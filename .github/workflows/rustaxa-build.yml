@@ -1,0 +1,24 @@
+name: Rustaxa Build
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository }}/rustaxa-builder:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build Rustaxa
+      run: |
+        mkdir -p build
+        conan install . -s 'build_type=RelWithDebInfo' --profile:host=clang --profile:build=clang --build=missing --output-folder=build
+        cd build
+        cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DTARAXA_ENABLE_LTO=OFF -DTARAXA_STATIC_BUILD=ON -DTARAXA_GPERF=ON
+        cmake --build build --target taraxad -j
