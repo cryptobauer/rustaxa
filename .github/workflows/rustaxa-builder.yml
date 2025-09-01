@@ -1,7 +1,13 @@
-name: Rustaxa Builder Image
+name: Rustaxa Builder
 on:
   push:
     branches: [ "main" ]
+    paths:
+      - 'Dockerfile.builder'
+      - 'conanfile.py'
+      - 'scripts/**'
+      - '.github/workflows/rustaxa-builder.yml'
+  workflow_dispatch:  # Manual trigger option
 
 env:
   LLVM_VERSION: 19
