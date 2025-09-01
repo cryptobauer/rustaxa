@@ -168,7 +168,11 @@ endif()
 # We are using clang from llvm toolchain as default compiler as well as clang-format and clang-tidy
 # It is possible to build taraxa-node also with other C++ compilers but to contribute to the official repo,
 # changes must pass clang-format/clang-tidy checks for which we internally use llvm version=LLVM_VERSION
-set(LLVM_VERSION "18")
+if(DEFINED ENV{LLVM_VERSION})
+    set(LLVM_VERSION "$ENV{LLVM_VERSION}")
+else()
+    set(LLVM_VERSION "19")
+endif()
 
 # clang-tidy
 include(CMakeModules/clang_tidy.cmake)
