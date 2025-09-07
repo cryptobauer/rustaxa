@@ -76,3 +76,9 @@ COPY conanfile.py .
 RUN mkdir -p /buildarea
 RUN ./scripts/config.sh
 RUN conan install . -s "build_type=RelWithDebInfo" -s "&:build_type=Debug" --profile:host=clang --profile:build=clang --build=missing --output-folder=/buildarea
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --default-toolchain stable
+
+ENV PATH="/root/.cargo/bin:${PATH}"
