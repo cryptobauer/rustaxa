@@ -23,6 +23,10 @@ conan: ## Run conan install to generate dependencies in build directory.
 build: ## Configure and build the project inside Docker container.
 	docker run -e LLVM_VERSION=$(LLVM_VERSION) --rm -v .:/workarea rustaxa-builder bash -c "mkdir -p /workarea/build && cd /workarea/build && cmake .. -DCMAKE_BUILD_TYPE=Debug -DTARAXA_ENABLE_LTO=OFF -DTARAXA_STATIC_BUILD=ON -DTARAXA_GPERF=ON && make -j2 taraxad"
 
+.PHONY: test
+test: ## Run the tests inside Docker container.
+	docker run -e LLVM_VERSION=$(LLVM_VERSION) --rm -v .:/workarea rustaxa-builder bash -c "cd /workarea/build && ctest"
+
 .PHONY: enter
 enter: ## Enter the docker container.
 	docker run -e LLVM_VERSION=$(LLVM_VERSION) -it -v .:/workarea rustaxa-builder
