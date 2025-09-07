@@ -35,6 +35,7 @@ add_library(rustaxa-vdf STATIC IMPORTED GLOBAL)
 
 set_target_properties(rustaxa-vdf PROPERTIES
     IMPORTED_LOCATION ${RUST_VDF_LIB_PATH}
+    INTERFACE_INCLUDE_DIRECTORIES ${RUSTAXA_VDF_CXXBRIDGE_DIR}
 )
 
 # Store the cxxbridge path as a variable for consumers to use

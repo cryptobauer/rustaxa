@@ -3,11 +3,17 @@
 #include <libdevcore/CommonData.h>
 #include <libdevcore/CommonJS.h>
 
+#ifdef RUSTAXA_ENABLED
+#include "rustaxa-vdf/src/bindings.rs.h"
+#else
 #include "ProverWesolowski.h"
+#endif
 #include "common/encoding_rlp.hpp"
 #include "common/util.hpp"
 namespace taraxa::vdf_sortition {
+#ifndef RUSTAXA_ENABLED
 using namespace vdf;
+#endif
 
 VdfSortition::VdfSortition(const SortitionParams& config, const vrf_sk_t& sk, const bytes& vrf_input,
                            uint64_t vote_count, uint64_t total_vote_count)
@@ -71,9 +77,20 @@ Json::Value VdfSortition::getJson() const {
 void VdfSortition::computeVdfSolution(const SortitionParams& config, const bytes& msg,
                                       const std::atomic_bool& cancelled) {
   auto t1 = getCurrentTimeMilliSeconds();
+#ifdef RUSTAXA_ENABLED
+  rust::Slice<const uint8_t> msgSlice{msg.data(), msg.size()};
+  rust::Slice<const uint8_t> NSlice{N.data(), N.size()};
+  const auto vdf = make_vdf(config.vdf.lambda_bound, difficulty_, msgSlice, NSlice);
+  auto cancellation_token = make_cancellation_token_with_atomic(reinterpret_cast<const bool*>(&cancelled));
+  const auto solution = prove(*vdf, *cancellation_token);
+  const auto proof = solution_get_proof(*solution);
+  const auto output = solution_get_output(*solution);
+  vdf_sol_ = std::make_pair(bytes(proof.begin(), proof.end()), bytes(output.begin(), output.end()));
+#else
   VerifierWesolowski verifier(config.vdf.lambda_bound, difficulty_, msg, N);
   ProverWesolowski prover;
   vdf_sol_ = prover(verifier, cancelled);  // this line takes time ...
+#endif
   auto t2 = getCurrentTimeMilliSeconds();
   vdf_computation_time_ = t2 - t1;
 }
@@ -96,8 +113,18 @@ void VdfSortition::verifyVdf(SortitionParams const& config, bytes const& vrf_inp
   }
 
   // Verify VDF solution
+#ifdef RUSTAXA_ENABLED
+  rust::Slice<const uint8_t> msgSlice{vdf_input.data(), vdf_input.size()};
+  rust::Slice<const uint8_t> NSlice{N.data(), N.size()};
+  const auto vdf = make_vdf(config.vdf.lambda_bound, getDifficulty(), msgSlice, NSlice);
+  rust::Slice<const uint8_t> proofSlice{vdf_sol_.first.data(), vdf_sol_.first.size()};
+  rust::Slice<const uint8_t> outputSlice{vdf_sol_.second.data(), vdf_sol_.second.size()};
+  const auto solution = make_solution(proofSlice, outputSlice);
+  if (!::verify(*vdf, *solution)) {
+#else
   VerifierWesolowski verifier(config.vdf.lambda_bound, getDifficulty(), vdf_input, N);
   if (!verifier(vdf_sol_)) {
+#endif
     throw InvalidVdfSortition("VDF solution verification failed. VDF input " + dev::toHex(vdf_input) + ", lambda " +
                               std::to_string(config.vdf.lambda_bound) + ", difficulty " +
                               std::to_string(getDifficulty()));
