@@ -1,3 +1,6 @@
+find_package(GTest REQUIRED)
+include(GoogleTest)
+
 add_executable(vdf_tests
     test_vdf.cpp
     test_vdf_integration.cpp
@@ -10,7 +13,7 @@ target_link_libraries(vdf_tests
 )
 
 target_include_directories(vdf_tests PRIVATE
-    ${CMAKE_CURRENT_BINARY_DIR}/../../cargo_build/cxxbridge
+    ${RUSTAXA_VDF_CXXBRIDGE_DIR}
 )
 
 if(UNIX AND NOT APPLE)
@@ -21,7 +24,7 @@ endif()
 
 target_compile_features(vdf_tests PRIVATE cxx_std_17)
 
-if(ENABLE_SANITIZER)
+if(TARAXA_ENABLE_SANITIZERS)
     target_compile_options(vdf_tests PRIVATE
         -fsanitize=address,undefined
         -fno-omit-frame-pointer
