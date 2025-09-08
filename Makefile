@@ -17,10 +17,6 @@ image: ## Build the docker image for the project.
 
 .PHONY: conan
 conan: ## Run conan install to generate dependencies in build directory.
-	docker run -e LLVM_VERSION=$(LLVM_VERSION) --rm -v .:/workarea rustaxa-builder bash -c "mkdir -p /workarea/build && cd /workarea && conan install . -s 'build_type=RelWithDebInfo' -s '&:build_type=Debug' --profile:host=clang --profile:build=clang --build=missing --output-folder=build"
-
-.PHONY: conan-cached
-conan-cached: ## Run conan install with persistent cache.
 	docker run -e LLVM_VERSION=$(LLVM_VERSION) --rm \
 		-v .:/workarea \
 		-v rustaxa-cargo-cache:/root/.cargo \
@@ -30,10 +26,6 @@ conan-cached: ## Run conan install with persistent cache.
 
 .PHONY: build
 build: ## Configure and build the project inside Docker container.
-	docker run -e LLVM_VERSION=$(LLVM_VERSION) --rm -v .:/workarea rustaxa-builder bash -c "mkdir -p /workarea/build && cd /workarea/build && cmake .. -DCMAKE_BUILD_TYPE=Debug -DTARAXA_ENABLE_LTO=OFF -DTARAXA_STATIC_BUILD=ON -DTARAXA_GPERF=ON && make -j2 taraxad"
-
-.PHONY: build-cached
-build-cached: ## Build with persistent caches (much faster for incremental builds).
 	docker run -e LLVM_VERSION=$(LLVM_VERSION) --rm \
 		-v .:/workarea \
 		-v rustaxa-cargo-cache:/root/.cargo \
@@ -41,8 +33,8 @@ build-cached: ## Build with persistent caches (much faster for incremental build
 		-v rustaxa-sccache-cache:/root/.cache/sccache \
 		rustaxa-builder bash -c "cd build && cmake .. -DCMAKE_BUILD_TYPE=Debug -DTARAXA_ENABLE_LTO=OFF -DTARAXA_STATIC_BUILD=ON -DTARAXA_GPERF=ON && make -j2 taraxad"
 
-.PHONY: shell-cached
-shell-cached: ## Enter shell with all caches mounted.
+.PHONY: shell
+shell: ## Enter shell with all caches mounted.
 	docker run -e LLVM_VERSION=$(LLVM_VERSION) -it \
 		-v .:/workarea \
 		-v rustaxa-cargo-cache:/root/.cargo \
@@ -50,18 +42,14 @@ shell-cached: ## Enter shell with all caches mounted.
 		-v rustaxa-sccache-cache:/root/.cache/sccache \
 		rustaxa-builder bash
 
-.PHONY: clean-cache
-clean-cache: ## Remove all cache volumes.
-	docker volume rm rustaxa-cargo-cache rustaxa-conan-cache rustaxa-sccache-cache 2>/dev/null || true
-
 .PHONY: test
 test: ## Run the tests inside Docker container.
 	docker run -e LLVM_VERSION=$(LLVM_VERSION) --rm -v .:/workarea rustaxa-builder bash -c "cd /workarea/build && ctest"
 
-.PHONY: enter
-enter: ## Enter the docker container.
-	docker run -e LLVM_VERSION=$(LLVM_VERSION) -it -v .:/workarea rustaxa-builder
-
 .PHONY: clean
 clean: ## Clean the build directory.
 	@rm -rf build
+
+.PHONY: clean-cache
+clean-cache: ## Remove all cache volumes.
+	docker volume rm rustaxa-cargo-cache rustaxa-conan-cache rustaxa-sccache-cache 2>/dev/null || true
