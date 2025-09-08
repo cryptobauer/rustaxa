@@ -30,6 +30,10 @@ add_custom_command(TARGET rust-workspace-build POST_BUILD
     COMMENT "Ensuring cxxbridge directory exists"
 )
 
+# Store the cxxbridge path as a variable for consumers to use
+# CXX bridge generates headers at target/cxxbridge/ with structure: <crate-name>/src/<file>.rs.h
+set(RUSTAXA_VDF_CXXBRIDGE_DIR "${WORKSPACE_TARGET_DIR}/cxxbridge" CACHE INTERNAL "CXX bridge include directory for rustaxa-vdf")
+
 # Create imported library target
 add_library(rustaxa-vdf STATIC IMPORTED GLOBAL)
 
@@ -37,10 +41,6 @@ set_target_properties(rustaxa-vdf PROPERTIES
     IMPORTED_LOCATION ${RUST_VDF_LIB_PATH}
     INTERFACE_INCLUDE_DIRECTORIES ${RUSTAXA_VDF_CXXBRIDGE_DIR}
 )
-
-# Store the cxxbridge path as a variable for consumers to use
-# CXX bridge generates headers at target/cxxbridge/ with structure: <crate-name>/src/<file>.rs.h
-set(RUSTAXA_VDF_CXXBRIDGE_DIR "${WORKSPACE_TARGET_DIR}/cxxbridge" CACHE INTERNAL "CXX bridge include directory for rustaxa-vdf")
 
 # Create the cxxbridge directory during configuration to avoid CMake errors
 file(MAKE_DIRECTORY "${RUSTAXA_VDF_CXXBRIDGE_DIR}")
