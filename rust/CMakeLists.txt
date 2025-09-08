@@ -17,7 +17,11 @@ set(RUST_VDF_LIB_PATH ${WORKSPACE_TARGET_DIR}/${CARGO_TARGET_SUBDIR}/librustaxa_
 # Use a custom target that always runs and let Cargo handle dependency tracking
 # This is more efficient as Cargo already knows what needs to be rebuilt
 add_custom_target(rust-workspace-build ALL
-    COMMAND cargo build ${CARGO_BUILD_MODE} --target-dir ${WORKSPACE_TARGET_DIR}
+    COMMAND ${CMAKE_COMMAND} -E env
+        # Set the CC and CXX environment variables for the build to avoid picking up sscache.
+        CC=clang-${LLVM_VERSION}
+        CXX=clang++-${LLVM_VERSION}
+        cargo build ${CARGO_BUILD_MODE} --target-dir ${WORKSPACE_TARGET_DIR}
     WORKING_DIRECTORY ${WORKSPACE_ROOT_DIR}
     COMMENT "Building Rust workspace via Cargo (${CMAKE_BUILD_TYPE} mode)"
     VERBATIM

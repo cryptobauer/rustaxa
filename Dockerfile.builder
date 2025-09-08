@@ -48,7 +48,6 @@ RUN add-apt-repository ppa:ethereum/ethereum \
     autoconf \
     binutils \
     cmake \
-    ccache \
     ninja-build \
     # this libs are required for arm build by go part
     libzstd-dev \
@@ -56,6 +55,10 @@ RUN add-apt-repository ppa:ethereum/ethereum \
     # replace this with conan dependency
     rapidjson-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Install sccache for better C++ and Rust compilation caching
+RUN curl -L https://github.com/mozilla/sccache/releases/download/v0.10.0/sccache-v0.10.0-x86_64-unknown-linux-musl.tar.gz | tar xz \
+    && mv sccache-v0.10.0-x86_64-unknown-linux-musl/sccache /usr/local/bin/
 
 ENV CXX="clang++-${LLVM_VERSION}"
 ENV CC="clang-${LLVM_VERSION}"
@@ -82,3 +85,16 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --default-toolchain stable
 
 ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Configure sccache for Rust only
+ENV RUSTC_WRAPPER=sccache
+
+# Create sccache wrapper scripts for C/C++ compilers to enable caching
+RUN printf '#!/bin/bash\nexec /usr/local/bin/sccache /usr/bin/clang-%s "$@"\n' "${LLVM_VERSION}" > /usr/local/bin/sccache-clang \
+    && printf '#!/bin/bash\nexec /usr/local/bin/sccache /usr/bin/clang++-%s "$@"\n' "${LLVM_VERSION}" > /usr/local/bin/sccache-clang++ \
+    && chmod +x /usr/local/bin/sccache-clang /usr/local/bin/sccache-clang++
+
+# Set environment variables for C/C++ compilation with sccache wrappers
+ENV CC="sccache-clang"
+ENV CXX="sccache-clang++"
+
