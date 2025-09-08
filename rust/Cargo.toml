@@ -2,3 +2,4 @@
 members = [
     "libs/vdf",
 ]
+resolver = "3"
