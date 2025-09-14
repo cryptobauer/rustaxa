@@ -14,31 +14,14 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
       options: --user root
+      env:
+        HOME: /root
     steps:
     - uses: actions/checkout@v4
     - name: Build Rustaxa
       run: |
-        echo "=== Diagnostic Information ==="
-        echo "Current user: $(whoami)"
-        echo "Current working directory: $(pwd)"
-        echo "Conan version: $(conan --version)"
         echo "Conan config home: $(conan config home)"
-
-        echo "=== Available Conan profiles ==="
-        conan profile list || echo "Failed to list profiles"
-
-        echo "=== Checking for clang profile specifically ==="
-        conan profile show clang || echo "Clang profile not found"
-
-        echo "=== Conan profile directory contents ==="
-        ls -la $(conan config home)/profiles/ || echo "Profiles directory not found"
-
-        echo "=== Environment variables ==="
-        echo "CC: $CC"
-        echo "CXX: $CXX"
-        echo "LLVM_VERSION: $LLVM_VERSION"
-
-        echo "=== Starting build ==="
+        echo "Available profiles: $(conan profile list)"
         mkdir -p build
         conan install . -s "build_type=RelWithDebInfo" -s "&:build_type=Debug" --profile:host=clang --profile:build=clang --build=missing --output-folder=build
         cd build
