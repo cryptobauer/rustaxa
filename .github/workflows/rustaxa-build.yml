@@ -13,12 +13,13 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user root
     steps:
     - uses: actions/checkout@v4
     - name: Build Rustaxa
       run: |
         mkdir -p build
-        conan install . -s 'build_type=RelWithDebInfo' --profile:host=clang --profile:build=clang --build=missing --output-folder=build
+        conan install . -s "build_type=RelWithDebInfo" -s "&:build_type=Debug" --profile:host=clang --profile:build=clang --build=missing --output-folder=build
         cd build
         cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DTARAXA_ENABLE_LTO=OFF -DTARAXA_STATIC_BUILD=ON -DTARAXA_GPERF=ON
         cmake --build build --target taraxad -j
