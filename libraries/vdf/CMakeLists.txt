@@ -11,11 +11,18 @@ set(SOURCES
 add_library(vdf ${SOURCES} ${HEADERS})
 target_include_directories(vdf PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-target_link_libraries(vdf PUBLIC
-    logger
-    taraxa-vdf
-    mpfr::mpfr
-)
+if(RUSTAXA_ENABLE)
+    target_link_libraries(vdf PUBLIC
+        logger
+        rustaxa-vdf
+    )
+else()
+    target_link_libraries(vdf PUBLIC
+        logger
+        taraxa-vdf
+        mpfr::mpfr
+    )
+endif()
 
 install(TARGETS vdf
     ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
