@@ -11,7 +11,7 @@ We maintain three primary tracks of development to separate upstream logic from 
 | Branch | Role | Description |
 | :--- | :--- | :--- |
 | **`upstream-main`** | **The Mirror** | A 1:1 clean replica of the upstream repository. No local commits. |
-| **`cpp-reference`** | **Validation Gate** | The C++ codebase + `#ifdef` integration hooks. This branch is used to verify upstream updates in a pure C++ environment (`USE_RUST=0`) before porting. |
+| **`cpp-reference`** | **Validation Gate** | The C++ codebase + `#ifdef` integration hooks. This branch is used to verify upstream updates in a pure C++ environment (`RUSTAXA_ENABLE=0`) before porting. |
 | **`main`** | **The Rewrite** | The primary Rust codebase. This is the "Source of Truth" for the project's future. |
 
 ---
@@ -23,7 +23,7 @@ We use a "Strangler Fig" pattern to replace C++ modules. By wrapping the origina
 ```cpp
 // Example of the integration pattern
 void process_data() {
-#ifdef USE_RUST
+#ifdef RUSTAXA_ENABLE
     // Calls the Rust implementation via FFI
     rust_process_data_bridge();
 #else
@@ -38,9 +38,9 @@ void process_data() {
 When the upstream project releases updates, we follow this gated pipeline:
 
 1.  **Sync Baseline:** `git checkout upstream-main && git pull upstream main`
-2.  **Verify C++ (The Gate):** Merge `upstream-main` into `cpp-reference`. Resolve conflicts and ensure the project builds and runs with `USE_RUST=0`.
+2.  **Verify C++ (The Gate):** Merge `upstream-main` into `cpp-reference`. Resolve conflicts and ensure the project builds and runs with `RUSTAXA_ENABLE=0`.
 3.  **Integration Branch:** Create a temporary feature branch from `main` (e.g., `sync/upstream-jan-2026`). Merge `cpp-reference` into this branch.
-4.  **Rust Logic Port:** Build with `USE_RUST=1`. Identify where the C++ logic changed (the `#else` blocks) and update the corresponding Rust code.
+4.  **Rust Logic Port:** Build with `RUSTAXA_ENABLE=1`. Identify where the C++ logic changed (the `#else` blocks) and update the corresponding Rust code.
 5.  **Merge to Main:** Once all tests pass, merge the feature branch into `main`.
 
 ## 📂 Repository Structure
@@ -66,7 +66,7 @@ When the upstream project releases updates, we follow this gated pipeline:
         └── ...
 ```
 
-**Note to Contributors:** Do not delete C++ code in the `cpp-reference` branch. Instead, wrap it in `#ifdef USE_RUST` to maintain the validation gate and ensure we can always fall back to the C++ baseline for debugging.
+**Note to Contributors:** Do not delete C++ code in the `cpp-reference` branch. Instead, wrap it in `#ifdef RUSTAXA_ENABLE` to maintain the validation gate and ensure we can always fall back to the C++ baseline for debugging.
 
 
 
