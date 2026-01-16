@@ -212,7 +212,7 @@ set(JSONCPP_INCLUDE_DIR ${jsoncpp_INCLUDE_DIRS})
 include(ProjectJSONRPCCPP)
 
 if(RUSTAXA_ENABLE)
-    add_subdirectory(rust)
+    include(CMakeModules/RustaxaBridge.cmake)
 endif()
 
 # Add sub-directories cmakes
