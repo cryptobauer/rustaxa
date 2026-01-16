@@ -14,7 +14,7 @@ target_include_directories(vdf PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 if(RUSTAXA_ENABLE)
     target_link_libraries(vdf PUBLIC
         logger
-        rustaxa-vdf
+        rustaxa-bridge
     )
 else()
     target_link_libraries(vdf PUBLIC

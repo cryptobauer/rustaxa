@@ -4,7 +4,7 @@
 #include <libdevcore/CommonJS.h>
 
 #ifdef RUSTAXA_ENABLED
-#include "rustaxa-vdf/src/bindings.rs.h"
+#include "rustaxa-bridge/src/vdf.rs.h"
 #else
 #include "ProverWesolowski.h"
 #endif
@@ -80,11 +80,11 @@ void VdfSortition::computeVdfSolution(const SortitionParams& config, const bytes
 #ifdef RUSTAXA_ENABLED
   rust::Slice<const uint8_t> msgSlice{msg.data(), msg.size()};
   rust::Slice<const uint8_t> NSlice{N.data(), N.size()};
-  const auto vdf = make_vdf(config.vdf.lambda_bound, difficulty_, msgSlice, NSlice);
-  auto cancellation_token = make_cancellation_token_with_atomic(reinterpret_cast<const bool*>(&cancelled));
-  const auto solution = prove(*vdf, *cancellation_token);
-  const auto proof = solution_get_proof(*solution);
-  const auto output = solution_get_output(*solution);
+  const auto vdf = rustaxa::vdf::make_vdf(config.vdf.lambda_bound, difficulty_, msgSlice, NSlice);
+  auto cancellation_token = rustaxa::vdf::make_cancellation_token_with_atomic(reinterpret_cast<const bool*>(&cancelled));
+  const auto solution = rustaxa::vdf::prove(*vdf, *cancellation_token);
+  const auto proof = rustaxa::vdf::solution_get_proof(*solution);
+  const auto output = rustaxa::vdf::solution_get_output(*solution);
   vdf_sol_ = std::make_pair(bytes(proof.begin(), proof.end()), bytes(output.begin(), output.end()));
 #else
   VerifierWesolowski verifier(config.vdf.lambda_bound, difficulty_, msg, N);
@@ -116,11 +116,11 @@ void VdfSortition::verifyVdf(SortitionParams const& config, bytes const& vrf_inp
 #ifdef RUSTAXA_ENABLED
   rust::Slice<const uint8_t> msgSlice{vdf_input.data(), vdf_input.size()};
   rust::Slice<const uint8_t> NSlice{N.data(), N.size()};
-  const auto vdf = make_vdf(config.vdf.lambda_bound, getDifficulty(), msgSlice, NSlice);
+  const auto vdf = rustaxa::vdf::make_vdf(config.vdf.lambda_bound, getDifficulty(), msgSlice, NSlice);
   rust::Slice<const uint8_t> proofSlice{vdf_sol_.first.data(), vdf_sol_.first.size()};
   rust::Slice<const uint8_t> outputSlice{vdf_sol_.second.data(), vdf_sol_.second.size()};
-  const auto solution = make_solution(proofSlice, outputSlice);
-  if (!::verify(*vdf, *solution)) {
+  const auto solution = rustaxa::vdf::make_solution(proofSlice, outputSlice);
+  if (!rustaxa::vdf::verify(*vdf, *solution)) {
 #else
   VerifierWesolowski verifier(config.vdf.lambda_bound, getDifficulty(), vdf_input, N);
   if (!verifier(vdf_sol_)) {
