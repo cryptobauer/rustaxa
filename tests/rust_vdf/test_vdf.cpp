@@ -2,7 +2,9 @@
 #include <vector>
 
 #include "rust/cxx.h"
-#include "rustaxa-vdf/src/bindings.rs.h"
+#include "rustaxa-bridge/src/vdf.rs.h"
+
+using namespace rustaxa::vdf;
 
 inline rust::Slice<const uint8_t> to_slice(const std::vector<uint8_t>& v) {
   return {v.data(), v.size()};

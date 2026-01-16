@@ -1,12 +1,17 @@
-use crate::prover::{CancellationToken, WesolowskiProver};
-use crate::vdf::{Solution, WesolowskiVdf};
-use crate::verifier::WesolowskiVerifier;
+use rustaxa_vdf::prover::{CancellationToken as InnerCancellationToken, WesolowskiProver};
+use rustaxa_vdf::vdf::{Solution as InnerSolution, WesolowskiVdf as InnerWesolowskiVdf};
+use rustaxa_vdf::verifier::WesolowskiVerifier;
 
-#[cxx::bridge]
+// Wrapper types to satisfy Orphan Rule since we are bridging types from another crate
+pub struct WesolowskiVdf(InnerWesolowskiVdf);
+pub struct CancellationToken(InnerCancellationToken);
+pub struct Solution(InnerSolution);
+
+#[cxx::bridge(namespace = "rustaxa::vdf")]
 mod ffi {
     extern "Rust" {
         type WesolowskiVdf;
-        type WesolowskiVerifier<'a>;
+        // WesolowskiVerifier is not exposed to C++, so we don't list it here
 
         fn make_vdf(
             lambda: u32,
@@ -34,51 +39,48 @@ mod ffi {
     }
 }
 
-// Boilerplate for C++ to call Rust functions. We are not moving this to the actual
-// modules because only C++ needs this.
-
 pub fn make_vdf(lambda: u32, time_bits: u32, input: &[u8], modulus: &[u8]) -> Box<WesolowskiVdf> {
-    Box::new(WesolowskiVdf::new(
+    Box::new(WesolowskiVdf(InnerWesolowskiVdf::new(
         lambda,
         time_bits,
         input.to_vec(),
         modulus.to_vec(),
-    ))
+    )))
 }
 
 pub fn make_solution(proof: &[u8], output: &[u8]) -> Box<Solution> {
-    Box::new(Solution {
+    Box::new(Solution(InnerSolution {
         first: proof.to_vec(),
         second: output.to_vec(),
-    })
+    }))
 }
 
 pub fn make_cancellation_token() -> Box<CancellationToken> {
-    Box::new(CancellationToken::new())
+    Box::new(CancellationToken(InnerCancellationToken::new()))
 }
 
 pub fn make_cancellation_token_with_atomic(atomic_ptr: *const bool) -> Box<CancellationToken> {
-    Box::new(CancellationToken::from_atomic_ptr(atomic_ptr))
+    Box::new(CancellationToken(InnerCancellationToken::from_atomic_ptr(atomic_ptr)))
 }
 
 pub fn cancellation_token_cancel(token: &CancellationToken) {
-    token.cancel();
+    token.0.cancel();
 }
 
 pub fn verify(vdf: &WesolowskiVdf, solution: &Solution) -> bool {
-    let verifier = WesolowskiVerifier::new(vdf);
-    verifier.verify(solution)
+    let verifier = WesolowskiVerifier::new(&vdf.0);
+    verifier.verify(&solution.0)
 }
 
 pub fn prove(vdf: &WesolowskiVdf, cancelled: &CancellationToken) -> Box<Solution> {
-    let prover = WesolowskiProver::new(vdf);
-    Box::new(prover.prove(cancelled))
+    let prover = WesolowskiProver::new(&vdf.0);
+    Box::new(Solution(prover.prove(&cancelled.0)))
 }
 
 pub fn solution_get_proof(solution: &Solution) -> &[u8] {
-    &solution.first
+    &solution.0.first
 }
 
 pub fn solution_get_output(solution: &Solution) -> &[u8] {
-    &solution.second
+    &solution.0.second
 }

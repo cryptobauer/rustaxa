@@ -1,5 +1,6 @@
 [workspace]
 members = [
-    "libs/vdf",
+    "crates/rustaxa-vdf",
+    "crates/rustaxa-bridge",
 ]
 resolver = "3"

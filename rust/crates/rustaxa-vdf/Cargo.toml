@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-cxx = "1.0"
 rug = "1.27.0"
 
 [dev-dependencies]
@@ -25,9 +24,3 @@ harness = false
 [[bench]]
 name = "puzzle_operations"
 harness = false
-
-[build-dependencies]
-cxx-build = "1.0"
-
-[lib]
-crate-type = ["staticlib", "lib"]
