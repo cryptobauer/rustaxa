@@ -1,0 +1,58 @@
+{
+	"name": "Rustaxa Dev Container",
+	"build": {
+		"dockerfile": "Dockerfile"
+	},
+	"features": {
+		"ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+			"version": "latest",
+			"moby": false
+		}
+	},
+	"containerEnv": {
+		"CCACHE_MAXSIZE": "10G"
+	},
+	"mounts": [
+		"source=rustaxa-clangd-index,target=${containerWorkspaceFolder}/.cache/clangd,type=volume",
+		"source=rustaxa-ccache,target=/root/.ccache,type=volume",
+		"source=${localEnv:HOME}/.ssh,target=/root/.ssh,type=bind,consistency=cached",
+		"source=${localEnv:HOME}/.gitconfig,target=/root/.gitconfig-host,type=bind,consistency=cached",
+		"source=${localEnv:HOME}/.gitconfig-cryptobauer,target=/root/.gitconfig-cryptobauer,type=bind,consistency=cached"
+	],
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"docker.docker",
+				"eamodio.gitlens",
+				"GitHub.copilot-chat",
+				"GitHub.copilot",
+				"llvm-vs-code-extensions.vscode-clangd",
+				"ms-azuretools.vscode-containers",
+				"ms-python.python",
+				"ms-vscode.cmake-tools",
+				"ms-vscode.cpptools-extension-pack",
+				"ms-vscode.cpptools",
+				"ms-vscode.makefile-tools",
+				"rust-lang.rust-analyzer",
+				"streetsidesoftware.code-spell-checker",
+				"tamasfe.even-better-toml",
+				"vadimcn.vscode-lldb"
+			],
+			"settings": {
+				"C_Cpp.intelliSenseEngine": "disabled",
+				"clangd.arguments": [
+					"--compile-commands-dir=.",
+					"--background-index",
+					"--clang-tidy",
+					"--header-insertion=never"
+				],
+				"rust-analyzer.cargo.buildScripts.enable": true,
+				"rust-analyzer.procMacro.enable": true,
+				"cmake.configureOnOpen": true,
+				"terminal.integrated.defaultProfile.linux": "zsh"
+			}
+		}
+	},
+	"remoteUser": "root",
+	"postCreateCommand": "git config --global include.path /root/.gitconfig-host && git config --global includeIf.\"gitdir:/workspaces/rustaxa/\".path /root/.gitconfig-cryptobauer && git config --global core.sshCommand \"ssh -i /root/.ssh/id_ed25519_cryptobauer\" && ln -sf build/compile_commands.json compile_commands.json"
+}
