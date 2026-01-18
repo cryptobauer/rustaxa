@@ -1,0 +1,14 @@
+[package]
+name = "rustaxa-storage"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.100"
+ethereum-types = "0.16.0"
+thiserror = "2.0.17"
+
+[dependencies.rocksdb]
+version = "0.24.0"
+default-features = false
+features = ["lz4"]
