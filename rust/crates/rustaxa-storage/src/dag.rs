@@ -53,10 +53,14 @@ impl<D: DbReader> DagRepository<D> {
 
     /// Implements GetLastBlocksLevel() -> uint64
     pub fn last_blocks_level(&self) -> Result<u64> {
-        if let Some(key) = self.db.get_last_key(Column::DagBlocksLevel)? {
-            let mut bytes = [0u8; 8];
-            bytes.copy_from_slice(&key);
-            return Ok(u64::from_le_bytes(bytes));
+        let last = self.db.iter(Column::DagBlocksLevel).last();
+        if let Some(res) = last {
+            let (key, _) = res?;
+            if key.len() == 8 {
+                let mut bytes = [0u8; 8];
+                bytes.copy_from_slice(&key);
+                return Ok(u64::from_le_bytes(bytes));
+            }
         }
         Ok(0)
     }
@@ -87,10 +91,14 @@ impl<D: DbReader> DagRepository<D> {
     }
 
     /// Implements GetNonfinalizedDagBlocks() -> map<level, vector<DagBlock>>
-    /// DUMMY IMPLEMENTATION: Returns empty map for now as it requires DB iteration support
     pub fn nonfinalized_dag_blocks(&self) -> Result<BTreeMap<u64, Vec<DagBlock>>> {
-        // TODO: This requires iteration over Column::DagBlocksLevel which is not yet supported by DbReader
-        Ok(BTreeMap::new())
+        let mut map: BTreeMap<u64, Vec<DagBlock>> = BTreeMap::new();
+        for res in self.db.iter(Column::DagBlocks) {
+            let (_, value) = res?;
+            let block = DagBlock::from_rlp_bytes(&value)?;
+            map.entry(block.level).or_default().push(block);
+        }
+        Ok(map)
     }
 
     /// Implements GetProposalPeriodForDagLevel(level) -> uint64
@@ -115,6 +123,7 @@ impl<D: DbReader> DagRepository<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::DbIterator;
     use rlp::RlpStream;
     use std::collections::{BTreeMap, HashMap};
     use std::sync::RwLock;
@@ -152,12 +161,17 @@ mod tests {
             }
         }
 
-        fn get_last_key(&self, col: Column) -> Result<Option<Vec<u8>>> {
+        fn iter<'a>(&'a self, col: Column) -> DbIterator<'a> {
             let data = self.data.read().unwrap();
             if let Some(cf) = data.get(col.name()) {
-                Ok(cf.keys().last().cloned())
+                // We need to clone the data because we can't manually keep the lock
+                let items: Vec<_> = cf
+                    .iter()
+                    .map(|(k, v)| Ok((k.clone().into_boxed_slice(), v.clone().into_boxed_slice())))
+                    .collect();
+                Box::new(items.into_iter())
             } else {
-                Ok(None)
+                Box::new(std::iter::empty())
             }
         }
     }
@@ -345,10 +359,26 @@ mod tests {
     }
 
     #[test]
-    fn test_nonfinalized_dag_blocks_dummy() {
+    fn test_nonfinalized_dag_blocks() {
         let db = Arc::new(MockDagStore::new());
         let repo = DagRepository::new(db.clone());
-        // Currently returns empty
-        assert!(repo.nonfinalized_dag_blocks().unwrap().is_empty());
+
+        // Create 2 blocks at same level
+        let block1_hash = H256::random();
+        let block1 = create_dummy_dag_block_rlp(); // Assumes level 10 inside dummy
+
+        let block2_hash = H256::random();
+        let block2 = create_dummy_dag_block_rlp(); // Assumes level 10 inside dummy
+
+        // Adjust dummy creation helper or just patch bytes?
+        // create_dummy_dag_block_rlp creates block with level 10.
+        // We can use it directly.
+
+        db.put(Column::DagBlocks, block1_hash.as_bytes(), &block1);
+        db.put(Column::DagBlocks, block2_hash.as_bytes(), &block2);
+
+        let result = repo.nonfinalized_dag_blocks().unwrap();
+        assert_eq!(result.len(), 1); // 1 level
+        assert_eq!(result.get(&10).unwrap().len(), 2);
     }
 }

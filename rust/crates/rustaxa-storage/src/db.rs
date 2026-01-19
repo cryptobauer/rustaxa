@@ -9,6 +9,7 @@
 ///   - Snapshots
 ///
 use anyhow::Result;
+use ethereum_types::H256;
 use rocksdb::{DBPinnableSlice, DBWithThreadMode, MultiThreaded, Options};
 use std::sync::Arc;
 
@@ -16,6 +17,12 @@ use crate::Column;
 use crate::Config;
 use crate::DagRepository;
 use crate::StorageError;
+
+/// Item returned by the database iterator.
+/// Key and Value are boxed slices.
+pub type IteratorItem = Result<(Box<[u8]>, Box<[u8]>)>;
+/// Iterator type for database queries.
+pub type DbIterator<'a> = Box<dyn Iterator<Item = IteratorItem> + Send + Sync + 'a>;
 
 /// Trait abstracting database read operations.
 pub trait DbReader: Send + Sync {
@@ -27,7 +34,7 @@ pub trait DbReader: Send + Sync {
         Self: 'a;
 
     fn get<'a>(&'a self, col: Column, key: &[u8]) -> Result<Option<Self::Slice<'a>>>;
-    fn get_last_key(&self, col: Column) -> Result<Option<Vec<u8>>>;
+    fn iter<'a>(&'a self, col: Column) -> DbIterator<'a>;
 }
 
 impl DbReader for DBWithThreadMode<MultiThreaded> {
@@ -41,16 +48,19 @@ impl DbReader for DBWithThreadMode<MultiThreaded> {
             .map_err(|e| StorageError::Database(e).into())
     }
 
-    fn get_last_key(&self, col: Column) -> Result<Option<Vec<u8>>> {
-        let handle = self.cf_handle(col.name()).ok_or_else(|| {
-            StorageError::Config(format!("Missing column family: {}", col.name()))
-        })?;
-        let mut iter = self.raw_iterator_cf(&handle);
-        iter.seek_to_last();
-        if let Some(key) = iter.key() {
-            Ok(Some(key.to_vec()))
-        } else {
-            Ok(None)
+    fn iter<'a>(&'a self, col: Column) -> DbIterator<'a> {
+        match self.cf_handle(col.name()) {
+            Some(handle) => {
+                let iter = self
+                    .iterator_cf(&handle, rocksdb::IteratorMode::Start)
+                    .map(|res| res.map_err(|e| StorageError::Database(e).into()));
+                Box::new(iter)
+            }
+            None => Box::new(std::iter::once(Err(StorageError::Config(format!(
+                "Missing column family: {}",
+                col.name()
+            ))
+            .into()))),
         }
     }
 }
@@ -94,5 +104,23 @@ impl Storage {
 
     pub fn dag(&self) -> &DagRepository<DBWithThreadMode<MultiThreaded>> {
         &self.dag
+    }
+
+    pub fn genesis_hash(&self) -> Result<H256> {
+        self.get(Column::Genesis, &[])?
+            .map(|val| H256::from_slice(val.as_ref()))
+            .ok_or_else(|| StorageError::Dag("Genesis hash not found".to_string()).into())
+    }
+}
+
+impl DbReader for Storage {
+    type Slice<'a> = DBPinnableSlice<'a>;
+
+    fn get<'a>(&'a self, col: Column, key: &[u8]) -> Result<Option<Self::Slice<'a>>> {
+        DbReader::get(&*self.db, col, key)
+    }
+
+    fn iter<'a>(&'a self, col: Column) -> DbIterator<'a> {
+        DbReader::iter(&*self.db, col)
     }
 }
