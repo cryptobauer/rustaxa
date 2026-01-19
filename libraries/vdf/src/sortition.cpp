@@ -4,7 +4,7 @@
 #include <libdevcore/CommonJS.h>
 
 #ifdef RUSTAXA_ENABLE_VDF
-#include "rustaxa-bridge/src/vdf.rs.h"
+#include "rustaxa-bridge/vdf.rs.h"
 #else
 #include "ProverWesolowski.h"
 #endif

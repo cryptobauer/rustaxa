@@ -22,6 +22,10 @@
 #include "vote/pillar_vote.hpp"
 #include "vote_manager/verified_votes.hpp"
 
+#ifdef RUSTAXA_ENABLE_STORAGE
+#include "rustaxa-bridge/storage.rs.h"
+#endif
+
 namespace taraxa {
 namespace fs = std::filesystem;
 struct SortitionParamsChange;

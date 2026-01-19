@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include <filesystem>
-#include "rustaxa-bridge/src/storage.rs.h"
+#include "rustaxa-bridge/storage.rs.h"
 
 using namespace rustaxa::storage;
 
