@@ -60,7 +60,9 @@ pub fn make_cancellation_token() -> Box<CancellationToken> {
 }
 
 pub fn make_cancellation_token_with_atomic(atomic_ptr: *const bool) -> Box<CancellationToken> {
-    Box::new(CancellationToken(InnerCancellationToken::from_atomic_ptr(atomic_ptr)))
+    Box::new(CancellationToken(InnerCancellationToken::from_atomic_ptr(
+        atomic_ptr,
+    )))
 }
 
 pub fn cancellation_token_cancel(token: &CancellationToken) {

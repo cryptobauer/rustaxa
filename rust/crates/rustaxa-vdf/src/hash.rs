@@ -244,10 +244,11 @@ fn compute_precision_bound(lambda: u32) -> rug::Integer {
 
         // Fallback: try integer conversion
         if let Some(bits) = w_magnitude.to_integer()
-            && let Some(bits_u32) = bits.to_u32() {
-                let clamped_bits = bits_u32.clamp(MIN_PRECISION_BITS, MAX_PRECISION_BITS);
-                return rug::Integer::from(2u32).pow(clamped_bits);
-            }
+            && let Some(bits_u32) = bits.to_u32()
+        {
+            let clamped_bits = bits_u32.clamp(MIN_PRECISION_BITS, MAX_PRECISION_BITS);
+            return rug::Integer::from(2u32).pow(clamped_bits);
+        }
     }
 
     // Default fallback

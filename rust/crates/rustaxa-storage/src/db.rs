@@ -9,14 +9,17 @@
 ///   - Snapshots
 ///
 use anyhow::Result;
-use rocksdb::{BoundColumnFamily, DBWithThreadMode, MultiThreaded, Options};
+use rocksdb::{DBWithThreadMode, MultiThreaded, Options};
 use std::sync::Arc;
 
+use crate::Config;
+use crate::DagRepository;
 use crate::StorageError;
-use crate::{Column, Config, StatusField};
 
 pub struct Storage {
-    db: DBWithThreadMode<MultiThreaded>,
+    #[allow(dead_code)]
+    db: Arc<DBWithThreadMode<MultiThreaded>>,
+    dag: DagRepository,
 }
 
 impl Storage {
@@ -44,35 +47,13 @@ impl Storage {
         )
         .map_err(StorageError::Database)?;
 
-        Ok(Storage { db })
+        let db = Arc::new(db);
+        let dag = DagRepository::new(db.clone());
+
+        Ok(Storage { db, dag })
     }
 
-    fn handle(&self, column: Column) -> Arc<BoundColumnFamily<'_>> {
-        self.db
-            .cf_handle(column.name())
-            .expect("Missing column family") // We don't expect this to happen.
-    }
-
-    pub fn get_status_field(&self, field: StatusField) -> Result<u64> {
-        let key = (field as u8).to_le_bytes();
-        let handle = self.handle(Column::Status);
-        match self.db.get_pinned_cf(&handle, key) {
-            Ok(Some(value)) => {
-                if value.len() >= 8 {
-                    Ok(u64::from_le_bytes(value[0..8].try_into().unwrap()))
-                } else {
-                    Err(StorageError::ReadError(format!(
-                        "StatusField value for {:?} is too short: {:?}",
-                        field,
-                        value.len()
-                    ))
-                    .into())
-                }
-            }
-            Ok(None) => {
-                Err(StorageError::ReadError(format!("Status field {:?} not found", field)).into())
-            }
-            Err(e) => Err(StorageError::Database(e).into()),
-        }
+    pub fn dag(&self) -> &DagRepository {
+        &self.dag
     }
 }

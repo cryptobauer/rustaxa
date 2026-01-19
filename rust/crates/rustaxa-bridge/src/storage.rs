@@ -2,7 +2,7 @@ use rustaxa_storage::Config;
 use rustaxa_storage::Storage as InnerStorage;
 use std::path::PathBuf;
 
-pub struct Storage(InnerStorage);
+pub struct Storage(#[allow(dead_code)] InnerStorage);
 
 #[cxx::bridge(namespace = "rustaxa::storage")]
 mod ffi {

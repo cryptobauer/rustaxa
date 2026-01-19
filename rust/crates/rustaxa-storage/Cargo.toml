@@ -5,7 +5,8 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
-ethereum-types = "0.16.0"
+ethereum-types = { version = "0.16.0", features = ["rlp"] }
+rlp = "0.6"
 thiserror = "2.0.17"
 
 [dependencies.rocksdb]

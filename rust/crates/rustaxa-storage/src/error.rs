@@ -14,6 +14,9 @@ pub enum StorageError {
     #[error("Database read error: {0}")]
     ReadError(String),
 
+    #[error("Decode error: {0}")]
+    DecodeError(#[from] rlp::DecoderError),
+
     #[error("Unknown storage error")]
     Unknown,
 }
