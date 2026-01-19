@@ -9,6 +9,7 @@ crate-type = ["staticlib", "lib"]
 [dependencies]
 cxx = "1.0"
 rustaxa-vdf = { path = "../rustaxa-vdf" }
+rustaxa-storage = { path = "../rustaxa-storage" }
 
 [build-dependencies]
 cxx-build = "1.0"
