@@ -209,7 +209,7 @@ impl Column {
     }
 
     /// Returns whether the column uses a custom uint64 comparator.
-    pub fn is_uint64_comparator(&self) -> bool {
+    pub fn uses_uint64_comparator(&self) -> bool {
         matches!(
             self,
             Column::PeriodData
@@ -226,7 +226,7 @@ impl Column {
     /// Creates a ColumnFamilyDescriptor for this column.
     pub fn descriptor(&self, opts: &rocksdb::Options) -> rocksdb::ColumnFamilyDescriptor {
         let mut opts = opts.clone();
-        if self.is_uint64_comparator() {
+        if self.uses_uint64_comparator() {
             opts.set_comparator("taraxa.UintComparator", Self::uint64_comparator());
         }
         rocksdb::ColumnFamilyDescriptor::new(self.name(), opts)
@@ -331,7 +331,7 @@ mod tests {
 
         for column in uint64_columns {
             assert!(
-                column.is_uint64_comparator(),
+                column.uses_uint64_comparator(),
                 "{:?} should use uint64 comparator",
                 column
             );
