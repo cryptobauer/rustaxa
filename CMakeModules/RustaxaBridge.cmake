@@ -7,7 +7,7 @@ find_program(CARGO_EXE NAMES cargo REQUIRED)
 
 set(RUST_ROOT "${PROJECT_SOURCE_DIR}/rust")
 set(RUST_TARGET_DIR "${PROJECT_BINARY_DIR}/rust/target")
-set(BRIDGE_INCLUDE_DIR "${RUST_TARGET_DIR}/cxxbridge")
+set(BRIDGE_INCLUDE_DIR "${PROJECT_BINARY_DIR}/rust_bridge_include")
 
 file(MAKE_DIRECTORY "${BRIDGE_INCLUDE_DIR}/rustaxa-bridge")
 
@@ -35,6 +35,13 @@ file(WRITE "${SYNC_SCRIPT}" "
         # Using configure_file with COPYONLY updates timestamps only on change, preventing rebuilds
         configure_file(\"\${HEADER}\" \"${BRIDGE_INCLUDE_DIR}/rustaxa-bridge/\${FNAME}\" COPYONLY)
     endforeach()
+
+    # Copy rust/cxx.h
+    file(MAKE_DIRECTORY \"${BRIDGE_INCLUDE_DIR}/rust\")
+    set(CXX_H \"\${TARGET_DIR}/cxxbridge/rust/cxx.h\")
+    if(EXISTS \"\${CXX_H}\")
+        configure_file(\"\${CXX_H}\" \"${BRIDGE_INCLUDE_DIR}/rust/cxx.h\" COPYONLY)
+    endif()
 ")
 
 # --- Build Target ---
