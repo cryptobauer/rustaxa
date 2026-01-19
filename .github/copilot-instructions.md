@@ -6,7 +6,7 @@ Rustaxa is a port of the Taraxa node software written in Rust. Taraxa is a block
 - The Rust code is organized in a separate directory and is being developed alongside the existing C++.
 - The goal is to eventually replace the C++ codebase with Rust.
 - Whenever we replace any C++ code with Rust it always has to be backwards compatible with the C++ implementation to ensure the node can run against other C++ validator nodes.
-- We are using shims to inject the Rust code activated with the define `RUSTAXA_ENABLED`.
+- We are using shims to inject the Rust code activated with the defines like `RUSTAXA_ENABLE_VDF` (one per module).
 - Any shim should be as small as possible so that merging C++ upstream changes doesn't lead to conflicts.
 - The Rust code is organized in crates.
 - Never change existing C++ code without asking me before.
