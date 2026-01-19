@@ -12,10 +12,13 @@ pub enum StorageError {
     Config(String),
 
     #[error("Database read error: {0}")]
-    ReadError(String),
+    Read(String),
 
     #[error("Types error: {0}")]
     Types(#[from] rustaxa_types::TypesError),
+
+    #[error("DAG error: {0}")]
+    Dag(String),
 
     #[error("Unknown storage error")]
     Unknown,
