@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "crates/rustaxa-bridge",
-    "crates/rustaxa-storage",
+    "crates/rustaxa-storage", "crates/rustaxa-types",
     "crates/rustaxa-vdf",
 ]
 resolver = "3"

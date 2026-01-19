@@ -1,6 +1,7 @@
 use anyhow::Result;
 use ethereum_types::H256;
 use rocksdb::{DBWithThreadMode, MultiThreaded};
+use rustaxa_types::DagBlock;
 use std::sync::Arc;
 
 use crate::{Column, StorageError};
@@ -14,14 +15,14 @@ impl DagRepository {
         DagRepository { db }
     }
 
-    /// Implements GetDagBlock(blockHash) -> bytes
-    pub fn dag_block(&self, block: H256) -> Result<Vec<u8>> {
+    /// Implements GetDagBlock(blockHash) -> DagBlock
+    pub fn dag_block(&self, block: H256) -> Result<DagBlock> {
         let handle = self
             .db
             .cf_handle(Column::DagBlocks.name())
             .expect("Missing DAG column family");
         match self.db.get_pinned_cf(&handle, block.as_bytes()) {
-            Ok(Some(value)) => Ok(value.to_vec()),
+            Ok(Some(value)) => DagBlock::from_rlp_bytes(&value),
             Ok(None) => Err(anyhow::anyhow!("DAG block not found")),
             Err(e) => Err(anyhow::anyhow!(e)),
         }

@@ -1070,6 +1070,17 @@ dependencies = [
  "ethereum-types",
  "rlp",
  "rocksdb",
+ "rustaxa-types",
+ "thiserror",
+]
+
+[[package]]
+name = "rustaxa-types"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ethereum-types",
+ "rlp",
  "thiserror",
 ]
 
