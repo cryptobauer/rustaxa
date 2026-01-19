@@ -18,11 +18,17 @@ impl<D: DbReader> DagRepository<D> {
 
     /// Implements dagBlockInDb(blockHash) -> bool
     pub fn dag_block_in_db(&self, block: H256) -> Result<bool> {
-        let exists = self.db.get(Column::DagBlocks, block.as_bytes())?.is_some();
+        if self.db.get(Column::DagBlocks, block.as_bytes())?.is_some() {
+            return Ok(true);
+        }
+        let exists = self
+            .db
+            .get(Column::DagBlockPeriod, block.as_bytes())?
+            .is_some();
         Ok(exists)
     }
 
-    /// Implements GetDagBlock(blockHash) -> DagBlock
+    /// Implements GetDagBlock(blockHash) -> DagBlock (non-finalized)
     pub fn dag_block(&self, block: H256) -> Result<DagBlock> {
         let value = self
             .db
@@ -32,7 +38,7 @@ impl<D: DbReader> DagRepository<D> {
         Ok(DagBlock::from_rlp_bytes(value.as_ref())?)
     }
 
-    /// Implements GetDagBlockPeriod() -> (uint64, uint32)
+    /// Implements GetDagBlockPeriod() -> (uint64, uint32) (finalized)
     pub fn dag_block_period(&self, block: H256) -> Result<(u64, u32)> {
         let value = self
             .db
@@ -303,13 +309,18 @@ mod tests {
         let db = Arc::new(MockDagStore::new());
         let repo = DagRepository::new(db.clone());
         let block_hash = H256::random();
+        let block_hash_finalized = H256::random();
 
         // Initially not in DB
         assert!(!repo.dag_block_in_db(block_hash).unwrap());
 
-        // Add to DB
+        // Add to DagBlocks (non-finalized)
         db.put(Column::DagBlocks, block_hash.as_bytes(), &[]);
         assert!(repo.dag_block_in_db(block_hash).unwrap());
+
+        // Add to DagBlockPeriod (finalized)
+        db.put(Column::DagBlockPeriod, block_hash_finalized.as_bytes(), &[]);
+        assert!(repo.dag_block_in_db(block_hash_finalized).unwrap());
     }
 
     #[test]
