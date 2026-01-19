@@ -36,6 +36,8 @@ configure: ## Configure the project locally.
 		-DTARAXA_STATIC_BUILD=ON \
 		-DTARAXA_GPERF=ON \
 		-DRUSTAXA_ENABLE=ON \
+		-DRUSTAXA_ENABLE_VDF=ON \
+		-DRUSTAXA_ENABLE_STORAGE=ON \
 		-DLLVM_VERSION=$(LLVM_VERSION)
 
 .PHONY: build
