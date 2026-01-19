@@ -21,11 +21,15 @@ impl<D: DbReader> DagRepository<D> {
         if self.db.get(Column::DagBlocks, block.as_bytes())?.is_some() {
             return Ok(true);
         }
-        let exists = self
+        if self
             .db
             .get(Column::DagBlockPeriod, block.as_bytes())?
-            .is_some();
-        Ok(exists)
+            .is_some()
+        {
+            return Ok(true);
+        }
+
+        Ok(false)
     }
 
     /// Implements GetDagBlock(blockHash) -> DagBlock (non-finalized)
@@ -53,8 +57,8 @@ impl<D: DbReader> DagRepository<D> {
 
     /// Implements GetLastBlocksLevel() -> uint64
     pub fn last_blocks_level(&self) -> Result<u64> {
-        let last = self.db.iter(Column::DagBlocksLevel).last();
-        if let Some(res) = last {
+        let mut iter = self.db.iter_rev(Column::DagBlocksLevel);
+        if let Some(res) = iter.next() {
             let (key, _) = res?;
             if key.len() == 8 {
                 let mut bytes = [0u8; 8];
@@ -167,6 +171,21 @@ mod tests {
                 // We need to clone the data because we can't manually keep the lock
                 let items: Vec<_> = cf
                     .iter()
+                    .map(|(k, v)| Ok((k.clone().into_boxed_slice(), v.clone().into_boxed_slice())))
+                    .collect();
+                Box::new(items.into_iter())
+            } else {
+                Box::new(std::iter::empty())
+            }
+        }
+
+        fn iter_rev<'a>(&'a self, col: Column) -> DbIterator<'a> {
+            let data = self.data.read().unwrap();
+            if let Some(cf) = data.get(col.name()) {
+                // We need to clone the data because we can't manually keep the lock
+                let items: Vec<_> = cf
+                    .iter()
+                    .rev()
                     .map(|(k, v)| Ok((k.clone().into_boxed_slice(), v.clone().into_boxed_slice())))
                     .collect();
                 Box::new(items.into_iter())
