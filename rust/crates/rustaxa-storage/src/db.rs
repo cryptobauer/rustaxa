@@ -35,6 +35,7 @@ pub trait DbReader: Send + Sync {
 
     fn get<'a>(&'a self, col: Column, key: &[u8]) -> Result<Option<Self::Slice<'a>>>;
     fn iter<'a>(&'a self, col: Column) -> DbIterator<'a>;
+    fn iter_rev<'a>(&'a self, col: Column) -> DbIterator<'a>;
 }
 
 impl DbReader for DBWithThreadMode<MultiThreaded> {
@@ -53,6 +54,22 @@ impl DbReader for DBWithThreadMode<MultiThreaded> {
             Some(handle) => {
                 let iter = self
                     .iterator_cf(&handle, rocksdb::IteratorMode::Start)
+                    .map(|res| res.map_err(|e| StorageError::Database(e).into()));
+                Box::new(iter)
+            }
+            None => Box::new(std::iter::once(Err(StorageError::Config(format!(
+                "Missing column family: {}",
+                col.name()
+            ))
+            .into()))),
+        }
+    }
+
+    fn iter_rev<'a>(&'a self, col: Column) -> DbIterator<'a> {
+        match self.cf_handle(col.name()) {
+            Some(handle) => {
+                let iter = self
+                    .iterator_cf(&handle, rocksdb::IteratorMode::End)
                     .map(|res| res.map_err(|e| StorageError::Database(e).into()));
                 Box::new(iter)
             }
@@ -106,10 +123,10 @@ impl Storage {
         &self.dag
     }
 
-    pub fn genesis_hash(&self) -> Result<H256> {
-        self.get(Column::Genesis, &[])?
-            .map(|val| H256::from_slice(val.as_ref()))
-            .ok_or_else(|| StorageError::Dag("Genesis hash not found".to_string()).into())
+    pub fn genesis_hash(&self) -> Result<Option<H256>> {
+        Ok(self
+            .get(Column::Genesis, &0i32.to_le_bytes())?
+            .map(|val| H256::from_slice(val.as_ref())))
     }
 }
 
@@ -122,5 +139,9 @@ impl DbReader for Storage {
 
     fn iter<'a>(&'a self, col: Column) -> DbIterator<'a> {
         DbReader::iter(&*self.db, col)
+    }
+
+    fn iter_rev<'a>(&'a self, col: Column) -> DbIterator<'a> {
+        DbReader::iter_rev(&*self.db, col)
     }
 }
