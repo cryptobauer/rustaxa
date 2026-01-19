@@ -10,14 +10,18 @@
 		}
 	},
 	"containerEnv": {
-		"CCACHE_MAXSIZE": "10G"
+		"CCACHE_MAXSIZE": "20G"
 	},
 	"mounts": [
 		"source=rustaxa-clangd-index,target=${containerWorkspaceFolder}/.cache/clangd,type=volume",
 		"source=rustaxa-ccache,target=/root/.ccache,type=volume",
+		"source=rustaxa-build,target=/build,type=volume",
+		"source=rustaxa-rust-target,target=${containerWorkspaceFolder}/rust/target,type=volume",
+		"source=rustaxa-rocksdb,target=/rocksdb,type=volume",
 		"source=${localEnv:HOME}/.ssh,target=/root/.ssh,type=bind,consistency=cached",
 		"source=${localEnv:HOME}/.gitconfig,target=/root/.gitconfig-host,type=bind,consistency=cached",
-		"source=${localEnv:HOME}/.gitconfig-cryptobauer,target=/root/.gitconfig-cryptobauer,type=bind,consistency=cached"
+		"source=${localEnv:HOME}/.gitconfig-cryptobauer,target=/root/.gitconfig-cryptobauer,type=bind,consistency=cached",
+		"source=${localEnv:HOME}/.gnupg,target=/root/.gnupg-host,type=bind,consistency=cached"
 	],
 	"customizations": {
 		"vscode": {
@@ -49,10 +53,20 @@
 				"rust-analyzer.cargo.buildScripts.enable": true,
 				"rust-analyzer.procMacro.enable": true,
 				"cmake.configureOnOpen": true,
-				"terminal.integrated.defaultProfile.linux": "zsh"
+				"terminal.integrated.defaultProfile.linux": "zsh",
+				"files.watcherExclude": {
+					"**/target/**": true,
+					"**/build/**": true,
+					"**/.git/objects/**": true,
+					"**/node_modules/**": true
+				},
+				"search.exclude": {
+					"**/target": true,
+					"**/build": true
+				}
 			}
 		}
 	},
 	"remoteUser": "root",
-	"postCreateCommand": "git config --global include.path /root/.gitconfig-host && git config --global includeIf.\"gitdir:/workspaces/rustaxa/\".path /root/.gitconfig-cryptobauer && git config --global core.sshCommand \"ssh -i /root/.ssh/id_ed25519_cryptobauer\" && ln -sf build/compile_commands.json compile_commands.json"
+	"postCreateCommand": "git config --global include.path /root/.gitconfig-host && git config --global includeIf.\"gitdir:/workspaces/rustaxa/\".path /root/.gitconfig-cryptobauer && git config --global core.sshCommand \"ssh -i /root/.ssh/id_ed25519_cryptobauer\" && git config core.untrackedCache true && ln -sf /build/compile_commands.json compile_commands.json && (gpg --homedir /root/.gnupg-host --export | gpg --import || true)"
 }
