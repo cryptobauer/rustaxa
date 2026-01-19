@@ -19,7 +19,7 @@ use crate::StorageError;
 pub struct Storage {
     #[allow(dead_code)]
     db: Arc<DBWithThreadMode<MultiThreaded>>,
-    dag: DagRepository,
+    dag: DagRepository<DBWithThreadMode<MultiThreaded>>,
 }
 
 impl Storage {
@@ -53,7 +53,7 @@ impl Storage {
         Ok(Storage { db, dag })
     }
 
-    pub fn dag(&self) -> &DagRepository {
+    pub fn dag(&self) -> &DagRepository<DBWithThreadMode<MultiThreaded>> {
         &self.dag
     }
 }
