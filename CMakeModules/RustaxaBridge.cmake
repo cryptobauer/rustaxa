@@ -9,7 +9,7 @@ set(RUST_ROOT "${PROJECT_SOURCE_DIR}/rust")
 set(RUST_TARGET_DIR "${PROJECT_BINARY_DIR}/rust/target")
 set(BRIDGE_INCLUDE_DIR "${RUST_TARGET_DIR}/cxxbridge")
 
-file(MAKE_DIRECTORY "${BRIDGE_INCLUDE_DIR}/rustaxa-bridge/src")
+file(MAKE_DIRECTORY "${BRIDGE_INCLUDE_DIR}/rustaxa-bridge")
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(CARGO_MODE_ARGS "")
@@ -33,7 +33,7 @@ file(WRITE "${SYNC_SCRIPT}" "
     foreach(HEADER \${HEADERS})
         get_filename_component(FNAME \"\${HEADER}\" NAME)
         # Using configure_file with COPYONLY updates timestamps only on change, preventing rebuilds
-        configure_file(\"\${HEADER}\" \"${BRIDGE_INCLUDE_DIR}/rustaxa-bridge/src/\${FNAME}\" COPYONLY)
+        configure_file(\"\${HEADER}\" \"${BRIDGE_INCLUDE_DIR}/rustaxa-bridge/\${FNAME}\" COPYONLY)
     endforeach()
 ")
 

@@ -4,7 +4,7 @@
 #include <chrono>
 
 #include "rust/cxx.h"
-#include "rustaxa-bridge/src/vdf.rs.h"
+#include "rustaxa-bridge/vdf.rs.h"
 
 using namespace rustaxa::vdf;
 
