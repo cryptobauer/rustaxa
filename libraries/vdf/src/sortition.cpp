@@ -3,7 +3,7 @@
 #include <libdevcore/CommonData.h>
 #include <libdevcore/CommonJS.h>
 
-#ifdef RUSTAXA_ENABLED
+#ifdef RUSTAXA_ENABLE_VDF
 #include "rustaxa-bridge/src/vdf.rs.h"
 #else
 #include "ProverWesolowski.h"
@@ -11,7 +11,7 @@
 #include "common/encoding_rlp.hpp"
 #include "common/util.hpp"
 namespace taraxa::vdf_sortition {
-#ifndef RUSTAXA_ENABLED
+#ifndef RUSTAXA_ENABLE_VDF
 using namespace vdf;
 #endif
 
@@ -77,7 +77,7 @@ Json::Value VdfSortition::getJson() const {
 void VdfSortition::computeVdfSolution(const SortitionParams& config, const bytes& msg,
                                       const std::atomic_bool& cancelled) {
   auto t1 = getCurrentTimeMilliSeconds();
-#ifdef RUSTAXA_ENABLED
+#ifdef RUSTAXA_ENABLE_VDF
   rust::Slice<const uint8_t> msgSlice{msg.data(), msg.size()};
   rust::Slice<const uint8_t> NSlice{N.data(), N.size()};
   const auto vdf = rustaxa::vdf::make_vdf(config.vdf.lambda_bound, difficulty_, msgSlice, NSlice);
@@ -113,7 +113,7 @@ void VdfSortition::verifyVdf(SortitionParams const& config, bytes const& vrf_inp
   }
 
   // Verify VDF solution
-#ifdef RUSTAXA_ENABLED
+#ifdef RUSTAXA_ENABLE_VDF
   rust::Slice<const uint8_t> msgSlice{vdf_input.data(), vdf_input.size()};
   rust::Slice<const uint8_t> NSlice{N.data(), N.size()};
   const auto vdf = rustaxa::vdf::make_vdf(config.vdf.lambda_bound, getDifficulty(), msgSlice, NSlice);
