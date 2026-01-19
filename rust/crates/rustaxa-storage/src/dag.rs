@@ -1,6 +1,7 @@
 use anyhow::Result;
 use ethereum_types::H256;
 use rustaxa_types::{DagBlock, TypesError};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::db::DbReader;
@@ -15,12 +16,19 @@ impl<D: DbReader> DagRepository<D> {
         DagRepository { db }
     }
 
+    /// Implements dagBlockInDb(blockHash) -> bool
+    pub fn dag_block_in_db(&self, block: H256) -> Result<bool> {
+        let exists = self.db.get(Column::DagBlocks, block.as_bytes())?.is_some();
+        Ok(exists)
+    }
+
     /// Implements GetDagBlock(blockHash) -> DagBlock
     pub fn dag_block(&self, block: H256) -> Result<DagBlock> {
         let value = self
             .db
             .get(Column::DagBlocks, block.as_bytes())?
             .ok_or_else(|| StorageError::Dag("DAG block not found".to_string()))?;
+        // TODO: implement fallback
         Ok(DagBlock::from_rlp_bytes(value.as_ref())?)
     }
 
@@ -70,6 +78,31 @@ impl<D: DbReader> DagRepository<D> {
             })?;
 
         Ok(hashes)
+    }
+
+    /// Implements GetNonfinalizedDagBlocks() -> map<level, vector<DagBlock>>
+    /// DUMMY IMPLEMENTATION: Returns empty map for now as it requires DB iteration support
+    pub fn nonfinalized_dag_blocks(&self) -> Result<BTreeMap<u64, Vec<DagBlock>>> {
+        // TODO: This requires iteration over Column::DagBlocksLevel which is not yet supported by DbReader
+        Ok(BTreeMap::new())
+    }
+
+    /// Implements GetProposalPeriodForDagLevel(level) -> uint64
+    pub fn proposal_period_for_dag_level(&self, level: u64) -> Result<Option<u64>> {
+        match self
+            .db
+            .get(Column::ProposalPeriodLevelsMap, &level.to_le_bytes())?
+        {
+            Some(value) => {
+                if value.as_ref().len() != 8 {
+                    return Err(StorageError::Dag("Invalid period data size".to_string()).into());
+                }
+                let mut bytes = [0u8; 8];
+                bytes.copy_from_slice(value.as_ref());
+                Ok(Some(u64::from_le_bytes(bytes)))
+            }
+            None => Ok(None),
+        }
     }
 }
 
@@ -263,5 +296,48 @@ mod tests {
         assert_eq!(all_hashes[0], hashes10[0]);
         assert_eq!(all_hashes[1], hashes10[1]);
         assert_eq!(all_hashes[2], hashes11[0]);
+    }
+
+    #[test]
+    fn test_dag_block_in_db() {
+        let db = Arc::new(MockDagStore::new());
+        let repo = DagRepository::new(db.clone());
+        let block_hash = H256::random();
+
+        // Initially not in DB
+        assert!(!repo.dag_block_in_db(block_hash).unwrap());
+
+        // Add to DB
+        db.put(Column::DagBlocks, block_hash.as_bytes(), &[]);
+        assert!(repo.dag_block_in_db(block_hash).unwrap());
+    }
+
+    #[test]
+    fn test_proposal_period_for_dag_level() {
+        let db = Arc::new(MockDagStore::new());
+        let repo = DagRepository::new(db.clone());
+        let level = 10u64;
+        let period = 5u64;
+
+        // Initially not set
+        assert!(repo.proposal_period_for_dag_level(level).unwrap().is_none());
+
+        // Set period
+        db.put(
+            Column::ProposalPeriodLevelsMap,
+            &level.to_le_bytes(),
+            &period.to_le_bytes(),
+        );
+
+        let result = repo.proposal_period_for_dag_level(level).unwrap();
+        assert_eq!(result, Some(period));
+    }
+
+    #[test]
+    fn test_nonfinalized_dag_blocks_dummy() {
+        let db = Arc::new(MockDagStore::new());
+        let repo = DagRepository::new(db.clone());
+        // Currently returns empty
+        assert!(repo.nonfinalized_dag_blocks().unwrap().is_empty());
     }
 }
