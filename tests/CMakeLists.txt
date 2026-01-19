@@ -1,8 +1,7 @@
 find_package(GTest REQUIRED)
 add_subdirectory(test_util)
 if(RUSTAXA_ENABLE)
-    add_subdirectory(rust_vdf)
-    add_subdirectory(rust_storage)
+    add_subdirectory(rust)
 endif()
 
 # Enable testing for current directory and below.
