@@ -8,7 +8,7 @@
 
 # Default LLVM version (can be overridden with make LLVM_VERSION=<version>)
 LLVM_VERSION?=19
-BUILD_OUTPUT_DIR?=build
+BUILD_OUTPUT_DIR?=/build
 CMAKE_BUILD_TYPE?=Debug
 
 .PHONY: help
@@ -29,19 +29,23 @@ configure: ## Configure the project locally.
 	./scripts/config.sh
 	conan install . -s "build_type=Release" -s "&:build_type=$(CMAKE_BUILD_TYPE)" --profile:host=clang --profile:build=clang --build=missing --output-folder=$(BUILD_OUTPUT_DIR)
 	cd $(BUILD_OUTPUT_DIR) && \
-	cmake .. \
+	cmake $(CURDIR) \
 		-DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) \
+		-DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
 		-DTARAXA_ENABLE_LTO=OFF \
-		-DTARAXA_STATIC_BUILD=OFF \
+		-DTARAXA_STATIC_BUILD=ON \
 		-DTARAXA_GPERF=ON \
 		-DRUSTAXA_ENABLE=ON \
 		-DLLVM_VERSION=$(LLVM_VERSION)
 
 .PHONY: build
-build: configure ## Compile the project locally.
+build: ## Compile the project locally.
+	@if [ ! -f $(BUILD_OUTPUT_DIR)/CMakeCache.txt ]; then \
+		$(MAKE) configure; \
+	fi
 	cmake --build $(BUILD_OUTPUT_DIR) -j6
 	cp $(BUILD_OUTPUT_DIR)/tests/CTestTestfile.cmake $(BUILD_OUTPUT_DIR)/bin/
 
 .PHONY: clean
 clean: ## Clean the build directory.
-	@rm -rf $(BUILD_OUTPUT_DIR)
+	@find "$(BUILD_OUTPUT_DIR)" -mindepth 1 -delete
