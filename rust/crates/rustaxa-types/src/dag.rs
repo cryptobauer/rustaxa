@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use crate::TypesError;
 use ethereum_types::H256;
 use rlp::{Decodable, DecoderError, Rlp};
 
@@ -15,9 +15,9 @@ pub struct DagBlock {
 }
 
 impl DagBlock {
-    pub fn from_rlp_bytes(bytes: &[u8]) -> Result<Self> {
+    pub fn from_rlp_bytes(bytes: &[u8]) -> Result<Self, TypesError> {
         let rlp = Rlp::new(bytes);
-        Self::decode(&rlp).map_err(|e| anyhow!("RLP decode error: {}", e))
+        Self::decode(&rlp).map_err(TypesError::RlpDecode)
     }
 }
 

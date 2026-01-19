@@ -1,10 +1,10 @@
 use anyhow::Result;
 use ethereum_types::H256;
 use rocksdb::{DBWithThreadMode, MultiThreaded};
-use rustaxa_types::DagBlock;
+use rustaxa_types::{DagBlock, TypesError};
 use std::sync::Arc;
 
-use crate::{Column, StorageError};
+use crate::Column;
 
 pub struct DagRepository {
     db: Arc<DBWithThreadMode<MultiThreaded>>,
@@ -22,7 +22,7 @@ impl DagRepository {
             .cf_handle(Column::DagBlocks.name())
             .expect("Missing DAG column family");
         match self.db.get_pinned_cf(&handle, block.as_bytes()) {
-            Ok(Some(value)) => DagBlock::from_rlp_bytes(&value),
+            Ok(Some(value)) => Ok(DagBlock::from_rlp_bytes(&value)?),
             Ok(None) => Err(anyhow::anyhow!("DAG block not found")),
             Err(e) => Err(anyhow::anyhow!(e)),
         }
@@ -55,7 +55,7 @@ impl DagRepository {
         match self.db.get_pinned_cf(&handle, level.to_le_bytes()) {
             Ok(Some(value)) => {
                 let rlp = rlp::Rlp::new(&value);
-                let hashes: Vec<H256> = rlp.as_list().map_err(StorageError::DecodeError)?;
+                let hashes: Vec<H256> = rlp.as_list().map_err(TypesError::from)?;
                 Ok(hashes)
             }
             Ok(None) => Ok(vec![]), // No blocks at this level
