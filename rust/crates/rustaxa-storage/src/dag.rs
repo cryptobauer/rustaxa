@@ -1,45 +1,10 @@
 use anyhow::Result;
 use ethereum_types::H256;
-use rocksdb::{DBPinnableSlice, DBWithThreadMode, MultiThreaded};
 use rustaxa_types::{DagBlock, TypesError};
 use std::sync::Arc;
 
+use crate::db::DbReader;
 use crate::{Column, StorageError};
-
-/// Trait abstracting database read operations.
-pub trait DbReader: Send + Sync {
-    type Slice<'a>: AsRef<[u8]>
-    where
-        Self: 'a;
-
-    fn get<'a>(&'a self, col: Column, key: &[u8]) -> Result<Option<Self::Slice<'a>>>;
-    fn get_last_key(&self, col: Column) -> Result<Option<Vec<u8>>>;
-}
-
-impl DbReader for DBWithThreadMode<MultiThreaded> {
-    type Slice<'a> = DBPinnableSlice<'a>;
-
-    fn get<'a>(&'a self, col: Column, key: &[u8]) -> Result<Option<Self::Slice<'a>>> {
-        let handle = self.cf_handle(col.name()).ok_or_else(|| {
-            StorageError::Config(format!("Missing column family: {}", col.name()))
-        })?;
-        self.get_pinned_cf(&handle, key)
-            .map_err(|e| StorageError::Database(e).into())
-    }
-
-    fn get_last_key(&self, col: Column) -> Result<Option<Vec<u8>>> {
-        let handle = self.cf_handle(col.name()).ok_or_else(|| {
-            StorageError::Config(format!("Missing column family: {}", col.name()))
-        })?;
-        let mut iter = self.raw_iterator_cf(&handle);
-        iter.seek_to_last();
-        if let Some(key) = iter.key() {
-            Ok(Some(key.to_vec()))
-        } else {
-            Ok(None)
-        }
-    }
-}
 
 pub struct DagRepository<D: DbReader> {
     db: Arc<D>,
