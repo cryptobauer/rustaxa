@@ -180,6 +180,9 @@ class DbStorage : public std::enable_shared_from_this<DbStorage> {
   std::atomic<uint64_t> dag_edge_count_;
   const uint32_t kDbSnapshotsEachNblock = 0;
   std::atomic<bool> snapshots_enabled_ = true;
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  ::rust::Box<rustaxa::storage::Storage> rust_storage_;
+  #endif
   const uint32_t kDbSnapshotsMaxCount = 0;
   std::set<PbftPeriod> snapshots_;
   uint64_t earliest_block_number_ = 0;

@@ -35,6 +35,9 @@ DbStorage::DbStorage(const fs::path& path, uint32_t db_snapshot_each_n_pbft_bloc
     : path_(path),
       handles_(Columns::all.size()),
       kDbSnapshotsEachNblock(db_snapshot_each_n_pbft_block),
+      #ifdef RUSTAXA_ENABLE_STORAGE
+      rust_storage_(rustaxa::storage::create_storage(path.string())),
+      #endif
       kDbSnapshotsMaxCount(db_max_snapshots) {
   db_path_ = (path / kDbDir);
   state_db_path_ = (path / kStateDbDir);
@@ -455,6 +458,17 @@ void DbStorage::CompactRange(const Column& col, uint64_t begin, uint64_t end) {
 }
 
 std::shared_ptr<DagBlock> DbStorage::getDagBlock(blk_hash_t const& hash) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  try {
+    std::array<uint8_t, 32> h_arr;
+    std::memcpy(h_arr.data(), hash.data(), 32);
+    auto rlp_bytes = rust_storage_->get_dag_block(h_arr);
+    dev::RLP rlp(dev::bytesConstRef(rlp_bytes.data(), rlp_bytes.size()));
+    return std::make_shared<DagBlock>(rlp);
+  } catch (std::exception const& e) {
+    LOG(log_dg_) << "Failed in DbStorage::getDagBlock: " << e.what();
+  }
+  #endif
   auto block_data = asBytes(lookup(toSlice(hash.asBytes()), Columns::dag_blocks));
   if (block_data.size() > 0) {
     return std::make_shared<DagBlock>(block_data);
@@ -472,6 +486,15 @@ std::shared_ptr<DagBlock> DbStorage::getDagBlock(blk_hash_t const& hash) {
 }
 
 bool DbStorage::dagBlockInDb(blk_hash_t const& hash) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  try {
+    std::array<uint8_t, 32> h_arr;
+    std::memcpy(h_arr.data(), hash.data(), 32);
+    if (rust_storage_->dag_block_in_db(h_arr)) return true;
+  } catch (std::exception const& e) {
+    LOG(log_dg_) << "Failed in DbStorage::dagBlockInDb: " << e.what();
+  }
+  #endif
   if (exist(toSlice(hash.asBytes()), Columns::dag_blocks) ||
       exist(toSlice(hash.asBytes()), Columns::dag_block_period)) {
     return true;
@@ -480,12 +503,33 @@ bool DbStorage::dagBlockInDb(blk_hash_t const& hash) {
 }
 
 std::set<blk_hash_t> DbStorage::getBlocksByLevel(level_t level) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  try {
+    auto bytes = rust_storage_->get_blocks_by_level(level);
+    std::set<blk_hash_t> res;
+    for (size_t i = 0; i < bytes.size(); i += 32) {
+        blk_hash_t h;
+        std::memcpy(h.data(), bytes.data() + i, 32);
+        res.insert(h);
+    }
+    return res;
+  } catch (std::exception const& e) {
+    LOG(log_dg_) << "Failed in DbStorage::getBlocksByLevel: " << e.what();
+  }
+  #endif
   auto data = asBytes(lookup(toSlice(level), Columns::dag_blocks_level));
   dev::RLP rlp(data);
   return rlp.toSet<blk_hash_t>();
 }
 
 level_t DbStorage::getLastBlocksLevel() const {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  try {
+    return rust_storage_->get_last_blocks_level();
+  } catch (std::exception const& e) {
+    LOG(log_dg_) << "Failed in DbStorage::getLastBlocksLevel: " << e.what();
+  }
+  #endif
   level_t level = 0;
   auto it = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::dag_blocks_level)));
   it->SeekToLast();
@@ -496,6 +540,19 @@ level_t DbStorage::getLastBlocksLevel() const {
 }
 
 std::vector<std::shared_ptr<DagBlock>> DbStorage::getDagBlocksAtLevel(level_t level, int number_of_levels) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  try {
+    std::vector<std::shared_ptr<DagBlock>> res;
+    auto blocks_rlp = rust_storage_->get_dag_blocks_at_level(level, (uint32_t)number_of_levels);
+    for (auto const& item : blocks_rlp) {
+        dev::RLP rlp(dev::bytesConstRef(item.data.data(), item.data.size()));
+        res.push_back(std::make_shared<DagBlock>(rlp));
+    }
+    return res;
+  } catch (std::exception const& e) {
+    LOG(log_dg_) << "Failed in DbStorage::getDagBlocksAtLevel: " << e.what();
+  }
+  #endif
   std::vector<std::shared_ptr<DagBlock>> res;
   for (int i = 0; i < number_of_levels; i++) {
     if (level + i == 0) continue;  // Skip genesis
@@ -511,6 +568,23 @@ std::vector<std::shared_ptr<DagBlock>> DbStorage::getDagBlocksAtLevel(level_t le
 }
 
 std::map<level_t, std::vector<std::shared_ptr<DagBlock>>> DbStorage::getNonfinalizedDagBlocks() {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  try {
+    std::map<level_t, std::vector<std::shared_ptr<DagBlock>>> res;
+    auto levels = rust_storage_->get_nonfinalized_dag_blocks();
+    for (auto const& item : levels) {
+      std::vector<std::shared_ptr<DagBlock>> blocks;
+      for (auto const& block_rlp : item.blocks) {
+        dev::RLP rlp(dev::bytesConstRef(block_rlp.data.data(), block_rlp.data.size()));
+        blocks.push_back(std::make_shared<DagBlock>(rlp));
+      }
+      res[item.level] = blocks;
+    }
+    return res;
+  } catch (std::exception const& e) {
+    LOG(log_dg_) << "Failed in DbStorage::getNonfinalizedDagBlocks: " << e.what();
+  }
+  #endif
   std::map<level_t, std::vector<std::shared_ptr<DagBlock>>> res;
   auto i = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::dag_blocks)));
   for (i->SeekToFirst(); i->Valid(); i->Next()) {
@@ -1194,6 +1268,16 @@ std::pair<bool, PbftPeriod> DbStorage::getPeriodFromPbftHash(taraxa::blk_hash_t 
 }
 
 std::shared_ptr<std::pair<PbftPeriod, uint32_t>> DbStorage::getDagBlockPeriod(blk_hash_t const& hash) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  try {
+    std::array<uint8_t, 32> h_arr;
+    std::memcpy(h_arr.data(), hash.data(), 32);
+    auto res = rust_storage_->get_dag_block_period(h_arr);
+    return std::make_shared<std::pair<PbftPeriod, uint32_t>>(res.period, res.position);
+  } catch (std::exception const& e) {
+    LOG(log_dg_) << "Failed in DbStorage::getDagBlockPeriod: " << e.what();
+  }
+  #endif
   auto data = asBytes(lookup(toSlice(hash.asBytes()), Columns::dag_block_period));
   if (data.size() > 0) {
     dev::RLP rlp(data);
@@ -1254,6 +1338,15 @@ DbStorage::getLastPbftBlockHashAndFinalizedDagBlockByPeriod(PbftPeriod period) {
 }
 
 std::optional<PbftPeriod> DbStorage::getProposalPeriodForDagLevel(uint64_t level) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  try {
+    auto res = rust_storage_->get_proposal_period_for_dag_level(level);
+    if (res != 0) return std::optional<PbftPeriod>(res);
+    return std::nullopt;
+  } catch (std::exception const& e) {
+    LOG(log_dg_) << "Failed in DbStorage::getDagBlockPeriod: " << e.what();
+  }
+  #endif
   auto it =
       std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::proposal_period_levels_map)));
   it->Seek(toSlice(level));
