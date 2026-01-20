@@ -10,6 +10,8 @@ crate-type = ["staticlib", "lib"]
 cxx = "1.0"
 rustaxa-vdf = { path = "../rustaxa-vdf" }
 rustaxa-storage = { path = "../rustaxa-storage" }
+anyhow = "1.0.100"
+ethereum-types = "0.16.0"
 
 [build-dependencies]
 cxx-build = "1.0"

@@ -1056,8 +1056,10 @@ dependencies = [
 name = "rustaxa-bridge"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "cxx",
  "cxx-build",
+ "ethereum-types",
  "rustaxa-storage",
  "rustaxa-vdf",
 ]

@@ -32,14 +32,10 @@ impl<D: DbReader> DagRepository<D> {
         Ok(false)
     }
 
-    /// Implements GetDagBlock(blockHash) -> DagBlock (non-finalized)
+    /// Implements GetDagBlock(blockHash) -> DagBlock
     pub fn dag_block(&self, block: H256) -> Result<DagBlock> {
-        let value = self
-            .db
-            .get(Column::DagBlocks, block.as_bytes())?
-            .ok_or_else(|| StorageError::Dag("DAG block not found".to_string()))?;
-        // TODO: implement fallback
-        Ok(DagBlock::from_rlp_bytes(value.as_ref())?)
+        let bytes = self.dag_block_rlp(block)?;
+        Ok(DagBlock::from_rlp_bytes(&bytes)?)
     }
 
     /// Implements GetDagBlockPeriod() -> (uint64, uint32) (finalized)
@@ -121,6 +117,59 @@ impl<D: DbReader> DagRepository<D> {
             }
             None => Ok(None),
         }
+    }
+
+    /// Temporary helper needed to bridge into C++.
+    /// TODO: remove as soon as possible.
+
+    pub fn dag_block_rlp(&self, block: H256) -> Result<Vec<u8>> {
+        if let Some(val) = self.db.get(Column::DagBlocks, block.as_bytes())? {
+            return Ok(val.as_ref().to_vec());
+        }
+        if let Some(val) = self.db.get(Column::DagBlockPeriod, block.as_bytes())? {
+            let rlp = rlp::Rlp::new(val.as_ref());
+            let period: u64 = rlp.val_at(0)?;
+            let position: usize = rlp.val_at(1)?;
+
+            if let Some(period_data) = self.db.get(Column::PeriodData, &period.to_le_bytes())? {
+                let period_rlp = rlp::Rlp::new(period_data.as_ref());
+                // DAG_BLOCKS_POS_IN_PERIOD_DATA = 2 in C++
+                let dag_blocks_rlp = period_rlp.at(2)?;
+                let block_rlp = dag_blocks_rlp.at(position)?;
+                return Ok(block_rlp.as_raw().to_vec());
+            }
+        }
+        Err(StorageError::Dag("DAG block not found".to_string()).into())
+    }
+
+    pub fn dag_blocks_at_level_rlp(
+        &self,
+        level: u64,
+        number_of_levels: u32,
+    ) -> Result<Vec<Vec<u8>>> {
+        let mut res = Vec::new();
+        for i in 0..number_of_levels {
+            let l = level + i as u64;
+            let blocks = self.blocks_by_level(l)?;
+            for hash in blocks {
+                if let Ok(rlp) = self.dag_block_rlp(hash) {
+                    res.push(rlp);
+                }
+            }
+        }
+        Ok(res)
+    }
+
+    pub fn nonfinalized_dag_blocks_rlp(&self) -> Result<Vec<(u64, Vec<Vec<u8>>)>> {
+        let mut map: BTreeMap<u64, Vec<Vec<u8>>> = BTreeMap::new();
+        for res in self.db.iter(Column::DagBlocks) {
+            let (_, val) = res?;
+            let rlp = rlp::Rlp::new(&val);
+            // Level is the 2nd item in DagBlock RLP (index 1)
+            let level: u64 = rlp.val_at(1)?;
+            map.entry(level).or_default().push(val.into_vec());
+        }
+        Ok(map.into_iter().collect())
     }
 }
 
