@@ -65,6 +65,10 @@ if(TCMALLOC_LIB)
     target_link_libraries(core_libs INTERFACE ${TCMALLOC_LIB}) # MUST BE LINKED LAST!!!
 endif()
 
+if(RUSTAXA_ENABLE_STORAGE)
+    target_link_libraries(core_libs PUBLIC rustaxa-bridge)
+endif()
+
 install(TARGETS core_libs
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

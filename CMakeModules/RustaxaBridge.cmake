@@ -4,6 +4,7 @@ if(TARGET rustaxa-bridge)
 endif()
 
 find_program(CARGO_EXE NAMES cargo REQUIRED)
+find_program(OBJCOPY_EXE NAMES llvm-objcopy objcopy REQUIRED)
 
 set(RUST_ROOT "${PROJECT_SOURCE_DIR}/rust")
 set(RUST_TARGET_DIR "${PROJECT_BINARY_DIR}/rust/target")
@@ -20,6 +21,11 @@ else()
 endif()
 
 set(RUST_LIB "${RUST_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}rustaxa_bridge${CMAKE_STATIC_LIBRARY_SUFFIX}")
+
+set(BRIDGE_LOCALIZE_PATTERNS
+    "__gmpn_mul_1"
+    "__gmpn_divrem_1"
+)
 
 # --- Helper Script for Header Sync ---
 # Generates a script to copy cxxbridge headers from the cargo build tree to our include dir.
@@ -44,6 +50,25 @@ file(WRITE "${SYNC_SCRIPT}" "
     endif()
 ")
 
+set(FILTER_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/filter_bridge_symbols.cmake")
+file(WRITE "${FILTER_SCRIPT}" "
+    execute_process(
+        COMMAND \"${OBJCOPY_EXE}\" --wildcard
+")
+
+foreach(PATTERN IN LISTS BRIDGE_LOCALIZE_PATTERNS)
+    file(APPEND "${FILTER_SCRIPT}" "        --localize-symbol \"${PATTERN}\"\n")
+endforeach()
+
+file(APPEND "${FILTER_SCRIPT}" "
+        \"${RUST_LIB}\"
+        RESULT_VARIABLE OBJCOPY_RES
+    )
+    if(NOT OBJCOPY_RES EQUAL 0)
+        message(FATAL_ERROR \"Failed to localize bridge dependency symbols\")
+    endif()
+")
+
 # --- Build Target ---
 
 add_custom_target(rust-workspace-build ALL
@@ -54,6 +79,8 @@ add_custom_target(rust-workspace-build ALL
         "CC=${CMAKE_C_COMPILER}"
         "CXX=${CMAKE_CXX_COMPILER}"
         "${CARGO_EXE}" build ${CARGO_MODE_ARGS} --target-dir "${RUST_TARGET_DIR}"
+
+    COMMAND ${CMAKE_COMMAND} -P "${FILTER_SCRIPT}"
 
     # 2. Sync Headers
     COMMAND ${CMAKE_COMMAND}

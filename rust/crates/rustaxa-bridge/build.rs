@@ -1,6 +1,7 @@
 fn main() {
     cxx_build::bridges(["src/vdf.rs", "src/storage.rs"])
-        .std("c++17")
+        .std("c++20")
+        .flag("-fvisibility=hidden")
         .compile("rustaxa-bridge");
 
     println!("cargo:rerun-if-changed=src/lib.rs");
