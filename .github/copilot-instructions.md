@@ -26,6 +26,8 @@ All C++ code is located in the `libraries`, `programs`, and `submodules` directo
 
 - All code can be build with `make build`, which will build both C++ and Rust code.
 - The Rust code can be built separately with `cargo build` from the `rust` directory.
+- The C++ build directory is always `/build`.
+- The Rust build directory is `/rust/target`.
 
 ## Rust Specifics
 

@@ -68,5 +68,48 @@ When the upstream project releases updates, we follow this gated pipeline:
 
 **Note to Contributors:** Do not delete C++ code in the `cpp-reference` branch. Instead, wrap it in `#ifdef RUSTAXA_ENABLE` to maintain the validation gate and ensure we can always fall back to the C++ baseline for debugging.
 
+## 🔀 Syncing C++ Intersection to `cpp-reference`
+
+When a feature is merged to `main` (including squash merge), we still want the C++ side touched by that feature to be present in `cpp-reference`.
+
+Use the Makefile helpers:
+
+1. Check out `cpp-reference`.
+2. Apply only the C++ intersection from a commit range:
+
+```bash
+make cpp-reference-apply-intersection FROM=<base_sha> TO=<tip_sha>
+```
+
+By default, the Makefile detects intersection paths dynamically from `main..cpp-reference`, excluding Rust and repo-meta paths.
+
+You can inspect detected paths:
+
+```bash
+make cpp-intersection-list
+```
+
+You can override path detection explicitly if needed:
+
+```bash
+make cpp-reference-apply-intersection \
+    FROM=<base_sha> TO=<tip_sha> \
+    CPP_INTERSECTION_PATHS="CMakeLists.txt CMakeModules libraries programs submodules tests"
+```
+
+Then commit:
+
+```bash
+git commit -m "chore(cpp-reference): sync C++ intersection from <tip_sha>"
+```
+
+If you want to inspect the patch before applying, generate it first:
+
+```bash
+make cpp-intersection-patch FROM=<base_sha> TO=<tip_sha>
+```
+
+Patch output path: `/build/cpp-reference-intersection.patch`.
+
 
 
