@@ -1,4 +1,3 @@
-
 if(TARGET rustaxa-bridge)
     return()
 endif()
@@ -22,10 +21,33 @@ endif()
 
 set(RUST_LIB "${RUST_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}rustaxa_bridge${CMAKE_STATIC_LIBRARY_SUFFIX}")
 
-set(BRIDGE_LOCALIZE_PATTERNS
-    "__gmpn_mul_1"
-    "__gmpn_divrem_1"
-)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|armv[0-9]+.*)$")
+    set(BRIDGE_LOCALIZE_SYMBOLS
+        "__gmpn_mul_1"
+        "__gmpn_divrem_1"
+    )
+else()
+    set(BRIDGE_LOCALIZE_SYMBOLS
+        "__gmpn_add_n"
+        "__gmpn_addmul_1"
+        "__gmpn_bdiv_dbm1c"
+        "__gmpn_com"
+        "__gmpn_copyd"
+        "__gmpn_copyi"
+        "__gmpn_divexact_1"
+        "__gmpn_divrem_1"
+        "__gmpn_lshift"
+        "__gmpn_lshiftc"
+        "__gmpn_mod_34lsub1"
+        "__gmpn_mul_1"
+        "__gmpn_mul_basecase"
+        "__gmpn_mullo_basecase"
+        "__gmpn_rshift"
+        "__gmpn_sqr_basecase"
+        "__gmpn_sub_n"
+        "__gmpn_submul_1"
+    )
+endif()
 
 # --- Helper Script for Header Sync ---
 # Generates a script to copy cxxbridge headers from the cargo build tree to our include dir.
@@ -56,8 +78,8 @@ file(WRITE "${FILTER_SCRIPT}" "
         COMMAND \"${OBJCOPY_EXE}\" --wildcard
 ")
 
-foreach(PATTERN IN LISTS BRIDGE_LOCALIZE_PATTERNS)
-    file(APPEND "${FILTER_SCRIPT}" "        --localize-symbol \"${PATTERN}\"\n")
+foreach(SYMBOL IN LISTS BRIDGE_LOCALIZE_SYMBOLS)
+    file(APPEND "${FILTER_SCRIPT}" "        --localize-symbol \"${SYMBOL}\"\n")
 endforeach()
 
 file(APPEND "${FILTER_SCRIPT}" "
