@@ -37,11 +37,74 @@ void process_data() {
 
 When the upstream project releases updates, we follow this gated pipeline:
 
-1.  **Sync Baseline:** `git checkout upstream-main && git pull upstream main`
-2.  **Verify C++ (The Gate):** Merge `upstream-main` into `cpp-reference`. Resolve conflicts and ensure the project builds and runs with `RUSTAXA_ENABLE=0`.
-3.  **Integration Branch:** Create a temporary feature branch from `main` (e.g., `sync/upstream-jan-2026`). Merge `cpp-reference` into this branch.
-4.  **Rust Logic Port:** Build with `RUSTAXA_ENABLE=1`. Identify where the C++ logic changed (the `#else` blocks) and update the corresponding Rust code.
-5.  **Merge to Main:** Once all tests pass, merge the feature branch into `main`.
+> **One-time setup:** Ensure the `upstream` remote points to the original repository:
+> ```bash
+> git remote add upstream <upstream-repo-url>
+> ```
+
+### 1. Sync Baseline
+
+Fetch the latest upstream commits onto `upstream-main` and push it so all contributors are up to date:
+
+```bash
+git checkout upstream-main
+git pull upstream main
+git push origin upstream-main
+```
+
+### 2. Verify C++ (The Gate)
+
+Merge `upstream-main` into `cpp-reference` and validate the pure C++ build. **Merge conflicts are expected** — upstream may have modified the same lines that were wrapped in `#ifdef` blocks. When resolving, always preserve the `#ifdef` structure and update only the `#else` block with upstream's new logic.
+
+```bash
+git checkout cpp-reference
+git merge upstream-main --no-ff
+# resolve any conflicts, keeping the #ifdef structure intact
+make configure  # RUSTAXA_ENABLE=OFF by default
+make build
+cd /build/tests && ctest --output-on-failure
+git push origin cpp-reference
+```
+
+### 3. Integration Branch
+
+Create a temporary sync branch from `main` and merge `cpp-reference` into it. Conflicts here are also possible — they arise where Rust porting work on `main` diverges from the updated C++ on `cpp-reference`. Apply the same resolution rule: preserve `#ifdef` structure, update `#else` with upstream logic.
+
+```bash
+git checkout main
+git checkout -b sync/upstream-jan-2026
+git merge cpp-reference --no-ff -m "chore(sync): merge cpp-reference into sync/upstream-jan-2026"
+```
+
+### 4. Rust Logic Port
+
+Find what C++ logic changed in this upstream sync, then update the corresponding Rust code:
+
+```bash
+# Inspect what changed on the C++ side in this sync
+git diff upstream-main~1..upstream-main -- libraries/ programs/ submodules/
+```
+
+For each changed `#else` block, update the matching Rust implementation in `/rust`. Then validate the Rust build:
+
+```bash
+# Reconfigure with Rust enabled, then build and test
+cd /build && cmake /workspaces/rustaxa -DRUSTAXA_ENABLE=ON
+cmake --build /build -j6 --target=taraxad
+cargo test --manifest-path /workspaces/rustaxa/rust/Cargo.toml
+cd /build/tests && ctest --output-on-failure
+```
+
+### 5. Merge to Main
+
+Once all tests pass, merge the sync branch into `main`, then clean up:
+
+```bash
+git checkout main
+git merge sync/upstream-jan-2026 --no-ff
+git branch -d sync/upstream-jan-2026
+git push origin main
+```
 
 ## 📂 Repository Structure
 
@@ -69,6 +132,8 @@ When the upstream project releases updates, we follow this gated pipeline:
 **Note to Contributors:** Do not delete C++ code in the `cpp-reference` branch. Instead, wrap it in `#ifdef RUSTAXA_ENABLE` to maintain the validation gate and ensure we can always fall back to the C++ baseline for debugging.
 
 ## 🔀 Syncing C++ Intersection to `cpp-reference`
+
+> **When to run this:** After merging a Rust feature branch into `main`, run this to keep `cpp-reference` up to date with any C++ changes that were part of that feature. This is independent of the upstream sync workflow above — it flows in the opposite direction (`main` → `cpp-reference`).
 
 When a feature is merged to `main` (including squash merge), we still want the C++ side touched by that feature to be present in `cpp-reference`.
 
