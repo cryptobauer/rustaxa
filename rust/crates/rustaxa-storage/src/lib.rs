@@ -5,6 +5,7 @@ mod error;
 
 pub use config::Column;
 pub use config::Config;
+pub use config::AccessMode;
 pub use config::StatusField;
 pub use dag::DagRepository;
 pub use db::Storage;

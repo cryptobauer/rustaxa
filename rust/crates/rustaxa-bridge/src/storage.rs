@@ -25,10 +25,10 @@ mod ffi {
         type Storage;
         fn create_storage(path: &str) -> Box<Storage>;
 
-        fn dag_block_in_db(&self, hash: &[u8; 32]) -> bool;
+        fn dag_block_in_db(&self, hash: &[u8; 32]) -> Result<bool>;
         fn get_dag_block(&self, hash: &[u8; 32]) -> Result<Vec<u8>>;
         fn get_dag_block_period(&self, hash: &[u8; 32]) -> Result<BlockPeriod>;
-        fn get_last_blocks_level(&self) -> u64;
+        fn get_last_blocks_level(&self) -> Result<u64>;
         fn get_blocks_by_level(&self, level: u64) -> Result<Vec<u8>>;
         fn get_dag_blocks_at_level(
             &self,
@@ -42,21 +42,23 @@ mod ffi {
 
 pub fn create_storage(path: &str) -> Box<Storage> {
     let path_buf = PathBuf::from(path);
-    let config = Config::new(path_buf);
+    let config = Config::new(path_buf.clone());
     // TODO: better error handling?
     let storage = InnerStorage::new(config).expect("Failed to create storage");
     Box::new(Storage(storage))
 }
 
 impl Storage {
-    fn dag_block_in_db(&self, hash: &[u8; 32]) -> bool {
+    fn dag_block_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
+        self.0.catch_up()?;
         self.0
             .dag()
             .dag_block_in_db(H256::from(*hash))
-            .unwrap_or(false)
+            .map_err(|e| anyhow::anyhow!(e))
     }
 
     fn get_dag_block(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
+        self.0.catch_up()?;
         self.0
             .dag()
             .dag_block_rlp(H256::from(*hash))
@@ -64,6 +66,7 @@ impl Storage {
     }
 
     fn get_dag_block_period(&self, hash: &[u8; 32]) -> Result<ffi::BlockPeriod, anyhow::Error> {
+        self.0.catch_up()?;
         let (period, position) = self
             .0
             .dag()
@@ -72,11 +75,16 @@ impl Storage {
         Ok(ffi::BlockPeriod { period, position })
     }
 
-    fn get_last_blocks_level(&self) -> u64 {
-        self.0.dag().last_blocks_level().unwrap_or(0)
+    fn get_last_blocks_level(&self) -> Result<u64, anyhow::Error> {
+        self.0.catch_up()?;
+        self.0
+            .dag()
+            .last_blocks_level()
+            .map_err(|e| anyhow::anyhow!(e))
     }
 
     fn get_blocks_by_level(&self, level: u64) -> Result<Vec<u8>, anyhow::Error> {
+        self.0.catch_up()?;
         let hashes = self
             .0
             .dag()
@@ -94,6 +102,7 @@ impl Storage {
         level: u64,
         number_of_levels: u32,
     ) -> Result<Vec<ffi::BlockRlp>, anyhow::Error> {
+        self.0.catch_up()?;
         let rlps = self
             .0
             .dag()
@@ -106,6 +115,7 @@ impl Storage {
     }
 
     fn get_nonfinalized_dag_blocks(&self) -> Result<Vec<ffi::LevelBlocks>, anyhow::Error> {
+        self.0.catch_up()?;
         let map = self
             .0
             .dag()
@@ -124,6 +134,7 @@ impl Storage {
     }
 
     fn get_proposal_period_for_dag_level(&self, level: u64) -> Result<u64, anyhow::Error> {
+        self.0.catch_up()?;
         self.0
             .dag()
             .proposal_period_for_dag_level(level)

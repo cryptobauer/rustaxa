@@ -119,8 +119,8 @@ impl<D: DbReader> DagRepository<D> {
         }
     }
 
-    /// Temporary helper needed to bridge into C++.
-    /// TODO: remove as soon as possible.
+    // Temporary helper needed to bridge into C++.
+    // TODO: remove as soon as possible.
 
     pub fn dag_block_rlp(&self, block: H256) -> Result<Vec<u8>> {
         if let Some(val) = self.db.get(Column::DagBlocks, block.as_bytes())? {

@@ -13,6 +13,7 @@ use ethereum_types::H256;
 use rocksdb::{DBPinnableSlice, DBWithThreadMode, MultiThreaded, Options};
 use std::sync::Arc;
 
+use crate::AccessMode;
 use crate::Column;
 use crate::Config;
 use crate::DagRepository;
@@ -100,17 +101,33 @@ impl Storage {
         opts.set_write_buffer_size(config.db_write_buffer_size);
         opts.set_max_open_files(config.max_open_files);
 
-        let descriptors = config
-            .column_families
-            .iter()
-            .map(|col| col.descriptor(&opts))
-            .collect::<Vec<_>>();
+        let descriptors = || {
+            config
+                .column_families
+                .iter()
+                .map(|col| col.descriptor(&opts))
+                .collect::<Vec<_>>()
+        };
 
-        let db = DBWithThreadMode::<MultiThreaded>::open_cf_descriptors(
-            &opts,
-            &config.db_path,
-            descriptors,
-        )
+        let db = match &config.access_mode {
+            AccessMode::Primary => DBWithThreadMode::<MultiThreaded>::open_cf_descriptors(
+                &opts,
+                &config.db_path,
+                descriptors(),
+            ),
+            AccessMode::Secondary { path } => {
+                if path.exists() {
+                    std::fs::remove_dir_all(path).map_err(StorageError::Io)?;
+                }
+                std::fs::create_dir_all(path).map_err(StorageError::Io)?;
+                DBWithThreadMode::<MultiThreaded>::open_cf_descriptors_as_secondary(
+                    &opts,
+                    &config.db_path,
+                    path,
+                    descriptors(),
+                )
+            }
+        }
         .map_err(StorageError::Database)?;
 
         let db = Arc::new(db);
@@ -121,6 +138,13 @@ impl Storage {
 
     pub fn dag(&self) -> &DagRepository<DBWithThreadMode<MultiThreaded>> {
         &self.dag
+    }
+
+    pub fn catch_up(&self) -> Result<()> {
+        self.db
+            .try_catch_up_with_primary()
+            .map_err(StorageError::Database)?;
+        Ok(())
     }
 
     pub fn genesis_hash(&self) -> Result<Option<H256>> {
