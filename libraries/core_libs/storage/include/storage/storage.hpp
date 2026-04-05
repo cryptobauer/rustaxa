@@ -181,7 +181,7 @@ class DbStorage : public std::enable_shared_from_this<DbStorage> {
   const uint32_t kDbSnapshotsEachNblock = 0;
   std::atomic<bool> snapshots_enabled_ = true;
   #ifdef RUSTAXA_ENABLE_STORAGE
-  ::rust::Box<rustaxa::storage::Storage> rust_storage_;
+  std::optional<::rust::Box<rustaxa::storage::Storage>> rust_storage_;
   #endif
   const uint32_t kDbSnapshotsMaxCount = 0;
   std::set<PbftPeriod> snapshots_;

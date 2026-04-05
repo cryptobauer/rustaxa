@@ -35,9 +35,6 @@ DbStorage::DbStorage(const fs::path& path, uint32_t db_snapshot_each_n_pbft_bloc
     : path_(path),
       handles_(Columns::all.size()),
       kDbSnapshotsEachNblock(db_snapshot_each_n_pbft_block),
-      #ifdef RUSTAXA_ENABLE_STORAGE
-      rust_storage_(rustaxa::storage::create_storage(path.string())),
-      #endif
       kDbSnapshotsMaxCount(db_max_snapshots) {
   db_path_ = (path / kDbDir);
   state_db_path_ = (path / kStateDbDir);
@@ -107,6 +104,10 @@ DbStorage::DbStorage(const fs::path& path, uint32_t db_snapshot_each_n_pbft_bloc
   } else if (minor_version != TARAXA_DB_MINOR_VERSION) {
     minor_version_changed_ = true;
   }
+
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  rust_storage_ = rustaxa::storage::create_storage(path.string());
+  #endif
 }
 
 void DbStorage::removeTempFiles() const {
@@ -462,7 +463,7 @@ std::shared_ptr<DagBlock> DbStorage::getDagBlock(blk_hash_t const& hash) {
   try {
     std::array<uint8_t, 32> h_arr;
     std::memcpy(h_arr.data(), hash.data(), 32);
-    auto rlp_bytes = rust_storage_->get_dag_block(h_arr);
+    auto rlp_bytes = rust_storage_.value()->get_dag_block(h_arr);
     dev::RLP rlp(dev::bytesConstRef(rlp_bytes.data(), rlp_bytes.size()));
     return std::make_shared<DagBlock>(rlp);
   } catch (std::exception const& e) {
@@ -490,7 +491,7 @@ bool DbStorage::dagBlockInDb(blk_hash_t const& hash) {
   try {
     std::array<uint8_t, 32> h_arr;
     std::memcpy(h_arr.data(), hash.data(), 32);
-    if (rust_storage_->dag_block_in_db(h_arr)) return true;
+    if (rust_storage_.value()->dag_block_in_db(h_arr)) return true;
   } catch (std::exception const& e) {
     LOG(log_dg_) << "Failed in DbStorage::dagBlockInDb: " << e.what();
   }
@@ -505,7 +506,7 @@ bool DbStorage::dagBlockInDb(blk_hash_t const& hash) {
 std::set<blk_hash_t> DbStorage::getBlocksByLevel(level_t level) {
   #ifdef RUSTAXA_ENABLE_STORAGE
   try {
-    auto bytes = rust_storage_->get_blocks_by_level(level);
+    auto bytes = rust_storage_.value()->get_blocks_by_level(level);
     std::set<blk_hash_t> res;
     for (size_t i = 0; i < bytes.size(); i += 32) {
         blk_hash_t h;
@@ -525,7 +526,7 @@ std::set<blk_hash_t> DbStorage::getBlocksByLevel(level_t level) {
 level_t DbStorage::getLastBlocksLevel() const {
   #ifdef RUSTAXA_ENABLE_STORAGE
   try {
-    return rust_storage_->get_last_blocks_level();
+    return rust_storage_.value()->get_last_blocks_level();
   } catch (std::exception const& e) {
     LOG(log_dg_) << "Failed in DbStorage::getLastBlocksLevel: " << e.what();
   }
@@ -543,7 +544,7 @@ std::vector<std::shared_ptr<DagBlock>> DbStorage::getDagBlocksAtLevel(level_t le
   #ifdef RUSTAXA_ENABLE_STORAGE
   try {
     std::vector<std::shared_ptr<DagBlock>> res;
-    auto blocks_rlp = rust_storage_->get_dag_blocks_at_level(level, (uint32_t)number_of_levels);
+    auto blocks_rlp = rust_storage_.value()->get_dag_blocks_at_level(level, (uint32_t)number_of_levels);
     for (auto const& item : blocks_rlp) {
         dev::RLP rlp(dev::bytesConstRef(item.data.data(), item.data.size()));
         res.push_back(std::make_shared<DagBlock>(rlp));
@@ -571,7 +572,7 @@ std::map<level_t, std::vector<std::shared_ptr<DagBlock>>> DbStorage::getNonfinal
   #ifdef RUSTAXA_ENABLE_STORAGE
   try {
     std::map<level_t, std::vector<std::shared_ptr<DagBlock>>> res;
-    auto levels = rust_storage_->get_nonfinalized_dag_blocks();
+    auto levels = rust_storage_.value()->get_nonfinalized_dag_blocks();
     for (auto const& item : levels) {
       std::vector<std::shared_ptr<DagBlock>> blocks;
       for (auto const& block_rlp : item.blocks) {
@@ -1272,7 +1273,7 @@ std::shared_ptr<std::pair<PbftPeriod, uint32_t>> DbStorage::getDagBlockPeriod(bl
   try {
     std::array<uint8_t, 32> h_arr;
     std::memcpy(h_arr.data(), hash.data(), 32);
-    auto res = rust_storage_->get_dag_block_period(h_arr);
+    auto res = rust_storage_.value()->get_dag_block_period(h_arr);
     return std::make_shared<std::pair<PbftPeriod, uint32_t>>(res.period, res.position);
   } catch (std::exception const& e) {
     LOG(log_dg_) << "Failed in DbStorage::getDagBlockPeriod: " << e.what();
@@ -1340,7 +1341,7 @@ DbStorage::getLastPbftBlockHashAndFinalizedDagBlockByPeriod(PbftPeriod period) {
 std::optional<PbftPeriod> DbStorage::getProposalPeriodForDagLevel(uint64_t level) {
   #ifdef RUSTAXA_ENABLE_STORAGE
   try {
-    auto res = rust_storage_->get_proposal_period_for_dag_level(level);
+    auto res = rust_storage_.value()->get_proposal_period_for_dag_level(level);
     if (res != 0) return std::optional<PbftPeriod>(res);
     return std::nullopt;
   } catch (std::exception const& e) {
