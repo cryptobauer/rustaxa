@@ -23,7 +23,7 @@ mod ffi {
 
     extern "Rust" {
         type Storage;
-        fn create_storage(path: &str) -> Box<Storage>;
+        fn create_storage(path: &str) -> Result<Box<Storage>>;
 
         fn dag_block_in_db(&self, hash: &[u8; 32]) -> Result<bool>;
         fn get_dag_block(&self, hash: &[u8; 32]) -> Result<Vec<u8>>;
@@ -40,12 +40,11 @@ mod ffi {
     }
 }
 
-pub fn create_storage(path: &str) -> Box<Storage> {
+pub fn create_storage(path: &str) -> Result<Box<Storage>, anyhow::Error> {
     let path_buf = PathBuf::from(path);
     let config = Config::new(path_buf.clone());
-    // TODO: better error handling?
-    let storage = InnerStorage::new(config).expect("Failed to create storage");
-    Box::new(Storage(storage))
+    let storage = InnerStorage::new(config)?;
+    Ok(Box::new(Storage(storage)))
 }
 
 impl Storage {

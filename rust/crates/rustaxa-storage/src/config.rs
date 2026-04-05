@@ -36,7 +36,7 @@ impl Config {
             access_mode: AccessMode::Secondary {
                 // As long as we open the DB from C++ and Rust and Rust only reads, we bypass lock issues by
                 // reading as a secondary.
-                path: base_path.join("db_rust_secondary"),
+                path: base_path.join(".rustaxa").join("storage_secondary"),
             },
             create_if_missing: true,
             create_missing_column_families: true,
@@ -95,7 +95,7 @@ impl Column {
     /// Returns the column family name.
     pub fn name(&self) -> &'static str {
         match self {
-            Column::DefaultColumn => "default_column",
+            Column::DefaultColumn => "default",
             Column::Migrations => "migrations",
             Column::PeriodData => "period_data",
             Column::Genesis => "genesis",
@@ -179,7 +179,7 @@ impl Column {
     /// Parses a column from its name string. Return an `Error` if the name does not match any known column.
     pub fn from_name(name: &str) -> Result<Column> {
         match name {
-            "default_column" => Ok(Column::DefaultColumn),
+            "default" => Ok(Column::DefaultColumn),
             "migrations" => Ok(Column::Migrations),
             "period_data" => Ok(Column::PeriodData),
             "genesis" => Ok(Column::Genesis),
@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn test_column_name_mapping() {
         // Test a few key columns
-        assert_eq!(Column::DefaultColumn.name(), "default_column");
+        assert_eq!(Column::DefaultColumn.name(), "default");
         assert_eq!(Column::PeriodData.name(), "period_data");
         assert_eq!(Column::DagBlocks.name(), "dag_blocks");
         assert_eq!(Column::Status.name(), "status");
@@ -297,10 +297,7 @@ mod tests {
 
     #[test]
     fn test_column_from_name_valid() {
-        assert_eq!(
-            Column::from_name("default_column").unwrap(),
-            Column::DefaultColumn
-        );
+        assert_eq!(Column::from_name("default").unwrap(), Column::DefaultColumn);
         assert_eq!(
             Column::from_name("period_data").unwrap(),
             Column::PeriodData

@@ -106,7 +106,12 @@ DbStorage::DbStorage(const fs::path& path, uint32_t db_snapshot_each_n_pbft_bloc
   }
 
   #ifdef RUSTAXA_ENABLE_STORAGE
-  rust_storage_ = rustaxa::storage::create_storage(path.string());
+  try {
+    rust_storage_ = rustaxa::storage::create_storage(path.string());
+  } catch (std::exception const& e) {
+    LOG(log_er_) << "Error: " << e.what() << std::endl;
+    throw DbException(std::string("Rust storage init failed: ") + e.what());
+  }
   #endif
 }
 
