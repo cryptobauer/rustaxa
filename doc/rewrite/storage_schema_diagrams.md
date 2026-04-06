@@ -287,6 +287,11 @@ flowchart LR
     RustRepos -. secondary catch-up and reads .-> MainDb
 ```
 
+Current implemented Rust repositories behind this insertion point:
+- `DagRepository`
+- `PeriodRepository`
+- `PbftRepository` (currently used for `pbftBlockInDb` checks)
+
 ## Reading Order Suggestion
 
 If you are trying to understand the storage module from scratch, the diagrams are easiest to consume in this order:

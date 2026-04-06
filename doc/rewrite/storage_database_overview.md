@@ -309,6 +309,20 @@ What is not true today:
 
 From a rewrite perspective, the design naturally breaks into layers.
 
+### Current Rust Read Slice
+
+The implemented Rust read shim coverage now includes:
+- DAG read/index APIs (`dag_blocks`, `dag_blocks_level`, `dag_block_period`, `proposal_period_levels_map`)
+- period-data primitives (`getPeriodDataRaw`, `getPeriodFromPbftHash`)
+- PBFT block-hash presence checks (`pbftBlockInDb`)
+
+Current Rust-side repository split in `rustaxa-storage`:
+- `DagRepository` for DAG reads and DAG indexes
+- `PeriodRepository` for period bundle and period/PBFT-hash lookups
+- `PbftRepository` for PBFT hash presence checks
+
+The Rust `DbReader::exist` path now mirrors the C++ `exist()` pattern (`KeyMayExist` pre-check + real read to avoid false positives).
+
 ### Good first Rust targets
 
 - DAG reads and indexes

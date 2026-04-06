@@ -69,8 +69,9 @@ These public read methods already branch to `rust_storage_` today:
 - `[x] getProposalPeriodForDagLevel(uint64_t level)`
 - `[x] getPeriodDataRaw(PbftPeriod period) const`
 - `[x] getPeriodFromPbftHash(taraxa::blk_hash_t const& pbft_block_hash)`
+- `[x] pbftBlockInDb(blk_hash_t const& hash)`
 
-Current bridge coverage now includes the DAG read slice, proposal-period lookup, and period-data primitives (`period_data` and `pbft_block_period`). Everything else below is still backed by C++ RocksDB access.
+Current bridge coverage now includes the DAG read slice, proposal-period lookup, period-data primitives (`period_data` and `pbft_block_period`), and PBFT hash presence checks. Everything else below is still backed by C++ RocksDB access.
 
 ## Suggested Storage Buckets
 
@@ -115,7 +116,8 @@ Current bridge coverage now includes the DAG read slice, proposal-period lookup,
 - `[x] getPeriodFromPbftHash(taraxa::blk_hash_t const& pbft_block_hash)`
 - `[~] getPbftBlock(blk_hash_t const& hash)`
   Note: composes over `getPeriodFromPbftHash` and `getPbftBlock(period)`.
-- `[ ] pbftBlockInDb(blk_hash_t const& hash)`
+- `[x] pbftBlockInDb(blk_hash_t const& hash)`
+  Note: now bridged through Rust (`PbftRepository`) and backed by `pbft_block_period` existence checks.
 - `[ ] getBlockReceipts(PbftPeriod period) const`
 - `[u] getTransactionReceipt(EthBlockNumber blk_n, uint64_t position) const`
 
