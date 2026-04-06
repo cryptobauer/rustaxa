@@ -67,8 +67,10 @@ These public read methods already branch to `rust_storage_` today:
 - `[x] getNonfinalizedDagBlocks()`
 - `[x] getDagBlockPeriod(blk_hash_t const& hash)`
 - `[x] getProposalPeriodForDagLevel(uint64_t level)`
+- `[x] getPeriodDataRaw(PbftPeriod period) const`
+- `[x] getPeriodFromPbftHash(taraxa::blk_hash_t const& pbft_block_hash)`
 
-Current bridge coverage is therefore limited to a DAG read slice plus proposal-period lookup. Everything else below is still backed by C++ RocksDB access.
+Current bridge coverage now includes the DAG read slice, proposal-period lookup, and period-data primitives (`period_data` and `pbft_block_period`). Everything else below is still backed by C++ RocksDB access.
 
 ## Suggested Storage Buckets
 
@@ -101,7 +103,7 @@ Current bridge coverage is therefore limited to a DAG read slice plus proposal-p
 
 ### 2. Period Data and Finalized Chain Read APIs
 
-- `[ ] getPeriodDataRaw(PbftPeriod period) const`
+- `[x] getPeriodDataRaw(PbftPeriod period) const`
 - `[~] getPeriodData(PbftPeriod period) const`
 - `[~] getPbftBlock(PbftPeriod period) const`
 - `[~] getPeriodCertVotes(PbftPeriod period) const`
@@ -110,7 +112,7 @@ Current bridge coverage is therefore limited to a DAG read slice plus proposal-p
 - `[~] getPeriodPillarVotes(PbftPeriod period) const`
 - `[~] transactionsFromPeriodDataRlp(PbftPeriod period, const dev::RLP& period_data_rlp) const`
   Note: decode helper only. This should stay in C++ unless the decode layer also moves.
-- `[ ] getPeriodFromPbftHash(taraxa::blk_hash_t const& pbft_block_hash)`
+- `[x] getPeriodFromPbftHash(taraxa::blk_hash_t const& pbft_block_hash)`
 - `[~] getPbftBlock(blk_hash_t const& hash)`
   Note: composes over `getPeriodFromPbftHash` and `getPbftBlock(period)`.
 - `[ ] pbftBlockInDb(blk_hash_t const& hash)`
@@ -272,8 +274,8 @@ Notes:
 
 ## Sequencing Recommendation
 
-1. Finish `period_data` read shims first.
-   This unlocks many composite helpers without expanding the FFI surface too much.
+1. `period_data` primitive read shims are complete (`getPeriodDataRaw`, `getPeriodFromPbftHash`).
+   Keep composite decode helpers in C++ for now.
 2. Finish transaction read shims second.
    This removes a large amount of direct `db_` access and covers common execution paths.
 3. Finish PBFT manager/vote and pillar read shims third.
@@ -284,7 +286,7 @@ Notes:
 ## Design Notes for the Next Batch
 
 - Prefer shimming primitive reads over helper/composite reads.
-  Example: bridge `getPeriodDataRaw`, then keep `getPeriodData`, `getPeriodTransactions`, and finalized DAG helpers in C++ until there is a reason to move decoding logic.
+  Example already implemented: `getPeriodDataRaw` is bridged, while `getPeriodData`, `getPeriodTransactions`, and finalized DAG helpers remain in C++ decode/composition code.
 - Keep the shim boundary small.
   The current DAG work follows the right pattern: the public API remains in C++, and only the storage lookup logic crosses into Rust.
 - Be careful with APIs that currently expose RocksDB types directly.
