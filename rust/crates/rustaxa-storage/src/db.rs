@@ -17,6 +17,7 @@ use crate::AccessMode;
 use crate::Column;
 use crate::Config;
 use crate::DagRepository;
+use crate::PbftRepository;
 use crate::PeriodRepository;
 use crate::StorageError;
 
@@ -104,6 +105,7 @@ pub struct Storage {
     db: Arc<DBWithThreadMode<MultiThreaded>>,
     dag: DagRepository<DBWithThreadMode<MultiThreaded>>,
     period: PeriodRepository<DBWithThreadMode<MultiThreaded>>,
+    pbft: PbftRepository<DBWithThreadMode<MultiThreaded>>,
 }
 
 impl Storage {
@@ -150,8 +152,14 @@ impl Storage {
         let db = Arc::new(db);
         let dag = DagRepository::new(db.clone());
         let period = PeriodRepository::new(db.clone());
+        let pbft = PbftRepository::new(db.clone());
 
-        Ok(Storage { db, dag, period })
+        Ok(Storage {
+            db,
+            dag,
+            period,
+            pbft,
+        })
     }
 
     pub fn dag(&self) -> &DagRepository<DBWithThreadMode<MultiThreaded>> {
@@ -160,6 +168,10 @@ impl Storage {
 
     pub fn period(&self) -> &PeriodRepository<DBWithThreadMode<MultiThreaded>> {
         &self.period
+    }
+
+    pub fn pbft(&self) -> &PbftRepository<DBWithThreadMode<MultiThreaded>> {
+        &self.pbft
     }
 
     pub fn catch_up(&self) -> Result<()> {

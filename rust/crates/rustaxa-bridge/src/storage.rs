@@ -45,6 +45,8 @@ mod ffi {
 
         fn get_period_data_raw(&self, period: u64) -> Result<Vec<u8>>;
         fn get_period_from_pbft_hash(&self, hash: &[u8; 32]) -> Result<PeriodLookup>;
+
+        fn pbft_block_in_db(&self, hash: &[u8; 32]) -> Result<bool>;
     }
 }
 
@@ -157,7 +159,10 @@ impl Storage {
             .map_err(|e| anyhow::anyhow!(e))
     }
 
-    fn get_period_from_pbft_hash(&self, hash: &[u8; 32]) -> Result<ffi::PeriodLookup, anyhow::Error> {
+    fn get_period_from_pbft_hash(
+        &self,
+        hash: &[u8; 32],
+    ) -> Result<ffi::PeriodLookup, anyhow::Error> {
         self.0.catch_up()?;
         let lookup = self
             .0
@@ -175,5 +180,10 @@ impl Storage {
                 period: 0,
             }),
         }
+    }
+
+    fn pbft_block_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
+        self.0.catch_up()?;
+        self.0.pbft().pbft_block_in_db(H256::from(*hash))
     }
 }

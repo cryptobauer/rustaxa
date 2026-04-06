@@ -18,10 +18,12 @@ impl<D: DbReader> DagRepository<D> {
 
     /// Implements dagBlockInDb(blockHash) -> bool
     pub fn dag_block_in_db(&self, block: H256) -> Result<bool> {
+        // Check potentially non-finalized consensus data.
         if self.db.exist(Column::DagBlocks, block.as_bytes())? {
             return Ok(true);
         }
 
+        // Check finalized consensus data.
         self.db.exist(Column::DagBlockPeriod, block.as_bytes())
     }
 

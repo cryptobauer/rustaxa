@@ -1158,6 +1158,12 @@ std::optional<PbftBlock> DbStorage::getPbftBlock(blk_hash_t const& hash) {
 }
 
 bool DbStorage::pbftBlockInDb(blk_hash_t const& hash) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  std::array<uint8_t, 32> h_arr;
+  std::memcpy(h_arr.data(), hash.data(), 32);
+  auto res = rust_storage_.value()->pbft_block_in_db(h_arr);
+  return res;
+  #endif
   return exist(toSlice(hash.asBytes()), Columns::pbft_block_period);
 }
 
