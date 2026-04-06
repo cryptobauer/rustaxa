@@ -36,6 +36,7 @@ pub trait DbReader: Send + Sync {
         Self: 'a;
 
     fn get<'a>(&'a self, col: Column, key: &[u8]) -> Result<Option<Self::Slice<'a>>>;
+    fn exist(&self, col: Column, key: &[u8]) -> Result<bool>;
     fn iter<'a>(&'a self, col: Column) -> DbIterator<'a>;
     fn iter_rev<'a>(&'a self, col: Column) -> DbIterator<'a>;
 }
@@ -43,10 +44,24 @@ pub trait DbReader: Send + Sync {
 impl DbReader for DBWithThreadMode<MultiThreaded> {
     type Slice<'a> = DBPinnableSlice<'a>;
 
+    fn exist(&self, col: Column, key: &[u8]) -> Result<bool> {
+        let handle = self.cf_handle(col.name()).ok_or_else(|| {
+            StorageError::Config(format!("Missing column family: {}", col.name()))
+        })?;
+
+        if !self.key_may_exist_cf(&handle, key) {
+            return Ok(false);
+        }
+
+        self.get_pinned_cf(&handle, key)
+            .map(|value| value.is_some())
+            .map_err(|e| StorageError::Database(e).into())
+    }
+
     fn get<'a>(&'a self, col: Column, key: &[u8]) -> Result<Option<Self::Slice<'a>>> {
-        let handle = self
-            .cf_handle(col.name())
-            .ok_or_else(|| StorageError::Config(format!("Missing column family: {}", col.name())))?;
+        let handle = self.cf_handle(col.name()).ok_or_else(|| {
+            StorageError::Config(format!("Missing column family: {}", col.name()))
+        })?;
         self.get_pinned_cf(&handle, key)
             .map_err(|e| StorageError::Database(e).into())
     }
@@ -163,6 +178,10 @@ impl Storage {
 
 impl DbReader for Storage {
     type Slice<'a> = DBPinnableSlice<'a>;
+
+    fn exist(&self, col: Column, key: &[u8]) -> Result<bool> {
+        DbReader::exist(&*self.db, col, key)
+    }
 
     fn get<'a>(&'a self, col: Column, key: &[u8]) -> Result<Option<Self::Slice<'a>>> {
         DbReader::get(&*self.db, col, key)

@@ -76,6 +76,15 @@ mod tests {
     impl DbReader for MockPeriodStore {
         type Slice<'a> = Vec<u8>;
 
+        fn exist(&self, col: Column, key: &[u8]) -> Result<bool> {
+            let data = self.data.read().unwrap();
+            if let Some(cf) = data.get(col.name()) {
+                Ok(cf.contains_key(key))
+            } else {
+                Ok(false)
+            }
+        }
+
         fn get<'a>(&'a self, col: Column, key: &[u8]) -> Result<Option<Self::Slice<'a>>> {
             let data = self.data.read().unwrap();
             if let Some(cf) = data.get(col.name()) {
@@ -136,6 +145,19 @@ mod tests {
     }
 
     #[test]
+    fn test_mock_period_store_exist() {
+        let db = MockPeriodStore::new();
+        let hash = H256::from_low_u64_be(3);
+
+        assert!(!db.exist(Column::PeriodData, hash.as_bytes()).unwrap());
+
+        db.put(Column::PeriodData, hash.as_bytes(), &[0xAA]);
+
+        assert!(db.exist(Column::PeriodData, hash.as_bytes()).unwrap());
+        assert!(!db.exist(Column::PbftBlockPeriod, hash.as_bytes()).unwrap());
+    }
+
+    #[test]
     fn test_period_from_pbft_hash_found() {
         let db = Arc::new(MockPeriodStore::new());
         let repo = PeriodRepository::new(db.clone());
@@ -157,7 +179,9 @@ mod tests {
         let db = Arc::new(MockPeriodStore::new());
         let repo = PeriodRepository::new(db);
 
-        let result = repo.period_from_pbft_hash(H256::from_low_u64_be(1)).unwrap();
+        let result = repo
+            .period_from_pbft_hash(H256::from_low_u64_be(1))
+            .unwrap();
         assert_eq!(result, None);
     }
 

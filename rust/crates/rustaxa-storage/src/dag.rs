@@ -18,18 +18,11 @@ impl<D: DbReader> DagRepository<D> {
 
     /// Implements dagBlockInDb(blockHash) -> bool
     pub fn dag_block_in_db(&self, block: H256) -> Result<bool> {
-        if self.db.get(Column::DagBlocks, block.as_bytes())?.is_some() {
-            return Ok(true);
-        }
-        if self
-            .db
-            .get(Column::DagBlockPeriod, block.as_bytes())?
-            .is_some()
-        {
+        if self.db.exist(Column::DagBlocks, block.as_bytes())? {
             return Ok(true);
         }
 
-        Ok(false)
+        self.db.exist(Column::DagBlockPeriod, block.as_bytes())
     }
 
     /// Implements GetDagBlock(blockHash) -> DagBlock
@@ -205,6 +198,15 @@ mod tests {
     impl DbReader for MockDagStore {
         type Slice<'a> = Vec<u8>;
 
+        fn exist(&self, col: Column, key: &[u8]) -> Result<bool> {
+            let data = self.data.read().unwrap();
+            if let Some(cf) = data.get(col.name()) {
+                Ok(cf.contains_key(key))
+            } else {
+                Ok(false)
+            }
+        }
+
         fn get<'a>(&'a self, col: Column, key: &[u8]) -> Result<Option<Self::Slice<'a>>> {
             let data = self.data.read().unwrap();
             if let Some(cf) = data.get(col.name()) {
@@ -241,6 +243,28 @@ mod tests {
             } else {
                 Box::new(std::iter::empty())
             }
+        }
+    }
+
+    struct ErrorDagStore;
+
+    impl DbReader for ErrorDagStore {
+        type Slice<'a> = Vec<u8>;
+
+        fn exist(&self, _col: Column, _key: &[u8]) -> Result<bool> {
+            Err(StorageError::Dag("exist failed".to_string()).into())
+        }
+
+        fn get<'a>(&'a self, _col: Column, _key: &[u8]) -> Result<Option<Self::Slice<'a>>> {
+            Ok(None)
+        }
+
+        fn iter<'a>(&'a self, _col: Column) -> DbIterator<'a> {
+            Box::new(std::iter::empty())
+        }
+
+        fn iter_rev<'a>(&'a self, _col: Column) -> DbIterator<'a> {
+            Box::new(std::iter::empty())
         }
     }
 
@@ -284,6 +308,19 @@ mod tests {
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.to_string().contains("DAG block not found"));
+    }
+
+    #[test]
+    fn test_mock_dag_store_exist() {
+        let db = MockDagStore::new();
+        let key = H256::from_low_u64_be(7);
+
+        assert!(!db.exist(Column::DagBlocks, key.as_bytes()).unwrap());
+
+        db.put(Column::DagBlocks, key.as_bytes(), &[]);
+
+        assert!(db.exist(Column::DagBlocks, key.as_bytes()).unwrap());
+        assert!(!db.exist(Column::DagBlockPeriod, key.as_bytes()).unwrap());
     }
 
     #[test]
@@ -403,6 +440,14 @@ mod tests {
         // Add to DagBlockPeriod (finalized)
         db.put(Column::DagBlockPeriod, block_hash_finalized.as_bytes(), &[]);
         assert!(repo.dag_block_in_db(block_hash_finalized).unwrap());
+    }
+
+    #[test]
+    fn test_dag_block_in_db_propagates_exist_error() {
+        let repo = DagRepository::new(Arc::new(ErrorDagStore));
+        let err = repo.dag_block_in_db(H256::from_low_u64_be(9)).unwrap_err();
+
+        assert!(err.to_string().contains("exist failed"));
     }
 
     #[test]
