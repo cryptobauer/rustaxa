@@ -719,6 +719,10 @@ void DbStorage::savePeriodData(const PeriodData& period_data, Batch& write_batch
 }
 
 dev::bytes DbStorage::getPeriodDataRaw(PbftPeriod period) const {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto period_data = rust_storage_.value()->get_period_data_raw(period);
+  return dev::bytes(period_data.begin(), period_data.end());
+  #endif
   return asBytes(lookup(toSlice(period), Columns::period_data));
 }
 
@@ -1262,6 +1266,12 @@ void DbStorage::addPbftBlockPeriodToBatch(PbftPeriod period, taraxa::blk_hash_t 
 }
 
 std::pair<bool, PbftPeriod> DbStorage::getPeriodFromPbftHash(taraxa::blk_hash_t const& pbft_block_hash) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  std::array<uint8_t, 32> h_arr;
+  std::memcpy(h_arr.data(), pbft_block_hash.data(), 32);
+  auto res = rust_storage_.value()->get_period_from_pbft_hash(h_arr);
+  return {res.found, static_cast<PbftPeriod>(res.period)};
+  #endif
   auto data = lookup(toSlice(pbft_block_hash.asBytes()), Columns::pbft_block_period);
 
   if (!data.empty()) {

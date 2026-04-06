@@ -17,6 +17,7 @@ use crate::AccessMode;
 use crate::Column;
 use crate::Config;
 use crate::DagRepository;
+use crate::PeriodRepository;
 use crate::StorageError;
 
 /// Item returned by the database iterator.
@@ -43,9 +44,9 @@ impl DbReader for DBWithThreadMode<MultiThreaded> {
     type Slice<'a> = DBPinnableSlice<'a>;
 
     fn get<'a>(&'a self, col: Column, key: &[u8]) -> Result<Option<Self::Slice<'a>>> {
-        let handle = self.cf_handle(col.name()).ok_or_else(|| {
-            StorageError::Config(format!("Missing column family: {}", col.name()))
-        })?;
+        let handle = self
+            .cf_handle(col.name())
+            .ok_or_else(|| StorageError::Config(format!("Missing column family: {}", col.name())))?;
         self.get_pinned_cf(&handle, key)
             .map_err(|e| StorageError::Database(e).into())
     }
@@ -87,6 +88,7 @@ pub struct Storage {
     #[allow(dead_code)]
     db: Arc<DBWithThreadMode<MultiThreaded>>,
     dag: DagRepository<DBWithThreadMode<MultiThreaded>>,
+    period: PeriodRepository<DBWithThreadMode<MultiThreaded>>,
 }
 
 impl Storage {
@@ -132,12 +134,17 @@ impl Storage {
 
         let db = Arc::new(db);
         let dag = DagRepository::new(db.clone());
+        let period = PeriodRepository::new(db.clone());
 
-        Ok(Storage { db, dag })
+        Ok(Storage { db, dag, period })
     }
 
     pub fn dag(&self) -> &DagRepository<DBWithThreadMode<MultiThreaded>> {
         &self.dag
+    }
+
+    pub fn period(&self) -> &PeriodRepository<DBWithThreadMode<MultiThreaded>> {
+        &self.period
     }
 
     pub fn catch_up(&self) -> Result<()> {

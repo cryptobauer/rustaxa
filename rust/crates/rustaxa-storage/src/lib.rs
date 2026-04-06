@@ -2,11 +2,13 @@ mod config;
 mod dag;
 mod db;
 mod error;
+mod period;
 
+pub use config::AccessMode;
 pub use config::Column;
 pub use config::Config;
-pub use config::AccessMode;
 pub use config::StatusField;
 pub use dag::DagRepository;
 pub use db::Storage;
 pub use error::StorageError;
+pub use period::PeriodRepository;
