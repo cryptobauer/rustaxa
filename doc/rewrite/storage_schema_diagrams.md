@@ -156,7 +156,7 @@ flowchart TB
         period_system_transactions_cf[period_system_transactions]
     end
 
-    SavePeriodData[savePeriodData(period_data, batch)]
+    SavePeriodData[savePeriodData period batch]
 
     subgraph AfterFinalization[After finalization]
         period_data_cf[period_data]
@@ -184,13 +184,13 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    DagLookup[getDagBlock(hash)] --> DagPeriod{present in dag_blocks?}
+    DagLookup[getDagBlock by hash] --> DagPeriod{present in dag_blocks?}
     DagPeriod -->|yes| dag_blocks_cf[dag_blocks]
     DagPeriod -->|no| dag_block_period_cf[dag_block_period]
     dag_block_period_cf --> period_data_cf[period_data]
     period_data_cf --> DecodeDag[decode DAG block from bundle]
 
-    TrxLookup[getTransaction(hash)] --> TrxPending{present in transactions?}
+    TrxLookup[getTransaction by hash] --> TrxPending{present in transactions?}
     TrxPending -->|yes| transactions_cf[transactions]
     TrxPending -->|no| trx_period_cf[trx_period]
     trx_period_cf --> TrxSystem{system transaction?}
@@ -198,7 +198,7 @@ flowchart LR
     TrxSystem -->|yes| system_transaction_cf[system_transaction]
     period_data_cf --> DecodeTrx[decode transaction from bundle]
 
-    PbftLookup[getPbftBlock(hash)] --> pbft_block_period_cf[pbft_block_period]
+    PbftLookup[getPbftBlock by hash] --> pbft_block_period_cf[pbft_block_period]
     pbft_block_period_cf --> period_data_cf
     period_data_cf --> DecodePbft[decode PBFT block from bundle]
 ```
@@ -251,10 +251,10 @@ flowchart TB
         snap_state[(state_dbN)]
     end
 
-    CreateSnapshot[createSnapshot(period)]
-    LoadSnapshots[loadSnapshots()]
-    Recover[recoverToPeriod(period)]
-    DeleteSnapshot[deleteSnapshot(period)]
+    CreateSnapshot[createSnapshot for period]
+    LoadSnapshots[loadSnapshots]
+    Recover[recoverToPeriod]
+    DeleteSnapshot[deleteSnapshot]
 
     live_db --> CreateSnapshot --> snap_db
     snap_db --> LoadSnapshots
