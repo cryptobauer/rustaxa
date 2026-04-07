@@ -797,16 +797,35 @@ void DbStorage::addTransactionLocationToBatch(Batch& write_batch, trx_hash_t con
 }
 
 std::optional<TransactionLocation> DbStorage::getTransactionLocation(trx_hash_t const& hash) const {
-  auto data = lookup(toSlice(hash.asBytes()), Columns::trx_period);
-  if (!data.empty()) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  std::array<uint8_t, 32> h_arr;
+  std::memcpy(h_arr.data(), hash.data(), 32);
+  auto location_bytes = rust_storage_.value()->get_transaction_location(h_arr);
+  if (!location_bytes.empty()) {
+    auto location_data = dev::bytes(location_bytes.begin(), location_bytes.end());
     // Don't use std::move - RLP stores a reference and needs data to stay alive
-    return TransactionLocation::fromRlp(dev::RLP(data));
+    return TransactionLocation::fromRlp(dev::RLP(location_data));
+  }
+  return std::nullopt;
+  #endif
+  auto location_data = lookup(toSlice(hash.asBytes()), Columns::trx_period);
+  if (!location_data.empty()) {
+    // Don't use std::move - RLP stores a reference and needs data to stay alive
+    return TransactionLocation::fromRlp(dev::RLP(location_data));
   }
   return std::nullopt;
 }
 
 std::vector<bool> DbStorage::transactionsFinalized(std::vector<trx_hash_t> const& trx_hashes) {
   std::vector<bool> result(trx_hashes.size(), false);
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  for (size_t i = 0; i < trx_hashes.size(); ++i) {
+    std::array<uint8_t, 32> h_arr;
+    std::memcpy(h_arr.data(), trx_hashes[i].data(), 32);
+    result[i] = rust_storage_.value()->transaction_finalized(h_arr);
+  }
+  return result;
+  #endif
   for (size_t i = 0; i < trx_hashes.size(); ++i) {
     if (exist(toSlice(trx_hashes[i].asBytes()), Columns::trx_period)) {
       result[i] = true;
@@ -1044,10 +1063,20 @@ void DbStorage::removeTransactionToBatch(trx_hash_t const& trx, Batch& write_bat
 }
 
 bool DbStorage::transactionInDb(trx_hash_t const& hash) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  std::array<uint8_t, 32> h_arr;
+  std::memcpy(h_arr.data(), hash.data(), 32);
+  return rust_storage_.value()->transaction_in_db(h_arr);
+  #endif
   return exist(toSlice(hash.asBytes()), Columns::transactions) || exist(toSlice(hash.asBytes()), Columns::trx_period);
 }
 
 bool DbStorage::transactionFinalized(trx_hash_t const& hash) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  std::array<uint8_t, 32> h_arr;
+  std::memcpy(h_arr.data(), hash.data(), 32);
+  return rust_storage_.value()->transaction_finalized(h_arr);
+  #endif
   return exist(toSlice(hash.asBytes()), Columns::trx_period);
 }
 

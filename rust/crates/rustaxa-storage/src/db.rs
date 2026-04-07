@@ -20,6 +20,7 @@ use crate::DagRepository;
 use crate::PbftRepository;
 use crate::PeriodRepository;
 use crate::StorageError;
+use crate::TransactionRepository;
 
 /// Item returned by the database iterator.
 /// Key and Value are boxed slices.
@@ -106,6 +107,7 @@ pub struct Storage {
     dag: DagRepository<DBWithThreadMode<MultiThreaded>>,
     period: PeriodRepository<DBWithThreadMode<MultiThreaded>>,
     pbft: PbftRepository<DBWithThreadMode<MultiThreaded>>,
+    transaction: TransactionRepository<DBWithThreadMode<MultiThreaded>>,
 }
 
 impl Storage {
@@ -153,12 +155,14 @@ impl Storage {
         let dag = DagRepository::new(db.clone());
         let period = PeriodRepository::new(db.clone());
         let pbft = PbftRepository::new(db.clone());
+        let transaction = TransactionRepository::new(db.clone());
 
         Ok(Storage {
             db,
             dag,
             period,
             pbft,
+            transaction,
         })
     }
 
@@ -172,6 +176,10 @@ impl Storage {
 
     pub fn pbft(&self) -> &PbftRepository<DBWithThreadMode<MultiThreaded>> {
         &self.pbft
+    }
+
+    pub fn transaction(&self) -> &TransactionRepository<DBWithThreadMode<MultiThreaded>> {
+        &self.transaction
     }
 
     pub fn catch_up(&self) -> Result<()> {

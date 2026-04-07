@@ -47,6 +47,9 @@ mod ffi {
         fn get_period_from_pbft_hash(&self, hash: &[u8; 32]) -> Result<PeriodLookup>;
 
         fn pbft_block_in_db(&self, hash: &[u8; 32]) -> Result<bool>;
+        fn transaction_in_db(&self, hash: &[u8; 32]) -> Result<bool>;
+        fn transaction_finalized(&self, hash: &[u8; 32]) -> Result<bool>;
+        fn get_transaction_location(&self, hash: &[u8; 32]) -> Result<Vec<u8>>;
     }
 }
 
@@ -185,5 +188,26 @@ impl Storage {
     fn pbft_block_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
         self.0.catch_up()?;
         self.0.pbft().pbft_block_in_db(H256::from(*hash))
+    }
+
+    fn transaction_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
+        self.0.catch_up()?;
+        self.0.transaction().transaction_in_db(H256::from(*hash))
+    }
+
+    fn transaction_finalized(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
+        self.0.catch_up()?;
+        self.0
+            .transaction()
+            .transaction_finalized(H256::from(*hash))
+    }
+
+    fn get_transaction_location(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
+        self.0.catch_up()?;
+        Ok(self
+            .0
+            .transaction()
+            .transaction_location_rlp(H256::from(*hash))?
+            .unwrap_or_default())
     }
 }
