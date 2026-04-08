@@ -602,6 +602,14 @@ std::map<level_t, std::vector<std::shared_ptr<DagBlock>>> DbStorage::getNonfinal
 
 SharedTransactions DbStorage::getAllNonfinalizedTransactions() {
   SharedTransactions res;
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto trxs = rust_storage_.value()->get_all_nonfinalized_transactions();
+  res.reserve(trxs.size());
+  for (auto const& trx_rlp : trxs) {
+    res.emplace_back(std::make_shared<Transaction>(dev::bytes(trx_rlp.data.begin(), trx_rlp.data.end())));
+  }
+  return res;
+  #endif
   auto i = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::transactions)));
   for (i->SeekToFirst(); i->Valid(); i->Next()) {
     res.emplace_back(std::make_shared<Transaction>(asBytes(i->value().ToString())));
@@ -836,6 +844,15 @@ std::vector<bool> DbStorage::transactionsFinalized(std::vector<trx_hash_t> const
 
 std::unordered_map<trx_hash_t, PbftPeriod> DbStorage::getAllTransactionPeriod() {
   std::unordered_map<trx_hash_t, PbftPeriod> res;
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto data = rust_storage_.value()->get_all_transaction_period();
+  res.reserve(data.size());
+  for (auto const& item : data) {
+    auto hash_bytes = dev::bytes(item.hash.begin(), item.hash.end());
+    res[trx_hash_t(hash_bytes)] = item.period;
+  }
+  return res;
+  #endif
   auto i = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::trx_period)));
   for (i->SeekToFirst(); i->Valid(); i->Next()) {
     auto data = asBytes(i->value().ToString());
@@ -883,6 +900,21 @@ blk_hash_t DbStorage::getPeriodBlockHash(PbftPeriod period) const {
 }
 
 std::shared_ptr<Transaction> DbStorage::getTransaction(trx_hash_t const& hash) const {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  std::array<uint8_t, 32> h_arr;
+  std::memcpy(h_arr.data(), hash.data(), 32);
+  auto rust_data = rust_storage_.value()->get_transaction(h_arr);
+  if (!rust_data.empty()) {
+    return std::make_shared<Transaction>(dev::bytes(rust_data.begin(), rust_data.end()));
+  }
+  auto rust_location = getTransactionLocation(hash);
+  if (rust_location && !rust_location->is_system) {
+    return getTransaction(rust_location->period, rust_location->position);
+  } else {
+    return getSystemTransaction(hash);
+  }
+  return nullptr;
+  #endif
   auto data = asBytes(lookup(toSlice(hash.asBytes()), Columns::transactions));
   if (data.size() > 0) {
     return std::make_shared<Transaction>(std::move(data));
@@ -898,6 +930,13 @@ std::shared_ptr<Transaction> DbStorage::getTransaction(trx_hash_t const& hash) c
 }
 
 std::shared_ptr<Transaction> DbStorage::getTransaction(PbftPeriod period, uint32_t position) const {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto data = rust_storage_.value()->get_transaction_by_period_position(period, position);
+  if (!data.empty()) {
+    return std::make_shared<Transaction>(dev::bytes(data.begin(), data.end()));
+  }
+  return nullptr;
+  #endif
   auto period_data = getPeriodDataRaw(period);
   if (period_data.size() > 0) {
     auto period_data_rlp = dev::RLP(period_data);
@@ -908,6 +947,9 @@ std::shared_ptr<Transaction> DbStorage::getTransaction(PbftPeriod period, uint32
 }
 
 uint64_t DbStorage::getTransactionCount(PbftPeriod period) const {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  return rust_storage_.value()->get_transaction_count(period);
+  #endif
   auto period_data = getPeriodDataRaw(period);
   if (period_data.size()) {
     auto period_data_rlp = dev::RLP(period_data);
@@ -947,6 +989,16 @@ void DbStorage::addSystemTransactionToBatch(Batch& write_batch, SharedTransactio
 }
 
 std::shared_ptr<Transaction> DbStorage::getSystemTransaction(const trx_hash_t& hash) const {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  std::array<uint8_t, 32> h_arr;
+  std::memcpy(h_arr.data(), hash.data(), 32);
+  auto rust_data = rust_storage_.value()->get_system_transaction(h_arr);
+  if (!rust_data.empty()) {
+    // construct as system transaction to have proper sender
+    return std::make_shared<SystemTransaction>(dev::bytes(rust_data.begin(), rust_data.end()));
+  }
+  return nullptr;
+  #endif
   auto data = asBytes(lookup(toSlice(hash.asBytes()), Columns::system_transaction));
   if (data.size() > 0) {
     // construct as system transaction to have proper sender
@@ -965,6 +1017,14 @@ void DbStorage::addPeriodSystemTransactions(Batch& write_batch, SharedTransactio
 }
 
 std::vector<trx_hash_t> DbStorage::getPeriodSystemTransactionsHashes(PbftPeriod period) const {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto rust_data = rust_storage_.value()->get_period_system_transactions_hashes(period);
+  if (rust_data.empty()) {
+    return {};
+  }
+  auto hashes_data = dev::bytes(rust_data.begin(), rust_data.end());
+  return util::rlp_dec<std::vector<trx_hash_t>>(dev::RLP(hashes_data));
+  #endif
   auto data = asBytes(lookup(toSlice(period), Columns::period_system_transactions));
   if (data.size() == 0) {
     return {};

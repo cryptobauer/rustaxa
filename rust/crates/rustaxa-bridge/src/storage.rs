@@ -26,6 +26,15 @@ mod ffi {
         period: u64,
     }
 
+    struct TxRlp {
+        data: Vec<u8>,
+    }
+
+    struct HashPeriod {
+        hash: [u8; 32],
+        period: u64,
+    }
+
     extern "Rust" {
         type Storage;
         fn create_storage(path: &str) -> Result<Box<Storage>>;
@@ -50,6 +59,14 @@ mod ffi {
         fn transaction_in_db(&self, hash: &[u8; 32]) -> Result<bool>;
         fn transaction_finalized(&self, hash: &[u8; 32]) -> Result<bool>;
         fn get_transaction_location(&self, hash: &[u8; 32]) -> Result<Vec<u8>>;
+        fn get_transaction(&self, hash: &[u8; 32]) -> Result<Vec<u8>>;
+        fn get_transaction_by_period_position(&self, period: u64, position: u32)
+            -> Result<Vec<u8>>;
+        fn get_transaction_count(&self, period: u64) -> Result<u64>;
+        fn get_system_transaction(&self, hash: &[u8; 32]) -> Result<Vec<u8>>;
+        fn get_all_nonfinalized_transactions(&self) -> Result<Vec<TxRlp>>;
+        fn get_all_transaction_period(&self) -> Result<Vec<HashPeriod>>;
+        fn get_period_system_transactions_hashes(&self, period: u64) -> Result<Vec<u8>>;
     }
 }
 
@@ -209,5 +226,67 @@ impl Storage {
             .transaction()
             .transaction_location_rlp(H256::from(*hash))?
             .unwrap_or_default())
+    }
+
+    fn get_transaction(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
+        self.0.catch_up()?;
+        Ok(self
+            .0
+            .transaction()
+            .transaction_rlp(H256::from(*hash))?
+            .unwrap_or_default())
+    }
+
+    fn get_transaction_by_period_position(
+        &self,
+        period: u64,
+        position: u32,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        self.0.catch_up()?;
+        Ok(self
+            .0
+            .transaction()
+            .transaction_by_period_position_rlp(period, position)?
+            .unwrap_or_default())
+    }
+
+    fn get_transaction_count(&self, period: u64) -> Result<u64, anyhow::Error> {
+        self.0.catch_up()?;
+        self.0.transaction().transaction_count(period)
+    }
+
+    fn get_system_transaction(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
+        self.0.catch_up()?;
+        Ok(self
+            .0
+            .transaction()
+            .system_transaction_rlp(H256::from(*hash))?
+            .unwrap_or_default())
+    }
+
+    fn get_all_nonfinalized_transactions(&self) -> Result<Vec<ffi::TxRlp>, anyhow::Error> {
+        self.0.catch_up()?;
+        let trxs = self.0.transaction().all_nonfinalized_transactions_rlp()?;
+        Ok(trxs.into_iter().map(|data| ffi::TxRlp { data }).collect())
+    }
+
+    fn get_all_transaction_period(&self) -> Result<Vec<ffi::HashPeriod>, anyhow::Error> {
+        self.0.catch_up()?;
+        let periods = self.0.transaction().all_transaction_period()?;
+        Ok(periods
+            .into_iter()
+            .map(|(hash, period)| {
+                let mut h = [0u8; 32];
+                h.copy_from_slice(hash.as_bytes());
+                ffi::HashPeriod { hash: h, period }
+            })
+            .collect())
+    }
+
+    fn get_period_system_transactions_hashes(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
+        self.0.catch_up()?;
+        self.0
+            .transaction()
+            .period_system_transactions_hashes_rlp(period)
     }
 }
