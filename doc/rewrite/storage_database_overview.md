@@ -315,11 +315,16 @@ The implemented Rust read shim coverage now includes:
 - DAG read/index APIs (`dag_blocks`, `dag_blocks_level`, `dag_block_period`, `proposal_period_levels_map`)
 - period-data primitives (`getPeriodDataRaw`, `getPeriodFromPbftHash`)
 - PBFT block-hash presence checks (`pbftBlockInDb`)
+- transaction read primitives and retrieval paths (`transactionInDb`, `transactionFinalized`,
+  `transactionsFinalized`, `getTransactionLocation`, `getTransaction`, `getTransaction(period, position)`,
+  `getSystemTransaction`, `getTransactionCount`, `getAllNonfinalizedTransactions`,
+  `getAllTransactionPeriod`, `getPeriodSystemTransactionsHashes`)
 
 Current Rust-side repository split in `rustaxa-storage`:
 - `DagRepository` for DAG reads and DAG indexes
 - `PeriodRepository` for period bundle and period/PBFT-hash lookups
 - `PbftRepository` for PBFT hash presence checks
+- `TransactionRepository` for transaction presence/location and transaction read paths
 
 The Rust `DbReader::exist` path now mirrors the C++ `exist()` pattern (`KeyMayExist` pre-check + real read to avoid false positives).
 
@@ -327,7 +332,7 @@ The Rust `DbReader::exist` path now mirrors the C++ `exist()` pattern (`KeyMayEx
 
 - DAG reads and indexes
 - `period_data` reads
-- transaction location and transaction presence checks
+- transaction retrieval, location, and presence checks
 - small metadata reads such as genesis and status
 
 These are mostly local to `DbStorage` and do not require redesigning the public interface.

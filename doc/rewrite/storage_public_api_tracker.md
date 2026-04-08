@@ -51,7 +51,6 @@ These methods are public today but I found no external call sites in the workspa
 - `[u] removeDagBlockBatch(Batch& write_batch, blk_hash_t const& hash)`
 - `[u] transactionsInDb(std::vector<trx_hash_t> const& trx_hashes)`
 - `[u] getTransactionReceipt(EthBlockNumber blk_n, uint64_t position) const`
-- `[u] getSystemTransaction(const trx_hash_t& hash) const`
 - `[u] getPeriodSystemTransactions(PbftPeriod period) const`
 - `[u] getLastPbftBlockHashAndFinalizedDagBlockByPeriod(PbftPeriod period)`
 
@@ -70,8 +69,19 @@ These public read methods already branch to `rust_storage_` today:
 - `[x] getPeriodDataRaw(PbftPeriod period) const`
 - `[x] getPeriodFromPbftHash(taraxa::blk_hash_t const& pbft_block_hash)`
 - `[x] pbftBlockInDb(blk_hash_t const& hash)`
+- `[x] transactionInDb(trx_hash_t const& hash)`
+- `[x] transactionFinalized(trx_hash_t const& hash)`
+- `[x] transactionsFinalized(std::vector<trx_hash_t> const& trx_hashes)`
+- `[x] getTransactionLocation(trx_hash_t const& hash) const`
+- `[x] getTransaction(trx_hash_t const& hash) const`
+- `[x] getTransaction(PbftPeriod period, uint32_t position) const`
+- `[x] getTransactionCount(PbftPeriod period) const`
+- `[x] getSystemTransaction(const trx_hash_t& hash) const`
+- `[x] getAllNonfinalizedTransactions()`
+- `[x] getAllTransactionPeriod()`
+- `[x] getPeriodSystemTransactionsHashes(PbftPeriod period) const`
 
-Current bridge coverage now includes the DAG read slice, proposal-period lookup, period-data primitives (`period_data` and `pbft_block_period`), and PBFT hash presence checks. Everything else below is still backed by C++ RocksDB access.
+Current bridge coverage now includes the DAG read slice, proposal-period lookup, period-data primitives (`period_data` and `pbft_block_period`), PBFT hash presence checks, and a broader transaction read slice over `transactions`, `trx_period`, `system_transaction`, `period_data`, and `period_system_transactions`. Everything else below is still backed by C++ RocksDB access.
 
 ## Suggested Storage Buckets
 
@@ -123,19 +133,20 @@ Current bridge coverage now includes the DAG read slice, proposal-period lookup,
 
 ### 3. Transaction Read APIs
 
-- `[ ] getTransaction(trx_hash_t const& hash) const`
-- `[ ] getTransaction(PbftPeriod period, uint32_t position) const`
-- `[ ] getAllNonfinalizedTransactions()`
-- `[ ] transactionInDb(trx_hash_t const& hash)`
-- `[ ] transactionFinalized(trx_hash_t const& hash)`
+- `[x] getTransaction(trx_hash_t const& hash) const`
+- `[x] getTransaction(PbftPeriod period, uint32_t position) const`
+- `[x] getAllNonfinalizedTransactions()`
+- `[x] transactionInDb(trx_hash_t const& hash)`
+- `[x] transactionFinalized(trx_hash_t const& hash)`
 - `[u] transactionsInDb(std::vector<trx_hash_t> const& trx_hashes)`
-- `[ ] transactionsFinalized(std::vector<trx_hash_t> const& trx_hashes)`
-- `[ ] getTransactionLocation(trx_hash_t const& hash) const`
-- `[ ] getAllTransactionPeriod()`
-- `[ ] getTransactionCount(PbftPeriod period) const`
-- `[ ] getFinalizedTransactions(std::vector<trx_hash_t> const& trx_hashes) const`
-- `[u] getSystemTransaction(const trx_hash_t& hash) const`
-- `[ ] getPeriodSystemTransactionsHashes(PbftPeriod period) const`
+- `[x] transactionsFinalized(std::vector<trx_hash_t> const& trx_hashes)`
+- `[x] getTransactionLocation(trx_hash_t const& hash) const`
+- `[x] getAllTransactionPeriod()`
+- `[x] getTransactionCount(PbftPeriod period) const`
+- `[~] getFinalizedTransactions(std::vector<trx_hash_t> const& trx_hashes) const`
+  Note: composition over already-shimmed primitives (`getTransactionLocation`, `getPeriodDataRaw`).
+- `[x] getSystemTransaction(const trx_hash_t& hash) const`
+- `[x] getPeriodSystemTransactionsHashes(PbftPeriod period) const`
 - `[u] getPeriodSystemTransactions(PbftPeriod period) const`
   Note: can remain a composition helper if the primitive reads above are bridged.
 
@@ -278,8 +289,13 @@ Notes:
 
 1. `period_data` primitive read shims are complete (`getPeriodDataRaw`, `getPeriodFromPbftHash`).
    Keep composite decode helpers in C++ for now.
-2. Finish transaction read shims second.
-   This removes a large amount of direct `db_` access and covers common execution paths.
+2. Continue transaction read shims second.
+   The main transaction retrieval primitives are now bridged (`getTransaction`, `getTransaction(period, position)`,
+   `getSystemTransaction`, `getTransactionCount`, `transactionInDb`, `transactionFinalized`,
+   `transactionsFinalized`, `getTransactionLocation`, `getAllNonfinalizedTransactions`,
+   `getAllTransactionPeriod`, `getPeriodSystemTransactionsHashes`).
+   Next step is optional batching/perf work (`transactionsInDb` or multi-hash lookups) and
+   finalized-chain receipt reads (`getBlockReceipts`, `getTransactionReceipt`).
 3. Finish PBFT manager/vote and pillar read shims third.
    These are mostly isolated key-value and iteration operations.
 4. Move metadata and iterator-heavy config reads after the core read path is stable.
