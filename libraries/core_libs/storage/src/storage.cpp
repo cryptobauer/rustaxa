@@ -1100,12 +1100,13 @@ std::optional<TransactionReceipt> DbStorage::getTransactionReceipt(EthBlockNumbe
 
 SharedTransactionReceipts DbStorage::getBlockReceipts(PbftPeriod period) const {
   #ifdef RUSTAXA_ENABLE_STORAGE
-  auto data = rust_storage_.value()->get_block_receipt(period);
-  if (data.empty()) {
+  auto rust_value = rust_storage_.value()->get_block_receipt(period);
+  if (rust_value.empty()) {
     return {};
   }
+  auto data_bytes = dev::bytes(rust_value.begin(), rust_value.end());
   return std::make_shared<std::vector<TransactionReceipt>>(
-      util::rlp_dec<std::vector<TransactionReceipt>>(dev::RLP(data)));
+      util::rlp_dec<std::vector<TransactionReceipt>>(dev::RLP(data_bytes)));
   #endif
   auto raw = lookup(toSlice(period), DbStorage::Columns::final_chain_receipt_by_period);
   if (raw.empty()) {
