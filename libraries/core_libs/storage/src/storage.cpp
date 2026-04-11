@@ -748,6 +748,15 @@ void DbStorage::savePillarBlock(const std::shared_ptr<pillar_chain::PillarBlock>
 }
 
 std::shared_ptr<pillar_chain::PillarBlock> DbStorage::getPillarBlock(PbftPeriod period) const {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto data = rust_storage_.value()->get_pillar_block(period);
+  if (data.empty()) {
+    return {};
+  }
+
+  auto rust_bytes = dev::bytes(data.begin(), data.end());
+  return std::make_shared<pillar_chain::PillarBlock>(dev::RLP(rust_bytes));
+  #endif
   const auto bytes = asBytes(lookup(period, Columns::pillar_block));
   if (bytes.empty()) {
     return {};
@@ -757,6 +766,15 @@ std::shared_ptr<pillar_chain::PillarBlock> DbStorage::getPillarBlock(PbftPeriod 
 }
 
 std::shared_ptr<pillar_chain::PillarBlock> DbStorage::getLatestPillarBlock() const {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto data = rust_storage_.value()->get_latest_pillar_block();
+  if (data.empty()) {
+    return {};
+  }
+
+  auto bytes = dev::bytes(data.begin(), data.end());
+  return std::make_shared<pillar_chain::PillarBlock>(dev::RLP(bytes));
+  #endif
   auto it = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::pillar_block)));
   it->SeekToLast();
   if (!it->Valid()) {
@@ -771,6 +789,15 @@ void DbStorage::saveOwnPillarBlockVote(const std::shared_ptr<PillarVote>& vote) 
 }
 
 std::shared_ptr<PillarVote> DbStorage::getOwnPillarBlockVote() const {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto data = rust_storage_.value()->get_own_pillar_block_vote();
+  if (data.empty()) {
+    return nullptr;
+  }
+
+  auto rust_bytes = dev::bytes(data.begin(), data.end());
+  return std::make_shared<PillarVote>(dev::RLP(rust_bytes));
+  #endif
   const auto bytes = asBytes(lookup(0, Columns::current_pillar_block_own_vote));
   if (bytes.empty()) {
     return nullptr;
@@ -784,6 +811,15 @@ void DbStorage::saveCurrentPillarBlockData(const pillar_chain::CurrentPillarBloc
 }
 
 std::optional<pillar_chain::CurrentPillarBlockDataDb> DbStorage::getCurrentPillarBlockData() const {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto data = rust_storage_.value()->get_current_pillar_block_data();
+  if (data.empty()) {
+    return {};
+  }
+
+  auto rust_bytes = dev::bytes(data.begin(), data.end());
+  return util::rlp_dec<pillar_chain::CurrentPillarBlockDataDb>(dev::RLP(rust_bytes));
+  #endif
   const auto bytes = asBytes(lookup(0, Columns::current_pillar_block_data));
   if (bytes.empty()) {
     return {};

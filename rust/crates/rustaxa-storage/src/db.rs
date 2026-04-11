@@ -19,6 +19,7 @@ use crate::Config;
 use crate::DagRepository;
 use crate::PbftRepository;
 use crate::PeriodRepository;
+use crate::PillarRepository;
 use crate::StorageError;
 use crate::TransactionRepository;
 
@@ -106,6 +107,7 @@ pub struct Storage {
     db: Arc<DBWithThreadMode<MultiThreaded>>,
     dag: DagRepository<DBWithThreadMode<MultiThreaded>>,
     period: PeriodRepository<DBWithThreadMode<MultiThreaded>>,
+    pillar: PillarRepository<DBWithThreadMode<MultiThreaded>>,
     pbft: PbftRepository<DBWithThreadMode<MultiThreaded>>,
     transaction: TransactionRepository<DBWithThreadMode<MultiThreaded>>,
 }
@@ -154,6 +156,7 @@ impl Storage {
         let db = Arc::new(db);
         let dag = DagRepository::new(db.clone());
         let period = PeriodRepository::new(db.clone());
+        let pillar = PillarRepository::new(db.clone());
         let pbft = PbftRepository::new(db.clone());
         let transaction = TransactionRepository::new(db.clone());
 
@@ -161,6 +164,7 @@ impl Storage {
             db,
             dag,
             period,
+            pillar,
             pbft,
             transaction,
         })
@@ -176,6 +180,10 @@ impl Storage {
 
     pub fn pbft(&self) -> &PbftRepository<DBWithThreadMode<MultiThreaded>> {
         &self.pbft
+    }
+
+    pub fn pillar(&self) -> &PillarRepository<DBWithThreadMode<MultiThreaded>> {
+        &self.pillar
     }
 
     pub fn transaction(&self) -> &TransactionRepository<DBWithThreadMode<MultiThreaded>> {

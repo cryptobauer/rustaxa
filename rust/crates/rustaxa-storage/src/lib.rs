@@ -4,6 +4,7 @@ mod db;
 mod error;
 mod pbft;
 mod period;
+mod pillar;
 mod transaction;
 
 pub use config::AccessMode;
@@ -15,4 +16,5 @@ pub use db::Storage;
 pub use error::StorageError;
 pub use pbft::PbftRepository;
 pub use period::PeriodRepository;
+pub use pillar::PillarRepository;
 pub use transaction::TransactionRepository;

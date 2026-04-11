@@ -332,9 +332,14 @@ mod tests {
     #[test]
     fn test_uint64_comparator_columns() {
         let uint64_columns = vec![
+            Column::PeriodData,
             Column::DagBlocksLevel,
             Column::ProposalPeriodLevelsMap,
+            Column::SortitionParamsChange,
             Column::BlockRewardsStats,
+            Column::PillarBlock,
+            Column::FinalChainReceiptByPeriod,
+            Column::PeriodLambda,
         ];
 
         for column in uint64_columns {
@@ -344,6 +349,16 @@ mod tests {
                 column
             );
         }
+    }
+
+    #[test]
+    fn test_uint64_comparator_orders_little_endian_keys_numerically() {
+        let comparator = Column::uint64_comparator();
+        let lower = 255u64.to_le_bytes();
+        let higher = 256u64.to_le_bytes();
+
+        assert_eq!(comparator(&lower, &higher), Ordering::Less);
+        assert_eq!(comparator(&higher, &lower), Ordering::Greater);
     }
 
     #[test]

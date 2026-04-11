@@ -1,0 +1,189 @@
+use anyhow::Result;
+use std::sync::Arc;
+
+use crate::Column;
+use crate::db::DbReader;
+
+const PILLAR_SINGLETON_KEY: [u8; 4] = 0i32.to_le_bytes();
+
+pub struct PillarRepository<D: DbReader> {
+    db: Arc<D>,
+}
+
+impl<D: DbReader> PillarRepository<D> {
+    pub fn new(db: Arc<D>) -> Self {
+        PillarRepository { db }
+    }
+
+    /// Implements getPillarBlock(period) -> optional(rlp(pillar_block))
+    pub fn pillar_block_rlp(&self, period: u64) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .db
+            .get(Column::PillarBlock, &period.to_le_bytes())?
+            .map(|value| value.as_ref().to_vec())
+            .filter(|value| !value.is_empty()))
+    }
+
+    /// Implements getLatestPillarBlock() -> optional(rlp(pillar_block))
+    pub fn latest_pillar_block_rlp(&self) -> Result<Option<Vec<u8>>> {
+        if let Some(item) = self.db.iter_rev(Column::PillarBlock).next() {
+            let (_, value) = item?;
+            let value = value.into_vec();
+            if value.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(value));
+        }
+
+        Ok(None)
+    }
+
+    /// Implements getOwnPillarBlockVote() -> optional(rlp(vote))
+    pub fn own_pillar_block_vote_rlp(&self) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .db
+            .get(Column::CurrentPillarBlockOwnVote, &PILLAR_SINGLETON_KEY)?
+            .map(|value| value.as_ref().to_vec())
+            .filter(|value| !value.is_empty()))
+    }
+
+    /// Implements getCurrentPillarBlockData() -> optional(rlp(data))
+    pub fn current_pillar_block_data_rlp(&self) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .db
+            .get(Column::CurrentPillarBlockData, &PILLAR_SINGLETON_KEY)?
+            .map(|value| value.as_ref().to_vec())
+            .filter(|value| !value.is_empty()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::DbIterator;
+    use std::collections::{BTreeMap, HashMap};
+    use std::sync::RwLock;
+
+    struct MockPillarStore {
+        data: RwLock<HashMap<String, BTreeMap<Vec<u8>, Vec<u8>>>>,
+    }
+
+    impl MockPillarStore {
+        fn new() -> Self {
+            MockPillarStore {
+                data: RwLock::new(HashMap::new()),
+            }
+        }
+
+        fn put(&self, col: Column, key: &[u8], value: &[u8]) {
+            let mut data = self.data.write().unwrap();
+            let cf = data
+                .entry(col.name().to_string())
+                .or_insert_with(BTreeMap::new);
+            cf.insert(key.to_vec(), value.to_vec());
+        }
+    }
+
+    impl DbReader for MockPillarStore {
+        type Slice<'a> = Vec<u8>;
+
+        fn exist(&self, col: Column, key: &[u8]) -> Result<bool> {
+            let data = self.data.read().unwrap();
+            if let Some(cf) = data.get(col.name()) {
+                Ok(cf.contains_key(key))
+            } else {
+                Ok(false)
+            }
+        }
+
+        fn get<'a>(&'a self, col: Column, key: &[u8]) -> Result<Option<Self::Slice<'a>>> {
+            let data = self.data.read().unwrap();
+            if let Some(cf) = data.get(col.name()) {
+                Ok(cf.get(key).cloned())
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn iter<'a>(&'a self, col: Column) -> DbIterator<'a> {
+            let data = self.data.read().unwrap();
+            if let Some(cf) = data.get(col.name()) {
+                let items: Vec<_> = cf
+                    .iter()
+                    .map(|(k, v)| Ok((k.clone().into_boxed_slice(), v.clone().into_boxed_slice())))
+                    .collect();
+                Box::new(items.into_iter())
+            } else {
+                Box::new(std::iter::empty())
+            }
+        }
+
+        fn iter_rev<'a>(&'a self, col: Column) -> DbIterator<'a> {
+            let data = self.data.read().unwrap();
+            if let Some(cf) = data.get(col.name()) {
+                let items: Vec<_> = cf
+                    .iter()
+                    .rev()
+                    .map(|(k, v)| Ok((k.clone().into_boxed_slice(), v.clone().into_boxed_slice())))
+                    .collect();
+                Box::new(items.into_iter())
+            } else {
+                Box::new(std::iter::empty())
+            }
+        }
+    }
+
+    #[test]
+    fn test_pillar_block_rlp() {
+        let db = Arc::new(MockPillarStore::new());
+        let repo = PillarRepository::new(db.clone());
+        let period = 8u64;
+        let block = vec![0xCA, 0x01];
+
+        assert_eq!(repo.pillar_block_rlp(period).unwrap(), None);
+
+        db.put(Column::PillarBlock, &period.to_le_bytes(), &block);
+        assert_eq!(repo.pillar_block_rlp(period).unwrap(), Some(block));
+    }
+
+    #[test]
+    fn test_latest_pillar_block_rlp() {
+        let db = Arc::new(MockPillarStore::new());
+        let repo = PillarRepository::new(db.clone());
+        assert_eq!(repo.latest_pillar_block_rlp().unwrap(), None);
+
+        db.put(Column::PillarBlock, &1u64.to_le_bytes(), &[0xA1]);
+        db.put(Column::PillarBlock, &5u64.to_le_bytes(), &[0xA5]);
+        db.put(Column::PillarBlock, &3u64.to_le_bytes(), &[0xA3]);
+
+        assert_eq!(repo.latest_pillar_block_rlp().unwrap(), Some(vec![0xA5]));
+    }
+
+    #[test]
+    fn test_own_pillar_block_vote_rlp() {
+        let db = Arc::new(MockPillarStore::new());
+        let repo = PillarRepository::new(db.clone());
+        let vote = vec![0xD1, 0x11];
+
+        assert_eq!(repo.own_pillar_block_vote_rlp().unwrap(), None);
+
+        db.put(
+            Column::CurrentPillarBlockOwnVote,
+            &PILLAR_SINGLETON_KEY,
+            &vote,
+        );
+        assert_eq!(repo.own_pillar_block_vote_rlp().unwrap(), Some(vote));
+    }
+
+    #[test]
+    fn test_current_pillar_block_data_rlp() {
+        let db = Arc::new(MockPillarStore::new());
+        let repo = PillarRepository::new(db.clone());
+        let data = vec![0xC1, 0x42];
+
+        assert_eq!(repo.current_pillar_block_data_rlp().unwrap(), None);
+
+        db.put(Column::CurrentPillarBlockData, &PILLAR_SINGLETON_KEY, &data);
+        assert_eq!(repo.current_pillar_block_data_rlp().unwrap(), Some(data));
+    }
+}
