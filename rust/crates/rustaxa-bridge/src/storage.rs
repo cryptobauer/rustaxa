@@ -35,6 +35,10 @@ mod ffi {
         period: u64,
     }
 
+    struct VoteRlp {
+        data: Vec<u8>,
+    }
+
     extern "Rust" {
         type Storage;
         fn create_storage(path: &str) -> Result<Box<Storage>>;
@@ -56,6 +60,15 @@ mod ffi {
         fn get_period_from_pbft_hash(&self, hash: &[u8; 32]) -> Result<PeriodLookup>;
 
         fn pbft_block_in_db(&self, hash: &[u8; 32]) -> Result<bool>;
+        fn get_pbft_mgr_field(&self, field: u8) -> Result<u32>;
+        fn get_pbft_mgr_status(&self, field: u8) -> Result<bool>;
+        fn get_cert_voted_block_in_round(&self) -> Result<Vec<u8>>;
+        fn get_proposed_pbft_blocks(&self) -> Result<Vec<BlockRlp>>;
+        fn get_pbft_head(&self, hash: &[u8; 32]) -> Result<Vec<u8>>;
+        fn get_own_verified_votes(&self) -> Result<Vec<VoteRlp>>;
+        fn get_all_two_t_plus_one_votes(&self) -> Result<Vec<VoteRlp>>;
+        fn get_reward_votes(&self) -> Result<Vec<VoteRlp>>;
+
         fn transaction_in_db(&self, hash: &[u8; 32]) -> Result<bool>;
         fn transaction_finalized(&self, hash: &[u8; 32]) -> Result<bool>;
         fn get_transaction_location(&self, hash: &[u8; 32]) -> Result<Vec<u8>>;
@@ -205,6 +218,70 @@ impl Storage {
     fn pbft_block_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
         self.0.catch_up()?;
         self.0.pbft().pbft_block_in_db(H256::from(*hash))
+    }
+
+    fn get_pbft_mgr_field(&self, field: u8) -> Result<u32, anyhow::Error> {
+        self.0.catch_up()?;
+        Ok(self.0.pbft().pbft_mgr_field(field)?.unwrap_or(1))
+    }
+
+    fn get_pbft_mgr_status(&self, field: u8) -> Result<bool, anyhow::Error> {
+        self.0.catch_up()?;
+        Ok(self.0.pbft().pbft_mgr_status(field)?.unwrap_or(false))
+    }
+
+    fn get_cert_voted_block_in_round(&self) -> Result<Vec<u8>, anyhow::Error> {
+        self.0.catch_up()?;
+        Ok(self
+            .0
+            .pbft()
+            .cert_voted_block_in_round_rlp()?
+            .unwrap_or_default())
+    }
+
+    fn get_proposed_pbft_blocks(&self) -> Result<Vec<ffi::BlockRlp>, anyhow::Error> {
+        self.0.catch_up()?;
+        let blocks = self.0.pbft().proposed_pbft_blocks_rlp()?;
+        Ok(blocks
+            .into_iter()
+            .map(|data| ffi::BlockRlp { data })
+            .collect())
+    }
+
+    fn get_pbft_head(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
+        self.0.catch_up()?;
+        Ok(self
+            .0
+            .pbft()
+            .pbft_head(H256::from(*hash))?
+            .unwrap_or_default())
+    }
+
+    fn get_own_verified_votes(&self) -> Result<Vec<ffi::VoteRlp>, anyhow::Error> {
+        self.0.catch_up()?;
+        let votes = self.0.pbft().own_verified_votes_rlp()?;
+        Ok(votes
+            .into_iter()
+            .map(|data| ffi::VoteRlp { data })
+            .collect())
+    }
+
+    fn get_all_two_t_plus_one_votes(&self) -> Result<Vec<ffi::VoteRlp>, anyhow::Error> {
+        self.0.catch_up()?;
+        let votes = self.0.pbft().all_two_t_plus_one_votes_rlp()?;
+        Ok(votes
+            .into_iter()
+            .map(|data| ffi::VoteRlp { data })
+            .collect())
+    }
+
+    fn get_reward_votes(&self) -> Result<Vec<ffi::VoteRlp>, anyhow::Error> {
+        self.0.catch_up()?;
+        let votes = self.0.pbft().reward_votes_rlp()?;
+        Ok(votes
+            .into_iter()
+            .map(|data| ffi::VoteRlp { data })
+            .collect())
     }
 
     fn transaction_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {

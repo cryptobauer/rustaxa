@@ -874,6 +874,14 @@ void DbStorage::removeProposedPbftBlock(const blk_hash_t& block_hash, Batch& wri
 
 std::vector<std::shared_ptr<PbftBlock>> DbStorage::getProposedPbftBlocks() {
   std::vector<std::shared_ptr<PbftBlock>> res;
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto blocks = rust_storage_.value()->get_proposed_pbft_blocks();
+  res.reserve(blocks.size());
+  for (auto const& block_rlp : blocks) {
+    res.emplace_back(std::make_shared<PbftBlock>(dev::bytes(block_rlp.data.begin(), block_rlp.data.end())));
+  }
+  return res;
+  #endif
   auto i = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::proposed_pbft_blocks)));
   for (i->SeekToFirst(); i->Valid(); i->Next()) {
     res.push_back(std::make_shared<PbftBlock>(asBytes(i->value().ToString())));
@@ -1173,6 +1181,9 @@ void DbStorage::addStatusFieldToBatch(StatusDbField const& field, uint64_t value
 // PBFT
 
 uint32_t DbStorage::getPbftMgrField(PbftMgrField field) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  return rust_storage_.value()->get_pbft_mgr_field(static_cast<uint8_t>(field));
+  #endif
   auto status = lookup(toSlice(static_cast<uint8_t>(field)), Columns::pbft_mgr_round_step);
   if (!status.empty()) {
     uint32_t value;
@@ -1192,6 +1203,9 @@ void DbStorage::addPbftMgrFieldToBatch(PbftMgrField field, uint32_t value, Batch
 }
 
 bool DbStorage::getPbftMgrStatus(PbftMgrStatus field) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  return rust_storage_.value()->get_pbft_mgr_status(static_cast<uint8_t>(field));
+  #endif
   auto status = lookup(toSlice(field), Columns::pbft_mgr_status);
   if (!status.empty()) {
     bool value;
@@ -1219,6 +1233,22 @@ void DbStorage::saveCertVotedBlockInRound(PbftRound round, const std::shared_ptr
 }
 
 std::optional<std::pair<PbftRound, std::shared_ptr<PbftBlock>>> DbStorage::getCertVotedBlockInRound() const {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto rust_value = rust_storage_.value()->get_cert_voted_block_in_round();
+  if (rust_value.empty()) {
+    return {};
+  }
+
+  auto value_bytes = dev::bytes(rust_value.begin(), rust_value.end());
+  auto rust_value_rlp = dev::RLP(value_bytes);
+  assert(rust_value_rlp.itemCount() == 2);
+
+  std::pair<PbftRound, std::shared_ptr<PbftBlock>> rust_ret;
+  rust_ret.first = rust_value_rlp[0].toInt<PbftRound>();
+  rust_ret.second = std::make_shared<PbftBlock>(rust_value_rlp[1]);
+
+  return rust_ret;
+  #endif
   auto value = asBytes(lookup(0, Columns::cert_voted_block_in_round));
   if (value.empty()) {
     return {};
@@ -1257,6 +1287,12 @@ bool DbStorage::pbftBlockInDb(blk_hash_t const& hash) {
 }
 
 std::string DbStorage::getPbftHead(blk_hash_t const& hash) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  std::array<uint8_t, 32> h_arr;
+  std::memcpy(h_arr.data(), hash.data(), 32);
+  auto data = rust_storage_.value()->get_pbft_head(h_arr);
+  return std::string(data.begin(), data.end());
+  #endif
   return lookup(toSlice(hash.asBytes()), Columns::pbft_head);
 }
 
@@ -1275,6 +1311,15 @@ void DbStorage::saveOwnVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
 
 std::vector<std::shared_ptr<PbftVote>> DbStorage::getOwnVerifiedVotes() {
   std::vector<std::shared_ptr<PbftVote>> votes;
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto rust_votes = rust_storage_.value()->get_own_verified_votes();
+  votes.reserve(rust_votes.size());
+  for (auto const& vote_rlp : rust_votes) {
+    votes.emplace_back(std::make_shared<PbftVote>(dev::bytes(vote_rlp.data.begin(), vote_rlp.data.end())));
+  }
+
+  return votes;
+  #endif
   auto it =
       std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::latest_round_own_votes)));
   for (it->SeekToFirst(); it->Valid(); it->Next()) {
@@ -1316,6 +1361,15 @@ void DbStorage::replaceTwoTPlusOneVotesToBatch(TwoTPlusOneVotedBlockType type,
 
 std::vector<std::shared_ptr<PbftVote>> DbStorage::getAllTwoTPlusOneVotes() {
   std::vector<std::shared_ptr<PbftVote>> votes;
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto rust_votes = rust_storage_.value()->get_all_two_t_plus_one_votes();
+  votes.reserve(rust_votes.size());
+  for (auto const& vote_rlp : rust_votes) {
+    votes.emplace_back(std::make_shared<PbftVote>(dev::bytes(vote_rlp.data.begin(), vote_rlp.data.end())));
+  }
+
+  return votes;
+  #endif
   auto load_db_votes = [this, &votes](TwoTPlusOneVotedBlockType type) {
     auto votes_raw = asBytes(lookup(static_cast<uint8_t>(type), Columns::latest_round_two_t_plus_one_votes));
     auto votes_rlp = dev::RLP(votes_raw);
@@ -1346,6 +1400,15 @@ void DbStorage::saveExtraRewardVote(const std::shared_ptr<PbftVote>& vote) {
 
 std::vector<std::shared_ptr<PbftVote>> DbStorage::getRewardVotes() {
   std::vector<std::shared_ptr<PbftVote>> votes;
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto rust_votes = rust_storage_.value()->get_reward_votes();
+  votes.reserve(rust_votes.size());
+  for (auto const& vote_rlp : rust_votes) {
+    votes.emplace_back(std::make_shared<PbftVote>(dev::bytes(vote_rlp.data.begin(), vote_rlp.data.end())));
+  }
+
+  return votes;
+  #endif
 
   auto it = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::extra_reward_votes)));
   for (it->SeekToFirst(); it->Valid(); it->Next()) {
