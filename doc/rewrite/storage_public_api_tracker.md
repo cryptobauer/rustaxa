@@ -69,6 +69,14 @@ These public read methods already branch to `rust_storage_` today:
 - `[x] getPeriodDataRaw(PbftPeriod period) const`
 - `[x] getPeriodFromPbftHash(taraxa::blk_hash_t const& pbft_block_hash)`
 - `[x] pbftBlockInDb(blk_hash_t const& hash)`
+- `[x] getPbftMgrField(PbftMgrField field)`
+- `[x] getPbftMgrStatus(PbftMgrStatus field)`
+- `[x] getCertVotedBlockInRound() const`
+- `[x] getProposedPbftBlocks()`
+- `[x] getPbftHead(blk_hash_t const& hash)`
+- `[x] getOwnVerifiedVotes()`
+- `[x] getAllTwoTPlusOneVotes()`
+- `[x] getRewardVotes()`
 - `[x] transactionInDb(trx_hash_t const& hash)`
 - `[x] transactionFinalized(trx_hash_t const& hash)`
 - `[x] transactionsFinalized(std::vector<trx_hash_t> const& trx_hashes)`
@@ -81,7 +89,7 @@ These public read methods already branch to `rust_storage_` today:
 - `[x] getAllTransactionPeriod()`
 - `[x] getPeriodSystemTransactionsHashes(PbftPeriod period) const`
 
-Current bridge coverage now includes the DAG read slice, proposal-period lookup, period-data primitives (`period_data` and `pbft_block_period`), PBFT hash presence checks, and a broader transaction read slice over `transactions`, `trx_period`, `system_transaction`, `period_data`, and `period_system_transactions`. Everything else below is still backed by C++ RocksDB access.
+Current bridge coverage now includes the DAG read slice, proposal-period lookup, period-data primitives (`period_data` and `pbft_block_period`), PBFT hash presence checks, PBFT manager/vote reads (`pbft_mgr_round_step`, `pbft_mgr_status`, `cert_voted_block_in_round`, `proposed_pbft_blocks`, `pbft_head`, `latest_round_own_votes`, `latest_round_two_t_plus_one_votes`, `extra_reward_votes`), and a broader transaction read slice over `transactions`, `trx_period`, `system_transaction`, `period_data`, and `period_system_transactions`. Everything else below is still backed by C++ RocksDB access.
 
 ## Suggested Storage Buckets
 
@@ -152,14 +160,14 @@ Current bridge coverage now includes the DAG read slice, proposal-period lookup,
 
 ### 4. PBFT Manager and Vote Read APIs
 
-- `[ ] getPbftMgrField(PbftMgrField field)`
-- `[ ] getPbftMgrStatus(PbftMgrStatus field)`
-- `[ ] getCertVotedBlockInRound() const`
-- `[ ] getProposedPbftBlocks()`
-- `[ ] getPbftHead(blk_hash_t const& hash)`
-- `[ ] getOwnVerifiedVotes()`
-- `[ ] getAllTwoTPlusOneVotes()`
-- `[ ] getRewardVotes()`
+- `[x] getPbftMgrField(PbftMgrField field)`
+- `[x] getPbftMgrStatus(PbftMgrStatus field)`
+- `[x] getCertVotedBlockInRound() const`
+- `[x] getProposedPbftBlocks()`
+- `[x] getPbftHead(blk_hash_t const& hash)`
+- `[x] getOwnVerifiedVotes()`
+- `[x] getAllTwoTPlusOneVotes()`
+- `[x] getRewardVotes()`
 
 ### 5. Pillar Read APIs
 
@@ -296,10 +304,13 @@ Notes:
    `getAllTransactionPeriod`, `getPeriodSystemTransactionsHashes`).
    Next step is optional batching/perf work (`transactionsInDb` or multi-hash lookups) and
    finalized-chain receipt reads (`getBlockReceipts`, `getTransactionReceipt`).
-3. Finish PBFT manager/vote and pillar read shims third.
-   These are mostly isolated key-value and iteration operations.
-4. Move metadata and iterator-heavy config reads after the core read path is stable.
-5. Only then decide how to represent write batches across the C++ and Rust boundary.
+3. PBFT manager/vote read shims are now bridged (`getPbftMgrField`, `getPbftMgrStatus`,
+   `getCertVotedBlockInRound`, `getProposedPbftBlocks`, `getPbftHead`,
+   `getOwnVerifiedVotes`, `getAllTwoTPlusOneVotes`, `getRewardVotes`).
+4. Next targets are pillar read shims and finalized-chain receipt reads (`getBlockReceipts`,
+   `getTransactionReceipt`).
+5. Move metadata and iterator-heavy config reads after the core read path is stable.
+6. Only then decide how to represent write batches across the C++ and Rust boundary.
 
 ## Design Notes for the Next Batch
 
