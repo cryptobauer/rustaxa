@@ -58,6 +58,7 @@ mod ffi {
 
         fn get_period_data_raw(&self, period: u64) -> Result<Vec<u8>>;
         fn get_period_from_pbft_hash(&self, hash: &[u8; 32]) -> Result<PeriodLookup>;
+        fn get_block_receipt(&self, period: u64) -> Result<Vec<u8>>;
 
         fn pbft_block_in_db(&self, hash: &[u8; 32]) -> Result<bool>;
         fn get_pbft_mgr_field(&self, field: u8) -> Result<u32>;
@@ -213,6 +214,14 @@ impl Storage {
                 period: 0,
             }),
         }
+    }
+
+    fn get_block_receipt(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
+        self.0.catch_up()?;
+        self.0
+            .period()
+            .block_receipt(period)
+            .map_err(|e| anyhow::anyhow!(e))
     }
 
     fn pbft_block_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {

@@ -44,6 +44,15 @@ impl<D: DbReader> PeriodRepository<D> {
             None => Ok(None),
         }
     }
+
+    /// Implements getBlockReceipt(period) -> rlp(receipt)
+    pub fn block_receipt(&self, period: u64) -> Result<Vec<u8>> {
+        Ok(self
+            .db
+            .get(Column::FinalChainReceiptByPeriod, &period.to_le_bytes())?
+            .map(|value| value.as_ref().to_vec())
+            .unwrap_or_default())
+    }
 }
 
 #[cfg(test)]
@@ -141,6 +150,32 @@ mod tests {
         let repo = PeriodRepository::new(db);
 
         let result = repo.period_data_raw(11).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_block_receipt_found() {
+        let db = Arc::new(MockPeriodStore::new());
+        let repo = PeriodRepository::new(db.clone());
+
+        let period = 88u64;
+        let expected = vec![0xC2, 0xAA, 0xBB];
+        db.put(
+            Column::FinalChainReceiptByPeriod,
+            &period.to_le_bytes(),
+            &expected,
+        );
+
+        let result = repo.block_receipt(period).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_block_receipt_missing() {
+        let db = Arc::new(MockPeriodStore::new());
+        let repo = PeriodRepository::new(db);
+
+        let result = repo.block_receipt(12).unwrap();
         assert!(result.is_empty());
     }
 
