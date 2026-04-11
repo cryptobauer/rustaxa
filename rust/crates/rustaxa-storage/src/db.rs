@@ -17,9 +17,11 @@ use crate::AccessMode;
 use crate::Column;
 use crate::Config;
 use crate::DagRepository;
+use crate::MetadataRepository;
 use crate::PbftRepository;
 use crate::PeriodRepository;
 use crate::PillarRepository;
+use crate::SINGLE_VALUE_KEY;
 use crate::StorageError;
 use crate::TransactionRepository;
 
@@ -40,6 +42,7 @@ pub trait DbReader: Send + Sync {
 
     fn get<'a>(&'a self, col: Column, key: &[u8]) -> Result<Option<Self::Slice<'a>>>;
     fn exist(&self, col: Column, key: &[u8]) -> Result<bool>;
+    fn get_at_or_before(&self, col: Column, key: &[u8]) -> Result<Option<(Box<[u8]>, Box<[u8]>)>>;
     fn iter<'a>(&'a self, col: Column) -> DbIterator<'a>;
     fn iter_rev<'a>(&'a self, col: Column) -> DbIterator<'a>;
 }
@@ -67,6 +70,22 @@ impl DbReader for DBWithThreadMode<MultiThreaded> {
         })?;
         self.get_pinned_cf(&handle, key)
             .map_err(|e| StorageError::Database(e).into())
+    }
+
+    fn get_at_or_before(&self, col: Column, key: &[u8]) -> Result<Option<(Box<[u8]>, Box<[u8]>)>> {
+        let handle = self.cf_handle(col.name()).ok_or_else(|| {
+            StorageError::Config(format!("Missing column family: {}", col.name()))
+        })?;
+        let mut iter = self.iterator_cf(
+            &handle,
+            rocksdb::IteratorMode::From(key, rocksdb::Direction::Reverse),
+        );
+        match iter.next() {
+            Some(res) => res
+                .map(|(k, v)| Some((k, v)))
+                .map_err(|e| StorageError::Database(e).into()),
+            None => Ok(None),
+        }
     }
 
     fn iter<'a>(&'a self, col: Column) -> DbIterator<'a> {
@@ -106,6 +125,7 @@ pub struct Storage {
     #[allow(dead_code)]
     db: Arc<DBWithThreadMode<MultiThreaded>>,
     dag: DagRepository<DBWithThreadMode<MultiThreaded>>,
+    metadata: MetadataRepository<DBWithThreadMode<MultiThreaded>>,
     period: PeriodRepository<DBWithThreadMode<MultiThreaded>>,
     pillar: PillarRepository<DBWithThreadMode<MultiThreaded>>,
     pbft: PbftRepository<DBWithThreadMode<MultiThreaded>>,
@@ -155,6 +175,7 @@ impl Storage {
 
         let db = Arc::new(db);
         let dag = DagRepository::new(db.clone());
+        let metadata = MetadataRepository::new(db.clone());
         let period = PeriodRepository::new(db.clone());
         let pillar = PillarRepository::new(db.clone());
         let pbft = PbftRepository::new(db.clone());
@@ -163,6 +184,7 @@ impl Storage {
         Ok(Storage {
             db,
             dag,
+            metadata,
             period,
             pillar,
             pbft,
@@ -176,6 +198,10 @@ impl Storage {
 
     pub fn period(&self) -> &PeriodRepository<DBWithThreadMode<MultiThreaded>> {
         &self.period
+    }
+
+    pub fn metadata(&self) -> &MetadataRepository<DBWithThreadMode<MultiThreaded>> {
+        &self.metadata
     }
 
     pub fn pbft(&self) -> &PbftRepository<DBWithThreadMode<MultiThreaded>> {
@@ -199,7 +225,7 @@ impl Storage {
 
     pub fn genesis_hash(&self) -> Result<Option<H256>> {
         Ok(self
-            .get(Column::Genesis, &0i32.to_le_bytes())?
+            .get(Column::Genesis, &SINGLE_VALUE_KEY)?
             .map(|val| H256::from_slice(val.as_ref())))
     }
 }
@@ -213,6 +239,10 @@ impl DbReader for Storage {
 
     fn get<'a>(&'a self, col: Column, key: &[u8]) -> Result<Option<Self::Slice<'a>>> {
         DbReader::get(&*self.db, col, key)
+    }
+
+    fn get_at_or_before(&self, col: Column, key: &[u8]) -> Result<Option<(Box<[u8]>, Box<[u8]>)>> {
+        DbReader::get_at_or_before(&*self.db, col, key)
     }
 
     fn iter<'a>(&'a self, col: Column) -> DbIterator<'a> {

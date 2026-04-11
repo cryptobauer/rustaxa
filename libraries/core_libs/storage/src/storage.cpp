@@ -410,6 +410,15 @@ void DbStorage::setGenesisHash(const h256& genesis_hash) {
 }
 
 std::optional<h256> DbStorage::getGenesisHash() {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  if (rust_storage_) {
+    auto rust_hash = rust_storage_.value()->get_genesis_hash();
+    if (!rust_hash.empty()) {
+      return h256(dev::bytes(rust_hash.begin(), rust_hash.end()));
+    }
+    return {};
+  }
+  #endif
   auto hash = asBytes(lookup(0, Columns::genesis));
   if (hash.size() > 0) {
     return h256(hash);
@@ -679,6 +688,15 @@ void DbStorage::saveSortitionParamsChange(PbftPeriod period, const SortitionPara
 std::deque<SortitionParamsChange> DbStorage::getLastSortitionParams(size_t count) {
   std::deque<SortitionParamsChange> changes;
 
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto rust_changes = rust_storage_.value()->get_last_sortition_params(static_cast<uint64_t>(count));
+  for (auto const& change_rlp : rust_changes) {
+    auto bytes = dev::bytes(change_rlp.data.begin(), change_rlp.data.end());
+    changes.emplace_back(SortitionParamsChange::from_rlp(dev::RLP(bytes)));
+  }
+  return changes;
+  #endif
+
   auto it =
       std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::sortition_params_change)));
   for (it->SeekToLast(); it->Valid() && changes.size() < count; it->Prev()) {
@@ -689,6 +707,15 @@ std::deque<SortitionParamsChange> DbStorage::getLastSortitionParams(size_t count
 }
 
 std::optional<SortitionParamsChange> DbStorage::getParamsChangeForPeriod(PbftPeriod period) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto rust_change = rust_storage_.value()->get_params_change_for_period(period);
+  if (rust_change.empty()) {
+    return {};
+  }
+  auto bytes = dev::bytes(rust_change.begin(), rust_change.end());
+  return SortitionParamsChange::from_rlp(dev::RLP(bytes));
+  #endif
+
   auto it =
       std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::sortition_params_change)));
   it->SeekForPrev(toSlice(period));
@@ -1205,6 +1232,11 @@ std::vector<bool> DbStorage::transactionsInDb(std::vector<trx_hash_t> const& trx
 }
 
 uint64_t DbStorage::getStatusField(StatusDbField const& field) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  if (rust_storage_) {
+    return rust_storage_.value()->get_status_field(static_cast<uint8_t>(field));
+  }
+  #endif
   auto status = lookup(toSlice((uint8_t)field), Columns::status);
   if (!status.empty()) {
     uint64_t value;
@@ -1594,6 +1626,14 @@ void DbStorage::savePeriodLambda(PbftPeriod period, uint32_t period_lambda, Batc
 }
 
 std::optional<uint32_t> DbStorage::getPeriodLambda(PbftPeriod period, bool find_closest) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto rust_value = rust_storage_.value()->get_period_lambda(period, find_closest);
+  if (rust_value.found) {
+    return rust_value.value;
+  }
+  return {};
+  #endif
+
   if (find_closest) {
     auto it = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::period_lambda)));
     if (it->SeekForPrev(toSlice(period)); it->Valid()) {
@@ -1620,6 +1660,10 @@ void DbStorage::saveRoundsCountDynamicLambda(uint32_t rounds_count, Batch& write
 }
 
 uint32_t DbStorage::getRoundsCountDynamicLambda() {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  return rust_storage_.value()->get_rounds_count_dynamic_lambda();
+  #endif
+
   auto rounds_count_bytes = lookup(0, Columns::rounds_count_dynamic_lambda);
   if (!rounds_count_bytes.empty()) {
     uint32_t value;
@@ -1632,6 +1676,16 @@ uint32_t DbStorage::getRoundsCountDynamicLambda() {
 
 std::unordered_map<PbftPeriod, rewards::BlockStats> DbStorage::getBlocksRewardsStats() const {
   std::unordered_map<PbftPeriod, rewards::BlockStats> rewards_stats;
+
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto rust_stats = rust_storage_.value()->get_blocks_rewards_stats();
+  rewards_stats.reserve(rust_stats.size());
+  for (auto const& stat : rust_stats) {
+    auto bytes = dev::bytes(stat.data.begin(), stat.data.end());
+    rewards_stats[stat.period] = util::rlp_dec<rewards::BlockStats>(dev::RLP(bytes));
+  }
+  return rewards_stats;
+  #endif
 
   auto it = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::block_rewards_stats)));
   for (it->SeekToFirst(); it->Valid(); it->Next()) {

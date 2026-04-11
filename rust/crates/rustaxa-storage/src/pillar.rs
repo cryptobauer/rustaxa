@@ -2,9 +2,8 @@ use anyhow::Result;
 use std::sync::Arc;
 
 use crate::Column;
+use crate::SINGLE_VALUE_KEY;
 use crate::db::DbReader;
-
-const PILLAR_SINGLETON_KEY: [u8; 4] = 0i32.to_le_bytes();
 
 pub struct PillarRepository<D: DbReader> {
     db: Arc<D>,
@@ -42,7 +41,7 @@ impl<D: DbReader> PillarRepository<D> {
     pub fn own_pillar_block_vote_rlp(&self) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
-            .get(Column::CurrentPillarBlockOwnVote, &PILLAR_SINGLETON_KEY)?
+            .get(Column::CurrentPillarBlockOwnVote, &SINGLE_VALUE_KEY)?
             .map(|value| value.as_ref().to_vec())
             .filter(|value| !value.is_empty()))
     }
@@ -51,7 +50,7 @@ impl<D: DbReader> PillarRepository<D> {
     pub fn current_pillar_block_data_rlp(&self) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
-            .get(Column::CurrentPillarBlockData, &PILLAR_SINGLETON_KEY)?
+            .get(Column::CurrentPillarBlockData, &SINGLE_VALUE_KEY)?
             .map(|value| value.as_ref().to_vec())
             .filter(|value| !value.is_empty()))
     }
@@ -103,6 +102,22 @@ mod tests {
             } else {
                 Ok(None)
             }
+        }
+
+        fn get_at_or_before(
+            &self,
+            col: Column,
+            key: &[u8],
+        ) -> Result<Option<(Box<[u8]>, Box<[u8]>)>> {
+            let data = self.data.read().unwrap();
+            let Some(cf) = data.get(col.name()) else {
+                return Ok(None);
+            };
+            let key = key.to_vec();
+            Ok(cf
+                .range(..=key)
+                .next_back()
+                .map(|(k, v)| (k.clone().into_boxed_slice(), v.clone().into_boxed_slice())))
         }
 
         fn iter<'a>(&'a self, col: Column) -> DbIterator<'a> {
@@ -167,11 +182,7 @@ mod tests {
 
         assert_eq!(repo.own_pillar_block_vote_rlp().unwrap(), None);
 
-        db.put(
-            Column::CurrentPillarBlockOwnVote,
-            &PILLAR_SINGLETON_KEY,
-            &vote,
-        );
+        db.put(Column::CurrentPillarBlockOwnVote, &SINGLE_VALUE_KEY, &vote);
         assert_eq!(repo.own_pillar_block_vote_rlp().unwrap(), Some(vote));
     }
 
@@ -183,7 +194,7 @@ mod tests {
 
         assert_eq!(repo.current_pillar_block_data_rlp().unwrap(), None);
 
-        db.put(Column::CurrentPillarBlockData, &PILLAR_SINGLETON_KEY, &data);
+        db.put(Column::CurrentPillarBlockData, &SINGLE_VALUE_KEY, &data);
         assert_eq!(repo.current_pillar_block_data_rlp().unwrap(), Some(data));
     }
 }

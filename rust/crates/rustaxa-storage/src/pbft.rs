@@ -3,10 +3,9 @@ use ethereum_types::H256;
 use std::sync::Arc;
 
 use crate::Column;
+use crate::SINGLE_VALUE_KEY;
 use crate::StorageError;
 use crate::db::DbReader;
-
-const PBFT_CERT_VOTED_BLOCK_KEY: [u8; 4] = 0i32.to_le_bytes();
 
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -80,7 +79,7 @@ impl<D: DbReader> PbftRepository<D> {
     pub fn cert_voted_block_in_round_rlp(&self) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
-            .get(Column::CertVotedBlockInRound, &PBFT_CERT_VOTED_BLOCK_KEY)?
+            .get(Column::CertVotedBlockInRound, &SINGLE_VALUE_KEY)?
             .map(|value| value.as_ref().to_vec())
             .filter(|value| !value.is_empty()))
     }
@@ -196,6 +195,22 @@ mod tests {
             }
         }
 
+        fn get_at_or_before(
+            &self,
+            col: Column,
+            key: &[u8],
+        ) -> Result<Option<(Box<[u8]>, Box<[u8]>)>> {
+            let data = self.data.read().unwrap();
+            let Some(cf) = data.get(col.name()) else {
+                return Ok(None);
+            };
+            let key = key.to_vec();
+            Ok(cf
+                .range(..=key)
+                .next_back()
+                .map(|(k, v)| (k.clone().into_boxed_slice(), v.clone().into_boxed_slice())))
+        }
+
         fn iter<'a>(&'a self, col: Column) -> DbIterator<'a> {
             let data = self.data.read().unwrap();
             if let Some(cf) = data.get(col.name()) {
@@ -270,11 +285,7 @@ mod tests {
 
         assert!(repo.cert_voted_block_in_round_rlp().unwrap().is_none());
 
-        db.put(
-            Column::CertVotedBlockInRound,
-            &PBFT_CERT_VOTED_BLOCK_KEY,
-            &value,
-        );
+        db.put(Column::CertVotedBlockInRound, &SINGLE_VALUE_KEY, &value);
         assert_eq!(repo.cert_voted_block_in_round_rlp().unwrap(), Some(value));
     }
 
