@@ -318,6 +318,8 @@ The implemented Rust read shim coverage now includes:
 - PBFT block-hash presence checks and PBFT manager/vote reads (`pbftBlockInDb`, `getPbftMgrField`,
   `getPbftMgrStatus`, `getCertVotedBlockInRound`, `getProposedPbftBlocks`, `getPbftHead`,
   `getOwnVerifiedVotes`, `getAllTwoTPlusOneVotes`, `getRewardVotes`)
+- pillar reads (`getPillarBlock`, `getLatestPillarBlock`, `getOwnPillarBlockVote`,
+  `getCurrentPillarBlockData`)
 - transaction read primitives and retrieval paths (`transactionInDb`, `transactionFinalized`,
   `transactionsFinalized`, `getTransactionLocation`, `getTransaction`, `getTransaction(period, position)`,
   `getSystemTransaction`, `getTransactionCount`, `getAllNonfinalizedTransactions`,
@@ -325,6 +327,8 @@ The implemented Rust read shim coverage now includes:
 
 Current Rust-side repository split in `rustaxa-storage`:
 - `DagRepository` for DAG reads and DAG indexes
+- `PeriodRepository` for period bundle, period/PBFT-hash lookups, and `getBlockReceipts`
+- `PillarRepository` for pillar block/vote/data reads
 - `PeriodRepository` for period bundle, period/PBFT-hash lookups, and `getBlockReceipts`
 - `PbftRepository` for PBFT hash presence checks and PBFT manager/vote reads
 - `TransactionRepository` for transaction presence/location and transaction read paths
@@ -343,8 +347,6 @@ These are mostly local to `DbStorage` and do not require redesigning the public 
 ### Good second-wave targets
 
 - finalized-chain per-transaction receipt read (`getTransactionReceipt`)
-- PBFT runtime state
-- pillar state
 - dynamic config and statistics columns
 
 These are still mostly standard key-value or iterator reads.

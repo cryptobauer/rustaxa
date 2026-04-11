@@ -78,6 +78,10 @@ These public read methods already branch to `rust_storage_` today:
 - `[x] getOwnVerifiedVotes()`
 - `[x] getAllTwoTPlusOneVotes()`
 - `[x] getRewardVotes()`
+- `[x] getPillarBlock(PbftPeriod period) const`
+- `[x] getLatestPillarBlock() const`
+- `[x] getOwnPillarBlockVote() const`
+- `[x] getCurrentPillarBlockData() const`
 - `[x] transactionInDb(trx_hash_t const& hash)`
 - `[x] transactionFinalized(trx_hash_t const& hash)`
 - `[x] transactionsFinalized(std::vector<trx_hash_t> const& trx_hashes)`
@@ -90,7 +94,7 @@ These public read methods already branch to `rust_storage_` today:
 - `[x] getAllTransactionPeriod()`
 - `[x] getPeriodSystemTransactionsHashes(PbftPeriod period) const`
 
-Current bridge coverage now includes the DAG read slice, proposal-period lookup, period-data primitives (`period_data` and `pbft_block_period`), finalized-chain receipts by period (`final_chain_receipt_by_period`), PBFT hash presence checks, PBFT manager/vote reads (`pbft_mgr_round_step`, `pbft_mgr_status`, `cert_voted_block_in_round`, `proposed_pbft_blocks`, `pbft_head`, `latest_round_own_votes`, `latest_round_two_t_plus_one_votes`, `extra_reward_votes`), and a broader transaction read slice over `transactions`, `trx_period`, `system_transaction`, `period_data`, and `period_system_transactions`. Everything else below is still backed by C++ RocksDB access.
+Current bridge coverage now includes the DAG read slice, proposal-period lookup, period-data primitives (`period_data` and `pbft_block_period`), finalized-chain receipts by period (`final_chain_receipt_by_period`), PBFT hash presence checks, PBFT manager/vote reads (`pbft_mgr_round_step`, `pbft_mgr_status`, `cert_voted_block_in_round`, `proposed_pbft_blocks`, `pbft_head`, `latest_round_own_votes`, `latest_round_two_t_plus_one_votes`, `extra_reward_votes`), pillar reads (`pillar_block`, `current_pillar_block_own_vote`, `current_pillar_block_data`), and a broader transaction read slice over `transactions`, `trx_period`, `system_transaction`, `period_data`, and `period_system_transactions`. Everything else below is still backed by C++ RocksDB access.
 
 ## Suggested Storage Buckets
 
@@ -173,10 +177,10 @@ Current bridge coverage now includes the DAG read slice, proposal-period lookup,
 
 ### 5. Pillar Read APIs
 
-- `[ ] getPillarBlock(PbftPeriod period) const`
-- `[ ] getLatestPillarBlock() const`
-- `[ ] getOwnPillarBlockVote() const`
-- `[ ] getCurrentPillarBlockData() const`
+- `[x] getPillarBlock(PbftPeriod period) const`
+- `[x] getLatestPillarBlock() const`
+- `[x] getOwnPillarBlockVote() const`
+- `[x] getCurrentPillarBlockData() const`
 
 ### 6. Metadata, Config, and Statistics Read APIs
 
@@ -309,8 +313,7 @@ Notes:
 3. PBFT manager/vote read shims are now bridged (`getPbftMgrField`, `getPbftMgrStatus`,
    `getCertVotedBlockInRound`, `getProposedPbftBlocks`, `getPbftHead`,
    `getOwnVerifiedVotes`, `getAllTwoTPlusOneVotes`, `getRewardVotes`).
-4. Next targets are pillar read shims and finalized-chain per-transaction receipt read
-   (`getTransactionReceipt`).
+4. Next target is finalized-chain per-transaction receipt read (`getTransactionReceipt`).
 5. Move metadata and iterator-heavy config reads after the core read path is stable.
 6. Only then decide how to represent write batches across the C++ and Rust boundary.
 
