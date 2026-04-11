@@ -313,7 +313,8 @@ From a rewrite perspective, the design naturally breaks into layers.
 
 The implemented Rust read shim coverage now includes:
 - DAG read/index APIs (`dag_blocks`, `dag_blocks_level`, `dag_block_period`, `proposal_period_levels_map`)
-- period-data primitives (`getPeriodDataRaw`, `getPeriodFromPbftHash`)
+- period-data and finalized-receipt primitives (`getPeriodDataRaw`, `getPeriodFromPbftHash`,
+  `getBlockReceipts`)
 - PBFT block-hash presence checks and PBFT manager/vote reads (`pbftBlockInDb`, `getPbftMgrField`,
   `getPbftMgrStatus`, `getCertVotedBlockInRound`, `getProposedPbftBlocks`, `getPbftHead`,
   `getOwnVerifiedVotes`, `getAllTwoTPlusOneVotes`, `getRewardVotes`)
@@ -324,7 +325,7 @@ The implemented Rust read shim coverage now includes:
 
 Current Rust-side repository split in `rustaxa-storage`:
 - `DagRepository` for DAG reads and DAG indexes
-- `PeriodRepository` for period bundle and period/PBFT-hash lookups
+- `PeriodRepository` for period bundle, period/PBFT-hash lookups, and `getBlockReceipts`
 - `PbftRepository` for PBFT hash presence checks and PBFT manager/vote reads
 - `TransactionRepository` for transaction presence/location and transaction read paths
 
@@ -341,6 +342,7 @@ These are mostly local to `DbStorage` and do not require redesigning the public 
 
 ### Good second-wave targets
 
+- finalized-chain per-transaction receipt read (`getTransactionReceipt`)
 - PBFT runtime state
 - pillar state
 - dynamic config and statistics columns
