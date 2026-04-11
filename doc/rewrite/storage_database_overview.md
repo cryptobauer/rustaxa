@@ -320,6 +320,8 @@ The implemented Rust read shim coverage now includes:
   `getOwnVerifiedVotes`, `getAllTwoTPlusOneVotes`, `getRewardVotes`)
 - pillar reads (`getPillarBlock`, `getLatestPillarBlock`, `getOwnPillarBlockVote`,
   `getCurrentPillarBlockData`)
+- metadata/config/statistics reads (`getGenesisHash`, `getLastSortitionParams`, `getParamsChangeForPeriod`,
+  `getStatusField`, `getPeriodLambda`, `getRoundsCountDynamicLambda`, `getBlocksRewardsStats`)
 - transaction read primitives and retrieval paths (`transactionInDb`, `transactionFinalized`,
   `transactionsFinalized`, `getTransactionLocation`, `getTransaction`, `getTransaction(period, position)`,
   `getSystemTransaction`, `getTransactionCount`, `getAllNonfinalizedTransactions`,
@@ -328,8 +330,8 @@ The implemented Rust read shim coverage now includes:
 Current Rust-side repository split in `rustaxa-storage`:
 - `DagRepository` for DAG reads and DAG indexes
 - `PeriodRepository` for period bundle, period/PBFT-hash lookups, and `getBlockReceipts`
+- `MetadataRepository` for metadata/config/statistics reads
 - `PillarRepository` for pillar block/vote/data reads
-- `PeriodRepository` for period bundle, period/PBFT-hash lookups, and `getBlockReceipts`
 - `PbftRepository` for PBFT hash presence checks and PBFT manager/vote reads
 - `TransactionRepository` for transaction presence/location and transaction read paths
 
@@ -347,7 +349,6 @@ These are mostly local to `DbStorage` and do not require redesigning the public 
 ### Good second-wave targets
 
 - finalized-chain per-transaction receipt read (`getTransactionReceipt`)
-- dynamic config and statistics columns
 
 These are still mostly standard key-value or iterator reads.
 

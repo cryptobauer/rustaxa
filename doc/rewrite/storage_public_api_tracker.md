@@ -70,6 +70,13 @@ These public read methods already branch to `rust_storage_` today:
 - `[x] getPeriodFromPbftHash(taraxa::blk_hash_t const& pbft_block_hash)`
 - `[x] pbftBlockInDb(blk_hash_t const& hash)`
 - `[x] getBlockReceipts(PbftPeriod period) const`
+- `[x] getGenesisHash()`
+- `[x] getLastSortitionParams(size_t count)`
+- `[x] getParamsChangeForPeriod(PbftPeriod period)`
+- `[x] getStatusField(StatusDbField const& field)`
+- `[x] getPeriodLambda(PbftPeriod period, bool find_closest)`
+- `[x] getRoundsCountDynamicLambda()`
+- `[x] getBlocksRewardsStats() const`
 - `[x] getPbftMgrField(PbftMgrField field)`
 - `[x] getPbftMgrStatus(PbftMgrStatus field)`
 - `[x] getCertVotedBlockInRound() const`
@@ -94,7 +101,7 @@ These public read methods already branch to `rust_storage_` today:
 - `[x] getAllTransactionPeriod()`
 - `[x] getPeriodSystemTransactionsHashes(PbftPeriod period) const`
 
-Current bridge coverage now includes the DAG read slice, proposal-period lookup, period-data primitives (`period_data` and `pbft_block_period`), finalized-chain receipts by period (`final_chain_receipt_by_period`), PBFT hash presence checks, PBFT manager/vote reads (`pbft_mgr_round_step`, `pbft_mgr_status`, `cert_voted_block_in_round`, `proposed_pbft_blocks`, `pbft_head`, `latest_round_own_votes`, `latest_round_two_t_plus_one_votes`, `extra_reward_votes`), pillar reads (`pillar_block`, `current_pillar_block_own_vote`, `current_pillar_block_data`), and a broader transaction read slice over `transactions`, `trx_period`, `system_transaction`, `period_data`, and `period_system_transactions`. Everything else below is still backed by C++ RocksDB access.
+Current bridge coverage now includes the DAG read slice, proposal-period lookup, period-data primitives (`period_data` and `pbft_block_period`), finalized-chain receipts by period (`final_chain_receipt_by_period`), metadata/config reads (`genesis`, `status`, `sortition_params_change`, `period_lambda`, `rounds_count_dynamic_lambda`, `block_rewards_stats`), PBFT hash presence checks, PBFT manager/vote reads (`pbft_mgr_round_step`, `pbft_mgr_status`, `cert_voted_block_in_round`, `proposed_pbft_blocks`, `pbft_head`, `latest_round_own_votes`, `latest_round_two_t_plus_one_votes`, `extra_reward_votes`), pillar reads (`pillar_block`, `current_pillar_block_own_vote`, `current_pillar_block_data`), and a broader transaction read slice over `transactions`, `trx_period`, `system_transaction`, `period_data`, and `period_system_transactions`. Everything else below is still backed by C++ RocksDB access.
 
 ## Suggested Storage Buckets
 
@@ -184,13 +191,13 @@ Current bridge coverage now includes the DAG read slice, proposal-period lookup,
 
 ### 6. Metadata, Config, and Statistics Read APIs
 
-- `[ ] getGenesisHash()`
-- `[ ] getLastSortitionParams(size_t count)`
-- `[ ] getParamsChangeForPeriod(PbftPeriod period)`
-- `[ ] getStatusField(StatusDbField const& field)`
-- `[ ] getPeriodLambda(PbftPeriod period, bool find_closest)`
-- `[ ] getRoundsCountDynamicLambda()`
-- `[ ] getBlocksRewardsStats() const`
+- `[x] getGenesisHash()`
+- `[x] getLastSortitionParams(size_t count)`
+- `[x] getParamsChangeForPeriod(PbftPeriod period)`
+- `[x] getStatusField(StatusDbField const& field)`
+- `[x] getPeriodLambda(PbftPeriod period, bool find_closest)`
+- `[x] getRoundsCountDynamicLambda()`
+- `[x] getBlocksRewardsStats() const`
 - `[~] getMajorVersion() const`
   Note: returns cached constructor state, not a direct `db_` call.
 - `[~] getEarliestBlockNumber() const`
@@ -313,8 +320,10 @@ Notes:
 3. PBFT manager/vote read shims are now bridged (`getPbftMgrField`, `getPbftMgrStatus`,
    `getCertVotedBlockInRound`, `getProposedPbftBlocks`, `getPbftHead`,
    `getOwnVerifiedVotes`, `getAllTwoTPlusOneVotes`, `getRewardVotes`).
-4. Next target is finalized-chain per-transaction receipt read (`getTransactionReceipt`).
-5. Move metadata and iterator-heavy config reads after the core read path is stable.
+4. Metadata/config/statistics read shims are now bridged (`getGenesisHash`, `getLastSortitionParams`,
+   `getParamsChangeForPeriod`, `getStatusField`, `getPeriodLambda`, `getRoundsCountDynamicLambda`,
+   `getBlocksRewardsStats`).
+5. Next target is finalized-chain per-transaction receipt read (`getTransactionReceipt`).
 6. Only then decide how to represent write batches across the C++ and Rust boundary.
 
 ## Design Notes for the Next Batch
