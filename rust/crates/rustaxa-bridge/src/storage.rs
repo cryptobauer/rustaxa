@@ -88,10 +88,15 @@ mod ffi {
         fn get_latest_pillar_block(&self) -> Result<Vec<u8>>;
         fn get_own_pillar_block_vote(&self) -> Result<Vec<u8>>;
         fn get_current_pillar_block_data(&self) -> Result<Vec<u8>>;
+        fn save_pillar_block(&self, period: u64, pillar_block_rlp: Vec<u8>) -> Result<()>;
+        fn save_own_pillar_block_vote(&self, vote_rlp: Vec<u8>) -> Result<()>;
+        fn save_current_pillar_block_data(&self, data_rlp: Vec<u8>) -> Result<()>;
         fn get_genesis_hash(&self) -> Result<Vec<u8>>;
+        fn set_genesis_hash(&self, hash: &[u8; 32]) -> Result<()>;
         fn get_last_sortition_params(&self, count: u64) -> Result<Vec<BlockRlp>>;
         fn get_params_change_for_period(&self, period: u64) -> Result<Vec<u8>>;
         fn get_status_field(&self, field: u8) -> Result<u64>;
+        fn save_status_field(&self, field: u8, value: u64) -> Result<()>;
         fn get_period_lambda(&self, period: u64, find_closest: bool) -> Result<PeriodLambda>;
         fn get_rounds_count_dynamic_lambda(&self) -> Result<u32>;
         fn get_blocks_rewards_stats(&self) -> Result<Vec<PeriodRlp>>;
@@ -105,6 +110,18 @@ mod ffi {
         fn get_own_verified_votes(&self) -> Result<Vec<VoteRlp>>;
         fn get_all_two_t_plus_one_votes(&self) -> Result<Vec<VoteRlp>>;
         fn get_reward_votes(&self) -> Result<Vec<VoteRlp>>;
+        fn save_cert_voted_block_in_round(&self, round: u64, block_rlp: Vec<u8>) -> Result<()>;
+        fn save_proposed_pbft_block(&self, hash: &[u8; 32], block_rlp: Vec<u8>) -> Result<()>;
+        fn save_pbft_mgr_field(&self, field: u8, value: u32) -> Result<()>;
+        fn save_pbft_mgr_status(&self, field: u8, value: bool) -> Result<()>;
+        fn save_pbft_head(&self, hash: &[u8; 32], head: Vec<u8>) -> Result<()>;
+        fn save_own_verified_vote(&self, hash: &[u8; 32], vote_rlp: Vec<u8>) -> Result<()>;
+        fn replace_two_t_plus_one_votes(
+            &self,
+            vote_type: u8,
+            votes_bundle_rlp: Vec<u8>,
+        ) -> Result<()>;
+        fn save_extra_reward_vote(&self, hash: &[u8; 32], vote_rlp: Vec<u8>) -> Result<()>;
 
         fn transaction_in_db(&self, hash: &[u8; 32]) -> Result<bool>;
         fn transaction_finalized(&self, hash: &[u8; 32]) -> Result<bool>;
@@ -346,9 +363,29 @@ impl Storage {
             .unwrap_or_default())
     }
 
+    fn save_pillar_block(
+        &self,
+        period: u64,
+        pillar_block_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0.pillar().save_pillar_block(period, &pillar_block_rlp)
+    }
+
+    fn save_own_pillar_block_vote(&self, vote_rlp: Vec<u8>) -> Result<(), anyhow::Error> {
+        self.0.pillar().save_own_pillar_block_vote(&vote_rlp)
+    }
+
+    fn save_current_pillar_block_data(&self, data_rlp: Vec<u8>) -> Result<(), anyhow::Error> {
+        self.0.pillar().save_current_pillar_block_data(&data_rlp)
+    }
+
     fn get_genesis_hash(&self) -> Result<Vec<u8>, anyhow::Error> {
         self.0.catch_up()?;
         Ok(self.0.metadata().genesis_hash_bytes()?.unwrap_or_default())
+    }
+
+    fn set_genesis_hash(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
+        self.0.metadata().set_genesis_hash_if_empty(hash)
     }
 
     fn get_last_sortition_params(&self, count: u64) -> Result<Vec<ffi::BlockRlp>, anyhow::Error> {
@@ -376,6 +413,10 @@ impl Storage {
     fn get_status_field(&self, field: u8) -> Result<u64, anyhow::Error> {
         self.0.catch_up()?;
         self.0.metadata().status_field(field)
+    }
+
+    fn save_status_field(&self, field: u8, value: u64) -> Result<(), anyhow::Error> {
+        self.0.metadata().save_status_field(field, value)
     }
 
     fn get_period_lambda(
@@ -475,6 +516,68 @@ impl Storage {
             .into_iter()
             .map(|data| ffi::VoteRlp { data })
             .collect())
+    }
+
+    fn save_cert_voted_block_in_round(
+        &self,
+        round: u64,
+        block_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .pbft()
+            .save_cert_voted_block_in_round(round, &block_rlp)
+    }
+
+    fn save_proposed_pbft_block(
+        &self,
+        hash: &[u8; 32],
+        block_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .pbft()
+            .save_proposed_pbft_block(H256::from(*hash), &block_rlp)
+    }
+
+    fn save_pbft_mgr_field(&self, field: u8, value: u32) -> Result<(), anyhow::Error> {
+        self.0.pbft().save_pbft_mgr_field(field, value)
+    }
+
+    fn save_pbft_mgr_status(&self, field: u8, value: bool) -> Result<(), anyhow::Error> {
+        self.0.pbft().save_pbft_mgr_status(field, value)
+    }
+
+    fn save_pbft_head(&self, hash: &[u8; 32], head: Vec<u8>) -> Result<(), anyhow::Error> {
+        self.0.pbft().save_pbft_head(H256::from(*hash), &head)
+    }
+
+    fn save_own_verified_vote(
+        &self,
+        hash: &[u8; 32],
+        vote_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .pbft()
+            .save_own_verified_vote(H256::from(*hash), &vote_rlp)
+    }
+
+    fn replace_two_t_plus_one_votes(
+        &self,
+        vote_type: u8,
+        votes_bundle_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .pbft()
+            .replace_two_t_plus_one_votes(vote_type, &votes_bundle_rlp)
+    }
+
+    fn save_extra_reward_vote(
+        &self,
+        hash: &[u8; 32],
+        vote_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .pbft()
+            .save_extra_reward_vote(H256::from(*hash), &vote_rlp)
     }
 
     fn transaction_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {

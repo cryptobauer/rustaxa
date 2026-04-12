@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::Column;
 use crate::SINGLE_VALUE_KEY;
 use crate::StorageError;
-use crate::db::DbReader;
+use crate::db::{DbReader, DbWriter};
 
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -144,6 +144,82 @@ impl<D: DbReader> PbftRepository<D> {
             result.push(value.into_vec());
         }
         Ok(result)
+    }
+}
+
+impl<D: DbReader + DbWriter> PbftRepository<D> {
+    /// Implements savePbftMgrField(field, value)
+    pub fn save_pbft_mgr_field(&self, field: u8, value: u32) -> Result<()> {
+        self.db
+            .put(Column::PbftMgrRoundStep, &[field], &value.to_le_bytes())
+    }
+
+    /// Implements savePbftMgrStatus(field, value)
+    pub fn save_pbft_mgr_status(&self, field: u8, value: bool) -> Result<()> {
+        self.db
+            .put(Column::PbftMgrStatus, &[field], &[u8::from(value)])
+    }
+
+    /// Implements savePbftHead(hash, pbft_chain_head_str)
+    pub fn save_pbft_head(&self, pbft_hash: H256, head_bytes: &[u8]) -> Result<()> {
+        self.db
+            .put(Column::PbftHead, pbft_hash.as_bytes(), head_bytes)
+    }
+
+    /// Implements saveOwnVerifiedVote(vote)
+    pub fn save_own_verified_vote(&self, vote_hash: H256, vote_rlp: &[u8]) -> Result<()> {
+        self.db
+            .put(Column::LatestRoundOwnVotes, vote_hash.as_bytes(), vote_rlp)
+    }
+
+    /// Implements replaceTwoTPlusOneVotes(type, votes)
+    pub fn replace_two_t_plus_one_votes(
+        &self,
+        vote_type: u8,
+        votes_bundle_rlp: &[u8],
+    ) -> Result<()> {
+        Self::validate_two_t_plus_one_vote_type(vote_type)?;
+        self.db
+            .delete(Column::LatestRoundTwoTPlusOneVotes, &[vote_type])?;
+        self.db.put(
+            Column::LatestRoundTwoTPlusOneVotes,
+            &[vote_type],
+            votes_bundle_rlp,
+        )
+    }
+
+    /// Implements saveExtraRewardVote(vote)
+    pub fn save_extra_reward_vote(&self, vote_hash: H256, vote_rlp: &[u8]) -> Result<()> {
+        self.db
+            .put(Column::ExtraRewardVotes, vote_hash.as_bytes(), vote_rlp)
+    }
+
+    /// Implements saveCertVotedBlockInRound(round, block)
+    pub fn save_cert_voted_block_in_round(&self, round: u64, block_rlp: &[u8]) -> Result<()> {
+        let mut stream = rlp::RlpStream::new_list(2);
+        stream.append(&round);
+        stream.append_raw(block_rlp, 1);
+        self.db.put(
+            Column::CertVotedBlockInRound,
+            &SINGLE_VALUE_KEY,
+            &stream.out(),
+        )
+    }
+
+    /// Implements saveProposedPbftBlock(block)
+    pub fn save_proposed_pbft_block(&self, block_hash: H256, block_rlp: &[u8]) -> Result<()> {
+        self.db
+            .put(Column::ProposedPbftBlocks, block_hash.as_bytes(), block_rlp)
+    }
+
+    fn validate_two_t_plus_one_vote_type(vote_type: u8) -> Result<()> {
+        if TwoTPlusOneVotedBlockType::ALL
+            .iter()
+            .any(|item| *item as u8 == vote_type)
+        {
+            return Ok(());
+        }
+        Err(StorageError::Read(format!("Invalid two_t_plus_one vote type: {vote_type}")).into())
     }
 }
 

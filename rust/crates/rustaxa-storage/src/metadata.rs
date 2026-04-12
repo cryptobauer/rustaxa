@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::Column;
 use crate::SINGLE_VALUE_KEY;
 use crate::StorageError;
-use crate::db::DbReader;
+use crate::db::{DbReader, DbWriter};
 
 pub struct MetadataRepository<D: DbReader> {
     db: Arc<D>,
@@ -154,6 +154,22 @@ impl<D: DbReader> MetadataRepository<D> {
         let mut arr = [0u8; 4];
         arr.copy_from_slice(bytes);
         Ok(u32::from_le_bytes(arr))
+    }
+}
+
+impl<D: DbReader + DbWriter> MetadataRepository<D> {
+    /// Implements setGenesisHash(hash) preserving C++ semantics (write only if absent).
+    pub fn set_genesis_hash_if_empty(&self, genesis_hash: &[u8]) -> Result<()> {
+        if !self.db.exist(Column::Genesis, &SINGLE_VALUE_KEY)? {
+            self.db
+                .put(Column::Genesis, &SINGLE_VALUE_KEY, genesis_hash)?;
+        }
+        Ok(())
+    }
+
+    /// Implements saveStatusField(field, value)
+    pub fn save_status_field(&self, field: u8, value: u64) -> Result<()> {
+        self.db.put(Column::Status, &[field], &value.to_le_bytes())
     }
 }
 

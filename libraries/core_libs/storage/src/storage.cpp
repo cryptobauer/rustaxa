@@ -404,6 +404,12 @@ void DbStorage::disableSnapshots() { snapshots_enabled_ = false; }
 void DbStorage::enableSnapshots() { snapshots_enabled_ = true; }
 
 void DbStorage::setGenesisHash(const h256& genesis_hash) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  std::array<uint8_t, 32> h_arr;
+  std::memcpy(h_arr.data(), genesis_hash.data(), 32);
+  rust_storage_.value()->set_genesis_hash(h_arr);
+  return;
+  #endif
   if (!exist(0, Columns::genesis)) {
     insert(Columns::genesis, 0, genesis_hash);
   }
@@ -809,6 +815,16 @@ std::optional<PeriodData> DbStorage::getPeriodData(PbftPeriod period) const {
 }
 
 void DbStorage::savePillarBlock(const std::shared_ptr<pillar_chain::PillarBlock>& pillar_block) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto pillar_rlp_bytes = pillar_block->getRlp();
+  rust::Vec<uint8_t> pillar_rlp;
+  pillar_rlp.reserve(pillar_rlp_bytes.size());
+  for (auto const& b : pillar_rlp_bytes) {
+    pillar_rlp.push_back(static_cast<uint8_t>(b));
+  }
+  rust_storage_.value()->save_pillar_block(pillar_block->getPeriod(), std::move(pillar_rlp));
+  return;
+  #endif
   insert(Columns::pillar_block, pillar_block->getPeriod(), pillar_block->getRlp());
 }
 
@@ -850,6 +866,16 @@ std::shared_ptr<pillar_chain::PillarBlock> DbStorage::getLatestPillarBlock() con
 }
 
 void DbStorage::saveOwnPillarBlockVote(const std::shared_ptr<PillarVote>& vote) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto vote_bytes = util::rlp_enc(vote);
+  rust::Vec<uint8_t> vote_rlp;
+  vote_rlp.reserve(vote_bytes.size());
+  for (auto const& b : vote_bytes) {
+    vote_rlp.push_back(static_cast<uint8_t>(b));
+  }
+  rust_storage_.value()->save_own_pillar_block_vote(std::move(vote_rlp));
+  return;
+  #endif
   insert(Columns::current_pillar_block_own_vote, 0, util::rlp_enc(vote));
 }
 
@@ -872,6 +898,16 @@ std::shared_ptr<PillarVote> DbStorage::getOwnPillarBlockVote() const {
 }
 
 void DbStorage::saveCurrentPillarBlockData(const pillar_chain::CurrentPillarBlockDataDb& current_pillar_block_data) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto data_bytes = util::rlp_enc(current_pillar_block_data);
+  rust::Vec<uint8_t> data_rlp;
+  data_rlp.reserve(data_bytes.size());
+  for (auto const& b : data_bytes) {
+    data_rlp.push_back(static_cast<uint8_t>(b));
+  }
+  rust_storage_.value()->save_current_pillar_block_data(std::move(data_rlp));
+  return;
+  #endif
   insert(Columns::current_pillar_block_data, 0, util::rlp_enc(current_pillar_block_data));
 }
 
@@ -966,6 +1002,19 @@ std::unordered_map<trx_hash_t, PbftPeriod> DbStorage::getAllTransactionPeriod() 
 
 // Proposed pbft blocks
 void DbStorage::saveProposedPbftBlock(const std::shared_ptr<PbftBlock>& block) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  std::array<uint8_t, 32> h_arr;
+  auto block_hash = block->getBlockHash();
+  std::memcpy(h_arr.data(), block_hash.data(), 32);
+  auto block_bytes = block->rlp(true);
+  rust::Vec<uint8_t> block_rlp;
+  block_rlp.reserve(block_bytes.size());
+  for (auto const& b : block_bytes) {
+    block_rlp.push_back(static_cast<uint8_t>(b));
+  }
+  rust_storage_.value()->save_proposed_pbft_block(h_arr, std::move(block_rlp));
+  return;
+  #endif
   insert(Columns::proposed_pbft_blocks, block->getBlockHash().asBytes(), block->rlp(true));
 }
 
@@ -1286,6 +1335,10 @@ uint64_t DbStorage::getStatusField(StatusDbField const& field) {
 }
 
 void DbStorage::saveStatusField(StatusDbField const& field, uint64_t value) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  rust_storage_.value()->save_status_field(static_cast<uint8_t>(field), value);
+  return;
+  #endif
   insert(Columns::status, toSlice((uint8_t)field), toSlice(value));
 }
 
@@ -1310,6 +1363,10 @@ uint32_t DbStorage::getPbftMgrField(PbftMgrField field) {
 }
 
 void DbStorage::savePbftMgrField(PbftMgrField field, uint32_t value) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  rust_storage_.value()->save_pbft_mgr_field(static_cast<uint8_t>(field), value);
+  return;
+  #endif
   insert(Columns::pbft_mgr_round_step, toSlice(static_cast<uint8_t>(field)), toSlice(value));
 }
 
@@ -1331,6 +1388,10 @@ bool DbStorage::getPbftMgrStatus(PbftMgrStatus field) {
 }
 
 void DbStorage::savePbftMgrStatus(PbftMgrStatus field, bool const& value) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  rust_storage_.value()->save_pbft_mgr_status(static_cast<uint8_t>(field), value);
+  return;
+  #endif
   insert(Columns::pbft_mgr_status, toSlice(field), toSlice(value));
 }
 
@@ -1340,6 +1401,16 @@ void DbStorage::addPbftMgrStatusToBatch(PbftMgrStatus field, bool const& value, 
 
 void DbStorage::saveCertVotedBlockInRound(PbftRound round, const std::shared_ptr<PbftBlock>& block) {
   assert(block);
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto block_bytes = block->rlp(true);
+  rust::Vec<uint8_t> block_rlp;
+  block_rlp.reserve(block_bytes.size());
+  for (auto const& b : block_bytes) {
+    block_rlp.push_back(static_cast<uint8_t>(b));
+  }
+  rust_storage_.value()->save_cert_voted_block_in_round(round, std::move(block_rlp));
+  return;
+  #endif
 
   dev::RLPStream s(2);
   s.append(round);
@@ -1412,6 +1483,17 @@ std::string DbStorage::getPbftHead(blk_hash_t const& hash) {
 }
 
 void DbStorage::savePbftHead(blk_hash_t const& hash, std::string const& pbft_chain_head_str) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  std::array<uint8_t, 32> h_arr;
+  std::memcpy(h_arr.data(), hash.data(), 32);
+  rust::Vec<uint8_t> head_bytes;
+  head_bytes.reserve(pbft_chain_head_str.size());
+  for (auto const& c : pbft_chain_head_str) {
+    head_bytes.push_back(static_cast<uint8_t>(c));
+  }
+  rust_storage_.value()->save_pbft_head(h_arr, std::move(head_bytes));
+  return;
+  #endif
   insert(Columns::pbft_head, toSlice(hash.asBytes()), pbft_chain_head_str);
 }
 
@@ -1421,6 +1503,20 @@ void DbStorage::addPbftHeadToBatch(taraxa::blk_hash_t const& head_hash, std::str
 }
 
 void DbStorage::saveOwnVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  std::array<uint8_t, 32> h_arr;
+  auto vote_hash = vote->getHash();
+  std::memcpy(h_arr.data(), vote_hash.data(), 32);
+
+  auto vote_bytes = vote->rlp(true, true);
+  rust::Vec<uint8_t> vote_rlp;
+  vote_rlp.reserve(vote_bytes.size());
+  for (auto const& b : vote_bytes) {
+    vote_rlp.push_back(static_cast<uint8_t>(b));
+  }
+  rust_storage_.value()->save_own_verified_vote(h_arr, std::move(vote_rlp));
+  return;
+  #endif
   insert(Columns::latest_round_own_votes, vote->getHash().asBytes(), vote->rlp(true, true));
 }
 
@@ -1453,6 +1549,20 @@ void DbStorage::clearOwnVerifiedVotes(Batch& write_batch,
 
 void DbStorage::replaceTwoTPlusOneVotes(TwoTPlusOneVotedBlockType type,
                                         const std::vector<std::shared_ptr<PbftVote>>& votes) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  dev::RLPStream rust_votes_stream(votes.size());
+  for (const auto& vote : votes) {
+    rust_votes_stream.appendRaw(vote->rlp(true, true));
+  }
+  auto votes_bundle = rust_votes_stream.out();
+  rust::Vec<uint8_t> votes_bundle_rlp;
+  votes_bundle_rlp.reserve(votes_bundle.size());
+  for (auto const& b : votes_bundle) {
+    votes_bundle_rlp.push_back(static_cast<uint8_t>(b));
+  }
+  rust_storage_.value()->replace_two_t_plus_one_votes(static_cast<uint8_t>(type), std::move(votes_bundle_rlp));
+  return;
+  #endif
   remove(Columns::latest_round_two_t_plus_one_votes, static_cast<uint8_t>(type));
 
   dev::RLPStream s(votes.size());
@@ -1510,6 +1620,19 @@ void DbStorage::removeExtraRewardVotes(const std::vector<vote_hash_t>& votes, Ba
 }
 
 void DbStorage::saveExtraRewardVote(const std::shared_ptr<PbftVote>& vote) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  std::array<uint8_t, 32> h_arr;
+  auto vote_hash = vote->getHash();
+  std::memcpy(h_arr.data(), vote_hash.data(), 32);
+  auto vote_bytes = vote->rlp(true, true);
+  rust::Vec<uint8_t> vote_rlp;
+  vote_rlp.reserve(vote_bytes.size());
+  for (auto const& b : vote_bytes) {
+    vote_rlp.push_back(static_cast<uint8_t>(b));
+  }
+  rust_storage_.value()->save_extra_reward_vote(h_arr, std::move(vote_rlp));
+  return;
+  #endif
   insert(Columns::extra_reward_votes, vote->getHash().asBytes(), vote->rlp(true, true));
 }
 

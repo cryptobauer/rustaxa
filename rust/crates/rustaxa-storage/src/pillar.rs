@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::Column;
 use crate::SINGLE_VALUE_KEY;
-use crate::db::DbReader;
+use crate::db::{DbReader, DbWriter};
 
 pub struct PillarRepository<D: DbReader> {
     db: Arc<D>,
@@ -53,6 +53,29 @@ impl<D: DbReader> PillarRepository<D> {
             .get(Column::CurrentPillarBlockData, &SINGLE_VALUE_KEY)?
             .map(|value| value.as_ref().to_vec())
             .filter(|value| !value.is_empty()))
+    }
+}
+
+impl<D: DbReader + DbWriter> PillarRepository<D> {
+    /// Implements savePillarBlock(pillar_block)
+    pub fn save_pillar_block(&self, period: u64, pillar_block_rlp: &[u8]) -> Result<()> {
+        self.db
+            .put(Column::PillarBlock, &period.to_le_bytes(), pillar_block_rlp)
+    }
+
+    /// Implements saveOwnPillarBlockVote(vote)
+    pub fn save_own_pillar_block_vote(&self, vote_rlp: &[u8]) -> Result<()> {
+        self.db.put(
+            Column::CurrentPillarBlockOwnVote,
+            &SINGLE_VALUE_KEY,
+            vote_rlp,
+        )
+    }
+
+    /// Implements saveCurrentPillarBlockData(data)
+    pub fn save_current_pillar_block_data(&self, data_rlp: &[u8]) -> Result<()> {
+        self.db
+            .put(Column::CurrentPillarBlockData, &SINGLE_VALUE_KEY, data_rlp)
     }
 }
 
