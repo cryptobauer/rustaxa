@@ -1001,6 +1001,150 @@ fn main() -> Result<()> {
     println!("  most likely root cause. Check node logs for 'failed on VDF verification' or");
     println!("  'missing VRF key' near the stuck period.");
 
+    println!();
+    print_section("13. FORENSIC ANALYSIS — BLOCK PRODUCERS");
+    println!();
+
+    // 1. Who produced the stuck DAG block (target anchor)?
+    if !target_anchor.is_zero() {
+        println!("  a) Target anchor block: {target_anchor:?}");
+        if let Some(blk) = all_nonfinalized.get(&target_anchor) {
+            // The block is stored as rustaxa_types::DagBlock — we need the raw RLP to recover sender
+            // Read raw bytes from DB instead
+            let raw = storage.dag().dag_block_rlp(target_anchor)?;
+            if !raw.is_empty() {
+                match recover_dag_block_sender(&raw) {
+                    Some(addr) => println!("     Sender (block producer): 0x{}", hex_encode(&addr)),
+                    None => println!("     ⚠ Could not recover sender from signature"),
+                }
+            }
+            println!("     Level: {}", blk.level);
+            println!("     Pivot: {:?}", blk.pivot);
+            println!(
+                "     Timestamp: {} ({})",
+                blk.timestamp,
+                format_timestamp(blk.timestamp)
+            );
+            println!("     Transactions: {}", blk.transactions.len());
+        } else {
+            println!("     ⚠ Block not found in non-finalized set");
+        }
+    }
+
+    // 2. Who proposed the PBFT block for period 25706949 (the collision-causing period)?
+    let collision_period = get_proposal_period_seek(&storage, target_anchor_level)?;
+    if let Some(cp) = collision_period {
+        println!();
+        println!("  b) PBFT block for collision-causing period {cp}:");
+        let pd_raw = storage.period().period_data_raw(cp)?;
+        if !pd_raw.is_empty() {
+            let period_rlp = Rlp::new(&pd_raw);
+            let pbft_rlp = period_rlp.at(PBFT_BLOCK_POS)?;
+            match recover_pbft_block_proposer(pbft_rlp.as_raw()) {
+                Some(addr) => println!("     Proposer: 0x{}", hex_encode(&addr)),
+                None => println!("     ⚠ Could not recover proposer from signature"),
+            }
+            let (_, pivot_dag, period, ts) = decode_pbft_block_fields(pbft_rlp.as_raw())?;
+            println!("     Period: {period}");
+            println!("     Anchor (pivot DAG block): {pivot_dag:?}");
+            println!("     Timestamp: {ts} ({})", format_timestamp(ts));
+
+            // Recover sender of the anchor DAG block for this period
+            // This anchor is at level 73779506, and its map entry collided with our target
+            if !pivot_dag.is_zero() {
+                // Try non-finalized first, then check period data
+                let anchor_raw = storage.dag().dag_block_rlp(pivot_dag)?;
+                if !anchor_raw.is_empty() {
+                    match recover_dag_block_sender(&anchor_raw) {
+                        Some(addr) => {
+                            println!("     Anchor DAG block sender: 0x{}", hex_encode(&addr))
+                        }
+                        None => {
+                            println!("     ⚠ Could not recover anchor block sender from signature")
+                        }
+                    }
+                } else {
+                    // The anchor is finalized — look in period data DAG blocks bundle
+                    let dag_bundle_rlp = period_rlp.at(DAG_BLOCKS_POS)?;
+                    let dag_count = dag_bundle_rlp.item_count().unwrap_or(0);
+                    println!(
+                        "     Anchor is finalized — scanning {dag_count} DAG blocks in period data"
+                    );
+                    for i in 0..dag_count {
+                        if let Ok(dag_rlp) = dag_bundle_rlp.at(i) {
+                            let dag_hash = keccak256(dag_rlp.as_raw());
+                            if dag_hash == pivot_dag {
+                                match recover_dag_block_sender(dag_rlp.as_raw()) {
+                                    Some(addr) => println!(
+                                        "     Anchor DAG block sender: 0x{}",
+                                        hex_encode(&addr)
+                                    ),
+                                    None => {
+                                        println!("     ⚠ Could not recover anchor block sender")
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Who proposed PBFT block for the ORIGINAL (pre-collision) period?
+        let original_period = get_proposal_period_seek(&storage, target_anchor_level + 1)?;
+        if let Some(op) = original_period {
+            if op != cp {
+                println!();
+                println!("  c) PBFT block for original (pre-collision) period {op}:");
+                let op_raw = storage.period().period_data_raw(op)?;
+                if !op_raw.is_empty() {
+                    let op_period_rlp = Rlp::new(&op_raw);
+                    let op_pbft_rlp = op_period_rlp.at(PBFT_BLOCK_POS)?;
+                    match recover_pbft_block_proposer(op_pbft_rlp.as_raw()) {
+                        Some(addr) => println!("     Proposer: 0x{}", hex_encode(&addr)),
+                        None => println!("     ⚠ Could not recover proposer from signature"),
+                    }
+                    let (_, pivot_dag, period, ts) =
+                        decode_pbft_block_fields(op_pbft_rlp.as_raw())?;
+                    println!("     Period: {period}");
+                    println!("     Anchor: {pivot_dag:?}");
+                    println!("     Timestamp: {ts} ({})", format_timestamp(ts));
+                }
+            }
+        }
+    }
+
+    // 4. List all senders of non-finalized blocks at the target level
+    if target_anchor_level > 0 {
+        if let Some(blocks) = blocks_by_level.get(&target_anchor_level) {
+            println!();
+            println!(
+                "  d) All {} block producers at level {target_anchor_level}:",
+                blocks.len()
+            );
+            for (hash, _blk) in blocks {
+                let raw = storage.dag().dag_block_rlp(*hash)?;
+                let sender = if !raw.is_empty() {
+                    recover_dag_block_sender(&raw)
+                } else {
+                    None
+                };
+                let is_target = if *hash == target_anchor {
+                    " ← TARGET ANCHOR"
+                } else {
+                    ""
+                };
+                match sender {
+                    Some(addr) => {
+                        println!("     {hash:?} → 0x{}{is_target}", hex_encode(&addr))
+                    }
+                    None => println!("     {hash:?} → ⚠ unknown sender{is_target}"),
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -1245,6 +1389,66 @@ fn keccak256(data: &[u8]) -> H256 {
     let mut output = [0u8; 32];
     hasher.finalize(&mut output);
     H256::from(output)
+}
+
+/// Recover the Ethereum address from a 65-byte signature over a message hash.
+/// Replicates the C++ `dev::recover(sig, msg)` → `right160(sha3(pubkey))` pattern.
+fn ecrecover_address(sig: &[u8], msg: &H256) -> Option<[u8; 20]> {
+    use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
+    if sig.len() != 65 {
+        return None;
+    }
+    let recovery_id = RecoveryId::try_from(sig[64] % 4).ok()?;
+    let signature = Signature::try_from(&sig[..64]).ok()?;
+    let recovered_key =
+        VerifyingKey::recover_from_prehash(msg.as_bytes(), &signature, recovery_id).ok()?;
+    let uncompressed = recovered_key.to_encoded_point(false);
+    // Skip the 0x04 prefix byte, hash the 64-byte public key
+    let pubkey_hash = keccak256(&uncompressed.as_bytes()[1..]);
+    let mut addr = [0u8; 20];
+    addr.copy_from_slice(&pubkey_hash.as_bytes()[12..]);
+    Some(addr)
+}
+
+/// Recover the sender address from a DagBlock's RLP-encoded data.
+/// DagBlock RLP: [pivot, level, timestamp, vdf, tips, trxs, sig(65), gas_estimation]
+/// The signing message is sha3 of RLP without the signature (fields 0-5 + 7).
+fn recover_dag_block_sender(block_rlp: &[u8]) -> Option<[u8; 20]> {
+    let rlp = Rlp::new(block_rlp);
+    let sig: Vec<u8> = rlp.val_at(6).ok()?;
+
+    // Reconstruct RLP without signature (positions 0-5 + 7)
+    let mut stream = rlp::RlpStream::new_list(7);
+    for i in [0usize, 1, 2, 3, 4, 5] {
+        stream.append_raw(rlp.at(i).ok()?.as_raw(), 1);
+    }
+    stream.append_raw(rlp.at(7).ok()?.as_raw(), 1);
+    let msg = keccak256(&stream.out());
+
+    ecrecover_address(&sig, &msg)
+}
+
+/// Recover the proposer address from a PbftBlock's RLP-encoded data.
+/// PbftBlock RLP: [prev_hash, pivot, order_hash, final_chain_hash, period, timestamp,
+///                 reward_votes, (extra_data?), signature]
+/// Signature is always the LAST field. Message is sha3 of RLP without the last field.
+fn recover_pbft_block_proposer(block_rlp: &[u8]) -> Option<[u8; 20]> {
+    let rlp = Rlp::new(block_rlp);
+    let item_count = rlp.item_count().ok()?;
+    if item_count < 8 {
+        return None;
+    }
+    // Signature is always the last field
+    let sig: Vec<u8> = rlp.val_at(item_count - 1).ok()?;
+
+    // Reconstruct RLP without the signature (all fields except last)
+    let mut stream = rlp::RlpStream::new_list(item_count - 1);
+    for i in 0..item_count - 1 {
+        stream.append_raw(rlp.at(i).ok()?.as_raw(), 1);
+    }
+    let msg = keccak256(&stream.out());
+
+    ecrecover_address(&sig, &msg)
 }
 
 /// Replicate C++ getProposalPeriodForDagLevel() using Seek (first key >= level).
