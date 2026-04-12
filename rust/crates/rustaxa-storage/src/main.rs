@@ -1093,8 +1093,8 @@ fn main() -> Result<()> {
 
         // 3. Who proposed PBFT block for the ORIGINAL (pre-collision) period?
         let original_period = get_proposal_period_seek(&storage, target_anchor_level + 1)?;
-        if let Some(op) = original_period {
-            if op != cp {
+        if let Some(op) = original_period
+            && op != cp {
                 println!();
                 println!("  c) PBFT block for original (pre-collision) period {op}:");
                 let op_raw = storage.period().period_data_raw(op)?;
@@ -1112,12 +1112,11 @@ fn main() -> Result<()> {
                     println!("     Timestamp: {ts} ({})", format_timestamp(ts));
                 }
             }
-        }
     }
 
     // 4. List all senders of non-finalized blocks at the target level
-    if target_anchor_level > 0 {
-        if let Some(blocks) = blocks_by_level.get(&target_anchor_level) {
+    if target_anchor_level > 0
+        && let Some(blocks) = blocks_by_level.get(&target_anchor_level) {
             println!();
             println!(
                 "  d) All {} block producers at level {target_anchor_level}:",
@@ -1143,7 +1142,6 @@ fn main() -> Result<()> {
                 }
             }
         }
-    }
 
     Ok(())
 }
