@@ -100,9 +100,9 @@ impl<D: DbReader> DagRepository<D> {
     pub fn proposal_period_for_dag_level(&self, level: u64) -> Result<Option<u64>> {
         match self
             .db
-            .get(Column::ProposalPeriodLevelsMap, &level.to_le_bytes())?
+            .get_at_or_after(Column::ProposalPeriodLevelsMap, &level.to_le_bytes())?
         {
-            Some(value) => {
+            Some((_key, value)) => {
                 if value.as_ref().len() != 8 {
                     return Err(StorageError::Dag("Invalid period data size".to_string()).into());
                 }
@@ -636,21 +636,34 @@ mod tests {
     fn test_proposal_period_for_dag_level() {
         let db = Arc::new(MockDagStore::new());
         let repo = DagRepository::new(db.clone());
-        let level = 10u64;
-        let period = 5u64;
 
         // Initially not set
-        assert!(repo.proposal_period_for_dag_level(level).unwrap().is_none());
+        assert!(repo.proposal_period_for_dag_level(10).unwrap().is_none());
 
-        // Set period
+        // Map is sparse and lookup should return first key >= requested level.
         db.put(
             Column::ProposalPeriodLevelsMap,
-            &level.to_le_bytes(),
-            &period.to_le_bytes(),
+            &100u64.to_le_bytes(),
+            &0u64.to_le_bytes(),
+        );
+        db.put(
+            Column::ProposalPeriodLevelsMap,
+            &103u64.to_le_bytes(),
+            &1u64.to_le_bytes(),
+        );
+        db.put(
+            Column::ProposalPeriodLevelsMap,
+            &106u64.to_le_bytes(),
+            &3u64.to_le_bytes(),
         );
 
-        let result = repo.proposal_period_for_dag_level(level).unwrap();
-        assert_eq!(result, Some(period));
+        assert_eq!(repo.proposal_period_for_dag_level(5).unwrap(), Some(0));
+        assert_eq!(repo.proposal_period_for_dag_level(100).unwrap(), Some(0));
+        assert_eq!(repo.proposal_period_for_dag_level(101).unwrap(), Some(1));
+        assert_eq!(repo.proposal_period_for_dag_level(103).unwrap(), Some(1));
+        assert_eq!(repo.proposal_period_for_dag_level(105).unwrap(), Some(3));
+        assert_eq!(repo.proposal_period_for_dag_level(106).unwrap(), Some(3));
+        assert!(repo.proposal_period_for_dag_level(107).unwrap().is_none());
     }
 
     #[test]

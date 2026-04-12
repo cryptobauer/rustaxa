@@ -1247,9 +1247,7 @@ fn keccak256(data: &[u8]) -> H256 {
     H256::from(output)
 }
 
-/// Replicate C++ getProposalPeriodForDagLevel() which uses Seek (first key >= level).
-/// The Rust proposal_period_for_dag_level() uses exact key lookup, which is WRONG for
-/// levels between mapping entries.
+/// Replicate C++ getProposalPeriodForDagLevel() using Seek (first key >= level).
 fn get_proposal_period_seek(storage: &Storage, level: u64) -> Result<Option<u64>> {
     match storage.seek_forward(Column::ProposalPeriodLevelsMap, &level.to_le_bytes())? {
         Some((_key, value)) => {

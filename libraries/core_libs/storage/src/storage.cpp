@@ -1630,7 +1630,9 @@ std::optional<PbftPeriod> DbStorage::getProposalPeriodForDagLevel(uint64_t level
   #ifdef RUSTAXA_ENABLE_STORAGE
   try {
     auto res = rust_storage_.value()->get_proposal_period_for_dag_level(level);
-    if (res != 0) return std::optional<PbftPeriod>(res);
+    if (res.found) {
+      return std::optional<PbftPeriod>(res.period);
+    }
     return std::nullopt;
   } catch (std::exception const& e) {
     LOG(log_dg_) << "Failed in DbStorage::getDagBlockPeriod: " << e.what();
