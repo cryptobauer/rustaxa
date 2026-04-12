@@ -214,6 +214,9 @@ Current bridge coverage now includes the DAG read slice, proposal-period lookup,
 
 These methods mutate RocksDB state today and will need either direct Rust shims or a batch translation layer.
 
+Batch migration note:
+- Batch-commit translation work (`commitWriteBatch` routing through Rust) is implemented in worktree branch `feat/rust/batch-write-round1` and is not merged into this branch yet.
+
 ### 1. DAG Write APIs
 
 - `[~] saveDagBlock(const std::shared_ptr<DagBlock>& blk, Batch* write_batch_p = nullptr)`
@@ -244,34 +247,34 @@ These methods mutate RocksDB state today and will need either direct Rust shims 
 
 ### 4. PBFT Manager and Vote Write APIs
 
-- `[ ] savePbftMgrField(PbftMgrField field, uint32_t value)`
+- `[x] savePbftMgrField(PbftMgrField field, uint32_t value)`
 - `[ ] addPbftMgrFieldToBatch(PbftMgrField field, uint32_t value, Batch& write_batch)`
-- `[ ] savePbftMgrStatus(PbftMgrStatus field, bool const& value)`
+- `[x] savePbftMgrStatus(PbftMgrStatus field, bool const& value)`
 - `[ ] addPbftMgrStatusToBatch(PbftMgrStatus field, bool const& value, Batch& write_batch)`
-- `[ ] saveCertVotedBlockInRound(PbftRound round, const std::shared_ptr<PbftBlock>& block)`
+- `[x] saveCertVotedBlockInRound(PbftRound round, const std::shared_ptr<PbftBlock>& block)`
 - `[ ] removeCertVotedBlockInRound(Batch& write_batch)`
-- `[ ] saveProposedPbftBlock(const std::shared_ptr<PbftBlock>& block)`
+- `[x] saveProposedPbftBlock(const std::shared_ptr<PbftBlock>& block)`
 - `[ ] removeProposedPbftBlock(const blk_hash_t& block_hash, Batch& write_batch)`
-- `[ ] savePbftHead(blk_hash_t const& hash, std::string const& pbft_chain_head_str)`
+- `[x] savePbftHead(blk_hash_t const& hash, std::string const& pbft_chain_head_str)`
 - `[ ] addPbftHeadToBatch(taraxa::blk_hash_t const& head_hash, std::string const& head_str, Batch& write_batch)`
-- `[ ] saveOwnVerifiedVote(const std::shared_ptr<PbftVote>& vote)`
+- `[x] saveOwnVerifiedVote(const std::shared_ptr<PbftVote>& vote)`
 - `[ ] clearOwnVerifiedVotes(Batch& write_batch, const std::vector<std::shared_ptr<PbftVote>>& own_verified_votes)`
-- `[ ] replaceTwoTPlusOneVotes(TwoTPlusOneVotedBlockType type, const std::vector<std::shared_ptr<PbftVote>>& votes)`
+- `[x] replaceTwoTPlusOneVotes(TwoTPlusOneVotedBlockType type, const std::vector<std::shared_ptr<PbftVote>>& votes)`
 - `[ ] replaceTwoTPlusOneVotesToBatch(TwoTPlusOneVotedBlockType type, const std::vector<std::shared_ptr<PbftVote>>& votes, Batch& write_batch)`
 - `[ ] removeExtraRewardVotes(const std::vector<vote_hash_t>& votes, Batch& write_batch)`
-- `[ ] saveExtraRewardVote(const std::shared_ptr<PbftVote>& vote)`
+- `[x] saveExtraRewardVote(const std::shared_ptr<PbftVote>& vote)`
 
 ### 5. Pillar Write APIs
 
-- `[ ] savePillarBlock(const std::shared_ptr<pillar_chain::PillarBlock>& pillar_block)`
-- `[ ] saveOwnPillarBlockVote(const std::shared_ptr<PillarVote>& vote)`
-- `[ ] saveCurrentPillarBlockData(const pillar_chain::CurrentPillarBlockDataDb& current_pillar_block_data)`
+- `[x] savePillarBlock(const std::shared_ptr<pillar_chain::PillarBlock>& pillar_block)`
+- `[x] saveOwnPillarBlockVote(const std::shared_ptr<PillarVote>& vote)`
+- `[x] saveCurrentPillarBlockData(const pillar_chain::CurrentPillarBlockDataDb& current_pillar_block_data)`
 
 ### 6. Metadata, Config, and Statistics Write APIs
 
-- `[ ] setGenesisHash(const h256& genesis_hash)`
+- `[x] setGenesisHash(const h256& genesis_hash)`
 - `[ ] saveSortitionParamsChange(PbftPeriod period, const SortitionParamsChange& params, Batch& batch)`
-- `[ ] saveStatusField(StatusDbField const& field, uint64_t value)`
+- `[x] saveStatusField(StatusDbField const& field, uint64_t value)`
 - `[ ] addStatusFieldToBatch(StatusDbField const& field, uint64_t value, Batch& write_batch)`
 - `[ ] savePeriodLambda(PbftPeriod period, uint32_t period_lambda, Batch& write_batch)`
 - `[ ] saveRoundsCountDynamicLambda(uint32_t rounds_count, Batch& write_batch)`
