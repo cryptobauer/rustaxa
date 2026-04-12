@@ -216,12 +216,17 @@ These methods mutate RocksDB state today and will need either direct Rust shims 
 
 ### 1. DAG Write APIs
 
-- `[ ] saveDagBlock(const std::shared_ptr<DagBlock>& blk, Batch* write_batch_p = nullptr)`
-- `[ ] updateDagBlockCounters(std::vector<std::shared_ptr<DagBlock>> blks)`
+- `[~] saveDagBlock(const std::shared_ptr<DagBlock>& blk, Batch* write_batch_p = nullptr)`
+  Note: Rust-backed for non-batch path (`write_batch_p == nullptr`).
+  The explicit C++ `Batch*` accumulation path (`write_batch_p != nullptr`) has no external callers in the workspace and is intentionally not planned for Rust parity.
+- `[x] updateDagBlockCounters(std::vector<std::shared_ptr<DagBlock>> blks)`
+  TODO: Rust path currently updates one block per FFI call and derives counters from `status` reads each call.
+  C++ path updates in-memory atomics and commits one batch for the whole vector.
+  Revisit for parity/performance (bulk Rust API + single commit, and coherence of C++ cached DAG counters in Rust mode).
 - `[u] removeDagBlockBatch(Batch& write_batch, blk_hash_t const& hash)`
-- `[ ] removeDagBlock(blk_hash_t const& hash)`
+- `[x] removeDagBlock(blk_hash_t const& hash)`
 - `[ ] addDagBlockPeriodToBatch(blk_hash_t const& hash, PbftPeriod period, uint32_t position, Batch& write_batch)`
-- `[ ] saveProposalPeriodDagLevelsMap(uint64_t level, PbftPeriod period)`
+- `[x] saveProposalPeriodDagLevelsMap(uint64_t level, PbftPeriod period)`
 - `[ ] addProposalPeriodDagLevelsMapToBatch(uint64_t level, PbftPeriod period, Batch& write_batch)`
 
 ### 2. Period Data and Finalized Chain Write APIs
