@@ -1074,6 +1074,7 @@ dependencies = [
  "rocksdb",
  "rustaxa-types",
  "thiserror",
+ "tiny-keccak",
 ]
 
 [[package]]

@@ -221,6 +221,22 @@ mod tests {
                 .map(|(k, v)| (k.clone().into_boxed_slice(), v.clone().into_boxed_slice())))
         }
 
+        fn get_at_or_after(
+            &self,
+            col: Column,
+            key: &[u8],
+        ) -> Result<Option<(Box<[u8]>, Box<[u8]>)>> {
+            let data = self.data.read().unwrap();
+            let Some(cf) = data.get(col.name()) else {
+                return Ok(None);
+            };
+            let key = key.to_vec();
+            Ok(cf
+                .range(key..)
+                .next()
+                .map(|(k, v)| (k.clone().into_boxed_slice(), v.clone().into_boxed_slice())))
+        }
+
         fn iter<'a>(&'a self, col: Column) -> DbIterator<'a> {
             let data = self.data.read().unwrap();
             if let Some(cf) = data.get(col.name()) {

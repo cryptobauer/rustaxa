@@ -9,6 +9,7 @@ ethereum-types = { version = "0.16.0", features = ["rlp"] }
 rlp = "0.6"
 rustaxa-types = { path = "../rustaxa-types" }
 thiserror = "2.0.17"
+tiny-keccak = { version = "2.0", features = ["keccak"] }
 
 [dependencies.rocksdb]
 version = "0.24.0"

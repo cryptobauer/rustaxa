@@ -65,6 +65,21 @@ mod ffi {
         ) -> Result<Vec<BlockRlp>>;
         fn get_nonfinalized_dag_blocks(&self) -> Result<Vec<LevelBlocks>>;
         fn get_proposal_period_for_dag_level(&self, level: u64) -> Result<u64>;
+        fn save_dag_block(
+            &self,
+            hash: &[u8; 32],
+            level: u64,
+            tips_count: u64,
+            block_rlp: Vec<u8>,
+        ) -> Result<()>;
+        fn update_dag_block_counter(
+            &self,
+            hash: &[u8; 32],
+            level: u64,
+            tips_count: u64,
+        ) -> Result<()>;
+        fn remove_dag_block(&self, hash: &[u8; 32]) -> Result<()>;
+        fn save_proposal_period_dag_levels_map(&self, level: u64, period: u64) -> Result<()>;
 
         fn get_period_data_raw(&self, period: u64) -> Result<Vec<u8>>;
         fn get_period_from_pbft_hash(&self, hash: &[u8; 32]) -> Result<PeriodLookup>;
@@ -204,6 +219,43 @@ impl Storage {
             .proposal_period_for_dag_level(level)
             .map(|opt| opt.unwrap_or(0))
             .map_err(|e| anyhow::anyhow!(e))
+    }
+
+    fn save_dag_block(
+        &self,
+        hash: &[u8; 32],
+        level: u64,
+        tips_count: u64,
+        block_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .dag()
+            .save_dag_block(H256::from(*hash), level, tips_count, &block_rlp)
+    }
+
+    fn update_dag_block_counter(
+        &self,
+        hash: &[u8; 32],
+        level: u64,
+        tips_count: u64,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .dag()
+            .update_dag_block_counter(H256::from(*hash), level, tips_count)
+    }
+
+    fn remove_dag_block(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
+        self.0.dag().remove_dag_block(H256::from(*hash))
+    }
+
+    fn save_proposal_period_dag_levels_map(
+        &self,
+        level: u64,
+        period: u64,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .dag()
+            .save_proposal_period_dag_levels_map(level, period)
     }
 
     fn get_period_data_raw(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {

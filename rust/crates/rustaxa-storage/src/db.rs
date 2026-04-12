@@ -10,7 +10,9 @@
 ///
 use anyhow::Result;
 use ethereum_types::H256;
-use rocksdb::{DBPinnableSlice, DBWithThreadMode, MultiThreaded, Options};
+use rocksdb::{
+    DBPinnableSlice, DBWithThreadMode, MultiThreaded, Options, WriteBatch, WriteOptions,
+};
 use std::sync::Arc;
 
 use crate::AccessMode;
@@ -28,6 +30,8 @@ use crate::TransactionRepository;
 /// Item returned by the database iterator.
 /// Key and Value are boxed slices.
 pub type IteratorItem = Result<(Box<[u8]>, Box<[u8]>)>;
+/// Key/value tuple returned by seek-style helpers.
+pub type KeyValueEntry = (Box<[u8]>, Box<[u8]>);
 /// Iterator type for database queries.
 pub type DbIterator<'a> = Box<dyn Iterator<Item = IteratorItem> + Send + Sync + 'a>;
 
@@ -42,9 +46,28 @@ pub trait DbReader: Send + Sync {
 
     fn get<'a>(&'a self, col: Column, key: &[u8]) -> Result<Option<Self::Slice<'a>>>;
     fn exist(&self, col: Column, key: &[u8]) -> Result<bool>;
-    fn get_at_or_before(&self, col: Column, key: &[u8]) -> Result<Option<(Box<[u8]>, Box<[u8]>)>>;
+    fn get_at_or_before(&self, col: Column, key: &[u8]) -> Result<Option<KeyValueEntry>>;
+    fn get_at_or_after(&self, col: Column, key: &[u8]) -> Result<Option<KeyValueEntry>>;
     fn iter<'a>(&'a self, col: Column) -> DbIterator<'a>;
     fn iter_rev<'a>(&'a self, col: Column) -> DbIterator<'a>;
+}
+
+/// Trait abstracting database write operations.
+pub trait DbWriter: Send + Sync {
+    type Batch;
+
+    fn create_batch(&self) -> Self::Batch;
+    fn batch_put(
+        &self,
+        batch: &mut Self::Batch,
+        col: Column,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<()>;
+    fn batch_delete(&self, batch: &mut Self::Batch, col: Column, key: &[u8]) -> Result<()>;
+    fn commit_batch(&self, batch: Self::Batch) -> Result<()>;
+    fn put(&self, col: Column, key: &[u8], value: &[u8]) -> Result<()>;
+    fn delete(&self, col: Column, key: &[u8]) -> Result<()>;
 }
 
 impl DbReader for DBWithThreadMode<MultiThreaded> {
@@ -72,13 +95,29 @@ impl DbReader for DBWithThreadMode<MultiThreaded> {
             .map_err(|e| StorageError::Database(e).into())
     }
 
-    fn get_at_or_before(&self, col: Column, key: &[u8]) -> Result<Option<(Box<[u8]>, Box<[u8]>)>> {
+    fn get_at_or_before(&self, col: Column, key: &[u8]) -> Result<Option<KeyValueEntry>> {
         let handle = self.cf_handle(col.name()).ok_or_else(|| {
             StorageError::Config(format!("Missing column family: {}", col.name()))
         })?;
         let mut iter = self.iterator_cf(
             &handle,
             rocksdb::IteratorMode::From(key, rocksdb::Direction::Reverse),
+        );
+        match iter.next() {
+            Some(res) => res
+                .map(|(k, v)| Some((k, v)))
+                .map_err(|e| StorageError::Database(e).into()),
+            None => Ok(None),
+        }
+    }
+
+    fn get_at_or_after(&self, col: Column, key: &[u8]) -> Result<Option<KeyValueEntry>> {
+        let handle = self.cf_handle(col.name()).ok_or_else(|| {
+            StorageError::Config(format!("Missing column family: {}", col.name()))
+        })?;
+        let mut iter = self.iterator_cf(
+            &handle,
+            rocksdb::IteratorMode::From(key, rocksdb::Direction::Forward),
         );
         match iter.next() {
             Some(res) => res
@@ -118,6 +157,57 @@ impl DbReader for DBWithThreadMode<MultiThreaded> {
             ))
             .into()))),
         }
+    }
+}
+
+impl DbWriter for DBWithThreadMode<MultiThreaded> {
+    type Batch = WriteBatch;
+
+    fn create_batch(&self) -> Self::Batch {
+        WriteBatch::default()
+    }
+
+    fn batch_put(
+        &self,
+        batch: &mut Self::Batch,
+        col: Column,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<()> {
+        let handle = self.cf_handle(col.name()).ok_or_else(|| {
+            StorageError::Config(format!("Missing column family: {}", col.name()))
+        })?;
+        batch.put_cf(&handle, key, value);
+        Ok(())
+    }
+
+    fn batch_delete(&self, batch: &mut Self::Batch, col: Column, key: &[u8]) -> Result<()> {
+        let handle = self.cf_handle(col.name()).ok_or_else(|| {
+            StorageError::Config(format!("Missing column family: {}", col.name()))
+        })?;
+        batch.delete_cf(&handle, key);
+        Ok(())
+    }
+
+    fn commit_batch(&self, batch: Self::Batch) -> Result<()> {
+        self.write_opt(batch, &WriteOptions::default())
+            .map_err(|e| StorageError::Database(e).into())
+    }
+
+    fn put(&self, col: Column, key: &[u8], value: &[u8]) -> Result<()> {
+        let handle = self.cf_handle(col.name()).ok_or_else(|| {
+            StorageError::Config(format!("Missing column family: {}", col.name()))
+        })?;
+        self.put_cf(&handle, key, value)
+            .map_err(|e| StorageError::Database(e).into())
+    }
+
+    fn delete(&self, col: Column, key: &[u8]) -> Result<()> {
+        let handle = self.cf_handle(col.name()).ok_or_else(|| {
+            StorageError::Config(format!("Missing column family: {}", col.name()))
+        })?;
+        self.delete_cf(&handle, key)
+            .map_err(|e| StorageError::Database(e).into())
     }
 }
 
@@ -228,6 +318,18 @@ impl Storage {
             .get(Column::Genesis, &SINGLE_VALUE_KEY)?
             .map(|val| H256::from_slice(val.as_ref())))
     }
+
+    pub fn get_raw(&self, col: Column, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        Ok(DbReader::get(self, col, key)?.map(|v| v.as_ref().to_vec()))
+    }
+
+    pub fn seek_forward(&self, col: Column, key: &[u8]) -> Result<Option<KeyValueEntry>> {
+        DbReader::get_at_or_after(self, col, key)
+    }
+
+    pub fn iter(&self, col: Column) -> DbIterator<'_> {
+        DbReader::iter(self, col)
+    }
 }
 
 impl DbReader for Storage {
@@ -241,8 +343,12 @@ impl DbReader for Storage {
         DbReader::get(&*self.db, col, key)
     }
 
-    fn get_at_or_before(&self, col: Column, key: &[u8]) -> Result<Option<(Box<[u8]>, Box<[u8]>)>> {
+    fn get_at_or_before(&self, col: Column, key: &[u8]) -> Result<Option<KeyValueEntry>> {
         DbReader::get_at_or_before(&*self.db, col, key)
+    }
+
+    fn get_at_or_after(&self, col: Column, key: &[u8]) -> Result<Option<KeyValueEntry>> {
+        DbReader::get_at_or_after(&*self.db, col, key)
     }
 
     fn iter<'a>(&'a self, col: Column) -> DbIterator<'a> {
@@ -251,5 +357,39 @@ impl DbReader for Storage {
 
     fn iter_rev<'a>(&'a self, col: Column) -> DbIterator<'a> {
         DbReader::iter_rev(&*self.db, col)
+    }
+}
+
+impl DbWriter for Storage {
+    type Batch = WriteBatch;
+
+    fn create_batch(&self) -> Self::Batch {
+        DbWriter::create_batch(&*self.db)
+    }
+
+    fn batch_put(
+        &self,
+        batch: &mut Self::Batch,
+        col: Column,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<()> {
+        DbWriter::batch_put(&*self.db, batch, col, key, value)
+    }
+
+    fn batch_delete(&self, batch: &mut Self::Batch, col: Column, key: &[u8]) -> Result<()> {
+        DbWriter::batch_delete(&*self.db, batch, col, key)
+    }
+
+    fn commit_batch(&self, batch: Self::Batch) -> Result<()> {
+        DbWriter::commit_batch(&*self.db, batch)
+    }
+
+    fn put(&self, col: Column, key: &[u8], value: &[u8]) -> Result<()> {
+        DbWriter::put(&*self.db, col, key, value)
+    }
+
+    fn delete(&self, col: Column, key: &[u8]) -> Result<()> {
+        DbWriter::delete(&*self.db, col, key)
     }
 }

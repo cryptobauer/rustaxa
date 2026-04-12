@@ -630,11 +630,28 @@ void DbStorage::removeDagBlockBatch(Batch& write_batch, blk_hash_t const& hash) 
   remove(write_batch, Columns::dag_blocks, toSlice(hash));
 }
 
-void DbStorage::removeDagBlock(blk_hash_t const& hash) { remove(Columns::dag_blocks, toSlice(hash)); }
+void DbStorage::removeDagBlock(blk_hash_t const& hash) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  std::array<uint8_t, 32> h_arr;
+  std::memcpy(h_arr.data(), hash.data(), 32);
+  rust_storage_.value()->remove_dag_block(h_arr);
+  return;
+  #endif
+  remove(Columns::dag_blocks, toSlice(hash));
+}
 
 void DbStorage::updateDagBlockCounters(std::vector<std::shared_ptr<DagBlock>> blks) {
   // Lock is needed since we are editing some fields
   std::lock_guard<std::mutex> u_lock(dag_blocks_mutex_);
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  for (auto const& blk : blks) {
+    std::array<uint8_t, 32> h_arr;
+    auto hash = blk->getHash();
+    std::memcpy(h_arr.data(), hash.data(), 32);
+    rust_storage_.value()->update_dag_block_counter(h_arr, blk->getLevel(), blk->getTips().size());
+  }
+  return;
+  #endif
   auto write_batch = createWriteBatch();
   for (auto const& blk : blks) {
     auto level = blk->getLevel();
@@ -656,6 +673,27 @@ void DbStorage::updateDagBlockCounters(std::vector<std::shared_ptr<DagBlock>> bl
 void DbStorage::saveDagBlock(const std::shared_ptr<DagBlock>& blk, Batch* write_batch_p) {
   // Lock is needed since we are editing some fields
   std::lock_guard<std::mutex> u_lock(dag_blocks_mutex_);
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  // There are no callers of this method that pass in a write batch. So no need to ever
+  // do more than we do here.
+  if (!write_batch_p) {
+    auto block_hash = blk->getHash();
+    std::array<uint8_t, 32> h_arr;
+    std::memcpy(h_arr.data(), block_hash.data(), 32);
+
+    auto block_bytes = blk->rlp(true);
+    rust::Vec<uint8_t> block_rlp;
+    block_rlp.reserve(block_bytes.size());
+    for (auto const& b : block_bytes) {
+      block_rlp.push_back(static_cast<uint8_t>(b));
+    }
+
+    rust_storage_.value()->save_dag_block(h_arr, blk->getLevel(), blk->getTips().size(), std::move(block_rlp));
+    return;
+  } else {
+    throw DbException("saveDagBlock was called with write batch but is not implemented.");
+  }
+  #endif
   auto write_batch_up = write_batch_p ? std::unique_ptr<Batch>() : std::make_unique<Batch>();
   auto commit = !write_batch_p;
   auto& write_batch = write_batch_p ? *write_batch_p : *write_batch_up;
@@ -1613,6 +1651,10 @@ std::optional<PbftPeriod> DbStorage::getProposalPeriodForDagLevel(uint64_t level
 }
 
 void DbStorage::saveProposalPeriodDagLevelsMap(uint64_t level, PbftPeriod period) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  rust_storage_.value()->save_proposal_period_dag_levels_map(level, period);
+  return;
+  #endif
   insert(Columns::proposal_period_levels_map, toSlice(level), toSlice(period));
 }
 

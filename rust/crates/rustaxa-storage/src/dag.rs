@@ -1,11 +1,11 @@
 use anyhow::Result;
 use ethereum_types::H256;
 use rustaxa_types::{DagBlock, TypesError};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use crate::db::DbReader;
-use crate::{Column, StorageError};
+use crate::db::{DbReader, DbWriter};
+use crate::{Column, StatusField, StorageError};
 
 pub struct DagRepository<D: DbReader> {
     db: Arc<D>,
@@ -168,6 +168,138 @@ impl<D: DbReader> DagRepository<D> {
     }
 }
 
+impl<D: DbReader + DbWriter> DagRepository<D> {
+    /// Implements saveDagBlock(block, nullptr)
+    pub fn save_dag_block(
+        &self,
+        hash: H256,
+        level: u64,
+        tips_count: u64,
+        block_rlp: &[u8],
+    ) -> Result<()> {
+        let mut write_batch = self.db.create_batch();
+        self.db.batch_put(
+            &mut write_batch,
+            Column::DagBlocks,
+            hash.as_bytes(),
+            block_rlp,
+        )?;
+
+        let level_bytes = self.encode_level_hashes(level, hash)?;
+        self.db.batch_put(
+            &mut write_batch,
+            Column::DagBlocksLevel,
+            &level.to_le_bytes(),
+            &level_bytes,
+        )?;
+
+        let dag_blocks_count = self
+            .status_field(StatusField::DagBlkCount as u8)?
+            .wrapping_add(1);
+        let dag_edge_count = self
+            .status_field(StatusField::DagEdgeCount as u8)?
+            .wrapping_add(tips_count.wrapping_add(1));
+
+        self.db.batch_put(
+            &mut write_batch,
+            Column::Status,
+            &[StatusField::DagBlkCount as u8],
+            &dag_blocks_count.to_le_bytes(),
+        )?;
+        self.db.batch_put(
+            &mut write_batch,
+            Column::Status,
+            &[StatusField::DagEdgeCount as u8],
+            &dag_edge_count.to_le_bytes(),
+        )?;
+
+        self.db.commit_batch(write_batch)
+    }
+
+    /// Implements updateDagBlockCounters(blocks)
+    pub fn update_dag_block_counter(&self, hash: H256, level: u64, tips_count: u64) -> Result<()> {
+        let mut write_batch = self.db.create_batch();
+
+        let level_bytes = self.encode_level_hashes(level, hash)?;
+        self.db.batch_put(
+            &mut write_batch,
+            Column::DagBlocksLevel,
+            &level.to_le_bytes(),
+            &level_bytes,
+        )?;
+
+        let dag_blocks_count = self
+            .status_field(StatusField::DagBlkCount as u8)?
+            .wrapping_add(1);
+        let dag_edge_count = self
+            .status_field(StatusField::DagEdgeCount as u8)?
+            .wrapping_add(tips_count.wrapping_add(1));
+
+        self.db.batch_put(
+            &mut write_batch,
+            Column::Status,
+            &[StatusField::DagBlkCount as u8],
+            &dag_blocks_count.to_le_bytes(),
+        )?;
+        self.db.batch_put(
+            &mut write_batch,
+            Column::Status,
+            &[StatusField::DagEdgeCount as u8],
+            &dag_edge_count.to_le_bytes(),
+        )?;
+
+        self.db.commit_batch(write_batch)
+    }
+
+    /// Implements removeDagBlock(hash)
+    pub fn remove_dag_block(&self, hash: H256) -> Result<()> {
+        self.db.delete(Column::DagBlocks, hash.as_bytes())
+    }
+
+    /// Implements saveProposalPeriodDagLevelsMap(level, period)
+    pub fn save_proposal_period_dag_levels_map(&self, level: u64, period: u64) -> Result<()> {
+        self.db.put(
+            Column::ProposalPeriodLevelsMap,
+            &level.to_le_bytes(),
+            &period.to_le_bytes(),
+        )
+    }
+
+    fn encode_level_hashes(&self, level: u64, new_hash: H256) -> Result<Vec<u8>> {
+        let existing = self.blocks_by_level(level)?;
+        let mut merged = BTreeSet::new();
+        for hash in existing {
+            merged.insert(hash);
+        }
+        merged.insert(new_hash);
+
+        let mut stream = rlp::RlpStream::new_list(merged.len());
+        for hash in merged {
+            stream.append(&hash);
+        }
+        Ok(stream.out().to_vec())
+    }
+
+    fn status_field(&self, field: u8) -> Result<u64> {
+        let Some(value) = self.db.get(Column::Status, &[field])? else {
+            return Ok(0);
+        };
+        let value = value.as_ref();
+        if value.len() != std::mem::size_of::<u64>() {
+            return Err(StorageError::Read(format!(
+                "Invalid status value size: expected {}, got {}",
+                std::mem::size_of::<u64>(),
+                value.len()
+            ))
+            .into());
+        }
+
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(value);
+        Ok(u64::from_le_bytes(bytes))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,6 +366,22 @@ mod tests {
                 .map(|(k, v)| (k.clone().into_boxed_slice(), v.clone().into_boxed_slice())))
         }
 
+        fn get_at_or_after(
+            &self,
+            col: Column,
+            key: &[u8],
+        ) -> Result<Option<(Box<[u8]>, Box<[u8]>)>> {
+            let data = self.data.read().unwrap();
+            let Some(cf) = data.get(col.name()) else {
+                return Ok(None);
+            };
+            let key = key.to_vec();
+            Ok(cf
+                .range(key..)
+                .next()
+                .map(|(k, v)| (k.clone().into_boxed_slice(), v.clone().into_boxed_slice())))
+        }
+
         fn iter<'a>(&'a self, col: Column) -> DbIterator<'a> {
             let data = self.data.read().unwrap();
             if let Some(cf) = data.get(col.name()) {
@@ -278,6 +426,14 @@ mod tests {
         }
 
         fn get_at_or_before(
+            &self,
+            _col: Column,
+            _key: &[u8],
+        ) -> Result<Option<(Box<[u8]>, Box<[u8]>)>> {
+            Ok(None)
+        }
+
+        fn get_at_or_after(
             &self,
             _col: Column,
             _key: &[u8],
