@@ -9,6 +9,7 @@ Current migration direction:
 - After the read surface is stable, move write APIs and batch handling.
 - Keep RocksDB administration and file-management helpers out of the first wave unless they block functional parity.
 - Snapshotting and storage migrations stay in C++ and are generally out of Rust rewrite scope.
+- `light_plugin` storage maintenance/pruning flows stay in C++ and are out of Rust rewrite scope.
 
 ## Legend
 
@@ -290,6 +291,7 @@ Batch migration note:
 
 These are part of the public surface but they are not good first-wave Rust repository shims.
 Scope note: snapshotting and DB migration flow are intentionally out of Rust rewrite scope. Some low-level admin APIs are also out of scope for now.
+Scope note: APIs primarily exercised by `libraries/plugin/light` (iterator/range/compaction/history maintenance) are intentionally not migration blockers for Rust storage.
 
 - `[!] createWriteBatch()`
 - `[!] commitWriteBatch(Batch& write_batch, const rocksdb::WriteOptions& opts)`
@@ -299,6 +301,7 @@ Scope note: snapshotting and DB migration flow are intentionally out of Rust rew
 - `[!] DeleteRange(const Column& col, uint64_t begin, uint64_t end)`
 - `[!] CompactRange(const Column& col, uint64_t begin, uint64_t end)`
 - `[!] compactColumn(Column const& column)`
+- `[!] clearColumnHistory(std::unordered_set<T>& to_keep, Column c)`
 - `[u] rebuildColumns(const rocksdb::Options& options)`
 - `[!] createSnapshot(PbftPeriod period)`
 - `[u] deleteSnapshot(PbftPeriod period)`
