@@ -1094,54 +1094,55 @@ fn main() -> Result<()> {
         // 3. Who proposed PBFT block for the ORIGINAL (pre-collision) period?
         let original_period = get_proposal_period_seek(&storage, target_anchor_level + 1)?;
         if let Some(op) = original_period
-            && op != cp {
-                println!();
-                println!("  c) PBFT block for original (pre-collision) period {op}:");
-                let op_raw = storage.period().period_data_raw(op)?;
-                if !op_raw.is_empty() {
-                    let op_period_rlp = Rlp::new(&op_raw);
-                    let op_pbft_rlp = op_period_rlp.at(PBFT_BLOCK_POS)?;
-                    match recover_pbft_block_proposer(op_pbft_rlp.as_raw()) {
-                        Some(addr) => println!("     Proposer: 0x{}", hex_encode(&addr)),
-                        None => println!("     ⚠ Could not recover proposer from signature"),
-                    }
-                    let (_, pivot_dag, period, ts) =
-                        decode_pbft_block_fields(op_pbft_rlp.as_raw())?;
-                    println!("     Period: {period}");
-                    println!("     Anchor: {pivot_dag:?}");
-                    println!("     Timestamp: {ts} ({})", format_timestamp(ts));
+            && op != cp
+        {
+            println!();
+            println!("  c) PBFT block for original (pre-collision) period {op}:");
+            let op_raw = storage.period().period_data_raw(op)?;
+            if !op_raw.is_empty() {
+                let op_period_rlp = Rlp::new(&op_raw);
+                let op_pbft_rlp = op_period_rlp.at(PBFT_BLOCK_POS)?;
+                match recover_pbft_block_proposer(op_pbft_rlp.as_raw()) {
+                    Some(addr) => println!("     Proposer: 0x{}", hex_encode(&addr)),
+                    None => println!("     ⚠ Could not recover proposer from signature"),
                 }
+                let (_, pivot_dag, period, ts) = decode_pbft_block_fields(op_pbft_rlp.as_raw())?;
+                println!("     Period: {period}");
+                println!("     Anchor: {pivot_dag:?}");
+                println!("     Timestamp: {ts} ({})", format_timestamp(ts));
             }
+        }
     }
 
     // 4. List all senders of non-finalized blocks at the target level
     if target_anchor_level > 0
-        && let Some(blocks) = blocks_by_level.get(&target_anchor_level) {
-            println!();
-            println!(
-                "  d) All {} block producers at level {target_anchor_level}:",
-                blocks.len()
-            );
-            for (hash, _blk) in blocks {
-                let raw = storage.dag().dag_block_rlp(*hash)?;
-                let sender = if !raw.is_empty() {
-                    recover_dag_block_sender(&raw)
-                } else {
-                    None
-                };
-                let is_target = if *hash == target_anchor {
-                    " ← TARGET ANCHOR"
-                } else {
-                    ""
-                };
-                match sender {
-                    Some(addr) => {
-                        println!("     {hash:?} → 0x{}{is_target}", hex_encode(&addr))
-                    }
-                    None => println!("     {hash:?} → ⚠ unknown sender{is_target}"),
+        && let Some(blocks) = blocks_by_level.get(&target_anchor_level)
+    {
+        println!();
+        println!(
+            "  d) All {} block producers at level {target_anchor_level}:",
+            blocks.len()
+        );
+        for (hash, _blk) in blocks {
+            let raw = storage.dag().dag_block_rlp(*hash)?;
+            let sender = if !raw.is_empty() {
+                recover_dag_block_sender(&raw)
+            } else {
+                None
+            };
+            let is_target = if *hash == target_anchor {
+                " ← TARGET ANCHOR"
+            } else {
+                ""
+            };
+            match sender {
+                Some(addr) => {
+                    println!("     {hash:?} → 0x{}{is_target}", hex_encode(&addr))
                 }
+                None => println!("     {hash:?} → ⚠ unknown sender{is_target}"),
             }
         }
+    }
 
     Ok(())
 }

@@ -116,6 +116,10 @@ mod ffi {
         fn save_pbft_mgr_status(&self, field: u8, value: bool) -> Result<()>;
         fn save_pbft_head(&self, hash: &[u8; 32], head: Vec<u8>) -> Result<()>;
         fn save_own_verified_vote(&self, hash: &[u8; 32], vote_rlp: Vec<u8>) -> Result<()>;
+        fn remove_cert_voted_block_in_round(&self) -> Result<()>;
+        fn remove_proposed_pbft_block(&self, hash: &[u8; 32]) -> Result<()>;
+        fn remove_own_verified_vote(&self, hash: &[u8; 32]) -> Result<()>;
+        fn remove_extra_reward_vote(&self, hash: &[u8; 32]) -> Result<()>;
         fn replace_two_t_plus_one_votes(
             &self,
             vote_type: u8,
@@ -558,6 +562,22 @@ impl Storage {
         self.0
             .pbft()
             .save_own_verified_vote(H256::from(*hash), &vote_rlp)
+    }
+
+    fn remove_cert_voted_block_in_round(&self) -> Result<(), anyhow::Error> {
+        self.0.pbft().remove_cert_voted_block_in_round()
+    }
+
+    fn remove_proposed_pbft_block(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
+        self.0.pbft().remove_proposed_pbft_block(H256::from(*hash))
+    }
+
+    fn remove_own_verified_vote(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
+        self.0.pbft().remove_own_verified_vote(H256::from(*hash))
+    }
+
+    fn remove_extra_reward_vote(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
+        self.0.pbft().remove_extra_reward_vote(H256::from(*hash))
     }
 
     fn replace_two_t_plus_one_votes(

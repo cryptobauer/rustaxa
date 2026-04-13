@@ -212,6 +212,30 @@ impl<D: DbReader + DbWriter> PbftRepository<D> {
             .put(Column::ProposedPbftBlocks, block_hash.as_bytes(), block_rlp)
     }
 
+    /// Implements removeCertVotedBlockInRound()
+    pub fn remove_cert_voted_block_in_round(&self) -> Result<()> {
+        self.db
+            .delete(Column::CertVotedBlockInRound, &SINGLE_VALUE_KEY)
+    }
+
+    /// Implements removeProposedPbftBlock(hash)
+    pub fn remove_proposed_pbft_block(&self, block_hash: H256) -> Result<()> {
+        self.db
+            .delete(Column::ProposedPbftBlocks, block_hash.as_bytes())
+    }
+
+    /// Implements clearOwnVerifiedVotes([...])
+    pub fn remove_own_verified_vote(&self, vote_hash: H256) -> Result<()> {
+        self.db
+            .delete(Column::LatestRoundOwnVotes, vote_hash.as_bytes())
+    }
+
+    /// Implements removeExtraRewardVotes([...])
+    pub fn remove_extra_reward_vote(&self, vote_hash: H256) -> Result<()> {
+        self.db
+            .delete(Column::ExtraRewardVotes, vote_hash.as_bytes())
+    }
+
     fn validate_two_t_plus_one_vote_type(vote_type: u8) -> Result<()> {
         if TwoTPlusOneVotedBlockType::ALL
             .iter()

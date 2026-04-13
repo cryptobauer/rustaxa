@@ -1019,6 +1019,12 @@ void DbStorage::saveProposedPbftBlock(const std::shared_ptr<PbftBlock>& block) {
 }
 
 void DbStorage::removeProposedPbftBlock(const blk_hash_t& block_hash, Batch& write_batch) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  std::array<uint8_t, 32> h_arr;
+  std::memcpy(h_arr.data(), block_hash.data(), 32);
+  rust_storage_.value()->remove_proposed_pbft_block(h_arr);
+  return;
+  #endif
   remove(write_batch, Columns::proposed_pbft_blocks, toSlice(block_hash.asBytes()));
 }
 
@@ -1371,6 +1377,10 @@ void DbStorage::savePbftMgrField(PbftMgrField field, uint32_t value) {
 }
 
 void DbStorage::addPbftMgrFieldToBatch(PbftMgrField field, uint32_t value, Batch& write_batch) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  rust_storage_.value()->save_pbft_mgr_field(static_cast<uint8_t>(field), value);
+  return;
+  #endif
   insert(write_batch, DbStorage::Columns::pbft_mgr_round_step, toSlice(static_cast<uint8_t>(field)), toSlice(value));
 }
 
@@ -1396,6 +1406,10 @@ void DbStorage::savePbftMgrStatus(PbftMgrStatus field, bool const& value) {
 }
 
 void DbStorage::addPbftMgrStatusToBatch(PbftMgrStatus field, bool const& value, Batch& write_batch) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  rust_storage_.value()->save_pbft_mgr_status(static_cast<uint8_t>(field), value);
+  return;
+  #endif
   insert(write_batch, DbStorage::Columns::pbft_mgr_status, toSlice(field), toSlice(value));
 }
 
@@ -1451,6 +1465,10 @@ std::optional<std::pair<PbftRound, std::shared_ptr<PbftBlock>>> DbStorage::getCe
 }
 
 void DbStorage::removeCertVotedBlockInRound(Batch& write_batch) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  rust_storage_.value()->remove_cert_voted_block_in_round();
+  return;
+  #endif
   remove(write_batch, Columns::cert_voted_block_in_round, 0);
 }
 
@@ -1499,6 +1517,17 @@ void DbStorage::savePbftHead(blk_hash_t const& hash, std::string const& pbft_cha
 
 void DbStorage::addPbftHeadToBatch(taraxa::blk_hash_t const& head_hash, std::string const& head_str,
                                    Batch& write_batch) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  std::array<uint8_t, 32> h_arr;
+  std::memcpy(h_arr.data(), head_hash.data(), 32);
+  rust::Vec<uint8_t> head_bytes;
+  head_bytes.reserve(head_str.size());
+  for (auto const& c : head_str) {
+    head_bytes.push_back(static_cast<uint8_t>(c));
+  }
+  rust_storage_.value()->save_pbft_head(h_arr, std::move(head_bytes));
+  return;
+  #endif
   insert(write_batch, Columns::pbft_head, toSlice(head_hash.asBytes()), head_str);
 }
 
@@ -1542,6 +1571,15 @@ std::vector<std::shared_ptr<PbftVote>> DbStorage::getOwnVerifiedVotes() {
 
 void DbStorage::clearOwnVerifiedVotes(Batch& write_batch,
                                       const std::vector<std::shared_ptr<PbftVote>>& own_verified_votes) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  for (const auto& own_vote : own_verified_votes) {
+    std::array<uint8_t, 32> h_arr;
+    auto vote_hash = own_vote->getHash();
+    std::memcpy(h_arr.data(), vote_hash.data(), 32);
+    rust_storage_.value()->remove_own_verified_vote(h_arr);
+  }
+  return;
+  #endif
   for (const auto& own_vote : own_verified_votes) {
     remove(write_batch, Columns::latest_round_own_votes, own_vote->getHash().asBytes());
   }
@@ -1575,6 +1613,20 @@ void DbStorage::replaceTwoTPlusOneVotes(TwoTPlusOneVotedBlockType type,
 void DbStorage::replaceTwoTPlusOneVotesToBatch(TwoTPlusOneVotedBlockType type,
                                                const std::vector<std::shared_ptr<PbftVote>>& votes,
                                                Batch& write_batch) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  dev::RLPStream rust_votes_stream(votes.size());
+  for (const auto& vote : votes) {
+    rust_votes_stream.appendRaw(vote->rlp(true, true));
+  }
+  auto votes_bundle = rust_votes_stream.out();
+  rust::Vec<uint8_t> votes_bundle_rlp;
+  votes_bundle_rlp.reserve(votes_bundle.size());
+  for (auto const& b : votes_bundle) {
+    votes_bundle_rlp.push_back(static_cast<uint8_t>(b));
+  }
+  rust_storage_.value()->replace_two_t_plus_one_votes(static_cast<uint8_t>(type), std::move(votes_bundle_rlp));
+  return;
+  #endif
   remove(write_batch, Columns::latest_round_two_t_plus_one_votes, static_cast<uint8_t>(type));
 
   dev::RLPStream s(votes.size());
@@ -1614,6 +1666,14 @@ std::vector<std::shared_ptr<PbftVote>> DbStorage::getAllTwoTPlusOneVotes() {
 }
 
 void DbStorage::removeExtraRewardVotes(const std::vector<vote_hash_t>& votes, Batch& write_batch) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  for (const auto& v : votes) {
+    std::array<uint8_t, 32> h_arr;
+    std::memcpy(h_arr.data(), v.data(), 32);
+    rust_storage_.value()->remove_extra_reward_vote(h_arr);
+  }
+  return;
+  #endif
   for (const auto& v : votes) {
     remove(write_batch, Columns::extra_reward_votes, v.asBytes());
   }
