@@ -726,6 +726,16 @@ void DbStorage::saveDagBlock(const std::shared_ptr<DagBlock>& blk, Batch* write_
 
 // Sortition params
 void DbStorage::saveSortitionParamsChange(PbftPeriod period, const SortitionParamsChange& params, Batch& batch) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  auto params_rlp_bytes = params.rlp();
+  rust::Vec<uint8_t> params_rlp;
+  params_rlp.reserve(params_rlp_bytes.size());
+  for (auto const& b : params_rlp_bytes) {
+    params_rlp.push_back(static_cast<uint8_t>(b));
+  }
+  rust_storage_.value()->save_sortition_params_change(period, std::move(params_rlp));
+  return;
+  #endif
   insert(batch, Columns::sortition_params_change, toSlice(period), toSlice(params.rlp()));
 }
 
@@ -775,6 +785,43 @@ std::optional<SortitionParamsChange> DbStorage::getParamsChangeForPeriod(PbftPer
 uint64_t DbStorage::getEarliestBlockNumber() const { return earliest_block_number_; }
 
 void DbStorage::savePeriodData(const PeriodData& period_data, Batch& write_batch) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  const auto rust_period = period_data.pbft_blk->getPeriod();
+
+  auto pbft_block_hash = period_data.pbft_blk->getBlockHash();
+  std::array<uint8_t, 32> pbft_hash_arr;
+  std::memcpy(pbft_hash_arr.data(), pbft_block_hash.data(), 32);
+  rust_storage_.value()->save_pbft_block_period(pbft_hash_arr, rust_period);
+
+  uint32_t rust_block_pos = 0;
+  for (auto const& block : period_data.dag_blocks) {
+    std::array<uint8_t, 32> block_hash_arr;
+    auto block_hash = block->getHash();
+    std::memcpy(block_hash_arr.data(), block_hash.data(), 32);
+    rust_storage_.value()->remove_dag_block(block_hash_arr);
+    rust_storage_.value()->save_dag_block_period(block_hash_arr, rust_period, rust_block_pos);
+    rust_block_pos++;
+  }
+
+  uint32_t rust_trx_pos = 0;
+  for (auto const& trx : period_data.transactions) {
+    std::array<uint8_t, 32> trx_hash_arr;
+    auto trx_hash = trx->getHash();
+    std::memcpy(trx_hash_arr.data(), trx_hash.data(), 32);
+    rust_storage_.value()->remove_transaction(trx_hash_arr);
+    rust_storage_.value()->save_transaction_location(trx_hash_arr, rust_period, rust_trx_pos, false);
+    rust_trx_pos++;
+  }
+
+  auto period_data_bytes = period_data.rlp();
+  rust::Vec<uint8_t> period_data_rlp;
+  period_data_rlp.reserve(period_data_bytes.size());
+  for (auto const& b : period_data_bytes) {
+    period_data_rlp.push_back(static_cast<uint8_t>(b));
+  }
+  rust_storage_.value()->save_period_data(rust_period, std::move(period_data_rlp));
+  return;
+  #endif
   const auto period = period_data.pbft_blk->getPeriod();
   addPbftBlockPeriodToBatch(period, period_data.pbft_blk->getBlockHash(), write_batch);
 
@@ -931,6 +978,12 @@ std::optional<pillar_chain::CurrentPillarBlockDataDb> DbStorage::getCurrentPilla
 
 void DbStorage::addTransactionLocationToBatch(Batch& write_batch, trx_hash_t const& trx_hash, PbftPeriod period,
                                               uint32_t position, bool is_system) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  std::array<uint8_t, 32> h_arr;
+  std::memcpy(h_arr.data(), trx_hash.data(), 32);
+  rust_storage_.value()->save_transaction_location(h_arr, period, position, is_system);
+  return;
+  #endif
   dev::RLPStream s;
   s.appendList(2 + is_system);
   s << period;
@@ -1149,6 +1202,19 @@ SharedTransactions DbStorage::getFinalizedTransactions(std::vector<trx_hash_t> c
 }
 
 void DbStorage::addSystemTransactionToBatch(Batch& write_batch, SharedTransaction trx) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  std::array<uint8_t, 32> h_arr;
+  auto trx_hash = trx->getHash();
+  std::memcpy(h_arr.data(), trx_hash.data(), 32);
+  auto trx_bytes = trx->rlp();
+  rust::Vec<uint8_t> trx_rlp;
+  trx_rlp.reserve(trx_bytes.size());
+  for (auto const& b : trx_bytes) {
+    trx_rlp.push_back(static_cast<uint8_t>(b));
+  }
+  rust_storage_.value()->save_system_transaction(h_arr, std::move(trx_rlp));
+  return;
+  #endif
   insert(write_batch, Columns::system_transaction, toSlice(trx->getHash().asBytes()), toSlice(trx->rlp()));
 }
 
@@ -1177,6 +1243,15 @@ void DbStorage::addPeriodSystemTransactions(Batch& write_batch, SharedTransactio
   std::transform(trxs.begin(), trxs.end(), std::back_inserter(trx_hashes),
                  [](const auto& trx) { return trx->getHash(); });
   auto hashes_rlp = util::rlp_enc(trx_hashes);
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  rust::Vec<uint8_t> hashes;
+  hashes.reserve(hashes_rlp.size());
+  for (auto const& b : hashes_rlp) {
+    hashes.push_back(static_cast<uint8_t>(b));
+  }
+  rust_storage_.value()->save_period_system_transactions_hashes(period, std::move(hashes));
+  return;
+  #endif
   insert(write_batch, Columns::period_system_transactions, toSlice(period), toSlice(hashes_rlp));
 }
 
@@ -1288,10 +1363,29 @@ std::vector<std::shared_ptr<PillarVote>> DbStorage::getPeriodPillarVotes(PbftPer
 }
 
 void DbStorage::addTransactionToBatch(Transaction const& trx, Batch& write_batch) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  std::array<uint8_t, 32> h_arr;
+  auto trx_hash = trx.getHash();
+  std::memcpy(h_arr.data(), trx_hash.data(), 32);
+  auto trx_bytes = trx.rlp();
+  rust::Vec<uint8_t> trx_rlp;
+  trx_rlp.reserve(trx_bytes.size());
+  for (auto const& b : trx_bytes) {
+    trx_rlp.push_back(static_cast<uint8_t>(b));
+  }
+  rust_storage_.value()->save_transaction(h_arr, std::move(trx_rlp));
+  return;
+  #endif
   insert(write_batch, DbStorage::Columns::transactions, toSlice(trx.getHash().asBytes()), toSlice(trx.rlp()));
 }
 
 void DbStorage::removeTransactionToBatch(trx_hash_t const& trx, Batch& write_batch) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  std::array<uint8_t, 32> h_arr;
+  std::memcpy(h_arr.data(), trx.data(), 32);
+  rust_storage_.value()->remove_transaction(h_arr);
+  return;
+  #endif
   remove(write_batch, Columns::transactions, toSlice(trx));
 }
 
@@ -1349,6 +1443,10 @@ void DbStorage::saveStatusField(StatusDbField const& field, uint64_t value) {
 }
 
 void DbStorage::addStatusFieldToBatch(StatusDbField const& field, uint64_t value, Batch& write_batch) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  rust_storage_.value()->save_status_field(static_cast<uint8_t>(field), value);
+  return;
+  #endif
   insert(write_batch, DbStorage::Columns::status, toSlice((uint8_t)field), toSlice(value));
 }
 
@@ -1718,6 +1816,12 @@ std::vector<std::shared_ptr<PbftVote>> DbStorage::getRewardVotes() {
 
 void DbStorage::addPbftBlockPeriodToBatch(PbftPeriod period, taraxa::blk_hash_t const& pbft_block_hash,
                                           Batch& write_batch) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  std::array<uint8_t, 32> h_arr;
+  std::memcpy(h_arr.data(), pbft_block_hash.data(), 32);
+  rust_storage_.value()->save_pbft_block_period(h_arr, period);
+  return;
+  #endif
   insert(write_batch, Columns::pbft_block_period, toSlice(pbft_block_hash.asBytes()), toSlice(period));
 }
 
@@ -1764,6 +1868,12 @@ std::shared_ptr<std::pair<PbftPeriod, uint32_t>> DbStorage::getDagBlockPeriod(bl
 
 void DbStorage::addDagBlockPeriodToBatch(blk_hash_t const& hash, PbftPeriod period, uint32_t position,
                                          Batch& write_batch) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  std::array<uint8_t, 32> h_arr;
+  std::memcpy(h_arr.data(), hash.data(), 32);
+  rust_storage_.value()->save_dag_block_period(h_arr, period, position);
+  return;
+  #endif
   dev::RLPStream s;
   s.appendList(2);
   s << period;
@@ -1844,10 +1954,18 @@ void DbStorage::saveProposalPeriodDagLevelsMap(uint64_t level, PbftPeriod period
 }
 
 void DbStorage::addProposalPeriodDagLevelsMapToBatch(uint64_t level, PbftPeriod period, Batch& write_batch) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  rust_storage_.value()->save_proposal_period_dag_levels_map(level, period);
+  return;
+  #endif
   insert(write_batch, Columns::proposal_period_levels_map, toSlice(level), toSlice(period));
 }
 
 void DbStorage::savePeriodLambda(PbftPeriod period, uint32_t period_lambda, Batch& write_batch) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  rust_storage_.value()->save_period_lambda(period, period_lambda);
+  return;
+  #endif
   // Save latest dynamic lambda
   insert(write_batch, Columns::period_lambda, period, period_lambda);
 }
@@ -1883,6 +2001,10 @@ std::optional<uint32_t> DbStorage::getPeriodLambda(PbftPeriod period, bool find_
 }
 
 void DbStorage::saveRoundsCountDynamicLambda(uint32_t rounds_count, Batch& write_batch) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  rust_storage_.value()->save_rounds_count_dynamic_lambda(rounds_count);
+  return;
+  #endif
   insert(write_batch, Columns::rounds_count_dynamic_lambda, 0, toSlice(rounds_count));
 }
 
@@ -1925,6 +2047,18 @@ std::unordered_map<PbftPeriod, rewards::BlockStats> DbStorage::getBlocksRewardsS
 }
 
 void DbStorage::saveBlockRewardsStats(uint64_t period, const rewards::BlockStats& stats, Batch& write_batch) {
+  #ifdef RUSTAXA_ENABLE_STORAGE
+  dev::RLPStream rust_encoding;
+  stats.rlp(rust_encoding);
+  auto stats_bytes = rust_encoding.out();
+  rust::Vec<uint8_t> stats_rlp;
+  stats_rlp.reserve(stats_bytes.size());
+  for (auto const& b : stats_bytes) {
+    stats_rlp.push_back(static_cast<uint8_t>(b));
+  }
+  rust_storage_.value()->save_block_rewards_stats(period, std::move(stats_rlp));
+  return;
+  #endif
   dev::RLPStream encoding;
   stats.rlp(encoding);
   insert(write_batch, DbStorage::Columns::block_rewards_stats, period, encoding.out());

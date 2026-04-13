@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::Column;
 use crate::StorageError;
-use crate::db::DbReader;
+use crate::db::{DbReader, DbWriter};
 
 const TRANSACTIONS_POS_IN_PERIOD_DATA: usize = 3;
 
@@ -120,6 +120,60 @@ impl<D: DbReader> TransactionRepository<D> {
             .get(Column::PeriodSystemTransactions, &period.to_le_bytes())?
             .map(|value| value.as_ref().to_vec())
             .unwrap_or_default())
+    }
+}
+
+impl<D: DbReader + DbWriter> TransactionRepository<D> {
+    /// Implements addTransactionToBatch(trx, ...)
+    pub fn save_transaction(&self, trx_hash: H256, trx_rlp: &[u8]) -> Result<()> {
+        self.db
+            .put(Column::Transactions, trx_hash.as_bytes(), trx_rlp)
+    }
+
+    /// Implements removeTransactionToBatch(hash, ...)
+    pub fn remove_transaction(&self, trx_hash: H256) -> Result<()> {
+        self.db.delete(Column::Transactions, trx_hash.as_bytes())
+    }
+
+    /// Implements addTransactionLocationToBatch(..., hash, period, position, is_system)
+    pub fn save_transaction_location(
+        &self,
+        trx_hash: H256,
+        period: u64,
+        position: u32,
+        is_system: bool,
+    ) -> Result<()> {
+        let mut stream = rlp::RlpStream::new_list(2 + usize::from(is_system));
+        stream.append(&period);
+        stream.append(&position);
+        if is_system {
+            stream.append(&is_system);
+        }
+
+        self.db.put(
+            Column::TrxPeriod,
+            trx_hash.as_bytes(),
+            stream.out().as_ref(),
+        )
+    }
+
+    /// Implements addSystemTransactionToBatch(..., trx)
+    pub fn save_system_transaction(&self, trx_hash: H256, trx_rlp: &[u8]) -> Result<()> {
+        self.db
+            .put(Column::SystemTransaction, trx_hash.as_bytes(), trx_rlp)
+    }
+
+    /// Implements addPeriodSystemTransactions(..., trxs, period)
+    pub fn save_period_system_transactions_hashes(
+        &self,
+        period: u64,
+        hashes_rlp: &[u8],
+    ) -> Result<()> {
+        self.db.put(
+            Column::PeriodSystemTransactions,
+            &period.to_le_bytes(),
+            hashes_rlp,
+        )
     }
 }
 

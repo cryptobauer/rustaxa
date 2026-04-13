@@ -265,6 +265,19 @@ impl<D: DbReader + DbWriter> DagRepository<D> {
         )
     }
 
+    /// Implements addDagBlockPeriodToBatch(hash, period, position, ...)
+    pub fn save_dag_block_period(&self, hash: H256, period: u64, position: u32) -> Result<()> {
+        let mut stream = rlp::RlpStream::new_list(2);
+        stream.append(&period);
+        stream.append(&position);
+
+        self.db.put(
+            Column::DagBlockPeriod,
+            hash.as_bytes(),
+            stream.out().as_ref(),
+        )
+    }
+
     fn encode_level_hashes(&self, level: u64, new_hash: H256) -> Result<Vec<u8>> {
         let existing = self.blocks_by_level(level)?;
         let mut merged = BTreeSet::new();

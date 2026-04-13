@@ -2,7 +2,7 @@ use anyhow::Result;
 use ethereum_types::H256;
 use std::sync::Arc;
 
-use crate::db::DbReader;
+use crate::db::{DbReader, DbWriter};
 use crate::{Column, StorageError};
 
 pub struct PeriodRepository<D: DbReader> {
@@ -52,6 +52,23 @@ impl<D: DbReader> PeriodRepository<D> {
             .get(Column::FinalChainReceiptByPeriod, &period.to_le_bytes())?
             .map(|value| value.as_ref().to_vec())
             .unwrap_or_default())
+    }
+}
+
+impl<D: DbReader + DbWriter> PeriodRepository<D> {
+    /// Implements savePeriodData(period_data, ...)
+    pub fn save_period_data(&self, period: u64, period_data_rlp: &[u8]) -> Result<()> {
+        self.db
+            .put(Column::PeriodData, &period.to_le_bytes(), period_data_rlp)
+    }
+
+    /// Implements addPbftBlockPeriodToBatch(period, pbft_block_hash, ...)
+    pub fn save_pbft_block_period(&self, pbft_block_hash: H256, period: u64) -> Result<()> {
+        self.db.put(
+            Column::PbftBlockPeriod,
+            pbft_block_hash.as_bytes(),
+            &period.to_le_bytes(),
+        )
     }
 }
 

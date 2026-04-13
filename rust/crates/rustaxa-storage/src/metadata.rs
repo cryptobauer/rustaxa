@@ -171,6 +171,39 @@ impl<D: DbReader + DbWriter> MetadataRepository<D> {
     pub fn save_status_field(&self, field: u8, value: u64) -> Result<()> {
         self.db.put(Column::Status, &[field], &value.to_le_bytes())
     }
+
+    /// Implements saveSortitionParamsChange(period, params, ...)
+    pub fn save_sortition_params_change(&self, period: u64, params_rlp: &[u8]) -> Result<()> {
+        self.db.put(
+            Column::SortitionParamsChange,
+            &period.to_le_bytes(),
+            params_rlp,
+        )
+    }
+
+    /// Implements savePeriodLambda(period, period_lambda, ...)
+    pub fn save_period_lambda(&self, period: u64, period_lambda: u32) -> Result<()> {
+        self.db.put(
+            Column::PeriodLambda,
+            &period.to_le_bytes(),
+            &period_lambda.to_le_bytes(),
+        )
+    }
+
+    /// Implements saveRoundsCountDynamicLambda(rounds_count, ...)
+    pub fn save_rounds_count_dynamic_lambda(&self, rounds_count: u32) -> Result<()> {
+        self.db.put(
+            Column::RoundsCountDynamicLambda,
+            &SINGLE_VALUE_KEY,
+            &rounds_count.to_le_bytes(),
+        )
+    }
+
+    /// Implements saveBlockRewardsStats(period, stats, ...)
+    pub fn save_block_rewards_stats(&self, period: u64, stats_rlp: &[u8]) -> Result<()> {
+        self.db
+            .put(Column::BlockRewardsStats, &period.to_le_bytes(), stats_rlp)
+    }
 }
 
 #[cfg(test)]

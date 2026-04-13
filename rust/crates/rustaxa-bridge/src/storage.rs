@@ -80,10 +80,13 @@ mod ffi {
         ) -> Result<()>;
         fn remove_dag_block(&self, hash: &[u8; 32]) -> Result<()>;
         fn save_proposal_period_dag_levels_map(&self, level: u64, period: u64) -> Result<()>;
+        fn save_dag_block_period(&self, hash: &[u8; 32], period: u64, position: u32) -> Result<()>;
 
         fn get_period_data_raw(&self, period: u64) -> Result<Vec<u8>>;
         fn get_period_from_pbft_hash(&self, hash: &[u8; 32]) -> Result<PeriodLookup>;
         fn get_block_receipt(&self, period: u64) -> Result<Vec<u8>>;
+        fn save_period_data(&self, period: u64, period_data_rlp: Vec<u8>) -> Result<()>;
+        fn save_pbft_block_period(&self, hash: &[u8; 32], period: u64) -> Result<()>;
         fn get_pillar_block(&self, period: u64) -> Result<Vec<u8>>;
         fn get_latest_pillar_block(&self) -> Result<Vec<u8>>;
         fn get_own_pillar_block_vote(&self) -> Result<Vec<u8>>;
@@ -97,9 +100,13 @@ mod ffi {
         fn get_params_change_for_period(&self, period: u64) -> Result<Vec<u8>>;
         fn get_status_field(&self, field: u8) -> Result<u64>;
         fn save_status_field(&self, field: u8, value: u64) -> Result<()>;
+        fn save_sortition_params_change(&self, period: u64, params_rlp: Vec<u8>) -> Result<()>;
         fn get_period_lambda(&self, period: u64, find_closest: bool) -> Result<PeriodLambda>;
+        fn save_period_lambda(&self, period: u64, period_lambda: u32) -> Result<()>;
         fn get_rounds_count_dynamic_lambda(&self) -> Result<u32>;
+        fn save_rounds_count_dynamic_lambda(&self, rounds_count: u32) -> Result<()>;
         fn get_blocks_rewards_stats(&self) -> Result<Vec<PeriodRlp>>;
+        fn save_block_rewards_stats(&self, period: u64, stats_rlp: Vec<u8>) -> Result<()>;
 
         fn pbft_block_in_db(&self, hash: &[u8; 32]) -> Result<bool>;
         fn get_pbft_mgr_field(&self, field: u8) -> Result<u32>;
@@ -138,6 +145,21 @@ mod ffi {
         fn get_all_nonfinalized_transactions(&self) -> Result<Vec<TxRlp>>;
         fn get_all_transaction_period(&self) -> Result<Vec<HashPeriod>>;
         fn get_period_system_transactions_hashes(&self, period: u64) -> Result<Vec<u8>>;
+        fn save_transaction(&self, hash: &[u8; 32], trx_rlp: Vec<u8>) -> Result<()>;
+        fn remove_transaction(&self, hash: &[u8; 32]) -> Result<()>;
+        fn save_transaction_location(
+            &self,
+            hash: &[u8; 32],
+            period: u64,
+            position: u32,
+            is_system: bool,
+        ) -> Result<()>;
+        fn save_system_transaction(&self, hash: &[u8; 32], trx_rlp: Vec<u8>) -> Result<()>;
+        fn save_period_system_transactions_hashes(
+            &self,
+            period: u64,
+            hashes_rlp: Vec<u8>,
+        ) -> Result<()>;
     }
 }
 
@@ -292,6 +314,17 @@ impl Storage {
             .save_proposal_period_dag_levels_map(level, period)
     }
 
+    fn save_dag_block_period(
+        &self,
+        hash: &[u8; 32],
+        period: u64,
+        position: u32,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .dag()
+            .save_dag_block_period(H256::from(*hash), period, position)
+    }
+
     fn get_period_data_raw(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
         self.0.catch_up()?;
         self.0
@@ -329,6 +362,16 @@ impl Storage {
             .period()
             .block_receipt(period)
             .map_err(|e| anyhow::anyhow!(e))
+    }
+
+    fn save_period_data(&self, period: u64, period_data_rlp: Vec<u8>) -> Result<(), anyhow::Error> {
+        self.0.period().save_period_data(period, &period_data_rlp)
+    }
+
+    fn save_pbft_block_period(&self, hash: &[u8; 32], period: u64) -> Result<(), anyhow::Error> {
+        self.0
+            .period()
+            .save_pbft_block_period(H256::from(*hash), period)
     }
 
     fn get_pillar_block(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
@@ -423,6 +466,16 @@ impl Storage {
         self.0.metadata().save_status_field(field, value)
     }
 
+    fn save_sortition_params_change(
+        &self,
+        period: u64,
+        params_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .metadata()
+            .save_sortition_params_change(period, &params_rlp)
+    }
+
     fn get_period_lambda(
         &self,
         period: u64,
@@ -444,6 +497,16 @@ impl Storage {
         self.0.metadata().rounds_count_dynamic_lambda()
     }
 
+    fn save_period_lambda(&self, period: u64, period_lambda: u32) -> Result<(), anyhow::Error> {
+        self.0.metadata().save_period_lambda(period, period_lambda)
+    }
+
+    fn save_rounds_count_dynamic_lambda(&self, rounds_count: u32) -> Result<(), anyhow::Error> {
+        self.0
+            .metadata()
+            .save_rounds_count_dynamic_lambda(rounds_count)
+    }
+
     fn get_blocks_rewards_stats(&self) -> Result<Vec<ffi::PeriodRlp>, anyhow::Error> {
         self.0.catch_up()?;
         let stats = self.0.metadata().block_rewards_stats_rlp()?;
@@ -451,6 +514,16 @@ impl Storage {
             .into_iter()
             .map(|(period, data)| ffi::PeriodRlp { period, data })
             .collect())
+    }
+
+    fn save_block_rewards_stats(
+        &self,
+        period: u64,
+        stats_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .metadata()
+            .save_block_rewards_stats(period, &stats_rlp)
     }
 
     fn pbft_block_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
@@ -681,5 +754,50 @@ impl Storage {
         self.0
             .transaction()
             .period_system_transactions_hashes_rlp(period)
+    }
+
+    fn save_transaction(&self, hash: &[u8; 32], trx_rlp: Vec<u8>) -> Result<(), anyhow::Error> {
+        self.0
+            .transaction()
+            .save_transaction(H256::from(*hash), &trx_rlp)
+    }
+
+    fn remove_transaction(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
+        self.0.transaction().remove_transaction(H256::from(*hash))
+    }
+
+    fn save_transaction_location(
+        &self,
+        hash: &[u8; 32],
+        period: u64,
+        position: u32,
+        is_system: bool,
+    ) -> Result<(), anyhow::Error> {
+        self.0.transaction().save_transaction_location(
+            H256::from(*hash),
+            period,
+            position,
+            is_system,
+        )
+    }
+
+    fn save_system_transaction(
+        &self,
+        hash: &[u8; 32],
+        trx_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .transaction()
+            .save_system_transaction(H256::from(*hash), &trx_rlp)
+    }
+
+    fn save_period_system_transactions_hashes(
+        &self,
+        period: u64,
+        hashes_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .transaction()
+            .save_period_system_transactions_hashes(period, &hashes_rlp)
     }
 }
