@@ -8,6 +8,7 @@ Current migration direction:
 - First focus on read paths.
 - After the read surface is stable, move write APIs and batch handling.
 - Keep RocksDB administration and file-management helpers out of the first wave unless they block functional parity.
+- Snapshotting and storage migrations stay in C++ and are generally out of Rust rewrite scope.
 
 ## Legend
 
@@ -248,21 +249,25 @@ Batch migration note:
 ### 4. PBFT Manager and Vote Write APIs
 
 - `[x] savePbftMgrField(PbftMgrField field, uint32_t value)`
-- `[ ] addPbftMgrFieldToBatch(PbftMgrField field, uint32_t value, Batch& write_batch)`
+- `[x] addPbftMgrFieldToBatch(PbftMgrField field, uint32_t value, Batch& write_batch)`
 - `[x] savePbftMgrStatus(PbftMgrStatus field, bool const& value)`
-- `[ ] addPbftMgrStatusToBatch(PbftMgrStatus field, bool const& value, Batch& write_batch)`
+- `[x] addPbftMgrStatusToBatch(PbftMgrStatus field, bool const& value, Batch& write_batch)`
 - `[x] saveCertVotedBlockInRound(PbftRound round, const std::shared_ptr<PbftBlock>& block)`
-- `[ ] removeCertVotedBlockInRound(Batch& write_batch)`
+- `[x] removeCertVotedBlockInRound(Batch& write_batch)`
 - `[x] saveProposedPbftBlock(const std::shared_ptr<PbftBlock>& block)`
-- `[ ] removeProposedPbftBlock(const blk_hash_t& block_hash, Batch& write_batch)`
+- `[x] removeProposedPbftBlock(const blk_hash_t& block_hash, Batch& write_batch)`
 - `[x] savePbftHead(blk_hash_t const& hash, std::string const& pbft_chain_head_str)`
-- `[ ] addPbftHeadToBatch(taraxa::blk_hash_t const& head_hash, std::string const& head_str, Batch& write_batch)`
+- `[x] addPbftHeadToBatch(taraxa::blk_hash_t const& head_hash, std::string const& head_str, Batch& write_batch)`
 - `[x] saveOwnVerifiedVote(const std::shared_ptr<PbftVote>& vote)`
-- `[ ] clearOwnVerifiedVotes(Batch& write_batch, const std::vector<std::shared_ptr<PbftVote>>& own_verified_votes)`
+- `[x] clearOwnVerifiedVotes(Batch& write_batch, const std::vector<std::shared_ptr<PbftVote>>& own_verified_votes)`
 - `[x] replaceTwoTPlusOneVotes(TwoTPlusOneVotedBlockType type, const std::vector<std::shared_ptr<PbftVote>>& votes)`
-- `[ ] replaceTwoTPlusOneVotesToBatch(TwoTPlusOneVotedBlockType type, const std::vector<std::shared_ptr<PbftVote>>& votes, Batch& write_batch)`
-- `[ ] removeExtraRewardVotes(const std::vector<vote_hash_t>& votes, Batch& write_batch)`
+- `[x] replaceTwoTPlusOneVotesToBatch(TwoTPlusOneVotedBlockType type, const std::vector<std::shared_ptr<PbftVote>>& votes, Batch& write_batch)`
+- `[x] removeExtraRewardVotes(const std::vector<vote_hash_t>& votes, Batch& write_batch)`
 - `[x] saveExtraRewardVote(const std::shared_ptr<PbftVote>& vote)`
+
+  Note: the `*ToBatch`/batch-parameter PBFT APIs above are currently Rust-backed for API coverage via direct Rust writes in
+  `RUSTAXA_ENABLE_STORAGE` mode. They do not yet preserve C++ batch-accumulation/atomic-commit semantics.
+  TODO: re-introduce Rust-side batch accumulation and atomic commit semantics for these APIs.
 
 ### 5. Pillar Write APIs
 
@@ -283,6 +288,7 @@ Batch migration note:
 ## Infrastructure and Admin APIs
 
 These are part of the public surface but they are not good first-wave Rust repository shims.
+Scope note: snapshotting and DB migration flow are intentionally out of Rust rewrite scope. Some low-level admin APIs are also out of scope for now.
 
 - `[!] createWriteBatch()`
 - `[!] commitWriteBatch(Batch& write_batch, const rocksdb::WriteOptions& opts)`
