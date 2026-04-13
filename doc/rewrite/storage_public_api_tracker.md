@@ -217,6 +217,7 @@ These methods mutate RocksDB state today and will need either direct Rust shims 
 
 Batch migration note:
 - Batch-commit translation work (`commitWriteBatch` routing through Rust) is implemented in worktree branch `feat/rust/batch-write-round1` and is not merged into this branch yet.
+- Current `*ToBatch` shims in Rust mode target API coverage via direct Rust writes. They do not yet preserve C++ batch-accumulation/atomic-commit semantics.
 
 ### 1. DAG Write APIs
 
@@ -229,22 +230,22 @@ Batch migration note:
   Revisit for parity/performance (bulk Rust API + single commit, and coherence of C++ cached DAG counters in Rust mode).
 - `[u] removeDagBlockBatch(Batch& write_batch, blk_hash_t const& hash)`
 - `[x] removeDagBlock(blk_hash_t const& hash)`
-- `[ ] addDagBlockPeriodToBatch(blk_hash_t const& hash, PbftPeriod period, uint32_t position, Batch& write_batch)`
+- `[x] addDagBlockPeriodToBatch(blk_hash_t const& hash, PbftPeriod period, uint32_t position, Batch& write_batch)`
 - `[x] saveProposalPeriodDagLevelsMap(uint64_t level, PbftPeriod period)`
-- `[ ] addProposalPeriodDagLevelsMapToBatch(uint64_t level, PbftPeriod period, Batch& write_batch)`
+- `[x] addProposalPeriodDagLevelsMapToBatch(uint64_t level, PbftPeriod period, Batch& write_batch)`
 
 ### 2. Period Data and Finalized Chain Write APIs
 
-- `[ ] savePeriodData(const PeriodData& period_data, Batch& write_batch)`
-- `[ ] addPbftBlockPeriodToBatch(PbftPeriod period, taraxa::blk_hash_t const& pbft_block_hash, Batch& write_batch)`
+- `[x] savePeriodData(const PeriodData& period_data, Batch& write_batch)`
+- `[x] addPbftBlockPeriodToBatch(PbftPeriod period, taraxa::blk_hash_t const& pbft_block_hash, Batch& write_batch)`
 
 ### 3. Transaction Write APIs
 
-- `[ ] addTransactionToBatch(Transaction const& trx, Batch& write_batch)`
-- `[ ] removeTransactionToBatch(trx_hash_t const& trx, Batch& write_batch)`
-- `[ ] addTransactionLocationToBatch(Batch& write_batch, trx_hash_t const& trx, PbftPeriod period, uint32_t position, bool is_system = false)`
-- `[ ] addSystemTransactionToBatch(Batch& write_batch, SharedTransaction trx)`
-- `[ ] addPeriodSystemTransactions(Batch& write_batch, SharedTransactions trxs, PbftPeriod period)`
+- `[x] addTransactionToBatch(Transaction const& trx, Batch& write_batch)`
+- `[x] removeTransactionToBatch(trx_hash_t const& trx, Batch& write_batch)`
+- `[x] addTransactionLocationToBatch(Batch& write_batch, trx_hash_t const& trx, PbftPeriod period, uint32_t position, bool is_system = false)`
+- `[x] addSystemTransactionToBatch(Batch& write_batch, SharedTransaction trx)`
+- `[x] addPeriodSystemTransactions(Batch& write_batch, SharedTransactions trxs, PbftPeriod period)`
 
 ### 4. PBFT Manager and Vote Write APIs
 
@@ -278,12 +279,12 @@ Batch migration note:
 ### 6. Metadata, Config, and Statistics Write APIs
 
 - `[x] setGenesisHash(const h256& genesis_hash)`
-- `[ ] saveSortitionParamsChange(PbftPeriod period, const SortitionParamsChange& params, Batch& batch)`
+- `[x] saveSortitionParamsChange(PbftPeriod period, const SortitionParamsChange& params, Batch& batch)`
 - `[x] saveStatusField(StatusDbField const& field, uint64_t value)`
-- `[ ] addStatusFieldToBatch(StatusDbField const& field, uint64_t value, Batch& write_batch)`
-- `[ ] savePeriodLambda(PbftPeriod period, uint32_t period_lambda, Batch& write_batch)`
-- `[ ] saveRoundsCountDynamicLambda(uint32_t rounds_count, Batch& write_batch)`
-- `[ ] saveBlockRewardsStats(uint64_t period, const rewards::BlockStats& stats, Batch& write_batch)`
+- `[x] addStatusFieldToBatch(StatusDbField const& field, uint64_t value, Batch& write_batch)`
+- `[x] savePeriodLambda(PbftPeriod period, uint32_t period_lambda, Batch& write_batch)`
+- `[x] saveRoundsCountDynamicLambda(uint32_t rounds_count, Batch& write_batch)`
+- `[x] saveBlockRewardsStats(uint64_t period, const rewards::BlockStats& stats, Batch& write_batch)`
 
 ## Infrastructure and Admin APIs
 
