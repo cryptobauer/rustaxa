@@ -45,6 +45,13 @@ class DbStorage : public DbStorageOld {
 
   void savePeriodData(const PeriodData& period_data, Batch& write_batch);
   dev::bytes getPeriodDataRaw(PbftPeriod period) const;
+  std::optional<PeriodData> getPeriodData(PbftPeriod period) const;
+  std::optional<PbftBlock> getPbftBlock(PbftPeriod period) const;
+  std::vector<std::shared_ptr<PbftVote>> getPeriodCertVotes(PbftPeriod period) const;
+  blk_hash_t getPeriodBlockHash(PbftPeriod period) const;
+  std::optional<SharedTransactions> getPeriodTransactions(PbftPeriod period) const;
+  std::vector<std::shared_ptr<PillarVote>> getPeriodPillarVotes(PbftPeriod period) const;
+  uint64_t getEarliestBlockNumber() const;
 
   void savePillarBlock(const std::shared_ptr<pillar_chain::PillarBlock>& pillar_block);
   std::shared_ptr<pillar_chain::PillarBlock> getPillarBlock(PbftPeriod period) const;
@@ -67,6 +74,7 @@ class DbStorage : public DbStorageOld {
   std::shared_ptr<Transaction> getTransaction(trx_hash_t const& hash) const;
   std::shared_ptr<Transaction> getTransaction(PbftPeriod period, uint32_t position) const;
   uint64_t getTransactionCount(PbftPeriod period) const;
+  SharedTransactions getFinalizedTransactions(std::vector<trx_hash_t> const& trx_hashes) const;
 
   void addSystemTransactionToBatch(Batch& write_batch, SharedTransaction trx);
   std::shared_ptr<Transaction> getSystemTransaction(const trx_hash_t& hash) const;
@@ -96,6 +104,7 @@ class DbStorage : public DbStorageOld {
   std::optional<std::pair<PbftRound, std::shared_ptr<PbftBlock>>> getCertVotedBlockInRound() const;
   void removeCertVotedBlockInRound(Batch& write_batch);
 
+  std::optional<PbftBlock> getPbftBlock(blk_hash_t const& hash);
   bool pbftBlockInDb(blk_hash_t const& hash);
 
   std::string getPbftHead(blk_hash_t const& hash);
@@ -119,6 +128,8 @@ class DbStorage : public DbStorageOld {
   std::pair<bool, PbftPeriod> getPeriodFromPbftHash(taraxa::blk_hash_t const& pbft_block_hash);
   std::shared_ptr<std::pair<PbftPeriod, uint32_t>> getDagBlockPeriod(blk_hash_t const& hash);
   void addDagBlockPeriodToBatch(blk_hash_t const& hash, PbftPeriod period, uint32_t position, Batch& write_batch);
+  std::vector<blk_hash_t> getFinalizedDagBlockHashesByPeriod(PbftPeriod period);
+  std::vector<std::shared_ptr<DagBlock>> getFinalizedDagBlockByPeriod(PbftPeriod period);
 
   std::optional<uint64_t> getProposalPeriodForDagLevel(uint64_t level);
   void saveProposalPeriodDagLevelsMap(uint64_t level, PbftPeriod period);

@@ -1,9 +1,17 @@
+#include "dag/dag_block_bundle_rlp.hpp"
 #include "dag/sortition_params_manager.hpp"
 #include "storage/storage.hpp"
 #include "transaction/system_transaction.hpp"
+#include "vote/votes_bundle_rlp.hpp"
 
 namespace taraxa {
 namespace {
+static constexpr uint16_t PBFT_BLOCK_POS_IN_PERIOD_DATA = 0;
+static constexpr uint16_t CERT_VOTES_POS_IN_PERIOD_DATA = 1;
+static constexpr uint16_t DAG_BLOCKS_POS_IN_PERIOD_DATA = 2;
+static constexpr uint16_t TRANSACTIONS_POS_IN_PERIOD_DATA = 3;
+static constexpr uint16_t PILLAR_VOTES_POS_IN_PERIOD_DATA = 4;
+
 template <typename T>
 std::array<uint8_t, 32> into_bytes_array(T const& val) {
   std::array<uint8_t, 32> bytes;
@@ -187,6 +195,88 @@ dev::bytes DbStorage::getPeriodDataRaw(PbftPeriod period) const {
   return dev::bytes(period_data.begin(), period_data.end());
 }
 
+uint64_t DbStorage::getEarliestBlockNumber() const {
+  // Seems like a light node feature that never got implement.
+  return 0;
+}
+
+std::optional<PeriodData> DbStorage::getPeriodData(PbftPeriod period) const {
+  auto period_data_bytes = getPeriodDataRaw(period);
+  if (period_data_bytes.empty()) {
+    return {};
+  }
+
+  return PeriodData{std::move(period_data_bytes)};
+}
+
+std::optional<PbftBlock> DbStorage::getPbftBlock(PbftPeriod period) const {
+  auto period_data = getPeriodDataRaw(period);
+  if (period_data.size() > 0) {
+    auto period_data_rlp = dev::RLP(period_data);
+    return std::optional<PbftBlock>(period_data_rlp[PBFT_BLOCK_POS_IN_PERIOD_DATA]);
+  }
+  return {};
+}
+
+blk_hash_t DbStorage::getPeriodBlockHash(PbftPeriod period) const {
+  const auto& blk = getPbftBlock(period);
+  if (blk.has_value()) {
+    return blk->getBlockHash();
+  }
+  return {};
+}
+
+std::vector<std::shared_ptr<PbftVote>> DbStorage::getPeriodCertVotes(PbftPeriod period) const {
+  auto period_data = getPeriodDataRaw(period);
+  if (period_data.empty()) {
+    return {};
+  }
+
+  auto period_data_rlp = dev::RLP(period_data);
+  auto votes_rlp = period_data_rlp[CERT_VOTES_POS_IN_PERIOD_DATA];
+  if (votes_rlp.itemCount() == 0) {
+    return {};
+  }
+  return decodePbftVotesBundleRlp(votes_rlp);
+}
+
+std::optional<SharedTransactions> DbStorage::getPeriodTransactions(PbftPeriod period) const {
+  const auto period_data = getPeriodDataRaw(period);
+  if (!period_data.size()) {
+    return std::nullopt;
+  }
+
+  auto period_data_rlp = dev::RLP(period_data);
+  SharedTransactions ret;
+  ret.reserve(period_data_rlp[TRANSACTIONS_POS_IN_PERIOD_DATA].size());
+  for (auto&& transaction_data : period_data_rlp[TRANSACTIONS_POS_IN_PERIOD_DATA]) {
+    ret.emplace_back(std::make_shared<Transaction>(std::move(transaction_data)));
+  }
+
+  auto system_transaction_hashes = getPeriodSystemTransactionsHashes(period);
+  ret.reserve(ret.size() + system_transaction_hashes.size());
+  for (const auto& trx_hash : system_transaction_hashes) {
+    ret.emplace_back(getSystemTransaction(trx_hash));
+  }
+
+  return ret;
+}
+
+std::vector<std::shared_ptr<PillarVote>> DbStorage::getPeriodPillarVotes(PbftPeriod period) const {
+  const auto period_data = getPeriodDataRaw(period);
+  if (!period_data.size()) {
+    return {};
+  }
+
+  auto period_data_rlp = dev::RLP(period_data);
+  // This could potentially happen if getPeriodPillarVotes is called for period that does not contain pillar votes
+  if (period_data_rlp.itemCount() < PILLAR_VOTES_POS_IN_PERIOD_DATA) {
+    return {};
+  }
+
+  return decodePillarVotesBundleRlp(period_data_rlp[PILLAR_VOTES_POS_IN_PERIOD_DATA]);
+}
+
 void DbStorage::savePillarBlock(const std::shared_ptr<pillar_chain::PillarBlock>& pillar_block) {
   auto pillar_rlp_bytes = pillar_block->getRlp();
   auto pillar_rlp = into_rust_vec(pillar_rlp_bytes);
@@ -333,6 +423,31 @@ uint64_t DbStorage::getTransactionCount(PbftPeriod period) const {
   return rust_storage_.value()->get_transaction_count(period);
 }
 
+SharedTransactions DbStorage::getFinalizedTransactions(std::vector<trx_hash_t> const& trx_hashes) const {
+  SharedTransactions trxs;
+  std::map<PbftPeriod, std::set<uint32_t>> period_map;
+  trxs.reserve(trx_hashes.size());
+  for (auto const& tx_hash : trx_hashes) {
+    auto trx_period = getTransactionLocation(tx_hash);
+    if (trx_period.has_value()) {
+      period_map[trx_period->period].insert(trx_period->position);
+    }
+  }
+  for (auto it : period_map) {
+    const auto period_data = getPeriodDataRaw(it.first);
+    if (!period_data.size()) {
+      assert(false);
+    }
+
+    auto const transactions_rlp = dev::RLP(period_data)[TRANSACTIONS_POS_IN_PERIOD_DATA];
+    for (auto pos : it.second) {
+      trxs.emplace_back(std::make_shared<Transaction>(transactions_rlp[pos]));
+    }
+  }
+
+  return trxs;
+}
+
 void DbStorage::addSystemTransactionToBatch(Batch& write_batch, SharedTransaction trx) {
   (void)write_batch;
   auto trx_hash = trx->getHash();
@@ -473,6 +588,14 @@ std::optional<std::pair<PbftRound, std::shared_ptr<PbftBlock>>> DbStorage::getCe
 void DbStorage::removeCertVotedBlockInRound(Batch& write_batch) {
   (void)write_batch;
   rust_storage_.value()->remove_cert_voted_block_in_round();
+}
+
+std::optional<PbftBlock> DbStorage::getPbftBlock(blk_hash_t const& hash) {
+  auto res = getPeriodFromPbftHash(hash);
+  if (res.first) {
+    return getPbftBlock(res.second);
+  }
+  return {};
 }
 
 bool DbStorage::pbftBlockInDb(blk_hash_t const& hash) {
@@ -617,6 +740,29 @@ void DbStorage::addDagBlockPeriodToBatch(blk_hash_t const& hash, PbftPeriod peri
   (void)write_batch;
   auto h_arr = into_bytes_array(hash);
   rust_storage_.value()->save_dag_block_period(h_arr, period, position);
+}
+
+std::vector<blk_hash_t> DbStorage::getFinalizedDagBlockHashesByPeriod(PbftPeriod period) {
+  std::vector<blk_hash_t> ret;
+  if (auto period_data = getPeriodDataRaw(period); period_data.size() > 0) {
+    auto dag_blocks_data = dev::RLP(period_data)[DAG_BLOCKS_POS_IN_PERIOD_DATA];
+    const auto dag_blocks = decodeDAGBlocksBundleRlp(dag_blocks_data);
+    ret.reserve(dag_blocks.size());
+    std::transform(dag_blocks.begin(), dag_blocks.end(), std::back_inserter(ret),
+                   [](const auto& dag_block) { return dag_block->getHash(); });
+  }
+
+  return ret;
+}
+
+std::vector<std::shared_ptr<DagBlock>> DbStorage::getFinalizedDagBlockByPeriod(PbftPeriod period) {
+  auto period_data = getPeriodDataRaw(period);
+  if (period_data.empty()) {
+    return {};
+  }
+
+  auto dag_blocks_data = dev::RLP(period_data)[DAG_BLOCKS_POS_IN_PERIOD_DATA];
+  return decodeDAGBlocksBundleRlp(dag_blocks_data);
 }
 
 std::optional<PbftPeriod> DbStorage::getProposalPeriodForDagLevel(uint64_t level) {
