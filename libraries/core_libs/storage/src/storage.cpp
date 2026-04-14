@@ -104,15 +104,6 @@ DbStorage::DbStorage(const fs::path& path, uint32_t db_snapshot_each_n_pbft_bloc
   } else if (minor_version != TARAXA_DB_MINOR_VERSION) {
     minor_version_changed_ = true;
   }
-
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  try {
-    rust_storage_ = rustaxa::storage::create_storage(path.string());
-  } catch (std::exception const& e) {
-    LOG(log_er_) << "Error: " << e.what() << std::endl;
-    throw DbException(std::string("Rust storage init failed: ") + e.what());
-  }
-  #endif
 }
 
 void DbStorage::removeTempFiles() const {
@@ -404,27 +395,12 @@ void DbStorage::disableSnapshots() { snapshots_enabled_ = false; }
 void DbStorage::enableSnapshots() { snapshots_enabled_ = true; }
 
 void DbStorage::setGenesisHash(const h256& genesis_hash) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::array<uint8_t, 32> h_arr;
-  std::memcpy(h_arr.data(), genesis_hash.data(), 32);
-  rust_storage_.value()->set_genesis_hash(h_arr);
-  return;
-  #endif
   if (!exist(0, Columns::genesis)) {
     insert(Columns::genesis, 0, genesis_hash);
   }
 }
 
 std::optional<h256> DbStorage::getGenesisHash() {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  if (rust_storage_) {
-    auto rust_hash = rust_storage_.value()->get_genesis_hash();
-    if (!rust_hash.empty()) {
-      return h256(dev::bytes(rust_hash.begin(), rust_hash.end()));
-    }
-    return {};
-  }
-  #endif
   auto hash = asBytes(lookup(0, Columns::genesis));
   if (hash.size() > 0) {
     return h256(hash);
@@ -479,17 +455,6 @@ void DbStorage::CompactRange(const Column& col, uint64_t begin, uint64_t end) {
 }
 
 std::shared_ptr<DagBlock> DbStorage::getDagBlock(blk_hash_t const& hash) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  try {
-    std::array<uint8_t, 32> h_arr;
-    std::memcpy(h_arr.data(), hash.data(), 32);
-    auto rlp_bytes = rust_storage_.value()->get_dag_block(h_arr);
-    dev::RLP rlp(dev::bytesConstRef(rlp_bytes.data(), rlp_bytes.size()));
-    return std::make_shared<DagBlock>(rlp);
-  } catch (std::exception const& e) {
-    LOG(log_dg_) << "Failed in DbStorage::getDagBlock: " << e.what();
-  }
-  #endif
   auto block_data = asBytes(lookup(toSlice(hash.asBytes()), Columns::dag_blocks));
   if (block_data.size() > 0) {
     return std::make_shared<DagBlock>(block_data);
@@ -507,15 +472,6 @@ std::shared_ptr<DagBlock> DbStorage::getDagBlock(blk_hash_t const& hash) {
 }
 
 bool DbStorage::dagBlockInDb(blk_hash_t const& hash) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  try {
-    std::array<uint8_t, 32> h_arr;
-    std::memcpy(h_arr.data(), hash.data(), 32);
-    if (rust_storage_.value()->dag_block_in_db(h_arr)) return true;
-  } catch (std::exception const& e) {
-    LOG(log_dg_) << "Failed in DbStorage::dagBlockInDb: " << e.what();
-  }
-  #endif
   if (exist(toSlice(hash.asBytes()), Columns::dag_blocks) ||
       exist(toSlice(hash.asBytes()), Columns::dag_block_period)) {
     return true;
@@ -524,33 +480,12 @@ bool DbStorage::dagBlockInDb(blk_hash_t const& hash) {
 }
 
 std::set<blk_hash_t> DbStorage::getBlocksByLevel(level_t level) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  try {
-    auto bytes = rust_storage_.value()->get_blocks_by_level(level);
-    std::set<blk_hash_t> res;
-    for (size_t i = 0; i < bytes.size(); i += 32) {
-        blk_hash_t h;
-        std::memcpy(h.data(), bytes.data() + i, 32);
-        res.insert(h);
-    }
-    return res;
-  } catch (std::exception const& e) {
-    LOG(log_dg_) << "Failed in DbStorage::getBlocksByLevel: " << e.what();
-  }
-  #endif
   auto data = asBytes(lookup(toSlice(level), Columns::dag_blocks_level));
   dev::RLP rlp(data);
   return rlp.toSet<blk_hash_t>();
 }
 
 level_t DbStorage::getLastBlocksLevel() const {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  try {
-    return rust_storage_.value()->get_last_blocks_level();
-  } catch (std::exception const& e) {
-    LOG(log_dg_) << "Failed in DbStorage::getLastBlocksLevel: " << e.what();
-  }
-  #endif
   level_t level = 0;
   auto it = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::dag_blocks_level)));
   it->SeekToLast();
@@ -561,19 +496,6 @@ level_t DbStorage::getLastBlocksLevel() const {
 }
 
 std::vector<std::shared_ptr<DagBlock>> DbStorage::getDagBlocksAtLevel(level_t level, int number_of_levels) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  try {
-    std::vector<std::shared_ptr<DagBlock>> res;
-    auto blocks_rlp = rust_storage_.value()->get_dag_blocks_at_level(level, (uint32_t)number_of_levels);
-    for (auto const& item : blocks_rlp) {
-        dev::RLP rlp(dev::bytesConstRef(item.data.data(), item.data.size()));
-        res.push_back(std::make_shared<DagBlock>(rlp));
-    }
-    return res;
-  } catch (std::exception const& e) {
-    LOG(log_dg_) << "Failed in DbStorage::getDagBlocksAtLevel: " << e.what();
-  }
-  #endif
   std::vector<std::shared_ptr<DagBlock>> res;
   for (int i = 0; i < number_of_levels; i++) {
     if (level + i == 0) continue;  // Skip genesis
@@ -589,23 +511,6 @@ std::vector<std::shared_ptr<DagBlock>> DbStorage::getDagBlocksAtLevel(level_t le
 }
 
 std::map<level_t, std::vector<std::shared_ptr<DagBlock>>> DbStorage::getNonfinalizedDagBlocks() {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  try {
-    std::map<level_t, std::vector<std::shared_ptr<DagBlock>>> res;
-    auto levels = rust_storage_.value()->get_nonfinalized_dag_blocks();
-    for (auto const& item : levels) {
-      std::vector<std::shared_ptr<DagBlock>> blocks;
-      for (auto const& block_rlp : item.blocks) {
-        dev::RLP rlp(dev::bytesConstRef(block_rlp.data.data(), block_rlp.data.size()));
-        blocks.push_back(std::make_shared<DagBlock>(rlp));
-      }
-      res[item.level] = blocks;
-    }
-    return res;
-  } catch (std::exception const& e) {
-    LOG(log_dg_) << "Failed in DbStorage::getNonfinalizedDagBlocks: " << e.what();
-  }
-  #endif
   std::map<level_t, std::vector<std::shared_ptr<DagBlock>>> res;
   auto i = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::dag_blocks)));
   for (i->SeekToFirst(); i->Valid(); i->Next()) {
@@ -617,14 +522,6 @@ std::map<level_t, std::vector<std::shared_ptr<DagBlock>>> DbStorage::getNonfinal
 
 SharedTransactions DbStorage::getAllNonfinalizedTransactions() {
   SharedTransactions res;
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto trxs = rust_storage_.value()->get_all_nonfinalized_transactions();
-  res.reserve(trxs.size());
-  for (auto const& trx_rlp : trxs) {
-    res.emplace_back(std::make_shared<Transaction>(dev::bytes(trx_rlp.data.begin(), trx_rlp.data.end())));
-  }
-  return res;
-  #endif
   auto i = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::transactions)));
   for (i->SeekToFirst(); i->Valid(); i->Next()) {
     res.emplace_back(std::make_shared<Transaction>(asBytes(i->value().ToString())));
@@ -637,27 +534,12 @@ void DbStorage::removeDagBlockBatch(Batch& write_batch, blk_hash_t const& hash) 
 }
 
 void DbStorage::removeDagBlock(blk_hash_t const& hash) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::array<uint8_t, 32> h_arr;
-  std::memcpy(h_arr.data(), hash.data(), 32);
-  rust_storage_.value()->remove_dag_block(h_arr);
-  return;
-  #endif
   remove(Columns::dag_blocks, toSlice(hash));
 }
 
 void DbStorage::updateDagBlockCounters(std::vector<std::shared_ptr<DagBlock>> blks) {
   // Lock is needed since we are editing some fields
   std::lock_guard<std::mutex> u_lock(dag_blocks_mutex_);
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  for (auto const& blk : blks) {
-    std::array<uint8_t, 32> h_arr;
-    auto hash = blk->getHash();
-    std::memcpy(h_arr.data(), hash.data(), 32);
-    rust_storage_.value()->update_dag_block_counter(h_arr, blk->getLevel(), blk->getTips().size());
-  }
-  return;
-  #endif
   auto write_batch = createWriteBatch();
   for (auto const& blk : blks) {
     auto level = blk->getLevel();
@@ -679,27 +561,6 @@ void DbStorage::updateDagBlockCounters(std::vector<std::shared_ptr<DagBlock>> bl
 void DbStorage::saveDagBlock(const std::shared_ptr<DagBlock>& blk, Batch* write_batch_p) {
   // Lock is needed since we are editing some fields
   std::lock_guard<std::mutex> u_lock(dag_blocks_mutex_);
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  // There are no callers of this method that pass in a write batch. So no need to ever
-  // do more than we do here.
-  if (!write_batch_p) {
-    auto block_hash = blk->getHash();
-    std::array<uint8_t, 32> h_arr;
-    std::memcpy(h_arr.data(), block_hash.data(), 32);
-
-    auto block_bytes = blk->rlp(true);
-    rust::Vec<uint8_t> block_rlp;
-    block_rlp.reserve(block_bytes.size());
-    for (auto const& b : block_bytes) {
-      block_rlp.push_back(static_cast<uint8_t>(b));
-    }
-
-    rust_storage_.value()->save_dag_block(h_arr, blk->getLevel(), blk->getTips().size(), std::move(block_rlp));
-    return;
-  } else {
-    throw DbException("saveDagBlock was called with write batch but is not implemented.");
-  }
-  #endif
   auto write_batch_up = write_batch_p ? std::unique_ptr<Batch>() : std::make_unique<Batch>();
   auto commit = !write_batch_p;
   auto& write_batch = write_batch_p ? *write_batch_p : *write_batch_up;
@@ -726,30 +587,12 @@ void DbStorage::saveDagBlock(const std::shared_ptr<DagBlock>& blk, Batch* write_
 
 // Sortition params
 void DbStorage::saveSortitionParamsChange(PbftPeriod period, const SortitionParamsChange& params, Batch& batch) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto params_rlp_bytes = params.rlp();
-  rust::Vec<uint8_t> params_rlp;
-  params_rlp.reserve(params_rlp_bytes.size());
-  for (auto const& b : params_rlp_bytes) {
-    params_rlp.push_back(static_cast<uint8_t>(b));
-  }
-  rust_storage_.value()->save_sortition_params_change(period, std::move(params_rlp));
-  return;
-  #endif
   insert(batch, Columns::sortition_params_change, toSlice(period), toSlice(params.rlp()));
 }
 
 std::deque<SortitionParamsChange> DbStorage::getLastSortitionParams(size_t count) {
   std::deque<SortitionParamsChange> changes;
 
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto rust_changes = rust_storage_.value()->get_last_sortition_params(static_cast<uint64_t>(count));
-  for (auto const& change_rlp : rust_changes) {
-    auto bytes = dev::bytes(change_rlp.data.begin(), change_rlp.data.end());
-    changes.emplace_back(SortitionParamsChange::from_rlp(dev::RLP(bytes)));
-  }
-  return changes;
-  #endif
 
   auto it =
       std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::sortition_params_change)));
@@ -761,14 +604,6 @@ std::deque<SortitionParamsChange> DbStorage::getLastSortitionParams(size_t count
 }
 
 std::optional<SortitionParamsChange> DbStorage::getParamsChangeForPeriod(PbftPeriod period) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto rust_change = rust_storage_.value()->get_params_change_for_period(period);
-  if (rust_change.empty()) {
-    return {};
-  }
-  auto bytes = dev::bytes(rust_change.begin(), rust_change.end());
-  return SortitionParamsChange::from_rlp(dev::RLP(bytes));
-  #endif
 
   auto it =
       std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::sortition_params_change)));
@@ -785,43 +620,6 @@ std::optional<SortitionParamsChange> DbStorage::getParamsChangeForPeriod(PbftPer
 uint64_t DbStorage::getEarliestBlockNumber() const { return earliest_block_number_; }
 
 void DbStorage::savePeriodData(const PeriodData& period_data, Batch& write_batch) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  const auto rust_period = period_data.pbft_blk->getPeriod();
-
-  auto pbft_block_hash = period_data.pbft_blk->getBlockHash();
-  std::array<uint8_t, 32> pbft_hash_arr;
-  std::memcpy(pbft_hash_arr.data(), pbft_block_hash.data(), 32);
-  rust_storage_.value()->save_pbft_block_period(pbft_hash_arr, rust_period);
-
-  uint32_t rust_block_pos = 0;
-  for (auto const& block : period_data.dag_blocks) {
-    std::array<uint8_t, 32> block_hash_arr;
-    auto block_hash = block->getHash();
-    std::memcpy(block_hash_arr.data(), block_hash.data(), 32);
-    rust_storage_.value()->remove_dag_block(block_hash_arr);
-    rust_storage_.value()->save_dag_block_period(block_hash_arr, rust_period, rust_block_pos);
-    rust_block_pos++;
-  }
-
-  uint32_t rust_trx_pos = 0;
-  for (auto const& trx : period_data.transactions) {
-    std::array<uint8_t, 32> trx_hash_arr;
-    auto trx_hash = trx->getHash();
-    std::memcpy(trx_hash_arr.data(), trx_hash.data(), 32);
-    rust_storage_.value()->remove_transaction(trx_hash_arr);
-    rust_storage_.value()->save_transaction_location(trx_hash_arr, rust_period, rust_trx_pos, false);
-    rust_trx_pos++;
-  }
-
-  auto period_data_bytes = period_data.rlp();
-  rust::Vec<uint8_t> period_data_rlp;
-  period_data_rlp.reserve(period_data_bytes.size());
-  for (auto const& b : period_data_bytes) {
-    period_data_rlp.push_back(static_cast<uint8_t>(b));
-  }
-  rust_storage_.value()->save_period_data(rust_period, std::move(period_data_rlp));
-  return;
-  #endif
   const auto period = period_data.pbft_blk->getPeriod();
   addPbftBlockPeriodToBatch(period, period_data.pbft_blk->getBlockHash(), write_batch);
 
@@ -845,10 +643,6 @@ void DbStorage::savePeriodData(const PeriodData& period_data, Batch& write_batch
 }
 
 dev::bytes DbStorage::getPeriodDataRaw(PbftPeriod period) const {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto period_data = rust_storage_.value()->get_period_data_raw(period);
-  return dev::bytes(period_data.begin(), period_data.end());
-  #endif
   return asBytes(lookup(toSlice(period), Columns::period_data));
 }
 
@@ -862,29 +656,10 @@ std::optional<PeriodData> DbStorage::getPeriodData(PbftPeriod period) const {
 }
 
 void DbStorage::savePillarBlock(const std::shared_ptr<pillar_chain::PillarBlock>& pillar_block) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto pillar_rlp_bytes = pillar_block->getRlp();
-  rust::Vec<uint8_t> pillar_rlp;
-  pillar_rlp.reserve(pillar_rlp_bytes.size());
-  for (auto const& b : pillar_rlp_bytes) {
-    pillar_rlp.push_back(static_cast<uint8_t>(b));
-  }
-  rust_storage_.value()->save_pillar_block(pillar_block->getPeriod(), std::move(pillar_rlp));
-  return;
-  #endif
   insert(Columns::pillar_block, pillar_block->getPeriod(), pillar_block->getRlp());
 }
 
 std::shared_ptr<pillar_chain::PillarBlock> DbStorage::getPillarBlock(PbftPeriod period) const {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto data = rust_storage_.value()->get_pillar_block(period);
-  if (data.empty()) {
-    return {};
-  }
-
-  auto rust_bytes = dev::bytes(data.begin(), data.end());
-  return std::make_shared<pillar_chain::PillarBlock>(dev::RLP(rust_bytes));
-  #endif
   const auto bytes = asBytes(lookup(period, Columns::pillar_block));
   if (bytes.empty()) {
     return {};
@@ -894,15 +669,6 @@ std::shared_ptr<pillar_chain::PillarBlock> DbStorage::getPillarBlock(PbftPeriod 
 }
 
 std::shared_ptr<pillar_chain::PillarBlock> DbStorage::getLatestPillarBlock() const {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto data = rust_storage_.value()->get_latest_pillar_block();
-  if (data.empty()) {
-    return {};
-  }
-
-  auto bytes = dev::bytes(data.begin(), data.end());
-  return std::make_shared<pillar_chain::PillarBlock>(dev::RLP(bytes));
-  #endif
   auto it = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::pillar_block)));
   it->SeekToLast();
   if (!it->Valid()) {
@@ -913,29 +679,10 @@ std::shared_ptr<pillar_chain::PillarBlock> DbStorage::getLatestPillarBlock() con
 }
 
 void DbStorage::saveOwnPillarBlockVote(const std::shared_ptr<PillarVote>& vote) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto vote_bytes = util::rlp_enc(vote);
-  rust::Vec<uint8_t> vote_rlp;
-  vote_rlp.reserve(vote_bytes.size());
-  for (auto const& b : vote_bytes) {
-    vote_rlp.push_back(static_cast<uint8_t>(b));
-  }
-  rust_storage_.value()->save_own_pillar_block_vote(std::move(vote_rlp));
-  return;
-  #endif
   insert(Columns::current_pillar_block_own_vote, 0, util::rlp_enc(vote));
 }
 
 std::shared_ptr<PillarVote> DbStorage::getOwnPillarBlockVote() const {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto data = rust_storage_.value()->get_own_pillar_block_vote();
-  if (data.empty()) {
-    return nullptr;
-  }
-
-  auto rust_bytes = dev::bytes(data.begin(), data.end());
-  return std::make_shared<PillarVote>(dev::RLP(rust_bytes));
-  #endif
   const auto bytes = asBytes(lookup(0, Columns::current_pillar_block_own_vote));
   if (bytes.empty()) {
     return nullptr;
@@ -945,29 +692,10 @@ std::shared_ptr<PillarVote> DbStorage::getOwnPillarBlockVote() const {
 }
 
 void DbStorage::saveCurrentPillarBlockData(const pillar_chain::CurrentPillarBlockDataDb& current_pillar_block_data) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto data_bytes = util::rlp_enc(current_pillar_block_data);
-  rust::Vec<uint8_t> data_rlp;
-  data_rlp.reserve(data_bytes.size());
-  for (auto const& b : data_bytes) {
-    data_rlp.push_back(static_cast<uint8_t>(b));
-  }
-  rust_storage_.value()->save_current_pillar_block_data(std::move(data_rlp));
-  return;
-  #endif
   insert(Columns::current_pillar_block_data, 0, util::rlp_enc(current_pillar_block_data));
 }
 
 std::optional<pillar_chain::CurrentPillarBlockDataDb> DbStorage::getCurrentPillarBlockData() const {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto data = rust_storage_.value()->get_current_pillar_block_data();
-  if (data.empty()) {
-    return {};
-  }
-
-  auto rust_bytes = dev::bytes(data.begin(), data.end());
-  return util::rlp_dec<pillar_chain::CurrentPillarBlockDataDb>(dev::RLP(rust_bytes));
-  #endif
   const auto bytes = asBytes(lookup(0, Columns::current_pillar_block_data));
   if (bytes.empty()) {
     return {};
@@ -978,12 +706,6 @@ std::optional<pillar_chain::CurrentPillarBlockDataDb> DbStorage::getCurrentPilla
 
 void DbStorage::addTransactionLocationToBatch(Batch& write_batch, trx_hash_t const& trx_hash, PbftPeriod period,
                                               uint32_t position, bool is_system) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::array<uint8_t, 32> h_arr;
-  std::memcpy(h_arr.data(), trx_hash.data(), 32);
-  rust_storage_.value()->save_transaction_location(h_arr, period, position, is_system);
-  return;
-  #endif
   dev::RLPStream s;
   s.appendList(2 + is_system);
   s << period;
@@ -995,17 +717,6 @@ void DbStorage::addTransactionLocationToBatch(Batch& write_batch, trx_hash_t con
 }
 
 std::optional<TransactionLocation> DbStorage::getTransactionLocation(trx_hash_t const& hash) const {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::array<uint8_t, 32> h_arr;
-  std::memcpy(h_arr.data(), hash.data(), 32);
-  auto location_bytes = rust_storage_.value()->get_transaction_location(h_arr);
-  if (!location_bytes.empty()) {
-    auto location_data = dev::bytes(location_bytes.begin(), location_bytes.end());
-    // Don't use std::move - RLP stores a reference and needs data to stay alive
-    return TransactionLocation::fromRlp(dev::RLP(location_data));
-  }
-  return std::nullopt;
-  #endif
   auto location_data = lookup(toSlice(hash.asBytes()), Columns::trx_period);
   if (!location_data.empty()) {
     // Don't use std::move - RLP stores a reference and needs data to stay alive
@@ -1016,14 +727,6 @@ std::optional<TransactionLocation> DbStorage::getTransactionLocation(trx_hash_t 
 
 std::vector<bool> DbStorage::transactionsFinalized(std::vector<trx_hash_t> const& trx_hashes) {
   std::vector<bool> result(trx_hashes.size(), false);
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  for (size_t i = 0; i < trx_hashes.size(); ++i) {
-    std::array<uint8_t, 32> h_arr;
-    std::memcpy(h_arr.data(), trx_hashes[i].data(), 32);
-    result[i] = rust_storage_.value()->transaction_finalized(h_arr);
-  }
-  return result;
-  #endif
   for (size_t i = 0; i < trx_hashes.size(); ++i) {
     if (exist(toSlice(trx_hashes[i].asBytes()), Columns::trx_period)) {
       result[i] = true;
@@ -1034,15 +737,6 @@ std::vector<bool> DbStorage::transactionsFinalized(std::vector<trx_hash_t> const
 
 std::unordered_map<trx_hash_t, PbftPeriod> DbStorage::getAllTransactionPeriod() {
   std::unordered_map<trx_hash_t, PbftPeriod> res;
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto data = rust_storage_.value()->get_all_transaction_period();
-  res.reserve(data.size());
-  for (auto const& item : data) {
-    auto hash_bytes = dev::bytes(item.hash.begin(), item.hash.end());
-    res[trx_hash_t(hash_bytes)] = item.period;
-  }
-  return res;
-  #endif
   auto i = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::trx_period)));
   for (i->SeekToFirst(); i->Valid(); i->Next()) {
     auto data = asBytes(i->value().ToString());
@@ -1055,42 +749,15 @@ std::unordered_map<trx_hash_t, PbftPeriod> DbStorage::getAllTransactionPeriod() 
 
 // Proposed pbft blocks
 void DbStorage::saveProposedPbftBlock(const std::shared_ptr<PbftBlock>& block) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::array<uint8_t, 32> h_arr;
-  auto block_hash = block->getBlockHash();
-  std::memcpy(h_arr.data(), block_hash.data(), 32);
-  auto block_bytes = block->rlp(true);
-  rust::Vec<uint8_t> block_rlp;
-  block_rlp.reserve(block_bytes.size());
-  for (auto const& b : block_bytes) {
-    block_rlp.push_back(static_cast<uint8_t>(b));
-  }
-  rust_storage_.value()->save_proposed_pbft_block(h_arr, std::move(block_rlp));
-  return;
-  #endif
   insert(Columns::proposed_pbft_blocks, block->getBlockHash().asBytes(), block->rlp(true));
 }
 
 void DbStorage::removeProposedPbftBlock(const blk_hash_t& block_hash, Batch& write_batch) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::array<uint8_t, 32> h_arr;
-  std::memcpy(h_arr.data(), block_hash.data(), 32);
-  rust_storage_.value()->remove_proposed_pbft_block(h_arr);
-  return;
-  #endif
   remove(write_batch, Columns::proposed_pbft_blocks, toSlice(block_hash.asBytes()));
 }
 
 std::vector<std::shared_ptr<PbftBlock>> DbStorage::getProposedPbftBlocks() {
   std::vector<std::shared_ptr<PbftBlock>> res;
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto blocks = rust_storage_.value()->get_proposed_pbft_blocks();
-  res.reserve(blocks.size());
-  for (auto const& block_rlp : blocks) {
-    res.emplace_back(std::make_shared<PbftBlock>(dev::bytes(block_rlp.data.begin(), block_rlp.data.end())));
-  }
-  return res;
-  #endif
   auto i = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::proposed_pbft_blocks)));
   for (i->SeekToFirst(); i->Valid(); i->Next()) {
     res.push_back(std::make_shared<PbftBlock>(asBytes(i->value().ToString())));
@@ -1117,21 +784,6 @@ blk_hash_t DbStorage::getPeriodBlockHash(PbftPeriod period) const {
 }
 
 std::shared_ptr<Transaction> DbStorage::getTransaction(trx_hash_t const& hash) const {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::array<uint8_t, 32> h_arr;
-  std::memcpy(h_arr.data(), hash.data(), 32);
-  auto rust_data = rust_storage_.value()->get_transaction(h_arr);
-  if (!rust_data.empty()) {
-    return std::make_shared<Transaction>(dev::bytes(rust_data.begin(), rust_data.end()));
-  }
-  auto rust_location = getTransactionLocation(hash);
-  if (rust_location && !rust_location->is_system) {
-    return getTransaction(rust_location->period, rust_location->position);
-  } else {
-    return getSystemTransaction(hash);
-  }
-  return nullptr;
-  #endif
   auto data = asBytes(lookup(toSlice(hash.asBytes()), Columns::transactions));
   if (data.size() > 0) {
     return std::make_shared<Transaction>(std::move(data));
@@ -1147,13 +799,6 @@ std::shared_ptr<Transaction> DbStorage::getTransaction(trx_hash_t const& hash) c
 }
 
 std::shared_ptr<Transaction> DbStorage::getTransaction(PbftPeriod period, uint32_t position) const {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto data = rust_storage_.value()->get_transaction_by_period_position(period, position);
-  if (!data.empty()) {
-    return std::make_shared<Transaction>(dev::bytes(data.begin(), data.end()));
-  }
-  return nullptr;
-  #endif
   auto period_data = getPeriodDataRaw(period);
   if (period_data.size() > 0) {
     auto period_data_rlp = dev::RLP(period_data);
@@ -1164,9 +809,6 @@ std::shared_ptr<Transaction> DbStorage::getTransaction(PbftPeriod period, uint32
 }
 
 uint64_t DbStorage::getTransactionCount(PbftPeriod period) const {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  return rust_storage_.value()->get_transaction_count(period);
-  #endif
   auto period_data = getPeriodDataRaw(period);
   if (period_data.size()) {
     auto period_data_rlp = dev::RLP(period_data);
@@ -1202,33 +844,10 @@ SharedTransactions DbStorage::getFinalizedTransactions(std::vector<trx_hash_t> c
 }
 
 void DbStorage::addSystemTransactionToBatch(Batch& write_batch, SharedTransaction trx) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::array<uint8_t, 32> h_arr;
-  auto trx_hash = trx->getHash();
-  std::memcpy(h_arr.data(), trx_hash.data(), 32);
-  auto trx_bytes = trx->rlp();
-  rust::Vec<uint8_t> trx_rlp;
-  trx_rlp.reserve(trx_bytes.size());
-  for (auto const& b : trx_bytes) {
-    trx_rlp.push_back(static_cast<uint8_t>(b));
-  }
-  rust_storage_.value()->save_system_transaction(h_arr, std::move(trx_rlp));
-  return;
-  #endif
   insert(write_batch, Columns::system_transaction, toSlice(trx->getHash().asBytes()), toSlice(trx->rlp()));
 }
 
 std::shared_ptr<Transaction> DbStorage::getSystemTransaction(const trx_hash_t& hash) const {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::array<uint8_t, 32> h_arr;
-  std::memcpy(h_arr.data(), hash.data(), 32);
-  auto rust_data = rust_storage_.value()->get_system_transaction(h_arr);
-  if (!rust_data.empty()) {
-    // construct as system transaction to have proper sender
-    return std::make_shared<SystemTransaction>(dev::bytes(rust_data.begin(), rust_data.end()));
-  }
-  return nullptr;
-  #endif
   auto data = asBytes(lookup(toSlice(hash.asBytes()), Columns::system_transaction));
   if (data.size() > 0) {
     // construct as system transaction to have proper sender
@@ -1243,27 +862,10 @@ void DbStorage::addPeriodSystemTransactions(Batch& write_batch, SharedTransactio
   std::transform(trxs.begin(), trxs.end(), std::back_inserter(trx_hashes),
                  [](const auto& trx) { return trx->getHash(); });
   auto hashes_rlp = util::rlp_enc(trx_hashes);
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  rust::Vec<uint8_t> hashes;
-  hashes.reserve(hashes_rlp.size());
-  for (auto const& b : hashes_rlp) {
-    hashes.push_back(static_cast<uint8_t>(b));
-  }
-  rust_storage_.value()->save_period_system_transactions_hashes(period, std::move(hashes));
-  return;
-  #endif
   insert(write_batch, Columns::period_system_transactions, toSlice(period), toSlice(hashes_rlp));
 }
 
 std::vector<trx_hash_t> DbStorage::getPeriodSystemTransactionsHashes(PbftPeriod period) const {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto rust_data = rust_storage_.value()->get_period_system_transactions_hashes(period);
-  if (rust_data.empty()) {
-    return {};
-  }
-  auto hashes_data = dev::bytes(rust_data.begin(), rust_data.end());
-  return util::rlp_dec<std::vector<trx_hash_t>>(dev::RLP(hashes_data));
-  #endif
   auto data = asBytes(lookup(toSlice(period), Columns::period_system_transactions));
   if (data.size() == 0) {
     return {};
@@ -1330,15 +932,6 @@ std::optional<TransactionReceipt> DbStorage::getTransactionReceipt(EthBlockNumbe
 }
 
 SharedTransactionReceipts DbStorage::getBlockReceipts(PbftPeriod period) const {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto rust_value = rust_storage_.value()->get_block_receipt(period);
-  if (rust_value.empty()) {
-    return {};
-  }
-  auto data_bytes = dev::bytes(rust_value.begin(), rust_value.end());
-  return std::make_shared<std::vector<TransactionReceipt>>(
-      util::rlp_dec<std::vector<TransactionReceipt>>(dev::RLP(data_bytes)));
-  #endif
   auto raw = lookup(toSlice(period), DbStorage::Columns::final_chain_receipt_by_period);
   if (raw.empty()) {
     return {};
@@ -1363,47 +956,18 @@ std::vector<std::shared_ptr<PillarVote>> DbStorage::getPeriodPillarVotes(PbftPer
 }
 
 void DbStorage::addTransactionToBatch(Transaction const& trx, Batch& write_batch) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::array<uint8_t, 32> h_arr;
-  auto trx_hash = trx.getHash();
-  std::memcpy(h_arr.data(), trx_hash.data(), 32);
-  auto trx_bytes = trx.rlp();
-  rust::Vec<uint8_t> trx_rlp;
-  trx_rlp.reserve(trx_bytes.size());
-  for (auto const& b : trx_bytes) {
-    trx_rlp.push_back(static_cast<uint8_t>(b));
-  }
-  rust_storage_.value()->save_transaction(h_arr, std::move(trx_rlp));
-  return;
-  #endif
   insert(write_batch, DbStorage::Columns::transactions, toSlice(trx.getHash().asBytes()), toSlice(trx.rlp()));
 }
 
 void DbStorage::removeTransactionToBatch(trx_hash_t const& trx, Batch& write_batch) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::array<uint8_t, 32> h_arr;
-  std::memcpy(h_arr.data(), trx.data(), 32);
-  rust_storage_.value()->remove_transaction(h_arr);
-  return;
-  #endif
   remove(write_batch, Columns::transactions, toSlice(trx));
 }
 
 bool DbStorage::transactionInDb(trx_hash_t const& hash) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::array<uint8_t, 32> h_arr;
-  std::memcpy(h_arr.data(), hash.data(), 32);
-  return rust_storage_.value()->transaction_in_db(h_arr);
-  #endif
   return exist(toSlice(hash.asBytes()), Columns::transactions) || exist(toSlice(hash.asBytes()), Columns::trx_period);
 }
 
 bool DbStorage::transactionFinalized(trx_hash_t const& hash) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::array<uint8_t, 32> h_arr;
-  std::memcpy(h_arr.data(), hash.data(), 32);
-  return rust_storage_.value()->transaction_finalized(h_arr);
-  #endif
   return exist(toSlice(hash.asBytes()), Columns::trx_period);
 }
 
@@ -1419,11 +983,6 @@ std::vector<bool> DbStorage::transactionsInDb(std::vector<trx_hash_t> const& trx
 }
 
 uint64_t DbStorage::getStatusField(StatusDbField const& field) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  if (rust_storage_) {
-    return rust_storage_.value()->get_status_field(static_cast<uint8_t>(field));
-  }
-  #endif
   auto status = lookup(toSlice((uint8_t)field), Columns::status);
   if (!status.empty()) {
     uint64_t value;
@@ -1435,27 +994,16 @@ uint64_t DbStorage::getStatusField(StatusDbField const& field) {
 }
 
 void DbStorage::saveStatusField(StatusDbField const& field, uint64_t value) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  rust_storage_.value()->save_status_field(static_cast<uint8_t>(field), value);
-  return;
-  #endif
   insert(Columns::status, toSlice((uint8_t)field), toSlice(value));
 }
 
 void DbStorage::addStatusFieldToBatch(StatusDbField const& field, uint64_t value, Batch& write_batch) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  rust_storage_.value()->save_status_field(static_cast<uint8_t>(field), value);
-  return;
-  #endif
   insert(write_batch, DbStorage::Columns::status, toSlice((uint8_t)field), toSlice(value));
 }
 
 // PBFT
 
 uint32_t DbStorage::getPbftMgrField(PbftMgrField field) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  return rust_storage_.value()->get_pbft_mgr_field(static_cast<uint8_t>(field));
-  #endif
   auto status = lookup(toSlice(static_cast<uint8_t>(field)), Columns::pbft_mgr_round_step);
   if (!status.empty()) {
     uint32_t value;
@@ -1467,25 +1015,14 @@ uint32_t DbStorage::getPbftMgrField(PbftMgrField field) {
 }
 
 void DbStorage::savePbftMgrField(PbftMgrField field, uint32_t value) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  rust_storage_.value()->save_pbft_mgr_field(static_cast<uint8_t>(field), value);
-  return;
-  #endif
   insert(Columns::pbft_mgr_round_step, toSlice(static_cast<uint8_t>(field)), toSlice(value));
 }
 
 void DbStorage::addPbftMgrFieldToBatch(PbftMgrField field, uint32_t value, Batch& write_batch) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  rust_storage_.value()->save_pbft_mgr_field(static_cast<uint8_t>(field), value);
-  return;
-  #endif
   insert(write_batch, DbStorage::Columns::pbft_mgr_round_step, toSlice(static_cast<uint8_t>(field)), toSlice(value));
 }
 
 bool DbStorage::getPbftMgrStatus(PbftMgrStatus field) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  return rust_storage_.value()->get_pbft_mgr_status(static_cast<uint8_t>(field));
-  #endif
   auto status = lookup(toSlice(field), Columns::pbft_mgr_status);
   if (!status.empty()) {
     bool value;
@@ -1496,33 +1033,15 @@ bool DbStorage::getPbftMgrStatus(PbftMgrStatus field) {
 }
 
 void DbStorage::savePbftMgrStatus(PbftMgrStatus field, bool const& value) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  rust_storage_.value()->save_pbft_mgr_status(static_cast<uint8_t>(field), value);
-  return;
-  #endif
   insert(Columns::pbft_mgr_status, toSlice(field), toSlice(value));
 }
 
 void DbStorage::addPbftMgrStatusToBatch(PbftMgrStatus field, bool const& value, Batch& write_batch) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  rust_storage_.value()->save_pbft_mgr_status(static_cast<uint8_t>(field), value);
-  return;
-  #endif
   insert(write_batch, DbStorage::Columns::pbft_mgr_status, toSlice(field), toSlice(value));
 }
 
 void DbStorage::saveCertVotedBlockInRound(PbftRound round, const std::shared_ptr<PbftBlock>& block) {
   assert(block);
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto block_bytes = block->rlp(true);
-  rust::Vec<uint8_t> block_rlp;
-  block_rlp.reserve(block_bytes.size());
-  for (auto const& b : block_bytes) {
-    block_rlp.push_back(static_cast<uint8_t>(b));
-  }
-  rust_storage_.value()->save_cert_voted_block_in_round(round, std::move(block_rlp));
-  return;
-  #endif
 
   dev::RLPStream s(2);
   s.append(round);
@@ -1531,22 +1050,6 @@ void DbStorage::saveCertVotedBlockInRound(PbftRound round, const std::shared_ptr
 }
 
 std::optional<std::pair<PbftRound, std::shared_ptr<PbftBlock>>> DbStorage::getCertVotedBlockInRound() const {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto rust_value = rust_storage_.value()->get_cert_voted_block_in_round();
-  if (rust_value.empty()) {
-    return {};
-  }
-
-  auto value_bytes = dev::bytes(rust_value.begin(), rust_value.end());
-  auto rust_value_rlp = dev::RLP(value_bytes);
-  assert(rust_value_rlp.itemCount() == 2);
-
-  std::pair<PbftRound, std::shared_ptr<PbftBlock>> rust_ret;
-  rust_ret.first = rust_value_rlp[0].toInt<PbftRound>();
-  rust_ret.second = std::make_shared<PbftBlock>(rust_value_rlp[1]);
-
-  return rust_ret;
-  #endif
   auto value = asBytes(lookup(0, Columns::cert_voted_block_in_round));
   if (value.empty()) {
     return {};
@@ -1563,10 +1066,6 @@ std::optional<std::pair<PbftRound, std::shared_ptr<PbftBlock>>> DbStorage::getCe
 }
 
 void DbStorage::removeCertVotedBlockInRound(Batch& write_batch) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  rust_storage_.value()->remove_cert_voted_block_in_round();
-  return;
-  #endif
   remove(write_batch, Columns::cert_voted_block_in_round, 0);
 }
 
@@ -1579,85 +1078,28 @@ std::optional<PbftBlock> DbStorage::getPbftBlock(blk_hash_t const& hash) {
 }
 
 bool DbStorage::pbftBlockInDb(blk_hash_t const& hash) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::array<uint8_t, 32> h_arr;
-  std::memcpy(h_arr.data(), hash.data(), 32);
-  auto res = rust_storage_.value()->pbft_block_in_db(h_arr);
-  return res;
-  #endif
   return exist(toSlice(hash.asBytes()), Columns::pbft_block_period);
 }
 
 std::string DbStorage::getPbftHead(blk_hash_t const& hash) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::array<uint8_t, 32> h_arr;
-  std::memcpy(h_arr.data(), hash.data(), 32);
-  auto data = rust_storage_.value()->get_pbft_head(h_arr);
-  return std::string(data.begin(), data.end());
-  #endif
   return lookup(toSlice(hash.asBytes()), Columns::pbft_head);
 }
 
 void DbStorage::savePbftHead(blk_hash_t const& hash, std::string const& pbft_chain_head_str) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::array<uint8_t, 32> h_arr;
-  std::memcpy(h_arr.data(), hash.data(), 32);
-  rust::Vec<uint8_t> head_bytes;
-  head_bytes.reserve(pbft_chain_head_str.size());
-  for (auto const& c : pbft_chain_head_str) {
-    head_bytes.push_back(static_cast<uint8_t>(c));
-  }
-  rust_storage_.value()->save_pbft_head(h_arr, std::move(head_bytes));
-  return;
-  #endif
   insert(Columns::pbft_head, toSlice(hash.asBytes()), pbft_chain_head_str);
 }
 
 void DbStorage::addPbftHeadToBatch(taraxa::blk_hash_t const& head_hash, std::string const& head_str,
                                    Batch& write_batch) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::array<uint8_t, 32> h_arr;
-  std::memcpy(h_arr.data(), head_hash.data(), 32);
-  rust::Vec<uint8_t> head_bytes;
-  head_bytes.reserve(head_str.size());
-  for (auto const& c : head_str) {
-    head_bytes.push_back(static_cast<uint8_t>(c));
-  }
-  rust_storage_.value()->save_pbft_head(h_arr, std::move(head_bytes));
-  return;
-  #endif
   insert(write_batch, Columns::pbft_head, toSlice(head_hash.asBytes()), head_str);
 }
 
 void DbStorage::saveOwnVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::array<uint8_t, 32> h_arr;
-  auto vote_hash = vote->getHash();
-  std::memcpy(h_arr.data(), vote_hash.data(), 32);
-
-  auto vote_bytes = vote->rlp(true, true);
-  rust::Vec<uint8_t> vote_rlp;
-  vote_rlp.reserve(vote_bytes.size());
-  for (auto const& b : vote_bytes) {
-    vote_rlp.push_back(static_cast<uint8_t>(b));
-  }
-  rust_storage_.value()->save_own_verified_vote(h_arr, std::move(vote_rlp));
-  return;
-  #endif
   insert(Columns::latest_round_own_votes, vote->getHash().asBytes(), vote->rlp(true, true));
 }
 
 std::vector<std::shared_ptr<PbftVote>> DbStorage::getOwnVerifiedVotes() {
   std::vector<std::shared_ptr<PbftVote>> votes;
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto rust_votes = rust_storage_.value()->get_own_verified_votes();
-  votes.reserve(rust_votes.size());
-  for (auto const& vote_rlp : rust_votes) {
-    votes.emplace_back(std::make_shared<PbftVote>(dev::bytes(vote_rlp.data.begin(), vote_rlp.data.end())));
-  }
-
-  return votes;
-  #endif
   auto it =
       std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::latest_round_own_votes)));
   for (it->SeekToFirst(); it->Valid(); it->Next()) {
@@ -1669,15 +1111,6 @@ std::vector<std::shared_ptr<PbftVote>> DbStorage::getOwnVerifiedVotes() {
 
 void DbStorage::clearOwnVerifiedVotes(Batch& write_batch,
                                       const std::vector<std::shared_ptr<PbftVote>>& own_verified_votes) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  for (const auto& own_vote : own_verified_votes) {
-    std::array<uint8_t, 32> h_arr;
-    auto vote_hash = own_vote->getHash();
-    std::memcpy(h_arr.data(), vote_hash.data(), 32);
-    rust_storage_.value()->remove_own_verified_vote(h_arr);
-  }
-  return;
-  #endif
   for (const auto& own_vote : own_verified_votes) {
     remove(write_batch, Columns::latest_round_own_votes, own_vote->getHash().asBytes());
   }
@@ -1685,20 +1118,6 @@ void DbStorage::clearOwnVerifiedVotes(Batch& write_batch,
 
 void DbStorage::replaceTwoTPlusOneVotes(TwoTPlusOneVotedBlockType type,
                                         const std::vector<std::shared_ptr<PbftVote>>& votes) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  dev::RLPStream rust_votes_stream(votes.size());
-  for (const auto& vote : votes) {
-    rust_votes_stream.appendRaw(vote->rlp(true, true));
-  }
-  auto votes_bundle = rust_votes_stream.out();
-  rust::Vec<uint8_t> votes_bundle_rlp;
-  votes_bundle_rlp.reserve(votes_bundle.size());
-  for (auto const& b : votes_bundle) {
-    votes_bundle_rlp.push_back(static_cast<uint8_t>(b));
-  }
-  rust_storage_.value()->replace_two_t_plus_one_votes(static_cast<uint8_t>(type), std::move(votes_bundle_rlp));
-  return;
-  #endif
   remove(Columns::latest_round_two_t_plus_one_votes, static_cast<uint8_t>(type));
 
   dev::RLPStream s(votes.size());
@@ -1711,20 +1130,6 @@ void DbStorage::replaceTwoTPlusOneVotes(TwoTPlusOneVotedBlockType type,
 void DbStorage::replaceTwoTPlusOneVotesToBatch(TwoTPlusOneVotedBlockType type,
                                                const std::vector<std::shared_ptr<PbftVote>>& votes,
                                                Batch& write_batch) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  dev::RLPStream rust_votes_stream(votes.size());
-  for (const auto& vote : votes) {
-    rust_votes_stream.appendRaw(vote->rlp(true, true));
-  }
-  auto votes_bundle = rust_votes_stream.out();
-  rust::Vec<uint8_t> votes_bundle_rlp;
-  votes_bundle_rlp.reserve(votes_bundle.size());
-  for (auto const& b : votes_bundle) {
-    votes_bundle_rlp.push_back(static_cast<uint8_t>(b));
-  }
-  rust_storage_.value()->replace_two_t_plus_one_votes(static_cast<uint8_t>(type), std::move(votes_bundle_rlp));
-  return;
-  #endif
   remove(write_batch, Columns::latest_round_two_t_plus_one_votes, static_cast<uint8_t>(type));
 
   dev::RLPStream s(votes.size());
@@ -1736,15 +1141,6 @@ void DbStorage::replaceTwoTPlusOneVotesToBatch(TwoTPlusOneVotedBlockType type,
 
 std::vector<std::shared_ptr<PbftVote>> DbStorage::getAllTwoTPlusOneVotes() {
   std::vector<std::shared_ptr<PbftVote>> votes;
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto rust_votes = rust_storage_.value()->get_all_two_t_plus_one_votes();
-  votes.reserve(rust_votes.size());
-  for (auto const& vote_rlp : rust_votes) {
-    votes.emplace_back(std::make_shared<PbftVote>(dev::bytes(vote_rlp.data.begin(), vote_rlp.data.end())));
-  }
-
-  return votes;
-  #endif
   auto load_db_votes = [this, &votes](TwoTPlusOneVotedBlockType type) {
     auto votes_raw = asBytes(lookup(static_cast<uint8_t>(type), Columns::latest_round_two_t_plus_one_votes));
     auto votes_rlp = dev::RLP(votes_raw);
@@ -1764,47 +1160,17 @@ std::vector<std::shared_ptr<PbftVote>> DbStorage::getAllTwoTPlusOneVotes() {
 }
 
 void DbStorage::removeExtraRewardVotes(const std::vector<vote_hash_t>& votes, Batch& write_batch) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  for (const auto& v : votes) {
-    std::array<uint8_t, 32> h_arr;
-    std::memcpy(h_arr.data(), v.data(), 32);
-    rust_storage_.value()->remove_extra_reward_vote(h_arr);
-  }
-  return;
-  #endif
   for (const auto& v : votes) {
     remove(write_batch, Columns::extra_reward_votes, v.asBytes());
   }
 }
 
 void DbStorage::saveExtraRewardVote(const std::shared_ptr<PbftVote>& vote) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::array<uint8_t, 32> h_arr;
-  auto vote_hash = vote->getHash();
-  std::memcpy(h_arr.data(), vote_hash.data(), 32);
-  auto vote_bytes = vote->rlp(true, true);
-  rust::Vec<uint8_t> vote_rlp;
-  vote_rlp.reserve(vote_bytes.size());
-  for (auto const& b : vote_bytes) {
-    vote_rlp.push_back(static_cast<uint8_t>(b));
-  }
-  rust_storage_.value()->save_extra_reward_vote(h_arr, std::move(vote_rlp));
-  return;
-  #endif
   insert(Columns::extra_reward_votes, vote->getHash().asBytes(), vote->rlp(true, true));
 }
 
 std::vector<std::shared_ptr<PbftVote>> DbStorage::getRewardVotes() {
   std::vector<std::shared_ptr<PbftVote>> votes;
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto rust_votes = rust_storage_.value()->get_reward_votes();
-  votes.reserve(rust_votes.size());
-  for (auto const& vote_rlp : rust_votes) {
-    votes.emplace_back(std::make_shared<PbftVote>(dev::bytes(vote_rlp.data.begin(), vote_rlp.data.end())));
-  }
-
-  return votes;
-  #endif
 
   auto it = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::extra_reward_votes)));
   for (it->SeekToFirst(); it->Valid(); it->Next()) {
@@ -1816,22 +1182,10 @@ std::vector<std::shared_ptr<PbftVote>> DbStorage::getRewardVotes() {
 
 void DbStorage::addPbftBlockPeriodToBatch(PbftPeriod period, taraxa::blk_hash_t const& pbft_block_hash,
                                           Batch& write_batch) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::array<uint8_t, 32> h_arr;
-  std::memcpy(h_arr.data(), pbft_block_hash.data(), 32);
-  rust_storage_.value()->save_pbft_block_period(h_arr, period);
-  return;
-  #endif
   insert(write_batch, Columns::pbft_block_period, toSlice(pbft_block_hash.asBytes()), toSlice(period));
 }
 
 std::pair<bool, PbftPeriod> DbStorage::getPeriodFromPbftHash(taraxa::blk_hash_t const& pbft_block_hash) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::array<uint8_t, 32> h_arr;
-  std::memcpy(h_arr.data(), pbft_block_hash.data(), 32);
-  auto res = rust_storage_.value()->get_period_from_pbft_hash(h_arr);
-  return {res.found, static_cast<PbftPeriod>(res.period)};
-  #endif
   auto data = lookup(toSlice(pbft_block_hash.asBytes()), Columns::pbft_block_period);
 
   if (!data.empty()) {
@@ -1844,16 +1198,6 @@ std::pair<bool, PbftPeriod> DbStorage::getPeriodFromPbftHash(taraxa::blk_hash_t 
 }
 
 std::shared_ptr<std::pair<PbftPeriod, uint32_t>> DbStorage::getDagBlockPeriod(blk_hash_t const& hash) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  try {
-    std::array<uint8_t, 32> h_arr;
-    std::memcpy(h_arr.data(), hash.data(), 32);
-    auto res = rust_storage_.value()->get_dag_block_period(h_arr);
-    return std::make_shared<std::pair<PbftPeriod, uint32_t>>(res.period, res.position);
-  } catch (std::exception const& e) {
-    LOG(log_dg_) << "Failed in DbStorage::getDagBlockPeriod: " << e.what();
-  }
-  #endif
   auto data = asBytes(lookup(toSlice(hash.asBytes()), Columns::dag_block_period));
   if (data.size() > 0) {
     dev::RLP rlp(data);
@@ -1868,12 +1212,6 @@ std::shared_ptr<std::pair<PbftPeriod, uint32_t>> DbStorage::getDagBlockPeriod(bl
 
 void DbStorage::addDagBlockPeriodToBatch(blk_hash_t const& hash, PbftPeriod period, uint32_t position,
                                          Batch& write_batch) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::array<uint8_t, 32> h_arr;
-  std::memcpy(h_arr.data(), hash.data(), 32);
-  rust_storage_.value()->save_dag_block_period(h_arr, period, position);
-  return;
-  #endif
   dev::RLPStream s;
   s.appendList(2);
   s << period;
@@ -1920,17 +1258,6 @@ DbStorage::getLastPbftBlockHashAndFinalizedDagBlockByPeriod(PbftPeriod period) {
 }
 
 std::optional<PbftPeriod> DbStorage::getProposalPeriodForDagLevel(uint64_t level) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  try {
-    auto res = rust_storage_.value()->get_proposal_period_for_dag_level(level);
-    if (res.found) {
-      return std::optional<PbftPeriod>(res.period);
-    }
-    return std::nullopt;
-  } catch (std::exception const& e) {
-    LOG(log_dg_) << "Failed in DbStorage::getDagBlockPeriod: " << e.what();
-  }
-  #endif
   auto it =
       std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::proposal_period_levels_map)));
   it->Seek(toSlice(level));
@@ -1946,38 +1273,19 @@ std::optional<PbftPeriod> DbStorage::getProposalPeriodForDagLevel(uint64_t level
 }
 
 void DbStorage::saveProposalPeriodDagLevelsMap(uint64_t level, PbftPeriod period) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  rust_storage_.value()->save_proposal_period_dag_levels_map(level, period);
-  return;
-  #endif
   insert(Columns::proposal_period_levels_map, toSlice(level), toSlice(period));
 }
 
 void DbStorage::addProposalPeriodDagLevelsMapToBatch(uint64_t level, PbftPeriod period, Batch& write_batch) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  rust_storage_.value()->save_proposal_period_dag_levels_map(level, period);
-  return;
-  #endif
   insert(write_batch, Columns::proposal_period_levels_map, toSlice(level), toSlice(period));
 }
 
 void DbStorage::savePeriodLambda(PbftPeriod period, uint32_t period_lambda, Batch& write_batch) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  rust_storage_.value()->save_period_lambda(period, period_lambda);
-  return;
-  #endif
   // Save latest dynamic lambda
   insert(write_batch, Columns::period_lambda, period, period_lambda);
 }
 
 std::optional<uint32_t> DbStorage::getPeriodLambda(PbftPeriod period, bool find_closest) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto rust_value = rust_storage_.value()->get_period_lambda(period, find_closest);
-  if (rust_value.found) {
-    return rust_value.value;
-  }
-  return {};
-  #endif
 
   if (find_closest) {
     auto it = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::period_lambda)));
@@ -2001,17 +1309,10 @@ std::optional<uint32_t> DbStorage::getPeriodLambda(PbftPeriod period, bool find_
 }
 
 void DbStorage::saveRoundsCountDynamicLambda(uint32_t rounds_count, Batch& write_batch) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  rust_storage_.value()->save_rounds_count_dynamic_lambda(rounds_count);
-  return;
-  #endif
   insert(write_batch, Columns::rounds_count_dynamic_lambda, 0, toSlice(rounds_count));
 }
 
 uint32_t DbStorage::getRoundsCountDynamicLambda() {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  return rust_storage_.value()->get_rounds_count_dynamic_lambda();
-  #endif
 
   auto rounds_count_bytes = lookup(0, Columns::rounds_count_dynamic_lambda);
   if (!rounds_count_bytes.empty()) {
@@ -2026,15 +1327,6 @@ uint32_t DbStorage::getRoundsCountDynamicLambda() {
 std::unordered_map<PbftPeriod, rewards::BlockStats> DbStorage::getBlocksRewardsStats() const {
   std::unordered_map<PbftPeriod, rewards::BlockStats> rewards_stats;
 
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  auto rust_stats = rust_storage_.value()->get_blocks_rewards_stats();
-  rewards_stats.reserve(rust_stats.size());
-  for (auto const& stat : rust_stats) {
-    auto bytes = dev::bytes(stat.data.begin(), stat.data.end());
-    rewards_stats[stat.period] = util::rlp_dec<rewards::BlockStats>(dev::RLP(bytes));
-  }
-  return rewards_stats;
-  #endif
 
   auto it = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::block_rewards_stats)));
   for (it->SeekToFirst(); it->Valid(); it->Next()) {
@@ -2047,18 +1339,6 @@ std::unordered_map<PbftPeriod, rewards::BlockStats> DbStorage::getBlocksRewardsS
 }
 
 void DbStorage::saveBlockRewardsStats(uint64_t period, const rewards::BlockStats& stats, Batch& write_batch) {
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  dev::RLPStream rust_encoding;
-  stats.rlp(rust_encoding);
-  auto stats_bytes = rust_encoding.out();
-  rust::Vec<uint8_t> stats_rlp;
-  stats_rlp.reserve(stats_bytes.size());
-  for (auto const& b : stats_bytes) {
-    stats_rlp.push_back(static_cast<uint8_t>(b));
-  }
-  rust_storage_.value()->save_block_rewards_stats(period, std::move(stats_rlp));
-  return;
-  #endif
   dev::RLPStream encoding;
   stats.rlp(encoding);
   insert(write_batch, DbStorage::Columns::block_rewards_stats, period, encoding.out());

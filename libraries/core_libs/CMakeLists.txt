@@ -69,6 +69,7 @@ if(RUSTAXA_ENABLE_STORAGE)
     # In Rust storage mode, inject a header overlay that remaps legacy DbStorage
     # to DbStorageOld and exposes a forwarding DbStorage shim facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/storage_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/storage_shim/src/storage_shim.cpp)
 
     # Compile the legacy implementation as DbStorageOld.
     set_source_files_properties(

@@ -22,10 +22,6 @@
 #include "vote/pillar_vote.hpp"
 #include "vote_manager/verified_votes.hpp"
 
-#ifdef RUSTAXA_ENABLE_STORAGE
-#include "rustaxa-bridge/storage.rs.h"
-#endif
-
 namespace taraxa {
 namespace fs = std::filesystem;
 struct SortitionParamsChange;
@@ -167,7 +163,7 @@ class DbStorage : public std::enable_shared_from_this<DbStorage> {
   rocksdb::WriteOptions async_write_;
   rocksdb::WriteOptions sync_write_;
 
- private:
+ protected:
   fs::path path_;
   fs::path db_path_;
   fs::path state_db_path_;
@@ -180,9 +176,6 @@ class DbStorage : public std::enable_shared_from_this<DbStorage> {
   std::atomic<uint64_t> dag_edge_count_;
   const uint32_t kDbSnapshotsEachNblock = 0;
   std::atomic<bool> snapshots_enabled_ = true;
-  #ifdef RUSTAXA_ENABLE_STORAGE
-  std::optional<::rust::Box<rustaxa::storage::Storage>> rust_storage_;
-  #endif
   const uint32_t kDbSnapshotsMaxCount = 0;
   std::set<PbftPeriod> snapshots_;
   uint64_t earliest_block_number_ = 0;
