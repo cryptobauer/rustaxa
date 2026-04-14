@@ -4,6 +4,11 @@ Source of truth: `libraries/core_libs/storage/include/storage/storage.hpp`
 
 Goal: keep the `DbStorage` public interface stable while replacing all internal `db_` access with the Rust storage module behind small C++ shims.
 
+Current shim placement:
+- Rust-mode shim implementations now live in `libraries/core_libs/storage_shim/src/storage_shim.cpp`.
+- Legacy `libraries/core_libs/storage/src/storage.cpp` no longer contains Rust `#ifdef` branches for shimmed APIs.
+- Shimmed APIs execute Rust logic directly (no fallback calls into `DbStorageOld` inside shim methods).
+
 Current migration direction:
 - First focus on read paths.
 - After the read surface is stable, move write APIs and batch handling.
@@ -13,7 +18,7 @@ Current migration direction:
 
 ## Legend
 
-- `[x]` Rust-backed shim already exists in `storage.cpp`
+- `[x]` Rust-backed shim exists in the Rust storage shim layer (`storage_shim.cpp`/`storage_shim.hpp`)
 - `[ ]` Public API still reads/writes via `db_`, `lookup`, `exist`, iterators, or `Batch`
 - `[~]` Public helper or cached accessor; no dedicated Rust FFI entry point is required if underlying primitive reads are already shimmed
 - `[u]` Public API with no external callers found in the workspace; defer for now
@@ -21,7 +26,7 @@ Current migration direction:
 
 ## External Usage Audit
 
-I checked each public method against workspace call sites outside `storage.hpp` and `storage.cpp`.
+I checked each public method against workspace call sites outside `storage.hpp`, `storage.cpp`, and `storage_shim.cpp`.
 
 Audit rule used:
 - search for member/static call patterns `->method(`, `.method(`, and `DbStorage::method(` across the workspace
@@ -326,23 +331,9 @@ Notes:
 
 ## Sequencing Recommendation
 
-1. `period_data` primitive read shims are complete (`getPeriodDataRaw`, `getPeriodFromPbftHash`).
-   Keep composite decode helpers in C++ for now.
-2. Continue transaction read shims second.
-   The main transaction retrieval primitives are now bridged (`getTransaction`, `getTransaction(period, position)`,
-   `getSystemTransaction`, `getTransactionCount`, `transactionInDb`, `transactionFinalized`,
-   `transactionsFinalized`, `getTransactionLocation`, `getAllNonfinalizedTransactions`,
-   `getAllTransactionPeriod`, `getPeriodSystemTransactionsHashes`).
-   Next step is optional batching/perf work (`transactionsInDb` or multi-hash lookups) and
-   the remaining finalized-chain receipt read (`getTransactionReceipt`).
-3. PBFT manager/vote read shims are now bridged (`getPbftMgrField`, `getPbftMgrStatus`,
-   `getCertVotedBlockInRound`, `getProposedPbftBlocks`, `getPbftHead`,
-   `getOwnVerifiedVotes`, `getAllTwoTPlusOneVotes`, `getRewardVotes`).
-4. Metadata/config/statistics read shims are now bridged (`getGenesisHash`, `getLastSortitionParams`,
-   `getParamsChangeForPeriod`, `getStatusField`, `getPeriodLambda`, `getRoundsCountDynamicLambda`,
-   `getBlocksRewardsStats`).
-5. Next target is finalized-chain per-transaction receipt read (`getTransactionReceipt`).
-6. Only then decide how to represent write batches across the C++ and Rust boundary.
+1. Maintain parity on shimmed APIs while expanding direct Rust coverage for remaining externally-used public APIs.
+2. Re-introduce Rust-side batch accumulation/atomic commit semantics for APIs that currently execute direct writes in Rust mode.
+3. Keep snapshot/migration/admin APIs in C++ (out of scope), and avoid regression in dual-mode build behavior.
 
 ## Design Notes for the Next Batch
 

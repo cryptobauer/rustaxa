@@ -309,9 +309,9 @@ What is not true today:
 
 From a rewrite perspective, the design naturally breaks into layers.
 
-### Current Rust Read Slice
+### Current Rust Shim Slice
 
-The implemented Rust read shim coverage now includes:
+The implemented Rust shim coverage now includes:
 - DAG read/index APIs (`dag_blocks`, `dag_blocks_level`, `dag_block_period`, `proposal_period_levels_map`)
 - period-data and finalized-receipt primitives (`getPeriodDataRaw`, `getPeriodFromPbftHash`,
   `getBlockReceipts`)
@@ -326,6 +326,12 @@ The implemented Rust read shim coverage now includes:
   `transactionsFinalized`, `getTransactionLocation`, `getTransaction`, `getTransaction(period, position)`,
   `getSystemTransaction`, `getTransactionCount`, `getAllNonfinalizedTransactions`,
   `getAllTransactionPeriod`, `getPeriodSystemTransactionsHashes`)
+- write primitives for DAG, period, transaction, PBFT manager/vote, pillar, and metadata/config/statistics APIs
+  that are marked `[x]` in the public API tracker
+
+Implementation note:
+- Rust-mode shim implementations live in `libraries/core_libs/storage_shim/src/storage_shim.cpp`.
+- Legacy `libraries/core_libs/storage/src/storage.cpp` now remains legacy-only logic.
 
 Current Rust-side repository split in `rustaxa-storage`:
 - `DagRepository` for DAG reads and DAG indexes
