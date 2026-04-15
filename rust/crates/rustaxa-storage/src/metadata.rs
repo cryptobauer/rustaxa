@@ -204,6 +204,17 @@ impl<D: DbReader + DbWriter> MetadataRepository<D> {
         self.db
             .put(Column::BlockRewardsStats, &period.to_le_bytes(), stats_rlp)
     }
+
+    /// Clears all cached block rewards stats.
+    pub fn clear_block_rewards_stats(&self) -> Result<()> {
+        let mut batch = self.db.create_batch();
+        for item in self.db.iter(Column::BlockRewardsStats) {
+            let (key, _) = item?;
+            self.db
+                .batch_delete(&mut batch, Column::BlockRewardsStats, &key)?;
+        }
+        self.db.commit_batch(batch)
+    }
 }
 
 #[cfg(test)]

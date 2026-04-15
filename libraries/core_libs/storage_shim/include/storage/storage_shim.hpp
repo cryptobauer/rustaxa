@@ -1,5 +1,8 @@
 #pragma once
 
+#include <mutex>
+#include <unordered_map>
+
 #include "common/types.hpp"
 #include "rustaxa-bridge/storage.rs.h"
 
@@ -23,6 +26,29 @@ class DbStorage : public DbStorageOld {
       LOG(log_er_) << "Error: " << e.what() << std::endl;
       throw DbException(std::string("Rust storage init failed: ") + e.what());
     }
+  }
+
+  ~DbStorage();
+
+  static Batch createWriteBatch();
+  void commitWriteBatch(Batch& write_batch, const rocksdb::WriteOptions& opts);
+  void commitWriteBatch(Batch& write_batch);
+  void updateDbVersions();
+
+  template <typename K, typename V>
+  void insert(Batch& batch, Column const& col, K const& k, V const& v) {
+    auto const key = toSlice(k);
+    auto const value = toSlice(v);
+    auto const batch_id = getOrCreateRustBatch(batch);
+    rust_storage_.value()->batch_put(batch_id, static_cast<uint8_t>(col.ordinal_), sliceToRustVec(key),
+                                     sliceToRustVec(value));
+  }
+
+  template <typename K>
+  void remove(Batch& batch, Column const& col, K const& k) {
+    auto const key = toSlice(k);
+    auto const batch_id = getOrCreateRustBatch(batch);
+    rust_storage_.value()->batch_delete(batch_id, static_cast<uint8_t>(col.ordinal_), sliceToRustVec(key));
   }
 
   void setGenesisHash(const h256& genesis_hash);
@@ -145,7 +171,12 @@ class DbStorage : public DbStorageOld {
   void saveBlockRewardsStats(uint64_t period, const rewards::BlockStats& stats, Batch& write_batch);
 
  private:
+  uint64_t getOrCreateRustBatch(Batch& batch);
+  static rust::Vec<uint8_t> sliceToRustVec(const Slice& slice);
+
   std::optional<::rust::Box<rustaxa::storage::Storage>> rust_storage_;
+  std::unordered_map<Batch*, uint64_t> rust_batches_;
+  std::mutex rust_batches_mutex_;
 };
 
 }  // namespace taraxa

@@ -1,9 +1,17 @@
 use ethereum_types::H256;
 use rustaxa_storage::Config;
 use rustaxa_storage::Storage as InnerStorage;
+use rustaxa_storage::StorageWriteBatch;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
-pub struct Storage(#[allow(dead_code)] InnerStorage);
+pub struct Storage(
+    #[allow(dead_code)] InnerStorage,
+    Mutex<HashMap<u64, StorageWriteBatch>>,
+    AtomicU64,
+);
 
 #[cxx::bridge(namespace = "rustaxa::storage")]
 mod ffi {
@@ -52,6 +60,11 @@ mod ffi {
     extern "Rust" {
         type Storage;
         fn create_storage(path: &str) -> Result<Box<Storage>>;
+        fn create_write_batch(&self) -> Result<u64>;
+        fn batch_put(&self, batch_id: u64, column: u8, key: Vec<u8>, value: Vec<u8>) -> Result<()>;
+        fn batch_delete(&self, batch_id: u64, column: u8, key: Vec<u8>) -> Result<()>;
+        fn commit_write_batch(&self, batch_id: u64, sync: bool) -> Result<()>;
+        fn drop_write_batch(&self, batch_id: u64) -> Result<()>;
 
         fn dag_block_in_db(&self, hash: &[u8; 32]) -> Result<bool>;
         fn get_dag_block(&self, hash: &[u8; 32]) -> Result<Vec<u8>>;
@@ -107,6 +120,7 @@ mod ffi {
         fn save_rounds_count_dynamic_lambda(&self, rounds_count: u32) -> Result<()>;
         fn get_blocks_rewards_stats(&self) -> Result<Vec<PeriodRlp>>;
         fn save_block_rewards_stats(&self, period: u64, stats_rlp: Vec<u8>) -> Result<()>;
+        fn clear_block_rewards_stats(&self) -> Result<()>;
 
         fn pbft_block_in_db(&self, hash: &[u8; 32]) -> Result<bool>;
         fn get_pbft_mgr_field(&self, field: u8) -> Result<u32>;
@@ -167,10 +181,76 @@ pub fn create_storage(path: &str) -> Result<Box<Storage>, anyhow::Error> {
     let path_buf = PathBuf::from(path);
     let config = Config::new(path_buf);
     let storage = InnerStorage::new(config)?;
-    Ok(Box::new(Storage(storage)))
+    Ok(Box::new(Storage(
+        storage,
+        Mutex::new(HashMap::new()),
+        AtomicU64::new(1),
+    )))
 }
 
 impl Storage {
+    fn create_write_batch(&self) -> Result<u64, anyhow::Error> {
+        let batch_id = self.2.fetch_add(1, Ordering::Relaxed);
+        let mut batches = self
+            .1
+            .lock()
+            .map_err(|_| anyhow::anyhow!("batch registry lock poisoned"))?;
+        batches.insert(batch_id, self.0.create_write_batch());
+        Ok(batch_id)
+    }
+
+    fn batch_put(
+        &self,
+        batch_id: u64,
+        column: u8,
+        key: Vec<u8>,
+        value: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        let column = rustaxa_storage::Column::from_index(column)?;
+        let mut batches = self
+            .1
+            .lock()
+            .map_err(|_| anyhow::anyhow!("batch registry lock poisoned"))?;
+        let batch = batches
+            .get_mut(&batch_id)
+            .ok_or_else(|| anyhow::anyhow!("unknown batch id: {}", batch_id))?;
+        self.0.batch_put_raw(batch, column, &key, &value)
+    }
+
+    fn batch_delete(&self, batch_id: u64, column: u8, key: Vec<u8>) -> Result<(), anyhow::Error> {
+        let column = rustaxa_storage::Column::from_index(column)?;
+        let mut batches = self
+            .1
+            .lock()
+            .map_err(|_| anyhow::anyhow!("batch registry lock poisoned"))?;
+        let batch = batches
+            .get_mut(&batch_id)
+            .ok_or_else(|| anyhow::anyhow!("unknown batch id: {}", batch_id))?;
+        self.0.batch_delete_raw(batch, column, &key)
+    }
+
+    fn commit_write_batch(&self, batch_id: u64, sync: bool) -> Result<(), anyhow::Error> {
+        let batch = {
+            let mut batches = self
+                .1
+                .lock()
+                .map_err(|_| anyhow::anyhow!("batch registry lock poisoned"))?;
+            batches
+                .remove(&batch_id)
+                .ok_or_else(|| anyhow::anyhow!("unknown batch id: {}", batch_id))?
+        };
+        self.0.commit_write_batch_with_sync(batch, sync)
+    }
+
+    fn drop_write_batch(&self, batch_id: u64) -> Result<(), anyhow::Error> {
+        let mut batches = self
+            .1
+            .lock()
+            .map_err(|_| anyhow::anyhow!("batch registry lock poisoned"))?;
+        batches.remove(&batch_id);
+        Ok(())
+    }
+
     fn dag_block_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
         self.0.catch_up()?;
         self.0
@@ -524,6 +604,10 @@ impl Storage {
         self.0
             .metadata()
             .save_block_rewards_stats(period, &stats_rlp)
+    }
+
+    fn clear_block_rewards_stats(&self) -> Result<(), anyhow::Error> {
+        self.0.metadata().clear_block_rewards_stats()
     }
 
     fn pbft_block_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {

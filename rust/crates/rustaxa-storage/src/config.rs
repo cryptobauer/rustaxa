@@ -219,6 +219,14 @@ impl Column {
         }
     }
 
+    /// Parses a column by ordinal index (matching C++ `Column::ordinal_` order).
+    pub fn from_index(index: u8) -> Result<Column> {
+        Self::all()
+            .get(index as usize)
+            .copied()
+            .ok_or_else(|| StorageError::Config(format!("Unknown column index: {}", index)).into())
+    }
+
     /// Returns whether the column uses a custom uint64 comparator.
     pub fn uses_uint64_comparator(&self) -> bool {
         matches!(

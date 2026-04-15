@@ -16,6 +16,7 @@ pub use config::Config;
 pub use config::StatusField;
 pub use dag::DagRepository;
 pub use db::Storage;
+pub use db::StorageWriteBatch;
 pub use error::StorageError;
 pub use metadata::MetadataRepository;
 pub use pbft::PbftRepository;

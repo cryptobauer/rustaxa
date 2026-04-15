@@ -70,6 +70,9 @@ pub trait DbWriter: Send + Sync {
     fn delete(&self, col: Column, key: &[u8]) -> Result<()>;
 }
 
+/// Public batch type used by bridge-owned batch registries.
+pub type StorageWriteBatch = WriteBatch;
+
 impl DbReader for DBWithThreadMode<MultiThreaded> {
     type Slice<'a> = DBPinnableSlice<'a>;
 
@@ -329,6 +332,37 @@ impl Storage {
 
     pub fn iter(&self, col: Column) -> DbIterator<'_> {
         DbReader::iter(self, col)
+    }
+
+    pub fn create_write_batch(&self) -> StorageWriteBatch {
+        DbWriter::create_batch(self)
+    }
+
+    pub fn batch_put_raw(
+        &self,
+        batch: &mut StorageWriteBatch,
+        col: Column,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<()> {
+        DbWriter::batch_put(self, batch, col, key, value)
+    }
+
+    pub fn batch_delete_raw(
+        &self,
+        batch: &mut StorageWriteBatch,
+        col: Column,
+        key: &[u8],
+    ) -> Result<()> {
+        DbWriter::batch_delete(self, batch, col, key)
+    }
+
+    pub fn commit_write_batch_with_sync(&self, batch: StorageWriteBatch, sync: bool) -> Result<()> {
+        let mut opts = WriteOptions::default();
+        opts.set_sync(sync);
+        self.db
+            .write_opt(batch, &opts)
+            .map_err(|e| StorageError::Database(e).into())
     }
 }
 
