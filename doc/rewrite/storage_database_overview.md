@@ -360,7 +360,7 @@ These are still mostly standard key-value or iterator reads.
 
 ### Harder targets
 
-- write batching across the C++ and Rust boundary
+- performance/parity hardening for batch-heavy write paths now that C++ `Batch` APIs are routed through Rust in shim mode
 - snapshot/migration/admin APIs
 - final-chain code paths that use low-level `DbStorage` helpers directly
 

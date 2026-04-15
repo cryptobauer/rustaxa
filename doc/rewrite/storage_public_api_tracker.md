@@ -222,8 +222,11 @@ Current bridge coverage now includes the DAG read slice, proposal-period lookup,
 These methods mutate RocksDB state today and will need either direct Rust shims or a batch translation layer.
 
 Batch migration note:
-- Batch-commit translation work (`commitWriteBatch` routing through Rust) is implemented in worktree branch `feat/rust/batch-write-round1` and is not merged into this branch yet.
-- Current `*ToBatch` shims in Rust mode target API coverage via direct Rust writes. They do not yet preserve C++ batch-accumulation/atomic-commit semantics.
+- Rust-mode `createWriteBatch` / `commitWriteBatch` now route through a Rust bridge batch registry.
+- `Batch&` write APIs that use `insert(batch, ...)` / `remove(batch, ...)` now enqueue operations into Rust-side batches and
+  apply on commit, preserving deferred batch-commit behavior.
+- The explicit `saveDagBlock(..., Batch* write_batch_p)` pointer-based accumulation path is still intentionally unsupported in Rust mode
+  (no external callers in the workspace).
 
 ### 1. DAG Write APIs
 
@@ -272,10 +275,6 @@ Batch migration note:
 - `[x] removeExtraRewardVotes(const std::vector<vote_hash_t>& votes, Batch& write_batch)`
 - `[x] saveExtraRewardVote(const std::shared_ptr<PbftVote>& vote)`
 
-  Note: the `*ToBatch`/batch-parameter PBFT APIs above are currently Rust-backed for API coverage via direct Rust writes in
-  `RUSTAXA_ENABLE_STORAGE` mode. They do not yet preserve C++ batch-accumulation/atomic-commit semantics.
-  TODO: re-introduce Rust-side batch accumulation and atomic commit semantics for these APIs.
-
 ### 5. Pillar Write APIs
 
 - `[x] savePillarBlock(const std::shared_ptr<pillar_chain::PillarBlock>& pillar_block)`
@@ -298,9 +297,9 @@ These are part of the public surface but they are not good first-wave Rust repos
 Scope note: snapshotting and DB migration flow are intentionally out of Rust rewrite scope. Some low-level admin APIs are also out of scope for now.
 Scope note: APIs primarily exercised by `libraries/plugin/light` (iterator/range/compaction/history maintenance) are intentionally not migration blockers for Rust storage.
 
-- `[!] createWriteBatch()`
-- `[!] commitWriteBatch(Batch& write_batch, const rocksdb::WriteOptions& opts)`
-- `[!] commitWriteBatch(Batch& write_batch)`
+- `[x] createWriteBatch()`
+- `[x] commitWriteBatch(Batch& write_batch, const rocksdb::WriteOptions& opts)`
+- `[x] commitWriteBatch(Batch& write_batch)`
 - `[!] getColumnIterator(const Column& c)`
 - `[!] getColumnIterator(rocksdb::ColumnFamilyHandle* c)`
 - `[!] DeleteRange(const Column& col, uint64_t begin, uint64_t end)`
@@ -314,7 +313,7 @@ Scope note: APIs primarily exercised by `libraries/plugin/light` (iterator/range
 - `[u] loadSnapshots()`
 - `[!] disableSnapshots()`
 - `[!] enableSnapshots()`
-- `[!] updateDbVersions()`
+- `[x] updateDbVersions()`
 - `[!] deleteColumnData(const Column& c)`
 - `[u] replaceColumn(const Column& to_be_replaced_col, std::unique_ptr<rocksdb::ColumnFamilyHandle>&& replacing_col)`
 - `[u] copyColumn(rocksdb::ColumnFamilyHandle* orig_column, const std::string& new_col_name, bool move_data = false)`
@@ -327,12 +326,12 @@ Notes:
 - `path()` and `dbStoragePath()` currently have no external callers.
 - `stateDbStoragePath()` is externally used.
 - The constructor and destructor are also out of scope for repository-level tracking, except that constructor bootstrapping already creates `rust_storage_`.
-- `Batch` currently aliases `rocksdb::WriteBatch`, so write-phase porting needs an explicit compatibility plan.
+- `Batch` still aliases `rocksdb::WriteBatch`; Rust-mode compatibility is implemented via a shim-side batch-handle map.
 
 ## Sequencing Recommendation
 
 1. Maintain parity on shimmed APIs while expanding direct Rust coverage for remaining externally-used public APIs.
-2. Re-introduce Rust-side batch accumulation/atomic commit semantics for APIs that currently execute direct writes in Rust mode.
+2. Benchmark and harden Rust-mode batch-heavy paths for parity/performance (especially hot final-chain and consensus write flows).
 3. Keep snapshot/migration/admin APIs in C++ (out of scope), and avoid regression in dual-mode build behavior.
 
 ## Design Notes for the Next Batch
