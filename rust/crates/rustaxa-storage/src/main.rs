@@ -214,7 +214,7 @@ fn main() -> Result<()> {
 
     println!();
     print_section("6. NON-FINALIZED DAG BLOCKS");
-    let nonfinalized = storage.dag().nonfinalized_dag_blocks()?;
+    let nonfinalized = storage.dag().non_finalized()?;
     let total_nonfinalized: usize = nonfinalized.values().map(|v| v.len()).sum();
     println!("  Total non-finalized DAG blocks: {total_nonfinalized}");
     if !nonfinalized.is_empty() {
@@ -291,7 +291,7 @@ fn main() -> Result<()> {
                 let marker = if is_target { " ← TARGET ANCHOR" } else { "" };
 
                 // recoverDag check 1: is block "actually finalized"?
-                let period_entry = storage.dag().dag_block_period(*hash);
+                let period_entry = storage.dag().period(*hash);
                 let finalized_status = match &period_entry {
                     Ok((p, _)) => format!("⚠ FINALIZED in period {p} (causes break!)"),
                     Err(_) => "non-finalized ✓".to_string(),
@@ -361,7 +361,7 @@ fn main() -> Result<()> {
 
         for (i, (hash, _block)) in blocks.iter().enumerate() {
             // Check 1: finalized?
-            if let Ok((p, _)) = storage.dag().dag_block_period(*hash) {
+            if let Ok((p, _)) = storage.dag().period(*hash) {
                 would_break = true;
                 break_reason = format!(
                     "block [{i}] {short} is finalized in period {p}",
@@ -465,7 +465,7 @@ fn main() -> Result<()> {
                     let pivot = b.pivot;
                     let _tips_count = b.tips.len();
                     let in_nonfinalized = all_nonfinalized.contains_key(&pivot);
-                    let in_finalized = storage.dag().dag_block_period(pivot).is_ok();
+                    let in_finalized = storage.dag().period(pivot).is_ok();
                     let pivot_status = if pivot.is_zero() {
                         "genesis/null".to_string()
                     } else if in_nonfinalized {
@@ -483,7 +483,7 @@ fn main() -> Result<()> {
                     // Check tips too
                     for (ti, tip) in b.tips.iter().enumerate() {
                         let tip_in_nf = all_nonfinalized.contains_key(tip);
-                        let tip_in_f = storage.dag().dag_block_period(*tip).is_ok();
+                        let tip_in_f = storage.dag().period(*tip).is_ok();
                         let tip_status = if tip_in_nf {
                             "non-finalized ✓"
                         } else if tip_in_f {
@@ -503,7 +503,7 @@ fn main() -> Result<()> {
                 }
                 None => {
                     // Not in non-finalized, check finalized
-                    let in_finalized = storage.dag().dag_block_period(current).is_ok();
+                    let in_finalized = storage.dag().period(current).is_ok();
                     if in_finalized {
                         println!(
                             "    [{depth}] {current:?} → finalized ✓ (chain ends in finalized data)"
@@ -536,7 +536,7 @@ fn main() -> Result<()> {
             .unwrap_or(H256::zero());
         if !target_pivot.is_zero() {
             let pivot_in_nonfinalized = all_nonfinalized.contains_key(&target_pivot);
-            let pivot_in_finalized = storage.dag().dag_block_period(target_pivot).is_ok();
+            let pivot_in_finalized = storage.dag().period(target_pivot).is_ok();
             // Check the pivot's level — it must be processed BEFORE the target anchor's level
             let pivot_level = all_nonfinalized.get(&target_pivot).map(|b| b.level);
             println!("  Target anchor pivot: {target_pivot:?}");
@@ -755,7 +755,7 @@ fn main() -> Result<()> {
 
     println!();
     print_section("7. DAG BLOCKS LEVEL INDEX (last 10 levels)");
-    let last_dag_level = storage.dag().last_blocks_level()?;
+    let last_dag_level = storage.dag().last_level()?;
     println!("  Last indexed DAG level: {last_dag_level}");
     let check_start = if last_dag_level > 9 {
         last_dag_level - 9
@@ -763,7 +763,7 @@ fn main() -> Result<()> {
         1
     };
     for lvl in check_start..=last_dag_level {
-        let blocks = storage.dag().blocks_by_level(lvl)?;
+        let blocks = storage.dag().hashes_at_level(lvl)?;
         println!("    Level {lvl}: {} block(s)", blocks.len());
     }
 
@@ -777,7 +777,7 @@ fn main() -> Result<()> {
     };
     let mut gaps = Vec::new();
     for lvl in gap_start..=last_dag_level {
-        let blocks = storage.dag().blocks_by_level(lvl)?;
+        let blocks = storage.dag().hashes_at_level(lvl)?;
         if blocks.is_empty() {
             gaps.push(lvl);
         }
@@ -825,7 +825,7 @@ fn main() -> Result<()> {
     let mut found_levels_for_target = Vec::new();
     let mut found_levels_nearby = Vec::new();
     for lvl in scan_start..=last_dag_level {
-        if let Some(period) = storage.dag().proposal_period_for_dag_level(lvl)? {
+        if let Some(period) = storage.dag().proposal_period_at_level(lvl)? {
             if period == target_period {
                 found_levels_for_target.push(lvl);
             }
@@ -845,7 +845,7 @@ fn main() -> Result<()> {
     if !found_levels_nearby.is_empty() {
         println!("  Nearby level→period mappings:");
         for (lvl, period) in &found_levels_nearby {
-            let blocks = storage.dag().blocks_by_level(*lvl)?;
+            let blocks = storage.dag().hashes_at_level(*lvl)?;
             let nonfinalized_at = nonfinalized.get(lvl).map(|v| v.len()).unwrap_or(0);
             println!(
                 "    Level {lvl} → period {period} (indexed: {} blocks, nonfinalized: {nonfinalized_at})",
@@ -927,7 +927,7 @@ fn main() -> Result<()> {
     }
 
     for anchor in &target_anchors {
-        let exists = storage.dag().dag_block_in_db(*anchor)?;
+        let exists = storage.dag().exists(*anchor)?;
         if exists {
             ok_items.push(format!("Target anchor {} exists in DB", h256_short(anchor)));
         } else {
@@ -1009,7 +1009,7 @@ fn main() -> Result<()> {
         if let Some(blk) = all_nonfinalized.get(&target_anchor) {
             // The block is stored as rustaxa_types::DagBlock — we need the raw RLP to recover sender
             // Read raw bytes from DB instead
-            let raw = storage.dag().dag_block_rlp(target_anchor)?;
+            let raw = storage.dag().by_hash_rlp(target_anchor)?;
             if !raw.is_empty() {
                 match recover_dag_block_sender(&raw) {
                     Some(addr) => println!("     Sender (block producer): 0x{}", hex_encode(&addr)),
@@ -1051,7 +1051,7 @@ fn main() -> Result<()> {
             // This anchor is at level 73779506, and its map entry collided with our target
             if !pivot_dag.is_zero() {
                 // Try non-finalized first, then check period data
-                let anchor_raw = storage.dag().dag_block_rlp(pivot_dag)?;
+                let anchor_raw = storage.dag().by_hash_rlp(pivot_dag)?;
                 if !anchor_raw.is_empty() {
                     match recover_dag_block_sender(&anchor_raw) {
                         Some(addr) => {
@@ -1122,7 +1122,7 @@ fn main() -> Result<()> {
             blocks.len()
         );
         for (hash, _blk) in blocks {
-            let raw = storage.dag().dag_block_rlp(*hash)?;
+            let raw = storage.dag().by_hash_rlp(*hash)?;
             let sender = if !raw.is_empty() {
                 recover_dag_block_sender(&raw)
             } else {
@@ -1146,8 +1146,8 @@ fn main() -> Result<()> {
 }
 
 fn check_dag_block_existence_inline(storage: &Storage, hash: H256) -> Result<()> {
-    let in_nonfinalized = storage.dag().dag_block_in_db(hash)?;
-    let in_period = storage.dag().dag_block_period(hash);
+    let in_nonfinalized = storage.dag().exists(hash)?;
+    let in_period = storage.dag().period(hash);
     match (in_nonfinalized, &in_period) {
         (true, Ok((period, pos))) => {
             println!("EXISTS (finalized period {period}, pos {pos})");
@@ -1164,8 +1164,8 @@ fn check_dag_block_existence_inline(storage: &Storage, hash: H256) -> Result<()>
 
 fn analyze_dag_block(storage: &Storage, hash: H256, indent: &str) -> Result<()> {
     println!("{indent}Hash: {hash:?}");
-    let in_nonfinalized = storage.dag().dag_block_in_db(hash)?;
-    let in_period = storage.dag().dag_block_period(hash);
+    let in_nonfinalized = storage.dag().exists(hash)?;
+    let in_period = storage.dag().period(hash);
     match (in_nonfinalized, &in_period) {
         (true, Ok((period, pos))) => {
             println!("{indent}Status: finalized (period {period}, pos {pos})")
@@ -1176,7 +1176,7 @@ fn analyze_dag_block(storage: &Storage, hash: H256, indent: &str) -> Result<()> 
             return Ok(());
         }
     }
-    match storage.dag().dag_block(hash) {
+    match storage.dag().by_hash(hash) {
         Ok(block) => {
             println!("{indent}Level: {}", block.level);
             println!("{indent}Pivot: {:?}", block.pivot);
@@ -1185,7 +1185,7 @@ fn analyze_dag_block(storage: &Storage, hash: H256, indent: &str) -> Result<()> 
             println!("{indent}Timestamp: {}", format_timestamp(block.timestamp));
             // Check pivot exists
             if !block.pivot.is_zero() {
-                let pivot_exists = storage.dag().dag_block_in_db(block.pivot)?;
+                let pivot_exists = storage.dag().exists(block.pivot)?;
                 println!("{indent}Pivot exists: {pivot_exists}");
             }
             // Check proposal period for this level (using Seek semantics like C++)
@@ -1498,11 +1498,11 @@ fn print_section(title: &str) {
 /// We scan backward through the map to find the entry for our target period.
 fn find_last_mapping_level(storage: &Storage, target_period: u64) -> Result<u64> {
     // Scan recent levels from the DAG level index
-    let last_level = storage.dag().last_blocks_level()?;
+    let last_level = storage.dag().last_level()?;
     let scan_start = last_level.saturating_sub(500);
     let mut best_level = 0u64;
     for lvl in scan_start..=last_level {
-        if let Some(period) = storage.dag().proposal_period_for_dag_level(lvl)?
+        if let Some(period) = storage.dag().proposal_period_at_level(lvl)?
             && period == target_period
         {
             best_level = lvl;

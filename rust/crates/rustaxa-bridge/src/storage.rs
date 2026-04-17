@@ -254,14 +254,14 @@ impl Storage {
     fn dag_block_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
         self.0
             .dag()
-            .dag_block_in_db(H256::from(*hash))
+            .exists(H256::from(*hash))
             .map_err(|e| anyhow::anyhow!(e))
     }
 
     fn get_dag_block(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
         self.0
             .dag()
-            .dag_block_rlp(H256::from(*hash))
+            .by_hash_rlp(H256::from(*hash))
             .map_err(|e| anyhow::anyhow!(e))
     }
 
@@ -269,23 +269,20 @@ impl Storage {
         let (period, position) = self
             .0
             .dag()
-            .dag_block_period(H256::from(*hash))
+            .period(H256::from(*hash))
             .map_err(|e| anyhow::anyhow!(e))?;
         Ok(ffi::BlockPeriod { period, position })
     }
 
     fn get_last_blocks_level(&self) -> Result<u64, anyhow::Error> {
-        self.0
-            .dag()
-            .last_blocks_level()
-            .map_err(|e| anyhow::anyhow!(e))
+        self.0.dag().last_level().map_err(|e| anyhow::anyhow!(e))
     }
 
     fn get_blocks_by_level(&self, level: u64) -> Result<Vec<u8>, anyhow::Error> {
         let hashes = self
             .0
             .dag()
-            .blocks_by_level(level)
+            .hashes_at_level(level)
             .map_err(|e| anyhow::anyhow!(e))?;
         let mut bytes = Vec::with_capacity(hashes.len() * 32);
         for h in hashes {
@@ -302,7 +299,7 @@ impl Storage {
         let rlps = self
             .0
             .dag()
-            .dag_blocks_at_level_rlp(level, number_of_levels)
+            .at_level_range(level, number_of_levels)
             .map_err(|e| anyhow::anyhow!(e))?;
         Ok(rlps
             .into_iter()
@@ -314,7 +311,7 @@ impl Storage {
         let map = self
             .0
             .dag()
-            .nonfinalized_dag_blocks_rlp()
+            .non_finalized()
             .map_err(|e| anyhow::anyhow!(e))?;
         Ok(map
             .into_iter()
@@ -335,7 +332,7 @@ impl Storage {
         let period = self
             .0
             .dag()
-            .proposal_period_for_dag_level(level)
+            .proposal_period_at_level(level)
             .map_err(|e| anyhow::anyhow!(e))?;
         Ok(match period {
             Some(period) => ffi::PeriodLookup {
@@ -358,7 +355,7 @@ impl Storage {
     ) -> Result<(), anyhow::Error> {
         self.0
             .dag()
-            .save_dag_block(H256::from(*hash), level, tips_count, &block_rlp)
+            .write(H256::from(*hash), level, tips_count, &block_rlp)
     }
 
     fn update_dag_block_counter(
@@ -369,11 +366,11 @@ impl Storage {
     ) -> Result<(), anyhow::Error> {
         self.0
             .dag()
-            .update_dag_block_counter(H256::from(*hash), level, tips_count)
+            .update_counter(H256::from(*hash), level, tips_count)
     }
 
     fn remove_dag_block(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
-        self.0.dag().remove_dag_block(H256::from(*hash))
+        self.0.dag().remove(H256::from(*hash))
     }
 
     fn save_proposal_period_dag_levels_map(
@@ -381,9 +378,7 @@ impl Storage {
         level: u64,
         period: u64,
     ) -> Result<(), anyhow::Error> {
-        self.0
-            .dag()
-            .save_proposal_period_dag_levels_map(level, period)
+        self.0.dag().write_proposal_period_at_level(level, period)
     }
 
     fn save_dag_block_period(
@@ -394,7 +389,7 @@ impl Storage {
     ) -> Result<(), anyhow::Error> {
         self.0
             .dag()
-            .save_dag_block_period(H256::from(*hash), period, position)
+            .write_period(H256::from(*hash), period, position)
     }
 
     fn get_period_data_raw(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
