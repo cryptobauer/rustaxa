@@ -114,29 +114,6 @@ impl<D: DbReader> DagRepository<D> {
         }
     }
 
-    // Temporary helper needed to bridge into C++.
-    // TODO: remove as soon as possible.
-
-    pub fn dag_block_rlp(&self, block: H256) -> Result<Vec<u8>> {
-        if let Some(val) = self.db.get(Column::DagBlocks, block.as_bytes())? {
-            return Ok(val.as_ref().to_vec());
-        }
-        if let Some(val) = self.db.get(Column::DagBlockPeriod, block.as_bytes())? {
-            let rlp = rlp::Rlp::new(val.as_ref());
-            let period: u64 = rlp.val_at(0)?;
-            let position: usize = rlp.val_at(1)?;
-
-            if let Some(period_data) = self.db.get(Column::PeriodData, &period.to_le_bytes())? {
-                let period_rlp = rlp::Rlp::new(period_data.as_ref());
-                // DAG_BLOCKS_POS_IN_PERIOD_DATA = 2 in C++
-                let dag_blocks_rlp = period_rlp.at(2)?;
-                let block_rlp = dag_blocks_rlp.at(position)?;
-                return Ok(block_rlp.as_raw().to_vec());
-            }
-        }
-        Err(StorageError::Dag("DAG block not found".to_string()).into())
-    }
-
     pub fn dag_blocks_at_level_rlp(
         &self,
         level: u64,
@@ -165,6 +142,29 @@ impl<D: DbReader> DagRepository<D> {
             map.entry(level).or_default().push(val.into_vec());
         }
         Ok(map.into_iter().collect())
+    }
+
+    // Temporary helper needed to bridge into C++.
+    // TODO: remove as soon as possible.
+
+    pub fn dag_block_rlp(&self, block: H256) -> Result<Vec<u8>> {
+        if let Some(val) = self.db.get(Column::DagBlocks, block.as_bytes())? {
+            return Ok(val.as_ref().to_vec());
+        }
+        if let Some(val) = self.db.get(Column::DagBlockPeriod, block.as_bytes())? {
+            let rlp = rlp::Rlp::new(val.as_ref());
+            let period: u64 = rlp.val_at(0)?;
+            let position: usize = rlp.val_at(1)?;
+
+            if let Some(period_data) = self.db.get(Column::PeriodData, &period.to_le_bytes())? {
+                let period_rlp = rlp::Rlp::new(period_data.as_ref());
+                // DAG_BLOCKS_POS_IN_PERIOD_DATA = 2 in C++
+                let dag_blocks_rlp = period_rlp.at(2)?;
+                let block_rlp = dag_blocks_rlp.at(position)?;
+                return Ok(block_rlp.as_raw().to_vec());
+            }
+        }
+        Err(StorageError::Dag("DAG block not found".to_string()).into())
     }
 }
 
