@@ -9,7 +9,6 @@ use crate::StorageError;
 pub struct Config {
     pub db_path: PathBuf,
     pub state_path: PathBuf,
-    pub access_mode: AccessMode,
     pub create_if_missing: bool,
     pub create_missing_column_families: bool,
     pub compression: rocksdb::DBCompressionType,
@@ -20,12 +19,6 @@ pub struct Config {
     pub column_families: Vec<Column>,
 }
 
-#[derive(Debug, Clone)]
-pub enum AccessMode {
-    Primary,
-    Secondary { path: PathBuf },
-}
-
 impl Config {
     /// Creates a new storage configuration with the specified information.
     pub fn new(base_path: PathBuf) -> Self {
@@ -33,11 +26,6 @@ impl Config {
             // TODO: make configurable via toml.
             db_path: base_path.join("db"),
             state_path: base_path.join("state"),
-            access_mode: AccessMode::Secondary {
-                // As long as we open the DB from C++ and Rust and Rust only reads, we bypass lock issues by
-                // reading as a secondary.
-                path: base_path.join(".rustaxa").join("storage_secondary"),
-            },
             create_if_missing: true,
             create_missing_column_families: true,
             compression: rocksdb::DBCompressionType::Lz4,

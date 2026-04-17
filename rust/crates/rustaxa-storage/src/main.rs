@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use ethereum_types::H256;
 use rlp::Rlp;
-use rustaxa_storage::{AccessMode, Column, Config, StatusField, Storage};
+use rustaxa_storage::{Column, Config, StatusField, Storage};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -46,8 +46,6 @@ fn main() -> Result<()> {
             .unwrap_or(std::path::Path::new(&db_path))
             .to_path_buf(),
     );
-    // Open in primary mode for direct read access (no C++ running concurrently)
-    config.access_mode = AccessMode::Primary;
     config.db_path = PathBuf::from(&db_path);
     config.create_if_missing = false;
     config.create_missing_column_families = false;

@@ -15,7 +15,6 @@ use rocksdb::{
 };
 use std::sync::Arc;
 
-use crate::AccessMode;
 use crate::Column;
 use crate::Config;
 use crate::DagRepository;
@@ -245,25 +244,11 @@ impl Storage {
                 .collect::<Vec<_>>()
         };
 
-        let db = match &config.access_mode {
-            AccessMode::Primary => DBWithThreadMode::<MultiThreaded>::open_cf_descriptors(
-                &opts,
-                &config.db_path,
-                descriptors(),
-            ),
-            AccessMode::Secondary { path } => {
-                if path.exists() {
-                    std::fs::remove_dir_all(path).map_err(StorageError::Io)?;
-                }
-                std::fs::create_dir_all(path).map_err(StorageError::Io)?;
-                DBWithThreadMode::<MultiThreaded>::open_cf_descriptors_as_secondary(
-                    &opts,
-                    &config.db_path,
-                    path,
-                    descriptors(),
-                )
-            }
-        }
+        let db = DBWithThreadMode::<MultiThreaded>::open_cf_descriptors(
+            &opts,
+            &config.db_path,
+            descriptors(),
+        )
         .map_err(StorageError::Database)?;
 
         let db = Arc::new(db);
@@ -307,13 +292,6 @@ impl Storage {
 
     pub fn transaction(&self) -> &TransactionRepository<DBWithThreadMode<MultiThreaded>> {
         &self.transaction
-    }
-
-    pub fn catch_up(&self) -> Result<()> {
-        self.db
-            .try_catch_up_with_primary()
-            .map_err(StorageError::Database)?;
-        Ok(())
     }
 
     pub fn genesis_hash(&self) -> Result<Option<H256>> {

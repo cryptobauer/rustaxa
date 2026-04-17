@@ -252,7 +252,6 @@ impl Storage {
     }
 
     fn dag_block_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
-        self.0.catch_up()?;
         self.0
             .dag()
             .dag_block_in_db(H256::from(*hash))
@@ -260,7 +259,6 @@ impl Storage {
     }
 
     fn get_dag_block(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.catch_up()?;
         self.0
             .dag()
             .dag_block_rlp(H256::from(*hash))
@@ -268,7 +266,6 @@ impl Storage {
     }
 
     fn get_dag_block_period(&self, hash: &[u8; 32]) -> Result<ffi::BlockPeriod, anyhow::Error> {
-        self.0.catch_up()?;
         let (period, position) = self
             .0
             .dag()
@@ -278,7 +275,6 @@ impl Storage {
     }
 
     fn get_last_blocks_level(&self) -> Result<u64, anyhow::Error> {
-        self.0.catch_up()?;
         self.0
             .dag()
             .last_blocks_level()
@@ -286,7 +282,6 @@ impl Storage {
     }
 
     fn get_blocks_by_level(&self, level: u64) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.catch_up()?;
         let hashes = self
             .0
             .dag()
@@ -304,7 +299,6 @@ impl Storage {
         level: u64,
         number_of_levels: u32,
     ) -> Result<Vec<ffi::BlockRlp>, anyhow::Error> {
-        self.0.catch_up()?;
         let rlps = self
             .0
             .dag()
@@ -317,7 +311,6 @@ impl Storage {
     }
 
     fn get_nonfinalized_dag_blocks(&self) -> Result<Vec<ffi::LevelBlocks>, anyhow::Error> {
-        self.0.catch_up()?;
         let map = self
             .0
             .dag()
@@ -339,7 +332,6 @@ impl Storage {
         &self,
         level: u64,
     ) -> Result<ffi::PeriodLookup, anyhow::Error> {
-        self.0.catch_up()?;
         let period = self
             .0
             .dag()
@@ -406,7 +398,6 @@ impl Storage {
     }
 
     fn get_period_data_raw(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.catch_up()?;
         self.0
             .period()
             .period_data_raw(period)
@@ -417,7 +408,6 @@ impl Storage {
         &self,
         hash: &[u8; 32],
     ) -> Result<ffi::PeriodLookup, anyhow::Error> {
-        self.0.catch_up()?;
         let lookup = self
             .0
             .period()
@@ -437,7 +427,6 @@ impl Storage {
     }
 
     fn get_block_receipt(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.catch_up()?;
         self.0
             .period()
             .block_receipt(period)
@@ -455,7 +444,6 @@ impl Storage {
     }
 
     fn get_pillar_block(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.catch_up()?;
         Ok(self
             .0
             .pillar()
@@ -464,7 +452,6 @@ impl Storage {
     }
 
     fn get_latest_pillar_block(&self) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.catch_up()?;
         Ok(self
             .0
             .pillar()
@@ -473,7 +460,6 @@ impl Storage {
     }
 
     fn get_own_pillar_block_vote(&self) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.catch_up()?;
         Ok(self
             .0
             .pillar()
@@ -482,7 +468,6 @@ impl Storage {
     }
 
     fn get_current_pillar_block_data(&self) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.catch_up()?;
         Ok(self
             .0
             .pillar()
@@ -507,7 +492,6 @@ impl Storage {
     }
 
     fn get_genesis_hash(&self) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.catch_up()?;
         Ok(self.0.metadata().genesis_hash_bytes()?.unwrap_or_default())
     }
 
@@ -516,8 +500,6 @@ impl Storage {
     }
 
     fn get_last_sortition_params(&self, count: u64) -> Result<Vec<ffi::BlockRlp>, anyhow::Error> {
-        self.0.catch_up()?;
-
         // C++ passes size_t across the bridge; on the same architecture, size_t and usize are equal.
         // This conversion should never fail on 32-bit or 64-bit systems.
         let count = usize::try_from(count).unwrap_or(usize::MAX);
@@ -529,7 +511,6 @@ impl Storage {
     }
 
     fn get_params_change_for_period(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.catch_up()?;
         Ok(self
             .0
             .metadata()
@@ -538,7 +519,6 @@ impl Storage {
     }
 
     fn get_status_field(&self, field: u8) -> Result<u64, anyhow::Error> {
-        self.0.catch_up()?;
         self.0.metadata().status_field(field)
     }
 
@@ -561,7 +541,6 @@ impl Storage {
         period: u64,
         find_closest: bool,
     ) -> Result<ffi::PeriodLambda, anyhow::Error> {
-        self.0.catch_up()?;
         let value = self.0.metadata().period_lambda(period, find_closest)?;
         Ok(match value {
             Some(value) => ffi::PeriodLambda { found: true, value },
@@ -573,7 +552,6 @@ impl Storage {
     }
 
     fn get_rounds_count_dynamic_lambda(&self) -> Result<u32, anyhow::Error> {
-        self.0.catch_up()?;
         self.0.metadata().rounds_count_dynamic_lambda()
     }
 
@@ -588,7 +566,6 @@ impl Storage {
     }
 
     fn get_blocks_rewards_stats(&self) -> Result<Vec<ffi::PeriodRlp>, anyhow::Error> {
-        self.0.catch_up()?;
         let stats = self.0.metadata().block_rewards_stats_rlp()?;
         Ok(stats
             .into_iter()
@@ -611,22 +588,18 @@ impl Storage {
     }
 
     fn pbft_block_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
-        self.0.catch_up()?;
         self.0.pbft().pbft_block_in_db(H256::from(*hash))
     }
 
     fn get_pbft_mgr_field(&self, field: u8) -> Result<u32, anyhow::Error> {
-        self.0.catch_up()?;
         Ok(self.0.pbft().pbft_mgr_field(field)?.unwrap_or(1))
     }
 
     fn get_pbft_mgr_status(&self, field: u8) -> Result<bool, anyhow::Error> {
-        self.0.catch_up()?;
         Ok(self.0.pbft().pbft_mgr_status(field)?.unwrap_or(false))
     }
 
     fn get_cert_voted_block_in_round(&self) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.catch_up()?;
         Ok(self
             .0
             .pbft()
@@ -635,7 +608,6 @@ impl Storage {
     }
 
     fn get_proposed_pbft_blocks(&self) -> Result<Vec<ffi::BlockRlp>, anyhow::Error> {
-        self.0.catch_up()?;
         let blocks = self.0.pbft().proposed_pbft_blocks_rlp()?;
         Ok(blocks
             .into_iter()
@@ -644,7 +616,6 @@ impl Storage {
     }
 
     fn get_pbft_head(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.catch_up()?;
         Ok(self
             .0
             .pbft()
@@ -653,7 +624,6 @@ impl Storage {
     }
 
     fn get_own_verified_votes(&self) -> Result<Vec<ffi::VoteRlp>, anyhow::Error> {
-        self.0.catch_up()?;
         let votes = self.0.pbft().own_verified_votes_rlp()?;
         Ok(votes
             .into_iter()
@@ -662,7 +632,6 @@ impl Storage {
     }
 
     fn get_all_two_t_plus_one_votes(&self) -> Result<Vec<ffi::VoteRlp>, anyhow::Error> {
-        self.0.catch_up()?;
         let votes = self.0.pbft().all_two_t_plus_one_votes_rlp()?;
         Ok(votes
             .into_iter()
@@ -671,7 +640,6 @@ impl Storage {
     }
 
     fn get_reward_votes(&self) -> Result<Vec<ffi::VoteRlp>, anyhow::Error> {
-        self.0.catch_up()?;
         let votes = self.0.pbft().reward_votes_rlp()?;
         Ok(votes
             .into_iter()
@@ -758,19 +726,16 @@ impl Storage {
     }
 
     fn transaction_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
-        self.0.catch_up()?;
         self.0.transaction().transaction_in_db(H256::from(*hash))
     }
 
     fn transaction_finalized(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
-        self.0.catch_up()?;
         self.0
             .transaction()
             .transaction_finalized(H256::from(*hash))
     }
 
     fn get_transaction_location(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.catch_up()?;
         Ok(self
             .0
             .transaction()
@@ -779,7 +744,6 @@ impl Storage {
     }
 
     fn get_transaction(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.catch_up()?;
         Ok(self
             .0
             .transaction()
@@ -792,7 +756,6 @@ impl Storage {
         period: u64,
         position: u32,
     ) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.catch_up()?;
         Ok(self
             .0
             .transaction()
@@ -801,12 +764,10 @@ impl Storage {
     }
 
     fn get_transaction_count(&self, period: u64) -> Result<u64, anyhow::Error> {
-        self.0.catch_up()?;
         self.0.transaction().transaction_count(period)
     }
 
     fn get_system_transaction(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.catch_up()?;
         Ok(self
             .0
             .transaction()
@@ -815,13 +776,11 @@ impl Storage {
     }
 
     fn get_all_nonfinalized_transactions(&self) -> Result<Vec<ffi::TxRlp>, anyhow::Error> {
-        self.0.catch_up()?;
         let trxs = self.0.transaction().all_nonfinalized_transactions_rlp()?;
         Ok(trxs.into_iter().map(|data| ffi::TxRlp { data }).collect())
     }
 
     fn get_all_transaction_period(&self) -> Result<Vec<ffi::HashPeriod>, anyhow::Error> {
-        self.0.catch_up()?;
         let periods = self.0.transaction().all_transaction_period()?;
         Ok(periods
             .into_iter()
@@ -834,7 +793,6 @@ impl Storage {
     }
 
     fn get_period_system_transactions_hashes(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.catch_up()?;
         self.0
             .transaction()
             .period_system_transactions_hashes_rlp(period)

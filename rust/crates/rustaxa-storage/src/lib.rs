@@ -10,7 +10,6 @@ mod transaction;
 
 pub(crate) const SINGLE_VALUE_KEY: [u8; 4] = 0i32.to_le_bytes();
 
-pub use config::AccessMode;
 pub use config::Column;
 pub use config::Config;
 pub use config::StatusField;
