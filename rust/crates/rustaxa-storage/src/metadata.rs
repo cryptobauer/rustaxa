@@ -16,7 +16,7 @@ impl<D: DbReader> MetadataRepository<D> {
     }
 
     /// Implements getGenesisHash() -> optional(bytes)
-    pub fn genesis_hash_bytes(&self) -> Result<Option<Vec<u8>>> {
+    pub fn genesis_hash(&self) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
             .get(Column::Genesis, &SINGLE_VALUE_KEY)?
@@ -331,9 +331,9 @@ mod tests {
         let repo = MetadataRepository::new(db.clone());
         let genesis = vec![0xAB; 32];
 
-        assert_eq!(repo.genesis_hash_bytes().unwrap(), None);
+        assert_eq!(repo.genesis_hash().unwrap(), None);
         db.put(Column::Genesis, &SINGLE_VALUE_KEY, &genesis);
-        assert_eq!(repo.genesis_hash_bytes().unwrap(), Some(genesis));
+        assert_eq!(repo.genesis_hash().unwrap(), Some(genesis));
     }
 
     #[test]

@@ -492,7 +492,7 @@ impl Storage {
     }
 
     fn get_genesis_hash(&self) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self.0.metadata().genesis_hash_bytes()?.unwrap_or_default())
+        Ok(self.0.metadata().genesis_hash()?.unwrap_or_default())
     }
 
     fn set_genesis_hash(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {

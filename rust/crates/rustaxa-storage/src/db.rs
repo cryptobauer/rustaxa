@@ -9,7 +9,6 @@
 ///   - Snapshots
 ///
 use anyhow::Result;
-use ethereum_types::H256;
 use rocksdb::{
     DBPinnableSlice, DBWithThreadMode, MultiThreaded, Options, WriteBatch, WriteOptions,
 };
@@ -22,7 +21,6 @@ use crate::MetadataRepository;
 use crate::PbftRepository;
 use crate::PeriodRepository;
 use crate::PillarRepository;
-use crate::SINGLE_VALUE_KEY;
 use crate::StorageError;
 use crate::TransactionRepository;
 
@@ -216,12 +214,13 @@ impl DbWriter for DBWithThreadMode<MultiThreaded> {
 pub struct Storage {
     #[allow(dead_code)]
     db: Arc<DBWithThreadMode<MultiThreaded>>,
+    // Individual repositories splitting query/apply into domains.
     dag: DagRepository<DBWithThreadMode<MultiThreaded>>,
-    metadata: MetadataRepository<DBWithThreadMode<MultiThreaded>>,
-    period: PeriodRepository<DBWithThreadMode<MultiThreaded>>,
-    pillar: PillarRepository<DBWithThreadMode<MultiThreaded>>,
     pbft: PbftRepository<DBWithThreadMode<MultiThreaded>>,
+    pillar: PillarRepository<DBWithThreadMode<MultiThreaded>>,
+    period: PeriodRepository<DBWithThreadMode<MultiThreaded>>,
     transaction: TransactionRepository<DBWithThreadMode<MultiThreaded>>,
+    metadata: MetadataRepository<DBWithThreadMode<MultiThreaded>>,
 }
 
 impl Storage {
@@ -292,12 +291,6 @@ impl Storage {
 
     pub fn transaction(&self) -> &TransactionRepository<DBWithThreadMode<MultiThreaded>> {
         &self.transaction
-    }
-
-    pub fn genesis_hash(&self) -> Result<Option<H256>> {
-        Ok(self
-            .get(Column::Genesis, &SINGLE_VALUE_KEY)?
-            .map(|val| H256::from_slice(val.as_ref())))
     }
 
     pub fn get_raw(&self, col: Column, key: &[u8]) -> Result<Option<Vec<u8>>> {
