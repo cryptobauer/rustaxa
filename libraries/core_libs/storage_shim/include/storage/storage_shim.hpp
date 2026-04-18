@@ -17,16 +17,7 @@ class DbStorage : public DbStorageOld {
  public:
   explicit DbStorage(fs::path const& path, uint32_t db_snapshot_each_n_pbft_block = 0, uint32_t max_open_files = 0,
                      uint32_t db_max_snapshots = 0, PbftPeriod db_revert_to_period = 0, addr_t node_addr = addr_t(),
-                     bool rebuild = false)
-      : DbStorageOld(path, db_snapshot_each_n_pbft_block, max_open_files, db_max_snapshots, db_revert_to_period,
-                     node_addr, rebuild) {
-    try {
-      rust_storage_ = rustaxa::storage::create_storage(path.string());
-    } catch (std::exception const& e) {
-      LOG(log_er_) << "Error: " << e.what() << std::endl;
-      throw DbException(std::string("Rust storage init failed: ") + e.what());
-    }
-  }
+                     bool rebuild = false);
 
   ~DbStorage();
 

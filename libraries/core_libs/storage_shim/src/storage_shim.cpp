@@ -31,6 +31,18 @@ rust::Vec<uint8_t> into_rust_vec(T const& val) {
 }
 }  // namespace
 
+DbStorage::DbStorage(fs::path const& path, uint32_t db_snapshot_each_n_pbft_block, uint32_t max_open_files,
+                     uint32_t db_max_snapshots, PbftPeriod db_revert_to_period, addr_t node_addr, bool rebuild)
+    : DbStorageOld(path, db_snapshot_each_n_pbft_block, max_open_files, db_max_snapshots, db_revert_to_period,
+                   node_addr, rebuild) {
+  try {
+    rust_storage_ = rustaxa::storage::create_storage(path.string());
+  } catch (std::exception const& e) {
+    LOG(log_er_) << "Error: " << e.what() << std::endl;
+    throw DbException(std::string("Rust storage init failed: ") + e.what());
+  }
+}
+
 Batch DbStorage::createWriteBatch() { return Batch(); }
 
 DbStorage::~DbStorage() {
