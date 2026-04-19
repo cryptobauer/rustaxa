@@ -20,6 +20,8 @@
 - `cd /build/tests && ctest --output-on-failure`: run registered C++ and `go_test` suites.
 - `cd tests/py && ./run.sh -s --tb=short`: create virtualenv, install requirements, run pytest tests.
 - `cargo test --manifest-path rust/Cargo.toml`: run Rust workspace tests.
+- `cargo clippy --manifest-path rust/Cargo.toml`: run Rust workspace linter.
+- `cargo fmt --manifest-path rust/Cargo.toml`: run Rust workspace formatter.
 
 ## Coding Style & Naming Conventions
 - C++ formatting follows `.clang-format` (Google base, `ColumnLimit: 120`).
