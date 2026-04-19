@@ -15,7 +15,7 @@ impl<D: DbReader> PillarRepository<D> {
     }
 
     /// Implements getPillarBlock(period) -> optional(rlp(pillar_block))
-    pub fn pillar_block_rlp(&self, period: u64) -> Result<Option<Vec<u8>>> {
+    pub fn rlp(&self, period: u64) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
             .get(Column::PillarBlock, &period.to_le_bytes())?
@@ -24,7 +24,7 @@ impl<D: DbReader> PillarRepository<D> {
     }
 
     /// Implements getLatestPillarBlock() -> optional(rlp(pillar_block))
-    pub fn latest_pillar_block_rlp(&self) -> Result<Option<Vec<u8>>> {
+    pub fn latest_rlp(&self) -> Result<Option<Vec<u8>>> {
         if let Some(item) = self.db.iter_rev(Column::PillarBlock).next() {
             let (_, value) = item?;
             let value = value.into_vec();
@@ -38,7 +38,7 @@ impl<D: DbReader> PillarRepository<D> {
     }
 
     /// Implements getOwnPillarBlockVote() -> optional(rlp(vote))
-    pub fn own_pillar_block_vote_rlp(&self) -> Result<Option<Vec<u8>>> {
+    pub fn own_vote_rlp(&self) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
             .get(Column::CurrentPillarBlockOwnVote, &SINGLE_VALUE_KEY)?
@@ -47,7 +47,7 @@ impl<D: DbReader> PillarRepository<D> {
     }
 
     /// Implements getCurrentPillarBlockData() -> optional(rlp(data))
-    pub fn current_pillar_block_data_rlp(&self) -> Result<Option<Vec<u8>>> {
+    pub fn current_data_rlp(&self) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
             .get(Column::CurrentPillarBlockData, &SINGLE_VALUE_KEY)?
@@ -58,13 +58,13 @@ impl<D: DbReader> PillarRepository<D> {
 
 impl<D: DbReader + DbWriter> PillarRepository<D> {
     /// Implements savePillarBlock(pillar_block)
-    pub fn save_pillar_block(&self, period: u64, pillar_block_rlp: &[u8]) -> Result<()> {
+    pub fn write(&self, period: u64, pillar_block_rlp: &[u8]) -> Result<()> {
         self.db
             .put(Column::PillarBlock, &period.to_le_bytes(), pillar_block_rlp)
     }
 
     /// Implements saveOwnPillarBlockVote(vote)
-    pub fn save_own_pillar_block_vote(&self, vote_rlp: &[u8]) -> Result<()> {
+    pub fn write_own_vote(&self, vote_rlp: &[u8]) -> Result<()> {
         self.db.put(
             Column::CurrentPillarBlockOwnVote,
             &SINGLE_VALUE_KEY,
@@ -73,7 +73,7 @@ impl<D: DbReader + DbWriter> PillarRepository<D> {
     }
 
     /// Implements saveCurrentPillarBlockData(data)
-    pub fn save_current_pillar_block_data(&self, data_rlp: &[u8]) -> Result<()> {
+    pub fn write_current_data(&self, data_rlp: &[u8]) -> Result<()> {
         self.db
             .put(Column::CurrentPillarBlockData, &SINGLE_VALUE_KEY, data_rlp)
     }
@@ -194,23 +194,23 @@ mod tests {
         let period = 8u64;
         let block = vec![0xCA, 0x01];
 
-        assert_eq!(repo.pillar_block_rlp(period).unwrap(), None);
+        assert_eq!(repo.rlp(period).unwrap(), None);
 
         db.put(Column::PillarBlock, &period.to_le_bytes(), &block);
-        assert_eq!(repo.pillar_block_rlp(period).unwrap(), Some(block));
+        assert_eq!(repo.rlp(period).unwrap(), Some(block));
     }
 
     #[test]
     fn test_latest_pillar_block_rlp() {
         let db = Arc::new(MockPillarStore::new());
         let repo = PillarRepository::new(db.clone());
-        assert_eq!(repo.latest_pillar_block_rlp().unwrap(), None);
+        assert_eq!(repo.latest_rlp().unwrap(), None);
 
         db.put(Column::PillarBlock, &1u64.to_le_bytes(), &[0xA1]);
         db.put(Column::PillarBlock, &5u64.to_le_bytes(), &[0xA5]);
         db.put(Column::PillarBlock, &3u64.to_le_bytes(), &[0xA3]);
 
-        assert_eq!(repo.latest_pillar_block_rlp().unwrap(), Some(vec![0xA5]));
+        assert_eq!(repo.latest_rlp().unwrap(), Some(vec![0xA5]));
     }
 
     #[test]
@@ -219,10 +219,10 @@ mod tests {
         let repo = PillarRepository::new(db.clone());
         let vote = vec![0xD1, 0x11];
 
-        assert_eq!(repo.own_pillar_block_vote_rlp().unwrap(), None);
+        assert_eq!(repo.own_vote_rlp().unwrap(), None);
 
         db.put(Column::CurrentPillarBlockOwnVote, &SINGLE_VALUE_KEY, &vote);
-        assert_eq!(repo.own_pillar_block_vote_rlp().unwrap(), Some(vote));
+        assert_eq!(repo.own_vote_rlp().unwrap(), Some(vote));
     }
 
     #[test]
@@ -231,9 +231,9 @@ mod tests {
         let repo = PillarRepository::new(db.clone());
         let data = vec![0xC1, 0x42];
 
-        assert_eq!(repo.current_pillar_block_data_rlp().unwrap(), None);
+        assert_eq!(repo.current_data_rlp().unwrap(), None);
 
         db.put(Column::CurrentPillarBlockData, &SINGLE_VALUE_KEY, &data);
-        assert_eq!(repo.current_pillar_block_data_rlp().unwrap(), Some(data));
+        assert_eq!(repo.current_data_rlp().unwrap(), Some(data));
     }
 }

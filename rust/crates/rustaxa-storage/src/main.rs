@@ -141,8 +141,8 @@ fn main() -> Result<()> {
     println!();
     print_section("4. PBFT MANAGER STATE");
     // PbftMgrField: 0=PbftRound, 1=PbftStep
-    let round = storage.pbft().pbft_mgr_field(0)?;
-    let step = storage.pbft().pbft_mgr_field(1)?;
+    let round = storage.pbft().manager_field(0)?;
+    let step = storage.pbft().manager_field(1)?;
     println!("  PBFT round: {:?}", round);
     println!("  PBFT step:  {:?}", step);
     if let Some(cert_rlp) = storage.pbft().cert_voted_block_in_round_rlp()? {
@@ -155,7 +155,7 @@ fn main() -> Result<()> {
 
     println!();
     print_section("5. PROPOSED PBFT BLOCKS");
-    let proposed = storage.pbft().proposed_pbft_blocks_rlp()?;
+    let proposed = storage.pbft().proposed_rlp()?;
     println!("  Total count: {}", proposed.len());
 
     // Aggregate by period and anchor
@@ -308,7 +308,7 @@ fn main() -> Result<()> {
                 let vdf_note = match proposal_period {
                     Some(pp) => {
                         // Check if period data exists (getPeriodBlockHash reads from period_data)
-                        let pd_raw = storage.period().period_data_raw(pp)?;
+                        let pd_raw = storage.period().data_raw(pp)?;
                         let hash_status = if !pd_raw.is_empty() {
                             "exists"
                         } else {
@@ -578,7 +578,7 @@ fn main() -> Result<()> {
             }
 
             // Check period block hash (getPeriodBlockHash reads PBFT block for that period)
-            let pd_raw = storage.period().period_data_raw(pp)?;
+            let pd_raw = storage.period().data_raw(pp)?;
             if !pd_raw.is_empty() {
                 let period_rlp = Rlp::new(&pd_raw);
                 let pbft_rlp = period_rlp.at(PBFT_BLOCK_POS)?;
@@ -606,7 +606,7 @@ fn main() -> Result<()> {
             // Also check the PREVIOUS period — maybe the block was created with that
             if pp > 0 {
                 let prev_pp = pp - 1;
-                let prev_raw = storage.period().period_data_raw(prev_pp)?;
+                let prev_raw = storage.period().data_raw(prev_pp)?;
                 if !prev_raw.is_empty() {
                     let prev_period_rlp = Rlp::new(&prev_raw);
                     let prev_pbft_rlp = prev_period_rlp.at(PBFT_BLOCK_POS)?;
@@ -634,7 +634,7 @@ fn main() -> Result<()> {
                 println!(
                     "  CRITICAL: Seek(level+1) = period {next_pp} (pre-finalization lookup simulation)"
                 );
-                let next_raw = storage.period().period_data_raw(next_pp)?;
+                let next_raw = storage.period().data_raw(next_pp)?;
                 if !next_raw.is_empty() {
                     let next_period_rlp = Rlp::new(&next_raw);
                     let next_pbft_rlp = next_period_rlp.at(PBFT_BLOCK_POS)?;
@@ -856,7 +856,7 @@ fn main() -> Result<()> {
 
     println!();
     print_section("11. PILLAR CHAIN STATE");
-    match storage.pillar().current_pillar_block_data_rlp()? {
+    match storage.pillar().current_data_rlp()? {
         Some(data) => {
             let rlp = Rlp::new(&data);
             println!(
@@ -867,7 +867,7 @@ fn main() -> Result<()> {
         }
         None => println!("  No current pillar block data"),
     }
-    match storage.pillar().latest_pillar_block_rlp()? {
+    match storage.pillar().latest_rlp()? {
         Some(data) => println!("  Latest pillar block: {} bytes", data.len()),
         None => println!("  No latest pillar block"),
     }
@@ -1034,7 +1034,7 @@ fn main() -> Result<()> {
     if let Some(cp) = collision_period {
         println!();
         println!("  b) PBFT block for collision-causing period {cp}:");
-        let pd_raw = storage.period().period_data_raw(cp)?;
+        let pd_raw = storage.period().data_raw(cp)?;
         if !pd_raw.is_empty() {
             let period_rlp = Rlp::new(&pd_raw);
             let pbft_rlp = period_rlp.at(PBFT_BLOCK_POS)?;
@@ -1096,7 +1096,7 @@ fn main() -> Result<()> {
         {
             println!();
             println!("  c) PBFT block for original (pre-collision) period {op}:");
-            let op_raw = storage.period().period_data_raw(op)?;
+            let op_raw = storage.period().data_raw(op)?;
             if !op_raw.is_empty() {
                 let op_period_rlp = Rlp::new(&op_raw);
                 let op_pbft_rlp = op_period_rlp.at(PBFT_BLOCK_POS)?;
@@ -1249,7 +1249,7 @@ fn read_last_block_number(storage: &Storage) -> Result<u64> {
 fn read_pbft_chain_head(storage: &Storage) -> Result<(u64, H256)> {
     // PBFT head is stored in pbft_head with key = zero hash, value = JSON string
     let zero_hash = H256::zero();
-    match storage.pbft().pbft_head(zero_hash)? {
+    match storage.pbft().head(zero_hash)? {
         Some(data) => {
             let json_str = String::from_utf8_lossy(&data);
             let size = extract_json_u64(&json_str, "size").unwrap_or(0);
@@ -1343,7 +1343,7 @@ struct PeriodSummary {
 }
 
 fn read_period_summary(storage: &Storage, p: u64) -> Result<Option<PeriodSummary>> {
-    let raw = storage.period().period_data_raw(p)?;
+    let raw = storage.period().data_raw(p)?;
     if raw.is_empty() {
         return Ok(None);
     }

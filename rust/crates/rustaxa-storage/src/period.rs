@@ -15,7 +15,7 @@ impl<D: DbReader> PeriodRepository<D> {
     }
 
     /// Implements getPeriodDataRaw(period) -> bytes
-    pub fn period_data_raw(&self, period: u64) -> Result<Vec<u8>> {
+    pub fn data_raw(&self, period: u64) -> Result<Vec<u8>> {
         Ok(self
             .db
             .get(Column::PeriodData, &period.to_le_bytes())?
@@ -24,7 +24,7 @@ impl<D: DbReader> PeriodRepository<D> {
     }
 
     /// Implements getPeriodFromPbftHash(hash) -> optional(period)
-    pub fn period_from_pbft_hash(&self, pbft_hash: H256) -> Result<Option<u64>> {
+    pub fn by_pbft_hash(&self, pbft_hash: H256) -> Result<Option<u64>> {
         match self.db.get(Column::PbftBlockPeriod, pbft_hash.as_bytes())? {
             Some(value) => {
                 let value = value.as_ref();
@@ -46,7 +46,7 @@ impl<D: DbReader> PeriodRepository<D> {
     }
 
     /// Implements getBlockReceipt(period) -> rlp(receipt)
-    pub fn block_receipt(&self, period: u64) -> Result<Vec<u8>> {
+    pub fn receipt(&self, period: u64) -> Result<Vec<u8>> {
         Ok(self
             .db
             .get(Column::FinalChainReceiptByPeriod, &period.to_le_bytes())?
@@ -57,13 +57,13 @@ impl<D: DbReader> PeriodRepository<D> {
 
 impl<D: DbReader + DbWriter> PeriodRepository<D> {
     /// Implements savePeriodData(period_data, ...)
-    pub fn save_period_data(&self, period: u64, period_data_rlp: &[u8]) -> Result<()> {
+    pub fn write(&self, period: u64, period_data_rlp: &[u8]) -> Result<()> {
         self.db
             .put(Column::PeriodData, &period.to_le_bytes(), period_data_rlp)
     }
 
     /// Implements addPbftBlockPeriodToBatch(period, pbft_block_hash, ...)
-    pub fn save_pbft_block_period(&self, pbft_block_hash: H256, period: u64) -> Result<()> {
+    pub fn write_pbft_period(&self, pbft_block_hash: H256, period: u64) -> Result<()> {
         self.db.put(
             Column::PbftBlockPeriod,
             pbft_block_hash.as_bytes(),
@@ -189,7 +189,7 @@ mod tests {
         let expected = vec![0xC1, 0xAA, 0xBB];
         db.put(Column::PeriodData, &period.to_le_bytes(), &expected);
 
-        let result = repo.period_data_raw(period).unwrap();
+        let result = repo.data_raw(period).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -198,7 +198,7 @@ mod tests {
         let db = Arc::new(MockPeriodStore::new());
         let repo = PeriodRepository::new(db);
 
-        let result = repo.period_data_raw(11).unwrap();
+        let result = repo.data_raw(11).unwrap();
         assert!(result.is_empty());
     }
 
@@ -215,7 +215,7 @@ mod tests {
             &expected,
         );
 
-        let result = repo.block_receipt(period).unwrap();
+        let result = repo.receipt(period).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -224,7 +224,7 @@ mod tests {
         let db = Arc::new(MockPeriodStore::new());
         let repo = PeriodRepository::new(db);
 
-        let result = repo.block_receipt(12).unwrap();
+        let result = repo.receipt(12).unwrap();
         assert!(result.is_empty());
     }
 
@@ -254,7 +254,7 @@ mod tests {
             &period.to_le_bytes(),
         );
 
-        let result = repo.period_from_pbft_hash(hash).unwrap();
+        let result = repo.by_pbft_hash(hash).unwrap();
         assert_eq!(result, Some(period));
     }
 
@@ -263,9 +263,7 @@ mod tests {
         let db = Arc::new(MockPeriodStore::new());
         let repo = PeriodRepository::new(db);
 
-        let result = repo
-            .period_from_pbft_hash(H256::from_low_u64_be(1))
-            .unwrap();
+        let result = repo.by_pbft_hash(H256::from_low_u64_be(1)).unwrap();
         assert_eq!(result, None);
     }
 
@@ -277,7 +275,7 @@ mod tests {
         let hash = H256::from_low_u64_be(2);
         db.put(Column::PbftBlockPeriod, hash.as_bytes(), &[1, 2, 3]);
 
-        let err = repo.period_from_pbft_hash(hash).unwrap_err().to_string();
+        let err = repo.by_pbft_hash(hash).unwrap_err().to_string();
         assert!(err.contains("Invalid pbft_block_period value size"));
     }
 }

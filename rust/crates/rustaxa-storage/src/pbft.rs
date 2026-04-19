@@ -35,12 +35,12 @@ impl<D: DbReader> PbftRepository<D> {
     }
 
     /// Implements pbftBlockInDb(hash) -> bool
-    pub fn pbft_block_in_db(&self, pbft_hash: H256) -> Result<bool> {
+    pub fn exists(&self, pbft_hash: H256) -> Result<bool> {
         self.db.exist(Column::PbftBlockPeriod, pbft_hash.as_bytes())
     }
 
     /// Implements getPbftMgrField(field) -> uint32_t
-    pub fn pbft_mgr_field(&self, field: u8) -> Result<Option<u32>> {
+    pub fn manager_field(&self, field: u8) -> Result<Option<u32>> {
         let Some(value) = self.db.get(Column::PbftMgrRoundStep, &[field])? else {
             return Ok(None);
         };
@@ -63,7 +63,7 @@ impl<D: DbReader> PbftRepository<D> {
     }
 
     /// Implements getPbftMgrStatus(field) -> bool
-    pub fn pbft_mgr_status(&self, field: u8) -> Result<Option<bool>> {
+    pub fn manager_status(&self, field: u8) -> Result<Option<bool>> {
         let Some(value) = self.db.get(Column::PbftMgrStatus, &[field])? else {
             return Ok(None);
         };
@@ -85,7 +85,7 @@ impl<D: DbReader> PbftRepository<D> {
     }
 
     /// Implements getProposedPbftBlocks() -> [pbft_block_rlp]
-    pub fn proposed_pbft_blocks_rlp(&self) -> Result<Vec<Vec<u8>>> {
+    pub fn proposed_rlp(&self) -> Result<Vec<Vec<u8>>> {
         let mut result = Vec::new();
         for item in self.db.iter(Column::ProposedPbftBlocks) {
             let (_, value) = item?;
@@ -95,7 +95,7 @@ impl<D: DbReader> PbftRepository<D> {
     }
 
     /// Implements getPbftHead(hash) -> optional(string bytes)
-    pub fn pbft_head(&self, pbft_hash: H256) -> Result<Option<Vec<u8>>> {
+    pub fn head(&self, pbft_hash: H256) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
             .get(Column::PbftHead, pbft_hash.as_bytes())?
@@ -149,25 +149,25 @@ impl<D: DbReader> PbftRepository<D> {
 
 impl<D: DbReader + DbWriter> PbftRepository<D> {
     /// Implements savePbftMgrField(field, value)
-    pub fn save_pbft_mgr_field(&self, field: u8, value: u32) -> Result<()> {
+    pub fn write_manager_field(&self, field: u8, value: u32) -> Result<()> {
         self.db
             .put(Column::PbftMgrRoundStep, &[field], &value.to_le_bytes())
     }
 
     /// Implements savePbftMgrStatus(field, value)
-    pub fn save_pbft_mgr_status(&self, field: u8, value: bool) -> Result<()> {
+    pub fn write_manager_status(&self, field: u8, value: bool) -> Result<()> {
         self.db
             .put(Column::PbftMgrStatus, &[field], &[u8::from(value)])
     }
 
     /// Implements savePbftHead(hash, pbft_chain_head_str)
-    pub fn save_pbft_head(&self, pbft_hash: H256, head_bytes: &[u8]) -> Result<()> {
+    pub fn write_head(&self, pbft_hash: H256, head_bytes: &[u8]) -> Result<()> {
         self.db
             .put(Column::PbftHead, pbft_hash.as_bytes(), head_bytes)
     }
 
     /// Implements saveOwnVerifiedVote(vote)
-    pub fn save_own_verified_vote(&self, vote_hash: H256, vote_rlp: &[u8]) -> Result<()> {
+    pub fn write_own_verified_vote(&self, vote_hash: H256, vote_rlp: &[u8]) -> Result<()> {
         self.db
             .put(Column::LatestRoundOwnVotes, vote_hash.as_bytes(), vote_rlp)
     }
@@ -189,13 +189,13 @@ impl<D: DbReader + DbWriter> PbftRepository<D> {
     }
 
     /// Implements saveExtraRewardVote(vote)
-    pub fn save_extra_reward_vote(&self, vote_hash: H256, vote_rlp: &[u8]) -> Result<()> {
+    pub fn write_extra_reward_vote(&self, vote_hash: H256, vote_rlp: &[u8]) -> Result<()> {
         self.db
             .put(Column::ExtraRewardVotes, vote_hash.as_bytes(), vote_rlp)
     }
 
     /// Implements saveCertVotedBlockInRound(round, block)
-    pub fn save_cert_voted_block_in_round(&self, round: u64, block_rlp: &[u8]) -> Result<()> {
+    pub fn write_cert_voted_block_in_round(&self, round: u64, block_rlp: &[u8]) -> Result<()> {
         let mut stream = rlp::RlpStream::new_list(2);
         stream.append(&round);
         stream.append_raw(block_rlp, 1);
@@ -207,7 +207,7 @@ impl<D: DbReader + DbWriter> PbftRepository<D> {
     }
 
     /// Implements saveProposedPbftBlock(block)
-    pub fn save_proposed_pbft_block(&self, block_hash: H256, block_rlp: &[u8]) -> Result<()> {
+    pub fn write_proposed(&self, block_hash: H256, block_rlp: &[u8]) -> Result<()> {
         self.db
             .put(Column::ProposedPbftBlocks, block_hash.as_bytes(), block_rlp)
     }
@@ -219,7 +219,7 @@ impl<D: DbReader + DbWriter> PbftRepository<D> {
     }
 
     /// Implements removeProposedPbftBlock(hash)
-    pub fn remove_proposed_pbft_block(&self, block_hash: H256) -> Result<()> {
+    pub fn remove_proposed(&self, block_hash: H256) -> Result<()> {
         self.db
             .delete(Column::ProposedPbftBlocks, block_hash.as_bytes())
     }
@@ -376,10 +376,10 @@ mod tests {
         let db = Arc::new(MockPbftStore::new());
         let repo = PbftRepository::new(db.clone());
 
-        assert_eq!(repo.pbft_mgr_field(0).unwrap(), None);
+        assert_eq!(repo.manager_field(0).unwrap(), None);
 
         db.put(Column::PbftMgrRoundStep, &[0], &7u32.to_le_bytes());
-        assert_eq!(repo.pbft_mgr_field(0).unwrap(), Some(7));
+        assert_eq!(repo.manager_field(0).unwrap(), Some(7));
     }
 
     #[test]
@@ -387,10 +387,10 @@ mod tests {
         let db = Arc::new(MockPbftStore::new());
         let repo = PbftRepository::new(db.clone());
 
-        assert_eq!(repo.pbft_mgr_status(1).unwrap(), None);
+        assert_eq!(repo.manager_status(1).unwrap(), None);
 
         db.put(Column::PbftMgrStatus, &[1], &[1]);
-        assert_eq!(repo.pbft_mgr_status(1).unwrap(), Some(true));
+        assert_eq!(repo.manager_status(1).unwrap(), Some(true));
     }
 
     #[test]
@@ -421,7 +421,7 @@ mod tests {
             &[0xBB],
         );
 
-        let mut res = repo.proposed_pbft_blocks_rlp().unwrap();
+        let mut res = repo.proposed_rlp().unwrap();
         res.sort();
         assert_eq!(res, vec![vec![0xAA], vec![0xBB]]);
     }
@@ -433,9 +433,9 @@ mod tests {
         let hash = H256::from_low_u64_be(9);
         let head = b"head-data".to_vec();
 
-        assert_eq!(repo.pbft_head(hash).unwrap(), None);
+        assert_eq!(repo.head(hash).unwrap(), None);
         db.put(Column::PbftHead, hash.as_bytes(), &head);
-        assert_eq!(repo.pbft_head(hash).unwrap(), Some(head));
+        assert_eq!(repo.head(hash).unwrap(), Some(head));
     }
 
     #[test]
