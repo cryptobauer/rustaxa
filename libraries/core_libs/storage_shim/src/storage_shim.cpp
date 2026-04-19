@@ -41,6 +41,10 @@ T decode_little_endian(const Slice& key) {
   throw DbException("Invalid key size for " + std::string(column_name) + " in Rust shim mode. Got " +
                     std::to_string(got) + ", expected " + std::to_string(expected));
 }
+
+[[noreturn]] void throw_unimplemented_shim_api(const char* api_name) {
+  throw DbException("DbStorage::" + std::string(api_name) + " is not implemented in Rust shim mode");
+}
 }  // namespace
 
 DbStorage::DbStorage(fs::path const& path, uint32_t db_snapshot_each_n_pbft_block, uint32_t max_open_files,
@@ -112,6 +116,91 @@ void DbStorage::commitWriteBatch(Batch& write_batch, const rocksdb::WriteOptions
 }
 
 void DbStorage::commitWriteBatch(Batch& write_batch) { commitWriteBatch(write_batch, async_write_); }
+
+void DbStorage::DeleteRange(const Column& col, uint64_t begin, uint64_t end) {
+  (void)col;
+  (void)begin;
+  (void)end;
+  throw_unimplemented_shim_api("DeleteRange");
+}
+
+void DbStorage::CompactRange(const Column& col, uint64_t begin, uint64_t end) {
+  (void)col;
+  (void)begin;
+  (void)end;
+  throw_unimplemented_shim_api("CompactRange");
+}
+
+void DbStorage::rebuildColumns(const rocksdb::Options& options) {
+  (void)options;
+  throw_unimplemented_shim_api("rebuildColumns");
+}
+
+bool DbStorage::createSnapshot(PbftPeriod period) {
+  (void)period;
+  throw_unimplemented_shim_api("createSnapshot");
+}
+
+void DbStorage::deleteSnapshot(PbftPeriod period) {
+  (void)period;
+  throw_unimplemented_shim_api("deleteSnapshot");
+}
+
+void DbStorage::recoverToPeriod(PbftPeriod period) {
+  (void)period;
+  throw_unimplemented_shim_api("recoverToPeriod");
+}
+
+void DbStorage::loadSnapshots() { throw_unimplemented_shim_api("loadSnapshots"); }
+
+void DbStorage::disableSnapshots() { throw_unimplemented_shim_api("disableSnapshots"); }
+
+void DbStorage::enableSnapshots() { throw_unimplemented_shim_api("enableSnapshots"); }
+
+void DbStorage::deleteColumnData(const Column& c) {
+  (void)c;
+  throw_unimplemented_shim_api("deleteColumnData");
+}
+
+void DbStorage::replaceColumn(const Column& to_be_replaced_col,
+                              std::unique_ptr<rocksdb::ColumnFamilyHandle>&& replacing_col) {
+  (void)to_be_replaced_col;
+  (void)replacing_col;
+  throw_unimplemented_shim_api("replaceColumn");
+}
+
+std::unique_ptr<rocksdb::ColumnFamilyHandle> DbStorage::copyColumn(rocksdb::ColumnFamilyHandle* orig_column,
+                                                                   const std::string& new_col_name, bool move_data) {
+  (void)orig_column;
+  (void)new_col_name;
+  (void)move_data;
+  throw_unimplemented_shim_api("copyColumn");
+}
+
+void DbStorage::removeTempFiles() const { throw_unimplemented_shim_api("removeTempFiles"); }
+
+void DbStorage::removeFilesWithPattern(const std::string& directory, const std::regex& pattern) const {
+  (void)directory;
+  (void)pattern;
+  throw_unimplemented_shim_api("removeFilesWithPattern");
+}
+
+void DbStorage::deleteTmpDirectories(const std::string& path) const {
+  (void)path;
+  throw_unimplemented_shim_api("deleteTmpDirectories");
+}
+
+uint32_t DbStorage::getMajorVersion() const { throw_unimplemented_shim_api("getMajorVersion"); }
+
+std::unique_ptr<rocksdb::Iterator> DbStorage::getColumnIterator(const Column& c) {
+  (void)c;
+  throw_unimplemented_shim_api("getColumnIterator(Column)");
+}
+
+std::unique_ptr<rocksdb::Iterator> DbStorage::getColumnIterator(rocksdb::ColumnFamilyHandle* c) {
+  (void)c;
+  throw_unimplemented_shim_api("getColumnIterator(ColumnFamilyHandle*)");
+}
 
 std::string DbStorage::lookupFinalChainMeta(const Slice& key) const {
   if (key.size() != sizeof(uint32_t)) {
@@ -261,6 +350,12 @@ void DbStorage::removeDagBlock(blk_hash_t const& hash) {
   rust_storage_.value()->remove_dag_block(h_arr);
 }
 
+void DbStorage::removeDagBlockBatch(Batch& write_batch, blk_hash_t const& hash) {
+  (void)write_batch;
+  (void)hash;
+  throw_unimplemented_shim_api("removeDagBlockBatch");
+}
+
 void DbStorage::updateDagBlockCounters(std::vector<std::shared_ptr<DagBlock>> blks) {
   for (auto const& blk : blks) {
     auto hash = blk->getHash();
@@ -364,6 +459,12 @@ blk_hash_t DbStorage::getPeriodBlockHash(PbftPeriod period) const {
     return blk->getBlockHash();
   }
   return {};
+}
+
+SharedTransactions DbStorage::transactionsFromPeriodDataRlp(PbftPeriod period, const dev::RLP& period_data_rlp) const {
+  (void)period;
+  (void)period_data_rlp;
+  throw_unimplemented_shim_api("transactionsFromPeriodDataRlp");
 }
 
 std::vector<std::shared_ptr<PbftVote>> DbStorage::getPeriodCertVotes(PbftPeriod period) const {
@@ -498,6 +599,11 @@ std::optional<TransactionLocation> DbStorage::getTransactionLocation(trx_hash_t 
   return std::nullopt;
 }
 
+std::vector<bool> DbStorage::transactionsInDb(std::vector<trx_hash_t> const& trx_hashes) {
+  (void)trx_hashes;
+  throw_unimplemented_shim_api("transactionsInDb");
+}
+
 std::vector<bool> DbStorage::transactionsFinalized(std::vector<trx_hash_t> const& trx_hashes) {
   std::vector<bool> result(trx_hashes.size(), false);
   for (size_t i = 0; i < trx_hashes.size(); ++i) {
@@ -566,6 +672,12 @@ uint64_t DbStorage::getTransactionCount(PbftPeriod period) const {
   return rust_storage_.value()->get_transaction_count(period);
 }
 
+std::optional<TransactionReceipt> DbStorage::getTransactionReceipt(EthBlockNumber blk_n, uint64_t position) const {
+  (void)blk_n;
+  (void)position;
+  throw_unimplemented_shim_api("getTransactionReceipt");
+}
+
 SharedTransactions DbStorage::getFinalizedTransactions(std::vector<trx_hash_t> const& trx_hashes) const {
   SharedTransactions trxs;
   std::map<PbftPeriod, std::set<uint32_t>> period_map;
@@ -621,6 +733,11 @@ std::vector<trx_hash_t> DbStorage::getPeriodSystemTransactionsHashes(PbftPeriod 
   }
   auto hashes_data = dev::bytes(rust_data.begin(), rust_data.end());
   return util::rlp_dec<std::vector<trx_hash_t>>(dev::RLP(hashes_data));
+}
+
+SharedTransactions DbStorage::getPeriodSystemTransactions(PbftPeriod period) const {
+  (void)period;
+  throw_unimplemented_shim_api("getPeriodSystemTransactions");
 }
 
 SharedTransactionReceipts DbStorage::getBlockReceipts(PbftPeriod period) const {
@@ -881,6 +998,12 @@ std::vector<std::shared_ptr<DagBlock>> DbStorage::getFinalizedDagBlockByPeriod(P
   return decodeDAGBlocksBundleRlp(dag_blocks_data);
 }
 
+std::pair<blk_hash_t, std::vector<std::shared_ptr<DagBlock>>> DbStorage::getLastPbftBlockHashAndFinalizedDagBlockByPeriod(
+    PbftPeriod period) {
+  (void)period;
+  throw_unimplemented_shim_api("getLastPbftBlockHashAndFinalizedDagBlockByPeriod");
+}
+
 std::optional<PbftPeriod> DbStorage::getProposalPeriodForDagLevel(uint64_t level) {
   auto res = rust_storage_.value()->get_proposal_period_for_dag_level(level);
   if (res.found) {
@@ -931,6 +1054,21 @@ void DbStorage::saveBlockRewardsStats(uint64_t period, const rewards::BlockStats
   dev::RLPStream encoding;
   stats.rlp(encoding);
   insert(write_batch, Columns::block_rewards_stats, period, encoding.out());
+}
+
+bool DbStorage::hasMinorVersionChanged() { throw_unimplemented_shim_api("hasMinorVersionChanged"); }
+
+bool DbStorage::hasMajorVersionChanged() { throw_unimplemented_shim_api("hasMajorVersionChanged"); }
+
+void DbStorage::compactColumn(Column const& column) {
+  (void)column;
+  throw_unimplemented_shim_api("compactColumn");
+}
+
+void DbStorage::forEach(Column const& col, OnEntry const& f) {
+  (void)col;
+  (void)f;
+  throw_unimplemented_shim_api("forEach");
 }
 
 }  // namespace taraxa
