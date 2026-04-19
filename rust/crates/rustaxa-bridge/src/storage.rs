@@ -783,20 +783,18 @@ impl Storage {
     }
 
     fn transaction_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
-        self.0.transaction().transaction_in_db(H256::from(*hash))
+        self.0.transaction().exists(H256::from(*hash))
     }
 
     fn transaction_finalized(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
-        self.0
-            .transaction()
-            .transaction_finalized(H256::from(*hash))
+        self.0.transaction().finalized(H256::from(*hash))
     }
 
     fn get_transaction_location(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
         Ok(self
             .0
             .transaction()
-            .transaction_location_rlp(H256::from(*hash))?
+            .location_rlp(H256::from(*hash))?
             .unwrap_or_default())
     }
 
@@ -804,7 +802,7 @@ impl Storage {
         Ok(self
             .0
             .transaction()
-            .transaction_rlp(H256::from(*hash))?
+            .rlp(H256::from(*hash))?
             .unwrap_or_default())
     }
 
@@ -816,29 +814,29 @@ impl Storage {
         Ok(self
             .0
             .transaction()
-            .transaction_by_period_position_rlp(period, position)?
+            .by_period_position_rlp(period, position)?
             .unwrap_or_default())
     }
 
     fn get_transaction_count(&self, period: u64) -> Result<u64, anyhow::Error> {
-        self.0.transaction().transaction_count(period)
+        self.0.transaction().count(period)
     }
 
     fn get_system_transaction(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
         Ok(self
             .0
             .transaction()
-            .system_transaction_rlp(H256::from(*hash))?
+            .system_rlp(H256::from(*hash))?
             .unwrap_or_default())
     }
 
     fn get_all_nonfinalized_transactions(&self) -> Result<Vec<ffi::TxRlp>, anyhow::Error> {
-        let trxs = self.0.transaction().all_nonfinalized_transactions_rlp()?;
+        let trxs = self.0.transaction().all_nonfinalized_rlp()?;
         Ok(trxs.into_iter().map(|data| ffi::TxRlp { data }).collect())
     }
 
     fn get_all_transaction_period(&self) -> Result<Vec<ffi::HashPeriod>, anyhow::Error> {
-        let periods = self.0.transaction().all_transaction_period()?;
+        let periods = self.0.transaction().all_with_period()?;
         Ok(periods
             .into_iter()
             .map(|(hash, period)| {
@@ -850,19 +848,15 @@ impl Storage {
     }
 
     fn get_period_system_transactions_hashes(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
-        self.0
-            .transaction()
-            .period_system_transactions_hashes_rlp(period)
+        self.0.transaction().period_system_hashes_rlp(period)
     }
 
     fn save_transaction(&self, hash: &[u8; 32], trx_rlp: Vec<u8>) -> Result<(), anyhow::Error> {
-        self.0
-            .transaction()
-            .save_transaction(H256::from(*hash), &trx_rlp)
+        self.0.transaction().write(H256::from(*hash), &trx_rlp)
     }
 
     fn remove_transaction(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
-        self.0.transaction().remove_transaction(H256::from(*hash))
+        self.0.transaction().remove(H256::from(*hash))
     }
 
     fn save_transaction_location(
@@ -872,12 +866,9 @@ impl Storage {
         position: u32,
         is_system: bool,
     ) -> Result<(), anyhow::Error> {
-        self.0.transaction().save_transaction_location(
-            H256::from(*hash),
-            period,
-            position,
-            is_system,
-        )
+        self.0
+            .transaction()
+            .write_location(H256::from(*hash), period, position, is_system)
     }
 
     fn save_system_transaction(
@@ -887,7 +878,7 @@ impl Storage {
     ) -> Result<(), anyhow::Error> {
         self.0
             .transaction()
-            .save_system_transaction(H256::from(*hash), &trx_rlp)
+            .write_system(H256::from(*hash), &trx_rlp)
     }
 
     fn save_period_system_transactions_hashes(
@@ -897,6 +888,6 @@ impl Storage {
     ) -> Result<(), anyhow::Error> {
         self.0
             .transaction()
-            .save_period_system_transactions_hashes(period, &hashes_rlp)
+            .write_period_system_hashes(period, &hashes_rlp)
     }
 }

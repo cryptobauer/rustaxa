@@ -18,7 +18,7 @@ impl<D: DbReader> TransactionRepository<D> {
     }
 
     /// Implements transactionInDb(hash) -> bool
-    pub fn transaction_in_db(&self, trx_hash: H256) -> Result<bool> {
+    pub fn exists(&self, trx_hash: H256) -> Result<bool> {
         // Check potentially non-finalized transactions first.
         if self.db.exist(Column::Transactions, trx_hash.as_bytes())? {
             return Ok(true);
@@ -29,12 +29,12 @@ impl<D: DbReader> TransactionRepository<D> {
     }
 
     /// Implements transactionFinalized(hash) -> bool
-    pub fn transaction_finalized(&self, trx_hash: H256) -> Result<bool> {
+    pub fn finalized(&self, trx_hash: H256) -> Result<bool> {
         self.db.exist(Column::TrxPeriod, trx_hash.as_bytes())
     }
 
     /// Implements getTransactionLocation(hash) -> optional(rlp(period, position, is_system?))
-    pub fn transaction_location_rlp(&self, trx_hash: H256) -> Result<Option<Vec<u8>>> {
+    pub fn location_rlp(&self, trx_hash: H256) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
             .get(Column::TrxPeriod, trx_hash.as_bytes())?
@@ -42,7 +42,7 @@ impl<D: DbReader> TransactionRepository<D> {
     }
 
     /// Implements getTransaction(hash) pending-transaction branch -> optional(rlp(tx))
-    pub fn transaction_rlp(&self, trx_hash: H256) -> Result<Option<Vec<u8>>> {
+    pub fn rlp(&self, trx_hash: H256) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
             .get(Column::Transactions, trx_hash.as_bytes())?
@@ -50,7 +50,7 @@ impl<D: DbReader> TransactionRepository<D> {
     }
 
     /// Implements getSystemTransaction(hash) -> optional(rlp(tx))
-    pub fn system_transaction_rlp(&self, trx_hash: H256) -> Result<Option<Vec<u8>>> {
+    pub fn system_rlp(&self, trx_hash: H256) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
             .get(Column::SystemTransaction, trx_hash.as_bytes())?
@@ -58,11 +58,7 @@ impl<D: DbReader> TransactionRepository<D> {
     }
 
     /// Implements getTransaction(period, position) -> optional(rlp(tx))
-    pub fn transaction_by_period_position_rlp(
-        &self,
-        period: u64,
-        position: u32,
-    ) -> Result<Option<Vec<u8>>> {
+    pub fn by_period_position_rlp(&self, period: u64, position: u32) -> Result<Option<Vec<u8>>> {
         let Some(period_data) = self.db.get(Column::PeriodData, &period.to_le_bytes())? else {
             return Ok(None);
         };
@@ -74,7 +70,7 @@ impl<D: DbReader> TransactionRepository<D> {
     }
 
     /// Implements getTransactionCount(period) -> count
-    pub fn transaction_count(&self, period: u64) -> Result<u64> {
+    pub fn count(&self, period: u64) -> Result<u64> {
         let Some(period_data) = self.db.get(Column::PeriodData, &period.to_le_bytes())? else {
             return Ok(0);
         };
@@ -85,7 +81,7 @@ impl<D: DbReader> TransactionRepository<D> {
     }
 
     /// Implements getAllNonfinalizedTransactions() -> [transaction_rlp]
-    pub fn all_nonfinalized_transactions_rlp(&self) -> Result<Vec<Vec<u8>>> {
+    pub fn all_nonfinalized_rlp(&self) -> Result<Vec<Vec<u8>>> {
         let mut result = Vec::new();
         for entry in self.db.iter(Column::Transactions) {
             let (_, value) = entry?;
@@ -95,7 +91,7 @@ impl<D: DbReader> TransactionRepository<D> {
     }
 
     /// Implements getAllTransactionPeriod() -> [(trx_hash, period)]
-    pub fn all_transaction_period(&self) -> Result<Vec<(H256, u64)>> {
+    pub fn all_with_period(&self) -> Result<Vec<(H256, u64)>> {
         let mut result = Vec::new();
         for entry in self.db.iter(Column::TrxPeriod) {
             let (key, value) = entry?;
@@ -114,7 +110,7 @@ impl<D: DbReader> TransactionRepository<D> {
     }
 
     /// Implements getPeriodSystemTransactionsHashes(period) -> rlp([trx_hash])
-    pub fn period_system_transactions_hashes_rlp(&self, period: u64) -> Result<Vec<u8>> {
+    pub fn period_system_hashes_rlp(&self, period: u64) -> Result<Vec<u8>> {
         Ok(self
             .db
             .get(Column::PeriodSystemTransactions, &period.to_le_bytes())?
@@ -125,18 +121,18 @@ impl<D: DbReader> TransactionRepository<D> {
 
 impl<D: DbReader + DbWriter> TransactionRepository<D> {
     /// Implements addTransactionToBatch(trx, ...)
-    pub fn save_transaction(&self, trx_hash: H256, trx_rlp: &[u8]) -> Result<()> {
+    pub fn write(&self, trx_hash: H256, trx_rlp: &[u8]) -> Result<()> {
         self.db
             .put(Column::Transactions, trx_hash.as_bytes(), trx_rlp)
     }
 
     /// Implements removeTransactionToBatch(hash, ...)
-    pub fn remove_transaction(&self, trx_hash: H256) -> Result<()> {
+    pub fn remove(&self, trx_hash: H256) -> Result<()> {
         self.db.delete(Column::Transactions, trx_hash.as_bytes())
     }
 
     /// Implements addTransactionLocationToBatch(..., hash, period, position, is_system)
-    pub fn save_transaction_location(
+    pub fn write_location(
         &self,
         trx_hash: H256,
         period: u64,
@@ -158,17 +154,13 @@ impl<D: DbReader + DbWriter> TransactionRepository<D> {
     }
 
     /// Implements addSystemTransactionToBatch(..., trx)
-    pub fn save_system_transaction(&self, trx_hash: H256, trx_rlp: &[u8]) -> Result<()> {
+    pub fn write_system(&self, trx_hash: H256, trx_rlp: &[u8]) -> Result<()> {
         self.db
             .put(Column::SystemTransaction, trx_hash.as_bytes(), trx_rlp)
     }
 
     /// Implements addPeriodSystemTransactions(..., trxs, period)
-    pub fn save_period_system_transactions_hashes(
-        &self,
-        period: u64,
-        hashes_rlp: &[u8],
-    ) -> Result<()> {
+    pub fn write_period_system_hashes(&self, period: u64, hashes_rlp: &[u8]) -> Result<()> {
         self.db.put(
             Column::PeriodSystemTransactions,
             &period.to_le_bytes(),
@@ -293,7 +285,7 @@ mod tests {
         let hash = H256::from_low_u64_be(1);
         db.put(Column::Transactions, hash.as_bytes(), &[0xAA]);
 
-        assert!(repo.transaction_in_db(hash).unwrap());
+        assert!(repo.exists(hash).unwrap());
     }
 
     #[test]
@@ -304,7 +296,7 @@ mod tests {
         let hash = H256::from_low_u64_be(2);
         db.put(Column::TrxPeriod, hash.as_bytes(), &[0xC2, 0x01, 0x02]);
 
-        assert!(repo.transaction_in_db(hash).unwrap());
+        assert!(repo.exists(hash).unwrap());
     }
 
     #[test]
@@ -312,7 +304,7 @@ mod tests {
         let db = Arc::new(MockTransactionStore::new());
         let repo = TransactionRepository::new(db);
 
-        assert!(!repo.transaction_in_db(H256::from_low_u64_be(3)).unwrap());
+        assert!(!repo.exists(H256::from_low_u64_be(3)).unwrap());
     }
 
     #[test]
@@ -321,9 +313,9 @@ mod tests {
         let repo = TransactionRepository::new(db.clone());
         let hash = H256::from_low_u64_be(4);
 
-        assert!(!repo.transaction_finalized(hash).unwrap());
+        assert!(!repo.finalized(hash).unwrap());
         db.put(Column::TrxPeriod, hash.as_bytes(), &[0xC2, 0x01, 0x02]);
-        assert!(repo.transaction_finalized(hash).unwrap());
+        assert!(repo.finalized(hash).unwrap());
     }
 
     #[test]
@@ -333,9 +325,9 @@ mod tests {
         let hash = H256::from_low_u64_be(5);
         let location = vec![0xC2, 0x01, 0x02];
 
-        assert!(repo.transaction_location_rlp(hash).unwrap().is_none());
+        assert!(repo.location_rlp(hash).unwrap().is_none());
         db.put(Column::TrxPeriod, hash.as_bytes(), &location);
-        assert_eq!(repo.transaction_location_rlp(hash).unwrap(), Some(location));
+        assert_eq!(repo.location_rlp(hash).unwrap(), Some(location));
     }
 
     #[test]
@@ -345,9 +337,9 @@ mod tests {
         let hash = H256::from_low_u64_be(6);
         let tx = vec![0xC1, 0x11];
 
-        assert!(repo.transaction_rlp(hash).unwrap().is_none());
+        assert!(repo.rlp(hash).unwrap().is_none());
         db.put(Column::Transactions, hash.as_bytes(), &tx);
-        assert_eq!(repo.transaction_rlp(hash).unwrap(), Some(tx));
+        assert_eq!(repo.rlp(hash).unwrap(), Some(tx));
     }
 
     #[test]
@@ -357,9 +349,9 @@ mod tests {
         let hash = H256::from_low_u64_be(7);
         let tx = vec![0xC1, 0x22];
 
-        assert!(repo.system_transaction_rlp(hash).unwrap().is_none());
+        assert!(repo.system_rlp(hash).unwrap().is_none());
         db.put(Column::SystemTransaction, hash.as_bytes(), &tx);
-        assert_eq!(repo.system_transaction_rlp(hash).unwrap(), Some(tx));
+        assert_eq!(repo.system_rlp(hash).unwrap(), Some(tx));
     }
 
     #[test]
@@ -387,18 +379,12 @@ mod tests {
             period_data.out().as_ref(),
         );
 
-        assert_eq!(
-            repo.transaction_by_period_position_rlp(period, 0).unwrap(),
-            Some(tx0)
-        );
-        assert_eq!(
-            repo.transaction_by_period_position_rlp(period, 1).unwrap(),
-            Some(tx1)
-        );
-        assert_eq!(repo.transaction_count(period).unwrap(), 2);
+        assert_eq!(repo.by_period_position_rlp(period, 0).unwrap(), Some(tx0));
+        assert_eq!(repo.by_period_position_rlp(period, 1).unwrap(), Some(tx1));
+        assert_eq!(repo.count(period).unwrap(), 2);
 
-        assert!(repo.transaction_by_period_position_rlp(period, 2).is_err());
-        assert_eq!(repo.transaction_count(999).unwrap(), 0);
+        assert!(repo.by_period_position_rlp(period, 2).is_err());
+        assert_eq!(repo.count(999).unwrap(), 0);
     }
 
     #[test]
@@ -417,7 +403,7 @@ mod tests {
             &[0xCC],
         );
 
-        let mut result = repo.all_nonfinalized_transactions_rlp().unwrap();
+        let mut result = repo.all_nonfinalized_rlp().unwrap();
         result.sort();
         assert_eq!(result, vec![vec![0xAA, 0xBB], vec![0xCC]]);
     }
@@ -432,7 +418,7 @@ mod tests {
         db.put(Column::TrxPeriod, hash1.as_bytes(), &[0xC2, 0x01, 0x05]); // [1, 5]
         db.put(Column::TrxPeriod, hash2.as_bytes(), &[0xC2, 0x02, 0x06]); // [2, 6]
 
-        let result = repo.all_transaction_period().unwrap();
+        let result = repo.all_with_period().unwrap();
         assert!(result.contains(&(hash1, 1)));
         assert!(result.contains(&(hash2, 2)));
     }
@@ -444,20 +430,13 @@ mod tests {
         let period = 42u64;
         let hashes_rlp = vec![0xC1, 0x01];
 
-        assert!(
-            repo.period_system_transactions_hashes_rlp(period)
-                .unwrap()
-                .is_empty()
-        );
+        assert!(repo.period_system_hashes_rlp(period).unwrap().is_empty());
 
         db.put(
             Column::PeriodSystemTransactions,
             &period.to_le_bytes(),
             &hashes_rlp,
         );
-        assert_eq!(
-            repo.period_system_transactions_hashes_rlp(period).unwrap(),
-            hashes_rlp
-        );
+        assert_eq!(repo.period_system_hashes_rlp(period).unwrap(), hashes_rlp);
     }
 }
