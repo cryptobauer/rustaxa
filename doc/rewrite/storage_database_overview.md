@@ -6,6 +6,15 @@ It is intentionally not exhaustive. The goal is to make the system easier to rea
 
 See also: `doc/rewrite/storage_schema_diagrams.md` for visual schema and lifecycle diagrams.
 
+## Rewrite Scope Boundary
+
+For the current Rust storage rewrite wave, the following areas are explicitly out of scope and stay C++-owned:
+- storage migration flows
+- light-node / `plugin/light` maintenance and pruning flows
+- snapshot lifecycle and recovery flows
+
+This document still describes those areas for architectural context, but they are not migration blockers for Rust shim parity.
+
 ## Big Picture
 
 The storage layer is centered around `DbStorage`, which acts as the node's durable data facade.
@@ -271,6 +280,7 @@ This is why `period_data` is such a high-value target for the Rust read rewrite.
 ## Snapshots, Recovery, and Migrations
 
 The storage system also has lifecycle support beyond normal reads and writes.
+These lifecycle paths are intentionally out of scope for the current Rust rewrite wave.
 
 ### Snapshots
 
@@ -289,8 +299,7 @@ Recovery swaps the live `db/` and `state_db/` directories with the snapshot pair
 ### Migrations
 
 The schema can rebuild or drop old column families and can copy/replace columns during migrations.
-
-This is useful operationally, but most of it is not part of the first Rust storage rewrite wave.
+This is useful operationally, but migration flow remains explicitly out of scope for the current Rust storage rewrite.
 
 ## State DB Relationship
 

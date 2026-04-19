@@ -16,6 +16,16 @@ Current migration direction:
 - Snapshotting and storage migrations stay in C++ and are generally out of Rust rewrite scope.
 - `light_plugin` storage maintenance/pruning flows stay in C++ and are out of Rust rewrite scope.
 
+## Rewrite Scope Boundary
+
+Out of scope for the Rust storage rewrite (unless explicitly re-scoped in a future batch):
+- storage migration flows (`libraries/core_libs/storage/src/migration/*`)
+- light-node / `plugin/light` maintenance and pruning flows
+- snapshot lifecycle and recovery APIs (`createSnapshot`, `loadSnapshots`, `recoverToPeriod`, `deleteSnapshot`,
+  `enableSnapshots`, `disableSnapshots`)
+
+These paths stay C++-owned for now and are not rewrite blockers.
+
 ## Legend
 
 - `[x]` Rust-backed shim exists in the Rust storage shim layer (`storage_shim.cpp`/`storage_shim.hpp`)
@@ -116,8 +126,61 @@ Final-chain internal read coverage is also routed through Rust in shim mode via 
 - `final_chain_blk_hash_by_number`
 - `final_chain_blk_number_by_hash`
 - `final_chain_log_blooms_index`
+- `final_chain_receipt_by_trx_hash`
 
 This keeps existing `FinalChain` and `GasPricer` call sites unchanged while replacing direct RocksDB reads under the shim boundary.
+
+## Latest Gap Audit (2026-04-19)
+
+I re-ran a workspace scan of:
+- all `DbStorage::lookup` / `lookup_int` call sites, and
+- all public `DbStorage` APIs that are still inherited from `DbStorageOld` (not redeclared in `storage_shim.hpp`).
+
+### 1. Unshimmed `lookup*` usage still present
+
+- `lookup_int<bool>(..., Columns::migrations)` in `libraries/core_libs/storage/include/storage/migration/migration_base.hpp`
+  - This column is not intercepted in the shim lookup dispatcher.
+  - Since shim lookup now throws for unsupported columns, this path is currently a migration-scope gap.
+
+### 2. Public APIs still not shim-covered but externally used
+
+These APIs are inherited from `DbStorageOld` (not Rust shim overrides) and have external callers:
+
+- `DeleteRange(...)` and `CompactRange(...)`
+  - used by `libraries/plugin/light/src/light.cpp`
+- `createSnapshot(...)`
+  - used by `libraries/core_libs/consensus/src/final_chain/final_chain.cpp`
+- `deleteColumnData(...)`
+  - used by `libraries/core_libs/consensus/src/rewards/rewards_stats.cpp`
+  - used by `libraries/core_libs/storage/src/migration/block_stats.cpp`
+- `disableSnapshots()` / `enableSnapshots()`
+  - used by `libraries/core_libs/network/src/tarcap/packets_handlers/interface/sync_packet_handler.cpp`
+- `getColumnIterator(...)`
+  - used by `libraries/core_libs/storage/src/migration/{block_stats,transaction_receipts_by_period}.cpp`
+  - used by `libraries/plugin/light/src/light.cpp`
+- `getMajorVersion() const`
+  - used by `libraries/core_libs/storage/src/migration/migration_manager.cpp`
+  - note: cached/helper-style accessor, not a direct DB read path
+- `transactionsFromPeriodDataRlp(...)`
+  - used by `libraries/core_libs/storage/src/migration/transaction_receipts_by_period.cpp`
+
+All of the above align with existing scope notes: migration/admin/snapshot and `plugin/light` maintenance paths are intentionally non-blocking for first-wave Rust shims.
+
+### 3. Public APIs still not shim-covered and with no external callers found
+
+No external call sites were found for:
+- `getPeriodSystemTransactions(PbftPeriod)`
+- `getTransactionReceipt(EthBlockNumber, uint64_t)`
+- `removeDagBlockBatch(Batch&, blk_hash_t const&)`
+- `transactionsInDb(std::vector<trx_hash_t> const&)`
+- `rebuildColumns(...)`
+- `deleteSnapshot(...)`
+- `recoverToPeriod(...)`
+- `loadSnapshots()`
+- `replaceColumn(...)`
+- `removeTempFiles()`
+- `removeFilesWithPattern(...)`
+- `deleteTmpDirectories(...)`
 
 ## Suggested Storage Buckets
 
