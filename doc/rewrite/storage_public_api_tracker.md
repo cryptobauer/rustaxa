@@ -108,7 +108,16 @@ These public read methods already branch to `rust_storage_` today:
 - `[x] getAllTransactionPeriod()`
 - `[x] getPeriodSystemTransactionsHashes(PbftPeriod period) const`
 
-Current bridge coverage now includes the DAG read slice, proposal-period lookup, period-data primitives (`period_data` and `pbft_block_period`), finalized-chain receipts by period (`final_chain_receipt_by_period`), metadata/config reads (`genesis`, `status`, `sortition_params_change`, `period_lambda`, `rounds_count_dynamic_lambda`, `block_rewards_stats`), PBFT hash presence checks, PBFT manager/vote reads (`pbft_mgr_round_step`, `pbft_mgr_status`, `cert_voted_block_in_round`, `proposed_pbft_blocks`, `pbft_head`, `latest_round_own_votes`, `latest_round_two_t_plus_one_votes`, `extra_reward_votes`), pillar reads (`pillar_block`, `current_pillar_block_own_vote`, `current_pillar_block_data`), and a broader transaction read slice over `transactions`, `trx_period`, `system_transaction`, `period_data`, and `period_system_transactions`. Everything else below is still backed by C++ RocksDB access.
+Current bridge coverage now includes the DAG read slice, proposal-period lookup, period-data primitives (`period_data` and `pbft_block_period`), finalized-chain receipts by period (`final_chain_receipt_by_period`), metadata/config reads (`genesis`, `status`, `sortition_params_change`, `period_lambda`, `rounds_count_dynamic_lambda`, `block_rewards_stats`), PBFT hash presence checks, PBFT manager/vote reads (`pbft_mgr_round_step`, `pbft_mgr_status`, `cert_voted_block_in_round`, `proposed_pbft_blocks`, `pbft_head`, `latest_round_own_votes`, `latest_round_two_t_plus_one_votes`, `extra_reward_votes`), pillar reads (`pillar_block`, `current_pillar_block_own_vote`, `current_pillar_block_data`), and a broader transaction read slice over `transactions`, `trx_period`, `system_transaction`, `period_data`, and `period_system_transactions`.
+
+Final-chain internal read coverage is also routed through Rust in shim mode via additive `DbStorage::lookup*` interception for:
+- `final_chain_meta`
+- `final_chain_blk_by_number`
+- `final_chain_blk_hash_by_number`
+- `final_chain_blk_number_by_hash`
+- `final_chain_log_blooms_index`
+
+This keeps existing `FinalChain` and `GasPricer` call sites unchanged while replacing direct RocksDB reads under the shim boundary.
 
 ## Suggested Storage Buckets
 
