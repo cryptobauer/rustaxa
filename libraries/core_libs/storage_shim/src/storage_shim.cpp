@@ -31,7 +31,7 @@ rust::Vec<uint8_t> into_rust_vec(T const& val) {
 }
 
 template <typename T>
-T decode_little_endian(const Slice& key) {
+T save_as(const Slice& key) {
   T value{};
   std::memcpy(&value, key.data(), sizeof(T));
   return value;
@@ -207,7 +207,7 @@ std::string DbStorage::lookupFinalChainMeta(const Slice& key) const {
     throw_invalid_final_chain_key_size(Columns::final_chain_meta.name().c_str(), key.size(), sizeof(uint32_t));
   }
 
-  auto const meta_key = decode_little_endian<uint32_t>(key);
+  auto const meta_key = save_as<uint32_t>(key);
   auto rust_value = rust_storage_.value()->get_final_chain_meta_value(meta_key);
   return std::string(reinterpret_cast<const char*>(rust_value.data()), rust_value.size());
 }
@@ -217,7 +217,7 @@ std::string DbStorage::lookupFinalChainBlockByNumber(const Slice& key) const {
     throw_invalid_final_chain_key_size(Columns::final_chain_blk_by_number.name().c_str(), key.size(), sizeof(uint64_t));
   }
 
-  auto const block_number = decode_little_endian<uint64_t>(key);
+  auto const block_number = save_as<uint64_t>(key);
   auto rust_value = rust_storage_.value()->get_final_chain_block_header(block_number);
   return std::string(reinterpret_cast<const char*>(rust_value.data()), rust_value.size());
 }
@@ -228,7 +228,7 @@ std::string DbStorage::lookupFinalChainBlockHashByNumber(const Slice& key) const
                                        sizeof(uint64_t));
   }
 
-  auto const block_number = decode_little_endian<uint64_t>(key);
+  auto const block_number = save_as<uint64_t>(key);
   auto rust_value = rust_storage_.value()->get_final_chain_block_hash_by_number(block_number);
   return std::string(reinterpret_cast<const char*>(rust_value.data()), rust_value.size());
 }
