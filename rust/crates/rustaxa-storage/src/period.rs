@@ -10,11 +10,13 @@ pub struct PeriodRepository<D: DbReader> {
 }
 
 impl<D: DbReader> PeriodRepository<D> {
+    /// Creates a period repository over the shared database handle.
     pub fn new(db: Arc<D>) -> Self {
         PeriodRepository { db }
     }
 
-    /// Implements getPeriodDataRaw(period) -> bytes
+    /// Returns serialized period payload bytes, or empty bytes when missing.
+    /// C++ mapping: `DbStorage::getPeriodDataRaw(PbftPeriod) const`.
     pub fn data_raw(&self, period: u64) -> Result<Vec<u8>> {
         Ok(self
             .db
@@ -23,7 +25,8 @@ impl<D: DbReader> PeriodRepository<D> {
             .unwrap_or_default())
     }
 
-    /// Implements getPeriodFromPbftHash(hash) -> optional(period)
+    /// Resolves finalized period number for a PBFT block hash.
+    /// C++ mapping: `DbStorage::getPeriodFromPbftHash(taraxa::blk_hash_t const&)`.
     pub fn by_pbft_hash(&self, pbft_hash: H256) -> Result<Option<u64>> {
         match self.db.get(Column::PbftBlockPeriod, pbft_hash.as_bytes())? {
             Some(value) => {
@@ -45,7 +48,9 @@ impl<D: DbReader> PeriodRepository<D> {
         }
     }
 
-    /// Implements getBlockReceipt(period) -> rlp(receipt)
+    /// Returns serialized final-chain receipts for a period, or empty bytes
+    /// when no receipts are stored.
+    /// C++ mapping: `DbStorage::getBlockReceipts(PbftPeriod) const`.
     pub fn receipt(&self, period: u64) -> Result<Vec<u8>> {
         Ok(self
             .db
@@ -56,13 +61,15 @@ impl<D: DbReader> PeriodRepository<D> {
 }
 
 impl<D: DbReader + DbWriter> PeriodRepository<D> {
-    /// Implements savePeriodData(period_data, ...)
+    /// Stores serialized period payload keyed by period number.
+    /// C++ mapping: `DbStorage::savePeriodData(const PeriodData&, Batch&)`.
     pub fn write(&self, period: u64, period_data_rlp: &[u8]) -> Result<()> {
         self.db
             .put(Column::PeriodData, &period.to_le_bytes(), period_data_rlp)
     }
 
-    /// Implements addPbftBlockPeriodToBatch(period, pbft_block_hash, ...)
+    /// Stores finalized PBFT hash-to-period index entry.
+    /// C++ mapping: `DbStorage::addPbftBlockPeriodToBatch(PbftPeriod, taraxa::blk_hash_t const&, Batch&)`.
     pub fn write_pbft_period(&self, pbft_block_hash: H256, period: u64) -> Result<()> {
         self.db.put(
             Column::PbftBlockPeriod,

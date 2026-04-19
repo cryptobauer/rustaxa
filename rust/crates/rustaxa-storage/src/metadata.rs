@@ -11,11 +11,13 @@ pub struct MetadataRepository<D: DbReader> {
 }
 
 impl<D: DbReader> MetadataRepository<D> {
+    /// Creates a metadata repository over the shared database handle.
     pub fn new(db: Arc<D>) -> Self {
         MetadataRepository { db }
     }
 
-    /// Implements getGenesisHash() -> optional(bytes)
+    /// Returns the configured genesis hash when present and non-empty.
+    /// C++ mapping: `DbStorage::getGenesisHash()`.
     pub fn genesis_hash(&self) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
@@ -24,7 +26,8 @@ impl<D: DbReader> MetadataRepository<D> {
             .filter(|value| !value.is_empty()))
     }
 
-    /// Implements getLastSortitionParams(count) -> [rlp(sortition_params_change)]
+    /// Returns up to `count` latest sortition parameter changes in chronological order.
+    /// C++ mapping: `DbStorage::getLastSortitionParams(size_t)`.
     ///
     /// The returned list is ordered oldest to newest, matching the C++ storage API.
     /// We iterate the column in reverse so we can stop after collecting the latest
@@ -44,7 +47,8 @@ impl<D: DbReader> MetadataRepository<D> {
         Ok(changes)
     }
 
-    /// Implements getParamsChangeForPeriod(period) -> optional(rlp(sortition_params_change))
+    /// Returns the latest sortition parameter change at-or-before a target period.
+    /// C++ mapping: `DbStorage::getParamsChangeForPeriod(PbftPeriod)`.
     pub fn params_change_for_period_rlp(&self, period: u64) -> Result<Option<Vec<u8>>> {
         let Some((_, value)) = self
             .db
@@ -56,7 +60,8 @@ impl<D: DbReader> MetadataRepository<D> {
         Ok(Some(value.into_vec()))
     }
 
-    /// Implements getStatusField(field) -> uint64_t
+    /// Loads a status counter value, defaulting to zero when the key is absent.
+    /// C++ mapping: `DbStorage::getStatusField(StatusDbField const&)`.
     pub fn status_field(&self, field: u8) -> Result<u64> {
         let Some(value) = self.db.get(Column::Status, &[field])? else {
             return Ok(0);
@@ -65,7 +70,9 @@ impl<D: DbReader> MetadataRepository<D> {
         Self::decode_u64_value(value.as_ref(), Column::Status)
     }
 
-    /// Implements getPeriodLambda(period, find_closest) -> optional(uint32_t)
+    /// Returns the lambda value for a period, optionally falling back to the
+    /// nearest prior persisted value.
+    /// C++ mapping: `DbStorage::getPeriodLambda(PbftPeriod, bool)`.
     pub fn period_lambda(&self, period: u64, find_closest: bool) -> Result<Option<u32>> {
         if find_closest {
             let Some((_, value)) = self
@@ -84,7 +91,8 @@ impl<D: DbReader> MetadataRepository<D> {
         Self::decode_u32_value(value.as_ref(), Column::PeriodLambda).map(Some)
     }
 
-    /// Implements getRoundsCountDynamicLambda() -> uint32_t
+    /// Returns the current rounds-count threshold used for dynamic lambda tuning.
+    /// C++ mapping: `DbStorage::getRoundsCountDynamicLambda()`.
     pub fn rounds_count_dynamic_lambda(&self) -> Result<u32> {
         let Some(value) = self
             .db
@@ -96,7 +104,8 @@ impl<D: DbReader> MetadataRepository<D> {
         Self::decode_u32_value(value.as_ref(), Column::RoundsCountDynamicLambda)
     }
 
-    /// Implements getBlocksRewardsStats() -> [(period, rlp(block_stats))]
+    /// Returns all persisted block reward stats keyed by period.
+    /// C++ mapping: `DbStorage::getBlocksRewardsStats() const`.
     pub fn block_rewards_stats_rlp(&self) -> Result<Vec<(u64, Vec<u8>)>> {
         let mut stats = Vec::new();
         for item in self.db.iter(Column::BlockRewardsStats) {
@@ -158,7 +167,8 @@ impl<D: DbReader> MetadataRepository<D> {
 }
 
 impl<D: DbReader + DbWriter> MetadataRepository<D> {
-    /// Implements setGenesisHash(hash) preserving C++ semantics (write only if absent).
+    /// Writes genesis hash only when it has not been initialized yet.
+    /// C++ mapping: `DbStorage::setGenesisHash(const h256&)` (write-once behavior).
     pub fn set_genesis_hash_if_empty(&self, genesis_hash: &[u8]) -> Result<()> {
         if !self.db.exist(Column::Genesis, &SINGLE_VALUE_KEY)? {
             self.db
@@ -167,12 +177,14 @@ impl<D: DbReader + DbWriter> MetadataRepository<D> {
         Ok(())
     }
 
-    /// Implements saveStatusField(field, value)
+    /// Persists a status counter value.
+    /// C++ mapping: `DbStorage::saveStatusField(StatusDbField const&, uint64_t)`.
     pub fn write_status_field(&self, field: u8, value: u64) -> Result<()> {
         self.db.put(Column::Status, &[field], &value.to_le_bytes())
     }
 
-    /// Implements saveSortitionParamsChange(period, params, ...)
+    /// Stores sortition parameter change payload for a period.
+    /// C++ mapping: `DbStorage::saveSortitionParamsChange(PbftPeriod, const SortitionParamsChange&, Batch&)`.
     pub fn write_sortition_params_change(&self, period: u64, params_rlp: &[u8]) -> Result<()> {
         self.db.put(
             Column::SortitionParamsChange,
@@ -181,7 +193,8 @@ impl<D: DbReader + DbWriter> MetadataRepository<D> {
         )
     }
 
-    /// Implements savePeriodLambda(period, period_lambda, ...)
+    /// Persists the dynamic lambda used for a specific period.
+    /// C++ mapping: `DbStorage::savePeriodLambda(PbftPeriod, uint32_t, Batch&)`.
     pub fn write_period_lambda(&self, period: u64, period_lambda: u32) -> Result<()> {
         self.db.put(
             Column::PeriodLambda,
@@ -190,7 +203,8 @@ impl<D: DbReader + DbWriter> MetadataRepository<D> {
         )
     }
 
-    /// Implements saveRoundsCountDynamicLambda(rounds_count, ...)
+    /// Persists the rounds-count parameter that controls dynamic lambda updates.
+    /// C++ mapping: `DbStorage::saveRoundsCountDynamicLambda(uint32_t, Batch&)`.
     pub fn write_rounds_count_dynamic_lambda(&self, rounds_count: u32) -> Result<()> {
         self.db.put(
             Column::RoundsCountDynamicLambda,
@@ -199,13 +213,14 @@ impl<D: DbReader + DbWriter> MetadataRepository<D> {
         )
     }
 
-    /// Implements saveBlockRewardsStats(period, stats, ...)
+    /// Persists serialized block reward statistics for a period.
+    /// C++ mapping: `DbStorage::saveBlockRewardsStats(uint64_t, const rewards::BlockStats&, Batch&)`.
     pub fn write_block_rewards_stats(&self, period: u64, stats_rlp: &[u8]) -> Result<()> {
         self.db
             .put(Column::BlockRewardsStats, &period.to_le_bytes(), stats_rlp)
     }
 
-    /// Clears all cached block rewards stats.
+    /// Removes every stored block reward stats entry.
     pub fn clear_block_rewards_stats(&self) -> Result<()> {
         let mut batch = self.db.create_batch();
         for item in self.db.iter(Column::BlockRewardsStats) {

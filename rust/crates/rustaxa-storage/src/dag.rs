@@ -12,11 +12,14 @@ pub struct DagRepository<D: DbReader> {
 }
 
 impl<D: DbReader> DagRepository<D> {
+    /// Creates a DAG repository over the shared database handle.
     pub fn new(db: Arc<D>) -> Self {
         DagRepository { db }
     }
 
-    /// Implements dagBlockInDb(blockHash) -> bool
+    /// Returns true when a DAG block is present in either non-finalized storage
+    /// or in finalized period indexing data.
+    /// C++ mapping: `DbStorage::dagBlockInDb(blk_hash_t const&)`.
     pub fn exists(&self, block: H256) -> Result<bool> {
         // Check potentially non-finalized consensus data.
         if self.db.exist(Column::DagBlocks, block.as_bytes())? {
@@ -27,12 +30,17 @@ impl<D: DbReader> DagRepository<D> {
         self.db.exist(Column::DagBlockPeriod, block.as_bytes())
     }
 
-    /// Implements GetDagBlock(blockHash) -> DagBlock
+    /// Loads and decodes a DAG block by hash, resolving from non-finalized
+    /// storage first and then from finalized period data.
+    /// C++ mapping: `DbStorage::getDagBlock(blk_hash_t const&)`.
     pub fn by_hash(&self, block: H256) -> Result<DagBlock> {
         let bytes = self.by_hash_rlp(block)?;
         Ok(DagBlock::from_rlp_bytes(&bytes)?)
     }
 
+    /// Loads the serialized DAG block RLP by hash using both non-finalized and
+    /// finalized storage layouts.
+    /// C++ mapping: `DbStorage::getDagBlock(blk_hash_t const&)`.
     pub fn by_hash_rlp(&self, block: H256) -> Result<Vec<u8>> {
         if let Some(val) = self.db.get(Column::DagBlocks, block.as_bytes())? {
             return Ok(val.as_ref().to_vec());
@@ -53,7 +61,9 @@ impl<D: DbReader> DagRepository<D> {
         Err(StorageError::Dag("DAG block not found".to_string()).into())
     }
 
-    /// Implements GetDagBlockPeriod() -> (uint64, uint32) (finalized)
+    /// Returns finalized period and position for a DAG block that is already
+    /// indexed as finalized.
+    /// C++ mapping: `DbStorage::getDagBlockPeriod(blk_hash_t const&)`.
     pub fn period(&self, block: H256) -> Result<(u64, u32)> {
         let value = self
             .db
@@ -66,7 +76,8 @@ impl<D: DbReader> DagRepository<D> {
         Ok((period, position))
     }
 
-    /// Implements GetLastBlocksLevel() -> uint64
+    /// Returns the highest DAG level currently indexed, or zero when empty.
+    /// C++ mapping: `DbStorage::getLastBlocksLevel() const`.
     pub fn last_level(&self) -> Result<u64> {
         let mut iter = self.db.iter_rev(Column::DagBlocksLevel);
         if let Some(res) = iter.next() {
@@ -80,7 +91,8 @@ impl<D: DbReader> DagRepository<D> {
         Ok(0)
     }
 
-    /// Implements GetBlocksByLevel(level) -> [blockHash]
+    /// Returns all DAG block hashes stored for a single level.
+    /// C++ mapping: `DbStorage::getBlocksByLevel(level_t)`.
     pub fn hashes_at_level(&self, level: u64) -> Result<Vec<H256>> {
         match self.db.get(Column::DagBlocksLevel, &level.to_le_bytes())? {
             Some(value) => {
@@ -92,7 +104,8 @@ impl<D: DbReader> DagRepository<D> {
         }
     }
 
-    /// Implements GetDagBlocksAtLevel(level, number_of_levels) -> [blockHash]
+    /// Returns hashes for a contiguous level window, skipping genesis level.
+    /// C++ mapping: `DbStorage::getDagBlocksAtLevel(level_t, int)` (hash collection stage).
     pub fn hashes_at_level_range(&self, level: u64, number_of_levels: u32) -> Result<Vec<H256>> {
         let hashes = (0..number_of_levels)
             .map(|depth| level + depth as u64)
@@ -105,7 +118,9 @@ impl<D: DbReader> DagRepository<D> {
         Ok(hashes)
     }
 
-    /// Implements GetProposalPeriodForDagLevel(level) -> uint64
+    /// Resolves the proposal period associated with a DAG level using the first
+    /// mapping entry at-or-after the requested level.
+    /// C++ mapping: `DbStorage::getProposalPeriodForDagLevel(uint64_t)`.
     pub fn proposal_period_at_level(&self, level: u64) -> Result<Option<u64>> {
         match self
             .db
@@ -123,6 +138,8 @@ impl<D: DbReader> DagRepository<D> {
         }
     }
 
+    /// Returns serialized DAG blocks for a contiguous level window, omitting
+    /// hashes that cannot be resolved to block payloads.
     pub fn at_level_range(&self, level: u64, number_of_levels: u32) -> Result<Vec<Vec<u8>>> {
         let mut res = Vec::new();
         for i in 0..number_of_levels {
@@ -137,7 +154,8 @@ impl<D: DbReader> DagRepository<D> {
         Ok(res)
     }
 
-    /// Implements GetNonfinalizedDagBlocks() -> map<level, vector<DagBlock>>
+    /// Groups non-finalized DAG blocks by level, preserving each block's raw RLP.
+    /// C++ mapping: `DbStorage::getNonfinalizedDagBlocks()`.
     pub fn non_finalized(&self) -> Result<BTreeMap<u64, Vec<Vec<u8>>>> {
         let mut map: BTreeMap<u64, Vec<Vec<u8>>> = BTreeMap::new();
         for res in self.db.iter(Column::DagBlocks) {
@@ -151,7 +169,9 @@ impl<D: DbReader> DagRepository<D> {
 }
 
 impl<D: DbReader + DbWriter> DagRepository<D> {
-    /// Implements saveDagBlock(block, nullptr)
+    /// Persists a non-finalized DAG block, updates level index entries, and
+    /// increments DAG block and edge counters atomically.
+    /// C++ mapping: `DbStorage::saveDagBlock(const std::shared_ptr<DagBlock>&, Batch*)` (no batch path).
     pub fn write(&self, hash: H256, level: u64, tips_count: u64, block_rlp: &[u8]) -> Result<()> {
         let mut write_batch = self.db.create_batch();
         self.db.batch_put(
@@ -192,7 +212,8 @@ impl<D: DbReader + DbWriter> DagRepository<D> {
         self.db.commit_batch(write_batch)
     }
 
-    /// Implements addDagBlockPeriodToBatch(hash, period, position, ...)
+    /// Stores finalized DAG block location (period, position) for a block hash.
+    /// C++ mapping: `DbStorage::addDagBlockPeriodToBatch(blk_hash_t const&, PbftPeriod, uint32_t, Batch&)`.
     pub fn write_period(&self, hash: H256, period: u64, position: u32) -> Result<()> {
         let mut stream = rlp::RlpStream::new_list(2);
         stream.append(&period);
@@ -205,7 +226,8 @@ impl<D: DbReader + DbWriter> DagRepository<D> {
         )
     }
 
-    /// Implements updateDagBlockCounters(blocks)
+    /// Updates level index and DAG counters for an already-saved block.
+    /// C++ mapping: `DbStorage::updateDagBlockCounters(std::vector<std::shared_ptr<DagBlock>>)`.
     pub fn update_counter(&self, hash: H256, level: u64, tips_count: u64) -> Result<()> {
         let mut write_batch = self.db.create_batch();
 
@@ -240,12 +262,14 @@ impl<D: DbReader + DbWriter> DagRepository<D> {
         self.db.commit_batch(write_batch)
     }
 
-    /// Implements removeDagBlock(hash)
+    /// Removes a non-finalized DAG block payload by hash.
+    /// C++ mapping: `DbStorage::removeDagBlock(blk_hash_t const&)`.
     pub fn remove(&self, hash: H256) -> Result<()> {
         self.db.delete(Column::DagBlocks, hash.as_bytes())
     }
 
-    /// Implements saveProposalPeriodDagLevelsMap(level, period)
+    /// Writes the proposal-period mapping entry for a DAG level.
+    /// C++ mapping: `DbStorage::saveProposalPeriodDagLevelsMap(uint64_t, PbftPeriod)`.
     pub fn write_proposal_period_at_level(&self, level: u64, period: u64) -> Result<()> {
         self.db.put(
             Column::ProposalPeriodLevelsMap,

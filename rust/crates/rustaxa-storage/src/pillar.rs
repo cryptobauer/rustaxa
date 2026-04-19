@@ -10,11 +10,13 @@ pub struct PillarRepository<D: DbReader> {
 }
 
 impl<D: DbReader> PillarRepository<D> {
+    /// Creates a pillar repository over the shared database handle.
     pub fn new(db: Arc<D>) -> Self {
         PillarRepository { db }
     }
 
-    /// Implements getPillarBlock(period) -> optional(rlp(pillar_block))
+    /// Returns serialized pillar block payload for a period when available.
+    /// C++ mapping: `DbStorage::getPillarBlock(PbftPeriod) const`.
     pub fn rlp(&self, period: u64) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
@@ -23,7 +25,8 @@ impl<D: DbReader> PillarRepository<D> {
             .filter(|value| !value.is_empty()))
     }
 
-    /// Implements getLatestPillarBlock() -> optional(rlp(pillar_block))
+    /// Returns the newest serialized pillar block payload in storage.
+    /// C++ mapping: `DbStorage::getLatestPillarBlock() const`.
     pub fn latest_rlp(&self) -> Result<Option<Vec<u8>>> {
         if let Some(item) = self.db.iter_rev(Column::PillarBlock).next() {
             let (_, value) = item?;
@@ -37,7 +40,8 @@ impl<D: DbReader> PillarRepository<D> {
         Ok(None)
     }
 
-    /// Implements getOwnPillarBlockVote() -> optional(rlp(vote))
+    /// Returns serialized local pillar vote payload for current pillar state.
+    /// C++ mapping: `DbStorage::getOwnPillarBlockVote() const`.
     pub fn own_vote_rlp(&self) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
@@ -46,7 +50,8 @@ impl<D: DbReader> PillarRepository<D> {
             .filter(|value| !value.is_empty()))
     }
 
-    /// Implements getCurrentPillarBlockData() -> optional(rlp(data))
+    /// Returns serialized current pillar-chain state payload.
+    /// C++ mapping: `DbStorage::getCurrentPillarBlockData() const`.
     pub fn current_data_rlp(&self) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
@@ -57,13 +62,15 @@ impl<D: DbReader> PillarRepository<D> {
 }
 
 impl<D: DbReader + DbWriter> PillarRepository<D> {
-    /// Implements savePillarBlock(pillar_block)
+    /// Stores serialized pillar block payload for its period.
+    /// C++ mapping: `DbStorage::savePillarBlock(const std::shared_ptr<pillar_chain::PillarBlock>&)`.
     pub fn write(&self, period: u64, pillar_block_rlp: &[u8]) -> Result<()> {
         self.db
             .put(Column::PillarBlock, &period.to_le_bytes(), pillar_block_rlp)
     }
 
-    /// Implements saveOwnPillarBlockVote(vote)
+    /// Stores serialized local pillar vote payload.
+    /// C++ mapping: `DbStorage::saveOwnPillarBlockVote(const std::shared_ptr<PillarVote>&)`.
     pub fn write_own_vote(&self, vote_rlp: &[u8]) -> Result<()> {
         self.db.put(
             Column::CurrentPillarBlockOwnVote,
@@ -72,7 +79,8 @@ impl<D: DbReader + DbWriter> PillarRepository<D> {
         )
     }
 
-    /// Implements saveCurrentPillarBlockData(data)
+    /// Stores serialized current pillar-chain state payload.
+    /// C++ mapping: `DbStorage::saveCurrentPillarBlockData(const pillar_chain::CurrentPillarBlockDataDb&)`.
     pub fn write_current_data(&self, data_rlp: &[u8]) -> Result<()> {
         self.db
             .put(Column::CurrentPillarBlockData, &SINGLE_VALUE_KEY, data_rlp)

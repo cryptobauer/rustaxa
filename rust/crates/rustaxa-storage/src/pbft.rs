@@ -30,16 +30,19 @@ pub struct PbftRepository<D: DbReader> {
 }
 
 impl<D: DbReader> PbftRepository<D> {
+    /// Creates a PBFT repository over the shared database handle.
     pub fn new(db: Arc<D>) -> Self {
         PbftRepository { db }
     }
 
-    /// Implements pbftBlockInDb(hash) -> bool
+    /// Returns true when a PBFT block hash has a finalized period index entry.
+    /// C++ mapping: `DbStorage::pbftBlockInDb(blk_hash_t const&)`.
     pub fn exists(&self, pbft_hash: H256) -> Result<bool> {
         self.db.exist(Column::PbftBlockPeriod, pbft_hash.as_bytes())
     }
 
-    /// Implements getPbftMgrField(field) -> uint32_t
+    /// Reads a PBFT manager numeric field and validates fixed-width encoding.
+    /// C++ mapping: `DbStorage::getPbftMgrField(PbftMgrField)`.
     pub fn manager_field(&self, field: u8) -> Result<Option<u32>> {
         let Some(value) = self.db.get(Column::PbftMgrRoundStep, &[field])? else {
             return Ok(None);
@@ -62,7 +65,8 @@ impl<D: DbReader> PbftRepository<D> {
         Ok(Some(u32::from_le_bytes(num)))
     }
 
-    /// Implements getPbftMgrStatus(field) -> bool
+    /// Reads a PBFT manager status flag.
+    /// C++ mapping: `DbStorage::getPbftMgrStatus(PbftMgrStatus)`.
     pub fn manager_status(&self, field: u8) -> Result<Option<bool>> {
         let Some(value) = self.db.get(Column::PbftMgrStatus, &[field])? else {
             return Ok(None);
@@ -75,7 +79,8 @@ impl<D: DbReader> PbftRepository<D> {
         Ok(Some(value[0] != 0))
     }
 
-    /// Implements getCertVotedBlockInRound() -> optional(rlp(round, pbft_block))
+    /// Returns serialized cert-voted block-with-round payload for the latest round.
+    /// C++ mapping: `DbStorage::getCertVotedBlockInRound() const`.
     pub fn cert_voted_block_in_round_rlp(&self) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
@@ -84,7 +89,8 @@ impl<D: DbReader> PbftRepository<D> {
             .filter(|value| !value.is_empty()))
     }
 
-    /// Implements getProposedPbftBlocks() -> [pbft_block_rlp]
+    /// Returns all cached proposed PBFT blocks as raw RLP payloads.
+    /// C++ mapping: `DbStorage::getProposedPbftBlocks()`.
     pub fn proposed_rlp(&self) -> Result<Vec<Vec<u8>>> {
         let mut result = Vec::new();
         for item in self.db.iter(Column::ProposedPbftBlocks) {
@@ -94,7 +100,8 @@ impl<D: DbReader> PbftRepository<D> {
         Ok(result)
     }
 
-    /// Implements getPbftHead(hash) -> optional(string bytes)
+    /// Returns serialized PBFT head bytes associated with a head hash.
+    /// C++ mapping: `DbStorage::getPbftHead(blk_hash_t const&)`.
     pub fn head(&self, pbft_hash: H256) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
@@ -103,7 +110,8 @@ impl<D: DbReader> PbftRepository<D> {
             .filter(|value| !value.is_empty()))
     }
 
-    /// Implements getOwnVerifiedVotes() -> [vote_rlp]
+    /// Returns all locally stored verified votes for the latest round.
+    /// C++ mapping: `DbStorage::getOwnVerifiedVotes()`.
     pub fn own_verified_votes_rlp(&self) -> Result<Vec<Vec<u8>>> {
         let mut result = Vec::new();
         for item in self.db.iter(Column::LatestRoundOwnVotes) {
@@ -113,7 +121,8 @@ impl<D: DbReader> PbftRepository<D> {
         Ok(result)
     }
 
-    /// Implements getAllTwoTPlusOneVotes() -> [vote_rlp]
+    /// Returns flattened votes from all stored 2t+1 vote bundles.
+    /// C++ mapping: `DbStorage::getAllTwoTPlusOneVotes()`.
     pub fn all_two_t_plus_one_votes_rlp(&self) -> Result<Vec<Vec<u8>>> {
         let mut result = Vec::new();
         for vote_type in TwoTPlusOneVotedBlockType::ALL.iter() {
@@ -136,7 +145,8 @@ impl<D: DbReader> PbftRepository<D> {
         Ok(result)
     }
 
-    /// Implements getRewardVotes() -> [vote_rlp]
+    /// Returns all stored extra reward votes for the latest finalized block.
+    /// C++ mapping: `DbStorage::getRewardVotes()`.
     pub fn reward_votes_rlp(&self) -> Result<Vec<Vec<u8>>> {
         let mut result = Vec::new();
         for item in self.db.iter(Column::ExtraRewardVotes) {
@@ -148,31 +158,36 @@ impl<D: DbReader> PbftRepository<D> {
 }
 
 impl<D: DbReader + DbWriter> PbftRepository<D> {
-    /// Implements savePbftMgrField(field, value)
+    /// Persists a PBFT manager numeric field value.
+    /// C++ mapping: `DbStorage::savePbftMgrField(PbftMgrField, uint32_t)`.
     pub fn write_manager_field(&self, field: u8, value: u32) -> Result<()> {
         self.db
             .put(Column::PbftMgrRoundStep, &[field], &value.to_le_bytes())
     }
 
-    /// Implements savePbftMgrStatus(field, value)
+    /// Persists a PBFT manager status flag.
+    /// C++ mapping: `DbStorage::savePbftMgrStatus(PbftMgrStatus, bool const&)`.
     pub fn write_manager_status(&self, field: u8, value: bool) -> Result<()> {
         self.db
             .put(Column::PbftMgrStatus, &[field], &[u8::from(value)])
     }
 
-    /// Implements savePbftHead(hash, pbft_chain_head_str)
+    /// Stores serialized PBFT head bytes for a head hash.
+    /// C++ mapping: `DbStorage::savePbftHead(blk_hash_t const&, std::string const&)`.
     pub fn write_head(&self, pbft_hash: H256, head_bytes: &[u8]) -> Result<()> {
         self.db
             .put(Column::PbftHead, pbft_hash.as_bytes(), head_bytes)
     }
 
-    /// Implements saveOwnVerifiedVote(vote)
+    /// Stores one locally produced verified vote payload.
+    /// C++ mapping: `DbStorage::saveOwnVerifiedVote(const std::shared_ptr<PbftVote>&)`.
     pub fn write_own_verified_vote(&self, vote_hash: H256, vote_rlp: &[u8]) -> Result<()> {
         self.db
             .put(Column::LatestRoundOwnVotes, vote_hash.as_bytes(), vote_rlp)
     }
 
-    /// Implements replaceTwoTPlusOneVotes(type, votes)
+    /// Replaces a full 2t+1 vote bundle for the given vote type.
+    /// C++ mapping: `DbStorage::replaceTwoTPlusOneVotes(TwoTPlusOneVotedBlockType, const std::vector<std::shared_ptr<PbftVote>>&)`.
     pub fn replace_two_t_plus_one_votes(
         &self,
         vote_type: u8,
@@ -188,13 +203,15 @@ impl<D: DbReader + DbWriter> PbftRepository<D> {
         )
     }
 
-    /// Implements saveExtraRewardVote(vote)
+    /// Stores one extra reward vote payload.
+    /// C++ mapping: `DbStorage::saveExtraRewardVote(const std::shared_ptr<PbftVote>&)`.
     pub fn write_extra_reward_vote(&self, vote_hash: H256, vote_rlp: &[u8]) -> Result<()> {
         self.db
             .put(Column::ExtraRewardVotes, vote_hash.as_bytes(), vote_rlp)
     }
 
-    /// Implements saveCertVotedBlockInRound(round, block)
+    /// Stores the latest cert-voted block together with the round number.
+    /// C++ mapping: `DbStorage::saveCertVotedBlockInRound(PbftRound, const std::shared_ptr<PbftBlock>&)`.
     pub fn write_cert_voted_block_in_round(&self, round: u64, block_rlp: &[u8]) -> Result<()> {
         let mut stream = rlp::RlpStream::new_list(2);
         stream.append(&round);
@@ -206,31 +223,36 @@ impl<D: DbReader + DbWriter> PbftRepository<D> {
         )
     }
 
-    /// Implements saveProposedPbftBlock(block)
+    /// Stores a proposed PBFT block payload by its hash.
+    /// C++ mapping: `DbStorage::saveProposedPbftBlock(const std::shared_ptr<PbftBlock>&)`.
     pub fn write_proposed(&self, block_hash: H256, block_rlp: &[u8]) -> Result<()> {
         self.db
             .put(Column::ProposedPbftBlocks, block_hash.as_bytes(), block_rlp)
     }
 
-    /// Implements removeCertVotedBlockInRound()
+    /// Removes the cached cert-voted block for the latest round.
+    /// C++ mapping: `DbStorage::removeCertVotedBlockInRound(Batch&)`.
     pub fn remove_cert_voted_block_in_round(&self) -> Result<()> {
         self.db
             .delete(Column::CertVotedBlockInRound, &SINGLE_VALUE_KEY)
     }
 
-    /// Implements removeProposedPbftBlock(hash)
+    /// Removes one proposed PBFT block by hash.
+    /// C++ mapping: `DbStorage::removeProposedPbftBlock(const blk_hash_t&, Batch&)`.
     pub fn remove_proposed(&self, block_hash: H256) -> Result<()> {
         self.db
             .delete(Column::ProposedPbftBlocks, block_hash.as_bytes())
     }
 
-    /// Implements clearOwnVerifiedVotes([...])
+    /// Removes one cached own verified vote by vote hash.
+    /// C++ mapping: `DbStorage::clearOwnVerifiedVotes(Batch&, const std::vector<std::shared_ptr<PbftVote>>&)`.
     pub fn remove_own_verified_vote(&self, vote_hash: H256) -> Result<()> {
         self.db
             .delete(Column::LatestRoundOwnVotes, vote_hash.as_bytes())
     }
 
-    /// Implements removeExtraRewardVotes([...])
+    /// Removes one cached extra reward vote by vote hash.
+    /// C++ mapping: `DbStorage::removeExtraRewardVotes(const std::vector<vote_hash_t>&, Batch&)`.
     pub fn remove_extra_reward_vote(&self, vote_hash: H256) -> Result<()> {
         self.db
             .delete(Column::ExtraRewardVotes, vote_hash.as_bytes())

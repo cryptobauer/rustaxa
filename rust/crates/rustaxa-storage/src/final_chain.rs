@@ -10,11 +10,13 @@ pub struct FinalChainRepository<D: DbReader> {
 }
 
 impl<D: DbReader> FinalChainRepository<D> {
+    /// Creates a final-chain repository over the shared database handle.
     pub fn new(db: Arc<D>) -> Self {
         FinalChainRepository { db }
     }
 
-    /// Reads value from final_chain_meta by metadata key.
+    /// Returns raw final-chain metadata payload by metadata key.
+    /// C++ mapping: `DbStorage::lookup(..., Columns::final_chain_meta)`.
     pub fn meta_value(&self, key: u32) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
@@ -22,7 +24,8 @@ impl<D: DbReader> FinalChainRepository<D> {
             .map(|value| value.as_ref().to_vec()))
     }
 
-    /// Reads serialized block header payload from final_chain_blk_by_number.
+    /// Returns serialized final-chain block header payload by block number.
+    /// C++ mapping: `DbStorage::lookup(..., Columns::final_chain_blk_by_number)`.
     pub fn block_header_raw(&self, number: u64) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
@@ -30,7 +33,8 @@ impl<D: DbReader> FinalChainRepository<D> {
             .map(|value| value.as_ref().to_vec()))
     }
 
-    /// Reads block hash bytes from final_chain_blk_hash_by_number.
+    /// Returns block hash bytes for a finalized block number.
+    /// C++ mapping: `DbStorage::lookup(..., Columns::final_chain_blk_hash_by_number)`.
     pub fn block_hash_by_number(&self, number: u64) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
@@ -38,7 +42,8 @@ impl<D: DbReader> FinalChainRepository<D> {
             .map(|value| value.as_ref().to_vec()))
     }
 
-    /// Reads block number bytes from final_chain_blk_number_by_hash.
+    /// Returns block number bytes for a finalized block hash.
+    /// C++ mapping: `DbStorage::lookup(..., Columns::final_chain_blk_number_by_hash)`.
     pub fn block_number_by_hash(&self, hash: H256) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
@@ -46,7 +51,8 @@ impl<D: DbReader> FinalChainRepository<D> {
             .map(|value| value.as_ref().to_vec()))
     }
 
-    /// Reads bloom chunk payload from final_chain_log_blooms_index.
+    /// Returns serialized bloom chunk payload by bloom chunk identifier.
+    /// C++ mapping: `DbStorage::lookup(..., Columns::final_chain_log_blooms_index)`.
     pub fn log_blooms_chunk_raw(&self, chunk_id: H256) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
@@ -54,7 +60,8 @@ impl<D: DbReader> FinalChainRepository<D> {
             .map(|value| value.as_ref().to_vec()))
     }
 
-    /// Reads receipt payload from final_chain_receipt_by_trx_hash.
+    /// Returns serialized transaction receipt payload by transaction hash.
+    /// C++ mapping: `DbStorage::lookup(..., Columns::final_chain_receipt_by_trx_hash)`.
     pub fn receipt_by_trx_hash(&self, trx_hash: H256) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db

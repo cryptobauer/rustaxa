@@ -13,11 +13,14 @@ pub struct TransactionRepository<D: DbReader> {
 }
 
 impl<D: DbReader> TransactionRepository<D> {
+    /// Creates a transaction repository over the shared database handle.
     pub fn new(db: Arc<D>) -> Self {
         TransactionRepository { db }
     }
 
-    /// Implements transactionInDb(hash) -> bool
+    /// Returns true when transaction data exists in either pending transaction
+    /// storage or the finalized transaction index.
+    /// C++ mapping: `DbStorage::transactionInDb(trx_hash_t const&)`.
     pub fn exists(&self, trx_hash: H256) -> Result<bool> {
         // Check potentially non-finalized transactions first.
         if self.db.exist(Column::Transactions, trx_hash.as_bytes())? {
@@ -28,12 +31,15 @@ impl<D: DbReader> TransactionRepository<D> {
         self.db.exist(Column::TrxPeriod, trx_hash.as_bytes())
     }
 
-    /// Implements transactionFinalized(hash) -> bool
+    /// Returns true when transaction hash is indexed as finalized.
+    /// C++ mapping: `DbStorage::transactionFinalized(trx_hash_t const&)`.
     pub fn finalized(&self, trx_hash: H256) -> Result<bool> {
         self.db.exist(Column::TrxPeriod, trx_hash.as_bytes())
     }
 
-    /// Implements getTransactionLocation(hash) -> optional(rlp(period, position, is_system?))
+    /// Returns serialized transaction location entry containing period, position,
+    /// and optional system-transaction marker.
+    /// C++ mapping: `DbStorage::getTransactionLocation(trx_hash_t const&) const`.
     pub fn location_rlp(&self, trx_hash: H256) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
@@ -41,7 +47,9 @@ impl<D: DbReader> TransactionRepository<D> {
             .map(|value| value.as_ref().to_vec()))
     }
 
-    /// Implements getTransaction(hash) pending-transaction branch -> optional(rlp(tx))
+    /// Returns pending transaction payload by hash when it exists in the
+    /// non-finalized transaction column.
+    /// C++ mapping: `DbStorage::getTransaction(trx_hash_t const&) const` (pending branch).
     pub fn rlp(&self, trx_hash: H256) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
@@ -49,7 +57,8 @@ impl<D: DbReader> TransactionRepository<D> {
             .map(|value| value.as_ref().to_vec()))
     }
 
-    /// Implements getSystemTransaction(hash) -> optional(rlp(tx))
+    /// Returns serialized system transaction payload by hash.
+    /// C++ mapping: `DbStorage::getSystemTransaction(const trx_hash_t&) const`.
     pub fn system_rlp(&self, trx_hash: H256) -> Result<Option<Vec<u8>>> {
         Ok(self
             .db
@@ -57,7 +66,8 @@ impl<D: DbReader> TransactionRepository<D> {
             .map(|value| value.as_ref().to_vec()))
     }
 
-    /// Implements getTransaction(period, position) -> optional(rlp(tx))
+    /// Extracts one transaction payload from period data by transaction position.
+    /// C++ mapping: `DbStorage::getTransaction(PbftPeriod, uint32_t) const`.
     pub fn by_period_position_rlp(&self, period: u64, position: u32) -> Result<Option<Vec<u8>>> {
         let Some(period_data) = self.db.get(Column::PeriodData, &period.to_le_bytes())? else {
             return Ok(None);
@@ -69,7 +79,8 @@ impl<D: DbReader> TransactionRepository<D> {
         Ok(Some(trx.as_raw().to_vec()))
     }
 
-    /// Implements getTransactionCount(period) -> count
+    /// Counts transactions embedded in period data for a finalized period.
+    /// C++ mapping: `DbStorage::getTransactionCount(PbftPeriod) const`.
     pub fn count(&self, period: u64) -> Result<u64> {
         let Some(period_data) = self.db.get(Column::PeriodData, &period.to_le_bytes())? else {
             return Ok(0);
@@ -80,7 +91,8 @@ impl<D: DbReader> TransactionRepository<D> {
         Ok(transactions.item_count()? as u64)
     }
 
-    /// Implements getAllNonfinalizedTransactions() -> [transaction_rlp]
+    /// Returns all pending transaction payloads currently stored as non-finalized.
+    /// C++ mapping: `DbStorage::getAllNonfinalizedTransactions()`.
     pub fn all_nonfinalized_rlp(&self) -> Result<Vec<Vec<u8>>> {
         let mut result = Vec::new();
         for entry in self.db.iter(Column::Transactions) {
@@ -90,7 +102,8 @@ impl<D: DbReader> TransactionRepository<D> {
         Ok(result)
     }
 
-    /// Implements getAllTransactionPeriod() -> [(trx_hash, period)]
+    /// Returns every finalized transaction hash together with its finalized period.
+    /// C++ mapping: `DbStorage::getAllTransactionPeriod()`.
     pub fn all_with_period(&self) -> Result<Vec<(H256, u64)>> {
         let mut result = Vec::new();
         for entry in self.db.iter(Column::TrxPeriod) {
@@ -109,7 +122,8 @@ impl<D: DbReader> TransactionRepository<D> {
         Ok(result)
     }
 
-    /// Implements getPeriodSystemTransactionsHashes(period) -> rlp([trx_hash])
+    /// Returns serialized list of system transaction hashes for a period.
+    /// C++ mapping: `DbStorage::getPeriodSystemTransactionsHashes(PbftPeriod) const`.
     pub fn period_system_hashes_rlp(&self, period: u64) -> Result<Vec<u8>> {
         Ok(self
             .db
@@ -120,18 +134,22 @@ impl<D: DbReader> TransactionRepository<D> {
 }
 
 impl<D: DbReader + DbWriter> TransactionRepository<D> {
-    /// Implements addTransactionToBatch(trx, ...)
+    /// Stores a pending transaction payload by hash.
+    /// C++ mapping: `DbStorage::addTransactionToBatch(Transaction const&, Batch&)`.
     pub fn write(&self, trx_hash: H256, trx_rlp: &[u8]) -> Result<()> {
         self.db
             .put(Column::Transactions, trx_hash.as_bytes(), trx_rlp)
     }
 
-    /// Implements removeTransactionToBatch(hash, ...)
+    /// Removes a pending transaction payload by hash.
+    /// C++ mapping: `DbStorage::removeTransactionToBatch(trx_hash_t const&, Batch&)`.
     pub fn remove(&self, trx_hash: H256) -> Result<()> {
         self.db.delete(Column::Transactions, trx_hash.as_bytes())
     }
 
-    /// Implements addTransactionLocationToBatch(..., hash, period, position, is_system)
+    /// Stores finalized transaction location metadata (period, position, optional
+    /// system marker) for a transaction hash.
+    /// C++ mapping: `DbStorage::addTransactionLocationToBatch(Batch&, trx_hash_t const&, PbftPeriod, uint32_t, bool)`.
     pub fn write_location(
         &self,
         trx_hash: H256,
@@ -153,13 +171,15 @@ impl<D: DbReader + DbWriter> TransactionRepository<D> {
         )
     }
 
-    /// Implements addSystemTransactionToBatch(..., trx)
+    /// Stores a system transaction payload by hash.
+    /// C++ mapping: `DbStorage::addSystemTransactionToBatch(Batch&, SharedTransaction)`.
     pub fn write_system(&self, trx_hash: H256, trx_rlp: &[u8]) -> Result<()> {
         self.db
             .put(Column::SystemTransaction, trx_hash.as_bytes(), trx_rlp)
     }
 
-    /// Implements addPeriodSystemTransactions(..., trxs, period)
+    /// Stores serialized system transaction hash list for a finalized period.
+    /// C++ mapping: `DbStorage::addPeriodSystemTransactions(Batch&, SharedTransactions, PbftPeriod)`.
     pub fn write_period_system_hashes(&self, period: u64, hashes_rlp: &[u8]) -> Result<()> {
         self.db.put(
             Column::PeriodSystemTransactions,
