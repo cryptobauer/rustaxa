@@ -98,6 +98,12 @@ mod ffi {
         fn get_period_data_raw(&self, period: u64) -> Result<Vec<u8>>;
         fn get_period_from_pbft_hash(&self, hash: &[u8; 32]) -> Result<PeriodLookup>;
         fn get_block_receipt(&self, period: u64) -> Result<Vec<u8>>;
+        fn get_final_chain_meta_value(&self, key: u32) -> Result<Vec<u8>>;
+        fn get_final_chain_block_header(&self, block_number: u64) -> Result<Vec<u8>>;
+        fn get_final_chain_block_hash_by_number(&self, block_number: u64) -> Result<Vec<u8>>;
+        fn get_final_chain_block_number_by_hash(&self, hash: &[u8; 32]) -> Result<Vec<u8>>;
+        fn get_final_chain_log_blooms_chunk(&self, chunk_id: &[u8; 32]) -> Result<Vec<u8>>;
+        fn get_final_chain_receipt_by_trx_hash(&self, trx_hash: &[u8; 32]) -> Result<Vec<u8>>;
         fn save_period_data(&self, period: u64, period_data_rlp: Vec<u8>) -> Result<()>;
         fn save_pbft_block_period(&self, hash: &[u8; 32], period: u64) -> Result<()>;
         fn get_pillar_block(&self, period: u64) -> Result<Vec<u8>>;
@@ -426,6 +432,62 @@ impl Storage {
             .period()
             .block_receipt(period)
             .map_err(|e| anyhow::anyhow!(e))
+    }
+
+    fn get_final_chain_meta_value(&self, key: u32) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self.0.final_chain().meta_value(key)?.unwrap_or_default())
+    }
+
+    fn get_final_chain_block_header(&self, block_number: u64) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .0
+            .final_chain()
+            .block_header_raw(block_number)?
+            .unwrap_or_default())
+    }
+
+    fn get_final_chain_block_hash_by_number(
+        &self,
+        block_number: u64,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .0
+            .final_chain()
+            .block_hash_by_number(block_number)?
+            .unwrap_or_default())
+    }
+
+    fn get_final_chain_block_number_by_hash(
+        &self,
+        hash: &[u8; 32],
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .0
+            .final_chain()
+            .block_number_by_hash(H256::from(*hash))?
+            .unwrap_or_default())
+    }
+
+    fn get_final_chain_log_blooms_chunk(
+        &self,
+        chunk_id: &[u8; 32],
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .0
+            .final_chain()
+            .log_blooms_chunk_raw(H256::from(*chunk_id))?
+            .unwrap_or_default())
+    }
+
+    fn get_final_chain_receipt_by_trx_hash(
+        &self,
+        trx_hash: &[u8; 32],
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .0
+            .final_chain()
+            .receipt_by_trx_hash(H256::from(*trx_hash))?
+            .unwrap_or_default())
     }
 
     fn save_period_data(&self, period: u64, period_data_rlp: Vec<u8>) -> Result<(), anyhow::Error> {

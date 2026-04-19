@@ -29,6 +29,18 @@ rust::Vec<uint8_t> into_rust_vec(T const& val) {
   }
   return vec;
 }
+
+template <typename T>
+T decode_little_endian(const Slice& key) {
+  T value{};
+  std::memcpy(&value, key.data(), sizeof(T));
+  return value;
+}
+
+[[noreturn]] void throw_invalid_final_chain_key_size(const char* column_name, size_t got, size_t expected) {
+  throw DbException("Invalid key size for " + std::string(column_name) + " in Rust shim mode. Got " +
+                    std::to_string(got) + ", expected " + std::to_string(expected));
+}
 }  // namespace
 
 DbStorage::DbStorage(fs::path const& path, uint32_t db_snapshot_each_n_pbft_block, uint32_t max_open_files,
@@ -100,6 +112,70 @@ void DbStorage::commitWriteBatch(Batch& write_batch, const rocksdb::WriteOptions
 }
 
 void DbStorage::commitWriteBatch(Batch& write_batch) { commitWriteBatch(write_batch, async_write_); }
+
+std::string DbStorage::lookupFinalChainMeta(const Slice& key) const {
+  if (key.size() != sizeof(uint32_t)) {
+    throw_invalid_final_chain_key_size(Columns::final_chain_meta.name().c_str(), key.size(), sizeof(uint32_t));
+  }
+
+  auto const meta_key = decode_little_endian<uint32_t>(key);
+  auto rust_value = rust_storage_.value()->get_final_chain_meta_value(meta_key);
+  return std::string(reinterpret_cast<const char*>(rust_value.data()), rust_value.size());
+}
+
+std::string DbStorage::lookupFinalChainBlockByNumber(const Slice& key) const {
+  if (key.size() != sizeof(uint64_t)) {
+    throw_invalid_final_chain_key_size(Columns::final_chain_blk_by_number.name().c_str(), key.size(), sizeof(uint64_t));
+  }
+
+  auto const block_number = decode_little_endian<uint64_t>(key);
+  auto rust_value = rust_storage_.value()->get_final_chain_block_header(block_number);
+  return std::string(reinterpret_cast<const char*>(rust_value.data()), rust_value.size());
+}
+
+std::string DbStorage::lookupFinalChainBlockHashByNumber(const Slice& key) const {
+  if (key.size() != sizeof(uint64_t)) {
+    throw_invalid_final_chain_key_size(Columns::final_chain_blk_hash_by_number.name().c_str(), key.size(),
+                                       sizeof(uint64_t));
+  }
+
+  auto const block_number = decode_little_endian<uint64_t>(key);
+  auto rust_value = rust_storage_.value()->get_final_chain_block_hash_by_number(block_number);
+  return std::string(reinterpret_cast<const char*>(rust_value.data()), rust_value.size());
+}
+
+std::string DbStorage::lookupFinalChainBlockNumberByHash(const Slice& key) const {
+  if (key.size() != 32) {
+    throw_invalid_final_chain_key_size(Columns::final_chain_blk_number_by_hash.name().c_str(), key.size(), 32);
+  }
+
+  std::array<uint8_t, 32> hash{};
+  std::memcpy(hash.data(), key.data(), hash.size());
+  auto rust_value = rust_storage_.value()->get_final_chain_block_number_by_hash(hash);
+  return std::string(reinterpret_cast<const char*>(rust_value.data()), rust_value.size());
+}
+
+std::string DbStorage::lookupFinalChainLogBloomsChunk(const Slice& key) const {
+  if (key.size() != 32) {
+    throw_invalid_final_chain_key_size(Columns::final_chain_log_blooms_index.name().c_str(), key.size(), 32);
+  }
+
+  std::array<uint8_t, 32> chunk_id{};
+  std::memcpy(chunk_id.data(), key.data(), chunk_id.size());
+  auto rust_value = rust_storage_.value()->get_final_chain_log_blooms_chunk(chunk_id);
+  return std::string(reinterpret_cast<const char*>(rust_value.data()), rust_value.size());
+}
+
+std::string DbStorage::lookupFinalChainReceiptByTrxHash(const Slice& key) const {
+  if (key.size() != 32) {
+    throw_invalid_final_chain_key_size(Columns::final_chain_receipt_by_trx_hash.name().c_str(), key.size(), 32);
+  }
+
+  std::array<uint8_t, 32> trx_hash{};
+  std::memcpy(trx_hash.data(), key.data(), trx_hash.size());
+  auto rust_value = rust_storage_.value()->get_final_chain_receipt_by_trx_hash(trx_hash);
+  return std::string(reinterpret_cast<const char*>(rust_value.data()), rust_value.size());
+}
 
 void DbStorage::updateDbVersions() {
   saveStatusField(StatusDbField::DbMajorVersion, TARAXA_DB_MAJOR_VERSION);

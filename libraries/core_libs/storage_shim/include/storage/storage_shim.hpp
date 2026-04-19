@@ -42,6 +42,39 @@ class DbStorage : public DbStorageOld {
     rust_storage_.value()->batch_delete(batch_id, static_cast<uint8_t>(col.ordinal_), sliceToRustVec(key));
   }
 
+  template <typename K>
+  std::string lookup(K const& key, Column const& column) const {
+    auto const key_slice = toSlice(key);
+    if (column.ordinal_ == Columns::final_chain_meta.ordinal_) {
+      return lookupFinalChainMeta(key_slice);
+    }
+    if (column.ordinal_ == Columns::final_chain_blk_by_number.ordinal_) {
+      return lookupFinalChainBlockByNumber(key_slice);
+    }
+    if (column.ordinal_ == Columns::final_chain_blk_hash_by_number.ordinal_) {
+      return lookupFinalChainBlockHashByNumber(key_slice);
+    }
+    if (column.ordinal_ == Columns::final_chain_blk_number_by_hash.ordinal_) {
+      return lookupFinalChainBlockNumberByHash(key_slice);
+    }
+    if (column.ordinal_ == Columns::final_chain_log_blooms_index.ordinal_) {
+      return lookupFinalChainLogBloomsChunk(key_slice);
+    }
+    if (column.ordinal_ == Columns::final_chain_receipt_by_trx_hash.ordinal_) {
+      return lookupFinalChainReceiptByTrxHash(key_slice);
+    }
+    throw DbException("DbStorage::lookup unsupported column in Rust shim mode: " + column.name());
+  }
+
+  template <typename Int, typename K>
+  auto lookup_int(K const& key, Column const& column) -> std::enable_if_t<std::is_integral_v<Int>, std::optional<Int>> {
+    auto str = lookup(key, column);
+    if (str.empty()) {
+      return std::nullopt;
+    }
+    return *reinterpret_cast<Int*>(str.data());
+  }
+
   void setGenesisHash(const h256& genesis_hash);
   std::optional<h256> getGenesisHash();
 
@@ -164,6 +197,12 @@ class DbStorage : public DbStorageOld {
  private:
   uint64_t getOrCreateRustBatch(Batch& batch);
   static rust::Vec<uint8_t> sliceToRustVec(const Slice& slice);
+  std::string lookupFinalChainMeta(const Slice& key) const;
+  std::string lookupFinalChainBlockByNumber(const Slice& key) const;
+  std::string lookupFinalChainBlockHashByNumber(const Slice& key) const;
+  std::string lookupFinalChainBlockNumberByHash(const Slice& key) const;
+  std::string lookupFinalChainLogBloomsChunk(const Slice& key) const;
+  std::string lookupFinalChainReceiptByTrxHash(const Slice& key) const;
 
   std::optional<::rust::Box<rustaxa::storage::Storage>> rust_storage_;
   std::unordered_map<Batch*, uint64_t> rust_batches_;

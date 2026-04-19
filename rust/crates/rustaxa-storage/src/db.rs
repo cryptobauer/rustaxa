@@ -17,6 +17,7 @@ use std::sync::Arc;
 use crate::Column;
 use crate::Config;
 use crate::DagRepository;
+use crate::FinalChainRepository;
 use crate::MetadataRepository;
 use crate::PbftRepository;
 use crate::PeriodRepository;
@@ -221,6 +222,7 @@ pub struct Storage {
     period: PeriodRepository<DBWithThreadMode<MultiThreaded>>,
     transaction: TransactionRepository<DBWithThreadMode<MultiThreaded>>,
     metadata: MetadataRepository<DBWithThreadMode<MultiThreaded>>,
+    final_chain: FinalChainRepository<DBWithThreadMode<MultiThreaded>>,
 }
 
 impl Storage {
@@ -257,6 +259,7 @@ impl Storage {
         let pillar = PillarRepository::new(db.clone());
         let pbft = PbftRepository::new(db.clone());
         let transaction = TransactionRepository::new(db.clone());
+        let final_chain = FinalChainRepository::new(db.clone());
 
         Ok(Storage {
             db,
@@ -266,6 +269,7 @@ impl Storage {
             pillar,
             pbft,
             transaction,
+            final_chain,
         })
     }
 
@@ -291,6 +295,10 @@ impl Storage {
 
     pub fn transaction(&self) -> &TransactionRepository<DBWithThreadMode<MultiThreaded>> {
         &self.transaction
+    }
+
+    pub fn final_chain(&self) -> &FinalChainRepository<DBWithThreadMode<MultiThreaded>> {
+        &self.final_chain
     }
 
     pub fn get_raw(&self, col: Column, key: &[u8]) -> Result<Option<Vec<u8>>> {
