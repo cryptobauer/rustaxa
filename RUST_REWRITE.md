@@ -43,6 +43,36 @@ When the upstream project releases updates, we follow this gated pipeline:
 4.  **Rust Logic Port:** Build with `RUSTAXA_ENABLE=1`. Identify where the C++ logic changed (the `#else` blocks) and update the corresponding Rust code.
 5.  **Merge to Main:** Once all tests pass, merge the feature branch into `main`.
 
+## ✅ Storage Rewrite Validation Workflow
+
+For changes in the storage module (C++ storage shim, Rust storage crate, or Rust bridge), test validation is required as part of the task.
+
+### Regular storage changes (required)
+
+1. Build and run storage-focused gtests in your active build tree.
+2. At minimum, run the Rust bridge storage gtests binary:
+
+```bash
+cmake --build /build --target rust_storage_tests
+/build/bin/rust_storage_tests
+```
+
+3. If your change touches C++ storage behavior, also run the affected C++ gtests (or `ctest --output-on-failure` for the relevant set).
+4. If behavior changes are introduced (new logic, bug fix, serialization/update semantics), add or extend tests in:
+   - `tests/rust/storage/test_storage.cpp`
+   - `tests/storage_conformance/storage_conformance_runner.cpp`
+   - other impacted `tests/*_test.cpp` suites as needed
+
+### Larger storage refactors (required at end of task)
+
+For larger refactors (multi-file storage rewrites, API remaps, batch semantics changes, migration of read/write paths), run the C++ vs Rust differential validation script after implementation:
+
+```bash
+scripts/storage_conformance_diff.sh
+```
+
+This script is expensive and should not be run implicitly. Always ask the task owner/requester if it should be run before executing it.
+
 ## 📂 Repository Structure
 
 *   `/libraries`: The original C++ libraries.
@@ -110,6 +140,5 @@ make cpp-intersection-patch FROM=<base_sha> TO=<tip_sha>
 ```
 
 Patch output path: `/build/cpp-reference-intersection.patch`.
-
 
 

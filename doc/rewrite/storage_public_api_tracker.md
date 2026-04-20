@@ -4,6 +4,27 @@ Source of truth: `libraries/core_libs/storage/include/storage/storage.hpp`
 
 Goal: keep the `DbStorage` public interface stable while replacing all internal `db_` access with the Rust storage module behind small C++ shims.
 
+## Validation Expectations
+
+Storage rewrite changes must include test validation as part of normal development flow.
+
+### Regular storage changes (required)
+
+- Run storage gtests for every storage-module change.
+- Minimum required run:
+  - `cmake --build /build --target rust_storage_tests`
+  - `/build/bin/rust_storage_tests`
+- If C++ storage behavior is touched, run impacted C++ gtests as well (or relevant `ctest` subset).
+- Add or update tests whenever behavior changes:
+  - `tests/rust/storage/test_storage.cpp`
+  - `tests/storage_conformance/storage_conformance_runner.cpp`
+  - additional affected `tests/*_test.cpp` suites
+
+### Larger refactors (required before closeout)
+
+- Run `scripts/storage_conformance_diff.sh` at the end of larger storage refactors to validate C++ vs Rust parity.
+- This script is heavyweight; always ask the task owner/requester before running it.
+
 Current shim placement:
 - Rust-mode shim implementations now live in `libraries/core_libs/storage_shim/src/storage_shim.cpp`.
 - Legacy `libraries/core_libs/storage/src/storage.cpp` no longer contains Rust `#ifdef` branches for shimmed APIs.
@@ -181,6 +202,27 @@ No external call sites were found for:
 - `removeTempFiles()`
 - `removeFilesWithPattern(...)`
 - `deleteTmpDirectories(...)`
+
+## Conformance Coverage Snapshot (2026-04-20)
+
+`tests/storage_conformance/storage_conformance_runner.cpp` now cross-checks C++ reference vs Rust storage for these additional in-scope paths:
+
+- genesis read/write (`getGenesisHash`, `setGenesisHash`)
+- DAG level metadata (`getLastBlocksLevel`, `getDagBlocksAtLevel`)
+- PBFT hash existence (`pbftBlockInDb`) and head mapping (`getPbftHead`, `savePbftHead`)
+- transaction non-finalized scan (`getAllNonfinalizedTransactions`)
+- transaction finalized vector semantics (`transactionsFinalized` equivalent output)
+- raw period payload read (`getPeriodDataRaw`)
+
+Still intentionally excluded from conformance fixtures (but in-scope for dedicated unit tests) are APIs that require full, valid domain RLP payload construction in both modes:
+
+- non-finalized DAG grouping (`getNonfinalizedDagBlocks`)
+- period-data decoded accessors (`getPeriodData`, `getPbftBlock(period)`, `getPeriodCertVotes`,
+  `getPeriodTransactions`, `getPeriodPillarVotes`, `getTransaction(period, position)`, `getTransactionCount`)
+- pillar and PBFT vote object surfaces (`getPillarBlock`, `getLatestPillarBlock`, `getOwnPillarBlockVote`,
+  `getCurrentPillarBlockData`, `getProposedPbftBlocks`, `getCertVotedBlockInRound`, `getOwnVerifiedVotes`,
+  `getAllTwoTPlusOneVotes`, `getRewardVotes`)
+- sortition/reward object decoders (`getLastSortitionParams`, `getParamsChangeForPeriod`, `getBlocksRewardsStats`)
 
 ## Suggested Storage Buckets
 
