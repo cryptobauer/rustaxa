@@ -288,6 +288,9 @@ std::optional<h256> DbStorage::getGenesisHash() {
 std::shared_ptr<DagBlock> DbStorage::getDagBlock(blk_hash_t const& hash) {
   auto h_arr = into_bytes_array(hash);
   auto rlp_bytes = rust_storage_.value()->get_dag_block(h_arr);
+  if (rlp_bytes.empty()) {
+    return nullptr;
+  }
   dev::RLP rlp(dev::bytesConstRef(rlp_bytes.data(), rlp_bytes.size()));
   return std::make_shared<DagBlock>(rlp);
 }
@@ -357,27 +360,60 @@ void DbStorage::removeDagBlockBatch(Batch& write_batch, blk_hash_t const& hash) 
 }
 
 void DbStorage::updateDagBlockCounters(std::vector<std::shared_ptr<DagBlock>> blks) {
+  std::lock_guard<std::mutex> u_lock(dag_blocks_mutex_);
+  auto write_batch = createWriteBatch();
   for (auto const& blk : blks) {
-    auto hash = blk->getHash();
-    auto h_arr = into_bytes_array(hash);
-    rust_storage_.value()->update_dag_block_counter(h_arr, blk->getLevel(), blk->getTips().size());
+    auto level = blk->getLevel();
+    auto block_hashes = getBlocksByLevel(level);
+    block_hashes.emplace(blk->getHash());
+    dev::RLPStream blocks_stream(block_hashes.size());
+    for (auto const& hash : block_hashes) {
+      blocks_stream << hash;
+    }
+    insert(write_batch, Columns::dag_blocks_level, toSlice(level), toSlice(blocks_stream.out()));
+    dag_blocks_count_.fetch_add(1);
+    dag_edge_count_.fetch_add(blk->getTips().size() + 1);
   }
+  insert(write_batch, Columns::status, toSlice((uint8_t)StatusDbField::DagBlkCount), toSlice(dag_blocks_count_.load()));
+  insert(write_batch, Columns::status, toSlice((uint8_t)StatusDbField::DagEdgeCount), toSlice(dag_edge_count_.load()));
+  commitWriteBatch(write_batch);
 }
 
 void DbStorage::saveDagBlock(const std::shared_ptr<DagBlock>& blk, Batch* write_batch_p) {
-  // There are no callers of this method that pass in a write batch. So no need to ever
-  // do more than we do here.
+  // Keep parity with legacy semantics: when called with caller-provided batch,
+  // stage all writes there and update counters; otherwise delegate to Rust
+  // atomic write path.
   if (!write_batch_p) {
+    std::lock_guard<std::mutex> u_lock(dag_blocks_mutex_);
     auto block_hash = blk->getHash();
     auto h_arr = into_bytes_array(block_hash);
-
     auto block_bytes = blk->rlp(true);
     auto block_rlp = into_rust_vec(block_bytes);
-
     rust_storage_.value()->save_dag_block(h_arr, blk->getLevel(), blk->getTips().size(), std::move(block_rlp));
-  } else {
-    throw DbException("saveDagBlock was called with write batch but is not implemented.");
+    dag_blocks_count_.fetch_add(1);
+    dag_edge_count_.fetch_add(blk->getTips().size() + 1);
+    return;
   }
+
+  std::lock_guard<std::mutex> u_lock(dag_blocks_mutex_);
+  auto& write_batch = *write_batch_p;
+  auto block_bytes = blk->rlp(true);
+  auto block_hash = blk->getHash();
+  insert(write_batch, Columns::dag_blocks, toSlice(block_hash.asBytes()), toSlice(block_bytes));
+
+  auto level = blk->getLevel();
+  auto block_hashes = getBlocksByLevel(level);
+  block_hashes.emplace(blk->getHash());
+  dev::RLPStream blocks_stream(block_hashes.size());
+  for (auto const& hash : block_hashes) {
+    blocks_stream << hash;
+  }
+  insert(write_batch, Columns::dag_blocks_level, toSlice(level), toSlice(blocks_stream.out()));
+
+  dag_blocks_count_.fetch_add(1);
+  dag_edge_count_.fetch_add(blk->getTips().size() + 1);
+  insert(write_batch, Columns::status, toSlice((uint8_t)StatusDbField::DagBlkCount), toSlice(dag_blocks_count_.load()));
+  insert(write_batch, Columns::status, toSlice((uint8_t)StatusDbField::DagEdgeCount), toSlice(dag_edge_count_.load()));
 }
 
 void DbStorage::saveSortitionParamsChange(PbftPeriod period, const SortitionParamsChange& params, Batch& batch) {
@@ -962,7 +998,10 @@ std::pair<bool, PbftPeriod> DbStorage::getPeriodFromPbftHash(taraxa::blk_hash_t 
 
 std::shared_ptr<std::pair<PbftPeriod, uint32_t>> DbStorage::getDagBlockPeriod(blk_hash_t const& hash) {
   auto h_arr = into_bytes_array(hash);
-  auto res = rust_storage_.value()->get_dag_block_period(h_arr);
+  auto res = rust_storage_.value()->get_dag_block_period_lookup(h_arr);
+  if (!res.found) {
+    return nullptr;
+  }
   return std::make_shared<std::pair<PbftPeriod, uint32_t>>(res.period, res.position);
 }
 

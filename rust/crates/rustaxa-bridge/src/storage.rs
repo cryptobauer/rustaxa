@@ -20,6 +20,12 @@ mod ffi {
         position: u32,
     }
 
+    struct BlockPeriodLookup {
+        found: bool,
+        period: u64,
+        position: u32,
+    }
+
     struct BlockRlp {
         data: Vec<u8>,
     }
@@ -69,6 +75,7 @@ mod ffi {
         fn dag_block_in_db(&self, hash: &[u8; 32]) -> Result<bool>;
         fn get_dag_block(&self, hash: &[u8; 32]) -> Result<Vec<u8>>;
         fn get_dag_block_period(&self, hash: &[u8; 32]) -> Result<BlockPeriod>;
+        fn get_dag_block_period_lookup(&self, hash: &[u8; 32]) -> Result<BlockPeriodLookup>;
         fn get_last_blocks_level(&self) -> Result<u64>;
         fn get_blocks_by_level(&self, level: u64) -> Result<Vec<u8>>;
         fn get_dag_blocks_at_level(
@@ -265,10 +272,12 @@ impl Storage {
     }
 
     fn get_dag_block(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
-        self.0
+        Ok(self
+            .0
             .dag()
-            .by_hash_rlp(H256::from(*hash))
-            .map_err(|e| anyhow::anyhow!(e))
+            .by_hash_rlp_optional(H256::from(*hash))
+            .map_err(|e| anyhow::anyhow!(e))?
+            .unwrap_or_default())
     }
 
     fn get_dag_block_period(&self, hash: &[u8; 32]) -> Result<ffi::BlockPeriod, anyhow::Error> {
@@ -278,6 +287,29 @@ impl Storage {
             .period(H256::from(*hash))
             .map_err(|e| anyhow::anyhow!(e))?;
         Ok(ffi::BlockPeriod { period, position })
+    }
+
+    fn get_dag_block_period_lookup(
+        &self,
+        hash: &[u8; 32],
+    ) -> Result<ffi::BlockPeriodLookup, anyhow::Error> {
+        let lookup = self
+            .0
+            .dag()
+            .period_optional(H256::from(*hash))
+            .map_err(|e| anyhow::anyhow!(e))?;
+        Ok(match lookup {
+            Some((period, position)) => ffi::BlockPeriodLookup {
+                found: true,
+                period,
+                position,
+            },
+            None => ffi::BlockPeriodLookup {
+                found: false,
+                period: 0,
+                position: 0,
+            },
+        })
     }
 
     fn get_last_blocks_level(&self) -> Result<u64, anyhow::Error> {

@@ -38,12 +38,11 @@ impl<D: DbReader> DagRepository<D> {
         Ok(DagBlock::from_rlp_bytes(&bytes)?)
     }
 
-    /// Loads the serialized DAG block RLP by hash using both non-finalized and
-    /// finalized storage layouts.
-    /// C++ mapping: `DbStorage::getDagBlock(blk_hash_t const&)`.
-    pub fn by_hash_rlp(&self, block: H256) -> Result<Vec<u8>> {
+    /// Loads the serialized DAG block RLP by hash and returns `None` when the
+    /// block cannot be resolved in either non-finalized or finalized storage.
+    pub fn by_hash_rlp_optional(&self, block: H256) -> Result<Option<Vec<u8>>> {
         if let Some(val) = self.db.get(Column::DagBlocks, block.as_bytes())? {
-            return Ok(val.as_ref().to_vec());
+            return Ok(Some(val.as_ref().to_vec()));
         }
         if let Some(val) = self.db.get(Column::DagBlockPeriod, block.as_bytes())? {
             let rlp = rlp::Rlp::new(val.as_ref());
@@ -55,25 +54,39 @@ impl<D: DbReader> DagRepository<D> {
                 // DAG_BLOCKS_POS_IN_PERIOD_DATA = 2 in C++
                 let dag_blocks_rlp = period_rlp.at(2)?;
                 let block_rlp = dag_blocks_rlp.at(position)?;
-                return Ok(block_rlp.as_raw().to_vec());
+                return Ok(Some(block_rlp.as_raw().to_vec()));
             }
         }
-        Err(StorageError::Dag("DAG block not found".to_string()).into())
+        Ok(None)
+    }
+
+    /// Loads the serialized DAG block RLP by hash using both non-finalized and
+    /// finalized storage layouts.
+    /// C++ mapping: `DbStorage::getDagBlock(blk_hash_t const&)`.
+    pub fn by_hash_rlp(&self, block: H256) -> Result<Vec<u8>> {
+        self.by_hash_rlp_optional(block)?
+            .ok_or_else(|| StorageError::Dag("DAG block not found".to_string()).into())
     }
 
     /// Returns finalized period and position for a DAG block that is already
     /// indexed as finalized.
     /// C++ mapping: `DbStorage::getDagBlockPeriod(blk_hash_t const&)`.
     pub fn period(&self, block: H256) -> Result<(u64, u32)> {
-        let value = self
-            .db
-            .get(Column::DagBlockPeriod, block.as_bytes())?
-            .ok_or_else(|| StorageError::Dag("DAG block not found".to_string()))?;
+        self.period_optional(block)?
+            .ok_or_else(|| StorageError::Dag("DAG block not found".to_string()).into())
+    }
+
+    /// Returns finalized period and position for a DAG block, or `None` when
+    /// no finalized location is recorded.
+    pub fn period_optional(&self, block: H256) -> Result<Option<(u64, u32)>> {
+        let Some(value) = self.db.get(Column::DagBlockPeriod, block.as_bytes())? else {
+            return Ok(None);
+        };
 
         let rlp = rlp::Rlp::new(value.as_ref());
         let period: u64 = rlp.val_at(0)?;
         let position: u32 = rlp.val_at(1)?;
-        Ok((period, position))
+        Ok(Some((period, position)))
     }
 
     /// Returns the highest DAG level currently indexed, or zero when empty.
@@ -505,6 +518,9 @@ mod tests {
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.to_string().contains("DAG block not found"));
+
+        let optional = repo.by_hash_rlp_optional(block_hash).unwrap();
+        assert!(optional.is_none());
     }
 
     #[test]
@@ -539,6 +555,18 @@ mod tests {
         let result = repo.period(block_hash);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), (period, position));
+
+        let optional = repo.period_optional(block_hash).unwrap();
+        assert_eq!(optional, Some((period, position)));
+    }
+
+    #[test]
+    fn test_dag_block_period_missing_optional() {
+        let db = Arc::new(MockDagStore::new());
+        let repo = DagRepository::new(db);
+
+        let missing = repo.period_optional(H256::random()).unwrap();
+        assert!(missing.is_none());
     }
 
     #[test]
