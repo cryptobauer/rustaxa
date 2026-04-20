@@ -1,0 +1,73 @@
+#pragma once
+
+namespace taraxa::final_chain {
+
+// Rust-mode final-chain shim facade.
+// Public APIs are redeclared here so callers go through this layer first.
+// Batch 1 behavior is passthrough to FinalChainOld with no semantic changes.
+class FinalChain : public FinalChainOld {
+ public:
+  FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullNodeConfig& config, const addr_t& node_addr);
+  ~FinalChain() = default;
+
+  FinalChain(const FinalChain&) = delete;
+  FinalChain(FinalChain&&) = delete;
+  FinalChain& operator=(const FinalChain&) = delete;
+  FinalChain& operator=(FinalChain&&) = delete;
+
+  void stop();
+  EthBlockNumber delegationDelay() const;
+
+  std::future<std::shared_ptr<const FinalizationResult>> finalize(PeriodData&& period_data,
+                                                                  std::vector<h256>&& finalized_dag_blk_hashes,
+                                                                  uint32_t blocks_per_year,
+                                                                  std::shared_ptr<DagBlock>&& anchor = nullptr);
+
+  std::shared_ptr<const BlockHeader> blockHeader(std::optional<EthBlockNumber> n = {}) const;
+  EthBlockNumber lastBlockNumber() const;
+  std::optional<EthBlockNumber> blockNumber(h256 const& h) const;
+  std::optional<h256> blockHash(std::optional<EthBlockNumber> n = {}) const;
+  std::optional<h256> finalChainHash(EthBlockNumber n) const;
+  void updateStateConfig(const state_api::Config& new_config);
+
+  std::shared_ptr<const TransactionHashes> transactionHashes(std::optional<EthBlockNumber> n = {}) const;
+  const SharedTransactions transactions(std::optional<EthBlockNumber> n = {}) const;
+  std::optional<TransactionLocation> transactionLocation(h256 const& trx_hash) const;
+  std::optional<TransactionReceipt> transactionReceipt(EthBlockNumber blk_n, uint64_t position,
+                                                       std::optional<trx_hash_t> trx_hash = {}) const;
+  std::shared_ptr<Transaction> transaction(EthBlockNumber blk_n, uint32_t position) const;
+  uint64_t transactionCount(std::optional<EthBlockNumber> n = {}) const;
+  std::vector<EthBlockNumber> withBlockBloom(LogBloom const& b, EthBlockNumber from, EthBlockNumber to) const;
+
+  std::optional<state_api::Account> getAccount(addr_t const& addr, std::optional<EthBlockNumber> blk_n = {}) const;
+  h256 getAccountStorage(addr_t const& addr, u256 const& key, std::optional<EthBlockNumber> blk_n = {}) const;
+  bytes getCode(addr_t const& addr, std::optional<EthBlockNumber> blk_n = {}) const;
+
+  state_api::ExecutionResult call(state_api::EVMTransaction const& trx, std::optional<EthBlockNumber> blk_n = {}) const;
+  std::string trace(std::vector<state_api::EVMTransaction> state_trxs, std::vector<state_api::EVMTransaction> trxs,
+                    EthBlockNumber blk_n, std::optional<state_api::Tracing> params = {}) const;
+
+  uint64_t dposEligibleTotalVoteCount(EthBlockNumber blk_num) const;
+  uint64_t dposEligibleVoteCount(EthBlockNumber blk_num, addr_t const& addr) const;
+  bool dposIsEligible(EthBlockNumber blk_num, addr_t const& addr) const;
+  vrf_wrapper::vrf_pk_t dposGetVrfKey(EthBlockNumber blk_n, const addr_t& addr) const;
+  void prune(EthBlockNumber blk_n);
+  void waitForFinalized();
+
+  std::vector<state_api::ValidatorStake> dposValidatorsTotalStakes(EthBlockNumber blk_num) const;
+  uint256_t dposTotalAmountDelegated(EthBlockNumber blk_num) const;
+  std::vector<state_api::ValidatorVoteCount> dposValidatorsEligibleVoteCounts(EthBlockNumber blk_num) const;
+  uint64_t dposYield(EthBlockNumber blk_num) const;
+  u256 dposTotalSupply(EthBlockNumber blk_num) const;
+  h256 getBridgeRoot(EthBlockNumber blk_num) const;
+  h256 getBridgeEpoch(EthBlockNumber blk_num) const;
+
+  std::pair<val_t, bool> getBalance(addr_t const& addr) const;
+  std::shared_ptr<const FinalizationResult> finalize_(PeriodData&& new_blk,
+                                                      std::vector<h256>&& finalized_dag_blk_hashes,
+                                                      uint32_t blocks_per_year, std::shared_ptr<DagBlock>&& anchor);
+  SharedTransactionReceipts blockReceipts(std::optional<EthBlockNumber> n = {}) const;
+};
+
+}  // namespace taraxa::final_chain
+

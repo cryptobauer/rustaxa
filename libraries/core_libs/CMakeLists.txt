@@ -81,6 +81,20 @@ if(RUSTAXA_ENABLE_STORAGE)
     target_link_libraries(core_libs PUBLIC rustaxa-bridge)
 endif()
 
+if(RUSTAXA_ENABLE_FINAL_CHAIN)
+    # In Rust final-chain mode, inject a header overlay that remaps legacy FinalChain
+    # to FinalChainOld and exposes a forwarding FinalChain shim facade.
+    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/final_chain_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/final_chain_shim/src/final_chain_shim.cpp)
+
+    # Compile the legacy implementation as FinalChainOld.
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/final_chain/final_chain.cpp
+        PROPERTIES
+        COMPILE_DEFINITIONS "FinalChain=FinalChainOld"
+    )
+endif()
+
 install(TARGETS core_libs
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

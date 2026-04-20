@@ -43,6 +43,7 @@ configure: ## Configure the project locally.
 		-DRUSTAXA_ENABLE=ON \
 		-DRUSTAXA_ENABLE_VDF=ON \
 		-DRUSTAXA_ENABLE_STORAGE=ON \
+		-DRUSTAXA_ENABLE_FINAL_CHAIN=ON \
 		-DLLVM_VERSION=$(LLVM_VERSION)
 
 .PHONY: build
