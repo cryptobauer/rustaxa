@@ -8,6 +8,8 @@ target_link_libraries(rust_storage_tests
     PRIVATE
     Rustaxa::bridge
     GTest::gtest_main
+    gmp::gmp
+    mpfr::mpfr
 )
 
 if(UNIX AND NOT APPLE)

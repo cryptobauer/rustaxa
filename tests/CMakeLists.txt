@@ -1,5 +1,6 @@
 find_package(GTest REQUIRED)
 add_subdirectory(test_util)
+add_subdirectory(storage_conformance)
 if(RUSTAXA_ENABLE)
     add_subdirectory(rust)
 endif()
