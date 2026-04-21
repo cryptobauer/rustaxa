@@ -213,7 +213,6 @@ impl DbWriter for DBWithThreadMode<MultiThreaded> {
 }
 
 pub struct Storage {
-    #[allow(dead_code)]
     db: Arc<DBWithThreadMode<MultiThreaded>>,
     // Individual repositories splitting query/apply into domains.
     dag: DagRepository<DBWithThreadMode<MultiThreaded>>,
