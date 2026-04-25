@@ -8,8 +8,9 @@ crate-type = ["staticlib"]
 
 [dependencies]
 cxx = "1.0"
-rustaxa-vdf = { path = "../rustaxa-vdf" }
+rustaxa-consensus = { path = "../rustaxa-consensus" }
 rustaxa-storage = { path = "../rustaxa-storage" }
+rustaxa-vdf = { path = "../rustaxa-vdf" }
 anyhow = "1.0.100"
 ethereum-types = "0.16.0"
 

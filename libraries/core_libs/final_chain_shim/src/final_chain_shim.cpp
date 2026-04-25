@@ -6,7 +6,9 @@ namespace taraxa::final_chain {
 
 FinalChain::FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullNodeConfig& config,
                        const addr_t& node_addr)
-    : FinalChainOld(db, config, node_addr) {}
+    : FinalChainOld(db, config, node_addr) {
+  rust_final_chain_ = rustaxa::create_final_chain(db->rustStorage());
+}
 
 void FinalChain::stop() { FinalChainOld::stop(); }
 

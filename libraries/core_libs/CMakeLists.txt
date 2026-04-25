@@ -82,6 +82,10 @@ if(RUSTAXA_ENABLE_STORAGE)
 endif()
 
 if(RUSTAXA_ENABLE_FINAL_CHAIN)
+    if(NOT RUSTAXA_ENABLE_STORAGE)
+        message(FATAL_ERROR "RUSTAXA_ENABLE_FINAL_CHAIN requires RUSTAXA_ENABLE_STORAGE")
+    endif()
+
     # In Rust final-chain mode, inject a header overlay that remaps legacy FinalChain
     # to FinalChainOld and exposes a forwarding FinalChain shim facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/final_chain_shim/include)

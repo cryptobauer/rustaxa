@@ -4,7 +4,7 @@
 #include <unordered_map>
 
 #include "common/types.hpp"
-#include "rustaxa-bridge/storage.rs.h"
+#include "rustaxa-bridge/ffi.rs.h"
 
 namespace taraxa {
 namespace fs = std::filesystem;
@@ -230,6 +230,8 @@ class DbStorage : public DbStorageOld {
   bool hasMajorVersionChanged();
   void compactColumn(Column const& column);
   void forEach(Column const& col, OnEntry const& f);
+  rustaxa::Storage& rustStorage();
+  const rustaxa::Storage& rustStorage() const;
 
   template <typename T>
   void clearColumnHistory(std::unordered_set<T>& to_keep, Column c) {
@@ -248,7 +250,7 @@ class DbStorage : public DbStorageOld {
   std::string lookupFinalChainLogBloomsChunk(const Slice& key) const;
   std::string lookupFinalChainReceiptByTrxHash(const Slice& key) const;
 
-  std::optional<::rust::Box<rustaxa::storage::Storage>> rust_storage_;
+  std::optional<::rust::Box<rustaxa::Storage>> rust_storage_;
   std::unordered_map<Batch*, uint64_t> rust_batches_;
   std::mutex rust_batches_mutex_;
 };

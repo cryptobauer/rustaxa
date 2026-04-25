@@ -1,5 +1,7 @@
 #pragma once
 
+#include "rustaxa-bridge/ffi.rs.h"
+
 namespace taraxa::final_chain {
 
 // Rust-mode final-chain shim facade.
@@ -67,6 +69,9 @@ class FinalChain : public FinalChainOld {
                                                       std::vector<h256>&& finalized_dag_blk_hashes,
                                                       uint32_t blocks_per_year, std::shared_ptr<DagBlock>&& anchor);
   SharedTransactionReceipts blockReceipts(std::optional<EthBlockNumber> n = {}) const;
+
+private:
+  std::optional<::rust::Box<rustaxa::BridgeFinalChain>> rust_final_chain_;
 };
 
 }  // namespace taraxa::final_chain

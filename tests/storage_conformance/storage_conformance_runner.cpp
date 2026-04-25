@@ -11,7 +11,7 @@
 #include <vector>
 
 #if defined(RUSTAXA_ENABLE_STORAGE)
-#include "rustaxa-bridge/storage.rs.h"
+#include "rustaxa-bridge/ffi.rs.h"
 #else
 #include <libdevcrypto/Common.h>
 
@@ -168,14 +168,14 @@ std::vector<uint8_t> encodeSingleHashListRlp(const std::array<uint8_t, 32>& hash
   return out;
 }
 
-std::optional<uint64_t> toOptional(const rustaxa::storage::PeriodLookup& lookup) {
+std::optional<uint64_t> toOptional(const rustaxa::PeriodLookup& lookup) {
   if (!lookup.found) {
     return std::nullopt;
   }
   return lookup.period;
 }
 
-std::optional<uint32_t> toOptional(const rustaxa::storage::PeriodLambda& value) {
+std::optional<uint32_t> toOptional(const rustaxa::PeriodLambda& value) {
   if (!value.found) {
     return std::nullopt;
   }
@@ -201,7 +201,7 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   static constexpr uint8_t kColFinalChainLogBlooms = 25;
   static constexpr uint8_t kColFinalChainReceiptByPeriod = 33;
 
-  auto storage = rustaxa::storage::create_storage(db_path.string());
+  auto storage = rustaxa::create_storage(db_path.string());
 
   // Baseline API coverage
   transcript.add("status_default_executed_blk", toString(storage->get_status_field(kStatusFieldExecutedBlkCount)));

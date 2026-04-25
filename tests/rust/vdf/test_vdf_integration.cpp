@@ -4,9 +4,9 @@
 #include <chrono>
 
 #include "rust/cxx.h"
-#include "rustaxa-bridge/vdf.rs.h"
+#include "rustaxa-bridge/ffi.rs.h"
 
-using namespace rustaxa::vdf;
+using namespace rustaxa;
 
 inline rust::Slice<const uint8_t> to_slice(const std::vector<uint8_t>& v) {
   return {v.data(), v.size()};

@@ -1248,8 +1248,17 @@ dependencies = [
  "cxx",
  "cxx-build",
  "ethereum-types",
+ "rustaxa-consensus",
  "rustaxa-storage",
  "rustaxa-vdf",
+]
+
+[[package]]
+name = "rustaxa-consensus"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rustaxa-storage",
 ]
 
 [[package]]

@@ -3,9 +3,9 @@
 #include <cstdint>
 #include <filesystem>
 
-#include "rustaxa-bridge/storage.rs.h"
+#include "rustaxa-bridge/ffi.rs.h"
 
-using namespace rustaxa::storage;
+using namespace rustaxa;
 
 class StorageTest : public ::testing::Test {
  protected:

@@ -52,7 +52,7 @@ DbStorage::DbStorage(fs::path const& path, uint32_t db_snapshot_each_n_pbft_bloc
     : DbStorageOld(path, db_snapshot_each_n_pbft_block, max_open_files, db_max_snapshots, db_revert_to_period,
                    node_addr, rebuild) {
   try {
-    rust_storage_ = rustaxa::storage::create_storage(path.string());
+    rust_storage_ = rustaxa::create_storage(path.string());
   } catch (std::exception const& e) {
     LOG(log_er_) << "Error: " << e.what() << std::endl;
     throw DbException(std::string("Rust storage init failed: ") + e.what());
@@ -271,6 +271,10 @@ void DbStorage::updateDbVersions() {
   saveStatusField(StatusDbField::DbMinorVersion, TARAXA_DB_MINOR_VERSION);
   kMajorVersion_ = TARAXA_DB_MAJOR_VERSION;
 }
+
+rustaxa::Storage& DbStorage::rustStorage() { return *rust_storage_.value(); }
+
+const rustaxa::Storage& DbStorage::rustStorage() const { return *rust_storage_.value(); }
 
 void DbStorage::setGenesisHash(const h256& genesis_hash) {
   auto bytes = into_bytes_array(genesis_hash);
