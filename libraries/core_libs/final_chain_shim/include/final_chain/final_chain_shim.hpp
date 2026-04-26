@@ -6,7 +6,7 @@ namespace taraxa::final_chain {
 
 // Rust-mode final-chain shim facade.
 // Public APIs are redeclared here so callers go through this layer first.
-// Batch 1 behavior is passthrough to FinalChainOld with no semantic changes.
+// Implemented methods call Rust directly; unimplemented methods throw instead of falling back to FinalChainOld.
 class FinalChain : public FinalChainOld {
  public:
   FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullNodeConfig& config, const addr_t& node_addr);
@@ -70,9 +70,8 @@ class FinalChain : public FinalChainOld {
                                                       uint32_t blocks_per_year, std::shared_ptr<DagBlock>&& anchor);
   SharedTransactionReceipts blockReceipts(std::optional<EthBlockNumber> n = {}) const;
 
-private:
+ private:
   std::optional<::rust::Box<rustaxa::BridgeFinalChain>> rust_final_chain_;
 };
 
 }  // namespace taraxa::final_chain
-

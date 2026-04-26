@@ -67,6 +67,11 @@ pub mod rustaxa_ffi {
         data: Vec<u8>,
     }
 
+    struct FinalChainBlockNumberLookup {
+        found: bool,
+        value: u64,
+    }
+
     extern "Rust" {
         type WesolowskiVdf;
         type CancellationToken;
@@ -335,6 +340,11 @@ pub mod rustaxa_ffi {
 
         pub fn create_final_chain(storage: &BridgeStorage) -> Result<Box<BridgeFinalChain>>;
 
+        pub fn get_last_block_number(self: &BridgeFinalChain) -> Result<u64>;
+        pub fn get_block_number(
+            self: &BridgeFinalChain,
+            hash: &[u8; 32],
+        ) -> Result<FinalChainBlockNumberLookup>;
         pub fn get_block_hash(self: &BridgeFinalChain, num: u64) -> Result<Vec<u8>>;
     }
 }
