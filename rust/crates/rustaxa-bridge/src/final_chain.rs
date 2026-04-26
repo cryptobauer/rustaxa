@@ -1,8 +1,8 @@
 use crate::ffi::BridgeFinalChain;
-use crate::ffi::Storage;
+use crate::ffi::BridgeStorage;
 use rustaxa_consensus::FinalChain;
 
-pub fn create_final_chain(storage: &Storage) -> Result<Box<BridgeFinalChain>, anyhow::Error> {
+pub fn create_final_chain(storage: &BridgeStorage) -> Result<Box<BridgeFinalChain>, anyhow::Error> {
     let final_chain = FinalChain::new(storage.0.clone())?;
     Ok(Box::new(BridgeFinalChain(final_chain)))
 }

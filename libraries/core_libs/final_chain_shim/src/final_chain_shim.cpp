@@ -30,7 +30,14 @@ EthBlockNumber FinalChain::lastBlockNumber() const { return FinalChainOld::lastB
 std::optional<EthBlockNumber> FinalChain::blockNumber(h256 const& h) const { return FinalChainOld::blockNumber(h); }
 
 std::optional<h256> FinalChain::blockHash(std::optional<EthBlockNumber> n) const {
-  return FinalChainOld::blockHash(n);
+  if (n.has_value()) {
+    auto rust_hash = rust_final_chain_.value()->get_block_hash(static_cast<uint64_t>(n.value()));
+    if (!rust_hash.empty()) {
+      return h256(dev::bytes(rust_hash.begin(), rust_hash.end()));
+    }
+  }
+
+  return std::nullopt;
 }
 
 std::optional<h256> FinalChain::finalChainHash(EthBlockNumber n) const { return FinalChainOld::finalChainHash(n); }

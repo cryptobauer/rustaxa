@@ -272,9 +272,9 @@ void DbStorage::updateDbVersions() {
   kMajorVersion_ = TARAXA_DB_MAJOR_VERSION;
 }
 
-rustaxa::Storage& DbStorage::rustStorage() { return *rust_storage_.value(); }
+rustaxa::BridgeStorage& DbStorage::rustStorage() { return *rust_storage_.value(); }
 
-const rustaxa::Storage& DbStorage::rustStorage() const { return *rust_storage_.value(); }
+const rustaxa::BridgeStorage& DbStorage::rustStorage() const { return *rust_storage_.value(); }
 
 void DbStorage::setGenesisHash(const h256& genesis_hash) {
   auto bytes = into_bytes_array(genesis_hash);

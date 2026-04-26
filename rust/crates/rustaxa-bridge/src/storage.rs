@@ -1,26 +1,26 @@
 use crate::ffi::rustaxa_ffi;
-use crate::ffi::Storage;
+use crate::ffi::BridgeStorage;
 use ethereum_types::H256;
 use rustaxa_storage::Config;
-use rustaxa_storage::Storage as InnerStorage;
+use rustaxa_storage::Storage;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 
-pub fn create_storage(path: &str) -> Result<Box<Storage>, anyhow::Error> {
+pub fn create_storage(path: &str) -> Result<Box<BridgeStorage>, anyhow::Error> {
     let path_buf = PathBuf::from(path);
     let config = Config::new(path_buf);
-    let storage = Arc::new(InnerStorage::new(config)?);
-    Ok(Box::new(Storage(
+    let storage = Arc::new(Storage::new(config)?);
+    Ok(Box::new(BridgeStorage(
         storage,
         Mutex::new(HashMap::new()),
         AtomicU64::new(1),
     )))
 }
 
-impl Storage {
+impl BridgeStorage {
     pub fn create_write_batch(&self) -> Result<u64, anyhow::Error> {
         let batch_id = self.2.fetch_add(1, Ordering::Relaxed);
         let mut batches = self
