@@ -41,6 +41,15 @@ DbStorage::DbStorage(const fs::path& path, uint32_t db_snapshot_each_n_pbft_bloc
   async_write_.sync = false;
   sync_write_.sync = true;
 
+#ifdef RUSTAXA_ENABLE_STORAGE
+  (void)max_open_files;
+  (void)db_revert_to_period;
+  (void)node_addr;
+  (void)rebuild;
+  kMajorVersion_ = 0;
+  return;
+#endif
+
   if (rebuild) {
     const std::string backup_label = "-rebuild-backup-";
     auto timestamp = std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
@@ -409,6 +418,10 @@ std::optional<h256> DbStorage::getGenesisHash() {
 }
 
 DbStorage::~DbStorage() {
+  if (!db_) {
+    return;
+  }
+
   for (auto cf : handles_) {
     if (cf->GetName() != "default") {
       checkStatus(db_->DestroyColumnFamilyHandle(cf));

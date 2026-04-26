@@ -3,8 +3,12 @@ use crate::ffi::BridgeFinalChain;
 use crate::ffi::BridgeStorage;
 use rustaxa_consensus::FinalChain;
 
-pub fn create_final_chain(storage: &BridgeStorage) -> Result<Box<BridgeFinalChain>, anyhow::Error> {
-    let final_chain = FinalChain::new(storage.0.clone())?;
+pub fn create_final_chain(
+    storage: &BridgeStorage,
+    block_gas_limit: u64,
+    genesis_timestamp: u64,
+) -> Result<Box<BridgeFinalChain>, anyhow::Error> {
+    let final_chain = FinalChain::new(storage.0.clone(), block_gas_limit, genesis_timestamp)?;
     Ok(Box::new(BridgeFinalChain(final_chain)))
 }
 
@@ -32,5 +36,23 @@ impl BridgeFinalChain {
             .block_hash(num)
             .map_err(|e| anyhow::anyhow!(e))?
             .unwrap_or_default())
+    }
+
+    pub fn get_block_header(self: &BridgeFinalChain, num: u64) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self.0.block_header(num)?.unwrap_or_default())
+    }
+
+    pub fn get_transaction_location(
+        self: &BridgeFinalChain,
+        hash: &[u8; 32],
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self.0.transaction_location(*hash)?.unwrap_or_default())
+    }
+
+    pub fn get_transaction_count(
+        self: &BridgeFinalChain,
+        period: u64,
+    ) -> Result<u64, anyhow::Error> {
+        self.0.transaction_count(period)
     }
 }

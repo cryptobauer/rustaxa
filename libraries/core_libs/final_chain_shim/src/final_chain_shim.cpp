@@ -25,12 +25,17 @@ h256 into_h256(const rust::Vec<uint8_t>& bytes, const char* api_name) {
   return h256(dev::bytes(bytes.begin(), bytes.end()));
 }
 
+std::string into_string(const rust::Vec<uint8_t>& bytes) {
+  return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+}
+
 }  // namespace
 
 FinalChain::FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullNodeConfig& config,
                        const addr_t& node_addr)
     : FinalChainOld(db, config, node_addr) {
-  rust_final_chain_ = rustaxa::create_final_chain(db->rustStorage());
+  rust_final_chain_ = rustaxa::create_final_chain(db->rustStorage(), config.genesis.pbft.gas_limit,
+                                                  config.genesis.dag_genesis_block.getTimestamp());
 }
 
 void FinalChain::stop() { throw_unimplemented_final_chain_api("stop"); }
@@ -42,8 +47,15 @@ std::future<std::shared_ptr<const FinalizationResult>> FinalChain::finalize(Peri
   throw_unimplemented_final_chain_api("finalize");
 }
 
-std::shared_ptr<const BlockHeader> FinalChain::blockHeader(std::optional<EthBlockNumber>) const {
-  throw_unimplemented_final_chain_api("blockHeader");
+std::shared_ptr<const BlockHeader> FinalChain::blockHeader(std::optional<EthBlockNumber> n) const {
+  auto const block_number = n.value_or(lastBlockNumber());
+  auto rust_header = rust_final_chain_.value()->get_block_header(static_cast<uint64_t>(block_number));
+  if (rust_header.empty()) {
+    return nullptr;
+  }
+
+  auto header_data = into_string(rust_header);
+  return BlockHeader::fromRLP(dev::RLP(header_data));
 }
 
 EthBlockNumber FinalChain::lastBlockNumber() const { return rust_final_chain_.value()->get_last_block_number(); }
@@ -81,8 +93,13 @@ const SharedTransactions FinalChain::transactions(std::optional<EthBlockNumber>)
   throw_unimplemented_final_chain_api("transactions");
 }
 
-std::optional<TransactionLocation> FinalChain::transactionLocation(h256 const&) const {
-  throw_unimplemented_final_chain_api("transactionLocation");
+std::optional<TransactionLocation> FinalChain::transactionLocation(h256 const& trx_hash) const {
+  auto rust_location = rust_final_chain_.value()->get_transaction_location(into_bytes_array(trx_hash));
+  if (rust_location.empty()) {
+    return std::nullopt;
+  }
+  auto location_data = into_string(rust_location);
+  return TransactionLocation::fromRlp(dev::RLP(location_data));
 }
 
 std::optional<TransactionReceipt> FinalChain::transactionReceipt(EthBlockNumber, uint64_t,
@@ -94,8 +111,8 @@ std::shared_ptr<Transaction> FinalChain::transaction(EthBlockNumber, uint32_t) c
   throw_unimplemented_final_chain_api("transaction");
 }
 
-uint64_t FinalChain::transactionCount(std::optional<EthBlockNumber>) const {
-  throw_unimplemented_final_chain_api("transactionCount");
+uint64_t FinalChain::transactionCount(std::optional<EthBlockNumber> n) const {
+  return rust_final_chain_.value()->get_transaction_count(static_cast<uint64_t>(n.value_or(lastBlockNumber())));
 }
 
 std::vector<EthBlockNumber> FinalChain::withBlockBloom(LogBloom const&, EthBlockNumber, EthBlockNumber) const {

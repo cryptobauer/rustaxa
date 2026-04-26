@@ -338,7 +338,11 @@ pub mod rustaxa_ffi {
 
         type BridgeFinalChain;
 
-        pub fn create_final_chain(storage: &BridgeStorage) -> Result<Box<BridgeFinalChain>>;
+        pub fn create_final_chain(
+            storage: &BridgeStorage,
+            block_gas_limit: u64,
+            genesis_timestamp: u64,
+        ) -> Result<Box<BridgeFinalChain>>;
 
         pub fn get_last_block_number(self: &BridgeFinalChain) -> Result<u64>;
         pub fn get_block_number(
@@ -346,5 +350,11 @@ pub mod rustaxa_ffi {
             hash: &[u8; 32],
         ) -> Result<FinalChainBlockNumberLookup>;
         pub fn get_block_hash(self: &BridgeFinalChain, num: u64) -> Result<Vec<u8>>;
+        pub fn get_block_header(self: &BridgeFinalChain, num: u64) -> Result<Vec<u8>>;
+        pub fn get_transaction_location(
+            self: &BridgeFinalChain,
+            hash: &[u8; 32],
+        ) -> Result<Vec<u8>>;
+        pub fn get_transaction_count(self: &BridgeFinalChain, period: u64) -> Result<u64>;
     }
 }
