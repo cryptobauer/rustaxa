@@ -66,6 +66,20 @@ Batch 1 Rust data sources:
 - `final_chain_blk_number_by_hash`
 - `final_chain_blk_hash_by_number`
 
+Batch 2 Rust-backed methods:
+
+- `blockHeader(std::optional<EthBlockNumber>)`
+- `transactionLocation(h256 const&)`
+- `transactionCount(std::optional<EthBlockNumber>)`
+
+Batch 2 data and reconstruction notes:
+
+- Rust reads raw `final_chain_blk_by_number` payloads and emits full C++ `BlockHeader` RLP values to preserve the public API.
+- Non-genesis block headers need PBFT metadata, so Rust reads `period_data`, recovers the PBFT proposer from the PBFT signature, applies gas/timestamp/extra-data fields, and computes the Ethereum block header hash.
+- The C++ shim only decodes the Rust-produced full header RLP with `BlockHeader::fromRLP`; it does not reconstruct header fields or call `FinalChainOld`.
+- Rust returns raw `trx_period` transaction-location payloads; the shim decodes them through existing C++ `TransactionLocation::fromRlp`.
+- Rust counts transactions from `period_data`.
+
 ## Current Dependency and Dataflow Notes
 
 FinalChain currently spans:
@@ -91,7 +105,7 @@ Direct final-chain column usage in `final_chain.cpp`:
 - no finalization path migration
 - no StateAPI/evm integration changes
 - no schema/column changes
-- no block header, transaction, receipt, bloom, DPoS, bridge, prune, or lifecycle behavior beyond explicit unimplemented throws
+- no full transaction, receipt, bloom, DPoS, bridge, prune, finalization, or lifecycle behavior beyond explicit unimplemented throws
 
 ## Migration Guidance for Future Batches
 

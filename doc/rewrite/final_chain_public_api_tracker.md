@@ -8,7 +8,8 @@ Goal: keep `final_chain::FinalChain` public interface stable while incrementally
 
 - Batch 1: additive shim scaffold plus Rust-backed chain index reads: `lastBlockNumber`, `blockNumber`, `blockHash`.
 - Batch 1 also removed `FinalChainOld` behavior fallback from shim methods: every unimplemented public method now throws in Rust shim mode.
-- Batch 2+: migrate remaining selected read/index APIs to Rust-backed implementations.
+- Batch 2: Rust-backed block header and transaction index reads: `blockHeader`, `transactionLocation`, `transactionCount`.
+- Batch 3+: migrate remaining selected read/index APIs to Rust-backed implementations.
 
 ## Legend
 
@@ -50,7 +51,7 @@ Most frequently used callsites in workspace scans:
 
 ### Chain Index and Header/Hash Queries
 
-- `[T]` `blockHeader(std::optional<EthBlockNumber>) const`
+- `[x]` `blockHeader(std::optional<EthBlockNumber>) const`
 - `[x]` `lastBlockNumber() const`
 - `[x]` `blockNumber(h256 const&) const`
 - `[x]` `blockHash(std::optional<EthBlockNumber>) const`
@@ -60,10 +61,10 @@ Most frequently used callsites in workspace scans:
 
 - `[T]` `transactionHashes(std::optional<EthBlockNumber>) const`
 - `[T]` `transactions(std::optional<EthBlockNumber>) const`
-- `[T]` `transactionLocation(h256 const&) const`
+- `[x]` `transactionLocation(h256 const&) const`
 - `[T]` `transactionReceipt(EthBlockNumber, uint64_t, std::optional<trx_hash_t>) const`
 - `[T][~]` `transaction(EthBlockNumber, uint32_t) const`
-- `[T]` `transactionCount(std::optional<EthBlockNumber>) const`
+- `[x]` `transactionCount(std::optional<EthBlockNumber>) const`
 - `[T]` `blockReceipts(std::optional<EthBlockNumber>) const`
 
 ### Logs and Bloom Query
@@ -118,7 +119,7 @@ From `final_chain.cpp`, FinalChain currently depends on:
 ## Proposed Work Batches
 
 1. **Batch 1**: shim scaffold + Rust-backed chain index reads (`lastBlockNumber`, `blockNumber`, `blockHash`) (done)
-2. **Batch 2**: remaining read/index APIs (block header, transaction/receipt count and location paths)
+2. **Batch 2**: block header, transaction location, and transaction count read/index APIs (done)
 3. **Batch 3**: transaction/receipt/log query helpers and bloom search parity
 4. **Batch 4**: finalize/write path (`appendBlock`, counters, index writes)
 5. **Batch 5**: StateAPI/DPoS bridge-heavy APIs (only after clear Rust/EVM integration strategy)
