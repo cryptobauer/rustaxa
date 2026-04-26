@@ -6,12 +6,14 @@ Goal: keep `final_chain::FinalChain` public interface stable while incrementally
 
 ## Current Batch Status
 
-- Batch 1 (this change): additive shim scaffold + passthrough wrappers, no behavior change.
-- Batch 2+: migrate selected read/index APIs to Rust-backed implementations.
+- Batch 1: additive shim scaffold plus Rust-backed chain index reads: `lastBlockNumber`, `blockNumber`, `blockHash`.
+- Batch 1 also removed `FinalChainOld` behavior fallback from shim methods: every unimplemented public method now throws in Rust shim mode.
+- Batch 2+: migrate remaining selected read/index APIs to Rust-backed implementations.
 
 ## Legend
 
-- `[x]` Implemented in FinalChain shim (currently passthrough to `FinalChainOld`)
+- `[x]` Implemented in FinalChain shim through Rust-backed logic
+- `[T]` Declared in the shim and explicitly throws; no `FinalChainOld` fallback
 - `[ ]` Not yet routed through Rust-backed FinalChain logic
 - `[~]` Public API but mostly composition/cache helper over other primitives
 - `[!]` High-risk API (state transition, pruning, or cross-module side effects)
@@ -39,58 +41,58 @@ Most frequently used callsites in workspace scans:
 
 ### Lifecycle and Finalization
 
-- `[x][!]` `stop()`
-- `[x]` `delegationDelay() const`
-- `[x][!]` `finalize(PeriodData&&, std::vector<h256>&&, uint32_t, std::shared_ptr<DagBlock>&&)`
-- `[x][!]` `finalize_(...)`
-- `[x]` `waitForFinalized()`
-- `[x][!]` `prune(EthBlockNumber)`
+- `[T][!]` `stop()`
+- `[T]` `delegationDelay() const`
+- `[T][!]` `finalize(PeriodData&&, std::vector<h256>&&, uint32_t, std::shared_ptr<DagBlock>&&)`
+- `[T][!]` `finalize_(...)`
+- `[T]` `waitForFinalized()`
+- `[T][!]` `prune(EthBlockNumber)`
 
 ### Chain Index and Header/Hash Queries
 
-- `[x]` `blockHeader(std::optional<EthBlockNumber>) const`
+- `[T]` `blockHeader(std::optional<EthBlockNumber>) const`
 - `[x]` `lastBlockNumber() const`
 - `[x]` `blockNumber(h256 const&) const`
 - `[x]` `blockHash(std::optional<EthBlockNumber>) const`
-- `[x]` `finalChainHash(EthBlockNumber) const`
+- `[T]` `finalChainHash(EthBlockNumber) const`
 
 ### Transaction and Receipt Surface
 
-- `[x]` `transactionHashes(std::optional<EthBlockNumber>) const`
-- `[x]` `transactions(std::optional<EthBlockNumber>) const`
-- `[x]` `transactionLocation(h256 const&) const`
-- `[x]` `transactionReceipt(EthBlockNumber, uint64_t, std::optional<trx_hash_t>) const`
-- `[x][~]` `transaction(EthBlockNumber, uint32_t) const`
-- `[x]` `transactionCount(std::optional<EthBlockNumber>) const`
-- `[x]` `blockReceipts(std::optional<EthBlockNumber>) const`
+- `[T]` `transactionHashes(std::optional<EthBlockNumber>) const`
+- `[T]` `transactions(std::optional<EthBlockNumber>) const`
+- `[T]` `transactionLocation(h256 const&) const`
+- `[T]` `transactionReceipt(EthBlockNumber, uint64_t, std::optional<trx_hash_t>) const`
+- `[T][~]` `transaction(EthBlockNumber, uint32_t) const`
+- `[T]` `transactionCount(std::optional<EthBlockNumber>) const`
+- `[T]` `blockReceipts(std::optional<EthBlockNumber>) const`
 
 ### Logs and Bloom Query
 
-- `[x]` `withBlockBloom(LogBloom const&, EthBlockNumber, EthBlockNumber) const`
+- `[T]` `withBlockBloom(LogBloom const&, EthBlockNumber, EthBlockNumber) const`
 
 ### State Query / EVM Read APIs
 
-- `[x][!]` `updateStateConfig(state_api::Config const&)`
-- `[x]` `getAccount(addr_t const&, std::optional<EthBlockNumber>) const`
-- `[x]` `getAccountStorage(addr_t const&, u256 const&, std::optional<EthBlockNumber>) const`
-- `[x]` `getCode(addr_t const&, std::optional<EthBlockNumber>) const`
-- `[x][!]` `call(state_api::EVMTransaction const&, std::optional<EthBlockNumber>) const`
-- `[x][!]` `trace(std::vector<state_api::EVMTransaction>, std::vector<state_api::EVMTransaction>, EthBlockNumber, std::optional<state_api::Tracing>) const`
+- `[T][!]` `updateStateConfig(state_api::Config const&)`
+- `[T]` `getAccount(addr_t const&, std::optional<EthBlockNumber>) const`
+- `[T]` `getAccountStorage(addr_t const&, u256 const&, std::optional<EthBlockNumber>) const`
+- `[T]` `getCode(addr_t const&, std::optional<EthBlockNumber>) const`
+- `[T][!]` `call(state_api::EVMTransaction const&, std::optional<EthBlockNumber>) const`
+- `[T][!]` `trace(std::vector<state_api::EVMTransaction>, std::vector<state_api::EVMTransaction>, EthBlockNumber, std::optional<state_api::Tracing>) const`
 
 ### DPoS and Bridge Query APIs
 
-- `[x]` `dposEligibleTotalVoteCount(EthBlockNumber) const`
-- `[x]` `dposEligibleVoteCount(EthBlockNumber, addr_t const&) const`
-- `[x]` `dposIsEligible(EthBlockNumber, addr_t const&) const`
-- `[x]` `dposGetVrfKey(EthBlockNumber, addr_t const&) const`
-- `[x]` `dposValidatorsTotalStakes(EthBlockNumber) const`
-- `[x]` `dposTotalAmountDelegated(EthBlockNumber) const`
-- `[x]` `dposValidatorsEligibleVoteCounts(EthBlockNumber) const`
-- `[x]` `dposYield(EthBlockNumber) const`
-- `[x]` `dposTotalSupply(EthBlockNumber) const`
-- `[x]` `getBridgeRoot(EthBlockNumber) const`
-- `[x]` `getBridgeEpoch(EthBlockNumber) const`
-- `[x][~]` `getBalance(addr_t const&) const`
+- `[T]` `dposEligibleTotalVoteCount(EthBlockNumber) const`
+- `[T]` `dposEligibleVoteCount(EthBlockNumber, addr_t const&) const`
+- `[T]` `dposIsEligible(EthBlockNumber, addr_t const&) const`
+- `[T]` `dposGetVrfKey(EthBlockNumber, addr_t const&) const`
+- `[T]` `dposValidatorsTotalStakes(EthBlockNumber) const`
+- `[T]` `dposTotalAmountDelegated(EthBlockNumber) const`
+- `[T]` `dposValidatorsEligibleVoteCounts(EthBlockNumber) const`
+- `[T]` `dposYield(EthBlockNumber) const`
+- `[T]` `dposTotalSupply(EthBlockNumber) const`
+- `[T]` `getBridgeRoot(EthBlockNumber) const`
+- `[T]` `getBridgeEpoch(EthBlockNumber) const`
+- `[T][~]` `getBalance(addr_t const&) const`
 
 ## Current FinalChain Storage Touchpoints (for migration planning)
 
@@ -115,8 +117,8 @@ From `final_chain.cpp`, FinalChain currently depends on:
 
 ## Proposed Work Batches
 
-1. **Batch 1**: shim scaffold + passthrough wrappers (done)
-2. **Batch 2**: read/index APIs (block/header/hash/meta/receipt lookup paths)
+1. **Batch 1**: shim scaffold + Rust-backed chain index reads (`lastBlockNumber`, `blockNumber`, `blockHash`) (done)
+2. **Batch 2**: remaining read/index APIs (block header, transaction/receipt count and location paths)
 3. **Batch 3**: transaction/receipt/log query helpers and bloom search parity
 4. **Batch 4**: finalize/write path (`appendBlock`, counters, index writes)
 5. **Batch 5**: StateAPI/DPoS bridge-heavy APIs (only after clear Rust/EVM integration strategy)
