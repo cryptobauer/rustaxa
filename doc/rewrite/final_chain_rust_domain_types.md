@@ -1,8 +1,17 @@
 # FinalChain Rust Domain Types Backlog
 
-Date: 2026-04-20
+Date: 2026-04-27
 
-This document tracks C++ FinalChain-related domain types that should be introduced on the Rust side over time.
+This document tracks Rust domain types needed for the FinalChain rewrite. It is not a 1:1 mirror of the C++ class layout.
+
+The Rust type crate should group concepts by domain meaning and boundary role:
+
+- `rustaxa_types::pbft`: PBFT block metadata and eventually PBFT block/vote domain objects.
+- `rustaxa_types::final_chain`: final-chain block, receipt, log, and bloom domain objects.
+- `rustaxa_types::dag`: DAG block and future DAG-related domain objects.
+- `rustaxa_types::codec`: orthogonal encoders/decoders such as RLP. Codecs convert bytes into domain types and export domain types into compatibility/wire formats. Any hash/signature helpers needed for legacy codec compatibility should remain private codec implementation details.
+
+Compatibility adapters may keep legacy names in function names when they explicitly produce C++-compatible wire formats, but core structs should use semantic Rust names rather than C++ class names.
 
 ## Usage
 
@@ -15,15 +24,30 @@ For each type:
 
 ## P0 Types (needed for core FinalChain read/write migration)
 
-### FinalChain data models (`final_chain/data.hpp`)
+### Final-chain block models
 
-- `BlockHeaderData` — `todo`, `P0`
-  - Notes: DB payload format compatibility (`serializeForDB`) and RLP fields must match C++.
-- `BlockHeader` — `todo`, `P0`
-  - Notes: requires exact hash/rlp compatibility with C++ `ethereumRlp()` and header hash derivation.
+- `StoredFinalChainBlockHeader` — `done`, `P0`
+  - Notes: storage payload decoded from `final_chain_blk_by_number`; replaces direct use of C++ `BlockHeaderData` naming in Rust.
+- `FinalChainBlockHeader` — `done`, `P0`
+  - Notes: materialized block header with PBFT metadata applied.
+- `BlockHeaderContext` — `done`, `P0`
+  - Notes: construction context that combines a computed hash, PBFT metadata, configured gas limit, and genesis timestamp without baking node config into the domain type.
+- `FinalChainBlockHeaderBuilder` — `done`, `P0`
+  - Notes: domain builder for constructing a materialized header from a stored header, PBFT metadata, configuration values, and an already-computed hash.
 - `NewBlock` — `todo`, `P0`
 - `FinalizationResult` — `todo`, `P0`
 - `BlocksBlooms` (`std::array<LogBloom, c_bloomIndexSize>`) — `todo`, `P0`
+
+### PBFT metadata used by final-chain headers
+
+- `PbftBlockMetadata` — `done`, `P0`
+  - Notes: decoded from signed PBFT block RLP when final-chain header materialization needs proposer, period, timestamp, and extra data.
+  - Boundary: lives in `rustaxa_types::pbft`, not `final_chain`, because PBFT metadata will be reused outside the final-chain shim.
+
+### Compatibility adapters
+
+- `LegacyBlockHeaderRlpInput` / `LegacyBlockHeaderRlp` — `done`, `P0`
+  - Notes: adapter types for the current C++ shim boundary; `TryFrom<LegacyBlockHeaderRlpInput>` composes stored-header decoding, PBFT metadata decoding, compatibility hash calculation, and legacy `BlockHeader` RLP export.
 
 ### Transaction/receipt and location (`transaction/receipt.hpp`)
 
@@ -92,6 +116,38 @@ Why: this keeps safety at compile time with near-zero runtime overhead.
 
 Why: avoids decoding and re-encoding overhead on byte-pass-through paths.
 
+Current applied pattern:
+
+- `StoredFinalChainBlockHeader` represents the compact DB payload.
+- `PbftBlockMetadata` represents the signed PBFT block facts needed by other domains.
+- `FinalChainBlockHeader` represents the materialized logical header.
+- `FinalChainBlockHeaderBuilder` constructs the logical header after all boundary-specific inputs have been decoded or computed.
+- `rustaxa_types::codec::rlp::final_chain` decodes the stored header payload, decodes PBFT metadata, computes the C++/Ethereum-compatible header hash, and exports the legacy `BlockHeader` RLP for existing C++ callers.
+- `rustaxa_types::codec::rlp::dag` decodes DAG block RLP into `DagBlock`; `DagBlock` itself does not depend on RLP.
+- RLP conversion entry points use explicit wrapper types with `From`/`TryFrom`, for example `StoredBlockHeaderRlp`, `SignedPbftBlockRlp`, `DagBlockRlp`, and `LegacyBlockHeaderRlp`.
+
+### 2a. Keep codecs orthogonal
+
+- Domain modules should not expose `from_rlp`, `to_rlp`, or `legacy_rlp` methods by default.
+- Put encoding-specific code under `rustaxa_types::codec::<format>::<domain>`.
+- Prefer `TryFrom<CodecSpecificInput>` for decoding and `From<&DomainType>` for encoding.
+- Avoid `TryFrom<&[u8]> for DomainType`; raw bytes do not identify the encoding or payload shape.
+- If multiple encodings emerge, add sibling codec modules instead of expanding core domain structs.
+- Codec modules may use compatibility-oriented names when the target format is explicitly legacy or bridge-specific.
+
+Why: domain code remains usable by consensus/storage logic without carrying serialization details, and future formats can be added without reshaping the core types.
+
+### 2b. Use builders at composition boundaries
+
+- Prefer small domain builders when constructing an aggregate needs multiple independently sourced facts.
+- Builders should take domain values, not raw encoded bytes.
+- Encoding-specific builders or helper functions can live in codec modules and should decode/compute boundary-specific data before invoking domain builders.
+
+Current example:
+
+- `FinalChainBlockHeaderBuilder` takes a `StoredFinalChainBlockHeader`, optional `PbftBlockMetadata`, gas/timestamp config, and a computed hash.
+- `LegacyBlockHeaderRlp::try_from(LegacyBlockHeaderRlpInput::new(...))` is the RLP compatibility builder for the current shim boundary.
+
 ### 3. Optimize for contiguous data and predictable control flow
 
 - In hot paths, prefer contiguous layouts (`Vec<T>`, arrays, plain structs).
@@ -154,37 +210,69 @@ pub struct TransactionLocation {
 
 Rule: keep fields private and construct through validated constructors when invariants apply.
 
-### Example C: getting RLP representation efficiently
+### Example C: codec-specific RLP wrappers
 
-Goal: expose RLP bytes without repeated re-encoding on hot paths.
+Goal: keep RLP as an orthogonal codec while still using idiomatic conversions.
 
 ```rust
-pub struct BlockHeader {
-    fields: BlockHeaderFields,
-    rlp_cache: Option<Vec<u8>>,
+pub struct StoredBlockHeaderRlp<'a>(&'a [u8]);
+
+impl<'a> StoredBlockHeaderRlp<'a> {
+    pub fn new(bytes: &'a [u8]) -> Self {
+        Self(bytes)
+    }
 }
 
-impl BlockHeader {
-    pub fn rlp_bytes(&mut self) -> &[u8] {
-        if self.rlp_cache.is_none() {
-            self.rlp_cache = Some(encode_header_rlp(&self.fields));
-        }
-        self.rlp_cache.as_deref().unwrap()
-    }
+pub struct LegacyBlockHeaderRlp(Vec<u8>);
 
-    pub fn from_rlp(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let fields = decode_header_fields(bytes)?;
-        Ok(Self {
-            fields,
-            rlp_cache: Some(bytes.to_vec()),
-        })
+impl LegacyBlockHeaderRlp {
+    pub fn into_vec(self) -> Vec<u8> {
+        self.0
+    }
+}
+
+pub struct LegacyBlockHeaderRlpInput<'a> {
+    stored_header: StoredBlockHeaderRlp<'a>,
+    signed_pbft_block: Option<SignedPbftBlockRlp<'a>>,
+    block_gas_limit: u64,
+    genesis_timestamp: u64,
+}
+
+impl<'a> LegacyBlockHeaderRlpInput<'a> {
+    pub fn new(
+        stored_header: StoredBlockHeaderRlp<'a>,
+        block_gas_limit: u64,
+        genesis_timestamp: u64,
+    ) -> Self {
+        Self {
+            stored_header,
+            signed_pbft_block: None,
+            block_gas_limit,
+            genesis_timestamp,
+        }
+    }
+}
+
+impl TryFrom<StoredBlockHeaderRlp<'_>> for StoredFinalChainBlockHeader {
+    type Error = anyhow::Error;
+
+    fn try_from(value: StoredBlockHeaderRlp<'_>) -> Result<Self, Self::Error> {
+        decode_stored_header_rlp(value.0)
+    }
+}
+
+impl From<&FinalChainBlockHeader> for LegacyBlockHeaderRlp {
+    fn from(header: &FinalChainBlockHeader) -> Self {
+        encode_legacy_header_rlp(header)
     }
 }
 ```
 
 Notes:
-- If the object originates from canonical RLP, preserve that canonical byte form.
-- If mutation occurs, invalidate cache and re-encode lazily.
+- Implement `From`, not `Into`; Rust derives `Into` from `From`.
+- Implement `TryFrom`, not `TryInto`; Rust derives `TryInto` from `TryFrom`.
+- Avoid `TryFrom<&[u8]>` where multiple byte formats could exist.
+- Keep wrapper fields private unless direct field access is the intended stable API.
 
 ## When not to add more abstraction
 
