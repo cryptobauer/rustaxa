@@ -1,5 +1,11 @@
+pub mod codec;
 pub mod dag;
-pub mod error;
+pub mod final_chain;
+pub mod pbft;
 
 pub use dag::DagBlock;
-pub use error::TypesError;
+pub use final_chain::{
+    BlockHeaderContext, FinalChainBlockHeader, FinalChainBlockHeaderBuilder,
+    StoredFinalChainBlockHeader,
+};
+pub use pbft::PbftBlockMetadata;

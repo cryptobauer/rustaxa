@@ -14,9 +14,6 @@ pub enum StorageError {
     #[error("Database read error: {0}")]
     Read(String),
 
-    #[error("Types error: {0}")]
-    Types(#[from] rustaxa_types::TypesError),
-
     #[error("DAG error: {0}")]
     Dag(String),
 

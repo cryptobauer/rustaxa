@@ -1259,10 +1259,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ethereum-types",
- "k256",
  "rlp",
  "rustaxa-storage",
- "tiny-keccak",
+ "rustaxa-types",
 ]
 
 [[package]]
@@ -1285,8 +1284,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ethereum-types",
+ "k256",
  "rlp",
- "thiserror",
+ "tiny-keccak",
 ]
 
 [[package]]

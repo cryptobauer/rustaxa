@@ -6,5 +6,6 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.100"
 ethereum-types = { version = "0.16.0", features = ["rlp"] }
+k256 = { version = "0.13", features = ["ecdsa"] }
 rlp = "0.6"
-thiserror = "2.0.17"
+tiny-keccak = { version = "2.0", features = ["keccak"] }

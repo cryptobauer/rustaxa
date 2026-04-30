@@ -1,6 +1,6 @@
 use anyhow::Result;
 use ethereum_types::H256;
-use rustaxa_types::{DagBlock, TypesError};
+use rustaxa_types::DagBlock;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -35,7 +35,7 @@ impl<D: DbReader> DagRepository<D> {
     /// C++ mapping: `DbStorage::getDagBlock(blk_hash_t const&)`.
     pub fn by_hash(&self, block: H256) -> Result<DagBlock> {
         let bytes = self.by_hash_rlp(block)?;
-        Ok(DagBlock::from_rlp_bytes(&bytes)?)
+        DagBlock::try_from(rustaxa_types::codec::rlp::dag::DagBlockRlp::new(&bytes))
     }
 
     /// Loads the serialized DAG block RLP by hash and returns `None` when the
@@ -110,7 +110,7 @@ impl<D: DbReader> DagRepository<D> {
         match self.db.get(Column::DagBlocksLevel, &level.to_le_bytes())? {
             Some(value) => {
                 let rlp = rlp::Rlp::new(value.as_ref());
-                let hashes: Vec<H256> = rlp.as_list().map_err(TypesError::from)?;
+                let hashes: Vec<H256> = rlp.as_list()?;
                 Ok(hashes)
             }
             None => Ok(vec![]),

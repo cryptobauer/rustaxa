@@ -261,7 +261,9 @@ fn main() -> Result<()> {
     for res in storage.iter(Column::DagBlocks) {
         let (key, value) = res?;
         let hash = H256::from_slice(&key);
-        match rustaxa_types::DagBlock::from_rlp_bytes(&value) {
+        match rustaxa_types::DagBlock::try_from(rustaxa_types::codec::rlp::dag::DagBlockRlp::new(
+            &value,
+        )) {
             Ok(block) => {
                 if hash == target_anchor {
                     target_anchor_level = block.level;
