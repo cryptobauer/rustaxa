@@ -9,7 +9,7 @@
 # Default LLVM version (can be overridden with make LLVM_VERSION=<version>)
 LLVM_VERSION?=19
 BUILD_OUTPUT_DIR?=/build
-CMAKE_BUILD_TYPE?=Debug
+CMAKE_BUILD_TYPE?=RelWithDebInfo
 CPP_INTERSECTION_PATHS?=
 CPP_INTERSECTION_BASE?=main
 CPP_INTERSECTION_REF?=cpp-reference
