@@ -105,6 +105,12 @@ cpp-reference-apply-intersection: ## Apply C++ intersection FROM..TO to current 
 		echo "Next: git commit -m 'chore(cpp-reference): sync C++ intersection from $(TO)'"; \
 	fi
 
+.PHONY: rust-update
+rust-update: ## Update the Rust toolchain (works around overlayfs cross-device rename by reinstalling).
+	rustup toolchain remove stable 2>/dev/null || true
+	rustup toolchain install stable
+	rustup default stable
+
 .PHONY: cpp-intersection-list
 cpp-intersection-list: ## Print detected intersection paths (override via CPP_INTERSECTION_PATHS)
 	@paths="$(CPP_INTERSECTION_PATHS)"; \

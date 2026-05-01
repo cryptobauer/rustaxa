@@ -1,4 +1,5 @@
 .vscode
+.devcontainer/devcontainer-lock.json
 compile_commands.json
 
 # clangd indexer cache
