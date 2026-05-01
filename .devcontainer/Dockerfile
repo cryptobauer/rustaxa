@@ -1,4 +1,5 @@
-FROM ghcr.io/cryptobauer/taraxa-build/taraxa-builder:debug
+FROM ghcr.io/cryptobauer/taraxa-build/taraxa-builder:relwithdebinfo
+# FROM taraxa-builder:relwithdebinfo
 
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
