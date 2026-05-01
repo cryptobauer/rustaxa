@@ -1,0 +1,754 @@
+use crate::ffi::rustaxa_ffi;
+use crate::ffi::BridgeStorage;
+use ethereum_types::H256;
+use rustaxa_storage::Config;
+use rustaxa_storage::Storage;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::Mutex;
+
+pub fn create_storage(path: &str) -> Result<Box<BridgeStorage>, anyhow::Error> {
+    let path_buf = PathBuf::from(path);
+    let config = Config::new(path_buf);
+    let storage = Arc::new(Storage::new(config)?);
+    Ok(Box::new(BridgeStorage(
+        storage,
+        Mutex::new(HashMap::new()),
+        AtomicU64::new(1),
+    )))
+}
+
+impl BridgeStorage {
+    pub fn create_write_batch(&self) -> Result<u64, anyhow::Error> {
+        let batch_id = self.2.fetch_add(1, Ordering::Relaxed);
+        let mut batches = self
+            .1
+            .lock()
+            .map_err(|_| anyhow::anyhow!("batch registry lock poisoned"))?;
+        batches.insert(batch_id, self.0.create_write_batch());
+        Ok(batch_id)
+    }
+
+    pub fn batch_put(
+        &self,
+        batch_id: u64,
+        column: u8,
+        key: Vec<u8>,
+        value: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        let column = rustaxa_storage::Column::from_index(column)?;
+        let mut batches = self
+            .1
+            .lock()
+            .map_err(|_| anyhow::anyhow!("batch registry lock poisoned"))?;
+        let batch = batches
+            .get_mut(&batch_id)
+            .ok_or_else(|| anyhow::anyhow!("unknown batch id: {}", batch_id))?;
+        self.0.batch_put_raw(batch, column, &key, &value)
+    }
+
+    pub fn batch_delete(
+        &self,
+        batch_id: u64,
+        column: u8,
+        key: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        let column = rustaxa_storage::Column::from_index(column)?;
+        let mut batches = self
+            .1
+            .lock()
+            .map_err(|_| anyhow::anyhow!("batch registry lock poisoned"))?;
+        let batch = batches
+            .get_mut(&batch_id)
+            .ok_or_else(|| anyhow::anyhow!("unknown batch id: {}", batch_id))?;
+        self.0.batch_delete_raw(batch, column, &key)
+    }
+
+    pub fn commit_write_batch(&self, batch_id: u64, sync: bool) -> Result<(), anyhow::Error> {
+        let batch = {
+            let mut batches = self
+                .1
+                .lock()
+                .map_err(|_| anyhow::anyhow!("batch registry lock poisoned"))?;
+            batches
+                .remove(&batch_id)
+                .ok_or_else(|| anyhow::anyhow!("unknown batch id: {}", batch_id))?
+        };
+        self.0.commit_write_batch_with_sync(batch, sync)
+    }
+
+    pub fn drop_write_batch(&self, batch_id: u64) -> Result<(), anyhow::Error> {
+        let mut batches = self
+            .1
+            .lock()
+            .map_err(|_| anyhow::anyhow!("batch registry lock poisoned"))?;
+        batches.remove(&batch_id);
+        Ok(())
+    }
+
+    pub fn dag_block_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
+        self.0
+            .dag()
+            .exists(H256::from(*hash))
+            .map_err(|e| anyhow::anyhow!(e))
+    }
+
+    pub fn get_dag_block(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .0
+            .dag()
+            .by_hash_rlp_optional(H256::from(*hash))
+            .map_err(|e| anyhow::anyhow!(e))?
+            .unwrap_or_default())
+    }
+
+    pub fn get_dag_block_period(
+        &self,
+        hash: &[u8; 32],
+    ) -> Result<rustaxa_ffi::BlockPeriod, anyhow::Error> {
+        let (period, position) = self
+            .0
+            .dag()
+            .period(H256::from(*hash))
+            .map_err(|e| anyhow::anyhow!(e))?;
+        Ok(rustaxa_ffi::BlockPeriod { period, position })
+    }
+
+    pub fn get_dag_block_period_lookup(
+        &self,
+        hash: &[u8; 32],
+    ) -> Result<rustaxa_ffi::BlockPeriodLookup, anyhow::Error> {
+        let lookup = self
+            .0
+            .dag()
+            .period_optional(H256::from(*hash))
+            .map_err(|e| anyhow::anyhow!(e))?;
+        Ok(match lookup {
+            Some((period, position)) => rustaxa_ffi::BlockPeriodLookup {
+                found: true,
+                period,
+                position,
+            },
+            None => rustaxa_ffi::BlockPeriodLookup {
+                found: false,
+                period: 0,
+                position: 0,
+            },
+        })
+    }
+
+    pub fn get_last_blocks_level(&self) -> Result<u64, anyhow::Error> {
+        self.0.dag().last_level().map_err(|e| anyhow::anyhow!(e))
+    }
+
+    pub fn get_blocks_by_level(&self, level: u64) -> Result<Vec<u8>, anyhow::Error> {
+        let hashes = self
+            .0
+            .dag()
+            .hashes_at_level(level)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let mut bytes = Vec::with_capacity(hashes.len() * 32);
+        for h in hashes {
+            bytes.extend_from_slice(h.as_bytes());
+        }
+        Ok(bytes)
+    }
+
+    pub fn get_dag_blocks_at_level(
+        &self,
+        level: u64,
+        number_of_levels: u32,
+    ) -> Result<Vec<rustaxa_ffi::BlockRlp>, anyhow::Error> {
+        let rlps = self
+            .0
+            .dag()
+            .at_level_range(level, number_of_levels)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        Ok(rlps
+            .into_iter()
+            .map(|data| rustaxa_ffi::BlockRlp { data })
+            .collect())
+    }
+
+    pub fn get_nonfinalized_dag_blocks(
+        &self,
+    ) -> Result<Vec<rustaxa_ffi::LevelBlocks>, anyhow::Error> {
+        let map = self
+            .0
+            .dag()
+            .non_finalized()
+            .map_err(|e| anyhow::anyhow!(e))?;
+        Ok(map
+            .into_iter()
+            .map(|(level, blocks)| rustaxa_ffi::LevelBlocks {
+                level,
+                blocks: blocks
+                    .into_iter()
+                    .map(|data| rustaxa_ffi::BlockRlp { data })
+                    .collect(),
+            })
+            .collect())
+    }
+
+    pub fn get_proposal_period_for_dag_level(
+        &self,
+        level: u64,
+    ) -> Result<rustaxa_ffi::PeriodLookup, anyhow::Error> {
+        let period = self
+            .0
+            .dag()
+            .proposal_period_at_level(level)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        Ok(match period {
+            Some(period) => rustaxa_ffi::PeriodLookup {
+                found: true,
+                period,
+            },
+            None => rustaxa_ffi::PeriodLookup {
+                found: false,
+                period: 0,
+            },
+        })
+    }
+
+    pub fn save_dag_block(
+        &self,
+        hash: &[u8; 32],
+        level: u64,
+        tips_count: u64,
+        block_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .dag()
+            .write(H256::from(*hash), level, tips_count, &block_rlp)
+    }
+
+    pub fn update_dag_block_counter(
+        &self,
+        hash: &[u8; 32],
+        level: u64,
+        tips_count: u64,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .dag()
+            .update_counter(H256::from(*hash), level, tips_count)
+    }
+
+    pub fn remove_dag_block(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
+        self.0.dag().remove(H256::from(*hash))
+    }
+
+    pub fn save_proposal_period_dag_levels_map(
+        &self,
+        level: u64,
+        period: u64,
+    ) -> Result<(), anyhow::Error> {
+        self.0.dag().write_proposal_period_at_level(level, period)
+    }
+
+    pub fn save_dag_block_period(
+        &self,
+        hash: &[u8; 32],
+        period: u64,
+        position: u32,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .dag()
+            .write_period(H256::from(*hash), period, position)
+    }
+
+    pub fn get_period_data_raw(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
+        self.0
+            .period()
+            .data_raw(period)
+            .map_err(|e| anyhow::anyhow!(e))
+    }
+
+    pub fn get_period_from_pbft_hash(
+        &self,
+        hash: &[u8; 32],
+    ) -> Result<rustaxa_ffi::PeriodLookup, anyhow::Error> {
+        let lookup = self
+            .0
+            .period()
+            .by_pbft_hash(H256::from(*hash))
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        match lookup {
+            Some(period) => Ok(rustaxa_ffi::PeriodLookup {
+                found: true,
+                period,
+            }),
+            None => Ok(rustaxa_ffi::PeriodLookup {
+                found: false,
+                period: 0,
+            }),
+        }
+    }
+
+    pub fn get_block_receipt(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
+        self.0
+            .period()
+            .receipt(period)
+            .map_err(|e| anyhow::anyhow!(e))
+    }
+
+    pub fn get_final_chain_meta_value(&self, key: u32) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self.0.final_chain().meta_value(key)?.unwrap_or_default())
+    }
+
+    pub fn get_final_chain_block_header(
+        &self,
+        block_number: u64,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .0
+            .final_chain()
+            .block_header_raw(block_number)?
+            .unwrap_or_default())
+    }
+
+    pub fn get_final_chain_block_hash_by_number(
+        &self,
+        block_number: u64,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .0
+            .final_chain()
+            .block_hash_by_number(block_number)?
+            .unwrap_or_default())
+    }
+
+    pub fn get_final_chain_block_number_by_hash(
+        &self,
+        hash: &[u8; 32],
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .0
+            .final_chain()
+            .block_number_by_hash(H256::from(*hash))?
+            .unwrap_or_default())
+    }
+
+    pub fn get_final_chain_log_blooms_chunk(
+        &self,
+        chunk_id: &[u8; 32],
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .0
+            .final_chain()
+            .log_blooms_chunk_raw(H256::from(*chunk_id))?
+            .unwrap_or_default())
+    }
+
+    pub fn get_final_chain_receipt_by_trx_hash(
+        &self,
+        trx_hash: &[u8; 32],
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .0
+            .final_chain()
+            .receipt_by_trx_hash(H256::from(*trx_hash))?
+            .unwrap_or_default())
+    }
+
+    pub fn save_period_data(
+        &self,
+        period: u64,
+        period_data_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0.period().write(period, &period_data_rlp)
+    }
+
+    pub fn save_pbft_block_period(
+        &self,
+        hash: &[u8; 32],
+        period: u64,
+    ) -> Result<(), anyhow::Error> {
+        self.0.period().write_pbft_period(H256::from(*hash), period)
+    }
+
+    pub fn get_pillar_block(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self.0.pillar().rlp(period)?.unwrap_or_default())
+    }
+
+    pub fn get_latest_pillar_block(&self) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self.0.pillar().latest_rlp()?.unwrap_or_default())
+    }
+
+    pub fn get_own_pillar_block_vote(&self) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self.0.pillar().own_vote_rlp()?.unwrap_or_default())
+    }
+
+    pub fn get_current_pillar_block_data(&self) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self.0.pillar().current_data_rlp()?.unwrap_or_default())
+    }
+
+    pub fn save_pillar_block(
+        &self,
+        period: u64,
+        pillar_block_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0.pillar().write(period, &pillar_block_rlp)
+    }
+
+    pub fn save_own_pillar_block_vote(&self, vote_rlp: Vec<u8>) -> Result<(), anyhow::Error> {
+        self.0.pillar().write_own_vote(&vote_rlp)
+    }
+
+    pub fn save_current_pillar_block_data(&self, data_rlp: Vec<u8>) -> Result<(), anyhow::Error> {
+        self.0.pillar().write_current_data(&data_rlp)
+    }
+
+    pub fn get_genesis_hash(&self) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self.0.metadata().genesis_hash()?.unwrap_or_default())
+    }
+
+    pub fn set_genesis_hash(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
+        self.0.metadata().set_genesis_hash_if_empty(hash)
+    }
+
+    pub fn get_last_sortition_params(
+        &self,
+        count: u64,
+    ) -> Result<Vec<rustaxa_ffi::BlockRlp>, anyhow::Error> {
+        // C++ passes size_t across the bridge; on the same architecture, size_t and usize are equal.
+        // This conversion should never fail on 32-bit or 64-bit systems.
+        let count = usize::try_from(count).unwrap_or(usize::MAX);
+        let changes = self.0.metadata().last_sortition_params_changes_rlp(count)?;
+        Ok(changes
+            .into_iter()
+            .map(|data| rustaxa_ffi::BlockRlp { data })
+            .collect())
+    }
+
+    pub fn get_params_change_for_period(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .0
+            .metadata()
+            .params_change_for_period_rlp(period)?
+            .unwrap_or_default())
+    }
+
+    pub fn get_status_field(&self, field: u8) -> Result<u64, anyhow::Error> {
+        self.0.metadata().status_field(field)
+    }
+
+    pub fn save_status_field(&self, field: u8, value: u64) -> Result<(), anyhow::Error> {
+        self.0.metadata().write_status_field(field, value)
+    }
+
+    pub fn save_sortition_params_change(
+        &self,
+        period: u64,
+        params_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .metadata()
+            .write_sortition_params_change(period, &params_rlp)
+    }
+
+    pub fn get_period_lambda(
+        &self,
+        period: u64,
+        find_closest: bool,
+    ) -> Result<rustaxa_ffi::PeriodLambda, anyhow::Error> {
+        let value = self.0.metadata().period_lambda(period, find_closest)?;
+        Ok(match value {
+            Some(value) => rustaxa_ffi::PeriodLambda { found: true, value },
+            None => rustaxa_ffi::PeriodLambda {
+                found: false,
+                value: 0,
+            },
+        })
+    }
+
+    pub fn get_rounds_count_dynamic_lambda(&self) -> Result<u32, anyhow::Error> {
+        self.0.metadata().rounds_count_dynamic_lambda()
+    }
+
+    pub fn save_period_lambda(&self, period: u64, period_lambda: u32) -> Result<(), anyhow::Error> {
+        self.0.metadata().write_period_lambda(period, period_lambda)
+    }
+
+    pub fn save_rounds_count_dynamic_lambda(&self, rounds_count: u32) -> Result<(), anyhow::Error> {
+        self.0
+            .metadata()
+            .write_rounds_count_dynamic_lambda(rounds_count)
+    }
+
+    pub fn get_blocks_rewards_stats(&self) -> Result<Vec<rustaxa_ffi::PeriodRlp>, anyhow::Error> {
+        let stats = self.0.metadata().block_rewards_stats_rlp()?;
+        Ok(stats
+            .into_iter()
+            .map(|(period, data)| rustaxa_ffi::PeriodRlp { period, data })
+            .collect())
+    }
+
+    pub fn save_block_rewards_stats(
+        &self,
+        period: u64,
+        stats_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .metadata()
+            .write_block_rewards_stats(period, &stats_rlp)
+    }
+
+    pub fn clear_block_rewards_stats(&self) -> Result<(), anyhow::Error> {
+        self.0.metadata().clear_block_rewards_stats()
+    }
+
+    pub fn pbft_block_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
+        self.0.pbft().exists(H256::from(*hash))
+    }
+
+    pub fn get_pbft_mgr_field(&self, field: u8) -> Result<u32, anyhow::Error> {
+        Ok(self.0.pbft().manager_field(field)?.unwrap_or(1))
+    }
+
+    pub fn get_pbft_mgr_status(&self, field: u8) -> Result<bool, anyhow::Error> {
+        Ok(self.0.pbft().manager_status(field)?.unwrap_or(false))
+    }
+
+    pub fn get_cert_voted_block_in_round(&self) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .0
+            .pbft()
+            .cert_voted_block_in_round_rlp()?
+            .unwrap_or_default())
+    }
+
+    pub fn get_proposed_pbft_blocks(&self) -> Result<Vec<rustaxa_ffi::BlockRlp>, anyhow::Error> {
+        let blocks = self.0.pbft().proposed_rlp()?;
+        Ok(blocks
+            .into_iter()
+            .map(|data| rustaxa_ffi::BlockRlp { data })
+            .collect())
+    }
+
+    pub fn get_pbft_head(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self.0.pbft().head(H256::from(*hash))?.unwrap_or_default())
+    }
+
+    pub fn get_own_verified_votes(&self) -> Result<Vec<rustaxa_ffi::VoteRlp>, anyhow::Error> {
+        let votes = self.0.pbft().own_verified_votes_rlp()?;
+        Ok(votes
+            .into_iter()
+            .map(|data| rustaxa_ffi::VoteRlp { data })
+            .collect())
+    }
+
+    pub fn get_all_two_t_plus_one_votes(&self) -> Result<Vec<rustaxa_ffi::VoteRlp>, anyhow::Error> {
+        let votes = self.0.pbft().all_two_t_plus_one_votes_rlp()?;
+        Ok(votes
+            .into_iter()
+            .map(|data| rustaxa_ffi::VoteRlp { data })
+            .collect())
+    }
+
+    pub fn get_reward_votes(&self) -> Result<Vec<rustaxa_ffi::VoteRlp>, anyhow::Error> {
+        let votes = self.0.pbft().reward_votes_rlp()?;
+        Ok(votes
+            .into_iter()
+            .map(|data| rustaxa_ffi::VoteRlp { data })
+            .collect())
+    }
+
+    pub fn save_cert_voted_block_in_round(
+        &self,
+        round: u64,
+        block_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .pbft()
+            .write_cert_voted_block_in_round(round, &block_rlp)
+    }
+
+    pub fn save_proposed_pbft_block(
+        &self,
+        hash: &[u8; 32],
+        block_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0.pbft().write_proposed(H256::from(*hash), &block_rlp)
+    }
+
+    pub fn save_pbft_mgr_field(&self, field: u8, value: u32) -> Result<(), anyhow::Error> {
+        self.0.pbft().write_manager_field(field, value)
+    }
+
+    pub fn save_pbft_mgr_status(&self, field: u8, value: bool) -> Result<(), anyhow::Error> {
+        self.0.pbft().write_manager_status(field, value)
+    }
+
+    pub fn save_pbft_head(&self, hash: &[u8; 32], head: Vec<u8>) -> Result<(), anyhow::Error> {
+        self.0.pbft().write_head(H256::from(*hash), &head)
+    }
+
+    pub fn save_own_verified_vote(
+        &self,
+        hash: &[u8; 32],
+        vote_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .pbft()
+            .write_own_verified_vote(H256::from(*hash), &vote_rlp)
+    }
+
+    pub fn remove_cert_voted_block_in_round(&self) -> Result<(), anyhow::Error> {
+        self.0.pbft().remove_cert_voted_block_in_round()
+    }
+
+    pub fn remove_proposed_pbft_block(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
+        self.0.pbft().remove_proposed(H256::from(*hash))
+    }
+
+    pub fn remove_own_verified_vote(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
+        self.0.pbft().remove_own_verified_vote(H256::from(*hash))
+    }
+
+    pub fn remove_extra_reward_vote(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
+        self.0.pbft().remove_extra_reward_vote(H256::from(*hash))
+    }
+
+    pub fn replace_two_t_plus_one_votes(
+        &self,
+        vote_type: u8,
+        votes_bundle_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .pbft()
+            .replace_two_t_plus_one_votes(vote_type, &votes_bundle_rlp)
+    }
+
+    pub fn save_extra_reward_vote(
+        &self,
+        hash: &[u8; 32],
+        vote_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .pbft()
+            .write_extra_reward_vote(H256::from(*hash), &vote_rlp)
+    }
+
+    pub fn transaction_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
+        self.0.transaction().exists(H256::from(*hash))
+    }
+
+    pub fn transaction_finalized(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
+        self.0.transaction().finalized(H256::from(*hash))
+    }
+
+    pub fn get_transaction_location(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .0
+            .transaction()
+            .location_rlp(H256::from(*hash))?
+            .unwrap_or_default())
+    }
+
+    pub fn get_transaction(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .0
+            .transaction()
+            .rlp(H256::from(*hash))?
+            .unwrap_or_default())
+    }
+
+    pub fn get_transaction_by_period_position(
+        &self,
+        period: u64,
+        position: u32,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .0
+            .transaction()
+            .by_period_position_rlp(period, position)?
+            .unwrap_or_default())
+    }
+
+    pub fn get_transaction_count(&self, period: u64) -> Result<u64, anyhow::Error> {
+        self.0.transaction().count(period)
+    }
+
+    pub fn get_system_transaction(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .0
+            .transaction()
+            .system_rlp(H256::from(*hash))?
+            .unwrap_or_default())
+    }
+
+    pub fn get_all_nonfinalized_transactions(
+        &self,
+    ) -> Result<Vec<rustaxa_ffi::TxRlp>, anyhow::Error> {
+        let trxs = self.0.transaction().all_nonfinalized_rlp()?;
+        Ok(trxs
+            .into_iter()
+            .map(|data| rustaxa_ffi::TxRlp { data })
+            .collect())
+    }
+
+    pub fn get_all_transaction_period(
+        &self,
+    ) -> Result<Vec<rustaxa_ffi::HashPeriod>, anyhow::Error> {
+        let periods = self.0.transaction().all_with_period()?;
+        Ok(periods
+            .into_iter()
+            .map(|(hash, period)| {
+                let mut h = [0u8; 32];
+                h.copy_from_slice(hash.as_bytes());
+                rustaxa_ffi::HashPeriod { hash: h, period }
+            })
+            .collect())
+    }
+
+    pub fn get_period_system_transactions_hashes(
+        &self,
+        period: u64,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        self.0.transaction().period_system_hashes_rlp(period)
+    }
+
+    pub fn save_transaction(&self, hash: &[u8; 32], trx_rlp: Vec<u8>) -> Result<(), anyhow::Error> {
+        self.0.transaction().write(H256::from(*hash), &trx_rlp)
+    }
+
+    pub fn remove_transaction(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
+        self.0.transaction().remove(H256::from(*hash))
+    }
+
+    pub fn save_transaction_location(
+        &self,
+        hash: &[u8; 32],
+        period: u64,
+        position: u32,
+        is_system: bool,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .transaction()
+            .write_location(H256::from(*hash), period, position, is_system)
+    }
+
+    pub fn save_system_transaction(
+        &self,
+        hash: &[u8; 32],
+        trx_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .transaction()
+            .write_system(H256::from(*hash), &trx_rlp)
+    }
+
+    pub fn save_period_system_transactions_hashes(
+        &self,
+        period: u64,
+        hashes_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0
+            .transaction()
+            .write_period_system_hashes(period, &hashes_rlp)
+    }
+}

@@ -41,6 +41,15 @@ DbStorage::DbStorage(const fs::path& path, uint32_t db_snapshot_each_n_pbft_bloc
   async_write_.sync = false;
   sync_write_.sync = true;
 
+#ifdef RUSTAXA_ENABLE_STORAGE
+  (void)max_open_files;
+  (void)db_revert_to_period;
+  (void)node_addr;
+  (void)rebuild;
+  kMajorVersion_ = 0;
+  return;
+#endif
+
   if (rebuild) {
     const std::string backup_label = "-rebuild-backup-";
     auto timestamp = std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
@@ -409,6 +418,10 @@ std::optional<h256> DbStorage::getGenesisHash() {
 }
 
 DbStorage::~DbStorage() {
+  if (!db_) {
+    return;
+  }
+
   for (auto cf : handles_) {
     if (cf->GetName() != "default") {
       checkStatus(db_->DestroyColumnFamilyHandle(cf));
@@ -533,7 +546,9 @@ void DbStorage::removeDagBlockBatch(Batch& write_batch, blk_hash_t const& hash) 
   remove(write_batch, Columns::dag_blocks, toSlice(hash));
 }
 
-void DbStorage::removeDagBlock(blk_hash_t const& hash) { remove(Columns::dag_blocks, toSlice(hash)); }
+void DbStorage::removeDagBlock(blk_hash_t const& hash) {
+  remove(Columns::dag_blocks, toSlice(hash));
+}
 
 void DbStorage::updateDagBlockCounters(std::vector<std::shared_ptr<DagBlock>> blks) {
   // Lock is needed since we are editing some fields
@@ -591,6 +606,7 @@ void DbStorage::saveSortitionParamsChange(PbftPeriod period, const SortitionPara
 std::deque<SortitionParamsChange> DbStorage::getLastSortitionParams(size_t count) {
   std::deque<SortitionParamsChange> changes;
 
+
   auto it =
       std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::sortition_params_change)));
   for (it->SeekToLast(); it->Valid() && changes.size() < count; it->Prev()) {
@@ -601,6 +617,7 @@ std::deque<SortitionParamsChange> DbStorage::getLastSortitionParams(size_t count
 }
 
 std::optional<SortitionParamsChange> DbStorage::getParamsChangeForPeriod(PbftPeriod period) {
+
   auto it =
       std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::sortition_params_change)));
   it->SeekForPrev(toSlice(period));
@@ -713,10 +730,10 @@ void DbStorage::addTransactionLocationToBatch(Batch& write_batch, trx_hash_t con
 }
 
 std::optional<TransactionLocation> DbStorage::getTransactionLocation(trx_hash_t const& hash) const {
-  auto data = lookup(toSlice(hash.asBytes()), Columns::trx_period);
-  if (!data.empty()) {
+  auto location_data = lookup(toSlice(hash.asBytes()), Columns::trx_period);
+  if (!location_data.empty()) {
     // Don't use std::move - RLP stores a reference and needs data to stay alive
-    return TransactionLocation::fromRlp(dev::RLP(data));
+    return TransactionLocation::fromRlp(dev::RLP(location_data));
   }
   return std::nullopt;
 }
@@ -1282,6 +1299,7 @@ void DbStorage::savePeriodLambda(PbftPeriod period, uint32_t period_lambda, Batc
 }
 
 std::optional<uint32_t> DbStorage::getPeriodLambda(PbftPeriod period, bool find_closest) {
+
   if (find_closest) {
     auto it = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::period_lambda)));
     if (it->SeekForPrev(toSlice(period)); it->Valid()) {
@@ -1308,6 +1326,7 @@ void DbStorage::saveRoundsCountDynamicLambda(uint32_t rounds_count, Batch& write
 }
 
 uint32_t DbStorage::getRoundsCountDynamicLambda() {
+
   auto rounds_count_bytes = lookup(0, Columns::rounds_count_dynamic_lambda);
   if (!rounds_count_bytes.empty()) {
     uint32_t value;
@@ -1320,6 +1339,7 @@ uint32_t DbStorage::getRoundsCountDynamicLambda() {
 
 std::unordered_map<PbftPeriod, rewards::BlockStats> DbStorage::getBlocksRewardsStats() const {
   std::unordered_map<PbftPeriod, rewards::BlockStats> rewards_stats;
+
 
   auto it = std::unique_ptr<rocksdb::Iterator>(db_->NewIterator(read_options_, handle(Columns::block_rewards_stats)));
   for (it->SeekToFirst(); it->Valid(); it->Next()) {

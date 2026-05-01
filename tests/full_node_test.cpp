@@ -115,6 +115,8 @@ TEST_F(FullNodeTest, db_test) {
   EXPECT_EQ(*blk1, *db.getDagBlock(blk1->getHash()));
   EXPECT_EQ(*blk2, *db.getDagBlock(blk2->getHash()));
   EXPECT_EQ(*blk3, *db.getDagBlock(blk3->getHash()));
+  EXPECT_EQ(nullptr, db.getDagBlock(blk_hash_t(0xDEAD)));
+  EXPECT_EQ(nullptr, db.getDagBlockPeriod(blk_hash_t(0xDEAD)));
   std::set<blk_hash_t> s1, s2;
   s1.emplace(blk1->getHash());
   s1.emplace(blk2->getHash());

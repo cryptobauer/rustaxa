@@ -163,7 +163,7 @@ class DbStorage : public std::enable_shared_from_this<DbStorage> {
   rocksdb::WriteOptions async_write_;
   rocksdb::WriteOptions sync_write_;
 
- private:
+ protected:
   fs::path path_;
   fs::path db_path_;
   fs::path state_db_path_;

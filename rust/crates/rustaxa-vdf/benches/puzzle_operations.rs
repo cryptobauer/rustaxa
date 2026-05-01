@@ -115,12 +115,18 @@ fn bench_puzzle_edge_cases(c: &mut Criterion) {
         ("empty_input", 10u32, vec![], vec![3u8]),
         ("single_byte_input", 10u32, vec![42u8], vec![7u8]),
         ("single_byte_modulus", 10u32, vec![1u8, 2u8], vec![11u8]),
-        ("large_input_small_modulus", 15u32, vec![255u8; 32], vec![
-            13u8,
-        ]),
-        ("equal_input_modulus", 15u32, vec![17u8, 19u8], vec![
-            17u8, 19u8,
-        ]),
+        (
+            "large_input_small_modulus",
+            15u32,
+            vec![255u8; 32],
+            vec![13u8],
+        ),
+        (
+            "equal_input_modulus",
+            15u32,
+            vec![17u8, 19u8],
+            vec![17u8, 19u8],
+        ),
     ];
 
     for (name, time_bits, input, modulus) in edge_cases.iter() {
@@ -203,9 +209,11 @@ fn bench_puzzle_modular_arithmetic(c: &mut Criterion) {
         ("input_greater_than_modulus", vec![100u8], vec![7u8]),
         ("large_input_small_modulus", vec![255u8, 255u8], vec![3u8]),
         ("multi_byte_equal", vec![1u8, 2u8, 3u8], vec![1u8, 2u8, 3u8]),
-        ("multi_byte_mod", vec![255u8, 254u8, 253u8], vec![
-            1u8, 1u8, 1u8,
-        ]),
+        (
+            "multi_byte_mod",
+            vec![255u8, 254u8, 253u8],
+            vec![1u8, 1u8, 1u8],
+        ),
     ];
 
     let time_bits = 15u32;

@@ -68,5 +68,5 @@
 		}
 	},
 	"remoteUser": "root",
-	"postCreateCommand": "git config --global include.path /root/.gitconfig-host && git config --global includeIf.\"gitdir:/workspaces/rustaxa/\".path /root/.gitconfig-cryptobauer && git config --global core.sshCommand \"ssh -i /root/.ssh/id_ed25519_cryptobauer\" && git config core.untrackedCache true && ln -sf /build/compile_commands.json compile_commands.json && (gpg --homedir /root/.gnupg-host --export | gpg --import || true)"
+	"postCreateCommand": "/bin/sh .devcontainer/post-create.sh"
 }

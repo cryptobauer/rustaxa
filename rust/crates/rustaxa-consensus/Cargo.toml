@@ -1,0 +1,11 @@
+[package]
+name = "rustaxa-consensus"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.100"
+ethereum-types = { version = "0.16.0", features = ["rlp"] }
+rlp = "0.6"
+rustaxa-storage = { version = "0.1.0", path = "../rustaxa-storage" }
+rustaxa-types = { version = "0.1.0", path = "../rustaxa-types" }
