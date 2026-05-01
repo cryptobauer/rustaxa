@@ -13,7 +13,7 @@ CMAKE_BUILD_TYPE?=RelWithDebInfo
 CPP_INTERSECTION_PATHS?=
 CPP_INTERSECTION_BASE?=main
 CPP_INTERSECTION_REF?=cpp-reference
-CPP_INTERSECTION_EXCLUDES?=':(exclude)rust/**' ':(exclude).devcontainer/**' ':(exclude).github/**' ':(exclude)Makefile' ':(exclude)RUST_REWRITE.md'
+CPP_INTERSECTION_EXCLUDES?=':(exclude)rust/**' ':(exclude).devcontainer/**' ':(exclude).github/**' ':(exclude)Makefile' ':(exclude)AGENTS.md' ':(exclude)PLAN.md'
 CPP_INTERSECTION_PATCH?=$(BUILD_OUTPUT_DIR)/cpp-reference-intersection.patch
 
 .PHONY: help
