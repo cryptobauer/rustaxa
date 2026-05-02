@@ -34,13 +34,14 @@ std::string into_string(const rust::Vec<uint8_t>& bytes) {
 FinalChain::FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullNodeConfig& config,
                        const addr_t& node_addr)
     : FinalChainOld(db, config, node_addr) {
+  delegation_delay_ = config.genesis.state.dpos.delegation_delay;
   rust_final_chain_ = rustaxa::create_final_chain(db->rustStorage(), config.genesis.pbft.gas_limit,
                                                   config.genesis.dag_genesis_block.getTimestamp());
 }
 
 void FinalChain::stop() { throw_unimplemented_final_chain_api("stop"); }
 
-EthBlockNumber FinalChain::delegationDelay() const { throw_unimplemented_final_chain_api("delegationDelay"); }
+EthBlockNumber FinalChain::delegationDelay() const { return delegation_delay_; }
 
 std::future<std::shared_ptr<const FinalizationResult>> FinalChain::finalize(PeriodData&&, std::vector<h256>&&, uint32_t,
                                                                             std::shared_ptr<DagBlock>&&) {

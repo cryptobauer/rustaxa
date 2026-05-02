@@ -71,6 +71,7 @@ class FinalChain : public FinalChainOld {
   SharedTransactionReceipts blockReceipts(std::optional<EthBlockNumber> n = {}) const;
 
  private:
+  EthBlockNumber delegation_delay_ = 0;
   std::optional<::rust::Box<rustaxa::BridgeFinalChain>> rust_final_chain_;
 };
 
