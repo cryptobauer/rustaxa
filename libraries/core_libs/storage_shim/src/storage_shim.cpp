@@ -53,6 +53,13 @@ DbStorage::DbStorage(fs::path const& path, uint32_t db_snapshot_each_n_pbft_bloc
                    node_addr, rebuild) {
   try {
     rust_storage_ = rustaxa::create_storage(path.string());
+    kMajorVersion_ = static_cast<uint32_t>(getStatusField(StatusDbField::DbMajorVersion));
+    auto const minor_version = static_cast<uint32_t>(getStatusField(StatusDbField::DbMinorVersion));
+    if (kMajorVersion_ != 0 && kMajorVersion_ != TARAXA_DB_MAJOR_VERSION) {
+      major_version_changed_ = true;
+    } else if (minor_version != TARAXA_DB_MINOR_VERSION) {
+      minor_version_changed_ = true;
+    }
   } catch (std::exception const& e) {
     LOG(log_er_) << "Error: " << e.what() << std::endl;
     throw DbException(std::string("Rust storage init failed: ") + e.what());
@@ -190,7 +197,7 @@ void DbStorage::deleteTmpDirectories(const std::string& path) const {
   throw_unimplemented_shim_api("deleteTmpDirectories");
 }
 
-uint32_t DbStorage::getMajorVersion() const { throw_unimplemented_shim_api("getMajorVersion"); }
+uint32_t DbStorage::getMajorVersion() const { return kMajorVersion_; }
 
 std::unique_ptr<rocksdb::Iterator> DbStorage::getColumnIterator(const Column& c) {
   (void)c;
@@ -1099,9 +1106,9 @@ void DbStorage::saveBlockRewardsStats(uint64_t period, const rewards::BlockStats
   insert(write_batch, Columns::block_rewards_stats, period, encoding.out());
 }
 
-bool DbStorage::hasMinorVersionChanged() { throw_unimplemented_shim_api("hasMinorVersionChanged"); }
+bool DbStorage::hasMinorVersionChanged() { return minor_version_changed_; }
 
-bool DbStorage::hasMajorVersionChanged() { throw_unimplemented_shim_api("hasMajorVersionChanged"); }
+bool DbStorage::hasMajorVersionChanged() { return major_version_changed_; }
 
 void DbStorage::compactColumn(Column const& column) {
   (void)column;
