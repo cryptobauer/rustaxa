@@ -82,6 +82,11 @@ class DbStorage : public DbStorageOld {
     if (column.ordinal_ == Columns::final_chain_receipt_by_trx_hash.ordinal_) {
       return lookupFinalChainReceiptByTrxHash(key_slice);
     }
+    if (column.ordinal_ == Columns::migrations.ordinal_) {
+      // Migration execution stays C++-owned and out of Rust shim scope. Returning a truthy bool payload makes
+      // migration::Base::isApplied() skip migration work without adding Rust support for the migrations column.
+      return std::string(1, '\1');
+    }
     throw DbException("DbStorage::lookup unsupported column in Rust shim mode: " + column.name());
   }
 
