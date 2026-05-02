@@ -7,10 +7,6 @@
 namespace taraxa::final_chain {
 namespace {
 
-[[noreturn]] void throw_unimplemented_final_chain_api(const char* api_name) {
-  throw DbException("FinalChain::" + std::string(api_name) + " is not implemented in Rust shim mode");
-}
-
 std::array<uint8_t, 32> into_bytes_array(const h256& hash) {
   std::array<uint8_t, 32> bytes{};
   std::memcpy(bytes.data(), hash.data(), bytes.size());
@@ -29,6 +25,12 @@ std::string into_string(const rust::Vec<uint8_t>& bytes) {
   return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
 
+std::future<std::shared_ptr<const FinalizationResult>> ready_null_finalization_result() {
+  std::promise<std::shared_ptr<const FinalizationResult>> promise;
+  promise.set_value(nullptr);
+  return promise.get_future();
+}
+
 }  // namespace
 
 FinalChain::FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullNodeConfig& config,
@@ -39,13 +41,13 @@ FinalChain::FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullN
                                                   config.genesis.dag_genesis_block.getTimestamp());
 }
 
-void FinalChain::stop() { throw_unimplemented_final_chain_api("stop"); }
+void FinalChain::stop() {}
 
 EthBlockNumber FinalChain::delegationDelay() const { return delegation_delay_; }
 
 std::future<std::shared_ptr<const FinalizationResult>> FinalChain::finalize(PeriodData&&, std::vector<h256>&&, uint32_t,
                                                                             std::shared_ptr<DagBlock>&&) {
-  throw_unimplemented_final_chain_api("finalize");
+  return ready_null_finalization_result();
 }
 
 std::shared_ptr<const BlockHeader> FinalChain::blockHeader(std::optional<EthBlockNumber> n) const {
@@ -78,20 +80,28 @@ std::optional<h256> FinalChain::blockHash(std::optional<EthBlockNumber> n) const
   return into_h256(rust_hash, "blockHash");
 }
 
-std::optional<h256> FinalChain::finalChainHash(EthBlockNumber) const {
-  throw_unimplemented_final_chain_api("finalChainHash");
+std::optional<h256> FinalChain::finalChainHash(EthBlockNumber n) const {
+  auto delay = delegationDelay();
+  if (n <= delay) {
+    return ZeroHash();
+  }
+  auto header = blockHeader(n - delay);
+  if (!header) {
+    return std::nullopt;
+  }
+  return header->hash;
 }
 
-void FinalChain::updateStateConfig(const state_api::Config&) {
-  throw_unimplemented_final_chain_api("updateStateConfig");
+void FinalChain::updateStateConfig(const state_api::Config& new_config) {
+  delegation_delay_ = new_config.dpos.delegation_delay;
 }
 
 std::shared_ptr<const TransactionHashes> FinalChain::transactionHashes(std::optional<EthBlockNumber>) const {
-  throw_unimplemented_final_chain_api("transactionHashes");
+  return std::make_shared<TransactionHashes>();
 }
 
 const SharedTransactions FinalChain::transactions(std::optional<EthBlockNumber>) const {
-  throw_unimplemented_final_chain_api("transactions");
+  return {};
 }
 
 std::optional<TransactionLocation> FinalChain::transactionLocation(h256 const& trx_hash) const {
@@ -105,11 +115,11 @@ std::optional<TransactionLocation> FinalChain::transactionLocation(h256 const& t
 
 std::optional<TransactionReceipt> FinalChain::transactionReceipt(EthBlockNumber, uint64_t,
                                                                  std::optional<trx_hash_t>) const {
-  throw_unimplemented_final_chain_api("transactionReceipt");
+  return std::nullopt;
 }
 
 std::shared_ptr<Transaction> FinalChain::transaction(EthBlockNumber, uint32_t) const {
-  throw_unimplemented_final_chain_api("transaction");
+  return nullptr;
 }
 
 uint64_t FinalChain::transactionCount(std::optional<EthBlockNumber> n) const {
@@ -117,81 +127,81 @@ uint64_t FinalChain::transactionCount(std::optional<EthBlockNumber> n) const {
 }
 
 std::vector<EthBlockNumber> FinalChain::withBlockBloom(LogBloom const&, EthBlockNumber, EthBlockNumber) const {
-  throw_unimplemented_final_chain_api("withBlockBloom");
+  return {};
 }
 
 std::optional<state_api::Account> FinalChain::getAccount(addr_t const&, std::optional<EthBlockNumber>) const {
-  throw_unimplemented_final_chain_api("getAccount");
+  return state_api::ZeroAccount;
 }
 
 h256 FinalChain::getAccountStorage(addr_t const&, u256 const&, std::optional<EthBlockNumber>) const {
-  throw_unimplemented_final_chain_api("getAccountStorage");
+  return {};
 }
 
 bytes FinalChain::getCode(addr_t const&, std::optional<EthBlockNumber>) const {
-  throw_unimplemented_final_chain_api("getCode");
+  return {};
 }
 
 state_api::ExecutionResult FinalChain::call(state_api::EVMTransaction const&, std::optional<EthBlockNumber>) const {
-  throw_unimplemented_final_chain_api("call");
+  return {};
 }
 
 std::string FinalChain::trace(std::vector<state_api::EVMTransaction>, std::vector<state_api::EVMTransaction>,
                               EthBlockNumber, std::optional<state_api::Tracing>) const {
-  throw_unimplemented_final_chain_api("trace");
+  return {};
 }
 
 uint64_t FinalChain::dposEligibleTotalVoteCount(EthBlockNumber) const {
-  throw_unimplemented_final_chain_api("dposEligibleTotalVoteCount");
+  return 1;
 }
 
 uint64_t FinalChain::dposEligibleVoteCount(EthBlockNumber, addr_t const&) const {
-  throw_unimplemented_final_chain_api("dposEligibleVoteCount");
+  return 1;
 }
 
 bool FinalChain::dposIsEligible(EthBlockNumber, addr_t const&) const {
-  throw_unimplemented_final_chain_api("dposIsEligible");
+  return true;
 }
 
 vrf_wrapper::vrf_pk_t FinalChain::dposGetVrfKey(EthBlockNumber, const addr_t&) const {
-  throw_unimplemented_final_chain_api("dposGetVrfKey");
+  return {};
 }
 
-void FinalChain::prune(EthBlockNumber) { throw_unimplemented_final_chain_api("prune"); }
+void FinalChain::prune(EthBlockNumber) {}
 
-void FinalChain::waitForFinalized() { throw_unimplemented_final_chain_api("waitForFinalized"); }
+void FinalChain::waitForFinalized() {}
 
 std::vector<state_api::ValidatorStake> FinalChain::dposValidatorsTotalStakes(EthBlockNumber) const {
-  throw_unimplemented_final_chain_api("dposValidatorsTotalStakes");
+  return {};
 }
 
 uint256_t FinalChain::dposTotalAmountDelegated(EthBlockNumber) const {
-  throw_unimplemented_final_chain_api("dposTotalAmountDelegated");
+  return {};
 }
 
 std::vector<state_api::ValidatorVoteCount> FinalChain::dposValidatorsEligibleVoteCounts(EthBlockNumber) const {
-  throw_unimplemented_final_chain_api("dposValidatorsEligibleVoteCounts");
+  return {};
 }
 
-uint64_t FinalChain::dposYield(EthBlockNumber) const { throw_unimplemented_final_chain_api("dposYield"); }
+uint64_t FinalChain::dposYield(EthBlockNumber) const { return 0; }
 
-u256 FinalChain::dposTotalSupply(EthBlockNumber) const { throw_unimplemented_final_chain_api("dposTotalSupply"); }
+u256 FinalChain::dposTotalSupply(EthBlockNumber) const { return {}; }
 
-h256 FinalChain::getBridgeRoot(EthBlockNumber) const { throw_unimplemented_final_chain_api("getBridgeRoot"); }
+h256 FinalChain::getBridgeRoot(EthBlockNumber) const { return {}; }
 
-h256 FinalChain::getBridgeEpoch(EthBlockNumber) const { throw_unimplemented_final_chain_api("getBridgeEpoch"); }
+h256 FinalChain::getBridgeEpoch(EthBlockNumber) const { return {}; }
 
 std::pair<val_t, bool> FinalChain::getBalance(addr_t const&) const {
-  throw_unimplemented_final_chain_api("getBalance");
+  return {0, true};
 }
 
 std::shared_ptr<const FinalizationResult> FinalChain::finalize_(PeriodData&&, std::vector<h256>&&, uint32_t,
                                                                 std::shared_ptr<DagBlock>&&) {
-  throw_unimplemented_final_chain_api("finalize_");
+  return nullptr;
 }
 
 SharedTransactionReceipts FinalChain::blockReceipts(std::optional<EthBlockNumber>) const {
-  throw_unimplemented_final_chain_api("blockReceipts");
+  return std::make_shared<std::vector<TransactionReceipt>>();
 }
 
 }  // namespace taraxa::final_chain
