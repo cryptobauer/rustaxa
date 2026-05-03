@@ -5,6 +5,7 @@ fn main() {
         .compile("rustaxa-bridge");
 
     println!("cargo:rerun-if-changed=src/ffi.rs");
+    println!("cargo:rerun-if-changed=src/dag.rs");
     println!("cargo:rerun-if-changed=src/final_chain.rs");
     println!("cargo:rerun-if-changed=src/lib.rs");
     println!("cargo:rerun-if-changed=src/vdf.rs");

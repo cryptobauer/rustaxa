@@ -48,6 +48,11 @@ Core rules:
 - Runtime/bootstrap code wires concrete implementations together.
 - Avoid "everything bag" context structs and broad service locators.
 - Keep dependency direction one-way: domain -> ports, infra -> port implementations, runtime -> wiring.
+- Rust rewrite code should use clearer names than C++ when legacy names are ambiguous, unclear, overly abbreviated, or
+  easy to misread. Preserve C++ compatibility at the shim boundary, but prefer descriptive Rust APIs internally.
+- Rust modules should use `anyhow` for fallible APIs unless a narrower error type is explicitly needed at a domain
+  boundary. Convert lower-level errors into `anyhow::Result` with useful context instead of leaking incidental backend
+  details through domain APIs.
 
 Dispatch guidance:
 

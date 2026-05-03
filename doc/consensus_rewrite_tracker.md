@@ -106,7 +106,7 @@ Required test coverage and parity gates for the Rust consensus model are defined
 Target behavior:
 
 - `Dag::hasVertex`
-- `Dag::addVEEs`
+- Rust `DagGraph::add_vertex_edges` parity with C++ `Dag::addVEEs`
 - leaf collection
 - `PivotTree::getGhostPath`
 - `Dag::computeOrder`
@@ -137,7 +137,7 @@ Open questions:
 | Change area | Minimum validation |
 | --- | --- |
 | Rust consensus domain only | `cargo fmt --manifest-path rust/Cargo.toml`, `cargo clippy --manifest-path rust/Cargo.toml`, `cargo test --manifest-path rust/Cargo.toml` |
-| DAG graph routing | Rust validation plus `dag_test` and `dag_block_test` |
+| DAG graph routing | Rust validation plus `rust_consensus_tests`, `dag_test`, and `dag_block_test` |
 | PBFT chain/proposed-block/queue routing | Rust validation plus `pbft_chain_test` and relevant `pbft_manager_test` cases |
 | Vote aggregation/eligibility | Rust validation plus `vote_test`, relevant `pbft_manager_test`, and DPoS/state API coverage |
 | Transaction queue behavior | Rust validation plus `transaction_test` and affected DAG/PBFT tests |

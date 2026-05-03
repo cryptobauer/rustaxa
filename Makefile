@@ -16,7 +16,7 @@ CPP_INTERSECTION_HEAD?=main
 CPP_INTERSECTION_EXCLUDES?=':(exclude)rust/**' ':(exclude).devcontainer/**' ':(exclude).github/**' ':(exclude).gitignore' ':(exclude)Makefile' ':(exclude)AGENTS.md' ':(exclude)PLAN.md'
 CPP_INTERSECTION_PATCH?=$(BUILD_OUTPUT_DIR)/cpp-reference-intersection.patch
 RUST_MANIFEST?=rust/Cargo.toml
-REWRITE_CONSENSUS_TESTS?=dag_test dag_block_test pbft_chain_test pbft_manager_test vote_test pillar_chain_test rewards_stats_test
+REWRITE_CONSENSUS_TESTS?=rust_consensus_tests dag_test dag_block_test pbft_chain_test pbft_manager_test vote_test pillar_chain_test rewards_stats_test
 REWRITE_FINAL_CHAIN_TESTS?=final_chain_test state_api_test rpc_test
 
 define require_cmake_build
@@ -136,7 +136,7 @@ rust-update: ## Update the Rust toolchain (works around overlayfs cross-device r
 
 .PHONY: rewrite-validate-fast
 rewrite-validate-fast: ## Run fast Rust rewrite checks and whitespace validation.
-	cargo fmt --manifest-path $(RUST_MANIFEST) --check
+	cargo fmt --manifest-path $(RUST_MANIFEST) --all --check
 	cargo clippy --manifest-path $(RUST_MANIFEST)
 	cargo test --manifest-path $(RUST_MANIFEST)
 	git diff --check

@@ -28,7 +28,7 @@ Use this tier for narrow Rust changes and as the base for broader rewrite work.
 `make rewrite-validate-fast` runs:
 
 ```bash
-cargo fmt --manifest-path rust/Cargo.toml --check
+cargo fmt --manifest-path rust/Cargo.toml --all --check
 cargo clippy --manifest-path rust/Cargo.toml
 cargo test --manifest-path rust/Cargo.toml
 git diff --check

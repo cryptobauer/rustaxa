@@ -1,6 +1,8 @@
+use crate::dag::*;
 use crate::final_chain::*;
 use crate::storage::*;
 use crate::vdf::*;
+use rustaxa_consensus::dag::DagGraph;
 use rustaxa_consensus::FinalChain;
 use rustaxa_storage::Storage;
 use rustaxa_storage::StorageWriteBatch;
@@ -16,6 +18,8 @@ pub struct BridgeStorage(
 );
 
 pub struct BridgeFinalChain(pub FinalChain);
+
+pub struct BridgeDagGraph(pub DagGraph);
 
 #[cxx::bridge(namespace = "rustaxa")]
 pub mod rustaxa_ffi {
@@ -72,6 +76,20 @@ pub mod rustaxa_ffi {
         value: u64,
     }
 
+    struct DagHash {
+        hash: [u8; 32],
+    }
+
+    struct DagLevelHashes {
+        level: u64,
+        hashes: Vec<DagHash>,
+    }
+
+    struct DagOrder {
+        found: bool,
+        hashes: Vec<DagHash>,
+    }
+
     extern "Rust" {
         type WesolowskiVdf;
         type CancellationToken;
@@ -97,6 +115,28 @@ pub mod rustaxa_ffi {
 
         pub fn solution_get_proof(solution: &Solution) -> &[u8];
         pub fn solution_get_output(solution: &Solution) -> &[u8];
+
+        // Consensus DAG
+
+        type BridgeDagGraph;
+
+        pub fn create_dag_graph(genesis: &[u8; 32]) -> Box<BridgeDagGraph>;
+        pub fn dag_vertex_count(self: &BridgeDagGraph) -> usize;
+        pub fn dag_edge_count(self: &BridgeDagGraph) -> usize;
+        pub fn dag_has_vertex(self: &BridgeDagGraph, vertex: &[u8; 32]) -> bool;
+        pub fn dag_add_vertex_edges(
+            self: &mut BridgeDagGraph,
+            new_vertex: &[u8; 32],
+            pivot: &[u8; 32],
+            tips: Vec<DagHash>,
+        ) -> bool;
+        pub fn dag_leaves(self: &BridgeDagGraph) -> Vec<DagHash>;
+        pub fn dag_ghost_path(self: &BridgeDagGraph, root: &[u8; 32]) -> Vec<DagHash>;
+        pub fn dag_compute_order(
+            self: &BridgeDagGraph,
+            anchor: &[u8; 32],
+            non_finalized_blocks: Vec<DagLevelHashes>,
+        ) -> DagOrder;
 
         // Storage
 
