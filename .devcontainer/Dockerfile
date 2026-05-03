@@ -30,3 +30,6 @@ RUN chsh -s $(which zsh) root
 # Configure fzf to use fd
 RUN echo 'export FZF_DEFAULT_COMMAND="fdfind --type f"' >> /root/.zshrc && \
     echo 'export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"' >> /root/.zshrc
+
+# Use repository-managed hooks, including Rust fmt/clippy/test validation.
+RUN git config --system core.hooksPath .githooks

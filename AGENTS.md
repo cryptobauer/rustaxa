@@ -27,12 +27,10 @@ This repository is the Rust rewrite track for Taraxa. Keep day-to-day work align
 - `make configure && make build`: configure Conan/CMake and compile `taraxad` using the default `/build` tree.
 - `cd /build/tests && ctest --output-on-failure`: run registered C++ and `go_test` suites.
 - `cd tests/py && ./run.sh -s --tb=short`: run Python integration tests.
-- `cargo test --manifest-path rust/Cargo.toml`: run Rust workspace tests.
-- `cargo clippy --manifest-path rust/Cargo.toml`: run Rust lints.
-- `cargo fmt --manifest-path rust/Cargo.toml`: format Rust code.
+- `make rewrite-validate-fast`: run the Rust pre-commit checks (`cargo fmt --check`, `cargo clippy`, and `cargo test`) plus whitespace validation.
 - `cmake --build /build --target check-static`: run configured static/style checks before closeout when C++ changed.
 
-For Rust code changes, always run `cargo fmt --manifest-path rust/Cargo.toml`, `cargo clippy --manifest-path rust/Cargo.toml`, and `cargo test --manifest-path rust/Cargo.toml` before closeout, and address any problems found.
+Rust code changes are validated by the repository pre-commit hook at `.githooks/pre-commit`; address any problems it finds before closeout.
 
 ## Storage Rewrite Validation
 
