@@ -28,7 +28,7 @@ Required test coverage and parity gates for the Rust consensus model are defined
 | Area | Rust location | Status | Notes |
 | --- | --- | --- | --- |
 | FinalChain read/index helper | `rust/crates/rustaxa-consensus/src/final_chain.rs` | `rust-backed` for selected FinalChain reads | Exists because FinalChain work started before consensus. It is not a PBFT/DAG port yet. |
-| Consensus crate root | `rust/crates/rustaxa-consensus/src/lib.rs` | `not-started` for consensus | Currently only re-exports `FinalChain`. |
+| Consensus crate root | `rust/crates/rustaxa-consensus/src/lib.rs` | `rust-domain` for DAG graph | Exports the standalone DAG graph model and selected FinalChain read helpers. |
 | Shared DAG/PBFT types | `rust/crates/rustaxa-types/src/{dag.rs,pbft.rs}` and codec modules | partial | Useful for future consensus domain types, but not yet a full consensus model. |
 | Storage ports | `rust/crates/rustaxa-storage/src/{dag.rs,pbft.rs,pillar.rs}` | partial infra | Use through narrow domain-facing ports; do not let consensus logic depend on broad storage APIs. |
 
@@ -36,7 +36,7 @@ Required test coverage and parity gates for the Rust consensus model are defined
 
 | Module | Primary files | Approx size | Status | Proposed ownership | Notes |
 | --- | --- | ---: | --- | --- | --- |
-| DAG graph | `dag/dag.hpp`, `dag/dag.cpp` | 424 lines | `not-started` | Rust domain | First implementation slice. Port graph operations before `DagManager`. |
+| DAG graph | `dag/dag.hpp`, `dag/dag.cpp` | 424 lines | `rust-domain` | Rust domain | Standalone Rust `DagGraph` exists with unit coverage and CXX bridge fixture tests. C++ production routing is still pending. |
 | DAG manager | `dag/dag_manager.hpp`, `dag/dag_manager.cpp` | 1048 lines | `not-started` | C++ shim plus Rust domain/infra ports | Depends on transaction manager, PBFT chain, storage, network, key manager, FinalChain. |
 | DAG proposer | `dag/dag_block_proposer.hpp`, `dag/dag_block_proposer.cpp` | 576 lines | `cpp-owned` initially | C++ orchestration, later Rust proposer policy | Threaded, networked, VDF/DPoS-heavy. Keep orchestration in C++ early. |
 | Sortition params | `dag/sortition_params_manager.hpp`, `dag/sortition_params_manager.cpp` | 331 lines | `not-started` | Rust domain plus storage port | Deterministic calculations and RLP/storage compatibility are good Rust candidates after DAG graph. |
@@ -103,6 +103,9 @@ Required test coverage and parity gates for the Rust consensus model are defined
 
 ## First Slice: Rust DAG Graph
 
+Status: `rust-domain` landed. The Rust graph model and CXX bridge fixture tests exist, but C++ `Dag`/`DagManager`
+production behavior is not routed through Rust yet.
+
 Target behavior:
 
 - `Dag::hasVertex`
@@ -114,23 +117,24 @@ Target behavior:
 
 Rust design sketch:
 
-- Add a `dag` module under `rustaxa-consensus`.
-- Model graph state with explicit hash-keyed maps instead of mirroring Boost graph types.
-- Keep ordering deterministic by documenting and testing traversal/order tie-breakers.
-- Expose a narrow CXX bridge only after pure Rust unit tests match C++ behavior fixtures.
-- Keep `DagManager` in C++ during this slice; replace internal graph operations only after parity tests exist.
+- `rustaxa-consensus` has a `dag` module with explicit hash-keyed graph state instead of mirrored Boost graph types.
+- Ordering is deterministic and covered by Rust unit tests and CXX bridge fixture tests.
+- The bridge uses fixed hash bytes and explicit conversion at the boundary.
+- `DagManager` remains in C++ during this slice; production graph routing requires the DAG routing validation gate.
 
 Required tests:
 
-- Rust unit tests for graph insertion, leaves, reachability, ghost path, and deterministic order.
-- C++ parity tests that compare C++ `Dag` and Rust graph output on the same fixtures before changing production routing.
+- Rust unit tests for graph insertion, leaves, reachability, ghost path, and deterministic order. Landed.
+- CXX bridge fixture tests for Rust graph behavior. Landed under `rust_consensus_tests`.
+- Direct C++ vs Rust DAG parity tests or an equivalent fixture-transcript diff before changing production routing.
 - Existing C++ tests: `dag_test`, `dag_block_test`, and ordering cases in `full_node_test`.
 
 Open questions:
 
 - Whether `computeOrder` must preserve every Boost traversal tie-breaker or only the externally visible block order.
 - Whether graphviz/debug output remains C++-only or needs a Rust debug equivalent.
-- Whether CXX should transport hashes as `[u8; 32]` arrays or existing bridge byte wrappers for this slice.
+- Whether direct C++ `Dag` linking can be added to `rust_consensus_tests` without duplicate dependency symbols, or whether
+  parity should stay fixture/transcript based.
 
 ## Validation Matrix
 
@@ -149,7 +153,7 @@ Open questions:
 | Item | Status | Owner decision needed |
 | --- | --- | --- |
 | Replace temporary `dposIsEligible` behavior | `shim-stubbed` | Needs real FinalChain/state DPoS port before consensus can rely on it. |
-| Create Rust DAG graph module | `not-started` | First implementation task. |
+| Create Rust DAG graph module | `rust-domain` | Landed as standalone Rust domain plus bridge tests; no production routing yet. |
 | Define consensus storage ports | `not-started` | Needed before Rust services depend on storage. |
-| Decide CXX bridge shape for consensus hashes and vectors | `not-started` | Prefer plain fixed bytes and explicit conversion at boundary. |
-| Add C++/Rust DAG parity fixture | `not-started` | Should land before production routing changes. |
+| Decide CXX bridge shape for consensus hashes and vectors | `rust-domain` for DAG graph | DAG bridge uses fixed bytes and explicit boundary conversion; revisit if PBFT/vote bridges need richer payloads. |
+| Add C++/Rust DAG parity fixture | `rust-domain` | Rust bridge fixture tests landed; direct C++ vs Rust parity or transcript diff is still required before production routing. |
