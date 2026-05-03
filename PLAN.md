@@ -313,6 +313,8 @@ The current Rust starting point is intentionally small:
 
 Start with a consensus rewrite tracker, then implement Rust DAG graph logic as the first code slice.
 
+Tracker: `doc/consensus_rewrite_tracker.md`
+
 The tracker should list:
 
 - consensus classes and public APIs

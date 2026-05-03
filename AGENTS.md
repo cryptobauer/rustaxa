@@ -7,7 +7,7 @@ This repository is the Rust rewrite track for Taraxa. Keep day-to-day work align
 - `libraries/`: C++ modules by domain, including `core_libs/{consensus,network,storage}`, `types/*`, `app`, `cli`, and `metrics`.
 - `programs/`: node binaries such as `taraxad` and `taraxa-bootnode`.
 - `tests/`: C++/CTest suites, Rust bridge tests under `tests/rust`, storage conformance tests, and Python integration tests.
-- `rust/crates/`: Rust workspace crates, including `rustaxa-bridge`, `rustaxa-storage`, `rustaxa-types`, and `rustaxa-vdf`.
+- `rust/crates/`: Rust workspace crates, including `rustaxa-bridge`, `rustaxa-consensus`, `rustaxa-storage`, `rustaxa-types`, and `rustaxa-vdf`.
 - `scripts/`: build, configuration, sync, and validation helpers.
 - `PLAN.md`: consolidated Rust rewrite roadmap, architecture, scope, and validation plan.
 
@@ -17,7 +17,7 @@ This repository is the Rust rewrite track for Taraxa. Keep day-to-day work align
 - `upstream-main`: clean mirror of upstream C++; no local commits.
 - `cpp-reference`: C++ validation gate with integration hooks; must build and test in pure C++ mode (`RUSTAXA_ENABLE=0`).
 - `main`: primary Rust rewrite branch and source of truth for future implementation.
-- In C++ files, prefer additive `#ifdef RUSTAXA_ENABLE` or shim-overlay integration over deleting legacy logic.
+- In C++ files, prefer additive per-module guards (`#ifdef RUSTAXA_ENABLE_VDF`, `#ifdef RUSTAXA_ENABLE_STORAGE`, `#ifdef RUSTAXA_ENABLE_FINAL_CHAIN`) or the master `#ifdef RUSTAXA_ENABLE` for shim-overlay integration over deleting legacy logic.
 - Do not remove C++ fallback/reference logic from `cpp-reference`.
 - Any original upstream file that includes, links, or otherwise depends on a file that exists only on `main` must guard that dependency behind `RUSTAXA_ENABLE=1` / `#ifdef RUSTAXA_ENABLE` so pure C++ mode on `cpp-reference` does not require main-only files.
 
