@@ -267,6 +267,78 @@ Recommended introduction order:
 3. Finalization result aggregation types.
 4. DPoS validator query types.
 
+## Consensus Rewrite Plan
+
+### Scope
+
+Goal: rewrite consensus internals while keeping existing C++ public APIs and node wiring stable.
+
+Rules:
+
+- Do not delegate Rust shim behavior back to legacy `FinalChainOld` or other old implementation methods.
+- Temporary Rust-mode gaps must be explicit shim-local defaults, no-ops, or tracked unimplemented paths.
+- Treat `dposIsEligible` and related vote-count methods as real consensus work, not permanent dummy behavior.
+- Keep networking callbacks, thread orchestration, and broad node integration in C++ until the Rust domain services are stable.
+
+### Current Consensus Shape
+
+The C++ consensus area includes:
+
+- DAG graph and proposal logic: `Dag`, `DagManager`, `DagBlockProposer`, `SortitionParamsManager`.
+- PBFT state and proposal flow: `PbftManager`, `PbftChain`, `PeriodDataQueue`, `ProposedBlocks`.
+- Voting and eligibility: vote manager, vote bundles, DPoS eligibility, eligible and total vote counts.
+- Transaction flow: `TransactionManager`, `TransactionQueue`, gas pricing, and transaction proposal selection.
+- Pillar chain, rewards, slashing, and final-chain state/query integration.
+
+The current Rust starting point is intentionally small:
+
+- `rustaxa-consensus` contains early FinalChain read/index logic.
+- `rustaxa-types` contains shared Rust domain and codec types.
+- `rustaxa-storage` contains storage repositories that consensus should use through narrow ports.
+
+### Consensus Sequencing
+
+1. Inventory consensus APIs, dependencies, tests, and current Rust shim gaps.
+2. Create a tracker that classifies each item as Rust-backed, shim-stubbed, C++-owned temporary, or out of scope.
+3. Introduce pure Rust domain types for PBFT rounds, steps, votes, DAG ordering metadata, and eligibility outputs.
+4. Port DAG graph operations before `DagManager`: pivot/tip availability, ghost path, ordering, counters, and storage-facing queries.
+5. Define Rust ports for DPoS eligibility, eligible vote count, total vote count, and VRF key access.
+6. Replace the temporary `dposIsEligible` shim behavior once the eligibility port has a real implementation.
+7. Port `PbftChain`, `ProposedBlocks`, and `PeriodDataQueue` with parity around head updates, lookup, proposal selection, and persisted state.
+8. Split `PbftManager` into Rust services for round/step transitions, proposal handling, vote thresholding, and finalization decisions.
+9. Port transaction queue behavior before transaction manager orchestration.
+10. Port deterministic rewards, slashing, and pillar calculations after DPoS and final-chain query ports are real.
+
+### First Implementation Slice
+
+Start with a consensus rewrite tracker, then implement Rust DAG graph logic as the first code slice.
+
+The tracker should list:
+
+- consensus classes and public APIs
+- direct dependencies on storage, final-chain state, networking, transaction pool, and config
+- current tests that cover each area
+- proposed ownership: Rust domain, Rust infra adapter, C++ shim, or deferred legacy path
+
+The first Rust code slice should focus on `Dag` graph operations because the domain is narrower than `PbftManager` and gives PBFT/finalization work a stable base.
+
+### Risks
+
+- `PbftManager` is the largest and most coupled consensus class; port it only after DAG, vote, and chain primitives are stable.
+- DPoS eligibility depends on FinalChain/state surfaces; dummy eligibility behavior must stay temporary and visible.
+- Finalization crosses DAG, PBFT, storage, rewards, and state execution; port finalization decisions only after the read/query ports are real.
+- Consensus behavior is latency-sensitive and persistence-sensitive, so byte compatibility and deterministic ordering tests matter.
+
+### Consensus Validation
+
+Use targeted validation before broad integration runs:
+
+- Rust consensus changes require `cargo fmt --manifest-path rust/Cargo.toml`, `cargo clippy --manifest-path rust/Cargo.toml`, and `cargo test --manifest-path rust/Cargo.toml`.
+- DAG changes should run relevant DAG tests such as `dag_test` and `dag_block_test`.
+- PBFT changes should run relevant PBFT tests such as `pbft_chain_test`, `pbft_manager_test`, and `vote_test`.
+- Pillar/reward/eligibility changes should run `pillar_chain_test` and any affected final-chain or full-node tests.
+- Shim startup behavior should be validated with a Rust-enabled node smoke test when consensus shims change.
+
 ## Validation Matrix
 
 Use the narrowest validation that covers the changed behavior, then broaden for shared or high-risk paths.

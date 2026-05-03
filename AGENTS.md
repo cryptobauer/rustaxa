@@ -19,6 +19,7 @@ This repository is the Rust rewrite track for Taraxa. Keep day-to-day work align
 - `main`: primary Rust rewrite branch and source of truth for future implementation.
 - In C++ files, prefer additive `#ifdef RUSTAXA_ENABLE` or shim-overlay integration over deleting legacy logic.
 - Do not remove C++ fallback/reference logic from `cpp-reference`.
+- Any original upstream file that includes, links, or otherwise depends on a file that exists only on `main` must guard that dependency behind `RUSTAXA_ENABLE=1` / `#ifdef RUSTAXA_ENABLE` so pure C++ mode on `cpp-reference` does not require main-only files.
 
 ## Build and Test Commands
 
@@ -96,7 +97,9 @@ make cpp-reference-apply-intersection FROM=<base_sha> TO=<tip_sha>
 make cpp-intersection-patch FROM=<base_sha> TO=<tip_sha>
 ```
 
-Use `make cpp-reference-apply-intersection` after Rust feature work lands on `main` when C++ intersection changes need to be carried back to `cpp-reference`.
+The intersection helpers are intentionally narrow. `make cpp-intersection-list` defaults to `upstream-main..main`. Patch/apply targets use the explicit `FROM..TO` range. In both cases, helpers select only modified paths that already exist in upstream-owned code, excluding Rust-only, devcontainer, GitHub workflow, docs, Makefile, and `.gitignore` changes. New files that exist only on `main` are not included in the intersection patch.
+
+Use `make cpp-intersection-list` before applying a carry-back patch and verify it is the smallest set of upstream-owned files touched by `main`. Use `make cpp-reference-apply-intersection` after Rust feature work lands on `main` when those original-file changes need to be carried back to `cpp-reference`.
 
 ## Commit and PR Guidelines
 
