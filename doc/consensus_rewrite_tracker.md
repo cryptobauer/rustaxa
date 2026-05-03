@@ -1,6 +1,8 @@
 # Consensus Rewrite Tracker
 
 This tracker expands the consensus section in `PLAN.md`. Keep it current as consensus code moves from C++ into Rust.
+Required test coverage and parity gates for the Rust consensus model are defined in
+`doc/consensus_model_test_plan.md`.
 
 ## Status Legend
 
