@@ -34,6 +34,10 @@ Rust code changes are validated by the repository pre-commit hook at `.githooks/
 
 ## Storage Rewrite Validation
 
+Before closing rewrite work, choose the narrowest validation tier in `doc/rewrite_validation_strategy.md` that covers the
+changed behavior. Do not route Rust production behavior without C++ vs Rust parity validation, plus a Rust-enabled smoke
+or subsystem test when the code runs during node startup, sync, consensus, finalization, or RPC handling.
+
 For every storage-module change, validate the Rust storage bridge tests:
 
 ```bash

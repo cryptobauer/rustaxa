@@ -343,7 +343,8 @@ Use targeted validation before broad integration runs:
 
 ## Validation Matrix
 
-Use the narrowest validation that covers the changed behavior, then broaden for shared or high-risk paths.
+Use the narrowest validation that covers the changed behavior, then broaden for shared or high-risk paths. The dedicated
+strategy and repeatable Makefile targets live in `doc/rewrite_validation_strategy.md`.
 
 | Change area | Minimum validation |
 | --- | --- |
