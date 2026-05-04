@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <fstream>
+#include <stdexcept>
+
 #include "common/init.hpp"
 #include "common/types.hpp"
 #include "dag/dag_manager.hpp"
@@ -128,6 +131,40 @@ TEST_F(DagTest, genesis_get_pivot) {
   graph.getLeaves(leaves);
   EXPECT_EQ(leaves.size(), 1);
 }
+
+TEST_F(DagTest, clear_and_draw_graph_use_current_graph) {
+  const blk_hash_t GENESIS("0000000000000000000000000000000000000000000000000000000000000001");
+  taraxa::Dag graph(GENESIS, addr_t());
+
+  graph.addVEEs(blk_hash_t(2), GENESIS, {});
+  graph.clear();
+
+  EXPECT_EQ(graph.getNumVertices(), 0);
+  EXPECT_EQ(graph.getNumEdges(), 0);
+
+  graph.addVEEs(blk_hash_t(3), blk_hash_t(), {});
+  EXPECT_EQ(graph.getNumVertices(), 1);
+
+  const auto dotfile = data_dir / "dag_graph.dot";
+  graph.drawGraph(dotfile.string());
+
+  std::ifstream dot(dotfile);
+  ASSERT_TRUE(dot.good());
+
+  std::string content((std::istreambuf_iterator<char>(dot)), std::istreambuf_iterator<char>());
+  EXPECT_NE(content.find("digraph"), std::string::npos);
+}
+
+#ifdef RUSTAXA_ENABLE
+TEST_F(DagTest, rust_backed_dag_copy_throws) {
+  const blk_hash_t GENESIS("0000000000000000000000000000000000000000000000000000000000000001");
+  taraxa::Dag graph(GENESIS, addr_t());
+  taraxa::Dag other(GENESIS, addr_t());
+
+  EXPECT_THROW({ taraxa::Dag copy(graph); }, std::logic_error);
+  EXPECT_THROW({ other = graph; }, std::logic_error);
+}
+#endif
 
 // Use the example on Conflux paper
 TEST_F(DagTest, compute_epoch) {

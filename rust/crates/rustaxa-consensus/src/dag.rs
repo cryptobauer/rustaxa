@@ -1,5 +1,6 @@
 use ethereum_types::H256;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DagGraph {
@@ -177,6 +178,25 @@ impl DagGraph {
         self.vertices.clear();
     }
 
+    pub fn graphviz_dot(&self) -> String {
+        let mut dot = String::from("digraph G {\n");
+        for vertex in self.vertices.keys() {
+            let _ = writeln!(
+                dot,
+                "  \"{}\" [label=\"{} \"];",
+                hex_hash(vertex),
+                hex_prefix(vertex)
+            );
+        }
+        for (from, children) in &self.vertices {
+            for child in children {
+                let _ = writeln!(dot, "  \"{}\" -> \"{}\";", hex_hash(from), hex_hash(child));
+            }
+        }
+        dot.push_str("}\n");
+        dot
+    }
+
     fn add_edge(&mut self, from: H256, to: H256) -> bool {
         match self.vertices.get_mut(&from) {
             Some(children) => children.insert(to),
@@ -212,6 +232,21 @@ impl DagGraph {
 
         weights
     }
+}
+
+fn hex_hash(hash: &H256) -> String {
+    hash.as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn hex_prefix(hash: &H256) -> String {
+    hash.as_bytes()
+        .iter()
+        .take(4)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 #[cfg(test)]
@@ -374,5 +409,18 @@ mod tests {
         graph.add_vertex_edges(h(3), H256::zero(), &[]);
         assert_eq!(graph.vertex_count(), 1);
         assert_eq!(graph.leaves(), vec![h(3)]);
+    }
+
+    #[test]
+    fn graphviz_dot_uses_current_graph_edges() {
+        let mut graph = DagGraph::new(h(1));
+        graph.add_vertex_edges(h(2), h(1), &[]);
+
+        let dot = graph.graphviz_dot();
+
+        assert!(
+            dot.contains("\"0000000000000000000000000000000000000000000000000000000000000001\"")
+        );
+        assert!(dot.contains("\"0000000000000000000000000000000000000000000000000000000000000001\" -> \"0000000000000000000000000000000000000000000000000000000000000002\""));
     }
 }

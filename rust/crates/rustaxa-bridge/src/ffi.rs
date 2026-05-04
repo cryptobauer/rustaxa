@@ -137,6 +137,8 @@ pub mod rustaxa_ffi {
             anchor: &[u8; 32],
             non_finalized_blocks: Vec<DagLevelHashes>,
         ) -> DagOrder;
+        pub fn dag_clear(self: &mut BridgeDagGraph);
+        pub fn dag_graphviz_dot(self: &BridgeDagGraph) -> String;
 
         // Storage
 

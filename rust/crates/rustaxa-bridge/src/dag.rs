@@ -73,6 +73,14 @@ impl BridgeDagGraph {
             },
         }
     }
+
+    pub fn dag_clear(&mut self) {
+        self.0.clear();
+    }
+
+    pub fn dag_graphviz_dot(&self) -> String {
+        self.0.graphviz_dot()
+    }
 }
 
 fn to_h256(hash: &[u8; 32]) -> H256 {

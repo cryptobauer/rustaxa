@@ -65,6 +65,10 @@ if(TCMALLOC_LIB)
     target_link_libraries(core_libs INTERFACE ${TCMALLOC_LIB}) # MUST BE LINKED LAST!!!
 endif()
 
+if(RUSTAXA_ENABLE)
+    target_link_libraries(core_libs PUBLIC rustaxa-bridge)
+endif()
+
 if(RUSTAXA_ENABLE_STORAGE)
     # In Rust storage mode, inject a header overlay that remaps legacy DbStorage
     # to DbStorageOld and exposes a forwarding DbStorage shim facade.
@@ -77,8 +81,6 @@ if(RUSTAXA_ENABLE_STORAGE)
         PROPERTIES
         COMPILE_DEFINITIONS "DbStorage=DbStorageOld"
     )
-
-    target_link_libraries(core_libs PUBLIC rustaxa-bridge)
 endif()
 
 if(RUSTAXA_ENABLE_FINAL_CHAIN)
