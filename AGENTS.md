@@ -18,6 +18,7 @@ This repository is the Rust rewrite track for Taraxa. Keep day-to-day work align
 - `cpp-reference`: C++ validation gate with integration hooks; must build and test in pure C++ mode (`RUSTAXA_ENABLE=0`).
 - `main`: primary Rust rewrite branch and source of truth for future implementation.
 - In C++ files, prefer additive per-module guards (`#ifdef RUSTAXA_ENABLE_VDF`, `#ifdef RUSTAXA_ENABLE_STORAGE`, `#ifdef RUSTAXA_ENABLE_FINAL_CHAIN`) or the master `#ifdef RUSTAXA_ENABLE` for shim-overlay integration over deleting legacy logic.
+- In C++ shim functions, prefer an early `return` inside the Rust `#ifdef` branch, then close with `#endif` and let the legacy C++ implementation continue below. Avoid `#ifdef` / `#else` / `#endif` when the Rust branch already returns.
 - Do not remove C++ fallback/reference logic from `cpp-reference`.
 - Any original upstream file that includes, links, or otherwise depends on a file that exists only on `main` must guard that dependency behind `RUSTAXA_ENABLE=1` / `#ifdef RUSTAXA_ENABLE` so pure C++ mode on `cpp-reference` does not require main-only files.
 
