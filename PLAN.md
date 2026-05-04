@@ -43,6 +43,9 @@ Core rules:
 
 - Public C++ interfaces remain stable while implementation moves.
 - C++ shims route selected APIs to Rust and keep legacy code available for validation.
+- For upstream-owned C++ classes, use the overlay shim pattern by default (as in storage and FinalChain): header overlay + shim facade + legacy `*Old` compilation rename. Prefer this over scattered inline `#ifdef` edits to reduce upstream merge conflicts.
+- Hard rule: preserve existing test intent. Do not loosen or rewrite tests to accommodate Rust rewrite regressions; fix implementation parity first. Only change tests when product behavior is intentionally changed and documented.
+- Documentation rule: whenever adding or changing rewrite code, document modules, types, and functions as complete units (purpose, inputs, outputs, invariants, and error or edge behavior), not just isolated lines.
 - Rust domain modules define narrow ports for required capabilities.
 - Infrastructure modules implement those ports over RocksDB, CXX bridges, or test fakes.
 - Runtime/bootstrap code wires concrete implementations together.
