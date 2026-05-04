@@ -1,4 +1,5 @@
 pub mod dag;
+pub mod sortition;
 
 mod final_chain;
 

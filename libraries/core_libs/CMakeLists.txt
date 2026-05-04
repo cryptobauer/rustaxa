@@ -67,6 +67,18 @@ endif()
 
 if(RUSTAXA_ENABLE)
     target_link_libraries(core_libs PUBLIC rustaxa-bridge)
+
+    # In Rust mode, inject a header overlay that remaps legacy KeyManager
+    # to KeyManagerOld and exposes a forwarding KeyManager shim facade.
+    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/key_manager_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/key_manager_shim/src/key_manager_shim.cpp)
+
+    # Compile the legacy implementation as KeyManagerOld.
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/key_manager/key_manager.cpp
+        PROPERTIES
+        COMPILE_DEFINITIONS "KeyManager=KeyManagerOld"
+    )
 endif()
 
 if(RUSTAXA_ENABLE_STORAGE)
