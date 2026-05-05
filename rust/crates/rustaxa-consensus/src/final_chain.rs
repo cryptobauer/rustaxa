@@ -5,32 +5,9 @@ use rustaxa_types::codec::rlp::final_chain::{
     LegacyBlockHeaderRlp, LegacyBlockHeaderRlpInput, StoredBlockHeaderRlp,
 };
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
+use rustaxa_types::{Account, GenesisAccount, GenesisValidator};
 use std::collections::HashMap;
 use std::sync::Arc;
-
-/// Genesis account data needed by the Rust final-chain shim.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GenesisAccount {
-    pub address: [u8; 20],
-    pub balance: Vec<u8>,
-}
-
-/// Genesis validator key data needed by the Rust final-chain shim.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GenesisValidator {
-    pub address: [u8; 20],
-    pub vrf_key: [u8; 32],
-}
-
-/// Account view returned through the C++ bridge.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Account {
-    pub nonce: u64,
-    pub balance: Vec<u8>,
-    pub storage_root_hash: [u8; 32],
-    pub code_hash: [u8; 32],
-    pub code_size: u64,
-}
 
 /// Rust final-chain domain surface used by the C++ shim.
 pub struct FinalChain {

@@ -1,6 +1,9 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ethereum_types::H256;
 use rustaxa_types::DagBlock;
+use rustaxa_types::codec::rlp::dag::{
+    FinalizedDagBlockBundleRlp, reconstruct_finalized_dag_block_rlp,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -54,7 +57,7 @@ impl<D: DbReader> DagRepository<D> {
                 // DAG_BLOCKS_POS_IN_PERIOD_DATA = 2 in C++
                 let dag_blocks_bundle_rlp = period_rlp.at(2)?;
                 return Ok(Some(reconstruct_finalized_dag_block_rlp(
-                    dag_blocks_bundle_rlp,
+                    FinalizedDagBlockBundleRlp::new(dag_blocks_bundle_rlp.as_raw()),
                     position,
                 )?));
             }
@@ -181,67 +184,6 @@ impl<D: DbReader> DagRepository<D> {
         }
         Ok(map)
     }
-}
-
-/// Rebuilds the full DAG block RLP from the compact finalized period bundle.
-///
-/// C++ mapping: `decodeDAGBlockBundleRlp(uint64_t, dev::RLP const&)` plus
-/// `DagBlock(dev::RLP const&, vec_trx_t&&)`. The period bundle stores
-/// transaction hashes once, per-block transaction indexes, and a compact
-/// seven-field DAG block RLP without the transaction list. Storage callers
-/// expect the canonical eight-field DAG block RLP.
-fn reconstruct_finalized_dag_block_rlp(
-    bundle_rlp: rlp::Rlp<'_>,
-    position: usize,
-) -> Result<Vec<u8>> {
-    const BUNDLE_FIELD_COUNT: usize = 3;
-    const COMPACT_DAG_BLOCK_FIELD_COUNT: usize = 7;
-
-    if bundle_rlp.item_count()? != BUNDLE_FIELD_COUNT {
-        return Err(StorageError::Dag("Invalid DAG block bundle field count".to_string()).into());
-    }
-
-    let ordered_transaction_hashes = bundle_rlp.at(0)?;
-    let transaction_indexes = bundle_rlp.at(1)?;
-    let compact_blocks = bundle_rlp.at(2)?;
-
-    if position >= compact_blocks.item_count()? {
-        return Err(StorageError::Dag("DAG block bundle position out of range".to_string()).into());
-    }
-
-    let block_rlp = compact_blocks.at(position)?;
-    if block_rlp.item_count()? != COMPACT_DAG_BLOCK_FIELD_COUNT {
-        return Err(StorageError::Dag("Invalid compact DAG block field count".to_string()).into());
-    }
-
-    let index_list = transaction_indexes
-        .at(position)
-        .context("Missing finalized DAG block transaction index list")?;
-
-    let mut stream = rlp::RlpStream::new_list(8);
-    for field in 0..5 {
-        stream.append_raw(block_rlp.at(field)?.as_raw(), 1);
-    }
-
-    stream.begin_list(index_list.item_count()?);
-    for encoded_index in index_list.iter() {
-        let transaction_index: usize = encoded_index.as_val()?;
-        if transaction_index >= ordered_transaction_hashes.item_count()? {
-            return Err(
-                StorageError::Dag("DAG block transaction index out of range".to_string()).into(),
-            );
-        }
-        stream.append_raw(
-            ordered_transaction_hashes.at(transaction_index)?.as_raw(),
-            1,
-        );
-    }
-
-    for field in 5..COMPACT_DAG_BLOCK_FIELD_COUNT {
-        stream.append_raw(block_rlp.at(field)?.as_raw(), 1);
-    }
-
-    Ok(stream.out().to_vec())
 }
 
 impl<D: DbReader + DbWriter> DagRepository<D> {

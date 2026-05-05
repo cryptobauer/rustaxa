@@ -3,4 +3,5 @@ pub mod sortition;
 
 mod final_chain;
 
-pub use final_chain::{Account, FinalChain, GenesisAccount, GenesisValidator};
+pub use final_chain::FinalChain;
+pub use rustaxa_types::{Account, GenesisAccount, GenesisValidator};

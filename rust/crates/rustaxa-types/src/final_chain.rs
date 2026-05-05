@@ -2,6 +2,51 @@ use crate::pbft::PbftBlockMetadata;
 use anyhow::{Result, anyhow};
 use ethereum_types::{H160, H256, U256};
 
+/// Genesis account input passed from C++ configuration into the Rust final-chain domain.
+///
+/// Balances are stored as big-endian unsigned integer bytes so bridge code can
+/// preserve the exact C++ `u256` representation without assigning numeric
+/// semantics at the FFI boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GenesisAccount {
+    /// Account address bytes in canonical Ethereum/Taraxa address order.
+    pub address: [u8; 20],
+    /// Initial account balance as an unsigned big-endian integer byte string.
+    pub balance: Vec<u8>,
+}
+
+/// Genesis validator key input passed from C++ configuration into Rust.
+///
+/// The address identifies the validator account and the VRF key is kept as raw
+/// bytes because DAG verification currently consumes the C++ VRF wrapper format
+/// through the bridge.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GenesisValidator {
+    /// Validator account address bytes in canonical address order.
+    pub address: [u8; 20],
+    /// Validator VRF public key bytes.
+    pub vrf_key: [u8; 32],
+}
+
+/// Final-chain account view returned to C++ callers through the bridge.
+///
+/// This is intentionally a data carrier rather than an EVM account object. It
+/// represents the fields currently needed by Rust-enabled DAG and final-chain
+/// tests while keeping storage roots, code hashes, and balances byte-exact.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Account {
+    /// Account nonce.
+    pub nonce: u64,
+    /// Account balance as an unsigned big-endian integer byte string.
+    pub balance: Vec<u8>,
+    /// State storage root hash bytes.
+    pub storage_root_hash: [u8; 32],
+    /// Contract code hash bytes.
+    pub code_hash: [u8; 32],
+    /// Contract code size in bytes.
+    pub code_size: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredFinalChainBlockHeader {
     pub parent_hash: H256,
