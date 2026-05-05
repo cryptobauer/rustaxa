@@ -4,6 +4,24 @@ endif()
 
 find_program(CARGO_EXE NAMES cargo REQUIRED)
 find_program(OBJCOPY_EXE NAMES llvm-objcopy objcopy REQUIRED)
+find_package(RocksDB REQUIRED)
+
+get_target_property(RUSTAXA_ROCKSDB_INCLUDE_DIRS RocksDB::rocksdb INTERFACE_INCLUDE_DIRECTORIES)
+get_target_property(RUSTAXA_ROCKSDB_LIB_DIRS RocksDB::rocksdb INTERFACE_LINK_DIRECTORIES)
+if(NOT RUSTAXA_ROCKSDB_INCLUDE_DIRS)
+    set(RUSTAXA_ROCKSDB_INCLUDE_DIRS "")
+endif()
+if(NOT RUSTAXA_ROCKSDB_LIB_DIRS)
+    get_target_property(RUSTAXA_ROCKSDB_LOCATION_RELEASE RocksDB::rocksdb IMPORTED_LOCATION_RELEASE)
+    get_target_property(RUSTAXA_ROCKSDB_LOCATION RocksDB::rocksdb IMPORTED_LOCATION)
+    if(RUSTAXA_ROCKSDB_LOCATION_RELEASE)
+        get_filename_component(RUSTAXA_ROCKSDB_LIB_DIRS "${RUSTAXA_ROCKSDB_LOCATION_RELEASE}" DIRECTORY)
+    elseif(RUSTAXA_ROCKSDB_LOCATION)
+        get_filename_component(RUSTAXA_ROCKSDB_LIB_DIRS "${RUSTAXA_ROCKSDB_LOCATION}" DIRECTORY)
+    else()
+        set(RUSTAXA_ROCKSDB_LIB_DIRS "")
+    endif()
+endif()
 
 set(RUST_ROOT "${PROJECT_SOURCE_DIR}/rust")
 set(RUST_TARGET_DIR "${PROJECT_BINARY_DIR}/rust/target")
@@ -100,7 +118,10 @@ add_custom_target(rust-workspace-build ALL
     COMMAND ${CMAKE_COMMAND} -E env
         "CC=${CMAKE_C_COMPILER}"
         "CXX=${CMAKE_CXX_COMPILER}"
-        "${CARGO_EXE}" build ${CARGO_MODE_ARGS} --target-dir "${RUST_TARGET_DIR}"
+        "ROCKSDB_INCLUDE_DIR=${RUSTAXA_ROCKSDB_INCLUDE_DIRS}"
+        "ROCKSDB_LIB_DIR=${RUSTAXA_ROCKSDB_LIB_DIRS}"
+        "ROCKSDB_STATIC=1"
+        "${CARGO_EXE}" build ${CARGO_MODE_ARGS} --target-dir "${RUST_TARGET_DIR}" -p rustaxa-bridge
 
     COMMAND ${CMAKE_COMMAND} -P "${FILTER_SCRIPT}"
 

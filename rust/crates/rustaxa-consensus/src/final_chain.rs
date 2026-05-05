@@ -5,12 +5,40 @@ use rustaxa_types::codec::rlp::final_chain::{
     LegacyBlockHeaderRlp, LegacyBlockHeaderRlpInput, StoredBlockHeaderRlp,
 };
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
+use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Genesis account data needed by the Rust final-chain shim.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GenesisAccount {
+    pub address: [u8; 20],
+    pub balance: Vec<u8>,
+}
+
+/// Genesis validator key data needed by the Rust final-chain shim.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GenesisValidator {
+    pub address: [u8; 20],
+    pub vrf_key: [u8; 32],
+}
+
+/// Account view returned through the C++ bridge.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Account {
+    pub nonce: u64,
+    pub balance: Vec<u8>,
+    pub storage_root_hash: [u8; 32],
+    pub code_hash: [u8; 32],
+    pub code_size: u64,
+}
+
+/// Rust final-chain domain surface used by the C++ shim.
 pub struct FinalChain {
     storage: Arc<Storage>,
     block_gas_limit: u64,
     genesis_timestamp: u64,
+    genesis_accounts: HashMap<[u8; 20], Account>,
+    genesis_vrf_keys: HashMap<[u8; 20], [u8; 32]>,
 }
 
 impl FinalChain {
@@ -21,11 +49,35 @@ impl FinalChain {
         storage: Arc<Storage>,
         block_gas_limit: u64,
         genesis_timestamp: u64,
+        genesis_accounts: Vec<GenesisAccount>,
+        genesis_validators: Vec<GenesisValidator>,
     ) -> Result<Self> {
+        let genesis_accounts = genesis_accounts
+            .into_iter()
+            .map(|account| {
+                (
+                    account.address,
+                    Account {
+                        nonce: 0,
+                        balance: account.balance,
+                        storage_root_hash: [0; 32],
+                        code_hash: [0; 32],
+                        code_size: 0,
+                    },
+                )
+            })
+            .collect();
+        let genesis_vrf_keys = genesis_validators
+            .into_iter()
+            .map(|validator| (validator.address, validator.vrf_key))
+            .collect();
+
         Ok(FinalChain {
             storage,
             block_gas_limit,
             genesis_timestamp,
+            genesis_accounts,
+            genesis_vrf_keys,
         })
     }
 
@@ -97,6 +149,18 @@ impl FinalChain {
     pub fn transaction_count(&self, period: u64) -> Result<u64, anyhow::Error> {
         self.storage.transaction().count(period)
     }
+
+    pub fn account(&self, address: [u8; 20]) -> Result<Option<Account>, anyhow::Error> {
+        Ok(self.genesis_accounts.get(&address).cloned())
+    }
+
+    pub fn vrf_key(&self, address: [u8; 20]) -> Result<Option<[u8; 32]>, anyhow::Error> {
+        Ok(self.genesis_vrf_keys.get(&address).copied())
+    }
+
+    pub fn estimate_call_gas(&self, gas_limit: u64) -> Result<u64, anyhow::Error> {
+        Ok(gas_limit)
+    }
 }
 
 fn decode_u64_le(raw: &[u8], field: &str) -> Result<u64, anyhow::Error> {
@@ -149,7 +213,7 @@ mod tests {
     fn last_block_number_returns_zero_when_missing() {
         let path = temp_db_path("last-missing");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
-        let final_chain = FinalChain::new(storage.clone(), 0, 0).unwrap();
+        let final_chain = FinalChain::new(storage.clone(), 0, 0, vec![], vec![]).unwrap();
 
         assert_eq!(final_chain.last_block_number().unwrap(), 0);
 
@@ -192,7 +256,7 @@ mod tests {
             .unwrap();
         storage.commit_write_batch_with_sync(batch, false).unwrap();
 
-        let final_chain = FinalChain::new(storage.clone(), 0, 0).unwrap();
+        let final_chain = FinalChain::new(storage.clone(), 0, 0, vec![], vec![]).unwrap();
 
         assert_eq!(final_chain.last_block_number().unwrap(), block_number);
         assert_eq!(
@@ -244,8 +308,14 @@ mod tests {
             .unwrap();
         storage.commit_write_batch_with_sync(batch, false).unwrap();
 
-        let final_chain =
-            FinalChain::new(storage.clone(), block_gas_limit, genesis_timestamp).unwrap();
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            block_gas_limit,
+            genesis_timestamp,
+            vec![],
+            vec![],
+        )
+        .unwrap();
 
         let full_header = final_chain.block_header(block_number).unwrap().unwrap();
         let full_header_rlp = Rlp::new(&full_header);

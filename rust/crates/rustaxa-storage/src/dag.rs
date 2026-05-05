@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ethereum_types::H256;
 use rustaxa_types::DagBlock;
 use std::collections::{BTreeMap, BTreeSet};
@@ -52,9 +52,11 @@ impl<D: DbReader> DagRepository<D> {
             if let Some(period_data) = self.db.get(Column::PeriodData, &period.to_le_bytes())? {
                 let period_rlp = rlp::Rlp::new(period_data.as_ref());
                 // DAG_BLOCKS_POS_IN_PERIOD_DATA = 2 in C++
-                let dag_blocks_rlp = period_rlp.at(2)?;
-                let block_rlp = dag_blocks_rlp.at(position)?;
-                return Ok(Some(block_rlp.as_raw().to_vec()));
+                let dag_blocks_bundle_rlp = period_rlp.at(2)?;
+                return Ok(Some(reconstruct_finalized_dag_block_rlp(
+                    dag_blocks_bundle_rlp,
+                    position,
+                )?));
             }
         }
         Ok(None)
@@ -179,6 +181,67 @@ impl<D: DbReader> DagRepository<D> {
         }
         Ok(map)
     }
+}
+
+/// Rebuilds the full DAG block RLP from the compact finalized period bundle.
+///
+/// C++ mapping: `decodeDAGBlockBundleRlp(uint64_t, dev::RLP const&)` plus
+/// `DagBlock(dev::RLP const&, vec_trx_t&&)`. The period bundle stores
+/// transaction hashes once, per-block transaction indexes, and a compact
+/// seven-field DAG block RLP without the transaction list. Storage callers
+/// expect the canonical eight-field DAG block RLP.
+fn reconstruct_finalized_dag_block_rlp(
+    bundle_rlp: rlp::Rlp<'_>,
+    position: usize,
+) -> Result<Vec<u8>> {
+    const BUNDLE_FIELD_COUNT: usize = 3;
+    const COMPACT_DAG_BLOCK_FIELD_COUNT: usize = 7;
+
+    if bundle_rlp.item_count()? != BUNDLE_FIELD_COUNT {
+        return Err(StorageError::Dag("Invalid DAG block bundle field count".to_string()).into());
+    }
+
+    let ordered_transaction_hashes = bundle_rlp.at(0)?;
+    let transaction_indexes = bundle_rlp.at(1)?;
+    let compact_blocks = bundle_rlp.at(2)?;
+
+    if position >= compact_blocks.item_count()? {
+        return Err(StorageError::Dag("DAG block bundle position out of range".to_string()).into());
+    }
+
+    let block_rlp = compact_blocks.at(position)?;
+    if block_rlp.item_count()? != COMPACT_DAG_BLOCK_FIELD_COUNT {
+        return Err(StorageError::Dag("Invalid compact DAG block field count".to_string()).into());
+    }
+
+    let index_list = transaction_indexes
+        .at(position)
+        .context("Missing finalized DAG block transaction index list")?;
+
+    let mut stream = rlp::RlpStream::new_list(8);
+    for field in 0..5 {
+        stream.append_raw(block_rlp.at(field)?.as_raw(), 1);
+    }
+
+    stream.begin_list(index_list.item_count()?);
+    for encoded_index in index_list.iter() {
+        let transaction_index: usize = encoded_index.as_val()?;
+        if transaction_index >= ordered_transaction_hashes.item_count()? {
+            return Err(
+                StorageError::Dag("DAG block transaction index out of range".to_string()).into(),
+            );
+        }
+        stream.append_raw(
+            ordered_transaction_hashes.at(transaction_index)?.as_raw(),
+            1,
+        );
+    }
+
+    for field in 5..COMPACT_DAG_BLOCK_FIELD_COUNT {
+        stream.append_raw(block_rlp.at(field)?.as_raw(), 1);
+    }
+
+    Ok(stream.out().to_vec())
 }
 
 impl<D: DbReader + DbWriter> DagRepository<D> {
@@ -491,6 +554,18 @@ mod tests {
         stream.out().to_vec()
     }
 
+    fn create_compact_dag_block_rlp() -> Vec<u8> {
+        let mut stream = RlpStream::new_list(7);
+        stream.append(&H256::zero()); // pivot
+        stream.append(&10u64); // level
+        stream.append(&123456789u64); // timestamp
+        stream.append(&vec![1u8, 2, 3]); // vdf
+        stream.begin_list(0); // tips
+        stream.append(&vec![0u8; 65]); // signature
+        stream.append(&1000u64); // gas_estimation
+        stream.out().to_vec()
+    }
+
     #[test]
     fn test_dag_block_found() {
         let db = Arc::new(MockDagStore::new());
@@ -506,6 +581,60 @@ mod tests {
         let block = result.unwrap();
         assert_eq!(block.level, 10);
         assert_eq!(block.timestamp, 123456789);
+    }
+
+    #[test]
+    fn test_finalized_dag_block_bundle_reconstructs_full_rlp() {
+        let db = Arc::new(MockDagStore::new());
+        let repo = DagRepository::new(db.clone());
+
+        let block_hash = H256::random();
+        let period = 7u64;
+        let position = 0u32;
+        let transactions = vec![H256::from_low_u64_be(1), H256::from_low_u64_be(2)];
+
+        let mut period_lookup = RlpStream::new_list(2);
+        period_lookup.append(&period);
+        period_lookup.append(&position);
+        db.put(
+            Column::DagBlockPeriod,
+            block_hash.as_bytes(),
+            period_lookup.out().as_ref(),
+        );
+
+        let compact_block = create_compact_dag_block_rlp();
+        let mut bundle = RlpStream::new_list(3);
+        bundle.begin_list(transactions.len());
+        for hash in &transactions {
+            bundle.append(hash);
+        }
+        bundle.begin_list(1);
+        bundle.begin_list(transactions.len());
+        for idx in 0..transactions.len() {
+            bundle.append(&idx);
+        }
+        bundle.begin_list(1);
+        bundle.append_raw(&compact_block, 1);
+        let bundle = bundle.out();
+
+        let mut period_data = RlpStream::new_list(3);
+        period_data.begin_list(0);
+        period_data.begin_list(0);
+        period_data.append_raw(bundle.as_ref(), 1);
+        db.put(
+            Column::PeriodData,
+            &period.to_le_bytes(),
+            period_data.out().as_ref(),
+        );
+
+        let full_rlp = repo.by_hash_rlp_optional(block_hash).unwrap().unwrap();
+        let full = rlp::Rlp::new(&full_rlp);
+
+        assert_eq!(full.item_count().unwrap(), 8);
+        let decoded_transactions: Vec<H256> = full.list_at(5).unwrap();
+        assert_eq!(decoded_transactions, transactions);
+        assert_eq!(full.val_at::<Vec<u8>>(6).unwrap(), vec![0u8; 65]);
+        assert_eq!(full.val_at::<u64>(7).unwrap(), 1000u64);
     }
 
     #[test]

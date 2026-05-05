@@ -176,6 +176,9 @@ class DbStorage : public DbStorageOld {
   uint64_t getStatusField(StatusDbField const& field);
   void saveStatusField(StatusDbField const& field, uint64_t value);
   void addStatusFieldToBatch(StatusDbField const& field, uint64_t value, Batch& write_batch);
+  uint64_t getNumTransactionExecuted();
+  uint64_t getNumTransactionInDag();
+  uint64_t getNumBlockExecuted();
 
   uint32_t getPbftMgrField(PbftMgrField field);
   void savePbftMgrField(PbftMgrField field, uint32_t value);

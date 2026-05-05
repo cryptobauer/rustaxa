@@ -145,28 +145,27 @@ void DbStorage::rebuildColumns(const rocksdb::Options& options) {
 
 bool DbStorage::createSnapshot(PbftPeriod period) {
   (void)period;
-  throw_unimplemented_shim_api("createSnapshot");
+  // Snapshot lifecycle is not wired in Rust storage shim mode yet.
+  return false;
 }
 
-void DbStorage::deleteSnapshot(PbftPeriod period) {
-  (void)period;
-  throw_unimplemented_shim_api("deleteSnapshot");
-}
+void DbStorage::deleteSnapshot(PbftPeriod period) { (void)period; }
 
-void DbStorage::recoverToPeriod(PbftPeriod period) {
-  (void)period;
-  throw_unimplemented_shim_api("recoverToPeriod");
-}
+void DbStorage::recoverToPeriod(PbftPeriod period) { (void)period; }
 
-void DbStorage::loadSnapshots() { throw_unimplemented_shim_api("loadSnapshots"); }
+void DbStorage::loadSnapshots() { return; }
 
-void DbStorage::disableSnapshots() { throw_unimplemented_shim_api("disableSnapshots"); }
+void DbStorage::disableSnapshots() { snapshots_enabled_ = false; }
 
-void DbStorage::enableSnapshots() { throw_unimplemented_shim_api("enableSnapshots"); }
+void DbStorage::enableSnapshots() { snapshots_enabled_ = true; }
 
 void DbStorage::deleteColumnData(const Column& c) {
-  (void)c;
-  throw_unimplemented_shim_api("deleteColumnData");
+  if (c.ordinal_ == Columns::block_rewards_stats.ordinal_) {
+    rust_storage_.value()->clear_block_rewards_stats();
+    return;
+  }
+
+  throw DbException("DbStorage::deleteColumnData is not implemented for column " + c.name() + " in Rust shim mode");
 }
 
 void DbStorage::replaceColumn(const Column& to_be_replaced_col,
@@ -819,6 +818,12 @@ uint64_t DbStorage::getStatusField(StatusDbField const& field) {
   return rust_storage_.value()->get_status_field(static_cast<uint8_t>(field));
 }
 
+uint64_t DbStorage::getNumTransactionExecuted() { return getStatusField(StatusDbField::ExecutedTrxCount); }
+
+uint64_t DbStorage::getNumTransactionInDag() { return getStatusField(StatusDbField::TrxCount); }
+
+uint64_t DbStorage::getNumBlockExecuted() { return getStatusField(StatusDbField::ExecutedBlkCount); }
+
 void DbStorage::saveStatusField(StatusDbField const& field, uint64_t value) {
   rust_storage_.value()->save_status_field(static_cast<uint8_t>(field), value);
 }
@@ -1048,8 +1053,8 @@ std::vector<std::shared_ptr<DagBlock>> DbStorage::getFinalizedDagBlockByPeriod(P
   return decodeDAGBlocksBundleRlp(dag_blocks_data);
 }
 
-std::pair<blk_hash_t, std::vector<std::shared_ptr<DagBlock>>> DbStorage::getLastPbftBlockHashAndFinalizedDagBlockByPeriod(
-    PbftPeriod period) {
+std::pair<blk_hash_t, std::vector<std::shared_ptr<DagBlock>>>
+DbStorage::getLastPbftBlockHashAndFinalizedDagBlockByPeriod(PbftPeriod period) {
   (void)period;
   throw_unimplemented_shim_api("getLastPbftBlockHashAndFinalizedDagBlockByPeriod");
 }

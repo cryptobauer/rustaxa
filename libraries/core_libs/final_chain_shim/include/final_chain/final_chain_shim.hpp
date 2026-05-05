@@ -5,13 +5,19 @@
 namespace taraxa::final_chain {
 
 // Rust-mode final-chain shim facade.
-// Public APIs are redeclared here so callers go through this layer first.
-// Implemented methods call Rust directly; unimplemented methods throw instead of falling back to FinalChainOld.
-class FinalChain : public FinalChainOld {
- public:
-  FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullNodeConfig& config, const addr_t& node_addr);
-  ~FinalChain() = default;
+// This class is a standalone surface in Rust-enabled builds and must not inherit
+// or delegate behavior to FinalChainOld.
+class FinalChain {
+ protected:
+  util::event::EventEmitter<std::shared_ptr<FinalizationResult>> const block_finalized_emitter_{};
+  util::event::EventEmitter<uint64_t> const block_applying_emitter_{};
 
+ public:
+  decltype(block_finalized_emitter_)::Subscriber const& block_finalized_ = block_finalized_emitter_;
+  decltype(block_applying_emitter_)::Subscriber const& block_applying_ = block_applying_emitter_;
+
+  ~FinalChain() = default;
+  FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullNodeConfig& config, const addr_t& node_addr);
   FinalChain(const FinalChain&) = delete;
   FinalChain(FinalChain&&) = delete;
   FinalChain& operator=(const FinalChain&) = delete;

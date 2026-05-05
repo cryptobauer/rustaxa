@@ -66,7 +66,7 @@ if(TCMALLOC_LIB)
 endif()
 
 if(RUSTAXA_ENABLE)
-    target_link_libraries(core_libs PUBLIC rustaxa-bridge)
+    target_link_libraries(core_libs PUBLIC rustaxa-bridge RocksDB::rocksdb)
 
     # In Rust mode, inject a header overlay that remaps legacy KeyManager
     # to KeyManagerOld and exposes a forwarding KeyManager shim facade.
@@ -101,7 +101,7 @@ if(RUSTAXA_ENABLE_FINAL_CHAIN)
     endif()
 
     # In Rust final-chain mode, inject a header overlay that remaps legacy FinalChain
-    # to FinalChainOld and exposes a forwarding FinalChain shim facade.
+    # to FinalChainOld and exposes a standalone FinalChain shim facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/final_chain_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/final_chain_shim/src/final_chain_shim.cpp)
 

@@ -76,6 +76,25 @@ pub mod rustaxa_ffi {
         value: u64,
     }
 
+    struct GenesisAccount {
+        address: [u8; 20],
+        balance: Vec<u8>,
+    }
+
+    struct GenesisValidator {
+        address: [u8; 20],
+        vrf_key: [u8; 32],
+    }
+
+    struct AccountLookup {
+        found: bool,
+        nonce: u64,
+        balance: Vec<u8>,
+        storage_root_hash: [u8; 32],
+        code_hash: [u8; 32],
+        code_size: u64,
+    }
+
     struct DagHash {
         hash: [u8; 32],
     }
@@ -384,6 +403,8 @@ pub mod rustaxa_ffi {
             storage: &BridgeStorage,
             block_gas_limit: u64,
             genesis_timestamp: u64,
+            genesis_accounts: Vec<GenesisAccount>,
+            genesis_validators: Vec<GenesisValidator>,
         ) -> Result<Box<BridgeFinalChain>>;
 
         pub fn get_last_block_number(self: &BridgeFinalChain) -> Result<u64>;
@@ -398,5 +419,8 @@ pub mod rustaxa_ffi {
             hash: &[u8; 32],
         ) -> Result<Vec<u8>>;
         pub fn get_transaction_count(self: &BridgeFinalChain, period: u64) -> Result<u64>;
+        pub fn get_account(self: &BridgeFinalChain, address: &[u8; 20]) -> Result<AccountLookup>;
+        pub fn get_vrf_key(self: &BridgeFinalChain, address: &[u8; 20]) -> Result<Vec<u8>>;
+        pub fn estimate_call_gas(self: &BridgeFinalChain, gas_limit: u64) -> Result<u64>;
     }
 }

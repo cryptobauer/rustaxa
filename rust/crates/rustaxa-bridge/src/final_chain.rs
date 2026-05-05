@@ -7,8 +7,30 @@ pub fn create_final_chain(
     storage: &BridgeStorage,
     block_gas_limit: u64,
     genesis_timestamp: u64,
+    genesis_accounts: Vec<rustaxa_ffi::GenesisAccount>,
+    genesis_validators: Vec<rustaxa_ffi::GenesisValidator>,
 ) -> Result<Box<BridgeFinalChain>, anyhow::Error> {
-    let final_chain = FinalChain::new(storage.0.clone(), block_gas_limit, genesis_timestamp)?;
+    let genesis_accounts = genesis_accounts
+        .into_iter()
+        .map(|account| rustaxa_consensus::GenesisAccount {
+            address: account.address,
+            balance: account.balance,
+        })
+        .collect();
+    let genesis_validators = genesis_validators
+        .into_iter()
+        .map(|validator| rustaxa_consensus::GenesisValidator {
+            address: validator.address,
+            vrf_key: validator.vrf_key,
+        })
+        .collect();
+    let final_chain = FinalChain::new(
+        storage.0.clone(),
+        block_gas_limit,
+        genesis_timestamp,
+        genesis_accounts,
+        genesis_validators,
+    )?;
     Ok(Box::new(BridgeFinalChain(final_chain)))
 }
 
@@ -54,5 +76,47 @@ impl BridgeFinalChain {
         period: u64,
     ) -> Result<u64, anyhow::Error> {
         self.0.transaction_count(period)
+    }
+
+    pub fn get_account(
+        self: &BridgeFinalChain,
+        address: &[u8; 20],
+    ) -> Result<rustaxa_ffi::AccountLookup, anyhow::Error> {
+        Ok(match self.0.account(*address)? {
+            Some(account) => rustaxa_ffi::AccountLookup {
+                found: true,
+                nonce: account.nonce,
+                balance: account.balance,
+                storage_root_hash: account.storage_root_hash,
+                code_hash: account.code_hash,
+                code_size: account.code_size,
+            },
+            None => rustaxa_ffi::AccountLookup {
+                found: false,
+                nonce: 0,
+                balance: vec![],
+                storage_root_hash: [0; 32],
+                code_hash: [0; 32],
+                code_size: 0,
+            },
+        })
+    }
+
+    pub fn get_vrf_key(
+        self: &BridgeFinalChain,
+        address: &[u8; 20],
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .0
+            .vrf_key(*address)?
+            .map(|key| key.to_vec())
+            .unwrap_or_default())
+    }
+
+    pub fn estimate_call_gas(
+        self: &BridgeFinalChain,
+        gas_limit: u64,
+    ) -> Result<u64, anyhow::Error> {
+        self.0.estimate_call_gas(gas_limit)
     }
 }
