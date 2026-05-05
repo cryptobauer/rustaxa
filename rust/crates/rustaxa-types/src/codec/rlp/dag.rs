@@ -17,9 +17,7 @@ impl<'a> DagBlockRlp<'a> {
 ///
 /// The finalized bundle layout is `[ordered_transaction_hashes,
 /// transaction_indexes_per_block, compact_dag_blocks]`. Each compact block is
-/// the seven-field C++ finalized representation without inline transaction
-/// hashes. Call `reconstruct_finalized_dag_block_rlp` to materialize the
-/// canonical eight-field DAG block RLP expected by normal DAG block decoders.
+/// the seven-field C++ finalized representation without inline transaction hashes.
 #[derive(Debug, Clone, Copy)]
 pub struct FinalizedDagBlockBundleRlp<'a>(&'a [u8]);
 
@@ -27,6 +25,18 @@ impl<'a> FinalizedDagBlockBundleRlp<'a> {
     /// Wraps raw finalized DAG block bundle RLP bytes.
     pub fn new(bytes: &'a [u8]) -> Self {
         Self(bytes)
+    }
+
+    /// Materializes the block at `position` as canonical eight-field DAG block RLP.
+    ///
+    /// C++ mapping: `decodeDAGBlockBundleRlp(uint64_t, dev::RLP const&)` plus
+    /// `DagBlock(dev::RLP const&, vec_trx_t&&)`. The period bundle stores
+    /// transaction hashes once, per-block transaction indexes, and compact
+    /// seven-field DAG block RLPs without transaction lists. This method selects
+    /// one compact block, resolves its transaction indexes, and returns canonical
+    /// DAG block RLP bytes.
+    pub fn canonical_block_rlp(&self, position: usize) -> Result<Vec<u8>> {
+        reconstruct_canonical_block_rlp(self.0, position)
     }
 }
 
@@ -61,22 +71,11 @@ fn decode_dag_block_rlp(rlp: &Rlp<'_>) -> Result<DagBlock, DecoderError> {
     })
 }
 
-/// Rebuilds canonical DAG block RLP from a compact finalized period bundle.
-///
-/// C++ mapping: `decodeDAGBlockBundleRlp(uint64_t, dev::RLP const&)` plus
-/// `DagBlock(dev::RLP const&, vec_trx_t&&)`. The period bundle stores
-/// transaction hashes once, per-block transaction indexes, and compact
-/// seven-field DAG block RLPs without transaction lists. This function selects
-/// the compact block at `position`, resolves its transaction indexes, and
-/// returns canonical eight-field DAG block RLP bytes.
-pub fn reconstruct_finalized_dag_block_rlp(
-    bundle: FinalizedDagBlockBundleRlp<'_>,
-    position: usize,
-) -> Result<Vec<u8>> {
+fn reconstruct_canonical_block_rlp(bundle: &[u8], position: usize) -> Result<Vec<u8>> {
     const BUNDLE_FIELD_COUNT: usize = 3;
     const COMPACT_DAG_BLOCK_FIELD_COUNT: usize = 7;
 
-    let bundle_rlp = Rlp::new(bundle.0);
+    let bundle_rlp = Rlp::new(bundle);
     if bundle_rlp.item_count()? != BUNDLE_FIELD_COUNT {
         bail!("invalid finalized DAG block bundle field count");
     }
@@ -193,9 +192,9 @@ mod tests {
         bundle.append_raw(&compact_dag_block_rlp(), 1);
         let bundle = bundle.out();
 
-        let full_rlp =
-            reconstruct_finalized_dag_block_rlp(FinalizedDagBlockBundleRlp::new(&bundle), 0)
-                .unwrap();
+        let full_rlp = FinalizedDagBlockBundleRlp::new(&bundle)
+            .canonical_block_rlp(0)
+            .unwrap();
         let full = Rlp::new(&full_rlp);
 
         assert_eq!(full.item_count().unwrap(), 8);

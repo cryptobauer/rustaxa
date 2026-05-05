@@ -1,9 +1,7 @@
 use anyhow::Result;
 use ethereum_types::H256;
 use rustaxa_types::DagBlock;
-use rustaxa_types::codec::rlp::dag::{
-    FinalizedDagBlockBundleRlp, reconstruct_finalized_dag_block_rlp,
-};
+use rustaxa_types::codec::rlp::dag::FinalizedDagBlockBundleRlp;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -56,10 +54,10 @@ impl<D: DbReader> DagRepository<D> {
                 let period_rlp = rlp::Rlp::new(period_data.as_ref());
                 // DAG_BLOCKS_POS_IN_PERIOD_DATA = 2 in C++
                 let dag_blocks_bundle_rlp = period_rlp.at(2)?;
-                return Ok(Some(reconstruct_finalized_dag_block_rlp(
-                    FinalizedDagBlockBundleRlp::new(dag_blocks_bundle_rlp.as_raw()),
-                    position,
-                )?));
+                return Ok(Some(
+                    FinalizedDagBlockBundleRlp::new(dag_blocks_bundle_rlp.as_raw())
+                        .canonical_block_rlp(position)?,
+                ));
             }
         }
         Ok(None)
