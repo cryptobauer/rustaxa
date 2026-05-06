@@ -1295,6 +1295,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ethereum-types",
+ "k256",
  "keccak-hasher",
  "rlp 0.6.1",
  "rustaxa-storage",

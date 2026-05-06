@@ -12,3 +12,6 @@ rustaxa-storage = { version = "0.1.0", path = "../rustaxa-storage" }
 rustaxa-types = { version = "0.1.0", path = "../rustaxa-types" }
 tiny-keccak = { version = "2.0", features = ["keccak"] }
 triehash = "0.8.4"
+
+[dev-dependencies]
+k256 = { version = "0.13", features = ["ecdsa"] }

@@ -509,8 +509,9 @@ struct NativeExecution {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ethereum_types::{H256, U256};
-    use rlp::RlpStream;
+    use ethereum_types::{H160, H256, U256};
+    use k256::ecdsa::SigningKey;
+    use rlp::{Rlp, RlpStream};
     use rustaxa_storage::{Column, Config};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -536,6 +537,126 @@ mod tests {
         header_stream.append(&gas_used);
         header_stream.append(&total_reward);
         header_stream.out().to_vec()
+    }
+
+    fn keccak256(data: &[u8]) -> H256 {
+        use tiny_keccak::{Hasher, Keccak};
+
+        let mut hasher = Keccak::v256();
+        hasher.update(data);
+        let mut output = [0u8; 32];
+        hasher.finalize(&mut output);
+        H256::from(output)
+    }
+
+    fn append_pbft_block_fields(stream: &mut RlpStream, period: u64, timestamp: u64) {
+        stream.append(&H256::from_low_u64_be(10));
+        stream.append(&H256::from_low_u64_be(11));
+        stream.append(&H256::from_low_u64_be(12));
+        stream.append(&H256::from_low_u64_be(13));
+        stream.append(&period);
+        stream.append(&timestamp);
+        stream.begin_list(0);
+    }
+
+    fn signed_pbft_block(signing_key: &SigningKey, period: u64, timestamp: u64) -> Vec<u8> {
+        let mut unsigned_stream = RlpStream::new_list(7);
+        append_pbft_block_fields(&mut unsigned_stream, period, timestamp);
+        let message_hash = keccak256(&unsigned_stream.out());
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(message_hash.as_bytes())
+            .unwrap();
+        let mut signature_bytes = signature.to_bytes().to_vec();
+        signature_bytes.push(recovery_id.to_byte());
+
+        let mut signed_stream = RlpStream::new_list(8);
+        append_pbft_block_fields(&mut signed_stream, period, timestamp);
+        signed_stream.append(&signature_bytes);
+        signed_stream.out().to_vec()
+    }
+
+    fn address_from_signing_key(signing_key: &SigningKey) -> H160 {
+        let public_key = signing_key.verifying_key().to_encoded_point(false);
+        let public_key_hash = keccak256(&public_key.as_bytes()[1..]);
+        H160::from_slice(&public_key_hash.as_bytes()[12..])
+    }
+
+    fn period_data_rlp(pbft_block_rlp: &[u8], transaction_rlps: &[Vec<u8>]) -> Vec<u8> {
+        let mut stream = RlpStream::new_list(4);
+        stream.append_raw(pbft_block_rlp, 1);
+        stream.begin_list(0);
+        stream.begin_list(0);
+        stream.begin_list(transaction_rlps.len());
+        for transaction_rlp in transaction_rlps {
+            stream.append_raw(transaction_rlp, 1);
+        }
+        stream.out().to_vec()
+    }
+
+    fn write_period_data(
+        storage: &Storage,
+        period: u64,
+        pbft_block_rlp: &[u8],
+        transaction_rlps: &[Vec<u8>],
+    ) {
+        let mut batch = storage.create_write_batch();
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::PeriodData,
+                &period.to_le_bytes(),
+                &period_data_rlp(pbft_block_rlp, transaction_rlps),
+            )
+            .unwrap();
+        storage.commit_write_batch_with_sync(batch, false).unwrap();
+    }
+
+    fn test_transaction(
+        hash_byte: u8,
+        sender: [u8; 20],
+        receiver: Option<[u8; 20]>,
+        nonce: u64,
+        value: U256,
+        gas_price: U256,
+        gas_limit: u64,
+        data: Vec<u8>,
+        rlp: Vec<u8>,
+    ) -> FinalizationTransaction {
+        FinalizationTransaction {
+            hash: [hash_byte; 32],
+            sender,
+            receiver,
+            nonce,
+            value: u256_to_big_endian(value),
+            gas_price: u256_to_big_endian(gas_price),
+            gas_limit,
+            data,
+            rlp,
+        }
+    }
+
+    fn genesis_account(address: [u8; 20], balance: U256) -> GenesisAccount {
+        GenesisAccount {
+            address,
+            balance: u256_to_big_endian(balance),
+        }
+    }
+
+    fn receipt_fields(receipt_rlp: &[u8]) -> (u8, u64, u64) {
+        let receipt = Rlp::new(receipt_rlp);
+        (
+            receipt.val_at(0).unwrap(),
+            receipt.val_at(1).unwrap(),
+            receipt.val_at(2).unwrap(),
+        )
+    }
+
+    fn balance_of(final_chain: &FinalChain, address: [u8; 20]) -> U256 {
+        final_chain
+            .account(address)
+            .unwrap()
+            .map(|account| u256_from_big_endian(&account.balance))
+            .unwrap_or_default()
     }
 
     #[test]
@@ -664,6 +785,331 @@ mod tests {
             Some(tx_location)
         );
         assert_eq!(final_chain.transaction_count(tx_period).unwrap(), 2);
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_applies_native_transfer_and_persists_indexes() {
+        let path = temp_db_path("finalize-native-transfer");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let timestamp = 77u64;
+        let block_gas_limit = 100_000u64;
+        let sender = [0x11; 20];
+        let receiver = [0x22; 20];
+        let signing_key = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let beneficiary = address_from_signing_key(&signing_key);
+        let beneficiary_bytes: [u8; 20] = beneficiary.into();
+        let pbft_block = signed_pbft_block(&signing_key, period, timestamp);
+        let transaction_rlp = vec![0xc1, 0x80];
+        let transaction = test_transaction(
+            0xA1,
+            sender,
+            Some(receiver),
+            0,
+            U256::from(13u64),
+            U256::from(2u64),
+            50_000,
+            vec![],
+            transaction_rlp.clone(),
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&transaction_rlp),
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            block_gas_limit,
+            0,
+            vec![genesis_account(sender, U256::from(1_000_000u64))],
+            vec![],
+        )
+        .unwrap();
+        let genesis_hash = H256::from_slice(&final_chain.block_hash(0).unwrap().unwrap());
+
+        let (header_rlp, receipts) = final_chain
+            .finalize_block(pbft_block, vec![transaction.clone()])
+            .unwrap();
+
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (1, VALUE_TRANSFER_GAS, VALUE_TRANSFER_GAS)
+        );
+        assert_eq!(
+            final_chain.transaction_receipt_rlp(period, 0).unwrap(),
+            Some(receipts[0].clone())
+        );
+        assert_eq!(
+            final_chain.transaction_receipt_rlp(period, 1).unwrap(),
+            None
+        );
+        assert_eq!(
+            final_chain.transaction_rlps(period).unwrap(),
+            vec![transaction_rlp.clone()]
+        );
+        let header = Rlp::new(&header_rlp);
+        assert_eq!(header.val_at::<H256>(1).unwrap(), genesis_hash);
+        assert_eq!(header.val_at::<H160>(2).unwrap(), beneficiary);
+        assert_eq!(
+            header.val_at::<H256>(4).unwrap(),
+            ordered_root(std::iter::once(transaction_rlp.as_slice()))
+        );
+        assert_eq!(
+            header.val_at::<H256>(5).unwrap(),
+            ordered_root(std::iter::once(receipts[0].as_slice()))
+        );
+        assert_eq!(header.val_at::<u64>(7).unwrap(), period);
+        assert_eq!(header.val_at::<u64>(8).unwrap(), block_gas_limit);
+        assert_eq!(header.val_at::<u64>(9).unwrap(), VALUE_TRANSFER_GAS);
+        assert_eq!(header.val_at::<u64>(10).unwrap(), timestamp);
+        assert_eq!(final_chain.last_block_number().unwrap(), period);
+        assert_eq!(
+            final_chain.block_number(transaction.hash).unwrap(),
+            None,
+            "transaction hash must not be indexed as a block hash"
+        );
+        let block_hash = header.val_at::<H256>(0).unwrap();
+        assert_eq!(
+            final_chain.block_number(block_hash.into()).unwrap(),
+            Some(period)
+        );
+        let location = final_chain
+            .transaction_location(transaction.hash)
+            .unwrap()
+            .unwrap();
+        let location = Rlp::new(&location);
+        assert_eq!(location.val_at::<u64>(0).unwrap(), period);
+        assert_eq!(location.val_at::<u32>(1).unwrap(), 0);
+        assert_eq!(
+            balance_of(&final_chain, sender),
+            U256::from(1_000_000u64) - U256::from(13u64) - U256::from(VALUE_TRANSFER_GAS * 2)
+        );
+        assert_eq!(final_chain.account(sender).unwrap().unwrap().nonce, 1);
+        assert_eq!(balance_of(&final_chain, receiver), U256::from(13u64));
+        assert_eq!(
+            balance_of(&final_chain, beneficiary_bytes),
+            U256::from(VALUE_TRANSFER_GAS * 2)
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_failed_transfer_charges_affordable_gas_without_nonce_or_receiver_change() {
+        let path = temp_db_path("finalize-failed-transfer");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let sender = [0x33; 20];
+        let receiver = [0x44; 20];
+        let signing_key = SigningKey::from_slice(&[8u8; 32]).unwrap();
+        let beneficiary: [u8; 20] = address_from_signing_key(&signing_key).into();
+        let pbft_block = signed_pbft_block(&signing_key, period, 88);
+        let transaction_rlp = vec![0xc1, 0x81];
+        let transaction = test_transaction(
+            0xB2,
+            sender,
+            Some(receiver),
+            0,
+            U256::from(1u64),
+            U256::from(10u64),
+            30_000,
+            vec![],
+            transaction_rlp.clone(),
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&transaction_rlp),
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(sender, U256::from(100_001u64))],
+            vec![],
+        )
+        .unwrap();
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(pbft_block, vec![transaction])
+            .unwrap();
+
+        assert_eq!(receipt_fields(&receipts[0]), (0, 10_000, 10_000));
+        assert_eq!(final_chain.account(sender).unwrap().unwrap().nonce, 0);
+        assert_eq!(balance_of(&final_chain, sender), U256::from(1u64));
+        assert!(final_chain.account(receiver).unwrap().is_none());
+        assert_eq!(
+            balance_of(&final_chain, beneficiary),
+            U256::from(100_000u64)
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_low_nonce_consumes_full_gas_limit() {
+        let path = temp_db_path("finalize-low-nonce");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let sender = [0x55; 20];
+        let receiver = [0x66; 20];
+        let signing_key = SigningKey::from_slice(&[9u8; 32]).unwrap();
+        let beneficiary: [u8; 20] = address_from_signing_key(&signing_key).into();
+        let pbft_block = signed_pbft_block(&signing_key, period, 99);
+        let transaction_rlp = vec![0xc1, 0x82];
+        let transaction = test_transaction(
+            0xC3,
+            sender,
+            Some(receiver),
+            2,
+            U256::from(1u64),
+            U256::from(3u64),
+            30_000,
+            vec![],
+            transaction_rlp.clone(),
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&transaction_rlp),
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            100_000,
+            0,
+            vec![GenesisAccount {
+                address: sender,
+                balance: u256_to_big_endian(U256::from(200_000u64)),
+            }],
+            vec![],
+        )
+        .unwrap();
+        final_chain
+            .accounts
+            .lock()
+            .unwrap()
+            .get_mut(&sender)
+            .unwrap()
+            .nonce = 3;
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(pbft_block, vec![transaction])
+            .unwrap();
+
+        assert_eq!(receipt_fields(&receipts[0]), (0, 30_000, 30_000));
+        assert_eq!(final_chain.account(sender).unwrap().unwrap().nonce, 3);
+        assert_eq!(balance_of(&final_chain, sender), U256::from(110_000u64));
+        assert!(final_chain.account(receiver).unwrap().is_none());
+        assert_eq!(balance_of(&final_chain, beneficiary), U256::from(90_000u64));
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_rejects_transaction_count_mismatch_without_execution() {
+        let path = temp_db_path("finalize-count-mismatch");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let sender = [0x77; 20];
+        let signing_key = SigningKey::from_slice(&[10u8; 32]).unwrap();
+        let pbft_block = signed_pbft_block(&signing_key, period, 101);
+        write_period_data(&storage, period, &pbft_block, &[]);
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(sender, U256::from(100_000u64))],
+            vec![],
+        )
+        .unwrap();
+
+        let err = final_chain
+            .finalize_block(
+                pbft_block,
+                vec![test_transaction(
+                    0xD4,
+                    sender,
+                    Some([0x88; 20]),
+                    0,
+                    U256::from(1u64),
+                    U256::from(1u64),
+                    30_000,
+                    vec![],
+                    vec![0xc1, 0x83],
+                )],
+            )
+            .unwrap_err();
+
+        assert!(err.to_string().contains("transaction count mismatch"));
+        assert_eq!(final_chain.last_block_number().unwrap(), 0);
+        assert_eq!(balance_of(&final_chain, sender), U256::from(100_000u64));
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_rejects_non_native_transfer_without_persisting_block() {
+        let path = temp_db_path("finalize-non-native");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let sender = [0x99; 20];
+        let signing_key = SigningKey::from_slice(&[11u8; 32]).unwrap();
+        let pbft_block = signed_pbft_block(&signing_key, period, 111);
+        let transaction_rlp = vec![0xc1, 0x84];
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&transaction_rlp),
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(sender, U256::from(100_000u64))],
+            vec![],
+        )
+        .unwrap();
+
+        let err = final_chain
+            .finalize_block(
+                pbft_block,
+                vec![test_transaction(
+                    0xE5,
+                    sender,
+                    None,
+                    0,
+                    U256::zero(),
+                    U256::from(1u64),
+                    30_000,
+                    vec![0x01],
+                    transaction_rlp,
+                )],
+            )
+            .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("currently supports only native value transfers")
+        );
+        assert_eq!(final_chain.last_block_number().unwrap(), 0);
+        assert_eq!(final_chain.transaction_location([0xE5; 32]).unwrap(), None);
 
         drop(final_chain);
         drop(storage);
