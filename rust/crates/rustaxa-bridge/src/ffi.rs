@@ -102,6 +102,16 @@ pub mod rustaxa_ffi {
         code_size: u64,
     }
 
+    struct DposValidatorStake {
+        address: [u8; 20],
+        stake: Vec<u8>,
+    }
+
+    struct DposValidatorVoteCount {
+        address: [u8; 20],
+        vote_count: u64,
+    }
+
     struct FinalizationOutcome {
         block_header_rlp: Vec<u8>,
         receipts: Vec<ReceiptRlp>,
@@ -464,6 +474,14 @@ pub mod rustaxa_ffi {
             block_number: u64,
             address: &[u8; 20],
         ) -> Result<bool>;
+        pub fn get_dpos_validators_total_stakes(
+            self: &BridgeFinalChain,
+            block_number: u64,
+        ) -> Result<Vec<DposValidatorStake>>;
+        pub fn get_dpos_validators_eligible_vote_counts(
+            self: &BridgeFinalChain,
+            block_number: u64,
+        ) -> Result<Vec<DposValidatorVoteCount>>;
         pub fn get_vrf_key(self: &BridgeFinalChain, address: &[u8; 20]) -> Result<Vec<u8>>;
         pub fn estimate_call_gas(self: &BridgeFinalChain, gas_limit: u64) -> Result<u64>;
         pub fn finalize_block(

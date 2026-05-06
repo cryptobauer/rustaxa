@@ -42,6 +42,30 @@ pub struct GenesisDposConfig {
     pub validator_maximum_stake: Vec<u8>,
 }
 
+/// Validator stake entry returned from the Rust DPoS read model.
+///
+/// The stake bytes keep the unsigned big-endian shape used by C++ `u256`
+/// conversions at the bridge boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DposValidatorStake {
+    /// Validator account address bytes in canonical address order.
+    pub address: [u8; 20],
+    /// Validator total stake as an unsigned big-endian integer byte string.
+    pub stake: Vec<u8>,
+}
+
+/// Eligible validator vote-count entry returned from the Rust DPoS read model.
+///
+/// Entries represent validators with nonzero eligible vote count at the queried
+/// block. Addresses are sorted by the Rust caller before crossing the bridge.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DposValidatorVoteCount {
+    /// Validator account address bytes in canonical address order.
+    pub address: [u8; 20],
+    /// Eligible vote count for this validator.
+    pub vote_count: u64,
+}
+
 /// Final-chain account view returned to C++ callers through the bridge.
 ///
 /// This is intentionally a data carrier rather than an EVM account object. It

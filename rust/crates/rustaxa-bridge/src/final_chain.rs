@@ -143,6 +143,36 @@ impl BridgeFinalChain {
         self.0.dpos_is_eligible(block_number, *address)
     }
 
+    pub fn get_dpos_validators_total_stakes(
+        self: &BridgeFinalChain,
+        block_number: u64,
+    ) -> Result<Vec<rustaxa_ffi::DposValidatorStake>, anyhow::Error> {
+        Ok(self
+            .0
+            .dpos_validators_total_stakes(block_number)?
+            .into_iter()
+            .map(|stake| rustaxa_ffi::DposValidatorStake {
+                address: stake.address,
+                stake: stake.stake,
+            })
+            .collect())
+    }
+
+    pub fn get_dpos_validators_eligible_vote_counts(
+        self: &BridgeFinalChain,
+        block_number: u64,
+    ) -> Result<Vec<rustaxa_ffi::DposValidatorVoteCount>, anyhow::Error> {
+        Ok(self
+            .0
+            .dpos_validators_eligible_vote_counts(block_number)?
+            .into_iter()
+            .map(|vote_count| rustaxa_ffi::DposValidatorVoteCount {
+                address: vote_count.address,
+                vote_count: vote_count.vote_count,
+            })
+            .collect())
+    }
+
     pub fn estimate_call_gas(
         self: &BridgeFinalChain,
         gas_limit: u64,

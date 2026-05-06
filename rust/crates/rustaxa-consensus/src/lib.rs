@@ -5,5 +5,6 @@ mod final_chain;
 
 pub use final_chain::FinalChain;
 pub use rustaxa_types::{
-    Account, FinalizationTransaction, GenesisAccount, GenesisDposConfig, GenesisValidator,
+    Account, DposValidatorStake, DposValidatorVoteCount, FinalizationTransaction, GenesisAccount,
+    GenesisDposConfig, GenesisValidator,
 };

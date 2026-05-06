@@ -20,6 +20,8 @@ std::array<uint8_t, 20> into_address_array(const addr_t& address) {
   return bytes;
 }
 
+addr_t into_address(const std::array<uint8_t, 20>& address) { return addr_t(dev::bytes(address.begin(), address.end())); }
+
 rust::Vec<uint8_t> into_rust_vec(const dev::bytes& bytes) {
   rust::Vec<uint8_t> vec;
   vec.reserve(bytes.size());
@@ -347,12 +349,32 @@ void FinalChain::prune(EthBlockNumber) {}
 
 void FinalChain::waitForFinalized() {}
 
-std::vector<state_api::ValidatorStake> FinalChain::dposValidatorsTotalStakes(EthBlockNumber) const { return {}; }
+std::vector<state_api::ValidatorStake> FinalChain::dposValidatorsTotalStakes(EthBlockNumber blk_num) const {
+  auto rust_stakes = rust_final_chain_.value()->get_dpos_validators_total_stakes(blk_num);
+  std::vector<state_api::ValidatorStake> stakes;
+  stakes.reserve(rust_stakes.size());
+  for (const auto& rust_stake : rust_stakes) {
+    stakes.push_back(state_api::ValidatorStake{
+        into_address(rust_stake.address),
+        dev::fromBigEndian<u256>(dev::bytes(rust_stake.stake.begin(), rust_stake.stake.end())),
+    });
+  }
+  return stakes;
+}
 
 uint256_t FinalChain::dposTotalAmountDelegated(EthBlockNumber) const { return {}; }
 
-std::vector<state_api::ValidatorVoteCount> FinalChain::dposValidatorsEligibleVoteCounts(EthBlockNumber) const {
-  return {};
+std::vector<state_api::ValidatorVoteCount> FinalChain::dposValidatorsEligibleVoteCounts(EthBlockNumber blk_num) const {
+  auto rust_vote_counts = rust_final_chain_.value()->get_dpos_validators_eligible_vote_counts(blk_num);
+  std::vector<state_api::ValidatorVoteCount> vote_counts;
+  vote_counts.reserve(rust_vote_counts.size());
+  for (const auto& rust_vote_count : rust_vote_counts) {
+    vote_counts.push_back(state_api::ValidatorVoteCount{
+        into_address(rust_vote_count.address),
+        rust_vote_count.vote_count,
+    });
+  }
+  return vote_counts;
 }
 
 uint64_t FinalChain::dposYield(EthBlockNumber) const { return 0; }

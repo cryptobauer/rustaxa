@@ -9,10 +9,10 @@ use rustaxa_types::codec::rlp::final_chain::{
 };
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::{
-    Account, FinalizationTransaction, GenesisAccount, GenesisDposConfig, GenesisValidator,
-    StoredFinalChainBlockHeader,
+    Account, DposValidatorStake, DposValidatorVoteCount, FinalizationTransaction, GenesisAccount,
+    GenesisDposConfig, GenesisValidator, StoredFinalChainBlockHeader,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::Mutex;
 use triehash::ordered_trie_root;
@@ -40,8 +40,10 @@ pub struct FinalChain {
 /// changes instead of answering historical queries from stale genesis data.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DposSnapshot {
+    /// Total stake by validator address at this block.
+    total_stakes: BTreeMap<[u8; 20], Vec<u8>>,
     /// Eligible vote count by validator address at this block.
-    vote_counts: HashMap<[u8; 20], u64>,
+    vote_counts: BTreeMap<[u8; 20], u64>,
     /// Total eligible vote count at this block.
     total_vote_count: u64,
 }
@@ -82,24 +84,33 @@ impl FinalChain {
                     &genesis_dpos_config.vote_eligibility_balance_step,
                     &genesis_dpos_config.validator_maximum_stake,
                 )?;
-                Ok((validator.address, validator.vrf_key, vote_count))
+                Ok((
+                    validator.address,
+                    validator.vrf_key,
+                    vote_count,
+                    validator.total_stake,
+                ))
             })
             .collect::<Result<Vec<_>>>()?;
+        let genesis_dpos_total_stakes = genesis_vrf_keys
+            .iter()
+            .map(|(address, _, _, stake)| (*address, stake.clone()))
+            .collect::<BTreeMap<_, _>>();
         let genesis_dpos_vote_counts = genesis_vrf_keys
             .iter()
-            .map(|(address, _, vote_count)| (*address, *vote_count))
-            .collect::<HashMap<_, _>>();
+            .map(|(address, _, vote_count, _)| (*address, *vote_count))
+            .collect::<BTreeMap<_, _>>();
         let genesis_dpos_total_vote_count =
             genesis_vrf_keys
                 .iter()
-                .try_fold(0u64, |total, (_, _, vote_count)| {
+                .try_fold(0u64, |total, (_, _, vote_count, _)| {
                     total
                         .checked_add(*vote_count)
                         .ok_or_else(|| anyhow::anyhow!("genesis DPoS total vote count overflow"))
                 })?;
         let genesis_vrf_keys = genesis_vrf_keys
             .into_iter()
-            .map(|(address, vrf_key, _)| (address, vrf_key))
+            .map(|(address, vrf_key, _, _)| (address, vrf_key))
             .collect();
 
         let final_chain = FinalChain {
@@ -111,6 +122,7 @@ impl FinalChain {
             dpos_snapshots: HashMap::from([(
                 0,
                 DposSnapshot {
+                    total_stakes: genesis_dpos_total_stakes,
                     vote_counts: genesis_dpos_vote_counts,
                     total_vote_count: genesis_dpos_total_vote_count,
                 },
@@ -228,6 +240,39 @@ impl FinalChain {
         address: [u8; 20],
     ) -> Result<bool, anyhow::Error> {
         Ok(self.dpos_eligible_vote_count(block_number, address)? > 0)
+    }
+
+    /// Returns validator total stakes at a block, sorted by validator address.
+    pub fn dpos_validators_total_stakes(
+        &self,
+        block_number: u64,
+    ) -> Result<Vec<DposValidatorStake>, anyhow::Error> {
+        Ok(self
+            .dpos_snapshot(block_number)?
+            .total_stakes
+            .iter()
+            .map(|(address, stake)| DposValidatorStake {
+                address: *address,
+                stake: stake.clone(),
+            })
+            .collect())
+    }
+
+    /// Returns nonzero validator eligible vote counts at a block, sorted by validator address.
+    pub fn dpos_validators_eligible_vote_counts(
+        &self,
+        block_number: u64,
+    ) -> Result<Vec<DposValidatorVoteCount>, anyhow::Error> {
+        Ok(self
+            .dpos_snapshot(block_number)?
+            .vote_counts
+            .iter()
+            .filter(|(_, vote_count)| **vote_count > 0)
+            .map(|(address, vote_count)| DposValidatorVoteCount {
+                address: *address,
+                vote_count: *vote_count,
+            })
+            .collect())
     }
 
     pub fn estimate_call_gas(&self, gas_limit: u64) -> Result<u64, anyhow::Error> {
@@ -991,6 +1036,28 @@ mod tests {
                 .unwrap()
         );
         assert!(!final_chain.dpos_is_eligible(0, [0xFF; 20]).unwrap());
+        assert_eq!(
+            final_chain
+                .dpos_validators_total_stakes(0)
+                .unwrap()
+                .into_iter()
+                .map(|stake| (stake.address, u256_from_big_endian(&stake.stake)))
+                .collect::<Vec<_>>(),
+            vec![
+                (first_validator, U256::from(10_000u64)),
+                (second_validator, U256::from(25_000u64)),
+                (ineligible_validator, U256::from(999u64)),
+            ]
+        );
+        assert_eq!(
+            final_chain
+                .dpos_validators_eligible_vote_counts(0)
+                .unwrap()
+                .into_iter()
+                .map(|vote_count| (vote_count.address, vote_count.vote_count))
+                .collect::<Vec<_>>(),
+            vec![(first_validator, 10), (second_validator, 25)]
+        );
 
         drop(final_chain);
         drop(storage);
@@ -1017,6 +1084,16 @@ mod tests {
 
         let err = final_chain
             .dpos_eligible_total_vote_count(1)
+            .expect_err("expected missing non-genesis DPoS snapshot");
+        assert!(err.to_string().contains("snapshot for block 1"));
+
+        let err = final_chain
+            .dpos_validators_total_stakes(1)
+            .expect_err("expected missing non-genesis DPoS snapshot");
+        assert!(err.to_string().contains("snapshot for block 1"));
+
+        let err = final_chain
+            .dpos_validators_eligible_vote_counts(1)
             .expect_err("expected missing non-genesis DPoS snapshot");
         assert!(err.to_string().contains("snapshot for block 1"));
 

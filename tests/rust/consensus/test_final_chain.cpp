@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "rustaxa-bridge/ffi.rs.h"
 
@@ -54,6 +55,10 @@ class RustFinalChainTest : public ::testing::Test {
     return out;
   }
 
+  static std::vector<uint8_t> bytes(const rust::Vec<uint8_t>& value) {
+    return std::vector<uint8_t>(value.begin(), value.end());
+  }
+
   static rust::Vec<GenesisAccount> genesis_accounts() { return {}; }
 
   static GenesisDposConfig genesis_dpos_config() {
@@ -89,6 +94,16 @@ TEST_F(RustFinalChainTest, DposQueriesUseGenesisSnapshotAtBlockZero) {
   EXPECT_TRUE(final_chain->get_dpos_is_eligible(0, validator_address));
   EXPECT_EQ(final_chain->get_dpos_eligible_vote_count(0, unknown_address), 0u);
   EXPECT_FALSE(final_chain->get_dpos_is_eligible(0, unknown_address));
+
+  const auto stakes = final_chain->get_dpos_validators_total_stakes(0);
+  ASSERT_EQ(stakes.size(), 1u);
+  EXPECT_EQ(stakes[0].address, validator_address);
+  EXPECT_EQ(bytes(stakes[0].stake), bytes(u64_be(10000)));
+
+  const auto vote_counts = final_chain->get_dpos_validators_eligible_vote_counts(0);
+  ASSERT_EQ(vote_counts.size(), 1u);
+  EXPECT_EQ(vote_counts[0].address, validator_address);
+  EXPECT_EQ(vote_counts[0].vote_count, 10u);
 }
 
 TEST_F(RustFinalChainTest, DposQueriesRejectMissingNonGenesisSnapshot) {
@@ -100,4 +115,6 @@ TEST_F(RustFinalChainTest, DposQueriesRejectMissingNonGenesisSnapshot) {
   EXPECT_THROW(final_chain->get_dpos_eligible_total_vote_count(1), std::exception);
   EXPECT_THROW(final_chain->get_dpos_eligible_vote_count(1, validator_address), std::exception);
   EXPECT_THROW(final_chain->get_dpos_is_eligible(1, validator_address), std::exception);
+  EXPECT_THROW(final_chain->get_dpos_validators_total_stakes(1), std::exception);
+  EXPECT_THROW(final_chain->get_dpos_validators_eligible_vote_counts(1), std::exception);
 }
