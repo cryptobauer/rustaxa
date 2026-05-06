@@ -94,9 +94,22 @@ rust::Vec<rustaxa::GenesisValidator> make_genesis_validators(const state_api::Co
     rustaxa::GenesisValidator genesis_validator;
     genesis_validator.address = into_address_array(validator.address);
     genesis_validator.vrf_key = into_bytes_array(validator.vrf_key);
+    u256 total_stake = 0;
+    for (const auto& [_, amount] : validator.delegations) {
+      total_stake += amount;
+    }
+    genesis_validator.total_stake = into_big_endian_vec(total_stake);
     validators.push_back(std::move(genesis_validator));
   }
   return validators;
+}
+
+rustaxa::GenesisDposConfig make_genesis_dpos_config(const state_api::DPOSConfig& config) {
+  rustaxa::GenesisDposConfig dpos_config;
+  dpos_config.eligibility_balance_threshold = into_big_endian_vec(config.eligibility_balance_threshold);
+  dpos_config.vote_eligibility_balance_step = into_big_endian_vec(config.vote_eligibility_balance_step);
+  dpos_config.validator_maximum_stake = into_big_endian_vec(config.validator_maximum_stake);
+  return dpos_config;
 }
 
 h256 into_h256(const rust::Vec<uint8_t>& bytes, const char* api_name) {
@@ -139,7 +152,8 @@ FinalChain::FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullN
   delegation_delay_ = config.genesis.state.dpos.delegation_delay;
   rust_final_chain_ = rustaxa::create_final_chain(
       db->rustStorage(), config.genesis.pbft.gas_limit, config.genesis.dag_genesis_block.getTimestamp(),
-      make_genesis_accounts(config.genesis.state), make_genesis_validators(config.genesis.state));
+      make_genesis_accounts(config.genesis.state), make_genesis_validators(config.genesis.state),
+      make_genesis_dpos_config(config.genesis.state.dpos));
 }
 
 void FinalChain::stop() {}
@@ -309,11 +323,17 @@ std::string FinalChain::trace(std::vector<state_api::EVMTransaction>, std::vecto
   return {};
 }
 
-uint64_t FinalChain::dposEligibleTotalVoteCount(EthBlockNumber) const { return 1; }
+uint64_t FinalChain::dposEligibleTotalVoteCount(EthBlockNumber) const {
+  return rust_final_chain_.value()->get_dpos_eligible_total_vote_count();
+}
 
-uint64_t FinalChain::dposEligibleVoteCount(EthBlockNumber, addr_t const&) const { return 1; }
+uint64_t FinalChain::dposEligibleVoteCount(EthBlockNumber, addr_t const& addr) const {
+  return rust_final_chain_.value()->get_dpos_eligible_vote_count(into_address_array(addr));
+}
 
-bool FinalChain::dposIsEligible(EthBlockNumber, addr_t const&) const { return true; }
+bool FinalChain::dposIsEligible(EthBlockNumber, addr_t const& addr) const {
+  return rust_final_chain_.value()->get_dpos_is_eligible(into_address_array(addr));
+}
 
 vrf_wrapper::vrf_pk_t FinalChain::dposGetVrfKey(EthBlockNumber, const addr_t& addr) const {
   auto rust_key = rust_final_chain_.value()->get_vrf_key(into_address_array(addr));

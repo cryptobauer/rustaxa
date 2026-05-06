@@ -9,7 +9,8 @@ use rustaxa_types::codec::rlp::final_chain::{
 };
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::{
-    Account, FinalizationTransaction, GenesisAccount, GenesisValidator, StoredFinalChainBlockHeader,
+    Account, FinalizationTransaction, GenesisAccount, GenesisDposConfig, GenesisValidator,
+    StoredFinalChainBlockHeader,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -29,6 +30,8 @@ pub struct FinalChain {
     genesis_timestamp: u64,
     accounts: Mutex<HashMap<[u8; 20], Account>>,
     genesis_vrf_keys: HashMap<[u8; 20], [u8; 32]>,
+    genesis_dpos_vote_counts: HashMap<[u8; 20], u64>,
+    genesis_dpos_total_vote_count: u64,
 }
 
 impl FinalChain {
@@ -41,6 +44,7 @@ impl FinalChain {
         genesis_timestamp: u64,
         genesis_accounts: Vec<GenesisAccount>,
         genesis_validators: Vec<GenesisValidator>,
+        genesis_dpos_config: GenesisDposConfig,
     ) -> Result<Self> {
         let genesis_accounts = genesis_accounts
             .into_iter()
@@ -59,7 +63,31 @@ impl FinalChain {
             .collect();
         let genesis_vrf_keys = genesis_validators
             .into_iter()
-            .map(|validator| (validator.address, validator.vrf_key))
+            .map(|validator| {
+                let vote_count = dpos_vote_count(
+                    &validator.total_stake,
+                    &genesis_dpos_config.eligibility_balance_threshold,
+                    &genesis_dpos_config.vote_eligibility_balance_step,
+                    &genesis_dpos_config.validator_maximum_stake,
+                )?;
+                Ok((validator.address, validator.vrf_key, vote_count))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let genesis_dpos_vote_counts = genesis_vrf_keys
+            .iter()
+            .map(|(address, _, vote_count)| (*address, *vote_count))
+            .collect::<HashMap<_, _>>();
+        let genesis_dpos_total_vote_count =
+            genesis_vrf_keys
+                .iter()
+                .try_fold(0u64, |total, (_, _, vote_count)| {
+                    total
+                        .checked_add(*vote_count)
+                        .ok_or_else(|| anyhow::anyhow!("genesis DPoS total vote count overflow"))
+                })?;
+        let genesis_vrf_keys = genesis_vrf_keys
+            .into_iter()
+            .map(|(address, vrf_key, _)| (address, vrf_key))
             .collect();
 
         let final_chain = FinalChain {
@@ -68,6 +96,8 @@ impl FinalChain {
             genesis_timestamp,
             accounts: Mutex::new(genesis_accounts),
             genesis_vrf_keys,
+            genesis_dpos_vote_counts,
+            genesis_dpos_total_vote_count,
         };
         final_chain.ensure_genesis_header()?;
         Ok(final_chain)
@@ -154,6 +184,21 @@ impl FinalChain {
 
     pub fn vrf_key(&self, address: [u8; 20]) -> Result<Option<[u8; 32]>, anyhow::Error> {
         Ok(self.genesis_vrf_keys.get(&address).copied())
+    }
+
+    /// Returns the genesis DPoS eligible vote count for one validator address.
+    pub fn dpos_eligible_vote_count(&self, address: [u8; 20]) -> Result<u64, anyhow::Error> {
+        Ok(*self.genesis_dpos_vote_counts.get(&address).unwrap_or(&0))
+    }
+
+    /// Returns the total genesis DPoS eligible vote count.
+    pub fn dpos_eligible_total_vote_count(&self) -> Result<u64, anyhow::Error> {
+        Ok(self.genesis_dpos_total_vote_count)
+    }
+
+    /// Returns whether the validator has nonzero genesis DPoS eligible votes.
+    pub fn dpos_is_eligible(&self, address: [u8; 20]) -> Result<bool, anyhow::Error> {
+        Ok(self.dpos_eligible_vote_count(address)? > 0)
     }
 
     pub fn estimate_call_gas(&self, gas_limit: u64) -> Result<u64, anyhow::Error> {
@@ -481,6 +526,30 @@ fn h160_to_address(value: ethereum_types::H160) -> [u8; 20] {
     address
 }
 
+fn dpos_vote_count(
+    stake: &[u8],
+    eligibility_balance_threshold: &[u8],
+    vote_eligibility_balance_step: &[u8],
+    validator_maximum_stake: &[u8],
+) -> Result<u64, anyhow::Error> {
+    let stake = u256_from_big_endian(stake);
+    let eligibility_balance_threshold = u256_from_big_endian(eligibility_balance_threshold);
+    let vote_eligibility_balance_step = u256_from_big_endian(vote_eligibility_balance_step);
+    let validator_maximum_stake = u256_from_big_endian(validator_maximum_stake);
+    if stake > validator_maximum_stake {
+        anyhow::bail!("genesis DPoS validator stake exceeds maximum stake");
+    }
+    if vote_eligibility_balance_step.is_zero() || stake < eligibility_balance_threshold {
+        return Ok(0);
+    }
+
+    let votes = stake / vote_eligibility_balance_step;
+    if votes > U256::from(u64::MAX) {
+        anyhow::bail!("genesis DPoS vote count does not fit into u64");
+    }
+    Ok(votes.as_u64())
+}
+
 fn affordable_gas(account: &Account, gas_price: U256, gas_limit: u64) -> u64 {
     if gas_price.is_zero() {
         return gas_limit;
@@ -642,6 +711,14 @@ mod tests {
         }
     }
 
+    fn genesis_validator(address: [u8; 20], stake: U256) -> GenesisValidator {
+        GenesisValidator {
+            address,
+            vrf_key: [address[0]; 32],
+            total_stake: u256_to_big_endian(stake),
+        }
+    }
+
     fn receipt_fields(receipt_rlp: &[u8]) -> (u8, u64, u64) {
         let receipt = Rlp::new(receipt_rlp);
         (
@@ -659,11 +736,51 @@ mod tests {
             .unwrap_or_default()
     }
 
+    fn new_final_chain(
+        storage: Arc<Storage>,
+        block_gas_limit: u64,
+        genesis_timestamp: u64,
+        genesis_accounts: Vec<GenesisAccount>,
+        genesis_validators: Vec<GenesisValidator>,
+    ) -> FinalChain {
+        FinalChain::new(
+            storage,
+            block_gas_limit,
+            genesis_timestamp,
+            genesis_accounts,
+            genesis_validators,
+            GenesisDposConfig::default(),
+        )
+        .unwrap()
+    }
+
+    fn new_final_chain_with_dpos(
+        storage: Arc<Storage>,
+        genesis_validators: Vec<GenesisValidator>,
+        threshold: U256,
+        vote_step: U256,
+        maximum_stake: U256,
+    ) -> FinalChain {
+        FinalChain::new(
+            storage,
+            0,
+            0,
+            vec![],
+            genesis_validators,
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(threshold),
+                vote_eligibility_balance_step: u256_to_big_endian(vote_step),
+                validator_maximum_stake: u256_to_big_endian(maximum_stake),
+            },
+        )
+        .unwrap()
+    }
+
     #[test]
     fn last_block_number_returns_zero_when_missing() {
         let path = temp_db_path("last-missing");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
-        let final_chain = FinalChain::new(storage.clone(), 0, 0, vec![], vec![]).unwrap();
+        let final_chain = new_final_chain(storage.clone(), 0, 0, vec![], vec![]);
 
         assert_eq!(final_chain.last_block_number().unwrap(), 0);
 
@@ -706,7 +823,7 @@ mod tests {
             .unwrap();
         storage.commit_write_batch_with_sync(batch, false).unwrap();
 
-        let final_chain = FinalChain::new(storage.clone(), 0, 0, vec![], vec![]).unwrap();
+        let final_chain = new_final_chain(storage.clone(), 0, 0, vec![], vec![]);
 
         assert_eq!(final_chain.last_block_number().unwrap(), block_number);
         assert_eq!(
@@ -758,14 +875,13 @@ mod tests {
             .unwrap();
         storage.commit_write_batch_with_sync(batch, false).unwrap();
 
-        let final_chain = FinalChain::new(
+        let final_chain = new_final_chain(
             storage.clone(),
             block_gas_limit,
             genesis_timestamp,
             vec![],
             vec![],
-        )
-        .unwrap();
+        );
 
         let full_header = final_chain.block_header(block_number).unwrap().unwrap();
         let full_header_rlp = Rlp::new(&full_header);
@@ -787,6 +903,111 @@ mod tests {
         assert_eq!(final_chain.transaction_count(tx_period).unwrap(), 2);
 
         drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn genesis_dpos_vote_counts_are_derived_from_validator_stake() {
+        let path = temp_db_path("genesis-dpos-votes");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let first_validator = [0x10; 20];
+        let second_validator = [0x20; 20];
+        let ineligible_validator = [0x30; 20];
+
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![
+                genesis_validator(first_validator, U256::from(10_000u64)),
+                genesis_validator(second_validator, U256::from(25_000u64)),
+                genesis_validator(ineligible_validator, U256::from(999u64)),
+            ],
+            U256::from(1_000u64),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+
+        assert_eq!(
+            final_chain
+                .dpos_eligible_vote_count(first_validator)
+                .unwrap(),
+            10
+        );
+        assert_eq!(
+            final_chain
+                .dpos_eligible_vote_count(second_validator)
+                .unwrap(),
+            25
+        );
+        assert_eq!(
+            final_chain
+                .dpos_eligible_vote_count(ineligible_validator)
+                .unwrap(),
+            0
+        );
+        assert_eq!(final_chain.dpos_eligible_total_vote_count().unwrap(), 35);
+        assert!(final_chain.dpos_is_eligible(first_validator).unwrap());
+        assert!(!final_chain.dpos_is_eligible(ineligible_validator).unwrap());
+        assert!(!final_chain.dpos_is_eligible([0xFF; 20]).unwrap());
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn genesis_dpos_vote_count_rejects_u64_overflow() {
+        let path = temp_db_path("genesis-dpos-overflow");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+
+        let err = match FinalChain::new(
+            storage.clone(),
+            0,
+            0,
+            vec![],
+            vec![genesis_validator(
+                [0x40; 20],
+                U256::from(u64::MAX) + U256::one(),
+            )],
+            GenesisDposConfig {
+                eligibility_balance_threshold: vec![],
+                vote_eligibility_balance_step: u256_to_big_endian(U256::one()),
+                validator_maximum_stake: u256_to_big_endian(U256::MAX),
+            },
+        ) {
+            Ok(_) => panic!("expected genesis DPoS vote count overflow"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("does not fit into u64"));
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn genesis_dpos_vote_count_rejects_stake_above_validator_maximum() {
+        let path = temp_db_path("genesis-dpos-max-stake");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+
+        let err = match FinalChain::new(
+            storage.clone(),
+            0,
+            0,
+            vec![],
+            vec![genesis_validator([0x50; 20], U256::from(10_001u64))],
+            GenesisDposConfig {
+                eligibility_balance_threshold: vec![],
+                vote_eligibility_balance_step: u256_to_big_endian(U256::one()),
+                validator_maximum_stake: u256_to_big_endian(U256::from(10_000u64)),
+            },
+        ) {
+            Ok(_) => panic!("expected genesis DPoS maximum stake rejection"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("exceeds maximum stake"));
+
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
     }
@@ -822,14 +1043,13 @@ mod tests {
             &pbft_block,
             std::slice::from_ref(&transaction_rlp),
         );
-        let final_chain = FinalChain::new(
+        let final_chain = new_final_chain(
             storage.clone(),
             block_gas_limit,
             0,
             vec![genesis_account(sender, U256::from(1_000_000u64))],
             vec![],
-        )
-        .unwrap();
+        );
         let genesis_hash = H256::from_slice(&final_chain.block_hash(0).unwrap().unwrap());
 
         let (header_rlp, receipts) = final_chain
@@ -930,14 +1150,13 @@ mod tests {
             &pbft_block,
             std::slice::from_ref(&transaction_rlp),
         );
-        let final_chain = FinalChain::new(
+        let final_chain = new_final_chain(
             storage.clone(),
             100_000,
             0,
             vec![genesis_account(sender, U256::from(100_001u64))],
             vec![],
-        )
-        .unwrap();
+        );
 
         let (_header_rlp, receipts) = final_chain
             .finalize_block(pbft_block, vec![transaction])
@@ -985,7 +1204,7 @@ mod tests {
             &pbft_block,
             std::slice::from_ref(&transaction_rlp),
         );
-        let final_chain = FinalChain::new(
+        let final_chain = new_final_chain(
             storage.clone(),
             100_000,
             0,
@@ -994,8 +1213,7 @@ mod tests {
                 balance: u256_to_big_endian(U256::from(200_000u64)),
             }],
             vec![],
-        )
-        .unwrap();
+        );
         final_chain
             .accounts
             .lock()
@@ -1028,14 +1246,13 @@ mod tests {
         let signing_key = SigningKey::from_slice(&[10u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 101);
         write_period_data(&storage, period, &pbft_block, &[]);
-        let final_chain = FinalChain::new(
+        let final_chain = new_final_chain(
             storage.clone(),
             100_000,
             0,
             vec![genesis_account(sender, U256::from(100_000u64))],
             vec![],
-        )
-        .unwrap();
+        );
 
         let err = final_chain
             .finalize_block(
@@ -1078,14 +1295,13 @@ mod tests {
             &pbft_block,
             std::slice::from_ref(&transaction_rlp),
         );
-        let final_chain = FinalChain::new(
+        let final_chain = new_final_chain(
             storage.clone(),
             100_000,
             0,
             vec![genesis_account(sender, U256::from(100_000u64))],
             vec![],
-        )
-        .unwrap();
+        );
 
         let err = final_chain
             .finalize_block(

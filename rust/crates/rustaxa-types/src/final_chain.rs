@@ -17,15 +17,29 @@ pub struct GenesisAccount {
 
 /// Genesis validator key input passed from C++ configuration into Rust.
 ///
-/// The address identifies the validator account and the VRF key is kept as raw
+/// The address identifies the validator account, the VRF key is kept as raw
 /// bytes because DAG verification currently consumes the C++ VRF wrapper format
-/// through the bridge.
+/// through the bridge, and `total_stake` is the effective genesis stake used by
+/// the initial Rust DPoS vote-count model.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GenesisValidator {
     /// Validator account address bytes in canonical address order.
     pub address: [u8; 20],
     /// Validator VRF public key bytes.
     pub vrf_key: [u8; 32],
+    /// Effective genesis validator stake as an unsigned big-endian integer byte string.
+    pub total_stake: Vec<u8>,
+}
+
+/// DPoS genesis parameters used to derive the initial vote-count model.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct GenesisDposConfig {
+    /// Minimum stake required for a validator to be eligible.
+    pub eligibility_balance_threshold: Vec<u8>,
+    /// Stake amount represented by one vote.
+    pub vote_eligibility_balance_step: Vec<u8>,
+    /// Maximum allowed effective stake for a genesis validator.
+    pub validator_maximum_stake: Vec<u8>,
 }
 
 /// Final-chain account view returned to C++ callers through the bridge.

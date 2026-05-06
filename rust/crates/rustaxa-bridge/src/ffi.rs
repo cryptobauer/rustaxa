@@ -84,6 +84,13 @@ pub mod rustaxa_ffi {
     struct GenesisValidator {
         address: [u8; 20],
         vrf_key: [u8; 32],
+        total_stake: Vec<u8>,
+    }
+
+    struct GenesisDposConfig {
+        eligibility_balance_threshold: Vec<u8>,
+        vote_eligibility_balance_step: Vec<u8>,
+        validator_maximum_stake: Vec<u8>,
     }
 
     struct AccountLookup {
@@ -427,6 +434,7 @@ pub mod rustaxa_ffi {
             genesis_timestamp: u64,
             genesis_accounts: Vec<GenesisAccount>,
             genesis_validators: Vec<GenesisValidator>,
+            genesis_dpos_config: GenesisDposConfig,
         ) -> Result<Box<BridgeFinalChain>>;
 
         pub fn get_last_block_number(self: &BridgeFinalChain) -> Result<u64>;
@@ -442,6 +450,12 @@ pub mod rustaxa_ffi {
         ) -> Result<Vec<u8>>;
         pub fn get_transaction_count(self: &BridgeFinalChain, period: u64) -> Result<u64>;
         pub fn get_account(self: &BridgeFinalChain, address: &[u8; 20]) -> Result<AccountLookup>;
+        pub fn get_dpos_eligible_vote_count(
+            self: &BridgeFinalChain,
+            address: &[u8; 20],
+        ) -> Result<u64>;
+        pub fn get_dpos_eligible_total_vote_count(self: &BridgeFinalChain) -> Result<u64>;
+        pub fn get_dpos_is_eligible(self: &BridgeFinalChain, address: &[u8; 20]) -> Result<bool>;
         pub fn get_vrf_key(self: &BridgeFinalChain, address: &[u8; 20]) -> Result<Vec<u8>>;
         pub fn estimate_call_gas(self: &BridgeFinalChain, gas_limit: u64) -> Result<u64>;
         pub fn finalize_block(

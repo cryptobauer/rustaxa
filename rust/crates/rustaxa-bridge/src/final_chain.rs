@@ -9,6 +9,7 @@ pub fn create_final_chain(
     genesis_timestamp: u64,
     genesis_accounts: Vec<rustaxa_ffi::GenesisAccount>,
     genesis_validators: Vec<rustaxa_ffi::GenesisValidator>,
+    genesis_dpos_config: rustaxa_ffi::GenesisDposConfig,
 ) -> Result<Box<BridgeFinalChain>, anyhow::Error> {
     let genesis_accounts = genesis_accounts
         .into_iter()
@@ -22,6 +23,7 @@ pub fn create_final_chain(
         .map(|validator| rustaxa_consensus::GenesisValidator {
             address: validator.address,
             vrf_key: validator.vrf_key,
+            total_stake: validator.total_stake,
         })
         .collect();
     let final_chain = FinalChain::new(
@@ -30,6 +32,11 @@ pub fn create_final_chain(
         genesis_timestamp,
         genesis_accounts,
         genesis_validators,
+        rustaxa_consensus::GenesisDposConfig {
+            eligibility_balance_threshold: genesis_dpos_config.eligibility_balance_threshold,
+            vote_eligibility_balance_step: genesis_dpos_config.vote_eligibility_balance_step,
+            validator_maximum_stake: genesis_dpos_config.validator_maximum_stake,
+        },
     )?;
     Ok(Box::new(BridgeFinalChain(final_chain)))
 }
@@ -111,6 +118,26 @@ impl BridgeFinalChain {
             .vrf_key(*address)?
             .map(|key| key.to_vec())
             .unwrap_or_default())
+    }
+
+    pub fn get_dpos_eligible_vote_count(
+        self: &BridgeFinalChain,
+        address: &[u8; 20],
+    ) -> Result<u64, anyhow::Error> {
+        self.0.dpos_eligible_vote_count(*address)
+    }
+
+    pub fn get_dpos_eligible_total_vote_count(
+        self: &BridgeFinalChain,
+    ) -> Result<u64, anyhow::Error> {
+        self.0.dpos_eligible_total_vote_count()
+    }
+
+    pub fn get_dpos_is_eligible(
+        self: &BridgeFinalChain,
+        address: &[u8; 20],
+    ) -> Result<bool, anyhow::Error> {
+        self.0.dpos_is_eligible(*address)
     }
 
     pub fn estimate_call_gas(
