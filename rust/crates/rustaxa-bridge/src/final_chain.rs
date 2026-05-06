@@ -119,4 +119,60 @@ impl BridgeFinalChain {
     ) -> Result<u64, anyhow::Error> {
         self.0.estimate_call_gas(gas_limit)
     }
+
+    pub fn finalize_block(
+        self: &BridgeFinalChain,
+        pbft_block_rlp: Vec<u8>,
+        transactions: Vec<rustaxa_ffi::FinalizationTransaction>,
+    ) -> Result<rustaxa_ffi::FinalizationOutcome, anyhow::Error> {
+        let transactions = transactions
+            .into_iter()
+            .map(|transaction| rustaxa_consensus::FinalizationTransaction {
+                hash: transaction.hash,
+                sender: transaction.sender,
+                receiver: if transaction.receiver_found {
+                    Some(transaction.receiver)
+                } else {
+                    None
+                },
+                nonce: transaction.nonce,
+                value: transaction.value,
+                gas_price: transaction.gas_price,
+                gas_limit: transaction.gas_limit,
+                data: transaction.data,
+                rlp: transaction.rlp,
+            })
+            .collect();
+        let (block_header_rlp, receipts) = self.0.finalize_block(pbft_block_rlp, transactions)?;
+        Ok(rustaxa_ffi::FinalizationOutcome {
+            block_header_rlp,
+            receipts: receipts
+                .into_iter()
+                .map(|data| rustaxa_ffi::ReceiptRlp { data })
+                .collect(),
+        })
+    }
+
+    pub fn get_transaction_rlps(
+        self: &BridgeFinalChain,
+        period: u64,
+    ) -> Result<Vec<rustaxa_ffi::TxRlp>, anyhow::Error> {
+        Ok(self
+            .0
+            .transaction_rlps(period)?
+            .into_iter()
+            .map(|data| rustaxa_ffi::TxRlp { data })
+            .collect())
+    }
+
+    pub fn get_transaction_receipt(
+        self: &BridgeFinalChain,
+        period: u64,
+        position: u64,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .0
+            .transaction_receipt_rlp(period, position)?
+            .unwrap_or_default())
+    }
 }

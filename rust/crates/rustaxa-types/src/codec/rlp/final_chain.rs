@@ -38,6 +38,11 @@ impl LegacyBlockHeaderRlp {
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
+
+    /// Returns the final-chain block hash embedded as field zero in legacy header RLP.
+    pub fn hash(&self) -> Result<H256> {
+        Ok(Rlp::new(&self.0).val_at(0)?)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -76,6 +81,28 @@ impl TryFrom<StoredBlockHeaderRlp<'_>> for StoredFinalChainBlockHeader {
     }
 }
 
+impl From<&StoredFinalChainBlockHeader> for StoredBlockHeaderRlpOwned {
+    fn from(header: &StoredFinalChainBlockHeader) -> Self {
+        StoredBlockHeaderRlpOwned(encode_stored_block_header_rlp(header))
+    }
+}
+
+/// Owned encoded form of the seven-field final-chain header stored in RocksDB.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredBlockHeaderRlpOwned(Vec<u8>);
+
+impl StoredBlockHeaderRlpOwned {
+    /// Consumes the wrapper and returns the encoded bytes.
+    pub fn into_vec(self) -> Vec<u8> {
+        self.0
+    }
+
+    /// Borrows the encoded bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 fn decode_stored_block_header_rlp(rlp: &Rlp<'_>) -> Result<StoredFinalChainBlockHeader> {
     Ok(StoredFinalChainBlockHeader {
         parent_hash: rlp.val_at(STORED_HEADER_PARENT_HASH_POS)?,
@@ -86,6 +113,18 @@ fn decode_stored_block_header_rlp(rlp: &Rlp<'_>) -> Result<StoredFinalChainBlock
         gas_used: rlp.val_at(STORED_HEADER_GAS_USED_POS)?,
         total_reward: rlp.val_at(STORED_HEADER_TOTAL_REWARD_POS)?,
     })
+}
+
+fn encode_stored_block_header_rlp(header: &StoredFinalChainBlockHeader) -> Vec<u8> {
+    let mut stream = RlpStream::new_list(7);
+    stream.append(&header.parent_hash);
+    stream.append(&header.state_root);
+    stream.append(&header.transactions_root);
+    stream.append(&header.receipts_root);
+    stream.append(&header.log_bloom.as_slice());
+    stream.append(&header.gas_used);
+    stream.append(&header.total_reward);
+    stream.out().to_vec()
 }
 
 impl From<&FinalChainBlockHeader> for LegacyBlockHeaderRlp {

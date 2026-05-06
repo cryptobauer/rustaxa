@@ -20,6 +20,50 @@ std::array<uint8_t, 20> into_address_array(const addr_t& address) {
   return bytes;
 }
 
+rust::Vec<uint8_t> into_rust_vec(const dev::bytes& bytes) {
+  rust::Vec<uint8_t> vec;
+  vec.reserve(bytes.size());
+  for (auto const byte : bytes) {
+    vec.push_back(static_cast<uint8_t>(byte));
+  }
+  return vec;
+}
+
+rust::Vec<uint8_t> into_big_endian_vec(const u256& value) {
+  rust::Vec<uint8_t> vec;
+  auto bytes = dev::toBigEndian(value);
+  vec.reserve(bytes.size());
+  for (auto const byte : bytes) {
+    vec.push_back(static_cast<uint8_t>(byte));
+  }
+  return vec;
+}
+
+rust::Vec<rustaxa::FinalizationTransaction> make_finalization_transactions(const SharedTransactions& transactions) {
+  rust::Vec<rustaxa::FinalizationTransaction> rust_transactions;
+  rust_transactions.reserve(transactions.size());
+  for (const auto& transaction : transactions) {
+    rustaxa::FinalizationTransaction rust_transaction;
+    rust_transaction.hash = into_bytes_array(transaction->getHash());
+    rust_transaction.sender = into_address_array(transaction->getSender());
+    if (auto const& receiver = transaction->getReceiver(); receiver) {
+      rust_transaction.receiver_found = true;
+      rust_transaction.receiver = into_address_array(*receiver);
+    } else {
+      rust_transaction.receiver_found = false;
+      rust_transaction.receiver = {};
+    }
+    rust_transaction.nonce = transaction->getNonce().convert_to<uint64_t>();
+    rust_transaction.value = into_big_endian_vec(transaction->getValue());
+    rust_transaction.gas_price = into_big_endian_vec(transaction->getGasPrice());
+    rust_transaction.gas_limit = transaction->getGas();
+    rust_transaction.data = into_rust_vec(transaction->getData());
+    rust_transaction.rlp = into_rust_vec(transaction->rlp());
+    rust_transactions.push_back(std::move(rust_transaction));
+  }
+  return rust_transactions;
+}
+
 rust::Vec<rustaxa::GenesisAccount> make_genesis_accounts(const state_api::Config& config) {
   auto effective_balances = config.initial_balances;
   for (const auto& validator : config.dpos.initial_validators) {
@@ -67,6 +111,8 @@ std::string into_string(const rust::Vec<uint8_t>& bytes) {
   return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
 
+dev::bytes into_bytes(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
+
 [[noreturn]] void throw_unimplemented_final_chain_api(const char* api_name) {
   throw DbException("FinalChain::" + std::string(api_name) + " is not implemented in Rust shim mode");
 }
@@ -75,6 +121,13 @@ std::future<std::shared_ptr<const FinalizationResult>> ready_unimplemented_final
   std::promise<std::shared_ptr<const FinalizationResult>> promise;
   promise.set_exception(std::make_exception_ptr(
       DbException("FinalChain::" + std::string(api_name) + " is not implemented in Rust shim mode")));
+  return promise.get_future();
+}
+
+std::future<std::shared_ptr<const FinalizationResult>> ready_finalization_result(
+    std::shared_ptr<const FinalizationResult> result) {
+  std::promise<std::shared_ptr<const FinalizationResult>> promise;
+  promise.set_value(std::move(result));
   return promise.get_future();
 }
 
@@ -93,9 +146,36 @@ void FinalChain::stop() {}
 
 EthBlockNumber FinalChain::delegationDelay() const { return delegation_delay_; }
 
-std::future<std::shared_ptr<const FinalizationResult>> FinalChain::finalize(PeriodData&&, std::vector<h256>&&, uint32_t,
-                                                                            std::shared_ptr<DagBlock>&&) {
-  return ready_unimplemented_finalization_result("finalize");
+std::future<std::shared_ptr<const FinalizationResult>> FinalChain::finalize(PeriodData&& period_data,
+                                                                            std::vector<h256>&& finalized_dag_blk_hashes,
+                                                                            uint32_t,
+                                                                            std::shared_ptr<DagBlock>&& anchor) {
+  if (anchor) {
+    return ready_unimplemented_finalization_result("finalize(anchor)");
+  }
+  auto outcome = rust_final_chain_.value()->finalize_block(into_rust_vec(period_data.pbft_blk->rlp(true)),
+                                                           make_finalization_transactions(period_data.transactions));
+  auto header_data = into_string(outcome.block_header_rlp);
+  auto header = BlockHeader::fromRLP(dev::RLP(header_data));
+  TransactionReceipts receipts;
+  receipts.reserve(outcome.receipts.size());
+  for (auto const& receipt : outcome.receipts) {
+    auto receipt_data = into_string(receipt.data);
+    receipts.push_back(util::rlp_dec<TransactionReceipt>(dev::RLP(receipt_data)));
+  }
+  auto result = std::make_shared<FinalizationResult>(FinalizationResult{
+      {
+          period_data.pbft_blk->getBeneficiary(),
+          period_data.pbft_blk->getTimestamp(),
+          std::move(finalized_dag_blk_hashes),
+          period_data.pbft_blk->getBlockHash(),
+      },
+      std::move(header),
+      std::move(period_data.transactions),
+      std::move(receipts),
+  });
+  block_finalized_emitter_.emit(result);
+  return ready_finalization_result(std::move(result));
 }
 
 std::shared_ptr<const BlockHeader> FinalChain::blockHeader(std::optional<EthBlockNumber> n) const {
@@ -144,11 +224,24 @@ void FinalChain::updateStateConfig(const state_api::Config& new_config) {
   delegation_delay_ = new_config.dpos.delegation_delay;
 }
 
-std::shared_ptr<const TransactionHashes> FinalChain::transactionHashes(std::optional<EthBlockNumber>) const {
-  return std::make_shared<TransactionHashes>();
+std::shared_ptr<const TransactionHashes> FinalChain::transactionHashes(std::optional<EthBlockNumber> n) const {
+  auto ret = std::make_shared<TransactionHashes>();
+  for (auto const& transaction : transactions(n)) {
+    ret->push_back(transaction->getHash());
+  }
+  return ret;
 }
 
-const SharedTransactions FinalChain::transactions(std::optional<EthBlockNumber>) const { return {}; }
+const SharedTransactions FinalChain::transactions(std::optional<EthBlockNumber> n) const {
+  SharedTransactions ret;
+  auto const block_number = n.value_or(lastBlockNumber());
+  auto rust_transactions = rust_final_chain_.value()->get_transaction_rlps(block_number);
+  ret.reserve(rust_transactions.size());
+  for (auto const& transaction : rust_transactions) {
+    ret.push_back(std::make_shared<Transaction>(into_bytes(transaction.data), false));
+  }
+  return ret;
+}
 
 std::optional<TransactionLocation> FinalChain::transactionLocation(h256 const& trx_hash) const {
   auto rust_location = rust_final_chain_.value()->get_transaction_location(into_bytes_array(trx_hash));
@@ -159,12 +252,23 @@ std::optional<TransactionLocation> FinalChain::transactionLocation(h256 const& t
   return TransactionLocation::fromRlp(dev::RLP(location_data));
 }
 
-std::optional<TransactionReceipt> FinalChain::transactionReceipt(EthBlockNumber, uint64_t,
+std::optional<TransactionReceipt> FinalChain::transactionReceipt(EthBlockNumber blk_n, uint64_t position,
                                                                  std::optional<trx_hash_t>) const {
-  return std::nullopt;
+  auto receipt = rust_final_chain_.value()->get_transaction_receipt(blk_n, position);
+  if (receipt.empty()) {
+    return std::nullopt;
+  }
+  auto receipt_data = into_string(receipt);
+  return util::rlp_dec<TransactionReceipt>(dev::RLP(receipt_data));
 }
 
-std::shared_ptr<Transaction> FinalChain::transaction(EthBlockNumber, uint32_t) const { return nullptr; }
+std::shared_ptr<Transaction> FinalChain::transaction(EthBlockNumber blk_n, uint32_t position) const {
+  auto block_transactions = transactions(blk_n);
+  if (position >= block_transactions.size()) {
+    return nullptr;
+  }
+  return block_transactions[position];
+}
 
 uint64_t FinalChain::transactionCount(std::optional<EthBlockNumber> n) const {
   return rust_final_chain_.value()->get_transaction_count(static_cast<uint64_t>(n.value_or(lastBlockNumber())));
@@ -239,15 +343,29 @@ h256 FinalChain::getBridgeRoot(EthBlockNumber) const { return {}; }
 
 h256 FinalChain::getBridgeEpoch(EthBlockNumber) const { return {}; }
 
-std::pair<val_t, bool> FinalChain::getBalance(addr_t const&) const { return {0, true}; }
+std::pair<val_t, bool> FinalChain::getBalance(addr_t const& addr) const {
+  if (auto account = getAccount(addr)) {
+    return {account->balance, true};
+  }
+  return {0, false};
+}
 
 std::shared_ptr<const FinalizationResult> FinalChain::finalize_(PeriodData&&, std::vector<h256>&&, uint32_t,
                                                                 std::shared_ptr<DagBlock>&&) {
   throw_unimplemented_final_chain_api("finalize_");
 }
 
-SharedTransactionReceipts FinalChain::blockReceipts(std::optional<EthBlockNumber>) const {
-  return std::make_shared<std::vector<TransactionReceipt>>();
+SharedTransactionReceipts FinalChain::blockReceipts(std::optional<EthBlockNumber> n) const {
+  auto const block_number = n.value_or(lastBlockNumber());
+  auto count = transactionCount(block_number);
+  auto receipts = std::make_shared<std::vector<TransactionReceipt>>();
+  receipts->reserve(count);
+  for (uint64_t position = 0; position < count; ++position) {
+    if (auto receipt = transactionReceipt(block_number, position)) {
+      receipts->push_back(*receipt);
+    }
+  }
+  return receipts;
 }
 
 }  // namespace taraxa::final_chain

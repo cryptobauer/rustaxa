@@ -3,7 +3,7 @@ use ethereum_types::H256;
 use std::sync::Arc;
 
 use crate::Column;
-use crate::db::DbReader;
+use crate::db::{DbReader, DbWriter};
 
 pub struct FinalChainRepository<D: DbReader> {
     db: Arc<D>,
@@ -67,6 +67,65 @@ impl<D: DbReader> FinalChainRepository<D> {
             .db
             .get(Column::FinalChainReceiptByTrxHash, trx_hash.as_bytes())?
             .map(|value| value.as_ref().to_vec()))
+    }
+}
+
+impl<D: DbReader + DbWriter> FinalChainRepository<D> {
+    /// Persists a finalized block header and its lookup indexes atomically.
+    ///
+    /// C++ mapping: the final-chain portions of `FinalChain::appendBlock`.
+    pub fn write_block_header(
+        &self,
+        number: u64,
+        hash: H256,
+        stored_header_rlp: &[u8],
+        receipts_rlp: &[u8],
+    ) -> Result<()> {
+        const DB_META_LAST_NUMBER: u32 = 1;
+
+        let mut batch = self.db.create_batch();
+        self.db.batch_put(
+            &mut batch,
+            Column::FinalChainBlkByNumber,
+            &number.to_le_bytes(),
+            stored_header_rlp,
+        )?;
+        self.db.batch_put(
+            &mut batch,
+            Column::FinalChainReceiptByPeriod,
+            &number.to_le_bytes(),
+            receipts_rlp,
+        )?;
+        self.db.batch_put(
+            &mut batch,
+            Column::FinalChainBlkHashByNumber,
+            &number.to_le_bytes(),
+            hash.as_bytes(),
+        )?;
+        self.db.batch_put(
+            &mut batch,
+            Column::FinalChainBlkNumberByHash,
+            hash.as_bytes(),
+            &number.to_le_bytes(),
+        )?;
+        self.db.batch_put(
+            &mut batch,
+            Column::FinalChainMeta,
+            &DB_META_LAST_NUMBER.to_le_bytes(),
+            &number.to_le_bytes(),
+        )?;
+        self.db.commit_batch(batch)
+    }
+
+    /// Persists one finalized transaction receipt by transaction hash.
+    ///
+    /// C++ mapping: `DbStorage::insert(..., Columns::final_chain_receipt_by_trx_hash)`.
+    pub fn write_receipt_by_trx_hash(&self, trx_hash: H256, receipt_rlp: &[u8]) -> Result<()> {
+        self.db.put(
+            Column::FinalChainReceiptByTrxHash,
+            trx_hash.as_bytes(),
+            receipt_rlp,
+        )
     }
 }
 

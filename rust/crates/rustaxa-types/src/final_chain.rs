@@ -47,6 +47,30 @@ pub struct Account {
     pub code_size: u64,
 }
 
+/// Transaction data needed by Rust finalization while transaction ownership is
+/// still held by the C++ `Transaction` type at the bridge boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FinalizationTransaction {
+    /// Canonical transaction hash bytes.
+    pub hash: [u8; 32],
+    /// Recovered sender address bytes.
+    pub sender: [u8; 20],
+    /// Receiver address bytes for calls and value transfers.
+    pub receiver: Option<[u8; 20]>,
+    /// Transaction nonce.
+    pub nonce: u64,
+    /// Transaction value as unsigned big-endian integer bytes.
+    pub value: Vec<u8>,
+    /// Gas price as unsigned big-endian integer bytes.
+    pub gas_price: Vec<u8>,
+    /// Gas limit supplied by the transaction.
+    pub gas_limit: u64,
+    /// Transaction input data.
+    pub data: Vec<u8>,
+    /// Canonical transaction RLP.
+    pub rlp: Vec<u8>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredFinalChainBlockHeader {
     pub parent_hash: H256,

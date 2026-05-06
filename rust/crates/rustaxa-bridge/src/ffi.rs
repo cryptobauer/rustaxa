@@ -95,6 +95,28 @@ pub mod rustaxa_ffi {
         code_size: u64,
     }
 
+    struct FinalizationOutcome {
+        block_header_rlp: Vec<u8>,
+        receipts: Vec<ReceiptRlp>,
+    }
+
+    struct FinalizationTransaction {
+        hash: [u8; 32],
+        sender: [u8; 20],
+        receiver_found: bool,
+        receiver: [u8; 20],
+        nonce: u64,
+        value: Vec<u8>,
+        gas_price: Vec<u8>,
+        gas_limit: u64,
+        data: Vec<u8>,
+        rlp: Vec<u8>,
+    }
+
+    struct ReceiptRlp {
+        data: Vec<u8>,
+    }
+
     struct DagHash {
         hash: [u8; 32],
     }
@@ -422,5 +444,16 @@ pub mod rustaxa_ffi {
         pub fn get_account(self: &BridgeFinalChain, address: &[u8; 20]) -> Result<AccountLookup>;
         pub fn get_vrf_key(self: &BridgeFinalChain, address: &[u8; 20]) -> Result<Vec<u8>>;
         pub fn estimate_call_gas(self: &BridgeFinalChain, gas_limit: u64) -> Result<u64>;
+        pub fn finalize_block(
+            self: &BridgeFinalChain,
+            pbft_block_rlp: Vec<u8>,
+            transactions: Vec<FinalizationTransaction>,
+        ) -> Result<FinalizationOutcome>;
+        pub fn get_transaction_rlps(self: &BridgeFinalChain, period: u64) -> Result<Vec<TxRlp>>;
+        pub fn get_transaction_receipt(
+            self: &BridgeFinalChain,
+            period: u64,
+            position: u64,
+        ) -> Result<Vec<u8>>;
     }
 }
