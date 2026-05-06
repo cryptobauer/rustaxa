@@ -82,7 +82,7 @@ Required test coverage and parity gates for the Rust consensus model are defined
 | --- | --- | --- | --- | --- |
 | `VerifiedVotes` | vote insertion, unique voter tracking, step/round/period lookup, 2t+1 voted blocks, cleanup | `PbftVote` | `vote_test`, `pbft_manager_test` | Rust domain vote aggregation |
 | `VoteManager` | vote validation, generation, reward votes, two_t_plus_one thresholds, VRF sortition, current period/round | `FinalChain`, `PbftChain`, `KeyManager`, `SlashingManager`, `DbStorage`, `Network`, VRF | `vote_test`, `pbft_manager_test` | Port validation/aggregation after DPoS ports exist; keep gossip shell in C++ |
-| FinalChain DPoS ports | `dposIsEligible`, eligible vote count, total vote count, validators eligible vote counts, VRF key | FinalChain/state API/EVM | `rust_consensus_tests`, `pbft_manager_test`, `state_api_test`, proposer tests | Partial: genesis snapshot is Rust-backed and block numbers are preserved through the shim/bridge. Non-genesis DPoS snapshots intentionally throw until Rust finalization maintains state. |
+| FinalChain DPoS ports | `dposIsEligible`, eligible vote count, total vote count, validators eligible vote counts, validators total stakes, VRF key | FinalChain/state API/EVM | `rust_consensus_tests`, `pbft_manager_test`, `state_api_test`, proposer tests | Partial: genesis snapshot is Rust-backed and block numbers are preserved through the shim/bridge. Genesis validator stake and eligible vote-count vectors are Rust-backed and address-sorted. Non-genesis DPoS snapshots intentionally throw until Rust finalization maintains state. |
 
 ### Transactions
 
@@ -153,7 +153,7 @@ Open questions:
 
 | Item | Status | Owner decision needed |
 | --- | --- | --- |
-| Replace temporary `dposIsEligible` behavior | `partial` | Genesis DPoS vote-count and eligibility queries are Rust-backed for block `0`; non-genesis queries throw instead of returning stale data. Needs Rust finalization/state DPoS snapshots before consensus can rely on it for later blocks. |
+| Replace temporary DPoS query behavior | `partial` | Genesis DPoS vote-count, eligibility, validator total stake, and validator eligible vote-count queries are Rust-backed for block `0`; non-genesis queries throw instead of returning stale data. Needs Rust finalization/state DPoS snapshots before consensus can rely on it for later blocks. |
 | Create Rust DAG graph module | `rust-backed` | Landed as standalone Rust domain plus bridge tests and C++ `Dag` production routing under `RUSTAXA_ENABLE`. |
 | Define consensus storage ports | `not-started` | Needed before Rust services depend on storage. |
 | Decide CXX bridge shape for consensus hashes and vectors | `rust-backed` for DAG graph | DAG bridge uses fixed bytes and explicit boundary conversion; revisit if PBFT/vote bridges need richer payloads. |

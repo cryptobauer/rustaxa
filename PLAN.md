@@ -206,6 +206,8 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
   - genesis vote-count snapshot is derived in Rust from genesis validator stake.
   - `dposEligibleTotalVoteCount`, `dposEligibleVoteCount`, and `dposIsEligible` now preserve the `EthBlockNumber`
     argument through the C++ shim and Rust bridge.
+  - `dposValidatorsTotalStakes` and `dposValidatorsEligibleVoteCounts` are Rust-backed for the genesis snapshot and
+    return address-sorted vectors.
   - only block `0` has a Rust DPoS snapshot today; non-genesis DPoS queries throw instead of returning stale genesis
     data until Rust finalization maintains DPoS state snapshots.
 - Unimplemented public shim methods throw rather than falling back to `FinalChainOld`.
