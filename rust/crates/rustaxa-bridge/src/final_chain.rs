@@ -122,22 +122,25 @@ impl BridgeFinalChain {
 
     pub fn get_dpos_eligible_vote_count(
         self: &BridgeFinalChain,
+        block_number: u64,
         address: &[u8; 20],
     ) -> Result<u64, anyhow::Error> {
-        self.0.dpos_eligible_vote_count(*address)
+        self.0.dpos_eligible_vote_count(block_number, *address)
     }
 
     pub fn get_dpos_eligible_total_vote_count(
         self: &BridgeFinalChain,
+        block_number: u64,
     ) -> Result<u64, anyhow::Error> {
-        self.0.dpos_eligible_total_vote_count()
+        self.0.dpos_eligible_total_vote_count(block_number)
     }
 
     pub fn get_dpos_is_eligible(
         self: &BridgeFinalChain,
+        block_number: u64,
         address: &[u8; 20],
     ) -> Result<bool, anyhow::Error> {
-        self.0.dpos_is_eligible(*address)
+        self.0.dpos_is_eligible(block_number, *address)
     }
 
     pub fn estimate_call_gas(

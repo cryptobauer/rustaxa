@@ -323,16 +323,16 @@ std::string FinalChain::trace(std::vector<state_api::EVMTransaction>, std::vecto
   return {};
 }
 
-uint64_t FinalChain::dposEligibleTotalVoteCount(EthBlockNumber) const {
-  return rust_final_chain_.value()->get_dpos_eligible_total_vote_count();
+uint64_t FinalChain::dposEligibleTotalVoteCount(EthBlockNumber blk_num) const {
+  return rust_final_chain_.value()->get_dpos_eligible_total_vote_count(blk_num);
 }
 
-uint64_t FinalChain::dposEligibleVoteCount(EthBlockNumber, addr_t const& addr) const {
-  return rust_final_chain_.value()->get_dpos_eligible_vote_count(into_address_array(addr));
+uint64_t FinalChain::dposEligibleVoteCount(EthBlockNumber blk_num, addr_t const& addr) const {
+  return rust_final_chain_.value()->get_dpos_eligible_vote_count(blk_num, into_address_array(addr));
 }
 
-bool FinalChain::dposIsEligible(EthBlockNumber, addr_t const& addr) const {
-  return rust_final_chain_.value()->get_dpos_is_eligible(into_address_array(addr));
+bool FinalChain::dposIsEligible(EthBlockNumber blk_num, addr_t const& addr) const {
+  return rust_final_chain_.value()->get_dpos_is_eligible(blk_num, into_address_array(addr));
 }
 
 vrf_wrapper::vrf_pk_t FinalChain::dposGetVrfKey(EthBlockNumber, const addr_t& addr) const {

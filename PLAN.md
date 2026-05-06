@@ -202,6 +202,12 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
   - `blockHeader`
   - `transactionLocation`
   - `transactionCount`
+- DPoS query boundary is partially Rust-backed:
+  - genesis vote-count snapshot is derived in Rust from genesis validator stake.
+  - `dposEligibleTotalVoteCount`, `dposEligibleVoteCount`, and `dposIsEligible` now preserve the `EthBlockNumber`
+    argument through the C++ shim and Rust bridge.
+  - only block `0` has a Rust DPoS snapshot today; non-genesis DPoS queries throw instead of returning stale genesis
+    data until Rust finalization maintains DPoS state snapshots.
 - Unimplemented public shim methods throw rather than falling back to `FinalChainOld`.
 
 ### FinalChain Storage Touchpoints
@@ -226,7 +232,9 @@ FinalChain currently depends on:
 1. Keep read/index parity stable.
 2. Migrate transaction, receipt, log query helpers, and bloom search parity.
 3. Migrate finalization/write path pieces such as append-block, counters, and index writes.
-4. Defer StateAPI, DPoS, bridge-heavy APIs, pruning, snapshots, and state-transition boundaries until there is a clear Rust/EVM integration strategy.
+4. Continue DPoS state snapshot work only alongside Rust finalization/state-transition work; block-aware query plumbing exists,
+   but non-genesis DPoS behavior is intentionally unimplemented until snapshots are maintained.
+5. Defer broader StateAPI, bridge-heavy APIs, pruning, snapshots, and state-transition boundaries until there is a clear Rust/EVM integration strategy.
 
 High-risk APIs:
 
@@ -235,7 +243,7 @@ High-risk APIs:
 - `updateStateConfig`
 - `call`
 - `trace`
-- state and DPoS query surfaces that depend on EVM/state integration
+- state and non-genesis DPoS query surfaces that depend on EVM/state integration
 
 ## FinalChain Domain Type Backlog
 
@@ -336,7 +344,8 @@ The first Rust code slice should focus on `Dag` graph operations because the dom
 ### Risks
 
 - `PbftManager` is the largest and most coupled consensus class; port it only after DAG, vote, and chain primitives are stable.
-- DPoS eligibility depends on FinalChain/state surfaces; dummy eligibility behavior must stay temporary and visible.
+- DPoS eligibility depends on FinalChain/state surfaces; genesis-only DPoS query support must stay temporary and visible until
+  Rust finalization maintains block-keyed snapshots.
 - Finalization crosses DAG, PBFT, storage, rewards, and state execution; port finalization decisions only after the read/query ports are real.
 - Consensus behavior is latency-sensitive and persistence-sensitive, so byte compatibility and deterministic ordering tests matter.
 

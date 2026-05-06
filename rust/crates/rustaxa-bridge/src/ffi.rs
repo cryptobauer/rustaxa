@@ -452,10 +452,18 @@ pub mod rustaxa_ffi {
         pub fn get_account(self: &BridgeFinalChain, address: &[u8; 20]) -> Result<AccountLookup>;
         pub fn get_dpos_eligible_vote_count(
             self: &BridgeFinalChain,
+            block_number: u64,
             address: &[u8; 20],
         ) -> Result<u64>;
-        pub fn get_dpos_eligible_total_vote_count(self: &BridgeFinalChain) -> Result<u64>;
-        pub fn get_dpos_is_eligible(self: &BridgeFinalChain, address: &[u8; 20]) -> Result<bool>;
+        pub fn get_dpos_eligible_total_vote_count(
+            self: &BridgeFinalChain,
+            block_number: u64,
+        ) -> Result<u64>;
+        pub fn get_dpos_is_eligible(
+            self: &BridgeFinalChain,
+            block_number: u64,
+            address: &[u8; 20],
+        ) -> Result<bool>;
         pub fn get_vrf_key(self: &BridgeFinalChain, address: &[u8; 20]) -> Result<Vec<u8>>;
         pub fn estimate_call_gas(self: &BridgeFinalChain, gas_limit: u64) -> Result<u64>;
         pub fn finalize_block(

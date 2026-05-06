@@ -30,8 +30,20 @@ pub struct FinalChain {
     genesis_timestamp: u64,
     accounts: Mutex<HashMap<[u8; 20], Account>>,
     genesis_vrf_keys: HashMap<[u8; 20], [u8; 32]>,
-    genesis_dpos_vote_counts: HashMap<[u8; 20], u64>,
-    genesis_dpos_total_vote_count: u64,
+    dpos_snapshots: HashMap<u64, DposSnapshot>,
+}
+
+/// Point-in-time DPoS vote-count view keyed by final-chain block number.
+///
+/// The current implementation stores the genesis snapshot only. Later DPoS
+/// finalization work should append snapshots for blocks where DPoS state
+/// changes instead of answering historical queries from stale genesis data.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DposSnapshot {
+    /// Eligible vote count by validator address at this block.
+    vote_counts: HashMap<[u8; 20], u64>,
+    /// Total eligible vote count at this block.
+    total_vote_count: u64,
 }
 
 impl FinalChain {
@@ -96,8 +108,13 @@ impl FinalChain {
             genesis_timestamp,
             accounts: Mutex::new(genesis_accounts),
             genesis_vrf_keys,
-            genesis_dpos_vote_counts,
-            genesis_dpos_total_vote_count,
+            dpos_snapshots: HashMap::from([(
+                0,
+                DposSnapshot {
+                    vote_counts: genesis_dpos_vote_counts,
+                    total_vote_count: genesis_dpos_total_vote_count,
+                },
+            )]),
         };
         final_chain.ensure_genesis_header()?;
         Ok(final_chain)
@@ -186,19 +203,31 @@ impl FinalChain {
         Ok(self.genesis_vrf_keys.get(&address).copied())
     }
 
-    /// Returns the genesis DPoS eligible vote count for one validator address.
-    pub fn dpos_eligible_vote_count(&self, address: [u8; 20]) -> Result<u64, anyhow::Error> {
-        Ok(*self.genesis_dpos_vote_counts.get(&address).unwrap_or(&0))
+    /// Returns the DPoS eligible vote count for one validator address at a block.
+    pub fn dpos_eligible_vote_count(
+        &self,
+        block_number: u64,
+        address: [u8; 20],
+    ) -> Result<u64, anyhow::Error> {
+        Ok(*self
+            .dpos_snapshot(block_number)?
+            .vote_counts
+            .get(&address)
+            .unwrap_or(&0))
     }
 
-    /// Returns the total genesis DPoS eligible vote count.
-    pub fn dpos_eligible_total_vote_count(&self) -> Result<u64, anyhow::Error> {
-        Ok(self.genesis_dpos_total_vote_count)
+    /// Returns the total DPoS eligible vote count at a block.
+    pub fn dpos_eligible_total_vote_count(&self, block_number: u64) -> Result<u64, anyhow::Error> {
+        Ok(self.dpos_snapshot(block_number)?.total_vote_count)
     }
 
-    /// Returns whether the validator has nonzero genesis DPoS eligible votes.
-    pub fn dpos_is_eligible(&self, address: [u8; 20]) -> Result<bool, anyhow::Error> {
-        Ok(self.dpos_eligible_vote_count(address)? > 0)
+    /// Returns whether the validator has nonzero DPoS eligible votes at a block.
+    pub fn dpos_is_eligible(
+        &self,
+        block_number: u64,
+        address: [u8; 20],
+    ) -> Result<bool, anyhow::Error> {
+        Ok(self.dpos_eligible_vote_count(block_number, address)? > 0)
     }
 
     pub fn estimate_call_gas(&self, gas_limit: u64) -> Result<u64, anyhow::Error> {
@@ -442,6 +471,15 @@ impl FinalChain {
         Ok(NativeExecution {
             receipts,
             gas_used: cumulative_gas_used,
+        })
+    }
+
+    fn dpos_snapshot(&self, block_number: u64) -> Result<&DposSnapshot, anyhow::Error> {
+        self.dpos_snapshots.get(&block_number).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Rust FinalChain DPoS snapshot for block {} is not implemented",
+                block_number
+            )
         })
     }
 }
@@ -929,26 +967,58 @@ mod tests {
 
         assert_eq!(
             final_chain
-                .dpos_eligible_vote_count(first_validator)
+                .dpos_eligible_vote_count(0, first_validator)
                 .unwrap(),
             10
         );
         assert_eq!(
             final_chain
-                .dpos_eligible_vote_count(second_validator)
+                .dpos_eligible_vote_count(0, second_validator)
                 .unwrap(),
             25
         );
         assert_eq!(
             final_chain
-                .dpos_eligible_vote_count(ineligible_validator)
+                .dpos_eligible_vote_count(0, ineligible_validator)
                 .unwrap(),
             0
         );
-        assert_eq!(final_chain.dpos_eligible_total_vote_count().unwrap(), 35);
-        assert!(final_chain.dpos_is_eligible(first_validator).unwrap());
-        assert!(!final_chain.dpos_is_eligible(ineligible_validator).unwrap());
-        assert!(!final_chain.dpos_is_eligible([0xFF; 20]).unwrap());
+        assert_eq!(final_chain.dpos_eligible_total_vote_count(0).unwrap(), 35);
+        assert!(final_chain.dpos_is_eligible(0, first_validator).unwrap());
+        assert!(
+            !final_chain
+                .dpos_is_eligible(0, ineligible_validator)
+                .unwrap()
+        );
+        assert!(!final_chain.dpos_is_eligible(0, [0xFF; 20]).unwrap());
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn non_genesis_dpos_queries_reject_missing_snapshot() {
+        let path = temp_db_path("dpos-missing-snapshot");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x60; 20];
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            U256::from(1_000u64),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+
+        let err = final_chain
+            .dpos_is_eligible(1, validator)
+            .expect_err("expected missing non-genesis DPoS snapshot");
+        assert!(err.to_string().contains("snapshot for block 1"));
+
+        let err = final_chain
+            .dpos_eligible_total_vote_count(1)
+            .expect_err("expected missing non-genesis DPoS snapshot");
+        assert!(err.to_string().contains("snapshot for block 1"));
 
         drop(final_chain);
         drop(storage);

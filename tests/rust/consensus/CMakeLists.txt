@@ -2,6 +2,7 @@ include(GoogleTest)
 
 add_executable(rust_consensus_tests
     test_dag.cpp
+    test_final_chain.cpp
 )
 
 target_link_libraries(rust_consensus_tests
