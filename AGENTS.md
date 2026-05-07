@@ -37,6 +37,12 @@ This repository is the Rust rewrite track for Taraxa. Keep day-to-day work align
 
 Rust code changes are validated by the repository pre-commit hook at `.githooks/pre-commit`; address any problems it finds before closeout.
 
+`check-static` is a repo-wide cppcheck/format gate and can currently fail on pre-existing findings outside the files touched
+by a rewrite slice. For routine Rust rewrite work, prefer targeted validation for the changed C++ shim/bridge files plus the
+relevant Rust and C++ tests. Run full `check-static` when broad C++ changes justify a repo-wide pass, before pre-merge
+cleanup, or after existing cppcheck findings have been baselined/fixed. If `cppcheck` is installed after `/build` was
+configured, rerun CMake or `make configure` before invoking `check-static` so the `cpp-check` target is generated.
+
 ## Storage Rewrite Validation
 
 Before closing rewrite work, choose the narrowest validation tier in `doc/rewrite_validation_strategy.md` that covers the
