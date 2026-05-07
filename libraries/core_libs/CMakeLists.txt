@@ -68,6 +68,18 @@ endif()
 if(RUSTAXA_ENABLE)
     target_link_libraries(core_libs PUBLIC rustaxa-bridge RocksDB::rocksdb)
 
+    # In Rust mode, inject a header overlay that remaps legacy Dag/PivotTree
+    # to DagOld/PivotTreeOld and exposes standalone Rust-backed facades.
+    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/dag_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/dag_shim/src/dag_shim.cpp)
+
+    # Compile the legacy implementation under old symbols only.
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/dag/dag.cpp
+        PROPERTIES
+        COMPILE_DEFINITIONS "Dag=DagOld;PivotTree=PivotTreeOld"
+    )
+
     # In Rust mode, inject a header overlay that remaps legacy KeyManager
     # to KeyManagerOld and exposes a forwarding KeyManager shim facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/key_manager_shim/include)

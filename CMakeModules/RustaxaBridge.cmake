@@ -140,9 +140,21 @@ add_custom_target(rust-workspace-build ALL
 add_library(rustaxa-bridge STATIC IMPORTED GLOBAL)
 add_dependencies(rustaxa-bridge rust-workspace-build)
 
+set(RUSTAXA_BRIDGE_LINK_LIBRARIES
+    gmp::gmp
+    mpfr::mpfr
+)
+
+if(UNIX AND NOT APPLE)
+    list(APPEND RUSTAXA_BRIDGE_LINK_LIBRARIES pthread dl)
+elseif(APPLE)
+    list(APPEND RUSTAXA_BRIDGE_LINK_LIBRARIES pthread)
+endif()
+
 set_target_properties(rustaxa-bridge PROPERTIES
     IMPORTED_LOCATION "${RUST_LIB}"
     INTERFACE_INCLUDE_DIRECTORIES "${BRIDGE_INCLUDE_DIR}"
+    INTERFACE_LINK_LIBRARIES "${RUSTAXA_BRIDGE_LINK_LIBRARIES}"
 )
 
 add_library(Rustaxa::bridge ALIAS rustaxa-bridge)

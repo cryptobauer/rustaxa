@@ -37,7 +37,7 @@ Required test coverage and parity gates for the Rust consensus model are defined
 
 | Module | Primary files | Approx size | Status | Proposed ownership | Notes |
 | --- | --- | ---: | --- | --- | --- |
-| DAG graph | `dag/dag.hpp`, `dag/dag.cpp` | 424 lines | `rust-backed` | Rust domain behind C++ API | C++ `Dag`/`PivotTree` graph operations route to Rust under `RUSTAXA_ENABLE`. Legacy Boost graph remains the pure C++ fallback. |
+| DAG graph | `dag/dag.hpp`, `dag/dag.cpp`, `dag_shim/*` | 424 lines | `rust-backed` | Rust domain behind C++ overlay shim | C++ `Dag`/`PivotTree` graph operations route to Rust under `RUSTAXA_ENABLE` through a full overlay shim. Legacy Boost graph remains pure C++ fallback/reference code and is compiled as `DagOld`/`PivotTreeOld` only in Rust-enabled builds. |
 | DAG manager | `dag/dag_manager.hpp`, `dag/dag_manager.cpp` | 1048 lines | partial | C++ shim plus Rust domain/infra ports | Manager orchestration remains C++; its `Dag`/`PivotTree` graph objects are Rust-backed in Rust mode. Depends on transaction manager, PBFT chain, storage, network, key manager, FinalChain. |
 | DAG proposer | `dag/dag_block_proposer.hpp`, `dag/dag_block_proposer.cpp` | 576 lines | `cpp-owned` initially | C++ orchestration, later Rust proposer policy | Threaded, networked, VDF/DPoS-heavy. Keep orchestration in C++ early. |
 | Sortition params | `dag/sortition_params_manager.hpp`, `dag/sortition_params_manager.cpp` | 331 lines | `rust-backed` | Rust domain behind C++ overlay shim | Deterministic efficiency/threshold runtime state routes to `rustaxa-consensus::sortition` under `RUSTAXA_ENABLE_SORTITION_PARAMS`. C++ still owns storage reads/writes and batch atomicity; the legacy implementation is compiled as `SortitionParamsManagerOld` only for pure C++ reference builds. |
@@ -142,7 +142,7 @@ Open questions:
 | Change area | Minimum validation |
 | --- | --- |
 | Rust consensus domain only | `cargo fmt --manifest-path rust/Cargo.toml`, `cargo clippy --manifest-path rust/Cargo.toml`, `cargo test --manifest-path rust/Cargo.toml` |
-| DAG graph routing | Rust validation plus `rust_consensus_tests`, `dag_test`, and `dag_block_test` |
+| DAG graph routing | Rust validation plus `rust_consensus_tests`, `dag_test`, `dag_block_test`, and `dag_shim_test` |
 | Sortition params routing | Rust validation plus `rust_consensus_tests`, `sortition_test`, and `sortition_params_manager_shim_test` |
 | PBFT chain/proposed-block/queue routing | Rust validation plus `pbft_chain_test` and relevant `pbft_manager_test` cases |
 | Vote aggregation/eligibility | Rust validation plus `vote_test`, relevant `pbft_manager_test`, and DPoS/state API coverage |
@@ -155,7 +155,7 @@ Open questions:
 | Item | Status | Owner decision needed |
 | --- | --- | --- |
 | Replace temporary DPoS query behavior | `partial` | Genesis DPoS vote-count, eligibility, validator total stake, and validator eligible vote-count queries are Rust-backed. Rust-finalized native-transfer blocks now carry forward snapshots and post-Magnolia fee commission rewards. Remaining gaps: validator owner/metadata, delegation mutations, jailing, slashing, broader rewards distribution, and contract-call state transitions. |
-| Create Rust DAG graph module | `rust-backed` | Landed as standalone Rust domain plus bridge tests and C++ `Dag` production routing under `RUSTAXA_ENABLE`. |
+| Create Rust DAG graph module | `rust-backed` | Landed as standalone Rust domain plus bridge tests and C++ `Dag` production routing through a full overlay shim under `RUSTAXA_ENABLE`. |
 | Route sortition params through Rust | `rust-backed` | Landed under `RUSTAXA_ENABLE_SORTITION_PARAMS`; storage and write batches intentionally remain C++ owned for this slice. |
 | Define consensus storage ports | `not-started` | Needed before Rust services depend on storage. |
 | Decide CXX bridge shape for consensus hashes and vectors | `rust-backed` for DAG graph | DAG bridge uses fixed bytes and explicit boundary conversion; revisit if PBFT/vote bridges need richer payloads. |

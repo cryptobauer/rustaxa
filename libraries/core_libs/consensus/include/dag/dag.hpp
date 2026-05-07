@@ -16,10 +16,6 @@
 #include "common/types.hpp"
 #include "logger/logger.hpp"
 
-#ifdef RUSTAXA_ENABLE
-#include <memory>
-#endif
-
 namespace taraxa {
 
 /** @addtogroup DAG
@@ -61,21 +57,12 @@ class Dag {
   friend DagManager;
 
   explicit Dag(blk_hash_t const &dag_genesis_block_hash, addr_t node_addr);
-#ifdef RUSTAXA_ENABLE
-  virtual ~Dag();
-
-  Dag(const Dag &);
-  Dag(Dag &&) noexcept;
-  Dag &operator=(const Dag &);
-  Dag &operator=(Dag &&) noexcept;
-#else
   virtual ~Dag() = default;
 
   Dag(const Dag &) = default;
   Dag(Dag &&) = default;
   Dag &operator=(const Dag &) = default;
   Dag &operator=(Dag &&) = default;
-#endif
 
   uint64_t getNumVertices() const;
   uint64_t getNumEdges() const;
@@ -102,11 +89,6 @@ class Dag {
 
  protected:
   LOG_OBJECTS_DEFINE
-
-#ifdef RUSTAXA_ENABLE
-  struct RustDagGraphHolder;
-  std::unique_ptr<RustDagGraphHolder> rust_graph_;
-#endif
 };
 
 /**
