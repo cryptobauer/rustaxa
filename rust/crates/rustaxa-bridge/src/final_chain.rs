@@ -180,10 +180,36 @@ impl BridgeFinalChain {
         self.0.estimate_call_gas(gas_limit)
     }
 
+    pub fn call(
+        self: &BridgeFinalChain,
+        request: rustaxa_ffi::FinalChainCall,
+    ) -> Result<rustaxa_ffi::FinalChainCallOutcome, anyhow::Error> {
+        let outcome = self.0.call(rustaxa_consensus::FinalChainCallRequest {
+            block_number: request.block_number,
+            sender: request.sender,
+            receiver: if request.receiver_found {
+                Some(request.receiver)
+            } else {
+                None
+            },
+            value: request.value,
+            gas_price: request.gas_price,
+            gas_limit: request.gas_limit,
+            input: request.input,
+        })?;
+        Ok(rustaxa_ffi::FinalChainCallOutcome {
+            code_retval: outcome.code_retval,
+            gas_used: outcome.gas_used,
+            code_err: outcome.code_err,
+            consensus_err: outcome.consensus_err,
+        })
+    }
+
     pub fn finalize_block(
         self: &BridgeFinalChain,
         pbft_block_rlp: Vec<u8>,
         transactions: Vec<rustaxa_ffi::FinalizationTransaction>,
+        finalized_dag_blocks: Vec<rustaxa_ffi::FinalizationDagBlock>,
     ) -> Result<rustaxa_ffi::FinalizationOutcome, anyhow::Error> {
         let transactions = transactions
             .into_iter()
@@ -203,7 +229,20 @@ impl BridgeFinalChain {
                 rlp: transaction.rlp,
             })
             .collect();
-        let (block_header_rlp, receipts) = self.0.finalize_block(pbft_block_rlp, transactions)?;
+        let finalized_dag_blocks = finalized_dag_blocks
+            .into_iter()
+            .map(|dag_block| rustaxa_consensus::FinalizationDagBlock {
+                author: dag_block.author,
+                transaction_hashes: dag_block
+                    .transaction_hashes
+                    .into_iter()
+                    .map(|hash| hash.hash)
+                    .collect(),
+            })
+            .collect();
+        let (block_header_rlp, receipts) =
+            self.0
+                .finalize_block(pbft_block_rlp, transactions, finalized_dag_blocks)?;
         Ok(rustaxa_ffi::FinalizationOutcome {
             block_header_rlp,
             receipts: receipts

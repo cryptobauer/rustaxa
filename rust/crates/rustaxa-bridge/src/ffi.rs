@@ -112,6 +112,24 @@ pub mod rustaxa_ffi {
         vote_count: u64,
     }
 
+    struct FinalChainCall {
+        block_number: u64,
+        sender: [u8; 20],
+        receiver_found: bool,
+        receiver: [u8; 20],
+        value: Vec<u8>,
+        gas_price: Vec<u8>,
+        gas_limit: u64,
+        input: Vec<u8>,
+    }
+
+    struct FinalChainCallOutcome {
+        code_retval: Vec<u8>,
+        gas_used: u64,
+        code_err: String,
+        consensus_err: String,
+    }
+
     struct FinalizationOutcome {
         block_header_rlp: Vec<u8>,
         receipts: Vec<ReceiptRlp>,
@@ -136,6 +154,11 @@ pub mod rustaxa_ffi {
 
     struct DagHash {
         hash: [u8; 32],
+    }
+
+    struct FinalizationDagBlock {
+        author: [u8; 20],
+        transaction_hashes: Vec<DagHash>,
     }
 
     struct DagLevelHashes {
@@ -484,10 +507,15 @@ pub mod rustaxa_ffi {
         ) -> Result<Vec<DposValidatorVoteCount>>;
         pub fn get_vrf_key(self: &BridgeFinalChain, address: &[u8; 20]) -> Result<Vec<u8>>;
         pub fn estimate_call_gas(self: &BridgeFinalChain, gas_limit: u64) -> Result<u64>;
+        pub fn call(
+            self: &BridgeFinalChain,
+            request: FinalChainCall,
+        ) -> Result<FinalChainCallOutcome>;
         pub fn finalize_block(
             self: &BridgeFinalChain,
             pbft_block_rlp: Vec<u8>,
             transactions: Vec<FinalizationTransaction>,
+            finalized_dag_blocks: Vec<FinalizationDagBlock>,
         ) -> Result<FinalizationOutcome>;
         pub fn get_transaction_rlps(self: &BridgeFinalChain, period: u64) -> Result<Vec<TxRlp>>;
         pub fn get_transaction_receipt(

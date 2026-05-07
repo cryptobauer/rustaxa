@@ -206,10 +206,15 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
   - genesis vote-count snapshot is derived in Rust from genesis validator stake.
   - `dposEligibleTotalVoteCount`, `dposEligibleVoteCount`, and `dposIsEligible` now preserve the `EthBlockNumber`
     argument through the C++ shim and Rust bridge.
-  - `dposValidatorsTotalStakes` and `dposValidatorsEligibleVoteCounts` are Rust-backed for the genesis snapshot and
-    return address-sorted vectors.
-  - only block `0` has a Rust DPoS snapshot today; non-genesis DPoS queries throw instead of returning stale genesis
-    data until Rust finalization maintains DPoS state snapshots.
+  - `dposValidatorsTotalStakes` and `dposValidatorsEligibleVoteCounts` are Rust-backed and return address-sorted
+    vectors for available Rust DPoS snapshots.
+  - Rust finalization appends DPoS snapshots for finalized native-transfer blocks. Because Rust finalization is scoped to
+    post-Magnolia execution, native transaction fees are assigned to validator commission rewards by finalized DAG block
+    author and transaction hash.
+  - non-genesis DPoS queries still throw when the queried block has not been finalized through Rust snapshot
+    maintenance; unsupported state/EVM DPoS transitions remain explicit gaps.
+  - selected DPoS precompile reads through `FinalChain::call` are Rust-backed for `getTotalEligibleVotesCount()` and
+    `getValidator(address)`.
 - Unimplemented public shim methods throw rather than falling back to `FinalChainOld`.
 
 ### FinalChain Storage Touchpoints
@@ -234,8 +239,8 @@ FinalChain currently depends on:
 1. Keep read/index parity stable.
 2. Migrate transaction, receipt, log query helpers, and bloom search parity.
 3. Migrate finalization/write path pieces such as append-block, counters, and index writes.
-4. Continue DPoS state snapshot work only alongside Rust finalization/state-transition work; block-aware query plumbing exists,
-   but non-genesis DPoS behavior is intentionally unimplemented until snapshots are maintained.
+4. Continue DPoS snapshot parity beyond native transfers: validator owner/metadata, delegation mutations, jailing,
+   slashing, rewards distribution, and contract-call state transitions.
 5. Defer broader StateAPI, bridge-heavy APIs, pruning, snapshots, and state-transition boundaries until there is a clear Rust/EVM integration strategy.
 
 High-risk APIs:

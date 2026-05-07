@@ -42,6 +42,60 @@ pub struct GenesisDposConfig {
     pub validator_maximum_stake: Vec<u8>,
 }
 
+/// Read-only FinalChain call request routed from C++ into Rust.
+///
+/// This type intentionally models the execution-facing fields Rust needs for
+/// deterministic native/precompile reads. Values are kept as big-endian byte
+/// strings at the boundary so the bridge does not need to interpret C++ `u256`
+/// layouts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FinalChainCallRequest {
+    /// Block number used for historical reads.
+    pub block_number: u64,
+    /// Caller address bytes in canonical Ethereum/Taraxa address order.
+    pub sender: [u8; 20],
+    /// Optional receiver address. `None` represents contract creation.
+    pub receiver: Option<[u8; 20]>,
+    /// Transaction value as an unsigned big-endian integer byte string.
+    pub value: Vec<u8>,
+    /// Gas price as an unsigned big-endian integer byte string.
+    pub gas_price: Vec<u8>,
+    /// Gas limit supplied by the caller.
+    pub gas_limit: u64,
+    /// Call input data.
+    pub input: Vec<u8>,
+}
+
+/// Result of a Rust-backed read-only FinalChain call.
+///
+/// EVM-style failures are represented as error strings in the result to match
+/// the C++ `state_api::ExecutionResult` contract. Infrastructure failures still
+/// use `anyhow::Result` at the API boundary.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct FinalChainCallOutcome {
+    /// Returned call data bytes.
+    pub code_retval: Vec<u8>,
+    /// Gas used by the read-only call.
+    pub gas_used: u64,
+    /// EVM/code-level error text, if any.
+    pub code_err: String,
+    /// Consensus/account-level error text, if any.
+    pub consensus_err: String,
+}
+
+/// Finalized DAG block summary needed by Rust finalization reward accounting.
+///
+/// The full DAG block remains a C++ type during this slice. Rust only needs the
+/// author and ordered transaction hashes to reproduce deterministic fee reward
+/// assignment for native transaction finalization.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FinalizationDagBlock {
+    /// DAG block author address bytes.
+    pub author: [u8; 20],
+    /// Transaction hashes carried by this DAG block.
+    pub transaction_hashes: Vec<[u8; 32]>,
+}
+
 /// Validator stake entry returned from the Rust DPoS read model.
 ///
 /// The stake bytes keep the unsigned big-endian shape used by C++ `u256`

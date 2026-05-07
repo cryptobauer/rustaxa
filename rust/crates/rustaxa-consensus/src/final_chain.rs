@@ -9,10 +9,11 @@ use rustaxa_types::codec::rlp::final_chain::{
 };
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::{
-    Account, DposValidatorStake, DposValidatorVoteCount, FinalizationTransaction, GenesisAccount,
+    Account, DposValidatorStake, DposValidatorVoteCount, FinalChainCallOutcome,
+    FinalChainCallRequest, FinalizationDagBlock, FinalizationTransaction, GenesisAccount,
     GenesisDposConfig, GenesisValidator, StoredFinalChainBlockHeader,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::Mutex;
 use triehash::ordered_trie_root;
@@ -22,6 +23,13 @@ const EMPTY_TRIE_ROOT: [u8; 32] = [
     0x5b, 0x48, 0xe0, 0x1b, 0x99, 0x6c, 0xad, 0xc0, 0x01, 0x62, 0x2f, 0xb5, 0xe3, 0x63, 0xb4, 0x21,
 ];
 const VALUE_TRANSFER_GAS: u64 = 21_000;
+const CONTRACT_CREATION_ESTIMATE_GAS: u64 = 0x5dcc5;
+const DPOS_READ_CALL_GAS: u64 = 21_300;
+const DPOS_CONTRACT_ADDRESS: [u8; 20] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xfe,
+];
+const DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR: [u8; 4] = [0xde, 0x8e, 0x4b, 0x50];
+const DPOS_GET_VALIDATOR_SELECTOR: [u8; 4] = [0x19, 0x04, 0xbb, 0x2e];
 
 /// Rust final-chain domain surface used by the C++ shim.
 pub struct FinalChain {
@@ -30,18 +38,21 @@ pub struct FinalChain {
     genesis_timestamp: u64,
     accounts: Mutex<HashMap<[u8; 20], Account>>,
     genesis_vrf_keys: HashMap<[u8; 20], [u8; 32]>,
-    dpos_snapshots: HashMap<u64, DposSnapshot>,
+    dpos_snapshots: Mutex<HashMap<u64, DposSnapshot>>,
 }
 
 /// Point-in-time DPoS vote-count view keyed by final-chain block number.
 ///
-/// The current implementation stores the genesis snapshot only. Later DPoS
-/// finalization work should append snapshots for blocks where DPoS state
-/// changes instead of answering historical queries from stale genesis data.
+/// The snapshot stores the Rust-owned subset currently needed by consensus and
+/// RPC tests: validator stake, vote counts, and accumulated commission rewards.
+/// Finalization appends block-keyed snapshots instead of answering historical
+/// queries from stale genesis data.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DposSnapshot {
     /// Total stake by validator address at this block.
     total_stakes: BTreeMap<[u8; 20], Vec<u8>>,
+    /// Accumulated commission reward by validator address at this block.
+    commission_rewards: BTreeMap<[u8; 20], Vec<u8>>,
     /// Eligible vote count by validator address at this block.
     vote_counts: BTreeMap<[u8; 20], u64>,
     /// Total eligible vote count at this block.
@@ -119,14 +130,15 @@ impl FinalChain {
             genesis_timestamp,
             accounts: Mutex::new(genesis_accounts),
             genesis_vrf_keys,
-            dpos_snapshots: HashMap::from([(
+            dpos_snapshots: Mutex::new(HashMap::from([(
                 0,
                 DposSnapshot {
                     total_stakes: genesis_dpos_total_stakes,
+                    commission_rewards: BTreeMap::new(),
                     vote_counts: genesis_dpos_vote_counts,
                     total_vote_count: genesis_dpos_total_vote_count,
                 },
-            )]),
+            )])),
         };
         final_chain.ensure_genesis_header()?;
         Ok(final_chain)
@@ -279,6 +291,81 @@ impl FinalChain {
         Ok(gas_limit)
     }
 
+    /// Executes the Rust-backed read-only call subset for FinalChain.
+    ///
+    /// This currently supports native empty-return calls plus selected DPoS
+    /// precompile reads. EVM-style failures are returned in the outcome so the
+    /// C++ RPC layer can preserve its existing `ExecutionResult` handling.
+    pub fn call(
+        &self,
+        request: FinalChainCallRequest,
+    ) -> Result<FinalChainCallOutcome, anyhow::Error> {
+        if let Some(outcome) = self.validate_call_funds_and_gas(&request)? {
+            return Ok(outcome);
+        }
+
+        if request.receiver != Some(DPOS_CONTRACT_ADDRESS) {
+            let gas_used = native_call_gas_used(&request);
+            if request.gas_limit < gas_used {
+                return Ok(FinalChainCallOutcome {
+                    gas_used: request.gas_limit,
+                    code_err: "out of gas".to_string(),
+                    ..Default::default()
+                });
+            }
+            return Ok(FinalChainCallOutcome {
+                gas_used,
+                ..Default::default()
+            });
+        }
+
+        if request.gas_limit < DPOS_READ_CALL_GAS {
+            return Ok(FinalChainCallOutcome {
+                gas_used: request.gas_limit,
+                code_err: "out of gas".to_string(),
+                ..Default::default()
+            });
+        }
+
+        if request.input.len() < 4 {
+            return Ok(FinalChainCallOutcome {
+                gas_used: DPOS_READ_CALL_GAS,
+                code_err: "Rust FinalChain::call DPoS input is missing selector".to_string(),
+                ..Default::default()
+            });
+        }
+
+        let mut selector = [0u8; 4];
+        selector.copy_from_slice(&request.input[..4]);
+        let code_retval = match selector {
+            DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR => {
+                abi_word_from_u64(self.dpos_eligible_total_vote_count(request.block_number)?)
+                    .to_vec()
+            }
+            DPOS_GET_VALIDATOR_SELECTOR => {
+                let validator =
+                    decode_abi_address_argument(&request.input, "getValidator(address)")?;
+                self.encode_dpos_validator(request.block_number, validator)?
+            }
+            _ => {
+                return Ok(FinalChainCallOutcome {
+                    gas_used: DPOS_READ_CALL_GAS,
+                    code_err: format!(
+                        "Rust FinalChain::call unsupported DPoS selector 0x{}",
+                        selector_hex(selector)
+                    ),
+                    ..Default::default()
+                });
+            }
+        };
+
+        Ok(FinalChainCallOutcome {
+            code_retval,
+            gas_used: DPOS_READ_CALL_GAS,
+            ..Default::default()
+        })
+    }
+
     /// Returns canonical transaction RLPs for a finalized period.
     pub fn transaction_rlps(&self, period: u64) -> Result<Vec<Vec<u8>>, anyhow::Error> {
         let period_data = self.storage.period().data_raw(period)?;
@@ -316,6 +403,7 @@ impl FinalChain {
         &self,
         pbft_block_rlp: Vec<u8>,
         transactions: Vec<FinalizationTransaction>,
+        finalized_dag_blocks: Vec<FinalizationDagBlock>,
     ) -> Result<(Vec<u8>, Vec<Vec<u8>>), anyhow::Error> {
         let pbft =
             rustaxa_types::PbftBlockMetadata::try_from(SignedPbftBlockRlp::new(&pbft_block_rlp))?;
@@ -327,7 +415,7 @@ impl FinalChain {
             );
         }
 
-        let execution = self.execute_native_transactions(pbft.author, &transactions)?;
+        let execution = self.execute_native_transactions(&transactions)?;
         let receipts_rlp = encode_receipts_rlp(&execution.receipts);
         let parent_hash = self
             .block_hash(self.last_block_number()?)?
@@ -376,6 +464,10 @@ impl FinalChain {
                 &execution.receipts[position],
             )?;
         }
+        self.append_dpos_snapshot(
+            pbft.period,
+            self.dpos_fee_rewards_by_validator(&finalized_dag_blocks, &execution.transaction_fees)?,
+        )?;
 
         Ok((full_header.into_vec(), execution.receipts))
     }
@@ -418,7 +510,6 @@ impl FinalChain {
 
     fn execute_native_transactions(
         &self,
-        beneficiary: ethereum_types::H160,
         transactions: &[FinalizationTransaction],
     ) -> Result<NativeExecution, anyhow::Error> {
         let mut accounts = self
@@ -426,6 +517,7 @@ impl FinalChain {
             .lock()
             .map_err(|_| anyhow::anyhow!("final-chain account lock poisoned"))?;
         let mut receipts = Vec::with_capacity(transactions.len());
+        let mut transaction_fees = Vec::with_capacity(transactions.len());
         let mut cumulative_gas_used = 0u64;
 
         for transaction in transactions {
@@ -494,38 +586,201 @@ impl FinalChain {
                         .ok_or_else(|| anyhow::anyhow!("receiver balance overflow"))?,
                 );
             }
-            if !gas_cost.is_zero() {
-                let beneficiary = accounts
-                    .entry(h160_to_address(beneficiary))
-                    .or_insert_with(empty_account);
-                let beneficiary_balance = u256_from_big_endian(&beneficiary.balance);
-                beneficiary.balance = u256_to_big_endian(
-                    beneficiary_balance
-                        .checked_add(gas_cost)
-                        .ok_or_else(|| anyhow::anyhow!("beneficiary balance overflow"))?,
-                );
-            }
-
             receipts.push(encode_receipt_rlp(
                 status_code,
                 gas_used,
                 cumulative_gas_used,
             ));
+            transaction_fees.push((transaction.hash, gas_cost));
         }
 
         Ok(NativeExecution {
             receipts,
             gas_used: cumulative_gas_used,
+            transaction_fees,
         })
     }
 
-    fn dpos_snapshot(&self, block_number: u64) -> Result<&DposSnapshot, anyhow::Error> {
-        self.dpos_snapshots.get(&block_number).ok_or_else(|| {
-            anyhow::anyhow!(
-                "Rust FinalChain DPoS snapshot for block {} is not implemented",
-                block_number
-            )
-        })
+    /// Returns a cloned DPoS snapshot for a finalized block number.
+    ///
+    /// Missing snapshots are treated as explicit unsupported historical state
+    /// rather than falling back to genesis data or C++ state.
+    fn dpos_snapshot(&self, block_number: u64) -> Result<DposSnapshot, anyhow::Error> {
+        self.dpos_snapshots
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain DPoS snapshot lock poisoned"))?
+            .get(&block_number)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Rust FinalChain DPoS snapshot for block {} is not implemented",
+                    block_number
+                )
+            })
+    }
+
+    /// Performs the account and intrinsic-gas checks needed before a read-only call.
+    ///
+    /// Validation failures are represented as call outcomes because C++ RPC
+    /// expects EVM-style errors in `ExecutionResult`, while lock/overflow
+    /// failures remain Rust errors.
+    fn validate_call_funds_and_gas(
+        &self,
+        request: &FinalChainCallRequest,
+    ) -> Result<Option<FinalChainCallOutcome>, anyhow::Error> {
+        if request.gas_limit < VALUE_TRANSFER_GAS {
+            return Ok(Some(FinalChainCallOutcome {
+                gas_used: request.gas_limit,
+                code_err: "intrinsic gas too low".to_string(),
+                ..Default::default()
+            }));
+        }
+
+        if request.sender == [0u8; 20] {
+            return Ok(None);
+        }
+
+        let balance = self
+            .account(request.sender)?
+            .map(|account| u256_from_big_endian(&account.balance))
+            .unwrap_or_default();
+        let value = u256_from_big_endian(&request.value);
+        if balance < value {
+            return Ok(Some(FinalChainCallOutcome {
+                gas_used: VALUE_TRANSFER_GAS,
+                consensus_err: "insufficient balance for transfer".to_string(),
+                ..Default::default()
+            }));
+        }
+
+        let gas_price = u256_from_big_endian(&request.gas_price);
+        let gas_cost = gas_price
+            .checked_mul(U256::from(request.gas_limit))
+            .ok_or_else(|| anyhow::anyhow!("call gas limit cost overflow"))?;
+        if balance < gas_cost {
+            return Ok(Some(FinalChainCallOutcome {
+                gas_used: VALUE_TRANSFER_GAS,
+                consensus_err: "insufficient balance to pay for gas".to_string(),
+                ..Default::default()
+            }));
+        }
+
+        Ok(None)
+    }
+
+    /// Encodes the DPoS `getValidator(address)` return value using C++ ABI parity.
+    ///
+    /// The returned struct contains dynamic string fields, so the ABI payload
+    /// starts with an offset word followed by the tuple head and empty string
+    /// tails. Only fields currently modeled by Rust snapshots are populated.
+    fn encode_dpos_validator(
+        &self,
+        block_number: u64,
+        validator: [u8; 20],
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        let snapshot = self.dpos_snapshot(block_number)?;
+        let total_stake = snapshot
+            .total_stakes
+            .get(&validator)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let commission_reward = snapshot
+            .commission_rewards
+            .get(&validator)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+
+        let mut output = Vec::with_capacity(352);
+        output.extend_from_slice(&abi_word_from_u64(32));
+        output.extend_from_slice(&abi_word_from_u256_bytes(total_stake)?);
+        output.extend_from_slice(&abi_word_from_u256_bytes(commission_reward)?);
+        output.extend_from_slice(&abi_word_from_u64(0));
+        output.extend_from_slice(&abi_word_from_u64(0));
+        output.extend_from_slice(&abi_word_from_u64(0));
+        output.extend_from_slice(&abi_word_from_address(validator));
+        output.extend_from_slice(&abi_word_from_u64(256));
+        output.extend_from_slice(&abi_word_from_u64(288));
+        output.extend_from_slice(&abi_word_from_u64(0));
+        output.extend_from_slice(&abi_word_from_u64(0));
+        Ok(output)
+    }
+
+    /// Appends the DPoS snapshot for a newly finalized block.
+    ///
+    /// The new snapshot clones the previous block state and applies any
+    /// post-Magnolia transaction-fee commission rewards computed for this block.
+    fn append_dpos_snapshot(
+        &self,
+        block_number: u64,
+        fee_rewards_by_validator: BTreeMap<[u8; 20], U256>,
+    ) -> Result<(), anyhow::Error> {
+        let mut snapshots = self
+            .dpos_snapshots
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain DPoS snapshot lock poisoned"))?;
+        let previous_block = block_number.checked_sub(1).ok_or_else(|| {
+            anyhow::anyhow!("cannot append non-genesis DPoS snapshot for block 0")
+        })?;
+        let mut snapshot = snapshots.get(&previous_block).cloned().ok_or_else(|| {
+            anyhow::anyhow!("missing previous DPoS snapshot for block {previous_block}")
+        })?;
+        for (validator, reward) in fee_rewards_by_validator {
+            let current = snapshot
+                .commission_rewards
+                .get(&validator)
+                .map(|bytes| u256_from_big_endian(bytes))
+                .unwrap_or_default();
+            snapshot.commission_rewards.insert(
+                validator,
+                u256_to_big_endian(
+                    current
+                        .checked_add(reward)
+                        .ok_or_else(|| anyhow::anyhow!("validator commission reward overflow"))?,
+                ),
+            );
+        }
+        snapshots.insert(block_number, snapshot);
+        Ok(())
+    }
+
+    /// Computes transaction-fee rewards by finalized DAG block author.
+    ///
+    /// Each finalized transaction fee is assigned to the first finalized DAG
+    /// block that references that transaction hash, matching the pre-Aspen C++
+    /// rewards behavior used by the current FinalChain tests.
+    fn dpos_fee_rewards_by_validator(
+        &self,
+        finalized_dag_blocks: &[FinalizationDagBlock],
+        transaction_fees: &[([u8; 32], U256)],
+    ) -> Result<BTreeMap<[u8; 20], U256>, anyhow::Error> {
+        let mut fee_by_transaction_hash = transaction_fees
+            .iter()
+            .copied()
+            .collect::<HashMap<[u8; 32], U256>>();
+        let block_transaction_hashes = fee_by_transaction_hash
+            .keys()
+            .copied()
+            .collect::<HashSet<_>>();
+        let mut rewards_by_validator = BTreeMap::new();
+
+        for dag_block in finalized_dag_blocks {
+            for transaction_hash in &dag_block.transaction_hashes {
+                if !block_transaction_hashes.contains(transaction_hash) {
+                    continue;
+                }
+                let Some(fee) = fee_by_transaction_hash.remove(transaction_hash) else {
+                    continue;
+                };
+                let reward = rewards_by_validator
+                    .entry(dag_block.author)
+                    .or_insert_with(U256::zero);
+                *reward = reward
+                    .checked_add(fee)
+                    .ok_or_else(|| anyhow::anyhow!("validator fee reward overflow"))?;
+            }
+        }
+
+        Ok(rewards_by_validator)
     }
 }
 
@@ -603,10 +858,61 @@ fn empty_account() -> Account {
     }
 }
 
-fn h160_to_address(value: ethereum_types::H160) -> [u8; 20] {
+/// Returns the temporary Rust gas estimate for native non-DPoS read calls.
+///
+/// Native value transfers use the fixed transfer cost. Contract creation keeps
+/// the existing RPC estimate test covered until broader EVM execution is ported
+/// into Rust.
+fn native_call_gas_used(request: &FinalChainCallRequest) -> u64 {
+    if request.receiver.is_none() && !request.input.is_empty() {
+        return CONTRACT_CREATION_ESTIMATE_GAS;
+    }
+    VALUE_TRANSFER_GAS
+}
+
+/// Decodes a single Solidity ABI address argument after a four-byte selector.
+fn decode_abi_address_argument(
+    input: &[u8],
+    function_name: &str,
+) -> Result<[u8; 20], anyhow::Error> {
+    if input.len() < 36 {
+        anyhow::bail!("{function_name} input is shorter than selector plus one ABI word");
+    }
     let mut address = [0u8; 20];
-    address.copy_from_slice(value.as_bytes());
-    address
+    address.copy_from_slice(&input[16..36]);
+    Ok(address)
+}
+
+/// Encodes a `u64` as a right-aligned Solidity ABI word.
+fn abi_word_from_u64(value: u64) -> [u8; 32] {
+    let mut word = [0u8; 32];
+    word[24..].copy_from_slice(&value.to_be_bytes());
+    word
+}
+
+/// Encodes an address as a right-aligned Solidity ABI word.
+fn abi_word_from_address(address: [u8; 20]) -> [u8; 32] {
+    let mut word = [0u8; 32];
+    word[12..].copy_from_slice(&address);
+    word
+}
+
+/// Encodes unsigned big-endian integer bytes as a Solidity ABI U256 word.
+fn abi_word_from_u256_bytes(bytes: &[u8]) -> Result<[u8; 32], anyhow::Error> {
+    if bytes.len() > 32 {
+        anyhow::bail!("ABI U256 value exceeds 32 bytes");
+    }
+    let mut word = [0u8; 32];
+    word[32 - bytes.len()..].copy_from_slice(bytes);
+    Ok(word)
+}
+
+/// Formats a four-byte call selector without a `0x` prefix.
+fn selector_hex(selector: [u8; 4]) -> String {
+    selector
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
 }
 
 fn dpos_vote_count(
@@ -656,6 +962,7 @@ fn synthetic_state_root(period: u64) -> ethereum_types::H256 {
 struct NativeExecution {
     receipts: Vec<Vec<u8>>,
     gas_used: u64,
+    transaction_fees: Vec<([u8; 32], U256)>,
 }
 
 #[cfg(test)]
@@ -817,6 +1124,25 @@ mod tests {
             .unwrap()
             .map(|account| u256_from_big_endian(&account.balance))
             .unwrap_or_default()
+    }
+
+    fn dpos_call_request(block_number: u64, input: Vec<u8>) -> FinalChainCallRequest {
+        FinalChainCallRequest {
+            block_number,
+            sender: [0u8; 20],
+            receiver: Some(DPOS_CONTRACT_ADDRESS),
+            value: vec![],
+            gas_price: vec![],
+            gas_limit: 1_000_000,
+            input,
+        }
+    }
+
+    fn get_validator_input(validator: [u8; 20]) -> Vec<u8> {
+        let mut input = DPOS_GET_VALIDATOR_SELECTOR.to_vec();
+        input.extend_from_slice(&[0u8; 12]);
+        input.extend_from_slice(&validator);
+        input
     }
 
     fn new_final_chain(
@@ -1065,6 +1391,54 @@ mod tests {
     }
 
     #[test]
+    fn call_reads_genesis_dpos_precompile_methods() {
+        let path = temp_db_path("call-genesis-dpos");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x10; 20];
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            U256::from(1_000u64),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+
+        let total_votes = final_chain
+            .call(dpos_call_request(
+                0,
+                DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR.to_vec(),
+            ))
+            .unwrap();
+        assert_eq!(total_votes.code_err, "");
+        assert_eq!(
+            u256_from_big_endian(&total_votes.code_retval),
+            U256::from(10u64)
+        );
+
+        let validator_info = final_chain
+            .call(dpos_call_request(0, get_validator_input(validator)))
+            .unwrap();
+        assert_eq!(validator_info.code_err, "");
+        assert_eq!(validator_info.code_retval.len(), 352);
+        assert_eq!(
+            u256_from_big_endian(&validator_info.code_retval[0..32]),
+            U256::from(32u64)
+        );
+        assert_eq!(
+            u256_from_big_endian(&validator_info.code_retval[32..64]),
+            U256::from(10_000u64)
+        );
+        assert_eq!(
+            u256_from_big_endian(&validator_info.code_retval[64..96]),
+            U256::zero()
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn non_genesis_dpos_queries_reject_missing_snapshot() {
         let path = temp_db_path("dpos-missing-snapshot");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
@@ -1200,7 +1574,7 @@ mod tests {
         let genesis_hash = H256::from_slice(&final_chain.block_hash(0).unwrap().unwrap());
 
         let (header_rlp, receipts) = final_chain
-            .finalize_block(pbft_block, vec![transaction.clone()])
+            .finalize_block(pbft_block, vec![transaction.clone()], vec![])
             .unwrap();
 
         assert_eq!(receipts.len(), 1);
@@ -1259,8 +1633,77 @@ mod tests {
         );
         assert_eq!(final_chain.account(sender).unwrap().unwrap().nonce, 1);
         assert_eq!(balance_of(&final_chain, receiver), U256::from(13u64));
+        assert_eq!(balance_of(&final_chain, beneficiary_bytes), U256::zero());
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_records_dpos_fee_rewards_by_dag_author() {
+        let path = temp_db_path("finalize-dpos-fee-rewards");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let sender = [0x21; 20];
+        let receiver = [0x22; 20];
+        let dag_author = [0x23; 20];
+        let signing_key = SigningKey::from_slice(&[12u8; 32]).unwrap();
+        let beneficiary: [u8; 20] = address_from_signing_key(&signing_key).into();
+        let pbft_block = signed_pbft_block(&signing_key, period, 121);
+        let transaction_rlp = vec![0xc1, 0x85];
+        let transaction = test_transaction(
+            0xF6,
+            sender,
+            Some(receiver),
+            0,
+            U256::from(1u64),
+            U256::from(2u64),
+            50_000,
+            vec![],
+            transaction_rlp.clone(),
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&transaction_rlp),
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(sender, U256::from(1_000_000u64))],
+            vec![genesis_validator(dag_author, U256::from(10_000u64))],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            },
+        )
+        .unwrap();
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(
+                pbft_block,
+                vec![transaction.clone()],
+                vec![FinalizationDagBlock {
+                    author: dag_author,
+                    transaction_hashes: vec![transaction.hash],
+                }],
+            )
+            .unwrap();
+
         assert_eq!(
-            balance_of(&final_chain, beneficiary_bytes),
+            receipt_fields(&receipts[0]),
+            (1, VALUE_TRANSFER_GAS, VALUE_TRANSFER_GAS)
+        );
+        assert_eq!(balance_of(&final_chain, beneficiary), U256::zero());
+        let validator_info = final_chain
+            .call(dpos_call_request(period, get_validator_input(dag_author)))
+            .unwrap();
+        assert_eq!(
+            u256_from_big_endian(&validator_info.code_retval[64..96]),
             U256::from(VALUE_TRANSFER_GAS * 2)
         );
 
@@ -1306,17 +1749,14 @@ mod tests {
         );
 
         let (_header_rlp, receipts) = final_chain
-            .finalize_block(pbft_block, vec![transaction])
+            .finalize_block(pbft_block, vec![transaction], vec![])
             .unwrap();
 
         assert_eq!(receipt_fields(&receipts[0]), (0, 10_000, 10_000));
         assert_eq!(final_chain.account(sender).unwrap().unwrap().nonce, 0);
         assert_eq!(balance_of(&final_chain, sender), U256::from(1u64));
         assert!(final_chain.account(receiver).unwrap().is_none());
-        assert_eq!(
-            balance_of(&final_chain, beneficiary),
-            U256::from(100_000u64)
-        );
+        assert_eq!(balance_of(&final_chain, beneficiary), U256::zero());
 
         drop(final_chain);
         drop(storage);
@@ -1370,14 +1810,14 @@ mod tests {
             .nonce = 3;
 
         let (_header_rlp, receipts) = final_chain
-            .finalize_block(pbft_block, vec![transaction])
+            .finalize_block(pbft_block, vec![transaction], vec![])
             .unwrap();
 
         assert_eq!(receipt_fields(&receipts[0]), (0, 30_000, 30_000));
         assert_eq!(final_chain.account(sender).unwrap().unwrap().nonce, 3);
         assert_eq!(balance_of(&final_chain, sender), U256::from(110_000u64));
         assert!(final_chain.account(receiver).unwrap().is_none());
-        assert_eq!(balance_of(&final_chain, beneficiary), U256::from(90_000u64));
+        assert_eq!(balance_of(&final_chain, beneficiary), U256::zero());
 
         drop(final_chain);
         drop(storage);
@@ -1415,6 +1855,7 @@ mod tests {
                     vec![],
                     vec![0xc1, 0x83],
                 )],
+                vec![],
             )
             .unwrap_err();
 
@@ -1464,6 +1905,7 @@ mod tests {
                     vec![0x01],
                     transaction_rlp,
                 )],
+                vec![],
             )
             .unwrap_err();
 

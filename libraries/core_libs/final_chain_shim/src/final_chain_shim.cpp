@@ -66,6 +66,24 @@ rust::Vec<rustaxa::FinalizationTransaction> make_finalization_transactions(const
   return rust_transactions;
 }
 
+rust::Vec<rustaxa::FinalizationDagBlock> make_finalization_dag_blocks(
+    const std::vector<std::shared_ptr<DagBlock>>& dag_blocks) {
+  rust::Vec<rustaxa::FinalizationDagBlock> rust_dag_blocks;
+  rust_dag_blocks.reserve(dag_blocks.size());
+  for (const auto& dag_block : dag_blocks) {
+    rustaxa::FinalizationDagBlock rust_dag_block;
+    rust_dag_block.author = into_address_array(dag_block->getSender());
+    rust_dag_block.transaction_hashes.reserve(dag_block->getTrxs().size());
+    for (const auto& transaction_hash : dag_block->getTrxs()) {
+      rustaxa::DagHash rust_transaction_hash;
+      rust_transaction_hash.hash = into_bytes_array(transaction_hash);
+      rust_dag_block.transaction_hashes.push_back(std::move(rust_transaction_hash));
+    }
+    rust_dag_blocks.push_back(std::move(rust_dag_block));
+  }
+  return rust_dag_blocks;
+}
+
 rust::Vec<rustaxa::GenesisAccount> make_genesis_accounts(const state_api::Config& config) {
   auto effective_balances = config.initial_balances;
   for (const auto& validator : config.dpos.initial_validators) {
@@ -169,8 +187,9 @@ std::future<std::shared_ptr<const FinalizationResult>> FinalChain::finalize(Peri
   if (anchor) {
     return ready_unimplemented_finalization_result("finalize(anchor)");
   }
-  auto outcome = rust_final_chain_.value()->finalize_block(into_rust_vec(period_data.pbft_blk->rlp(true)),
-                                                           make_finalization_transactions(period_data.transactions));
+  auto outcome = rust_final_chain_.value()->finalize_block(
+      into_rust_vec(period_data.pbft_blk->rlp(true)), make_finalization_transactions(period_data.transactions),
+      make_finalization_dag_blocks(period_data.dag_blocks));
   auto header_data = into_string(outcome.block_header_rlp);
   auto header = BlockHeader::fromRLP(dev::RLP(header_data));
   TransactionReceipts receipts;
@@ -314,9 +333,29 @@ h256 FinalChain::getAccountStorage(addr_t const&, u256 const&, std::optional<Eth
 
 bytes FinalChain::getCode(addr_t const&, std::optional<EthBlockNumber>) const { return {}; }
 
-state_api::ExecutionResult FinalChain::call(state_api::EVMTransaction const& trx, std::optional<EthBlockNumber>) const {
+state_api::ExecutionResult FinalChain::call(state_api::EVMTransaction const& trx,
+                                            std::optional<EthBlockNumber> blk_n) const {
+  rustaxa::FinalChainCall request;
+  request.block_number = blk_n.value_or(lastBlockNumber());
+  request.sender = into_address_array(trx.from);
+  if (trx.to) {
+    request.receiver_found = true;
+    request.receiver = into_address_array(*trx.to);
+  } else {
+    request.receiver_found = false;
+    request.receiver = {};
+  }
+  request.value = into_big_endian_vec(trx.value);
+  request.gas_price = into_big_endian_vec(trx.gas_price);
+  request.gas_limit = trx.gas;
+  request.input = into_rust_vec(trx.input);
+  auto outcome = rust_final_chain_.value()->call(std::move(request));
+
   state_api::ExecutionResult result;
-  result.gas_used = rust_final_chain_.value()->estimate_call_gas(trx.gas);
+  result.code_retval = into_bytes(outcome.code_retval);
+  result.gas_used = outcome.gas_used;
+  result.code_err = std::string(outcome.code_err);
+  result.consensus_err = std::string(outcome.consensus_err);
   return result;
 }
 
