@@ -113,7 +113,11 @@ rust::Vec<rustaxa::GenesisValidator> make_genesis_validators(const state_api::Co
   for (const auto& validator : config.dpos.initial_validators) {
     rustaxa::GenesisValidator genesis_validator;
     genesis_validator.address = into_address_array(validator.address);
+    genesis_validator.owner = into_address_array(validator.owner);
     genesis_validator.vrf_key = into_bytes_array(validator.vrf_key);
+    genesis_validator.commission = validator.commission;
+    genesis_validator.description = rust::String(validator.description);
+    genesis_validator.endpoint = rust::String(validator.endpoint);
     u256 total_stake = 0;
     for (const auto& [_, amount] : validator.delegations) {
       total_stake += amount;

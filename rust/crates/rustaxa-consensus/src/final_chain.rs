@@ -9,9 +9,9 @@ use rustaxa_types::codec::rlp::final_chain::{
 };
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::{
-    Account, DposValidatorStake, DposValidatorVoteCount, FinalChainCallOutcome,
-    FinalChainCallRequest, FinalizationDagBlock, FinalizationTransaction, GenesisAccount,
-    GenesisDposConfig, GenesisValidator, StoredFinalChainBlockHeader,
+    Account, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount,
+    FinalChainCallOutcome, FinalChainCallRequest, FinalizationDagBlock, FinalizationTransaction,
+    GenesisAccount, GenesisDposConfig, GenesisValidator, StoredFinalChainBlockHeader,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -44,15 +44,17 @@ pub struct FinalChain {
 /// Point-in-time DPoS vote-count view keyed by final-chain block number.
 ///
 /// The snapshot stores the Rust-owned subset currently needed by consensus and
-/// RPC tests: validator stake, vote counts, and accumulated commission rewards.
-/// Finalization appends block-keyed snapshots instead of answering historical
-/// queries from stale genesis data.
+/// RPC tests: validator stake, vote counts, accumulated commission rewards, and
+/// genesis-seeded validator metadata. Finalization appends block-keyed snapshots
+/// instead of answering historical queries from stale genesis data.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DposSnapshot {
     /// Total stake by validator address at this block.
     total_stakes: BTreeMap<[u8; 20], Vec<u8>>,
     /// Accumulated commission reward by validator address at this block.
     commission_rewards: BTreeMap<[u8; 20], Vec<u8>>,
+    /// Validator metadata by validator address at this block.
+    validator_metadata: BTreeMap<[u8; 20], DposValidatorMetadata>,
     /// Eligible vote count by validator address at this block.
     vote_counts: BTreeMap<[u8; 20], u64>,
     /// Total eligible vote count at this block.
@@ -89,6 +91,7 @@ impl FinalChain {
         let genesis_vrf_keys = genesis_validators
             .into_iter()
             .map(|validator| {
+                let metadata = DposValidatorMetadata::from(&validator);
                 let vote_count = dpos_vote_count(
                     &validator.total_stake,
                     &genesis_dpos_config.eligibility_balance_threshold,
@@ -100,28 +103,33 @@ impl FinalChain {
                     validator.vrf_key,
                     vote_count,
                     validator.total_stake,
+                    metadata,
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
         let genesis_dpos_total_stakes = genesis_vrf_keys
             .iter()
-            .map(|(address, _, _, stake)| (*address, stake.clone()))
+            .map(|(address, _, _, stake, _)| (*address, stake.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let genesis_dpos_validator_metadata = genesis_vrf_keys
+            .iter()
+            .map(|(address, _, _, _, metadata)| (*address, metadata.clone()))
             .collect::<BTreeMap<_, _>>();
         let genesis_dpos_vote_counts = genesis_vrf_keys
             .iter()
-            .map(|(address, _, vote_count, _)| (*address, *vote_count))
+            .map(|(address, _, vote_count, _, _)| (*address, *vote_count))
             .collect::<BTreeMap<_, _>>();
         let genesis_dpos_total_vote_count =
             genesis_vrf_keys
                 .iter()
-                .try_fold(0u64, |total, (_, _, vote_count, _)| {
+                .try_fold(0u64, |total, (_, _, vote_count, _, _)| {
                     total
                         .checked_add(*vote_count)
                         .ok_or_else(|| anyhow::anyhow!("genesis DPoS total vote count overflow"))
                 })?;
         let genesis_vrf_keys = genesis_vrf_keys
             .into_iter()
-            .map(|(address, vrf_key, _, _)| (address, vrf_key))
+            .map(|(address, vrf_key, _, _, _)| (address, vrf_key))
             .collect();
 
         let final_chain = FinalChain {
@@ -135,6 +143,7 @@ impl FinalChain {
                 DposSnapshot {
                     total_stakes: genesis_dpos_total_stakes,
                     commission_rewards: BTreeMap::new(),
+                    validator_metadata: genesis_dpos_validator_metadata,
                     vote_counts: genesis_dpos_vote_counts,
                     total_vote_count: genesis_dpos_total_vote_count,
                 },
@@ -671,8 +680,9 @@ impl FinalChain {
     /// Encodes the DPoS `getValidator(address)` return value using C++ ABI parity.
     ///
     /// The returned struct contains dynamic string fields, so the ABI payload
-    /// starts with an offset word followed by the tuple head and empty string
-    /// tails. Only fields currently modeled by Rust snapshots are populated.
+    /// starts with an offset word followed by the tuple head and ABI string
+    /// tails. Stake, commission reward, owner, commission, description, and
+    /// endpoint are read from the requested DPoS snapshot.
     fn encode_dpos_validator(
         &self,
         block_number: u64,
@@ -689,19 +699,43 @@ impl FinalChain {
             .get(&validator)
             .map(Vec::as_slice)
             .unwrap_or_default();
+        let metadata = snapshot
+            .validator_metadata
+            .get(&validator)
+            .cloned()
+            .unwrap_or_default();
+        let description_offset = 8usize
+            .checked_mul(32)
+            .ok_or_else(|| anyhow::anyhow!("validator ABI tuple head size overflow"))?;
+        let endpoint_offset = description_offset
+            .checked_add(abi_dynamic_string_tail_len(&metadata.description)?)
+            .ok_or_else(|| anyhow::anyhow!("validator ABI endpoint offset overflow"))?;
+        let description_tail_len = abi_dynamic_string_tail_len(&metadata.description)?;
+        let endpoint_tail_len = abi_dynamic_string_tail_len(&metadata.endpoint)?;
+        let output_capacity = 32usize
+            .checked_add(description_offset)
+            .and_then(|size| size.checked_add(description_tail_len))
+            .and_then(|size| size.checked_add(endpoint_tail_len))
+            .ok_or_else(|| anyhow::anyhow!("validator ABI output size overflow"))?;
 
-        let mut output = Vec::with_capacity(352);
+        let mut output = Vec::with_capacity(output_capacity);
         output.extend_from_slice(&abi_word_from_u64(32));
         output.extend_from_slice(&abi_word_from_u256_bytes(total_stake)?);
         output.extend_from_slice(&abi_word_from_u256_bytes(commission_reward)?);
+        output.extend_from_slice(&abi_word_from_u64(u64::from(metadata.commission)));
         output.extend_from_slice(&abi_word_from_u64(0));
         output.extend_from_slice(&abi_word_from_u64(0));
-        output.extend_from_slice(&abi_word_from_u64(0));
-        output.extend_from_slice(&abi_word_from_address(validator));
-        output.extend_from_slice(&abi_word_from_u64(256));
-        output.extend_from_slice(&abi_word_from_u64(288));
-        output.extend_from_slice(&abi_word_from_u64(0));
-        output.extend_from_slice(&abi_word_from_u64(0));
+        output.extend_from_slice(&abi_word_from_address(metadata.owner));
+        output.extend_from_slice(&abi_word_from_usize(
+            description_offset,
+            "validator description offset",
+        )?);
+        output.extend_from_slice(&abi_word_from_usize(
+            endpoint_offset,
+            "validator endpoint offset",
+        )?);
+        output.extend_from_slice(&abi_string_tail(&metadata.description)?);
+        output.extend_from_slice(&abi_string_tail(&metadata.endpoint)?);
         Ok(output)
     }
 
@@ -890,6 +924,13 @@ fn abi_word_from_u64(value: u64) -> [u8; 32] {
     word
 }
 
+/// Encodes a `usize` ABI offset or length as a Solidity ABI word.
+fn abi_word_from_usize(value: usize, field: &str) -> Result<[u8; 32], anyhow::Error> {
+    let value = u64::try_from(value)
+        .map_err(|_| anyhow::anyhow!("{field} does not fit into ABI uint256 word"))?;
+    Ok(abi_word_from_u64(value))
+}
+
 /// Encodes an address as a right-aligned Solidity ABI word.
 fn abi_word_from_address(address: [u8; 20]) -> [u8; 32] {
     let mut word = [0u8; 32];
@@ -905,6 +946,35 @@ fn abi_word_from_u256_bytes(bytes: &[u8]) -> Result<[u8; 32], anyhow::Error> {
     let mut word = [0u8; 32];
     word[32 - bytes.len()..].copy_from_slice(bytes);
     Ok(word)
+}
+
+/// Returns the padded ABI tail length for a Solidity string.
+fn abi_dynamic_string_tail_len(value: &str) -> Result<usize, anyhow::Error> {
+    32usize
+        .checked_add(abi_padded_len(value.len())?)
+        .ok_or_else(|| anyhow::anyhow!("ABI string tail length overflow"))
+}
+
+/// Encodes a Solidity string tail as length word, UTF-8 bytes, and zero padding.
+fn abi_string_tail(value: &str) -> Result<Vec<u8>, anyhow::Error> {
+    let bytes = value.as_bytes();
+    let padded_len = abi_padded_len(bytes.len())?;
+    let mut tail = Vec::with_capacity(
+        32usize
+            .checked_add(padded_len)
+            .ok_or_else(|| anyhow::anyhow!("ABI string tail allocation size overflow"))?,
+    );
+    tail.extend_from_slice(&abi_word_from_usize(bytes.len(), "ABI string length")?);
+    tail.extend_from_slice(bytes);
+    tail.resize(32 + padded_len, 0);
+    Ok(tail)
+}
+
+/// Rounds an ABI dynamic byte length up to the next 32-byte word boundary.
+fn abi_padded_len(len: usize) -> Result<usize, anyhow::Error> {
+    len.checked_add(31)
+        .map(|value| value / 32 * 32)
+        .ok_or_else(|| anyhow::anyhow!("ABI dynamic value length overflow"))
 }
 
 /// Formats a four-byte call selector without a `0x` prefix.
@@ -972,6 +1042,7 @@ mod tests {
     use k256::ecdsa::SigningKey;
     use rlp::{Rlp, RlpStream};
     use rustaxa_storage::{Column, Config};
+    use rustaxa_types::GenesisValidatorMetadata;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1102,11 +1173,41 @@ mod tests {
     }
 
     fn genesis_validator(address: [u8; 20], stake: U256) -> GenesisValidator {
+        genesis_validator_with_metadata(address, stake, [0; 20], 0, "", "")
+    }
+
+    fn genesis_validator_with_metadata(
+        address: [u8; 20],
+        stake: U256,
+        owner: [u8; 20],
+        commission: u16,
+        description: &str,
+        endpoint: &str,
+    ) -> GenesisValidator {
         GenesisValidator {
             address,
             vrf_key: [address[0]; 32],
             total_stake: u256_to_big_endian(stake),
+            metadata: GenesisValidatorMetadata {
+                owner,
+                commission,
+                description: description.to_string(),
+                endpoint: endpoint.to_string(),
+            },
         }
+    }
+
+    fn assert_abi_string_tail(payload: &[u8], tuple_start: usize, offset: usize, expected: &str) {
+        let tail_start = tuple_start + offset;
+        let bytes = expected.as_bytes();
+        assert_eq!(
+            u256_from_big_endian(&payload[tail_start..tail_start + 32]),
+            U256::from(bytes.len() as u64)
+        );
+        assert_eq!(
+            &payload[tail_start + 32..tail_start + 32 + bytes.len()],
+            bytes
+        );
     }
 
     fn receipt_fields(receipt_rlp: &[u8]) -> (u8, u64, u64) {
@@ -1432,6 +1533,71 @@ mod tests {
             u256_from_big_endian(&validator_info.code_retval[64..96]),
             U256::zero()
         );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn call_reads_genesis_dpos_validator_metadata() {
+        let path = temp_db_path("call-genesis-dpos-metadata");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x10; 20];
+        let owner = [0xA1; 20];
+        let description = "metadata-backed validator";
+        let endpoint = "https://validator.example";
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![genesis_validator_with_metadata(
+                validator,
+                U256::from(10_000u64),
+                owner,
+                12,
+                description,
+                endpoint,
+            )],
+            U256::from(1_000u64),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+
+        let validator_info = final_chain
+            .call(dpos_call_request(0, get_validator_input(validator)))
+            .unwrap();
+
+        let description_offset = 8 * 32;
+        let endpoint_offset =
+            description_offset + abi_dynamic_string_tail_len(description).unwrap();
+        let expected_len = 32
+            + description_offset
+            + abi_dynamic_string_tail_len(description).unwrap()
+            + abi_dynamic_string_tail_len(endpoint).unwrap();
+        assert_eq!(validator_info.code_err, "");
+        assert_eq!(validator_info.code_retval.len(), expected_len);
+        assert_eq!(
+            u256_from_big_endian(&validator_info.code_retval[96..128]),
+            U256::from(12u64)
+        );
+        assert_eq!(
+            &validator_info.code_retval[192..224],
+            &abi_word_from_address(owner)
+        );
+        assert_eq!(
+            u256_from_big_endian(&validator_info.code_retval[224..256]),
+            U256::from(description_offset as u64)
+        );
+        assert_eq!(
+            u256_from_big_endian(&validator_info.code_retval[256..288]),
+            U256::from(endpoint_offset as u64)
+        );
+        assert_abi_string_tail(
+            &validator_info.code_retval,
+            32,
+            description_offset,
+            description,
+        );
+        assert_abi_string_tail(&validator_info.code_retval, 32, endpoint_offset, endpoint);
 
         drop(final_chain);
         drop(storage);

@@ -20,10 +20,27 @@ pub fn create_final_chain(
         .collect();
     let genesis_validators = genesis_validators
         .into_iter()
-        .map(|validator| rustaxa_consensus::GenesisValidator {
-            address: validator.address,
-            vrf_key: validator.vrf_key,
-            total_stake: validator.total_stake,
+        .map(|validator| {
+            let rustaxa_ffi::GenesisValidator {
+                address,
+                owner,
+                vrf_key,
+                commission,
+                description,
+                endpoint,
+                total_stake,
+            } = validator;
+            rustaxa_consensus::GenesisValidator {
+                address,
+                vrf_key,
+                total_stake,
+                metadata: rustaxa_consensus::GenesisValidatorMetadata {
+                    owner,
+                    commission,
+                    description,
+                    endpoint,
+                },
+            }
         })
         .collect();
     let final_chain = FinalChain::new(

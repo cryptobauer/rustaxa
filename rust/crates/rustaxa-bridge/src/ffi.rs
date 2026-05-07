@@ -83,7 +83,11 @@ pub mod rustaxa_ffi {
 
     struct GenesisValidator {
         address: [u8; 20],
+        owner: [u8; 20],
         vrf_key: [u8; 32],
+        commission: u16,
+        description: String,
+        endpoint: String,
         total_stake: Vec<u8>,
     }
 

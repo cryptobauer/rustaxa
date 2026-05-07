@@ -5,9 +5,9 @@ pub mod pbft;
 
 pub use dag::DagBlock;
 pub use final_chain::{
-    Account, BlockHeaderContext, DposValidatorStake, DposValidatorVoteCount, FinalChainBlockHeader,
-    FinalChainBlockHeaderBuilder, FinalChainCallOutcome, FinalChainCallRequest,
-    FinalizationDagBlock, FinalizationTransaction, GenesisAccount, GenesisDposConfig,
-    GenesisValidator, StoredFinalChainBlockHeader,
+    Account, BlockHeaderContext, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount,
+    FinalChainBlockHeader, FinalChainBlockHeaderBuilder, FinalChainCallOutcome,
+    FinalChainCallRequest, FinalizationDagBlock, FinalizationTransaction, GenesisAccount,
+    GenesisDposConfig, GenesisValidator, GenesisValidatorMetadata, StoredFinalChainBlockHeader,
 };
 pub use pbft::PbftBlockMetadata;

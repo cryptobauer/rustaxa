@@ -15,12 +15,32 @@ pub struct GenesisAccount {
     pub balance: Vec<u8>,
 }
 
-/// Genesis validator key input passed from C++ configuration into Rust.
+/// Genesis validator metadata passed from genesis configuration into Rust.
+///
+/// These fields mirror the user-visible DPoS validator info returned by
+/// `getValidator(address)`. The owner address is encoded in canonical
+/// Ethereum/Taraxa address order, `commission` is the Solidity `uint16`
+/// percentage value, and the text fields are stored as UTF-8 strings so the
+/// FinalChain read model can ABI-encode them without crossing back into C++.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct GenesisValidatorMetadata {
+    /// Validator owner address bytes in canonical address order.
+    pub owner: [u8; 20],
+    /// Validator commission value represented as the contract's `uint16`.
+    pub commission: u16,
+    /// Human-readable validator description encoded as UTF-8.
+    pub description: String,
+    /// Validator endpoint encoded as UTF-8.
+    pub endpoint: String,
+}
+
+/// Genesis validator input passed from configuration into Rust.
 ///
 /// The address identifies the validator account, the VRF key is kept as raw
 /// bytes because DAG verification currently consumes the C++ VRF wrapper format
-/// through the bridge, and `total_stake` is the effective genesis stake used by
-/// the initial Rust DPoS vote-count model.
+/// through the bridge, `total_stake` is the effective genesis stake used by the
+/// initial Rust DPoS vote-count model, and `metadata` seeds the DPoS read model
+/// returned by `getValidator(address)`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GenesisValidator {
     /// Validator account address bytes in canonical address order.
@@ -29,6 +49,37 @@ pub struct GenesisValidator {
     pub vrf_key: [u8; 32],
     /// Effective genesis validator stake as an unsigned big-endian integer byte string.
     pub total_stake: Vec<u8>,
+    /// Genesis-seeded user-visible validator metadata.
+    pub metadata: GenesisValidatorMetadata,
+}
+
+/// Validator metadata stored in a block-keyed DPoS snapshot.
+///
+/// Snapshot metadata is separated from stake and reward counters because stake
+/// and rewards change through finalization, while this slice only supports
+/// genesis-seeded metadata. Future DPoS transactions can update these fields in
+/// the snapshot without changing the read-only ABI encoder.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DposValidatorMetadata {
+    /// Validator owner address bytes in canonical address order.
+    pub owner: [u8; 20],
+    /// Validator commission value represented as the contract's `uint16`.
+    pub commission: u16,
+    /// Human-readable validator description encoded as UTF-8.
+    pub description: String,
+    /// Validator endpoint encoded as UTF-8.
+    pub endpoint: String,
+}
+
+impl From<&GenesisValidator> for DposValidatorMetadata {
+    fn from(validator: &GenesisValidator) -> Self {
+        Self {
+            owner: validator.metadata.owner,
+            commission: validator.metadata.commission,
+            description: validator.metadata.description.clone(),
+            endpoint: validator.metadata.endpoint.clone(),
+        }
+    }
 }
 
 /// DPoS genesis parameters used to derive the initial vote-count model.
