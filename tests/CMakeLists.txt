@@ -70,6 +70,12 @@ add_executable(sortition_test sortition_test.cpp)
 target_link_libraries(sortition_test test_util)
 add_test(sortition_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/sortition_test)
 
+if(RUSTAXA_ENABLE_SORTITION_PARAMS)
+    add_executable(sortition_params_manager_shim_test sortition_params_manager_shim_test.cpp)
+    target_link_libraries(sortition_params_manager_shim_test test_util)
+    add_test(sortition_params_manager_shim_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/sortition_params_manager_shim_test)
+endif()
+
 add_executable(state_api_test state_api_test.cpp)
 target_link_libraries(state_api_test test_util)
 add_test(state_api_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/state_api_test)

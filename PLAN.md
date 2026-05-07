@@ -316,7 +316,8 @@ The C++ consensus area includes:
 
 The current Rust starting point is intentionally small:
 
-- `rustaxa-consensus` contains early FinalChain read/index logic.
+- `rustaxa-consensus` contains early FinalChain read/index logic, Rust-backed DAG graph state, and Rust-backed
+  sortition efficiency/threshold runtime state.
 - `rustaxa-types` contains shared Rust domain and codec types.
 - `rustaxa-storage` contains storage repositories that consensus should use through narrow ports.
 
@@ -362,6 +363,8 @@ Use targeted validation before broad integration runs:
 
 - Rust consensus changes require `cargo fmt --manifest-path rust/Cargo.toml`, `cargo clippy --manifest-path rust/Cargo.toml`, and `cargo test --manifest-path rust/Cargo.toml`.
 - DAG changes should run relevant DAG tests such as `dag_test` and `dag_block_test`.
+- Sortition parameter changes should run `rust_consensus_tests`, `sortition_test`, and the
+  `sortition_params_manager_shim_test` overlay check when `RUSTAXA_ENABLE_SORTITION_PARAMS` is enabled.
 - PBFT changes should run relevant PBFT tests such as `pbft_chain_test`, `pbft_manager_test`, and `vote_test`.
 - Pillar/reward/eligibility changes should run `pillar_chain_test` and any affected final-chain or full-node tests.
 - Shim startup behavior should be validated with a Rust-enabled node smoke test when consensus shims change.

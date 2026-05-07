@@ -113,6 +113,25 @@ if(RUSTAXA_ENABLE_FINAL_CHAIN)
     )
 endif()
 
+if(RUSTAXA_ENABLE_SORTITION_PARAMS)
+    if(NOT RUSTAXA_ENABLE)
+        message(FATAL_ERROR "RUSTAXA_ENABLE_SORTITION_PARAMS requires RUSTAXA_ENABLE")
+    endif()
+
+    # In Rust sortition-params mode, inject a header overlay that remaps legacy
+    # SortitionParamsManager to SortitionParamsManagerOld and exposes a
+    # standalone SortitionParamsManager shim facade.
+    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/sortition_params_manager_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/sortition_params_manager_shim/src/sortition_params_manager_shim.cpp)
+
+    # Compile the legacy implementation as SortitionParamsManagerOld.
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/dag/sortition_params_manager.cpp
+        PROPERTIES
+        COMPILE_DEFINITIONS "SortitionParamsManager=SortitionParamsManagerOld"
+    )
+endif()
+
 install(TARGETS core_libs
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

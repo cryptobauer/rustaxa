@@ -40,7 +40,7 @@ Required test coverage and parity gates for the Rust consensus model are defined
 | DAG graph | `dag/dag.hpp`, `dag/dag.cpp` | 424 lines | `rust-backed` | Rust domain behind C++ API | C++ `Dag`/`PivotTree` graph operations route to Rust under `RUSTAXA_ENABLE`. Legacy Boost graph remains the pure C++ fallback. |
 | DAG manager | `dag/dag_manager.hpp`, `dag/dag_manager.cpp` | 1048 lines | partial | C++ shim plus Rust domain/infra ports | Manager orchestration remains C++; its `Dag`/`PivotTree` graph objects are Rust-backed in Rust mode. Depends on transaction manager, PBFT chain, storage, network, key manager, FinalChain. |
 | DAG proposer | `dag/dag_block_proposer.hpp`, `dag/dag_block_proposer.cpp` | 576 lines | `cpp-owned` initially | C++ orchestration, later Rust proposer policy | Threaded, networked, VDF/DPoS-heavy. Keep orchestration in C++ early. |
-| Sortition params | `dag/sortition_params_manager.hpp`, `dag/sortition_params_manager.cpp` | 331 lines | `rust-domain` | Rust domain plus storage port | Deterministic efficiency/threshold policy model landed in `rustaxa-consensus::sortition`; C++ runtime wiring and storage-backed parity are pending. |
+| Sortition params | `dag/sortition_params_manager.hpp`, `dag/sortition_params_manager.cpp` | 331 lines | `rust-backed` | Rust domain behind C++ overlay shim | Deterministic efficiency/threshold runtime state routes to `rustaxa-consensus::sortition` under `RUSTAXA_ENABLE_SORTITION_PARAMS`. C++ still owns storage reads/writes and batch atomicity; the legacy implementation is compiled as `SortitionParamsManagerOld` only for pure C++ reference builds. |
 | PBFT chain | `pbft/pbft_chain.hpp`, `pbft/pbft_chain.cpp` | 259 lines | `not-started` | Rust-backed infra/domain | Relatively bounded persisted head/chain state. Good early PBFT slice. |
 | Proposed blocks | `pbft/proposed_blocks.hpp`, `pbft/proposed_blocks.cpp` | 178 lines | `not-started` | Rust domain/infra | Period/hash keyed cache plus DB persistence. |
 | Period data queue | `pbft/period_data_queue.hpp`, `pbft/period_data_queue.cpp` | 168 lines | `not-started` | Rust domain, C++ sync wiring | Queue behavior is bounded; peer `NodeID` keeps C++ bridge concerns. |
@@ -65,7 +65,7 @@ Required test coverage and parity gates for the Rust consensus model are defined
 | `Dag` / `PivotTree` | vertex/edge counts, `hasVertex`, `addVEEs`, leaves, ghost path, deterministic order, graph clearing | hashes, Boost graph today | `dag_test`, `full_node_test` ordering cases | Rust domain graph with byte/hash-compatible ordering |
 | `DagManager` | block known/get/verify/add, pivot/tip availability, ordering, frontier, non-finalized blocks, anchors, expiry, VDF message | `DbStorage`, `TransactionManager`, `PbftChain`, `FinalChain`, `Network`, `KeyManager`, config | `dag_test`, `dag_block_test`, `pbft_manager_test`, `full_node_test` | C++ shim delegates pure graph/order logic to Rust first |
 | `DagBlockProposer` | proposer lifecycle, propose block, select tips, proposer eligibility | `DagManager`, `TransactionManager`, `FinalChain`, `DbStorage`, `KeyManager`, `Network`, VDF | `dag_block_test`, `pbft_manager_test`, `sortition_test`, full-node tests | Keep C++ thread/network shell; port deterministic selection/policy later |
-| `SortitionParamsManager` | params lookup, DAG efficiency, interval recalculation, cleanup | `DbStorage`, config, `PeriodData`, VDF params | `sortition_test`, `full_node_test` lambda tests | Rust deterministic calculations with storage port |
+| `SortitionParamsManager` | params lookup, DAG efficiency, interval recalculation, cleanup | `DbStorage`, config, `PeriodData`, VDF params | `sortition_test`, `rust_consensus_tests`, `sortition_params_manager_shim_test`, full-node lambda tests | Rust deterministic calculations and runtime state; C++ storage/batch shell |
 
 ### PBFT
 
@@ -143,6 +143,7 @@ Open questions:
 | --- | --- |
 | Rust consensus domain only | `cargo fmt --manifest-path rust/Cargo.toml`, `cargo clippy --manifest-path rust/Cargo.toml`, `cargo test --manifest-path rust/Cargo.toml` |
 | DAG graph routing | Rust validation plus `rust_consensus_tests`, `dag_test`, and `dag_block_test` |
+| Sortition params routing | Rust validation plus `rust_consensus_tests`, `sortition_test`, and `sortition_params_manager_shim_test` |
 | PBFT chain/proposed-block/queue routing | Rust validation plus `pbft_chain_test` and relevant `pbft_manager_test` cases |
 | Vote aggregation/eligibility | Rust validation plus `vote_test`, relevant `pbft_manager_test`, and DPoS/state API coverage |
 | Transaction queue behavior | Rust validation plus `transaction_test` and affected DAG/PBFT tests |
@@ -155,6 +156,7 @@ Open questions:
 | --- | --- | --- |
 | Replace temporary DPoS query behavior | `partial` | Genesis DPoS vote-count, eligibility, validator total stake, and validator eligible vote-count queries are Rust-backed. Rust-finalized native-transfer blocks now carry forward snapshots and post-Magnolia fee commission rewards. Remaining gaps: validator owner/metadata, delegation mutations, jailing, slashing, broader rewards distribution, and contract-call state transitions. |
 | Create Rust DAG graph module | `rust-backed` | Landed as standalone Rust domain plus bridge tests and C++ `Dag` production routing under `RUSTAXA_ENABLE`. |
+| Route sortition params through Rust | `rust-backed` | Landed under `RUSTAXA_ENABLE_SORTITION_PARAMS`; storage and write batches intentionally remain C++ owned for this slice. |
 | Define consensus storage ports | `not-started` | Needed before Rust services depend on storage. |
 | Decide CXX bridge shape for consensus hashes and vectors | `rust-backed` for DAG graph | DAG bridge uses fixed bytes and explicit boundary conversion; revisit if PBFT/vote bridges need richer payloads. |
 | Add C++/Rust DAG parity fixture | `rust-backed` | Rust bridge fixture tests and C++ public API regression tests landed. Direct in-process legacy-vs-Rust comparison remains optional if duplicate dependency symbols are resolved. |

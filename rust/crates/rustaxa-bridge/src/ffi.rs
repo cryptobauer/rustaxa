@@ -1,8 +1,10 @@
 use crate::dag::*;
 use crate::final_chain::*;
+use crate::sortition::*;
 use crate::storage::*;
 use crate::vdf::*;
 use rustaxa_consensus::dag::DagGraph;
+use rustaxa_consensus::sortition::SortitionParamsManager;
 use rustaxa_consensus::FinalChain;
 use rustaxa_storage::Storage;
 use rustaxa_storage::StorageWriteBatch;
@@ -20,6 +22,8 @@ pub struct BridgeStorage(
 pub struct BridgeFinalChain(pub FinalChain);
 
 pub struct BridgeDagGraph(pub DagGraph);
+
+pub struct BridgeSortitionParamsManager(pub SortitionParamsManager);
 
 #[cxx::bridge(namespace = "rustaxa")]
 pub mod rustaxa_ffi {
@@ -175,6 +179,46 @@ pub mod rustaxa_ffi {
         hashes: Vec<DagHash>,
     }
 
+    struct SortitionRuntimeConfig {
+        threshold_upper: u16,
+        difficulty_min: u16,
+        difficulty_max: u16,
+        difficulty_stale: u16,
+        lambda_bound: u16,
+        changes_count_for_average: u16,
+        dag_efficiency_target_low: u16,
+        dag_efficiency_target_high: u16,
+        changing_interval: u16,
+        computation_interval: u16,
+    }
+
+    struct SortitionRuntimeParams {
+        threshold_upper: u16,
+        difficulty_min: u16,
+        difficulty_max: u16,
+        difficulty_stale: u16,
+        lambda_bound: u16,
+    }
+
+    struct SortitionParamsChangePayload {
+        period: u64,
+        interval_efficiency: u16,
+        threshold_upper: u16,
+    }
+
+    struct SortitionParamsChangeResult {
+        changed: bool,
+        period: u64,
+        interval_efficiency: u16,
+        threshold_upper: u16,
+    }
+
+    struct SortitionEfficiencyResult {
+        ok: bool,
+        value: u16,
+        error: String,
+    }
+
     extern "Rust" {
         type WesolowskiVdf;
         type CancellationToken;
@@ -224,6 +268,47 @@ pub mod rustaxa_ffi {
         ) -> DagOrder;
         pub fn dag_clear(self: &mut BridgeDagGraph);
         pub fn dag_graphviz_dot(self: &BridgeDagGraph) -> String;
+
+        // Consensus sortition
+
+        type BridgeSortitionParamsManager;
+
+        pub fn create_sortition_params_manager(
+            config: SortitionRuntimeConfig,
+            params_changes: Vec<SortitionParamsChangePayload>,
+        ) -> Result<Box<BridgeSortitionParamsManager>>;
+        pub fn sortition_current_params(
+            self: &BridgeSortitionParamsManager,
+        ) -> SortitionRuntimeParams;
+        pub fn sortition_params_for_period(
+            self: &BridgeSortitionParamsManager,
+            found: bool,
+            change: SortitionParamsChangePayload,
+        ) -> SortitionRuntimeParams;
+        pub fn sortition_restore_finalized_period(
+            self: &mut BridgeSortitionParamsManager,
+            has_pivot: bool,
+            unique_transactions: u64,
+            total_dag_transaction_refs: u64,
+        ) -> Result<()>;
+        pub fn sortition_record_finalized_period(
+            self: &mut BridgeSortitionParamsManager,
+            period: u64,
+            has_pivot: bool,
+            unique_transactions: u64,
+            total_dag_transaction_refs: u64,
+            non_empty_pbft_chain_size: u64,
+        ) -> Result<SortitionParamsChangeResult>;
+        pub fn sortition_average_dag_efficiency(self: &BridgeSortitionParamsManager)
+            -> Result<u16>;
+        pub fn sortition_params_changes(
+            self: &BridgeSortitionParamsManager,
+        ) -> Vec<SortitionParamsChangePayload>;
+        pub fn sortition_calculate_dag_efficiency(
+            self: &BridgeSortitionParamsManager,
+            unique_transactions: u64,
+            total_dag_transaction_refs: u64,
+        ) -> SortitionEfficiencyResult;
 
         // Storage
 
