@@ -242,6 +242,17 @@ pub struct RoundMarkerSnapshot {
     pub network_t_plus_one_step: u64,
 }
 
+/// Deterministic round-advance decision derived from stored next-vote 2t+1
+/// mappings for one period.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DetermineNewRoundOutcome {
+    pub new_round: u64,
+    pub source_round: u64,
+    pub source_kind: TwoTPlusOneVotedBlockType,
+    pub block_hash: H256,
+    pub step: u64,
+}
+
 /// Rust-owned verified-votes index.
 #[derive(Debug, Clone, Default)]
 pub struct VerifiedVotes {
@@ -635,6 +646,55 @@ impl VerifiedVotes {
         }
     }
 
+    /// Determines next round from next-vote 2t+1 mappings for `period`.
+    ///
+    /// Behavior mirrors legacy C++:
+    /// - scan rounds from highest to lowest,
+    /// - stop with no decision once rounds are below `current_round`,
+    /// - prefer `NextVotedBlock` over `NextVotedNullBlock` in the same round.
+    pub fn determine_new_round(
+        &self,
+        period: u64,
+        current_round: u64,
+    ) -> Option<DetermineNewRoundOutcome> {
+        let rounds = self.votes.get(&period)?;
+        for (&round, round_votes) in rounds.iter().rev() {
+            if round < current_round {
+                return None;
+            }
+
+            if let Some(voted) = round_votes
+                .two_t_plus_one_voted_blocks
+                .get(&TwoTPlusOneVotedBlockType::NextVotedBlock)
+            {
+                let new_round = round.checked_add(1)?;
+                return Some(DetermineNewRoundOutcome {
+                    new_round,
+                    source_round: round,
+                    source_kind: TwoTPlusOneVotedBlockType::NextVotedBlock,
+                    block_hash: voted.hash,
+                    step: voted.step,
+                });
+            }
+
+            if let Some(voted) = round_votes
+                .two_t_plus_one_voted_blocks
+                .get(&TwoTPlusOneVotedBlockType::NextVotedNullBlock)
+            {
+                let new_round = round.checked_add(1)?;
+                return Some(DetermineNewRoundOutcome {
+                    new_round,
+                    source_round: round,
+                    source_kind: TwoTPlusOneVotedBlockType::NextVotedNullBlock,
+                    block_hash: voted.hash,
+                    step: voted.step,
+                });
+            }
+        }
+
+        None
+    }
+
     fn ensure_step_mut(&mut self, period: u64, round: u64, step: u64) -> &mut StepVotes {
         self.votes
             .entry(period)
@@ -1014,6 +1074,70 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn determine_new_round_prefers_next_block_over_next_null() {
+        let mut verified = VerifiedVotes::new();
+        verified
+            .insert_voted_value(vote(1, 11, 101, 5, 3, 4, PbftVoteType::Next, 1))
+            .unwrap();
+        verified
+            .insert_voted_value(vote(2, 0, 102, 5, 3, 5, PbftVoteType::Next, 1))
+            .unwrap();
+        assert!(
+            verified
+                .insert_two_t_plus_one_voted_block(
+                    5,
+                    3,
+                    TwoTPlusOneVotedBlockType::NextVotedBlock,
+                    h256(11),
+                    4
+                )
+                .inserted
+        );
+        assert!(
+            verified
+                .insert_two_t_plus_one_voted_block(
+                    5,
+                    3,
+                    TwoTPlusOneVotedBlockType::NextVotedNullBlock,
+                    h256(0),
+                    5
+                )
+                .inserted
+        );
+
+        let decision = verified.determine_new_round(5, 3).unwrap();
+        assert_eq!(decision.new_round, 4);
+        assert_eq!(decision.source_round, 3);
+        assert_eq!(
+            decision.source_kind,
+            TwoTPlusOneVotedBlockType::NextVotedBlock
+        );
+        assert_eq!(decision.block_hash, h256(11));
+        assert_eq!(decision.step, 4);
+    }
+
+    #[test]
+    fn determine_new_round_ignores_rounds_below_current() {
+        let mut verified = VerifiedVotes::new();
+        verified
+            .insert_voted_value(vote(1, 21, 201, 7, 2, 4, PbftVoteType::Next, 1))
+            .unwrap();
+        assert!(
+            verified
+                .insert_two_t_plus_one_voted_block(
+                    7,
+                    2,
+                    TwoTPlusOneVotedBlockType::NextVotedBlock,
+                    h256(21),
+                    4
+                )
+                .inserted
+        );
+
+        assert!(verified.determine_new_round(7, 3).is_none());
     }
 
     #[test]

@@ -200,6 +200,15 @@ pub mod rustaxa_ffi {
         inserted: bool,
     }
 
+    struct DetermineNewRoundOutcome {
+        found: bool,
+        new_round: u64,
+        source_round: u64,
+        source_kind: u8,
+        block_hash: [u8; 32],
+        step: u64,
+    }
+
     struct TwoTPlusOneVotedBlockLookup {
         found: bool,
         block_hash: [u8; 32],
@@ -563,6 +572,11 @@ pub mod rustaxa_ffi {
             period: u64,
             round: u64,
         ) -> NetworkTPlusOneStepLookup;
+        pub fn verified_votes_determine_new_round(
+            self: &BridgeVerifiedVotes,
+            period: u64,
+            current_round: u64,
+        ) -> DetermineNewRoundOutcome;
         pub fn verified_votes_insert_two_t_plus_one_voted_block(
             self: &mut BridgeVerifiedVotes,
             period: u64,

@@ -1,14 +1,15 @@
 use crate::ffi::rustaxa_ffi::{
-    AtomicVoteInsertOutcome, DagHash, NetworkTPlusOneStepLookup, RoundMarkerSnapshot,
-    TwoTPlusOneInsertOutcome, TwoTPlusOneSnapshotEntry, TwoTPlusOneVotedBlockLookup,
-    TwoTPlusOneVotesLookup, UniqueVoterCheckOutcome, UniqueVoterInsertOutcome, VerifiedVotePayload,
-    VotedValueInsertOutcome,
+    AtomicVoteInsertOutcome, DagHash, DetermineNewRoundOutcome, NetworkTPlusOneStepLookup,
+    RoundMarkerSnapshot, TwoTPlusOneInsertOutcome, TwoTPlusOneSnapshotEntry,
+    TwoTPlusOneVotedBlockLookup, TwoTPlusOneVotesLookup, UniqueVoterCheckOutcome,
+    UniqueVoterInsertOutcome, VerifiedVotePayload, VotedValueInsertOutcome,
 };
 use crate::ffi::BridgeVerifiedVotes;
 use ethereum_types::{H160, H256};
 use rustaxa_consensus::verified_votes::{
-    PbftVoteType, TwoTPlusOneInsertOutcome as ConsensusTwoTPlusOneInsertOutcome,
-    TwoTPlusOneVotedBlockType, VerifiedVote, VerifiedVotes,
+    DetermineNewRoundOutcome as ConsensusDetermineNewRoundOutcome, PbftVoteType,
+    TwoTPlusOneInsertOutcome as ConsensusTwoTPlusOneInsertOutcome, TwoTPlusOneVotedBlockType,
+    VerifiedVote, VerifiedVotes,
 };
 
 /// Creates an empty Rust verified-votes index for the C++ vote-manager shim.
@@ -121,6 +122,25 @@ impl BridgeVerifiedVotes {
             .map(|step| NetworkTPlusOneStepLookup { found: true, step })
             .unwrap_or(NetworkTPlusOneStepLookup {
                 found: false,
+                step: 0,
+            })
+    }
+
+    /// Determines next round from Rust-owned next-vote 2t+1 mappings.
+    pub fn verified_votes_determine_new_round(
+        &self,
+        period: u64,
+        current_round: u64,
+    ) -> DetermineNewRoundOutcome {
+        self.0
+            .determine_new_round(period, current_round)
+            .map(Into::into)
+            .unwrap_or(DetermineNewRoundOutcome {
+                found: false,
+                new_round: 0,
+                source_round: 0,
+                source_kind: 0,
+                block_hash: [0u8; 32],
                 step: 0,
             })
     }
@@ -268,6 +288,19 @@ impl From<ConsensusTwoTPlusOneInsertOutcome> for TwoTPlusOneInsertOutcome {
         Self {
             round_found: value.round_found,
             inserted: value.inserted,
+        }
+    }
+}
+
+impl From<ConsensusDetermineNewRoundOutcome> for DetermineNewRoundOutcome {
+    fn from(value: ConsensusDetermineNewRoundOutcome) -> Self {
+        Self {
+            found: true,
+            new_round: value.new_round,
+            source_round: value.source_round,
+            source_kind: value.source_kind.into(),
+            block_hash: value.block_hash.into(),
+            step: value.step,
         }
     }
 }

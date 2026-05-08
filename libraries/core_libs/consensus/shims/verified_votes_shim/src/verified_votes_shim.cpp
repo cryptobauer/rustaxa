@@ -295,4 +295,20 @@ bool VerifiedVotes::insertTwoTPlusOneVotedBlock(TwoTPlusOneVotedBlockType type, 
   return outcome.inserted;
 }
 
+std::optional<VerifiedVotes::RoundAdvanceDecision> VerifiedVotes::determineRoundAdvance(
+    PbftPeriod current_pbft_period, PbftRound current_pbft_round) const {
+  std::shared_lock lock(verified_votes_access_);
+  const auto outcome =
+      rust_verified_votes_->verified_votes_determine_new_round(current_pbft_period, current_pbft_round);
+  if (!outcome.found) {
+    return std::nullopt;
+  }
+
+  return RoundAdvanceDecision{
+      static_cast<PbftRound>(outcome.new_round),
+      static_cast<PbftRound>(outcome.source_round),
+      VotedBlock{fromBridgeHash(outcome.block_hash), static_cast<PbftStep>(outcome.step)},
+  };
+}
+
 }  // namespace taraxa

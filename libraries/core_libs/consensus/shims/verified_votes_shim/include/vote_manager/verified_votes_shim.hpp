@@ -33,6 +33,24 @@ class PbftVote;
 class VerifiedVotes {
  public:
   /**
+   * Rust-evaluated round-advance decision.
+   *
+   * Purpose:
+   * - Carries the highest round in `period` that has 2t+1 next votes, plus
+   *   voted-block details used by C++ callers for logging.
+   *
+   * Invariants:
+   * - `new_round == supporting_round + 1`.
+   * - `supporting_round` is the greatest round `>= current_pbft_round` that
+   *   has a NextVotedBlock or NextVotedNullBlock mapping.
+   */
+  struct RoundAdvanceDecision {
+    PbftRound new_round{0};
+    PbftRound supporting_round{0};
+    VotedBlock voted_block{};
+  };
+
+  /**
    * Outcome of one atomic verified-vote insert attempt.
    *
    * Exactly one of these states is expected:
@@ -140,6 +158,26 @@ class VerifiedVotes {
    * - `false` when mapping already existed or round is missing.
    */
   bool insertTwoTPlusOneVotedBlock(TwoTPlusOneVotedBlockType type, std::shared_ptr<PbftVote> vote);
+
+  /**
+   * Evaluates whether the period can advance to a higher round from Rust
+   * next-vote 2t+1 mappings.
+   *
+   * Inputs:
+   * - `current_pbft_period`: period to evaluate.
+   * - `current_pbft_round`: current round lower bound.
+   *
+   * Outputs:
+   * - Empty optional when no qualifying next-vote 2t+1 mapping exists.
+   * - Highest qualifying round + 1 plus supporting mapping details otherwise.
+   *
+   * Edge behavior:
+   * - Ignores mappings from older rounds (`< current_pbft_round`).
+   * - Prefers `NextVotedBlock` over `NextVotedNullBlock` when both exist for
+   *   the same round to match legacy C++ selection order.
+   */
+  std::optional<RoundAdvanceDecision> determineRoundAdvance(PbftPeriod current_pbft_period,
+                                                            PbftRound current_pbft_round) const;
 
  private:
   static std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t& hash);
