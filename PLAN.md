@@ -318,7 +318,7 @@ The current Rust starting point is intentionally small:
 
 - `rustaxa-consensus` contains early FinalChain read/index logic, Rust-backed DAG graph state, Rust-backed
   sortition efficiency/threshold runtime state, Rust-backed PBFT chain head/validation state, and Rust-backed
-  proposed PBFT block cache state.
+  proposed PBFT block cache and period-data queue metadata state.
 - `rustaxa-types` contains shared Rust domain and codec types.
 - `rustaxa-storage` contains storage repositories that consensus should use through narrow ports.
 
@@ -330,9 +330,11 @@ The current Rust starting point is intentionally small:
 4. Port DAG graph operations before `DagManager`: pivot/tip availability, ghost path, ordering, counters, and storage-facing queries.
 5. Define Rust ports for DPoS eligibility, eligible vote count, total vote count, and VRF key access.
 6. Replace the temporary `dposIsEligible` shim behavior once the eligibility port has a real implementation.
-7. Finish the PBFT support slice by porting `PeriodDataQueue`; `PbftChain` head updates, persisted-head preview, and
-   next-block validation already route through Rust under `RUSTAXA_ENABLE_PBFT_CHAIN`, and proposed-block membership,
-   validity flags, RLP snapshots, and cleanup planning already route through Rust under `RUSTAXA_ENABLE_PROPOSED_BLOCKS`.
+7. Finish the PBFT support slice by adding broader manager-level validation around the now Rust-backed primitives:
+   `PbftChain` head updates, persisted-head preview, and next-block validation route through Rust under
+   `RUSTAXA_ENABLE_PBFT_CHAIN`; proposed-block membership, validity flags, RLP snapshots, and cleanup planning route
+   through Rust under `RUSTAXA_ENABLE_PROPOSED_BLOCKS`; period-data queue admission, effective size, pop vote-source
+   decisions, and cleanup planning route through Rust under `RUSTAXA_ENABLE_PERIOD_DATA_QUEUE`.
 8. Split `PbftManager` into Rust services for round/step transitions, proposal handling, vote thresholding, and finalization decisions.
 9. Port transaction queue behavior before transaction manager orchestration.
 10. Port deterministic rewards, slashing, and pillar calculations after DPoS and final-chain query ports are real.
@@ -368,8 +370,9 @@ Use targeted validation before broad integration runs:
 - DAG changes should run relevant DAG tests such as `dag_test` and `dag_block_test`.
 - Sortition parameter changes should run `rust_consensus_tests`, `sortition_test`, and the
   `sortition_params_manager_shim_test` overlay check when `RUSTAXA_ENABLE_SORTITION_PARAMS` is enabled.
-- PBFT chain/proposed-block changes should run `rust_consensus_tests`, the corresponding shim test, and targeted
-  `pbft_chain_test` or `pbft_manager_test` cases; broader PBFT changes should also run relevant `vote_test` coverage.
+- PBFT chain/proposed-block/period-data-queue changes should run `rust_consensus_tests`, the corresponding shim test,
+  and targeted `pbft_chain_test` or `pbft_manager_test` cases; broader PBFT changes should also run relevant
+  `vote_test` coverage.
 - Pillar/reward/eligibility changes should run `pillar_chain_test` and any affected final-chain or full-node tests.
 - Shim startup behavior should be validated with a Rust-enabled node smoke test when consensus shims change.
 

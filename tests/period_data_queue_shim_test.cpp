@@ -1,0 +1,90 @@
+#include <gtest/gtest.h>
+
+#include <type_traits>
+#include <vector>
+
+#include "pbft/pbft_block.hpp"
+#include "pbft/period_data_queue.hpp"
+#include "vote/pbft_vote.hpp"
+
+namespace taraxa::core_tests {
+namespace {
+
+std::shared_ptr<PbftBlock> makeBlock(PbftPeriod period, uint64_t seed) {
+  std::vector<vote_hash_t> reward_votes_hashes;
+  return std::make_shared<PbftBlock>(blk_hash_t(seed), kNullBlockHash, kNullBlockHash, kNullBlockHash, period, addr_t(),
+                                     dev::KeyPair::create().secret(), reward_votes_hashes);
+}
+
+PeriodData makePeriodData(PbftPeriod period, uint64_t seed,
+                          const std::vector<std::shared_ptr<PbftVote>>& previous_cert_votes = {}) {
+  return PeriodData(makeBlock(period, seed), previous_cert_votes);
+}
+
+}  // namespace
+
+TEST(PeriodDataQueueShimTest, rustModePeriodDataQueueDoesNotInheritLegacyImplementation) {
+#ifdef RUSTAXA_ENABLE_PERIOD_DATA_QUEUE
+  static_assert(!std::is_base_of_v<PeriodDataQueueOld, PeriodDataQueue>);
+  SUCCEED();
+#else
+  GTEST_SKIP() << "PeriodDataQueue shim is disabled";
+#endif
+}
+
+TEST(PeriodDataQueueShimTest, popReturnsQueueFrontAndMatchingCertVotesContract) {
+  PeriodDataQueue queue;
+  const dev::p2p::NodeID node1(11);
+  const dev::p2p::NodeID node2(22);
+
+  auto vote_from_next_block = std::make_shared<PbftVote>();
+  auto vote_for_last_block = std::make_shared<PbftVote>();
+
+  auto period1 = makePeriodData(1, 101);
+  auto period2 = makePeriodData(2, 202, {vote_from_next_block});
+
+  EXPECT_TRUE(queue.push(std::move(period1), node1, 0, {}));
+  EXPECT_EQ(queue.size(), 0);
+  EXPECT_TRUE(queue.push(std::move(period2), node2, 0, {vote_for_last_block}));
+  EXPECT_EQ(queue.size(), 2);
+  ASSERT_NE(queue.lastPbftBlock(), nullptr);
+  EXPECT_EQ(queue.lastPbftBlock()->getPeriod(), 2);
+
+  auto [popped1, cert_votes1, popped_node1] = queue.pop();
+  EXPECT_EQ(popped1.pbft_blk->getPeriod(), 1);
+  EXPECT_EQ(popped_node1, node1);
+  ASSERT_EQ(cert_votes1.size(), 1);
+  EXPECT_EQ(cert_votes1[0].get(), vote_from_next_block.get());
+  EXPECT_EQ(queue.size(), 1);
+  EXPECT_EQ(queue.getPeriod(), 2);
+
+  auto [popped2, cert_votes2, popped_node2] = queue.pop();
+  EXPECT_EQ(popped2.pbft_blk->getPeriod(), 2);
+  EXPECT_EQ(popped_node2, node2);
+  ASSERT_EQ(cert_votes2.size(), 1);
+  EXPECT_EQ(cert_votes2[0].get(), vote_for_last_block.get());
+  EXPECT_TRUE(queue.empty());
+  EXPECT_EQ(queue.size(), 0);
+  EXPECT_EQ(queue.getPeriod(), 0);
+}
+
+TEST(PeriodDataQueueShimTest, periodAdmissionAndCleanupBehaviorMatchesLegacyContract) {
+  PeriodDataQueue queue;
+  const dev::p2p::NodeID node(33);
+
+  EXPECT_FALSE(queue.push(makePeriodData(3, 303), node, 0, {}));
+  EXPECT_TRUE(queue.push(makePeriodData(2, 202), node, 0, {}));
+  EXPECT_FALSE(queue.push(makePeriodData(4, 404), node, 1, {}));
+
+  EXPECT_FALSE(queue.empty());
+  queue.cleanOldData(3);
+  EXPECT_TRUE(queue.empty());
+  // Legacy contract keeps tracked period until explicit reset.
+  EXPECT_EQ(queue.getPeriod(), 2);
+
+  queue.clear();
+  EXPECT_EQ(queue.getPeriod(), 0);
+  EXPECT_TRUE(queue.push(makePeriodData(1, 101), node, 0, {}));
+}
+
+}  // namespace taraxa::core_tests

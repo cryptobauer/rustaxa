@@ -80,6 +80,12 @@ if(RUSTAXA_ENABLE_PROPOSED_BLOCKS)
     add_test(proposed_blocks_shim_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/proposed_blocks_shim_test)
 endif()
 
+if(RUSTAXA_ENABLE_PERIOD_DATA_QUEUE)
+    add_executable(period_data_queue_shim_test period_data_queue_shim_test.cpp)
+    target_link_libraries(period_data_queue_shim_test test_util)
+    add_test(period_data_queue_shim_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/period_data_queue_shim_test)
+endif()
+
 add_executable(pbft_manager_test pbft_manager_test.cpp)
 target_link_libraries(pbft_manager_test test_util)
 add_test(pbft_manager_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/pbft_manager_test)

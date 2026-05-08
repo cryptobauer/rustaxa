@@ -1,12 +1,14 @@
 use crate::dag::*;
 use crate::final_chain::*;
 use crate::pbft_chain::*;
+use crate::period_data_queue::*;
 use crate::proposed_blocks::*;
 use crate::sortition::*;
 use crate::storage::*;
 use crate::vdf::*;
 use rustaxa_consensus::dag::DagGraph;
 use rustaxa_consensus::pbft_chain::PbftChain;
+use rustaxa_consensus::period_data_queue::PeriodDataQueue;
 use rustaxa_consensus::proposed_blocks::ProposedBlocks;
 use rustaxa_consensus::sortition::SortitionParamsManager;
 use rustaxa_consensus::FinalChain;
@@ -30,6 +32,8 @@ pub struct BridgeDagGraph(pub DagGraph);
 pub struct BridgePbftChain(pub PbftChain);
 
 pub struct BridgeProposedBlocks(pub ProposedBlocks);
+
+pub struct BridgePeriodDataQueue(pub PeriodDataQueue);
 
 pub struct BridgeSortitionParamsManager(pub SortitionParamsManager);
 
@@ -116,6 +120,34 @@ pub mod rustaxa_ffi {
         block_hash: [u8; 32],
         block_rlp: Vec<u8>,
         is_valid: bool,
+    }
+
+    struct PeriodDataQueueEntryRef {
+        entry_id: u64,
+        period: u64,
+    }
+
+    struct PeriodDataQueuePushOutcome {
+        accepted: bool,
+        clear_existing: bool,
+        expected_next_period: u64,
+        actual_period: u64,
+        current_period: u64,
+        effective_size: usize,
+    }
+
+    struct PeriodDataQueuePopPlan {
+        entry_id: u64,
+        use_last_block_cert_votes: bool,
+        next_entry_id: u64,
+        current_period: u64,
+        effective_size: usize,
+    }
+
+    struct PeriodDataQueueLastEntryLookup {
+        found: bool,
+        entry_id: u64,
+        period: u64,
     }
 
     struct FinalChainBlockNumberLookup {
@@ -380,6 +412,33 @@ pub mod rustaxa_ffi {
         pub fn proposed_blocks_snapshot(
             self: &BridgeProposedBlocks,
         ) -> Vec<ProposedBlockPeriodHashes>;
+
+        // Consensus period-data queue
+
+        type BridgePeriodDataQueue;
+
+        pub fn create_period_data_queue() -> Box<BridgePeriodDataQueue>;
+        pub fn period_data_queue_period(self: &BridgePeriodDataQueue) -> u64;
+        pub fn period_data_queue_size(self: &BridgePeriodDataQueue) -> usize;
+        pub fn period_data_queue_empty(self: &BridgePeriodDataQueue) -> bool;
+        pub fn period_data_queue_clear(self: &mut BridgePeriodDataQueue);
+        pub fn period_data_queue_push(
+            self: &mut BridgePeriodDataQueue,
+            entry_id: u64,
+            period: u64,
+            max_pbft_size: u64,
+            current_block_cert_votes_count: usize,
+        ) -> Result<PeriodDataQueuePushOutcome>;
+        pub fn period_data_queue_pop(
+            self: &mut BridgePeriodDataQueue,
+        ) -> Result<PeriodDataQueuePopPlan>;
+        pub fn period_data_queue_last_entry(
+            self: &BridgePeriodDataQueue,
+        ) -> PeriodDataQueueLastEntryLookup;
+        pub fn period_data_queue_clean_old_data(
+            self: &mut BridgePeriodDataQueue,
+            period: u64,
+        ) -> Vec<PeriodDataQueueEntryRef>;
 
         // Consensus sortition
 

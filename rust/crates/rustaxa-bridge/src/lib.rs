@@ -2,6 +2,7 @@ mod dag;
 mod ffi;
 mod final_chain;
 mod pbft_chain;
+mod period_data_queue;
 mod proposed_blocks;
 mod sortition;
 mod storage;
