@@ -316,8 +316,8 @@ The C++ consensus area includes:
 
 The current Rust starting point is intentionally small:
 
-- `rustaxa-consensus` contains early FinalChain read/index logic, Rust-backed DAG graph state, and Rust-backed
-  sortition efficiency/threshold runtime state.
+- `rustaxa-consensus` contains early FinalChain read/index logic, Rust-backed DAG graph state, Rust-backed
+  sortition efficiency/threshold runtime state, and Rust-backed PBFT chain head/validation state.
 - `rustaxa-types` contains shared Rust domain and codec types.
 - `rustaxa-storage` contains storage repositories that consensus should use through narrow ports.
 
@@ -329,7 +329,8 @@ The current Rust starting point is intentionally small:
 4. Port DAG graph operations before `DagManager`: pivot/tip availability, ghost path, ordering, counters, and storage-facing queries.
 5. Define Rust ports for DPoS eligibility, eligible vote count, total vote count, and VRF key access.
 6. Replace the temporary `dposIsEligible` shim behavior once the eligibility port has a real implementation.
-7. Port `PbftChain`, `ProposedBlocks`, and `PeriodDataQueue` with parity around head updates, lookup, proposal selection, and persisted state.
+7. Finish the PBFT support slice by porting `ProposedBlocks` and `PeriodDataQueue`; `PbftChain` head updates,
+   persisted-head preview, and next-block validation already route through Rust under `RUSTAXA_ENABLE_PBFT_CHAIN`.
 8. Split `PbftManager` into Rust services for round/step transitions, proposal handling, vote thresholding, and finalization decisions.
 9. Port transaction queue behavior before transaction manager orchestration.
 10. Port deterministic rewards, slashing, and pillar calculations after DPoS and final-chain query ports are real.
@@ -365,7 +366,8 @@ Use targeted validation before broad integration runs:
 - DAG changes should run relevant DAG tests such as `dag_test` and `dag_block_test`.
 - Sortition parameter changes should run `rust_consensus_tests`, `sortition_test`, and the
   `sortition_params_manager_shim_test` overlay check when `RUSTAXA_ENABLE_SORTITION_PARAMS` is enabled.
-- PBFT changes should run relevant PBFT tests such as `pbft_chain_test`, `pbft_manager_test`, and `vote_test`.
+- PBFT chain changes should run `rust_consensus_tests`, `pbft_chain_test`, and `pbft_chain_shim_test`; broader PBFT
+  changes should also run relevant `pbft_manager_test` and `vote_test` cases.
 - Pillar/reward/eligibility changes should run `pillar_chain_test` and any affected final-chain or full-node tests.
 - Shim startup behavior should be validated with a Rust-enabled node smoke test when consensus shims change.
 

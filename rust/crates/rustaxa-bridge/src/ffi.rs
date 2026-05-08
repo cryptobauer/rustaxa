@@ -1,9 +1,11 @@
 use crate::dag::*;
 use crate::final_chain::*;
+use crate::pbft_chain::*;
 use crate::sortition::*;
 use crate::storage::*;
 use crate::vdf::*;
 use rustaxa_consensus::dag::DagGraph;
+use rustaxa_consensus::pbft_chain::PbftChain;
 use rustaxa_consensus::sortition::SortitionParamsManager;
 use rustaxa_consensus::FinalChain;
 use rustaxa_storage::Storage;
@@ -22,6 +24,8 @@ pub struct BridgeStorage(
 pub struct BridgeFinalChain(pub FinalChain);
 
 pub struct BridgeDagGraph(pub DagGraph);
+
+pub struct BridgePbftChain(pub PbftChain);
 
 pub struct BridgeSortitionParamsManager(pub SortitionParamsManager);
 
@@ -73,6 +77,23 @@ pub mod rustaxa_ffi {
 
     struct VoteRlp {
         data: Vec<u8>,
+    }
+
+    struct PbftChainHeadPayload {
+        head_hash: [u8; 32],
+        size: u64,
+        non_empty_size: u64,
+        last_pbft_block_hash: [u8; 32],
+        last_non_null_anchor_hash: [u8; 32],
+    }
+
+    struct PbftBlockValidationResult {
+        ok: bool,
+        code: u8,
+        expected_period: u64,
+        actual_period: u64,
+        expected_prev_hash: [u8; 32],
+        actual_prev_hash: [u8; 32],
     }
 
     struct FinalChainBlockNumberLookup {
@@ -268,6 +289,33 @@ pub mod rustaxa_ffi {
         ) -> DagOrder;
         pub fn dag_clear(self: &mut BridgeDagGraph);
         pub fn dag_graphviz_dot(self: &BridgeDagGraph) -> String;
+
+        // Consensus PBFT chain
+
+        type BridgePbftChain;
+
+        pub fn create_pbft_chain(head: PbftChainHeadPayload) -> Result<Box<BridgePbftChain>>;
+        pub fn pbft_chain_head(self: &BridgePbftChain) -> PbftChainHeadPayload;
+        pub fn pbft_chain_project_update(
+            self: &BridgePbftChain,
+            block_hash: &[u8; 32],
+            anchor_hash: &[u8; 32],
+        ) -> Result<PbftChainHeadPayload>;
+        pub fn pbft_chain_project_legacy_json_head(
+            self: &BridgePbftChain,
+            block_hash: &[u8; 32],
+            increments_non_empty_size: bool,
+        ) -> Result<PbftChainHeadPayload>;
+        pub fn pbft_chain_update(
+            self: &mut BridgePbftChain,
+            block_hash: &[u8; 32],
+            anchor_hash: &[u8; 32],
+        ) -> Result<PbftChainHeadPayload>;
+        pub fn pbft_chain_validate_block(
+            self: &BridgePbftChain,
+            period: u64,
+            prev_hash: &[u8; 32],
+        ) -> PbftBlockValidationResult;
 
         // Consensus sortition
 

@@ -91,6 +91,7 @@ if(RUSTAXA_ENABLE)
         PROPERTIES
         COMPILE_DEFINITIONS "KeyManager=KeyManagerOld"
     )
+
 endif()
 
 if(RUSTAXA_ENABLE_STORAGE)
@@ -141,6 +142,24 @@ if(RUSTAXA_ENABLE_SORTITION_PARAMS)
         ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/dag/sortition_params_manager.cpp
         PROPERTIES
         COMPILE_DEFINITIONS "SortitionParamsManager=SortitionParamsManagerOld"
+    )
+endif()
+
+if(RUSTAXA_ENABLE_PBFT_CHAIN)
+    if(NOT RUSTAXA_ENABLE_STORAGE)
+        message(FATAL_ERROR "RUSTAXA_ENABLE_PBFT_CHAIN requires RUSTAXA_ENABLE_STORAGE")
+    endif()
+
+    # In Rust PBFT-chain mode, inject a header overlay that remaps legacy
+    # PbftChain to PbftChainOld and exposes a standalone Rust-backed facade.
+    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/pbft_chain_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/pbft_chain_shim/src/pbft_chain_shim.cpp)
+
+    # Compile the legacy implementation as PbftChainOld.
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/pbft/pbft_chain.cpp
+        PROPERTIES
+        COMPILE_DEFINITIONS "PbftChain=PbftChainOld"
     )
 endif()
 

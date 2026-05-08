@@ -68,6 +68,12 @@ add_executable(pbft_chain_test pbft_chain_test.cpp)
 target_link_libraries(pbft_chain_test test_util)
 add_test(pbft_chain_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/pbft_chain_test)
 
+if(RUSTAXA_ENABLE_PBFT_CHAIN)
+    add_executable(pbft_chain_shim_test pbft_chain_shim_test.cpp)
+    target_link_libraries(pbft_chain_shim_test test_util)
+    add_test(pbft_chain_shim_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/pbft_chain_shim_test)
+endif()
+
 add_executable(pbft_manager_test pbft_manager_test.cpp)
 target_link_libraries(pbft_manager_test test_util)
 add_test(pbft_manager_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/pbft_manager_test)

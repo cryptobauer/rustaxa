@@ -41,7 +41,7 @@ Required test coverage and parity gates for the Rust consensus model are defined
 | DAG manager | `dag/dag_manager.hpp`, `dag/dag_manager.cpp` | 1048 lines | partial | C++ shim plus Rust domain/infra ports | Manager orchestration remains C++; its `Dag`/`PivotTree` graph objects are Rust-backed in Rust mode. Depends on transaction manager, PBFT chain, storage, network, key manager, FinalChain. |
 | DAG proposer | `dag/dag_block_proposer.hpp`, `dag/dag_block_proposer.cpp` | 576 lines | `cpp-owned` initially | C++ orchestration, later Rust proposer policy | Threaded, networked, VDF/DPoS-heavy. Keep orchestration in C++ early. |
 | Sortition params | `dag/sortition_params_manager.hpp`, `dag/sortition_params_manager.cpp` | 331 lines | `rust-backed` | Rust domain behind C++ overlay shim | Deterministic efficiency/threshold runtime state routes to `rustaxa-consensus::sortition` under `RUSTAXA_ENABLE_SORTITION_PARAMS`. C++ still owns storage reads/writes and batch atomicity; the legacy implementation is compiled as `SortitionParamsManagerOld` only for pure C++ reference builds. |
-| PBFT chain | `pbft/pbft_chain.hpp`, `pbft/pbft_chain.cpp` | 259 lines | `not-started` | Rust-backed infra/domain | Relatively bounded persisted head/chain state. Good early PBFT slice. |
+| PBFT chain | `pbft/pbft_chain.hpp`, `pbft/pbft_chain.cpp`, `pbft_chain_shim/*` | 259 lines | `rust-backed` | Rust domain behind C++ overlay shim | In-memory head updates, legacy JSON-head preview, and next-block validation route to Rust under `RUSTAXA_ENABLE_PBFT_CHAIN`. C++ shim preserves `DbStorage` lookup/persistence ownership and JsonCpp formatting; legacy implementation is compiled as `PbftChainOld` only for pure C++ reference builds. |
 | Proposed blocks | `pbft/proposed_blocks.hpp`, `pbft/proposed_blocks.cpp` | 178 lines | `not-started` | Rust domain/infra | Period/hash keyed cache plus DB persistence. |
 | Period data queue | `pbft/period_data_queue.hpp`, `pbft/period_data_queue.cpp` | 168 lines | `not-started` | Rust domain, C++ sync wiring | Queue behavior is bounded; peer `NodeID` keeps C++ bridge concerns. |
 | PBFT manager | `pbft/pbft_manager.hpp`, `pbft/pbft_manager.cpp` | 3267 lines | `not-started` | Split Rust services behind C++ daemon shell | Highest complexity: state machine, finalization, gossip, threading, storage, DAG, votes, pillar, FinalChain. |
@@ -144,7 +144,7 @@ Open questions:
 | Rust consensus domain only | `cargo fmt --manifest-path rust/Cargo.toml`, `cargo clippy --manifest-path rust/Cargo.toml`, `cargo test --manifest-path rust/Cargo.toml` |
 | DAG graph routing | Rust validation plus `rust_consensus_tests`, `dag_test`, `dag_block_test`, and `dag_shim_test` |
 | Sortition params routing | Rust validation plus `rust_consensus_tests`, `sortition_test`, and `sortition_params_manager_shim_test` |
-| PBFT chain/proposed-block/queue routing | Rust validation plus `pbft_chain_test` and relevant `pbft_manager_test` cases |
+| PBFT chain/proposed-block/queue routing | Rust validation plus `rust_consensus_tests`, `pbft_chain_test`, `pbft_chain_shim_test`, and relevant `pbft_manager_test` cases |
 | Vote aggregation/eligibility | Rust validation plus `vote_test`, relevant `pbft_manager_test`, and DPoS/state API coverage |
 | Transaction queue behavior | Rust validation plus `transaction_test` and affected DAG/PBFT tests |
 | Pillar/reward behavior | Rust validation plus `pillar_chain_test`, `rewards_stats_test`, and affected full-node tests |
