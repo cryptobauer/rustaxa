@@ -6,11 +6,13 @@ use crate::proposed_blocks::*;
 use crate::sortition::*;
 use crate::storage::*;
 use crate::vdf::*;
+use crate::verified_votes::*;
 use rustaxa_consensus::dag::DagGraph;
 use rustaxa_consensus::pbft_chain::PbftChain;
 use rustaxa_consensus::period_data_queue::PeriodDataQueue;
 use rustaxa_consensus::proposed_blocks::ProposedBlocks;
 use rustaxa_consensus::sortition::SortitionParamsManager;
+use rustaxa_consensus::verified_votes::VerifiedVotes;
 use rustaxa_consensus::FinalChain;
 use rustaxa_storage::Storage;
 use rustaxa_storage::StorageWriteBatch;
@@ -34,6 +36,8 @@ pub struct BridgePbftChain(pub PbftChain);
 pub struct BridgeProposedBlocks(pub ProposedBlocks);
 
 pub struct BridgePeriodDataQueue(pub PeriodDataQueue);
+
+pub struct BridgeVerifiedVotes(pub VerifiedVotes);
 
 pub struct BridgeSortitionParamsManager(pub SortitionParamsManager);
 
@@ -148,6 +152,69 @@ pub mod rustaxa_ffi {
         found: bool,
         entry_id: u64,
         period: u64,
+    }
+
+    struct VerifiedVotePayload {
+        vote_hash: [u8; 32],
+        block_hash: [u8; 32],
+        voter: [u8; 20],
+        period: u64,
+        round: u64,
+        step: u64,
+        vote_type: u8,
+        weight: u64,
+    }
+
+    struct UniqueVoterCheckOutcome {
+        is_unique: bool,
+        conflict_found: bool,
+        conflicting_vote_hash: [u8; 32],
+    }
+
+    struct UniqueVoterInsertOutcome {
+        accepted: bool,
+        conflict_found: bool,
+        conflicting_vote_hash: [u8; 32],
+        used_secondary_slot: bool,
+        duplicate_vote_hash: bool,
+    }
+
+    struct VotedValueInsertOutcome {
+        inserted: bool,
+        total_weight: u64,
+        votes_count: usize,
+    }
+
+    struct TwoTPlusOneVotedBlockLookup {
+        found: bool,
+        block_hash: [u8; 32],
+        step: u64,
+    }
+
+    struct TwoTPlusOneVotesLookup {
+        found: bool,
+        block_hash: [u8; 32],
+        step: u64,
+        vote_hashes: Vec<DagHash>,
+    }
+
+    struct NetworkTPlusOneStepLookup {
+        found: bool,
+        step: u64,
+    }
+
+    struct TwoTPlusOneSnapshotEntry {
+        period: u64,
+        round: u64,
+        kind: u8,
+        block_hash: [u8; 32],
+        step: u64,
+    }
+
+    struct RoundMarkerSnapshot {
+        period: u64,
+        round: u64,
+        network_t_plus_one_step: u64,
     }
 
     struct FinalChainBlockNumberLookup {
@@ -439,6 +506,77 @@ pub mod rustaxa_ffi {
             self: &mut BridgePeriodDataQueue,
             period: u64,
         ) -> Vec<PeriodDataQueueEntryRef>;
+
+        // Consensus verified votes
+
+        type BridgeVerifiedVotes;
+
+        pub fn create_verified_votes_index() -> Box<BridgeVerifiedVotes>;
+        pub fn verified_votes_size(self: &BridgeVerifiedVotes) -> u64;
+        pub fn verified_votes_check_unique_voter(
+            self: &BridgeVerifiedVotes,
+            vote: VerifiedVotePayload,
+        ) -> Result<UniqueVoterCheckOutcome>;
+        pub fn verified_votes_insert_unique_voter(
+            self: &mut BridgeVerifiedVotes,
+            vote: VerifiedVotePayload,
+        ) -> Result<UniqueVoterInsertOutcome>;
+        pub fn verified_votes_insert_voted_value(
+            self: &mut BridgeVerifiedVotes,
+            vote: VerifiedVotePayload,
+        ) -> Result<VotedValueInsertOutcome>;
+        pub fn verified_votes_vote_in_verified_map(
+            self: &BridgeVerifiedVotes,
+            period: u64,
+            round: u64,
+            step: u64,
+            block_hash: &[u8; 32],
+            vote_hash: &[u8; 32],
+        ) -> bool;
+        pub fn verified_votes_set_network_t_plus_one_step(
+            self: &mut BridgeVerifiedVotes,
+            period: u64,
+            round: u64,
+            step: u64,
+        ) -> bool;
+        pub fn verified_votes_get_network_t_plus_one_step(
+            self: &BridgeVerifiedVotes,
+            period: u64,
+            round: u64,
+        ) -> NetworkTPlusOneStepLookup;
+        pub fn verified_votes_insert_two_t_plus_one_voted_block(
+            self: &mut BridgeVerifiedVotes,
+            period: u64,
+            round: u64,
+            kind: u8,
+            block_hash: &[u8; 32],
+            step: u64,
+        ) -> Result<bool>;
+        pub fn verified_votes_get_two_t_plus_one_voted_block(
+            self: &BridgeVerifiedVotes,
+            period: u64,
+            round: u64,
+            kind: u8,
+        ) -> Result<TwoTPlusOneVotedBlockLookup>;
+        pub fn verified_votes_get_two_t_plus_one_voted_block_votes(
+            self: &BridgeVerifiedVotes,
+            period: u64,
+            round: u64,
+            kind: u8,
+        ) -> Result<TwoTPlusOneVotesLookup>;
+        pub fn verified_votes_cleanup_votes_by_period(
+            self: &mut BridgeVerifiedVotes,
+            pbft_period: u64,
+        );
+        pub fn verified_votes_snapshot_votes(
+            self: &BridgeVerifiedVotes,
+        ) -> Vec<VerifiedVotePayload>;
+        pub fn verified_votes_snapshot_two_t_plus_one(
+            self: &BridgeVerifiedVotes,
+        ) -> Vec<TwoTPlusOneSnapshotEntry>;
+        pub fn verified_votes_snapshot_round_markers(
+            self: &BridgeVerifiedVotes,
+        ) -> Vec<RoundMarkerSnapshot>;
 
         // Consensus sortition
 

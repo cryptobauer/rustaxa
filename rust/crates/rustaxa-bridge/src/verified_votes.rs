@@ -1,0 +1,259 @@
+use crate::ffi::rustaxa_ffi::{
+    DagHash, NetworkTPlusOneStepLookup, RoundMarkerSnapshot, TwoTPlusOneSnapshotEntry,
+    TwoTPlusOneVotedBlockLookup, TwoTPlusOneVotesLookup, UniqueVoterCheckOutcome,
+    UniqueVoterInsertOutcome, VerifiedVotePayload, VotedValueInsertOutcome,
+};
+use crate::ffi::BridgeVerifiedVotes;
+use ethereum_types::{H160, H256};
+use rustaxa_consensus::verified_votes::{
+    PbftVoteType, TwoTPlusOneVotedBlockType, VerifiedVote, VerifiedVotes,
+};
+
+/// Creates an empty Rust verified-votes index for the C++ vote-manager shim.
+pub fn create_verified_votes_index() -> Box<BridgeVerifiedVotes> {
+    Box::new(BridgeVerifiedVotes(VerifiedVotes::new()))
+}
+
+impl BridgeVerifiedVotes {
+    /// Returns count of stored verified vote hashes.
+    pub fn verified_votes_size(&self) -> u64 {
+        self.0.size()
+    }
+
+    /// Checks unique-voter acceptance for `vote`.
+    pub fn verified_votes_check_unique_voter(
+        &self,
+        vote: VerifiedVotePayload,
+    ) -> Result<UniqueVoterCheckOutcome, anyhow::Error> {
+        let vote = payload_to_vote(vote)?;
+        let outcome = self.0.check_unique_voter(&vote);
+        Ok(UniqueVoterCheckOutcome {
+            is_unique: outcome.is_unique,
+            conflict_found: outcome.conflicting_vote_hash.is_some(),
+            conflicting_vote_hash: outcome.conflicting_vote_hash.unwrap_or_default().into(),
+        })
+    }
+
+    /// Inserts `vote` into unique-voter tracking.
+    pub fn verified_votes_insert_unique_voter(
+        &mut self,
+        vote: VerifiedVotePayload,
+    ) -> Result<UniqueVoterInsertOutcome, anyhow::Error> {
+        let vote = payload_to_vote(vote)?;
+        let outcome = self.0.insert_unique_voter(&vote);
+        Ok(UniqueVoterInsertOutcome {
+            accepted: outcome.accepted,
+            conflict_found: outcome.conflicting_vote_hash.is_some(),
+            conflicting_vote_hash: outcome.conflicting_vote_hash.unwrap_or_default().into(),
+            used_secondary_slot: outcome.used_secondary_slot,
+            duplicate_vote_hash: outcome.duplicate_vote_hash,
+        })
+    }
+
+    /// Inserts `vote` into voted-value aggregation.
+    pub fn verified_votes_insert_voted_value(
+        &mut self,
+        vote: VerifiedVotePayload,
+    ) -> Result<VotedValueInsertOutcome, anyhow::Error> {
+        let vote = payload_to_vote(vote)?;
+        Ok(self.0.insert_voted_value(vote)?.into())
+    }
+
+    /// Returns whether exact `(period, round, step, block_hash, vote_hash)` exists.
+    pub fn verified_votes_vote_in_verified_map(
+        &self,
+        period: u64,
+        round: u64,
+        step: u64,
+        block_hash: &[u8; 32],
+        vote_hash: &[u8; 32],
+    ) -> bool {
+        self.0.vote_in_verified_map(
+            period,
+            round,
+            step,
+            H256::from(*block_hash),
+            H256::from(*vote_hash),
+        )
+    }
+
+    /// Sets network t+1 step marker for one round.
+    pub fn verified_votes_set_network_t_plus_one_step(
+        &mut self,
+        period: u64,
+        round: u64,
+        step: u64,
+    ) -> bool {
+        self.0.set_network_t_plus_one_step(period, round, step)
+    }
+
+    /// Returns network t+1 step marker for one round.
+    pub fn verified_votes_get_network_t_plus_one_step(
+        &self,
+        period: u64,
+        round: u64,
+    ) -> NetworkTPlusOneStepLookup {
+        self.0
+            .network_t_plus_one_step(period, round)
+            .map(|step| NetworkTPlusOneStepLookup { found: true, step })
+            .unwrap_or(NetworkTPlusOneStepLookup {
+                found: false,
+                step: 0,
+            })
+    }
+
+    /// Inserts one 2t+1 voted-block mapping for existing round.
+    pub fn verified_votes_insert_two_t_plus_one_voted_block(
+        &mut self,
+        period: u64,
+        round: u64,
+        kind: u8,
+        block_hash: &[u8; 32],
+        step: u64,
+    ) -> Result<bool, anyhow::Error> {
+        let kind = TwoTPlusOneVotedBlockType::try_from(kind)?;
+        Ok(self.0.insert_two_t_plus_one_voted_block(
+            period,
+            round,
+            kind,
+            H256::from(*block_hash),
+            step,
+        ))
+    }
+
+    /// Gets one 2t+1 voted-block mapping.
+    pub fn verified_votes_get_two_t_plus_one_voted_block(
+        &self,
+        period: u64,
+        round: u64,
+        kind: u8,
+    ) -> Result<TwoTPlusOneVotedBlockLookup, anyhow::Error> {
+        let kind = TwoTPlusOneVotedBlockType::try_from(kind)?;
+        Ok(self
+            .0
+            .get_two_t_plus_one_voted_block(period, round, kind)
+            .map(|value| TwoTPlusOneVotedBlockLookup {
+                found: true,
+                block_hash: value.hash.into(),
+                step: value.step,
+            })
+            .unwrap_or(TwoTPlusOneVotedBlockLookup {
+                found: false,
+                block_hash: [0u8; 32],
+                step: 0,
+            }))
+    }
+
+    /// Gets vote hashes for one mapped 2t+1 voted block.
+    pub fn verified_votes_get_two_t_plus_one_voted_block_votes(
+        &self,
+        period: u64,
+        round: u64,
+        kind: u8,
+    ) -> Result<TwoTPlusOneVotesLookup, anyhow::Error> {
+        let kind = TwoTPlusOneVotedBlockType::try_from(kind)?;
+        let voted = self.0.get_two_t_plus_one_voted_block(period, round, kind);
+        let Some(voted) = voted else {
+            return Ok(TwoTPlusOneVotesLookup {
+                found: false,
+                block_hash: [0u8; 32],
+                step: 0,
+                vote_hashes: Vec::new(),
+            });
+        };
+
+        let vote_hashes = self
+            .0
+            .get_two_t_plus_one_voted_block_vote_hashes(period, round, kind)
+            .into_iter()
+            .map(|hash| DagHash { hash: hash.into() })
+            .collect();
+
+        Ok(TwoTPlusOneVotesLookup {
+            found: true,
+            block_hash: voted.hash.into(),
+            step: voted.step,
+            vote_hashes,
+        })
+    }
+
+    /// Removes periods lower than `pbft_period`.
+    pub fn verified_votes_cleanup_votes_by_period(&mut self, pbft_period: u64) {
+        self.0.cleanup_votes_by_period(pbft_period);
+    }
+
+    /// Returns deterministic flat vote snapshot.
+    pub fn verified_votes_snapshot_votes(&self) -> Vec<VerifiedVotePayload> {
+        self.0
+            .snapshot_votes()
+            .into_iter()
+            .map(Into::into)
+            .collect()
+    }
+
+    /// Returns deterministic 2t+1 mapping snapshot.
+    pub fn verified_votes_snapshot_two_t_plus_one(&self) -> Vec<TwoTPlusOneSnapshotEntry> {
+        self.0
+            .snapshot_two_t_plus_one()
+            .into_iter()
+            .map(|entry| TwoTPlusOneSnapshotEntry {
+                period: entry.period,
+                round: entry.round,
+                kind: entry.kind.into(),
+                block_hash: entry.block_hash.into(),
+                step: entry.step,
+            })
+            .collect()
+    }
+
+    /// Returns deterministic round marker snapshot.
+    pub fn verified_votes_snapshot_round_markers(&self) -> Vec<RoundMarkerSnapshot> {
+        self.0
+            .snapshot_round_markers()
+            .into_iter()
+            .map(|entry| RoundMarkerSnapshot {
+                period: entry.period,
+                round: entry.round,
+                network_t_plus_one_step: entry.network_t_plus_one_step,
+            })
+            .collect()
+    }
+}
+
+fn payload_to_vote(value: VerifiedVotePayload) -> Result<VerifiedVote, anyhow::Error> {
+    VerifiedVote::new(
+        H256::from(value.vote_hash),
+        H256::from(value.block_hash),
+        H160::from(value.voter),
+        value.period,
+        value.round,
+        value.step,
+        PbftVoteType::try_from(value.vote_type)?,
+        value.weight,
+    )
+}
+
+impl From<rustaxa_consensus::verified_votes::VotedValueInsertOutcome> for VotedValueInsertOutcome {
+    fn from(value: rustaxa_consensus::verified_votes::VotedValueInsertOutcome) -> Self {
+        Self {
+            inserted: value.inserted,
+            total_weight: value.total_weight,
+            votes_count: value.votes_count,
+        }
+    }
+}
+
+impl From<VerifiedVote> for VerifiedVotePayload {
+    fn from(value: VerifiedVote) -> Self {
+        Self {
+            vote_hash: value.vote_hash.into(),
+            block_hash: value.block_hash.into(),
+            voter: value.voter.into(),
+            period: value.period,
+            round: value.round,
+            step: value.step,
+            vote_type: value.vote_type.into(),
+            weight: value.weight,
+        }
+    }
+}

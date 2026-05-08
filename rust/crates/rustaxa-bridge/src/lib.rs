@@ -7,3 +7,4 @@ mod proposed_blocks;
 mod sortition;
 mod storage;
 mod vdf;
+mod verified_votes;

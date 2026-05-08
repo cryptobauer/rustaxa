@@ -1,0 +1,760 @@
+//! Verified PBFT vote index for Rust rewrite mode.
+//!
+//! This module models deterministic verified-vote bookkeeping used by consensus:
+//! - uniqueness per `(period, round, step, voter)` with legacy next-vote exception,
+//! - per-value vote aggregation by vote hash and cumulative weight,
+//! - per-round 2t+1 voted-block mapping,
+//! - network `t+1` next-voting step marker,
+//! - period-based cleanup and deterministic snapshots.
+//!
+//! The structure owns only metadata and vote identity fields. Live C++ `PbftVote`
+//! objects remain owned by the shim/caller.
+
+use anyhow::{Result, anyhow};
+use ethereum_types::{H160, H256};
+use std::collections::BTreeMap;
+
+/// PBFT vote type encoded as legacy numeric step-compatible values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum PbftVoteType {
+    Invalid = 0,
+    Propose = 1,
+    Soft = 2,
+    Cert = 3,
+    Next = 4,
+}
+
+impl TryFrom<u8> for PbftVoteType {
+    type Error = anyhow::Error;
+
+    fn try_from(value: u8) -> Result<Self> {
+        match value {
+            0 => Ok(Self::Invalid),
+            1 => Ok(Self::Propose),
+            2 => Ok(Self::Soft),
+            3 => Ok(Self::Cert),
+            4 => Ok(Self::Next),
+            _ => Err(anyhow!("unsupported PBFT vote type value: {value}")),
+        }
+    }
+}
+
+impl From<PbftVoteType> for u8 {
+    fn from(value: PbftVoteType) -> Self {
+        value as u8
+    }
+}
+
+/// 2t+1 voted-block category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum TwoTPlusOneVotedBlockType {
+    SoftVotedBlock = 0,
+    CertVotedBlock = 1,
+    NextVotedBlock = 2,
+    NextVotedNullBlock = 3,
+}
+
+impl TryFrom<u8> for TwoTPlusOneVotedBlockType {
+    type Error = anyhow::Error;
+
+    fn try_from(value: u8) -> Result<Self> {
+        match value {
+            0 => Ok(Self::SoftVotedBlock),
+            1 => Ok(Self::CertVotedBlock),
+            2 => Ok(Self::NextVotedBlock),
+            3 => Ok(Self::NextVotedNullBlock),
+            _ => Err(anyhow!("unsupported 2t+1 voted-block type value: {value}")),
+        }
+    }
+}
+
+impl From<TwoTPlusOneVotedBlockType> for u8 {
+    fn from(value: TwoTPlusOneVotedBlockType) -> Self {
+        value as u8
+    }
+}
+
+/// Plain vote metadata stored by Rust.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedVote {
+    pub vote_hash: H256,
+    pub block_hash: H256,
+    pub voter: H160,
+    pub period: u64,
+    pub round: u64,
+    pub step: u64,
+    pub vote_type: PbftVoteType,
+    pub weight: u64,
+}
+
+impl VerifiedVote {
+    /// Creates a new verified-vote payload.
+    ///
+    /// `weight` must be non-zero.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        vote_hash: H256,
+        block_hash: H256,
+        voter: H160,
+        period: u64,
+        round: u64,
+        step: u64,
+        vote_type: PbftVoteType,
+        weight: u64,
+    ) -> Result<Self> {
+        if weight == 0 {
+            return Err(anyhow!(
+                "verified vote cannot be inserted with zero weight: vote {vote_hash:#x}"
+            ));
+        }
+
+        Ok(Self {
+            vote_hash,
+            block_hash,
+            voter,
+            period,
+            round,
+            step,
+            vote_type,
+            weight,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UniqueVoteRef {
+    vote_hash: H256,
+    block_hash: H256,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UniqueVoterVotes {
+    primary: UniqueVoteRef,
+    secondary: Option<UniqueVoteRef>,
+}
+
+/// Per-voted-value aggregation.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct VotesWithWeight {
+    pub weight: u64,
+    pub votes: BTreeMap<H256, VerifiedVote>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct StepVotes {
+    votes: BTreeMap<H256, VotesWithWeight>,
+    unique_voters: BTreeMap<H160, UniqueVoterVotes>,
+}
+
+/// 2t+1 voted block hash and step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VotedBlock {
+    pub hash: H256,
+    pub step: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct RoundVerifiedVotes {
+    two_t_plus_one_voted_blocks: BTreeMap<TwoTPlusOneVotedBlockType, VotedBlock>,
+    step_votes: BTreeMap<u64, StepVotes>,
+    network_t_plus_one_step: u64,
+}
+
+/// Unique-voter precheck outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UniqueVoterCheckOutcome {
+    pub is_unique: bool,
+    pub conflicting_vote_hash: Option<H256>,
+}
+
+/// Unique-voter insert outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UniqueVoterInsertOutcome {
+    pub accepted: bool,
+    pub conflicting_vote_hash: Option<H256>,
+    pub used_secondary_slot: bool,
+    pub duplicate_vote_hash: bool,
+}
+
+/// Insert/update result for voted-value aggregation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VotedValueInsertOutcome {
+    pub inserted: bool,
+    pub total_weight: u64,
+    pub votes_count: usize,
+}
+
+/// Snapshot of one 2t+1 mapping entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TwoTPlusOneSnapshotEntry {
+    pub period: u64,
+    pub round: u64,
+    pub kind: TwoTPlusOneVotedBlockType,
+    pub block_hash: H256,
+    pub step: u64,
+}
+
+/// Snapshot of one round-level marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoundMarkerSnapshot {
+    pub period: u64,
+    pub round: u64,
+    pub network_t_plus_one_step: u64,
+}
+
+/// Rust-owned verified-votes index.
+#[derive(Debug, Clone, Default)]
+pub struct VerifiedVotes {
+    votes: BTreeMap<u64, BTreeMap<u64, RoundVerifiedVotes>>,
+}
+
+impl VerifiedVotes {
+    /// Creates an empty verified-votes index.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns total count of stored vote hashes across all periods/rounds/steps.
+    pub fn size(&self) -> u64 {
+        self.votes
+            .values()
+            .flat_map(|rounds| rounds.values())
+            .flat_map(|round| round.step_votes.values())
+            .flat_map(|step| step.votes.values())
+            .map(|value| value.votes.len() as u64)
+            .sum()
+    }
+
+    /// Returns all stored votes in deterministic order.
+    pub fn snapshot_votes(&self) -> Vec<VerifiedVote> {
+        let mut out = Vec::with_capacity(self.size() as usize);
+        for rounds in self.votes.values() {
+            for round in rounds.values() {
+                for step_votes in round.step_votes.values() {
+                    for votes_with_weight in step_votes.votes.values() {
+                        out.extend(votes_with_weight.votes.values().cloned());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Returns deterministic snapshot of all 2t+1 mappings.
+    pub fn snapshot_two_t_plus_one(&self) -> Vec<TwoTPlusOneSnapshotEntry> {
+        let mut out = Vec::new();
+        for (period, rounds) in &self.votes {
+            for (round, round_votes) in rounds {
+                for (kind, voted) in &round_votes.two_t_plus_one_voted_blocks {
+                    out.push(TwoTPlusOneSnapshotEntry {
+                        period: *period,
+                        round: *round,
+                        kind: *kind,
+                        block_hash: voted.hash,
+                        step: voted.step,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// Returns deterministic snapshot of per-round network t+1 markers.
+    pub fn snapshot_round_markers(&self) -> Vec<RoundMarkerSnapshot> {
+        let mut out = Vec::new();
+        for (period, rounds) in &self.votes {
+            for (round, round_votes) in rounds {
+                out.push(RoundMarkerSnapshot {
+                    period: *period,
+                    round: *round,
+                    network_t_plus_one_step: round_votes.network_t_plus_one_step,
+                });
+            }
+        }
+        out
+    }
+
+    /// Checks uniqueness against current stored unique-voter map for the same
+    /// `(period, round, step, voter)`.
+    pub fn check_unique_voter(&self, vote: &VerifiedVote) -> UniqueVoterCheckOutcome {
+        let Some(round_votes) = self.get_round(vote.period, vote.round) else {
+            return UniqueVoterCheckOutcome {
+                is_unique: true,
+                conflicting_vote_hash: None,
+            };
+        };
+
+        let Some(step_votes) = round_votes.step_votes.get(&vote.step) else {
+            return UniqueVoterCheckOutcome {
+                is_unique: true,
+                conflicting_vote_hash: None,
+            };
+        };
+
+        let Some(voter_votes) = step_votes.unique_voters.get(&vote.voter) else {
+            return UniqueVoterCheckOutcome {
+                is_unique: true,
+                conflicting_vote_hash: None,
+            };
+        };
+
+        if voter_votes.primary.vote_hash == vote.vote_hash
+            || voter_votes
+                .secondary
+                .map(|second| second.vote_hash == vote.vote_hash)
+                .unwrap_or(false)
+        {
+            return UniqueVoterCheckOutcome {
+                is_unique: true,
+                conflicting_vote_hash: None,
+            };
+        }
+
+        if Self::can_insert_secondary_next_vote(voter_votes, vote) {
+            return UniqueVoterCheckOutcome {
+                is_unique: true,
+                conflicting_vote_hash: None,
+            };
+        }
+
+        UniqueVoterCheckOutcome {
+            is_unique: false,
+            conflicting_vote_hash: Some(
+                voter_votes
+                    .secondary
+                    .map(|v| v.vote_hash)
+                    .unwrap_or(voter_votes.primary.vote_hash),
+            ),
+        }
+    }
+
+    /// Inserts vote into unique-voter tracking and returns acceptance outcome.
+    pub fn insert_unique_voter(&mut self, vote: &VerifiedVote) -> UniqueVoterInsertOutcome {
+        let step_votes = self.ensure_step_mut(vote.period, vote.round, vote.step);
+        let vote_ref = UniqueVoteRef {
+            vote_hash: vote.vote_hash,
+            block_hash: vote.block_hash,
+        };
+
+        let Some(voter_votes) = step_votes.unique_voters.get_mut(&vote.voter) else {
+            step_votes.unique_voters.insert(
+                vote.voter,
+                UniqueVoterVotes {
+                    primary: vote_ref,
+                    secondary: None,
+                },
+            );
+            return UniqueVoterInsertOutcome {
+                accepted: true,
+                conflicting_vote_hash: None,
+                used_secondary_slot: false,
+                duplicate_vote_hash: false,
+            };
+        };
+
+        if voter_votes.primary.vote_hash == vote.vote_hash
+            || voter_votes
+                .secondary
+                .map(|second| second.vote_hash == vote.vote_hash)
+                .unwrap_or(false)
+        {
+            return UniqueVoterInsertOutcome {
+                accepted: true,
+                conflicting_vote_hash: None,
+                used_secondary_slot: false,
+                duplicate_vote_hash: true,
+            };
+        }
+
+        if Self::can_insert_secondary_next_vote(voter_votes, vote) {
+            voter_votes.secondary = Some(vote_ref);
+            return UniqueVoterInsertOutcome {
+                accepted: true,
+                conflicting_vote_hash: None,
+                used_secondary_slot: true,
+                duplicate_vote_hash: false,
+            };
+        }
+
+        UniqueVoterInsertOutcome {
+            accepted: false,
+            conflicting_vote_hash: Some(
+                voter_votes
+                    .secondary
+                    .map(|v| v.vote_hash)
+                    .unwrap_or(voter_votes.primary.vote_hash),
+            ),
+            used_secondary_slot: false,
+            duplicate_vote_hash: false,
+        }
+    }
+
+    /// Inserts vote into voted-value aggregation keyed by `(period, round, step,
+    /// block_hash, vote_hash)`.
+    pub fn insert_voted_value(&mut self, vote: VerifiedVote) -> Result<VotedValueInsertOutcome> {
+        let step_votes = self.ensure_step_mut(vote.period, vote.round, vote.step);
+        let votes_with_weight = step_votes.votes.entry(vote.block_hash).or_default();
+
+        if votes_with_weight.votes.contains_key(&vote.vote_hash) {
+            return Ok(VotedValueInsertOutcome {
+                inserted: false,
+                total_weight: votes_with_weight.weight,
+                votes_count: votes_with_weight.votes.len(),
+            });
+        }
+
+        votes_with_weight.weight = votes_with_weight
+            .weight
+            .checked_add(vote.weight)
+            .ok_or_else(|| {
+                anyhow!(
+                    "vote weight overflow for period {}, round {}, step {}, block {:#x}",
+                    vote.period,
+                    vote.round,
+                    vote.step,
+                    vote.block_hash
+                )
+            })?;
+        votes_with_weight.votes.insert(vote.vote_hash, vote);
+
+        Ok(VotedValueInsertOutcome {
+            inserted: true,
+            total_weight: votes_with_weight.weight,
+            votes_count: votes_with_weight.votes.len(),
+        })
+    }
+
+    /// Returns true when vote hash exists under exact period/round/step/value key.
+    pub fn vote_in_verified_map(
+        &self,
+        period: u64,
+        round: u64,
+        step: u64,
+        block_hash: H256,
+        vote_hash: H256,
+    ) -> bool {
+        self.get_round(period, round)
+            .and_then(|round_votes| round_votes.step_votes.get(&step))
+            .and_then(|step_votes| step_votes.votes.get(&block_hash))
+            .map(|votes_with_weight| votes_with_weight.votes.contains_key(&vote_hash))
+            .unwrap_or(false)
+    }
+
+    /// Sets network t+1 step marker for an existing round.
+    ///
+    /// Returns `true` when round existed and marker was updated.
+    pub fn set_network_t_plus_one_step(&mut self, period: u64, round: u64, step: u64) -> bool {
+        let Some(round_votes) = self
+            .votes
+            .get_mut(&period)
+            .and_then(|rounds| rounds.get_mut(&round))
+        else {
+            return false;
+        };
+        round_votes.network_t_plus_one_step = step;
+        true
+    }
+
+    /// Gets network t+1 step marker for round.
+    pub fn network_t_plus_one_step(&self, period: u64, round: u64) -> Option<u64> {
+        self.get_round(period, round)
+            .map(|round_votes| round_votes.network_t_plus_one_step)
+    }
+
+    /// Inserts one 2t+1 voted-block mapping for existing round.
+    ///
+    /// Returns `true` only when a new mapping was inserted.
+    pub fn insert_two_t_plus_one_voted_block(
+        &mut self,
+        period: u64,
+        round: u64,
+        kind: TwoTPlusOneVotedBlockType,
+        block_hash: H256,
+        step: u64,
+    ) -> bool {
+        let Some(round_votes) = self
+            .votes
+            .get_mut(&period)
+            .and_then(|rounds| rounds.get_mut(&round))
+        else {
+            return false;
+        };
+
+        round_votes
+            .two_t_plus_one_voted_blocks
+            .insert(
+                kind,
+                VotedBlock {
+                    hash: block_hash,
+                    step,
+                },
+            )
+            .is_none()
+    }
+
+    /// Returns one 2t+1 voted-block mapping.
+    pub fn get_two_t_plus_one_voted_block(
+        &self,
+        period: u64,
+        round: u64,
+        kind: TwoTPlusOneVotedBlockType,
+    ) -> Option<VotedBlock> {
+        self.get_round(period, round)
+            .and_then(|round_votes| round_votes.two_t_plus_one_voted_blocks.get(&kind).copied())
+    }
+
+    /// Returns vote hashes that correspond to the mapped 2t+1 voted block.
+    pub fn get_two_t_plus_one_voted_block_vote_hashes(
+        &self,
+        period: u64,
+        round: u64,
+        kind: TwoTPlusOneVotedBlockType,
+    ) -> Vec<H256> {
+        let Some(voted_block) = self.get_two_t_plus_one_voted_block(period, round, kind) else {
+            return Vec::new();
+        };
+
+        self.get_round(period, round)
+            .and_then(|round_votes| round_votes.step_votes.get(&voted_block.step))
+            .and_then(|step_votes| step_votes.votes.get(&voted_block.hash))
+            .map(|votes_with_weight| votes_with_weight.votes.keys().copied().collect())
+            .unwrap_or_default()
+    }
+
+    /// Removes all periods `< pbft_period`.
+    pub fn cleanup_votes_by_period(&mut self, pbft_period: u64) {
+        let stale_periods: Vec<u64> = self
+            .votes
+            .keys()
+            .copied()
+            .take_while(|period| *period < pbft_period)
+            .collect();
+
+        for period in stale_periods {
+            self.votes.remove(&period);
+        }
+    }
+
+    fn ensure_step_mut(&mut self, period: u64, round: u64, step: u64) -> &mut StepVotes {
+        self.votes
+            .entry(period)
+            .or_default()
+            .entry(round)
+            .or_default()
+            .step_votes
+            .entry(step)
+            .or_default()
+    }
+
+    fn get_round(&self, period: u64, round: u64) -> Option<&RoundVerifiedVotes> {
+        self.votes
+            .get(&period)
+            .and_then(|rounds| rounds.get(&round))
+    }
+
+    fn can_insert_secondary_next_vote(existing: &UniqueVoterVotes, vote: &VerifiedVote) -> bool {
+        if vote.vote_type != PbftVoteType::Next
+            || vote.step.is_multiple_of(2)
+            || existing.secondary.is_some()
+        {
+            return false;
+        }
+
+        let existing_is_null = existing.primary.block_hash == H256::zero();
+        let incoming_is_null = vote.block_hash == H256::zero();
+        existing_is_null != incoming_is_null
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn h256(v: u64) -> H256 {
+        H256::from_low_u64_be(v)
+    }
+
+    fn h160(v: u64) -> H160 {
+        H160::from_low_u64_be(v)
+    }
+
+    fn vote(
+        vote_hash: u64,
+        block_hash: u64,
+        voter: u64,
+        period: u64,
+        round: u64,
+        step: u64,
+        vote_type: PbftVoteType,
+        weight: u64,
+    ) -> VerifiedVote {
+        VerifiedVote::new(
+            h256(vote_hash),
+            h256(block_hash),
+            h160(voter),
+            period,
+            round,
+            step,
+            vote_type,
+            weight,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn unique_voter_allows_odd_step_next_vote_pair_null_and_non_null() {
+        let mut verified = VerifiedVotes::new();
+        let first = vote(1, 0, 42, 7, 3, 5, PbftVoteType::Next, 1);
+        let second = vote(2, 99, 42, 7, 3, 5, PbftVoteType::Next, 1);
+        let third = vote(3, 100, 42, 7, 3, 5, PbftVoteType::Next, 1);
+
+        let first_outcome = verified.insert_unique_voter(&first);
+        assert!(first_outcome.accepted);
+        assert!(!first_outcome.used_secondary_slot);
+
+        let second_outcome = verified.insert_unique_voter(&second);
+        assert!(second_outcome.accepted);
+        assert!(second_outcome.used_secondary_slot);
+
+        let third_check = verified.check_unique_voter(&third);
+        assert!(!third_check.is_unique);
+        assert_eq!(third_check.conflicting_vote_hash, Some(second.vote_hash));
+
+        let third_outcome = verified.insert_unique_voter(&third);
+        assert!(!third_outcome.accepted);
+        assert_eq!(third_outcome.conflicting_vote_hash, Some(second.vote_hash));
+    }
+
+    #[test]
+    fn unique_voter_rejects_second_next_vote_on_even_step() {
+        let mut verified = VerifiedVotes::new();
+        let first = vote(1, 0, 42, 7, 3, 4, PbftVoteType::Next, 1);
+        let second = vote(2, 99, 42, 7, 3, 4, PbftVoteType::Next, 1);
+
+        assert!(verified.insert_unique_voter(&first).accepted);
+        let second_outcome = verified.insert_unique_voter(&second);
+        assert!(!second_outcome.accepted);
+        assert_eq!(second_outcome.conflicting_vote_hash, Some(first.vote_hash));
+    }
+
+    #[test]
+    fn voted_value_accumulates_weight_and_is_idempotent_by_vote_hash() {
+        let mut verified = VerifiedVotes::new();
+        let first = vote(1, 9, 11, 2, 1, 3, PbftVoteType::Cert, 2);
+        let second = vote(2, 9, 12, 2, 1, 3, PbftVoteType::Cert, 3);
+
+        let first_outcome = verified.insert_voted_value(first.clone()).unwrap();
+        assert!(first_outcome.inserted);
+        assert_eq!(first_outcome.total_weight, 2);
+        assert_eq!(first_outcome.votes_count, 1);
+
+        let second_outcome = verified.insert_voted_value(second.clone()).unwrap();
+        assert!(second_outcome.inserted);
+        assert_eq!(second_outcome.total_weight, 5);
+        assert_eq!(second_outcome.votes_count, 2);
+
+        let duplicate = verified.insert_voted_value(second).unwrap();
+        assert!(!duplicate.inserted);
+        assert_eq!(duplicate.total_weight, 5);
+        assert_eq!(duplicate.votes_count, 2);
+
+        assert!(verified.vote_in_verified_map(2, 1, 3, h256(9), h256(1)));
+        assert!(verified.vote_in_verified_map(2, 1, 3, h256(9), h256(2)));
+        assert!(!verified.vote_in_verified_map(2, 1, 3, h256(9), h256(3)));
+    }
+
+    #[test]
+    fn two_t_plus_one_lookup_returns_mapped_votes_for_step_and_block() {
+        let mut verified = VerifiedVotes::new();
+        let first = vote(1, 55, 10, 4, 2, 3, PbftVoteType::Cert, 2);
+        let second = vote(2, 55, 11, 4, 2, 3, PbftVoteType::Cert, 3);
+
+        verified.insert_voted_value(first.clone()).unwrap();
+        verified.insert_voted_value(second.clone()).unwrap();
+
+        assert!(verified.insert_two_t_plus_one_voted_block(
+            4,
+            2,
+            TwoTPlusOneVotedBlockType::CertVotedBlock,
+            h256(55),
+            3,
+        ));
+
+        let mapped = verified
+            .get_two_t_plus_one_voted_block(4, 2, TwoTPlusOneVotedBlockType::CertVotedBlock)
+            .unwrap();
+        assert_eq!(mapped.hash, h256(55));
+        assert_eq!(mapped.step, 3);
+
+        let votes = verified.get_two_t_plus_one_voted_block_vote_hashes(
+            4,
+            2,
+            TwoTPlusOneVotedBlockType::CertVotedBlock,
+        );
+        assert_eq!(votes, vec![h256(1), h256(2)]);
+    }
+
+    #[test]
+    fn network_t_plus_one_step_and_cleanup_follow_round_and_period_boundaries() {
+        let mut verified = VerifiedVotes::new();
+
+        assert!(!verified.set_network_t_plus_one_step(9, 1, 7));
+        assert_eq!(verified.network_t_plus_one_step(9, 1), None);
+
+        verified
+            .insert_voted_value(vote(1, 5, 1, 9, 1, 3, PbftVoteType::Cert, 1))
+            .unwrap();
+        assert!(verified.set_network_t_plus_one_step(9, 1, 7));
+        assert_eq!(verified.network_t_plus_one_step(9, 1), Some(7));
+
+        verified
+            .insert_voted_value(vote(2, 6, 2, 10, 1, 3, PbftVoteType::Cert, 1))
+            .unwrap();
+        verified.cleanup_votes_by_period(10);
+
+        assert_eq!(verified.network_t_plus_one_step(9, 1), None);
+        assert_eq!(verified.network_t_plus_one_step(10, 1), Some(0));
+    }
+
+    #[test]
+    fn snapshots_are_deterministic() {
+        let mut verified = VerifiedVotes::new();
+        verified
+            .insert_voted_value(vote(10, 100, 1, 3, 2, 5, PbftVoteType::Next, 1))
+            .unwrap();
+        verified
+            .insert_voted_value(vote(9, 100, 2, 3, 2, 5, PbftVoteType::Next, 1))
+            .unwrap();
+        verified
+            .insert_voted_value(vote(20, 200, 3, 2, 1, 3, PbftVoteType::Cert, 1))
+            .unwrap();
+
+        let votes = verified.snapshot_votes();
+        let hashes: Vec<H256> = votes.into_iter().map(|v| v.vote_hash).collect();
+        assert_eq!(hashes, vec![h256(20), h256(9), h256(10)]);
+
+        verified.insert_two_t_plus_one_voted_block(
+            2,
+            1,
+            TwoTPlusOneVotedBlockType::CertVotedBlock,
+            h256(200),
+            3,
+        );
+        verified.insert_two_t_plus_one_voted_block(
+            3,
+            2,
+            TwoTPlusOneVotedBlockType::NextVotedBlock,
+            h256(100),
+            5,
+        );
+
+        let snapshot = verified.snapshot_two_t_plus_one();
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot[0].period, 2);
+        assert_eq!(snapshot[0].round, 1);
+        assert_eq!(snapshot[1].period, 3);
+        assert_eq!(snapshot[1].round, 2);
+    }
+}
