@@ -287,11 +287,12 @@ void VerifiedVotes::setNetworkTPlusOneStep(std::shared_ptr<PbftVote> vote) {
                                                                    vote->getStep());
 }
 
-void VerifiedVotes::insertTwoTPlusOneVotedBlock(TwoTPlusOneVotedBlockType type, std::shared_ptr<PbftVote> vote) {
+bool VerifiedVotes::insertTwoTPlusOneVotedBlock(TwoTPlusOneVotedBlockType type, std::shared_ptr<PbftVote> vote) {
   std::scoped_lock lock(verified_votes_access_);
   const auto block_hash = toBridgeHash(vote->getBlockHash());
-  rust_verified_votes_->verified_votes_insert_two_t_plus_one_voted_block(
+  const auto outcome = rust_verified_votes_->verified_votes_insert_two_t_plus_one_voted_block(
       vote->getPeriod(), vote->getRound(), static_cast<uint8_t>(type), block_hash, vote->getStep());
+  return outcome.inserted;
 }
 
 }  // namespace taraxa

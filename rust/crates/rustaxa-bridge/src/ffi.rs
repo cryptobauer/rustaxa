@@ -195,6 +195,11 @@ pub mod rustaxa_ffi {
         duplicate_vote_hash: bool,
     }
 
+    struct TwoTPlusOneInsertOutcome {
+        round_found: bool,
+        inserted: bool,
+    }
+
     struct TwoTPlusOneVotedBlockLookup {
         found: bool,
         block_hash: [u8; 32],
@@ -565,7 +570,7 @@ pub mod rustaxa_ffi {
             kind: u8,
             block_hash: &[u8; 32],
             step: u64,
-        ) -> Result<bool>;
+        ) -> Result<TwoTPlusOneInsertOutcome>;
         pub fn verified_votes_get_two_t_plus_one_voted_block(
             self: &BridgeVerifiedVotes,
             period: u64,

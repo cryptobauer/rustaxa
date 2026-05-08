@@ -134,8 +134,12 @@ class VerifiedVotes {
 
   /**
    * Stores 2t+1 voted block hash/step marker for vote's (`period`, `round`).
+   *
+   * Returns:
+   * - `true` when this call inserted a new mapping.
+   * - `false` when mapping already existed or round is missing.
    */
-  void insertTwoTPlusOneVotedBlock(TwoTPlusOneVotedBlockType type, std::shared_ptr<PbftVote> vote);
+  bool insertTwoTPlusOneVotedBlock(TwoTPlusOneVotedBlockType type, std::shared_ptr<PbftVote> vote);
 
  private:
   static std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t& hash);

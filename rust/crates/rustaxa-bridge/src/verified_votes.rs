@@ -1,13 +1,14 @@
 use crate::ffi::rustaxa_ffi::{
     AtomicVoteInsertOutcome, DagHash, NetworkTPlusOneStepLookup, RoundMarkerSnapshot,
-    TwoTPlusOneSnapshotEntry, TwoTPlusOneVotedBlockLookup, TwoTPlusOneVotesLookup,
-    UniqueVoterCheckOutcome, UniqueVoterInsertOutcome, VerifiedVotePayload,
+    TwoTPlusOneInsertOutcome, TwoTPlusOneSnapshotEntry, TwoTPlusOneVotedBlockLookup,
+    TwoTPlusOneVotesLookup, UniqueVoterCheckOutcome, UniqueVoterInsertOutcome, VerifiedVotePayload,
     VotedValueInsertOutcome,
 };
 use crate::ffi::BridgeVerifiedVotes;
 use ethereum_types::{H160, H256};
 use rustaxa_consensus::verified_votes::{
-    PbftVoteType, TwoTPlusOneVotedBlockType, VerifiedVote, VerifiedVotes,
+    PbftVoteType, TwoTPlusOneInsertOutcome as ConsensusTwoTPlusOneInsertOutcome,
+    TwoTPlusOneVotedBlockType, VerifiedVote, VerifiedVotes,
 };
 
 /// Creates an empty Rust verified-votes index for the C++ vote-manager shim.
@@ -132,15 +133,12 @@ impl BridgeVerifiedVotes {
         kind: u8,
         block_hash: &[u8; 32],
         step: u64,
-    ) -> Result<bool, anyhow::Error> {
+    ) -> Result<TwoTPlusOneInsertOutcome, anyhow::Error> {
         let kind = TwoTPlusOneVotedBlockType::try_from(kind)?;
-        Ok(self.0.insert_two_t_plus_one_voted_block(
-            period,
-            round,
-            kind,
-            H256::from(*block_hash),
-            step,
-        ))
+        Ok(self
+            .0
+            .insert_two_t_plus_one_voted_block(period, round, kind, H256::from(*block_hash), step)
+            .into())
     }
 
     /// Gets one 2t+1 voted-block mapping.
@@ -261,6 +259,15 @@ impl From<rustaxa_consensus::verified_votes::VotedValueInsertOutcome> for VotedV
             inserted: value.inserted,
             total_weight: value.total_weight,
             votes_count: value.votes_count,
+        }
+    }
+}
+
+impl From<ConsensusTwoTPlusOneInsertOutcome> for TwoTPlusOneInsertOutcome {
+    fn from(value: ConsensusTwoTPlusOneInsertOutcome) -> Self {
+        Self {
+            round_found: value.round_found,
+            inserted: value.inserted,
         }
     }
 }

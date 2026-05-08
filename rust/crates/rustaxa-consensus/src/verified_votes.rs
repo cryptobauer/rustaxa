@@ -155,6 +155,18 @@ pub struct VotedBlock {
     pub step: u64,
 }
 
+/// 2t+1 voted-block insertion outcome for one `(period, round, kind)` key.
+///
+/// `round_found` indicates whether the requested round exists. `inserted` is
+/// true only when the key was previously unset and the new mapping was stored.
+/// When `round_found` is true and `inserted` is false, the existing mapping is
+/// preserved (first-writer-wins).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TwoTPlusOneInsertOutcome {
+    pub round_found: bool,
+    pub inserted: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct RoundVerifiedVotes {
     two_t_plus_one_voted_blocks: BTreeMap<TwoTPlusOneVotedBlockType, VotedBlock>,
@@ -538,7 +550,8 @@ impl VerifiedVotes {
 
     /// Inserts one 2t+1 voted-block mapping for existing round.
     ///
-    /// Returns `true` only when a new mapping was inserted.
+    /// Missing rounds are rejected without side effects. Existing mappings for
+    /// the same key are preserved (first-writer-wins) and never overwritten.
     pub fn insert_two_t_plus_one_voted_block(
         &mut self,
         period: u64,
@@ -546,25 +559,37 @@ impl VerifiedVotes {
         kind: TwoTPlusOneVotedBlockType,
         block_hash: H256,
         step: u64,
-    ) -> bool {
+    ) -> TwoTPlusOneInsertOutcome {
         let Some(round_votes) = self
             .votes
             .get_mut(&period)
             .and_then(|rounds| rounds.get_mut(&round))
         else {
-            return false;
+            return TwoTPlusOneInsertOutcome {
+                round_found: false,
+                inserted: false,
+            };
         };
 
-        round_votes
-            .two_t_plus_one_voted_blocks
-            .insert(
-                kind,
-                VotedBlock {
-                    hash: block_hash,
-                    step,
-                },
-            )
-            .is_none()
+        if round_votes.two_t_plus_one_voted_blocks.contains_key(&kind) {
+            return TwoTPlusOneInsertOutcome {
+                round_found: true,
+                inserted: false,
+            };
+        }
+
+        round_votes.two_t_plus_one_voted_blocks.insert(
+            kind,
+            VotedBlock {
+                hash: block_hash,
+                step,
+            },
+        );
+
+        TwoTPlusOneInsertOutcome {
+            round_found: true,
+            inserted: true,
+        }
     }
 
     /// Returns one 2t+1 voted-block mapping.
@@ -906,13 +931,15 @@ mod tests {
         verified.insert_voted_value(first.clone()).unwrap();
         verified.insert_voted_value(second.clone()).unwrap();
 
-        assert!(verified.insert_two_t_plus_one_voted_block(
+        let insert_outcome = verified.insert_two_t_plus_one_voted_block(
             4,
             2,
             TwoTPlusOneVotedBlockType::CertVotedBlock,
             h256(55),
             3,
-        ));
+        );
+        assert!(insert_outcome.round_found);
+        assert!(insert_outcome.inserted);
 
         let mapped = verified
             .get_two_t_plus_one_voted_block(4, 2, TwoTPlusOneVotedBlockType::CertVotedBlock)
@@ -926,6 +953,67 @@ mod tests {
             TwoTPlusOneVotedBlockType::CertVotedBlock,
         );
         assert_eq!(votes, vec![h256(1), h256(2)]);
+    }
+
+    #[test]
+    fn two_t_plus_one_insert_is_first_writer_wins_and_reports_existing_mapping() {
+        let mut verified = VerifiedVotes::new();
+
+        verified
+            .insert_voted_value(vote(1, 111, 10, 8, 4, 3, PbftVoteType::Cert, 1))
+            .unwrap();
+        verified
+            .insert_voted_value(vote(2, 222, 11, 8, 4, 7, PbftVoteType::Cert, 1))
+            .unwrap();
+
+        let first_insert = verified.insert_two_t_plus_one_voted_block(
+            8,
+            4,
+            TwoTPlusOneVotedBlockType::CertVotedBlock,
+            h256(111),
+            3,
+        );
+        assert!(first_insert.round_found);
+        assert!(first_insert.inserted);
+
+        let second_insert = verified.insert_two_t_plus_one_voted_block(
+            8,
+            4,
+            TwoTPlusOneVotedBlockType::CertVotedBlock,
+            h256(222),
+            7,
+        );
+        assert!(second_insert.round_found);
+        assert!(!second_insert.inserted);
+
+        let mapped = verified
+            .get_two_t_plus_one_voted_block(8, 4, TwoTPlusOneVotedBlockType::CertVotedBlock)
+            .unwrap();
+        assert_eq!(mapped.hash, h256(111));
+        assert_eq!(mapped.step, 3);
+    }
+
+    #[test]
+    fn two_t_plus_one_insert_reports_missing_round_without_side_effects() {
+        let mut verified = VerifiedVotes::new();
+
+        let outcome = verified.insert_two_t_plus_one_voted_block(
+            99,
+            1,
+            TwoTPlusOneVotedBlockType::SoftVotedBlock,
+            h256(55),
+            5,
+        );
+        assert!(!outcome.round_found);
+        assert!(!outcome.inserted);
+        assert_eq!(
+            verified.get_two_t_plus_one_voted_block(
+                99,
+                1,
+                TwoTPlusOneVotedBlockType::SoftVotedBlock
+            ),
+            None
+        );
     }
 
     #[test]

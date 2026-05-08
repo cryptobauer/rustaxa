@@ -247,8 +247,16 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
         return;
       }
 
-      // Insert new 2t+1 voted block
+      // Insert new 2t+1 voted block. In Rust mode this is first-writer-wins.
+#ifdef RUSTAXA_ENABLE_VERIFIED_VOTES
+      const auto inserted_two_t_plus_one =
+          verified_votes_.insertTwoTPlusOneVotedBlock(two_plus_one_voted_block_type, vote);
+      if (!inserted_two_t_plus_one) {
+        return;
+      }
+#else
       verified_votes_.insertTwoTPlusOneVotedBlock(two_plus_one_voted_block_type, vote);
+#endif
 
       // Save only current pbft period & round 2t+1 votes bundles into db
       // Cert votes are saved once the pbft block is pushed in the chain
