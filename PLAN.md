@@ -137,7 +137,7 @@ This makes `period_data` one of the highest-value Rust rewrite targets.
 
 ### Current Rust Storage Coverage
 
-Rust-mode shim implementations live in `libraries/core_libs/storage_shim/src/storage_shim.cpp`. Legacy `libraries/core_libs/storage/src/storage.cpp` remains legacy-only logic.
+Rust-mode shim implementations live in `libraries/core_libs/consensus/shims/storage_shim/src/storage_shim.cpp`. Legacy `libraries/core_libs/storage/src/storage.cpp` remains legacy-only logic.
 
 Current Rust-backed coverage includes:
 
