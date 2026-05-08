@@ -70,8 +70,8 @@ if(RUSTAXA_ENABLE)
 
     # In Rust mode, inject a header overlay that remaps legacy Dag/PivotTree
     # to DagOld/PivotTreeOld and exposes standalone Rust-backed facades.
-    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/dag_shim/include)
-    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/dag_shim/src/dag_shim.cpp)
+    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/dag_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/dag_shim/src/dag_shim.cpp)
 
     # Compile the legacy implementation under old symbols only.
     set_source_files_properties(
@@ -82,8 +82,8 @@ if(RUSTAXA_ENABLE)
 
     # In Rust mode, inject a header overlay that remaps legacy KeyManager
     # to KeyManagerOld and exposes a forwarding KeyManager shim facade.
-    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/key_manager_shim/include)
-    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/key_manager_shim/src/key_manager_shim.cpp)
+    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/key_manager_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/key_manager_shim/src/key_manager_shim.cpp)
 
     # Compile the legacy implementation as KeyManagerOld.
     set_source_files_properties(
@@ -97,8 +97,8 @@ endif()
 if(RUSTAXA_ENABLE_STORAGE)
     # In Rust storage mode, inject a header overlay that remaps legacy DbStorage
     # to DbStorageOld and exposes a forwarding DbStorage shim facade.
-    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/storage_shim/include)
-    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/storage_shim/src/storage_shim.cpp)
+    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/storage_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/storage_shim/src/storage_shim.cpp)
 
     # Compile the legacy implementation as DbStorageOld.
     set_source_files_properties(
@@ -115,8 +115,8 @@ if(RUSTAXA_ENABLE_FINAL_CHAIN)
 
     # In Rust final-chain mode, inject a header overlay that remaps legacy FinalChain
     # to FinalChainOld and exposes a standalone FinalChain shim facade.
-    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/final_chain_shim/include)
-    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/final_chain_shim/src/final_chain_shim.cpp)
+    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/final_chain_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/final_chain_shim/src/final_chain_shim.cpp)
 
     # Compile the legacy implementation as FinalChainOld.
     set_source_files_properties(
@@ -134,8 +134,8 @@ if(RUSTAXA_ENABLE_SORTITION_PARAMS)
     # In Rust sortition-params mode, inject a header overlay that remaps legacy
     # SortitionParamsManager to SortitionParamsManagerOld and exposes a
     # standalone SortitionParamsManager shim facade.
-    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/sortition_params_manager_shim/include)
-    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/sortition_params_manager_shim/src/sortition_params_manager_shim.cpp)
+    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/sortition_params_manager_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/sortition_params_manager_shim/src/sortition_params_manager_shim.cpp)
 
     # Compile the legacy implementation as SortitionParamsManagerOld.
     set_source_files_properties(
@@ -152,8 +152,8 @@ if(RUSTAXA_ENABLE_PBFT_CHAIN)
 
     # In Rust PBFT-chain mode, inject a header overlay that remaps legacy
     # PbftChain to PbftChainOld and exposes a standalone Rust-backed facade.
-    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/pbft_chain_shim/include)
-    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/pbft_chain_shim/src/pbft_chain_shim.cpp)
+    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pbft_chain_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pbft_chain_shim/src/pbft_chain_shim.cpp)
 
     # Compile the legacy implementation as PbftChainOld.
     set_source_files_properties(
@@ -170,8 +170,8 @@ if(RUSTAXA_ENABLE_PROPOSED_BLOCKS)
 
     # In Rust proposed-blocks mode, inject a header overlay that remaps legacy
     # ProposedBlocks to ProposedBlocksOld and exposes a standalone shim facade.
-    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/proposed_blocks_shim/include)
-    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/proposed_blocks_shim/src/proposed_blocks_shim.cpp)
+    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/proposed_blocks_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/proposed_blocks_shim/src/proposed_blocks_shim.cpp)
 
     # Compile the legacy implementation as ProposedBlocksOld.
     set_source_files_properties(
@@ -188,8 +188,8 @@ if(RUSTAXA_ENABLE_PERIOD_DATA_QUEUE)
 
     # In Rust period-data-queue mode, inject a header overlay that remaps legacy
     # PeriodDataQueue to PeriodDataQueueOld and exposes a standalone shim facade.
-    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/period_data_queue_shim/include)
-    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/period_data_queue_shim/src/period_data_queue_shim.cpp)
+    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/period_data_queue_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/period_data_queue_shim/src/period_data_queue_shim.cpp)
 
     # Compile the legacy implementation as PeriodDataQueueOld.
     set_source_files_properties(
@@ -206,8 +206,8 @@ if(RUSTAXA_ENABLE_VERIFIED_VOTES)
 
     # In Rust verified-votes mode, inject a header overlay that remaps legacy
     # VerifiedVotes to VerifiedVotesOld and exposes a standalone shim facade.
-    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/verified_votes_shim/include)
-    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/verified_votes_shim/src/verified_votes_shim.cpp)
+    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/verified_votes_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/verified_votes_shim/src/verified_votes_shim.cpp)
 
     # Compile the legacy implementation as VerifiedVotesOld.
     set_source_files_properties(
