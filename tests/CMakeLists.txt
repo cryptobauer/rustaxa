@@ -74,6 +74,12 @@ if(RUSTAXA_ENABLE_PBFT_CHAIN)
     add_test(pbft_chain_shim_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/pbft_chain_shim_test)
 endif()
 
+if(RUSTAXA_ENABLE_PROPOSED_BLOCKS)
+    add_executable(proposed_blocks_shim_test proposed_blocks_shim_test.cpp)
+    target_link_libraries(proposed_blocks_shim_test test_util)
+    add_test(proposed_blocks_shim_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/proposed_blocks_shim_test)
+endif()
+
 add_executable(pbft_manager_test pbft_manager_test.cpp)
 target_link_libraries(pbft_manager_test test_util)
 add_test(pbft_manager_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/pbft_manager_test)

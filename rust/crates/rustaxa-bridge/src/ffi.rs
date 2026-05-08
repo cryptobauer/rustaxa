@@ -1,11 +1,13 @@
 use crate::dag::*;
 use crate::final_chain::*;
 use crate::pbft_chain::*;
+use crate::proposed_blocks::*;
 use crate::sortition::*;
 use crate::storage::*;
 use crate::vdf::*;
 use rustaxa_consensus::dag::DagGraph;
 use rustaxa_consensus::pbft_chain::PbftChain;
+use rustaxa_consensus::proposed_blocks::ProposedBlocks;
 use rustaxa_consensus::sortition::SortitionParamsManager;
 use rustaxa_consensus::FinalChain;
 use rustaxa_storage::Storage;
@@ -26,6 +28,8 @@ pub struct BridgeFinalChain(pub FinalChain);
 pub struct BridgeDagGraph(pub DagGraph);
 
 pub struct BridgePbftChain(pub PbftChain);
+
+pub struct BridgeProposedBlocks(pub ProposedBlocks);
 
 pub struct BridgeSortitionParamsManager(pub SortitionParamsManager);
 
@@ -94,6 +98,24 @@ pub mod rustaxa_ffi {
         actual_period: u64,
         expected_prev_hash: [u8; 32],
         actual_prev_hash: [u8; 32],
+    }
+
+    struct ProposedBlockLookup {
+        found: bool,
+        is_valid: bool,
+        block_rlp: Vec<u8>,
+    }
+
+    struct ProposedBlockPeriodHashes {
+        period: u64,
+        block_hashes: Vec<DagHash>,
+    }
+
+    struct ProposedBlockSnapshotEntry {
+        period: u64,
+        block_hash: [u8; 32],
+        block_rlp: Vec<u8>,
+        is_valid: bool,
     }
 
     struct FinalChainBlockNumberLookup {
@@ -316,6 +338,48 @@ pub mod rustaxa_ffi {
             period: u64,
             prev_hash: &[u8; 32],
         ) -> PbftBlockValidationResult;
+
+        // Consensus proposed PBFT blocks
+
+        type BridgeProposedBlocks;
+
+        pub fn create_proposed_blocks_index() -> Box<BridgeProposedBlocks>;
+        pub fn proposed_blocks_push(
+            self: &mut BridgeProposedBlocks,
+            period: u64,
+            block_hash: &[u8; 32],
+            block_rlp: Vec<u8>,
+        ) -> bool;
+        pub fn proposed_blocks_mark_valid(
+            self: &mut BridgeProposedBlocks,
+            period: u64,
+            block_hash: &[u8; 32],
+        ) -> Result<()>;
+        pub fn proposed_blocks_get(
+            self: &BridgeProposedBlocks,
+            period: u64,
+            block_hash: &[u8; 32],
+        ) -> ProposedBlockLookup;
+        pub fn proposed_blocks_contains(
+            self: &BridgeProposedBlocks,
+            period: u64,
+            block_hash: &[u8; 32],
+        ) -> bool;
+        pub fn proposed_blocks_cleanup_candidates(
+            self: &BridgeProposedBlocks,
+            period: u64,
+        ) -> Vec<ProposedBlockPeriodHashes>;
+        pub fn proposed_blocks_remove_period(self: &mut BridgeProposedBlocks, period: u64);
+        pub fn proposed_blocks_old_blocks_message(
+            self: &BridgeProposedBlocks,
+            current_period: u64,
+        ) -> String;
+        pub fn proposed_blocks_snapshot_entries(
+            self: &BridgeProposedBlocks,
+        ) -> Vec<ProposedBlockSnapshotEntry>;
+        pub fn proposed_blocks_snapshot(
+            self: &BridgeProposedBlocks,
+        ) -> Vec<ProposedBlockPeriodHashes>;
 
         // Consensus sortition
 

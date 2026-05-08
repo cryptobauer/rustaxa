@@ -4,6 +4,7 @@ add_executable(rust_consensus_tests
     test_dag.cpp
     test_final_chain.cpp
     test_pbft_chain.cpp
+    test_proposed_blocks.cpp
     test_sortition.cpp
 )
 
