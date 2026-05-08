@@ -185,6 +185,16 @@ pub mod rustaxa_ffi {
         votes_count: usize,
     }
 
+    struct AtomicVoteInsertOutcome {
+        inserted: bool,
+        total_weight: u64,
+        votes_count: usize,
+        conflict_found: bool,
+        conflicting_vote_hash: [u8; 32],
+        used_secondary_slot: bool,
+        duplicate_vote_hash: bool,
+    }
+
     struct TwoTPlusOneVotedBlockLookup {
         found: bool,
         block_hash: [u8; 32],
@@ -525,6 +535,10 @@ pub mod rustaxa_ffi {
             self: &mut BridgeVerifiedVotes,
             vote: VerifiedVotePayload,
         ) -> Result<VotedValueInsertOutcome>;
+        pub fn verified_votes_insert_vote_atomic(
+            self: &mut BridgeVerifiedVotes,
+            vote: VerifiedVotePayload,
+        ) -> Result<AtomicVoteInsertOutcome>;
         pub fn verified_votes_vote_in_verified_map(
             self: &BridgeVerifiedVotes,
             period: u64,

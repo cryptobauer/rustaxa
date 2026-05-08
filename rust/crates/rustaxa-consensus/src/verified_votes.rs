@@ -186,6 +186,32 @@ pub struct VotedValueInsertOutcome {
     pub votes_count: usize,
 }
 
+/// Outcome of an atomic verified-vote insert operation.
+///
+/// The operation first performs unique-voter tracking and then voted-value
+/// aggregation as one logical unit:
+/// - uniqueness conflicts return the conflicting vote hash for slashing
+///   decisions and do not touch voted-value aggregation,
+/// - voted-value insertion reports deterministic aggregate counters,
+/// - voted-value insertion errors roll back unique-voter state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AtomicVoteInsertOutcome {
+    pub inserted: bool,
+    pub total_weight: u64,
+    pub votes_count: usize,
+    pub conflicting_vote_hash: Option<H256>,
+    pub used_secondary_slot: bool,
+    pub duplicate_vote_hash: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UniqueVoterRollbackState {
+    had_period: bool,
+    had_round: bool,
+    had_step: bool,
+    previous_vote: Option<UniqueVoterVotes>,
+}
+
 /// Snapshot of one 2t+1 mapping entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TwoTPlusOneSnapshotEntry {
@@ -426,6 +452,53 @@ impl VerifiedVotes {
         })
     }
 
+    /// Atomically inserts one verified vote into unique-voter tracking and
+    /// voted-value aggregation.
+    ///
+    /// The odd-step `Next` dual-vote special case is preserved exactly as in
+    /// `insert_unique_voter`. When uniqueness fails, this returns
+    /// `conflicting_vote_hash` for slashing decisions and leaves voted-value
+    /// aggregation unchanged.
+    ///
+    /// If voted-value insertion errors (for example, weight overflow), unique
+    /// voter state is rolled back to its pre-call contents.
+    pub fn insert_vote_atomic(&mut self, vote: VerifiedVote) -> Result<AtomicVoteInsertOutcome> {
+        let rollback = self.snapshot_unique_voter_rollback_state(
+            vote.period,
+            vote.round,
+            vote.step,
+            vote.voter,
+        );
+        let unique_outcome = self.insert_unique_voter(&vote);
+        if !unique_outcome.accepted {
+            return Ok(AtomicVoteInsertOutcome {
+                inserted: false,
+                total_weight: 0,
+                votes_count: 0,
+                conflicting_vote_hash: unique_outcome.conflicting_vote_hash,
+                used_secondary_slot: false,
+                duplicate_vote_hash: false,
+            });
+        }
+
+        match self.insert_voted_value(vote) {
+            Ok(voted_outcome) => Ok(AtomicVoteInsertOutcome {
+                inserted: voted_outcome.inserted,
+                total_weight: voted_outcome.total_weight,
+                votes_count: voted_outcome.votes_count,
+                conflicting_vote_hash: None,
+                used_secondary_slot: unique_outcome.used_secondary_slot,
+                duplicate_vote_hash: unique_outcome.duplicate_vote_hash,
+            }),
+            Err(err) => {
+                self.restore_unique_voter_state(
+                    rollback.0, rollback.1, rollback.2, rollback.3, rollback.4,
+                );
+                Err(err)
+            }
+        }
+    }
+
     /// Returns true when vote hash exists under exact period/round/step/value key.
     pub fn vote_in_verified_map(
         &self,
@@ -566,6 +639,119 @@ impl VerifiedVotes {
         let incoming_is_null = vote.block_hash == H256::zero();
         existing_is_null != incoming_is_null
     }
+
+    fn snapshot_unique_voter_rollback_state(
+        &self,
+        period: u64,
+        round: u64,
+        step: u64,
+        voter: H160,
+    ) -> (u64, u64, u64, H160, UniqueVoterRollbackState) {
+        let had_period = self.votes.contains_key(&period);
+        let had_round = self
+            .votes
+            .get(&period)
+            .map(|rounds| rounds.contains_key(&round))
+            .unwrap_or(false);
+        let had_step = self
+            .votes
+            .get(&period)
+            .and_then(|rounds| rounds.get(&round))
+            .map(|round_votes| round_votes.step_votes.contains_key(&step))
+            .unwrap_or(false);
+        let previous_vote = self
+            .votes
+            .get(&period)
+            .and_then(|rounds| rounds.get(&round))
+            .and_then(|round_votes| round_votes.step_votes.get(&step))
+            .and_then(|step_votes| step_votes.unique_voters.get(&voter))
+            .cloned();
+
+        (
+            period,
+            round,
+            step,
+            voter,
+            UniqueVoterRollbackState {
+                had_period,
+                had_round,
+                had_step,
+                previous_vote,
+            },
+        )
+    }
+
+    #[allow(clippy::collapsible_if)]
+    fn restore_unique_voter_state(
+        &mut self,
+        period: u64,
+        round: u64,
+        step: u64,
+        voter: H160,
+        rollback: UniqueVoterRollbackState,
+    ) {
+        if let Some(previous_vote) = rollback.previous_vote {
+            self.ensure_step_mut(period, round, step)
+                .unique_voters
+                .insert(voter, previous_vote);
+            return;
+        }
+
+        if let Some(step_votes) = self
+            .votes
+            .get_mut(&period)
+            .and_then(|rounds| rounds.get_mut(&round))
+            .and_then(|round_votes| round_votes.step_votes.get_mut(&step))
+        {
+            step_votes.unique_voters.remove(&voter);
+        }
+
+        if !rollback.had_step {
+            if let Some(round_votes) = self
+                .votes
+                .get_mut(&period)
+                .and_then(|rounds| rounds.get_mut(&round))
+            {
+                let remove_step = round_votes
+                    .step_votes
+                    .get(&step)
+                    .map(|step_votes| {
+                        step_votes.votes.is_empty() && step_votes.unique_voters.is_empty()
+                    })
+                    .unwrap_or(false);
+                if remove_step {
+                    round_votes.step_votes.remove(&step);
+                }
+            }
+        }
+
+        if !rollback.had_round {
+            if let Some(rounds) = self.votes.get_mut(&period) {
+                let remove_round = rounds
+                    .get(&round)
+                    .map(|round_votes| {
+                        round_votes.step_votes.is_empty()
+                            && round_votes.two_t_plus_one_voted_blocks.is_empty()
+                            && round_votes.network_t_plus_one_step == 0
+                    })
+                    .unwrap_or(false);
+                if remove_round {
+                    rounds.remove(&round);
+                }
+            }
+        }
+
+        if !rollback.had_period {
+            let remove_period = self
+                .votes
+                .get(&period)
+                .map(|rounds| rounds.is_empty())
+                .unwrap_or(false);
+            if remove_period {
+                self.votes.remove(&period);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -580,6 +766,7 @@ mod tests {
         H160::from_low_u64_be(v)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn vote(
         vote_hash: u64,
         block_hash: u64,
@@ -663,6 +850,51 @@ mod tests {
         assert!(verified.vote_in_verified_map(2, 1, 3, h256(9), h256(1)));
         assert!(verified.vote_in_verified_map(2, 1, 3, h256(9), h256(2)));
         assert!(!verified.vote_in_verified_map(2, 1, 3, h256(9), h256(3)));
+    }
+
+    #[test]
+    fn atomic_insert_preserves_odd_step_next_dual_vote_and_conflict_hash() {
+        let mut verified = VerifiedVotes::new();
+        let first = vote(1, 0, 42, 7, 3, 5, PbftVoteType::Next, 2);
+        let second = vote(2, 99, 42, 7, 3, 5, PbftVoteType::Next, 3);
+        let third = vote(3, 100, 42, 7, 3, 5, PbftVoteType::Next, 1);
+
+        let first_outcome = verified.insert_vote_atomic(first.clone()).unwrap();
+        assert!(first_outcome.inserted);
+        assert_eq!(first_outcome.total_weight, 2);
+        assert_eq!(first_outcome.votes_count, 1);
+        assert_eq!(first_outcome.conflicting_vote_hash, None);
+
+        let second_outcome = verified.insert_vote_atomic(second.clone()).unwrap();
+        assert!(second_outcome.inserted);
+        assert_eq!(second_outcome.total_weight, 3);
+        assert_eq!(second_outcome.votes_count, 1);
+        assert!(second_outcome.used_secondary_slot);
+        assert_eq!(second_outcome.conflicting_vote_hash, None);
+
+        let third_outcome = verified.insert_vote_atomic(third).unwrap();
+        assert!(!third_outcome.inserted);
+        assert_eq!(third_outcome.conflicting_vote_hash, Some(second.vote_hash));
+    }
+
+    #[test]
+    fn atomic_insert_rolls_back_unique_voter_on_weight_overflow() {
+        let mut verified = VerifiedVotes::new();
+        let first = vote(10, 88, 11, 9, 4, 3, PbftVoteType::Cert, u64::MAX);
+        let second = vote(11, 88, 12, 9, 4, 3, PbftVoteType::Cert, 1);
+        let probe = vote(12, 77, 12, 9, 4, 3, PbftVoteType::Cert, 1);
+
+        let first_outcome = verified.insert_vote_atomic(first).unwrap();
+        assert!(first_outcome.inserted);
+
+        let err = verified.insert_vote_atomic(second).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("vote weight overflow for period 9, round 4, step 3")
+        );
+
+        let check_after_rollback = verified.check_unique_voter(&probe);
+        assert!(check_after_rollback.is_unique);
     }
 
     #[test]

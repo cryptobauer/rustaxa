@@ -50,6 +50,31 @@ const std::shared_ptr<PbftVote>& VerifiedVotes::requireLiveVote(const vote_hash_
   return found->second;
 }
 
+VotesWithWeight VerifiedVotes::requireInsertedVotesWithWeightLocked(const std::shared_ptr<PbftVote>& vote,
+                                                                    uint64_t total_weight) const {
+  VotesWithWeight value{};
+  value.weight = total_weight;
+  const auto state = buildSnapshotState();
+  const auto period_it = state.find(vote->getPeriod());
+  if (period_it == state.end()) {
+    throw verifiedVotesError("Rust inserted voted value but C++ snapshot has no matching period");
+  }
+  const auto round_it = period_it->second.find(vote->getRound());
+  if (round_it == period_it->second.end()) {
+    throw verifiedVotesError("Rust inserted voted value but C++ snapshot has no matching round");
+  }
+  const auto step_it = round_it->second.step_votes.find(vote->getStep());
+  if (step_it == round_it->second.step_votes.end()) {
+    throw verifiedVotesError("Rust inserted voted value but C++ snapshot has no matching step");
+  }
+  const auto found = step_it->second.votes.find(vote->getBlockHash());
+  if (found == step_it->second.votes.end()) {
+    throw verifiedVotesError("Rust inserted voted value but C++ snapshot has no matching block bucket");
+  }
+  value.votes = found->second.votes;
+  return value;
+}
+
 PeriodVerifiedVotesMap VerifiedVotes::buildSnapshotState() const {
   PeriodVerifiedVotesMap state;
 
@@ -235,33 +260,31 @@ std::optional<VotesWithWeight> VerifiedVotes::insertVotedValue(const std::shared
   }
 
   live_votes_[vote->getHash()] = vote;
+  return requireInsertedVotesWithWeightLocked(vote, outcome.total_weight);
+}
 
-  VotesWithWeight value{};
-  value.weight = outcome.total_weight;
-  const auto state = buildSnapshotState();
-  const auto period_it = state.find(vote->getPeriod());
-  if (period_it == state.end()) {
-    throw verifiedVotesError("Rust inserted voted value but C++ snapshot has no matching period");
+VerifiedVotes::AtomicInsertOutcome VerifiedVotes::insertVerifiedVoteAtomic(const std::shared_ptr<PbftVote>& vote) {
+  std::scoped_lock lock(verified_votes_access_);
+  const auto payload = toBridgeVotePayload(vote);
+
+  const auto outcome = rust_verified_votes_->verified_votes_insert_vote_atomic(payload);
+  if (outcome.conflict_found) {
+    const auto conflict_hash = fromBridgeHash(outcome.conflicting_vote_hash);
+    return AtomicInsertOutcome{requireLiveVote(conflict_hash), std::nullopt};
   }
-  const auto round_it = period_it->second.find(vote->getRound());
-  if (round_it == period_it->second.end()) {
-    throw verifiedVotesError("Rust inserted voted value but C++ snapshot has no matching round");
+
+  if (!outcome.inserted) {
+    return AtomicInsertOutcome{std::nullopt, std::nullopt};
   }
-  const auto step_it = round_it->second.step_votes.find(vote->getStep());
-  if (step_it == round_it->second.step_votes.end()) {
-    throw verifiedVotesError("Rust inserted voted value but C++ snapshot has no matching step");
-  }
-  const auto found = step_it->second.votes.find(vote->getBlockHash());
-  if (found == step_it->second.votes.end()) {
-    throw verifiedVotesError("Rust inserted voted value but C++ snapshot has no matching block bucket");
-  }
-  value.votes = found->second.votes;
-  return value;
+
+  live_votes_[vote->getHash()] = vote;
+  return AtomicInsertOutcome{std::nullopt, requireInsertedVotesWithWeightLocked(vote, outcome.total_weight)};
 }
 
 void VerifiedVotes::setNetworkTPlusOneStep(std::shared_ptr<PbftVote> vote) {
   std::scoped_lock lock(verified_votes_access_);
-  rust_verified_votes_->verified_votes_set_network_t_plus_one_step(vote->getPeriod(), vote->getRound(), vote->getStep());
+  rust_verified_votes_->verified_votes_set_network_t_plus_one_step(vote->getPeriod(), vote->getRound(),
+                                                                   vote->getStep());
 }
 
 void VerifiedVotes::insertTwoTPlusOneVotedBlock(TwoTPlusOneVotedBlockType type, std::shared_ptr<PbftVote> vote) {

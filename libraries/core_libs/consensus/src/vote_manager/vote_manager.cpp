@@ -150,6 +150,26 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
   const auto vote_block_hash = vote->getBlockHash();
 
   {
+    // Old vote, ignore unless it is a reward vote
+    bool is_valid_potential_reward_vote = false;
+#ifdef RUSTAXA_ENABLE_VERIFIED_VOTES
+    if (vote->getPeriod() < current_pbft_period_) {
+      if (is_valid_potential_reward_vote = isValidRewardVote(vote); !is_valid_potential_reward_vote) {
+        LOG(log_tr_) << "Old vote " << vote->getHash().abridged() << " vote period" << vote->getPeriod()
+                     << " current period " << current_pbft_period_;
+        return false;
+      }
+    }
+
+    const auto insert_outcome = verified_votes_.insertVerifiedVoteAtomic(vote);
+    if (insert_outcome.conflicting_vote) {
+      LOG(log_wr_) << "Non unique vote " << vote->getHash().abridged() << " (race condition)";
+      slashing_manager_->submitDoubleVotingProof(vote, *insert_outcome.conflicting_vote);
+      return false;
+    }
+
+    const auto votes_with_weight = insert_outcome.votes_with_weight;
+#else
     if (auto existing_vote = verified_votes_.insertUniqueVoter(vote); existing_vote) {
       LOG(log_wr_) << "Non unique vote " << vote->getHash().abridged() << " (race condition)";
       // Create double voting proof
@@ -157,8 +177,6 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
       return false;
     }
 
-    // Old vote, ignore unless it is a reward vote
-    bool is_valid_potential_reward_vote = false;
     if (vote->getPeriod() < current_pbft_period_) {
       if (is_valid_potential_reward_vote = isValidRewardVote(vote); !is_valid_potential_reward_vote) {
         LOG(log_tr_) << "Old vote " << vote->getHash().abridged() << " vote period" << vote->getPeriod()
@@ -168,6 +186,7 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
     }
 
     const auto votes_with_weight = verified_votes_.insertVotedValue(vote);
+#endif
     if (!votes_with_weight) {
       return false;
     }

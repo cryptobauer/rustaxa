@@ -33,6 +33,19 @@ class PbftVote;
 class VerifiedVotes {
  public:
   /**
+   * Outcome of one atomic verified-vote insert attempt.
+   *
+   * Exactly one of these states is expected:
+   * - `conflicting_vote` set when unique-voter conflict is detected.
+   * - `votes_with_weight` set when vote was inserted into voted-value bucket.
+   * - both empty when vote hash already exists in voted-value bucket.
+   */
+  struct AtomicInsertOutcome {
+    std::optional<std::shared_ptr<PbftVote>> conflicting_vote;
+    std::optional<VotesWithWeight> votes_with_weight;
+  };
+
+  /**
    * Constructs an empty verified-votes index.
    *
    * Inputs:
@@ -107,6 +120,14 @@ class VerifiedVotes {
   std::optional<VotesWithWeight> insertVotedValue(const std::shared_ptr<PbftVote>& vote);
 
   /**
+   * Atomically performs unique-voter and voted-value inserts for `vote`.
+   *
+   * This preserves one lock boundary across both Rust index updates so
+   * `VoteManager` can process one consistent insertion outcome.
+   */
+  AtomicInsertOutcome insertVerifiedVoteAtomic(const std::shared_ptr<PbftVote>& vote);
+
+  /**
    * Sets `network_t_plus_one_step` for vote's (`period`, `round`) entry when present.
    */
   void setNetworkTPlusOneStep(std::shared_ptr<PbftVote> vote);
@@ -114,7 +135,7 @@ class VerifiedVotes {
   /**
    * Stores 2t+1 voted block hash/step marker for vote's (`period`, `round`).
    */
- void insertTwoTPlusOneVotedBlock(TwoTPlusOneVotedBlockType type, std::shared_ptr<PbftVote> vote);
+  void insertTwoTPlusOneVotedBlock(TwoTPlusOneVotedBlockType type, std::shared_ptr<PbftVote> vote);
 
  private:
   static std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t& hash);
@@ -122,6 +143,8 @@ class VerifiedVotes {
   static uint256_hash_t fromBridgeHash(const std::array<uint8_t, 32>& hash);
   rustaxa::VerifiedVotePayload toBridgeVotePayload(const std::shared_ptr<PbftVote>& vote) const;
   const std::shared_ptr<PbftVote>& requireLiveVote(const vote_hash_t& vote_hash) const;
+  VotesWithWeight requireInsertedVotesWithWeightLocked(const std::shared_ptr<PbftVote>& vote,
+                                                       uint64_t total_weight) const;
   PeriodVerifiedVotesMap buildSnapshotState() const;
   void pruneLiveVotesToSnapshotLocked();
 

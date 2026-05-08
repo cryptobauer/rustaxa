@@ -1,7 +1,8 @@
 use crate::ffi::rustaxa_ffi::{
-    DagHash, NetworkTPlusOneStepLookup, RoundMarkerSnapshot, TwoTPlusOneSnapshotEntry,
-    TwoTPlusOneVotedBlockLookup, TwoTPlusOneVotesLookup, UniqueVoterCheckOutcome,
-    UniqueVoterInsertOutcome, VerifiedVotePayload, VotedValueInsertOutcome,
+    AtomicVoteInsertOutcome, DagHash, NetworkTPlusOneStepLookup, RoundMarkerSnapshot,
+    TwoTPlusOneSnapshotEntry, TwoTPlusOneVotedBlockLookup, TwoTPlusOneVotesLookup,
+    UniqueVoterCheckOutcome, UniqueVoterInsertOutcome, VerifiedVotePayload,
+    VotedValueInsertOutcome,
 };
 use crate::ffi::BridgeVerifiedVotes;
 use ethereum_types::{H160, H256};
@@ -57,6 +58,27 @@ impl BridgeVerifiedVotes {
     ) -> Result<VotedValueInsertOutcome, anyhow::Error> {
         let vote = payload_to_vote(vote)?;
         Ok(self.0.insert_voted_value(vote)?.into())
+    }
+
+    /// Atomically inserts `vote` into unique-voter and voted-value state.
+    ///
+    /// This returns conflict details for slashing decisions when uniqueness
+    /// fails and voted-value aggregation counters when insertion succeeds.
+    pub fn verified_votes_insert_vote_atomic(
+        &mut self,
+        vote: VerifiedVotePayload,
+    ) -> Result<AtomicVoteInsertOutcome, anyhow::Error> {
+        let vote = payload_to_vote(vote)?;
+        let outcome = self.0.insert_vote_atomic(vote)?;
+        Ok(AtomicVoteInsertOutcome {
+            inserted: outcome.inserted,
+            total_weight: outcome.total_weight,
+            votes_count: outcome.votes_count,
+            conflict_found: outcome.conflicting_vote_hash.is_some(),
+            conflicting_vote_hash: outcome.conflicting_vote_hash.unwrap_or_default().into(),
+            used_secondary_slot: outcome.used_secondary_slot,
+            duplicate_vote_hash: outcome.duplicate_vote_hash,
+        })
     }
 
     /// Returns whether exact `(period, round, step, block_hash, vote_hash)` exists.
