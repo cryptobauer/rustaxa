@@ -1,15 +1,15 @@
 use crate::ffi::rustaxa_ffi::{
     DagBlockLookup, DagFrontier, DagHash, DagLevelHashes, DagManagerAnchors, DagManagerBlock,
     DagManagerNonFinalizedSize, DagManagerSnapshot, DagOrder, DagPersistenceCounters,
-    DagPivotTipsValidation, DagReferenceMetadata,
+    DagPivotTipsValidation, DagReferenceMetadata, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
 use anyhow::{Context, Result};
 use ethereum_types::H256;
 use rustaxa_consensus::dag::{
-    derive_frontier, validate_pivot_tips_metadata, DagGraph,
+    derive_frontier, validate_dag_verify_precheck, validate_pivot_tips_metadata, DagGraph,
     DagManagerBlock as DomainDagManagerBlock, DagManagerSnapshot as DomainDagManagerSnapshot,
-    DagManagerState, DagReferenceMetadata as ReferenceMetadata,
+    DagManagerState, DagReferenceMetadata as ReferenceMetadata, DagVerifyPrecheckInput,
 };
 use rustaxa_storage::StatusField;
 use std::collections::{BTreeMap, BTreeSet};
@@ -477,6 +477,43 @@ impl BridgeDagManagerRuntime {
                 .context("DAG_STORAGE_COUNTERS")?,
         })
     }
+
+    /// Runs deterministic DAG block verification prechecks against Rust state
+    /// and storage.
+    ///
+    /// This bridge method intentionally does not perform transaction, VDF,
+    /// DPOS, gas-estimation, event, or networking work. A successful result only
+    /// tells C++ to continue the remaining verification stages.
+    pub fn dag_manager_runtime_verify_precheck(
+        &self,
+        block: DagVerifyPrecheckBlock,
+    ) -> Result<DagVerifyPrecheckResult> {
+        let proposal_period = self
+            .storage
+            .dag()
+            .proposal_period_at_level(block.level)
+            .context("DAG_PROPOSAL_PERIOD_LOOKUP")?;
+        let tips = block
+            .tips
+            .into_iter()
+            .map(|tip| H256::from(tip.hash))
+            .collect::<Vec<_>>();
+        let precheck = validate_dag_verify_precheck(DagVerifyPrecheckInput {
+            block_level: block.level,
+            pivot: to_h256(&block.pivot),
+            tips,
+            proposal_period_found: proposal_period.is_some(),
+            proposal_period: proposal_period.unwrap_or(0),
+            dag_expiry_level: self.state.dag_expiry_level(),
+        });
+
+        Ok(DagVerifyPrecheckResult {
+            continue_validation: precheck.continue_validation,
+            reject_code: precheck.reject_code,
+            proposal_period_found: precheck.proposal_period_found,
+            proposal_period: precheck.proposal_period,
+        })
+    }
 }
 
 fn to_h256(hash: &[u8; 32]) -> H256 {
@@ -624,6 +661,76 @@ mod tests {
             assert!(!runtime
                 .dag_manager_runtime_ensure_proposal_period_mapping(100, 0)
                 .expect("idempotent ensure should succeed"));
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_verify_precheck_uses_storage_period_and_expiry() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_verify_precheck");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("runtime should initialize");
+            runtime
+                .dag_manager_runtime_rebuild(DagManagerSnapshot {
+                    old_anchor: [1u8; 32],
+                    anchor: [1u8; 32],
+                    anchor_level: 8,
+                    period: 5,
+                    max_level: 8,
+                    dag_expiry_level: 4,
+                    non_finalized_min_difficulty: u32::MAX,
+                    non_finalized_blocks: vec![],
+                })
+                .expect("rebuild should succeed");
+
+            let missing_period = runtime
+                .dag_manager_runtime_verify_precheck(DagVerifyPrecheckBlock {
+                    level: 3,
+                    pivot: [1u8; 32],
+                    tips: vec![],
+                })
+                .expect("precheck should succeed");
+            assert!(!missing_period.continue_validation);
+            assert_eq!(
+                missing_period.reject_code,
+                rustaxa_consensus::dag::DAG_VERIFY_REJECT_AHEAD_BLOCK
+            );
+
+            runtime
+                .dag_manager_runtime_ensure_proposal_period_mapping(3, 5)
+                .expect("mapping write should succeed");
+            let expired = runtime
+                .dag_manager_runtime_verify_precheck(DagVerifyPrecheckBlock {
+                    level: 3,
+                    pivot: [1u8; 32],
+                    tips: vec![],
+                })
+                .expect("precheck should succeed");
+            assert!(!expired.continue_validation);
+            assert_eq!(
+                expired.reject_code,
+                rustaxa_consensus::dag::DAG_VERIFY_REJECT_EXPIRED_BLOCK
+            );
+
+            runtime
+                .dag_manager_runtime_ensure_proposal_period_mapping(4, 5)
+                .expect("mapping write should succeed");
+            let continues = runtime
+                .dag_manager_runtime_verify_precheck(DagVerifyPrecheckBlock {
+                    level: 4,
+                    pivot: [1u8; 32],
+                    tips: vec![],
+                })
+                .expect("precheck should succeed");
+            assert!(continues.continue_validation);
+            assert_eq!(continues.reject_code, 0);
+            assert!(continues.proposal_period_found);
+            assert_eq!(continues.proposal_period, 5);
         }
 
         let _ = fs::remove_dir_all(&temp_dir);

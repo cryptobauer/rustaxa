@@ -318,7 +318,8 @@ The current Rust starting point is intentionally small:
 
 - `rustaxa-consensus` contains early FinalChain read/index logic, Rust-backed DAG graph state, Rust-backed
   sortition efficiency/threshold runtime state, Rust-backed PBFT chain head/validation state, and Rust-backed
-  proposed PBFT block cache and period-data queue metadata state.
+  proposed PBFT block cache, period-data queue metadata state, and the first DagManager `verifyBlock` deterministic
+  precheck decisions.
 - `rustaxa-types` contains shared Rust domain and codec types.
 - `rustaxa-storage` contains storage repositories that consensus should use through narrow ports.
 
@@ -327,7 +328,8 @@ The current Rust starting point is intentionally small:
 1. Inventory consensus APIs, dependencies, tests, and current Rust shim gaps.
 2. Create a tracker that classifies each item as Rust-backed, shim-stubbed, C++-owned temporary, or out of scope.
 3. Introduce pure Rust domain types for PBFT rounds, steps, votes, DAG ordering metadata, and eligibility outputs.
-4. Port DAG graph operations before `DagManager`: pivot/tip availability, ghost path, ordering, counters, and storage-facing queries.
+4. Port DAG graph operations before broader `DagManager` orchestration: pivot/tip availability, ghost path, ordering,
+   counters, storage-facing queries, and deterministic `verifyBlock` precheck rejects.
 5. Define Rust ports for DPoS eligibility, eligible vote count, total vote count, and VRF key access.
 6. Replace the temporary `dposIsEligible` shim behavior once the eligibility port has a real implementation.
 7. Finish the PBFT support slice by adding broader manager-level validation around the now Rust-backed primitives:

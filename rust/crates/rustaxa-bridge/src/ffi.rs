@@ -396,6 +396,21 @@ pub mod rustaxa_ffi {
         missing_references: Vec<DagHash>,
     }
 
+    /// C++-originated payload for Rust DAG block verification prechecks.
+    struct DagVerifyPrecheckBlock {
+        level: u64,
+        pivot: [u8; 32],
+        tips: Vec<DagHash>,
+    }
+
+    /// Rust DAG block verification precheck decision.
+    struct DagVerifyPrecheckResult {
+        continue_validation: bool,
+        reject_code: u32,
+        proposal_period_found: bool,
+        proposal_period: u64,
+    }
+
     struct DagManagerBlock {
         hash: [u8; 32],
         pivot: [u8; 32],
@@ -637,6 +652,10 @@ pub mod rustaxa_ffi {
         pub fn dag_manager_runtime_persistence_counters(
             self: &BridgeDagManagerRuntime,
         ) -> Result<DagPersistenceCounters>;
+        pub fn dag_manager_runtime_verify_precheck(
+            self: &BridgeDagManagerRuntime,
+            block: DagVerifyPrecheckBlock,
+        ) -> Result<DagVerifyPrecheckResult>;
 
         // Consensus PBFT chain
 

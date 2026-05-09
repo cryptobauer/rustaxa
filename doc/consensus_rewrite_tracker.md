@@ -107,7 +107,8 @@ Required test coverage and parity gates for the Rust consensus model are defined
 Status: `rust-backed` landed for C++ `Dag`/`PivotTree` graph operations under `RUSTAXA_ENABLE`. `DagManager`
 orchestration remains C++, but Rust-enabled builds now keep a Rust-owned `DagManagerState` for deterministic in-memory
 state. Frontier, ghost path, ordering, graphviz output, counters, anchors, period, expiry level, non-finalized indexes,
-minimum difficulty, and pivot/tip availability metadata route through that state.
+minimum difficulty, pivot/tip availability metadata, storage-backed persistence, and the first deterministic
+`verifyBlock` precheck rejects route through that state/runtime.
 
 Target behavior:
 
@@ -124,8 +125,8 @@ Rust design sketch:
 - Ordering is deterministic and covered by Rust unit tests and CXX bridge fixture tests.
 - The bridge uses fixed hash bytes and explicit conversion at the boundary.
 - `DagManager` remains in C++ during this slice; command-side DB writes, transaction handling, events, and networking
-  still stay with the C++ side while deterministic in-memory state moves through `DagManagerState` under
-  `RUSTAXA_ENABLE`.
+  still stay with the C++ side while deterministic in-memory state and storage-backed prechecks move through
+  `DagManagerState`/`BridgeDagManagerRuntime` under `RUSTAXA_ENABLE`.
 
 Required tests:
 
@@ -133,6 +134,9 @@ Required tests:
 - CXX bridge fixture tests for Rust graph behavior. Landed under `rust_consensus_tests`.
 - C++ public API regression/parity tests through the Rust-backed `Dag` wrapper. Landed through `dag_test`.
 - Existing C++ tests: `dag_test`, `dag_block_test`, and ordering cases in `full_node_test`.
+- Rust `verifyBlock` precheck coverage for tip count/uniqueness, missing proposal-period mapping, and expired block
+  decisions. Landed in `rustaxa-consensus` and `rustaxa-bridge`; full transaction/VDF/DPOS/gas verification remains a
+  later slice.
 
 Open questions:
 
@@ -161,6 +165,7 @@ Open questions:
 | Create Rust DAG graph module | `rust-backed` | Landed as standalone Rust domain plus bridge tests and C++ `Dag` production routing through a full overlay shim under `RUSTAXA_ENABLE`. |
 | Route sortition params through Rust | `rust-backed` | Landed under `RUSTAXA_ENABLE_SORTITION_PARAMS`; storage and write batches intentionally remain C++ owned for this slice. |
 | Route verified votes through Rust | `rust-backed` | Landed under `RUSTAXA_ENABLE_VERIFIED_VOTES`; C++ shim preserves live `PbftVote` ownership while Rust owns deterministic index semantics and 2t+1 metadata. VoteManager Rust mode now consumes a single atomic insert outcome in `addVerifiedVote`, removing split unique-voter/voted-value mutation in the Rust-enabled path. |
+| Route DagManager verify prechecks through Rust | `partial` | Tip count/uniqueness, proposal-period availability, and expiry prechecks now route through `BridgeDagManagerRuntime`. Passing the precheck only continues legacy transaction/VDF/DPOS/gas verification; it does not mean public `Verified`. |
 | Define consensus storage ports | `not-started` | Needed before Rust services depend on storage. |
 | Decide CXX bridge shape for consensus hashes and vectors | `rust-backed` for DAG graph | DAG bridge uses fixed bytes and explicit boundary conversion; revisit if PBFT/vote bridges need richer payloads. |
 | Add C++/Rust DAG parity fixture | `rust-backed` | Rust bridge fixture tests and C++ public API regression tests landed. Direct in-process legacy-vs-Rust comparison remains optional if duplicate dependency symbols are resolved. |

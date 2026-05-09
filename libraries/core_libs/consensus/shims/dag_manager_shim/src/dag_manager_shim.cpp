@@ -5,6 +5,7 @@
 #include <iostream>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <stdexcept>
 #include <utility>
@@ -75,6 +76,32 @@ rust::Vec<uint8_t> to_rust_vec(const dev::bytes &bytes) {
     out.push_back(byte);
   }
   return out;
+}
+
+rustaxa::DagVerifyPrecheckBlock to_bridge_verify_precheck_block(const std::shared_ptr<DagBlock> &block) {
+  rustaxa::DagVerifyPrecheckBlock out;
+  out.level = block->getLevel();
+  out.pivot = to_bridge_hash(block->getPivot());
+  out.tips = to_bridge_dag_hashes(block->getTips());
+  return out;
+}
+
+std::optional<DagManager::VerifyBlockReturnType> to_verify_block_reject(uint32_t reject_code) {
+  switch (reject_code) {
+    case 0:
+      return std::nullopt;
+    case 2:
+      return DagManager::VerifyBlockReturnType::AheadBlock;
+    case 6:
+      return DagManager::VerifyBlockReturnType::ExpiredBlock;
+    case 9:
+      return DagManager::VerifyBlockReturnType::FailedTipsVerification;
+    default:
+      // Reject-code skew is an integration error, not an invalid-block outcome.
+      // Do not fall back to DagManagerOld here because that would hide Rust
+      // production routing drift.
+      throw std::runtime_error("DagManager: unknown Rust verify precheck reject code");
+  }
 }
 
 }  // namespace
@@ -195,7 +222,23 @@ std::shared_ptr<DagBlock> DagManager::getDagBlock(const blk_hash_t &hash) const 
 std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::verifyBlock(
     const std::shared_ptr<DagBlock> &blk,
     const std::unordered_map<trx_hash_t, std::shared_ptr<Transaction>> &trxs) {
-  // TODO(rust-rewrite): migrate DAG block verification to Rust instead of DagManagerOld.
+  {
+    std::shared_lock lock(rust_graphs_mutex_);
+    // Rust bridge/storage failures intentionally propagate as exceptions: they
+    // are infrastructure errors, while consensus-invalid blocks are returned as
+    // explicit reject codes.
+    const auto precheck =
+        rust_graphs_->runtime->dag_manager_runtime_verify_precheck(to_bridge_verify_precheck_block(blk));
+    if (const auto reject = to_verify_block_reject(precheck.reject_code); reject.has_value()) {
+      if (*reject == VerifyBlockReturnType::AheadBlock) {
+        seen_blocks_.erase(blk->getHash());
+      }
+      return {*reject, {}};
+    }
+  }
+
+  // TODO(rust-rewrite): migrate remaining transaction/VDF/DPOS/gas DAG block verification to Rust instead of
+  // DagManagerOld.
   return DagManagerOld::verifyBlock(blk, trxs);
 }
 

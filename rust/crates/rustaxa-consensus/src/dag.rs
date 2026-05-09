@@ -47,6 +47,57 @@ pub struct DagPivotTipsValidation {
     pub missing_references: Vec<H256>,
 }
 
+/// Maximum number of tips allowed on one DAG block.
+///
+/// This mirrors legacy `kDagBlockMaxTips` and is used by Rust verify prechecks
+/// to preserve deterministic parity.
+pub const DAG_BLOCK_MAX_TIPS: usize = 16;
+
+/// Legacy C++ `DagManager::VerifyBlockReturnType::AheadBlock` value.
+///
+/// The Rust precheck returns legacy-compatible numeric codes because the CXX
+/// bridge exposes plain structs, while the public C++ enum remains owned by the
+/// existing DagManager API.
+pub const DAG_VERIFY_REJECT_AHEAD_BLOCK: u32 = 2;
+
+/// Legacy C++ `DagManager::VerifyBlockReturnType::ExpiredBlock` value.
+pub const DAG_VERIFY_REJECT_EXPIRED_BLOCK: u32 = 6;
+
+/// Legacy C++ `DagManager::VerifyBlockReturnType::FailedTipsVerification` value.
+pub const DAG_VERIFY_REJECT_FAILED_TIPS_VERIFICATION: u32 = 9;
+
+/// Inputs for deterministic `DagManager::verifyBlock` prechecks.
+///
+/// This struct covers only checks that do not need transaction bodies, VDF
+/// execution, DPOS state, gas estimation, events, or network effects. It is
+/// intentionally codec- and storage-independent so bridge/runtime code can
+/// provide lookup results without moving infrastructure concerns into the
+/// consensus domain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagVerifyPrecheckInput {
+    pub block_level: u64,
+    pub pivot: H256,
+    pub tips: Vec<H256>,
+    pub proposal_period_found: bool,
+    pub proposal_period: u64,
+    pub dag_expiry_level: u64,
+}
+
+/// Decision returned by deterministic `DagManager::verifyBlock` prechecks.
+///
+/// `continue_validation == true` means only this Rust precheck passed; callers
+/// must continue the remaining transaction, VDF, DPOS, and gas checks before
+/// returning the public C++ `Verified` result. When `continue_validation` is
+/// false, `reject_code` is one of the legacy-compatible reject constants in
+/// this module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagVerifyPrecheck {
+    pub continue_validation: bool,
+    pub reject_code: u32,
+    pub proposal_period_found: bool,
+    pub proposal_period: u64,
+}
+
 /// Derives frontier from a ghost path and current leaves.
 ///
 /// Behavior mirrors legacy DagManager frontier rules:
@@ -111,6 +162,38 @@ pub fn validate_pivot_tips_metadata(
         expected_level,
         level_matches,
         missing_references,
+    }
+}
+
+/// Runs deterministic `DagManager::verifyBlock` prechecks.
+///
+/// The order mirrors the deterministic portion of the legacy C++ verification
+/// path: tip count/uniqueness, proposal-period availability, and expiry. The
+/// public `Verified` result is deliberately not produced here because successful
+/// prechecks are only permission to continue the remaining verification stages.
+pub fn validate_dag_verify_precheck(input: DagVerifyPrecheckInput) -> DagVerifyPrecheck {
+    let reject_code = if input.tips.len() > DAG_BLOCK_MAX_TIPS {
+        Some(DAG_VERIFY_REJECT_FAILED_TIPS_VERIFICATION)
+    } else {
+        let mut unique_references = BTreeSet::from([input.pivot]);
+        let has_duplicate_tip = input.tips.iter().any(|tip| !unique_references.insert(*tip));
+
+        if has_duplicate_tip {
+            Some(DAG_VERIFY_REJECT_FAILED_TIPS_VERIFICATION)
+        } else if !input.proposal_period_found {
+            Some(DAG_VERIFY_REJECT_AHEAD_BLOCK)
+        } else if input.block_level < input.dag_expiry_level {
+            Some(DAG_VERIFY_REJECT_EXPIRED_BLOCK)
+        } else {
+            None
+        }
+    };
+
+    DagVerifyPrecheck {
+        continue_validation: reject_code.is_none(),
+        reject_code: reject_code.unwrap_or(0),
+        proposal_period_found: input.proposal_period_found,
+        proposal_period: input.proposal_period,
     }
 }
 
@@ -1092,6 +1175,99 @@ mod tests {
         assert_eq!(result.expected_level, 0);
         assert!(result.level_matches);
         assert!(result.missing_references.is_empty());
+    }
+
+    #[test]
+    fn verify_precheck_rejects_tip_count_over_limit() {
+        let result = validate_dag_verify_precheck(DagVerifyPrecheckInput {
+            block_level: 10,
+            pivot: h(1),
+            tips: (2..=(DAG_BLOCK_MAX_TIPS as u64 + 2)).map(h).collect(),
+            proposal_period_found: true,
+            proposal_period: 7,
+            dag_expiry_level: 0,
+        });
+
+        assert!(!result.continue_validation);
+        assert_eq!(
+            result.reject_code,
+            DAG_VERIFY_REJECT_FAILED_TIPS_VERIFICATION
+        );
+    }
+
+    #[test]
+    fn verify_precheck_rejects_duplicate_pivot_or_tip_reference() {
+        let duplicate_pivot = validate_dag_verify_precheck(DagVerifyPrecheckInput {
+            block_level: 10,
+            pivot: h(1),
+            tips: vec![h(2), h(1)],
+            proposal_period_found: true,
+            proposal_period: 7,
+            dag_expiry_level: 0,
+        });
+        let duplicate_tip = validate_dag_verify_precheck(DagVerifyPrecheckInput {
+            block_level: 10,
+            pivot: h(1),
+            tips: vec![h(2), h(2)],
+            proposal_period_found: true,
+            proposal_period: 7,
+            dag_expiry_level: 0,
+        });
+
+        assert_eq!(
+            duplicate_pivot.reject_code,
+            DAG_VERIFY_REJECT_FAILED_TIPS_VERIFICATION
+        );
+        assert_eq!(
+            duplicate_tip.reject_code,
+            DAG_VERIFY_REJECT_FAILED_TIPS_VERIFICATION
+        );
+    }
+
+    #[test]
+    fn verify_precheck_rejects_missing_proposal_period_before_expiry() {
+        let result = validate_dag_verify_precheck(DagVerifyPrecheckInput {
+            block_level: 1,
+            pivot: h(1),
+            tips: vec![],
+            proposal_period_found: false,
+            proposal_period: 0,
+            dag_expiry_level: 2,
+        });
+
+        assert!(!result.continue_validation);
+        assert_eq!(result.reject_code, DAG_VERIFY_REJECT_AHEAD_BLOCK);
+    }
+
+    #[test]
+    fn verify_precheck_rejects_expired_block() {
+        let result = validate_dag_verify_precheck(DagVerifyPrecheckInput {
+            block_level: 4,
+            pivot: h(1),
+            tips: vec![],
+            proposal_period_found: true,
+            proposal_period: 7,
+            dag_expiry_level: 5,
+        });
+
+        assert!(!result.continue_validation);
+        assert_eq!(result.reject_code, DAG_VERIFY_REJECT_EXPIRED_BLOCK);
+    }
+
+    #[test]
+    fn verify_precheck_continues_for_remaining_validation() {
+        let result = validate_dag_verify_precheck(DagVerifyPrecheckInput {
+            block_level: 5,
+            pivot: h(1),
+            tips: vec![h(2), h(3)],
+            proposal_period_found: true,
+            proposal_period: 7,
+            dag_expiry_level: 5,
+        });
+
+        assert!(result.continue_validation);
+        assert_eq!(result.reject_code, 0);
+        assert_eq!(result.proposal_period, 7);
     }
 
     fn record(hash: u64, pivot: u64, tips: &[u64], level: u64, difficulty: u64) -> DagManagerBlock {
