@@ -2,7 +2,11 @@
 
 #include <array>
 #include <iostream>
+#include <map>
+#include <mutex>
+#include <shared_mutex>
 #include <utility>
+#include <vector>
 
 #include "dag/dag_block.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
@@ -11,6 +15,48 @@ namespace taraxa {
 namespace {
 
 std::array<uint8_t, 32> to_bridge_hash(const blk_hash_t &hash) { return hash.asArray(); }
+
+rustaxa::DagHash to_bridge_dag_hash(const blk_hash_t &hash) { return rustaxa::DagHash{to_bridge_hash(hash)}; }
+
+rust::Vec<rustaxa::DagHash> to_bridge_dag_hashes(const std::vector<blk_hash_t> &hashes) {
+  rust::Vec<rustaxa::DagHash> out;
+  out.reserve(hashes.size());
+  for (const auto &hash : hashes) {
+    out.push_back(to_bridge_dag_hash(hash));
+  }
+  return out;
+}
+
+rust::Vec<rustaxa::DagLevelHashes> to_bridge_level_hashes(
+    const std::map<uint64_t, std::unordered_set<blk_hash_t>> &non_finalized_blks) {
+  rust::Vec<rustaxa::DagLevelHashes> out;
+  out.reserve(non_finalized_blks.size());
+  for (const auto &[level, hashes] : non_finalized_blks) {
+    rustaxa::DagLevelHashes level_hashes;
+    level_hashes.level = level;
+    level_hashes.hashes.reserve(hashes.size());
+    for (const auto &hash : hashes) {
+      level_hashes.hashes.push_back(to_bridge_dag_hash(hash));
+    }
+    out.push_back(std::move(level_hashes));
+  }
+  return out;
+}
+
+blk_hash_t from_bridge_hash(const std::array<uint8_t, 32> &hash) {
+  return blk_hash_t(hash.data(), blk_hash_t::ConstructFromPointer);
+}
+
+blk_hash_t from_bridge_dag_hash(const rustaxa::DagHash &hash) { return from_bridge_hash(hash.hash); }
+
+std::vector<blk_hash_t> from_bridge_dag_hashes(const rust::Vec<rustaxa::DagHash> &hashes) {
+  std::vector<blk_hash_t> out;
+  out.reserve(hashes.size());
+  for (const auto &hash : hashes) {
+    out.emplace_back(from_bridge_dag_hash(hash));
+  }
+  return out;
+}
 
 rustaxa::DagReferenceMetadata to_bridge_reference(const blk_hash_t &hash, const std::shared_ptr<DagBlock> &block) {
   rustaxa::DagReferenceMetadata out;
@@ -22,11 +68,84 @@ rustaxa::DagReferenceMetadata to_bridge_reference(const blk_hash_t &hash, const 
 
 }  // namespace
 
+struct DagManager::RustDagManagerGraphs {
+  explicit RustDagManagerGraphs(const blk_hash_t &genesis)
+      : total_dag(rustaxa::create_dag_graph(to_bridge_hash(genesis))),
+        pivot_tree(rustaxa::create_dag_graph(to_bridge_hash(genesis))),
+        anchor(genesis) {}
+
+  rust::Box<rustaxa::BridgeDagGraph> total_dag;
+  rust::Box<rustaxa::BridgeDagGraph> pivot_tree;
+  blk_hash_t anchor;
+};
+
 DagManager::DagManager(const FullNodeConfig &config, addr_t node_addr, std::shared_ptr<TransactionManager> trx_mgr,
                        std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
                        std::shared_ptr<DbStorage> db, std::shared_ptr<KeyManager> key_manager)
     : DagManagerOld(config, node_addr, std::move(trx_mgr), std::move(pbft_chain), std::move(final_chain), std::move(db),
-                    std::move(key_manager)) {}
+                    std::move(key_manager)),
+      rust_graphs_(std::make_unique<RustDagManagerGraphs>(config.genesis.dag_genesis_block.getHash())) {
+  rebuildRustGraphsFromOld();
+}
+
+DagManager::~DagManager() = default;
+
+void DagManager::rebuildRustGraphsFromOld() {
+  const auto anchors = DagManagerOld::getAnchors();
+  const auto [_, non_finalized_blks] = DagManagerOld::getNonFinalizedBlocks();
+  std::vector<std::shared_ptr<DagBlock>> non_finalized_blocks;
+  for (const auto &[level, hashes] : non_finalized_blks) {
+    (void)level;
+    for (const auto &hash : hashes) {
+      if (auto blk = DagManagerOld::getDagBlock(hash); blk) {
+        non_finalized_blocks.push_back(std::move(blk));
+      }
+    }
+  }
+
+  std::unique_lock lock(rust_graphs_mutex_);
+  rust_graphs_->anchor = anchors.second.isZero() ? rust_graphs_->anchor : anchors.second;
+  rust_graphs_->total_dag->dag_clear();
+  rust_graphs_->pivot_tree->dag_clear();
+  if (!rust_graphs_->total_dag->dag_add_vertex_edges(to_bridge_hash(rust_graphs_->anchor),
+                                                     to_bridge_hash(kNullBlockHash), {})) {
+    std::cerr << "DagManager: failed to add Rust total DAG anchor " << rust_graphs_->anchor << std::endl;
+  }
+  if (!rust_graphs_->pivot_tree->dag_add_vertex_edges(to_bridge_hash(rust_graphs_->anchor),
+                                                      to_bridge_hash(kNullBlockHash), {})) {
+    std::cerr << "DagManager: failed to add Rust pivot DAG anchor " << rust_graphs_->anchor << std::endl;
+  }
+
+  for (const auto &blk : non_finalized_blocks) {
+    if (!addBlockToRustGraphs(blk)) {
+      std::cerr << "DagManager: failed to mirror DAG block into Rust graph " << blk->getHash() << std::endl;
+    }
+  }
+}
+
+bool DagManager::addBlockToRustGraphs(const std::shared_ptr<DagBlock> &blk) {
+  const auto block_hash = blk->getHash();
+  if (rust_graphs_->total_dag->dag_has_vertex(to_bridge_hash(block_hash)) &&
+      rust_graphs_->pivot_tree->dag_has_vertex(to_bridge_hash(block_hash))) {
+    return true;
+  }
+
+  const auto pivot_hash = blk->getPivot();
+  const auto tips = blk->getTips();
+  const auto total_added = rust_graphs_->total_dag->dag_add_vertex_edges(
+      to_bridge_hash(block_hash), to_bridge_hash(pivot_hash), to_bridge_dag_hashes(tips));
+  const auto pivot_added =
+      rust_graphs_->pivot_tree->dag_add_vertex_edges(to_bridge_hash(block_hash), to_bridge_hash(pivot_hash), {});
+  return total_added && pivot_added;
+}
+
+std::pair<blk_hash_t, std::vector<blk_hash_t>> DagManager::getRustFrontier() const {
+  std::shared_lock lock(rust_graphs_mutex_);
+  const auto pivot_chain = rust_graphs_->pivot_tree->dag_ghost_path(to_bridge_hash(rust_graphs_->anchor));
+  const auto leaves = rust_graphs_->total_dag->dag_leaves();
+  const auto frontier = rustaxa::dag_derive_frontier(pivot_chain, leaves);
+  return {from_bridge_hash(frontier.pivot), from_bridge_dag_hashes(frontier.tips)};
+}
 
 std::shared_ptr<DagManager> DagManager::getShared() {
   try {
@@ -96,32 +215,60 @@ std::pair<bool, std::vector<blk_hash_t>> DagManager::pivotAndTipsAvailable(const
 std::pair<bool, std::vector<blk_hash_t>> DagManager::addDagBlock(const std::shared_ptr<DagBlock> &blk,
                                                                  SharedTransactions &&trxs, bool proposed, bool save) {
   // TODO(rust-rewrite): migrate DAG block insertion/frontier updates to Rust instead of DagManagerOld.
-  return DagManagerOld::addDagBlock(blk, std::move(trxs), proposed, save);
+  const auto was_known_save = save && DagManagerOld::isDagBlockKnown(blk->getHash());
+  auto result = DagManagerOld::addDagBlock(blk, std::move(trxs), proposed, save);
+  if (result.first && !was_known_save) {
+    bool mirrored = false;
+    {
+      std::unique_lock lock(rust_graphs_mutex_);
+      mirrored = addBlockToRustGraphs(blk);
+    }
+    if (!mirrored) {
+      std::cerr << "DagManager: failed to mirror added DAG block into Rust graph " << blk->getHash()
+                << "; rebuilding Rust graph mirror" << std::endl;
+      rebuildRustGraphsFromOld();
+    }
+  }
+  return result;
 }
 
 vec_blk_t DagManager::getDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period) {
-  // TODO(rust-rewrite): migrate DAG ordering to Rust instead of DagManagerOld.
-  return DagManagerOld::getDagBlockOrder(anchor, period);
+  if (period != DagManagerOld::getLatestPeriod() + 1) {
+    return {};
+  }
+  if (DagManagerOld::getAnchors().second == anchor) {
+    return {};
+  }
+
+  const auto [_, non_finalized_blks] = DagManagerOld::getNonFinalizedBlocks();
+  std::shared_lock lock(rust_graphs_mutex_);
+  const auto order =
+      rust_graphs_->total_dag->dag_compute_order(to_bridge_hash(anchor), to_bridge_level_hashes(non_finalized_blks));
+  if (!order.found) {
+    return {};
+  }
+  return from_bridge_dag_hashes(order.hashes);
 }
 
 uint DagManager::setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, vec_blk_t const &dag_order) {
   // TODO(rust-rewrite): migrate finalized DAG order application to Rust instead of DagManagerOld.
-  return DagManagerOld::setDagBlockOrder(anchor, period, dag_order);
+  const auto finalized_count = DagManagerOld::setDagBlockOrder(anchor, period, dag_order);
+  rebuildRustGraphsFromOld();
+  return finalized_count;
 }
 
 std::optional<std::pair<blk_hash_t, std::vector<blk_hash_t>>> DagManager::getLatestPivotAndTips() const {
-  // TODO(rust-rewrite): migrate frontier retrieval to Rust instead of DagManagerOld.
-  return DagManagerOld::getLatestPivotAndTips();
+  return {getRustFrontier()};
 }
 
 std::vector<blk_hash_t> DagManager::getGhostPath(const blk_hash_t &source) const {
-  // TODO(rust-rewrite): migrate ghost-path traversal to Rust instead of DagManagerOld.
-  return DagManagerOld::getGhostPath(source);
+  std::shared_lock lock(rust_graphs_mutex_);
+  return from_bridge_dag_hashes(rust_graphs_->pivot_tree->dag_ghost_path(to_bridge_hash(source)));
 }
 
 std::vector<blk_hash_t> DagManager::getGhostPath() const {
-  // TODO(rust-rewrite): migrate anchor ghost-path traversal to Rust instead of DagManagerOld.
-  return DagManagerOld::getGhostPath();
+  std::shared_lock lock(rust_graphs_mutex_);
+  return from_bridge_dag_hashes(rust_graphs_->pivot_tree->dag_ghost_path(to_bridge_hash(rust_graphs_->anchor)));
 }
 
 void DagManager::drawTotalGraph(std::string const &str) const {
@@ -140,13 +287,15 @@ void DagManager::drawGraph(std::string const &dotfile) const {
 }
 
 std::pair<uint64_t, uint64_t> DagManager::getNumVerticesInDag() const {
-  // TODO(rust-rewrite): migrate DAG vertex counting to Rust instead of DagManagerOld.
-  return DagManagerOld::getNumVerticesInDag();
+  const auto persisted_count = DagManagerOld::getNumVerticesInDag().first;
+  std::shared_lock lock(rust_graphs_mutex_);
+  return {persisted_count, rust_graphs_->total_dag->dag_vertex_count()};
 }
 
 std::pair<uint64_t, uint64_t> DagManager::getNumEdgesInDag() const {
-  // TODO(rust-rewrite): migrate DAG edge counting to Rust instead of DagManagerOld.
-  return DagManagerOld::getNumEdgesInDag();
+  const auto persisted_count = DagManagerOld::getNumEdgesInDag().first;
+  std::shared_lock lock(rust_graphs_mutex_);
+  return {persisted_count, rust_graphs_->total_dag->dag_edge_count()};
 }
 
 level_t DagManager::getMaxLevel() const {
@@ -182,8 +331,8 @@ DagManager::getNonFinalizedBlocksWithTransactions(const std::unordered_set<blk_h
 }
 
 DagFrontier DagManager::getDagFrontier() {
-  // TODO(rust-rewrite): migrate DAG frontier cache to Rust instead of DagManagerOld.
-  return DagManagerOld::getDagFrontier();
+  const auto [pivot, tips] = getRustFrontier();
+  return DagFrontier(pivot, tips);
 }
 
 std::pair<size_t, size_t> DagManager::getNonFinalizedBlocksSize() const {

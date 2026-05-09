@@ -11,12 +11,15 @@ namespace taraxa {
  * with a local TODO comment so remaining migration work stays visible.
  */
 class DagManager : public DagManagerOld {
+  struct RustDagManagerGraphs;
+
  public:
   using VerifyBlockReturnType = DagManagerOld::VerifyBlockReturnType;
 
   explicit DagManager(const FullNodeConfig &config, addr_t node_addr, std::shared_ptr<TransactionManager> trx_mgr,
                       std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
                       std::shared_ptr<DbStorage> db, std::shared_ptr<KeyManager> key_manager);
+  ~DagManager();
 
   DagManager(const DagManager &) = delete;
   DagManager(DagManager &&) = delete;
@@ -67,6 +70,14 @@ class DagManager : public DagManagerOld {
 
   static dev::bytes getVdfMessage(blk_hash_t const &hash, SharedTransactions const &trxs);
   static dev::bytes getVdfMessage(blk_hash_t const &hash, std::vector<trx_hash_t> const &trx_hashes);
+
+ private:
+  void rebuildRustGraphsFromOld();
+  bool addBlockToRustGraphs(const std::shared_ptr<DagBlock> &blk);
+  std::pair<blk_hash_t, std::vector<blk_hash_t>> getRustFrontier() const;
+
+  mutable std::shared_mutex rust_graphs_mutex_;
+  std::unique_ptr<RustDagManagerGraphs> rust_graphs_;
 };
 
 }  // namespace taraxa
