@@ -1,5 +1,3 @@
-#include "dag/dag_manager.hpp"
-
 #include <array>
 #include <fstream>
 #include <iostream>
@@ -12,6 +10,7 @@
 #include <vector>
 
 #include "dag/dag_block.hpp"
+#include "dag/dag_manager.hpp"
 #include "key_manager/key_manager.hpp"
 #include "network/network.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
@@ -95,6 +94,12 @@ std::optional<DagManager::VerifyBlockReturnType> to_verify_block_reject(uint32_t
       return DagManager::VerifyBlockReturnType::MissingTransaction;
     case 2:
       return DagManager::VerifyBlockReturnType::AheadBlock;
+    case 3:
+      return DagManager::VerifyBlockReturnType::FailedVdfVerification;
+    case 4:
+      return DagManager::VerifyBlockReturnType::FutureBlock;
+    case 5:
+      return DagManager::VerifyBlockReturnType::NotEligible;
     case 6:
       return DagManager::VerifyBlockReturnType::ExpiredBlock;
     case 7:
@@ -111,6 +116,32 @@ std::optional<DagManager::VerifyBlockReturnType> to_verify_block_reject(uint32_t
       // production routing drift.
       throw std::runtime_error("DagManager: unknown Rust verify precheck reject code");
   }
+}
+
+rustaxa::DagVerifyVdfPrepareInput to_bridge_vdf_prepare_input(bool vrf_key_found, uint64_t eligible_vote_count,
+                                                              uint64_t vdf_max_vote_count) {
+  rustaxa::DagVerifyVdfPrepareInput out;
+  out.vrf_key_found = vrf_key_found;
+  out.eligible_vote_count = eligible_vote_count;
+  out.vdf_max_vote_count = vdf_max_vote_count;
+  return out;
+}
+
+rustaxa::DagVerifyAuthorizationInput to_bridge_authorization_input(bool vdf_valid, bool dpos_snapshot_available,
+                                                                   bool dpos_eligible) {
+  rustaxa::DagVerifyAuthorizationInput out;
+  out.vdf_valid = vdf_valid;
+  out.dpos_snapshot_available = dpos_snapshot_available;
+  out.dpos_eligible = dpos_eligible;
+  return out;
+}
+
+std::optional<DagManager::VerifyBlockReturnType> verify_authorization_decision(bool vdf_valid,
+                                                                               bool dpos_snapshot_available,
+                                                                               bool dpos_eligible) {
+  const auto authorization = rustaxa::dag_verify_authorization(
+      to_bridge_authorization_input(vdf_valid, dpos_snapshot_available, dpos_eligible));
+  return to_verify_block_reject(authorization.reject_code);
 }
 
 rustaxa::DagVerifyTransactionAvailabilityInput to_bridge_transaction_availability_input(
@@ -256,8 +287,7 @@ std::shared_ptr<DagBlock> DagManager::getDagBlock(const blk_hash_t &hash) const 
 }
 
 std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::verifyBlock(
-    const std::shared_ptr<DagBlock> &blk,
-    const std::unordered_map<trx_hash_t, std::shared_ptr<Transaction>> &trxs) {
+    const std::shared_ptr<DagBlock> &blk, const std::unordered_map<trx_hash_t, std::shared_ptr<Transaction>> &trxs) {
   const auto &block_hash = blk->getHash();
   uint64_t proposal_period = 0;
   {
@@ -308,28 +338,42 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
   }
 
   const auto pk = key_manager_->getVrfKey(proposal_period, blk->getSender());
-  if (!pk) {
-    return {VerifyBlockReturnType::FailedVdfVerification, {}};
+  uint64_t eligible_vote_count = 0;
+  uint64_t vdf_max_vote_count = validator_max_vote_;
+  if (pk) {
+    eligible_vote_count = final_chain_->dposEligibleVoteCount(proposal_period, blk->getSender());
+    if (proposal_period < genesis_config_.state.hardforks.magnolia_hf.block_num) {
+      vdf_max_vote_count = final_chain_->dposEligibleTotalVoteCount(proposal_period);
+    }
+  }
+  auto vdf_prepare = rustaxa::dag_verify_vdf_prepare(
+      to_bridge_vdf_prepare_input(static_cast<bool>(pk), eligible_vote_count, vdf_max_vote_count));
+  if (const auto reject = to_verify_block_reject(vdf_prepare.reject_code); reject.has_value()) {
+    return {*reject, {}};
   }
 
+  bool vdf_valid = true;
   try {
     const auto proposal_period_hash = db_->getPeriodBlockHash(proposal_period);
-    const auto vote_count = final_chain_->dposEligibleVoteCount(proposal_period, blk->getSender());
-    const auto max_vote_count = proposal_period < genesis_config_.state.hardforks.magnolia_hf.block_num
-                                    ? final_chain_->dposEligibleTotalVoteCount(proposal_period)
-                                    : validator_max_vote_;
-    blk->verifyVdf(sortition_params_manager_.getSortitionParams(proposal_period), proposal_period_hash, *pk, vote_count,
-                   max_vote_count);
+    blk->verifyVdf(sortition_params_manager_.getSortitionParams(proposal_period), proposal_period_hash, *pk,
+                   vdf_prepare.vote_count, vdf_prepare.max_vote_count);
   } catch (vdf_sortition::VdfSortition::InvalidVdfSortition const &) {
-    return {VerifyBlockReturnType::FailedVdfVerification, {}};
+    vdf_valid = false;
+  }
+  if (const auto reject = verify_authorization_decision(vdf_valid, true, true); reject.has_value()) {
+    return {*reject, {}};
   }
 
+  bool dpos_eligible = false;
+  bool dpos_snapshot_available = true;
   try {
-    if (!final_chain_->dposIsEligible(proposal_period, blk->getSender())) {
-      return {VerifyBlockReturnType::NotEligible, {}};
-    }
+    dpos_eligible = final_chain_->dposIsEligible(proposal_period, blk->getSender());
   } catch (state_api::ErrFutureBlock &) {
-    return {VerifyBlockReturnType::FutureBlock, {}};
+    dpos_snapshot_available = false;
+  }
+  if (const auto reject = verify_authorization_decision(true, dpos_snapshot_available, dpos_eligible);
+      reject.has_value()) {
+    return {*reject, {}};
   }
 
   const auto [dag_gas_limit, pbft_gas_limit] = genesis_config_.getGasLimits(proposal_period);
@@ -353,9 +397,9 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
     }
   }
 
-  const auto gas = rustaxa::dag_verify_gas(to_bridge_gas_input(blk->getGasEstimation(), estimated_transactions_weight,
-                                                               dag_gas_limit, pbft_gas_limit,
-                                                               std::move(tip_gas_estimations)));
+  const auto gas =
+      rustaxa::dag_verify_gas(to_bridge_gas_input(blk->getGasEstimation(), estimated_transactions_weight, dag_gas_limit,
+                                                  pbft_gas_limit, std::move(tip_gas_estimations)));
   if (const auto reject = to_verify_block_reject(gas.reject_code); reject.has_value()) {
     return {*reject, {}};
   }
@@ -576,22 +620,16 @@ std::shared_mutex &DagManager::getDagMutex() {
   return DagManagerOld::getDagMutex();
 }
 
-SortitionParamsManager &DagManager::sortitionParamsManager() {
-  return sortition_params_manager_;
-}
+SortitionParamsManager &DagManager::sortitionParamsManager() { return sortition_params_manager_; }
 
-const DagConfig &DagManager::getDagConfig() const {
-  return genesis_config_.dag;
-}
+const DagConfig &DagManager::getDagConfig() const { return genesis_config_.dag; }
 
 uint64_t DagManager::getDagExpiryLevel() const {
   std::shared_lock lock(rust_graphs_mutex_);
   return rust_graphs_->runtime->dag_manager_runtime_dag_expiry_level();
 }
 
-uint64_t DagManager::getMaxLevelsPerPeriod() const {
-  return max_levels_per_period_;
-}
+uint64_t DagManager::getMaxLevelsPerPeriod() const { return max_levels_per_period_; }
 
 dev::bytes DagManager::getVdfMessage(blk_hash_t const &hash, SharedTransactions const &trxs) {
   // TODO(rust-rewrite): migrate DAG VDF message encoding to Rust instead of DagManagerOld.

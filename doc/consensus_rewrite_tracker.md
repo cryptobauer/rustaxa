@@ -109,8 +109,8 @@ orchestration remains C++, but Rust-enabled builds now keep a Rust-owned `DagMan
 state. Frontier, ghost path, ordering, graphviz output, counters, anchors, period, expiry level, non-finalized indexes,
 minimum difficulty, pivot/tip availability metadata, storage-backed persistence, and the first deterministic
 `verifyBlock` reject decisions route through that state/runtime. The Rust-mode `DagManager` shim now owns the
-`verifyBlock` flow directly for prechecks, transaction materialization, VDF/DPOS calls, and Rust-backed gas policy
-decisions instead of forwarding the method wholesale to `DagManagerOld`.
+`verifyBlock` flow directly for prechecks, transaction materialization, VDF/DPoS authorization decision ordering, and
+Rust-backed gas policy decisions instead of forwarding the method wholesale to `DagManagerOld`.
 
 Target behavior:
 
@@ -137,8 +137,9 @@ Required tests:
 - C++ public API regression/parity tests through the Rust-backed `Dag` wrapper. Landed through `dag_test`.
 - Existing C++ tests: `dag_test`, `dag_block_test`, and ordering cases in `full_node_test`.
 - Rust `verifyBlock` coverage for tip count/uniqueness, missing proposal-period mapping, expired block, transaction
-  availability, and gas-policy decisions. Landed in `rustaxa-consensus` and `rustaxa-bridge`; VDF/DPOS calls are still
-  C++ dependency calls from the shim, but no longer require a `DagManagerOld::verifyBlock` method forward.
+  availability, VDF/DPoS authorization decision ordering, and gas-policy decisions. Landed in `rustaxa-consensus` and
+  `rustaxa-bridge`; live VDF verification and DPoS data reads are still C++/FinalChain dependency calls from the shim,
+  but no longer require a `DagManagerOld::verifyBlock` method forward.
 
 Open questions:
 
@@ -167,7 +168,7 @@ Open questions:
 | Create Rust DAG graph module | `rust-backed` | Landed as standalone Rust domain plus bridge tests and C++ `Dag` production routing through a full overlay shim under `RUSTAXA_ENABLE`. |
 | Route sortition params through Rust | `rust-backed` | Landed under `RUSTAXA_ENABLE_SORTITION_PARAMS`; storage and write batches intentionally remain C++ owned for this slice. |
 | Route verified votes through Rust | `rust-backed` | Landed under `RUSTAXA_ENABLE_VERIFIED_VOTES`; C++ shim preserves live `PbftVote` ownership while Rust owns deterministic index semantics and 2t+1 metadata. VoteManager Rust mode now consumes a single atomic insert outcome in `addVerifiedVote`, removing split unique-voter/voted-value mutation in the Rust-enabled path. |
-| Route DagManager verify flow through Rust/shim | `partial` | Tip count/uniqueness, proposal-period availability, expiry, transaction availability, and gas-policy decisions route through Rust. The shim owns live transaction fetching and C++ VDF/DPOS dependency calls. Remaining gaps: move VDF/sortition and DPoS eligibility decisions behind Rust domain ports. |
+| Route DagManager verify flow through Rust/shim | `partial` | Tip count/uniqueness, proposal-period availability, expiry, transaction availability, VDF/DPoS authorization ordering, and gas-policy decisions route through Rust. The shim owns live transaction fetching, C++ VDF verification, and C++/FinalChain DPoS data calls, including the period-effective VDF max vote count until DPoS data ports move fully into Rust. Remaining gaps: move VDF/sortition verification and DPoS eligibility data access behind Rust domain ports. |
 | Define consensus storage ports | `not-started` | Needed before Rust services depend on storage. |
 | Decide CXX bridge shape for consensus hashes and vectors | `rust-backed` for DAG graph | DAG bridge uses fixed bytes and explicit boundary conversion; revisit if PBFT/vote bridges need richer payloads. |
 | Add C++/Rust DAG parity fixture | `rust-backed` | Rust bridge fixture tests and C++ public API regression tests landed. Direct in-process legacy-vs-Rust comparison remains optional if duplicate dependency symbols are resolved. |

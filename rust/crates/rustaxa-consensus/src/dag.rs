@@ -60,6 +60,15 @@ pub const DAG_BLOCK_MAX_TIPS: usize = 16;
 /// existing DagManager API.
 pub const DAG_VERIFY_REJECT_AHEAD_BLOCK: u32 = 2;
 
+/// Legacy C++ `DagManager::VerifyBlockReturnType::FailedVdfVerification` value.
+pub const DAG_VERIFY_REJECT_FAILED_VDF_VERIFICATION: u32 = 3;
+
+/// Legacy C++ `DagManager::VerifyBlockReturnType::FutureBlock` value.
+pub const DAG_VERIFY_REJECT_FUTURE_BLOCK: u32 = 4;
+
+/// Legacy C++ `DagManager::VerifyBlockReturnType::NotEligible` value.
+pub const DAG_VERIFY_REJECT_NOT_ELIGIBLE: u32 = 5;
+
 /// Legacy C++ `DagManager::VerifyBlockReturnType::ExpiredBlock` value.
 pub const DAG_VERIFY_REJECT_EXPIRED_BLOCK: u32 = 6;
 
@@ -77,6 +86,21 @@ pub const DAG_VERIFY_REJECT_MISSING_TIP: u32 = 10;
 
 /// Legacy C++ `DagManager::VerifyBlockReturnType::MissingTransaction` value.
 pub const DAG_VERIFY_REJECT_MISSING_TRANSACTION: u32 = 1;
+
+/// Rust DAG verification reason: continue validation.
+pub const DAG_VERIFY_REASON_CONTINUE: u32 = 0;
+
+/// Rust DAG verification reason: VRF key was not available.
+pub const DAG_VERIFY_REASON_MISSING_VRF_KEY: u32 = 1;
+
+/// Rust DAG verification reason: VDF proof did not validate.
+pub const DAG_VERIFY_REASON_INVALID_VDF: u32 = 2;
+
+/// Rust DAG verification reason: DPoS state for the block is not available.
+pub const DAG_VERIFY_REASON_FUTURE_DPOS_SNAPSHOT: u32 = 3;
+
+/// Rust DAG verification reason: block sender is not DPoS eligible.
+pub const DAG_VERIFY_REASON_NOT_ELIGIBLE: u32 = 4;
 
 /// Inputs for deterministic `DagManager::verifyBlock` prechecks.
 ///
@@ -162,6 +186,57 @@ pub struct DagVerifyGasInput {
 pub struct DagVerifyGas {
     pub continue_validation: bool,
     pub reject_code: u32,
+}
+
+/// Inputs for preparing VDF verification in `DagManager::verifyBlock`.
+///
+/// C++ still owns live VRF-key lookup and DPoS vote-count/max-vote reads. Rust
+/// owns the deterministic decision for missing VRF keys and carries the
+/// supplied VDF vote counts to the remaining C++ VDF verifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagVerifyVdfPrepareInput {
+    pub vrf_key_found: bool,
+    pub eligible_vote_count: u64,
+    pub vdf_max_vote_count: u64,
+}
+
+/// VDF verification preparation result.
+///
+/// When `continue_validation` is true, C++ must use `vote_count` and
+/// `max_vote_count` for the C++ VDF verifier. When false, `reject_code` is a
+/// legacy-compatible `VerifyBlockReturnType` value and `reason_code` explains
+/// the Rust decision for tests and diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagVerifyVdfPrepare {
+    pub continue_validation: bool,
+    pub reject_code: u32,
+    pub reason_code: u32,
+    pub vote_count: u64,
+    pub max_vote_count: u64,
+}
+
+/// Inputs for deterministic authorization decisions in
+/// `DagManager::verifyBlock`.
+///
+/// C++ still performs live VDF verification and DPoS state access. Rust owns
+/// the ordering that maps those outcomes to legacy `VerifyBlockReturnType`
+/// values. Missing VRF-key handling belongs to `prepare_dag_verify_vdf`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagVerifyAuthorizationInput {
+    pub vdf_valid: bool,
+    pub dpos_snapshot_available: bool,
+    pub dpos_eligible: bool,
+}
+
+/// Decision returned by deterministic DAG block authorization verification.
+///
+/// `reason_code` is not a public C++ API value. It exists so bridge and Rust
+/// tests can distinguish why one legacy reject code was selected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagVerifyAuthorization {
+    pub continue_validation: bool,
+    pub reject_code: u32,
+    pub reason_code: u32,
 }
 
 /// Derives frontier from a ghost path and current leaves.
@@ -280,6 +355,30 @@ pub fn validate_dag_verify_transaction_availability(
     }
 }
 
+/// Prepares deterministic VDF inputs for `DagManager::verifyBlock`.
+///
+/// Missing VRF key is a consensus reject. On success, this returns the vote
+/// count and max-vote count supplied by the current DPoS data source.
+pub fn prepare_dag_verify_vdf(input: DagVerifyVdfPrepareInput) -> DagVerifyVdfPrepare {
+    let reject_code = if !input.vrf_key_found {
+        DAG_VERIFY_REJECT_FAILED_VDF_VERIFICATION
+    } else {
+        0
+    };
+
+    DagVerifyVdfPrepare {
+        continue_validation: reject_code == 0,
+        reject_code,
+        reason_code: if reject_code == 0 {
+            DAG_VERIFY_REASON_CONTINUE
+        } else {
+            DAG_VERIFY_REASON_MISSING_VRF_KEY
+        },
+        vote_count: input.eligible_vote_count,
+        max_vote_count: input.vdf_max_vote_count,
+    }
+}
+
 /// Runs deterministic gas checks for `DagManager::verifyBlock`.
 ///
 /// This must be called after transaction availability, VDF, and DPOS checks to
@@ -314,6 +413,41 @@ pub fn validate_dag_verify_gas(input: DagVerifyGasInput) -> DagVerifyGas {
     DagVerifyGas {
         continue_validation: reject_code.is_none(),
         reject_code: reject_code.unwrap_or(0),
+    }
+}
+
+/// Runs deterministic authorization checks for `DagManager::verifyBlock`.
+///
+/// This must be called after transaction availability and before gas checks to
+/// preserve legacy return ordering. Invalid VDF proof maps to
+/// `FailedVdfVerification`; DPoS state unavailability maps to `FutureBlock`;
+/// ineligible validators map to `NotEligible`.
+pub fn validate_dag_verify_authorization(
+    input: DagVerifyAuthorizationInput,
+) -> DagVerifyAuthorization {
+    let (reject_code, reason_code) = if !input.vdf_valid {
+        (
+            DAG_VERIFY_REJECT_FAILED_VDF_VERIFICATION,
+            DAG_VERIFY_REASON_INVALID_VDF,
+        )
+    } else if !input.dpos_snapshot_available {
+        (
+            DAG_VERIFY_REJECT_FUTURE_BLOCK,
+            DAG_VERIFY_REASON_FUTURE_DPOS_SNAPSHOT,
+        )
+    } else if !input.dpos_eligible {
+        (
+            DAG_VERIFY_REJECT_NOT_ELIGIBLE,
+            DAG_VERIFY_REASON_NOT_ELIGIBLE,
+        )
+    } else {
+        (0, DAG_VERIFY_REASON_CONTINUE)
+    };
+
+    DagVerifyAuthorization {
+        continue_validation: reject_code == 0,
+        reject_code,
+        reason_code,
     }
 }
 
@@ -1419,6 +1553,92 @@ mod tests {
 
         assert!(result.continue_validation);
         assert_eq!(result.reject_code, 0);
+    }
+
+    #[test]
+    fn verify_vdf_prepare_rejects_when_vrf_key_is_missing() {
+        let result = prepare_dag_verify_vdf(DagVerifyVdfPrepareInput {
+            vrf_key_found: false,
+            eligible_vote_count: 12,
+            vdf_max_vote_count: 42,
+        });
+
+        assert!(!result.continue_validation);
+        assert_eq!(
+            result.reject_code,
+            DAG_VERIFY_REJECT_FAILED_VDF_VERIFICATION
+        );
+        assert_eq!(result.reason_code, DAG_VERIFY_REASON_MISSING_VRF_KEY);
+    }
+
+    #[test]
+    fn verify_vdf_prepare_uses_supplied_max_vote_count() {
+        let result = prepare_dag_verify_vdf(DagVerifyVdfPrepareInput {
+            vrf_key_found: true,
+            eligible_vote_count: 12,
+            vdf_max_vote_count: 42,
+        });
+
+        assert!(result.continue_validation);
+        assert_eq!(result.reject_code, 0);
+        assert_eq!(result.reason_code, DAG_VERIFY_REASON_CONTINUE);
+        assert_eq!(result.vote_count, 12);
+        assert_eq!(result.max_vote_count, 42);
+    }
+
+    #[test]
+    fn verify_authorization_rejects_when_vdf_is_invalid() {
+        let result = validate_dag_verify_authorization(DagVerifyAuthorizationInput {
+            vdf_valid: false,
+            dpos_snapshot_available: true,
+            dpos_eligible: true,
+        });
+
+        assert!(!result.continue_validation);
+        assert_eq!(
+            result.reject_code,
+            DAG_VERIFY_REJECT_FAILED_VDF_VERIFICATION
+        );
+        assert_eq!(result.reason_code, DAG_VERIFY_REASON_INVALID_VDF);
+    }
+
+    #[test]
+    fn verify_authorization_rejects_future_snapshot_before_not_eligible() {
+        let result = validate_dag_verify_authorization(DagVerifyAuthorizationInput {
+            vdf_valid: true,
+            dpos_snapshot_available: false,
+            dpos_eligible: false,
+        });
+
+        assert!(!result.continue_validation);
+        assert_eq!(result.reject_code, DAG_VERIFY_REJECT_FUTURE_BLOCK);
+        assert_eq!(result.reason_code, DAG_VERIFY_REASON_FUTURE_DPOS_SNAPSHOT);
+    }
+
+    #[test]
+    fn verify_authorization_rejects_not_eligible() {
+        let result = validate_dag_verify_authorization(DagVerifyAuthorizationInput {
+            vdf_valid: true,
+            dpos_snapshot_available: true,
+            dpos_eligible: false,
+        });
+
+        assert!(!result.continue_validation);
+        assert_eq!(result.reject_code, DAG_VERIFY_REJECT_NOT_ELIGIBLE);
+        assert_eq!(result.reason_code, DAG_VERIFY_REASON_NOT_ELIGIBLE);
+    }
+
+    #[test]
+    fn verify_authorization_continues_when_all_checks_pass() {
+        let result = validate_dag_verify_authorization(DagVerifyAuthorizationInput {
+            vdf_valid: true,
+            dpos_snapshot_available: true,
+            dpos_eligible: true,
+        });
+
+        assert!(result.continue_validation);
+        assert_eq!(result.reject_code, 0);
+        assert_eq!(result.reason_code, DAG_VERIFY_REASON_CONTINUE);
     }
 
     #[test]

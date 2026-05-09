@@ -1,20 +1,24 @@
 use crate::ffi::rustaxa_ffi::{
     DagBlockLookup, DagFrontier, DagHash, DagLevelHashes, DagManagerAnchors, DagManagerBlock,
     DagManagerNonFinalizedSize, DagManagerSnapshot, DagOrder, DagPersistenceCounters,
-    DagPivotTipsValidation, DagReferenceMetadata, DagVerifyGasInput, DagVerifyGasResult,
-    DagVerifyPrecheckBlock, DagVerifyPrecheckResult, DagVerifyTransactionAvailabilityInput,
-    DagVerifyTransactionAvailabilityResult,
+    DagPivotTipsValidation, DagReferenceMetadata, DagVerifyAuthorizationInput,
+    DagVerifyAuthorizationResult, DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock,
+    DagVerifyPrecheckResult, DagVerifyTransactionAvailabilityInput,
+    DagVerifyTransactionAvailabilityResult, DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
 use anyhow::{ensure, Context, Result};
 use ethereum_types::H256;
 use rustaxa_consensus::dag::{
-    derive_frontier, validate_dag_verify_gas, validate_dag_verify_precheck,
+    derive_frontier, prepare_dag_verify_vdf, validate_dag_verify_authorization,
+    validate_dag_verify_gas, validate_dag_verify_precheck,
     validate_dag_verify_transaction_availability, validate_pivot_tips_metadata, DagGraph,
     DagManagerBlock as DomainDagManagerBlock, DagManagerSnapshot as DomainDagManagerSnapshot,
     DagManagerState, DagReferenceMetadata as ReferenceMetadata, DagTipGas,
+    DagVerifyAuthorizationInput as DomainDagVerifyAuthorizationInput,
     DagVerifyGasInput as DomainDagVerifyGasInput, DagVerifyPrecheckInput,
     DagVerifyTransactionAvailabilityInput as DomainDagVerifyTransactionAvailabilityInput,
+    DagVerifyVdfPrepareInput as DomainDagVerifyVdfPrepareInput,
 };
 use rustaxa_storage::StatusField;
 use std::collections::{BTreeMap, BTreeSet};
@@ -541,6 +545,45 @@ pub fn dag_verify_transaction_availability(
     }
 }
 
+/// Prepares deterministic VDF verification inputs for DAG block verification.
+///
+/// C++ supplies live VRF-key and DPoS vote-count data. Rust returns the
+/// legacy-compatible missing-key reject or the vote counts C++ must pass to
+/// the current C++ VDF verifier.
+pub fn dag_verify_vdf_prepare(input: DagVerifyVdfPrepareInput) -> DagVerifyVdfPrepareResult {
+    let result = prepare_dag_verify_vdf(DomainDagVerifyVdfPrepareInput {
+        vrf_key_found: input.vrf_key_found,
+        eligible_vote_count: input.eligible_vote_count,
+        vdf_max_vote_count: input.vdf_max_vote_count,
+    });
+    DagVerifyVdfPrepareResult {
+        continue_validation: result.continue_validation,
+        reject_code: result.reject_code,
+        reason_code: result.reason_code,
+        vote_count: result.vote_count,
+        max_vote_count: result.max_vote_count,
+    }
+}
+
+/// Runs deterministic authorization decisions for DAG block verification.
+///
+/// C++ supplies outcomes from VDF verification and DPoS eligibility reads. Rust
+/// applies consensus reject ordering and returns legacy-compatible codes.
+pub fn dag_verify_authorization(
+    input: DagVerifyAuthorizationInput,
+) -> DagVerifyAuthorizationResult {
+    let result = validate_dag_verify_authorization(DomainDagVerifyAuthorizationInput {
+        vdf_valid: input.vdf_valid,
+        dpos_snapshot_available: input.dpos_snapshot_available,
+        dpos_eligible: input.dpos_eligible,
+    });
+    DagVerifyAuthorizationResult {
+        continue_validation: result.continue_validation,
+        reject_code: result.reject_code,
+        reason_code: result.reason_code,
+    }
+}
+
 /// Runs deterministic gas decisions for DAG block verification.
 ///
 /// C++ supplies live gas-estimation outputs. This bridge converts those plain
@@ -830,6 +873,68 @@ mod tests {
             ],
         })
         .expect("gas decision should succeed");
+        assert!(continues.continue_validation);
+        assert_eq!(continues.reject_code, 0);
+    }
+
+    #[test]
+    fn dag_verify_vdf_prepare_and_authorization_bridge_decisions() {
+        let missing_vrf = dag_verify_vdf_prepare(DagVerifyVdfPrepareInput {
+            vrf_key_found: false,
+            eligible_vote_count: 12,
+            vdf_max_vote_count: 77,
+        });
+        assert!(!missing_vrf.continue_validation);
+        assert_eq!(
+            missing_vrf.reject_code,
+            rustaxa_consensus::dag::DAG_VERIFY_REJECT_FAILED_VDF_VERIFICATION
+        );
+        assert_eq!(
+            missing_vrf.reason_code,
+            rustaxa_consensus::dag::DAG_VERIFY_REASON_MISSING_VRF_KEY
+        );
+
+        let prepared = dag_verify_vdf_prepare(DagVerifyVdfPrepareInput {
+            vrf_key_found: true,
+            eligible_vote_count: 12,
+            vdf_max_vote_count: 77,
+        });
+        assert!(prepared.continue_validation);
+        assert_eq!(prepared.reject_code, 0);
+        assert_eq!(prepared.vote_count, 12);
+        assert_eq!(prepared.max_vote_count, 77);
+
+        let future_snapshot = dag_verify_authorization(DagVerifyAuthorizationInput {
+            vdf_valid: true,
+            dpos_snapshot_available: false,
+            dpos_eligible: false,
+        });
+        assert!(!future_snapshot.continue_validation);
+        assert_eq!(
+            future_snapshot.reject_code,
+            rustaxa_consensus::dag::DAG_VERIFY_REJECT_FUTURE_BLOCK
+        );
+        assert_eq!(
+            future_snapshot.reason_code,
+            rustaxa_consensus::dag::DAG_VERIFY_REASON_FUTURE_DPOS_SNAPSHOT
+        );
+
+        let not_eligible = dag_verify_authorization(DagVerifyAuthorizationInput {
+            vdf_valid: true,
+            dpos_snapshot_available: true,
+            dpos_eligible: false,
+        });
+        assert!(!not_eligible.continue_validation);
+        assert_eq!(
+            not_eligible.reject_code,
+            rustaxa_consensus::dag::DAG_VERIFY_REJECT_NOT_ELIGIBLE
+        );
+
+        let continues = dag_verify_authorization(DagVerifyAuthorizationInput {
+            vdf_valid: true,
+            dpos_snapshot_available: true,
+            dpos_eligible: true,
+        });
         assert!(continues.continue_validation);
         assert_eq!(continues.reject_code, 0);
     }
