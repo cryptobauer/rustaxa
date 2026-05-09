@@ -62,6 +62,8 @@ class DagManager : public DagManagerOld {
   std::pair<size_t, size_t> getNonFinalizedBlocksSize() const;
   uint32_t getNonFinalizedBlocksMinDifficulty() const;
 
+  util::event::Event<DagManager, std::shared_ptr<DagBlock>> const block_verified_{};
+
   std::shared_mutex &getDagMutex();
   SortitionParamsManager &sortitionParamsManager();
   const DagConfig &getDagConfig() const;
@@ -76,6 +78,15 @@ class DagManager : public DagManagerOld {
   bool addBlockToRustGraphs(const std::shared_ptr<DagBlock> &blk);
   std::pair<blk_hash_t, std::vector<blk_hash_t>> getRustFrontier() const;
 
+  std::shared_ptr<TransactionManager> trx_mgr_;
+  std::weak_ptr<Network> network_;
+  std::shared_ptr<DbStorage> db_;
+  const std::shared_ptr<DagBlock> genesis_block_;
+  const uint32_t max_levels_per_period_;
+  const uint32_t cache_max_size_ = 10000;
+  const uint32_t cache_delete_step_ = 100;
+  ExpirationCacheMap<blk_hash_t, std::shared_ptr<DagBlock>> seen_blocks_;
+  mutable std::shared_mutex order_dag_blocks_mutex_;
   mutable std::shared_mutex rust_graphs_mutex_;
   std::unique_ptr<RustDagManagerGraphs> rust_graphs_;
 };
