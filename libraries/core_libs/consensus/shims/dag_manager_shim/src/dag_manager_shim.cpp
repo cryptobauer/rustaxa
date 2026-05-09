@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "dag/dag_block.hpp"
+#include "key_manager/key_manager.hpp"
 #include "network/network.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "transaction/transaction_manager.hpp"
@@ -90,18 +91,46 @@ std::optional<DagManager::VerifyBlockReturnType> to_verify_block_reject(uint32_t
   switch (reject_code) {
     case 0:
       return std::nullopt;
+    case 1:
+      return DagManager::VerifyBlockReturnType::MissingTransaction;
     case 2:
       return DagManager::VerifyBlockReturnType::AheadBlock;
     case 6:
       return DagManager::VerifyBlockReturnType::ExpiredBlock;
+    case 7:
+      return DagManager::VerifyBlockReturnType::IncorrectTransactionsEstimation;
+    case 8:
+      return DagManager::VerifyBlockReturnType::BlockTooBig;
     case 9:
       return DagManager::VerifyBlockReturnType::FailedTipsVerification;
+    case 10:
+      return DagManager::VerifyBlockReturnType::MissingTip;
     default:
       // Reject-code skew is an integration error, not an invalid-block outcome.
       // Do not fall back to DagManagerOld here because that would hide Rust
       // production routing drift.
       throw std::runtime_error("DagManager: unknown Rust verify precheck reject code");
   }
+}
+
+rustaxa::DagVerifyTransactionAvailabilityInput to_bridge_transaction_availability_input(
+    uint64_t expected_transactions, uint64_t resolved_transactions) {
+  rustaxa::DagVerifyTransactionAvailabilityInput out;
+  out.expected_transactions = expected_transactions;
+  out.resolved_transactions = resolved_transactions;
+  return out;
+}
+
+rustaxa::DagVerifyGasInput to_bridge_gas_input(uint64_t block_gas_estimation, uint64_t estimated_transactions_weight,
+                                               uint64_t dag_gas_limit, uint64_t pbft_gas_limit,
+                                               rust::Vec<rustaxa::DagTipGas> tip_gas_estimations) {
+  rustaxa::DagVerifyGasInput out;
+  out.block_gas_estimation = block_gas_estimation;
+  out.estimated_transactions_weight = estimated_transactions_weight;
+  out.dag_gas_limit = dag_gas_limit;
+  out.pbft_gas_limit = pbft_gas_limit;
+  out.tip_gas_estimations = std::move(tip_gas_estimations);
+  return out;
 }
 
 }  // namespace
@@ -116,14 +145,21 @@ struct DagManager::RustDagManagerGraphs {
 DagManager::DagManager(const FullNodeConfig &config, addr_t node_addr, std::shared_ptr<TransactionManager> trx_mgr,
                        std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
                        std::shared_ptr<DbStorage> db, std::shared_ptr<KeyManager> key_manager)
-    : DagManagerOld(config, node_addr, trx_mgr, std::move(pbft_chain), std::move(final_chain), db,
-                    std::move(key_manager)),
+    : DagManagerOld(config, node_addr, trx_mgr, pbft_chain, final_chain, db, key_manager),
       trx_mgr_(std::move(trx_mgr)),
+      pbft_chain_(std::move(pbft_chain)),
+      final_chain_(std::move(final_chain)),
+      db_(std::move(db)),
+      key_manager_(std::move(key_manager)),
+      sortition_params_manager_(node_addr, config, db_),
+      genesis_config_(config.genesis),
+      validator_max_vote_(config.genesis.state.dpos.validator_maximum_stake /
+                          config.genesis.state.dpos.vote_eligibility_balance_step),
       genesis_block_(std::make_shared<DagBlock>(config.genesis.dag_genesis_block)),
       max_levels_per_period_(config.max_levels_per_period),
       seen_blocks_(cache_max_size_, cache_delete_step_),
       rust_graphs_(std::make_unique<RustDagManagerGraphs>(config.genesis.dag_genesis_block.getHash(),
-                                                          config.dag_expiry_limit, db->rustStorage())) {
+                                                          config.dag_expiry_limit, db_->rustStorage())) {
   rust_graphs_->runtime->dag_manager_runtime_ensure_proposal_period_mapping(max_levels_per_period_, 0);
   rebuildRustGraphsFromOld();
 }
@@ -222,6 +258,8 @@ std::shared_ptr<DagBlock> DagManager::getDagBlock(const blk_hash_t &hash) const 
 std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::verifyBlock(
     const std::shared_ptr<DagBlock> &blk,
     const std::unordered_map<trx_hash_t, std::shared_ptr<Transaction>> &trxs) {
+  const auto &block_hash = blk->getHash();
+  uint64_t proposal_period = 0;
   {
     std::shared_lock lock(rust_graphs_mutex_);
     // Rust bridge/storage failures intentionally propagate as exceptions: they
@@ -229,17 +267,100 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
     // explicit reject codes.
     const auto precheck =
         rust_graphs_->runtime->dag_manager_runtime_verify_precheck(to_bridge_verify_precheck_block(blk));
+    proposal_period = precheck.proposal_period;
     if (const auto reject = to_verify_block_reject(precheck.reject_code); reject.has_value()) {
       if (*reject == VerifyBlockReturnType::AheadBlock) {
-        seen_blocks_.erase(blk->getHash());
+        seen_blocks_.erase(block_hash);
       }
       return {*reject, {}};
     }
   }
 
-  // TODO(rust-rewrite): migrate remaining transaction/VDF/DPOS/gas DAG block verification to Rust instead of
-  // DagManagerOld.
-  return DagManagerOld::verifyBlock(blk, trxs);
+  const auto &all_block_trx_hashes = blk->getTrxs();
+  vec_trx_t trx_hashes_to_query;
+  SharedTransactions all_block_trxs;
+
+  if (!trxs.empty()) {
+    for (const auto &tx_hash : all_block_trx_hashes) {
+      const auto trx_it = trxs.find(tx_hash);
+      if (trx_it != trxs.end()) {
+        all_block_trxs.emplace_back(trx_it->second);
+      } else {
+        trx_hashes_to_query.emplace_back(tx_hash);
+      }
+    }
+  } else {
+    trx_hashes_to_query = all_block_trx_hashes;
+  }
+
+  auto transactions = trx_mgr_->getTransactions(trx_hashes_to_query, proposal_period);
+  for (auto transaction : transactions) {
+    all_block_trxs.emplace_back(std::move(transaction));
+  }
+
+  const auto transaction_availability = rustaxa::dag_verify_transaction_availability(
+      to_bridge_transaction_availability_input(all_block_trx_hashes.size(), all_block_trxs.size()));
+  if (const auto reject = to_verify_block_reject(transaction_availability.reject_code); reject.has_value()) {
+    if (*reject == VerifyBlockReturnType::MissingTransaction) {
+      seen_blocks_.erase(block_hash);
+    }
+    return {*reject, {}};
+  }
+
+  const auto pk = key_manager_->getVrfKey(proposal_period, blk->getSender());
+  if (!pk) {
+    return {VerifyBlockReturnType::FailedVdfVerification, {}};
+  }
+
+  try {
+    const auto proposal_period_hash = db_->getPeriodBlockHash(proposal_period);
+    const auto vote_count = final_chain_->dposEligibleVoteCount(proposal_period, blk->getSender());
+    const auto max_vote_count = proposal_period < genesis_config_.state.hardforks.magnolia_hf.block_num
+                                    ? final_chain_->dposEligibleTotalVoteCount(proposal_period)
+                                    : validator_max_vote_;
+    blk->verifyVdf(sortition_params_manager_.getSortitionParams(proposal_period), proposal_period_hash, *pk, vote_count,
+                   max_vote_count);
+  } catch (vdf_sortition::VdfSortition::InvalidVdfSortition const &) {
+    return {VerifyBlockReturnType::FailedVdfVerification, {}};
+  }
+
+  try {
+    if (!final_chain_->dposIsEligible(proposal_period, blk->getSender())) {
+      return {VerifyBlockReturnType::NotEligible, {}};
+    }
+  } catch (state_api::ErrFutureBlock &) {
+    return {VerifyBlockReturnType::FutureBlock, {}};
+  }
+
+  const auto [dag_gas_limit, pbft_gas_limit] = genesis_config_.getGasLimits(proposal_period);
+  const auto estimated_transactions_weight = trx_mgr_->estimateTransactions(all_block_trxs, proposal_period);
+
+  rust::Vec<rustaxa::DagTipGas> tip_gas_estimations;
+  const auto needs_tip_gas =
+      dag_gas_limit == 0 || static_cast<uint64_t>(blk->getTips().size() + 1) > pbft_gas_limit / dag_gas_limit;
+  if (needs_tip_gas) {
+    tip_gas_estimations.reserve(blk->getTips().size());
+    for (const auto &tip_hash : blk->getTips()) {
+      rustaxa::DagTipGas tip_gas;
+      if (const auto tip_block = getDagBlock(tip_hash); tip_block) {
+        tip_gas.found = true;
+        tip_gas.gas_estimation = tip_block->getGasEstimation();
+      } else {
+        tip_gas.found = false;
+        tip_gas.gas_estimation = 0;
+      }
+      tip_gas_estimations.push_back(tip_gas);
+    }
+  }
+
+  const auto gas = rustaxa::dag_verify_gas(to_bridge_gas_input(blk->getGasEstimation(), estimated_transactions_weight,
+                                                               dag_gas_limit, pbft_gas_limit,
+                                                               std::move(tip_gas_estimations)));
+  if (const auto reject = to_verify_block_reject(gas.reject_code); reject.has_value()) {
+    return {*reject, {}};
+  }
+
+  return {VerifyBlockReturnType::Verified, std::move(all_block_trxs)};
 }
 
 std::pair<bool, std::vector<blk_hash_t>> DagManager::pivotAndTipsAvailable(const std::shared_ptr<DagBlock> &blk) {
@@ -456,13 +577,11 @@ std::shared_mutex &DagManager::getDagMutex() {
 }
 
 SortitionParamsManager &DagManager::sortitionParamsManager() {
-  // TODO(rust-rewrite): migrate sortition access out of DagManagerOld.
-  return DagManagerOld::sortitionParamsManager();
+  return sortition_params_manager_;
 }
 
 const DagConfig &DagManager::getDagConfig() const {
-  // TODO(rust-rewrite): migrate DAG config access out of DagManagerOld.
-  return DagManagerOld::getDagConfig();
+  return genesis_config_.dag;
 }
 
 uint64_t DagManager::getDagExpiryLevel() const {

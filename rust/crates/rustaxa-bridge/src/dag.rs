@@ -1,15 +1,20 @@
 use crate::ffi::rustaxa_ffi::{
     DagBlockLookup, DagFrontier, DagHash, DagLevelHashes, DagManagerAnchors, DagManagerBlock,
     DagManagerNonFinalizedSize, DagManagerSnapshot, DagOrder, DagPersistenceCounters,
-    DagPivotTipsValidation, DagReferenceMetadata, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
+    DagPivotTipsValidation, DagReferenceMetadata, DagVerifyGasInput, DagVerifyGasResult,
+    DagVerifyPrecheckBlock, DagVerifyPrecheckResult, DagVerifyTransactionAvailabilityInput,
+    DagVerifyTransactionAvailabilityResult,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use ethereum_types::H256;
 use rustaxa_consensus::dag::{
-    derive_frontier, validate_dag_verify_precheck, validate_pivot_tips_metadata, DagGraph,
+    derive_frontier, validate_dag_verify_gas, validate_dag_verify_precheck,
+    validate_dag_verify_transaction_availability, validate_pivot_tips_metadata, DagGraph,
     DagManagerBlock as DomainDagManagerBlock, DagManagerSnapshot as DomainDagManagerSnapshot,
-    DagManagerState, DagReferenceMetadata as ReferenceMetadata, DagVerifyPrecheckInput,
+    DagManagerState, DagReferenceMetadata as ReferenceMetadata, DagTipGas,
+    DagVerifyGasInput as DomainDagVerifyGasInput, DagVerifyPrecheckInput,
+    DagVerifyTransactionAvailabilityInput as DomainDagVerifyTransactionAvailabilityInput,
 };
 use rustaxa_storage::StatusField;
 use std::collections::{BTreeMap, BTreeSet};
@@ -516,6 +521,52 @@ impl BridgeDagManagerRuntime {
     }
 }
 
+/// Runs deterministic transaction availability decisions for DAG block
+/// verification.
+///
+/// C++ supplies live transaction lookup counts. This bridge converts those
+/// plain values into the Rust consensus policy result used by the DagManager
+/// shim.
+pub fn dag_verify_transaction_availability(
+    input: DagVerifyTransactionAvailabilityInput,
+) -> DagVerifyTransactionAvailabilityResult {
+    let result =
+        validate_dag_verify_transaction_availability(DomainDagVerifyTransactionAvailabilityInput {
+            expected_transactions: input.expected_transactions,
+            resolved_transactions: input.resolved_transactions,
+        });
+    DagVerifyTransactionAvailabilityResult {
+        continue_validation: result.continue_validation,
+        reject_code: result.reject_code,
+    }
+}
+
+/// Runs deterministic gas decisions for DAG block verification.
+///
+/// C++ supplies live gas-estimation outputs. This bridge converts those plain
+/// values into the Rust consensus policy result used by the DagManager shim.
+pub fn dag_verify_gas(input: DagVerifyGasInput) -> Result<DagVerifyGasResult> {
+    ensure!(input.dag_gas_limit != 0, "DAG_GAS_LIMIT_ZERO");
+    let result = validate_dag_verify_gas(DomainDagVerifyGasInput {
+        block_gas_estimation: input.block_gas_estimation,
+        estimated_transactions_weight: input.estimated_transactions_weight,
+        dag_gas_limit: input.dag_gas_limit,
+        pbft_gas_limit: input.pbft_gas_limit,
+        tip_gas_estimations: input
+            .tip_gas_estimations
+            .into_iter()
+            .map(|tip| DagTipGas {
+                found: tip.found,
+                gas_estimation: tip.gas_estimation,
+            })
+            .collect(),
+    });
+    Ok(DagVerifyGasResult {
+        continue_validation: result.continue_validation,
+        reject_code: result.reject_code,
+    })
+}
+
 fn to_h256(hash: &[u8; 32]) -> H256 {
     H256::from(*hash)
 }
@@ -734,5 +785,52 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_verify_transaction_availability_and_gas_bridge_decisions() {
+        let missing = dag_verify_transaction_availability(DagVerifyTransactionAvailabilityInput {
+            expected_transactions: 2,
+            resolved_transactions: 1,
+        });
+        assert!(!missing.continue_validation);
+        assert_eq!(
+            missing.reject_code,
+            rustaxa_consensus::dag::DAG_VERIFY_REJECT_MISSING_TRANSACTION
+        );
+
+        let block_too_big = dag_verify_gas(DagVerifyGasInput {
+            block_gas_estimation: 101,
+            estimated_transactions_weight: 101,
+            dag_gas_limit: 100,
+            pbft_gas_limit: 500,
+            tip_gas_estimations: vec![],
+        })
+        .expect("gas decision should succeed");
+        assert!(!block_too_big.continue_validation);
+        assert_eq!(
+            block_too_big.reject_code,
+            rustaxa_consensus::dag::DAG_VERIFY_REJECT_BLOCK_TOO_BIG
+        );
+
+        let continues = dag_verify_gas(DagVerifyGasInput {
+            block_gas_estimation: 100,
+            estimated_transactions_weight: 100,
+            dag_gas_limit: 100,
+            pbft_gas_limit: 300,
+            tip_gas_estimations: vec![
+                crate::ffi::rustaxa_ffi::DagTipGas {
+                    found: true,
+                    gas_estimation: 50,
+                },
+                crate::ffi::rustaxa_ffi::DagTipGas {
+                    found: true,
+                    gas_estimation: 50,
+                },
+            ],
+        })
+        .expect("gas decision should succeed");
+        assert!(continues.continue_validation);
+        assert_eq!(continues.reject_code, 0);
     }
 }

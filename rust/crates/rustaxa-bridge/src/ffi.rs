@@ -411,6 +411,39 @@ pub mod rustaxa_ffi {
         proposal_period: u64,
     }
 
+    /// Per-tip gas metadata for Rust DAG verification gas decisions.
+    struct DagTipGas {
+        found: bool,
+        gas_estimation: u64,
+    }
+
+    /// C++-originated payload for Rust transaction availability decisions.
+    struct DagVerifyTransactionAvailabilityInput {
+        expected_transactions: u64,
+        resolved_transactions: u64,
+    }
+
+    /// Rust transaction availability decision.
+    struct DagVerifyTransactionAvailabilityResult {
+        continue_validation: bool,
+        reject_code: u32,
+    }
+
+    /// C++-originated payload for Rust gas verification decisions.
+    struct DagVerifyGasInput {
+        block_gas_estimation: u64,
+        estimated_transactions_weight: u64,
+        dag_gas_limit: u64,
+        pbft_gas_limit: u64,
+        tip_gas_estimations: Vec<DagTipGas>,
+    }
+
+    /// Rust gas verification decision.
+    struct DagVerifyGasResult {
+        continue_validation: bool,
+        reject_code: u32,
+    }
+
     struct DagManagerBlock {
         hash: [u8; 32],
         pivot: [u8; 32],
@@ -656,6 +689,10 @@ pub mod rustaxa_ffi {
             self: &BridgeDagManagerRuntime,
             block: DagVerifyPrecheckBlock,
         ) -> Result<DagVerifyPrecheckResult>;
+        pub fn dag_verify_transaction_availability(
+            input: DagVerifyTransactionAvailabilityInput,
+        ) -> DagVerifyTransactionAvailabilityResult;
+        pub fn dag_verify_gas(input: DagVerifyGasInput) -> Result<DagVerifyGasResult>;
 
         // Consensus PBFT chain
 

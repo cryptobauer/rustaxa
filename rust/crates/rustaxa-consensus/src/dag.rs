@@ -63,8 +63,20 @@ pub const DAG_VERIFY_REJECT_AHEAD_BLOCK: u32 = 2;
 /// Legacy C++ `DagManager::VerifyBlockReturnType::ExpiredBlock` value.
 pub const DAG_VERIFY_REJECT_EXPIRED_BLOCK: u32 = 6;
 
+/// Legacy C++ `DagManager::VerifyBlockReturnType::IncorrectTransactionsEstimation` value.
+pub const DAG_VERIFY_REJECT_INCORRECT_TRANSACTIONS_ESTIMATION: u32 = 7;
+
+/// Legacy C++ `DagManager::VerifyBlockReturnType::BlockTooBig` value.
+pub const DAG_VERIFY_REJECT_BLOCK_TOO_BIG: u32 = 8;
+
 /// Legacy C++ `DagManager::VerifyBlockReturnType::FailedTipsVerification` value.
 pub const DAG_VERIFY_REJECT_FAILED_TIPS_VERIFICATION: u32 = 9;
+
+/// Legacy C++ `DagManager::VerifyBlockReturnType::MissingTip` value.
+pub const DAG_VERIFY_REJECT_MISSING_TIP: u32 = 10;
+
+/// Legacy C++ `DagManager::VerifyBlockReturnType::MissingTransaction` value.
+pub const DAG_VERIFY_REJECT_MISSING_TRANSACTION: u32 = 1;
 
 /// Inputs for deterministic `DagManager::verifyBlock` prechecks.
 ///
@@ -96,6 +108,60 @@ pub struct DagVerifyPrecheck {
     pub reject_code: u32,
     pub proposal_period_found: bool,
     pub proposal_period: u64,
+}
+
+/// Per-tip gas metadata used by DAG block gas validation.
+///
+/// Missing tips are represented as data so consensus-invalid blocks return the
+/// legacy `MissingTip` outcome instead of using error handling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagTipGas {
+    pub found: bool,
+    pub gas_estimation: u64,
+}
+
+/// Inputs for deterministic transaction availability checks in
+/// `DagManager::verifyBlock`.
+///
+/// C++ owns live transaction lookup. Rust owns the deterministic decision over
+/// expected and resolved transaction counts so missing-transaction semantics
+/// stay explicit and testable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagVerifyTransactionAvailabilityInput {
+    pub expected_transactions: u64,
+    pub resolved_transactions: u64,
+}
+
+/// Decision returned by deterministic transaction availability verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagVerifyTransactionAvailability {
+    pub continue_validation: bool,
+    pub reject_code: u32,
+}
+
+/// Inputs for deterministic gas checks in `DagManager::verifyBlock`.
+///
+/// C++ still owns live transaction lookup and EVM-backed transaction gas
+/// estimation. Rust owns the deterministic decision over the resulting counts,
+/// weights, DAG/PBFT gas limits, and tip gas metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagVerifyGasInput {
+    pub block_gas_estimation: u64,
+    pub estimated_transactions_weight: u64,
+    pub dag_gas_limit: u64,
+    pub pbft_gas_limit: u64,
+    pub tip_gas_estimations: Vec<DagTipGas>,
+}
+
+/// Decision returned by deterministic gas verification.
+///
+/// `continue_validation == true` means gas checks passed. When false,
+/// `reject_code` is a legacy-compatible
+/// `DagManager::VerifyBlockReturnType` value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagVerifyGas {
+    pub continue_validation: bool,
+    pub reject_code: u32,
 }
 
 /// Derives frontier from a ghost path and current leaves.
@@ -195,6 +261,67 @@ pub fn validate_dag_verify_precheck(input: DagVerifyPrecheckInput) -> DagVerifyP
         proposal_period_found: input.proposal_period_found,
         proposal_period: input.proposal_period,
     }
+}
+
+/// Runs deterministic transaction availability checks for
+/// `DagManager::verifyBlock`.
+///
+/// The helper returns only `MissingTransaction` or continue; VDF/DPOS checks
+/// still run before gas validation to preserve legacy return ordering.
+pub fn validate_dag_verify_transaction_availability(
+    input: DagVerifyTransactionAvailabilityInput,
+) -> DagVerifyTransactionAvailability {
+    let reject_code = (input.resolved_transactions < input.expected_transactions)
+        .then_some(DAG_VERIFY_REJECT_MISSING_TRANSACTION);
+
+    DagVerifyTransactionAvailability {
+        continue_validation: reject_code.is_none(),
+        reject_code: reject_code.unwrap_or(0),
+    }
+}
+
+/// Runs deterministic gas checks for `DagManager::verifyBlock`.
+///
+/// This must be called after transaction availability, VDF, and DPOS checks to
+/// preserve legacy `verifyBlock` return ordering. Tip count is derived from the
+/// provided tip metadata so callers cannot accidentally bypass missing-tip or
+/// aggregate-gas checks by passing inconsistent counts.
+pub fn validate_dag_verify_gas(input: DagVerifyGasInput) -> DagVerifyGas {
+    let reject_code = if input.block_gas_estimation > input.dag_gas_limit {
+        Some(DAG_VERIFY_REJECT_BLOCK_TOO_BIG)
+    } else if input.estimated_transactions_weight != input.block_gas_estimation {
+        Some(DAG_VERIFY_REJECT_INCORRECT_TRANSACTIONS_ESTIMATION)
+    } else if exceeds_pbft_dag_count(
+        input.tip_gas_estimations.len() as u64,
+        input.dag_gas_limit,
+        input.pbft_gas_limit,
+    ) {
+        let mut total_gas = input.block_gas_estimation;
+        for tip in input.tip_gas_estimations {
+            if !tip.found {
+                return DagVerifyGas {
+                    continue_validation: false,
+                    reject_code: DAG_VERIFY_REJECT_MISSING_TIP,
+                };
+            }
+            total_gas = total_gas.wrapping_add(tip.gas_estimation);
+        }
+        (total_gas > input.pbft_gas_limit).then_some(DAG_VERIFY_REJECT_BLOCK_TOO_BIG)
+    } else {
+        None
+    };
+
+    DagVerifyGas {
+        continue_validation: reject_code.is_none(),
+        reject_code: reject_code.unwrap_or(0),
+    }
+}
+
+fn exceeds_pbft_dag_count(tips_count: u64, dag_gas_limit: u64, pbft_gas_limit: u64) -> bool {
+    let Some(max_dag_blocks) = pbft_gas_limit.checked_div(dag_gas_limit) else {
+        return true;
+    };
+    tips_count.saturating_add(1) > max_dag_blocks
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1268,6 +1395,130 @@ mod tests {
         assert!(result.continue_validation);
         assert_eq!(result.reject_code, 0);
         assert_eq!(result.proposal_period, 7);
+    }
+
+    #[test]
+    fn verify_transaction_availability_rejects_missing_transactions() {
+        let result =
+            validate_dag_verify_transaction_availability(DagVerifyTransactionAvailabilityInput {
+                expected_transactions: 3,
+                resolved_transactions: 2,
+            });
+
+        assert!(!result.continue_validation);
+        assert_eq!(result.reject_code, DAG_VERIFY_REJECT_MISSING_TRANSACTION);
+    }
+
+    #[test]
+    fn verify_transaction_availability_continues_when_all_transactions_are_present() {
+        let result =
+            validate_dag_verify_transaction_availability(DagVerifyTransactionAvailabilityInput {
+                expected_transactions: 3,
+                resolved_transactions: 3,
+            });
+
+        assert!(result.continue_validation);
+        assert_eq!(result.reject_code, 0);
+    }
+
+    #[test]
+    fn verify_gas_rejects_block_over_dag_limit() {
+        let result = validate_dag_verify_gas(DagVerifyGasInput {
+            block_gas_estimation: 101,
+            estimated_transactions_weight: 101,
+            dag_gas_limit: 100,
+            pbft_gas_limit: 500,
+            tip_gas_estimations: vec![],
+        });
+
+        assert!(!result.continue_validation);
+        assert_eq!(result.reject_code, DAG_VERIFY_REJECT_BLOCK_TOO_BIG);
+    }
+
+    #[test]
+    fn verify_gas_rejects_weight_mismatch() {
+        let result = validate_dag_verify_gas(DagVerifyGasInput {
+            block_gas_estimation: 90,
+            estimated_transactions_weight: 91,
+            dag_gas_limit: 100,
+            pbft_gas_limit: 500,
+            tip_gas_estimations: vec![],
+        });
+
+        assert!(!result.continue_validation);
+        assert_eq!(
+            result.reject_code,
+            DAG_VERIFY_REJECT_INCORRECT_TRANSACTIONS_ESTIMATION
+        );
+    }
+
+    #[test]
+    fn verify_gas_rejects_missing_tip_when_pbft_aggregation_is_needed() {
+        let result = validate_dag_verify_gas(DagVerifyGasInput {
+            block_gas_estimation: 90,
+            estimated_transactions_weight: 90,
+            dag_gas_limit: 100,
+            pbft_gas_limit: 200,
+            tip_gas_estimations: vec![
+                DagTipGas {
+                    found: true,
+                    gas_estimation: 70,
+                },
+                DagTipGas {
+                    found: false,
+                    gas_estimation: 0,
+                },
+            ],
+        });
+
+        assert!(!result.continue_validation);
+        assert_eq!(result.reject_code, DAG_VERIFY_REJECT_MISSING_TIP);
+    }
+
+    #[test]
+    fn verify_gas_rejects_tips_over_pbft_limit() {
+        let result = validate_dag_verify_gas(DagVerifyGasInput {
+            block_gas_estimation: 90,
+            estimated_transactions_weight: 90,
+            dag_gas_limit: 100,
+            pbft_gas_limit: 200,
+            tip_gas_estimations: vec![
+                DagTipGas {
+                    found: true,
+                    gas_estimation: 70,
+                },
+                DagTipGas {
+                    found: true,
+                    gas_estimation: 50,
+                },
+            ],
+        });
+
+        assert!(!result.continue_validation);
+        assert_eq!(result.reject_code, DAG_VERIFY_REJECT_BLOCK_TOO_BIG);
+    }
+
+    #[test]
+    fn verify_gas_continues_when_all_checks_pass() {
+        let result = validate_dag_verify_gas(DagVerifyGasInput {
+            block_gas_estimation: 90,
+            estimated_transactions_weight: 90,
+            dag_gas_limit: 100,
+            pbft_gas_limit: 300,
+            tip_gas_estimations: vec![
+                DagTipGas {
+                    found: true,
+                    gas_estimation: 80,
+                },
+                DagTipGas {
+                    found: true,
+                    gas_estimation: 70,
+                },
+            ],
+        });
+
+        assert!(result.continue_validation);
+        assert_eq!(result.reject_code, 0);
     }
 
     fn record(hash: u64, pivot: u64, tips: &[u64], level: u64, difficulty: u64) -> DagManagerBlock {

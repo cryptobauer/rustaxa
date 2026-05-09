@@ -79,7 +79,14 @@ class DagManager : public DagManagerOld {
   std::pair<blk_hash_t, std::vector<blk_hash_t>> getRustFrontier() const;
 
   std::shared_ptr<TransactionManager> trx_mgr_;
+  std::shared_ptr<PbftChain> pbft_chain_;
+  std::shared_ptr<final_chain::FinalChain> final_chain_;
+  std::shared_ptr<DbStorage> db_;
+  std::shared_ptr<KeyManager> key_manager_;
   std::weak_ptr<Network> network_;
+  SortitionParamsManager sortition_params_manager_;
+  const GenesisConfig genesis_config_;
+  const uint64_t validator_max_vote_;
   const std::shared_ptr<DagBlock> genesis_block_;
   const uint32_t max_levels_per_period_;
   const uint32_t cache_max_size_ = 10000;
