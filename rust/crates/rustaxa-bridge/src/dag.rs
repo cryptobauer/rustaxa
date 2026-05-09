@@ -1,11 +1,61 @@
-use crate::ffi::rustaxa_ffi::{DagHash, DagLevelHashes, DagOrder};
+use crate::ffi::rustaxa_ffi::{
+    DagFrontier, DagHash, DagLevelHashes, DagOrder, DagPivotTipsValidation, DagReferenceMetadata,
+};
 use crate::ffi::BridgeDagGraph;
 use ethereum_types::H256;
-use rustaxa_consensus::dag::DagGraph;
+use rustaxa_consensus::dag::{
+    derive_frontier, validate_pivot_tips_metadata, DagGraph,
+    DagReferenceMetadata as ReferenceMetadata,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub fn create_dag_graph(genesis: &[u8; 32]) -> Box<BridgeDagGraph> {
     Box::new(BridgeDagGraph(DagGraph::new(to_h256(genesis))))
+}
+
+pub fn dag_derive_frontier(ghost_path: Vec<DagHash>, leaves: Vec<DagHash>) -> DagFrontier {
+    let ghost_path = ghost_path
+        .into_iter()
+        .map(|hash| H256::from(hash.hash))
+        .collect::<Vec<_>>();
+    let leaves = leaves
+        .into_iter()
+        .map(|hash| H256::from(hash.hash))
+        .collect::<Vec<_>>();
+    let frontier = derive_frontier(&ghost_path, &leaves);
+
+    DagFrontier {
+        pivot: frontier.pivot.into(),
+        tips: to_dag_hashes(frontier.tips),
+    }
+}
+
+pub fn dag_validate_pivot_tips_metadata(
+    block_level: u64,
+    pivot: DagReferenceMetadata,
+    tips: Vec<DagReferenceMetadata>,
+) -> DagPivotTipsValidation {
+    let pivot = ReferenceMetadata {
+        hash: H256::from(pivot.hash),
+        found: pivot.found,
+        level: pivot.level,
+    };
+    let tips = tips
+        .into_iter()
+        .map(|tip| ReferenceMetadata {
+            hash: H256::from(tip.hash),
+            found: tip.found,
+            level: tip.level,
+        })
+        .collect::<Vec<_>>();
+    let validation = validate_pivot_tips_metadata(block_level, pivot, &tips);
+
+    DagPivotTipsValidation {
+        ok: validation.ok,
+        expected_level: validation.expected_level,
+        level_matches: validation.level_matches,
+        missing_references: to_dag_hashes(validation.missing_references),
+    }
 }
 
 impl BridgeDagGraph {

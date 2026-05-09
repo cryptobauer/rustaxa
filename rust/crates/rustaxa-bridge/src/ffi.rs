@@ -355,6 +355,24 @@ pub mod rustaxa_ffi {
         hashes: Vec<DagHash>,
     }
 
+    struct DagFrontier {
+        pivot: [u8; 32],
+        tips: Vec<DagHash>,
+    }
+
+    struct DagReferenceMetadata {
+        hash: [u8; 32],
+        found: bool,
+        level: u64,
+    }
+
+    struct DagPivotTipsValidation {
+        ok: bool,
+        expected_level: u64,
+        level_matches: bool,
+        missing_references: Vec<DagHash>,
+    }
+
     struct SortitionRuntimeConfig {
         threshold_upper: u16,
         difficulty_min: u16,
@@ -442,6 +460,12 @@ pub mod rustaxa_ffi {
             anchor: &[u8; 32],
             non_finalized_blocks: Vec<DagLevelHashes>,
         ) -> DagOrder;
+        pub fn dag_derive_frontier(ghost_path: Vec<DagHash>, leaves: Vec<DagHash>) -> DagFrontier;
+        pub fn dag_validate_pivot_tips_metadata(
+            block_level: u64,
+            pivot: DagReferenceMetadata,
+            tips: Vec<DagReferenceMetadata>,
+        ) -> DagPivotTipsValidation;
         pub fn dag_clear(self: &mut BridgeDagGraph);
         pub fn dag_graphviz_dot(self: &BridgeDagGraph) -> String;
 

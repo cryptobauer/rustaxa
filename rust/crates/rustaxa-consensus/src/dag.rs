@@ -2,6 +2,117 @@ use ethereum_types::H256;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
+/// Deterministic DAG frontier derived from a ghost path and DAG leaves.
+///
+/// Inputs:
+/// - `pivot`: last hash in the ghost path (or zero hash when the path is empty).
+/// - `tips`: leaf hashes excluding `pivot`.
+///
+/// Output invariants:
+/// - `tips` never contains `pivot`.
+/// - tip order is preserved from the input `leaves`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagFrontier {
+    pub pivot: H256,
+    pub tips: Vec<H256>,
+}
+
+/// Per-reference metadata used for pivot/tip level validation.
+///
+/// Inputs:
+/// - `hash`: pivot/tip hash being validated.
+/// - `found`: whether the reference block metadata exists.
+/// - `level`: reference block level when `found == true`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagReferenceMetadata {
+    pub hash: H256,
+    pub found: bool,
+    pub level: u64,
+}
+
+/// Result of validating block level against pivot/tip metadata availability.
+///
+/// Output fields:
+/// - `ok`: true only when there are no missing references and level matches.
+/// - `expected_level`: max(parent-level + 1) across available pivot/tips.
+/// - `level_matches`: whether `block_level == expected_level`.
+/// - `missing_references`: missing pivot/tip hashes in deterministic order:
+///   pivot first, then tips in provided order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagPivotTipsValidation {
+    pub ok: bool,
+    pub expected_level: u64,
+    pub level_matches: bool,
+    pub missing_references: Vec<H256>,
+}
+
+/// Derives frontier from a ghost path and current leaves.
+///
+/// Behavior mirrors legacy DagManager frontier rules:
+/// - empty ghost path returns `{ pivot: 0, tips: [] }`
+/// - non-empty path sets `pivot` to the last ghost-path hash
+/// - `tips` contains leaves except `pivot`
+///
+/// Additional deterministic guarantees:
+/// - tip order is preserved from `leaves` while removing only `pivot`.
+pub fn derive_frontier(ghost_path: &[H256], leaves: &[H256]) -> DagFrontier {
+    let Some(pivot) = ghost_path.last().copied() else {
+        return DagFrontier {
+            pivot: H256::zero(),
+            tips: Vec::new(),
+        };
+    };
+
+    let tips = leaves
+        .iter()
+        .copied()
+        .filter(|hash| *hash != pivot)
+        .collect::<Vec<_>>();
+
+    DagFrontier { pivot, tips }
+}
+
+/// Validates expected block level and missing pivot/tip references from metadata.
+///
+/// This mirrors legacy DagManager logic:
+/// - `expected_level` starts at `0`
+/// - each found pivot/tip updates `expected_level = max(expected_level, level + 1)`
+///   with `u64` wrapping addition to mirror legacy C++ unsigned arithmetic
+/// - missing references are returned for caller-driven sync requests
+/// - final `ok` requires both no missing references and matching block level
+pub fn validate_pivot_tips_metadata(
+    block_level: u64,
+    pivot: DagReferenceMetadata,
+    tips: &[DagReferenceMetadata],
+) -> DagPivotTipsValidation {
+    let mut expected_level = 0_u64;
+    let mut missing_references = Vec::new();
+
+    if pivot.found {
+        expected_level = expected_level.max(pivot.level.wrapping_add(1));
+    } else {
+        missing_references.push(pivot.hash);
+    }
+
+    for tip in tips {
+        if tip.found {
+            expected_level = expected_level.max(tip.level.wrapping_add(1));
+        } else {
+            missing_references.push(tip.hash);
+        }
+    }
+
+    let level_matches = block_level == expected_level;
+    let ok = missing_references.is_empty() && level_matches;
+
+    DagPivotTipsValidation {
+        ok,
+        expected_level,
+        level_matches,
+        missing_references,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DagGraph {
     vertices: BTreeMap<H256, BTreeSet<H256>>,
@@ -422,5 +533,102 @@ mod tests {
             dot.contains("\"0000000000000000000000000000000000000000000000000000000000000001\"")
         );
         assert!(dot.contains("\"0000000000000000000000000000000000000000000000000000000000000001\" -> \"0000000000000000000000000000000000000000000000000000000000000002\""));
+    }
+
+    #[test]
+    fn frontier_derivation_returns_empty_when_ghost_path_is_empty() {
+        let frontier = derive_frontier(&[], &[h(1), h(2)]);
+
+        assert_eq!(frontier.pivot, H256::zero());
+        assert_eq!(frontier.tips, Vec::<H256>::new());
+    }
+
+    #[test]
+    fn frontier_derivation_removes_pivot_and_preserves_leaf_order() {
+        let frontier = derive_frontier(&[h(10), h(20)], &[h(30), h(20), h(10), h(30), h(2)]);
+
+        assert_eq!(frontier.pivot, h(20));
+        assert_eq!(frontier.tips, vec![h(30), h(10), h(30), h(2)]);
+    }
+
+    #[test]
+    fn pivot_tips_validation_reports_missing_references_and_expected_level() {
+        let result = validate_pivot_tips_metadata(
+            11,
+            DagReferenceMetadata {
+                hash: h(100),
+                found: false,
+                level: 0,
+            },
+            &[
+                DagReferenceMetadata {
+                    hash: h(101),
+                    found: true,
+                    level: 4,
+                },
+                DagReferenceMetadata {
+                    hash: h(102),
+                    found: false,
+                    level: 0,
+                },
+                DagReferenceMetadata {
+                    hash: h(103),
+                    found: true,
+                    level: 9,
+                },
+            ],
+        );
+
+        assert!(!result.ok);
+        assert_eq!(result.expected_level, 10);
+        assert!(!result.level_matches);
+        assert_eq!(result.missing_references, vec![h(100), h(102)]);
+    }
+
+    #[test]
+    fn pivot_tips_validation_succeeds_when_level_matches_and_no_missing() {
+        let result = validate_pivot_tips_metadata(
+            8,
+            DagReferenceMetadata {
+                hash: h(200),
+                found: true,
+                level: 5,
+            },
+            &[
+                DagReferenceMetadata {
+                    hash: h(201),
+                    found: true,
+                    level: 7,
+                },
+                DagReferenceMetadata {
+                    hash: h(202),
+                    found: true,
+                    level: 6,
+                },
+            ],
+        );
+
+        assert!(result.ok);
+        assert_eq!(result.expected_level, 8);
+        assert!(result.level_matches);
+        assert!(result.missing_references.is_empty());
+    }
+
+    #[test]
+    fn pivot_tips_validation_wraps_level_like_cpp_unsigned_arithmetic() {
+        let result = validate_pivot_tips_metadata(
+            0,
+            DagReferenceMetadata {
+                hash: h(300),
+                found: true,
+                level: u64::MAX,
+            },
+            &[],
+        );
+
+        assert!(result.ok);
+        assert_eq!(result.expected_level, 0);
+        assert!(result.level_matches);
+        assert!(result.missing_references.is_empty());
     }
 }
