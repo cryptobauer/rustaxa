@@ -18,9 +18,18 @@ This repository is the Rust rewrite track for Taraxa. Keep day-to-day work align
 - `cpp-reference`: C++ validation gate with integration hooks; must build and test in pure C++ mode (`RUSTAXA_ENABLE=0`).
 - `main`: primary Rust rewrite branch and source of truth for future implementation.
 - In C++ files, prefer additive per-module guards (`#ifdef RUSTAXA_ENABLE_VDF`, `#ifdef RUSTAXA_ENABLE_STORAGE`, `#ifdef RUSTAXA_ENABLE_FINAL_CHAIN`) or the master `#ifdef RUSTAXA_ENABLE` for shim-overlay integration over deleting legacy logic.
-- For upstream-owned C++ classes, prefer the storage/final-chain overlay shim strategy over editing legacy files inline: add a shim include overlay, compile legacy implementation as `*Old`, and implement Rust-mode behavior in shim files. This is the default to minimize upstream merge conflicts.
+- For upstream-owned C++ classes, use the storage/final-chain overlay shim strategy instead of editing legacy files inline:
+  add a shim include overlay, compile legacy implementation as `*Old`, and provide a shim class in shim-owned files. The
+  shim class is the Rust-mode surface. Each method should call into Rust when the Rust implementation exists; otherwise,
+  prefer an explicit shim-local exception/stub so missing rewrite work is visible. Forward to the `*Old` class only when
+  throwing would prevent parity testing or proving correctness, and add a TODO comment at every `*Old` call site stating
+  what must move to Rust. This is the default to minimize upstream merge conflicts while keeping temporary legacy use
+  auditable.
 - Hard rule: do not fix rewrite-discovered bugs in original upstream C++ code on `main`. Track the issue and implement the fix in the Rust rewrite path (Rust modules, bridge, or shim overlay). Touch original C++ only when explicitly approved by the task owner.
-- Hard rule: in Rust-enabled rewrite paths, never forward/delegate/inherit behavior from legacy C++ implementations. Gaps must be explicit shim-local stubs/no-ops/throws until Rust parity is implemented. If fallback is being considered, stop and get explicit task-owner approval first.
+- Hard rule: in Rust-enabled production routing, never silently forward/delegate/inherit behavior from legacy C++
+  implementations. Gaps must be explicit shim-local stubs/no-ops/throws until Rust parity is implemented, except for
+  documented `*Old` forwarding used as a temporary parity-test scaffold as described above. If fallback is being
+  considered for production behavior rather than parity scaffolding, stop and get explicit task-owner approval first.
 - In C++ shim functions, prefer an early `return` inside the Rust `#ifdef` branch, then close with `#endif` and let the legacy C++ implementation continue below. Avoid `#ifdef` / `#else` / `#endif` when the Rust branch already returns.
 - Hard rule: do not weaken, retarget, or otherwise tamper with existing tests to make rewrite mode pass. If Rust-mode behavior diverges from test expectations, fix implementation or parity wiring first, then update tests only when the intended product behavior has actually changed.
 - Documentation rule: whenever adding or changing Rust/C++ rewrite code, document modules, public types, and public functions as complete units (purpose, inputs, outputs, invariants, and error/edge behavior), not just isolated lines.
