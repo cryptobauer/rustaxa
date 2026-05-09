@@ -295,6 +295,24 @@ bool VerifiedVotes::insertTwoTPlusOneVotedBlock(TwoTPlusOneVotedBlockType type, 
   return outcome.inserted;
 }
 
+VerifiedVotes::ThresholdDecision VerifiedVotes::decideThresholdEffects(const std::shared_ptr<PbftVote>& vote,
+                                                                       uint64_t total_weight, uint64_t two_t_plus_one) {
+  if (!vote) {
+    throw verifiedVotesError("cannot derive threshold decision from null vote");
+  }
+
+  std::scoped_lock lock(verified_votes_access_);
+  const auto outcome = rust_verified_votes_->verified_votes_apply_threshold_decision(toBridgeVotePayload(vote),
+                                                                                     total_weight, two_t_plus_one);
+  ThresholdDecision decision{};
+  decision.set_network_t_plus_one_step = outcome.network_t_plus_one_step_updated;
+  if (outcome.two_t_plus_one_inserted && outcome.two_t_plus_one_kind_found) {
+    decision.inserted_two_t_plus_one_voted_block_type =
+        static_cast<TwoTPlusOneVotedBlockType>(outcome.two_t_plus_one_kind);
+  }
+  return decision;
+}
+
 std::optional<VerifiedVotes::RoundAdvanceDecision> VerifiedVotes::determineRoundAdvance(
     PbftPeriod current_pbft_period, PbftRound current_pbft_round) const {
   std::shared_lock lock(verified_votes_access_);

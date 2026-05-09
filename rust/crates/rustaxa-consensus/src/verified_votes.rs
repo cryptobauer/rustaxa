@@ -253,6 +253,25 @@ pub struct DetermineNewRoundOutcome {
     pub step: u64,
 }
 
+/// Deterministic threshold decision outcome for one verified vote.
+///
+/// This captures state transitions owned by `VerifiedVotes` once vote
+/// aggregation has produced `total_weight` and the caller supplies the per-vote
+/// 2t+1 threshold:
+/// - `t_plus_one_reached` / `network_t_plus_one_step_updated` describe `next`
+///   vote t+1 handling,
+/// - `two_t_plus_one_reached` describes whether 2t+1 was met,
+/// - `two_t_plus_one_kind` and `two_t_plus_one_insert_outcome` describe mapped
+///   2t+1 marker insertion (first-writer-wins, existing-round-only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThresholdDecisionOutcome {
+    pub t_plus_one_reached: bool,
+    pub network_t_plus_one_step_updated: bool,
+    pub two_t_plus_one_reached: bool,
+    pub two_t_plus_one_kind: Option<TwoTPlusOneVotedBlockType>,
+    pub two_t_plus_one_insert_outcome: Option<TwoTPlusOneInsertOutcome>,
+}
+
 /// Rust-owned verified-votes index.
 #[derive(Debug, Clone, Default)]
 pub struct VerifiedVotes {
@@ -559,6 +578,85 @@ impl VerifiedVotes {
             .map(|round_votes| round_votes.network_t_plus_one_step)
     }
 
+    /// Applies deterministic t+1 / 2t+1 threshold decisions for one vote.
+    ///
+    /// Inputs:
+    /// - `vote`: vote metadata that identifies (`period`, `round`, `step`,
+    ///   type, voted block hash).
+    /// - `total_weight`: aggregated voted-value weight for this vote's bucket.
+    /// - `two_t_plus_one_threshold`: threshold that defines 2t+1.
+    ///
+    /// Behavior:
+    /// - Computes `t_plus_one = ((2t+1 - 1) / 2) + 1`.
+    /// - For `next` votes with `total_weight >= t_plus_one`, updates round
+    ///   `network_t_plus_one_step` only when `vote.step` is strictly greater
+    ///   than current marker and round exists.
+    /// - For votes with `total_weight >= 2t+1`, derives marker kind from vote
+    ///   type/hash and inserts 2t+1 mapping with first-writer-wins semantics.
+    ///
+    /// Returns a structured decision summary used by the C++ caller for side
+    /// effects (logs/database writes) while Rust owns consensus marker state.
+    pub fn apply_threshold_decision(
+        &mut self,
+        vote: &VerifiedVote,
+        total_weight: u64,
+        two_t_plus_one_threshold: u64,
+    ) -> Result<ThresholdDecisionOutcome> {
+        if two_t_plus_one_threshold == 0 {
+            return Err(anyhow!(
+                "2t+1 threshold cannot be zero for period {}, round {}, step {}",
+                vote.period,
+                vote.round,
+                vote.step
+            ));
+        }
+
+        let t_plus_one = ((two_t_plus_one_threshold - 1) / 2) + 1;
+        let t_plus_one_reached = vote.vote_type == PbftVoteType::Next && total_weight >= t_plus_one;
+        let current_marker = self
+            .network_t_plus_one_step(vote.period, vote.round)
+            .unwrap_or_default();
+        let network_t_plus_one_step_updated = t_plus_one_reached
+            && vote.step > current_marker
+            && self.set_network_t_plus_one_step(vote.period, vote.round, vote.step);
+
+        if total_weight < two_t_plus_one_threshold {
+            return Ok(ThresholdDecisionOutcome {
+                t_plus_one_reached,
+                network_t_plus_one_step_updated,
+                two_t_plus_one_reached: false,
+                two_t_plus_one_kind: None,
+                two_t_plus_one_insert_outcome: None,
+            });
+        }
+
+        let Some(kind) = Self::two_t_plus_one_kind_from_vote(vote) else {
+            return Ok(ThresholdDecisionOutcome {
+                t_plus_one_reached,
+                network_t_plus_one_step_updated,
+                two_t_plus_one_reached: true,
+                two_t_plus_one_kind: None,
+                two_t_plus_one_insert_outcome: None,
+            });
+        };
+
+        let insert_outcome = self.insert_two_t_plus_one_voted_block(
+            vote.period,
+            vote.round,
+            kind,
+            vote.block_hash,
+            vote.step,
+        );
+
+        Ok(ThresholdDecisionOutcome {
+            t_plus_one_reached,
+            network_t_plus_one_step_updated,
+            two_t_plus_one_reached: true,
+            two_t_plus_one_kind: Some(kind),
+            two_t_plus_one_insert_outcome: Some(insert_outcome),
+        })
+    }
+
     /// Inserts one 2t+1 voted-block mapping for existing round.
     ///
     /// Missing rounds are rejected without side effects. Existing mappings for
@@ -723,6 +821,18 @@ impl VerifiedVotes {
         let existing_is_null = existing.primary.block_hash == H256::zero();
         let incoming_is_null = vote.block_hash == H256::zero();
         existing_is_null != incoming_is_null
+    }
+
+    fn two_t_plus_one_kind_from_vote(vote: &VerifiedVote) -> Option<TwoTPlusOneVotedBlockType> {
+        match vote.vote_type {
+            PbftVoteType::Soft => Some(TwoTPlusOneVotedBlockType::SoftVotedBlock),
+            PbftVoteType::Cert => Some(TwoTPlusOneVotedBlockType::CertVotedBlock),
+            PbftVoteType::Next if vote.block_hash == H256::zero() => {
+                Some(TwoTPlusOneVotedBlockType::NextVotedNullBlock)
+            }
+            PbftVoteType::Next => Some(TwoTPlusOneVotedBlockType::NextVotedBlock),
+            PbftVoteType::Invalid | PbftVoteType::Propose => None,
+        }
     }
 
     fn snapshot_unique_voter_rollback_state(
@@ -1074,6 +1184,161 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn threshold_decision_next_vote_updates_t_plus_one_and_inserts_next_marker() {
+        let mut verified = VerifiedVotes::new();
+        let next_vote = vote(1, 77, 10, 5, 2, 9, PbftVoteType::Next, 1);
+        verified.insert_voted_value(next_vote.clone()).unwrap();
+
+        let outcome = verified.apply_threshold_decision(&next_vote, 5, 5).unwrap();
+
+        assert!(outcome.t_plus_one_reached);
+        assert!(outcome.network_t_plus_one_step_updated);
+        assert!(outcome.two_t_plus_one_reached);
+        assert_eq!(
+            outcome.two_t_plus_one_kind,
+            Some(TwoTPlusOneVotedBlockType::NextVotedBlock)
+        );
+        assert_eq!(
+            outcome.two_t_plus_one_insert_outcome,
+            Some(TwoTPlusOneInsertOutcome {
+                round_found: true,
+                inserted: true
+            })
+        );
+        assert_eq!(verified.network_t_plus_one_step(5, 2), Some(9));
+        assert_eq!(
+            verified.get_two_t_plus_one_voted_block(
+                5,
+                2,
+                TwoTPlusOneVotedBlockType::NextVotedBlock
+            ),
+            Some(VotedBlock {
+                hash: h256(77),
+                step: 9
+            })
+        );
+    }
+
+    #[test]
+    fn threshold_decision_non_next_vote_skips_t_plus_one_and_sets_two_t_plus_one() {
+        let mut verified = VerifiedVotes::new();
+        let cert_vote = vote(2, 91, 11, 6, 3, 8, PbftVoteType::Cert, 1);
+        verified.insert_voted_value(cert_vote.clone()).unwrap();
+
+        let outcome = verified.apply_threshold_decision(&cert_vote, 7, 7).unwrap();
+
+        assert!(!outcome.t_plus_one_reached);
+        assert!(!outcome.network_t_plus_one_step_updated);
+        assert!(outcome.two_t_plus_one_reached);
+        assert_eq!(
+            outcome.two_t_plus_one_kind,
+            Some(TwoTPlusOneVotedBlockType::CertVotedBlock)
+        );
+        assert_eq!(
+            outcome.two_t_plus_one_insert_outcome,
+            Some(TwoTPlusOneInsertOutcome {
+                round_found: true,
+                inserted: true
+            })
+        );
+        assert_eq!(verified.network_t_plus_one_step(6, 3), Some(0));
+    }
+
+    #[test]
+    fn threshold_decision_below_two_t_plus_one_only_applies_t_plus_one_for_next_votes() {
+        let mut verified = VerifiedVotes::new();
+        let next_vote = vote(3, 101, 12, 7, 4, 6, PbftVoteType::Next, 1);
+        verified.insert_voted_value(next_vote.clone()).unwrap();
+
+        let outcome = verified.apply_threshold_decision(&next_vote, 4, 7).unwrap();
+
+        assert!(outcome.t_plus_one_reached);
+        assert!(outcome.network_t_plus_one_step_updated);
+        assert!(!outcome.two_t_plus_one_reached);
+        assert_eq!(outcome.two_t_plus_one_kind, None);
+        assert_eq!(outcome.two_t_plus_one_insert_outcome, None);
+        assert_eq!(
+            verified.get_two_t_plus_one_voted_block(
+                7,
+                4,
+                TwoTPlusOneVotedBlockType::NextVotedBlock
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn threshold_decision_preserves_existing_markers_when_already_set() {
+        let mut verified = VerifiedVotes::new();
+        let existing_vote = vote(4, 202, 21, 8, 5, 10, PbftVoteType::Next, 1);
+        let candidate_vote = vote(5, 202, 22, 8, 5, 8, PbftVoteType::Next, 1);
+        verified.insert_voted_value(existing_vote.clone()).unwrap();
+        verified.insert_voted_value(candidate_vote.clone()).unwrap();
+
+        assert!(verified.set_network_t_plus_one_step(8, 5, 10));
+        let inserted = verified.insert_two_t_plus_one_voted_block(
+            8,
+            5,
+            TwoTPlusOneVotedBlockType::NextVotedBlock,
+            existing_vote.block_hash,
+            existing_vote.step,
+        );
+        assert!(inserted.round_found);
+        assert!(inserted.inserted);
+
+        let outcome = verified
+            .apply_threshold_decision(&candidate_vote, 5, 5)
+            .unwrap();
+
+        assert!(outcome.t_plus_one_reached);
+        assert!(!outcome.network_t_plus_one_step_updated);
+        assert!(outcome.two_t_plus_one_reached);
+        assert_eq!(
+            outcome.two_t_plus_one_insert_outcome,
+            Some(TwoTPlusOneInsertOutcome {
+                round_found: true,
+                inserted: false
+            })
+        );
+        assert_eq!(verified.network_t_plus_one_step(8, 5), Some(10));
+        assert_eq!(
+            verified.get_two_t_plus_one_voted_block(
+                8,
+                5,
+                TwoTPlusOneVotedBlockType::NextVotedBlock
+            ),
+            Some(VotedBlock {
+                hash: h256(202),
+                step: 10
+            })
+        );
+    }
+
+    #[test]
+    fn threshold_decision_reports_missing_round_without_state_changes() {
+        let mut verified = VerifiedVotes::new();
+        let next_vote = vote(6, 303, 31, 9, 6, 3, PbftVoteType::Next, 1);
+
+        let outcome = verified.apply_threshold_decision(&next_vote, 5, 5).unwrap();
+
+        assert!(outcome.t_plus_one_reached);
+        assert!(!outcome.network_t_plus_one_step_updated);
+        assert!(outcome.two_t_plus_one_reached);
+        assert_eq!(
+            outcome.two_t_plus_one_kind,
+            Some(TwoTPlusOneVotedBlockType::NextVotedBlock)
+        );
+        assert_eq!(
+            outcome.two_t_plus_one_insert_outcome,
+            Some(TwoTPlusOneInsertOutcome {
+                round_found: false,
+                inserted: false
+            })
+        );
+        assert_eq!(verified.network_t_plus_one_step(9, 6), None);
     }
 
     #[test]

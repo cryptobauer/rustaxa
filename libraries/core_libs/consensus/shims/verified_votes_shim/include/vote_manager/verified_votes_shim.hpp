@@ -64,6 +64,35 @@ class VerifiedVotes {
   };
 
   /**
+   * Rust-evaluated threshold effects for one inserted verified vote.
+   *
+   * Purpose:
+   * - Captures all Rust-owned threshold side effects consumed by
+   *   `VoteManager::addVerifiedVote` in one decision object.
+   *
+   * Inputs used to derive this decision:
+   * - vote metadata (`period`, `round`, `step`, type, voted block hash),
+   * - voted-value `total_weight`,
+   * - caller-computed `two_t_plus_one` threshold.
+   *
+   * Outputs:
+   * - `set_network_t_plus_one_step` when this vote advanced the stored
+   *   network t+1 step marker.
+   * - `inserted_two_t_plus_one_voted_block_type` when this vote crossed 2t+1
+   *   and inserted a new first-writer mapping for its vote type.
+   *
+   * Invariants:
+   * - Empty `inserted_two_t_plus_one_voted_block_type` means either
+   *   `total_weight < two_t_plus_one` or mapping already existed.
+   * - When `inserted_two_t_plus_one_voted_block_type` is set, Rust state already
+   *   contains the corresponding mapping for vote's (`period`, `round`).
+   */
+  struct ThresholdDecision {
+    bool set_network_t_plus_one_step{false};
+    std::optional<TwoTPlusOneVotedBlockType> inserted_two_t_plus_one_voted_block_type;
+  };
+
+  /**
    * Constructs an empty verified-votes index.
    *
    * Inputs:
@@ -158,6 +187,13 @@ class VerifiedVotes {
    * - `false` when mapping already existed or round is missing.
    */
   bool insertTwoTPlusOneVotedBlock(TwoTPlusOneVotedBlockType type, std::shared_ptr<PbftVote> vote);
+
+  /**
+   * Applies Rust-owned t+1 and 2t+1 threshold effects for one vote and
+   * returns a summary decision for `VoteManager`.
+   */
+  ThresholdDecision decideThresholdEffects(const std::shared_ptr<PbftVote>& vote, uint64_t total_weight,
+                                           uint64_t two_t_plus_one);
 
   /**
    * Evaluates whether the period can advance to a higher round from Rust

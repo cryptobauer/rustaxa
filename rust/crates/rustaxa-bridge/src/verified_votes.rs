@@ -1,13 +1,15 @@
 use crate::ffi::rustaxa_ffi::{
     AtomicVoteInsertOutcome, DagHash, DetermineNewRoundOutcome, NetworkTPlusOneStepLookup,
-    RoundMarkerSnapshot, TwoTPlusOneInsertOutcome, TwoTPlusOneSnapshotEntry,
-    TwoTPlusOneVotedBlockLookup, TwoTPlusOneVotesLookup, UniqueVoterCheckOutcome,
-    UniqueVoterInsertOutcome, VerifiedVotePayload, VotedValueInsertOutcome,
+    RoundMarkerSnapshot, ThresholdDecisionOutcome, TwoTPlusOneInsertOutcome,
+    TwoTPlusOneSnapshotEntry, TwoTPlusOneVotedBlockLookup, TwoTPlusOneVotesLookup,
+    UniqueVoterCheckOutcome, UniqueVoterInsertOutcome, VerifiedVotePayload,
+    VotedValueInsertOutcome,
 };
 use crate::ffi::BridgeVerifiedVotes;
 use ethereum_types::{H160, H256};
 use rustaxa_consensus::verified_votes::{
     DetermineNewRoundOutcome as ConsensusDetermineNewRoundOutcome, PbftVoteType,
+    ThresholdDecisionOutcome as ConsensusThresholdDecisionOutcome,
     TwoTPlusOneInsertOutcome as ConsensusTwoTPlusOneInsertOutcome, TwoTPlusOneVotedBlockType,
     VerifiedVote, VerifiedVotes,
 };
@@ -81,6 +83,23 @@ impl BridgeVerifiedVotes {
             used_secondary_slot: outcome.used_secondary_slot,
             duplicate_vote_hash: outcome.duplicate_vote_hash,
         })
+    }
+
+    /// Applies deterministic threshold decisions to verified-votes state.
+    ///
+    /// The caller provides `total_weight` for vote's voted-value bucket and
+    /// `two_t_plus_one_threshold` for this vote type/period.
+    pub fn verified_votes_apply_threshold_decision(
+        &mut self,
+        vote: VerifiedVotePayload,
+        total_weight: u64,
+        two_t_plus_one_threshold: u64,
+    ) -> Result<ThresholdDecisionOutcome, anyhow::Error> {
+        let vote = payload_to_vote(vote)?;
+        let outcome =
+            self.0
+                .apply_threshold_decision(&vote, total_weight, two_t_plus_one_threshold)?;
+        Ok(outcome.into())
     }
 
     /// Returns whether exact `(period, round, step, block_hash, vote_hash)` exists.
@@ -301,6 +320,29 @@ impl From<ConsensusDetermineNewRoundOutcome> for DetermineNewRoundOutcome {
             source_kind: value.source_kind.into(),
             block_hash: value.block_hash.into(),
             step: value.step,
+        }
+    }
+}
+
+impl From<ConsensusThresholdDecisionOutcome> for ThresholdDecisionOutcome {
+    fn from(value: ConsensusThresholdDecisionOutcome) -> Self {
+        let (kind_found, kind) = value
+            .two_t_plus_one_kind
+            .map(|kind| (true, kind.into()))
+            .unwrap_or((false, 0));
+        let (round_found, inserted) = value
+            .two_t_plus_one_insert_outcome
+            .map(|outcome| (outcome.round_found, outcome.inserted))
+            .unwrap_or((false, false));
+
+        Self {
+            t_plus_one_reached: value.t_plus_one_reached,
+            network_t_plus_one_step_updated: value.network_t_plus_one_step_updated,
+            two_t_plus_one_reached: value.two_t_plus_one_reached,
+            two_t_plus_one_kind_found: kind_found,
+            two_t_plus_one_kind: kind,
+            two_t_plus_one_round_found: round_found,
+            two_t_plus_one_inserted: inserted,
         }
     }
 }

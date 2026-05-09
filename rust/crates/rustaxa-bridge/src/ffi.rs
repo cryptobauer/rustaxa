@@ -195,6 +195,16 @@ pub mod rustaxa_ffi {
         duplicate_vote_hash: bool,
     }
 
+    struct ThresholdDecisionOutcome {
+        t_plus_one_reached: bool,
+        network_t_plus_one_step_updated: bool,
+        two_t_plus_one_reached: bool,
+        two_t_plus_one_kind_found: bool,
+        two_t_plus_one_kind: u8,
+        two_t_plus_one_round_found: bool,
+        two_t_plus_one_inserted: bool,
+    }
+
     struct TwoTPlusOneInsertOutcome {
         round_found: bool,
         inserted: bool,
@@ -553,6 +563,12 @@ pub mod rustaxa_ffi {
             self: &mut BridgeVerifiedVotes,
             vote: VerifiedVotePayload,
         ) -> Result<AtomicVoteInsertOutcome>;
+        pub fn verified_votes_apply_threshold_decision(
+            self: &mut BridgeVerifiedVotes,
+            vote: VerifiedVotePayload,
+            total_weight: u64,
+            two_t_plus_one_threshold: u64,
+        ) -> Result<ThresholdDecisionOutcome>;
         pub fn verified_votes_vote_in_verified_map(
             self: &BridgeVerifiedVotes,
             period: u64,

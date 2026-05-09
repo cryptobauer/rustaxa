@@ -206,14 +206,41 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
       return true;
     }
 
+    const auto total_weight = votes_with_weight->weight;
+
+#ifdef RUSTAXA_ENABLE_VERIFIED_VOTES
+    const auto threshold_decision = verified_votes_.decideThresholdEffects(vote, total_weight, *two_t_plus_one);
+
+    if (threshold_decision.set_network_t_plus_one_step) {
+      LOG(log_nf_) << "Set t+1 next voted block " << vote->getHash() << " for period " << vote->getPeriod()
+                   << ", round " << vote->getRound() << ", step " << vote->getStep();
+    }
+
+    if (!threshold_decision.inserted_two_t_plus_one_voted_block_type) {
+      return true;
+    }
+
+    if (vote->getType() != PbftVoteTypes::cert_vote && vote->getPeriod() == current_pbft_period_ &&
+        vote->getRound() == current_pbft_round_) {
+      std::vector<std::shared_ptr<PbftVote>> votes;
+      votes.reserve(votes_with_weight->votes.size());
+      for (const auto& tmp_vote : votes_with_weight->votes) {
+        votes.push_back(tmp_vote.second);
+      }
+
+      db_->replaceTwoTPlusOneVotes(*threshold_decision.inserted_two_t_plus_one_voted_block_type, votes);
+    }
+    return true;
+#endif
+
     auto round_votes = verified_votes_.getRoundVotes(vote->getPeriod(), vote->getRound());
     if (!round_votes) {
       return true;
     }
 
-    const auto total_weight = votes_with_weight->weight;
     // Calculate t+1
     const auto t_plus_one = ((*two_t_plus_one - 1) / 2) + 1;
+
     // Set network_t_plus_one_step - used for triggering exponential backoff
     if (vote->getType() == PbftVoteTypes::next_vote && total_weight >= t_plus_one &&
         vote->getStep() > round_votes->network_t_plus_one_step) {
