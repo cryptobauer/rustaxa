@@ -105,7 +105,8 @@ Required test coverage and parity gates for the Rust consensus model are defined
 ## First Slice: Rust DAG Graph
 
 Status: `rust-backed` landed for C++ `Dag`/`PivotTree` graph operations under `RUSTAXA_ENABLE`. `DagManager`
-orchestration remains C++, but its graph objects now use Rust in Rust-enabled builds.
+orchestration remains C++, but Rust-enabled builds now keep a Rust graph mirror for deterministic graph reads and
+route frontier, ghost path, ordering, graphviz output, counters, and pivot/tip availability metadata through that mirror.
 
 Target behavior:
 
@@ -121,8 +122,8 @@ Rust design sketch:
 - `rustaxa-consensus` has a `dag` module with explicit hash-keyed graph state instead of mirrored Boost graph types.
 - Ordering is deterministic and covered by Rust unit tests and CXX bridge fixture tests.
 - The bridge uses fixed hash bytes and explicit conversion at the boundary.
-- `DagManager` remains in C++ during this slice; production graph routing is active through the `Dag`/`PivotTree`
-  wrappers under `RUSTAXA_ENABLE`.
+- `DagManager` remains in C++ during this slice; command-side DB writes, transaction handling, events, and networking
+  still stay with the C++ side while deterministic graph reads move through the Rust mirror under `RUSTAXA_ENABLE`.
 
 Required tests:
 

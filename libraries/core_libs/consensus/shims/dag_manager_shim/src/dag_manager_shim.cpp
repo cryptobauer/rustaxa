@@ -1,6 +1,7 @@
 #include "dag/dag_manager.hpp"
 
 #include <array>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <mutex>
@@ -58,24 +59,19 @@ std::vector<blk_hash_t> from_bridge_dag_hashes(const rust::Vec<rustaxa::DagHash>
   return out;
 }
 
-rustaxa::DagReferenceMetadata to_bridge_reference(const blk_hash_t &hash, const std::shared_ptr<DagBlock> &block) {
-  rustaxa::DagReferenceMetadata out;
-  out.hash = to_bridge_hash(hash);
-  out.found = static_cast<bool>(block);
-  out.level = block ? block->getLevel() : 0;
-  return out;
-}
-
 }  // namespace
 
 struct DagManager::RustDagManagerGraphs {
   explicit RustDagManagerGraphs(const blk_hash_t &genesis)
       : total_dag(rustaxa::create_dag_graph(to_bridge_hash(genesis))),
         pivot_tree(rustaxa::create_dag_graph(to_bridge_hash(genesis))),
-        anchor(genesis) {}
+        anchor(genesis) {
+    block_levels[genesis] = 0;
+  }
 
   rust::Box<rustaxa::BridgeDagGraph> total_dag;
   rust::Box<rustaxa::BridgeDagGraph> pivot_tree;
+  std::map<blk_hash_t, level_t> block_levels;
   blk_hash_t anchor;
 };
 
@@ -93,6 +89,13 @@ DagManager::~DagManager() = default;
 void DagManager::rebuildRustGraphsFromOld() {
   const auto anchors = DagManagerOld::getAnchors();
   const auto [_, non_finalized_blks] = DagManagerOld::getNonFinalizedBlocks();
+  blk_hash_t current_anchor;
+  {
+    std::shared_lock lock(rust_graphs_mutex_);
+    current_anchor = rust_graphs_->anchor;
+  }
+  const auto next_anchor = anchors.second.isZero() ? current_anchor : anchors.second;
+  const auto anchor_block = DagManagerOld::getDagBlock(next_anchor);
   std::vector<std::shared_ptr<DagBlock>> non_finalized_blocks;
   for (const auto &[level, hashes] : non_finalized_blks) {
     (void)level;
@@ -104,9 +107,15 @@ void DagManager::rebuildRustGraphsFromOld() {
   }
 
   std::unique_lock lock(rust_graphs_mutex_);
-  rust_graphs_->anchor = anchors.second.isZero() ? rust_graphs_->anchor : anchors.second;
+  rust_graphs_->anchor = next_anchor;
   rust_graphs_->total_dag->dag_clear();
   rust_graphs_->pivot_tree->dag_clear();
+  rust_graphs_->block_levels.clear();
+  if (anchor_block) {
+    rust_graphs_->block_levels[rust_graphs_->anchor] = anchor_block->getLevel();
+  } else {
+    rust_graphs_->block_levels[rust_graphs_->anchor] = 0;
+  }
   if (!rust_graphs_->total_dag->dag_add_vertex_edges(to_bridge_hash(rust_graphs_->anchor),
                                                      to_bridge_hash(kNullBlockHash), {})) {
     std::cerr << "DagManager: failed to add Rust total DAG anchor " << rust_graphs_->anchor << std::endl;
@@ -125,6 +134,7 @@ void DagManager::rebuildRustGraphsFromOld() {
 
 bool DagManager::addBlockToRustGraphs(const std::shared_ptr<DagBlock> &blk) {
   const auto block_hash = blk->getHash();
+  rust_graphs_->block_levels[block_hash] = blk->getLevel();
   if (rust_graphs_->total_dag->dag_has_vertex(to_bridge_hash(block_hash)) &&
       rust_graphs_->pivot_tree->dag_has_vertex(to_bridge_hash(block_hash))) {
     return true;
@@ -181,21 +191,32 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
 std::pair<bool, std::vector<blk_hash_t>> DagManager::pivotAndTipsAvailable(const std::shared_ptr<DagBlock> &blk) {
   std::vector<blk_hash_t> missing_tips_or_pivot;
   const auto pivot_hash = blk->getPivot();
-
-  // TODO(rust-rewrite): source reference block metadata from Rust DAG state instead of DagManagerOld.
-  const auto dag_blk_pivot = DagManagerOld::getDagBlock(pivot_hash);
-  if (!dag_blk_pivot) {
-    missing_tips_or_pivot.push_back(pivot_hash);
-  }
-
   rust::Vec<rustaxa::DagReferenceMetadata> tip_refs;
   tip_refs.reserve(blk->getTips().size());
-  for (const auto &tip : blk->getTips()) {
-    // TODO(rust-rewrite): source tip metadata from Rust DAG state instead of DagManagerOld.
-    const auto tip_block = DagManagerOld::getDagBlock(tip);
-    tip_refs.push_back(to_bridge_reference(tip, tip_block));
-    if (!tip_block) {
-      missing_tips_or_pivot.push_back(tip);
+
+  rustaxa::DagReferenceMetadata pivot_ref;
+  {
+    std::shared_lock lock(rust_graphs_mutex_);
+    const auto pivot_level = rust_graphs_->block_levels.find(pivot_hash);
+    pivot_ref.hash = to_bridge_hash(pivot_hash);
+    pivot_ref.found = rust_graphs_->total_dag->dag_has_vertex(to_bridge_hash(pivot_hash)) &&
+                      pivot_level != rust_graphs_->block_levels.end();
+    pivot_ref.level = pivot_ref.found ? pivot_level->second : 0;
+    if (!pivot_ref.found) {
+      missing_tips_or_pivot.push_back(pivot_hash);
+    }
+
+    for (const auto &tip : blk->getTips()) {
+      const auto tip_level = rust_graphs_->block_levels.find(tip);
+      rustaxa::DagReferenceMetadata tip_ref;
+      tip_ref.hash = to_bridge_hash(tip);
+      tip_ref.found =
+          rust_graphs_->total_dag->dag_has_vertex(to_bridge_hash(tip)) && tip_level != rust_graphs_->block_levels.end();
+      tip_ref.level = tip_ref.found ? tip_level->second : 0;
+      tip_refs.push_back(tip_ref);
+      if (!tip_ref.found) {
+        missing_tips_or_pivot.push_back(tip);
+      }
     }
   }
 
@@ -203,8 +224,7 @@ std::pair<bool, std::vector<blk_hash_t>> DagManager::pivotAndTipsAvailable(const
     return {false, missing_tips_or_pivot};
   }
 
-  const auto validation = rustaxa::dag_validate_pivot_tips_metadata(
-      blk->getLevel(), to_bridge_reference(pivot_hash, dag_blk_pivot), std::move(tip_refs));
+  const auto validation = rustaxa::dag_validate_pivot_tips_metadata(blk->getLevel(), pivot_ref, std::move(tip_refs));
   if (!validation.level_matches) {
     return {false, {}};
   }
@@ -272,18 +292,24 @@ std::vector<blk_hash_t> DagManager::getGhostPath() const {
 }
 
 void DagManager::drawTotalGraph(std::string const &str) const {
-  // TODO(rust-rewrite): migrate total DAG graph output to Rust instead of DagManagerOld.
-  DagManagerOld::drawTotalGraph(str);
+  std::shared_lock lock(rust_graphs_mutex_);
+  std::ofstream outfile(str.c_str());
+  outfile << std::string(rust_graphs_->total_dag->dag_graphviz_dot());
+  std::cout << "Dot file " << str << " generated!" << std::endl;
+  std::cout << "Use \"dot -Tpdf <dot file> -o <pdf file>\" to generate pdf file" << std::endl;
 }
 
 void DagManager::drawPivotGraph(std::string const &str) const {
-  // TODO(rust-rewrite): migrate pivot DAG graph output to Rust instead of DagManagerOld.
-  DagManagerOld::drawPivotGraph(str);
+  std::shared_lock lock(rust_graphs_mutex_);
+  std::ofstream outfile(str.c_str());
+  outfile << std::string(rust_graphs_->pivot_tree->dag_graphviz_dot());
+  std::cout << "Dot file " << str << " generated!" << std::endl;
+  std::cout << "Use \"dot -Tpdf <dot file> -o <pdf file>\" to generate pdf file" << std::endl;
 }
 
 void DagManager::drawGraph(std::string const &dotfile) const {
-  // TODO(rust-rewrite): migrate DAG graph output to Rust instead of DagManagerOld.
-  DagManagerOld::drawGraph(dotfile);
+  drawPivotGraph("pivot." + dotfile);
+  drawTotalGraph("total." + dotfile);
 }
 
 std::pair<uint64_t, uint64_t> DagManager::getNumVerticesInDag() const {
