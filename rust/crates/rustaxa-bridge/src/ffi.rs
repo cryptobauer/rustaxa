@@ -7,7 +7,7 @@ use crate::sortition::*;
 use crate::storage::*;
 use crate::vdf::*;
 use crate::verified_votes::*;
-use rustaxa_consensus::dag::DagGraph;
+use rustaxa_consensus::dag::{DagGraph, DagManagerState};
 use rustaxa_consensus::pbft_chain::PbftChain;
 use rustaxa_consensus::period_data_queue::PeriodDataQueue;
 use rustaxa_consensus::proposed_blocks::ProposedBlocks;
@@ -30,6 +30,8 @@ pub struct BridgeStorage(
 pub struct BridgeFinalChain(pub FinalChain);
 
 pub struct BridgeDagGraph(pub DagGraph);
+
+pub struct BridgeDagManagerState(pub DagManagerState);
 
 pub struct BridgePbftChain(pub PbftChain);
 
@@ -373,6 +375,35 @@ pub mod rustaxa_ffi {
         missing_references: Vec<DagHash>,
     }
 
+    struct DagManagerBlock {
+        hash: [u8; 32],
+        pivot: [u8; 32],
+        tips: Vec<DagHash>,
+        level: u64,
+        difficulty: u32,
+    }
+
+    struct DagManagerSnapshot {
+        old_anchor: [u8; 32],
+        anchor: [u8; 32],
+        anchor_level: u64,
+        period: u64,
+        max_level: u64,
+        dag_expiry_level: u64,
+        non_finalized_min_difficulty: u32,
+        non_finalized_blocks: Vec<DagManagerBlock>,
+    }
+
+    struct DagManagerAnchors {
+        old_anchor: [u8; 32],
+        anchor: [u8; 32],
+    }
+
+    struct DagManagerNonFinalizedSize {
+        levels: u64,
+        blocks: u64,
+    }
+
     struct SortitionRuntimeConfig {
         threshold_upper: u16,
         difficulty_min: u16,
@@ -468,6 +499,52 @@ pub mod rustaxa_ffi {
         ) -> DagPivotTipsValidation;
         pub fn dag_clear(self: &mut BridgeDagGraph);
         pub fn dag_graphviz_dot(self: &BridgeDagGraph) -> String;
+
+        type BridgeDagManagerState;
+
+        pub fn create_dag_manager_state(
+            genesis: &[u8; 32],
+            dag_expiry_limit: u32,
+        ) -> Result<Box<BridgeDagManagerState>>;
+        pub fn dag_manager_rebuild(
+            self: &mut BridgeDagManagerState,
+            snapshot: DagManagerSnapshot,
+        ) -> Result<()>;
+        pub fn dag_manager_add_block(
+            self: &mut BridgeDagManagerState,
+            block: DagManagerBlock,
+        ) -> Result<()>;
+        pub fn dag_manager_validate_pivot_tips(
+            self: &BridgeDagManagerState,
+            block_level: u64,
+            pivot: &[u8; 32],
+            tips: Vec<DagHash>,
+        ) -> DagPivotTipsValidation;
+        pub fn dag_manager_compute_order(
+            self: &BridgeDagManagerState,
+            anchor: &[u8; 32],
+        ) -> DagOrder;
+        pub fn dag_manager_frontier(self: &BridgeDagManagerState) -> DagFrontier;
+        pub fn dag_manager_ghost_path(
+            self: &BridgeDagManagerState,
+            source: &[u8; 32],
+        ) -> Vec<DagHash>;
+        pub fn dag_manager_anchor_ghost_path(self: &BridgeDagManagerState) -> Vec<DagHash>;
+        pub fn dag_manager_graphviz_dot(self: &BridgeDagManagerState, pivot_tree: bool) -> String;
+        pub fn dag_manager_vertex_count(self: &BridgeDagManagerState) -> usize;
+        pub fn dag_manager_edge_count(self: &BridgeDagManagerState) -> usize;
+        pub fn dag_manager_max_level(self: &BridgeDagManagerState) -> u64;
+        pub fn dag_manager_latest_period(self: &BridgeDagManagerState) -> u64;
+        pub fn dag_manager_anchors(self: &BridgeDagManagerState) -> DagManagerAnchors;
+        pub fn dag_manager_dag_expiry_limit(self: &BridgeDagManagerState) -> u32;
+        pub fn dag_manager_dag_expiry_level(self: &BridgeDagManagerState) -> u64;
+        pub fn dag_manager_non_finalized_blocks(
+            self: &BridgeDagManagerState,
+        ) -> Vec<DagLevelHashes>;
+        pub fn dag_manager_non_finalized_blocks_size(
+            self: &BridgeDagManagerState,
+        ) -> DagManagerNonFinalizedSize;
+        pub fn dag_manager_non_finalized_min_difficulty(self: &BridgeDagManagerState) -> u32;
 
         // Consensus PBFT chain
 

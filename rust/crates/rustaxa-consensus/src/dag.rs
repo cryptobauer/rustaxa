@@ -1,3 +1,4 @@
+use anyhow::{Context, Result, bail, ensure};
 use ethereum_types::H256;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -345,6 +346,467 @@ impl DagGraph {
     }
 }
 
+/// Immutable block metadata used to update Rust-owned `DagManager` state.
+///
+/// Inputs:
+/// - `hash`: DAG block hash. It must be nonzero.
+/// - `pivot`: pivot parent hash, or zero for the current anchor root.
+/// - `tips`: non-pivot parent hashes in block order.
+/// - `level`: DAG level persisted on the block.
+/// - `difficulty`: VDF difficulty used for non-finalized minimum-difficulty tracking.
+///
+/// Invariants:
+/// - A block can be applied repeatedly without duplicating graph vertices or
+///   non-finalized indexes.
+/// - Missing parent hashes do not create edges, matching legacy graph behavior.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagManagerBlock {
+    pub hash: H256,
+    pub pivot: H256,
+    pub tips: Vec<H256>,
+    pub level: u64,
+    pub difficulty: u32,
+}
+
+/// Complete snapshot used to rebuild Rust-owned `DagManager` state from the
+/// C++ side while DB, transaction, event, and network ownership still lives in
+/// C++.
+///
+/// Inputs:
+/// - anchors and period mirror the legacy manager state at one point in time.
+/// - `anchor_level`, `max_level`, and `dag_expiry_level` preserve legacy
+///   counters that are still affected by storage and finalization side effects.
+/// - `non_finalized_min_difficulty` is accepted from C++ for exact parity during
+///   transitional rebuilds; subsequent Rust `add_block` calls maintain it.
+/// - `non_finalized_blocks` is the ordered set of currently live blocks that
+///   should be present in the in-memory DAG.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagManagerSnapshot {
+    pub old_anchor: H256,
+    pub anchor: H256,
+    pub anchor_level: u64,
+    pub period: u64,
+    pub max_level: u64,
+    pub dag_expiry_level: u64,
+    pub non_finalized_min_difficulty: u32,
+    pub non_finalized_blocks: Vec<DagManagerBlock>,
+}
+
+/// Rust-owned in-memory state for deterministic `DagManager` behavior.
+///
+/// This type owns the total DAG graph, pivot tree, non-finalized block index,
+/// block levels, frontier, anchors, period, max level, expiry level, and
+/// non-finalized minimum difficulty. It deliberately does not own storage,
+/// transaction pool effects, verified-block events, or network gossip yet; the
+/// C++ shim still performs those side effects and feeds successful state changes
+/// into this object.
+///
+/// Output guarantees:
+/// - Graph reads, frontier derivation, ghost path, block ordering, counters, and
+///   pivot/tip metadata are derived from one Rust state object.
+/// - Non-finalized block snapshots are returned in deterministic level/hash
+///   order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagManagerState {
+    total_dag: DagGraph,
+    pivot_tree: DagGraph,
+    block_levels: BTreeMap<H256, u64>,
+    blocks: BTreeMap<H256, DagManagerBlock>,
+    non_finalized_blocks: BTreeMap<u64, BTreeSet<H256>>,
+    old_anchor: H256,
+    anchor: H256,
+    period: u64,
+    max_level: u64,
+    dag_expiry_limit: u32,
+    dag_expiry_level: u64,
+    non_finalized_min_difficulty: u32,
+    frontier: DagFrontier,
+}
+
+impl DagManagerState {
+    /// Creates a Rust-owned manager state rooted at the genesis DAG block.
+    ///
+    /// `genesis` must be nonzero. The initial state has period `0`, no
+    /// non-finalized blocks, zero expiry level, and a frontier derived from the
+    /// single genesis root.
+    pub fn new(genesis: H256, dag_expiry_limit: u32) -> Result<Self> {
+        if genesis == H256::zero() {
+            bail!("DagManagerState requires a nonzero genesis hash");
+        }
+
+        let total_dag = DagGraph::new(genesis);
+        let pivot_tree = DagGraph::new(genesis);
+        let frontier = derive_frontier(&pivot_tree.ghost_path(genesis), &total_dag.leaves());
+        let mut block_levels = BTreeMap::new();
+        block_levels.insert(genesis, 0);
+
+        Ok(Self {
+            total_dag,
+            pivot_tree,
+            block_levels,
+            blocks: BTreeMap::new(),
+            non_finalized_blocks: BTreeMap::new(),
+            old_anchor: H256::zero(),
+            anchor: genesis,
+            period: 0,
+            max_level: 0,
+            dag_expiry_limit,
+            dag_expiry_level: 0,
+            non_finalized_min_difficulty: u32::MAX,
+            frontier,
+        })
+    }
+
+    /// Replaces the current Rust state with a full snapshot from the C++ side.
+    ///
+    /// This is the transitional synchronization point after startup recovery and
+    /// finalization, where storage cleanup and transaction side effects are
+    /// still owned by C++.
+    pub fn rebuild_from_snapshot(&mut self, snapshot: DagManagerSnapshot) -> Result<()> {
+        if snapshot.anchor == H256::zero() {
+            bail!("DagManagerState snapshot anchor must be nonzero");
+        }
+
+        self.total_dag.clear();
+        self.pivot_tree.clear();
+        self.block_levels.clear();
+        self.blocks.clear();
+        self.non_finalized_blocks.clear();
+
+        self.old_anchor = snapshot.old_anchor;
+        self.anchor = snapshot.anchor;
+        self.period = snapshot.period;
+        self.max_level = snapshot.max_level;
+        self.dag_expiry_level = snapshot.dag_expiry_level;
+        self.non_finalized_min_difficulty = snapshot.non_finalized_min_difficulty;
+
+        self.block_levels
+            .insert(snapshot.anchor, snapshot.anchor_level);
+        self.total_dag
+            .add_vertex_edges(snapshot.anchor, H256::zero(), &[]);
+        self.pivot_tree
+            .add_vertex_edges(snapshot.anchor, H256::zero(), &[]);
+
+        for block in snapshot.non_finalized_blocks {
+            self.add_non_finalized_block(block)?;
+        }
+        self.frontier = self.compute_frontier();
+
+        Ok(())
+    }
+
+    /// Builds a fresh Rust DAG manager state from one snapshot.
+    ///
+    /// This is a convenience constructor for callers that create state from a
+    /// persisted snapshot rather than mutating an existing instance.
+    pub fn from_snapshot(snapshot: DagManagerSnapshot, dag_expiry_limit: u32) -> Result<Self> {
+        let mut state = Self::new(snapshot.anchor, dag_expiry_limit)?;
+        state.rebuild_from_snapshot(snapshot)?;
+        Ok(state)
+    }
+
+    /// Adds one non-finalized block to the Rust-owned in-memory DAG state.
+    ///
+    /// The caller must invoke this only after C++ side validation, persistence,
+    /// and transaction handling have succeeded. The method updates graph edges,
+    /// block level metadata, non-finalized indexes, max level, min difficulty,
+    /// and frontier.
+    pub fn add_block(&mut self, block: DagManagerBlock) -> Result<()> {
+        self.add_non_finalized_block(block)?;
+        self.frontier = self.compute_frontier();
+        Ok(())
+    }
+
+    /// Applies one finalized DAG order update and transitions to the next
+    /// period/anchor.
+    ///
+    /// Inputs:
+    /// - `new_anchor`: anchor hash for the new period (must be nonzero).
+    /// - `new_period`: expected to be exactly `period + 1`.
+    /// - `finalized_order`: hashes finalized by this period.
+    ///
+    /// Output:
+    /// - number of finalized non-finalized hashes removed from Rust state.
+    ///
+    /// Behavior:
+    /// - updates `old_anchor`, `anchor`, and `period`
+    /// - removes finalized blocks from level indexes and block metadata
+    /// - rebuilds DAG graphs and frontier from remaining non-finalized blocks
+    pub fn set_finalized_order(
+        &mut self,
+        new_anchor: H256,
+        new_period: u64,
+        finalized_order: &[H256],
+    ) -> Result<usize> {
+        ensure!(new_anchor != H256::zero(), "new anchor must be nonzero");
+        ensure!(
+            new_period == self.period.saturating_add(1),
+            "invalid period transition: expected {}, got {}",
+            self.period.saturating_add(1),
+            new_period
+        );
+
+        let anchor_level = self.block_levels.get(&new_anchor).copied().unwrap_or(0);
+        let finalized = finalized_order.iter().copied().collect::<BTreeSet<_>>();
+        let mut removed = 0usize;
+        for hash in &finalized {
+            if self.blocks.remove(hash).is_some() {
+                removed += 1;
+            }
+            if let Some(level) = self.block_levels.remove(hash) {
+                let remove_level_entry = self
+                    .non_finalized_blocks
+                    .get_mut(&level)
+                    .map(|hashes| {
+                        hashes.remove(hash);
+                        hashes.is_empty()
+                    })
+                    .unwrap_or(false);
+                if remove_level_entry {
+                    self.non_finalized_blocks.remove(&level);
+                }
+            }
+        }
+
+        self.old_anchor = self.anchor;
+        self.anchor = new_anchor;
+        self.period = new_period;
+        self.block_levels.clear();
+        self.block_levels.insert(self.anchor, anchor_level);
+        for block in self.blocks.values() {
+            self.block_levels.insert(block.hash, block.level);
+        }
+        self.rebuild_graphs_from_records()?;
+        self.refresh_non_finalized_min_difficulty();
+        self.frontier = self.compute_frontier();
+
+        Ok(removed)
+    }
+
+    /// Returns true when the total DAG mirror contains `hash`.
+    pub fn has_vertex(&self, hash: H256) -> bool {
+        self.total_dag.has_vertex(hash)
+    }
+
+    /// Returns reference metadata for pivot/tip validation from Rust state.
+    pub fn reference_metadata(&self, hash: H256) -> DagReferenceMetadata {
+        match self.block_levels.get(&hash).copied() {
+            Some(level) if self.total_dag.has_vertex(hash) => DagReferenceMetadata {
+                hash,
+                found: true,
+                level,
+            },
+            _ => DagReferenceMetadata {
+                hash,
+                found: false,
+                level: 0,
+            },
+        }
+    }
+
+    /// Validates pivot/tip availability and level for a block using Rust state.
+    pub fn validate_pivot_tips(
+        &self,
+        block_level: u64,
+        pivot: H256,
+        tips: &[H256],
+    ) -> DagPivotTipsValidation {
+        let pivot = self.reference_metadata(pivot);
+        let tips = tips
+            .iter()
+            .map(|tip| self.reference_metadata(*tip))
+            .collect::<Vec<_>>();
+        validate_pivot_tips_metadata(block_level, pivot, &tips)
+    }
+
+    /// Computes DAG order for `anchor` from the Rust non-finalized index.
+    pub fn compute_order(&self, anchor: H256) -> Option<Vec<H256>> {
+        self.total_dag
+            .compute_order(anchor, &self.non_finalized_blocks)
+    }
+
+    /// Returns the pivot ghost path from an explicit source.
+    pub fn ghost_path(&self, source: H256) -> Vec<H256> {
+        self.pivot_tree.ghost_path(source)
+    }
+
+    /// Returns the pivot ghost path from the current anchor.
+    pub fn anchor_ghost_path(&self) -> Vec<H256> {
+        self.pivot_tree.ghost_path(self.anchor)
+    }
+
+    /// Returns the cached frontier derived from current Rust graph state.
+    pub fn frontier(&self) -> &DagFrontier {
+        &self.frontier
+    }
+
+    /// Returns graphviz output for the total DAG when `pivot_tree == false`,
+    /// otherwise for the pivot tree.
+    pub fn graphviz_dot(&self, pivot_tree: bool) -> String {
+        if pivot_tree {
+            self.pivot_tree.graphviz_dot()
+        } else {
+            self.total_dag.graphviz_dot()
+        }
+    }
+
+    /// Returns the persisted old/current anchors mirrored in Rust state.
+    pub fn anchors(&self) -> (H256, H256) {
+        (self.old_anchor, self.anchor)
+    }
+
+    /// Returns the current anchor hash.
+    pub fn anchor(&self) -> H256 {
+        self.anchor
+    }
+
+    /// Returns the previous anchor hash.
+    pub fn old_anchor(&self) -> H256 {
+        self.old_anchor
+    }
+
+    /// Returns the latest finalized PBFT period mirrored in Rust state.
+    pub fn period(&self) -> u64 {
+        self.period
+    }
+
+    /// Returns the max non-finalized DAG level mirrored in Rust state.
+    pub fn max_level(&self) -> u64 {
+        self.max_level
+    }
+
+    /// Returns the configured DAG expiry limit.
+    pub fn dag_expiry_limit(&self) -> u32 {
+        self.dag_expiry_limit
+    }
+
+    /// Returns the currently active DAG expiry level.
+    pub fn dag_expiry_level(&self) -> u64 {
+        self.dag_expiry_level
+    }
+
+    /// Alias accessor for current DAG expiry level.
+    pub fn expiry_level(&self) -> u64 {
+        self.dag_expiry_level
+    }
+
+    /// Returns the current non-finalized minimum difficulty.
+    pub fn non_finalized_min_difficulty(&self) -> u32 {
+        self.non_finalized_min_difficulty
+    }
+
+    /// Optional minimum difficulty for non-finalized blocks.
+    pub fn min_difficulty(&self) -> Option<u32> {
+        (self.non_finalized_min_difficulty != u32::MAX).then_some(self.non_finalized_min_difficulty)
+    }
+
+    /// Returns total graph vertex count.
+    pub fn vertex_count(&self) -> usize {
+        self.total_dag.vertex_count()
+    }
+
+    /// Returns total graph edge count.
+    pub fn edge_count(&self) -> usize {
+        self.total_dag.edge_count()
+    }
+
+    /// Returns non-finalized levels and hashes in deterministic order.
+    pub fn non_finalized_blocks(&self) -> &BTreeMap<u64, BTreeSet<H256>> {
+        &self.non_finalized_blocks
+    }
+
+    /// Per-block level lookup map for current anchor and non-finalized blocks.
+    pub fn block_levels(&self) -> &BTreeMap<H256, u64> {
+        &self.block_levels
+    }
+
+    /// Read-only access to total DAG mirror.
+    pub fn total_dag(&self) -> &DagGraph {
+        &self.total_dag
+    }
+
+    /// Read-only access to pivot-tree DAG mirror.
+    pub fn pivot_tree(&self) -> &DagGraph {
+        &self.pivot_tree
+    }
+
+    /// Returns `(number of levels, number of blocks)` for non-finalized state.
+    pub fn non_finalized_blocks_size(&self) -> (usize, usize) {
+        (
+            self.non_finalized_blocks.len(),
+            self.non_finalized_blocks.values().map(BTreeSet::len).sum(),
+        )
+    }
+
+    fn add_non_finalized_block(&mut self, block: DagManagerBlock) -> Result<()> {
+        if block.hash == H256::zero() {
+            bail!("DagManagerState cannot add a zero DAG block hash");
+        }
+
+        if let Some(existing) = self.blocks.get(&block.hash) {
+            ensure!(
+                existing == &block,
+                "DagManagerState cannot add conflicting metadata for hash {:?}",
+                block.hash
+            );
+            return Ok(());
+        }
+
+        self.blocks.insert(block.hash, block.clone());
+
+        self.block_levels.insert(block.hash, block.level);
+        self.max_level = self.max_level.max(block.level);
+        self.non_finalized_blocks
+            .entry(block.level)
+            .or_default()
+            .insert(block.hash);
+        self.non_finalized_min_difficulty = self.non_finalized_min_difficulty.min(block.difficulty);
+
+        self.total_dag
+            .add_vertex_edges(block.hash, block.pivot, &block.tips);
+        self.pivot_tree
+            .add_vertex_edges(block.hash, block.pivot, &[]);
+
+        Ok(())
+    }
+
+    fn rebuild_graphs_from_records(&mut self) -> Result<()> {
+        self.total_dag.clear();
+        self.pivot_tree.clear();
+        self.total_dag
+            .add_vertex_edges(self.anchor, H256::zero(), &[]);
+        self.pivot_tree
+            .add_vertex_edges(self.anchor, H256::zero(), &[]);
+
+        for hash in self.non_finalized_blocks.values().flatten() {
+            let block = self.blocks.get(hash).with_context(|| {
+                format!("missing non-finalized block metadata for hash {hash:?}")
+            })?;
+            self.total_dag
+                .add_vertex_edges(block.hash, block.pivot, &block.tips);
+            self.pivot_tree
+                .add_vertex_edges(block.hash, block.pivot, &[]);
+        }
+        Ok(())
+    }
+
+    fn refresh_non_finalized_min_difficulty(&mut self) {
+        self.non_finalized_min_difficulty = self
+            .blocks
+            .values()
+            .map(|block| block.difficulty)
+            .min()
+            .unwrap_or(u32::MAX);
+    }
+
+    fn compute_frontier(&self) -> DagFrontier {
+        derive_frontier(
+            &self.pivot_tree.ghost_path(self.anchor),
+            &self.total_dag.leaves(),
+        )
+    }
+}
+
 fn hex_hash(hash: &H256) -> String {
     hash.as_bytes()
         .iter()
@@ -630,5 +1092,102 @@ mod tests {
         assert_eq!(result.expected_level, 0);
         assert!(result.level_matches);
         assert!(result.missing_references.is_empty());
+    }
+
+    fn record(hash: u64, pivot: u64, tips: &[u64], level: u64, difficulty: u64) -> DagManagerBlock {
+        DagManagerBlock {
+            hash: h(hash),
+            pivot: h(pivot),
+            tips: tips.iter().copied().map(h).collect(),
+            level,
+            difficulty: difficulty as u32,
+        }
+    }
+
+    #[test]
+    fn dag_manager_state_add_block_updates_indexes_and_frontier() {
+        let mut state = DagManagerState::new(h(1), 0).expect("state");
+
+        state.add_block(record(2, 1, &[], 2, 100)).expect("add");
+        state.add_block(record(3, 2, &[1], 3, 50)).expect("add");
+
+        assert_eq!(state.max_level(), 3);
+        assert_eq!(state.min_difficulty(), Some(50));
+        assert_eq!(state.frontier().pivot, h(3));
+        assert!(state.frontier().tips.is_empty());
+        assert_eq!(state.block_levels().get(&h(2)), Some(&2));
+        assert_eq!(state.block_levels().get(&h(3)), Some(&3));
+    }
+
+    #[test]
+    fn dag_manager_state_rebuild_from_snapshot_restores_state() {
+        let snapshot = DagManagerSnapshot {
+            anchor: h(1),
+            old_anchor: h(1),
+            anchor_level: 0,
+            period: 5,
+            max_level: 9,
+            dag_expiry_level: 4,
+            non_finalized_min_difficulty: 60,
+            non_finalized_blocks: vec![
+                record(2, 1, &[], 2, 100),
+                record(3, 2, &[1], 3, 80),
+                record(4, 3, &[2], 4, 60),
+            ],
+        };
+
+        let state = DagManagerState::from_snapshot(snapshot, 77).expect("snapshot");
+        assert_eq!(state.anchor(), h(1));
+        assert_eq!(state.old_anchor(), h(1));
+        assert_eq!(state.period(), 5);
+        assert_eq!(state.max_level(), 9);
+        assert_eq!(state.expiry_level(), 4);
+        assert_eq!(state.min_difficulty(), Some(60_u32));
+        assert_eq!(state.frontier().pivot, h(4));
+        assert!(state.frontier().tips.is_empty());
+        assert!(state.total_dag().has_vertex(h(4)));
+        assert!(state.pivot_tree().has_vertex(h(4)));
+    }
+
+    #[test]
+    fn dag_manager_state_set_finalized_order_updates_anchor_and_rebuilds_graphs() {
+        let mut state = DagManagerState::new(h(1), 0).expect("state");
+        state.add_block(record(2, 1, &[], 2, 100)).expect("add");
+        state.add_block(record(3, 2, &[], 3, 90)).expect("add");
+        state.add_block(record(4, 2, &[3], 4, 80)).expect("add");
+
+        let removed = state
+            .set_finalized_order(h(4), 1, &[h(2), h(3), h(4)])
+            .expect("finalize");
+        assert_eq!(removed, 3);
+        assert_eq!(state.old_anchor(), h(1));
+        assert_eq!(state.anchor(), h(4));
+        assert_eq!(state.period(), 1);
+        assert!(state.non_finalized_blocks().is_empty());
+        assert_eq!(state.block_levels().len(), 1);
+        assert_eq!(state.block_levels().get(&h(4)), Some(&4));
+        assert_eq!(state.min_difficulty(), None);
+        assert_eq!(state.frontier().pivot, h(4));
+        assert!(state.frontier().tips.is_empty());
+    }
+
+    #[test]
+    fn dag_manager_state_set_finalized_order_rejects_invalid_period_transition() {
+        let mut state = DagManagerState::new(h(1), 0).expect("state");
+        let snapshot = DagManagerSnapshot {
+            anchor: h(1),
+            old_anchor: h(1),
+            anchor_level: 0,
+            period: 2,
+            max_level: 0,
+            dag_expiry_level: 0,
+            non_finalized_min_difficulty: u32::MAX,
+            non_finalized_blocks: vec![],
+        };
+        state.rebuild_from_snapshot(snapshot).expect("snapshot");
+        let err = state
+            .set_finalized_order(h(2), 4, &[])
+            .expect_err("period transition must fail");
+        assert!(format!("{err:#}").contains("invalid period transition"));
     }
 }
