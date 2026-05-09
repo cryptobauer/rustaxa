@@ -66,6 +66,10 @@ if(TCMALLOC_LIB)
 endif()
 
 if(RUSTAXA_ENABLE)
+    if(NOT RUSTAXA_ENABLE_STORAGE)
+        message(FATAL_ERROR "RUSTAXA_ENABLE requires RUSTAXA_ENABLE_STORAGE for Rust DagManager storage runtime wiring")
+    endif()
+
     target_link_libraries(core_libs PUBLIC rustaxa-bridge RocksDB::rocksdb)
 
     # In Rust mode, inject a header overlay that remaps legacy DagManager

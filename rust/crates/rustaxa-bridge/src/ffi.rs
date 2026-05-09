@@ -31,7 +31,16 @@ pub struct BridgeFinalChain(pub FinalChain);
 
 pub struct BridgeDagGraph(pub DagGraph);
 
+/// Storage-free DagManager state wrapper used for in-memory DAG graph/index
+/// logic only. Persistence is intentionally handled by `BridgeDagManagerRuntime`.
 pub struct BridgeDagManagerState(pub DagManagerState);
+
+/// DagManager runtime wrapper coupling deterministic in-memory state with the
+/// shared Rust storage handle used for direct DAG persistence and reads.
+pub struct BridgeDagManagerRuntime {
+    pub state: DagManagerState,
+    pub storage: Arc<Storage>,
+}
 
 pub struct BridgePbftChain(pub PbftChain);
 
@@ -58,6 +67,18 @@ pub mod rustaxa_ffi {
 
     struct BlockRlp {
         data: Vec<u8>,
+    }
+
+    /// Optional DAG block payload lookup result.
+    struct DagBlockLookup {
+        found: bool,
+        block_rlp: Vec<u8>,
+    }
+
+    /// Persisted DAG block/edge counters loaded from storage status fields.
+    struct DagPersistenceCounters {
+        dag_blocks: u64,
+        dag_edges: u64,
     }
 
     struct LevelBlocks {
@@ -545,6 +566,77 @@ pub mod rustaxa_ffi {
             self: &BridgeDagManagerState,
         ) -> DagManagerNonFinalizedSize;
         pub fn dag_manager_non_finalized_min_difficulty(self: &BridgeDagManagerState) -> u32;
+
+        type BridgeDagManagerRuntime;
+
+        pub fn create_dag_manager_runtime_from_storage(
+            genesis: &[u8; 32],
+            dag_expiry_limit: u32,
+            storage: &BridgeStorage,
+        ) -> Result<Box<BridgeDagManagerRuntime>>;
+        pub fn dag_manager_runtime_rebuild(
+            self: &mut BridgeDagManagerRuntime,
+            snapshot: DagManagerSnapshot,
+        ) -> Result<()>;
+        pub fn dag_manager_runtime_add_block(
+            self: &mut BridgeDagManagerRuntime,
+            block: DagManagerBlock,
+        ) -> Result<()>;
+        pub fn dag_manager_runtime_compute_order(
+            self: &BridgeDagManagerRuntime,
+            anchor: &[u8; 32],
+        ) -> DagOrder;
+        pub fn dag_manager_runtime_frontier(self: &BridgeDagManagerRuntime) -> DagFrontier;
+        pub fn dag_manager_runtime_ghost_path(
+            self: &BridgeDagManagerRuntime,
+            source: &[u8; 32],
+        ) -> Vec<DagHash>;
+        pub fn dag_manager_runtime_anchor_ghost_path(
+            self: &BridgeDagManagerRuntime,
+        ) -> Vec<DagHash>;
+        pub fn dag_manager_runtime_graphviz_dot(
+            self: &BridgeDagManagerRuntime,
+            pivot_tree: bool,
+        ) -> String;
+        pub fn dag_manager_runtime_vertex_count(self: &BridgeDagManagerRuntime) -> usize;
+        pub fn dag_manager_runtime_edge_count(self: &BridgeDagManagerRuntime) -> usize;
+        pub fn dag_manager_runtime_max_level(self: &BridgeDagManagerRuntime) -> u64;
+        pub fn dag_manager_runtime_latest_period(self: &BridgeDagManagerRuntime) -> u64;
+        pub fn dag_manager_runtime_anchors(self: &BridgeDagManagerRuntime) -> DagManagerAnchors;
+        pub fn dag_manager_runtime_dag_expiry_limit(self: &BridgeDagManagerRuntime) -> u32;
+        pub fn dag_manager_runtime_dag_expiry_level(self: &BridgeDagManagerRuntime) -> u64;
+        pub fn dag_manager_runtime_non_finalized_blocks(
+            self: &BridgeDagManagerRuntime,
+        ) -> Vec<DagLevelHashes>;
+        pub fn dag_manager_runtime_non_finalized_blocks_size(
+            self: &BridgeDagManagerRuntime,
+        ) -> DagManagerNonFinalizedSize;
+        pub fn dag_manager_runtime_non_finalized_min_difficulty(
+            self: &BridgeDagManagerRuntime,
+        ) -> u32;
+        pub fn dag_manager_runtime_block_exists(
+            self: &BridgeDagManagerRuntime,
+            hash: &[u8; 32],
+        ) -> Result<bool>;
+        pub fn dag_manager_runtime_load_block(
+            self: &BridgeDagManagerRuntime,
+            hash: &[u8; 32],
+        ) -> Result<DagBlockLookup>;
+        pub fn dag_manager_runtime_save_block(
+            self: &BridgeDagManagerRuntime,
+            hash: &[u8; 32],
+            level: u64,
+            tips_count: u64,
+            block_rlp: Vec<u8>,
+        ) -> Result<()>;
+        pub fn dag_manager_runtime_ensure_proposal_period_mapping(
+            self: &BridgeDagManagerRuntime,
+            level: u64,
+            period: u64,
+        ) -> Result<bool>;
+        pub fn dag_manager_runtime_persistence_counters(
+            self: &BridgeDagManagerRuntime,
+        ) -> Result<DagPersistenceCounters>;
 
         // Consensus PBFT chain
 

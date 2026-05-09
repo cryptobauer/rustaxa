@@ -80,13 +80,14 @@ class DagManager : public DagManagerOld {
 
   std::shared_ptr<TransactionManager> trx_mgr_;
   std::weak_ptr<Network> network_;
-  std::shared_ptr<DbStorage> db_;
   const std::shared_ptr<DagBlock> genesis_block_;
   const uint32_t max_levels_per_period_;
   const uint32_t cache_max_size_ = 10000;
   const uint32_t cache_delete_step_ = 100;
   ExpirationCacheMap<blk_hash_t, std::shared_ptr<DagBlock>> seen_blocks_;
-  mutable std::shared_mutex order_dag_blocks_mutex_;
+  // Serializes Rust DAG persistence/runtime mutation with compatibility-mirror
+  // updates and finalization-triggered Rust rebuilds.
+  mutable std::shared_mutex rust_order_dag_blocks_mutex_;
   mutable std::shared_mutex rust_graphs_mutex_;
   std::unique_ptr<RustDagManagerGraphs> rust_graphs_;
 };
