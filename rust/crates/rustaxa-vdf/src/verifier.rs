@@ -273,13 +273,12 @@ mod tests {
     fn test_different_inputs_produce_different_solutions() {
         // Test that different inputs produce different solutions
         let lambda = 128u32;
-        let time_bits = 6u32; // Slightly larger for better distinction
-        // Use a larger modulus to reduce collision probability
-        let modulus = vec![0x01, 0x00, 0x01]; // Larger modulus
+        let time_bits = 6u32;
+        let modulus = vec![0xff, 0xff, 0xff, 0xff];
 
-        let vdf1 = WesolowskiVdf::new(lambda, time_bits, vec![0x02], modulus.clone());
+        let vdf1 = WesolowskiVdf::new(lambda, time_bits, vec![0x12, 0x34], modulus.clone());
         let verifier1 = WesolowskiVerifier::new(&vdf1);
-        let vdf2 = WesolowskiVdf::new(lambda, time_bits, vec![0x05], modulus.clone()); // More different input
+        let vdf2 = WesolowskiVdf::new(lambda, time_bits, vec![0x56, 0x78], modulus.clone());
         let verifier2 = WesolowskiVerifier::new(&vdf2);
 
         let stop_flag = CancellationToken::new();

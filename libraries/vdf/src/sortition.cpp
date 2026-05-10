@@ -13,13 +13,49 @@
 namespace taraxa::vdf_sortition {
 #ifndef RUSTAXA_ENABLE_VDF
 using namespace vdf;
+#else
+namespace {
+rustaxa::LegacySortitionParams toRustSortitionParams(SortitionParams const& config) {
+  return rustaxa::LegacySortitionParams{
+      .vrf_threshold_upper = static_cast<uint16_t>(config.vrf.threshold_upper),
+      .vdf_difficulty_min = static_cast<uint16_t>(config.vdf.difficulty_min),
+      .vdf_difficulty_max = static_cast<uint16_t>(config.vdf.difficulty_max),
+      .vdf_difficulty_stale = static_cast<uint16_t>(config.vdf.difficulty_stale),
+      .vdf_lambda_bound = static_cast<uint16_t>(config.vdf.lambda_bound),
+  };
+}
+
+std::string rustSortitionError(uint8_t status, rust::String const& error) {
+  auto message = "Rust VDF/VRF sortition status " + std::to_string(status);
+  if (!error.empty()) {
+    message += ": " + static_cast<std::string>(error);
+  }
+  return message;
+}
+}  // namespace
 #endif
 
 VdfSortition::VdfSortition(const SortitionParams& config, const vrf_sk_t& sk, const bytes& vrf_input,
                            uint64_t vote_count, uint64_t total_vote_count)
+#ifdef RUSTAXA_ENABLE_VDF
+{
+  const auto normalized_vote_count = static_cast<uint16_t>(vote_count * kVotesProportion / total_vote_count);
+  rust::Slice<const uint8_t> vrf_input_slice{vrf_input.data(), vrf_input.size()};
+  const auto result = rustaxa::prove_legacy_vrf_sortition(sk.asArray(), vrf_input_slice, normalized_vote_count);
+  if (!result.ok) {
+    throw InvalidVdfSortition("VRF proof creation failed. " + rustSortitionError(result.status, result.error));
+  }
+
+  proof_ = vrf_proof_t(bytes(result.proof.begin(), result.proof.end()));
+  output_ = vrf_output_t(bytes(result.output.begin(), result.output.end()));
+  threshold_ = result.threshold;
+  difficulty_ = calculateDifficulty(config);
+}
+#else
     : VrfSortitionBase(sk, vrf_input, vote_count * kVotesProportion / total_vote_count) {
   difficulty_ = calculateDifficulty(config);
 }
+#endif
 
 bool VdfSortition::isStale(SortitionParams const& config) const { return difficulty_ == config.vdf.difficulty_stale; }
 
@@ -97,6 +133,27 @@ void VdfSortition::computeVdfSolution(const SortitionParams& config, const bytes
 
 void VdfSortition::verifyVdf(SortitionParams const& config, bytes const& vrf_input, const vrf_pk_t& pk,
                              bytes const& vdf_input, uint64_t vote_count, uint64_t total_vote_count) const {
+#ifdef RUSTAXA_ENABLE_VDF
+  const auto encoded = rlp();
+  rust::Slice<const uint8_t> sortition_rlp_slice{encoded.data(), encoded.size()};
+  rust::Slice<const uint8_t> vrf_input_slice{vrf_input.data(), vrf_input.size()};
+  rust::Slice<const uint8_t> vdf_input_slice{vdf_input.data(), vdf_input.size()};
+  const auto result = rustaxa::verify_legacy_vdf_sortition(toRustSortitionParams(config), pk.asArray(),
+                                                           sortition_rlp_slice, vrf_input_slice, vdf_input_slice,
+                                                           vote_count, total_vote_count);
+  output_ = vrf_output_t(bytes(result.vrf_output.begin(), result.vrf_output.end()));
+  threshold_ = result.vrf_threshold;
+  if (!result.ok) {
+    throw InvalidVdfSortition("VDF solution verification failed. " + rustSortitionError(result.status, result.error) +
+                              ", VDF input " + dev::toHex(vdf_input) +
+                              ", lambda " + std::to_string(config.vdf.lambda_bound) +
+                              ", difficulty " + std::to_string(getDifficulty()) +
+                              ", expected: " + std::to_string(result.expected_difficulty) +
+                              ", vrf_params: ( threshold_upper: " + std::to_string(config.vrf.threshold_upper) +
+                              ") THRESHOLD: " + std::to_string(threshold_));
+  }
+  return;
+#endif
   // Verify VRF output
   if (!verifyVrf(pk, vrf_input, vote_count * kVotesProportion / total_vote_count)) {
     throw InvalidVdfSortition("VRF verify failed. VRF input " + dev::toHex(vrf_input));

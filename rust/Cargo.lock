@@ -1293,11 +1293,13 @@ dependencies = [
 name = "rustaxa-vdf"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "criterion",
  "proptest",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "rayon",
+ "rlp",
  "rug",
 ]
 

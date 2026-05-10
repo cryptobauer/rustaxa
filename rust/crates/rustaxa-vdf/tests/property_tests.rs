@@ -18,7 +18,7 @@ proptest! {
 
         if let Ok(prime) = result {
             use rug::integer::IsPrime;
-            prop_assert_eq!(prime.is_probably_prime(10), IsPrime::Yes);
+            prop_assert_ne!(prime.is_probably_prime(10), IsPrime::No);
             prop_assert!(prime > 1);
         }
     }
@@ -121,7 +121,7 @@ proptest! {
 
         if let Ok(prime) = hash_result {
             use rug::integer::IsPrime;
-            prop_assert_eq!(prime.is_probably_prime(10), IsPrime::Yes);
+            prop_assert_ne!(prime.is_probably_prime(10), IsPrime::No);
             prop_assert!(prime > 1);
         }
     }

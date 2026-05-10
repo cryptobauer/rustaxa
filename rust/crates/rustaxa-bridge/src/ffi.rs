@@ -72,6 +72,80 @@ pub mod rustaxa_ffi {
         value: u64,
     }
 
+    struct LegacySortitionParams {
+        vrf_threshold_upper: u16,
+        vdf_difficulty_min: u16,
+        vdf_difficulty_max: u16,
+        vdf_difficulty_stale: u16,
+        vdf_lambda_bound: u16,
+    }
+
+    struct VrfVerifyResult {
+        ok: bool,
+        status: u8,
+        error: String,
+        output: [u8; 64],
+        threshold: u16,
+    }
+
+    struct VrfProofResult {
+        ok: bool,
+        status: u8,
+        error: String,
+        public_key: [u8; 32],
+        proof: [u8; 80],
+        output: [u8; 64],
+        threshold: u16,
+    }
+
+    struct VrfVerifyOutput {
+        is_valid: bool,
+        output: Vec<u8>,
+    }
+
+    struct VdfSortitionVerifyResult {
+        ok: bool,
+        status: u8,
+        error: String,
+        vrf_output: [u8; 64],
+        vrf_threshold: u16,
+        expected_difficulty: u16,
+        actual_difficulty: u16,
+    }
+
+    struct VdfSortitionPayload {
+        vrf_proof: [u8; 80],
+        vdf_solution_proof: Vec<u8>,
+        vdf_solution_output: Vec<u8>,
+        difficulty: u16,
+    }
+
+    struct VdfSortitionVerifyConfig {
+        threshold_upper: u16,
+        difficulty_min: u16,
+        difficulty_max: u16,
+        difficulty_stale: u16,
+        lambda_bound: u16,
+    }
+
+    struct VdfSortitionPayloadVerifyResult {
+        vdf_status: u8,
+        difficulty: u16,
+        expected_difficulty: u16,
+    }
+
+    struct VdfSortitionProofResult {
+        ok: bool,
+        status: u8,
+        error: String,
+        vrf_proof: [u8; 80],
+        vrf_output: [u8; 64],
+        vrf_threshold: u16,
+        difficulty: u16,
+        vdf_proof: Vec<u8>,
+        vdf_output: Vec<u8>,
+    }
+
     extern "Rust" {
         type WesolowskiVdf;
         type CancellationToken;
@@ -97,6 +171,90 @@ pub mod rustaxa_ffi {
 
         pub fn solution_get_proof(solution: &Solution) -> &[u8];
         pub fn solution_get_output(solution: &Solution) -> &[u8];
+
+        pub fn vdf_sortition_payload_encode(payload: &VdfSortitionPayload) -> Vec<u8>;
+
+        pub fn vdf_sortition_payload_decode(payload: &[u8]) -> Result<VdfSortitionPayload>;
+
+        pub fn vdf_sortition_payload_verify(
+            payload: &VdfSortitionPayload,
+            vdf_input: &[u8],
+            config: VdfSortitionVerifyConfig,
+            vrf_output: &[u8],
+            sender_eligible_vote_count: u64,
+            vdf_sortition_max_vote_count: u64,
+        ) -> Result<VdfSortitionPayloadVerifyResult>;
+
+        pub fn vdf_sortition_payload_verify_with_modulus(
+            payload: &VdfSortitionPayload,
+            vdf_input: &[u8],
+            config: VdfSortitionVerifyConfig,
+            vrf_output: &[u8],
+            sender_eligible_vote_count: u64,
+            vdf_sortition_max_vote_count: u64,
+            modulus: &[u8],
+        ) -> Result<VdfSortitionPayloadVerifyResult>;
+
+        pub fn vdf_sortition_threshold_from_output(
+            vrf_output: &[u8],
+            vote_count: u16,
+        ) -> Result<u16>;
+
+        pub fn vdf_sortition_normalize_vote_count(
+            sender_eligible_vote_count: u64,
+            vdf_sortition_max_vote_count: u64,
+        ) -> Result<u16>;
+
+        pub fn vdf_sortition_difficulty(
+            config: VdfSortitionVerifyConfig,
+            threshold: u16,
+        ) -> Result<u16>;
+
+        pub fn vdf_sortition_legacy_modulus() -> Vec<u8>;
+
+        pub fn vrf_verify_output(
+            vrf_public_key: &[u8],
+            vrf_proof: &[u8],
+            message: &[u8],
+        ) -> Result<VrfVerifyOutput>;
+
+        pub fn vrf_proof_to_hash(vrf_proof: &[u8]) -> Result<Vec<u8>>;
+
+        pub fn vrf_prove_output(vrf_secret_key: &[u8], message: &[u8]) -> Result<Vec<u8>>;
+
+        pub fn verify_legacy_vrf_sortition(
+            public_key: &[u8; 32],
+            proof: &[u8; 80],
+            message: &[u8],
+            vote_count: u16,
+            strict: bool,
+        ) -> VrfVerifyResult;
+
+        pub fn prove_legacy_vrf_sortition(
+            secret_key: &[u8; 64],
+            message: &[u8],
+            vote_count: u16,
+        ) -> VrfProofResult;
+
+        pub fn prove_legacy_vdf_sortition(
+            params: LegacySortitionParams,
+            secret_key: &[u8; 64],
+            vrf_input: &[u8],
+            vdf_input: &[u8],
+            vote_count: u64,
+            total_vote_count: u64,
+            cancellation_token: &CancellationToken,
+        ) -> VdfSortitionProofResult;
+
+        pub fn verify_legacy_vdf_sortition(
+            params: LegacySortitionParams,
+            public_key: &[u8; 32],
+            sortition_rlp: &[u8],
+            vrf_input: &[u8],
+            vdf_input: &[u8],
+            vote_count: u64,
+            total_vote_count: u64,
+        ) -> VdfSortitionVerifyResult;
 
         // Storage
 

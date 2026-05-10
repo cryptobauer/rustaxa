@@ -54,6 +54,13 @@ build: ## Compile the project locally.
 	cmake --build $(BUILD_OUTPUT_DIR) -j6 --target=taraxad
 	cp $(BUILD_OUTPUT_DIR)/tests/CTestTestfile.cmake $(BUILD_OUTPUT_DIR)/bin/
 
+.PHONY: rewrite-validate-fast
+rewrite-validate-fast: ## Run the fast Rust rewrite validation gate.
+	cargo fmt --manifest-path rust/Cargo.toml --all --check
+	cargo clippy --manifest-path rust/Cargo.toml
+	cargo test --manifest-path rust/Cargo.toml
+	git diff --check
+
 .PHONY: clean
 clean: ## Clean the build directory.
 	@find "$(BUILD_OUTPUT_DIR)" -mindepth 1 -delete
