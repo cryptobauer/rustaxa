@@ -29,7 +29,7 @@ fn test_complete_vdf_workflow_small() {
 
     let prime = prime_result.unwrap();
     use rug::integer::IsPrime;
-    assert_eq!(prime.is_probably_prime(20), IsPrime::Yes);
+    assert_ne!(prime.is_probably_prime(20), IsPrime::No);
 
     // Create prover and verifier
     let prover = WesolowskiProver::new(&vdf);
@@ -66,7 +66,7 @@ fn test_multiple_vdf_instances() {
 
         if let Ok(prime) = prime_result {
             use rug::integer::IsPrime;
-            assert_eq!(prime.is_probably_prime(10), IsPrime::Yes);
+            assert_ne!(prime.is_probably_prime(10), IsPrime::No);
         }
 
         // Test prove-verify cycle with very small iterations
@@ -209,7 +209,7 @@ fn test_concurrent_hash_to_prime() {
 
         if let Ok(prime) = result {
             use rug::integer::IsPrime;
-            assert_eq!(prime.is_probably_prime(10), IsPrime::Yes);
+            assert_ne!(prime.is_probably_prime(10), IsPrime::No);
             assert!(prime > 1);
         }
     }
@@ -235,7 +235,7 @@ fn test_large_parameter_stress() {
 
         if let Ok(prime) = result {
             use rug::integer::IsPrime;
-            assert_eq!(prime.is_probably_prime(10), IsPrime::Yes);
+            assert_ne!(prime.is_probably_prime(10), IsPrime::No);
         }
     }
 }
@@ -402,7 +402,7 @@ fn test_boundary_combinations() {
         match result {
             Ok(prime) => {
                 use rug::integer::IsPrime;
-                assert_eq!(prime.is_probably_prime(10), IsPrime::Yes);
+                assert_ne!(prime.is_probably_prime(10), IsPrime::No);
                 assert!(prime > 1);
             }
             Err(msg) => {
