@@ -3,6 +3,7 @@ use ethereum_types::H256;
 use rlp::Rlp;
 use rustaxa_types::codec::rlp::dag::DagBlockRlp;
 use rustaxa_types::dag::DagBlock;
+use rustaxa_vdf::sortition::{self, LegacySortitionParams};
 use rustaxa_vdf::vdf::{Solution as VdfSolution, WesolowskiVdf};
 use rustaxa_vdf::verifier::WesolowskiVerifier;
 use std::collections::{BTreeMap, BTreeSet};
@@ -336,8 +337,12 @@ pub struct DagVerifyVdfDposDecision {
 ///   and the embedded VDF sortition payload.
 /// - `vdf_input`: canonical VDF message bytes used by the block proposer.
 /// - `sortition_params`: runtime sortition parameters for the proposal period.
-/// - `vrf_output`: output from a verified VRF proof over
-///   `(block_level, proposal_period_hash)`.
+/// - `vrf_output`: legacy/compatibility precomputed VRF output. This field is
+///   still required for legacy callers that have not migrated to embedded VRF
+///   proof verification.
+/// - `vrf_public_key` + `vrf_input`: optional Rust-owned embedded VRF contract.
+///   When both are present, Rust verifies `vrf_proof` from the payload with
+///   these inputs instead of trusting precomputed `vrf_output`.
 /// - `sender_eligible_vote_count`: sender vote count used to normalize VRF
 ///   threshold selection.
 /// - `vdf_sortition_max_vote_count`: period-effective max vote count used for
@@ -353,6 +358,8 @@ pub struct DagVdfSortitionInput {
     pub vdf_input: Vec<u8>,
     pub sortition_params: crate::sortition::SortitionParams,
     pub vrf_output: [u8; 64],
+    pub vrf_public_key: Vec<u8>,
+    pub vrf_input: Vec<u8>,
     pub sender_eligible_vote_count: u64,
     pub vdf_sortition_max_vote_count: u64,
 }
@@ -642,21 +649,21 @@ pub fn decide_dag_verify_vdf_dpos_authorization(
 
 /// Extracts the VRF proof embedded in canonical DAG block RLP.
 ///
-/// This helper exists for the temporary migration boundary where Rust owns VDF
-/// proof and difficulty verification, while C++ still owns VRF proof
-/// verification. Malformed block or VDF RLP is an operational bridge error
-/// because callers cannot verify the peer-supplied payload without decoding it.
+/// This helper remains available for legacy compatibility paths that still need
+/// to extract the embedded VRF proof from the payload. Malformed block or VDF
+/// RLP is returned as an operational bridge error because callers cannot verify
+/// the peer-supplied payload without decoding it.
 pub fn extract_dag_vdf_vrf_proof(block_rlp: &[u8]) -> Result<[u8; 80]> {
     Ok(decode_dag_vdf_sortition_payload(block_rlp)?.vrf_proof)
 }
 
 /// Verifies the DAG block VDF proof and sortition difficulty in Rust.
 ///
-/// The caller must provide a VRF output that has already been verified against
-/// the block level and proposal-period hash. This temporary contract keeps the
-/// remaining legacy VRF dependency explicit while moving VDF payload decoding,
-/// vote-threshold normalization, difficulty calculation, and Wesolowski proof
-/// verification into Rust.
+/// The preferred input is an embedded VRF proof input tuple:
+/// `vrf_public_key` + `vrf_input`. When both fields are supplied, Rust verifies
+/// the embedded proof directly from the DAG block payload.
+/// Legacy callers can still provide `vrf_output` for compatibility while the
+/// migration to embedded verification completes.
 pub fn verify_dag_vdf_sortition(
     input: DagVdfSortitionInput,
 ) -> Result<DagVdfSortitionVerification> {
@@ -664,6 +671,48 @@ pub fn verify_dag_vdf_sortition(
         .context("decode canonical DAG block RLP for VDF verification")?;
     let payload = decode_vdf_sortition_payload(&block.vdf)
         .context("decode DAG block VDF sortition payload")?;
+
+    let verify_embedded_vrf = !(input.vrf_public_key.is_empty() && input.vrf_input.is_empty());
+    ensure!(
+        !(verify_embedded_vrf && (input.vrf_public_key.is_empty() || input.vrf_input.is_empty())),
+        "embedded VRF verification requires both vrf_public_key and vrf_input"
+    );
+
+    if verify_embedded_vrf {
+        ensure!(
+            input.vrf_public_key.len() == 32,
+            "embedded VRF public key must be 32 bytes"
+        );
+        let mut public_key = [0_u8; 32];
+        public_key.copy_from_slice(&input.vrf_public_key);
+        let result = sortition::verify_legacy_vdf_sortition(
+            LegacySortitionParams {
+                vrf_threshold_upper: input.sortition_params.vrf.threshold_upper,
+                vdf_difficulty_min: input.sortition_params.vdf.difficulty_min,
+                vdf_difficulty_max: input.sortition_params.vdf.difficulty_max,
+                vdf_difficulty_stale: input.sortition_params.vdf.difficulty_stale,
+                vdf_lambda_bound: input.sortition_params.vdf.lambda_bound,
+            },
+            &public_key,
+            &block.vdf,
+            &input.vrf_input,
+            &input.vdf_input,
+            input.sender_eligible_vote_count,
+            input.vdf_sortition_max_vote_count,
+        )?;
+
+        let vdf_status = if result.status == sortition::LEGACY_SORTITION_STATUS_VALID {
+            DAG_VERIFY_VDF_STATUS_VALID
+        } else {
+            DAG_VERIFY_VDF_STATUS_INVALID
+        };
+
+        return Ok(DagVdfSortitionVerification {
+            vdf_status,
+            difficulty: result.actual_difficulty,
+            expected_difficulty: result.expected_difficulty,
+        });
+    }
 
     let normalized_vote_count = normalized_vdf_vote_count(
         input.sender_eligible_vote_count,
@@ -1539,6 +1588,8 @@ mod tests {
     use super::*;
     use rlp::RlpStream;
     use rustaxa_vdf::prover::{CancellationToken, WesolowskiProver};
+    use rustaxa_vdf::sortition::{self, LegacySortitionParams};
+    use rustaxa_vdf::vrf::public_key_from_secret;
 
     fn h(value: u64) -> H256 {
         H256::from_low_u64_be(value)
@@ -1595,6 +1646,14 @@ mod tests {
             },
         }
     }
+
+    const SECRET_KEY: [u8; 64] = [
+        0x90, 0xf5, 0x9a, 0x7e, 0xe7, 0xa3, 0x92, 0xc8, 0x11, 0xc5, 0xd2, 0x99, 0xb5, 0x57, 0xa4,
+        0xe0, 0x9e, 0x61, 0x0d, 0xe7, 0xd1, 0x09, 0xd6, 0xb3, 0xfc, 0xb1, 0x9a, 0xb8, 0xd5, 0x1c,
+        0x9a, 0x0d, 0x93, 0x1f, 0x5e, 0x7d, 0xb0, 0x7c, 0x99, 0x69, 0xe4, 0x38, 0xdb, 0x7e, 0x28,
+        0x7e, 0xab, 0xba, 0xac, 0xa4, 0x9c, 0xa4, 0x14, 0xf5, 0xf3, 0xa4, 0x02, 0xea, 0x69, 0x97,
+        0xad, 0xe4, 0x00, 0x81,
+    ];
 
     #[test]
     fn genesis_graph_has_one_vertex_and_no_edges() {
@@ -2164,6 +2223,8 @@ mod tests {
                 },
             },
             vrf_output: [0u8; 64],
+            vrf_public_key: Vec::new(),
+            vrf_input: Vec::new(),
             sender_eligible_vote_count: 100,
             vdf_sortition_max_vote_count: 100,
         })
@@ -2199,6 +2260,8 @@ mod tests {
                 },
             },
             vrf_output: [0u8; 64],
+            vrf_public_key: Vec::new(),
+            vrf_input: Vec::new(),
             sender_eligible_vote_count: 100,
             vdf_sortition_max_vote_count: 100,
         })
@@ -2239,6 +2302,8 @@ mod tests {
             vdf_input: dag_vdf_test_input(&transactions),
             sortition_params: sortition_params_for_vdf_tests(difficulty),
             vrf_output: [0_u8; 64],
+            vrf_public_key: Vec::new(),
+            vrf_input: Vec::new(),
             sender_eligible_vote_count: 1,
             vdf_sortition_max_vote_count: 1000,
         })
@@ -2247,6 +2312,63 @@ mod tests {
         assert_eq!(result.vdf_status, DAG_VERIFY_VDF_STATUS_VALID);
         assert_eq!(result.difficulty, difficulty);
         assert_eq!(result.expected_difficulty, difficulty);
+    }
+
+    #[test]
+    fn dag_vdf_sortition_verifies_embedded_vrf_proof() {
+        let sortition_input = LegacySortitionParams {
+            vrf_threshold_upper: 0x5ff,
+            vdf_difficulty_min: 5,
+            vdf_difficulty_max: 10,
+            vdf_difficulty_stale: 9,
+            vdf_lambda_bound: 64,
+        };
+        let vrf_input = vec![0xA1, 0x02, 0x03];
+        let vdf_input = vec![0xB1, 0x04];
+        let proof = sortition::prove_legacy_vdf_sortition(
+            sortition_input,
+            &SECRET_KEY,
+            &vrf_input,
+            &vdf_input,
+            1,
+            1,
+            &CancellationToken::new(),
+        )
+        .expect("proof generation should succeed");
+
+        let mut vdf_payload = RlpStream::new_list(4);
+        vdf_payload.append(&&proof.vrf_proof[..]);
+        vdf_payload.append(&proof.vdf_proof);
+        vdf_payload.append(&proof.vdf_output);
+        vdf_payload.append(&proof.difficulty);
+        let block_rlp = dag_block_with_vdf_payload(vdf_payload.out().to_vec());
+
+        let result = verify_dag_vdf_sortition(DagVdfSortitionInput {
+            block_rlp,
+            vdf_input,
+            sortition_params: crate::sortition::SortitionParams {
+                vrf: crate::sortition::VrfParams {
+                    threshold_upper: 0x5ff,
+                },
+                vdf: crate::sortition::VdfParams {
+                    difficulty_min: 5,
+                    difficulty_max: 10,
+                    difficulty_stale: 9,
+                    lambda_bound: 64,
+                },
+            },
+            vrf_output: [0_u8; 64],
+            vrf_public_key: public_key_from_secret(&SECRET_KEY)
+                .expect("public key from fixed secret")
+                .to_vec(),
+            vrf_input,
+            sender_eligible_vote_count: 1,
+            vdf_sortition_max_vote_count: 1,
+        })
+        .unwrap();
+
+        assert_eq!(result.vdf_status, DAG_VERIFY_VDF_STATUS_VALID);
+        assert_eq!(result.difficulty, result.expected_difficulty);
     }
 
     #[test]

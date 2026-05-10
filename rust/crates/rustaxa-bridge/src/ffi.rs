@@ -461,11 +461,23 @@ pub mod rustaxa_ffi {
 
     /// C++-originated payload for Rust DAG VDF sortition verification.
     struct DagVerifyVdfSortitionInput {
+        /// Canonical DAG block RLP bytes.
         block_rlp: Vec<u8>,
+        /// VDF message used for Wesolowski proof verification.
         vdf_input: Vec<u8>,
+        /// Runtime sortition parameters for this proposal period.
         sortition_params: SortitionRuntimeParams,
+        /// Optional legacy path input: precomputed VRF output (64 bytes).
+        ///
+        /// Rust uses `vrf_public_key` + `vrf_input` when both are provided.
         vrf_output: Vec<u8>,
+        /// Embedded VRF public key (32 bytes) for direct Rust verification.
+        vrf_public_key: Vec<u8>,
+        /// Canonical VRF message used to verify the DAG embedded VRF proof.
+        vrf_input: Vec<u8>,
+        /// Sender-eligible vote count for threshold normalization.
         sender_eligible_vote_count: u64,
+        /// Period-effective maximum vote count for normalization denominator.
         vdf_sortition_max_vote_count: u64,
     }
 
@@ -926,7 +938,6 @@ pub mod rustaxa_ffi {
         ) -> DagVerifyTransactionAvailabilityResult;
         pub fn dag_verify_vdf_prepare(input: DagVerifyVdfPrepareInput)
             -> DagVerifyVdfPrepareResult;
-        pub fn dag_vdf_vrf_proof(block_rlp: Vec<u8>) -> Result<Vec<u8>>;
         pub fn dag_verify_vdf_sortition(
             input: DagVerifyVdfSortitionInput,
         ) -> Result<DagVerifyVdfSortitionResult>;

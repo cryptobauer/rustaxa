@@ -85,8 +85,8 @@ rust::Vec<uint8_t> to_rust_vec(const dev::bytes &bytes) {
   return out;
 }
 
-dev::bytes from_rust_bytes(const rust::Vec<uint8_t> &bytes) {
-  dev::bytes out;
+rust::Vec<uint8_t> copy_rust_vec(const rust::Vec<uint8_t> &bytes) {
+  rust::Vec<uint8_t> out;
   out.reserve(bytes.size());
   for (const auto byte : bytes) {
     out.push_back(byte);
@@ -105,13 +105,16 @@ rustaxa::SortitionRuntimeParams to_bridge_sortition_params(const SortitionParams
 }
 
 rustaxa::DagVerifyVdfSortitionInput to_bridge_vdf_sortition_input(
-    dev::bytes block_rlp, dev::bytes vdf_input, SortitionParams const &sortition_params, dev::bytes vrf_output,
-    uint64_t sender_eligible_vote_count, uint64_t vdf_sortition_max_vote_count) {
+    dev::bytes block_rlp, dev::bytes vdf_input, SortitionParams const &sortition_params,
+    const rust::Vec<uint8_t> &vrf_public_key, dev::bytes vrf_input, uint64_t sender_eligible_vote_count,
+    uint64_t vdf_sortition_max_vote_count) {
   rustaxa::DagVerifyVdfSortitionInput out;
   out.block_rlp = to_rust_vec(block_rlp);
   out.vdf_input = to_rust_vec(vdf_input);
   out.sortition_params = to_bridge_sortition_params(sortition_params);
-  out.vrf_output = to_rust_vec(vrf_output);
+  out.vrf_output = rust::Vec<uint8_t>();
+  out.vrf_public_key = copy_rust_vec(vrf_public_key);
+  out.vrf_input = to_rust_vec(vrf_input);
   out.sender_eligible_vote_count = sender_eligible_vote_count;
   out.vdf_sortition_max_vote_count = vdf_sortition_max_vote_count;
   return out;
@@ -396,23 +399,14 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
   uint8_t vdf_status = kDagVerifyVdfStatusValid;
   if (vrf_key_found) {
     try {
-      const vrf_wrapper::vrf_pk_t vrf_key(
-          dev::bytes(authorization_facts.vrf_key.begin(), authorization_facts.vrf_key.end()));
       const auto proposal_period_hash = db_->getPeriodBlockHash(proposal_period);
       const auto block_rlp = blk->rlp(true);
-      const auto vrf_proof_bytes = from_rust_bytes(rustaxa::dag_vdf_vrf_proof(to_rust_vec(block_rlp)));
-      const vrf_wrapper::vrf_proof_t vrf_proof(vrf_proof_bytes);
       const auto vrf_input = vrf_wrapper::VrfSortitionBase::makeVrfInput(blk->getLevel(), proposal_period_hash);
-      const auto vrf_output = vrf_wrapper::getVrfOutput(vrf_key, vrf_proof, vrf_input);
-      if (vrf_output) {
-        const auto sortition_params = sortition_params_manager_.getSortitionParams(proposal_period);
-        const auto vdf_result = rustaxa::dag_verify_vdf_sortition(to_bridge_vdf_sortition_input(
-            block_rlp, vdf_message_for_block(blk), sortition_params, vrf_output->asBytes(), sender_eligible_vote_count,
-            vdf_sortition_max_vote_count));
-        vdf_status = vdf_result.vdf_status;
-      } else {
-        vdf_status = kDagVerifyVdfStatusInvalid;
-      }
+      const auto sortition_params = sortition_params_manager_.getSortitionParams(proposal_period);
+      const auto vdf_result = rustaxa::dag_verify_vdf_sortition(to_bridge_vdf_sortition_input(
+          block_rlp, vdf_message_for_block(blk), sortition_params, authorization_facts.vrf_key, vrf_input,
+          sender_eligible_vote_count, vdf_sortition_max_vote_count));
+      vdf_status = vdf_result.vdf_status;
     } catch (std::exception const &) {
       vdf_status = kDagVerifyVdfStatusInvalid;
     }
