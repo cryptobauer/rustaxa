@@ -312,7 +312,7 @@ mod tests {
 
     #[test]
     fn test_solution_components_non_trivial() {
-        // Test that solutions are non-trivial (not just 1 or 0)
+        // Test that legacy-compatible solutions are valid non-zero values.
         let lambda = 128u32;
         let time_bits = 5u32;
         let modulus = vec![0x01, 0x00, 0x01]; // 65537
@@ -328,11 +328,9 @@ mod tests {
         let pi = rug::Integer::from_digits(&solution.first, rug::integer::Order::MsfBe);
         let y = rug::Integer::from_digits(&solution.second, rug::integer::Order::MsfBe);
 
-        // Should not be trivial values
         assert!(!pi.is_zero(), "Proof element should not be zero");
         assert!(!y.is_zero(), "Solution element should not be zero");
-        assert!(pi != 1, "Proof element should not be 1");
-        // Note: y could theoretically be 1 in some cases, so we don't test for that
+        assert!(crate::verifier::WesolowskiVerifier::new(&vdf).verify(&solution));
     }
 
     #[test]

@@ -307,6 +307,58 @@ TEST_F(CryptoTest, vdf_proof_verify) {
                VdfSortition::InvalidVdfSortition);
 }
 
+TEST_F(CryptoTest, vdf_sortition_legacy_reference_parity) {
+  constexpr auto kLegacyN =
+      "3d1055a514e17cce1290ccb5befb256b00b8aac664e39e754466fcd631004c9e23d16f239"
+      "aee2a207e5173a7ee8f90ee9ab9b6a745d27c6e850e7ca7332388dfef7e5bbe6267d1f79f9330e44715b3f2066"
+      "f903081836c1c83ca29126f8fdc5f5922bf3f9ddb4540171691accc1ef6a34b2a804a18159c89c39b16edee2ede35";
+
+  SortitionParams sortition_params(0x5ff, 5, 10, 9, 1500);
+  vrf_sk_t sk(
+      "90f59a7ee7a392c811c5d299b557a4e09e610de7d109d6b3fcb19ab8d51c9a0d931f5e7d"
+      "b07c9969e438db7e287eabbaaca49ca414f5f3a402ea6997ade40081");
+  level_t level = 7;
+  blk_hash_t vdf_input = blk_hash_t(200);
+  auto vrf_input = getRlpBytes(level);
+  auto pk = getVrfPublicKey(sk);
+
+  VdfSortition vdf(sortition_params, sk, vrf_input, 1, 1);
+  vdf.computeVdfSolution(sortition_params, vdf_input.asBytes(), false);
+
+  auto expected_vrf_proof = getVrfProof(sk, vrf_input);
+  ASSERT_TRUE(expected_vrf_proof.has_value());
+  auto expected_vrf_output = getVrfOutput(pk, expected_vrf_proof.value(), vrf_input);
+  ASSERT_TRUE(expected_vrf_output.has_value());
+
+  EXPECT_EQ(vdf.proof_, expected_vrf_proof.value());
+  EXPECT_EQ(vdf.output_, expected_vrf_output.value());
+
+  const dev::bytes encoded = vdf.rlp();
+  dev::RLP rlp_solution(encoded);
+  auto rlp_proof = rlp_solution[1].toBytes();
+  auto rlp_output = rlp_solution[2].toBytes();
+  const auto difficulty = static_cast<uint16_t>(rlp_solution[3].toInt<uint16_t>());
+
+  VerifierWesolowski verifier(sortition_params.vdf.lambda_bound, difficulty, vdf_input.asBytes(),
+                              dev::asBytes(kLegacyN));
+  ProverWesolowski prover;
+  const auto legacy_solution = prover(verifier);
+  EXPECT_EQ(difficulty, vdf.getDifficulty());
+  EXPECT_EQ(rlp_proof, legacy_solution.first);
+  EXPECT_EQ(rlp_output, legacy_solution.second);
+  EXPECT_TRUE(verifier(legacy_solution));
+
+  ProverWesolowski::solution roundtrip_solution{rlp_proof, rlp_output};
+  EXPECT_TRUE(verifier(roundtrip_solution));
+
+  ProverWesolowski::solution invalid_solution = legacy_solution;
+  ASSERT_FALSE(invalid_solution.first.empty());
+  ++invalid_solution.first[0];
+  EXPECT_FALSE(verifier(invalid_solution));
+
+  EXPECT_NO_THROW(vdf.verifyVdf(sortition_params, vrf_input, pk, vdf_input.asBytes(), 1, 1));
+}
+
 TEST_F(CryptoTest, DISABLED_compute_vdf_solution_cost_time) {
   vrf_sk_t sk(
       "0b6627a6680e01cea3d9f36fa797f7f34e8869c3a526d9ed63ed8170e35542aad05dc12c"

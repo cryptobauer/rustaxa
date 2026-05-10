@@ -23,9 +23,9 @@ mod hash_to_prime_boundary_tests {
                 assert!(prime > 1, "Prime should be > 1 for lambda={}", lambda);
                 // Verify it's actually prime
                 use rug::integer::IsPrime;
-                assert_eq!(
+                assert_ne!(
                     prime.is_probably_prime(10),
-                    IsPrime::Yes,
+                    IsPrime::No,
                     "Result should be prime for lambda={}",
                     lambda
                 );
@@ -48,9 +48,9 @@ mod hash_to_prime_boundary_tests {
             if let Ok(prime) = result {
                 assert!(prime > 1, "Prime should be > 1 for lambda={}", lambda);
                 use rug::integer::IsPrime;
-                assert_eq!(
+                assert_ne!(
                     prime.is_probably_prime(10),
-                    IsPrime::Yes,
+                    IsPrime::No,
                     "Result should be prime for lambda={}",
                     lambda
                 );
@@ -69,7 +69,7 @@ mod hash_to_prime_boundary_tests {
         if let Ok(prime) = result {
             assert!(prime > 1);
             use rug::integer::IsPrime;
-            assert_eq!(prime.is_probably_prime(10), IsPrime::Yes);
+            assert_ne!(prime.is_probably_prime(10), IsPrime::No);
         }
     }
 
@@ -88,7 +88,7 @@ mod hash_to_prime_boundary_tests {
         if let Ok(prime) = result {
             assert!(prime > 1);
             use rug::integer::IsPrime;
-            assert_eq!(prime.is_probably_prime(10), IsPrime::Yes);
+            assert_ne!(prime.is_probably_prime(10), IsPrime::No);
         }
     }
 
@@ -103,7 +103,7 @@ mod hash_to_prime_boundary_tests {
         if let Ok(prime) = result {
             assert!(prime > 1);
             use rug::integer::IsPrime;
-            assert_eq!(prime.is_probably_prime(10), IsPrime::Yes);
+            assert_ne!(prime.is_probably_prime(10), IsPrime::No);
         }
     }
 
@@ -122,7 +122,7 @@ mod hash_to_prime_boundary_tests {
                 Ok(prime) => {
                     assert!(prime > 1);
                     use rug::integer::IsPrime;
-                    assert_eq!(prime.is_probably_prime(10), IsPrime::Yes);
+                    assert_ne!(prime.is_probably_prime(10), IsPrime::No);
                 }
                 Err(msg) => {
                     assert!(
@@ -442,9 +442,9 @@ mod vdf_boundary_tests {
 
             if let Ok(prime) = result {
                 use rug::integer::IsPrime;
-                assert_eq!(
+                assert_ne!(
                     prime.is_probably_prime(10),
-                    IsPrime::Yes,
+                    IsPrime::No,
                     "Result should be prime for input: {}",
                     input
                 );
@@ -513,7 +513,7 @@ mod stress_and_edge_tests {
 
             if let Ok(prime) = result {
                 use rug::integer::IsPrime;
-                assert_eq!(prime.is_probably_prime(10), IsPrime::Yes);
+                assert_ne!(prime.is_probably_prime(10), IsPrime::No);
             }
         }
     }
@@ -542,7 +542,7 @@ mod stress_and_edge_tests {
 
             if let Ok(prime) = result {
                 use rug::integer::IsPrime;
-                assert_eq!(prime.is_probably_prime(10), IsPrime::Yes);
+                assert_ne!(prime.is_probably_prime(10), IsPrime::No);
 
                 // Ensure the prime isn't excessively large
                 assert!(

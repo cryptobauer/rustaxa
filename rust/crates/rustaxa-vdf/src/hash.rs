@@ -32,10 +32,15 @@ impl HashToPrime {
             }
         };
 
-        // Divide max_int by 6 to take only values 6k±1 as candidates
-        // This reduces the search space since we'll multiply by 6 and add ±1 later
+        // Divide max_int by 6 to take only values 6k±1 as candidates.
+        // C++ uses ceiling division here via `mpz_cdiv_q`; keep that exact
+        // range because the RNG draws are consensus-visible for VDF proofs.
         let mut optimized_max_int = max_int;
+        optimized_max_int += 5;
         optimized_max_int /= 6;
+        if optimized_max_int < 2 {
+            optimized_max_int = rug::Integer::from(2);
+        }
 
         HashToPrime {
             max_int: optimized_max_int,
@@ -50,36 +55,14 @@ impl HashToPrime {
 
     pub fn hash_to_prime(&self, input: &rug::Integer) -> Result<rug::Integer, String> {
         use rug::integer::IsPrime;
-        use rug::ops::Pow;
-
         const MAX_ITER: u32 = 10000;
         const MAX_MILLER_RABIN: u32 = 30;
 
-        // Use a practical range for hash-to-prime operations
-        // Start with a small, manageable range that's likely to contain primes
-        // Optimization: Use bit operations instead of pow for powers of 2
-        let practical_bits = std::cmp::min(self.max_int.significant_bits(), 32);
-        let practical_max: rug::Integer = if practical_bits <= 64 {
-            // For small bit sizes, use more efficient bit shifting
-            rug::Integer::from(1u64 << std::cmp::min(practical_bits, 63)) / 6
-        } else {
-            rug::Integer::from(2u32).pow(practical_bits) / 6
-        };
-
-        // Convert input integer to bytes and seed the random generator directly
-        // Optimized: Avoid unnecessary byte array allocation for seeding
-        let seed = if input.is_zero() {
-            rug::Integer::from(1u32)
-        } else {
-            // Use a more efficient seeding approach by taking modulo of a large prime
-            // This avoids the byte allocation and conversion overhead
-            let hash_modulus = rug::Integer::from(2u64).pow(64) - 59; // Large prime near 2^64
-            rug::Integer::from(input % &hash_modulus)
-        };
-
-        // Create a fresh random state for this call (deterministic based on input)
+        // Create a fresh Mersenne Twister state for this call. C++ seeds GMP's
+        // `gmp_randinit_mt` with the full big-endian BIGNUM value, so do not
+        // truncate or otherwise hash the seed here.
         let mut prime_gen = rug::rand::RandState::new();
-        prime_gen.seed(&seed);
+        prime_gen.seed(input);
 
         let mut is_prime = IsPrime::No;
         let mut count = 0u32;
@@ -90,9 +73,9 @@ impl HashToPrime {
         let one = rug::Integer::from(1);
         let two = rug::Integer::from(2);
 
-        while is_prime != IsPrime::Yes && count < MAX_ITER {
-            // Generate random candidate in range [0, practical_max)
-            candidate = practical_max.clone().random_below(&mut prime_gen);
+        while is_prime == IsPrime::No && count < MAX_ITER {
+            // Generate random candidate in range [0, max_int).
+            candidate = self.max_int.clone().random_below(&mut prime_gen);
 
             // Generate random sign bit (0 or 1) and convert to -1 or +1
             let sign_bit = two.clone().random_below(&mut prime_gen);
@@ -117,7 +100,8 @@ impl HashToPrime {
         if count == MAX_ITER {
             return Err(format!(
                 "Prime not found within {} iterations for practical_bits={}",
-                MAX_ITER, practical_bits
+                MAX_ITER,
+                self.max_int.significant_bits()
             ));
         }
 
@@ -130,21 +114,12 @@ impl HashToPrime {
 fn compute_precision_bound(lambda: u32) -> rug::Integer {
     use rug::Assign;
     use rug::Float;
+    use rug::float::Round;
     use rug::ops::Pow;
 
-    // Use adaptive precision - higher precision for larger lambda values
-    let precision = if lambda > 1000 {
-        4096
-    } else if lambda > 500 {
-        2048
-    } else {
-        1024
-    };
+    let precision = 4096;
     const MAX_ITER: i32 = 32;
-    const MIN_PRECISION_BITS: u32 = 64;
-    const MAX_PRECISION_BITS: u32 = 8192;
 
-    // Pre-allocate working variables to reduce allocations
     let mut x = Float::with_val(precision, 2).pow(-(lambda as i32));
     let tmp_x = x.clone();
     x = -x; // x = -2^(-lambda)
@@ -160,8 +135,7 @@ fn compute_precision_bound(lambda: u32) -> rug::Integer {
     w += &l1; // w = L1 + L2/L1
     w -= &l2; // w = L1 - L2 + L2/L1
 
-    // Convergence tolerance - improved calculation
-    let eps_exp = std::cmp::min(200i32, precision as i32 / 4);
+    let eps_exp = std::cmp::min(200i32, precision as i32 / 3);
     let eps = Float::with_val(precision, 2).pow(-eps_exp);
 
     // Pre-allocate working variables for the iteration to reduce allocations
@@ -205,60 +179,39 @@ fn compute_precision_bound(lambda: u32) -> rug::Integer {
             t /= &ep;
         }
 
-        // Check convergence before updating w
-        let abs_t = t.clone().abs();
-
-        // Simplified tolerance calculation
-        let base_tolerance = Float::with_val(precision, &eps * 10);
-
-        if abs_t <= base_tolerance {
-            break; // Converged
-        }
-
-        // Update w
         w -= &t;
 
-        // Safety check for divergence
-        if w.clone().abs() > Float::with_val(precision, 1000) {
+        let mut tolerance_denominator = Float::with_val(precision, &p);
+        tolerance_denominator.abs_mut();
+        tolerance_denominator *= &e;
+        let mut inverse_tolerance = Float::with_val(precision, 1);
+        inverse_tolerance /= &tolerance_denominator;
+        let w_abs = w.clone().abs();
+        let tolerance_max = if inverse_tolerance > w_abs {
+            inverse_tolerance
+        } else {
+            w_abs
+        };
+        let tolerance = Float::with_val(precision, &eps * tolerance_max * 10);
+        let abs_t = t.clone().abs();
+
+        if tolerance > abs_t {
             break;
         }
     }
 
-    // Convert result to precision bits
-    if w.is_finite() && !w.is_zero() {
-        // For Lambert W_{-1}, the result is typically negative
-        // Convert to precision bits using the magnitude
-        let w_magnitude = w.abs();
-
-        // Use higher precision conversion to avoid truncation errors
-        let precision_bits_f64 = w_magnitude.to_f64();
-
-        if precision_bits_f64.is_finite() && precision_bits_f64 > 0.0 {
-            // Apply cryptographic scaling factor
-            let scaled_bits = (precision_bits_f64 * 1.1).ceil() as u32;
-
-            if (MIN_PRECISION_BITS..=MAX_PRECISION_BITS).contains(&scaled_bits) {
-                return rug::Integer::from(2u32).pow(scaled_bits);
-            }
-        }
-
-        // Fallback: try integer conversion
-        if let Some(bits) = w_magnitude.to_integer()
-            && let Some(bits_u32) = bits.to_u32()
-        {
-            let clamped_bits = bits_u32.clamp(MIN_PRECISION_BITS, MAX_PRECISION_BITS);
-            return rug::Integer::from(2u32).pow(clamped_bits);
-        }
-    }
-
-    // Default fallback
-    rug::Integer::from(2u32).pow(MIN_PRECISION_BITS)
+    w = -w;
+    w = w.exp();
+    w.ceil_mut();
+    w.to_integer_round(Round::Nearest)
+        .map(|(value, _)| value)
+        .unwrap_or_else(|| rug::Integer::from(1))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rug::{Integer, ops::Pow};
+    use rug::ops::Pow;
     #[test]
     fn test_compute_precision_bound_basic() {
         // Test with a reasonable lambda value
@@ -267,8 +220,7 @@ mod tests {
         // The result should be a positive integer (at least our fallback values)
         assert!(result > 0);
 
-        // Should be at least 2^64 (our minimum fallback)
-        assert!(result >= rug::Integer::from(2u32).pow(64));
+        assert!(result.significant_bits() >= 32);
     }
 
     #[test]
@@ -276,9 +228,8 @@ mod tests {
         // Test with a small lambda value
         let result = compute_precision_bound(32);
 
-        // Should still produce a valid result
         assert!(result > 0);
-        assert!(result >= rug::Integer::from(2u32).pow(64));
+        assert!(result.significant_bits() >= 32);
     }
 
     #[test]
@@ -286,9 +237,8 @@ mod tests {
         // Test with a larger lambda value
         let result = compute_precision_bound(256);
 
-        // Should produce a valid precision bound
         assert!(result > 0);
-        assert!(result >= rug::Integer::from(2u32).pow(64));
+        assert!(result.significant_bits() >= 256);
     }
 
     #[test]
@@ -309,10 +259,7 @@ mod tests {
         assert!(result_small > 0);
         assert!(result_large > 0);
 
-        // Both should be at least our minimum
-        let min_bound = Integer::from(2u32).pow(64);
-        assert!(result_small >= min_bound);
-        assert!(result_large >= min_bound);
+        assert!(result_large > result_small);
     }
 
     #[test]
@@ -320,21 +267,18 @@ mod tests {
         // Test edge case with lambda=0
         let result = compute_precision_bound(0);
 
-        // Should handle this gracefully and return a valid integer
         assert!(result > 0);
-        assert!(result >= Integer::from(2u32).pow(64));
     }
     #[test]
     fn test_compute_precision_bound_edge_cases() {
         // Test with very small lambda
         let result_small = compute_precision_bound(1);
         assert!(result_small > 0);
-        assert!(result_small >= Integer::from(2u32).pow(64));
 
         // Test with large lambda value (1500 is a realistic value)
         let result_large = compute_precision_bound(1500);
         assert!(result_large > 0);
-        assert!(result_large >= Integer::from(2u32).pow(64));
+        assert!(result_large > result_small);
     }
 
     #[test]
@@ -342,37 +286,21 @@ mod tests {
         // Test specifically with lambda=1500 (expected real-world value)
         let result = compute_precision_bound(1500);
 
-        // Should compute successfully without using fallback
         assert!(result > 0);
-        assert!(result >= Integer::from(2u32).pow(64));
 
         // Should be deterministic
         let result2 = compute_precision_bound(1500);
         assert_eq!(result, result2);
 
-        // Should be a power of 2
-        let bit_count = result.count_ones();
-        assert_eq!(bit_count, Some(1));
-
-        // Should be in a reasonable range
-        assert!(result.significant_bits() < 10000);
+        assert!(result.significant_bits() >= 1500);
     }
     #[test]
-    fn test_precision_bound_power_of_two() {
-        // Test that the result is indeed a power of 2 (when computation succeeds)
+    fn test_precision_bound_is_legacy_lambert_bound() {
         let result = compute_precision_bound(128);
 
-        if result > 0 {
-            // Check if it's a power of 2 by checking if only one bit is set
-            // Count the number of 1 bits - should be exactly 1 for powers of 2
-            let bit_count = result.count_ones();
-            assert_eq!(
-                bit_count,
-                Some(1),
-                "Result should be a power of 2 (have exactly 1 bit set): {}",
-                result
-            );
-        }
+        assert!(result > 0);
+        assert!(result.significant_bits() >= 128);
+        assert_ne!(result.count_ones(), Some(1));
     }
     #[test]
     fn test_precision_bound_reasonable_range() {
@@ -382,15 +310,6 @@ mod tests {
         for lambda in lambdas.iter() {
             let result = compute_precision_bound(*lambda);
 
-            // Should be at least 2^64 (our minimum fallback)
-            let min_bound = Integer::from(2u32).pow(64);
-            assert!(
-                result >= min_bound,
-                "Precision bound too small for lambda={}",
-                lambda
-            );
-
-            // Should not be extremely large (less than 2^10000 for practical purposes)
             assert!(
                 result.significant_bits() < 10000,
                 "Precision bound too large for lambda={}",
@@ -414,9 +333,7 @@ mod tests {
             for _ in 0..iterations_per_lambda {
                 let result = compute_precision_bound(lambda);
 
-                // Verify the result is reasonable
                 assert!(result > 0);
-                assert!(result >= Integer::from(2u32).pow(64));
                 total_computations += 1;
             }
         }
@@ -454,7 +371,7 @@ mod tests {
 
         // Verify it's actually a probable prime
         use rug::integer::IsPrime;
-        assert_eq!(prime.is_probably_prime(30), IsPrime::Yes);
+        assert_ne!(prime.is_probably_prime(30), IsPrime::No);
 
         // Verify it's greater than 1
         assert!(prime > 1);
@@ -498,7 +415,7 @@ mod tests {
         // Test integer to bytes conversion (used internally for seeding)
         let small_int = rug::Integer::from(255u32);
         let bit_size = small_int.significant_bits();
-        let byte_size = (bit_size + 7) / 8;
+        let byte_size = bit_size.div_ceil(8);
         let mut cache = vec![0u8; byte_size as usize];
         small_int.write_digits(&mut cache, rug::integer::Order::MsfBe);
 
@@ -509,7 +426,7 @@ mod tests {
         // Test with larger integer
         let large_int = rug::Integer::from(2u32).pow(100);
         let bit_size_large = large_int.significant_bits();
-        let byte_size_large = (bit_size_large + 7) / 8;
+        let byte_size_large = bit_size_large.div_ceil(8);
         let mut cache_large = vec![0u8; byte_size_large as usize];
         large_int.write_digits(&mut cache_large, rug::integer::Order::MsfBe);
         let reconstructed_large =
@@ -530,7 +447,7 @@ mod tests {
 
         // Verify it's actually a probable prime
         use rug::integer::IsPrime;
-        assert_eq!(prime.is_probably_prime(30), IsPrime::Yes);
+        assert_ne!(prime.is_probably_prime(30), IsPrime::No);
 
         // Verify it's greater than 1
         assert!(prime > 1);
