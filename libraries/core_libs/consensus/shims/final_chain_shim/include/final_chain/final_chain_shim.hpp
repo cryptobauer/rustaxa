@@ -59,15 +59,10 @@ class FinalChain {
   //
   // Inputs:
   // - consensus block number and sender address.
-  // - `vdf_sortition_max_vote_count` is the post-Magnolia vote ceiling.
-  // - `use_total_vote_count_for_vdf_sortition` preserves legacy pre-Magnolia fixtures until those historical paths are
-  //   removed.
   //
   // Outputs are encoded in `rustaxa::DagDposAuthorizationFacts`; missing DPoS snapshots are represented as a status
   // value, while Rust bridge infrastructure failures still throw.
-  rustaxa::DagDposAuthorizationFacts dagDposAuthorizationFacts(EthBlockNumber blk_num, addr_t const& addr,
-                                                               uint64_t vdf_sortition_max_vote_count,
-                                                               bool use_total_vote_count_for_vdf_sortition) const;
+  rustaxa::DagDposAuthorizationFacts dagDposAuthorizationFacts(EthBlockNumber blk_num, addr_t const& addr) const;
 
   uint64_t dposEligibleTotalVoteCount(EthBlockNumber blk_num) const;
   uint64_t dposEligibleVoteCount(EthBlockNumber blk_num, addr_t const& addr) const;

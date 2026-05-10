@@ -43,6 +43,16 @@ pub struct FinalChain {
     genesis_timestamp: u64,
     accounts: Mutex<HashMap<[u8; 20], Account>>,
     genesis_vrf_keys: HashMap<[u8; 20], [u8; 32]>,
+    /// DAG VDF sortition vote-count ceiling after the configured legacy
+    /// total-vote-count compatibility boundary.
+    ///
+    /// New Rust-routed production blocks use this post-Magnolia ceiling. The
+    /// boundary below remains explicit until the block proposer no longer needs
+    /// to validate historical fixtures produced by legacy C++ code.
+    dag_vdf_sortition_max_vote_count: u64,
+    /// Exclusive period boundary below which legacy DAG VDF sortition uses the
+    /// snapshot total eligible vote count.
+    dag_vdf_sortition_total_vote_count_until_period: u64,
     dpos_snapshots: Mutex<HashMap<u64, DposSnapshot>>,
 }
 
@@ -137,12 +147,17 @@ impl FinalChain {
             .map(|(address, vrf_key, _, _, _)| (address, vrf_key))
             .collect();
 
+        let dag_vdf_sortition_max_vote_count =
+            dpos_vdf_sortition_max_vote_count(&genesis_dpos_config)?;
         let final_chain = FinalChain {
             storage,
             block_gas_limit,
             genesis_timestamp,
             accounts: Mutex::new(genesis_accounts),
             genesis_vrf_keys,
+            dag_vdf_sortition_max_vote_count,
+            dag_vdf_sortition_total_vote_count_until_period: genesis_dpos_config
+                .dag_vdf_sortition_total_vote_count_until_period,
             dpos_snapshots: Mutex::new(HashMap::from([(
                 0,
                 DposSnapshot {
@@ -275,16 +290,15 @@ impl FinalChain {
     /// failure as data through the staged decision pipeline.
     ///
     /// Output contract (Rust-only):
-    /// - `vdf_sortition_max_vote_count` is either the block-local value passed in
-    ///   by the caller or the total eligible vote count for the block when
-    ///   `use_total_vote_count_for_vdf_sortition` is true.
+    /// - `vdf_sortition_max_vote_count` is the snapshot total eligible vote
+    ///   count before the configured legacy boundary, otherwise the
+    ///   post-Magnolia validator maximum vote ceiling derived from genesis DPoS
+    ///   config.
     /// - `eligibility_status` is one of the `DAG_VERIFY_DPOS_STATUS_*` values.
     pub fn dag_dpos_authorization_facts(
         &self,
         block_number: u64,
         sender: [u8; 20],
-        vdf_sortition_max_vote_count: u64,
-        use_total_vote_count_for_vdf_sortition: bool,
     ) -> Result<DagDposAuthorizationFacts, anyhow::Error> {
         let vrf_key = self.vrf_key(sender)?;
         let vrf_key_found = vrf_key.is_some();
@@ -294,7 +308,7 @@ impl FinalChain {
                 vrf_key,
                 vrf_key_found,
                 sender_eligible_vote_count: 0,
-                vdf_sortition_max_vote_count,
+                vdf_sortition_max_vote_count: 0,
                 eligibility_status: DAG_VERIFY_DPOS_STATUS_NOT_CHECKED,
             });
         }
@@ -304,17 +318,18 @@ impl FinalChain {
                 vrf_key,
                 vrf_key_found,
                 sender_eligible_vote_count: 0,
-                vdf_sortition_max_vote_count,
+                vdf_sortition_max_vote_count: 0,
                 eligibility_status: DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE,
             });
         };
 
         let sender_eligible_vote_count = self.dpos_eligible_vote_count(block_number, sender)?;
-        let effective_vdf_sortition_max_vote_count = if use_total_vote_count_for_vdf_sortition {
-            self.dpos_eligible_total_vote_count(block_number)?
-        } else {
-            vdf_sortition_max_vote_count
-        };
+        let vdf_sortition_max_vote_count =
+            if block_number < self.dag_vdf_sortition_total_vote_count_until_period {
+                self.dpos_eligible_total_vote_count(block_number)?
+            } else {
+                self.dag_vdf_sortition_max_vote_count
+            };
         let eligibility_status = if sender_eligible_vote_count > 0 {
             DAG_VERIFY_DPOS_STATUS_ELIGIBLE
         } else {
@@ -325,7 +340,7 @@ impl FinalChain {
             vrf_key,
             vrf_key_found,
             sender_eligible_vote_count,
-            vdf_sortition_max_vote_count: effective_vdf_sortition_max_vote_count,
+            vdf_sortition_max_vote_count,
             eligibility_status,
         })
     }
@@ -1083,6 +1098,29 @@ fn dpos_vote_count(
     Ok(votes.as_u64())
 }
 
+fn dpos_vdf_sortition_max_vote_count(
+    genesis_dpos_config: &GenesisDposConfig,
+) -> Result<u64, anyhow::Error> {
+    let vote_eligibility_balance_step =
+        u256_from_big_endian(&genesis_dpos_config.vote_eligibility_balance_step);
+    let validator_maximum_stake =
+        u256_from_big_endian(&genesis_dpos_config.validator_maximum_stake);
+    if vote_eligibility_balance_step.is_zero() {
+        anyhow::ensure!(
+            validator_maximum_stake.is_zero(),
+            "genesis DPoS VDF sortition vote step cannot be zero when maximum stake is nonzero"
+        );
+        return Ok(0);
+    }
+
+    let votes = validator_maximum_stake / vote_eligibility_balance_step;
+    anyhow::ensure!(
+        votes <= U256::from(u64::MAX),
+        "genesis DPoS VDF sortition maximum vote count does not fit into u64"
+    );
+    Ok(votes.as_u64())
+}
+
 fn affordable_gas(account: &Account, gas_price: U256, gas_limit: u64) -> u64 {
     if gas_price.is_zero() {
         return gas_limit;
@@ -1345,17 +1383,38 @@ mod tests {
         vote_step: U256,
         maximum_stake: U256,
     ) -> FinalChain {
+        new_final_chain_with_dpos_boundary(
+            storage,
+            genesis_validators,
+            threshold,
+            vote_step,
+            maximum_stake,
+            0,
+        )
+    }
+
+    fn new_final_chain_with_dpos_boundary(
+        storage: Arc<Storage>,
+        genesis_validators: Vec<GenesisValidator>,
+        threshold: U256,
+        vote_step: U256,
+        maximum_stake: U256,
+        dag_vdf_sortition_total_vote_count_until_period: u64,
+    ) -> FinalChain {
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(threshold),
+            vote_eligibility_balance_step: u256_to_big_endian(vote_step),
+            validator_maximum_stake: u256_to_big_endian(maximum_stake),
+            dag_vdf_sortition_total_vote_count_until_period,
+        };
+
         FinalChain::new(
             storage,
             0,
             0,
             vec![],
             genesis_validators,
-            GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(threshold),
-                vote_eligibility_balance_step: u256_to_big_endian(vote_step),
-                validator_maximum_stake: u256_to_big_endian(maximum_stake),
-            },
+            genesis_dpos_config,
         )
         .unwrap()
     }
@@ -1734,16 +1793,16 @@ mod tests {
         );
 
         let facts = final_chain
-            .dag_dpos_authorization_facts(0, eligible, 30, true)
+            .dag_dpos_authorization_facts(0, eligible)
             .expect("authorization facts should be available for genesis");
         assert!(facts.vrf_key_found);
         assert_eq!(facts.vrf_key, Some([0x61; 32]));
         assert_eq!(facts.sender_eligible_vote_count, 10);
-        assert_eq!(facts.vdf_sortition_max_vote_count, 10);
+        assert_eq!(facts.vdf_sortition_max_vote_count, 30);
         assert_eq!(facts.eligibility_status, DAG_VERIFY_DPOS_STATUS_ELIGIBLE);
 
         let facts = final_chain
-            .dag_dpos_authorization_facts(0, ineligible, 30, false)
+            .dag_dpos_authorization_facts(0, ineligible)
             .expect("authorization facts should be available for genesis");
         assert!(facts.vrf_key_found);
         assert_eq!(facts.sender_eligible_vote_count, 0);
@@ -1752,6 +1811,36 @@ mod tests {
             facts.eligibility_status,
             DAG_VERIFY_DPOS_STATUS_NOT_ELIGIBLE
         );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn dpos_authorization_facts_use_total_votes_before_configured_boundary() {
+        let path = temp_db_path("dpos-authorization-facts-boundary");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x64; 20];
+        let final_chain = new_final_chain_with_dpos_boundary(
+            storage.clone(),
+            vec![
+                genesis_validator(validator, U256::from(10_000u64)),
+                genesis_validator([0x65; 20], U256::from(5_000u64)),
+            ],
+            U256::from(1_000u64),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+            1,
+        );
+
+        let facts = final_chain
+            .dag_dpos_authorization_facts(0, validator)
+            .expect("authorization facts should be available before boundary");
+        assert!(facts.vrf_key_found);
+        assert_eq!(facts.sender_eligible_vote_count, 10);
+        assert_eq!(facts.vdf_sortition_max_vote_count, 15);
+        assert_eq!(facts.eligibility_status, DAG_VERIFY_DPOS_STATUS_ELIGIBLE);
 
         drop(final_chain);
         drop(storage);
@@ -1772,11 +1861,11 @@ mod tests {
         );
 
         let facts = final_chain
-            .dag_dpos_authorization_facts(1, validator, 30, true)
+            .dag_dpos_authorization_facts(1, validator)
             .expect("authorization facts should return unavailable status instead of error");
         assert!(facts.vrf_key_found);
         assert_eq!(facts.sender_eligible_vote_count, 0);
-        assert_eq!(facts.vdf_sortition_max_vote_count, 30);
+        assert_eq!(facts.vdf_sortition_max_vote_count, 0);
         assert_eq!(
             facts.eligibility_status, DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE,
             "missing snapshot must be carried as data"
@@ -1805,6 +1894,7 @@ mod tests {
                 eligibility_balance_threshold: vec![],
                 vote_eligibility_balance_step: u256_to_big_endian(U256::one()),
                 validator_maximum_stake: u256_to_big_endian(U256::MAX),
+                dag_vdf_sortition_total_vote_count_until_period: 0,
             },
         ) {
             Ok(_) => panic!("expected genesis DPoS vote count overflow"),
@@ -1832,6 +1922,7 @@ mod tests {
                 eligibility_balance_threshold: vec![],
                 vote_eligibility_balance_step: u256_to_big_endian(U256::one()),
                 validator_maximum_stake: u256_to_big_endian(U256::from(10_000u64)),
+                dag_vdf_sortition_total_vote_count_until_period: 0,
             },
         ) {
             Ok(_) => panic!("expected genesis DPoS maximum stake rejection"),
@@ -1839,6 +1930,34 @@ mod tests {
         };
 
         assert!(err.to_string().contains("exceeds maximum stake"));
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn genesis_dpos_vdf_sortition_rejects_zero_vote_step_with_nonzero_maximum() {
+        let path = temp_db_path("genesis-dpos-vdf-zero-step");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+
+        let err = match FinalChain::new(
+            storage.clone(),
+            0,
+            0,
+            vec![],
+            vec![],
+            GenesisDposConfig {
+                eligibility_balance_threshold: vec![],
+                vote_eligibility_balance_step: u256_to_big_endian(U256::zero()),
+                validator_maximum_stake: u256_to_big_endian(U256::from(10_000u64)),
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+        ) {
+            Ok(_) => panic!("expected zero DPoS vote step rejection"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("vote step cannot be zero"));
 
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
@@ -1990,6 +2109,7 @@ mod tests {
                 eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
                 vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
                 validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                dag_vdf_sortition_total_vote_count_until_period: 0,
             },
         )
         .unwrap();

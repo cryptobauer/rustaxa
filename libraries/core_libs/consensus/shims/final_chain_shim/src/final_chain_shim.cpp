@@ -130,11 +130,13 @@ rust::Vec<rustaxa::GenesisValidator> make_genesis_validators(const state_api::Co
   return validators;
 }
 
-rustaxa::GenesisDposConfig make_genesis_dpos_config(const state_api::DPOSConfig& config) {
+rustaxa::GenesisDposConfig make_genesis_dpos_config(const state_api::DPOSConfig& config,
+                                                    uint64_t dag_vdf_sortition_total_vote_count_until_period) {
   rustaxa::GenesisDposConfig dpos_config;
   dpos_config.eligibility_balance_threshold = into_big_endian_vec(config.eligibility_balance_threshold);
   dpos_config.vote_eligibility_balance_step = into_big_endian_vec(config.vote_eligibility_balance_step);
   dpos_config.validator_maximum_stake = into_big_endian_vec(config.validator_maximum_stake);
+  dpos_config.dag_vdf_sortition_total_vote_count_until_period = dag_vdf_sortition_total_vote_count_until_period;
   return dpos_config;
 }
 
@@ -179,7 +181,7 @@ FinalChain::FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullN
   rust_final_chain_ = rustaxa::create_final_chain(
       db->rustStorage(), config.genesis.pbft.gas_limit, config.genesis.dag_genesis_block.getTimestamp(),
       make_genesis_accounts(config.genesis.state), make_genesis_validators(config.genesis.state),
-      make_genesis_dpos_config(config.genesis.state.dpos));
+      make_genesis_dpos_config(config.genesis.state.dpos, config.genesis.state.hardforks.magnolia_hf.block_num));
 }
 
 void FinalChain::stop() {}
@@ -373,11 +375,9 @@ uint64_t FinalChain::dposEligibleTotalVoteCount(EthBlockNumber blk_num) const {
   return rust_final_chain_.value()->get_dpos_eligible_total_vote_count(blk_num);
 }
 
-rustaxa::DagDposAuthorizationFacts FinalChain::dagDposAuthorizationFacts(
-    EthBlockNumber blk_num, const addr_t& addr, uint64_t vdf_sortition_max_vote_count,
-    bool use_total_vote_count_for_vdf_sortition) const {
-  return rust_final_chain_.value()->get_dag_dpos_authorization_facts(
-      blk_num, into_address_array(addr), vdf_sortition_max_vote_count, use_total_vote_count_for_vdf_sortition);
+rustaxa::DagDposAuthorizationFacts FinalChain::dagDposAuthorizationFacts(EthBlockNumber blk_num,
+                                                                         const addr_t& addr) const {
+  return rust_final_chain_.value()->get_dag_dpos_authorization_facts(blk_num, into_address_array(addr));
 }
 
 uint64_t FinalChain::dposEligibleVoteCount(EthBlockNumber blk_num, addr_t const& addr) const {

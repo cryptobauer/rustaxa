@@ -86,7 +86,6 @@ class DagManager : public DagManagerOld {
   std::weak_ptr<Network> network_;
   SortitionParamsManager sortition_params_manager_;
   const GenesisConfig genesis_config_;
-  const uint64_t validator_max_vote_;
   const std::shared_ptr<DagBlock> genesis_block_;
   const uint32_t max_levels_per_period_;
   const uint32_t cache_max_size_ = 10000;

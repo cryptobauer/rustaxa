@@ -102,6 +102,7 @@ class RustFinalChainTest : public ::testing::Test {
     config.eligibility_balance_threshold = u64_be(1000);
     config.vote_eligibility_balance_step = u64_be(1000);
     config.validator_maximum_stake = u64_be(30000);
+    config.dag_vdf_sortition_total_vote_count_until_period = 0;
     return config;
   }
 

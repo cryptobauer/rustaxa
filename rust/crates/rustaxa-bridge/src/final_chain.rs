@@ -53,6 +53,8 @@ pub fn create_final_chain(
             eligibility_balance_threshold: genesis_dpos_config.eligibility_balance_threshold,
             vote_eligibility_balance_step: genesis_dpos_config.vote_eligibility_balance_step,
             validator_maximum_stake: genesis_dpos_config.validator_maximum_stake,
+            dag_vdf_sortition_total_vote_count_until_period: genesis_dpos_config
+                .dag_vdf_sortition_total_vote_count_until_period,
         },
     )?;
     Ok(Box::new(BridgeFinalChain(final_chain)))
@@ -169,15 +171,8 @@ impl BridgeFinalChain {
         self: &BridgeFinalChain,
         block_number: u64,
         sender: &[u8; 20],
-        vdf_sortition_max_vote_count: u64,
-        use_total_vote_count_for_vdf_sortition: bool,
     ) -> Result<rustaxa_ffi::DagDposAuthorizationFacts, anyhow::Error> {
-        let facts = self.0.dag_dpos_authorization_facts(
-            block_number,
-            *sender,
-            vdf_sortition_max_vote_count,
-            use_total_vote_count_for_vdf_sortition,
-        )?;
+        let facts = self.0.dag_dpos_authorization_facts(block_number, *sender)?;
         Ok(rustaxa_ffi::DagDposAuthorizationFacts {
             vrf_key_found: facts.vrf_key_found,
             vrf_key: facts
@@ -377,6 +372,7 @@ mod tests {
                 eligibility_balance_threshold: u256_be(1_000),
                 vote_eligibility_balance_step: u256_be(1_000),
                 validator_maximum_stake: u256_be(30_000),
+                dag_vdf_sortition_total_vote_count_until_period: 0,
             },
         )
         .expect("final chain should initialize")
@@ -396,23 +392,23 @@ mod tests {
             ],
         );
         let eligible = final_chain
-            .get_dag_dpos_authorization_facts(0, &validator, 30, true)
+            .get_dag_dpos_authorization_facts(0, &validator)
             .expect("eligible facts should be available");
         assert!(eligible.vrf_key_found);
         assert_eq!(eligible.vrf_key, vec![0xA1; 32]);
         assert_eq!(eligible.sender_eligible_vote_count, 10);
-        assert_eq!(eligible.vdf_sortition_max_vote_count, 10);
+        assert_eq!(eligible.vdf_sortition_max_vote_count, 30);
         assert_eq!(
             eligible.eligibility_status,
             dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE
         );
 
         let missing_snapshot = final_chain
-            .get_dag_dpos_authorization_facts(1, &validator, 30, true)
+            .get_dag_dpos_authorization_facts(1, &validator)
             .expect("snapshot should return unavailable status as data");
         assert!(missing_snapshot.vrf_key_found);
         assert_eq!(missing_snapshot.sender_eligible_vote_count, 0);
-        assert_eq!(missing_snapshot.vdf_sortition_max_vote_count, 30);
+        assert_eq!(missing_snapshot.vdf_sortition_max_vote_count, 0);
         assert_eq!(
             missing_snapshot.eligibility_status,
             dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE

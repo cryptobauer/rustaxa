@@ -208,6 +208,9 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     argument through the C++ shim and Rust bridge.
   - `dposValidatorsTotalStakes` and `dposValidatorsEligibleVoteCounts` are Rust-backed and return address-sorted
     vectors for available Rust DPoS snapshots.
+  - DagManager verification now receives DPoS authorization facts whose VDF sortition denominator is selected in Rust
+    from genesis DPoS config plus the configured Magnolia boundary, instead of passing per-block hardfork or
+    validator-max policy through the C++ shim.
   - Rust finalization appends DPoS snapshots for finalized native-transfer blocks. Because Rust finalization is scoped to
     post-Magnolia execution, native transaction fees are assigned to validator commission rewards by finalized DAG block
     author and transaction hash.
@@ -334,7 +337,8 @@ The current Rust starting point is intentionally small:
 5. Define Rust ports for DPoS eligibility, eligible vote count, total vote count, and VRF key access. The current
    `DagManager` shim now gets those DPoS/VRF facts from a Rust FinalChain bridge bundle and routes embedded VRF proof
    verification, DAG VDF payload decode, difficulty calculation, legacy-modulus Wesolowski proof check, status-coded
-   VDF/DPoS fact envelope, legacy VRF/VDF message construction, and reject ordering through Rust.
+   VDF/DPoS fact envelope, legacy VRF/VDF message construction, verify-side VDF denominator policy, and reject ordering
+   through Rust. Producer-side `DagBlockProposer` denominator selection remains C++ owned until that class is shimmed.
 6. Replace the temporary `dposIsEligible` shim behavior once the eligibility port has a real implementation.
 7. Finish the PBFT support slice by adding broader manager-level validation around the now Rust-backed primitives:
    `PbftChain` head updates, persisted-head preview, and next-block validation route through Rust under

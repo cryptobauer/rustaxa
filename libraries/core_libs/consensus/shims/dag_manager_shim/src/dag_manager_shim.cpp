@@ -233,8 +233,6 @@ DagManager::DagManager(const FullNodeConfig &config, addr_t node_addr, std::shar
       key_manager_(std::move(key_manager)),
       sortition_params_manager_(node_addr, config, db_),
       genesis_config_(config.genesis),
-      validator_max_vote_(config.genesis.state.dpos.validator_maximum_stake /
-                          config.genesis.state.dpos.vote_eligibility_balance_step),
       genesis_block_(std::make_shared<DagBlock>(config.genesis.dag_genesis_block)),
       max_levels_per_period_(config.max_levels_per_period),
       seen_blocks_(cache_max_size_, cache_delete_step_),
@@ -386,9 +384,7 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
     return {*reject, {}};
   }
 
-  const bool fetch_total_vote_count = proposal_period < genesis_config_.state.hardforks.magnolia_hf.block_num;
-  const auto authorization_facts = final_chain_->dagDposAuthorizationFacts(proposal_period, blk->getSender(),
-                                                                           validator_max_vote_, fetch_total_vote_count);
+  const auto authorization_facts = final_chain_->dagDposAuthorizationFacts(proposal_period, blk->getSender());
   const bool vrf_key_found = authorization_facts.vrf_key_found;
   const uint64_t sender_eligible_vote_count = authorization_facts.sender_eligible_vote_count;
   const uint64_t vdf_sortition_max_vote_count = authorization_facts.vdf_sortition_max_vote_count;

@@ -91,6 +91,9 @@ pub struct GenesisDposConfig {
     pub vote_eligibility_balance_step: Vec<u8>,
     /// Maximum allowed effective stake for a genesis validator.
     pub validator_maximum_stake: Vec<u8>,
+    /// Exclusive period boundary below which legacy DAG VDF sortition uses the
+    /// total eligible vote count as denominator.
+    pub dag_vdf_sortition_total_vote_count_until_period: u64,
 }
 
 /// Read-only FinalChain call request routed from C++ into Rust.

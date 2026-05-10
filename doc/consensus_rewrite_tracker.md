@@ -143,9 +143,11 @@ Required tests:
   authorization branches in C++. DPoS/VRF facts are collected through a Rust FinalChain bridge bundle. Rust now decodes
   the DAG VDF payload, verifies the embedded VRF proof, calculates sortition difficulty, and verifies the Wesolowski
   proof against the exact legacy ASCII-hex modulus bytes used by C++ `VdfSortition`. Rust also builds the legacy
-  `level + proposal-period-hash` VRF input and `pivot + transaction-hashes` VDF message bytes. The path no longer
-  requires a `DagManagerOld::verifyBlock` method forward, and it no longer derives VRF output, VRF input, or DAG VDF
-  messages through C++ consensus helpers.
+  `level + proposal-period-hash` VRF input, `pivot + transaction-hashes` VDF message bytes, and the verify-side VDF
+  sortition denominator from Rust FinalChain config. The path no longer requires a `DagManagerOld::verifyBlock` method
+  forward, and it no longer derives VRF output, VRF input, DAG VDF messages, or per-block verify-side VDF denominator
+  policy through C++ consensus helpers. Producer-side `DagBlockProposer` denominator selection remains C++ owned until
+  that class is shimmed.
 
 Open questions:
 
@@ -174,7 +176,7 @@ Open questions:
 | Create Rust DAG graph module | `rust-backed` | Landed as standalone Rust domain plus bridge tests and C++ `Dag` production routing through a full overlay shim under `RUSTAXA_ENABLE`. |
 | Route sortition params through Rust | `rust-backed` | Landed under `RUSTAXA_ENABLE_SORTITION_PARAMS`; storage and write batches intentionally remain C++ owned for this slice. |
 | Route verified votes through Rust | `rust-backed` | Landed under `RUSTAXA_ENABLE_VERIFIED_VOTES`; C++ shim preserves live `PbftVote` ownership while Rust owns deterministic index semantics and 2t+1 metadata. VoteManager Rust mode now consumes a single atomic insert outcome in `addVerifiedVote`, removing split unique-voter/voted-value mutation in the Rust-enabled path. |
-| Route DagManager verify flow through Rust/shim | `partial` | Tip count/uniqueness, proposal-period availability, expiry, transaction availability, DAG embedded-VRF/VDF payload/difficulty/proof verification, legacy DAG VRF/VDF message construction, VDF/DPoS authorization ordering, and gas-policy decisions route through Rust. The shim still owns live transaction fetching, while DPoS/VRF facts now come from a Rust FinalChain bridge bundle and feed a single status-coded Rust envelope. Remaining gap: replace temporary historical hardfork vote-ceiling compatibility. |
+| Route DagManager verify flow through Rust/shim | `partial` | Tip count/uniqueness, proposal-period availability, expiry, transaction availability, DAG embedded-VRF/VDF payload/difficulty/proof verification, legacy DAG VRF/VDF message construction, verify-side VDF max-vote ceiling selection, VDF/DPoS authorization ordering, and gas-policy decisions route through Rust. The shim still owns live transaction fetching, while DPoS/VRF facts now come from a Rust FinalChain bridge bundle and feed a single status-coded Rust envelope. Remaining gap: move live transaction fetching and broader orchestration out of the shim. |
 | Define consensus storage ports | `not-started` | Needed before Rust services depend on storage. |
 | Decide CXX bridge shape for consensus hashes and vectors | `rust-backed` for DAG graph | DAG bridge uses fixed bytes and explicit boundary conversion; revisit if PBFT/vote bridges need richer payloads. |
 | Add C++/Rust DAG parity fixture | `rust-backed` | Rust bridge fixture tests and C++ public API regression tests landed. Direct in-process legacy-vs-Rust comparison remains optional if duplicate dependency symbols are resolved. |

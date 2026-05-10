@@ -298,6 +298,9 @@ pub mod rustaxa_ffi {
         eligibility_balance_threshold: Vec<u8>,
         vote_eligibility_balance_step: Vec<u8>,
         validator_maximum_stake: Vec<u8>,
+        // Exclusive period boundary below which legacy DAG VDF sortition uses
+        // the snapshot total eligible vote count as denominator.
+        dag_vdf_sortition_total_vote_count_until_period: u64,
     }
 
     struct AccountLookup {
@@ -1475,8 +1478,6 @@ pub mod rustaxa_ffi {
             self: &BridgeFinalChain,
             block_number: u64,
             sender: &[u8; 20],
-            vdf_sortition_max_vote_count: u64,
-            use_total_vote_count_for_vdf_sortition: bool,
         ) -> Result<DagDposAuthorizationFacts>;
         pub fn get_dpos_validators_total_stakes(
             self: &BridgeFinalChain,
