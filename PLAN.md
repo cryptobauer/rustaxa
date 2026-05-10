@@ -331,8 +331,8 @@ The current Rust starting point is intentionally small:
 4. Port DAG graph operations before broader `DagManager` orchestration: pivot/tip availability, ghost path, ordering,
    counters, storage-facing queries, and deterministic `verifyBlock` reject decisions.
 5. Define Rust ports for DPoS eligibility, eligible vote count, total vote count, and VRF key access. The current
-   `DagManager` shim still supplies those live inputs and the period-effective VDF max vote count from C++/FinalChain
-   while Rust owns missing-key/reject ordering.
+   `DagManager` shim still supplies those live inputs, the C++ VDF status, and the period-effective VDF max vote count
+   from C++/FinalChain while Rust owns the explicit status-coded VDF/DPoS fact envelope and reject ordering.
 6. Replace the temporary `dposIsEligible` shim behavior once the eligibility port has a real implementation.
 7. Finish the PBFT support slice by adding broader manager-level validation around the now Rust-backed primitives:
    `PbftChain` head updates, persisted-head preview, and next-block validation route through Rust under

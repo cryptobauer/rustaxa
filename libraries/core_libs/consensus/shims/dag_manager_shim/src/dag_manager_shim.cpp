@@ -19,6 +19,14 @@
 namespace taraxa {
 namespace {
 
+constexpr uint8_t kDagVerifyVdfStatusNotChecked = 0;
+constexpr uint8_t kDagVerifyVdfStatusValid = 1;
+constexpr uint8_t kDagVerifyVdfStatusInvalid = 2;
+constexpr uint8_t kDagVerifyDposStatusNotChecked = 0;
+constexpr uint8_t kDagVerifyDposStatusSnapshotUnavailable = 1;
+constexpr uint8_t kDagVerifyDposStatusEligible = 2;
+constexpr uint8_t kDagVerifyDposStatusNotEligible = 3;
+
 std::array<uint8_t, 32> to_bridge_hash(const blk_hash_t &hash) { return hash.asArray(); }
 
 rustaxa::DagHash to_bridge_dag_hash(const blk_hash_t &hash) { return rustaxa::DagHash{to_bridge_hash(hash)}; }
@@ -118,30 +126,22 @@ std::optional<DagManager::VerifyBlockReturnType> to_verify_block_reject(uint32_t
   }
 }
 
-rustaxa::DagVerifyVdfPrepareInput to_bridge_vdf_prepare_input(bool vrf_key_found, uint64_t eligible_vote_count,
-                                                              uint64_t vdf_max_vote_count) {
-  rustaxa::DagVerifyVdfPrepareInput out;
+rustaxa::DagVerifyVdfDposFacts to_bridge_vdf_dpos_facts(bool vrf_key_found, uint64_t sender_eligible_vote_count,
+                                                        uint64_t vdf_sortition_max_vote_count, uint8_t vdf_status,
+                                                        uint8_t dpos_status) {
+  rustaxa::DagVerifyVdfDposFacts out;
   out.vrf_key_found = vrf_key_found;
-  out.eligible_vote_count = eligible_vote_count;
-  out.vdf_max_vote_count = vdf_max_vote_count;
+  out.sender_eligible_vote_count = sender_eligible_vote_count;
+  out.vdf_sortition_max_vote_count = vdf_sortition_max_vote_count;
+  out.vdf_status = vdf_status;
+  out.dpos_status = dpos_status;
   return out;
 }
 
-rustaxa::DagVerifyAuthorizationInput to_bridge_authorization_input(bool vdf_valid, bool dpos_snapshot_available,
-                                                                   bool dpos_eligible) {
-  rustaxa::DagVerifyAuthorizationInput out;
-  out.vdf_valid = vdf_valid;
-  out.dpos_snapshot_available = dpos_snapshot_available;
-  out.dpos_eligible = dpos_eligible;
-  return out;
-}
-
-std::optional<DagManager::VerifyBlockReturnType> verify_authorization_decision(bool vdf_valid,
-                                                                               bool dpos_snapshot_available,
-                                                                               bool dpos_eligible) {
-  const auto authorization = rustaxa::dag_verify_authorization(
-      to_bridge_authorization_input(vdf_valid, dpos_snapshot_available, dpos_eligible));
-  return to_verify_block_reject(authorization.reject_code);
+std::optional<DagManager::VerifyBlockReturnType> decide_vdf_dpos_authorization(
+    const rustaxa::DagVerifyVdfDposFacts &facts) {
+  const auto decision = rustaxa::dag_decide_vdf_dpos_authorization(facts);
+  return to_verify_block_reject(decision.reject_code);
 }
 
 rustaxa::DagVerifyTransactionAvailabilityInput to_bridge_transaction_availability_input(
@@ -338,40 +338,51 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
   }
 
   const auto pk = key_manager_->getVrfKey(proposal_period, blk->getSender());
-  uint64_t eligible_vote_count = 0;
-  uint64_t vdf_max_vote_count = validator_max_vote_;
+  const auto vrf_key_found = static_cast<bool>(pk);
+  uint64_t sender_eligible_vote_count = 0;
+  uint64_t vdf_sortition_max_vote_count = validator_max_vote_;
+  bool dpos_snapshot_available = true;
   if (pk) {
-    eligible_vote_count = final_chain_->dposEligibleVoteCount(proposal_period, blk->getSender());
-    if (proposal_period < genesis_config_.state.hardforks.magnolia_hf.block_num) {
-      vdf_max_vote_count = final_chain_->dposEligibleTotalVoteCount(proposal_period);
+    try {
+      sender_eligible_vote_count = final_chain_->dposEligibleVoteCount(proposal_period, blk->getSender());
+      if (proposal_period < genesis_config_.state.hardforks.magnolia_hf.block_num) {
+        vdf_sortition_max_vote_count = final_chain_->dposEligibleTotalVoteCount(proposal_period);
+      }
+    } catch (state_api::ErrFutureBlock &) {
+      dpos_snapshot_available = false;
     }
   }
-  auto vdf_prepare = rustaxa::dag_verify_vdf_prepare(
-      to_bridge_vdf_prepare_input(static_cast<bool>(pk), eligible_vote_count, vdf_max_vote_count));
-  if (const auto reject = to_verify_block_reject(vdf_prepare.reject_code); reject.has_value()) {
+
+  if (const auto reject = decide_vdf_dpos_authorization(to_bridge_vdf_dpos_facts(
+          vrf_key_found, sender_eligible_vote_count, vdf_sortition_max_vote_count, kDagVerifyVdfStatusNotChecked,
+          dpos_snapshot_available ? kDagVerifyDposStatusNotChecked : kDagVerifyDposStatusSnapshotUnavailable));
+      reject.has_value()) {
     return {*reject, {}};
   }
 
-  bool vdf_valid = true;
+  uint8_t vdf_status = kDagVerifyVdfStatusValid;
   try {
     const auto proposal_period_hash = db_->getPeriodBlockHash(proposal_period);
     blk->verifyVdf(sortition_params_manager_.getSortitionParams(proposal_period), proposal_period_hash, *pk,
-                   vdf_prepare.vote_count, vdf_prepare.max_vote_count);
+                   sender_eligible_vote_count, vdf_sortition_max_vote_count);
   } catch (vdf_sortition::VdfSortition::InvalidVdfSortition const &) {
-    vdf_valid = false;
+    vdf_status = kDagVerifyVdfStatusInvalid;
   }
-  if (const auto reject = verify_authorization_decision(vdf_valid, true, true); reject.has_value()) {
+  if (const auto reject = decide_vdf_dpos_authorization(to_bridge_vdf_dpos_facts(
+          true, sender_eligible_vote_count, vdf_sortition_max_vote_count, vdf_status, kDagVerifyDposStatusNotChecked));
+      reject.has_value()) {
     return {*reject, {}};
   }
 
-  bool dpos_eligible = false;
-  bool dpos_snapshot_available = true;
+  uint8_t dpos_status = kDagVerifyDposStatusNotEligible;
   try {
-    dpos_eligible = final_chain_->dposIsEligible(proposal_period, blk->getSender());
+    dpos_status = final_chain_->dposIsEligible(proposal_period, blk->getSender()) ? kDagVerifyDposStatusEligible
+                                                                                  : kDagVerifyDposStatusNotEligible;
   } catch (state_api::ErrFutureBlock &) {
-    dpos_snapshot_available = false;
+    dpos_status = kDagVerifyDposStatusSnapshotUnavailable;
   }
-  if (const auto reject = verify_authorization_decision(true, dpos_snapshot_available, dpos_eligible);
+  if (const auto reject = decide_vdf_dpos_authorization(to_bridge_vdf_dpos_facts(
+          true, sender_eligible_vote_count, vdf_sortition_max_vote_count, kDagVerifyVdfStatusValid, dpos_status));
       reject.has_value()) {
     return {*reject, {}};
   }

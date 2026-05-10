@@ -459,6 +459,24 @@ pub mod rustaxa_ffi {
         reason_code: u32,
     }
 
+    /// C++-originated VDF and DPoS facts for Rust authorization decisions.
+    struct DagVerifyVdfDposFacts {
+        vrf_key_found: bool,
+        sender_eligible_vote_count: u64,
+        vdf_sortition_max_vote_count: u64,
+        vdf_status: u8,
+        dpos_status: u8,
+    }
+
+    /// Rust VDF and DPoS authorization decision.
+    struct DagVerifyVdfDposDecision {
+        continue_validation: bool,
+        reject_code: u32,
+        reason_code: u32,
+        vote_count: u64,
+        max_vote_count: u64,
+    }
+
     /// C++-originated payload for Rust gas verification decisions.
     struct DagVerifyGasInput {
         block_gas_estimation: u64,
@@ -727,6 +745,9 @@ pub mod rustaxa_ffi {
         pub fn dag_verify_authorization(
             input: DagVerifyAuthorizationInput,
         ) -> DagVerifyAuthorizationResult;
+        pub fn dag_decide_vdf_dpos_authorization(
+            facts: DagVerifyVdfDposFacts,
+        ) -> DagVerifyVdfDposDecision;
         pub fn dag_verify_gas(input: DagVerifyGasInput) -> Result<DagVerifyGasResult>;
 
         // Consensus PBFT chain

@@ -102,6 +102,27 @@ pub const DAG_VERIFY_REASON_FUTURE_DPOS_SNAPSHOT: u32 = 3;
 /// Rust DAG verification reason: block sender is not DPoS eligible.
 pub const DAG_VERIFY_REASON_NOT_ELIGIBLE: u32 = 4;
 
+/// VDF status: the VDF stage has not produced a fact yet.
+pub const DAG_VERIFY_VDF_STATUS_NOT_CHECKED: u8 = 0;
+
+/// VDF status: the VDF proof verified successfully.
+pub const DAG_VERIFY_VDF_STATUS_VALID: u8 = 1;
+
+/// VDF status: the VDF proof failed verification.
+pub const DAG_VERIFY_VDF_STATUS_INVALID: u8 = 2;
+
+/// DPoS status: the DPoS stage has not produced a fact yet.
+pub const DAG_VERIFY_DPOS_STATUS_NOT_CHECKED: u8 = 0;
+
+/// DPoS status: DPoS state for the proposal period is not available yet.
+pub const DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE: u8 = 1;
+
+/// DPoS status: the sender is eligible for the proposal period.
+pub const DAG_VERIFY_DPOS_STATUS_ELIGIBLE: u8 = 2;
+
+/// DPoS status: the sender is not eligible for the proposal period.
+pub const DAG_VERIFY_DPOS_STATUS_NOT_ELIGIBLE: u8 = 3;
+
 /// Inputs for deterministic `DagManager::verifyBlock` prechecks.
 ///
 /// This struct covers only checks that do not need transaction bodies, VDF
@@ -237,6 +258,47 @@ pub struct DagVerifyAuthorization {
     pub continue_validation: bool,
     pub reject_code: u32,
     pub reason_code: u32,
+}
+
+/// Staged VDF and DPoS fact envelope for `DagManager::verifyBlock`.
+///
+/// Inputs:
+/// - `vrf_key_found`: whether the sender has a VRF key for the proposal period.
+/// - `sender_eligible_vote_count`: sender vote count used by VDF sortition.
+/// - `vdf_sortition_max_vote_count`: period-effective max vote count used by VDF sortition.
+/// - `vdf_status`: one of the `DAG_VERIFY_VDF_STATUS_*` constants.
+/// - `dpos_status`: one of the `DAG_VERIFY_DPOS_STATUS_*` constants.
+///
+/// This type is deliberately fact-only and supports staged collection. A
+/// `*_NOT_CHECKED` status means that dependency has not produced a fact yet,
+/// not that it succeeded. Infrastructure crates or C++ shims own live lookups
+/// until those dependencies move behind Rust ports, while Rust owns the
+/// deterministic reject ordering over the supplied facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagVerifyVdfDposFacts {
+    pub vrf_key_found: bool,
+    pub sender_eligible_vote_count: u64,
+    pub vdf_sortition_max_vote_count: u64,
+    pub vdf_status: u8,
+    pub dpos_status: u8,
+}
+
+/// Decision returned for the VDF and DPoS authorization stage.
+///
+/// Output invariants:
+/// - missing VRF key and invalid VDF both map to legacy
+///   `FailedVdfVerification`, distinguished by `reason_code`.
+/// - unavailable DPoS state maps to `FutureBlock`.
+/// - DPoS ineligibility maps to `NotEligible`.
+/// - successful results pass through the exact vote counts supplied in the
+///   input for diagnostics and compatibility checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagVerifyVdfDposDecision {
+    pub continue_validation: bool,
+    pub reject_code: u32,
+    pub reason_code: u32,
+    pub vote_count: u64,
+    pub max_vote_count: u64,
 }
 
 /// Derives frontier from a ghost path and current leaves.
@@ -448,6 +510,47 @@ pub fn validate_dag_verify_authorization(
         continue_validation: reject_code == 0,
         reject_code,
         reason_code,
+    }
+}
+
+/// Runs the staged deterministic VDF and DPoS authorization decision.
+///
+/// The input contains facts gathered by the current runtime boundary. This
+/// function centralizes consensus reject ordering so shims do not encode that
+/// policy while VDF, FinalChain, and DPoS data access are still migrating.
+pub fn decide_dag_verify_vdf_dpos_authorization(
+    facts: DagVerifyVdfDposFacts,
+) -> DagVerifyVdfDposDecision {
+    let (reject_code, reason_code) = if !facts.vrf_key_found {
+        (
+            DAG_VERIFY_REJECT_FAILED_VDF_VERIFICATION,
+            DAG_VERIFY_REASON_MISSING_VRF_KEY,
+        )
+    } else if facts.vdf_status == DAG_VERIFY_VDF_STATUS_INVALID {
+        (
+            DAG_VERIFY_REJECT_FAILED_VDF_VERIFICATION,
+            DAG_VERIFY_REASON_INVALID_VDF,
+        )
+    } else if facts.dpos_status == DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE {
+        (
+            DAG_VERIFY_REJECT_FUTURE_BLOCK,
+            DAG_VERIFY_REASON_FUTURE_DPOS_SNAPSHOT,
+        )
+    } else if facts.dpos_status == DAG_VERIFY_DPOS_STATUS_NOT_ELIGIBLE {
+        (
+            DAG_VERIFY_REJECT_NOT_ELIGIBLE,
+            DAG_VERIFY_REASON_NOT_ELIGIBLE,
+        )
+    } else {
+        (0, DAG_VERIFY_REASON_CONTINUE)
+    };
+
+    DagVerifyVdfDposDecision {
+        continue_validation: reject_code == 0,
+        reject_code,
+        reason_code,
+        vote_count: facts.sender_eligible_vote_count,
+        max_vote_count: facts.vdf_sortition_max_vote_count,
     }
 }
 
@@ -1639,6 +1742,76 @@ mod tests {
         assert!(result.continue_validation);
         assert_eq!(result.reject_code, 0);
         assert_eq!(result.reason_code, DAG_VERIFY_REASON_CONTINUE);
+    }
+
+    #[test]
+    fn verify_vdf_dpos_rejects_missing_vrf_before_other_facts() {
+        let result = decide_dag_verify_vdf_dpos_authorization(DagVerifyVdfDposFacts {
+            vrf_key_found: false,
+            sender_eligible_vote_count: 12,
+            vdf_sortition_max_vote_count: 42,
+            vdf_status: DAG_VERIFY_VDF_STATUS_INVALID,
+            dpos_status: DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE,
+        });
+
+        assert!(!result.continue_validation);
+        assert_eq!(
+            result.reject_code,
+            DAG_VERIFY_REJECT_FAILED_VDF_VERIFICATION
+        );
+        assert_eq!(result.reason_code, DAG_VERIFY_REASON_MISSING_VRF_KEY);
+        assert_eq!(result.vote_count, 12);
+        assert_eq!(result.max_vote_count, 42);
+    }
+
+    #[test]
+    fn verify_vdf_dpos_rejects_invalid_vdf_before_dpos_facts() {
+        let result = decide_dag_verify_vdf_dpos_authorization(DagVerifyVdfDposFacts {
+            vrf_key_found: true,
+            sender_eligible_vote_count: 12,
+            vdf_sortition_max_vote_count: 42,
+            vdf_status: DAG_VERIFY_VDF_STATUS_INVALID,
+            dpos_status: DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE,
+        });
+
+        assert!(!result.continue_validation);
+        assert_eq!(
+            result.reject_code,
+            DAG_VERIFY_REJECT_FAILED_VDF_VERIFICATION
+        );
+        assert_eq!(result.reason_code, DAG_VERIFY_REASON_INVALID_VDF);
+    }
+
+    #[test]
+    fn verify_vdf_dpos_rejects_future_snapshot_before_not_eligible() {
+        let result = decide_dag_verify_vdf_dpos_authorization(DagVerifyVdfDposFacts {
+            vrf_key_found: true,
+            sender_eligible_vote_count: 12,
+            vdf_sortition_max_vote_count: 42,
+            vdf_status: DAG_VERIFY_VDF_STATUS_NOT_CHECKED,
+            dpos_status: DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE,
+        });
+
+        assert!(!result.continue_validation);
+        assert_eq!(result.reject_code, DAG_VERIFY_REJECT_FUTURE_BLOCK);
+        assert_eq!(result.reason_code, DAG_VERIFY_REASON_FUTURE_DPOS_SNAPSHOT);
+    }
+
+    #[test]
+    fn verify_vdf_dpos_continues_with_supplied_vote_counts() {
+        let result = decide_dag_verify_vdf_dpos_authorization(DagVerifyVdfDposFacts {
+            vrf_key_found: true,
+            sender_eligible_vote_count: 12,
+            vdf_sortition_max_vote_count: 42,
+            vdf_status: DAG_VERIFY_VDF_STATUS_VALID,
+            dpos_status: DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
+        });
+
+        assert!(result.continue_validation);
+        assert_eq!(result.reject_code, 0);
+        assert_eq!(result.reason_code, DAG_VERIFY_REASON_CONTINUE);
+        assert_eq!(result.vote_count, 12);
+        assert_eq!(result.max_vote_count, 42);
     }
 
     #[test]

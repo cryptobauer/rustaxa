@@ -4,20 +4,22 @@ use crate::ffi::rustaxa_ffi::{
     DagPivotTipsValidation, DagReferenceMetadata, DagVerifyAuthorizationInput,
     DagVerifyAuthorizationResult, DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock,
     DagVerifyPrecheckResult, DagVerifyTransactionAvailabilityInput,
-    DagVerifyTransactionAvailabilityResult, DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult,
+    DagVerifyTransactionAvailabilityResult, DagVerifyVdfDposDecision, DagVerifyVdfDposFacts,
+    DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
 use anyhow::{ensure, Context, Result};
 use ethereum_types::H256;
 use rustaxa_consensus::dag::{
-    derive_frontier, prepare_dag_verify_vdf, validate_dag_verify_authorization,
-    validate_dag_verify_gas, validate_dag_verify_precheck,
+    decide_dag_verify_vdf_dpos_authorization, derive_frontier, prepare_dag_verify_vdf,
+    validate_dag_verify_authorization, validate_dag_verify_gas, validate_dag_verify_precheck,
     validate_dag_verify_transaction_availability, validate_pivot_tips_metadata, DagGraph,
     DagManagerBlock as DomainDagManagerBlock, DagManagerSnapshot as DomainDagManagerSnapshot,
     DagManagerState, DagReferenceMetadata as ReferenceMetadata, DagTipGas,
     DagVerifyAuthorizationInput as DomainDagVerifyAuthorizationInput,
     DagVerifyGasInput as DomainDagVerifyGasInput, DagVerifyPrecheckInput,
     DagVerifyTransactionAvailabilityInput as DomainDagVerifyTransactionAvailabilityInput,
+    DagVerifyVdfDposFacts as DomainDagVerifyVdfDposFacts,
     DagVerifyVdfPrepareInput as DomainDagVerifyVdfPrepareInput,
 };
 use rustaxa_storage::StatusField;
@@ -584,6 +586,28 @@ pub fn dag_verify_authorization(
     }
 }
 
+/// Runs deterministic VDF and DPoS authorization over explicit facts.
+///
+/// C++ supplies current live VDF and DPoS lookup outcomes. Rust applies the
+/// complete consensus reject ordering and returns legacy-compatible codes plus
+/// the vote counts used for diagnostics and parity checks.
+pub fn dag_decide_vdf_dpos_authorization(facts: DagVerifyVdfDposFacts) -> DagVerifyVdfDposDecision {
+    let decision = decide_dag_verify_vdf_dpos_authorization(DomainDagVerifyVdfDposFacts {
+        vrf_key_found: facts.vrf_key_found,
+        sender_eligible_vote_count: facts.sender_eligible_vote_count,
+        vdf_sortition_max_vote_count: facts.vdf_sortition_max_vote_count,
+        vdf_status: facts.vdf_status,
+        dpos_status: facts.dpos_status,
+    });
+    DagVerifyVdfDposDecision {
+        continue_validation: decision.continue_validation,
+        reject_code: decision.reject_code,
+        reason_code: decision.reason_code,
+        vote_count: decision.vote_count,
+        max_vote_count: decision.max_vote_count,
+    }
+}
+
 /// Runs deterministic gas decisions for DAG block verification.
 ///
 /// C++ supplies live gas-estimation outputs. This bridge converts those plain
@@ -937,5 +961,87 @@ mod tests {
         });
         assert!(continues.continue_validation);
         assert_eq!(continues.reject_code, 0);
+
+        let combined_missing_vrf = dag_decide_vdf_dpos_authorization(DagVerifyVdfDposFacts {
+            vrf_key_found: false,
+            sender_eligible_vote_count: 12,
+            vdf_sortition_max_vote_count: 77,
+            vdf_status: rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_INVALID,
+            dpos_status: rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE,
+        });
+        assert!(!combined_missing_vrf.continue_validation);
+        assert_eq!(
+            combined_missing_vrf.reject_code,
+            rustaxa_consensus::dag::DAG_VERIFY_REJECT_FAILED_VDF_VERIFICATION
+        );
+        assert_eq!(
+            combined_missing_vrf.reason_code,
+            rustaxa_consensus::dag::DAG_VERIFY_REASON_MISSING_VRF_KEY
+        );
+        assert_eq!(combined_missing_vrf.vote_count, 12);
+        assert_eq!(combined_missing_vrf.max_vote_count, 77);
+
+        let combined_invalid_vdf = dag_decide_vdf_dpos_authorization(DagVerifyVdfDposFacts {
+            vrf_key_found: true,
+            sender_eligible_vote_count: 12,
+            vdf_sortition_max_vote_count: 77,
+            vdf_status: rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_INVALID,
+            dpos_status: rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE,
+        });
+        assert!(!combined_invalid_vdf.continue_validation);
+        assert_eq!(
+            combined_invalid_vdf.reject_code,
+            rustaxa_consensus::dag::DAG_VERIFY_REJECT_FAILED_VDF_VERIFICATION
+        );
+        assert_eq!(
+            combined_invalid_vdf.reason_code,
+            rustaxa_consensus::dag::DAG_VERIFY_REASON_INVALID_VDF
+        );
+
+        let combined_future_snapshot = dag_decide_vdf_dpos_authorization(DagVerifyVdfDposFacts {
+            vrf_key_found: true,
+            sender_eligible_vote_count: 12,
+            vdf_sortition_max_vote_count: 77,
+            vdf_status: rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_NOT_CHECKED,
+            dpos_status: rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE,
+        });
+        assert!(!combined_future_snapshot.continue_validation);
+        assert_eq!(
+            combined_future_snapshot.reject_code,
+            rustaxa_consensus::dag::DAG_VERIFY_REJECT_FUTURE_BLOCK
+        );
+        assert_eq!(
+            combined_future_snapshot.reason_code,
+            rustaxa_consensus::dag::DAG_VERIFY_REASON_FUTURE_DPOS_SNAPSHOT
+        );
+
+        let combined_not_eligible = dag_decide_vdf_dpos_authorization(DagVerifyVdfDposFacts {
+            vrf_key_found: true,
+            sender_eligible_vote_count: 12,
+            vdf_sortition_max_vote_count: 77,
+            vdf_status: rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_VALID,
+            dpos_status: rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_NOT_ELIGIBLE,
+        });
+        assert!(!combined_not_eligible.continue_validation);
+        assert_eq!(
+            combined_not_eligible.reject_code,
+            rustaxa_consensus::dag::DAG_VERIFY_REJECT_NOT_ELIGIBLE
+        );
+        assert_eq!(
+            combined_not_eligible.reason_code,
+            rustaxa_consensus::dag::DAG_VERIFY_REASON_NOT_ELIGIBLE
+        );
+
+        let combined_continues = dag_decide_vdf_dpos_authorization(DagVerifyVdfDposFacts {
+            vrf_key_found: true,
+            sender_eligible_vote_count: 12,
+            vdf_sortition_max_vote_count: 77,
+            vdf_status: rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_VALID,
+            dpos_status: rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
+        });
+        assert!(combined_continues.continue_validation);
+        assert_eq!(combined_continues.reject_code, 0);
+        assert_eq!(combined_continues.vote_count, 12);
+        assert_eq!(combined_continues.max_vote_count, 77);
     }
 }
