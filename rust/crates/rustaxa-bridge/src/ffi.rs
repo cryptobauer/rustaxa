@@ -488,6 +488,25 @@ pub mod rustaxa_ffi {
         expected_difficulty: u16,
     }
 
+    /// C++-originated payload to build legacy VRF/VDF messages from block RLP
+    /// and verify embedded sortition proof.
+    struct DagVerifyVdfSortitionFromBlockInput {
+        /// Canonical DAG block RLP bytes.
+        block_rlp: Vec<u8>,
+        /// DAG block level used in legacy VRF message construction.
+        block_level: u64,
+        /// Legacy proposal-period hash used in legacy VRF message construction.
+        proposal_period_hash: [u8; 32],
+        /// Runtime sortition parameters for this proposal period.
+        sortition_params: SortitionRuntimeParams,
+        /// Embedded VRF public key (32 bytes) for direct Rust verification.
+        vrf_public_key: [u8; 32],
+        /// Sender-eligible vote count for threshold normalization.
+        sender_eligible_vote_count: u64,
+        /// Period-effective maximum vote count for normalization denominator.
+        vdf_sortition_max_vote_count: u64,
+    }
+
     /// C++-originated VDF and DPoS facts for Rust authorization decisions.
     struct DagVerifyVdfDposFacts {
         vrf_key_found: bool,
@@ -941,6 +960,10 @@ pub mod rustaxa_ffi {
         pub fn dag_verify_vdf_sortition(
             input: DagVerifyVdfSortitionInput,
         ) -> Result<DagVerifyVdfSortitionResult>;
+        pub fn dag_verify_vdf_sortition_from_block(
+            input: DagVerifyVdfSortitionFromBlockInput,
+        ) -> Result<DagVerifyVdfSortitionResult>;
+        pub fn dag_vdf_message(pivot: &[u8; 32], transaction_hashes: Vec<DagHash>) -> Vec<u8>;
         pub fn dag_verify_authorization(
             input: DagVerifyAuthorizationInput,
         ) -> DagVerifyAuthorizationResult;

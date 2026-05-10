@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <fstream>
 #include <iostream>
@@ -9,7 +10,6 @@
 #include <utility>
 #include <vector>
 
-#include "common/vrf_wrapper.hpp"
 #include "dag/dag_block.hpp"
 #include "dag/dag_manager.hpp"
 #include "key_manager/key_manager.hpp"
@@ -85,12 +85,22 @@ rust::Vec<uint8_t> to_rust_vec(const dev::bytes &bytes) {
   return out;
 }
 
-rust::Vec<uint8_t> copy_rust_vec(const rust::Vec<uint8_t> &bytes) {
-  rust::Vec<uint8_t> out;
+dev::bytes from_rust_bytes(const rust::Vec<uint8_t> &bytes) {
+  dev::bytes out;
   out.reserve(bytes.size());
   for (const auto byte : bytes) {
-    out.push_back(byte);
+    out.emplace_back(byte);
   }
+  return out;
+}
+
+std::array<uint8_t, 32> to_bridge_vrf_public_key(const rust::Vec<uint8_t> &vrf_public_key) {
+  if (vrf_public_key.size() != 32) {
+    throw std::runtime_error("DagManager: VRF public key must be 32 bytes");
+  }
+
+  std::array<uint8_t, 32> out{};
+  std::copy(vrf_public_key.begin(), vrf_public_key.end(), out.begin());
   return out;
 }
 
@@ -104,29 +114,25 @@ rustaxa::SortitionRuntimeParams to_bridge_sortition_params(const SortitionParams
   return out;
 }
 
-rustaxa::DagVerifyVdfSortitionInput to_bridge_vdf_sortition_input(
-    dev::bytes block_rlp, dev::bytes vdf_input, SortitionParams const &sortition_params,
-    const rust::Vec<uint8_t> &vrf_public_key, dev::bytes vrf_input, uint64_t sender_eligible_vote_count,
+rustaxa::DagVerifyVdfSortitionFromBlockInput to_bridge_vdf_sortition_input(
+    const dev::bytes &block_rlp, uint64_t block_level, const blk_hash_t &proposal_period_hash,
+    SortitionParams const &sortition_params, const rust::Vec<uint8_t> &vrf_public_key,
+    uint64_t sender_eligible_vote_count,
     uint64_t vdf_sortition_max_vote_count) {
-  rustaxa::DagVerifyVdfSortitionInput out;
+  rustaxa::DagVerifyVdfSortitionFromBlockInput out;
   out.block_rlp = to_rust_vec(block_rlp);
-  out.vdf_input = to_rust_vec(vdf_input);
+  out.block_level = block_level;
+  out.proposal_period_hash = to_bridge_hash(proposal_period_hash);
   out.sortition_params = to_bridge_sortition_params(sortition_params);
-  out.vrf_output = rust::Vec<uint8_t>();
-  out.vrf_public_key = copy_rust_vec(vrf_public_key);
-  out.vrf_input = to_rust_vec(vrf_input);
+  out.vrf_public_key = to_bridge_vrf_public_key(vrf_public_key);
   out.sender_eligible_vote_count = sender_eligible_vote_count;
   out.vdf_sortition_max_vote_count = vdf_sortition_max_vote_count;
   return out;
 }
 
-dev::bytes vdf_message_for_block(const std::shared_ptr<DagBlock> &block) {
-  dev::RLPStream stream;
-  stream << block->getPivot();
-  for (const auto &transaction_hash : block->getTrxs()) {
-    stream << transaction_hash;
-  }
-  return stream.invalidate();
+dev::bytes rust_vdf_message(const blk_hash_t &pivot, const std::vector<trx_hash_t> &trx_hashes) {
+  const auto bridge_pivot = to_bridge_hash(pivot);
+  return from_rust_bytes(rustaxa::dag_vdf_message(bridge_pivot, to_bridge_dag_hashes(trx_hashes)));
 }
 
 rustaxa::DagVerifyPrecheckBlock to_bridge_verify_precheck_block(const std::shared_ptr<DagBlock> &block) {
@@ -401,10 +407,9 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
     try {
       const auto proposal_period_hash = db_->getPeriodBlockHash(proposal_period);
       const auto block_rlp = blk->rlp(true);
-      const auto vrf_input = vrf_wrapper::VrfSortitionBase::makeVrfInput(blk->getLevel(), proposal_period_hash);
       const auto sortition_params = sortition_params_manager_.getSortitionParams(proposal_period);
-      const auto vdf_result = rustaxa::dag_verify_vdf_sortition(to_bridge_vdf_sortition_input(
-          block_rlp, vdf_message_for_block(blk), sortition_params, authorization_facts.vrf_key, vrf_input,
+      const auto vdf_result = rustaxa::dag_verify_vdf_sortition_from_block(to_bridge_vdf_sortition_input(
+          block_rlp, blk->getLevel(), proposal_period_hash, sortition_params, authorization_facts.vrf_key,
           sender_eligible_vote_count, vdf_sortition_max_vote_count));
       vdf_status = vdf_result.vdf_status;
     } catch (std::exception const &) {
@@ -682,13 +687,16 @@ uint64_t DagManager::getDagExpiryLevel() const {
 uint64_t DagManager::getMaxLevelsPerPeriod() const { return max_levels_per_period_; }
 
 dev::bytes DagManager::getVdfMessage(blk_hash_t const &hash, SharedTransactions const &trxs) {
-  // TODO(rust-rewrite): migrate DAG VDF message encoding to Rust instead of DagManagerOld.
-  return DagManagerOld::getVdfMessage(hash, trxs);
+  std::vector<trx_hash_t> trx_hashes;
+  trx_hashes.reserve(trxs.size());
+  for (const auto &trx : trxs) {
+    trx_hashes.emplace_back(trx->getHash());
+  }
+  return rust_vdf_message(hash, trx_hashes);
 }
 
 dev::bytes DagManager::getVdfMessage(blk_hash_t const &hash, std::vector<trx_hash_t> const &trx_hashes) {
-  // TODO(rust-rewrite): migrate DAG VDF message encoding to Rust instead of DagManagerOld.
-  return DagManagerOld::getVdfMessage(hash, trx_hashes);
+  return rust_vdf_message(hash, trx_hashes);
 }
 
 }  // namespace taraxa

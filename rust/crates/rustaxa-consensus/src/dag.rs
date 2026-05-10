@@ -394,6 +394,27 @@ pub struct DagVdfSortitionPayload {
     pub difficulty: u16,
 }
 
+/// Inputs for constructing and verifying DAG VDF data directly from block RLP.
+///
+/// `DagManager` verifies VDF sortition by:
+/// - building a legacy VRF message from `(block_level, proposal_period_hash)`
+/// - building a VDF message from `(pivot, tx_hashes)`
+/// - validating both signatures/proofs against the embedded payload in `block_rlp`.
+///
+/// This keeps CXX payloads flat and explicit while preserving the legacy
+/// message format in Rust, where canonical RLP bytes are recomputed from the
+/// block data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagVdfSortitionBlockInput {
+    pub block_rlp: Vec<u8>,
+    pub block_level: u64,
+    pub proposal_period_hash: H256,
+    pub vrf_public_key: [u8; 32],
+    pub sortition_params: crate::sortition::SortitionParams,
+    pub sender_eligible_vote_count: u64,
+    pub vdf_sortition_max_vote_count: u64,
+}
+
 /// Derives frontier from a ghost path and current leaves.
 ///
 /// Behavior mirrors legacy DagManager frontier rules:
@@ -751,6 +772,80 @@ pub fn verify_dag_vdf_sortition(
         vdf_status,
         difficulty: payload.difficulty,
         expected_difficulty,
+    })
+}
+
+/// Builds the legacy VRF input message for DAG sortition.
+///
+/// The C++ `VrfSortitionBase::makeVrfInput` uses a default `dev::RLPStream`
+/// and appends `block_level` followed by `proposal_period_hash`. This is a
+/// sequence of two RLP items, not an RLP list.
+pub fn construct_dag_vrf_input(block_level: u64, proposal_period_hash: H256) -> Vec<u8> {
+    let mut stream = rlp::RlpStream::new();
+    stream.append(&block_level);
+    stream.append(&proposal_period_hash);
+    stream.out().to_vec()
+}
+
+/// Builds the legacy VDF message from DAG block pivot and transaction hashes.
+///
+/// The C++ `DagManager::getVdfMessage` uses a default `dev::RLPStream` and
+/// appends the pivot followed by each transaction hash. This is a sequence of
+/// RLP items, not an RLP list.
+pub fn construct_dag_vdf_message(pivot: H256, transaction_hashes: &[H256]) -> Vec<u8> {
+    let mut stream = rlp::RlpStream::new();
+    stream.append(&pivot);
+    for tx_hash in transaction_hashes {
+        stream.append(tx_hash);
+    }
+    stream.out().to_vec()
+}
+
+/// Builds the legacy VDF message from canonical DAG block RLP.
+///
+/// `block_rlp` must be the canonical eight-field DAG block payload. The pivot
+/// and transaction hashes are decoded and then encoded through
+/// `construct_dag_vdf_message`.
+pub fn construct_dag_vdf_message_from_block_rlp(block_rlp: &[u8]) -> Result<Vec<u8>> {
+    let block = DagBlock::try_from(DagBlockRlp::new(block_rlp))
+        .context("decode canonical DAG block RLP for VDF message construction")?;
+    Ok(construct_dag_vdf_message(block.pivot, &block.transactions))
+}
+
+/// Verifies DAG VDF sortition from canonical block payload and high-level sortition
+/// parameters.
+///
+/// Rust re-builds both:
+/// - VRF message from `block_level` + `proposal_period_hash`
+/// - VDF message from `pivot` + `transactions` of `block_rlp`
+///
+/// This path requires explicit `vrf_public_key` and thus always uses embedded
+/// VRF verification. Legacy precomputed-output compatibility should route through
+/// `verify_dag_vdf_sortition` directly.
+pub fn verify_dag_vdf_sortition_from_block(
+    input: DagVdfSortitionBlockInput,
+) -> Result<DagVdfSortitionVerification> {
+    let block = DagBlock::try_from(DagBlockRlp::new(&input.block_rlp))
+        .context("decode canonical DAG block RLP for VDF verification")?;
+    ensure!(
+        block.level == input.block_level,
+        "block level mismatch: input={} block={}",
+        input.block_level,
+        block.level
+    );
+
+    let vrf_input = construct_dag_vrf_input(input.block_level, input.proposal_period_hash);
+    let vdf_input = construct_dag_vdf_message(block.pivot, &block.transactions);
+
+    verify_dag_vdf_sortition(DagVdfSortitionInput {
+        block_rlp: input.block_rlp,
+        vdf_input,
+        sortition_params: input.sortition_params,
+        vrf_output: [0_u8; 64],
+        vrf_public_key: input.vrf_public_key.to_vec(),
+        vrf_input,
+        sender_eligible_vote_count: input.sender_eligible_vote_count,
+        vdf_sortition_max_vote_count: input.vdf_sortition_max_vote_count,
     })
 }
 
@@ -2199,6 +2294,133 @@ mod tests {
         block.append(&&[0u8; 65][..]);
         block.append(&123u64);
         block.out().to_vec()
+    }
+
+    #[test]
+    fn dag_vrf_input_is_legacy_level_and_period_hash_rlp() {
+        let block_level = 12_u64;
+        let proposal_period_hash = h(99);
+        let mut expected = RlpStream::new();
+        expected.append(&block_level);
+        expected.append(&proposal_period_hash);
+
+        assert_eq!(
+            construct_dag_vrf_input(block_level, proposal_period_hash),
+            expected.out().to_vec()
+        );
+    }
+
+    #[test]
+    fn dag_vdf_message_is_pivot_and_transactions_rlp() {
+        let transactions = vec![h(12), h(13)];
+        let mut initial_payload = RlpStream::new_list(4);
+        initial_payload.append(&vec![0x11_u8; 80]);
+        initial_payload.append(&vec![0x22_u8]);
+        initial_payload.append(&vec![0x33_u8]);
+        initial_payload.append(&1u16);
+        let block_rlp = dag_block_rlp_with_vdf(initial_payload.out().to_vec(), &transactions);
+
+        let mut expected = RlpStream::new();
+        expected.append(&h(1));
+        for tx in &transactions {
+            expected.append(tx);
+        }
+
+        assert_eq!(
+            construct_dag_vdf_message_from_block_rlp(&block_rlp).unwrap(),
+            expected.out().to_vec()
+        );
+    }
+
+    #[test]
+    fn dag_vdf_sortition_from_block_verifies_embedded_inputs() {
+        let proposal_period_hash = h(77);
+        let transactions = vec![h(12), h(13)];
+        let block_level = 7_u64;
+        let sortition_params = LegacySortitionParams {
+            vrf_threshold_upper: 0x5ff,
+            vdf_difficulty_min: 5,
+            vdf_difficulty_max: 10,
+            vdf_difficulty_stale: 9,
+            vdf_lambda_bound: 64,
+        };
+        let sortition_params_for_input = crate::sortition::SortitionParams {
+            vrf: crate::sortition::VrfParams {
+                threshold_upper: 0x5ff,
+            },
+            vdf: crate::sortition::VdfParams {
+                difficulty_min: 5,
+                difficulty_max: 10,
+                difficulty_stale: 9,
+                lambda_bound: 64,
+            },
+        };
+
+        let placeholder_payload =
+            dag_block_rlp_with_vdf(vdf_payload_rlp(5, vec![1], vec![2]), &transactions);
+        let vdf_input = construct_dag_vdf_message_from_block_rlp(&placeholder_payload).unwrap();
+        let vrf_input = construct_dag_vrf_input(block_level, proposal_period_hash);
+        let proof = sortition::prove_legacy_vdf_sortition(
+            sortition_params,
+            &SECRET_KEY,
+            &vrf_input,
+            &vdf_input,
+            1,
+            1,
+            &CancellationToken::new(),
+        )
+        .expect("proof generation should succeed");
+
+        let mut vdf_payload = RlpStream::new_list(4);
+        vdf_payload.append(&&proof.vrf_proof[..]);
+        vdf_payload.append(&proof.vdf_proof);
+        vdf_payload.append(&proof.vdf_output);
+        vdf_payload.append(&proof.difficulty);
+        let block_rlp = dag_block_rlp_with_vdf(vdf_payload.out().to_vec(), &transactions);
+
+        let result = verify_dag_vdf_sortition_from_block(DagVdfSortitionBlockInput {
+            block_rlp,
+            block_level,
+            proposal_period_hash,
+            vrf_public_key: public_key_from_secret(&SECRET_KEY)
+                .expect("public key from fixed secret"),
+            sortition_params: sortition_params_for_input,
+            sender_eligible_vote_count: 1,
+            vdf_sortition_max_vote_count: 1,
+        })
+        .unwrap();
+
+        assert_eq!(result.vdf_status, DAG_VERIFY_VDF_STATUS_VALID);
+        assert_eq!(result.difficulty, result.expected_difficulty);
+    }
+
+    #[test]
+    fn dag_vdf_sortition_from_block_rejects_level_mismatch() {
+        let transactions = vec![h(12), h(13)];
+        let placeholder_payload =
+            dag_block_rlp_with_vdf(vdf_payload_rlp(5, vec![1], vec![2]), &transactions);
+        let err = verify_dag_vdf_sortition_from_block(DagVdfSortitionBlockInput {
+            block_rlp: placeholder_payload,
+            block_level: 999,
+            proposal_period_hash: h(77),
+            vrf_public_key: [0_u8; 32],
+            sortition_params: crate::sortition::SortitionParams {
+                vrf: crate::sortition::VrfParams {
+                    threshold_upper: 1_000,
+                },
+                vdf: crate::sortition::VdfParams {
+                    difficulty_min: 1,
+                    difficulty_max: 1,
+                    difficulty_stale: 1,
+                    lambda_bound: 6,
+                },
+            },
+            sender_eligible_vote_count: 100,
+            vdf_sortition_max_vote_count: 100,
+        })
+        .expect_err("level mismatch should fail");
+
+        assert!(err.to_string().contains("block level mismatch"));
     }
 
     #[test]

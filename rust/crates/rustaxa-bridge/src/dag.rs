@@ -5,19 +5,21 @@ use crate::ffi::rustaxa_ffi::{
     DagVerifyAuthorizationResult, DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock,
     DagVerifyPrecheckResult, DagVerifyTransactionAvailabilityInput,
     DagVerifyTransactionAvailabilityResult, DagVerifyVdfDposDecision, DagVerifyVdfDposFacts,
-    DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult, DagVerifyVdfSortitionInput,
-    DagVerifyVdfSortitionResult, SortitionRuntimeParams,
+    DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput,
+    DagVerifyVdfSortitionInput, DagVerifyVdfSortitionResult, SortitionRuntimeParams,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
 use anyhow::{ensure, Context, Result};
 use ethereum_types::H256;
 use rustaxa_consensus::dag::{
-    decide_dag_verify_vdf_dpos_authorization, derive_frontier, prepare_dag_verify_vdf,
-    validate_dag_verify_authorization, validate_dag_verify_gas, validate_dag_verify_precheck,
-    validate_dag_verify_transaction_availability, validate_pivot_tips_metadata,
-    verify_dag_vdf_sortition, DagGraph, DagManagerBlock as DomainDagManagerBlock,
+    construct_dag_vdf_message, decide_dag_verify_vdf_dpos_authorization, derive_frontier,
+    prepare_dag_verify_vdf, validate_dag_verify_authorization, validate_dag_verify_gas,
+    validate_dag_verify_precheck, validate_dag_verify_transaction_availability,
+    validate_pivot_tips_metadata, verify_dag_vdf_sortition, verify_dag_vdf_sortition_from_block,
+    DagGraph, DagManagerBlock as DomainDagManagerBlock,
     DagManagerSnapshot as DomainDagManagerSnapshot, DagManagerState,
     DagReferenceMetadata as ReferenceMetadata, DagTipGas,
+    DagVdfSortitionBlockInput as DomainDagVdfSortitionBlockInput,
     DagVdfSortitionInput as DomainDagVdfSortitionInput,
     DagVerifyAuthorizationInput as DomainDagVerifyAuthorizationInput,
     DagVerifyGasInput as DomainDagVerifyGasInput, DagVerifyPrecheckInput,
@@ -660,6 +662,47 @@ pub fn dag_verify_vdf_sortition(
     })
 }
 
+/// Verifies DAG VDF sortition after building canonical legacy messages in Rust.
+///
+/// C++ passes only the block payload and sortition context; Rust rebuilds:
+/// - `vrf_input`: sequential RLP items `block_level`, `proposal_period_hash`
+/// - `vdf_input`: sequential RLP items `pivot`, then each transaction hash
+///
+/// It then verifies the embedded proof using `vrf_public_key`.
+pub fn dag_verify_vdf_sortition_from_block(
+    input: DagVerifyVdfSortitionFromBlockInput,
+) -> Result<DagVerifyVdfSortitionResult> {
+    let result = verify_dag_vdf_sortition_from_block(DomainDagVdfSortitionBlockInput {
+        block_rlp: input.block_rlp,
+        block_level: input.block_level,
+        proposal_period_hash: H256::from(input.proposal_period_hash),
+        vrf_public_key: input.vrf_public_key,
+        sortition_params: to_domain_sortition_params(input.sortition_params),
+        sender_eligible_vote_count: input.sender_eligible_vote_count,
+        vdf_sortition_max_vote_count: input.vdf_sortition_max_vote_count,
+    })?;
+
+    Ok(DagVerifyVdfSortitionResult {
+        vdf_status: result.vdf_status,
+        difficulty: result.difficulty,
+        expected_difficulty: result.expected_difficulty,
+    })
+}
+
+/// Builds the legacy DAG VDF message for a pivot and ordered transaction hashes.
+///
+/// This bridge is used by the C++ DagManager shim to preserve the public
+/// `DagManager::getVdfMessage` API while moving the consensus byte construction
+/// into Rust. The output is a sequence of RLP items, matching legacy C++
+/// `dev::RLPStream << pivot << tx_hash...` behavior.
+pub fn dag_vdf_message(pivot: &[u8; 32], transaction_hashes: Vec<DagHash>) -> Vec<u8> {
+    let hashes = transaction_hashes
+        .into_iter()
+        .map(|hash| H256::from(hash.hash))
+        .collect::<Vec<_>>();
+    construct_dag_vdf_message(H256::from(*pivot), &hashes)
+}
+
 /// Runs deterministic gas decisions for DAG block verification.
 ///
 /// C++ supplies live gas-estimation outputs. This bridge converts those plain
@@ -1232,6 +1275,84 @@ mod tests {
 
         assert_eq!(result.vdf_status, dag::DAG_VERIFY_VDF_STATUS_VALID);
         assert_eq!(result.difficulty, result.expected_difficulty);
+    }
+
+    #[test]
+    fn dag_verify_vdf_sortition_from_block_constructs_and_verifies_embedded_inputs() {
+        let sortition_input = LegacySortitionParams {
+            vrf_threshold_upper: 0x5ff,
+            vdf_difficulty_min: 5,
+            vdf_difficulty_max: 10,
+            vdf_difficulty_stale: 9,
+            vdf_lambda_bound: 64,
+        };
+        let proposal_period_hash = [9u8; 32];
+        let block_level = 1;
+        let vrf_input = dag::construct_dag_vrf_input(block_level, H256::from(proposal_period_hash));
+        let block_rlp = dag_block_with_vdf_payload(vec![0; 0]);
+        let vdf_input = dag::construct_dag_vdf_message_from_block_rlp(&block_rlp)
+            .expect("VDF input should build");
+
+        let proof = sortition::prove_legacy_vdf_sortition(
+            sortition_input,
+            &SECRET_KEY,
+            &vrf_input,
+            &vdf_input,
+            1,
+            1,
+            &CancellationToken::new(),
+        )
+        .expect("proof generation should succeed");
+
+        let mut vdf_payload = RlpStream::new_list(4);
+        vdf_payload.append(&&proof.vrf_proof[..]);
+        vdf_payload.append(&proof.vdf_proof);
+        vdf_payload.append(&proof.vdf_output);
+        vdf_payload.append(&proof.difficulty);
+
+        let block_rlp = dag_block_with_vdf_payload(vdf_payload.out().to_vec());
+        let vrf_public_key =
+            public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
+
+        let result = dag_verify_vdf_sortition_from_block(DagVerifyVdfSortitionFromBlockInput {
+            block_rlp,
+            block_level,
+            proposal_period_hash,
+            sortition_params: SortitionRuntimeParams {
+                threshold_upper: 0x5ff,
+                difficulty_min: 5,
+                difficulty_max: 10,
+                difficulty_stale: 9,
+                lambda_bound: 64,
+            },
+            vrf_public_key,
+            sender_eligible_vote_count: 1,
+            vdf_sortition_max_vote_count: 1,
+        })
+        .expect("embedded bridge verification should succeed");
+
+        assert_eq!(result.vdf_status, dag::DAG_VERIFY_VDF_STATUS_VALID);
+        assert_eq!(result.difficulty, result.expected_difficulty);
+    }
+
+    #[test]
+    fn dag_vdf_message_bridge_uses_legacy_pivot_and_transaction_rlp() {
+        let pivot = [0x11_u8; 32];
+        let tx_hashes = vec![
+            DagHash {
+                hash: [0x22_u8; 32],
+            },
+            DagHash {
+                hash: [0x33_u8; 32],
+            },
+        ];
+
+        let mut expected = RlpStream::new();
+        expected.append(&H256::from(pivot));
+        expected.append(&H256::from(tx_hashes[0].hash));
+        expected.append(&H256::from(tx_hashes[1].hash));
+
+        assert_eq!(dag_vdf_message(&pivot, tx_hashes), expected.out().to_vec());
     }
 
     #[test]
