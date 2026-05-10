@@ -283,6 +283,29 @@ pub struct DagVerifyVdfDposFacts {
     pub dpos_status: u8,
 }
 
+/// DPoS and VRF facts collected for DAG VDF authorization.
+///
+/// Inputs are collected from FinalChain state for one `(proposal_period,
+/// sender)` pair. The optional `vrf_key` is included so the transitional C++
+/// shim can continue running C++ VDF proof verification without repeating VRF
+/// lookup through `KeyManager`.
+///
+/// Output invariants:
+/// - `vrf_key_found` is true exactly when `vrf_key` contains a key.
+/// - `sender_eligible_vote_count` and `vdf_sortition_max_vote_count` are the
+///   vote values to pass to VDF sortition verification when a key exists and a
+///   DPoS snapshot is available.
+/// - `eligibility_status` is a `DAG_VERIFY_DPOS_STATUS_*` value and represents
+///   missing snapshots as data rather than an infrastructure error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagDposAuthorizationFacts {
+    pub vrf_key: Option<[u8; 32]>,
+    pub vrf_key_found: bool,
+    pub sender_eligible_vote_count: u64,
+    pub vdf_sortition_max_vote_count: u64,
+    pub eligibility_status: u8,
+}
+
 /// Decision returned for the VDF and DPoS authorization stage.
 ///
 /// Output invariants:

@@ -1,3 +1,8 @@
+use crate::dag::{
+    DAG_VERIFY_DPOS_STATUS_ELIGIBLE, DAG_VERIFY_DPOS_STATUS_NOT_CHECKED,
+    DAG_VERIFY_DPOS_STATUS_NOT_ELIGIBLE, DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE,
+    DagDposAuthorizationFacts,
+};
 use anyhow::Result;
 use ethereum_types::{H256, U256};
 use keccak_hasher::KeccakHasher;
@@ -261,6 +266,62 @@ impl FinalChain {
         address: [u8; 20],
     ) -> Result<bool, anyhow::Error> {
         Ok(self.dpos_eligible_vote_count(block_number, address)? > 0)
+    }
+
+    /// Collects DagManager authorization facts for the given block and sender.
+    ///
+    /// Missing DPoS snapshots are represented as
+    /// `DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE` so callers can carry the
+    /// failure as data through the staged decision pipeline.
+    pub fn dag_dpos_authorization_facts(
+        &self,
+        block_number: u64,
+        sender: [u8; 20],
+        vdf_sortition_max_vote_count: u64,
+        use_total_vote_count_for_vdf_sortition: bool,
+    ) -> Result<DagDposAuthorizationFacts, anyhow::Error> {
+        let vrf_key = self.vrf_key(sender)?;
+        let vrf_key_found = vrf_key.is_some();
+
+        if !vrf_key_found {
+            return Ok(DagDposAuthorizationFacts {
+                vrf_key,
+                vrf_key_found,
+                sender_eligible_vote_count: 0,
+                vdf_sortition_max_vote_count,
+                eligibility_status: DAG_VERIFY_DPOS_STATUS_NOT_CHECKED,
+            });
+        }
+
+        let Some(snapshot) = self.dpos_snapshot_optional(block_number)? else {
+            return Ok(DagDposAuthorizationFacts {
+                vrf_key,
+                vrf_key_found,
+                sender_eligible_vote_count: 0,
+                vdf_sortition_max_vote_count,
+                eligibility_status: DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE,
+            });
+        };
+
+        let sender_eligible_vote_count = *snapshot.vote_counts.get(&sender).unwrap_or(&0);
+        let effective_vdf_sortition_max_vote_count = if use_total_vote_count_for_vdf_sortition {
+            snapshot.total_vote_count
+        } else {
+            vdf_sortition_max_vote_count
+        };
+        let eligibility_status = if sender_eligible_vote_count > 0 {
+            DAG_VERIFY_DPOS_STATUS_ELIGIBLE
+        } else {
+            DAG_VERIFY_DPOS_STATUS_NOT_ELIGIBLE
+        };
+
+        Ok(DagDposAuthorizationFacts {
+            vrf_key,
+            vrf_key_found,
+            sender_eligible_vote_count,
+            vdf_sortition_max_vote_count: effective_vdf_sortition_max_vote_count,
+            eligibility_status,
+        })
     }
 
     /// Returns validator total stakes at a block, sorted by validator address.
@@ -615,17 +676,24 @@ impl FinalChain {
     /// Missing snapshots are treated as explicit unsupported historical state
     /// rather than falling back to genesis data or C++ state.
     fn dpos_snapshot(&self, block_number: u64) -> Result<DposSnapshot, anyhow::Error> {
-        self.dpos_snapshots
+        self.dpos_snapshot_optional(block_number)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Rust FinalChain DPoS snapshot for block {} is not implemented",
+                block_number
+            )
+        })
+    }
+
+    fn dpos_snapshot_optional(
+        &self,
+        block_number: u64,
+    ) -> Result<Option<DposSnapshot>, anyhow::Error> {
+        Ok(self
+            .dpos_snapshots
             .lock()
             .map_err(|_| anyhow::anyhow!("final-chain DPoS snapshot lock poisoned"))?
             .get(&block_number)
-            .cloned()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Rust FinalChain DPoS snapshot for block {} is not implemented",
-                    block_number
-                )
-            })
+            .cloned())
     }
 
     /// Performs the account and intrinsic-gas checks needed before a read-only call.
@@ -1636,6 +1704,77 @@ mod tests {
             .dpos_validators_eligible_vote_counts(1)
             .expect_err("expected missing non-genesis DPoS snapshot");
         assert!(err.to_string().contains("snapshot for block 1"));
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn dpos_authorization_facts_reflect_genesis_and_eligibility_state() {
+        let path = temp_db_path("dpos-authorization-facts");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let eligible = [0x61; 20];
+        let ineligible = [0x62; 20];
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![
+                genesis_validator(eligible, U256::from(10_000u64)),
+                genesis_validator(ineligible, U256::from(999u64)),
+            ],
+            U256::from(1_000u64),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+
+        let facts = final_chain
+            .dag_dpos_authorization_facts(0, eligible, 30, true)
+            .expect("authorization facts should be available for genesis");
+        assert!(facts.vrf_key_found);
+        assert_eq!(facts.vrf_key, Some([0x61; 32]));
+        assert_eq!(facts.sender_eligible_vote_count, 10);
+        assert_eq!(facts.vdf_sortition_max_vote_count, 10);
+        assert_eq!(facts.eligibility_status, DAG_VERIFY_DPOS_STATUS_ELIGIBLE);
+
+        let facts = final_chain
+            .dag_dpos_authorization_facts(0, ineligible, 30, false)
+            .expect("authorization facts should be available for genesis");
+        assert!(facts.vrf_key_found);
+        assert_eq!(facts.sender_eligible_vote_count, 0);
+        assert_eq!(facts.vdf_sortition_max_vote_count, 30);
+        assert_eq!(
+            facts.eligibility_status,
+            DAG_VERIFY_DPOS_STATUS_NOT_ELIGIBLE
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn dpos_authorization_facts_maps_missing_snapshot_to_unavailable_status() {
+        let path = temp_db_path("dpos-authorization-facts-missing-snapshot");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x63; 20];
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            U256::from(1_000u64),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+
+        let facts = final_chain
+            .dag_dpos_authorization_facts(1, validator, 30, true)
+            .expect("authorization facts should return unavailable status instead of error");
+        assert!(facts.vrf_key_found);
+        assert_eq!(facts.sender_eligible_vote_count, 0);
+        assert_eq!(facts.vdf_sortition_max_vote_count, 30);
+        assert_eq!(
+            facts.eligibility_status, DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE,
+            "missing snapshot must be carried as data"
+        );
 
         drop(final_chain);
         drop(storage);

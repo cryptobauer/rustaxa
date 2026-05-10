@@ -468,6 +468,15 @@ pub mod rustaxa_ffi {
         dpos_status: u8,
     }
 
+    /// Rust-collected DPoS and VRF facts for DAG authorization.
+    struct DagDposAuthorizationFacts {
+        vrf_key_found: bool,
+        vrf_key: Vec<u8>,
+        sender_eligible_vote_count: u64,
+        vdf_sortition_max_vote_count: u64,
+        eligibility_status: u8,
+    }
+
     /// Rust VDF and DPoS authorization decision.
     struct DagVerifyVdfDposDecision {
         continue_validation: bool,
@@ -1249,6 +1258,13 @@ pub mod rustaxa_ffi {
             block_number: u64,
             address: &[u8; 20],
         ) -> Result<bool>;
+        pub fn get_dag_dpos_authorization_facts(
+            self: &BridgeFinalChain,
+            block_number: u64,
+            sender: &[u8; 20],
+            vdf_sortition_max_vote_count: u64,
+            use_total_vote_count_for_vdf_sortition: bool,
+        ) -> Result<DagDposAuthorizationFacts>;
         pub fn get_dpos_validators_total_stakes(
             self: &BridgeFinalChain,
             block_number: u64,

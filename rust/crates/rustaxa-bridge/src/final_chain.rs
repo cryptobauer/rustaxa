@@ -160,6 +160,36 @@ impl BridgeFinalChain {
         self.0.dpos_is_eligible(block_number, *address)
     }
 
+    /// Returns DagManager authorization facts for staged VDF/DPoS checks.
+    ///
+    /// Missing DPoS snapshots are surfaced as
+    /// `DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE` in the returned payload,
+    /// while other FinalChain errors remain hard failures.
+    pub fn get_dag_dpos_authorization_facts(
+        self: &BridgeFinalChain,
+        block_number: u64,
+        sender: &[u8; 20],
+        vdf_sortition_max_vote_count: u64,
+        use_total_vote_count_for_vdf_sortition: bool,
+    ) -> Result<rustaxa_ffi::DagDposAuthorizationFacts, anyhow::Error> {
+        let facts = self.0.dag_dpos_authorization_facts(
+            block_number,
+            *sender,
+            vdf_sortition_max_vote_count,
+            use_total_vote_count_for_vdf_sortition,
+        )?;
+        Ok(rustaxa_ffi::DagDposAuthorizationFacts {
+            vrf_key_found: facts.vrf_key_found,
+            vrf_key: facts
+                .vrf_key
+                .map(|vrf_key| vrf_key.to_vec())
+                .unwrap_or_default(),
+            sender_eligible_vote_count: facts.sender_eligible_vote_count,
+            vdf_sortition_max_vote_count: facts.vdf_sortition_max_vote_count,
+            eligibility_status: facts.eligibility_status,
+        })
+    }
+
     pub fn get_dpos_validators_total_stakes(
         self: &BridgeFinalChain,
         block_number: u64,
@@ -290,5 +320,105 @@ impl BridgeFinalChain {
             .0
             .transaction_receipt_rlp(period, position)?
             .unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::create_storage;
+    use rustaxa_consensus::dag;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn u256_be(value: u64) -> Vec<u8> {
+        let bytes = value.to_be_bytes();
+        let first_nonzero = bytes
+            .iter()
+            .position(|byte| *byte != 0)
+            .unwrap_or(bytes.len());
+        bytes[first_nonzero..].to_vec()
+    }
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let now_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after UNIX_EPOCH")
+            .as_nanos();
+        let process_id = std::process::id();
+        std::env::temp_dir().join(format!("{prefix}_{process_id}_{now_ns}"))
+    }
+
+    fn genesis_validator(address: [u8; 20], stake: u64) -> rustaxa_ffi::GenesisValidator {
+        rustaxa_ffi::GenesisValidator {
+            address,
+            owner: [0u8; 20],
+            vrf_key: [address[0]; 32],
+            commission: 0,
+            description: "".to_string(),
+            endpoint: "".to_string(),
+            total_stake: u256_be(stake),
+        }
+    }
+
+    fn make_final_chain(
+        storage_path: &str,
+        genesis_validators: Vec<rustaxa_ffi::GenesisValidator>,
+    ) -> Box<BridgeFinalChain> {
+        let storage = create_storage(storage_path).expect("storage should initialize");
+        create_final_chain(
+            &storage,
+            0,
+            0,
+            vec![],
+            genesis_validators,
+            rustaxa_ffi::GenesisDposConfig {
+                eligibility_balance_threshold: u256_be(1_000),
+                vote_eligibility_balance_step: u256_be(1_000),
+                validator_maximum_stake: u256_be(30_000),
+            },
+        )
+        .expect("final chain should initialize")
+    }
+
+    #[test]
+    fn bridge_get_dpos_authorization_facts_prefers_snapshot_status() {
+        let validator = [0xA1u8; 20];
+        let ineligible = [0xA2u8; 20];
+        let temp_dir = unique_temp_dir("rustaxa_bridge_final_chain_authorization_facts");
+        let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
+        let final_chain = make_final_chain(
+            storage_path,
+            vec![
+                genesis_validator(validator, 10_000),
+                genesis_validator(ineligible, 999),
+            ],
+        );
+        let eligible = final_chain
+            .get_dag_dpos_authorization_facts(0, &validator, 30, true)
+            .expect("eligible facts should be available");
+        assert!(eligible.vrf_key_found);
+        assert_eq!(eligible.vrf_key, vec![0xA1; 32]);
+        assert_eq!(eligible.sender_eligible_vote_count, 10);
+        assert_eq!(eligible.vdf_sortition_max_vote_count, 10);
+        assert_eq!(
+            eligible.eligibility_status,
+            dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE
+        );
+
+        let missing_snapshot = final_chain
+            .get_dag_dpos_authorization_facts(1, &validator, 30, true)
+            .expect("snapshot should return unavailable status as data");
+        assert!(missing_snapshot.vrf_key_found);
+        assert_eq!(missing_snapshot.sender_eligible_vote_count, 0);
+        assert_eq!(missing_snapshot.vdf_sortition_max_vote_count, 30);
+        assert_eq!(
+            missing_snapshot.eligibility_status,
+            dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE
+        );
+
+        drop(final_chain);
+        let _ = fs::remove_dir_all(temp_dir);
     }
 }

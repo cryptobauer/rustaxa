@@ -24,8 +24,6 @@ constexpr uint8_t kDagVerifyVdfStatusValid = 1;
 constexpr uint8_t kDagVerifyVdfStatusInvalid = 2;
 constexpr uint8_t kDagVerifyDposStatusNotChecked = 0;
 constexpr uint8_t kDagVerifyDposStatusSnapshotUnavailable = 1;
-constexpr uint8_t kDagVerifyDposStatusEligible = 2;
-constexpr uint8_t kDagVerifyDposStatusNotEligible = 3;
 
 std::array<uint8_t, 32> to_bridge_hash(const blk_hash_t &hash) { return hash.asArray(); }
 
@@ -337,52 +335,45 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
     return {*reject, {}};
   }
 
-  const auto pk = key_manager_->getVrfKey(proposal_period, blk->getSender());
-  const auto vrf_key_found = static_cast<bool>(pk);
-  uint64_t sender_eligible_vote_count = 0;
-  uint64_t vdf_sortition_max_vote_count = validator_max_vote_;
-  bool dpos_snapshot_available = true;
-  if (pk) {
-    try {
-      sender_eligible_vote_count = final_chain_->dposEligibleVoteCount(proposal_period, blk->getSender());
-      if (proposal_period < genesis_config_.state.hardforks.magnolia_hf.block_num) {
-        vdf_sortition_max_vote_count = final_chain_->dposEligibleTotalVoteCount(proposal_period);
-      }
-    } catch (state_api::ErrFutureBlock &) {
-      dpos_snapshot_available = false;
-    }
-  }
+  const bool fetch_total_vote_count = proposal_period < genesis_config_.state.hardforks.magnolia_hf.block_num;
+  const auto authorization_facts = final_chain_->dagDposAuthorizationFacts(proposal_period, blk->getSender(),
+                                                                           validator_max_vote_, fetch_total_vote_count);
+  const bool vrf_key_found = authorization_facts.vrf_key_found;
+  const uint64_t sender_eligible_vote_count = authorization_facts.sender_eligible_vote_count;
+  const uint64_t vdf_sortition_max_vote_count = authorization_facts.vdf_sortition_max_vote_count;
+  const uint8_t eligibility_status = authorization_facts.eligibility_status;
 
   if (const auto reject = decide_vdf_dpos_authorization(to_bridge_vdf_dpos_facts(
           vrf_key_found, sender_eligible_vote_count, vdf_sortition_max_vote_count, kDagVerifyVdfStatusNotChecked,
-          dpos_snapshot_available ? kDagVerifyDposStatusNotChecked : kDagVerifyDposStatusSnapshotUnavailable));
+          eligibility_status == kDagVerifyDposStatusSnapshotUnavailable ? kDagVerifyDposStatusSnapshotUnavailable
+                                                                        : kDagVerifyDposStatusNotChecked));
       reject.has_value()) {
     return {*reject, {}};
   }
 
   uint8_t vdf_status = kDagVerifyVdfStatusValid;
-  try {
-    const auto proposal_period_hash = db_->getPeriodBlockHash(proposal_period);
-    blk->verifyVdf(sortition_params_manager_.getSortitionParams(proposal_period), proposal_period_hash, *pk,
-                   sender_eligible_vote_count, vdf_sortition_max_vote_count);
-  } catch (vdf_sortition::VdfSortition::InvalidVdfSortition const &) {
-    vdf_status = kDagVerifyVdfStatusInvalid;
+  if (vrf_key_found) {
+    try {
+      const vrf_wrapper::vrf_pk_t vrf_key(
+          dev::bytes(authorization_facts.vrf_key.begin(), authorization_facts.vrf_key.end()));
+      const auto proposal_period_hash = db_->getPeriodBlockHash(proposal_period);
+      blk->verifyVdf(sortition_params_manager_.getSortitionParams(proposal_period), proposal_period_hash, vrf_key,
+                     sender_eligible_vote_count, vdf_sortition_max_vote_count);
+    } catch (vdf_sortition::VdfSortition::InvalidVdfSortition const &) {
+      vdf_status = kDagVerifyVdfStatusInvalid;
+    }
   }
   if (const auto reject = decide_vdf_dpos_authorization(to_bridge_vdf_dpos_facts(
-          true, sender_eligible_vote_count, vdf_sortition_max_vote_count, vdf_status, kDagVerifyDposStatusNotChecked));
+          true, sender_eligible_vote_count, vdf_sortition_max_vote_count, vdf_status,
+          eligibility_status == kDagVerifyDposStatusSnapshotUnavailable ? kDagVerifyDposStatusSnapshotUnavailable
+                                                                        : kDagVerifyDposStatusNotChecked));
       reject.has_value()) {
     return {*reject, {}};
   }
 
-  uint8_t dpos_status = kDagVerifyDposStatusNotEligible;
-  try {
-    dpos_status = final_chain_->dposIsEligible(proposal_period, blk->getSender()) ? kDagVerifyDposStatusEligible
-                                                                                  : kDagVerifyDposStatusNotEligible;
-  } catch (state_api::ErrFutureBlock &) {
-    dpos_status = kDagVerifyDposStatusSnapshotUnavailable;
-  }
-  if (const auto reject = decide_vdf_dpos_authorization(to_bridge_vdf_dpos_facts(
-          true, sender_eligible_vote_count, vdf_sortition_max_vote_count, kDagVerifyVdfStatusValid, dpos_status));
+  if (const auto reject = decide_vdf_dpos_authorization(
+          to_bridge_vdf_dpos_facts(true, sender_eligible_vote_count, vdf_sortition_max_vote_count,
+                                   kDagVerifyVdfStatusValid, eligibility_status));
       reject.has_value()) {
     return {*reject, {}};
   }

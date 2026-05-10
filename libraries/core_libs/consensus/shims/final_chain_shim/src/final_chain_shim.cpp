@@ -20,7 +20,9 @@ std::array<uint8_t, 20> into_address_array(const addr_t& address) {
   return bytes;
 }
 
-addr_t into_address(const std::array<uint8_t, 20>& address) { return addr_t(dev::bytes(address.begin(), address.end())); }
+addr_t into_address(const std::array<uint8_t, 20>& address) {
+  return addr_t(dev::bytes(address.begin(), address.end()));
+}
 
 rust::Vec<uint8_t> into_rust_vec(const dev::bytes& bytes) {
   rust::Vec<uint8_t> vec;
@@ -184,16 +186,15 @@ void FinalChain::stop() {}
 
 EthBlockNumber FinalChain::delegationDelay() const { return delegation_delay_; }
 
-std::future<std::shared_ptr<const FinalizationResult>> FinalChain::finalize(PeriodData&& period_data,
-                                                                            std::vector<h256>&& finalized_dag_blk_hashes,
-                                                                            uint32_t,
-                                                                            std::shared_ptr<DagBlock>&& anchor) {
+std::future<std::shared_ptr<const FinalizationResult>> FinalChain::finalize(
+    PeriodData&& period_data, std::vector<h256>&& finalized_dag_blk_hashes, uint32_t,
+    std::shared_ptr<DagBlock>&& anchor) {
   if (anchor) {
     return ready_unimplemented_finalization_result("finalize(anchor)");
   }
-  auto outcome = rust_final_chain_.value()->finalize_block(
-      into_rust_vec(period_data.pbft_blk->rlp(true)), make_finalization_transactions(period_data.transactions),
-      make_finalization_dag_blocks(period_data.dag_blocks));
+  auto outcome = rust_final_chain_.value()->finalize_block(into_rust_vec(period_data.pbft_blk->rlp(true)),
+                                                           make_finalization_transactions(period_data.transactions),
+                                                           make_finalization_dag_blocks(period_data.dag_blocks));
   auto header_data = into_string(outcome.block_header_rlp);
   auto header = BlockHeader::fromRLP(dev::RLP(header_data));
   TransactionReceipts receipts;
@@ -370,6 +371,13 @@ std::string FinalChain::trace(std::vector<state_api::EVMTransaction>, std::vecto
 
 uint64_t FinalChain::dposEligibleTotalVoteCount(EthBlockNumber blk_num) const {
   return rust_final_chain_.value()->get_dpos_eligible_total_vote_count(blk_num);
+}
+
+rustaxa::DagDposAuthorizationFacts FinalChain::dagDposAuthorizationFacts(
+    EthBlockNumber blk_num, const addr_t& addr, uint64_t vdf_sortition_max_vote_count,
+    bool use_total_vote_count_for_vdf_sortition) const {
+  return rust_final_chain_.value()->get_dag_dpos_authorization_facts(
+      blk_num, into_address_array(addr), vdf_sortition_max_vote_count, use_total_vote_count_for_vdf_sortition);
 }
 
 uint64_t FinalChain::dposEligibleVoteCount(EthBlockNumber blk_num, addr_t const& addr) const {
