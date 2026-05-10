@@ -10,6 +10,7 @@ keccak-hasher = "0.15.3"
 rlp = "0.6"
 rustaxa-storage = { version = "0.1.0", path = "../rustaxa-storage" }
 rustaxa-types = { version = "0.1.0", path = "../rustaxa-types" }
+rustaxa-vdf = { version = "0.1.0", path = "../rustaxa-vdf" }
 tiny-keccak = { version = "2.0", features = ["keccak"] }
 triehash = "0.8.4"
 

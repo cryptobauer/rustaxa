@@ -5,23 +5,27 @@ use crate::ffi::rustaxa_ffi::{
     DagVerifyAuthorizationResult, DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock,
     DagVerifyPrecheckResult, DagVerifyTransactionAvailabilityInput,
     DagVerifyTransactionAvailabilityResult, DagVerifyVdfDposDecision, DagVerifyVdfDposFacts,
-    DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult,
+    DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult, DagVerifyVdfSortitionInput,
+    DagVerifyVdfSortitionResult, SortitionRuntimeParams,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
 use anyhow::{ensure, Context, Result};
 use ethereum_types::H256;
 use rustaxa_consensus::dag::{
-    decide_dag_verify_vdf_dpos_authorization, derive_frontier, prepare_dag_verify_vdf,
-    validate_dag_verify_authorization, validate_dag_verify_gas, validate_dag_verify_precheck,
-    validate_dag_verify_transaction_availability, validate_pivot_tips_metadata, DagGraph,
+    decide_dag_verify_vdf_dpos_authorization, derive_frontier, extract_dag_vdf_vrf_proof,
+    prepare_dag_verify_vdf, validate_dag_verify_authorization, validate_dag_verify_gas,
+    validate_dag_verify_precheck, validate_dag_verify_transaction_availability,
+    validate_pivot_tips_metadata, verify_dag_vdf_sortition, DagGraph,
     DagManagerBlock as DomainDagManagerBlock, DagManagerSnapshot as DomainDagManagerSnapshot,
     DagManagerState, DagReferenceMetadata as ReferenceMetadata, DagTipGas,
+    DagVdfSortitionInput as DomainDagVdfSortitionInput,
     DagVerifyAuthorizationInput as DomainDagVerifyAuthorizationInput,
     DagVerifyGasInput as DomainDagVerifyGasInput, DagVerifyPrecheckInput,
     DagVerifyTransactionAvailabilityInput as DomainDagVerifyTransactionAvailabilityInput,
     DagVerifyVdfDposFacts as DomainDagVerifyVdfDposFacts,
     DagVerifyVdfPrepareInput as DomainDagVerifyVdfPrepareInput,
 };
+use rustaxa_consensus::sortition::{SortitionParams, VdfParams, VrfParams};
 use rustaxa_storage::StatusField;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -608,6 +612,41 @@ pub fn dag_decide_vdf_dpos_authorization(facts: DagVerifyVdfDposFacts) -> DagVer
     }
 }
 
+/// Extracts the VRF proof embedded in a canonical DAG block RLP payload.
+///
+/// This transitional bridge lets the DagManager shim keep VRF proof
+/// verification in the existing C++ VRF wrapper while Rust owns VDF sortition
+/// payload decoding and proof verification. Malformed RLP is returned as an
+/// infrastructure error because the bridge contract could not be decoded.
+pub fn dag_vdf_vrf_proof(block_rlp: Vec<u8>) -> Result<Vec<u8>> {
+    Ok(extract_dag_vdf_vrf_proof(&block_rlp)?.to_vec())
+}
+
+/// Verifies DAG VDF proof and difficulty against a verified VRF output.
+///
+/// Invalid peer data returns `vdf_status = INVALID`; malformed bridge payloads
+/// such as wrong VRF-output length return `Err` because the C++/Rust contract
+/// itself is not satisfiable.
+pub fn dag_verify_vdf_sortition(
+    input: DagVerifyVdfSortitionInput,
+) -> Result<DagVerifyVdfSortitionResult> {
+    let vrf_output = to_vrf_output(input.vrf_output)?;
+    let result = verify_dag_vdf_sortition(DomainDagVdfSortitionInput {
+        block_rlp: input.block_rlp,
+        vdf_input: input.vdf_input,
+        sortition_params: to_domain_sortition_params(input.sortition_params),
+        vrf_output,
+        sender_eligible_vote_count: input.sender_eligible_vote_count,
+        vdf_sortition_max_vote_count: input.vdf_sortition_max_vote_count,
+    })?;
+
+    Ok(DagVerifyVdfSortitionResult {
+        vdf_status: result.vdf_status,
+        difficulty: result.difficulty,
+        expected_difficulty: result.expected_difficulty,
+    })
+}
+
 /// Runs deterministic gas decisions for DAG block verification.
 ///
 /// C++ supplies live gas-estimation outputs. This bridge converts those plain
@@ -636,6 +675,32 @@ pub fn dag_verify_gas(input: DagVerifyGasInput) -> Result<DagVerifyGasResult> {
 
 fn to_h256(hash: &[u8; 32]) -> H256 {
     H256::from(*hash)
+}
+
+fn to_domain_sortition_params(params: SortitionRuntimeParams) -> SortitionParams {
+    SortitionParams {
+        vrf: VrfParams {
+            threshold_upper: params.threshold_upper,
+        },
+        vdf: VdfParams {
+            difficulty_min: params.difficulty_min,
+            difficulty_max: params.difficulty_max,
+            difficulty_stale: params.difficulty_stale,
+            lambda_bound: params.lambda_bound,
+        },
+    }
+}
+
+fn to_vrf_output(vrf_output: Vec<u8>) -> Result<[u8; 64]> {
+    const VRF_OUTPUT_BYTES: usize = 64;
+
+    ensure!(
+        vrf_output.len() == VRF_OUTPUT_BYTES,
+        "VRF output must be 64 bytes"
+    );
+    let mut out = [0_u8; VRF_OUTPUT_BYTES];
+    out.copy_from_slice(&vrf_output);
+    Ok(out)
 }
 
 fn to_dag_hashes(hashes: Vec<H256>) -> Vec<DagHash> {
@@ -687,6 +752,8 @@ fn to_domain_snapshot(snapshot: DagManagerSnapshot) -> DomainDagManagerSnapshot 
 mod tests {
     use super::*;
     use crate::storage::create_storage;
+    use rlp::RlpStream;
+    use rustaxa_consensus::dag;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -700,6 +767,19 @@ mod tests {
             .as_nanos();
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!("{}_{}_{}", prefix, now_ns, id))
+    }
+
+    fn dag_block_with_vdf_payload(vdf_payload: Vec<u8>) -> Vec<u8> {
+        let mut block = RlpStream::new_list(8);
+        block.append(&&[0u8; 32][..]);
+        block.append(&1u64);
+        block.append(&0u64);
+        block.append(&vdf_payload);
+        block.begin_list(0);
+        block.begin_list(0);
+        block.append(&&[0u8; 65][..]);
+        block.append(&123u64);
+        block.out().to_vec()
     }
 
     #[test]
@@ -1043,5 +1123,71 @@ mod tests {
         assert_eq!(combined_continues.reject_code, 0);
         assert_eq!(combined_continues.vote_count, 12);
         assert_eq!(combined_continues.max_vote_count, 77);
+    }
+
+    #[test]
+    fn dag_vdf_vrf_proof_and_sortition_bridge_verification() {
+        let mut vdf_payload = RlpStream::new_list(4);
+        vdf_payload.append(&vec![0x11u8; 80]);
+        vdf_payload.append(&vec![0x22u8]);
+        vdf_payload.append(&vec![0x33u8]);
+        vdf_payload.append(&1u16);
+
+        let block_rlp = dag_block_with_vdf_payload(vdf_payload.out().to_vec());
+
+        let vrf_proof = dag_vdf_vrf_proof(block_rlp.clone()).expect("VRF proof should parse");
+        assert_eq!(vrf_proof.len(), 80);
+
+        let result = dag_verify_vdf_sortition(DagVerifyVdfSortitionInput {
+            block_rlp,
+            vdf_input: vec![0x01],
+            sortition_params: SortitionRuntimeParams {
+                threshold_upper: 1000,
+                difficulty_min: 1,
+                difficulty_max: 1,
+                difficulty_stale: 1,
+                lambda_bound: 6,
+            },
+            vrf_output: vec![0u8; 64],
+            sender_eligible_vote_count: 100,
+            vdf_sortition_max_vote_count: 100,
+        })
+        .expect("verification should return a result");
+
+        assert_eq!(result.vdf_status, dag::DAG_VERIFY_VDF_STATUS_INVALID);
+        assert_eq!(result.difficulty, 1);
+        assert_eq!(result.expected_difficulty, 1);
+    }
+
+    #[test]
+    fn dag_verify_vdf_sortition_rejects_invalid_vrf_output_shape() {
+        let mut vdf_payload = RlpStream::new_list(4);
+        vdf_payload.append(&vec![0x11u8; 80]);
+        vdf_payload.append(&vec![0x22u8]);
+        vdf_payload.append(&vec![0x33u8]);
+        vdf_payload.append(&1u16);
+
+        let err = match dag_verify_vdf_sortition(DagVerifyVdfSortitionInput {
+            block_rlp: dag_block_with_vdf_payload(vdf_payload.out().to_vec()),
+            vdf_input: vec![0x01],
+            sortition_params: SortitionRuntimeParams {
+                threshold_upper: 1000,
+                difficulty_min: 1,
+                difficulty_max: 1,
+                difficulty_stale: 1,
+                lambda_bound: 6,
+            },
+            vrf_output: vec![0u8; 63],
+            sender_eligible_vote_count: 100,
+            vdf_sortition_max_vote_count: 100,
+        }) {
+            Ok(_) => panic!("invalid VRF output shape should fail"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.to_string().contains("VRF output must be 64 bytes"),
+            "unexpected error: {err}"
+        );
     }
 }

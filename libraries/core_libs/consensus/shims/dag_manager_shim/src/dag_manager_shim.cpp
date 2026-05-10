@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/vrf_wrapper.hpp"
 #include "dag/dag_block.hpp"
 #include "dag/dag_manager.hpp"
 #include "key_manager/key_manager.hpp"
@@ -82,6 +83,47 @@ rust::Vec<uint8_t> to_rust_vec(const dev::bytes &bytes) {
     out.push_back(byte);
   }
   return out;
+}
+
+dev::bytes from_rust_bytes(const rust::Vec<uint8_t> &bytes) {
+  dev::bytes out;
+  out.reserve(bytes.size());
+  for (const auto byte : bytes) {
+    out.push_back(byte);
+  }
+  return out;
+}
+
+rustaxa::SortitionRuntimeParams to_bridge_sortition_params(const SortitionParams &params) {
+  rustaxa::SortitionRuntimeParams out;
+  out.threshold_upper = params.vrf.threshold_upper;
+  out.difficulty_min = params.vdf.difficulty_min;
+  out.difficulty_max = params.vdf.difficulty_max;
+  out.difficulty_stale = params.vdf.difficulty_stale;
+  out.lambda_bound = params.vdf.lambda_bound;
+  return out;
+}
+
+rustaxa::DagVerifyVdfSortitionInput to_bridge_vdf_sortition_input(
+    dev::bytes block_rlp, dev::bytes vdf_input, SortitionParams const &sortition_params, dev::bytes vrf_output,
+    uint64_t sender_eligible_vote_count, uint64_t vdf_sortition_max_vote_count) {
+  rustaxa::DagVerifyVdfSortitionInput out;
+  out.block_rlp = to_rust_vec(block_rlp);
+  out.vdf_input = to_rust_vec(vdf_input);
+  out.sortition_params = to_bridge_sortition_params(sortition_params);
+  out.vrf_output = to_rust_vec(vrf_output);
+  out.sender_eligible_vote_count = sender_eligible_vote_count;
+  out.vdf_sortition_max_vote_count = vdf_sortition_max_vote_count;
+  return out;
+}
+
+dev::bytes vdf_message_for_block(const std::shared_ptr<DagBlock> &block) {
+  dev::RLPStream stream;
+  stream << block->getPivot();
+  for (const auto &transaction_hash : block->getTrxs()) {
+    stream << transaction_hash;
+  }
+  return stream.invalidate();
 }
 
 rustaxa::DagVerifyPrecheckBlock to_bridge_verify_precheck_block(const std::shared_ptr<DagBlock> &block) {
@@ -357,9 +399,21 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
       const vrf_wrapper::vrf_pk_t vrf_key(
           dev::bytes(authorization_facts.vrf_key.begin(), authorization_facts.vrf_key.end()));
       const auto proposal_period_hash = db_->getPeriodBlockHash(proposal_period);
-      blk->verifyVdf(sortition_params_manager_.getSortitionParams(proposal_period), proposal_period_hash, vrf_key,
-                     sender_eligible_vote_count, vdf_sortition_max_vote_count);
-    } catch (vdf_sortition::VdfSortition::InvalidVdfSortition const &) {
+      const auto block_rlp = blk->rlp(true);
+      const auto vrf_proof_bytes = from_rust_bytes(rustaxa::dag_vdf_vrf_proof(to_rust_vec(block_rlp)));
+      const vrf_wrapper::vrf_proof_t vrf_proof(vrf_proof_bytes);
+      const auto vrf_input = vrf_wrapper::VrfSortitionBase::makeVrfInput(blk->getLevel(), proposal_period_hash);
+      const auto vrf_output = vrf_wrapper::getVrfOutput(vrf_key, vrf_proof, vrf_input);
+      if (vrf_output) {
+        const auto sortition_params = sortition_params_manager_.getSortitionParams(proposal_period);
+        const auto vdf_result = rustaxa::dag_verify_vdf_sortition(to_bridge_vdf_sortition_input(
+            block_rlp, vdf_message_for_block(blk), sortition_params, vrf_output->asBytes(), sender_eligible_vote_count,
+            vdf_sortition_max_vote_count));
+        vdf_status = vdf_result.vdf_status;
+      } else {
+        vdf_status = kDagVerifyVdfStatusInvalid;
+      }
+    } catch (std::exception const &) {
       vdf_status = kDagVerifyVdfStatusInvalid;
     }
   }

@@ -319,7 +319,8 @@ The current Rust starting point is intentionally small:
 - `rustaxa-consensus` contains early FinalChain read/index logic, Rust-backed DAG graph state, Rust-backed
   sortition efficiency/threshold runtime state, Rust-backed PBFT chain head/validation state, and Rust-backed
   proposed PBFT block cache, period-data queue metadata state, and DagManager `verifyBlock` deterministic reject
-  decisions for prechecks, transaction availability, VDF/DPoS authorization ordering, and gas policy.
+  decisions for prechecks, transaction availability, DAG VDF payload/difficulty/proof verification, DPoS
+  authorization ordering, and gas policy.
 - `rustaxa-types` contains shared Rust domain and codec types.
 - `rustaxa-storage` contains storage repositories that consensus should use through narrow ports.
 
@@ -331,8 +332,9 @@ The current Rust starting point is intentionally small:
 4. Port DAG graph operations before broader `DagManager` orchestration: pivot/tip availability, ghost path, ordering,
    counters, storage-facing queries, and deterministic `verifyBlock` reject decisions.
 5. Define Rust ports for DPoS eligibility, eligible vote count, total vote count, and VRF key access. The current
-   `DagManager` shim now gets those DPoS/VRF facts from a Rust FinalChain bridge bundle and still supplies the C++ VDF
-   status while Rust owns the explicit status-coded VDF/DPoS fact envelope and reject ordering.
+   `DagManager` shim now gets those DPoS/VRF facts from a Rust FinalChain bridge bundle, derives the temporary VRF
+   output through C++, and routes the DAG VDF payload decode, difficulty calculation, legacy-modulus Wesolowski proof
+   check, status-coded VDF/DPoS fact envelope, and reject ordering through Rust.
 6. Replace the temporary `dposIsEligible` shim behavior once the eligibility port has a real implementation.
 7. Finish the PBFT support slice by adding broader manager-level validation around the now Rust-backed primitives:
    `PbftChain` head updates, persisted-head preview, and next-block validation route through Rust under

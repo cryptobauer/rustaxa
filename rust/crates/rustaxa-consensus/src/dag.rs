@@ -1,5 +1,10 @@
 use anyhow::{Context, Result, bail, ensure};
 use ethereum_types::H256;
+use rlp::Rlp;
+use rustaxa_types::codec::rlp::dag::DagBlockRlp;
+use rustaxa_types::dag::DagBlock;
+use rustaxa_vdf::vdf::{Solution as VdfSolution, WesolowskiVdf};
+use rustaxa_vdf::verifier::WesolowskiVerifier;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
@@ -324,6 +329,64 @@ pub struct DagVerifyVdfDposDecision {
     pub max_vote_count: u64,
 }
 
+/// Consensus-specific DAG VDF sortition verification input.
+///
+/// Inputs:
+/// - `block_rlp`: canonical eight-field DAG block RLP, including transactions
+///   and the embedded VDF sortition payload.
+/// - `vdf_input`: canonical VDF message bytes used by the block proposer.
+/// - `sortition_params`: runtime sortition parameters for the proposal period.
+/// - `vrf_output`: output from a verified VRF proof over
+///   `(block_level, proposal_period_hash)`.
+/// - `sender_eligible_vote_count`: sender vote count used to normalize VRF
+///   threshold selection.
+/// - `vdf_sortition_max_vote_count`: period-effective max vote count used for
+///   the vote normalization denominator.
+///
+/// Edge behavior:
+/// malformed RLP and impossible runtime parameters are operational errors;
+/// invalid difficulty or VDF proof are consensus-invalid facts returned as
+/// `DAG_VERIFY_VDF_STATUS_INVALID`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagVdfSortitionInput {
+    pub block_rlp: Vec<u8>,
+    pub vdf_input: Vec<u8>,
+    pub sortition_params: crate::sortition::SortitionParams,
+    pub vrf_output: [u8; 64],
+    pub sender_eligible_vote_count: u64,
+    pub vdf_sortition_max_vote_count: u64,
+}
+
+/// Result of Rust-owned DAG VDF sortition verification.
+///
+/// Output invariants:
+/// - `vdf_status` is `VALID` only when the embedded difficulty and Wesolowski
+///   proof match the supplied sortition parameters and verified VRF output.
+/// - `difficulty` is the embedded block difficulty decoded from the VDF RLP.
+/// - `expected_difficulty` is the difficulty derived from the supplied VRF
+///   output and vote counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagVdfSortitionVerification {
+    pub vdf_status: u8,
+    pub difficulty: u16,
+    pub expected_difficulty: u16,
+}
+
+/// Decoded VDF sortition payload embedded in a DAG block.
+///
+/// The canonical C++ payload is `[vrf_proof, vdf_solution_proof,
+/// vdf_solution_output, difficulty]`. The VRF proof is exposed separately so a
+/// temporary shim boundary can keep using the legacy VRF verifier until the VRF
+/// module is rewritten in Rust. The Wesolowski solution and difficulty are
+/// consumed by Rust-owned DAG VDF verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagVdfSortitionPayload {
+    pub vrf_proof: [u8; 80],
+    pub vdf_solution_proof: Vec<u8>,
+    pub vdf_solution_output: Vec<u8>,
+    pub difficulty: u16,
+}
+
 /// Derives frontier from a ghost path and current leaves.
 ///
 /// Behavior mirrors legacy DagManager frontier rules:
@@ -576,6 +639,185 @@ pub fn decide_dag_verify_vdf_dpos_authorization(
         max_vote_count: facts.vdf_sortition_max_vote_count,
     }
 }
+
+/// Extracts the VRF proof embedded in canonical DAG block RLP.
+///
+/// This helper exists for the temporary migration boundary where Rust owns VDF
+/// proof and difficulty verification, while C++ still owns VRF proof
+/// verification. Malformed block or VDF RLP is an operational bridge error
+/// because callers cannot verify the peer-supplied payload without decoding it.
+pub fn extract_dag_vdf_vrf_proof(block_rlp: &[u8]) -> Result<[u8; 80]> {
+    Ok(decode_dag_vdf_sortition_payload(block_rlp)?.vrf_proof)
+}
+
+/// Verifies the DAG block VDF proof and sortition difficulty in Rust.
+///
+/// The caller must provide a VRF output that has already been verified against
+/// the block level and proposal-period hash. This temporary contract keeps the
+/// remaining legacy VRF dependency explicit while moving VDF payload decoding,
+/// vote-threshold normalization, difficulty calculation, and Wesolowski proof
+/// verification into Rust.
+pub fn verify_dag_vdf_sortition(
+    input: DagVdfSortitionInput,
+) -> Result<DagVdfSortitionVerification> {
+    let block = DagBlock::try_from(DagBlockRlp::new(&input.block_rlp))
+        .context("decode canonical DAG block RLP for VDF verification")?;
+    let payload = decode_vdf_sortition_payload(&block.vdf)
+        .context("decode DAG block VDF sortition payload")?;
+
+    let normalized_vote_count = normalized_vdf_vote_count(
+        input.sender_eligible_vote_count,
+        input.vdf_sortition_max_vote_count,
+    )?;
+    let threshold = threshold_from_vrf_output(&input.vrf_output, normalized_vote_count);
+    let expected_difficulty =
+        calculate_vdf_sortition_difficulty(input.sortition_params, threshold)?;
+
+    if payload.difficulty != expected_difficulty {
+        return Ok(DagVdfSortitionVerification {
+            vdf_status: DAG_VERIFY_VDF_STATUS_INVALID,
+            difficulty: payload.difficulty,
+            expected_difficulty,
+        });
+    }
+
+    let solution = VdfSolution {
+        first: payload.vdf_solution_proof,
+        second: payload.vdf_solution_output,
+    };
+    let vdf = WesolowskiVdf::new(
+        u32::from(input.sortition_params.vdf.lambda_bound),
+        u32::from(payload.difficulty),
+        input.vdf_input,
+        LEGACY_VDF_MODULUS_ASCII_HEX.to_vec(),
+    );
+    let verifier = WesolowskiVerifier::new(&vdf);
+    let vdf_status = if verifier.verify(&solution) {
+        DAG_VERIFY_VDF_STATUS_VALID
+    } else {
+        DAG_VERIFY_VDF_STATUS_INVALID
+    };
+
+    Ok(DagVdfSortitionVerification {
+        vdf_status,
+        difficulty: payload.difficulty,
+        expected_difficulty,
+    })
+}
+
+fn decode_dag_vdf_sortition_payload(block_rlp: &[u8]) -> Result<DagVdfSortitionPayload> {
+    let block = DagBlock::try_from(DagBlockRlp::new(block_rlp))
+        .context("decode canonical DAG block RLP for VDF payload")?;
+    decode_vdf_sortition_payload(&block.vdf)
+}
+
+fn decode_vdf_sortition_payload(vdf_rlp: &[u8]) -> Result<DagVdfSortitionPayload> {
+    const VDF_SORTITION_FIELD_COUNT: usize = 4;
+    const VRF_PROOF_BYTES: usize = 80;
+
+    let rlp = Rlp::new(vdf_rlp);
+    ensure!(
+        rlp.item_count()? == VDF_SORTITION_FIELD_COUNT,
+        "invalid DAG VDF sortition field count"
+    );
+
+    let proof_bytes = rlp.at(0)?.data()?;
+    ensure!(
+        proof_bytes.len() == VRF_PROOF_BYTES,
+        "invalid DAG VDF VRF proof length"
+    );
+    let mut vrf_proof = [0_u8; VRF_PROOF_BYTES];
+    vrf_proof.copy_from_slice(proof_bytes);
+
+    Ok(DagVdfSortitionPayload {
+        vrf_proof,
+        vdf_solution_proof: rlp.val_at(1)?,
+        vdf_solution_output: rlp.val_at(2)?,
+        difficulty: rlp.val_at(3)?,
+    })
+}
+
+fn normalized_vdf_vote_count(vote_count: u64, total_vote_count: u64) -> Result<u16> {
+    const VOTES_PROPORTION: u64 = 1000;
+
+    ensure!(
+        total_vote_count != 0,
+        "VDF sortition max vote count cannot be zero"
+    );
+    let normalized = vote_count
+        .checked_mul(VOTES_PROPORTION)
+        .context("VDF sortition vote normalization overflow")?
+        / total_vote_count;
+    ensure!(
+        normalized <= u64::from(u16::MAX),
+        "VDF sortition normalized vote count exceeds u16"
+    );
+    Ok(normalized as u16)
+}
+
+fn threshold_from_vrf_output(vrf_output: &[u8; 64], vote_count: u16) -> u16 {
+    const MINSTD_RAND_MULTIPLIER: u16 = 48271;
+
+    let mut threshold = (u16::from(vrf_output[1]) << 8) | u16::from(vrf_output[0]);
+    if vote_count > 1 {
+        let mut min_threshold = threshold;
+        let mut threshold_candidate = threshold;
+        for _ in 1..vote_count {
+            threshold_candidate = threshold_candidate.wrapping_mul(MINSTD_RAND_MULTIPLIER);
+            if threshold_candidate < min_threshold {
+                min_threshold = threshold_candidate;
+            }
+        }
+        threshold = min_threshold;
+    }
+    threshold
+}
+
+fn calculate_vdf_sortition_difficulty(
+    params: crate::sortition::SortitionParams,
+    threshold: u16,
+) -> Result<u16> {
+    const THRESHOLD_CORRECTION: u32 = 10;
+
+    ensure!(
+        params.vdf.difficulty_max >= params.vdf.difficulty_min,
+        "VDF difficulty max must be greater than or equal to min"
+    );
+    let number_of_difficulties =
+        u32::from(params.vdf.difficulty_max - params.vdf.difficulty_min) + 1;
+    ensure!(
+        number_of_difficulties != 0,
+        "VDF difficulty range cannot be empty"
+    );
+    ensure!(
+        u32::from(params.vrf.threshold_upper) >= number_of_difficulties,
+        "VDF threshold upper must cover the difficulty range"
+    );
+
+    let corrected_threshold = u32::from(threshold) * THRESHOLD_CORRECTION;
+    if corrected_threshold >= u32::from(params.vrf.threshold_upper) {
+        Ok(params.vdf.difficulty_stale)
+    } else {
+        let bucket_width = u32::from(params.vrf.threshold_upper) / number_of_difficulties;
+        ensure!(
+            bucket_width != 0,
+            "VDF difficulty bucket width cannot be zero"
+        );
+        Ok(params.vdf.difficulty_min + (corrected_threshold / bucket_width) as u16)
+    }
+}
+
+/// Legacy VDF modulus bytes used by C++ `VdfSortition`.
+///
+/// C++ defines the modulus as `dev::asBytes("<hex text>")`, which preserves
+/// the ASCII hex characters instead of decoding them into binary. Production
+/// parity therefore requires using these exact 256 bytes until the VDF/VRF
+/// module contract is deliberately migrated.
+const LEGACY_VDF_MODULUS_ASCII_HEX: &[u8] =
+    b"3d1055a514e17cce1290ccb5befb256b00b8aac664e39e754466fcd631004c9e23d16f23\
+      9aee2a207e5173a7ee8f90ee9ab9b6a745d27c6e850e7ca7332388dfef7e5bbe6267d1f7\
+      9f9330e44715b3f2066f903081836c1c83ca29126f8fdc5f5922bf3f9ddb4540171691ac\
+      cc1ef6a34b2a804a18159c89c39b16edee2ede35";
 
 fn exceeds_pbft_dag_count(tips_count: u64, dag_gas_limit: u64, pbft_gas_limit: u64) -> bool {
     let Some(max_dag_blocks) = pbft_gas_limit.checked_div(dag_gas_limit) else {
@@ -1295,6 +1537,8 @@ fn hex_prefix(hash: &H256) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rlp::RlpStream;
+    use rustaxa_vdf::prover::{CancellationToken, WesolowskiProver};
 
     fn h(value: u64) -> H256 {
         H256::from_low_u64_be(value)
@@ -1302,6 +1546,54 @@ mod tests {
 
     fn set(values: impl IntoIterator<Item = H256>) -> BTreeSet<H256> {
         values.into_iter().collect()
+    }
+
+    fn dag_block_rlp_with_vdf(vdf_rlp: Vec<u8>, transactions: &[H256]) -> Vec<u8> {
+        let mut stream = RlpStream::new_list(8);
+        stream.append(&h(1));
+        stream.append(&7_u64);
+        stream.append(&123_u64);
+        stream.append(&vdf_rlp);
+        stream.begin_list(0);
+        stream.begin_list(transactions.len());
+        for transaction in transactions {
+            stream.append(transaction);
+        }
+        stream.append(&vec![9_u8; 65]);
+        stream.append(&42_u64);
+        stream.out().to_vec()
+    }
+
+    fn dag_vdf_test_input(transactions: &[H256]) -> Vec<u8> {
+        let mut stream = RlpStream::new();
+        stream.append(&h(1));
+        for transaction in transactions {
+            stream.append(transaction);
+        }
+        stream.out().to_vec()
+    }
+
+    fn vdf_payload_rlp(difficulty: u16, proof: Vec<u8>, output: Vec<u8>) -> Vec<u8> {
+        let mut stream = RlpStream::new_list(4);
+        stream.append(&vec![0xAB_u8; 80]);
+        stream.append(&proof);
+        stream.append(&output);
+        stream.append(&difficulty);
+        stream.out().to_vec()
+    }
+
+    fn sortition_params_for_vdf_tests(difficulty: u16) -> crate::sortition::SortitionParams {
+        crate::sortition::SortitionParams {
+            vrf: crate::sortition::VrfParams {
+                threshold_upper: u16::MAX,
+            },
+            vdf: crate::sortition::VdfParams {
+                difficulty_min: difficulty,
+                difficulty_max: difficulty,
+                difficulty_stale: difficulty,
+                lambda_bound: 128,
+            },
+        }
     }
 
     #[test]
@@ -1835,6 +2127,126 @@ mod tests {
         assert_eq!(result.reason_code, DAG_VERIFY_REASON_CONTINUE);
         assert_eq!(result.vote_count, 12);
         assert_eq!(result.max_vote_count, 42);
+    }
+
+    fn dag_block_with_vdf_payload(vdf_payload: Vec<u8>) -> Vec<u8> {
+        let mut block = RlpStream::new_list(8);
+        block.append(&h(1));
+        block.append(&1u64);
+        block.append(&0u64);
+        block.append(&vdf_payload);
+        block.begin_list(0);
+        block.begin_list(0);
+        block.append(&&[0u8; 65][..]);
+        block.append(&123u64);
+        block.out().to_vec()
+    }
+
+    #[test]
+    fn verify_dag_vdf_sortition_rejects_invalid_payload() {
+        let mut vdf_payload = RlpStream::new_list(3);
+        vdf_payload.append(&vec![0x11u8; 80]);
+        vdf_payload.append(&vec![0x22u8]);
+        vdf_payload.append(&vec![0x33u8]);
+
+        let result = verify_dag_vdf_sortition(DagVdfSortitionInput {
+            block_rlp: dag_block_with_vdf_payload(vdf_payload.out().to_vec()),
+            vdf_input: vec![0x01],
+            sortition_params: crate::sortition::SortitionParams {
+                vrf: crate::sortition::VrfParams {
+                    threshold_upper: 1_000,
+                },
+                vdf: crate::sortition::VdfParams {
+                    difficulty_min: 1,
+                    difficulty_max: 1,
+                    difficulty_stale: 1,
+                    lambda_bound: 6,
+                },
+            },
+            vrf_output: [0u8; 64],
+            sender_eligible_vote_count: 100,
+            vdf_sortition_max_vote_count: 100,
+        })
+        .expect_err("invalid VDF payload field count should be an operational error");
+
+        assert!(
+            result
+                .to_string()
+                .contains("decode DAG block VDF sortition payload")
+        );
+    }
+
+    #[test]
+    fn verify_dag_vdf_sortition_rejects_invalid_difficulty_or_proof_as_data() {
+        let mut vdf_payload = RlpStream::new_list(4);
+        vdf_payload.append(&vec![0x11u8; 80]);
+        vdf_payload.append(&vec![0x22u8]);
+        vdf_payload.append(&vec![0x33u8]);
+        vdf_payload.append(&999u16);
+
+        let result = verify_dag_vdf_sortition(DagVdfSortitionInput {
+            block_rlp: dag_block_with_vdf_payload(vdf_payload.out().to_vec()),
+            vdf_input: vec![0x01],
+            sortition_params: crate::sortition::SortitionParams {
+                vrf: crate::sortition::VrfParams {
+                    threshold_upper: 1_000,
+                },
+                vdf: crate::sortition::VdfParams {
+                    difficulty_min: 1,
+                    difficulty_max: 1,
+                    difficulty_stale: 1,
+                    lambda_bound: 6,
+                },
+            },
+            vrf_output: [0u8; 64],
+            sender_eligible_vote_count: 100,
+            vdf_sortition_max_vote_count: 100,
+        })
+        .expect("verification should complete");
+
+        assert_eq!(result.vdf_status, DAG_VERIFY_VDF_STATUS_INVALID);
+        assert_eq!(result.difficulty, 999);
+        assert_eq!(result.expected_difficulty, 1);
+    }
+
+    #[test]
+    fn dag_vdf_sortition_extracts_vrf_proof_from_block_rlp() {
+        let block_rlp = dag_block_rlp_with_vdf(vdf_payload_rlp(4, vec![1], vec![2]), &[h(2)]);
+
+        let proof = extract_dag_vdf_vrf_proof(&block_rlp).unwrap();
+
+        assert_eq!(proof, [0xAB_u8; 80]);
+    }
+
+    #[test]
+    fn dag_vdf_sortition_verifies_matching_difficulty_and_solution() {
+        let transactions = vec![h(2), h(3)];
+        let difficulty = 4_u16;
+        let vdf = WesolowskiVdf::new(
+            128,
+            u32::from(difficulty),
+            dag_vdf_test_input(&transactions),
+            LEGACY_VDF_MODULUS_ASCII_HEX.to_vec(),
+        );
+        let solution = WesolowskiProver::new(&vdf).prove(&CancellationToken::new());
+        let block_rlp = dag_block_rlp_with_vdf(
+            vdf_payload_rlp(difficulty, solution.first, solution.second),
+            &transactions,
+        );
+
+        let result = verify_dag_vdf_sortition(DagVdfSortitionInput {
+            block_rlp,
+            vdf_input: dag_vdf_test_input(&transactions),
+            sortition_params: sortition_params_for_vdf_tests(difficulty),
+            vrf_output: [0_u8; 64],
+            sender_eligible_vote_count: 1,
+            vdf_sortition_max_vote_count: 1000,
+        })
+        .unwrap();
+
+        assert_eq!(result.vdf_status, DAG_VERIFY_VDF_STATUS_VALID);
+        assert_eq!(result.difficulty, difficulty);
+        assert_eq!(result.expected_difficulty, difficulty);
     }
 
     #[test]

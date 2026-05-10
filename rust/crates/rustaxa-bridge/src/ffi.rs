@@ -459,6 +459,23 @@ pub mod rustaxa_ffi {
         reason_code: u32,
     }
 
+    /// C++-originated payload for Rust DAG VDF sortition verification.
+    struct DagVerifyVdfSortitionInput {
+        block_rlp: Vec<u8>,
+        vdf_input: Vec<u8>,
+        sortition_params: SortitionRuntimeParams,
+        vrf_output: Vec<u8>,
+        sender_eligible_vote_count: u64,
+        vdf_sortition_max_vote_count: u64,
+    }
+
+    /// Rust DAG VDF sortition verification result.
+    struct DagVerifyVdfSortitionResult {
+        vdf_status: u8,
+        difficulty: u16,
+        expected_difficulty: u16,
+    }
+
     /// C++-originated VDF and DPoS facts for Rust authorization decisions.
     struct DagVerifyVdfDposFacts {
         vrf_key_found: bool,
@@ -751,6 +768,10 @@ pub mod rustaxa_ffi {
         ) -> DagVerifyTransactionAvailabilityResult;
         pub fn dag_verify_vdf_prepare(input: DagVerifyVdfPrepareInput)
             -> DagVerifyVdfPrepareResult;
+        pub fn dag_vdf_vrf_proof(block_rlp: Vec<u8>) -> Result<Vec<u8>>;
+        pub fn dag_verify_vdf_sortition(
+            input: DagVerifyVdfSortitionInput,
+        ) -> Result<DagVerifyVdfSortitionResult>;
         pub fn dag_verify_authorization(
             input: DagVerifyAuthorizationInput,
         ) -> DagVerifyAuthorizationResult;

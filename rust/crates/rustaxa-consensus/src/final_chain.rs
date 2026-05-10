@@ -273,6 +273,12 @@ impl FinalChain {
     /// Missing DPoS snapshots are represented as
     /// `DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE` so callers can carry the
     /// failure as data through the staged decision pipeline.
+    ///
+    /// Output contract (Rust-only):
+    /// - `vdf_sortition_max_vote_count` is either the block-local value passed in
+    ///   by the caller or the total eligible vote count for the block when
+    ///   `use_total_vote_count_for_vdf_sortition` is true.
+    /// - `eligibility_status` is one of the `DAG_VERIFY_DPOS_STATUS_*` values.
     pub fn dag_dpos_authorization_facts(
         &self,
         block_number: u64,
@@ -293,7 +299,7 @@ impl FinalChain {
             });
         }
 
-        let Some(snapshot) = self.dpos_snapshot_optional(block_number)? else {
+        let Some(_) = self.dpos_snapshot_optional(block_number)? else {
             return Ok(DagDposAuthorizationFacts {
                 vrf_key,
                 vrf_key_found,
@@ -303,9 +309,9 @@ impl FinalChain {
             });
         };
 
-        let sender_eligible_vote_count = *snapshot.vote_counts.get(&sender).unwrap_or(&0);
+        let sender_eligible_vote_count = self.dpos_eligible_vote_count(block_number, sender)?;
         let effective_vdf_sortition_max_vote_count = if use_total_vote_count_for_vdf_sortition {
-            snapshot.total_vote_count
+            self.dpos_eligible_total_vote_count(block_number)?
         } else {
             vdf_sortition_max_vote_count
         };
