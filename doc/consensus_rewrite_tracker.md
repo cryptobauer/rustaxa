@@ -39,7 +39,7 @@ Required test coverage and parity gates for the Rust consensus model are defined
 | --- | --- | ---: | --- | --- | --- |
 | DAG graph | `dag/dag.hpp`, `dag/dag.cpp`, `dag_shim/*` | 424 lines | `rust-backed` | Rust domain behind C++ overlay shim | C++ `Dag`/`PivotTree` graph operations route to Rust under `RUSTAXA_ENABLE` through a full overlay shim. Legacy Boost graph remains pure C++ fallback/reference code and is compiled as `DagOld`/`PivotTreeOld` only in Rust-enabled builds. |
 | DAG manager | `dag/dag_manager.hpp`, `dag/dag_manager.cpp` | 1048 lines | partial | C++ shim plus Rust domain/infra ports | Manager orchestration remains C++; its `Dag`/`PivotTree` graph objects are Rust-backed in Rust mode. Depends on transaction manager, PBFT chain, storage, network, key manager, FinalChain. |
-| DAG proposer | `dag/dag_block_proposer.hpp`, `dag/dag_block_proposer.cpp` | 576 lines | `cpp-owned` initially | C++ orchestration, later Rust proposer policy | Threaded, networked, VDF/DPoS-heavy. Keep orchestration in C++ early. |
+| DAG proposer | `dag/dag_block_proposer.hpp`, `dag/dag_block_proposer.cpp`, `dag_block_proposer_shim/*` | 576 lines | `partial` | C++ orchestration with Rust proposer policy | Full Rust-mode overlay shim landed. C++ still owns thread/network lifecycle, transaction packing, block construction, signing, and add-block wiring; Rust owns proposer eligibility status decisions, legacy VRF input bytes, and deterministic tip-selection policy. |
 | Sortition params | `dag/sortition_params_manager.hpp`, `dag/sortition_params_manager.cpp` | 331 lines | `rust-backed` | Rust domain behind C++ overlay shim | Deterministic efficiency/threshold runtime state routes to `rustaxa-consensus::sortition` under `RUSTAXA_ENABLE_SORTITION_PARAMS`. C++ still owns storage reads/writes and batch atomicity; the legacy implementation is compiled as `SortitionParamsManagerOld` only for pure C++ reference builds. |
 | PBFT chain | `pbft/pbft_chain.hpp`, `pbft/pbft_chain.cpp`, `pbft_chain_shim/*` | 259 lines | `rust-backed` | Rust domain behind C++ overlay shim | In-memory head updates, legacy JSON-head preview, and next-block validation route to Rust under `RUSTAXA_ENABLE_PBFT_CHAIN`. C++ shim preserves `DbStorage` lookup/persistence ownership and JsonCpp formatting; legacy implementation is compiled as `PbftChainOld` only for pure C++ reference builds. |
 | Proposed blocks | `pbft/proposed_blocks.hpp`, `pbft/proposed_blocks.cpp`, `proposed_blocks_shim/*` | 178 lines | `rust-backed` | Rust domain behind C++ overlay shim | Proposed block membership, cached validation flags, RLP payload snapshots, old-block diagnostics, and cleanup planning route to Rust under `RUSTAXA_ENABLE_PROPOSED_BLOCKS`. C++ shim preserves `DbStorage` persistence/removal and `PbftBlock` materialization; legacy implementation is compiled as `ProposedBlocksOld` only for pure C++ reference builds. |
@@ -64,7 +64,7 @@ Required test coverage and parity gates for the Rust consensus model are defined
 | --- | --- | --- | --- | --- |
 | `Dag` / `PivotTree` | vertex/edge counts, `hasVertex`, `addVEEs`, leaves, ghost path, deterministic order, graph clearing | hashes, Boost graph today | `dag_test`, `full_node_test` ordering cases | Rust domain graph with byte/hash-compatible ordering |
 | `DagManager` | block known/get/verify/add, pivot/tip availability, ordering, frontier, non-finalized blocks, anchors, expiry, VDF message | `DbStorage`, `TransactionManager`, `PbftChain`, `FinalChain`, `Network`, `KeyManager`, config | `dag_test`, `dag_block_test`, `pbft_manager_test`, `full_node_test` | C++ shim delegates pure graph/order logic to Rust first |
-| `DagBlockProposer` | proposer lifecycle, propose block, select tips, proposer eligibility | `DagManager`, `TransactionManager`, `FinalChain`, `DbStorage`, `KeyManager`, `Network`, VDF | `dag_block_test`, `pbft_manager_test`, `sortition_test`, full-node tests | Keep C++ thread/network shell; port deterministic selection/policy later |
+| `DagBlockProposer` | proposer lifecycle, propose block, select tips, proposer eligibility | `DagManager`, `TransactionManager`, `FinalChain`, `DbStorage`, `Network`, VDF | `dag_block_test`, `pbft_manager_test`, `sortition_test`, full-node tests | Rust-mode overlay keeps C++ thread/network shell; proposer eligibility status decisions, VRF input bytes, and deterministic tip selection are Rust-backed |
 | `SortitionParamsManager` | params lookup, DAG efficiency, interval recalculation, cleanup | `DbStorage`, config, `PeriodData`, VDF params | `sortition_test`, `rust_consensus_tests`, `sortition_params_manager_shim_test`, full-node lambda tests | Rust deterministic calculations and runtime state; C++ storage/batch shell |
 
 ### PBFT
@@ -146,8 +146,10 @@ Required tests:
   `level + proposal-period-hash` VRF input, `pivot + transaction-hashes` VDF message bytes, and the verify-side VDF
   sortition denominator from Rust FinalChain config. The path no longer requires a `DagManagerOld::verifyBlock` method
   forward, and it no longer derives VRF output, VRF input, DAG VDF messages, or per-block verify-side VDF denominator
-  policy through C++ consensus helpers. Producer-side `DagBlockProposer` denominator selection remains C++ owned until
-  that class is shimmed.
+  policy through C++ consensus helpers. Producer-side `DagBlockProposer` now uses a full Rust-mode overlay shim for
+  proposer eligibility status decisions, legacy VRF input construction, and deterministic tip selection, while C++ keeps
+  the live thread/network shell, transaction packing, VDF compute wrapper, `DagBlock` construction/signing, and
+  `DagManager::addDagBlock` wiring.
 
 Open questions:
 
@@ -161,6 +163,7 @@ Open questions:
 | --- | --- |
 | Rust consensus domain only | `cargo fmt --manifest-path rust/Cargo.toml`, `cargo clippy --manifest-path rust/Cargo.toml`, `cargo test --manifest-path rust/Cargo.toml` |
 | DAG graph routing | Rust validation plus `rust_consensus_tests`, `dag_test`, `dag_block_test`, and `dag_shim_test` |
+| DAG proposer routing | Rust validation plus `rust_consensus_tests`, `dag_block_test`, and proposer-path full-node or PBFT coverage when orchestration changes |
 | Sortition params routing | Rust validation plus `rust_consensus_tests`, `sortition_test`, and `sortition_params_manager_shim_test` |
 | PBFT chain/proposed-block/queue routing | Rust validation plus `rust_consensus_tests`, `pbft_chain_test`, `pbft_chain_shim_test`, `proposed_blocks_shim_test`, `period_data_queue_shim_test`, and relevant `pbft_manager_test` cases |
 | Vote aggregation/eligibility | Rust validation plus `rust_consensus_tests`, `verified_votes_shim_test`, `vote_test`, relevant `pbft_manager_test`, and DPoS/state API coverage |
@@ -177,6 +180,7 @@ Open questions:
 | Route sortition params through Rust | `rust-backed` | Landed under `RUSTAXA_ENABLE_SORTITION_PARAMS`; storage and write batches intentionally remain C++ owned for this slice. |
 | Route verified votes through Rust | `rust-backed` | Landed under `RUSTAXA_ENABLE_VERIFIED_VOTES`; C++ shim preserves live `PbftVote` ownership while Rust owns deterministic index semantics and 2t+1 metadata. VoteManager Rust mode now consumes a single atomic insert outcome in `addVerifiedVote`, removing split unique-voter/voted-value mutation in the Rust-enabled path. |
 | Route DagManager verify flow through Rust/shim | `partial` | Tip count/uniqueness, proposal-period availability, expiry, transaction availability, DAG embedded-VRF/VDF payload/difficulty/proof verification, legacy DAG VRF/VDF message construction, verify-side VDF max-vote ceiling selection, VDF/DPoS authorization ordering, and gas-policy decisions route through Rust. The shim still owns live transaction fetching, while DPoS/VRF facts now come from a Rust FinalChain bridge bundle and feed a single status-coded Rust envelope. Remaining gap: move live transaction fetching and broader orchestration out of the shim. |
+| Route DagBlockProposer policy through Rust/shim | `partial` | Full overlay shim landed. Rust handles proposer eligibility status decisions, legacy VRF input construction, and deterministic tip selection. Remaining gaps: transaction selection/packing, VDF compute payload assembly, block construction/signing, add-block wiring, and lifecycle/network orchestration still live in C++. |
 | Define consensus storage ports | `not-started` | Needed before Rust services depend on storage. |
 | Decide CXX bridge shape for consensus hashes and vectors | `rust-backed` for DAG graph | DAG bridge uses fixed bytes and explicit boundary conversion; revisit if PBFT/vote bridges need richer payloads. |
 | Add C++/Rust DAG parity fixture | `rust-backed` | Rust bridge fixture tests and C++ public API regression tests landed. Direct in-process legacy-vs-Rust comparison remains optional if duplicate dependency symbols are resolved. |

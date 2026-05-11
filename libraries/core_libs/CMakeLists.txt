@@ -77,6 +77,11 @@ if(RUSTAXA_ENABLE)
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/dag_manager_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/dag_manager_shim/src/dag_manager_shim.cpp)
 
+    # In Rust mode, inject a header overlay that remaps legacy DagBlockProposer
+    # to DagBlockProposerOld and exposes a standalone proposer shim facade.
+    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/dag_block_proposer_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/dag_block_proposer_shim/src/dag_block_proposer_shim.cpp)
+
     # In Rust mode, inject a header overlay that remaps legacy Dag/PivotTree
     # to DagOld/PivotTreeOld and exposes standalone Rust-backed facades.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/dag_shim/include)
@@ -94,6 +99,13 @@ if(RUSTAXA_ENABLE)
         ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/dag/dag_manager.cpp
         PROPERTIES
         COMPILE_DEFINITIONS "DagManager=DagManagerOld"
+    )
+
+    # Compile legacy DagBlockProposer implementation as DagBlockProposerOld.
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/dag/dag_block_proposer.cpp
+        PROPERTIES
+        COMPILE_DEFINITIONS "DagBlockProposer=DagBlockProposerOld"
     )
 
     # In Rust mode, inject a header overlay that remaps legacy KeyManager

@@ -1,12 +1,14 @@
 use crate::ffi::rustaxa_ffi::{
     DagBlockLookup, DagFrontier, DagHash, DagLevelHashes, DagManagerAnchors, DagManagerBlock,
     DagManagerNonFinalizedSize, DagManagerSnapshot, DagOrder, DagPersistenceCounters,
-    DagPivotTipsValidation, DagReferenceMetadata, DagVerifyAuthorizationInput,
-    DagVerifyAuthorizationResult, DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock,
-    DagVerifyPrecheckResult, DagVerifyTransactionAvailabilityInput,
-    DagVerifyTransactionAvailabilityResult, DagVerifyVdfDposDecision, DagVerifyVdfDposFacts,
-    DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput,
-    DagVerifyVdfSortitionInput, DagVerifyVdfSortitionResult, SortitionRuntimeParams,
+    DagPivotTipsValidation, DagProposerEligibilityDecision, DagProposerEligibilityInput,
+    DagProposerTipCandidate, DagProposerTipSelection, DagReferenceMetadata,
+    DagVerifyAuthorizationInput, DagVerifyAuthorizationResult, DagVerifyGasInput,
+    DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
+    DagVerifyTransactionAvailabilityInput, DagVerifyTransactionAvailabilityResult,
+    DagVerifyVdfDposDecision, DagVerifyVdfDposFacts, DagVerifyVdfPrepareInput,
+    DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
+    DagVerifyVdfSortitionResult, SortitionRuntimeParams,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
 use anyhow::{ensure, Context, Result};
@@ -29,7 +31,20 @@ use rustaxa_consensus::dag::{
 };
 use rustaxa_consensus::sortition::{SortitionParams, VdfParams, VrfParams};
 use rustaxa_storage::StatusField;
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
+
+const DAG_PROPOSER_ACTION_CONTINUE: u8 = 1;
+const DAG_PROPOSER_ACTION_SKIP: u8 = 2;
+const DAG_PROPOSER_ACTION_RETRY_LATER: u8 = 3;
+
+const DAG_PROPOSER_REASON_OK: u32 = 0;
+const DAG_PROPOSER_REASON_MISSING_PROPOSAL_PERIOD: u32 = 1;
+const DAG_PROPOSER_REASON_MISSING_VRF_KEY: u32 = 2;
+const DAG_PROPOSER_REASON_VRF_KEY_MISMATCH: u32 = 3;
+const DAG_PROPOSER_REASON_DPOS_UNAVAILABLE: u32 = 4;
+const DAG_PROPOSER_REASON_NOT_ELIGIBLE: u32 = 5;
+const DAG_PROPOSER_REASON_ZERO_DENOMINATOR: u32 = 6;
 
 pub fn create_dag_graph(genesis: &[u8; 32]) -> Box<BridgeDagGraph> {
     Box::new(BridgeDagGraph(DagGraph::new(to_h256(genesis))))
@@ -689,6 +704,16 @@ pub fn dag_verify_vdf_sortition_from_block(
     })
 }
 
+/// Builds the legacy DAG proposer VRF input.
+///
+/// The returned bytes are the canonical sequential RLP encoding of
+/// `(block_level, proposal_period_hash)`. This is the producer-side counterpart
+/// to Rust DAG VDF verification, which reconstructs the same bytes from block
+/// context.
+pub fn dag_vrf_input(block_level: u64, proposal_period_hash: &[u8; 32]) -> Vec<u8> {
+    rustaxa_consensus::dag::construct_dag_vrf_input(block_level, H256::from(*proposal_period_hash))
+}
+
 /// Builds the legacy DAG VDF message for a pivot and ordered transaction hashes.
 ///
 /// This bridge is used by the C++ DagManager shim to preserve the public
@@ -701,6 +726,156 @@ pub fn dag_vdf_message(pivot: &[u8; 32], transaction_hashes: Vec<DagHash>) -> Ve
         .map(|hash| H256::from(hash.hash))
         .collect::<Vec<_>>();
     construct_dag_vdf_message(H256::from(*pivot), &hashes)
+}
+
+/// Checks DAG block proposer eligibility from Rust-owned DPoS/VRF facts.
+///
+/// Inputs are plain bridge values collected by the C++ proposer shim: whether
+/// the level has a proposal period, the local wallet VRF public key, and the
+/// Rust FinalChain authorization facts for `(proposal_period, proposer)`.
+/// Expected proposal skips are returned as status data; bridge contract
+/// violations are not represented here because all fields have fixed shapes.
+pub fn dag_proposer_check_eligibility(
+    input: DagProposerEligibilityInput,
+) -> DagProposerEligibilityDecision {
+    if !input.proposal_period_found {
+        return dag_proposer_decision(
+            DAG_PROPOSER_ACTION_SKIP,
+            DAG_PROPOSER_REASON_MISSING_PROPOSAL_PERIOD,
+            0,
+            0,
+        );
+    }
+    if !input.authorization_facts.vrf_key_found {
+        return dag_proposer_decision(
+            DAG_PROPOSER_ACTION_SKIP,
+            DAG_PROPOSER_REASON_MISSING_VRF_KEY,
+            0,
+            0,
+        );
+    }
+    if input.authorization_facts.vrf_key != input.wallet_vrf_public_key {
+        return dag_proposer_decision(
+            DAG_PROPOSER_ACTION_SKIP,
+            DAG_PROPOSER_REASON_VRF_KEY_MISMATCH,
+            0,
+            0,
+        );
+    }
+    if input.authorization_facts.eligibility_status
+        == rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE
+    {
+        return dag_proposer_decision(
+            DAG_PROPOSER_ACTION_RETRY_LATER,
+            DAG_PROPOSER_REASON_DPOS_UNAVAILABLE,
+            0,
+            0,
+        );
+    }
+    if input.authorization_facts.eligibility_status
+        != rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE
+    {
+        return dag_proposer_decision(
+            DAG_PROPOSER_ACTION_SKIP,
+            DAG_PROPOSER_REASON_NOT_ELIGIBLE,
+            0,
+            0,
+        );
+    }
+    if input.authorization_facts.vdf_sortition_max_vote_count == 0 {
+        return dag_proposer_decision(
+            DAG_PROPOSER_ACTION_SKIP,
+            DAG_PROPOSER_REASON_ZERO_DENOMINATOR,
+            input.authorization_facts.sender_eligible_vote_count,
+            0,
+        );
+    }
+
+    dag_proposer_decision(
+        DAG_PROPOSER_ACTION_CONTINUE,
+        DAG_PROPOSER_REASON_OK,
+        input.authorization_facts.sender_eligible_vote_count,
+        input.authorization_facts.vdf_sortition_max_vote_count,
+    )
+}
+
+/// Selects DAG block proposer tips from caller-provided tip metadata.
+///
+/// C++ owns live `DagBlock` lookup and passes flat candidate records. Rust owns
+/// deterministic ordering and gas-limit policy:
+/// - missing candidates are skipped and counted
+/// - found candidates from unique proposers are considered before duplicate
+///   proposer candidates
+/// - each group is ordered by descending level with stable input-order ties
+/// - selection stops before exceeding `gas_limit` or `max_tips`
+pub fn dag_proposer_select_tips(
+    candidates: Vec<DagProposerTipCandidate>,
+    gas_limit: u64,
+    max_tips: u16,
+) -> DagProposerTipSelection {
+    let skipped_missing = candidates
+        .iter()
+        .filter(|candidate| !candidate.found)
+        .count() as u64;
+    let found = candidates
+        .into_iter()
+        .enumerate()
+        .filter(|(_, candidate)| candidate.found)
+        .collect::<Vec<_>>();
+
+    let mut proposer_counts = BTreeMap::<[u8; 20], usize>::new();
+    for (_, candidate) in &found {
+        *proposer_counts.entry(candidate.sender).or_default() += 1;
+    }
+
+    let mut unique = Vec::new();
+    let mut duplicate = Vec::new();
+    for candidate in found {
+        if proposer_counts
+            .get(&candidate.1.sender)
+            .copied()
+            .unwrap_or_default()
+            > 1
+        {
+            duplicate.push(candidate);
+        } else {
+            unique.push(candidate);
+        }
+    }
+
+    unique.sort_by_key(|(position, candidate)| (Reverse(candidate.level), *position));
+    duplicate.sort_by_key(|(position, candidate)| (Reverse(candidate.level), *position));
+
+    let mut selected = Vec::new();
+    let mut gas_used = 0_u64;
+    for (_, candidate) in unique.into_iter().chain(duplicate) {
+        gas_used = gas_used.saturating_add(candidate.gas_estimation);
+        if gas_used > gas_limit || selected.len() == usize::from(max_tips) {
+            break;
+        }
+        selected.push(DagHash {
+            hash: candidate.hash,
+        });
+    }
+
+    DagProposerTipSelection {
+        selected,
+        skipped_missing,
+    }
+}
+
+fn dag_proposer_decision(
+    action: u8,
+    reason_code: u32,
+    vote_count: u64,
+    max_vote_count: u64,
+) -> DagProposerEligibilityDecision {
+    DagProposerEligibilityDecision {
+        action,
+        reason_code,
+        vote_count,
+        max_vote_count,
+    }
 }
 
 /// Runs deterministic gas decisions for DAG block verification.
@@ -807,6 +982,7 @@ fn to_domain_snapshot(snapshot: DagManagerSnapshot) -> DomainDagManagerSnapshot 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ffi::rustaxa_ffi::DagDposAuthorizationFacts;
     use crate::storage::create_storage;
     use rlp::RlpStream;
     use rustaxa_consensus::dag;
@@ -1353,6 +1529,122 @@ mod tests {
         expected.append(&H256::from(tx_hashes[1].hash));
 
         assert_eq!(dag_vdf_message(&pivot, tx_hashes), expected.out().to_vec());
+    }
+
+    #[test]
+    fn dag_vrf_input_bridge_uses_legacy_level_and_period_hash_rlp() {
+        let block_level = 7;
+        let proposal_period_hash = [0x44_u8; 32];
+
+        let mut expected = RlpStream::new();
+        expected.append(&block_level);
+        expected.append(&H256::from(proposal_period_hash));
+
+        assert_eq!(
+            dag_vrf_input(block_level, &proposal_period_hash),
+            expected.out().to_vec()
+        );
+    }
+
+    #[test]
+    fn dag_proposer_eligibility_returns_status_decisions() {
+        let wallet_vrf_public_key = [0x55_u8; 32];
+        let continues = dag_proposer_check_eligibility(DagProposerEligibilityInput {
+            proposal_period_found: true,
+            wallet_vrf_public_key,
+            authorization_facts: DagDposAuthorizationFacts {
+                vrf_key_found: true,
+                vrf_key: wallet_vrf_public_key.to_vec(),
+                sender_eligible_vote_count: 12,
+                vdf_sortition_max_vote_count: 30,
+                eligibility_status: dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
+            },
+        });
+        assert_eq!(continues.action, DAG_PROPOSER_ACTION_CONTINUE);
+        assert_eq!(continues.reason_code, DAG_PROPOSER_REASON_OK);
+        assert_eq!(continues.vote_count, 12);
+        assert_eq!(continues.max_vote_count, 30);
+
+        let mismatch = dag_proposer_check_eligibility(DagProposerEligibilityInput {
+            proposal_period_found: true,
+            wallet_vrf_public_key,
+            authorization_facts: DagDposAuthorizationFacts {
+                vrf_key_found: true,
+                vrf_key: vec![0x66; 32],
+                sender_eligible_vote_count: 12,
+                vdf_sortition_max_vote_count: 30,
+                eligibility_status: dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
+            },
+        });
+        assert_eq!(mismatch.action, DAG_PROPOSER_ACTION_SKIP);
+        assert_eq!(mismatch.reason_code, DAG_PROPOSER_REASON_VRF_KEY_MISMATCH);
+
+        let unavailable = dag_proposer_check_eligibility(DagProposerEligibilityInput {
+            proposal_period_found: true,
+            wallet_vrf_public_key,
+            authorization_facts: DagDposAuthorizationFacts {
+                vrf_key_found: true,
+                vrf_key: wallet_vrf_public_key.to_vec(),
+                sender_eligible_vote_count: 0,
+                vdf_sortition_max_vote_count: 0,
+                eligibility_status: dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE,
+            },
+        });
+        assert_eq!(unavailable.action, DAG_PROPOSER_ACTION_RETRY_LATER);
+        assert_eq!(
+            unavailable.reason_code,
+            DAG_PROPOSER_REASON_DPOS_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn dag_proposer_tip_selection_skips_missing_and_prefers_unique_higher_levels() {
+        let candidates = vec![
+            DagProposerTipCandidate {
+                hash: [0x01; 32],
+                found: true,
+                sender: [0xA1; 20],
+                level: 1,
+                gas_estimation: 100,
+            },
+            DagProposerTipCandidate {
+                hash: [0x02; 32],
+                found: false,
+                sender: [0; 20],
+                level: 0,
+                gas_estimation: 0,
+            },
+            DagProposerTipCandidate {
+                hash: [0x03; 32],
+                found: true,
+                sender: [0xB1; 20],
+                level: 2,
+                gas_estimation: 100,
+            },
+            DagProposerTipCandidate {
+                hash: [0x04; 32],
+                found: true,
+                sender: [0xB1; 20],
+                level: 3,
+                gas_estimation: 100,
+            },
+            DagProposerTipCandidate {
+                hash: [0x05; 32],
+                found: true,
+                sender: [0xC1; 20],
+                level: 1,
+                gas_estimation: 100,
+            },
+        ];
+
+        let selection = dag_proposer_select_tips(candidates, 250, 10);
+        assert_eq!(selection.skipped_missing, 1);
+        let selected = selection
+            .selected
+            .into_iter()
+            .map(|hash| hash.hash)
+            .collect::<Vec<_>>();
+        assert_eq!(selected, vec![[0x01; 32], [0x05; 32]]);
     }
 
     #[test]

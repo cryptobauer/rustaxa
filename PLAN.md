@@ -211,6 +211,9 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
   - DagManager verification now receives DPoS authorization facts whose VDF sortition denominator is selected in Rust
     from genesis DPoS config plus the configured Magnolia boundary, instead of passing per-block hardfork or
     validator-max policy through the C++ shim.
+  - DagBlockProposer now has a full Rust-mode overlay shim. C++ still owns thread/network orchestration, transaction
+    packing, block construction, signing, and add-block wiring, while Rust owns proposer eligibility status decisions,
+    legacy VRF input bytes, and deterministic tip-selection policy.
   - Rust finalization appends DPoS snapshots for finalized native-transfer blocks. Because Rust finalization is scoped to
     post-Magnolia execution, native transaction fees are assigned to validator commission rewards by finalized DAG block
     author and transaction hash.
@@ -338,7 +341,8 @@ The current Rust starting point is intentionally small:
    `DagManager` shim now gets those DPoS/VRF facts from a Rust FinalChain bridge bundle and routes embedded VRF proof
    verification, DAG VDF payload decode, difficulty calculation, legacy-modulus Wesolowski proof check, status-coded
    VDF/DPoS fact envelope, legacy VRF/VDF message construction, verify-side VDF denominator policy, and reject ordering
-   through Rust. Producer-side `DagBlockProposer` denominator selection remains C++ owned until that class is shimmed.
+   through Rust. The Rust-mode `DagBlockProposer` overlay now routes proposer eligibility status decisions, legacy VRF
+   input construction, and deterministic tip selection through Rust while preserving the C++ thread/network shell.
 6. Replace the temporary `dposIsEligible` shim behavior once the eligibility port has a real implementation.
 7. Finish the PBFT support slice by adding broader manager-level validation around the now Rust-backed primitives:
    `PbftChain` head updates, persisted-head preview, and next-block validation route through Rust under
@@ -378,6 +382,8 @@ Use targeted validation before broad integration runs:
 
 - Rust consensus changes require `cargo fmt --manifest-path rust/Cargo.toml`, `cargo clippy --manifest-path rust/Cargo.toml`, and `cargo test --manifest-path rust/Cargo.toml`.
 - DAG changes should run relevant DAG tests such as `dag_test` and `dag_block_test`.
+- DAG proposer-routing changes should run Rust validation plus `rust_consensus_tests`, `dag_block_test`, and proposer-path
+  PBFT or full-node coverage when thread/network orchestration changes.
 - Sortition parameter changes should run `rust_consensus_tests`, `sortition_test`, and the
   `sortition_params_manager_shim_test` overlay check when `RUSTAXA_ENABLE_SORTITION_PARAMS` is enabled.
 - PBFT chain/proposed-block/period-data-queue changes should run `rust_consensus_tests`, the corresponding shim test,

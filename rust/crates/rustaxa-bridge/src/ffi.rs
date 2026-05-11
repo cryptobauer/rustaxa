@@ -528,6 +528,36 @@ pub mod rustaxa_ffi {
         eligibility_status: u8,
     }
 
+    /// C++-originated proposer eligibility facts.
+    struct DagProposerEligibilityInput {
+        proposal_period_found: bool,
+        wallet_vrf_public_key: [u8; 32],
+        authorization_facts: DagDposAuthorizationFacts,
+    }
+
+    /// Rust producer-side proposer eligibility decision.
+    struct DagProposerEligibilityDecision {
+        action: u8,
+        reason_code: u32,
+        vote_count: u64,
+        max_vote_count: u64,
+    }
+
+    /// C++-originated tip candidate facts for Rust proposer tip selection.
+    struct DagProposerTipCandidate {
+        hash: [u8; 32],
+        found: bool,
+        sender: [u8; 20],
+        level: u64,
+        gas_estimation: u64,
+    }
+
+    /// Rust producer-side tip selection result.
+    struct DagProposerTipSelection {
+        selected: Vec<DagHash>,
+        skipped_missing: u64,
+    }
+
     /// Rust VDF and DPoS authorization decision.
     struct DagVerifyVdfDposDecision {
         continue_validation: bool,
@@ -966,7 +996,16 @@ pub mod rustaxa_ffi {
         pub fn dag_verify_vdf_sortition_from_block(
             input: DagVerifyVdfSortitionFromBlockInput,
         ) -> Result<DagVerifyVdfSortitionResult>;
+        pub fn dag_vrf_input(block_level: u64, proposal_period_hash: &[u8; 32]) -> Vec<u8>;
         pub fn dag_vdf_message(pivot: &[u8; 32], transaction_hashes: Vec<DagHash>) -> Vec<u8>;
+        pub fn dag_proposer_check_eligibility(
+            input: DagProposerEligibilityInput,
+        ) -> DagProposerEligibilityDecision;
+        pub fn dag_proposer_select_tips(
+            candidates: Vec<DagProposerTipCandidate>,
+            gas_limit: u64,
+            max_tips: u16,
+        ) -> DagProposerTipSelection;
         pub fn dag_verify_authorization(
             input: DagVerifyAuthorizationInput,
         ) -> DagVerifyAuthorizationResult;
