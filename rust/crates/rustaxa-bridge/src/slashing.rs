@@ -161,6 +161,27 @@ mod tests {
         }
     }
 
+    fn hex_nibble(value: u8) -> u8 {
+        match value {
+            b'0'..=b'9' => value - b'0',
+            b'a'..=b'f' => value - b'a' + 10,
+            b'A'..=b'F' => value - b'A' + 10,
+            _ => panic!("invalid hex nibble"),
+        }
+    }
+
+    fn hex_bytes(value: &str) -> Vec<u8> {
+        let chunks = value.as_bytes().chunks_exact(2);
+        assert!(chunks.remainder().is_empty());
+        chunks
+            .map(|chunk| (hex_nibble(chunk[0]) << 4) | hex_nibble(chunk[1]))
+            .collect()
+    }
+
+    fn h256_hex(value: &str) -> [u8; 32] {
+        hex_bytes(value).try_into().unwrap()
+    }
+
     #[test]
     fn bridges_planner_plan_output() {
         let planner = create_slashing_proof_planner(true).unwrap();
@@ -182,6 +203,40 @@ mod tests {
         assert!(!plan.call_data.is_empty());
         assert_eq!(plan.value, [0u8; 32]);
         assert_eq!(plan.gas_limit, 100_000);
+    }
+
+    #[test]
+    fn bridge_output_matches_slashing_fixture_bytes() {
+        let planner = create_slashing_proof_planner(true).unwrap();
+
+        let plan = planner
+            .slashing_plan_double_voting_proof(proof_input(0x22, 0x11, vec![submitter(3, true, 9)]))
+            .unwrap();
+
+        assert_eq!(
+            plan.proof_hash,
+            h256_hex("3adcdeea9dd9a4219614e50270f3aba4ab10f39f111bfb028dadeee274cdabd9")
+        );
+        assert_eq!(
+            plan.call_data,
+            hex_bytes(concat!(
+                "fac7c94a",
+                "0000000000000000000000000000000000000000000000000000000000000040",
+                "0000000000000000000000000000000000000000000000000000000000000080",
+                "0000000000000000000000000000000000000000000000000000000000000002",
+                "c101000000000000000000000000000000000000000000000000000000000000",
+                "0000000000000000000000000000000000000000000000000000000000000002",
+                "c102000000000000000000000000000000000000000000000000000000000000"
+            ))
+        );
+        assert_eq!(plan.wallet_index, 3);
+        assert_eq!(plan.nonce, {
+            let mut bytes = [0u8; 32];
+            bytes[31] = 9;
+            bytes
+        });
+        assert_eq!(plan.contract_address[19], 0xee);
+        assert_eq!(plan.value, [0u8; 32]);
     }
 
     #[test]

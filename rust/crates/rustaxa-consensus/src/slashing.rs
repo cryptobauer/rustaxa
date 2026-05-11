@@ -309,6 +309,27 @@ mod tests {
         }
     }
 
+    fn hex_nibble(value: u8) -> u8 {
+        match value {
+            b'0'..=b'9' => value - b'0',
+            b'a'..=b'f' => value - b'a' + 10,
+            b'A'..=b'F' => value - b'A' + 10,
+            _ => panic!("invalid hex nibble"),
+        }
+    }
+
+    fn hex_bytes(value: &str) -> Vec<u8> {
+        let chunks = value.as_bytes().chunks_exact(2);
+        assert!(chunks.remainder().is_empty());
+        chunks
+            .map(|chunk| (hex_nibble(chunk[0]) << 4) | hex_nibble(chunk[1]))
+            .collect()
+    }
+
+    fn h256_hex(value: &str) -> H256 {
+        H256(hex_bytes(value).try_into().unwrap())
+    }
+
     #[test]
     fn plans_call_data_and_canonical_hash_for_matching_votes() {
         let planner = SlashingProofPlanner::new(true, 1000, 100).unwrap();
@@ -328,6 +349,39 @@ mod tests {
         assert_eq!(plan.value, U256::zero());
         assert_eq!(plan.gas_limit, DOUBLE_VOTING_GAS_LIMIT);
         assert_eq!(plan.call_data.len(), 4 + 2 * WORD_SIZE + 2 * 2 * WORD_SIZE);
+    }
+
+    #[test]
+    fn fixture_canonical_proof_hash_matches_legacy_sorted_rlp_pair() {
+        let planner = SlashingProofPlanner::new(true, 1000, 100).unwrap();
+        let expected = h256_hex("3adcdeea9dd9a4219614e50270f3aba4ab10f39f111bfb028dadeee274cdabd9");
+
+        let forward = planner.plan_double_voting_proof(input(0x22, 0x11));
+        let reverse = planner.plan_double_voting_proof(input(0x11, 0x22));
+
+        assert_eq!(forward.proof_hash, expected);
+        assert_eq!(reverse.proof_hash, expected);
+    }
+
+    #[test]
+    fn fixture_call_data_matches_legacy_solidity_bytes_layout() {
+        let planner = SlashingProofPlanner::new(true, 1000, 100).unwrap();
+        let proof = input(0x11, 0x22);
+
+        let plan = planner.plan_double_voting_proof(proof);
+
+        assert_eq!(
+            plan.call_data,
+            hex_bytes(concat!(
+                "fac7c94a",
+                "0000000000000000000000000000000000000000000000000000000000000040",
+                "0000000000000000000000000000000000000000000000000000000000000080",
+                "0000000000000000000000000000000000000000000000000000000000000002",
+                "c101000000000000000000000000000000000000000000000000000000000000",
+                "0000000000000000000000000000000000000000000000000000000000000002",
+                "c102000000000000000000000000000000000000000000000000000000000000"
+            ))
+        );
     }
 
     #[test]
@@ -424,6 +478,20 @@ mod tests {
         let plan = planner.plan_double_voting_proof(proof);
 
         assert!(plan.should_submit);
+        assert_eq!(
+            plan.call_data,
+            hex_bytes(concat!(
+                "fac7c94a",
+                "0000000000000000000000000000000000000000000000000000000000000040",
+                "00000000000000000000000000000000000000000000000000000000000000a0",
+                "0000000000000000000000000000000000000000000000000000000000000020",
+                "5555555555555555555555555555555555555555555555555555555555555555",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                "0000000000000000000000000000000000000000000000000000000000000020",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "0000000000000000000000000000000000000000000000000000000000000000"
+            ))
+        );
         assert_eq!(
             plan.call_data.len(),
             4 + 2 * WORD_SIZE + (WORD_SIZE + WORD_SIZE + WORD_SIZE) * 2
