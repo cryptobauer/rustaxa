@@ -337,6 +337,8 @@ The current Rust starting point is intentionally small:
   cache decisions, submitter selection, and slashing contract calldata construction through Rust while C++ keeps live
   vote objects, account reads, gas bidding, transaction signing, and transaction-pool insertion.
 - `rustaxa-types` contains shared Rust domain and codec types.
+- `rustaxa-types` now contains Rust pillar block/domain compatibility encoding for the first deterministic pillar
+  parity slice.
 - `rustaxa-storage` contains storage repositories that consensus should use through narrow ports.
 
 ### Consensus Sequencing

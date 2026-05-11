@@ -2,6 +2,7 @@ pub mod codec;
 pub mod dag;
 pub mod final_chain;
 pub mod pbft;
+pub mod pillar;
 
 pub use dag::DagBlock;
 pub use final_chain::{
@@ -11,3 +12,7 @@ pub use final_chain::{
     GenesisDposConfig, GenesisValidator, GenesisValidatorMetadata, StoredFinalChainBlockHeader,
 };
 pub use pbft::PbftBlockMetadata;
+pub use pillar::{
+    PillarBlock, PillarBlockData, PillarVote, ValidatorVoteCountChange,
+    decode_optimized_pillar_votes_bundle_rlp, encode_optimized_pillar_votes_bundle_rlp,
+};
