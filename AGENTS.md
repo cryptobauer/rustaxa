@@ -17,6 +17,10 @@ This repository is the Rust rewrite track for Taraxa. Keep day-to-day work align
 - `upstream-main`: clean mirror of upstream C++; no local commits.
 - `cpp-reference`: C++ validation gate with integration hooks; must build and test in pure C++ mode (`RUSTAXA_ENABLE=0`).
 - `main`: primary Rust rewrite branch and source of truth for future implementation.
+- Hard rule: when a dependency or subsystem already has a Rust rewrite path, new rewrite work should leverage that Rust
+  implementation directly instead of re-centering behavior in C++. Prefer extending Rust crates, bridges, and shim-owned
+  Rust handles over adding C++ orchestration or C++ data materialization, unless a concrete blocker is documented and
+  accepted by the task owner.
 - In C++ files, prefer additive per-module guards (`#ifdef RUSTAXA_ENABLE_VDF`, `#ifdef RUSTAXA_ENABLE_STORAGE`, `#ifdef RUSTAXA_ENABLE_FINAL_CHAIN`) or the master `#ifdef RUSTAXA_ENABLE` for shim-overlay integration over deleting legacy logic.
 - For upstream-owned C++ classes, use the storage/final-chain overlay shim strategy instead of editing legacy files inline:
   add a shim include overlay, compile legacy implementation as `*Old`, and provide a shim class in shim-owned files. The
