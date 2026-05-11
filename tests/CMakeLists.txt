@@ -92,6 +92,12 @@ if(RUSTAXA_ENABLE_VERIFIED_VOTES)
     add_test(verified_votes_shim_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/verified_votes_shim_test)
 endif()
 
+if(RUSTAXA_ENABLE_TRANSACTION_QUEUE)
+    add_executable(transaction_queue_shim_test transaction_queue_shim_test.cpp)
+    target_link_libraries(transaction_queue_shim_test test_util)
+    add_test(transaction_queue_shim_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/transaction_queue_shim_test)
+endif()
+
 add_executable(pbft_manager_test pbft_manager_test.cpp)
 target_link_libraries(pbft_manager_test test_util)
 add_test(pbft_manager_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/pbft_manager_test)

@@ -5,6 +5,7 @@ use crate::period_data_queue::*;
 use crate::proposed_blocks::*;
 use crate::sortition::*;
 use crate::storage::*;
+use crate::transaction_queue::*;
 use crate::vdf::*;
 use crate::verified_votes::*;
 use rustaxa_consensus::dag::{DagGraph, DagManagerState};
@@ -12,6 +13,7 @@ use rustaxa_consensus::pbft_chain::PbftChain;
 use rustaxa_consensus::period_data_queue::PeriodDataQueue;
 use rustaxa_consensus::proposed_blocks::ProposedBlocks;
 use rustaxa_consensus::sortition::SortitionParamsManager;
+use rustaxa_consensus::transaction_queue::TransactionQueue;
 use rustaxa_consensus::verified_votes::VerifiedVotes;
 use rustaxa_consensus::FinalChain;
 use rustaxa_storage::Storage;
@@ -51,6 +53,8 @@ pub struct BridgePeriodDataQueue(pub PeriodDataQueue);
 pub struct BridgeVerifiedVotes(pub VerifiedVotes);
 
 pub struct BridgeSortitionParamsManager(pub SortitionParamsManager);
+
+pub struct BridgeTransactionQueue(pub TransactionQueue);
 
 #[cxx::bridge(namespace = "rustaxa")]
 pub mod rustaxa_ffi {
@@ -103,6 +107,47 @@ pub mod rustaxa_ffi {
 
     struct TxRlp {
         data: Vec<u8>,
+    }
+
+    /// TransactionQueue construction limits.
+    struct TransactionQueueConfig {
+        max_size: usize,
+    }
+
+    /// Hash handle used to map Rust queue decisions back to C++ live transactions.
+    struct TransactionQueueHash {
+        hash: [u8; 32],
+    }
+
+    /// Address handle used by C++ to query FinalChain account state for purge.
+    struct TransactionQueueAddress {
+        address: [u8; 20],
+    }
+
+    /// Proposable transaction hash group returned per sender.
+    struct TransactionQueueHashGroup {
+        hashes: Vec<TransactionQueueHash>,
+    }
+
+    /// C++-originated transaction queue metadata for one insert attempt.
+    struct TransactionQueueInsertInput {
+        hash: [u8; 32],
+        sender: [u8; 20],
+        nonce: [u8; 32],
+        gas_price: [u8; 32],
+        gas: u64,
+        data_size: usize,
+        proposable: bool,
+        last_block_number: u64,
+    }
+
+    /// Rust queue insert decision and C++ mirror-update plan.
+    struct TransactionQueueInsertOutcome {
+        status: u8,
+        inserted_hash_found: bool,
+        inserted_hash: [u8; 32],
+        demoted_hashes: Vec<TransactionQueueHash>,
+        overflow_removed_hashes: Vec<TransactionQueueHash>,
     }
 
     struct HashPeriod {
@@ -1109,6 +1154,45 @@ pub mod rustaxa_ffi {
             self: &mut BridgePeriodDataQueue,
             period: u64,
         ) -> Vec<PeriodDataQueueEntryRef>;
+
+        // Consensus transaction queue
+
+        type BridgeTransactionQueue;
+
+        pub fn create_transaction_queue(
+            config: TransactionQueueConfig,
+        ) -> Box<BridgeTransactionQueue>;
+        pub fn transaction_queue_insert(
+            self: &mut BridgeTransactionQueue,
+            input: TransactionQueueInsertInput,
+        ) -> Result<TransactionQueueInsertOutcome>;
+        pub fn transaction_queue_erase(self: &mut BridgeTransactionQueue, hash: &[u8; 32]) -> bool;
+        pub fn transaction_queue_contains(self: &BridgeTransactionQueue, hash: &[u8; 32]) -> bool;
+        pub fn transaction_queue_size(self: &BridgeTransactionQueue) -> usize;
+        pub fn transaction_queue_ordered_hashes(
+            self: &BridgeTransactionQueue,
+            count: u64,
+        ) -> Vec<TransactionQueueHash>;
+        pub fn transaction_queue_all_hash_groups(
+            self: &BridgeTransactionQueue,
+        ) -> Vec<TransactionQueueHashGroup>;
+        pub fn transaction_queue_block_finalized(
+            self: &mut BridgeTransactionQueue,
+            block_number: u64,
+        ) -> Vec<TransactionQueueHash>;
+        pub fn transaction_queue_proposable_accounts(
+            self: &BridgeTransactionQueue,
+        ) -> Vec<TransactionQueueAddress>;
+        pub fn transaction_queue_purge_account(
+            self: &mut BridgeTransactionQueue,
+            sender: &[u8; 20],
+            account_nonce: &[u8; 32],
+        ) -> Vec<TransactionQueueHash>;
+        pub fn transaction_queue_non_proposable_over_limit(self: &BridgeTransactionQueue) -> bool;
+        pub fn transaction_queue_min_gas_price_for_block_inclusion(
+            self: &BridgeTransactionQueue,
+            limit: u64,
+        ) -> [u8; 32];
 
         // Consensus verified votes
 

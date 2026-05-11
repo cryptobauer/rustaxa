@@ -14,4 +14,5 @@ fn main() {
     println!("cargo:rerun-if-changed=src/vdf.rs");
     println!("cargo:rerun-if-changed=src/storage.rs");
     println!("cargo:rerun-if-changed=src/verified_votes.rs");
+    println!("cargo:rerun-if-changed=src/transaction_queue.rs");
 }

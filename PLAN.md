@@ -326,7 +326,8 @@ The current Rust starting point is intentionally small:
   sortition efficiency/threshold runtime state, Rust-backed PBFT chain head/validation state, and Rust-backed
   proposed PBFT block cache, period-data queue metadata state, and DagManager `verifyBlock` deterministic reject
   decisions for prechecks, transaction availability, DAG VDF payload/embedded-VRF/difficulty/proof verification,
-  legacy DAG VRF/VDF message construction, DPoS authorization ordering, and gas policy.
+  legacy DAG VRF/VDF message construction, DPoS authorization ordering, gas policy, and Rust-backed transaction queue
+  metadata/order/limit state.
 - `rustaxa-types` contains shared Rust domain and codec types.
 - `rustaxa-storage` contains storage repositories that consensus should use through narrow ports.
 
@@ -350,7 +351,10 @@ The current Rust starting point is intentionally small:
    through Rust under `RUSTAXA_ENABLE_PROPOSED_BLOCKS`; period-data queue admission, effective size, pop vote-source
    decisions, and cleanup planning route through Rust under `RUSTAXA_ENABLE_PERIOD_DATA_QUEUE`.
 8. Split `PbftManager` into Rust services for round/step transitions, proposal handling, vote thresholding, and finalization decisions.
-9. Port transaction queue behavior before transaction manager orchestration.
+9. Port transaction queue behavior before transaction manager orchestration. The Rust-mode `TransactionQueue` overlay
+   now routes deterministic queue metadata, per-account nonce ordering, same-nonce replacement, non-proposer expiry
+   planning, pool limits, and gas-price threshold accounting through Rust while C++ keeps live transaction pointers,
+   known-transaction cache timing, overflow wall-clock state, and FinalChain account reads for purge.
 10. Port deterministic rewards, slashing, and pillar calculations after DPoS and final-chain query ports are real.
 
 ### First Implementation Slice
@@ -384,6 +388,8 @@ Use targeted validation before broad integration runs:
 - DAG changes should run relevant DAG tests such as `dag_test` and `dag_block_test`.
 - DAG proposer-routing changes should run Rust validation plus `rust_consensus_tests`, `dag_block_test`, and proposer-path
   PBFT or full-node coverage when thread/network orchestration changes.
+- Transaction queue changes should run Rust validation plus `transaction_queue_shim_test`, queue-focused
+  `transaction_test` cases, and `gas_pricer_test`.
 - Sortition parameter changes should run `rust_consensus_tests`, `sortition_test`, and the
   `sortition_params_manager_shim_test` overlay check when `RUSTAXA_ENABLE_SORTITION_PARAMS` is enabled.
 - PBFT chain/proposed-block/period-data-queue changes should run `rust_consensus_tests`, the corresponding shim test,

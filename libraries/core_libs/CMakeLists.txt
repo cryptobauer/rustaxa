@@ -227,6 +227,24 @@ if(RUSTAXA_ENABLE_PERIOD_DATA_QUEUE)
     )
 endif()
 
+if(RUSTAXA_ENABLE_TRANSACTION_QUEUE)
+    if(NOT RUSTAXA_ENABLE)
+        message(FATAL_ERROR "RUSTAXA_ENABLE_TRANSACTION_QUEUE requires RUSTAXA_ENABLE")
+    endif()
+
+    # In Rust transaction-queue mode, inject a header overlay that remaps legacy
+    # TransactionQueue to TransactionQueueOld and exposes a standalone TransactionQueue shim facade.
+    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/transaction_queue_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/transaction_queue_shim/src/transaction_queue_shim.cpp)
+
+    # Compile the legacy implementation as TransactionQueueOld.
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/transaction/transaction_queue.cpp
+        PROPERTIES
+        COMPILE_DEFINITIONS "TransactionQueue=TransactionQueueOld"
+    )
+endif()
+
 if(RUSTAXA_ENABLE_VERIFIED_VOTES)
     if(NOT RUSTAXA_ENABLE)
         message(FATAL_ERROR "RUSTAXA_ENABLE_VERIFIED_VOTES requires RUSTAXA_ENABLE")

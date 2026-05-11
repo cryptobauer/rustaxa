@@ -3,6 +3,7 @@ pub mod pbft_chain;
 pub mod period_data_queue;
 pub mod proposed_blocks;
 pub mod sortition;
+pub mod transaction_queue;
 pub mod verified_votes;
 
 mod final_chain;
@@ -16,4 +17,5 @@ pub use rustaxa_types::{
     FinalChainCallRequest, FinalizationDagBlock, FinalizationTransaction, GenesisAccount,
     GenesisDposConfig, GenesisValidator, GenesisValidatorMetadata,
 };
+pub use transaction_queue::TransactionQueue;
 pub use verified_votes::VerifiedVotes;

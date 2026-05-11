@@ -9,7 +9,11 @@
 #include "logger/logger.hpp"
 #include "storage/storage.hpp"
 #include "transaction/transaction.hpp"
+#ifdef RUSTAXA_ENABLE_TRANSACTION_QUEUE
+#include "transaction/transaction_queue.hpp"
+#else
 #include "transaction_queue.hpp"
+#endif
 
 namespace taraxa {
 

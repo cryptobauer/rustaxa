@@ -6,5 +6,6 @@ mod period_data_queue;
 mod proposed_blocks;
 mod sortition;
 mod storage;
+mod transaction_queue;
 mod vdf;
 mod verified_votes;
