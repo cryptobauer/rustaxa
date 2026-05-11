@@ -4,6 +4,7 @@ use crate::gas_pricer::*;
 use crate::pbft_chain::*;
 use crate::period_data_queue::*;
 use crate::proposed_blocks::*;
+use crate::slashing::*;
 use crate::sortition::*;
 use crate::storage::*;
 use crate::transaction_manager::*;
@@ -15,6 +16,7 @@ use rustaxa_consensus::gas_pricer::GasPriceOracle;
 use rustaxa_consensus::pbft_chain::PbftChain;
 use rustaxa_consensus::period_data_queue::PeriodDataQueue;
 use rustaxa_consensus::proposed_blocks::ProposedBlocks;
+use rustaxa_consensus::slashing::SlashingProofPlanner;
 use rustaxa_consensus::sortition::SortitionParamsManager;
 use rustaxa_consensus::transaction_manager::TransactionPackingPlanner;
 use rustaxa_consensus::transaction_queue::TransactionQueue;
@@ -53,6 +55,8 @@ pub struct BridgeDagManagerRuntime {
 pub struct BridgePbftChain(pub PbftChain);
 
 pub struct BridgeProposedBlocks(pub ProposedBlocks);
+
+pub struct BridgeSlashingProofPlanner(pub Mutex<SlashingProofPlanner>);
 
 pub struct BridgePeriodDataQueue(pub PeriodDataQueue);
 
@@ -187,6 +191,41 @@ pub mod rustaxa_ffi {
     /// One live or finalized transaction gas-price fact supplied to Rust.
     struct GasPricerGasPrice {
         price: [u8; 32],
+    }
+
+    /// One configured wallet/account candidate for slashing proof submission.
+    struct SlashingSubmitterFact {
+        wallet_index: usize,
+        nonce: [u8; 32],
+        balance: [u8; 32],
+    }
+
+    /// C++-originated facts for planning a double-voting proof transaction.
+    struct DoubleVotingProofInput {
+        vote_a_hash: [u8; 32],
+        vote_b_hash: [u8; 32],
+        vote_a_period: u64,
+        vote_b_period: u64,
+        vote_a_round: u64,
+        vote_b_round: u64,
+        vote_a_step: u64,
+        vote_b_step: u64,
+        vote_a_rlp: Vec<u8>,
+        vote_b_rlp: Vec<u8>,
+        submitters: Vec<SlashingSubmitterFact>,
+    }
+
+    /// Rust slashing proof plan consumed by the C++ shim.
+    struct DoubleVotingProofPlan {
+        status: u8,
+        should_submit: bool,
+        proof_hash: [u8; 32],
+        contract_address: [u8; 20],
+        value: [u8; 32],
+        gas_limit: u64,
+        call_data: Vec<u8>,
+        wallet_index: usize,
+        nonce: [u8; 32],
     }
 
     /// Rust decision after consuming a C++ gas estimate.
@@ -1260,6 +1299,22 @@ pub mod rustaxa_ffi {
             self: &BridgeGasPricer,
             storage: &BridgeStorage,
         ) -> Result<()>;
+
+        // Consensus slashing proof planner
+
+        type BridgeSlashingProofPlanner;
+
+        pub fn create_slashing_proof_planner(
+            report_malicious_behaviour: bool,
+        ) -> Result<Box<BridgeSlashingProofPlanner>>;
+        pub fn slashing_plan_double_voting_proof(
+            self: &BridgeSlashingProofPlanner,
+            input: DoubleVotingProofInput,
+        ) -> Result<DoubleVotingProofPlan>;
+        pub fn slashing_mark_double_voting_proof_submission(
+            self: &BridgeSlashingProofPlanner,
+            proof_hash: &[u8; 32],
+        ) -> Result<bool>;
 
         // Consensus transaction manager planning
 

@@ -172,6 +172,30 @@ if(RUSTAXA_ENABLE_GAS_PRICER)
     )
 endif()
 
+if(RUSTAXA_ENABLE_SLASHING_MANAGER)
+    if(NOT RUSTAXA_ENABLE)
+        message(FATAL_ERROR "RUSTAXA_ENABLE_SLASHING_MANAGER requires RUSTAXA_ENABLE")
+    endif()
+    if(NOT RUSTAXA_ENABLE_FINAL_CHAIN)
+        message(FATAL_ERROR "RUSTAXA_ENABLE_SLASHING_MANAGER requires RUSTAXA_ENABLE_FINAL_CHAIN")
+    endif()
+    if(NOT RUSTAXA_ENABLE_GAS_PRICER)
+        message(FATAL_ERROR "RUSTAXA_ENABLE_SLASHING_MANAGER requires RUSTAXA_ENABLE_GAS_PRICER")
+    endif()
+
+    # In Rust SlashingManager mode, inject a header overlay that remaps legacy
+    # SlashingManager to SlashingManagerOld and exposes a standalone Rust-planning facade.
+    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/slashing_manager_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/slashing_manager_shim/src/slashing_manager_shim.cpp)
+
+    # Compile the legacy SlashingManager implementation as SlashingManagerOld.
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/slashing_manager/slashing_manager.cpp
+        PROPERTIES
+        COMPILE_DEFINITIONS "SlashingManager=SlashingManagerOld"
+    )
+endif()
+
 if(RUSTAXA_ENABLE_FINAL_CHAIN)
     if(NOT RUSTAXA_ENABLE_STORAGE)
         message(FATAL_ERROR "RUSTAXA_ENABLE_FINAL_CHAIN requires RUSTAXA_ENABLE_STORAGE")

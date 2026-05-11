@@ -333,6 +333,9 @@ The current Rust starting point is intentionally small:
   legacy DAG VRF/VDF message construction, DPoS authorization ordering, gas policy, Rust-backed transaction queue
   metadata/order/limit state, Rust-backed `TransactionManager::packTrxs` deterministic packing decisions, and a
   Rust-backed `GasPricer` oracle for finalized-block history, minimum-price flooring, and percentile bid selection.
+  The Rust-enabled `SlashingManager` overlay now routes deterministic double-voting proof planning, duplicate-proof
+  cache decisions, submitter selection, and slashing contract calldata construction through Rust while C++ keeps live
+  vote objects, account reads, gas bidding, transaction signing, and transaction-pool insertion.
 - `rustaxa-types` contains shared Rust domain and codec types.
 - `rustaxa-storage` contains storage repositories that consensus should use through narrow ports.
 
@@ -367,7 +370,9 @@ The current Rust starting point is intentionally small:
    updates through Rust, and pool-mode minimum-price flooring through Rust. Pool mode requires the Rust-backed transaction
    queue so `TransactionManager::getMinGasPriceForBlockInclusion()` reads Rust queue metadata rather than legacy queue
    state.
-10. Port deterministic rewards, slashing, and pillar calculations after DPoS and final-chain query ports are real.
+10. Port deterministic rewards, remaining slashing behavior, and pillar calculations after DPoS and final-chain query
+    ports are real. Double-voting proof planning is Rust-backed; broader slashing state transitions still depend on
+    future FinalChain/state ports.
 
 ### First Implementation Slice
 

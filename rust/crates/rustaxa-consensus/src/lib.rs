@@ -3,6 +3,7 @@ pub mod gas_pricer;
 pub mod pbft_chain;
 pub mod period_data_queue;
 pub mod proposed_blocks;
+pub mod slashing;
 pub mod sortition;
 pub mod transaction_manager;
 pub mod transaction_queue;
@@ -19,6 +20,10 @@ pub use rustaxa_types::{
     Account, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount,
     FinalChainCallRequest, FinalizationDagBlock, FinalizationTransaction, GenesisAccount,
     GenesisDposConfig, GenesisValidator, GenesisValidatorMetadata,
+};
+pub use slashing::{
+    DoubleVotingProofInput, DoubleVotingProofPlan, DoubleVotingProofPlanStatus,
+    SlashingProofPlanner, SlashingSubmitterFact,
 };
 pub use transaction_manager::{
     TransactionPackCandidate, TransactionPackCandidateDecision, TransactionPackEstimate,

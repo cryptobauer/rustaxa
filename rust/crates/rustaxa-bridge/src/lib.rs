@@ -5,6 +5,7 @@ mod gas_pricer;
 mod pbft_chain;
 mod period_data_queue;
 mod proposed_blocks;
+mod slashing;
 mod sortition;
 mod storage;
 mod transaction_manager;
