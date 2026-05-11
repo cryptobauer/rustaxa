@@ -1,4 +1,6 @@
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
+
 [agents]
 max_threads = 6
 max_depth = 1
-
