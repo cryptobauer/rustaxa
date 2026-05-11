@@ -5,6 +5,7 @@ use crate::period_data_queue::*;
 use crate::proposed_blocks::*;
 use crate::sortition::*;
 use crate::storage::*;
+use crate::transaction_manager::*;
 use crate::transaction_queue::*;
 use crate::vdf::*;
 use crate::verified_votes::*;
@@ -13,6 +14,7 @@ use rustaxa_consensus::pbft_chain::PbftChain;
 use rustaxa_consensus::period_data_queue::PeriodDataQueue;
 use rustaxa_consensus::proposed_blocks::ProposedBlocks;
 use rustaxa_consensus::sortition::SortitionParamsManager;
+use rustaxa_consensus::transaction_manager::TransactionPackingPlanner;
 use rustaxa_consensus::transaction_queue::TransactionQueue;
 use rustaxa_consensus::verified_votes::VerifiedVotes;
 use rustaxa_consensus::FinalChain;
@@ -55,6 +57,8 @@ pub struct BridgeVerifiedVotes(pub VerifiedVotes);
 pub struct BridgeSortitionParamsManager(pub SortitionParamsManager);
 
 pub struct BridgeTransactionQueue(pub TransactionQueue);
+
+pub struct BridgeTransactionPackPlanner(pub TransactionPackingPlanner);
 
 #[cxx::bridge(namespace = "rustaxa")]
 pub mod rustaxa_ffi {
@@ -148,6 +152,32 @@ pub mod rustaxa_ffi {
         inserted_hash: [u8; 32],
         demoted_hashes: Vec<TransactionQueueHash>,
         overflow_removed_hashes: Vec<TransactionQueueHash>,
+    }
+
+    /// Candidate metadata supplied before C++ runs a gas estimate.
+    struct TransactionPackCandidateInput {
+        hash: [u8; 32],
+        declared_gas: u64,
+    }
+
+    /// Decision telling C++ whether to estimate a candidate.
+    struct TransactionPackCandidateDecision {
+        should_estimate: bool,
+    }
+
+    /// C++ gas-estimation fact supplied after FinalChain/EVM estimation.
+    struct TransactionPackEstimateInput {
+        hash: [u8; 32],
+        gas_used: u64,
+    }
+
+    /// Rust decision after consuming a C++ gas estimate.
+    struct TransactionPackEstimateOutcome {
+        hash: [u8; 32],
+        selected: bool,
+        demote_to_non_proposable: bool,
+        stop: bool,
+        gas_used: u64,
     }
 
     struct HashPeriod {
@@ -1193,6 +1223,24 @@ pub mod rustaxa_ffi {
             self: &BridgeTransactionQueue,
             limit: u64,
         ) -> [u8; 32];
+
+        // Consensus transaction manager planning
+
+        type BridgeTransactionPackPlanner;
+
+        pub fn create_transaction_pack_planner(
+            weight_limit: u64,
+            min_transaction_gas: u64,
+        ) -> Result<Box<BridgeTransactionPackPlanner>>;
+        pub fn transaction_pack_max_candidate_count(self: &BridgeTransactionPackPlanner) -> u64;
+        pub fn transaction_pack_consider_candidate(
+            self: &BridgeTransactionPackPlanner,
+            input: TransactionPackCandidateInput,
+        ) -> Result<TransactionPackCandidateDecision>;
+        pub fn transaction_pack_record_estimate(
+            self: &mut BridgeTransactionPackPlanner,
+            input: TransactionPackEstimateInput,
+        ) -> Result<TransactionPackEstimateOutcome>;
 
         // Consensus verified votes
 

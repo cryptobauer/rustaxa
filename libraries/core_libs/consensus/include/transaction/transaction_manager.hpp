@@ -29,6 +29,9 @@ enum class TransactionStatus { Inserted = 0, InsertedNonProposable, Known, Overf
 struct FullNodeConfig;
 class DagBlock;
 class DagManager;
+#ifdef RUSTAXA_ENABLE
+class TransactionManagerRustShimAccess;
+#endif
 
 /**
  * @brief TransactionManager class verifies and inserts incoming transactions in memory pool and handles saving
@@ -263,6 +266,9 @@ class TransactionManager : public std::enable_shared_from_this<TransactionManage
   std::pair<bool, std::string> verifyTransaction(const std::shared_ptr<Transaction> &trx) const;
 
  private:
+#ifdef RUSTAXA_ENABLE
+  friend class TransactionManagerRustShimAccess;
+#endif
   addr_t getFullNodeAddress() const;
 
  private:

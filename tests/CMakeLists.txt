@@ -98,6 +98,12 @@ if(RUSTAXA_ENABLE_TRANSACTION_QUEUE)
     add_test(transaction_queue_shim_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/transaction_queue_shim_test)
 endif()
 
+if(RUSTAXA_ENABLE)
+    add_executable(transaction_manager_shim_test transaction_manager_shim_test.cpp)
+    target_link_libraries(transaction_manager_shim_test test_util)
+    add_test(transaction_manager_shim_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/transaction_manager_shim_test)
+endif()
+
 add_executable(pbft_manager_test pbft_manager_test.cpp)
 target_link_libraries(pbft_manager_test test_util)
 add_test(pbft_manager_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/pbft_manager_test)
