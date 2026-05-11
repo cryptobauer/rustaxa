@@ -1,5 +1,6 @@
 use crate::dag::*;
 use crate::final_chain::*;
+use crate::gas_pricer::*;
 use crate::pbft_chain::*;
 use crate::period_data_queue::*;
 use crate::proposed_blocks::*;
@@ -10,6 +11,7 @@ use crate::transaction_queue::*;
 use crate::vdf::*;
 use crate::verified_votes::*;
 use rustaxa_consensus::dag::{DagGraph, DagManagerState};
+use rustaxa_consensus::gas_pricer::GasPriceOracle;
 use rustaxa_consensus::pbft_chain::PbftChain;
 use rustaxa_consensus::period_data_queue::PeriodDataQueue;
 use rustaxa_consensus::proposed_blocks::ProposedBlocks;
@@ -32,6 +34,8 @@ pub struct BridgeStorage(
 );
 
 pub struct BridgeFinalChain(pub FinalChain);
+
+pub struct BridgeGasPricer(pub Mutex<GasPriceOracle>);
 
 pub struct BridgeDagGraph(pub DagGraph);
 
@@ -169,6 +173,20 @@ pub mod rustaxa_ffi {
     struct TransactionPackEstimateInput {
         hash: [u8; 32],
         gas_used: u64,
+    }
+
+    /// GasPricer construction limits and mode flags supplied by C++ genesis config.
+    struct GasPricerConfig {
+        percentile: u64,
+        minimum_price: [u8; 32],
+        history_blocks: usize,
+        is_light_node: bool,
+        blocks_gas_pricer: bool,
+    }
+
+    /// One live or finalized transaction gas-price fact supplied to Rust.
+    struct GasPricerGasPrice {
+        price: [u8; 32],
     }
 
     /// Rust decision after consuming a C++ gas estimate.
@@ -1223,6 +1241,25 @@ pub mod rustaxa_ffi {
             self: &BridgeTransactionQueue,
             limit: u64,
         ) -> [u8; 32];
+
+        // Consensus gas pricer
+
+        type BridgeGasPricer;
+
+        pub fn create_gas_pricer(config: GasPricerConfig) -> Result<Box<BridgeGasPricer>>;
+        pub fn gas_pricer_bid(self: &BridgeGasPricer) -> Result<[u8; 32]>;
+        pub fn gas_pricer_bid_from_pool(
+            self: &BridgeGasPricer,
+            pool_price: &[u8; 32],
+        ) -> Result<[u8; 32]>;
+        pub fn gas_pricer_update(
+            self: &BridgeGasPricer,
+            gas_prices: Vec<GasPricerGasPrice>,
+        ) -> Result<()>;
+        pub fn gas_pricer_init_from_storage(
+            self: &BridgeGasPricer,
+            storage: &BridgeStorage,
+        ) -> Result<()>;
 
         // Consensus transaction manager planning
 

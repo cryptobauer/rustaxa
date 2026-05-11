@@ -148,6 +148,30 @@ if(RUSTAXA_ENABLE_STORAGE)
     )
 endif()
 
+if(RUSTAXA_ENABLE_GAS_PRICER)
+    if(NOT RUSTAXA_ENABLE_STORAGE)
+        message(FATAL_ERROR "RUSTAXA_ENABLE_GAS_PRICER requires RUSTAXA_ENABLE_STORAGE")
+    endif()
+    if(NOT RUSTAXA_ENABLE)
+        message(FATAL_ERROR "RUSTAXA_ENABLE_GAS_PRICER requires RUSTAXA_ENABLE")
+    endif()
+    if(NOT RUSTAXA_ENABLE_TRANSACTION_QUEUE)
+        message(FATAL_ERROR "RUSTAXA_ENABLE_GAS_PRICER requires RUSTAXA_ENABLE_TRANSACTION_QUEUE")
+    endif()
+
+    # In Rust GasPricer mode, inject a header overlay that remaps legacy
+    # GasPricer to GasPricerOld and exposes a standalone GasPricer shim facade.
+    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/gas_pricer_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/gas_pricer_shim/src/gas_pricer_shim.cpp)
+
+    # Compile the legacy implementation as GasPricerOld.
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/transaction/gas_pricer.cpp
+        PROPERTIES
+        COMPILE_DEFINITIONS "GasPricer=GasPricerOld"
+    )
+endif()
+
 if(RUSTAXA_ENABLE_FINAL_CHAIN)
     if(NOT RUSTAXA_ENABLE_STORAGE)
         message(FATAL_ERROR "RUSTAXA_ENABLE_FINAL_CHAIN requires RUSTAXA_ENABLE_STORAGE")

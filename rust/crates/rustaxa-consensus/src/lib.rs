@@ -1,4 +1,5 @@
 pub mod dag;
+pub mod gas_pricer;
 pub mod pbft_chain;
 pub mod period_data_queue;
 pub mod proposed_blocks;
@@ -10,6 +11,7 @@ pub mod verified_votes;
 mod final_chain;
 
 pub use final_chain::FinalChain;
+pub use gas_pricer::{GasPriceOracle, GasPricerConfig};
 pub use pbft_chain::PbftChain;
 pub use period_data_queue::PeriodDataQueue;
 pub use proposed_blocks::ProposedBlocks;

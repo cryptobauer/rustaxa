@@ -13,9 +13,9 @@ rustaxa-storage = { path = "../rustaxa-storage" }
 rustaxa-vdf = { path = "../rustaxa-vdf" }
 anyhow = "1.0.100"
 ethereum-types = "0.16.0"
+rlp = "0.6"
 
 [build-dependencies]
 cxx-build = "1.0"
 
 [dev-dependencies]
-rlp = "0.6"

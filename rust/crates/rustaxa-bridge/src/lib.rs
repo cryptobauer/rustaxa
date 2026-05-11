@@ -1,6 +1,7 @@
 mod dag;
 mod ffi;
 mod final_chain;
+mod gas_pricer;
 mod pbft_chain;
 mod period_data_queue;
 mod proposed_blocks;

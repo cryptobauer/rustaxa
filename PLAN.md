@@ -331,7 +331,8 @@ The current Rust starting point is intentionally small:
   proposed PBFT block cache, period-data queue metadata state, and DagManager `verifyBlock` deterministic reject
   decisions for prechecks, transaction availability, DAG VDF payload/embedded-VRF/difficulty/proof verification,
   legacy DAG VRF/VDF message construction, DPoS authorization ordering, gas policy, Rust-backed transaction queue
-  metadata/order/limit state, and Rust-backed `TransactionManager::packTrxs` deterministic packing decisions.
+  metadata/order/limit state, Rust-backed `TransactionManager::packTrxs` deterministic packing decisions, and a
+  Rust-backed `GasPricer` oracle for finalized-block history, minimum-price flooring, and percentile bid selection.
 - `rustaxa-types` contains shared Rust domain and codec types.
 - `rustaxa-storage` contains storage repositories that consensus should use through narrow ports.
 
@@ -361,7 +362,11 @@ The current Rust starting point is intentionally small:
    known-transaction cache timing, overflow wall-clock state, and FinalChain account reads for purge. The Rust-mode
    `TransactionManager` packing shim now routes proposal candidate sizing, declared-gas fit checks, invalid-estimate
    demotion decisions, accepted gas accumulation, and stop rules through Rust while C++ keeps live transaction objects,
-   `estimateTransactionGas`, estimation caching, queue mutation, and lifecycle/finalization state.
+   `estimateTransactionGas`, estimation caching, queue mutation, and lifecycle/finalization state. The Rust-mode
+   `GasPricer` overlay now routes finalized-block history restoration through Rust storage, live finalized-block gas-price
+   updates through Rust, and pool-mode minimum-price flooring through Rust. Pool mode requires the Rust-backed transaction
+   queue so `TransactionManager::getMinGasPriceForBlockInclusion()` reads Rust queue metadata rather than legacy queue
+   state.
 10. Port deterministic rewards, slashing, and pillar calculations after DPoS and final-chain query ports are real.
 
 ### First Implementation Slice
