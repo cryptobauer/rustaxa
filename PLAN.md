@@ -312,7 +312,8 @@ Rules:
 - Do not delegate Rust shim behavior back to legacy `FinalChainOld` or other old implementation methods.
 - Temporary Rust-mode gaps must be explicit shim-local defaults, no-ops, or tracked unimplemented paths.
 - Temporary guarded touches to upstream-owned C++ files should be removed once a complete shim can own Rust-mode routing;
-  currently `pbft_manager.cpp` has such a temporary hook for sync pillar-vote bundle planning.
+  currently `pbft_manager.cpp` has a narrow early-return hook for sync pillar-vote bundle planning, with helper
+  declarations supplied by the temporary `pbft_manager_shim` header overlay.
 - Treat `dposIsEligible` and related vote-count methods as real consensus work, not permanent dummy behavior.
 - Keep networking callbacks, thread orchestration, and broad node integration in C++ until the Rust domain services are stable.
 
@@ -426,9 +427,9 @@ Use targeted validation before broad integration runs:
 - PBFT chain/proposed-block/period-data-queue changes should run `rust_consensus_tests`, the corresponding shim test,
   and targeted `pbft_chain_test` or `pbft_manager_test` cases; broader PBFT changes should also run relevant
   `vote_test` coverage.
-- Pillar vote aggregation or PBFT sync bundle validation changes should run Rust validation plus
-  `pillar_votes_shim_test` when `RUSTAXA_ENABLE_PILLAR_VOTES` is enabled; manager-path changes should also run targeted
-  `pbft_manager_test`/`pillar_chain_test` coverage and any affected final-chain or full-node tests.
+- Pillar vote aggregation or PBFT sync bundle validation changes should run Rust validation plus `rust_consensus_tests`
+  and `pillar_votes_shim_test` when `RUSTAXA_ENABLE_PILLAR_VOTES` is enabled; manager-path changes should also run
+  targeted `pbft_manager_test`/`pillar_chain_test` coverage and any affected final-chain or full-node tests.
 - Shim startup behavior should be validated with a Rust-enabled node smoke test when consensus shims change.
 
 ## Validation Matrix

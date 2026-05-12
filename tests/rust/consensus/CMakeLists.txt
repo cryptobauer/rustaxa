@@ -5,6 +5,7 @@ add_executable(rust_consensus_tests
     test_final_chain.cpp
     test_period_data_queue.cpp
     test_pbft_chain.cpp
+    test_pillar_vote_bundle.cpp
     test_proposed_blocks.cpp
     test_sortition.cpp
 )
