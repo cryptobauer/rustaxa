@@ -340,6 +340,9 @@ The current Rust starting point is intentionally small:
 - `rustaxa-types` now contains Rust pillar type and codec parity for `PillarBlock`,
   `ValidatorVoteCountChange`, `PillarVote`, `PillarBlockData`, optimized pillar-vote bundles, and current pillar data
   storage shape. Pillar signing/recovery, manager orchestration, and production routing remain later consensus slices.
+- `rustaxa-consensus` now contains a Rust pillar-vote aggregation domain for already-verified pillar vote facts:
+  period initialization, per-validator uniqueness, weighted per-block aggregation, deterministic threshold subset
+  selection, and stale-period cleanup. It is not wired into production routing yet.
 - `rustaxa-storage` contains storage repositories that consensus should use through narrow ports.
 
 ### Consensus Sequencing

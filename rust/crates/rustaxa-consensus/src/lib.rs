@@ -2,6 +2,7 @@ pub mod dag;
 pub mod gas_pricer;
 pub mod pbft_chain;
 pub mod period_data_queue;
+pub mod pillar_votes;
 pub mod proposed_blocks;
 pub mod slashing;
 pub mod sortition;
@@ -15,6 +16,9 @@ pub use final_chain::FinalChain;
 pub use gas_pricer::{GasPriceOracle, GasPricerConfig};
 pub use pbft_chain::PbftChain;
 pub use period_data_queue::PeriodDataQueue;
+pub use pillar_votes::{
+    PillarVoteInsertOutcome, PillarVotes, PillarVotesLookup, VerifiedPillarVote,
+};
 pub use proposed_blocks::ProposedBlocks;
 pub use rustaxa_types::{
     Account, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount,
