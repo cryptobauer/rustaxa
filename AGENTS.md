@@ -29,6 +29,13 @@ This repository is the Rust rewrite track for Taraxa. Keep day-to-day work align
   throwing would prevent parity testing or proving correctness, and add a TODO comment at every `*Old` call site stating
   what must move to Rust. This is the default to minimize upstream merge conflicts while keeping temporary legacy use
   auditable.
+- Hard rule: treat the full overlay shim as the first design step, not a later cleanup. Before adding Rust-mode behavior
+  to an upstream-owned C++ class, create or extend the class overlay (`shims/<class>_shim/include/.../<class>.hpp`),
+  compile the legacy implementation as `<Class>Old`, and put Rust routing, temporary stubs, and shim-only helper methods
+  in shim-owned files. Do not add new Rust-only methods, `ForRust` hooks, bridge includes, or scattered `#ifdef`
+  branches to original upstream headers/sources unless the task owner explicitly approves a temporary guarded hook.
+  Before closeout, run `git diff upstream-main -- <original C++ paths>` for any upstream-owned files you touched; the
+  expected result is empty or an explicitly documented temporary exception.
 - If a rewrite slice temporarily touches an upstream-owned C++ file because a complete class shim is not ready yet, keep
   the change guarded and track it as temporary debt. Revert that file back to its upstream shape as soon as a complete
   shim can own the Rust-mode routing.

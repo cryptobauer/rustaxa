@@ -44,6 +44,13 @@ Core rules:
 - Public C++ interfaces remain stable while implementation moves.
 - C++ shims route selected APIs to Rust and keep legacy code available for validation.
 - For upstream-owned C++ classes, use the overlay shim pattern by default (as in storage and FinalChain): header overlay + shim facade + legacy `*Old` compilation rename. Prefer this over scattered inline `#ifdef` edits to reduce upstream merge conflicts.
+- Treat the full overlay shim as the first design step, not a later cleanup. Before adding Rust-mode behavior to an
+  upstream-owned C++ class, create or extend the class overlay (`shims/<class>_shim/include/.../<class>.hpp`), compile
+  the legacy implementation as `<Class>Old`, and keep Rust routing, shim-only helper methods, temporary stubs, and
+  parity scaffolding in shim-owned files. Do not add Rust-only methods, `ForRust` hooks, bridge includes, or scattered
+  `#ifdef` branches to original upstream headers/sources unless the task owner explicitly approves a temporary guarded
+  hook. Closeout for touched upstream-owned files should include `git diff upstream-main -- <original C++ paths>`; the
+  expected result is empty or an explicitly documented temporary exception.
 - Hard rule: when a dependency or subsystem already has a Rust rewrite path, new rewrite work should leverage that Rust
   implementation directly instead of re-centering behavior in C++. Prefer extending Rust crates, bridges, and shim-owned
   Rust handles over adding C++ orchestration or C++ data materialization, unless a concrete blocker is documented and
