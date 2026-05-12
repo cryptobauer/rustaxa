@@ -292,13 +292,15 @@ bool PillarChainManager::isRelevantPillarVote(const std::shared_ptr<PillarVote> 
 bool PillarChainManager::validatePillarVote(const std::shared_ptr<PillarVote> vote) const {
 #ifdef RUSTAXA_ENABLE_PILLAR_VOTES
   {
-    const auto current_pillar_block = getCurrentPillarBlock();
-    const auto vote_already_known = pillar_votes_.voteExists(vote);
-    const auto is_unique = pillar_votes_.isUniqueVote(vote);
-    const auto vote_period = vote->getPeriod();
+    if (!vote) {
+      LOG(log_er_) << "Unable to validate pillar vote: null vote pointer";
+      return false;
+    }
 
-    const auto validation_plan = validatePillarVoteWithRust(kFicusHfConfig, vote, final_chain_, current_pillar_block,
-                                                            vote_already_known, is_unique);
+    const auto current_pillar_block = getCurrentPillarBlock();
+    const auto validation_plan =
+        validatePillarVoteWithRust(kFicusHfConfig, vote, final_chain_, current_pillar_block, pillar_votes_);
+    const auto vote_period = validation_plan.period;
 
     if (!validation_plan.is_valid) {
       switch (validation_plan.status) {
@@ -312,9 +314,9 @@ bool PillarChainManager::validatePillarVote(const std::shared_ptr<PillarVote> vo
           return false;
         case pillar_chain::PillarVoteValidationPlanStatus::kVotePeriodMismatch:
           if (!current_pillar_block) {
-            LOG(log_nf_) << "Received vote's period " << vote->getPeriod() << ", current pillar block missing";
+            LOG(log_nf_) << "Received vote's period " << vote_period << ", current pillar block missing";
           } else {
-            LOG(log_nf_) << "Received vote's period " << vote->getPeriod() << ", current pillar block period "
+            LOG(log_nf_) << "Received vote's period " << vote_period << ", current pillar block period "
                          << current_pillar_block->getPeriod();
           }
           return false;

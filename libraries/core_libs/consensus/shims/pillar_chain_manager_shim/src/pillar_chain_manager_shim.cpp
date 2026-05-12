@@ -6,6 +6,7 @@
 #include "config/hardfork.hpp"
 #include "final_chain/final_chain.hpp"
 #include "pillar_chain/pillar_block.hpp"
+#include "pillar_chain/pillar_votes.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "vote/pillar_vote.hpp"
 
@@ -136,12 +137,13 @@ PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& f
                                                     const std::shared_ptr<PillarVote>& vote,
                                                     const std::shared_ptr<final_chain::FinalChain>& final_chain,
                                                     const std::shared_ptr<PillarBlock>& current_pillar_block,
-                                                    bool vote_already_known, bool is_unique) {
+                                                    const PillarVotes& pillar_votes) {
   if (!vote || !final_chain) {
     return {PillarVoteValidationPlanStatus::kInspectionFailure, false, 0, {}, {}};
   }
 
   try {
+    const auto vote_already_known = pillar_votes.voteExists(vote);
     const auto relevance_plan =
         planPillarVoteRelevance(ficus_hf_config, vote, current_pillar_block, vote_already_known);
     if (!relevance_plan.is_relevant) {
@@ -151,15 +153,16 @@ PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& f
     return {PillarVoteValidationPlanStatus::kUnknown, false, vote->getPeriod(), vote->getHash(), {}};
   }
 
-  if (!is_unique) {
-    return {PillarVoteValidationPlanStatus::kNotUnique, false, vote->getPeriod(), vote->getHash(), {}};
-  }
-
   auto inspection = inspectPillarVoteWithRust(vote);
   if (!inspection.is_valid) {
     return inspection;
   }
   auto recovered_voter = inspection.recovered_voter;
+
+  if (!pillar_votes.isUniqueVoteIdentity(inspection.period, inspection.vote_hash, recovered_voter)) {
+    return {PillarVoteValidationPlanStatus::kNotUnique, false, inspection.period, inspection.vote_hash,
+            recovered_voter};
+  }
 
   try {
     if (!final_chain->dposIsEligible(inspection.period - 1, recovered_voter)) {

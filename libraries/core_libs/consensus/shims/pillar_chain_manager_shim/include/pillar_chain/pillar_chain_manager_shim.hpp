@@ -14,6 +14,7 @@ class FinalChain;
 
 namespace pillar_chain {
 class PillarBlock;
+class PillarVotes;
 
 /**
  * Deterministic pillar-vote relevance plan status from the Rust planner.
@@ -112,13 +113,29 @@ struct PillarVoteValidationPlan {
 };
 
 /**
- * Validates one pillar vote in Rust-mode through bridge inspection + local checks.
+ * Validates one pillar vote in Rust mode with local relevance, identity, and DPoS checks.
+ *
+ * Purpose:
+ * - Owns the Rust-enabled validation order so callers cannot accidentally pass
+ *   uniqueness results computed from C++ sidecar voter recovery.
+ *
+ * Inputs/outputs:
+ * - `pillar_votes` supplies duplicate and Rust identity uniqueness checks.
+ * - Returned `period`, `vote_hash`, and `recovered_voter` are populated from
+ *   Rust inspection when the vote reaches identity checks.
+ *
+ * Invariants:
+ * - Duplicate/relevance checks run before Rust signature inspection.
+ * - Signature inspection runs before identity uniqueness.
+ * - Identity uniqueness must call `isUniqueVoteIdentity(period, vote_hash,
+ *   recovered_voter)`, not `isUniqueVote(vote)`.
+ * - The helper must not call `PillarVote::getVoterAddr()` or `verifyVote()`.
  */
 PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& ficus_hf_config,
                                                     const std::shared_ptr<PillarVote>& vote,
                                                     const std::shared_ptr<final_chain::FinalChain>& final_chain,
                                                     const std::shared_ptr<PillarBlock>& current_pillar_block,
-                                                    bool vote_already_known, bool is_unique);
+                                                    const PillarVotes& pillar_votes);
 
 /**
  * Prepared insertion facts for one Rust-inspected pillar vote.

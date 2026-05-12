@@ -355,11 +355,12 @@ The current Rust starting point is intentionally small:
   planned-insertion hook that does not re-run manager validation, recover voters in C++, or re-query DPoS weights.
   `PillarChainManager::isRelevantPillarVote` now uses a shim-owned Rust relevance planner for period/block/known-vote
   decisions under `RUSTAXA_ENABLE_PILLAR_VOTES`.
-  `PillarChainManager::validatePillarVote` now inspects pillar-vote RLP in Rust, uses the Rust-recovered voter for
-  uniqueness and DPoS eligibility, and avoids C++ signature recovery in Rust mode. Pillar signing and the full
-  `PillarChainManager::addVerifiedPillarVote` now also runs through Rust inspection, uses the Rust-recovered voter for
-  C++ `FinalChain::dposEligibleVoteCount`, and inserts with `addVerifiedVoteWithRecoveredVoter` to avoid re-querying
-  C++-side voter identity. Pillar signing and the full `PillarChainManager` overlay remain later slices.
+  `PillarChainManager::validatePillarVote` now inspects pillar-vote RLP in Rust, uses the Rust-recovered
+  `(period, vote_hash, voter)` identity for uniqueness, uses the recovered voter for DPoS eligibility, and avoids C++
+  signature or voter recovery in Rust mode. `PillarChainManager::addVerifiedPillarVote` now also runs through Rust
+  inspection, uses the Rust-recovered voter for C++ `FinalChain::dposEligibleVoteCount`, and inserts with
+  `addVerifiedVoteWithRecoveredVoter` to avoid re-querying C++-side voter identity. Pillar signing and the full
+  `PillarChainManager` overlay remain later slices.
 - `rustaxa-storage` contains storage repositories that consensus should use through narrow ports.
 
 ### Consensus Sequencing
