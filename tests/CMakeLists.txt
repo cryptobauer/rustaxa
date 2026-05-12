@@ -92,6 +92,12 @@ if(RUSTAXA_ENABLE_VERIFIED_VOTES)
     add_test(verified_votes_shim_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/verified_votes_shim_test)
 endif()
 
+if(RUSTAXA_ENABLE_PILLAR_VOTES)
+    add_executable(pillar_votes_shim_test pillar_votes_shim_test.cpp)
+    target_link_libraries(pillar_votes_shim_test test_util)
+    add_test(pillar_votes_shim_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/pillar_votes_shim_test)
+endif()
+
 if(RUSTAXA_ENABLE_TRANSACTION_QUEUE)
     add_executable(transaction_queue_shim_test transaction_queue_shim_test.cpp)
     target_link_libraries(transaction_queue_shim_test test_util)

@@ -334,6 +334,19 @@ impl PillarVotes {
         self.periods.get(&period).map(|period| period.threshold)
     }
 
+    /// Returns all stored verified pillar votes in deterministic order.
+    ///
+    /// Entries are ordered by period, pillar block hash, and vote hash. This is
+    /// intended for C++ shim sidecar pruning and diagnostic snapshots; it does
+    /// not expose storage, networking, or signature validation behavior.
+    pub fn snapshot_votes(&self) -> Vec<VerifiedPillarVote> {
+        self.periods
+            .values()
+            .flat_map(|period| period.block_votes.values())
+            .flat_map(|block_votes| block_votes.votes.values().cloned())
+            .collect()
+    }
+
     /// Removes all vote state with period lower than `min_period`.
     pub fn erase_votes(&mut self, min_period: u64) {
         self.periods = self.periods.split_off(&min_period);
@@ -558,6 +571,14 @@ mod tests {
         assert!(votes.period_data_initialized(21));
         assert!(votes.period_data_initialized(22));
         assert_eq!(votes.len(), 2);
+        assert_eq!(
+            votes
+                .snapshot_votes()
+                .into_iter()
+                .map(|vote| vote.period())
+                .collect::<Vec<_>>(),
+            vec![21, 22]
+        );
     }
 
     #[test]

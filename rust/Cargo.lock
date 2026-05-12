@@ -1287,6 +1287,7 @@ dependencies = [
  "rlp 0.6.1",
  "rustaxa-consensus",
  "rustaxa-storage",
+ "rustaxa-types",
  "rustaxa-vdf",
 ]
 

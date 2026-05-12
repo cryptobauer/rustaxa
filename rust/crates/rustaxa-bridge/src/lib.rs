@@ -4,6 +4,7 @@ mod final_chain;
 mod gas_pricer;
 mod pbft_chain;
 mod period_data_queue;
+mod pillar_votes;
 mod proposed_blocks;
 mod slashing;
 mod sortition;

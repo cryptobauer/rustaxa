@@ -3,6 +3,7 @@ use crate::final_chain::*;
 use crate::gas_pricer::*;
 use crate::pbft_chain::*;
 use crate::period_data_queue::*;
+use crate::pillar_votes::*;
 use crate::proposed_blocks::*;
 use crate::slashing::*;
 use crate::sortition::*;
@@ -22,6 +23,7 @@ use rustaxa_consensus::transaction_manager::TransactionPackingPlanner;
 use rustaxa_consensus::transaction_queue::TransactionQueue;
 use rustaxa_consensus::verified_votes::VerifiedVotes;
 use rustaxa_consensus::FinalChain;
+use rustaxa_consensus::PillarVotes;
 use rustaxa_storage::Storage;
 use rustaxa_storage::StorageWriteBatch;
 use std::collections::HashMap;
@@ -61,6 +63,8 @@ pub struct BridgeSlashingProofPlanner(pub Mutex<SlashingProofPlanner>);
 pub struct BridgePeriodDataQueue(pub PeriodDataQueue);
 
 pub struct BridgeVerifiedVotes(pub VerifiedVotes);
+
+pub struct BridgePillarVotes(pub PillarVotes);
 
 pub struct BridgeSortitionParamsManager(pub SortitionParamsManager);
 
@@ -318,6 +322,44 @@ pub mod rustaxa_ffi {
         step: u64,
         vote_type: u8,
         weight: u64,
+    }
+
+    /// Plain payload for a pillar vote carried across the CXX boundary.
+    struct PillarVotePayload {
+        vote_hash: [u8; 32],
+        block_hash: [u8; 32],
+        voter: [u8; 20],
+        period: u64,
+        weight: u64,
+        vote_rlp: Vec<u8>,
+    }
+
+    /// Result of a uniqueness check for one pillar vote.
+    struct PillarVoteUniqueOutcome {
+        is_unique: bool,
+    }
+
+    /// Result of inserting one pillar vote into Rust-owned aggregation.
+    struct PillarVoteInsertOutcome {
+        accepted: bool,
+        duplicate: bool,
+        conflict_found: bool,
+        conflicting_vote_hash: [u8; 32],
+        block_weight: u64,
+    }
+
+    /// Lightweight reference to a Rust-selected pillar vote.
+    struct PillarVoteRef {
+        vote_hash: [u8; 32],
+        weight: u64,
+    }
+
+    /// Lookup result for one pillar block, optionally threshold-filtered.
+    struct PillarVotesLookup {
+        threshold_met: bool,
+        block_weight: u64,
+        selected_weight: u64,
+        votes: Vec<PillarVoteRef>,
     }
 
     struct UniqueVoterCheckOutcome {
@@ -1419,6 +1461,38 @@ pub mod rustaxa_ffi {
         pub fn verified_votes_snapshot_round_markers(
             self: &BridgeVerifiedVotes,
         ) -> Vec<RoundMarkerSnapshot>;
+
+        // Consensus pillar votes
+
+        type BridgePillarVotes;
+
+        pub fn create_pillar_votes_index() -> Box<BridgePillarVotes>;
+        pub fn pillar_votes_period_data_initialized(self: &BridgePillarVotes, period: u64) -> bool;
+        pub fn pillar_votes_init_period_data(
+            self: &mut BridgePillarVotes,
+            period: u64,
+            threshold: u64,
+        ) -> bool;
+        pub fn pillar_votes_vote_exists(
+            self: &BridgePillarVotes,
+            vote: PillarVotePayload,
+        ) -> Result<bool>;
+        pub fn pillar_votes_is_unique_vote(
+            self: &BridgePillarVotes,
+            vote: PillarVotePayload,
+        ) -> Result<PillarVoteUniqueOutcome>;
+        pub fn pillar_votes_insert_vote(
+            self: &mut BridgePillarVotes,
+            vote: PillarVotePayload,
+        ) -> Result<PillarVoteInsertOutcome>;
+        pub fn pillar_votes_get_verified_votes(
+            self: &BridgePillarVotes,
+            period: u64,
+            block_hash: &[u8; 32],
+            above_threshold: bool,
+        ) -> PillarVotesLookup;
+        pub fn pillar_votes_cleanup_votes_by_period(self: &mut BridgePillarVotes, min_period: u64);
+        pub fn pillar_votes_snapshot_refs(self: &BridgePillarVotes) -> Vec<PillarVoteRef>;
 
         // Consensus sortition
 

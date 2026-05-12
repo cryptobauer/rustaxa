@@ -10,6 +10,7 @@ crate-type = ["staticlib"]
 cxx = "1.0"
 rustaxa-consensus = { path = "../rustaxa-consensus" }
 rustaxa-storage = { path = "../rustaxa-storage" }
+rustaxa-types = { path = "../rustaxa-types" }
 rustaxa-vdf = { path = "../rustaxa-vdf" }
 anyhow = "1.0.100"
 ethereum-types = "0.16.0"

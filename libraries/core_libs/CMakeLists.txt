@@ -323,6 +323,25 @@ if(RUSTAXA_ENABLE_VERIFIED_VOTES)
     )
 endif()
 
+if(RUSTAXA_ENABLE_PILLAR_VOTES)
+    if(NOT RUSTAXA_ENABLE)
+        message(FATAL_ERROR "RUSTAXA_ENABLE_PILLAR_VOTES requires RUSTAXA_ENABLE")
+    endif()
+
+    # In Rust pillar-votes mode, inject a header overlay that remaps legacy
+    # PillarVotes to PillarVotesOld and exposes a standalone PillarVotes shim facade.
+    target_include_directories(core_libs BEFORE PUBLIC
+                             ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pillar_votes_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pillar_votes_shim/src/pillar_votes_shim.cpp)
+
+    # Compile the legacy implementation as PillarVotesOld.
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/pillar_chain/pillar_votes.cpp
+        PROPERTIES
+        COMPILE_DEFINITIONS "PillarVotes=PillarVotesOld"
+    )
+endif()
+
 install(TARGETS core_libs
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

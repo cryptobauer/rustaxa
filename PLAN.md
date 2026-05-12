@@ -342,7 +342,9 @@ The current Rust starting point is intentionally small:
   storage shape. Pillar signing/recovery, manager orchestration, and production routing remain later consensus slices.
 - `rustaxa-consensus` now contains a Rust pillar-vote aggregation domain for already-verified pillar vote facts:
   period initialization, per-validator uniqueness, weighted per-block aggregation, deterministic threshold subset
-  selection, and stale-period cleanup. It is not wired into production routing yet.
+  selection, and stale-period cleanup. The `RUSTAXA_ENABLE_PILLAR_VOTES` overlay routes the C++ `PillarVotes` API
+  through Rust for deterministic aggregation while C++ keeps live `PillarVote` sidecars. Pillar signing/recovery and
+  `PillarChainManager` orchestration remain later slices.
 - `rustaxa-storage` contains storage repositories that consensus should use through narrow ports.
 
 ### Consensus Sequencing
@@ -377,8 +379,9 @@ The current Rust starting point is intentionally small:
    queue so `TransactionManager::getMinGasPriceForBlockInclusion()` reads Rust queue metadata rather than legacy queue
    state.
 10. Port deterministic rewards, remaining slashing behavior, and pillar calculations after DPoS and final-chain query
-    ports are real. Double-voting proof planning is Rust-backed; broader slashing state transitions still depend on
-    future FinalChain/state ports.
+    ports are real. Double-voting proof planning and already-verified pillar-vote aggregation are Rust-backed; broader
+    slashing state transitions, pillar signing/recovery, and `PillarChainManager` orchestration still depend on future
+    FinalChain/state ports.
 
 ### First Implementation Slice
 
@@ -419,7 +422,9 @@ Use targeted validation before broad integration runs:
 - PBFT chain/proposed-block/period-data-queue changes should run `rust_consensus_tests`, the corresponding shim test,
   and targeted `pbft_chain_test` or `pbft_manager_test` cases; broader PBFT changes should also run relevant
   `vote_test` coverage.
-- Pillar/reward/eligibility changes should run `pillar_chain_test` and any affected final-chain or full-node tests.
+- Pillar vote aggregation changes should run Rust validation plus `pillar_votes_shim_test` when
+  `RUSTAXA_ENABLE_PILLAR_VOTES` is enabled; broader pillar/reward/eligibility changes should run `pillar_chain_test` and
+  any affected final-chain or full-node tests.
 - Shim startup behavior should be validated with a Rust-enabled node smoke test when consensus shims change.
 
 ## Validation Matrix
