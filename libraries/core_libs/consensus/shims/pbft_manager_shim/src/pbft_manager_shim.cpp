@@ -142,6 +142,8 @@ ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBund
 
   std::unordered_map<vote_hash_t, uint64_t> vote_weights;
   vote_weights.reserve(pillar_votes.size());
+  std::unordered_map<vote_hash_t, addr_t> vote_recovered_voters;
+  vote_recovered_voters.reserve(pillar_votes.size());
 
   for (const auto& vote : pillar_votes) {
     if (!vote) {
@@ -166,6 +168,8 @@ ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBund
     if (!weight) {
       return {ValidateSyncPillarVotesBundlePlanStatus::kZeroWeight, vote_hash, 0, 0, {}, false};
     }
+
+    vote_recovered_voters[vote_hash] = voter;
 
     rustaxa::PillarVoteBundleFact fact{};
     fact.vote_hash = inspection.vote_hash;
@@ -197,10 +201,11 @@ ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBund
     result.accepted_votes.reserve(plan.accepted_votes.size());
     for (const auto& accepted_vote : plan.accepted_votes) {
       const auto accepted_vote_hash = fromBridgeHash(accepted_vote.vote_hash);
-      if (!vote_weights.contains(accepted_vote_hash)) {
+      const auto recovered_voter_it = vote_recovered_voters.find(accepted_vote_hash);
+      if (!vote_weights.contains(accepted_vote_hash) || recovered_voter_it == vote_recovered_voters.end()) {
         return {ValidateSyncPillarVotesBundlePlanStatus::kUnknown, accepted_vote_hash, 0, 0, {}, false};
       }
-      result.accepted_votes.push_back({accepted_vote_hash, accepted_vote.weight});
+      result.accepted_votes.push_back({accepted_vote_hash, accepted_vote.weight, recovered_voter_it->second});
     }
 
     result.valid = true;
@@ -269,7 +274,7 @@ ValidatePbftBlockPillarVotesWithRustResult validatePbftBlockPillarVotesWithRust(
 
 #ifdef RUSTAXA_ENABLE_PILLAR_VOTES
     if (!pillar_chain_mgr->addPlannedVerifiedPillarVoteForRust(vote_it->second, *pillar_consensus_threshold,
-                                                               accepted_vote.weight)) {
+                                                               accepted_vote.weight, accepted_vote.recovered_voter)) {
       return {ValidatePbftBlockPillarVotesWithRustStatus::kInsertFailed, toPlanStatusCode(sync_plan.plan_status),
               vote_hash, sync_plan.block_weight, sync_plan.selected_weight};
     }

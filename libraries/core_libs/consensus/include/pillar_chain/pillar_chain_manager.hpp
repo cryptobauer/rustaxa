@@ -119,15 +119,15 @@ class PillarChainManager {
    *
    * Invariants:
    * - The caller has already verified signature, period, block hash, non-zero
-   *   DPoS weight, and deterministic bundle threshold in Rust.
+   *   DPoS weight, deterministic bundle threshold, and recovered voter in Rust.
    * - This method must not call `validatePillarVote`, `addVerifiedPillarVote`,
-   *   or any FinalChain DPoS lookup.
+   *   `PillarVote::getVoterAddr`, or any FinalChain DPoS lookup.
    *
    * TODO(rustaxa): remove this guarded hook once the Rust `PillarChainManager`
    * shim owns planned sync insertion directly.
    */
   bool addPlannedVerifiedPillarVoteForRust(const std::shared_ptr<PillarVote>& vote, uint64_t period_threshold,
-                                           uint64_t validator_vote_count);
+                                           uint64_t validator_vote_count, const addr_t& recovered_voter);
 #endif
 
   /**

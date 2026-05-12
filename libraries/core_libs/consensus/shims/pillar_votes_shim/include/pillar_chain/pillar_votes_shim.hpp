@@ -88,6 +88,19 @@ class PillarVotes {
    * conflicting voter attempts.
    */
   bool addVerifiedVote(const std::shared_ptr<PillarVote>& vote, uint64_t validator_vote_count);
+#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
+  /**
+   * Adds one verified pillar vote using a Rust-recovered voter.
+   *
+   * The caller supplies the voter identity produced by Rust inspection; this
+   * path must not recover the voter from the C++ `PillarVote` sidecar.
+   *
+   * Returns true for accepted or duplicate votes for the same hash; false for
+   * conflicting voter attempts.
+   */
+  bool addVerifiedVoteWithRecoveredVoter(const std::shared_ptr<PillarVote>& vote, uint64_t validator_vote_count,
+                                         const addr_t& recovered_voter);
+#endif
 
   /**
    * Returns all votes for `pillar_block_hash`, optionally threshold-filtered.

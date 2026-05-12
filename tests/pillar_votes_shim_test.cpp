@@ -46,7 +46,11 @@ DuplicateVoteResult runDuplicateVoteScenario(PbftPeriod period = PbftPeriod{11},
   const auto duplicate_added = votes.addVerifiedVote(vote_b, weight);
   const auto all_votes_for_block = votes.getVerifiedVotes(period, blk_hash_t(1), false);
 
-  return {first_unique, first_added, duplicate_unique, duplicate_added, vote_a->getHash() == vote_b->getHash(),
+  return {first_unique,
+          first_added,
+          duplicate_unique,
+          duplicate_added,
+          vote_a->getHash() == vote_b->getHash(),
           all_votes_for_block.size()};
 }
 
@@ -108,7 +112,7 @@ AboveThresholdResult runAboveThresholdScenario(PbftPeriod period = PbftPeriod{13
   const auto contains_medium = std::any_of(selected_votes.begin(), selected_votes.end(),
                                            [&](const auto& vote) { return vote->getHash() == medium_vote->getHash(); });
   const auto contains_light = std::any_of(selected_votes.begin(), selected_votes.end(),
-                                         [&](const auto& vote) { return vote->getHash() == light_vote->getHash(); });
+                                          [&](const auto& vote) { return vote->getHash() == light_vote->getHash(); });
 
   return {all_votes.size(), selected_votes.size(), contains_heavy && contains_medium, !contains_light};
 }
@@ -229,6 +233,34 @@ TEST(PillarVotesShimTest, paritySameVoterConflictingVoteRejection) {
   EXPECT_EQ(legacy.second_added, shim.second_added);
   EXPECT_EQ(legacy.votes_for_first_block, shim.votes_for_first_block);
   EXPECT_EQ(legacy.votes_for_second_block, shim.votes_for_second_block);
+#else
+  GTEST_SKIP() << "PillarVotes shim is disabled";
+#endif
+}
+
+TEST(PillarVotesShimTest, rustRecoveredVoterControlsPlannedInsertionIdentity) {
+#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
+  taraxa::pillar_chain::PillarVotes pillar_votes;
+  const auto period = PbftPeriod{20};
+  pillar_votes.initializePeriodData(period, 2);
+
+  const auto first_secret = secret_t::random();
+  const auto second_secret = secret_t::random();
+  const auto first_vote = std::make_shared<PillarVote>(first_secret, period, blk_hash_t(1));
+  const auto second_vote = std::make_shared<PillarVote>(second_secret, period, blk_hash_t(2));
+  const auto third_vote = std::make_shared<PillarVote>(first_secret, period, blk_hash_t(3));
+
+  const auto first_recovered_voter = first_vote->getVoterAddr();
+  const auto second_recovered_voter = second_vote->getVoterAddr();
+  ASSERT_NE(first_recovered_voter, second_recovered_voter);
+
+  EXPECT_TRUE(pillar_votes.addVerifiedVoteWithRecoveredVoter(first_vote, 1, first_recovered_voter));
+  EXPECT_FALSE(pillar_votes.addVerifiedVoteWithRecoveredVoter(second_vote, 1, first_recovered_voter));
+  EXPECT_TRUE(pillar_votes.addVerifiedVoteWithRecoveredVoter(third_vote, 1, second_recovered_voter));
+
+  EXPECT_EQ(pillar_votes.getVerifiedVotes(period, blk_hash_t(1), false).size(), 1);
+  EXPECT_EQ(pillar_votes.getVerifiedVotes(period, blk_hash_t(2), false).size(), 0);
+  EXPECT_EQ(pillar_votes.getVerifiedVotes(period, blk_hash_t(3), false).size(), 1);
 #else
   GTEST_SKIP() << "PillarVotes shim is disabled";
 #endif

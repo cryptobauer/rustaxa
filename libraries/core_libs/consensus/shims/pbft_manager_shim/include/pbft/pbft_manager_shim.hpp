@@ -48,13 +48,14 @@ enum class ValidateSyncPillarVotesBundlePlanStatus : uint8_t {
  * One Rust-planned pillar-vote insertion fact.
  *
  * Purpose:
- * - Carries the exact vote hash and DPoS weight selected by Rust so C++ can
- *   resolve a live `PillarVote` sidecar and insert it without re-querying
- *   FinalChain.
+ * - Carries the exact vote hash, DPoS weight, and Rust-recovered voter
+ *   selected by Rust so C++ can resolve a live `PillarVote` sidecar and
+ *   insert it without re-querying FinalChain or recovering the voter in C++.
  */
 struct ValidateSyncPillarVotesBundleAcceptedVote {
   vote_hash_t vote_hash{};
   uint64_t weight{0};
+  addr_t recovered_voter{};
 };
 
 /**

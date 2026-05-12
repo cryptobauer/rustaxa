@@ -350,10 +350,11 @@ The current Rust starting point is intentionally small:
   selection, and stale-period cleanup. The `RUSTAXA_ENABLE_PILLAR_VOTES` overlay routes the C++ `PillarVotes` API
   through Rust for deterministic aggregation while C++ keeps live `PillarVote` sidecars. The PBFT sync pillar-vote
   bundle path now calls a stateless Rust bundle planner for period/block validation, duplicate-safe unique-weight
-  threshold accounting, deterministic rejection statuses, and accepted vote weights. The PBFT shim resolves only
-  Rust-accepted vote hashes back to live C++ sidecars and inserts them through a temporary planned-insertion hook that
-  does not re-run manager validation or re-query DPoS weights. `PillarChainManager::isRelevantPillarVote` now uses a
-  shim-owned Rust relevance planner for period/block/known-vote decisions under `RUSTAXA_ENABLE_PILLAR_VOTES`.
+  threshold accounting, deterministic rejection statuses, accepted vote weights, and Rust-recovered voter identities.
+  The PBFT shim resolves only Rust-accepted vote hashes back to live C++ sidecars and inserts them through a temporary
+  planned-insertion hook that does not re-run manager validation, recover voters in C++, or re-query DPoS weights.
+  `PillarChainManager::isRelevantPillarVote` now uses a shim-owned Rust relevance planner for period/block/known-vote
+  decisions under `RUSTAXA_ENABLE_PILLAR_VOTES`.
   `PillarChainManager::validatePillarVote` now inspects pillar-vote RLP in Rust, uses the Rust-recovered voter for
   uniqueness and DPoS eligibility, and avoids C++ signature recovery in Rust mode. Pillar signing and the full
   `PillarChainManager` overlay remain later slices.

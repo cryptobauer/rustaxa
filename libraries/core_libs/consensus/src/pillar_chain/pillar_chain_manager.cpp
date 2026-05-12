@@ -297,8 +297,8 @@ bool PillarChainManager::validatePillarVote(const std::shared_ptr<PillarVote> vo
     const auto is_unique = pillar_votes_.isUniqueVote(vote);
     const auto vote_period = vote->getPeriod();
 
-    const auto validation_plan =
-        validatePillarVoteWithRust(kFicusHfConfig, vote, final_chain_, current_pillar_block, vote_already_known, is_unique);
+    const auto validation_plan = validatePillarVoteWithRust(kFicusHfConfig, vote, final_chain_, current_pillar_block,
+                                                            vote_already_known, is_unique);
 
     if (!validation_plan.is_valid) {
       switch (validation_plan.status) {
@@ -416,7 +416,8 @@ uint64_t PillarChainManager::addVerifiedPillarVote(const std::shared_ptr<PillarV
 
 #ifdef RUSTAXA_ENABLE_PILLAR_VOTES
 bool PillarChainManager::addPlannedVerifiedPillarVoteForRust(const std::shared_ptr<PillarVote>& vote,
-                                                             uint64_t period_threshold, uint64_t validator_vote_count) {
+                                                             uint64_t period_threshold, uint64_t validator_vote_count,
+                                                             const addr_t& recovered_voter) {
   if (!vote || period_threshold == 0 || validator_vote_count == 0) {
     LOG(log_er_) << "Unable to add planned pillar vote: missing vote, zero threshold, or zero validator vote count";
     return false;
@@ -426,7 +427,7 @@ bool PillarChainManager::addPlannedVerifiedPillarVoteForRust(const std::shared_p
     pillar_votes_.initializePeriodData(vote->getPeriod(), period_threshold);
   }
 
-  if (!pillar_votes_.addVerifiedVote(vote, validator_vote_count)) {
+  if (!pillar_votes_.addVerifiedVoteWithRecoveredVoter(vote, validator_vote_count, recovered_voter)) {
     LOG(log_er_) << "Unable to insert planned pillar vote " << vote->getHash() << " for period " << vote->getPeriod()
                  << " in Rust sync path";
     return false;

@@ -29,7 +29,7 @@ rust::Vec<uint8_t> toBridgeBytes(const bytes& input) {
 }
 
 rustaxa::PillarVotePayload toBridgePayload(const std::shared_ptr<PillarVote>& vote, uint64_t validator_vote_count,
-                                           bool include_voter) {
+                                           const std::array<uint8_t, 20>& voter) {
   if (!vote) {
     throw pillarVotesError("cannot bridge null vote pointer");
   }
@@ -37,12 +37,15 @@ rustaxa::PillarVotePayload toBridgePayload(const std::shared_ptr<PillarVote>& vo
     throw pillarVotesError("validator vote count must be non-zero");
   }
 
-  return rustaxa::PillarVotePayload{toBridgeHash(vote->getHash()),
-                                    toBridgeHash(vote->getBlockHash()),
-                                    include_voter ? toBridgeAddress(vote->getVoterAddr()) : std::array<uint8_t, 20>{},
-                                    vote->getPeriod(),
-                                    validator_vote_count,
-                                    toBridgeBytes(vote->rlp())};
+  return rustaxa::PillarVotePayload{
+      toBridgeHash(vote->getHash()), toBridgeHash(vote->getBlockHash()), voter, vote->getPeriod(),
+      validator_vote_count,          toBridgeBytes(vote->rlp())};
+}
+
+rustaxa::PillarVotePayload toBridgePayload(const std::shared_ptr<PillarVote>& vote, uint64_t validator_vote_count,
+                                           bool include_voter) {
+  return toBridgePayload(vote, validator_vote_count,
+                         include_voter ? toBridgeAddress(vote->getVoterAddr()) : std::array<uint8_t, 20>{});
 }
 
 }  // namespace
@@ -135,6 +138,25 @@ bool PillarVotes::addVerifiedVote(const std::shared_ptr<PillarVote>& vote, uint6
   trackVote(vote);
   return true;
 }
+
+#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
+bool PillarVotes::addVerifiedVoteWithRecoveredVoter(const std::shared_ptr<PillarVote>& vote,
+                                                    uint64_t validator_vote_count, const addr_t& recovered_voter) {
+  std::scoped_lock lock(mutex_);
+  const auto outcome = rust_pillar_votes_->pillar_votes_insert_vote(
+      taraxa::pillar_chain::toBridgePayload(vote, validator_vote_count, toBridgeAddress(recovered_voter)));
+  if (outcome.conflict_found) {
+    return false;
+  }
+
+  if (!outcome.accepted && !outcome.duplicate) {
+    throw pillarVotesError("Rust insert returned neither accepted, duplicate, nor conflict");
+  }
+
+  trackVote(vote);
+  return true;
+}
+#endif
 
 std::vector<std::shared_ptr<PillarVote>> PillarVotes::getVerifiedVotes(PbftPeriod period,
                                                                        const blk_hash_t& pillar_block_hash,
