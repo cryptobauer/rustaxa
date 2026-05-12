@@ -15,12 +15,10 @@ namespace taraxa {
 
 namespace {
 
-std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t& hash) {
-  return hash.asArray();
-}
+std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t& hash) { return hash.asArray(); }
 
-std::array<uint8_t, 20> toBridgeAddress(const addr_t& address) {
-  return address.asArray();
+addr_t fromBridgeAddress(const std::array<uint8_t, 20>& address) {
+  return addr_t(address.data(), addr_t::ConstructFromPointer);
 }
 
 vote_hash_t fromBridgeHash(const std::array<uint8_t, 32>& hash) {
@@ -52,15 +50,12 @@ ValidateSyncPillarVotesBundlePlanStatus toPlanStatus(uint8_t status) {
   }
 }
 
-uint8_t toPlanStatusCode(ValidateSyncPillarVotesBundlePlanStatus status) {
-  return static_cast<uint8_t>(status);
-}
+uint8_t toPlanStatusCode(ValidateSyncPillarVotesBundlePlanStatus status) { return static_cast<uint8_t>(status); }
 
 std::optional<uint64_t> getPillarVoteWeight(const std::shared_ptr<final_chain::FinalChain>& final_chain,
-                                            const std::shared_ptr<PillarVote>& vote,
-                                            PbftPeriod required_votes_period) {
+                                            const addr_t& voter, PbftPeriod required_votes_period) {
   try {
-    const auto weight = final_chain->dposEligibleVoteCount(required_votes_period - 1, vote->getVoterAddr());
+    const auto weight = final_chain->dposEligibleVoteCount(required_votes_period - 1, voter);
     if (weight == 0) {
       return std::nullopt;
     }
@@ -153,21 +148,35 @@ ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBund
       return {ValidateSyncPillarVotesBundlePlanStatus::kUnknown, {}, 0, 0, {}, false};
     }
 
-    const auto weight = getPillarVoteWeight(final_chain, vote, required_votes_period);
+    rustaxa::PillarVoteInspection inspection;
+    try {
+      const auto rlp = vote->rlp();
+      inspection = rustaxa::pillar_vote_inspect(rust::Slice<const uint8_t>(rlp.data(), rlp.size()));
+    } catch (const std::exception&) {
+      return {ValidateSyncPillarVotesBundlePlanStatus::kPrevalidationFailed, {}, 0, 0, {}, false};
+    }
+
+    const auto vote_hash = fromBridgeHash(inspection.vote_hash);
+    if (!inspection.signature_valid) {
+      return {ValidateSyncPillarVotesBundlePlanStatus::kPrevalidationFailed, vote_hash, 0, 0, {}, false};
+    }
+
+    const auto voter = fromBridgeAddress(inspection.voter);
+    const auto weight = getPillarVoteWeight(final_chain, voter, required_votes_period);
     if (!weight) {
-      return {ValidateSyncPillarVotesBundlePlanStatus::kZeroWeight, vote->getHash(), 0, 0, {}, false};
+      return {ValidateSyncPillarVotesBundlePlanStatus::kZeroWeight, vote_hash, 0, 0, {}, false};
     }
 
     rustaxa::PillarVoteBundleFact fact{};
-    fact.vote_hash = toBridgeHash(vote->getHash());
-    fact.block_hash = toBridgeHash(vote->getBlockHash());
-    fact.voter = toBridgeAddress(vote->getVoterAddr());
-    fact.period = vote->getPeriod();
+    fact.vote_hash = inspection.vote_hash;
+    fact.block_hash = inspection.block_hash;
+    fact.voter = inspection.voter;
+    fact.period = inspection.period;
     fact.weight = *weight;
-    fact.prevalidated = vote->verifyVote();
+    fact.prevalidated = true;
 
     facts.push_back(fact);
-    vote_weights[vote->getHash()] = *weight;
+    vote_weights[vote_hash] = *weight;
   }
 
   try {
@@ -229,10 +238,9 @@ ValidatePbftBlockPillarVotesWithRustResult validatePbftBlockPillarVotesWithRust(
     return {ValidatePbftBlockPillarVotesWithRustStatus::kMissingThreshold, 0, {}, 0, 0};
   }
 
-  const auto sync_plan =
-      validateSyncPillarVotesBundleDeterministically(*period_data.pillar_votes_, required_votes_period,
-                                                    current_pillar_block->getHash(), *pillar_consensus_threshold,
-                                                    final_chain);
+  const auto sync_plan = validateSyncPillarVotesBundleDeterministically(
+      *period_data.pillar_votes_, required_votes_period, current_pillar_block->getHash(), *pillar_consensus_threshold,
+      final_chain);
   if (!sync_plan.valid) {
     ValidatePbftBlockPillarVotesWithRustStatus status = ValidatePbftBlockPillarVotesWithRustStatus::kPlanRejected;
     if (sync_plan.plan_status == ValidateSyncPillarVotesBundlePlanStatus::kUnknown) {
@@ -255,8 +263,8 @@ ValidatePbftBlockPillarVotesWithRustResult validatePbftBlockPillarVotesWithRust(
     const auto& vote_hash = accepted_vote.vote_hash;
     const auto vote_it = vote_by_hash.find(vote_hash);
     if (vote_it == vote_by_hash.end()) {
-      return {ValidatePbftBlockPillarVotesWithRustStatus::kAcceptedVoteMissing,
-              toPlanStatusCode(sync_plan.plan_status), vote_hash, sync_plan.block_weight, sync_plan.selected_weight};
+      return {ValidatePbftBlockPillarVotesWithRustStatus::kAcceptedVoteMissing, toPlanStatusCode(sync_plan.plan_status),
+              vote_hash, sync_plan.block_weight, sync_plan.selected_weight};
     }
 
 #ifdef RUSTAXA_ENABLE_PILLAR_VOTES
