@@ -340,7 +340,9 @@ if(RUSTAXA_ENABLE_PILLAR_VOTES)
                              ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pbft_manager_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pbft_manager_shim/src/pbft_manager_shim.cpp)
 
-    # Temporary PillarChainManager relevance shim header and helper source.
+    # In Rust pillar-votes mode, inject a header overlay that remaps legacy
+    # PillarChainManager to PillarChainManagerOld and exposes a standalone
+    # PillarChainManager shim facade.
     target_include_directories(core_libs BEFORE PUBLIC
                              ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pillar_chain_manager_shim/include)
     target_sources(core_libs PRIVATE
@@ -351,6 +353,13 @@ if(RUSTAXA_ENABLE_PILLAR_VOTES)
         ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/pillar_chain/pillar_votes.cpp
         PROPERTIES
         COMPILE_DEFINITIONS "PillarVotes=PillarVotesOld"
+    )
+
+    # Compile the legacy implementation as PillarChainManagerOld.
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/pillar_chain/pillar_chain_manager.cpp
+        PROPERTIES
+        COMPILE_DEFINITIONS "PillarChainManager=PillarChainManagerOld"
     )
 endif()
 

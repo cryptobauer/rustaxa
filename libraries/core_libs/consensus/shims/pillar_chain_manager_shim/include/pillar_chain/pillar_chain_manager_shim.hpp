@@ -2,19 +2,27 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <shared_mutex>
+#include <vector>
 
+#include "common/event.hpp"
 #include "common/types.hpp"
+#include "final_chain/data.hpp"
+#include "logger/logger.hpp"
+#include "pillar_chain/pillar_block.hpp"
+#include "pillar_chain/pillar_votes.hpp"
 
 namespace taraxa {
+class DbStorage;
+class Network;
+class KeyManager;
 struct FicusHardforkConfig;
-class PillarVote;
 namespace final_chain {
 class FinalChain;
 }
 
 namespace pillar_chain {
-class PillarBlock;
-class PillarVotes;
 
 /**
  * Deterministic pillar-vote relevance plan status from the Rust planner.
@@ -188,6 +196,208 @@ PillarVoteValidationPlan inspectPillarVoteWithRust(const std::shared_ptr<PillarV
  * Stable logging helper for explicit validation reason reporting.
  */
 const char* pillarVoteValidationPlanStatusString(PillarVoteValidationPlanStatus status);
+
+/** @addtogroup PILLAR_CHAIN
+ * @{
+ */
+
+/**
+ * Rust-mode PillarChainManager facade.
+ *
+ * Purpose:
+ * - Preserves the public C++ `PillarChainManager` API while keeping all
+ *   Rust-enabled routing in shim-owned files.
+ * - Owns the pillar-vote Rust identity/relevance/validation insertion paths so
+ *   upstream-owned `pillar_chain_manager.cpp` remains pure legacy C++.
+ *
+ * Invariants:
+ * - This class is the Rust-mode production surface; it must not silently
+ *   delegate deterministic vote validation or insertion to `PillarChainManagerOld`.
+ * - Existing C++ storage, networking, and block lifecycle calls remain stable
+ *   while deterministic vote identity logic is moved behind Rust bridge helpers.
+ */
+class PillarChainManager {
+ private:
+  const util::event::EventEmitter<const PillarBlockData&> pillar_block_finalized_emitter_{};
+
+ public:
+  const decltype(pillar_block_finalized_emitter_)::Subscriber& pillar_block_finalized_ =
+      pillar_block_finalized_emitter_;
+
+ public:
+  /**
+   * Constructs the Rust-mode pillar-chain manager and loads persisted local
+   * pillar block/vote state.
+   *
+   * Inputs:
+   * - `ficus_hf_config` supplies pillar period configuration.
+   * - `db` supplies persisted pillar blocks and votes.
+   * - `final_chain` supplies DPoS vote counts and eligibility.
+   * - `key_manager` and `node_addr` preserve the legacy construction contract.
+   *
+   * Edge behavior:
+   * - Persisted votes are reinserted through the Rust-mode verified-vote path.
+   */
+  PillarChainManager(const FicusHardforkConfig& ficus_hf_config, std::shared_ptr<DbStorage> db,
+                     std::shared_ptr<final_chain::FinalChain> final_chain, std::shared_ptr<KeyManager> key_manager,
+                     addr_t node_addr);
+
+  /**
+   * Creates and persists a new current pillar block for `period`.
+   *
+   * Returns:
+   * - The created block when vote-count deltas and parent linkage are valid.
+   * - `nullptr` when local finalized/current pillar state is inconsistent.
+   */
+  std::shared_ptr<PillarBlock> createPillarBlock(PbftPeriod period,
+                                                 const std::shared_ptr<const final_chain::BlockHeader>& block_header,
+                                                 const h256& bridge_root, const h256& bridge_epoch);
+
+  /**
+   * Generates, stores, and optionally broadcasts this node's pillar vote.
+   *
+   * Returns:
+   * - The created vote when Rust-mode verified insertion succeeds.
+   * - `nullptr` when the vote cannot be weighted or inserted.
+   */
+  std::shared_ptr<PillarVote> genAndPlacePillarVote(PbftPeriod period, const blk_hash_t& pillar_block_hash,
+                                                    const secret_t& node_sk, bool broadcast_vote);
+
+  /**
+   * Sets the network dependency used for pillar-vote gossip and vote-bundle requests.
+   */
+  void setNetwork(std::weak_ptr<Network> network);
+
+  /**
+   * Checks whether a pillar vote is relevant to the local current/future pillar context.
+   *
+   * Invariants:
+   * - Relevance is planned through Rust-compatible helper facts.
+   * - Duplicate votes are rejected before insertion.
+   */
+  bool isRelevantPillarVote(const std::shared_ptr<PillarVote> vote) const;
+
+  /**
+   * Validates one pillar vote using Rust identity inspection plus local DPoS checks.
+   *
+   * Returns:
+   * - `true` only when relevance, uniqueness, Rust signature recovery, and DPoS
+   *   eligibility all pass.
+   */
+  bool validatePillarVote(const std::shared_ptr<PillarVote> vote) const;
+
+  /**
+   * Returns true when `block_hash` is already the latest finalized pillar block.
+   */
+  bool isPillarBlockLatestFinalized(const blk_hash_t& block_hash) const;
+
+  /**
+   * Returns the latest finalized pillar block, or `nullptr` before first finalization.
+   */
+  std::shared_ptr<PillarBlock> getLastFinalizedPillarBlock() const;
+
+  /**
+   * Adds one verified pillar vote to the in-memory Rust-backed vote index.
+   *
+   * Invariants:
+   * - Voter identity is recovered from Rust inspection and passed into
+   *   `PillarVotes`; this method must not call `PillarVote::getVoterAddr()`.
+   * - DPoS weight is looked up for the Rust-recovered voter at `period - 1`.
+   *
+   * Returns:
+   * - The non-zero validator vote count when inserted; otherwise 0.
+   */
+  uint64_t addVerifiedPillarVote(const std::shared_ptr<PillarVote>& vote);
+
+  /**
+   * Inserts one Rust-planned sync pillar vote with caller-provided threshold,
+   * validator weight, and recovered voter identity.
+   *
+   * Invariants:
+   * - Caller has already validated the vote bundle through Rust planning.
+   * - This method does not re-enter legacy C++ identity recovery or FinalChain
+   *   DPoS lookup.
+   */
+  bool addPlannedVerifiedPillarVoteForRust(const std::shared_ptr<PillarVote>& vote, uint64_t period_threshold,
+                                           uint64_t validator_vote_count, const addr_t& recovered_voter);
+
+  /**
+   * Finalizes the current pillar block when enough verified votes are present.
+   *
+   * Returns:
+   * - Above-threshold votes used for finalization, or an empty vector when
+   *   finalization cannot proceed.
+   */
+  std::vector<std::shared_ptr<PillarVote>> finalizePillarBlock(const blk_hash_t& pillar_block_hash);
+
+  /**
+   * Returns the current local pillar block, or `nullptr` before one is created.
+   */
+  std::shared_ptr<PillarBlock> getCurrentPillarBlock() const;
+
+  /**
+   * Retrieves verified votes for one pillar period and block hash.
+   *
+   * Inputs:
+   * - `above_threshold` requests the minimum sorted above-threshold vote set.
+   *
+   * Edge behavior:
+   * - Falls back to persisted period votes only when the in-memory index has no
+   *   entries for the requested key.
+   */
+  std::vector<std::shared_ptr<PillarVote>> getVerifiedPillarVotes(PbftPeriod period, const blk_hash_t pillar_block_hash,
+                                                                  bool above_threshold = false) const;
+
+  /**
+   * Checks whether a proposed pillar block properly links to the finalized pillar chain.
+   */
+  bool isValidPillarBlock(const std::shared_ptr<PillarBlock>& pillar_block) const;
+
+  /**
+   * Calculates the pillar consensus threshold for a DPoS period.
+   *
+   * Returns:
+   * - `total_eligible_vote_count / 2 + 1`, or empty when FinalChain cannot
+   *   provide the period state.
+   */
+  std::optional<uint64_t> getPillarConsensusThreshold(PbftPeriod period) const;
+
+ private:
+  /**
+   * Computes ordered validator vote-count deltas between the current and previous pillar block snapshots.
+   */
+  std::vector<PillarBlock::ValidatorVoteCountChange> getOrderedValidatorsVoteCountsChanges(
+      const std::vector<state_api::ValidatorVoteCount>& current_vote_counts,
+      const std::vector<state_api::ValidatorVoteCount>& previous_pillar_block_vote_counts);
+
+  /**
+   * Persists and installs a new current pillar block snapshot.
+   */
+  void saveNewPillarBlock(const std::shared_ptr<PillarBlock>& pillar_block,
+                          std::vector<state_api::ValidatorVoteCount>&& new_vote_counts);
+
+ private:
+  const FicusHardforkConfig& kFicusHfConfig;
+
+  std::shared_ptr<DbStorage> db_;
+  std::weak_ptr<Network> network_;
+  std::shared_ptr<final_chain::FinalChain> final_chain_;
+  std::shared_ptr<KeyManager> key_manager_;
+
+  const addr_t node_addr_;
+
+  std::shared_ptr<PillarBlock> last_finalized_pillar_block_;
+  std::shared_ptr<PillarBlock> current_pillar_block_;
+  std::vector<state_api::ValidatorVoteCount> current_pillar_block_vote_counts_;
+
+  PillarVotes pillar_votes_;
+
+  mutable std::shared_mutex mutex_;
+
+  LOG_OBJECTS_DEFINE
+};
+
+/** @}*/
 
 }  // namespace pillar_chain
 }  // namespace taraxa

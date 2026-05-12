@@ -101,45 +101,12 @@ class PillarChainManager {
   std::shared_ptr<PillarBlock> getLastFinalizedPillarBlock() const;
 
   /**
-   * Adds one verified pillar vote to the in-memory vote index.
+   * @brief Add a vote to the pillar votes map
+   * @param vote vote
    *
-   * Purpose:
-   * - Calculates the signer's current DPoS vote count, initializes period
-   *   threshold state when needed, and stores the vote for threshold
-   *   aggregation.
-   *
-   * Rust-mode invariants:
-   * - The voter identity is recovered by Rust inspection and carried into the
-   *   Rust-backed `PillarVotes` insertion path.
-   * - This path must not recover voter identity from the C++ `PillarVote`
-   *   sidecar before a full `PillarChainManager` overlay owns insertion.
-   *
-   * Returns:
-   * - The vote's non-zero weight when successfully added; otherwise 0.
+   * @return vote's weight if vote was successfully added, otherwise 0
    */
   uint64_t addVerifiedPillarVote(const std::shared_ptr<PillarVote>& vote);
-
-#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
-  /**
-   * TEMPORARY: inserts one Rust-planned pillar vote with caller-provided threshold and weight.
-   *
-   * Purpose:
-   * - Mirrors PBFT sync votes accepted by the Rust planner into the existing
-   *   live `PillarVotes` sidecar index while `PillarChainManager` is not yet a
-   *   full overlay shim.
-   *
-   * Invariants:
-   * - The caller has already verified signature, period, block hash, non-zero
-   *   DPoS weight, deterministic bundle threshold, and recovered voter in Rust.
-   * - This method must not call `validatePillarVote`, `addVerifiedPillarVote`,
-   *   `PillarVote::getVoterAddr`, or any FinalChain DPoS lookup.
-   *
-   * TODO(rustaxa): remove this guarded hook once the Rust `PillarChainManager`
-   * shim owns planned sync insertion directly.
-   */
-  bool addPlannedVerifiedPillarVoteForRust(const std::shared_ptr<PillarVote>& vote, uint64_t period_threshold,
-                                           uint64_t validator_vote_count, const addr_t& recovered_voter);
-#endif
 
   /**
    * @brief Finalize pillar block
