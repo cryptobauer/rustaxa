@@ -365,8 +365,10 @@ pub mod rustaxa_ffi {
     }
 
     /// Lightweight reference to a bundle-planned pillar vote.
+    /// Includes the vote hash and weight carried from planner input.
     struct PillarVoteBundleAcceptedVote {
         vote_hash: [u8; 32],
+        weight: u64,
     }
 
     /// Lookup result for one pillar block, optionally threshold-filtered.

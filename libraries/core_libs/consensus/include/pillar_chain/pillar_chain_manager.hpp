@@ -108,6 +108,28 @@ class PillarChainManager {
    */
   uint64_t addVerifiedPillarVote(const std::shared_ptr<PillarVote>& vote);
 
+#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
+  /**
+   * TEMPORARY: inserts one Rust-planned pillar vote with caller-provided threshold and weight.
+   *
+   * Purpose:
+   * - Mirrors PBFT sync votes accepted by the Rust planner into the existing
+   *   live `PillarVotes` sidecar index while `PillarChainManager` is not yet a
+   *   full overlay shim.
+   *
+   * Invariants:
+   * - The caller has already verified signature, period, block hash, non-zero
+   *   DPoS weight, and deterministic bundle threshold in Rust.
+   * - This method must not call `validatePillarVote`, `addVerifiedPillarVote`,
+   *   or any FinalChain DPoS lookup.
+   *
+   * TODO(rustaxa): remove this guarded hook once the Rust `PillarChainManager`
+   * shim owns planned sync insertion directly.
+   */
+  bool addPlannedVerifiedPillarVoteForRust(const std::shared_ptr<PillarVote>& vote, uint64_t period_threshold,
+                                           uint64_t validator_vote_count);
+#endif
+
   /**
    * @brief Finalize pillar block
    *

@@ -195,10 +195,11 @@ impl From<ConsensusPillarVoteBundlePlan> for PillarVoteBundlePlanOutput {
         Self {
             status: value.status.as_u8(),
             accepted_votes: value
-                .accepted_vote_hashes
+                .accepted_votes
                 .into_iter()
-                .map(|vote_hash| PillarVoteBundleAcceptedVote {
-                    vote_hash: vote_hash.into(),
+                .map(|vote| PillarVoteBundleAcceptedVote {
+                    vote_hash: vote.vote_hash.into(),
+                    weight: vote.weight,
                 })
                 .collect(),
             block_weight: value.block_weight,
@@ -467,9 +468,13 @@ mod tests {
         assert_eq!(
             plan.accepted_votes
                 .into_iter()
-                .map(|vote| vote.vote_hash)
+                .map(|vote| (vote.vote_hash, vote.weight))
                 .collect::<Vec<_>>(),
-            vec![hash_bytes(11), hash_bytes(12), hash_bytes(13)]
+            vec![
+                (hash_bytes(11), 4),
+                (hash_bytes(12), 3),
+                (hash_bytes(13), 2)
+            ]
         );
     }
 

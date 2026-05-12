@@ -2380,11 +2380,14 @@ bool PbftManager::validatePbftBlockPillarVotes(const PeriodData &period_data) co
 #ifdef RUSTAXA_ENABLE_PILLAR_VOTES
   const auto rust_validation_result =
       validatePbftBlockPillarVotesWithRust(period_data, pillar_chain_mgr_, final_chain_);
-  if (!rust_validation_result) {
+  if (!rust_validation_result.valid()) {
     LOG(log_er_) << "Rust sync pillar-vote validation failed, pbft block period "
-                 << period_data.pbft_blk->getPeriod();
+                 << (period_data.pbft_blk ? period_data.pbft_blk->getPeriod() : 0) << ", status "
+                 << validatePbftBlockPillarVotesWithRustStatusString(rust_validation_result.status)
+                 << ", plan status " << static_cast<uint32_t>(rust_validation_result.plan_status)
+                 << ", first bad vote " << rust_validation_result.first_bad_vote_hash;
   }
-  return rust_validation_result;
+  return rust_validation_result.valid();
 #endif
 
   if (!period_data.pillar_votes_.has_value() || period_data.pillar_votes_->empty()) {

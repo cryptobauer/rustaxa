@@ -53,8 +53,11 @@ TEST(PillarVoteBundleBridgeTest, planPillarVoteBundleMatchesExpectedStatuses) {
   EXPECT_EQ(plan.selected_weight, 7);
   EXPECT_EQ(plan.accepted_votes.size(), 3);
   EXPECT_EQ(plan.accepted_votes[0].vote_hash, makeHash(11));
+  EXPECT_EQ(plan.accepted_votes[0].weight, 4);
   EXPECT_EQ(plan.accepted_votes[1].vote_hash, makeHash(12));
+  EXPECT_EQ(plan.accepted_votes[1].weight, 3);
   EXPECT_EQ(plan.accepted_votes[2].vote_hash, makeHash(13));
+  EXPECT_EQ(plan.accepted_votes[2].weight, 2);
 }
 
 TEST(PillarVoteBundleBridgeTest, planPillarVoteBundleRejectsMismatchedBlockHash) {

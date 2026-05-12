@@ -25,8 +25,8 @@ use std::collections::{BTreeMap, btree_map::Entry};
 ///   `PillarVote` object that will be inserted if the bundle is accepted.
 /// - `weight` is the C++/FinalChain-derived eligible vote count for `voter`.
 /// - `prevalidated` must be true only after C++ has accepted non-ported checks
-///   such as signature recovery, eligibility, and existing local-state conflict
-///   checks.
+///   such as signature recovery and DPoS weight lookup. Local-state conflicts
+///   are enforced by this planner and by the Rust-backed insertion index.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PillarVoteFact {
     pub vote_hash: H256,
@@ -75,9 +75,11 @@ impl PillarVoteBundleValidationStatus {
 ///
 /// Outputs:
 /// - `status` communicates the first deterministic rejection reason, or `Valid`.
-/// - `accepted_vote_hashes` contains unique accepted vote hashes in deterministic
-///   all-vote lookup order when the bundle reaches threshold; C++ uses this as
-///   the side-effect insertion plan.
+/// - `accepted_vote_hashes` keeps backward-compatible accepted hashes in
+///   deterministic all-vote lookup order.
+/// - `accepted_votes` contains unique accepted vote hashes and weights in
+///   deterministic all-vote lookup order when the bundle reaches threshold. C++
+///   can use these as insertion facts without re-querying DPoS.
 /// - `block_weight` is the unique accepted weight for the expected pillar block.
 /// - `selected_weight` is the minimal above-threshold prefix weight.
 /// - `first_bad_vote_hash` identifies the offending vote when a per-vote
@@ -86,9 +88,21 @@ impl PillarVoteBundleValidationStatus {
 pub struct PillarVoteBundlePlan {
     pub status: PillarVoteBundleValidationStatus,
     pub accepted_vote_hashes: Vec<H256>,
+    pub accepted_votes: Vec<PillarVoteBundleAcceptedVote>,
     pub block_weight: u64,
     pub selected_weight: u64,
     pub first_bad_vote_hash: H256,
+}
+
+/// Deterministic vote-selection entry returned from bundle planning.
+///
+/// Invariants:
+/// - `vote_hash` is the canonical hash for one deterministic accepted vote.
+/// - `weight` is the non-zero weight supplied by C++/DPoS prevalidation facts.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PillarVoteBundleAcceptedVote {
+    pub vote_hash: H256,
+    pub weight: u64,
 }
 
 /// Planner for deterministic PBFT pillar-vote bundle acceptance.
@@ -185,19 +199,27 @@ impl PillarVoteBundlePlanner {
             return PillarVoteBundlePlan {
                 status: PillarVoteBundleValidationStatus::ThresholdNotReached,
                 accepted_vote_hashes: Vec::new(),
+                accepted_votes: Vec::new(),
                 block_weight: all_votes.block_weight,
                 selected_weight: 0,
                 first_bad_vote_hash: H256::zero(),
             };
         }
 
+        let accepted_votes: Vec<_> = all_votes
+            .votes
+            .iter()
+            .map(|vote| PillarVoteBundleAcceptedVote {
+                vote_hash: vote.vote_hash,
+                weight: vote.weight,
+            })
+            .collect();
+        let accepted_vote_hashes = accepted_votes.iter().map(|vote| vote.vote_hash).collect();
+
         PillarVoteBundlePlan {
             status: PillarVoteBundleValidationStatus::Valid,
-            accepted_vote_hashes: all_votes
-                .votes
-                .into_iter()
-                .map(|vote| vote.vote_hash)
-                .collect(),
+            accepted_votes,
+            accepted_vote_hashes,
             block_weight: all_votes.block_weight,
             selected_weight: above_threshold.selected_weight,
             first_bad_vote_hash: H256::zero(),
@@ -212,6 +234,7 @@ impl PillarVoteBundlePlanner {
         PillarVoteBundlePlan {
             status,
             accepted_vote_hashes: Vec::new(),
+            accepted_votes: Vec::new(),
             block_weight: 0,
             selected_weight: 0,
             first_bad_vote_hash,
@@ -612,11 +635,20 @@ mod tests {
         assert_eq!(plan.block_weight, 6);
         assert_eq!(plan.selected_weight, 6);
         assert_eq!(
-            plan.accepted_vote_hashes,
+            plan.accepted_votes,
             vec![
-                H256::from_low_u64_be(11),
-                H256::from_low_u64_be(12),
-                H256::from_low_u64_be(13)
+                PillarVoteBundleAcceptedVote {
+                    vote_hash: H256::from_low_u64_be(11),
+                    weight: 1
+                },
+                PillarVoteBundleAcceptedVote {
+                    vote_hash: H256::from_low_u64_be(12),
+                    weight: 2
+                },
+                PillarVoteBundleAcceptedVote {
+                    vote_hash: H256::from_low_u64_be(13),
+                    weight: 3
+                },
             ]
         );
     }
@@ -634,7 +666,7 @@ mod tests {
         );
         assert_eq!(plan.block_weight, 6);
         assert_eq!(plan.selected_weight, 0);
-        assert!(plan.accepted_vote_hashes.is_empty());
+        assert!(plan.accepted_votes.is_empty());
     }
 
     #[test]
@@ -700,7 +732,11 @@ mod tests {
         );
         assert_eq!(duplicate_plan.block_weight, 6);
         assert_eq!(
-            duplicate_plan.accepted_vote_hashes,
+            duplicate_plan
+                .accepted_votes
+                .iter()
+                .map(|vote| vote.vote_hash)
+                .collect::<Vec<_>>(),
             vec![H256::from_low_u64_be(51), H256::from_low_u64_be(52)]
         );
 

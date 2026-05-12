@@ -311,6 +311,32 @@ uint64_t PillarChainManager::addVerifiedPillarVote(const std::shared_ptr<PillarV
   return validator_vote_count;
 }
 
+#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
+bool PillarChainManager::addPlannedVerifiedPillarVoteForRust(const std::shared_ptr<PillarVote>& vote,
+                                                            uint64_t period_threshold,
+                                                            uint64_t validator_vote_count) {
+  if (!vote || period_threshold == 0 || validator_vote_count == 0) {
+    LOG(log_er_) << "Unable to add planned pillar vote: missing vote, zero threshold, or zero validator vote count";
+    return false;
+  }
+
+  if (!pillar_votes_.periodDataInitialized(vote->getPeriod())) {
+    pillar_votes_.initializePeriodData(vote->getPeriod(), period_threshold);
+  }
+
+  if (!pillar_votes_.addVerifiedVote(vote, validator_vote_count)) {
+    LOG(log_er_) << "Unable to insert planned pillar vote " << vote->getHash() << " for period " << vote->getPeriod()
+                 << " in Rust sync path";
+    return false;
+  }
+
+  LOG(log_nf_) << "Inserted planned pillar vote " << vote->getHash() << " for block " << vote->getBlockHash()
+               << ", period " << vote->getPeriod();
+  return true;
+}
+
+#endif
+
 std::vector<std::shared_ptr<PillarVote>> PillarChainManager::getVerifiedPillarVotes(PbftPeriod period,
                                                                                     const blk_hash_t pillar_block_hash,
                                                                                     bool above_threshold) const {

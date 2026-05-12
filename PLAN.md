@@ -347,9 +347,11 @@ The current Rust starting point is intentionally small:
   period initialization, per-validator uniqueness, weighted per-block aggregation, deterministic threshold subset
   selection, and stale-period cleanup. The `RUSTAXA_ENABLE_PILLAR_VOTES` overlay routes the C++ `PillarVotes` API
   through Rust for deterministic aggregation while C++ keeps live `PillarVote` sidecars. The PBFT sync pillar-vote
-  bundle precheck now calls a stateless Rust bundle planner for period/block validation, duplicate-safe unique-weight
-  threshold accounting, and deterministic rejection statuses before C++ applies live vote side effects. Pillar
-  signing/recovery and `PillarChainManager` orchestration remain later slices.
+  bundle path now calls a stateless Rust bundle planner for period/block validation, duplicate-safe unique-weight
+  threshold accounting, deterministic rejection statuses, and accepted vote weights. The PBFT shim resolves only
+  Rust-accepted vote hashes back to live C++ sidecars and inserts them through a temporary planned-insertion hook that
+  does not re-run manager validation or re-query DPoS weights. Pillar signing/recovery and the full
+  `PillarChainManager` overlay remain later slices.
 - `rustaxa-storage` contains storage repositories that consensus should use through narrow ports.
 
 ### Consensus Sequencing
