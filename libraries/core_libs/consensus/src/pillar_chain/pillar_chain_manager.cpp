@@ -9,6 +9,10 @@
 #include "storage/storage.hpp"
 #include "vote/pillar_vote.hpp"
 
+#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
+#include "pillar_chain/pillar_chain_manager_shim.hpp"
+#endif
+
 namespace taraxa::pillar_chain {
 
 PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_config, std::shared_ptr<DbStorage> db,
@@ -212,6 +216,47 @@ std::shared_ptr<PillarBlock> PillarChainManager::getCurrentPillarBlock() const {
 }
 
 bool PillarChainManager::isRelevantPillarVote(const std::shared_ptr<PillarVote> vote) const {
+#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
+  {
+    const auto vote_exists = pillar_votes_.voteExists(vote);
+    const auto current_pillar_block = getCurrentPillarBlock();
+    const auto relevance_plan = planPillarVoteRelevance(kFicusHfConfig, vote, current_pillar_block, vote_exists);
+
+    if (!relevance_plan.is_relevant) {
+      switch (relevance_plan.status) {
+        case pillar_chain::PillarVoteRelevancePlanStatus::kVoteAlreadyKnown:
+          LOG(log_dg_) << "Received vote " << vote->getHash() << " already saved";
+          return false;
+        case pillar_chain::PillarVoteRelevancePlanStatus::kMissingCurrentPillarBlock:
+          LOG(log_nf_) << "Received vote's period " << vote->getPeriod()
+                       << ", no pillar block created yet. Accepting votes with "
+                       << kFicusHfConfig.firstPillarBlockPeriod() + 1 << " period";
+          return false;
+        case pillar_chain::PillarVoteRelevancePlanStatus::kVotePeriodMismatch:
+          if (!current_pillar_block) {
+            LOG(log_nf_) << "Received vote's period " << vote->getPeriod() << ", current pillar block missing";
+          } else {
+            LOG(log_nf_) << "Received vote's period " << vote->getPeriod() << ", current pillar block period "
+                         << current_pillar_block->getPeriod();
+          }
+          return false;
+        case pillar_chain::PillarVoteRelevancePlanStatus::kVoteBlockHashMismatch:
+          LOG(log_nf_) << "Received vote's block hash " << vote->getBlockHash() << " != current pillar block hash "
+                       << current_pillar_block->getHash();
+          return false;
+        case pillar_chain::PillarVoteRelevancePlanStatus::kUnknown:
+          [[fallthrough]];
+        default:
+          LOG(log_wr_) << "Unable to evaluate pillar vote relevance for " << vote->getHash() << ": "
+                       << pillarVoteRelevancePlanStatusString(relevance_plan.status);
+          return false;
+      }
+    }
+
+    return true;
+  }
+#endif
+
   const auto current_pillar_block = getCurrentPillarBlock();
 
   const auto vote_period = vote->getPeriod();
@@ -313,8 +358,7 @@ uint64_t PillarChainManager::addVerifiedPillarVote(const std::shared_ptr<PillarV
 
 #ifdef RUSTAXA_ENABLE_PILLAR_VOTES
 bool PillarChainManager::addPlannedVerifiedPillarVoteForRust(const std::shared_ptr<PillarVote>& vote,
-                                                            uint64_t period_threshold,
-                                                            uint64_t validator_vote_count) {
+                                                             uint64_t period_threshold, uint64_t validator_vote_count) {
   if (!vote || period_threshold == 0 || validator_vote_count == 0) {
     LOG(log_er_) << "Unable to add planned pillar vote: missing vote, zero threshold, or zero validator vote count";
     return false;

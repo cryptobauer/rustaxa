@@ -12,7 +12,9 @@
 use crate::ffi::rustaxa_ffi::{
     PillarVoteBundleAcceptedVote, PillarVoteBundleFact as FfiPillarVoteBundleFact,
     PillarVoteBundlePlan as PillarVoteBundlePlanOutput, PillarVoteInsertOutcome, PillarVotePayload,
-    PillarVoteRef, PillarVoteUniqueOutcome, PillarVotesLookup,
+    PillarVoteRef, PillarVoteRelevanceFact as FfiPillarVoteRelevanceFact,
+    PillarVoteRelevancePlan as FfiPillarVoteRelevancePlan, PillarVoteUniqueOutcome,
+    PillarVotesLookup,
 };
 use crate::ffi::BridgePillarVotes;
 use anyhow::{ensure, Result};
@@ -20,7 +22,9 @@ use ethereum_types::{H160, H256};
 use rustaxa_consensus::{
     PillarVoteBundlePlan as ConsensusPillarVoteBundlePlan, PillarVoteBundlePlanner,
     PillarVoteFact as ConsensusPillarVoteFact,
-    PillarVoteInsertOutcome as ConsensusPillarVoteInsertOutcome, PillarVotes, VerifiedPillarVote,
+    PillarVoteInsertOutcome as ConsensusPillarVoteInsertOutcome,
+    PillarVoteRelevanceFact as ConsensusPillarVoteRelevanceFact,
+    PillarVoteRelevancePlan as ConsensusPillarVoteRelevancePlan, PillarVotes, VerifiedPillarVote,
 };
 use rustaxa_types::PillarVote;
 
@@ -120,6 +124,16 @@ pub fn plan_pillar_vote_bundle(
     Ok(PillarVoteBundlePlanOutput::from(planner.plan(&facts)))
 }
 
+/// Evaluates one pillar-vote relevance query and returns a deterministic reason.
+pub fn plan_pillar_vote_relevance(
+    fact: FfiPillarVoteRelevanceFact,
+) -> Result<FfiPillarVoteRelevancePlan> {
+    let fact = relevance_fact_to_consensus_fact(fact)?;
+    Ok(FfiPillarVoteRelevancePlan::from(
+        rustaxa_consensus::plan_pillar_vote_relevance(fact)?,
+    ))
+}
+
 fn bundle_fact_to_consensus_fact(value: FfiPillarVoteBundleFact) -> ConsensusPillarVoteFact {
     ConsensusPillarVoteFact {
         vote_hash: H256::from(value.vote_hash),
@@ -129,6 +143,31 @@ fn bundle_fact_to_consensus_fact(value: FfiPillarVoteBundleFact) -> ConsensusPil
         weight: value.weight,
         prevalidated: value.prevalidated,
     }
+}
+
+fn relevance_fact_to_consensus_fact(
+    value: FfiPillarVoteRelevanceFact,
+) -> Result<ConsensusPillarVoteRelevanceFact> {
+    let current_pillar_block_period = if value.has_current_pillar_block {
+        Some(value.current_pillar_block_period)
+    } else {
+        None
+    };
+    let current_pillar_block_hash = if value.has_current_pillar_block {
+        Some(H256::from(value.current_pillar_block_hash))
+    } else {
+        None
+    };
+
+    Ok(ConsensusPillarVoteRelevanceFact {
+        vote_period: value.vote_period,
+        vote_block_hash: H256::from(value.vote_block_hash),
+        current_pillar_block_period,
+        current_pillar_block_hash,
+        first_pillar_block_period: value.first_pillar_block_period,
+        pillar_blocks_interval: value.pillar_blocks_interval,
+        vote_already_known: value.vote_already_known,
+    })
 }
 
 fn payload_to_vote(value: PillarVotePayload) -> Result<VerifiedPillarVote> {
@@ -205,6 +244,15 @@ impl From<ConsensusPillarVoteBundlePlan> for PillarVoteBundlePlanOutput {
             block_weight: value.block_weight,
             selected_weight: value.selected_weight,
             first_bad_vote_hash: value.first_bad_vote_hash.into(),
+        }
+    }
+}
+
+impl From<ConsensusPillarVoteRelevancePlan> for FfiPillarVoteRelevancePlan {
+    fn from(value: ConsensusPillarVoteRelevancePlan) -> Self {
+        Self {
+            status: value.status_code(),
+            is_relevant: value.is_relevant,
         }
     }
 }
@@ -504,5 +552,64 @@ mod tests {
         assert_eq!(plan.selected_weight, 0);
         assert!(plan.accepted_votes.is_empty());
         assert_eq!(plan.first_bad_vote_hash, hash_bytes(31));
+    }
+
+    fn relevance_fact(
+        vote_period: u64,
+        vote_block_hash: u64,
+        current_pillar_block_period: Option<u64>,
+        current_pillar_block_hash: u64,
+        vote_already_known: bool,
+    ) -> FfiPillarVoteRelevanceFact {
+        FfiPillarVoteRelevanceFact {
+            vote_period,
+            vote_block_hash: H256::from_low_u64_be(vote_block_hash).into(),
+            current_pillar_block_period: current_pillar_block_period.unwrap_or_default(),
+            current_pillar_block_hash: H256::from_low_u64_be(current_pillar_block_hash).into(),
+            has_current_pillar_block: current_pillar_block_period.is_some(),
+            first_pillar_block_period: 10,
+            pillar_blocks_interval: 10,
+            vote_already_known,
+        }
+    }
+
+    #[test]
+    fn plan_relevance_with_no_current_block_matches_first_period_plus_one() {
+        let fact = relevance_fact(11, 10_001, None, 0, false);
+
+        let plan = plan_pillar_vote_relevance(fact).unwrap();
+
+        assert!(plan.is_relevant);
+        assert_eq!(plan.status, 0);
+    }
+
+    #[test]
+    fn plan_relevance_rejects_hash_mismatch_for_next_period() {
+        let fact = relevance_fact(21, 777, Some(20), 333, false);
+
+        let plan = plan_pillar_vote_relevance(fact).unwrap();
+
+        assert!(!plan.is_relevant);
+        assert_eq!(plan.status, 4);
+    }
+
+    #[test]
+    fn plan_relevance_accepts_future_period_relative_to_current() {
+        let fact = relevance_fact(31, 888, Some(20), 333, false);
+
+        let plan = plan_pillar_vote_relevance(fact).unwrap();
+
+        assert!(plan.is_relevant);
+        assert_eq!(plan.status, 0);
+    }
+
+    #[test]
+    fn plan_relevance_reports_known_vote_as_irrelevant() {
+        let fact = relevance_fact(31, 888, Some(20), 333, true);
+
+        let plan = plan_pillar_vote_relevance(fact).unwrap();
+
+        assert!(!plan.is_relevant);
+        assert_eq!(plan.status, 1);
     }
 }

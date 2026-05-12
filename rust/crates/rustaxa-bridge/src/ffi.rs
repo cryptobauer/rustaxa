@@ -399,6 +399,35 @@ pub mod rustaxa_ffi {
         first_bad_vote_hash: [u8; 32],
     }
 
+    /// Input facts for one pillar-vote relevance check.
+    ///
+    /// `has_current_pillar_block` gates whether C++ has provided current pillar
+    /// context. When false, `current_pillar_block_period` and
+    /// `current_pillar_block_hash` are ignored.
+    struct PillarVoteRelevanceFact {
+        vote_period: u64,
+        vote_block_hash: [u8; 32],
+        current_pillar_block_period: u64,
+        current_pillar_block_hash: [u8; 32],
+        has_current_pillar_block: bool,
+        first_pillar_block_period: u64,
+        pillar_blocks_interval: u64,
+        vote_already_known: bool,
+    }
+
+    /// Deterministic relevance decision returned by Rust.
+    ///
+    /// Status values:
+    /// - `0` - relevant
+    /// - `1` - vote already known
+    /// - `2` - missing current pillar block context
+    /// - `3` - vote period mismatch
+    /// - `4` - vote hash mismatch for `current_period + 1`
+    struct PillarVoteRelevancePlan {
+        status: u8,
+        is_relevant: bool,
+    }
+
     struct UniqueVoterCheckOutcome {
         is_unique: bool,
         conflict_found: bool,
@@ -1537,6 +1566,11 @@ pub mod rustaxa_ffi {
             expected_block_hash: &[u8; 32],
             threshold: u64,
         ) -> Result<PillarVoteBundlePlan>;
+
+        /// Evaluates one pillar-vote relevance query.
+        pub fn plan_pillar_vote_relevance(
+            fact: PillarVoteRelevanceFact,
+        ) -> Result<PillarVoteRelevancePlan>;
 
         // Consensus sortition
 

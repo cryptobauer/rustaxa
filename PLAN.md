@@ -350,8 +350,9 @@ The current Rust starting point is intentionally small:
   bundle path now calls a stateless Rust bundle planner for period/block validation, duplicate-safe unique-weight
   threshold accounting, deterministic rejection statuses, and accepted vote weights. The PBFT shim resolves only
   Rust-accepted vote hashes back to live C++ sidecars and inserts them through a temporary planned-insertion hook that
-  does not re-run manager validation or re-query DPoS weights. Pillar signing/recovery and the full
-  `PillarChainManager` overlay remain later slices.
+  does not re-run manager validation or re-query DPoS weights. `PillarChainManager::isRelevantPillarVote` now uses a
+  shim-owned Rust relevance planner for period/block/known-vote decisions under `RUSTAXA_ENABLE_PILLAR_VOTES`. Pillar
+  signing/recovery and the full `PillarChainManager` overlay remain later slices.
 - `rustaxa-storage` contains storage repositories that consensus should use through narrow ports.
 
 ### Consensus Sequencing

@@ -18,8 +18,9 @@ pub use pbft_chain::PbftChain;
 pub use period_data_queue::PeriodDataQueue;
 pub use pillar_votes::{
     PillarVoteBundleAcceptedVote, PillarVoteBundlePlan, PillarVoteBundlePlanner,
-    PillarVoteBundleValidationStatus, PillarVoteFact, PillarVoteInsertOutcome, PillarVotes,
-    PillarVotesLookup, VerifiedPillarVote,
+    PillarVoteBundleValidationStatus, PillarVoteFact, PillarVoteInsertOutcome,
+    PillarVoteRelevanceFact, PillarVoteRelevancePlan, PillarVoteRelevanceStatus, PillarVotes,
+    PillarVotesLookup, VerifiedPillarVote, plan_pillar_vote_relevance,
 };
 pub use proposed_blocks::ProposedBlocks;
 pub use rustaxa_types::{

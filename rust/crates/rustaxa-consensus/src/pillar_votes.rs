@@ -14,6 +14,147 @@ use rustaxa_types::PillarVote;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, btree_map::Entry};
 
+/// Plain input used to evaluate whether one pillar vote is relevant for local
+/// acceptance and sidecar indexing.
+///
+/// Inputs are intentionally plain scalars and domain hashes so C++ can keep its
+/// live vote sidecar ownership while delegating the relevance gate to Rust.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PillarVoteRelevanceFact {
+    pub vote_period: u64,
+    pub vote_block_hash: H256,
+    pub current_pillar_block_period: Option<u64>,
+    pub current_pillar_block_hash: Option<H256>,
+    pub first_pillar_block_period: u64,
+    pub pillar_blocks_interval: u64,
+    pub vote_already_known: bool,
+}
+
+/// Deterministic status describing why a pillar vote is accepted or rejected by
+/// relevance planning.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PillarVoteRelevanceStatus {
+    Relevant,
+    VoteAlreadyKnown,
+    MissingCurrentPillarBlock,
+    VotePeriodMismatch,
+    VoteBlockHashMismatch,
+}
+
+impl PillarVoteRelevanceStatus {
+    pub fn as_u8(self) -> u8 {
+        match self {
+            Self::Relevant => 0,
+            Self::VoteAlreadyKnown => 1,
+            Self::MissingCurrentPillarBlock => 2,
+            Self::VotePeriodMismatch => 3,
+            Self::VoteBlockHashMismatch => 4,
+        }
+    }
+}
+
+/// Deterministic relevance decision returned by one planner pass.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PillarVoteRelevancePlan {
+    pub status: PillarVoteRelevanceStatus,
+    pub is_relevant: bool,
+}
+
+impl PillarVoteRelevancePlan {
+    /// Returns the stable bridge status code for this relevance decision.
+    pub fn status_code(self) -> u8 {
+        self.status.as_u8()
+    }
+}
+
+/// Evaluates whether one pillar vote is relevant for current pillar state.
+///
+/// The planner follows the existing C++-anchored semantics:
+/// - A known vote is always irrelevant.
+/// - When no current pillar block exists, only `first_pillar_block_period + 1`
+///   can still be relevant.
+/// - With a current block, period `current + 1` is relevant only with matching
+///   pillar hash; `current + pillar_interval + 1` is the forward-period path
+///   with no hash check.
+pub fn plan_pillar_vote_relevance(
+    fact: PillarVoteRelevanceFact,
+) -> Result<PillarVoteRelevancePlan> {
+    if fact.vote_already_known {
+        return Ok(PillarVoteRelevancePlan {
+            status: PillarVoteRelevanceStatus::VoteAlreadyKnown,
+            is_relevant: false,
+        });
+    }
+
+    ensure!(
+        fact.pillar_blocks_interval > 0,
+        "pillar blocks interval must be greater than zero"
+    );
+
+    let has_current_period = fact.current_pillar_block_period.is_some();
+    let has_current_hash = fact.current_pillar_block_hash.is_some();
+    ensure!(
+        has_current_period == has_current_hash,
+        "current pillar block period/hash options must be provided together"
+    );
+
+    let status = match (
+        fact.current_pillar_block_period,
+        fact.current_pillar_block_hash,
+    ) {
+        (None, None) => {
+            let first_plus_one =
+                fact.first_pillar_block_period
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "first pillar block period overflow while planning relevance: {}",
+                            fact.first_pillar_block_period
+                        )
+                    })?;
+
+            if fact.vote_period == first_plus_one {
+                PillarVoteRelevanceStatus::Relevant
+            } else {
+                PillarVoteRelevanceStatus::MissingCurrentPillarBlock
+            }
+        }
+        (Some(current_period), Some(current_hash)) => {
+            let next_period = current_period.checked_add(1).ok_or_else(|| {
+                anyhow!("current pillar block period overflow: {}", current_period)
+            })?;
+            let future_period = current_period
+                .checked_add(fact.pillar_blocks_interval)
+                .and_then(|p| p.checked_add(1))
+                .ok_or_else(|| {
+                    anyhow!(
+                        "pillar block interval overflow: period {} + {} + 1",
+                        current_period,
+                        fact.pillar_blocks_interval,
+                    )
+                })?;
+
+            if fact.vote_period == next_period {
+                if fact.vote_block_hash == current_hash {
+                    PillarVoteRelevanceStatus::Relevant
+                } else {
+                    PillarVoteRelevanceStatus::VoteBlockHashMismatch
+                }
+            } else if fact.vote_period == future_period {
+                PillarVoteRelevanceStatus::Relevant
+            } else {
+                PillarVoteRelevanceStatus::VotePeriodMismatch
+            }
+        }
+        _ => PillarVoteRelevanceStatus::MissingCurrentPillarBlock,
+    };
+
+    Ok(PillarVoteRelevancePlan {
+        status,
+        is_relevant: matches!(status, PillarVoteRelevanceStatus::Relevant),
+    })
+}
+
 /// Plain pillar-vote fact used by PBFT pillar-vote bundle validation.
 ///
 /// Purpose:
@@ -618,6 +759,98 @@ mod tests {
             weight,
             prevalidated: true,
         }
+    }
+
+    #[test]
+    fn relevance_plan_accepts_first_block_plus_one_without_current_block() {
+        let plan = plan_pillar_vote_relevance(PillarVoteRelevanceFact {
+            vote_period: 11,
+            vote_block_hash: H256::from_low_u64_be(333),
+            current_pillar_block_period: None,
+            current_pillar_block_hash: None,
+            first_pillar_block_period: 10,
+            pillar_blocks_interval: 10,
+            vote_already_known: false,
+        })
+        .unwrap();
+
+        assert!(plan.is_relevant);
+        assert_eq!(plan.status, PillarVoteRelevanceStatus::Relevant,);
+        assert_eq!(plan.status_code(), 0);
+    }
+
+    #[test]
+    fn relevance_plan_rejects_missing_current_block_unless_first_plus_one() {
+        let plan = plan_pillar_vote_relevance(PillarVoteRelevanceFact {
+            vote_period: 13,
+            vote_block_hash: H256::from_low_u64_be(333),
+            current_pillar_block_period: None,
+            current_pillar_block_hash: None,
+            first_pillar_block_period: 10,
+            pillar_blocks_interval: 10,
+            vote_already_known: false,
+        })
+        .unwrap();
+
+        assert!(!plan.is_relevant);
+        assert_eq!(
+            plan.status,
+            PillarVoteRelevanceStatus::MissingCurrentPillarBlock,
+        );
+    }
+
+    #[test]
+    fn relevance_plan_rejects_next_period_mismatched_hash_when_current_known() {
+        let plan = plan_pillar_vote_relevance(PillarVoteRelevanceFact {
+            vote_period: 21,
+            vote_block_hash: H256::from_low_u64_be(333),
+            current_pillar_block_period: Some(20),
+            current_pillar_block_hash: Some(H256::from_low_u64_be(111)),
+            first_pillar_block_period: 10,
+            pillar_blocks_interval: 10,
+            vote_already_known: false,
+        })
+        .unwrap();
+
+        assert!(!plan.is_relevant);
+        assert_eq!(
+            plan.status,
+            PillarVoteRelevanceStatus::VoteBlockHashMismatch
+        );
+    }
+
+    #[test]
+    fn relevance_plan_accepts_future_period_relative_to_current_block() {
+        let plan = plan_pillar_vote_relevance(PillarVoteRelevanceFact {
+            vote_period: 31,
+            vote_block_hash: H256::from_low_u64_be(333),
+            current_pillar_block_period: Some(20),
+            current_pillar_block_hash: Some(H256::from_low_u64_be(111)),
+            first_pillar_block_period: 10,
+            pillar_blocks_interval: 10,
+            vote_already_known: false,
+        })
+        .unwrap();
+
+        assert!(plan.is_relevant);
+        assert_eq!(plan.status, PillarVoteRelevanceStatus::Relevant);
+    }
+
+    #[test]
+    fn relevance_plan_rejects_vote_when_already_known() {
+        let plan = plan_pillar_vote_relevance(PillarVoteRelevanceFact {
+            vote_period: 31,
+            vote_block_hash: H256::from_low_u64_be(333),
+            current_pillar_block_period: Some(20),
+            current_pillar_block_hash: Some(H256::from_low_u64_be(333)),
+            first_pillar_block_period: 10,
+            pillar_blocks_interval: 10,
+            vote_already_known: true,
+        })
+        .unwrap();
+
+        assert!(!plan.is_relevant);
+        assert_eq!(plan.status, PillarVoteRelevanceStatus::VoteAlreadyKnown);
     }
 
     #[test]
