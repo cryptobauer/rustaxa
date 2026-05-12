@@ -183,6 +183,8 @@ C++ vs Rust parity tests required:
 
 - replay `pillar_chain_test.block_serialization`, `pillar_block_solidity_rlp_encoding`,
   `pillar_vote_solidity_rlp_encoding`, `votes_count_changes`, and `finalize_root_in_pillar_block`
+- cover `PillarChainManager::addVerifiedPillarVote` in Rust-enabled mode for successful recovered-voter insertion and
+  invalid Rust-inspected signature rejection
 - replay `rewards_stats_test.statsProcessing`, `distributionChange`, `feeRewards`, and `dagBlockRewards`
 
 ### 8. PBFT Manager State Machine

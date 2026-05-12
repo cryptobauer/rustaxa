@@ -2,6 +2,7 @@
 
 #include "common/encoding_solidity.hpp"
 #include "common/init.hpp"
+#include "final_chain/final_chain.hpp"
 #include "logger/logger.hpp"
 #include "pbft/pbft_manager.hpp"
 #include "pillar_chain/pillar_chain_manager.hpp"
@@ -388,6 +389,56 @@ TEST_F(PillarChainTest, compact_signature) {
     ASSERT_EQ(compact_sig, dev::h512("0x9328da16089fcba9bececa81663203989f2df5fe1faa6291a45381c81bd17f76939c6d6b623b42d"
                                      "a56557e5e734a43dc83345ddfadec52cbe24d0cc64f550793"));
   }
+}
+
+TEST_F(PillarChainTest, addVerifiedPillarVote_insertsWithRecoveredIdentityWeight) {
+  auto cfg = make_node_cfgs(1, 1, 10).front();
+  cfg.genesis.state.dpos.delegation_delay = 1;
+  cfg.genesis.state.hardforks.ficus_hf.block_num = 0;
+  cfg.genesis.state.hardforks.ficus_hf.pillar_blocks_interval = 4;
+
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, cfg.getFirstWallet().node_addr);
+  auto pillar_chain_manager = pillar_chain::PillarChainManager(cfg.genesis.state.hardforks.ficus_hf, db, final_chain,
+                                                               nullptr, cfg.getFirstWallet().node_addr);
+
+  const auto vote_period = PbftPeriod{1};
+  const auto vote = std::make_shared<PillarVote>(cfg.getFirstWallet().node_secret, vote_period, blk_hash_t(10));
+  const auto expected_weight = final_chain->dposEligibleVoteCount(vote_period - 1, cfg.getFirstWallet().node_addr);
+  const auto vote_weight = pillar_chain_manager.addVerifiedPillarVote(vote);
+  ASSERT_GT(vote_weight, 0u);
+  EXPECT_EQ(vote_weight, expected_weight);
+
+  const auto votes = pillar_chain_manager.getVerifiedPillarVotes(vote_period, vote->getBlockHash(), false);
+  ASSERT_FALSE(votes.empty());
+  EXPECT_EQ(votes.size(), 1u);
+  EXPECT_EQ(votes[0]->getHash(), vote->getHash());
+}
+
+TEST_F(PillarChainTest, addVerifiedPillarVote_rejectsInvalidRustInspectedSignature) {
+#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
+  auto cfg = make_node_cfgs(1, 1, 10).front();
+  cfg.genesis.state.dpos.delegation_delay = 1;
+  cfg.genesis.state.hardforks.ficus_hf.block_num = 0;
+  cfg.genesis.state.hardforks.ficus_hf.pillar_blocks_interval = 4;
+
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, cfg.getFirstWallet().node_addr);
+  auto pillar_chain_manager = pillar_chain::PillarChainManager(cfg.genesis.state.hardforks.ficus_hf, db, final_chain,
+                                                               nullptr, cfg.getFirstWallet().node_addr);
+
+  const auto vote_period = PbftPeriod{1};
+  const auto valid_vote = PillarVote(cfg.getFirstWallet().node_secret, vote_period, blk_hash_t(11));
+  auto signature = valid_vote.getVoteSignature();
+  signature[64] = 4;
+  const auto malformed_vote =
+      std::make_shared<PillarVote>(valid_vote.getPeriod(), valid_vote.getBlockHash(), std::move(signature));
+
+  EXPECT_EQ(pillar_chain_manager.addVerifiedPillarVote(malformed_vote), 0);
+  EXPECT_TRUE(pillar_chain_manager.getVerifiedPillarVotes(vote_period, malformed_vote->getBlockHash(), false).empty());
+#else
+  GTEST_SKIP() << "Pillar vote Rust inspection is disabled";
+#endif
 }
 
 TEST_F(PillarChainTest, pillar_block_solidity_rlp_encoding) {

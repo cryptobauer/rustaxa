@@ -378,16 +378,52 @@ bool PillarChainManager::validatePillarVote(const std::shared_ptr<PillarVote> vo
 }
 
 uint64_t PillarChainManager::addVerifiedPillarVote(const std::shared_ptr<PillarVote>& vote) {
-  uint64_t validator_vote_count = 0;
+#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
+  {
+    const auto add_plan = planAddVerifiedPillarVoteWithRust(vote, final_chain_);
+    if (!add_plan.can_insert) {
+      LOG(log_er_) << "Unable to add pillar vote in Rust production path: "
+                   << pillarVoteValidationPlanStatusString(add_plan.status);
+      return 0;
+    }
+
+    if (!pillar_votes_.periodDataInitialized(add_plan.period)) {
+      const auto threshold = getPillarConsensusThreshold(add_plan.period - 1);
+      if (!threshold) {
+        LOG(log_er_) << "Unable to get pillar consensus threshold for period " << add_plan.period - 1;
+        return 0;
+      }
+      pillar_votes_.initializePeriodData(add_plan.period, *threshold);
+    }
+
+    if (!pillar_votes_.addVerifiedVoteWithRecoveredVoter(vote, add_plan.validator_vote_count,
+                                                         add_plan.recovered_voter)) {
+      LOG(log_er_) << "Non-unique pillar vote " << add_plan.vote_hash << ", period " << add_plan.period
+                   << ", validator " << add_plan.recovered_voter;
+      return 0;
+    }
+
+    LOG(log_nf_) << "Added pillar vote " << add_plan.vote_hash << ", period " << add_plan.period
+                 << ", pillar block hash " << vote->getBlockHash();
+    return add_plan.validator_vote_count;
+  }
+#endif
+
+  if (!vote) {
+    LOG(log_er_) << "Unable to add pillar vote: null vote pointer";
+    return 0;
+  }
+
+  uint64_t legacy_validator_vote_count = 0;
   try {
-    validator_vote_count = final_chain_->dposEligibleVoteCount(vote->getPeriod() - 1, vote->getVoterAddr());
+    legacy_validator_vote_count = final_chain_->dposEligibleVoteCount(vote->getPeriod() - 1, vote->getVoterAddr());
   } catch (state_api::ErrFutureBlock& e) {
     LOG(log_er_) << "Pillar vote " << vote->getHash() << " with period " << vote->getPeriod()
                  << " is too far ahead of DPOS. " << e.what();
     return 0;
   }
 
-  if (!validator_vote_count) {
+  if (!legacy_validator_vote_count) {
     LOG(log_er_) << "Zero vote count for pillar vote: " << vote->getHash() << ", author: " << vote->getVoterAddr()
                  << ", period: " << vote->getPeriod();
     return 0;
@@ -402,7 +438,7 @@ uint64_t PillarChainManager::addVerifiedPillarVote(const std::shared_ptr<PillarV
     pillar_votes_.initializePeriodData(vote->getPeriod(), *threshold);
   }
 
-  if (!pillar_votes_.addVerifiedVote(vote, validator_vote_count)) {
+  if (!pillar_votes_.addVerifiedVote(vote, legacy_validator_vote_count)) {
     LOG(log_er_) << "Non-unique pillar vote " << vote->getHash() << ", period " << vote->getPeriod() << ", validator "
                  << vote->getVoterAddr();
     return 0;
@@ -411,7 +447,7 @@ uint64_t PillarChainManager::addVerifiedPillarVote(const std::shared_ptr<PillarV
   LOG(log_nf_) << "Added pillar vote " << vote->getHash() << ", period " << vote->getPeriod() << ", pillar block hash "
                << vote->getBlockHash();
 
-  return validator_vote_count;
+  return legacy_validator_vote_count;
 }
 
 #ifdef RUSTAXA_ENABLE_PILLAR_VOTES

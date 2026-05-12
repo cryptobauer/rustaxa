@@ -176,6 +176,52 @@ PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& f
   return {PillarVoteValidationPlanStatus::kValid, true, inspection.period, inspection.vote_hash, recovered_voter};
 }
 
+AddVerifiedPillarVoteWithRustPlan planAddVerifiedPillarVoteWithRust(
+    const std::shared_ptr<PillarVote>& vote, const std::shared_ptr<final_chain::FinalChain>& final_chain) {
+  if (!vote || !final_chain) {
+    return {PillarVoteValidationPlanStatus::kInspectionFailure, false, 0, {}, {}, 0};
+  }
+
+  const auto inspection = inspectPillarVoteWithRust(vote);
+  if (!inspection.is_valid || inspection.period == 0) {
+    return {inspection.status, false, inspection.period, inspection.vote_hash, inspection.recovered_voter, 0};
+  }
+
+  try {
+    const auto validator_vote_count =
+        final_chain->dposEligibleVoteCount(inspection.period - 1, inspection.recovered_voter);
+    if (validator_vote_count == 0) {
+      return {PillarVoteValidationPlanStatus::kNotEligible,
+              false,
+              inspection.period,
+              inspection.vote_hash,
+              inspection.recovered_voter,
+              0};
+    }
+
+    return {PillarVoteValidationPlanStatus::kValid,
+            true,
+            inspection.period,
+            inspection.vote_hash,
+            inspection.recovered_voter,
+            validator_vote_count};
+  } catch (state_api::ErrFutureBlock&) {
+    return {PillarVoteValidationPlanStatus::kFuturePeriod,
+            false,
+            inspection.period,
+            inspection.vote_hash,
+            inspection.recovered_voter,
+            0};
+  } catch (...) {
+    return {PillarVoteValidationPlanStatus::kUnknown,
+            false,
+            inspection.period,
+            inspection.vote_hash,
+            inspection.recovered_voter,
+            0};
+  }
+}
+
 PillarVoteValidationPlan inspectPillarVoteWithRust(const std::shared_ptr<PillarVote>& vote) {
   if (!vote) {
     return {PillarVoteValidationPlanStatus::kInspectionFailure, false, 0, {}, {}};

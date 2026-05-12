@@ -101,10 +101,21 @@ class PillarChainManager {
   std::shared_ptr<PillarBlock> getLastFinalizedPillarBlock() const;
 
   /**
-   * @brief Add a vote to the pillar votes map
-   * @param vote vote
+   * Adds one verified pillar vote to the in-memory vote index.
    *
-   * @return vote's weight if vote was successfully added, otherwise 0
+   * Purpose:
+   * - Calculates the signer's current DPoS vote count, initializes period
+   *   threshold state when needed, and stores the vote for threshold
+   *   aggregation.
+   *
+   * Rust-mode invariants:
+   * - The voter identity is recovered by Rust inspection and carried into the
+   *   Rust-backed `PillarVotes` insertion path.
+   * - This path must not recover voter identity from the C++ `PillarVote`
+   *   sidecar before a full `PillarChainManager` overlay owns insertion.
+   *
+   * Returns:
+   * - The vote's non-zero weight when successfully added; otherwise 0.
    */
   uint64_t addVerifiedPillarVote(const std::shared_ptr<PillarVote>& vote);
 

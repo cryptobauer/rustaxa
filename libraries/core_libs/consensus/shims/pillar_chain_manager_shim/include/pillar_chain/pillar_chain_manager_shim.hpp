@@ -121,6 +121,44 @@ PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& f
                                                     bool vote_already_known, bool is_unique);
 
 /**
+ * Prepared insertion facts for one Rust-inspected pillar vote.
+ *
+ * Purpose:
+ * - Carries the Rust-recovered identity and DPoS weight that
+ *   `PillarChainManager::addVerifiedPillarVote` needs to initialize threshold
+ *   state and insert into the Rust-backed `PillarVotes` index.
+ *
+ * Invariants:
+ * - `can_insert` is true only after Rust RLP/signature inspection succeeds and
+ *   FinalChain returns a non-zero DPoS vote count for `recovered_voter`.
+ * - Callers must not fall back to C++ voter recovery when `can_insert` is false
+ *   in Rust-enabled mode.
+ */
+struct AddVerifiedPillarVoteWithRustPlan {
+  PillarVoteValidationPlanStatus status{PillarVoteValidationPlanStatus::kUnknown};
+  bool can_insert{false};
+  PbftPeriod period{0};
+  vote_hash_t vote_hash{};
+  addr_t recovered_voter{};
+  uint64_t validator_vote_count{0};
+};
+
+/**
+ * Inspects and weights one vote for Rust-mode `addVerifiedPillarVote`.
+ *
+ * Inputs/outputs:
+ * - `vote` supplies canonical RLP bytes and live sidecar hash/block data.
+ * - `final_chain` supplies DPoS vote counts at `period - 1`.
+ * - Returns a plan with explicit failure status instead of falling back to C++.
+ *
+ * Edge behavior:
+ * - Null inputs, malformed RLP, invalid signatures, future DPoS state, and
+ *   zero-weight validators all return `can_insert == false`.
+ */
+AddVerifiedPillarVoteWithRustPlan planAddVerifiedPillarVoteWithRust(
+    const std::shared_ptr<PillarVote>& vote, const std::shared_ptr<final_chain::FinalChain>& final_chain);
+
+/**
  * Inspects one vote RLP in Rust and returns decoded identity plus signature status.
  *
  * The helper must not call `PillarVote::getVoterAddr()` or `verifyVote()`.

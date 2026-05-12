@@ -357,7 +357,9 @@ The current Rust starting point is intentionally small:
   decisions under `RUSTAXA_ENABLE_PILLAR_VOTES`.
   `PillarChainManager::validatePillarVote` now inspects pillar-vote RLP in Rust, uses the Rust-recovered voter for
   uniqueness and DPoS eligibility, and avoids C++ signature recovery in Rust mode. Pillar signing and the full
-  `PillarChainManager` overlay remain later slices.
+  `PillarChainManager::addVerifiedPillarVote` now also runs through Rust inspection, uses the Rust-recovered voter for
+  C++ `FinalChain::dposEligibleVoteCount`, and inserts with `addVerifiedVoteWithRecoveredVoter` to avoid re-querying
+  C++-side voter identity. Pillar signing and the full `PillarChainManager` overlay remain later slices.
 - `rustaxa-storage` contains storage repositories that consensus should use through narrow ports.
 
 ### Consensus Sequencing
