@@ -13,6 +13,9 @@
 #include "pbft/period_data.hpp"
 #include "pillar_chain/pillar_chain_manager.hpp"
 #include "vote_manager/vote_manager.hpp"
+#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
+#include "pbft/pbft_manager_shim.hpp"
+#endif
 
 namespace taraxa {
 using namespace std::chrono_literals;
@@ -2387,11 +2390,36 @@ bool PbftManager::validatePbftBlockPillarVotes(const PeriodData &period_data) co
   const auto required_votes_period = period_data.pbft_blk->getPeriod();
 
   const auto current_pillar_block = pillar_chain_mgr_->getCurrentPillarBlock();
+#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
+  if (!current_pillar_block) {
+    LOG(log_er_) << "No current pillar block for sync pillar votes validation, pbft block period "
+                 << period_data.pbft_blk->getPeriod();
+    return false;
+  }
+#endif
   if (current_pillar_block->getPeriod() + 1 != required_votes_period) {
     LOG(log_er_) << "Sync pillar votes required period " << required_votes_period
                  << " != " << " current pillar block period " << current_pillar_block->getPeriod() << " + 1";
     return false;
   }
+
+  const auto pillar_consensus_threshold_opt = pillar_chain_mgr_->getPillarConsensusThreshold(required_votes_period - 1);
+  if (!pillar_consensus_threshold_opt) {
+    LOG(log_er_) << "Unable to obtain pillar consensus threshold for period " << required_votes_period - 1;
+    return false;
+  }
+  const auto pillar_consensus_threshold = *pillar_consensus_threshold_opt;
+
+#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
+  const auto rust_votes_weight = validateSyncPillarVotesBundleDeterministically(
+      *period_data.pillar_votes_, required_votes_period, current_pillar_block->getHash(), pillar_consensus_threshold,
+      final_chain_);
+  if (!rust_votes_weight) {
+    LOG(log_er_) << "Deterministic Rust validation failed for sync pillar votes, pbft block period "
+                 << period_data.pbft_blk->getPeriod() << ", expected weight threshold " << pillar_consensus_threshold;
+    return false;
+  }
+#endif
 
   uint64_t votes_weight = 0;
   for (auto &vote : *period_data.pillar_votes_) {
@@ -2424,15 +2452,9 @@ bool PbftManager::validatePbftBlockPillarVotes(const PeriodData &period_data) co
     }
   }
 
-  const auto pillar_consensus_threshold = pillar_chain_mgr_->getPillarConsensusThreshold(required_votes_period - 1);
-  if (!pillar_consensus_threshold.has_value()) {
-    LOG(log_er_) << "Unable to obtain pillar consensus threshold for period " << required_votes_period - 1;
-    return false;
-  }
-
-  if (votes_weight < *pillar_consensus_threshold) {
+  if (votes_weight < pillar_consensus_threshold) {
     LOG(log_wr_) << "Invalid sync pillar votes weight " << votes_weight << " < threshold "
-                 << *pillar_consensus_threshold << ", period " << required_votes_period - 1;
+                 << pillar_consensus_threshold << ", period " << required_votes_period - 1;
     return false;
   }
 

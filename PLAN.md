@@ -311,6 +311,8 @@ Rules:
 
 - Do not delegate Rust shim behavior back to legacy `FinalChainOld` or other old implementation methods.
 - Temporary Rust-mode gaps must be explicit shim-local defaults, no-ops, or tracked unimplemented paths.
+- Temporary guarded touches to upstream-owned C++ files should be removed once a complete shim can own Rust-mode routing;
+  currently `pbft_manager.cpp` has such a temporary hook for sync pillar-vote bundle planning.
 - Treat `dposIsEligible` and related vote-count methods as real consensus work, not permanent dummy behavior.
 - Keep networking callbacks, thread orchestration, and broad node integration in C++ until the Rust domain services are stable.
 
@@ -343,8 +345,10 @@ The current Rust starting point is intentionally small:
 - `rustaxa-consensus` now contains a Rust pillar-vote aggregation domain for already-verified pillar vote facts:
   period initialization, per-validator uniqueness, weighted per-block aggregation, deterministic threshold subset
   selection, and stale-period cleanup. The `RUSTAXA_ENABLE_PILLAR_VOTES` overlay routes the C++ `PillarVotes` API
-  through Rust for deterministic aggregation while C++ keeps live `PillarVote` sidecars. Pillar signing/recovery and
-  `PillarChainManager` orchestration remain later slices.
+  through Rust for deterministic aggregation while C++ keeps live `PillarVote` sidecars. The PBFT sync pillar-vote
+  bundle precheck now calls a stateless Rust bundle planner for period/block validation, duplicate-safe unique-weight
+  threshold accounting, and deterministic rejection statuses before C++ applies live vote side effects. Pillar
+  signing/recovery and `PillarChainManager` orchestration remain later slices.
 - `rustaxa-storage` contains storage repositories that consensus should use through narrow ports.
 
 ### Consensus Sequencing
@@ -422,9 +426,9 @@ Use targeted validation before broad integration runs:
 - PBFT chain/proposed-block/period-data-queue changes should run `rust_consensus_tests`, the corresponding shim test,
   and targeted `pbft_chain_test` or `pbft_manager_test` cases; broader PBFT changes should also run relevant
   `vote_test` coverage.
-- Pillar vote aggregation changes should run Rust validation plus `pillar_votes_shim_test` when
-  `RUSTAXA_ENABLE_PILLAR_VOTES` is enabled; broader pillar/reward/eligibility changes should run `pillar_chain_test` and
-  any affected final-chain or full-node tests.
+- Pillar vote aggregation or PBFT sync bundle validation changes should run Rust validation plus
+  `pillar_votes_shim_test` when `RUSTAXA_ENABLE_PILLAR_VOTES` is enabled; manager-path changes should also run targeted
+  `pbft_manager_test`/`pillar_chain_test` coverage and any affected final-chain or full-node tests.
 - Shim startup behavior should be validated with a Rust-enabled node smoke test when consensus shims change.
 
 ## Validation Matrix

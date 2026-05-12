@@ -17,7 +17,8 @@ pub use gas_pricer::{GasPriceOracle, GasPricerConfig};
 pub use pbft_chain::PbftChain;
 pub use period_data_queue::PeriodDataQueue;
 pub use pillar_votes::{
-    PillarVoteInsertOutcome, PillarVotes, PillarVotesLookup, VerifiedPillarVote,
+    PillarVoteBundlePlan, PillarVoteBundlePlanner, PillarVoteBundleValidationStatus,
+    PillarVoteFact, PillarVoteInsertOutcome, PillarVotes, PillarVotesLookup, VerifiedPillarVote,
 };
 pub use proposed_blocks::ProposedBlocks;
 pub use rustaxa_types::{

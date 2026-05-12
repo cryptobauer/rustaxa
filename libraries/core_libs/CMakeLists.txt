@@ -334,6 +334,10 @@ if(RUSTAXA_ENABLE_PILLAR_VOTES)
                              ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pillar_votes_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pillar_votes_shim/src/pillar_votes_shim.cpp)
 
+    target_include_directories(core_libs BEFORE PUBLIC
+                             ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pbft_manager_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pbft_manager_shim/src/pbft_manager_shim.cpp)
+
     # Compile the legacy implementation as PillarVotesOld.
     set_source_files_properties(
         ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/pillar_chain/pillar_votes.cpp

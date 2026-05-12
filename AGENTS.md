@@ -29,6 +29,9 @@ This repository is the Rust rewrite track for Taraxa. Keep day-to-day work align
   throwing would prevent parity testing or proving correctness, and add a TODO comment at every `*Old` call site stating
   what must move to Rust. This is the default to minimize upstream merge conflicts while keeping temporary legacy use
   auditable.
+- If a rewrite slice temporarily touches an upstream-owned C++ file because a complete class shim is not ready yet, keep
+  the change guarded and track it as temporary debt. Revert that file back to its upstream shape as soon as a complete
+  shim can own the Rust-mode routing.
 - Hard rule: do not fix rewrite-discovered bugs in original upstream C++ code on `main`. Track the issue and implement the fix in the Rust rewrite path (Rust modules, bridge, or shim overlay). Touch original C++ only when explicitly approved by the task owner.
 - Hard rule: in Rust-enabled production routing, never silently forward/delegate/inherit behavior from legacy C++
   implementations. Gaps must be explicit shim-local stubs/no-ops/throws until Rust parity is implemented, except for

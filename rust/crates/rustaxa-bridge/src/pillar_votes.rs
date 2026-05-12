@@ -1,21 +1,25 @@
 //! CXX bridge wrappers for deterministic pillar-vote aggregation.
 //!
-//! The bridge accepts plain C++-style vote payloads (`vote_hash`, `block_hash`,
-//! `voter`, `period`, `weight`, `vote_rlp`) and converts them into
-//! `rustaxa_consensus::VerifiedPillarVote` domain values.
+//! The bridge accepts plain C++-style vote payloads and converts them into
+//! `rustaxa_consensus::VerifiedPillarVote` domain values for stateful
+//! aggregation. It also exposes a stateless bundle planner for C++ sync paths
+//! that already hold prevalidated pillar-vote facts.
 //!
 //! Cryptographic checks and signature validation remain outside this module; this
 //! layer only enforces local bridge-domain invariants and delegates aggregation
 //! rules to [`PillarVotes`].
 
 use crate::ffi::rustaxa_ffi::{
-    PillarVoteInsertOutcome, PillarVotePayload, PillarVoteRef, PillarVoteUniqueOutcome,
-    PillarVotesLookup,
+    PillarVoteBundleAcceptedVote, PillarVoteBundleFact as FfiPillarVoteBundleFact,
+    PillarVoteBundlePlan as PillarVoteBundlePlanOutput, PillarVoteInsertOutcome, PillarVotePayload,
+    PillarVoteRef, PillarVoteUniqueOutcome, PillarVotesLookup,
 };
 use crate::ffi::BridgePillarVotes;
 use anyhow::{ensure, Result};
 use ethereum_types::{H160, H256};
 use rustaxa_consensus::{
+    PillarVoteBundlePlan as ConsensusPillarVoteBundlePlan, PillarVoteBundlePlanner,
+    PillarVoteFact as ConsensusPillarVoteFact,
     PillarVoteInsertOutcome as ConsensusPillarVoteInsertOutcome, PillarVotes, VerifiedPillarVote,
 };
 use rustaxa_types::PillarVote;
@@ -96,6 +100,37 @@ impl BridgePillarVotes {
     }
 }
 
+/// Stateless planner entry point for one batch of plain pillar-vote facts.
+///
+/// The input `facts` are plain, transport-level values to avoid forcing C++ to
+/// materialize consensus domain objects inside the planning boundary.
+pub fn plan_pillar_vote_bundle(
+    facts: Vec<FfiPillarVoteBundleFact>,
+    expected_period: u64,
+    expected_block_hash: &[u8; 32],
+    threshold: u64,
+) -> Result<PillarVoteBundlePlanOutput> {
+    let planner =
+        PillarVoteBundlePlanner::new(expected_period, H256::from(*expected_block_hash), threshold);
+    let facts = facts
+        .into_iter()
+        .map(bundle_fact_to_consensus_fact)
+        .collect::<Vec<_>>();
+
+    Ok(PillarVoteBundlePlanOutput::from(planner.plan(&facts)))
+}
+
+fn bundle_fact_to_consensus_fact(value: FfiPillarVoteBundleFact) -> ConsensusPillarVoteFact {
+    ConsensusPillarVoteFact {
+        vote_hash: H256::from(value.vote_hash),
+        period: value.period,
+        block_hash: H256::from(value.block_hash),
+        voter: H160::from(value.voter),
+        weight: value.weight,
+        prevalidated: value.prevalidated,
+    }
+}
+
 fn payload_to_vote(value: PillarVotePayload) -> Result<VerifiedPillarVote> {
     let vote = PillarVote::decode_rlp(&value.vote_rlp)?;
     ensure!(
@@ -155,11 +190,33 @@ impl From<rustaxa_consensus::PillarVotesLookup> for PillarVotesLookup {
     }
 }
 
+impl From<ConsensusPillarVoteBundlePlan> for PillarVoteBundlePlanOutput {
+    fn from(value: ConsensusPillarVoteBundlePlan) -> Self {
+        Self {
+            status: value.status.as_u8(),
+            accepted_votes: value
+                .accepted_vote_hashes
+                .into_iter()
+                .map(|vote_hash| PillarVoteBundleAcceptedVote {
+                    vote_hash: vote_hash.into(),
+                })
+                .collect(),
+            block_weight: value.block_weight,
+            selected_weight: value.selected_weight,
+            first_bad_vote_hash: value.first_bad_vote_hash.into(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use ethereum_types::H256;
+
+    fn hash_bytes(value: u64) -> [u8; 32] {
+        H256::from_low_u64_be(value).into()
+    }
 
     fn signature(seed: u8) -> [u8; 65] {
         let mut signature = [seed; 65];
@@ -373,5 +430,74 @@ mod tests {
         assert_eq!(decoded.voter, H160::from(payload.voter));
         assert_eq!(decoded.weight, payload.weight);
         assert_eq!(decoded.vote.encode_rlp(), payload.vote_rlp);
+    }
+
+    fn bundle_fact(
+        vote_hash: u64,
+        period: u64,
+        block_hash: u64,
+        voter: u8,
+        weight: u64,
+        prevalidated: bool,
+    ) -> FfiPillarVoteBundleFact {
+        FfiPillarVoteBundleFact {
+            vote_hash: H256::from_low_u64_be(vote_hash).into(),
+            block_hash: H256::from_low_u64_be(block_hash).into(),
+            voter: [voter; 20],
+            period,
+            weight,
+            prevalidated,
+        }
+    }
+
+    #[test]
+    fn plan_bundle_plans_and_returns_threshold_status() {
+        let facts = vec![
+            bundle_fact(11, 40, 1234, 1, 4, true),
+            bundle_fact(12, 40, 1234, 2, 3, true),
+            bundle_fact(13, 40, 1234, 3, 2, true),
+        ];
+        let expected_block_hash = H256::from_low_u64_be(1234).into();
+
+        let plan = plan_pillar_vote_bundle(facts, 40, &expected_block_hash, 7).unwrap();
+
+        assert_eq!(plan.status, 0);
+        assert_eq!(plan.block_weight, 9);
+        assert_eq!(plan.selected_weight, 7);
+        assert_eq!(
+            plan.accepted_votes
+                .into_iter()
+                .map(|vote| vote.vote_hash)
+                .collect::<Vec<_>>(),
+            vec![hash_bytes(11), hash_bytes(12), hash_bytes(13)]
+        );
+    }
+
+    #[test]
+    fn plan_bundle_rejects_block_period_mismatch_through_context_checks() {
+        let facts = vec![bundle_fact(21, 41, 5555, 1, 1, true)];
+        let expected_block_hash = H256::from_low_u64_be(1234).into();
+
+        let plan = plan_pillar_vote_bundle(facts, 40, &expected_block_hash, 10).unwrap();
+
+        assert_eq!(plan.status, 2);
+        assert_eq!(plan.first_bad_vote_hash, hash_bytes(21));
+    }
+
+    #[test]
+    fn plan_bundle_rejects_failed_prevalidation() {
+        let facts = vec![
+            bundle_fact(31, 42, 7777, 1, 3, false),
+            bundle_fact(32, 42, 7777, 2, 2, true),
+        ];
+        let expected_block_hash = H256::from_low_u64_be(7777).into();
+
+        let plan = plan_pillar_vote_bundle(facts, 42, &expected_block_hash, 10).unwrap();
+
+        assert_eq!(plan.status, 4);
+        assert_eq!(plan.block_weight, 0);
+        assert_eq!(plan.selected_weight, 0);
+        assert!(plan.accepted_votes.is_empty());
+        assert_eq!(plan.first_bad_vote_hash, hash_bytes(31));
     }
 }

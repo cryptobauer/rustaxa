@@ -334,6 +334,16 @@ pub mod rustaxa_ffi {
         vote_rlp: Vec<u8>,
     }
 
+    /// Plain bundle fact consumed by the Rust planner for one planning pass.
+    struct PillarVoteBundleFact {
+        vote_hash: [u8; 32],
+        block_hash: [u8; 32],
+        voter: [u8; 20],
+        period: u64,
+        weight: u64,
+        prevalidated: bool,
+    }
+
     /// Result of a uniqueness check for one pillar vote.
     struct PillarVoteUniqueOutcome {
         is_unique: bool,
@@ -354,12 +364,37 @@ pub mod rustaxa_ffi {
         weight: u64,
     }
 
+    /// Lightweight reference to a bundle-planned pillar vote.
+    struct PillarVoteBundleAcceptedVote {
+        vote_hash: [u8; 32],
+    }
+
     /// Lookup result for one pillar block, optionally threshold-filtered.
     struct PillarVotesLookup {
         threshold_met: bool,
         block_weight: u64,
         selected_weight: u64,
         votes: Vec<PillarVoteRef>,
+    }
+
+    /// Result of a bundle planning pass.
+    ///
+    /// `status` values:
+    /// - `0` - valid
+    /// - `1` - empty bundle
+    /// - `2` - vote period mismatch
+    /// - `3` - vote block hash mismatch
+    /// - `4` - prevalidation failed
+    /// - `5` - zero vote weight
+    /// - `6` - voter conflict
+    /// - `7` - threshold not reached
+    /// - `8` - weight overflow
+    struct PillarVoteBundlePlan {
+        status: u8,
+        accepted_votes: Vec<PillarVoteBundleAcceptedVote>,
+        block_weight: u64,
+        selected_weight: u64,
+        first_bad_vote_hash: [u8; 32],
     }
 
     struct UniqueVoterCheckOutcome {
@@ -1493,6 +1528,13 @@ pub mod rustaxa_ffi {
         ) -> PillarVotesLookup;
         pub fn pillar_votes_cleanup_votes_by_period(self: &mut BridgePillarVotes, min_period: u64);
         pub fn pillar_votes_snapshot_refs(self: &BridgePillarVotes) -> Vec<PillarVoteRef>;
+
+        pub fn plan_pillar_vote_bundle(
+            facts: Vec<PillarVoteBundleFact>,
+            expected_period: u64,
+            expected_block_hash: &[u8; 32],
+            threshold: u64,
+        ) -> Result<PillarVoteBundlePlan>;
 
         // Consensus sortition
 

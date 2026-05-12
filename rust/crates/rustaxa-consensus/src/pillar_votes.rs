@@ -14,6 +14,226 @@ use rustaxa_types::PillarVote;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, btree_map::Entry};
 
+/// Plain pillar-vote fact used by PBFT pillar-vote bundle validation.
+///
+/// Purpose:
+/// - Carries one C++-decoded pillar vote plus external facts that Rust does not
+///   own yet, such as signature/eligibility prevalidation and DPoS vote weight.
+///
+/// Invariants:
+/// - `vote_hash`, `period`, and `block_hash` must identify the same live C++
+///   `PillarVote` object that will be inserted if the bundle is accepted.
+/// - `weight` is the C++/FinalChain-derived eligible vote count for `voter`.
+/// - `prevalidated` must be true only after C++ has accepted non-ported checks
+///   such as signature recovery, eligibility, and existing local-state conflict
+///   checks.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PillarVoteFact {
+    pub vote_hash: H256,
+    pub period: u64,
+    pub block_hash: H256,
+    pub voter: H160,
+    pub weight: u64,
+    pub prevalidated: bool,
+}
+
+/// Stable status for a PBFT pillar-vote bundle planning pass.
+///
+/// These values are mapped to integer bridge codes and should remain stable for
+/// C++ logging/tests.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PillarVoteBundleValidationStatus {
+    Valid,
+    EmptyBundle,
+    VotePeriodMismatch,
+    VoteBlockHashMismatch,
+    PrevalidationFailed,
+    ZeroWeight,
+    VoterConflict,
+    ThresholdNotReached,
+    WeightOverflow,
+}
+
+impl PillarVoteBundleValidationStatus {
+    /// Returns the stable CXX bridge code for this status.
+    pub fn as_u8(self) -> u8 {
+        match self {
+            Self::Valid => 0,
+            Self::EmptyBundle => 1,
+            Self::VotePeriodMismatch => 2,
+            Self::VoteBlockHashMismatch => 3,
+            Self::PrevalidationFailed => 4,
+            Self::ZeroWeight => 5,
+            Self::VoterConflict => 6,
+            Self::ThresholdNotReached => 7,
+            Self::WeightOverflow => 8,
+        }
+    }
+}
+
+/// Deterministic decision returned for one PBFT pillar-vote bundle.
+///
+/// Outputs:
+/// - `status` communicates the first deterministic rejection reason, or `Valid`.
+/// - `accepted_vote_hashes` contains unique accepted vote hashes in deterministic
+///   all-vote lookup order when the bundle reaches threshold; C++ uses this as
+///   the side-effect insertion plan.
+/// - `block_weight` is the unique accepted weight for the expected pillar block.
+/// - `selected_weight` is the minimal above-threshold prefix weight.
+/// - `first_bad_vote_hash` identifies the offending vote when a per-vote
+///   validation status fails; otherwise it is zero.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PillarVoteBundlePlan {
+    pub status: PillarVoteBundleValidationStatus,
+    pub accepted_vote_hashes: Vec<H256>,
+    pub block_weight: u64,
+    pub selected_weight: u64,
+    pub first_bad_vote_hash: H256,
+}
+
+/// Planner for deterministic PBFT pillar-vote bundle acceptance.
+///
+/// The planner is side-effect free. It does not decode RLP, recover signatures,
+/// query FinalChain, or mutate C++ vote indexes. Those dependencies are supplied
+/// as plain facts by the C++ shim-owned caller.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PillarVoteBundlePlanner {
+    expected_period: u64,
+    expected_block_hash: H256,
+    threshold: u64,
+}
+
+impl PillarVoteBundlePlanner {
+    /// Creates a planner bound to the expected period/block context.
+    pub fn new(expected_period: u64, expected_block_hash: H256, threshold: u64) -> Self {
+        Self {
+            expected_period,
+            expected_block_hash,
+            threshold,
+        }
+    }
+
+    /// Evaluates a batch of plain vote facts.
+    ///
+    /// Validation behavior:
+    /// - Context mismatches reject the whole bundle with the offending hash.
+    /// - `prevalidated == false` rejects the whole bundle; C++ owns the concrete
+    ///   non-ported validation reason.
+    /// - Duplicate vote hashes are idempotent and do not recount weight.
+    /// - Same-period same-voter different-hash conflicts reject the bundle.
+    /// - Threshold accounting uses unique accepted votes only.
+    pub fn plan(&self, facts: &[PillarVoteFact]) -> PillarVoteBundlePlan {
+        if facts.is_empty() {
+            return self.empty_plan(PillarVoteBundleValidationStatus::EmptyBundle, H256::zero());
+        }
+
+        let mut votes = PillarVotes::new();
+        votes.initialize_period_data(self.expected_period, self.threshold);
+
+        for fact in facts {
+            if fact.period != self.expected_period {
+                return self.empty_plan(
+                    PillarVoteBundleValidationStatus::VotePeriodMismatch,
+                    fact.vote_hash,
+                );
+            }
+
+            if fact.block_hash != self.expected_block_hash {
+                return self.empty_plan(
+                    PillarVoteBundleValidationStatus::VoteBlockHashMismatch,
+                    fact.vote_hash,
+                );
+            }
+
+            if !fact.prevalidated {
+                return self.empty_plan(
+                    PillarVoteBundleValidationStatus::PrevalidationFailed,
+                    fact.vote_hash,
+                );
+            }
+
+            if fact.weight == 0 {
+                return self
+                    .empty_plan(PillarVoteBundleValidationStatus::ZeroWeight, fact.vote_hash);
+            }
+
+            let vote = fact.to_verified_pillar_vote();
+            match votes.add_verified_vote(vote) {
+                Ok(outcome) => {
+                    if !outcome.accepted {
+                        return self.empty_plan(
+                            PillarVoteBundleValidationStatus::VoterConflict,
+                            fact.vote_hash,
+                        );
+                    }
+                }
+                Err(_) => {
+                    return self.empty_plan(
+                        PillarVoteBundleValidationStatus::WeightOverflow,
+                        fact.vote_hash,
+                    );
+                }
+            }
+        }
+
+        let all_votes =
+            votes.get_verified_votes(self.expected_period, self.expected_block_hash, false);
+        let above_threshold =
+            votes.get_verified_votes(self.expected_period, self.expected_block_hash, true);
+
+        if !above_threshold.threshold_met {
+            return PillarVoteBundlePlan {
+                status: PillarVoteBundleValidationStatus::ThresholdNotReached,
+                accepted_vote_hashes: Vec::new(),
+                block_weight: all_votes.block_weight,
+                selected_weight: 0,
+                first_bad_vote_hash: H256::zero(),
+            };
+        }
+
+        PillarVoteBundlePlan {
+            status: PillarVoteBundleValidationStatus::Valid,
+            accepted_vote_hashes: all_votes
+                .votes
+                .into_iter()
+                .map(|vote| vote.vote_hash)
+                .collect(),
+            block_weight: all_votes.block_weight,
+            selected_weight: above_threshold.selected_weight,
+            first_bad_vote_hash: H256::zero(),
+        }
+    }
+
+    fn empty_plan(
+        &self,
+        status: PillarVoteBundleValidationStatus,
+        first_bad_vote_hash: H256,
+    ) -> PillarVoteBundlePlan {
+        PillarVoteBundlePlan {
+            status,
+            accepted_vote_hashes: Vec::new(),
+            block_weight: 0,
+            selected_weight: 0,
+            first_bad_vote_hash,
+        }
+    }
+}
+
+impl PillarVoteFact {
+    fn to_verified_pillar_vote(&self) -> VerifiedPillarVote {
+        VerifiedPillarVote {
+            vote: PillarVote {
+                period: self.period,
+                block_hash: self.block_hash,
+                signature: [0u8; 65],
+            },
+            vote_hash: self.vote_hash,
+            voter: self.voter,
+            weight: self.weight,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct WeightedPillarVotes {
     votes: BTreeMap<H256, VerifiedPillarVote>,
@@ -365,6 +585,132 @@ fn empty_lookup() -> PillarVotesLookup {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fact(vote_hash: u64, period: u64, block: u64, voter: u64, weight: u64) -> PillarVoteFact {
+        PillarVoteFact {
+            vote_hash: H256::from_low_u64_be(vote_hash),
+            period,
+            block_hash: H256::from_low_u64_be(block),
+            voter: H160::from_low_u64_be(voter),
+            weight,
+            prevalidated: true,
+        }
+    }
+
+    #[test]
+    fn bundle_plan_accepts_unique_votes_when_threshold_is_met() {
+        let planner = PillarVoteBundlePlanner::new(10, H256::from_low_u64_be(1234), 6);
+        let votes = [
+            fact(11, 10, 1234, 1, 1),
+            fact(12, 10, 1234, 2, 2),
+            fact(13, 10, 1234, 3, 3),
+        ];
+
+        let plan = planner.plan(&votes);
+
+        assert_eq!(plan.status, PillarVoteBundleValidationStatus::Valid);
+        assert_eq!(plan.block_weight, 6);
+        assert_eq!(plan.selected_weight, 6);
+        assert_eq!(
+            plan.accepted_vote_hashes,
+            vec![
+                H256::from_low_u64_be(11),
+                H256::from_low_u64_be(12),
+                H256::from_low_u64_be(13)
+            ]
+        );
+    }
+
+    #[test]
+    fn bundle_plan_below_threshold_returns_empty_selection() {
+        let planner = PillarVoteBundlePlanner::new(10, H256::from_low_u64_be(1235), 10);
+        let votes = [fact(21, 10, 1235, 1, 3), fact(22, 10, 1235, 2, 3)];
+
+        let plan = planner.plan(&votes);
+
+        assert_eq!(
+            plan.status,
+            PillarVoteBundleValidationStatus::ThresholdNotReached
+        );
+        assert_eq!(plan.block_weight, 6);
+        assert_eq!(plan.selected_weight, 0);
+        assert!(plan.accepted_vote_hashes.is_empty());
+    }
+
+    #[test]
+    fn bundle_plan_rejects_period_and_block_mismatch() {
+        let planner = PillarVoteBundlePlanner::new(11, H256::from_low_u64_be(1111), 3);
+
+        let mismatch_period = fact(31, 12, 1111, 1, 4);
+        let mismatch_block = fact(32, 11, 1112, 2, 4);
+
+        let period_plan = planner.plan(&[mismatch_period]);
+        assert_eq!(
+            period_plan.status,
+            PillarVoteBundleValidationStatus::VotePeriodMismatch
+        );
+        assert_eq!(period_plan.first_bad_vote_hash, H256::from_low_u64_be(31));
+
+        let block_plan = planner.plan(&[mismatch_block]);
+        assert_eq!(
+            block_plan.status,
+            PillarVoteBundleValidationStatus::VoteBlockHashMismatch
+        );
+        assert_eq!(block_plan.first_bad_vote_hash, H256::from_low_u64_be(32));
+    }
+
+    #[test]
+    fn bundle_plan_rejects_prevalidation_and_zero_weight_failures() {
+        let planner = PillarVoteBundlePlanner::new(10, H256::from_low_u64_be(2222), 5);
+
+        let prevalidation_plan = planner.plan(&[PillarVoteFact {
+            prevalidated: false,
+            ..fact(41, 10, 2222, 1, 3)
+        }]);
+        assert_eq!(
+            prevalidation_plan.status,
+            PillarVoteBundleValidationStatus::PrevalidationFailed
+        );
+        assert_eq!(
+            prevalidation_plan.first_bad_vote_hash,
+            H256::from_low_u64_be(41)
+        );
+
+        let zero_weight_plan = planner.plan(&[fact(42, 10, 2222, 2, 0)]);
+        assert_eq!(
+            zero_weight_plan.status,
+            PillarVoteBundleValidationStatus::ZeroWeight
+        );
+        assert_eq!(
+            zero_weight_plan.first_bad_vote_hash,
+            H256::from_low_u64_be(42)
+        );
+    }
+
+    #[test]
+    fn bundle_plan_rejects_voter_conflicts_without_recounting_duplicates() {
+        let planner = PillarVoteBundlePlanner::new(10, H256::from_low_u64_be(3333), 6);
+        let duplicate = fact(51, 10, 3333, 1, 3);
+
+        let duplicate_plan =
+            planner.plan(&[duplicate.clone(), duplicate, fact(52, 10, 3333, 2, 3)]);
+        assert_eq!(
+            duplicate_plan.status,
+            PillarVoteBundleValidationStatus::Valid
+        );
+        assert_eq!(duplicate_plan.block_weight, 6);
+        assert_eq!(
+            duplicate_plan.accepted_vote_hashes,
+            vec![H256::from_low_u64_be(51), H256::from_low_u64_be(52)]
+        );
+
+        let conflict_plan = planner.plan(&[fact(61, 10, 3333, 1, 3), fact(62, 10, 3333, 1, 3)]);
+        assert_eq!(
+            conflict_plan.status,
+            PillarVoteBundleValidationStatus::VoterConflict
+        );
+        assert_eq!(conflict_plan.first_bad_vote_hash, H256::from_low_u64_be(62));
+    }
 
     fn signature(seed: u8) -> [u8; 65] {
         let mut signature = [seed; 65];
