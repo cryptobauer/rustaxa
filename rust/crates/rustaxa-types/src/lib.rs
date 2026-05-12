@@ -13,6 +13,7 @@ pub use final_chain::{
 };
 pub use pbft::PbftBlockMetadata;
 pub use pillar::{
-    PillarBlock, PillarBlockData, PillarVote, ValidatorVoteCountChange,
-    decode_optimized_pillar_votes_bundle_rlp, encode_optimized_pillar_votes_bundle_rlp,
+    CurrentPillarBlockDataDb, PillarBlock, PillarBlockData, PillarVote, ValidatorVoteCount,
+    ValidatorVoteCountChange, decode_optimized_pillar_votes_bundle_rlp,
+    encode_optimized_pillar_votes_bundle_rlp,
 };
