@@ -1183,6 +1183,12 @@ pub mod rustaxa_ffi {
             self: &mut BridgeDagManagerRuntime,
             block: DagManagerBlock,
         ) -> Result<()>;
+        pub fn dag_manager_runtime_set_finalized_order(
+            self: &mut BridgeDagManagerRuntime,
+            new_anchor: [u8; 32],
+            new_period: u64,
+            finalized_order: Vec<DagHash>,
+        ) -> Result<u64>;
         pub fn dag_manager_runtime_compute_order(
             self: &BridgeDagManagerRuntime,
             anchor: &[u8; 32],

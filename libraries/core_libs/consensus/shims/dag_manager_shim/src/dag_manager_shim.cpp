@@ -117,8 +117,7 @@ rustaxa::SortitionRuntimeParams to_bridge_sortition_params(const SortitionParams
 rustaxa::DagVerifyVdfSortitionFromBlockInput to_bridge_vdf_sortition_input(
     const dev::bytes &block_rlp, uint64_t block_level, const blk_hash_t &proposal_period_hash,
     SortitionParams const &sortition_params, const rust::Vec<uint8_t> &vrf_public_key,
-    uint64_t sender_eligible_vote_count,
-    uint64_t vdf_sortition_max_vote_count) {
+    uint64_t sender_eligible_vote_count, uint64_t vdf_sortition_max_vote_count) {
   rustaxa::DagVerifyVdfSortitionFromBlockInput out;
   out.block_rlp = to_rust_vec(block_rlp);
   out.block_level = block_level;
@@ -562,11 +561,19 @@ vec_blk_t DagManager::getDagBlockOrder(blk_hash_t const &anchor, PbftPeriod peri
 }
 
 uint DagManager::setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, vec_blk_t const &dag_order) {
-  std::scoped_lock order_lock(rust_order_dag_blocks_mutex_);
-  // TODO(rust-rewrite): migrate finalized DAG order application to Rust instead of DagManagerOld.
-  const auto finalized_count = DagManagerOld::setDagBlockOrder(anchor, period, dag_order);
-  rebuildRustGraphsFromOld();
-  return finalized_count;
+  std::scoped_lock order_lock(rust_order_dag_blocks_mutex_, rust_graphs_mutex_);
+  if (period != rust_graphs_->runtime->dag_manager_runtime_latest_period() + 1) {
+    return 0;
+  }
+
+  try {
+    const auto finalized_count = rust_graphs_->runtime->dag_manager_runtime_set_finalized_order(
+        to_bridge_hash(anchor), period, to_bridge_dag_hashes(dag_order));
+    return static_cast<uint>(finalized_count);
+  } catch (const std::exception &e) {
+    throw std::runtime_error(std::string("DagManager: failed to apply finalized DAG order in Rust runtime: ") +
+                             e.what());
+  }
 }
 
 std::optional<std::pair<blk_hash_t, std::vector<blk_hash_t>>> DagManager::getLatestPivotAndTips() const {
@@ -646,8 +653,43 @@ const std::pair<PbftPeriod, std::map<uint64_t, std::unordered_set<blk_hash_t>>> 
 
 const std::tuple<PbftPeriod, std::vector<std::shared_ptr<DagBlock>>, SharedTransactions>
 DagManager::getNonFinalizedBlocksWithTransactions(const std::unordered_set<blk_hash_t> &known_hashes) const {
-  // TODO(rust-rewrite): migrate non-finalized DAG block/transaction collection to Rust instead of DagManagerOld.
-  return DagManagerOld::getNonFinalizedBlocksWithTransactions(known_hashes);
+  std::vector<std::shared_ptr<DagBlock>> dag_blocks;
+  std::unordered_set<trx_hash_t> unique_trxs;
+  std::vector<trx_hash_t> trx_to_query;
+
+  PbftPeriod period = 0;
+  std::map<uint64_t, std::unordered_set<blk_hash_t>> non_finalized_blocks;
+  {
+    std::shared_lock lock(rust_graphs_mutex_);
+    period = rust_graphs_->runtime->dag_manager_runtime_latest_period();
+    non_finalized_blocks = from_bridge_level_hashes(rust_graphs_->runtime->dag_manager_runtime_non_finalized_blocks());
+  }
+
+  for (const auto &[level, hashes] : non_finalized_blocks) {
+    (void)level;
+    for (const auto &hash : hashes) {
+      if (known_hashes.count(hash) != 0) {
+        continue;
+      }
+
+      auto blk = getDagBlock(hash);
+      if (!blk) {
+        throw std::runtime_error("DagManager: non-finalized Rust DAG block missing from storage");
+      }
+      dag_blocks.emplace_back(std::move(blk));
+    }
+  }
+
+  for (const auto &block : dag_blocks) {
+    for (auto trx : block->getTrxs()) {
+      if (unique_trxs.emplace(trx).second) {
+        trx_to_query.emplace_back(trx);
+      }
+    }
+  }
+
+  auto trxs = trx_mgr_->getNonfinalizedTrx(trx_to_query);
+  return {period, std::move(dag_blocks), std::move(trxs)};
 }
 
 DagFrontier DagManager::getDagFrontier() {

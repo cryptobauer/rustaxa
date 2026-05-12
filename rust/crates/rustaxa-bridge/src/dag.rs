@@ -333,6 +333,40 @@ impl BridgeDagManagerRuntime {
         self.state.add_block(to_domain_block(block))
     }
 
+    /// Applies one finalized DAG order directly to Rust state and advances period/anchor.
+    ///
+    /// Inputs:
+    /// - `new_anchor`: hash of the new anchor block, or zero for an empty
+    ///   PBFT period without a DAG anchor transition.
+    /// - `new_period`: expected to be `state.period + 1`.
+    /// - `finalized_order`: hashes finalized in this order transition.
+    ///
+    /// Output:
+    /// - legacy-compatible number of unique finalized hashes supplied by the caller.
+    pub fn dag_manager_runtime_set_finalized_order(
+        &mut self,
+        new_anchor: [u8; 32],
+        new_period: u64,
+        finalized_order: Vec<DagHash>,
+    ) -> Result<u64> {
+        let new_anchor = to_h256(&new_anchor);
+        if new_anchor == H256::zero() {
+            self.state
+                .advance_empty_period(new_period)
+                .context("DAG_RUNTIME_ADVANCE_EMPTY_PERIOD")?;
+            return Ok(0);
+        }
+
+        let finalized_order = finalized_order
+            .into_iter()
+            .map(|hash| H256::from(hash.hash))
+            .collect::<Vec<_>>();
+        self.state
+            .set_finalized_order(new_anchor, new_period, &finalized_order)
+            .context("DAG_RUNTIME_SET_FINALIZED_ORDER")
+            .map(|finalized_count| finalized_count as u64)
+    }
+
     /// Computes deterministic DAG order for a target anchor.
     pub fn dag_manager_runtime_compute_order(&self, anchor: &[u8; 32]) -> DagOrder {
         match self.state.compute_order(to_h256(anchor)) {
@@ -1178,6 +1212,113 @@ mod tests {
     }
 
     #[test]
+    fn dag_manager_runtime_set_finalized_order_updates_graph_state() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_set_finalized_order");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("runtime should initialize");
+
+            runtime
+                .dag_manager_runtime_add_block(DagManagerBlock {
+                    hash: [2u8; 32],
+                    pivot: [1u8; 32],
+                    tips: vec![],
+                    level: 2,
+                    difficulty: 100,
+                })
+                .expect("add block 2");
+            runtime
+                .dag_manager_runtime_add_block(DagManagerBlock {
+                    hash: [3u8; 32],
+                    pivot: [2u8; 32],
+                    tips: vec![DagHash { hash: [1u8; 32] }],
+                    level: 3,
+                    difficulty: 80,
+                })
+                .expect("add block 3");
+            runtime
+                .dag_manager_runtime_add_block(DagManagerBlock {
+                    hash: [4u8; 32],
+                    pivot: [2u8; 32],
+                    tips: vec![DagHash { hash: [3u8; 32] }],
+                    level: 4,
+                    difficulty: 60,
+                })
+                .expect("add block 4");
+
+            let removed = runtime
+                .dag_manager_runtime_set_finalized_order(
+                    [4u8; 32],
+                    1,
+                    vec![
+                        DagHash { hash: [2u8; 32] },
+                        DagHash { hash: [3u8; 32] },
+                        DagHash { hash: [4u8; 32] },
+                    ],
+                )
+                .expect("set finalized order should succeed");
+            assert_eq!(removed, 3);
+
+            let anchors = runtime.dag_manager_runtime_anchors();
+            assert_eq!(anchors.old_anchor, [1u8; 32]);
+            assert_eq!(anchors.anchor, [4u8; 32]);
+            assert_eq!(runtime.dag_manager_runtime_latest_period(), 1);
+
+            let non_finalized = runtime.dag_manager_runtime_non_finalized_blocks();
+            assert!(non_finalized.is_empty());
+            assert_eq!(
+                runtime.dag_manager_runtime_non_finalized_min_difficulty(),
+                u32::MAX
+            );
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_empty_period_preserves_anchors() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_empty_period");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("runtime should initialize");
+
+            runtime
+                .dag_manager_runtime_add_block(DagManagerBlock {
+                    hash: [2u8; 32],
+                    pivot: [1u8; 32],
+                    tips: vec![],
+                    level: 2,
+                    difficulty: 100,
+                })
+                .expect("add block");
+
+            let finalized_count = runtime
+                .dag_manager_runtime_set_finalized_order([0u8; 32], 1, vec![])
+                .expect("empty period should advance");
+            assert_eq!(finalized_count, 0);
+
+            let anchors = runtime.dag_manager_runtime_anchors();
+            assert_eq!(anchors.old_anchor, [0u8; 32]);
+            assert_eq!(anchors.anchor, [1u8; 32]);
+            assert_eq!(runtime.dag_manager_runtime_latest_period(), 1);
+            assert_eq!(
+                runtime
+                    .dag_manager_runtime_non_finalized_blocks_size()
+                    .blocks,
+                1
+            );
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
     fn dag_verify_transaction_availability_and_gas_bridge_decisions() {
         let missing = dag_verify_transaction_availability(DagVerifyTransactionAvailabilityInput {
             expected_transactions: 2,
@@ -1433,7 +1574,7 @@ mod tests {
 
         let result = dag_verify_vdf_sortition(DagVerifyVdfSortitionInput {
             block_rlp,
-            vdf_input: vdf_input,
+            vdf_input,
             sortition_params: SortitionRuntimeParams {
                 threshold_upper: 0x5ff,
                 difficulty_min: 5,

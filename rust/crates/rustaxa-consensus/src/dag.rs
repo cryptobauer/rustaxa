@@ -1382,7 +1382,8 @@ impl DagManagerState {
     /// - `finalized_order`: hashes finalized by this period.
     ///
     /// Output:
-    /// - number of finalized non-finalized hashes removed from Rust state.
+    /// - number of unique finalized hashes supplied by the caller, matching
+    ///   the legacy C++ `DagManager::setDagBlockOrder` return contract.
     ///
     /// Behavior:
     /// - updates `old_anchor`, `anchor`, and `period`
@@ -1404,11 +1405,8 @@ impl DagManagerState {
 
         let anchor_level = self.block_levels.get(&new_anchor).copied().unwrap_or(0);
         let finalized = finalized_order.iter().copied().collect::<BTreeSet<_>>();
-        let mut removed = 0usize;
         for hash in &finalized {
-            if self.blocks.remove(hash).is_some() {
-                removed += 1;
-            }
+            self.blocks.remove(hash);
             if let Some(level) = self.block_levels.remove(hash) {
                 let remove_level_entry = self
                     .non_finalized_blocks
@@ -1436,7 +1434,30 @@ impl DagManagerState {
         self.refresh_non_finalized_min_difficulty();
         self.frontier = self.compute_frontier();
 
-        Ok(removed)
+        Ok(finalized.len())
+    }
+
+    /// Advances the finalized period for an empty PBFT block.
+    ///
+    /// Inputs:
+    /// - `new_period`: expected to be exactly `period + 1`.
+    ///
+    /// Behavior:
+    /// - updates only the latest period, preserving current and previous
+    ///   anchors because a null-anchor PBFT block does not finalize a new DAG
+    ///   anchor in the legacy manager.
+    ///
+    /// Errors:
+    /// - returns an error when the transition is not exactly sequential.
+    pub fn advance_empty_period(&mut self, new_period: u64) -> Result<()> {
+        ensure!(
+            new_period == self.period.saturating_add(1),
+            "invalid period transition: expected {}, got {}",
+            self.period.saturating_add(1),
+            new_period
+        );
+        self.period = new_period;
+        Ok(())
     }
 
     /// Returns true when the total DAG mirror contains `hash`.
@@ -2768,6 +2789,32 @@ mod tests {
         assert_eq!(state.min_difficulty(), None);
         assert_eq!(state.frontier().pivot, h(4));
         assert!(state.frontier().tips.is_empty());
+    }
+
+    #[test]
+    fn dag_manager_state_set_finalized_order_returns_legacy_unique_count() {
+        let mut state = DagManagerState::new(h(1), 0).expect("state");
+        state.add_block(record(2, 1, &[], 2, 100)).expect("add");
+        state.add_block(record(3, 2, &[], 3, 90)).expect("add");
+
+        let finalized_count = state
+            .set_finalized_order(h(3), 1, &[h(2), h(2), h(3), h(99)])
+            .expect("finalize");
+        assert_eq!(finalized_count, 3);
+        assert_eq!(state.anchor(), h(3));
+        assert!(state.non_finalized_blocks().is_empty());
+    }
+
+    #[test]
+    fn dag_manager_state_advance_empty_period_preserves_anchors() {
+        let mut state = DagManagerState::new(h(1), 0).expect("state");
+        state.add_block(record(2, 1, &[], 2, 100)).expect("add");
+
+        state.advance_empty_period(1).expect("empty period");
+        assert_eq!(state.old_anchor(), H256::zero());
+        assert_eq!(state.anchor(), h(1));
+        assert_eq!(state.period(), 1);
+        assert!(state.non_finalized_blocks().contains_key(&2));
     }
 
     #[test]
