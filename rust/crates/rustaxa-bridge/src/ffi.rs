@@ -334,6 +334,23 @@ pub mod rustaxa_ffi {
         vote_rlp: Vec<u8>,
     }
 
+    /// Pre-weight pillar-vote identity supplied after Rust signature recovery.
+    struct PillarVoteIdentityPayload {
+        vote_hash: [u8; 32],
+        voter: [u8; 20],
+        period: u64,
+    }
+
+    /// Result of inspecting one PillarVote RLP payload in Rust.
+    struct PillarVoteInspection {
+        status: u8,
+        period: u64,
+        block_hash: [u8; 32],
+        vote_hash: [u8; 32],
+        voter: [u8; 20],
+        signature_valid: bool,
+    }
+
     /// Plain bundle fact consumed by the Rust planner for one planning pass.
     struct PillarVoteBundleFact {
         vote_hash: [u8; 32],
@@ -1543,6 +1560,11 @@ pub mod rustaxa_ffi {
             self: &BridgePillarVotes,
             vote: PillarVotePayload,
         ) -> Result<bool>;
+        pub fn pillar_vote_inspect(vote_rlp: &[u8]) -> Result<PillarVoteInspection>;
+        pub fn pillar_votes_is_unique_identity(
+            self: &BridgePillarVotes,
+            vote: PillarVoteIdentityPayload,
+        ) -> Result<PillarVoteUniqueOutcome>;
         pub fn pillar_votes_is_unique_vote(
             self: &BridgePillarVotes,
             vote: PillarVotePayload,

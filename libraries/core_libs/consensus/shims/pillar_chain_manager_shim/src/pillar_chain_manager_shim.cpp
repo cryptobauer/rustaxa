@@ -4,6 +4,7 @@
 #include <exception>
 
 #include "config/hardfork.hpp"
+#include "final_chain/final_chain.hpp"
 #include "pillar_chain/pillar_block.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "vote/pillar_vote.hpp"
@@ -12,6 +13,17 @@ namespace taraxa::pillar_chain {
 namespace {
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t& hash) { return hash.asArray(); }
+addr_t fromBridgeAddress(const std::array<uint8_t, 20>& address) {
+  return addr_t(address.data(), addr_t::ConstructFromPointer);
+}
+
+vote_hash_t fromBridgeHash(const std::array<uint8_t, 32>& hash) {
+  return vote_hash_t(hash.data(), vote_hash_t::ConstructFromPointer);
+}
+
+rust::Slice<const uint8_t> toBridgeBytes(const bytes& input) {
+  return rust::Slice<const uint8_t>(input.data(), input.size());
+}
 
 PillarVoteRelevancePlanStatus fromStatusCode(uint8_t status) {
   switch (status) {
@@ -30,7 +42,52 @@ PillarVoteRelevancePlanStatus fromStatusCode(uint8_t status) {
   }
 }
 
+PillarVoteValidationPlanStatus fromRelevanceStatus(PillarVoteRelevancePlanStatus status) {
+  switch (status) {
+    case PillarVoteRelevancePlanStatus::kRelevant:
+      return PillarVoteValidationPlanStatus::kValid;
+    case PillarVoteRelevancePlanStatus::kVoteAlreadyKnown:
+      return PillarVoteValidationPlanStatus::kDuplicate;
+    case PillarVoteRelevancePlanStatus::kMissingCurrentPillarBlock:
+      return PillarVoteValidationPlanStatus::kMissingCurrentPillarBlock;
+    case PillarVoteRelevancePlanStatus::kVotePeriodMismatch:
+      return PillarVoteValidationPlanStatus::kVotePeriodMismatch;
+    case PillarVoteRelevancePlanStatus::kVoteBlockHashMismatch:
+      return PillarVoteValidationPlanStatus::kVoteBlockHashMismatch;
+    default:
+      return PillarVoteValidationPlanStatus::kUnknown;
+  }
+}
+
 }  // namespace
+
+const char* pillarVoteValidationPlanStatusString(PillarVoteValidationPlanStatus status) {
+  switch (status) {
+    case PillarVoteValidationPlanStatus::kValid:
+      return "valid";
+    case PillarVoteValidationPlanStatus::kDuplicate:
+      return "vote already known";
+    case PillarVoteValidationPlanStatus::kMissingCurrentPillarBlock:
+      return "missing current pillar block";
+    case PillarVoteValidationPlanStatus::kVotePeriodMismatch:
+      return "vote period mismatch";
+    case PillarVoteValidationPlanStatus::kVoteBlockHashMismatch:
+      return "vote block hash mismatch";
+    case PillarVoteValidationPlanStatus::kNotUnique:
+      return "vote not unique";
+    case PillarVoteValidationPlanStatus::kSignatureInvalid:
+      return "invalid signature";
+    case PillarVoteValidationPlanStatus::kNotEligible:
+      return "validator not eligible";
+    case PillarVoteValidationPlanStatus::kFuturePeriod:
+      return "period too far ahead of DPOS";
+    case PillarVoteValidationPlanStatus::kInspectionFailure:
+      return "inspection failure";
+    case PillarVoteValidationPlanStatus::kUnknown:
+      return "unknown";
+  }
+  return "unknown";
+}
 
 const char* pillarVoteRelevancePlanStatusString(PillarVoteRelevancePlanStatus status) {
   switch (status) {
@@ -72,6 +129,68 @@ PillarVoteRelevancePlan planPillarVoteRelevance(const FicusHardforkConfig& ficus
     return {fromStatusCode(plan.status), plan.is_relevant};
   } catch (const std::exception&) {
     return {PillarVoteRelevancePlanStatus::kUnknown, false};
+  }
+}
+
+PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& ficus_hf_config,
+                                                    const std::shared_ptr<PillarVote>& vote,
+                                                    const std::shared_ptr<final_chain::FinalChain>& final_chain,
+                                                    const std::shared_ptr<PillarBlock>& current_pillar_block,
+                                                    bool vote_already_known, bool is_unique) {
+  if (!vote || !final_chain) {
+    return {PillarVoteValidationPlanStatus::kInspectionFailure, false, 0, {}, {}};
+  }
+
+  try {
+    const auto relevance_plan =
+        planPillarVoteRelevance(ficus_hf_config, vote, current_pillar_block, vote_already_known);
+    if (!relevance_plan.is_relevant) {
+      return {fromRelevanceStatus(relevance_plan.status), false, vote->getPeriod(), vote->getHash(), {}};
+    }
+  } catch (...) {
+    return {PillarVoteValidationPlanStatus::kUnknown, false, vote->getPeriod(), vote->getHash(), {}};
+  }
+
+  if (!is_unique) {
+    return {PillarVoteValidationPlanStatus::kNotUnique, false, vote->getPeriod(), vote->getHash(), {}};
+  }
+
+  auto inspection = inspectPillarVoteWithRust(vote);
+  if (!inspection.is_valid) {
+    return inspection;
+  }
+  auto recovered_voter = inspection.recovered_voter;
+
+  try {
+    if (!final_chain->dposIsEligible(inspection.period - 1, recovered_voter)) {
+      return {PillarVoteValidationPlanStatus::kNotEligible, false, inspection.period, inspection.vote_hash,
+              recovered_voter};
+    }
+  } catch (state_api::ErrFutureBlock&) {
+    return {PillarVoteValidationPlanStatus::kFuturePeriod, false, inspection.period, inspection.vote_hash,
+            recovered_voter};
+  } catch (...) {
+    return {PillarVoteValidationPlanStatus::kUnknown, false, inspection.period, inspection.vote_hash, recovered_voter};
+  }
+
+  return {PillarVoteValidationPlanStatus::kValid, true, inspection.period, inspection.vote_hash, recovered_voter};
+}
+
+PillarVoteValidationPlan inspectPillarVoteWithRust(const std::shared_ptr<PillarVote>& vote) {
+  if (!vote) {
+    return {PillarVoteValidationPlanStatus::kInspectionFailure, false, 0, {}, {}};
+  }
+
+  try {
+    const auto inspection = rustaxa::pillar_vote_inspect(toBridgeBytes(vote->rlp()));
+    const auto vote_hash = fromBridgeHash(inspection.vote_hash);
+    const auto voter = fromBridgeAddress(inspection.voter);
+    if (!inspection.signature_valid) {
+      return {PillarVoteValidationPlanStatus::kSignatureInvalid, false, inspection.period, vote_hash, voter};
+    }
+    return {PillarVoteValidationPlanStatus::kValid, true, inspection.period, vote_hash, voter};
+  } catch (const std::exception&) {
+    return {PillarVoteValidationPlanStatus::kInspectionFailure, false, 0, {}, {}};
   }
 }
 

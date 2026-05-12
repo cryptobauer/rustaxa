@@ -290,6 +290,64 @@ bool PillarChainManager::isRelevantPillarVote(const std::shared_ptr<PillarVote> 
 }
 
 bool PillarChainManager::validatePillarVote(const std::shared_ptr<PillarVote> vote) const {
+#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
+  {
+    const auto current_pillar_block = getCurrentPillarBlock();
+    const auto vote_already_known = pillar_votes_.voteExists(vote);
+    const auto is_unique = pillar_votes_.isUniqueVote(vote);
+    const auto vote_period = vote->getPeriod();
+
+    const auto validation_plan =
+        validatePillarVoteWithRust(kFicusHfConfig, vote, final_chain_, current_pillar_block, vote_already_known, is_unique);
+
+    if (!validation_plan.is_valid) {
+      switch (validation_plan.status) {
+        case pillar_chain::PillarVoteValidationPlanStatus::kDuplicate:
+          LOG(log_dg_) << "Received vote " << vote->getHash() << " already saved";
+          return false;
+        case pillar_chain::PillarVoteValidationPlanStatus::kMissingCurrentPillarBlock:
+          LOG(log_nf_) << "Received vote's period " << vote_period
+                       << ", no pillar block created yet. Accepting votes with "
+                       << kFicusHfConfig.firstPillarBlockPeriod() + 1 << " period";
+          return false;
+        case pillar_chain::PillarVoteValidationPlanStatus::kVotePeriodMismatch:
+          if (!current_pillar_block) {
+            LOG(log_nf_) << "Received vote's period " << vote->getPeriod() << ", current pillar block missing";
+          } else {
+            LOG(log_nf_) << "Received vote's period " << vote->getPeriod() << ", current pillar block period "
+                         << current_pillar_block->getPeriod();
+          }
+          return false;
+        case pillar_chain::PillarVoteValidationPlanStatus::kVoteBlockHashMismatch:
+          LOG(log_nf_) << "Received vote's block hash " << vote->getBlockHash() << " != current pillar block hash "
+                       << current_pillar_block->getHash();
+          return false;
+        case pillar_chain::PillarVoteValidationPlanStatus::kNotUnique:
+          LOG(log_er_) << "Pillar vote " << vote->getHash() << " is not unique per period & validator";
+          return false;
+        case pillar_chain::PillarVoteValidationPlanStatus::kNotEligible:
+          LOG(log_er_) << "Validator is not eligible. Pillar vote " << vote->getHash();
+          return false;
+        case pillar_chain::PillarVoteValidationPlanStatus::kFuturePeriod:
+          LOG(log_wr_) << "Period " << vote_period << " is too far ahead of DPOS. Pillar vote " << vote->getHash();
+          return false;
+        case pillar_chain::PillarVoteValidationPlanStatus::kSignatureInvalid:
+          LOG(log_er_) << "Invalid pillar vote " << vote->getHash();
+          return false;
+        case pillar_chain::PillarVoteValidationPlanStatus::kInspectionFailure:
+        case pillar_chain::PillarVoteValidationPlanStatus::kUnknown:
+          [[fallthrough]];
+        default:
+          LOG(log_wr_) << "Unable to validate pillar vote " << vote->getHash() << ": "
+                       << pillarVoteValidationPlanStatusString(validation_plan.status);
+          return false;
+      }
+    }
+
+    return true;
+  }
+#endif
+
   const auto period = vote->getPeriod();
   const auto validator = vote->getVoterAddr();
 

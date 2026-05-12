@@ -13,6 +13,7 @@ add_executable(rust_consensus_tests
 target_link_libraries(rust_consensus_tests
     PRIVATE
     Rustaxa::bridge
+    vote
     GTest::gtest_main
     gmp::gmp
     mpfr::mpfr

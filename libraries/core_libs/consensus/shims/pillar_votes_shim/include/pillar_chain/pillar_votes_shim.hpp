@@ -64,6 +64,13 @@ class PillarVotes {
    */
   bool isUniqueVote(const std::shared_ptr<PillarVote> vote) const;
 
+#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
+  /**
+   * Checks whether a Rust-recovered `(period, voter, vote_hash)` identity is unique.
+   */
+  bool isUniqueVoteIdentity(PbftPeriod period, const vote_hash_t& vote_hash, const addr_t& voter) const;
+#endif
+
   /**
    * Checks if specified period data have been initialized.
    */
@@ -97,7 +104,8 @@ class PillarVotes {
   static std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t& hash);
   static std::array<uint8_t, 20> toBridgeAddress(const addr_t& address);
   static vote_hash_t fromBridgeHash(const std::array<uint8_t, 32>& hash);
-  static rustaxa::PillarVotePayload toBridgePayload(const std::shared_ptr<PillarVote>& vote, uint64_t validator_vote_count);
+  static rustaxa::PillarVotePayload toBridgePayload(const std::shared_ptr<PillarVote>& vote,
+                                                    uint64_t validator_vote_count);
   static rustaxa::PillarVotePayload toBridgeLookupPayload(const std::shared_ptr<PillarVote>& vote);
 
   const std::shared_ptr<PillarVote>& requireLiveVote(const vote_hash_t& vote_hash) const;

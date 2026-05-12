@@ -1284,11 +1284,13 @@ dependencies = [
  "cxx",
  "cxx-build",
  "ethereum-types",
+ "k256",
  "rlp 0.6.1",
  "rustaxa-consensus",
  "rustaxa-storage",
  "rustaxa-types",
  "rustaxa-vdf",
+ "tiny-keccak",
 ]
 
 [[package]]

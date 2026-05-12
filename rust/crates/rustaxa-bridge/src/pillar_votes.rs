@@ -5,14 +5,16 @@
 //! aggregation. It also exposes a stateless bundle planner for C++ sync paths
 //! that already hold prevalidated pillar-vote facts.
 //!
-//! Cryptographic checks and signature validation remain outside this module; this
-//! layer only enforces local bridge-domain invariants and delegates aggregation
-//! rules to [`PillarVotes`].
+//! Pillar-vote inspection delegates byte-level signature recovery to
+//! `rustaxa-types`; this layer exposes the CXX-compatible boundary and
+//! enforces local bridge-domain invariants before delegating aggregation rules
+//! to [`PillarVotes`].
 
 use crate::ffi::rustaxa_ffi::{
     PillarVoteBundleAcceptedVote, PillarVoteBundleFact as FfiPillarVoteBundleFact,
-    PillarVoteBundlePlan as PillarVoteBundlePlanOutput, PillarVoteInsertOutcome, PillarVotePayload,
-    PillarVoteRef, PillarVoteRelevanceFact as FfiPillarVoteRelevanceFact,
+    PillarVoteBundlePlan as PillarVoteBundlePlanOutput, PillarVoteIdentityPayload,
+    PillarVoteInsertOutcome, PillarVoteInspection, PillarVotePayload, PillarVoteRef,
+    PillarVoteRelevanceFact as FfiPillarVoteRelevanceFact,
     PillarVoteRelevancePlan as FfiPillarVoteRelevancePlan, PillarVoteUniqueOutcome,
     PillarVotesLookup,
 };
@@ -20,9 +22,11 @@ use crate::ffi::BridgePillarVotes;
 use anyhow::{ensure, Result};
 use ethereum_types::{H160, H256};
 use rustaxa_consensus::{
-    PillarVoteBundlePlan as ConsensusPillarVoteBundlePlan, PillarVoteBundlePlanner,
-    PillarVoteFact as ConsensusPillarVoteFact,
+    inspect_pillar_vote_from_rlp, PillarVoteBundlePlan as ConsensusPillarVoteBundlePlan,
+    PillarVoteBundlePlanner, PillarVoteFact as ConsensusPillarVoteFact,
+    PillarVoteIdentity as ConsensusPillarVoteIdentity,
     PillarVoteInsertOutcome as ConsensusPillarVoteInsertOutcome,
+    PillarVoteInspection as ConsensusPillarVoteInspection,
     PillarVoteRelevanceFact as ConsensusPillarVoteRelevanceFact,
     PillarVoteRelevancePlan as ConsensusPillarVoteRelevancePlan, PillarVotes, VerifiedPillarVote,
 };
@@ -94,6 +98,18 @@ impl BridgePillarVotes {
         self.0.erase_votes(min_period);
     }
 
+    /// Checks whether a recovered vote identity is unique before weight lookup.
+    pub fn pillar_votes_is_unique_identity(
+        &self,
+        vote: PillarVoteIdentityPayload,
+    ) -> Result<PillarVoteUniqueOutcome> {
+        Ok(PillarVoteUniqueOutcome {
+            is_unique: self
+                .0
+                .is_unique_vote_identity(identity_payload_to_consensus(vote)),
+        })
+    }
+
     /// Returns all stored vote refs for C++ shim sidecar pruning.
     pub fn pillar_votes_snapshot_refs(&self) -> Vec<PillarVoteRef> {
         self.0
@@ -102,6 +118,14 @@ impl BridgePillarVotes {
             .map(PillarVoteRef::from)
             .collect()
     }
+}
+
+/// Inspects a legacy-encoded PillarVote payload without mutating state.
+///
+/// Use this before inserting a vote to recover voter/address and check
+/// signature validity from vote RLP alone.
+pub fn pillar_vote_inspect(vote_rlp: &[u8]) -> Result<PillarVoteInspection> {
+    Ok(inspect_pillar_vote_from_rlp(vote_rlp)?.into())
 }
 
 /// Stateless planner entry point for one batch of plain pillar-vote facts.
@@ -142,6 +166,14 @@ fn bundle_fact_to_consensus_fact(value: FfiPillarVoteBundleFact) -> ConsensusPil
         voter: H160::from(value.voter),
         weight: value.weight,
         prevalidated: value.prevalidated,
+    }
+}
+
+fn identity_payload_to_consensus(value: PillarVoteIdentityPayload) -> ConsensusPillarVoteIdentity {
+    ConsensusPillarVoteIdentity {
+        period: value.period,
+        vote_hash: H256::from(value.vote_hash),
+        voter: H160::from(value.voter),
     }
 }
 
@@ -257,9 +289,23 @@ impl From<ConsensusPillarVoteRelevancePlan> for FfiPillarVoteRelevancePlan {
     }
 }
 
+impl From<ConsensusPillarVoteInspection> for PillarVoteInspection {
+    fn from(value: ConsensusPillarVoteInspection) -> Self {
+        Self {
+            status: u8::from(!value.signature_valid),
+            period: value.period,
+            block_hash: value.block_hash.into(),
+            vote_hash: value.vote_hash.into(),
+            voter: value.voter.into(),
+            signature_valid: value.signature_valid,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use k256::ecdsa::SigningKey;
 
     use ethereum_types::H256;
 
@@ -298,6 +344,85 @@ mod tests {
             weight: value.weight,
             vote_rlp: value.vote_rlp.clone(),
         }
+    }
+
+    fn keccak256(data: &[u8]) -> H256 {
+        use tiny_keccak::{Hasher, Keccak};
+
+        let mut output = [0u8; 32];
+        let mut hasher = Keccak::v256();
+        hasher.update(data);
+        hasher.finalize(&mut output);
+        H256::from(output)
+    }
+
+    fn signed_vote(seed: u8, period: u64, block: u64) -> (PillarVote, [u8; 20]) {
+        let signing_key = SigningKey::from_slice(&[seed; 32]).unwrap();
+        let mut vote = PillarVote {
+            period,
+            block_hash: H256::from_low_u64_be(block),
+            signature: [0u8; 65],
+        };
+        let unsigned_hash = vote.hash(false);
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(unsigned_hash.as_bytes())
+            .unwrap();
+        let signature_bytes_fixed = signature.to_bytes();
+        let mut signature_bytes = [0u8; 65];
+        signature_bytes[..64].copy_from_slice(&signature_bytes_fixed);
+        signature_bytes[64] = recovery_id.to_byte();
+        vote.signature = signature_bytes;
+
+        let voter = {
+            let verifying_key = signing_key.verifying_key();
+            let public_key = verifying_key.to_encoded_point(false);
+            let public_key_hash = keccak256(&public_key.as_bytes()[1..]);
+            public_key_hash.as_bytes()[12..].try_into().unwrap()
+        };
+
+        (vote, voter)
+    }
+
+    #[test]
+    fn inspect_pillar_vote_recovers_voter_and_signature_status() {
+        let (vote, voter) = signed_vote(0x11, 9_999, 77);
+        let inspected = pillar_vote_inspect(&vote.encode_rlp()).unwrap();
+
+        assert!(inspected.signature_valid);
+        assert_eq!(inspected.status, 0);
+        assert_eq!(inspected.period, 9_999);
+        assert_eq!(H256::from(inspected.block_hash), H256::from_low_u64_be(77));
+        assert_eq!(H256::from(inspected.vote_hash), vote.hash(true));
+        assert_eq!(inspected.voter, voter);
+    }
+
+    #[test]
+    fn inspect_pillar_vote_reports_invalid_signature_without_error() {
+        let (mut vote, _) = signed_vote(0x12, 100, 78);
+        vote.signature = [0u8; 65];
+
+        let inspected = pillar_vote_inspect(&vote.encode_rlp()).unwrap();
+
+        assert!(!inspected.signature_valid);
+        assert_eq!(inspected.status, 1);
+        assert_eq!(inspected.voter, [0u8; 20]);
+    }
+
+    #[test]
+    fn inspect_pillar_vote_rejects_out_of_range_recovery_id() {
+        let (mut vote, _) = signed_vote(0x13, 101, 79);
+        vote.signature[64] = 4;
+
+        let inspected = pillar_vote_inspect(&vote.encode_rlp()).unwrap();
+
+        assert!(!inspected.signature_valid);
+        assert_eq!(inspected.status, 1);
+        assert_eq!(inspected.voter, [0u8; 20]);
+    }
+
+    #[test]
+    fn inspect_pillar_vote_rejects_malformed_rlp() {
+        assert!(pillar_vote_inspect(&[1, 2, 3]).is_err());
     }
 
     #[test]

@@ -3,16 +3,89 @@
 //! This module mirrors the pure in-memory state owned by C++
 //! `pillar_chain::PillarVotes`: period initialization, per-period voter
 //! uniqueness, per-block vote-weight accumulation, threshold subset selection,
-//! and stale-period cleanup. It deliberately consumes already-verified vote
-//! facts. Signature recovery, DPoS eligibility, vote-count lookup, storage
-//! fallback, networking, and finalization side effects remain outside this
-//! domain boundary until the broader `PillarChainManager` rewrite lands.
+//! and stale-period cleanup. It also exposes stateless pillar-vote inspection
+//! so C++ shims can use Rust-recovered identity before DPoS lookup. DPoS
+//! eligibility, vote-count lookup, storage fallback, networking, and
+//! finalization side effects remain outside this domain boundary until the
+//! broader `PillarChainManager` rewrite lands.
 
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use ethereum_types::{H160, H256};
 use rustaxa_types::PillarVote;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, btree_map::Entry};
+
+/// Inspection output for one PillarVote RLP payload.
+///
+/// Inputs:
+/// - `vote_rlp`: raw pillar-vote RLP bytes.
+/// - Outputs include the deterministic decoded vote metadata and whether the
+///   recoverable ECDSA signature is valid for the unsigned vote hash.
+///
+/// Invariants:
+/// - `vote_hash` is always computed as `sha3(encodeSolidity(true))`.
+/// - `period`, `block_hash`, and `vote_hash` always reflect decoded vote
+///   fields and canonical recomputation.
+/// - `signature_valid == false` means recovery against
+///   `sha3(encodeSolidity(false))` failed; caller can still use decoded fields.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PillarVoteInspection {
+    /// Decoded vote period.
+    pub period: u64,
+    /// Decoded pillar block hash target.
+    pub block_hash: H256,
+    /// Canonical signed vote hash (`sha3(encodeSolidity(true))`).
+    pub vote_hash: H256,
+    /// Recovered signer address when signature verification succeeds; zero on failure.
+    pub voter: H160,
+    /// Recovery/verification result for the 65-byte recoverable signature.
+    pub signature_valid: bool,
+}
+
+/// Inspects and verifies one PillarVote RLP payload.
+///
+/// This helper is the Rust-side replacement for callers that currently need:
+/// - RLP decoding
+/// - deterministic vote hash reconstruction
+/// - signature recovery from the recoverable signature layout used by C++.
+///
+/// Returns:
+/// - `Ok(PillarVoteInspection)` for well-formed RLP.
+/// - `Err(anyhow::Error)` when RLP decoding fails.
+pub fn inspect_pillar_vote_from_rlp(vote_rlp: &[u8]) -> Result<PillarVoteInspection> {
+    let vote = PillarVote::decode_rlp(vote_rlp)
+        .context("could not decode PillarVote RLP for inspection")?;
+    let vote_hash = vote.hash(true);
+    let (voter, signature_valid) = vote
+        .recover_voter_address()
+        .filter(|address| *address != H160::zero())
+        .map(|voter| (voter, true))
+        .unwrap_or((H160::zero(), false));
+
+    Ok(PillarVoteInspection {
+        period: vote.period,
+        block_hash: vote.block_hash,
+        vote_hash,
+        voter,
+        signature_valid,
+    })
+}
+
+/// Hash-and-voter identity for a pillar vote before validator weight is known.
+///
+/// This type lets manager validation query the Rust-owned uniqueness index
+/// after Rust signature recovery but before C++ has looked up the validator's
+/// DPoS vote count. It intentionally omits signature bytes and weight so it
+/// cannot be confused with a verified aggregation input.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PillarVoteIdentity {
+    /// Vote period.
+    pub period: u64,
+    /// Canonical signed vote hash.
+    pub vote_hash: H256,
+    /// Recovered voter address.
+    pub voter: H160,
+}
 
 /// Plain input used to evaluate whether one pillar vote is relevant for local
 /// acceptance and sidecar indexing.
@@ -550,10 +623,23 @@ impl PillarVotes {
     /// existing vote hash is identical. Returns false when the voter already
     /// contributed a different vote hash.
     pub fn is_unique_vote(&self, vote: &VerifiedPillarVote) -> bool {
+        self.is_unique_vote_identity(PillarVoteIdentity {
+            period: vote.period(),
+            vote_hash: vote.vote_hash,
+            voter: vote.voter,
+        })
+    }
+
+    /// Checks whether one `(period, voter, vote_hash)` identity is unique.
+    ///
+    /// This is the pre-weight variant used by validation paths that have
+    /// already recovered the signer but have not queried FinalChain for the
+    /// validator's voting weight yet.
+    pub fn is_unique_vote_identity(&self, identity: PillarVoteIdentity) -> bool {
         self.periods
-            .get(&vote.period())
-            .and_then(|period| period.unique_voters.get(&vote.voter))
-            .is_none_or(|existing_hash| *existing_hash == vote.vote_hash)
+            .get(&identity.period)
+            .and_then(|period| period.unique_voters.get(&identity.voter))
+            .is_none_or(|existing_hash| *existing_hash == identity.vote_hash)
     }
 
     /// Returns whether threshold/vote state has been initialized for `period`.
@@ -747,8 +833,88 @@ fn empty_lookup() -> PillarVotesLookup {
 }
 
 #[cfg(test)]
+fn keccak256(data: &[u8]) -> H256 {
+    use tiny_keccak::{Hasher, Keccak};
+
+    let mut output = [0u8; 32];
+    let mut hasher = Keccak::v256();
+    hasher.update(data);
+    hasher.finalize(&mut output);
+    H256::from(output)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use k256::ecdsa::SigningKey;
+
+    fn signed_vote(seed: u8, period: u64, block_hash: u64) -> (PillarVote, H160) {
+        let signing_key = SigningKey::from_slice(&[seed; 32]).unwrap();
+        let mut vote = PillarVote {
+            period,
+            block_hash: H256::from_low_u64_be(block_hash),
+            signature: [0u8; 65],
+        };
+        let unsigned_hash = vote.hash(false);
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(unsigned_hash.as_bytes())
+            .unwrap();
+        let signature_bytes_fixed = signature.to_bytes();
+        let mut signature_bytes = [0u8; 65];
+        signature_bytes[..64].copy_from_slice(&signature_bytes_fixed);
+        signature_bytes[64] = recovery_id.to_byte();
+        vote.signature = signature_bytes;
+
+        let voter = {
+            let verifying_key = signing_key.verifying_key();
+            let public_key = verifying_key.to_encoded_point(false);
+            let public_key_hash = keccak256(&public_key.as_bytes()[1..]);
+            H160::from_slice(&public_key_hash.as_bytes()[12..])
+        };
+
+        (vote, voter)
+    }
+
+    #[test]
+    fn inspect_pillar_vote_from_rlp_recovers_signer_and_vote_hash() {
+        let (vote, expected_voter) = signed_vote(0x77, 1_337, 123_456_789);
+        let vote_hash = vote.hash(true);
+
+        let inspected = inspect_pillar_vote_from_rlp(&vote.encode_rlp()).unwrap();
+
+        assert!(inspected.signature_valid);
+        assert_eq!(inspected.period, 1_337);
+        assert_eq!(inspected.block_hash, H256::from_low_u64_be(123_456_789));
+        assert_eq!(inspected.vote_hash, vote_hash);
+        assert_eq!(inspected.voter, expected_voter);
+    }
+
+    #[test]
+    fn inspect_pillar_vote_from_rlp_marks_invalid_signature_without_error() {
+        let (mut vote, _) = signed_vote(0x66, 9, 999);
+        vote.signature = [0u8; 65];
+
+        let inspected = inspect_pillar_vote_from_rlp(&vote.encode_rlp()).unwrap();
+
+        assert!(!inspected.signature_valid);
+        assert_eq!(inspected.voter, H160::zero());
+    }
+
+    #[test]
+    fn inspect_pillar_vote_from_rlp_rejects_out_of_range_recovery_id() {
+        let (mut vote, _) = signed_vote(0x67, 10, 1_000);
+        vote.signature[64] = 4;
+
+        let inspected = inspect_pillar_vote_from_rlp(&vote.encode_rlp()).unwrap();
+
+        assert!(!inspected.signature_valid);
+        assert_eq!(inspected.voter, H160::zero());
+    }
+
+    #[test]
+    fn inspect_pillar_vote_from_rlp_rejects_malformed_rlp() {
+        assert!(inspect_pillar_vote_from_rlp(&[0x7f]).is_err());
+    }
 
     fn fact(vote_hash: u64, period: u64, block: u64, voter: u64, weight: u64) -> PillarVoteFact {
         PillarVoteFact {

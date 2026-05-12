@@ -1,18 +1,15 @@
-#include "pillar_chain/pillar_votes.hpp"
-
 #include <mutex>
 #include <shared_mutex>
 #include <stdexcept>
 #include <unordered_set>
 
+#include "pillar_chain/pillar_votes.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 
 namespace taraxa::pillar_chain {
 namespace {
 
-std::runtime_error pillarVotesError(const std::string& msg) {
-  return std::runtime_error("PillarVotes: " + msg);
-}
+std::runtime_error pillarVotesError(const std::string& msg) { return std::runtime_error("PillarVotes: " + msg); }
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t& hash) { return hash.asArray(); }
 
@@ -40,9 +37,12 @@ rustaxa::PillarVotePayload toBridgePayload(const std::shared_ptr<PillarVote>& vo
     throw pillarVotesError("validator vote count must be non-zero");
   }
 
-  return rustaxa::PillarVotePayload{toBridgeHash(vote->getHash()), toBridgeHash(vote->getBlockHash()),
+  return rustaxa::PillarVotePayload{toBridgeHash(vote->getHash()),
+                                    toBridgeHash(vote->getBlockHash()),
                                     include_voter ? toBridgeAddress(vote->getVoterAddr()) : std::array<uint8_t, 20>{},
-                                    vote->getPeriod(), validator_vote_count, toBridgeBytes(vote->rlp())};
+                                    vote->getPeriod(),
+                                    validator_vote_count,
+                                    toBridgeBytes(vote->rlp())};
 }
 
 }  // namespace
@@ -102,6 +102,14 @@ bool PillarVotes::isUniqueVote(const std::shared_ptr<PillarVote> vote) const {
   std::shared_lock lock(mutex_);
   return rust_pillar_votes_->pillar_votes_is_unique_vote(toBridgePayload(vote, 1)).is_unique;
 }
+
+#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
+bool PillarVotes::isUniqueVoteIdentity(PbftPeriod period, const vote_hash_t& vote_hash, const addr_t& voter) const {
+  std::shared_lock lock(mutex_);
+  rustaxa::PillarVoteIdentityPayload payload{toBridgeHash(vote_hash), toBridgeAddress(voter), period};
+  return rust_pillar_votes_->pillar_votes_is_unique_identity(payload).is_unique;
+}
+#endif
 
 bool PillarVotes::periodDataInitialized(PbftPeriod period) const {
   std::shared_lock lock(mutex_);

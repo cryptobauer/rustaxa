@@ -233,9 +233,10 @@ impl PillarBlock {
 
 /// Minimal pillar vote shape used by canonical vote and optimized bundle codecs.
 ///
-/// Full vote signing and author recovery remain outside this type. RLP stores
-/// the full 65-byte signature; Solidity compatibility encoding stores compact
-/// EIP-2098 `(r, vs)` words.
+/// RLP stores the full 65-byte signature; Solidity compatibility encoding
+/// stores compact EIP-2098 `(r, vs)` words. The type also owns deterministic
+/// author recovery because the signed/unsigned hash contract is part of the
+/// canonical pillar-vote byte format.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PillarVote {
     /// PBFT period the vote is for.
@@ -327,6 +328,28 @@ impl PillarVote {
     /// the unsigned or signed form with `include_signature`.
     pub fn hash(&self, include_signature: bool) -> H256 {
         keccak256(&self.encode_solidity(include_signature))
+    }
+
+    /// Recovers the validator address that signed this pillar vote.
+    ///
+    /// The signed message is the legacy unsigned pillar-vote hash,
+    /// `hash(false)`, and the signature is the 65-byte recoverable ECDSA
+    /// signature stored in C++ `sig_t` order. Invalid signatures return `None`
+    /// so callers can treat peer-supplied malformed votes as ordinary
+    /// validation failures instead of panics or transport errors.
+    pub fn recover_voter_address(&self) -> Option<H160> {
+        recover_address(&self.signature, &self.hash(false))
+    }
+
+    /// Returns whether this vote carries a recoverable nonzero signer address.
+    ///
+    /// This mirrors the C++ `Vote::verifyVote()` contract: successful public-key
+    /// recovery is the validity check. The recovered address is not checked
+    /// against DPoS state here; consensus callers must perform eligibility and
+    /// weight lookups separately for the vote period.
+    pub fn verify_signature(&self) -> bool {
+        self.recover_voter_address()
+            .is_some_and(|address| address != H160::zero())
     }
 }
 
@@ -709,6 +732,22 @@ fn keccak256(data: &[u8]) -> H256 {
     H256(out)
 }
 
+fn recover_address(signature: &[u8; SIGNATURE_SIZE], message_hash: &H256) -> Option<H160> {
+    use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
+
+    if signature[64] > 3 {
+        return None;
+    }
+    let recovery_id = RecoveryId::try_from(signature[64]).ok()?;
+    let signature = Signature::try_from(&signature[..64]).ok()?;
+    let recovered_key =
+        VerifyingKey::recover_from_prehash(message_hash.as_bytes(), &signature, recovery_id)
+            .ok()?;
+    let uncompressed = recovered_key.to_encoded_point(false);
+    let public_key_hash = keccak256(&uncompressed.as_bytes()[1..]);
+    Some(H160::from_slice(&public_key_hash.as_bytes()[12..]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -738,6 +777,30 @@ mod tests {
         let mut signature = [byte; SIGNATURE_SIZE];
         signature[64] = recovery_id;
         signature
+    }
+
+    fn signed_pillar_vote(seed: u8, period: u64, block_hash: H256) -> (PillarVote, H160) {
+        use k256::ecdsa::SigningKey;
+
+        let signing_key = SigningKey::from_slice(&[seed; WORD_SIZE]).unwrap();
+        let mut vote = PillarVote {
+            period,
+            block_hash,
+            signature: [0u8; SIGNATURE_SIZE],
+        };
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(vote.hash(false).as_bytes())
+            .unwrap();
+        let signature_bytes = signature.to_bytes();
+        vote.signature[..2 * WORD_SIZE].copy_from_slice(&signature_bytes);
+        vote.signature[64] = recovery_id.to_byte();
+
+        let verifying_key = signing_key.verifying_key();
+        let public_key = verifying_key.to_encoded_point(false);
+        let public_key_hash = keccak256(&public_key.as_bytes()[1..]);
+        let voter = H160::from_slice(&public_key_hash.as_bytes()[12..]);
+
+        (vote, voter)
     }
 
     fn pillar_fixture() -> PillarBlock {
@@ -865,6 +928,23 @@ mod tests {
         let decoded = PillarVote::decode_rlp(&vote.encode_rlp()).unwrap();
 
         assert_eq!(decoded, vote);
+    }
+
+    #[test]
+    fn pillar_vote_recovers_voter_address_from_signature() {
+        let (vote, voter) = signed_pillar_vote(0x21, 12, H256::from_low_u64_be(34));
+
+        assert_eq!(vote.recover_voter_address(), Some(voter));
+        assert!(vote.verify_signature());
+    }
+
+    #[test]
+    fn pillar_vote_rejects_out_of_range_recovery_id() {
+        let (mut vote, _) = signed_pillar_vote(0x22, 12, H256::from_low_u64_be(34));
+        vote.signature[64] = 4;
+
+        assert_eq!(vote.recover_voter_address(), None);
+        assert!(!vote.verify_signature());
     }
 
     #[test]

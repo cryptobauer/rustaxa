@@ -342,7 +342,9 @@ The current Rust starting point is intentionally small:
 - `rustaxa-types` contains shared Rust domain and codec types.
 - `rustaxa-types` now contains Rust pillar type and codec parity for `PillarBlock`,
   `ValidatorVoteCountChange`, `PillarVote`, `PillarBlockData`, optimized pillar-vote bundles, and current pillar data
-  storage shape. Pillar signing/recovery, manager orchestration, and production routing remain later consensus slices.
+  storage shape. Pillar-vote author recovery now lives on the Rust `PillarVote` type with C++ parity coverage for the
+  recoverable-signature path. Pillar signing, broader manager orchestration, and production routing remain later
+  consensus slices.
 - `rustaxa-consensus` now contains a Rust pillar-vote aggregation domain for already-verified pillar vote facts:
   period initialization, per-validator uniqueness, weighted per-block aggregation, deterministic threshold subset
   selection, and stale-period cleanup. The `RUSTAXA_ENABLE_PILLAR_VOTES` overlay routes the C++ `PillarVotes` API
@@ -351,8 +353,10 @@ The current Rust starting point is intentionally small:
   threshold accounting, deterministic rejection statuses, and accepted vote weights. The PBFT shim resolves only
   Rust-accepted vote hashes back to live C++ sidecars and inserts them through a temporary planned-insertion hook that
   does not re-run manager validation or re-query DPoS weights. `PillarChainManager::isRelevantPillarVote` now uses a
-  shim-owned Rust relevance planner for period/block/known-vote decisions under `RUSTAXA_ENABLE_PILLAR_VOTES`. Pillar
-  signing/recovery and the full `PillarChainManager` overlay remain later slices.
+  shim-owned Rust relevance planner for period/block/known-vote decisions under `RUSTAXA_ENABLE_PILLAR_VOTES`.
+  `PillarChainManager::validatePillarVote` now inspects pillar-vote RLP in Rust, uses the Rust-recovered voter for
+  uniqueness and DPoS eligibility, and avoids C++ signature recovery in Rust mode. Pillar signing and the full
+  `PillarChainManager` overlay remain later slices.
 - `rustaxa-storage` contains storage repositories that consensus should use through narrow ports.
 
 ### Consensus Sequencing
