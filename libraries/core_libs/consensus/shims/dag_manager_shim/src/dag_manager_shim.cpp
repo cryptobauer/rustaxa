@@ -7,6 +7,7 @@
 #include <optional>
 #include <shared_mutex>
 #include <stdexcept>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -561,15 +562,90 @@ vec_blk_t DagManager::getDagBlockOrder(blk_hash_t const &anchor, PbftPeriod peri
 }
 
 uint DagManager::setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, vec_blk_t const &dag_order) {
-  std::scoped_lock order_lock(rust_order_dag_blocks_mutex_, rust_graphs_mutex_);
-  if (period != rust_graphs_->runtime->dag_manager_runtime_latest_period() + 1) {
-    return 0;
-  }
+  std::scoped_lock order_lock(rust_order_dag_blocks_mutex_);
 
   try {
-    const auto finalized_count = rust_graphs_->runtime->dag_manager_runtime_set_finalized_order(
-        to_bridge_hash(anchor), period, to_bridge_dag_hashes(dag_order));
-    return static_cast<uint>(finalized_count);
+    {
+      std::shared_lock graph_lock(rust_graphs_mutex_);
+      if (period != rust_graphs_->runtime->dag_manager_runtime_latest_period() + 1) {
+        return 0;
+      }
+    }
+
+    uint64_t anchor_level = 0;
+    if (anchor != kNullBlockHash) {
+      const auto anchor_block = getDagBlock(anchor);
+      if (!anchor_block) {
+        throw std::runtime_error("DagManager: finalized anchor missing from DAG storage");
+      }
+      anchor_level = anchor_block->getLevel();
+    }
+
+    rustaxa::DagManagerFinalizationPlan plan;
+    {
+      std::unique_lock graph_lock(rust_graphs_mutex_);
+      if (period != rust_graphs_->runtime->dag_manager_runtime_latest_period() + 1) {
+        return 0;
+      }
+      plan = rust_graphs_->runtime->dag_manager_runtime_set_finalized_order(to_bridge_hash(anchor), anchor_level, period,
+                                                                            to_bridge_dag_hashes(dag_order));
+    }
+
+    if (!plan.counter_update_hashes.empty()) {
+      std::vector<std::shared_ptr<DagBlock>> dag_blocks_to_update_counters;
+      dag_blocks_to_update_counters.reserve(plan.counter_update_hashes.size());
+      for (const auto &bridge_hash : plan.counter_update_hashes) {
+        const auto hash = from_bridge_dag_hash(bridge_hash);
+        auto dag_block = getDagBlock(hash);
+        if (!dag_block) {
+          throw std::runtime_error("DagManager: finalized block missing from DAG storage");
+        }
+        dag_blocks_to_update_counters.emplace_back(std::move(dag_block));
+      }
+      db_->updateDagBlockCounters(std::move(dag_blocks_to_update_counters));
+    }
+
+    if (!plan.expired_hashes.empty()) {
+      std::vector<trx_hash_t> transactions_from_expired_blocks;
+      for (const auto &bridge_hash : plan.expired_hashes) {
+        const auto hash = from_bridge_dag_hash(bridge_hash);
+        const auto block = getDagBlock(hash);
+        if (!block) {
+          throw std::runtime_error("DagManager: expired block missing from DAG storage");
+        }
+        seen_blocks_.erase(hash);
+        db_->removeDagBlock(hash);
+        auto const block_trx_hashes = block->getTrxs();
+        transactions_from_expired_blocks.insert(transactions_from_expired_blocks.end(), block_trx_hashes.begin(),
+                                                block_trx_hashes.end());
+      }
+
+      if (!transactions_from_expired_blocks.empty()) {
+        const auto finalized_transactions = db_->transactionsFinalized(transactions_from_expired_blocks);
+        std::unordered_set<trx_hash_t> transactions_to_remove;
+        for (size_t i = 0; i < finalized_transactions.size(); ++i) {
+          if (!finalized_transactions[i]) {
+            transactions_to_remove.emplace(transactions_from_expired_blocks[i]);
+          }
+        }
+
+        for (const auto &bridge_hash : plan.remaining_hashes) {
+          const auto dag_block = getDagBlock(from_bridge_dag_hash(bridge_hash));
+          if (!dag_block) {
+            throw std::runtime_error("DagManager: post-finalization non-finalized block missing");
+          }
+          for (auto const &trx_hash : dag_block->getTrxs()) {
+            transactions_to_remove.erase(trx_hash);
+          }
+        }
+
+        if (!transactions_to_remove.empty()) {
+          trx_mgr_->removeNonFinalizedTransactions(std::move(transactions_to_remove));
+        }
+      }
+    }
+
+    return static_cast<uint>(plan.finalized_count);
   } catch (const std::exception &e) {
     throw std::runtime_error(std::string("DagManager: failed to apply finalized DAG order in Rust runtime: ") +
                              e.what());

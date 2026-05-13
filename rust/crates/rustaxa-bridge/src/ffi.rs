@@ -863,6 +863,13 @@ pub mod rustaxa_ffi {
         anchor: [u8; 32],
     }
 
+    struct DagManagerFinalizationPlan {
+        finalized_count: u64,
+        counter_update_hashes: Vec<DagHash>,
+        expired_hashes: Vec<DagHash>,
+        remaining_hashes: Vec<DagHash>,
+    }
+
     struct DagManagerNonFinalizedSize {
         levels: u64,
         blocks: u64,
@@ -1186,9 +1193,10 @@ pub mod rustaxa_ffi {
         pub fn dag_manager_runtime_set_finalized_order(
             self: &mut BridgeDagManagerRuntime,
             new_anchor: [u8; 32],
+            new_anchor_level: u64,
             new_period: u64,
             finalized_order: Vec<DagHash>,
-        ) -> Result<u64>;
+        ) -> Result<DagManagerFinalizationPlan>;
         pub fn dag_manager_runtime_compute_order(
             self: &BridgeDagManagerRuntime,
             anchor: &[u8; 32],

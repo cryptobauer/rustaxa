@@ -6,7 +6,7 @@ use rustaxa_types::dag::DagBlock;
 use rustaxa_vdf::sortition::{self, LegacySortitionParams};
 use rustaxa_vdf::vdf::{Solution as VdfSolution, WesolowskiVdf};
 use rustaxa_vdf::verifier::WesolowskiVerifier;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write;
 
 /// Deterministic DAG frontier derived from a ghost path and DAG leaves.
@@ -1248,6 +1248,40 @@ pub struct DagManagerSnapshot {
     pub non_finalized_blocks: Vec<DagManagerBlock>,
 }
 
+/// Deterministic effects produced by one finalized DAG order transition.
+///
+/// This type is the Rust domain contract for the stateful part of
+/// `DagManager::setDagBlockOrder`. It contains only hash-level facts; storage,
+/// transaction-manager, cache, event, and network side effects remain at the
+/// runtime/shim boundary.
+///
+/// Fields:
+/// - `previous_period` / `new_period`: period transition applied by the plan.
+/// - `previous_anchor` / `current_anchor`: anchor transition applied by the
+///   plan.
+/// - `finalized_count`: legacy-compatible count of unique hashes supplied in
+///   the finalized order.
+/// - `dag_expiry_level`: expiry level after applying the anchor-level rule.
+/// - `counter_update_hashes`: finalized-order hashes that were not present in
+///   the in-memory non-finalized index before the transition and therefore need
+///   persistent DAG counter/index updates for sync parity.
+/// - `expired_hashes`: previously non-finalized blocks removed because they
+///   are below the new expiry level or reference another expired block.
+/// - `remaining_hashes`: non-finalized hashes that remain live after the
+///   transition, sorted by level and hash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagManagerFinalizationPlan {
+    pub previous_period: u64,
+    pub new_period: u64,
+    pub previous_anchor: H256,
+    pub current_anchor: H256,
+    pub finalized_count: usize,
+    pub dag_expiry_level: u64,
+    pub counter_update_hashes: Vec<H256>,
+    pub expired_hashes: Vec<H256>,
+    pub remaining_hashes: Vec<H256>,
+}
+
 /// Rust-owned in-memory state for deterministic `DagManager` behavior.
 ///
 /// This type owns the total DAG graph, pivot tree, non-finalized block index,
@@ -1380,61 +1414,146 @@ impl DagManagerState {
     /// - `new_anchor`: anchor hash for the new period (must be nonzero).
     /// - `new_period`: expected to be exactly `period + 1`.
     /// - `finalized_order`: hashes finalized by this period.
+    /// - `new_anchor_level`: storage-resolved level for `new_anchor`.
     ///
     /// Output:
-    /// - number of unique finalized hashes supplied by the caller, matching
-    ///   the legacy C++ `DagManager::setDagBlockOrder` return contract.
+    /// - a deterministic finalization plan containing the legacy-compatible
+    ///   finalized count and side-effect hashes for the runtime boundary.
     ///
     /// Behavior:
     /// - updates `old_anchor`, `anchor`, and `period`
     /// - removes finalized blocks from level indexes and block metadata
+    /// - advances expiry level from the anchor level
+    /// - removes non-finalized blocks that expired directly or through an
+    ///   expired pivot/tip dependency
     /// - rebuilds DAG graphs and frontier from remaining non-finalized blocks
     pub fn set_finalized_order(
         &mut self,
         new_anchor: H256,
         new_period: u64,
         finalized_order: &[H256],
-    ) -> Result<usize> {
+        new_anchor_level: u64,
+    ) -> Result<DagManagerFinalizationPlan> {
         ensure!(new_anchor != H256::zero(), "new anchor must be nonzero");
         ensure!(
             new_period == self.period.saturating_add(1),
-            "invalid period transition: expected {}, got {}",
+            "DAG_MANAGER_FINALIZATION_INVALID_PERIOD: expected {}, got {}",
             self.period.saturating_add(1),
             new_period
         );
 
-        let anchor_level = self.block_levels.get(&new_anchor).copied().unwrap_or(0);
-        let finalized = finalized_order.iter().copied().collect::<BTreeSet<_>>();
+        let previous_non_finalized = self
+            .non_finalized_blocks
+            .values()
+            .flatten()
+            .copied()
+            .collect::<BTreeSet<_>>();
+
+        let previous_period = self.period;
+        let previous_anchor = self.anchor;
+
+        let mut finalized = BTreeSet::new();
+        let mut counter_update_hashes = Vec::new();
+        for hash in finalized_order {
+            if finalized.insert(*hash) && !previous_non_finalized.contains(hash) {
+                counter_update_hashes.push(*hash);
+            }
+        }
+        ensure!(
+            finalized.contains(&new_anchor),
+            "DAG_MANAGER_FINALIZATION_ANCHOR_NOT_IN_ORDER: anchor {:?} missing from finalized order",
+            new_anchor
+        );
+
         for hash in &finalized {
-            self.blocks.remove(hash);
-            if let Some(level) = self.block_levels.remove(hash) {
-                let remove_level_entry = self
-                    .non_finalized_blocks
-                    .get_mut(&level)
-                    .map(|hashes| {
-                        hashes.remove(hash);
-                        hashes.is_empty()
-                    })
-                    .unwrap_or(false);
-                if remove_level_entry {
-                    self.non_finalized_blocks.remove(&level);
+            self.remove_non_finalized_block_metadata(*hash);
+        }
+        if new_anchor_level > u64::from(self.dag_expiry_limit) {
+            self.dag_expiry_level = new_anchor_level - u64::from(self.dag_expiry_limit);
+        }
+
+        let remaining_hashes = self
+            .non_finalized_blocks
+            .values()
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut remaining_set = BTreeSet::new();
+        for hash in &remaining_hashes {
+            remaining_set.insert(*hash);
+        }
+
+        let mut references = BTreeMap::new();
+        for hash in &remaining_hashes {
+            let Some(block) = self.blocks.get(hash) else {
+                continue;
+            };
+            for ref_hash in std::iter::once(block.pivot).chain(block.tips.iter().copied()) {
+                if remaining_set.contains(&ref_hash) {
+                    references
+                        .entry(ref_hash)
+                        .or_insert_with(BTreeSet::new)
+                        .insert(*hash);
                 }
             }
+        }
+
+        let mut expired = BTreeSet::new();
+        let mut expired_hashes = Vec::new();
+        let mut queue = VecDeque::new();
+        for hash in remaining_hashes.iter() {
+            let Some(block) = self.blocks.get(hash) else {
+                continue;
+            };
+            if block.level < self.dag_expiry_level {
+                expired.insert(*hash);
+                queue.push_back(*hash);
+                expired_hashes.push(*hash);
+            }
+        }
+        while let Some(expired_hash) = queue.pop_front() {
+            if let Some(dependents) = references.get(&expired_hash) {
+                for dependent in dependents {
+                    if expired.insert(*dependent) {
+                        queue.push_back(*dependent);
+                        expired_hashes.push(*dependent);
+                    }
+                }
+            }
+        }
+        for hash in &expired_hashes {
+            self.remove_non_finalized_block_metadata(*hash);
         }
 
         self.old_anchor = self.anchor;
         self.anchor = new_anchor;
         self.period = new_period;
         self.block_levels.clear();
-        self.block_levels.insert(self.anchor, anchor_level);
+        self.block_levels.insert(self.anchor, new_anchor_level);
         for block in self.blocks.values() {
             self.block_levels.insert(block.hash, block.level);
         }
         self.rebuild_graphs_from_records()?;
         self.refresh_non_finalized_min_difficulty();
         self.frontier = self.compute_frontier();
+        let remaining_hashes = self
+            .non_finalized_blocks
+            .values()
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>();
 
-        Ok(finalized.len())
+        Ok(DagManagerFinalizationPlan {
+            previous_period,
+            new_period,
+            previous_anchor,
+            current_anchor: new_anchor,
+            finalized_count: finalized.len(),
+            dag_expiry_level: self.dag_expiry_level,
+            counter_update_hashes,
+            expired_hashes,
+            remaining_hashes,
+        })
     }
 
     /// Advances the finalized period for an empty PBFT block.
@@ -1645,6 +1764,23 @@ impl DagManagerState {
             .add_vertex_edges(block.hash, block.pivot, &[]);
 
         Ok(())
+    }
+
+    fn remove_non_finalized_block_metadata(&mut self, hash: H256) {
+        self.blocks.remove(&hash);
+        if let Some(level) = self.block_levels.remove(&hash) {
+            let remove_level_entry = self
+                .non_finalized_blocks
+                .get_mut(&level)
+                .map(|hashes| {
+                    hashes.remove(&hash);
+                    hashes.is_empty()
+                })
+                .unwrap_or(false);
+            if remove_level_entry {
+                self.non_finalized_blocks.remove(&level);
+            }
+        }
     }
 
     fn rebuild_graphs_from_records(&mut self) -> Result<()> {
@@ -2776,10 +2912,18 @@ mod tests {
         state.add_block(record(3, 2, &[], 3, 90)).expect("add");
         state.add_block(record(4, 2, &[3], 4, 80)).expect("add");
 
-        let removed = state
-            .set_finalized_order(h(4), 1, &[h(2), h(3), h(4)])
+        let plan = state
+            .set_finalized_order(h(4), 1, &[h(2), h(3), h(4)], 4)
             .expect("finalize");
-        assert_eq!(removed, 3);
+        assert_eq!(plan.finalized_count, 3);
+        assert_eq!(plan.previous_period, 0);
+        assert_eq!(plan.new_period, 1);
+        assert_eq!(plan.previous_anchor, h(1));
+        assert_eq!(plan.current_anchor, h(4));
+        assert_eq!(plan.dag_expiry_level, 4);
+        assert!(plan.counter_update_hashes.is_empty());
+        assert!(plan.expired_hashes.is_empty());
+        assert!(plan.remaining_hashes.is_empty());
         assert_eq!(state.old_anchor(), h(1));
         assert_eq!(state.anchor(), h(4));
         assert_eq!(state.period(), 1);
@@ -2797,12 +2941,44 @@ mod tests {
         state.add_block(record(2, 1, &[], 2, 100)).expect("add");
         state.add_block(record(3, 2, &[], 3, 90)).expect("add");
 
-        let finalized_count = state
-            .set_finalized_order(h(3), 1, &[h(2), h(2), h(3), h(99)])
+        let plan = state
+            .set_finalized_order(h(3), 1, &[h(2), h(2), h(3), h(99)], 3)
             .expect("finalize");
-        assert_eq!(finalized_count, 3);
+        assert_eq!(plan.finalized_count, 3);
+        assert_eq!(plan.counter_update_hashes, vec![h(99)]);
         assert_eq!(state.anchor(), h(3));
         assert!(state.non_finalized_blocks().is_empty());
+    }
+
+    #[test]
+    fn dag_manager_state_set_finalized_order_prunes_expired_dependents() {
+        let mut state = DagManagerState::new(h(1), 2).expect("state");
+        state.add_block(record(2, 1, &[], 2, 100)).expect("add");
+        state.add_block(record(3, 2, &[], 3, 90)).expect("add");
+        state.add_block(record(4, 3, &[], 4, 80)).expect("add");
+        state.add_block(record(5, 1, &[], 1, 70)).expect("add");
+        state.add_block(record(6, 5, &[], 6, 60)).expect("add");
+
+        let plan = state
+            .set_finalized_order(h(4), 1, &[h(2), h(3), h(4)], 4)
+            .expect("finalize");
+
+        assert_eq!(state.expiry_level(), 2);
+        assert_eq!(plan.dag_expiry_level, 2);
+        assert_eq!(plan.expired_hashes, vec![h(5), h(6)]);
+        assert!(plan.remaining_hashes.is_empty());
+        assert!(state.non_finalized_blocks().is_empty());
+    }
+
+    #[test]
+    fn dag_manager_state_set_finalized_order_requires_anchor_in_order() {
+        let mut state = DagManagerState::new(h(1), 0).expect("state");
+        state.add_block(record(2, 1, &[], 2, 100)).expect("add");
+
+        let err = state
+            .set_finalized_order(h(2), 1, &[], 2)
+            .expect_err("anchor missing from order");
+        assert!(format!("{err:#}").contains("DAG_MANAGER_FINALIZATION_ANCHOR_NOT_IN_ORDER"));
     }
 
     #[test]
@@ -2832,8 +3008,8 @@ mod tests {
         };
         state.rebuild_from_snapshot(snapshot).expect("snapshot");
         let err = state
-            .set_finalized_order(h(2), 4, &[])
+            .set_finalized_order(h(2), 4, &[], 2)
             .expect_err("period transition must fail");
-        assert!(format!("{err:#}").contains("invalid period transition"));
+        assert!(format!("{err:#}").contains("DAG_MANAGER_FINALIZATION_INVALID_PERIOD"));
     }
 }
