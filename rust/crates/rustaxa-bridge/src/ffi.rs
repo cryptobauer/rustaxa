@@ -634,10 +634,12 @@ pub mod rustaxa_ffi {
         selected_hashes: Vec<DagHash>,
     }
 
-    /// Rust-storage-backed transaction lookup result for DAG sync materialization.
+    /// Rust-storage-backed transaction lookup result for DAG transaction materialization.
     struct DagTransactionRlpLookup {
         hash: [u8; 32],
         found: bool,
+        /// True when the RLP was loaded through finalized transaction location metadata.
+        finalized: bool,
         tx_rlp: Vec<u8>,
     }
 

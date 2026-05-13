@@ -696,8 +696,9 @@ impl BridgeStorage {
     /// storage.
     ///
     /// Inputs are transaction hashes in caller-requested order. Each output entry
-    /// preserves that order and carries the queried hash, a presence flag, and
-    /// raw transaction RLP bytes. Lookup mirrors the storage shim's hash lookup:
+    /// preserves that order and carries the queried hash, a presence flag,
+    /// whether the bytes came from finalized storage, and raw transaction RLP
+    /// bytes. Lookup mirrors the storage shim's hash lookup:
     /// pending/non-finalized transactions first, then finalized transaction
     /// location metadata, including system transactions.
     pub fn get_transaction_rlps_by_hashes(
@@ -709,45 +710,47 @@ impl BridgeStorage {
 
         for hash in hashes {
             let hash = H256::from(hash.hash);
-            let tx_rlp = if let Some(tx_rlp) = transaction
+            let (tx_rlp, finalized) = if let Some(tx_rlp) = transaction
                 .rlp(hash)
-                .context("DAG_SYNC_TRANSACTION_PENDING_LOOKUP")?
+                .context("DAG_TRANSACTION_RLP_PENDING_LOOKUP")?
             {
-                Some(tx_rlp)
+                (Some(tx_rlp), false)
             } else if let Some(location_rlp) = transaction
                 .location_rlp(hash)
-                .context("DAG_SYNC_TRANSACTION_LOCATION_LOOKUP")?
+                .context("DAG_TRANSACTION_RLP_LOCATION_LOOKUP")?
             {
                 let location = rlp::Rlp::new(&location_rlp);
                 let period = location
                     .val_at::<u64>(0)
-                    .context("DAG_SYNC_TRANSACTION_LOCATION_PERIOD")?;
+                    .context("DAG_TRANSACTION_RLP_LOCATION_PERIOD")?;
                 let position = location
                     .val_at::<u32>(1)
-                    .context("DAG_SYNC_TRANSACTION_LOCATION_POSITION")?;
+                    .context("DAG_TRANSACTION_RLP_LOCATION_POSITION")?;
                 let is_system = location
                     .item_count()
-                    .context("DAG_SYNC_TRANSACTION_LOCATION_SHAPE")?
+                    .context("DAG_TRANSACTION_RLP_LOCATION_SHAPE")?
                     == 3
                     && location
                         .val_at::<bool>(2)
-                        .context("DAG_SYNC_TRANSACTION_LOCATION_SYSTEM_FLAG")?;
-                if is_system {
+                        .context("DAG_TRANSACTION_RLP_LOCATION_SYSTEM_FLAG")?;
+                let tx_rlp = if is_system {
                     transaction
                         .system_rlp(hash)
-                        .context("DAG_SYNC_TRANSACTION_SYSTEM_LOOKUP")?
+                        .context("DAG_TRANSACTION_RLP_SYSTEM_LOOKUP")?
                 } else {
                     transaction
                         .by_period_position_rlp(period, position)
-                        .context("DAG_SYNC_TRANSACTION_FINALIZED_LOOKUP")?
-                }
+                        .context("DAG_TRANSACTION_RLP_FINALIZED_LOOKUP")?
+                };
+                (tx_rlp, true)
             } else {
-                None
+                (None, false)
             };
 
             out.push(rustaxa_ffi::DagTransactionRlpLookup {
                 hash: hash.0,
                 found: tx_rlp.is_some(),
+                finalized,
                 tx_rlp: tx_rlp.unwrap_or_default(),
             });
         }
@@ -889,15 +892,19 @@ mod tests {
             assert_eq!(lookup.len(), 4);
             assert_eq!(lookup[0].hash, [1u8; 32]);
             assert!(lookup[0].found);
+            assert!(!lookup[0].finalized);
             assert_eq!(lookup[0].tx_rlp, pending);
             assert_eq!(lookup[1].hash, [2u8; 32]);
             assert!(lookup[1].found);
+            assert!(lookup[1].finalized);
             assert_eq!(lookup[1].tx_rlp, finalized);
             assert_eq!(lookup[2].hash, [3u8; 32]);
             assert!(lookup[2].found);
+            assert!(lookup[2].finalized);
             assert_eq!(lookup[2].tx_rlp, system);
             assert_eq!(lookup[3].hash, [4u8; 32]);
             assert!(!lookup[3].found);
+            assert!(!lookup[3].finalized);
             assert!(lookup[3].tx_rlp.is_empty());
         }
 

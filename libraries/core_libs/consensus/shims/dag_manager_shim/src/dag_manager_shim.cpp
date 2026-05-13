@@ -155,7 +155,11 @@ std::vector<std::shared_ptr<Transaction>> from_bridge_dag_transaction_rlps(
     if (!entry.found) {
       throw std::runtime_error("DagManager: selected non-finalized transaction missing from Rust storage");
     }
-    out.emplace_back(std::make_shared<Transaction>(from_rust_bytes(entry.tx_rlp)));
+    auto transaction = std::make_shared<Transaction>(from_rust_bytes(entry.tx_rlp));
+    if (transaction->getHash() != trx_hash_t(entry.hash.data(), trx_hash_t::ConstructFromPointer)) {
+      throw std::runtime_error("DagManager: Rust storage transaction RLP hash does not match requested hash");
+    }
+    out.emplace_back(std::move(transaction));
   }
   return out;
 }
@@ -424,23 +428,54 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
   for (const auto &entry : trxs) {
     supplied_trx_hashes.push_back(entry.first);
   }
-  const auto query_plan = rustaxa::dag_plan_verify_transaction_query(
-      to_bridge_dag_transaction_hashes(all_block_trx_hashes), to_bridge_dag_transaction_hashes(supplied_trx_hashes));
-  const auto trx_hashes_to_query = from_bridge_dag_transaction_hashes(query_plan.query_hashes);
+  auto query_plan = rustaxa::dag_plan_verify_transaction_query(to_bridge_dag_transaction_hashes(all_block_trx_hashes),
+                                                               to_bridge_dag_transaction_hashes(supplied_trx_hashes));
+  std::vector<trx_hash_t> planned_query_hashes;
+  planned_query_hashes.reserve(query_plan.query_hashes.size());
+  for (const auto &hash : query_plan.query_hashes) {
+    planned_query_hashes.emplace_back(from_bridge_dag_transaction_hash(hash));
+  }
 
   SharedTransactions all_block_trxs;
   all_block_trxs.reserve(all_block_trx_hashes.size());
 
-  const auto transactions = trx_mgr_->getTransactions(trx_hashes_to_query, proposal_period);
-  if (transactions.size() < trx_hashes_to_query.size()) {
-    seen_blocks_.erase(block_hash);
-    return {VerifyBlockReturnType::MissingTransaction, {}};
+  std::unordered_map<trx_hash_t, std::shared_ptr<Transaction>> queried_transactions;
+  queried_transactions.reserve(planned_query_hashes.size());
+
+  auto [pool_transactions, storage_query_hashes] = trx_mgr_->getPoolTransactions(planned_query_hashes);
+  for (const auto &transaction : pool_transactions) {
+    queried_transactions.emplace(transaction->getHash(), transaction);
   }
 
-  std::unordered_map<trx_hash_t, std::shared_ptr<Transaction>> queried_transactions;
-  queried_transactions.reserve(transactions.size());
-  for (const auto &transaction : transactions) {
-    queried_transactions[transaction->getHash()] = transaction;
+  rust::Vec<rustaxa::DagTransactionRlpLookup> storage_transactions;
+  {
+    std::shared_lock transactions_lock(trx_mgr_->getTransactionsMutex());
+    storage_transactions =
+        db_->rustStorage().get_transaction_rlps_by_hashes(to_bridge_dag_transaction_hashes(storage_query_hashes));
+  }
+  if (storage_transactions.size() != storage_query_hashes.size()) {
+    throw std::runtime_error("DagManager: Rust storage transaction lookup returned unexpected result count");
+  }
+  for (size_t i = 0; i < storage_transactions.size(); ++i) {
+    const auto &entry = storage_transactions[i];
+    const auto &planned_hash = storage_query_hashes[i];
+    if (trx_hash_t(entry.hash.data(), trx_hash_t::ConstructFromPointer) != planned_hash) {
+      throw std::runtime_error("DagManager: Rust storage transaction lookup returned unexpected hash order");
+    }
+    if (!entry.found) {
+      continue;
+    }
+    auto transaction = std::make_shared<Transaction>(from_rust_bytes(entry.tx_rlp));
+    if (transaction->getHash() != planned_hash) {
+      throw std::runtime_error("DagManager: Rust storage transaction RLP hash does not match requested hash");
+    }
+    if (entry.finalized) {
+      const auto account = final_chain_->getAccount(transaction->getSender(), proposal_period);
+      if (account.has_value() && account->nonce > transaction->getNonce()) {
+        continue;
+      }
+    }
+    queried_transactions.emplace(planned_hash, std::move(transaction));
   }
 
   for (const auto &tx_hash : all_block_trx_hashes) {
@@ -451,7 +486,8 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
 
     const auto it = queried_transactions.find(tx_hash);
     if (it == queried_transactions.end()) {
-      throw std::runtime_error("DagManager: transaction plan missing hash for planned query");
+      seen_blocks_.erase(block_hash);
+      return {VerifyBlockReturnType::MissingTransaction, {}};
     }
     all_block_trxs.emplace_back(it->second);
   }
