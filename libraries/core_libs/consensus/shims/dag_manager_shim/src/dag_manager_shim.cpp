@@ -147,6 +147,19 @@ dev::bytes from_rust_bytes(const rust::Vec<uint8_t> &bytes) {
   return out;
 }
 
+std::vector<std::shared_ptr<Transaction>> from_bridge_dag_transaction_rlps(
+    const rust::Vec<rustaxa::DagTransactionRlpLookup> &rlps) {
+  std::vector<std::shared_ptr<Transaction>> out;
+  out.reserve(rlps.size());
+  for (const auto &entry : rlps) {
+    if (!entry.found) {
+      throw std::runtime_error("DagManager: selected non-finalized transaction missing from Rust storage");
+    }
+    out.emplace_back(std::make_shared<Transaction>(from_rust_bytes(entry.tx_rlp)));
+  }
+  return out;
+}
+
 std::array<uint8_t, 32> to_bridge_vrf_public_key(const rust::Vec<uint8_t> &vrf_public_key) {
   if (vrf_public_key.size() != 32) {
     throw std::runtime_error("DagManager: VRF public key must be 32 bytes");
@@ -811,15 +824,15 @@ const std::tuple<PbftPeriod, std::vector<std::shared_ptr<DagBlock>>, SharedTrans
 DagManager::getNonFinalizedBlocksWithTransactions(const std::unordered_set<blk_hash_t> &known_hashes) const {
   std::vector<std::shared_ptr<DagBlock>> dag_blocks;
   std::vector<std::vector<trx_hash_t>> all_block_transaction_hashes;
-  std::vector<trx_hash_t> trx_to_query;
 
   PbftPeriod period = 0;
   std::vector<blk_hash_t> non_finalized_hashes;
   {
     std::shared_lock lock(rust_graphs_mutex_);
-    period = rust_graphs_->runtime->dag_manager_runtime_latest_period();
-    non_finalized_hashes = from_bridge_dag_hashes(
-        rust_graphs_->runtime->dag_manager_runtime_select_non_finalized_hashes(to_bridge_dag_hashes(known_hashes)));
+    const auto snapshot =
+        rust_graphs_->runtime->dag_manager_runtime_non_finalized_sync_snapshot(to_bridge_dag_hashes(known_hashes));
+    period = snapshot.period;
+    non_finalized_hashes = from_bridge_dag_hashes(snapshot.selected_hashes);
   }
 
   for (const auto &hash : non_finalized_hashes) {
@@ -835,13 +848,14 @@ DagManager::getNonFinalizedBlocksWithTransactions(const std::unordered_set<blk_h
     all_block_transaction_hashes.emplace_back(block->getTrxs());
   }
 
-  if (!dag_blocks.empty()) {
-    const auto query_plan = rustaxa::dag_plan_non_finalized_transaction_query(
-        to_bridge_dag_block_transaction_refs(all_block_transaction_hashes));
-    trx_to_query = from_bridge_dag_transaction_hashes(query_plan.query_hashes);
+  if (all_block_transaction_hashes.empty()) {
+    return {period, std::move(dag_blocks), {}};
   }
 
-  auto trxs = trx_mgr_->getNonfinalizedTrx(trx_to_query);
+  auto query_plan = rustaxa::dag_plan_non_finalized_transaction_query(
+      to_bridge_dag_block_transaction_refs(all_block_transaction_hashes));
+  const auto trxs_lookup = db_->rustStorage().get_transaction_rlps_by_hashes(std::move(query_plan.query_hashes));
+  auto trxs = from_bridge_dag_transaction_rlps(trxs_lookup);
   return {period, std::move(dag_blocks), std::move(trxs)};
 }
 

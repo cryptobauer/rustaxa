@@ -628,6 +628,19 @@ pub mod rustaxa_ffi {
         hash: [u8; 32],
     }
 
+    /// Runtime snapshot for non-finalized DAG sync materialization.
+    struct DagManagerRuntimeSyncSnapshot {
+        period: u64,
+        selected_hashes: Vec<DagHash>,
+    }
+
+    /// Rust-storage-backed transaction lookup result for DAG sync materialization.
+    struct DagTransactionRlpLookup {
+        hash: [u8; 32],
+        found: bool,
+        tx_rlp: Vec<u8>,
+    }
+
     /// Transaction hashes for one DAG block, preserving block-local order.
     struct DagBlockTransactionRefs {
         transaction_hashes: Vec<DagTransactionHash>,
@@ -1223,6 +1236,11 @@ pub mod rustaxa_ffi {
             new_period: u64,
             finalized_order: Vec<DagHash>,
         ) -> Result<DagManagerFinalizationPlan>;
+        /// Returns current runtime sync snapshot for non-finalized materialization.
+        pub fn dag_manager_runtime_non_finalized_sync_snapshot(
+            self: &BridgeDagManagerRuntime,
+            known_hashes: Vec<DagHash>,
+        ) -> DagManagerRuntimeSyncSnapshot;
         pub fn dag_manager_runtime_compute_order(
             self: &BridgeDagManagerRuntime,
             anchor: &[u8; 32],
@@ -1902,6 +1920,11 @@ pub mod rustaxa_ffi {
         pub fn get_transaction_count(self: &BridgeStorage, period: u64) -> Result<u64>;
         pub fn get_system_transaction(self: &BridgeStorage, hash: &[u8; 32]) -> Result<Vec<u8>>;
         pub fn get_all_nonfinalized_transactions(self: &BridgeStorage) -> Result<Vec<TxRlp>>;
+        /// Batch-fetches transaction RLP payloads by hash from Rust storage.
+        pub fn get_transaction_rlps_by_hashes(
+            self: &BridgeStorage,
+            hashes: Vec<DagTransactionHash>,
+        ) -> Result<Vec<DagTransactionRlpLookup>>;
         pub fn get_all_transaction_period(self: &BridgeStorage) -> Result<Vec<HashPeriod>>;
         pub fn get_period_system_transactions_hashes(
             self: &BridgeStorage,

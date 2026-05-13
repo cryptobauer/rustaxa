@@ -1,5 +1,6 @@
 use crate::ffi::rustaxa_ffi;
 use crate::ffi::BridgeStorage;
+use anyhow::Context;
 use ethereum_types::H256;
 use rustaxa_storage::Config;
 use rustaxa_storage::Storage;
@@ -691,6 +692,69 @@ impl BridgeStorage {
             .collect())
     }
 
+    /// Batch-loads canonical transaction RLP payloads by hash through Rust
+    /// storage.
+    ///
+    /// Inputs are transaction hashes in caller-requested order. Each output entry
+    /// preserves that order and carries the queried hash, a presence flag, and
+    /// raw transaction RLP bytes. Lookup mirrors the storage shim's hash lookup:
+    /// pending/non-finalized transactions first, then finalized transaction
+    /// location metadata, including system transactions.
+    pub fn get_transaction_rlps_by_hashes(
+        &self,
+        hashes: Vec<rustaxa_ffi::DagTransactionHash>,
+    ) -> Result<Vec<rustaxa_ffi::DagTransactionRlpLookup>, anyhow::Error> {
+        let transaction = self.0.transaction();
+        let mut out = Vec::with_capacity(hashes.len());
+
+        for hash in hashes {
+            let hash = H256::from(hash.hash);
+            let tx_rlp = if let Some(tx_rlp) = transaction
+                .rlp(hash)
+                .context("DAG_SYNC_TRANSACTION_PENDING_LOOKUP")?
+            {
+                Some(tx_rlp)
+            } else if let Some(location_rlp) = transaction
+                .location_rlp(hash)
+                .context("DAG_SYNC_TRANSACTION_LOCATION_LOOKUP")?
+            {
+                let location = rlp::Rlp::new(&location_rlp);
+                let period = location
+                    .val_at::<u64>(0)
+                    .context("DAG_SYNC_TRANSACTION_LOCATION_PERIOD")?;
+                let position = location
+                    .val_at::<u32>(1)
+                    .context("DAG_SYNC_TRANSACTION_LOCATION_POSITION")?;
+                let is_system = location
+                    .item_count()
+                    .context("DAG_SYNC_TRANSACTION_LOCATION_SHAPE")?
+                    == 3
+                    && location
+                        .val_at::<bool>(2)
+                        .context("DAG_SYNC_TRANSACTION_LOCATION_SYSTEM_FLAG")?;
+                if is_system {
+                    transaction
+                        .system_rlp(hash)
+                        .context("DAG_SYNC_TRANSACTION_SYSTEM_LOOKUP")?
+                } else {
+                    transaction
+                        .by_period_position_rlp(period, position)
+                        .context("DAG_SYNC_TRANSACTION_FINALIZED_LOOKUP")?
+                }
+            } else {
+                None
+            };
+
+            out.push(rustaxa_ffi::DagTransactionRlpLookup {
+                hash: hash.0,
+                found: tx_rlp.is_some(),
+                tx_rlp: tx_rlp.unwrap_or_default(),
+            });
+        }
+
+        Ok(out)
+    }
+
     pub fn get_all_transaction_period(
         &self,
     ) -> Result<Vec<rustaxa_ffi::HashPeriod>, anyhow::Error> {
@@ -750,5 +814,93 @@ impl BridgeStorage {
         self.0
             .transaction()
             .write_period_system_hashes(period, &hashes_rlp)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be available")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{name}_{nonce}"))
+    }
+
+    fn tx_hash(byte: u8) -> rustaxa_ffi::DagTransactionHash {
+        rustaxa_ffi::DagTransactionHash { hash: [byte; 32] }
+    }
+
+    fn period_data_rlp(transaction_rlps: &[Vec<u8>]) -> Vec<u8> {
+        let mut transactions = rlp::RlpStream::new_list(transaction_rlps.len());
+        for transaction_rlp in transaction_rlps {
+            transactions.append_raw(transaction_rlp, 1);
+        }
+
+        let mut period_data = rlp::RlpStream::new_list(5);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&transactions.out(), 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.out().to_vec()
+    }
+
+    #[test]
+    fn transaction_rlp_batch_lookup_reads_pending_finalized_system_and_missing() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_storage_transaction_rlps");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let pending = vec![0xC1, 0xA1];
+            let finalized = vec![0xC1, 0xA2];
+            let system = vec![0xC1, 0xA3];
+
+            storage
+                .save_transaction(&[1u8; 32], pending.clone())
+                .expect("pending transaction should save");
+            storage
+                .save_period_data(7, period_data_rlp(std::slice::from_ref(&finalized)))
+                .expect("period data should save");
+            storage
+                .save_transaction_location(&[2u8; 32], 7, 0, false)
+                .expect("regular finalized location should save");
+            storage
+                .save_system_transaction(&[3u8; 32], system.clone())
+                .expect("system transaction should save");
+            storage
+                .save_transaction_location(&[3u8; 32], 8, 0, true)
+                .expect("system finalized location should save");
+
+            let lookup = storage
+                .get_transaction_rlps_by_hashes(vec![
+                    tx_hash(1),
+                    tx_hash(2),
+                    tx_hash(3),
+                    tx_hash(4),
+                ])
+                .expect("batch lookup should succeed");
+
+            assert_eq!(lookup.len(), 4);
+            assert_eq!(lookup[0].hash, [1u8; 32]);
+            assert!(lookup[0].found);
+            assert_eq!(lookup[0].tx_rlp, pending);
+            assert_eq!(lookup[1].hash, [2u8; 32]);
+            assert!(lookup[1].found);
+            assert_eq!(lookup[1].tx_rlp, finalized);
+            assert_eq!(lookup[2].hash, [3u8; 32]);
+            assert!(lookup[2].found);
+            assert_eq!(lookup[2].tx_rlp, system);
+            assert_eq!(lookup[3].hash, [4u8; 32]);
+            assert!(!lookup[3].found);
+            assert!(lookup[3].tx_rlp.is_empty());
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
     }
 }

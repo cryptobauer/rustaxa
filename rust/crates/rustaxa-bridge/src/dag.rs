@@ -1,15 +1,16 @@
 use crate::ffi::rustaxa_ffi::{
     DagBlockLookup, DagBlockTransactionRefs, DagExpiredTransactionCleanupPlan,
     DagExpiredTransactionFact, DagFrontier, DagHash, DagLevelHashes, DagManagerAnchors,
-    DagManagerBlock, DagManagerFinalizationPlan, DagManagerNonFinalizedSize, DagManagerSnapshot,
-    DagOrder, DagPersistenceCounters, DagPivotTipsValidation, DagProposerEligibilityDecision,
-    DagProposerEligibilityInput, DagProposerTipCandidate, DagProposerTipSelection,
-    DagReferenceMetadata, DagTransactionHash, DagTransactionQueryPlan, DagVerifyAuthorizationInput,
-    DagVerifyAuthorizationResult, DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock,
-    DagVerifyPrecheckResult, DagVerifyTransactionAvailabilityInput,
-    DagVerifyTransactionAvailabilityResult, DagVerifyVdfDposDecision, DagVerifyVdfDposFacts,
-    DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput,
-    DagVerifyVdfSortitionInput, DagVerifyVdfSortitionResult, SortitionRuntimeParams,
+    DagManagerBlock, DagManagerFinalizationPlan, DagManagerNonFinalizedSize,
+    DagManagerRuntimeSyncSnapshot, DagManagerSnapshot, DagOrder, DagPersistenceCounters,
+    DagPivotTipsValidation, DagProposerEligibilityDecision, DagProposerEligibilityInput,
+    DagProposerTipCandidate, DagProposerTipSelection, DagReferenceMetadata, DagTransactionHash,
+    DagTransactionQueryPlan, DagVerifyAuthorizationInput, DagVerifyAuthorizationResult,
+    DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
+    DagVerifyTransactionAvailabilityInput, DagVerifyTransactionAvailabilityResult,
+    DagVerifyVdfDposDecision, DagVerifyVdfDposFacts, DagVerifyVdfPrepareInput,
+    DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
+    DagVerifyVdfSortitionResult, SortitionRuntimeParams,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
 use anyhow::{ensure, Context, Result};
@@ -384,6 +385,26 @@ impl BridgeDagManagerRuntime {
             .set_finalized_order(new_anchor, new_period, &finalized_order, new_anchor_level)
             .context("DAG_RUNTIME_SET_FINALIZED_ORDER")
             .map(to_bridge_finalization_plan)
+    }
+
+    /// Returns a one-shot sync snapshot containing the current period and the
+    /// deterministic selection of non-finalized block hashes that are not in
+    /// `known_hashes`.
+    pub fn dag_manager_runtime_non_finalized_sync_snapshot(
+        &self,
+        known_hashes: Vec<DagHash>,
+    ) -> DagManagerRuntimeSyncSnapshot {
+        let known_hashes = known_hashes
+            .into_iter()
+            .map(|hash| H256::from(hash.hash))
+            .collect::<Vec<_>>();
+        DagManagerRuntimeSyncSnapshot {
+            period: self.state.period(),
+            selected_hashes: to_dag_hashes(
+                self.state
+                    .select_non_finalized_hashes_excluding_known(&known_hashes),
+            ),
+        }
     }
 
     /// Computes deterministic DAG order for a target anchor.
@@ -1581,6 +1602,71 @@ mod tests {
                     .blocks,
                 1
             );
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_non_finalized_sync_snapshot_includes_period_and_selected_hashes() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_sync_snapshot");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("runtime should initialize");
+
+            runtime
+                .dag_manager_runtime_add_block(DagManagerBlock {
+                    hash: [2u8; 32],
+                    pivot: [1u8; 32],
+                    tips: vec![],
+                    level: 2,
+                    difficulty: 100,
+                })
+                .expect("add block");
+            runtime
+                .dag_manager_runtime_add_block(DagManagerBlock {
+                    hash: [3u8; 32],
+                    pivot: [1u8; 32],
+                    tips: vec![],
+                    level: 3,
+                    difficulty: 90,
+                })
+                .expect("add block");
+            runtime
+                .dag_manager_runtime_add_block(DagManagerBlock {
+                    hash: [6u8; 32],
+                    pivot: [3u8; 32],
+                    tips: vec![],
+                    level: 4,
+                    difficulty: 85,
+                })
+                .expect("add block");
+            runtime
+                .dag_manager_runtime_add_block(DagManagerBlock {
+                    hash: [4u8; 32],
+                    pivot: [3u8; 32],
+                    tips: vec![],
+                    level: 4,
+                    difficulty: 80,
+                })
+                .expect("add block");
+
+            let snapshot = runtime.dag_manager_runtime_non_finalized_sync_snapshot(vec![
+                DagHash { hash: [2u8; 32] },
+                DagHash { hash: [9u8; 32] },
+                DagHash { hash: [2u8; 32] },
+            ]);
+            let selected = snapshot
+                .selected_hashes
+                .into_iter()
+                .map(|hash| hash.hash)
+                .collect::<Vec<_>>();
+
+            assert_eq!(snapshot.period, 0);
+            assert_eq!(selected, vec![[3u8; 32], [4u8; 32], [6u8; 32]]);
         }
 
         let _ = fs::remove_dir_all(&temp_dir);
