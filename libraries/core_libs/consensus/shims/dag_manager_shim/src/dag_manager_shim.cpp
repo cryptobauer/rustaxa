@@ -7,6 +7,7 @@
 #include <optional>
 #include <shared_mutex>
 #include <stdexcept>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -31,6 +32,10 @@ std::array<uint8_t, 32> to_bridge_hash(const blk_hash_t &hash) { return hash.asA
 
 rustaxa::DagHash to_bridge_dag_hash(const blk_hash_t &hash) { return rustaxa::DagHash{to_bridge_hash(hash)}; }
 
+rustaxa::DagTransactionHash to_bridge_dag_transaction_hash(const trx_hash_t &hash) {
+  return rustaxa::DagTransactionHash{hash.asArray()};
+}
+
 rust::Vec<rustaxa::DagHash> to_bridge_dag_hashes(const std::vector<blk_hash_t> &hashes) {
   rust::Vec<rustaxa::DagHash> out;
   out.reserve(hashes.size());
@@ -40,11 +45,23 @@ rust::Vec<rustaxa::DagHash> to_bridge_dag_hashes(const std::vector<blk_hash_t> &
   return out;
 }
 
+rust::Vec<rustaxa::DagTransactionHash> to_bridge_dag_transaction_hashes(const std::vector<trx_hash_t> &hashes) {
+  rust::Vec<rustaxa::DagTransactionHash> out;
+  out.reserve(hashes.size());
+  for (const auto &hash : hashes) {
+    out.push_back(to_bridge_dag_transaction_hash(hash));
+  }
+  return out;
+}
+
 blk_hash_t from_bridge_hash(const std::array<uint8_t, 32> &hash) {
   return blk_hash_t(hash.data(), blk_hash_t::ConstructFromPointer);
 }
 
 blk_hash_t from_bridge_dag_hash(const rustaxa::DagHash &hash) { return from_bridge_hash(hash.hash); }
+trx_hash_t from_bridge_dag_transaction_hash(const rustaxa::DagTransactionHash &hash) {
+  return trx_hash_t(hash.hash.data(), trx_hash_t::ConstructFromPointer);
+}
 
 std::vector<blk_hash_t> from_bridge_dag_hashes(const rust::Vec<rustaxa::DagHash> &hashes) {
   std::vector<blk_hash_t> out;
@@ -53,6 +70,33 @@ std::vector<blk_hash_t> from_bridge_dag_hashes(const rust::Vec<rustaxa::DagHash>
     out.emplace_back(from_bridge_dag_hash(hash));
   }
   return out;
+}
+
+std::vector<trx_hash_t> from_bridge_dag_transaction_hashes(
+    const rust::Vec<rustaxa::DagTransactionHash> &hashes) {
+  std::vector<trx_hash_t> out;
+  out.reserve(hashes.size());
+  for (const auto &hash : hashes) {
+    out.emplace_back(from_bridge_dag_transaction_hash(hash));
+  }
+  return out;
+}
+
+rust::Vec<rustaxa::DagBlockTransactionRefs> to_bridge_dag_block_transaction_refs(
+    const std::vector<std::vector<trx_hash_t>> &hashes) {
+  rust::Vec<rustaxa::DagBlockTransactionRefs> nested;
+  nested.reserve(hashes.size());
+  for (const auto &block_hashes : hashes) {
+    rustaxa::DagBlockTransactionRefs refs;
+    rust::Vec<rustaxa::DagTransactionHash> converted;
+    converted.reserve(block_hashes.size());
+    for (const auto &hash : block_hashes) {
+      converted.push_back(to_bridge_dag_transaction_hash(hash));
+    }
+    refs.transaction_hashes = std::move(converted);
+    nested.push_back(std::move(refs));
+  }
+  return nested;
 }
 
 std::map<uint64_t, std::unordered_set<blk_hash_t>> from_bridge_level_hashes(
@@ -354,25 +398,41 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
   }
 
   const auto &all_block_trx_hashes = blk->getTrxs();
-  vec_trx_t trx_hashes_to_query;
-  SharedTransactions all_block_trxs;
+  vec_trx_t supplied_trx_hashes;
+  supplied_trx_hashes.reserve(trxs.size());
+  for (const auto &entry : trxs) {
+    supplied_trx_hashes.push_back(entry.first);
+  }
+  const auto query_plan = rustaxa::dag_plan_verify_transaction_query(
+      to_bridge_dag_transaction_hashes(all_block_trx_hashes), to_bridge_dag_transaction_hashes(supplied_trx_hashes));
+  const auto trx_hashes_to_query = from_bridge_dag_transaction_hashes(query_plan.query_hashes);
 
-  if (!trxs.empty()) {
-    for (const auto &tx_hash : all_block_trx_hashes) {
-      const auto trx_it = trxs.find(tx_hash);
-      if (trx_it != trxs.end()) {
-        all_block_trxs.emplace_back(trx_it->second);
-      } else {
-        trx_hashes_to_query.emplace_back(tx_hash);
-      }
-    }
-  } else {
-    trx_hashes_to_query = all_block_trx_hashes;
+  SharedTransactions all_block_trxs;
+  all_block_trxs.reserve(all_block_trx_hashes.size());
+
+  const auto transactions = trx_mgr_->getTransactions(trx_hashes_to_query, proposal_period);
+  if (transactions.size() < trx_hashes_to_query.size()) {
+    seen_blocks_.erase(block_hash);
+    return {VerifyBlockReturnType::MissingTransaction, {}};
   }
 
-  auto transactions = trx_mgr_->getTransactions(trx_hashes_to_query, proposal_period);
-  for (auto transaction : transactions) {
-    all_block_trxs.emplace_back(std::move(transaction));
+  std::unordered_map<trx_hash_t, std::shared_ptr<Transaction>> queried_transactions;
+  queried_transactions.reserve(transactions.size());
+  for (const auto &transaction : transactions) {
+    queried_transactions[transaction->getHash()] = transaction;
+  }
+
+  for (const auto &tx_hash : all_block_trx_hashes) {
+    if (const auto it = trxs.find(tx_hash); it != trxs.end()) {
+      all_block_trxs.emplace_back(it->second);
+      continue;
+    }
+
+    const auto it = queried_transactions.find(tx_hash);
+    if (it == queried_transactions.end()) {
+      throw std::runtime_error("DagManager: transaction plan missing hash for planned query");
+    }
+    all_block_trxs.emplace_back(it->second);
   }
 
   const auto transaction_availability = rustaxa::dag_verify_transaction_availability(
@@ -622,25 +682,39 @@ uint DagManager::setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, v
 
       if (!transactions_from_expired_blocks.empty()) {
         const auto finalized_transactions = db_->transactionsFinalized(transactions_from_expired_blocks);
-        std::unordered_set<trx_hash_t> transactions_to_remove;
+        rust::Vec<rustaxa::DagExpiredTransactionFact> expired_candidates;
+        expired_candidates.reserve(transactions_from_expired_blocks.size());
         for (size_t i = 0; i < finalized_transactions.size(); ++i) {
-          if (!finalized_transactions[i]) {
-            transactions_to_remove.emplace(transactions_from_expired_blocks[i]);
-          }
+          rustaxa::DagExpiredTransactionFact fact;
+          fact.hash = to_bridge_dag_transaction_hash(transactions_from_expired_blocks[i]).hash;
+          fact.finalized = finalized_transactions[i];
+          expired_candidates.push_back(std::move(fact));
         }
 
+        std::vector<std::vector<trx_hash_t>> remaining_transaction_hashes;
+        remaining_transaction_hashes.reserve(plan.remaining_hashes.size());
         for (const auto &bridge_hash : plan.remaining_hashes) {
           const auto dag_block = getDagBlock(from_bridge_dag_hash(bridge_hash));
           if (!dag_block) {
             throw std::runtime_error("DagManager: post-finalization non-finalized block missing");
           }
-          for (auto const &trx_hash : dag_block->getTrxs()) {
-            transactions_to_remove.erase(trx_hash);
-          }
+          remaining_transaction_hashes.push_back(dag_block->getTrxs());
         }
 
+        const auto retained_hash_plan =
+            rustaxa::dag_plan_non_finalized_transaction_query(
+                to_bridge_dag_block_transaction_refs(remaining_transaction_hashes));
+        const auto tx_cleanup_plan =
+            rustaxa::dag_plan_expired_transaction_cleanup(std::move(expired_candidates),
+                                                          retained_hash_plan.query_hashes);
+        const auto transactions_to_remove = from_bridge_dag_transaction_hashes(tx_cleanup_plan.remove_hashes);
         if (!transactions_to_remove.empty()) {
-          trx_mgr_->removeNonFinalizedTransactions(std::move(transactions_to_remove));
+          std::unordered_set<trx_hash_t> transactions_to_remove_set;
+          transactions_to_remove_set.reserve(transactions_to_remove.size());
+          for (const auto &hash : transactions_to_remove) {
+            transactions_to_remove_set.emplace(hash);
+          }
+          trx_mgr_->removeNonFinalizedTransactions(std::move(transactions_to_remove_set));
         }
       }
     }
@@ -730,7 +804,7 @@ const std::pair<PbftPeriod, std::map<uint64_t, std::unordered_set<blk_hash_t>>> 
 const std::tuple<PbftPeriod, std::vector<std::shared_ptr<DagBlock>>, SharedTransactions>
 DagManager::getNonFinalizedBlocksWithTransactions(const std::unordered_set<blk_hash_t> &known_hashes) const {
   std::vector<std::shared_ptr<DagBlock>> dag_blocks;
-  std::unordered_set<trx_hash_t> unique_trxs;
+  std::vector<std::vector<trx_hash_t>> all_block_transaction_hashes;
   std::vector<trx_hash_t> trx_to_query;
 
   PbftPeriod period = 0;
@@ -756,12 +830,15 @@ DagManager::getNonFinalizedBlocksWithTransactions(const std::unordered_set<blk_h
     }
   }
 
+  all_block_transaction_hashes.reserve(dag_blocks.size());
   for (const auto &block : dag_blocks) {
-    for (auto trx : block->getTrxs()) {
-      if (unique_trxs.emplace(trx).second) {
-        trx_to_query.emplace_back(trx);
-      }
-    }
+    all_block_transaction_hashes.emplace_back(block->getTrxs());
+  }
+
+  if (!dag_blocks.empty()) {
+    const auto query_plan =
+        rustaxa::dag_plan_non_finalized_transaction_query(to_bridge_dag_block_transaction_refs(all_block_transaction_hashes));
+    trx_to_query = from_bridge_dag_transaction_hashes(query_plan.query_hashes);
   }
 
   auto trxs = trx_mgr_->getNonfinalizedTrx(trx_to_query);

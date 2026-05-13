@@ -190,6 +190,39 @@ pub struct DagVerifyTransactionAvailability {
     pub reject_code: u32,
 }
 
+/// Transaction hash query plan for DAG manager C++ boundaries.
+///
+/// Rust owns deterministic hash selection while C++ still owns live
+/// `Transaction` objects. The returned hashes preserve first-seen order so the
+/// shim can query storage/pool without reimplementing ordering or dedup rules.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagTransactionQueryPlan {
+    pub query_hashes: Vec<H256>,
+}
+
+/// Finalization fact for one transaction referenced by expired DAG blocks.
+///
+/// Inputs:
+/// - `hash`: transaction hash candidate collected from an expired DAG block.
+/// - `finalized`: true when storage already has a finalized location for the
+///   transaction, in which case it must not be removed from non-finalized
+///   transaction state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagExpiredTransactionFact {
+    pub hash: H256,
+    pub finalized: bool,
+}
+
+/// Transaction cleanup plan for expired DAG block finalization.
+///
+/// `remove_hashes` contains unique transaction hashes that were referenced by
+/// expired DAG blocks, are not finalized, and are no longer referenced by any
+/// remaining non-finalized DAG block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagExpiredTransactionCleanupPlan {
+    pub remove_hashes: Vec<H256>,
+}
+
 /// Inputs for deterministic gas checks in `DagManager::verifyBlock`.
 ///
 /// C++ still owns live transaction lookup and EVM-backed transaction gas
@@ -529,6 +562,100 @@ pub fn validate_dag_verify_transaction_availability(
         continue_validation: reject_code.is_none(),
         reject_code: reject_code.unwrap_or(0),
     }
+}
+
+/// Plans which DAG block transaction hashes still need live lookup.
+///
+/// Inputs:
+/// - `block_transaction_hashes`: transaction hashes in canonical block order.
+/// - `supplied_transaction_hashes`: hashes already supplied by the caller, for
+///   example sidecar transactions received with a DAG block.
+///
+/// Output:
+/// - hashes from `block_transaction_hashes` missing from the supplied set,
+///   preserving first-seen block order and deduplicating duplicate query
+///   hashes. Callers that need duplicate transaction references should rebuild
+///   those references from the original block hash list after lookup.
+pub fn plan_dag_verify_transaction_query(
+    block_transaction_hashes: &[H256],
+    supplied_transaction_hashes: &[H256],
+) -> DagTransactionQueryPlan {
+    let supplied = supplied_transaction_hashes
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut seen = BTreeSet::new();
+    let mut query_hashes = Vec::new();
+    for hash in block_transaction_hashes {
+        if supplied.contains(hash) {
+            continue;
+        }
+        if seen.insert(*hash) {
+            query_hashes.push(*hash);
+        }
+    }
+    DagTransactionQueryPlan { query_hashes }
+}
+
+/// Plans unique transaction lookups for non-finalized DAG sync payloads.
+///
+/// Inputs:
+/// - `block_transaction_hashes`: transaction hashes grouped in the same DAG
+///   block order C++ will use for sync payload materialization.
+///
+/// Output:
+/// - unique transaction hashes, preserving first-seen block/order position.
+pub fn plan_non_finalized_transaction_query(
+    block_transaction_hashes: &[Vec<H256>],
+) -> DagTransactionQueryPlan {
+    let mut seen = BTreeSet::new();
+    let mut query_hashes = Vec::new();
+    for block in block_transaction_hashes {
+        for hash in block {
+            if seen.insert(*hash) {
+                query_hashes.push(*hash);
+            }
+        }
+    }
+    DagTransactionQueryPlan { query_hashes }
+}
+
+/// Plans non-finalized transaction removals after expired DAG block cleanup.
+///
+/// Inputs:
+/// - `expired_candidates`: transaction facts collected from expired DAG blocks
+///   in deterministic block/transaction order. `finalized == true` marks
+///   transaction candidates that must not be removed.
+/// - `retained_transaction_refs`: transaction hashes still referenced by
+///   remaining non-finalized DAG blocks.
+///
+/// Output:
+/// - unique transaction hashes to remove, preserving first expired-candidate
+///   order, excluding finalized transactions and retained references.
+pub fn plan_expired_transaction_cleanup(
+    expired_candidates: &[DagExpiredTransactionFact],
+    retained_transaction_refs: &[H256],
+) -> DagExpiredTransactionCleanupPlan {
+    let finalized = expired_candidates
+        .iter()
+        .filter(|candidate| candidate.finalized)
+        .map(|candidate| candidate.hash)
+        .collect::<BTreeSet<_>>();
+    let retained = retained_transaction_refs
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut seen = BTreeSet::new();
+    let mut remove_hashes = Vec::new();
+    for candidate in expired_candidates {
+        if finalized.contains(&candidate.hash) || retained.contains(&candidate.hash) {
+            continue;
+        }
+        if seen.insert(candidate.hash) {
+            remove_hashes.push(candidate.hash);
+        }
+    }
+    DagExpiredTransactionCleanupPlan { remove_hashes }
 }
 
 /// Prepares deterministic VDF inputs for `DagManager::verifyBlock`.
@@ -2282,6 +2409,49 @@ mod tests {
 
         assert!(result.continue_validation);
         assert_eq!(result.reject_code, 0);
+    }
+
+    #[test]
+    fn verify_transaction_query_plan_preserves_missing_block_order() {
+        let plan =
+            plan_dag_verify_transaction_query(&[h(1), h(2), h(3), h(1), h(2)], &[h(2), h(9)]);
+
+        assert_eq!(plan.query_hashes, vec![h(1), h(3)]);
+    }
+
+    #[test]
+    fn non_finalized_transaction_query_plan_deduplicates_first_seen_order() {
+        let plan =
+            plan_non_finalized_transaction_query(&[vec![h(1), h(2), h(1)], vec![h(3), h(2)]]);
+
+        assert_eq!(plan.query_hashes, vec![h(1), h(2), h(3)]);
+    }
+
+    #[test]
+    fn expired_transaction_cleanup_skips_finalized_and_retained_refs() {
+        let plan = plan_expired_transaction_cleanup(
+            &[
+                DagExpiredTransactionFact {
+                    hash: h(1),
+                    finalized: false,
+                },
+                DagExpiredTransactionFact {
+                    hash: h(2),
+                    finalized: true,
+                },
+                DagExpiredTransactionFact {
+                    hash: h(3),
+                    finalized: false,
+                },
+                DagExpiredTransactionFact {
+                    hash: h(1),
+                    finalized: false,
+                },
+            ],
+            &[h(3)],
+        );
+
+        assert_eq!(plan.remove_hashes, vec![h(1)]);
     }
 
     #[test]

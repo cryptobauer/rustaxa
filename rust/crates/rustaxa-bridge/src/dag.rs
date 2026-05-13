@@ -1,24 +1,28 @@
 use crate::ffi::rustaxa_ffi::{
-    DagBlockLookup, DagFrontier, DagHash, DagLevelHashes, DagManagerAnchors, DagManagerBlock,
-    DagManagerFinalizationPlan, DagManagerNonFinalizedSize, DagManagerSnapshot, DagOrder,
-    DagPersistenceCounters, DagPivotTipsValidation, DagProposerEligibilityDecision,
+    DagBlockLookup, DagBlockTransactionRefs, DagExpiredTransactionCleanupPlan,
+    DagExpiredTransactionFact, DagFrontier, DagHash, DagLevelHashes, DagManagerAnchors,
+    DagManagerBlock, DagManagerFinalizationPlan, DagManagerNonFinalizedSize, DagManagerSnapshot,
+    DagOrder, DagPersistenceCounters, DagPivotTipsValidation, DagProposerEligibilityDecision,
     DagProposerEligibilityInput, DagProposerTipCandidate, DagProposerTipSelection,
-    DagReferenceMetadata, DagVerifyAuthorizationInput, DagVerifyAuthorizationResult,
-    DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
-    DagVerifyTransactionAvailabilityInput, DagVerifyTransactionAvailabilityResult,
-    DagVerifyVdfDposDecision, DagVerifyVdfDposFacts, DagVerifyVdfPrepareInput,
-    DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
-    DagVerifyVdfSortitionResult, SortitionRuntimeParams,
+    DagReferenceMetadata, DagTransactionHash, DagTransactionQueryPlan, DagVerifyAuthorizationInput,
+    DagVerifyAuthorizationResult, DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock,
+    DagVerifyPrecheckResult, DagVerifyTransactionAvailabilityInput,
+    DagVerifyTransactionAvailabilityResult, DagVerifyVdfDposDecision, DagVerifyVdfDposFacts,
+    DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput,
+    DagVerifyVdfSortitionInput, DagVerifyVdfSortitionResult, SortitionRuntimeParams,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
 use anyhow::{ensure, Context, Result};
 use ethereum_types::H256;
 use rustaxa_consensus::dag::{
     construct_dag_vdf_message, decide_dag_verify_vdf_dpos_authorization, derive_frontier,
-    prepare_dag_verify_vdf, validate_dag_verify_authorization, validate_dag_verify_gas,
-    validate_dag_verify_precheck, validate_dag_verify_transaction_availability,
-    validate_pivot_tips_metadata, verify_dag_vdf_sortition, verify_dag_vdf_sortition_from_block,
-    DagGraph, DagManagerBlock as DomainDagManagerBlock,
+    plan_dag_verify_transaction_query, plan_expired_transaction_cleanup,
+    plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
+    validate_dag_verify_authorization, validate_dag_verify_gas, validate_dag_verify_precheck,
+    validate_dag_verify_transaction_availability, validate_pivot_tips_metadata,
+    verify_dag_vdf_sortition, verify_dag_vdf_sortition_from_block,
+    DagExpiredTransactionFact as DomainDagExpiredTransactionFact, DagGraph,
+    DagManagerBlock as DomainDagManagerBlock,
     DagManagerFinalizationPlan as DomainDagManagerFinalizationPlan,
     DagManagerSnapshot as DomainDagManagerSnapshot, DagManagerState,
     DagReferenceMetadata as ReferenceMetadata, DagTipGas,
@@ -617,6 +621,68 @@ pub fn dag_verify_transaction_availability(
     }
 }
 
+/// Builds a deterministic plan of additional transaction hashes required for
+/// `DagManager::verifyBlock`.
+///
+/// Inputs:
+/// - `block_transaction_hashes`: all hashes in block order.
+/// - `supplied_transaction_hashes`: hashes already provided by the caller.
+///
+/// Outputs preserve first-seen block order and dedupe duplicates.
+pub fn dag_plan_verify_transaction_query(
+    block_transaction_hashes: Vec<DagTransactionHash>,
+    supplied_transaction_hashes: Vec<DagTransactionHash>,
+) -> DagTransactionQueryPlan {
+    let block_transaction_hashes = to_transaction_hashes(block_transaction_hashes);
+    let supplied_transaction_hashes = to_transaction_hashes(supplied_transaction_hashes);
+    let plan =
+        plan_dag_verify_transaction_query(&block_transaction_hashes, &supplied_transaction_hashes);
+    DagTransactionQueryPlan {
+        query_hashes: to_bridge_transaction_hashes(plan.query_hashes),
+    }
+}
+
+/// Builds a deterministic unique list of transaction hashes referenced by
+/// non-finalized DAG blocks, preserving first-seen order.
+pub fn dag_plan_non_finalized_transaction_query(
+    blocks: Vec<DagBlockTransactionRefs>,
+) -> DagTransactionQueryPlan {
+    let blocks = blocks
+        .into_iter()
+        .map(|block| to_transaction_hashes(block.transaction_hashes))
+        .collect::<Vec<_>>();
+    let plan = plan_non_finalized_transaction_query(&blocks);
+    DagTransactionQueryPlan {
+        query_hashes: to_bridge_transaction_hashes(plan.query_hashes),
+    }
+}
+
+/// Builds a deterministic cleanup plan for non-finalized transaction state after
+/// expired DAG block finalization.
+///
+/// Inputs:
+/// - `expired_candidates`: candidate hashes from expired DAG blocks with finality
+///   flags.
+/// - `retained_transaction_refs`: hashes still referenced by non-finalized DAG
+///   blocks and therefore not removable.
+pub fn dag_plan_expired_transaction_cleanup(
+    expired_candidates: Vec<DagExpiredTransactionFact>,
+    retained_transaction_refs: Vec<DagTransactionHash>,
+) -> DagExpiredTransactionCleanupPlan {
+    let expired_candidates = expired_candidates
+        .into_iter()
+        .map(|candidate| DomainDagExpiredTransactionFact {
+            hash: H256::from(candidate.hash),
+            finalized: candidate.finalized,
+        })
+        .collect::<Vec<_>>();
+    let retained_transaction_refs = to_transaction_hashes(retained_transaction_refs);
+    let plan = plan_expired_transaction_cleanup(&expired_candidates, &retained_transaction_refs);
+    DagExpiredTransactionCleanupPlan {
+        remove_hashes: to_bridge_transaction_hashes(plan.remove_hashes),
+    }
+}
+
 /// Prepares deterministic VDF verification inputs for DAG block verification.
 ///
 /// C++ supplies live VRF-key and DPoS vote-count data. Rust returns the
@@ -990,6 +1056,17 @@ fn to_dag_hashes(hashes: Vec<H256>) -> Vec<DagHash> {
         .collect()
 }
 
+fn to_transaction_hashes(hashes: Vec<DagTransactionHash>) -> Vec<H256> {
+    hashes.into_iter().map(|hash| hash.hash.into()).collect()
+}
+
+fn to_bridge_transaction_hashes(hashes: Vec<H256>) -> Vec<DagTransactionHash> {
+    hashes
+        .into_iter()
+        .map(|hash| DagTransactionHash { hash: hash.0 })
+        .collect()
+}
+
 fn to_bridge_frontier(frontier: &rustaxa_consensus::dag::DagFrontier) -> DagFrontier {
     DagFrontier {
         pivot: frontier.pivot.into(),
@@ -1075,6 +1152,10 @@ mod tests {
         block.append(&&[0u8; 65][..]);
         block.append(&123u64);
         block.out().to_vec()
+    }
+
+    fn tx_hash(byte: u8) -> DagTransactionHash {
+        DagTransactionHash { hash: [byte; 32] }
     }
 
     const SECRET_KEY: [u8; 64] = [
@@ -1472,6 +1553,61 @@ mod tests {
         .expect("gas decision should succeed");
         assert!(continues.continue_validation);
         assert_eq!(continues.reject_code, 0);
+    }
+
+    #[test]
+    fn dag_plan_verify_transaction_query_preserves_missing_block_order() {
+        let plan = dag_plan_verify_transaction_query(
+            vec![tx_hash(1), tx_hash(2), tx_hash(3), tx_hash(1), tx_hash(2)],
+            vec![tx_hash(2), tx_hash(9)],
+        );
+        assert_eq!(plan.query_hashes.len(), 2);
+        assert_eq!(plan.query_hashes[0].hash, [1u8; 32]);
+        assert_eq!(plan.query_hashes[1].hash, [3u8; 32]);
+    }
+
+    #[test]
+    fn dag_plan_non_finalized_transaction_query_deduplicates_first_seen_order() {
+        let plan = dag_plan_non_finalized_transaction_query(vec![
+            DagBlockTransactionRefs {
+                transaction_hashes: vec![tx_hash(1), tx_hash(2), tx_hash(1)],
+            },
+            DagBlockTransactionRefs {
+                transaction_hashes: vec![tx_hash(3), tx_hash(2)],
+            },
+        ]);
+        assert_eq!(plan.query_hashes.len(), 3);
+        assert_eq!(plan.query_hashes[0].hash, [1u8; 32]);
+        assert_eq!(plan.query_hashes[1].hash, [2u8; 32]);
+        assert_eq!(plan.query_hashes[2].hash, [3u8; 32]);
+    }
+
+    #[test]
+    fn dag_plan_expired_transaction_cleanup_skips_finalized_and_retained_refs() {
+        let plan = dag_plan_expired_transaction_cleanup(
+            vec![
+                DagExpiredTransactionFact {
+                    hash: [1u8; 32],
+                    finalized: false,
+                },
+                DagExpiredTransactionFact {
+                    hash: [2u8; 32],
+                    finalized: true,
+                },
+                DagExpiredTransactionFact {
+                    hash: [3u8; 32],
+                    finalized: false,
+                },
+                DagExpiredTransactionFact {
+                    hash: [1u8; 32],
+                    finalized: false,
+                },
+            ],
+            vec![tx_hash(3)],
+        );
+
+        assert_eq!(plan.remove_hashes.len(), 1);
+        assert_eq!(plan.remove_hashes[0].hash, [1u8; 32]);
     }
 
     #[test]

@@ -623,6 +623,32 @@ pub mod rustaxa_ffi {
         hash: [u8; 32],
     }
 
+    /// Hash wrapper for transaction lists used by DAG planning payloads.
+    struct DagTransactionHash {
+        hash: [u8; 32],
+    }
+
+    /// Transaction hashes for one DAG block, preserving block-local order.
+    struct DagBlockTransactionRefs {
+        transaction_hashes: Vec<DagTransactionHash>,
+    }
+
+    /// Finalization hint for one transaction referenced by an expired DAG block.
+    struct DagExpiredTransactionFact {
+        hash: [u8; 32],
+        finalized: bool,
+    }
+
+    /// Query plan returned for additional DAG transaction lookups.
+    struct DagTransactionQueryPlan {
+        query_hashes: Vec<DagTransactionHash>,
+    }
+
+    /// Cleanup plan returned for non-finalized transaction removals.
+    struct DagExpiredTransactionCleanupPlan {
+        remove_hashes: Vec<DagTransactionHash>,
+    }
+
     struct FinalizationDagBlock {
         author: [u8; 20],
         transaction_hashes: Vec<DagHash>,
@@ -1259,6 +1285,22 @@ pub mod rustaxa_ffi {
         pub fn dag_verify_transaction_availability(
             input: DagVerifyTransactionAvailabilityInput,
         ) -> DagVerifyTransactionAvailabilityResult;
+        /// Plans verifyBlock transaction queries from block hashes and already-supplied
+        /// hashes.
+        pub fn dag_plan_verify_transaction_query(
+            block_transaction_hashes: Vec<DagTransactionHash>,
+            supplied_transaction_hashes: Vec<DagTransactionHash>,
+        ) -> DagTransactionQueryPlan;
+        /// Plans unique transaction hashes needed from non-finalized DAG blocks.
+        pub fn dag_plan_non_finalized_transaction_query(
+            blocks: Vec<DagBlockTransactionRefs>,
+        ) -> DagTransactionQueryPlan;
+        /// Plans non-finalized transaction removals after expired DAG block
+        /// finalization, excluding finalized and still-retained hashes.
+        pub fn dag_plan_expired_transaction_cleanup(
+            expired_candidates: Vec<DagExpiredTransactionFact>,
+            retained_transaction_refs: Vec<DagTransactionHash>,
+        ) -> DagExpiredTransactionCleanupPlan;
         pub fn dag_verify_vdf_prepare(input: DagVerifyVdfPrepareInput)
             -> DagVerifyVdfPrepareResult;
         pub fn dag_verify_vdf_sortition(
