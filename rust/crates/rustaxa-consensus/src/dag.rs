@@ -1727,6 +1727,22 @@ impl DagManagerState {
         }
     }
 
+    /// Returns non-finalized block hashes in deterministic order, excluding hashes
+    /// already known by the caller.
+    ///
+    /// Output order is ascending block level, then ascending hash within each
+    /// level. `known_hashes` is treated as a set and may include duplicates
+    /// without changing output.
+    pub fn select_non_finalized_hashes_excluding_known(&self, known_hashes: &[H256]) -> Vec<H256> {
+        let known = known_hashes.iter().copied().collect::<BTreeSet<_>>();
+        self.non_finalized_blocks
+            .values()
+            .flat_map(|level_blocks| level_blocks.iter())
+            .filter(|hash| !known.contains(hash))
+            .copied()
+            .collect()
+    }
+
     /// Validates pivot/tip availability and level for a block using Rust state.
     pub fn validate_pivot_tips(
         &self,
@@ -3181,5 +3197,18 @@ mod tests {
             .set_finalized_order(h(2), 4, &[], 2)
             .expect_err("period transition must fail");
         assert!(format!("{err:#}").contains("DAG_MANAGER_FINALIZATION_INVALID_PERIOD"));
+    }
+
+    #[test]
+    fn dag_manager_state_select_non_finalized_hashes_excludes_known() {
+        let mut state = DagManagerState::new(h(1), 0).expect("state");
+        state.add_block(record(4, 3, &[3], 4, 100)).expect("add");
+        state.add_block(record(2, 1, &[], 2, 80)).expect("add");
+        state.add_block(record(3, 2, &[1], 3, 90)).expect("add");
+        state.add_block(record(6, 3, &[4], 4, 75)).expect("add");
+        state.add_block(record(5, 3, &[4], 5, 70)).expect("add");
+
+        let selected = state.select_non_finalized_hashes_excluding_known(&[h(3), h(2), h(3)]);
+        assert_eq!(selected, vec![h(4), h(6), h(5)]);
     }
 }

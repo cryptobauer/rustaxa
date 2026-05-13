@@ -1227,6 +1227,10 @@ pub mod rustaxa_ffi {
             self: &BridgeDagManagerRuntime,
             anchor: &[u8; 32],
         ) -> DagOrder;
+        pub fn dag_manager_runtime_select_non_finalized_hashes(
+            self: &BridgeDagManagerRuntime,
+            known_hashes: Vec<DagHash>,
+        ) -> Vec<DagHash>;
         pub fn dag_manager_runtime_frontier(self: &BridgeDagManagerRuntime) -> DagFrontier;
         pub fn dag_manager_runtime_ghost_path(
             self: &BridgeDagManagerRuntime,

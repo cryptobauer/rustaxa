@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <utility>
 #include <vector>
 
@@ -18,6 +19,15 @@ class RustDagGraphTest : public ::testing::Test {
   }
 
   static DagHash dag_hash(uint8_t last_byte) { return DagHash{h256(last_byte)}; }
+
+  static DagManagerBlock manager_block(uint8_t hash, uint8_t pivot, uint64_t level, uint32_t difficulty) {
+    DagManagerBlock block;
+    block.hash = h256(hash);
+    block.pivot = h256(pivot);
+    block.level = level;
+    block.difficulty = difficulty;
+    return block;
+  }
 
   static rust::Vec<DagHash> hashes(std::initializer_list<uint8_t> values) {
     rust::Vec<DagHash> out;
@@ -100,4 +110,25 @@ TEST_F(RustDagGraphTest, ComputeOrderMatchesConfluxPeriodFourFixture) {
   const auto missing = graph->dag_compute_order(h256(99), non_finalized({8, 9, 10, 11}));
   EXPECT_FALSE(missing.found);
   EXPECT_TRUE(missing.hashes.empty());
+}
+
+TEST_F(RustDagGraphTest, RuntimeSelectNonFinalizedHashesExcludesKnownInOrder) {
+  const auto test_dir = std::filesystem::temp_directory_path() / "rustaxa_consensus_dag_runtime_select_hashes";
+  if (std::filesystem::exists(test_dir)) {
+    std::filesystem::remove_all(test_dir);
+  }
+
+  auto storage = create_storage(test_dir.string());
+  auto runtime = create_dag_manager_runtime_from_storage(h256(1), 32, *storage);
+
+  runtime->dag_manager_runtime_add_block(manager_block(6, 3, 4, 85));
+  runtime->dag_manager_runtime_add_block(manager_block(2, 1, 2, 100));
+  runtime->dag_manager_runtime_add_block(manager_block(3, 2, 3, 90));
+  runtime->dag_manager_runtime_add_block(manager_block(4, 3, 4, 80));
+
+  const auto selected = runtime->dag_manager_runtime_select_non_finalized_hashes(hashes({2, 9, 2}));
+
+  EXPECT_EQ(last_bytes(selected), (std::vector<uint8_t>{3, 4, 6}));
+
+  std::filesystem::remove_all(test_dir);
 }

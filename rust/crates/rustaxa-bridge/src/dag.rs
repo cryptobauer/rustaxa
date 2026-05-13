@@ -400,6 +400,25 @@ impl BridgeDagManagerRuntime {
         }
     }
 
+    /// Returns non-finalized DAG block hashes excluding already-known hashes.
+    ///
+    /// This method applies the deterministic `DagManagerState` selection helper at
+    /// the runtime boundary so C++ can request next-sync candidates without
+    /// reordering responsibility.
+    pub fn dag_manager_runtime_select_non_finalized_hashes(
+        &self,
+        known_hashes: Vec<DagHash>,
+    ) -> Vec<DagHash> {
+        let known_hashes = known_hashes
+            .into_iter()
+            .map(|hash| H256::from(hash.hash))
+            .collect::<Vec<_>>();
+        to_dag_hashes(
+            self.state
+                .select_non_finalized_hashes_excluding_known(&known_hashes),
+        )
+    }
+
     /// Returns the current Rust-owned DAG frontier.
     pub fn dag_manager_runtime_frontier(&self) -> DagFrontier {
         to_bridge_frontier(self.state.frontier())
@@ -1463,6 +1482,65 @@ mod tests {
             );
             assert!(plan.remaining_hashes.is_empty());
             assert_eq!(runtime.dag_manager_runtime_dag_expiry_level(), 2);
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_select_non_finalized_hashes_excludes_known_hashes() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_select_hashes");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("runtime should initialize");
+
+            runtime
+                .dag_manager_runtime_add_block(DagManagerBlock {
+                    hash: [2u8; 32],
+                    pivot: [1u8; 32],
+                    tips: vec![],
+                    level: 2,
+                    difficulty: 100,
+                })
+                .expect("add block");
+            runtime
+                .dag_manager_runtime_add_block(DagManagerBlock {
+                    hash: [3u8; 32],
+                    pivot: [1u8; 32],
+                    tips: vec![],
+                    level: 3,
+                    difficulty: 90,
+                })
+                .expect("add block");
+            runtime
+                .dag_manager_runtime_add_block(DagManagerBlock {
+                    hash: [6u8; 32],
+                    pivot: [3u8; 32],
+                    tips: vec![],
+                    level: 4,
+                    difficulty: 85,
+                })
+                .expect("add block");
+            runtime
+                .dag_manager_runtime_add_block(DagManagerBlock {
+                    hash: [4u8; 32],
+                    pivot: [3u8; 32],
+                    tips: vec![],
+                    level: 4,
+                    difficulty: 80,
+                })
+                .expect("add block");
+
+            let selected = runtime.dag_manager_runtime_select_non_finalized_hashes(vec![
+                DagHash { hash: [2u8; 32] },
+                DagHash { hash: [9u8; 32] },
+                DagHash { hash: [2u8; 32] },
+            ]);
+            let selected = selected.iter().map(|hash| hash.hash).collect::<Vec<_>>();
+            assert_eq!(selected, vec![[3u8; 32], [4u8; 32], [6u8; 32]]);
         }
 
         let _ = fs::remove_dir_all(&temp_dir);
