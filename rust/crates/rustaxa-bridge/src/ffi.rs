@@ -704,6 +704,18 @@ pub mod rustaxa_ffi {
         finalized: bool,
     }
 
+    /// Deterministic finalization cleanup payload for expired DAG blocks.
+    ///
+    /// Callers receive full expired-transaction context to support legacy
+    /// storage removals while also receiving compact removal hashes suitable for
+    /// direct status updates.
+    struct DagExpiredTransactionCleanupPayload {
+        /// Transaction facts grouped by discovered order across expired DAG blocks.
+        expired_transaction_facts: Vec<DagExpiredTransactionFact>,
+        /// Unique hashes that should be removed from non-finalized storage.
+        remove_hashes: Vec<DagTransactionHash>,
+    }
+
     /// Query plan returned for additional DAG transaction lookups.
     struct DagTransactionQueryPlan {
         query_hashes: Vec<DagTransactionHash>,
@@ -959,6 +971,20 @@ pub mod rustaxa_ffi {
         counter_update_hashes: Vec<DagHash>,
         expired_hashes: Vec<DagHash>,
         remaining_hashes: Vec<DagHash>,
+    }
+
+    /// Storage-derived counter update fact for a finalized DAG block.
+    struct DagFinalizedCounterUpdate {
+        hash: [u8; 32],
+        level: u64,
+        tips_count: u64,
+    }
+
+    /// Rust-storage-backed cleanup payload after applying a finalized DAG order.
+    struct DagManagerFinalizationCleanupPayload {
+        counter_updates: Vec<DagFinalizedCounterUpdate>,
+        expired_hashes: Vec<DagHash>,
+        remove_transaction_hashes: Vec<DagTransactionHash>,
     }
 
     struct DagManagerNonFinalizedSize {
@@ -1288,6 +1314,11 @@ pub mod rustaxa_ffi {
             new_period: u64,
             finalized_order: Vec<DagHash>,
         ) -> Result<DagManagerFinalizationPlan>;
+        /// Builds storage-backed cleanup facts for a finalized DAG order plan.
+        pub fn dag_manager_runtime_finalization_cleanup_payload(
+            self: &BridgeDagManagerRuntime,
+            plan: DagManagerFinalizationPlan,
+        ) -> Result<DagManagerFinalizationCleanupPayload>;
         /// Returns current runtime sync snapshot for non-finalized materialization.
         pub fn dag_manager_runtime_non_finalized_sync_snapshot(
             self: &BridgeDagManagerRuntime,
@@ -1381,6 +1412,12 @@ pub mod rustaxa_ffi {
             expired_candidates: Vec<DagExpiredTransactionFact>,
             retained_transaction_refs: Vec<DagTransactionHash>,
         ) -> DagExpiredTransactionCleanupPlan;
+        /// Builds a compact finalization cleanup payload from plan candidates.
+        pub fn dag_manager_runtime_expired_transaction_cleanup_payload(
+            self: &BridgeDagManagerRuntime,
+            expired_hashes: Vec<DagHash>,
+            remaining_hashes: Vec<DagHash>,
+        ) -> Result<DagExpiredTransactionCleanupPayload>;
         pub fn dag_verify_vdf_prepare(input: DagVerifyVdfPrepareInput)
             -> DagVerifyVdfPrepareResult;
         pub fn dag_verify_vdf_sortition(

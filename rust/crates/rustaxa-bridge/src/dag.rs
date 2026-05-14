@@ -1,7 +1,8 @@
 use crate::ffi::rustaxa_ffi::{
-    DagBlockLookup, DagBlockTransactionRefs, DagExpiredTransactionCleanupPlan,
-    DagExpiredTransactionFact, DagFrontier, DagHash, DagLevelHashes, DagManagerAnchors,
-    DagManagerBlock, DagManagerFinalizationPlan, DagManagerNonFinalizedSize,
+    DagBlockLookup, DagBlockTransactionRefs, DagExpiredTransactionCleanupPayload,
+    DagExpiredTransactionCleanupPlan, DagExpiredTransactionFact, DagFinalizedCounterUpdate,
+    DagFrontier, DagHash, DagLevelHashes, DagManagerAnchors, DagManagerBlock,
+    DagManagerFinalizationCleanupPayload, DagManagerFinalizationPlan, DagManagerNonFinalizedSize,
     DagManagerNonFinalizedSyncPayload, DagManagerRuntimeSyncSnapshot, DagManagerSnapshot, DagOrder,
     DagPersistenceCounters, DagPivotTipsValidation, DagProposerEligibilityDecision,
     DagProposerEligibilityInput, DagProposerTipCandidate, DagProposerTipSelection,
@@ -24,6 +25,7 @@ use rustaxa_consensus::dag::{
     validate_dag_verify_authorization, validate_dag_verify_gas, validate_dag_verify_precheck,
     validate_dag_verify_transaction_availability, validate_pivot_tips_metadata,
     verify_dag_vdf_sortition, verify_dag_vdf_sortition_from_block,
+    DagExpiredTransactionCleanupPlan as DomainDagExpiredTransactionCleanupPlan,
     DagExpiredTransactionFact as DomainDagExpiredTransactionFact, DagGraph,
     DagManagerBlock as DomainDagManagerBlock,
     DagManagerFinalizationPlan as DomainDagManagerFinalizationPlan,
@@ -389,6 +391,60 @@ impl BridgeDagManagerRuntime {
             .map(to_bridge_finalization_plan)
     }
 
+    /// Builds storage-backed cleanup facts for a finalized DAG order plan.
+    ///
+    /// This method is a narrow convenience wrapper over
+    /// `dag_manager_runtime_expired_transaction_cleanup_payload` for callers that
+    /// already have a full `DagManagerFinalizationPlan`.
+    pub fn dag_manager_runtime_finalization_cleanup_payload(
+        &self,
+        plan: DagManagerFinalizationPlan,
+    ) -> Result<DagManagerFinalizationCleanupPayload> {
+        let DagManagerFinalizationPlan {
+            finalized_count: _,
+            counter_update_hashes,
+            expired_hashes,
+            remaining_hashes,
+        } = plan;
+
+        let mut counter_updates = Vec::with_capacity(counter_update_hashes.len());
+        for hash in counter_update_hashes {
+            let block_hash = H256::from(hash.hash);
+            let block = self.storage.dag().by_hash(block_hash).with_context(|| {
+                format!("DAG_RUNTIME_FINALIZATION_COUNTER_BLOCK: {block_hash:?}")
+            })?;
+            counter_updates.push(DagFinalizedCounterUpdate {
+                hash: hash.hash,
+                level: block.level,
+                tips_count: block.tips.len() as u64,
+            });
+        }
+
+        let mut expired_hashes_for_cleanup = Vec::with_capacity(expired_hashes.len());
+        let mut expired_hashes_for_payload = Vec::with_capacity(expired_hashes.len());
+        for hash in expired_hashes {
+            expired_hashes_for_cleanup.push(DagHash { hash: hash.hash });
+            expired_hashes_for_payload.push(DagHash { hash: hash.hash });
+        }
+
+        let remove_transaction_hashes = if expired_hashes_for_cleanup.is_empty() {
+            Vec::new()
+        } else {
+            self.dag_manager_runtime_expired_transaction_cleanup_payload(
+                expired_hashes_for_cleanup,
+                remaining_hashes,
+            )
+            .map(|payload| payload.remove_hashes)
+            .context("DAG_RUNTIME_FINALIZATION_CLEANUP_BUILD_FAILED")?
+        };
+
+        Ok(DagManagerFinalizationCleanupPayload {
+            counter_updates,
+            expired_hashes: expired_hashes_for_payload,
+            remove_transaction_hashes,
+        })
+    }
+
     /// Returns a one-shot sync snapshot containing the current period and the
     /// deterministic selection of non-finalized block hashes that are not in
     /// `known_hashes`.
@@ -452,6 +508,93 @@ impl BridgeDagManagerRuntime {
             period: snapshot.period,
             blocks,
             transactions,
+        })
+    }
+
+    /// Builds finalization cleanup facts and removals from storage-backed block inputs.
+    ///
+    /// Inputs:
+    /// - `expired_hashes`: hashes of non-finalized DAG blocks removed by this
+    ///   finalized order transition.
+    /// - `remaining_hashes`: hashes of DAG blocks that remain in the non-finalized
+    ///   graph after the transition.
+    ///
+    /// Output:
+    /// - `expired_transaction_facts`: transaction references observed in expired blocks
+    ///   with `finalized` flags resolved from Rust storage.
+    /// - `remove_hashes`: a compact set computed by
+    ///   `plan_expired_transaction_cleanup`.
+    pub fn dag_manager_runtime_expired_transaction_cleanup_payload(
+        &self,
+        expired_hashes: Vec<DagHash>,
+        remaining_hashes: Vec<DagHash>,
+    ) -> Result<DagExpiredTransactionCleanupPayload> {
+        let mut finalized_cache = BTreeMap::new();
+        let mut expired_candidates = Vec::new();
+        let mut retained_transaction_hashes = Vec::new();
+
+        for hash in expired_hashes {
+            let block = self
+                .dag_manager_runtime_load_block(&hash.hash)
+                .context("DAG_RUNTIME_FINALIZATION_EXPIRED_BLOCK_LOAD")?;
+            ensure!(
+                block.found,
+                "DAG_RUNTIME_FINALIZATION_EXPIRED_BLOCK_MISSING: {:?}",
+                H256::from(hash.hash)
+            );
+
+            for trx_hash in dag_block_transaction_hashes(&block.block_rlp)
+                .context("DAG_RUNTIME_FINALIZATION_EXPIRED_BLOCK_TRANSACTIONS")?
+            {
+                let finalized = if let Some(finalized) = finalized_cache.get(&trx_hash) {
+                    *finalized
+                } else {
+                    let finalized = self
+                        .storage
+                        .transaction()
+                        .finalized(trx_hash)
+                        .context("DAG_RUNTIME_FINALIZATION_TRANSACTION_FINALIZED")?;
+                    finalized_cache.insert(trx_hash, finalized);
+                    finalized
+                };
+
+                expired_candidates.push(DomainDagExpiredTransactionFact {
+                    hash: trx_hash,
+                    finalized,
+                });
+            }
+        }
+
+        for hash in remaining_hashes {
+            let block = self
+                .dag_manager_runtime_load_block(&hash.hash)
+                .context("DAG_RUNTIME_FINALIZATION_REMAINING_BLOCK_LOAD")?;
+            ensure!(
+                block.found,
+                "DAG_RUNTIME_FINALIZATION_REMAINING_BLOCK_MISSING: {:?}",
+                H256::from(hash.hash)
+            );
+
+            retained_transaction_hashes.extend(
+                dag_block_transaction_hashes(&block.block_rlp)
+                    .context("DAG_RUNTIME_FINALIZATION_REMAINING_BLOCK_TRANSACTIONS")?,
+            );
+        }
+
+        let expired_transaction_facts = expired_candidates
+            .iter()
+            .map(|candidate| DagExpiredTransactionFact {
+                hash: candidate.hash.0,
+                finalized: candidate.finalized,
+            })
+            .collect();
+
+        let DomainDagExpiredTransactionCleanupPlan { remove_hashes } =
+            plan_expired_transaction_cleanup(&expired_candidates, &retained_transaction_hashes);
+
+        Ok(DagExpiredTransactionCleanupPayload {
+            expired_transaction_facts,
+            remove_hashes: to_bridge_transaction_hashes(remove_hashes),
         })
     }
 
@@ -1825,6 +1968,141 @@ mod tests {
             assert!(!payload.transactions[2].found);
             assert!(payload.transactions[2].tx_rlp.is_empty());
             assert!(!payload.transactions[2].finalized);
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_expired_transaction_cleanup_payload_checks_finalized_and_retained_refs()
+    {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_finalization_cleanup_payload");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("runtime should initialize");
+
+            let expired_block_a = dag_block_with_vdf_payload_and_transaction_hashes(
+                vec![0x11],
+                &[tx_hash(1), tx_hash(2), tx_hash(1)],
+            );
+            let expired_block_b =
+                dag_block_with_vdf_payload_and_transaction_hashes(vec![0x22], &[tx_hash(3)]);
+            let remaining_block =
+                dag_block_with_vdf_payload_and_transaction_hashes(vec![0x33], &[tx_hash(3)]);
+
+            runtime
+                .dag_manager_runtime_save_block(&[3u8; 32], 3, 3, expired_block_a)
+                .expect("persist expired block a");
+            runtime
+                .dag_manager_runtime_save_block(&[4u8; 32], 4, 1, expired_block_b)
+                .expect("persist expired block b");
+            runtime
+                .dag_manager_runtime_save_block(&[6u8; 32], 6, 1, remaining_block)
+                .expect("persist remaining block");
+
+            storage
+                .save_transaction_location(&[2u8; 32], 7, 0, false)
+                .expect("mark tx2 as finalized");
+
+            let payload = runtime
+                .dag_manager_runtime_expired_transaction_cleanup_payload(
+                    vec![DagHash { hash: [3u8; 32] }, DagHash { hash: [4u8; 32] }],
+                    vec![DagHash { hash: [6u8; 32] }],
+                )
+                .expect("finalization cleanup payload should compute");
+
+            let facts = payload.expired_transaction_facts;
+            assert_eq!(facts.len(), 4);
+            assert_eq!(facts[0].hash, [1u8; 32]);
+            assert!(!facts[0].finalized);
+            assert_eq!(facts[1].hash, [2u8; 32]);
+            assert!(facts[1].finalized);
+            assert_eq!(facts[2].hash, [1u8; 32]);
+            assert!(!facts[2].finalized);
+            assert_eq!(facts[3].hash, [3u8; 32]);
+            assert!(!facts[3].finalized);
+
+            let remove_hashes = payload.remove_hashes;
+            assert_eq!(remove_hashes.len(), 1);
+            assert_eq!(remove_hashes[0].hash, [1u8; 32]);
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_finalization_cleanup_payload_returns_storage_backed_side_effects() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_finalization_payload");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("runtime should initialize");
+
+            runtime
+                .dag_manager_runtime_save_block(
+                    &[8u8; 32],
+                    1,
+                    0,
+                    dag_block_with_vdf_payload(vec![0x88]),
+                )
+                .expect("persist finalized block needing counter update");
+            runtime
+                .dag_manager_runtime_save_block(
+                    &[3u8; 32],
+                    3,
+                    3,
+                    dag_block_with_vdf_payload_and_transaction_hashes(
+                        vec![0x11],
+                        &[tx_hash(1), tx_hash(2), tx_hash(1)],
+                    ),
+                )
+                .expect("persist expired block a");
+            runtime
+                .dag_manager_runtime_save_block(
+                    &[4u8; 32],
+                    4,
+                    1,
+                    dag_block_with_vdf_payload_and_transaction_hashes(vec![0x22], &[tx_hash(3)]),
+                )
+                .expect("persist expired block b");
+            runtime
+                .dag_manager_runtime_save_block(
+                    &[6u8; 32],
+                    6,
+                    1,
+                    dag_block_with_vdf_payload_and_transaction_hashes(vec![0x33], &[tx_hash(3)]),
+                )
+                .expect("persist remaining block");
+
+            storage
+                .save_transaction_location(&[2u8; 32], 7, 0, false)
+                .expect("mark tx2 as finalized");
+
+            let payload = runtime
+                .dag_manager_runtime_finalization_cleanup_payload(DagManagerFinalizationPlan {
+                    finalized_count: 2,
+                    counter_update_hashes: vec![DagHash { hash: [8u8; 32] }],
+                    expired_hashes: vec![DagHash { hash: [3u8; 32] }, DagHash { hash: [4u8; 32] }],
+                    remaining_hashes: vec![DagHash { hash: [6u8; 32] }],
+                })
+                .expect("finalization cleanup payload should compute");
+
+            assert_eq!(payload.counter_updates.len(), 1);
+            assert_eq!(payload.counter_updates[0].hash, [8u8; 32]);
+            assert_eq!(payload.counter_updates[0].level, 1);
+            assert_eq!(payload.counter_updates[0].tips_count, 0);
+
+            assert_eq!(payload.expired_hashes.len(), 2);
+            assert_eq!(payload.expired_hashes[0].hash, [3u8; 32]);
+            assert_eq!(payload.expired_hashes[1].hash, [4u8; 32]);
+
+            assert_eq!(payload.remove_transaction_hashes.len(), 1);
+            assert_eq!(payload.remove_transaction_hashes[0].hash, [1u8; 32]);
         }
 
         let _ = fs::remove_dir_all(&temp_dir);

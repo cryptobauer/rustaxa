@@ -90,23 +90,6 @@ std::vector<trx_hash_t> from_bridge_dag_transaction_hashes(const rust::Vec<rusta
   return out;
 }
 
-rust::Vec<rustaxa::DagBlockTransactionRefs> to_bridge_dag_block_transaction_refs(
-    const std::vector<std::vector<trx_hash_t>> &hashes) {
-  rust::Vec<rustaxa::DagBlockTransactionRefs> nested;
-  nested.reserve(hashes.size());
-  for (const auto &block_hashes : hashes) {
-    rustaxa::DagBlockTransactionRefs refs;
-    rust::Vec<rustaxa::DagTransactionHash> converted;
-    converted.reserve(block_hashes.size());
-    for (const auto &hash : block_hashes) {
-      converted.push_back(to_bridge_dag_transaction_hash(hash));
-    }
-    refs.transaction_hashes = std::move(converted);
-    nested.push_back(std::move(refs));
-  }
-  return nested;
-}
-
 std::map<uint64_t, std::unordered_set<blk_hash_t>> from_bridge_level_hashes(
     const rust::Vec<rustaxa::DagLevelHashes> &levels) {
   std::map<uint64_t, std::unordered_set<blk_hash_t>> out;
@@ -723,73 +706,29 @@ uint DagManager::setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, v
                                                                             period, to_bridge_dag_hashes(dag_order));
     }
 
-    if (!plan.counter_update_hashes.empty()) {
-      std::vector<std::shared_ptr<DagBlock>> dag_blocks_to_update_counters;
-      dag_blocks_to_update_counters.reserve(plan.counter_update_hashes.size());
-      for (const auto &bridge_hash : plan.counter_update_hashes) {
-        const auto hash = from_bridge_dag_hash(bridge_hash);
-        auto dag_block = getDagBlock(hash);
-        if (!dag_block) {
-          throw std::runtime_error("DagManager: finalized block missing from DAG storage");
-        }
-        dag_blocks_to_update_counters.emplace_back(std::move(dag_block));
-      }
-      db_->updateDagBlockCounters(std::move(dag_blocks_to_update_counters));
+    const auto finalized_count = plan.finalized_count;
+    auto cleanup = rust_graphs_->runtime->dag_manager_runtime_finalization_cleanup_payload(std::move(plan));
+
+    for (const auto &counter_update : cleanup.counter_updates) {
+      db_->rustStorage().update_dag_block_counter(counter_update.hash, counter_update.level, counter_update.tips_count);
     }
 
-    if (!plan.expired_hashes.empty()) {
-      std::vector<trx_hash_t> transactions_from_expired_blocks;
-      for (const auto &bridge_hash : plan.expired_hashes) {
-        const auto hash = from_bridge_dag_hash(bridge_hash);
-        const auto block = getDagBlock(hash);
-        if (!block) {
-          throw std::runtime_error("DagManager: expired block missing from DAG storage");
-        }
-        seen_blocks_.erase(hash);
-        db_->removeDagBlock(hash);
-        auto const block_trx_hashes = block->getTrxs();
-        transactions_from_expired_blocks.insert(transactions_from_expired_blocks.end(), block_trx_hashes.begin(),
-                                                block_trx_hashes.end());
-      }
-
-      if (!transactions_from_expired_blocks.empty()) {
-        const auto finalized_transactions = db_->transactionsFinalized(transactions_from_expired_blocks);
-        rust::Vec<rustaxa::DagExpiredTransactionFact> expired_candidates;
-        expired_candidates.reserve(transactions_from_expired_blocks.size());
-        for (size_t i = 0; i < finalized_transactions.size(); ++i) {
-          rustaxa::DagExpiredTransactionFact fact;
-          fact.hash = to_bridge_dag_transaction_hash(transactions_from_expired_blocks[i]).hash;
-          fact.finalized = finalized_transactions[i];
-          expired_candidates.push_back(std::move(fact));
-        }
-
-        std::vector<std::vector<trx_hash_t>> remaining_transaction_hashes;
-        remaining_transaction_hashes.reserve(plan.remaining_hashes.size());
-        for (const auto &bridge_hash : plan.remaining_hashes) {
-          const auto dag_block = getDagBlock(from_bridge_dag_hash(bridge_hash));
-          if (!dag_block) {
-            throw std::runtime_error("DagManager: post-finalization non-finalized block missing");
-          }
-          remaining_transaction_hashes.push_back(dag_block->getTrxs());
-        }
-
-        const auto retained_hash_plan = rustaxa::dag_plan_non_finalized_transaction_query(
-            to_bridge_dag_block_transaction_refs(remaining_transaction_hashes));
-        const auto tx_cleanup_plan = rustaxa::dag_plan_expired_transaction_cleanup(std::move(expired_candidates),
-                                                                                   retained_hash_plan.query_hashes);
-        const auto transactions_to_remove = from_bridge_dag_transaction_hashes(tx_cleanup_plan.remove_hashes);
-        if (!transactions_to_remove.empty()) {
-          std::unordered_set<trx_hash_t> transactions_to_remove_set;
-          transactions_to_remove_set.reserve(transactions_to_remove.size());
-          for (const auto &hash : transactions_to_remove) {
-            transactions_to_remove_set.emplace(hash);
-          }
-          trx_mgr_->removeNonFinalizedTransactions(std::move(transactions_to_remove_set));
-        }
-      }
+    for (const auto &bridge_hash : cleanup.expired_hashes) {
+      seen_blocks_.erase(from_bridge_dag_hash(bridge_hash));
+      db_->rustStorage().remove_dag_block(bridge_hash.hash);
     }
 
-    return static_cast<uint>(plan.finalized_count);
+    const auto transactions_to_remove = from_bridge_dag_transaction_hashes(cleanup.remove_transaction_hashes);
+    if (!transactions_to_remove.empty()) {
+      std::unordered_set<trx_hash_t> transactions_to_remove_set;
+      transactions_to_remove_set.reserve(transactions_to_remove.size());
+      for (const auto &hash : transactions_to_remove) {
+        transactions_to_remove_set.emplace(hash);
+      }
+      trx_mgr_->removeNonFinalizedTransactions(std::move(transactions_to_remove_set));
+    }
+
+    return static_cast<uint>(finalized_count);
   } catch (const std::exception &e) {
     throw std::runtime_error(std::string("DagManager: failed to apply finalized DAG order in Rust runtime: ") +
                              e.what());

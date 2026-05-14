@@ -403,7 +403,9 @@ The current Rust starting point is intentionally small:
   updates. `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
   selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
   lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode
-  `GasPricer` overlay now routes finalized-block history restoration through Rust storage, live finalized-block
+  `DagManager::setDagBlockOrder()` now asks Rust storage for finalized-block counter facts, expired block hashes, and
+  expired transaction cleanup hashes before the shim applies local cache and transaction-manager side effects. The
+  Rust-mode `GasPricer` overlay now routes finalized-block history restoration through Rust storage, live finalized-block
   gas-price updates through Rust, and pool-mode minimum-price flooring through Rust. Pool mode requires the Rust-backed
   transaction queue so `TransactionManager::getMinGasPriceForBlockInclusion()` reads Rust queue metadata rather than
   legacy queue state.
