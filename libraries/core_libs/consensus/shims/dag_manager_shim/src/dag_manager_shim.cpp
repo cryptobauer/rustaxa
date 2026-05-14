@@ -164,6 +164,21 @@ std::vector<std::shared_ptr<Transaction>> from_bridge_dag_transaction_rlps(
   return out;
 }
 
+std::vector<std::shared_ptr<DagBlock>> from_bridge_dag_sync_blocks(const rust::Vec<rustaxa::DagSyncBlockRlp> &blocks) {
+  std::vector<std::shared_ptr<DagBlock>> out;
+  out.reserve(blocks.size());
+  for (const auto &entry : blocks) {
+    const auto bytes = from_rust_bytes(entry.block_rlp);
+    dev::RLP rlp(dev::bytesConstRef(bytes.data(), bytes.size()));
+    auto block = std::make_shared<DagBlock>(rlp);
+    if (block->getHash() != from_bridge_hash(entry.hash)) {
+      throw std::runtime_error("DagManager: Rust sync DAG block RLP hash does not match selected hash");
+    }
+    out.emplace_back(std::move(block));
+  }
+  return out;
+}
+
 std::array<uint8_t, 32> to_bridge_vrf_public_key(const rust::Vec<uint8_t> &vrf_public_key) {
   if (vrf_public_key.size() != 32) {
     throw std::runtime_error("DagManager: VRF public key must be 32 bytes");
@@ -858,41 +873,15 @@ const std::pair<PbftPeriod, std::map<uint64_t, std::unordered_set<blk_hash_t>>> 
 
 const std::tuple<PbftPeriod, std::vector<std::shared_ptr<DagBlock>>, SharedTransactions>
 DagManager::getNonFinalizedBlocksWithTransactions(const std::unordered_set<blk_hash_t> &known_hashes) const {
-  std::vector<std::shared_ptr<DagBlock>> dag_blocks;
-  std::vector<std::vector<trx_hash_t>> all_block_transaction_hashes;
-
-  PbftPeriod period = 0;
-  std::vector<blk_hash_t> non_finalized_hashes;
+  rustaxa::DagManagerNonFinalizedSyncPayload payload;
   {
     std::shared_lock lock(rust_graphs_mutex_);
-    const auto snapshot =
-        rust_graphs_->runtime->dag_manager_runtime_non_finalized_sync_snapshot(to_bridge_dag_hashes(known_hashes));
-    period = snapshot.period;
-    non_finalized_hashes = from_bridge_dag_hashes(snapshot.selected_hashes);
+    payload = rust_graphs_->runtime->dag_manager_runtime_non_finalized_sync_payload(to_bridge_dag_hashes(known_hashes));
   }
 
-  for (const auto &hash : non_finalized_hashes) {
-    auto blk = getDagBlock(hash);
-    if (!blk) {
-      throw std::runtime_error("DagManager: non-finalized Rust DAG block missing from storage");
-    }
-    dag_blocks.emplace_back(std::move(blk));
-  }
-
-  all_block_transaction_hashes.reserve(dag_blocks.size());
-  for (const auto &block : dag_blocks) {
-    all_block_transaction_hashes.emplace_back(block->getTrxs());
-  }
-
-  if (all_block_transaction_hashes.empty()) {
-    return {period, std::move(dag_blocks), {}};
-  }
-
-  auto query_plan = rustaxa::dag_plan_non_finalized_transaction_query(
-      to_bridge_dag_block_transaction_refs(all_block_transaction_hashes));
-  const auto trxs_lookup = db_->rustStorage().get_transaction_rlps_by_hashes(std::move(query_plan.query_hashes));
-  auto trxs = from_bridge_dag_transaction_rlps(trxs_lookup);
-  return {period, std::move(dag_blocks), std::move(trxs)};
+  auto dag_blocks = from_bridge_dag_sync_blocks(payload.blocks);
+  auto trxs = from_bridge_dag_transaction_rlps(payload.transactions);
+  return {payload.period, std::move(dag_blocks), std::move(trxs)};
 }
 
 DagFrontier DagManager::getDagFrontier() {

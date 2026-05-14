@@ -2,23 +2,25 @@ use crate::ffi::rustaxa_ffi::{
     DagBlockLookup, DagBlockTransactionRefs, DagExpiredTransactionCleanupPlan,
     DagExpiredTransactionFact, DagFrontier, DagHash, DagLevelHashes, DagManagerAnchors,
     DagManagerBlock, DagManagerFinalizationPlan, DagManagerNonFinalizedSize,
-    DagManagerRuntimeSyncSnapshot, DagManagerSnapshot, DagOrder, DagPersistenceCounters,
-    DagPivotTipsValidation, DagProposerEligibilityDecision, DagProposerEligibilityInput,
-    DagProposerTipCandidate, DagProposerTipSelection, DagReferenceMetadata, DagTransactionHash,
-    DagTransactionQueryPlan, DagVerifyAuthorizationInput, DagVerifyAuthorizationResult,
-    DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
+    DagManagerNonFinalizedSyncPayload, DagManagerRuntimeSyncSnapshot, DagManagerSnapshot, DagOrder,
+    DagPersistenceCounters, DagPivotTipsValidation, DagProposerEligibilityDecision,
+    DagProposerEligibilityInput, DagProposerTipCandidate, DagProposerTipSelection,
+    DagReferenceMetadata, DagSyncBlockRlp, DagTransactionHash, DagTransactionQueryPlan,
+    DagVerifyAuthorizationInput, DagVerifyAuthorizationResult, DagVerifyGasInput,
+    DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
     DagVerifyTransactionAvailabilityInput, DagVerifyTransactionAvailabilityResult,
     DagVerifyVdfDposDecision, DagVerifyVdfDposFacts, DagVerifyVdfPrepareInput,
     DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
     DagVerifyVdfSortitionResult, SortitionRuntimeParams,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
+use crate::storage::transaction_rlp_lookups;
 use anyhow::{ensure, Context, Result};
 use ethereum_types::H256;
 use rustaxa_consensus::dag::{
-    construct_dag_vdf_message, decide_dag_verify_vdf_dpos_authorization, derive_frontier,
-    plan_dag_verify_transaction_query, plan_expired_transaction_cleanup,
-    plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
+    construct_dag_vdf_message, dag_block_transaction_hashes,
+    decide_dag_verify_vdf_dpos_authorization, derive_frontier, plan_dag_verify_transaction_query,
+    plan_expired_transaction_cleanup, plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
     validate_dag_verify_authorization, validate_dag_verify_gas, validate_dag_verify_precheck,
     validate_dag_verify_transaction_availability, validate_pivot_tips_metadata,
     verify_dag_vdf_sortition, verify_dag_vdf_sortition_from_block,
@@ -405,6 +407,52 @@ impl BridgeDagManagerRuntime {
                     .select_non_finalized_hashes_excluding_known(&known_hashes),
             ),
         }
+    }
+
+    /// Builds one-shot non-finalized DAG sync materialization data through
+    /// Rust storage only.
+    ///
+    /// Returns selected block RLP payloads plus a de-duplicated transaction lookup
+    /// list that preserves the sync snapshot block order and per-block
+    /// transaction order.
+    pub fn dag_manager_runtime_non_finalized_sync_payload(
+        &self,
+        known_hashes: Vec<DagHash>,
+    ) -> Result<DagManagerNonFinalizedSyncPayload> {
+        let snapshot = self.dag_manager_runtime_non_finalized_sync_snapshot(known_hashes);
+
+        let mut transaction_hashes_by_block = Vec::with_capacity(snapshot.selected_hashes.len());
+        let mut blocks = Vec::with_capacity(snapshot.selected_hashes.len());
+
+        for hash in &snapshot.selected_hashes {
+            let block = self
+                .dag_manager_runtime_load_block(&hash.hash)
+                .context("DAG_RUNTIME_SYNC_BLOCK_LOAD")?;
+            ensure!(
+                block.found,
+                "selected non-finalized DAG block missing from storage"
+            );
+
+            let transactions = dag_block_transaction_hashes(&block.block_rlp)
+                .context("DAG_RUNTIME_SYNC_BLOCK_TRANSACTIONS")?;
+
+            transaction_hashes_by_block.push(transactions);
+            blocks.push(DagSyncBlockRlp {
+                hash: hash.hash,
+                block_rlp: block.block_rlp,
+            });
+        }
+
+        let transaction_query = plan_non_finalized_transaction_query(&transaction_hashes_by_block);
+        let transactions =
+            transaction_rlp_lookups(self.storage.as_ref(), transaction_query.query_hashes)
+                .context("DAG_RUNTIME_SYNC_TRANSACTION_LOOKUP")?;
+
+        Ok(DagManagerNonFinalizedSyncPayload {
+            period: snapshot.period,
+            blocks,
+            transactions,
+        })
     }
 
     /// Computes deterministic DAG order for a target anchor.
@@ -1194,6 +1242,25 @@ mod tests {
         block.out().to_vec()
     }
 
+    fn dag_block_with_vdf_payload_and_transaction_hashes(
+        vdf_payload: Vec<u8>,
+        transaction_hashes: &[DagTransactionHash],
+    ) -> Vec<u8> {
+        let mut block = RlpStream::new_list(8);
+        block.append(&&[0u8; 32][..]);
+        block.append(&1u64);
+        block.append(&0u64);
+        block.append(&vdf_payload);
+        block.begin_list(0);
+        block.begin_list(transaction_hashes.len());
+        for hash in transaction_hashes {
+            block.append(&&hash.hash[..]);
+        }
+        block.append(&&[0u8; 65][..]);
+        block.append(&123u64);
+        block.out().to_vec()
+    }
+
     fn tx_hash(byte: u8) -> DagTransactionHash {
         DagTransactionHash { hash: [byte; 32] }
     }
@@ -1667,6 +1734,97 @@ mod tests {
 
             assert_eq!(snapshot.period, 0);
             assert_eq!(selected, vec![[3u8; 32], [4u8; 32], [6u8; 32]]);
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_non_finalized_sync_payload_uses_storage_and_dedupes_transactions() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_sync_payload");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("runtime should initialize");
+
+            runtime
+                .dag_manager_runtime_add_block(DagManagerBlock {
+                    hash: [2u8; 32],
+                    pivot: [1u8; 32],
+                    tips: vec![],
+                    level: 2,
+                    difficulty: 100,
+                })
+                .expect("add block 2");
+            runtime
+                .dag_manager_runtime_add_block(DagManagerBlock {
+                    hash: [3u8; 32],
+                    pivot: [2u8; 32],
+                    tips: vec![DagHash { hash: [2u8; 32] }],
+                    level: 3,
+                    difficulty: 90,
+                })
+                .expect("add block 3");
+            runtime
+                .dag_manager_runtime_add_block(DagManagerBlock {
+                    hash: [4u8; 32],
+                    pivot: [3u8; 32],
+                    tips: vec![DagHash { hash: [3u8; 32] }],
+                    level: 4,
+                    difficulty: 80,
+                })
+                .expect("add block 4");
+
+            let tx_block_3 = dag_block_with_vdf_payload_and_transaction_hashes(
+                vec![0x11],
+                &[tx_hash(1), tx_hash(2)],
+            );
+            let tx_block_4 = dag_block_with_vdf_payload_and_transaction_hashes(
+                vec![0x22],
+                &[tx_hash(2), tx_hash(4)],
+            );
+
+            runtime
+                .dag_manager_runtime_save_block(&[3u8; 32], 3, 2, tx_block_3.clone())
+                .expect("persist block 3");
+            runtime
+                .dag_manager_runtime_save_block(&[4u8; 32], 4, 2, tx_block_4.clone())
+                .expect("persist block 4");
+
+            storage
+                .save_transaction(&[1u8; 32], vec![0xA1, 0x01])
+                .expect("persist pending transaction 1");
+            storage
+                .save_transaction(&[2u8; 32], vec![0xA2, 0x02])
+                .expect("persist pending transaction 2");
+            storage
+                .save_transaction(&[3u8; 32], vec![0xA3, 0x03])
+                .expect("persist pending transaction 3");
+
+            let payload = runtime
+                .dag_manager_runtime_non_finalized_sync_payload(vec![DagHash { hash: [2u8; 32] }])
+                .expect("sync payload should materialize");
+
+            assert_eq!(payload.period, 0);
+            assert_eq!(payload.blocks.len(), 2);
+            assert_eq!(payload.blocks[0].hash, [3u8; 32]);
+            assert_eq!(payload.blocks[0].block_rlp, tx_block_3);
+            assert_eq!(payload.blocks[1].hash, [4u8; 32]);
+            assert_eq!(payload.blocks[1].block_rlp, tx_block_4);
+
+            assert_eq!(payload.transactions.len(), 3);
+            assert_eq!(payload.transactions[0].hash, tx_hash(1).hash);
+            assert!(payload.transactions[0].found);
+            assert_eq!(payload.transactions[0].tx_rlp, vec![0xA1, 0x01]);
+            assert_eq!(payload.transactions[1].hash, tx_hash(2).hash);
+            assert!(payload.transactions[1].found);
+            assert_eq!(payload.transactions[1].tx_rlp, vec![0xA2, 0x02]);
+            assert_eq!(payload.transactions[2].hash, tx_hash(4).hash);
+            assert!(!payload.transactions[2].found);
+            assert!(payload.transactions[2].tx_rlp.is_empty());
+            assert!(!payload.transactions[2].finalized);
         }
 
         let _ = fs::remove_dir_all(&temp_dir);

@@ -40,3 +40,5 @@ pub use transaction_manager::{
 };
 pub use transaction_queue::TransactionQueue;
 pub use verified_votes::VerifiedVotes;
+
+pub use dag::dag_block_transaction_hashes;

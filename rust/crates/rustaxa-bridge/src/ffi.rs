@@ -634,6 +634,19 @@ pub mod rustaxa_ffi {
         selected_hashes: Vec<DagHash>,
     }
 
+    /// Canonical DAG block RLP selected for non-finalized sync payloads.
+    struct DagSyncBlockRlp {
+        hash: [u8; 32],
+        block_rlp: Vec<u8>,
+    }
+
+    /// Rust-storage-backed non-finalized DAG sync payload.
+    struct DagManagerNonFinalizedSyncPayload {
+        period: u64,
+        blocks: Vec<DagSyncBlockRlp>,
+        transactions: Vec<DagTransactionRlpLookup>,
+    }
+
     /// Rust-storage-backed transaction lookup result for DAG transaction materialization.
     struct DagTransactionRlpLookup {
         hash: [u8; 32],
@@ -1280,6 +1293,12 @@ pub mod rustaxa_ffi {
             self: &BridgeDagManagerRuntime,
             known_hashes: Vec<DagHash>,
         ) -> DagManagerRuntimeSyncSnapshot;
+        /// Returns non-finalized sync DAG block RLPs and referenced transaction
+        /// RLPs through Rust-owned storage access.
+        pub fn dag_manager_runtime_non_finalized_sync_payload(
+            self: &BridgeDagManagerRuntime,
+            known_hashes: Vec<DagHash>,
+        ) -> Result<DagManagerNonFinalizedSyncPayload>;
         pub fn dag_manager_runtime_compute_order(
             self: &BridgeDagManagerRuntime,
             anchor: &[u8; 32],

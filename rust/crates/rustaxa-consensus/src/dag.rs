@@ -928,6 +928,19 @@ pub fn construct_dag_vdf_message(pivot: H256, transaction_hashes: &[H256]) -> Ve
     stream.out().to_vec()
 }
 
+/// Extracts transaction hashes from a canonical DAG block payload.
+///
+/// Inputs:
+/// - `block_rlp`: canonical eight-field DAG block bytes.
+///
+/// Output is the block transaction list in canonical order, preserved for
+/// downstream sync and validation logic.
+pub fn dag_block_transaction_hashes(block_rlp: &[u8]) -> Result<Vec<H256>> {
+    let block = DagBlock::try_from(DagBlockRlp::new(block_rlp))
+        .context("decode canonical DAG block RLP for transaction hash extraction")?;
+    Ok(block.transactions)
+}
+
 /// Builds the legacy VDF message from canonical DAG block RLP.
 ///
 /// `block_rlp` must be the canonical eight-field DAG block payload. The pivot
@@ -2650,6 +2663,18 @@ mod tests {
         assert_eq!(
             construct_dag_vrf_input(block_level, proposal_period_hash),
             expected.out().to_vec()
+        );
+    }
+
+    #[test]
+    fn dag_block_transaction_hashes_preserves_order_and_duplicates() {
+        let transactions = vec![h(1), h(2), h(1)];
+        let block_rlp = dag_block_rlp_with_vdf(vec![0xAB_u8], &transactions);
+
+        assert_eq!(
+            dag_block_transaction_hashes(&block_rlp)
+                .expect("transaction hashes should decode from DAG block payload"),
+            transactions
         );
     }
 

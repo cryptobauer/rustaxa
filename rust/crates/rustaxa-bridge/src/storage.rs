@@ -23,6 +23,70 @@ pub fn create_storage(path: &str) -> Result<Box<BridgeStorage>, anyhow::Error> {
     )))
 }
 
+/// Batch-loads transaction RLP payloads by hash using Rust storage semantics shared by consensus bridges.
+///
+/// Inputs are canonical transaction hashes in caller-requested order. Outputs preserve
+/// that order, return the original hash, mark whether a payload was found, and identify
+/// whether the payload came from finalized storage. Lookup checks pending/non-finalized
+/// transactions first, then finalized transaction-location metadata, including system
+/// transactions. Missing hashes are returned as `found = false` rather than errors;
+/// storage/codec failures are propagated with stable context labels.
+pub(crate) fn transaction_rlp_lookups(
+    storage: &Storage,
+    hashes: Vec<H256>,
+) -> Result<Vec<rustaxa_ffi::DagTransactionRlpLookup>, anyhow::Error> {
+    let transaction = storage.transaction();
+    let mut out = Vec::with_capacity(hashes.len());
+
+    for hash in hashes {
+        let (tx_rlp, finalized) = if let Some(tx_rlp) = transaction
+            .rlp(hash)
+            .context("DAG_TRANSACTION_RLP_PENDING_LOOKUP")?
+        {
+            (Some(tx_rlp), false)
+        } else if let Some(location_rlp) = transaction
+            .location_rlp(hash)
+            .context("DAG_TRANSACTION_RLP_LOCATION_LOOKUP")?
+        {
+            let location = rlp::Rlp::new(&location_rlp);
+            let period = location
+                .val_at::<u64>(0)
+                .context("DAG_TRANSACTION_RLP_LOCATION_PERIOD")?;
+            let position = location
+                .val_at::<u32>(1)
+                .context("DAG_TRANSACTION_RLP_LOCATION_POSITION")?;
+            let is_system = location
+                .item_count()
+                .context("DAG_TRANSACTION_RLP_LOCATION_SHAPE")?
+                == 3
+                && location
+                    .val_at::<bool>(2)
+                    .context("DAG_TRANSACTION_RLP_LOCATION_SYSTEM_FLAG")?;
+            let tx_rlp = if is_system {
+                transaction
+                    .system_rlp(hash)
+                    .context("DAG_TRANSACTION_RLP_SYSTEM_LOOKUP")?
+            } else {
+                transaction
+                    .by_period_position_rlp(period, position)
+                    .context("DAG_TRANSACTION_RLP_FINALIZED_LOOKUP")?
+            };
+            (tx_rlp, true)
+        } else {
+            (None, false)
+        };
+
+        out.push(rustaxa_ffi::DagTransactionRlpLookup {
+            hash: hash.0,
+            found: tx_rlp.is_some(),
+            finalized,
+            tx_rlp: tx_rlp.unwrap_or_default(),
+        });
+    }
+
+    Ok(out)
+}
+
 impl BridgeStorage {
     pub fn create_write_batch(&self) -> Result<u64, anyhow::Error> {
         let batch_id = self.2.fetch_add(1, Ordering::Relaxed);
@@ -707,57 +771,13 @@ impl BridgeStorage {
         &self,
         hashes: Vec<rustaxa_ffi::DagTransactionHash>,
     ) -> Result<Vec<rustaxa_ffi::DagTransactionRlpLookup>, anyhow::Error> {
-        let transaction = self.0.transaction();
-        let mut out = Vec::with_capacity(hashes.len());
-
-        for hash in hashes {
-            let hash = H256::from(hash.hash);
-            let (tx_rlp, finalized) = if let Some(tx_rlp) = transaction
-                .rlp(hash)
-                .context("DAG_TRANSACTION_RLP_PENDING_LOOKUP")?
-            {
-                (Some(tx_rlp), false)
-            } else if let Some(location_rlp) = transaction
-                .location_rlp(hash)
-                .context("DAG_TRANSACTION_RLP_LOCATION_LOOKUP")?
-            {
-                let location = rlp::Rlp::new(&location_rlp);
-                let period = location
-                    .val_at::<u64>(0)
-                    .context("DAG_TRANSACTION_RLP_LOCATION_PERIOD")?;
-                let position = location
-                    .val_at::<u32>(1)
-                    .context("DAG_TRANSACTION_RLP_LOCATION_POSITION")?;
-                let is_system = location
-                    .item_count()
-                    .context("DAG_TRANSACTION_RLP_LOCATION_SHAPE")?
-                    == 3
-                    && location
-                        .val_at::<bool>(2)
-                        .context("DAG_TRANSACTION_RLP_LOCATION_SYSTEM_FLAG")?;
-                let tx_rlp = if is_system {
-                    transaction
-                        .system_rlp(hash)
-                        .context("DAG_TRANSACTION_RLP_SYSTEM_LOOKUP")?
-                } else {
-                    transaction
-                        .by_period_position_rlp(period, position)
-                        .context("DAG_TRANSACTION_RLP_FINALIZED_LOOKUP")?
-                };
-                (tx_rlp, true)
-            } else {
-                (None, false)
-            };
-
-            out.push(rustaxa_ffi::DagTransactionRlpLookup {
-                hash: hash.0,
-                found: tx_rlp.is_some(),
-                finalized,
-                tx_rlp: tx_rlp.unwrap_or_default(),
-            });
-        }
-
-        Ok(out)
+        transaction_rlp_lookups(
+            &self.0,
+            hashes
+                .into_iter()
+                .map(|hash| H256::from(hash.hash))
+                .collect(),
+        )
     }
 
     pub fn get_all_transaction_period(
