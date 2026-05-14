@@ -2,6 +2,7 @@
 #include <cstring>
 #include <shared_mutex>
 #include <stdexcept>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -162,6 +163,21 @@ class TransactionManagerRustShimAccess {
     }
     manager.trx_count_ = outcome.target_transaction_count;
   }
+
+  /**
+   * Clears only live non-finalized transaction sidecars after Rust finalization
+   * storage cleanup has committed.
+   *
+   * This intentionally performs no storage deletes and does not update
+   * transaction counters, matching the legacy expired-DAG cleanup semantics after
+   * moving persistent deletion to Rust.
+   */
+  static void forgetExpiredNonFinalizedTransactionSidecars(TransactionManagerOld& manager,
+                                                           std::unordered_set<trx_hash_t>&& transactions) {
+    for (const auto& trx_hash : transactions) {
+      manager.nonfinalized_transactions_in_dag_.erase(trx_hash);
+    }
+  }
 };
 
 std::pair<SharedTransactions, std::vector<uint64_t>> TransactionManager::packTrxs(PbftPeriod proposal_period,
@@ -171,6 +187,10 @@ std::pair<SharedTransactions, std::vector<uint64_t>> TransactionManager::packTrx
 
 void TransactionManager::saveTransactionsFromDagBlock(const SharedTransactions& trxs) {
   TransactionManagerRustShimAccess::saveTransactionsFromDagBlock(*this, trxs);
+}
+
+void TransactionManager::forgetExpiredNonFinalizedTransactionSidecars(std::unordered_set<trx_hash_t>&& transactions) {
+  TransactionManagerRustShimAccess::forgetExpiredNonFinalizedTransactionSidecars(*this, std::move(transactions));
 }
 
 }  // namespace taraxa

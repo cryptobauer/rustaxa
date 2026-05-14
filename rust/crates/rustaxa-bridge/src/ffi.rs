@@ -971,8 +971,11 @@ pub mod rustaxa_ffi {
         counter_update_hashes: Vec<DagHash>,
         expired_hashes: Vec<DagHash>,
         remaining_hashes: Vec<DagHash>,
-        /// Transaction hashes that can be removed from non-finalized storage after
-        /// this finalized transition.
+        /// Transaction hashes that can be removed after this finalized transition.
+        ///
+        /// Plan payloads are pre-apply facts. Apply payloads return the same hashes
+        /// after Rust has removed them from non-finalized storage, so C++ must use
+        /// them only for live sidecar cleanup.
         remove_transaction_hashes: Vec<DagTransactionHash>,
     }
 
@@ -987,6 +990,7 @@ pub mod rustaxa_ffi {
     struct DagManagerFinalizationCleanupPayload {
         counter_updates: Vec<DagFinalizedCounterUpdate>,
         expired_hashes: Vec<DagHash>,
+        /// Expired transaction hashes selected for Rust-owned storage deletion.
         remove_transaction_hashes: Vec<DagTransactionHash>,
     }
 
@@ -994,6 +998,8 @@ pub mod rustaxa_ffi {
     struct DagManagerFinalizationApplyPayload {
         finalized_count: u64,
         expired_hashes: Vec<DagHash>,
+        /// Expired transaction hashes already removed from Rust-owned
+        /// non-finalized storage. C++ must only clear live sidecars for them.
         remove_transaction_hashes: Vec<DagTransactionHash>,
     }
 

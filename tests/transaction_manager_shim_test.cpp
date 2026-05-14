@@ -1,7 +1,10 @@
 #include <gtest/gtest.h>
 
 #include <limits>
+#include <mutex>
+#include <shared_mutex>
 #include <type_traits>
+#include <unordered_set>
 
 #include "common/init.hpp"
 #include "final_chain/final_chain.hpp"
@@ -103,6 +106,29 @@ TEST_F(TransactionManagerShimFixture, rustDagTransactionPersistenceFailureDoesNo
   EXPECT_EQ(trx_mgr.getNonfinalizedTrxSize(), 0);
   EXPECT_EQ(trx_mgr.getTransactionPoolSize(), transactions.size());
   EXPECT_FALSE(db->getTransaction(transactions[0]->getHash()));
+}
+
+TEST_F(TransactionManagerShimFixture, expiredNonFinalizedSidecarCleanupDoesNotTouchStorage) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  const auto transactions =
+      samples::createSignedTrxSamples(1, 1,
+                                      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                  dev::Secret::ConstructFromStringType::FromHex));
+  ASSERT_TRUE(trx_mgr.insertTransaction(transactions[0]).first);
+  trx_mgr.saveTransactionsFromDagBlock({transactions[0]});
+  ASSERT_EQ(trx_mgr.getNonfinalizedTrxSize(), 1);
+  ASSERT_TRUE(db->getTransaction(transactions[0]->getHash()));
+
+  std::unordered_set<trx_hash_t> expired_hashes{transactions[0]->getHash()};
+  std::unique_lock lock(trx_mgr.getTransactionsMutex());
+  trx_mgr.forgetExpiredNonFinalizedTransactionSidecars(std::move(expired_hashes));
+  lock.unlock();
+
+  EXPECT_EQ(trx_mgr.getNonfinalizedTrxSize(), 0);
+  EXPECT_TRUE(db->getTransaction(transactions[0]->getHash()));
 }
 #endif
 

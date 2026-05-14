@@ -1,5 +1,6 @@
 #pragma once
 
+#include <unordered_set>
 #include <utility>
 
 #include "common/constants.hpp"
@@ -145,6 +146,16 @@ class TransactionManager : public TransactionManagerOld {
     // TODO(rust-rewrite): migrate non-finalized transaction removal to Rust instead of TransactionManagerOld.
     TransactionManagerOld::removeNonFinalizedTransactions(std::move(transactions));
   }
+
+  /**
+   * Erase live C++ sidecars for expired non-finalized DAG transactions.
+   *
+   * Rust finalization has already removed the matching payloads from
+   * non-finalized storage before this method is called. This method performs no
+   * DB writes and is idempotent for hashes that are no longer present in the
+   * live sidecar map. The caller must hold the finalization transaction lock.
+   */
+  void forgetExpiredNonFinalizedTransactionSidecars(std::unordered_set<trx_hash_t> &&transactions);
 
   std::shared_mutex &getTransactionsMutex() {
     // TODO(rust-rewrite): migrate transaction lifecycle synchronization to Rust instead of TransactionManagerOld.

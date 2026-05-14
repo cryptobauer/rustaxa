@@ -709,7 +709,7 @@ uint DagManager::setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, v
       for (const auto &hash : transactions_to_remove) {
         transactions_to_remove_set.emplace(hash);
       }
-      trx_mgr_->removeNonFinalizedTransactions(std::move(transactions_to_remove_set));
+      trx_mgr_->forgetExpiredNonFinalizedTransactionSidecars(std::move(transactions_to_remove_set));
     }
 
     return static_cast<uint>(finalized_count);

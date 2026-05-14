@@ -458,15 +458,16 @@ impl BridgeDagManagerRuntime {
     ///
     /// Output:
     /// - finalized block count plus the live C++ side-effect facts that cannot
-    ///   move yet: expired block hashes for `seen_blocks_` cleanup and
-    ///   transaction hashes for transaction-manager pool cleanup.
+    ///   move yet: expired block hashes for `seen_blocks_` cleanup and expired
+    ///   transaction hashes for transaction-manager sidecar cleanup. Returned
+    ///   transaction hashes have already been removed from Rust-owned storage.
     ///
     /// Behavior:
     /// - resolves the anchor level from Rust storage when the anchor is nonzero
     /// - computes finalization on a candidate state before mutating this runtime
     /// - preflights storage-backed cleanup facts before persistent writes
-    /// - updates Rust DAG counters and removes expired DAG blocks through
-    ///   `rustaxa-storage`
+    /// - updates Rust DAG counters, removes expired DAG blocks, and removes
+    ///   expired non-finalized transaction payloads through `rustaxa-storage`
     /// - commits the candidate state only after the Rust-owned storage writes
     ///   complete
     pub fn dag_manager_runtime_apply_finalized_order(
@@ -528,9 +529,18 @@ impl BridgeDagManagerRuntime {
             .iter()
             .map(|hash| H256::from(hash.hash))
             .collect::<Vec<_>>();
+        let expired_transaction_hashes = cleanup
+            .remove_transaction_hashes
+            .iter()
+            .map(|hash| H256::from(hash.hash))
+            .collect::<Vec<_>>();
         self.storage
             .dag()
-            .apply_finalization_cleanup(&counter_updates, &expired_hashes)
+            .apply_finalization_cleanup(
+                &counter_updates,
+                &expired_hashes,
+                &expired_transaction_hashes,
+            )
             .context("DAG_RUNTIME_FINALIZATION_STORAGE_APPLY")?;
 
         self.state = candidate_state;
@@ -2293,6 +2303,15 @@ mod tests {
             storage
                 .save_transaction_location(&[2u8; 32], 7, 0, false)
                 .expect("mark tx2 as finalized");
+            storage
+                .save_transaction(&[1u8; 32], vec![0xA1])
+                .expect("persist expired pending tx1");
+            storage
+                .save_transaction(&[2u8; 32], vec![0xA2])
+                .expect("persist finalized pending tx2");
+            storage
+                .save_transaction(&[3u8; 32], vec![0xA3])
+                .expect("persist retained pending tx3");
 
             let payload = runtime
                 .dag_manager_runtime_apply_finalized_order(
@@ -2308,6 +2327,24 @@ mod tests {
             assert_eq!(payload.expired_hashes[1].hash, [4u8; 32]);
             assert_eq!(payload.remove_transaction_hashes.len(), 1);
             assert_eq!(payload.remove_transaction_hashes[0].hash, [1u8; 32]);
+            assert_eq!(
+                storage
+                    .get_transaction(&[1u8; 32])
+                    .expect("load removed pending tx1"),
+                Vec::<u8>::new()
+            );
+            assert_eq!(
+                storage
+                    .get_transaction(&[2u8; 32])
+                    .expect("load finalized pending tx2"),
+                vec![0xA2]
+            );
+            assert_eq!(
+                storage
+                    .get_transaction(&[3u8; 32])
+                    .expect("load retained pending tx3"),
+                vec![0xA3]
+            );
 
             assert_eq!(runtime.dag_manager_runtime_latest_period(), 1);
             assert_eq!(runtime.dag_manager_runtime_anchors().anchor, [8u8; 32]);

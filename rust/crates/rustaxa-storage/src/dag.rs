@@ -284,6 +284,8 @@ impl<D: DbReader + DbWriter> DagRepository<D> {
     /// - `counter_updates`: finalized block hash, level, and tips count facts
     ///   used to update level indexes plus DAG block/edge counters.
     /// - `expired_hashes`: non-finalized DAG block payloads to remove.
+    /// - `expired_transaction_hashes`: non-finalized transaction payloads from
+    ///   expired DAG blocks that no remaining non-finalized block references.
     ///
     /// Behavior:
     /// - merges all counter updates per DAG level before writing level indexes,
@@ -291,12 +293,18 @@ impl<D: DbReader + DbWriter> DagRepository<D> {
     ///   canonical level set
     /// - increments persistent DAG counters once for the whole cleanup batch
     /// - deletes expired non-finalized DAG payloads in the same committed batch
+    /// - deletes expired non-finalized transaction payloads in the same committed
+    ///   batch without updating transaction counters, matching legacy cleanup
     pub fn apply_finalization_cleanup(
         &self,
         counter_updates: &[(H256, u64, u64)],
         expired_hashes: &[H256],
+        expired_transaction_hashes: &[H256],
     ) -> Result<()> {
-        if counter_updates.is_empty() && expired_hashes.is_empty() {
+        if counter_updates.is_empty()
+            && expired_hashes.is_empty()
+            && expired_transaction_hashes.is_empty()
+        {
             return Ok(());
         }
 
@@ -352,6 +360,11 @@ impl<D: DbReader + DbWriter> DagRepository<D> {
         for hash in expired_hashes {
             self.db
                 .batch_delete(&mut write_batch, Column::DagBlocks, hash.as_bytes())?;
+        }
+
+        for hash in expired_transaction_hashes {
+            self.db
+                .batch_delete(&mut write_batch, Column::Transactions, hash.as_bytes())?;
         }
 
         self.db.commit_batch(write_batch)

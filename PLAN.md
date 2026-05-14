@@ -399,17 +399,17 @@ The current Rust starting point is intentionally small:
    demotion decisions, accepted gas accumulation, and stop rules through Rust while C++ keeps live transaction objects,
    `estimateTransactionGas`, estimation caching, queue mutation, and lifecycle/finalization state. DAG transaction
    persistence now sends live transaction facts to Rust; Rust owns duplicate filtering, nonce-gated finalized-storage
-  lookup, accepted ordering, count planning, and the storage batch before C++ applies only the accepted live sidecar
-  updates. `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
-  selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
-  lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode
-  `DagManager::setDagBlockOrder()` now calls one Rust apply operation that resolves the anchor level from Rust storage,
-  computes the candidate finalization state, applies finalized-block counter updates and expired DAG deletes through a
-  Rust storage batch, commits Rust state, then returns only local cache and transaction-manager side-effect facts to the
-  shim. The Rust-mode `GasPricer` overlay now routes finalized-block history restoration through Rust storage, live finalized-block
-  gas-price updates through Rust, and pool-mode minimum-price flooring through Rust. Pool mode requires the Rust-backed
-  transaction queue so `TransactionManager::getMinGasPriceForBlockInclusion()` reads Rust queue metadata rather than
-  legacy queue state.
+   lookup, accepted ordering, count planning, and the storage batch before C++ applies only the accepted live sidecar
+   updates. `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
+   selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
+   lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode
+   `DagManager::setDagBlockOrder()` now calls one Rust apply operation that resolves the anchor level from Rust storage,
+   computes the candidate finalization state, applies finalized-block counter updates, expired DAG deletes, and expired
+   non-finalized transaction deletes through one Rust storage batch, commits Rust state, then returns only local cache
+   and live transaction-manager sidecar cleanup facts to the shim. The Rust-mode `GasPricer` overlay now routes
+   finalized-block history restoration through Rust storage, live finalized-block gas-price updates through Rust, and
+   pool-mode minimum-price flooring through Rust. Pool mode requires the Rust-backed transaction queue so
+   `TransactionManager::getMinGasPriceForBlockInclusion()` reads Rust queue metadata rather than legacy queue state.
 10. Port deterministic rewards, remaining slashing behavior, and pillar calculations after DPoS and final-chain query
     ports are real. Double-voting proof planning and already-verified pillar-vote aggregation are Rust-backed; broader
     slashing state transitions, pillar signing/recovery, and `PillarChainManager` orchestration still depend on future
