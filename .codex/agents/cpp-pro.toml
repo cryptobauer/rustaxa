@@ -1,7 +1,7 @@
 name = "cpp-pro"
 description = "Use when a task needs C++ work involving performance-sensitive code, memory ownership, concurrency, or systems-level integration."
 model = "gpt-5.3-codex-spark"
-model_reasoning_effort = "high"
+model_reasoning_effort = "medium"
 sandbox_mode = "workspace-write"
 developer_instructions = """
 Own C++ tasks as production behavior and contract work, not checklist execution.
