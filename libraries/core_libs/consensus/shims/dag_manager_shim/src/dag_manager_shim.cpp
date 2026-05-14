@@ -687,38 +687,22 @@ uint DagManager::setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, v
       }
     }
 
-    uint64_t anchor_level = 0;
-    if (anchor != kNullBlockHash) {
-      const auto anchor_block = getDagBlock(anchor);
-      if (!anchor_block) {
-        throw std::runtime_error("DagManager: finalized anchor missing from DAG storage");
-      }
-      anchor_level = anchor_block->getLevel();
-    }
-
-    rustaxa::DagManagerFinalizationPlan plan;
+    rustaxa::DagManagerFinalizationApplyPayload finalized;
     {
       std::unique_lock graph_lock(rust_graphs_mutex_);
       if (period != rust_graphs_->runtime->dag_manager_runtime_latest_period() + 1) {
         return 0;
       }
-      plan = rust_graphs_->runtime->dag_manager_runtime_set_finalized_order(to_bridge_hash(anchor), anchor_level,
-                                                                            period, to_bridge_dag_hashes(dag_order));
+      finalized = rust_graphs_->runtime->dag_manager_runtime_apply_finalized_order(to_bridge_hash(anchor), period,
+                                                                                   to_bridge_dag_hashes(dag_order));
     }
 
-    const auto finalized_count = plan.finalized_count;
-    auto cleanup = rust_graphs_->runtime->dag_manager_runtime_finalization_cleanup_payload(std::move(plan));
-
-    for (const auto &counter_update : cleanup.counter_updates) {
-      db_->rustStorage().update_dag_block_counter(counter_update.hash, counter_update.level, counter_update.tips_count);
-    }
-
-    for (const auto &bridge_hash : cleanup.expired_hashes) {
+    const auto finalized_count = finalized.finalized_count;
+    for (const auto &bridge_hash : finalized.expired_hashes) {
       seen_blocks_.erase(from_bridge_dag_hash(bridge_hash));
-      db_->rustStorage().remove_dag_block(bridge_hash.hash);
     }
 
-    const auto transactions_to_remove = from_bridge_dag_transaction_hashes(cleanup.remove_transaction_hashes);
+    const auto transactions_to_remove = from_bridge_dag_transaction_hashes(finalized.remove_transaction_hashes);
     if (!transactions_to_remove.empty()) {
       std::unordered_set<trx_hash_t> transactions_to_remove_set;
       transactions_to_remove_set.reserve(transactions_to_remove.size());

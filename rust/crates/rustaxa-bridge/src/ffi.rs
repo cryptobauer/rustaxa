@@ -971,6 +971,9 @@ pub mod rustaxa_ffi {
         counter_update_hashes: Vec<DagHash>,
         expired_hashes: Vec<DagHash>,
         remaining_hashes: Vec<DagHash>,
+        /// Transaction hashes that can be removed from non-finalized storage after
+        /// this finalized transition.
+        remove_transaction_hashes: Vec<DagTransactionHash>,
     }
 
     /// Storage-derived counter update fact for a finalized DAG block.
@@ -983,6 +986,13 @@ pub mod rustaxa_ffi {
     /// Rust-storage-backed cleanup payload after applying a finalized DAG order.
     struct DagManagerFinalizationCleanupPayload {
         counter_updates: Vec<DagFinalizedCounterUpdate>,
+        expired_hashes: Vec<DagHash>,
+        remove_transaction_hashes: Vec<DagTransactionHash>,
+    }
+
+    /// Rust-applied finalized DAG order result for C++ live side effects.
+    struct DagManagerFinalizationApplyPayload {
+        finalized_count: u64,
         expired_hashes: Vec<DagHash>,
         remove_transaction_hashes: Vec<DagTransactionHash>,
     }
@@ -1307,18 +1317,13 @@ pub mod rustaxa_ffi {
             self: &mut BridgeDagManagerRuntime,
             block: DagManagerBlock,
         ) -> Result<()>;
-        pub fn dag_manager_runtime_set_finalized_order(
+        /// Applies finalized DAG order using Rust state and Rust storage.
+        pub fn dag_manager_runtime_apply_finalized_order(
             self: &mut BridgeDagManagerRuntime,
             new_anchor: [u8; 32],
-            new_anchor_level: u64,
             new_period: u64,
             finalized_order: Vec<DagHash>,
-        ) -> Result<DagManagerFinalizationPlan>;
-        /// Builds storage-backed cleanup facts for a finalized DAG order plan.
-        pub fn dag_manager_runtime_finalization_cleanup_payload(
-            self: &BridgeDagManagerRuntime,
-            plan: DagManagerFinalizationPlan,
-        ) -> Result<DagManagerFinalizationCleanupPayload>;
+        ) -> Result<DagManagerFinalizationApplyPayload>;
         /// Returns current runtime sync snapshot for non-finalized materialization.
         pub fn dag_manager_runtime_non_finalized_sync_snapshot(
             self: &BridgeDagManagerRuntime,

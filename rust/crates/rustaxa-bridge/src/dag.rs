@@ -2,17 +2,17 @@ use crate::ffi::rustaxa_ffi::{
     DagBlockLookup, DagBlockTransactionRefs, DagExpiredTransactionCleanupPayload,
     DagExpiredTransactionCleanupPlan, DagExpiredTransactionFact, DagFinalizedCounterUpdate,
     DagFrontier, DagHash, DagLevelHashes, DagManagerAnchors, DagManagerBlock,
-    DagManagerFinalizationCleanupPayload, DagManagerFinalizationPlan, DagManagerNonFinalizedSize,
-    DagManagerNonFinalizedSyncPayload, DagManagerRuntimeSyncSnapshot, DagManagerSnapshot, DagOrder,
-    DagPersistenceCounters, DagPivotTipsValidation, DagProposerEligibilityDecision,
-    DagProposerEligibilityInput, DagProposerTipCandidate, DagProposerTipSelection,
-    DagReferenceMetadata, DagSyncBlockRlp, DagTransactionHash, DagTransactionQueryPlan,
-    DagVerifyAuthorizationInput, DagVerifyAuthorizationResult, DagVerifyGasInput,
-    DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
-    DagVerifyTransactionAvailabilityInput, DagVerifyTransactionAvailabilityResult,
-    DagVerifyVdfDposDecision, DagVerifyVdfDposFacts, DagVerifyVdfPrepareInput,
-    DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
-    DagVerifyVdfSortitionResult, SortitionRuntimeParams,
+    DagManagerFinalizationApplyPayload, DagManagerFinalizationCleanupPayload,
+    DagManagerFinalizationPlan, DagManagerNonFinalizedSize, DagManagerNonFinalizedSyncPayload,
+    DagManagerRuntimeSyncSnapshot, DagManagerSnapshot, DagOrder, DagPersistenceCounters,
+    DagPivotTipsValidation, DagProposerEligibilityDecision, DagProposerEligibilityInput,
+    DagProposerTipCandidate, DagProposerTipSelection, DagReferenceMetadata, DagSyncBlockRlp,
+    DagTransactionHash, DagTransactionQueryPlan, DagVerifyAuthorizationInput,
+    DagVerifyAuthorizationResult, DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock,
+    DagVerifyPrecheckResult, DagVerifyTransactionAvailabilityInput,
+    DagVerifyTransactionAvailabilityResult, DagVerifyVdfDposDecision, DagVerifyVdfDposFacts,
+    DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput,
+    DagVerifyVdfSortitionInput, DagVerifyVdfSortitionResult, SortitionRuntimeParams,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
 use crate::storage::transaction_rlp_lookups;
@@ -354,6 +354,7 @@ impl BridgeDagManagerRuntime {
     ///
     /// Output:
     /// - deterministic finalization plan including unique finalized count and side-effect hashes.
+    #[cfg(test)]
     pub fn dag_manager_runtime_set_finalized_order(
         &mut self,
         new_anchor: [u8; 32],
@@ -378,6 +379,7 @@ impl BridgeDagManagerRuntime {
                         .copied()
                         .collect(),
                 ),
+                remove_transaction_hashes: Vec::new(),
             });
         }
 
@@ -403,6 +405,7 @@ impl BridgeDagManagerRuntime {
         let DagManagerFinalizationPlan {
             finalized_count: _,
             counter_update_hashes,
+            remove_transaction_hashes: _,
             expired_hashes,
             remaining_hashes,
         } = plan;
@@ -442,6 +445,100 @@ impl BridgeDagManagerRuntime {
             counter_updates,
             expired_hashes: expired_hashes_for_payload,
             remove_transaction_hashes,
+        })
+    }
+
+    /// Applies one finalized DAG order through Rust state and Rust storage.
+    ///
+    /// Inputs:
+    /// - `new_anchor`: the new finalized DAG anchor, or zero for an empty PBFT
+    ///   period without a DAG anchor transition.
+    /// - `new_period`: expected to be the next runtime period.
+    /// - `finalized_order`: finalized DAG block hashes in legacy order.
+    ///
+    /// Output:
+    /// - finalized block count plus the live C++ side-effect facts that cannot
+    ///   move yet: expired block hashes for `seen_blocks_` cleanup and
+    ///   transaction hashes for transaction-manager pool cleanup.
+    ///
+    /// Behavior:
+    /// - resolves the anchor level from Rust storage when the anchor is nonzero
+    /// - computes finalization on a candidate state before mutating this runtime
+    /// - preflights storage-backed cleanup facts before persistent writes
+    /// - updates Rust DAG counters and removes expired DAG blocks through
+    ///   `rustaxa-storage`
+    /// - commits the candidate state only after the Rust-owned storage writes
+    ///   complete
+    pub fn dag_manager_runtime_apply_finalized_order(
+        &mut self,
+        new_anchor: [u8; 32],
+        new_period: u64,
+        finalized_order: Vec<DagHash>,
+    ) -> Result<DagManagerFinalizationApplyPayload> {
+        let new_anchor = H256::from(new_anchor);
+        let mut candidate_state = self.state.clone();
+
+        let plan = if new_anchor == H256::zero() {
+            candidate_state
+                .advance_empty_period(new_period)
+                .context("DAG_RUNTIME_ADVANCE_EMPTY_PERIOD")?;
+            DagManagerFinalizationPlan {
+                finalized_count: 0,
+                counter_update_hashes: Vec::new(),
+                expired_hashes: Vec::new(),
+                remaining_hashes: to_dag_hashes(
+                    candidate_state
+                        .non_finalized_blocks()
+                        .values()
+                        .flatten()
+                        .copied()
+                        .collect(),
+                ),
+                remove_transaction_hashes: Vec::new(),
+            }
+        } else {
+            let anchor_level = self
+                .storage
+                .dag()
+                .by_hash(new_anchor)
+                .with_context(|| format!("DAG_RUNTIME_FINALIZATION_ANCHOR_BLOCK: {new_anchor:?}"))?
+                .level;
+            let finalized_order = finalized_order
+                .into_iter()
+                .map(|hash| H256::from(hash.hash))
+                .collect::<Vec<_>>();
+            candidate_state
+                .set_finalized_order(new_anchor, new_period, &finalized_order, anchor_level)
+                .context("DAG_RUNTIME_SET_FINALIZED_ORDER")
+                .map(to_bridge_finalization_plan)?
+        };
+
+        let finalized_count = plan.finalized_count;
+        let cleanup = self
+            .dag_manager_runtime_finalization_cleanup_payload(plan)
+            .context("DAG_RUNTIME_FINALIZATION_CLEANUP_BUILD_FAILED")?;
+
+        let counter_updates = cleanup
+            .counter_updates
+            .iter()
+            .map(|update| (H256::from(update.hash), update.level, update.tips_count))
+            .collect::<Vec<_>>();
+        let expired_hashes = cleanup
+            .expired_hashes
+            .iter()
+            .map(|hash| H256::from(hash.hash))
+            .collect::<Vec<_>>();
+        self.storage
+            .dag()
+            .apply_finalization_cleanup(&counter_updates, &expired_hashes)
+            .context("DAG_RUNTIME_FINALIZATION_STORAGE_APPLY")?;
+
+        self.state = candidate_state;
+
+        Ok(DagManagerFinalizationApplyPayload {
+            finalized_count,
+            expired_hashes: cleanup.expired_hashes,
+            remove_transaction_hashes: cleanup.remove_transaction_hashes,
         })
     }
 
@@ -1313,6 +1410,7 @@ fn to_bridge_finalization_plan(
         counter_update_hashes: to_dag_hashes(plan.counter_update_hashes),
         expired_hashes: to_dag_hashes(plan.expired_hashes),
         remaining_hashes: to_dag_hashes(plan.remaining_hashes),
+        remove_transaction_hashes: Vec::new(),
     }
 }
 
@@ -1389,9 +1487,17 @@ mod tests {
         vdf_payload: Vec<u8>,
         transaction_hashes: &[DagTransactionHash],
     ) -> Vec<u8> {
+        dag_block_with_level_and_transaction_hashes(1, vdf_payload, transaction_hashes)
+    }
+
+    fn dag_block_with_level_and_transaction_hashes(
+        level: u64,
+        vdf_payload: Vec<u8>,
+        transaction_hashes: &[DagTransactionHash],
+    ) -> Vec<u8> {
         let mut block = RlpStream::new_list(8);
         block.append(&&[0u8; 32][..]);
-        block.append(&1u64);
+        block.append(&level);
         block.append(&0u64);
         block.append(&vdf_payload);
         block.begin_list(0);
@@ -2089,6 +2195,7 @@ mod tests {
                     counter_update_hashes: vec![DagHash { hash: [8u8; 32] }],
                     expired_hashes: vec![DagHash { hash: [3u8; 32] }, DagHash { hash: [4u8; 32] }],
                     remaining_hashes: vec![DagHash { hash: [6u8; 32] }],
+                    remove_transaction_hashes: vec![],
                 })
                 .expect("finalization cleanup payload should compute");
 
@@ -2103,6 +2210,160 @@ mod tests {
 
             assert_eq!(payload.remove_transaction_hashes.len(), 1);
             assert_eq!(payload.remove_transaction_hashes[0].hash, [1u8; 32]);
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_apply_finalized_order_writes_storage_and_commits_state() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_apply_finalized_order");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 1, &storage)
+                .expect("runtime should initialize");
+
+            for block in [
+                DagManagerBlock {
+                    hash: [3u8; 32],
+                    pivot: [1u8; 32],
+                    tips: vec![],
+                    level: 3,
+                    difficulty: 90,
+                },
+                DagManagerBlock {
+                    hash: [4u8; 32],
+                    pivot: [3u8; 32],
+                    tips: vec![],
+                    level: 4,
+                    difficulty: 80,
+                },
+                DagManagerBlock {
+                    hash: [6u8; 32],
+                    pivot: [1u8; 32],
+                    tips: vec![],
+                    level: 6,
+                    difficulty: 70,
+                },
+            ] {
+                runtime
+                    .dag_manager_runtime_add_block(block)
+                    .expect("add non-finalized block");
+            }
+
+            runtime
+                .dag_manager_runtime_save_block(
+                    &[8u8; 32],
+                    5,
+                    0,
+                    dag_block_with_level_and_transaction_hashes(5, vec![0x88], &[]),
+                )
+                .expect("persist finalized anchor block");
+            runtime
+                .dag_manager_runtime_save_block(
+                    &[3u8; 32],
+                    3,
+                    0,
+                    dag_block_with_level_and_transaction_hashes(
+                        3,
+                        vec![0x11],
+                        &[tx_hash(1), tx_hash(2)],
+                    ),
+                )
+                .expect("persist expired block a");
+            runtime
+                .dag_manager_runtime_save_block(
+                    &[4u8; 32],
+                    4,
+                    0,
+                    dag_block_with_level_and_transaction_hashes(4, vec![0x22], &[tx_hash(3)]),
+                )
+                .expect("persist expired dependent block");
+            runtime
+                .dag_manager_runtime_save_block(
+                    &[6u8; 32],
+                    6,
+                    0,
+                    dag_block_with_level_and_transaction_hashes(6, vec![0x33], &[tx_hash(3)]),
+                )
+                .expect("persist remaining block");
+
+            storage
+                .save_transaction_location(&[2u8; 32], 7, 0, false)
+                .expect("mark tx2 as finalized");
+
+            let payload = runtime
+                .dag_manager_runtime_apply_finalized_order(
+                    [8u8; 32],
+                    1,
+                    vec![DagHash { hash: [8u8; 32] }],
+                )
+                .expect("apply finalized order");
+
+            assert_eq!(payload.finalized_count, 1);
+            assert_eq!(payload.expired_hashes.len(), 2);
+            assert_eq!(payload.expired_hashes[0].hash, [3u8; 32]);
+            assert_eq!(payload.expired_hashes[1].hash, [4u8; 32]);
+            assert_eq!(payload.remove_transaction_hashes.len(), 1);
+            assert_eq!(payload.remove_transaction_hashes[0].hash, [1u8; 32]);
+
+            assert_eq!(runtime.dag_manager_runtime_latest_period(), 1);
+            assert_eq!(runtime.dag_manager_runtime_anchors().anchor, [8u8; 32]);
+            assert!(
+                !runtime
+                    .dag_manager_runtime_load_block(&[3u8; 32])
+                    .expect("load removed block")
+                    .found
+            );
+            assert!(
+                !runtime
+                    .dag_manager_runtime_load_block(&[4u8; 32])
+                    .expect("load removed dependent block")
+                    .found
+            );
+            assert!(
+                runtime
+                    .dag_manager_runtime_load_block(&[6u8; 32])
+                    .expect("load remaining block")
+                    .found
+            );
+
+            let counters = runtime
+                .dag_manager_runtime_persistence_counters()
+                .expect("load counters");
+            assert_eq!(counters.dag_blocks, 5);
+            assert_eq!(counters.dag_edges, 5);
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_apply_finalized_order_requires_anchor_in_storage_before_state_commit() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_apply_missing_anchor");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 1, &storage)
+                .expect("runtime should initialize");
+
+            let err = match runtime.dag_manager_runtime_apply_finalized_order(
+                [8u8; 32],
+                1,
+                vec![DagHash { hash: [8u8; 32] }],
+            ) {
+                Ok(_) => panic!("missing anchor should fail"),
+                Err(err) => err,
+            };
+
+            assert!(err
+                .to_string()
+                .contains("DAG_RUNTIME_FINALIZATION_ANCHOR_BLOCK"));
+            assert_eq!(runtime.dag_manager_runtime_latest_period(), 0);
+            assert_eq!(runtime.dag_manager_runtime_anchors().anchor, [1u8; 32]);
         }
 
         let _ = fs::remove_dir_all(&temp_dir);

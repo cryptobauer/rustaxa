@@ -278,6 +278,85 @@ impl<D: DbReader + DbWriter> DagRepository<D> {
         self.db.commit_batch(write_batch)
     }
 
+    /// Applies finalized DAG cleanup side effects in one storage batch.
+    ///
+    /// Inputs:
+    /// - `counter_updates`: finalized block hash, level, and tips count facts
+    ///   used to update level indexes plus DAG block/edge counters.
+    /// - `expired_hashes`: non-finalized DAG block payloads to remove.
+    ///
+    /// Behavior:
+    /// - merges all counter updates per DAG level before writing level indexes,
+    ///   so multiple finalized blocks at the same level are represented by one
+    ///   canonical level set
+    /// - increments persistent DAG counters once for the whole cleanup batch
+    /// - deletes expired non-finalized DAG payloads in the same committed batch
+    pub fn apply_finalization_cleanup(
+        &self,
+        counter_updates: &[(H256, u64, u64)],
+        expired_hashes: &[H256],
+    ) -> Result<()> {
+        if counter_updates.is_empty() && expired_hashes.is_empty() {
+            return Ok(());
+        }
+
+        let mut write_batch = self.db.create_batch();
+        let mut level_hashes = BTreeMap::<u64, BTreeSet<H256>>::new();
+        let mut edge_count_delta = 0u64;
+
+        for (hash, level, tips_count) in counter_updates {
+            if !level_hashes.contains_key(level) {
+                level_hashes.insert(*level, self.hashes_at_level(*level)?.into_iter().collect());
+            }
+            if let Some(hashes) = level_hashes.get_mut(level) {
+                hashes.insert(*hash);
+            }
+            edge_count_delta = edge_count_delta.wrapping_add(tips_count.wrapping_add(1));
+        }
+
+        for (level, hashes) in level_hashes {
+            let mut stream = rlp::RlpStream::new_list(hashes.len());
+            for hash in hashes {
+                stream.append(&hash);
+            }
+            self.db.batch_put(
+                &mut write_batch,
+                Column::DagBlocksLevel,
+                &level.to_le_bytes(),
+                stream.out().as_ref(),
+            )?;
+        }
+
+        if !counter_updates.is_empty() {
+            let dag_blocks_count = self
+                .status_field(StatusField::DagBlkCount as u8)?
+                .wrapping_add(counter_updates.len() as u64);
+            let dag_edge_count = self
+                .status_field(StatusField::DagEdgeCount as u8)?
+                .wrapping_add(edge_count_delta);
+
+            self.db.batch_put(
+                &mut write_batch,
+                Column::Status,
+                &[StatusField::DagBlkCount as u8],
+                &dag_blocks_count.to_le_bytes(),
+            )?;
+            self.db.batch_put(
+                &mut write_batch,
+                Column::Status,
+                &[StatusField::DagEdgeCount as u8],
+                &dag_edge_count.to_le_bytes(),
+            )?;
+        }
+
+        for hash in expired_hashes {
+            self.db
+                .batch_delete(&mut write_batch, Column::DagBlocks, hash.as_bytes())?;
+        }
+
+        self.db.commit_batch(write_batch)
+    }
+
     /// Removes a non-finalized DAG block payload by hash.
     /// C++ mapping: `DbStorage::removeDagBlock(blk_hash_t const&)`.
     pub fn remove(&self, hash: H256) -> Result<()> {
