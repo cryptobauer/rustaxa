@@ -693,6 +693,28 @@ pub mod rustaxa_ffi {
         target_transaction_count: u64,
     }
 
+    /// Input finalized transaction fact for Rust planning of finalized status updates.
+    struct FinalizedTransactionStatusFact {
+        input_index: u64,
+        hash: [u8; 32],
+        in_non_finalized_cache: bool,
+    }
+
+    /// One finalized transaction action returned from Rust status planning.
+    struct FinalizedTransactionStatusAction {
+        input_index: u64,
+        hash: [u8; 32],
+    }
+
+    /// Finalized status planning outcome for one finalized period.
+    struct FinalizedTransactionStatusPlan {
+        accepted: Vec<FinalizedTransactionStatusAction>,
+        target_transaction_count: u64,
+        stale_period: u64,
+        has_stale_period: bool,
+        purge_transaction_queue: bool,
+    }
+
     /// Transaction hashes for one DAG block, preserving block-local order.
     struct DagBlockTransactionRefs {
         transaction_hashes: Vec<DagTransactionHash>,
@@ -1647,6 +1669,13 @@ pub mod rustaxa_ffi {
             current_transaction_count: u64,
             facts: Vec<DagTransactionSaveFact>,
         ) -> Result<DagTransactionSaveOutcome>;
+        pub fn update_finalized_transactions_status(
+            storage: &BridgeStorage,
+            period: u64,
+            retention_window: u64,
+            current_transaction_count: u64,
+            facts: Vec<FinalizedTransactionStatusFact>,
+        ) -> Result<FinalizedTransactionStatusPlan>;
 
         // Consensus verified votes
 

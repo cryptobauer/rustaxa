@@ -1,11 +1,12 @@
 //! Deterministic transaction decision helpers for Rust-backed `TransactionManager` flows.
 //!
-//! The module currently owns two independent decision boundaries used by C++ shims:
+//! The module currently owns three independent decision boundaries used by C++ shims:
 //! - proposer transaction packing (`packTrxs`)
 //! - DAG-block transaction persistence planning (`saveTransactionsFromDagBlock`)
+//! - finalized transaction status updates (`updateFinalizedTransactionsStatus`)
 //!
-//! In both cases Rust remains side-effect free and deterministic: it only computes the
-//! inclusion plan and leaves queue/cache mutation to legacy C++ state.
+//! In each case Rust remains side-effect free and deterministic: it only computes the
+//! plan and leaves live queue/cache mutation to C++ state.
 
 use anyhow::{Context, Result, ensure};
 use ethereum_types::{H256, U256};
@@ -96,6 +97,49 @@ pub struct DagTransactionSavePlan {
     pub target_transaction_count: u64,
 }
 
+/// C++-originated finalized transaction fact supplied to Rust planning.
+///
+/// The caller supplies live cache membership because Rust does not yet own live
+/// `TransactionManager` sidecars. The fact contains no transaction payload and
+/// is stable across the CXX bridge.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FinalizedTransactionStatusFact {
+    /// Original input position in the C++ `PeriodData` transaction list.
+    pub input_index: u64,
+    /// Canonical transaction hash.
+    pub hash: H256,
+    /// True when the transaction is currently still tracked in non-finalized DAG state.
+    pub in_non_finalized_cache: bool,
+}
+
+/// Deterministic action for one finalized transaction after planning.
+///
+/// C++ uses `input_index` to resolve the live `SharedTransaction` pointer while
+/// Rust controls which hashes participate in finalized-status side effects.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FinalizedTransactionStatusAction {
+    /// Original input position to map back to C++ live structures.
+    pub input_index: u64,
+    /// Canonical transaction hash.
+    pub hash: H256,
+}
+
+/// Deterministic finalized-transaction status plan.
+///
+/// `accepted_transactions` is emitted in input order with one entry per input,
+/// matching legacy `TransactionManager::updateFinalizedTransactionsStatus`.
+/// `target_transaction_count` increments the current counter only for
+/// transactions that were not present in the non-finalized DAG cache.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FinalizedTransactionStatusPlan {
+    pub accepted_transactions: Vec<FinalizedTransactionStatusAction>,
+    pub target_transaction_count: u64,
+    /// Some(stale_period) when `period > retention_window`, otherwise None.
+    pub stale_period: Option<u64>,
+    /// Legacy purge interval behavior: purge pending queue state every 100 periods.
+    pub purge_transactions: bool,
+}
+
 /// Builds a deterministic save plan from C++-supplied DAG transaction facts.
 ///
 /// Filtering preserves legacy behavior from `TransactionManager::saveTransactionsFromDagBlock`:
@@ -146,6 +190,61 @@ where
     Ok(DagTransactionSavePlan {
         accepted_transactions,
         target_transaction_count,
+    })
+}
+
+/// Builds a deterministic finalized-transaction status plan from C++ facts.
+///
+/// Inputs:
+/// - `facts`: finalized transaction hashes in legacy period-data order plus
+///   live non-finalized-cache membership.
+/// - `current_transaction_count`: manager-owned `TrxCount` before the period.
+/// - `period`: finalized PBFT period.
+/// - `retention_window`: recently-finalized cache retention in PBFT periods.
+///
+/// Behavior:
+/// - rejects zero hashes as malformed bridge input.
+/// - preserves one action per input without de-duplicating.
+/// - increments `target_transaction_count` only when a finalized transaction is
+///   not found in the non-finalized DAG cache.
+/// - reports stale cache eviction when `period > retention_window`.
+/// - reports periodic queue purge when `period` is divisible by 100.
+pub fn plan_finalized_transactions_status(
+    facts: Vec<FinalizedTransactionStatusFact>,
+    current_transaction_count: u64,
+    period: u64,
+    retention_window: u64,
+) -> Result<FinalizedTransactionStatusPlan> {
+    let mut target_transaction_count = current_transaction_count;
+    let mut accepted_transactions = Vec::with_capacity(facts.len());
+
+    for fact in facts {
+        ensure!(
+            !fact.hash.is_zero(),
+            "finalized transaction hash cannot be zero"
+        );
+
+        if !fact.in_non_finalized_cache {
+            target_transaction_count = target_transaction_count
+                .checked_add(1)
+                .context("transaction count overflow while planning finalized status updates")?;
+        }
+
+        accepted_transactions.push(FinalizedTransactionStatusAction {
+            input_index: fact.input_index,
+            hash: fact.hash,
+        });
+    }
+
+    Ok(FinalizedTransactionStatusPlan {
+        accepted_transactions,
+        target_transaction_count,
+        stale_period: if period > retention_window {
+            Some(period - retention_window)
+        } else {
+            None
+        },
+        purge_transactions: period.is_multiple_of(100),
     })
 }
 
@@ -330,6 +429,18 @@ mod tests {
         }
     }
 
+    fn finalized_status_fact(
+        input_index: u64,
+        hash: u8,
+        in_non_finalized_cache: bool,
+    ) -> FinalizedTransactionStatusFact {
+        FinalizedTransactionStatusFact {
+            input_index,
+            hash: H256::from([hash; 32]),
+            in_non_finalized_cache,
+        }
+    }
+
     #[test]
     fn dag_block_save_plan_filters_known_flags_duplicates_and_nonce_gates_finalization() {
         let plan = plan_transactions_from_dag_block(
@@ -400,5 +511,72 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(1, H256::from([1; 32])), (3, H256::from([3; 32]))]
         );
+    }
+
+    #[test]
+    fn finalized_status_plan_counts_only_when_not_in_non_finalized_cache() {
+        let plan = plan_finalized_transactions_status(
+            vec![
+                finalized_status_fact(0, 1, false),
+                finalized_status_fact(1, 2, true),
+                finalized_status_fact(2, 3, false),
+            ],
+            7,
+            220,
+            20,
+        )
+        .unwrap();
+
+        assert_eq!(plan.target_transaction_count, 9);
+        assert_eq!(
+            plan.accepted_transactions
+                .iter()
+                .map(|action| (action.input_index, action.hash))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, H256::from([1; 32])),
+                (1, H256::from([2; 32])),
+                (2, H256::from([3; 32]))
+            ]
+        );
+    }
+
+    #[test]
+    fn finalized_status_plan_includes_stale_period_and_purge_flag() {
+        let plan = plan_finalized_transactions_status(
+            vec![
+                finalized_status_fact(0, 1, false),
+                finalized_status_fact(1, 2, false),
+            ],
+            0,
+            200,
+            10,
+        )
+        .unwrap();
+
+        assert_eq!(plan.stale_period, Some(190));
+        assert!(plan.purge_transactions);
+    }
+
+    #[test]
+    fn finalized_status_plan_omits_stale_period_when_window_not_exceeded() {
+        let plan =
+            plan_finalized_transactions_status(vec![finalized_status_fact(0, 1, false)], 0, 5, 10)
+                .unwrap();
+
+        assert_eq!(plan.stale_period, None);
+        assert!(!plan.purge_transactions);
+    }
+
+    #[test]
+    fn finalized_status_plan_overflow_is_reported_before_persistence() {
+        let result = plan_finalized_transactions_status(
+            vec![finalized_status_fact(0, 1, false)],
+            u64::MAX,
+            200,
+            10,
+        );
+
+        assert!(result.is_err());
     }
 }

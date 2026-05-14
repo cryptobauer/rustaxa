@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cstring>
+#include <mutex>
 #include <shared_mutex>
 #include <stdexcept>
 #include <unordered_set>
@@ -178,6 +179,80 @@ class TransactionManagerRustShimAccess {
       manager.nonfinalized_transactions_in_dag_.erase(trx_hash);
     }
   }
+
+  static void initializeRecentlyFinalizedTransactions(TransactionManagerOld& manager, const PeriodData& period_data) {
+    std::unique_lock transactions_lock(manager.transactions_mutex_);
+    for (auto const& trx : period_data.transactions) {
+      const auto hash = trx->getHash();
+      manager.recently_finalized_transactions_[hash] = trx;
+      manager.recently_finalized_transactions_per_period_[period_data.pbft_blk->getPeriod()].push_back(hash);
+    }
+  }
+
+  static void updateFinalizedTransactionsStatus(TransactionManagerOld& manager, const PeriodData& period_data) {
+    const auto recently_finalized_transactions_periods =
+        kRecentlyFinalizedTransactionsFactor * manager.final_chain_->delegationDelay();
+
+    rust::Vec<rustaxa::FinalizedTransactionStatusFact> facts;
+    facts.reserve(period_data.transactions.size());
+    uint64_t input_index = 0;
+    for (const auto& transaction : period_data.transactions) {
+      const auto trx_hash = transaction->getHash();
+      rustaxa::FinalizedTransactionStatusFact fact;
+      fact.input_index = input_index++;
+      fact.hash = toBridgeHash(trx_hash);
+      fact.in_non_finalized_cache = manager.nonfinalized_transactions_in_dag_.contains(trx_hash);
+      facts.push_back(std::move(fact));
+    }
+
+    const auto plan = [&]() {
+      try {
+        return rustaxa::update_finalized_transactions_status(
+            manager.db_->rustStorage(), period_data.pbft_blk->getPeriod(), recently_finalized_transactions_periods,
+            manager.trx_count_, std::move(facts));
+      } catch (const std::exception& e) {
+        throw DbException(std::string("RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: ") + e.what());
+      }
+    }();
+
+    if (plan.has_stale_period) {
+      const auto stale_period = static_cast<PbftPeriod>(plan.stale_period);
+      if (const auto stale_period_it = manager.recently_finalized_transactions_per_period_.find(stale_period);
+          stale_period_it != manager.recently_finalized_transactions_per_period_.end()) {
+        for (const auto& hash : stale_period_it->second) {
+          manager.recently_finalized_transactions_.erase(hash);
+        }
+        manager.recently_finalized_transactions_per_period_.erase(stale_period_it);
+      }
+    }
+
+    for (const auto& action : plan.accepted) {
+      if (action.input_index >= period_data.transactions.size()) {
+        throw DbException("RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: Rust returned an out-of-range transaction index");
+      }
+      const auto& transaction = period_data.transactions[static_cast<size_t>(action.input_index)];
+      const auto trx_hash = transaction->getHash();
+      if (fromBridgeHash(action.hash) != trx_hash) {
+        throw DbException("RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: Rust returned a transaction hash/index mismatch");
+      }
+
+      manager.recently_finalized_transactions_[trx_hash] = transaction;
+      manager.recently_finalized_transactions_per_period_[period_data.pbft_blk->getPeriod()].push_back(trx_hash);
+      manager.transactions_pool_.markTransactionKnown(trx_hash);
+      if (manager.nonfinalized_transactions_in_dag_.erase(trx_hash)) {
+        LOG(manager.log_dg_) << "Transaction " << trx_hash << " removed from nonfinalized transactions";
+      }
+      if (manager.transactions_pool_.erase(transaction)) {
+        LOG(manager.log_dg_) << "Transaction " << trx_hash << " removed from transactions_pool_";
+      }
+    }
+
+    manager.trx_count_ = plan.target_transaction_count;
+
+    if (plan.purge_transaction_queue) {
+      manager.transactions_pool_.purge();
+    }
+  }
 };
 
 std::pair<SharedTransactions, std::vector<uint64_t>> TransactionManager::packTrxs(PbftPeriod proposal_period,
@@ -191,6 +266,14 @@ void TransactionManager::saveTransactionsFromDagBlock(const SharedTransactions& 
 
 void TransactionManager::forgetExpiredNonFinalizedTransactionSidecars(std::unordered_set<trx_hash_t>&& transactions) {
   TransactionManagerRustShimAccess::forgetExpiredNonFinalizedTransactionSidecars(*this, std::move(transactions));
+}
+
+void TransactionManager::updateFinalizedTransactionsStatus(const PeriodData& period_data) {
+  TransactionManagerRustShimAccess::updateFinalizedTransactionsStatus(*this, period_data);
+}
+
+void TransactionManager::initializeRecentlyFinalizedTransactions(const PeriodData& period_data) {
+  TransactionManagerRustShimAccess::initializeRecentlyFinalizedTransactions(*this, period_data);
 }
 
 }  // namespace taraxa

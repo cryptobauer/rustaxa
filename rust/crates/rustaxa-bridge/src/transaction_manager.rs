@@ -9,16 +9,20 @@
 
 use crate::ffi::rustaxa_ffi::{
     DagTransactionSaveAccepted, DagTransactionSaveFact, DagTransactionSaveOutcome,
-    NonFinalizedTransactionPayload, TransactionPackCandidateDecision,
-    TransactionPackCandidateInput, TransactionPackEstimateInput, TransactionPackEstimateOutcome,
+    FinalizedTransactionStatusAction, FinalizedTransactionStatusFact,
+    FinalizedTransactionStatusPlan, NonFinalizedTransactionPayload,
+    TransactionPackCandidateDecision, TransactionPackCandidateInput, TransactionPackEstimateInput,
+    TransactionPackEstimateOutcome,
 };
 use crate::ffi::{BridgeStorage, BridgeTransactionPackPlanner};
 use anyhow::{Context, Result};
 use ethereum_types::{H256, U256};
 use rustaxa_consensus::transaction_manager::{
-    plan_transactions_from_dag_block, DagTransactionSaveFact as ConsensusDagTransactionSaveFact,
-    DagTransactionSavePayload, TransactionPackCandidate, TransactionPackEstimate,
-    TransactionPackingPlanner,
+    plan_finalized_transactions_status, plan_transactions_from_dag_block,
+    DagTransactionSaveFact as ConsensusDagTransactionSaveFact, DagTransactionSavePayload,
+    FinalizedTransactionStatusFact as ConsensusFinalizedTransactionStatusFact,
+    FinalizedTransactionStatusPlan as ConsensusFinalizedTransactionStatusPlan,
+    TransactionPackCandidate, TransactionPackEstimate, TransactionPackingPlanner,
 };
 
 /// Plans and persists accepted transactions for one incoming DAG block.
@@ -78,6 +82,53 @@ pub fn save_transactions_from_dag_block(
     })
 }
 
+/// Plans finalized-transaction status transitions for one period.
+///
+/// This call is storage-bound for the `StatusDbField::TrxCount` counter only.
+/// The counter persists only when the finalized transaction list is non-empty,
+/// matching existing Rust-side storage behavior for conditional status updates.
+pub fn update_finalized_transactions_status(
+    storage: &BridgeStorage,
+    period: u64,
+    retention_window: u64,
+    current_transaction_count: u64,
+    facts: Vec<FinalizedTransactionStatusFact>,
+) -> Result<FinalizedTransactionStatusPlan> {
+    let plan: ConsensusFinalizedTransactionStatusPlan = plan_finalized_transactions_status(
+        facts
+            .into_iter()
+            .map(consensus_finalized_status_fact_from_ffi_fact)
+            .collect(),
+        current_transaction_count,
+        period,
+        retention_window,
+    )?;
+
+    if !plan.accepted_transactions.is_empty() {
+        storage
+            .save_status_field(
+                rustaxa_storage::StatusField::TrxCount as u8,
+                plan.target_transaction_count,
+            )
+            .context("TM_FINALIZED_STATUS_TRXCOUNT_WRITE")?;
+    }
+
+    Ok(FinalizedTransactionStatusPlan {
+        accepted: plan
+            .accepted_transactions
+            .into_iter()
+            .map(|action| FinalizedTransactionStatusAction {
+                input_index: action.input_index,
+                hash: action.hash.0,
+            })
+            .collect(),
+        target_transaction_count: plan.target_transaction_count,
+        stale_period: plan.stale_period.unwrap_or(0),
+        has_stale_period: plan.stale_period.is_some(),
+        purge_transaction_queue: plan.purge_transactions,
+    })
+}
+
 fn consensus_fact_from_ffi_fact(fact: DagTransactionSaveFact) -> ConsensusDagTransactionSaveFact {
     ConsensusDagTransactionSaveFact {
         input_index: fact.input_index,
@@ -87,6 +138,16 @@ fn consensus_fact_from_ffi_fact(fact: DagTransactionSaveFact) -> ConsensusDagTra
         sender_account_nonce: U256::from_big_endian(&fact.sender_account_nonce),
         in_non_finalized_cache: fact.in_non_finalized_cache,
         in_recently_finalized_cache: fact.in_recently_finalized_cache,
+    }
+}
+
+fn consensus_finalized_status_fact_from_ffi_fact(
+    fact: FinalizedTransactionStatusFact,
+) -> ConsensusFinalizedTransactionStatusFact {
+    ConsensusFinalizedTransactionStatusFact {
+        input_index: fact.input_index,
+        hash: H256::from(fact.hash),
+        in_non_finalized_cache: fact.in_non_finalized_cache,
     }
 }
 
@@ -202,6 +263,18 @@ mod tests {
         U256::from(value).to_big_endian()
     }
 
+    fn finalized_status_fact(
+        input_index: u64,
+        hash: u8,
+        in_non_finalized_cache: bool,
+    ) -> FinalizedTransactionStatusFact {
+        FinalizedTransactionStatusFact {
+            input_index,
+            hash: [hash; 32],
+            in_non_finalized_cache,
+        }
+    }
+
     #[test]
     fn bridge_save_transactions_from_dag_block_persists_accepted_hashes_and_count() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_transaction_manager_save_dag");
@@ -301,6 +374,81 @@ mod tests {
                 .get_status_field(StatusField::TrxCount as u8)
                 .expect("status field should remain"),
             7
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_update_finalized_transactions_status_plans_and_persists_count_when_non_empty() {
+        let temp_dir =
+            unique_temp_dir("rustaxa_bridge_transaction_manager_update_finalized_status");
+        let storage = crate::storage::create_storage(
+            temp_dir.to_str().expect("temp path should be valid UTF-8"),
+        )
+        .expect("storage should initialize");
+
+        storage
+            .save_status_field(StatusField::TrxCount as u8, 7)
+            .expect("status field seed should persist");
+
+        let out = update_finalized_transactions_status(
+            &storage,
+            200,
+            10,
+            7,
+            vec![
+                finalized_status_fact(0, 1, false),
+                finalized_status_fact(1, 2, true),
+                finalized_status_fact(2, 3, false),
+            ],
+        )
+        .expect("finalized status plan should be computed");
+
+        assert_eq!(
+            out.accepted
+                .iter()
+                .map(|entry| (entry.input_index, entry.hash))
+                .collect::<Vec<_>>(),
+            vec![(0, [1; 32]), (1, [2; 32]), (2, [3; 32])]
+        );
+        assert_eq!(out.target_transaction_count, 9);
+        assert_eq!(out.stale_period, 190);
+        assert!(out.has_stale_period);
+        assert!(out.purge_transaction_queue);
+        assert_eq!(
+            storage
+                .get_status_field(StatusField::TrxCount as u8)
+                .expect("status field should persist"),
+            9,
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_update_finalized_transactions_status_skips_status_persistence_when_no_inputs() {
+        let temp_dir =
+            unique_temp_dir("rustaxa_bridge_transaction_manager_update_finalized_status_skip");
+        let storage = crate::storage::create_storage(
+            temp_dir.to_str().expect("temp path should be valid UTF-8"),
+        )
+        .expect("storage should initialize");
+
+        storage
+            .save_status_field(StatusField::TrxCount as u8, 11)
+            .expect("status field seed should persist");
+
+        let out = update_finalized_transactions_status(&storage, 200, 10, 11, vec![])
+            .expect("empty finalized list should still plan");
+
+        assert!(out.accepted.is_empty());
+        assert_eq!(out.target_transaction_count, 11);
+        assert_eq!(
+            storage
+                .get_status_field(StatusField::TrxCount as u8)
+                .expect("status field should remain unchanged"),
+            11,
         );
 
         let _ = fs::remove_dir_all(temp_dir);

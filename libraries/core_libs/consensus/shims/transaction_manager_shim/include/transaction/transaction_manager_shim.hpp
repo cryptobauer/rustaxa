@@ -132,15 +132,9 @@ class TransactionManager : public TransactionManagerOld {
     return TransactionManagerOld::getTransactions(trxs_hashes, proposal_period);
   }
 
-  void updateFinalizedTransactionsStatus(const PeriodData &period_data) {
-    // TODO(rust-rewrite): migrate finalized transaction status updates to Rust instead of TransactionManagerOld.
-    TransactionManagerOld::updateFinalizedTransactionsStatus(period_data);
-  }
+  void updateFinalizedTransactionsStatus(const PeriodData &period_data);
 
-  void initializeRecentlyFinalizedTransactions(const PeriodData &period_data) {
-    // TODO(rust-rewrite): migrate recently-finalized transaction cache to Rust instead of TransactionManagerOld.
-    TransactionManagerOld::initializeRecentlyFinalizedTransactions(period_data);
-  }
+  void initializeRecentlyFinalizedTransactions(const PeriodData &period_data);
 
   void removeNonFinalizedTransactions(std::unordered_set<trx_hash_t> &&transactions) {
     // TODO(rust-rewrite): migrate non-finalized transaction removal to Rust instead of TransactionManagerOld.

@@ -400,7 +400,10 @@ The current Rust starting point is intentionally small:
    `estimateTransactionGas`, estimation caching, queue mutation, and lifecycle/finalization state. DAG transaction
    persistence now sends live transaction facts to Rust; Rust owns duplicate filtering, nonce-gated finalized-storage
    lookup, accepted ordering, count planning, and the storage batch before C++ applies only the accepted live sidecar
-   updates. `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
+   updates. Finalized transaction status updates now send finalized hashes and non-finalized-cache facts to Rust; Rust
+   plans count increments, retention eviction, and periodic queue purge, persists `TrxCount` before returning, and leaves
+   C++ with live recently-finalized maps, known-cache marking, non-finalized sidecar removal, and transaction-pool
+   cleanup. `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
    selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
    lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode
    `DagManager::setDagBlockOrder()` now calls one Rust apply operation that resolves the anchor level from Rust storage,
