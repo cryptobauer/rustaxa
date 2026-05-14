@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <type_traits>
 
 #include "common/init.hpp"
@@ -81,6 +82,27 @@ TEST_F(TransactionManagerShimFixture, rustStoragePersistsDagTransactionsBeforeLi
   EXPECT_EQ(db->getStatusField(StatusDbField::TrxCount), initial_count + 2);
   EXPECT_EQ(trx_mgr.getNonfinalizedTrxSize(), 2);
   EXPECT_EQ(trx_mgr.getTransactionPoolSize(), transactions.size() - 2);
+}
+
+TEST_F(TransactionManagerShimFixture, rustDagTransactionPersistenceFailureDoesNotMutateLiveState) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  db->saveStatusField(StatusDbField::TrxCount, std::numeric_limits<uint64_t>::max());
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  const auto transactions =
+      samples::createSignedTrxSamples(1, 1,
+                                      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                  dev::Secret::ConstructFromStringType::FromHex));
+  ASSERT_TRUE(trx_mgr.insertTransaction(transactions[0]).first);
+
+  EXPECT_THROW(trx_mgr.saveTransactionsFromDagBlock({transactions[0]}), DbException);
+
+  EXPECT_EQ(trx_mgr.getTransactionCount(), std::numeric_limits<uint64_t>::max());
+  EXPECT_EQ(db->getStatusField(StatusDbField::TrxCount), std::numeric_limits<uint64_t>::max());
+  EXPECT_EQ(trx_mgr.getNonfinalizedTrxSize(), 0);
+  EXPECT_EQ(trx_mgr.getTransactionPoolSize(), transactions.size());
+  EXPECT_FALSE(db->getTransaction(transactions[0]->getHash()));
 }
 #endif
 

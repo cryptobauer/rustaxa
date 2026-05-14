@@ -1,12 +1,15 @@
-//! Deterministic transaction packing decisions for `TransactionManager::packTrxs`.
+//! Deterministic transaction decision helpers for Rust-backed `TransactionManager` flows.
 //!
-//! The planner owns the consensus-visible control flow around proposer transaction selection:
-//! candidate scan sizing, declared-gas fit checks, invalid-estimate demotion decisions, accepted gas accumulation, and
-//! the legacy stop condition. C++ remains responsible for live `Transaction` pointers, queue mutation, logging, and
-//! FinalChain/EVM-backed gas estimation because those dependencies are not Rust-owned yet.
+//! The module currently owns two independent decision boundaries used by C++ shims:
+//! - proposer transaction packing (`packTrxs`)
+//! - DAG-block transaction persistence planning (`saveTransactionsFromDagBlock`)
+//!
+//! In both cases Rust remains side-effect free and deterministic: it only computes the
+//! inclusion plan and leaves queue/cache mutation to legacy C++ state.
 
-use anyhow::{Result, ensure};
-use ethereum_types::H256;
+use anyhow::{Context, Result, ensure};
+use ethereum_types::{H256, U256};
+use std::collections::HashSet;
 
 /// Candidate metadata supplied before C++ runs a gas estimate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,6 +49,104 @@ pub struct TransactionPackEstimateOutcome {
     pub stop: bool,
     /// Gas value to store beside the selected transaction in the C++ return value.
     pub gas_used: u64,
+}
+
+/// One candidate transaction fact from a DAG block, supplied by the C++ caller.
+///
+/// The caller supplies sender/account nonce and live-cache facts because those
+/// sources are not Rust-owned yet. Rust owns the nonce-gated finalized-storage
+/// lookup by invoking the callback passed to [`plan_transactions_from_dag_block`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DagTransactionSaveFact {
+    /// Original input position in the C++ `SharedTransactions` slice.
+    pub input_index: u64,
+    /// Canonical transaction hash.
+    pub hash: H256,
+    /// Raw non-finalized transaction payload to persist when accepted.
+    pub trx_rlp: Vec<u8>,
+    /// The transaction `nonce` declared by `Transaction::getNonce()`.
+    pub transaction_nonce: U256,
+    /// The sender account nonce fact, typically from `FinalChain::getAccount`.
+    pub sender_account_nonce: U256,
+    /// True when the transaction is already tracked in the non-finalized DAG cache.
+    pub in_non_finalized_cache: bool,
+    /// True when the transaction is already tracked in the recently-finalized cache.
+    pub in_recently_finalized_cache: bool,
+}
+
+/// Persistent payload for one accepted DAG-block transaction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DagTransactionSavePayload {
+    /// Original input position of the accepted transaction.
+    pub input_index: u64,
+    /// Canonical transaction hash.
+    pub hash: H256,
+    /// Raw transaction RLP payload to persist in the non-finalized transaction column.
+    pub trx_rlp: Vec<u8>,
+}
+
+/// Deterministic plan for one DAG block persistence sweep.
+///
+/// `accepted_transactions` is in first-accepted order and already de-duplicated by hash.
+/// `target_transaction_count` is the manager-owned status counter value that should be
+/// written as `StatusDbField::TrxCount` once persistence succeeds.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DagTransactionSavePlan {
+    pub accepted_transactions: Vec<DagTransactionSavePayload>,
+    pub target_transaction_count: u64,
+}
+
+/// Builds a deterministic save plan from C++-supplied DAG transaction facts.
+///
+/// Filtering preserves legacy behavior from `TransactionManager::saveTransactionsFromDagBlock`:
+/// - skip entries already known in non-finalized/recently-finalized in-memory sets
+/// - skip duplicates within the same DAG block by hash
+/// - when sender account nonce >= transaction nonce, consult storage through the provided callback
+/// - accept all others
+///
+/// The returned `target_transaction_count` is computed by incrementing the supplied
+/// `current_transaction_count` for each accepted transaction and errors on overflow.
+pub fn plan_transactions_from_dag_block<F>(
+    facts: Vec<DagTransactionSaveFact>,
+    current_transaction_count: u64,
+    mut is_finalized: F,
+) -> Result<DagTransactionSavePlan>
+where
+    F: FnMut(H256) -> Result<bool>,
+{
+    let mut accepted_transactions = Vec::new();
+    let mut accepted_hashes = HashSet::with_capacity(facts.len());
+    let mut target_transaction_count = current_transaction_count;
+
+    for fact in facts {
+        ensure!(!fact.hash.is_zero(), "DAG transaction hash cannot be zero");
+
+        if fact.in_non_finalized_cache
+            || fact.in_recently_finalized_cache
+            || !accepted_hashes.insert(fact.hash)
+        {
+            continue;
+        }
+
+        if fact.sender_account_nonce >= fact.transaction_nonce && is_finalized(fact.hash)? {
+            continue;
+        }
+
+        target_transaction_count = target_transaction_count.checked_add(1).context(
+            "transaction count overflow while planning DAG block transaction persistence",
+        )?;
+
+        accepted_transactions.push(DagTransactionSavePayload {
+            input_index: fact.input_index,
+            hash: fact.hash,
+            trx_rlp: fact.trx_rlp,
+        });
+    }
+
+    Ok(DagTransactionSavePlan {
+        accepted_transactions,
+        target_transaction_count,
+    })
 }
 
 /// Stateful planner for one `TransactionManager::packTrxs` invocation.
@@ -209,5 +310,95 @@ mod tests {
 
         assert!(outcome.selected);
         assert!(outcome.stop);
+    }
+
+    fn save_fact(
+        hash: u8,
+        trx_nonce: u64,
+        sender_nonce: u64,
+        in_non_finalized_cache: bool,
+        in_recently_finalized_cache: bool,
+    ) -> DagTransactionSaveFact {
+        DagTransactionSaveFact {
+            input_index: hash as u64,
+            hash: H256::from([hash; 32]),
+            trx_rlp: vec![hash],
+            transaction_nonce: U256::from(trx_nonce),
+            sender_account_nonce: U256::from(sender_nonce),
+            in_non_finalized_cache,
+            in_recently_finalized_cache,
+        }
+    }
+
+    #[test]
+    fn dag_block_save_plan_filters_known_flags_duplicates_and_nonce_gates_finalization() {
+        let plan = plan_transactions_from_dag_block(
+            vec![
+                save_fact(1, 5, 4, false, false),
+                save_fact(1, 5, 4, false, false),
+                save_fact(2, 9, 11, true, false),
+                save_fact(3, 9, 11, false, true),
+                save_fact(4, 1, 5, false, false),
+                save_fact(5, 5, 11, false, false),
+                save_fact(6, 2, 1, false, false),
+            ],
+            12,
+            |hash| Ok(hash == H256::from([4; 32])),
+        )
+        .unwrap();
+
+        assert_eq!(plan.target_transaction_count, 15);
+        assert_eq!(
+            plan.accepted_transactions
+                .iter()
+                .map(|payload| (payload.input_index, payload.hash))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, H256::from([1; 32])),
+                (5, H256::from([5; 32])),
+                (6, H256::from([6; 32])),
+            ]
+        );
+        assert_eq!(plan.accepted_transactions[0].trx_rlp, vec![1]);
+        assert_eq!(plan.accepted_transactions[1].trx_rlp, vec![5]);
+        assert_eq!(plan.accepted_transactions[2].trx_rlp, vec![6]);
+    }
+
+    #[test]
+    fn dag_block_save_plan_overflow_is_reported_before_persistence() {
+        let result = plan_transactions_from_dag_block(
+            vec![save_fact(1, 1, 0, false, false)],
+            u64::MAX,
+            |_| Ok(false),
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn dag_block_save_plan_only_checks_storage_when_nonce_requires_it() {
+        let mut looked_up = Vec::new();
+        let plan = plan_transactions_from_dag_block(
+            vec![
+                save_fact(1, 5, 4, false, false),
+                save_fact(2, 5, 5, false, false),
+                save_fact(3, 5, 8, false, false),
+            ],
+            0,
+            |hash| {
+                looked_up.push(hash);
+                Ok(hash == H256::from([2; 32]))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(looked_up, vec![H256::from([2; 32]), H256::from([3; 32])]);
+        assert_eq!(
+            plan.accepted_transactions
+                .iter()
+                .map(|payload| (payload.input_index, payload.hash))
+                .collect::<Vec<_>>(),
+            vec![(1, H256::from([1; 32])), (3, H256::from([3; 32]))]
+        );
     }
 }

@@ -34,8 +34,9 @@ pub use slashing::{
     SlashingProofPlanner, SlashingSubmitterFact,
 };
 pub use transaction_manager::{
+    DagTransactionSaveFact, DagTransactionSavePayload, DagTransactionSavePlan,
     TransactionPackCandidate, TransactionPackCandidateDecision, TransactionPackEstimate,
-    TransactionPackEstimateOutcome, TransactionPackingPlanner,
+    TransactionPackEstimateOutcome, TransactionPackingPlanner, plan_transactions_from_dag_block,
 };
 pub use transaction_queue::TransactionQueue;
 pub use verified_votes::VerifiedVotes;

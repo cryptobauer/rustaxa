@@ -1,9 +1,9 @@
+#include <algorithm>
 #include <cstring>
-#include <limits>
 #include <shared_mutex>
 #include <stdexcept>
-#include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include "rustaxa-bridge/ffi.rs.h"
 #include "transaction/transaction_manager.hpp"
@@ -17,12 +17,27 @@ std::array<uint8_t, 32> toBridgeHash(const trx_hash_t& hash) {
   return bytes;
 }
 
+trx_hash_t fromBridgeHash(const std::array<uint8_t, 32>& hash) {
+  return trx_hash_t(hash.data(), trx_hash_t::ConstructFromPointer);
+}
+
 rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& bytes) {
   rust::Vec<uint8_t> out;
   out.reserve(bytes.size());
   for (const auto byte : bytes) {
     out.push_back(static_cast<uint8_t>(byte));
   }
+  return out;
+}
+
+template <typename Value>
+std::array<uint8_t, 32> toBridgeU256(const Value& value) {
+  std::array<uint8_t, 32> out{};
+  const auto bytes = dev::toBigEndian(value);
+  if (bytes.size() > out.size()) {
+    throw std::runtime_error("u256 value exceeds 32 bytes");
+  }
+  std::copy(bytes.begin(), bytes.end(), out.begin() + static_cast<std::ptrdiff_t>(out.size() - bytes.size()));
   return out;
 }
 
@@ -87,81 +102,65 @@ class TransactionManagerRustShimAccess {
   }
 
   /**
-   * Persists DAG-accepted transactions through Rust storage, then updates the C++
-   * live transaction indexes after the storage commit succeeds.
+   * Persists transactions accepted by a DAG block.
    *
-   * Inputs are live C++ transaction objects from a DAG block. The method keeps
-   * TransactionManager as the owner of duplicate/finalized filtering and the
-   * `trx_count_` value because those decisions depend on C++ live caches and
-   * FinalChain account reads during this migration slice. Rust owns the atomic
-   * storage write of accepted transaction RLP payloads and the target status
-   * counter. If the bridge write fails, no C++ pool/cache/count mutation occurs.
+   * C++ owns only the live transaction pointers, cache fact snapshot, and
+   * sidecar mutation. Rust owns duplicate filtering, nonce-gated finalized
+   * storage checks, accepted ordering, count planning, and the atomic storage
+   * write. If the bridge write fails, no C++ transaction state is mutated.
    */
   static void saveTransactionsFromDagBlock(TransactionManagerOld& manager, SharedTransactions const& trxs) {
     std::unique_lock transactions_lock(manager.transactions_mutex_);
 
-    SharedTransactions accepted_transactions;
-    std::unordered_set<trx_hash_t> accepted_hashes;
-    accepted_transactions.reserve(trxs.size());
-    accepted_hashes.reserve(trxs.size());
+    rust::Vec<rustaxa::DagTransactionSaveFact> facts;
+    facts.reserve(trxs.size());
+    std::vector<std::shared_ptr<Transaction>> transaction_by_input_index;
+    transaction_by_input_index.reserve(trxs.size());
+    manager.nonfinalized_transactions_in_dag_.reserve(manager.nonfinalized_transactions_in_dag_.size() + trxs.size());
 
-    for (const auto& t : trxs) {
-      const auto trx_hash = t->getHash();
-
-      bool transaction_in_dag_or_finalized = manager.nonfinalized_transactions_in_dag_.contains(trx_hash) ||
-                                             manager.recently_finalized_transactions_.contains(trx_hash) ||
-                                             accepted_hashes.contains(trx_hash);
-      if (transaction_in_dag_or_finalized) {
-        continue;
-      }
-
-      // Checking nonce is cheaper than checking DB, verify with nonce if possible.
-      const auto account = manager.final_chain_->getAccount(t->getSender()).value_or(taraxa::state_api::ZeroAccount);
-      if (account.nonce >= t->getNonce()) {
-        // This is a very rare scenario but it can happen:
-        // The check against database is needed because there is a possibility that transaction was executed within last
-        // 100 period (dag proposal period) but it might not be part of recently_finalized_transactions_
-        transaction_in_dag_or_finalized = manager.db_->transactionFinalized(trx_hash);
-      }
-
-      if (!transaction_in_dag_or_finalized) {
-        accepted_hashes.emplace(trx_hash);
-        accepted_transactions.push_back(t);
-      }
-    }
-
-    if (accepted_transactions.empty()) {
-      return;
-    }
-
-    if (manager.trx_count_ > std::numeric_limits<uint64_t>::max() - accepted_transactions.size()) {
-      throw std::overflow_error("RUST_STORAGE_DAG_TX_PERSIST_FAILED: transaction count overflow");
-    }
-
-    const auto new_transaction_count = manager.trx_count_ + accepted_transactions.size();
-    rust::Vec<rustaxa::NonFinalizedTransactionPayload> payloads;
-    payloads.reserve(accepted_transactions.size());
-    for (const auto& transaction : accepted_transactions) {
-      rustaxa::NonFinalizedTransactionPayload payload;
-      payload.hash = toBridgeHash(transaction->getHash());
-      payload.trx_rlp = toBridgeBytes(transaction->rlp());
-      payloads.push_back(std::move(payload));
-    }
-
-    try {
-      manager.db_->rustStorage().save_non_finalized_transactions(std::move(payloads), new_transaction_count);
-    } catch (const std::exception& e) {
-      throw DbException(std::string("RUST_STORAGE_DAG_TX_PERSIST_FAILED: ") + e.what());
-    }
-
-    for (const auto& transaction : accepted_transactions) {
+    uint64_t input_index = 0;
+    for (const auto& transaction : trxs) {
       const auto trx_hash = transaction->getHash();
+      const auto account =
+          manager.final_chain_->getAccount(transaction->getSender()).value_or(taraxa::state_api::ZeroAccount);
+
+      rustaxa::DagTransactionSaveFact fact;
+      fact.input_index = input_index++;
+      fact.hash = toBridgeHash(trx_hash);
+      fact.trx_rlp = toBridgeBytes(transaction->rlp());
+      fact.transaction_nonce = toBridgeU256(transaction->getNonce());
+      fact.sender_account_nonce = toBridgeU256(account.nonce);
+      fact.in_non_finalized_cache = manager.nonfinalized_transactions_in_dag_.contains(trx_hash);
+      fact.in_recently_finalized_cache = manager.recently_finalized_transactions_.contains(trx_hash);
+      facts.push_back(std::move(fact));
+      transaction_by_input_index.push_back(transaction);
+    }
+
+    const auto outcome = [&]() {
+      try {
+        return rustaxa::save_transactions_from_dag_block(manager.db_->rustStorage(), manager.trx_count_,
+                                                         std::move(facts));
+      } catch (const std::exception& e) {
+        throw DbException(std::string("RUST_STORAGE_DAG_TX_PERSIST_FAILED: ") + e.what());
+      }
+    }();
+
+    for (const auto& accepted : outcome.accepted) {
+      if (accepted.input_index >= transaction_by_input_index.size()) {
+        throw DbException("RUST_STORAGE_DAG_TX_PERSIST_FAILED: Rust returned an out-of-range transaction input index");
+      }
+      const auto& transaction = transaction_by_input_index[static_cast<size_t>(accepted.input_index)];
+      const auto trx_hash = transaction->getHash();
+      if (fromBridgeHash(accepted.hash) != trx_hash) {
+        throw DbException("RUST_STORAGE_DAG_TX_PERSIST_FAILED: Rust returned a transaction hash/index mismatch");
+      }
+
       manager.nonfinalized_transactions_in_dag_.emplace(trx_hash, transaction);
       if (manager.transactions_pool_.erase(transaction)) {
         LOG(manager.log_dg_) << "Transaction " << trx_hash << " removed from trx pool ";
       }
     }
-    manager.trx_count_ = new_transaction_count;
+    manager.trx_count_ = outcome.target_transaction_count;
   }
 };
 

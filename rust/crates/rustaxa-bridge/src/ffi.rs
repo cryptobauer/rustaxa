@@ -653,6 +653,33 @@ pub mod rustaxa_ffi {
         trx_rlp: Vec<u8>,
     }
 
+    /// Input transaction fact for Rust planning of `TransactionManager::saveTransactionsFromDagBlock`.
+    ///
+    /// The caller supplies live C++ cache and FinalChain nonce facts. Rust owns
+    /// duplicate filtering, nonce-gated finalized-storage lookup, persistence,
+    /// and target count planning.
+    struct DagTransactionSaveFact {
+        input_index: u64,
+        hash: [u8; 32],
+        trx_rlp: Vec<u8>,
+        transaction_nonce: [u8; 32],
+        sender_account_nonce: [u8; 32],
+        in_non_finalized_cache: bool,
+        in_recently_finalized_cache: bool,
+    }
+
+    /// Accepted DAG transaction pointer for C++ live sidecar updates.
+    struct DagTransactionSaveAccepted {
+        input_index: u64,
+        hash: [u8; 32],
+    }
+
+    /// Rust planning outcome for one DAG transaction persistence pass.
+    struct DagTransactionSaveOutcome {
+        accepted: Vec<DagTransactionSaveAccepted>,
+        target_transaction_count: u64,
+    }
+
     /// Transaction hashes for one DAG block, preserving block-local order.
     struct DagBlockTransactionRefs {
         transaction_hashes: Vec<DagTransactionHash>,
@@ -1548,6 +1575,11 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionPackPlanner,
             input: TransactionPackEstimateInput,
         ) -> Result<TransactionPackEstimateOutcome>;
+        pub fn save_transactions_from_dag_block(
+            storage: &BridgeStorage,
+            current_transaction_count: u64,
+            facts: Vec<DagTransactionSaveFact>,
+        ) -> Result<DagTransactionSaveOutcome>;
 
         // Consensus verified votes
 
