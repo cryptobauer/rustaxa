@@ -2,7 +2,9 @@ use crate::ffi::rustaxa_ffi;
 use crate::ffi::BridgeStorage;
 use anyhow::Context;
 use ethereum_types::H256;
+use rustaxa_storage::Column;
 use rustaxa_storage::Config;
+use rustaxa_storage::StatusField;
 use rustaxa_storage::Storage;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -783,6 +785,50 @@ impl BridgeStorage {
         self.0.transaction().write(H256::from(*hash), &trx_rlp)
     }
 
+    /// Persists TransactionManager-accepted non-finalized transactions with one
+    /// atomic write batch and writes the manager-owned `StatusField::TrxCount`.
+    ///
+    /// The caller owns transaction selection, duplicate filtering, finalized
+    /// checks, and the in-memory transaction-count value. This method is a
+    /// storage boundary only: every supplied payload is written under its hash,
+    /// and the provided `transaction_count` is stored as the target count in the
+    /// same batch.
+    pub fn save_non_finalized_transactions(
+        &self,
+        transactions: Vec<rustaxa_ffi::NonFinalizedTransactionPayload>,
+        transaction_count: u64,
+    ) -> Result<(), anyhow::Error> {
+        let mut batch = self.0.create_write_batch();
+
+        for transaction in transactions {
+            let hash = H256::from(transaction.hash);
+            self.0
+                .batch_put_raw(
+                    &mut batch,
+                    Column::Transactions,
+                    hash.as_bytes(),
+                    &transaction.trx_rlp,
+                )
+                .context("NON_FINALIZED_TRANSACTION_BATCH_PUT")?;
+        }
+
+        let status_field = StatusField::TrxCount as u8;
+        self.0
+            .batch_put_raw(
+                &mut batch,
+                Column::Status,
+                &[status_field],
+                &transaction_count.to_le_bytes(),
+            )
+            .context("NON_FINALIZED_TRANSACTION_COUNT_WRITE")?;
+
+        self.0
+            .commit_write_batch_with_sync(batch, false)
+            .context("NON_FINALIZED_TRANSACTION_BATCH_COMMIT")?;
+
+        Ok(())
+    }
+
     pub fn remove_transaction(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
         self.0.transaction().remove(H256::from(*hash))
     }
@@ -836,6 +882,13 @@ mod tests {
 
     fn tx_hash(byte: u8) -> rustaxa_ffi::DagTransactionHash {
         rustaxa_ffi::DagTransactionHash { hash: [byte; 32] }
+    }
+
+    fn non_finalized_tx_payload(hash: u8, data: u8) -> rustaxa_ffi::NonFinalizedTransactionPayload {
+        rustaxa_ffi::NonFinalizedTransactionPayload {
+            hash: [hash; 32],
+            trx_rlp: vec![data],
+        }
     }
 
     fn period_data_rlp(transaction_rlps: &[Vec<u8>]) -> Vec<u8> {
@@ -906,6 +959,69 @@ mod tests {
             assert!(!lookup[3].found);
             assert!(!lookup[3].finalized);
             assert!(lookup[3].tx_rlp.is_empty());
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn save_non_finalized_transactions_batch_updates_trx_count_status() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_storage_save_non_finalized_transactions");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+
+            let existing_tx_count = 3u64;
+            storage
+                .save_status_field(
+                    rustaxa_storage::StatusField::TrxCount as u8,
+                    existing_tx_count,
+                )
+                .expect("pre-seeded transaction count should persist");
+
+            storage
+                .save_non_finalized_transactions(
+                    vec![
+                        non_finalized_tx_payload(10, 1),
+                        non_finalized_tx_payload(11, 2),
+                    ],
+                    existing_tx_count + 2,
+                )
+                .expect("batch write should persist accepted transactions");
+
+            assert_eq!(
+                storage
+                    .get_status_field(rustaxa_storage::StatusField::TrxCount as u8)
+                    .expect("trx count status should load"),
+                existing_tx_count + 2,
+            );
+            assert_eq!(
+                storage
+                    .get_transaction(&[10u8; 32])
+                    .expect("tx 10 should be retrievable"),
+                vec![1],
+            );
+
+            storage
+                .save_non_finalized_transactions(
+                    vec![non_finalized_tx_payload(13, 5)],
+                    existing_tx_count + 3,
+                )
+                .expect("second batch write should persist accepted tx");
+
+            assert_eq!(
+                storage
+                    .get_status_field(rustaxa_storage::StatusField::TrxCount as u8)
+                    .expect("trx count status should load"),
+                existing_tx_count + 3,
+            );
+            assert_eq!(
+                storage
+                    .get_transaction(&[13u8; 32])
+                    .expect("tx 13 should be persisted"),
+                vec![5],
+            );
         }
 
         let _ = fs::remove_dir_all(temp_dir);

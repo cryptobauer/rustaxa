@@ -10,14 +10,16 @@ namespace taraxa {
  * Rust-mode TransactionManager facade.
  *
  * This facade preserves the public `TransactionManager` API while moving deterministic
- * proposal selection planning to Rust-backed planner code.
+ * proposal selection planning and DAG-accepted transaction persistence to Rust-backed
+ * planner/storage code.
  * C++ continues to own live `Transaction` objects, gas estimation, and stateful
- * transaction lifecycle handling.
+ * transaction lifecycle cache handling.
  *
  * The facade currently inherits the legacy storage/lifecycle implementation so existing
- * runtime wiring stays intact. `packTrxs` is redeclared because proposal packing is the
- * migrated surface for this slice; remaining inherited APIs are tracked TransactionManager
- * migration work, not a permanent Rust fallback boundary.
+ * runtime wiring stays intact. `packTrxs` and `saveTransactionsFromDagBlock` are redeclared
+ * because proposal packing and DAG transaction persistence are the migrated surfaces for
+ * this slice; remaining inherited APIs are tracked TransactionManager migration work, not a
+ * permanent Rust fallback boundary.
  */
 class TransactionManager : public TransactionManagerOld {
  public:
@@ -54,10 +56,14 @@ class TransactionManager : public TransactionManagerOld {
     return TransactionManagerOld::getAllPoolTrxs();
   }
 
-  void saveTransactionsFromDagBlock(const SharedTransactions &trxs) {
-    // TODO(rust-rewrite): migrate DAG transaction persistence to Rust instead of TransactionManagerOld.
-    TransactionManagerOld::saveTransactionsFromDagBlock(trxs);
-  }
+  /**
+   * Persist transactions accepted by a DAG block.
+   *
+   * C++ applies live duplicate/finalized filtering and owns pool/cache mutation. Accepted
+   * transaction RLP payloads and the target transaction count are committed through Rust
+   * storage first; if that write fails, the live C++ transaction state is left unchanged.
+   */
+  void saveTransactionsFromDagBlock(const SharedTransactions &trxs);
 
   std::pair<bool, std::string> insertTransaction(const std::shared_ptr<Transaction> &trx) {
     // TODO(rust-rewrite): migrate transaction verification/insertion orchestration to Rust instead of

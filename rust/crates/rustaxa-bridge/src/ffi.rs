@@ -643,6 +643,16 @@ pub mod rustaxa_ffi {
         tx_rlp: Vec<u8>,
     }
 
+    /// One non-finalized transaction payload persisted through Rust storage.
+    ///
+    /// The bridge caller must supply the canonical C++ transaction hash and RLP.
+    /// Rust stores the payload under `hash` and does not re-hash `trx_rlp` at
+    /// this storage boundary.
+    struct NonFinalizedTransactionPayload {
+        hash: [u8; 32],
+        trx_rlp: Vec<u8>,
+    }
+
     /// Transaction hashes for one DAG block, preserving block-local order.
     struct DagBlockTransactionRefs {
         transaction_hashes: Vec<DagTransactionHash>,
@@ -1936,6 +1946,13 @@ pub mod rustaxa_ffi {
             self: &BridgeStorage,
             hash: &[u8; 32],
             trx_rlp: Vec<u8>,
+        ) -> Result<()>;
+        /// Persists TransactionManager-accepted non-finalized transactions in one
+        /// storage batch and writes the manager-owned `StatusDbField::TrxCount`.
+        pub fn save_non_finalized_transactions(
+            self: &BridgeStorage,
+            transactions: Vec<NonFinalizedTransactionPayload>,
+            transaction_count: u64,
         ) -> Result<()>;
         pub fn remove_transaction(self: &BridgeStorage, hash: &[u8; 32]) -> Result<()>;
         pub fn save_transaction_location(
