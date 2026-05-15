@@ -4,17 +4,19 @@
 //! update known-transaction cache state and materialize legacy `Transaction` objects for API callers.
 
 use crate::ffi::rustaxa_ffi::{
-    TransactionQueueAddress, TransactionQueueConfig, TransactionQueueDemotePlan,
-    TransactionQueueErasePlan, TransactionQueueHash, TransactionQueueHashGroup,
-    TransactionQueueInsertInput, TransactionQueueInsertOutcome, TransactionQueueOrderedHashesPlan,
-    TransactionQueuePurgePlan, TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
+    TransactionQueueAccountNonceFact as BridgeAccountNonceFact, TransactionQueueAddress,
+    TransactionQueueConfig, TransactionQueueDemotePlan, TransactionQueueErasePlan,
+    TransactionQueueHash, TransactionQueueHashGroup, TransactionQueueInsertInput,
+    TransactionQueueInsertOutcome, TransactionQueueOrderedHashesPlan, TransactionQueuePurgePlan,
+    TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
 };
 use crate::ffi::BridgeTransactionQueue;
 use ethereum_types::{H160, H256, U256};
 use rustaxa_consensus::transaction_queue::{
-    TransactionQueue, TransactionQueueDemoteOutcome, TransactionQueueDemoteStatus,
-    TransactionQueueEntry, TransactionQueueEraseOutcome, TransactionQueueInsertStatus,
-    TransactionQueueOrderedHashesPlan as ConsensusOrderedHashesPlan, TransactionQueuePurgeOutcome,
+    TransactionQueue, TransactionQueueAccountNonceFact, TransactionQueueDemoteOutcome,
+    TransactionQueueDemoteStatus, TransactionQueueEntry, TransactionQueueEraseOutcome,
+    TransactionQueueInsertStatus, TransactionQueueOrderedHashesPlan as ConsensusOrderedHashesPlan,
+    TransactionQueuePurgeOutcome,
 };
 use std::time::{Duration, Instant};
 
@@ -318,6 +320,22 @@ impl BridgeTransactionQueue {
         )
     }
 
+    /// Removes hashes for multiple account nonce facts and returns a unified mutation plan.
+    pub fn transaction_queue_purge_accounts_plan(
+        &mut self,
+        facts: Vec<BridgeAccountNonceFact>,
+    ) -> TransactionQueuePurgePlan {
+        let consensus_facts = facts
+            .into_iter()
+            .map(|fact| TransactionQueueAccountNonceFact {
+                sender: H160::from(fact.sender),
+                account_found: fact.account_found,
+                account_nonce: U256::from_big_endian(&fact.account_nonce),
+            })
+            .collect::<Vec<_>>();
+        tx_queue_purge_plan_from_consensus(self.queue.purge_accounts_plan(&consensus_facts))
+    }
+
     /// Attempts to demote one queue hash to non-proposable metadata.
     pub fn transaction_queue_demote_to_non_proposable(
         &mut self,
@@ -464,6 +482,41 @@ mod tests {
         let plan = queue.transaction_queue_purge_account_plan(&[1; 20], &be(2));
         assert_eq!(plan.removed_count, 1);
         assert_eq!(plan.removed_hashes[0].hash, [1; 32]);
+    }
+
+    #[test]
+    fn bridge_purge_accounts_plan_exposes_combined_hashes() {
+        let mut queue = create_transaction_queue(TransactionQueueConfig { max_size: 100 });
+        queue.transaction_queue_insert(input(1, 1, 5, 1)).unwrap();
+        queue.transaction_queue_insert(input(1, 2, 6, 2)).unwrap();
+        queue.transaction_queue_insert(input(2, 1, 7, 3)).unwrap();
+        queue.transaction_queue_insert(input(2, 3, 8, 4)).unwrap();
+
+        let plan = queue.transaction_queue_purge_accounts_plan(vec![
+            BridgeAccountNonceFact {
+                sender: [1; 20],
+                account_found: true,
+                account_nonce: be(2),
+            },
+            BridgeAccountNonceFact {
+                sender: [2; 20],
+                account_found: true,
+                account_nonce: be(3),
+            },
+            BridgeAccountNonceFact {
+                sender: [9; 20],
+                account_found: false,
+                account_nonce: be(99),
+            },
+        ]);
+
+        assert_eq!(plan.removed_count, 2);
+        assert_eq!(plan.removed_hashes[0].hash, [1; 32]);
+        assert_eq!(plan.removed_hashes[1].hash, [3; 32]);
+        assert!(!queue.transaction_queue_contains(&[1; 32]));
+        assert!(!queue.transaction_queue_contains(&[3; 32]));
+        assert!(queue.transaction_queue_contains(&[2; 32]));
+        assert!(queue.transaction_queue_contains(&[4; 32]));
     }
 
     #[test]

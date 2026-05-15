@@ -125,21 +125,12 @@ void TransactionQueue::blockFinalized(uint64_t block_number) {
 }
 
 void TransactionQueue::purge() {
-  if (!final_chain_) {
+  auto facts = collectPurgeAccountFacts();
+  if (facts.empty()) {
     return;
   }
 
-  const auto accounts = queue_->transaction_queue_proposable_accounts();
-  for (const auto& account : accounts) {
-    const auto address = addr_t(account.address.data(), addr_t::ConstructFromPointer);
-    const auto account_state = final_chain_->getAccount(address);
-    if (!account_state.has_value()) {
-      continue;
-    }
-    const auto sender = toBridgeAddress(address);
-    const auto nonce = toBridgeU256(account_state->nonce);
-    queue_->transaction_queue_purge_account(sender, nonce);
-  }
+  queue_->transaction_queue_purge_accounts_plan(std::move(facts));
 }
 
 void TransactionQueue::markTransactionKnown(const trx_hash_t& trx_hash) {
@@ -209,6 +200,26 @@ std::array<uint8_t, 32> TransactionQueue::toBridgeU256(const val_t& value) {
 
 val_t TransactionQueue::fromBridgeU256(const std::array<uint8_t, 32>& value) {
   return dev::fromBigEndian<val_t>(dev::bytes(value.begin(), value.end()));
+}
+
+rust::Vec<rustaxa::TransactionQueueAccountNonceFact> TransactionQueue::collectPurgeAccountFacts() const {
+  rust::Vec<rustaxa::TransactionQueueAccountNonceFact> facts;
+  if (!final_chain_) {
+    return facts;
+  }
+
+  const auto accounts = queue_->transaction_queue_proposable_accounts();
+  facts.reserve(accounts.size());
+  for (const auto& account : accounts) {
+    const auto address = addr_t(account.address.data(), addr_t::ConstructFromPointer);
+    const auto account_state = final_chain_->getAccount(address);
+    facts.push_back(rustaxa::TransactionQueueAccountNonceFact{
+        .sender = toBridgeAddress(address),
+        .account_found = account_state.has_value(),
+        .account_nonce = account_state.has_value() ? toBridgeU256(account_state->nonce) : std::array<uint8_t, 32>{},
+    });
+  }
+  return facts;
 }
 
 }  // namespace taraxa

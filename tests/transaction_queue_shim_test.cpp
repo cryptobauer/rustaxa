@@ -117,4 +117,21 @@ TEST(TransactionQueueShimTest, rustModeTransactionQueueExpiresNonProposableWithF
 #endif
 }
 
+TEST(TransactionQueueShimTest, rustModeTransactionQueuePurgeWithoutFinalChainIsNoop) {
+#ifdef RUSTAXA_ENABLE_TRANSACTION_QUEUE
+  TransactionQueue priority_queue(nullptr);
+  auto tx =
+      std::make_shared<Transaction>(0, 1, 1000, 10000, dev::bytes(), dev::KeyPair::create().secret(), addr_t::random());
+  const auto tx_hash = tx->getHash();
+
+  EXPECT_EQ(priority_queue.insert(std::move(tx), true, 1), TransactionStatus::Inserted);
+  EXPECT_TRUE(priority_queue.contains(tx_hash));
+
+  priority_queue.purge();
+  EXPECT_TRUE(priority_queue.contains(tx_hash));
+#else
+  GTEST_SKIP() << "TransactionQueue shim is disabled";
+#endif
+}
+
 }  // namespace taraxa::core_tests

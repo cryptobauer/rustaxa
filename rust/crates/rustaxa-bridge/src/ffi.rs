@@ -176,6 +176,13 @@ pub mod rustaxa_ffi {
         address: [u8; 20],
     }
 
+    /// One finalized account nonce fact consumed by batch purge planning.
+    struct TransactionQueueAccountNonceFact {
+        sender: [u8; 20],
+        account_found: bool,
+        account_nonce: [u8; 32],
+    }
+
     /// Proposable transaction hash group returned per sender.
     struct TransactionQueueHashGroup {
         hashes: Vec<TransactionQueueHash>,
@@ -1848,6 +1855,10 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionQueue,
             sender: &[u8; 20],
             account_nonce: &[u8; 32],
+        ) -> TransactionQueuePurgePlan;
+        pub fn transaction_queue_purge_accounts_plan(
+            self: &mut BridgeTransactionQueue,
+            facts: Vec<TransactionQueueAccountNonceFact>,
         ) -> TransactionQueuePurgePlan;
         pub fn transaction_queue_non_proposable_over_limit(self: &BridgeTransactionQueue) -> bool;
         pub fn transaction_queue_min_gas_price_for_block_inclusion(

@@ -151,7 +151,12 @@ class TransactionQueue {
    */
   static val_t fromBridgeU256(const std::array<uint8_t, 32>& value);
 
-private:
+  /**
+   * Collects finalized nonce facts for currently proposable accounts.
+   */
+  rust::Vec<rustaxa::TransactionQueueAccountNonceFact> collectPurgeAccountFacts() const;
+
+ private:
   ::rust::Box<rustaxa::BridgeTransactionQueue> queue_;
   std::shared_ptr<final_chain::FinalChain> final_chain_;
 };

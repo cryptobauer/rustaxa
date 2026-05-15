@@ -2,9 +2,9 @@
 //!
 //! The queue stores transaction metadata and canonical transaction bytes needed for consensus-facing pool decisions.
 //! C++ supplies validated RLP at insertion time and materializes `Transaction` objects on demand for legacy API callers.
-//! C++ still owns signature/state validation, known-cache expiration, event dispatch, overflow wall-clock state, and
-//! FinalChain account reads. Rust owns deterministic insertion, same-sender nonce replacement, priority ordering,
-//! non-proposable expiry planning, queued payload retention, and gas-price threshold accounting.
+//! C++ still owns signature/state validation, event dispatch, and FinalChain account reads. Rust owns deterministic
+//! insertion, same-sender nonce replacement, priority ordering, non-proposable expiry planning, queued payload retention,
+//! known-cache expiration, overflow/drop observation, purge planning, and gas-price threshold accounting.
 
 use anyhow::{Result, ensure};
 use ethereum_types::{H160, H256, U256};
@@ -100,6 +100,22 @@ pub struct TransactionQueueOrderedHashesPlan {
 pub struct TransactionQueuePurgeOutcome {
     /// Hashes removed from Rust queue metadata.
     pub removed_hashes: Vec<H256>,
+}
+
+/// FinalChain account nonce fact supplied by the C++ shim for queue purge planning.
+///
+/// The queue does not read FinalChain state directly in this slice. C++ supplies one fact for every proposable account
+/// whether the account state was available, and Rust removes proposer transactions whose nonce is below the supplied
+/// finalized account nonce. Missing accounts are explicit no-ops. Inputs are account addresses and finalized account
+/// nonces; output is the deterministic removed-hash list in fact order, preserving per-account nonce order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransactionQueueAccountNonceFact {
+    /// Account owning proposer transactions.
+    pub sender: H160,
+    /// True when C++ found FinalChain account state for `sender`.
+    pub account_found: bool,
+    /// Finalized account nonce read by C++ from FinalChain.
+    pub account_nonce: U256,
 }
 
 #[derive(Clone, Debug)]
@@ -403,6 +419,28 @@ impl TransactionQueue {
         TransactionQueuePurgeOutcome {
             removed_hashes: removed,
         }
+    }
+
+    /// Removes proposer transactions for all supplied finalized account nonce facts.
+    ///
+    /// Facts for accounts missing from the queue are ignored. Duplicate account facts are safe: the first fact removes
+    /// the matching live transactions and later duplicate facts find no already-removed hashes. Normal purge preserves
+    /// the transaction-known cache so recently purged hashes remain known, matching legacy queue behavior.
+    pub fn purge_accounts_plan(
+        &mut self,
+        facts: &[TransactionQueueAccountNonceFact],
+    ) -> TransactionQueuePurgeOutcome {
+        let mut removed_hashes = Vec::new();
+        for fact in facts {
+            if !fact.account_found {
+                continue;
+            }
+            removed_hashes.extend(
+                self.purge_account_plan(fact.sender, fact.account_nonce)
+                    .removed_hashes,
+            );
+        }
+        TransactionQueuePurgeOutcome { removed_hashes }
     }
 
     /// Returns all accounts that currently own proposer transactions.
@@ -774,6 +812,68 @@ mod tests {
                 .purge_account_plan(H160::from([1; 20]), U256::from(2u8))
                 .removed_hashes,
             vec![H256::from([1; 32])]
+        );
+    }
+
+    #[test]
+    fn purge_accounts_plan_removes_hashes_for_multiple_facts() {
+        let mut queue = TransactionQueue::new(100);
+        queue.insert(entry(1, 1, 5, 1), true).unwrap();
+        queue.insert(entry(1, 2, 6, 2), true).unwrap();
+        queue.insert(entry(2, 1, 7, 3), true).unwrap();
+        queue.insert(entry(2, 3, 8, 4), true).unwrap();
+
+        let plan = queue.purge_accounts_plan(&[
+            TransactionQueueAccountNonceFact {
+                sender: H160::from([1; 20]),
+                account_found: true,
+                account_nonce: U256::from(2u8),
+            },
+            TransactionQueueAccountNonceFact {
+                sender: H160::from([2; 20]),
+                account_found: true,
+                account_nonce: U256::from(3u8),
+            },
+            TransactionQueueAccountNonceFact {
+                sender: H160::from([3; 20]),
+                account_found: false,
+                account_nonce: U256::zero(),
+            },
+        ]);
+
+        assert_eq!(
+            plan.removed_hashes,
+            vec![H256::from([1; 32]), H256::from([3; 32])]
+        );
+        assert!(!queue.contains(H256::from([1; 32])));
+        assert!(!queue.contains(H256::from([3; 32])));
+        assert!(queue.contains(H256::from([2; 32])));
+        assert!(queue.contains(H256::from([4; 32])));
+        assert!(queue.is_transaction_known(H256::from([1; 32])));
+    }
+
+    #[test]
+    fn purge_accounts_plan_is_idempotent_for_duplicate_facts() {
+        let mut queue = TransactionQueue::new(100);
+        queue.insert(entry(1, 1, 5, 1), true).unwrap();
+        queue.insert(entry(1, 2, 6, 2), true).unwrap();
+
+        let plan = queue.purge_accounts_plan(&[
+            TransactionQueueAccountNonceFact {
+                sender: H160::from([1; 20]),
+                account_found: true,
+                account_nonce: U256::from(3u8),
+            },
+            TransactionQueueAccountNonceFact {
+                sender: H160::from([1; 20]),
+                account_found: true,
+                account_nonce: U256::from(3u8),
+            },
+        ]);
+
+        assert_eq!(
+            plan.removed_hashes,
+            vec![H256::from([1; 32]), H256::from([2; 32])]
         );
     }
 
