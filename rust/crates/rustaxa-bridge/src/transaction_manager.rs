@@ -11,8 +11,9 @@ use crate::ffi::rustaxa_ffi::{
     DagTransactionSaveAccepted, DagTransactionSaveFact, DagTransactionSaveOutcome,
     FinalizedTransactionStatusAction, FinalizedTransactionStatusFact,
     FinalizedTransactionStatusPlan, NonFinalizedTransactionPayload,
-    TransactionPackCandidateDecision, TransactionPackCandidateInput, TransactionPackEstimateInput,
-    TransactionPackEstimateOutcome,
+    TransactionManagerRecoveryEntry, TransactionManagerStoredTransactionLookup,
+    TransactionManagerStoredTransactionRequest, TransactionPackCandidateDecision,
+    TransactionPackCandidateInput, TransactionPackEstimateInput, TransactionPackEstimateOutcome,
 };
 use crate::ffi::{BridgeStorage, BridgeTransactionPackPlanner};
 use anyhow::{Context, Result};
@@ -129,6 +130,133 @@ pub fn update_finalized_transactions_status(
     })
 }
 
+const TM_STORED_TX_SOURCE_MISSING: u8 = 0;
+const TM_STORED_TX_SOURCE_PENDING: u8 = 1;
+const TM_STORED_TX_SOURCE_FINALIZED_REGULAR: u8 = 2;
+const TM_STORED_TX_SOURCE_FINALIZED_SYSTEM: u8 = 3;
+
+/// Resolves transaction hashes through TransactionManager storage rules.
+///
+/// Inputs are ordered requests from C++ after live transaction caches miss.
+/// Outputs preserve request order, echo `input_index` and `hash`, classify the
+/// storage source, and carry canonical transaction RLP bytes for C++ object
+/// materialization. Missing hashes are returned as `source = 0` instead of
+/// errors. Storage backend failures, malformed transaction-location RLP, and
+/// malformed period data return `anyhow::Error` with stable context labels.
+pub fn transaction_manager_load_stored_transactions(
+    storage: &BridgeStorage,
+    requests: Vec<TransactionManagerStoredTransactionRequest>,
+) -> Result<Vec<TransactionManagerStoredTransactionLookup>> {
+    let mut out = Vec::with_capacity(requests.len());
+    let transaction = storage.0.transaction();
+
+    for request in requests {
+        let hash = H256::from(request.hash);
+        let (tx_rlp, source) = if let Some(tx_rlp) = transaction
+            .rlp(hash)
+            .context("TM_TRANSACTION_RLP_PENDING_LOOKUP")?
+        {
+            (Some(tx_rlp), TM_STORED_TX_SOURCE_PENDING)
+        } else if let Some(location_rlp) = transaction
+            .location_rlp(hash)
+            .context("TM_TRANSACTION_RLP_LOCATION_LOOKUP")?
+        {
+            let location = rlp::Rlp::new(&location_rlp);
+            let period = location
+                .val_at::<u64>(0)
+                .context("TM_TRANSACTION_RLP_LOCATION_PERIOD")?;
+            let position = location
+                .val_at::<u32>(1)
+                .context("TM_TRANSACTION_RLP_LOCATION_POSITION")?;
+            let is_system = location
+                .item_count()
+                .context("TM_TRANSACTION_RLP_LOCATION_SHAPE")?
+                == 3
+                && location
+                    .val_at::<bool>(2)
+                    .context("TM_TRANSACTION_RLP_LOCATION_SYSTEM_FLAG")?;
+            let tx_rlp = if is_system {
+                transaction
+                    .system_rlp(hash)
+                    .context("TM_TRANSACTION_RLP_SYSTEM_LOOKUP")?
+                    .map(|tx_rlp| (tx_rlp, TM_STORED_TX_SOURCE_FINALIZED_SYSTEM))
+            } else {
+                transaction
+                    .by_period_position_rlp(period, position)
+                    .context("TM_TRANSACTION_RLP_FINALIZED_LOOKUP")?
+                    .map(|tx_rlp| (tx_rlp, TM_STORED_TX_SOURCE_FINALIZED_REGULAR))
+            };
+
+            match tx_rlp {
+                Some((tx_rlp, source)) => (Some(tx_rlp), source),
+                None => (None, TM_STORED_TX_SOURCE_MISSING),
+            }
+        } else {
+            (None, TM_STORED_TX_SOURCE_MISSING)
+        };
+
+        out.push(TransactionManagerStoredTransactionLookup {
+            input_index: request.input_index,
+            hash: hash.0,
+            found: tx_rlp.is_some(),
+            source,
+            tx_rlp: tx_rlp.unwrap_or_default(),
+        });
+    }
+
+    Ok(out)
+}
+
+/// Returns all payloads currently persisted for non-finalized transaction recovery.
+///
+/// The returned list preserves storage iteration order, carries the DB key hash
+/// for invariant validation by C++, and flags any payloads that are stale by
+/// checking finalized-index membership in Rust. Stale finalized rows are removed
+/// from non-finalized storage in one Rust storage batch before returning.
+pub fn transaction_manager_load_nonfinalized_recovery(
+    storage: &BridgeStorage,
+) -> Result<Vec<TransactionManagerRecoveryEntry>> {
+    let transaction = storage.0.transaction();
+    let non_finalized = transaction.all_nonfinalized_with_hash()?;
+    let mut out = Vec::with_capacity(non_finalized.len());
+    let mut stale_hashes = Vec::new();
+
+    for (hash, tx_rlp) in non_finalized {
+        let finalized = transaction
+            .finalized(hash)
+            .context("TM_NONFINALIZED_RECOVERY_FINALIZED_LOOKUP")?;
+        if finalized {
+            stale_hashes.push(hash);
+        }
+
+        out.push(TransactionManagerRecoveryEntry {
+            hash: hash.0,
+            finalized,
+            tx_rlp,
+        });
+    }
+
+    if !stale_hashes.is_empty() {
+        let mut batch = storage.0.create_write_batch();
+        for hash in stale_hashes {
+            storage
+                .0
+                .batch_delete_raw(
+                    &mut batch,
+                    rustaxa_storage::Column::Transactions,
+                    hash.as_bytes(),
+                )
+                .context("TM_NONFINALIZED_RECOVERY_STALE_DELETE")?;
+        }
+        storage
+            .0
+            .commit_write_batch_with_sync(batch, false)
+            .context("TM_NONFINALIZED_RECOVERY_STALE_COMMIT")?;
+    }
+
+    Ok(out)
+}
+
 fn consensus_fact_from_ffi_fact(fact: DagTransactionSaveFact) -> ConsensusDagTransactionSaveFact {
     ConsensusDagTransactionSaveFact {
         input_index: fact.input_index,
@@ -203,6 +331,7 @@ impl BridgeTransactionPackPlanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rlp::RlpStream;
     use rustaxa_storage::StatusField;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -449,6 +578,176 @@ mod tests {
                 .get_status_field(StatusField::TrxCount as u8)
                 .expect("status field should remain unchanged"),
             11,
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_transaction_manager_load_stored_transactions_orders_and_classifies_sources() {
+        let temp_dir =
+            unique_temp_dir("rustaxa_bridge_transaction_manager_load_stored_transactions");
+        let storage = crate::storage::create_storage(
+            temp_dir.to_str().expect("temp path should be valid UTF-8"),
+        )
+        .expect("storage should initialize");
+
+        storage
+            .save_transaction(&[1u8; 32], vec![0x11])
+            .expect("pending transaction should persist");
+
+        // Persist finalized location metadata and tx-by-position data for hash 2 so lookup
+        // exercises finalized fallback path after non-finalized miss.
+        storage
+            .save_transaction_location(&[2u8; 32], 8, 0, false)
+            .expect("finalized location should persist");
+
+        let mut txs = RlpStream::new_list(1);
+        txs.append_raw(&[0x22], 1);
+
+        let mut period_data = RlpStream::new_list(5);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&txs.out(), 1);
+        period_data.append_raw(&[0xC0], 1);
+        storage
+            .save_period_data(8, period_data.out().as_ref().to_vec())
+            .expect("period data should persist");
+        storage
+            .save_system_transaction(&[4u8; 32], vec![0x44])
+            .expect("system transaction should persist");
+        storage
+            .save_transaction_location(&[4u8; 32], 9, 0, true)
+            .expect("system finalized location should persist");
+
+        let out = transaction_manager_load_stored_transactions(
+            &storage,
+            vec![
+                TransactionManagerStoredTransactionRequest {
+                    input_index: 7,
+                    hash: [2u8; 32],
+                },
+                TransactionManagerStoredTransactionRequest {
+                    input_index: 8,
+                    hash: [3u8; 32],
+                },
+                TransactionManagerStoredTransactionRequest {
+                    input_index: 9,
+                    hash: [1u8; 32],
+                },
+                TransactionManagerStoredTransactionRequest {
+                    input_index: 10,
+                    hash: [4u8; 32],
+                },
+            ],
+        )
+        .expect("transaction payload lookup should preserve order");
+
+        let out = out
+            .into_iter()
+            .map(|entry| {
+                (
+                    entry.input_index,
+                    entry.hash,
+                    entry.found,
+                    entry.source,
+                    entry.tx_rlp,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(out.len(), 4);
+        assert_eq!(
+            out[0],
+            (
+                7,
+                [2u8; 32],
+                true,
+                TM_STORED_TX_SOURCE_FINALIZED_REGULAR,
+                vec![0x22]
+            )
+        );
+        assert_eq!(
+            out[1],
+            (
+                8,
+                [3u8; 32],
+                false,
+                TM_STORED_TX_SOURCE_MISSING,
+                Vec::<u8>::new()
+            )
+        );
+        assert_eq!(
+            out[2],
+            (9, [1u8; 32], true, TM_STORED_TX_SOURCE_PENDING, vec![0x11])
+        );
+        assert_eq!(
+            out[3],
+            (
+                10,
+                [4u8; 32],
+                true,
+                TM_STORED_TX_SOURCE_FINALIZED_SYSTEM,
+                vec![0x44]
+            )
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_transaction_manager_recovery_payloads_mark_stale_finalized_entries() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_transaction_manager_recovery_payloads");
+        let storage = crate::storage::create_storage(
+            temp_dir.to_str().expect("temp path should be valid UTF-8"),
+        )
+        .expect("storage should initialize");
+
+        storage
+            .save_transaction(&[1u8; 32], vec![0x11])
+            .expect("non-finalized transaction should persist");
+        storage
+            .save_transaction(&[2u8; 32], vec![0x22])
+            .expect("finalized stale entry should persist");
+        storage
+            .save_transaction_location(&[2u8; 32], 11, 0, false)
+            .expect("stale finalized entry location should persist");
+
+        let mut txs = RlpStream::new_list(1);
+        txs.append_raw(&[0x22], 1);
+
+        let mut period_data = RlpStream::new_list(5);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&txs.out(), 1);
+        period_data.append_raw(&[0xC0], 1);
+        storage
+            .save_period_data(11, period_data.out().as_ref().to_vec())
+            .expect("period data should persist");
+
+        let out = transaction_manager_load_nonfinalized_recovery(&storage)
+            .expect("recovery payload lookup should inspect all non-finalized storage rows");
+
+        assert_eq!(out.len(), 2);
+        let mut by_hash = out
+            .into_iter()
+            .map(|entry| (entry.hash[0], entry.finalized))
+            .collect::<Vec<_>>();
+        by_hash.sort_unstable();
+        assert_eq!(by_hash, vec![(1u8, false), (2u8, true)]);
+        assert_eq!(
+            storage
+                .get_transaction(&[2u8; 32])
+                .expect("stale finalized entry should be removed"),
+            Vec::<u8>::new()
+        );
+        assert_eq!(
+            storage
+                .get_transaction(&[1u8; 32])
+                .expect("live non-finalized entry should remain"),
+            vec![0x11]
         );
 
         let _ = fs::remove_dir_all(temp_dir);

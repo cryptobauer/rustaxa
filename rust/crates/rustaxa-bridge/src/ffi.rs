@@ -656,6 +656,39 @@ pub mod rustaxa_ffi {
         tx_rlp: Vec<u8>,
     }
 
+    /// One ordered transaction lookup request for TransactionManager storage reads.
+    ///
+    /// `input_index` lets C++ validate and place the result without relying on vector
+    /// position alone. `hash` is the canonical transaction hash being resolved.
+    struct TransactionManagerStoredTransactionRequest {
+        input_index: u64,
+        hash: [u8; 32],
+    }
+
+    /// One TransactionManager storage lookup result.
+    ///
+    /// `source` is 0 for missing, 1 for pending/non-finalized storage, 2 for
+    /// finalized regular period-data storage, and 3 for finalized system
+    /// transaction storage. Missing transactions are data results rather than
+    /// errors; malformed storage and backend failures are bridge errors.
+    struct TransactionManagerStoredTransactionLookup {
+        input_index: u64,
+        hash: [u8; 32],
+        found: bool,
+        source: u8,
+        tx_rlp: Vec<u8>,
+    }
+
+    /// One non-finalized transaction recovery entry loaded from Rust storage.
+    ///
+    /// `finalized` identifies stale pending rows that must be removed from
+    /// non-finalized storage and must not be materialized into C++ live sidecars.
+    struct TransactionManagerRecoveryEntry {
+        hash: [u8; 32],
+        finalized: bool,
+        tx_rlp: Vec<u8>,
+    }
+
     /// One non-finalized transaction payload persisted through Rust storage.
     ///
     /// The bridge caller must supply the canonical C++ transaction hash and RLP.
@@ -1676,6 +1709,15 @@ pub mod rustaxa_ffi {
             current_transaction_count: u64,
             facts: Vec<FinalizedTransactionStatusFact>,
         ) -> Result<FinalizedTransactionStatusPlan>;
+        /// Resolves transaction hashes through TransactionManager storage rules.
+        pub fn transaction_manager_load_stored_transactions(
+            storage: &BridgeStorage,
+            requests: Vec<TransactionManagerStoredTransactionRequest>,
+        ) -> Result<Vec<TransactionManagerStoredTransactionLookup>>;
+        /// Returns persisted non-finalized transaction payloads for TransactionManager recovery.
+        pub fn transaction_manager_load_nonfinalized_recovery(
+            storage: &BridgeStorage,
+        ) -> Result<Vec<TransactionManagerRecoveryEntry>>;
 
         // Consensus verified votes
 

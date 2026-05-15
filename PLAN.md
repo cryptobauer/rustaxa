@@ -342,7 +342,8 @@ The current Rust starting point is intentionally small:
   decisions for prechecks, transaction availability, DAG VDF payload/embedded-VRF/difficulty/proof verification,
   legacy DAG VRF/VDF message construction, DPoS authorization ordering, gas policy, Rust-backed transaction queue
   metadata/order/limit state, Rust-backed `TransactionManager::packTrxs` deterministic packing decisions, Rust-owned
-  DAG transaction persistence planning plus Rust-storage batch commits, and a Rust-backed `GasPricer` oracle for
+  DAG transaction persistence planning plus Rust-storage batch commits, Rust-storage-backed `TransactionManager`
+  transaction lookup and non-finalized recovery payload loading, and a Rust-backed `GasPricer` oracle for
   finalized-block history, minimum-price flooring, and percentile bid selection.
   The Rust-enabled `SlashingManager` overlay now routes deterministic double-voting proof planning, duplicate-proof
   cache decisions, submitter selection, and slashing contract calldata construction through Rust while C++ keeps live

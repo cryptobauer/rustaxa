@@ -122,15 +122,23 @@ class TransactionManager : public TransactionManagerOld {
     return TransactionManagerOld::verifyTransactionsNotFinalized(trxs);
   }
 
-  SharedTransactions getBlockTransactions(const DagBlock &blk, PbftPeriod proposal_period) {
-    // TODO(rust-rewrite): migrate DAG block transaction materialization to Rust instead of TransactionManagerOld.
-    return TransactionManagerOld::getBlockTransactions(blk, proposal_period);
-  }
+  /**
+   * Materialize DAG block transactions from live C++ views and Rust-backed storage.
+   *
+   * C++ preserves `SharedTransaction` identity for live pool, non-finalized, and
+   * recently-finalized hits. Rust resolves storage misses and classifies regular
+   * versus system finalized payloads; C++ constructs the transaction objects and
+   * applies proposal-period nonce filtering.
+   */
+  SharedTransactions getBlockTransactions(const DagBlock &blk, PbftPeriod proposal_period);
 
-  SharedTransactions getTransactions(const vec_trx_t &trxs_hashes, PbftPeriod proposal_period) {
-    // TODO(rust-rewrite): migrate transaction materialization to Rust instead of TransactionManagerOld.
-    return TransactionManagerOld::getTransactions(trxs_hashes, proposal_period);
-  }
+  /**
+   * Materialize ordered transaction hashes from live C++ views and Rust-backed storage.
+   *
+   * Missing hashes are skipped. Storage or RLP corruption throws before any live
+   * sidecar mutation because this lookup is read-only.
+   */
+  SharedTransactions getTransactions(const vec_trx_t &trxs_hashes, PbftPeriod proposal_period);
 
   void updateFinalizedTransactionsStatus(const PeriodData &period_data);
 
@@ -172,10 +180,14 @@ class TransactionManager : public TransactionManagerOld {
     return TransactionManagerOld::getMinGasPriceForBlockInclusion();
   }
 
-  std::shared_ptr<Transaction> getTransaction(const trx_hash_t &hash) const {
-    // TODO(rust-rewrite): migrate transaction lookup to Rust instead of TransactionManagerOld.
-    return TransactionManagerOld::getTransaction(hash);
-  }
+  /**
+   * Lookup one transaction by hash from live C++ views or Rust-backed storage.
+   *
+   * Pool, non-finalized, and recently-finalized cache hits return their live
+   * `SharedTransaction` object. Cache misses are resolved by Rust storage lookup;
+   * missing hashes return `nullptr`, and storage/RLP corruption raises `DbException`.
+   */
+  std::shared_ptr<Transaction> getTransaction(const trx_hash_t &hash) const;
 
   std::shared_ptr<Transaction> getNonFinalizedTransaction(const trx_hash_t &hash) const {
     // TODO(rust-rewrite): migrate non-finalized transaction lookup to Rust instead of TransactionManagerOld.
@@ -187,10 +199,15 @@ class TransactionManager : public TransactionManagerOld {
     return TransactionManagerOld::getTransactionCount();
   }
 
-  void recoverNonfinalizedTransactions() {
-    // TODO(rust-rewrite): migrate non-finalized transaction recovery to Rust instead of TransactionManagerOld.
-    TransactionManagerOld::recoverNonfinalizedTransactions();
-  }
+  /**
+   * Rebuild non-finalized transaction sidecars from Rust-backed storage on startup.
+   *
+   * Rust returns persisted payloads keyed by hash and removes stale finalized rows.
+   * C++ constructs survivor `Transaction` objects, validates hash/RLP consistency,
+   * warms sender caches, and mutates the live sidecar map only after materialization
+   * succeeds.
+   */
+  void recoverNonfinalizedTransactions();
 
   std::pair<bool, std::string> verifyTransaction(const std::shared_ptr<Transaction> &trx) const {
     // TODO(rust-rewrite): migrate transaction verification to Rust instead of TransactionManagerOld.

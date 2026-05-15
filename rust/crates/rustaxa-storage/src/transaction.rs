@@ -102,6 +102,29 @@ impl<D: DbReader> TransactionRepository<D> {
         Ok(result)
     }
 
+    /// Returns all non-finalized transactions as persisted hash/RLP pairs.
+    ///
+    /// The hash is the exact `transactions` column key and the payload is the
+    /// canonical RLP value stored under it. Invalid key lengths are reported as
+    /// read errors because C++ recovery validates the key against the decoded
+    /// transaction before rebuilding live sidecars.
+    pub fn all_nonfinalized_with_hash(&self) -> Result<Vec<(H256, Vec<u8>)>> {
+        let mut result = Vec::new();
+        for entry in self.db.iter(Column::Transactions) {
+            let (key, value) = entry?;
+            if key.len() != 32 {
+                return Err(StorageError::Read(format!(
+                    "Invalid transaction hash size in non-finalized cache column: {}",
+                    key.len()
+                ))
+                .into());
+            }
+
+            result.push((H256::from_slice(key.as_ref()), value.into_vec()));
+        }
+        Ok(result)
+    }
+
     /// Returns every finalized transaction hash together with its finalized period.
     /// C++ mapping: `DbStorage::getAllTransactionPeriod()`.
     pub fn all_with_period(&self) -> Result<Vec<(H256, u64)>> {
@@ -426,6 +449,22 @@ mod tests {
         let mut result = repo.all_nonfinalized_rlp().unwrap();
         result.sort();
         assert_eq!(result, vec![vec![0xAA, 0xBB], vec![0xCC]]);
+    }
+
+    #[test]
+    fn test_all_nonfinalized_transactions_with_hash() {
+        let db = Arc::new(MockTransactionStore::new());
+        let repo = TransactionRepository::new(db.clone());
+        let hash1 = H256::from_low_u64_be(8);
+        let hash2 = H256::from_low_u64_be(9);
+
+        db.put(Column::Transactions, hash1.as_bytes(), &[0xAA, 0xBB]);
+        db.put(Column::Transactions, hash2.as_bytes(), &[0xCC]);
+
+        let result = repo.all_nonfinalized_with_hash().unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], (hash1, vec![0xAA, 0xBB]));
+        assert_eq!(result[1], (hash2, vec![0xCC]));
     }
 
     #[test]

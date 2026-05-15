@@ -87,6 +87,64 @@ TEST_F(TransactionManagerShimFixture, rustStoragePersistsDagTransactionsBeforeLi
   EXPECT_EQ(trx_mgr.getTransactionPoolSize(), transactions.size() - 2);
 }
 
+TEST_F(TransactionManagerShimFixture, rustGetTransactionPrefersLiveCachesThenStorage) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  const auto transactions =
+      samples::createSignedTrxSamples(1, 1,
+                                      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                  dev::Secret::ConstructFromStringType::FromHex));
+
+  ASSERT_TRUE(trx_mgr.insertTransaction(transactions[0]).first);
+
+  const auto from_pool = trx_mgr.getTransaction(transactions[0]->getHash());
+  ASSERT_TRUE(from_pool);
+  EXPECT_EQ(from_pool.get(), transactions[0].get());
+
+  trx_mgr.saveTransactionsFromDagBlock({transactions[0]});
+
+  const auto from_cache = trx_mgr.getTransaction(transactions[0]->getHash());
+  ASSERT_TRUE(from_cache);
+  const auto cached_view = trx_mgr.getNonfinalizedTrx({transactions[0]->getHash()});
+  ASSERT_EQ(cached_view.size(), 1);
+  EXPECT_EQ(from_cache.get(), cached_view.front().get());
+
+  TransactionManager restart_trx_mgr(cfg, db, final_chain, addr_t());
+  const auto from_storage = restart_trx_mgr.getTransaction(transactions[0]->getHash());
+  ASSERT_TRUE(from_storage);
+  EXPECT_NE(from_storage.get(), transactions[0].get());
+  EXPECT_EQ(from_storage->getHash(), transactions[0]->getHash());
+  EXPECT_EQ(from_storage->rlp(), transactions[0]->rlp());
+}
+
+TEST_F(TransactionManagerShimFixture, rustGetTransactionsCombinesLiveAndRustStorageLookups) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  const auto transactions =
+      samples::createSignedTrxSamples(1, 2,
+                                      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                  dev::Secret::ConstructFromStringType::FromHex));
+
+  {
+    TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+    ASSERT_TRUE(trx_mgr.insertTransaction(transactions[0]).first);
+    trx_mgr.saveTransactionsFromDagBlock({transactions[0]});
+  }
+
+  TransactionManager restart_trx_mgr(cfg, db, final_chain, addr_t());
+  ASSERT_TRUE(restart_trx_mgr.insertTransaction(transactions[1]).first);
+
+  const auto materialized = restart_trx_mgr.getTransactions(
+      {transactions[0]->getHash(), trx_hash_t::random(), transactions[1]->getHash()}, 0);
+
+  ASSERT_EQ(materialized.size(), 2);
+  EXPECT_EQ(materialized[0]->getHash(), transactions[0]->getHash());
+  EXPECT_EQ(materialized[1].get(), transactions[1].get());
+}
+
 TEST_F(TransactionManagerShimFixture, rustDagTransactionPersistenceFailureDoesNotMutateLiveState) {
   auto db = std::make_shared<DbStorage>(data_dir);
   db->saveStatusField(StatusDbField::TrxCount, std::numeric_limits<uint64_t>::max());
@@ -106,6 +164,40 @@ TEST_F(TransactionManagerShimFixture, rustDagTransactionPersistenceFailureDoesNo
   EXPECT_EQ(trx_mgr.getNonfinalizedTrxSize(), 0);
   EXPECT_EQ(trx_mgr.getTransactionPoolSize(), transactions.size());
   EXPECT_FALSE(db->getTransaction(transactions[0]->getHash()));
+}
+
+TEST_F(TransactionManagerShimFixture, rustRecoverNonfinalizedTransactionsSkipsFinalizedPayloads) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  const auto transactions =
+      samples::createSignedTrxSamples(1, 2,
+                                      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                  dev::Secret::ConstructFromStringType::FromHex));
+
+  {
+    TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+    for (const auto& trx : transactions) {
+      ASSERT_TRUE(trx_mgr.insertTransaction(trx).first);
+    }
+    trx_mgr.saveTransactionsFromDagBlock(transactions);
+
+    auto batch = db->createWriteBatch();
+    db->addTransactionLocationToBatch(batch, transactions[0]->getHash(), 0, 0);
+    db->commitWriteBatch(batch);
+  }
+
+  TransactionManager restart_trx_mgr(cfg, db, final_chain, addr_t());
+  EXPECT_EQ(restart_trx_mgr.getNonfinalizedTrxSize(), 0);
+  restart_trx_mgr.recoverNonfinalizedTransactions();
+  EXPECT_EQ(restart_trx_mgr.getNonfinalizedTrxSize(), 1);
+
+  const auto recovered_only =
+      restart_trx_mgr.getNonfinalizedTrx({transactions[0]->getHash(), transactions[1]->getHash()});
+  ASSERT_EQ(recovered_only.size(), 1);
+  EXPECT_EQ(recovered_only.front()->getHash(), transactions[1]->getHash());
+  EXPECT_FALSE(db->getTransaction(transactions[0]->getHash()));
+  ASSERT_TRUE(db->getTransaction(transactions[1]->getHash()));
 }
 
 TEST_F(TransactionManagerShimFixture, expiredNonFinalizedSidecarCleanupDoesNotTouchStorage) {

@@ -7,7 +7,9 @@
 #include <utility>
 #include <vector>
 
+#include "dag/dag_block.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
+#include "transaction/system_transaction.hpp"
 #include "transaction/transaction_manager.hpp"
 
 namespace taraxa {
@@ -23,6 +25,10 @@ trx_hash_t fromBridgeHash(const std::array<uint8_t, 32>& hash) {
   return trx_hash_t(hash.data(), trx_hash_t::ConstructFromPointer);
 }
 
+dev::bytes fromBridgeBytes(const rust::Vec<uint8_t>& bytes) {
+  return dev::bytes(bytes.begin(), bytes.end());
+}
+
 rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& bytes) {
   rust::Vec<uint8_t> out;
   out.reserve(bytes.size());
@@ -30,6 +36,35 @@ rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& bytes) {
     out.push_back(static_cast<uint8_t>(byte));
   }
   return out;
+}
+
+constexpr uint8_t kStoredTransactionPending = 1;
+constexpr uint8_t kStoredTransactionFinalizedRegular = 2;
+constexpr uint8_t kStoredTransactionFinalizedSystem = 3;
+
+bool isFinalizedStoredTransactionSource(uint8_t source) {
+  return source == kStoredTransactionFinalizedRegular || source == kStoredTransactionFinalizedSystem;
+}
+
+std::shared_ptr<Transaction> materializeStoredTransaction(
+    const rustaxa::TransactionManagerStoredTransactionLookup& lookup, const char* error_prefix) {
+  if (!lookup.found) {
+    return nullptr;
+  }
+
+  std::shared_ptr<Transaction> transaction;
+  if (lookup.source == kStoredTransactionPending || lookup.source == kStoredTransactionFinalizedRegular) {
+    transaction = std::make_shared<Transaction>(fromBridgeBytes(lookup.tx_rlp));
+  } else if (lookup.source == kStoredTransactionFinalizedSystem) {
+    transaction = std::make_shared<SystemTransaction>(fromBridgeBytes(lookup.tx_rlp));
+  } else {
+    throw DbException(std::string(error_prefix) + ": Rust returned an unknown transaction source");
+  }
+
+  if (transaction->getHash() != fromBridgeHash(lookup.hash)) {
+    throw DbException(std::string(error_prefix) + ": Rust returned transaction RLP that does not match the key hash");
+  }
+  return transaction;
 }
 
 template <typename Value>
@@ -180,6 +215,173 @@ class TransactionManagerRustShimAccess {
     }
   }
 
+  /**
+   * Retrieves a transaction from C++ live caches first and falls back to Rust-backed
+   * storage for persistence-backed lookup.
+   *
+   * This keeps transaction object materialization and identity ownership in-memory,
+   * while storage reads remain authoritative for non-live transactions.
+   */
+  static std::shared_ptr<Transaction> getTransaction(const TransactionManagerOld& manager, const trx_hash_t& hash) {
+    {
+      std::shared_lock transactions_lock(manager.transactions_mutex_);
+      if (const auto trx = manager.transactions_pool_.get(hash)) {
+        return trx;
+      }
+      if (const auto it = manager.nonfinalized_transactions_in_dag_.find(hash);
+          it != manager.nonfinalized_transactions_in_dag_.end()) {
+        return it->second;
+      }
+      if (const auto it = manager.recently_finalized_transactions_.find(hash);
+          it != manager.recently_finalized_transactions_.end()) {
+        return it->second;
+      }
+    }
+
+    rust::Vec<rustaxa::TransactionManagerStoredTransactionRequest> requests;
+    requests.reserve(1);
+    rustaxa::TransactionManagerStoredTransactionRequest request;
+    request.input_index = 0;
+    request.hash = toBridgeHash(hash);
+    requests.push_back(request);
+
+    const auto lookups = [&]() {
+      try {
+        return rustaxa::transaction_manager_load_stored_transactions(manager.db_->rustStorage(), std::move(requests));
+      } catch (const std::exception& e) {
+        throw DbException(std::string("RUST_STORAGE_TX_RETRIEVAL_FAILED: ") + e.what());
+      }
+    }();
+
+    if (lookups.size() != 1 || lookups[0].input_index != 0 || fromBridgeHash(lookups[0].hash) != hash) {
+      throw DbException("RUST_STORAGE_TX_RETRIEVAL_FAILED: Rust returned an invalid transaction lookup response");
+    }
+
+    return materializeStoredTransaction(lookups[0], "RUST_STORAGE_TX_RETRIEVAL_FAILED");
+  }
+
+  /**
+   * Materializes ordered transaction hashes from C++ live views and Rust-backed
+   * storage.
+   *
+   * C++ keeps live `SharedTransaction` ownership and proposal-period nonce
+   * filtering. Rust owns storage lookup, transaction-location decoding, period
+   * data extraction, and regular/system source classification for cache misses.
+   */
+  static SharedTransactions getTransactions(const TransactionManagerOld& manager, const vec_trx_t& trxs_hashes,
+                                            PbftPeriod proposal_period) {
+    std::vector<std::shared_ptr<Transaction>> ordered_transactions(trxs_hashes.size());
+    rust::Vec<rustaxa::TransactionManagerStoredTransactionRequest> requests;
+
+    {
+      std::shared_lock transactions_lock(manager.transactions_mutex_);
+      for (size_t i = 0; i < trxs_hashes.size(); ++i) {
+        const auto& tx_hash = trxs_hashes[i];
+        if (auto trx = manager.transactions_pool_.get(tx_hash)) {
+          ordered_transactions[i] = std::move(trx);
+        } else {
+          auto trx_it = manager.nonfinalized_transactions_in_dag_.find(tx_hash);
+          if (trx_it != manager.nonfinalized_transactions_in_dag_.end()) {
+            ordered_transactions[i] = trx_it->second;
+          } else {
+            trx_it = manager.recently_finalized_transactions_.find(tx_hash);
+            if (trx_it != manager.recently_finalized_transactions_.end()) {
+              ordered_transactions[i] = trx_it->second;
+            } else {
+              rustaxa::TransactionManagerStoredTransactionRequest request;
+              request.input_index = static_cast<uint64_t>(i);
+              request.hash = toBridgeHash(tx_hash);
+              requests.push_back(request);
+            }
+          }
+        }
+      }
+    }
+
+    if (!requests.empty()) {
+      const auto lookups = [&]() {
+        try {
+          return rustaxa::transaction_manager_load_stored_transactions(manager.db_->rustStorage(), std::move(requests));
+        } catch (const std::exception& e) {
+          throw DbException(std::string("RUST_STORAGE_TX_RETRIEVAL_FAILED: ") + e.what());
+        }
+      }();
+
+      for (const auto& lookup : lookups) {
+        if (lookup.input_index >= trxs_hashes.size()) {
+          throw DbException("RUST_STORAGE_TX_RETRIEVAL_FAILED: Rust returned an out-of-range transaction index");
+        }
+        const auto input_index = static_cast<size_t>(lookup.input_index);
+        const auto& expected_hash = trxs_hashes[input_index];
+        if (fromBridgeHash(lookup.hash) != expected_hash) {
+          throw DbException("RUST_STORAGE_TX_RETRIEVAL_FAILED: Rust returned a transaction hash/index mismatch");
+        }
+
+        auto transaction = materializeStoredTransaction(lookup, "RUST_STORAGE_TX_RETRIEVAL_FAILED");
+        if (!transaction) {
+          continue;
+        }
+
+        if (isFinalizedStoredTransactionSource(lookup.source)) {
+          auto acc = manager.final_chain_->getAccount(transaction->getSender(), proposal_period);
+          if (acc.has_value() && acc->nonce > transaction->getNonce()) {
+            LOG(manager.log_er_) << "Old transaction: " << transaction->getHash();
+            continue;
+          }
+        }
+        ordered_transactions[input_index] = std::move(transaction);
+      }
+    }
+
+    SharedTransactions transactions;
+    transactions.reserve(trxs_hashes.size());
+    for (auto& transaction : ordered_transactions) {
+      if (transaction) {
+        transactions.emplace_back(std::move(transaction));
+      }
+    }
+    return transactions;
+  }
+
+  /**
+   * Rebuilds in-memory non-finalized transaction sidecars from Rust-backed storage.
+   *
+   * Rust loads the recovery payloads and removes stale finalized rows from
+   * non-finalized storage before C++ materializes survivor transactions into
+   * the live sidecar map. Each survivor has its sender cached before insertion.
+   */
+  static void recoverNonfinalizedTransactions(TransactionManagerOld& manager) {
+    const auto entries = [&]() {
+      try {
+        return rustaxa::transaction_manager_load_nonfinalized_recovery(manager.db_->rustStorage());
+      } catch (const std::exception& e) {
+        throw DbException(std::string("RUST_STORAGE_TX_RECOVERY_FAILED: ") + e.what());
+      }
+    }();
+
+    std::vector<std::pair<trx_hash_t, std::shared_ptr<Transaction>>> recovered_transactions;
+    recovered_transactions.reserve(entries.size());
+    for (const auto& entry : entries) {
+      if (entry.finalized) {
+        continue;
+      }
+
+      auto transaction = std::make_shared<Transaction>(fromBridgeBytes(entry.tx_rlp));
+      const auto trx_hash = fromBridgeHash(entry.hash);
+      if (transaction->getHash() != trx_hash) {
+        throw DbException(
+            "RUST_STORAGE_TX_RECOVERY_FAILED: Rust returned transaction RLP that does not match the key hash");
+      }
+      transaction->getSender();
+      recovered_transactions.emplace_back(trx_hash, std::move(transaction));
+    }
+
+    std::unique_lock transactions_lock(manager.transactions_mutex_);
+    for (auto& [trx_hash, transaction] : recovered_transactions) {
+      manager.nonfinalized_transactions_in_dag_.emplace(trx_hash, std::move(transaction));
+    }
+  }
+
   static void initializeRecentlyFinalizedTransactions(TransactionManagerOld& manager, const PeriodData& period_data) {
     std::unique_lock transactions_lock(manager.transactions_mutex_);
     for (auto const& trx : period_data.transactions) {
@@ -274,6 +476,22 @@ void TransactionManager::updateFinalizedTransactionsStatus(const PeriodData& per
 
 void TransactionManager::initializeRecentlyFinalizedTransactions(const PeriodData& period_data) {
   TransactionManagerRustShimAccess::initializeRecentlyFinalizedTransactions(*this, period_data);
+}
+
+SharedTransactions TransactionManager::getBlockTransactions(const DagBlock& blk, PbftPeriod proposal_period) {
+  return TransactionManagerRustShimAccess::getTransactions(*this, blk.getTrxs(), proposal_period);
+}
+
+SharedTransactions TransactionManager::getTransactions(const vec_trx_t& trxs_hashes, PbftPeriod proposal_period) {
+  return TransactionManagerRustShimAccess::getTransactions(*this, trxs_hashes, proposal_period);
+}
+
+std::shared_ptr<Transaction> TransactionManager::getTransaction(const trx_hash_t& hash) const {
+  return TransactionManagerRustShimAccess::getTransaction(*this, hash);
+}
+
+void TransactionManager::recoverNonfinalizedTransactions() {
+  TransactionManagerRustShimAccess::recoverNonfinalizedTransactions(*this);
 }
 
 }  // namespace taraxa
