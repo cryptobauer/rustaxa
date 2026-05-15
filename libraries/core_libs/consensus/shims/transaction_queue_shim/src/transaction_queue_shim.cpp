@@ -52,6 +52,7 @@ TransactionStatus TransactionQueue::insert(std::shared_ptr<Transaction>&& transa
   input.gas_price = toBridgeU256(transaction->getGasPrice());
   input.gas = transaction->getGas();
   input.data_size = transaction->getData().size();
+  input.tx_rlp = toBridgeBytes(transaction->rlp());
   input.proposable = proposable;
   input.last_block_number = last_block_number;
 
@@ -62,10 +63,6 @@ TransactionStatus TransactionQueue::insert(std::shared_ptr<Transaction>&& transa
   }
 
   forgetHashes(outcome.overflow_removed_hashes, true);
-  if (outcome.inserted_hash_found && queue_->transaction_queue_contains(outcome.inserted_hash)) {
-    storeTransaction(transaction);
-  }
-
   if (status == TransactionStatus::Inserted || status == TransactionStatus::InsertedNonProposable) {
     known_txs_.insert(tx_hash);
   }
@@ -80,44 +77,45 @@ bool TransactionQueue::erase(const SharedTransaction& transaction) {
   if (!queue_->transaction_queue_erase(hash)) {
     return false;
   }
-  transactions_.erase(transaction->getHash());
   return true;
 }
 
+bool TransactionQueue::demoteToNonProposable(const trx_hash_t& hash, uint64_t last_block_number) {
+  constexpr uint8_t kDemoted = 2;
+  const auto plan = queue_->transaction_queue_demote_to_non_proposable(toBridgeHash(hash), last_block_number);
+  return plan.status == kDemoted;
+}
+
 std::shared_ptr<Transaction> TransactionQueue::get(const trx_hash_t& hash) const {
-  const auto it = transactions_.find(hash);
-  if (it == transactions_.end()) {
-    return nullptr;
-  }
-  return it->second;
+  return materializeTransaction(queue_->transaction_queue_get_transaction(toBridgeHash(hash)));
 }
 
 std::vector<std::shared_ptr<Transaction>> TransactionQueue::getOrderedTransactions(uint64_t count) const {
-  const auto hashes = queue_->transaction_queue_ordered_hashes(count);
+  const auto queued_transactions = queue_->transaction_queue_ordered_transactions(count);
   SharedTransactions transactions;
-  transactions.reserve(hashes.size());
-  for (const auto& hash : hashes) {
-    if (auto transaction = get(fromBridgeHash(hash.hash)); transaction) {
+  transactions.reserve(queued_transactions.size());
+  for (const auto& queued_transaction : queued_transactions) {
+    if (auto transaction = materializeTransaction(queued_transaction); transaction) {
       transactions.emplace_back(std::move(transaction));
     } else {
-      throw std::runtime_error("Rust transaction queue returned a hash without a live C++ transaction");
+      throw std::runtime_error("Rust transaction queue returned a missing ordered transaction payload");
     }
   }
   return transactions;
 }
 
 std::vector<SharedTransactions> TransactionQueue::getAllTransactions() const {
-  const auto groups = queue_->transaction_queue_all_hash_groups();
+  const auto groups = queue_->transaction_queue_all_transaction_groups();
   std::vector<SharedTransactions> transactions;
   transactions.reserve(groups.size());
   for (const auto& group : groups) {
     SharedTransactions group_transactions;
-    group_transactions.reserve(group.hashes.size());
-    for (const auto& hash : group.hashes) {
-      if (auto transaction = get(fromBridgeHash(hash.hash)); transaction) {
+    group_transactions.reserve(group.transactions.size());
+    for (const auto& queued_transaction : group.transactions) {
+      if (auto transaction = materializeTransaction(queued_transaction); transaction) {
         group_transactions.emplace_back(std::move(transaction));
       } else {
-        throw std::runtime_error("Rust transaction queue returned a group hash without a live C++ transaction");
+        throw std::runtime_error("Rust transaction queue returned a missing grouped transaction payload");
       }
     }
     transactions.emplace_back(std::move(group_transactions));
@@ -171,15 +169,31 @@ val_t TransactionQueue::getMinGasPriceForBlockInclusion(uint64_t limit) const {
 void TransactionQueue::forgetHashes(const rust::Vec<rustaxa::TransactionQueueHash>& hashes, bool erase_known) {
   for (const auto& hash : hashes) {
     const auto local_hash = fromBridgeHash(hash.hash);
-    transactions_.erase(local_hash);
     if (erase_known) {
       known_txs_.erase(local_hash);
     }
   }
 }
 
-void TransactionQueue::storeTransaction(const SharedTransaction& transaction) {
-  transactions_[transaction->getHash()] = transaction;
+std::shared_ptr<Transaction> TransactionQueue::materializeTransaction(
+    const rustaxa::TransactionQueueStoredTransaction& stored) {
+  if (!stored.found) {
+    return nullptr;
+  }
+  auto transaction = std::make_shared<Transaction>(dev::bytes(stored.tx_rlp.begin(), stored.tx_rlp.end()));
+  if (transaction->getHash() != fromBridgeHash(stored.hash)) {
+    throw std::runtime_error("Rust transaction queue returned transaction RLP that does not match the queue hash");
+  }
+  return transaction;
+}
+
+rust::Vec<uint8_t> TransactionQueue::toBridgeBytes(const dev::bytes& bytes) {
+  rust::Vec<uint8_t> out;
+  out.reserve(bytes.size());
+  for (const auto byte : bytes) {
+    out.push_back(static_cast<uint8_t>(byte));
+  }
+  return out;
 }
 
 trx_hash_t TransactionQueue::fromBridgeHash(const std::array<uint8_t, 32>& hash) {

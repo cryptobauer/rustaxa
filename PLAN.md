@@ -396,11 +396,12 @@ The current Rust starting point is intentionally small:
 8. Split `PbftManager` into Rust services for round/step transitions, proposal handling, vote thresholding, and finalization decisions.
 9. Port transaction queue behavior before transaction manager orchestration. The Rust-mode `TransactionQueue` overlay
    now routes deterministic queue metadata, per-account nonce ordering, same-nonce replacement, non-proposer expiry
-   planning, pool limits, and gas-price threshold accounting through Rust while C++ keeps live transaction pointers,
-   known-transaction cache timing, overflow wall-clock state, and FinalChain account reads for purge. The Rust-mode
-   `TransactionManager` packing shim now routes proposal candidate sizing, declared-gas fit checks, invalid-estimate
-   demotion decisions, accepted gas accumulation, and stop rules through Rust while C++ keeps live transaction objects,
-   `estimateTransactionGas`, estimation caching, queue mutation, and lifecycle/finalization state. DAG transaction
+   planning, pool limits, gas-price threshold accounting, and queued transaction RLP payload retention through Rust while
+   C++ materializes `Transaction` objects on demand and keeps known-transaction cache timing, overflow wall-clock state,
+   and FinalChain account reads for purge. The Rust-mode `TransactionManager` packing shim now routes proposal candidate
+   sizing, declared-gas fit checks, invalid-estimate demotion decisions, accepted gas accumulation, and stop rules
+   through Rust while C++ keeps `estimateTransactionGas`, estimation caching, manager sidecars, and
+   lifecycle/finalization state. DAG transaction
    persistence now sends live transaction facts to Rust; Rust owns duplicate filtering, nonce-gated finalized-storage
    lookup, accepted ordering, count planning, and the storage batch before C++ applies only the accepted live sidecar
    updates. Finalized transaction status updates now send finalized hashes and non-finalized-cache facts to Rust; Rust
@@ -413,8 +414,9 @@ The current Rust starting point is intentionally small:
    proposable/non-proposable admission before C++ mutates the live queue. The Rust-mode facade now owns the public
    `transaction_added_` event surface and emits it from shim-owned code for Rust-planned proposable admissions before
    live queue insertion, matching legacy event timing. Live pool/non-finalized/count helpers are shim-owned under the existing transaction mutex and no
-   longer forward to `TransactionManagerOld`. Remaining live-shell gaps are broader live queue ownership,
-   `SharedTransaction` materialization, queue mutation, and estimation/lifecycle orchestration.
+   longer forward to `TransactionManagerOld`. Remaining live-shell gaps are Rust ownership of known-cache expiry,
+   overflow timing, FinalChain purge facts, manager non-finalized/recently-finalized sidecars, and
+   estimation/lifecycle orchestration.
    `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
    selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
    lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode

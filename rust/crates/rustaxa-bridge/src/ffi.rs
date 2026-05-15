@@ -130,9 +130,36 @@ pub mod rustaxa_ffi {
         max_size: usize,
     }
 
+    /// Queue erase result and metadata for C++ mirror mutation.
+    struct TransactionQueueErasePlan {
+        removed: bool,
+        removed_hash: [u8; 32],
+        removed_sender: [u8; 20],
+        removed_nonce: [u8; 32],
+        removed_gas_price: [u8; 32],
+        removed_gas: u64,
+        removed_data_size: usize,
+        removed_last_block_number: u64,
+        removed_proposable: bool,
+    }
+
     /// Hash handle used to map Rust queue decisions back to C++ live transactions.
     struct TransactionQueueHash {
         hash: [u8; 32],
+    }
+
+    /// Demote outcome returned by Rust transaction queue metadata.
+    struct TransactionQueueDemotePlan {
+        status: u8,
+        hash: [u8; 32],
+        hash_found: bool,
+        sender: [u8; 20],
+        nonce: [u8; 32],
+        gas_price: [u8; 32],
+        gas: u64,
+        data_size: usize,
+        last_block_number: u64,
+        proposable_before: bool,
     }
 
     /// Address handle used by C++ to query FinalChain account state for purge.
@@ -153,8 +180,21 @@ pub mod rustaxa_ffi {
         gas_price: [u8; 32],
         gas: u64,
         data_size: usize,
+        tx_rlp: Vec<u8>,
         proposable: bool,
         last_block_number: u64,
+    }
+
+    /// Queued transaction payload retained by Rust and materialized by C++.
+    struct TransactionQueueStoredTransaction {
+        found: bool,
+        hash: [u8; 32],
+        tx_rlp: Vec<u8>,
+    }
+
+    /// Proposable queued transactions returned per sender.
+    struct TransactionQueueTransactionGroup {
+        transactions: Vec<TransactionQueueStoredTransaction>,
     }
 
     /// Rust queue insert decision and C++ mirror-update plan.
@@ -164,6 +204,19 @@ pub mod rustaxa_ffi {
         inserted_hash: [u8; 32],
         demoted_hashes: Vec<TransactionQueueHash>,
         overflow_removed_hashes: Vec<TransactionQueueHash>,
+    }
+
+    /// Ordered hash read plan with completion metadata.
+    struct TransactionQueueOrderedHashesPlan {
+        hashes: Vec<TransactionQueueHash>,
+        requested_count: u64,
+        complete: bool,
+    }
+
+    /// Purge-style outcome with removed hashes and count.
+    struct TransactionQueuePurgePlan {
+        removed_hashes: Vec<TransactionQueueHash>,
+        removed_count: usize,
     }
 
     /// Candidate metadata supplied before C++ runs a gas estimate.
@@ -1728,20 +1781,43 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionQueue,
             input: TransactionQueueInsertInput,
         ) -> Result<TransactionQueueInsertOutcome>;
+        pub fn transaction_queue_erase_plan(
+            self: &mut BridgeTransactionQueue,
+            hash: &[u8; 32],
+        ) -> TransactionQueueErasePlan;
         pub fn transaction_queue_erase(self: &mut BridgeTransactionQueue, hash: &[u8; 32]) -> bool;
         pub fn transaction_queue_contains(self: &BridgeTransactionQueue, hash: &[u8; 32]) -> bool;
+        pub fn transaction_queue_get_transaction(
+            self: &BridgeTransactionQueue,
+            hash: &[u8; 32],
+        ) -> TransactionQueueStoredTransaction;
         pub fn transaction_queue_size(self: &BridgeTransactionQueue) -> usize;
         pub fn transaction_queue_ordered_hashes(
             self: &BridgeTransactionQueue,
             count: u64,
         ) -> Vec<TransactionQueueHash>;
+        pub fn transaction_queue_ordered_transactions(
+            self: &BridgeTransactionQueue,
+            count: u64,
+        ) -> Vec<TransactionQueueStoredTransaction>;
+        pub fn transaction_queue_ordered_hashes_plan(
+            self: &BridgeTransactionQueue,
+            count: u64,
+        ) -> TransactionQueueOrderedHashesPlan;
         pub fn transaction_queue_all_hash_groups(
             self: &BridgeTransactionQueue,
         ) -> Vec<TransactionQueueHashGroup>;
+        pub fn transaction_queue_all_transaction_groups(
+            self: &BridgeTransactionQueue,
+        ) -> Vec<TransactionQueueTransactionGroup>;
         pub fn transaction_queue_block_finalized(
             self: &mut BridgeTransactionQueue,
             block_number: u64,
         ) -> Vec<TransactionQueueHash>;
+        pub fn transaction_queue_block_finalized_plan(
+            self: &mut BridgeTransactionQueue,
+            block_number: u64,
+        ) -> TransactionQueuePurgePlan;
         pub fn transaction_queue_proposable_accounts(
             self: &BridgeTransactionQueue,
         ) -> Vec<TransactionQueueAddress>;
@@ -1750,11 +1826,21 @@ pub mod rustaxa_ffi {
             sender: &[u8; 20],
             account_nonce: &[u8; 32],
         ) -> Vec<TransactionQueueHash>;
+        pub fn transaction_queue_purge_account_plan(
+            self: &mut BridgeTransactionQueue,
+            sender: &[u8; 20],
+            account_nonce: &[u8; 32],
+        ) -> TransactionQueuePurgePlan;
         pub fn transaction_queue_non_proposable_over_limit(self: &BridgeTransactionQueue) -> bool;
         pub fn transaction_queue_min_gas_price_for_block_inclusion(
             self: &BridgeTransactionQueue,
             limit: u64,
         ) -> [u8; 32];
+        pub fn transaction_queue_demote_to_non_proposable(
+            self: &mut BridgeTransactionQueue,
+            hash: &[u8; 32],
+            last_block_number: u64,
+        ) -> TransactionQueueDemotePlan;
 
         // Consensus gas pricer
 

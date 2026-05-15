@@ -103,7 +103,9 @@ TEST_F(TransactionManagerShimFixture, rustGetTransactionPrefersLiveCachesThenSto
 
   const auto from_pool = trx_mgr.getTransaction(transactions[0]->getHash());
   ASSERT_TRUE(from_pool);
-  EXPECT_EQ(from_pool.get(), transactions[0].get());
+  EXPECT_NE(from_pool.get(), transactions[0].get());
+  EXPECT_EQ(from_pool->getHash(), transactions[0]->getHash());
+  EXPECT_EQ(from_pool->rlp(), transactions[0]->rlp());
 
   trx_mgr.saveTransactionsFromDagBlock({transactions[0]});
 
@@ -144,7 +146,9 @@ TEST_F(TransactionManagerShimFixture, rustGetTransactionsCombinesLiveAndRustStor
 
   ASSERT_EQ(materialized.size(), 2);
   EXPECT_EQ(materialized[0]->getHash(), transactions[0]->getHash());
-  EXPECT_EQ(materialized[1].get(), transactions[1].get());
+  EXPECT_NE(materialized[1].get(), transactions[1].get());
+  EXPECT_EQ(materialized[1]->getHash(), transactions[1]->getHash());
+  EXPECT_EQ(materialized[1]->rlp(), transactions[1]->rlp());
 }
 
 TEST_F(TransactionManagerShimFixture, rustDagTransactionPersistenceFailureDoesNotMutateLiveState) {
@@ -653,6 +657,64 @@ TEST_F(TransactionManagerShimFixture, rustInsertValidatedTransactionDoesNotEmitF
   EXPECT_EQ(trx_mgr.insertValidatedTransaction(std::move(transaction)), TransactionStatus::InsertedNonProposable);
   EXPECT_EQ(emitted_hash_future.wait_for(std::chrono::milliseconds(200)), std::future_status::timeout);
   trx_mgr.transaction_added_.unsubscribe(sub_id);
+}
+
+TEST_F(TransactionManagerShimFixture, rustInsertValidatedTransactionKeepsDemotedMatchingNonceTransactionMaterialized) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  const auto sender_secret =
+      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                  dev::Secret::ConstructFromStringType::FromHex);
+
+  auto low_fee_tx = std::make_shared<Transaction>(0, 1, 1000, 10000, dev::bytes(), sender_secret, addr_t::random());
+  auto high_fee_tx =
+      std::make_shared<Transaction>(0, 1, 2000, 10000, dev::bytes(), sender_secret, addr_t::random());
+  const auto low_fee_tx_hash = low_fee_tx->getHash();
+  const auto high_fee_tx_hash = high_fee_tx->getHash();
+
+  EXPECT_EQ(trx_mgr.insertValidatedTransaction(std::move(low_fee_tx)), TransactionStatus::Inserted);
+  EXPECT_EQ(trx_mgr.insertValidatedTransaction(std::move(high_fee_tx)), TransactionStatus::Inserted);
+
+  const auto proposal_pool = trx_mgr.getAllPoolTrxs();
+  ASSERT_EQ(proposal_pool.size(), 1);
+  ASSERT_EQ(proposal_pool[0].size(), 1);
+  EXPECT_EQ(proposal_pool[0][0]->getHash(), high_fee_tx_hash);
+
+  EXPECT_EQ(trx_mgr.getTransactionPoolSize(), 1);
+  const auto demoted = trx_mgr.getTransaction(low_fee_tx_hash);
+  ASSERT_NE(demoted, nullptr);
+  EXPECT_EQ(demoted->getHash(), low_fee_tx_hash);
+
+  EXPECT_TRUE(trx_mgr.isTransactionKnown(low_fee_tx_hash));
+  EXPECT_TRUE(trx_mgr.isTransactionKnown(high_fee_tx_hash));
+}
+
+TEST_F(TransactionManagerShimFixture, rustInsertValidatedTransactionStoresNonProposableTransactionsAsKnownLiveCache) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+
+  auto oversized_tx = std::make_shared<Transaction>(1, 1, 10, cfg.propose_dag_gas_limit + 1, dev::bytes(),
+                                                   dev::KeyPair::create().secret(), addr_t::random());
+  const auto oversized_tx_hash = oversized_tx->getHash();
+
+  EXPECT_EQ(trx_mgr.insertValidatedTransaction(std::move(oversized_tx)),
+            TransactionStatus::InsertedNonProposable);
+
+  EXPECT_EQ(trx_mgr.getTransactionPoolSize(), 0);
+  const auto live = trx_mgr.getTransaction(oversized_tx_hash);
+  ASSERT_NE(live, nullptr);
+  EXPECT_EQ(live->getHash(), oversized_tx_hash);
+  EXPECT_TRUE(trx_mgr.isTransactionKnown(oversized_tx_hash));
+
+  size_t proposal_pool_size = 0;
+  for (const auto& chunk : trx_mgr.getAllPoolTrxs()) {
+    proposal_pool_size += chunk.size();
+  }
+  EXPECT_EQ(proposal_pool_size, 0);
 }
 #endif
 

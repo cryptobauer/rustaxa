@@ -1,9 +1,10 @@
 //! Deterministic transaction-pool metadata for Rust-backed transaction queue shims.
 //!
-//! The queue stores only transaction metadata needed for consensus-facing pool decisions. C++ keeps live `Transaction`
-//! objects, signature/state validation, known-cache expiration, and FinalChain account reads. Rust owns deterministic
-//! insertion, same-sender nonce replacement, priority ordering, non-proposable expiry planning, and gas-price threshold
-//! accounting.
+//! The queue stores transaction metadata and canonical transaction bytes needed for consensus-facing pool decisions.
+//! C++ supplies validated RLP at insertion time and materializes `Transaction` objects on demand for legacy API callers.
+//! C++ still owns signature/state validation, known-cache expiration, event dispatch, overflow wall-clock state, and
+//! FinalChain account reads. Rust owns deterministic insertion, same-sender nonce replacement, priority ordering,
+//! non-proposable expiry planning, queued payload retention, and gas-price threshold accounting.
 
 use anyhow::{Result, ensure};
 use ethereum_types::{H160, H256, U256};
@@ -25,6 +26,8 @@ pub struct TransactionQueueEntry {
     pub gas: u64,
     /// Raw transaction data size in bytes.
     pub data_size: u64,
+    /// Canonical transaction RLP bytes retained while the transaction is queued.
+    pub rlp: Vec<u8>,
     /// Final-chain block number observed when the transaction became non-proposable.
     pub last_block_number: u64,
 }
@@ -50,6 +53,53 @@ pub struct TransactionQueueInsertOutcome {
     pub demoted_hashes: Vec<H256>,
     /// Hashes dropped entirely because proposer overflow eviction ran.
     pub overflow_removed_hashes: Vec<H256>,
+}
+
+/// Result of erasing one hash from Rust queue metadata.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TransactionQueueEraseOutcome {
+    /// Whether the hash was removed.
+    pub removed: bool,
+    /// Whether the removed entry was proposable.
+    pub removed_proposable: bool,
+    /// Removed live metadata, when the hash existed.
+    pub removed_entry: Option<TransactionQueueEntry>,
+}
+
+/// Result of explicit proposer -> non-proposer demotion for one known transaction.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TransactionQueueDemoteStatus {
+    #[default]
+    NotFound,
+    AlreadyNonProposable,
+    Demoted,
+}
+
+/// Result of an explicit demotion attempt.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TransactionQueueDemoteOutcome {
+    /// Outcome status for the requested hash.
+    pub status: TransactionQueueDemoteStatus,
+    /// Final entry metadata after demotion (when known).
+    pub entry: Option<TransactionQueueEntry>,
+}
+
+/// Deterministic result for ordered-read operations.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TransactionQueueOrderedHashesPlan {
+    /// Ordered hashes that match the request.
+    pub hashes: Vec<H256>,
+    /// Caller requested cardinality.
+    pub requested_count: u64,
+    /// True when all proposer entries were returned.
+    pub complete: bool,
+}
+
+/// Result of purge-like operations.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TransactionQueuePurgeOutcome {
+    /// Hashes removed from Rust queue metadata.
+    pub removed_hashes: Vec<H256>,
 }
 
 #[derive(Clone, Debug)]
@@ -108,6 +158,14 @@ impl TransactionQueue {
         self.entries.contains_key(&hash)
     }
 
+    /// Returns canonical transaction bytes and metadata for a queued hash.
+    ///
+    /// The returned entry is cloned because the CXX bridge transfers owned bytes
+    /// to C++ for legacy `Transaction` materialization. Missing hashes return `None`.
+    pub fn transaction(&self, hash: H256) -> Option<TransactionQueueEntry> {
+        self.entries.get(&hash).map(|stored| stored.entry.clone())
+    }
+
     /// Returns true when non-proposer transactions reached their configured limit.
     pub fn non_proposable_transactions_over_the_limit(&self) -> bool {
         self.non_proposable_transactions.len() as u64 >= self.max_non_proposable_size
@@ -146,8 +204,17 @@ impl TransactionQueue {
 
     /// Removes a transaction by hash from any queue index.
     pub fn erase(&mut self, hash: H256) -> bool {
+        self.erase_plan(hash).removed
+    }
+
+    /// Removes a transaction by hash and returns a C++ mirror mutation plan.
+    pub fn erase_plan(&mut self, hash: H256) -> TransactionQueueEraseOutcome {
         let Some(stored) = self.entries.remove(&hash) else {
-            return false;
+            return TransactionQueueEraseOutcome {
+                removed: false,
+                removed_proposable: false,
+                removed_entry: None,
+            };
         };
         self.data_size = self.data_size.saturating_sub(stored.entry.data_size);
         if stored.proposable {
@@ -155,11 +222,51 @@ impl TransactionQueue {
         } else {
             self.non_proposable_transactions.remove(&hash);
         }
-        true
+        TransactionQueueEraseOutcome {
+            removed: true,
+            removed_proposable: stored.proposable,
+            removed_entry: Some(stored.entry),
+        }
+    }
+
+    /// Attempts to demote one transaction to non-proposable.
+    pub fn demote(&mut self, hash: H256, last_block_number: u64) -> TransactionQueueDemoteOutcome {
+        let Some(mut stored) = self.entries.remove(&hash) else {
+            return TransactionQueueDemoteOutcome {
+                status: TransactionQueueDemoteStatus::NotFound,
+                entry: None,
+            };
+        };
+
+        if !stored.proposable {
+            let entry = stored.entry.clone();
+            self.entries.insert(hash, stored);
+            return TransactionQueueDemoteOutcome {
+                status: TransactionQueueDemoteStatus::AlreadyNonProposable,
+                entry: Some(entry),
+            };
+        }
+
+        self.remove_proposable_indexes(&stored.entry);
+        stored.entry.last_block_number = last_block_number;
+        stored.proposable = false;
+        self.non_proposable_transactions
+            .insert(hash, stored.entry.last_block_number);
+        let entry = stored.entry.clone();
+        self.entries.insert(hash, stored);
+        TransactionQueueDemoteOutcome {
+            status: TransactionQueueDemoteStatus::Demoted,
+            entry: Some(entry),
+        }
     }
 
     /// Removes expired non-proposer transactions for a newly finalized block number.
     pub fn block_finalized(&mut self, block_number: u64) -> Vec<H256> {
+        self.block_finalized_plan(block_number).removed_hashes
+    }
+
+    /// Removes expired non-proposer transactions and returns a C++ mirror mutation plan.
+    pub fn block_finalized_plan(&mut self, block_number: u64) -> TransactionQueuePurgeOutcome {
         let expired = self
             .non_proposable_transactions
             .iter()
@@ -171,11 +278,23 @@ impl TransactionQueue {
         for hash in &expired {
             self.erase(*hash);
         }
-        expired
+        TransactionQueuePurgeOutcome {
+            removed_hashes: expired,
+        }
     }
 
     /// Removes proposer transactions whose nonce is lower than the finalized account nonce.
     pub fn purge_account(&mut self, sender: H160, account_nonce: U256) -> Vec<H256> {
+        self.purge_account_plan(sender, account_nonce)
+            .removed_hashes
+    }
+
+    /// Removes proposer transactions for `sender` below `account_nonce` and returns a mutation plan.
+    pub fn purge_account_plan(
+        &mut self,
+        sender: H160,
+        account_nonce: U256,
+    ) -> TransactionQueuePurgeOutcome {
         let removed = self
             .account_nonce_transactions
             .get(&sender)
@@ -189,7 +308,9 @@ impl TransactionQueue {
         for hash in &removed {
             self.erase(*hash);
         }
-        removed
+        TransactionQueuePurgeOutcome {
+            removed_hashes: removed,
+        }
     }
 
     /// Returns all accounts that currently own proposer transactions.
@@ -199,6 +320,11 @@ impl TransactionQueue {
 
     /// Returns proposer ordering with per-account nonce gating and deterministic gas-price priority.
     pub fn ordered_hashes(&self, count: u64) -> Vec<H256> {
+        self.ordered_hashes_plan(count).hashes
+    }
+
+    /// Returns proposer ordering metadata for ordered-read callers.
+    pub fn ordered_hashes_plan(&self, count: u64) -> TransactionQueueOrderedHashesPlan {
         let mut iterators = self
             .account_nonce_transactions
             .iter()
@@ -234,7 +360,11 @@ impl TransactionQueue {
                 ));
             }
         }
-        selected
+        TransactionQueueOrderedHashesPlan {
+            hashes: selected,
+            requested_count: count,
+            complete: self.size() <= count,
+        }
     }
 
     /// Returns proposer transaction hashes grouped per sender and ordered by nonce within each sender.
@@ -242,6 +372,27 @@ impl TransactionQueue {
         self.account_nonce_transactions
             .values()
             .map(|transactions| transactions.values().copied().collect())
+            .collect()
+    }
+
+    /// Returns proposer-ordered queued transactions with canonical bytes.
+    pub fn ordered_transactions(&self, count: u64) -> Vec<TransactionQueueEntry> {
+        self.ordered_hashes(count)
+            .into_iter()
+            .filter_map(|hash| self.transaction(hash))
+            .collect()
+    }
+
+    /// Returns proposer transactions grouped per sender and ordered by nonce within each sender.
+    pub fn all_transaction_groups(&self) -> Vec<Vec<TransactionQueueEntry>> {
+        self.account_nonce_transactions
+            .values()
+            .map(|transactions| {
+                transactions
+                    .values()
+                    .filter_map(|hash| self.transaction(*hash))
+                    .collect()
+            })
             .collect()
     }
 
@@ -431,6 +582,7 @@ mod tests {
             gas_price: U256::from(gas_price),
             gas: 100,
             data_size: 4,
+            rlp: vec![hash; 4],
             last_block_number: 1,
         }
     }
@@ -465,6 +617,75 @@ mod tests {
     }
 
     #[test]
+    fn erase_plan_reports_removed_entry_metadata() {
+        let mut queue = TransactionQueue::new(100);
+        queue.insert(entry(1, 1, 1, 1), true).unwrap();
+
+        let outcome = queue.erase_plan(H256::from([1; 32]));
+        assert!(outcome.removed);
+        assert!(outcome.removed_proposable);
+        assert_eq!(outcome.removed_entry.unwrap().hash, H256::from([1; 32]));
+        assert!(!queue.contains(H256::from([1; 32])));
+    }
+
+    #[test]
+    fn demote_returns_explicit_status() {
+        let mut queue = TransactionQueue::new(100);
+        queue.insert(entry(1, 1, 10, 1), true).unwrap();
+
+        let outcome = queue.demote(H256::from([1; 32]), 33);
+        assert_eq!(outcome.status, TransactionQueueDemoteStatus::Demoted);
+        assert_eq!(outcome.entry.unwrap().last_block_number, 33);
+    }
+
+    #[test]
+    fn ordered_hashes_plan_reports_completion_state() {
+        let mut queue = TransactionQueue::new(100);
+        queue.insert(entry(1, 1, 5, 1), true).unwrap();
+        queue.insert(entry(1, 2, 6, 2), true).unwrap();
+        queue.insert(entry(2, 1, 4, 3), true).unwrap();
+
+        let partial = queue.ordered_hashes_plan(2);
+        assert_eq!(
+            partial.hashes,
+            vec![H256::from([1; 32]), H256::from([2; 32])]
+        );
+        assert!(!partial.complete);
+        assert_eq!(partial.requested_count, 2);
+
+        let all = queue.ordered_hashes_plan(10);
+        assert!(all.complete);
+        assert_eq!(
+            all.hashes,
+            vec![
+                H256::from([1; 32]),
+                H256::from([2; 32]),
+                H256::from([3; 32])
+            ]
+        );
+    }
+
+    #[test]
+    fn block_finalized_and_purge_account_plans_return_removed_lists() {
+        let mut queue = TransactionQueue::new(100);
+        queue.insert(entry(1, 1, 1, 1), false).unwrap();
+        assert_eq!(
+            queue.block_finalized_plan(12).removed_hashes,
+            vec![H256::from([1; 32])]
+        );
+
+        queue.insert(entry(1, 1, 5, 1), true).unwrap();
+        queue.insert(entry(1, 2, 6, 2), true).unwrap();
+        queue.insert(entry(2, 1, 4, 3), true).unwrap();
+        assert_eq!(
+            queue
+                .purge_account_plan(H160::from([1; 20]), U256::from(2u8))
+                .removed_hashes,
+            vec![H256::from([1; 32])]
+        );
+    }
+
+    #[test]
     fn expires_non_proposable_transactions_after_finalized_block_limit() {
         let mut queue = TransactionQueue::new(100);
         queue.insert(entry(1, 1, 1, 1), false).unwrap();
@@ -483,5 +704,25 @@ mod tests {
 
         assert_eq!(queue.min_gas_price_for_block_inclusion(150), U256::from(6));
         assert_eq!(queue.min_gas_price_for_block_inclusion(300), U256::one());
+    }
+
+    #[test]
+    fn queued_transactions_return_canonical_payloads() {
+        let mut queue = TransactionQueue::new(100);
+        queue.insert(entry(1, 1, 5, 1), true).unwrap();
+        queue.insert(entry(2, 1, 7, 2), true).unwrap();
+
+        let ordered = queue.ordered_transactions(2);
+        assert_eq!(ordered[0].hash, H256::from([2; 32]));
+        assert_eq!(ordered[0].rlp, vec![2; 4]);
+        assert_eq!(
+            queue.transaction(H256::from([1; 32])).unwrap().rlp,
+            vec![1; 4]
+        );
+
+        let groups = queue.all_transaction_groups();
+        assert_eq!(groups.len(), 2);
+        assert!(groups.iter().any(|group| group[0].rlp == vec![1; 4]));
+        assert!(groups.iter().any(|group| group[0].rlp == vec![2; 4]));
     }
 }

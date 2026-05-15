@@ -2,7 +2,6 @@
 
 #include <chrono>
 #include <memory>
-#include <unordered_map>
 
 #include "common/constants.hpp"
 #include "common/util.hpp"
@@ -23,10 +22,11 @@ class FinalChain;
 /**
  * Rust-mode transaction queue facade.
  *
- * The class preserves the public `TransactionQueue` API while moving deterministic queue metadata into Rust. C++ keeps
- * live `Transaction` ownership, known-transaction expiration cache semantics, overflow wall-clock state, and FinalChain
- * account lookups used by purge. Rust owns proposer/non-proposer indexes, per-account nonce ordering, replacement,
- * expiry planning, pool limits, and gas-price aggregates.
+ * The class preserves the public `TransactionQueue` API while moving deterministic queue metadata and queued
+ * transaction payload bytes into Rust. C++ materializes `Transaction` objects from Rust-retained canonical RLP for API
+ * callers and keeps known-transaction expiration cache semantics, overflow wall-clock state, and FinalChain account
+ * lookups used by purge. Rust owns proposer/non-proposer indexes, per-account nonce ordering, replacement, expiry
+ * planning, pool limits, gas-price aggregates, and queued payload retention.
  *
  * Edge behavior:
  * - insert status values mirror `TransactionStatus`
@@ -52,7 +52,12 @@ class TransactionQueue {
   bool erase(const SharedTransaction& transaction);
 
   /**
-   * Returns the live transaction pointer for `hash`, or null when absent.
+   * Moves a queued transaction from proposer ordering to non-proposer state.
+   */
+  bool demoteToNonProposable(const trx_hash_t& hash, uint64_t last_block_number);
+
+  /**
+   * Materializes and returns the queued transaction for `hash`, or null when absent.
    */
   std::shared_ptr<Transaction> get(const trx_hash_t& hash) const;
 
@@ -115,14 +120,19 @@ class TransactionQueue {
 
  private:
   /**
-   * Removes live pointers and known-cache entries for hashes dropped by Rust.
+   * Removes known-cache entries for hashes dropped by Rust when requested.
    */
   void forgetHashes(const rust::Vec<rustaxa::TransactionQueueHash>& hashes, bool erase_known);
 
   /**
-   * Stores a live transaction pointer after Rust accepts the metadata.
+   * Materializes a legacy transaction object from Rust-owned queued bytes.
    */
-  void storeTransaction(const SharedTransaction& transaction);
+  static std::shared_ptr<Transaction> materializeTransaction(const rustaxa::TransactionQueueStoredTransaction& stored);
+
+  /**
+   * Converts a byte vector into the bridge representation.
+   */
+  static rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& bytes);
 
   /**
    * Converts a Rust hash handle into the local hash type.
@@ -151,7 +161,6 @@ class TransactionQueue {
 
  private:
   ::rust::Box<rustaxa::BridgeTransactionQueue> queue_;
-  std::unordered_map<trx_hash_t, std::shared_ptr<Transaction>> transactions_;
   ExpirationCache<trx_hash_t> known_txs_;
 
   std::chrono::system_clock::time_point transaction_overflow_time_;

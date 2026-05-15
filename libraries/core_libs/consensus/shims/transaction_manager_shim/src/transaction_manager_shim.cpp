@@ -305,9 +305,10 @@ class TransactionManagerRustShimAccess {
         LOG(manager.log_er_) << "Transaction " << candidate->getHash()
                              << " has invalid estimation: " << estimate.gas_used;
         std::unique_lock transactions_lock(manager.transactions_mutex_);
-        auto transaction = candidate;
-        manager.transactions_pool_.erase(transaction);
-        manager.transactions_pool_.insert(std::move(transaction), false, manager.final_chain_->lastBlockNumber());
+        if (!manager.transactions_pool_.demoteToNonProposable(candidate->getHash(),
+                                                              manager.final_chain_->lastBlockNumber())) {
+          throw std::runtime_error("Rust transaction queue failed to demote invalid-estimate transaction");
+        }
         continue;
       }
 
