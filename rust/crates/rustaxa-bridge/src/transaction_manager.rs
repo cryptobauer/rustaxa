@@ -889,6 +889,7 @@ mod tests {
             non_proposable.status,
             rustaxa_consensus::transaction_queue::TransactionQueueInsertStatus::InsertedNonProposable as u8
         );
+        assert!(!non_proposable.emit_transaction_added);
 
         let rejected =
             transaction_manager_plan_validated_insert(validated_insert_fact(3, false, 0, 0, false))
@@ -898,6 +899,7 @@ mod tests {
             rejected.status,
             rustaxa_consensus::transaction_queue::TransactionQueueInsertStatus::Known as u8
         );
+        assert!(!rejected.emit_transaction_added);
     }
 
     #[test]

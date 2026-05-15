@@ -24,6 +24,15 @@ namespace taraxa {
  */
 class TransactionManager : public TransactionManagerOld {
  public:
+  /**
+   * Rust-mode pending-transaction event surface.
+   *
+   * The legacy owner type keeps `emit` private to `TransactionManagerOld`, so the shim owns
+   * the public event instance used by Rust-mode subscribers and emits it only from
+   * shim-owned insertion paths selected by Rust admission planning.
+   */
+  util::event::Event<TransactionManager, const trx_hash_t &> const transaction_added_{};
+
   TransactionManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db,
                      std::shared_ptr<final_chain::FinalChain> final_chain, addr_t node_addr)
       : TransactionManagerOld(conf, std::move(db), std::move(final_chain), node_addr) {}
@@ -214,6 +223,18 @@ class TransactionManager : public TransactionManagerOld {
   void recoverNonfinalizedTransactions();
 
   std::pair<bool, std::string> verifyTransaction(const std::shared_ptr<Transaction> &trx) const;
+
+ private:
+  friend class TransactionManagerRustShimAccess;
+
+  /**
+   * Emit the Rust-mode pending-transaction event.
+   *
+   * Only shim-owned insertion code calls this helper. It intentionally emits the facade event
+   * rather than the inherited legacy event so subscribers attached to the Rust-mode
+   * `TransactionManager` observe Rust-planned proposable admissions without a legacy owner hook.
+   */
+  void emitTransactionAddedForRust(const trx_hash_t &trx_hash) const { transaction_added_.emit(trx_hash); }
 };
 
 }  // namespace taraxa

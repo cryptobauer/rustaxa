@@ -25,9 +25,7 @@ trx_hash_t fromBridgeHash(const std::array<uint8_t, 32>& hash) {
   return trx_hash_t(hash.data(), trx_hash_t::ConstructFromPointer);
 }
 
-dev::bytes fromBridgeBytes(const rust::Vec<uint8_t>& bytes) {
-  return dev::bytes(bytes.begin(), bytes.end());
-}
+dev::bytes fromBridgeBytes(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
 
 rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& bytes) {
   rust::Vec<uint8_t> out;
@@ -94,7 +92,7 @@ std::array<uint8_t, 32> toBridgeU256(const Value& value) {
 }
 
 std::pair<bool, std::string> verifyTransactionResultFromRustStatus(uint8_t status, uint64_t chain_id,
-                                                                 uint64_t expected_chain_id) {
+                                                                   uint64_t expected_chain_id) {
   switch (status) {
     case kTMVerifyTransactionAccepted:
       return {true, ""};
@@ -172,8 +170,7 @@ class TransactionManagerRustShimAccess {
     fact.intrinsic_gas_covered = trx->intrinsicGasCovered();
     fact.signature_valid = signature_valid;
     fact.gas_price = toBridgeU256(trx->getGasPrice());
-    fact.minimum_gas_price =
-        toBridgeU256(val_t(manager.kConf.genesis.state.hardforks.soleirolia_hf.trx_min_gas_price));
+    fact.minimum_gas_price = toBridgeU256(val_t(manager.kConf.genesis.state.hardforks.soleirolia_hf.trx_min_gas_price));
 
     const auto outcome = [&]() {
       try {
@@ -186,8 +183,8 @@ class TransactionManagerRustShimAccess {
     return verifyTransactionResultFromRustStatus(outcome.status, fact.chain_id, fact.expected_chain_id);
   }
 
-  static std::pair<bool, std::string> insertTransaction(TransactionManagerOld& manager,
-                                                       const std::shared_ptr<Transaction>& trx) {
+  static std::pair<bool, std::string> insertTransaction(TransactionManager& manager,
+                                                        const std::shared_ptr<Transaction>& trx) {
     if (isTransactionKnown(manager, trx->getHash())) {
       return {false, "Transaction already in transactions pool"};
     }
@@ -228,8 +225,8 @@ class TransactionManagerRustShimAccess {
         outcome.status, outcome.finalized_period_known ? outcome.finalized_period : finalized_period);
   }
 
-  static TransactionStatus insertValidatedTransaction(TransactionManagerOld& manager, std::shared_ptr<Transaction>&& tx,
-                                                     bool insert_non_proposable) {
+  static TransactionStatus insertValidatedTransaction(TransactionManager& manager, std::shared_ptr<Transaction>&& tx,
+                                                      bool insert_non_proposable) {
     const auto trx_hash = tx->getHash();
 
     std::unique_lock transactions_lock(manager.transactions_mutex_);
@@ -262,10 +259,12 @@ class TransactionManagerRustShimAccess {
     }
 
     LOG(manager.log_dg_) << "Transaction " << trx_hash << " inserted in trx pool";
-    // TODO(rust-rewrite): restore transaction_added_ emission from shim-owned code once event emission is no longer
-    // restricted to TransactionManagerOld internals.
-    return manager.transactions_pool_.insert(std::move(tx), plan.queue_proposable,
-                                             manager.final_chain_->lastBlockNumber());
+    if (plan.emit_transaction_added) {
+      manager.emitTransactionAddedForRust(trx_hash);
+    }
+    const auto queue_status = manager.transactions_pool_.insert(std::move(tx), plan.queue_proposable,
+                                                                manager.final_chain_->lastBlockNumber());
+    return queue_status;
   }
 
   /**
@@ -446,8 +445,8 @@ class TransactionManagerRustShimAccess {
     return materializeStoredTransaction(lookups[0], "RUST_STORAGE_TX_RETRIEVAL_FAILED");
   }
 
-  static std::vector<std::shared_ptr<Transaction>> getNonfinalizedTrx(
-      const TransactionManagerOld& manager, const std::vector<trx_hash_t>& hashes) {
+  static std::vector<std::shared_ptr<Transaction>> getNonfinalizedTrx(const TransactionManagerOld& manager,
+                                                                      const std::vector<trx_hash_t>& hashes) {
     std::vector<std::shared_ptr<Transaction>> ret;
     ret.reserve(hashes.size());
     std::shared_lock transactions_lock(manager.transactions_mutex_);
@@ -461,7 +460,7 @@ class TransactionManagerRustShimAccess {
   }
 
   static std::shared_ptr<Transaction> getNonFinalizedTransaction(const TransactionManagerOld& manager,
-                                                                const trx_hash_t& hash) {
+                                                                 const trx_hash_t& hash) {
     std::shared_lock transactions_lock(manager.transactions_mutex_);
     if (const auto it = manager.nonfinalized_transactions_in_dag_.find(hash);
         it != manager.nonfinalized_transactions_in_dag_.end()) {
@@ -850,7 +849,8 @@ size_t TransactionManager::getNonfinalizedTrxSize() const {
   return TransactionManagerRustShimAccess::getNonfinalizedTrxSize(*this);
 }
 
-std::vector<std::shared_ptr<Transaction>> TransactionManager::getNonfinalizedTrx(const std::vector<trx_hash_t>& hashes) {
+std::vector<std::shared_ptr<Transaction>> TransactionManager::getNonfinalizedTrx(
+    const std::vector<trx_hash_t>& hashes) {
   return TransactionManagerRustShimAccess::getNonfinalizedTrx(*this, hashes);
 }
 

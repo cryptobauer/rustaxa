@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <future>
 #include <limits>
 #include <mutex>
 #include <shared_mutex>
@@ -329,8 +331,8 @@ TEST_F(TransactionManagerShimFixture, rustNonFinalizedReadHelpersUseLiveState) {
 
   trx_mgr.saveTransactionsFromDagBlock({transactions[0], transactions[1]});
 
-  const auto non_finalized = trx_mgr.getNonfinalizedTrx(
-      {transactions[0]->getHash(), transactions[1]->getHash(), transactions[2]->getHash()});
+  const auto non_finalized =
+      trx_mgr.getNonfinalizedTrx({transactions[0]->getHash(), transactions[1]->getHash(), transactions[2]->getHash()});
   ASSERT_EQ(non_finalized.size(), 2);
   EXPECT_EQ(non_finalized[0]->getHash(), transactions[0]->getHash());
   EXPECT_EQ(non_finalized[1]->getHash(), transactions[1]->getHash());
@@ -356,7 +358,7 @@ TEST_F(TransactionManagerShimFixture, rustExcludeFinalizedTransactionsUsesRecent
 
   std::vector<vote_hash_t> reward_votes;
   auto block = std::make_shared<PbftBlock>(kNullBlockHash, kNullBlockHash, kNullBlockHash, kNullBlockHash, 1,
-                                          addr_t::random(), dev::KeyPair::create().secret(), reward_votes);
+                                           addr_t::random(), dev::KeyPair::create().secret(), reward_votes);
   PeriodData period_data(std::move(block), {});
   period_data.transactions = {transactions[0]};
   trx_mgr.initializeRecentlyFinalizedTransactions(period_data);
@@ -398,7 +400,7 @@ TEST_F(TransactionManagerShimFixture, rustVerifyTransactionsNotFinalizedUsesRece
 
   std::vector<vote_hash_t> reward_votes;
   auto block = std::make_shared<PbftBlock>(kNullBlockHash, kNullBlockHash, kNullBlockHash, kNullBlockHash, 1,
-                                          addr_t::random(), dev::KeyPair::create().secret(), reward_votes);
+                                           addr_t::random(), dev::KeyPair::create().secret(), reward_votes);
   PeriodData period_data(std::move(block), {});
   period_data.transactions = {transactions[1]};
   trx_mgr.initializeRecentlyFinalizedTransactions(period_data);
@@ -435,8 +437,8 @@ TEST_F(TransactionManagerShimFixture, rustPoolReadHelpersRemainCxxOwned) {
   }
   ASSERT_EQ(before_count, 2);
 
-  const auto pool_lookup = trx_mgr.getPoolTransactions(
-      {transactions[0]->getHash(), trx_hash_t::random(), transactions[1]->getHash()});
+  const auto pool_lookup =
+      trx_mgr.getPoolTransactions({transactions[0]->getHash(), trx_hash_t::random(), transactions[1]->getHash()});
   ASSERT_EQ(pool_lookup.first.size(), 2);
   ASSERT_EQ(pool_lookup.second.size(), 1);
 
@@ -456,15 +458,14 @@ TEST_F(TransactionManagerShimFixture, rustVerifyTransactionRejectsChainIdMismatc
   TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
   auto bad_chain_id_transaction =
       std::make_shared<Transaction>(1, 100, 1000000000, 100000, dev::bytes(),
-                                   dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
-                                               dev::Secret::ConstructFromStringType::FromHex),
-                                   addr_t::random(), cfg.genesis.chain_id + 1);
+                                    dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                dev::Secret::ConstructFromStringType::FromHex),
+                                    addr_t::random(), cfg.genesis.chain_id + 1);
 
   const auto result = trx_mgr.verifyTransaction(bad_chain_id_transaction);
   EXPECT_FALSE(result.first);
-  EXPECT_EQ(result.second,
-            "chain_id mismatch " + std::to_string(cfg.genesis.chain_id + 1) + " " +
-                std::to_string(cfg.genesis.chain_id));
+  EXPECT_EQ(result.second, "chain_id mismatch " + std::to_string(cfg.genesis.chain_id + 1) + " " +
+                               std::to_string(cfg.genesis.chain_id));
 }
 
 TEST_F(TransactionManagerShimFixture, rustVerifyTransactionRejectsInvalidGasLimit) {
@@ -474,11 +475,11 @@ TEST_F(TransactionManagerShimFixture, rustVerifyTransactionRejectsInvalidGasLimi
   TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
   auto max_gas_limit = cfg.genesis.state.hardforks.soleirolia_hf.trx_max_gas_limit;
 
-  const auto tx = std::make_shared<Transaction>(
-      1, 100, 1000000000, max_gas_limit + 1, dev::bytes(),
-      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
-                  dev::Secret::ConstructFromStringType::FromHex),
-      addr_t::random());
+  const auto tx =
+      std::make_shared<Transaction>(1, 100, 1000000000, max_gas_limit + 1, dev::bytes(),
+                                    dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                dev::Secret::ConstructFromStringType::FromHex),
+                                    addr_t::random());
 
   const auto result = trx_mgr.verifyTransaction(tx);
   EXPECT_FALSE(result.first);
@@ -489,9 +490,10 @@ TEST_F(TransactionManagerShimFixture, rustVerifyTransactionRejectsInvalidSignatu
   auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
 
-  const auto valid_transactions = samples::createSignedTrxSamples(
-      1, 1, dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
-                           dev::Secret::ConstructFromStringType::FromHex));
+  const auto valid_transactions =
+      samples::createSignedTrxSamples(1, 1,
+                                      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                  dev::Secret::ConstructFromStringType::FromHex));
   auto valid_trx = valid_transactions[0];
 
   dev::RLPStream with_invalid_signature(9);
@@ -540,9 +542,7 @@ TEST_F(TransactionManagerShimFixture, rustInsertTransactionRejectsAlreadyFinaliz
   TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
   const auto unknown_sender = dev::Secret::random();
   const auto finalized_tx =
-      std::make_shared<Transaction>(0, 100, 1000000000, 100000, dev::bytes(),
-                                   unknown_sender,
-                                   addr_t::random());
+      std::make_shared<Transaction>(0, 100, 1000000000, 100000, dev::bytes(), unknown_sender, addr_t::random());
   constexpr uint64_t kFinalizedPeriod = 11;
 
   {
@@ -554,6 +554,105 @@ TEST_F(TransactionManagerShimFixture, rustInsertTransactionRejectsAlreadyFinaliz
   const auto result = trx_mgr.insertTransaction(finalized_tx);
   EXPECT_FALSE(result.first);
   EXPECT_EQ(result.second, "Transaction already finalized in period" + std::to_string(kFinalizedPeriod));
+}
+
+TEST_F(TransactionManagerShimFixture, rustInsertTransactionEmitsTransactionAddedEvent) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  auto transaction =
+      samples::createSignedTrxSamples(1, 1,
+                                      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                  dev::Secret::ConstructFromStringType::FromHex))[0];
+  const auto expected_hash = transaction->getHash();
+
+  std::promise<trx_hash_t> emitted_hash;
+  auto emitted_hash_future = emitted_hash.get_future();
+  const auto emission_pool = std::make_shared<util::ThreadPool>(1);
+  const auto sub_id = trx_mgr.transaction_added_.subscribe(
+      [expected_hash = expected_hash, &emitted_hash](const auto& hash) {
+        if (hash == expected_hash) {
+          emitted_hash.set_value(hash);
+        }
+      },
+      emission_pool);
+
+  ASSERT_TRUE(trx_mgr.insertTransaction(transaction).first);
+  ASSERT_EQ(emitted_hash_future.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+  EXPECT_EQ(emitted_hash_future.get(), expected_hash);
+  trx_mgr.transaction_added_.unsubscribe(sub_id);
+}
+
+TEST_F(TransactionManagerShimFixture, rustInsertTransactionDoesNotEmitForKnownFastPath) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  auto transaction =
+      samples::createSignedTrxSamples(1, 1,
+                                      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                  dev::Secret::ConstructFromStringType::FromHex))[0];
+
+  ASSERT_TRUE(trx_mgr.insertTransaction(transaction).first);
+
+  std::promise<trx_hash_t> emitted_hash;
+  auto emitted_hash_future = emitted_hash.get_future();
+  const auto emission_pool = std::make_shared<util::ThreadPool>(1);
+  const auto sub_id = trx_mgr.transaction_added_.subscribe(
+      [&emitted_hash](const auto& hash) { emitted_hash.set_value(hash); }, emission_pool);
+
+  const auto result = trx_mgr.insertTransaction(transaction);
+  EXPECT_FALSE(result.first);
+  EXPECT_EQ(result.second, "Transaction already in transactions pool");
+  EXPECT_EQ(emitted_hash_future.wait_for(std::chrono::milliseconds(200)), std::future_status::timeout);
+  trx_mgr.transaction_added_.unsubscribe(sub_id);
+}
+
+TEST_F(TransactionManagerShimFixture, rustInsertValidatedTransactionEmitsTransactionAddedEvent) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  auto transaction =
+      samples::createSignedTrxSamples(1, 1,
+                                      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                  dev::Secret::ConstructFromStringType::FromHex))[0];
+  const auto expected_hash = transaction->getHash();
+
+  std::promise<trx_hash_t> emitted_hash;
+  auto emitted_hash_future = emitted_hash.get_future();
+  const auto emission_pool = std::make_shared<util::ThreadPool>(1);
+  const auto sub_id = trx_mgr.transaction_added_.subscribe(
+      [expected_hash = expected_hash, &emitted_hash](const auto& hash) {
+        if (hash == expected_hash) {
+          emitted_hash.set_value(hash);
+        }
+      },
+      emission_pool);
+
+  EXPECT_EQ(trx_mgr.insertValidatedTransaction(std::move(transaction)), TransactionStatus::Inserted);
+  ASSERT_EQ(emitted_hash_future.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+  EXPECT_EQ(emitted_hash_future.get(), expected_hash);
+  trx_mgr.transaction_added_.unsubscribe(sub_id);
+}
+
+TEST_F(TransactionManagerShimFixture, rustInsertValidatedTransactionDoesNotEmitForNonProposableAdmission) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  auto transaction = samples::createSignedTrxSamples(1, 1, dev::KeyPair::create().secret())[0];
+
+  std::promise<trx_hash_t> emitted_hash;
+  auto emitted_hash_future = emitted_hash.get_future();
+  const auto emission_pool = std::make_shared<util::ThreadPool>(1);
+  const auto sub_id = trx_mgr.transaction_added_.subscribe(
+      [&emitted_hash](const auto& hash) { emitted_hash.set_value(hash); }, emission_pool);
+
+  EXPECT_EQ(trx_mgr.insertValidatedTransaction(std::move(transaction)), TransactionStatus::InsertedNonProposable);
+  EXPECT_EQ(emitted_hash_future.wait_for(std::chrono::milliseconds(200)), std::future_status::timeout);
+  trx_mgr.transaction_added_.unsubscribe(sub_id);
 }
 #endif
 
