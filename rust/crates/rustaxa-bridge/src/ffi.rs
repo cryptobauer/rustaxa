@@ -758,6 +758,62 @@ pub mod rustaxa_ffi {
         tx_rlp: Vec<u8>,
     }
 
+    /// One sidecar insertion payload for live non-finalized transaction state.
+    struct TransactionManagerSidecarInsertInput {
+        hash: [u8; 32],
+        trx_rlp: Vec<u8>,
+    }
+
+    /// One ordered sidecar lookup request for C++ transaction materialization.
+    struct TransactionManagerSidecarLookupRequest {
+        input_index: u64,
+        hash: [u8; 32],
+    }
+
+    /// One sidecar lookup result preserving input ordering metadata.
+    struct TransactionManagerSidecarLookup {
+        input_index: u64,
+        hash: [u8; 32],
+        found: bool,
+        source: u8,
+        trx_rlp: Vec<u8>,
+    }
+
+    /// Ordered sidecar lookup plan for C++ materialization.
+    struct TransactionManagerSidecarLookupPlan {
+        lookups: Vec<TransactionManagerSidecarLookup>,
+    }
+
+    /// Canonical hash wrapper for sidecar transition lists.
+    struct TransactionManagerSidecarHash {
+        hash: [u8; 32],
+    }
+
+    /// One finalized transition payload for sidecar mutation.
+    struct TransactionManagerSidecarTransitionInput {
+        period: u64,
+        hashes: Vec<TransactionManagerSidecarHash>,
+    }
+
+    /// One recovery insertion payload for sidecar state rebuild.
+    struct TransactionManagerSidecarRecoveryInsertInput {
+        hash: [u8; 32],
+        finalized: bool,
+        trx_rlp: Vec<u8>,
+    }
+
+    /// Input transaction fact for sidecar-aware DAG transaction persistence.
+    ///
+    /// Rust computes sidecar membership from `BridgeTransactionManagerSidecar`
+    /// instead of accepting C++ membership booleans.
+    struct DagTransactionSaveSidecarFact {
+        input_index: u64,
+        hash: [u8; 32],
+        trx_rlp: Vec<u8>,
+        transaction_nonce: [u8; 32],
+        sender_account_nonce: [u8; 32],
+    }
+
     /// One non-finalized transaction payload persisted through Rust storage.
     ///
     /// The bridge caller must supply the canonical C++ transaction hash and RLP.
@@ -806,6 +862,14 @@ pub mod rustaxa_ffi {
     struct FinalizedTransactionStatusAction {
         input_index: u64,
         hash: [u8; 32],
+        removed_non_finalized: bool,
+    }
+
+    /// Input finalized transaction payload for sidecar-aware status updates.
+    struct FinalizedTransactionStatusSidecarFact {
+        input_index: u64,
+        hash: [u8; 32],
+        trx_rlp: Vec<u8>,
     }
 
     /// Input for finalized transaction filtering from legacy C++.
@@ -835,6 +899,14 @@ pub mod rustaxa_ffi {
         in_recently_finalized_cache: bool,
     }
 
+    /// Input for Rust-owned sidecar `verifyTransactionsNotFinalized` decisions.
+    struct TransactionManagerVerifyNotFinalizedSidecarFact {
+        input_index: u64,
+        hash: [u8; 32],
+        transaction_nonce: [u8; 32],
+        sender_account_nonce: [u8; 32],
+    }
+
     /// Decision returned when the first finalized transaction is observed.
     ///
     /// `is_finalized` is false when all inputs are accepted.
@@ -842,6 +914,7 @@ pub mod rustaxa_ffi {
         is_finalized: bool,
         input_index: u64,
         hash: [u8; 32],
+        source: u8,
     }
 
     /// Facts extracted by C++ for TransactionManager::verifyTransaction admission checks.
@@ -906,6 +979,19 @@ pub mod rustaxa_ffi {
         insert_non_proposable: bool,
         in_non_finalized_cache: bool,
         in_recently_finalized_cache: bool,
+        account_found: bool,
+        account_nonce: [u8; 32],
+        account_balance: [u8; 32],
+    }
+
+    /// Facts extracted by C++ before queue insertion when Rust owns manager sidecars.
+    struct TransactionManagerValidatedInsertSidecarFact {
+        tx_hash: [u8; 32],
+        transaction_nonce: [u8; 32],
+        transaction_cost: [u8; 32],
+        gas_limit: u64,
+        propose_dag_gas_limit: u64,
+        insert_non_proposable: bool,
         account_found: bool,
         account_nonce: [u8; 32],
         account_balance: [u8; 32],
@@ -1909,6 +1995,7 @@ pub mod rustaxa_ffi {
         // Consensus transaction manager planning
 
         type BridgeTransactionPackPlanner;
+        type BridgeTransactionManagerSidecar;
 
         pub fn create_transaction_pack_planner(
             weight_limit: u64,
@@ -1923,11 +2010,61 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionPackPlanner,
             input: TransactionPackEstimateInput,
         ) -> Result<TransactionPackEstimateOutcome>;
+        pub fn create_transaction_manager_sidecar() -> Box<BridgeTransactionManagerSidecar>;
+        pub fn transaction_manager_sidecar_insert_non_finalized(
+            self: &mut BridgeTransactionManagerSidecar,
+            input: TransactionManagerSidecarInsertInput,
+        ) -> Result<()>;
+        pub fn transaction_manager_sidecar_contains_non_finalized(
+            self: &BridgeTransactionManagerSidecar,
+            hash: &[u8; 32],
+        ) -> bool;
+        pub fn transaction_manager_sidecar_contains_recently_finalized(
+            self: &BridgeTransactionManagerSidecar,
+            hash: &[u8; 32],
+        ) -> bool;
+        pub fn transaction_manager_sidecar_non_finalized_size(
+            self: &BridgeTransactionManagerSidecar,
+        ) -> usize;
+        pub fn transaction_manager_sidecar_lookup_ordered_payloads(
+            self: &BridgeTransactionManagerSidecar,
+            requests: Vec<TransactionManagerSidecarLookupRequest>,
+        ) -> Result<TransactionManagerSidecarLookupPlan>;
+        pub fn transaction_manager_sidecar_remove_non_finalized(
+            self: &mut BridgeTransactionManagerSidecar,
+            requests: Vec<TransactionManagerSidecarLookupRequest>,
+        ) -> Result<u64>;
+        pub fn transaction_manager_sidecar_apply_finalized_transition(
+            self: &mut BridgeTransactionManagerSidecar,
+            transition: TransactionManagerSidecarTransitionInput,
+        ) -> Result<()>;
+        pub fn transaction_manager_sidecar_evict_stale_recently_finalized(
+            self: &mut BridgeTransactionManagerSidecar,
+            stale_period: u64,
+        ) -> u64;
+        pub fn transaction_manager_sidecar_insert_recovery_entries(
+            self: &mut BridgeTransactionManagerSidecar,
+            entries: Vec<TransactionManagerSidecarRecoveryInsertInput>,
+        ) -> Result<u64>;
+        pub fn save_transactions_from_dag_block_with_sidecar(
+            sidecar: &mut BridgeTransactionManagerSidecar,
+            storage: &BridgeStorage,
+            current_transaction_count: u64,
+            facts: Vec<DagTransactionSaveSidecarFact>,
+        ) -> Result<DagTransactionSaveOutcome>;
         pub fn save_transactions_from_dag_block(
             storage: &BridgeStorage,
             current_transaction_count: u64,
             facts: Vec<DagTransactionSaveFact>,
         ) -> Result<DagTransactionSaveOutcome>;
+        pub fn update_finalized_transactions_status_with_sidecar(
+            sidecar: &mut BridgeTransactionManagerSidecar,
+            storage: &BridgeStorage,
+            period: u64,
+            retention_window: u64,
+            current_transaction_count: u64,
+            facts: Vec<FinalizedTransactionStatusSidecarFact>,
+        ) -> Result<FinalizedTransactionStatusPlan>;
         pub fn update_finalized_transactions_status(
             storage: &BridgeStorage,
             period: u64,
@@ -1947,15 +2084,32 @@ pub mod rustaxa_ffi {
         pub fn transaction_manager_plan_validated_insert(
             fact: TransactionManagerValidatedInsertFact,
         ) -> Result<TransactionManagerValidatedInsertPlan>;
+        /// Builds deterministic TransactionManager::insertValidatedTransaction plan using Rust sidecars.
+        pub fn transaction_manager_plan_validated_insert_with_sidecar(
+            sidecar: &BridgeTransactionManagerSidecar,
+            fact: TransactionManagerValidatedInsertSidecarFact,
+        ) -> Result<TransactionManagerValidatedInsertPlan>;
         /// Determines which hash inputs are not finalized in-memory and in storage.
         pub fn transaction_manager_filter_non_finalized(
             storage: &BridgeStorage,
             facts: Vec<TransactionManagerFinalizedFilterFact>,
         ) -> Result<FinalizedTransactionFilterPlan>;
+        /// Determines which hash inputs are not finalized using Rust-owned sidecars and storage.
+        pub fn transaction_manager_filter_non_finalized_with_sidecar(
+            sidecar: &BridgeTransactionManagerSidecar,
+            storage: &BridgeStorage,
+            requests: Vec<TransactionManagerSidecarLookupRequest>,
+        ) -> Result<FinalizedTransactionFilterPlan>;
         /// Verifies a transaction sequence has no finalized entries.
         pub fn transaction_manager_verify_not_finalized(
             storage: &BridgeStorage,
             facts: Vec<TransactionManagerVerifyNotFinalizedFact>,
+        ) -> Result<TransactionManagerVerifyNotFinalizedOutcome>;
+        /// Verifies a transaction sequence has no finalized entries using Rust-owned sidecars.
+        pub fn transaction_manager_verify_not_finalized_with_sidecar(
+            sidecar: &BridgeTransactionManagerSidecar,
+            storage: &BridgeStorage,
+            facts: Vec<TransactionManagerVerifyNotFinalizedSidecarFact>,
         ) -> Result<TransactionManagerVerifyNotFinalizedOutcome>;
         /// Resolves transaction hashes through TransactionManager storage rules.
         pub fn transaction_manager_load_stored_transactions(

@@ -1,20 +1,23 @@
 //! Deterministic transaction decision helpers for Rust-backed `TransactionManager` flows.
 //!
-//! The module currently owns three independent decision boundaries used by C++ shims:
+//! The module currently owns transaction-manager decision boundaries used by C++ shims:
 //! - proposer transaction packing (`packTrxs`)
 //! - DAG-block transaction persistence planning (`saveTransactionsFromDagBlock`)
 //! - finalized transaction status updates (`updateFinalizedTransactionsStatus`)
 //! - finalized filtering (`excludeFinalizedTransactions` + `verifyTransactionsNotFinalized`)
 //! - TransactionManager verification and pre-admission insert planning (`verifyTransaction`,
 //!   `insertTransaction`)
+//! - live non-finalized and recently-finalized sidecar membership plus canonical RLP retention
 //!
-//! In each case Rust remains side-effect free and deterministic: it only computes the
-//! plan and leaves live queue/cache mutation to C++ state.
+//! Planner functions remain side-effect free and deterministic. The
+//! [`TransactionManagerSidecar`] state owns only hash membership and canonical
+//! transaction bytes; C++ still materializes transaction objects, mutates the live
+//! queue/known-cache side effects, performs gas estimation, and orchestrates lifecycle calls.
 
 use crate::transaction_queue::TransactionQueueInsertStatus;
 use anyhow::{Context, Result, ensure};
 use ethereum_types::{H256, U256};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Candidate metadata supplied before C++ runs a gas estimate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -126,6 +129,8 @@ pub struct FinalizedTransactionStatusAction {
     pub input_index: u64,
     /// Canonical transaction hash.
     pub hash: H256,
+    /// True when this finalized transaction was removed from the live non-finalized sidecar.
+    pub removed_non_finalized: bool,
 }
 
 /// Deterministic finalized-transaction status plan.
@@ -298,6 +303,7 @@ pub fn plan_finalized_transactions_status(
         accepted_transactions.push(FinalizedTransactionStatusAction {
             input_index: fact.input_index,
             hash: fact.hash,
+            removed_non_finalized: fact.in_non_finalized_cache,
         });
     }
 
@@ -507,6 +513,197 @@ pub struct TransactionManagerValidatedInsertPlan {
     pub queue_proposable: bool,
     /// True when C++ should emit `transaction_added_` before queue insertion.
     pub emit_transaction_added: bool,
+}
+
+/// One ordered sidecar payload lookup result for C++ transaction materialization.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionManagerSidecarLookup {
+    /// Original caller-provided request position.
+    pub input_index: u64,
+    /// Canonical transaction hash used as the sidecar key.
+    pub hash: H256,
+    /// True when `trx_rlp` was found in Rust-owned sidecar state.
+    pub found: bool,
+    /// Sidecar source: 0 missing, 1 non-finalized, 2 recently-finalized.
+    pub source: u8,
+    /// Canonical transaction RLP payload, when found.
+    pub trx_rlp: Vec<u8>,
+}
+
+/// Recovery insertion entry consumed by the Rust-owned TransactionManager sidecar.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionManagerSidecarRecoveryEntry {
+    /// Canonical transaction hash used as the sidecar key.
+    pub hash: H256,
+    /// True when recovery source marked this entry stale/finalized.
+    pub finalized: bool,
+    /// Canonical transaction RLP payload.
+    pub trx_rlp: Vec<u8>,
+}
+
+/// Rust-owned live transaction sidecar state for TransactionManager.
+///
+/// Execution boundary:
+/// - owns canonical RLP payload retention for live non-finalized and recently-finalized hashes
+/// - supports hash membership checks used by C++ admission/finalization plumbing
+/// - provides ordered payload lookups without exposing internal map ordering
+/// - applies finalized transitions and stale eviction deterministically
+/// - accepts non-finalized recovery payloads while skipping stale finalized rows
+#[derive(Clone, Debug, Default)]
+pub struct TransactionManagerSidecar {
+    non_finalized: HashMap<H256, Vec<u8>>,
+    recently_finalized: HashMap<H256, Vec<u8>>,
+    recently_finalized_periods: BTreeMap<u64, Vec<H256>>,
+}
+
+impl TransactionManagerSidecarLookup {
+    /// Missing sidecar lookup source.
+    pub const SOURCE_MISSING: u8 = 0;
+    /// Non-finalized sidecar lookup source.
+    pub const SOURCE_NON_FINALIZED: u8 = 1;
+    /// Recently-finalized sidecar lookup source.
+    pub const SOURCE_RECENTLY_FINALIZED: u8 = 2;
+}
+
+impl TransactionManagerSidecar {
+    /// Creates an empty TransactionManager live sidecar.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Inserts or updates one non-finalized transaction payload in canonical form.
+    pub fn insert_non_finalized(&mut self, hash: H256, trx_rlp: Vec<u8>) -> Result<()> {
+        ensure!(!hash.is_zero(), "sidecar non-finalized hash cannot be zero");
+        self.recently_finalized.remove(&hash);
+        self.non_finalized.insert(hash, trx_rlp);
+        Ok(())
+    }
+
+    /// Inserts or updates one recently-finalized transaction payload in canonical form.
+    pub fn insert_recently_finalized(
+        &mut self,
+        period: u64,
+        hash: H256,
+        trx_rlp: Vec<u8>,
+    ) -> Result<bool> {
+        ensure!(
+            !hash.is_zero(),
+            "sidecar recently-finalized hash cannot be zero"
+        );
+        let removed_non_finalized = self.non_finalized.remove(&hash).is_some();
+        self.recently_finalized.insert(hash, trx_rlp);
+        self.recently_finalized_periods
+            .entry(period)
+            .or_default()
+            .push(hash);
+        Ok(removed_non_finalized)
+    }
+
+    /// Removes one non-finalized sidecar payload.
+    pub fn remove_non_finalized(&mut self, hash: H256) -> bool {
+        self.non_finalized.remove(&hash).is_some()
+    }
+
+    /// True when the hash exists in Rust-owned non-finalized sidecar state.
+    pub fn contains_non_finalized(&self, hash: H256) -> bool {
+        self.non_finalized.contains_key(&hash)
+    }
+
+    /// True when the hash exists in Rust-owned recently-finalized sidecar state.
+    pub fn contains_recently_finalized(&self, hash: H256) -> bool {
+        self.recently_finalized.contains_key(&hash)
+    }
+
+    /// Returns the number of Rust-owned non-finalized transaction sidecars.
+    pub fn non_finalized_size(&self) -> usize {
+        self.non_finalized.len()
+    }
+
+    /// Returns payloads for ordered hash requests, preserving input order.
+    pub fn lookup_payloads_ordered(
+        &self,
+        requests: Vec<(u64, H256)>,
+    ) -> Result<Vec<TransactionManagerSidecarLookup>> {
+        let mut out = Vec::with_capacity(requests.len());
+        for (input_index, hash) in requests {
+            ensure!(!hash.is_zero(), "sidecar lookup hash cannot be zero");
+            let (source, payload) = if let Some(payload) = self.non_finalized.get(&hash) {
+                (
+                    TransactionManagerSidecarLookup::SOURCE_NON_FINALIZED,
+                    Some(payload),
+                )
+            } else if let Some(payload) = self.recently_finalized.get(&hash) {
+                (
+                    TransactionManagerSidecarLookup::SOURCE_RECENTLY_FINALIZED,
+                    Some(payload),
+                )
+            } else {
+                (TransactionManagerSidecarLookup::SOURCE_MISSING, None)
+            };
+            out.push(TransactionManagerSidecarLookup {
+                input_index,
+                hash,
+                found: payload.is_some(),
+                source,
+                trx_rlp: payload.cloned().unwrap_or_default(),
+            });
+        }
+        Ok(out)
+    }
+
+    /// Moves finalized hashes from non-finalized to recently-finalized sidecar state.
+    pub fn apply_finalized_transition(&mut self, period: u64, hashes: Vec<H256>) -> Result<()> {
+        for hash in hashes {
+            ensure!(
+                !hash.is_zero(),
+                "sidecar finalized transition hash cannot be zero"
+            );
+            if let Some(trx_rlp) = self.non_finalized.get(&hash).cloned() {
+                self.insert_recently_finalized(period, hash, trx_rlp)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Evicts recently-finalized payloads from one stale period.
+    ///
+    /// Returns the number of payloads removed from the recently-finalized hash map.
+    pub fn evict_recently_finalized_stale_period(&mut self, stale_period: u64) -> usize {
+        self.recently_finalized_periods
+            .remove(&stale_period)
+            .map(|hashes| {
+                hashes
+                    .into_iter()
+                    .filter(|hash| self.recently_finalized.remove(hash).is_some())
+                    .count()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Inserts recovery payloads into non-finalized sidecar state.
+    ///
+    /// Entries marked finalized are skipped to avoid restoring stale payloads.
+    /// Returns the number of inserted non-finalized payloads.
+    pub fn insert_recovery_entries(
+        &mut self,
+        entries: Vec<TransactionManagerSidecarRecoveryEntry>,
+    ) -> Result<usize> {
+        let mut inserted = 0usize;
+        for entry in entries {
+            ensure!(
+                !entry.hash.is_zero(),
+                "sidecar recovery hash cannot be zero"
+            );
+            if entry.finalized {
+                self.non_finalized.remove(&entry.hash);
+                continue;
+            }
+            self.recently_finalized.remove(&entry.hash);
+            self.non_finalized.insert(entry.hash, entry.trx_rlp);
+            inserted += 1;
+        }
+        Ok(inserted)
+    }
 }
 
 /// Deterministic outcome of a transaction insert admission plan.
@@ -1445,5 +1642,107 @@ mod tests {
             .status,
             TransactionManagerInsertTransactionStatus::CouldNotInsert
         );
+    }
+
+    #[test]
+    fn sidecar_lookup_preserves_order_and_uses_both_live_sets() {
+        let mut sidecar = TransactionManagerSidecar::new();
+        sidecar
+            .insert_non_finalized(H256::from([1; 32]), vec![0x11])
+            .unwrap();
+        sidecar
+            .insert_non_finalized(H256::from([2; 32]), vec![0x22])
+            .unwrap();
+        sidecar
+            .apply_finalized_transition(9, vec![H256::from([2; 32])])
+            .unwrap();
+
+        let out = sidecar
+            .lookup_payloads_ordered(vec![
+                (7, H256::from([2; 32])),
+                (8, H256::from([3; 32])),
+                (9, H256::from([1; 32])),
+            ])
+            .unwrap();
+        assert_eq!(
+            out.into_iter()
+                .map(|entry| {
+                    (
+                        entry.input_index,
+                        entry.hash,
+                        entry.found,
+                        entry.source,
+                        entry.trx_rlp,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    7,
+                    H256::from([2; 32]),
+                    true,
+                    TransactionManagerSidecarLookup::SOURCE_RECENTLY_FINALIZED,
+                    vec![0x22],
+                ),
+                (
+                    8,
+                    H256::from([3; 32]),
+                    false,
+                    TransactionManagerSidecarLookup::SOURCE_MISSING,
+                    Vec::<u8>::new(),
+                ),
+                (
+                    9,
+                    H256::from([1; 32]),
+                    true,
+                    TransactionManagerSidecarLookup::SOURCE_NON_FINALIZED,
+                    vec![0x11],
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn sidecar_finalized_transition_and_stale_eviction_are_bounded_by_period() {
+        let mut sidecar = TransactionManagerSidecar::new();
+        sidecar
+            .insert_non_finalized(H256::from([1; 32]), vec![0x11])
+            .unwrap();
+        sidecar
+            .insert_non_finalized(H256::from([2; 32]), vec![0x22])
+            .unwrap();
+
+        sidecar
+            .apply_finalized_transition(10, vec![H256::from([1; 32]), H256::from([2; 32])])
+            .unwrap();
+        assert!(sidecar.contains_recently_finalized(H256::from([1; 32])));
+        assert!(!sidecar.contains_non_finalized(H256::from([1; 32])));
+
+        assert_eq!(sidecar.evict_recently_finalized_stale_period(9), 0);
+        assert_eq!(sidecar.evict_recently_finalized_stale_period(10), 2);
+        assert!(!sidecar.contains_recently_finalized(H256::from([1; 32])));
+    }
+
+    #[test]
+    fn sidecar_recovery_insertion_skips_finalized_entries() {
+        let mut sidecar = TransactionManagerSidecar::new();
+        let inserted = sidecar
+            .insert_recovery_entries(vec![
+                TransactionManagerSidecarRecoveryEntry {
+                    hash: H256::from([1; 32]),
+                    finalized: false,
+                    trx_rlp: vec![0x11],
+                },
+                TransactionManagerSidecarRecoveryEntry {
+                    hash: H256::from([2; 32]),
+                    finalized: true,
+                    trx_rlp: vec![0x22],
+                },
+            ])
+            .unwrap();
+
+        assert_eq!(inserted, 1);
+        assert!(sidecar.contains_non_finalized(H256::from([1; 32])));
+        assert!(!sidecar.contains_non_finalized(H256::from([2; 32])));
     }
 }

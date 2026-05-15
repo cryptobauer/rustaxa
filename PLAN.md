@@ -400,22 +400,24 @@ The current Rust starting point is intentionally small:
    cache expiry, overflow/drop observation state, and finalized-account purge planning through Rust while C++
    materializes `Transaction` objects on demand and keeps FinalChain account reads for purge fact sourcing. The Rust-mode `TransactionManager` packing shim now routes proposal candidate
    sizing, declared-gas fit checks, invalid-estimate demotion decisions, accepted gas accumulation, and stop rules
-   through Rust while C++ keeps `estimateTransactionGas`, estimation caching, manager sidecars, and
-   lifecycle/finalization state. DAG transaction
-   persistence now sends live transaction facts to Rust; Rust owns duplicate filtering, nonce-gated finalized-storage
-   lookup, accepted ordering, count planning, and the storage batch before C++ applies only the accepted live sidecar
-   updates. Finalized transaction status updates now send finalized hashes and non-finalized-cache facts to Rust; Rust
-   plans count increments, retention eviction, and periodic queue purge, persists `TrxCount` before returning, and leaves
-   C++ with live recently-finalized maps, known-cache marking, non-finalized sidecar removal, and transaction-pool
-   cleanup. `excludeFinalizedTransactions` and `verifyTransactionsNotFinalized` now collect recently-finalized and nonce
-   facts in the shim, then call Rust for finalized-storage checks and deterministic filtering/short-circuit decisions.
+   through Rust while C++ keeps `estimateTransactionGas`, estimation caching, and lifecycle/finalization orchestration.
+   The TransactionManager shim now owns an opaque Rust sidecar handle for live non-finalized and recently-finalized
+   transaction membership plus canonical RLP payloads. DAG transaction persistence sends transaction/account facts to
+   Rust; Rust owns sidecar membership checks, duplicate filtering, nonce-gated finalized-storage lookup, accepted
+   ordering, count planning, the storage batch, and accepted non-finalized sidecar insertion before C++ applies only pool
+   cleanup. Finalized transaction status updates now send finalized hashes and RLP payloads to Rust; Rust plans count
+   increments, retention eviction, periodic queue purge, recently-finalized sidecar insertion, and non-finalized sidecar
+   removal while persisting `TrxCount` before C++ applies known-cache marking and transaction-pool cleanup.
+   `excludeFinalizedTransactions` and `verifyTransactionsNotFinalized` now collect only hash/nonce facts in the shim,
+   then call Rust for sidecar membership, finalized-storage checks, and deterministic filtering/short-circuit decisions.
    `verifyTransaction`, `insertTransaction`, and `insertValidatedTransaction` now collect transaction/config/cache/account
    facts in the shim and call Rust planners for exact verification reasons, public insertion result mapping, and
    proposable/non-proposable admission before C++ mutates the live queue. The Rust-mode facade now owns the public
    `transaction_added_` event surface and emits it from shim-owned code for Rust-planned proposable admissions before
-   live queue insertion, matching legacy event timing. Live pool/non-finalized/count helpers are shim-owned under the existing transaction mutex and no
-   longer forward to `TransactionManagerOld`. Remaining live-shell gaps are Rust ownership of FinalChain purge fact
-   sourcing, manager non-finalized/recently-finalized sidecars, and estimation/lifecycle orchestration.
+   live queue insertion, matching legacy event timing. Live pool/count helpers remain shim-owned under the existing
+   transaction mutex and no longer forward to `TransactionManagerOld`; non-finalized and recently-finalized read helpers
+   now materialize from Rust-owned sidecar RLP. Remaining live-shell gaps are Rust ownership of FinalChain purge fact
+   sourcing, transaction pool/known-cache side effects, and estimation/lifecycle orchestration.
    `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
    selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
    lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode

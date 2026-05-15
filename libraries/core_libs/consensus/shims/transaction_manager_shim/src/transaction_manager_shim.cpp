@@ -39,6 +39,9 @@ rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& bytes) {
 constexpr uint8_t kStoredTransactionPending = 1;
 constexpr uint8_t kStoredTransactionFinalizedRegular = 2;
 constexpr uint8_t kStoredTransactionFinalizedSystem = 3;
+constexpr uint8_t kSidecarTransactionNonFinalized = 1;
+constexpr uint8_t kSidecarTransactionRecentlyFinalized = 2;
+constexpr uint8_t kVerifyNotFinalizedRecentSidecar = 1;
 constexpr uint8_t kTMVerifyTransactionAccepted = 0;
 constexpr uint8_t kTMVerifyTransactionChainIdMismatch = 1;
 constexpr uint8_t kTMVerifyTransactionInvalidGas = 2;
@@ -78,6 +81,55 @@ std::shared_ptr<Transaction> materializeStoredTransaction(
     throw DbException(std::string(error_prefix) + ": Rust returned transaction RLP that does not match the key hash");
   }
   return transaction;
+}
+
+std::shared_ptr<Transaction> materializeSidecarTransaction(
+    const rustaxa::TransactionManagerSidecarLookup& lookup, const char* error_prefix) {
+  if (!lookup.found) {
+    return nullptr;
+  }
+  if (lookup.source != kSidecarTransactionNonFinalized && lookup.source != kSidecarTransactionRecentlyFinalized) {
+    throw DbException(std::string(error_prefix) + ": Rust returned an unknown transaction sidecar source");
+  }
+
+  auto transaction = std::make_shared<Transaction>(fromBridgeBytes(lookup.trx_rlp));
+  if (transaction->getHash() != fromBridgeHash(lookup.hash)) {
+    throw DbException(std::string(error_prefix) + ": Rust returned transaction RLP that does not match the sidecar hash");
+  }
+  return transaction;
+}
+
+rust::Vec<rustaxa::TransactionManagerStoredTransactionRequest> buildStoredTransactionRequests(
+    const std::vector<trx_hash_t>& hashes) {
+  rust::Vec<rustaxa::TransactionManagerStoredTransactionRequest> requests;
+  requests.reserve(hashes.size());
+  for (size_t i = 0; i < hashes.size(); ++i) {
+    rustaxa::TransactionManagerStoredTransactionRequest request;
+    request.input_index = static_cast<uint64_t>(i);
+    request.hash = toBridgeHash(hashes[i]);
+    requests.push_back(std::move(request));
+  }
+  return requests;
+}
+
+rust::Vec<rustaxa::TransactionManagerSidecarLookupRequest> buildSidecarLookupRequests(
+    const std::vector<trx_hash_t>& hashes) {
+  rust::Vec<rustaxa::TransactionManagerSidecarLookupRequest> requests;
+  requests.reserve(hashes.size());
+  for (size_t i = 0; i < hashes.size(); ++i) {
+    rustaxa::TransactionManagerSidecarLookupRequest request;
+    request.input_index = static_cast<uint64_t>(i);
+    request.hash = toBridgeHash(hashes[i]);
+    requests.push_back(std::move(request));
+  }
+  return requests;
+}
+
+rustaxa::TransactionManagerSidecarInsertInput toSidecarPayload(const std::shared_ptr<Transaction>& transaction) {
+  rustaxa::TransactionManagerSidecarInsertInput input;
+  input.hash = toBridgeHash(transaction->getHash());
+  input.trx_rlp = toBridgeBytes(transaction->rlp());
+  return input;
 }
 
 template <typename Value>
@@ -233,22 +285,20 @@ class TransactionManagerRustShimAccess {
     const auto sender = tx->getSender();
     const auto account = manager.final_chain_->getAccount(sender);
 
-    rustaxa::TransactionManagerValidatedInsertFact fact;
+    rustaxa::TransactionManagerValidatedInsertSidecarFact fact;
     fact.tx_hash = toBridgeHash(trx_hash);
     fact.transaction_nonce = toBridgeU256(tx->getNonce());
     fact.transaction_cost = toBridgeU256(tx->getCost());
     fact.gas_limit = tx->getGas();
     fact.propose_dag_gas_limit = manager.kConf.propose_dag_gas_limit;
     fact.insert_non_proposable = insert_non_proposable;
-    fact.in_non_finalized_cache = manager.nonfinalized_transactions_in_dag_.contains(trx_hash);
-    fact.in_recently_finalized_cache = manager.recently_finalized_transactions_.contains(trx_hash);
     fact.account_found = account.has_value();
     fact.account_nonce = toBridgeU256(account ? account->nonce : 0);
     fact.account_balance = toBridgeU256(account ? account->balance : 0);
 
     const auto plan = [&]() {
       try {
-        return rustaxa::transaction_manager_plan_validated_insert(fact);
+        return rustaxa::transaction_manager_plan_validated_insert_with_sidecar(*manager.sidecars_, fact);
       } catch (const std::exception& e) {
         throw std::runtime_error(std::string("RUST_TX_MANAGER_VALIDATED_INSERT_FAILED: ") + e.what());
       }
@@ -332,14 +382,13 @@ class TransactionManagerRustShimAccess {
    * storage checks, accepted ordering, count planning, and the atomic storage
    * write. If the bridge write fails, no C++ transaction state is mutated.
    */
-  static void saveTransactionsFromDagBlock(TransactionManagerOld& manager, SharedTransactions const& trxs) {
+  static void saveTransactionsFromDagBlock(TransactionManager& manager, SharedTransactions const& trxs) {
     std::unique_lock transactions_lock(manager.transactions_mutex_);
 
-    rust::Vec<rustaxa::DagTransactionSaveFact> facts;
+    rust::Vec<rustaxa::DagTransactionSaveSidecarFact> facts;
     facts.reserve(trxs.size());
     std::vector<std::shared_ptr<Transaction>> transaction_by_input_index;
     transaction_by_input_index.reserve(trxs.size());
-    manager.nonfinalized_transactions_in_dag_.reserve(manager.nonfinalized_transactions_in_dag_.size() + trxs.size());
 
     uint64_t input_index = 0;
     for (const auto& transaction : trxs) {
@@ -347,22 +396,20 @@ class TransactionManagerRustShimAccess {
       const auto account =
           manager.final_chain_->getAccount(transaction->getSender()).value_or(taraxa::state_api::ZeroAccount);
 
-      rustaxa::DagTransactionSaveFact fact;
+      rustaxa::DagTransactionSaveSidecarFact fact;
       fact.input_index = input_index++;
       fact.hash = toBridgeHash(trx_hash);
       fact.trx_rlp = toBridgeBytes(transaction->rlp());
       fact.transaction_nonce = toBridgeU256(transaction->getNonce());
       fact.sender_account_nonce = toBridgeU256(account.nonce);
-      fact.in_non_finalized_cache = manager.nonfinalized_transactions_in_dag_.contains(trx_hash);
-      fact.in_recently_finalized_cache = manager.recently_finalized_transactions_.contains(trx_hash);
       facts.push_back(std::move(fact));
       transaction_by_input_index.push_back(transaction);
     }
 
     const auto outcome = [&]() {
       try {
-        return rustaxa::save_transactions_from_dag_block(manager.db_->rustStorage(), manager.trx_count_,
-                                                         std::move(facts));
+        return rustaxa::save_transactions_from_dag_block_with_sidecar(*manager.sidecars_, manager.db_->rustStorage(),
+                                                                      manager.trx_count_, std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_DAG_TX_PERSIST_FAILED: ") + e.what());
       }
@@ -378,7 +425,6 @@ class TransactionManagerRustShimAccess {
         throw DbException("RUST_STORAGE_DAG_TX_PERSIST_FAILED: Rust returned a transaction hash/index mismatch");
       }
 
-      manager.nonfinalized_transactions_in_dag_.emplace(trx_hash, transaction);
       if (manager.transactions_pool_.erase(transaction)) {
         LOG(manager.log_dg_) << "Transaction " << trx_hash << " removed from trx pool ";
       }
@@ -394,10 +440,17 @@ class TransactionManagerRustShimAccess {
    * transaction counters, matching the legacy expired-DAG cleanup semantics after
    * moving persistent deletion to Rust.
    */
-  static void forgetExpiredNonFinalizedTransactionSidecars(TransactionManagerOld& manager,
+  static void forgetExpiredNonFinalizedTransactionSidecars(TransactionManager& manager,
                                                            std::unordered_set<trx_hash_t>&& transactions) {
-    for (const auto& trx_hash : transactions) {
-      manager.nonfinalized_transactions_in_dag_.erase(trx_hash);
+    std::vector<trx_hash_t> hashes;
+    hashes.reserve(transactions.size());
+    for (const auto& hash : transactions) {
+      hashes.push_back(hash);
+    }
+    try {
+      manager.sidecars_->transaction_manager_sidecar_remove_non_finalized(buildSidecarLookupRequests(hashes));
+    } catch (const std::exception& e) {
+      throw DbException(std::string("RUST_TX_MANAGER_SIDECAR_EXPIRED_REMOVE_FAILED: ") + e.what());
     }
   }
 
@@ -408,20 +461,29 @@ class TransactionManagerRustShimAccess {
    * This keeps transaction object materialization and identity ownership in-memory,
    * while storage reads remain authoritative for non-live transactions.
    */
-  static std::shared_ptr<Transaction> getTransaction(const TransactionManagerOld& manager, const trx_hash_t& hash) {
+  static std::shared_ptr<Transaction> getTransaction(const TransactionManager& manager, const trx_hash_t& hash) {
     {
       std::shared_lock transactions_lock(manager.transactions_mutex_);
       if (const auto trx = manager.transactions_pool_.get(hash)) {
         return trx;
       }
-      if (const auto it = manager.nonfinalized_transactions_in_dag_.find(hash);
-          it != manager.nonfinalized_transactions_in_dag_.end()) {
-        return it->second;
+    }
+
+    const auto sidecar_plan = [&]() {
+      try {
+        return manager.sidecars_->transaction_manager_sidecar_lookup_ordered_payloads(
+            buildSidecarLookupRequests(std::vector<trx_hash_t>{hash}));
+      } catch (const std::exception& e) {
+        throw DbException(std::string("RUST_TX_MANAGER_SIDECAR_LOOKUP_FAILED: ") + e.what());
       }
-      if (const auto it = manager.recently_finalized_transactions_.find(hash);
-          it != manager.recently_finalized_transactions_.end()) {
-        return it->second;
-      }
+    }();
+
+    if (sidecar_plan.lookups.size() != 1 || sidecar_plan.lookups[0].input_index != 0 ||
+        fromBridgeHash(sidecar_plan.lookups[0].hash) != hash) {
+      throw DbException("RUST_TX_MANAGER_SIDECAR_LOOKUP_FAILED: Rust returned an invalid sidecar lookup response");
+    }
+    if (auto transaction = materializeSidecarTransaction(sidecar_plan.lookups[0], "RUST_TX_MANAGER_SIDECAR_LOOKUP_FAILED")) {
+      return transaction;
     }
 
     rust::Vec<rustaxa::TransactionManagerStoredTransactionRequest> requests;
@@ -446,49 +508,60 @@ class TransactionManagerRustShimAccess {
     return materializeStoredTransaction(lookups[0], "RUST_STORAGE_TX_RETRIEVAL_FAILED");
   }
 
-  static std::vector<std::shared_ptr<Transaction>> getNonfinalizedTrx(const TransactionManagerOld& manager,
+  static std::vector<std::shared_ptr<Transaction>> getNonfinalizedTrx(const TransactionManager& manager,
                                                                       const std::vector<trx_hash_t>& hashes) {
     std::vector<std::shared_ptr<Transaction>> ret;
-    ret.reserve(hashes.size());
-    std::shared_lock transactions_lock(manager.transactions_mutex_);
-    for (const auto& hash : hashes) {
-      if (const auto it = manager.nonfinalized_transactions_in_dag_.find(hash);
-          it != manager.nonfinalized_transactions_in_dag_.end()) {
-        ret.push_back(it->second);
+    if (hashes.empty()) {
+      return ret;
+    }
+
+    const auto plan = [&]() {
+      try {
+        return manager.sidecars_->transaction_manager_sidecar_lookup_ordered_payloads(buildSidecarLookupRequests(hashes));
+      } catch (const std::exception& e) {
+        throw DbException(std::string("RUST_TX_MANAGER_NONFINALIZED_SIDECAR_LOOKUP_FAILED: ") + e.what());
+      }
+    }();
+
+    ret.reserve(plan.lookups.size());
+    for (const auto& lookup : plan.lookups) {
+      if (lookup.input_index >= hashes.size()) {
+        throw DbException(
+            "RUST_TX_MANAGER_NONFINALIZED_SIDECAR_LOOKUP_FAILED: Rust returned an out-of-range transaction index");
+      }
+      const auto& expected_hash = hashes[static_cast<size_t>(lookup.input_index)];
+      if (fromBridgeHash(lookup.hash) != expected_hash) {
+        throw DbException(
+            "RUST_TX_MANAGER_NONFINALIZED_SIDECAR_LOOKUP_FAILED: Rust returned a transaction hash/index mismatch");
+      }
+
+      if (!lookup.found || lookup.source != kSidecarTransactionNonFinalized) {
+        continue;
+      }
+      auto transaction = materializeSidecarTransaction(lookup, "RUST_TX_MANAGER_NONFINALIZED_SIDECAR_LOOKUP_FAILED");
+      if (transaction) {
+        ret.push_back(std::move(transaction));
       }
     }
     return ret;
   }
 
-  static std::shared_ptr<Transaction> getNonFinalizedTransaction(const TransactionManagerOld& manager,
+  static std::shared_ptr<Transaction> getNonFinalizedTransaction(const TransactionManager& manager,
                                                                  const trx_hash_t& hash) {
-    std::shared_lock transactions_lock(manager.transactions_mutex_);
-    if (const auto it = manager.nonfinalized_transactions_in_dag_.find(hash);
-        it != manager.nonfinalized_transactions_in_dag_.end()) {
-      return it->second;
+    std::vector<trx_hash_t> hashes{hash};
+    const auto transactions = getNonfinalizedTrx(manager, hashes);
+    if (!transactions.empty()) {
+      return transactions.front();
     }
     return {};
   }
 
-  static std::unordered_set<trx_hash_t> excludeFinalizedTransactions(const TransactionManagerOld& manager,
+  static std::unordered_set<trx_hash_t> excludeFinalizedTransactions(const TransactionManager& manager,
                                                                      const std::vector<trx_hash_t>& hashes) {
-    rust::Vec<rustaxa::TransactionManagerFinalizedFilterFact> facts;
-    facts.reserve(hashes.size());
-    {
-      std::shared_lock transactions_lock(manager.transactions_mutex_);
-      uint64_t input_index = 0;
-      for (const auto& hash : hashes) {
-        rustaxa::TransactionManagerFinalizedFilterFact fact;
-        fact.input_index = input_index++;
-        fact.hash = toBridgeHash(hash);
-        fact.in_recently_finalized_cache = manager.recently_finalized_transactions_.contains(hash);
-        facts.push_back(fact);
-      }
-    }
-
     const auto plan = [&]() {
       try {
-        return rustaxa::transaction_manager_filter_non_finalized(manager.db_->rustStorage(), std::move(facts));
+        return rustaxa::transaction_manager_filter_non_finalized_with_sidecar(
+            *manager.sidecars_, manager.db_->rustStorage(), buildSidecarLookupRequests(hashes));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_TX_FILTER_FAILED: ") + e.what());
       }
@@ -509,29 +582,26 @@ class TransactionManagerRustShimAccess {
     return ret;
   }
 
-  static bool verifyTransactionsNotFinalized(const TransactionManagerOld& manager, const SharedTransactions& trxs) {
-    rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedFact> facts;
+  static bool verifyTransactionsNotFinalized(const TransactionManager& manager, const SharedTransactions& trxs) {
+    rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedSidecarFact> facts;
     facts.reserve(trxs.size());
     uint64_t input_index = 0;
     for (const auto& transaction : trxs) {
       const auto trx_hash = transaction->getHash();
       const auto account = manager.final_chain_->getAccount(transaction->getSender()).value_or(state_api::ZeroAccount);
 
-      rustaxa::TransactionManagerVerifyNotFinalizedFact fact;
+      rustaxa::TransactionManagerVerifyNotFinalizedSidecarFact fact;
       fact.input_index = input_index++;
       fact.hash = toBridgeHash(trx_hash);
       fact.transaction_nonce = toBridgeU256(transaction->getNonce());
       fact.sender_account_nonce = toBridgeU256(account.nonce);
-      {
-        std::shared_lock transactions_lock(manager.transactions_mutex_);
-        fact.in_recently_finalized_cache = manager.recently_finalized_transactions_.contains(trx_hash);
-      }
       facts.push_back(fact);
     }
 
     const auto outcome = [&]() {
       try {
-        return rustaxa::transaction_manager_verify_not_finalized(manager.db_->rustStorage(), std::move(facts));
+        return rustaxa::transaction_manager_verify_not_finalized_with_sidecar(
+            *manager.sidecars_, manager.db_->rustStorage(), std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: ") + e.what());
       }
@@ -550,8 +620,7 @@ class TransactionManagerRustShimAccess {
       throw DbException("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: Rust returned a transaction hash/index mismatch");
     }
 
-    std::shared_lock transactions_lock(manager.transactions_mutex_);
-    if (manager.recently_finalized_transactions_.contains(trx_hash)) {
+    if (outcome.source == kVerifyNotFinalizedRecentSidecar) {
       LOG(manager.log_er_) << "Transaction " << trx_hash << " already finalized";
     } else {
       LOG(manager.log_er_) << "Transaction " << trx_hash << " already finalized in db";
@@ -609,9 +678,8 @@ class TransactionManagerRustShimAccess {
     return manager.transactions_pool_.nonProposableTransactionsOverTheLimit();
   }
 
-  static size_t getNonfinalizedTrxSize(const TransactionManagerOld& manager) {
-    std::shared_lock transactions_lock(manager.transactions_mutex_);
-    return manager.nonfinalized_transactions_in_dag_.size();
+  static size_t getNonfinalizedTrxSize(const TransactionManager& manager) {
+    return manager.sidecars_->transaction_manager_sidecar_non_finalized_size();
   }
 
   static bool transactionsDropped(const TransactionManagerOld& manager) {
@@ -632,10 +700,11 @@ class TransactionManagerRustShimAccess {
    * filtering. Rust owns storage lookup, transaction-location decoding, period
    * data extraction, and regular/system source classification for cache misses.
    */
-  static SharedTransactions getTransactions(const TransactionManagerOld& manager, const vec_trx_t& trxs_hashes,
+  static SharedTransactions getTransactions(const TransactionManager& manager, const vec_trx_t& trxs_hashes,
                                             PbftPeriod proposal_period) {
     std::vector<std::shared_ptr<Transaction>> ordered_transactions(trxs_hashes.size());
-    rust::Vec<rustaxa::TransactionManagerStoredTransactionRequest> requests;
+    std::vector<trx_hash_t> sidecar_miss_hashes;
+    std::vector<size_t> sidecar_miss_indexes;
 
     {
       std::shared_lock transactions_lock(manager.transactions_mutex_);
@@ -644,24 +713,45 @@ class TransactionManagerRustShimAccess {
         if (auto trx = manager.transactions_pool_.get(tx_hash)) {
           ordered_transactions[i] = std::move(trx);
         } else {
-          auto trx_it = manager.nonfinalized_transactions_in_dag_.find(tx_hash);
-          if (trx_it != manager.nonfinalized_transactions_in_dag_.end()) {
-            ordered_transactions[i] = trx_it->second;
-          } else {
-            trx_it = manager.recently_finalized_transactions_.find(tx_hash);
-            if (trx_it != manager.recently_finalized_transactions_.end()) {
-              ordered_transactions[i] = trx_it->second;
-            } else {
-              rustaxa::TransactionManagerStoredTransactionRequest request;
-              request.input_index = static_cast<uint64_t>(i);
-              request.hash = toBridgeHash(tx_hash);
-              requests.push_back(request);
-            }
-          }
+          sidecar_miss_indexes.push_back(i);
+          sidecar_miss_hashes.push_back(tx_hash);
         }
       }
     }
 
+    std::vector<trx_hash_t> storage_miss_hashes;
+    std::vector<size_t> storage_miss_indexes;
+    if (!sidecar_miss_hashes.empty()) {
+      const auto sidecar_plan = [&]() {
+        try {
+          return manager.sidecars_->transaction_manager_sidecar_lookup_ordered_payloads(
+              buildSidecarLookupRequests(sidecar_miss_hashes));
+        } catch (const std::exception& e) {
+          throw DbException(std::string("RUST_TX_MANAGER_SIDECAR_LOOKUP_FAILED: ") + e.what());
+        }
+      }();
+
+      for (const auto& lookup : sidecar_plan.lookups) {
+        if (lookup.input_index >= sidecar_miss_hashes.size()) {
+          throw DbException("RUST_TX_MANAGER_SIDECAR_LOOKUP_FAILED: Rust returned an out-of-range transaction index");
+        }
+        const auto sidecar_index = static_cast<size_t>(lookup.input_index);
+        const auto& expected_hash = sidecar_miss_hashes[sidecar_index];
+        if (fromBridgeHash(lookup.hash) != expected_hash) {
+          throw DbException("RUST_TX_MANAGER_SIDECAR_LOOKUP_FAILED: Rust returned a transaction hash/index mismatch");
+        }
+
+        auto transaction = materializeSidecarTransaction(lookup, "RUST_TX_MANAGER_SIDECAR_LOOKUP_FAILED");
+        if (transaction) {
+          ordered_transactions[sidecar_miss_indexes[sidecar_index]] = std::move(transaction);
+        } else {
+          storage_miss_indexes.push_back(sidecar_miss_indexes[sidecar_index]);
+          storage_miss_hashes.push_back(expected_hash);
+        }
+      }
+    }
+
+    auto requests = buildStoredTransactionRequests(storage_miss_hashes);
     if (!requests.empty()) {
       const auto lookups = [&]() {
         try {
@@ -672,11 +762,11 @@ class TransactionManagerRustShimAccess {
       }();
 
       for (const auto& lookup : lookups) {
-        if (lookup.input_index >= trxs_hashes.size()) {
+        if (lookup.input_index >= storage_miss_hashes.size()) {
           throw DbException("RUST_STORAGE_TX_RETRIEVAL_FAILED: Rust returned an out-of-range transaction index");
         }
-        const auto input_index = static_cast<size_t>(lookup.input_index);
-        const auto& expected_hash = trxs_hashes[input_index];
+        const auto storage_index = static_cast<size_t>(lookup.input_index);
+        const auto& expected_hash = storage_miss_hashes[storage_index];
         if (fromBridgeHash(lookup.hash) != expected_hash) {
           throw DbException("RUST_STORAGE_TX_RETRIEVAL_FAILED: Rust returned a transaction hash/index mismatch");
         }
@@ -693,7 +783,7 @@ class TransactionManagerRustShimAccess {
             continue;
           }
         }
-        ordered_transactions[input_index] = std::move(transaction);
+        ordered_transactions[storage_miss_indexes[storage_index]] = std::move(transaction);
       }
     }
 
@@ -714,7 +804,7 @@ class TransactionManagerRustShimAccess {
    * non-finalized storage before C++ materializes survivor transactions into
    * the live sidecar map. Each survivor has its sender cached before insertion.
    */
-  static void recoverNonfinalizedTransactions(TransactionManagerOld& manager) {
+  static void recoverNonfinalizedTransactions(TransactionManager& manager) {
     const auto entries = [&]() {
       try {
         return rustaxa::transaction_manager_load_nonfinalized_recovery(manager.db_->rustStorage());
@@ -723,7 +813,7 @@ class TransactionManagerRustShimAccess {
       }
     }();
 
-    std::vector<std::pair<trx_hash_t, std::shared_ptr<Transaction>>> recovered_transactions;
+    rust::Vec<rustaxa::TransactionManagerSidecarRecoveryInsertInput> recovered_transactions;
     recovered_transactions.reserve(entries.size());
     for (const auto& entry : entries) {
       if (entry.finalized) {
@@ -737,60 +827,63 @@ class TransactionManagerRustShimAccess {
             "RUST_STORAGE_TX_RECOVERY_FAILED: Rust returned transaction RLP that does not match the key hash");
       }
       transaction->getSender();
-      recovered_transactions.emplace_back(trx_hash, std::move(transaction));
+      rustaxa::TransactionManagerSidecarRecoveryInsertInput recovered;
+      recovered.hash = toBridgeHash(trx_hash);
+      recovered.finalized = false;
+      recovered.trx_rlp = toBridgeBytes(transaction->rlp());
+      recovered_transactions.push_back(std::move(recovered));
     }
 
     std::unique_lock transactions_lock(manager.transactions_mutex_);
-    for (auto& [trx_hash, transaction] : recovered_transactions) {
-      manager.nonfinalized_transactions_in_dag_.emplace(trx_hash, std::move(transaction));
+    try {
+      manager.sidecars_->transaction_manager_sidecar_insert_recovery_entries(std::move(recovered_transactions));
+    } catch (const std::exception& e) {
+      throw DbException(std::string("RUST_STORAGE_TX_RECOVERY_FAILED: ") + e.what());
     }
   }
 
-  static void initializeRecentlyFinalizedTransactions(TransactionManagerOld& manager, const PeriodData& period_data) {
+  static void initializeRecentlyFinalizedTransactions(TransactionManager& manager, const PeriodData& period_data) {
+    const auto period = period_data.pbft_blk->getPeriod();
     std::unique_lock transactions_lock(manager.transactions_mutex_);
-    for (auto const& trx : period_data.transactions) {
-      const auto hash = trx->getHash();
-      manager.recently_finalized_transactions_[hash] = trx;
-      manager.recently_finalized_transactions_per_period_[period_data.pbft_blk->getPeriod()].push_back(hash);
+    for (const auto& transaction : period_data.transactions) {
+      try {
+        manager.sidecars_->transaction_manager_sidecar_insert_non_finalized(toSidecarPayload(transaction));
+        rustaxa::TransactionManagerSidecarTransitionInput transition;
+        transition.period = period;
+        rustaxa::TransactionManagerSidecarHash hash;
+        hash.hash = toBridgeHash(transaction->getHash());
+        transition.hashes.push_back(std::move(hash));
+        manager.sidecars_->transaction_manager_sidecar_apply_finalized_transition(std::move(transition));
+      } catch (const std::exception& e) {
+        throw DbException(std::string("RUST_TX_MANAGER_RECENT_SIDECAR_INIT_FAILED: ") + e.what());
+      }
     }
   }
 
-  static void updateFinalizedTransactionsStatus(TransactionManagerOld& manager, const PeriodData& period_data) {
+  static void updateFinalizedTransactionsStatus(TransactionManager& manager, const PeriodData& period_data) {
     const auto recently_finalized_transactions_periods =
         kRecentlyFinalizedTransactionsFactor * manager.final_chain_->delegationDelay();
 
-    rust::Vec<rustaxa::FinalizedTransactionStatusFact> facts;
+    rust::Vec<rustaxa::FinalizedTransactionStatusSidecarFact> facts;
     facts.reserve(period_data.transactions.size());
     uint64_t input_index = 0;
     for (const auto& transaction : period_data.transactions) {
-      const auto trx_hash = transaction->getHash();
-      rustaxa::FinalizedTransactionStatusFact fact;
+      rustaxa::FinalizedTransactionStatusSidecarFact fact;
       fact.input_index = input_index++;
-      fact.hash = toBridgeHash(trx_hash);
-      fact.in_non_finalized_cache = manager.nonfinalized_transactions_in_dag_.contains(trx_hash);
+      fact.hash = toBridgeHash(transaction->getHash());
+      fact.trx_rlp = toBridgeBytes(transaction->rlp());
       facts.push_back(std::move(fact));
     }
 
     const auto plan = [&]() {
       try {
-        return rustaxa::update_finalized_transactions_status(
-            manager.db_->rustStorage(), period_data.pbft_blk->getPeriod(), recently_finalized_transactions_periods,
-            manager.trx_count_, std::move(facts));
+        return rustaxa::update_finalized_transactions_status_with_sidecar(
+            *manager.sidecars_, manager.db_->rustStorage(), period_data.pbft_blk->getPeriod(),
+            recently_finalized_transactions_periods, manager.trx_count_, std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: ") + e.what());
       }
     }();
-
-    if (plan.has_stale_period) {
-      const auto stale_period = static_cast<PbftPeriod>(plan.stale_period);
-      if (const auto stale_period_it = manager.recently_finalized_transactions_per_period_.find(stale_period);
-          stale_period_it != manager.recently_finalized_transactions_per_period_.end()) {
-        for (const auto& hash : stale_period_it->second) {
-          manager.recently_finalized_transactions_.erase(hash);
-        }
-        manager.recently_finalized_transactions_per_period_.erase(stale_period_it);
-      }
-    }
 
     for (const auto& action : plan.accepted) {
       if (action.input_index >= period_data.transactions.size()) {
@@ -802,10 +895,8 @@ class TransactionManagerRustShimAccess {
         throw DbException("RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: Rust returned a transaction hash/index mismatch");
       }
 
-      manager.recently_finalized_transactions_[trx_hash] = transaction;
-      manager.recently_finalized_transactions_per_period_[period_data.pbft_blk->getPeriod()].push_back(trx_hash);
       manager.transactions_pool_.markTransactionKnown(trx_hash);
-      if (manager.nonfinalized_transactions_in_dag_.erase(trx_hash)) {
+      if (action.removed_non_finalized) {
         LOG(manager.log_dg_) << "Transaction " << trx_hash << " removed from nonfinalized transactions";
       }
       if (manager.transactions_pool_.erase(transaction)) {
@@ -890,6 +981,10 @@ unsigned long TransactionManager::getTransactionCount() const {
 
 void TransactionManager::saveTransactionsFromDagBlock(const SharedTransactions& trxs) {
   TransactionManagerRustShimAccess::saveTransactionsFromDagBlock(*this, trxs);
+}
+
+void TransactionManager::removeNonFinalizedTransactions(std::unordered_set<trx_hash_t>&& transactions) {
+  TransactionManagerRustShimAccess::forgetExpiredNonFinalizedTransactionSidecars(*this, std::move(transactions));
 }
 
 void TransactionManager::forgetExpiredNonFinalizedTransactionSidecars(std::unordered_set<trx_hash_t>&& transactions) {

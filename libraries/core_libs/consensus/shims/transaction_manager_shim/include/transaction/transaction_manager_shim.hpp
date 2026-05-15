@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "common/constants.hpp"
+#include "rustaxa-bridge/ffi.rs.h"
 
 namespace taraxa {
 
@@ -35,7 +36,8 @@ class TransactionManager : public TransactionManagerOld {
 
   TransactionManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db,
                      std::shared_ptr<final_chain::FinalChain> final_chain, addr_t node_addr)
-      : TransactionManagerOld(conf, std::move(db), std::move(final_chain), node_addr) {}
+      : TransactionManagerOld(conf, std::move(db), std::move(final_chain), node_addr),
+        sidecars_(rustaxa::create_transaction_manager_sidecar()) {}
 
   TransactionManager(const TransactionManager &) = delete;
   TransactionManager(TransactionManager &&) = delete;
@@ -115,12 +117,12 @@ class TransactionManager : public TransactionManagerOld {
   bool nonProposableTransactionsOverTheLimit() const;
 
   /**
-   * Return the number of live non-finalized DAG transaction sidecars.
+   * Return the number of Rust-owned live non-finalized DAG transaction sidecars.
    */
   size_t getNonfinalizedTrxSize() const;
 
   /**
-   * Resolve hashes from the live non-finalized DAG transaction sidecar map, preserving input order for hits.
+   * Resolve hashes from Rust-owned live non-finalized DAG sidecars, preserving input order for hits.
    */
   std::vector<std::shared_ptr<Transaction>> getNonfinalizedTrx(const std::vector<trx_hash_t> &hashes);
 
@@ -141,10 +143,10 @@ class TransactionManager : public TransactionManagerOld {
   /**
    * Materialize DAG block transactions from live C++ views and Rust-backed storage.
    *
-   * C++ preserves `SharedTransaction` identity for live pool, non-finalized, and
-   * recently-finalized hits. Rust resolves storage misses and classifies regular
-   * versus system finalized payloads; C++ constructs the transaction objects and
-   * applies proposal-period nonce filtering.
+   * C++ preserves live pool identity and materializes non-finalized/recently-finalized
+   * sidecar hits from Rust-retained canonical RLP. Rust resolves storage misses
+   * and classifies regular versus system finalized payloads; C++ constructs the
+   * transaction objects and applies proposal-period nonce filtering.
    */
   SharedTransactions getBlockTransactions(const DagBlock &blk, PbftPeriod proposal_period);
 
@@ -156,14 +158,21 @@ class TransactionManager : public TransactionManagerOld {
    */
   SharedTransactions getTransactions(const vec_trx_t &trxs_hashes, PbftPeriod proposal_period);
 
+  /**
+   * Apply finalized-status transitions using Rust planner and sidecar state.
+   *
+   * Rust owns status planning, recently-finalized sidecar retention, and
+   * non-finalized sidecar removal. C++ applies live queue/cache side effects
+   * under the caller-held transaction lock.
+   */
   void updateFinalizedTransactionsStatus(const PeriodData &period_data);
 
+  /**
+   * Warm Rust-owned recently-finalized sidecars from canonical period-data RLP payloads.
+   */
   void initializeRecentlyFinalizedTransactions(const PeriodData &period_data);
 
-  void removeNonFinalizedTransactions(std::unordered_set<trx_hash_t> &&transactions) {
-    // TODO(rust-rewrite): migrate non-finalized transaction removal to Rust instead of TransactionManagerOld.
-    TransactionManagerOld::removeNonFinalizedTransactions(std::move(transactions));
-  }
+  void removeNonFinalizedTransactions(std::unordered_set<trx_hash_t> &&transactions);
 
   /**
    * Erase live C++ sidecars for expired non-finalized DAG transactions.
@@ -203,7 +212,7 @@ class TransactionManager : public TransactionManagerOld {
   std::shared_ptr<Transaction> getTransaction(const trx_hash_t &hash) const;
 
   /**
-   * Resolve one hash from the live non-finalized DAG transaction sidecar map.
+   * Resolve one hash from Rust-owned live non-finalized sidecars and materialize it in C++.
    */
   std::shared_ptr<Transaction> getNonFinalizedTransaction(const trx_hash_t &hash) const;
 
@@ -235,6 +244,15 @@ class TransactionManager : public TransactionManagerOld {
    * `TransactionManager` observe Rust-planned proposable admissions without a legacy owner hook.
    */
   void emitTransactionAddedForRust(const trx_hash_t &trx_hash) const { transaction_added_.emit(trx_hash); }
+
+  /**
+   * Rust-owned live TransactionManager sidecar state.
+   *
+   * The handle owns canonical RLP payloads and membership for non-finalized and
+   * recently-finalized transaction sidecars. C++ keeps object materialization,
+   * pool mutation, event emission, gas estimation, and lifecycle orchestration.
+   */
+  ::rust::Box<rustaxa::BridgeTransactionManagerSidecar> sidecars_;
 };
 
 }  // namespace taraxa

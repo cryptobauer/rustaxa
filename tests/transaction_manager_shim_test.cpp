@@ -113,7 +113,8 @@ TEST_F(TransactionManagerShimFixture, rustGetTransactionPrefersLiveCachesThenSto
   ASSERT_TRUE(from_cache);
   const auto cached_view = trx_mgr.getNonfinalizedTrx({transactions[0]->getHash()});
   ASSERT_EQ(cached_view.size(), 1);
-  EXPECT_EQ(from_cache.get(), cached_view.front().get());
+  EXPECT_EQ(from_cache->getHash(), cached_view.front()->getHash());
+  EXPECT_EQ(from_cache->rlp(), cached_view.front()->rlp());
 
   TransactionManager restart_trx_mgr(cfg, db, final_chain, addr_t());
   const auto from_storage = restart_trx_mgr.getTransaction(transactions[0]->getHash());
@@ -229,7 +230,7 @@ TEST_F(TransactionManagerShimFixture, expiredNonFinalizedSidecarCleanupDoesNotTo
   EXPECT_TRUE(db->getTransaction(transactions[0]->getHash()));
 }
 
-TEST_F(TransactionManagerShimFixture, rustFinalizedTransactionsInitializationRetainsLiveReferences) {
+TEST_F(TransactionManagerShimFixture, rustFinalizedTransactionsInitializationRetainsLivePayloadsInRust) {
   auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
   auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());

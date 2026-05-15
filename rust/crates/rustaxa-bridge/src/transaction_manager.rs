@@ -3,25 +3,33 @@
 //! The bridge exposes:
 //! - a short-lived planner used while one DAG proposal is being packed
 //! - a storage-complete planner for `TransactionManager::saveTransactionsFromDagBlock`
+//! - an opaque live sidecar handle for non-finalized and recently-finalized payloads
 //!
-//! C++ supplies live transaction metadata and storage facts; Rust keeps planning and
-//! persistence decisions deterministic and does not own live pointers or shared caches.
+//! C++ supplies transaction metadata, RLP payloads, and FinalChain facts. Rust owns
+//! deterministic planning, storage mutations routed through Rust storage, and live
+//! sidecar membership/RLP bytes, but not C++ `Transaction` pointers or gas estimation.
 
 use crate::ffi::rustaxa_ffi::{
     DagTransactionSaveAccepted, DagTransactionSaveFact, DagTransactionSaveOutcome,
-    FinalizedTransactionFilterPlan, FinalizedTransactionStatusAction,
-    FinalizedTransactionStatusFact, FinalizedTransactionStatusPlan, NonFinalizedTransactionPayload,
-    TransactionManagerFilterAction, TransactionManagerFinalizedFilterFact,
-    TransactionManagerInsertTransactionFact, TransactionManagerInsertTransactionOutcome,
-    TransactionManagerRecoveryEntry, TransactionManagerStoredTransactionLookup,
-    TransactionManagerStoredTransactionRequest, TransactionManagerValidatedInsertFact,
-    TransactionManagerValidatedInsertPlan, TransactionManagerVerifyNotFinalizedFact,
-    TransactionManagerVerifyNotFinalizedOutcome, TransactionManagerVerifyTransactionFact,
-    TransactionManagerVerifyTransactionOutcome, TransactionPackCandidateDecision,
-    TransactionPackCandidateInput, TransactionPackEstimateInput, TransactionPackEstimateOutcome,
+    DagTransactionSaveSidecarFact, FinalizedTransactionFilterPlan,
+    FinalizedTransactionStatusAction, FinalizedTransactionStatusFact,
+    FinalizedTransactionStatusPlan, FinalizedTransactionStatusSidecarFact,
+    NonFinalizedTransactionPayload, TransactionManagerFilterAction,
+    TransactionManagerFinalizedFilterFact, TransactionManagerInsertTransactionFact,
+    TransactionManagerInsertTransactionOutcome, TransactionManagerRecoveryEntry,
+    TransactionManagerSidecarInsertInput, TransactionManagerSidecarLookup,
+    TransactionManagerSidecarLookupPlan, TransactionManagerSidecarLookupRequest,
+    TransactionManagerSidecarRecoveryInsertInput, TransactionManagerSidecarTransitionInput,
+    TransactionManagerStoredTransactionLookup, TransactionManagerStoredTransactionRequest,
+    TransactionManagerValidatedInsertFact, TransactionManagerValidatedInsertPlan,
+    TransactionManagerValidatedInsertSidecarFact, TransactionManagerVerifyNotFinalizedFact,
+    TransactionManagerVerifyNotFinalizedOutcome, TransactionManagerVerifyNotFinalizedSidecarFact,
+    TransactionManagerVerifyTransactionFact, TransactionManagerVerifyTransactionOutcome,
+    TransactionPackCandidateDecision, TransactionPackCandidateInput, TransactionPackEstimateInput,
+    TransactionPackEstimateOutcome,
 };
 use crate::ffi::{BridgeStorage, BridgeTransactionPackPlanner};
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use ethereum_types::{H256, U256};
 use rustaxa_consensus::transaction_manager::{
     plan_exclude_finalized_transactions as plan_exclude_finalized_transactions_from_storage,
@@ -35,7 +43,8 @@ use rustaxa_consensus::transaction_manager::{
     FinalizedTransactionStatusFact as ConsensusFinalizedTransactionStatusFact,
     FinalizedTransactionStatusPlan as ConsensusFinalizedTransactionStatusPlan,
     TransactionManagerInsertTransactionFact as ConsensusTransactionManagerInsertTransactionFact,
-    TransactionManagerInsertTransactionStatus,
+    TransactionManagerInsertTransactionStatus, TransactionManagerSidecar,
+    TransactionManagerSidecarRecoveryEntry as ConsensusTransactionManagerSidecarRecoveryEntry,
     TransactionManagerValidatedInsertFact as ConsensusTransactionManagerValidatedInsertFact,
     TransactionManagerVerifyTransactionFact as ConsensusTransactionManagerVerifyTransactionFact,
     TransactionManagerVerifyTransactionStatus, TransactionPackCandidate, TransactionPackEstimate,
@@ -124,6 +133,77 @@ pub fn save_transactions_from_dag_block(
     })
 }
 
+/// Plans and persists accepted DAG-block transactions while Rust owns live sidecars.
+///
+/// Sidecar membership is read from `sidecar`; C++ supplies only transaction
+/// payloads and FinalChain nonce facts. The Rust live sidecar is mutated only
+/// after the storage batch succeeds.
+pub fn save_transactions_from_dag_block_with_sidecar(
+    sidecar: &mut BridgeTransactionManagerSidecar,
+    storage: &BridgeStorage,
+    current_transaction_count: u64,
+    facts: Vec<DagTransactionSaveSidecarFact>,
+) -> Result<DagTransactionSaveOutcome> {
+    let plan = plan_transactions_from_dag_block(
+        facts
+            .into_iter()
+            .map(|fact| {
+                let hash = H256::from(fact.hash);
+                ConsensusDagTransactionSaveFact {
+                    input_index: fact.input_index,
+                    hash,
+                    trx_rlp: fact.trx_rlp,
+                    transaction_nonce: U256::from_big_endian(&fact.transaction_nonce),
+                    sender_account_nonce: U256::from_big_endian(&fact.sender_account_nonce),
+                    in_non_finalized_cache: sidecar.0.contains_non_finalized(hash),
+                    in_recently_finalized_cache: sidecar.0.contains_recently_finalized(hash),
+                }
+            })
+            .collect(),
+        current_transaction_count,
+        |hash| {
+            storage
+                .0
+                .transaction()
+                .finalized(hash)
+                .context("TM_DAG_TX_FINALIZED_LOOKUP_FAILED")
+        },
+    )?;
+
+    let mut accepted: Vec<DagTransactionSaveAccepted> =
+        Vec::with_capacity(plan.accepted_transactions.len());
+    let mut accepted_payloads: Vec<NonFinalizedTransactionPayload> =
+        Vec::with_capacity(plan.accepted_transactions.len());
+
+    for payload in &plan.accepted_transactions {
+        accepted.push(DagTransactionSaveAccepted {
+            input_index: payload.input_index,
+            hash: payload.hash.0,
+        });
+        accepted_payloads.push(NonFinalizedTransactionPayload {
+            hash: payload.hash.0,
+            trx_rlp: payload.trx_rlp.clone(),
+        });
+    }
+
+    if !accepted_payloads.is_empty() {
+        storage
+            .save_non_finalized_transactions(accepted_payloads, plan.target_transaction_count)?;
+    }
+
+    for payload in plan.accepted_transactions {
+        sidecar
+            .0
+            .insert_non_finalized(payload.hash, payload.trx_rlp)
+            .context("TM_SIDECAR_DAG_TX_INSERT")?;
+    }
+
+    Ok(DagTransactionSaveOutcome {
+        accepted,
+        target_transaction_count: plan.target_transaction_count,
+    })
+}
+
 /// Plans finalized-transaction status transitions for one period.
 ///
 /// This call is storage-bound for the `StatusDbField::TrxCount` counter only.
@@ -162,6 +242,86 @@ pub fn update_finalized_transactions_status(
             .map(|action| FinalizedTransactionStatusAction {
                 input_index: action.input_index,
                 hash: action.hash.0,
+                removed_non_finalized: action.removed_non_finalized,
+            })
+            .collect(),
+        target_transaction_count: plan.target_transaction_count,
+        stale_period: plan.stale_period.unwrap_or(0),
+        has_stale_period: plan.stale_period.is_some(),
+        purge_transaction_queue: plan.purge_transactions,
+    })
+}
+
+/// Plans finalized transaction status updates while Rust owns live sidecars.
+///
+/// Rust computes non-finalized membership internally, persists `TrxCount`
+/// before live sidecar mutation, evicts stale recently-finalized entries, and
+/// stores current-period finalized payloads for later C++ materialization.
+pub fn update_finalized_transactions_status_with_sidecar(
+    sidecar: &mut BridgeTransactionManagerSidecar,
+    storage: &BridgeStorage,
+    period: u64,
+    retention_window: u64,
+    current_transaction_count: u64,
+    facts: Vec<FinalizedTransactionStatusSidecarFact>,
+) -> Result<FinalizedTransactionStatusPlan> {
+    let consensus_facts = facts
+        .iter()
+        .map(|fact| {
+            let hash = H256::from(fact.hash);
+            ConsensusFinalizedTransactionStatusFact {
+                input_index: fact.input_index,
+                hash,
+                in_non_finalized_cache: sidecar.0.contains_non_finalized(hash),
+            }
+        })
+        .collect();
+
+    let plan: ConsensusFinalizedTransactionStatusPlan = plan_finalized_transactions_status(
+        consensus_facts,
+        current_transaction_count,
+        period,
+        retention_window,
+    )?;
+
+    if !plan.accepted_transactions.is_empty() {
+        storage
+            .save_status_field(
+                rustaxa_storage::StatusField::TrxCount as u8,
+                plan.target_transaction_count,
+            )
+            .context("TM_FINALIZED_STATUS_TRXCOUNT_WRITE")?;
+    }
+
+    if let Some(stale_period) = plan.stale_period {
+        sidecar
+            .0
+            .evict_recently_finalized_stale_period(stale_period);
+    }
+
+    for action in &plan.accepted_transactions {
+        let fact = facts
+            .get(action.input_index as usize)
+            .context("TM_SIDECAR_FINALIZED_STATUS_INPUT_INDEX")?;
+        let hash = H256::from(fact.hash);
+        ensure!(
+            hash == action.hash,
+            "TM_SIDECAR_FINALIZED_STATUS_HASH_MISMATCH"
+        );
+        sidecar
+            .0
+            .insert_recently_finalized(period, hash, fact.trx_rlp.clone())
+            .context("TM_SIDECAR_FINALIZED_STATUS_INSERT")?;
+    }
+
+    Ok(FinalizedTransactionStatusPlan {
+        accepted: plan
+            .accepted_transactions
+            .into_iter()
+            .map(|action| FinalizedTransactionStatusAction {
+                input_index: action.input_index,
+                hash: action.hash.0,
+                removed_non_finalized: action.removed_non_finalized,
             })
             .collect(),
         target_transaction_count: plan.target_transaction_count,
@@ -254,6 +414,33 @@ pub fn transaction_manager_plan_validated_insert(
     })
 }
 
+/// Builds a deterministic pre-mutation plan using Rust-owned sidecar membership.
+pub fn transaction_manager_plan_validated_insert_with_sidecar(
+    sidecar: &BridgeTransactionManagerSidecar,
+    fact: TransactionManagerValidatedInsertSidecarFact,
+) -> Result<TransactionManagerValidatedInsertPlan> {
+    let hash = H256::from(fact.tx_hash);
+    let plan = plan_validated_insert(ConsensusTransactionManagerValidatedInsertFact {
+        tx_hash: hash,
+        transaction_nonce: U256::from_big_endian(&fact.transaction_nonce),
+        transaction_cost: U256::from_big_endian(&fact.transaction_cost),
+        gas_limit: fact.gas_limit,
+        propose_dag_gas_limit: fact.propose_dag_gas_limit,
+        insert_non_proposable: fact.insert_non_proposable,
+        in_non_finalized_cache: sidecar.0.contains_non_finalized(hash),
+        in_recently_finalized_cache: sidecar.0.contains_recently_finalized(hash),
+        account_found: fact.account_found,
+        account_nonce: U256::from_big_endian(&fact.account_nonce),
+        account_balance: U256::from_big_endian(&fact.account_balance),
+    })?;
+    Ok(TransactionManagerValidatedInsertPlan {
+        status: queue_status_to_ffi(plan.status),
+        should_insert_queue: plan.should_insert_queue,
+        queue_proposable: plan.queue_proposable,
+        emit_transaction_added: plan.emit_transaction_added,
+    })
+}
+
 /// Filters finalized transactions for one legacy C++ transaction-manager path.
 ///
 /// Each fact already includes `recently_finalized` membership, so Rust only performs
@@ -299,6 +486,10 @@ pub fn transaction_manager_verify_not_finalized(
     storage: &BridgeStorage,
     facts: Vec<TransactionManagerVerifyNotFinalizedFact>,
 ) -> Result<TransactionManagerVerifyNotFinalizedOutcome> {
+    let recent_indexes = facts
+        .iter()
+        .filter_map(|fact| fact.in_recently_finalized_cache.then_some(fact.input_index))
+        .collect::<std::collections::HashSet<_>>();
     let plan: ConsensusVerifyNotFinalizedTransactionPlan =
         plan_verify_not_finalized_transactions_from_storage(
             facts
@@ -318,21 +509,118 @@ pub fn transaction_manager_verify_not_finalized(
         is_finalized: false,
         input_index: 0,
         hash: [0; 32],
+        source: TM_VERIFY_NOT_FINALIZED_SOURCE_NONE,
     };
 
     if let Some(failure) = plan.finalized {
         out.is_finalized = true;
         out.input_index = failure.input_index;
         out.hash = failure.hash.0;
+        out.source = if recent_indexes.contains(&failure.input_index) {
+            TM_VERIFY_NOT_FINALIZED_SOURCE_RECENT_SIDECAR
+        } else {
+            TM_VERIFY_NOT_FINALIZED_SOURCE_STORAGE
+        };
     }
 
     Ok(out)
+}
+
+/// Filters finalized transactions using Rust-owned live sidecars plus storage.
+pub fn transaction_manager_filter_non_finalized_with_sidecar(
+    sidecar: &BridgeTransactionManagerSidecar,
+    storage: &BridgeStorage,
+    requests: Vec<TransactionManagerSidecarLookupRequest>,
+) -> Result<FinalizedTransactionFilterPlan> {
+    let facts = requests
+        .into_iter()
+        .map(|request| {
+            let hash = H256::from(request.hash);
+            ConsensusFinalizedTransactionFilterFact {
+                input_index: request.input_index,
+                hash,
+                in_recently_finalized_cache: sidecar.0.contains_recently_finalized(hash),
+            }
+        })
+        .collect();
+
+    let plan: ConsensusFinalizedTransactionFilterPlan =
+        plan_exclude_finalized_transactions_from_storage(facts, |hash| {
+            storage
+                .0
+                .transaction()
+                .finalized(hash)
+                .context("TM_FILTER_FINALIZED_LOOKUP")
+        })?;
+
+    Ok(FinalizedTransactionFilterPlan {
+        not_finalized: plan
+            .not_finalized
+            .into_iter()
+            .map(|action| TransactionManagerFilterAction {
+                input_index: action.input_index,
+                hash: action.hash.0,
+            })
+            .collect(),
+    })
+}
+
+/// Verifies transaction hashes against Rust-owned recent sidecars and storage.
+pub fn transaction_manager_verify_not_finalized_with_sidecar(
+    sidecar: &BridgeTransactionManagerSidecar,
+    storage: &BridgeStorage,
+    facts: Vec<TransactionManagerVerifyNotFinalizedSidecarFact>,
+) -> Result<TransactionManagerVerifyNotFinalizedOutcome> {
+    for fact in facts {
+        let hash = H256::from(fact.hash);
+        ensure!(
+            !hash.is_zero(),
+            "finalized verification transaction hash cannot be zero"
+        );
+        if sidecar.0.contains_recently_finalized(hash) {
+            return Ok(TransactionManagerVerifyNotFinalizedOutcome {
+                is_finalized: true,
+                input_index: fact.input_index,
+                hash: hash.0,
+                source: TM_VERIFY_NOT_FINALIZED_SOURCE_RECENT_SIDECAR,
+            });
+        }
+
+        if U256::from_big_endian(&fact.sender_account_nonce)
+            >= U256::from_big_endian(&fact.transaction_nonce)
+            && storage
+                .0
+                .transaction()
+                .finalized(hash)
+                .context("TM_VERIFY_FINALIZED_LOOKUP")?
+        {
+            return Ok(TransactionManagerVerifyNotFinalizedOutcome {
+                is_finalized: true,
+                input_index: fact.input_index,
+                hash: hash.0,
+                source: TM_VERIFY_NOT_FINALIZED_SOURCE_STORAGE,
+            });
+        }
+    }
+
+    Ok(TransactionManagerVerifyNotFinalizedOutcome {
+        is_finalized: false,
+        input_index: 0,
+        hash: [0; 32],
+        source: TM_VERIFY_NOT_FINALIZED_SOURCE_NONE,
+    })
 }
 
 const TM_STORED_TX_SOURCE_MISSING: u8 = 0;
 const TM_STORED_TX_SOURCE_PENDING: u8 = 1;
 const TM_STORED_TX_SOURCE_FINALIZED_REGULAR: u8 = 2;
 const TM_STORED_TX_SOURCE_FINALIZED_SYSTEM: u8 = 3;
+const TM_VERIFY_NOT_FINALIZED_SOURCE_NONE: u8 = 0;
+const TM_VERIFY_NOT_FINALIZED_SOURCE_RECENT_SIDECAR: u8 = 1;
+const TM_VERIFY_NOT_FINALIZED_SOURCE_STORAGE: u8 = 2;
+
+/// Bridge-owned Rust TransactionManager sidecar wrapper.
+pub struct BridgeTransactionManagerSidecar(pub TransactionManagerSidecar);
 
 /// Resolves transaction hashes through TransactionManager storage rules.
 ///
@@ -454,6 +742,129 @@ pub fn transaction_manager_load_nonfinalized_recovery(
     }
 
     Ok(out)
+}
+
+/// Creates an empty Rust-owned TransactionManager sidecar.
+pub fn create_transaction_manager_sidecar() -> Box<BridgeTransactionManagerSidecar> {
+    Box::new(BridgeTransactionManagerSidecar(
+        TransactionManagerSidecar::new(),
+    ))
+}
+
+impl BridgeTransactionManagerSidecar {
+    /// Inserts or updates one live non-finalized sidecar payload.
+    pub fn transaction_manager_sidecar_insert_non_finalized(
+        &mut self,
+        input: TransactionManagerSidecarInsertInput,
+    ) -> Result<()> {
+        self.0
+            .insert_non_finalized(H256::from(input.hash), input.trx_rlp)
+            .context("TM_SIDECAR_INSERT_NON_FINALIZED")
+    }
+
+    /// True when hash exists in non-finalized sidecar state.
+    pub fn transaction_manager_sidecar_contains_non_finalized(&self, hash: &[u8; 32]) -> bool {
+        self.0.contains_non_finalized(H256::from(*hash))
+    }
+
+    /// True when hash exists in recently-finalized sidecar state.
+    pub fn transaction_manager_sidecar_contains_recently_finalized(&self, hash: &[u8; 32]) -> bool {
+        self.0.contains_recently_finalized(H256::from(*hash))
+    }
+
+    /// Returns ordered payload lookups for C++ transaction materialization.
+    pub fn transaction_manager_sidecar_lookup_ordered_payloads(
+        &self,
+        requests: Vec<TransactionManagerSidecarLookupRequest>,
+    ) -> Result<TransactionManagerSidecarLookupPlan> {
+        let lookups = self
+            .0
+            .lookup_payloads_ordered(
+                requests
+                    .iter()
+                    .map(|request| (request.input_index, H256::from(request.hash)))
+                    .collect(),
+            )
+            .context("TM_SIDECAR_LOOKUP_ORDERED")?;
+        Ok(TransactionManagerSidecarLookupPlan {
+            lookups: lookups
+                .into_iter()
+                .map(|lookup| TransactionManagerSidecarLookup {
+                    input_index: lookup.input_index,
+                    hash: lookup.hash.0,
+                    found: lookup.found,
+                    source: lookup.source,
+                    trx_rlp: lookup.trx_rlp,
+                })
+                .collect(),
+        })
+    }
+
+    /// Returns current non-finalized sidecar size.
+    pub fn transaction_manager_sidecar_non_finalized_size(&self) -> usize {
+        self.0.non_finalized_size()
+    }
+
+    /// Removes requested non-finalized sidecar payloads and returns the removal count.
+    pub fn transaction_manager_sidecar_remove_non_finalized(
+        &mut self,
+        requests: Vec<TransactionManagerSidecarLookupRequest>,
+    ) -> Result<u64> {
+        let mut removed = 0u64;
+        for request in requests {
+            let hash = H256::from(request.hash);
+            ensure!(!hash.is_zero(), "sidecar removal hash cannot be zero");
+            if self.0.remove_non_finalized(hash) {
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Moves finalized hashes from non-finalized to recently-finalized sidecar state.
+    pub fn transaction_manager_sidecar_apply_finalized_transition(
+        &mut self,
+        transition: TransactionManagerSidecarTransitionInput,
+    ) -> Result<()> {
+        self.0
+            .apply_finalized_transition(
+                transition.period,
+                transition
+                    .hashes
+                    .into_iter()
+                    .map(|hash| H256::from(hash.hash))
+                    .collect::<Vec<_>>(),
+            )
+            .context("TM_SIDECAR_FINALIZED_TRANSITION")
+    }
+
+    /// Evicts stale recently-finalized entries for one computed stale period.
+    pub fn transaction_manager_sidecar_evict_stale_recently_finalized(
+        &mut self,
+        stale_period: u64,
+    ) -> u64 {
+        self.0.evict_recently_finalized_stale_period(stale_period) as u64
+    }
+
+    /// Inserts recovery payloads while skipping stale finalized entries.
+    pub fn transaction_manager_sidecar_insert_recovery_entries(
+        &mut self,
+        entries: Vec<TransactionManagerSidecarRecoveryInsertInput>,
+    ) -> Result<u64> {
+        Ok(self
+            .0
+            .insert_recovery_entries(
+                entries
+                    .into_iter()
+                    .map(|entry| ConsensusTransactionManagerSidecarRecoveryEntry {
+                        hash: H256::from(entry.hash),
+                        finalized: entry.finalized,
+                        trx_rlp: entry.trx_rlp,
+                    })
+                    .collect(),
+            )
+            .context("TM_SIDECAR_RECOVERY_INSERT")? as u64)
+    }
 }
 
 fn consensus_fact_from_ffi_fact(fact: DagTransactionSaveFact) -> ConsensusDagTransactionSaveFact {
@@ -1336,5 +1747,87 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_transaction_manager_sidecar_supports_lookup_finalize_evict_and_recovery() {
+        let mut sidecar = create_transaction_manager_sidecar();
+        sidecar
+            .transaction_manager_sidecar_insert_non_finalized(
+                TransactionManagerSidecarInsertInput {
+                    hash: [1; 32],
+                    trx_rlp: vec![0x11],
+                },
+            )
+            .unwrap();
+        sidecar
+            .transaction_manager_sidecar_insert_non_finalized(
+                TransactionManagerSidecarInsertInput {
+                    hash: [2; 32],
+                    trx_rlp: vec![0x22],
+                },
+            )
+            .unwrap();
+
+        let lookup = sidecar
+            .transaction_manager_sidecar_lookup_ordered_payloads(vec![
+                TransactionManagerSidecarLookupRequest {
+                    input_index: 3,
+                    hash: [2; 32],
+                },
+                TransactionManagerSidecarLookupRequest {
+                    input_index: 4,
+                    hash: [9; 32],
+                },
+            ])
+            .unwrap();
+        assert_eq!(lookup.lookups.len(), 2);
+        assert!(lookup.lookups[0].found);
+        assert_eq!(
+            lookup.lookups[0].source,
+            rustaxa_consensus::transaction_manager::TransactionManagerSidecarLookup::SOURCE_NON_FINALIZED
+        );
+        assert_eq!(lookup.lookups[0].trx_rlp, vec![0x22]);
+        assert!(!lookup.lookups[1].found);
+        assert_eq!(
+            lookup.lookups[1].source,
+            rustaxa_consensus::transaction_manager::TransactionManagerSidecarLookup::SOURCE_MISSING
+        );
+
+        sidecar
+            .transaction_manager_sidecar_apply_finalized_transition(
+                TransactionManagerSidecarTransitionInput {
+                    period: 55,
+                    hashes: vec![crate::ffi::rustaxa_ffi::TransactionManagerSidecarHash {
+                        hash: [1; 32],
+                    }],
+                },
+            )
+            .unwrap();
+        assert!(!sidecar.transaction_manager_sidecar_contains_non_finalized(&[1; 32]));
+        assert!(sidecar.transaction_manager_sidecar_contains_recently_finalized(&[1; 32]));
+        assert_eq!(
+            sidecar.transaction_manager_sidecar_evict_stale_recently_finalized(55),
+            1
+        );
+        assert!(!sidecar.transaction_manager_sidecar_contains_recently_finalized(&[1; 32]));
+
+        let inserted = sidecar
+            .transaction_manager_sidecar_insert_recovery_entries(vec![
+                TransactionManagerSidecarRecoveryInsertInput {
+                    hash: [3; 32],
+                    finalized: false,
+                    trx_rlp: vec![0x33],
+                },
+                TransactionManagerSidecarRecoveryInsertInput {
+                    hash: [4; 32],
+                    finalized: true,
+                    trx_rlp: vec![0x44],
+                },
+            ])
+            .unwrap();
+        assert_eq!(inserted, 1);
+        assert!(sidecar.transaction_manager_sidecar_contains_non_finalized(&[3; 32]));
+        assert!(!sidecar.transaction_manager_sidecar_contains_non_finalized(&[4; 32]));
     }
 }
