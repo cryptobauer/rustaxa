@@ -412,12 +412,15 @@ The current Rust starting point is intentionally small:
    then call Rust for sidecar membership, finalized-storage checks, and deterministic filtering/short-circuit decisions.
    `verifyTransaction`, `insertTransaction`, and `insertValidatedTransaction` now collect transaction/config/cache/account
    facts in the shim and call Rust planners for exact verification reasons, public insertion result mapping, and
-   proposable/non-proposable admission before C++ mutates the live queue. The Rust-mode facade now owns the public
+   proposable/non-proposable admission before C++ mutates the live queue; known-hash insert decisions now route through
+   the Rust insert planner instead of a shim-local early return, and `isTransactionKnown` now includes Rust sidecar
+   membership checks alongside queue-known state. The Rust-mode facade now owns the public
    `transaction_added_` event surface and emits it from shim-owned code for Rust-planned proposable admissions before
-   live queue insertion, matching legacy event timing. Live pool/count helpers remain shim-owned under the existing
+   live queue insertion, matching legacy event timing. Live pool helpers remain shim-owned under the existing
    transaction mutex and no longer forward to `TransactionManagerOld`; non-finalized and recently-finalized read helpers
-   now materialize from Rust-owned sidecar RLP. Remaining live-shell gaps are Rust ownership of FinalChain purge fact
-   sourcing, transaction pool/known-cache side effects, and estimation/lifecycle orchestration.
+   now materialize from Rust-owned sidecar RLP. Rust sidecar state now exposes the authoritative Rust-mode transaction
+   count and drives count reads after persistence/finalization commits. Remaining live-shell gaps are Rust ownership of
+   FinalChain purge fact sourcing, transaction pool/known-cache side effects, and estimation/lifecycle orchestration.
    `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
    selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
    lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode

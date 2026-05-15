@@ -36,8 +36,8 @@ class TransactionManager : public TransactionManagerOld {
 
   TransactionManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db,
                      std::shared_ptr<final_chain::FinalChain> final_chain, addr_t node_addr)
-      : TransactionManagerOld(conf, std::move(db), std::move(final_chain), node_addr),
-        sidecars_(rustaxa::create_transaction_manager_sidecar()) {}
+      : TransactionManagerOld(conf, db, std::move(final_chain), node_addr),
+        sidecars_(rustaxa::create_transaction_manager_sidecar(db->getStatusField(StatusDbField::TrxCount))) {}
 
   TransactionManager(const TransactionManager &) = delete;
   TransactionManager(TransactionManager &&) = delete;
@@ -97,7 +97,7 @@ class TransactionManager : public TransactionManagerOld {
   TransactionStatus insertValidatedTransaction(std::shared_ptr<Transaction> &&tx, bool insert_non_proposable = true);
 
   /**
-   * Query live known-transaction cache membership for one hash under the transaction mutex.
+   * Query Rust-owned known-transaction admission state for one hash under the transaction mutex.
    */
   bool isTransactionKnown(const trx_hash_t &trx_hash);
 
@@ -217,7 +217,9 @@ class TransactionManager : public TransactionManagerOld {
   std::shared_ptr<Transaction> getNonFinalizedTransaction(const trx_hash_t &hash) const;
 
   /**
-   * Return the Rust-mode transaction count cached by the manager.
+   * Return the Rust-owned Rust-mode transaction count cached by the manager.
+   *
+   * The count value is updated from Rust-planned persistence/finalization outcomes.
    */
   unsigned long getTransactionCount() const;
 
@@ -248,9 +250,10 @@ class TransactionManager : public TransactionManagerOld {
   /**
    * Rust-owned live TransactionManager sidecar state.
    *
-   * The handle owns canonical RLP payloads and membership for non-finalized and
-   * recently-finalized transaction sidecars. C++ keeps object materialization,
-   * pool mutation, event emission, gas estimation, and lifecycle orchestration.
+   * The handle owns the authoritative Rust-mode transaction count plus canonical
+   * RLP payloads and membership for non-finalized and recently-finalized transaction
+   * sidecars. C++ keeps object materialization, pool mutation, event emission,
+   * gas estimation, and lifecycle orchestration.
    */
   ::rust::Box<rustaxa::BridgeTransactionManagerSidecar> sidecars_;
 };

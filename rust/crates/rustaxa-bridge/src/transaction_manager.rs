@@ -5,9 +5,10 @@
 //! - a storage-complete planner for `TransactionManager::saveTransactionsFromDagBlock`
 //! - an opaque live sidecar handle for non-finalized and recently-finalized payloads
 //!
-//! C++ supplies transaction metadata, RLP payloads, and FinalChain facts. Rust owns
-//! deterministic planning, storage mutations routed through Rust storage, and live
-//! sidecar membership/RLP bytes, but not C++ `Transaction` pointers or gas estimation.
+//! C++ supplies transaction metadata, RLP payloads, queue-known facts, and FinalChain facts.
+//! Rust owns deterministic planning, storage mutations routed through Rust storage, live
+//! transaction count authority, and sidecar membership/RLP bytes, but not C++ `Transaction`
+//! pointers or gas estimation.
 
 use crate::ffi::rustaxa_ffi::{
     DagTransactionSaveAccepted, DagTransactionSaveFact, DagTransactionSaveOutcome,
@@ -17,16 +18,16 @@ use crate::ffi::rustaxa_ffi::{
     NonFinalizedTransactionPayload, TransactionManagerFilterAction,
     TransactionManagerFinalizedFilterFact, TransactionManagerInsertTransactionFact,
     TransactionManagerInsertTransactionOutcome, TransactionManagerRecoveryEntry,
-    TransactionManagerSidecarInsertInput, TransactionManagerSidecarLookup,
-    TransactionManagerSidecarLookupPlan, TransactionManagerSidecarLookupRequest,
-    TransactionManagerSidecarRecoveryInsertInput, TransactionManagerSidecarTransitionInput,
-    TransactionManagerStoredTransactionLookup, TransactionManagerStoredTransactionRequest,
-    TransactionManagerValidatedInsertFact, TransactionManagerValidatedInsertPlan,
-    TransactionManagerValidatedInsertSidecarFact, TransactionManagerVerifyNotFinalizedFact,
-    TransactionManagerVerifyNotFinalizedOutcome, TransactionManagerVerifyNotFinalizedSidecarFact,
-    TransactionManagerVerifyTransactionFact, TransactionManagerVerifyTransactionOutcome,
-    TransactionPackCandidateDecision, TransactionPackCandidateInput, TransactionPackEstimateInput,
-    TransactionPackEstimateOutcome,
+    TransactionManagerSidecarInsertInput, TransactionManagerSidecarKnownFact,
+    TransactionManagerSidecarLookup, TransactionManagerSidecarLookupPlan,
+    TransactionManagerSidecarLookupRequest, TransactionManagerSidecarRecoveryInsertInput,
+    TransactionManagerSidecarTransitionInput, TransactionManagerStoredTransactionLookup,
+    TransactionManagerStoredTransactionRequest, TransactionManagerValidatedInsertFact,
+    TransactionManagerValidatedInsertPlan, TransactionManagerValidatedInsertSidecarFact,
+    TransactionManagerVerifyNotFinalizedFact, TransactionManagerVerifyNotFinalizedOutcome,
+    TransactionManagerVerifyNotFinalizedSidecarFact, TransactionManagerVerifyTransactionFact,
+    TransactionManagerVerifyTransactionOutcome, TransactionPackCandidateDecision,
+    TransactionPackCandidateInput, TransactionPackEstimateInput, TransactionPackEstimateOutcome,
 };
 use crate::ffi::{BridgeStorage, BridgeTransactionPackPlanner};
 use anyhow::{ensure, Context, Result};
@@ -43,7 +44,8 @@ use rustaxa_consensus::transaction_manager::{
     FinalizedTransactionStatusFact as ConsensusFinalizedTransactionStatusFact,
     FinalizedTransactionStatusPlan as ConsensusFinalizedTransactionStatusPlan,
     TransactionManagerInsertTransactionFact as ConsensusTransactionManagerInsertTransactionFact,
-    TransactionManagerInsertTransactionStatus, TransactionManagerSidecar,
+    TransactionManagerInsertTransactionStatus, TransactionManagerKnownFact,
+    TransactionManagerSidecar,
     TransactionManagerSidecarRecoveryEntry as ConsensusTransactionManagerSidecarRecoveryEntry,
     TransactionManagerValidatedInsertFact as ConsensusTransactionManagerValidatedInsertFact,
     TransactionManagerVerifyTransactionFact as ConsensusTransactionManagerVerifyTransactionFact,
@@ -141,7 +143,6 @@ pub fn save_transactions_from_dag_block(
 pub fn save_transactions_from_dag_block_with_sidecar(
     sidecar: &mut BridgeTransactionManagerSidecar,
     storage: &BridgeStorage,
-    current_transaction_count: u64,
     facts: Vec<DagTransactionSaveSidecarFact>,
 ) -> Result<DagTransactionSaveOutcome> {
     let plan = plan_transactions_from_dag_block(
@@ -160,7 +161,7 @@ pub fn save_transactions_from_dag_block_with_sidecar(
                 }
             })
             .collect(),
-        current_transaction_count,
+        sidecar.0.transaction_count(),
         |hash| {
             storage
                 .0
@@ -197,6 +198,9 @@ pub fn save_transactions_from_dag_block_with_sidecar(
             .insert_non_finalized(payload.hash, payload.trx_rlp)
             .context("TM_SIDECAR_DAG_TX_INSERT")?;
     }
+    sidecar
+        .0
+        .set_transaction_count(plan.target_transaction_count);
 
     Ok(DagTransactionSaveOutcome {
         accepted,
@@ -262,7 +266,6 @@ pub fn update_finalized_transactions_status_with_sidecar(
     storage: &BridgeStorage,
     period: u64,
     retention_window: u64,
-    current_transaction_count: u64,
     facts: Vec<FinalizedTransactionStatusSidecarFact>,
 ) -> Result<FinalizedTransactionStatusPlan> {
     let consensus_facts = facts
@@ -279,7 +282,7 @@ pub fn update_finalized_transactions_status_with_sidecar(
 
     let plan: ConsensusFinalizedTransactionStatusPlan = plan_finalized_transactions_status(
         consensus_facts,
-        current_transaction_count,
+        sidecar.0.transaction_count(),
         period,
         retention_window,
     )?;
@@ -313,6 +316,9 @@ pub fn update_finalized_transactions_status_with_sidecar(
             .insert_recently_finalized(period, hash, fact.trx_rlp.clone())
             .context("TM_SIDECAR_FINALIZED_STATUS_INSERT")?;
     }
+    sidecar
+        .0
+        .set_transaction_count(plan.target_transaction_count);
 
     Ok(FinalizedTransactionStatusPlan {
         accepted: plan
@@ -398,6 +404,29 @@ pub fn transaction_manager_insert_transaction(
                 finalized_period_known: false,
             }
         }
+    })
+}
+
+/// Builds a deterministic admission plan for C++ insertion pre-checks using Rust-owned sidecars.
+///
+/// `fact.hash_known` is interpreted as the queue-known fact; Rust folds this with
+/// sidecar membership to make one known/admission decision.
+pub fn transaction_manager_insert_transaction_with_sidecar(
+    sidecar: &BridgeTransactionManagerSidecar,
+    fact: TransactionManagerInsertTransactionFact,
+) -> Result<TransactionManagerInsertTransactionOutcome> {
+    let tx_hash = H256::from(fact.tx_hash);
+    let hash_known = sidecar
+        .0
+        .is_transaction_known(TransactionManagerKnownFact {
+            hash: tx_hash,
+            queue_known: fact.hash_known,
+        })
+        .context("TM_INSERT_WITH_SIDECAR_KNOWN_CHECK_FAILED")?;
+
+    transaction_manager_insert_transaction(TransactionManagerInsertTransactionFact {
+        hash_known,
+        ..fact
     })
 }
 
@@ -744,14 +773,34 @@ pub fn transaction_manager_load_nonfinalized_recovery(
     Ok(out)
 }
 
-/// Creates an empty Rust-owned TransactionManager sidecar.
-pub fn create_transaction_manager_sidecar() -> Box<BridgeTransactionManagerSidecar> {
+/// Creates a Rust-owned TransactionManager sidecar seeded from persisted manager state.
+pub fn create_transaction_manager_sidecar(
+    initial_transaction_count: u64,
+) -> Box<BridgeTransactionManagerSidecar> {
     Box::new(BridgeTransactionManagerSidecar(
-        TransactionManagerSidecar::new(),
+        TransactionManagerSidecar::new(initial_transaction_count),
     ))
 }
 
 impl BridgeTransactionManagerSidecar {
+    /// Returns the authoritative Rust-mode manager transaction count.
+    pub fn transaction_manager_sidecar_transaction_count(&self) -> u64 {
+        self.0.transaction_count()
+    }
+
+    /// Returns Rust's known-transaction admission decision from queue and sidecar facts.
+    pub fn transaction_manager_sidecar_is_transaction_known(
+        &self,
+        fact: TransactionManagerSidecarKnownFact,
+    ) -> Result<bool> {
+        self.0
+            .is_transaction_known(TransactionManagerKnownFact {
+                hash: H256::from(fact.hash),
+                queue_known: fact.queue_known,
+            })
+            .context("TM_SIDECAR_IS_TRANSACTION_KNOWN")
+    }
+
     /// Inserts or updates one live non-finalized sidecar payload.
     pub fn transaction_manager_sidecar_insert_non_finalized(
         &mut self,
@@ -1278,6 +1327,50 @@ mod tests {
     }
 
     #[test]
+    fn bridge_insert_transaction_with_sidecar_combines_queue_known_and_sidecar_membership() {
+        let mut sidecar = create_transaction_manager_sidecar(5);
+        sidecar
+            .transaction_manager_sidecar_insert_non_finalized(
+                TransactionManagerSidecarInsertInput {
+                    hash: [7; 32],
+                    trx_rlp: vec![0x07],
+                },
+            )
+            .expect("sidecar insert should succeed");
+
+        let known = transaction_manager_insert_transaction_with_sidecar(
+            &sidecar,
+            insert_fact(
+                7,
+                false,
+                rustaxa_consensus::transaction_queue::TransactionQueueInsertStatus::Inserted as u8,
+                false,
+                0,
+            ),
+        )
+        .expect("insert-with-sidecar plan should compute");
+        assert_eq!(known.status, TM_INSERT_TRANSACTION_STATUS_ALREADY_KNOWN);
+
+        let finalized = transaction_manager_insert_transaction_with_sidecar(
+            &sidecar,
+            insert_fact(
+                8,
+                false,
+                rustaxa_consensus::transaction_queue::TransactionQueueInsertStatus::Known as u8,
+                true,
+                42,
+            ),
+        )
+        .expect("insert-with-sidecar plan should compute");
+        assert_eq!(
+            finalized.status,
+            TM_INSERT_TRANSACTION_STATUS_ALREADY_FINALIZED
+        );
+        assert!(finalized.finalized_period_known);
+        assert_eq!(finalized.finalized_period, 42);
+    }
+
+    #[test]
     fn bridge_transaction_manager_plan_validated_insert_returns_queue_plan() {
         let proposable = transaction_manager_plan_validated_insert(validated_insert_fact(
             1, true, 0, 100, false,
@@ -1751,7 +1844,8 @@ mod tests {
 
     #[test]
     fn bridge_transaction_manager_sidecar_supports_lookup_finalize_evict_and_recovery() {
-        let mut sidecar = create_transaction_manager_sidecar();
+        let mut sidecar = create_transaction_manager_sidecar(12);
+        assert_eq!(sidecar.transaction_manager_sidecar_transaction_count(), 12);
         sidecar
             .transaction_manager_sidecar_insert_non_finalized(
                 TransactionManagerSidecarInsertInput {
@@ -1768,6 +1862,24 @@ mod tests {
                 },
             )
             .unwrap();
+        assert!(sidecar
+            .transaction_manager_sidecar_is_transaction_known(TransactionManagerSidecarKnownFact {
+                hash: [1; 32],
+                queue_known: false,
+            },)
+            .unwrap());
+        assert!(sidecar
+            .transaction_manager_sidecar_is_transaction_known(TransactionManagerSidecarKnownFact {
+                hash: [9; 32],
+                queue_known: true,
+            },)
+            .unwrap());
+        assert!(!sidecar
+            .transaction_manager_sidecar_is_transaction_known(TransactionManagerSidecarKnownFact {
+                hash: [8; 32],
+                queue_known: false,
+            },)
+            .unwrap());
 
         let lookup = sidecar
             .transaction_manager_sidecar_lookup_ordered_payloads(vec![

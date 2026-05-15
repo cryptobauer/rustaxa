@@ -237,8 +237,39 @@ class TransactionManagerRustShimAccess {
 
   static std::pair<bool, std::string> insertTransaction(TransactionManager& manager,
                                                         const std::shared_ptr<Transaction>& trx) {
-    if (isTransactionKnown(manager, trx->getHash())) {
-      return {false, "Transaction already in transactions pool"};
+    const auto hash_known = isTransactionKnown(manager, trx->getHash());
+    const auto queue_known = [&]() {
+      std::shared_lock transactions_lock(manager.transactions_mutex_);
+      return manager.transactions_pool_.isTransactionKnown(trx->getHash());
+    }();
+
+    // Preserve legacy fast-path behavior for known hashes (skip verification and queue mutation),
+    // but route the final admission status through the Rust planner.
+    if (hash_known) {
+      bool has_finalized_period = false;
+      uint64_t finalized_period = 0;
+      if (const auto location = manager.db_->getTransactionLocation(trx->getHash())) {
+        has_finalized_period = true;
+        finalized_period = location->period;
+      }
+
+      rustaxa::TransactionManagerInsertTransactionFact fact;
+      fact.tx_hash = toBridgeHash(trx->getHash());
+      fact.hash_known = queue_known;
+      fact.queue_status = static_cast<uint8_t>(TransactionStatus::Known);
+      fact.has_finalized_period = has_finalized_period;
+      fact.finalized_period = finalized_period;
+
+      const auto outcome = [&]() {
+        try {
+          return rustaxa::transaction_manager_insert_transaction_with_sidecar(*manager.sidecars_, fact);
+        } catch (const std::exception& e) {
+          throw std::runtime_error(std::string("RUST_TX_MANAGER_INSERT_TRANSACTION_FAILED: ") + e.what());
+        }
+      }();
+
+      return insertTransactionResultFromRustStatus(
+          outcome.status, outcome.finalized_period_known ? outcome.finalized_period : finalized_period);
     }
 
     const auto verified = verifyTransaction(manager, trx);
@@ -260,14 +291,14 @@ class TransactionManagerRustShimAccess {
 
     rustaxa::TransactionManagerInsertTransactionFact fact;
     fact.tx_hash = toBridgeHash(trx->getHash());
-    fact.hash_known = false;
+    fact.hash_known = queue_known;
     fact.queue_status = static_cast<uint8_t>(queue_status);
     fact.has_finalized_period = has_finalized_period;
     fact.finalized_period = finalized_period;
 
     const auto outcome = [&]() {
       try {
-        return rustaxa::transaction_manager_insert_transaction(fact);
+        return rustaxa::transaction_manager_insert_transaction_with_sidecar(*manager.sidecars_, fact);
       } catch (const std::exception& e) {
         throw std::runtime_error(std::string("RUST_TX_MANAGER_INSERT_TRANSACTION_FAILED: ") + e.what());
       }
@@ -409,7 +440,7 @@ class TransactionManagerRustShimAccess {
     const auto outcome = [&]() {
       try {
         return rustaxa::save_transactions_from_dag_block_with_sidecar(*manager.sidecars_, manager.db_->rustStorage(),
-                                                                      manager.trx_count_, std::move(facts));
+                                                                      std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_DAG_TX_PERSIST_FAILED: ") + e.what());
       }
@@ -429,7 +460,7 @@ class TransactionManagerRustShimAccess {
         LOG(manager.log_dg_) << "Transaction " << trx_hash << " removed from trx pool ";
       }
     }
-    manager.trx_count_ = outcome.target_transaction_count;
+    manager.trx_count_ = manager.sidecars_->transaction_manager_sidecar_transaction_count();
   }
 
   /**
@@ -648,9 +679,9 @@ class TransactionManagerRustShimAccess {
     return result;
   }
 
-  static unsigned long getTransactionCount(const TransactionManagerOld& manager) {
+  static unsigned long getTransactionCount(const TransactionManager& manager) {
     std::shared_lock shared_transactions_lock(manager.transactions_mutex_);
-    return manager.trx_count_;
+    return manager.sidecars_->transaction_manager_sidecar_transaction_count();
   }
 
   static void blockFinalized(TransactionManagerOld& manager, EthBlockNumber block_number) {
@@ -658,9 +689,16 @@ class TransactionManagerRustShimAccess {
     manager.transactions_pool_.blockFinalized(block_number);
   }
 
-  static bool isTransactionKnown(TransactionManagerOld& manager, const trx_hash_t& trx_hash) {
+  static bool isTransactionKnown(TransactionManager& manager, const trx_hash_t& trx_hash) {
     std::shared_lock transactions_lock(manager.transactions_mutex_);
-    return manager.transactions_pool_.isTransactionKnown(trx_hash);
+    rustaxa::TransactionManagerSidecarKnownFact fact;
+    fact.hash = toBridgeHash(trx_hash);
+    fact.queue_known = manager.transactions_pool_.isTransactionKnown(trx_hash);
+    try {
+      return manager.sidecars_->transaction_manager_sidecar_is_transaction_known(fact);
+    } catch (const std::exception& e) {
+      throw DbException(std::string("RUST_TX_MANAGER_KNOWN_LOOKUP_FAILED: ") + e.what());
+    }
   }
 
   static size_t getTransactionPoolSize(const TransactionManagerOld& manager) {
@@ -879,7 +917,7 @@ class TransactionManagerRustShimAccess {
       try {
         return rustaxa::update_finalized_transactions_status_with_sidecar(
             *manager.sidecars_, manager.db_->rustStorage(), period_data.pbft_blk->getPeriod(),
-            recently_finalized_transactions_periods, manager.trx_count_, std::move(facts));
+            recently_finalized_transactions_periods, std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: ") + e.what());
       }
@@ -904,7 +942,7 @@ class TransactionManagerRustShimAccess {
       }
     }
 
-    manager.trx_count_ = plan.target_transaction_count;
+    manager.trx_count_ = manager.sidecars_->transaction_manager_sidecar_transaction_count();
 
     if (plan.purge_transaction_queue) {
       manager.transactions_pool_.purge();

@@ -253,6 +253,43 @@ TEST_F(TransactionManagerShimFixture, rustFinalizedTransactionsInitializationRet
   EXPECT_EQ(trx_mgr.getTransactionCount(), 0);
 }
 
+TEST_F(TransactionManagerShimFixture, rustIsTransactionKnownIncludesRustSidecarMembership) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  const auto transactions =
+      samples::createSignedTrxSamples(1, 1,
+                                      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                  dev::Secret::ConstructFromStringType::FromHex));
+
+  ASSERT_TRUE(trx_mgr.insertTransaction(transactions[0]).first);
+  EXPECT_TRUE(trx_mgr.isTransactionKnown(transactions[0]->getHash()));
+
+  trx_mgr.saveTransactionsFromDagBlock({transactions[0]});
+  EXPECT_TRUE(trx_mgr.isTransactionKnown(transactions[0]->getHash()));
+}
+
+TEST_F(TransactionManagerShimFixture, rustInsertTransactionUsesRustPlannerForKnownSidecarHashes) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  const auto transactions =
+      samples::createSignedTrxSamples(1, 1,
+                                      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                  dev::Secret::ConstructFromStringType::FromHex));
+
+  ASSERT_TRUE(trx_mgr.insertTransaction(transactions[0]).first);
+  trx_mgr.saveTransactionsFromDagBlock({transactions[0]});
+  ASSERT_EQ(trx_mgr.getTransactionPoolSize(), 0);
+
+  auto known_result = trx_mgr.insertTransaction(transactions[0]);
+  EXPECT_FALSE(known_result.first);
+  EXPECT_EQ(known_result.second, "Transaction already in transactions pool");
+  EXPECT_EQ(trx_mgr.getTransactionPoolSize(), 0);
+}
+
 TEST_F(TransactionManagerShimFixture, rustFinalizedTransactionsUpdateAppliesCleanupAndKnownMarking) {
   auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();

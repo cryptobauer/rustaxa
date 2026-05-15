@@ -7,12 +7,14 @@
 //! - finalized filtering (`excludeFinalizedTransactions` + `verifyTransactionsNotFinalized`)
 //! - TransactionManager verification and pre-admission insert planning (`verifyTransaction`,
 //!   `insertTransaction`)
-//! - live non-finalized and recently-finalized sidecar membership plus canonical RLP retention
+//! - live transaction count, known membership decisions, and non-finalized/recently-finalized
+//!   sidecar membership plus canonical RLP retention
 //!
 //! Planner functions remain side-effect free and deterministic. The
-//! [`TransactionManagerSidecar`] state owns only hash membership and canonical
-//! transaction bytes; C++ still materializes transaction objects, mutates the live
-//! queue/known-cache side effects, performs gas estimation, and orchestrates lifecycle calls.
+//! [`TransactionManagerSidecar`] state owns Rust-mode transaction count authority,
+//! hash membership, and canonical transaction bytes; C++ still materializes transaction
+//! objects, mutates the live queue/known-cache side effects, performs gas estimation,
+//! and orchestrates lifecycle calls.
 
 use crate::transaction_queue::TransactionQueueInsertStatus;
 use anyhow::{Context, Result, ensure};
@@ -147,6 +149,15 @@ pub struct FinalizedTransactionStatusPlan {
     pub stale_period: Option<u64>,
     /// Legacy purge interval behavior: purge pending queue state every 100 periods.
     pub purge_transactions: bool,
+}
+
+/// Input for Rust-owned known-transaction admission decisions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransactionManagerKnownFact {
+    /// Canonical transaction hash under test.
+    pub hash: H256,
+    /// True when the Rust-owned transaction queue known cache already contains the hash.
+    pub queue_known: bool,
 }
 
 /// Input for finalized-transaction filtering decisions from legacy C++.
@@ -544,13 +555,15 @@ pub struct TransactionManagerSidecarRecoveryEntry {
 /// Rust-owned live transaction sidecar state for TransactionManager.
 ///
 /// Execution boundary:
+/// - owns the authoritative Rust-mode transaction count loaded from/persisted to storage
 /// - owns canonical RLP payload retention for live non-finalized and recently-finalized hashes
-/// - supports hash membership checks used by C++ admission/finalization plumbing
+/// - supports hash membership and known-admission checks used by C++ plumbing
 /// - provides ordered payload lookups without exposing internal map ordering
 /// - applies finalized transitions and stale eviction deterministically
 /// - accepts non-finalized recovery payloads while skipping stale finalized rows
 #[derive(Clone, Debug, Default)]
 pub struct TransactionManagerSidecar {
+    transaction_count: u64,
     non_finalized: HashMap<H256, Vec<u8>>,
     recently_finalized: HashMap<H256, Vec<u8>>,
     recently_finalized_periods: BTreeMap<u64, Vec<H256>>,
@@ -566,9 +579,37 @@ impl TransactionManagerSidecarLookup {
 }
 
 impl TransactionManagerSidecar {
-    /// Creates an empty TransactionManager live sidecar.
-    pub fn new() -> Self {
-        Self::default()
+    /// Creates a TransactionManager live sidecar seeded with the persisted transaction count.
+    pub fn new(initial_transaction_count: u64) -> Self {
+        Self {
+            transaction_count: initial_transaction_count,
+            ..Self::default()
+        }
+    }
+
+    /// Returns the authoritative Rust-mode transaction count.
+    pub fn transaction_count(&self) -> u64 {
+        self.transaction_count
+    }
+
+    /// Replaces the authoritative Rust-mode transaction count after a committed storage write.
+    pub fn set_transaction_count(&mut self, transaction_count: u64) {
+        self.transaction_count = transaction_count;
+    }
+
+    /// Returns true when a transaction should be treated as known by Rust-mode admission.
+    ///
+    /// The queue still owns wall-clock known-cache expiry and supplies `queue_known`;
+    /// Rust folds that fact together with manager sidecar membership so DAG/recently
+    /// finalized payloads participate in one deterministic admission decision.
+    pub fn is_transaction_known(&self, fact: TransactionManagerKnownFact) -> Result<bool> {
+        ensure!(
+            !fact.hash.is_zero(),
+            "known transaction hash cannot be zero"
+        );
+        Ok(fact.queue_known
+            || self.contains_non_finalized(fact.hash)
+            || self.contains_recently_finalized(fact.hash))
     }
 
     /// Inserts or updates one non-finalized transaction payload in canonical form.
@@ -1646,7 +1687,7 @@ mod tests {
 
     #[test]
     fn sidecar_lookup_preserves_order_and_uses_both_live_sets() {
-        let mut sidecar = TransactionManagerSidecar::new();
+        let mut sidecar = TransactionManagerSidecar::new(0);
         sidecar
             .insert_non_finalized(H256::from([1; 32]), vec![0x11])
             .unwrap();
@@ -1704,7 +1745,7 @@ mod tests {
 
     #[test]
     fn sidecar_finalized_transition_and_stale_eviction_are_bounded_by_period() {
-        let mut sidecar = TransactionManagerSidecar::new();
+        let mut sidecar = TransactionManagerSidecar::new(0);
         sidecar
             .insert_non_finalized(H256::from([1; 32]), vec![0x11])
             .unwrap();
@@ -1725,7 +1766,7 @@ mod tests {
 
     #[test]
     fn sidecar_recovery_insertion_skips_finalized_entries() {
-        let mut sidecar = TransactionManagerSidecar::new();
+        let mut sidecar = TransactionManagerSidecar::new(0);
         let inserted = sidecar
             .insert_recovery_entries(vec![
                 TransactionManagerSidecarRecoveryEntry {
@@ -1744,5 +1785,53 @@ mod tests {
         assert_eq!(inserted, 1);
         assert!(sidecar.contains_non_finalized(H256::from([1; 32])));
         assert!(!sidecar.contains_non_finalized(H256::from([2; 32])));
+    }
+
+    #[test]
+    fn sidecar_owns_count_and_known_decision() {
+        let mut sidecar = TransactionManagerSidecar::new(41);
+        assert_eq!(sidecar.transaction_count(), 41);
+        sidecar.set_transaction_count(42);
+        assert_eq!(sidecar.transaction_count(), 42);
+
+        sidecar
+            .insert_non_finalized(H256::from([1; 32]), vec![0x11])
+            .unwrap();
+        sidecar
+            .insert_recently_finalized(7, H256::from([2; 32]), vec![0x22])
+            .unwrap();
+
+        assert!(
+            sidecar
+                .is_transaction_known(TransactionManagerKnownFact {
+                    hash: H256::from([1; 32]),
+                    queue_known: false,
+                })
+                .unwrap()
+        );
+        assert!(
+            sidecar
+                .is_transaction_known(TransactionManagerKnownFact {
+                    hash: H256::from([2; 32]),
+                    queue_known: false,
+                })
+                .unwrap()
+        );
+        assert!(
+            sidecar
+                .is_transaction_known(TransactionManagerKnownFact {
+                    hash: H256::from([3; 32]),
+                    queue_known: true,
+                })
+                .unwrap()
+        );
+        assert!(
+            !sidecar
+                .is_transaction_known(TransactionManagerKnownFact {
+                    hash: H256::from([4; 32]),
+                    queue_known: false,
+                })
+                .unwrap()
+        );
     }
 }

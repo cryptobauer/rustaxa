@@ -802,6 +802,12 @@ pub mod rustaxa_ffi {
         trx_rlp: Vec<u8>,
     }
 
+    /// Queue-known fact used by Rust-owned TransactionManager known-admission decisions.
+    struct TransactionManagerSidecarKnownFact {
+        hash: [u8; 32],
+        queue_known: bool,
+    }
+
     /// Input transaction fact for sidecar-aware DAG transaction persistence.
     ///
     /// Rust computes sidecar membership from `BridgeTransactionManagerSidecar`
@@ -2010,7 +2016,16 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionPackPlanner,
             input: TransactionPackEstimateInput,
         ) -> Result<TransactionPackEstimateOutcome>;
-        pub fn create_transaction_manager_sidecar() -> Box<BridgeTransactionManagerSidecar>;
+        pub fn create_transaction_manager_sidecar(
+            initial_transaction_count: u64,
+        ) -> Box<BridgeTransactionManagerSidecar>;
+        pub fn transaction_manager_sidecar_transaction_count(
+            self: &BridgeTransactionManagerSidecar,
+        ) -> u64;
+        pub fn transaction_manager_sidecar_is_transaction_known(
+            self: &BridgeTransactionManagerSidecar,
+            fact: TransactionManagerSidecarKnownFact,
+        ) -> Result<bool>;
         pub fn transaction_manager_sidecar_insert_non_finalized(
             self: &mut BridgeTransactionManagerSidecar,
             input: TransactionManagerSidecarInsertInput,
@@ -2049,7 +2064,6 @@ pub mod rustaxa_ffi {
         pub fn save_transactions_from_dag_block_with_sidecar(
             sidecar: &mut BridgeTransactionManagerSidecar,
             storage: &BridgeStorage,
-            current_transaction_count: u64,
             facts: Vec<DagTransactionSaveSidecarFact>,
         ) -> Result<DagTransactionSaveOutcome>;
         pub fn save_transactions_from_dag_block(
@@ -2062,7 +2076,6 @@ pub mod rustaxa_ffi {
             storage: &BridgeStorage,
             period: u64,
             retention_window: u64,
-            current_transaction_count: u64,
             facts: Vec<FinalizedTransactionStatusSidecarFact>,
         ) -> Result<FinalizedTransactionStatusPlan>;
         pub fn update_finalized_transactions_status(
@@ -2078,6 +2091,11 @@ pub mod rustaxa_ffi {
         ) -> Result<TransactionManagerVerifyTransactionOutcome>;
         /// Builds deterministic TransactionManager::insertTransaction admission plan.
         pub fn transaction_manager_insert_transaction(
+            fact: TransactionManagerInsertTransactionFact,
+        ) -> Result<TransactionManagerInsertTransactionOutcome>;
+        /// Builds deterministic TransactionManager::insertTransaction plan using Rust sidecars.
+        pub fn transaction_manager_insert_transaction_with_sidecar(
+            sidecar: &BridgeTransactionManagerSidecar,
             fact: TransactionManagerInsertTransactionFact,
         ) -> Result<TransactionManagerInsertTransactionOutcome>;
         /// Builds deterministic TransactionManager::insertValidatedTransaction plan.
