@@ -344,8 +344,9 @@ The current Rust starting point is intentionally small:
   metadata/order/limit state, Rust-backed `TransactionManager::packTrxs` deterministic packing decisions, Rust-owned
   DAG transaction persistence planning plus Rust-storage batch commits, Rust-storage-backed `TransactionManager`
   transaction lookup and non-finalized recovery payload loading, Rust-planned finalized transaction filter/verification
-  helpers, shim-owned live non-finalized/pool/count read helpers, and a Rust-backed `GasPricer` oracle for finalized-block
-  history, minimum-price flooring, and percentile bid selection.
+  helpers, Rust-planned transaction verification and validated-insert admission, shim-owned live non-finalized/pool/count
+  read helpers, and a Rust-backed `GasPricer` oracle for finalized-block history, minimum-price flooring, and percentile
+  bid selection.
   The Rust-enabled `SlashingManager` overlay now routes deterministic double-voting proof planning, duplicate-proof
   cache decisions, submitter selection, and slashing contract calldata construction through Rust while C++ keeps live
   vote objects, account reads, gas bidding, transaction signing, and transaction-pool insertion.
@@ -407,8 +408,12 @@ The current Rust starting point is intentionally small:
    C++ with live recently-finalized maps, known-cache marking, non-finalized sidecar removal, and transaction-pool
    cleanup. `excludeFinalizedTransactions` and `verifyTransactionsNotFinalized` now collect recently-finalized and nonce
    facts in the shim, then call Rust for finalized-storage checks and deterministic filtering/short-circuit decisions.
-   Live pool/non-finalized/count helpers are shim-owned under the existing transaction mutex and no longer forward to
-   `TransactionManagerOld`. `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
+   `verifyTransaction`, `insertTransaction`, and `insertValidatedTransaction` now collect transaction/config/cache/account
+   facts in the shim and call Rust planners for exact verification reasons, public insertion result mapping, and
+   proposable/non-proposable admission before C++ mutates the live queue. Live pool/non-finalized/count helpers are
+   shim-owned under the existing transaction mutex and no longer forward to `TransactionManagerOld`. One live-shell gap
+   remains: `transaction_added_` emission is still bound to the legacy event owner and must move with the live queue/event
+   boundary. `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
    selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
    lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode
    `DagManager::setDagBlockOrder()` now calls one Rust apply operation that resolves the anchor level from Rust storage,

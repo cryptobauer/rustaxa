@@ -41,6 +41,21 @@ rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& bytes) {
 constexpr uint8_t kStoredTransactionPending = 1;
 constexpr uint8_t kStoredTransactionFinalizedRegular = 2;
 constexpr uint8_t kStoredTransactionFinalizedSystem = 3;
+constexpr uint8_t kTMVerifyTransactionAccepted = 0;
+constexpr uint8_t kTMVerifyTransactionChainIdMismatch = 1;
+constexpr uint8_t kTMVerifyTransactionInvalidGas = 2;
+constexpr uint8_t kTMVerifyTransactionIntrinsicGas = 3;
+constexpr uint8_t kTMVerifyTransactionInvalidSignature = 4;
+constexpr uint8_t kTMVerifyTransactionGasPrice = 5;
+
+constexpr uint8_t kTMInsertTransactionAccepted = 0;
+constexpr uint8_t kTMInsertTransactionKnown = 1;
+constexpr uint8_t kTMInsertTransactionFinalized = 2;
+constexpr uint8_t kTMInsertTransactionCouldNotInsert = 3;
+constexpr uint8_t kTMQueueStatusInserted = 0;
+constexpr uint8_t kTMQueueStatusInsertedNonProposable = 1;
+constexpr uint8_t kTMQueueStatusKnown = 2;
+constexpr uint8_t kTMQueueStatusOverflow = 3;
 
 bool isFinalizedStoredTransactionSource(uint8_t source) {
   return source == kStoredTransactionFinalizedRegular || source == kStoredTransactionFinalizedSystem;
@@ -78,10 +93,181 @@ std::array<uint8_t, 32> toBridgeU256(const Value& value) {
   return out;
 }
 
+std::pair<bool, std::string> verifyTransactionResultFromRustStatus(uint8_t status, uint64_t chain_id,
+                                                                 uint64_t expected_chain_id) {
+  switch (status) {
+    case kTMVerifyTransactionAccepted:
+      return {true, ""};
+    case kTMVerifyTransactionChainIdMismatch:
+      return {false, "chain_id mismatch " + std::to_string(chain_id) + " " + std::to_string(expected_chain_id)};
+    case kTMVerifyTransactionInvalidGas:
+      return {false, "invalid gas"};
+    case kTMVerifyTransactionIntrinsicGas:
+      return {false, "intrinsic gas too low"};
+    case kTMVerifyTransactionInvalidSignature:
+      return {false, "invalid signature"};
+    case kTMVerifyTransactionGasPrice:
+      return {false, "gas_price too low"};
+    default:
+      throw std::runtime_error("TransactionManager shim received unknown verify status from Rust bridge");
+  }
+}
+
+std::pair<bool, std::string> insertTransactionResultFromRustStatus(uint8_t status, uint64_t finalized_period) {
+  switch (status) {
+    case kTMInsertTransactionAccepted:
+      return {true, ""};
+    case kTMInsertTransactionKnown:
+      return {false, "Transaction already in transactions pool"};
+    case kTMInsertTransactionFinalized:
+      return {false, "Transaction already finalized in period" + std::to_string(finalized_period)};
+    case kTMInsertTransactionCouldNotInsert:
+      return {false, "Transaction could not be inserted"};
+    default:
+      throw std::runtime_error("TransactionManager shim received unknown insert status from Rust bridge");
+  }
+}
+
+TransactionStatus transactionStatusFromBridge(uint8_t status) {
+  switch (status) {
+    case kTMQueueStatusInserted:
+      return TransactionStatus::Inserted;
+    case kTMQueueStatusInsertedNonProposable:
+      return TransactionStatus::InsertedNonProposable;
+    case kTMQueueStatusKnown:
+      return TransactionStatus::Known;
+    case kTMQueueStatusOverflow:
+      return TransactionStatus::Overflow;
+    default:
+      throw std::runtime_error("TransactionManager shim received unknown queue status from Rust bridge");
+  }
+}
+
 }  // namespace
 
 class TransactionManagerRustShimAccess {
  public:
+  static std::pair<bool, std::string> verifyTransaction(const TransactionManagerOld& manager,
+                                                        const std::shared_ptr<Transaction>& trx) {
+    if (!manager.final_chain_) {
+      return {true, ""};
+    }
+
+    bool signature_valid = true;
+    try {
+      trx->getSender();
+    } catch (const Transaction::InvalidSignature&) {
+      signature_valid = false;
+    }
+
+    const auto block_num = manager.final_chain_->lastBlockNumber();
+    rustaxa::TransactionManagerVerifyTransactionFact fact;
+    fact.tx_hash = toBridgeHash(trx->getHash());
+    fact.chain_id = trx->getChainID();
+    fact.expected_chain_id = manager.kConf.genesis.chain_id;
+    fact.gas_limit = trx->getGas();
+    fact.max_gas_limit = manager.kConf.genesis.state.hardforks.soleirolia_hf.trx_max_gas_limit;
+    fact.last_block_number = block_num;
+    fact.cornus_active = manager.kConf.genesis.state.hardforks.isOnCornusHardfork(block_num);
+    fact.intrinsic_gas_covered = trx->intrinsicGasCovered();
+    fact.signature_valid = signature_valid;
+    fact.gas_price = toBridgeU256(trx->getGasPrice());
+    fact.minimum_gas_price =
+        toBridgeU256(val_t(manager.kConf.genesis.state.hardforks.soleirolia_hf.trx_min_gas_price));
+
+    const auto outcome = [&]() {
+      try {
+        return rustaxa::transaction_manager_verify_transaction(fact);
+      } catch (const std::exception& e) {
+        throw std::runtime_error(std::string("RUST_TX_MANAGER_VERIFY_TRANSACTION_FAILED: ") + e.what());
+      }
+    }();
+
+    return verifyTransactionResultFromRustStatus(outcome.status, fact.chain_id, fact.expected_chain_id);
+  }
+
+  static std::pair<bool, std::string> insertTransaction(TransactionManagerOld& manager,
+                                                       const std::shared_ptr<Transaction>& trx) {
+    if (isTransactionKnown(manager, trx->getHash())) {
+      return {false, "Transaction already in transactions pool"};
+    }
+
+    const auto verified = verifyTransaction(manager, trx);
+    if (!verified.first) {
+      return verified;
+    }
+
+    auto trx_copy = trx;
+    const auto queue_status = insertValidatedTransaction(manager, std::move(trx_copy), false);
+
+    bool has_finalized_period = false;
+    uint64_t finalized_period = 0;
+    if (queue_status == TransactionStatus::Known) {
+      if (const auto location = manager.db_->getTransactionLocation(trx->getHash())) {
+        has_finalized_period = true;
+        finalized_period = location->period;
+      }
+    }
+
+    rustaxa::TransactionManagerInsertTransactionFact fact;
+    fact.tx_hash = toBridgeHash(trx->getHash());
+    fact.hash_known = false;
+    fact.queue_status = static_cast<uint8_t>(queue_status);
+    fact.has_finalized_period = has_finalized_period;
+    fact.finalized_period = finalized_period;
+
+    const auto outcome = [&]() {
+      try {
+        return rustaxa::transaction_manager_insert_transaction(fact);
+      } catch (const std::exception& e) {
+        throw std::runtime_error(std::string("RUST_TX_MANAGER_INSERT_TRANSACTION_FAILED: ") + e.what());
+      }
+    }();
+
+    return insertTransactionResultFromRustStatus(
+        outcome.status, outcome.finalized_period_known ? outcome.finalized_period : finalized_period);
+  }
+
+  static TransactionStatus insertValidatedTransaction(TransactionManagerOld& manager, std::shared_ptr<Transaction>&& tx,
+                                                     bool insert_non_proposable) {
+    const auto trx_hash = tx->getHash();
+
+    std::unique_lock transactions_lock(manager.transactions_mutex_);
+    const auto sender = tx->getSender();
+    const auto account = manager.final_chain_->getAccount(sender);
+
+    rustaxa::TransactionManagerValidatedInsertFact fact;
+    fact.tx_hash = toBridgeHash(trx_hash);
+    fact.transaction_nonce = toBridgeU256(tx->getNonce());
+    fact.transaction_cost = toBridgeU256(tx->getCost());
+    fact.gas_limit = tx->getGas();
+    fact.propose_dag_gas_limit = manager.kConf.propose_dag_gas_limit;
+    fact.insert_non_proposable = insert_non_proposable;
+    fact.in_non_finalized_cache = manager.nonfinalized_transactions_in_dag_.contains(trx_hash);
+    fact.in_recently_finalized_cache = manager.recently_finalized_transactions_.contains(trx_hash);
+    fact.account_found = account.has_value();
+    fact.account_nonce = toBridgeU256(account ? account->nonce : 0);
+    fact.account_balance = toBridgeU256(account ? account->balance : 0);
+
+    const auto plan = [&]() {
+      try {
+        return rustaxa::transaction_manager_plan_validated_insert(fact);
+      } catch (const std::exception& e) {
+        throw std::runtime_error(std::string("RUST_TX_MANAGER_VALIDATED_INSERT_FAILED: ") + e.what());
+      }
+    }();
+
+    if (!plan.should_insert_queue) {
+      return transactionStatusFromBridge(plan.status);
+    }
+
+    LOG(manager.log_dg_) << "Transaction " << trx_hash << " inserted in trx pool";
+    // TODO(rust-rewrite): restore transaction_added_ emission from shim-owned code once event emission is no longer
+    // restricted to TransactionManagerOld internals.
+    return manager.transactions_pool_.insert(std::move(tx), plan.queue_proposable,
+                                             manager.final_chain_->lastBlockNumber());
+  }
+
   /**
    * Runs Rust-backed deterministic transaction packing against the legacy manager's live C++ state.
    *
@@ -731,6 +917,19 @@ std::shared_ptr<Transaction> TransactionManager::getTransaction(const trx_hash_t
 
 void TransactionManager::recoverNonfinalizedTransactions() {
   TransactionManagerRustShimAccess::recoverNonfinalizedTransactions(*this);
+}
+
+std::pair<bool, std::string> TransactionManager::verifyTransaction(const std::shared_ptr<Transaction>& trx) const {
+  return TransactionManagerRustShimAccess::verifyTransaction(*this, trx);
+}
+
+std::pair<bool, std::string> TransactionManager::insertTransaction(const std::shared_ptr<Transaction>& trx) {
+  return TransactionManagerRustShimAccess::insertTransaction(*this, trx);
+}
+
+TransactionStatus TransactionManager::insertValidatedTransaction(std::shared_ptr<Transaction>&& tx,
+                                                                 bool insert_non_proposable) {
+  return TransactionManagerRustShimAccess::insertValidatedTransaction(*this, std::move(tx), insert_non_proposable);
 }
 
 }  // namespace taraxa

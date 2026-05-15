@@ -12,9 +12,12 @@ use crate::ffi::rustaxa_ffi::{
     FinalizedTransactionFilterPlan, FinalizedTransactionStatusAction,
     FinalizedTransactionStatusFact, FinalizedTransactionStatusPlan, NonFinalizedTransactionPayload,
     TransactionManagerFilterAction, TransactionManagerFinalizedFilterFact,
+    TransactionManagerInsertTransactionFact, TransactionManagerInsertTransactionOutcome,
     TransactionManagerRecoveryEntry, TransactionManagerStoredTransactionLookup,
-    TransactionManagerStoredTransactionRequest, TransactionManagerVerifyNotFinalizedFact,
-    TransactionManagerVerifyNotFinalizedOutcome, TransactionPackCandidateDecision,
+    TransactionManagerStoredTransactionRequest, TransactionManagerValidatedInsertFact,
+    TransactionManagerValidatedInsertPlan, TransactionManagerVerifyNotFinalizedFact,
+    TransactionManagerVerifyNotFinalizedOutcome, TransactionManagerVerifyTransactionFact,
+    TransactionManagerVerifyTransactionOutcome, TransactionPackCandidateDecision,
     TransactionPackCandidateInput, TransactionPackEstimateInput, TransactionPackEstimateOutcome,
 };
 use crate::ffi::{BridgeStorage, BridgeTransactionPackPlanner};
@@ -22,17 +25,47 @@ use anyhow::{Context, Result};
 use ethereum_types::{H256, U256};
 use rustaxa_consensus::transaction_manager::{
     plan_exclude_finalized_transactions as plan_exclude_finalized_transactions_from_storage,
-    plan_finalized_transactions_status, plan_transactions_from_dag_block,
+    plan_finalized_transactions_status, plan_insert_transaction, plan_transactions_from_dag_block,
+    plan_validated_insert,
     plan_verify_not_finalized_transactions as plan_verify_not_finalized_transactions_from_storage,
-    DagTransactionSaveFact as ConsensusDagTransactionSaveFact, DagTransactionSavePayload,
+    plan_verify_transaction, DagTransactionSaveFact as ConsensusDagTransactionSaveFact,
+    DagTransactionSavePayload,
     FinalizedTransactionFilterFact as ConsensusFinalizedTransactionFilterFact,
     FinalizedTransactionFilterPlan as ConsensusFinalizedTransactionFilterPlan,
     FinalizedTransactionStatusFact as ConsensusFinalizedTransactionStatusFact,
     FinalizedTransactionStatusPlan as ConsensusFinalizedTransactionStatusPlan,
-    TransactionPackCandidate, TransactionPackEstimate, TransactionPackingPlanner,
+    TransactionManagerInsertTransactionFact as ConsensusTransactionManagerInsertTransactionFact,
+    TransactionManagerInsertTransactionStatus,
+    TransactionManagerValidatedInsertFact as ConsensusTransactionManagerValidatedInsertFact,
+    TransactionManagerVerifyTransactionFact as ConsensusTransactionManagerVerifyTransactionFact,
+    TransactionManagerVerifyTransactionStatus, TransactionPackCandidate, TransactionPackEstimate,
+    TransactionPackingPlanner,
     VerifyNotFinalizedTransactionFact as ConsensusVerifyNotFinalizedTransactionFact,
     VerifyNotFinalizedTransactionPlan as ConsensusVerifyNotFinalizedTransactionPlan,
 };
+use rustaxa_consensus::transaction_queue::TransactionQueueInsertStatus;
+
+const TM_VERIFY_TRANSACTION_STATUS_ACCEPTED: u8 =
+    TransactionManagerVerifyTransactionStatus::Accepted as u8;
+const TM_VERIFY_TRANSACTION_STATUS_CHAIN_ID_MISMATCH: u8 =
+    TransactionManagerVerifyTransactionStatus::ChainIdMismatch as u8;
+const TM_VERIFY_TRANSACTION_STATUS_INVALID_GAS: u8 =
+    TransactionManagerVerifyTransactionStatus::InvalidGas as u8;
+const TM_VERIFY_TRANSACTION_STATUS_INTRINSIC_GAS: u8 =
+    TransactionManagerVerifyTransactionStatus::IntrinsicGasNotCovered as u8;
+const TM_VERIFY_TRANSACTION_STATUS_INVALID_SIGNATURE: u8 =
+    TransactionManagerVerifyTransactionStatus::InvalidSignature as u8;
+const TM_VERIFY_TRANSACTION_STATUS_GAS_PRICE: u8 =
+    TransactionManagerVerifyTransactionStatus::GasPriceTooLow as u8;
+
+const TM_INSERT_TRANSACTION_STATUS_ACCEPTED: u8 =
+    TransactionManagerInsertTransactionStatus::Accepted as u8;
+const TM_INSERT_TRANSACTION_STATUS_ALREADY_KNOWN: u8 =
+    TransactionManagerInsertTransactionStatus::AlreadyKnown as u8;
+const TM_INSERT_TRANSACTION_STATUS_ALREADY_FINALIZED: u8 =
+    TransactionManagerInsertTransactionStatus::AlreadyFinalized as u8;
+const TM_INSERT_TRANSACTION_STATUS_CANNOT_INSERT: u8 =
+    TransactionManagerInsertTransactionStatus::CouldNotInsert as u8;
 
 /// Plans and persists accepted transactions for one incoming DAG block.
 ///
@@ -135,6 +168,89 @@ pub fn update_finalized_transactions_status(
         stale_period: plan.stale_period.unwrap_or(0),
         has_stale_period: plan.stale_period.is_some(),
         purge_transaction_queue: plan.purge_transactions,
+    })
+}
+
+/// Builds a deterministic admission plan for C++ pre-admission verification.
+pub fn transaction_manager_verify_transaction(
+    fact: TransactionManagerVerifyTransactionFact,
+) -> Result<TransactionManagerVerifyTransactionOutcome> {
+    let outcome = plan_verify_transaction(consensus_verify_transaction_fact_from_ffi_fact(fact))?;
+    Ok(TransactionManagerVerifyTransactionOutcome {
+        status: match outcome.status {
+            TransactionManagerVerifyTransactionStatus::Accepted => {
+                TM_VERIFY_TRANSACTION_STATUS_ACCEPTED
+            }
+            TransactionManagerVerifyTransactionStatus::ChainIdMismatch => {
+                TM_VERIFY_TRANSACTION_STATUS_CHAIN_ID_MISMATCH
+            }
+            TransactionManagerVerifyTransactionStatus::InvalidGas => {
+                TM_VERIFY_TRANSACTION_STATUS_INVALID_GAS
+            }
+            TransactionManagerVerifyTransactionStatus::IntrinsicGasNotCovered => {
+                TM_VERIFY_TRANSACTION_STATUS_INTRINSIC_GAS
+            }
+            TransactionManagerVerifyTransactionStatus::InvalidSignature => {
+                TM_VERIFY_TRANSACTION_STATUS_INVALID_SIGNATURE
+            }
+            TransactionManagerVerifyTransactionStatus::GasPriceTooLow => {
+                TM_VERIFY_TRANSACTION_STATUS_GAS_PRICE
+            }
+        },
+    })
+}
+
+/// Builds a deterministic admission plan for C++ insertion pre-checks.
+pub fn transaction_manager_insert_transaction(
+    fact: TransactionManagerInsertTransactionFact,
+) -> Result<TransactionManagerInsertTransactionOutcome> {
+    let outcome = plan_insert_transaction(
+        consensus_insert_transaction_fact_from_ffi_fact(fact)
+            .context("TM_TX_INSERT_FACT_CONVERSION_FAILED")?,
+    )?;
+
+    Ok(match outcome.status {
+        TransactionManagerInsertTransactionStatus::Accepted => {
+            TransactionManagerInsertTransactionOutcome {
+                status: TM_INSERT_TRANSACTION_STATUS_ACCEPTED,
+                finalized_period: 0,
+                finalized_period_known: false,
+            }
+        }
+        TransactionManagerInsertTransactionStatus::AlreadyKnown => {
+            TransactionManagerInsertTransactionOutcome {
+                status: TM_INSERT_TRANSACTION_STATUS_ALREADY_KNOWN,
+                finalized_period: 0,
+                finalized_period_known: false,
+            }
+        }
+        TransactionManagerInsertTransactionStatus::AlreadyFinalized => {
+            TransactionManagerInsertTransactionOutcome {
+                status: TM_INSERT_TRANSACTION_STATUS_ALREADY_FINALIZED,
+                finalized_period: outcome.finalized_period.unwrap_or_default(),
+                finalized_period_known: true,
+            }
+        }
+        TransactionManagerInsertTransactionStatus::CouldNotInsert => {
+            TransactionManagerInsertTransactionOutcome {
+                status: TM_INSERT_TRANSACTION_STATUS_CANNOT_INSERT,
+                finalized_period: 0,
+                finalized_period_known: false,
+            }
+        }
+    })
+}
+
+/// Builds a deterministic pre-mutation plan for C++ live queue insertion.
+pub fn transaction_manager_plan_validated_insert(
+    fact: TransactionManagerValidatedInsertFact,
+) -> Result<TransactionManagerValidatedInsertPlan> {
+    let plan = plan_validated_insert(consensus_validated_insert_fact_from_ffi_fact(fact))?;
+    Ok(TransactionManagerValidatedInsertPlan {
+        status: queue_status_to_ffi(plan.status),
+        should_insert_queue: plan.should_insert_queue,
+        queue_proposable: plan.queue_proposable,
+        emit_transaction_added: plan.emit_transaction_added,
     })
 }
 
@@ -352,6 +468,83 @@ fn consensus_fact_from_ffi_fact(fact: DagTransactionSaveFact) -> ConsensusDagTra
     }
 }
 
+fn consensus_verify_transaction_fact_from_ffi_fact(
+    fact: TransactionManagerVerifyTransactionFact,
+) -> ConsensusTransactionManagerVerifyTransactionFact {
+    ConsensusTransactionManagerVerifyTransactionFact {
+        tx_hash: H256::from(fact.tx_hash),
+        chain_id: fact.chain_id,
+        expected_chain_id: fact.expected_chain_id,
+        gas_limit: fact.gas_limit,
+        max_gas_limit: fact.max_gas_limit,
+        last_block_number: fact.last_block_number,
+        cornus_active: fact.cornus_active,
+        intrinsic_gas_covered: fact.intrinsic_gas_covered,
+        signature_valid: fact.signature_valid,
+        gas_price: U256::from_big_endian(&fact.gas_price),
+        minimum_gas_price: U256::from_big_endian(&fact.minimum_gas_price),
+    }
+}
+
+fn consensus_insert_transaction_fact_from_ffi_fact(
+    fact: TransactionManagerInsertTransactionFact,
+) -> Result<ConsensusTransactionManagerInsertTransactionFact> {
+    Ok(ConsensusTransactionManagerInsertTransactionFact {
+        tx_hash: H256::from(fact.tx_hash),
+        hash_known: fact.hash_known,
+        queue_status: queue_status_from_ffi(fact.queue_status)?,
+        has_finalized_period: fact.has_finalized_period,
+        finalized_period: fact.finalized_period,
+    })
+}
+
+fn consensus_validated_insert_fact_from_ffi_fact(
+    fact: TransactionManagerValidatedInsertFact,
+) -> ConsensusTransactionManagerValidatedInsertFact {
+    ConsensusTransactionManagerValidatedInsertFact {
+        tx_hash: H256::from(fact.tx_hash),
+        transaction_nonce: U256::from_big_endian(&fact.transaction_nonce),
+        transaction_cost: U256::from_big_endian(&fact.transaction_cost),
+        gas_limit: fact.gas_limit,
+        propose_dag_gas_limit: fact.propose_dag_gas_limit,
+        insert_non_proposable: fact.insert_non_proposable,
+        in_non_finalized_cache: fact.in_non_finalized_cache,
+        in_recently_finalized_cache: fact.in_recently_finalized_cache,
+        account_found: fact.account_found,
+        account_nonce: U256::from_big_endian(&fact.account_nonce),
+        account_balance: U256::from_big_endian(&fact.account_balance),
+    }
+}
+
+fn queue_status_to_ffi(status: TransactionQueueInsertStatus) -> u8 {
+    match status {
+        TransactionQueueInsertStatus::Inserted => TransactionQueueInsertStatus::Inserted as u8,
+        TransactionQueueInsertStatus::InsertedNonProposable => {
+            TransactionQueueInsertStatus::InsertedNonProposable as u8
+        }
+        TransactionQueueInsertStatus::Known => TransactionQueueInsertStatus::Known as u8,
+        TransactionQueueInsertStatus::Overflow => TransactionQueueInsertStatus::Overflow as u8,
+    }
+}
+
+fn queue_status_from_ffi(status: u8) -> Result<TransactionQueueInsertStatus> {
+    Ok(match status {
+        x if x == TransactionQueueInsertStatus::Inserted as u8 => {
+            TransactionQueueInsertStatus::Inserted
+        }
+        x if x == TransactionQueueInsertStatus::InsertedNonProposable as u8 => {
+            TransactionQueueInsertStatus::InsertedNonProposable
+        }
+        x if x == TransactionQueueInsertStatus::Known as u8 => TransactionQueueInsertStatus::Known,
+        x if x == TransactionQueueInsertStatus::Overflow as u8 => {
+            TransactionQueueInsertStatus::Overflow
+        }
+        _ => {
+            anyhow::bail!("unknown transaction queue status: {}", status)
+        }
+    })
+}
+
 fn consensus_finalized_status_fact_from_ffi_fact(
     fact: FinalizedTransactionStatusFact,
 ) -> ConsensusFinalizedTransactionStatusFact {
@@ -535,6 +728,176 @@ mod tests {
             sender_account_nonce: u256_bytes(sender_account_nonce),
             in_recently_finalized_cache,
         }
+    }
+
+    fn verify_fact(
+        tx_hash: u8,
+        chain_id: u64,
+        expected_chain_id: u64,
+        gas_limit: u64,
+        max_gas_limit: u64,
+        cornus_active: bool,
+        intrinsic_gas_covered: bool,
+        signature_valid: bool,
+        gas_price: u64,
+        minimum_gas_price: u64,
+        last_block_number: u64,
+    ) -> TransactionManagerVerifyTransactionFact {
+        TransactionManagerVerifyTransactionFact {
+            tx_hash: [tx_hash; 32],
+            chain_id,
+            expected_chain_id,
+            gas_limit,
+            max_gas_limit,
+            cornus_active,
+            intrinsic_gas_covered,
+            signature_valid,
+            gas_price: u256_bytes(gas_price),
+            minimum_gas_price: u256_bytes(minimum_gas_price),
+            last_block_number,
+        }
+    }
+
+    fn insert_fact(
+        tx_hash: u8,
+        hash_known: bool,
+        queue_status: u8,
+        has_finalized_period: bool,
+        finalized_period: u64,
+    ) -> TransactionManagerInsertTransactionFact {
+        TransactionManagerInsertTransactionFact {
+            tx_hash: [tx_hash; 32],
+            hash_known,
+            queue_status,
+            has_finalized_period,
+            finalized_period,
+        }
+    }
+
+    fn validated_insert_fact(
+        tx_hash: u8,
+        account_found: bool,
+        account_nonce: u64,
+        account_balance: u64,
+        insert_non_proposable: bool,
+    ) -> TransactionManagerValidatedInsertFact {
+        TransactionManagerValidatedInsertFact {
+            tx_hash: [tx_hash; 32],
+            transaction_nonce: u256_bytes(1),
+            transaction_cost: u256_bytes(10),
+            gas_limit: 21_000,
+            propose_dag_gas_limit: 100_000,
+            insert_non_proposable,
+            in_non_finalized_cache: false,
+            in_recently_finalized_cache: false,
+            account_found,
+            account_nonce: u256_bytes(account_nonce),
+            account_balance: u256_bytes(account_balance),
+        }
+    }
+
+    #[test]
+    fn bridge_transaction_manager_verify_transaction_plans_accept_and_reject() {
+        assert_eq!(
+            transaction_manager_verify_transaction(verify_fact(
+                1, 1, 1, 21_000, 100_000, false, true, true, 1, 1, 0
+            ))
+            .expect("verification plan should compute")
+            .status,
+            TM_VERIFY_TRANSACTION_STATUS_ACCEPTED
+        );
+        assert_eq!(
+            transaction_manager_verify_transaction(verify_fact(
+                1, 2, 1, 21_000, 100_000, false, true, true, 1, 1, 0
+            ))
+            .expect("verification plan should compute")
+            .status,
+            TM_VERIFY_TRANSACTION_STATUS_CHAIN_ID_MISMATCH
+        );
+        assert_eq!(
+            transaction_manager_verify_transaction(verify_fact(
+                1, 1, 1, 21_000, 100_000, true, false, true, 1, 1, 0
+            ))
+            .expect("verification plan should compute")
+            .status,
+            TM_VERIFY_TRANSACTION_STATUS_INTRINSIC_GAS
+        );
+    }
+
+    #[test]
+    fn bridge_transaction_manager_insert_transaction_plans_known_and_finalized() {
+        assert_eq!(
+            transaction_manager_insert_transaction(insert_fact(
+                1,
+                true,
+                rustaxa_consensus::transaction_queue::TransactionQueueInsertStatus::Inserted as u8,
+                false,
+                0
+            ))
+            .expect("insert plan should compute")
+            .status,
+            TM_INSERT_TRANSACTION_STATUS_ALREADY_KNOWN
+        );
+
+        assert_eq!(
+            transaction_manager_insert_transaction(insert_fact(
+                1,
+                false,
+                rustaxa_consensus::transaction_queue::TransactionQueueInsertStatus::Known as u8,
+                true,
+                11
+            ))
+            .expect("insert plan should compute")
+            .status,
+            TM_INSERT_TRANSACTION_STATUS_ALREADY_FINALIZED
+        );
+
+        assert_eq!(
+            transaction_manager_insert_transaction(insert_fact(
+                1,
+                false,
+                rustaxa_consensus::transaction_queue::TransactionQueueInsertStatus::Overflow as u8,
+                false,
+                0
+            ))
+            .expect("insert plan should compute")
+            .status,
+            TM_INSERT_TRANSACTION_STATUS_CANNOT_INSERT
+        );
+    }
+
+    #[test]
+    fn bridge_transaction_manager_plan_validated_insert_returns_queue_plan() {
+        let proposable = transaction_manager_plan_validated_insert(validated_insert_fact(
+            1, true, 0, 100, false,
+        ))
+        .expect("validated insert plan should compute");
+        assert!(proposable.should_insert_queue);
+        assert!(proposable.queue_proposable);
+        assert!(proposable.emit_transaction_added);
+        assert_eq!(
+            proposable.status,
+            rustaxa_consensus::transaction_queue::TransactionQueueInsertStatus::Inserted as u8
+        );
+
+        let non_proposable =
+            transaction_manager_plan_validated_insert(validated_insert_fact(2, false, 0, 0, true))
+                .expect("validated insert plan should compute");
+        assert!(non_proposable.should_insert_queue);
+        assert!(!non_proposable.queue_proposable);
+        assert_eq!(
+            non_proposable.status,
+            rustaxa_consensus::transaction_queue::TransactionQueueInsertStatus::InsertedNonProposable as u8
+        );
+
+        let rejected =
+            transaction_manager_plan_validated_insert(validated_insert_fact(3, false, 0, 0, false))
+                .expect("validated insert plan should compute");
+        assert!(!rejected.should_insert_queue);
+        assert_eq!(
+            rejected.status,
+            rustaxa_consensus::transaction_queue::TransactionQueueInsertStatus::Known as u8
+        );
     }
 
     #[test]

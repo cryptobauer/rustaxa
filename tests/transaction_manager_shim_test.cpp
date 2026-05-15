@@ -448,6 +448,113 @@ TEST_F(TransactionManagerShimFixture, rustPoolReadHelpersRemainCxxOwned) {
   }
   EXPECT_EQ(after_count, 1);
 }
+
+TEST_F(TransactionManagerShimFixture, rustVerifyTransactionRejectsChainIdMismatch) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  auto bad_chain_id_transaction =
+      std::make_shared<Transaction>(1, 100, 1000000000, 100000, dev::bytes(),
+                                   dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                               dev::Secret::ConstructFromStringType::FromHex),
+                                   addr_t::random(), cfg.genesis.chain_id + 1);
+
+  const auto result = trx_mgr.verifyTransaction(bad_chain_id_transaction);
+  EXPECT_FALSE(result.first);
+  EXPECT_EQ(result.second,
+            "chain_id mismatch " + std::to_string(cfg.genesis.chain_id + 1) + " " +
+                std::to_string(cfg.genesis.chain_id));
+}
+
+TEST_F(TransactionManagerShimFixture, rustVerifyTransactionRejectsInvalidGasLimit) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  auto max_gas_limit = cfg.genesis.state.hardforks.soleirolia_hf.trx_max_gas_limit;
+
+  const auto tx = std::make_shared<Transaction>(
+      1, 100, 1000000000, max_gas_limit + 1, dev::bytes(),
+      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                  dev::Secret::ConstructFromStringType::FromHex),
+      addr_t::random());
+
+  const auto result = trx_mgr.verifyTransaction(tx);
+  EXPECT_FALSE(result.first);
+  EXPECT_EQ(result.second, "invalid gas");
+}
+
+TEST_F(TransactionManagerShimFixture, rustVerifyTransactionRejectsInvalidSignature) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+
+  const auto valid_transactions = samples::createSignedTrxSamples(
+      1, 1, dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                           dev::Secret::ConstructFromStringType::FromHex));
+  auto valid_trx = valid_transactions[0];
+
+  dev::RLPStream with_invalid_signature(9);
+  size_t fields_processed = 0;
+  for (const auto el : dev::RLP(valid_trx->rlp())) {
+    auto el_modified = el.toBytes();
+    ++fields_processed;
+    if (fields_processed > 7) {
+      for (auto& b : el_modified) {
+        b = 0;
+      }
+    }
+    with_invalid_signature << el_modified;
+  }
+
+  const auto invalid_signature_trx = std::make_shared<Transaction>(with_invalid_signature.invalidate());
+  cfg.genesis.chain_id = invalid_signature_trx->getChainID();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  const auto result = trx_mgr.verifyTransaction(invalid_signature_trx);
+  EXPECT_FALSE(result.first);
+  EXPECT_EQ(result.second, "invalid signature");
+}
+
+TEST_F(TransactionManagerShimFixture, rustInsertTransactionRejectsKnownTransaction) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  const auto transactions =
+      samples::createSignedTrxSamples(1, 1,
+                                      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                  dev::Secret::ConstructFromStringType::FromHex));
+
+  ASSERT_TRUE(trx_mgr.insertTransaction(transactions[0]).first);
+
+  const auto result = trx_mgr.insertTransaction(transactions[0]);
+  EXPECT_FALSE(result.first);
+  EXPECT_EQ(result.second, "Transaction already in transactions pool");
+}
+
+TEST_F(TransactionManagerShimFixture, rustInsertTransactionRejectsAlreadyFinalizedTransaction) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  const auto unknown_sender = dev::Secret::random();
+  const auto finalized_tx =
+      std::make_shared<Transaction>(0, 100, 1000000000, 100000, dev::bytes(),
+                                   unknown_sender,
+                                   addr_t::random());
+  constexpr uint64_t kFinalizedPeriod = 11;
+
+  {
+    auto batch = db->createWriteBatch();
+    db->addTransactionLocationToBatch(batch, finalized_tx->getHash(), kFinalizedPeriod, 0);
+    db->commitWriteBatch(batch);
+  }
+
+  const auto result = trx_mgr.insertTransaction(finalized_tx);
+  EXPECT_FALSE(result.first);
+  EXPECT_EQ(result.second, "Transaction already finalized in period" + std::to_string(kFinalizedPeriod));
+}
 #endif
 
 }  // namespace taraxa::core_tests

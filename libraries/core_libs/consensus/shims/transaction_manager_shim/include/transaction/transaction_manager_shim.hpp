@@ -68,11 +68,7 @@ class TransactionManager : public TransactionManagerOld {
    */
   void saveTransactionsFromDagBlock(const SharedTransactions &trxs);
 
-  std::pair<bool, std::string> insertTransaction(const std::shared_ptr<Transaction> &trx) {
-    // TODO(rust-rewrite): migrate transaction verification/insertion orchestration to Rust instead of
-    // TransactionManagerOld.
-    return TransactionManagerOld::insertTransaction(trx);
-  }
+  std::pair<bool, std::string> insertTransaction(const std::shared_ptr<Transaction> &trx);
 
   /**
    * Notify the live C++ transaction pool that an Ethereum block has finalized.
@@ -81,10 +77,13 @@ class TransactionManager : public TransactionManagerOld {
    */
   void blockFinalized(EthBlockNumber block_number);
 
-  TransactionStatus insertValidatedTransaction(std::shared_ptr<Transaction> &&tx, bool insert_non_proposable = true) {
-    // TODO(rust-rewrite): migrate validated transaction insertion to Rust instead of TransactionManagerOld.
-    return TransactionManagerOld::insertValidatedTransaction(std::move(tx), insert_non_proposable);
-  }
+  /**
+   * Plan validated transaction admission in Rust, then apply live C++ queue mutation.
+   *
+   * Rust decides known/proposable/non-proposable admission from C++ cache and account facts.
+   * The shim keeps `SharedTransaction` ownership, queue insertion, and event emission in C++.
+   */
+  TransactionStatus insertValidatedTransaction(std::shared_ptr<Transaction> &&tx, bool insert_non_proposable = true);
 
   /**
    * Query live known-transaction cache membership for one hash under the transaction mutex.
@@ -214,10 +213,7 @@ class TransactionManager : public TransactionManagerOld {
    */
   void recoverNonfinalizedTransactions();
 
-  std::pair<bool, std::string> verifyTransaction(const std::shared_ptr<Transaction> &trx) const {
-    // TODO(rust-rewrite): migrate transaction verification to Rust instead of TransactionManagerOld.
-    return TransactionManagerOld::verifyTransaction(trx);
-  }
+  std::pair<bool, std::string> verifyTransaction(const std::shared_ptr<Transaction> &trx) const;
 };
 
 }  // namespace taraxa

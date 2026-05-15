@@ -775,6 +775,81 @@ pub mod rustaxa_ffi {
         hash: [u8; 32],
     }
 
+    /// Facts extracted by C++ for TransactionManager::verifyTransaction admission checks.
+    struct TransactionManagerVerifyTransactionFact {
+        /// Transaction hash being evaluated.
+        tx_hash: [u8; 32],
+        /// Transaction chain id.
+        chain_id: u64,
+        /// Configured node chain id.
+        expected_chain_id: u64,
+        /// Gas limit declared in the transaction.
+        gas_limit: u64,
+        /// Maximum gas limit configured in genesis.
+        max_gas_limit: u64,
+        /// Last finalized block number; supplied for precomputed hardfork evaluation.
+        last_block_number: u64,
+        /// Hardfork gate for Cornus is active.
+        cornus_active: bool,
+        /// `Transaction::intrinsicGasCovered()` result from C++ side.
+        intrinsic_gas_covered: bool,
+        /// Signature validation result from C++ side.
+        signature_valid: bool,
+        /// Gas price from the transaction envelope.
+        gas_price: [u8; 32],
+        /// Minimum gas price from chain policy.
+        minimum_gas_price: [u8; 32],
+    }
+
+    /// TransactionManager::verifyTransaction plan status for C++.
+    struct TransactionManagerVerifyTransactionOutcome {
+        status: u8,
+    }
+
+    /// Facts extracted by C++ for TransactionManager::insertTransaction admission checks.
+    struct TransactionManagerInsertTransactionFact {
+        /// Transaction hash being evaluated.
+        tx_hash: [u8; 32],
+        /// Already known in the live transaction pool.
+        hash_known: bool,
+        /// Post-queue insertion status as returned by Rust queue adapter.
+        queue_status: u8,
+        /// Finalized period hint is available.
+        has_finalized_period: bool,
+        /// Finalized period hint used when `status == AlreadyFinalized`.
+        finalized_period: u64,
+    }
+
+    /// TransactionManager::insertTransaction plan status for C++.
+    struct TransactionManagerInsertTransactionOutcome {
+        status: u8,
+        finalized_period_known: bool,
+        finalized_period: u64,
+    }
+
+    /// Facts extracted by C++ before mutating the live transaction queue.
+    struct TransactionManagerValidatedInsertFact {
+        tx_hash: [u8; 32],
+        transaction_nonce: [u8; 32],
+        transaction_cost: [u8; 32],
+        gas_limit: u64,
+        propose_dag_gas_limit: u64,
+        insert_non_proposable: bool,
+        in_non_finalized_cache: bool,
+        in_recently_finalized_cache: bool,
+        account_found: bool,
+        account_nonce: [u8; 32],
+        account_balance: [u8; 32],
+    }
+
+    /// Plan for C++ live queue insertion.
+    struct TransactionManagerValidatedInsertPlan {
+        status: u8,
+        should_insert_queue: bool,
+        queue_proposable: bool,
+        emit_transaction_added: bool,
+    }
+
     /// Finalized status planning outcome for one finalized period.
     struct FinalizedTransactionStatusPlan {
         accepted: Vec<FinalizedTransactionStatusAction>,
@@ -1745,6 +1820,18 @@ pub mod rustaxa_ffi {
             current_transaction_count: u64,
             facts: Vec<FinalizedTransactionStatusFact>,
         ) -> Result<FinalizedTransactionStatusPlan>;
+        /// Builds deterministic TransactionManager::verifyTransaction admission plan.
+        pub fn transaction_manager_verify_transaction(
+            fact: TransactionManagerVerifyTransactionFact,
+        ) -> Result<TransactionManagerVerifyTransactionOutcome>;
+        /// Builds deterministic TransactionManager::insertTransaction admission plan.
+        pub fn transaction_manager_insert_transaction(
+            fact: TransactionManagerInsertTransactionFact,
+        ) -> Result<TransactionManagerInsertTransactionOutcome>;
+        /// Builds deterministic TransactionManager::insertValidatedTransaction plan.
+        pub fn transaction_manager_plan_validated_insert(
+            fact: TransactionManagerValidatedInsertFact,
+        ) -> Result<TransactionManagerValidatedInsertPlan>;
         /// Determines which hash inputs are not finalized in-memory and in storage.
         pub fn transaction_manager_filter_non_finalized(
             storage: &BridgeStorage,
