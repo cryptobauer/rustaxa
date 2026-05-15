@@ -30,6 +30,7 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Instant;
 
 pub struct BridgeStorage(
     pub Arc<Storage>,
@@ -68,7 +69,15 @@ pub struct BridgePillarVotes(pub PillarVotes);
 
 pub struct BridgeSortitionParamsManager(pub SortitionParamsManager);
 
-pub struct BridgeTransactionQueue(pub TransactionQueue);
+/// Bridge-owned transaction queue handle.
+///
+/// `queue` owns deterministic queue metadata, queued payload bytes, and the local known-transaction cache.
+/// `last_drop_observed` tracks the Rust-mode equivalent of the legacy overflow/drop wall-clock window used by C++
+/// callers to tell peers that this node recently rejected or evicted transactions.
+pub struct BridgeTransactionQueue {
+    pub queue: TransactionQueue,
+    pub last_drop_observed: Option<Instant>,
+}
 
 pub struct BridgeTransactionPackPlanner(pub TransactionPackingPlanner);
 
@@ -1787,6 +1796,15 @@ pub mod rustaxa_ffi {
         ) -> TransactionQueueErasePlan;
         pub fn transaction_queue_erase(self: &mut BridgeTransactionQueue, hash: &[u8; 32]) -> bool;
         pub fn transaction_queue_contains(self: &BridgeTransactionQueue, hash: &[u8; 32]) -> bool;
+        pub fn transaction_queue_mark_transaction_known(
+            self: &mut BridgeTransactionQueue,
+            hash: &[u8; 32],
+        ) -> bool;
+        pub fn transaction_queue_is_transaction_known(
+            self: &BridgeTransactionQueue,
+            hash: &[u8; 32],
+        ) -> bool;
+        pub fn transaction_queue_transactions_dropped(self: &BridgeTransactionQueue) -> bool;
         pub fn transaction_queue_get_transaction(
             self: &BridgeTransactionQueue,
             hash: &[u8; 32],

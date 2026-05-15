@@ -1,11 +1,21 @@
 #include <gtest/gtest.h>
 
+#include <array>
 #include <type_traits>
 
 #include "transaction/transaction_manager.hpp"
 #include "transaction/transaction_queue.hpp"
 
 namespace taraxa::core_tests {
+namespace {
+
+trx_hash_t testHash(uint8_t value) {
+  std::array<uint8_t, 32> bytes{};
+  bytes.fill(value);
+  return trx_hash_t(bytes.data(), trx_hash_t::ConstructFromPointer);
+}
+
+}  // namespace
 
 TEST(TransactionQueueShimTest, rustModeTransactionQueueDoesNotInheritLegacyImplementation) {
 #ifdef RUSTAXA_ENABLE_TRANSACTION_QUEUE
@@ -47,6 +57,41 @@ TEST(TransactionQueueShimTest, rustModeTransactionQueueRetainsDemotedNonceReplac
 
   EXPECT_TRUE(priority_queue.isTransactionKnown(low_fee_tx_hash));
   EXPECT_TRUE(priority_queue.isTransactionKnown(replacement_tx_hash));
+#else
+  GTEST_SKIP() << "TransactionQueue shim is disabled";
+#endif
+}
+
+TEST(TransactionQueueShimTest, rustModeTransactionQueueKnownCacheUsesRustOwnedFifoExpiry) {
+#ifdef RUSTAXA_ENABLE_TRANSACTION_QUEUE
+  TransactionQueue priority_queue(nullptr, 5);
+
+  for (uint8_t hash = 1; hash <= 10; ++hash) {
+    priority_queue.markTransactionKnown(testHash(hash));
+  }
+  EXPECT_TRUE(priority_queue.isTransactionKnown(testHash(1)));
+
+  priority_queue.markTransactionKnown(testHash(11));
+  EXPECT_FALSE(priority_queue.isTransactionKnown(testHash(1)));
+  EXPECT_TRUE(priority_queue.isTransactionKnown(testHash(2)));
+  EXPECT_TRUE(priority_queue.isTransactionKnown(testHash(11)));
+#else
+  GTEST_SKIP() << "TransactionQueue shim is disabled";
+#endif
+}
+
+TEST(TransactionQueueShimTest, rustModeTransactionQueueTracksOverflowDropsInRust) {
+#ifdef RUSTAXA_ENABLE_TRANSACTION_QUEUE
+  TransactionQueue priority_queue(nullptr, 5);
+  EXPECT_FALSE(priority_queue.transactionsDropped());
+
+  for (uint8_t nonce = 0; nonce < 6; ++nonce) {
+    auto trx = std::make_shared<Transaction>(nonce, 1, 1000, 10000, dev::bytes(), dev::KeyPair::create().secret(),
+                                             addr_t::random());
+    priority_queue.insert(std::move(trx), true, 1);
+  }
+
+  EXPECT_TRUE(priority_queue.transactionsDropped());
 #else
   GTEST_SKIP() << "TransactionQueue shim is disabled";
 #endif

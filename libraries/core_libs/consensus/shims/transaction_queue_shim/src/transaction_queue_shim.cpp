@@ -35,7 +35,6 @@ TransactionStatus toTransactionStatus(uint8_t status) {
 
 TransactionQueue::TransactionQueue(std::shared_ptr<final_chain::FinalChain> final_chain, size_t max_size)
     : queue_(rustaxa::create_transaction_queue(rustaxa::TransactionQueueConfig{max_size})),
-      known_txs_(max_size * 2, max_size / 5),
       final_chain_(std::move(final_chain)) {}
 
 TransactionStatus TransactionQueue::insert(std::shared_ptr<Transaction>&& transaction, bool proposable,
@@ -57,16 +56,7 @@ TransactionStatus TransactionQueue::insert(std::shared_ptr<Transaction>&& transa
   input.last_block_number = last_block_number;
 
   const auto outcome = queue_->transaction_queue_insert(std::move(input));
-  const auto status = toTransactionStatus(outcome.status);
-  if (status == TransactionStatus::Overflow) {
-    transaction_overflow_time_ = std::chrono::system_clock::now();
-  }
-
-  forgetHashes(outcome.overflow_removed_hashes, true);
-  if (status == TransactionStatus::Inserted || status == TransactionStatus::InsertedNonProposable) {
-    known_txs_.insert(tx_hash);
-  }
-  return status;
+  return toTransactionStatus(outcome.status);
 }
 
 bool TransactionQueue::erase(const SharedTransaction& transaction) {
@@ -131,8 +121,7 @@ bool TransactionQueue::contains(const trx_hash_t& hash) const {
 size_t TransactionQueue::size() const { return queue_->transaction_queue_size(); }
 
 void TransactionQueue::blockFinalized(uint64_t block_number) {
-  const auto expired = queue_->transaction_queue_block_finalized(block_number);
-  forgetHashes(expired, true);
+  queue_->transaction_queue_block_finalized(block_number);
 }
 
 void TransactionQueue::purge() {
@@ -149,14 +138,19 @@ void TransactionQueue::purge() {
     }
     const auto sender = toBridgeAddress(address);
     const auto nonce = toBridgeU256(account_state->nonce);
-    const auto removed = queue_->transaction_queue_purge_account(sender, nonce);
-    forgetHashes(removed, false);
+    queue_->transaction_queue_purge_account(sender, nonce);
   }
 }
 
-void TransactionQueue::markTransactionKnown(const trx_hash_t& trx_hash) { known_txs_.insert(trx_hash); }
+void TransactionQueue::markTransactionKnown(const trx_hash_t& trx_hash) {
+  queue_->transaction_queue_mark_transaction_known(toBridgeHash(trx_hash));
+}
 
-bool TransactionQueue::isTransactionKnown(const trx_hash_t& trx_hash) const { return known_txs_.contains(trx_hash); }
+bool TransactionQueue::isTransactionKnown(const trx_hash_t& trx_hash) const {
+  return queue_->transaction_queue_is_transaction_known(toBridgeHash(trx_hash));
+}
+
+bool TransactionQueue::transactionsDropped() const { return queue_->transaction_queue_transactions_dropped(); }
 
 bool TransactionQueue::nonProposableTransactionsOverTheLimit() const {
   return queue_->transaction_queue_non_proposable_over_limit();
@@ -164,15 +158,6 @@ bool TransactionQueue::nonProposableTransactionsOverTheLimit() const {
 
 val_t TransactionQueue::getMinGasPriceForBlockInclusion(uint64_t limit) const {
   return fromBridgeU256(queue_->transaction_queue_min_gas_price_for_block_inclusion(limit));
-}
-
-void TransactionQueue::forgetHashes(const rust::Vec<rustaxa::TransactionQueueHash>& hashes, bool erase_known) {
-  for (const auto& hash : hashes) {
-    const auto local_hash = fromBridgeHash(hash.hash);
-    if (erase_known) {
-      known_txs_.erase(local_hash);
-    }
-  }
 }
 
 std::shared_ptr<Transaction> TransactionQueue::materializeTransaction(

@@ -9,7 +9,7 @@
 use anyhow::{Result, ensure};
 use ethereum_types::{H160, H256, U256};
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 /// Metadata for a transaction known to the Rust queue.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -108,6 +108,57 @@ struct StoredTransaction {
     proposable: bool,
 }
 
+/// FIFO transaction-known cache used by the Rust-backed queue admission path.
+///
+/// The cache mirrors legacy `ExpirationCache` behavior for transaction hashes: insertions are idempotent, insertion
+/// order drives eviction, and once the configured maximum size is exceeded the oldest `delete_step` hashes are removed.
+/// The cache is local node bookkeeping rather than consensus state. Inputs and outputs are transaction hashes only;
+/// zero hashes are not special-cased so callers can preserve legacy cache semantics at the C++ API boundary.
+#[derive(Clone, Debug)]
+struct KnownTransactionCache {
+    cache: HashSet<H256>,
+    expiration: VecDeque<H256>,
+    max_size: u64,
+    delete_step: u64,
+}
+
+impl KnownTransactionCache {
+    fn new(max_size: u64, delete_step: u64) -> Self {
+        Self {
+            cache: HashSet::new(),
+            expiration: VecDeque::new(),
+            max_size,
+            delete_step,
+        }
+    }
+
+    fn insert(&mut self, hash: H256) -> bool {
+        if !self.cache.insert(hash) {
+            return false;
+        }
+
+        self.expiration.push_back(hash);
+        if self.cache.len() as u64 > self.max_size {
+            for _ in 0..self.delete_step {
+                if let Some(expired) = self.expiration.pop_front() {
+                    self.cache.remove(&expired);
+                } else {
+                    break;
+                }
+            }
+        }
+        true
+    }
+
+    fn contains(&self, hash: H256) -> bool {
+        self.cache.contains(&hash)
+    }
+
+    fn erase(&mut self, hash: H256) {
+        self.cache.remove(&hash);
+    }
+}
+
 /// Rust-owned transaction queue metadata and deterministic ordering state.
 ///
 /// Invariants:
@@ -117,6 +168,7 @@ struct StoredTransaction {
 /// - `data_size` includes proposer and non-proposer payload sizes
 pub struct TransactionQueue {
     entries: HashMap<H256, StoredTransaction>,
+    known_transactions: KnownTransactionCache,
     account_nonce_transactions: BTreeMap<H160, BTreeMap<U256, H256>>,
     queue_transactions_gas_prices: BTreeMap<Reverse<U256>, u64>,
     non_proposable_transactions: BTreeMap<H256, u64>,
@@ -133,6 +185,10 @@ impl TransactionQueue {
     pub fn new(max_size: u64) -> Self {
         Self {
             entries: HashMap::new(),
+            known_transactions: KnownTransactionCache::new(
+                max_size.saturating_mul(2),
+                max_size / 5,
+            ),
             account_nonce_transactions: BTreeMap::new(),
             queue_transactions_gas_prices: BTreeMap::new(),
             non_proposable_transactions: BTreeMap::new(),
@@ -156,6 +212,28 @@ impl TransactionQueue {
     /// Returns true when either proposer or non-proposer indexes contain `hash`.
     pub fn contains(&self, hash: H256) -> bool {
         self.entries.contains_key(&hash)
+    }
+
+    /// Marks `hash` as recently known to the local transaction admission cache.
+    ///
+    /// The cache is independent from live proposer/non-proposer queue membership and is used to suppress duplicate
+    /// re-admission attempts after transactions leave live queue state. It evicts older hashes with the same FIFO
+    /// capacity and delete-step policy as the legacy C++ `ExpirationCache`.
+    pub fn mark_transaction_known(&mut self, hash: H256) -> bool {
+        self.known_transactions.insert(hash)
+    }
+
+    /// Returns true when `hash` is present in the local transaction-known cache.
+    pub fn is_transaction_known(&self, hash: H256) -> bool {
+        self.known_transactions.contains(hash)
+    }
+
+    /// Removes `hash` from the local transaction-known cache.
+    ///
+    /// This is used for queue-owned expiry and overflow plans where legacy behavior allowed the same hash to be
+    /// admitted again after the queue dropped it from both live state and the known cache.
+    pub fn forget_transaction_known(&mut self, hash: H256) {
+        self.known_transactions.erase(hash);
     }
 
     /// Returns canonical transaction bytes and metadata for a queued hash.
@@ -195,11 +273,24 @@ impl TransactionQueue {
             });
         }
 
-        if proposable {
+        let outcome = if proposable {
             self.insert_proposable(entry)
         } else {
             self.insert_non_proposable(entry)
+        }?;
+
+        if matches!(
+            outcome.status,
+            TransactionQueueInsertStatus::Inserted
+                | TransactionQueueInsertStatus::InsertedNonProposable
+        ) && let Some(inserted_hash) = outcome.inserted_hash
+        {
+            self.mark_transaction_known(inserted_hash);
         }
+        for hash in &outcome.overflow_removed_hashes {
+            self.forget_transaction_known(*hash);
+        }
+        Ok(outcome)
     }
 
     /// Removes a transaction by hash from any queue index.
@@ -277,6 +368,7 @@ impl TransactionQueue {
             .collect::<Vec<_>>();
         for hash in &expired {
             self.erase(*hash);
+            self.forget_transaction_known(*hash);
         }
         TransactionQueuePurgeOutcome {
             removed_hashes: expired,
@@ -724,5 +816,33 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert!(groups.iter().any(|group| group[0].rlp == vec![1; 4]));
         assert!(groups.iter().any(|group| group[0].rlp == vec![2; 4]));
+    }
+
+    #[test]
+    fn known_transaction_cache_uses_legacy_fifo_eviction() {
+        let mut queue = TransactionQueue::new(5);
+        for hash in 1..=10 {
+            assert!(queue.mark_transaction_known(H256::from([hash; 32])));
+        }
+        assert!(!queue.mark_transaction_known(H256::from([1; 32])));
+        assert!(queue.is_transaction_known(H256::from([1; 32])));
+
+        assert!(queue.mark_transaction_known(H256::from([11; 32])));
+        assert!(!queue.is_transaction_known(H256::from([1; 32])));
+        assert!(queue.is_transaction_known(H256::from([2; 32])));
+        assert!(queue.is_transaction_known(H256::from([11; 32])));
+    }
+
+    #[test]
+    fn insert_and_expiry_update_known_transaction_cache() {
+        let mut queue = TransactionQueue::new(100);
+        let hash = H256::from([1; 32]);
+
+        queue.insert(entry(1, 1, 1, 1), false).unwrap();
+        assert!(queue.is_transaction_known(hash));
+
+        queue.block_finalized(12);
+        assert!(!queue.contains(hash));
+        assert!(!queue.is_transaction_known(hash));
     }
 }

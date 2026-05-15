@@ -1,6 +1,5 @@
 #pragma once
 
-#include <chrono>
 #include <memory>
 
 #include "common/constants.hpp"
@@ -24,13 +23,13 @@ class FinalChain;
  *
  * The class preserves the public `TransactionQueue` API while moving deterministic queue metadata and queued
  * transaction payload bytes into Rust. C++ materializes `Transaction` objects from Rust-retained canonical RLP for API
- * callers and keeps known-transaction expiration cache semantics, overflow wall-clock state, and FinalChain account
- * lookups used by purge. Rust owns proposer/non-proposer indexes, per-account nonce ordering, replacement, expiry
- * planning, pool limits, gas-price aggregates, and queued payload retention.
+ * callers and keeps FinalChain account lookups used by purge. Rust owns proposer/non-proposer indexes, per-account
+ * nonce ordering, replacement, expiry planning, pool limits, gas-price aggregates, queued payload retention, the local
+ * known-transaction expiration cache, and overflow/drop observation state.
  *
  * Edge behavior:
  * - insert status values mirror `TransactionStatus`
- * - overflow updates `transactionsDropped()` through shim-local wall-clock state
+ * - overflow/drop observations update `transactionsDropped()` through Rust-owned bridge state
  * - Rust errors at the metadata boundary are surfaced as local exceptions instead of falling back to legacy C++
  */
 class TransactionQueue {
@@ -92,21 +91,19 @@ class TransactionQueue {
   void purge();
 
   /**
-   * Marks a transaction hash as known to the local expiration cache.
+   * Marks a transaction hash as known to the Rust-owned local expiration cache.
    */
   void markTransactionKnown(const trx_hash_t& trx_hash);
 
   /**
-   * Returns true when the transaction hash is known to the local expiration cache.
+   * Returns true when the transaction hash is known to the Rust-owned local expiration cache.
    */
   bool isTransactionKnown(const trx_hash_t& trx_hash) const;
 
   /**
-   * Returns true for a short time after queue overflow drops or rejects transactions.
+   * Returns true for a short time after Rust observes queue overflow drops or rejects transactions.
    */
-  bool transactionsDropped() const {
-    return std::chrono::system_clock::now() - transaction_overflow_time_ < kTransactionOverflowTimeLimit;
-  }
+  bool transactionsDropped() const;
 
   /**
    * Returns true when non-proposable queue state reached its configured limit.
@@ -119,11 +116,6 @@ class TransactionQueue {
   val_t getMinGasPriceForBlockInclusion(uint64_t limit) const;
 
  private:
-  /**
-   * Removes known-cache entries for hashes dropped by Rust when requested.
-   */
-  void forgetHashes(const rust::Vec<rustaxa::TransactionQueueHash>& hashes, bool erase_known);
-
   /**
    * Materializes a legacy transaction object from Rust-owned queued bytes.
    */
@@ -159,14 +151,8 @@ class TransactionQueue {
    */
   static val_t fromBridgeU256(const std::array<uint8_t, 32>& value);
 
- private:
+private:
   ::rust::Box<rustaxa::BridgeTransactionQueue> queue_;
-  ExpirationCache<trx_hash_t> known_txs_;
-
-  std::chrono::system_clock::time_point transaction_overflow_time_;
-
-  const std::chrono::seconds kTransactionOverflowTimeLimit{600};
-
   std::shared_ptr<final_chain::FinalChain> final_chain_;
 };
 
