@@ -4,6 +4,7 @@
 //! - proposer transaction packing (`packTrxs`)
 //! - DAG-block transaction persistence planning (`saveTransactionsFromDagBlock`)
 //! - finalized transaction status updates (`updateFinalizedTransactionsStatus`)
+//! - finalized filtering (`excludeFinalizedTransactions` + `verifyTransactionsNotFinalized`)
 //!
 //! In each case Rust remains side-effect free and deterministic: it only computes the
 //! plan and leaves live queue/cache mutation to C++ state.
@@ -140,6 +141,67 @@ pub struct FinalizedTransactionStatusPlan {
     pub purge_transactions: bool,
 }
 
+/// Input for finalized-transaction filtering decisions from legacy C++.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FinalizedTransactionFilterFact {
+    /// Original input position in the C++ hash slice.
+    pub input_index: u64,
+    /// Canonical transaction hash.
+    pub hash: H256,
+    /// True when the hash is already known in `recently_finalized_transactions_`.
+    pub in_recently_finalized_cache: bool,
+}
+
+/// One filter action emitted for non-finalized hashes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FinalizedTransactionFilterAction {
+    /// Original input position.
+    pub input_index: u64,
+    /// Canonical transaction hash.
+    pub hash: H256,
+}
+
+/// Plan for finalized filtering operations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FinalizedTransactionFilterPlan {
+    /// Hashes that are not considered finalized by cache/storage checks.
+    pub not_finalized: Vec<FinalizedTransactionFilterAction>,
+}
+
+/// Input for verify-not-finalized decisions from legacy C++.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifyNotFinalizedTransactionFact {
+    /// Original input position in the C++ transaction list.
+    pub input_index: u64,
+    /// Canonical transaction hash.
+    pub hash: H256,
+    /// Transaction nonce from `Transaction::getNonce()`.
+    pub transaction_nonce: U256,
+    /// Sender account nonce from `FinalChain::getAccount().nonce`.
+    pub sender_account_nonce: U256,
+    /// True when the hash is already known in `recently_finalized_transactions_`.
+    pub in_recently_finalized_cache: bool,
+}
+
+/// First finalized transaction observed while verifying a candidate transaction list.
+///
+/// The planner preserves the original input index so the C++ shim can validate
+/// the returned hash against its live `SharedTransaction` vector before logging.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifyNotFinalizedTransactionFailure {
+    /// Original input position of the first finalized transaction.
+    pub input_index: u64,
+    /// Canonical hash of the first finalized transaction.
+    pub hash: H256,
+}
+
+/// Plan returned for `verifyTransactionsNotFinalized`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifyNotFinalizedTransactionPlan {
+    /// `Some` when a transaction is finalized; `None` means all inputs passed.
+    pub finalized: Option<VerifyNotFinalizedTransactionFailure>,
+}
+
 /// Builds a deterministic save plan from C++-supplied DAG transaction facts.
 ///
 /// Filtering preserves legacy behavior from `TransactionManager::saveTransactionsFromDagBlock`:
@@ -246,6 +308,85 @@ pub fn plan_finalized_transactions_status(
         },
         purge_transactions: period.is_multiple_of(100),
     })
+}
+
+/// Builds deterministic filtering inputs for `TransactionManager::excludeFinalizedTransactions`.
+///
+/// Facts already mark cache hits for `recently_finalized_transactions_`, so Rust only checks
+/// storage-backed finalized status for remaining candidates.
+pub fn plan_exclude_finalized_transactions<F>(
+    facts: Vec<FinalizedTransactionFilterFact>,
+    mut is_finalized: F,
+) -> Result<FinalizedTransactionFilterPlan>
+where
+    F: FnMut(H256) -> Result<bool>,
+{
+    let mut not_finalized = Vec::new();
+
+    for fact in facts {
+        ensure!(
+            !fact.hash.is_zero(),
+            "finalized filtering transaction hash cannot be zero"
+        );
+
+        if fact.in_recently_finalized_cache {
+            continue;
+        }
+
+        if is_finalized(fact.hash).context("storage finalized lookup failed while filtering")? {
+            continue;
+        }
+
+        not_finalized.push(FinalizedTransactionFilterAction {
+            input_index: fact.input_index,
+            hash: fact.hash,
+        });
+    }
+
+    Ok(FinalizedTransactionFilterPlan { not_finalized })
+}
+
+/// Builds deterministic short-circuit output for
+/// `TransactionManager::verifyTransactionsNotFinalized`.
+///
+/// For each transaction it mirrors the legacy logic:
+/// - immediate failure when present in `recently_finalized_transactions_`
+/// - storage finalized lookup only when `sender_account_nonce >= transaction_nonce`
+pub fn plan_verify_not_finalized_transactions<F>(
+    facts: Vec<VerifyNotFinalizedTransactionFact>,
+    mut is_finalized: F,
+) -> Result<VerifyNotFinalizedTransactionPlan>
+where
+    F: FnMut(H256) -> Result<bool>,
+{
+    for fact in facts {
+        ensure!(
+            !fact.hash.is_zero(),
+            "finalized verification transaction hash cannot be zero"
+        );
+
+        if fact.in_recently_finalized_cache {
+            return Ok(VerifyNotFinalizedTransactionPlan {
+                finalized: Some(VerifyNotFinalizedTransactionFailure {
+                    input_index: fact.input_index,
+                    hash: fact.hash,
+                }),
+            });
+        }
+
+        if fact.sender_account_nonce >= fact.transaction_nonce
+            && is_finalized(fact.hash).context("storage finalized lookup failed while verifying")?
+        {
+            return Ok(VerifyNotFinalizedTransactionPlan {
+                finalized: Some(VerifyNotFinalizedTransactionFailure {
+                    input_index: fact.input_index,
+                    hash: fact.hash,
+                }),
+            });
+        }
+    }
+
+    Ok(VerifyNotFinalizedTransactionPlan { finalized: None })
 }
 
 /// Stateful planner for one `TransactionManager::packTrxs` invocation.
@@ -578,5 +719,126 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+
+    fn finalized_filter_fact(
+        input_index: u64,
+        hash: u8,
+        in_recently_finalized_cache: bool,
+    ) -> FinalizedTransactionFilterFact {
+        FinalizedTransactionFilterFact {
+            input_index,
+            hash: H256::from([hash; 32]),
+            in_recently_finalized_cache,
+        }
+    }
+
+    fn verify_not_finalized_fact(
+        input_index: u64,
+        hash: u8,
+        transaction_nonce: u64,
+        sender_account_nonce: u64,
+        in_recently_finalized_cache: bool,
+    ) -> VerifyNotFinalizedTransactionFact {
+        VerifyNotFinalizedTransactionFact {
+            input_index,
+            hash: H256::from([hash; 32]),
+            transaction_nonce: U256::from(transaction_nonce),
+            sender_account_nonce: U256::from(sender_account_nonce),
+            in_recently_finalized_cache,
+        }
+    }
+
+    #[test]
+    fn finalized_filter_plan_excludes_recent_cache_and_storage() {
+        let mut lookup_count = 0;
+        let plan = plan_exclude_finalized_transactions(
+            vec![
+                finalized_filter_fact(0, 1, false),
+                finalized_filter_fact(1, 2, true),
+                finalized_filter_fact(2, 3, false),
+                finalized_filter_fact(3, 4, false),
+            ],
+            |hash| {
+                lookup_count += 1;
+                Ok(hash == H256::from([3; 32]))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(lookup_count, 3);
+        assert_eq!(
+            plan.not_finalized,
+            vec![
+                FinalizedTransactionFilterAction {
+                    input_index: 0,
+                    hash: H256::from([1; 32]),
+                },
+                FinalizedTransactionFilterAction {
+                    input_index: 3,
+                    hash: H256::from([4; 32]),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn finalize_filter_plan_rejects_zero_hash_inputs() {
+        let result =
+            plan_exclude_finalized_transactions(vec![finalized_filter_fact(0, 0, false)], |_| {
+                Ok(false)
+            });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn verify_not_finalized_plan_short_circuits_on_cache_before_storage() {
+        let mut lookup_count = 0;
+        let plan = plan_verify_not_finalized_transactions(
+            vec![
+                verify_not_finalized_fact(0, 1, 2, 8, true),
+                verify_not_finalized_fact(1, 2, 1, 2, false),
+            ],
+            |_hash| {
+                lookup_count += 1;
+                Ok(true)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(lookup_count, 0);
+        assert_eq!(
+            plan.finalized,
+            Some(VerifyNotFinalizedTransactionFailure {
+                input_index: 0,
+                hash: H256::from([1; 32]),
+            })
+        );
+    }
+
+    #[test]
+    fn verify_not_finalized_plan_skips_storage_lookup_when_sender_nonce_is_below_transaction_nonce()
+    {
+        let mut lookup_count = 0;
+        let plan = plan_verify_not_finalized_transactions(
+            vec![
+                verify_not_finalized_fact(0, 1, 10, 1, false),
+                verify_not_finalized_fact(1, 2, 2, 4, false),
+            ],
+            |_hash| {
+                lookup_count += 1;
+                Ok(true)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(lookup_count, 1);
+        assert_eq!(
+            plan.finalized,
+            Some(VerifyNotFinalizedTransactionFailure {
+                input_index: 1,
+                hash: H256::from([2; 32]),
+            })
+        );
     }
 }

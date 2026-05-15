@@ -260,6 +260,184 @@ class TransactionManagerRustShimAccess {
     return materializeStoredTransaction(lookups[0], "RUST_STORAGE_TX_RETRIEVAL_FAILED");
   }
 
+  static std::vector<std::shared_ptr<Transaction>> getNonfinalizedTrx(
+      const TransactionManagerOld& manager, const std::vector<trx_hash_t>& hashes) {
+    std::vector<std::shared_ptr<Transaction>> ret;
+    ret.reserve(hashes.size());
+    std::shared_lock transactions_lock(manager.transactions_mutex_);
+    for (const auto& hash : hashes) {
+      if (const auto it = manager.nonfinalized_transactions_in_dag_.find(hash);
+          it != manager.nonfinalized_transactions_in_dag_.end()) {
+        ret.push_back(it->second);
+      }
+    }
+    return ret;
+  }
+
+  static std::shared_ptr<Transaction> getNonFinalizedTransaction(const TransactionManagerOld& manager,
+                                                                const trx_hash_t& hash) {
+    std::shared_lock transactions_lock(manager.transactions_mutex_);
+    if (const auto it = manager.nonfinalized_transactions_in_dag_.find(hash);
+        it != manager.nonfinalized_transactions_in_dag_.end()) {
+      return it->second;
+    }
+    return {};
+  }
+
+  static std::unordered_set<trx_hash_t> excludeFinalizedTransactions(const TransactionManagerOld& manager,
+                                                                     const std::vector<trx_hash_t>& hashes) {
+    rust::Vec<rustaxa::TransactionManagerFinalizedFilterFact> facts;
+    facts.reserve(hashes.size());
+    {
+      std::shared_lock transactions_lock(manager.transactions_mutex_);
+      uint64_t input_index = 0;
+      for (const auto& hash : hashes) {
+        rustaxa::TransactionManagerFinalizedFilterFact fact;
+        fact.input_index = input_index++;
+        fact.hash = toBridgeHash(hash);
+        fact.in_recently_finalized_cache = manager.recently_finalized_transactions_.contains(hash);
+        facts.push_back(fact);
+      }
+    }
+
+    const auto plan = [&]() {
+      try {
+        return rustaxa::transaction_manager_filter_non_finalized(manager.db_->rustStorage(), std::move(facts));
+      } catch (const std::exception& e) {
+        throw DbException(std::string("RUST_STORAGE_TX_FILTER_FAILED: ") + e.what());
+      }
+    }();
+
+    std::unordered_set<trx_hash_t> ret;
+    ret.reserve(plan.not_finalized.size());
+    for (const auto& action : plan.not_finalized) {
+      if (action.input_index >= hashes.size()) {
+        throw DbException("RUST_STORAGE_TX_FILTER_FAILED: Rust returned an out-of-range transaction index");
+      }
+      const auto& expected_hash = hashes[static_cast<size_t>(action.input_index)];
+      if (fromBridgeHash(action.hash) != expected_hash) {
+        throw DbException("RUST_STORAGE_TX_FILTER_FAILED: Rust returned a transaction hash/index mismatch");
+      }
+      ret.insert(expected_hash);
+    }
+    return ret;
+  }
+
+  static bool verifyTransactionsNotFinalized(const TransactionManagerOld& manager, const SharedTransactions& trxs) {
+    rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedFact> facts;
+    facts.reserve(trxs.size());
+    uint64_t input_index = 0;
+    for (const auto& transaction : trxs) {
+      const auto trx_hash = transaction->getHash();
+      const auto account = manager.final_chain_->getAccount(transaction->getSender()).value_or(state_api::ZeroAccount);
+
+      rustaxa::TransactionManagerVerifyNotFinalizedFact fact;
+      fact.input_index = input_index++;
+      fact.hash = toBridgeHash(trx_hash);
+      fact.transaction_nonce = toBridgeU256(transaction->getNonce());
+      fact.sender_account_nonce = toBridgeU256(account.nonce);
+      {
+        std::shared_lock transactions_lock(manager.transactions_mutex_);
+        fact.in_recently_finalized_cache = manager.recently_finalized_transactions_.contains(trx_hash);
+      }
+      facts.push_back(fact);
+    }
+
+    const auto outcome = [&]() {
+      try {
+        return rustaxa::transaction_manager_verify_not_finalized(manager.db_->rustStorage(), std::move(facts));
+      } catch (const std::exception& e) {
+        throw DbException(std::string("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: ") + e.what());
+      }
+    }();
+
+    if (!outcome.is_finalized) {
+      return true;
+    }
+
+    if (outcome.input_index >= trxs.size()) {
+      throw DbException("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: Rust returned an out-of-range transaction index");
+    }
+    const auto& transaction = trxs[static_cast<size_t>(outcome.input_index)];
+    const auto trx_hash = transaction->getHash();
+    if (fromBridgeHash(outcome.hash) != trx_hash) {
+      throw DbException("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: Rust returned a transaction hash/index mismatch");
+    }
+
+    std::shared_lock transactions_lock(manager.transactions_mutex_);
+    if (manager.recently_finalized_transactions_.contains(trx_hash)) {
+      LOG(manager.log_er_) << "Transaction " << trx_hash << " already finalized";
+    } else {
+      LOG(manager.log_er_) << "Transaction " << trx_hash << " already finalized in db";
+    }
+    return false;
+  }
+
+  static std::vector<SharedTransactions> getAllPoolTrxs(const TransactionManagerOld& manager) {
+    std::shared_lock transactions_lock(manager.transactions_mutex_);
+    return manager.transactions_pool_.getAllTransactions();
+  }
+
+  static std::pair<std::vector<std::shared_ptr<Transaction>>, std::vector<trx_hash_t>> getPoolTransactions(
+      const TransactionManagerOld& manager, const std::vector<trx_hash_t>& trx_to_query) {
+    std::shared_lock transactions_lock(manager.transactions_mutex_);
+    std::pair<std::vector<std::shared_ptr<Transaction>>, std::vector<trx_hash_t>> result;
+    for (const auto& hash : trx_to_query) {
+      auto trx = manager.transactions_pool_.get(hash);
+      if (trx) {
+        result.first.emplace_back(trx);
+      } else {
+        result.second.emplace_back(hash);
+      }
+    }
+    return result;
+  }
+
+  static unsigned long getTransactionCount(const TransactionManagerOld& manager) {
+    std::shared_lock shared_transactions_lock(manager.transactions_mutex_);
+    return manager.trx_count_;
+  }
+
+  static void blockFinalized(TransactionManagerOld& manager, EthBlockNumber block_number) {
+    std::unique_lock transactions_lock(manager.transactions_mutex_);
+    manager.transactions_pool_.blockFinalized(block_number);
+  }
+
+  static bool isTransactionKnown(TransactionManagerOld& manager, const trx_hash_t& trx_hash) {
+    std::shared_lock transactions_lock(manager.transactions_mutex_);
+    return manager.transactions_pool_.isTransactionKnown(trx_hash);
+  }
+
+  static size_t getTransactionPoolSize(const TransactionManagerOld& manager) {
+    std::shared_lock transactions_lock(manager.transactions_mutex_);
+    return manager.transactions_pool_.size();
+  }
+
+  static bool isTransactionPoolFull(const TransactionManagerOld& manager, size_t percentage) {
+    std::shared_lock transactions_lock(manager.transactions_mutex_);
+    return manager.transactions_pool_.size() >= (manager.kConf.transactions_pool_size * percentage / 100);
+  }
+
+  static bool nonProposableTransactionsOverTheLimit(const TransactionManagerOld& manager) {
+    std::shared_lock transactions_lock(manager.transactions_mutex_);
+    return manager.transactions_pool_.nonProposableTransactionsOverTheLimit();
+  }
+
+  static size_t getNonfinalizedTrxSize(const TransactionManagerOld& manager) {
+    std::shared_lock transactions_lock(manager.transactions_mutex_);
+    return manager.nonfinalized_transactions_in_dag_.size();
+  }
+
+  static bool transactionsDropped(const TransactionManagerOld& manager) {
+    std::shared_lock transactions_lock(manager.transactions_mutex_);
+    return manager.transactions_pool_.transactionsDropped();
+  }
+
+  static val_t getMinGasPriceForBlockInclusion(const TransactionManagerOld& manager) {
+    std::shared_lock transactions_lock(manager.transactions_mutex_);
+    return manager.transactions_pool_.getMinGasPriceForBlockInclusion(manager.kConf.propose_dag_gas_limit);
+  }
+
   /**
    * Materializes ordered transaction hashes from C++ live views and Rust-backed
    * storage.
@@ -460,6 +638,67 @@ class TransactionManagerRustShimAccess {
 std::pair<SharedTransactions, std::vector<uint64_t>> TransactionManager::packTrxs(PbftPeriod proposal_period,
                                                                                   uint64_t weight_limit) {
   return TransactionManagerRustShimAccess::packTrxs(*this, proposal_period, weight_limit);
+}
+
+void TransactionManager::blockFinalized(EthBlockNumber block_number) {
+  TransactionManagerRustShimAccess::blockFinalized(*this, block_number);
+}
+
+bool TransactionManager::isTransactionKnown(const trx_hash_t& trx_hash) {
+  return TransactionManagerRustShimAccess::isTransactionKnown(*this, trx_hash);
+}
+
+size_t TransactionManager::getTransactionPoolSize() const {
+  return TransactionManagerRustShimAccess::getTransactionPoolSize(*this);
+}
+
+bool TransactionManager::isTransactionPoolFull(size_t percentage) const {
+  return TransactionManagerRustShimAccess::isTransactionPoolFull(*this, percentage);
+}
+
+bool TransactionManager::nonProposableTransactionsOverTheLimit() const {
+  return TransactionManagerRustShimAccess::nonProposableTransactionsOverTheLimit(*this);
+}
+
+size_t TransactionManager::getNonfinalizedTrxSize() const {
+  return TransactionManagerRustShimAccess::getNonfinalizedTrxSize(*this);
+}
+
+std::vector<std::shared_ptr<Transaction>> TransactionManager::getNonfinalizedTrx(const std::vector<trx_hash_t>& hashes) {
+  return TransactionManagerRustShimAccess::getNonfinalizedTrx(*this, hashes);
+}
+
+std::unordered_set<trx_hash_t> TransactionManager::excludeFinalizedTransactions(const std::vector<trx_hash_t>& hashes) {
+  return TransactionManagerRustShimAccess::excludeFinalizedTransactions(*this, hashes);
+}
+
+bool TransactionManager::verifyTransactionsNotFinalized(const SharedTransactions& trxs) {
+  return TransactionManagerRustShimAccess::verifyTransactionsNotFinalized(*this, trxs);
+}
+
+std::vector<SharedTransactions> TransactionManager::getAllPoolTrxs() {
+  return TransactionManagerRustShimAccess::getAllPoolTrxs(*this);
+}
+
+std::pair<std::vector<std::shared_ptr<Transaction>>, std::vector<trx_hash_t>> TransactionManager::getPoolTransactions(
+    const std::vector<trx_hash_t>& trx_to_query) const {
+  return TransactionManagerRustShimAccess::getPoolTransactions(*this, trx_to_query);
+}
+
+bool TransactionManager::transactionsDropped() const {
+  return TransactionManagerRustShimAccess::transactionsDropped(*this);
+}
+
+val_t TransactionManager::getMinGasPriceForBlockInclusion() const {
+  return TransactionManagerRustShimAccess::getMinGasPriceForBlockInclusion(*this);
+}
+
+std::shared_ptr<Transaction> TransactionManager::getNonFinalizedTransaction(const trx_hash_t& hash) const {
+  return TransactionManagerRustShimAccess::getNonFinalizedTransaction(*this, hash);
+}
+
+unsigned long TransactionManager::getTransactionCount() const {
+  return TransactionManagerRustShimAccess::getTransactionCount(*this);
 }
 
 void TransactionManager::saveTransactionsFromDagBlock(const SharedTransactions& trxs) {

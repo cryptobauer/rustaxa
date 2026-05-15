@@ -312,6 +312,142 @@ TEST_F(TransactionManagerShimFixture, rustFinalizedTransactionsStorageFailureDoe
   EXPECT_FALSE(trx_mgr.isTransactionKnown(transactions[0]->getHash()));
   EXPECT_TRUE(trx_mgr.getTransactions({transactions[0]->getHash()}, 0).empty());
 }
+
+TEST_F(TransactionManagerShimFixture, rustNonFinalizedReadHelpersUseLiveState) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  const auto transactions =
+      samples::createSignedTrxSamples(1, 3,
+                                      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                  dev::Secret::ConstructFromStringType::FromHex));
+
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  for (auto const& trx : transactions) {
+    ASSERT_TRUE(trx_mgr.insertTransaction(trx).first);
+  }
+
+  trx_mgr.saveTransactionsFromDagBlock({transactions[0], transactions[1]});
+
+  const auto non_finalized = trx_mgr.getNonfinalizedTrx(
+      {transactions[0]->getHash(), transactions[1]->getHash(), transactions[2]->getHash()});
+  ASSERT_EQ(non_finalized.size(), 2);
+  EXPECT_EQ(non_finalized[0]->getHash(), transactions[0]->getHash());
+  EXPECT_EQ(non_finalized[1]->getHash(), transactions[1]->getHash());
+
+  EXPECT_TRUE(trx_mgr.getNonFinalizedTransaction(transactions[0]->getHash()));
+  EXPECT_TRUE(trx_mgr.getNonFinalizedTransaction(transactions[1]->getHash()));
+  EXPECT_FALSE(trx_mgr.getNonFinalizedTransaction(transactions[2]->getHash()));
+}
+
+TEST_F(TransactionManagerShimFixture, rustExcludeFinalizedTransactionsUsesRecentCacheAndStorageState) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  const auto transactions =
+      samples::createSignedTrxSamples(1, 3,
+                                      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                  dev::Secret::ConstructFromStringType::FromHex));
+
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  for (auto const& trx : transactions) {
+    ASSERT_TRUE(trx_mgr.insertTransaction(trx).first);
+  }
+
+  std::vector<vote_hash_t> reward_votes;
+  auto block = std::make_shared<PbftBlock>(kNullBlockHash, kNullBlockHash, kNullBlockHash, kNullBlockHash, 1,
+                                          addr_t::random(), dev::KeyPair::create().secret(), reward_votes);
+  PeriodData period_data(std::move(block), {});
+  period_data.transactions = {transactions[0]};
+  trx_mgr.initializeRecentlyFinalizedTransactions(period_data);
+
+  {
+    auto batch = db->createWriteBatch();
+    db->addTransactionLocationToBatch(batch, transactions[1]->getHash(), 1, 0);
+    db->commitWriteBatch(batch);
+  }
+
+  const auto excluded = trx_mgr.excludeFinalizedTransactions(
+      {transactions[0]->getHash(), transactions[1]->getHash(), transactions[2]->getHash()});
+  ASSERT_EQ(excluded.size(), 1);
+  EXPECT_TRUE(excluded.contains(transactions[2]->getHash()));
+  EXPECT_FALSE(excluded.contains(transactions[0]->getHash()));
+  EXPECT_FALSE(excluded.contains(transactions[1]->getHash()));
+}
+
+TEST_F(TransactionManagerShimFixture, rustVerifyTransactionsNotFinalizedUsesRecentCacheAndStorageState) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  const auto transactions =
+      samples::createSignedTrxSamples(0, 2,
+                                      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                  dev::Secret::ConstructFromStringType::FromHex));
+  const auto pending_transactions =
+      samples::createSignedTrxSamples(3, 3,
+                                      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                  dev::Secret::ConstructFromStringType::FromHex));
+
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  for (auto const& trx : transactions) {
+    ASSERT_TRUE(trx_mgr.insertTransaction(trx).first);
+  }
+  for (auto const& trx : pending_transactions) {
+    ASSERT_TRUE(trx_mgr.insertTransaction(trx).first);
+  }
+
+  std::vector<vote_hash_t> reward_votes;
+  auto block = std::make_shared<PbftBlock>(kNullBlockHash, kNullBlockHash, kNullBlockHash, kNullBlockHash, 1,
+                                          addr_t::random(), dev::KeyPair::create().secret(), reward_votes);
+  PeriodData period_data(std::move(block), {});
+  period_data.transactions = {transactions[1]};
+  trx_mgr.initializeRecentlyFinalizedTransactions(period_data);
+  EXPECT_FALSE(trx_mgr.verifyTransactionsNotFinalized({transactions[1]}));
+
+  {
+    auto batch = db->createWriteBatch();
+    db->addTransactionLocationToBatch(batch, transactions[0]->getHash(), 1, 0);
+    db->commitWriteBatch(batch);
+  }
+
+  EXPECT_FALSE(trx_mgr.verifyTransactionsNotFinalized({transactions[0]}));
+  EXPECT_TRUE(trx_mgr.verifyTransactionsNotFinalized(pending_transactions));
+}
+
+TEST_F(TransactionManagerShimFixture, rustPoolReadHelpersRemainCxxOwned) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  const auto transactions =
+      samples::createSignedTrxSamples(1, 2,
+                                      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                  dev::Secret::ConstructFromStringType::FromHex));
+
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  for (auto const& trx : transactions) {
+    ASSERT_TRUE(trx_mgr.insertTransaction(trx).first);
+  }
+
+  const auto before = trx_mgr.getAllPoolTrxs();
+  size_t before_count = 0;
+  for (const auto& chunk : before) {
+    before_count += chunk.size();
+  }
+  ASSERT_EQ(before_count, 2);
+
+  const auto pool_lookup = trx_mgr.getPoolTransactions(
+      {transactions[0]->getHash(), trx_hash_t::random(), transactions[1]->getHash()});
+  ASSERT_EQ(pool_lookup.first.size(), 2);
+  ASSERT_EQ(pool_lookup.second.size(), 1);
+
+  trx_mgr.saveTransactionsFromDagBlock({transactions[0]});
+  const auto after = trx_mgr.getAllPoolTrxs();
+  size_t after_count = 0;
+  for (const auto& chunk : after) {
+    after_count += chunk.size();
+  }
+  EXPECT_EQ(after_count, 1);
+}
 #endif
 
 }  // namespace taraxa::core_tests

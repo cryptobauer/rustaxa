@@ -739,6 +739,42 @@ pub mod rustaxa_ffi {
         hash: [u8; 32],
     }
 
+    /// Input for finalized transaction filtering from legacy C++.
+    struct TransactionManagerFinalizedFilterFact {
+        input_index: u64,
+        hash: [u8; 32],
+        in_recently_finalized_cache: bool,
+    }
+
+    /// Filtered finalized transaction action with preserved index mapping.
+    struct TransactionManagerFilterAction {
+        input_index: u64,
+        hash: [u8; 32],
+    }
+
+    /// Finalized-filtering outcome for Rust-only decision logic.
+    struct FinalizedTransactionFilterPlan {
+        not_finalized: Vec<TransactionManagerFilterAction>,
+    }
+
+    /// Input for C++-owned `verifyTransactionsNotFinalized` decisions.
+    struct TransactionManagerVerifyNotFinalizedFact {
+        input_index: u64,
+        hash: [u8; 32],
+        transaction_nonce: [u8; 32],
+        sender_account_nonce: [u8; 32],
+        in_recently_finalized_cache: bool,
+    }
+
+    /// Decision returned when the first finalized transaction is observed.
+    ///
+    /// `is_finalized` is false when all inputs are accepted.
+    struct TransactionManagerVerifyNotFinalizedOutcome {
+        is_finalized: bool,
+        input_index: u64,
+        hash: [u8; 32],
+    }
+
     /// Finalized status planning outcome for one finalized period.
     struct FinalizedTransactionStatusPlan {
         accepted: Vec<FinalizedTransactionStatusAction>,
@@ -1709,6 +1745,16 @@ pub mod rustaxa_ffi {
             current_transaction_count: u64,
             facts: Vec<FinalizedTransactionStatusFact>,
         ) -> Result<FinalizedTransactionStatusPlan>;
+        /// Determines which hash inputs are not finalized in-memory and in storage.
+        pub fn transaction_manager_filter_non_finalized(
+            storage: &BridgeStorage,
+            facts: Vec<TransactionManagerFinalizedFilterFact>,
+        ) -> Result<FinalizedTransactionFilterPlan>;
+        /// Verifies a transaction sequence has no finalized entries.
+        pub fn transaction_manager_verify_not_finalized(
+            storage: &BridgeStorage,
+            facts: Vec<TransactionManagerVerifyNotFinalizedFact>,
+        ) -> Result<TransactionManagerVerifyNotFinalizedOutcome>;
         /// Resolves transaction hashes through TransactionManager storage rules.
         pub fn transaction_manager_load_stored_transactions(
             storage: &BridgeStorage,
