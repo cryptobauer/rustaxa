@@ -95,6 +95,16 @@ pub struct BridgeTransactionManagerRuntime {
     pub transaction_pack_session: Option<TransactionManagerRuntimePackSession>,
 }
 
+/// Runtime admission execution script for `saveTransactionsFromDagBlock`.
+///
+/// `accepted_payloads` is the storage write-set that must persist before any
+/// queue/sidecar mutation is committed into runtime live state.
+pub struct BridgeTransactionManagerAdmissionExecution {
+    pub accepted: Vec<rustaxa_ffi::DagTransactionSaveAccepted>,
+    pub accepted_payloads: Vec<rustaxa_ffi::NonFinalizedTransactionPayload>,
+    pub target_transaction_count: u64,
+}
+
 pub struct BridgeTransactionPackPlanner(pub TransactionPackingPlanner);
 
 /// Runtime-owned state for one TransactionManager proposal-packing pass.
@@ -1100,6 +1110,25 @@ pub mod rustaxa_ffi {
         overflow_removed_hashes: Vec<TransactionQueueHash>,
     }
 
+    /// Runtime-executed TransactionManager admission outcome.
+    ///
+    /// Rust owns the validated-admission queue mutation and the public
+    /// `insertTransaction` status mapping. C++ supplies verification,
+    /// FinalChain account/finalized facts, and executes returned event/logging
+    /// side effects.
+    struct TransactionManagerRuntimeAdmissionOutcome {
+        insert_status: u8,
+        transaction_status: u8,
+        requires_finalized_lookup: bool,
+        finalized_period_known: bool,
+        finalized_period: u64,
+        emit_transaction_added: bool,
+        inserted_hash_found: bool,
+        inserted_hash: [u8; 32],
+        demoted_hashes: Vec<TransactionQueueHash>,
+        overflow_removed_hashes: Vec<TransactionQueueHash>,
+    }
+
     /// Finalized status planning outcome for one finalized period.
     struct FinalizedTransactionStatusPlan {
         accepted: Vec<FinalizedTransactionStatusAction>,
@@ -2092,6 +2121,7 @@ pub mod rustaxa_ffi {
         type BridgeTransactionPackPlanner;
         type BridgeTransactionManagerSidecar;
         type BridgeTransactionManagerRuntime;
+        type BridgeTransactionManagerAdmissionExecution;
 
         pub fn create_transaction_pack_planner(
             weight_limit: u64,
@@ -2179,6 +2209,21 @@ pub mod rustaxa_ffi {
             fact: TransactionManagerValidatedInsertSidecarFact,
             input: TransactionQueueInsertInput,
         ) -> Result<TransactionManagerRuntimeValidatedInsertOutcome>;
+        pub fn transaction_manager_runtime_insert_transaction_precheck(
+            self: &BridgeTransactionManagerRuntime,
+            hash: &[u8; 32],
+        ) -> Result<TransactionManagerInsertTransactionOutcome>;
+        pub fn transaction_manager_runtime_finish_insert_transaction(
+            self: &BridgeTransactionManagerRuntime,
+            fact: TransactionManagerInsertTransactionFact,
+        ) -> Result<TransactionManagerInsertTransactionOutcome>;
+        pub fn transaction_manager_runtime_execute_transaction_admission(
+            self: &mut BridgeTransactionManagerRuntime,
+            fact: TransactionManagerValidatedInsertSidecarFact,
+            input: TransactionQueueInsertInput,
+            has_finalized_period: bool,
+            finalized_period: u64,
+        ) -> Result<TransactionManagerRuntimeAdmissionOutcome>;
         pub fn transaction_manager_runtime_queue_erase(
             self: &mut BridgeTransactionManagerRuntime,
             hash: &[u8; 32],
@@ -2288,6 +2333,18 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgeTransactionManagerRuntime,
             storage: &BridgeStorage,
             facts: Vec<DagTransactionSaveSidecarFact>,
+        ) -> Result<DagTransactionSaveOutcome>;
+        /// Executes runtime admission planning and returns an explicit commit script.
+        pub fn transaction_manager_runtime_execute_admission(
+            runtime: &BridgeTransactionManagerRuntime,
+            storage: &BridgeStorage,
+            facts: Vec<DagTransactionSaveSidecarFact>,
+        ) -> Result<Box<BridgeTransactionManagerAdmissionExecution>>;
+        /// Commits one runtime admission script with storage-first ordering.
+        pub fn transaction_manager_runtime_commit_admission(
+            runtime: &mut BridgeTransactionManagerRuntime,
+            storage: &BridgeStorage,
+            execution: Box<BridgeTransactionManagerAdmissionExecution>,
         ) -> Result<DagTransactionSaveOutcome>;
         pub fn save_transactions_from_dag_block(
             storage: &BridgeStorage,

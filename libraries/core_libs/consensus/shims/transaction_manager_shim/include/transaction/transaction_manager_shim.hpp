@@ -93,8 +93,9 @@ class TransactionManager : public TransactionManagerOld {
   /**
    * Execute validated transaction admission through the Rust runtime.
    *
-   * Rust decides known/proposable/non-proposable admission from C++ account facts and mutates the Rust-owned queue.
-   * The shim keeps `SharedTransaction` materialization, locking, logging, and event emission in C++.
+   * Rust decides known/proposable/non-proposable admission from C++ account facts, mutates the Rust-owned queue, and
+   * returns explicit status/event/log side effects. The shim keeps `SharedTransaction` materialization, locking,
+   * logging mechanics, and event dispatch in C++.
    */
   TransactionStatus insertValidatedTransaction(std::shared_ptr<Transaction> &&tx, bool insert_non_proposable = true);
 

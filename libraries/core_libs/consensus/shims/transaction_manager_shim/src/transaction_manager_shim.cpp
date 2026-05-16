@@ -272,77 +272,8 @@ class TransactionManagerRustShimAccess {
     return verifyTransactionResultFromRustStatus(outcome.status, fact.chain_id, fact.expected_chain_id);
   }
 
-  static std::pair<bool, std::string> insertTransaction(TransactionManager& manager,
-                                                        const std::shared_ptr<Transaction>& trx) {
-    const auto hash_known = isTransactionKnown(manager, trx->getHash());
-
-    // Preserve legacy fast-path behavior for known hashes (skip verification and queue mutation),
-    // but route the final admission status through the Rust planner.
-    if (hash_known) {
-      bool has_finalized_period = false;
-      uint64_t finalized_period = 0;
-      if (const auto location = manager.db_->getTransactionLocation(trx->getHash())) {
-        has_finalized_period = true;
-        finalized_period = location->period;
-      }
-
-      rustaxa::TransactionManagerInsertTransactionFact fact;
-      fact.tx_hash = toBridgeHash(trx->getHash());
-      fact.hash_known = hash_known;
-      fact.queue_status = static_cast<uint8_t>(TransactionStatus::Known);
-      fact.has_finalized_period = has_finalized_period;
-      fact.finalized_period = finalized_period;
-
-      const auto outcome = [&]() {
-        try {
-          return rustaxa::transaction_manager_insert_transaction_with_runtime(*manager.runtime_, fact);
-        } catch (const std::exception& e) {
-          throw std::runtime_error(std::string("RUST_TX_MANAGER_INSERT_TRANSACTION_FAILED: ") + e.what());
-        }
-      }();
-
-      return insertTransactionResultFromRustStatus(
-          outcome.status, outcome.finalized_period_known ? outcome.finalized_period : finalized_period);
-    }
-
-    const auto verified = verifyTransaction(manager, trx);
-    if (!verified.first) {
-      return verified;
-    }
-
-    auto trx_copy = trx;
-    const auto queue_status = insertValidatedTransaction(manager, std::move(trx_copy), false);
-
-    bool has_finalized_period = false;
-    uint64_t finalized_period = 0;
-    if (queue_status == TransactionStatus::Known) {
-      if (const auto location = manager.db_->getTransactionLocation(trx->getHash())) {
-        has_finalized_period = true;
-        finalized_period = location->period;
-      }
-    }
-
-    rustaxa::TransactionManagerInsertTransactionFact fact;
-    fact.tx_hash = toBridgeHash(trx->getHash());
-    fact.hash_known = hash_known;
-    fact.queue_status = static_cast<uint8_t>(queue_status);
-    fact.has_finalized_period = has_finalized_period;
-    fact.finalized_period = finalized_period;
-
-    const auto outcome = [&]() {
-      try {
-        return rustaxa::transaction_manager_insert_transaction_with_runtime(*manager.runtime_, fact);
-      } catch (const std::exception& e) {
-        throw std::runtime_error(std::string("RUST_TX_MANAGER_INSERT_TRANSACTION_FAILED: ") + e.what());
-      }
-    }();
-
-    return insertTransactionResultFromRustStatus(
-        outcome.status, outcome.finalized_period_known ? outcome.finalized_period : finalized_period);
-  }
-
-  static TransactionStatus insertValidatedTransaction(TransactionManager& manager, std::shared_ptr<Transaction>&& tx,
-                                                      bool insert_non_proposable) {
+  static rustaxa::TransactionManagerRuntimeAdmissionOutcome executeValidatedAdmission(
+      TransactionManager& manager, std::shared_ptr<Transaction>&& tx, bool insert_non_proposable) {
     const auto trx_hash = tx->getHash();
 
     std::unique_lock transactions_lock(manager.transactions_mutex_);
@@ -362,20 +293,89 @@ class TransactionManagerRustShimAccess {
 
     const auto outcome = [&]() {
       try {
-        return manager.runtime_->transaction_manager_runtime_insert_validated_transaction(
-            fact, toRuntimeQueueInsertInput(tx, false, manager.final_chain_->lastBlockNumber()));
+        return manager.runtime_->transaction_manager_runtime_execute_transaction_admission(
+            fact, toRuntimeQueueInsertInput(tx, false, manager.final_chain_->lastBlockNumber()), false, 0);
       } catch (const std::exception& e) {
-        throw std::runtime_error(std::string("RUST_TX_MANAGER_VALIDATED_INSERT_FAILED: ") + e.what());
+        throw std::runtime_error(std::string("RUST_TX_MANAGER_ADMISSION_EXECUTION_FAILED: ") + e.what());
       }
     }();
 
+    return outcome;
+  }
+
+  static void applyAdmissionSideEffects(TransactionManager& manager, const trx_hash_t& trx_hash,
+                                        const rustaxa::TransactionManagerRuntimeAdmissionOutcome& outcome) {
     if (outcome.inserted_hash_found) {
       LOG(manager.log_dg_) << "Transaction " << trx_hash << " inserted in trx pool";
     }
     if (outcome.emit_transaction_added) {
       manager.emitTransactionAddedForRust(trx_hash);
     }
-    return transactionStatusFromBridge(outcome.status);
+  }
+
+  static std::pair<bool, std::string> insertTransaction(TransactionManager& manager,
+                                                        const std::shared_ptr<Transaction>& trx) {
+    const auto trx_hash = trx->getHash();
+    const auto precheck = [&]() {
+      std::shared_lock transactions_lock(manager.transactions_mutex_);
+      try {
+        return manager.runtime_->transaction_manager_runtime_insert_transaction_precheck(toBridgeHash(trx_hash));
+      } catch (const std::exception& e) {
+        throw std::runtime_error(std::string("RUST_TX_MANAGER_INSERT_PRECHECK_FAILED: ") + e.what());
+      }
+    }();
+
+    if (precheck.status != kTMInsertTransactionAccepted) {
+      return insertTransactionResultFromRustStatus(
+          precheck.status, precheck.finalized_period_known ? precheck.finalized_period : 0);
+    }
+
+    const auto verified = verifyTransaction(manager, trx);
+    if (!verified.first) {
+      return verified;
+    }
+
+    auto trx_copy = trx;
+    const auto admission = executeValidatedAdmission(manager, std::move(trx_copy), false);
+    applyAdmissionSideEffects(manager, trx_hash, admission);
+
+    if (admission.requires_finalized_lookup) {
+      bool has_finalized_period = false;
+      uint64_t finalized_period = 0;
+      if (const auto location = manager.db_->getTransactionLocation(trx_hash)) {
+        has_finalized_period = true;
+        finalized_period = location->period;
+      }
+
+      rustaxa::TransactionManagerInsertTransactionFact fact;
+      fact.tx_hash = toBridgeHash(trx_hash);
+      fact.hash_known = false;
+      fact.queue_status = admission.transaction_status;
+      fact.has_finalized_period = has_finalized_period;
+      fact.finalized_period = finalized_period;
+
+      const auto finished = [&]() {
+        try {
+          return manager.runtime_->transaction_manager_runtime_finish_insert_transaction(fact);
+        } catch (const std::exception& e) {
+          throw std::runtime_error(std::string("RUST_TX_MANAGER_INSERT_FINISH_FAILED: ") + e.what());
+        }
+      }();
+
+      return insertTransactionResultFromRustStatus(
+          finished.status, finished.finalized_period_known ? finished.finalized_period : finalized_period);
+    }
+
+    return insertTransactionResultFromRustStatus(
+        admission.insert_status, admission.finalized_period_known ? admission.finalized_period : 0);
+  }
+
+  static TransactionStatus insertValidatedTransaction(TransactionManager& manager, std::shared_ptr<Transaction>&& tx,
+                                                      bool insert_non_proposable) {
+    const auto trx_hash = tx->getHash();
+    const auto admission = executeValidatedAdmission(manager, std::move(tx), insert_non_proposable);
+    applyAdmissionSideEffects(manager, trx_hash, admission);
+    return transactionStatusFromBridge(admission.transaction_status);
   }
 
   /**

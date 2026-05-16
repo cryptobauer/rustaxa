@@ -414,14 +414,14 @@ The current Rust starting point is intentionally small:
    `excludeFinalizedTransactions` and `verifyTransactionsNotFinalized` now collect only hash/nonce facts in the shim,
    then call Rust for sidecar membership, finalized-storage checks, and deterministic filtering/short-circuit decisions.
    `verifyTransaction`, `insertTransaction`, and `insertValidatedTransaction` now collect transaction/config/cache/account
-   facts in the shim and call Rust for exact verification reasons, public insertion result mapping, and fused
-   proposable/non-proposable admission with Rust-owned live queue mutation; known-hash insert decisions now route through
-   the Rust insert planner instead of a shim-local early return, and `isTransactionKnown` now includes Rust sidecar
-   membership checks alongside queue-known state. Rust now returns explicit validated-insert queue actions and finalized
+   facts in the shim and call Rust for exact verification reasons, public insertion result mapping, staged known-fast-path
+   prechecks, finalized-location finish mapping, and fused proposable/non-proposable admission with Rust-owned live queue
+   mutation. Known-hash insert decisions now route through the Rust runtime precheck instead of a shim-local early return,
+   and `isTransactionKnown` now includes Rust sidecar membership checks alongside queue-known state. Rust now returns
+   explicit validated-insert queue actions, public insert statuses, finalized lookup requests, and finalized
    known-cache/pool mutation actions so shim code applies side effects directly from Rust-planned intent instead of
-   inferring local action intent. The Rust-mode facade now owns the public
-   `transaction_added_` event surface and emits it from shim-owned code for Rust-planned proposable admissions before
-   live queue insertion, matching legacy event timing. Live pool helpers remain shim-owned under the existing
+   inferring local action intent. The Rust-mode facade now owns the public `transaction_added_` event surface and emits it
+   from shim-owned code after Rust accepts a proposable queue mutation. Live pool helpers remain shim-owned under the existing
    transaction mutex and no longer forward to `TransactionManagerOld`; they now materialize from Rust runtime queue or
    sidecar RLP. The Rust runtime state exposes the authoritative Rust-mode transaction count and drives count reads
    after persistence/finalization commits. Remaining live-shell gaps are Rust ownership of FinalChain purge fact
