@@ -869,6 +869,8 @@ pub mod rustaxa_ffi {
         input_index: u64,
         hash: [u8; 32],
         removed_non_finalized: bool,
+        mark_transaction_known: bool,
+        erase_from_queue: bool,
     }
 
     /// Input finalized transaction payload for sidecar-aware status updates.
@@ -1004,10 +1006,14 @@ pub mod rustaxa_ffi {
     }
 
     /// Plan for C++ live queue insertion.
+    ///
+    /// `queue_action`:
+    /// - `0`: no queue mutation; return `status` directly
+    /// - `1`: insert as proposable
+    /// - `2`: insert as non-proposable
     struct TransactionManagerValidatedInsertPlan {
         status: u8,
-        should_insert_queue: bool,
-        queue_proposable: bool,
+        queue_action: u8,
         emit_transaction_added: bool,
     }
 

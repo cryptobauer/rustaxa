@@ -77,6 +77,9 @@ const TM_INSERT_TRANSACTION_STATUS_ALREADY_FINALIZED: u8 =
     TransactionManagerInsertTransactionStatus::AlreadyFinalized as u8;
 const TM_INSERT_TRANSACTION_STATUS_CANNOT_INSERT: u8 =
     TransactionManagerInsertTransactionStatus::CouldNotInsert as u8;
+const TM_VALIDATED_INSERT_QUEUE_ACTION_NONE: u8 = 0;
+const TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_PROPOSABLE: u8 = 1;
+const TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_NON_PROPOSABLE: u8 = 2;
 
 /// Plans and persists accepted transactions for one incoming DAG block.
 ///
@@ -247,6 +250,8 @@ pub fn update_finalized_transactions_status(
                 input_index: action.input_index,
                 hash: action.hash.0,
                 removed_non_finalized: action.removed_non_finalized,
+                mark_transaction_known: true,
+                erase_from_queue: true,
             })
             .collect(),
         target_transaction_count: plan.target_transaction_count,
@@ -328,6 +333,8 @@ pub fn update_finalized_transactions_status_with_sidecar(
                 input_index: action.input_index,
                 hash: action.hash.0,
                 removed_non_finalized: action.removed_non_finalized,
+                mark_transaction_known: true,
+                erase_from_queue: true,
             })
             .collect(),
         target_transaction_count: plan.target_transaction_count,
@@ -437,8 +444,13 @@ pub fn transaction_manager_plan_validated_insert(
     let plan = plan_validated_insert(consensus_validated_insert_fact_from_ffi_fact(fact))?;
     Ok(TransactionManagerValidatedInsertPlan {
         status: queue_status_to_ffi(plan.status),
-        should_insert_queue: plan.should_insert_queue,
-        queue_proposable: plan.queue_proposable,
+        queue_action: if !plan.should_insert_queue {
+            TM_VALIDATED_INSERT_QUEUE_ACTION_NONE
+        } else if plan.queue_proposable {
+            TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_PROPOSABLE
+        } else {
+            TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_NON_PROPOSABLE
+        },
         emit_transaction_added: plan.emit_transaction_added,
     })
 }
@@ -464,8 +476,13 @@ pub fn transaction_manager_plan_validated_insert_with_sidecar(
     })?;
     Ok(TransactionManagerValidatedInsertPlan {
         status: queue_status_to_ffi(plan.status),
-        should_insert_queue: plan.should_insert_queue,
-        queue_proposable: plan.queue_proposable,
+        queue_action: if !plan.should_insert_queue {
+            TM_VALIDATED_INSERT_QUEUE_ACTION_NONE
+        } else if plan.queue_proposable {
+            TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_PROPOSABLE
+        } else {
+            TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_NON_PROPOSABLE
+        },
         emit_transaction_added: plan.emit_transaction_added,
     })
 }
@@ -1376,8 +1393,10 @@ mod tests {
             1, true, 0, 100, false,
         ))
         .expect("validated insert plan should compute");
-        assert!(proposable.should_insert_queue);
-        assert!(proposable.queue_proposable);
+        assert_eq!(
+            proposable.queue_action,
+            TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_PROPOSABLE
+        );
         assert!(proposable.emit_transaction_added);
         assert_eq!(
             proposable.status,
@@ -1387,8 +1406,10 @@ mod tests {
         let non_proposable =
             transaction_manager_plan_validated_insert(validated_insert_fact(2, false, 0, 0, true))
                 .expect("validated insert plan should compute");
-        assert!(non_proposable.should_insert_queue);
-        assert!(!non_proposable.queue_proposable);
+        assert_eq!(
+            non_proposable.queue_action,
+            TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_NON_PROPOSABLE
+        );
         assert_eq!(
             non_proposable.status,
             rustaxa_consensus::transaction_queue::TransactionQueueInsertStatus::InsertedNonProposable as u8
@@ -1398,7 +1419,7 @@ mod tests {
         let rejected =
             transaction_manager_plan_validated_insert(validated_insert_fact(3, false, 0, 0, false))
                 .expect("validated insert plan should compute");
-        assert!(!rejected.should_insert_queue);
+        assert_eq!(rejected.queue_action, TM_VALIDATED_INSERT_QUEUE_ACTION_NONE);
         assert_eq!(
             rejected.status,
             rustaxa_consensus::transaction_queue::TransactionQueueInsertStatus::Known as u8

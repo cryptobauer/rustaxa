@@ -57,6 +57,9 @@ constexpr uint8_t kTMQueueStatusInserted = 0;
 constexpr uint8_t kTMQueueStatusInsertedNonProposable = 1;
 constexpr uint8_t kTMQueueStatusKnown = 2;
 constexpr uint8_t kTMQueueStatusOverflow = 3;
+constexpr uint8_t kTMValidatedInsertQueueActionNone = 0;
+constexpr uint8_t kTMValidatedInsertQueueActionInsertProposable = 1;
+constexpr uint8_t kTMValidatedInsertQueueActionInsertNonProposable = 2;
 
 bool isFinalizedStoredTransactionSource(uint8_t source) {
   return source == kStoredTransactionFinalizedRegular || source == kStoredTransactionFinalizedSystem;
@@ -335,16 +338,26 @@ class TransactionManagerRustShimAccess {
       }
     }();
 
-    if (!plan.should_insert_queue) {
-      return transactionStatusFromBridge(plan.status);
+    bool queue_proposable = false;
+    switch (plan.queue_action) {
+      case kTMValidatedInsertQueueActionNone:
+        return transactionStatusFromBridge(plan.status);
+      case kTMValidatedInsertQueueActionInsertProposable:
+        queue_proposable = true;
+        break;
+      case kTMValidatedInsertQueueActionInsertNonProposable:
+        queue_proposable = false;
+        break;
+      default:
+        throw std::runtime_error("TransactionManager shim received unknown validated-insert queue action");
     }
 
     LOG(manager.log_dg_) << "Transaction " << trx_hash << " inserted in trx pool";
     if (plan.emit_transaction_added) {
       manager.emitTransactionAddedForRust(trx_hash);
     }
-    const auto queue_status = manager.transactions_pool_.insert(std::move(tx), plan.queue_proposable,
-                                                                manager.final_chain_->lastBlockNumber());
+    const auto queue_status =
+        manager.transactions_pool_.insert(std::move(tx), queue_proposable, manager.final_chain_->lastBlockNumber());
     return queue_status;
   }
 
@@ -933,11 +946,13 @@ class TransactionManagerRustShimAccess {
         throw DbException("RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: Rust returned a transaction hash/index mismatch");
       }
 
-      manager.transactions_pool_.markTransactionKnown(trx_hash);
+      if (action.mark_transaction_known) {
+        manager.transactions_pool_.markTransactionKnown(trx_hash);
+      }
       if (action.removed_non_finalized) {
         LOG(manager.log_dg_) << "Transaction " << trx_hash << " removed from nonfinalized transactions";
       }
-      if (manager.transactions_pool_.erase(transaction)) {
+      if (action.erase_from_queue && manager.transactions_pool_.erase(transaction)) {
         LOG(manager.log_dg_) << "Transaction " << trx_hash << " removed from transactions_pool_";
       }
     }
