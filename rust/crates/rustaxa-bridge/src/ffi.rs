@@ -19,7 +19,9 @@ use rustaxa_consensus::period_data_queue::PeriodDataQueue;
 use rustaxa_consensus::proposed_blocks::ProposedBlocks;
 use rustaxa_consensus::slashing::SlashingProofPlanner;
 use rustaxa_consensus::sortition::SortitionParamsManager;
-use rustaxa_consensus::transaction_manager::TransactionPackingPlanner;
+use rustaxa_consensus::transaction_manager::{
+    TransactionManagerSidecar, TransactionPackingPlanner,
+};
 use rustaxa_consensus::transaction_queue::TransactionQueue;
 use rustaxa_consensus::verified_votes::VerifiedVotes;
 use rustaxa_consensus::FinalChain;
@@ -75,6 +77,18 @@ pub struct BridgeSortitionParamsManager(pub SortitionParamsManager);
 /// `last_drop_observed` tracks the Rust-mode equivalent of the legacy overflow/drop wall-clock window used by C++
 /// callers to tell peers that this node recently rejected or evicted transactions.
 pub struct BridgeTransactionQueue {
+    pub queue: TransactionQueue,
+    pub last_drop_observed: Option<Instant>,
+}
+
+/// Bridge-owned TransactionManager runtime handle for Rust-enabled manager paths.
+///
+/// The runtime combines the manager sidecar state with Rust queue state so the
+/// C++ TransactionManager shim can route live admission, lookup, and finalization
+/// queue effects through one Rust-owned authority while still materializing
+/// legacy `Transaction` objects at the C++ API boundary.
+pub struct BridgeTransactionManagerRuntime {
+    pub sidecar: TransactionManagerSidecar,
     pub queue: TransactionQueue,
     pub last_drop_observed: Option<Instant>,
 }
@@ -849,6 +863,7 @@ pub mod rustaxa_ffi {
     struct DagTransactionSaveAccepted {
         input_index: u64,
         hash: [u8; 32],
+        erased_from_queue: bool,
     }
 
     /// Rust planning outcome for one DAG transaction persistence pass.
@@ -871,6 +886,7 @@ pub mod rustaxa_ffi {
         removed_non_finalized: bool,
         mark_transaction_known: bool,
         erase_from_queue: bool,
+        erased_from_queue: bool,
     }
 
     /// Input finalized transaction payload for sidecar-aware status updates.
@@ -1015,6 +1031,16 @@ pub mod rustaxa_ffi {
         status: u8,
         queue_action: u8,
         emit_transaction_added: bool,
+    }
+
+    /// Runtime-executed insert outcome that includes concrete queue mutations.
+    struct TransactionManagerRuntimeValidatedInsertOutcome {
+        status: u8,
+        emit_transaction_added: bool,
+        inserted_hash_found: bool,
+        inserted_hash: [u8; 32],
+        demoted_hashes: Vec<TransactionQueueHash>,
+        overflow_removed_hashes: Vec<TransactionQueueHash>,
     }
 
     /// Finalized status planning outcome for one finalized period.
@@ -2008,6 +2034,7 @@ pub mod rustaxa_ffi {
 
         type BridgeTransactionPackPlanner;
         type BridgeTransactionManagerSidecar;
+        type BridgeTransactionManagerRuntime;
 
         pub fn create_transaction_pack_planner(
             weight_limit: u64,
@@ -2025,6 +2052,113 @@ pub mod rustaxa_ffi {
         pub fn create_transaction_manager_sidecar(
             initial_transaction_count: u64,
         ) -> Box<BridgeTransactionManagerSidecar>;
+        pub fn create_transaction_manager_runtime(
+            initial_transaction_count: u64,
+            config: TransactionQueueConfig,
+        ) -> Box<BridgeTransactionManagerRuntime>;
+        pub fn transaction_manager_runtime_transaction_count(
+            self: &BridgeTransactionManagerRuntime,
+        ) -> u64;
+        pub fn transaction_manager_runtime_is_transaction_known(
+            self: &BridgeTransactionManagerRuntime,
+            fact: TransactionManagerSidecarKnownFact,
+        ) -> Result<bool>;
+        pub fn transaction_manager_runtime_insert_non_finalized(
+            self: &mut BridgeTransactionManagerRuntime,
+            input: TransactionManagerSidecarInsertInput,
+        ) -> Result<()>;
+        pub fn transaction_manager_runtime_contains_non_finalized(
+            self: &BridgeTransactionManagerRuntime,
+            hash: &[u8; 32],
+        ) -> bool;
+        pub fn transaction_manager_runtime_contains_recently_finalized(
+            self: &BridgeTransactionManagerRuntime,
+            hash: &[u8; 32],
+        ) -> bool;
+        pub fn transaction_manager_runtime_lookup_ordered_payloads(
+            self: &BridgeTransactionManagerRuntime,
+            requests: Vec<TransactionManagerSidecarLookupRequest>,
+        ) -> Result<TransactionManagerSidecarLookupPlan>;
+        pub fn transaction_manager_runtime_non_finalized_size(
+            self: &BridgeTransactionManagerRuntime,
+        ) -> usize;
+        pub fn transaction_manager_runtime_remove_non_finalized(
+            self: &mut BridgeTransactionManagerRuntime,
+            requests: Vec<TransactionManagerSidecarLookupRequest>,
+        ) -> Result<u64>;
+        pub fn transaction_manager_runtime_apply_finalized_transition(
+            self: &mut BridgeTransactionManagerRuntime,
+            transition: TransactionManagerSidecarTransitionInput,
+        ) -> Result<()>;
+        pub fn transaction_manager_runtime_evict_stale_recently_finalized(
+            self: &mut BridgeTransactionManagerRuntime,
+            stale_period: u64,
+        ) -> u64;
+        pub fn transaction_manager_runtime_insert_recovery_entries(
+            self: &mut BridgeTransactionManagerRuntime,
+            entries: Vec<TransactionManagerSidecarRecoveryInsertInput>,
+        ) -> Result<u64>;
+        pub fn transaction_manager_runtime_queue_insert(
+            self: &mut BridgeTransactionManagerRuntime,
+            input: TransactionQueueInsertInput,
+        ) -> Result<TransactionQueueInsertOutcome>;
+        pub fn transaction_manager_runtime_insert_validated_transaction(
+            self: &mut BridgeTransactionManagerRuntime,
+            fact: TransactionManagerValidatedInsertSidecarFact,
+            input: TransactionQueueInsertInput,
+        ) -> Result<TransactionManagerRuntimeValidatedInsertOutcome>;
+        pub fn transaction_manager_runtime_queue_erase(
+            self: &mut BridgeTransactionManagerRuntime,
+            hash: &[u8; 32],
+        ) -> bool;
+        pub fn transaction_manager_runtime_queue_get_transaction(
+            self: &BridgeTransactionManagerRuntime,
+            hash: &[u8; 32],
+        ) -> TransactionQueueStoredTransaction;
+        pub fn transaction_manager_runtime_queue_ordered_transactions(
+            self: &BridgeTransactionManagerRuntime,
+            count: u64,
+        ) -> Vec<TransactionQueueStoredTransaction>;
+        pub fn transaction_manager_runtime_queue_all_transaction_groups(
+            self: &BridgeTransactionManagerRuntime,
+        ) -> Vec<TransactionQueueTransactionGroup>;
+        pub fn transaction_manager_runtime_queue_contains(
+            self: &BridgeTransactionManagerRuntime,
+            hash: &[u8; 32],
+        ) -> bool;
+        pub fn transaction_manager_runtime_queue_size(
+            self: &BridgeTransactionManagerRuntime,
+        ) -> usize;
+        pub fn transaction_manager_runtime_queue_block_finalized(
+            self: &mut BridgeTransactionManagerRuntime,
+            block_number: u64,
+        ) -> Vec<TransactionQueueHash>;
+        pub fn transaction_manager_runtime_queue_proposable_accounts(
+            self: &BridgeTransactionManagerRuntime,
+        ) -> Vec<TransactionQueueAddress>;
+        pub fn transaction_manager_runtime_queue_purge_accounts_plan(
+            self: &mut BridgeTransactionManagerRuntime,
+            facts: Vec<TransactionQueueAccountNonceFact>,
+        ) -> TransactionQueuePurgePlan;
+        pub fn transaction_manager_runtime_queue_mark_transaction_known(
+            self: &mut BridgeTransactionManagerRuntime,
+            hash: &[u8; 32],
+        ) -> bool;
+        pub fn transaction_manager_runtime_queue_transactions_dropped(
+            self: &BridgeTransactionManagerRuntime,
+        ) -> bool;
+        pub fn transaction_manager_runtime_queue_non_proposable_over_limit(
+            self: &BridgeTransactionManagerRuntime,
+        ) -> bool;
+        pub fn transaction_manager_runtime_queue_min_gas_price_for_block_inclusion(
+            self: &BridgeTransactionManagerRuntime,
+            limit: u64,
+        ) -> [u8; 32];
+        pub fn transaction_manager_runtime_queue_demote_to_non_proposable(
+            self: &mut BridgeTransactionManagerRuntime,
+            hash: &[u8; 32],
+            last_block_number: u64,
+        ) -> TransactionQueueDemotePlan;
         pub fn transaction_manager_sidecar_transaction_count(
             self: &BridgeTransactionManagerSidecar,
         ) -> u64;
@@ -2072,6 +2206,11 @@ pub mod rustaxa_ffi {
             storage: &BridgeStorage,
             facts: Vec<DagTransactionSaveSidecarFact>,
         ) -> Result<DagTransactionSaveOutcome>;
+        pub fn save_transactions_from_dag_block_with_runtime(
+            runtime: &mut BridgeTransactionManagerRuntime,
+            storage: &BridgeStorage,
+            facts: Vec<DagTransactionSaveSidecarFact>,
+        ) -> Result<DagTransactionSaveOutcome>;
         pub fn save_transactions_from_dag_block(
             storage: &BridgeStorage,
             current_transaction_count: u64,
@@ -2079,6 +2218,13 @@ pub mod rustaxa_ffi {
         ) -> Result<DagTransactionSaveOutcome>;
         pub fn update_finalized_transactions_status_with_sidecar(
             sidecar: &mut BridgeTransactionManagerSidecar,
+            storage: &BridgeStorage,
+            period: u64,
+            retention_window: u64,
+            facts: Vec<FinalizedTransactionStatusSidecarFact>,
+        ) -> Result<FinalizedTransactionStatusPlan>;
+        pub fn update_finalized_transactions_status_with_runtime(
+            runtime: &mut BridgeTransactionManagerRuntime,
             storage: &BridgeStorage,
             period: u64,
             retention_window: u64,
@@ -2104,6 +2250,11 @@ pub mod rustaxa_ffi {
             sidecar: &BridgeTransactionManagerSidecar,
             fact: TransactionManagerInsertTransactionFact,
         ) -> Result<TransactionManagerInsertTransactionOutcome>;
+        /// Builds deterministic TransactionManager::insertTransaction plan using Rust runtime state.
+        pub fn transaction_manager_insert_transaction_with_runtime(
+            runtime: &BridgeTransactionManagerRuntime,
+            fact: TransactionManagerInsertTransactionFact,
+        ) -> Result<TransactionManagerInsertTransactionOutcome>;
         /// Builds deterministic TransactionManager::insertValidatedTransaction plan.
         pub fn transaction_manager_plan_validated_insert(
             fact: TransactionManagerValidatedInsertFact,
@@ -2111,6 +2262,11 @@ pub mod rustaxa_ffi {
         /// Builds deterministic TransactionManager::insertValidatedTransaction plan using Rust sidecars.
         pub fn transaction_manager_plan_validated_insert_with_sidecar(
             sidecar: &BridgeTransactionManagerSidecar,
+            fact: TransactionManagerValidatedInsertSidecarFact,
+        ) -> Result<TransactionManagerValidatedInsertPlan>;
+        /// Builds deterministic TransactionManager::insertValidatedTransaction plan using Rust runtime state.
+        pub fn transaction_manager_plan_validated_insert_with_runtime(
+            runtime: &BridgeTransactionManagerRuntime,
             fact: TransactionManagerValidatedInsertSidecarFact,
         ) -> Result<TransactionManagerValidatedInsertPlan>;
         /// Determines which hash inputs are not finalized in-memory and in storage.
@@ -2124,6 +2280,11 @@ pub mod rustaxa_ffi {
             storage: &BridgeStorage,
             requests: Vec<TransactionManagerSidecarLookupRequest>,
         ) -> Result<FinalizedTransactionFilterPlan>;
+        pub fn transaction_manager_filter_non_finalized_with_runtime(
+            runtime: &BridgeTransactionManagerRuntime,
+            storage: &BridgeStorage,
+            requests: Vec<TransactionManagerSidecarLookupRequest>,
+        ) -> Result<FinalizedTransactionFilterPlan>;
         /// Verifies a transaction sequence has no finalized entries.
         pub fn transaction_manager_verify_not_finalized(
             storage: &BridgeStorage,
@@ -2132,6 +2293,11 @@ pub mod rustaxa_ffi {
         /// Verifies a transaction sequence has no finalized entries using Rust-owned sidecars.
         pub fn transaction_manager_verify_not_finalized_with_sidecar(
             sidecar: &BridgeTransactionManagerSidecar,
+            storage: &BridgeStorage,
+            facts: Vec<TransactionManagerVerifyNotFinalizedSidecarFact>,
+        ) -> Result<TransactionManagerVerifyNotFinalizedOutcome>;
+        pub fn transaction_manager_verify_not_finalized_with_runtime(
+            runtime: &BridgeTransactionManagerRuntime,
             storage: &BridgeStorage,
             facts: Vec<TransactionManagerVerifyNotFinalizedSidecarFact>,
         ) -> Result<TransactionManagerVerifyNotFinalizedOutcome>;

@@ -18,20 +18,25 @@ use crate::ffi::rustaxa_ffi::{
     NonFinalizedTransactionPayload, TransactionManagerFilterAction,
     TransactionManagerFinalizedFilterFact, TransactionManagerInsertTransactionFact,
     TransactionManagerInsertTransactionOutcome, TransactionManagerRecoveryEntry,
-    TransactionManagerSidecarInsertInput, TransactionManagerSidecarKnownFact,
-    TransactionManagerSidecarLookup, TransactionManagerSidecarLookupPlan,
-    TransactionManagerSidecarLookupRequest, TransactionManagerSidecarRecoveryInsertInput,
-    TransactionManagerSidecarTransitionInput, TransactionManagerStoredTransactionLookup,
-    TransactionManagerStoredTransactionRequest, TransactionManagerValidatedInsertFact,
-    TransactionManagerValidatedInsertPlan, TransactionManagerValidatedInsertSidecarFact,
-    TransactionManagerVerifyNotFinalizedFact, TransactionManagerVerifyNotFinalizedOutcome,
-    TransactionManagerVerifyNotFinalizedSidecarFact, TransactionManagerVerifyTransactionFact,
-    TransactionManagerVerifyTransactionOutcome, TransactionPackCandidateDecision,
-    TransactionPackCandidateInput, TransactionPackEstimateInput, TransactionPackEstimateOutcome,
+    TransactionManagerRuntimeValidatedInsertOutcome, TransactionManagerSidecarInsertInput,
+    TransactionManagerSidecarKnownFact, TransactionManagerSidecarLookup,
+    TransactionManagerSidecarLookupPlan, TransactionManagerSidecarLookupRequest,
+    TransactionManagerSidecarRecoveryInsertInput, TransactionManagerSidecarTransitionInput,
+    TransactionManagerStoredTransactionLookup, TransactionManagerStoredTransactionRequest,
+    TransactionManagerValidatedInsertFact, TransactionManagerValidatedInsertPlan,
+    TransactionManagerValidatedInsertSidecarFact, TransactionManagerVerifyNotFinalizedFact,
+    TransactionManagerVerifyNotFinalizedOutcome, TransactionManagerVerifyNotFinalizedSidecarFact,
+    TransactionManagerVerifyTransactionFact, TransactionManagerVerifyTransactionOutcome,
+    TransactionPackCandidateDecision, TransactionPackCandidateInput, TransactionPackEstimateInput,
+    TransactionPackEstimateOutcome,
+    TransactionQueueAccountNonceFact as BridgeTransactionQueueAccountNonceFact,
+    TransactionQueueAddress, TransactionQueueConfig, TransactionQueueDemotePlan,
+    TransactionQueueHash, TransactionQueueInsertInput, TransactionQueueInsertOutcome,
+    TransactionQueuePurgePlan, TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
 };
-use crate::ffi::{BridgeStorage, BridgeTransactionPackPlanner};
+use crate::ffi::{BridgeStorage, BridgeTransactionManagerRuntime, BridgeTransactionPackPlanner};
 use anyhow::{ensure, Context, Result};
-use ethereum_types::{H256, U256};
+use ethereum_types::{H160, H256, U256};
 use rustaxa_consensus::transaction_manager::{
     plan_exclude_finalized_transactions as plan_exclude_finalized_transactions_from_storage,
     plan_finalized_transactions_status, plan_insert_transaction, plan_transactions_from_dag_block,
@@ -54,7 +59,12 @@ use rustaxa_consensus::transaction_manager::{
     VerifyNotFinalizedTransactionFact as ConsensusVerifyNotFinalizedTransactionFact,
     VerifyNotFinalizedTransactionPlan as ConsensusVerifyNotFinalizedTransactionPlan,
 };
-use rustaxa_consensus::transaction_queue::TransactionQueueInsertStatus;
+use rustaxa_consensus::transaction_queue::{
+    TransactionQueue, TransactionQueueAccountNonceFact, TransactionQueueDemoteOutcome,
+    TransactionQueueDemoteStatus, TransactionQueueEntry, TransactionQueueInsertStatus,
+    TransactionQueuePurgeOutcome,
+};
+use std::time::{Duration, Instant};
 
 const TM_VERIFY_TRANSACTION_STATUS_ACCEPTED: u8 =
     TransactionManagerVerifyTransactionStatus::Accepted as u8;
@@ -80,6 +90,98 @@ const TM_INSERT_TRANSACTION_STATUS_CANNOT_INSERT: u8 =
 const TM_VALIDATED_INSERT_QUEUE_ACTION_NONE: u8 = 0;
 const TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_PROPOSABLE: u8 = 1;
 const TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_NON_PROPOSABLE: u8 = 2;
+const TRANSACTION_QUEUE_DEMOTE_STATUS_NOT_FOUND: u8 = 0;
+const TRANSACTION_QUEUE_DEMOTE_STATUS_ALREADY_NON_PROPOSABLE: u8 = 1;
+const TRANSACTION_QUEUE_DEMOTE_STATUS_DEMOTED: u8 = 2;
+const TRANSACTION_QUEUE_DROP_WINDOW: Duration = Duration::from_secs(600);
+
+fn runtime_queue_entry_from_insert_input(
+    input: &TransactionQueueInsertInput,
+) -> TransactionQueueEntry {
+    TransactionQueueEntry {
+        hash: H256::from(input.hash),
+        sender: H160::from(input.sender),
+        nonce: U256::from_big_endian(&input.nonce),
+        gas_price: U256::from_big_endian(&input.gas_price),
+        gas: input.gas,
+        data_size: input.data_size as u64,
+        rlp: input.tx_rlp.clone(),
+        last_block_number: input.last_block_number,
+    }
+}
+
+fn runtime_queue_stored_transaction_from_entry(
+    entry: Option<TransactionQueueEntry>,
+) -> TransactionQueueStoredTransaction {
+    if let Some(entry) = entry {
+        TransactionQueueStoredTransaction {
+            found: true,
+            hash: entry.hash.0,
+            tx_rlp: entry.rlp,
+        }
+    } else {
+        TransactionQueueStoredTransaction {
+            found: false,
+            hash: [0; 32],
+            tx_rlp: Vec::new(),
+        }
+    }
+}
+
+fn runtime_hashes_to_bridge(hashes: Vec<H256>) -> Vec<TransactionQueueHash> {
+    hashes
+        .into_iter()
+        .map(|hash| TransactionQueueHash { hash: hash.0 })
+        .collect()
+}
+
+fn runtime_queue_purge_plan_from_consensus(
+    outcome: TransactionQueuePurgeOutcome,
+) -> TransactionQueuePurgePlan {
+    TransactionQueuePurgePlan {
+        removed_count: outcome.removed_hashes.len(),
+        removed_hashes: runtime_hashes_to_bridge(outcome.removed_hashes),
+    }
+}
+
+fn runtime_empty_queue_entry() -> TransactionQueueEntry {
+    TransactionQueueEntry {
+        hash: H256::zero(),
+        sender: H160::zero(),
+        nonce: U256::zero(),
+        gas_price: U256::zero(),
+        gas: 0,
+        data_size: 0,
+        rlp: Vec::new(),
+        last_block_number: 0,
+    }
+}
+
+fn runtime_queue_demote_plan_from_consensus(
+    hash: H256,
+    outcome: TransactionQueueDemoteOutcome,
+) -> TransactionQueueDemotePlan {
+    let hash_found = outcome.entry.is_some();
+    let entry = outcome.entry.unwrap_or_else(runtime_empty_queue_entry);
+    TransactionQueueDemotePlan {
+        status: match outcome.status {
+            TransactionQueueDemoteStatus::NotFound => TRANSACTION_QUEUE_DEMOTE_STATUS_NOT_FOUND,
+            TransactionQueueDemoteStatus::AlreadyNonProposable => {
+                TRANSACTION_QUEUE_DEMOTE_STATUS_ALREADY_NON_PROPOSABLE
+            }
+            TransactionQueueDemoteStatus::Demoted => TRANSACTION_QUEUE_DEMOTE_STATUS_DEMOTED,
+        },
+        hash: hash.0,
+        hash_found,
+        sender: entry.sender.0,
+        nonce: entry.nonce.to_big_endian(),
+        gas_price: entry.gas_price.to_big_endian(),
+        gas: entry.gas,
+        data_size: entry.data_size as usize,
+        last_block_number: entry.last_block_number,
+        proposable_before: matches!(outcome.status, TransactionQueueDemoteStatus::Demoted),
+    }
+}
 
 /// Plans and persists accepted transactions for one incoming DAG block.
 ///
@@ -120,6 +222,7 @@ pub fn save_transactions_from_dag_block(
         accepted.push(DagTransactionSaveAccepted {
             input_index,
             hash: hash.0,
+            erased_from_queue: false,
         });
         accepted_payloads.push(NonFinalizedTransactionPayload {
             hash: hash.0,
@@ -183,6 +286,7 @@ pub fn save_transactions_from_dag_block_with_sidecar(
         accepted.push(DagTransactionSaveAccepted {
             input_index: payload.input_index,
             hash: payload.hash.0,
+            erased_from_queue: false,
         });
         accepted_payloads.push(NonFinalizedTransactionPayload {
             hash: payload.hash.0,
@@ -203,6 +307,80 @@ pub fn save_transactions_from_dag_block_with_sidecar(
     }
     sidecar
         .0
+        .set_transaction_count(plan.target_transaction_count);
+
+    Ok(DagTransactionSaveOutcome {
+        accepted,
+        target_transaction_count: plan.target_transaction_count,
+    })
+}
+
+/// Plans and persists accepted DAG-block transactions through the Rust manager runtime.
+pub fn save_transactions_from_dag_block_with_runtime(
+    runtime: &mut BridgeTransactionManagerRuntime,
+    storage: &BridgeStorage,
+    facts: Vec<DagTransactionSaveSidecarFact>,
+) -> Result<DagTransactionSaveOutcome> {
+    let plan = plan_transactions_from_dag_block(
+        facts
+            .into_iter()
+            .map(|fact| {
+                let hash = H256::from(fact.hash);
+                ConsensusDagTransactionSaveFact {
+                    input_index: fact.input_index,
+                    hash,
+                    trx_rlp: fact.trx_rlp,
+                    transaction_nonce: U256::from_big_endian(&fact.transaction_nonce),
+                    sender_account_nonce: U256::from_big_endian(&fact.sender_account_nonce),
+                    in_non_finalized_cache: runtime.sidecar.contains_non_finalized(hash),
+                    in_recently_finalized_cache: runtime.sidecar.contains_recently_finalized(hash),
+                }
+            })
+            .collect(),
+        runtime.sidecar.transaction_count(),
+        |hash| {
+            storage
+                .0
+                .transaction()
+                .finalized(hash)
+                .context("TM_DAG_TX_FINALIZED_LOOKUP_FAILED")
+        },
+    )?;
+
+    let mut accepted: Vec<DagTransactionSaveAccepted> =
+        Vec::with_capacity(plan.accepted_transactions.len());
+    let mut accepted_payloads: Vec<NonFinalizedTransactionPayload> =
+        Vec::with_capacity(plan.accepted_transactions.len());
+
+    for payload in &plan.accepted_transactions {
+        accepted.push(DagTransactionSaveAccepted {
+            input_index: payload.input_index,
+            hash: payload.hash.0,
+            erased_from_queue: false,
+        });
+        accepted_payloads.push(NonFinalizedTransactionPayload {
+            hash: payload.hash.0,
+            trx_rlp: payload.trx_rlp.clone(),
+        });
+    }
+
+    if !accepted_payloads.is_empty() {
+        storage
+            .save_non_finalized_transactions(accepted_payloads, plan.target_transaction_count)?;
+    }
+
+    for accepted_entry in &mut accepted {
+        accepted_entry.erased_from_queue = runtime.queue.erase(H256::from(accepted_entry.hash));
+    }
+
+    for payload in plan.accepted_transactions {
+        runtime
+            .sidecar
+            .insert_non_finalized(payload.hash, payload.trx_rlp)
+            .context("TM_RUNTIME_DAG_TX_INSERT")?;
+    }
+    runtime
+        .sidecar
         .set_transaction_count(plan.target_transaction_count);
 
     Ok(DagTransactionSaveOutcome {
@@ -252,6 +430,7 @@ pub fn update_finalized_transactions_status(
                 removed_non_finalized: action.removed_non_finalized,
                 mark_transaction_known: true,
                 erase_from_queue: true,
+                erased_from_queue: false,
             })
             .collect(),
         target_transaction_count: plan.target_transaction_count,
@@ -335,8 +514,94 @@ pub fn update_finalized_transactions_status_with_sidecar(
                 removed_non_finalized: action.removed_non_finalized,
                 mark_transaction_known: true,
                 erase_from_queue: true,
+                erased_from_queue: false,
             })
             .collect(),
+        target_transaction_count: plan.target_transaction_count,
+        stale_period: plan.stale_period.unwrap_or(0),
+        has_stale_period: plan.stale_period.is_some(),
+        purge_transaction_queue: plan.purge_transactions,
+    })
+}
+
+/// Plans and applies finalized transaction status updates through the Rust manager runtime.
+///
+/// Rust persists count changes before mutating live runtime state. Once storage
+/// succeeds, the runtime evicts stale recent-finalized sidecars, inserts current
+/// finalized payloads, marks queue-known membership, erases matching queued
+/// payloads, and advances the authoritative transaction count.
+pub fn update_finalized_transactions_status_with_runtime(
+    runtime: &mut BridgeTransactionManagerRuntime,
+    storage: &BridgeStorage,
+    period: u64,
+    retention_window: u64,
+    facts: Vec<FinalizedTransactionStatusSidecarFact>,
+) -> Result<FinalizedTransactionStatusPlan> {
+    let consensus_facts = facts
+        .iter()
+        .map(|fact| {
+            let hash = H256::from(fact.hash);
+            ConsensusFinalizedTransactionStatusFact {
+                input_index: fact.input_index,
+                hash,
+                in_non_finalized_cache: runtime.sidecar.contains_non_finalized(hash),
+            }
+        })
+        .collect();
+
+    let plan: ConsensusFinalizedTransactionStatusPlan = plan_finalized_transactions_status(
+        consensus_facts,
+        runtime.sidecar.transaction_count(),
+        period,
+        retention_window,
+    )?;
+
+    if !plan.accepted_transactions.is_empty() {
+        storage
+            .save_status_field(
+                rustaxa_storage::StatusField::TrxCount as u8,
+                plan.target_transaction_count,
+            )
+            .context("TM_FINALIZED_STATUS_TRXCOUNT_WRITE")?;
+    }
+
+    if let Some(stale_period) = plan.stale_period {
+        runtime
+            .sidecar
+            .evict_recently_finalized_stale_period(stale_period);
+    }
+
+    let mut accepted = Vec::with_capacity(plan.accepted_transactions.len());
+    for action in &plan.accepted_transactions {
+        let fact = facts
+            .get(action.input_index as usize)
+            .context("TM_RUNTIME_FINALIZED_STATUS_INPUT_INDEX")?;
+        let hash = H256::from(fact.hash);
+        ensure!(
+            hash == action.hash,
+            "TM_RUNTIME_FINALIZED_STATUS_HASH_MISMATCH"
+        );
+        runtime
+            .sidecar
+            .insert_recently_finalized(period, hash, fact.trx_rlp.clone())
+            .context("TM_RUNTIME_FINALIZED_STATUS_INSERT")?;
+        runtime.queue.mark_transaction_known(hash);
+        let erased_from_queue = runtime.queue.erase(hash);
+        accepted.push(FinalizedTransactionStatusAction {
+            input_index: action.input_index,
+            hash: action.hash.0,
+            removed_non_finalized: action.removed_non_finalized,
+            mark_transaction_known: true,
+            erase_from_queue: true,
+            erased_from_queue,
+        });
+    }
+    runtime
+        .sidecar
+        .set_transaction_count(plan.target_transaction_count);
+
+    Ok(FinalizedTransactionStatusPlan {
+        accepted,
         target_transaction_count: plan.target_transaction_count,
         stale_period: plan.stale_period.unwrap_or(0),
         has_stale_period: plan.stale_period.is_some(),
@@ -437,6 +702,15 @@ pub fn transaction_manager_insert_transaction_with_sidecar(
     })
 }
 
+/// Builds a deterministic admission plan using Rust-owned runtime queue and sidecar state.
+pub fn transaction_manager_insert_transaction_with_runtime(
+    runtime: &BridgeTransactionManagerRuntime,
+    fact: TransactionManagerInsertTransactionFact,
+) -> Result<TransactionManagerInsertTransactionOutcome> {
+    let _ = runtime;
+    transaction_manager_insert_transaction(fact)
+}
+
 /// Builds a deterministic pre-mutation plan for C++ live queue insertion.
 pub fn transaction_manager_plan_validated_insert(
     fact: TransactionManagerValidatedInsertFact,
@@ -470,6 +744,38 @@ pub fn transaction_manager_plan_validated_insert_with_sidecar(
         insert_non_proposable: fact.insert_non_proposable,
         in_non_finalized_cache: sidecar.0.contains_non_finalized(hash),
         in_recently_finalized_cache: sidecar.0.contains_recently_finalized(hash),
+        account_found: fact.account_found,
+        account_nonce: U256::from_big_endian(&fact.account_nonce),
+        account_balance: U256::from_big_endian(&fact.account_balance),
+    })?;
+    Ok(TransactionManagerValidatedInsertPlan {
+        status: queue_status_to_ffi(plan.status),
+        queue_action: if !plan.should_insert_queue {
+            TM_VALIDATED_INSERT_QUEUE_ACTION_NONE
+        } else if plan.queue_proposable {
+            TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_PROPOSABLE
+        } else {
+            TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_NON_PROPOSABLE
+        },
+        emit_transaction_added: plan.emit_transaction_added,
+    })
+}
+
+/// Builds a deterministic pre-mutation plan using Rust-owned runtime queue and sidecar state.
+pub fn transaction_manager_plan_validated_insert_with_runtime(
+    runtime: &BridgeTransactionManagerRuntime,
+    fact: TransactionManagerValidatedInsertSidecarFact,
+) -> Result<TransactionManagerValidatedInsertPlan> {
+    let hash = H256::from(fact.tx_hash);
+    let plan = plan_validated_insert(ConsensusTransactionManagerValidatedInsertFact {
+        tx_hash: hash,
+        transaction_nonce: U256::from_big_endian(&fact.transaction_nonce),
+        transaction_cost: U256::from_big_endian(&fact.transaction_cost),
+        gas_limit: fact.gas_limit,
+        propose_dag_gas_limit: fact.propose_dag_gas_limit,
+        insert_non_proposable: fact.insert_non_proposable,
+        in_non_finalized_cache: runtime.sidecar.contains_non_finalized(hash),
+        in_recently_finalized_cache: runtime.sidecar.contains_recently_finalized(hash),
         account_found: fact.account_found,
         account_nonce: U256::from_big_endian(&fact.account_nonce),
         account_balance: U256::from_big_endian(&fact.account_balance),
@@ -586,6 +892,45 @@ pub fn transaction_manager_filter_non_finalized_with_sidecar(
                 input_index: request.input_index,
                 hash,
                 in_recently_finalized_cache: sidecar.0.contains_recently_finalized(hash),
+            }
+        })
+        .collect();
+
+    let plan: ConsensusFinalizedTransactionFilterPlan =
+        plan_exclude_finalized_transactions_from_storage(facts, |hash| {
+            storage
+                .0
+                .transaction()
+                .finalized(hash)
+                .context("TM_FILTER_FINALIZED_LOOKUP")
+        })?;
+
+    Ok(FinalizedTransactionFilterPlan {
+        not_finalized: plan
+            .not_finalized
+            .into_iter()
+            .map(|action| TransactionManagerFilterAction {
+                input_index: action.input_index,
+                hash: action.hash.0,
+            })
+            .collect(),
+    })
+}
+
+/// Filters finalized transactions using Rust runtime sidecars plus storage.
+pub fn transaction_manager_filter_non_finalized_with_runtime(
+    runtime: &BridgeTransactionManagerRuntime,
+    storage: &BridgeStorage,
+    requests: Vec<TransactionManagerSidecarLookupRequest>,
+) -> Result<FinalizedTransactionFilterPlan> {
+    let facts = requests
+        .into_iter()
+        .map(|request| {
+            let hash = H256::from(request.hash);
+            ConsensusFinalizedTransactionFilterFact {
+                input_index: request.input_index,
+                hash,
+                in_recently_finalized_cache: runtime.sidecar.contains_recently_finalized(hash),
             }
         })
         .collect();
@@ -740,6 +1085,52 @@ pub fn transaction_manager_load_stored_transactions(
     Ok(out)
 }
 
+/// Verifies transaction hashes against Rust runtime recent sidecars and storage.
+pub fn transaction_manager_verify_not_finalized_with_runtime(
+    runtime: &BridgeTransactionManagerRuntime,
+    storage: &BridgeStorage,
+    facts: Vec<TransactionManagerVerifyNotFinalizedSidecarFact>,
+) -> Result<TransactionManagerVerifyNotFinalizedOutcome> {
+    for fact in facts {
+        let hash = H256::from(fact.hash);
+        ensure!(
+            !hash.is_zero(),
+            "finalized verification transaction hash cannot be zero"
+        );
+        if runtime.sidecar.contains_recently_finalized(hash) {
+            return Ok(TransactionManagerVerifyNotFinalizedOutcome {
+                is_finalized: true,
+                input_index: fact.input_index,
+                hash: hash.0,
+                source: TM_VERIFY_NOT_FINALIZED_SOURCE_RECENT_SIDECAR,
+            });
+        }
+
+        if U256::from_big_endian(&fact.sender_account_nonce)
+            >= U256::from_big_endian(&fact.transaction_nonce)
+            && storage
+                .0
+                .transaction()
+                .finalized(hash)
+                .context("TM_VERIFY_FINALIZED_LOOKUP")?
+        {
+            return Ok(TransactionManagerVerifyNotFinalizedOutcome {
+                is_finalized: true,
+                input_index: fact.input_index,
+                hash: hash.0,
+                source: TM_VERIFY_NOT_FINALIZED_SOURCE_STORAGE,
+            });
+        }
+    }
+
+    Ok(TransactionManagerVerifyNotFinalizedOutcome {
+        is_finalized: false,
+        input_index: 0,
+        hash: [0; 32],
+        source: TM_VERIFY_NOT_FINALIZED_SOURCE_NONE,
+    })
+}
+
 /// Returns all payloads currently persisted for non-finalized transaction recovery.
 ///
 /// The returned list preserves storage iteration order, carries the DB key hash
@@ -797,6 +1188,362 @@ pub fn create_transaction_manager_sidecar(
     Box::new(BridgeTransactionManagerSidecar(
         TransactionManagerSidecar::new(initial_transaction_count),
     ))
+}
+
+/// Creates the Rust-owned TransactionManager runtime for Rust-enabled manager shims.
+///
+/// The runtime owns both the live manager sidecars and the transaction queue
+/// metadata/payload state. C++ supplies materialized transaction facts at method
+/// boundaries and remains responsible for events, logging, account reads, and gas
+/// estimation.
+pub fn create_transaction_manager_runtime(
+    initial_transaction_count: u64,
+    config: TransactionQueueConfig,
+) -> Box<BridgeTransactionManagerRuntime> {
+    Box::new(BridgeTransactionManagerRuntime {
+        sidecar: TransactionManagerSidecar::new(initial_transaction_count),
+        queue: TransactionQueue::new(config.max_size as u64),
+        last_drop_observed: None,
+    })
+}
+
+impl BridgeTransactionManagerRuntime {
+    /// Returns the authoritative Rust-mode manager transaction count.
+    pub fn transaction_manager_runtime_transaction_count(&self) -> u64 {
+        self.sidecar.transaction_count()
+    }
+
+    /// Returns Rust's known-transaction decision using runtime queue and sidecar state.
+    pub fn transaction_manager_runtime_is_transaction_known(
+        &self,
+        fact: TransactionManagerSidecarKnownFact,
+    ) -> Result<bool> {
+        self.sidecar
+            .is_transaction_known(TransactionManagerKnownFact {
+                hash: H256::from(fact.hash),
+                queue_known: self.queue.is_transaction_known(H256::from(fact.hash)),
+            })
+            .context("TM_RUNTIME_IS_TRANSACTION_KNOWN")
+    }
+
+    /// Inserts or updates one live non-finalized sidecar payload.
+    pub fn transaction_manager_runtime_insert_non_finalized(
+        &mut self,
+        input: TransactionManagerSidecarInsertInput,
+    ) -> Result<()> {
+        self.sidecar
+            .insert_non_finalized(H256::from(input.hash), input.trx_rlp)
+            .context("TM_RUNTIME_INSERT_NON_FINALIZED")
+    }
+
+    /// True when hash exists in non-finalized sidecar state.
+    pub fn transaction_manager_runtime_contains_non_finalized(&self, hash: &[u8; 32]) -> bool {
+        self.sidecar.contains_non_finalized(H256::from(*hash))
+    }
+
+    /// True when hash exists in recently-finalized sidecar state.
+    pub fn transaction_manager_runtime_contains_recently_finalized(&self, hash: &[u8; 32]) -> bool {
+        self.sidecar.contains_recently_finalized(H256::from(*hash))
+    }
+
+    /// Returns ordered sidecar payload lookups for C++ materialization.
+    pub fn transaction_manager_runtime_lookup_ordered_payloads(
+        &self,
+        requests: Vec<TransactionManagerSidecarLookupRequest>,
+    ) -> Result<TransactionManagerSidecarLookupPlan> {
+        let lookups = self
+            .sidecar
+            .lookup_payloads_ordered(
+                requests
+                    .iter()
+                    .map(|request| (request.input_index, H256::from(request.hash)))
+                    .collect(),
+            )
+            .context("TM_RUNTIME_LOOKUP_ORDERED")?;
+        Ok(TransactionManagerSidecarLookupPlan {
+            lookups: lookups
+                .into_iter()
+                .map(|lookup| TransactionManagerSidecarLookup {
+                    input_index: lookup.input_index,
+                    hash: lookup.hash.0,
+                    found: lookup.found,
+                    source: lookup.source,
+                    trx_rlp: lookup.trx_rlp,
+                })
+                .collect(),
+        })
+    }
+
+    /// Returns current non-finalized sidecar size.
+    pub fn transaction_manager_runtime_non_finalized_size(&self) -> usize {
+        self.sidecar.non_finalized_size()
+    }
+
+    /// Removes requested non-finalized sidecar payloads and returns the removal count.
+    pub fn transaction_manager_runtime_remove_non_finalized(
+        &mut self,
+        requests: Vec<TransactionManagerSidecarLookupRequest>,
+    ) -> Result<u64> {
+        let mut removed = 0u64;
+        for request in requests {
+            let hash = H256::from(request.hash);
+            ensure!(
+                !hash.is_zero(),
+                "runtime sidecar removal hash cannot be zero"
+            );
+            if self.sidecar.remove_non_finalized(hash) {
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Moves finalized hashes from non-finalized to recently-finalized sidecar state.
+    pub fn transaction_manager_runtime_apply_finalized_transition(
+        &mut self,
+        transition: TransactionManagerSidecarTransitionInput,
+    ) -> Result<()> {
+        self.sidecar
+            .apply_finalized_transition(
+                transition.period,
+                transition
+                    .hashes
+                    .into_iter()
+                    .map(|hash| H256::from(hash.hash))
+                    .collect::<Vec<_>>(),
+            )
+            .context("TM_RUNTIME_FINALIZED_TRANSITION")
+    }
+
+    /// Evicts stale recently-finalized entries for one computed stale period.
+    pub fn transaction_manager_runtime_evict_stale_recently_finalized(
+        &mut self,
+        stale_period: u64,
+    ) -> u64 {
+        self.sidecar
+            .evict_recently_finalized_stale_period(stale_period) as u64
+    }
+
+    /// Inserts recovery payloads while skipping stale finalized entries.
+    pub fn transaction_manager_runtime_insert_recovery_entries(
+        &mut self,
+        entries: Vec<TransactionManagerSidecarRecoveryInsertInput>,
+    ) -> Result<u64> {
+        Ok(self
+            .sidecar
+            .insert_recovery_entries(
+                entries
+                    .into_iter()
+                    .map(|entry| ConsensusTransactionManagerSidecarRecoveryEntry {
+                        hash: H256::from(entry.hash),
+                        finalized: entry.finalized,
+                        trx_rlp: entry.trx_rlp,
+                    })
+                    .collect(),
+            )
+            .context("TM_RUNTIME_RECOVERY_INSERT")? as u64)
+    }
+
+    /// Inserts transaction metadata and canonical bytes into the Rust-owned queue.
+    pub fn transaction_manager_runtime_queue_insert(
+        &mut self,
+        input: TransactionQueueInsertInput,
+    ) -> Result<TransactionQueueInsertOutcome> {
+        let proposable = input.proposable;
+        let outcome = self
+            .queue
+            .insert(runtime_queue_entry_from_insert_input(&input), proposable)?;
+        if matches!(outcome.status, TransactionQueueInsertStatus::Overflow)
+            || !outcome.overflow_removed_hashes.is_empty()
+        {
+            self.last_drop_observed = Some(Instant::now());
+        }
+        Ok(TransactionQueueInsertOutcome {
+            status: queue_status_to_ffi(outcome.status),
+            inserted_hash_found: outcome.inserted_hash.is_some(),
+            inserted_hash: outcome.inserted_hash.unwrap_or_default().0,
+            demoted_hashes: runtime_hashes_to_bridge(outcome.demoted_hashes),
+            overflow_removed_hashes: runtime_hashes_to_bridge(outcome.overflow_removed_hashes),
+        })
+    }
+
+    /// Executes validated-insert planning and queue mutation through a single runtime boundary.
+    pub fn transaction_manager_runtime_insert_validated_transaction(
+        &mut self,
+        fact: TransactionManagerValidatedInsertSidecarFact,
+        mut input: TransactionQueueInsertInput,
+    ) -> Result<TransactionManagerRuntimeValidatedInsertOutcome> {
+        ensure!(
+            input.hash == fact.tx_hash,
+            "TM_RUNTIME_VALIDATED_INSERT_HASH_MISMATCH"
+        );
+        let hash = H256::from(fact.tx_hash);
+        let plan = plan_validated_insert(ConsensusTransactionManagerValidatedInsertFact {
+            tx_hash: hash,
+            transaction_nonce: U256::from_big_endian(&fact.transaction_nonce),
+            transaction_cost: U256::from_big_endian(&fact.transaction_cost),
+            gas_limit: fact.gas_limit,
+            propose_dag_gas_limit: fact.propose_dag_gas_limit,
+            insert_non_proposable: fact.insert_non_proposable,
+            in_non_finalized_cache: self.sidecar.contains_non_finalized(hash),
+            in_recently_finalized_cache: self.sidecar.contains_recently_finalized(hash),
+            account_found: fact.account_found,
+            account_nonce: U256::from_big_endian(&fact.account_nonce),
+            account_balance: U256::from_big_endian(&fact.account_balance),
+        })?;
+        if !plan.should_insert_queue {
+            return Ok(TransactionManagerRuntimeValidatedInsertOutcome {
+                status: queue_status_to_ffi(plan.status),
+                emit_transaction_added: false,
+                inserted_hash_found: false,
+                inserted_hash: [0; 32],
+                demoted_hashes: Vec::new(),
+                overflow_removed_hashes: Vec::new(),
+            });
+        }
+
+        input.proposable = plan.queue_proposable;
+        let queue_outcome = self.transaction_manager_runtime_queue_insert(input)?;
+        Ok(TransactionManagerRuntimeValidatedInsertOutcome {
+            status: queue_outcome.status,
+            emit_transaction_added: plan.emit_transaction_added
+                && queue_outcome.status == TransactionQueueInsertStatus::Inserted as u8,
+            inserted_hash_found: queue_outcome.inserted_hash_found,
+            inserted_hash: queue_outcome.inserted_hash,
+            demoted_hashes: queue_outcome.demoted_hashes,
+            overflow_removed_hashes: queue_outcome.overflow_removed_hashes,
+        })
+    }
+
+    /// Removes one queued transaction by hash.
+    pub fn transaction_manager_runtime_queue_erase(&mut self, hash: &[u8; 32]) -> bool {
+        self.queue.erase(H256::from(*hash))
+    }
+
+    /// Returns one queued transaction payload by hash.
+    pub fn transaction_manager_runtime_queue_get_transaction(
+        &self,
+        hash: &[u8; 32],
+    ) -> TransactionQueueStoredTransaction {
+        runtime_queue_stored_transaction_from_entry(self.queue.transaction(H256::from(*hash)))
+    }
+
+    /// Returns proposer-ordered transaction payloads.
+    pub fn transaction_manager_runtime_queue_ordered_transactions(
+        &self,
+        count: u64,
+    ) -> Vec<TransactionQueueStoredTransaction> {
+        self.queue
+            .ordered_transactions(count)
+            .into_iter()
+            .map(Some)
+            .map(runtime_queue_stored_transaction_from_entry)
+            .collect()
+    }
+
+    /// Returns proposer transaction payloads grouped by sender and nonce order.
+    pub fn transaction_manager_runtime_queue_all_transaction_groups(
+        &self,
+    ) -> Vec<TransactionQueueTransactionGroup> {
+        self.queue
+            .all_transaction_groups()
+            .into_iter()
+            .map(|transactions| TransactionQueueTransactionGroup {
+                transactions: transactions
+                    .into_iter()
+                    .map(Some)
+                    .map(runtime_queue_stored_transaction_from_entry)
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// Returns true when the queue contains a transaction hash.
+    pub fn transaction_manager_runtime_queue_contains(&self, hash: &[u8; 32]) -> bool {
+        self.queue.contains(H256::from(*hash))
+    }
+
+    /// Returns the number of proposable transactions.
+    pub fn transaction_manager_runtime_queue_size(&self) -> usize {
+        self.queue.size() as usize
+    }
+
+    /// Applies finalized-block expiry to non-proposable queue state.
+    pub fn transaction_manager_runtime_queue_block_finalized(
+        &mut self,
+        block_number: u64,
+    ) -> Vec<TransactionQueueHash> {
+        runtime_hashes_to_bridge(self.queue.block_finalized(block_number))
+    }
+
+    /// Returns proposer accounts that C++ should query from FinalChain for purge facts.
+    pub fn transaction_manager_runtime_queue_proposable_accounts(
+        &self,
+    ) -> Vec<TransactionQueueAddress> {
+        self.queue
+            .proposable_accounts()
+            .into_iter()
+            .map(|address| TransactionQueueAddress { address: address.0 })
+            .collect()
+    }
+
+    /// Removes queued transactions for account nonce facts supplied by C++ FinalChain reads.
+    pub fn transaction_manager_runtime_queue_purge_accounts_plan(
+        &mut self,
+        facts: Vec<BridgeTransactionQueueAccountNonceFact>,
+    ) -> TransactionQueuePurgePlan {
+        let consensus_facts = facts
+            .into_iter()
+            .map(|fact| TransactionQueueAccountNonceFact {
+                sender: H160::from(fact.sender),
+                account_found: fact.account_found,
+                account_nonce: U256::from_big_endian(&fact.account_nonce),
+            })
+            .collect::<Vec<_>>();
+        runtime_queue_purge_plan_from_consensus(self.queue.purge_accounts_plan(&consensus_facts))
+    }
+
+    /// Marks one hash in the Rust-owned known-admission cache.
+    pub fn transaction_manager_runtime_queue_mark_transaction_known(
+        &mut self,
+        hash: &[u8; 32],
+    ) -> bool {
+        self.queue.mark_transaction_known(H256::from(*hash))
+    }
+
+    /// Returns true while the overflow/drop observation window remains active.
+    pub fn transaction_manager_runtime_queue_transactions_dropped(&self) -> bool {
+        self.last_drop_observed
+            .is_some_and(|observed| observed.elapsed() < TRANSACTION_QUEUE_DROP_WINDOW)
+    }
+
+    /// Returns true when non-proposable queue state exceeds the configured limit.
+    pub fn transaction_manager_runtime_queue_non_proposable_over_limit(&self) -> bool {
+        self.queue.non_proposable_transactions_over_the_limit()
+    }
+
+    /// Returns the minimum big-endian gas price needed for next-block inclusion.
+    pub fn transaction_manager_runtime_queue_min_gas_price_for_block_inclusion(
+        &self,
+        limit: u64,
+    ) -> [u8; 32] {
+        self.queue
+            .min_gas_price_for_block_inclusion(limit)
+            .to_big_endian()
+    }
+
+    /// Demotes one queued transaction to non-proposable metadata.
+    pub fn transaction_manager_runtime_queue_demote_to_non_proposable(
+        &mut self,
+        hash: &[u8; 32],
+        last_block_number: u64,
+    ) -> TransactionQueueDemotePlan {
+        let parsed_hash = H256::from(*hash);
+        runtime_queue_demote_plan_from_consensus(
+            parsed_hash,
+            self.queue.demote(parsed_hash, last_block_number),
+        )
+    }
 }
 
 impl BridgeTransactionManagerSidecar {
@@ -1270,6 +2017,40 @@ mod tests {
             account_found,
             account_nonce: u256_bytes(account_nonce),
             account_balance: u256_bytes(account_balance),
+        }
+    }
+
+    fn validated_insert_sidecar_fact(
+        tx_hash: u8,
+        account_found: bool,
+        account_nonce: u64,
+        account_balance: u64,
+        insert_non_proposable: bool,
+    ) -> TransactionManagerValidatedInsertSidecarFact {
+        TransactionManagerValidatedInsertSidecarFact {
+            tx_hash: [tx_hash; 32],
+            transaction_nonce: u256_bytes(1),
+            transaction_cost: u256_bytes(10),
+            gas_limit: 21_000,
+            propose_dag_gas_limit: 100_000,
+            insert_non_proposable,
+            account_found,
+            account_nonce: u256_bytes(account_nonce),
+            account_balance: u256_bytes(account_balance),
+        }
+    }
+
+    fn runtime_queue_input(hash: u8, proposable: bool) -> TransactionQueueInsertInput {
+        TransactionQueueInsertInput {
+            hash: [hash; 32],
+            sender: [9; 20],
+            nonce: u256_bytes(1),
+            gas_price: u256_bytes(2),
+            gas: 21_000,
+            data_size: 3,
+            tx_rlp: vec![0xaa, 0xbb, 0xcc],
+            proposable,
+            last_block_number: 0,
         }
     }
 
@@ -1962,5 +2743,51 @@ mod tests {
         assert_eq!(inserted, 1);
         assert!(sidecar.transaction_manager_sidecar_contains_non_finalized(&[3; 32]));
         assert!(!sidecar.transaction_manager_sidecar_contains_non_finalized(&[4; 32]));
+    }
+
+    #[test]
+    fn bridge_transaction_manager_runtime_insert_validated_executes_queue_insert() {
+        let mut runtime =
+            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
+        let outcome = runtime
+            .transaction_manager_runtime_insert_validated_transaction(
+                validated_insert_sidecar_fact(5, true, 0, 100, false),
+                runtime_queue_input(5, false),
+            )
+            .expect("runtime validated insert should succeed");
+        assert_eq!(
+            outcome.status,
+            rustaxa_consensus::transaction_queue::TransactionQueueInsertStatus::Inserted as u8
+        );
+        assert!(outcome.emit_transaction_added);
+        assert!(outcome.inserted_hash_found);
+        assert!(runtime.transaction_manager_runtime_queue_contains(&[5; 32]));
+    }
+
+    #[test]
+    fn bridge_transaction_manager_runtime_insert_validated_short_circuits_known() {
+        let mut runtime =
+            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
+        runtime
+            .transaction_manager_runtime_insert_non_finalized(
+                TransactionManagerSidecarInsertInput {
+                    hash: [7; 32],
+                    trx_rlp: vec![0x07],
+                },
+            )
+            .expect("runtime sidecar insert should succeed");
+
+        let outcome = runtime
+            .transaction_manager_runtime_insert_validated_transaction(
+                validated_insert_sidecar_fact(7, true, 0, 100, false),
+                runtime_queue_input(7, true),
+            )
+            .expect("runtime known short-circuit should succeed");
+        assert_eq!(
+            outcome.status,
+            rustaxa_consensus::transaction_queue::TransactionQueueInsertStatus::Known as u8
+        );
+        assert!(!outcome.emit_transaction_added);
+        assert!(!runtime.transaction_manager_runtime_queue_contains(&[7; 32]));
     }
 }

@@ -37,7 +37,9 @@ class TransactionManager : public TransactionManagerOld {
   TransactionManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db,
                      std::shared_ptr<final_chain::FinalChain> final_chain, addr_t node_addr)
       : TransactionManagerOld(conf, db, std::move(final_chain), node_addr),
-        sidecars_(rustaxa::create_transaction_manager_sidecar(db->getStatusField(StatusDbField::TrxCount))) {}
+        runtime_(rustaxa::create_transaction_manager_runtime(db->getStatusField(StatusDbField::TrxCount),
+                                                             rustaxa::TransactionQueueConfig{
+                                                                 conf.transactions_pool_size})) {}
 
   TransactionManager(const TransactionManager &) = delete;
   TransactionManager(TransactionManager &&) = delete;
@@ -248,14 +250,14 @@ class TransactionManager : public TransactionManagerOld {
   void emitTransactionAddedForRust(const trx_hash_t &trx_hash) const { transaction_added_.emit(trx_hash); }
 
   /**
-   * Rust-owned live TransactionManager sidecar state.
+   * Rust-owned live TransactionManager runtime state.
    *
-   * The handle owns the authoritative Rust-mode transaction count plus canonical
-   * RLP payloads and membership for non-finalized and recently-finalized transaction
-   * sidecars. C++ keeps object materialization, pool mutation, event emission,
-   * gas estimation, and lifecycle orchestration.
+   * The handle owns the authoritative Rust-mode transaction count, transaction queue
+   * metadata/payloads, known-admission cache, and non-finalized/recently-finalized
+   * sidecars. C++ keeps object materialization, event emission, logging, gas
+   * estimation, FinalChain fact reads, and lifecycle orchestration.
    */
-  ::rust::Box<rustaxa::BridgeTransactionManagerSidecar> sidecars_;
+  ::rust::Box<rustaxa::BridgeTransactionManagerRuntime> runtime_;
 };
 
 }  // namespace taraxa
