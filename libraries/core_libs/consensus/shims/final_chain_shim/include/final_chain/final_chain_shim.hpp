@@ -48,6 +48,15 @@ class FinalChain {
   std::vector<EthBlockNumber> withBlockBloom(LogBloom const& b, EthBlockNumber from, EthBlockNumber to) const;
 
   std::optional<state_api::Account> getAccount(addr_t const& addr, std::optional<EthBlockNumber> blk_n = {}) const;
+  /**
+   * Return the Rust FinalChain runtime used by Rust-owned consensus shims.
+   *
+   * This shim-owned accessor keeps Rust-mode integrations from re-entering the
+   * C++ FinalChain API for data that is already owned by `BridgeFinalChain`.
+   * Callers must not store the returned reference beyond the owning
+   * `FinalChain` lifetime.
+   */
+  const rustaxa::BridgeFinalChain& rustFinalChainForRust() const;
   h256 getAccountStorage(addr_t const& addr, u256 const& key, std::optional<EthBlockNumber> blk_n = {}) const;
   bytes getCode(addr_t const& addr, std::optional<EthBlockNumber> blk_n = {}) const;
 

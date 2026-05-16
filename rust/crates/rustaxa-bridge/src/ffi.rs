@@ -2263,6 +2263,12 @@ pub mod rustaxa_ffi {
             block_number: u64,
             facts: Vec<TransactionQueueAccountNonceFact>,
         ) -> TransactionManagerRuntimeQueueCleanupPlan;
+        pub fn transaction_manager_runtime_queue_cleanup_with_final_chain(
+            self: &mut BridgeTransactionManagerRuntime,
+            final_chain: &BridgeFinalChain,
+            apply_block_finalized: bool,
+            block_number: u64,
+        ) -> Result<TransactionManagerRuntimeQueueCleanupPlan>;
         pub fn transaction_manager_runtime_queue_mark_transaction_known(
             self: &mut BridgeTransactionManagerRuntime,
             hash: &[u8; 32],

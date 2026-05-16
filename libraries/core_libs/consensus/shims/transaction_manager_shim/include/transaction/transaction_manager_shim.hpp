@@ -166,7 +166,8 @@ class TransactionManager : public TransactionManagerOld {
    *
    * Rust owns status planning, recently-finalized sidecar retention,
    * non-finalized sidecar removal, known-cache marking, and live queue cleanup.
-   * C++ supplies FinalChain account facts and logs returned side effects.
+   * Rust also sources finalized-account purge facts from the Rust FinalChain
+   * runtime; C++ logs returned side effects.
    */
   void updateFinalizedTransactionsStatus(const PeriodData &period_data);
 

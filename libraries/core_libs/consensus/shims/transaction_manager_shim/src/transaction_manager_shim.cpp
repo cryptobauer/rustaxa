@@ -778,19 +778,12 @@ class TransactionManagerRustShimAccess {
   }
 
   static void purgeRuntimeQueue(TransactionManager& manager) {
-    rust::Vec<rustaxa::TransactionQueueAccountNonceFact> facts;
-    const auto accounts = manager.runtime_->transaction_manager_runtime_queue_proposable_accounts();
-    facts.reserve(accounts.size());
-    for (const auto& account : accounts) {
-      const auto address = addr_t(account.address.data(), addr_t::ConstructFromPointer);
-      const auto account_state = manager.final_chain_->getAccount(address);
-      rustaxa::TransactionQueueAccountNonceFact fact;
-      fact.sender = toBridgeAddress(address);
-      fact.account_found = account_state.has_value();
-      fact.account_nonce = account_state ? toBridgeU256(account_state->nonce) : std::array<uint8_t, 32>{};
-      facts.push_back(std::move(fact));
+    try {
+      manager.runtime_->transaction_manager_runtime_queue_cleanup_with_final_chain(
+          manager.final_chain_->rustFinalChainForRust(), false, 0);
+    } catch (const std::exception& e) {
+      throw DbException(std::string("RUST_TX_MANAGER_QUEUE_FINAL_CHAIN_PURGE_FAILED: ") + e.what());
     }
-    manager.runtime_->transaction_manager_runtime_queue_cleanup(false, 0, std::move(facts));
   }
 
   static bool isTransactionKnown(TransactionManager& manager, const trx_hash_t& trx_hash) {

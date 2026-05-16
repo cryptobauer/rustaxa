@@ -38,8 +38,9 @@ use crate::ffi::rustaxa_ffi::{
     TransactionQueuePurgePlan, TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
 };
 use crate::ffi::{
-    BridgeStorage, BridgeTransactionManagerAdmissionExecution, BridgeTransactionManagerRuntime,
-    BridgeTransactionPackPlanner, TransactionManagerRuntimePackSession,
+    BridgeFinalChain, BridgeStorage, BridgeTransactionManagerAdmissionExecution,
+    BridgeTransactionManagerRuntime, BridgeTransactionPackPlanner,
+    TransactionManagerRuntimePackSession,
 };
 use anyhow::{anyhow, ensure, Context, Result};
 use ethereum_types::{H160, H256, U256};
@@ -181,6 +182,25 @@ fn runtime_queue_account_nonce_facts_from_bridge(
             account_nonce: U256::from_big_endian(&fact.account_nonce),
         })
         .collect::<Vec<_>>()
+}
+
+fn runtime_queue_account_nonce_facts_from_final_chain(
+    final_chain: &BridgeFinalChain,
+    proposable_accounts: Vec<H160>,
+) -> Result<Vec<TransactionQueueAccountNonceFact>> {
+    proposable_accounts
+        .into_iter()
+        .map(|sender| {
+            let lookup = final_chain
+                .get_account(&sender.0)
+                .context("TM_RUNTIME_QUEUE_PURGE_ACCOUNT_LOOKUP_FAILED")?;
+            Ok(TransactionQueueAccountNonceFact {
+                sender,
+                account_found: lookup.found,
+                account_nonce: U256::from(lookup.nonce),
+            })
+        })
+        .collect()
 }
 
 fn runtime_empty_queue_entry() -> TransactionQueueEntry {
@@ -1270,8 +1290,9 @@ pub fn create_transaction_manager_sidecar(
 ///
 /// The runtime owns both the live manager sidecars and the transaction queue
 /// metadata/payload state. C++ supplies materialized transaction facts at method
-/// boundaries and remains responsible for events, logging, account reads, and gas
-/// estimation.
+/// boundaries and remains responsible for events, logging, admission account
+/// reads, and gas estimation. Finalized-account queue purge can source account
+/// facts directly from Rust FinalChain through the runtime cleanup API.
 pub fn create_transaction_manager_runtime(
     initial_transaction_count: u64,
     config: TransactionQueueConfig,
@@ -1832,6 +1853,34 @@ impl BridgeTransactionManagerRuntime {
         }
     }
 
+    /// Applies Rust-owned queue cleanup by sourcing account nonce facts from Rust FinalChain.
+    ///
+    /// This keeps finalized-account purge fact sourcing inside Rust and mutates the
+    /// Rust-owned queue directly without C++ account-lookup involvement.
+    pub fn transaction_manager_runtime_queue_cleanup_with_final_chain(
+        &mut self,
+        final_chain: &BridgeFinalChain,
+        apply_block_finalized: bool,
+        block_number: u64,
+    ) -> Result<TransactionManagerRuntimeQueueCleanupPlan> {
+        let account_nonce_facts = runtime_queue_account_nonce_facts_from_final_chain(
+            final_chain,
+            self.queue.proposable_accounts(),
+        )?;
+        let non_proposable_expired = if apply_block_finalized {
+            self.queue.block_finalized_plan(block_number)
+        } else {
+            TransactionQueuePurgeOutcome::default()
+        };
+        let finalized_account_purged = self.queue.purge_accounts_plan(&account_nonce_facts);
+        Ok(TransactionManagerRuntimeQueueCleanupPlan {
+            non_proposable_expired: runtime_queue_purge_plan_from_consensus(non_proposable_expired),
+            finalized_account_purged: runtime_queue_purge_plan_from_consensus(
+                finalized_account_purged,
+            ),
+        })
+    }
+
     /// Marks one hash in the Rust-owned known-admission cache.
     pub fn transaction_manager_runtime_queue_mark_transaction_known(
         &mut self,
@@ -2390,6 +2439,25 @@ mod tests {
             hash: [hash; 32],
             sender: [9; 20],
             nonce: u256_bytes(1),
+            gas_price: u256_bytes(2),
+            gas: 21_000,
+            data_size: 3,
+            tx_rlp: vec![0xaa, 0xbb, 0xcc],
+            proposable,
+            last_block_number: 0,
+        }
+    }
+
+    fn runtime_queue_input_for_sender(
+        hash: u8,
+        sender: [u8; 20],
+        nonce: u64,
+        proposable: bool,
+    ) -> TransactionQueueInsertInput {
+        TransactionQueueInsertInput {
+            hash: [hash; 32],
+            sender,
+            nonce: u256_bytes(nonce),
             gas_price: u256_bytes(2),
             gas: 21_000,
             data_size: 3,
@@ -3361,6 +3429,105 @@ mod tests {
         assert!(!runtime.transaction_manager_runtime_queue_contains(&[1; 32]));
         assert!(!runtime.transaction_manager_runtime_queue_contains(&[2; 32]));
         assert!(!runtime.transaction_manager_runtime_queue_contains(&[3; 32]));
+    }
+
+    #[test]
+    fn runtime_queue_account_nonce_facts_from_final_chain_maps_found_and_missing_accounts() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_queue_nonce_facts");
+        let storage = crate::storage::create_storage(
+            temp_dir.to_str().expect("temp path should be valid UTF-8"),
+        )
+        .expect("storage should initialize");
+        let genesis_account = crate::ffi::rustaxa_ffi::GenesisAccount {
+            address: [1; 20],
+            balance: vec![1],
+        };
+        let final_chain = crate::final_chain::create_final_chain(
+            &storage,
+            1_000_000,
+            1,
+            vec![genesis_account],
+            Vec::new(),
+            crate::ffi::rustaxa_ffi::GenesisDposConfig {
+                eligibility_balance_threshold: vec![1],
+                vote_eligibility_balance_step: vec![1],
+                validator_maximum_stake: vec![1],
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+        )
+        .expect("final chain should initialize");
+        let facts = runtime_queue_account_nonce_facts_from_final_chain(
+            &final_chain,
+            vec![H160::from([1; 20]), H160::from([2; 20])],
+        )
+        .expect("fact collection should succeed");
+
+        assert_eq!(facts.len(), 2);
+        assert_eq!(facts[0].sender, H160::from([1; 20]));
+        assert!(facts[0].account_found);
+        assert_eq!(facts[0].account_nonce, U256::zero());
+        assert_eq!(facts[1].sender, H160::from([2; 20]));
+        assert!(!facts[1].account_found);
+        assert_eq!(facts[1].account_nonce, U256::zero());
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_transaction_manager_runtime_queue_cleanup_with_final_chain_collects_facts_and_runs() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_queue_cleanup_fc");
+        let storage = crate::storage::create_storage(
+            temp_dir.to_str().expect("temp path should be valid UTF-8"),
+        )
+        .expect("storage should initialize");
+        let sender = [7; 20];
+        let final_chain = crate::final_chain::create_final_chain(
+            &storage,
+            1_000_000,
+            1,
+            vec![crate::ffi::rustaxa_ffi::GenesisAccount {
+                address: sender,
+                balance: vec![1],
+            }],
+            Vec::new(),
+            crate::ffi::rustaxa_ffi::GenesisDposConfig {
+                eligibility_balance_threshold: vec![1],
+                vote_eligibility_balance_step: vec![1],
+                validator_maximum_stake: vec![1],
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+        )
+        .expect("final chain should initialize");
+        let mut runtime =
+            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 32 });
+        runtime
+            .transaction_manager_runtime_queue_insert(runtime_queue_input_for_sender(
+                1, sender, 0, true,
+            ))
+            .expect("proposable nonce=0 insert should succeed");
+        runtime
+            .transaction_manager_runtime_queue_insert(runtime_queue_input_for_sender(
+                2, sender, 1, true,
+            ))
+            .expect("proposable nonce=1 insert should succeed");
+        runtime
+            .transaction_manager_runtime_queue_insert(runtime_queue_input_for_sender(
+                3, sender, 2, false,
+            ))
+            .expect("non-proposable nonce=2 insert should succeed");
+
+        let cleanup = runtime
+            .transaction_manager_runtime_queue_cleanup_with_final_chain(&final_chain, false, 20)
+            .expect("cleanup with final chain should succeed");
+
+        assert_eq!(cleanup.non_proposable_expired.removed_count, 0);
+        assert!(
+            cleanup.finalized_account_purged.removed_count <= 2,
+            "purge should only affect proposable sender entries"
+        );
+        assert!(runtime.transaction_manager_runtime_queue_contains(&[3; 32]));
+
+        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]

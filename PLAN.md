@@ -398,7 +398,8 @@ The current Rust starting point is intentionally small:
    now routes deterministic queue metadata, per-account nonce ordering, same-nonce replacement, non-proposer expiry
    planning, pool limits, gas-price threshold accounting, queued transaction RLP payload retention, known-transaction
    cache expiry, overflow/drop observation state, and finalized-account purge planning through Rust while C++
-   materializes `Transaction` objects on demand and keeps FinalChain account reads for purge fact sourcing. The Rust-mode `TransactionManager` packing shim now routes proposal candidate
+   materializes `Transaction` objects on demand. Finalized-account purge fact sourcing now reads accounts from the Rust
+   FinalChain runtime instead of the TransactionManager shim. The Rust-mode `TransactionManager` packing shim now routes proposal candidate
    snapshotting, candidate scan, declared-gas fit checks, invalid-estimate demotion mutation, accepted output ordering,
    accepted gas accumulation, and stop rules through a Rust runtime pack session while C++ keeps transaction
    materialization, `estimateTransactionGas`, estimation caching, and lifecycle/finalization orchestration.
@@ -424,7 +425,7 @@ The current Rust starting point is intentionally small:
    from shim-owned code after Rust accepts a proposable queue mutation. Live pool helpers remain shim-owned under the existing
    transaction mutex and no longer forward to `TransactionManagerOld`; they now materialize from Rust runtime queue or
    sidecar RLP. The Rust runtime state exposes the authoritative Rust-mode transaction count and drives count reads
-   after persistence/finalization commits. Remaining live-shell gaps are Rust ownership of FinalChain purge fact
+   after persistence/finalization commits. Remaining live-shell gaps are Rust ownership of admission account fact
    sourcing and estimation/lifecycle orchestration.
    `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
    selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction

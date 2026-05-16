@@ -336,6 +336,8 @@ std::optional<state_api::Account> FinalChain::getAccount(addr_t const& addr, std
   return account;
 }
 
+const rustaxa::BridgeFinalChain& FinalChain::rustFinalChainForRust() const { return *rust_final_chain_.value(); }
+
 h256 FinalChain::getAccountStorage(addr_t const&, u256 const&, std::optional<EthBlockNumber>) const { return {}; }
 
 bytes FinalChain::getCode(addr_t const&, std::optional<EthBlockNumber>) const { return {}; }
