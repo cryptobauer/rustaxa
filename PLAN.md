@@ -405,18 +405,20 @@ The current Rust starting point is intentionally small:
    materialization, `estimateTransactionGas`, estimation caching, and lifecycle/finalization orchestration.
    The TransactionManager shim now owns an opaque Rust runtime handle for live queue metadata/payloads, known-cache
    state, non-finalized and recently-finalized transaction sidecars, and the authoritative transaction count. DAG
-   transaction persistence sends transaction/account facts to Rust; Rust owns sidecar membership checks, duplicate
-   filtering, nonce-gated finalized-storage lookup, accepted ordering, count planning, the storage batch, accepted
-   non-finalized sidecar insertion, and accepted queue erasure before C++ logs removals. Finalized transaction status
+   transaction persistence sends transaction identities/RLP and senders to Rust; Rust sources latest account nonces from
+   the Rust FinalChain runtime and owns sidecar membership checks, duplicate filtering, nonce-gated finalized-storage
+   lookup, accepted ordering, count planning, the storage batch, accepted non-finalized sidecar insertion, and accepted
+   queue erasure before C++ logs removals. Finalized transaction status
    updates now send finalized hashes and RLP payloads to Rust; Rust plans count increments, retention eviction, periodic
    queue cleanup, recently-finalized sidecar insertion, non-finalized sidecar removal, known-cache marking, and queue
    erasure while persisting `TrxCount` before C++ logs side effects. Block-finalized queue cleanup and finalized-account
    purge now share a fused Rust runtime cleanup API that returns explicit per-phase removed hash groups.
-   `excludeFinalizedTransactions` and `verifyTransactionsNotFinalized` now collect only hash/nonce facts in the shim,
-   then call Rust for sidecar membership, finalized-storage checks, and deterministic filtering/short-circuit decisions.
-   `verifyTransaction`, `insertTransaction`, and `insertValidatedTransaction` now collect transaction/config/cache/account
-   facts in the shim and call Rust for exact verification reasons, public insertion result mapping, staged known-fast-path
-   prechecks, finalized-location finish mapping, and fused proposable/non-proposable admission with Rust-owned live queue
+   `excludeFinalizedTransactions` and `verifyTransactionsNotFinalized` now collect only transaction identity facts in the
+   shim, then call Rust for latest FinalChain account nonce sourcing, sidecar membership, finalized-storage checks, and
+   deterministic filtering/short-circuit decisions. `verifyTransaction`, `insertTransaction`, and
+   `insertValidatedTransaction` now collect transaction/config/cache facts in the shim and call Rust for exact
+   verification reasons, latest FinalChain account sourcing, public insertion result mapping, staged known-fast-path
+   prechecks, finalized-location mapping, and fused proposable/non-proposable admission with Rust-owned live queue
    mutation. Known-hash insert decisions now route through the Rust runtime precheck instead of a shim-local early return,
    and `isTransactionKnown` now includes Rust sidecar membership checks alongside queue-known state. Rust now returns
    explicit validated-insert queue actions, public insert statuses, finalized lookup requests, and finalized
@@ -425,8 +427,9 @@ The current Rust starting point is intentionally small:
    from shim-owned code after Rust accepts a proposable queue mutation. Live pool helpers remain shim-owned under the existing
    transaction mutex and no longer forward to `TransactionManagerOld`; they now materialize from Rust runtime queue or
    sidecar RLP. The Rust runtime state exposes the authoritative Rust-mode transaction count and drives count reads
-   after persistence/finalization commits. Remaining live-shell gaps are Rust ownership of admission account fact
-   sourcing and estimation/lifecycle orchestration.
+   after persistence/finalization commits. Remaining live-shell gaps are gas estimation and broader lifecycle
+   orchestration; historical/proposal-period account filtering stays C++-owned until Rust FinalChain exposes a
+   block-scoped account API.
    `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
    selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
    lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode

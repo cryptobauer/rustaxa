@@ -93,9 +93,9 @@ class TransactionManager : public TransactionManagerOld {
   /**
    * Execute validated transaction admission through the Rust runtime.
    *
-   * Rust decides known/proposable/non-proposable admission from C++ account facts, mutates the Rust-owned queue, and
-   * returns explicit status/event/log side effects. The shim keeps `SharedTransaction` materialization, locking,
-   * logging mechanics, and event dispatch in C++.
+   * Rust sources latest account facts from the Rust FinalChain handle, decides known/proposable/non-proposable
+   * admission, mutates the Rust-owned queue, and returns explicit status/event/log side effects. The shim keeps
+   * `SharedTransaction` materialization, locking, logging mechanics, and event dispatch in C++.
    */
   TransactionStatus insertValidatedTransaction(std::shared_ptr<Transaction> &&tx, bool insert_non_proposable = true);
 
@@ -139,7 +139,8 @@ class TransactionManager : public TransactionManagerOld {
   /**
    * Verify that all transactions are absent from recent-finalized cache and Rust-backed finalized storage.
    *
-   * C++ supplies live transaction nonces and account nonces; Rust short-circuits on the first finalized hash.
+   * C++ supplies live transaction identities and senders; Rust sources latest account nonces and short-circuits on the
+   * first finalized hash.
    */
   bool verifyTransactionsNotFinalized(const SharedTransactions &trxs);
 
@@ -257,7 +258,7 @@ class TransactionManager : public TransactionManagerOld {
    * The handle owns the authoritative Rust-mode transaction count, transaction queue
    * metadata/payloads, known-admission cache, and non-finalized/recently-finalized
    * sidecars. C++ keeps object materialization, event emission, logging, gas
-   * estimation, FinalChain fact reads, and lifecycle orchestration.
+   * estimation, historical/proposal-period account reads, and lifecycle orchestration.
    */
   ::rust::Box<rustaxa::BridgeTransactionManagerRuntime> runtime_;
 };

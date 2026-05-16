@@ -278,23 +278,21 @@ class TransactionManagerRustShimAccess {
 
     std::unique_lock transactions_lock(manager.transactions_mutex_);
     const auto sender = tx->getSender();
-    const auto account = manager.final_chain_->getAccount(sender);
 
-    rustaxa::TransactionManagerValidatedInsertSidecarFact fact;
+    rustaxa::TransactionManagerValidatedInsertRuntimeFact fact;
     fact.tx_hash = toBridgeHash(trx_hash);
+    fact.sender = toBridgeAddress(sender);
     fact.transaction_nonce = toBridgeU256(tx->getNonce());
     fact.transaction_cost = toBridgeU256(tx->getCost());
     fact.gas_limit = tx->getGas();
     fact.propose_dag_gas_limit = manager.kConf.propose_dag_gas_limit;
     fact.insert_non_proposable = insert_non_proposable;
-    fact.account_found = account.has_value();
-    fact.account_nonce = toBridgeU256(account ? account->nonce : 0);
-    fact.account_balance = toBridgeU256(account ? account->balance : 0);
 
     const auto outcome = [&]() {
       try {
-        return manager.runtime_->transaction_manager_runtime_execute_transaction_admission(
-            fact, toRuntimeQueueInsertInput(tx, false, manager.final_chain_->lastBlockNumber()), false, 0);
+        return manager.runtime_->transaction_manager_runtime_execute_transaction_admission_with_final_chain(
+            manager.final_chain_->rustFinalChainForRust(), fact,
+            toRuntimeQueueInsertInput(tx, false, manager.final_chain_->lastBlockNumber()));
       } catch (const std::exception& e) {
         throw std::runtime_error(std::string("RUST_TX_MANAGER_ADMISSION_EXECUTION_FAILED: ") + e.what());
       }
@@ -480,7 +478,7 @@ class TransactionManagerRustShimAccess {
   static void saveTransactionsFromDagBlock(TransactionManager& manager, SharedTransactions const& trxs) {
     std::unique_lock transactions_lock(manager.transactions_mutex_);
 
-    rust::Vec<rustaxa::DagTransactionSaveSidecarFact> facts;
+    rust::Vec<rustaxa::DagTransactionSaveRuntimeFact> facts;
     facts.reserve(trxs.size());
     std::vector<std::shared_ptr<Transaction>> transaction_by_input_index;
     transaction_by_input_index.reserve(trxs.size());
@@ -488,23 +486,22 @@ class TransactionManagerRustShimAccess {
     uint64_t input_index = 0;
     for (const auto& transaction : trxs) {
       const auto trx_hash = transaction->getHash();
-      const auto account =
-          manager.final_chain_->getAccount(transaction->getSender()).value_or(taraxa::state_api::ZeroAccount);
 
-      rustaxa::DagTransactionSaveSidecarFact fact;
+      rustaxa::DagTransactionSaveRuntimeFact fact;
       fact.input_index = input_index++;
       fact.hash = toBridgeHash(trx_hash);
       fact.trx_rlp = toBridgeBytes(transaction->rlp());
       fact.transaction_nonce = toBridgeU256(transaction->getNonce());
-      fact.sender_account_nonce = toBridgeU256(account.nonce);
+      fact.sender = toBridgeAddress(transaction->getSender());
       facts.push_back(std::move(fact));
       transaction_by_input_index.push_back(transaction);
     }
 
     const auto outcome = [&]() {
       try {
-        return rustaxa::save_transactions_from_dag_block_with_runtime(*manager.runtime_, manager.db_->rustStorage(),
-                                                                      std::move(facts));
+        return rustaxa::save_transactions_from_dag_block_with_runtime_and_final_chain(
+            *manager.runtime_, manager.db_->rustStorage(), manager.final_chain_->rustFinalChainForRust(),
+            std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_DAG_TX_PERSIST_FAILED: ") + e.what());
       }
@@ -680,25 +677,25 @@ class TransactionManagerRustShimAccess {
   }
 
   static bool verifyTransactionsNotFinalized(const TransactionManager& manager, const SharedTransactions& trxs) {
-    rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedSidecarFact> facts;
+    rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> facts;
     facts.reserve(trxs.size());
     uint64_t input_index = 0;
     for (const auto& transaction : trxs) {
       const auto trx_hash = transaction->getHash();
-      const auto account = manager.final_chain_->getAccount(transaction->getSender()).value_or(state_api::ZeroAccount);
 
-      rustaxa::TransactionManagerVerifyNotFinalizedSidecarFact fact;
+      rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact fact;
       fact.input_index = input_index++;
       fact.hash = toBridgeHash(trx_hash);
       fact.transaction_nonce = toBridgeU256(transaction->getNonce());
-      fact.sender_account_nonce = toBridgeU256(account.nonce);
+      fact.sender = toBridgeAddress(transaction->getSender());
       facts.push_back(fact);
     }
 
     const auto outcome = [&]() {
       try {
-        return rustaxa::transaction_manager_verify_not_finalized_with_runtime(
-            *manager.runtime_, manager.db_->rustStorage(), std::move(facts));
+        return rustaxa::transaction_manager_verify_not_finalized_with_runtime_and_final_chain(
+            *manager.runtime_, manager.db_->rustStorage(), manager.final_chain_->rustFinalChainForRust(),
+            std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: ") + e.what());
       }
