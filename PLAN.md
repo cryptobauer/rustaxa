@@ -399,8 +399,9 @@ The current Rust starting point is intentionally small:
    planning, pool limits, gas-price threshold accounting, queued transaction RLP payload retention, known-transaction
    cache expiry, overflow/drop observation state, and finalized-account purge planning through Rust while C++
    materializes `Transaction` objects on demand and keeps FinalChain account reads for purge fact sourcing. The Rust-mode `TransactionManager` packing shim now routes proposal candidate
-   sizing, declared-gas fit checks, invalid-estimate demotion decisions, accepted gas accumulation, and stop rules
-   through Rust while C++ keeps `estimateTransactionGas`, estimation caching, and lifecycle/finalization orchestration.
+   snapshotting, candidate scan, declared-gas fit checks, invalid-estimate demotion mutation, accepted output ordering,
+   accepted gas accumulation, and stop rules through a Rust runtime pack session while C++ keeps transaction
+   materialization, `estimateTransactionGas`, estimation caching, and lifecycle/finalization orchestration.
    The TransactionManager shim now owns an opaque Rust runtime handle for live queue metadata/payloads, known-cache
    state, non-finalized and recently-finalized transaction sidecars, and the authoritative transaction count. DAG
    transaction persistence sends transaction/account facts to Rust; Rust owns sidecar membership checks, duplicate

@@ -404,70 +404,91 @@ class TransactionManagerRustShimAccess {
    * Runs Rust-backed deterministic transaction packing against the legacy manager's live C++ state.
    *
    * The friend accessor exists only because the migration facade must reuse existing private pool, lock, cache, and
-   * FinalChain members without copying the whole transaction lifecycle into shim-owned C++ code. Rust owns the planner
-   * decisions; C++ owns live transaction pointers, estimation, queue mutation, and logging.
+   * FinalChain members without copying the whole transaction lifecycle into shim-owned C++ code. Rust owns the candidate
+   * scan, accepted ordering, invalid-estimate demotion, and stop decisions; C++ owns transaction materialization,
+   * estimation, and logging.
    */
   static std::pair<SharedTransactions, std::vector<uint64_t>> packTrxs(TransactionManagerOld& manager,
                                                                        PbftPeriod proposal_period,
                                                                        uint64_t weight_limit) {
     auto& rust_manager = static_cast<TransactionManager&>(manager);
-    auto planner = rustaxa::create_transaction_pack_planner(weight_limit, kMinTxGas);
-
-    SharedTransactions candidates;
-    {
-      std::shared_lock transactions_lock(manager.transactions_mutex_);
-      const auto queued_transactions =
-          rust_manager.runtime_->transaction_manager_runtime_queue_ordered_transactions(
-              planner->transaction_pack_max_candidate_count());
-      candidates.reserve(queued_transactions.size());
-      for (const auto& queued_transaction : queued_transactions) {
-        if (auto transaction = materializeQueuedTransaction(queued_transaction, "RUST_TX_MANAGER_QUEUE_PACK_FAILED")) {
-          candidates.emplace_back(std::move(transaction));
-        } else {
-          throw std::runtime_error("Rust transaction manager runtime returned a missing ordered queue payload");
-        }
-      }
-    }
-
-    std::vector<uint64_t> estimations;
-    SharedTransactions selected_transactions;
-    for (const auto& candidate : candidates) {
-      rustaxa::TransactionPackCandidateInput input;
-      input.hash = toBridgeHash(candidate->getHash());
-      input.declared_gas = candidate->getGas();
-      if (!planner->transaction_pack_consider_candidate(input).should_estimate) {
-        continue;
-      }
-
-      auto estimate = manager.estimateTransactionGas(candidate, proposal_period);
-      rustaxa::TransactionPackEstimateInput estimate_input;
-      estimate_input.hash = input.hash;
-      estimate_input.gas_used = estimate.gas_used;
-      const auto outcome = planner->transaction_pack_record_estimate(estimate_input);
-
-      if (outcome.demote_to_non_proposable) {
-        LOG(manager.log_er_) << "Transaction " << candidate->getHash()
-                             << " has invalid estimation: " << estimate.gas_used;
+    bool session_active = false;
+    try {
+      {
         std::unique_lock transactions_lock(manager.transactions_mutex_);
-        constexpr uint8_t kDemoted = 2;
-        const auto demote_plan = rust_manager.runtime_->transaction_manager_runtime_queue_demote_to_non_proposable(
-            toBridgeHash(candidate->getHash()), manager.final_chain_->lastBlockNumber());
-        if (demote_plan.status != kDemoted) {
-          throw std::runtime_error("Rust transaction queue failed to demote invalid-estimate transaction");
+        rust_manager.runtime_->transaction_manager_runtime_pack_begin(weight_limit, kMinTxGas);
+        session_active = true;
+      }
+
+      while (true) {
+        rustaxa::TransactionPackSessionCandidate candidate;
+        {
+          std::unique_lock transactions_lock(manager.transactions_mutex_);
+          candidate = rust_manager.runtime_->transaction_manager_runtime_pack_next_candidate();
         }
-        continue;
+        if (!candidate.found) {
+          break;
+        }
+
+        auto transaction = std::make_shared<Transaction>(fromBridgeBytes(candidate.tx_rlp));
+        const auto candidate_hash = fromBridgeHash(candidate.hash);
+        if (transaction->getHash() != candidate_hash) {
+          throw std::runtime_error("Rust transaction manager runtime returned pack candidate RLP with mismatched hash");
+        }
+        if (transaction->getGas() != candidate.declared_gas) {
+          throw std::runtime_error("Rust transaction manager runtime returned pack candidate RLP with mismatched gas");
+        }
+
+        const auto estimate = manager.estimateTransactionGas(transaction, proposal_period);
+        rustaxa::TransactionPackSessionEstimateInput estimate_input;
+        estimate_input.hash = candidate.hash;
+        estimate_input.gas_used = estimate.gas_used;
+        estimate_input.last_block_number = manager.final_chain_->lastBlockNumber();
+
+        rustaxa::TransactionPackEstimateOutcome outcome;
+        {
+          std::unique_lock transactions_lock(manager.transactions_mutex_);
+          outcome = rust_manager.runtime_->transaction_manager_runtime_pack_record_estimate(estimate_input);
+        }
+
+        if (outcome.demote_to_non_proposable) {
+          LOG(manager.log_er_) << "Transaction " << candidate_hash << " has invalid estimation: " << estimate.gas_used;
+        }
+        if (outcome.stop) {
+          break;
+        }
       }
 
-      if (outcome.selected) {
-        selected_transactions.push_back(candidate);
-        estimations.push_back(outcome.gas_used);
+      rustaxa::TransactionPackSessionOutcome session_outcome;
+      {
+        std::unique_lock transactions_lock(manager.transactions_mutex_);
+        session_outcome = rust_manager.runtime_->transaction_manager_runtime_pack_finalize();
+        session_active = false;
       }
 
-      if (outcome.stop) {
-        break;
+      SharedTransactions selected_transactions;
+      std::vector<uint64_t> estimations;
+      selected_transactions.reserve(session_outcome.selected_transactions.size());
+      estimations.reserve(session_outcome.selected_transactions.size());
+      for (const auto& selected : session_outcome.selected_transactions) {
+        auto transaction = std::make_shared<Transaction>(fromBridgeBytes(selected.tx_rlp));
+        if (transaction->getHash() != fromBridgeHash(selected.hash)) {
+          throw std::runtime_error("Rust transaction manager runtime returned selected pack RLP with mismatched hash");
+        }
+        selected_transactions.push_back(std::move(transaction));
+        estimations.push_back(selected.gas_used);
       }
+      return {selected_transactions, estimations};
+    } catch (...) {
+      if (session_active) {
+        try {
+          std::unique_lock transactions_lock(manager.transactions_mutex_);
+          rust_manager.runtime_->transaction_manager_runtime_pack_finalize();
+        } catch (...) {
+        }
+      }
+      throw;
     }
-    return {selected_transactions, estimations};
   }
 
   /**

@@ -28,14 +28,19 @@ use crate::ffi::rustaxa_ffi::{
     TransactionManagerVerifyNotFinalizedOutcome, TransactionManagerVerifyNotFinalizedSidecarFact,
     TransactionManagerVerifyTransactionFact, TransactionManagerVerifyTransactionOutcome,
     TransactionPackCandidateDecision, TransactionPackCandidateInput, TransactionPackEstimateInput,
-    TransactionPackEstimateOutcome,
+    TransactionPackEstimateOutcome, TransactionPackSelectedTransaction,
+    TransactionPackSessionCandidate, TransactionPackSessionEstimateInput,
+    TransactionPackSessionOutcome,
     TransactionQueueAccountNonceFact as BridgeTransactionQueueAccountNonceFact,
     TransactionQueueAddress, TransactionQueueConfig, TransactionQueueDemotePlan,
     TransactionQueueHash, TransactionQueueInsertInput, TransactionQueueInsertOutcome,
     TransactionQueuePurgePlan, TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
 };
-use crate::ffi::{BridgeStorage, BridgeTransactionManagerRuntime, BridgeTransactionPackPlanner};
-use anyhow::{ensure, Context, Result};
+use crate::ffi::{
+    BridgeStorage, BridgeTransactionManagerRuntime, BridgeTransactionPackPlanner,
+    TransactionManagerRuntimePackSession,
+};
+use anyhow::{anyhow, ensure, Context, Result};
 use ethereum_types::{H160, H256, U256};
 use rustaxa_consensus::transaction_manager::{
     plan_exclude_finalized_transactions as plan_exclude_finalized_transactions_from_storage,
@@ -123,6 +128,26 @@ fn runtime_queue_stored_transaction_from_entry(
         TransactionQueueStoredTransaction {
             found: false,
             hash: [0; 32],
+            tx_rlp: Vec::new(),
+        }
+    }
+}
+
+fn transaction_pack_candidate_from_entry(
+    entry: Option<TransactionQueueEntry>,
+) -> TransactionPackSessionCandidate {
+    if let Some(entry) = entry {
+        TransactionPackSessionCandidate {
+            found: true,
+            hash: entry.hash.0,
+            declared_gas: entry.gas,
+            tx_rlp: entry.rlp,
+        }
+    } else {
+        TransactionPackSessionCandidate {
+            found: false,
+            hash: [0; 32],
+            declared_gas: 0,
             tx_rlp: Vec::new(),
         }
     }
@@ -1204,10 +1229,148 @@ pub fn create_transaction_manager_runtime(
         sidecar: TransactionManagerSidecar::new(initial_transaction_count),
         queue: TransactionQueue::new(config.max_size as u64),
         last_drop_observed: None,
+        transaction_pack_session: None,
     })
 }
 
 impl BridgeTransactionManagerRuntime {
+    /// Begins one runtime-owned transaction packing session.
+    ///
+    /// The runtime snapshots ordered queue payloads up to the planner candidate
+    /// cap. C++ then asks Rust for one estimable candidate at a time and never
+    /// owns the deterministic candidate scan or accepted ordering.
+    pub fn transaction_manager_runtime_pack_begin(
+        &mut self,
+        weight_limit: u64,
+        min_transaction_gas: u64,
+    ) -> Result<()> {
+        ensure!(
+            self.transaction_pack_session.is_none(),
+            "TM_RUNTIME_PACK_SESSION_ALREADY_ACTIVE"
+        );
+        let planner = TransactionPackingPlanner::new(weight_limit, min_transaction_gas)?;
+        let candidates = self
+            .queue
+            .ordered_transactions(planner.max_candidate_count());
+        self.transaction_pack_session = Some(TransactionManagerRuntimePackSession {
+            planner,
+            candidates,
+            next_index: 0,
+            current: None,
+            selected: Vec::new(),
+            demoted_hashes: Vec::new(),
+            stopped: false,
+        });
+        Ok(())
+    }
+
+    /// Returns the next queue candidate that needs C++ gas estimation.
+    pub fn transaction_manager_runtime_pack_next_candidate(
+        &mut self,
+    ) -> Result<TransactionPackSessionCandidate> {
+        let session = self
+            .transaction_pack_session
+            .as_mut()
+            .context("TM_RUNTIME_PACK_SESSION_NOT_ACTIVE")?;
+        if session.stopped {
+            return Ok(transaction_pack_candidate_from_entry(None));
+        }
+
+        while session.next_index < session.candidates.len() {
+            let candidate = session.candidates[session.next_index].clone();
+            session.next_index += 1;
+            let decision = session
+                .planner
+                .consider_candidate(TransactionPackCandidate {
+                    hash: candidate.hash,
+                    declared_gas: candidate.gas,
+                })?;
+            if decision.should_estimate {
+                session.current = Some(candidate.clone());
+                return Ok(transaction_pack_candidate_from_entry(Some(candidate)));
+            }
+        }
+
+        Ok(transaction_pack_candidate_from_entry(None))
+    }
+
+    /// Records one C++ gas estimate and applies any Rust-owned queue demotion.
+    pub fn transaction_manager_runtime_pack_record_estimate(
+        &mut self,
+        input: TransactionPackSessionEstimateInput,
+    ) -> Result<TransactionPackEstimateOutcome> {
+        let mut session = self
+            .transaction_pack_session
+            .take()
+            .context("TM_RUNTIME_PACK_SESSION_NOT_ACTIVE")?;
+
+        let Some(candidate) = session.current.take() else {
+            self.transaction_pack_session = Some(session);
+            return Err(anyhow!("TM_RUNTIME_PACK_NO_ACTIVE_CANDIDATE"));
+        };
+        let estimate_hash = H256::from(input.hash);
+        if candidate.hash != estimate_hash {
+            self.transaction_pack_session = Some(session);
+            return Err(anyhow!("TM_RUNTIME_PACK_HASH_MISMATCH"));
+        }
+
+        let outcome = match session.planner.record_estimate(TransactionPackEstimate {
+            hash: H256::from(input.hash),
+            gas_used: input.gas_used,
+        }) {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                self.transaction_pack_session = Some(session);
+                return Err(err).context("TM_RUNTIME_PACK_RECORD_ESTIMATE");
+            }
+        };
+
+        if outcome.demote_to_non_proposable {
+            let demote_outcome = self.queue.demote(estimate_hash, input.last_block_number);
+            if matches!(demote_outcome.status, TransactionQueueDemoteStatus::Demoted) {
+                session.demoted_hashes.push(estimate_hash);
+            }
+        }
+        if outcome.selected {
+            session.selected.push((candidate, outcome.gas_used));
+        }
+        if outcome.stop {
+            session.stopped = true;
+        }
+
+        self.transaction_pack_session = Some(session);
+        Ok(TransactionPackEstimateOutcome {
+            hash: outcome.hash.0,
+            selected: outcome.selected,
+            demote_to_non_proposable: outcome.demote_to_non_proposable,
+            stop: outcome.stop,
+            gas_used: outcome.gas_used,
+        })
+    }
+
+    /// Finalizes, clears, and returns the active runtime packing session outcome.
+    pub fn transaction_manager_runtime_pack_finalize(
+        &mut self,
+    ) -> Result<TransactionPackSessionOutcome> {
+        let session = self
+            .transaction_pack_session
+            .take()
+            .context("TM_RUNTIME_PACK_SESSION_NOT_ACTIVE")?;
+        Ok(TransactionPackSessionOutcome {
+            selected_transactions: session
+                .selected
+                .into_iter()
+                .map(|(entry, gas_used)| TransactionPackSelectedTransaction {
+                    hash: entry.hash.0,
+                    gas_used,
+                    tx_rlp: entry.rlp,
+                })
+                .collect(),
+            demoted_hashes: runtime_hashes_to_bridge(session.demoted_hashes),
+            stopped: session.stopped,
+        })
+    }
+
     /// Returns the authoritative Rust-mode manager transaction count.
     pub fn transaction_manager_runtime_transaction_count(&self) -> u64 {
         self.sidecar.transaction_count()
@@ -2789,5 +2952,46 @@ mod tests {
         );
         assert!(!outcome.emit_transaction_added);
         assert!(!runtime.transaction_manager_runtime_queue_contains(&[7; 32]));
+    }
+
+    #[test]
+    fn bridge_transaction_manager_runtime_pack_session_round_trips_and_clears() {
+        let mut runtime =
+            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
+        runtime
+            .transaction_manager_runtime_queue_insert(runtime_queue_input(1, true))
+            .expect("queue insert should succeed");
+
+        runtime
+            .transaction_manager_runtime_pack_begin(63_000, 21_000)
+            .expect("pack session should begin");
+
+        let candidate = runtime
+            .transaction_manager_runtime_pack_next_candidate()
+            .expect("candidate decision should succeed");
+        assert!(candidate.found);
+        assert_eq!(candidate.hash, [1; 32]);
+        assert_eq!(candidate.declared_gas, 21_000);
+
+        let outcome = runtime
+            .transaction_manager_runtime_pack_record_estimate(TransactionPackSessionEstimateInput {
+                hash: [1; 32],
+                gas_used: 42_000,
+                last_block_number: 10,
+            })
+            .expect("record estimate should succeed");
+        assert!(outcome.selected);
+        assert!(outcome.stop);
+        assert!(!outcome.demote_to_non_proposable);
+
+        let final_outcome = runtime
+            .transaction_manager_runtime_pack_finalize()
+            .expect("pack session should finalize");
+        assert_eq!(final_outcome.selected_transactions.len(), 1);
+        assert_eq!(final_outcome.selected_transactions[0].hash, [1; 32]);
+        assert_eq!(final_outcome.selected_transactions[0].gas_used, 42_000);
+        assert!(runtime
+            .transaction_manager_runtime_pack_next_candidate()
+            .is_err());
     }
 }

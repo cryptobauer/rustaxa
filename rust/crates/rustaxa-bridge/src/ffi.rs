@@ -12,6 +12,7 @@ use crate::transaction_manager::*;
 use crate::transaction_queue::*;
 use crate::vdf::*;
 use crate::verified_votes::*;
+use ethereum_types::H256;
 use rustaxa_consensus::dag::{DagGraph, DagManagerState};
 use rustaxa_consensus::gas_pricer::GasPriceOracle;
 use rustaxa_consensus::pbft_chain::PbftChain;
@@ -22,7 +23,7 @@ use rustaxa_consensus::sortition::SortitionParamsManager;
 use rustaxa_consensus::transaction_manager::{
     TransactionManagerSidecar, TransactionPackingPlanner,
 };
-use rustaxa_consensus::transaction_queue::TransactionQueue;
+use rustaxa_consensus::transaction_queue::{TransactionQueue, TransactionQueueEntry};
 use rustaxa_consensus::verified_votes::VerifiedVotes;
 use rustaxa_consensus::FinalChain;
 use rustaxa_consensus::PillarVotes;
@@ -91,9 +92,26 @@ pub struct BridgeTransactionManagerRuntime {
     pub sidecar: TransactionManagerSidecar,
     pub queue: TransactionQueue,
     pub last_drop_observed: Option<Instant>,
+    pub transaction_pack_session: Option<TransactionManagerRuntimePackSession>,
 }
 
 pub struct BridgeTransactionPackPlanner(pub TransactionPackingPlanner);
+
+/// Runtime-owned state for one TransactionManager proposal-packing pass.
+///
+/// The session owns the ordered queue candidate snapshot, planner accounting,
+/// selected output ordering, and demotion summary. C++ remains responsible only
+/// for materializing the current candidate and supplying FinalChain/EVM gas
+/// estimates back to the runtime.
+pub struct TransactionManagerRuntimePackSession {
+    pub planner: TransactionPackingPlanner,
+    pub candidates: Vec<TransactionQueueEntry>,
+    pub next_index: usize,
+    pub current: Option<TransactionQueueEntry>,
+    pub selected: Vec<(TransactionQueueEntry, u64)>,
+    pub demoted_hashes: Vec<H256>,
+    pub stopped: bool,
+}
 
 #[cxx::bridge(namespace = "rustaxa")]
 pub mod rustaxa_ffi {
@@ -264,6 +282,35 @@ pub mod rustaxa_ffi {
     struct TransactionPackEstimateInput {
         hash: [u8; 32],
         gas_used: u64,
+    }
+
+    /// One candidate returned by a Rust-owned runtime packing session.
+    struct TransactionPackSessionCandidate {
+        found: bool,
+        hash: [u8; 32],
+        declared_gas: u64,
+        tx_rlp: Vec<u8>,
+    }
+
+    /// C++ gas-estimation fact supplied for the active runtime packing candidate.
+    struct TransactionPackSessionEstimateInput {
+        hash: [u8; 32],
+        gas_used: u64,
+        last_block_number: u64,
+    }
+
+    /// One transaction accepted by a Rust-owned runtime packing session.
+    struct TransactionPackSelectedTransaction {
+        hash: [u8; 32],
+        gas_used: u64,
+        tx_rlp: Vec<u8>,
+    }
+
+    /// Final selected transactions and queue mutation summary for one packing session.
+    struct TransactionPackSessionOutcome {
+        selected_transactions: Vec<TransactionPackSelectedTransaction>,
+        demoted_hashes: Vec<TransactionQueueHash>,
+        stopped: bool,
     }
 
     /// GasPricer construction limits and mode flags supplied by C++ genesis config.
@@ -2056,6 +2103,21 @@ pub mod rustaxa_ffi {
             initial_transaction_count: u64,
             config: TransactionQueueConfig,
         ) -> Box<BridgeTransactionManagerRuntime>;
+        pub fn transaction_manager_runtime_pack_begin(
+            self: &mut BridgeTransactionManagerRuntime,
+            weight_limit: u64,
+            min_transaction_gas: u64,
+        ) -> Result<()>;
+        pub fn transaction_manager_runtime_pack_next_candidate(
+            self: &mut BridgeTransactionManagerRuntime,
+        ) -> Result<TransactionPackSessionCandidate>;
+        pub fn transaction_manager_runtime_pack_record_estimate(
+            self: &mut BridgeTransactionManagerRuntime,
+            input: TransactionPackSessionEstimateInput,
+        ) -> Result<TransactionPackEstimateOutcome>;
+        pub fn transaction_manager_runtime_pack_finalize(
+            self: &mut BridgeTransactionManagerRuntime,
+        ) -> Result<TransactionPackSessionOutcome>;
         pub fn transaction_manager_runtime_transaction_count(
             self: &BridgeTransactionManagerRuntime,
         ) -> u64;

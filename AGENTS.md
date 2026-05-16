@@ -60,6 +60,10 @@ This repository is the Rust rewrite track for Taraxa. Keep day-to-day work align
 - `cmake --build /build --target check-static`: run configured static/style checks before closeout when C++ changed.
 
 Rust code changes are validated by the repository pre-commit hook at `.githooks/pre-commit`; address any problems it finds before closeout.
+Always run the narrowest relevant targeted validation before closing a rewrite slice. For routine Rust rewrite work, this
+means the affected Rust package checks/tests plus the focused C++ shim/bridge build or test targets that exercise changed
+behavior. Do not skip validation merely because it is time-consuming; ask the task owner only before expensive repo-wide
+or differential gates.
 
 `check-static` is a repo-wide cppcheck/format gate and can currently fail on pre-existing findings outside the files touched
 by a rewrite slice. For routine Rust rewrite work, prefer targeted validation for the changed C++ shim/bridge files plus the
