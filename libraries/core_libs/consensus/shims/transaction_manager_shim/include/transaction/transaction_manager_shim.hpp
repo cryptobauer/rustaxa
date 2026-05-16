@@ -91,10 +91,10 @@ class TransactionManager : public TransactionManagerOld {
   void blockFinalized(EthBlockNumber block_number);
 
   /**
-   * Plan validated transaction admission in Rust, then apply live C++ queue mutation.
+   * Execute validated transaction admission through the Rust runtime.
    *
-   * Rust decides known/proposable/non-proposable admission from C++ cache and account facts.
-   * The shim keeps `SharedTransaction` ownership, queue insertion, and event emission in C++.
+   * Rust decides known/proposable/non-proposable admission from C++ account facts and mutates the Rust-owned queue.
+   * The shim keeps `SharedTransaction` materialization, locking, logging, and event emission in C++.
    */
   TransactionStatus insertValidatedTransaction(std::shared_ptr<Transaction> &&tx, bool insert_non_proposable = true);
 

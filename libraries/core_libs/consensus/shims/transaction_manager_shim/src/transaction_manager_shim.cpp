@@ -63,9 +63,6 @@ constexpr uint8_t kTMQueueStatusInserted = 0;
 constexpr uint8_t kTMQueueStatusInsertedNonProposable = 1;
 constexpr uint8_t kTMQueueStatusKnown = 2;
 constexpr uint8_t kTMQueueStatusOverflow = 3;
-constexpr uint8_t kTMValidatedInsertQueueActionNone = 0;
-constexpr uint8_t kTMValidatedInsertQueueActionInsertProposable = 1;
-constexpr uint8_t kTMValidatedInsertQueueActionInsertNonProposable = 2;
 
 bool isFinalizedStoredTransactionSource(uint8_t source) {
   return source == kStoredTransactionFinalizedRegular || source == kStoredTransactionFinalizedSystem;
@@ -363,41 +360,22 @@ class TransactionManagerRustShimAccess {
     fact.account_nonce = toBridgeU256(account ? account->nonce : 0);
     fact.account_balance = toBridgeU256(account ? account->balance : 0);
 
-    const auto plan = [&]() {
+    const auto outcome = [&]() {
       try {
-        return rustaxa::transaction_manager_plan_validated_insert_with_runtime(*manager.runtime_, fact);
+        return manager.runtime_->transaction_manager_runtime_insert_validated_transaction(
+            fact, toRuntimeQueueInsertInput(tx, false, manager.final_chain_->lastBlockNumber()));
       } catch (const std::exception& e) {
         throw std::runtime_error(std::string("RUST_TX_MANAGER_VALIDATED_INSERT_FAILED: ") + e.what());
       }
     }();
 
-    bool queue_proposable = false;
-    switch (plan.queue_action) {
-      case kTMValidatedInsertQueueActionNone:
-        return transactionStatusFromBridge(plan.status);
-      case kTMValidatedInsertQueueActionInsertProposable:
-        queue_proposable = true;
-        break;
-      case kTMValidatedInsertQueueActionInsertNonProposable:
-        queue_proposable = false;
-        break;
-      default:
-        throw std::runtime_error("TransactionManager shim received unknown validated-insert queue action");
+    if (outcome.inserted_hash_found) {
+      LOG(manager.log_dg_) << "Transaction " << trx_hash << " inserted in trx pool";
     }
-
-    LOG(manager.log_dg_) << "Transaction " << trx_hash << " inserted in trx pool";
-    if (plan.emit_transaction_added) {
+    if (outcome.emit_transaction_added) {
       manager.emitTransactionAddedForRust(trx_hash);
     }
-    const auto queue_outcome = [&]() {
-      try {
-        return manager.runtime_->transaction_manager_runtime_queue_insert(
-            toRuntimeQueueInsertInput(tx, queue_proposable, manager.final_chain_->lastBlockNumber()));
-      } catch (const std::exception& e) {
-        throw std::runtime_error(std::string("RUST_TX_MANAGER_QUEUE_INSERT_FAILED: ") + e.what());
-      }
-    }();
-    return transactionStatusFromBridge(queue_outcome.status);
+    return transactionStatusFromBridge(outcome.status);
   }
 
   /**

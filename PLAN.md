@@ -413,8 +413,8 @@ The current Rust starting point is intentionally small:
    `excludeFinalizedTransactions` and `verifyTransactionsNotFinalized` now collect only hash/nonce facts in the shim,
    then call Rust for sidecar membership, finalized-storage checks, and deterministic filtering/short-circuit decisions.
    `verifyTransaction`, `insertTransaction`, and `insertValidatedTransaction` now collect transaction/config/cache/account
-   facts in the shim and call Rust planners for exact verification reasons, public insertion result mapping, and
-   proposable/non-proposable admission before C++ mutates the live queue; known-hash insert decisions now route through
+   facts in the shim and call Rust for exact verification reasons, public insertion result mapping, and fused
+   proposable/non-proposable admission with Rust-owned live queue mutation; known-hash insert decisions now route through
    the Rust insert planner instead of a shim-local early return, and `isTransactionKnown` now includes Rust sidecar
    membership checks alongside queue-known state. Rust now returns explicit validated-insert queue actions and finalized
    known-cache/pool mutation actions so shim code applies side effects directly from Rust-planned intent instead of

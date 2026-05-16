@@ -1540,6 +1540,14 @@ impl BridgeTransactionManagerRuntime {
             input.hash == fact.tx_hash,
             "TM_RUNTIME_VALIDATED_INSERT_HASH_MISMATCH"
         );
+        ensure!(
+            input.nonce == fact.transaction_nonce,
+            "TM_RUNTIME_VALIDATED_INSERT_NONCE_MISMATCH"
+        );
+        ensure!(
+            input.gas == fact.gas_limit,
+            "TM_RUNTIME_VALIDATED_INSERT_GAS_MISMATCH"
+        );
         let hash = H256::from(fact.tx_hash);
         let plan = plan_validated_insert(ConsensusTransactionManagerValidatedInsertFact {
             tx_hash: hash,
@@ -2952,6 +2960,44 @@ mod tests {
         );
         assert!(!outcome.emit_transaction_added);
         assert!(!runtime.transaction_manager_runtime_queue_contains(&[7; 32]));
+    }
+
+    #[test]
+    fn bridge_transaction_manager_runtime_insert_validated_rejects_hash_mismatch() {
+        let mut runtime =
+            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
+        let err = match runtime.transaction_manager_runtime_insert_validated_transaction(
+            validated_insert_sidecar_fact(8, true, 0, 100, false),
+            runtime_queue_input(9, true),
+        ) {
+            Ok(_) => panic!("runtime validated insert should reject mismatched hash"),
+            Err(err) => err,
+        };
+        assert!(err
+            .to_string()
+            .contains("TM_RUNTIME_VALIDATED_INSERT_HASH_MISMATCH"));
+        assert!(!runtime.transaction_manager_runtime_queue_contains(&[8; 32]));
+        assert!(!runtime.transaction_manager_runtime_queue_contains(&[9; 32]));
+    }
+
+    #[test]
+    fn bridge_transaction_manager_runtime_insert_validated_rejects_metadata_mismatch() {
+        let mut runtime =
+            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
+        let mut input = runtime_queue_input(10, true);
+        input.gas = 99_999;
+
+        let err = match runtime.transaction_manager_runtime_insert_validated_transaction(
+            validated_insert_sidecar_fact(10, true, 0, 100, false),
+            input,
+        ) {
+            Ok(_) => panic!("runtime validated insert should reject mismatched gas"),
+            Err(err) => err,
+        };
+        assert!(err
+            .to_string()
+            .contains("TM_RUNTIME_VALIDATED_INSERT_GAS_MISMATCH"));
+        assert!(!runtime.transaction_manager_runtime_queue_contains(&[10; 32]));
     }
 
     #[test]
