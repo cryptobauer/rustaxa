@@ -267,6 +267,16 @@ pub mod rustaxa_ffi {
         removed_count: usize,
     }
 
+    /// TransactionManager runtime queue cleanup outcome.
+    ///
+    /// `non_proposable_expired` reports non-proposable entries expired by
+    /// finalized block height. `finalized_account_purged` reports proposable
+    /// entries removed from C++ supplied FinalChain account nonce facts.
+    struct TransactionManagerRuntimeQueueCleanupPlan {
+        non_proposable_expired: TransactionQueuePurgePlan,
+        finalized_account_purged: TransactionQueuePurgePlan,
+    }
+
     /// Candidate metadata supplied before C++ runs a gas estimate.
     struct TransactionPackCandidateInput {
         hash: [u8; 32],
@@ -2202,6 +2212,12 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionManagerRuntime,
             facts: Vec<TransactionQueueAccountNonceFact>,
         ) -> TransactionQueuePurgePlan;
+        pub fn transaction_manager_runtime_queue_cleanup(
+            self: &mut BridgeTransactionManagerRuntime,
+            apply_block_finalized: bool,
+            block_number: u64,
+            facts: Vec<TransactionQueueAccountNonceFact>,
+        ) -> TransactionManagerRuntimeQueueCleanupPlan;
         pub fn transaction_manager_runtime_queue_mark_transaction_known(
             self: &mut BridgeTransactionManagerRuntime,
             hash: &[u8; 32],

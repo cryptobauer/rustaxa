@@ -408,8 +408,9 @@ The current Rust starting point is intentionally small:
    filtering, nonce-gated finalized-storage lookup, accepted ordering, count planning, the storage batch, accepted
    non-finalized sidecar insertion, and accepted queue erasure before C++ logs removals. Finalized transaction status
    updates now send finalized hashes and RLP payloads to Rust; Rust plans count increments, retention eviction, periodic
-   queue purge, recently-finalized sidecar insertion, non-finalized sidecar removal, known-cache marking, and queue
-   erasure while persisting `TrxCount` before C++ logs side effects.
+   queue cleanup, recently-finalized sidecar insertion, non-finalized sidecar removal, known-cache marking, and queue
+   erasure while persisting `TrxCount` before C++ logs side effects. Block-finalized queue cleanup and finalized-account
+   purge now share a fused Rust runtime cleanup API that returns explicit per-phase removed hash groups.
    `excludeFinalizedTransactions` and `verifyTransactionsNotFinalized` now collect only hash/nonce facts in the shim,
    then call Rust for sidecar membership, finalized-storage checks, and deterministic filtering/short-circuit decisions.
    `verifyTransaction`, `insertTransaction`, and `insertValidatedTransaction` now collect transaction/config/cache/account

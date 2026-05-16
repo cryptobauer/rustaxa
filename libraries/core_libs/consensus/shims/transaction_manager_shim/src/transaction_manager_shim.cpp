@@ -772,7 +772,9 @@ class TransactionManagerRustShimAccess {
 
   static void blockFinalized(TransactionManagerOld& manager, EthBlockNumber block_number) {
     std::unique_lock transactions_lock(manager.transactions_mutex_);
-    static_cast<TransactionManager&>(manager).runtime_->transaction_manager_runtime_queue_block_finalized(block_number);
+    rust::Vec<rustaxa::TransactionQueueAccountNonceFact> facts;
+    static_cast<TransactionManager&>(manager).runtime_->transaction_manager_runtime_queue_cleanup(
+        true, block_number, std::move(facts));
   }
 
   static void purgeRuntimeQueue(TransactionManager& manager) {
@@ -788,7 +790,7 @@ class TransactionManagerRustShimAccess {
       fact.account_nonce = account_state ? toBridgeU256(account_state->nonce) : std::array<uint8_t, 32>{};
       facts.push_back(std::move(fact));
     }
-    manager.runtime_->transaction_manager_runtime_queue_purge_accounts_plan(std::move(facts));
+    manager.runtime_->transaction_manager_runtime_queue_cleanup(false, 0, std::move(facts));
   }
 
   static bool isTransactionKnown(TransactionManager& manager, const trx_hash_t& trx_hash) {

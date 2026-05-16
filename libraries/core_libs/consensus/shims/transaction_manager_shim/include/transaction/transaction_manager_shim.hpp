@@ -84,9 +84,9 @@ class TransactionManager : public TransactionManagerOld {
   std::pair<bool, std::string> insertTransaction(const std::shared_ptr<Transaction> &trx);
 
   /**
-   * Notify the live C++ transaction pool that an Ethereum block has finalized.
+   * Notify the Rust-owned transaction queue that an Ethereum block has finalized.
    *
-   * Rust mode owns no transaction pointers here; the shim only applies the pool-side mutation under lock.
+   * Rust mode owns non-proposable expiry and returns explicit cleanup output while the shim keeps the public C++ API.
    */
   void blockFinalized(EthBlockNumber block_number);
 
@@ -163,9 +163,9 @@ class TransactionManager : public TransactionManagerOld {
   /**
    * Apply finalized-status transitions using Rust planner and sidecar state.
    *
-   * Rust owns status planning, recently-finalized sidecar retention, and
-   * non-finalized sidecar removal. C++ applies live queue/cache side effects
-   * under the caller-held transaction lock.
+   * Rust owns status planning, recently-finalized sidecar retention,
+   * non-finalized sidecar removal, known-cache marking, and live queue cleanup.
+   * C++ supplies FinalChain account facts and logs returned side effects.
    */
   void updateFinalizedTransactionsStatus(const PeriodData &period_data);
 

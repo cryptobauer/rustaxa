@@ -18,19 +18,19 @@ use crate::ffi::rustaxa_ffi::{
     NonFinalizedTransactionPayload, TransactionManagerFilterAction,
     TransactionManagerFinalizedFilterFact, TransactionManagerInsertTransactionFact,
     TransactionManagerInsertTransactionOutcome, TransactionManagerRecoveryEntry,
-    TransactionManagerRuntimeValidatedInsertOutcome, TransactionManagerSidecarInsertInput,
-    TransactionManagerSidecarKnownFact, TransactionManagerSidecarLookup,
-    TransactionManagerSidecarLookupPlan, TransactionManagerSidecarLookupRequest,
-    TransactionManagerSidecarRecoveryInsertInput, TransactionManagerSidecarTransitionInput,
-    TransactionManagerStoredTransactionLookup, TransactionManagerStoredTransactionRequest,
-    TransactionManagerValidatedInsertFact, TransactionManagerValidatedInsertPlan,
-    TransactionManagerValidatedInsertSidecarFact, TransactionManagerVerifyNotFinalizedFact,
-    TransactionManagerVerifyNotFinalizedOutcome, TransactionManagerVerifyNotFinalizedSidecarFact,
-    TransactionManagerVerifyTransactionFact, TransactionManagerVerifyTransactionOutcome,
-    TransactionPackCandidateDecision, TransactionPackCandidateInput, TransactionPackEstimateInput,
-    TransactionPackEstimateOutcome, TransactionPackSelectedTransaction,
-    TransactionPackSessionCandidate, TransactionPackSessionEstimateInput,
-    TransactionPackSessionOutcome,
+    TransactionManagerRuntimeQueueCleanupPlan, TransactionManagerRuntimeValidatedInsertOutcome,
+    TransactionManagerSidecarInsertInput, TransactionManagerSidecarKnownFact,
+    TransactionManagerSidecarLookup, TransactionManagerSidecarLookupPlan,
+    TransactionManagerSidecarLookupRequest, TransactionManagerSidecarRecoveryInsertInput,
+    TransactionManagerSidecarTransitionInput, TransactionManagerStoredTransactionLookup,
+    TransactionManagerStoredTransactionRequest, TransactionManagerValidatedInsertFact,
+    TransactionManagerValidatedInsertPlan, TransactionManagerValidatedInsertSidecarFact,
+    TransactionManagerVerifyNotFinalizedFact, TransactionManagerVerifyNotFinalizedOutcome,
+    TransactionManagerVerifyNotFinalizedSidecarFact, TransactionManagerVerifyTransactionFact,
+    TransactionManagerVerifyTransactionOutcome, TransactionPackCandidateDecision,
+    TransactionPackCandidateInput, TransactionPackEstimateInput, TransactionPackEstimateOutcome,
+    TransactionPackSelectedTransaction, TransactionPackSessionCandidate,
+    TransactionPackSessionEstimateInput, TransactionPackSessionOutcome,
     TransactionQueueAccountNonceFact as BridgeTransactionQueueAccountNonceFact,
     TransactionQueueAddress, TransactionQueueConfig, TransactionQueueDemotePlan,
     TransactionQueueHash, TransactionQueueInsertInput, TransactionQueueInsertOutcome,
@@ -167,6 +167,19 @@ fn runtime_queue_purge_plan_from_consensus(
         removed_count: outcome.removed_hashes.len(),
         removed_hashes: runtime_hashes_to_bridge(outcome.removed_hashes),
     }
+}
+
+fn runtime_queue_account_nonce_facts_from_bridge(
+    facts: Vec<BridgeTransactionQueueAccountNonceFact>,
+) -> Vec<TransactionQueueAccountNonceFact> {
+    facts
+        .into_iter()
+        .map(|fact| TransactionQueueAccountNonceFact {
+            sender: H160::from(fact.sender),
+            account_found: fact.account_found,
+            account_nonce: U256::from_big_endian(&fact.account_nonce),
+        })
+        .collect::<Vec<_>>()
 }
 
 fn runtime_empty_queue_entry() -> TransactionQueueEntry {
@@ -1663,15 +1676,34 @@ impl BridgeTransactionManagerRuntime {
         &mut self,
         facts: Vec<BridgeTransactionQueueAccountNonceFact>,
     ) -> TransactionQueuePurgePlan {
-        let consensus_facts = facts
-            .into_iter()
-            .map(|fact| TransactionQueueAccountNonceFact {
-                sender: H160::from(fact.sender),
-                account_found: fact.account_found,
-                account_nonce: U256::from_big_endian(&fact.account_nonce),
-            })
-            .collect::<Vec<_>>();
+        let consensus_facts = runtime_queue_account_nonce_facts_from_bridge(facts);
         runtime_queue_purge_plan_from_consensus(self.queue.purge_accounts_plan(&consensus_facts))
+    }
+
+    /// Applies Rust-owned queue cleanup for finalized block height and/or FinalChain account facts.
+    ///
+    /// C++ supplies account nonce facts because FinalChain account reads remain
+    /// in the shim. Rust owns all queue mutation and returns explicit removed
+    /// hash groups for C++ logging or future side-effect execution.
+    pub fn transaction_manager_runtime_queue_cleanup(
+        &mut self,
+        apply_block_finalized: bool,
+        block_number: u64,
+        facts: Vec<BridgeTransactionQueueAccountNonceFact>,
+    ) -> TransactionManagerRuntimeQueueCleanupPlan {
+        let non_proposable_expired = if apply_block_finalized {
+            self.queue.block_finalized_plan(block_number)
+        } else {
+            TransactionQueuePurgeOutcome::default()
+        };
+        let consensus_facts = runtime_queue_account_nonce_facts_from_bridge(facts);
+        let finalized_account_purged = self.queue.purge_accounts_plan(&consensus_facts);
+        TransactionManagerRuntimeQueueCleanupPlan {
+            non_proposable_expired: runtime_queue_purge_plan_from_consensus(non_proposable_expired),
+            finalized_account_purged: runtime_queue_purge_plan_from_consensus(
+                finalized_account_purged,
+            ),
+        }
     }
 
     /// Marks one hash in the Rust-owned known-admission cache.
@@ -2998,6 +3030,49 @@ mod tests {
             .to_string()
             .contains("TM_RUNTIME_VALIDATED_INSERT_GAS_MISMATCH"));
         assert!(!runtime.transaction_manager_runtime_queue_contains(&[10; 32]));
+    }
+
+    #[test]
+    fn bridge_transaction_manager_runtime_queue_cleanup_returns_explicit_hash_groups() {
+        let mut runtime =
+            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 32 });
+        runtime
+            .transaction_manager_runtime_queue_insert(runtime_queue_input(1, true))
+            .expect("proposable insert should succeed");
+        runtime
+            .transaction_manager_runtime_queue_insert(runtime_queue_input(2, false))
+            .expect("non-proposable insert should succeed");
+        runtime
+            .transaction_manager_runtime_queue_insert(runtime_queue_input(3, false))
+            .expect("non-proposable insert should succeed");
+
+        let cleanup = runtime.transaction_manager_runtime_queue_cleanup(
+            true,
+            20,
+            vec![BridgeTransactionQueueAccountNonceFact {
+                sender: [9; 20],
+                account_found: true,
+                account_nonce: U256::from(2_u64).to_big_endian(),
+            }],
+        );
+
+        assert_eq!(cleanup.non_proposable_expired.removed_count, 2);
+        assert_eq!(
+            cleanup.non_proposable_expired.removed_hashes[0].hash,
+            [2; 32]
+        );
+        assert_eq!(
+            cleanup.non_proposable_expired.removed_hashes[1].hash,
+            [3; 32]
+        );
+        assert_eq!(cleanup.finalized_account_purged.removed_count, 1);
+        assert_eq!(
+            cleanup.finalized_account_purged.removed_hashes[0].hash,
+            [1; 32]
+        );
+        assert!(!runtime.transaction_manager_runtime_queue_contains(&[1; 32]));
+        assert!(!runtime.transaction_manager_runtime_queue_contains(&[2; 32]));
+        assert!(!runtime.transaction_manager_runtime_queue_contains(&[3; 32]));
     }
 
     #[test]
