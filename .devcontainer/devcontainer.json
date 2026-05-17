@@ -13,12 +13,12 @@
 		"CCACHE_MAXSIZE": "20G"
 	},
 	"mounts": [
-		"source=rustaxa-clangd-index,target=${containerWorkspaceFolder}/.cache/clangd,type=volume",
-		"source=rustaxa-ccache,target=/root/.ccache,type=volume",
+		"source=rustaxa-network-pipe-clangd-index,target=${containerWorkspaceFolder}/.cache/clangd,type=volume",
+		"source=rustaxa-network-pipe-ccache,target=/root/.ccache,type=volume",
 		"source=rustaxa-codex,target=/root/.codex,type=volume",
-		"source=rustaxa-build,target=/build,type=volume",
-		"source=rustaxa-rust-target,target=${containerWorkspaceFolder}/rust/target,type=volume",
-		"source=rustaxa-rocksdb,target=/rocksdb,type=volume",
+		"source=rustaxa-network-pipe-build,target=/build,type=volume",
+		"source=rustaxa-network-pipe-rust-target,target=${containerWorkspaceFolder}/rust/target,type=volume",
+		"source=rustaxa-network-pipe-rocksdb,target=/rocksdb,type=volume",
 		"source=${localEnv:HOME}/.ssh/id_ed25519_cryptobauer.pub,target=/root/.ssh/id_ed25519_cryptobauer.pub,type=bind,consistency=cached,readonly",
 		"source=${localEnv:HOME}/.gitconfig,target=/root/.gitconfig-host,type=bind,consistency=cached",
 		"source=${localEnv:HOME}/.gitconfig-cryptobauer,target=/root/.gitconfig-cryptobauer,type=bind,consistency=cached"

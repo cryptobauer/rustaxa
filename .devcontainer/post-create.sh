@@ -2,7 +2,7 @@
 set -eu
 
 git config --global include.path /root/.gitconfig-host
-git config --global includeIf."gitdir:/workspaces/rustaxa/".path /root/.gitconfig-cryptobauer
+git config --global includeIf."gitdir:/workspaces/rustaxa-network-pipe/".path /root/.gitconfig-cryptobauer
 
 mkdir -p /root/.ssh
 chmod 700 /root/.ssh
