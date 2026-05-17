@@ -4,6 +4,7 @@
 #include <future>
 #include <mutex>
 #include <shared_mutex>
+#include <optional>
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
@@ -592,6 +593,7 @@ class TransactionManagerRustShimAccess {
                                                                        PbftPeriod proposal_period,
                                                                        uint64_t weight_limit) {
     auto& rust_manager = static_cast<TransactionManager&>(manager);
+    std::lock_guard pack_lock(rust_manager.pack_mutex_);
     bool session_active = false;
     try {
       {
@@ -600,49 +602,53 @@ class TransactionManagerRustShimAccess {
         session_active = true;
       }
 
-      while (true) {
-        rustaxa::TransactionPackSessionCandidate candidate;
-        {
-          std::unique_lock transactions_lock(manager.transactions_mutex_);
-          candidate = rust_manager.runtime_->transaction_manager_runtime_pack_next_candidate();
+      auto step = [&]() {
+        std::unique_lock transactions_lock(manager.transactions_mutex_);
+        try {
+          return rust_manager.runtime_->transaction_manager_runtime_pack_request_next();
+        } catch (const std::exception& e) {
+          throw std::runtime_error(std::string("RUST_TX_MANAGER_PACK_STEP_FAILED: ") + e.what());
         }
+      }();
+      if (!step.request_estimate) {
+        session_active = false;
+      }
+
+      while (step.request_estimate) {
+        const auto& candidate = step.candidate;
         if (!candidate.found) {
-          break;
+          throw std::runtime_error("Rust transaction manager runtime requested estimation for a missing pack candidate");
         }
 
-        const auto candidate_hash = fromBridgeHash(candidate.hash);
         const auto estimate = estimatePackCandidateGas(rust_manager, candidate, proposal_period);
+        if (estimate.gas_used < kMinTxGas) {
+          LOG(manager.log_er_) << "Transaction " << fromBridgeHash(candidate.hash)
+                              << " has invalid estimation: " << estimate.gas_used;
+        }
+
         rustaxa::TransactionPackSessionEstimateInput estimate_input;
         estimate_input.hash = candidate.hash;
         estimate_input.gas_used = estimate.gas_used;
         estimate_input.last_block_number = manager.final_chain_->lastBlockNumber();
 
-        rustaxa::TransactionPackEstimateOutcome outcome;
-        {
+        step = [&]() {
           std::unique_lock transactions_lock(manager.transactions_mutex_);
-          outcome = rust_manager.runtime_->transaction_manager_runtime_pack_record_estimate(estimate_input);
+          try {
+            return rust_manager.runtime_->transaction_manager_runtime_pack_record_estimate_step(estimate_input);
+          } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("RUST_TX_MANAGER_PACK_RECORD_ESTIMATE_FAILED: ") + e.what());
+          }
+        }();
+        if (!step.request_estimate) {
+          session_active = false;
         }
-
-        if (outcome.demote_to_non_proposable) {
-          LOG(manager.log_er_) << "Transaction " << candidate_hash << " has invalid estimation: " << estimate.gas_used;
-        }
-        if (outcome.stop) {
-          break;
-        }
-      }
-
-      rustaxa::TransactionPackSessionOutcome session_outcome;
-      {
-        std::unique_lock transactions_lock(manager.transactions_mutex_);
-        session_outcome = rust_manager.runtime_->transaction_manager_runtime_pack_finalize();
-        session_active = false;
       }
 
       SharedTransactions selected_transactions;
       std::vector<uint64_t> estimations;
-      selected_transactions.reserve(session_outcome.selected_transactions.size());
-      estimations.reserve(session_outcome.selected_transactions.size());
-      for (const auto& selected : session_outcome.selected_transactions) {
+      selected_transactions.reserve(step.selected_transactions.size());
+      estimations.reserve(step.selected_transactions.size());
+      for (const auto& selected : step.selected_transactions) {
         const auto selected_hash = fromBridgeHash(selected.hash);
         auto transaction = std::make_shared<Transaction>(fromBridgeBytes(selected.tx_rlp));
         if (transaction->getHash() != selected_hash) {
@@ -1144,40 +1150,13 @@ class TransactionManagerRustShimAccess {
    * the live sidecar map. Each survivor has its sender cached before insertion.
    */
   static void recoverNonfinalizedTransactions(TransactionManager& manager) {
-    const auto entries = [&]() {
+    auto recovered_transactions = [&]() {
       try {
-        return rustaxa::transaction_manager_load_nonfinalized_recovery(manager.db_->rustStorage());
+        return rustaxa::transaction_manager_load_nonfinalized_recovery_inputs(manager.db_->rustStorage());
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_TX_RECOVERY_FAILED: ") + e.what());
       }
     }();
-
-    rust::Vec<rustaxa::TransactionManagerSidecarRecoveryInsertInput> recovered_transactions;
-    recovered_transactions.reserve(entries.size());
-    for (const auto& entry : entries) {
-      if (entry.finalized) {
-        continue;
-      }
-
-      const auto envelope = [&]() {
-        try {
-          return rustaxa::inspect_legacy_transaction_rlp(cloneBridgeBytes(entry.tx_rlp), kLegacyTransactionSourceRegular);
-        } catch (const std::exception& e) {
-          throw DbException(std::string("RUST_STORAGE_TX_RECOVERY_FAILED: ") + e.what());
-        }
-      }();
-      const auto trx_hash = fromBridgeHash(entry.hash);
-      if (fromBridgeHash(envelope.hash) != trx_hash) {
-        throw DbException(
-            "RUST_STORAGE_TX_RECOVERY_FAILED: Rust returned transaction RLP that does not match the key hash");
-      }
-      requireEnvelopeSender(envelope, "RUST_STORAGE_TX_RECOVERY_FAILED");
-      rustaxa::TransactionManagerSidecarRecoveryInsertInput recovered;
-      recovered.hash = toBridgeHash(trx_hash);
-      recovered.finalized = false;
-      recovered.trx_rlp = cloneBridgeBytes(envelope.tx_rlp);
-      recovered_transactions.push_back(std::move(recovered));
-    }
 
     std::unique_lock transactions_lock(manager.transactions_mutex_);
     try {

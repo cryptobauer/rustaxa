@@ -34,7 +34,7 @@ use crate::ffi::rustaxa_ffi::{
     TransactionManagerVerifyTransactionOutcome, TransactionPackCandidateDecision,
     TransactionPackCandidateInput, TransactionPackEstimateInput, TransactionPackEstimateOutcome,
     TransactionPackSelectedTransaction, TransactionPackSessionCandidate,
-    TransactionPackSessionEstimateInput, TransactionPackSessionOutcome,
+    TransactionPackSessionEstimateInput, TransactionPackSessionOutcome, TransactionPackSessionStep,
     TransactionQueueAccountNonceFact as BridgeTransactionQueueAccountNonceFact,
     TransactionQueueAddress, TransactionQueueConfig, TransactionQueueDemotePlan,
     TransactionQueueHash, TransactionQueueInsertInput, TransactionQueueInsertOutcome,
@@ -200,6 +200,78 @@ fn transaction_pack_candidate_from_entry(
             tx_rlp: Vec::new(),
         })
     }
+}
+
+fn transaction_pack_session_empty_candidate() -> TransactionPackSessionCandidate {
+    TransactionPackSessionCandidate {
+        found: false,
+        hash: [0; 32],
+        declared_gas: 0,
+        sender: [0; 20],
+        nonce: [0; 32],
+        gas_price: [0; 32],
+        gas: 0,
+        receiver_found: false,
+        receiver: [0; 20],
+        value: [0; 32],
+        data: Vec::new(),
+        tx_rlp: Vec::new(),
+    }
+}
+
+fn runtime_pack_next_estimable_entry(
+    session: &mut TransactionManagerRuntimePackSession,
+) -> Result<Option<TransactionQueueEntry>> {
+    if session.stopped {
+        return Ok(None);
+    }
+
+    while session.next_index < session.candidates.len() {
+        let candidate = session.candidates[session.next_index].clone();
+        session.next_index += 1;
+        let decision = session
+            .planner
+            .consider_candidate(TransactionPackCandidate {
+                hash: candidate.hash,
+                declared_gas: candidate.gas,
+            })?;
+        if decision.should_estimate {
+            session.current = Some(candidate.clone());
+            return Ok(Some(candidate));
+        }
+    }
+
+    Ok(None)
+}
+
+fn runtime_pack_session_step(
+    session: &mut TransactionManagerRuntimePackSession,
+) -> Result<TransactionPackSessionStep> {
+    if let Some(candidate) = runtime_pack_next_estimable_entry(session)? {
+        return Ok(TransactionPackSessionStep {
+            request_estimate: true,
+            candidate: transaction_pack_candidate_from_entry(Some(candidate))?,
+            selected_transactions: Vec::new(),
+            demoted_hashes: Vec::new(),
+            stopped: session.stopped,
+        });
+    }
+
+    Ok(TransactionPackSessionStep {
+        request_estimate: false,
+        candidate: transaction_pack_session_empty_candidate(),
+        selected_transactions: session
+            .selected
+            .iter()
+            .map(|(entry, gas_used)| TransactionPackSelectedTransaction {
+                hash: entry.hash.0,
+                gas_used: *gas_used,
+                tx_rlp: entry.rlp.clone(),
+            })
+            .collect(),
+        demoted_hashes: runtime_hashes_to_bridge(session.demoted_hashes.clone()),
+        stopped: session.stopped,
+    })
 }
 
 fn runtime_hashes_to_bridge(hashes: Vec<H256>) -> Vec<TransactionQueueHash> {
@@ -1513,6 +1585,44 @@ pub fn transaction_manager_load_nonfinalized_recovery(
     Ok(out)
 }
 
+/// Returns Rust-validated sidecar inputs for non-finalized transaction recovery.
+///
+/// Rust owns storage iteration, stale-finalized cleanup, canonical legacy RLP
+/// inspection, key-hash validation, and sender-presence validation before C++
+/// mutates live runtime sidecars. C++ only applies the returned inputs under the
+/// transaction mutex, so malformed survivor storage never reaches live state.
+pub fn transaction_manager_load_nonfinalized_recovery_inputs(
+    storage: &BridgeStorage,
+) -> Result<Vec<TransactionManagerSidecarRecoveryInsertInput>> {
+    let entries = transaction_manager_load_nonfinalized_recovery(storage)?;
+    let mut recovered = Vec::with_capacity(entries.len());
+
+    for entry in entries {
+        if entry.finalized {
+            continue;
+        }
+
+        let inspection = legacy_transaction_inspection_from_bytes(&entry.tx_rlp, 0)
+            .context("TM_NONFINALIZED_RECOVERY_ENVELOPE_INSPECT")?;
+        ensure!(
+            inspection.hash == entry.hash,
+            "TM_NONFINALIZED_RECOVERY_HASH_MISMATCH"
+        );
+        ensure!(
+            inspection.sender_found,
+            "TM_NONFINALIZED_RECOVERY_SENDER_MISSING"
+        );
+
+        recovered.push(TransactionManagerSidecarRecoveryInsertInput {
+            hash: entry.hash,
+            finalized: false,
+            trx_rlp: inspection.tx_rlp,
+        });
+    }
+
+    Ok(recovered)
+}
+
 /// Creates a Rust-owned TransactionManager sidecar seeded from persisted manager state.
 pub fn create_transaction_manager_sidecar(
     initial_transaction_count: u64,
@@ -1587,26 +1697,28 @@ impl BridgeTransactionManagerRuntime {
             .transaction_pack_session
             .as_mut()
             .context("TM_RUNTIME_PACK_SESSION_NOT_ACTIVE")?;
-        if session.stopped {
-            return transaction_pack_candidate_from_entry(None);
-        }
+        runtime_pack_next_estimable_entry(session).and_then(transaction_pack_candidate_from_entry)
+    }
 
-        while session.next_index < session.candidates.len() {
-            let candidate = session.candidates[session.next_index].clone();
-            session.next_index += 1;
-            let decision = session
-                .planner
-                .consider_candidate(TransactionPackCandidate {
-                    hash: candidate.hash,
-                    declared_gas: candidate.gas,
-                })?;
-            if decision.should_estimate {
-                session.current = Some(candidate.clone());
-                return transaction_pack_candidate_from_entry(Some(candidate));
+    /// Requests the next packed transaction candidate or final session outcome.
+    pub fn transaction_manager_runtime_pack_request_next(
+        &mut self,
+    ) -> Result<TransactionPackSessionStep> {
+        let mut session = self
+            .transaction_pack_session
+            .take()
+            .context("TM_RUNTIME_PACK_SESSION_NOT_ACTIVE")?;
+        let step = match runtime_pack_session_step(&mut session) {
+            Ok(step) => step,
+            Err(err) => {
+                self.transaction_pack_session = Some(session);
+                return Err(err).context("TM_RUNTIME_PACK_REQUEST_NEXT");
             }
+        };
+        if step.request_estimate {
+            self.transaction_pack_session = Some(session);
         }
-
-        transaction_pack_candidate_from_entry(None)
+        Ok(step)
     }
 
     /// Records one C++ gas estimate and applies any Rust-owned queue demotion.
@@ -1619,26 +1731,69 @@ impl BridgeTransactionManagerRuntime {
             .take()
             .context("TM_RUNTIME_PACK_SESSION_NOT_ACTIVE")?;
 
-        let Some(candidate) = session.current.take() else {
-            self.transaction_pack_session = Some(session);
-            return Err(anyhow!("TM_RUNTIME_PACK_NO_ACTIVE_CANDIDATE"));
-        };
-        let estimate_hash = H256::from(input.hash);
-        if candidate.hash != estimate_hash {
-            self.transaction_pack_session = Some(session);
-            return Err(anyhow!("TM_RUNTIME_PACK_HASH_MISMATCH"));
-        }
-
-        let outcome = match session.planner.record_estimate(TransactionPackEstimate {
-            hash: H256::from(input.hash),
-            gas_used: input.gas_used,
-        }) {
+        let outcome = match self
+            .transaction_manager_runtime_pack_record_estimate_inner(&mut session, input)
+        {
             Ok(outcome) => outcome,
             Err(err) => {
                 self.transaction_pack_session = Some(session);
                 return Err(err).context("TM_RUNTIME_PACK_RECORD_ESTIMATE");
             }
         };
+
+        self.transaction_pack_session = Some(session);
+        Ok(outcome)
+    }
+
+    /// Records one C++ gas estimate and returns the next Rust-driven request or final output.
+    pub fn transaction_manager_runtime_pack_record_estimate_step(
+        &mut self,
+        input: TransactionPackSessionEstimateInput,
+    ) -> Result<TransactionPackSessionStep> {
+        let mut session = self
+            .transaction_pack_session
+            .take()
+            .context("TM_RUNTIME_PACK_SESSION_NOT_ACTIVE")?;
+
+        if let Err(err) =
+            self.transaction_manager_runtime_pack_record_estimate_inner(&mut session, input)
+        {
+            self.transaction_pack_session = Some(session);
+            return Err(err).context("TM_RUNTIME_PACK_RECORD_ESTIMATE");
+        }
+
+        let out = match runtime_pack_session_step(&mut session) {
+            Ok(out) => out,
+            Err(err) => {
+                self.transaction_pack_session = Some(session);
+                return Err(err).context("TM_RUNTIME_PACK_RECORD_ESTIMATE");
+            }
+        };
+
+        if out.request_estimate {
+            self.transaction_pack_session = Some(session);
+        }
+        Ok(out)
+    }
+
+    fn transaction_manager_runtime_pack_record_estimate_inner(
+        &mut self,
+        session: &mut TransactionManagerRuntimePackSession,
+        input: TransactionPackSessionEstimateInput,
+    ) -> Result<TransactionPackEstimateOutcome> {
+        let Some(candidate) = session.current.take() else {
+            return Err(anyhow!("TM_RUNTIME_PACK_NO_ACTIVE_CANDIDATE"));
+        };
+        let estimate_hash = H256::from(input.hash);
+        if candidate.hash != estimate_hash {
+            session.current = Some(candidate);
+            return Err(anyhow!("TM_RUNTIME_PACK_HASH_MISMATCH"));
+        }
+
+        let outcome = session.planner.record_estimate(TransactionPackEstimate {
+            hash: H256::from(input.hash),
+            gas_used: input.gas_used,
+        })?;
 
         if outcome.demote_to_non_proposable {
             let demote_outcome = self.queue.demote(estimate_hash, input.last_block_number);
@@ -1652,8 +1807,6 @@ impl BridgeTransactionManagerRuntime {
         if outcome.stop {
             session.stopped = true;
         }
-
-        self.transaction_pack_session = Some(session);
         Ok(TransactionPackEstimateOutcome {
             hash: outcome.hash.0,
             selected: outcome.selected,
@@ -3860,6 +4013,32 @@ mod tests {
     }
 
     #[test]
+    fn bridge_transaction_manager_recovery_inputs_validate_survivor_envelopes() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_transaction_manager_recovery_inputs");
+        let storage = crate::storage::create_storage(
+            temp_dir.to_str().expect("temp path should be valid UTF-8"),
+        )
+        .expect("storage should initialize");
+
+        let signing_key = SigningKey::from_slice(&[0x43u8; 32]).unwrap();
+        let tx_rlp = signed_legacy_transaction_rlp(&signing_key, 1, 2999);
+        let envelope = LegacyTransactionEnvelope::decode(&tx_rlp).unwrap();
+        storage
+            .save_transaction(&envelope.hash.0, tx_rlp.clone())
+            .expect("non-finalized transaction should persist");
+
+        let inputs = transaction_manager_load_nonfinalized_recovery_inputs(&storage)
+            .expect("recovery inputs should validate live survivor envelopes");
+
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].hash, envelope.hash.0);
+        assert!(!inputs[0].finalized);
+        assert_eq!(inputs[0].trx_rlp, tx_rlp);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn bridge_transaction_manager_sidecar_supports_lookup_finalize_evict_and_recovery() {
         let mut sidecar = create_transaction_manager_sidecar(12);
         assert_eq!(sidecar.transaction_manager_sidecar_transaction_count(), 12);
@@ -4406,6 +4585,88 @@ mod tests {
         assert!(runtime
             .transaction_manager_runtime_pack_next_candidate()
             .is_err());
+    }
+
+    #[test]
+    fn bridge_transaction_manager_runtime_pack_request_next_drives_estimate_loop() {
+        let mut runtime =
+            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
+        let signing_key = SigningKey::from_slice(&[0x42u8; 32]).unwrap();
+        let sender = address_from_signing_key(&signing_key);
+        let first_rlp = signed_legacy_transaction_rlp(&signing_key, 1, 2999);
+        let first_envelope = LegacyTransactionEnvelope::decode(&first_rlp).unwrap();
+        let second_rlp = signed_legacy_transaction_rlp(&signing_key, 2, 2999);
+        let second_envelope = LegacyTransactionEnvelope::decode(&second_rlp).unwrap();
+        runtime
+            .transaction_manager_runtime_queue_insert(TransactionQueueInsertInput {
+                hash: first_envelope.hash.0,
+                sender: sender.0,
+                nonce: first_envelope.nonce.to_big_endian(),
+                gas_price: first_envelope.gas_price.to_big_endian(),
+                gas: first_envelope.gas,
+                data_size: first_envelope.data.len(),
+                tx_rlp: first_rlp,
+                proposable: true,
+                last_block_number: 0,
+            })
+            .expect("proposable insert should succeed");
+        runtime
+            .transaction_manager_runtime_queue_insert(TransactionQueueInsertInput {
+                hash: second_envelope.hash.0,
+                sender: sender.0,
+                nonce: second_envelope.nonce.to_big_endian(),
+                gas_price: second_envelope.gas_price.to_big_endian(),
+                gas: second_envelope.gas,
+                data_size: second_envelope.data.len(),
+                tx_rlp: second_rlp,
+                proposable: true,
+                last_block_number: 0,
+            })
+            .expect("proposable insert should succeed");
+
+        runtime
+            .transaction_manager_runtime_pack_begin(63_000, 21_000)
+            .expect("pack session should begin");
+
+        let first_step = runtime
+            .transaction_manager_runtime_pack_request_next()
+            .expect("first request should be emitted");
+        assert!(first_step.request_estimate);
+        assert!(first_step.candidate.found);
+        let first_hash = first_step.candidate.hash;
+
+        let second_step = runtime
+            .transaction_manager_runtime_pack_record_estimate_step(
+                TransactionPackSessionEstimateInput {
+                    hash: first_hash,
+                    gas_used: 30_000,
+                    last_block_number: 10,
+                },
+            )
+            .expect("first estimate should return next request");
+        assert!(second_step.request_estimate);
+        let second_hash = second_step.candidate.hash;
+
+        let final_step = runtime
+            .transaction_manager_runtime_pack_record_estimate_step(
+                TransactionPackSessionEstimateInput {
+                    hash: second_hash,
+                    gas_used: 20_000,
+                    last_block_number: 11,
+                },
+            )
+            .expect("loop should finalize after last candidate");
+        assert!(!final_step.request_estimate);
+        assert_eq!(final_step.selected_transactions.len(), 1);
+        assert_eq!(final_step.selected_transactions[0].hash, first_hash);
+        assert_eq!(final_step.selected_transactions[0].gas_used, 30_000);
+        assert_eq!(final_step.demoted_hashes.len(), 1);
+        assert_eq!(final_step.demoted_hashes[0].hash, second_hash);
+
+        assert!(runtime.transaction_manager_runtime_pack_finalize().is_err());
+        runtime
+            .transaction_manager_runtime_pack_begin(21_000, 21_000)
+            .expect("completed step session should be cleared");
     }
 
     #[test]

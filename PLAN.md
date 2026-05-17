@@ -405,10 +405,12 @@ The current Rust starting point is intentionally small:
    FinalChain runtime instead of the TransactionManager shim. The Rust-mode `TransactionManager` packing shim now routes proposal candidate
    snapshotting, candidate scan, Rust-inspected envelope facts for candidate EVM input, declared-gas fit checks,
    invalid-estimate demotion mutation, accepted output ordering, accepted gas accumulation, and stop rules through a
-   Rust runtime pack session. Rust also owns `estimateTransactionGas` and `estimateTransactions` declared-gas shortcut
-   decisions plus the bounded `(transaction hash, proposal period)` opaque `ExecutionResult` cache, while C++ keeps EVM
-   execution, public transaction construction, final selected transaction materialization, and lifecycle/finalization
-   orchestration.
+   Rust runtime pack session. C++ drives packing through a Rust step protocol that either asks for the next EVM estimate
+   or returns the final selected payloads and clears the session; a shim-owned guard prevents concurrent C++ callers from
+   racing the single Rust runtime session while EVM execution is outside the transaction lock. Rust also owns
+   `estimateTransactionGas` and `estimateTransactions` declared-gas shortcut decisions plus the bounded `(transaction
+   hash, proposal period)` opaque `ExecutionResult` cache, while C++ keeps EVM execution, public transaction
+   construction, final selected transaction materialization, and lifecycle/finalization orchestration.
    The TransactionManager shim now owns an opaque Rust runtime handle for live queue metadata/payloads, known-cache
    state, non-finalized and recently-finalized transaction sidecars, and the authoritative transaction count. DAG
    transaction persistence now derives transaction hashes, senders, nonces, gas facts, costs, and canonical RLP payloads
@@ -421,6 +423,8 @@ The current Rust starting point is intentionally small:
    queue cleanup, recently-finalized sidecar insertion, non-finalized sidecar removal, known-cache marking, and queue
    erasure while persisting `TrxCount` before C++ logs side effects. Block-finalized queue cleanup and finalized-account
    purge now share a fused Rust runtime cleanup API that returns explicit per-phase removed hash groups.
+   Non-finalized recovery now asks Rust to delete stale finalized rows, inspect survivor legacy envelopes, validate key
+   hash and sender facts, and return sidecar insertion inputs before C++ mutates live runtime sidecars.
    `excludeFinalizedTransactions` and `verifyTransactionsNotFinalized` now inspect legacy transaction envelopes in Rust
    for identity facts, then call Rust for latest FinalChain account nonce sourcing, sidecar membership,
    finalized-storage checks, and deterministic filtering/short-circuit decisions. `verifyTransaction`,

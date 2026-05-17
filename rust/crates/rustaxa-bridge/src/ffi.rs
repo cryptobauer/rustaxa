@@ -375,6 +375,19 @@ pub mod rustaxa_ffi {
         last_block_number: u64,
     }
 
+    /// One executor step while Rust drives the packTrxs session loop.
+    ///
+    /// `request_estimate` is true when C++ should estimate `candidate`.
+    /// `request_estimate` is false when the session is complete and
+    /// `selected_transactions` carries final output.
+    struct TransactionPackSessionStep {
+        request_estimate: bool,
+        candidate: TransactionPackSessionCandidate,
+        selected_transactions: Vec<TransactionPackSelectedTransaction>,
+        demoted_hashes: Vec<TransactionQueueHash>,
+        stopped: bool,
+    }
+
     /// One transaction accepted by a Rust-owned runtime packing session.
     struct TransactionPackSelectedTransaction {
         hash: [u8; 32],
@@ -2238,6 +2251,13 @@ pub mod rustaxa_ffi {
             weight_limit: u64,
             min_transaction_gas: u64,
         ) -> Result<()>;
+        pub fn transaction_manager_runtime_pack_request_next(
+            self: &mut BridgeTransactionManagerRuntime,
+        ) -> Result<TransactionPackSessionStep>;
+        pub fn transaction_manager_runtime_pack_record_estimate_step(
+            self: &mut BridgeTransactionManagerRuntime,
+            input: TransactionPackSessionEstimateInput,
+        ) -> Result<TransactionPackSessionStep>;
         pub fn transaction_manager_runtime_pack_next_candidate(
             self: &mut BridgeTransactionManagerRuntime,
         ) -> Result<TransactionPackSessionCandidate>;
@@ -2583,6 +2603,10 @@ pub mod rustaxa_ffi {
         pub fn transaction_manager_load_nonfinalized_recovery(
             storage: &BridgeStorage,
         ) -> Result<Vec<TransactionManagerRecoveryEntry>>;
+        /// Returns Rust-validated sidecar recovery inputs for TransactionManager startup recovery.
+        pub fn transaction_manager_load_nonfinalized_recovery_inputs(
+            storage: &BridgeStorage,
+        ) -> Result<Vec<TransactionManagerSidecarRecoveryInsertInput>>;
 
         // Consensus verified votes
 

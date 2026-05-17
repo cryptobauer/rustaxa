@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mutex>
 #include <unordered_set>
 #include <utility>
 
@@ -268,6 +269,7 @@ class TransactionManager : public TransactionManagerOld {
    * account reads, and lifecycle orchestration.
    */
   ::rust::Box<rustaxa::BridgeTransactionManagerRuntime> runtime_;
+  mutable std::mutex pack_mutex_;
 };
 
 }  // namespace taraxa
