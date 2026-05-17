@@ -45,6 +45,7 @@ use crate::ffi::{
     BridgeTransactionManagerRuntime, BridgeTransactionPackPlanner,
     TransactionManagerRuntimePackSession,
 };
+use crate::transaction::legacy_transaction_inspection_from_bytes;
 use anyhow::{anyhow, ensure, Context, Result};
 use ethereum_types::{H160, H256, U256};
 use rustaxa_consensus::transaction_manager::{
@@ -141,21 +142,63 @@ fn runtime_queue_stored_transaction_from_entry(
 
 fn transaction_pack_candidate_from_entry(
     entry: Option<TransactionQueueEntry>,
-) -> TransactionPackSessionCandidate {
+) -> Result<TransactionPackSessionCandidate> {
     if let Some(entry) = entry {
-        TransactionPackSessionCandidate {
+        let inspection = legacy_transaction_inspection_from_bytes(&entry.rlp, 0)
+            .context("TM_RUNTIME_PACK_CANDIDATE_ENVELOPE_INSPECT_FAILED")?;
+        ensure!(
+            inspection.hash == entry.hash.0,
+            "TM_RUNTIME_PACK_CANDIDATE_HASH_MISMATCH"
+        );
+        ensure!(
+            inspection.sender_found && inspection.sender == entry.sender.0,
+            "TM_RUNTIME_PACK_CANDIDATE_SENDER_MISMATCH"
+        );
+        ensure!(
+            inspection.nonce == entry.nonce.to_big_endian(),
+            "TM_RUNTIME_PACK_CANDIDATE_NONCE_MISMATCH"
+        );
+        ensure!(
+            inspection.gas_price == entry.gas_price.to_big_endian(),
+            "TM_RUNTIME_PACK_CANDIDATE_GAS_PRICE_MISMATCH"
+        );
+        ensure!(
+            inspection.gas_limit == entry.gas,
+            "TM_RUNTIME_PACK_CANDIDATE_GAS_MISMATCH"
+        );
+        ensure!(
+            inspection.data_size == entry.data_size as usize,
+            "TM_RUNTIME_PACK_CANDIDATE_DATA_SIZE_MISMATCH"
+        );
+        Ok(TransactionPackSessionCandidate {
             found: true,
             hash: entry.hash.0,
             declared_gas: entry.gas,
+            sender: entry.sender.0,
+            nonce: entry.nonce.to_big_endian(),
+            gas_price: entry.gas_price.to_big_endian(),
+            gas: entry.gas,
+            receiver_found: inspection.receiver_found,
+            receiver: inspection.receiver,
+            value: inspection.value,
+            data: inspection.data,
             tx_rlp: entry.rlp,
-        }
+        })
     } else {
-        TransactionPackSessionCandidate {
+        Ok(TransactionPackSessionCandidate {
             found: false,
             hash: [0; 32],
             declared_gas: 0,
+            sender: [0; 20],
+            nonce: [0; 32],
+            gas_price: [0; 32],
+            gas: 0,
+            receiver_found: false,
+            receiver: [0; 20],
+            value: [0; 32],
+            data: Vec::new(),
             tx_rlp: Vec::new(),
-        }
+        })
     }
 }
 
@@ -1545,7 +1588,7 @@ impl BridgeTransactionManagerRuntime {
             .as_mut()
             .context("TM_RUNTIME_PACK_SESSION_NOT_ACTIVE")?;
         if session.stopped {
-            return Ok(transaction_pack_candidate_from_entry(None));
+            return transaction_pack_candidate_from_entry(None);
         }
 
         while session.next_index < session.candidates.len() {
@@ -1559,11 +1602,11 @@ impl BridgeTransactionManagerRuntime {
                 })?;
             if decision.should_estimate {
                 session.current = Some(candidate.clone());
-                return Ok(transaction_pack_candidate_from_entry(Some(candidate)));
+                return transaction_pack_candidate_from_entry(Some(candidate));
             }
         }
 
-        Ok(transaction_pack_candidate_from_entry(None))
+        transaction_pack_candidate_from_entry(None)
     }
 
     /// Records one C++ gas estimate and applies any Rust-owned queue demotion.
@@ -4306,8 +4349,22 @@ mod tests {
     fn bridge_transaction_manager_runtime_pack_session_round_trips_and_clears() {
         let mut runtime =
             create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
+        let signing_key = SigningKey::from_slice(&[0x41u8; 32]).unwrap();
+        let sender = address_from_signing_key(&signing_key);
+        let tx_rlp = signed_legacy_transaction_rlp(&signing_key, 1, 2999);
+        let envelope = LegacyTransactionEnvelope::decode(&tx_rlp).unwrap();
         runtime
-            .transaction_manager_runtime_queue_insert(runtime_queue_input(1, true))
+            .transaction_manager_runtime_queue_insert(TransactionQueueInsertInput {
+                hash: envelope.hash.0,
+                sender: sender.0,
+                nonce: envelope.nonce.to_big_endian(),
+                gas_price: envelope.gas_price.to_big_endian(),
+                gas: envelope.gas,
+                data_size: envelope.data.len(),
+                tx_rlp: tx_rlp.clone(),
+                proposable: true,
+                last_block_number: 0,
+            })
             .expect("queue insert should succeed");
 
         runtime
@@ -4318,12 +4375,20 @@ mod tests {
             .transaction_manager_runtime_pack_next_candidate()
             .expect("candidate decision should succeed");
         assert!(candidate.found);
-        assert_eq!(candidate.hash, [1; 32]);
+        assert_eq!(candidate.hash, envelope.hash.0);
+        assert_eq!(candidate.sender, sender.0);
+        assert_eq!(candidate.nonce, envelope.nonce.to_big_endian());
+        assert_eq!(candidate.gas_price, envelope.gas_price.to_big_endian());
         assert_eq!(candidate.declared_gas, 21_000);
+        assert_eq!(candidate.gas, 21_000);
+        assert!(candidate.receiver_found);
+        assert_eq!(candidate.receiver, H160::from([0x44u8; 20]).0);
+        assert_eq!(candidate.value, U256::from(3u64).to_big_endian());
+        assert!(candidate.data.is_empty());
 
         let outcome = runtime
             .transaction_manager_runtime_pack_record_estimate(TransactionPackSessionEstimateInput {
-                hash: [1; 32],
+                hash: envelope.hash.0,
                 gas_used: 42_000,
                 last_block_number: 10,
             })
@@ -4336,7 +4401,7 @@ mod tests {
             .transaction_manager_runtime_pack_finalize()
             .expect("pack session should finalize");
         assert_eq!(final_outcome.selected_transactions.len(), 1);
-        assert_eq!(final_outcome.selected_transactions[0].hash, [1; 32]);
+        assert_eq!(final_outcome.selected_transactions[0].hash, envelope.hash.0);
         assert_eq!(final_outcome.selected_transactions[0].gas_used, 42_000);
         assert!(runtime
             .transaction_manager_runtime_pack_next_candidate()

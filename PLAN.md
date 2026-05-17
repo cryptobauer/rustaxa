@@ -403,11 +403,12 @@ The current Rust starting point is intentionally small:
    cache expiry, overflow/drop observation state, and finalized-account purge planning through Rust while C++
    materializes `Transaction` objects on demand. Finalized-account purge fact sourcing now reads accounts from the Rust
    FinalChain runtime instead of the TransactionManager shim. The Rust-mode `TransactionManager` packing shim now routes proposal candidate
-   snapshotting, candidate scan, declared-gas fit checks, invalid-estimate demotion mutation, accepted output ordering,
-   accepted gas accumulation, and stop rules through a Rust runtime pack session. Rust also owns `estimateTransactionGas`
-   and `estimateTransactions` declared-gas shortcut decisions plus the bounded `(transaction hash, proposal period)`
-   opaque `ExecutionResult` cache, while C++ keeps transaction materialization, EVM estimation execution, and
-   lifecycle/finalization orchestration.
+   snapshotting, candidate scan, Rust-inspected envelope facts for candidate EVM input, declared-gas fit checks,
+   invalid-estimate demotion mutation, accepted output ordering, accepted gas accumulation, and stop rules through a
+   Rust runtime pack session. Rust also owns `estimateTransactionGas` and `estimateTransactions` declared-gas shortcut
+   decisions plus the bounded `(transaction hash, proposal period)` opaque `ExecutionResult` cache, while C++ keeps EVM
+   execution, public transaction construction, final selected transaction materialization, and lifecycle/finalization
+   orchestration.
    The TransactionManager shim now owns an opaque Rust runtime handle for live queue metadata/payloads, known-cache
    state, non-finalized and recently-finalized transaction sidecars, and the authoritative transaction count. DAG
    transaction persistence now derives transaction hashes, senders, nonces, gas facts, costs, and canonical RLP payloads

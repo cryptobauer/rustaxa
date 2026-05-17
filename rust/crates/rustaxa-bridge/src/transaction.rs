@@ -22,9 +22,16 @@ pub fn inspect_legacy_transaction_rlp(
     tx_rlp: Vec<u8>,
     source: u8,
 ) -> Result<LegacyTransactionInspection> {
+    legacy_transaction_inspection_from_bytes(&tx_rlp, source)
+}
+
+pub(crate) fn legacy_transaction_inspection_from_bytes(
+    tx_rlp: &[u8],
+    source: u8,
+) -> Result<LegacyTransactionInspection> {
     let envelope = match source {
-        LEGACY_TRANSACTION_SOURCE_REGULAR => LegacyTransactionEnvelope::decode(&tx_rlp),
-        LEGACY_TRANSACTION_SOURCE_SYSTEM => LegacyTransactionEnvelope::decode_system(&tx_rlp),
+        LEGACY_TRANSACTION_SOURCE_REGULAR => LegacyTransactionEnvelope::decode(tx_rlp),
+        LEGACY_TRANSACTION_SOURCE_SYSTEM => LegacyTransactionEnvelope::decode_system(tx_rlp),
         _ => anyhow::bail!("TX_LEGACY_SOURCE_INVALID"),
     }?;
     legacy_transaction_inspection_from_envelope(envelope)

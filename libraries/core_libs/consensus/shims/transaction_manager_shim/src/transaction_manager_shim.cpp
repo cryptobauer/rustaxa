@@ -28,6 +28,10 @@ trx_hash_t fromBridgeHash(const std::array<uint8_t, 32>& hash) {
   return trx_hash_t(hash.data(), trx_hash_t::ConstructFromPointer);
 }
 
+addr_t fromBridgeAddress(const std::array<uint8_t, 20>& address) {
+  return addr_t(address.data(), addr_t::ConstructFromPointer);
+}
+
 dev::bytes fromBridgeBytes(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
 
 rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& bytes) {
@@ -275,12 +279,10 @@ TransactionStatus transactionStatusFromBridge(uint8_t status) {
 class TransactionManagerRustShimAccess {
  public:
   static std::pair<bool, std::string> verifyTransaction(const TransactionManagerOld& manager,
-                                                        const std::shared_ptr<Transaction>& trx) {
+                                                        const rustaxa::LegacyTransactionInspection& envelope) {
     if (!manager.final_chain_) {
       return {true, ""};
     }
-
-    const auto envelope = inspectRegularTransaction(trx, "RUST_TX_MANAGER_VERIFY_ENVELOPE_FAILED");
 
     const auto block_num = manager.final_chain_->lastBlockNumber();
     rustaxa::TransactionManagerVerifyTransactionFact fact;
@@ -307,9 +309,18 @@ class TransactionManagerRustShimAccess {
     return verifyTransactionResultFromRustStatus(outcome.status, fact.chain_id, fact.expected_chain_id);
   }
 
+  static std::pair<bool, std::string> verifyTransaction(const TransactionManagerOld& manager,
+                                                        const std::shared_ptr<Transaction>& trx) {
+    const auto envelope = inspectRegularTransaction(trx, "RUST_TX_MANAGER_VERIFY_ENVELOPE_FAILED");
+    return verifyTransaction(manager, envelope);
+  }
+
   static rustaxa::TransactionManagerRuntimeAdmissionOutcome executeValidatedAdmission(
-      TransactionManager& manager, std::shared_ptr<Transaction>&& tx, bool insert_non_proposable) {
-    const auto envelope = inspectRegularTransaction(tx, "RUST_TX_MANAGER_ADMISSION_ENVELOPE_FAILED");
+      TransactionManager& manager, const rustaxa::LegacyTransactionInspection& envelope,
+      std::shared_ptr<Transaction>&& tx, bool insert_non_proposable) {
+    if (envelope.hash != toBridgeHash(tx->getHash())) {
+      throw std::runtime_error("RUST_TX_MANAGER_ADMISSION_ENVELOPE_FAILED: Rust transaction envelope hash mismatch");
+    }
 
     std::unique_lock transactions_lock(manager.transactions_mutex_);
     const auto sender = requireEnvelopeSender(envelope, "RUST_TX_MANAGER_ADMISSION_ENVELOPE_FAILED");
@@ -334,6 +345,12 @@ class TransactionManagerRustShimAccess {
     }();
 
     return outcome;
+  }
+
+  static rustaxa::TransactionManagerRuntimeAdmissionOutcome executeValidatedAdmission(
+      TransactionManager& manager, std::shared_ptr<Transaction>&& tx, bool insert_non_proposable) {
+    const auto envelope = inspectRegularTransaction(tx, "RUST_TX_MANAGER_ADMISSION_ENVELOPE_FAILED");
+    return executeValidatedAdmission(manager, envelope, std::move(tx), insert_non_proposable);
   }
 
   static void applyAdmissionSideEffects(TransactionManager& manager, const trx_hash_t& trx_hash,
@@ -363,13 +380,15 @@ class TransactionManagerRustShimAccess {
           precheck.status, precheck.finalized_period_known ? precheck.finalized_period : 0);
     }
 
-    const auto verified = verifyTransaction(manager, trx);
+    const auto envelope = inspectRegularTransaction(trx, "RUST_TX_MANAGER_INSERT_ENVELOPE_FAILED");
+
+    const auto verified = verifyTransaction(manager, envelope);
     if (!verified.first) {
       return verified;
     }
 
     auto trx_copy = trx;
-    const auto admission = executeValidatedAdmission(manager, std::move(trx_copy), false);
+    const auto admission = executeValidatedAdmission(manager, envelope, std::move(trx_copy), false);
     applyAdmissionSideEffects(manager, trx_hash, admission);
 
     if (admission.requires_finalized_lookup) {
@@ -497,6 +516,71 @@ class TransactionManagerRustShimAccess {
   }
 
   /**
+   * Estimates one Rust runtime pack candidate from Rust-inspected envelope facts.
+   *
+   * This keeps the deterministic candidate envelope in Rust and avoids
+   * materializing a legacy `Transaction` object unless the candidate is selected
+   * for the public `packTrxs` return value.
+   */
+  static state_api::ExecutionResult estimatePackCandidateGas(
+      TransactionManager& manager, const rustaxa::TransactionPackSessionCandidate& candidate,
+      PbftPeriod proposal_period) {
+    rustaxa::TransactionManagerGasEstimationFact fact;
+    fact.hash = candidate.hash;
+    fact.declared_gas = candidate.declared_gas;
+    fact.proposal_period = proposal_period;
+    fact.estimate_gas_limit = manager.kEstimateGasLimit;
+
+    rustaxa::TransactionManagerGasEstimationPlan plan;
+    {
+      std::shared_lock transactions_lock(manager.transactions_mutex_);
+      try {
+        plan = manager.runtime_->transaction_manager_runtime_plan_gas_estimation(fact);
+      } catch (const std::exception& e) {
+        throw std::runtime_error(std::string("RUST_TX_MANAGER_GAS_ESTIMATION_PLAN_FAILED: ") + e.what());
+      }
+    }
+
+    if (plan.use_declared_gas) {
+      state_api::ExecutionResult result;
+      result.gas_used = plan.gas_used;
+      return result;
+    }
+    if (plan.cache_hit) {
+      return executionResultFromBridgeBytes(plan.result_rlp);
+    }
+    if (!plan.requires_evm_call) {
+      throw std::runtime_error("Rust transaction manager runtime returned an invalid gas-estimation plan");
+    }
+
+    std::optional<addr_t> receiver;
+    if (candidate.receiver_found) {
+      receiver = fromBridgeAddress(candidate.receiver);
+    }
+    auto evm_trx = state_api::EVMTransaction{
+        fromBridgeAddress(candidate.sender), fromBridgeU256(candidate.gas_price), receiver,
+        fromBridgeU256(candidate.nonce),     fromBridgeU256(candidate.value),     candidate.gas,
+        toDevBytes(candidate.data),
+    };
+    auto result = manager.final_chain_->call(evm_trx, proposal_period);
+
+    rustaxa::TransactionManagerGasEstimationResult cache_result;
+    cache_result.hash = fact.hash;
+    cache_result.proposal_period = proposal_period;
+    cache_result.result_rlp = executionResultToBridgeBytes(result);
+    {
+      std::unique_lock transactions_lock(manager.transactions_mutex_);
+      try {
+        manager.runtime_->transaction_manager_runtime_store_gas_estimation(std::move(cache_result));
+      } catch (const std::exception& e) {
+        throw std::runtime_error(std::string("RUST_TX_MANAGER_GAS_ESTIMATION_STORE_FAILED: ") + e.what());
+      }
+    }
+
+    return result;
+  }
+
+  /**
    * Runs Rust-backed deterministic transaction packing against the legacy manager's live C++ state.
    *
    * The friend accessor exists only because the migration facade must reuse existing private pool, lock, cache, and
@@ -526,16 +610,8 @@ class TransactionManagerRustShimAccess {
           break;
         }
 
-        auto transaction = std::make_shared<Transaction>(fromBridgeBytes(candidate.tx_rlp));
         const auto candidate_hash = fromBridgeHash(candidate.hash);
-        if (transaction->getHash() != candidate_hash) {
-          throw std::runtime_error("Rust transaction manager runtime returned pack candidate RLP with mismatched hash");
-        }
-        if (transaction->getGas() != candidate.declared_gas) {
-          throw std::runtime_error("Rust transaction manager runtime returned pack candidate RLP with mismatched gas");
-        }
-
-        const auto estimate = estimateTransactionGas(rust_manager, transaction, proposal_period);
+        const auto estimate = estimatePackCandidateGas(rust_manager, candidate, proposal_period);
         rustaxa::TransactionPackSessionEstimateInput estimate_input;
         estimate_input.hash = candidate.hash;
         estimate_input.gas_used = estimate.gas_used;
@@ -567,8 +643,9 @@ class TransactionManagerRustShimAccess {
       selected_transactions.reserve(session_outcome.selected_transactions.size());
       estimations.reserve(session_outcome.selected_transactions.size());
       for (const auto& selected : session_outcome.selected_transactions) {
+        const auto selected_hash = fromBridgeHash(selected.hash);
         auto transaction = std::make_shared<Transaction>(fromBridgeBytes(selected.tx_rlp));
-        if (transaction->getHash() != fromBridgeHash(selected.hash)) {
+        if (transaction->getHash() != selected_hash) {
           throw std::runtime_error("Rust transaction manager runtime returned selected pack RLP with mismatched hash");
         }
         selected_transactions.push_back(std::move(transaction));

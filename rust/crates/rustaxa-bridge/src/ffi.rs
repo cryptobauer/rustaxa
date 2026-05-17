@@ -357,6 +357,14 @@ pub mod rustaxa_ffi {
         found: bool,
         hash: [u8; 32],
         declared_gas: u64,
+        sender: [u8; 20],
+        nonce: [u8; 32],
+        gas_price: [u8; 32],
+        gas: u64,
+        receiver_found: bool,
+        receiver: [u8; 20],
+        value: [u8; 32],
+        data: Vec<u8>,
         tx_rlp: Vec<u8>,
     }
 
