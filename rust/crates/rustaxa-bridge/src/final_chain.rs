@@ -1,7 +1,28 @@
 use crate::ffi::rustaxa_ffi;
 use crate::ffi::BridgeFinalChain;
 use crate::ffi::BridgeStorage;
-use rustaxa_consensus::FinalChain;
+use rustaxa_consensus::{Account, FinalChain};
+
+fn account_to_lookup(account: Option<Account>) -> rustaxa_ffi::AccountLookup {
+    match account {
+        Some(account) => rustaxa_ffi::AccountLookup {
+            found: true,
+            nonce: account.nonce,
+            balance: account.balance,
+            storage_root_hash: account.storage_root_hash,
+            code_hash: account.code_hash,
+            code_size: account.code_size,
+        },
+        None => rustaxa_ffi::AccountLookup {
+            found: false,
+            nonce: 0,
+            balance: vec![],
+            storage_root_hash: [0; 32],
+            code_hash: [0; 32],
+            code_size: 0,
+        },
+    }
+}
 
 pub fn create_final_chain(
     storage: &BridgeStorage,
@@ -108,24 +129,17 @@ impl BridgeFinalChain {
         self: &BridgeFinalChain,
         address: &[u8; 20],
     ) -> Result<rustaxa_ffi::AccountLookup, anyhow::Error> {
-        Ok(match self.0.account(*address)? {
-            Some(account) => rustaxa_ffi::AccountLookup {
-                found: true,
-                nonce: account.nonce,
-                balance: account.balance,
-                storage_root_hash: account.storage_root_hash,
-                code_hash: account.code_hash,
-                code_size: account.code_size,
-            },
-            None => rustaxa_ffi::AccountLookup {
-                found: false,
-                nonce: 0,
-                balance: vec![],
-                storage_root_hash: [0; 32],
-                code_hash: [0; 32],
-                code_size: 0,
-            },
-        })
+        Ok(account_to_lookup(self.0.account(*address)?))
+    }
+
+    pub fn get_account_at_block(
+        self: &BridgeFinalChain,
+        block_number: u64,
+        address: &[u8; 20],
+    ) -> Result<rustaxa_ffi::AccountLookup, anyhow::Error> {
+        Ok(account_to_lookup(
+            self.0.account_at_block(block_number, *address)?,
+        ))
     }
 
     pub fn get_vrf_key(

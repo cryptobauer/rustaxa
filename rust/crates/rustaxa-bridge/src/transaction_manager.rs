@@ -1167,6 +1167,13 @@ const TM_STORED_TX_SOURCE_FINALIZED_SYSTEM: u8 = 3;
 const TM_VERIFY_NOT_FINALIZED_SOURCE_NONE: u8 = 0;
 const TM_VERIFY_NOT_FINALIZED_SOURCE_RECENT_SIDECAR: u8 = 1;
 const TM_VERIFY_NOT_FINALIZED_SOURCE_STORAGE: u8 = 2;
+const TARAXA_SYSTEM_ACCOUNT: [u8; 20] = *b"\0TaraxaSystemAccount";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StoredTransactionIdentity {
+    sender: [u8; 20],
+    nonce: U256,
+}
 
 /// Bridge-owned Rust TransactionManager sidecar wrapper.
 pub struct BridgeTransactionManagerSidecar(pub TransactionManagerSidecar);
@@ -1236,11 +1243,164 @@ pub fn transaction_manager_load_stored_transactions(
             hash: hash.0,
             found: tx_rlp.is_some(),
             source,
+            old_finalized: false,
             tx_rlp: tx_rlp.unwrap_or_default(),
         });
     }
 
     Ok(out)
+}
+
+/// Resolves storage-backed proposal transactions and filters finalized hits
+/// against Rust FinalChain account state at the proposal period.
+///
+/// The generic storage lookup contract remains byte-oriented. This proposal
+/// path additionally verifies the stored RLP hash, inspects the legacy
+/// transaction sender and nonce in Rust, and returns old finalized
+/// transactions as data misses with `old_finalized = true` so C++ only
+/// materializes accepted payloads.
+pub fn transaction_manager_load_proposal_transactions_with_final_chain(
+    storage: &BridgeStorage,
+    final_chain: &BridgeFinalChain,
+    proposal_period: u64,
+    requests: Vec<TransactionManagerStoredTransactionRequest>,
+) -> Result<Vec<TransactionManagerStoredTransactionLookup>> {
+    let lookups = transaction_manager_load_stored_transactions(storage, requests)?;
+    lookups
+        .into_iter()
+        .map(|mut lookup| {
+            if !lookup.found || !is_finalized_stored_transaction_source(lookup.source) {
+                return Ok(lookup);
+            }
+
+            let expected_hash = H256::from(lookup.hash);
+            ensure!(
+                keccak256(&lookup.tx_rlp) == expected_hash,
+                "TM_PROPOSAL_TRANSACTION_HASH_MISMATCH"
+            );
+            let identity = inspect_stored_transaction_identity(&lookup.tx_rlp, lookup.source)
+                .context("TM_PROPOSAL_TRANSACTION_IDENTITY_INSPECT_FAILED")?;
+            let account = final_chain
+                .get_account_at_block(proposal_period, &identity.sender)
+                .context("TM_PROPOSAL_FINAL_CHAIN_ACCOUNT_LOOKUP_FAILED")?;
+            if account.found && U256::from(account.nonce) > identity.nonce {
+                lookup.found = false;
+                lookup.old_finalized = true;
+                lookup.tx_rlp.clear();
+            }
+            Ok(lookup)
+        })
+        .collect()
+}
+
+fn is_finalized_stored_transaction_source(source: u8) -> bool {
+    source == TM_STORED_TX_SOURCE_FINALIZED_REGULAR
+        || source == TM_STORED_TX_SOURCE_FINALIZED_SYSTEM
+}
+
+fn inspect_stored_transaction_identity(
+    tx_rlp: &[u8],
+    source: u8,
+) -> Result<StoredTransactionIdentity> {
+    let rlp = rlp::Rlp::new(tx_rlp);
+    ensure!(
+        rlp.item_count().context("TM_TRANSACTION_RLP_SHAPE")? == 9,
+        "TM_TRANSACTION_RLP_FIELD_COUNT"
+    );
+    let nonce = rlp.val_at::<U256>(0).context("TM_TRANSACTION_RLP_NONCE")?;
+    if source == TM_STORED_TX_SOURCE_FINALIZED_SYSTEM {
+        return Ok(StoredTransactionIdentity {
+            sender: TARAXA_SYSTEM_ACCOUNT,
+            nonce,
+        });
+    }
+
+    let v = rlp.val_at::<U256>(6).context("TM_TRANSACTION_RLP_V")?;
+    let r = rlp.val_at::<U256>(7).context("TM_TRANSACTION_RLP_R")?;
+    let s = rlp.val_at::<U256>(8).context("TM_TRANSACTION_RLP_S")?;
+    ensure!(
+        !r.is_zero() || !s.is_zero(),
+        "TM_TRANSACTION_RLP_SIGNATURE_MISSING"
+    );
+
+    let (chain_id, recovery_id) = transaction_chain_and_recovery_id(v)?;
+    let mut signature = [0u8; 65];
+    signature[..32].copy_from_slice(&r.to_big_endian());
+    signature[32..64].copy_from_slice(&s.to_big_endian());
+    signature[64] = recovery_id;
+    let hash = transaction_signature_hash(&rlp, chain_id)?;
+    let sender = recover_transaction_sender(&signature, &hash)
+        .ok_or_else(|| anyhow!("TM_TRANSACTION_RLP_SENDER_RECOVERY_FAILED"))?;
+
+    Ok(StoredTransactionIdentity {
+        sender: sender.0,
+        nonce,
+    })
+}
+
+fn transaction_chain_and_recovery_id(v: U256) -> Result<(Option<U256>, u8)> {
+    if v > U256::from(36u64) {
+        let chain_id = (v - U256::from(35u64)) / U256::from(2u64);
+        let recovery_id = v
+            .checked_sub(chain_id * U256::from(2u64) + U256::from(35u64))
+            .ok_or_else(|| anyhow!("TM_TRANSACTION_RLP_RECOVERY_ID_UNDERFLOW"))?;
+        return Ok((Some(chain_id), u256_to_recovery_id(recovery_id)?));
+    }
+
+    ensure!(
+        v == U256::from(27u64) || v == U256::from(28u64),
+        "TM_TRANSACTION_RLP_RECOVERY_ID_INVALID"
+    );
+    Ok((None, u256_to_recovery_id(v - U256::from(27u64))?))
+}
+
+fn u256_to_recovery_id(value: U256) -> Result<u8> {
+    ensure!(
+        value <= U256::from(3u64),
+        "TM_TRANSACTION_RLP_RECOVERY_ID_OUT_OF_RANGE"
+    );
+    Ok(value.low_u32() as u8)
+}
+
+fn transaction_signature_hash(rlp: &rlp::Rlp<'_>, chain_id: Option<U256>) -> Result<H256> {
+    let mut stream = rlp::RlpStream::new_list(if chain_id.is_some() { 9 } else { 6 });
+    for field in 0..6 {
+        stream.append_raw(
+            rlp.at(field)
+                .with_context(|| format!("TM_TRANSACTION_RLP_FIELD_{field}"))?
+                .as_raw(),
+            1,
+        );
+    }
+    if let Some(chain_id) = chain_id {
+        stream.append(&chain_id);
+        stream.append(&U256::zero());
+        stream.append(&U256::zero());
+    }
+    Ok(keccak256(&stream.out()))
+}
+
+fn recover_transaction_sender(signature: &[u8; 65], message_hash: &H256) -> Option<H160> {
+    use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
+
+    let recovery_id = RecoveryId::try_from(signature[64]).ok()?;
+    let signature = Signature::try_from(&signature[..64]).ok()?;
+    let recovered_key =
+        VerifyingKey::recover_from_prehash(message_hash.as_bytes(), &signature, recovery_id)
+            .ok()?;
+    let uncompressed = recovered_key.to_encoded_point(false);
+    let pubkey_hash = keccak256(&uncompressed.as_bytes()[1..]);
+    Some(H160::from_slice(&pubkey_hash.as_bytes()[12..]))
+}
+
+fn keccak256(data: &[u8]) -> H256 {
+    use tiny_keccak::{Hasher, Keccak};
+
+    let mut output = [0u8; 32];
+    let mut hasher = Keccak::v256();
+    hasher.update(data);
+    hasher.finalize(&mut output);
+    H256::from(output)
 }
 
 /// Verifies transaction hashes against Rust runtime recent sidecars and storage.
@@ -2512,6 +2672,7 @@ impl BridgeTransactionPackPlanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
     use rustaxa_storage::StatusField;
     use std::fs;
@@ -2547,6 +2708,227 @@ mod tests {
             .expect("time should be available")
             .as_nanos();
         std::env::temp_dir().join(format!("{name}_{nonce}"))
+    }
+
+    fn address_from_signing_key(signing_key: &SigningKey) -> H160 {
+        let public_key = signing_key.verifying_key().to_encoded_point(false);
+        let public_key_hash = keccak256(&public_key.as_bytes()[1..]);
+        H160::from_slice(&public_key_hash.as_bytes()[12..])
+    }
+
+    fn append_pbft_block_fields(stream: &mut RlpStream, period: u64, timestamp: u64) {
+        stream.append(&H256::from_low_u64_be(10));
+        stream.append(&H256::from_low_u64_be(11));
+        stream.append(&H256::from_low_u64_be(12));
+        stream.append(&H256::from_low_u64_be(13));
+        stream.append(&period);
+        stream.append(&timestamp);
+        stream.begin_list(0);
+    }
+
+    fn signed_pbft_block(signing_key: &SigningKey, period: u64, timestamp: u64) -> Vec<u8> {
+        let mut unsigned_stream = RlpStream::new_list(7);
+        append_pbft_block_fields(&mut unsigned_stream, period, timestamp);
+        let message_hash = keccak256(&unsigned_stream.out());
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(message_hash.as_bytes())
+            .expect("test PBFT block should sign");
+        let mut signature_bytes = signature.to_bytes().to_vec();
+        signature_bytes.push(recovery_id.to_byte());
+
+        let mut signed_stream = RlpStream::new_list(8);
+        append_pbft_block_fields(&mut signed_stream, period, timestamp);
+        signed_stream.append(&signature_bytes);
+        signed_stream.out().to_vec()
+    }
+
+    fn period_data_rlp_with_pbft(pbft_block_rlp: &[u8], transaction_rlps: &[Vec<u8>]) -> Vec<u8> {
+        let mut transactions = RlpStream::new_list(transaction_rlps.len());
+        for transaction_rlp in transaction_rlps {
+            transactions.append_raw(transaction_rlp, 1);
+        }
+
+        let mut period_data = RlpStream::new_list(5);
+        period_data.append_raw(pbft_block_rlp, 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&transactions.out(), 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.out().to_vec()
+    }
+
+    fn signed_legacy_transaction_rlp(
+        signing_key: &SigningKey,
+        nonce: u64,
+        chain_id: u64,
+    ) -> Vec<u8> {
+        let mut signature_stream = RlpStream::new_list(9);
+        signature_stream.append(&U256::from(nonce));
+        signature_stream.append(&U256::from(2u64));
+        signature_stream.append(&21_000u64);
+        signature_stream.append(&H160::from([0x44u8; 20]));
+        signature_stream.append(&U256::from(3u64));
+        signature_stream.append(&Vec::<u8>::new());
+        signature_stream.append(&U256::from(chain_id));
+        signature_stream.append(&U256::zero());
+        signature_stream.append(&U256::zero());
+        let message_hash = keccak256(&signature_stream.out());
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(message_hash.as_bytes())
+            .expect("test transaction should sign");
+        let signature = signature.to_bytes();
+        let r = U256::from_big_endian(&signature[..32]);
+        let s = U256::from_big_endian(&signature[32..]);
+        let v = U256::from(chain_id * 2 + 35 + u64::from(recovery_id.to_byte()));
+
+        let mut stream = RlpStream::new_list(9);
+        stream.append(&U256::from(nonce));
+        stream.append(&U256::from(2u64));
+        stream.append(&21_000u64);
+        stream.append(&H160::from([0x44u8; 20]));
+        stream.append(&U256::from(3u64));
+        stream.append(&Vec::<u8>::new());
+        stream.append(&v);
+        stream.append(&r);
+        stream.append(&s);
+        stream.out().to_vec()
+    }
+
+    fn system_transaction_rlp(nonce: u64) -> Vec<u8> {
+        let mut stream = RlpStream::new_list(9);
+        stream.append(&U256::from(nonce));
+        stream.append(&U256::zero());
+        stream.append(&0u64);
+        stream.append(&H160::zero());
+        stream.append(&U256::zero());
+        stream.append(&Vec::<u8>::new());
+        stream.append(&U256::from(1u64));
+        stream.append(&U256::zero());
+        stream.append(&U256::zero());
+        stream.out().to_vec()
+    }
+
+    #[test]
+    fn stored_transaction_identity_inspects_regular_and_system_rlp() {
+        let signing_key = SigningKey::from_slice(&[0x31u8; 32]).unwrap();
+        let sender = address_from_signing_key(&signing_key);
+        let transaction_rlp = signed_legacy_transaction_rlp(&signing_key, 7, 2999);
+
+        let identity = inspect_stored_transaction_identity(
+            &transaction_rlp,
+            TM_STORED_TX_SOURCE_FINALIZED_REGULAR,
+        )
+        .expect("signed transaction should inspect");
+
+        assert_eq!(identity.sender, sender.0);
+        assert_eq!(identity.nonce, U256::from(7u64));
+
+        let system_identity = inspect_stored_transaction_identity(
+            &system_transaction_rlp(3),
+            TM_STORED_TX_SOURCE_FINALIZED_SYSTEM,
+        )
+        .expect("system transaction should inspect");
+
+        assert_eq!(system_identity.sender, TARAXA_SYSTEM_ACCOUNT);
+        assert_eq!(system_identity.nonce, U256::from(3u64));
+        assert!(inspect_stored_transaction_identity(
+            &system_transaction_rlp(3),
+            TM_STORED_TX_SOURCE_FINALIZED_REGULAR
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("SIGNATURE_MISSING"));
+    }
+
+    #[test]
+    fn proposal_transaction_lookup_filters_old_finalized_with_block_scoped_account() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_transaction_manager_proposal_lookup_filter");
+        let storage = crate::storage::create_storage(
+            temp_dir.to_str().expect("temp path should be valid UTF-8"),
+        )
+        .expect("storage should initialize");
+
+        let signing_key = SigningKey::from_slice(&[0x32u8; 32]).unwrap();
+        let sender = address_from_signing_key(&signing_key);
+        let sender_bytes: [u8; 20] = sender.into();
+        let transaction_rlp = signed_legacy_transaction_rlp(&signing_key, 0, 2999);
+        let transaction_hash = keccak256(&transaction_rlp).0;
+        let pbft_key = SigningKey::from_slice(&[0x33u8; 32]).unwrap();
+        let pbft_block = signed_pbft_block(&pbft_key, 1, 100);
+
+        storage
+            .save_period_data(
+                1,
+                period_data_rlp_with_pbft(&pbft_block, std::slice::from_ref(&transaction_rlp)),
+            )
+            .expect("period data should persist");
+
+        let final_chain = crate::final_chain::create_final_chain(
+            &storage,
+            100_000,
+            0,
+            vec![crate::ffi::rustaxa_ffi::GenesisAccount {
+                address: sender_bytes,
+                balance: U256::from(1_000_000u64).to_big_endian().to_vec(),
+            }],
+            vec![],
+            crate::ffi::rustaxa_ffi::GenesisDposConfig {
+                eligibility_balance_threshold: vec![],
+                vote_eligibility_balance_step: U256::one().to_big_endian().to_vec(),
+                validator_maximum_stake: U256::from(30_000u64).to_big_endian().to_vec(),
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+        )
+        .expect("final chain should initialize");
+
+        final_chain
+            .finalize_block(
+                pbft_block,
+                vec![crate::ffi::rustaxa_ffi::FinalizationTransaction {
+                    hash: transaction_hash,
+                    sender: sender_bytes,
+                    receiver_found: true,
+                    receiver: [0x44u8; 20],
+                    nonce: 0,
+                    value: U256::from(3u64).to_big_endian().to_vec(),
+                    gas_price: U256::from(2u64).to_big_endian().to_vec(),
+                    gas_limit: 21_000,
+                    data: vec![],
+                    rlp: transaction_rlp.clone(),
+                }],
+                vec![],
+            )
+            .expect("finalization should create block-scoped account snapshot");
+
+        let before = transaction_manager_load_proposal_transactions_with_final_chain(
+            &storage,
+            &final_chain,
+            0,
+            vec![TransactionManagerStoredTransactionRequest {
+                input_index: 4,
+                hash: transaction_hash,
+            }],
+        )
+        .expect("proposal lookup at genesis should keep transaction");
+        assert!(before[0].found);
+        assert!(!before[0].old_finalized);
+        assert_eq!(before[0].tx_rlp, transaction_rlp);
+
+        let after = transaction_manager_load_proposal_transactions_with_final_chain(
+            &storage,
+            &final_chain,
+            1,
+            vec![TransactionManagerStoredTransactionRequest {
+                input_index: 4,
+                hash: transaction_hash,
+            }],
+        )
+        .expect("proposal lookup at finalized period should filter old transaction");
+        assert!(!after[0].found);
+        assert!(after[0].old_finalized);
+        assert!(after[0].tx_rlp.is_empty());
+
+        let _ = fs::remove_dir_all(temp_dir);
     }
 
     fn dag_tx_fact(

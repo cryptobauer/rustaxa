@@ -53,6 +53,9 @@ pub struct FinalChain {
     /// Exclusive period boundary below which legacy DAG VDF sortition uses the
     /// snapshot total eligible vote count.
     dag_vdf_sortition_total_vote_count_until_period: u64,
+    /// Account snapshots keyed by finalized block number for proposal-period
+    /// account reads. Missing accounts remain absent from each snapshot.
+    account_snapshots: Mutex<HashMap<u64, HashMap<[u8; 20], Account>>>,
     dpos_snapshots: Mutex<HashMap<u64, DposSnapshot>>,
 }
 
@@ -88,7 +91,7 @@ impl FinalChain {
         genesis_validators: Vec<GenesisValidator>,
         genesis_dpos_config: GenesisDposConfig,
     ) -> Result<Self> {
-        let genesis_accounts = genesis_accounts
+        let genesis_accounts: HashMap<[u8; 20], Account> = genesis_accounts
             .into_iter()
             .map(|account| {
                 (
@@ -153,11 +156,12 @@ impl FinalChain {
             storage,
             block_gas_limit,
             genesis_timestamp,
-            accounts: Mutex::new(genesis_accounts),
+            accounts: Mutex::new(genesis_accounts.clone()),
             genesis_vrf_keys,
             dag_vdf_sortition_max_vote_count,
             dag_vdf_sortition_total_vote_count_until_period: genesis_dpos_config
                 .dag_vdf_sortition_total_vote_count_until_period,
+            account_snapshots: Mutex::new(HashMap::from([(0, genesis_accounts.clone())])),
             dpos_snapshots: Mutex::new(HashMap::from([(
                 0,
                 DposSnapshot {
@@ -248,6 +252,28 @@ impl FinalChain {
             .accounts
             .lock()
             .map_err(|_| anyhow::anyhow!("final-chain account lock poisoned"))?
+            .get(&address)
+            .cloned())
+    }
+
+    /// Returns an account exactly as it existed at a finalized block number.
+    ///
+    /// `Ok(None)` means the address had no account in that block snapshot.
+    /// Missing snapshots are errors so callers never silently substitute latest
+    /// state for historical proposal-period decisions.
+    pub fn account_at_block(
+        &self,
+        block_number: u64,
+        address: [u8; 20],
+    ) -> Result<Option<Account>, anyhow::Error> {
+        Ok(self
+            .account_snapshots
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain account snapshot lock poisoned"))?
+            .get(&block_number)
+            .ok_or_else(|| {
+                anyhow::anyhow!("final-chain account snapshot unavailable for block {block_number}")
+            })?
             .get(&address)
             .cloned())
     }
@@ -555,6 +581,7 @@ impl FinalChain {
                 &execution.receipts[position],
             )?;
         }
+        self.append_account_snapshot(pbft.period)?;
         self.append_dpos_snapshot(
             pbft.period,
             self.dpos_fee_rewards_by_validator(&finalized_dag_blocks, &execution.transaction_fees)?,
@@ -863,6 +890,19 @@ impl FinalChain {
             );
         }
         snapshots.insert(block_number, snapshot);
+        Ok(())
+    }
+
+    fn append_account_snapshot(&self, block_number: u64) -> Result<(), anyhow::Error> {
+        let accounts = self
+            .accounts
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain account lock poisoned"))?
+            .clone();
+        self.account_snapshots
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain account snapshot lock poisoned"))?
+            .insert(block_number, accounts);
         Ok(())
     }
 
@@ -2001,6 +2041,15 @@ mod tests {
             vec![genesis_account(sender, U256::from(1_000_000u64))],
             vec![],
         );
+        assert_eq!(
+            final_chain
+                .account_at_block(0, sender)
+                .unwrap()
+                .unwrap()
+                .nonce,
+            0
+        );
+        assert!(final_chain.account_at_block(0, receiver).unwrap().is_none());
         let genesis_hash = H256::from_slice(&final_chain.block_hash(0).unwrap().unwrap());
 
         let (header_rlp, receipts) = final_chain
@@ -2062,6 +2111,40 @@ mod tests {
             U256::from(1_000_000u64) - U256::from(13u64) - U256::from(VALUE_TRANSFER_GAS * 2)
         );
         assert_eq!(final_chain.account(sender).unwrap().unwrap().nonce, 1);
+        assert_eq!(
+            final_chain
+                .account_at_block(0, sender)
+                .unwrap()
+                .unwrap()
+                .nonce,
+            0
+        );
+        assert_eq!(
+            final_chain
+                .account_at_block(period, sender)
+                .unwrap()
+                .unwrap()
+                .nonce,
+            1
+        );
+        assert!(final_chain.account_at_block(0, receiver).unwrap().is_none());
+        assert_eq!(
+            u256_from_big_endian(
+                &final_chain
+                    .account_at_block(period, receiver)
+                    .unwrap()
+                    .unwrap()
+                    .balance
+            ),
+            U256::from(13u64)
+        );
+        assert!(
+            final_chain
+                .account_at_block(period + 1, sender)
+                .unwrap_err()
+                .to_string()
+                .contains("account snapshot unavailable")
+        );
         assert_eq!(balance_of(&final_chain, receiver), U256::from(13u64));
         assert_eq!(balance_of(&final_chain, beneficiary_bytes), U256::zero());
 

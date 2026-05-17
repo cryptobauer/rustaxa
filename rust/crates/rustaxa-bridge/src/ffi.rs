@@ -850,6 +850,9 @@ pub mod rustaxa_ffi {
         hash: [u8; 32],
         found: bool,
         source: u8,
+        /// True when a proposal-period account snapshot proved this finalized
+        /// transaction nonce is older than the sender account nonce.
+        old_finalized: bool,
         tx_rlp: Vec<u8>,
     }
 
@@ -2537,6 +2540,13 @@ pub mod rustaxa_ffi {
             storage: &BridgeStorage,
             requests: Vec<TransactionManagerStoredTransactionRequest>,
         ) -> Result<Vec<TransactionManagerStoredTransactionLookup>>;
+        /// Resolves storage transactions and applies proposal-period FinalChain account filtering.
+        pub fn transaction_manager_load_proposal_transactions_with_final_chain(
+            storage: &BridgeStorage,
+            final_chain: &BridgeFinalChain,
+            proposal_period: u64,
+            requests: Vec<TransactionManagerStoredTransactionRequest>,
+        ) -> Result<Vec<TransactionManagerStoredTransactionLookup>>;
         /// Returns persisted non-finalized transaction payloads for TransactionManager recovery.
         pub fn transaction_manager_load_nonfinalized_recovery(
             storage: &BridgeStorage,
@@ -2992,6 +3002,11 @@ pub mod rustaxa_ffi {
         ) -> Result<Vec<u8>>;
         pub fn get_transaction_count(self: &BridgeFinalChain, period: u64) -> Result<u64>;
         pub fn get_account(self: &BridgeFinalChain, address: &[u8; 20]) -> Result<AccountLookup>;
+        pub fn get_account_at_block(
+            self: &BridgeFinalChain,
+            block_number: u64,
+            address: &[u8; 20],
+        ) -> Result<AccountLookup>;
         pub fn get_dpos_eligible_vote_count(
             self: &BridgeFinalChain,
             block_number: u64,

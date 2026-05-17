@@ -429,9 +429,11 @@ The current Rust starting point is intentionally small:
    from shim-owned code after Rust accepts a proposable queue mutation. Live pool helpers remain shim-owned under the existing
    transaction mutex and no longer forward to `TransactionManagerOld`; they now materialize from Rust runtime queue or
    sidecar RLP. The Rust runtime state exposes the authoritative Rust-mode transaction count and drives count reads
-   after persistence/finalization commits. Remaining live-shell gaps are EVM estimation execution and broader lifecycle
-   orchestration; historical/proposal-period account filtering stays C++-owned until Rust FinalChain exposes a
-   block-scoped account API.
+   after persistence/finalization commits. Rust FinalChain now exposes block-scoped account snapshots, and
+   `getTransactions`/`getBlockTransactions` use a proposal-specific Rust storage lookup that verifies stored transaction
+   RLP hashes, inspects legacy sender/nonce identity in Rust, and applies proposal-period finalized-account nonce
+   filtering before C++ materializes returned payloads. Remaining live-shell gaps are EVM estimation execution, event/log
+   mechanics, and broader lifecycle orchestration.
    `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
    selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
    lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode

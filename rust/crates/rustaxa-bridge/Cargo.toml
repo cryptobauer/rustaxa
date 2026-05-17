@@ -15,10 +15,10 @@ rustaxa-vdf = { path = "../rustaxa-vdf" }
 anyhow = "1.0.100"
 ethereum-types = "0.16.0"
 rlp = "0.6"
+k256 = { version = "0.13", features = ["ecdsa"] }
+tiny-keccak = { version = "2.0", features = ["keccak"] }
 
 [build-dependencies]
 cxx-build = "1.0"
 
 [dev-dependencies]
-k256 = { version = "0.13", features = ["ecdsa"] }
-tiny-keccak = { version = "2.0", features = ["keccak"] }

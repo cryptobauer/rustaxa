@@ -78,10 +78,6 @@ constexpr uint8_t kTMQueueStatusInsertedNonProposable = 1;
 constexpr uint8_t kTMQueueStatusKnown = 2;
 constexpr uint8_t kTMQueueStatusOverflow = 3;
 
-bool isFinalizedStoredTransactionSource(uint8_t source) {
-  return source == kStoredTransactionFinalizedRegular || source == kStoredTransactionFinalizedSystem;
-}
-
 std::shared_ptr<Transaction> materializeStoredTransaction(
     const rustaxa::TransactionManagerStoredTransactionLookup& lookup, const char* error_prefix) {
   if (!lookup.found) {
@@ -932,9 +928,10 @@ class TransactionManagerRustShimAccess {
    * Materializes ordered transaction hashes from C++ live views and Rust-backed
    * storage.
    *
-   * C++ keeps live `SharedTransaction` ownership and proposal-period nonce
-   * filtering. Rust owns storage lookup, transaction-location decoding, period
-   * data extraction, and regular/system source classification for cache misses.
+   * C++ keeps live `SharedTransaction` ownership and object materialization.
+   * Rust owns storage lookup, transaction-location decoding, period data
+   * extraction, source classification, and proposal-period nonce filtering for
+   * storage cache misses.
    */
   static SharedTransactions getTransactions(const TransactionManager& manager, const vec_trx_t& trxs_hashes,
                                             PbftPeriod proposal_period) {
@@ -993,7 +990,9 @@ class TransactionManagerRustShimAccess {
     if (!requests.empty()) {
       const auto lookups = [&]() {
         try {
-          return rustaxa::transaction_manager_load_stored_transactions(manager.db_->rustStorage(), std::move(requests));
+          return rustaxa::transaction_manager_load_proposal_transactions_with_final_chain(
+              manager.db_->rustStorage(), manager.final_chain_->rustFinalChainForRust(), proposal_period,
+              std::move(requests));
         } catch (const std::exception& e) {
           throw DbException(std::string("RUST_STORAGE_TX_RETRIEVAL_FAILED: ") + e.what());
         }
@@ -1008,19 +1007,16 @@ class TransactionManagerRustShimAccess {
         if (fromBridgeHash(lookup.hash) != expected_hash) {
           throw DbException("RUST_STORAGE_TX_RETRIEVAL_FAILED: Rust returned a transaction hash/index mismatch");
         }
+        if (lookup.old_finalized) {
+          LOG(manager.log_er_) << "Old transaction: " << expected_hash;
+          continue;
+        }
 
         auto transaction = materializeStoredTransaction(lookup, "RUST_STORAGE_TX_RETRIEVAL_FAILED");
         if (!transaction) {
           continue;
         }
 
-        if (isFinalizedStoredTransactionSource(lookup.source)) {
-          auto acc = manager.final_chain_->getAccount(transaction->getSender(), proposal_period);
-          if (acc.has_value() && acc->nonce > transaction->getNonce()) {
-            LOG(manager.log_er_) << "Old transaction: " << transaction->getHash();
-            continue;
-          }
-        }
         ordered_transactions[storage_miss_indexes[storage_index]] = std::move(transaction);
       }
     }

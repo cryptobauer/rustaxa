@@ -320,8 +320,10 @@ std::vector<EthBlockNumber> FinalChain::withBlockBloom(LogBloom const&, EthBlock
   return {};
 }
 
-std::optional<state_api::Account> FinalChain::getAccount(addr_t const& addr, std::optional<EthBlockNumber>) const {
-  auto rust_account = rust_final_chain_.value()->get_account(into_address_array(addr));
+std::optional<state_api::Account> FinalChain::getAccount(addr_t const& addr, std::optional<EthBlockNumber> blk_n) const {
+  auto rust_account = blk_n.has_value()
+                          ? rust_final_chain_.value()->get_account_at_block(*blk_n, into_address_array(addr))
+                          : rust_final_chain_.value()->get_account(into_address_array(addr));
   if (!rust_account.found) {
     return std::nullopt;
   }
