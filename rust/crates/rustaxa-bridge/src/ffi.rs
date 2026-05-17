@@ -1232,6 +1232,27 @@ pub mod rustaxa_ffi {
         overflow_removed_hashes: Vec<TransactionQueueHash>,
     }
 
+    /// One Rust-planned TransactionManager lifecycle notice for shim-owned side effects.
+    ///
+    /// `kind` is a stable bridge discriminator. `input_index` maps back to a
+    /// caller-supplied transaction list when the notice originated from a batch
+    /// input; notices that already carry a complete hash set this to zero.
+    struct TransactionManagerLifecycleNotice {
+        kind: u8,
+        input_index: u64,
+        hash: [u8; 32],
+    }
+
+    /// Runtime lifecycle report returned after Rust has already applied deterministic state changes.
+    ///
+    /// C++ consumes this only for live-object validation, logging, public event
+    /// dispatch, and shim-local follow-up actions that cannot yet move to Rust.
+    struct TransactionManagerLifecycleReport {
+        notices: Vec<TransactionManagerLifecycleNotice>,
+        transaction_count: u64,
+        purge_transaction_queue: bool,
+    }
+
     /// Finalized status planning outcome for one finalized period.
     struct FinalizedTransactionStatusPlan {
         accepted: Vec<FinalizedTransactionStatusAction>,
@@ -2351,12 +2372,27 @@ pub mod rustaxa_ffi {
             has_finalized_period: bool,
             finalized_period: u64,
         ) -> Result<TransactionManagerRuntimeAdmissionOutcome>;
+        /// Executes admission and returns shim-side lifecycle notices.
+        pub fn transaction_manager_runtime_execute_transaction_admission_report(
+            self: &mut BridgeTransactionManagerRuntime,
+            fact: TransactionManagerValidatedInsertSidecarFact,
+            input: TransactionQueueInsertInput,
+            has_finalized_period: bool,
+            finalized_period: u64,
+        ) -> Result<TransactionManagerLifecycleReport>;
         pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain(
             self: &mut BridgeTransactionManagerRuntime,
             final_chain: &BridgeFinalChain,
             fact: TransactionManagerValidatedInsertRuntimeFact,
             input: TransactionQueueInsertInput,
         ) -> Result<TransactionManagerRuntimeAdmissionOutcome>;
+        /// Executes admission with FinalChain facts and returns shim-side lifecycle notices.
+        pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain_report(
+            self: &mut BridgeTransactionManagerRuntime,
+            final_chain: &BridgeFinalChain,
+            fact: TransactionManagerValidatedInsertRuntimeFact,
+            input: TransactionQueueInsertInput,
+        ) -> Result<TransactionManagerLifecycleReport>;
         pub fn transaction_manager_runtime_queue_erase(
             self: &mut BridgeTransactionManagerRuntime,
             hash: &[u8; 32],
@@ -2479,6 +2515,13 @@ pub mod rustaxa_ffi {
             final_chain: &BridgeFinalChain,
             facts: Vec<DagTransactionSaveRuntimeFact>,
         ) -> Result<DagTransactionSaveOutcome>;
+        /// Applies DAG transaction persistence and returns shim-side lifecycle notices.
+        pub fn save_transactions_from_dag_block_report_with_runtime_and_final_chain(
+            runtime: &mut BridgeTransactionManagerRuntime,
+            storage: &BridgeStorage,
+            final_chain: &BridgeFinalChain,
+            facts: Vec<DagTransactionSaveRuntimeFact>,
+        ) -> Result<TransactionManagerLifecycleReport>;
         /// Executes runtime admission planning and returns an explicit commit script.
         pub fn transaction_manager_runtime_execute_admission(
             runtime: &BridgeTransactionManagerRuntime,
@@ -2510,6 +2553,14 @@ pub mod rustaxa_ffi {
             retention_window: u64,
             facts: Vec<FinalizedTransactionStatusSidecarFact>,
         ) -> Result<FinalizedTransactionStatusPlan>;
+        /// Applies finalized transaction status changes and returns shim-side lifecycle notices.
+        pub fn update_finalized_transactions_status_report_with_runtime(
+            runtime: &mut BridgeTransactionManagerRuntime,
+            storage: &BridgeStorage,
+            period: u64,
+            retention_window: u64,
+            facts: Vec<FinalizedTransactionStatusSidecarFact>,
+        ) -> Result<TransactionManagerLifecycleReport>;
         pub fn update_finalized_transactions_status(
             storage: &BridgeStorage,
             period: u64,
@@ -2607,6 +2658,11 @@ pub mod rustaxa_ffi {
         pub fn transaction_manager_load_nonfinalized_recovery_inputs(
             storage: &BridgeStorage,
         ) -> Result<Vec<TransactionManagerSidecarRecoveryInsertInput>>;
+        /// Rebuilds runtime recovery sidecars from Rust storage and returns a lifecycle report.
+        pub fn transaction_manager_recover_nonfinalized_report_with_runtime(
+            runtime: &mut BridgeTransactionManagerRuntime,
+            storage: &BridgeStorage,
+        ) -> Result<TransactionManagerLifecycleReport>;
 
         // Consensus verified votes
 

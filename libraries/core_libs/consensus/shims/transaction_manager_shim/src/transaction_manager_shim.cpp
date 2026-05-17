@@ -86,6 +86,11 @@ constexpr uint8_t kTMQueueStatusInserted = 0;
 constexpr uint8_t kTMQueueStatusInsertedNonProposable = 1;
 constexpr uint8_t kTMQueueStatusKnown = 2;
 constexpr uint8_t kTMQueueStatusOverflow = 3;
+constexpr uint8_t kTMLifecycleNoticeDagAccepted = 0;
+constexpr uint8_t kTMLifecycleNoticeDagQueueErased = 1;
+constexpr uint8_t kTMLifecycleNoticeFinalizedRemovedNonFinalized = 2;
+constexpr uint8_t kTMLifecycleNoticeFinalizedQueueErased = 3;
+constexpr uint8_t kTMLifecycleNoticeRecoveryInserted = 13;
 
 std::shared_ptr<Transaction> materializeStoredTransaction(
     const rustaxa::TransactionManagerStoredTransactionLookup& lookup, const char* error_prefix) {
@@ -352,6 +357,34 @@ class TransactionManagerRustShimAccess {
       TransactionManager& manager, std::shared_ptr<Transaction>&& tx, bool insert_non_proposable) {
     const auto envelope = inspectRegularTransaction(tx, "RUST_TX_MANAGER_ADMISSION_ENVELOPE_FAILED");
     return executeValidatedAdmission(manager, envelope, std::move(tx), insert_non_proposable);
+  }
+
+  static bool lifecycleNoticeUsesInputIndex(uint8_t kind) {
+    return kind == kTMLifecycleNoticeDagAccepted || kind == kTMLifecycleNoticeDagQueueErased ||
+           kind == kTMLifecycleNoticeFinalizedRemovedNonFinalized ||
+           kind == kTMLifecycleNoticeFinalizedQueueErased;
+  }
+
+  template <typename ApplyFn>
+  static void applyRuntimeLifecycleReport(const char* out_of_range_error, const char* hash_mismatch_error,
+                                          const std::vector<trx_hash_t>& input_hashes,
+                                          const rustaxa::TransactionManagerLifecycleReport& report, ApplyFn&& apply) {
+    for (const auto& notice : report.notices) {
+      auto trx_hash = fromBridgeHash(notice.hash);
+      size_t input_index = 0;
+      if (lifecycleNoticeUsesInputIndex(notice.kind)) {
+        if (notice.input_index >= input_hashes.size()) {
+          throw DbException(out_of_range_error);
+        }
+        input_index = static_cast<size_t>(notice.input_index);
+        const auto& expected_hash = input_hashes[input_index];
+        if (trx_hash != expected_hash) {
+          throw DbException(hash_mismatch_error);
+        }
+        trx_hash = expected_hash;
+      }
+      apply(notice, trx_hash, input_index);
+    }
   }
 
   static void applyAdmissionSideEffects(TransactionManager& manager, const trx_hash_t& trx_hash,
@@ -683,8 +716,6 @@ class TransactionManagerRustShimAccess {
 
     rust::Vec<rustaxa::DagTransactionSaveRuntimeFact> facts;
     facts.reserve(trxs.size());
-    std::vector<std::shared_ptr<Transaction>> transaction_by_input_index;
-    transaction_by_input_index.reserve(trxs.size());
 
     uint64_t input_index = 0;
     for (const auto& transaction : trxs) {
@@ -698,12 +729,11 @@ class TransactionManagerRustShimAccess {
       fact.transaction_nonce = envelope.nonce;
       fact.sender = sender;
       facts.push_back(std::move(fact));
-      transaction_by_input_index.push_back(transaction);
     }
 
-    const auto outcome = [&]() {
+    const auto report = [&]() {
       try {
-        return rustaxa::save_transactions_from_dag_block_with_runtime_and_final_chain(
+        return rustaxa::save_transactions_from_dag_block_report_with_runtime_and_final_chain(
             *manager.runtime_, manager.db_->rustStorage(), manager.final_chain_->rustFinalChainForRust(),
             std::move(facts));
       } catch (const std::exception& e) {
@@ -711,21 +741,26 @@ class TransactionManagerRustShimAccess {
       }
     }();
 
-    for (const auto& accepted : outcome.accepted) {
-      if (accepted.input_index >= transaction_by_input_index.size()) {
-        throw DbException("RUST_STORAGE_DAG_TX_PERSIST_FAILED: Rust returned an out-of-range transaction input index");
-      }
-      const auto& transaction = transaction_by_input_index[static_cast<size_t>(accepted.input_index)];
-      const auto trx_hash = transaction->getHash();
-      if (fromBridgeHash(accepted.hash) != trx_hash) {
-        throw DbException("RUST_STORAGE_DAG_TX_PERSIST_FAILED: Rust returned a transaction hash/index mismatch");
-      }
-
-      if (accepted.erased_from_queue) {
-        LOG(manager.log_dg_) << "Transaction " << trx_hash << " removed from trx pool ";
-      }
+    std::vector<trx_hash_t> request_hashes;
+    request_hashes.reserve(trxs.size());
+    for (const auto& transaction : trxs) {
+      request_hashes.push_back(transaction->getHash());
     }
-    manager.trx_count_ = manager.runtime_->transaction_manager_runtime_transaction_count();
+
+    applyRuntimeLifecycleReport(
+        "RUST_STORAGE_DAG_TX_PERSIST_FAILED: Rust returned an out-of-range transaction input index",
+        "RUST_STORAGE_DAG_TX_PERSIST_FAILED: Rust returned a transaction hash/index mismatch", request_hashes, report,
+        [&manager](const rustaxa::TransactionManagerLifecycleNotice& notice, const trx_hash_t& trx_hash, size_t) {
+          if (notice.kind == kTMLifecycleNoticeDagAccepted) {
+            return;
+          }
+          if (notice.kind == kTMLifecycleNoticeDagQueueErased) {
+            LOG(manager.log_dg_) << "Transaction " << trx_hash << " removed from trx pool ";
+            return;
+          }
+          throw DbException("RUST_STORAGE_DAG_TX_PERSIST_FAILED: Rust returned an unknown lifecycle notice");
+        });
+    manager.trx_count_ = report.transaction_count;
   }
 
   /**
@@ -1150,20 +1185,26 @@ class TransactionManagerRustShimAccess {
    * the live sidecar map. Each survivor has its sender cached before insertion.
    */
   static void recoverNonfinalizedTransactions(TransactionManager& manager) {
-    auto recovered_transactions = [&]() {
+    std::unique_lock transactions_lock(manager.transactions_mutex_);
+    const auto report = [&]() {
       try {
-        return rustaxa::transaction_manager_load_nonfinalized_recovery_inputs(manager.db_->rustStorage());
+        return rustaxa::transaction_manager_recover_nonfinalized_report_with_runtime(*manager.runtime_,
+                                                                                     manager.db_->rustStorage());
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_TX_RECOVERY_FAILED: ") + e.what());
       }
     }();
 
-    std::unique_lock transactions_lock(manager.transactions_mutex_);
-    try {
-      manager.runtime_->transaction_manager_runtime_insert_recovery_entries(std::move(recovered_transactions));
-    } catch (const std::exception& e) {
-      throw DbException(std::string("RUST_STORAGE_TX_RECOVERY_FAILED: ") + e.what());
-    }
+    applyRuntimeLifecycleReport(
+        "RUST_STORAGE_TX_RECOVERY_FAILED: Rust returned an out-of-range transaction index",
+        "RUST_STORAGE_TX_RECOVERY_FAILED: Rust returned a transaction hash/index mismatch", {}, report,
+        [](const rustaxa::TransactionManagerLifecycleNotice& notice, const trx_hash_t&, size_t) {
+          if (notice.kind == kTMLifecycleNoticeRecoveryInserted) {
+            return;
+          }
+          throw DbException("RUST_STORAGE_TX_RECOVERY_FAILED: Rust returned an unknown lifecycle notice");
+        });
+    manager.trx_count_ = report.transaction_count;
   }
 
   static void initializeRecentlyFinalizedTransactions(TransactionManager& manager, const PeriodData& period_data) {
@@ -1199,9 +1240,9 @@ class TransactionManagerRustShimAccess {
       facts.push_back(std::move(fact));
     }
 
-    const auto plan = [&]() {
+    const auto report = [&]() {
       try {
-        return rustaxa::update_finalized_transactions_status_with_runtime(
+        return rustaxa::update_finalized_transactions_status_report_with_runtime(
             *manager.runtime_, manager.db_->rustStorage(), period_data.pbft_blk->getPeriod(),
             recently_finalized_transactions_periods, std::move(facts));
       } catch (const std::exception& e) {
@@ -1209,28 +1250,31 @@ class TransactionManagerRustShimAccess {
       }
     }();
 
-    for (const auto& action : plan.accepted) {
-      if (action.input_index >= period_data.transactions.size()) {
-        throw DbException("RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: Rust returned an out-of-range transaction index");
-      }
-      const auto& transaction = period_data.transactions[static_cast<size_t>(action.input_index)];
-      const auto trx_hash = transaction->getHash();
-      if (fromBridgeHash(action.hash) != trx_hash) {
-        throw DbException("RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: Rust returned a transaction hash/index mismatch");
-      }
-
-      (void)action.mark_transaction_known;
-      if (action.removed_non_finalized) {
-        LOG(manager.log_dg_) << "Transaction " << trx_hash << " removed from nonfinalized transactions";
-      }
-      if (action.erased_from_queue) {
-        LOG(manager.log_dg_) << "Transaction " << trx_hash << " removed from transactions_pool_";
-      }
+    std::vector<trx_hash_t> request_hashes;
+    request_hashes.reserve(period_data.transactions.size());
+    for (const auto& transaction : period_data.transactions) {
+      request_hashes.push_back(transaction->getHash());
     }
 
-    manager.trx_count_ = manager.runtime_->transaction_manager_runtime_transaction_count();
+    applyRuntimeLifecycleReport(
+        "RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: Rust returned an out-of-range transaction index",
+        "RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: Rust returned a transaction hash/index mismatch", request_hashes,
+        report,
+        [&manager](const rustaxa::TransactionManagerLifecycleNotice& notice, const trx_hash_t& trx_hash, size_t) {
+          if (notice.kind == kTMLifecycleNoticeFinalizedRemovedNonFinalized) {
+            LOG(manager.log_dg_) << "Transaction " << trx_hash << " removed from nonfinalized transactions";
+            return;
+          }
+          if (notice.kind == kTMLifecycleNoticeFinalizedQueueErased) {
+            LOG(manager.log_dg_) << "Transaction " << trx_hash << " removed from transactions_pool_";
+            return;
+          }
+          throw DbException("RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: Rust returned an unknown lifecycle notice");
+        });
 
-    if (plan.purge_transaction_queue) {
+    manager.trx_count_ = report.transaction_count;
+
+    if (report.purge_transaction_queue) {
       purgeRuntimeQueue(manager);
     }
   }

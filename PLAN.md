@@ -418,13 +418,14 @@ The current Rust starting point is intentionally small:
    account nonces from the Rust FinalChain runtime and owns sidecar membership checks, duplicate filtering,
    nonce-gated finalized-storage
    lookup, accepted ordering, count planning, the storage batch, accepted non-finalized sidecar insertion, and accepted
-   queue erasure before C++ logs removals. Finalized transaction status
+   queue erasure before returning lifecycle notices that C++ validates and logs. Finalized transaction status
    updates now send finalized hashes and RLP payloads to Rust; Rust plans count increments, retention eviction, periodic
    queue cleanup, recently-finalized sidecar insertion, non-finalized sidecar removal, known-cache marking, and queue
-   erasure while persisting `TrxCount` before C++ logs side effects. Block-finalized queue cleanup and finalized-account
+   erasure while persisting `TrxCount` before returning lifecycle notices that C++ validates and logs. Block-finalized queue cleanup and finalized-account
    purge now share a fused Rust runtime cleanup API that returns explicit per-phase removed hash groups.
    Non-finalized recovery now asks Rust to delete stale finalized rows, inspect survivor legacy envelopes, validate key
-   hash and sender facts, and return sidecar insertion inputs before C++ mutates live runtime sidecars.
+   hash and sender facts, insert survivor sidecar payloads into the Rust runtime, and return lifecycle notices instead
+   of a C++-applied recovery input list.
    `excludeFinalizedTransactions` and `verifyTransactionsNotFinalized` now inspect legacy transaction envelopes in Rust
    for identity facts, then call Rust for latest FinalChain account nonce sourcing, sidecar membership,
    finalized-storage checks, and deterministic filtering/short-circuit decisions. `verifyTransaction`,
