@@ -1,5 +1,7 @@
 #include <algorithm>
+#include <atomic>
 #include <cstring>
+#include <future>
 #include <mutex>
 #include <shared_mutex>
 #include <stdexcept>
@@ -7,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/encoding_rlp.hpp"
 #include "dag/dag_block.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "transaction/system_transaction.hpp"
@@ -40,6 +43,17 @@ rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& bytes) {
     out.push_back(static_cast<uint8_t>(byte));
   }
   return out;
+}
+
+dev::bytes toDevBytes(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
+
+state_api::ExecutionResult executionResultFromBridgeBytes(const rust::Vec<uint8_t>& bytes) {
+  const auto encoded = toDevBytes(bytes);
+  return util::rlp_dec<state_api::ExecutionResult>(dev::RLP(encoded));
+}
+
+rust::Vec<uint8_t> executionResultToBridgeBytes(const state_api::ExecutionResult& result) {
+  return toBridgeBytes(util::rlp_enc(result));
 }
 
 constexpr uint8_t kStoredTransactionPending = 1;
@@ -377,6 +391,91 @@ class TransactionManagerRustShimAccess {
   }
 
   /**
+   * Estimates one transaction using Rust-owned cache policy.
+   *
+   * Rust owns the declared-gas fast path, cache hit/miss decision, and bounded
+   * cache insertion. C++ materializes the EVM transaction and calls FinalChain
+   * only when Rust reports a miss.
+   */
+  static state_api::ExecutionResult estimateTransactionGas(TransactionManager& manager,
+                                                           std::shared_ptr<Transaction> trx,
+                                                           PbftPeriod proposal_period) {
+    rustaxa::TransactionManagerGasEstimationFact fact;
+    fact.hash = toBridgeHash(trx->getHash());
+    fact.declared_gas = trx->getGas();
+    fact.proposal_period = proposal_period;
+    fact.estimate_gas_limit = manager.kEstimateGasLimit;
+
+    rustaxa::TransactionManagerGasEstimationPlan plan;
+    {
+      std::shared_lock transactions_lock(manager.transactions_mutex_);
+      try {
+        plan = manager.runtime_->transaction_manager_runtime_plan_gas_estimation(fact);
+      } catch (const std::exception& e) {
+        throw std::runtime_error(std::string("RUST_TX_MANAGER_GAS_ESTIMATION_PLAN_FAILED: ") + e.what());
+      }
+    }
+
+    if (plan.use_declared_gas) {
+      state_api::ExecutionResult result;
+      result.gas_used = plan.gas_used;
+      return result;
+    }
+    if (plan.cache_hit) {
+      return executionResultFromBridgeBytes(plan.result_rlp);
+    }
+    if (!plan.requires_evm_call) {
+      throw std::runtime_error("Rust transaction manager runtime returned an invalid gas-estimation plan");
+    }
+
+    auto evm_trx = state_api::EVMTransaction{
+        trx->getSender(), trx->getGasPrice(), trx->getReceiver(), trx->getNonce(),
+        trx->getValue(),  trx->getGas(),      trx->getData(),
+    };
+    auto result = manager.final_chain_->call(evm_trx, proposal_period);
+
+    rustaxa::TransactionManagerGasEstimationResult cache_result;
+    cache_result.hash = fact.hash;
+    cache_result.proposal_period = proposal_period;
+    cache_result.result_rlp = executionResultToBridgeBytes(result);
+    {
+      std::unique_lock transactions_lock(manager.transactions_mutex_);
+      try {
+        manager.runtime_->transaction_manager_runtime_store_gas_estimation(std::move(cache_result));
+      } catch (const std::exception& e) {
+        throw std::runtime_error(std::string("RUST_TX_MANAGER_GAS_ESTIMATION_STORE_FAILED: ") + e.what());
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Estimates aggregate transaction weight while Rust owns per-transaction cache
+   * decisions and C++ keeps the thread-pool EVM execution shell.
+   */
+  static uint64_t estimateTransactions(TransactionManager& manager, const SharedTransactions& trxs,
+                                       PbftPeriod proposal_period) {
+    std::atomic<uint64_t> total_gas = 0;
+    std::vector<std::future<void>> futures;
+    futures.reserve(trxs.size());
+    for (const auto& trx : trxs) {
+      if (trx->getGas() <= manager.kEstimateGasLimit) {
+        total_gas += estimateTransactionGas(manager, trx, proposal_period).gas_used;
+      } else {
+        futures.emplace_back(manager.estimation_thread_pool_.post(
+            [&manager, trx, proposal_period, &total_gas]() {
+              total_gas += estimateTransactionGas(manager, trx, proposal_period).gas_used;
+            }));
+      }
+    }
+    for (auto& future : futures) {
+      future.get();
+    }
+    return total_gas.load();
+  }
+
+  /**
    * Runs Rust-backed deterministic transaction packing against the legacy manager's live C++ state.
    *
    * The friend accessor exists only because the migration facade must reuse existing private pool, lock, cache, and
@@ -415,7 +514,7 @@ class TransactionManagerRustShimAccess {
           throw std::runtime_error("Rust transaction manager runtime returned pack candidate RLP with mismatched gas");
         }
 
-        const auto estimate = manager.estimateTransactionGas(transaction, proposal_period);
+        const auto estimate = estimateTransactionGas(rust_manager, transaction, proposal_period);
         rustaxa::TransactionPackSessionEstimateInput estimate_input;
         estimate_input.hash = candidate.hash;
         estimate_input.gas_used = estimate.gas_used;
@@ -1054,6 +1153,15 @@ class TransactionManagerRustShimAccess {
 std::pair<SharedTransactions, std::vector<uint64_t>> TransactionManager::packTrxs(PbftPeriod proposal_period,
                                                                                   uint64_t weight_limit) {
   return TransactionManagerRustShimAccess::packTrxs(*this, proposal_period, weight_limit);
+}
+
+uint64_t TransactionManager::estimateTransactions(const SharedTransactions& trxs, PbftPeriod proposal_period) {
+  return TransactionManagerRustShimAccess::estimateTransactions(*this, trxs, proposal_period);
+}
+
+state_api::ExecutionResult TransactionManager::estimateTransactionGas(std::shared_ptr<Transaction> trx,
+                                                                      PbftPeriod proposal_period) {
+  return TransactionManagerRustShimAccess::estimateTransactionGas(*this, std::move(trx), proposal_period);
 }
 
 void TransactionManager::blockFinalized(EthBlockNumber block_number) {

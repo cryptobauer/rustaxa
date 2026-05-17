@@ -17,18 +17,19 @@ use crate::ffi::rustaxa_ffi::{
     FinalizedTransactionStatusAction, FinalizedTransactionStatusFact,
     FinalizedTransactionStatusPlan, FinalizedTransactionStatusSidecarFact,
     NonFinalizedTransactionPayload, TransactionManagerFilterAction,
-    TransactionManagerFinalizedFilterFact, TransactionManagerInsertTransactionFact,
-    TransactionManagerInsertTransactionOutcome, TransactionManagerRecoveryEntry,
-    TransactionManagerRuntimeAdmissionOutcome, TransactionManagerRuntimeQueueCleanupPlan,
-    TransactionManagerRuntimeValidatedInsertOutcome, TransactionManagerSidecarInsertInput,
-    TransactionManagerSidecarKnownFact, TransactionManagerSidecarLookup,
-    TransactionManagerSidecarLookupPlan, TransactionManagerSidecarLookupRequest,
-    TransactionManagerSidecarRecoveryInsertInput, TransactionManagerSidecarTransitionInput,
-    TransactionManagerStoredTransactionLookup, TransactionManagerStoredTransactionRequest,
-    TransactionManagerValidatedInsertFact, TransactionManagerValidatedInsertPlan,
-    TransactionManagerValidatedInsertRuntimeFact, TransactionManagerValidatedInsertSidecarFact,
-    TransactionManagerVerifyNotFinalizedFact, TransactionManagerVerifyNotFinalizedOutcome,
-    TransactionManagerVerifyNotFinalizedRuntimeFact,
+    TransactionManagerFinalizedFilterFact, TransactionManagerGasEstimationFact,
+    TransactionManagerGasEstimationPlan, TransactionManagerGasEstimationResult,
+    TransactionManagerInsertTransactionFact, TransactionManagerInsertTransactionOutcome,
+    TransactionManagerRecoveryEntry, TransactionManagerRuntimeAdmissionOutcome,
+    TransactionManagerRuntimeQueueCleanupPlan, TransactionManagerRuntimeValidatedInsertOutcome,
+    TransactionManagerSidecarInsertInput, TransactionManagerSidecarKnownFact,
+    TransactionManagerSidecarLookup, TransactionManagerSidecarLookupPlan,
+    TransactionManagerSidecarLookupRequest, TransactionManagerSidecarRecoveryInsertInput,
+    TransactionManagerSidecarTransitionInput, TransactionManagerStoredTransactionLookup,
+    TransactionManagerStoredTransactionRequest, TransactionManagerValidatedInsertFact,
+    TransactionManagerValidatedInsertPlan, TransactionManagerValidatedInsertRuntimeFact,
+    TransactionManagerValidatedInsertSidecarFact, TransactionManagerVerifyNotFinalizedFact,
+    TransactionManagerVerifyNotFinalizedOutcome, TransactionManagerVerifyNotFinalizedRuntimeFact,
     TransactionManagerVerifyNotFinalizedSidecarFact, TransactionManagerVerifyTransactionFact,
     TransactionManagerVerifyTransactionOutcome, TransactionPackCandidateDecision,
     TransactionPackCandidateInput, TransactionPackEstimateInput, TransactionPackEstimateOutcome,
@@ -1405,8 +1406,14 @@ pub fn create_transaction_manager_runtime(
     initial_transaction_count: u64,
     config: TransactionQueueConfig,
 ) -> Box<BridgeTransactionManagerRuntime> {
+    let gas_estimation_cache_size = config.max_size / 10;
+    let gas_estimation_cache_delete_step = config.max_size / 100;
     Box::new(BridgeTransactionManagerRuntime {
-        sidecar: TransactionManagerSidecar::new(initial_transaction_count),
+        sidecar: TransactionManagerSidecar::new_with_gas_estimation_cache(
+            initial_transaction_count,
+            gas_estimation_cache_size,
+            gas_estimation_cache_delete_step,
+        ),
         queue: TransactionQueue::new(config.max_size as u64),
         last_drop_observed: None,
         transaction_pack_session: None,
@@ -1549,6 +1556,70 @@ impl BridgeTransactionManagerRuntime {
             demoted_hashes: runtime_hashes_to_bridge(session.demoted_hashes),
             stopped: session.stopped,
         })
+    }
+
+    /// Plans one public gas-estimation request using Rust-owned cache policy.
+    ///
+    /// Rust decides the declared-gas fast path and cache hits. C++ must call the
+    /// EVM only when `requires_evm_call` is true, then feed the opaque
+    /// `ExecutionResult` RLP back through `transaction_manager_runtime_store_gas_estimation`.
+    pub fn transaction_manager_runtime_plan_gas_estimation(
+        &self,
+        fact: TransactionManagerGasEstimationFact,
+    ) -> Result<TransactionManagerGasEstimationPlan> {
+        let hash = H256::from(fact.hash);
+        ensure!(!hash.is_zero(), "TM_RUNTIME_GAS_ESTIMATION_HASH_ZERO");
+
+        if fact.declared_gas <= fact.estimate_gas_limit {
+            return Ok(TransactionManagerGasEstimationPlan {
+                use_declared_gas: true,
+                cache_hit: false,
+                requires_evm_call: false,
+                gas_used: fact.declared_gas,
+                result_rlp: Vec::new(),
+            });
+        }
+
+        if let Some(result_rlp) = self
+            .sidecar
+            .gas_estimation_cache_get(hash, fact.proposal_period)
+            .context("TM_RUNTIME_GAS_ESTIMATION_CACHE_GET")?
+        {
+            return Ok(TransactionManagerGasEstimationPlan {
+                use_declared_gas: false,
+                cache_hit: true,
+                requires_evm_call: false,
+                gas_used: 0,
+                result_rlp,
+            });
+        }
+
+        Ok(TransactionManagerGasEstimationPlan {
+            use_declared_gas: false,
+            cache_hit: false,
+            requires_evm_call: true,
+            gas_used: 0,
+            result_rlp: Vec::new(),
+        })
+    }
+
+    /// Stores one opaque C++ `ExecutionResult` RLP in the Rust-owned estimation cache.
+    pub fn transaction_manager_runtime_store_gas_estimation(
+        &mut self,
+        result: TransactionManagerGasEstimationResult,
+    ) -> Result<bool> {
+        self.sidecar
+            .gas_estimation_cache_insert(
+                H256::from(result.hash),
+                result.proposal_period,
+                result.result_rlp,
+            )
+            .context("TM_RUNTIME_GAS_ESTIMATION_CACHE_STORE")
+    }
+
+    /// Returns the number of retained gas-estimation cache entries.
+    pub fn transaction_manager_runtime_gas_estimation_cache_size(&self) -> usize {
+        self.sidecar.gas_estimation_cache_len()
     }
 
     /// Returns the authoritative Rust-mode manager transaction count.
@@ -3963,5 +4034,73 @@ mod tests {
         assert!(runtime
             .transaction_manager_runtime_pack_next_candidate()
             .is_err());
+    }
+
+    #[test]
+    fn bridge_transaction_manager_runtime_plans_and_caches_gas_estimation() {
+        let mut runtime =
+            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 100 });
+
+        let small = runtime
+            .transaction_manager_runtime_plan_gas_estimation(TransactionManagerGasEstimationFact {
+                hash: [1; 32],
+                declared_gas: 21_000,
+                proposal_period: 5,
+                estimate_gas_limit: 200_000,
+            })
+            .expect("small gas estimation plan should succeed");
+        assert!(small.use_declared_gas);
+        assert!(!small.cache_hit);
+        assert!(!small.requires_evm_call);
+        assert_eq!(small.gas_used, 21_000);
+
+        let miss = runtime
+            .transaction_manager_runtime_plan_gas_estimation(TransactionManagerGasEstimationFact {
+                hash: [2; 32],
+                declared_gas: 300_000,
+                proposal_period: 5,
+                estimate_gas_limit: 200_000,
+            })
+            .expect("cache miss plan should succeed");
+        assert!(!miss.use_declared_gas);
+        assert!(!miss.cache_hit);
+        assert!(miss.requires_evm_call);
+
+        assert!(runtime
+            .transaction_manager_runtime_store_gas_estimation(
+                TransactionManagerGasEstimationResult {
+                    hash: [2; 32],
+                    proposal_period: 5,
+                    result_rlp: vec![0xc0],
+                },
+            )
+            .expect("cache store should succeed"));
+        assert_eq!(
+            runtime.transaction_manager_runtime_gas_estimation_cache_size(),
+            1
+        );
+
+        let hit = runtime
+            .transaction_manager_runtime_plan_gas_estimation(TransactionManagerGasEstimationFact {
+                hash: [2; 32],
+                declared_gas: 300_000,
+                proposal_period: 5,
+                estimate_gas_limit: 200_000,
+            })
+            .expect("cache hit plan should succeed");
+        assert!(!hit.use_declared_gas);
+        assert!(hit.cache_hit);
+        assert!(!hit.requires_evm_call);
+        assert_eq!(hit.result_rlp, vec![0xc0]);
+
+        let different_period = runtime
+            .transaction_manager_runtime_plan_gas_estimation(TransactionManagerGasEstimationFact {
+                hash: [2; 32],
+                declared_gas: 300_000,
+                proposal_period: 6,
+                estimate_gas_limit: 200_000,
+            })
+            .expect("different period plan should succeed");
+        assert!(different_period.requires_evm_call);
     }
 }

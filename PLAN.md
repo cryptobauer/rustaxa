@@ -401,8 +401,10 @@ The current Rust starting point is intentionally small:
    materializes `Transaction` objects on demand. Finalized-account purge fact sourcing now reads accounts from the Rust
    FinalChain runtime instead of the TransactionManager shim. The Rust-mode `TransactionManager` packing shim now routes proposal candidate
    snapshotting, candidate scan, declared-gas fit checks, invalid-estimate demotion mutation, accepted output ordering,
-   accepted gas accumulation, and stop rules through a Rust runtime pack session while C++ keeps transaction
-   materialization, `estimateTransactionGas`, estimation caching, and lifecycle/finalization orchestration.
+   accepted gas accumulation, and stop rules through a Rust runtime pack session. Rust also owns `estimateTransactionGas`
+   and `estimateTransactions` declared-gas shortcut decisions plus the bounded `(transaction hash, proposal period)`
+   opaque `ExecutionResult` cache, while C++ keeps transaction materialization, EVM estimation execution, and
+   lifecycle/finalization orchestration.
    The TransactionManager shim now owns an opaque Rust runtime handle for live queue metadata/payloads, known-cache
    state, non-finalized and recently-finalized transaction sidecars, and the authoritative transaction count. DAG
    transaction persistence sends transaction identities/RLP and senders to Rust; Rust sources latest account nonces from
@@ -427,7 +429,7 @@ The current Rust starting point is intentionally small:
    from shim-owned code after Rust accepts a proposable queue mutation. Live pool helpers remain shim-owned under the existing
    transaction mutex and no longer forward to `TransactionManagerOld`; they now materialize from Rust runtime queue or
    sidecar RLP. The Rust runtime state exposes the authoritative Rust-mode transaction count and drives count reads
-   after persistence/finalization commits. Remaining live-shell gaps are gas estimation and broader lifecycle
+   after persistence/finalization commits. Remaining live-shell gaps are EVM estimation execution and broader lifecycle
    orchestration; historical/proposal-period account filtering stays C++-owned until Rust FinalChain exposes a
    block-scoped account API.
    `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust

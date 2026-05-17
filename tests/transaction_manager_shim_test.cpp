@@ -50,6 +50,42 @@ TEST_F(TransactionManagerShimFixture, rustPlannerPreservesPackTrxsSelectionAndEs
   EXPECT_EQ(estimations[1], packed[1]->getGas());
 }
 
+TEST_F(TransactionManagerShimFixture, rustEstimateTransactionGasUsesRustRuntimeDecisions) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  auto transaction =
+      std::make_shared<Transaction>(1, 0, 1, 300000, dev::bytes(),
+                                    dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                dev::Secret::ConstructFromStringType::FromHex),
+                                    addr_t::random());
+
+  const auto first = trx_mgr.estimateTransactionGas(transaction, 7);
+  const auto cached = trx_mgr.estimateTransactionGas(transaction, 7);
+
+  EXPECT_EQ(first.gas_used, cached.gas_used);
+  EXPECT_EQ(first.code_err, cached.code_err);
+  EXPECT_EQ(first.consensus_err, cached.consensus_err);
+}
+
+TEST_F(TransactionManagerShimFixture, rustEstimateTransactionsUsesShimEstimator) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  const auto transactions =
+      samples::createSignedTrxSamples(1, 2,
+                                      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                  dev::Secret::ConstructFromStringType::FromHex));
+
+  const auto first = trx_mgr.estimateTransactions(transactions, 3);
+  const auto second = trx_mgr.estimateTransactions(transactions, 3);
+
+  EXPECT_EQ(first, second);
+  EXPECT_GT(first, 0);
+}
+
 TEST_F(TransactionManagerShimFixture, rustStoragePersistsDagTransactionsBeforeLiveCacheMutation) {
   auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();

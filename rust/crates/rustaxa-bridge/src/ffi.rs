@@ -304,6 +304,30 @@ pub mod rustaxa_ffi {
         gas_used: u64,
     }
 
+    /// Gas-estimation request supplied before C++ may call FinalChain/EVM.
+    struct TransactionManagerGasEstimationFact {
+        hash: [u8; 32],
+        declared_gas: u64,
+        proposal_period: u64,
+        estimate_gas_limit: u64,
+    }
+
+    /// Rust-owned cache/orchestration plan for one gas-estimation request.
+    struct TransactionManagerGasEstimationPlan {
+        use_declared_gas: bool,
+        cache_hit: bool,
+        requires_evm_call: bool,
+        gas_used: u64,
+        result_rlp: Vec<u8>,
+    }
+
+    /// Opaque C++ gas-estimation result to retain in the Rust runtime cache.
+    struct TransactionManagerGasEstimationResult {
+        hash: [u8; 32],
+        proposal_period: u64,
+        result_rlp: Vec<u8>,
+    }
+
     /// One candidate returned by a Rust-owned runtime packing session.
     struct TransactionPackSessionCandidate {
         found: bool,
@@ -2189,6 +2213,17 @@ pub mod rustaxa_ffi {
         pub fn transaction_manager_runtime_pack_finalize(
             self: &mut BridgeTransactionManagerRuntime,
         ) -> Result<TransactionPackSessionOutcome>;
+        pub fn transaction_manager_runtime_plan_gas_estimation(
+            self: &BridgeTransactionManagerRuntime,
+            fact: TransactionManagerGasEstimationFact,
+        ) -> Result<TransactionManagerGasEstimationPlan>;
+        pub fn transaction_manager_runtime_store_gas_estimation(
+            self: &mut BridgeTransactionManagerRuntime,
+            result: TransactionManagerGasEstimationResult,
+        ) -> Result<bool>;
+        pub fn transaction_manager_runtime_gas_estimation_cache_size(
+            self: &BridgeTransactionManagerRuntime,
+        ) -> usize;
         pub fn transaction_manager_runtime_transaction_count(
             self: &BridgeTransactionManagerRuntime,
         ) -> u64;

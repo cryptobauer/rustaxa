@@ -19,7 +19,7 @@
 use crate::transaction_queue::TransactionQueueInsertStatus;
 use anyhow::{Context, Result, ensure};
 use ethereum_types::{H256, U256};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 /// Candidate metadata supplied before C++ runs a gas estimate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44,6 +44,113 @@ pub struct TransactionPackEstimate {
     pub hash: H256,
     /// Gas used returned by C++ FinalChain/EVM estimation.
     pub gas_used: u64,
+}
+
+/// Key for one TransactionManager gas-estimation cache entry.
+///
+/// The key preserves the legacy cache dimensions: a canonical transaction hash
+/// plus the proposal period used for the FinalChain/EVM dry run.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct TransactionGasEstimationCacheKey {
+    /// Canonical transaction hash being estimated.
+    pub hash: H256,
+    /// Proposal period passed to the C++ EVM estimation call.
+    pub proposal_period: u64,
+}
+
+/// Rust-owned cache for C++ gas-estimation results.
+///
+/// Values are opaque C++ `ExecutionResult` RLP payloads. Rust owns only cache
+/// keying, bounded FIFO eviction, and hit/miss decisions; C++ remains the sole
+/// owner of EVM execution and result materialization.
+#[derive(Clone, Debug)]
+pub struct TransactionGasEstimationCache {
+    max_size: usize,
+    delete_step: usize,
+    entries: HashMap<TransactionGasEstimationCacheKey, Vec<u8>>,
+    insertion_order: VecDeque<TransactionGasEstimationCacheKey>,
+}
+
+impl TransactionGasEstimationCache {
+    /// Creates a bounded FIFO cache.
+    ///
+    /// A `max_size` of zero disables retention. `delete_step` is clamped to one
+    /// when eviction is required so oversized caches always make progress.
+    pub fn new(max_size: usize, delete_step: usize) -> Self {
+        Self {
+            max_size,
+            delete_step: delete_step.max(1),
+            entries: HashMap::new(),
+            insertion_order: VecDeque::new(),
+        }
+    }
+
+    /// Returns a cached opaque result payload for `key`, when present.
+    pub fn get(&self, key: TransactionGasEstimationCacheKey) -> Result<Option<Vec<u8>>> {
+        ensure!(
+            !key.hash.is_zero(),
+            "gas-estimation cache hash cannot be zero"
+        );
+        Ok(self.entries.get(&key).cloned())
+    }
+
+    /// Stores an opaque C++ `ExecutionResult` payload for `key`.
+    ///
+    /// Existing keys keep their original FIFO position, matching the legacy
+    /// cache insert behavior where duplicate inserts are ignored.
+    pub fn insert(
+        &mut self,
+        key: TransactionGasEstimationCacheKey,
+        result_rlp: Vec<u8>,
+    ) -> Result<bool> {
+        ensure!(
+            !key.hash.is_zero(),
+            "gas-estimation cache hash cannot be zero"
+        );
+        ensure!(
+            !result_rlp.is_empty(),
+            "gas-estimation cache result payload cannot be empty"
+        );
+
+        if self.max_size == 0 || self.entries.contains_key(&key) {
+            return Ok(false);
+        }
+
+        self.entries.insert(key, result_rlp);
+        self.insertion_order.push_back(key);
+        if self.entries.len() > self.max_size {
+            self.evict_oldest();
+        }
+        Ok(true)
+    }
+
+    /// Returns the number of retained cache entries.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns true when the cache has no retained entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn evict_oldest(&mut self) {
+        for _ in 0..self.delete_step {
+            let Some(key) = self.insertion_order.pop_front() else {
+                break;
+            };
+            self.entries.remove(&key);
+            if self.entries.len() <= self.max_size {
+                break;
+            }
+        }
+    }
+}
+
+impl Default for TransactionGasEstimationCache {
+    fn default() -> Self {
+        Self::new(0, 1)
+    }
 }
 
 /// Decision returned after Rust consumes a C++ gas estimate.
@@ -567,6 +674,7 @@ pub struct TransactionManagerSidecar {
     non_finalized: HashMap<H256, Vec<u8>>,
     recently_finalized: HashMap<H256, Vec<u8>>,
     recently_finalized_periods: BTreeMap<u64, Vec<H256>>,
+    gas_estimation_cache: TransactionGasEstimationCache,
 }
 
 impl TransactionManagerSidecarLookup {
@@ -581,8 +689,21 @@ impl TransactionManagerSidecarLookup {
 impl TransactionManagerSidecar {
     /// Creates a TransactionManager live sidecar seeded with the persisted transaction count.
     pub fn new(initial_transaction_count: u64) -> Self {
+        Self::new_with_gas_estimation_cache(initial_transaction_count, 0, 1)
+    }
+
+    /// Creates a TransactionManager sidecar with a configured gas-estimation cache.
+    pub fn new_with_gas_estimation_cache(
+        initial_transaction_count: u64,
+        gas_estimation_cache_size: usize,
+        gas_estimation_cache_delete_step: usize,
+    ) -> Self {
         Self {
             transaction_count: initial_transaction_count,
+            gas_estimation_cache: TransactionGasEstimationCache::new(
+                gas_estimation_cache_size,
+                gas_estimation_cache_delete_step,
+            ),
             ..Self::default()
         }
     }
@@ -590,6 +711,40 @@ impl TransactionManagerSidecar {
     /// Returns the authoritative Rust-mode transaction count.
     pub fn transaction_count(&self) -> u64 {
         self.transaction_count
+    }
+
+    /// Returns a cached opaque C++ gas-estimation result for `hash` and `proposal_period`.
+    pub fn gas_estimation_cache_get(
+        &self,
+        hash: H256,
+        proposal_period: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        self.gas_estimation_cache
+            .get(TransactionGasEstimationCacheKey {
+                hash,
+                proposal_period,
+            })
+    }
+
+    /// Stores one opaque C++ gas-estimation result under `hash` and `proposal_period`.
+    pub fn gas_estimation_cache_insert(
+        &mut self,
+        hash: H256,
+        proposal_period: u64,
+        result_rlp: Vec<u8>,
+    ) -> Result<bool> {
+        self.gas_estimation_cache.insert(
+            TransactionGasEstimationCacheKey {
+                hash,
+                proposal_period,
+            },
+            result_rlp,
+        )
+    }
+
+    /// Returns the number of retained gas-estimation cache entries.
+    pub fn gas_estimation_cache_len(&self) -> usize {
+        self.gas_estimation_cache.len()
     }
 
     /// Replaces the authoritative Rust-mode transaction count after a committed storage write.
@@ -1120,6 +1275,87 @@ mod tests {
 
         assert!(outcome.selected);
         assert!(outcome.stop);
+    }
+
+    #[test]
+    fn gas_estimation_cache_keys_by_hash_and_period() {
+        let mut cache = TransactionGasEstimationCache::new(4, 1);
+        let key = TransactionGasEstimationCacheKey {
+            hash: H256::from([1; 32]),
+            proposal_period: 7,
+        };
+
+        assert!(cache.get(key).unwrap().is_none());
+        assert!(cache.insert(key, vec![9, 8, 7]).unwrap());
+        assert_eq!(cache.get(key).unwrap(), Some(vec![9, 8, 7]));
+        assert!(
+            cache
+                .get(TransactionGasEstimationCacheKey {
+                    hash: H256::from([1; 32]),
+                    proposal_period: 8,
+                })
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn gas_estimation_cache_eviction_is_bounded_fifo() {
+        let mut cache = TransactionGasEstimationCache::new(2, 1);
+        for hash in 1..=3 {
+            cache
+                .insert(
+                    TransactionGasEstimationCacheKey {
+                        hash: H256::from([hash; 32]),
+                        proposal_period: 1,
+                    },
+                    vec![hash],
+                )
+                .unwrap();
+        }
+
+        assert_eq!(cache.len(), 2);
+        assert!(
+            cache
+                .get(TransactionGasEstimationCacheKey {
+                    hash: H256::from([1; 32]),
+                    proposal_period: 1,
+                })
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            cache
+                .get(TransactionGasEstimationCacheKey {
+                    hash: H256::from([2; 32]),
+                    proposal_period: 1,
+                })
+                .unwrap(),
+            Some(vec![2])
+        );
+    }
+
+    #[test]
+    fn gas_estimation_cache_rejects_zero_hash_and_empty_payload() {
+        let mut cache = TransactionGasEstimationCache::new(2, 1);
+        let zero_key = TransactionGasEstimationCacheKey {
+            hash: H256::zero(),
+            proposal_period: 1,
+        };
+
+        assert!(cache.get(zero_key).is_err());
+        assert!(cache.insert(zero_key, vec![1]).is_err());
+        assert!(
+            cache
+                .insert(
+                    TransactionGasEstimationCacheKey {
+                        hash: H256::from([1; 32]),
+                        proposal_period: 1,
+                    },
+                    Vec::new(),
+                )
+                .is_err()
+        );
     }
 
     fn save_fact(

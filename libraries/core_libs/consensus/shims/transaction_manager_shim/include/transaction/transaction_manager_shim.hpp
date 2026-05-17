@@ -46,15 +46,21 @@ class TransactionManager : public TransactionManagerOld {
   TransactionManager &operator=(const TransactionManager &) = delete;
   TransactionManager &operator=(TransactionManager &&) = delete;
 
-  uint64_t estimateTransactions(const SharedTransactions &trxs, PbftPeriod proposal_period) {
-    // TODO(rust-rewrite): migrate estimation orchestration to Rust instead of TransactionManagerOld.
-    return TransactionManagerOld::estimateTransactions(trxs, proposal_period);
-  }
+  /**
+   * Estimate total gas for a transaction list through Rust-owned cache decisions.
+   *
+   * Rust owns declared-gas shortcut decisions, cache lookup, and cache insertion
+   * policy. C++ keeps EVM execution and `ExecutionResult` materialization.
+   */
+  uint64_t estimateTransactions(const SharedTransactions &trxs, PbftPeriod proposal_period);
 
-  state_api::ExecutionResult estimateTransactionGas(std::shared_ptr<Transaction> trx, PbftPeriod proposal_period) {
-    // TODO(rust-rewrite): migrate estimation/cache ownership to Rust instead of TransactionManagerOld.
-    return TransactionManagerOld::estimateTransactionGas(std::move(trx), proposal_period);
-  }
+  /**
+   * Estimate one transaction's gas through the Rust runtime cache.
+   *
+   * Rust decides whether declared gas or a cached opaque `ExecutionResult` can
+   * satisfy the request. C++ calls FinalChain/EVM only on a Rust cache miss.
+   */
+  state_api::ExecutionResult estimateTransactionGas(std::shared_ptr<Transaction> trx, PbftPeriod proposal_period);
 
   /**
    * Select transactions to include in a proposed DAG block.
@@ -257,8 +263,9 @@ class TransactionManager : public TransactionManagerOld {
    *
    * The handle owns the authoritative Rust-mode transaction count, transaction queue
    * metadata/payloads, known-admission cache, and non-finalized/recently-finalized
-   * sidecars. C++ keeps object materialization, event emission, logging, gas
-   * estimation, historical/proposal-period account reads, and lifecycle orchestration.
+   * sidecars, and gas-estimation cache policy. C++ keeps object materialization,
+   * event emission, logging, EVM estimation execution, historical/proposal-period
+   * account reads, and lifecycle orchestration.
    */
   ::rust::Box<rustaxa::BridgeTransactionManagerRuntime> runtime_;
 };
