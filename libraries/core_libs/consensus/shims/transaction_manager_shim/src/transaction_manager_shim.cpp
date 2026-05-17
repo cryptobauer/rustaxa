@@ -91,6 +91,8 @@ constexpr uint8_t kTMLifecycleNoticeDagQueueErased = 1;
 constexpr uint8_t kTMLifecycleNoticeFinalizedRemovedNonFinalized = 2;
 constexpr uint8_t kTMLifecycleNoticeFinalizedQueueErased = 3;
 constexpr uint8_t kTMLifecycleNoticeRecoveryInserted = 13;
+constexpr uint8_t kTMLifecycleNoticeQueueNonProposableExpired = 14;
+constexpr uint8_t kTMLifecycleNoticeQueueFinalizedAccountPurged = 15;
 
 std::shared_ptr<Transaction> materializeStoredTransaction(
     const rustaxa::TransactionManagerStoredTransactionLookup& lookup, const char* error_prefix) {
@@ -424,32 +426,9 @@ class TransactionManagerRustShimAccess {
     auto trx_copy = trx;
     const auto admission = executeValidatedAdmission(manager, envelope, std::move(trx_copy), false);
     applyAdmissionSideEffects(manager, trx_hash, admission);
-
     if (admission.requires_finalized_lookup) {
-      bool has_finalized_period = false;
-      uint64_t finalized_period = 0;
-      if (const auto location = manager.db_->getTransactionLocation(trx_hash)) {
-        has_finalized_period = true;
-        finalized_period = location->period;
-      }
-
-      rustaxa::TransactionManagerInsertTransactionFact fact;
-      fact.tx_hash = toBridgeHash(trx_hash);
-      fact.hash_known = false;
-      fact.queue_status = admission.transaction_status;
-      fact.has_finalized_period = has_finalized_period;
-      fact.finalized_period = finalized_period;
-
-      const auto finished = [&]() {
-        try {
-          return manager.runtime_->transaction_manager_runtime_finish_insert_transaction(fact);
-        } catch (const std::exception& e) {
-          throw std::runtime_error(std::string("RUST_TX_MANAGER_INSERT_FINISH_FAILED: ") + e.what());
-        }
-      }();
-
-      return insertTransactionResultFromRustStatus(
-          finished.status, finished.finalized_period_known ? finished.finalized_period : finalized_period);
+      throw std::runtime_error(
+          "RUST_TX_MANAGER_INSERT_FINISH_FAILED: Rust FinalChain admission requested C++ storage completion");
     }
 
     return insertTransactionResultFromRustStatus(
@@ -1010,18 +989,26 @@ class TransactionManagerRustShimAccess {
 
   static void blockFinalized(TransactionManagerOld& manager, EthBlockNumber block_number) {
     std::unique_lock transactions_lock(manager.transactions_mutex_);
-    rust::Vec<rustaxa::TransactionQueueAccountNonceFact> facts;
-    static_cast<TransactionManager&>(manager).runtime_->transaction_manager_runtime_queue_cleanup(
-        true, block_number, std::move(facts));
-  }
+    auto& shim_manager = static_cast<TransactionManager&>(manager);
+    const auto report = [&]() {
+      try {
+        return shim_manager.runtime_->transaction_manager_runtime_queue_block_finalized_report(block_number);
+      } catch (const std::exception& e) {
+        throw DbException(std::string("RUST_TX_MANAGER_BLOCK_FINALIZED_FAILED: ") + e.what());
+      }
+    }();
 
-  static void purgeRuntimeQueue(TransactionManager& manager) {
-    try {
-      manager.runtime_->transaction_manager_runtime_queue_cleanup_with_final_chain(
-          manager.final_chain_->rustFinalChainForRust(), false, 0);
-    } catch (const std::exception& e) {
-      throw DbException(std::string("RUST_TX_MANAGER_QUEUE_FINAL_CHAIN_PURGE_FAILED: ") + e.what());
-    }
+    applyRuntimeLifecycleReport(
+        "RUST_TX_MANAGER_BLOCK_FINALIZED_FAILED: Rust returned an out-of-range transaction index",
+        "RUST_TX_MANAGER_BLOCK_FINALIZED_FAILED: Rust returned a transaction hash/index mismatch", {},
+        report,
+        [](const rustaxa::TransactionManagerLifecycleNotice& notice, const trx_hash_t&, size_t) {
+          if (notice.kind == kTMLifecycleNoticeQueueNonProposableExpired) {
+            return;
+          }
+          throw DbException("RUST_TX_MANAGER_BLOCK_FINALIZED_FAILED: Rust returned an unknown lifecycle notice");
+        });
+    shim_manager.trx_count_ = report.transaction_count;
   }
 
   static bool isTransactionKnown(TransactionManager& manager, const trx_hash_t& trx_hash) {
@@ -1242,8 +1229,9 @@ class TransactionManagerRustShimAccess {
 
     const auto report = [&]() {
       try {
-        return rustaxa::update_finalized_transactions_status_report_with_runtime(
-            *manager.runtime_, manager.db_->rustStorage(), period_data.pbft_blk->getPeriod(),
+        return rustaxa::update_finalized_transactions_status_report_with_runtime_and_final_chain(
+            *manager.runtime_, manager.db_->rustStorage(), manager.final_chain_->rustFinalChainForRust(),
+            period_data.pbft_blk->getPeriod(),
             recently_finalized_transactions_periods, std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: ") + e.what());
@@ -1269,14 +1257,13 @@ class TransactionManagerRustShimAccess {
             LOG(manager.log_dg_) << "Transaction " << trx_hash << " removed from transactions_pool_";
             return;
           }
+          if (notice.kind == kTMLifecycleNoticeQueueFinalizedAccountPurged) {
+            return;
+          }
           throw DbException("RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: Rust returned an unknown lifecycle notice");
-        });
+      });
 
     manager.trx_count_ = report.transaction_count;
-
-    if (report.purge_transaction_queue) {
-      purgeRuntimeQueue(manager);
-    }
   }
 };
 

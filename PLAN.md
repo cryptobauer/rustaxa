@@ -421,8 +421,11 @@ The current Rust starting point is intentionally small:
    queue erasure before returning lifecycle notices that C++ validates and logs. Finalized transaction status
    updates now send finalized hashes and RLP payloads to Rust; Rust plans count increments, retention eviction, periodic
    queue cleanup, recently-finalized sidecar insertion, non-finalized sidecar removal, known-cache marking, and queue
-   erasure while persisting `TrxCount` before returning lifecycle notices that C++ validates and logs. Block-finalized queue cleanup and finalized-account
-   purge now share a fused Rust runtime cleanup API that returns explicit per-phase removed hash groups.
+   erasure while persisting `TrxCount` before returning lifecycle notices that C++ validates and logs. Periodic
+   finalized-account purge now executes inside the Rust finalized-status report by sourcing account facts from Rust
+   FinalChain, mutating the Rust queue, and returning queue lifecycle notices to C++. Block-finalized queue cleanup and
+   finalized-account purge now share a fused Rust runtime report API that C++ consumes without inspecting queue-specific
+   plan structs.
    Non-finalized recovery now asks Rust to delete stale finalized rows, inspect survivor legacy envelopes, validate key
    hash and sender facts, insert survivor sidecar payloads into the Rust runtime, and return lifecycle notices instead
    of a C++-applied recovery input list.
@@ -431,7 +434,8 @@ The current Rust starting point is intentionally small:
    finalized-storage checks, and deterministic filtering/short-circuit decisions. `verifyTransaction`,
    `insertTransaction`, and `insertValidatedTransaction` now inspect the transaction envelope in Rust and call Rust for
    exact verification reasons, latest FinalChain account sourcing, public insertion result mapping, staged
-   known-fast-path prechecks, finalized-location mapping, and fused proposable/non-proposable admission with Rust-owned
+   known-fast-path prechecks, finalized-location mapping, Rust storage-completed admission support, and fused
+   proposable/non-proposable admission with Rust-owned
    live queue mutation. Known-hash insert decisions now route through the Rust runtime precheck instead of a shim-local early return,
    and `isTransactionKnown` now includes Rust sidecar membership checks alongside queue-known state. Rust now returns
    explicit validated-insert queue actions, public insert statuses, finalized lookup requests, and finalized

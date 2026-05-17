@@ -587,7 +587,7 @@ pub struct TransactionManagerInsertTransactionFact {
     pub hash_known: bool,
     /// Post-queue insertion status returned from C++ queue insertion.
     pub queue_status: TransactionQueueInsertStatus,
-    /// Whether a finalized transaction location was resolved by C++.
+    /// Whether the caller resolved a finalized transaction location before mapping public status.
     pub has_finalized_period: bool,
     /// Finalized location period, used only when `has_finalized_period`.
     pub finalized_period: u64,

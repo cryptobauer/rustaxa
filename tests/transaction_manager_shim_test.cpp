@@ -7,6 +7,7 @@
 #include <shared_mutex>
 #include <type_traits>
 #include <unordered_set>
+#include <utility>
 
 #include "common/init.hpp"
 #include "final_chain/final_chain.hpp"
@@ -324,6 +325,29 @@ TEST_F(TransactionManagerShimFixture, rustInsertTransactionUsesRustPlannerForKno
   EXPECT_FALSE(known_result.first);
   EXPECT_EQ(known_result.second, "Transaction already in transactions pool");
   EXPECT_EQ(trx_mgr.getTransactionPoolSize(), 0);
+}
+
+TEST_F(TransactionManagerShimFixture, rustBlockFinalizedPurgesNonProposableQueueEntries) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  auto oversized_tx = std::make_shared<Transaction>(1, 1, 10, cfg.propose_dag_gas_limit + 1, dev::bytes(),
+                                                   dev::KeyPair::create().secret(), addr_t::random());
+  const auto oversized_tx_hash = oversized_tx->getHash();
+
+  EXPECT_EQ(trx_mgr.insertValidatedTransaction(std::move(oversized_tx), true),
+            TransactionStatus::InsertedNonProposable);
+  EXPECT_TRUE(trx_mgr.getTransaction(oversized_tx_hash));
+  EXPECT_EQ(trx_mgr.getTransactionPoolSize(), 0u);
+
+  trx_mgr.blockFinalized(5);
+  EXPECT_TRUE(trx_mgr.getTransaction(oversized_tx_hash));
+  EXPECT_EQ(trx_mgr.getTransactionPoolSize(), 0u);
+
+  trx_mgr.blockFinalized(12);
+  EXPECT_FALSE(trx_mgr.getTransaction(oversized_tx_hash));
+  EXPECT_EQ(trx_mgr.getTransactionPoolSize(), 0u);
 }
 
 TEST_F(TransactionManagerShimFixture, rustFinalizedTransactionsUpdateAppliesCleanupAndKnownMarking) {

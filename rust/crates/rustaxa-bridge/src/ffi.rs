@@ -2372,6 +2372,13 @@ pub mod rustaxa_ffi {
             has_finalized_period: bool,
             finalized_period: u64,
         ) -> Result<TransactionManagerRuntimeAdmissionOutcome>;
+        /// Executes admission with Rust-localized finalized-location completion.
+        pub fn transaction_manager_runtime_execute_transaction_admission_with_storage(
+            self: &mut BridgeTransactionManagerRuntime,
+            storage: &BridgeStorage,
+            fact: TransactionManagerValidatedInsertSidecarFact,
+            input: TransactionQueueInsertInput,
+        ) -> Result<TransactionManagerRuntimeAdmissionOutcome>;
         /// Executes admission and returns shim-side lifecycle notices.
         pub fn transaction_manager_runtime_execute_transaction_admission_report(
             self: &mut BridgeTransactionManagerRuntime,
@@ -2379,6 +2386,13 @@ pub mod rustaxa_ffi {
             input: TransactionQueueInsertInput,
             has_finalized_period: bool,
             finalized_period: u64,
+        ) -> Result<TransactionManagerLifecycleReport>;
+        /// Executes storage-completed admission and returns shim-side lifecycle notices.
+        pub fn transaction_manager_runtime_execute_transaction_admission_with_storage_report(
+            self: &mut BridgeTransactionManagerRuntime,
+            storage: &BridgeStorage,
+            fact: TransactionManagerValidatedInsertSidecarFact,
+            input: TransactionQueueInsertInput,
         ) -> Result<TransactionManagerLifecycleReport>;
         pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain(
             self: &mut BridgeTransactionManagerRuntime,
@@ -2419,6 +2433,11 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionManagerRuntime,
             block_number: u64,
         ) -> Vec<TransactionQueueHash>;
+        /// Executes block-finalization queue cleanup and returns replay notices.
+        pub fn transaction_manager_runtime_queue_block_finalized_report(
+            self: &mut BridgeTransactionManagerRuntime,
+            block_number: u64,
+        ) -> TransactionManagerLifecycleReport;
         pub fn transaction_manager_runtime_queue_proposable_accounts(
             self: &BridgeTransactionManagerRuntime,
         ) -> Vec<TransactionQueueAddress>;
@@ -2432,12 +2451,24 @@ pub mod rustaxa_ffi {
             block_number: u64,
             facts: Vec<TransactionQueueAccountNonceFact>,
         ) -> TransactionManagerRuntimeQueueCleanupPlan;
+        pub fn transaction_manager_runtime_queue_cleanup_report(
+            self: &mut BridgeTransactionManagerRuntime,
+            apply_block_finalized: bool,
+            block_number: u64,
+            facts: Vec<TransactionQueueAccountNonceFact>,
+        ) -> TransactionManagerLifecycleReport;
         pub fn transaction_manager_runtime_queue_cleanup_with_final_chain(
             self: &mut BridgeTransactionManagerRuntime,
             final_chain: &BridgeFinalChain,
             apply_block_finalized: bool,
             block_number: u64,
         ) -> Result<TransactionManagerRuntimeQueueCleanupPlan>;
+        pub fn transaction_manager_runtime_queue_cleanup_report_with_final_chain(
+            self: &mut BridgeTransactionManagerRuntime,
+            final_chain: &BridgeFinalChain,
+            apply_block_finalized: bool,
+            block_number: u64,
+        ) -> Result<TransactionManagerLifecycleReport>;
         pub fn transaction_manager_runtime_queue_mark_transaction_known(
             self: &mut BridgeTransactionManagerRuntime,
             hash: &[u8; 32],
@@ -2557,6 +2588,15 @@ pub mod rustaxa_ffi {
         pub fn update_finalized_transactions_status_report_with_runtime(
             runtime: &mut BridgeTransactionManagerRuntime,
             storage: &BridgeStorage,
+            period: u64,
+            retention_window: u64,
+            facts: Vec<FinalizedTransactionStatusSidecarFact>,
+        ) -> Result<TransactionManagerLifecycleReport>;
+        /// Applies finalized transaction status changes plus any periodic queue purge in Rust.
+        pub fn update_finalized_transactions_status_report_with_runtime_and_final_chain(
+            runtime: &mut BridgeTransactionManagerRuntime,
+            storage: &BridgeStorage,
+            final_chain: &BridgeFinalChain,
             period: u64,
             retention_window: u64,
             facts: Vec<FinalizedTransactionStatusSidecarFact>,
