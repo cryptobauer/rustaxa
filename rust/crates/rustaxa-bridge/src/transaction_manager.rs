@@ -74,6 +74,7 @@ use rustaxa_consensus::transaction_queue::{
     TransactionQueueDemoteStatus, TransactionQueueEntry, TransactionQueueInsertStatus,
     TransactionQueuePurgeOutcome,
 };
+use rustaxa_types::LegacyTransactionEnvelope;
 use std::time::{Duration, Instant};
 
 const TM_VERIFY_TRANSACTION_STATUS_ACCEPTED: u8 =
@@ -1167,7 +1168,6 @@ const TM_STORED_TX_SOURCE_FINALIZED_SYSTEM: u8 = 3;
 const TM_VERIFY_NOT_FINALIZED_SOURCE_NONE: u8 = 0;
 const TM_VERIFY_NOT_FINALIZED_SOURCE_RECENT_SIDECAR: u8 = 1;
 const TM_VERIFY_NOT_FINALIZED_SOURCE_STORAGE: u8 = 2;
-const TARAXA_SYSTEM_ACCOUNT: [u8; 20] = *b"\0TaraxaSystemAccount";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct StoredTransactionIdentity {
@@ -1302,95 +1302,20 @@ fn inspect_stored_transaction_identity(
     tx_rlp: &[u8],
     source: u8,
 ) -> Result<StoredTransactionIdentity> {
-    let rlp = rlp::Rlp::new(tx_rlp);
-    ensure!(
-        rlp.item_count().context("TM_TRANSACTION_RLP_SHAPE")? == 9,
-        "TM_TRANSACTION_RLP_FIELD_COUNT"
-    );
-    let nonce = rlp.val_at::<U256>(0).context("TM_TRANSACTION_RLP_NONCE")?;
-    if source == TM_STORED_TX_SOURCE_FINALIZED_SYSTEM {
-        return Ok(StoredTransactionIdentity {
-            sender: TARAXA_SYSTEM_ACCOUNT,
-            nonce,
-        });
+    let tx = if source == TM_STORED_TX_SOURCE_FINALIZED_SYSTEM {
+        LegacyTransactionEnvelope::decode_system(tx_rlp)
+    } else {
+        LegacyTransactionEnvelope::decode(tx_rlp)
     }
-
-    let v = rlp.val_at::<U256>(6).context("TM_TRANSACTION_RLP_V")?;
-    let r = rlp.val_at::<U256>(7).context("TM_TRANSACTION_RLP_R")?;
-    let s = rlp.val_at::<U256>(8).context("TM_TRANSACTION_RLP_S")?;
-    ensure!(
-        !r.is_zero() || !s.is_zero(),
-        "TM_TRANSACTION_RLP_SIGNATURE_MISSING"
-    );
-
-    let (chain_id, recovery_id) = transaction_chain_and_recovery_id(v)?;
-    let mut signature = [0u8; 65];
-    signature[..32].copy_from_slice(&r.to_big_endian());
-    signature[32..64].copy_from_slice(&s.to_big_endian());
-    signature[64] = recovery_id;
-    let hash = transaction_signature_hash(&rlp, chain_id)?;
-    let sender = recover_transaction_sender(&signature, &hash)
+    .context("TM_TRANSACTION_RLP_PARSE_FAILED")?;
+    let sender = tx
+        .sender
         .ok_or_else(|| anyhow!("TM_TRANSACTION_RLP_SENDER_RECOVERY_FAILED"))?;
 
     Ok(StoredTransactionIdentity {
         sender: sender.0,
-        nonce,
+        nonce: tx.nonce,
     })
-}
-
-fn transaction_chain_and_recovery_id(v: U256) -> Result<(Option<U256>, u8)> {
-    if v > U256::from(36u64) {
-        let chain_id = (v - U256::from(35u64)) / U256::from(2u64);
-        let recovery_id = v
-            .checked_sub(chain_id * U256::from(2u64) + U256::from(35u64))
-            .ok_or_else(|| anyhow!("TM_TRANSACTION_RLP_RECOVERY_ID_UNDERFLOW"))?;
-        return Ok((Some(chain_id), u256_to_recovery_id(recovery_id)?));
-    }
-
-    ensure!(
-        v == U256::from(27u64) || v == U256::from(28u64),
-        "TM_TRANSACTION_RLP_RECOVERY_ID_INVALID"
-    );
-    Ok((None, u256_to_recovery_id(v - U256::from(27u64))?))
-}
-
-fn u256_to_recovery_id(value: U256) -> Result<u8> {
-    ensure!(
-        value <= U256::from(3u64),
-        "TM_TRANSACTION_RLP_RECOVERY_ID_OUT_OF_RANGE"
-    );
-    Ok(value.low_u32() as u8)
-}
-
-fn transaction_signature_hash(rlp: &rlp::Rlp<'_>, chain_id: Option<U256>) -> Result<H256> {
-    let mut stream = rlp::RlpStream::new_list(if chain_id.is_some() { 9 } else { 6 });
-    for field in 0..6 {
-        stream.append_raw(
-            rlp.at(field)
-                .with_context(|| format!("TM_TRANSACTION_RLP_FIELD_{field}"))?
-                .as_raw(),
-            1,
-        );
-    }
-    if let Some(chain_id) = chain_id {
-        stream.append(&chain_id);
-        stream.append(&U256::zero());
-        stream.append(&U256::zero());
-    }
-    Ok(keccak256(&stream.out()))
-}
-
-fn recover_transaction_sender(signature: &[u8; 65], message_hash: &H256) -> Option<H160> {
-    use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
-
-    let recovery_id = RecoveryId::try_from(signature[64]).ok()?;
-    let signature = Signature::try_from(&signature[..64]).ok()?;
-    let recovered_key =
-        VerifyingKey::recover_from_prehash(message_hash.as_bytes(), &signature, recovery_id)
-            .ok()?;
-    let uncompressed = recovered_key.to_encoded_point(false);
-    let pubkey_hash = keccak256(&uncompressed.as_bytes()[1..]);
-    Some(H160::from_slice(&pubkey_hash.as_bytes()[12..]))
 }
 
 fn keccak256(data: &[u8]) -> H256 {
@@ -2829,7 +2754,7 @@ mod tests {
         )
         .expect("system transaction should inspect");
 
-        assert_eq!(system_identity.sender, TARAXA_SYSTEM_ACCOUNT);
+        assert_eq!(system_identity.sender, rustaxa_types::TARAXA_SYSTEM_ACCOUNT);
         assert_eq!(system_identity.nonce, U256::from(3u64));
         assert!(inspect_stored_transaction_identity(
             &system_transaction_rlp(3),
@@ -2837,7 +2762,7 @@ mod tests {
         )
         .unwrap_err()
         .to_string()
-        .contains("SIGNATURE_MISSING"));
+        .contains("SENDER_RECOVERY_FAILED"));
     }
 
     #[test]

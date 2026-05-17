@@ -28,12 +28,6 @@ trx_hash_t fromBridgeHash(const std::array<uint8_t, 32>& hash) {
   return trx_hash_t(hash.data(), trx_hash_t::ConstructFromPointer);
 }
 
-std::array<uint8_t, 20> toBridgeAddress(const addr_t& address) {
-  std::array<uint8_t, 20> bytes{};
-  std::memcpy(bytes.data(), address.data(), bytes.size());
-  return bytes;
-}
-
 dev::bytes fromBridgeBytes(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
 
 rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& bytes) {
@@ -41,6 +35,15 @@ rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& bytes) {
   out.reserve(bytes.size());
   for (const auto byte : bytes) {
     out.push_back(static_cast<uint8_t>(byte));
+  }
+  return out;
+}
+
+rust::Vec<uint8_t> cloneBridgeBytes(const rust::Vec<uint8_t>& bytes) {
+  rust::Vec<uint8_t> out;
+  out.reserve(bytes.size());
+  for (const auto byte : bytes) {
+    out.push_back(byte);
   }
   return out;
 }
@@ -59,6 +62,7 @@ rust::Vec<uint8_t> executionResultToBridgeBytes(const state_api::ExecutionResult
 constexpr uint8_t kStoredTransactionPending = 1;
 constexpr uint8_t kStoredTransactionFinalizedRegular = 2;
 constexpr uint8_t kStoredTransactionFinalizedSystem = 3;
+constexpr uint8_t kLegacyTransactionSourceRegular = 0;
 constexpr uint8_t kSidecarTransactionNonFinalized = 1;
 constexpr uint8_t kSidecarTransactionRecentlyFinalized = 2;
 constexpr uint8_t kVerifyNotFinalizedRecentSidecar = 1;
@@ -175,16 +179,42 @@ val_t fromBridgeU256(const std::array<uint8_t, 32>& value) {
   return dev::fromBigEndian<val_t>(dev::bytes(value.begin(), value.end()));
 }
 
-rustaxa::TransactionQueueInsertInput toRuntimeQueueInsertInput(const std::shared_ptr<Transaction>& transaction,
+rustaxa::LegacyTransactionInspection inspectRegularTransaction(const std::shared_ptr<Transaction>& transaction,
+                                                               const char* error_prefix) {
+  if (!transaction) {
+    throw std::invalid_argument(std::string(error_prefix) + ": transaction is null");
+  }
+  auto envelope = [&]() {
+    try {
+      return rustaxa::inspect_legacy_transaction_rlp(toBridgeBytes(transaction->rlp()), kLegacyTransactionSourceRegular);
+    } catch (const std::exception& e) {
+      throw std::runtime_error(std::string(error_prefix) + ": " + e.what());
+    }
+  }();
+  if (fromBridgeHash(envelope.hash) != transaction->getHash()) {
+    throw std::runtime_error(std::string(error_prefix) + ": Rust transaction envelope hash mismatch");
+  }
+  return envelope;
+}
+
+std::array<uint8_t, 20> requireEnvelopeSender(const rustaxa::LegacyTransactionInspection& envelope,
+                                              const char* error_prefix) {
+  if (!envelope.sender_found) {
+    throw std::runtime_error(std::string(error_prefix) + ": Rust transaction envelope has no recovered sender");
+  }
+  return envelope.sender;
+}
+
+rustaxa::TransactionQueueInsertInput toRuntimeQueueInsertInput(const rustaxa::LegacyTransactionInspection& envelope,
                                                                bool proposable, uint64_t last_block_number) {
   rustaxa::TransactionQueueInsertInput input;
-  input.hash = toBridgeHash(transaction->getHash());
-  input.sender = toBridgeAddress(transaction->getSender());
-  input.nonce = toBridgeU256(transaction->getNonce());
-  input.gas_price = toBridgeU256(transaction->getGasPrice());
-  input.gas = transaction->getGas();
-  input.data_size = transaction->getData().size();
-  input.tx_rlp = toBridgeBytes(transaction->rlp());
+  input.hash = envelope.hash;
+  input.sender = requireEnvelopeSender(envelope, "RUST_TX_MANAGER_QUEUE_ENVELOPE_FAILED");
+  input.nonce = envelope.nonce;
+  input.gas_price = envelope.gas_price;
+  input.gas = envelope.gas_limit;
+  input.data_size = envelope.data_size;
+  input.tx_rlp = cloneBridgeBytes(envelope.tx_rlp);
   input.proposable = proposable;
   input.last_block_number = last_block_number;
   return input;
@@ -250,25 +280,20 @@ class TransactionManagerRustShimAccess {
       return {true, ""};
     }
 
-    bool signature_valid = true;
-    try {
-      trx->getSender();
-    } catch (const Transaction::InvalidSignature&) {
-      signature_valid = false;
-    }
+    const auto envelope = inspectRegularTransaction(trx, "RUST_TX_MANAGER_VERIFY_ENVELOPE_FAILED");
 
     const auto block_num = manager.final_chain_->lastBlockNumber();
     rustaxa::TransactionManagerVerifyTransactionFact fact;
-    fact.tx_hash = toBridgeHash(trx->getHash());
-    fact.chain_id = trx->getChainID();
+    fact.tx_hash = envelope.hash;
+    fact.chain_id = envelope.chain_id;
     fact.expected_chain_id = manager.kConf.genesis.chain_id;
-    fact.gas_limit = trx->getGas();
+    fact.gas_limit = envelope.gas_limit;
     fact.max_gas_limit = manager.kConf.genesis.state.hardforks.soleirolia_hf.trx_max_gas_limit;
     fact.last_block_number = block_num;
     fact.cornus_active = manager.kConf.genesis.state.hardforks.isOnCornusHardfork(block_num);
-    fact.intrinsic_gas_covered = trx->intrinsicGasCovered();
-    fact.signature_valid = signature_valid;
-    fact.gas_price = toBridgeU256(trx->getGasPrice());
+    fact.intrinsic_gas_covered = envelope.intrinsic_gas_covered;
+    fact.signature_valid = envelope.signature_valid && envelope.sender_found;
+    fact.gas_price = envelope.gas_price;
     fact.minimum_gas_price = toBridgeU256(val_t(manager.kConf.genesis.state.hardforks.soleirolia_hf.trx_min_gas_price));
 
     const auto outcome = [&]() {
@@ -284,17 +309,17 @@ class TransactionManagerRustShimAccess {
 
   static rustaxa::TransactionManagerRuntimeAdmissionOutcome executeValidatedAdmission(
       TransactionManager& manager, std::shared_ptr<Transaction>&& tx, bool insert_non_proposable) {
-    const auto trx_hash = tx->getHash();
+    const auto envelope = inspectRegularTransaction(tx, "RUST_TX_MANAGER_ADMISSION_ENVELOPE_FAILED");
 
     std::unique_lock transactions_lock(manager.transactions_mutex_);
-    const auto sender = tx->getSender();
+    const auto sender = requireEnvelopeSender(envelope, "RUST_TX_MANAGER_ADMISSION_ENVELOPE_FAILED");
 
     rustaxa::TransactionManagerValidatedInsertRuntimeFact fact;
-    fact.tx_hash = toBridgeHash(trx_hash);
-    fact.sender = toBridgeAddress(sender);
-    fact.transaction_nonce = toBridgeU256(tx->getNonce());
-    fact.transaction_cost = toBridgeU256(tx->getCost());
-    fact.gas_limit = tx->getGas();
+    fact.tx_hash = envelope.hash;
+    fact.sender = sender;
+    fact.transaction_nonce = envelope.nonce;
+    fact.transaction_cost = envelope.cost;
+    fact.gas_limit = envelope.gas_limit;
     fact.propose_dag_gas_limit = manager.kConf.propose_dag_gas_limit;
     fact.insert_non_proposable = insert_non_proposable;
 
@@ -302,7 +327,7 @@ class TransactionManagerRustShimAccess {
       try {
         return manager.runtime_->transaction_manager_runtime_execute_transaction_admission_with_final_chain(
             manager.final_chain_->rustFinalChainForRust(), fact,
-            toRuntimeQueueInsertInput(tx, false, manager.final_chain_->lastBlockNumber()));
+            toRuntimeQueueInsertInput(envelope, false, manager.final_chain_->lastBlockNumber()));
       } catch (const std::exception& e) {
         throw std::runtime_error(std::string("RUST_TX_MANAGER_ADMISSION_EXECUTION_FAILED: ") + e.what());
       }
@@ -580,14 +605,15 @@ class TransactionManagerRustShimAccess {
 
     uint64_t input_index = 0;
     for (const auto& transaction : trxs) {
-      const auto trx_hash = transaction->getHash();
+      const auto envelope = inspectRegularTransaction(transaction, "RUST_STORAGE_DAG_TX_ENVELOPE_FAILED");
+      const auto sender = requireEnvelopeSender(envelope, "RUST_STORAGE_DAG_TX_ENVELOPE_FAILED");
 
       rustaxa::DagTransactionSaveRuntimeFact fact;
       fact.input_index = input_index++;
-      fact.hash = toBridgeHash(trx_hash);
-      fact.trx_rlp = toBridgeBytes(transaction->rlp());
-      fact.transaction_nonce = toBridgeU256(transaction->getNonce());
-      fact.sender = toBridgeAddress(transaction->getSender());
+      fact.hash = envelope.hash;
+      fact.trx_rlp = cloneBridgeBytes(envelope.tx_rlp);
+      fact.transaction_nonce = envelope.nonce;
+      fact.sender = sender;
       facts.push_back(std::move(fact));
       transaction_by_input_index.push_back(transaction);
     }
@@ -776,13 +802,15 @@ class TransactionManagerRustShimAccess {
     facts.reserve(trxs.size());
     uint64_t input_index = 0;
     for (const auto& transaction : trxs) {
-      const auto trx_hash = transaction->getHash();
+      const auto envelope =
+          inspectRegularTransaction(transaction, "RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_ENVELOPE_FAILED");
+      const auto sender = requireEnvelopeSender(envelope, "RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_ENVELOPE_FAILED");
 
       rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact fact;
       fact.input_index = input_index++;
-      fact.hash = toBridgeHash(trx_hash);
-      fact.transaction_nonce = toBridgeU256(transaction->getNonce());
-      fact.sender = toBridgeAddress(transaction->getSender());
+      fact.hash = envelope.hash;
+      fact.transaction_nonce = envelope.nonce;
+      fact.sender = sender;
       facts.push_back(fact);
     }
 
@@ -1054,17 +1082,23 @@ class TransactionManagerRustShimAccess {
         continue;
       }
 
-      auto transaction = std::make_shared<Transaction>(fromBridgeBytes(entry.tx_rlp));
+      const auto envelope = [&]() {
+        try {
+          return rustaxa::inspect_legacy_transaction_rlp(cloneBridgeBytes(entry.tx_rlp), kLegacyTransactionSourceRegular);
+        } catch (const std::exception& e) {
+          throw DbException(std::string("RUST_STORAGE_TX_RECOVERY_FAILED: ") + e.what());
+        }
+      }();
       const auto trx_hash = fromBridgeHash(entry.hash);
-      if (transaction->getHash() != trx_hash) {
+      if (fromBridgeHash(envelope.hash) != trx_hash) {
         throw DbException(
             "RUST_STORAGE_TX_RECOVERY_FAILED: Rust returned transaction RLP that does not match the key hash");
       }
-      transaction->getSender();
+      requireEnvelopeSender(envelope, "RUST_STORAGE_TX_RECOVERY_FAILED");
       rustaxa::TransactionManagerSidecarRecoveryInsertInput recovered;
       recovered.hash = toBridgeHash(trx_hash);
       recovered.finalized = false;
-      recovered.trx_rlp = toBridgeBytes(transaction->rlp());
+      recovered.trx_rlp = cloneBridgeBytes(envelope.tx_rlp);
       recovered_transactions.push_back(std::move(recovered));
     }
 

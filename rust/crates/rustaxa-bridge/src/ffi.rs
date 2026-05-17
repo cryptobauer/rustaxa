@@ -8,6 +8,7 @@ use crate::proposed_blocks::*;
 use crate::slashing::*;
 use crate::sortition::*;
 use crate::storage::*;
+use crate::transaction::*;
 use crate::transaction_manager::*;
 use crate::transaction_queue::*;
 use crate::vdf::*;
@@ -174,6 +175,29 @@ pub mod rustaxa_ffi {
 
     struct TxRlp {
         data: Vec<u8>,
+    }
+
+    /// Rust-inspected legacy transaction facts.
+    ///
+    /// `sender_found == false` means regular signature recovery failed. System
+    /// transaction inspection always returns the fixed Taraxa system sender.
+    struct LegacyTransactionInspection {
+        hash: [u8; 32],
+        sender_found: bool,
+        sender: [u8; 20],
+        signature_valid: bool,
+        nonce: [u8; 32],
+        gas_price: [u8; 32],
+        gas_limit: u64,
+        receiver_found: bool,
+        receiver: [u8; 20],
+        value: [u8; 32],
+        data: Vec<u8>,
+        data_size: usize,
+        chain_id: u64,
+        intrinsic_gas_covered: bool,
+        cost: [u8; 32],
+        tx_rlp: Vec<u8>,
     }
 
     /// TransactionQueue construction limits.
@@ -2945,6 +2969,14 @@ pub mod rustaxa_ffi {
             self: &BridgeStorage,
             period: u64,
         ) -> Result<Vec<u8>>;
+
+        // Transaction envelope
+
+        pub fn inspect_legacy_transaction_rlp(
+            tx_rlp: Vec<u8>,
+            source: u8,
+        ) -> Result<LegacyTransactionInspection>;
+
         pub fn save_transaction(
             self: &BridgeStorage,
             hash: &[u8; 32],

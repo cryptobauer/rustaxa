@@ -3,6 +3,7 @@ pub mod dag;
 pub mod final_chain;
 pub mod pbft;
 pub mod pillar;
+pub mod transaction;
 
 pub use dag::DagBlock;
 pub use final_chain::{
@@ -17,3 +18,4 @@ pub use pillar::{
     ValidatorVoteCountChange, decode_optimized_pillar_votes_bundle_rlp,
     encode_optimized_pillar_votes_bundle_rlp,
 };
+pub use transaction::{LegacyTransactionEnvelope, TARAXA_SYSTEM_ACCOUNT, intrinsic_gas};

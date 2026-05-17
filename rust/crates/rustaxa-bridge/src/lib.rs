@@ -9,6 +9,7 @@ mod proposed_blocks;
 mod slashing;
 mod sortition;
 mod storage;
+mod transaction;
 mod transaction_manager;
 mod transaction_queue;
 mod vdf;

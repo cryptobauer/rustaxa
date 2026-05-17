@@ -350,7 +350,10 @@ The current Rust starting point is intentionally small:
   The Rust-enabled `SlashingManager` overlay now routes deterministic double-voting proof planning, duplicate-proof
   cache decisions, submitter selection, and slashing contract calldata construction through Rust while C++ keeps live
   vote objects, account reads, gas bidding, transaction signing, and transaction-pool insertion.
-- `rustaxa-types` contains shared Rust domain and codec types.
+- `rustaxa-types` contains shared Rust domain and codec types, including the legacy transaction envelope used by
+  Rust-enabled transaction-manager shims to decode canonical RLP bytes, hash transactions, recover/validate senders,
+  compute intrinsic gas coverage, and surface deterministic nonce/gas/value/cost facts without calling C++
+  `Transaction` getters for those fields.
 - `rustaxa-types` now contains Rust pillar type and codec parity for `PillarBlock`,
   `ValidatorVoteCountChange`, `PillarVote`, `PillarBlockData`, optimized pillar-vote bundles, and current pillar data
   storage shape. Pillar-vote author recovery now lives on the Rust `PillarVote` type with C++ parity coverage for the
@@ -407,21 +410,23 @@ The current Rust starting point is intentionally small:
    lifecycle/finalization orchestration.
    The TransactionManager shim now owns an opaque Rust runtime handle for live queue metadata/payloads, known-cache
    state, non-finalized and recently-finalized transaction sidecars, and the authoritative transaction count. DAG
-   transaction persistence sends transaction identities/RLP and senders to Rust; Rust sources latest account nonces from
-   the Rust FinalChain runtime and owns sidecar membership checks, duplicate filtering, nonce-gated finalized-storage
+   transaction persistence now derives transaction hashes, senders, nonces, gas facts, costs, and canonical RLP payloads
+   through the shared Rust legacy transaction envelope before sending facts to the Rust runtime. Rust sources latest
+   account nonces from the Rust FinalChain runtime and owns sidecar membership checks, duplicate filtering,
+   nonce-gated finalized-storage
    lookup, accepted ordering, count planning, the storage batch, accepted non-finalized sidecar insertion, and accepted
    queue erasure before C++ logs removals. Finalized transaction status
    updates now send finalized hashes and RLP payloads to Rust; Rust plans count increments, retention eviction, periodic
    queue cleanup, recently-finalized sidecar insertion, non-finalized sidecar removal, known-cache marking, and queue
    erasure while persisting `TrxCount` before C++ logs side effects. Block-finalized queue cleanup and finalized-account
    purge now share a fused Rust runtime cleanup API that returns explicit per-phase removed hash groups.
-   `excludeFinalizedTransactions` and `verifyTransactionsNotFinalized` now collect only transaction identity facts in the
-   shim, then call Rust for latest FinalChain account nonce sourcing, sidecar membership, finalized-storage checks, and
-   deterministic filtering/short-circuit decisions. `verifyTransaction`, `insertTransaction`, and
-   `insertValidatedTransaction` now collect transaction/config/cache facts in the shim and call Rust for exact
-   verification reasons, latest FinalChain account sourcing, public insertion result mapping, staged known-fast-path
-   prechecks, finalized-location mapping, and fused proposable/non-proposable admission with Rust-owned live queue
-   mutation. Known-hash insert decisions now route through the Rust runtime precheck instead of a shim-local early return,
+   `excludeFinalizedTransactions` and `verifyTransactionsNotFinalized` now inspect legacy transaction envelopes in Rust
+   for identity facts, then call Rust for latest FinalChain account nonce sourcing, sidecar membership,
+   finalized-storage checks, and deterministic filtering/short-circuit decisions. `verifyTransaction`,
+   `insertTransaction`, and `insertValidatedTransaction` now inspect the transaction envelope in Rust and call Rust for
+   exact verification reasons, latest FinalChain account sourcing, public insertion result mapping, staged
+   known-fast-path prechecks, finalized-location mapping, and fused proposable/non-proposable admission with Rust-owned
+   live queue mutation. Known-hash insert decisions now route through the Rust runtime precheck instead of a shim-local early return,
    and `isTransactionKnown` now includes Rust sidecar membership checks alongside queue-known state. Rust now returns
    explicit validated-insert queue actions, public insert statuses, finalized lookup requests, and finalized
    known-cache/pool mutation actions so shim code applies side effects directly from Rust-planned intent instead of
