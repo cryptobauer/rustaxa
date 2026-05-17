@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/rustaxa-arena",
     "crates/rustaxa-bridge",
     "crates/rustaxa-consensus",
     "crates/rustaxa-storage",

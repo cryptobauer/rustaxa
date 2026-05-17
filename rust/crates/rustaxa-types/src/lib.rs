@@ -1,8 +1,10 @@
 pub mod codec;
 pub mod dag;
+pub mod ethereum;
 pub mod final_chain;
 pub mod pbft;
 pub mod pillar;
+pub mod time;
 pub mod transaction;
 
 pub use dag::DagBlock;
