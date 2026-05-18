@@ -10,3 +10,10 @@ ethereum-types = "0.16.0"
 rlp = "0.6.1"
 rustaxa-types = { version = "0.1.0", path = "../rustaxa-types" }
 slab = "0.4.12"
+
+[dev-dependencies]
+criterion = "0.7"
+
+[[bench]]
+name = "arena_bench"
+harness = false
