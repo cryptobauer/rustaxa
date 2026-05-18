@@ -418,17 +418,16 @@ The current Rust starting point is intentionally small:
    account nonces from the Rust FinalChain runtime and owns sidecar membership checks, duplicate filtering,
    nonce-gated finalized-storage
    lookup, accepted ordering, count planning, the storage batch, accepted non-finalized sidecar insertion, and accepted
-   queue erasure before returning lifecycle notices that C++ validates and logs. Finalized transaction status
+   queue erasure before returning a typed DAG-save command report that C++ validates and logs. Finalized transaction status
    updates now send finalized hashes and RLP payloads to Rust; Rust plans count increments, retention eviction, periodic
    queue cleanup, recently-finalized sidecar insertion, non-finalized sidecar removal, known-cache marking, and queue
-   erasure while persisting `TrxCount` before returning lifecycle notices that C++ validates and logs. Periodic
-   finalized-account purge now executes inside the Rust finalized-status report by sourcing account facts from Rust
-   FinalChain, mutating the Rust queue, and returning queue lifecycle notices to C++. Block-finalized queue cleanup and
-   finalized-account purge now share a fused Rust runtime report API that C++ consumes without inspecting queue-specific
-   plan structs.
+   erasure while persisting `TrxCount` before returning typed finalized-status command buckets that C++ validates and
+   logs. Periodic finalized-account purge now executes inside the Rust finalized-status command report by sourcing account
+   facts from Rust FinalChain and mutating the Rust queue. Block-finalized queue cleanup returns a typed Rust queue-expiry
+   command report, so C++ no longer switches on raw lifecycle notice IDs for these mutation paths.
    Non-finalized recovery now asks Rust to delete stale finalized rows, inspect survivor legacy envelopes, validate key
-   hash and sender facts, insert survivor sidecar payloads into the Rust runtime, and return lifecycle notices instead
-   of a C++-applied recovery input list.
+   hash and sender facts, insert survivor sidecar payloads into the Rust runtime, and return a typed recovery command
+   report instead of a C++-applied recovery input list.
    `excludeFinalizedTransactions` and `verifyTransactionsNotFinalized` now inspect legacy transaction envelopes in Rust
    for identity facts, then call Rust for latest FinalChain account nonce sourcing, sidecar membership,
    finalized-storage checks, and deterministic filtering/short-circuit decisions. `verifyTransaction`,
