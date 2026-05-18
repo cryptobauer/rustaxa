@@ -6,9 +6,10 @@
 //! keep their [`bytes::Bytes`] allocation to avoid copying large buffers into
 //! every arena slot.
 //!
-//! [`PacketId`] identifies packet creation order within the current process.
-//! The keys returned by [`Arena::insert`] are slab handles local to one arena
-//! and may be reused after removal.
+//! [`PacketId`] combines a monotonic packet identifier with the packet's slab
+//! storage key. The storage key is local to one arena and may be reused after
+//! removal, while the monotonic identifier distinguishes stale handles from the
+//! packet currently occupying the same slab slot.
 
 use chrono::Utc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -18,14 +19,17 @@ use rustaxa_types::time::Microseconds;
 
 static PACKET_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-/// Monotonic process-local identifier assigned when a packet is created.
+/// Arena handle assigned when a packet is inserted.
 ///
-/// This id is separate from the slab key returned by [`Arena::insert`]. Slab
-/// keys may be reused after removal, while packet ids identify packet creation
-/// order within the current process.
+/// A packet id pairs a monotonic process-local identifier with the slab storage
+/// key used for fast arena access. The storage key can be reused after removal,
+/// so lookups should validate both fields before returning a packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PacketId {
+    /// Monotonic process-local id used to distinguish stale slab handles.
     internal_id: usize,
+
+    /// Slab key where the packet was inserted.
     storage_key: usize,
 }
 
@@ -82,7 +86,7 @@ impl Packet {
     ///
     /// Payloads up to [`INLINE_LIMIT`] bytes are copied into the packet entry.
     /// Larger payloads retain the provided [`bytes::Bytes`] handle.
-    pub fn new(from_node: NodeId, payload: bytes::Bytes, storage_key: usize) -> Self {
+    fn new(from_node: NodeId, payload: bytes::Bytes, storage_key: usize) -> Self {
         Packet {
             id: PacketId {
                 internal_id: PACKET_COUNTER.fetch_add(1, Ordering::Relaxed),
@@ -114,8 +118,9 @@ impl Packet {
 
 /// Slab-backed packet arena.
 ///
-/// The arena owns packets and returns slab keys for later lookup or removal.
-/// Keys are local to this arena and may be reused after a packet is removed.
+/// The arena owns packets and returns [`PacketId`] handles for later lookup or
+/// removal. Each handle contains an arena-local slab key plus a monotonic id for
+/// stale-handle detection.
 pub struct Arena {
     store: slab::Slab<Packet>,
 }
@@ -128,9 +133,10 @@ impl Arena {
         }
     }
 
-    /// Inserts a packet and returns its slab key.
+    /// Inserts a packet and returns its arena handle.
     ///
-    /// The returned key is an arena-local handle, not a stable packet identity.
+    /// The returned [`PacketId`] includes both the slab storage key and the
+    /// packet's monotonic process-local id.
     pub fn insert(&mut self, from_node: NodeId, payload: bytes::Bytes) -> PacketId {
         let key = self.store.vacant_key();
         let packet = Packet::new(from_node, payload, key);
@@ -139,14 +145,23 @@ impl Arena {
         packet_id
     }
 
-    /// Returns the packet stored at `key`, if the key is currently occupied.
-    pub fn get(&self, key: usize) -> Option<&Packet> {
-        self.store.get(key)
+    /// Returns the packet identified by `packet_id`, if it is still present.
+    ///
+    /// Both the slab storage key and monotonic id must match, so stale packet
+    /// ids do not resolve to newer packets that reused the same slab slot.
+    pub fn get(&self, packet_id: PacketId) -> Option<&Packet> {
+        self.store
+            .get(packet_id.storage_key)
+            .filter(|packet| packet.id == packet_id)
     }
 
-    /// Removes and returns the packet stored at `key`, if the key is occupied.
-    pub fn try_remove(&mut self, key: usize) -> Option<Packet> {
-        self.store.try_remove(key)
+    /// Removes and returns the packet at `packet_id`'s storage key, if occupied.
+    ///
+    /// This uses the storage key embedded in [`PacketId`]. Callers that may hold
+    /// stale ids should check [`Arena::get`] first if they need the monotonic id
+    /// to match before removal.
+    pub fn try_remove(&mut self, packet_id: PacketId) -> Option<Packet> {
+        self.store.try_remove(packet_id.storage_key)
     }
 
     /// Returns the number of packets currently stored in the arena.
@@ -219,7 +234,7 @@ mod tests {
     fn test_packet_size_is_2048() {
         assert_eq!(
             mem::size_of::<Packet>(),
-            2048,
+            PACKET_SIZE,
             "Packet size is not 2048 bytes"
         );
     }
@@ -273,9 +288,7 @@ mod tests {
         let packet_id = arena.insert(from_node, payload);
 
         assert_eq!(arena.len(), 1);
-        let retrieved = arena
-            .get(packet_id.storage_key)
-            .expect("packet should be present");
+        let retrieved = arena.get(packet_id).expect("packet should be present");
         assert_eq!(retrieved.id.storage_key, packet_id.storage_key);
         assert_eq!(retrieved.from_node, expected_node);
         assert_eq!(retrieved.payload(), expected_payload.as_ref());
@@ -291,16 +304,13 @@ mod tests {
         let key3 = arena.insert(from_node, test_payload_heap());
 
         assert_eq!(arena.len(), 3);
+        assert_eq!(arena.get(key1).unwrap().payload(), [0xc3, 0x01, 0x02, 0x03]);
         assert_eq!(
-            arena.get(key1.storage_key).unwrap().payload(),
-            [0xc3, 0x01, 0x02, 0x03]
-        );
-        assert_eq!(
-            arena.get(key2.storage_key).unwrap().payload(),
+            arena.get(key2).unwrap().payload(),
             vec![0xAB; INLINE_LIMIT].as_slice()
         );
         assert_eq!(
-            arena.get(key3.storage_key).unwrap().payload(),
+            arena.get(key3).unwrap().payload(),
             vec![0xCD; INLINE_LIMIT + 1].as_slice()
         );
     }
@@ -312,9 +322,9 @@ mod tests {
         let key = arena.insert(from_node, test_payload1());
 
         assert_eq!(arena.len(), 1);
-        let removed = arena.try_remove(key.storage_key).unwrap();
+        let removed = arena.try_remove(key).unwrap();
         assert_eq!(removed.payload(), [0xc3, 0x01, 0x02, 0x03]);
         assert_eq!(arena.len(), 0);
-        assert!(arena.get(key.storage_key).is_none());
+        assert!(arena.get(key).is_none());
     }
 }
