@@ -27,10 +27,12 @@ use crate::ffi::rustaxa_ffi::{
     TransactionManagerSidecarLookup, TransactionManagerSidecarLookupPlan,
     TransactionManagerSidecarLookupRequest, TransactionManagerSidecarRecoveryInsertInput,
     TransactionManagerSidecarTransitionInput, TransactionManagerStoredTransactionLookup,
-    TransactionManagerStoredTransactionRequest, TransactionManagerValidatedInsertFact,
-    TransactionManagerValidatedInsertPlan, TransactionManagerValidatedInsertRuntimeFact,
-    TransactionManagerValidatedInsertSidecarFact, TransactionManagerVerifyNotFinalizedFact,
-    TransactionManagerVerifyNotFinalizedOutcome, TransactionManagerVerifyNotFinalizedRuntimeFact,
+    TransactionManagerStoredTransactionRequest, TransactionManagerTransactionView,
+    TransactionManagerTransactionViewPlan, TransactionManagerTransactionViewRequest,
+    TransactionManagerValidatedInsertFact, TransactionManagerValidatedInsertPlan,
+    TransactionManagerValidatedInsertRuntimeFact, TransactionManagerValidatedInsertSidecarFact,
+    TransactionManagerVerifyNotFinalizedFact, TransactionManagerVerifyNotFinalizedOutcome,
+    TransactionManagerVerifyNotFinalizedRuntimeFact,
     TransactionManagerVerifyNotFinalizedSidecarFact, TransactionManagerVerifyTransactionFact,
     TransactionManagerVerifyTransactionOutcome, TransactionPackCandidateDecision,
     TransactionPackCandidateInput, TransactionPackEstimateInput, TransactionPackEstimateOutcome,
@@ -79,6 +81,13 @@ use rustaxa_consensus::transaction_queue::{
 use rustaxa_types::LegacyTransactionEnvelope;
 use std::time::{Duration, Instant};
 
+const TM_TRANSACTION_VIEW_SOURCE_MISSING: u8 = 0;
+const TM_TRANSACTION_VIEW_SOURCE_QUEUE: u8 = 1;
+const TM_TRANSACTION_VIEW_SOURCE_NON_FINALIZED_SIDECAR: u8 = 2;
+const TM_TRANSACTION_VIEW_SOURCE_RECENTLY_FINALIZED_SIDECAR: u8 = 3;
+const TM_TRANSACTION_VIEW_SOURCE_STORAGE_PENDING: u8 = 4;
+const TM_TRANSACTION_VIEW_SOURCE_STORAGE_FINALIZED_REGULAR: u8 = 5;
+const TM_TRANSACTION_VIEW_SOURCE_STORAGE_FINALIZED_SYSTEM: u8 = 6;
 const TM_VERIFY_TRANSACTION_STATUS_ACCEPTED: u8 =
     TransactionManagerVerifyTransactionStatus::Accepted as u8;
 const TM_VERIFY_TRANSACTION_STATUS_CHAIN_ID_MISMATCH: u8 =
@@ -1553,6 +1562,39 @@ struct StoredTransactionIdentity {
     nonce: U256,
 }
 
+fn transaction_manager_transaction_view_source_from_stored_transaction_source(
+    source: u8,
+) -> Result<u8> {
+    match source {
+        TM_STORED_TX_SOURCE_MISSING => Ok(TM_TRANSACTION_VIEW_SOURCE_MISSING),
+        TM_STORED_TX_SOURCE_PENDING => Ok(TM_TRANSACTION_VIEW_SOURCE_STORAGE_PENDING),
+        TM_STORED_TX_SOURCE_FINALIZED_REGULAR => {
+            Ok(TM_TRANSACTION_VIEW_SOURCE_STORAGE_FINALIZED_REGULAR)
+        }
+        TM_STORED_TX_SOURCE_FINALIZED_SYSTEM => {
+            Ok(TM_TRANSACTION_VIEW_SOURCE_STORAGE_FINALIZED_SYSTEM)
+        }
+        _ => Err(anyhow!("TM_TRANSACTION_VIEW_UNKNOWN_STORED_SOURCE")),
+    }
+}
+
+fn transaction_manager_transaction_view_source_from_sidecar_transaction_source(
+    source: u8,
+) -> Result<u8> {
+    match source {
+        1 => Ok(TM_TRANSACTION_VIEW_SOURCE_NON_FINALIZED_SIDECAR),
+        2 => Ok(TM_TRANSACTION_VIEW_SOURCE_RECENTLY_FINALIZED_SIDECAR),
+        _ => Err(anyhow!("TM_TRANSACTION_VIEW_UNKNOWN_SIDECAR_SOURCE")),
+    }
+}
+
+fn bounded_transaction_view_count(requests_len: usize, max_count: u64) -> usize {
+    match max_count {
+        0 => requests_len,
+        _ => (max_count.min(requests_len as u64)) as usize,
+    }
+}
+
 /// Bridge-owned Rust TransactionManager sidecar wrapper.
 pub struct BridgeTransactionManagerSidecar(pub TransactionManagerSidecar);
 
@@ -1693,6 +1735,111 @@ fn inspect_stored_transaction_identity(
     Ok(StoredTransactionIdentity {
         sender: sender.0,
         nonce: tx.nonce,
+    })
+}
+
+fn transaction_manager_runtime_lookup_transaction_views_inner(
+    runtime: &BridgeTransactionManagerRuntime,
+    requests: Vec<TransactionManagerTransactionViewRequest>,
+    max_count: u64,
+    mut transaction_lookup: impl FnMut(
+        Vec<TransactionManagerStoredTransactionRequest>,
+    ) -> Result<Vec<TransactionManagerStoredTransactionLookup>>,
+) -> Result<TransactionManagerTransactionViewPlan> {
+    let total_requests = requests.len();
+    let requested_count = bounded_transaction_view_count(total_requests, max_count) as u64;
+    let mut views = Vec::with_capacity(requested_count as usize);
+    let mut sidecar_requests = Vec::new();
+    let mut sidecar_view_indexes = Vec::new();
+
+    for request in requests.into_iter().take(requested_count as usize) {
+        let hash = H256::from(request.hash);
+        let queue_view = runtime.queue.transaction(hash);
+
+        let mut view = TransactionManagerTransactionView {
+            input_index: request.input_index,
+            hash: request.hash,
+            found: false,
+            source: TM_TRANSACTION_VIEW_SOURCE_MISSING,
+            old_finalized: false,
+            tx_rlp: Vec::new(),
+        };
+
+        if let Some(entry) = queue_view {
+            view.found = true;
+            view.source = TM_TRANSACTION_VIEW_SOURCE_QUEUE;
+            view.tx_rlp = entry.rlp;
+            views.push(view);
+            continue;
+        }
+
+        let view_index = views.len();
+        views.push(view);
+        sidecar_requests.push((request.input_index, hash));
+        sidecar_view_indexes.push(view_index);
+    }
+
+    if !sidecar_requests.is_empty() {
+        let sidecar_lookups = runtime
+            .sidecar
+            .lookup_payloads_ordered(
+                sidecar_requests
+                    .into_iter()
+                    .map(|request| (request.0, request.1))
+                    .collect(),
+            )
+            .context("TM_RUNTIME_TRANSACTION_VIEW_SIDECAR_LOOKUP")?;
+        ensure!(
+            sidecar_lookups.len() == sidecar_view_indexes.len(),
+            "TM_RUNTIME_TRANSACTION_VIEW_SIDECAR_RESULT_COUNT_MISMATCH"
+        );
+
+        let mut storage_requests = Vec::new();
+        let mut storage_view_indexes = Vec::new();
+        for (idx, lookup) in sidecar_lookups.into_iter().enumerate() {
+            let view_index = sidecar_view_indexes[idx];
+            if lookup.found {
+                let source =
+                    transaction_manager_transaction_view_source_from_sidecar_transaction_source(
+                        lookup.source,
+                    )
+                    .context("TM_RUNTIME_TRANSACTION_VIEW_SIDECAR_SOURCE")?;
+                views[view_index].found = true;
+                views[view_index].source = source;
+                views[view_index].tx_rlp = lookup.trx_rlp;
+            } else {
+                storage_requests.push(TransactionManagerStoredTransactionRequest {
+                    input_index: lookup.input_index,
+                    hash: lookup.hash.0,
+                });
+                storage_view_indexes.push(view_index);
+            }
+        }
+
+        if !storage_requests.is_empty() {
+            let stored_lookups = transaction_lookup(storage_requests)?;
+            ensure!(
+                stored_lookups.len() == storage_view_indexes.len(),
+                "TM_RUNTIME_TRANSACTION_VIEW_STORED_RESULT_COUNT_MISMATCH"
+            );
+            for (idx, lookup) in stored_lookups.into_iter().enumerate() {
+                let view_index = storage_view_indexes[idx];
+                views[view_index].found = lookup.found;
+                views[view_index].old_finalized = lookup.old_finalized;
+                views[view_index].tx_rlp = lookup.tx_rlp;
+                views[view_index].source =
+                    transaction_manager_transaction_view_source_from_stored_transaction_source(
+                        lookup.source,
+                    )
+                    .context("TM_RUNTIME_TRANSACTION_VIEW_STORED_SOURCE")?;
+            }
+        }
+    }
+
+    Ok(TransactionManagerTransactionViewPlan {
+        requested_count,
+        complete: requested_count == total_requests as u64,
+        views,
     })
 }
 
@@ -2193,6 +2340,37 @@ impl BridgeTransactionManagerRuntime {
         self.sidecar.transaction_count()
     }
 
+    /// Returns queue-only payload views.
+    pub fn transaction_manager_runtime_queue_lookup_transaction_views(
+        &self,
+        requests: Vec<TransactionManagerTransactionViewRequest>,
+    ) -> Result<Vec<TransactionManagerTransactionView>> {
+        Ok(requests
+            .into_iter()
+            .map(|request| {
+                let entry = self.queue.transaction(H256::from(request.hash));
+                match entry {
+                    Some(entry) => TransactionManagerTransactionView {
+                        input_index: request.input_index,
+                        hash: request.hash,
+                        found: true,
+                        source: TM_TRANSACTION_VIEW_SOURCE_QUEUE,
+                        old_finalized: false,
+                        tx_rlp: entry.rlp,
+                    },
+                    None => TransactionManagerTransactionView {
+                        input_index: request.input_index,
+                        hash: request.hash,
+                        found: false,
+                        source: TM_TRANSACTION_VIEW_SOURCE_MISSING,
+                        old_finalized: false,
+                        tx_rlp: Vec::new(),
+                    },
+                }
+            })
+            .collect())
+    }
+
     /// Returns Rust's known-transaction decision using runtime queue and sidecar state.
     pub fn transaction_manager_runtime_is_transaction_known(
         &self,
@@ -2204,6 +2382,83 @@ impl BridgeTransactionManagerRuntime {
                 queue_known: self.queue.is_transaction_known(H256::from(fact.hash)),
             })
             .context("TM_RUNTIME_IS_TRANSACTION_KNOWN")
+    }
+
+    /// Returns bounded, source-ordered runtime payload views from queue, sidecars, and storage.
+    pub fn transaction_manager_runtime_lookup_transaction_views(
+        &self,
+        storage: &BridgeStorage,
+        requests: Vec<TransactionManagerTransactionViewRequest>,
+        max_count: u64,
+    ) -> Result<TransactionManagerTransactionViewPlan> {
+        transaction_manager_runtime_lookup_transaction_views_inner(
+            self,
+            requests,
+            max_count,
+            |stored_requests| {
+                transaction_manager_load_stored_transactions(storage, stored_requests)
+            },
+        )
+    }
+
+    /// Returns bounded, source-ordered runtime payload views including proposal-period filtering.
+    pub fn transaction_manager_runtime_lookup_proposal_transaction_views(
+        &self,
+        storage: &BridgeStorage,
+        final_chain: &BridgeFinalChain,
+        proposal_period: u64,
+        requests: Vec<TransactionManagerTransactionViewRequest>,
+        max_count: u64,
+    ) -> Result<TransactionManagerTransactionViewPlan> {
+        transaction_manager_runtime_lookup_transaction_views_inner(
+            self,
+            requests,
+            max_count,
+            |stored_requests| {
+                transaction_manager_load_proposal_transactions_with_final_chain(
+                    storage,
+                    final_chain,
+                    proposal_period,
+                    stored_requests,
+                )
+            },
+        )
+    }
+
+    /// Returns non-finalized/recently-finalized sidecar payload views.
+    pub fn transaction_manager_runtime_lookup_non_finalized_transaction_views(
+        &self,
+        requests: Vec<TransactionManagerTransactionViewRequest>,
+    ) -> Result<Vec<TransactionManagerTransactionView>> {
+        let lookups = self
+            .sidecar
+            .lookup_payloads_ordered(
+                requests
+                    .into_iter()
+                    .map(|request| (request.input_index, H256::from(request.hash)))
+                    .collect(),
+            )
+            .context("TM_RUNTIME_TRANSACTION_VIEW_NON_FINALIZED_LOOKUP")?;
+        Ok(lookups
+            .into_iter()
+            .map(|lookup| {
+                let found = lookup.found
+                    && lookup.source
+                        == rustaxa_consensus::transaction_manager::TransactionManagerSidecarLookup::SOURCE_NON_FINALIZED;
+                TransactionManagerTransactionView {
+                    input_index: lookup.input_index,
+                    hash: lookup.hash.0,
+                    found,
+                    source: if found {
+                        TM_TRANSACTION_VIEW_SOURCE_NON_FINALIZED_SIDECAR
+                    } else {
+                        TM_TRANSACTION_VIEW_SOURCE_MISSING
+                    },
+                    old_finalized: false,
+                    tx_rlp: if found { lookup.trx_rlp } else { Vec::new() },
+                }
+            })
+            .collect())
     }
 
     /// Inserts or updates one live non-finalized sidecar payload.
@@ -3494,6 +3749,215 @@ mod tests {
         assert!(!after[0].found);
         assert!(after[0].old_finalized);
         assert!(after[0].tx_rlp.is_empty());
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    fn transaction_manager_view_request(
+        input_index: u64,
+        hash: u8,
+    ) -> TransactionManagerTransactionViewRequest {
+        TransactionManagerTransactionViewRequest {
+            input_index,
+            hash: [hash; 32],
+        }
+    }
+
+    #[test]
+    fn bridge_transaction_manager_runtime_lookup_transaction_views_enforces_source_precedence_and_bounds(
+    ) {
+        let temp_dir =
+            unique_temp_dir("rustaxa_bridge_transaction_manager_runtime_lookup_transaction_views");
+        let storage = crate::storage::create_storage(
+            temp_dir.to_str().expect("temp path should be valid UTF-8"),
+        )
+        .expect("storage should initialize");
+
+        let mut runtime =
+            create_transaction_manager_runtime(11, TransactionQueueConfig { max_size: 32 });
+        runtime
+            .transaction_manager_runtime_queue_insert(runtime_queue_input_for_sender(
+                1, [9u8; 20], 7, true,
+            ))
+            .expect("queue insert should seed");
+
+        runtime
+            .transaction_manager_runtime_insert_non_finalized(
+                TransactionManagerSidecarInsertInput {
+                    hash: [2u8; 32],
+                    trx_rlp: vec![0x22],
+                },
+            )
+            .expect("non-finalized sidecar insert should seed");
+        runtime
+            .transaction_manager_runtime_insert_non_finalized(
+                TransactionManagerSidecarInsertInput {
+                    hash: [3u8; 32],
+                    trx_rlp: vec![0x33],
+                },
+            )
+            .expect("recently-finalized sidecar seed should insert");
+        runtime
+            .transaction_manager_runtime_apply_finalized_transition(
+                TransactionManagerSidecarTransitionInput {
+                    period: 10,
+                    hashes: vec![crate::ffi::rustaxa_ffi::TransactionManagerSidecarHash {
+                        hash: [3u8; 32],
+                    }],
+                },
+            )
+            .expect("sidecar finalized transition should move source");
+
+        storage
+            .save_transaction(&[4u8; 32], vec![0x44])
+            .expect("storage pending payload should persist");
+
+        storage
+            .save_transaction_location(&[5u8; 32], 99, 0, false)
+            .expect("finalized location should persist");
+        let mut txs = RlpStream::new_list(1);
+        txs.append_raw(&[0x55], 1);
+        let mut period_data = RlpStream::new_list(5);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&txs.out(), 1);
+        period_data.append_raw(&[0xC0], 1);
+        storage
+            .save_period_data(99, period_data.out().as_ref().to_vec())
+            .expect("finalized period data should persist");
+
+        let plan = runtime
+            .transaction_manager_runtime_lookup_transaction_views(
+                &storage,
+                vec![
+                    transaction_manager_view_request(1, 1),
+                    transaction_manager_view_request(2, 2),
+                    transaction_manager_view_request(3, 3),
+                    transaction_manager_view_request(4, 4),
+                    transaction_manager_view_request(5, 5),
+                    transaction_manager_view_request(6, 6),
+                ],
+                4,
+            )
+            .expect("bounded runtime view should resolve");
+
+        assert_eq!(plan.requested_count, 4);
+        assert!(!plan.complete);
+        assert_eq!(plan.views.len(), 4);
+        assert_eq!(plan.views[0].source, TM_TRANSACTION_VIEW_SOURCE_QUEUE);
+        assert_eq!(plan.views[0].found, true);
+        assert_eq!(plan.views[0].tx_rlp, vec![0xaa, 0xbb, 0xcc]);
+        assert_eq!(
+            plan.views[1].source,
+            TM_TRANSACTION_VIEW_SOURCE_NON_FINALIZED_SIDECAR
+        );
+        assert_eq!(plan.views[1].found, true);
+        assert_eq!(plan.views[1].tx_rlp, vec![0x22]);
+        assert_eq!(
+            plan.views[2].source,
+            TM_TRANSACTION_VIEW_SOURCE_RECENTLY_FINALIZED_SIDECAR
+        );
+        assert_eq!(plan.views[2].tx_rlp, vec![0x33]);
+        assert_eq!(
+            plan.views[3].source,
+            TM_TRANSACTION_VIEW_SOURCE_STORAGE_PENDING
+        );
+        assert_eq!(plan.views[3].tx_rlp, vec![0x44]);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_transaction_manager_runtime_lookup_transaction_views_with_final_chain_marks_old_finalized(
+    ) {
+        let temp_dir = unique_temp_dir(
+            "rustaxa_bridge_transaction_manager_runtime_lookup_transaction_views_fc",
+        );
+        let storage = crate::storage::create_storage(
+            temp_dir.to_str().expect("temp path should be valid UTF-8"),
+        )
+        .expect("storage should initialize");
+
+        let signing_key = SigningKey::from_slice(&[0x34u8; 32]).unwrap();
+        let sender = address_from_signing_key(&signing_key);
+        let sender_bytes: [u8; 20] = sender.into();
+        let transaction_rlp = signed_legacy_transaction_rlp(&signing_key, 1, 2999);
+        let transaction_hash = keccak256(&transaction_rlp).0;
+        let pbft_key = SigningKey::from_slice(&[0x35u8; 32]).unwrap();
+        let pbft_block = signed_pbft_block(&pbft_key, 1, 1000);
+        storage
+            .save_transaction_location(&transaction_hash, 1, 0, false)
+            .expect("proposal storage location should persist");
+        storage
+            .save_period_data(
+                1,
+                period_data_rlp_with_pbft(&pbft_block, std::slice::from_ref(&transaction_rlp)),
+            )
+            .expect("period data should persist");
+
+        let final_chain = crate::final_chain::create_final_chain(
+            &storage,
+            1_000_000,
+            0,
+            vec![crate::ffi::rustaxa_ffi::GenesisAccount {
+                address: sender_bytes,
+                balance: U256::from(1_000_000u64).to_big_endian().to_vec(),
+            }],
+            vec![],
+            crate::ffi::rustaxa_ffi::GenesisDposConfig {
+                eligibility_balance_threshold: vec![],
+                vote_eligibility_balance_step: U256::one().to_big_endian().to_vec(),
+                validator_maximum_stake: U256::from(30_000u64).to_big_endian().to_vec(),
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+        )
+        .expect("final chain should initialize");
+
+        final_chain
+            .finalize_block(
+                pbft_block,
+                vec![crate::ffi::rustaxa_ffi::FinalizationTransaction {
+                    hash: transaction_hash,
+                    sender: sender_bytes,
+                    receiver_found: true,
+                    receiver: [0x55u8; 20],
+                    nonce: 2,
+                    value: U256::from(3u64).to_big_endian().to_vec(),
+                    gas_price: U256::from(2u64).to_big_endian().to_vec(),
+                    gas_limit: 21_000,
+                    data: vec![],
+                    rlp: transaction_rlp.clone(),
+                }],
+                vec![],
+            )
+            .expect("finalization should create block-scoped account snapshot");
+
+        let runtime =
+            create_transaction_manager_runtime(11, TransactionQueueConfig { max_size: 32 });
+        let plan = runtime
+            .transaction_manager_runtime_lookup_proposal_transaction_views(
+                &storage,
+                &final_chain,
+                1,
+                vec![TransactionManagerTransactionViewRequest {
+                    input_index: 10,
+                    hash: transaction_hash,
+                }],
+                0,
+            )
+            .expect("runtime view lookup with final-chain filtering should execute");
+
+        assert_eq!(plan.requested_count, 1);
+        assert!(plan.complete);
+        assert_eq!(plan.views.len(), 1);
+        assert!(plan.views[0].old_finalized);
+        assert_eq!(plan.views[0].found, false);
+        assert_eq!(
+            plan.views[0].source,
+            TM_TRANSACTION_VIEW_SOURCE_STORAGE_FINALIZED_REGULAR
+        );
+        assert!(plan.views[0].tx_rlp.is_empty());
 
         let _ = fs::remove_dir_all(temp_dir);
     }

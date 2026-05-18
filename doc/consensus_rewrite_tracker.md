@@ -56,6 +56,11 @@ Required test coverage and parity gates for the Rust consensus model are defined
 | Slashing manager | `slashing_manager/slashing_manager.*`, `slashing_manager_shim/*` | 102 lines | `partial` | Rust planner behind C++ overlay shim | Double-voting proof eligibility, canonical proof hash/cache, first funded submitter selection, contract address/gas/value envelope, and calldata construction route through Rust under `RUSTAXA_ENABLE_SLASHING_MANAGER`. C++ keeps live `PbftVote` objects, FinalChain account reads, GasPricer bid, transaction signing, and TransactionManager insertion. |
 | Key manager | `key_manager/key_manager.*` | 55 lines | `cpp-owned` | C++ initially | Small wallet/secret wrapper; not on critical rewrite path. |
 
+Current TransactionManager read boundary: `getTransaction`, `getTransactions`, `getBlockTransactions`,
+`getNonfinalizedTrx`, and `getPoolTransactions` consume Rust-owned transaction views that preserve request order and
+duplicates while resolving queue, sidecar, pending-storage, finalized-regular, and finalized-system sources. C++ keeps
+only transaction object materialization, logging, locks, EVM execution, event mechanics, and broader orchestration.
+
 ## Public API Tracker
 
 ### DAG
@@ -89,7 +94,7 @@ Required test coverage and parity gates for the Rust consensus model are defined
 | Class | Public API groups | Dependencies | Tests | Target |
 | --- | --- | --- | --- | --- |
 | `TransactionQueue` | insert/erase/get/order/group/contains/size/purge/known tx/min gas price | `FinalChain`, transactions | `transaction_test`, `transaction_queue_shim_test`, `gas_pricer_test`, `full_node_test` pool cases | Rust metadata and queued RLP payloads behind a full overlay shim; C++ materializes transactions and still owns known-cache timing plus FinalChain purge reads |
-| `TransactionManager` | verify/insert/pack/get/finalize status/non-finalized recovery/gas estimation | `DbStorage`, `FinalChain`, thread pool, `DagBlock`, state API | `transaction_test`, `transaction_manager_shim_test`, `dag_block_test`, `pbft_manager_test`, `full_node_test` | Rust-backed packing, DAG persistence, finalized-status execution, storage-backed transaction lookup, non-finalized recovery reads, finalized filter/verification helpers, verification/validated-insert admission planning, Rust-owned queue payloads, Rust lifecycle cleanup reports, and Rust-mode pending-transaction event emission with C++ sidecar/materialization/estimation shell; live pool/non-finalized/count read helpers are shim-owned; continue moving lifecycle mutation before broader orchestration |
+| `TransactionManager` | verify/insert/pack/get/finalize status/non-finalized recovery/gas estimation | `DbStorage`, `FinalChain`, thread pool, `DagBlock`, state API | `transaction_test`, `transaction_manager_shim_test`, `dag_block_test`, `pbft_manager_test`, `full_node_test` | Rust-backed packing, DAG persistence, finalized-status execution, storage-backed transaction lookup, Rust-owned transaction views for queue/sidecar/storage reads, non-finalized recovery reads, finalized filter/verification helpers, verification/validated-insert admission planning, Rust-owned queue payloads, Rust lifecycle cleanup reports, and Rust-mode pending-transaction event emission with C++ materialization/estimation shell; continue moving lifecycle mutation before broader orchestration |
 | `GasPricer` | gas price reads/calculation | `DbStorage`, `TransactionManager` | `transaction_test`, full-node transaction tests | Rust after queue semantics are stable |
 
 ### Pillar, Rewards, Slashing

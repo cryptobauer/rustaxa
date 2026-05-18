@@ -441,14 +441,16 @@ The current Rust starting point is intentionally small:
    explicit validated-insert queue actions, public insert statuses, finalized lookup requests, and finalized
    known-cache/pool mutation actions so shim code applies side effects directly from Rust-planned intent instead of
    inferring local action intent. The Rust-mode facade now owns the public `transaction_added_` event surface and emits it
-   from shim-owned code after Rust accepts a proposable queue mutation. Live pool helpers remain shim-owned under the existing
-   transaction mutex and no longer forward to `TransactionManagerOld`; they now materialize from Rust runtime queue or
-   sidecar RLP. The Rust runtime state exposes the authoritative Rust-mode transaction count and drives count reads
-   after persistence/finalization commits. Rust FinalChain now exposes block-scoped account snapshots, and
-   `getTransactions`/`getBlockTransactions` use a proposal-specific Rust storage lookup that verifies stored transaction
-   RLP hashes, inspects legacy sender/nonce identity in Rust, and applies proposal-period finalized-account nonce
-   filtering before C++ materializes returned payloads. Remaining live-shell gaps are EVM estimation execution, event/log
-   mechanics, and broader lifecycle orchestration.
+   from shim-owned code after Rust accepts a proposable queue mutation. Transaction read helpers no longer infer source
+   order in C++: `getTransaction`, `getTransactions`, `getBlockTransactions`, `getNonfinalizedTrx`, and
+   `getPoolTransactions` now consume Rust-owned transaction views that preserve request order and duplicates while
+   resolving queue, non-finalized sidecar, recently-finalized sidecar, pending storage, finalized regular storage, and
+   finalized system storage sources. The Rust runtime state exposes the authoritative Rust-mode transaction count and
+   drives count reads after persistence/finalization commits. Rust FinalChain now exposes block-scoped account snapshots,
+   and proposal transaction views verify stored transaction RLP hashes, inspect legacy sender/nonce identity in Rust, and
+   apply proposal-period finalized-account nonce filtering before C++ materializes returned payloads. Remaining live-shell
+   gaps are EVM estimation execution, event/log mechanics, public transaction object construction, final materialization,
+   and broader lifecycle orchestration.
    `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
    selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
    lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode

@@ -901,6 +901,31 @@ pub mod rustaxa_ffi {
         tx_rlp: Vec<u8>,
     }
 
+    /// One ordered TransactionManager runtime transaction view request.
+    struct TransactionManagerTransactionViewRequest {
+        input_index: u64,
+        hash: [u8; 32],
+    }
+
+    /// One source-ordered TransactionManager runtime payload view entry.
+    struct TransactionManagerTransactionView {
+        input_index: u64,
+        hash: [u8; 32],
+        found: bool,
+        /// Source precedence is queue / live sidecars / storage in one API surface.
+        source: u8,
+        /// True when a proposal-period account snapshot filtered a finalized tx as old.
+        old_finalized: bool,
+        tx_rlp: Vec<u8>,
+    }
+
+    /// Bounded payload-view plan preserving caller ordering semantics.
+    struct TransactionManagerTransactionViewPlan {
+        requested_count: u64,
+        complete: bool,
+        views: Vec<TransactionManagerTransactionView>,
+    }
+
     /// One non-finalized transaction recovery entry loaded from Rust storage.
     ///
     /// `finalized` identifies stale pending rows that must be removed from
@@ -2415,6 +2440,11 @@ pub mod rustaxa_ffi {
             self: &BridgeTransactionManagerRuntime,
             hash: &[u8; 32],
         ) -> TransactionQueueStoredTransaction;
+        /// Resolves requested hashes against Rust-owned live queue payloads only.
+        pub fn transaction_manager_runtime_queue_lookup_transaction_views(
+            self: &BridgeTransactionManagerRuntime,
+            requests: Vec<TransactionManagerTransactionViewRequest>,
+        ) -> Result<Vec<TransactionManagerTransactionView>>;
         pub fn transaction_manager_runtime_queue_ordered_transactions(
             self: &BridgeTransactionManagerRuntime,
             count: u64,
@@ -2488,6 +2518,27 @@ pub mod rustaxa_ffi {
             hash: &[u8; 32],
             last_block_number: u64,
         ) -> TransactionQueueDemotePlan;
+        /// Resolves requested hashes against non-finalized/recently-finalized sidecars.
+        pub fn transaction_manager_runtime_lookup_non_finalized_transaction_views(
+            self: &BridgeTransactionManagerRuntime,
+            requests: Vec<TransactionManagerTransactionViewRequest>,
+        ) -> Result<Vec<TransactionManagerTransactionView>>;
+        /// Resolves requested hashes through queue, sidecars, then Rust storage.
+        pub fn transaction_manager_runtime_lookup_transaction_views(
+            self: &BridgeTransactionManagerRuntime,
+            storage: &BridgeStorage,
+            requests: Vec<TransactionManagerTransactionViewRequest>,
+            max_count: u64,
+        ) -> Result<TransactionManagerTransactionViewPlan>;
+        /// Resolves requested hashes through queue, sidecars, then proposal-filtered Rust storage.
+        pub fn transaction_manager_runtime_lookup_proposal_transaction_views(
+            self: &BridgeTransactionManagerRuntime,
+            storage: &BridgeStorage,
+            final_chain: &BridgeFinalChain,
+            proposal_period: u64,
+            requests: Vec<TransactionManagerTransactionViewRequest>,
+            max_count: u64,
+        ) -> Result<TransactionManagerTransactionViewPlan>;
         pub fn transaction_manager_sidecar_transaction_count(
             self: &BridgeTransactionManagerSidecar,
         ) -> u64;

@@ -189,6 +189,41 @@ TEST_F(TransactionManagerShimFixture, rustGetTransactionsCombinesLiveAndRustStor
   EXPECT_EQ(materialized[1]->rlp(), transactions[1]->rlp());
 }
 
+TEST_F(TransactionManagerShimFixture, rustGetTransactionsBoundedViewPreservesInputOrderAndDuplicates) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
+  auto trx_mgr = TransactionManager(cfg, db, final_chain, addr_t());
+  const auto transactions =
+      samples::createSignedTrxSamples(1, 3,
+                                      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                  dev::Secret::ConstructFromStringType::FromHex));
+
+  ASSERT_TRUE(trx_mgr.insertTransaction(transactions[0]).first);
+  ASSERT_TRUE(trx_mgr.insertTransaction(transactions[1]).first);
+
+  trx_mgr.saveTransactionsFromDagBlock({transactions[1]});
+
+  const auto query_hashes = std::vector<trx_hash_t>{transactions[1]->getHash(), trx_hash_t::random(),
+                                                     transactions[0]->getHash(), transactions[2]->getHash(),
+                                                     transactions[1]->getHash(), transactions[0]->getHash()};
+
+  const auto materialized = trx_mgr.getTransactions(query_hashes, 0);
+  ASSERT_EQ(materialized.size(), 4);
+
+  EXPECT_EQ(materialized[0]->getHash(), transactions[1]->getHash());
+  EXPECT_EQ(materialized[1]->getHash(), transactions[0]->getHash());
+  EXPECT_EQ(materialized[2]->getHash(), transactions[1]->getHash());
+  EXPECT_EQ(materialized[3]->getHash(), transactions[0]->getHash());
+
+  const auto missing = trx_hash_t::random();
+  EXPECT_FALSE(trx_mgr.getTransaction(missing));
+
+  const auto materialized_single = trx_mgr.getTransaction(transactions[0]->getHash());
+  ASSERT_TRUE(materialized_single);
+  EXPECT_EQ(materialized_single->getHash(), transactions[0]->getHash());
+}
+
 TEST_F(TransactionManagerShimFixture, rustDagTransactionPersistenceFailureDoesNotMutateLiveState) {
   auto db = std::make_shared<DbStorage>(data_dir);
   db->saveStatusField(StatusDbField::TrxCount, std::numeric_limits<uint64_t>::max());
@@ -518,7 +553,7 @@ TEST_F(TransactionManagerShimFixture, rustVerifyTransactionsNotFinalizedUsesRece
   EXPECT_TRUE(trx_mgr.verifyTransactionsNotFinalized(pending_transactions));
 }
 
-TEST_F(TransactionManagerShimFixture, rustPoolReadHelpersRemainCxxOwned) {
+TEST_F(TransactionManagerShimFixture, rustPoolReadHelpersUseRustQueueViews) {
   auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
   auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
@@ -539,8 +574,8 @@ TEST_F(TransactionManagerShimFixture, rustPoolReadHelpersRemainCxxOwned) {
   }
   ASSERT_EQ(before_count, 2);
 
-  const auto pool_lookup =
-      trx_mgr.getPoolTransactions({transactions[0]->getHash(), trx_hash_t::random(), transactions[1]->getHash()});
+  const auto pool_lookup = trx_mgr.getPoolTransactions(
+      {transactions[0]->getHash(), trx_hash_t::random(), transactions[1]->getHash()});
   ASSERT_EQ(pool_lookup.first.size(), 2);
   ASSERT_EQ(pool_lookup.second.size(), 1);
 
