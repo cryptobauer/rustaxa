@@ -588,9 +588,19 @@ class TransactionManagerRustShimAccess {
    * C++ owns only the live transaction pointers, cache fact snapshot, and
    * sidecar mutation. Rust owns duplicate filtering, nonce-gated finalized
    * storage checks, accepted ordering, count planning, and the atomic storage
-   * write. If the bridge write fails, no C++ transaction state is mutated.
+   * write. Empty DAG blocks do not need FinalChain facts and are treated as a
+   * no-op. Non-empty batches require the Rust FinalChain handle for latest
+   * sender nonce sourcing. If the bridge write fails, no C++ transaction state
+   * is mutated.
    */
   static void saveTransactionsFromDagBlock(TransactionManager& manager, SharedTransactions const& trxs) {
+    if (trxs.empty()) {
+      return;
+    }
+    if (!manager.final_chain_) {
+      throw DbException("RUST_STORAGE_DAG_TX_PERSIST_FAILED: FinalChain is required for non-empty DAG transaction save");
+    }
+
     std::unique_lock transactions_lock(manager.transactions_mutex_);
 
     rust::Vec<rustaxa::DagTransactionSaveRuntimeFact> facts;
