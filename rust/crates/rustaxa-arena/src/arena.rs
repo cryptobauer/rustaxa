@@ -164,6 +164,10 @@ impl Arena {
         self.store.try_remove(packet_id.storage_key)
     }
 
+    pub fn mark_free(&mut self, _: PacketId) -> bool {
+        todo!("implement?")
+    }
+
     /// Returns the number of packets currently stored in the arena.
     pub fn len(&self) -> usize {
         self.store.len()
