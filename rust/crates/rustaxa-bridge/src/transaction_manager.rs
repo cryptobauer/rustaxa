@@ -16,27 +16,27 @@ use crate::ffi::rustaxa_ffi::{
     DagTransactionSaveRuntimeFact, DagTransactionSaveSidecarFact, FinalizedTransactionFilterPlan,
     FinalizedTransactionStatusAction, FinalizedTransactionStatusFact,
     FinalizedTransactionStatusPlan, FinalizedTransactionStatusSidecarFact,
-    NonFinalizedTransactionPayload, TransactionManagerCommandAction,
-    TransactionManagerCommandAdmissionResult, TransactionManagerCommandReport,
-    TransactionManagerDagSaveCommandReport, TransactionManagerFilterAction,
-    TransactionManagerFinalizedFilterFact, TransactionManagerFinalizedStatusCommandReport,
-    TransactionManagerGasEstimationFact, TransactionManagerGasEstimationPlan,
-    TransactionManagerGasEstimationResult, TransactionManagerHashCommand,
-    TransactionManagerIndexedHash, TransactionManagerInsertTransactionFact,
-    TransactionManagerInsertTransactionOutcome, TransactionManagerLifecycleNotice,
-    TransactionManagerLifecycleReport, TransactionManagerQueueBlockFinalizedCommandReport,
-    TransactionManagerRecoveryCommandReport, TransactionManagerRecoveryEntry,
-    TransactionManagerRuntimeAdmissionOutcome, TransactionManagerRuntimeQueueCleanupPlan,
-    TransactionManagerRuntimeValidatedInsertOutcome, TransactionManagerSidecarInsertInput,
-    TransactionManagerSidecarKnownFact, TransactionManagerSidecarLookup,
-    TransactionManagerSidecarLookupPlan, TransactionManagerSidecarLookupRequest,
-    TransactionManagerSidecarRecoveryInsertInput, TransactionManagerSidecarTransitionInput,
-    TransactionManagerStoredTransactionLookup, TransactionManagerStoredTransactionRequest,
-    TransactionManagerTransactionView, TransactionManagerTransactionViewPlan,
-    TransactionManagerTransactionViewRequest, TransactionManagerValidatedInsertFact,
-    TransactionManagerValidatedInsertPlan, TransactionManagerValidatedInsertRuntimeFact,
-    TransactionManagerValidatedInsertSidecarFact, TransactionManagerVerifyNotFinalizedFact,
-    TransactionManagerVerifyNotFinalizedOutcome, TransactionManagerVerifyNotFinalizedRuntimeFact,
+    NonFinalizedTransactionPayload, TransactionManagerAdmissionCommandReport,
+    TransactionManagerAdmissionResult, TransactionManagerDagSaveCommandReport,
+    TransactionManagerFilterAction, TransactionManagerFinalizedFilterFact,
+    TransactionManagerFinalizedStatusCommandReport, TransactionManagerGasEstimationFact,
+    TransactionManagerGasEstimationPlan, TransactionManagerGasEstimationResult,
+    TransactionManagerHashCommand, TransactionManagerIndexedHash,
+    TransactionManagerInsertTransactionFact, TransactionManagerInsertTransactionOutcome,
+    TransactionManagerPublicAdmissionCommandReport,
+    TransactionManagerQueueBlockFinalizedCommandReport, TransactionManagerRecoveryCommandReport,
+    TransactionManagerRecoveryEntry, TransactionManagerRuntimeAdmissionOutcome,
+    TransactionManagerRuntimeQueueCleanupPlan, TransactionManagerRuntimeValidatedInsertOutcome,
+    TransactionManagerSidecarInsertInput, TransactionManagerSidecarKnownFact,
+    TransactionManagerSidecarLookup, TransactionManagerSidecarLookupPlan,
+    TransactionManagerSidecarLookupRequest, TransactionManagerSidecarRecoveryInsertInput,
+    TransactionManagerSidecarTransitionInput, TransactionManagerStoredTransactionLookup,
+    TransactionManagerStoredTransactionRequest, TransactionManagerTransactionView,
+    TransactionManagerTransactionViewPlan, TransactionManagerTransactionViewRequest,
+    TransactionManagerValidatedInsertFact, TransactionManagerValidatedInsertPlan,
+    TransactionManagerValidatedInsertRuntimeFact, TransactionManagerValidatedInsertSidecarFact,
+    TransactionManagerVerifyNotFinalizedFact, TransactionManagerVerifyNotFinalizedOutcome,
+    TransactionManagerVerifyNotFinalizedRuntimeFact,
     TransactionManagerVerifyNotFinalizedSidecarFact, TransactionManagerVerifyTransactionFact,
     TransactionManagerVerifyTransactionOutcome, TransactionPackCandidateDecision,
     TransactionPackCandidateInput, TransactionPackEstimateInput, TransactionPackEstimateOutcome,
@@ -119,26 +119,6 @@ const TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_NON_PROPOSABLE: u8 = 2;
 const TRANSACTION_QUEUE_DEMOTE_STATUS_NOT_FOUND: u8 = 0;
 const TRANSACTION_QUEUE_DEMOTE_STATUS_ALREADY_NON_PROPOSABLE: u8 = 1;
 const TRANSACTION_QUEUE_DEMOTE_STATUS_DEMOTED: u8 = 2;
-/// Notices are compact, stable discriminators for generic CXX lifecycle replay.
-const TM_LIFECYCLE_NOTICE_DAG_ACCEPTED: u8 = 0;
-const TM_LIFECYCLE_NOTICE_DAG_QUEUE_ERASED: u8 = 1;
-const TM_LIFECYCLE_NOTICE_FINALIZED_REMOVED_NON_FINALIZED: u8 = 2;
-const TM_LIFECYCLE_NOTICE_FINALIZED_QUEUE_ERASED: u8 = 3;
-const TM_LIFECYCLE_NOTICE_ADMISSION_INSERTED: u8 = 4;
-const TM_LIFECYCLE_NOTICE_ADMISSION_TRANSACTION_ADDED: u8 = 5;
-const TM_LIFECYCLE_NOTICE_ADMISSION_STATUS_ACCEPTED: u8 = 6;
-const TM_LIFECYCLE_NOTICE_ADMISSION_STATUS_ALREADY_KNOWN: u8 = 7;
-const TM_LIFECYCLE_NOTICE_ADMISSION_STATUS_ALREADY_FINALIZED: u8 = 8;
-const TM_LIFECYCLE_NOTICE_ADMISSION_STATUS_CANNOT_INSERT: u8 = 9;
-const TM_LIFECYCLE_NOTICE_ADMISSION_FINALIZED_LOOKUP_REQUIRED: u8 = 10;
-const TM_LIFECYCLE_NOTICE_ADMISSION_DEMOTED_HASH: u8 = 11;
-const TM_LIFECYCLE_NOTICE_ADMISSION_OVERFLOW_REMOVED_HASH: u8 = 12;
-const TM_LIFECYCLE_NOTICE_RECOVERY_INSERTED: u8 = 13;
-const TM_LIFECYCLE_NOTICE_QUEUE_NON_PROPOSABLE_EXPIRED: u8 = 14;
-const TM_LIFECYCLE_NOTICE_QUEUE_FINALIZED_ACCOUNT_PURGED: u8 = 15;
-
-const TM_COMMAND_TARGET_NONE: u8 = 0;
-const TM_COMMAND_TARGET_HASH: u8 = 1;
 const TRANSACTION_QUEUE_DROP_WINDOW: Duration = Duration::from_secs(600);
 
 fn indexed_hash(input_index: u64, hash: [u8; 32]) -> TransactionManagerIndexedHash {
@@ -149,42 +129,10 @@ fn hash_command(hash: [u8; 32]) -> TransactionManagerHashCommand {
     TransactionManagerHashCommand { hash }
 }
 
-fn transaction_manager_command_action(
-    notice: TransactionManagerLifecycleNotice,
-) -> Option<TransactionManagerCommandAction> {
-    let target = match notice.kind {
-        TM_LIFECYCLE_NOTICE_ADMISSION_INSERTED
-        | TM_LIFECYCLE_NOTICE_ADMISSION_TRANSACTION_ADDED
-        | TM_LIFECYCLE_NOTICE_QUEUE_NON_PROPOSABLE_EXPIRED
-        | TM_LIFECYCLE_NOTICE_QUEUE_FINALIZED_ACCOUNT_PURGED => TM_COMMAND_TARGET_HASH,
-        _ => TM_COMMAND_TARGET_NONE,
-    };
-    if target == TM_COMMAND_TARGET_NONE {
-        return None;
-    }
-    Some(TransactionManagerCommandAction {
-        kind: notice.kind,
-        target,
-        input_index: notice.input_index,
-        hash: notice.hash,
-    })
-}
-
-fn empty_command_admission_result() -> TransactionManagerCommandAdmissionResult {
-    TransactionManagerCommandAdmissionResult {
-        present: false,
-        insert_status: 0,
-        transaction_status: 0,
-        finalized_period_known: false,
-        finalized_period: 0,
-        requires_finalized_lookup: false,
-    }
-}
-
 fn command_admission_result(
     outcome: &TransactionManagerRuntimeAdmissionOutcome,
-) -> TransactionManagerCommandAdmissionResult {
-    TransactionManagerCommandAdmissionResult {
+) -> TransactionManagerAdmissionResult {
+    TransactionManagerAdmissionResult {
         present: true,
         insert_status: outcome.insert_status,
         transaction_status: outcome.transaction_status,
@@ -194,13 +142,17 @@ fn command_admission_result(
     }
 }
 
-fn command_report_actions(
-    notices: Vec<TransactionManagerLifecycleNotice>,
-) -> Vec<TransactionManagerCommandAction> {
-    notices
-        .into_iter()
-        .filter_map(transaction_manager_command_action)
-        .collect()
+fn command_admission_result_from_insert_outcome(
+    outcome: &TransactionManagerInsertTransactionOutcome,
+) -> TransactionManagerAdmissionResult {
+    TransactionManagerAdmissionResult {
+        present: true,
+        insert_status: outcome.status,
+        transaction_status: 0,
+        finalized_period_known: outcome.finalized_period_known,
+        finalized_period: outcome.finalized_period,
+        requires_finalized_lookup: false,
+    }
 }
 
 fn dag_save_command_report(
@@ -219,6 +171,76 @@ fn dag_save_command_report(
         queue_erased,
         transaction_count: outcome.target_transaction_count,
     }
+}
+
+fn admission_command_report(
+    outcome: &TransactionManagerRuntimeAdmissionOutcome,
+    transaction_count: u64,
+) -> TransactionManagerAdmissionCommandReport {
+    TransactionManagerAdmissionCommandReport {
+        inserted_hash_found: outcome.inserted_hash_found,
+        inserted_hash: outcome.inserted_hash,
+        transaction_added_hash_found: outcome.emit_transaction_added && outcome.inserted_hash_found,
+        transaction_added_hash: outcome.inserted_hash,
+        transaction_count,
+        admission: command_admission_result(outcome),
+    }
+}
+
+fn public_admission_command_report(
+    verification_status: u8,
+    verify_fact: &TransactionManagerVerifyTransactionFact,
+    admission: TransactionManagerAdmissionCommandReport,
+) -> TransactionManagerPublicAdmissionCommandReport {
+    TransactionManagerPublicAdmissionCommandReport {
+        verification_status,
+        verification_chain_id: verify_fact.chain_id,
+        verification_expected_chain_id: verify_fact.expected_chain_id,
+        admission,
+    }
+}
+
+fn public_precheck_rejected_command_report(
+    precheck: TransactionManagerInsertTransactionOutcome,
+    verify_fact: &TransactionManagerVerifyTransactionFact,
+    transaction_count: u64,
+) -> TransactionManagerPublicAdmissionCommandReport {
+    let admission = TransactionManagerAdmissionCommandReport {
+        inserted_hash_found: false,
+        inserted_hash: [0; 32],
+        transaction_added_hash_found: false,
+        transaction_added_hash: [0; 32],
+        transaction_count,
+        admission: command_admission_result_from_insert_outcome(&precheck),
+    };
+    public_admission_command_report(
+        TM_VERIFY_TRANSACTION_STATUS_ACCEPTED,
+        verify_fact,
+        admission,
+    )
+}
+
+fn public_verification_rejected_command_report(
+    verify_status: u8,
+    verify_fact: &TransactionManagerVerifyTransactionFact,
+    transaction_count: u64,
+) -> TransactionManagerPublicAdmissionCommandReport {
+    let admission = TransactionManagerAdmissionCommandReport {
+        inserted_hash_found: false,
+        inserted_hash: [0; 32],
+        transaction_added_hash_found: false,
+        transaction_added_hash: [0; 32],
+        transaction_count,
+        admission: TransactionManagerAdmissionResult {
+            present: false,
+            insert_status: TM_INSERT_TRANSACTION_STATUS_ACCEPTED,
+            transaction_status: 0,
+            finalized_period_known: false,
+            finalized_period: 0,
+            requires_finalized_lookup: false,
+        },
+    };
+    public_admission_command_report(verify_status, verify_fact, admission)
 }
 
 fn finalized_status_command_report(
@@ -280,176 +302,6 @@ fn recovery_command_report(
             .collect(),
         transaction_count,
     }
-}
-
-fn command_report_from_admission(
-    notices: Vec<TransactionManagerLifecycleNotice>,
-    transaction_count: u64,
-    outcome: &TransactionManagerRuntimeAdmissionOutcome,
-) -> TransactionManagerCommandReport {
-    TransactionManagerCommandReport {
-        actions: command_report_actions(notices),
-        transaction_count,
-        purge_transaction_queue: false,
-        admission: command_admission_result(outcome),
-    }
-}
-
-fn command_report_from_lifecycle(
-    report: TransactionManagerLifecycleReport,
-) -> TransactionManagerCommandReport {
-    TransactionManagerCommandReport {
-        actions: command_report_actions(report.notices),
-        transaction_count: report.transaction_count,
-        purge_transaction_queue: report.purge_transaction_queue,
-        admission: empty_command_admission_result(),
-    }
-}
-
-fn lifecycle_notice(
-    kind: u8,
-    input_index: u64,
-    hash: [u8; 32],
-) -> TransactionManagerLifecycleNotice {
-    TransactionManagerLifecycleNotice {
-        kind,
-        input_index,
-        hash,
-    }
-}
-
-fn dag_save_notices(outcome: &DagTransactionSaveOutcome) -> Vec<TransactionManagerLifecycleNotice> {
-    let mut notices = Vec::with_capacity(outcome.accepted.len() * 2);
-
-    for entry in &outcome.accepted {
-        notices.push(lifecycle_notice(
-            TM_LIFECYCLE_NOTICE_DAG_ACCEPTED,
-            entry.input_index,
-            entry.hash,
-        ));
-        if entry.erased_from_queue {
-            notices.push(lifecycle_notice(
-                TM_LIFECYCLE_NOTICE_DAG_QUEUE_ERASED,
-                entry.input_index,
-                entry.hash,
-            ));
-        }
-    }
-
-    notices
-}
-
-fn finalized_status_notices(
-    outcome: &FinalizedTransactionStatusPlan,
-) -> Vec<TransactionManagerLifecycleNotice> {
-    let mut notices = Vec::with_capacity(outcome.accepted.len() * 2);
-
-    for action in &outcome.accepted {
-        if action.removed_non_finalized {
-            notices.push(lifecycle_notice(
-                TM_LIFECYCLE_NOTICE_FINALIZED_REMOVED_NON_FINALIZED,
-                action.input_index,
-                action.hash,
-            ));
-        }
-        if action.erase_from_queue && action.erased_from_queue {
-            notices.push(lifecycle_notice(
-                TM_LIFECYCLE_NOTICE_FINALIZED_QUEUE_ERASED,
-                action.input_index,
-                action.hash,
-            ));
-        }
-    }
-
-    notices
-}
-
-fn admission_status_notice(kind: u8, input_hash: [u8; 32]) -> TransactionManagerLifecycleNotice {
-    lifecycle_notice(kind, 0, input_hash)
-}
-
-fn admission_notices(
-    outcome: &TransactionManagerRuntimeAdmissionOutcome,
-    input_hash: [u8; 32],
-) -> Vec<TransactionManagerLifecycleNotice> {
-    let mut notices = Vec::new();
-
-    notices.push(admission_status_notice(
-        match outcome.insert_status {
-            x if x == TM_INSERT_TRANSACTION_STATUS_ACCEPTED => {
-                TM_LIFECYCLE_NOTICE_ADMISSION_STATUS_ACCEPTED
-            }
-            x if x == TM_INSERT_TRANSACTION_STATUS_ALREADY_KNOWN => {
-                TM_LIFECYCLE_NOTICE_ADMISSION_STATUS_ALREADY_KNOWN
-            }
-            x if x == TM_INSERT_TRANSACTION_STATUS_ALREADY_FINALIZED => {
-                TM_LIFECYCLE_NOTICE_ADMISSION_STATUS_ALREADY_FINALIZED
-            }
-            _ => TM_LIFECYCLE_NOTICE_ADMISSION_STATUS_CANNOT_INSERT,
-        },
-        input_hash,
-    ));
-
-    if outcome.inserted_hash_found {
-        notices.push(admission_status_notice(
-            TM_LIFECYCLE_NOTICE_ADMISSION_INSERTED,
-            outcome.inserted_hash,
-        ));
-
-        if outcome.emit_transaction_added {
-            notices.push(admission_status_notice(
-                TM_LIFECYCLE_NOTICE_ADMISSION_TRANSACTION_ADDED,
-                outcome.inserted_hash,
-            ));
-        }
-    }
-
-    for entry in outcome.demoted_hashes.iter() {
-        notices.push(admission_status_notice(
-            TM_LIFECYCLE_NOTICE_ADMISSION_DEMOTED_HASH,
-            entry.hash,
-        ));
-    }
-
-    for entry in outcome.overflow_removed_hashes.iter() {
-        notices.push(admission_status_notice(
-            TM_LIFECYCLE_NOTICE_ADMISSION_OVERFLOW_REMOVED_HASH,
-            entry.hash,
-        ));
-    }
-
-    if outcome.requires_finalized_lookup {
-        notices.push(admission_status_notice(
-            TM_LIFECYCLE_NOTICE_ADMISSION_FINALIZED_LOOKUP_REQUIRED,
-            input_hash,
-        ));
-    }
-
-    notices
-}
-
-fn queue_cleanup_notices(
-    cleanup: &TransactionManagerRuntimeQueueCleanupPlan,
-) -> Vec<TransactionManagerLifecycleNotice> {
-    let mut notices = Vec::with_capacity(
-        cleanup.non_proposable_expired.removed_hashes.len()
-            + cleanup.finalized_account_purged.removed_hashes.len(),
-    );
-    for hash in &cleanup.non_proposable_expired.removed_hashes {
-        notices.push(lifecycle_notice(
-            TM_LIFECYCLE_NOTICE_QUEUE_NON_PROPOSABLE_EXPIRED,
-            0,
-            hash.hash,
-        ));
-    }
-    for hash in &cleanup.finalized_account_purged.removed_hashes {
-        notices.push(lifecycle_notice(
-            TM_LIFECYCLE_NOTICE_QUEUE_FINALIZED_ACCOUNT_PURGED,
-            0,
-            hash.hash,
-        ));
-    }
-    notices
 }
 
 fn runtime_queue_entry_from_insert_input(
@@ -1025,27 +877,6 @@ pub fn save_transactions_from_dag_block_with_runtime_and_final_chain(
     save_transactions_from_dag_block_with_runtime(runtime, storage, sidecar_facts)
 }
 
-/// Executes runtime DAG persistence using FinalChain sender nonces and returns a
-/// replay-safe lifecycle report for shim follow-up behavior.
-pub fn save_transactions_from_dag_block_report_with_runtime_and_final_chain(
-    runtime: &mut BridgeTransactionManagerRuntime,
-    storage: &BridgeStorage,
-    final_chain: &BridgeFinalChain,
-    facts: Vec<DagTransactionSaveRuntimeFact>,
-) -> Result<TransactionManagerLifecycleReport> {
-    let outcome = save_transactions_from_dag_block_with_runtime_and_final_chain(
-        runtime,
-        storage,
-        final_chain,
-        facts,
-    )?;
-    Ok(TransactionManagerLifecycleReport {
-        notices: dag_save_notices(&outcome),
-        transaction_count: outcome.target_transaction_count,
-        purge_transaction_queue: false,
-    })
-}
-
 /// Returns transaction-manager DAG persistence as typed command actions.
 pub fn save_transactions_from_dag_block_command_report_with_runtime_and_final_chain(
     runtime: &mut BridgeTransactionManagerRuntime,
@@ -1282,29 +1113,6 @@ pub fn update_finalized_transactions_status_with_runtime(
     })
 }
 
-/// Applies finalized-transaction status changes through runtime and returns replay
-/// notices for shim-owned side effects.
-pub fn update_finalized_transactions_status_report_with_runtime(
-    runtime: &mut BridgeTransactionManagerRuntime,
-    storage: &BridgeStorage,
-    period: u64,
-    retention_window: u64,
-    facts: Vec<FinalizedTransactionStatusSidecarFact>,
-) -> Result<TransactionManagerLifecycleReport> {
-    let outcome = update_finalized_transactions_status_with_runtime(
-        runtime,
-        storage,
-        period,
-        retention_window,
-        facts,
-    )?;
-    Ok(TransactionManagerLifecycleReport {
-        notices: finalized_status_notices(&outcome),
-        transaction_count: outcome.target_transaction_count,
-        purge_transaction_queue: outcome.purge_transaction_queue,
-    })
-}
-
 /// Applies finalized-transaction status changes and returns typed command actions.
 pub fn update_finalized_transactions_status_command_report_with_runtime(
     runtime: &mut BridgeTransactionManagerRuntime,
@@ -1321,44 +1129,6 @@ pub fn update_finalized_transactions_status_command_report_with_runtime(
         facts,
     )?;
     Ok(finalized_status_command_report(&outcome))
-}
-
-/// Applies finalized-transaction status changes and any periodic queue purge through Rust.
-///
-/// This is the production lifecycle boundary used by the C++ shim when
-/// `plan_finalized_transactions_status` asks for the legacy every-100-period
-/// transaction-queue purge. Rust persists the finalized transaction count,
-/// mutates live sidecars and queue-known state, sources account nonces from
-/// Rust FinalChain for the purge, applies the purge inside the runtime, and
-/// returns one replay report for C++ logging/event mechanics. The returned
-/// `purge_transaction_queue` flag is false because this function has already
-/// executed the requested purge.
-pub fn update_finalized_transactions_status_report_with_runtime_and_final_chain(
-    runtime: &mut BridgeTransactionManagerRuntime,
-    storage: &BridgeStorage,
-    final_chain: &BridgeFinalChain,
-    period: u64,
-    retention_window: u64,
-    facts: Vec<FinalizedTransactionStatusSidecarFact>,
-) -> Result<TransactionManagerLifecycleReport> {
-    let mut report = update_finalized_transactions_status_report_with_runtime(
-        runtime,
-        storage,
-        period,
-        retention_window,
-        facts,
-    )?;
-    if report.purge_transaction_queue {
-        let cleanup = runtime.transaction_manager_runtime_queue_cleanup_report_with_final_chain(
-            final_chain,
-            false,
-            0,
-        )?;
-        report.notices.extend(cleanup.notices);
-        report.transaction_count = cleanup.transaction_count;
-        report.purge_transaction_queue = false;
-    }
-    Ok(report)
 }
 
 /// Applies finalized status changes plus queue purge and returns typed command actions.
@@ -2269,28 +2039,6 @@ pub fn transaction_manager_load_nonfinalized_recovery_inputs(
     Ok(recovered)
 }
 
-/// Rebuilds runtime sidecars from recovery inputs and returns shim-side notices.
-///
-/// Recovery first validates persisted rows through the existing recovery-input
-/// pipeline so malformed rows never reach live runtime sidecar state.
-pub fn transaction_manager_recover_nonfinalized_report_with_runtime(
-    runtime: &mut BridgeTransactionManagerRuntime,
-    storage: &BridgeStorage,
-) -> Result<TransactionManagerLifecycleReport> {
-    let entries = transaction_manager_load_nonfinalized_recovery_inputs(storage)?;
-    let notices = entries
-        .iter()
-        .map(|entry| lifecycle_notice(TM_LIFECYCLE_NOTICE_RECOVERY_INSERTED, 0, entry.hash))
-        .collect();
-    runtime.transaction_manager_runtime_insert_recovery_entries(entries)?;
-
-    Ok(TransactionManagerLifecycleReport {
-        notices,
-        transaction_count: runtime.transaction_manager_runtime_transaction_count(),
-        purge_transaction_queue: false,
-    })
-}
-
 /// Rebuilds runtime recovery sidecars and returns typed command actions.
 pub fn transaction_manager_recover_nonfinalized_command_report_with_runtime(
     runtime: &mut BridgeTransactionManagerRuntime,
@@ -3024,47 +2772,23 @@ impl BridgeTransactionManagerRuntime {
         })
     }
 
-    /// Executes admission and returns replay notices for shim-owned lifecycle hooks.
-    pub fn transaction_manager_runtime_execute_transaction_admission_report(
-        &mut self,
-        fact: TransactionManagerValidatedInsertSidecarFact,
-        input: TransactionQueueInsertInput,
-        has_finalized_period: bool,
-        finalized_period: u64,
-    ) -> Result<TransactionManagerLifecycleReport> {
-        let input_hash = fact.tx_hash;
-        let outcome = self.transaction_manager_runtime_execute_transaction_admission(
-            fact,
-            input,
-            has_finalized_period,
-            finalized_period,
-        )?;
-        Ok(TransactionManagerLifecycleReport {
-            notices: admission_notices(&outcome, input_hash),
-            transaction_count: self.transaction_manager_runtime_transaction_count(),
-            purge_transaction_queue: false,
-        })
-    }
-
-    /// Executes admission and returns typed command actions for generic replay.
+    /// Executes admission and returns a typed command report for C++ side effects.
     pub fn transaction_manager_runtime_execute_transaction_admission_command_report(
         &mut self,
         fact: TransactionManagerValidatedInsertSidecarFact,
         input: TransactionQueueInsertInput,
         has_finalized_period: bool,
         finalized_period: u64,
-    ) -> Result<TransactionManagerCommandReport> {
-        let input_hash = fact.tx_hash;
+    ) -> Result<TransactionManagerAdmissionCommandReport> {
         let outcome = self.transaction_manager_runtime_execute_transaction_admission(
             fact,
             input,
             has_finalized_period,
             finalized_period,
         )?;
-        Ok(command_report_from_admission(
-            admission_notices(&outcome, input_hash),
-            self.transaction_manager_runtime_transaction_count(),
+        Ok(admission_command_report(
             &outcome,
+            self.transaction_manager_runtime_transaction_count(),
         ))
     }
 
@@ -3094,39 +2818,19 @@ impl BridgeTransactionManagerRuntime {
         Ok(outcome)
     }
 
-    /// Executes storage-backed admission and returns replay notices for shim-owned lifecycle hooks.
-    pub fn transaction_manager_runtime_execute_transaction_admission_with_storage_report(
-        &mut self,
-        storage: &BridgeStorage,
-        fact: TransactionManagerValidatedInsertSidecarFact,
-        input: TransactionQueueInsertInput,
-    ) -> Result<TransactionManagerLifecycleReport> {
-        let input_hash = fact.tx_hash;
-        let outcome = self.transaction_manager_runtime_execute_transaction_admission_with_storage(
-            storage, fact, input,
-        )?;
-        Ok(TransactionManagerLifecycleReport {
-            notices: admission_notices(&outcome, input_hash),
-            transaction_count: self.transaction_manager_runtime_transaction_count(),
-            purge_transaction_queue: false,
-        })
-    }
-
-    /// Executes storage-backed admission and returns typed command actions.
+    /// Executes storage-backed admission and returns a typed command report.
     pub fn transaction_manager_runtime_execute_transaction_admission_with_storage_command_report(
         &mut self,
         storage: &BridgeStorage,
         fact: TransactionManagerValidatedInsertSidecarFact,
         input: TransactionQueueInsertInput,
-    ) -> Result<TransactionManagerCommandReport> {
-        let input_hash = fact.tx_hash;
+    ) -> Result<TransactionManagerAdmissionCommandReport> {
         let outcome = self.transaction_manager_runtime_execute_transaction_admission_with_storage(
             storage, fact, input,
         )?;
-        Ok(command_report_from_admission(
-            admission_notices(&outcome, input_hash),
-            self.transaction_manager_runtime_transaction_count(),
+        Ok(admission_command_report(
             &outcome,
+            self.transaction_manager_runtime_transaction_count(),
         ))
     }
 
@@ -3208,45 +2912,93 @@ impl BridgeTransactionManagerRuntime {
         })
     }
 
-    /// Executes FinalChain-backed admission and returns replay notices for shim-owned lifecycle hooks.
-    pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain_report(
-        &mut self,
-        final_chain: &BridgeFinalChain,
-        fact: TransactionManagerValidatedInsertRuntimeFact,
-        input: TransactionQueueInsertInput,
-    ) -> Result<TransactionManagerLifecycleReport> {
-        let input_hash = fact.tx_hash;
-        let outcome = self
-            .transaction_manager_runtime_execute_transaction_admission_with_final_chain(
-                final_chain,
-                fact,
-                input,
-            )?;
-        Ok(TransactionManagerLifecycleReport {
-            notices: admission_notices(&outcome, input_hash),
-            transaction_count: self.transaction_manager_runtime_transaction_count(),
-            purge_transaction_queue: false,
-        })
-    }
-
-    /// Executes FinalChain-backed admission and returns typed command actions.
+    /// Executes FinalChain-backed admission and returns a typed command report.
     pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report(
         &mut self,
         final_chain: &BridgeFinalChain,
         fact: TransactionManagerValidatedInsertRuntimeFact,
         input: TransactionQueueInsertInput,
-    ) -> Result<TransactionManagerCommandReport> {
-        let input_hash = fact.tx_hash;
+    ) -> Result<TransactionManagerAdmissionCommandReport> {
         let outcome = self
             .transaction_manager_runtime_execute_transaction_admission_with_final_chain(
                 final_chain,
                 fact,
                 input,
             )?;
-        Ok(command_report_from_admission(
-            admission_notices(&outcome, input_hash),
-            self.transaction_manager_runtime_transaction_count(),
+        Ok(admission_command_report(
             &outcome,
+            self.transaction_manager_runtime_transaction_count(),
+        ))
+    }
+
+    /// Executes public insert precheck, verification, and FinalChain-backed admission.
+    pub fn transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_command_report(
+        &mut self,
+        final_chain: &BridgeFinalChain,
+        verify_fact: TransactionManagerVerifyTransactionFact,
+        admission_fact: TransactionManagerValidatedInsertRuntimeFact,
+        input: TransactionQueueInsertInput,
+    ) -> Result<TransactionManagerPublicAdmissionCommandReport> {
+        let tx_hash = verify_fact.tx_hash;
+        let verification_chain_id = verify_fact.chain_id;
+        let verification_expected_chain_id = verify_fact.expected_chain_id;
+        ensure!(
+            tx_hash == admission_fact.tx_hash,
+            "TM_RUNTIME_PUBLIC_INSERT_VERIFY_HASH_MISMATCH"
+        );
+        let precheck = self.transaction_manager_runtime_insert_transaction_precheck(&tx_hash)?;
+        if precheck.status != TM_INSERT_TRANSACTION_STATUS_ACCEPTED {
+            return Ok(public_precheck_rejected_command_report(
+                precheck,
+                &verify_fact,
+                self.transaction_manager_runtime_transaction_count(),
+            ));
+        }
+
+        let verify_outcome = transaction_manager_verify_transaction(verify_fact)?;
+        if verify_outcome.status != TM_VERIFY_TRANSACTION_STATUS_ACCEPTED {
+            let verify_fact = TransactionManagerVerifyTransactionFact {
+                tx_hash,
+                chain_id: verification_chain_id,
+                expected_chain_id: verification_expected_chain_id,
+                gas_limit: 0,
+                max_gas_limit: 0,
+                last_block_number: 0,
+                cornus_active: false,
+                intrinsic_gas_covered: true,
+                signature_valid: true,
+                gas_price: [0; 32],
+                minimum_gas_price: [0; 32],
+            };
+            return Ok(public_verification_rejected_command_report(
+                verify_outcome.status,
+                &verify_fact,
+                self.transaction_manager_runtime_transaction_count(),
+            ));
+        }
+
+        let admission = self
+            .transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report(
+                final_chain,
+                admission_fact,
+                input,
+            )?;
+        Ok(public_admission_command_report(
+            TM_VERIFY_TRANSACTION_STATUS_ACCEPTED,
+            &TransactionManagerVerifyTransactionFact {
+                tx_hash,
+                chain_id: verification_chain_id,
+                expected_chain_id: verification_expected_chain_id,
+                gas_limit: 0,
+                max_gas_limit: 0,
+                last_block_number: 0,
+                cornus_active: false,
+                intrinsic_gas_covered: true,
+                signature_valid: true,
+                gas_price: [0; 32],
+                minimum_gas_price: [0; 32],
+            },
+            admission,
         ))
     }
 
@@ -3311,32 +3063,6 @@ impl BridgeTransactionManagerRuntime {
         runtime_hashes_to_bridge(self.queue.block_finalized(block_number))
     }
 
-    /// Applies finalized-block expiry and returns lifecycle notices for shim replay.
-    ///
-    /// This keeps non-proposable-expiry visibility consistent with queue cleanup
-    /// reporting without exposing queue internals to C++.
-    pub fn transaction_manager_runtime_queue_block_finalized_report(
-        &mut self,
-        block_number: u64,
-    ) -> TransactionManagerLifecycleReport {
-        let removed = self.transaction_manager_runtime_queue_block_finalized(block_number);
-        let cleanup = TransactionManagerRuntimeQueueCleanupPlan {
-            non_proposable_expired: TransactionQueuePurgePlan {
-                removed_count: removed.len(),
-                removed_hashes: removed,
-            },
-            finalized_account_purged: TransactionQueuePurgePlan {
-                removed_count: 0,
-                removed_hashes: Vec::new(),
-            },
-        };
-        TransactionManagerLifecycleReport {
-            notices: queue_cleanup_notices(&cleanup),
-            transaction_count: self.transaction_manager_runtime_transaction_count(),
-            purge_transaction_queue: false,
-        }
-    }
-
     /// Applies finalized-block expiry and returns typed command actions.
     pub fn transaction_manager_runtime_queue_block_finalized_command_report(
         &mut self,
@@ -3395,44 +3121,6 @@ impl BridgeTransactionManagerRuntime {
         }
     }
 
-    /// Applies Rust-owned queue cleanup and returns lifecycle notices for C++ replay.
-    ///
-    /// The report form is used by the TransactionManager shim so block-finalized
-    /// expiry and account-nonce purge results travel through the same lifecycle
-    /// notice protocol as DAG persistence and finalized-status updates.
-    pub fn transaction_manager_runtime_queue_cleanup_report(
-        &mut self,
-        apply_block_finalized: bool,
-        block_number: u64,
-        facts: Vec<BridgeTransactionQueueAccountNonceFact>,
-    ) -> TransactionManagerLifecycleReport {
-        let cleanup = self.transaction_manager_runtime_queue_cleanup(
-            apply_block_finalized,
-            block_number,
-            facts,
-        );
-        TransactionManagerLifecycleReport {
-            notices: queue_cleanup_notices(&cleanup),
-            transaction_count: self.transaction_manager_runtime_transaction_count(),
-            purge_transaction_queue: false,
-        }
-    }
-
-    /// Applies queue cleanup and returns typed command actions.
-    pub fn transaction_manager_runtime_queue_cleanup_command_report(
-        &mut self,
-        apply_block_finalized: bool,
-        block_number: u64,
-        facts: Vec<BridgeTransactionQueueAccountNonceFact>,
-    ) -> TransactionManagerCommandReport {
-        let report = self.transaction_manager_runtime_queue_cleanup_report(
-            apply_block_finalized,
-            block_number,
-            facts,
-        );
-        command_report_from_lifecycle(report)
-    }
-
     /// Applies Rust-owned queue cleanup by sourcing account nonce facts from Rust FinalChain.
     ///
     /// This keeps finalized-account purge fact sourcing inside Rust and mutates the
@@ -3459,45 +3147,6 @@ impl BridgeTransactionManagerRuntime {
                 finalized_account_purged,
             ),
         })
-    }
-
-    /// Applies Rust-owned queue cleanup with FinalChain-sourced account facts and returns lifecycle notices.
-    ///
-    /// This report form is the Rust-owned execution boundary for periodic queue
-    /// purge. Rust sources account nonces from FinalChain, mutates the queue, and
-    /// returns removed hash notices so C++ does not branch on queue-specific plan
-    /// structs.
-    pub fn transaction_manager_runtime_queue_cleanup_report_with_final_chain(
-        &mut self,
-        final_chain: &BridgeFinalChain,
-        apply_block_finalized: bool,
-        block_number: u64,
-    ) -> Result<TransactionManagerLifecycleReport> {
-        let cleanup = self.transaction_manager_runtime_queue_cleanup_with_final_chain(
-            final_chain,
-            apply_block_finalized,
-            block_number,
-        )?;
-        Ok(TransactionManagerLifecycleReport {
-            notices: queue_cleanup_notices(&cleanup),
-            transaction_count: self.transaction_manager_runtime_transaction_count(),
-            purge_transaction_queue: false,
-        })
-    }
-
-    /// Applies queue cleanup with FinalChain facts and returns typed command actions.
-    pub fn transaction_manager_runtime_queue_cleanup_with_final_chain_command_report(
-        &mut self,
-        final_chain: &BridgeFinalChain,
-        apply_block_finalized: bool,
-        block_number: u64,
-    ) -> Result<TransactionManagerCommandReport> {
-        let report = self.transaction_manager_runtime_queue_cleanup_report_with_final_chain(
-            final_chain,
-            apply_block_finalized,
-            block_number,
-        )?;
-        Ok(command_report_from_lifecycle(report))
     }
 
     /// Marks one hash in the Rust-owned known-admission cache.
@@ -5034,69 +4683,6 @@ mod tests {
     }
 
     #[test]
-    fn bridge_save_transactions_from_dag_block_report_with_runtime_and_final_chain_emits_notices() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_admission_fc_report");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-        let sender = [8; 20];
-        let final_chain = crate::final_chain::create_final_chain(
-            &storage,
-            1_000_000,
-            1,
-            vec![crate::ffi::rustaxa_ffi::GenesisAccount {
-                address: sender,
-                balance: vec![1],
-            }],
-            Vec::new(),
-            crate::ffi::rustaxa_ffi::GenesisDposConfig {
-                eligibility_balance_threshold: vec![1],
-                vote_eligibility_balance_step: vec![1],
-                validator_maximum_stake: vec![1],
-                dag_vdf_sortition_total_vote_count_until_period: 0,
-            },
-        )
-        .expect("final chain should initialize");
-        let mut runtime =
-            create_transaction_manager_runtime(7, TransactionQueueConfig { max_size: 16 });
-        runtime
-            .transaction_manager_runtime_queue_insert(runtime_queue_input(1, true))
-            .expect("queue seed should succeed");
-
-        let report = save_transactions_from_dag_block_report_with_runtime_and_final_chain(
-            &mut runtime,
-            &storage,
-            &final_chain,
-            vec![dag_tx_runtime_fact(0, 1, 1, sender, 0x33)],
-        )
-        .expect("runtime final-chain DAG report should execute");
-
-        assert_eq!(report.transaction_count, 8);
-        assert!(!report.purge_transaction_queue);
-        assert_eq!(report.notices.len(), 2);
-        assert_eq!(report.notices[0].kind, TM_LIFECYCLE_NOTICE_DAG_ACCEPTED);
-        assert_eq!(report.notices[0].input_index, 0);
-        assert_eq!(report.notices[0].hash, [1; 32]);
-        assert_eq!(report.notices[1].kind, TM_LIFECYCLE_NOTICE_DAG_QUEUE_ERASED);
-        assert_eq!(report.notices[1].input_index, 0);
-        assert_eq!(report.notices[1].hash, [1; 32]);
-        assert_eq!(
-            storage
-                .get_status_field(StatusField::TrxCount as u8)
-                .expect("status field should persist"),
-            8
-        );
-        assert_eq!(
-            storage
-                .get_transaction(&[1; 32])
-                .expect("accepted transaction should persist"),
-            vec![0x33]
-        );
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
     fn bridge_save_transactions_from_dag_block_command_report_with_runtime_and_final_chain_maps_actions(
     ) {
         let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_admission_fc_command_report");
@@ -5206,63 +4792,6 @@ mod tests {
     }
 
     #[test]
-    fn bridge_update_finalized_transactions_status_report_with_runtime_emits_notices() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_update_finalized_status_report");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-
-        storage
-            .save_status_field(StatusField::TrxCount as u8, 7)
-            .expect("status field seed should persist");
-
-        let mut runtime =
-            create_transaction_manager_runtime(7, TransactionQueueConfig { max_size: 16 });
-        runtime
-            .transaction_manager_runtime_insert_non_finalized(
-                TransactionManagerSidecarInsertInput {
-                    hash: [1; 32],
-                    trx_rlp: vec![0x11],
-                },
-            )
-            .expect("sidecar seed should succeed");
-        runtime
-            .transaction_manager_runtime_queue_insert(runtime_queue_input(1, true))
-            .expect("queue seed should succeed");
-
-        let report = update_finalized_transactions_status_report_with_runtime(
-            &mut runtime,
-            &storage,
-            11,
-            10,
-            vec![FinalizedTransactionStatusSidecarFact {
-                input_index: 0,
-                hash: [1; 32],
-                trx_rlp: vec![0x11],
-            }],
-        )
-        .expect("runtime finalized status report should execute");
-
-        assert_eq!(report.transaction_count, 7);
-        assert!(report.purge_transaction_queue == false);
-        assert_eq!(report.notices.len(), 2);
-        assert_eq!(
-            report.notices[0].kind,
-            TM_LIFECYCLE_NOTICE_FINALIZED_REMOVED_NON_FINALIZED
-        );
-        assert_eq!(
-            report.notices[1].kind,
-            TM_LIFECYCLE_NOTICE_FINALIZED_QUEUE_ERASED
-        );
-        assert_eq!(report.notices[0].hash, [1; 32]);
-        assert!(!runtime.transaction_manager_runtime_queue_contains(&[1; 32]));
-        assert!(runtime.transaction_manager_runtime_contains_recently_finalized(&[1; 32]));
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
     fn bridge_update_finalized_transactions_status_command_report_with_runtime_maps_actions() {
         let temp_dir = unique_temp_dir(
             "rustaxa_bridge_tm_update_finalized_status_report_runtime_command_report",
@@ -5324,7 +4853,7 @@ mod tests {
     }
 
     #[test]
-    fn bridge_update_finalized_transactions_status_report_with_final_chain_executes_periodic_purge_boundary(
+    fn bridge_update_finalized_transactions_status_command_report_with_final_chain_executes_periodic_purge_boundary(
     ) {
         let temp_dir = unique_temp_dir("rustaxa_bridge_tm_update_finalized_status_report_fc_purge");
         let storage = crate::storage::create_storage(
@@ -5358,19 +4887,22 @@ mod tests {
             ))
             .expect("queue seed should succeed");
 
-        let report = update_finalized_transactions_status_report_with_runtime_and_final_chain(
-            &mut runtime,
-            &storage,
-            &final_chain,
-            100,
-            10,
-            Vec::new(),
-        )
-        .expect("runtime finalized status report with final chain should execute purge");
+        let report =
+            update_finalized_transactions_status_command_report_with_runtime_and_final_chain(
+                &mut runtime,
+                &storage,
+                &final_chain,
+                100,
+                10,
+                Vec::new(),
+            )
+            .expect("runtime finalized status report with final chain should execute purge");
 
         assert_eq!(report.transaction_count, 7);
         assert!(!report.purge_transaction_queue);
-        assert!(report.notices.is_empty());
+        assert!(report.removed_non_finalized.is_empty());
+        assert!(report.queue_erased.is_empty());
+        assert!(report.finalized_account_purged.is_empty());
         assert!(runtime.transaction_manager_runtime_queue_contains(&[1; 32]));
         let _ = fs::remove_dir_all(temp_dir);
     }
@@ -5595,57 +5127,6 @@ mod tests {
         assert_eq!(inputs[0].hash, envelope.hash.0);
         assert!(!inputs[0].finalized);
         assert_eq!(inputs[0].trx_rlp, tx_rlp);
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_transaction_manager_recover_nonfinalized_report_inserts_survivors() {
-        let temp_dir =
-            unique_temp_dir("rustaxa_bridge_transaction_manager_recover_nonfinalized_report");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-
-        let signing_key = SigningKey::from_slice(&[0x43u8; 32]).unwrap();
-        let live_tx = signed_legacy_transaction_rlp(&signing_key, 1, 2999);
-        let live_hash = LegacyTransactionEnvelope::decode(&live_tx)
-            .expect("live transaction should decode")
-            .hash
-            .0;
-        storage
-            .save_transaction(&live_hash, live_tx.clone())
-            .expect("non-finalized transaction should persist");
-        storage
-            .save_transaction(&[2u8; 32], vec![0x22])
-            .expect("stale transaction should persist");
-        storage
-            .save_transaction_location(&[2u8; 32], 11, 0, false)
-            .expect("stale finalized location should persist");
-
-        let mut runtime =
-            create_transaction_manager_runtime(4, TransactionQueueConfig { max_size: 16 });
-
-        let report =
-            transaction_manager_recover_nonfinalized_report_with_runtime(&mut runtime, &storage)
-                .expect("runtime recovery report should execute");
-
-        assert_eq!(report.transaction_count, 4);
-        assert!(!report.purge_transaction_queue);
-        assert_eq!(report.notices.len(), 1);
-        assert_eq!(
-            report.notices[0].kind,
-            TM_LIFECYCLE_NOTICE_RECOVERY_INSERTED
-        );
-        assert_eq!(report.notices[0].hash, live_hash);
-        assert!(runtime.transaction_manager_runtime_contains_non_finalized(&live_hash));
-        assert_eq!(
-            storage
-                .get_transaction(&[2u8; 32])
-                .expect("stale tx should be removed"),
-            Vec::<u8>::new()
-        );
 
         let _ = fs::remove_dir_all(temp_dir);
     }
@@ -5976,8 +5457,8 @@ mod tests {
     }
 
     #[test]
-    fn bridge_transaction_manager_runtime_admission_with_storage_report_includes_finalized_status()
-    {
+    fn bridge_transaction_manager_runtime_admission_with_storage_command_report_includes_finalized_status(
+    ) {
         let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_admission_storage_report");
         let storage = crate::storage::create_storage(
             temp_dir.to_str().expect("temp path should be valid UTF-8"),
@@ -5993,7 +5474,7 @@ mod tests {
             .expect("runtime queue insert should succeed");
 
         let report = runtime
-            .transaction_manager_runtime_execute_transaction_admission_with_storage_report(
+            .transaction_manager_runtime_execute_transaction_admission_with_storage_command_report(
                 &storage,
                 validated_insert_sidecar_fact(16, true, 0, 100, false),
                 runtime_queue_input(16, false),
@@ -6001,13 +5482,15 @@ mod tests {
             .expect("runtime admission storage report should execute");
 
         assert_eq!(report.transaction_count, 0);
-        assert_eq!(report.notices.len(), 1);
+        assert!(report.admission.present);
         assert_eq!(
-            report.notices[0].kind,
-            TM_LIFECYCLE_NOTICE_ADMISSION_STATUS_ALREADY_FINALIZED
+            report.admission.insert_status,
+            TM_INSERT_TRANSACTION_STATUS_ALREADY_FINALIZED
         );
-        assert_eq!(report.notices[0].hash, [16; 32]);
-        assert!(!report.purge_transaction_queue);
+        assert!(report.admission.finalized_period_known);
+        assert_eq!(report.admission.finalized_period, 17);
+        assert!(!report.inserted_hash_found);
+        assert!(!report.transaction_added_hash_found);
         let _ = fs::remove_dir_all(temp_dir);
     }
 
@@ -6059,40 +5542,6 @@ mod tests {
     }
 
     #[test]
-    fn bridge_transaction_manager_runtime_admission_report_includes_status_and_added() {
-        let mut runtime =
-            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
-        let report = runtime
-            .transaction_manager_runtime_execute_transaction_admission_report(
-                validated_insert_sidecar_fact(14, true, 0, 100, false),
-                runtime_queue_input(14, false),
-                false,
-                0,
-            )
-            .expect("runtime admission report should execute");
-
-        assert_eq!(report.transaction_count, 0);
-        assert!(!report.purge_transaction_queue);
-        assert_eq!(report.notices.len(), 3);
-        assert_eq!(
-            report.notices[0].kind,
-            TM_LIFECYCLE_NOTICE_ADMISSION_STATUS_ACCEPTED
-        );
-        assert_eq!(report.notices[0].hash, [14; 32]);
-        assert_eq!(
-            report.notices[1].kind,
-            TM_LIFECYCLE_NOTICE_ADMISSION_INSERTED
-        );
-        assert_eq!(report.notices[1].hash, [14; 32]);
-        assert_eq!(
-            report.notices[2].kind,
-            TM_LIFECYCLE_NOTICE_ADMISSION_TRANSACTION_ADDED
-        );
-        assert_eq!(report.notices[2].hash, [14; 32]);
-        assert!(runtime.transaction_manager_runtime_queue_contains(&[14; 32]));
-    }
-
-    #[test]
     fn bridge_transaction_manager_runtime_admission_command_report_maps_actions() {
         let mut runtime =
             create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
@@ -6118,24 +5567,16 @@ mod tests {
         assert!(!report.admission.finalized_period_known);
         assert_eq!(report.admission.finalized_period, 0);
         assert!(!report.admission.requires_finalized_lookup);
-        assert!(!report.purge_transaction_queue);
-        assert_eq!(report.actions.len(), 2);
-        assert_eq!(
-            report.actions[0].kind,
-            TM_LIFECYCLE_NOTICE_ADMISSION_INSERTED
-        );
-        assert_eq!(report.actions[0].input_index, 0);
-        assert_eq!(report.actions[0].hash, [14; 32]);
-        assert_eq!(
-            report.actions[1].kind,
-            TM_LIFECYCLE_NOTICE_ADMISSION_TRANSACTION_ADDED
-        );
-        assert_eq!(report.actions[1].hash, [14; 32]);
+        assert!(report.inserted_hash_found);
+        assert_eq!(report.inserted_hash, [14; 32]);
+        assert!(report.transaction_added_hash_found);
+        assert_eq!(report.transaction_added_hash, [14; 32]);
         assert!(runtime.transaction_manager_runtime_queue_contains(&[14; 32]));
     }
 
     #[test]
-    fn bridge_transaction_manager_runtime_admission_with_final_chain_report_includes_status() {
+    fn bridge_transaction_manager_runtime_admission_with_final_chain_command_report_includes_status(
+    ) {
         let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_admission_fc_report");
         let storage = crate::storage::create_storage(
             temp_dir.to_str().expect("temp path should be valid UTF-8"),
@@ -6162,7 +5603,7 @@ mod tests {
         let mut runtime =
             create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
         let report = runtime
-            .transaction_manager_runtime_execute_transaction_admission_with_final_chain_report(
+            .transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report(
                 &final_chain,
                 validated_insert_runtime_fact(15, sender, false),
                 runtime_queue_input(15, false),
@@ -6170,23 +5611,138 @@ mod tests {
             .expect("runtime admission final-chain report should execute");
 
         assert_eq!(report.transaction_count, 0);
-        assert_eq!(report.notices.len(), 3);
+        assert!(report.admission.present);
         assert_eq!(
-            report.notices[0].kind,
-            TM_LIFECYCLE_NOTICE_ADMISSION_STATUS_ACCEPTED
+            report.admission.insert_status,
+            TM_INSERT_TRANSACTION_STATUS_ACCEPTED
         );
-        assert_eq!(report.notices[0].hash, [15; 32]);
         assert_eq!(
-            report.notices[1].kind,
-            TM_LIFECYCLE_NOTICE_ADMISSION_INSERTED
+            report.admission.transaction_status,
+            TransactionQueueInsertStatus::Inserted as u8
         );
-        assert_eq!(report.notices[1].hash, [15; 32]);
-        assert_eq!(
-            report.notices[2].kind,
-            TM_LIFECYCLE_NOTICE_ADMISSION_TRANSACTION_ADDED
-        );
-        assert_eq!(report.notices[2].hash, [15; 32]);
+        assert!(report.inserted_hash_found);
+        assert_eq!(report.inserted_hash, [15; 32]);
+        assert!(report.transaction_added_hash_found);
+        assert_eq!(report.transaction_added_hash, [15; 32]);
         assert!(runtime.transaction_manager_runtime_queue_contains(&[15; 32]));
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_transaction_manager_runtime_public_admission_command_report_accepts_transaction() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_public_admission_accept");
+        let storage = crate::storage::create_storage(
+            temp_dir.to_str().expect("temp path should be valid UTF-8"),
+        )
+        .expect("storage should initialize");
+        let sender = [6; 20];
+        let final_chain = crate::final_chain::create_final_chain(
+            &storage,
+            1_000_000,
+            1,
+            vec![crate::ffi::rustaxa_ffi::GenesisAccount {
+                address: sender,
+                balance: vec![20],
+            }],
+            Vec::new(),
+            crate::ffi::rustaxa_ffi::GenesisDposConfig {
+                eligibility_balance_threshold: vec![1],
+                vote_eligibility_balance_step: vec![1],
+                validator_maximum_stake: vec![1],
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+        )
+        .expect("final chain should initialize");
+        let mut runtime =
+            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
+        let report = runtime
+            .transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_command_report(
+                &final_chain,
+                verify_fact(17, 1, 1, 21_000, 100_000, false, true, true, 2, 1, 1),
+                validated_insert_runtime_fact(17, sender, false),
+                runtime_queue_input_for_sender(17, sender, 1, false),
+            )
+            .expect("runtime public admission report should execute");
+
+        assert_eq!(
+            report.verification_status,
+            TM_VERIFY_TRANSACTION_STATUS_ACCEPTED
+        );
+        assert_eq!(report.verification_chain_id, 1);
+        assert_eq!(report.verification_expected_chain_id, 1);
+        assert_eq!(report.admission.transaction_count, 0);
+        assert!(report.admission.admission.present);
+        assert_eq!(
+            report.admission.admission.insert_status,
+            TM_INSERT_TRANSACTION_STATUS_ACCEPTED
+        );
+        assert_eq!(
+            report.admission.admission.transaction_status,
+            TransactionQueueInsertStatus::Inserted as u8
+        );
+        assert!(report.admission.inserted_hash_found);
+        assert_eq!(report.admission.inserted_hash, [17; 32]);
+        assert!(report.admission.transaction_added_hash_found);
+        assert_eq!(report.admission.transaction_added_hash, [17; 32]);
+        assert!(runtime.transaction_manager_runtime_queue_contains(&[17; 32]));
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_transaction_manager_runtime_public_admission_command_report_short_circuits_known() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_public_admission_known");
+        let storage = crate::storage::create_storage(
+            temp_dir.to_str().expect("temp path should be valid UTF-8"),
+        )
+        .expect("storage should initialize");
+        let sender = [7; 20];
+        let final_chain = crate::final_chain::create_final_chain(
+            &storage,
+            1_000_000,
+            1,
+            vec![crate::ffi::rustaxa_ffi::GenesisAccount {
+                address: sender,
+                balance: vec![20],
+            }],
+            Vec::new(),
+            crate::ffi::rustaxa_ffi::GenesisDposConfig {
+                eligibility_balance_threshold: vec![1],
+                vote_eligibility_balance_step: vec![1],
+                validator_maximum_stake: vec![1],
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+        )
+        .expect("final chain should initialize");
+        let mut runtime =
+            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
+        runtime
+            .transaction_manager_runtime_queue_insert(runtime_queue_input_for_sender(
+                18, sender, 1, true,
+            ))
+            .expect("queue insert should succeed");
+
+        let report = runtime
+            .transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_command_report(
+                &final_chain,
+                verify_fact(18, 9, 1, 21_000, 100_000, false, true, true, 2, 1, 1),
+                validated_insert_runtime_fact(18, sender, false),
+                runtime_queue_input_for_sender(18, sender, 1, false),
+            )
+            .expect("runtime public known report should execute");
+
+        assert_eq!(
+            report.verification_status,
+            TM_VERIFY_TRANSACTION_STATUS_ACCEPTED
+        );
+        assert!(report.admission.admission.present);
+        assert_eq!(
+            report.admission.admission.insert_status,
+            TM_INSERT_TRANSACTION_STATUS_ALREADY_KNOWN
+        );
+        assert_eq!(report.admission.admission.transaction_status, 0);
+        assert!(!report.admission.inserted_hash_found);
+        assert!(!report.admission.transaction_added_hash_found);
+        assert!(runtime.transaction_manager_runtime_queue_contains(&[18; 32]));
         let _ = fs::remove_dir_all(temp_dir);
     }
 
@@ -6269,128 +5825,6 @@ mod tests {
         assert!(!runtime.transaction_manager_runtime_queue_contains(&[1; 32]));
         assert!(!runtime.transaction_manager_runtime_queue_contains(&[2; 32]));
         assert!(!runtime.transaction_manager_runtime_queue_contains(&[3; 32]));
-    }
-
-    #[test]
-    fn bridge_transaction_manager_runtime_queue_cleanup_report_emits_lifecycle_notices() {
-        let mut runtime =
-            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 32 });
-        runtime
-            .transaction_manager_runtime_queue_insert(runtime_queue_input(1, true))
-            .expect("proposable insert should succeed");
-        runtime
-            .transaction_manager_runtime_queue_insert(runtime_queue_input(2, false))
-            .expect("non-proposable insert should succeed");
-        runtime
-            .transaction_manager_runtime_queue_insert(runtime_queue_input(3, false))
-            .expect("non-proposable insert should succeed");
-
-        let report = runtime.transaction_manager_runtime_queue_cleanup_report(
-            true,
-            20,
-            vec![BridgeTransactionQueueAccountNonceFact {
-                sender: [9; 20],
-                account_found: true,
-                account_nonce: U256::from(2_u64).to_big_endian(),
-            }],
-        );
-
-        assert_eq!(report.transaction_count, 0);
-        assert!(!report.purge_transaction_queue);
-        assert_eq!(report.notices.len(), 3);
-        assert_eq!(
-            report.notices[0].kind,
-            TM_LIFECYCLE_NOTICE_QUEUE_NON_PROPOSABLE_EXPIRED
-        );
-        assert_eq!(report.notices[0].hash, [2; 32]);
-        assert_eq!(
-            report.notices[1].kind,
-            TM_LIFECYCLE_NOTICE_QUEUE_NON_PROPOSABLE_EXPIRED
-        );
-        assert_eq!(report.notices[1].hash, [3; 32]);
-        assert_eq!(
-            report.notices[2].kind,
-            TM_LIFECYCLE_NOTICE_QUEUE_FINALIZED_ACCOUNT_PURGED
-        );
-        assert_eq!(report.notices[2].hash, [1; 32]);
-        assert!(!runtime.transaction_manager_runtime_queue_contains(&[1; 32]));
-        assert!(!runtime.transaction_manager_runtime_queue_contains(&[2; 32]));
-        assert!(!runtime.transaction_manager_runtime_queue_contains(&[3; 32]));
-    }
-
-    #[test]
-    fn bridge_transaction_manager_runtime_queue_cleanup_command_report_emits_actions() {
-        let mut runtime =
-            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 32 });
-        runtime
-            .transaction_manager_runtime_queue_insert(runtime_queue_input(1, true))
-            .expect("proposable insert should succeed");
-        runtime
-            .transaction_manager_runtime_queue_insert(runtime_queue_input(2, false))
-            .expect("non-proposable insert should succeed");
-        runtime
-            .transaction_manager_runtime_queue_insert(runtime_queue_input(3, false))
-            .expect("non-proposable insert should succeed");
-
-        let report = runtime.transaction_manager_runtime_queue_cleanup_command_report(
-            true,
-            20,
-            vec![BridgeTransactionQueueAccountNonceFact {
-                sender: [9; 20],
-                account_found: true,
-                account_nonce: U256::from(2_u64).to_big_endian(),
-            }],
-        );
-
-        assert_eq!(report.transaction_count, 0);
-        assert!(!report.purge_transaction_queue);
-        assert_eq!(report.actions.len(), 3);
-        assert_eq!(
-            report.actions[0].kind,
-            TM_LIFECYCLE_NOTICE_QUEUE_NON_PROPOSABLE_EXPIRED
-        );
-        assert_eq!(
-            report.actions[1].kind,
-            TM_LIFECYCLE_NOTICE_QUEUE_NON_PROPOSABLE_EXPIRED
-        );
-        assert_eq!(
-            report.actions[2].kind,
-            TM_LIFECYCLE_NOTICE_QUEUE_FINALIZED_ACCOUNT_PURGED
-        );
-        assert!(!runtime.transaction_manager_runtime_queue_contains(&[1; 32]));
-        assert!(!runtime.transaction_manager_runtime_queue_contains(&[2; 32]));
-        assert!(!runtime.transaction_manager_runtime_queue_contains(&[3; 32]));
-    }
-
-    #[test]
-    fn bridge_transaction_manager_runtime_queue_block_finalized_report_emits_lifecycle_notices() {
-        let mut runtime =
-            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 16 });
-        runtime
-            .transaction_manager_runtime_queue_insert(runtime_queue_input(1, false))
-            .expect("non-proposable insert should succeed");
-        runtime
-            .transaction_manager_runtime_queue_insert(runtime_queue_input(2, false))
-            .expect("non-proposable insert should succeed");
-
-        let report = runtime.transaction_manager_runtime_queue_block_finalized_report(20);
-
-        assert_eq!(report.transaction_count, 0);
-        assert!(!report.purge_transaction_queue);
-        assert_eq!(report.notices.len(), 2);
-        assert_eq!(
-            report.notices[0].kind,
-            TM_LIFECYCLE_NOTICE_QUEUE_NON_PROPOSABLE_EXPIRED
-        );
-        assert_eq!(
-            report.notices[1].kind,
-            TM_LIFECYCLE_NOTICE_QUEUE_NON_PROPOSABLE_EXPIRED
-        );
-        assert!(report.notices[0].hash == [1; 32] || report.notices[0].hash == [2; 32]);
-        assert!(report.notices[1].hash == [1; 32] || report.notices[1].hash == [2; 32]);
-        assert_ne!(report.notices[0].hash, report.notices[1].hash);
-        assert!(!runtime.transaction_manager_runtime_queue_contains(&[1; 32]));
-        assert!(!runtime.transaction_manager_runtime_queue_contains(&[2; 32]));
     }
 
     #[test]

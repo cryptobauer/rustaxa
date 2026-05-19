@@ -279,19 +279,7 @@ class TransactionManagerRustShimAccess {
       return {true, ""};
     }
 
-    const auto block_num = manager.final_chain_->lastBlockNumber();
-    rustaxa::TransactionManagerVerifyTransactionFact fact;
-    fact.tx_hash = envelope.hash;
-    fact.chain_id = envelope.chain_id;
-    fact.expected_chain_id = manager.kConf.genesis.chain_id;
-    fact.gas_limit = envelope.gas_limit;
-    fact.max_gas_limit = manager.kConf.genesis.state.hardforks.soleirolia_hf.trx_max_gas_limit;
-    fact.last_block_number = block_num;
-    fact.cornus_active = manager.kConf.genesis.state.hardforks.isOnCornusHardfork(block_num);
-    fact.intrinsic_gas_covered = envelope.intrinsic_gas_covered;
-    fact.signature_valid = envelope.signature_valid && envelope.sender_found;
-    fact.gas_price = envelope.gas_price;
-    fact.minimum_gas_price = toBridgeU256(val_t(manager.kConf.genesis.state.hardforks.soleirolia_hf.trx_min_gas_price));
+    const auto fact = buildVerifyTransactionFact(manager, envelope);
 
     const auto outcome = [&]() {
       try {
@@ -310,42 +298,84 @@ class TransactionManagerRustShimAccess {
     return verifyTransaction(manager, envelope);
   }
 
-  static rustaxa::TransactionManagerRuntimeAdmissionOutcome executeValidatedAdmission(
-      TransactionManager& manager, const rustaxa::LegacyTransactionInspection& envelope,
-      std::shared_ptr<Transaction>&& tx, bool insert_non_proposable) {
-    if (envelope.hash != toBridgeHash(tx->getHash())) {
-      throw std::runtime_error("RUST_TX_MANAGER_ADMISSION_ENVELOPE_FAILED: Rust transaction envelope hash mismatch");
-    }
+  static rustaxa::TransactionManagerVerifyTransactionFact buildVerifyTransactionFact(
+      const TransactionManagerOld& manager, const rustaxa::LegacyTransactionInspection& envelope) {
+    const auto block_num = manager.final_chain_->lastBlockNumber();
+    rustaxa::TransactionManagerVerifyTransactionFact fact;
+    fact.tx_hash = envelope.hash;
+    fact.chain_id = envelope.chain_id;
+    fact.expected_chain_id = manager.kConf.genesis.chain_id;
+    fact.gas_limit = envelope.gas_limit;
+    fact.max_gas_limit = manager.kConf.genesis.state.hardforks.soleirolia_hf.trx_max_gas_limit;
+    fact.last_block_number = block_num;
+    fact.cornus_active = manager.kConf.genesis.state.hardforks.isOnCornusHardfork(block_num);
+    fact.intrinsic_gas_covered = envelope.intrinsic_gas_covered;
+    fact.signature_valid = envelope.signature_valid && envelope.sender_found;
+    fact.gas_price = envelope.gas_price;
+    fact.minimum_gas_price = toBridgeU256(val_t(manager.kConf.genesis.state.hardforks.soleirolia_hf.trx_min_gas_price));
+    return fact;
+  }
 
-    std::unique_lock transactions_lock(manager.transactions_mutex_);
-    const auto sender = requireEnvelopeSender(envelope, "RUST_TX_MANAGER_ADMISSION_ENVELOPE_FAILED");
-
+  static rustaxa::TransactionManagerValidatedInsertRuntimeFact buildValidatedInsertRuntimeFact(
+      const TransactionManager& manager, const rustaxa::LegacyTransactionInspection& envelope,
+      bool insert_non_proposable) {
     rustaxa::TransactionManagerValidatedInsertRuntimeFact fact;
     fact.tx_hash = envelope.hash;
-    fact.sender = sender;
+    fact.sender = requireEnvelopeSender(envelope, "RUST_TX_MANAGER_ADMISSION_ENVELOPE_FAILED");
     fact.transaction_nonce = envelope.nonce;
     fact.transaction_cost = envelope.cost;
     fact.gas_limit = envelope.gas_limit;
     fact.propose_dag_gas_limit = manager.kConf.propose_dag_gas_limit;
     fact.insert_non_proposable = insert_non_proposable;
+    return fact;
+  }
 
-    const auto outcome = [&]() {
+  static rustaxa::TransactionManagerAdmissionCommandReport executeValidatedAdmissionReport(
+      TransactionManager& manager, const rustaxa::LegacyTransactionInspection& envelope,
+      const std::shared_ptr<Transaction>& tx, bool insert_non_proposable) {
+    if (envelope.hash != toBridgeHash(tx->getHash())) {
+      throw std::runtime_error("RUST_TX_MANAGER_ADMISSION_ENVELOPE_FAILED: Rust transaction envelope hash mismatch");
+    }
+
+    std::unique_lock transactions_lock(manager.transactions_mutex_);
+    const auto fact = buildValidatedInsertRuntimeFact(manager, envelope, insert_non_proposable);
+    return [&]() {
       try {
-        return manager.runtime_->transaction_manager_runtime_execute_transaction_admission_with_final_chain(
+        return manager.runtime_->transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report(
             manager.final_chain_->rustFinalChainForRust(), fact,
             toRuntimeQueueInsertInput(envelope, false, manager.final_chain_->lastBlockNumber()));
       } catch (const std::exception& e) {
         throw std::runtime_error(std::string("RUST_TX_MANAGER_ADMISSION_EXECUTION_FAILED: ") + e.what());
       }
     }();
-
-    return outcome;
   }
 
-  static rustaxa::TransactionManagerRuntimeAdmissionOutcome executeValidatedAdmission(
-      TransactionManager& manager, std::shared_ptr<Transaction>&& tx, bool insert_non_proposable) {
+  static rustaxa::TransactionManagerAdmissionCommandReport executeValidatedAdmissionReport(
+      TransactionManager& manager, const std::shared_ptr<Transaction>& tx, bool insert_non_proposable) {
     const auto envelope = inspectRegularTransaction(tx, "RUST_TX_MANAGER_ADMISSION_ENVELOPE_FAILED");
-    return executeValidatedAdmission(manager, envelope, std::move(tx), insert_non_proposable);
+    return executeValidatedAdmissionReport(manager, envelope, tx, insert_non_proposable);
+  }
+
+  static rustaxa::TransactionManagerPublicAdmissionCommandReport executePublicAdmissionReport(
+      TransactionManager& manager, const rustaxa::LegacyTransactionInspection& envelope,
+      const std::shared_ptr<Transaction>& tx) {
+    if (envelope.hash != toBridgeHash(tx->getHash())) {
+      throw std::runtime_error("RUST_TX_MANAGER_ADMISSION_ENVELOPE_FAILED: Rust transaction envelope hash mismatch");
+    }
+
+    const auto verify_fact = buildVerifyTransactionFact(manager, envelope);
+    const auto admission_fact = buildValidatedInsertRuntimeFact(manager, envelope, false);
+    std::unique_lock transactions_lock(manager.transactions_mutex_);
+    return [&]() {
+      try {
+        return manager.runtime_
+            ->transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_command_report(
+                manager.final_chain_->rustFinalChainForRust(), verify_fact, admission_fact,
+                toRuntimeQueueInsertInput(envelope, false, manager.final_chain_->lastBlockNumber()));
+      } catch (const std::exception& e) {
+        throw std::runtime_error(std::string("RUST_TX_MANAGER_ADMISSION_EXECUTION_FAILED: ") + e.what());
+      }
+    }();
   }
 
   static trx_hash_t validateIndexedCommandHash(const char* out_of_range_error, const char* hash_mismatch_error,
@@ -362,58 +392,52 @@ class TransactionManagerRustShimAccess {
     return expected_hash;
   }
 
-  static void applyAdmissionSideEffects(TransactionManager& manager, const trx_hash_t& trx_hash,
-                                        const rustaxa::TransactionManagerRuntimeAdmissionOutcome& outcome) {
-    if (outcome.inserted_hash_found) {
+  static void applyAdmissionCommandReport(TransactionManager& manager, const trx_hash_t& trx_hash,
+                                          const rustaxa::TransactionManagerAdmissionCommandReport& report) {
+    if (!report.admission.present) {
+      return;
+    }
+    if (report.inserted_hash_found) {
+      if (fromBridgeHash(report.inserted_hash) != trx_hash) {
+        throw std::runtime_error("RUST_TX_MANAGER_ADMISSION_EXECUTION_FAILED: Rust returned inserted hash mismatch");
+      }
       LOG(manager.log_dg_) << "Transaction " << trx_hash << " inserted in trx pool";
     }
-    if (outcome.emit_transaction_added) {
+    if (report.transaction_added_hash_found) {
+      if (fromBridgeHash(report.transaction_added_hash) != trx_hash) {
+        throw std::runtime_error(
+            "RUST_TX_MANAGER_ADMISSION_EXECUTION_FAILED: Rust returned transaction-added hash mismatch");
+      }
       manager.emitTransactionAddedForRust(trx_hash);
+    }
+    if (report.admission.requires_finalized_lookup) {
+      throw std::runtime_error(
+          "RUST_TX_MANAGER_INSERT_FINISH_FAILED: Rust FinalChain admission requested C++ storage completion");
     }
   }
 
   static std::pair<bool, std::string> insertTransaction(TransactionManager& manager,
                                                         const std::shared_ptr<Transaction>& trx) {
     const auto trx_hash = trx->getHash();
-    const auto precheck = [&]() {
-      std::shared_lock transactions_lock(manager.transactions_mutex_);
-      try {
-        return manager.runtime_->transaction_manager_runtime_insert_transaction_precheck(toBridgeHash(trx_hash));
-      } catch (const std::exception& e) {
-        throw std::runtime_error(std::string("RUST_TX_MANAGER_INSERT_PRECHECK_FAILED: ") + e.what());
-      }
-    }();
-
-    if (precheck.status != kTMInsertTransactionAccepted) {
-      return insertTransactionResultFromRustStatus(
-          precheck.status, precheck.finalized_period_known ? precheck.finalized_period : 0);
-    }
-
     const auto envelope = inspectRegularTransaction(trx, "RUST_TX_MANAGER_INSERT_ENVELOPE_FAILED");
-
-    const auto verified = verifyTransaction(manager, envelope);
+    const auto report = executePublicAdmissionReport(manager, envelope, trx);
+    const auto verified = verifyTransactionResultFromRustStatus(
+        report.verification_status, report.verification_chain_id, report.verification_expected_chain_id);
     if (!verified.first) {
       return verified;
     }
-
-    auto trx_copy = trx;
-    const auto admission = executeValidatedAdmission(manager, envelope, std::move(trx_copy), false);
-    applyAdmissionSideEffects(manager, trx_hash, admission);
-    if (admission.requires_finalized_lookup) {
-      throw std::runtime_error(
-          "RUST_TX_MANAGER_INSERT_FINISH_FAILED: Rust FinalChain admission requested C++ storage completion");
-    }
-
+    applyAdmissionCommandReport(manager, trx_hash, report.admission);
     return insertTransactionResultFromRustStatus(
-        admission.insert_status, admission.finalized_period_known ? admission.finalized_period : 0);
+        report.admission.admission.insert_status,
+        report.admission.admission.finalized_period_known ? report.admission.admission.finalized_period : 0);
   }
 
   static TransactionStatus insertValidatedTransaction(TransactionManager& manager, std::shared_ptr<Transaction>&& tx,
                                                       bool insert_non_proposable) {
     const auto trx_hash = tx->getHash();
-    const auto admission = executeValidatedAdmission(manager, std::move(tx), insert_non_proposable);
-    applyAdmissionSideEffects(manager, trx_hash, admission);
-    return transactionStatusFromBridge(admission.transaction_status);
+    const auto report = executeValidatedAdmissionReport(manager, tx, insert_non_proposable);
+    applyAdmissionCommandReport(manager, trx_hash, report);
+    return transactionStatusFromBridge(report.admission.transaction_status);
   }
 
   /**

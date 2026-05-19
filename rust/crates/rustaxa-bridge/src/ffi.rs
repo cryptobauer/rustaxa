@@ -1257,27 +1257,6 @@ pub mod rustaxa_ffi {
         overflow_removed_hashes: Vec<TransactionQueueHash>,
     }
 
-    /// One Rust-planned TransactionManager lifecycle notice for shim-owned side effects.
-    ///
-    /// `kind` is a stable bridge discriminator. `input_index` maps back to a
-    /// caller-supplied transaction list when the notice originated from a batch
-    /// input; notices that already carry a complete hash set this to zero.
-    struct TransactionManagerLifecycleNotice {
-        kind: u8,
-        input_index: u64,
-        hash: [u8; 32],
-    }
-
-    /// Runtime lifecycle report returned after Rust has already applied deterministic state changes.
-    ///
-    /// C++ consumes this only for live-object validation, logging, public event
-    /// dispatch, and shim-local follow-up actions that cannot yet move to Rust.
-    struct TransactionManagerLifecycleReport {
-        notices: Vec<TransactionManagerLifecycleNotice>,
-        transaction_count: u64,
-        purge_transaction_queue: bool,
-    }
-
     /// One input-indexed transaction hash in a typed TransactionManager command report.
     ///
     /// `input_index` always points at the caller-supplied batch that produced
@@ -1338,16 +1317,8 @@ pub mod rustaxa_ffi {
         transaction_count: u64,
     }
 
-    /// Typed command action emitted by a runtime lifecycle report.
-    struct TransactionManagerCommandAction {
-        kind: u8,
-        target: u8,
-        input_index: u64,
-        hash: [u8; 32],
-    }
-
-    /// Typed admission result attached to command reports that execute admission.
-    struct TransactionManagerCommandAdmissionResult {
+    /// Typed admission result attached to admission command reports.
+    struct TransactionManagerAdmissionResult {
         present: bool,
         insert_status: u8,
         transaction_status: u8,
@@ -1356,12 +1327,30 @@ pub mod rustaxa_ffi {
         requires_finalized_lookup: bool,
     }
 
-    /// Typed command report consumed by C++ generic lifecycle tooling.
-    struct TransactionManagerCommandReport {
-        actions: Vec<TransactionManagerCommandAction>,
+    /// Typed command report for TransactionManager admission.
+    ///
+    /// Rust has already completed validated queue mutation and public status
+    /// mapping. C++ consumes this report only for legacy logging/event dispatch
+    /// mechanics and public status conversion.
+    struct TransactionManagerAdmissionCommandReport {
+        inserted_hash_found: bool,
+        inserted_hash: [u8; 32],
+        transaction_added_hash_found: bool,
+        transaction_added_hash: [u8; 32],
         transaction_count: u64,
-        purge_transaction_queue: bool,
-        admission: TransactionManagerCommandAdmissionResult,
+        admission: TransactionManagerAdmissionResult,
+    }
+
+    /// Typed command report for public `insertTransaction` admission.
+    ///
+    /// Rust owns known-fast-path precheck, verification status decision, account
+    /// fact sourcing, finalized-location lookup, queue mutation, and admission
+    /// status mapping. C++ keeps public error-string conversion.
+    struct TransactionManagerPublicAdmissionCommandReport {
+        verification_status: u8,
+        verification_chain_id: u64,
+        verification_expected_chain_id: u64,
+        admission: TransactionManagerAdmissionCommandReport,
     }
 
     /// Finalized status planning outcome for one finalized period.
@@ -2490,56 +2479,42 @@ pub mod rustaxa_ffi {
             fact: TransactionManagerValidatedInsertSidecarFact,
             input: TransactionQueueInsertInput,
         ) -> Result<TransactionManagerRuntimeAdmissionOutcome>;
-        /// Executes admission and returns shim-side lifecycle notices.
-        pub fn transaction_manager_runtime_execute_transaction_admission_report(
-            self: &mut BridgeTransactionManagerRuntime,
-            fact: TransactionManagerValidatedInsertSidecarFact,
-            input: TransactionQueueInsertInput,
-            has_finalized_period: bool,
-            finalized_period: u64,
-        ) -> Result<TransactionManagerLifecycleReport>;
-        /// Executes admission and returns typed lifecycle command actions.
+        /// Executes admission and returns a typed command report.
         pub fn transaction_manager_runtime_execute_transaction_admission_command_report(
             self: &mut BridgeTransactionManagerRuntime,
             fact: TransactionManagerValidatedInsertSidecarFact,
             input: TransactionQueueInsertInput,
             has_finalized_period: bool,
             finalized_period: u64,
-        ) -> Result<TransactionManagerCommandReport>;
-        /// Executes storage-completed admission and returns shim-side lifecycle notices.
-        pub fn transaction_manager_runtime_execute_transaction_admission_with_storage_report(
-            self: &mut BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
-            fact: TransactionManagerValidatedInsertSidecarFact,
-            input: TransactionQueueInsertInput,
-        ) -> Result<TransactionManagerLifecycleReport>;
-        /// Executes storage-completed admission and returns typed lifecycle command actions.
+        ) -> Result<TransactionManagerAdmissionCommandReport>;
+        /// Executes storage-completed admission and returns a typed command report.
         pub fn transaction_manager_runtime_execute_transaction_admission_with_storage_command_report(
             self: &mut BridgeTransactionManagerRuntime,
             storage: &BridgeStorage,
             fact: TransactionManagerValidatedInsertSidecarFact,
             input: TransactionQueueInsertInput,
-        ) -> Result<TransactionManagerCommandReport>;
+        ) -> Result<TransactionManagerAdmissionCommandReport>;
         pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain(
             self: &mut BridgeTransactionManagerRuntime,
             final_chain: &BridgeFinalChain,
             fact: TransactionManagerValidatedInsertRuntimeFact,
             input: TransactionQueueInsertInput,
         ) -> Result<TransactionManagerRuntimeAdmissionOutcome>;
-        /// Executes admission with FinalChain facts and returns shim-side lifecycle notices.
-        pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain_report(
-            self: &mut BridgeTransactionManagerRuntime,
-            final_chain: &BridgeFinalChain,
-            fact: TransactionManagerValidatedInsertRuntimeFact,
-            input: TransactionQueueInsertInput,
-        ) -> Result<TransactionManagerLifecycleReport>;
-        /// Executes FinalChain-backed admission and returns typed lifecycle command actions.
+        /// Executes FinalChain-backed admission and returns a typed command report.
         pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report(
             self: &mut BridgeTransactionManagerRuntime,
             final_chain: &BridgeFinalChain,
             fact: TransactionManagerValidatedInsertRuntimeFact,
             input: TransactionQueueInsertInput,
-        ) -> Result<TransactionManagerCommandReport>;
+        ) -> Result<TransactionManagerAdmissionCommandReport>;
+        /// Executes public insertTransaction verification and admission as one Rust-owned command.
+        pub fn transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_command_report(
+            self: &mut BridgeTransactionManagerRuntime,
+            final_chain: &BridgeFinalChain,
+            verify_fact: TransactionManagerVerifyTransactionFact,
+            admission_fact: TransactionManagerValidatedInsertRuntimeFact,
+            input: TransactionQueueInsertInput,
+        ) -> Result<TransactionManagerPublicAdmissionCommandReport>;
         pub fn transaction_manager_runtime_queue_erase(
             self: &mut BridgeTransactionManagerRuntime,
             hash: &[u8; 32],
@@ -2571,12 +2546,7 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionManagerRuntime,
             block_number: u64,
         ) -> Vec<TransactionQueueHash>;
-        /// Executes block-finalization queue cleanup and returns replay notices.
-        pub fn transaction_manager_runtime_queue_block_finalized_report(
-            self: &mut BridgeTransactionManagerRuntime,
-            block_number: u64,
-        ) -> TransactionManagerLifecycleReport;
-        /// Executes block-finalization queue cleanup and returns typed lifecycle command actions.
+        /// Executes block-finalization queue cleanup and returns a typed command report.
         pub fn transaction_manager_runtime_queue_block_finalized_command_report(
             self: &mut BridgeTransactionManagerRuntime,
             block_number: u64,
@@ -2594,38 +2564,12 @@ pub mod rustaxa_ffi {
             block_number: u64,
             facts: Vec<TransactionQueueAccountNonceFact>,
         ) -> TransactionManagerRuntimeQueueCleanupPlan;
-        pub fn transaction_manager_runtime_queue_cleanup_report(
-            self: &mut BridgeTransactionManagerRuntime,
-            apply_block_finalized: bool,
-            block_number: u64,
-            facts: Vec<TransactionQueueAccountNonceFact>,
-        ) -> TransactionManagerLifecycleReport;
-        /// Applies queue cleanup and returns typed lifecycle command actions.
-        pub fn transaction_manager_runtime_queue_cleanup_command_report(
-            self: &mut BridgeTransactionManagerRuntime,
-            apply_block_finalized: bool,
-            block_number: u64,
-            facts: Vec<TransactionQueueAccountNonceFact>,
-        ) -> TransactionManagerCommandReport;
         pub fn transaction_manager_runtime_queue_cleanup_with_final_chain(
             self: &mut BridgeTransactionManagerRuntime,
             final_chain: &BridgeFinalChain,
             apply_block_finalized: bool,
             block_number: u64,
         ) -> Result<TransactionManagerRuntimeQueueCleanupPlan>;
-        pub fn transaction_manager_runtime_queue_cleanup_report_with_final_chain(
-            self: &mut BridgeTransactionManagerRuntime,
-            final_chain: &BridgeFinalChain,
-            apply_block_finalized: bool,
-            block_number: u64,
-        ) -> Result<TransactionManagerLifecycleReport>;
-        /// Applies queue cleanup with FinalChain-sourced facts and returns typed lifecycle command actions.
-        pub fn transaction_manager_runtime_queue_cleanup_with_final_chain_command_report(
-            self: &mut BridgeTransactionManagerRuntime,
-            final_chain: &BridgeFinalChain,
-            apply_block_finalized: bool,
-            block_number: u64,
-        ) -> Result<TransactionManagerCommandReport>;
         pub fn transaction_manager_runtime_queue_mark_transaction_known(
             self: &mut BridgeTransactionManagerRuntime,
             hash: &[u8; 32],
@@ -2724,14 +2668,7 @@ pub mod rustaxa_ffi {
             final_chain: &BridgeFinalChain,
             facts: Vec<DagTransactionSaveRuntimeFact>,
         ) -> Result<DagTransactionSaveOutcome>;
-        /// Applies DAG transaction persistence and returns shim-side lifecycle notices.
-        pub fn save_transactions_from_dag_block_report_with_runtime_and_final_chain(
-            runtime: &mut BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
-            final_chain: &BridgeFinalChain,
-            facts: Vec<DagTransactionSaveRuntimeFact>,
-        ) -> Result<TransactionManagerLifecycleReport>;
-        /// Applies DAG transaction persistence and returns typed lifecycle command actions.
+        /// Applies DAG transaction persistence and returns a typed command report.
         pub fn save_transactions_from_dag_block_command_report_with_runtime_and_final_chain(
             runtime: &mut BridgeTransactionManagerRuntime,
             storage: &BridgeStorage,
@@ -2769,15 +2706,7 @@ pub mod rustaxa_ffi {
             retention_window: u64,
             facts: Vec<FinalizedTransactionStatusSidecarFact>,
         ) -> Result<FinalizedTransactionStatusPlan>;
-        /// Applies finalized transaction status changes and returns shim-side lifecycle notices.
-        pub fn update_finalized_transactions_status_report_with_runtime(
-            runtime: &mut BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
-            period: u64,
-            retention_window: u64,
-            facts: Vec<FinalizedTransactionStatusSidecarFact>,
-        ) -> Result<TransactionManagerLifecycleReport>;
-        /// Applies finalized status updates and returns typed lifecycle command actions.
+        /// Applies finalized status updates and returns a typed command report.
         pub fn update_finalized_transactions_status_command_report_with_runtime(
             runtime: &mut BridgeTransactionManagerRuntime,
             storage: &BridgeStorage,
@@ -2785,16 +2714,7 @@ pub mod rustaxa_ffi {
             retention_window: u64,
             facts: Vec<FinalizedTransactionStatusSidecarFact>,
         ) -> Result<TransactionManagerFinalizedStatusCommandReport>;
-        /// Applies finalized transaction status changes plus any periodic queue purge in Rust.
-        pub fn update_finalized_transactions_status_report_with_runtime_and_final_chain(
-            runtime: &mut BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
-            final_chain: &BridgeFinalChain,
-            period: u64,
-            retention_window: u64,
-            facts: Vec<FinalizedTransactionStatusSidecarFact>,
-        ) -> Result<TransactionManagerLifecycleReport>;
-        /// Applies finalized status updates plus periodic purge and returns typed lifecycle command actions.
+        /// Applies finalized status updates plus periodic purge and returns a typed command report.
         pub fn update_finalized_transactions_status_command_report_with_runtime_and_final_chain(
             runtime: &mut BridgeTransactionManagerRuntime,
             storage: &BridgeStorage,
@@ -2900,12 +2820,7 @@ pub mod rustaxa_ffi {
         pub fn transaction_manager_load_nonfinalized_recovery_inputs(
             storage: &BridgeStorage,
         ) -> Result<Vec<TransactionManagerSidecarRecoveryInsertInput>>;
-        /// Rebuilds runtime recovery sidecars from Rust storage and returns a lifecycle report.
-        pub fn transaction_manager_recover_nonfinalized_report_with_runtime(
-            runtime: &mut BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
-        ) -> Result<TransactionManagerLifecycleReport>;
-        /// Rebuilds runtime recovery sidecars and returns typed command actions.
+        /// Rebuilds runtime recovery sidecars and returns a typed command report.
         pub fn transaction_manager_recover_nonfinalized_command_report_with_runtime(
             runtime: &mut BridgeTransactionManagerRuntime,
             storage: &BridgeStorage,
