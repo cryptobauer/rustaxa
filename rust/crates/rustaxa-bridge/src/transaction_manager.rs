@@ -21,22 +21,21 @@ use crate::ffi::rustaxa_ffi::{
     TransactionManagerFilterAction, TransactionManagerFinalizedFilterFact,
     TransactionManagerFinalizedStatusCommandReport, TransactionManagerGasEstimationFact,
     TransactionManagerGasEstimationPlan, TransactionManagerGasEstimationResult,
-    TransactionManagerHashCommand, TransactionManagerIndexedHash,
-    TransactionManagerInsertTransactionFact, TransactionManagerInsertTransactionOutcome,
-    TransactionManagerPublicAdmissionCommandReport,
-    TransactionManagerQueueBlockFinalizedCommandReport, TransactionManagerRecoveryCommandReport,
-    TransactionManagerRecoveryEntry, TransactionManagerRuntimeAdmissionOutcome,
-    TransactionManagerRuntimeQueueCleanupPlan, TransactionManagerRuntimeValidatedInsertOutcome,
-    TransactionManagerSidecarInsertInput, TransactionManagerSidecarKnownFact,
-    TransactionManagerSidecarLookup, TransactionManagerSidecarLookupPlan,
-    TransactionManagerSidecarLookupRequest, TransactionManagerSidecarRecoveryInsertInput,
-    TransactionManagerSidecarTransitionInput, TransactionManagerStoredTransactionLookup,
-    TransactionManagerStoredTransactionRequest, TransactionManagerTransactionView,
-    TransactionManagerTransactionViewPlan, TransactionManagerTransactionViewRequest,
-    TransactionManagerValidatedInsertFact, TransactionManagerValidatedInsertPlan,
-    TransactionManagerValidatedInsertRuntimeFact, TransactionManagerValidatedInsertSidecarFact,
-    TransactionManagerVerifyNotFinalizedFact, TransactionManagerVerifyNotFinalizedOutcome,
-    TransactionManagerVerifyNotFinalizedRuntimeFact,
+    TransactionManagerHashCommand, TransactionManagerInsertTransactionFact,
+    TransactionManagerInsertTransactionOutcome, TransactionManagerPublicAdmissionCommandReport,
+    TransactionManagerPublicInsertResult, TransactionManagerQueueBlockFinalizedCommandReport,
+    TransactionManagerRecoveryCommandReport, TransactionManagerRecoveryEntry,
+    TransactionManagerRuntimeAdmissionOutcome, TransactionManagerRuntimeQueueCleanupPlan,
+    TransactionManagerRuntimeValidatedInsertOutcome, TransactionManagerSidecarInsertInput,
+    TransactionManagerSidecarKnownFact, TransactionManagerSidecarLookup,
+    TransactionManagerSidecarLookupPlan, TransactionManagerSidecarLookupRequest,
+    TransactionManagerSidecarRecoveryInsertInput, TransactionManagerSidecarTransitionInput,
+    TransactionManagerStoredTransactionLookup, TransactionManagerStoredTransactionRequest,
+    TransactionManagerTransactionView, TransactionManagerTransactionViewPlan,
+    TransactionManagerTransactionViewRequest, TransactionManagerValidatedInsertFact,
+    TransactionManagerValidatedInsertPlan, TransactionManagerValidatedInsertRuntimeFact,
+    TransactionManagerValidatedInsertSidecarFact, TransactionManagerVerifyNotFinalizedFact,
+    TransactionManagerVerifyNotFinalizedOutcome, TransactionManagerVerifyNotFinalizedRuntimeFact,
     TransactionManagerVerifyNotFinalizedSidecarFact, TransactionManagerVerifyTransactionFact,
     TransactionManagerVerifyTransactionOutcome, TransactionPackCandidateDecision,
     TransactionPackCandidateInput, TransactionPackEstimateInput, TransactionPackEstimateOutcome,
@@ -121,10 +120,6 @@ const TRANSACTION_QUEUE_DEMOTE_STATUS_ALREADY_NON_PROPOSABLE: u8 = 1;
 const TRANSACTION_QUEUE_DEMOTE_STATUS_DEMOTED: u8 = 2;
 const TRANSACTION_QUEUE_DROP_WINDOW: Duration = Duration::from_secs(600);
 
-fn indexed_hash(input_index: u64, hash: [u8; 32]) -> TransactionManagerIndexedHash {
-    TransactionManagerIndexedHash { input_index, hash }
-}
-
 fn hash_command(hash: [u8; 32]) -> TransactionManagerHashCommand {
     TransactionManagerHashCommand { hash }
 }
@@ -158,16 +153,13 @@ fn command_admission_result_from_insert_outcome(
 fn dag_save_command_report(
     outcome: &DagTransactionSaveOutcome,
 ) -> TransactionManagerDagSaveCommandReport {
-    let mut accepted = Vec::with_capacity(outcome.accepted.len());
     let mut queue_erased = Vec::new();
     for entry in &outcome.accepted {
-        accepted.push(indexed_hash(entry.input_index, entry.hash));
         if entry.erased_from_queue {
-            queue_erased.push(indexed_hash(entry.input_index, entry.hash));
+            queue_erased.push(hash_command(entry.hash));
         }
     }
     TransactionManagerDagSaveCommandReport {
-        accepted,
         queue_erased,
         transaction_count: outcome.target_transaction_count,
     }
@@ -187,15 +179,72 @@ fn admission_command_report(
     }
 }
 
+fn public_insert_verify_result(
+    status: u8,
+    chain_id: u64,
+    expected_chain_id: u64,
+) -> TransactionManagerPublicInsertResult {
+    let message = match status {
+        TM_VERIFY_TRANSACTION_STATUS_ACCEPTED => "",
+        TM_VERIFY_TRANSACTION_STATUS_CHAIN_ID_MISMATCH => {
+            return TransactionManagerPublicInsertResult {
+                accepted: false,
+                message: format!("chain_id mismatch {chain_id} {expected_chain_id}"),
+            };
+        }
+        TM_VERIFY_TRANSACTION_STATUS_INVALID_GAS => "invalid gas",
+        TM_VERIFY_TRANSACTION_STATUS_INTRINSIC_GAS => "intrinsic gas too low",
+        TM_VERIFY_TRANSACTION_STATUS_INVALID_SIGNATURE => "invalid signature",
+        TM_VERIFY_TRANSACTION_STATUS_GAS_PRICE => "gas_price too low",
+        _ => "unknown transaction verification status",
+    };
+    TransactionManagerPublicInsertResult {
+        accepted: status == TM_VERIFY_TRANSACTION_STATUS_ACCEPTED,
+        message: message.to_string(),
+    }
+}
+
+fn public_insert_admission_result(
+    admission: &TransactionManagerAdmissionResult,
+) -> TransactionManagerPublicInsertResult {
+    match admission.insert_status {
+        TM_INSERT_TRANSACTION_STATUS_ACCEPTED => TransactionManagerPublicInsertResult {
+            accepted: true,
+            message: "".to_string(),
+        },
+        TM_INSERT_TRANSACTION_STATUS_ALREADY_KNOWN => TransactionManagerPublicInsertResult {
+            accepted: false,
+            message: "Transaction already in transactions pool".to_string(),
+        },
+        TM_INSERT_TRANSACTION_STATUS_ALREADY_FINALIZED => TransactionManagerPublicInsertResult {
+            accepted: false,
+            message: format!(
+                "Transaction already finalized in period{}",
+                admission.finalized_period
+            ),
+        },
+        TM_INSERT_TRANSACTION_STATUS_CANNOT_INSERT => TransactionManagerPublicInsertResult {
+            accepted: false,
+            message: "Transaction could not be inserted".to_string(),
+        },
+        _ => TransactionManagerPublicInsertResult {
+            accepted: false,
+            message: "Transaction could not be inserted".to_string(),
+        },
+    }
+}
+
 fn public_admission_command_report(
     verification_status: u8,
     verify_fact: &TransactionManagerVerifyTransactionFact,
     admission: TransactionManagerAdmissionCommandReport,
+    public_result: TransactionManagerPublicInsertResult,
 ) -> TransactionManagerPublicAdmissionCommandReport {
     TransactionManagerPublicAdmissionCommandReport {
         verification_status,
         verification_chain_id: verify_fact.chain_id,
         verification_expected_chain_id: verify_fact.expected_chain_id,
+        public_result,
         admission,
     }
 }
@@ -213,10 +262,12 @@ fn public_precheck_rejected_command_report(
         transaction_count,
         admission: command_admission_result_from_insert_outcome(&precheck),
     };
+    let public_result = public_insert_admission_result(&admission.admission);
     public_admission_command_report(
         TM_VERIFY_TRANSACTION_STATUS_ACCEPTED,
         verify_fact,
         admission,
+        public_result,
     )
 }
 
@@ -240,7 +291,16 @@ fn public_verification_rejected_command_report(
             requires_finalized_lookup: false,
         },
     };
-    public_admission_command_report(verify_status, verify_fact, admission)
+    public_admission_command_report(
+        verify_status,
+        verify_fact,
+        admission,
+        public_insert_verify_result(
+            verify_status,
+            verify_fact.chain_id,
+            verify_fact.expected_chain_id,
+        ),
+    )
 }
 
 fn finalized_status_command_report(
@@ -250,10 +310,10 @@ fn finalized_status_command_report(
     let mut queue_erased = Vec::new();
     for action in &outcome.accepted {
         if action.removed_non_finalized {
-            removed_non_finalized.push(indexed_hash(action.input_index, action.hash));
+            removed_non_finalized.push(hash_command(action.hash));
         }
         if action.erase_from_queue && action.erased_from_queue {
-            queue_erased.push(indexed_hash(action.input_index, action.hash));
+            queue_erased.push(hash_command(action.hash));
         }
     }
     TransactionManagerFinalizedStatusCommandReport {
@@ -2925,6 +2985,10 @@ impl BridgeTransactionManagerRuntime {
                 fact,
                 input,
             )?;
+        ensure!(
+            !outcome.requires_finalized_lookup,
+            "TM_RUNTIME_FINAL_CHAIN_ADMISSION_LOOKUP_INCOMPLETE"
+        );
         Ok(admission_command_report(
             &outcome,
             self.transaction_manager_runtime_transaction_count(),
@@ -2983,6 +3047,7 @@ impl BridgeTransactionManagerRuntime {
                 admission_fact,
                 input,
             )?;
+        let public_result = public_insert_admission_result(&admission.admission);
         Ok(public_admission_command_report(
             TM_VERIFY_TRANSACTION_STATUS_ACCEPTED,
             &TransactionManagerVerifyTransactionFact {
@@ -2999,6 +3064,7 @@ impl BridgeTransactionManagerRuntime {
                 minimum_gas_price: [0; 32],
             },
             admission,
+            public_result,
         ))
     }
 
@@ -4723,12 +4789,8 @@ mod tests {
         .expect("runtime final-chain DAG command report should execute");
 
         assert_eq!(report.transaction_count, 8);
-        assert_eq!(report.accepted.len(), 1);
-        assert_eq!(report.accepted[0].hash, [1; 32]);
-        assert_eq!(report.accepted[0].input_index, 0);
         assert_eq!(report.queue_erased.len(), 1);
         assert_eq!(report.queue_erased[0].hash, [1; 32]);
-        assert_eq!(report.queue_erased[0].input_index, 0);
         assert_eq!(
             storage
                 .get_status_field(StatusField::TrxCount as u8)
@@ -4836,10 +4898,8 @@ mod tests {
         assert!(!report.purge_transaction_queue);
         assert_eq!(report.removed_non_finalized.len(), 1);
         assert_eq!(report.removed_non_finalized[0].hash, [1; 32]);
-        assert_eq!(report.removed_non_finalized[0].input_index, 0);
         assert_eq!(report.queue_erased.len(), 1);
         assert_eq!(report.queue_erased[0].hash, [1; 32]);
-        assert_eq!(report.queue_erased[0].input_index, 0);
         assert!(report.finalized_account_purged.is_empty());
         assert_eq!(
             storage
@@ -5670,6 +5730,8 @@ mod tests {
         );
         assert_eq!(report.verification_chain_id, 1);
         assert_eq!(report.verification_expected_chain_id, 1);
+        assert!(report.public_result.accepted);
+        assert_eq!(report.public_result.message, "");
         assert_eq!(report.admission.transaction_count, 0);
         assert!(report.admission.admission.present);
         assert_eq!(
@@ -5734,6 +5796,11 @@ mod tests {
             report.verification_status,
             TM_VERIFY_TRANSACTION_STATUS_ACCEPTED
         );
+        assert!(!report.public_result.accepted);
+        assert_eq!(
+            report.public_result.message,
+            "Transaction already in transactions pool"
+        );
         assert!(report.admission.admission.present);
         assert_eq!(
             report.admission.admission.insert_status,
@@ -5743,6 +5810,55 @@ mod tests {
         assert!(!report.admission.inserted_hash_found);
         assert!(!report.admission.transaction_added_hash_found);
         assert!(runtime.transaction_manager_runtime_queue_contains(&[18; 32]));
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_transaction_manager_runtime_public_admission_command_report_returns_verify_message() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_public_admission_verify_reject");
+        let storage = crate::storage::create_storage(
+            temp_dir.to_str().expect("temp path should be valid UTF-8"),
+        )
+        .expect("storage should initialize");
+        let sender = [8; 20];
+        let final_chain = crate::final_chain::create_final_chain(
+            &storage,
+            1_000_000,
+            1,
+            vec![crate::ffi::rustaxa_ffi::GenesisAccount {
+                address: sender,
+                balance: vec![20],
+            }],
+            Vec::new(),
+            crate::ffi::rustaxa_ffi::GenesisDposConfig {
+                eligibility_balance_threshold: vec![1],
+                vote_eligibility_balance_step: vec![1],
+                validator_maximum_stake: vec![1],
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+        )
+        .expect("final chain should initialize");
+        let mut runtime =
+            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
+
+        let report = runtime
+            .transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_command_report(
+                &final_chain,
+                verify_fact(19, 9, 1, 21_000, 100_000, false, true, true, 2, 1, 1),
+                validated_insert_runtime_fact(19, sender, false),
+                runtime_queue_input_for_sender(19, sender, 1, false),
+            )
+            .expect("runtime public verify rejection report should execute");
+
+        assert_eq!(
+            report.verification_status,
+            TM_VERIFY_TRANSACTION_STATUS_CHAIN_ID_MISMATCH
+        );
+        assert!(!report.public_result.accepted);
+        assert_eq!(report.public_result.message, "chain_id mismatch 9 1");
+        assert!(!report.admission.admission.present);
+        assert!(!report.admission.inserted_hash_found);
+        assert!(!runtime.transaction_manager_runtime_queue_contains(&[19; 32]));
         let _ = fs::remove_dir_all(temp_dir);
     }
 

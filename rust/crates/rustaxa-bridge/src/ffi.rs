@@ -1257,16 +1257,6 @@ pub mod rustaxa_ffi {
         overflow_removed_hashes: Vec<TransactionQueueHash>,
     }
 
-    /// One input-indexed transaction hash in a typed TransactionManager command report.
-    ///
-    /// `input_index` always points at the caller-supplied batch that produced
-    /// the command; C++ validates it against the original transaction vector
-    /// before applying any remaining materialized-object side effect.
-    struct TransactionManagerIndexedHash {
-        input_index: u64,
-        hash: [u8; 32],
-    }
-
     /// One direct transaction hash in a typed TransactionManager command report.
     ///
     /// Direct hashes are emitted for runtime queue or sidecar effects that are
@@ -1279,10 +1269,9 @@ pub mod rustaxa_ffi {
     ///
     /// Rust has already persisted storage, updated sidecars, erased queued
     /// transactions, and updated the authoritative runtime count. C++ consumes
-    /// this report only for input validation, logging, and count mirroring.
+    /// this report only for logging and count mirroring.
     struct TransactionManagerDagSaveCommandReport {
-        accepted: Vec<TransactionManagerIndexedHash>,
-        queue_erased: Vec<TransactionManagerIndexedHash>,
+        queue_erased: Vec<TransactionManagerHashCommand>,
         transaction_count: u64,
     }
 
@@ -1290,10 +1279,10 @@ pub mod rustaxa_ffi {
     ///
     /// Rust has already applied storage updates, live sidecar transitions,
     /// queue erasure, optional finalized-account queue purge, and runtime count
-    /// changes. C++ consumes the buckets for validation and existing logs only.
+    /// changes. C++ consumes the buckets for existing logs only.
     struct TransactionManagerFinalizedStatusCommandReport {
-        removed_non_finalized: Vec<TransactionManagerIndexedHash>,
-        queue_erased: Vec<TransactionManagerIndexedHash>,
+        removed_non_finalized: Vec<TransactionManagerHashCommand>,
+        queue_erased: Vec<TransactionManagerHashCommand>,
         finalized_account_purged: Vec<TransactionManagerHashCommand>,
         transaction_count: u64,
         purge_transaction_queue: bool,
@@ -1341,15 +1330,25 @@ pub mod rustaxa_ffi {
         admission: TransactionManagerAdmissionResult,
     }
 
+    /// Legacy public insert result selected by Rust.
+    ///
+    /// `accepted` and `message` map directly to the C++ public
+    /// `TransactionManager::insertTransaction` return value.
+    struct TransactionManagerPublicInsertResult {
+        accepted: bool,
+        message: String,
+    }
+
     /// Typed command report for public `insertTransaction` admission.
     ///
     /// Rust owns known-fast-path precheck, verification status decision, account
     /// fact sourcing, finalized-location lookup, queue mutation, and admission
-    /// status mapping. C++ keeps public error-string conversion.
+    /// status mapping plus legacy public result text.
     struct TransactionManagerPublicAdmissionCommandReport {
         verification_status: u8,
         verification_chain_id: u64,
         verification_expected_chain_id: u64,
+        public_result: TransactionManagerPublicInsertResult,
         admission: TransactionManagerAdmissionCommandReport,
     }
 

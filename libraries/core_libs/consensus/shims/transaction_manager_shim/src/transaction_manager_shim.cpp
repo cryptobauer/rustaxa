@@ -73,10 +73,6 @@ constexpr uint8_t kTMVerifyTransactionIntrinsicGas = 3;
 constexpr uint8_t kTMVerifyTransactionInvalidSignature = 4;
 constexpr uint8_t kTMVerifyTransactionGasPrice = 5;
 
-constexpr uint8_t kTMInsertTransactionAccepted = 0;
-constexpr uint8_t kTMInsertTransactionKnown = 1;
-constexpr uint8_t kTMInsertTransactionFinalized = 2;
-constexpr uint8_t kTMInsertTransactionCouldNotInsert = 3;
 constexpr uint8_t kTMQueueStatusInserted = 0;
 constexpr uint8_t kTMQueueStatusInsertedNonProposable = 1;
 constexpr uint8_t kTMQueueStatusKnown = 2;
@@ -239,21 +235,6 @@ std::pair<bool, std::string> verifyTransactionResultFromRustStatus(uint8_t statu
   }
 }
 
-std::pair<bool, std::string> insertTransactionResultFromRustStatus(uint8_t status, uint64_t finalized_period) {
-  switch (status) {
-    case kTMInsertTransactionAccepted:
-      return {true, ""};
-    case kTMInsertTransactionKnown:
-      return {false, "Transaction already in transactions pool"};
-    case kTMInsertTransactionFinalized:
-      return {false, "Transaction already finalized in period" + std::to_string(finalized_period)};
-    case kTMInsertTransactionCouldNotInsert:
-      return {false, "Transaction could not be inserted"};
-    default:
-      throw std::runtime_error("TransactionManager shim received unknown insert status from Rust bridge");
-  }
-}
-
 TransactionStatus transactionStatusFromBridge(uint8_t status) {
   switch (status) {
     case kTMQueueStatusInserted:
@@ -378,65 +359,31 @@ class TransactionManagerRustShimAccess {
     }();
   }
 
-  static trx_hash_t validateIndexedCommandHash(const char* out_of_range_error, const char* hash_mismatch_error,
-                                               const std::vector<trx_hash_t>& input_hashes,
-                                               const rustaxa::TransactionManagerIndexedHash& command) {
-    if (command.input_index >= input_hashes.size()) {
-      throw DbException(out_of_range_error);
-    }
-    const auto input_index = static_cast<size_t>(command.input_index);
-    const auto& expected_hash = input_hashes[input_index];
-    if (fromBridgeHash(command.hash) != expected_hash) {
-      throw DbException(hash_mismatch_error);
-    }
-    return expected_hash;
-  }
-
-  static void applyAdmissionCommandReport(TransactionManager& manager, const trx_hash_t& trx_hash,
+  static void applyAdmissionCommandReport(TransactionManager& manager,
                                           const rustaxa::TransactionManagerAdmissionCommandReport& report) {
     if (!report.admission.present) {
       return;
     }
     if (report.inserted_hash_found) {
-      if (fromBridgeHash(report.inserted_hash) != trx_hash) {
-        throw std::runtime_error("RUST_TX_MANAGER_ADMISSION_EXECUTION_FAILED: Rust returned inserted hash mismatch");
-      }
-      LOG(manager.log_dg_) << "Transaction " << trx_hash << " inserted in trx pool";
+      LOG(manager.log_dg_) << "Transaction " << fromBridgeHash(report.inserted_hash) << " inserted in trx pool";
     }
     if (report.transaction_added_hash_found) {
-      if (fromBridgeHash(report.transaction_added_hash) != trx_hash) {
-        throw std::runtime_error(
-            "RUST_TX_MANAGER_ADMISSION_EXECUTION_FAILED: Rust returned transaction-added hash mismatch");
-      }
-      manager.emitTransactionAddedForRust(trx_hash);
-    }
-    if (report.admission.requires_finalized_lookup) {
-      throw std::runtime_error(
-          "RUST_TX_MANAGER_INSERT_FINISH_FAILED: Rust FinalChain admission requested C++ storage completion");
+      manager.emitTransactionAddedForRust(fromBridgeHash(report.transaction_added_hash));
     }
   }
 
   static std::pair<bool, std::string> insertTransaction(TransactionManager& manager,
                                                         const std::shared_ptr<Transaction>& trx) {
-    const auto trx_hash = trx->getHash();
     const auto envelope = inspectRegularTransaction(trx, "RUST_TX_MANAGER_INSERT_ENVELOPE_FAILED");
     const auto report = executePublicAdmissionReport(manager, envelope, trx);
-    const auto verified = verifyTransactionResultFromRustStatus(
-        report.verification_status, report.verification_chain_id, report.verification_expected_chain_id);
-    if (!verified.first) {
-      return verified;
-    }
-    applyAdmissionCommandReport(manager, trx_hash, report.admission);
-    return insertTransactionResultFromRustStatus(
-        report.admission.admission.insert_status,
-        report.admission.admission.finalized_period_known ? report.admission.admission.finalized_period : 0);
+    applyAdmissionCommandReport(manager, report.admission);
+    return {report.public_result.accepted, std::string(report.public_result.message)};
   }
 
   static TransactionStatus insertValidatedTransaction(TransactionManager& manager, std::shared_ptr<Transaction>&& tx,
                                                       bool insert_non_proposable) {
-    const auto trx_hash = tx->getHash();
     const auto report = executeValidatedAdmissionReport(manager, tx, insert_non_proposable);
-    applyAdmissionCommandReport(manager, trx_hash, report);
+    applyAdmissionCommandReport(manager, report);
     return transactionStatusFromBridge(report.admission.transaction_status);
   }
 
@@ -717,24 +664,8 @@ class TransactionManagerRustShimAccess {
       }
     }();
 
-    std::vector<trx_hash_t> request_hashes;
-    request_hashes.reserve(trxs.size());
-    for (const auto& transaction : trxs) {
-      request_hashes.push_back(transaction->getHash());
-    }
-
-    for (const auto& accepted : report.accepted) {
-      validateIndexedCommandHash(
-          "RUST_STORAGE_DAG_TX_PERSIST_FAILED: Rust returned an out-of-range transaction input index",
-          "RUST_STORAGE_DAG_TX_PERSIST_FAILED: Rust returned a transaction hash/index mismatch", request_hashes,
-          accepted);
-    }
     for (const auto& erased : report.queue_erased) {
-      const auto trx_hash = validateIndexedCommandHash(
-          "RUST_STORAGE_DAG_TX_PERSIST_FAILED: Rust returned an out-of-range transaction input index",
-          "RUST_STORAGE_DAG_TX_PERSIST_FAILED: Rust returned a transaction hash/index mismatch", request_hashes,
-          erased);
-      LOG(manager.log_dg_) << "Transaction " << trx_hash << " removed from trx pool ";
+      LOG(manager.log_dg_) << "Transaction " << fromBridgeHash(erased.hash) << " removed from trx pool ";
     }
     manager.trx_count_ = report.transaction_count;
   }
@@ -1042,9 +973,6 @@ class TransactionManagerRustShimAccess {
       }
     }();
 
-    for (const auto& expired : report.expired_non_proposable) {
-      static_cast<void>(fromBridgeHash(expired.hash));
-    }
     shim_manager.trx_count_ = report.transaction_count;
   }
 
@@ -1134,9 +1062,6 @@ class TransactionManagerRustShimAccess {
       }
     }();
 
-    for (const auto& inserted : report.inserted) {
-      static_cast<void>(fromBridgeHash(inserted.hash));
-    }
     manager.trx_count_ = report.transaction_count;
   }
 
@@ -1184,28 +1109,12 @@ class TransactionManagerRustShimAccess {
       }
     }();
 
-    std::vector<trx_hash_t> request_hashes;
-    request_hashes.reserve(period_data.transactions.size());
-    for (const auto& transaction : period_data.transactions) {
-      request_hashes.push_back(transaction->getHash());
-    }
-
     for (const auto& removed : report.removed_non_finalized) {
-      const auto trx_hash = validateIndexedCommandHash(
-          "RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: Rust returned an out-of-range transaction index",
-          "RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: Rust returned a transaction hash/index mismatch", request_hashes,
-          removed);
-      LOG(manager.log_dg_) << "Transaction " << trx_hash << " removed from nonfinalized transactions";
+      LOG(manager.log_dg_) << "Transaction " << fromBridgeHash(removed.hash)
+                           << " removed from nonfinalized transactions";
     }
     for (const auto& erased : report.queue_erased) {
-      const auto trx_hash = validateIndexedCommandHash(
-          "RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: Rust returned an out-of-range transaction index",
-          "RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: Rust returned a transaction hash/index mismatch", request_hashes,
-          erased);
-      LOG(manager.log_dg_) << "Transaction " << trx_hash << " removed from transactions_pool_";
-    }
-    for (const auto& purged : report.finalized_account_purged) {
-      static_cast<void>(fromBridgeHash(purged.hash));
+      LOG(manager.log_dg_) << "Transaction " << fromBridgeHash(erased.hash) << " removed from transactions_pool_";
     }
 
     manager.trx_count_ = report.transaction_count;

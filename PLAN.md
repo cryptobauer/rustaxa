@@ -418,7 +418,7 @@ The current Rust starting point is intentionally small:
    account nonces from the Rust FinalChain runtime and owns sidecar membership checks, duplicate filtering,
    nonce-gated finalized-storage
    lookup, accepted ordering, count planning, the storage batch, accepted non-finalized sidecar insertion, and accepted
-   queue erasure before returning a typed DAG-save command report that C++ validates and logs. Finalized transaction status
+   queue erasure before returning a typed DAG-save command report that C++ consumes only for logging and count mirroring. Finalized transaction status
    updates now send finalized hashes and RLP payloads to Rust; Rust plans count increments, retention eviction, periodic
    queue cleanup, recently-finalized sidecar insertion, non-finalized sidecar removal, known-cache marking, and queue
    erasure while persisting `TrxCount` before returning typed finalized-status command buckets that C++ validates and
@@ -432,16 +432,16 @@ The current Rust starting point is intentionally small:
    for identity facts, then call Rust for latest FinalChain account nonce sourcing, sidecar membership,
    finalized-storage checks, and deterministic filtering/short-circuit decisions. `verifyTransaction`,
    `insertTransaction`, and `insertValidatedTransaction` now inspect the transaction envelope in Rust and call typed
-   Rust admission command reports for exact verification reasons, latest FinalChain account sourcing, public insertion
-   result mapping, staged known-fast-path prechecks, finalized-location mapping, Rust storage-completed admission
+   Rust admission command reports for exact verification reasons, legacy public insertion result text,
+   latest FinalChain account sourcing, public insertion result mapping, staged known-fast-path prechecks, finalized-location mapping, Rust storage-completed admission
    support, and fused proposable/non-proposable admission with Rust-owned live queue mutation. Public
    `insertTransaction` now enters one Rust runtime operation that owns known precheck, verification decisioning,
    FinalChain-backed account/finalized lookup, queue mutation, and event/log intent before C++ maps legacy public error
    strings. Known-hash insert decisions now route through the Rust runtime precheck instead of a shim-local early return,
    and `isTransactionKnown` now includes Rust sidecar membership checks alongside queue-known state. Rust now returns
    typed DAG-save, finalized-status, recovery, queue-expiry, and admission command reports instead of generic
-   lifecycle/action reports, so shim code applies only operation-specific Rust-planned side effects instead of switching
-   on raw notice IDs or inferring local action intent. The Rust-mode facade now owns the public `transaction_added_`
+   lifecycle/action reports. These reports now carry direct hash receipts for the remaining C++ log/event sinks, so shim
+   code no longer rebuilds input hash vectors or revalidates Rust command bucket indexes before logging side effects. The Rust-mode facade now owns the public `transaction_added_`
    event surface and emits it from shim-owned code after Rust accepts a proposable queue mutation. Transaction read helpers no longer infer source
    order in C++: `getTransaction`, `getTransactions`, `getBlockTransactions`, `getNonfinalizedTrx`, and
    `getPoolTransactions` now consume Rust-owned transaction views that preserve request order and duplicates while
