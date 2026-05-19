@@ -623,7 +623,6 @@ class TransactionManagerRustShimAccess {
     for (const auto& erased : report.queue_erased) {
       LOG(manager.log_dg_) << "Transaction " << fromBridgeHash(erased.hash) << " removed from trx pool ";
     }
-    manager.trx_count_ = report.transaction_count;
   }
 
   /**
@@ -634,8 +633,8 @@ class TransactionManagerRustShimAccess {
    * transaction counters, matching the legacy expired-DAG cleanup semantics after
    * moving persistent deletion to Rust.
    */
-  static void forgetExpiredNonFinalizedTransactionSidecars(TransactionManager& manager,
-                                                           std::unordered_set<trx_hash_t>&& transactions) {
+  static void removeNonFinalizedTransactions(TransactionManager& manager,
+                                             std::unordered_set<trx_hash_t>&& transactions) {
     std::vector<trx_hash_t> hashes;
     hashes.reserve(transactions.size());
     for (const auto& hash : transactions) {
@@ -729,7 +728,7 @@ class TransactionManagerRustShimAccess {
       std::shared_lock transactions_lock(manager.transactions_mutex_);
       view_plan = [&]() {
         try {
-          if (proposal_period.has_value()) {
+          if (proposal_period.has_value() && manager.final_chain_) {
             return manager.runtime_->transaction_manager_runtime_lookup_proposal_transaction_views(
                 manager.db_->rustStorage(), manager.final_chain_->rustFinalChainForRust(), proposal_period.value(),
                 std::move(requests), 0);
@@ -921,15 +920,13 @@ class TransactionManagerRustShimAccess {
   static void blockFinalized(TransactionManagerOld& manager, EthBlockNumber block_number) {
     std::unique_lock transactions_lock(manager.transactions_mutex_);
     auto& shim_manager = static_cast<TransactionManager&>(manager);
-    const auto report = [&]() {
+    [&]() {
       try {
-        return shim_manager.runtime_->transaction_manager_runtime_queue_block_finalized_command_report(block_number);
+        shim_manager.runtime_->transaction_manager_runtime_queue_block_finalized(block_number);
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_TX_MANAGER_BLOCK_FINALIZED_FAILED: ") + e.what());
       }
     }();
-
-    shim_manager.trx_count_ = report.transaction_count;
   }
 
   static bool isTransactionKnown(TransactionManager& manager, const trx_hash_t& trx_hash) {
@@ -1009,16 +1006,13 @@ class TransactionManagerRustShimAccess {
    */
   static void recoverNonfinalizedTransactions(TransactionManager& manager) {
     std::unique_lock transactions_lock(manager.transactions_mutex_);
-    const auto report = [&]() {
+    [&]() {
       try {
-        return rustaxa::transaction_manager_recover_nonfinalized_command_report_with_runtime(*manager.runtime_,
-                                                                                             manager.db_->rustStorage());
+        rustaxa::transaction_manager_recover_nonfinalized_with_runtime(*manager.runtime_, manager.db_->rustStorage());
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_TX_RECOVERY_FAILED: ") + e.what());
       }
     }();
-
-    manager.trx_count_ = report.transaction_count;
   }
 
   static void initializeRecentlyFinalizedTransactions(TransactionManager& manager, const PeriodData& period_data) {
@@ -1072,8 +1066,6 @@ class TransactionManagerRustShimAccess {
     for (const auto& erased : report.queue_erased) {
       LOG(manager.log_dg_) << "Transaction " << fromBridgeHash(erased.hash) << " removed from transactions_pool_";
     }
-
-    manager.trx_count_ = report.transaction_count;
   }
 };
 
@@ -1158,11 +1150,7 @@ void TransactionManager::saveTransactionsFromDagBlock(const SharedTransactions& 
 }
 
 void TransactionManager::removeNonFinalizedTransactions(std::unordered_set<trx_hash_t>&& transactions) {
-  TransactionManagerRustShimAccess::forgetExpiredNonFinalizedTransactionSidecars(*this, std::move(transactions));
-}
-
-void TransactionManager::forgetExpiredNonFinalizedTransactionSidecars(std::unordered_set<trx_hash_t>&& transactions) {
-  TransactionManagerRustShimAccess::forgetExpiredNonFinalizedTransactionSidecars(*this, std::move(transactions));
+  TransactionManagerRustShimAccess::removeNonFinalizedTransactions(*this, std::move(transactions));
 }
 
 void TransactionManager::updateFinalizedTransactionsStatus(const PeriodData& period_data) {

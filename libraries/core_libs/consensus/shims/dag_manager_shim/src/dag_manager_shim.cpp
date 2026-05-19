@@ -440,40 +440,8 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
   std::unordered_map<trx_hash_t, std::shared_ptr<Transaction>> queried_transactions;
   queried_transactions.reserve(planned_query_hashes.size());
 
-  auto [pool_transactions, storage_query_hashes] = trx_mgr_->getPoolTransactions(planned_query_hashes);
-  for (const auto &transaction : pool_transactions) {
+  for (const auto &transaction : trx_mgr_->getTransactions(planned_query_hashes, proposal_period)) {
     queried_transactions.emplace(transaction->getHash(), transaction);
-  }
-
-  rust::Vec<rustaxa::DagTransactionRlpLookup> storage_transactions;
-  {
-    std::shared_lock transactions_lock(trx_mgr_->getTransactionsMutex());
-    storage_transactions =
-        db_->rustStorage().get_transaction_rlps_by_hashes(to_bridge_dag_transaction_hashes(storage_query_hashes));
-  }
-  if (storage_transactions.size() != storage_query_hashes.size()) {
-    throw std::runtime_error("DagManager: Rust storage transaction lookup returned unexpected result count");
-  }
-  for (size_t i = 0; i < storage_transactions.size(); ++i) {
-    const auto &entry = storage_transactions[i];
-    const auto &planned_hash = storage_query_hashes[i];
-    if (trx_hash_t(entry.hash.data(), trx_hash_t::ConstructFromPointer) != planned_hash) {
-      throw std::runtime_error("DagManager: Rust storage transaction lookup returned unexpected hash order");
-    }
-    if (!entry.found) {
-      continue;
-    }
-    auto transaction = std::make_shared<Transaction>(from_rust_bytes(entry.tx_rlp));
-    if (transaction->getHash() != planned_hash) {
-      throw std::runtime_error("DagManager: Rust storage transaction RLP hash does not match requested hash");
-    }
-    if (entry.finalized) {
-      const auto account = final_chain_->getAccount(transaction->getSender(), proposal_period);
-      if (account.has_value() && account->nonce > transaction->getNonce()) {
-        continue;
-      }
-    }
-    queried_transactions.emplace(planned_hash, std::move(transaction));
   }
 
   for (const auto &tx_hash : all_block_trx_hashes) {
@@ -709,7 +677,7 @@ uint DagManager::setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, v
       for (const auto &hash : transactions_to_remove) {
         transactions_to_remove_set.emplace(hash);
       }
-      trx_mgr_->forgetExpiredNonFinalizedTransactionSidecars(std::move(transactions_to_remove_set));
+      trx_mgr_->removeNonFinalizedTransactions(std::move(transactions_to_remove_set));
     }
 
     return static_cast<uint>(finalized_count);

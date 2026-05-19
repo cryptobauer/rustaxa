@@ -186,16 +186,6 @@ class TransactionManager : public TransactionManagerOld {
 
   void removeNonFinalizedTransactions(std::unordered_set<trx_hash_t> &&transactions);
 
-  /**
-   * Erase live C++ sidecars for expired non-finalized DAG transactions.
-   *
-   * Rust finalization has already removed the matching payloads from
-   * non-finalized storage before this method is called. This method performs no
-   * DB writes and is idempotent for hashes that are no longer present in the
-   * live sidecar map. The caller must hold the finalization transaction lock.
-   */
-  void forgetExpiredNonFinalizedTransactionSidecars(std::unordered_set<trx_hash_t> &&transactions);
-
   std::shared_mutex &getTransactionsMutex() {
     // TODO(rust-rewrite): migrate transaction lifecycle synchronization to Rust instead of TransactionManagerOld.
     return TransactionManagerOld::getTransactionsMutex();
@@ -229,19 +219,18 @@ class TransactionManager : public TransactionManagerOld {
   std::shared_ptr<Transaction> getNonFinalizedTransaction(const trx_hash_t &hash) const;
 
   /**
-   * Return the Rust-owned Rust-mode transaction count cached by the manager.
+   * Return the Rust-owned Rust-mode transaction count from the manager runtime.
    *
-   * The count value is updated from Rust-planned persistence/finalization outcomes.
+   * The count value is seeded from storage and updated only inside Rust runtime persistence/finalization outcomes.
    */
   unsigned long getTransactionCount() const;
 
   /**
    * Rebuild non-finalized transaction sidecars from Rust-backed storage on startup.
    *
-   * Rust returns persisted payloads keyed by hash and removes stale finalized rows.
-   * C++ constructs survivor `Transaction` objects, validates hash/RLP consistency,
-   * warms sender caches, and mutates the live sidecar map only after materialization
-   * succeeds.
+   * Rust loads persisted payloads keyed by hash, removes stale finalized rows,
+   * validates survivor RLP hash and sender facts, and inserts survivor payloads
+   * into the runtime sidecars without returning count mirrors to C++.
    */
   void recoverNonfinalizedTransactions();
 

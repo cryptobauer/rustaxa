@@ -295,7 +295,7 @@ TEST_F(TransactionManagerShimFixture, expiredNonFinalizedSidecarCleanupDoesNotTo
 
   std::unordered_set<trx_hash_t> expired_hashes{transactions[0]->getHash()};
   std::unique_lock lock(trx_mgr.getTransactionsMutex());
-  trx_mgr.forgetExpiredNonFinalizedTransactionSidecars(std::move(expired_hashes));
+  trx_mgr.removeNonFinalizedTransactions(std::move(expired_hashes));
   lock.unlock();
 
   EXPECT_EQ(trx_mgr.getNonfinalizedTrxSize(), 0);

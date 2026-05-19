@@ -1233,41 +1233,22 @@ pub mod rustaxa_ffi {
     ///
     /// Rust has already persisted storage, updated sidecars, erased queued
     /// transactions, and updated the authoritative runtime count. C++ consumes
-    /// this report only for logging and count mirroring.
+    /// this report only for logging.
     struct TransactionManagerDagSaveCommandReport {
         queue_erased: Vec<TransactionManagerHashCommand>,
-        transaction_count: u64,
     }
 
     /// Typed command report for finalized transaction status updates.
     ///
     /// Rust has already applied storage updates, live sidecar transitions,
     /// queue erasure, optional finalized-account queue purge, and runtime count
-    /// changes. C++ consumes the buckets for existing logs only.
+    /// changes. C++ consumes the buckets for existing logs only and reads the
+    /// authoritative count from the runtime when callers ask for it.
     struct TransactionManagerFinalizedStatusCommandReport {
         removed_non_finalized: Vec<TransactionManagerHashCommand>,
         queue_erased: Vec<TransactionManagerHashCommand>,
         finalized_account_purged: Vec<TransactionManagerHashCommand>,
-        transaction_count: u64,
         purge_transaction_queue: bool,
-    }
-
-    /// Typed command report for startup non-finalized recovery.
-    ///
-    /// Rust has loaded, filtered, and inserted live sidecar survivors. C++ uses
-    /// this report to keep the shim's mirrored count aligned.
-    struct TransactionManagerRecoveryCommandReport {
-        inserted: Vec<TransactionManagerHashCommand>,
-        transaction_count: u64,
-    }
-
-    /// Typed command report for block-finalized queue expiry.
-    ///
-    /// Rust has already removed expired non-proposable queue entries. C++ uses
-    /// this report only for count mirroring and validation of the bridge shape.
-    struct TransactionManagerQueueBlockFinalizedCommandReport {
-        expired_non_proposable: Vec<TransactionManagerHashCommand>,
-        transaction_count: u64,
     }
 
     /// Typed admission result attached to admission command reports.
@@ -1290,7 +1271,6 @@ pub mod rustaxa_ffi {
         inserted_hash: [u8; 32],
         transaction_added_hash_found: bool,
         transaction_added_hash: [u8; 32],
-        transaction_count: u64,
         admission: TransactionManagerAdmissionResult,
     }
 
@@ -2486,11 +2466,6 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionManagerRuntime,
             block_number: u64,
         ) -> Vec<TransactionQueueHash>;
-        /// Executes block-finalization queue cleanup and returns a typed command report.
-        pub fn transaction_manager_runtime_queue_block_finalized_command_report(
-            self: &mut BridgeTransactionManagerRuntime,
-            block_number: u64,
-        ) -> TransactionManagerQueueBlockFinalizedCommandReport;
         pub fn transaction_manager_runtime_queue_proposable_accounts(
             self: &BridgeTransactionManagerRuntime,
         ) -> Vec<TransactionQueueAddress>;
@@ -2755,11 +2730,11 @@ pub mod rustaxa_ffi {
         pub fn transaction_manager_load_nonfinalized_recovery_inputs(
             storage: &BridgeStorage,
         ) -> Result<Vec<TransactionManagerSidecarRecoveryInsertInput>>;
-        /// Rebuilds runtime recovery sidecars and returns a typed command report.
-        pub fn transaction_manager_recover_nonfinalized_command_report_with_runtime(
+        /// Rebuilds runtime recovery sidecars from Rust-backed storage.
+        pub fn transaction_manager_recover_nonfinalized_with_runtime(
             runtime: &mut BridgeTransactionManagerRuntime,
             storage: &BridgeStorage,
-        ) -> Result<TransactionManagerRecoveryCommandReport>;
+        ) -> Result<()>;
 
         // Consensus verified votes
 
