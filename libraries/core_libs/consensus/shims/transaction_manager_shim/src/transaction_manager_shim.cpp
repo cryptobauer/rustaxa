@@ -434,6 +434,7 @@ class TransactionManagerRustShimAccess {
     rustaxa::TransactionManagerGasEstimationResult cache_result;
     cache_result.hash = fact.hash;
     cache_result.proposal_period = proposal_period;
+    cache_result.gas_used = result.gas_used;
     cache_result.result_rlp = executionResultToBridgeBytes(result);
     {
       std::unique_lock transactions_lock(manager.transactions_mutex_);
@@ -457,14 +458,9 @@ class TransactionManagerRustShimAccess {
     std::vector<std::future<void>> futures;
     futures.reserve(trxs.size());
     for (const auto& trx : trxs) {
-      if (trx->getGas() <= manager.kEstimateGasLimit) {
+      futures.emplace_back(manager.estimation_thread_pool_.post([&manager, trx, proposal_period, &total_gas]() {
         total_gas += estimateTransactionGas(manager, trx, proposal_period).gas_used;
-      } else {
-        futures.emplace_back(manager.estimation_thread_pool_.post(
-            [&manager, trx, proposal_period, &total_gas]() {
-              total_gas += estimateTransactionGas(manager, trx, proposal_period).gas_used;
-            }));
-      }
+      }));
     }
     for (auto& future : futures) {
       future.get();
@@ -479,37 +475,9 @@ class TransactionManagerRustShimAccess {
    * materializing a legacy `Transaction` object unless the candidate is selected
    * for the public `packTrxs` return value.
    */
-  static state_api::ExecutionResult estimatePackCandidateGas(
+  static state_api::ExecutionResult executePackCandidateGasEstimation(
       TransactionManager& manager, const rustaxa::TransactionPackSessionCandidate& candidate,
       PbftPeriod proposal_period) {
-    rustaxa::TransactionManagerGasEstimationFact fact;
-    fact.hash = candidate.hash;
-    fact.declared_gas = candidate.declared_gas;
-    fact.proposal_period = proposal_period;
-    fact.estimate_gas_limit = manager.kEstimateGasLimit;
-
-    rustaxa::TransactionManagerGasEstimationPlan plan;
-    {
-      std::shared_lock transactions_lock(manager.transactions_mutex_);
-      try {
-        plan = manager.runtime_->transaction_manager_runtime_plan_gas_estimation(fact);
-      } catch (const std::exception& e) {
-        throw std::runtime_error(std::string("RUST_TX_MANAGER_GAS_ESTIMATION_PLAN_FAILED: ") + e.what());
-      }
-    }
-
-    if (plan.use_declared_gas) {
-      state_api::ExecutionResult result;
-      result.gas_used = plan.gas_used;
-      return result;
-    }
-    if (plan.cache_hit) {
-      return executionResultFromBridgeBytes(plan.result_rlp);
-    }
-    if (!plan.requires_evm_call) {
-      throw std::runtime_error("Rust transaction manager runtime returned an invalid gas-estimation plan");
-    }
-
     std::optional<addr_t> receiver;
     if (candidate.receiver_found) {
       receiver = fromBridgeAddress(candidate.receiver);
@@ -519,22 +487,7 @@ class TransactionManagerRustShimAccess {
         fromBridgeU256(candidate.nonce),     fromBridgeU256(candidate.value),     candidate.gas,
         toDevBytes(candidate.data),
     };
-    auto result = manager.final_chain_->call(evm_trx, proposal_period);
-
-    rustaxa::TransactionManagerGasEstimationResult cache_result;
-    cache_result.hash = fact.hash;
-    cache_result.proposal_period = proposal_period;
-    cache_result.result_rlp = executionResultToBridgeBytes(result);
-    {
-      std::unique_lock transactions_lock(manager.transactions_mutex_);
-      try {
-        manager.runtime_->transaction_manager_runtime_store_gas_estimation(std::move(cache_result));
-      } catch (const std::exception& e) {
-        throw std::runtime_error(std::string("RUST_TX_MANAGER_GAS_ESTIMATION_STORE_FAILED: ") + e.what());
-      }
-    }
-
-    return result;
+    return manager.final_chain_->call(evm_trx, proposal_period);
   }
 
   /**
@@ -554,7 +507,9 @@ class TransactionManagerRustShimAccess {
     try {
       {
         std::unique_lock transactions_lock(manager.transactions_mutex_);
-        rust_manager.runtime_->transaction_manager_runtime_pack_begin(weight_limit, kMinTxGas);
+        rust_manager.runtime_->transaction_manager_runtime_pack_begin(
+            weight_limit, kMinTxGas, proposal_period, rust_manager.kEstimateGasLimit,
+            manager.final_chain_->lastBlockNumber());
         session_active = true;
       }
 
@@ -576,7 +531,7 @@ class TransactionManagerRustShimAccess {
           throw std::runtime_error("Rust transaction manager runtime requested estimation for a missing pack candidate");
         }
 
-        const auto estimate = estimatePackCandidateGas(rust_manager, candidate, proposal_period);
+        const auto estimate = executePackCandidateGasEstimation(rust_manager, candidate, proposal_period);
         if (estimate.gas_used < kMinTxGas) {
           LOG(manager.log_er_) << "Transaction " << fromBridgeHash(candidate.hash)
                               << " has invalid estimation: " << estimate.gas_used;
@@ -586,6 +541,7 @@ class TransactionManagerRustShimAccess {
         estimate_input.hash = candidate.hash;
         estimate_input.gas_used = estimate.gas_used;
         estimate_input.last_block_number = manager.final_chain_->lastBlockNumber();
+        estimate_input.result_rlp = executionResultToBridgeBytes(estimate);
 
         step = [&]() {
           std::unique_lock transactions_lock(manager.transactions_mutex_);
@@ -618,7 +574,7 @@ class TransactionManagerRustShimAccess {
       if (session_active) {
         try {
           std::unique_lock transactions_lock(manager.transactions_mutex_);
-          rust_manager.runtime_->transaction_manager_runtime_pack_finalize();
+          rust_manager.runtime_->transaction_manager_runtime_pack_abort();
         } catch (...) {
         }
       }

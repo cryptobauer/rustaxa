@@ -5,18 +5,17 @@
 
 use crate::ffi::rustaxa_ffi::{
     TransactionQueueAccountNonceFact as BridgeAccountNonceFact, TransactionQueueAddress,
-    TransactionQueueConfig, TransactionQueueDemotePlan, TransactionQueueErasePlan,
-    TransactionQueueHash, TransactionQueueHashGroup, TransactionQueueInsertInput,
-    TransactionQueueInsertOutcome, TransactionQueueOrderedHashesPlan, TransactionQueuePurgePlan,
+    TransactionQueueConfig, TransactionQueueErasePlan, TransactionQueueHash,
+    TransactionQueueHashGroup, TransactionQueueInsertInput, TransactionQueueInsertOutcome,
+    TransactionQueueOrderedHashesPlan, TransactionQueuePurgePlan,
     TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
 };
 use crate::ffi::BridgeTransactionQueue;
 use ethereum_types::{H160, H256, U256};
 use rustaxa_consensus::transaction_queue::{
-    TransactionQueue, TransactionQueueAccountNonceFact, TransactionQueueDemoteOutcome,
-    TransactionQueueDemoteStatus, TransactionQueueEntry, TransactionQueueEraseOutcome,
-    TransactionQueueInsertStatus, TransactionQueueOrderedHashesPlan as ConsensusOrderedHashesPlan,
-    TransactionQueuePurgeOutcome,
+    TransactionQueue, TransactionQueueAccountNonceFact, TransactionQueueEntry,
+    TransactionQueueEraseOutcome, TransactionQueueInsertStatus,
+    TransactionQueueOrderedHashesPlan as ConsensusOrderedHashesPlan, TransactionQueuePurgeOutcome,
 };
 use std::time::{Duration, Instant};
 
@@ -24,9 +23,6 @@ const TRANSACTION_QUEUE_STATUS_INSERTED: u8 = 0;
 const TRANSACTION_QUEUE_STATUS_INSERTED_NON_PROPOSABLE: u8 = 1;
 const TRANSACTION_QUEUE_STATUS_KNOWN: u8 = 2;
 const TRANSACTION_QUEUE_STATUS_OVERFLOW: u8 = 3;
-const TRANSACTION_QUEUE_DEMOTE_STATUS_NOT_FOUND: u8 = 0;
-const TRANSACTION_QUEUE_DEMOTE_STATUS_ALREADY_NON_PROPOSABLE: u8 = 1;
-const TRANSACTION_QUEUE_DEMOTE_STATUS_DEMOTED: u8 = 2;
 const TRANSACTION_QUEUE_DROP_WINDOW: Duration = Duration::from_secs(600);
 const ZERO_HASH: H256 = H256::zero();
 
@@ -87,32 +83,6 @@ fn tx_queue_erase_plan_from_consensus(
         removed_data_size: entry.data_size as usize,
         removed_last_block_number: entry.last_block_number,
         removed_proposable: outcome.removed_proposable,
-    }
-}
-
-fn tx_queue_demote_plan_from_consensus(
-    hash: H256,
-    outcome: TransactionQueueDemoteOutcome,
-) -> TransactionQueueDemotePlan {
-    let hash_found = outcome.entry.is_some();
-    let entry = outcome.entry.unwrap_or_else(tx_queue_empty_entry);
-    TransactionQueueDemotePlan {
-        status: match outcome.status {
-            TransactionQueueDemoteStatus::NotFound => TRANSACTION_QUEUE_DEMOTE_STATUS_NOT_FOUND,
-            TransactionQueueDemoteStatus::AlreadyNonProposable => {
-                TRANSACTION_QUEUE_DEMOTE_STATUS_ALREADY_NON_PROPOSABLE
-            }
-            TransactionQueueDemoteStatus::Demoted => TRANSACTION_QUEUE_DEMOTE_STATUS_DEMOTED,
-        },
-        hash: hash.0,
-        hash_found,
-        sender: tx_queue_sender_for_entry(&entry),
-        nonce: tx_queue_nonce_for_entry(&entry),
-        gas_price: tx_queue_gas_price_for_entry(&entry),
-        gas: entry.gas,
-        data_size: entry.data_size as usize,
-        last_block_number: entry.last_block_number,
-        proposable_before: matches!(outcome.status, TransactionQueueDemoteStatus::Demoted),
     }
 }
 
@@ -336,19 +306,6 @@ impl BridgeTransactionQueue {
         tx_queue_purge_plan_from_consensus(self.queue.purge_accounts_plan(&consensus_facts))
     }
 
-    /// Attempts to demote one queue hash to non-proposable metadata.
-    pub fn transaction_queue_demote_to_non_proposable(
-        &mut self,
-        hash: &[u8; 32],
-        last_block_number: u64,
-    ) -> TransactionQueueDemotePlan {
-        let parsed_hash = H256::from(*hash);
-        tx_queue_demote_plan_from_consensus(
-            parsed_hash,
-            self.queue.demote(parsed_hash, last_block_number),
-        )
-    }
-
     /// Returns true when non-proposable transactions reached their limit.
     pub fn transaction_queue_non_proposable_over_limit(&self) -> bool {
         self.queue.non_proposable_transactions_over_the_limit()
@@ -517,20 +474,6 @@ mod tests {
         assert!(!queue.transaction_queue_contains(&[3; 32]));
         assert!(queue.transaction_queue_contains(&[2; 32]));
         assert!(queue.transaction_queue_contains(&[4; 32]));
-    }
-
-    #[test]
-    fn bridge_demote_plan_reports_status() {
-        let mut queue = create_transaction_queue(TransactionQueueConfig { max_size: 100 });
-        queue.transaction_queue_insert(input(1, 1, 1, 1)).unwrap();
-
-        let demote = queue.transaction_queue_demote_to_non_proposable(&[1; 32], 9);
-        assert_eq!(demote.status, TRANSACTION_QUEUE_DEMOTE_STATUS_DEMOTED);
-        assert_eq!(demote.last_block_number, 9);
-        assert!(demote.hash_found);
-
-        let not_found = queue.transaction_queue_demote_to_non_proposable(&[2; 32], 5);
-        assert_eq!(not_found.status, TRANSACTION_QUEUE_DEMOTE_STATUS_NOT_FOUND);
     }
 
     #[test]

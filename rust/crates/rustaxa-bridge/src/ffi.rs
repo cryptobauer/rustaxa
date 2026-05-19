@@ -106,8 +106,6 @@ pub struct BridgeTransactionManagerAdmissionExecution {
     pub target_transaction_count: u64,
 }
 
-pub struct BridgeTransactionPackPlanner(pub TransactionPackingPlanner);
-
 /// Runtime-owned state for one TransactionManager proposal-packing pass.
 ///
 /// The session owns the ordered queue candidate snapshot, planner accounting,
@@ -116,6 +114,9 @@ pub struct BridgeTransactionPackPlanner(pub TransactionPackingPlanner);
 /// estimates back to the runtime.
 pub struct TransactionManagerRuntimePackSession {
     pub planner: TransactionPackingPlanner,
+    pub proposal_period: u64,
+    pub estimate_gas_limit: u64,
+    pub last_block_number: u64,
     pub candidates: Vec<TransactionQueueEntry>,
     pub next_index: usize,
     pub current: Option<TransactionQueueEntry>,
@@ -223,20 +224,6 @@ pub mod rustaxa_ffi {
         hash: [u8; 32],
     }
 
-    /// Demote outcome returned by Rust transaction queue metadata.
-    struct TransactionQueueDemotePlan {
-        status: u8,
-        hash: [u8; 32],
-        hash_found: bool,
-        sender: [u8; 20],
-        nonce: [u8; 32],
-        gas_price: [u8; 32],
-        gas: u64,
-        data_size: usize,
-        last_block_number: u64,
-        proposable_before: bool,
-    }
-
     /// Address handle used by C++ to query FinalChain account state for purge.
     struct TransactionQueueAddress {
         address: [u8; 20],
@@ -311,23 +298,6 @@ pub mod rustaxa_ffi {
         finalized_account_purged: TransactionQueuePurgePlan,
     }
 
-    /// Candidate metadata supplied before C++ runs a gas estimate.
-    struct TransactionPackCandidateInput {
-        hash: [u8; 32],
-        declared_gas: u64,
-    }
-
-    /// Decision telling C++ whether to estimate a candidate.
-    struct TransactionPackCandidateDecision {
-        should_estimate: bool,
-    }
-
-    /// C++ gas-estimation fact supplied after FinalChain/EVM estimation.
-    struct TransactionPackEstimateInput {
-        hash: [u8; 32],
-        gas_used: u64,
-    }
-
     /// Gas-estimation request supplied before C++ may call FinalChain/EVM.
     struct TransactionManagerGasEstimationFact {
         hash: [u8; 32],
@@ -349,6 +319,7 @@ pub mod rustaxa_ffi {
     struct TransactionManagerGasEstimationResult {
         hash: [u8; 32],
         proposal_period: u64,
+        gas_used: u64,
         result_rlp: Vec<u8>,
     }
 
@@ -365,7 +336,6 @@ pub mod rustaxa_ffi {
         receiver: [u8; 20],
         value: [u8; 32],
         data: Vec<u8>,
-        tx_rlp: Vec<u8>,
     }
 
     /// C++ gas-estimation fact supplied for the active runtime packing candidate.
@@ -373,6 +343,7 @@ pub mod rustaxa_ffi {
         hash: [u8; 32],
         gas_used: u64,
         last_block_number: u64,
+        result_rlp: Vec<u8>,
     }
 
     /// One executor step while Rust drives the packTrxs session loop.
@@ -393,13 +364,6 @@ pub mod rustaxa_ffi {
         hash: [u8; 32],
         gas_used: u64,
         tx_rlp: Vec<u8>,
-    }
-
-    /// Final selected transactions and queue mutation summary for one packing session.
-    struct TransactionPackSessionOutcome {
-        selected_transactions: Vec<TransactionPackSelectedTransaction>,
-        demoted_hashes: Vec<TransactionQueueHash>,
-        stopped: bool,
     }
 
     /// GasPricer construction limits and mode flags supplied by C++ genesis config.
@@ -2298,11 +2262,6 @@ pub mod rustaxa_ffi {
             self: &BridgeTransactionQueue,
             limit: u64,
         ) -> [u8; 32];
-        pub fn transaction_queue_demote_to_non_proposable(
-            self: &mut BridgeTransactionQueue,
-            hash: &[u8; 32],
-            last_block_number: u64,
-        ) -> TransactionQueueDemotePlan;
 
         // Consensus gas pricer
 
@@ -2341,24 +2300,10 @@ pub mod rustaxa_ffi {
 
         // Consensus transaction manager planning
 
-        type BridgeTransactionPackPlanner;
         type BridgeTransactionManagerSidecar;
         type BridgeTransactionManagerRuntime;
         type BridgeTransactionManagerAdmissionExecution;
 
-        pub fn create_transaction_pack_planner(
-            weight_limit: u64,
-            min_transaction_gas: u64,
-        ) -> Result<Box<BridgeTransactionPackPlanner>>;
-        pub fn transaction_pack_max_candidate_count(self: &BridgeTransactionPackPlanner) -> u64;
-        pub fn transaction_pack_consider_candidate(
-            self: &BridgeTransactionPackPlanner,
-            input: TransactionPackCandidateInput,
-        ) -> Result<TransactionPackCandidateDecision>;
-        pub fn transaction_pack_record_estimate(
-            self: &mut BridgeTransactionPackPlanner,
-            input: TransactionPackEstimateInput,
-        ) -> Result<TransactionPackEstimateOutcome>;
         pub fn create_transaction_manager_sidecar(
             initial_transaction_count: u64,
         ) -> Box<BridgeTransactionManagerSidecar>;
@@ -2370,6 +2315,9 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionManagerRuntime,
             weight_limit: u64,
             min_transaction_gas: u64,
+            proposal_period: u64,
+            estimate_gas_limit: u64,
+            last_block_number: u64,
         ) -> Result<()>;
         pub fn transaction_manager_runtime_pack_request_next(
             self: &mut BridgeTransactionManagerRuntime,
@@ -2378,16 +2326,9 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionManagerRuntime,
             input: TransactionPackSessionEstimateInput,
         ) -> Result<TransactionPackSessionStep>;
-        pub fn transaction_manager_runtime_pack_next_candidate(
+        pub fn transaction_manager_runtime_pack_abort(
             self: &mut BridgeTransactionManagerRuntime,
-        ) -> Result<TransactionPackSessionCandidate>;
-        pub fn transaction_manager_runtime_pack_record_estimate(
-            self: &mut BridgeTransactionManagerRuntime,
-            input: TransactionPackSessionEstimateInput,
-        ) -> Result<TransactionPackEstimateOutcome>;
-        pub fn transaction_manager_runtime_pack_finalize(
-            self: &mut BridgeTransactionManagerRuntime,
-        ) -> Result<TransactionPackSessionOutcome>;
+        ) -> bool;
         pub fn transaction_manager_runtime_plan_gas_estimation(
             self: &BridgeTransactionManagerRuntime,
             fact: TransactionManagerGasEstimationFact,
@@ -2583,11 +2524,6 @@ pub mod rustaxa_ffi {
             self: &BridgeTransactionManagerRuntime,
             limit: u64,
         ) -> [u8; 32];
-        pub fn transaction_manager_runtime_queue_demote_to_non_proposable(
-            self: &mut BridgeTransactionManagerRuntime,
-            hash: &[u8; 32],
-            last_block_number: u64,
-        ) -> TransactionQueueDemotePlan;
         /// Resolves requested hashes against non-finalized/recently-finalized sidecars.
         pub fn transaction_manager_runtime_lookup_non_finalized_transaction_views(
             self: &BridgeTransactionManagerRuntime,

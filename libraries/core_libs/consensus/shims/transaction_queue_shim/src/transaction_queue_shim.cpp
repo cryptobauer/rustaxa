@@ -70,12 +70,6 @@ bool TransactionQueue::erase(const SharedTransaction& transaction) {
   return true;
 }
 
-bool TransactionQueue::demoteToNonProposable(const trx_hash_t& hash, uint64_t last_block_number) {
-  constexpr uint8_t kDemoted = 2;
-  const auto plan = queue_->transaction_queue_demote_to_non_proposable(toBridgeHash(hash), last_block_number);
-  return plan.status == kDemoted;
-}
-
 std::shared_ptr<Transaction> TransactionQueue::get(const trx_hash_t& hash) const {
   return materializeTransaction(queue_->transaction_queue_get_transaction(toBridgeHash(hash)));
 }

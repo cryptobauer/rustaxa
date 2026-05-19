@@ -58,16 +58,31 @@ pub struct TransactionGasEstimationCacheKey {
     pub proposal_period: u64,
 }
 
+/// One retained C++ gas-estimation result.
+///
+/// Rust stores the gas used beside the opaque C++ `ExecutionResult` RLP so
+/// Rust-owned packing sessions can reuse cached weights without decoding the
+/// C++ execution payload. C++ still owns EVM execution and full result
+/// materialization for public estimation APIs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionGasEstimationCacheEntry {
+    /// Gas used returned by C++ FinalChain/EVM estimation.
+    pub gas_used: u64,
+    /// Opaque C++ `ExecutionResult` RLP payload.
+    pub result_rlp: Vec<u8>,
+}
+
 /// Rust-owned cache for C++ gas-estimation results.
 ///
-/// Values are opaque C++ `ExecutionResult` RLP payloads. Rust owns only cache
-/// keying, bounded FIFO eviction, and hit/miss decisions; C++ remains the sole
-/// owner of EVM execution and result materialization.
+/// Values retain the opaque C++ `ExecutionResult` RLP plus its gas-used value.
+/// Rust owns cache keying, bounded FIFO eviction, hit/miss decisions, and pack
+/// weight reuse; C++ remains the sole owner of EVM execution and result
+/// materialization.
 #[derive(Clone, Debug)]
 pub struct TransactionGasEstimationCache {
     max_size: usize,
     delete_step: usize,
-    entries: HashMap<TransactionGasEstimationCacheKey, Vec<u8>>,
+    entries: HashMap<TransactionGasEstimationCacheKey, TransactionGasEstimationCacheEntry>,
     insertion_order: VecDeque<TransactionGasEstimationCacheKey>,
 }
 
@@ -85,8 +100,11 @@ impl TransactionGasEstimationCache {
         }
     }
 
-    /// Returns a cached opaque result payload for `key`, when present.
-    pub fn get(&self, key: TransactionGasEstimationCacheKey) -> Result<Option<Vec<u8>>> {
+    /// Returns a cached result for `key`, when present.
+    pub fn get(
+        &self,
+        key: TransactionGasEstimationCacheKey,
+    ) -> Result<Option<TransactionGasEstimationCacheEntry>> {
         ensure!(
             !key.hash.is_zero(),
             "gas-estimation cache hash cannot be zero"
@@ -101,6 +119,7 @@ impl TransactionGasEstimationCache {
     pub fn insert(
         &mut self,
         key: TransactionGasEstimationCacheKey,
+        gas_used: u64,
         result_rlp: Vec<u8>,
     ) -> Result<bool> {
         ensure!(
@@ -116,7 +135,13 @@ impl TransactionGasEstimationCache {
             return Ok(false);
         }
 
-        self.entries.insert(key, result_rlp);
+        self.entries.insert(
+            key,
+            TransactionGasEstimationCacheEntry {
+                gas_used,
+                result_rlp,
+            },
+        );
         self.insertion_order.push_back(key);
         if self.entries.len() > self.max_size {
             self.evict_oldest();
@@ -718,7 +743,7 @@ impl TransactionManagerSidecar {
         &self,
         hash: H256,
         proposal_period: u64,
-    ) -> Result<Option<Vec<u8>>> {
+    ) -> Result<Option<TransactionGasEstimationCacheEntry>> {
         self.gas_estimation_cache
             .get(TransactionGasEstimationCacheKey {
                 hash,
@@ -731,6 +756,7 @@ impl TransactionManagerSidecar {
         &mut self,
         hash: H256,
         proposal_period: u64,
+        gas_used: u64,
         result_rlp: Vec<u8>,
     ) -> Result<bool> {
         self.gas_estimation_cache.insert(
@@ -738,6 +764,7 @@ impl TransactionManagerSidecar {
                 hash,
                 proposal_period,
             },
+            gas_used,
             result_rlp,
         )
     }
@@ -1286,8 +1313,14 @@ mod tests {
         };
 
         assert!(cache.get(key).unwrap().is_none());
-        assert!(cache.insert(key, vec![9, 8, 7]).unwrap());
-        assert_eq!(cache.get(key).unwrap(), Some(vec![9, 8, 7]));
+        assert!(cache.insert(key, 21_000, vec![9, 8, 7]).unwrap());
+        assert_eq!(
+            cache.get(key).unwrap(),
+            Some(TransactionGasEstimationCacheEntry {
+                gas_used: 21_000,
+                result_rlp: vec![9, 8, 7],
+            })
+        );
         assert!(
             cache
                 .get(TransactionGasEstimationCacheKey {
@@ -1309,6 +1342,7 @@ mod tests {
                         hash: H256::from([hash; 32]),
                         proposal_period: 1,
                     },
+                    hash as u64,
                     vec![hash],
                 )
                 .unwrap();
@@ -1331,7 +1365,10 @@ mod tests {
                     proposal_period: 1,
                 })
                 .unwrap(),
-            Some(vec![2])
+            Some(TransactionGasEstimationCacheEntry {
+                gas_used: 2,
+                result_rlp: vec![2],
+            })
         );
     }
 
@@ -1344,7 +1381,7 @@ mod tests {
         };
 
         assert!(cache.get(zero_key).is_err());
-        assert!(cache.insert(zero_key, vec![1]).is_err());
+        assert!(cache.insert(zero_key, 1, vec![1]).is_err());
         assert!(
             cache
                 .insert(
@@ -1352,6 +1389,7 @@ mod tests {
                         hash: H256::from([1; 32]),
                         proposal_period: 1,
                     },
+                    1,
                     Vec::new(),
                 )
                 .is_err()

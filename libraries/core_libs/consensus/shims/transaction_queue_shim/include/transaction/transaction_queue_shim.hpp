@@ -51,11 +51,6 @@ class TransactionQueue {
   bool erase(const SharedTransaction& transaction);
 
   /**
-   * Moves a queued transaction from proposer ordering to non-proposer state.
-   */
-  bool demoteToNonProposable(const trx_hash_t& hash, uint64_t last_block_number);
-
-  /**
    * Materializes and returns the queued transaction for `hash`, or null when absent.
    */
   std::shared_ptr<Transaction> get(const trx_hash_t& hash) const;

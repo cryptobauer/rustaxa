@@ -405,12 +405,15 @@ The current Rust starting point is intentionally small:
    FinalChain runtime instead of the TransactionManager shim. The Rust-mode `TransactionManager` packing shim now routes proposal candidate
    snapshotting, candidate scan, Rust-inspected envelope facts for candidate EVM input, declared-gas fit checks,
    invalid-estimate demotion mutation, accepted output ordering, accepted gas accumulation, and stop rules through a
-   Rust runtime pack session. C++ drives packing through a Rust step protocol that either asks for the next EVM estimate
-   or returns the final selected payloads and clears the session; a shim-owned guard prevents concurrent C++ callers from
-   racing the single Rust runtime session while EVM execution is outside the transaction lock. Rust also owns
-   `estimateTransactionGas` and `estimateTransactions` declared-gas shortcut decisions plus the bounded `(transaction
-   hash, proposal period)` opaque `ExecutionResult` cache, while C++ keeps EVM execution, public transaction
-   construction, final selected transaction materialization, and lifecycle/finalization orchestration.
+   Rust runtime pack session. C++ drives packing through a narrow Rust step protocol that either asks for a required EVM
+   estimate or returns the final selected payloads and clears the session; declared-gas and gas-estimation-cache hits are
+   consumed inside Rust without a C++ callback. The stale standalone planner FFI and explicit pack-finalize surface are
+   removed in favor of this session contract. A shim-owned guard prevents concurrent C++ callers from racing the single
+   Rust runtime session while EVM execution is outside the transaction lock. Rust also owns `estimateTransactionGas` and
+   `estimateTransactions` declared-gas shortcut decisions plus the bounded `(transaction hash, proposal period)` opaque
+   `ExecutionResult` cache, while C++ keeps EVM execution, public transaction construction, final selected transaction
+   materialization, and lifecycle/finalization orchestration. The shim-only `TransactionQueue::demoteToNonProposable`
+   API has been removed because pack demotion mutates the Rust runtime queue directly.
    The TransactionManager shim now owns an opaque Rust runtime handle for live queue metadata/payloads, known-cache
    state, non-finalized and recently-finalized transaction sidecars, and the authoritative transaction count. DAG
    transaction persistence now derives transaction hashes, senders, nonces, gas facts, costs, and canonical RLP payloads
