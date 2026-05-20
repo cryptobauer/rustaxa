@@ -16,23 +16,15 @@ namespace taraxa {
 
 Dag::Dag(blk_hash_t const &dag_genesis_block_hash, addr_t node_addr) {
   LOG_OBJECTS_CREATE("DAGMGR");
-
   std::vector<blk_hash_t> tips;
   // add genesis block
   addVEEs(dag_genesis_block_hash, {}, tips);
 }
 
-uint64_t Dag::getNumVertices() const {
-  return boost::num_vertices(graph_);
-}
+uint64_t Dag::getNumVertices() const { return boost::num_vertices(graph_); }
+uint64_t Dag::getNumEdges() const { return boost::num_edges(graph_); }
 
-uint64_t Dag::getNumEdges() const {
-  return boost::num_edges(graph_);
-}
-
-bool Dag::hasVertex(blk_hash_t const &v) const {
-  return graph_.vertex(v) != graph_.null_vertex();
-}
+bool Dag::hasVertex(blk_hash_t const &v) const { return graph_.vertex(v) != graph_.null_vertex(); }
 
 void Dag::getLeaves(std::vector<blk_hash_t> &tips) const {
   vertex_index_map_const_t index_map = boost::get(boost::vertex_index, graph_);
@@ -84,7 +76,6 @@ bool Dag::addVEEs(blk_hash_t const &new_vertex, blk_hash_t const &pivot, std::ve
 
 void Dag::drawGraph(std::string const &filename) const {
   std::ofstream outfile(filename.c_str());
-
   auto index_map = boost::get(boost::vertex_index, graph_);
   auto weight_map = boost::get(boost::edge_index, graph_);
 
@@ -93,9 +84,7 @@ void Dag::drawGraph(std::string const &filename) const {
   std::cout << "Use \"dot -Tpdf <dot file> -o <pdf file>\" to generate pdf file" << std::endl;
 }
 
-void Dag::clear() {
-  graph_ = graph_t();
-}
+void Dag::clear() { graph_ = graph_t(); }
 
 void Dag::collectLeafVertices(std::vector<vertex_t> &leaves) const {
   leaves.clear();

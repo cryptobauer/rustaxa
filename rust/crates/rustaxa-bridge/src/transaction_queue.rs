@@ -5,7 +5,6 @@
 //! routing sources account nonce facts from the Rust FinalChain handle so C++ does not materialize account facts.
 
 use crate::ffi::rustaxa_ffi::{
-    TransactionQueueAccountNonceFact as BridgeAccountNonceFact, TransactionQueueAddress,
     TransactionQueueConfig, TransactionQueueErasePlan, TransactionQueueHash,
     TransactionQueueHashGroup, TransactionQueueInsertInput, TransactionQueueInsertOutcome,
     TransactionQueueOrderedHashesPlan, TransactionQueuePurgePlan,
@@ -278,60 +277,6 @@ impl BridgeTransactionQueue {
         tx_queue_purge_plan_from_consensus(self.queue.block_finalized_plan(block_number))
     }
 
-    /// Returns proposer accounts for fact-driven parity tests.
-    pub fn transaction_queue_proposable_accounts(&self) -> Vec<TransactionQueueAddress> {
-        self.queue
-            .proposable_accounts()
-            .into_iter()
-            .map(|address| TransactionQueueAddress { address: address.0 })
-            .collect()
-    }
-
-    /// Removes hashes for one account whose nonce is below the finalized account nonce.
-    pub fn transaction_queue_purge_account(
-        &mut self,
-        sender: &[u8; 20],
-        account_nonce: &[u8; 32],
-    ) -> Vec<TransactionQueueHash> {
-        hashes_to_bridge(
-            self.queue
-                .purge_account(H160::from(*sender), U256::from_big_endian(account_nonce)),
-        )
-    }
-
-    /// Removes hashes for one account and returns a mutation plan.
-    pub fn transaction_queue_purge_account_plan(
-        &mut self,
-        sender: &[u8; 20],
-        account_nonce: &[u8; 32],
-    ) -> TransactionQueuePurgePlan {
-        tx_queue_purge_plan_from_consensus(
-            self.queue
-                .purge_account_plan(H160::from(*sender), U256::from_big_endian(account_nonce)),
-        )
-    }
-
-    /// Removes hashes for multiple account nonce facts and returns a unified mutation plan.
-    ///
-    /// This fact-driven API is retained for parity tests and compatibility
-    /// scaffolding. Rust-enabled production purge routing should call
-    /// `transaction_queue_purge_with_final_chain` so account lookup ownership
-    /// remains in Rust.
-    pub fn transaction_queue_purge_accounts_plan(
-        &mut self,
-        facts: Vec<BridgeAccountNonceFact>,
-    ) -> TransactionQueuePurgePlan {
-        let consensus_facts = facts
-            .into_iter()
-            .map(|fact| TransactionQueueAccountNonceFact {
-                sender: H160::from(fact.sender),
-                account_found: fact.account_found,
-                account_nonce: U256::from_big_endian(&fact.account_nonce),
-            })
-            .collect::<Vec<_>>();
-        tx_queue_purge_plan_from_consensus(self.queue.purge_accounts_plan(&consensus_facts))
-    }
-
     /// Removes proposer transactions whose nonce is below the latest FinalChain account nonce.
     ///
     /// Inputs:
@@ -519,53 +464,6 @@ mod tests {
         let full = queue.transaction_queue_ordered_hashes_plan(10);
         assert!(full.complete);
         assert_eq!(full.requested_count, 10);
-    }
-
-    #[test]
-    fn bridge_purge_account_plan_and_block_finalized_plan_expose_hashes() {
-        let mut queue = create_transaction_queue(TransactionQueueConfig { max_size: 100 });
-        queue.transaction_queue_insert(input(1, 1, 1, 1)).unwrap();
-        let plan = queue.transaction_queue_block_finalized_plan(11);
-        assert_eq!(plan.removed_count, 0);
-
-        let plan = queue.transaction_queue_purge_account_plan(&[1; 20], &be(2));
-        assert_eq!(plan.removed_count, 1);
-        assert_eq!(plan.removed_hashes[0].hash, [1; 32]);
-    }
-
-    #[test]
-    fn bridge_purge_accounts_plan_exposes_combined_hashes() {
-        let mut queue = create_transaction_queue(TransactionQueueConfig { max_size: 100 });
-        queue.transaction_queue_insert(input(1, 1, 5, 1)).unwrap();
-        queue.transaction_queue_insert(input(1, 2, 6, 2)).unwrap();
-        queue.transaction_queue_insert(input(2, 1, 7, 3)).unwrap();
-        queue.transaction_queue_insert(input(2, 3, 8, 4)).unwrap();
-
-        let plan = queue.transaction_queue_purge_accounts_plan(vec![
-            BridgeAccountNonceFact {
-                sender: [1; 20],
-                account_found: true,
-                account_nonce: be(2),
-            },
-            BridgeAccountNonceFact {
-                sender: [2; 20],
-                account_found: true,
-                account_nonce: be(3),
-            },
-            BridgeAccountNonceFact {
-                sender: [9; 20],
-                account_found: false,
-                account_nonce: be(99),
-            },
-        ]);
-
-        assert_eq!(plan.removed_count, 2);
-        assert_eq!(plan.removed_hashes[0].hash, [1; 32]);
-        assert_eq!(plan.removed_hashes[1].hash, [3; 32]);
-        assert!(!queue.transaction_queue_contains(&[1; 32]));
-        assert!(!queue.transaction_queue_contains(&[3; 32]));
-        assert!(queue.transaction_queue_contains(&[2; 32]));
-        assert!(queue.transaction_queue_contains(&[4; 32]));
     }
 
     #[test]

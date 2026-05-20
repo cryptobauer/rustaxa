@@ -38,11 +38,9 @@ use crate::ffi::rustaxa_ffi::{
     TransactionManagerVerifyNotFinalizedSidecarFact, TransactionManagerVerifyTransactionFact,
     TransactionManagerVerifyTransactionOutcome, TransactionPackEstimateOutcome,
     TransactionPackSelectedTransaction, TransactionPackSessionCandidate,
-    TransactionPackSessionEstimateInput, TransactionPackSessionStep,
-    TransactionQueueAccountNonceFact as BridgeTransactionQueueAccountNonceFact,
-    TransactionQueueAddress, TransactionQueueConfig, TransactionQueueHash,
-    TransactionQueueInsertInput, TransactionQueueInsertOutcome, TransactionQueuePurgePlan,
-    TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
+    TransactionPackSessionEstimateInput, TransactionPackSessionStep, TransactionQueueConfig,
+    TransactionQueueHash, TransactionQueueInsertInput, TransactionQueueInsertOutcome,
+    TransactionQueuePurgePlan, TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
 };
 use crate::ffi::{
     BridgeFinalChain, BridgeStorage, BridgeTransactionManagerAdmissionExecution,
@@ -489,19 +487,6 @@ fn runtime_queue_purge_plan_from_consensus(
         removed_count: outcome.removed_hashes.len(),
         removed_hashes: runtime_hashes_to_bridge(outcome.removed_hashes),
     }
-}
-
-fn runtime_queue_account_nonce_facts_from_bridge(
-    facts: Vec<BridgeTransactionQueueAccountNonceFact>,
-) -> Vec<TransactionQueueAccountNonceFact> {
-    facts
-        .into_iter()
-        .map(|fact| TransactionQueueAccountNonceFact {
-            sender: H160::from(fact.sender),
-            account_found: fact.account_found,
-            account_nonce: U256::from_big_endian(&fact.account_nonce),
-        })
-        .collect::<Vec<_>>()
 }
 
 fn runtime_queue_account_nonce_facts_from_final_chain(
@@ -3023,60 +3008,6 @@ impl BridgeTransactionManagerRuntime {
         block_number: u64,
     ) -> Vec<TransactionQueueHash> {
         runtime_hashes_to_bridge(self.queue.block_finalized(block_number))
-    }
-
-    /// Returns proposer accounts for fact-driven parity tests.
-    pub fn transaction_manager_runtime_queue_proposable_accounts(
-        &self,
-    ) -> Vec<TransactionQueueAddress> {
-        self.queue
-            .proposable_accounts()
-            .into_iter()
-            .map(|address| TransactionQueueAddress { address: address.0 })
-            .collect()
-    }
-
-    /// Removes queued transactions for caller-supplied account nonce facts.
-    ///
-    /// This API is retained for parity tests and compatibility scaffolding.
-    /// Rust-enabled production queue cleanup should call
-    /// `transaction_manager_runtime_queue_cleanup_with_final_chain` so account
-    /// fact sourcing stays inside Rust.
-    pub fn transaction_manager_runtime_queue_purge_accounts_plan(
-        &mut self,
-        facts: Vec<BridgeTransactionQueueAccountNonceFact>,
-    ) -> TransactionQueuePurgePlan {
-        let consensus_facts = runtime_queue_account_nonce_facts_from_bridge(facts);
-        runtime_queue_purge_plan_from_consensus(self.queue.purge_accounts_plan(&consensus_facts))
-    }
-
-    /// Applies Rust-owned queue cleanup for finalized block height and caller-supplied account facts.
-    ///
-    /// This fact-driven API is retained for parity tests and compatibility
-    /// scaffolding. Rust-enabled production queue cleanup should call
-    /// `transaction_manager_runtime_queue_cleanup_with_final_chain` so account
-    /// fact sourcing stays inside Rust. Rust still owns all queue mutation and
-    /// returns explicit removed hash groups for C++ logging or future
-    /// side-effect execution.
-    pub fn transaction_manager_runtime_queue_cleanup(
-        &mut self,
-        apply_block_finalized: bool,
-        block_number: u64,
-        facts: Vec<BridgeTransactionQueueAccountNonceFact>,
-    ) -> TransactionManagerRuntimeQueueCleanupPlan {
-        let non_proposable_expired = if apply_block_finalized {
-            self.queue.block_finalized_plan(block_number)
-        } else {
-            TransactionQueuePurgeOutcome::default()
-        };
-        let consensus_facts = runtime_queue_account_nonce_facts_from_bridge(facts);
-        let finalized_account_purged = self.queue.purge_accounts_plan(&consensus_facts);
-        TransactionManagerRuntimeQueueCleanupPlan {
-            non_proposable_expired: runtime_queue_purge_plan_from_consensus(non_proposable_expired),
-            finalized_account_purged: runtime_queue_purge_plan_from_consensus(
-                finalized_account_purged,
-            ),
-        }
     }
 
     /// Applies Rust-owned queue cleanup by sourcing account nonce facts from Rust FinalChain.
@@ -5695,49 +5626,6 @@ mod tests {
             .to_string()
             .contains("TM_RUNTIME_VALIDATED_INSERT_GAS_MISMATCH"));
         assert!(!runtime.transaction_manager_runtime_queue_contains(&[10; 32]));
-    }
-
-    #[test]
-    fn bridge_transaction_manager_runtime_queue_cleanup_returns_explicit_hash_groups() {
-        let mut runtime =
-            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 32 });
-        runtime
-            .transaction_manager_runtime_queue_insert(runtime_queue_input(1, true))
-            .expect("proposable insert should succeed");
-        runtime
-            .transaction_manager_runtime_queue_insert(runtime_queue_input(2, false))
-            .expect("non-proposable insert should succeed");
-        runtime
-            .transaction_manager_runtime_queue_insert(runtime_queue_input(3, false))
-            .expect("non-proposable insert should succeed");
-
-        let cleanup = runtime.transaction_manager_runtime_queue_cleanup(
-            true,
-            20,
-            vec![BridgeTransactionQueueAccountNonceFact {
-                sender: [9; 20],
-                account_found: true,
-                account_nonce: U256::from(2_u64).to_big_endian(),
-            }],
-        );
-
-        assert_eq!(cleanup.non_proposable_expired.removed_count, 2);
-        assert_eq!(
-            cleanup.non_proposable_expired.removed_hashes[0].hash,
-            [2; 32]
-        );
-        assert_eq!(
-            cleanup.non_proposable_expired.removed_hashes[1].hash,
-            [3; 32]
-        );
-        assert_eq!(cleanup.finalized_account_purged.removed_count, 1);
-        assert_eq!(
-            cleanup.finalized_account_purged.removed_hashes[0].hash,
-            [1; 32]
-        );
-        assert!(!runtime.transaction_manager_runtime_queue_contains(&[1; 32]));
-        assert!(!runtime.transaction_manager_runtime_queue_contains(&[2; 32]));
-        assert!(!runtime.transaction_manager_runtime_queue_contains(&[3; 32]));
     }
 
     #[test]
