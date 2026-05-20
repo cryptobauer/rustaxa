@@ -65,6 +65,21 @@ void ProposedBlocks::markBlockAsValid(const std::shared_ptr<PbftBlock>& proposed
   }
 }
 
+size_t ProposedBlocks::restoreFromStorage() {
+  if (!db_) {
+    throw std::runtime_error("Cannot restore proposed PBFT blocks without DbStorage");
+  }
+
+  std::unique_lock lock(proposed_blocks_mutex_);
+  try {
+    return rust_blocks_->proposed_blocks_restore_from_storage(db_->rustStorage());
+  } catch (const std::exception& e) {
+    throw std::runtime_error(e.what());
+  } catch (...) {
+    throw std::runtime_error("Failed to restore proposed PBFT blocks from storage");
+  }
+}
+
 std::optional<std::pair<std::shared_ptr<PbftBlock>, bool>> ProposedBlocks::getPbftProposedBlock(
     PbftPeriod period, const blk_hash_t& block_hash) const {
   std::shared_lock lock(proposed_blocks_mutex_);
@@ -83,18 +98,20 @@ bool ProposedBlocks::isInProposedBlocks(PbftPeriod period, const blk_hash_t& blo
 
 void ProposedBlocks::cleanupProposedPbftBlocksByPeriod(PbftPeriod period) {
   std::unique_lock lock(proposed_blocks_mutex_);
-  auto removed_periods = rust_blocks_->proposed_blocks_cleanup_candidates(period);
-
-  for (const auto& removed_period : removed_periods) {
-    if (db_) {
-      auto batch = db_->createWriteBatch();
-      for (const auto& block : removed_period.block_hashes) {
-        const auto block_hash = fromBridgeHash(block.hash);
-        db_->removeProposedPbftBlock(block_hash, batch);
-      }
-      db_->commitWriteBatch(batch);
+  if (!db_) {
+    auto removed_periods = rust_blocks_->proposed_blocks_cleanup_candidates(period);
+    for (const auto& removed_period : removed_periods) {
+      rust_blocks_->proposed_blocks_remove_period(removed_period.period);
     }
-    rust_blocks_->proposed_blocks_remove_period(removed_period.period);
+    return;
+  }
+
+  try {
+    rust_blocks_->proposed_blocks_cleanup_with_storage(db_->rustStorage(), period);
+  } catch (const std::exception& e) {
+    throw std::runtime_error(e.what());
+  } catch (...) {
+    throw std::runtime_error("Failed to cleanup proposed PBFT blocks using storage-backed index");
   }
 }
 

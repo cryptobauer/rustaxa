@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <map>
 #include <memory>
 #include <optional>
@@ -26,7 +27,7 @@ class Vote;
  * Invariants:
  * - Rust owns the canonical `(period, block hash) -> validation flag` index
  * - C++ owns live `PbftBlock` objects until the PBFT block model is ported
- * - C++ owns `DbStorage` writes/removals to preserve existing persistence batching
+ * - Rust storage owns startup restore and stale-proposal cleanup when a DB handle is available
  */
 class ProposedBlocks {
  public:
@@ -59,6 +60,23 @@ class ProposedBlocks {
   void markBlockAsValid(const std::shared_ptr<PbftBlock>& proposed_block);
 
   /**
+   * Restores the Rust index for proposed PBFT blocks from storage.
+   *
+   * Purpose:
+   * - Hydrates Rust-owned proposed-block metadata from persisted RLP without constructing
+   *   live C++ `PbftBlock` objects during PBFT startup.
+   *
+   * Inputs/outputs:
+   * - Requires `db_` to hold a Rust storage handle.
+   * - Returns the number of persisted proposals newly inserted into the Rust index.
+   *
+   * Edge behavior:
+   * - Throws `std::runtime_error` on missing DB, storage failures, corrupt PBFT block RLP,
+   *   or storage key/hash mismatch.
+   */
+  size_t restoreFromStorage();
+
+  /**
    * Returns a proposed block and its validation flag for `period`/`block_hash`.
    */
   std::optional<std::pair<std::shared_ptr<PbftBlock>, bool>> getPbftProposedBlock(PbftPeriod period,
@@ -70,7 +88,20 @@ class ProposedBlocks {
   bool isInProposedBlocks(PbftPeriod period, const blk_hash_t& block_hash) const;
 
   /**
-   * Removes proposed blocks with period lower than `period` from Rust, C++ object storage, and DB.
+   * Removes proposed blocks with period lower than `period`.
+   *
+   * Purpose:
+   * - Keeps Rust-owned proposed-block metadata and persisted proposed-block storage in sync
+   *   when PBFT advances to a newer period.
+   *
+   * Inputs/outputs:
+   * - `period` is the first retained PBFT period.
+   * - When `db_` is present, Rust deletes stale storage keys in one batch before
+   *   mutating the Rust index.
+   * - When `db_` is null, only the in-memory Rust index is cleaned.
+   *
+   * Edge behavior:
+   * - Throws `std::runtime_error` on Rust storage or bridge failures.
    */
   void cleanupProposedPbftBlocksByPeriod(PbftPeriod period);
 

@@ -591,9 +591,14 @@ void PbftManager::initialState() {
   round_ = current_pbft_round;
 
   // Load all proposed block from db to memory
+#ifdef RUSTAXA_ENABLE_PROPOSED_BLOCKS
+  // TODO[2855]: temporary restore hook until full PbftManager shim owns startup hydration.
+  proposed_blocks_.restoreFromStorage();
+#else
   for (const auto &block : db_->getProposedPbftBlocks()) {
     proposed_blocks_.pushProposedPbftBlock(block, false);
   }
+#endif
 
   // TODO[2840]: remove this check if case nodes do not log the err messages after restart
   //  if (const auto &err_msg = proposed_blocks_.checkOldBlocksPresence(current_pbft_period); err_msg.has_value()) {

@@ -47,17 +47,44 @@ TEST_F(ProposedBlocksShimDataTest, nullDbWorksWhenPersistenceIsDisabled) {
   found = proposed_blocks.getPbftProposedBlock(block->getPeriod(), block->getBlockHash());
   ASSERT_TRUE(found.has_value());
   EXPECT_TRUE(found->second);
+
+  proposed_blocks.cleanupProposedPbftBlocksByPeriod(2);
+  EXPECT_FALSE(proposed_blocks.isInProposedBlocks(block->getPeriod(), block->getBlockHash()));
 }
 
-TEST_F(ProposedBlocksShimDataTest, persistenceAndCleanupUseRustIndex) {
+TEST_F(ProposedBlocksShimDataTest, restoreFromStorageHydratesRustIndex) {
   auto db = std::make_shared<DbStorage>(data_dir);
-  ProposedBlocks proposed_blocks(db);
   auto period_one_block = makeBlock(1, 101);
   auto period_two_block = makeBlock(2, 202);
 
-  EXPECT_TRUE(proposed_blocks.pushProposedPbftBlock(period_one_block));
-  EXPECT_TRUE(proposed_blocks.pushProposedPbftBlock(period_two_block));
-  EXPECT_EQ(db->getProposedPbftBlocks().size(), 2);
+  db->saveProposedPbftBlock(period_one_block);
+  db->saveProposedPbftBlock(period_two_block);
+
+  ProposedBlocks proposed_blocks(db);
+  EXPECT_FALSE(proposed_blocks.isInProposedBlocks(period_one_block->getPeriod(), period_one_block->getBlockHash()));
+  EXPECT_FALSE(proposed_blocks.isInProposedBlocks(period_two_block->getPeriod(), period_two_block->getBlockHash()));
+
+  EXPECT_EQ(proposed_blocks.restoreFromStorage(), 2);
+  EXPECT_TRUE(proposed_blocks.isInProposedBlocks(period_one_block->getPeriod(), period_one_block->getBlockHash()));
+  EXPECT_TRUE(proposed_blocks.isInProposedBlocks(period_two_block->getPeriod(), period_two_block->getBlockHash()));
+}
+
+TEST_F(ProposedBlocksShimDataTest, restoreFromStorageRequiresDb) {
+  ProposedBlocks proposed_blocks(nullptr);
+  EXPECT_THROW(proposed_blocks.restoreFromStorage(), std::runtime_error);
+}
+
+TEST_F(ProposedBlocksShimDataTest, persistenceAndCleanupUseRustIndexAndDb) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto period_one_block = makeBlock(1, 101);
+  auto period_two_block = makeBlock(2, 202);
+
+  db->saveProposedPbftBlock(period_one_block);
+  db->saveProposedPbftBlock(period_two_block);
+
+  ProposedBlocks proposed_blocks(db);
+  EXPECT_EQ(proposed_blocks.restoreFromStorage(), 2);
+  ASSERT_EQ(db->getProposedPbftBlocks().size(), 2);
   EXPECT_EQ(proposed_blocks.checkOldBlocksPresence(2), std::make_optional(std::string("1 -> 1. ")));
 
   const auto snapshot = proposed_blocks.getProposedBlocks();
@@ -68,8 +95,10 @@ TEST_F(ProposedBlocksShimDataTest, persistenceAndCleanupUseRustIndex) {
   proposed_blocks.cleanupProposedPbftBlocksByPeriod(2);
   EXPECT_FALSE(proposed_blocks.isInProposedBlocks(1, period_one_block->getBlockHash()));
   EXPECT_TRUE(proposed_blocks.isInProposedBlocks(2, period_two_block->getBlockHash()));
-  EXPECT_EQ(db->getProposedPbftBlocks().size(), 1);
-  EXPECT_EQ(db->getProposedPbftBlocks()[0]->rlp(true), period_two_block->rlp(true));
+  const auto persisted = db->getProposedPbftBlocks();
+  ASSERT_EQ(persisted.size(), 1);
+  EXPECT_EQ(persisted[0]->getPeriod(), period_two_block->getPeriod());
+  EXPECT_EQ(persisted[0]->rlp(true), period_two_block->rlp(true));
 }
 
 TEST_F(ProposedBlocksShimDataTest, missingMarkValidThrows) {

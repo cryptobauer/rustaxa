@@ -2112,6 +2112,15 @@ pub mod rustaxa_ffi {
             self: &BridgeProposedBlocks,
             period: u64,
         ) -> Vec<ProposedBlockPeriodHashes>;
+        pub fn proposed_blocks_restore_from_storage(
+            self: &mut BridgeProposedBlocks,
+            storage: &BridgeStorage,
+        ) -> Result<usize>;
+        pub fn proposed_blocks_cleanup_with_storage(
+            self: &mut BridgeProposedBlocks,
+            storage: &BridgeStorage,
+            period: u64,
+        ) -> Result<Vec<ProposedBlockPeriodHashes>>;
         pub fn proposed_blocks_remove_period(self: &mut BridgeProposedBlocks, period: u64);
         pub fn proposed_blocks_old_blocks_message(
             self: &BridgeProposedBlocks,

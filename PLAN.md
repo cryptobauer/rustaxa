@@ -456,9 +456,11 @@ The current Rust starting point is intentionally small:
    and proposal transaction views verify stored transaction RLP hashes, inspect legacy sender/nonce identity in Rust, and
    apply proposal-period finalized-account nonce filtering before C++ materializes returned payloads. Remaining live-shell
    gaps are EVM estimation execution, event/log mechanics, public transaction object construction, final materialization,
-   and broader lifecycle orchestration. With transaction account-fact sourcing owned by Rust, the next safe PBFT
-   orchestration slice can focus on deterministic proposal/finalization planning while C++ keeps daemon threads,
-   networking, timers, storage commits, and live object dispatch.
+   and broader lifecycle orchestration. With transaction account-fact sourcing owned by Rust, the first PBFT
+   orchestration storage slice now restores proposed-block metadata directly from Rust storage and removes stale
+   proposed-block storage keys through Rust-batched cleanup while C++ keeps daemon threads, networking, timers,
+   finalization side effects, and live object dispatch. The next PBFT orchestration slice can extend this into a
+   Rust-owned PBFT manager runtime for round/step/status planning.
    `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
    selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
    lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode
