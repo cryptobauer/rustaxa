@@ -402,7 +402,8 @@ The current Rust starting point is intentionally small:
    planning, pool limits, gas-price threshold accounting, queued transaction RLP payload retention, known-transaction
    cache expiry, overflow/drop observation state, and finalized-account purge planning through Rust while C++
    materializes `Transaction` objects on demand. Finalized-account purge fact sourcing now reads accounts from the Rust
-   FinalChain runtime instead of the TransactionManager shim. The Rust-mode `TransactionManager` packing shim now routes proposal candidate
+   FinalChain runtime in both TransactionManager runtime cleanup and standalone `TransactionQueue::purge()`, leaving
+   fact-supplied bridge APIs as parity scaffolding only. The Rust-mode `TransactionManager` packing shim now routes proposal candidate
    snapshotting, candidate scan, Rust-inspected envelope facts for candidate EVM input, declared-gas fit checks,
    invalid-estimate demotion mutation, accepted output ordering, accepted gas accumulation, and stop rules through a
    Rust runtime pack session. C++ drives packing through a narrow Rust step protocol that either asks for a required EVM
@@ -455,7 +456,9 @@ The current Rust starting point is intentionally small:
    and proposal transaction views verify stored transaction RLP hashes, inspect legacy sender/nonce identity in Rust, and
    apply proposal-period finalized-account nonce filtering before C++ materializes returned payloads. Remaining live-shell
    gaps are EVM estimation execution, event/log mechanics, public transaction object construction, final materialization,
-   and broader lifecycle orchestration.
+   and broader lifecycle orchestration. With transaction account-fact sourcing owned by Rust, the next safe PBFT
+   orchestration slice can focus on deterministic proposal/finalization planning while C++ keeps daemon threads,
+   networking, timers, storage commits, and live object dispatch.
    `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
    selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
    lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode

@@ -3025,7 +3025,7 @@ impl BridgeTransactionManagerRuntime {
         runtime_hashes_to_bridge(self.queue.block_finalized(block_number))
     }
 
-    /// Returns proposer accounts that C++ should query from FinalChain for purge facts.
+    /// Returns proposer accounts for fact-driven parity tests.
     pub fn transaction_manager_runtime_queue_proposable_accounts(
         &self,
     ) -> Vec<TransactionQueueAddress> {
@@ -3036,7 +3036,12 @@ impl BridgeTransactionManagerRuntime {
             .collect()
     }
 
-    /// Removes queued transactions for account nonce facts supplied by C++ FinalChain reads.
+    /// Removes queued transactions for caller-supplied account nonce facts.
+    ///
+    /// This API is retained for parity tests and compatibility scaffolding.
+    /// Rust-enabled production queue cleanup should call
+    /// `transaction_manager_runtime_queue_cleanup_with_final_chain` so account
+    /// fact sourcing stays inside Rust.
     pub fn transaction_manager_runtime_queue_purge_accounts_plan(
         &mut self,
         facts: Vec<BridgeTransactionQueueAccountNonceFact>,
@@ -3045,11 +3050,14 @@ impl BridgeTransactionManagerRuntime {
         runtime_queue_purge_plan_from_consensus(self.queue.purge_accounts_plan(&consensus_facts))
     }
 
-    /// Applies Rust-owned queue cleanup for finalized block height and/or FinalChain account facts.
+    /// Applies Rust-owned queue cleanup for finalized block height and caller-supplied account facts.
     ///
-    /// C++ supplies account nonce facts because FinalChain account reads remain
-    /// in the shim. Rust owns all queue mutation and returns explicit removed
-    /// hash groups for C++ logging or future side-effect execution.
+    /// This fact-driven API is retained for parity tests and compatibility
+    /// scaffolding. Rust-enabled production queue cleanup should call
+    /// `transaction_manager_runtime_queue_cleanup_with_final_chain` so account
+    /// fact sourcing stays inside Rust. Rust still owns all queue mutation and
+    /// returns explicit removed hash groups for C++ logging or future
+    /// side-effect execution.
     pub fn transaction_manager_runtime_queue_cleanup(
         &mut self,
         apply_block_finalized: bool,

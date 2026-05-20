@@ -21,11 +21,11 @@ class FinalChain;
 /**
  * Rust-mode transaction queue facade.
  *
- * The class preserves the public `TransactionQueue` API while moving deterministic queue metadata and queued
- * transaction payload bytes into Rust. C++ materializes `Transaction` objects from Rust-retained canonical RLP for API
- * callers and keeps FinalChain account lookups used by purge. Rust owns proposer/non-proposer indexes, per-account
- * nonce ordering, replacement, expiry planning, pool limits, gas-price aggregates, queued payload retention, the local
- * known-transaction expiration cache, and overflow/drop observation state.
+ * The class preserves the public `TransactionQueue` API while moving deterministic queue metadata, queued transaction
+ * payload bytes, and FinalChain-backed purge fact sourcing into Rust. C++ materializes `Transaction` objects from
+ * Rust-retained canonical RLP for API callers. Rust owns proposer/non-proposer indexes, per-account nonce ordering,
+ * replacement, expiry planning, pool limits, gas-price aggregates, queued payload retention, the local
+ * known-transaction expiration cache, overflow/drop observation state, and latest-account purge lookup/mutation.
  *
  * Edge behavior:
  * - insert status values mirror `TransactionStatus`
@@ -145,11 +145,6 @@ class TransactionQueue {
    * Converts fixed-width big-endian bytes into a `u256` value.
    */
   static val_t fromBridgeU256(const std::array<uint8_t, 32>& value);
-
-  /**
-   * Collects finalized nonce facts for currently proposable accounts.
-   */
-  rust::Vec<rustaxa::TransactionQueueAccountNonceFact> collectPurgeAccountFacts() const;
 
  private:
   ::rust::Box<rustaxa::BridgeTransactionQueue> queue_;

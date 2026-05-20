@@ -2237,6 +2237,10 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionQueue,
             facts: Vec<TransactionQueueAccountNonceFact>,
         ) -> TransactionQueuePurgePlan;
+        pub fn transaction_queue_purge_with_final_chain(
+            self: &mut BridgeTransactionQueue,
+            final_chain: &BridgeFinalChain,
+        ) -> Result<TransactionQueuePurgePlan>;
         pub fn transaction_queue_non_proposable_over_limit(self: &BridgeTransactionQueue) -> bool;
         pub fn transaction_queue_min_gas_price_for_block_inclusion(
             self: &BridgeTransactionQueue,
@@ -2466,13 +2470,16 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionManagerRuntime,
             block_number: u64,
         ) -> Vec<TransactionQueueHash>;
+        /// Fact-driven parity scaffold; production cleanup sources accounts from BridgeFinalChain.
         pub fn transaction_manager_runtime_queue_proposable_accounts(
             self: &BridgeTransactionManagerRuntime,
         ) -> Vec<TransactionQueueAddress>;
+        /// Fact-driven parity scaffold; production cleanup sources accounts from BridgeFinalChain.
         pub fn transaction_manager_runtime_queue_purge_accounts_plan(
             self: &mut BridgeTransactionManagerRuntime,
             facts: Vec<TransactionQueueAccountNonceFact>,
         ) -> TransactionQueuePurgePlan;
+        /// Fact-driven parity scaffold; production cleanup sources accounts from BridgeFinalChain.
         pub fn transaction_manager_runtime_queue_cleanup(
             self: &mut BridgeTransactionManagerRuntime,
             apply_block_finalized: bool,

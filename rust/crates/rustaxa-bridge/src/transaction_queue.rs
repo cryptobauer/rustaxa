@@ -1,7 +1,8 @@
 //! CXX bridge adapters for Rust-owned transaction queue metadata and payload bytes.
 //!
 //! C++ shims pass fixed metadata and canonical RLP into this module. Rust returns hash and payload plans so C++ can
-//! update known-transaction cache state and materialize legacy `Transaction` objects for API callers.
+//! update known-transaction cache state and materialize legacy `Transaction` objects for API callers. Production purge
+//! routing sources account nonce facts from the Rust FinalChain handle so C++ does not materialize account facts.
 
 use crate::ffi::rustaxa_ffi::{
     TransactionQueueAccountNonceFact as BridgeAccountNonceFact, TransactionQueueAddress,
@@ -10,7 +11,8 @@ use crate::ffi::rustaxa_ffi::{
     TransactionQueueOrderedHashesPlan, TransactionQueuePurgePlan,
     TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
 };
-use crate::ffi::BridgeTransactionQueue;
+use crate::ffi::{BridgeFinalChain, BridgeTransactionQueue};
+use anyhow::{Context, Result};
 use ethereum_types::{H160, H256, U256};
 use rustaxa_consensus::transaction_queue::{
     TransactionQueue, TransactionQueueAccountNonceFact, TransactionQueueEntry,
@@ -93,6 +95,25 @@ fn tx_queue_purge_plan_from_consensus(
         removed_count: outcome.removed_hashes.len(),
         removed_hashes: hashes_to_bridge(outcome.removed_hashes),
     }
+}
+
+fn tx_queue_account_nonce_facts_from_final_chain(
+    final_chain: &BridgeFinalChain,
+    proposable_accounts: Vec<H160>,
+) -> Result<Vec<TransactionQueueAccountNonceFact>> {
+    proposable_accounts
+        .into_iter()
+        .map(|sender| {
+            let lookup = final_chain
+                .get_account(&sender.0)
+                .context("TRANSACTION_QUEUE_PURGE_ACCOUNT_LOOKUP_FAILED")?;
+            Ok(TransactionQueueAccountNonceFact {
+                sender,
+                account_found: lookup.found,
+                account_nonce: U256::from(lookup.nonce),
+            })
+        })
+        .collect()
 }
 
 fn tx_queue_ordered_hashes_plan_from_consensus(
@@ -257,7 +278,7 @@ impl BridgeTransactionQueue {
         tx_queue_purge_plan_from_consensus(self.queue.block_finalized_plan(block_number))
     }
 
-    /// Returns proposer accounts that C++ should query from FinalChain for purge.
+    /// Returns proposer accounts for fact-driven parity tests.
     pub fn transaction_queue_proposable_accounts(&self) -> Vec<TransactionQueueAddress> {
         self.queue
             .proposable_accounts()
@@ -291,6 +312,11 @@ impl BridgeTransactionQueue {
     }
 
     /// Removes hashes for multiple account nonce facts and returns a unified mutation plan.
+    ///
+    /// This fact-driven API is retained for parity tests and compatibility
+    /// scaffolding. Rust-enabled production purge routing should call
+    /// `transaction_queue_purge_with_final_chain` so account lookup ownership
+    /// remains in Rust.
     pub fn transaction_queue_purge_accounts_plan(
         &mut self,
         facts: Vec<BridgeAccountNonceFact>,
@@ -304,6 +330,35 @@ impl BridgeTransactionQueue {
             })
             .collect::<Vec<_>>();
         tx_queue_purge_plan_from_consensus(self.queue.purge_accounts_plan(&consensus_facts))
+    }
+
+    /// Removes proposer transactions whose nonce is below the latest FinalChain account nonce.
+    ///
+    /// Inputs:
+    /// - `final_chain`: Rust FinalChain runtime used to read the latest account
+    ///   state for each currently proposable queue sender.
+    ///
+    /// Output:
+    /// - a deterministic purge plan containing all removed transaction hashes.
+    ///
+    /// Behavior:
+    /// - collects proposable senders from the Rust queue
+    /// - reads each sender account from Rust FinalChain
+    /// - treats missing accounts as nonce zero, matching the consensus queue
+    ///   planner's account-fact semantics
+    /// - mutates only Rust-owned queue state and does not materialize C++
+    ///   account facts or transaction objects
+    pub fn transaction_queue_purge_with_final_chain(
+        &mut self,
+        final_chain: &BridgeFinalChain,
+    ) -> Result<TransactionQueuePurgePlan> {
+        let facts = tx_queue_account_nonce_facts_from_final_chain(
+            final_chain,
+            self.queue.proposable_accounts(),
+        )?;
+        Ok(tx_queue_purge_plan_from_consensus(
+            self.queue.purge_accounts_plan(&facts),
+        ))
     }
 
     /// Returns true when non-proposable transactions reached their limit.
@@ -340,6 +395,9 @@ fn status_to_bridge(status: TransactionQueueInsertStatus) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn be(value: u64) -> [u8; 32] {
         U256::from(value).to_big_endian()
@@ -357,6 +415,40 @@ mod tests {
             proposable: true,
             last_block_number: 1,
         }
+    }
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let now_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after UNIX_EPOCH")
+            .as_nanos();
+        let process_id = std::process::id();
+        std::env::temp_dir().join(format!("{prefix}_{process_id}_{now_ns}"))
+    }
+
+    fn final_chain_with_genesis_account(
+        storage_path: &str,
+        address: [u8; 20],
+    ) -> Box<BridgeFinalChain> {
+        let storage =
+            crate::storage::create_storage(storage_path).expect("storage should initialize");
+        crate::final_chain::create_final_chain(
+            &storage,
+            1_000_000,
+            1,
+            vec![crate::ffi::rustaxa_ffi::GenesisAccount {
+                address,
+                balance: vec![1],
+            }],
+            Vec::new(),
+            crate::ffi::rustaxa_ffi::GenesisDposConfig {
+                eligibility_balance_threshold: vec![1],
+                vote_eligibility_balance_step: vec![1],
+                validator_maximum_stake: vec![1],
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+        )
+        .expect("final chain should initialize")
     }
 
     #[test]
@@ -474,6 +566,28 @@ mod tests {
         assert!(!queue.transaction_queue_contains(&[3; 32]));
         assert!(queue.transaction_queue_contains(&[2; 32]));
         assert!(queue.transaction_queue_contains(&[4; 32]));
+    }
+
+    #[test]
+    fn bridge_purge_with_final_chain_sources_account_facts_in_rust() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_tx_queue_purge_fc");
+        let final_chain = final_chain_with_genesis_account(
+            temp_dir.to_str().expect("temp path should be valid UTF-8"),
+            [1; 20],
+        );
+        let mut queue = create_transaction_queue(TransactionQueueConfig { max_size: 100 });
+        queue.transaction_queue_insert(input(1, 0, 5, 1)).unwrap();
+        queue.transaction_queue_insert(input(2, 0, 6, 2)).unwrap();
+
+        let plan = queue
+            .transaction_queue_purge_with_final_chain(&final_chain)
+            .expect("FinalChain-backed purge should succeed");
+
+        assert_eq!(plan.removed_count, 0);
+        assert!(queue.transaction_queue_contains(&[1; 32]));
+        assert!(queue.transaction_queue_contains(&[2; 32]));
+
+        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]

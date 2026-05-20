@@ -2,9 +2,10 @@
 //!
 //! The queue stores transaction metadata and canonical transaction bytes needed for consensus-facing pool decisions.
 //! C++ supplies validated RLP at insertion time and materializes `Transaction` objects on demand for legacy API callers.
-//! C++ still owns signature/state validation, event dispatch, and FinalChain account reads. Rust owns deterministic
+//! C++ still owns signature/state validation, event dispatch, and final object materialization. Rust owns deterministic
 //! insertion, same-sender nonce replacement, priority ordering, non-proposable expiry planning, queued payload retention,
-//! known-cache expiration, overflow/drop observation, purge planning, and gas-price threshold accounting.
+//! known-cache expiration, overflow/drop observation, purge planning, gas-price threshold accounting, and the
+//! production bridge routes that source FinalChain account facts for purge.
 
 use anyhow::{Result, ensure};
 use ethereum_types::{H160, H256, U256};
@@ -102,19 +103,21 @@ pub struct TransactionQueuePurgeOutcome {
     pub removed_hashes: Vec<H256>,
 }
 
-/// FinalChain account nonce fact supplied by the C++ shim for queue purge planning.
+/// FinalChain account nonce fact consumed by queue purge planning.
 ///
-/// The queue does not read FinalChain state directly in this slice. C++ supplies one fact for every proposable account
-/// whether the account state was available, and Rust removes proposer transactions whose nonce is below the supplied
-/// finalized account nonce. Missing accounts are explicit no-ops. Inputs are account addresses and finalized account
-/// nonces; output is the deterministic removed-hash list in fact order, preserving per-account nonce order.
+/// The pure queue planner intentionally accepts explicit account facts so tests and higher-level bridges can validate
+/// deterministic behavior without coupling this domain type to a FinalChain runtime. Production Rust bridges source one
+/// fact for every proposable account from Rust FinalChain before calling the planner. Rust removes proposer transactions
+/// whose nonce is below the supplied finalized account nonce. Missing accounts are explicit no-ops. Inputs are account
+/// addresses and finalized account nonces; output is the deterministic removed-hash list in fact order, preserving
+/// per-account nonce order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TransactionQueueAccountNonceFact {
     /// Account owning proposer transactions.
     pub sender: H160,
-    /// True when C++ found FinalChain account state for `sender`.
+    /// True when FinalChain account state exists for `sender`.
     pub account_found: bool,
-    /// Finalized account nonce read by C++ from FinalChain.
+    /// Finalized account nonce read from FinalChain.
     pub account_nonce: U256,
 }
 

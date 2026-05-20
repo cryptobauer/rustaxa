@@ -1,5 +1,3 @@
-#include "transaction/transaction_queue.hpp"
-
 #include <cstring>
 #include <stdexcept>
 #include <utility>
@@ -7,6 +5,7 @@
 #include "final_chain/final_chain.hpp"
 #include "libdevcore/CommonData.h"
 #include "transaction/transaction_manager.hpp"
+#include "transaction/transaction_queue.hpp"
 
 namespace taraxa {
 namespace {
@@ -119,12 +118,22 @@ void TransactionQueue::blockFinalized(uint64_t block_number) {
 }
 
 void TransactionQueue::purge() {
-  auto facts = collectPurgeAccountFacts();
-  if (facts.empty()) {
+  if (!final_chain_) {
+    if (size() == 0) {
+      return;
+    }
+    throw std::runtime_error("TransactionQueue::purge requires FinalChain for non-empty Rust queue");
+  }
+  if (size() == 0) {
     return;
   }
 
-  queue_->transaction_queue_purge_accounts_plan(std::move(facts));
+  try {
+    queue_->transaction_queue_purge_with_final_chain(final_chain_->rustFinalChainForRust());
+  } catch (const std::exception& e) {
+    throw std::runtime_error(std::string("TransactionQueue::purge failed in Rust FinalChain-backed route: ") +
+                             e.what());
+  }
 }
 
 void TransactionQueue::markTransactionKnown(const trx_hash_t& trx_hash) {
@@ -194,26 +203,6 @@ std::array<uint8_t, 32> TransactionQueue::toBridgeU256(const val_t& value) {
 
 val_t TransactionQueue::fromBridgeU256(const std::array<uint8_t, 32>& value) {
   return dev::fromBigEndian<val_t>(dev::bytes(value.begin(), value.end()));
-}
-
-rust::Vec<rustaxa::TransactionQueueAccountNonceFact> TransactionQueue::collectPurgeAccountFacts() const {
-  rust::Vec<rustaxa::TransactionQueueAccountNonceFact> facts;
-  if (!final_chain_) {
-    return facts;
-  }
-
-  const auto accounts = queue_->transaction_queue_proposable_accounts();
-  facts.reserve(accounts.size());
-  for (const auto& account : accounts) {
-    const auto address = addr_t(account.address.data(), addr_t::ConstructFromPointer);
-    const auto account_state = final_chain_->getAccount(address);
-    facts.push_back(rustaxa::TransactionQueueAccountNonceFact{
-        .sender = toBridgeAddress(address),
-        .account_found = account_state.has_value(),
-        .account_nonce = account_state.has_value() ? toBridgeU256(account_state->nonce) : std::array<uint8_t, 32>{},
-    });
-  }
-  return facts;
 }
 
 }  // namespace taraxa
