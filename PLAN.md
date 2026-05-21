@@ -225,11 +225,13 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
   - DagBlockProposer now has a full Rust-mode overlay shim. C++ still owns thread/network orchestration, transaction
     packing, block construction, signing, and add-block wiring, while Rust owns proposer eligibility status decisions,
     legacy VRF input bytes, and deterministic tip-selection policy.
-  - Rust finalization appends DPoS snapshots for finalized native-transfer blocks. Because Rust finalization is scoped to
-    post-Magnolia execution, native transaction fees are assigned to validator commission rewards by finalized DAG block
-    author and transaction hash.
+  - Rust finalization appends DPoS snapshots for finalized native-transfer blocks and persists each snapshot atomically
+    with the finalized block indexes plus `lastBlockNumber`. Startup reloads persisted historical DPoS snapshots so PBFT,
+    DAG, and pillar reads can reuse block-scoped Rust FinalChain facts after restart.
+  - Because Rust finalization is scoped to post-Magnolia execution, native transaction fees are assigned to validator
+    commission rewards by finalized DAG block author and transaction hash.
   - non-genesis DPoS queries still throw when the queried block has not been finalized through Rust snapshot
-    maintenance; unsupported state/EVM DPoS transitions remain explicit gaps.
+    maintenance; unsupported state/EVM DPoS transitions and startup account-snapshot recovery remain explicit gaps.
   - selected DPoS precompile reads through `FinalChain::call` are Rust-backed for `getTotalEligibleVotesCount()` and
     `getValidator(address)`.
 - Unimplemented public shim methods throw rather than falling back to `FinalChainOld`.
@@ -257,7 +259,7 @@ FinalChain currently depends on:
 2. Migrate transaction, receipt, log query helpers, and bloom search parity.
 3. Migrate finalization/write path pieces such as append-block, counters, and index writes.
 4. Continue DPoS snapshot parity beyond native transfers: validator owner/metadata, delegation mutations, jailing,
-   slashing, rewards distribution, and contract-call state transitions.
+   slashing, rewards distribution, contract-call state transitions, and startup recovery for account snapshots.
 5. Defer broader StateAPI, bridge-heavy APIs, pruning, snapshots, and state-transition boundaries until there is a clear Rust/EVM integration strategy.
 
 High-risk APIs:

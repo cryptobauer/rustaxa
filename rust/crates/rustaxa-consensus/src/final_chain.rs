@@ -174,6 +174,7 @@ impl FinalChain {
             )])),
         };
         final_chain.ensure_genesis_header()?;
+        final_chain.load_persisted_dpos_snapshots()?;
         Ok(final_chain)
     }
 
@@ -563,12 +564,20 @@ impl FinalChain {
             )
             .signed_pbft_block(SignedPbftBlockRlp::new(&pbft_block_rlp)),
         )?;
-        self.storage.final_chain().write_block_header(
+        let dpos_snapshot = self.plan_dpos_snapshot(
             pbft.period,
-            full_header.hash()?,
-            stored_header_rlp.as_bytes(),
-            receipts_rlp.as_slice(),
+            self.dpos_fee_rewards_by_validator(&finalized_dag_blocks, &execution.transaction_fees)?,
         )?;
+        let dpos_snapshot_rlp = encode_dpos_snapshot_rlp(&dpos_snapshot);
+        self.storage
+            .final_chain()
+            .write_block_header_with_dpos_snapshot(
+                pbft.period,
+                full_header.hash()?,
+                stored_header_rlp.as_bytes(),
+                receipts_rlp.as_slice(),
+                Some(&dpos_snapshot_rlp),
+            )?;
         for (position, transaction) in transactions.iter().enumerate() {
             self.storage.transaction().write_location(
                 H256::from(transaction.hash),
@@ -582,10 +591,7 @@ impl FinalChain {
             )?;
         }
         self.append_account_snapshot(pbft.period)?;
-        self.append_dpos_snapshot(
-            pbft.period,
-            self.dpos_fee_rewards_by_validator(&finalized_dag_blocks, &execution.transaction_fees)?,
-        )?;
+        self.insert_dpos_snapshot(pbft.period, dpos_snapshot)?;
 
         Ok((full_header.into_vec(), execution.receipts))
     }
@@ -744,6 +750,32 @@ impl FinalChain {
             .cloned())
     }
 
+    /// Loads Rust-persisted historical DPoS snapshots for finalized blocks.
+    ///
+    /// Missing snapshot payloads are left absent so pre-existing databases do
+    /// not silently answer historical DPoS queries from genesis state. Corrupt
+    /// persisted snapshot payloads are hard errors because they would make
+    /// PBFT/pillar DPoS reads nondeterministic.
+    fn load_persisted_dpos_snapshots(&self) -> Result<(), anyhow::Error> {
+        let last_block = self.last_block_number()?;
+        if last_block == 0 {
+            return Ok(());
+        }
+
+        let mut snapshots = self
+            .dpos_snapshots
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain DPoS snapshot lock poisoned"))?;
+        for block_number in 1..=last_block {
+            let Some(raw_snapshot) = self.storage.final_chain().dpos_snapshot_raw(block_number)?
+            else {
+                continue;
+            };
+            snapshots.insert(block_number, decode_dpos_snapshot_rlp(&raw_snapshot)?);
+        }
+        Ok(())
+    }
+
     /// Performs the account and intrinsic-gas checks needed before a read-only call.
     ///
     /// Validation failures are represented as call outcomes because C++ RPC
@@ -855,16 +887,16 @@ impl FinalChain {
         Ok(output)
     }
 
-    /// Appends the DPoS snapshot for a newly finalized block.
+    /// Plans the DPoS snapshot for a newly finalized block.
     ///
     /// The new snapshot clones the previous block state and applies any
     /// post-Magnolia transaction-fee commission rewards computed for this block.
-    fn append_dpos_snapshot(
+    fn plan_dpos_snapshot(
         &self,
         block_number: u64,
         fee_rewards_by_validator: BTreeMap<[u8; 20], U256>,
-    ) -> Result<(), anyhow::Error> {
-        let mut snapshots = self
+    ) -> Result<DposSnapshot, anyhow::Error> {
+        let snapshots = self
             .dpos_snapshots
             .lock()
             .map_err(|_| anyhow::anyhow!("final-chain DPoS snapshot lock poisoned"))?;
@@ -889,6 +921,18 @@ impl FinalChain {
                 ),
             );
         }
+        Ok(snapshot)
+    }
+
+    fn insert_dpos_snapshot(
+        &self,
+        block_number: u64,
+        snapshot: DposSnapshot,
+    ) -> Result<(), anyhow::Error> {
+        let mut snapshots = self
+            .dpos_snapshots
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain DPoS snapshot lock poisoned"))?;
         snapshots.insert(block_number, snapshot);
         Ok(())
     }
@@ -966,6 +1010,130 @@ fn h256_from_slice(raw: &[u8], field: &str) -> Result<ethereum_types::H256, anyh
         anyhow::bail!("invalid {field} size: expected 32, got {}", raw.len());
     }
     Ok(ethereum_types::H256::from_slice(raw))
+}
+
+fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Vec<u8> {
+    let mut stream = rlp::RlpStream::new_list(5);
+    append_address_bytes_map(&mut stream, &snapshot.total_stakes);
+    append_address_bytes_map(&mut stream, &snapshot.commission_rewards);
+    append_validator_metadata_map(&mut stream, &snapshot.validator_metadata);
+    append_vote_count_map(&mut stream, &snapshot.vote_counts);
+    stream.append(&snapshot.total_vote_count);
+    stream.out().to_vec()
+}
+
+fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
+    let rlp = Rlp::new(raw);
+    if rlp.item_count()? != 5 {
+        anyhow::bail!("DPoS snapshot RLP must contain exactly five items");
+    }
+    let total_stakes = decode_address_bytes_map(&rlp.at(0)?, "total stakes")?;
+    let commission_rewards = decode_address_bytes_map(&rlp.at(1)?, "commission rewards")?;
+    let validator_metadata = decode_validator_metadata_map(&rlp.at(2)?)?;
+    let vote_counts = decode_vote_count_map(&rlp.at(3)?)?;
+    let total_vote_count = rlp.val_at(4)?;
+    Ok(DposSnapshot {
+        total_stakes,
+        commission_rewards,
+        validator_metadata,
+        vote_counts,
+        total_vote_count,
+    })
+}
+
+fn append_address_bytes_map(stream: &mut rlp::RlpStream, map: &BTreeMap<[u8; 20], Vec<u8>>) {
+    stream.begin_list(map.len());
+    for (address, value) in map {
+        stream.begin_list(2);
+        stream.append(&address.as_slice());
+        stream.append(&value.as_slice());
+    }
+}
+
+fn append_validator_metadata_map(
+    stream: &mut rlp::RlpStream,
+    map: &BTreeMap<[u8; 20], DposValidatorMetadata>,
+) {
+    stream.begin_list(map.len());
+    for (address, metadata) in map {
+        stream.begin_list(5);
+        stream.append(&address.as_slice());
+        stream.append(&metadata.owner.as_slice());
+        stream.append(&metadata.commission);
+        stream.append(&metadata.description.as_str());
+        stream.append(&metadata.endpoint.as_str());
+    }
+}
+
+fn append_vote_count_map(stream: &mut rlp::RlpStream, map: &BTreeMap<[u8; 20], u64>) {
+    stream.begin_list(map.len());
+    for (address, vote_count) in map {
+        stream.begin_list(2);
+        stream.append(&address.as_slice());
+        stream.append(vote_count);
+    }
+}
+
+fn decode_address_bytes_map(
+    rlp: &Rlp<'_>,
+    field: &str,
+) -> Result<BTreeMap<[u8; 20], Vec<u8>>, anyhow::Error> {
+    let mut map = BTreeMap::new();
+    for item in rlp.iter() {
+        if item.item_count()? != 2 {
+            anyhow::bail!("DPoS snapshot {field} entry must contain exactly two items");
+        }
+        map.insert(decode_address(&item.at(0)?, field)?, item.val_at(1)?);
+    }
+    Ok(map)
+}
+
+fn decode_validator_metadata_map(
+    rlp: &Rlp<'_>,
+) -> Result<BTreeMap<[u8; 20], DposValidatorMetadata>, anyhow::Error> {
+    let mut map = BTreeMap::new();
+    for item in rlp.iter() {
+        if item.item_count()? != 5 {
+            anyhow::bail!("DPoS snapshot metadata entry must contain exactly five items");
+        }
+        map.insert(
+            decode_address(&item.at(0)?, "validator metadata address")?,
+            DposValidatorMetadata {
+                owner: decode_address(&item.at(1)?, "validator metadata owner")?,
+                commission: item.val_at(2)?,
+                description: item.val_at(3)?,
+                endpoint: item.val_at(4)?,
+            },
+        );
+    }
+    Ok(map)
+}
+
+fn decode_vote_count_map(rlp: &Rlp<'_>) -> Result<BTreeMap<[u8; 20], u64>, anyhow::Error> {
+    let mut map = BTreeMap::new();
+    for item in rlp.iter() {
+        if item.item_count()? != 2 {
+            anyhow::bail!("DPoS snapshot vote-count entry must contain exactly two items");
+        }
+        map.insert(
+            decode_address(&item.at(0)?, "vote-count address")?,
+            item.val_at(1)?,
+        );
+    }
+    Ok(map)
+}
+
+fn decode_address(rlp: &Rlp<'_>, field: &str) -> Result<[u8; 20], anyhow::Error> {
+    let bytes: Vec<u8> = rlp.as_val()?;
+    if bytes.len() != 20 {
+        anyhow::bail!(
+            "invalid DPoS snapshot {field} size: expected 20, got {}",
+            bytes.len()
+        );
+    }
+    let mut address = [0u8; 20];
+    address.copy_from_slice(&bytes);
+    Ok(address)
 }
 
 fn empty_trie_root() -> ethereum_types::H256 {
@@ -2161,6 +2329,13 @@ mod tests {
         let sender = [0x21; 20];
         let receiver = [0x22; 20];
         let dag_author = [0x23; 20];
+        let genesis_validator = genesis_validator(dag_author, U256::from(10_000u64));
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
         let signing_key = SigningKey::from_slice(&[12u8; 32]).unwrap();
         let beneficiary: [u8; 20] = address_from_signing_key(&signing_key).into();
         let pbft_block = signed_pbft_block(&signing_key, period, 121);
@@ -2187,13 +2362,8 @@ mod tests {
             100_000,
             0,
             vec![genesis_account(sender, U256::from(1_000_000u64))],
-            vec![genesis_validator(dag_author, U256::from(10_000u64))],
-            GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                dag_vdf_sortition_total_vote_count_until_period: 0,
-            },
+            vec![genesis_validator.clone()],
+            genesis_dpos_config.clone(),
         )
         .unwrap();
 
@@ -2219,6 +2389,97 @@ mod tests {
         assert_eq!(
             u256_from_big_endian(&validator_info.code_retval[64..96]),
             U256::from(VALUE_TRANSFER_GAS * 2)
+        );
+        assert_eq!(
+            final_chain
+                .dpos_eligible_vote_count(period, dag_author)
+                .unwrap(),
+            10
+        );
+        assert_eq!(
+            final_chain.dpos_eligible_total_vote_count(period).unwrap(),
+            10
+        );
+        assert!(final_chain.dpos_is_eligible(period, dag_author).unwrap());
+        assert_eq!(
+            final_chain
+                .dpos_validators_total_stakes(period)
+                .unwrap()
+                .iter()
+                .map(|stake| (stake.address, u256_from_big_endian(&stake.stake)))
+                .collect::<Vec<_>>(),
+            vec![(dag_author, U256::from(10_000u64))]
+        );
+        assert_eq!(
+            final_chain
+                .dpos_validators_eligible_vote_counts(period)
+                .unwrap()
+                .iter()
+                .map(|vote_count| (vote_count.address, vote_count.vote_count))
+                .collect::<Vec<_>>(),
+            vec![(dag_author, 10)]
+        );
+
+        drop(final_chain);
+        drop(storage);
+
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(sender, U256::from(1_000_000u64))],
+            vec![genesis_validator],
+            genesis_dpos_config,
+        )
+        .unwrap();
+        assert_eq!(
+            final_chain
+                .dpos_eligible_vote_count(period, dag_author)
+                .unwrap(),
+            10
+        );
+        assert_eq!(
+            final_chain.dpos_eligible_total_vote_count(period).unwrap(),
+            10
+        );
+        assert!(final_chain.dpos_is_eligible(period, dag_author).unwrap());
+        assert_eq!(
+            final_chain
+                .dpos_validators_total_stakes(period)
+                .unwrap()
+                .iter()
+                .map(|stake| (stake.address, u256_from_big_endian(&stake.stake)))
+                .collect::<Vec<_>>(),
+            vec![(dag_author, U256::from(10_000u64))]
+        );
+        assert_eq!(
+            final_chain
+                .dpos_validators_eligible_vote_counts(period)
+                .unwrap()
+                .iter()
+                .map(|vote_count| (vote_count.address, vote_count.vote_count))
+                .collect::<Vec<_>>(),
+            vec![(dag_author, 10)]
+        );
+        let facts = final_chain
+            .dag_dpos_authorization_facts(period, dag_author)
+            .unwrap();
+        assert_eq!(facts.sender_eligible_vote_count, 10);
+        assert_eq!(facts.eligibility_status, DAG_VERIFY_DPOS_STATUS_ELIGIBLE);
+        let validator_info = final_chain
+            .call(dpos_call_request(period, get_validator_input(dag_author)))
+            .unwrap();
+        assert_eq!(
+            u256_from_big_endian(&validator_info.code_retval[64..96]),
+            U256::from(VALUE_TRANSFER_GAS * 2)
+        );
+        assert!(
+            final_chain
+                .dpos_eligible_total_vote_count(period + 1)
+                .unwrap_err()
+                .to_string()
+                .contains("snapshot for block 2")
         );
 
         drop(final_chain);

@@ -10,6 +10,8 @@ pub struct FinalChainRepository<D: DbReader> {
 }
 
 impl<D: DbReader> FinalChainRepository<D> {
+    const DPOS_SNAPSHOT_KEY_PREFIX: &'static [u8] = b"rustaxa:dpos_snapshot:";
+
     /// Creates a final-chain repository over the shared database handle.
     pub fn new(db: Arc<D>) -> Self {
         FinalChainRepository { db }
@@ -68,6 +70,25 @@ impl<D: DbReader> FinalChainRepository<D> {
             .get(Column::FinalChainReceiptByTrxHash, trx_hash.as_bytes())?
             .map(|value| value.as_ref().to_vec()))
     }
+
+    /// Returns the Rust-owned DPoS snapshot payload for a finalized block.
+    ///
+    /// The payload is stored in `final_chain_meta` under a Rust-prefixed key so
+    /// the existing C++ `u32` metadata keys stay unchanged. This is intentionally
+    /// a Rust rewrite sidecar until FinalChain persistence is fully typed.
+    pub fn dpos_snapshot_raw(&self, number: u64) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .db
+            .get(Column::FinalChainMeta, &Self::dpos_snapshot_key(number))?
+            .map(|value| value.as_ref().to_vec()))
+    }
+
+    fn dpos_snapshot_key(number: u64) -> Vec<u8> {
+        let mut key = Vec::with_capacity(Self::DPOS_SNAPSHOT_KEY_PREFIX.len() + 8);
+        key.extend_from_slice(Self::DPOS_SNAPSHOT_KEY_PREFIX);
+        key.extend_from_slice(&number.to_le_bytes());
+        key
+    }
 }
 
 impl<D: DbReader + DbWriter> FinalChainRepository<D> {
@@ -80,6 +101,25 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
         hash: H256,
         stored_header_rlp: &[u8],
         receipts_rlp: &[u8],
+    ) -> Result<()> {
+        self.write_block_header_with_dpos_snapshot(
+            number,
+            hash,
+            stored_header_rlp,
+            receipts_rlp,
+            None,
+        )
+    }
+
+    /// Persists a finalized block header, its lookup indexes, and an optional
+    /// Rust-owned DPoS snapshot atomically.
+    pub fn write_block_header_with_dpos_snapshot(
+        &self,
+        number: u64,
+        hash: H256,
+        stored_header_rlp: &[u8],
+        receipts_rlp: &[u8],
+        dpos_snapshot_rlp: Option<&[u8]>,
     ) -> Result<()> {
         const DB_META_LAST_NUMBER: u32 = 1;
 
@@ -108,6 +148,14 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
             hash.as_bytes(),
             &number.to_le_bytes(),
         )?;
+        if let Some(dpos_snapshot_rlp) = dpos_snapshot_rlp {
+            self.db.batch_put(
+                &mut batch,
+                Column::FinalChainMeta,
+                &Self::dpos_snapshot_key(number),
+                dpos_snapshot_rlp,
+            )?;
+        }
         self.db.batch_put(
             &mut batch,
             Column::FinalChainMeta,
@@ -249,6 +297,21 @@ mod tests {
 
         let result = repo.meta_value(1).unwrap();
         assert_eq!(result, Some(77u64.to_le_bytes().to_vec()));
+    }
+
+    #[test]
+    fn test_dpos_snapshot_raw_uses_rust_prefixed_meta_key() {
+        let db = Arc::new(MockFinalChainStore::new());
+        let repo = FinalChainRepository::new(db.clone());
+        let snapshot = vec![0xc0];
+        db.put(
+            Column::FinalChainMeta,
+            &FinalChainRepository::<MockFinalChainStore>::dpos_snapshot_key(7),
+            &snapshot,
+        );
+
+        assert_eq!(repo.dpos_snapshot_raw(7).unwrap(), Some(snapshot));
+        assert_eq!(repo.dpos_snapshot_raw(8).unwrap(), None);
     }
 
     #[test]
