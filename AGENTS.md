@@ -21,6 +21,11 @@ This repository is the Rust rewrite track for Taraxa. Keep day-to-day work align
   implementation directly instead of re-centering behavior in C++. Prefer extending Rust crates, bridges, and shim-owned
   Rust handles over adding C++ orchestration or C++ data materialization, unless a concrete blocker is documented and
   accepted by the task owner.
+- Hard rule: slice planning and implementation must proactively look for opportunities to bridge into existing Rust
+  rewrite code. Before settling on a design, inspect nearby Rust crates, bridge APIs, shim-owned handles, and already
+  migrated storage/FinalChain/DAG/transaction/vote functionality. Prefer routing through those Rust implementations,
+  even when it makes the slice moderately larger, if it reduces C++ ownership and advances the long-term goal of a
+  complete Rust rewrite.
 - In C++ files, prefer additive per-module guards (`#ifdef RUSTAXA_ENABLE_VDF`, `#ifdef RUSTAXA_ENABLE_STORAGE`, `#ifdef RUSTAXA_ENABLE_FINAL_CHAIN`) or the master `#ifdef RUSTAXA_ENABLE` for shim-overlay integration over deleting legacy logic.
 - For upstream-owned C++ classes, use the storage/final-chain overlay shim strategy instead of editing legacy files inline:
   add a shim include overlay, compile legacy implementation as `*Old`, and provide a shim class in shim-owned files. The

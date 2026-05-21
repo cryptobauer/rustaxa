@@ -7,6 +7,8 @@ This is the consolidated plan for progressively replacing C++ internals with Rus
 - Keep upstream C++ sync practical through a pure-C++ validation gate.
 - Preserve public C++ APIs while Rust implementations replace internals behind shims.
 - Move high-value storage and FinalChain paths first.
+- Use existing Rust rewrite implementations as aggressively as correctness allows, so each slice moves production routing
+  toward the long-term goal of complete Rust ownership rather than rebuilding orchestration in C++.
 - Keep Rust APIs type-safe, throughput-conscious, and unit-testable.
 - Maintain C++ vs Rust behavioral parity with focused tests and conformance checks.
 
@@ -55,6 +57,10 @@ Core rules:
   implementation directly instead of re-centering behavior in C++. Prefer extending Rust crates, bridges, and shim-owned
   Rust handles over adding C++ orchestration or C++ data materialization, unless a concrete blocker is documented and
   accepted by the task owner.
+- Before selecting or implementing a rewrite slice, proactively inspect adjacent Rust crates, bridge APIs, shim-owned
+  handles, and existing storage/FinalChain/DAG/transaction/vote coverage for reuse opportunities. Prefer connecting the
+  new path to those Rust implementations, even if that makes the slice slightly larger, when it reduces future C++
+  ownership and keeps behavior on the path to full Rust replacement.
 - Hard rule for Rust-enabled paths: never forward, delegate, or rely on inherited behavior from legacy C++ implementations. Any not-yet-ported API must stay explicit in the shim as a documented stub/no-op/throw until Rust parity lands. If fallback is proposed, require explicit task-owner approval first.
 - Hard rule: preserve existing test intent. Do not loosen or rewrite tests to accommodate Rust rewrite regressions; fix implementation parity first. Only change tests when product behavior is intentionally changed and documented.
 - Documentation rule: whenever adding or changing rewrite code, document modules, types, and functions as complete units (purpose, inputs, outputs, invariants, and error or edge behavior), not just isolated lines.
