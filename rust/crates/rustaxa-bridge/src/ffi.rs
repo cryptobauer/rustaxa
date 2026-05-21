@@ -2,6 +2,7 @@ use crate::dag::*;
 use crate::final_chain::*;
 use crate::gas_pricer::*;
 use crate::pbft_chain::*;
+use crate::pbft_sync::*;
 use crate::period_data_queue::*;
 use crate::pillar_votes::*;
 use crate::proposed_blocks::*;
@@ -427,6 +428,46 @@ pub mod rustaxa_ffi {
         non_empty_size: u64,
         last_pbft_block_hash: [u8; 32],
         last_non_null_anchor_hash: [u8; 32],
+    }
+
+    /// Warning carried from side-effect-free PBFT sync admission planning.
+    struct PbftSyncTransactionWarning {
+        hash: [u8; 32],
+        kind: u8,
+    }
+
+    /// Transaction hash wrapper for CXX bridge vectors.
+    struct PbftSyncTransactionHash {
+        hash: [u8; 32],
+    }
+
+    /// C++-originated PBFT sync admission fact.
+    struct PbftSyncPeriodAdmissionFact {
+        block_period: u64,
+        block_prev_hash: [u8; 32],
+        chain_last_hash: [u8; 32],
+        chain_last_period: u64,
+        block_in_chain: bool,
+        final_chain_hash_status: u8,
+        reward_votes_status: u8,
+        cert_votes_status: u8,
+        missing_transaction_hashes: Vec<PbftSyncTransactionHash>,
+        finalized_transaction_hashes: Vec<PbftSyncTransactionHash>,
+        contains_finalized_transactions: bool,
+        pillar_data_status: u8,
+        pillar_votes_status: u8,
+    }
+
+    /// Plan outcome for one PBFT sync admission decision.
+    struct PbftSyncPeriodAdmissionPlan {
+        decision: u8,
+        status: u8,
+        clear_sync_queue: bool,
+        report_malicious_peer: bool,
+        wait_for_finalization: bool,
+        accept_period_data: bool,
+        warnings: Vec<PbftSyncTransactionWarning>,
+        contains_finalized_transaction_warning: bool,
     }
 
     struct PbftBlockValidationResult {
@@ -2081,6 +2122,9 @@ pub mod rustaxa_ffi {
             period: u64,
             prev_hash: &[u8; 32],
         ) -> PbftBlockValidationResult;
+        pub fn plan_pbft_sync_period_admission(
+            fact: PbftSyncPeriodAdmissionFact,
+        ) -> PbftSyncPeriodAdmissionPlan;
 
         // Consensus proposed PBFT blocks
 

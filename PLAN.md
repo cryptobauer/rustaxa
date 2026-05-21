@@ -463,7 +463,11 @@ The current Rust starting point is intentionally small:
    finalization side effects, and live object dispatch. A full Rust-mode `PbftManager` overlay now owns PBFT startup and
    sync-validation routing so upstream `pbft_manager.cpp` stays merge-clean; the copied overlay is deliberate PBFT
    orchestration scaffolding and should be reduced over time by moving round/step/status planning into a Rust-owned PBFT
-   manager runtime.
+   manager runtime. The first PBFT orchestration slice now routes `processPeriodData` sync-period admission through a
+   side-effect-free Rust planner: C++ still sources PBFT chain, FinalChain, reward/cert vote, transaction, and pillar
+   facts and still performs logging, waits, queue clears, peer reporting, and live object dispatch, while Rust owns the
+   deterministic accept/drop/wait/clear decision table. Missing or finalized transaction facts remain warn-only for
+   compatibility and do not reject synced period data.
    `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
    selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
    lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode
