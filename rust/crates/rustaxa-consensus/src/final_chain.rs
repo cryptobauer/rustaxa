@@ -56,6 +56,10 @@ pub struct FinalChain {
     /// Account snapshots keyed by finalized block number for proposal-period
     /// account reads. Missing accounts remain absent from each snapshot.
     account_snapshots: Mutex<HashMap<u64, HashMap<[u8; 20], Account>>>,
+    /// Highest finalized block whose account snapshot has been loaded into the
+    /// latest account map. Latest account reads fail when this lags
+    /// LAST_NUMBER, preventing restart paths from silently using genesis state.
+    latest_account_snapshot_block: Mutex<u64>,
     dpos_snapshots: Mutex<HashMap<u64, DposSnapshot>>,
 }
 
@@ -162,6 +166,7 @@ impl FinalChain {
             dag_vdf_sortition_total_vote_count_until_period: genesis_dpos_config
                 .dag_vdf_sortition_total_vote_count_until_period,
             account_snapshots: Mutex::new(HashMap::from([(0, genesis_accounts.clone())])),
+            latest_account_snapshot_block: Mutex::new(0),
             dpos_snapshots: Mutex::new(HashMap::from([(
                 0,
                 DposSnapshot {
@@ -174,6 +179,7 @@ impl FinalChain {
             )])),
         };
         final_chain.ensure_genesis_header()?;
+        final_chain.load_persisted_account_snapshots()?;
         final_chain.load_persisted_dpos_snapshots()?;
         Ok(final_chain)
     }
@@ -249,6 +255,14 @@ impl FinalChain {
 
     /// Returns the latest in-memory account view tracked by Rust finalization.
     pub fn account(&self, address: [u8; 20]) -> Result<Option<Account>, anyhow::Error> {
+        let last_block = self.last_block_number()?;
+        let latest_snapshot_block = *self
+            .latest_account_snapshot_block
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain latest account snapshot lock poisoned"))?;
+        if latest_snapshot_block != last_block {
+            anyhow::bail!("final-chain account snapshot unavailable for latest block {last_block}");
+        }
         Ok(self
             .accounts
             .lock()
@@ -569,14 +583,17 @@ impl FinalChain {
             self.dpos_fee_rewards_by_validator(&finalized_dag_blocks, &execution.transaction_fees)?,
         )?;
         let dpos_snapshot_rlp = encode_dpos_snapshot_rlp(&dpos_snapshot);
+        let account_snapshot = self.current_account_snapshot()?;
+        let account_snapshot_rlp = encode_account_snapshot_rlp(&account_snapshot);
         self.storage
             .final_chain()
-            .write_block_header_with_dpos_snapshot(
+            .write_block_header_with_snapshots(
                 pbft.period,
                 full_header.hash()?,
                 stored_header_rlp.as_bytes(),
                 receipts_rlp.as_slice(),
                 Some(&dpos_snapshot_rlp),
+                Some(&account_snapshot_rlp),
             )?;
         for (position, transaction) in transactions.iter().enumerate() {
             self.storage.transaction().write_location(
@@ -590,7 +607,7 @@ impl FinalChain {
                 &execution.receipts[position],
             )?;
         }
-        self.append_account_snapshot(pbft.period)?;
+        self.insert_account_snapshot(pbft.period, account_snapshot)?;
         self.insert_dpos_snapshot(pbft.period, dpos_snapshot)?;
 
         Ok((full_header.into_vec(), execution.receipts))
@@ -776,6 +793,58 @@ impl FinalChain {
         Ok(())
     }
 
+    /// Loads Rust-persisted historical account snapshots for finalized blocks.
+    ///
+    /// Missing non-genesis payloads are left absent so older databases do not
+    /// fabricate account facts from genesis. Latest account reads then fail
+    /// explicitly until the finalized head has a Rust account snapshot. Corrupt
+    /// payloads are hard errors because account facts drive transaction purge,
+    /// proposal filtering, and read-only call validation.
+    fn load_persisted_account_snapshots(&self) -> Result<(), anyhow::Error> {
+        let last_block = self.last_block_number()?;
+        if last_block == 0 {
+            return Ok(());
+        }
+
+        let mut loaded_latest = 0u64;
+        let mut loaded_accounts = None;
+        let mut snapshots = self
+            .account_snapshots
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain account snapshot lock poisoned"))?;
+        for block_number in 1..=last_block {
+            let Some(raw_snapshot) = self
+                .storage
+                .final_chain()
+                .account_snapshot_raw(block_number)?
+            else {
+                continue;
+            };
+            let snapshot = decode_account_snapshot_rlp(&raw_snapshot).map_err(|err| {
+                anyhow::anyhow!(
+                    "failed to decode persisted account snapshot for block {block_number}: {err}"
+                )
+            })?;
+            if block_number > loaded_latest {
+                loaded_latest = block_number;
+                loaded_accounts = Some(snapshot.clone());
+            }
+            snapshots.insert(block_number, snapshot);
+        }
+        drop(snapshots);
+
+        if let Some(accounts) = loaded_accounts {
+            *self
+                .accounts
+                .lock()
+                .map_err(|_| anyhow::anyhow!("final-chain account lock poisoned"))? = accounts;
+            *self.latest_account_snapshot_block.lock().map_err(|_| {
+                anyhow::anyhow!("final-chain latest account snapshot lock poisoned")
+            })? = loaded_latest;
+        }
+        Ok(())
+    }
+
     /// Performs the account and intrinsic-gas checks needed before a read-only call.
     ///
     /// Validation failures are represented as call outcomes because C++ RPC
@@ -937,16 +1006,27 @@ impl FinalChain {
         Ok(())
     }
 
-    fn append_account_snapshot(&self, block_number: u64) -> Result<(), anyhow::Error> {
-        let accounts = self
-            .accounts
+    fn current_account_snapshot(&self) -> Result<HashMap<[u8; 20], Account>, anyhow::Error> {
+        self.accounts
             .lock()
-            .map_err(|_| anyhow::anyhow!("final-chain account lock poisoned"))?
-            .clone();
+            .map_err(|_| anyhow::anyhow!("final-chain account lock poisoned"))
+            .map(|accounts| accounts.clone())
+    }
+
+    fn insert_account_snapshot(
+        &self,
+        block_number: u64,
+        accounts: HashMap<[u8; 20], Account>,
+    ) -> Result<(), anyhow::Error> {
         self.account_snapshots
             .lock()
             .map_err(|_| anyhow::anyhow!("final-chain account snapshot lock poisoned"))?
             .insert(block_number, accounts);
+        *self
+            .latest_account_snapshot_block
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain latest account snapshot lock poisoned"))? =
+            block_number;
         Ok(())
     }
 
@@ -1041,6 +1121,55 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
     })
 }
 
+/// Encodes a full FinalChain account snapshot into deterministic RLP.
+///
+/// The payload is a sorted list of account entries keyed by address. Each entry
+/// stores the account fields currently exposed through the Rust/C++ bridge:
+/// nonce, balance bytes, storage root, code hash, and code size. Empty accounts
+/// are omitted by the caller by absence from the map, matching the in-memory
+/// account model used for historical reads.
+fn encode_account_snapshot_rlp(accounts: &HashMap<[u8; 20], Account>) -> Vec<u8> {
+    let sorted_accounts = accounts.iter().collect::<BTreeMap<_, _>>();
+    let mut stream = rlp::RlpStream::new_list(sorted_accounts.len());
+    for (address, account) in sorted_accounts {
+        stream.begin_list(6);
+        stream.append(&address.as_slice());
+        stream.append(&account.nonce);
+        stream.append(&account.balance.as_slice());
+        stream.append(&account.storage_root_hash.as_slice());
+        stream.append(&account.code_hash.as_slice());
+        stream.append(&account.code_size);
+    }
+    stream.out().to_vec()
+}
+
+/// Decodes a persisted account snapshot payload.
+///
+/// Malformed field counts, address lengths, root lengths, or code-hash lengths
+/// are hard errors because FinalChain account facts feed consensus transaction
+/// filtering and read-only execution checks after restart.
+fn decode_account_snapshot_rlp(raw: &[u8]) -> Result<HashMap<[u8; 20], Account>, anyhow::Error> {
+    let rlp = Rlp::new(raw);
+    let mut accounts = HashMap::with_capacity(rlp.item_count()?);
+    for item in rlp.iter() {
+        if item.item_count()? != 6 {
+            anyhow::bail!("account snapshot entry must contain exactly six items");
+        }
+        let address = decode_address(&item.at(0)?, "account address")?;
+        accounts.insert(
+            address,
+            Account {
+                nonce: item.val_at(1)?,
+                balance: item.val_at(2)?,
+                storage_root_hash: decode_fixed_hash(&item.at(3)?, "account storage root")?,
+                code_hash: decode_fixed_hash(&item.at(4)?, "account code hash")?,
+                code_size: item.val_at(5)?,
+            },
+        );
+    }
+    Ok(accounts)
+}
+
 fn append_address_bytes_map(stream: &mut rlp::RlpStream, map: &BTreeMap<[u8; 20], Vec<u8>>) {
     stream.begin_list(map.len());
     for (address, value) in map {
@@ -1127,13 +1256,26 @@ fn decode_address(rlp: &Rlp<'_>, field: &str) -> Result<[u8; 20], anyhow::Error>
     let bytes: Vec<u8> = rlp.as_val()?;
     if bytes.len() != 20 {
         anyhow::bail!(
-            "invalid DPoS snapshot {field} size: expected 20, got {}",
+            "invalid snapshot {field} size: expected 20, got {}",
             bytes.len()
         );
     }
     let mut address = [0u8; 20];
     address.copy_from_slice(&bytes);
     Ok(address)
+}
+
+fn decode_fixed_hash(rlp: &Rlp<'_>, field: &str) -> Result<[u8; 32], anyhow::Error> {
+    let bytes: Vec<u8> = rlp.as_val()?;
+    if bytes.len() != 32 {
+        anyhow::bail!(
+            "invalid snapshot {field} size: expected 32, got {}",
+            bytes.len()
+        );
+    }
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&bytes);
+    Ok(hash)
 }
 
 fn empty_trie_root() -> ethereum_types::H256 {
@@ -2318,6 +2460,41 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
+
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = new_final_chain(
+            storage.clone(),
+            block_gas_limit,
+            0,
+            vec![genesis_account(sender, U256::from(1_000_000u64))],
+            vec![],
+        );
+        assert_eq!(final_chain.last_block_number().unwrap(), period);
+        assert_eq!(final_chain.account(sender).unwrap().unwrap().nonce, 1);
+        assert_eq!(
+            balance_of(&final_chain, sender),
+            U256::from(1_000_000u64) - U256::from(13u64) - U256::from(VALUE_TRANSFER_GAS * 2)
+        );
+        assert_eq!(balance_of(&final_chain, receiver), U256::from(13u64));
+        assert_eq!(
+            final_chain
+                .account_at_block(0, sender)
+                .unwrap()
+                .unwrap()
+                .nonce,
+            0
+        );
+        assert_eq!(
+            final_chain
+                .account_at_block(period, sender)
+                .unwrap()
+                .unwrap()
+                .nonce,
+            1
+        );
+
+        drop(final_chain);
+        drop(storage);
         let _ = std::fs::remove_dir_all(path);
     }
 
@@ -2483,6 +2660,32 @@ mod tests {
         );
 
         drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn persisted_corrupt_account_snapshot_rejects_startup() {
+        let path = temp_db_path("corrupt-account-snapshot");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        storage
+            .final_chain()
+            .write_block_header_with_snapshots(1, H256::zero(), &[], &[], None, Some(&[0x01]))
+            .unwrap();
+
+        let err = match FinalChain::new(
+            storage.clone(),
+            0,
+            0,
+            vec![],
+            vec![],
+            GenesisDposConfig::default(),
+        ) {
+            Ok(_) => panic!("corrupt account snapshot should reject startup"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("account snapshot"));
+
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
     }

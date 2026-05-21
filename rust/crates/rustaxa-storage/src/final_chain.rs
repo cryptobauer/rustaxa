@@ -11,6 +11,7 @@ pub struct FinalChainRepository<D: DbReader> {
 
 impl<D: DbReader> FinalChainRepository<D> {
     const DPOS_SNAPSHOT_KEY_PREFIX: &'static [u8] = b"rustaxa:dpos_snapshot:";
+    const ACCOUNT_SNAPSHOT_KEY_PREFIX: &'static [u8] = b"rustaxa:account_snapshot:";
 
     /// Creates a final-chain repository over the shared database handle.
     pub fn new(db: Arc<D>) -> Self {
@@ -83,9 +84,29 @@ impl<D: DbReader> FinalChainRepository<D> {
             .map(|value| value.as_ref().to_vec()))
     }
 
+    /// Returns the Rust-owned account snapshot payload for a finalized block.
+    ///
+    /// The payload is a Rust rewrite sidecar stored in `final_chain_meta` under
+    /// a Rust-prefixed key. It is intentionally separate from legacy C++
+    /// metadata keys so Rust account-state durability can advance without
+    /// changing existing column-family contracts.
+    pub fn account_snapshot_raw(&self, number: u64) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .db
+            .get(Column::FinalChainMeta, &Self::account_snapshot_key(number))?
+            .map(|value| value.as_ref().to_vec()))
+    }
+
     fn dpos_snapshot_key(number: u64) -> Vec<u8> {
         let mut key = Vec::with_capacity(Self::DPOS_SNAPSHOT_KEY_PREFIX.len() + 8);
         key.extend_from_slice(Self::DPOS_SNAPSHOT_KEY_PREFIX);
+        key.extend_from_slice(&number.to_le_bytes());
+        key
+    }
+
+    fn account_snapshot_key(number: u64) -> Vec<u8> {
+        let mut key = Vec::with_capacity(Self::ACCOUNT_SNAPSHOT_KEY_PREFIX.len() + 8);
+        key.extend_from_slice(Self::ACCOUNT_SNAPSHOT_KEY_PREFIX);
         key.extend_from_slice(&number.to_le_bytes());
         key
     }
@@ -121,6 +142,33 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
         receipts_rlp: &[u8],
         dpos_snapshot_rlp: Option<&[u8]>,
     ) -> Result<()> {
+        self.write_block_header_with_snapshots(
+            number,
+            hash,
+            stored_header_rlp,
+            receipts_rlp,
+            dpos_snapshot_rlp,
+            None,
+        )
+    }
+
+    /// Persists a finalized block header, lookup indexes, optional Rust-owned
+    /// DPoS snapshot, optional Rust-owned account snapshot, and LAST_NUMBER in
+    /// one database batch.
+    ///
+    /// LAST_NUMBER is written after the sidecar snapshot records, so a committed
+    /// finalized block number is never made visible without the Rust snapshot
+    /// payloads supplied by the caller. Callers may pass `None` for a snapshot
+    /// only when that snapshot is intentionally not available for the block.
+    pub fn write_block_header_with_snapshots(
+        &self,
+        number: u64,
+        hash: H256,
+        stored_header_rlp: &[u8],
+        receipts_rlp: &[u8],
+        dpos_snapshot_rlp: Option<&[u8]>,
+        account_snapshot_rlp: Option<&[u8]>,
+    ) -> Result<()> {
         const DB_META_LAST_NUMBER: u32 = 1;
 
         let mut batch = self.db.create_batch();
@@ -154,6 +202,14 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
                 Column::FinalChainMeta,
                 &Self::dpos_snapshot_key(number),
                 dpos_snapshot_rlp,
+            )?;
+        }
+        if let Some(account_snapshot_rlp) = account_snapshot_rlp {
+            self.db.batch_put(
+                &mut batch,
+                Column::FinalChainMeta,
+                &Self::account_snapshot_key(number),
+                account_snapshot_rlp,
             )?;
         }
         self.db.batch_put(
@@ -312,6 +368,21 @@ mod tests {
 
         assert_eq!(repo.dpos_snapshot_raw(7).unwrap(), Some(snapshot));
         assert_eq!(repo.dpos_snapshot_raw(8).unwrap(), None);
+    }
+
+    #[test]
+    fn test_account_snapshot_raw_uses_rust_prefixed_meta_key() {
+        let db = Arc::new(MockFinalChainStore::new());
+        let repo = FinalChainRepository::new(db.clone());
+        let snapshot = vec![0xc0];
+        db.put(
+            Column::FinalChainMeta,
+            &FinalChainRepository::<MockFinalChainStore>::account_snapshot_key(7),
+            &snapshot,
+        );
+
+        assert_eq!(repo.account_snapshot_raw(7).unwrap(), Some(snapshot));
+        assert_eq!(repo.account_snapshot_raw(8).unwrap(), None);
     }
 
     #[test]
