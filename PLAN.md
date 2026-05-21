@@ -396,7 +396,8 @@ The current Rust starting point is intentionally small:
    `RUSTAXA_ENABLE_PBFT_CHAIN`; proposed-block membership, validity flags, RLP snapshots, and cleanup planning route
    through Rust under `RUSTAXA_ENABLE_PROPOSED_BLOCKS`; period-data queue admission, effective size, pop vote-source
    decisions, and cleanup planning route through Rust under `RUSTAXA_ENABLE_PERIOD_DATA_QUEUE`.
-8. Split `PbftManager` into Rust services for round/step transitions, proposal handling, vote thresholding, and finalization decisions.
+8. Split the Rust-mode `PbftManager` overlay into Rust services for round/step transitions, proposal handling, vote
+   thresholding, and finalization decisions.
 9. Port transaction queue behavior before transaction manager orchestration. The Rust-mode `TransactionQueue` overlay
    now routes deterministic queue metadata, per-account nonce ordering, same-nonce replacement, non-proposer expiry
    planning, pool limits, gas-price threshold accounting, queued transaction RLP payload retention, known-transaction
@@ -459,8 +460,10 @@ The current Rust starting point is intentionally small:
    and broader lifecycle orchestration. With transaction account-fact sourcing owned by Rust, the first PBFT
    orchestration storage slice now restores proposed-block metadata directly from Rust storage and removes stale
    proposed-block storage keys through Rust-batched cleanup while C++ keeps daemon threads, networking, timers,
-   finalization side effects, and live object dispatch. The next PBFT orchestration slice can extend this into a
-   Rust-owned PBFT manager runtime for round/step/status planning.
+   finalization side effects, and live object dispatch. A full Rust-mode `PbftManager` overlay now owns PBFT startup and
+   sync-validation routing so upstream `pbft_manager.cpp` stays merge-clean; the copied overlay is deliberate PBFT
+   orchestration scaffolding and should be reduced over time by moving round/step/status planning into a Rust-owned PBFT
+   manager runtime.
    `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
    selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
    lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode

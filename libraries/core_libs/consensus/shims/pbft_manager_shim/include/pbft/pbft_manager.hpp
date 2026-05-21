@@ -1,12 +1,19 @@
 #pragma once
 
-// Temporary PbftManager overlay:
-// - imports the upstream header unchanged
-// - exposes shim-owned Rust-mode helper declarations to PbftManager sources
-//
-// This intentionally does not remap PbftManager to PbftManagerOld. A full
-// PbftManager class overlay would be much larger and should only be introduced
-// when the shim can own the manager routing without broad legacy fallback.
-#include "../../../include/pbft/pbft_manager.hpp"
+// Rust build overlay for PbftManager:
+// - legacy header is imported as PbftManagerOld
+// - shim header provides the Rust-mode PbftManager facade
 
+namespace taraxa {
+class PbftManagerOld;
+}
+
+#pragma push_macro("PbftManager")
+#undef PbftManager
+#define PbftManager PbftManagerOld
+#include "../../../include/pbft/pbft_manager.hpp"
+#pragma pop_macro("PbftManager")
+
+#ifndef PbftManager
 #include "pbft/pbft_manager_shim.hpp"
+#endif

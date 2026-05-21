@@ -1,3 +1,5 @@
+#if defined(RUSTAXA_ENABLE_PILLAR_VOTES) || defined(RUSTAXA_ENABLE_PROPOSED_BLOCKS)
+
 #include "pbft/pbft_manager.hpp"
 
 #include <libdevcore/SHA3.h>
@@ -591,9 +593,13 @@ void PbftManager::initialState() {
   round_ = current_pbft_round;
 
   // Load all proposed block from db to memory
+#ifdef RUSTAXA_ENABLE_PROPOSED_BLOCKS
+  proposed_blocks_.restoreFromStorage();
+#else
   for (const auto &block : db_->getProposedPbftBlocks()) {
     proposed_blocks_.pushProposedPbftBlock(block, false);
   }
+#endif
 
   // TODO[2840]: remove this check if case nodes do not log the err messages after restart
   //  if (const auto &err_msg = proposed_blocks_.checkOldBlocksPresence(current_pbft_period); err_msg.has_value()) {
@@ -2377,6 +2383,19 @@ bool PbftManager::validatePbftBlockCertVotes(const std::shared_ptr<PbftBlock> pb
 }
 
 bool PbftManager::validatePbftBlockPillarVotes(const PeriodData &period_data) const {
+#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
+  const auto rust_validation_result =
+      validatePbftBlockPillarVotesWithRust(period_data, pillar_chain_mgr_, final_chain_);
+  if (!rust_validation_result.valid()) {
+    LOG(log_er_) << "Rust sync pillar-vote validation failed, pbft block period "
+                 << (period_data.pbft_blk ? period_data.pbft_blk->getPeriod() : 0) << ", status "
+                 << validatePbftBlockPillarVotesWithRustStatusString(rust_validation_result.status)
+                 << ", plan status " << static_cast<uint32_t>(rust_validation_result.plan_status)
+                 << ", first bad vote " << rust_validation_result.first_bad_vote_hash;
+  }
+  return rust_validation_result.valid();
+#endif
+
   if (!period_data.pillar_votes_.has_value() || period_data.pillar_votes_->empty()) {
     LOG(log_er_) << "No pillar votes provided, pbft block period " << period_data.pbft_blk->getPeriod()
                  << ". The synced PBFT block comes from a malicious player";
@@ -2563,3 +2582,5 @@ std::chrono::milliseconds PbftManager::getPbftDeadline() const {
 }
 
 }  // namespace taraxa
+
+#endif  // defined(RUSTAXA_ENABLE_PILLAR_VOTES) || defined(RUSTAXA_ENABLE_PROPOSED_BLOCKS)

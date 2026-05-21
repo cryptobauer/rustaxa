@@ -1,4 +1,4 @@
-#include "pbft/pbft_manager_shim.hpp"
+#include "pbft/pbft_manager.hpp"
 
 #include <array>
 #include <exception>
