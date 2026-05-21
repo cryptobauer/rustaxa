@@ -1,7 +1,5 @@
 #if defined(RUSTAXA_ENABLE_PILLAR_VOTES) || defined(RUSTAXA_ENABLE_PROPOSED_BLOCKS)
 
-#include "pbft/pbft_manager.hpp"
-
 #include <libdevcore/SHA3.h>
 
 #include <array>
@@ -15,6 +13,7 @@
 #include "dag/dag.hpp"
 #include "dag/dag_manager.hpp"
 #include "final_chain/final_chain.hpp"
+#include "pbft/pbft_manager.hpp"
 #include "pbft/period_data.hpp"
 #include "pillar_chain/pillar_chain_manager.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
@@ -56,6 +55,24 @@ rust::Vec<rustaxa::PbftSyncTransactionHash> toBridgeTransactionHashes(const std:
   return out;
 }
 
+rust::Vec<rustaxa::PbftSyncTransactionHash> toBridgeTransactionHashes(const std::vector<trx_hash_t> &hashes) {
+  rust::Vec<rustaxa::PbftSyncTransactionHash> out;
+  out.reserve(hashes.size());
+  for (const auto &hash : hashes) {
+    out.push_back(rustaxa::PbftSyncTransactionHash{toBridgeHash(hash)});
+  }
+  return out;
+}
+
+std::vector<trx_hash_t> fromBridgeTransactionHashes(const rust::Vec<rustaxa::PbftSyncTransactionHash> &hashes) {
+  std::vector<trx_hash_t> out;
+  out.reserve(hashes.size());
+  for (const auto &hash : hashes) {
+    out.emplace_back(hash.hash.data(), trx_hash_t::ConstructFromPointer);
+  }
+  return out;
+}
+
 uint8_t toPbftSyncFinalChainStatus(PbftStateRootValidation status) {
   switch (status) {
     case PbftStateRootValidation::Valid:
@@ -66,6 +83,26 @@ uint8_t toPbftSyncFinalChainStatus(PbftStateRootValidation status) {
       return kPbftSyncFinalChainInvalid;
   }
   return kPbftSyncFinalChainInvalid;
+}
+
+rustaxa::PbftSyncTransactionQueryFact makePbftSyncTransactionQueryFact(const PeriodData &period_data) {
+  std::vector<trx_hash_t> dag_transaction_hashes;
+  for (auto const &dag_block : period_data.dag_blocks) {
+    for (auto const &trx_hash : dag_block->getTrxs()) {
+      dag_transaction_hashes.emplace_back(trx_hash);
+    }
+  }
+
+  std::vector<trx_hash_t> period_data_transaction_hashes;
+  period_data_transaction_hashes.reserve(period_data.transactions.size());
+  for (auto const &transaction : period_data.transactions) {
+    period_data_transaction_hashes.emplace_back(transaction->getHash());
+  }
+
+  rustaxa::PbftSyncTransactionQueryFact fact;
+  fact.dag_transaction_hashes = toBridgeTransactionHashes(dag_transaction_hashes);
+  fact.period_data_transaction_hashes = toBridgeTransactionHashes(period_data_transaction_hashes);
+  return fact;
 }
 
 rustaxa::PbftSyncPeriodAdmissionFact makePbftSyncAdmissionFact(
@@ -2248,8 +2285,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   const auto block_in_chain = pbft_chain_->findPbftBlockInChain(pbft_block_hash);
   auto admission_plan = rustaxa::plan_pbft_sync_period_admission(makePbftSyncAdmissionFact(
       period_data, last_pbft_block_hash, last_pbft_block_period, block_in_chain, kPbftSyncFinalChainValid,
-      kPbftSyncFactNotChecked, kPbftSyncFactNotChecked, {}, false, kPbftSyncFactNotChecked,
-      kPbftSyncFactNotChecked));
+      kPbftSyncFactNotChecked, kPbftSyncFactNotChecked, {}, false, kPbftSyncFactNotChecked, kPbftSyncFactNotChecked));
   if (admission_plan.status == kPbftSyncStatusBlockAlreadyInChain) {
     LOG(log_dg_) << "PBFT block " << pbft_block_hash << " already present in chain.";
     return std::nullopt;
@@ -2278,9 +2314,8 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   while (true) {
     auto validation_result = validateFinalChainHash(period_data.pbft_blk);
     admission_plan = rustaxa::plan_pbft_sync_period_admission(makePbftSyncAdmissionFact(
-        period_data, last_pbft_block_hash, last_pbft_block_period, false,
-        toPbftSyncFinalChainStatus(validation_result), kPbftSyncFactNotChecked, kPbftSyncFactNotChecked, {}, false,
-        kPbftSyncFactNotChecked, kPbftSyncFactNotChecked));
+        period_data, last_pbft_block_hash, last_pbft_block_period, false, toPbftSyncFinalChainStatus(validation_result),
+        kPbftSyncFactNotChecked, kPbftSyncFactNotChecked, {}, false, kPbftSyncFactNotChecked, kPbftSyncFactNotChecked));
     if (!admission_plan.wait_for_finalization) {
       if (admission_plan.status == kPbftSyncStatusFinalChainHashInvalid) {
         LOG(log_er_) << "Failed verifying block " << pbft_block_hash
@@ -2353,23 +2388,11 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
     return std::nullopt;
   }
 
-  std::unordered_set<trx_hash_t> trx_set_period_data;
-  for (auto const &transaction : period_data.transactions) {
-    trx_set_period_data.emplace(transaction->getHash());
-  }
-
-  std::unordered_set<trx_hash_t> trx_set;
-  std::vector<trx_hash_t> finalized_transactions_to_check;
-  for (auto const &dag_block : period_data.dag_blocks) {
-    for (auto const &trx_hash : dag_block->getTrxs()) {
-      if (trx_set.insert(trx_hash).second && !trx_set_period_data.contains(trx_hash)) {
-        finalized_transactions_to_check.emplace_back(trx_hash);
-      }
-    }
-  }
-
   // Verify period data is not missing any transaction
-  auto non_finalized_transactions = trx_mgr_->excludeFinalizedTransactions(finalized_transactions_to_check);
+  const auto transaction_query_plan =
+      rustaxa::plan_pbft_sync_transaction_query(makePbftSyncTransactionQueryFact(period_data));
+  auto non_finalized_transactions = trx_mgr_->excludeFinalizedTransactions(
+      fromBridgeTransactionHashes(transaction_query_plan.finalized_lookup_hashes));
   if (non_finalized_transactions.size() > 0) {
     for (auto const &t : non_finalized_transactions) {
       LOG(log_er_) << "Synced PBFT block " << pbft_block_hash << " has missing transaction " << t;
@@ -2512,9 +2535,9 @@ bool PbftManager::validatePbftBlockPillarVotes(const PeriodData &period_data) co
   if (!rust_validation_result.valid()) {
     LOG(log_er_) << "Rust sync pillar-vote validation failed, pbft block period "
                  << (period_data.pbft_blk ? period_data.pbft_blk->getPeriod() : 0) << ", status "
-                 << validatePbftBlockPillarVotesWithRustStatusString(rust_validation_result.status)
-                 << ", plan status " << static_cast<uint32_t>(rust_validation_result.plan_status)
-                 << ", first bad vote " << rust_validation_result.first_bad_vote_hash;
+                 << validatePbftBlockPillarVotesWithRustStatusString(rust_validation_result.status) << ", plan status "
+                 << static_cast<uint32_t>(rust_validation_result.plan_status) << ", first bad vote "
+                 << rust_validation_result.first_bad_vote_hash;
   }
   return rust_validation_result.valid();
 #endif

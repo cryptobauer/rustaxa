@@ -11,6 +11,7 @@
 //! payload until the product behavior is explicitly changed.
 
 use ethereum_types::H256;
+use std::collections::HashSet;
 
 /// FinalChain state-root validation fact for a synced PBFT block.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -99,6 +100,54 @@ pub enum PbftSyncPeriodAdmissionDecision {
     ClearAndReportPeer,
 }
 
+/// Higher-level admission action that normalizes side-effect intent for runtime
+/// use while remaining side-effect-free.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftSyncAdmissionRuntimeAction {
+    /// Continue processing and eventually accept the period data.
+    Accept,
+    /// Drop the candidate without clearing the sync queue or reporting a peer.
+    Drop,
+    /// Wait for FinalChain to catch up, then re-check the same candidate.
+    WaitForFinalization,
+    /// Clear the sync queue and report the sending peer as malicious.
+    ClearAndReportPeer,
+}
+
+impl PbftSyncAdmissionRuntimeAction {
+    /// Stable bridge code used by higher-level Rust consumers.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Accept => 0,
+            Self::Drop => 1,
+            Self::WaitForFinalization => 2,
+            Self::ClearAndReportPeer => 3,
+        }
+    }
+}
+
+impl From<PbftSyncPeriodAdmissionDecision> for PbftSyncAdmissionRuntimeAction {
+    fn from(value: PbftSyncPeriodAdmissionDecision) -> Self {
+        match value {
+            PbftSyncPeriodAdmissionDecision::Accept => Self::Accept,
+            PbftSyncPeriodAdmissionDecision::Drop => Self::Drop,
+            PbftSyncPeriodAdmissionDecision::WaitForFinalization => Self::WaitForFinalization,
+            PbftSyncPeriodAdmissionDecision::ClearAndReportPeer => Self::ClearAndReportPeer,
+        }
+    }
+}
+
+impl From<PbftSyncAdmissionRuntimeAction> for PbftSyncPeriodAdmissionDecision {
+    fn from(value: PbftSyncAdmissionRuntimeAction) -> Self {
+        match value {
+            PbftSyncAdmissionRuntimeAction::Accept => Self::Accept,
+            PbftSyncAdmissionRuntimeAction::Drop => Self::Drop,
+            PbftSyncAdmissionRuntimeAction::WaitForFinalization => Self::WaitForFinalization,
+            PbftSyncAdmissionRuntimeAction::ClearAndReportPeer => Self::ClearAndReportPeer,
+        }
+    }
+}
+
 impl PbftSyncPeriodAdmissionDecision {
     /// Stable bridge code used by CXX callers.
     pub const fn as_u8(self) -> u8 {
@@ -185,6 +234,29 @@ pub struct PbftSyncTransactionWarning {
     pub kind: PbftSyncTransactionWarningKind,
 }
 
+/// Transaction references extracted from synced PBFT period data.
+///
+/// C++ still owns live `DagBlock` and `Transaction` objects while PBFT sync is
+/// being migrated. This side-effect-free fact lets Rust own the deterministic
+/// set-difference rule for deciding which DAG-referenced transaction hashes
+/// must be checked against finalized transaction storage.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftSyncTransactionQueryFact {
+    /// Transaction hashes referenced by finalized DAG blocks in period-data order.
+    pub dag_transaction_hashes: Vec<H256>,
+    /// Transaction hashes supplied in the period data transaction list.
+    pub period_data_transaction_hashes: Vec<H256>,
+}
+
+/// Rust-planned transaction lookup work for PBFT sync admission.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftSyncTransactionQueryPlan {
+    /// Unique DAG-referenced hashes that are absent from the supplied period
+    /// data transactions. C++ should query finalized transaction storage for
+    /// these hashes and pass non-finalized misses back into the admission fact.
+    pub finalized_lookup_hashes: Vec<H256>,
+}
+
 /// Input fact for one PBFT sync-period admission request.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftSyncPeriodAdmissionFact {
@@ -244,6 +316,47 @@ impl PbftSyncPeriodAdmissionPlan {
     }
 }
 
+/// Higher-level side-effect-free runtime plan built from the base planner.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftSyncPeriodAdmissionRuntimePlan {
+    /// Normalized runtime action for the candidate.
+    pub action: PbftSyncAdmissionRuntimeAction,
+    /// Full low-level planner output preserved for C++ boundary mapping.
+    pub plan: PbftSyncPeriodAdmissionPlan,
+}
+
+impl PbftSyncPeriodAdmissionRuntimePlan {
+    /// Returns `true` when the caller may accept the period data.
+    pub const fn is_accepted(&self) -> bool {
+        matches!(self.action, PbftSyncAdmissionRuntimeAction::Accept)
+    }
+
+    /// Whether this runtime result should clear the sync queue.
+    pub const fn clear_sync_queue(&self) -> bool {
+        self.plan.clear_sync_queue
+    }
+
+    /// Whether this runtime result should report the sender peer.
+    pub const fn report_malicious_peer(&self) -> bool {
+        self.plan.report_malicious_peer
+    }
+
+    /// Whether this runtime result should wait for finalization.
+    pub const fn wait_for_finalization(&self) -> bool {
+        self.plan.wait_for_finalization
+    }
+
+    /// Whether this runtime result may accept the period data.
+    pub const fn accept_period_data(&self) -> bool {
+        self.plan.accept_period_data
+    }
+
+    /// Expose the underlying low-level plan for bridge conversion.
+    pub fn into_plan(self) -> PbftSyncPeriodAdmissionPlan {
+        self.plan
+    }
+}
+
 fn plan(
     decision: PbftSyncPeriodAdmissionDecision,
     status: PbftSyncPeriodAdmissionStatus,
@@ -284,6 +397,37 @@ fn warn_transactions(
         .into_iter()
         .map(|hash| PbftSyncTransactionWarning { hash, kind })
         .collect()
+}
+
+/// Plans transaction-finalization lookups for synced PBFT period data.
+///
+/// The output preserves first-seen DAG transaction order and removes duplicate
+/// DAG references. Hashes already supplied in the period data transaction list
+/// are skipped. This mirrors the legacy sync check while moving the
+/// deterministic set-difference rule out of the C++ shim.
+pub fn plan_pbft_sync_transaction_query(
+    fact: PbftSyncTransactionQueryFact,
+) -> PbftSyncTransactionQueryPlan {
+    let supplied_transactions = fact
+        .period_data_transaction_hashes
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let mut seen_dag_transactions = HashSet::new();
+    let mut finalized_lookup_hashes = Vec::new();
+
+    for hash in fact.dag_transaction_hashes {
+        if !seen_dag_transactions.insert(hash) {
+            continue;
+        }
+        if supplied_transactions.contains(&hash) {
+            continue;
+        }
+        finalized_lookup_hashes.push(hash);
+    }
+
+    PbftSyncTransactionQueryPlan {
+        finalized_lookup_hashes,
+    }
 }
 
 fn plan_fact_status_rejection(
@@ -391,6 +535,17 @@ pub fn plan_pbft_sync_period_admission(
     accepted
 }
 
+/// Builds a higher-level runtime plan from deterministic planner output.
+pub fn plan_pbft_sync_period_admission_runtime(
+    fact: PbftSyncPeriodAdmissionFact,
+) -> PbftSyncPeriodAdmissionRuntimePlan {
+    let plan = plan_pbft_sync_period_admission(fact);
+    PbftSyncPeriodAdmissionRuntimePlan {
+        action: plan.decision.into(),
+        plan,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,6 +595,39 @@ mod tests {
         );
         assert_eq!(plan.warnings[2].hash, hash(3));
         assert!(plan.contains_finalized_transaction_warning);
+    }
+
+    #[test]
+    fn runtime_plan_wraps_base_plan_without_behavior_change() {
+        let runtime_plan = plan_pbft_sync_period_admission_runtime(fact());
+        assert_eq!(runtime_plan.action, PbftSyncAdmissionRuntimeAction::Accept);
+        assert!(runtime_plan.is_accepted());
+        assert!(!runtime_plan.clear_sync_queue());
+        assert!(!runtime_plan.report_malicious_peer());
+        assert!(!runtime_plan.wait_for_finalization());
+        assert!(runtime_plan.accept_period_data());
+    }
+
+    #[test]
+    fn transaction_query_plans_unique_missing_dag_transactions_in_order() {
+        let plan = plan_pbft_sync_transaction_query(PbftSyncTransactionQueryFact {
+            dag_transaction_hashes: vec![
+                H256::from_low_u64_be(1),
+                H256::from_low_u64_be(2),
+                H256::from_low_u64_be(1),
+                H256::from_low_u64_be(3),
+                H256::from_low_u64_be(4),
+            ],
+            period_data_transaction_hashes: vec![
+                H256::from_low_u64_be(2),
+                H256::from_low_u64_be(4),
+            ],
+        });
+
+        assert_eq!(
+            plan.finalized_lookup_hashes,
+            vec![H256::from_low_u64_be(1), H256::from_low_u64_be(3)]
+        );
     }
 
     #[test]

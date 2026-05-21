@@ -480,7 +480,10 @@ The current Rust starting point is intentionally small:
    side-effect-free Rust planner: C++ still sources PBFT chain, FinalChain, reward/cert vote, transaction, and pillar
    facts and still performs logging, waits, queue clears, peer reporting, and live object dispatch, while Rust owns the
    deterministic accept/drop/wait/clear decision table. Missing or finalized transaction facts remain warn-only for
-   compatibility and do not reject synced period data.
+   compatibility and do not reject synced period data. Rust now also plans the sync-period transaction-finalization query:
+   C++ extracts live DAG and period-data transaction hashes, Rust de-duplicates DAG references, removes hashes already
+   supplied by period data, and returns the ordered finalized-storage lookup list before C++ performs the live
+   TransactionManager query.
    `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
    selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
    lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode

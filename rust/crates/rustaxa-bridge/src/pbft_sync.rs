@@ -8,12 +8,17 @@
 use crate::ffi::rustaxa_ffi::{
     PbftSyncPeriodAdmissionFact as FfiPbftSyncPeriodAdmissionFact,
     PbftSyncPeriodAdmissionPlan as FfiPbftSyncPeriodAdmissionPlan,
+    PbftSyncTransactionHash as FfiPbftSyncTransactionHash,
+    PbftSyncTransactionQueryFact as FfiPbftSyncTransactionQueryFact,
+    PbftSyncTransactionQueryPlan as FfiPbftSyncTransactionQueryPlan,
     PbftSyncTransactionWarning as FfiPbftSyncTransactionWarning,
 };
 use ethereum_types::H256;
 use rustaxa_consensus::pbft_sync::{
-    plan_pbft_sync_period_admission as plan_domain_pbft_sync_period_admission, PbftSyncFactStatus,
-    PbftSyncFinalChainHashStatus, PbftSyncPeriodAdmissionFact, PbftSyncPeriodAdmissionPlan,
+    plan_pbft_sync_period_admission_runtime as plan_domain_pbft_sync_period_admission_runtime,
+    plan_pbft_sync_transaction_query as plan_domain_pbft_sync_transaction_query,
+    PbftSyncFactStatus, PbftSyncFinalChainHashStatus, PbftSyncPeriodAdmissionFact,
+    PbftSyncPeriodAdmissionPlan, PbftSyncTransactionQueryFact, PbftSyncTransactionQueryPlan,
     PbftSyncTransactionWarning,
 };
 
@@ -21,7 +26,16 @@ use rustaxa_consensus::pbft_sync::{
 pub fn plan_pbft_sync_period_admission(
     fact: FfiPbftSyncPeriodAdmissionFact,
 ) -> FfiPbftSyncPeriodAdmissionPlan {
-    plan_domain_pbft_sync_period_admission(fact.into()).into()
+    plan_domain_pbft_sync_period_admission_runtime(fact.into())
+        .into_plan()
+        .into()
+}
+
+/// Plans finalized-transaction lookups for synced PBFT period data.
+pub fn plan_pbft_sync_transaction_query(
+    fact: FfiPbftSyncTransactionQueryFact,
+) -> FfiPbftSyncTransactionQueryPlan {
+    plan_domain_pbft_sync_transaction_query(fact.into()).into()
 }
 
 impl From<FfiPbftSyncPeriodAdmissionFact> for PbftSyncPeriodAdmissionFact {
@@ -54,6 +68,23 @@ impl From<FfiPbftSyncPeriodAdmissionFact> for PbftSyncPeriodAdmissionFact {
     }
 }
 
+impl From<FfiPbftSyncTransactionQueryFact> for PbftSyncTransactionQueryFact {
+    fn from(value: FfiPbftSyncTransactionQueryFact) -> Self {
+        Self {
+            dag_transaction_hashes: value
+                .dag_transaction_hashes
+                .into_iter()
+                .map(|hash| H256::from(hash.hash))
+                .collect(),
+            period_data_transaction_hashes: value
+                .period_data_transaction_hashes
+                .into_iter()
+                .map(|hash| H256::from(hash.hash))
+                .collect(),
+        }
+    }
+}
+
 impl From<PbftSyncPeriodAdmissionPlan> for FfiPbftSyncPeriodAdmissionPlan {
     fn from(plan: PbftSyncPeriodAdmissionPlan) -> Self {
         Self {
@@ -73,6 +104,18 @@ impl From<PbftSyncPeriodAdmissionPlan> for FfiPbftSyncPeriodAdmissionPlan {
     }
 }
 
+impl From<PbftSyncTransactionQueryPlan> for FfiPbftSyncTransactionQueryPlan {
+    fn from(plan: PbftSyncTransactionQueryPlan) -> Self {
+        Self {
+            finalized_lookup_hashes: plan
+                .finalized_lookup_hashes
+                .into_iter()
+                .map(|hash| FfiPbftSyncTransactionHash { hash: hash.into() })
+                .collect(),
+        }
+    }
+}
+
 impl From<PbftSyncTransactionWarning> for FfiPbftSyncTransactionWarning {
     fn from(value: PbftSyncTransactionWarning) -> Self {
         Self {
@@ -85,7 +128,6 @@ impl From<PbftSyncTransactionWarning> for FfiPbftSyncTransactionWarning {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::rustaxa_ffi::PbftSyncTransactionHash as FfiPbftSyncTransactionHash;
     use rustaxa_consensus::pbft_sync::{
         PbftSyncPeriodAdmissionDecision, PbftSyncPeriodAdmissionStatus,
         PbftSyncTransactionWarningKind,
@@ -168,5 +210,26 @@ mod tests {
         );
         assert!(plan.wait_for_finalization);
         assert!(!plan.report_malicious_peer);
+    }
+
+    #[test]
+    fn bridge_transaction_query_preserves_rust_planned_lookup_order() {
+        let plan = plan_pbft_sync_transaction_query(FfiPbftSyncTransactionQueryFact {
+            dag_transaction_hashes: vec![
+                FfiPbftSyncTransactionHash { hash: [1; 32] },
+                FfiPbftSyncTransactionHash { hash: [2; 32] },
+                FfiPbftSyncTransactionHash { hash: [1; 32] },
+                FfiPbftSyncTransactionHash { hash: [3; 32] },
+            ],
+            period_data_transaction_hashes: vec![FfiPbftSyncTransactionHash { hash: [2; 32] }],
+        });
+
+        assert_eq!(
+            plan.finalized_lookup_hashes
+                .into_iter()
+                .map(|hash| hash.hash)
+                .collect::<Vec<_>>(),
+            vec![[1; 32], [3; 32]]
+        );
     }
 }

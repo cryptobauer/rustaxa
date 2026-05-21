@@ -441,6 +441,17 @@ pub mod rustaxa_ffi {
         hash: [u8; 32],
     }
 
+    /// C++-originated PBFT sync transaction references.
+    struct PbftSyncTransactionQueryFact {
+        dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
+        period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
+    }
+
+    /// Rust-planned finalized transaction lookup work for PBFT sync admission.
+    struct PbftSyncTransactionQueryPlan {
+        finalized_lookup_hashes: Vec<PbftSyncTransactionHash>,
+    }
+
     /// C++-originated PBFT sync admission fact.
     struct PbftSyncPeriodAdmissionFact {
         block_period: u64,
@@ -2125,6 +2136,9 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_sync_period_admission(
             fact: PbftSyncPeriodAdmissionFact,
         ) -> PbftSyncPeriodAdmissionPlan;
+        pub fn plan_pbft_sync_transaction_query(
+            fact: PbftSyncTransactionQueryFact,
+        ) -> PbftSyncTransactionQueryPlan;
 
         // Consensus proposed PBFT blocks
 
