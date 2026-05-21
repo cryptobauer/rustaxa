@@ -483,7 +483,12 @@ The current Rust starting point is intentionally small:
    compatibility and do not reject synced period data. Rust now also plans the sync-period transaction-finalization query:
    C++ extracts live DAG and period-data transaction hashes, Rust de-duplicates DAG references, removes hashes already
    supplied by period data, and returns the ordered finalized-storage lookup list before C++ performs the live
-   TransactionManager query.
+   TransactionManager query. The PBFT sync runtime now has a staged Rust planner for the full `processPeriodData`
+   validation order: Rust returns the next required live C++ check for FinalChain, reward votes, cert votes,
+   transactions, pillar data, or pillar votes until all required facts are present, then returns accept/drop/wait/report
+   side-effect intent. This keeps sleeps, queue mutation, peer reporting, live vote/transaction managers, and
+   `PeriodData` materialization in the shim while making `NotChecked` facts explicit runtime work rather than implicit
+   acceptance.
    `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
    selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
    lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode

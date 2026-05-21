@@ -481,6 +481,52 @@ pub mod rustaxa_ffi {
         contains_finalized_transaction_warning: bool,
     }
 
+    /// Combined PBFT sync runtime decision and transaction lookup plan.
+    struct PbftSyncRuntimePlan {
+        action: u8,
+        period_admission_plan: PbftSyncPeriodAdmissionPlan,
+        transaction_query_plan: PbftSyncTransactionQueryPlan,
+    }
+
+    /// C++-originated fact bundle for staged PBFT sync runtime planning.
+    struct PbftSyncProcessPeriodDataRuntimeFact {
+        block_period: u64,
+        block_prev_hash: [u8; 32],
+        chain_last_hash: [u8; 32],
+        chain_last_period: u64,
+        block_in_chain: bool,
+        final_chain_hash_status: u8,
+        reward_votes_status: u8,
+        cert_votes_status: u8,
+        transactions_status: u8,
+        dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
+        period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
+        missing_transaction_hashes: Vec<PbftSyncTransactionHash>,
+        finalized_transaction_hashes: Vec<PbftSyncTransactionHash>,
+        contains_finalized_transactions: bool,
+        pillar_data_status: u8,
+        pillar_votes_required: bool,
+        pillar_votes_status: u8,
+        previous_cert_votes_present: bool,
+        previous_cert_first_vote_has_weight: bool,
+    }
+
+    /// Staged PBFT sync runtime action for C++ `processPeriodData` execution.
+    struct PbftSyncProcessPeriodDataRuntimePlan {
+        runtime_action: u8,
+        status: u8,
+        next_check: u8,
+        clear_sync_queue: bool,
+        report_malicious_peer: bool,
+        wait_for_finalization: bool,
+        accept_period_data: bool,
+        retry_same_candidate: bool,
+        replace_previous_block_cert_votes: bool,
+        transaction_query_plan: PbftSyncTransactionQueryPlan,
+        warnings: Vec<PbftSyncTransactionWarning>,
+        contains_finalized_transaction_warning: bool,
+    }
+
     struct PbftBlockValidationResult {
         ok: bool,
         code: u8,
@@ -2139,6 +2185,13 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_sync_transaction_query(
             fact: PbftSyncTransactionQueryFact,
         ) -> PbftSyncTransactionQueryPlan;
+        pub fn plan_pbft_sync_runtime(
+            period_admission_fact: PbftSyncPeriodAdmissionFact,
+            transaction_query_fact: PbftSyncTransactionQueryFact,
+        ) -> PbftSyncRuntimePlan;
+        pub fn plan_pbft_sync_process_period_data_runtime(
+            fact: PbftSyncProcessPeriodDataRuntimeFact,
+        ) -> PbftSyncProcessPeriodDataRuntimePlan;
 
         // Consensus proposed PBFT blocks
 

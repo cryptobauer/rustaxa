@@ -5,6 +5,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -30,12 +31,14 @@ namespace {
 constexpr uint8_t kPbftSyncFinalChainValid = 0;
 constexpr uint8_t kPbftSyncFinalChainMissing = 1;
 constexpr uint8_t kPbftSyncFinalChainInvalid = 2;
+constexpr uint8_t kPbftSyncFinalChainNotChecked = 3;
 constexpr uint8_t kPbftSyncFactValid = 0;
 constexpr uint8_t kPbftSyncFactInvalid = 1;
 constexpr uint8_t kPbftSyncFactNotRequired = 2;
 constexpr uint8_t kPbftSyncFactNotChecked = 3;
 
 constexpr uint8_t kPbftSyncStatusBlockAlreadyInChain = 1;
+constexpr uint8_t kPbftSyncStatusAccepted = 0;
 constexpr uint8_t kPbftSyncStatusStalePeriod = 2;
 constexpr uint8_t kPbftSyncStatusPreviousHashMismatch = 3;
 constexpr uint8_t kPbftSyncStatusFinalChainHashInvalid = 5;
@@ -43,6 +46,8 @@ constexpr uint8_t kPbftSyncStatusRewardVotesInvalid = 6;
 constexpr uint8_t kPbftSyncStatusCertVotesInvalid = 7;
 constexpr uint8_t kPbftSyncStatusPillarDataInvalid = 10;
 constexpr uint8_t kPbftSyncStatusPillarVotesInvalid = 11;
+constexpr uint8_t kPbftSyncRuntimeActionRunCheck = 0;
+constexpr uint8_t kPbftSyncRuntimeActionContractError = 5;
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t &hash) { return hash.asArray(); }
 
@@ -105,12 +110,15 @@ rustaxa::PbftSyncTransactionQueryFact makePbftSyncTransactionQueryFact(const Per
   return fact;
 }
 
-rustaxa::PbftSyncPeriodAdmissionFact makePbftSyncAdmissionFact(
+rustaxa::PbftSyncProcessPeriodDataRuntimeFact makePbftSyncProcessPeriodDataRuntimeFact(
     const PeriodData &period_data, const blk_hash_t &last_pbft_block_hash, PbftPeriod last_pbft_block_period,
     bool block_in_chain, uint8_t final_chain_hash_status, uint8_t reward_votes_status, uint8_t cert_votes_status,
-    const std::unordered_set<trx_hash_t> &missing_transaction_hashes, bool contains_finalized_transactions,
-    uint8_t pillar_data_status, uint8_t pillar_votes_status) {
-  rustaxa::PbftSyncPeriodAdmissionFact fact;
+    uint8_t transactions_status, const std::unordered_set<trx_hash_t> &missing_transaction_hashes,
+    bool contains_finalized_transactions, uint8_t pillar_data_status, bool pillar_votes_required,
+    uint8_t pillar_votes_status) {
+  auto transaction_query_fact = makePbftSyncTransactionQueryFact(period_data);
+
+  rustaxa::PbftSyncProcessPeriodDataRuntimeFact fact;
   fact.block_period = period_data.pbft_blk->getPeriod();
   fact.block_prev_hash = toBridgeHash(period_data.pbft_blk->getPrevBlockHash());
   fact.chain_last_hash = toBridgeHash(last_pbft_block_hash);
@@ -119,11 +127,18 @@ rustaxa::PbftSyncPeriodAdmissionFact makePbftSyncAdmissionFact(
   fact.final_chain_hash_status = final_chain_hash_status;
   fact.reward_votes_status = reward_votes_status;
   fact.cert_votes_status = cert_votes_status;
+  fact.transactions_status = transactions_status;
+  fact.dag_transaction_hashes = std::move(transaction_query_fact.dag_transaction_hashes);
+  fact.period_data_transaction_hashes = std::move(transaction_query_fact.period_data_transaction_hashes);
   fact.missing_transaction_hashes = toBridgeTransactionHashes(missing_transaction_hashes);
   fact.finalized_transaction_hashes = rust::Vec<rustaxa::PbftSyncTransactionHash>();
   fact.contains_finalized_transactions = contains_finalized_transactions;
   fact.pillar_data_status = pillar_data_status;
+  fact.pillar_votes_required = pillar_votes_required;
   fact.pillar_votes_status = pillar_votes_status;
+  fact.previous_cert_votes_present = !period_data.previous_block_cert_votes.empty();
+  fact.previous_cert_first_vote_has_weight =
+      fact.previous_cert_votes_present && period_data.previous_block_cert_votes.front()->getWeight().has_value();
   return fact;
 }
 
@@ -2283,9 +2298,27 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   const auto last_pbft_block_hash = pbft_chain_->getLastPbftBlockHash();
   const auto last_pbft_block_period = pbft_chain_->getPbftChainSize();
   const auto block_in_chain = pbft_chain_->findPbftBlockInChain(pbft_block_hash);
-  auto admission_plan = rustaxa::plan_pbft_sync_period_admission(makePbftSyncAdmissionFact(
-      period_data, last_pbft_block_hash, last_pbft_block_period, block_in_chain, kPbftSyncFinalChainValid,
-      kPbftSyncFactNotChecked, kPbftSyncFactNotChecked, {}, false, kPbftSyncFactNotChecked, kPbftSyncFactNotChecked));
+  auto make_runtime_plan = [&](bool candidate_block_in_chain, uint8_t final_chain_status, uint8_t reward_votes_status,
+                               uint8_t cert_votes_status, uint8_t transactions_status,
+                               const std::unordered_set<trx_hash_t> &non_finalized_transactions,
+                               bool contains_finalized_transactions, uint8_t pillar_data_status,
+                               bool pillar_votes_required, uint8_t pillar_votes_status) {
+    return rustaxa::plan_pbft_sync_process_period_data_runtime(makePbftSyncProcessPeriodDataRuntimeFact(
+        period_data, last_pbft_block_hash, last_pbft_block_period, candidate_block_in_chain, final_chain_status,
+        reward_votes_status, cert_votes_status, transactions_status, non_finalized_transactions,
+        contains_finalized_transactions, pillar_data_status, pillar_votes_required, pillar_votes_status));
+  };
+
+  auto runtime_plan =
+      make_runtime_plan(block_in_chain, kPbftSyncFinalChainNotChecked, kPbftSyncFactNotChecked, kPbftSyncFactNotChecked,
+                        kPbftSyncFactNotChecked, {}, false, kPbftSyncFactNotChecked, false, kPbftSyncFactNotChecked);
+  auto admission_plan = runtime_plan;
+  auto throw_on_runtime_contract_error = [&]() {
+    if (admission_plan.runtime_action == kPbftSyncRuntimeActionContractError) {
+      throw std::runtime_error("Rust PBFT sync runtime planner received invalid bridge facts");
+    }
+  };
+  throw_on_runtime_contract_error();
   if (admission_plan.status == kPbftSyncStatusBlockAlreadyInChain) {
     LOG(log_dg_) << "PBFT block " << pbft_block_hash << " already present in chain.";
     return std::nullopt;
@@ -2313,9 +2346,11 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   bool retry_logged = false;
   while (true) {
     auto validation_result = validateFinalChainHash(period_data.pbft_blk);
-    admission_plan = rustaxa::plan_pbft_sync_period_admission(makePbftSyncAdmissionFact(
-        period_data, last_pbft_block_hash, last_pbft_block_period, false, toPbftSyncFinalChainStatus(validation_result),
-        kPbftSyncFactNotChecked, kPbftSyncFactNotChecked, {}, false, kPbftSyncFactNotChecked, kPbftSyncFactNotChecked));
+    runtime_plan = make_runtime_plan(false, toPbftSyncFinalChainStatus(validation_result), kPbftSyncFactNotChecked,
+                                     kPbftSyncFactNotChecked, kPbftSyncFactNotChecked, {}, false,
+                                     kPbftSyncFactNotChecked, false, kPbftSyncFactNotChecked);
+    admission_plan = runtime_plan;
+    throw_on_runtime_contract_error();
     if (!admission_plan.wait_for_finalization) {
       if (admission_plan.status == kPbftSyncStatusFinalChainHashInvalid) {
         LOG(log_er_) << "Failed verifying block " << pbft_block_hash
@@ -2328,6 +2363,9 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
           net->handleMaliciousSyncPeer(node_id);
         }
         return std::nullopt;
+      }
+      if (admission_plan.runtime_action == kPbftSyncRuntimeActionRunCheck) {
+        break;
       }
       if (!admission_plan.accept_period_data) {
         sync_queue_.clear();
@@ -2347,10 +2385,12 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
 
   // Check reward votes
   auto reward_votes = vote_mgr_->checkRewardVotes(period_data.pbft_blk, true);
-  admission_plan = rustaxa::plan_pbft_sync_period_admission(makePbftSyncAdmissionFact(
-      period_data, last_pbft_block_hash, last_pbft_block_period, false, kPbftSyncFinalChainValid,
-      reward_votes.first ? kPbftSyncFactValid : kPbftSyncFactInvalid, kPbftSyncFactNotChecked, {}, false,
-      kPbftSyncFactNotChecked, kPbftSyncFactNotChecked));
+  runtime_plan =
+      make_runtime_plan(false, kPbftSyncFinalChainValid, reward_votes.first ? kPbftSyncFactValid : kPbftSyncFactInvalid,
+                        kPbftSyncFactNotChecked, kPbftSyncFactNotChecked, {}, false, kPbftSyncFactNotChecked, false,
+                        kPbftSyncFactNotChecked);
+  admission_plan = runtime_plan;
+  throw_on_runtime_contract_error();
   if (admission_plan.status == kPbftSyncStatusRewardVotesInvalid) {
     LOG(log_er_) << "Failed verifying reward votes for block " << pbft_block_hash << ". Disconnect malicious peer "
                  << node_id.abridged();
@@ -2366,16 +2406,17 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   // Special case when previous block was already in chain so we hit condition
   // pbft_chain_->findPbftBlockInChain(pbft_block_hash) and it's cert votes were not verified here, they are part of
   // vote_manager so we need to replace them as they are not verified period_data structure
-  if (period_data.previous_block_cert_votes.size() && !period_data.previous_block_cert_votes.front()->getWeight()) {
+  if (admission_plan.replace_previous_block_cert_votes) {
     period_data.previous_block_cert_votes = std::move(reward_votes.second);
   }
 
   // Validate cert votes
   const auto cert_votes_valid = validatePbftBlockCertVotes(period_data.pbft_blk, cert_votes);
-  admission_plan = rustaxa::plan_pbft_sync_period_admission(makePbftSyncAdmissionFact(
-      period_data, last_pbft_block_hash, last_pbft_block_period, false, kPbftSyncFinalChainValid, kPbftSyncFactValid,
-      cert_votes_valid ? kPbftSyncFactValid : kPbftSyncFactInvalid, {}, false, kPbftSyncFactNotChecked,
-      kPbftSyncFactNotChecked));
+  runtime_plan = make_runtime_plan(
+      false, kPbftSyncFinalChainValid, kPbftSyncFactValid, cert_votes_valid ? kPbftSyncFactValid : kPbftSyncFactInvalid,
+      kPbftSyncFactNotChecked, {}, false, kPbftSyncFactNotChecked, false, kPbftSyncFactNotChecked);
+  admission_plan = runtime_plan;
+  throw_on_runtime_contract_error();
   if (admission_plan.status == kPbftSyncStatusCertVotesInvalid) {
     LOG(log_er_) << "Synced PBFT block " << pbft_block_hash
                  << " doesn't have enough valid cert votes. Clear synced PBFT blocks!";
@@ -2389,10 +2430,8 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   }
 
   // Verify period data is not missing any transaction
-  const auto transaction_query_plan =
-      rustaxa::plan_pbft_sync_transaction_query(makePbftSyncTransactionQueryFact(period_data));
   auto non_finalized_transactions = trx_mgr_->excludeFinalizedTransactions(
-      fromBridgeTransactionHashes(transaction_query_plan.finalized_lookup_hashes));
+      fromBridgeTransactionHashes(runtime_plan.transaction_query_plan.finalized_lookup_hashes));
   if (non_finalized_transactions.size() > 0) {
     for (auto const &t : non_finalized_transactions) {
       LOG(log_er_) << "Synced PBFT block " << pbft_block_hash << " has missing transaction " << t;
@@ -2405,12 +2444,17 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
     LOG(log_er_) << "Synced PBFT block " << pbft_block_hash << " has finalized transactions";
   }
 
+  const auto block_period = period_data.pbft_blk->getPeriod();
+  const auto pillar_votes_required = kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(block_period);
   const auto pillar_data_valid = validatePillarDataInPeriodData(period_data);
-  admission_plan = rustaxa::plan_pbft_sync_period_admission(makePbftSyncAdmissionFact(
-      period_data, last_pbft_block_hash, last_pbft_block_period, false, kPbftSyncFinalChainValid, kPbftSyncFactValid,
-      kPbftSyncFactValid, non_finalized_transactions, contains_finalized_transactions,
-      pillar_data_valid ? kPbftSyncFactValid : kPbftSyncFactInvalid, kPbftSyncFactNotChecked));
+  runtime_plan = make_runtime_plan(false, kPbftSyncFinalChainValid, kPbftSyncFactValid, kPbftSyncFactValid,
+                                   kPbftSyncFactValid, non_finalized_transactions, contains_finalized_transactions,
+                                   pillar_data_valid ? kPbftSyncFactValid : kPbftSyncFactInvalid, pillar_votes_required,
+                                   kPbftSyncFactNotChecked);
+  admission_plan = runtime_plan;
+  throw_on_runtime_contract_error();
   if (admission_plan.status == kPbftSyncStatusPillarDataInvalid) {
+    LOG(log_er_) << "Synced PBFT block " << pbft_block_hash << " has invalid pillar data";
     if (admission_plan.clear_sync_queue) {
       sync_queue_.clear();
     }
@@ -2420,18 +2464,28 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
     return std::nullopt;
   }
 
-  const auto block_period = period_data.pbft_blk->getPeriod();
   // Validate pillar votes
-  const auto pillar_votes_required = kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(block_period);
   const auto pillar_votes_valid = !pillar_votes_required || validatePbftBlockPillarVotes(period_data);
-  admission_plan = rustaxa::plan_pbft_sync_period_admission(makePbftSyncAdmissionFact(
-      period_data, last_pbft_block_hash, last_pbft_block_period, false, kPbftSyncFinalChainValid, kPbftSyncFactValid,
-      kPbftSyncFactValid, non_finalized_transactions, contains_finalized_transactions, kPbftSyncFactValid,
+  runtime_plan = make_runtime_plan(
+      false, kPbftSyncFinalChainValid, kPbftSyncFactValid, kPbftSyncFactValid, kPbftSyncFactValid,
+      non_finalized_transactions, contains_finalized_transactions, kPbftSyncFactValid, pillar_votes_required,
       pillar_votes_required ? (pillar_votes_valid ? kPbftSyncFactValid : kPbftSyncFactInvalid)
-                            : kPbftSyncFactNotRequired));
+                            : kPbftSyncFactNotRequired);
+  admission_plan = runtime_plan;
+  throw_on_runtime_contract_error();
   if (admission_plan.status == kPbftSyncStatusPillarVotesInvalid) {
     LOG(log_er_) << "Synced PBFT block " << pbft_block_hash << ", period " << block_period
                  << " doesn't have enough valid pillar votes. Clear synced PBFT blocks!";
+    if (admission_plan.clear_sync_queue) {
+      sync_queue_.clear();
+    }
+    if (admission_plan.report_malicious_peer) {
+      net->handleMaliciousSyncPeer(node_id);
+    }
+    return std::nullopt;
+  }
+
+  if (admission_plan.status != kPbftSyncStatusAccepted) {
     if (admission_plan.clear_sync_queue) {
       sync_queue_.clear();
     }

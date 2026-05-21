@@ -257,6 +257,242 @@ pub struct PbftSyncTransactionQueryPlan {
     pub finalized_lookup_hashes: Vec<H256>,
 }
 
+/// Combined side-effect-free runtime plan for one PBFT sync pass.
+///
+/// This value couples the deterministic period-admission plan with the
+/// deterministic finalized-transaction lookup plan so `processPeriodData()` can
+/// consume a single return object in a Rust-enabled orchestration path.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftSyncRuntimePlan {
+    /// Runtime-normalized period-admission decision and low-level decision plan.
+    pub period_admission: PbftSyncPeriodAdmissionRuntimePlan,
+    /// Planned finalized-transaction lookups for DAG references in period data.
+    pub transaction_query: PbftSyncTransactionQueryPlan,
+}
+
+impl PbftSyncRuntimePlan {
+    /// Returns `true` when the caller may accept the period data.
+    pub const fn is_accepted(&self) -> bool {
+        self.period_admission.is_accepted()
+    }
+
+    /// Whether this runtime result should clear the sync queue.
+    pub const fn clear_sync_queue(&self) -> bool {
+        self.period_admission.clear_sync_queue()
+    }
+
+    /// Whether this runtime result should report the sender peer as malicious.
+    pub const fn report_malicious_peer(&self) -> bool {
+        self.period_admission.report_malicious_peer()
+    }
+
+    /// Whether this runtime result should wait for finalization.
+    pub const fn wait_for_finalization(&self) -> bool {
+        self.period_admission.wait_for_finalization()
+    }
+
+    /// Whether this runtime result may accept the period data.
+    pub const fn accept_period_data(&self) -> bool {
+        self.period_admission.accept_period_data()
+    }
+
+    /// True when finalized-transaction lookup work is required.
+    pub fn requires_transaction_lookup(&self) -> bool {
+        !self.transaction_query.finalized_lookup_hashes.is_empty()
+    }
+
+    /// Decompose into the low-level runtime-planner outputs.
+    pub fn into_parts(
+        self,
+    ) -> (
+        PbftSyncPeriodAdmissionRuntimePlan,
+        PbftSyncTransactionQueryPlan,
+    ) {
+        (self.period_admission, self.transaction_query)
+    }
+}
+
+/// FinalChain fact status used by the staged PBFT sync runtime.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftSyncRuntimeFinalChainHashStatus {
+    /// The final-chain hash has not been checked yet.
+    NotChecked,
+    /// The block's final-chain hash matches local finalized state.
+    Valid,
+    /// Local finalization is behind and the caller should wait/retry.
+    Missing,
+    /// The block's final-chain hash conflicts with local finalized state.
+    Invalid,
+    /// The bridge supplied an unrecognized status code.
+    Unknown,
+}
+
+impl PbftSyncRuntimeFinalChainHashStatus {
+    /// Stable bridge code used by CXX callers.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Valid => 0,
+            Self::Missing => 1,
+            Self::Invalid => 2,
+            Self::NotChecked => 3,
+            Self::Unknown => 255,
+        }
+    }
+
+    /// Decodes a stable bridge code into a domain status.
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Valid,
+            1 => Self::Missing,
+            2 => Self::Invalid,
+            3 => Self::NotChecked,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// High-level side-effect intent for the staged `processPeriodData` runtime.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftSyncProcessRuntimeAction {
+    /// C++ should run the check named by `next_check` and call Rust again with updated facts.
+    RunCheck,
+    /// C++ may accept the period data and return it to the PBFT manager caller.
+    Accept,
+    /// C++ should drop the candidate without peer punishment.
+    Drop,
+    /// C++ should wait for FinalChain and retry the same candidate.
+    WaitForFinalization,
+    /// C++ should clear the sync queue and report the sender peer.
+    ClearAndReportPeer,
+    /// The local C++/Rust bridge supplied invalid status codes or inconsistent facts.
+    ContractError,
+}
+
+impl PbftSyncProcessRuntimeAction {
+    /// Stable bridge code used by CXX callers.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::RunCheck => 0,
+            Self::Accept => 1,
+            Self::Drop => 2,
+            Self::WaitForFinalization => 3,
+            Self::ClearAndReportPeer => 4,
+            Self::ContractError => 5,
+        }
+    }
+}
+
+/// Next C++ live-object check requested by the staged PBFT sync runtime.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftSyncProcessRuntimeNextCheck {
+    /// No more live checks are required.
+    None,
+    /// Run `validateFinalChainHash`.
+    ValidateFinalChainHash,
+    /// Run reward-vote validation.
+    CheckRewardVotes,
+    /// Run cert-vote validation.
+    ValidateCertVotes,
+    /// Run transaction finalized/missing checks.
+    CheckTransactions,
+    /// Run pillar-data validation.
+    ValidatePillarData,
+    /// Run pillar-vote validation.
+    ValidatePillarVotes,
+}
+
+impl PbftSyncProcessRuntimeNextCheck {
+    /// Stable bridge code used by CXX callers.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::ValidateFinalChainHash => 1,
+            Self::CheckRewardVotes => 2,
+            Self::ValidateCertVotes => 3,
+            Self::CheckTransactions => 4,
+            Self::ValidatePillarData => 5,
+            Self::ValidatePillarVotes => 6,
+        }
+    }
+}
+
+/// Complete side-effect-free fact bundle for staged PBFT sync runtime planning.
+///
+/// The runtime fact differs from the low-level admission fact by treating
+/// `NotChecked` as a request for the next C++ live-object operation instead of
+/// as an accepted precondition. C++ still owns the live checks and calls this
+/// planner again with updated facts after each requested operation.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftSyncProcessPeriodDataRuntimeFact {
+    /// Candidate block period from synced period-data.
+    pub block_period: u64,
+    /// Candidate block previous hash.
+    pub block_prev_hash: H256,
+    /// Local PBFT chain head hash at decision time.
+    pub chain_last_hash: H256,
+    /// Local PBFT chain head period at decision time.
+    pub chain_last_period: u64,
+    /// True when candidate block hash already exists in local chain state.
+    pub block_in_chain: bool,
+    /// FinalChain state-root validation status for the candidate.
+    pub final_chain_hash_status: PbftSyncRuntimeFinalChainHashStatus,
+    /// Reward-vote validation status for the candidate.
+    pub reward_votes_status: PbftSyncFactStatus,
+    /// Cert-vote validation status for the candidate.
+    pub cert_votes_status: PbftSyncFactStatus,
+    /// Transaction validation status after C++ performs live TransactionManager checks.
+    pub transactions_status: PbftSyncFactStatus,
+    /// Transaction hashes referenced by finalized DAG blocks in period-data order.
+    pub dag_transaction_hashes: Vec<H256>,
+    /// Transaction hashes supplied in the period data transaction list.
+    pub period_data_transaction_hashes: Vec<H256>,
+    /// DAG-referenced transaction hashes missing from supplied period data and not finalized locally.
+    pub missing_transaction_hashes: Vec<H256>,
+    /// Supplied transaction hashes that are already finalized locally when exact hashes are known.
+    pub finalized_transaction_hashes: Vec<H256>,
+    /// True when local checks found at least one supplied transaction already finalized.
+    pub contains_finalized_transactions: bool,
+    /// Pillar-data validation status for the candidate.
+    pub pillar_data_status: PbftSyncFactStatus,
+    /// Whether this period requires pillar-vote validation.
+    pub pillar_votes_required: bool,
+    /// Pillar-vote validation status for the candidate.
+    pub pillar_votes_status: PbftSyncFactStatus,
+    /// Whether synced period data carried previous-block cert votes.
+    pub previous_cert_votes_present: bool,
+    /// Whether the first previous-block cert vote already had a weight.
+    pub previous_cert_first_vote_has_weight: bool,
+}
+
+/// Staged runtime plan for `processPeriodData` orchestration.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftSyncProcessPeriodDataRuntimePlan {
+    /// High-level runtime action requested from C++.
+    pub runtime_action: PbftSyncProcessRuntimeAction,
+    /// Detailed status explaining `runtime_action`.
+    pub status: PbftSyncPeriodAdmissionStatus,
+    /// Next C++ live-object check to run when `runtime_action` is `RunCheck`.
+    pub next_check: PbftSyncProcessRuntimeNextCheck,
+    /// Whether caller should clear the remaining sync queue.
+    pub clear_sync_queue: bool,
+    /// Whether caller should report the sender as malicious.
+    pub report_malicious_peer: bool,
+    /// Whether caller should wait for FinalChain finalization and retry.
+    pub wait_for_finalization: bool,
+    /// Whether caller may accept the period data.
+    pub accept_period_data: bool,
+    /// Whether the same popped sync candidate should be retried after waiting.
+    pub retry_same_candidate: bool,
+    /// Whether C++ should replace unweighted previous-block cert votes with checked reward votes.
+    pub replace_previous_block_cert_votes: bool,
+    /// Planned finalized-transaction lookups for a requested transaction check.
+    pub transaction_query: PbftSyncTransactionQueryPlan,
+    /// Non-fatal transaction warnings carried with accepted plans.
+    pub warnings: Vec<PbftSyncTransactionWarning>,
+    /// Non-fatal compatibility signal for finalized transactions when exact hashes are not available.
+    pub contains_finalized_transaction_warning: bool,
+}
+
 /// Input fact for one PBFT sync-period admission request.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftSyncPeriodAdmissionFact {
@@ -546,6 +782,234 @@ pub fn plan_pbft_sync_period_admission_runtime(
     }
 }
 
+/// Builds one combined side-effect-free runtime plan for processPeriodData orchestration.
+///
+/// The return value does not perform I/O or mutation. It only composes:
+/// - finalized-transaction lookup planning from raw DAG/period transaction refs
+/// - period-admission decision planning from pre-checked admission facts
+pub fn plan_pbft_sync_runtime(
+    admission_fact: PbftSyncPeriodAdmissionFact,
+    transaction_query_fact: PbftSyncTransactionQueryFact,
+) -> PbftSyncRuntimePlan {
+    PbftSyncRuntimePlan {
+        period_admission: plan_pbft_sync_period_admission_runtime(admission_fact),
+        transaction_query: plan_pbft_sync_transaction_query(transaction_query_fact),
+    }
+}
+
+fn runtime_plan(
+    runtime_action: PbftSyncProcessRuntimeAction,
+    status: PbftSyncPeriodAdmissionStatus,
+    next_check: PbftSyncProcessRuntimeNextCheck,
+    transaction_query: PbftSyncTransactionQueryPlan,
+    replace_previous_block_cert_votes: bool,
+) -> PbftSyncProcessPeriodDataRuntimePlan {
+    PbftSyncProcessPeriodDataRuntimePlan {
+        runtime_action,
+        status,
+        next_check,
+        clear_sync_queue: matches!(
+            runtime_action,
+            PbftSyncProcessRuntimeAction::ClearAndReportPeer
+        ),
+        report_malicious_peer: matches!(
+            runtime_action,
+            PbftSyncProcessRuntimeAction::ClearAndReportPeer
+        ),
+        wait_for_finalization: matches!(
+            runtime_action,
+            PbftSyncProcessRuntimeAction::WaitForFinalization
+        ),
+        accept_period_data: matches!(runtime_action, PbftSyncProcessRuntimeAction::Accept),
+        retry_same_candidate: matches!(
+            runtime_action,
+            PbftSyncProcessRuntimeAction::WaitForFinalization
+        ),
+        replace_previous_block_cert_votes,
+        transaction_query,
+        warnings: Vec::new(),
+        contains_finalized_transaction_warning: false,
+    }
+}
+
+fn runtime_contract_error(
+    transaction_query: PbftSyncTransactionQueryPlan,
+) -> PbftSyncProcessPeriodDataRuntimePlan {
+    runtime_plan(
+        PbftSyncProcessRuntimeAction::ContractError,
+        PbftSyncPeriodAdmissionStatus::InvalidBridgeFacts,
+        PbftSyncProcessRuntimeNextCheck::None,
+        transaction_query,
+        false,
+    )
+}
+
+/// Plans the next side-effect-free PBFT sync runtime action for `processPeriodData`.
+///
+/// C++ calls this planner after collecting the facts it already has. When the
+/// returned action is `RunCheck`, C++ performs only the named live check,
+/// updates the corresponding fact status, and calls the planner again. This
+/// keeps C++ side effects staged while moving the branch-ordering contract into
+/// Rust.
+pub fn plan_pbft_sync_process_period_data_runtime(
+    fact: PbftSyncProcessPeriodDataRuntimeFact,
+) -> PbftSyncProcessPeriodDataRuntimePlan {
+    let transaction_query = plan_pbft_sync_transaction_query(PbftSyncTransactionQueryFact {
+        dag_transaction_hashes: fact.dag_transaction_hashes,
+        period_data_transaction_hashes: fact.period_data_transaction_hashes,
+    });
+    let replace_previous_block_cert_votes =
+        fact.previous_cert_votes_present && !fact.previous_cert_first_vote_has_weight;
+
+    if fact.block_in_chain {
+        return runtime_plan(
+            PbftSyncProcessRuntimeAction::Drop,
+            PbftSyncPeriodAdmissionStatus::BlockAlreadyInChain,
+            PbftSyncProcessRuntimeNextCheck::None,
+            transaction_query,
+            replace_previous_block_cert_votes,
+        );
+    }
+
+    if fact.block_prev_hash != fact.chain_last_hash && fact.block_period <= fact.chain_last_period {
+        return runtime_plan(
+            PbftSyncProcessRuntimeAction::Drop,
+            PbftSyncPeriodAdmissionStatus::StalePeriod,
+            PbftSyncProcessRuntimeNextCheck::None,
+            transaction_query,
+            replace_previous_block_cert_votes,
+        );
+    }
+
+    if fact.block_prev_hash != fact.chain_last_hash {
+        return runtime_plan(
+            PbftSyncProcessRuntimeAction::ClearAndReportPeer,
+            PbftSyncPeriodAdmissionStatus::PreviousHashMismatch,
+            PbftSyncProcessRuntimeNextCheck::None,
+            transaction_query,
+            replace_previous_block_cert_votes,
+        );
+    }
+
+    match fact.final_chain_hash_status {
+        PbftSyncRuntimeFinalChainHashStatus::NotChecked => {
+            return runtime_plan(
+                PbftSyncProcessRuntimeAction::RunCheck,
+                PbftSyncPeriodAdmissionStatus::Accepted,
+                PbftSyncProcessRuntimeNextCheck::ValidateFinalChainHash,
+                transaction_query,
+                replace_previous_block_cert_votes,
+            );
+        }
+        PbftSyncRuntimeFinalChainHashStatus::Valid => {}
+        PbftSyncRuntimeFinalChainHashStatus::Missing => {
+            return runtime_plan(
+                PbftSyncProcessRuntimeAction::WaitForFinalization,
+                PbftSyncPeriodAdmissionStatus::FinalChainHashMissing,
+                PbftSyncProcessRuntimeNextCheck::ValidateFinalChainHash,
+                transaction_query,
+                replace_previous_block_cert_votes,
+            );
+        }
+        PbftSyncRuntimeFinalChainHashStatus::Invalid => {
+            return runtime_plan(
+                PbftSyncProcessRuntimeAction::ClearAndReportPeer,
+                PbftSyncPeriodAdmissionStatus::FinalChainHashInvalid,
+                PbftSyncProcessRuntimeNextCheck::None,
+                transaction_query,
+                replace_previous_block_cert_votes,
+            );
+        }
+        PbftSyncRuntimeFinalChainHashStatus::Unknown => {
+            return runtime_contract_error(transaction_query);
+        }
+    }
+
+    let staged_fact_status = |status, next_check, invalid_status, transaction_query| match status {
+        PbftSyncFactStatus::NotChecked => Some(runtime_plan(
+            PbftSyncProcessRuntimeAction::RunCheck,
+            PbftSyncPeriodAdmissionStatus::Accepted,
+            next_check,
+            transaction_query,
+            replace_previous_block_cert_votes,
+        )),
+        PbftSyncFactStatus::Invalid => Some(runtime_plan(
+            PbftSyncProcessRuntimeAction::ClearAndReportPeer,
+            invalid_status,
+            PbftSyncProcessRuntimeNextCheck::None,
+            transaction_query,
+            replace_previous_block_cert_votes,
+        )),
+        PbftSyncFactStatus::Unknown => Some(runtime_contract_error(transaction_query)),
+        PbftSyncFactStatus::Valid | PbftSyncFactStatus::NotRequired => None,
+    };
+
+    if let Some(plan) = staged_fact_status(
+        fact.reward_votes_status,
+        PbftSyncProcessRuntimeNextCheck::CheckRewardVotes,
+        PbftSyncPeriodAdmissionStatus::RewardVotesInvalid,
+        transaction_query.clone(),
+    ) {
+        return plan;
+    }
+    if let Some(plan) = staged_fact_status(
+        fact.cert_votes_status,
+        PbftSyncProcessRuntimeNextCheck::ValidateCertVotes,
+        PbftSyncPeriodAdmissionStatus::CertVotesInvalid,
+        transaction_query.clone(),
+    ) {
+        return plan;
+    }
+    if let Some(plan) = staged_fact_status(
+        fact.transactions_status,
+        PbftSyncProcessRuntimeNextCheck::CheckTransactions,
+        PbftSyncPeriodAdmissionStatus::Accepted,
+        transaction_query.clone(),
+    ) {
+        return plan;
+    }
+    if let Some(plan) = staged_fact_status(
+        fact.pillar_data_status,
+        PbftSyncProcessRuntimeNextCheck::ValidatePillarData,
+        PbftSyncPeriodAdmissionStatus::PillarDataInvalid,
+        transaction_query.clone(),
+    ) {
+        return plan;
+    }
+
+    let pillar_votes_status = if fact.pillar_votes_required {
+        fact.pillar_votes_status
+    } else {
+        PbftSyncFactStatus::NotRequired
+    };
+    if let Some(plan) = staged_fact_status(
+        pillar_votes_status,
+        PbftSyncProcessRuntimeNextCheck::ValidatePillarVotes,
+        PbftSyncPeriodAdmissionStatus::PillarVotesInvalid,
+        transaction_query.clone(),
+    ) {
+        return plan;
+    }
+
+    let mut accepted = runtime_plan(
+        PbftSyncProcessRuntimeAction::Accept,
+        PbftSyncPeriodAdmissionStatus::Accepted,
+        PbftSyncProcessRuntimeNextCheck::None,
+        transaction_query,
+        replace_previous_block_cert_votes,
+    );
+    accepted.warnings.extend(warn_transactions(
+        fact.missing_transaction_hashes,
+        PbftSyncTransactionWarningKind::MissingTransaction,
+    ));
+    accepted.warnings.extend(warn_transactions(
+        fact.finalized_transaction_hashes,
+        PbftSyncTransactionWarningKind::FinalizedTransaction,
+    ));
+    accepted.contains_finalized_transaction_warning = fact.contains_finalized_transactions;
+    accepted
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -569,6 +1033,30 @@ mod tests {
             contains_finalized_transactions: false,
             pillar_data_status: PbftSyncFactStatus::Valid,
             pillar_votes_status: PbftSyncFactStatus::NotRequired,
+        }
+    }
+
+    fn runtime_fact() -> PbftSyncProcessPeriodDataRuntimeFact {
+        PbftSyncProcessPeriodDataRuntimeFact {
+            block_period: 101,
+            block_prev_hash: hash(10_000),
+            chain_last_hash: hash(10_000),
+            chain_last_period: 100,
+            block_in_chain: false,
+            final_chain_hash_status: PbftSyncRuntimeFinalChainHashStatus::NotChecked,
+            reward_votes_status: PbftSyncFactStatus::NotChecked,
+            cert_votes_status: PbftSyncFactStatus::NotChecked,
+            transactions_status: PbftSyncFactStatus::NotChecked,
+            dag_transaction_hashes: vec![hash(1), hash(2), hash(1)],
+            period_data_transaction_hashes: vec![hash(2)],
+            missing_transaction_hashes: vec![],
+            finalized_transaction_hashes: vec![],
+            contains_finalized_transactions: false,
+            pillar_data_status: PbftSyncFactStatus::NotChecked,
+            pillar_votes_required: true,
+            pillar_votes_status: PbftSyncFactStatus::NotChecked,
+            previous_cert_votes_present: true,
+            previous_cert_first_vote_has_weight: false,
         }
     }
 
@@ -606,6 +1094,113 @@ mod tests {
         assert!(!runtime_plan.report_malicious_peer());
         assert!(!runtime_plan.wait_for_finalization());
         assert!(runtime_plan.accept_period_data());
+    }
+
+    #[test]
+    fn runtime_plan_wraps_transaction_query_and_admission() {
+        let runtime_plan = plan_pbft_sync_runtime(
+            fact(),
+            PbftSyncTransactionQueryFact {
+                dag_transaction_hashes: vec![
+                    H256::from_low_u64_be(1),
+                    H256::from_low_u64_be(2),
+                    H256::from_low_u64_be(1),
+                ],
+                period_data_transaction_hashes: vec![H256::from_low_u64_be(2)],
+            },
+        );
+
+        assert_eq!(
+            runtime_plan.period_admission.action,
+            PbftSyncAdmissionRuntimeAction::Accept
+        );
+        assert!(runtime_plan.is_accepted());
+        assert_eq!(
+            runtime_plan.transaction_query.finalized_lookup_hashes,
+            vec![H256::from_low_u64_be(1)]
+        );
+        assert!(runtime_plan.requires_transaction_lookup());
+    }
+
+    #[test]
+    fn process_period_runtime_requests_checks_in_legacy_order() {
+        let plan = plan_pbft_sync_process_period_data_runtime(runtime_fact());
+        assert_eq!(plan.runtime_action, PbftSyncProcessRuntimeAction::RunCheck);
+        assert_eq!(
+            plan.next_check,
+            PbftSyncProcessRuntimeNextCheck::ValidateFinalChainHash
+        );
+        assert!(plan.replace_previous_block_cert_votes);
+
+        let mut f = runtime_fact();
+        f.final_chain_hash_status = PbftSyncRuntimeFinalChainHashStatus::Valid;
+        let plan = plan_pbft_sync_process_period_data_runtime(f);
+        assert_eq!(
+            plan.next_check,
+            PbftSyncProcessRuntimeNextCheck::CheckRewardVotes
+        );
+
+        let mut f = runtime_fact();
+        f.final_chain_hash_status = PbftSyncRuntimeFinalChainHashStatus::Valid;
+        f.reward_votes_status = PbftSyncFactStatus::Valid;
+        let plan = plan_pbft_sync_process_period_data_runtime(f);
+        assert_eq!(
+            plan.next_check,
+            PbftSyncProcessRuntimeNextCheck::ValidateCertVotes
+        );
+
+        let mut f = runtime_fact();
+        f.final_chain_hash_status = PbftSyncRuntimeFinalChainHashStatus::Valid;
+        f.reward_votes_status = PbftSyncFactStatus::Valid;
+        f.cert_votes_status = PbftSyncFactStatus::Valid;
+        let plan = plan_pbft_sync_process_period_data_runtime(f);
+        assert_eq!(
+            plan.next_check,
+            PbftSyncProcessRuntimeNextCheck::CheckTransactions
+        );
+        assert_eq!(
+            plan.transaction_query.finalized_lookup_hashes,
+            vec![hash(1)]
+        );
+    }
+
+    #[test]
+    fn process_period_runtime_waits_rejects_and_accepts_with_warnings() {
+        let mut f = runtime_fact();
+        f.final_chain_hash_status = PbftSyncRuntimeFinalChainHashStatus::Missing;
+        let plan = plan_pbft_sync_process_period_data_runtime(f);
+        assert_eq!(
+            plan.runtime_action,
+            PbftSyncProcessRuntimeAction::WaitForFinalization
+        );
+        assert!(plan.retry_same_candidate);
+
+        let mut f = runtime_fact();
+        f.block_prev_hash = hash(9);
+        let plan = plan_pbft_sync_process_period_data_runtime(f);
+        assert_eq!(
+            plan.runtime_action,
+            PbftSyncProcessRuntimeAction::ClearAndReportPeer
+        );
+        assert_eq!(
+            plan.status,
+            PbftSyncPeriodAdmissionStatus::PreviousHashMismatch
+        );
+
+        let mut f = runtime_fact();
+        f.final_chain_hash_status = PbftSyncRuntimeFinalChainHashStatus::Valid;
+        f.reward_votes_status = PbftSyncFactStatus::Valid;
+        f.cert_votes_status = PbftSyncFactStatus::Valid;
+        f.transactions_status = PbftSyncFactStatus::Valid;
+        f.missing_transaction_hashes = vec![hash(1)];
+        f.contains_finalized_transactions = true;
+        f.pillar_data_status = PbftSyncFactStatus::Valid;
+        f.pillar_votes_status = PbftSyncFactStatus::Valid;
+        let plan = plan_pbft_sync_process_period_data_runtime(f);
+        assert_eq!(plan.runtime_action, PbftSyncProcessRuntimeAction::Accept);
+        assert!(plan.accept_period_data);
+        assert_eq!(plan.warnings.len(), 1);
+        assert!(plan.contains_finalized_transaction_warning);
     }
 
     #[test]
