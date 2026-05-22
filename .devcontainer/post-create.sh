@@ -11,7 +11,10 @@ if ! grep -q "github.com" /root/.ssh/known_hosts 2>/dev/null; then
   ssh-keyscan -t ed25519 github.com >> /root/.ssh/known_hosts 2>/dev/null || true
 fi
 
-git config --global core.sshCommand "ssh -F /dev/null -o IdentitiesOnly=yes"
+cp /root/.ssh/id_ed25519_cryptobauer.pub /root/.ssh/id_ed25519_cryptobauer.select
+chmod 600 /root/.ssh/id_ed25519_cryptobauer.select
+
+git config --global core.sshCommand "ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityFile=/root/.ssh/id_ed25519_cryptobauer.select"
 git config --global gpg.format ssh
 git config --global user.signingkey /root/.ssh/id_ed25519_cryptobauer.pub
 git config --global commit.gpgsign true
