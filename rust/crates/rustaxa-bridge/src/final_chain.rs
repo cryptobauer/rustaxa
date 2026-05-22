@@ -153,6 +153,24 @@ impl BridgeFinalChain {
             .unwrap_or_default())
     }
 
+    /// Returns a block-scoped validator VRF key for the C++ FinalChain shim.
+    ///
+    /// Inputs are a finalized block number and validator address. The output is
+    /// the raw 32-byte VRF key, or an empty vector when the block snapshot
+    /// exists but does not contain the validator. Missing snapshots propagate as
+    /// errors so Rust mode does not fall back to genesis or latest state.
+    pub fn get_vrf_key_at_block(
+        self: &BridgeFinalChain,
+        block_number: u64,
+        address: &[u8; 20],
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .0
+            .vrf_key_at_block(block_number, *address)?
+            .map(|key| key.to_vec())
+            .unwrap_or_default())
+    }
+
     pub fn get_dpos_eligible_vote_count(
         self: &BridgeFinalChain,
         block_number: u64,

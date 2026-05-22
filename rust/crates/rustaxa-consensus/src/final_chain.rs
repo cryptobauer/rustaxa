@@ -7,7 +7,7 @@ use anyhow::Result;
 use ethereum_types::{H256, U256};
 use keccak_hasher::KeccakHasher;
 use rlp::Rlp;
-use rustaxa_storage::Storage;
+use rustaxa_storage::{FinalChainExecutionStatus, StatusField, Storage};
 use rustaxa_types::codec::rlp::final_chain::{
     LegacyBlockHeaderRlp, LegacyBlockHeaderRlpInput, StoredBlockHeaderRlp,
     StoredBlockHeaderRlpOwned,
@@ -35,6 +35,8 @@ const DPOS_CONTRACT_ADDRESS: [u8; 20] = [
 ];
 const DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR: [u8; 4] = [0xde, 0x8e, 0x4b, 0x50];
 const DPOS_GET_VALIDATOR_SELECTOR: [u8; 4] = [0x19, 0x04, 0xbb, 0x2e];
+const DPOS_REGISTER_VALIDATOR_SELECTOR: [u8; 4] = [0xd6, 0xfd, 0xc1, 0x27];
+const DPOS_REGISTER_VALIDATOR_GAS: u64 = 80_000;
 
 /// Rust final-chain domain surface used by the C++ shim.
 pub struct FinalChain {
@@ -43,6 +45,9 @@ pub struct FinalChain {
     genesis_timestamp: u64,
     accounts: Mutex<HashMap<[u8; 20], Account>>,
     genesis_vrf_keys: HashMap<[u8; 20], [u8; 32]>,
+    dpos_eligibility_balance_threshold: Vec<u8>,
+    dpos_vote_eligibility_balance_step: Vec<u8>,
+    dpos_validator_maximum_stake: Vec<u8>,
     /// DAG VDF sortition vote-count ceiling after the configured legacy
     /// total-vote-count compatibility boundary.
     ///
@@ -67,7 +72,7 @@ pub struct FinalChain {
 ///
 /// The snapshot stores the Rust-owned subset currently needed by consensus and
 /// RPC tests: validator stake, vote counts, accumulated commission rewards, and
-/// genesis-seeded validator metadata. Finalization appends block-keyed snapshots
+/// validator metadata, and VRF keys. Finalization appends block-keyed snapshots
 /// instead of answering historical queries from stale genesis data.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DposSnapshot {
@@ -77,6 +82,8 @@ struct DposSnapshot {
     commission_rewards: BTreeMap<[u8; 20], Vec<u8>>,
     /// Validator metadata by validator address at this block.
     validator_metadata: BTreeMap<[u8; 20], DposValidatorMetadata>,
+    /// Validator VRF keys by validator address at this block.
+    vrf_keys: BTreeMap<[u8; 20], [u8; 32]>,
     /// Eligible vote count by validator address at this block.
     vote_counts: BTreeMap<[u8; 20], u64>,
     /// Total eligible vote count at this block.
@@ -149,7 +156,7 @@ impl FinalChain {
                         .checked_add(*vote_count)
                         .ok_or_else(|| anyhow::anyhow!("genesis DPoS total vote count overflow"))
                 })?;
-        let genesis_vrf_keys = genesis_vrf_keys
+        let genesis_vrf_keys: HashMap<[u8; 20], [u8; 32]> = genesis_vrf_keys
             .into_iter()
             .map(|(address, vrf_key, _, _, _)| (address, vrf_key))
             .collect();
@@ -161,7 +168,14 @@ impl FinalChain {
             block_gas_limit,
             genesis_timestamp,
             accounts: Mutex::new(genesis_accounts.clone()),
-            genesis_vrf_keys,
+            genesis_vrf_keys: genesis_vrf_keys.clone(),
+            dpos_eligibility_balance_threshold: genesis_dpos_config
+                .eligibility_balance_threshold
+                .clone(),
+            dpos_vote_eligibility_balance_step: genesis_dpos_config
+                .vote_eligibility_balance_step
+                .clone(),
+            dpos_validator_maximum_stake: genesis_dpos_config.validator_maximum_stake.clone(),
             dag_vdf_sortition_max_vote_count,
             dag_vdf_sortition_total_vote_count_until_period: genesis_dpos_config
                 .dag_vdf_sortition_total_vote_count_until_period,
@@ -173,6 +187,10 @@ impl FinalChain {
                     total_stakes: genesis_dpos_total_stakes,
                     commission_rewards: BTreeMap::new(),
                     validator_metadata: genesis_dpos_validator_metadata,
+                    vrf_keys: genesis_vrf_keys
+                        .iter()
+                        .map(|(address, vrf_key)| (*address, *vrf_key))
+                        .collect(),
                     vote_counts: genesis_dpos_vote_counts,
                     total_vote_count: genesis_dpos_total_vote_count,
                 },
@@ -294,6 +312,24 @@ impl FinalChain {
     }
 
     pub fn vrf_key(&self, address: [u8; 20]) -> Result<Option<[u8; 32]>, anyhow::Error> {
+        let latest_block = self.last_block_number()?;
+        self.vrf_key_at_block(latest_block, address)
+    }
+
+    /// Returns the validator VRF key from the DPoS snapshot at a block.
+    ///
+    /// Inputs are a finalized block number and validator address. The output is
+    /// the snapshot VRF key when the validator exists at that block, or `None`
+    /// when the snapshot exists without that validator. Missing or corrupt
+    /// snapshots remain hard errors so callers do not silently use stale keys.
+    pub fn vrf_key_at_block(
+        &self,
+        block_number: u64,
+        address: [u8; 20],
+    ) -> Result<Option<[u8; 32]>, anyhow::Error> {
+        if let Some(vrf_key) = self.dpos_snapshot(block_number)?.vrf_keys.get(&address) {
+            return Ok(Some(*vrf_key));
+        }
         Ok(self.genesis_vrf_keys.get(&address).copied())
     }
 
@@ -341,7 +377,22 @@ impl FinalChain {
         block_number: u64,
         sender: [u8; 20],
     ) -> Result<DagDposAuthorizationFacts, anyhow::Error> {
-        let vrf_key = self.vrf_key(sender)?;
+        let Some(snapshot) = self.dpos_snapshot_optional(block_number)? else {
+            let vrf_key = self.genesis_vrf_keys.get(&sender).copied();
+            let vrf_key_found = vrf_key.is_some();
+            return Ok(DagDposAuthorizationFacts {
+                vrf_key,
+                vrf_key_found,
+                sender_eligible_vote_count: 0,
+                vdf_sortition_max_vote_count: 0,
+                eligibility_status: DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE,
+            });
+        };
+        let vrf_key = snapshot
+            .vrf_keys
+            .get(&sender)
+            .copied()
+            .or_else(|| self.genesis_vrf_keys.get(&sender).copied());
         let vrf_key_found = vrf_key.is_some();
 
         if !vrf_key_found {
@@ -354,20 +405,10 @@ impl FinalChain {
             });
         }
 
-        let Some(_) = self.dpos_snapshot_optional(block_number)? else {
-            return Ok(DagDposAuthorizationFacts {
-                vrf_key,
-                vrf_key_found,
-                sender_eligible_vote_count: 0,
-                vdf_sortition_max_vote_count: 0,
-                eligibility_status: DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE,
-            });
-        };
-
-        let sender_eligible_vote_count = self.dpos_eligible_vote_count(block_number, sender)?;
+        let sender_eligible_vote_count = *snapshot.vote_counts.get(&sender).unwrap_or(&0);
         let vdf_sortition_max_vote_count =
             if block_number < self.dag_vdf_sortition_total_vote_count_until_period {
-                self.dpos_eligible_total_vote_count(block_number)?
+                snapshot.total_vote_count
             } else {
                 self.dag_vdf_sortition_max_vote_count
             };
@@ -581,19 +622,25 @@ impl FinalChain {
         let dpos_snapshot = self.plan_dpos_snapshot(
             pbft.period,
             self.dpos_fee_rewards_by_validator(&finalized_dag_blocks, &execution.transaction_fees)?,
+            execution.dpos_registrations,
         )?;
         let dpos_snapshot_rlp = encode_dpos_snapshot_rlp(&dpos_snapshot);
         let account_snapshot = self.current_account_snapshot()?;
         let account_snapshot_rlp = encode_account_snapshot_rlp(&account_snapshot);
+        let execution_status = self.finalization_execution_status(
+            finalized_dag_blocks.len() as u64,
+            transactions.len() as u64,
+        )?;
         self.storage
             .final_chain()
-            .write_block_header_with_snapshots(
+            .write_block_header_with_snapshots_and_execution_status(
                 pbft.period,
                 full_header.hash()?,
                 stored_header_rlp.as_bytes(),
                 receipts_rlp.as_slice(),
                 Some(&dpos_snapshot_rlp),
                 Some(&account_snapshot_rlp),
+                Some(execution_status),
             )?;
         for (position, transaction) in transactions.iter().enumerate() {
             self.storage.transaction().write_location(
@@ -611,6 +658,29 @@ impl FinalChain {
         self.insert_dpos_snapshot(pbft.period, dpos_snapshot)?;
 
         Ok((full_header.into_vec(), execution.receipts))
+    }
+
+    fn finalization_execution_status(
+        &self,
+        finalized_dag_block_delta: u64,
+        executed_transaction_delta: u64,
+    ) -> Result<FinalChainExecutionStatus, anyhow::Error> {
+        let executed_dag_block_count = self
+            .storage
+            .metadata()
+            .status_field(StatusField::ExecutedBlkCount as u8)?
+            .checked_add(finalized_dag_block_delta)
+            .ok_or_else(|| anyhow::anyhow!("executed DAG block count overflow"))?;
+        let executed_transaction_count = self
+            .storage
+            .metadata()
+            .status_field(StatusField::ExecutedTrxCount as u8)?
+            .checked_add(executed_transaction_delta)
+            .ok_or_else(|| anyhow::anyhow!("executed transaction count overflow"))?;
+        Ok(FinalChainExecutionStatus {
+            executed_dag_block_count,
+            executed_transaction_count,
+        })
     }
 
     fn ensure_genesis_header(&self) -> Result<(), anyhow::Error> {
@@ -659,19 +729,32 @@ impl FinalChain {
             .map_err(|_| anyhow::anyhow!("final-chain account lock poisoned"))?;
         let mut receipts = Vec::with_capacity(transactions.len());
         let mut transaction_fees = Vec::with_capacity(transactions.len());
+        let mut dpos_registrations = Vec::new();
         let mut cumulative_gas_used = 0u64;
 
         for transaction in transactions {
-            if !transaction.data.is_empty() || transaction.receiver.is_none() {
+            let mut dpos_registration = if transaction.receiver == Some(DPOS_CONTRACT_ADDRESS) {
+                Some(decode_dpos_register_validator(
+                    &transaction.data,
+                    transaction.sender,
+                )?)
+            } else if !transaction.data.is_empty() || transaction.receiver.is_none() {
                 anyhow::bail!(
-                    "Rust FinalChain::finalize currently supports only native value transfers"
+                    "Rust FinalChain::finalize currently supports only native value transfers and DPoS validator registration"
                 );
-            }
-            let receiver_address = transaction.receiver.ok_or_else(|| {
-                anyhow::anyhow!("native value transfer missing receiver after validation")
-            })?;
+            } else {
+                None
+            };
             let gas_price = u256_from_big_endian(&transaction.gas_price);
             let value = u256_from_big_endian(&transaction.value);
+            if let Some(registration) = dpos_registration.as_mut() {
+                registration.stake = u256_to_big_endian(value);
+            }
+            let required_gas = if dpos_registration.is_some() {
+                DPOS_REGISTER_VALIDATOR_GAS
+            } else {
+                VALUE_TRANSFER_GAS
+            };
 
             let mut status_code = 1u8;
             let gas_used;
@@ -688,7 +771,10 @@ impl FinalChain {
                     status_code = 0;
                     gas_used = affordable_gas(sender, gas_price, transaction.gas_limit);
                 } else {
-                    gas_used = VALUE_TRANSFER_GAS;
+                    gas_used = required_gas.min(transaction.gas_limit);
+                    if transaction.gas_limit < required_gas {
+                        status_code = 0;
+                    }
                 }
 
                 gas_cost = gas_price
@@ -717,15 +803,27 @@ impl FinalChain {
                 .ok_or_else(|| anyhow::anyhow!("cumulative gas used overflow"))?;
 
             if status_code == 1 {
-                let receiver = accounts
-                    .entry(receiver_address)
-                    .or_insert_with(empty_account);
-                let receiver_balance = u256_from_big_endian(&receiver.balance);
-                receiver.balance = u256_to_big_endian(
-                    receiver_balance
-                        .checked_add(value)
-                        .ok_or_else(|| anyhow::anyhow!("receiver balance overflow"))?,
-                );
+                if let Some(registration) = dpos_registration {
+                    dpos_registrations.push(registration);
+                } else {
+                    let receiver_address = transaction.receiver.ok_or_else(|| {
+                        anyhow::anyhow!("native value transfer missing receiver after validation")
+                    })?;
+                    if receiver_address == DPOS_CONTRACT_ADDRESS {
+                        anyhow::bail!(
+                            "Rust FinalChain::finalize unsupported DPoS transaction selector"
+                        );
+                    }
+                    let receiver = accounts
+                        .entry(receiver_address)
+                        .or_insert_with(empty_account);
+                    let receiver_balance = u256_from_big_endian(&receiver.balance);
+                    receiver.balance = u256_to_big_endian(
+                        receiver_balance
+                            .checked_add(value)
+                            .ok_or_else(|| anyhow::anyhow!("receiver balance overflow"))?,
+                    );
+                }
             }
             receipts.push(encode_receipt_rlp(
                 status_code,
@@ -739,6 +837,7 @@ impl FinalChain {
             receipts,
             gas_used: cumulative_gas_used,
             transaction_fees,
+            dpos_registrations,
         })
     }
 
@@ -964,6 +1063,7 @@ impl FinalChain {
         &self,
         block_number: u64,
         fee_rewards_by_validator: BTreeMap<[u8; 20], U256>,
+        dpos_registrations: Vec<DposRegistration>,
     ) -> Result<DposSnapshot, anyhow::Error> {
         let snapshots = self
             .dpos_snapshots
@@ -975,6 +1075,9 @@ impl FinalChain {
         let mut snapshot = snapshots.get(&previous_block).cloned().ok_or_else(|| {
             anyhow::anyhow!("missing previous DPoS snapshot for block {previous_block}")
         })?;
+        for registration in dpos_registrations {
+            self.apply_dpos_registration(&mut snapshot, registration)?;
+        }
         for (validator, reward) in fee_rewards_by_validator {
             let current = snapshot
                 .commission_rewards
@@ -991,6 +1094,49 @@ impl FinalChain {
             );
         }
         Ok(snapshot)
+    }
+
+    fn apply_dpos_registration(
+        &self,
+        snapshot: &mut DposSnapshot,
+        registration: DposRegistration,
+    ) -> Result<(), anyhow::Error> {
+        if snapshot.total_stakes.contains_key(&registration.validator) {
+            anyhow::bail!("Rust FinalChain::finalize DPoS validator is already registered");
+        }
+        if u256_from_big_endian(&registration.stake)
+            > u256_from_big_endian(&self.dpos_validator_maximum_stake)
+        {
+            anyhow::bail!("Rust FinalChain::finalize DPoS validator stake exceeds maximum");
+        }
+
+        let vote_count = dpos_vote_count(
+            &registration.stake,
+            &self.dpos_eligibility_balance_threshold,
+            &self.dpos_vote_eligibility_balance_step,
+            &self.dpos_validator_maximum_stake,
+        )?;
+        snapshot.total_vote_count = snapshot
+            .total_vote_count
+            .checked_add(vote_count)
+            .ok_or_else(|| anyhow::anyhow!("DPoS total vote count overflow"))?;
+        snapshot
+            .total_stakes
+            .insert(registration.validator, registration.stake);
+        snapshot
+            .commission_rewards
+            .entry(registration.validator)
+            .or_default();
+        snapshot
+            .validator_metadata
+            .insert(registration.validator, registration.metadata);
+        snapshot
+            .vrf_keys
+            .insert(registration.validator, registration.vrf_key);
+        snapshot
+            .vote_counts
+            .insert(registration.validator, vote_count);
+        Ok(())
     }
 
     fn insert_dpos_snapshot(
@@ -1093,10 +1239,11 @@ fn h256_from_slice(raw: &[u8], field: &str) -> Result<ethereum_types::H256, anyh
 }
 
 fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Vec<u8> {
-    let mut stream = rlp::RlpStream::new_list(5);
+    let mut stream = rlp::RlpStream::new_list(6);
     append_address_bytes_map(&mut stream, &snapshot.total_stakes);
     append_address_bytes_map(&mut stream, &snapshot.commission_rewards);
     append_validator_metadata_map(&mut stream, &snapshot.validator_metadata);
+    append_address_fixed_hash_map(&mut stream, &snapshot.vrf_keys);
     append_vote_count_map(&mut stream, &snapshot.vote_counts);
     stream.append(&snapshot.total_vote_count);
     stream.out().to_vec()
@@ -1104,18 +1251,31 @@ fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Vec<u8> {
 
 fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
     let rlp = Rlp::new(raw);
-    if rlp.item_count()? != 5 {
-        anyhow::bail!("DPoS snapshot RLP must contain exactly five items");
+    let item_count = rlp.item_count()?;
+    if item_count != 5 && item_count != 6 {
+        anyhow::bail!("DPoS snapshot RLP must contain exactly five or six items");
     }
     let total_stakes = decode_address_bytes_map(&rlp.at(0)?, "total stakes")?;
     let commission_rewards = decode_address_bytes_map(&rlp.at(1)?, "commission rewards")?;
     let validator_metadata = decode_validator_metadata_map(&rlp.at(2)?)?;
-    let vote_counts = decode_vote_count_map(&rlp.at(3)?)?;
-    let total_vote_count = rlp.val_at(4)?;
+    let (vrf_keys, vote_counts, total_vote_count) = if item_count == 6 {
+        (
+            decode_address_fixed_hash_map(&rlp.at(3)?, "VRF key")?,
+            decode_vote_count_map(&rlp.at(4)?)?,
+            rlp.val_at(5)?,
+        )
+    } else {
+        (
+            BTreeMap::new(),
+            decode_vote_count_map(&rlp.at(3)?)?,
+            rlp.val_at(4)?,
+        )
+    };
     Ok(DposSnapshot {
         total_stakes,
         commission_rewards,
         validator_metadata,
+        vrf_keys,
         vote_counts,
         total_vote_count,
     })
@@ -1194,6 +1354,15 @@ fn append_validator_metadata_map(
     }
 }
 
+fn append_address_fixed_hash_map(stream: &mut rlp::RlpStream, map: &BTreeMap<[u8; 20], [u8; 32]>) {
+    stream.begin_list(map.len());
+    for (address, value) in map {
+        stream.begin_list(2);
+        stream.append(&address.as_slice());
+        stream.append(&value.as_slice());
+    }
+}
+
 fn append_vote_count_map(stream: &mut rlp::RlpStream, map: &BTreeMap<[u8; 20], u64>) {
     stream.begin_list(map.len());
     for (address, vote_count) in map {
@@ -1201,6 +1370,23 @@ fn append_vote_count_map(stream: &mut rlp::RlpStream, map: &BTreeMap<[u8; 20], u
         stream.append(&address.as_slice());
         stream.append(vote_count);
     }
+}
+
+fn decode_address_fixed_hash_map(
+    rlp: &Rlp<'_>,
+    field: &str,
+) -> Result<BTreeMap<[u8; 20], [u8; 32]>, anyhow::Error> {
+    let mut map = BTreeMap::new();
+    for item in rlp.iter() {
+        if item.item_count()? != 2 {
+            anyhow::bail!("DPoS snapshot {field} entry must contain exactly two items");
+        }
+        map.insert(
+            decode_address(&item.at(0)?, field)?,
+            decode_fixed_hash(&item.at(1)?, field)?,
+        );
+    }
+    Ok(map)
 }
 
 fn decode_address_bytes_map(
@@ -1424,6 +1610,139 @@ fn selector_hex(selector: [u8; 4]) -> String {
         .collect::<String>()
 }
 
+/// Decodes the Rust-supported DPoS `registerValidator` transaction payload.
+///
+/// The function validates Solidity ABI shape and extracts the fields that affect
+/// consensus-visible DPoS snapshots. Signature proof validation remains outside
+/// this slice, so malformed proofs are rejected only by ABI shape while the
+/// registered validator address and caller-owned stake are kept explicit.
+fn decode_dpos_register_validator(
+    input: &[u8],
+    owner: [u8; 20],
+) -> Result<DposRegistration, anyhow::Error> {
+    if input.len() < 4 {
+        anyhow::bail!("Rust FinalChain::finalize DPoS transaction input is missing selector");
+    }
+    let mut selector = [0u8; 4];
+    selector.copy_from_slice(&input[..4]);
+    if selector != DPOS_REGISTER_VALIDATOR_SELECTOR {
+        anyhow::bail!(
+            "Rust FinalChain::finalize unsupported DPoS selector 0x{}",
+            selector_hex(selector)
+        );
+    }
+    let head_len = 4 + 6 * 32;
+    if input.len() < head_len {
+        anyhow::bail!("registerValidator input is shorter than selector plus ABI head");
+    }
+
+    let validator = decode_abi_address_argument(input, "registerValidator(address,...)")?;
+    let proof_offset = decode_abi_word_as_usize(input, 4 + 32, "registerValidator proof offset")?;
+    let vrf_key_offset =
+        decode_abi_word_as_usize(input, 4 + 2 * 32, "registerValidator VRF key offset")?;
+    let commission = decode_abi_word_as_u16(input, 4 + 3 * 32, "registerValidator commission")?;
+    let description_offset =
+        decode_abi_word_as_usize(input, 4 + 4 * 32, "registerValidator description offset")?;
+    let endpoint_offset =
+        decode_abi_word_as_usize(input, 4 + 5 * 32, "registerValidator endpoint offset")?;
+    let proof = decode_abi_dynamic_bytes(input, proof_offset, "registerValidator proof")?;
+    if proof.is_empty() {
+        anyhow::bail!("registerValidator proof cannot be empty");
+    }
+    let vrf_key = decode_abi_dynamic_bytes(input, vrf_key_offset, "registerValidator VRF key")?;
+    if vrf_key.len() != 32 {
+        anyhow::bail!(
+            "registerValidator VRF key must be 32 bytes, got {}",
+            vrf_key.len()
+        );
+    }
+    let mut vrf_key_bytes = [0u8; 32];
+    vrf_key_bytes.copy_from_slice(&vrf_key);
+
+    Ok(DposRegistration {
+        validator,
+        stake: vec![],
+        vrf_key: vrf_key_bytes,
+        metadata: DposValidatorMetadata {
+            owner,
+            commission,
+            description: decode_abi_dynamic_string(
+                input,
+                description_offset,
+                "registerValidator description",
+            )?,
+            endpoint: decode_abi_dynamic_string(
+                input,
+                endpoint_offset,
+                "registerValidator endpoint",
+            )?,
+        },
+    })
+}
+
+fn decode_abi_word_as_usize(
+    input: &[u8],
+    offset: usize,
+    field: &str,
+) -> Result<usize, anyhow::Error> {
+    let word = abi_word(input, offset, field)?;
+    let value = u256_from_big_endian(word);
+    if value > U256::from(usize::MAX) {
+        anyhow::bail!("{field} does not fit into usize");
+    }
+    Ok(value.as_usize())
+}
+
+fn decode_abi_word_as_u16(input: &[u8], offset: usize, field: &str) -> Result<u16, anyhow::Error> {
+    let word = abi_word(input, offset, field)?;
+    let value = u256_from_big_endian(word);
+    if value > U256::from(u16::MAX) {
+        anyhow::bail!("{field} does not fit into uint16");
+    }
+    Ok(value.as_u32() as u16)
+}
+
+fn abi_word<'a>(input: &'a [u8], offset: usize, field: &str) -> Result<&'a [u8], anyhow::Error> {
+    input
+        .get(offset..offset + 32)
+        .ok_or_else(|| anyhow::anyhow!("{field} ABI word is out of bounds"))
+}
+
+fn decode_abi_dynamic_bytes(
+    input: &[u8],
+    relative_offset: usize,
+    field: &str,
+) -> Result<Vec<u8>, anyhow::Error> {
+    let offset = 4usize
+        .checked_add(relative_offset)
+        .ok_or_else(|| anyhow::anyhow!("{field} offset overflow"))?;
+    let len_word = abi_word(input, offset, field)?;
+    let len_value = u256_from_big_endian(len_word);
+    if len_value > U256::from(usize::MAX) {
+        anyhow::bail!("{field} length does not fit into usize");
+    }
+    let len = len_value.as_usize();
+    let start = offset
+        .checked_add(32)
+        .ok_or_else(|| anyhow::anyhow!("{field} start offset overflow"))?;
+    let end = start
+        .checked_add(len)
+        .ok_or_else(|| anyhow::anyhow!("{field} end offset overflow"))?;
+    Ok(input
+        .get(start..end)
+        .ok_or_else(|| anyhow::anyhow!("{field} bytes are out of bounds"))?
+        .to_vec())
+}
+
+fn decode_abi_dynamic_string(
+    input: &[u8],
+    relative_offset: usize,
+    field: &str,
+) -> Result<String, anyhow::Error> {
+    let bytes = decode_abi_dynamic_bytes(input, relative_offset, field)?;
+    String::from_utf8(bytes).map_err(|err| anyhow::anyhow!("{field} is not valid UTF-8: {err}"))
+}
+
 fn dpos_vote_count(
     stake: &[u8],
     eligibility_balance_threshold: &[u8],
@@ -1495,6 +1814,18 @@ struct NativeExecution {
     receipts: Vec<Vec<u8>>,
     gas_used: u64,
     transaction_fees: Vec<([u8; 32], U256)>,
+    dpos_registrations: Vec<DposRegistration>,
+}
+
+/// DPoS validator registration decoded from the Rust-supported contract subset.
+///
+/// This carries only the deterministic state mutation needed by FinalChain:
+/// validator identity, owner metadata, VRF key, and initial self-delegated stake.
+struct DposRegistration {
+    validator: [u8; 20],
+    stake: Vec<u8>,
+    vrf_key: [u8; 32],
+    metadata: DposValidatorMetadata,
 }
 
 #[cfg(test)]
@@ -1705,6 +2036,42 @@ mod tests {
         let mut input = DPOS_GET_VALIDATOR_SELECTOR.to_vec();
         input.extend_from_slice(&[0u8; 12]);
         input.extend_from_slice(&validator);
+        input
+    }
+
+    fn abi_word_from_bytes_offset(offset: usize) -> [u8; 32] {
+        abi_word_from_usize(offset, "test ABI offset").unwrap()
+    }
+
+    fn register_validator_input(
+        validator: [u8; 20],
+        proof: &[u8],
+        vrf_key: [u8; 32],
+        commission: u16,
+        description: &str,
+        endpoint: &str,
+    ) -> Vec<u8> {
+        let proof_offset = 6 * 32;
+        let vrf_offset = proof_offset + 32 + abi_padded_len(proof.len()).unwrap();
+        let description_offset = vrf_offset + 32 + abi_padded_len(vrf_key.len()).unwrap();
+        let endpoint_offset =
+            description_offset + abi_dynamic_string_tail_len(description).unwrap();
+        let mut input = DPOS_REGISTER_VALIDATOR_SELECTOR.to_vec();
+        input.extend_from_slice(&abi_word_from_address(validator));
+        input.extend_from_slice(&abi_word_from_bytes_offset(proof_offset));
+        input.extend_from_slice(&abi_word_from_bytes_offset(vrf_offset));
+        input.extend_from_slice(&abi_word_from_u64(u64::from(commission)));
+        input.extend_from_slice(&abi_word_from_bytes_offset(description_offset));
+        input.extend_from_slice(&abi_word_from_bytes_offset(endpoint_offset));
+        input.extend_from_slice(&abi_word_from_usize(proof.len(), "test proof length").unwrap());
+        input.extend_from_slice(proof);
+        input.resize(4 + vrf_offset, 0);
+        input
+            .extend_from_slice(&abi_word_from_usize(vrf_key.len(), "test VRF key length").unwrap());
+        input.extend_from_slice(&vrf_key);
+        input.resize(4 + description_offset, 0);
+        input.extend_from_slice(&abi_string_tail(description).unwrap());
+        input.extend_from_slice(&abi_string_tail(endpoint).unwrap());
         input
     }
 
@@ -2596,6 +2963,20 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(dag_author, 10)]
         );
+        assert_eq!(
+            storage
+                .metadata()
+                .status_field(StatusField::ExecutedBlkCount as u8)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            storage
+                .metadata()
+                .status_field(StatusField::ExecutedTrxCount as u8)
+                .unwrap(),
+            1
+        );
 
         drop(final_chain);
         drop(storage);
@@ -2657,6 +3038,136 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("snapshot for block 2")
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_registers_dpos_validator_snapshot() {
+        let path = temp_db_path("finalize-dpos-register-validator");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let owner = [0x31; 20];
+        let validator = [0x32; 20];
+        let vrf_key = [0xA5; 32];
+        let stake = U256::from(5_000u64);
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let signing_key = SigningKey::from_slice(&[15u8; 32]).unwrap();
+        let pbft_block = signed_pbft_block(&signing_key, period, 140);
+        let transaction_rlp = vec![0xc1, 0x91];
+        let input = register_validator_input(
+            validator,
+            &[0xCC; 65],
+            vrf_key,
+            10,
+            "test validator",
+            "test endpoint",
+        );
+        let transaction = test_transaction(
+            0xA7,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            stake,
+            U256::from(2u64),
+            100_000,
+            input,
+            transaction_rlp.clone(),
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&transaction_rlp),
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            200_000,
+            0,
+            vec![genesis_account(owner, U256::from(1_000_000u64))],
+            vec![],
+            genesis_dpos_config.clone(),
+        )
+        .unwrap();
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(pbft_block, vec![transaction], vec![])
+            .unwrap();
+
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (1, DPOS_REGISTER_VALIDATOR_GAS, DPOS_REGISTER_VALIDATOR_GAS)
+        );
+        assert_eq!(
+            final_chain
+                .dpos_eligible_vote_count(period, validator)
+                .unwrap(),
+            5
+        );
+        assert_eq!(
+            final_chain.dpos_eligible_total_vote_count(period).unwrap(),
+            5
+        );
+        assert!(final_chain.dpos_is_eligible(period, validator).unwrap());
+        assert_eq!(final_chain.vrf_key(validator).unwrap(), Some(vrf_key));
+        let validator_info = final_chain
+            .call(dpos_call_request(period, get_validator_input(validator)))
+            .unwrap();
+        assert_eq!(
+            u256_from_big_endian(&validator_info.code_retval[32..64]),
+            stake
+        );
+        assert_eq!(
+            u256_from_big_endian(&validator_info.code_retval[96..128]),
+            U256::from(10u64)
+        );
+        assert_eq!(
+            &validator_info.code_retval[192..224],
+            &abi_word_from_address(owner)
+        );
+
+        drop(final_chain);
+        drop(storage);
+
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            200_000,
+            0,
+            vec![genesis_account(owner, U256::from(1_000_000u64))],
+            vec![],
+            genesis_dpos_config,
+        )
+        .unwrap();
+        assert_eq!(
+            final_chain
+                .dpos_eligible_vote_count(period, validator)
+                .unwrap(),
+            5
+        );
+        assert_eq!(final_chain.vrf_key(validator).unwrap(), Some(vrf_key));
+        let facts = final_chain
+            .dag_dpos_authorization_facts(period, validator)
+            .unwrap();
+        assert_eq!(facts.vrf_key, Some(vrf_key));
+        assert_eq!(facts.sender_eligible_vote_count, 5);
+        assert_eq!(facts.eligibility_status, DAG_VERIFY_DPOS_STATUS_ELIGIBLE);
+        let genesis_facts = final_chain
+            .dag_dpos_authorization_facts(0, validator)
+            .unwrap();
+        assert_eq!(genesis_facts.vrf_key, None);
+        assert!(!genesis_facts.vrf_key_found);
+        assert_eq!(
+            genesis_facts.eligibility_status,
+            DAG_VERIFY_DPOS_STATUS_NOT_CHECKED
         );
 
         drop(final_chain);

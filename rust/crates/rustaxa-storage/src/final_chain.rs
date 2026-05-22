@@ -2,8 +2,22 @@ use anyhow::Result;
 use ethereum_types::H256;
 use std::sync::Arc;
 
-use crate::Column;
 use crate::db::{DbReader, DbWriter};
+use crate::{Column, StatusField};
+
+/// Final-chain execution counters persisted with finalized block visibility.
+///
+/// The fields mirror C++ `StatusDbField::ExecutedBlkCount` and
+/// `StatusDbField::ExecutedTrxCount`. Callers pass absolute counter values,
+/// not deltas, so the repository can atomically publish block indexes,
+/// Rust-owned snapshots, and legacy status counters in one database batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FinalChainExecutionStatus {
+    /// Total number of DAG blocks executed by finalized PBFT blocks.
+    pub executed_dag_block_count: u64,
+    /// Total number of transactions executed by finalized PBFT blocks.
+    pub executed_transaction_count: u64,
+}
 
 pub struct FinalChainRepository<D: DbReader> {
     db: Arc<D>,
@@ -169,6 +183,35 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
         dpos_snapshot_rlp: Option<&[u8]>,
         account_snapshot_rlp: Option<&[u8]>,
     ) -> Result<()> {
+        self.write_block_header_with_snapshots_and_execution_status(
+            number,
+            hash,
+            stored_header_rlp,
+            receipts_rlp,
+            dpos_snapshot_rlp,
+            account_snapshot_rlp,
+            None,
+        )
+    }
+
+    /// Persists a finalized block header, lookup indexes, Rust-owned snapshots,
+    /// optional execution counters, and LAST_NUMBER in one database batch.
+    ///
+    /// Inputs are the finalized block number and hash, stored-header and
+    /// receipt RLP payloads, optional Rust snapshot payloads, and optional
+    /// absolute execution counters. Outputs are durable database records only.
+    /// LAST_NUMBER remains the final write in the batch, so a committed block is
+    /// never visible without the supplied snapshot payloads and status counters.
+    pub fn write_block_header_with_snapshots_and_execution_status(
+        &self,
+        number: u64,
+        hash: H256,
+        stored_header_rlp: &[u8],
+        receipts_rlp: &[u8],
+        dpos_snapshot_rlp: Option<&[u8]>,
+        account_snapshot_rlp: Option<&[u8]>,
+        execution_status: Option<FinalChainExecutionStatus>,
+    ) -> Result<()> {
         const DB_META_LAST_NUMBER: u32 = 1;
 
         let mut batch = self.db.create_batch();
@@ -210,6 +253,20 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
                 Column::FinalChainMeta,
                 &Self::account_snapshot_key(number),
                 account_snapshot_rlp,
+            )?;
+        }
+        if let Some(execution_status) = execution_status {
+            self.db.batch_put(
+                &mut batch,
+                Column::Status,
+                &[StatusField::ExecutedBlkCount as u8],
+                &execution_status.executed_dag_block_count.to_le_bytes(),
+            )?;
+            self.db.batch_put(
+                &mut batch,
+                Column::Status,
+                &[StatusField::ExecutedTrxCount as u8],
+                &execution_status.executed_transaction_count.to_le_bytes(),
             )?;
         }
         self.db.batch_put(

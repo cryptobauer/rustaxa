@@ -3309,6 +3309,11 @@ pub mod rustaxa_ffi {
             block_number: u64,
         ) -> Result<Vec<DposValidatorVoteCount>>;
         pub fn get_vrf_key(self: &BridgeFinalChain, address: &[u8; 20]) -> Result<Vec<u8>>;
+        pub fn get_vrf_key_at_block(
+            self: &BridgeFinalChain,
+            block_number: u64,
+            address: &[u8; 20],
+        ) -> Result<Vec<u8>>;
         pub fn estimate_call_gas(self: &BridgeFinalChain, gas_limit: u64) -> Result<u64>;
         pub fn call(
             self: &BridgeFinalChain,

@@ -158,13 +158,6 @@ dev::bytes into_bytes(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes
   throw DbException("FinalChain::" + std::string(api_name) + " is not implemented in Rust shim mode");
 }
 
-std::future<std::shared_ptr<const FinalizationResult>> ready_unimplemented_finalization_result(const char* api_name) {
-  std::promise<std::shared_ptr<const FinalizationResult>> promise;
-  promise.set_exception(std::make_exception_ptr(
-      DbException("FinalChain::" + std::string(api_name) + " is not implemented in Rust shim mode")));
-  return promise.get_future();
-}
-
 std::future<std::shared_ptr<const FinalizationResult>> ready_finalization_result(
     std::shared_ptr<const FinalizationResult> result) {
   std::promise<std::shared_ptr<const FinalizationResult>> promise;
@@ -191,9 +184,7 @@ EthBlockNumber FinalChain::delegationDelay() const { return delegation_delay_; }
 std::future<std::shared_ptr<const FinalizationResult>> FinalChain::finalize(
     PeriodData&& period_data, std::vector<h256>&& finalized_dag_blk_hashes, uint32_t,
     std::shared_ptr<DagBlock>&& anchor) {
-  if (anchor) {
-    return ready_unimplemented_finalization_result("finalize(anchor)");
-  }
+  (void)anchor;
   auto outcome = rust_final_chain_.value()->finalize_block(into_rust_vec(period_data.pbft_blk->rlp(true)),
                                                            make_finalization_transactions(period_data.transactions),
                                                            make_finalization_dag_blocks(period_data.dag_blocks));
@@ -392,8 +383,9 @@ bool FinalChain::dposIsEligible(EthBlockNumber blk_num, addr_t const& addr) cons
   return rust_final_chain_.value()->get_dpos_is_eligible(blk_num, into_address_array(addr));
 }
 
-vrf_wrapper::vrf_pk_t FinalChain::dposGetVrfKey(EthBlockNumber, const addr_t& addr) const {
-  auto rust_key = rust_final_chain_.value()->get_vrf_key(into_address_array(addr));
+vrf_wrapper::vrf_pk_t FinalChain::dposGetVrfKey(EthBlockNumber blk_n, const addr_t& addr) const {
+  auto rust_key =
+      rust_final_chain_.value()->get_vrf_key_at_block(static_cast<uint64_t>(blk_n), into_address_array(addr));
   if (rust_key.empty()) {
     return {};
   }

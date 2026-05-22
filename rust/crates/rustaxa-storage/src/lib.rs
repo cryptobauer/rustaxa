@@ -18,6 +18,7 @@ pub use dag::DagRepository;
 pub use db::Storage;
 pub use db::StorageWriteBatch;
 pub use error::StorageError;
+pub use final_chain::FinalChainExecutionStatus;
 pub use final_chain::FinalChainRepository;
 pub use metadata::MetadataRepository;
 pub use pbft::PbftRepository;
