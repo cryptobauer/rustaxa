@@ -4,6 +4,12 @@
 //! flow steps (validation, pillar-finalization check, anchor classification, etc.).
 //! Rust performs deterministic intent planning and returns bridge-safe flags and
 //! status codes so C++ can apply side effects explicitly.
+//!
+//! The finalized-period storage appender is the first native persistence cutover
+//! for this path. It appends the storage records that are already represented as
+//! stable keys and canonical bytes to a Rust storage batch supplied by the shim.
+//! Live VoteManager, sortition, FinalChain, dynamic-lambda, and PBFT runtime
+//! side effects remain caller-owned until their Rust transition APIs exist.
 
 use crate::ffi::rustaxa_ffi::{
     PbftFinalizationCleanupPlan as FfiPbftFinalizationCleanupPlan,
@@ -11,19 +17,290 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
     PbftFinalizationPositionedHash as FfiPbftFinalizationPositionedHash,
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
+    PbftFinalizedPeriodApplyResult as FfiPbftFinalizedPeriodApplyResult,
 };
+use crate::ffi::BridgeStorage;
+use anyhow::{anyhow, Context, Result};
 use ethereum_types::H256;
 use rustaxa_consensus::pbft_finalize::{
     plan_pbft_finalization_intent as plan_domain_pbft_finalization_intent,
     PbftFinalizationCleanupIntent, PbftFinalizationIntentFact, PbftFinalizationPlan,
     PbftFinalizationPositionedHash, PbftFinalizationStorageWriteIntent,
 };
+use rustaxa_storage::Column;
+
+const APPLY_STATUS_APPLIED: u8 = 0;
+const APPLY_STATUS_ALREADY_APPLIED_SAME_VALUES: u8 = 1;
+const APPLY_STATUS_REJECTED_WRITE_SET: u8 = 2;
+const APPLY_STATUS_MISSING_REQUIRED_PAYLOAD: u8 = 3;
+const APPLY_STATUS_CONFLICTING_EXISTING_WRITE: u8 = 4;
 
 /// C++/Rust bridge entry for one deterministic PBFT finalization intent.
 pub fn plan_pbft_finalization_intent(
     fact: FfiPbftFinalizationIntentFact,
 ) -> FfiPbftFinalizationIntentPlan {
     plan_domain_pbft_finalization_intent(fact.into()).into()
+}
+
+/// Appends Rust-owned finalized-period storage writes to an existing bridge batch.
+///
+/// Inputs:
+/// - `storage`: shared Rust storage bridge used by the C++ storage shim.
+/// - `batch_id`: an existing bridge batch id owned by the caller's `Batch`.
+/// - `write_set`: accepted PBFT finalization storage intent from the Rust planner.
+///
+/// Outputs:
+/// - `status` reports whether writes were appended, already present, rejected, or conflicted.
+/// - count fields report how many finalized DAG/transaction indexes were appended.
+///
+/// Invariants and edge behavior:
+/// - The function appends only primary finalized-period records: PBFT head,
+///   PBFT hash-to-period, period-data RLP, DAG finalized indexes, transaction
+///   finalized indexes, and deletes of pending DAG/transaction rows.
+/// - It does not commit the batch. C++ commits the same Rust-backed batch after
+///   adding still-C++-owned reward-vote and sortition writes, preserving the
+///   current atomic commit boundary.
+/// - Missing required payloads or conflicting existing immutable finalized
+///   records return a non-applied status and do not mutate the batch. `PbftHead`
+///   is mutable chain-head state and is intentionally replaced when present.
+/// - Storage backend or unknown-batch failures are returned as bridge errors.
+pub fn append_pbft_finalized_period_storage_writes(
+    storage: &BridgeStorage,
+    batch_id: u64,
+    write_set: &FfiPbftFinalizationStorageWritePlan,
+) -> Result<FfiPbftFinalizedPeriodApplyResult> {
+    if !write_set.persist_pbft_head && !write_set.persist_period_data {
+        return Ok(apply_result(
+            APPLY_STATUS_REJECTED_WRITE_SET,
+            write_set,
+            0,
+            0,
+            "PBFT_FINALIZE_REJECTED_WRITE_SET",
+        ));
+    }
+
+    if write_set.persist_pbft_head && write_set.pbft_head_payload.is_empty() {
+        return Ok(apply_result(
+            APPLY_STATUS_MISSING_REQUIRED_PAYLOAD,
+            write_set,
+            0,
+            0,
+            "PBFT_FINALIZE_MISSING_PBFT_HEAD_PAYLOAD",
+        ));
+    }
+
+    if write_set.persist_period_data && write_set.period_data_rlp.is_empty() {
+        return Ok(apply_result(
+            APPLY_STATUS_MISSING_REQUIRED_PAYLOAD,
+            write_set,
+            0,
+            0,
+            "PBFT_FINALIZE_MISSING_PERIOD_DATA_RLP",
+        ));
+    }
+
+    let mut already_applied = true;
+    let mut pending_deletes_absent = true;
+    let pbft_block_hash = H256::from(write_set.pbft_block_hash);
+    let pbft_head_hash = H256::from(write_set.pbft_head_hash);
+
+    if write_set.persist_pbft_head {
+        already_applied &= storage
+            .0
+            .get_raw(Column::PbftHead, pbft_head_hash.as_bytes())?
+            .as_deref()
+            == Some(write_set.pbft_head_payload.as_slice());
+    }
+
+    if write_set.persist_period_data {
+        let period_key = write_set.block_period.to_le_bytes();
+        let period_value = write_set.block_period.to_le_bytes();
+        if check_existing_value(
+            storage,
+            Column::PbftBlockPeriod,
+            pbft_block_hash.as_bytes(),
+            &period_value,
+            "PBFT_FINALIZE_CONFLICTING_PBFT_PERIOD",
+        )? {
+            return Ok(apply_result(
+                APPLY_STATUS_CONFLICTING_EXISTING_WRITE,
+                write_set,
+                0,
+                0,
+                "PBFT_FINALIZE_CONFLICTING_PBFT_PERIOD",
+            ));
+        }
+        already_applied &= storage
+            .0
+            .get_raw(Column::PbftBlockPeriod, pbft_block_hash.as_bytes())?
+            .is_some();
+
+        if check_existing_value(
+            storage,
+            Column::PeriodData,
+            &period_key,
+            &write_set.period_data_rlp,
+            "PBFT_FINALIZE_CONFLICTING_PERIOD_DATA",
+        )? {
+            return Ok(apply_result(
+                APPLY_STATUS_CONFLICTING_EXISTING_WRITE,
+                write_set,
+                0,
+                0,
+                "PBFT_FINALIZE_CONFLICTING_PERIOD_DATA",
+            ));
+        }
+        already_applied &= storage
+            .0
+            .get_raw(Column::PeriodData, &period_key)?
+            .is_some();
+
+        for write in &write_set.dag_block_period_writes {
+            let hash = H256::from(write.hash);
+            let value = block_position_rlp(write_set.block_period, write.position);
+            if check_existing_value(
+                storage,
+                Column::DagBlockPeriod,
+                hash.as_bytes(),
+                &value,
+                "PBFT_FINALIZE_CONFLICTING_DAG_PERIOD",
+            )? {
+                return Ok(apply_result(
+                    APPLY_STATUS_CONFLICTING_EXISTING_WRITE,
+                    write_set,
+                    0,
+                    0,
+                    "PBFT_FINALIZE_CONFLICTING_DAG_PERIOD",
+                ));
+            }
+            already_applied &= storage
+                .0
+                .get_raw(Column::DagBlockPeriod, hash.as_bytes())?
+                .is_some();
+            pending_deletes_absent &= storage
+                .0
+                .get_raw(Column::DagBlocks, hash.as_bytes())?
+                .is_none();
+        }
+
+        for write in &write_set.transaction_location_writes {
+            let hash = H256::from(write.hash);
+            let value = block_position_rlp(write_set.block_period, write.position);
+            if check_existing_value(
+                storage,
+                Column::TrxPeriod,
+                hash.as_bytes(),
+                &value,
+                "PBFT_FINALIZE_CONFLICTING_TRANSACTION_LOCATION",
+            )? {
+                return Ok(apply_result(
+                    APPLY_STATUS_CONFLICTING_EXISTING_WRITE,
+                    write_set,
+                    0,
+                    0,
+                    "PBFT_FINALIZE_CONFLICTING_TRANSACTION_LOCATION",
+                ));
+            }
+            already_applied &= storage
+                .0
+                .get_raw(Column::TrxPeriod, hash.as_bytes())?
+                .is_some();
+            pending_deletes_absent &= storage
+                .0
+                .get_raw(Column::Transactions, hash.as_bytes())?
+                .is_none();
+        }
+    }
+
+    {
+        let mut batches = storage
+            .1
+            .lock()
+            .map_err(|_| anyhow!("batch registry lock poisoned"))?;
+        let batch = batches
+            .get_mut(&batch_id)
+            .ok_or_else(|| anyhow!("unknown batch id: {batch_id}"))?;
+
+        if write_set.persist_pbft_head {
+            storage
+                .0
+                .batch_put_raw(
+                    batch,
+                    Column::PbftHead,
+                    pbft_head_hash.as_bytes(),
+                    &write_set.pbft_head_payload,
+                )
+                .context("PBFT_FINALIZE_BATCH_PBFT_HEAD")?;
+        }
+
+        if write_set.persist_period_data {
+            storage
+                .0
+                .batch_put_raw(
+                    batch,
+                    Column::PbftBlockPeriod,
+                    pbft_block_hash.as_bytes(),
+                    &write_set.block_period.to_le_bytes(),
+                )
+                .context("PBFT_FINALIZE_BATCH_PBFT_PERIOD")?;
+            storage
+                .0
+                .batch_put_raw(
+                    batch,
+                    Column::PeriodData,
+                    &write_set.block_period.to_le_bytes(),
+                    &write_set.period_data_rlp,
+                )
+                .context("PBFT_FINALIZE_BATCH_PERIOD_DATA")?;
+
+            for write in &write_set.dag_block_period_writes {
+                let hash = H256::from(write.hash);
+                storage
+                    .0
+                    .batch_delete_raw(batch, Column::DagBlocks, hash.as_bytes())
+                    .context("PBFT_FINALIZE_BATCH_DELETE_PENDING_DAG")?;
+                storage
+                    .0
+                    .batch_put_raw(
+                        batch,
+                        Column::DagBlockPeriod,
+                        hash.as_bytes(),
+                        &block_position_rlp(write_set.block_period, write.position),
+                    )
+                    .context("PBFT_FINALIZE_BATCH_DAG_PERIOD")?;
+            }
+
+            for write in &write_set.transaction_location_writes {
+                let hash = H256::from(write.hash);
+                storage
+                    .0
+                    .batch_delete_raw(batch, Column::Transactions, hash.as_bytes())
+                    .context("PBFT_FINALIZE_BATCH_DELETE_PENDING_TRANSACTION")?;
+                storage
+                    .0
+                    .batch_put_raw(
+                        batch,
+                        Column::TrxPeriod,
+                        hash.as_bytes(),
+                        &block_position_rlp(write_set.block_period, write.position),
+                    )
+                    .context("PBFT_FINALIZE_BATCH_TRANSACTION_LOCATION")?;
+            }
+        }
+    }
+
+    let status = if already_applied && pending_deletes_absent {
+        APPLY_STATUS_ALREADY_APPLIED_SAME_VALUES
+    } else {
+        APPLY_STATUS_APPLIED
+    };
+    Ok(apply_result(
+        status,
+        write_set,
+        write_set.dag_block_period_writes.len(),
+        write_set.transaction_location_writes.len(),
+        "",
+    ))
 }
 
 impl From<FfiPbftFinalizationIntentFact> for PbftFinalizationIntentFact {
@@ -50,6 +327,7 @@ impl From<FfiPbftFinalizationIntentFact> for PbftFinalizationIntentFact {
             last_saved_period_lambda: value.last_saved_period_lambda,
             dynamic_blocks_per_year: value.dynamic_blocks_per_year,
             dpos_blocks_per_year: value.dpos_blocks_per_year,
+            pbft_head_payload: value.pbft_head_payload,
             period_data_rlp: value.period_data_rlp,
             ordered_dag_block_hashes: value
                 .ordered_dag_block_hashes
@@ -103,6 +381,7 @@ impl From<PbftFinalizationStorageWriteIntent> for FfiPbftFinalizationStorageWrit
             period_lambda: value.period_lambda,
             blocks_per_year: value.blocks_per_year,
             executed_pbft_status: value.executed_pbft_status,
+            pbft_head_payload: value.pbft_head_payload,
             period_data_rlp: value.period_data_rlp,
             dag_block_period_writes: value
                 .dag_block_period_writes
@@ -115,6 +394,54 @@ impl From<PbftFinalizationStorageWriteIntent> for FfiPbftFinalizationStorageWrit
                 .map(Into::into)
                 .collect(),
         }
+    }
+}
+
+fn block_position_rlp(period: u64, position: u32) -> Vec<u8> {
+    let mut stream = rlp::RlpStream::new_list(2);
+    stream.append(&period);
+    stream.append(&position);
+    stream.out().to_vec()
+}
+
+fn check_existing_value(
+    storage: &BridgeStorage,
+    column: Column,
+    key: &[u8],
+    expected: &[u8],
+    error_code: &str,
+) -> Result<bool> {
+    if let Some(existing) = storage.0.get_raw(column, key)? {
+        if existing != expected {
+            let _ = error_code;
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn apply_result(
+    status: u8,
+    write_set: &FfiPbftFinalizationStorageWritePlan,
+    dag_index_writes: usize,
+    transaction_location_writes: usize,
+    error_code: &str,
+) -> FfiPbftFinalizedPeriodApplyResult {
+    FfiPbftFinalizedPeriodApplyResult {
+        status,
+        wrote_pbft_head: status != APPLY_STATUS_REJECTED_WRITE_SET
+            && status != APPLY_STATUS_MISSING_REQUIRED_PAYLOAD
+            && status != APPLY_STATUS_CONFLICTING_EXISTING_WRITE
+            && write_set.persist_pbft_head,
+        wrote_period_data: status != APPLY_STATUS_REJECTED_WRITE_SET
+            && status != APPLY_STATUS_MISSING_REQUIRED_PAYLOAD
+            && status != APPLY_STATUS_CONFLICTING_EXISTING_WRITE
+            && write_set.persist_period_data,
+        dag_index_writes,
+        transaction_location_writes,
+        block_period: write_set.block_period,
+        pbft_block_hash: write_set.pbft_block_hash,
+        error_code: error_code.to_string(),
     }
 }
 
@@ -144,8 +471,17 @@ impl From<PbftFinalizationPlan> for FfiPbftFinalizationIntentPlan {
 mod tests {
     use super::*;
     use crate::ffi::rustaxa_ffi::PbftFinalizationHash as FfiPbftFinalizationHash;
+    use crate::storage::create_storage;
     use rustaxa_consensus::pbft_finalize::PbftFinalizationAnchor::{Anchored, Null};
     use rustaxa_consensus::pbft_finalize::PbftFinalizationStatus;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    const APPLY_STATUS_APPLIED_TEST: u8 = 0;
+    const APPLY_STATUS_ALREADY_APPLIED_TEST: u8 = 1;
+    const APPLY_STATUS_MISSING_PAYLOAD_TEST: u8 = 3;
+    const APPLY_STATUS_CONFLICT_TEST: u8 = 4;
 
     fn fact() -> FfiPbftFinalizationIntentFact {
         FfiPbftFinalizationIntentFact {
@@ -170,6 +506,7 @@ mod tests {
             last_saved_period_lambda: 0,
             dynamic_blocks_per_year: 1_000,
             dpos_blocks_per_year: 500,
+            pbft_head_payload: br#"{"last":true}"#.to_vec(),
             period_data_rlp: vec![0xc0],
             ordered_dag_block_hashes: vec![
                 FfiPbftFinalizationHash { hash: [1; 32] },
@@ -177,6 +514,14 @@ mod tests {
             ],
             ordered_transaction_hashes: vec![FfiPbftFinalizationHash { hash: [3; 32] }],
         }
+    }
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be available")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{name}_{nonce}"))
     }
 
     #[test]
@@ -202,6 +547,10 @@ mod tests {
         assert_eq!(plan.storage_write_intent.reward_vote_block_hash, [7; 32]);
         assert_eq!(plan.storage_write_intent.period_lambda, 1_500);
         assert_eq!(plan.storage_write_intent.blocks_per_year, 1_000);
+        assert_eq!(
+            plan.storage_write_intent.pbft_head_payload,
+            br#"{"last":true}"#.to_vec()
+        );
         assert_eq!(plan.storage_write_intent.period_data_rlp, vec![0xc0]);
         assert_eq!(plan.storage_write_intent.dag_block_period_writes.len(), 2);
         assert_eq!(
@@ -232,5 +581,144 @@ mod tests {
             rejected_plan.status,
             PbftFinalizationStatus::PillarDependencyMissing.as_u8()
         );
+    }
+
+    #[test]
+    fn appends_finalized_period_storage_writes_to_existing_batch() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_finalization_apply");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+
+            let mut seed = storage.0.create_write_batch();
+            storage
+                .0
+                .batch_put_raw(&mut seed, Column::DagBlocks, &[2u8; 32], &[0xDA])
+                .expect("pending DAG block should seed");
+            storage
+                .0
+                .batch_put_raw(&mut seed, Column::Transactions, &[3u8; 32], &[0xD0])
+                .expect("pending transaction should seed");
+            storage
+                .0
+                .commit_write_batch_with_sync(seed, false)
+                .expect("seed batch should commit");
+
+            let plan = plan_pbft_finalization_intent(fact());
+            let batch_id = storage
+                .create_write_batch()
+                .expect("bridge batch should be created");
+            let result = append_pbft_finalized_period_storage_writes(
+                &storage,
+                batch_id,
+                &plan.storage_write_intent,
+            )
+            .expect("append should succeed");
+            assert_eq!(result.status, APPLY_STATUS_APPLIED_TEST);
+            assert!(result.wrote_pbft_head);
+            assert!(result.wrote_period_data);
+            assert_eq!(result.dag_index_writes, 2);
+            assert_eq!(result.transaction_location_writes, 1);
+            storage
+                .commit_write_batch(batch_id, false)
+                .expect("append batch should commit");
+
+            assert_eq!(
+                storage
+                    .get_pbft_head(&[8; 32])
+                    .expect("pbft head should load"),
+                br#"{"last":true}"#.to_vec()
+            );
+            assert_eq!(
+                storage
+                    .get_period_data_raw(10)
+                    .expect("period data should load"),
+                vec![0xc0]
+            );
+            assert!(storage
+                .0
+                .get_raw(Column::DagBlocks, &[2; 32])
+                .expect("pending DAG row lookup should succeed")
+                .is_none());
+            assert!(storage
+                .get_transaction(&[3; 32])
+                .expect("pending transaction row should be deleted")
+                .is_empty());
+            assert_eq!(
+                storage
+                    .get_dag_block_period_lookup(&[2; 32])
+                    .expect("DAG period lookup should load")
+                    .position,
+                1
+            );
+            assert!(!storage
+                .get_transaction_location(&[3; 32])
+                .expect("transaction location should load")
+                .is_empty());
+
+            let retry_batch = storage
+                .create_write_batch()
+                .expect("retry batch should be created");
+            let retry_result = append_pbft_finalized_period_storage_writes(
+                &storage,
+                retry_batch,
+                &plan.storage_write_intent,
+            )
+            .expect("idempotent append should succeed");
+            assert_eq!(retry_result.status, APPLY_STATUS_ALREADY_APPLIED_TEST);
+            storage
+                .drop_write_batch(retry_batch)
+                .expect("retry batch should drop");
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn rejects_missing_or_conflicting_finalized_period_payloads() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_finalization_reject");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let mut missing_plan = plan_pbft_finalization_intent(fact());
+            missing_plan.storage_write_intent.pbft_head_payload.clear();
+            let batch_id = storage
+                .create_write_batch()
+                .expect("bridge batch should be created");
+            let result = append_pbft_finalized_period_storage_writes(
+                &storage,
+                batch_id,
+                &missing_plan.storage_write_intent,
+            )
+            .expect("missing payload should return status");
+            assert_eq!(result.status, APPLY_STATUS_MISSING_PAYLOAD_TEST);
+            assert!(!result.wrote_pbft_head);
+            storage
+                .drop_write_batch(batch_id)
+                .expect("missing-payload batch should drop");
+
+            storage
+                .save_pbft_block_period(&[7; 32], 99)
+                .expect("conflicting PBFT block period should seed");
+            let plan = plan_pbft_finalization_intent(fact());
+            let batch_id = storage
+                .create_write_batch()
+                .expect("conflict batch should be created");
+            let result = append_pbft_finalized_period_storage_writes(
+                &storage,
+                batch_id,
+                &plan.storage_write_intent,
+            )
+            .expect("conflict should return status");
+            assert_eq!(result.status, APPLY_STATUS_CONFLICT_TEST);
+            assert_eq!(result.error_code, "PBFT_FINALIZE_CONFLICTING_PBFT_PERIOD");
+            storage
+                .drop_write_batch(batch_id)
+                .expect("conflict batch should drop");
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
     }
 }

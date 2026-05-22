@@ -562,6 +562,7 @@ pub mod rustaxa_ffi {
         last_saved_period_lambda: u32,
         dynamic_blocks_per_year: u32,
         dpos_blocks_per_year: u32,
+        pbft_head_payload: Vec<u8>,
         period_data_rlp: Vec<u8>,
         ordered_dag_block_hashes: Vec<PbftFinalizationHash>,
         ordered_transaction_hashes: Vec<PbftFinalizationHash>,
@@ -601,9 +602,22 @@ pub mod rustaxa_ffi {
         period_lambda: u32,
         blocks_per_year: u32,
         executed_pbft_status: bool,
+        pbft_head_payload: Vec<u8>,
         period_data_rlp: Vec<u8>,
         dag_block_period_writes: Vec<PbftFinalizationPositionedHash>,
         transaction_location_writes: Vec<PbftFinalizationPositionedHash>,
+    }
+
+    /// Result from appending Rust-owned finalized-period storage writes to an existing batch.
+    struct PbftFinalizedPeriodApplyResult {
+        status: u8,
+        wrote_pbft_head: bool,
+        wrote_period_data: bool,
+        dag_index_writes: usize,
+        transaction_location_writes: usize,
+        block_period: u64,
+        pbft_block_hash: [u8; 32],
+        error_code: String,
     }
 
     /// Bridge-safe PBFT finalization intent returned to the C++ shim.
@@ -2284,6 +2298,11 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_finalization_intent(
             fact: PbftFinalizationIntentFact,
         ) -> PbftFinalizationIntentPlan;
+        pub fn append_pbft_finalized_period_storage_writes(
+            storage: &BridgeStorage,
+            batch_id: u64,
+            write_set: &PbftFinalizationStorageWritePlan,
+        ) -> Result<PbftFinalizedPeriodApplyResult>;
 
         // Consensus proposed PBFT blocks
 

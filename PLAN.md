@@ -496,9 +496,11 @@ The current Rust starting point is intentionally small:
    side effects in the legacy order. Rust also now plans the native-ready PBFT finalization storage write set: the shim
    supplies PBFT head key, canonical period-data RLP, ordered finalized DAG hashes, reordered transaction hashes,
    certified-vote identity, and lambda facts, and Rust returns primary-batch write flags, positioned DAG/transaction
-   index writes, period-lambda persistence, executed-status persistence, and `blocks_per_year`. C++ still executes those
-   writes today, but the next DB-write slice can replace that executor with one Rust storage batch consuming the same
-   plan.
+   index writes, period-lambda persistence, executed-status persistence, and `blocks_per_year`. Rust now appends the
+   PBFT head, PBFT hash-to-period, period-data RLP, finalized DAG indexes, transaction indexes, and pending-row deletes
+   to the shim's Rust-backed storage batch. C++ still owns reward-vote reset, sortition writes, dynamic-lambda persistence,
+   executed-status persistence, FinalChain updates, and live PBFT runtime mutation until those sidecar APIs move across
+   the bridge.
    `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
    selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
    lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode

@@ -1,7 +1,10 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <string>
 #include <vector>
 
 #include "rustaxa-bridge/ffi.rs.h"
@@ -48,6 +51,8 @@ constexpr uint8_t kPbftFinalizationStatusBlockAlreadyInChain = 1;
 constexpr uint8_t kPbftFinalizationStatusPillarDependencyMissing = 4;
 constexpr uint8_t kPbftFinalizationStatusEmptyCertVotes = 5;
 constexpr uint8_t kPbftFinalizationStatusCertVoteBlockMismatch = 6;
+constexpr uint8_t kPbftFinalizedPeriodApplyStatusApplied = 0;
+constexpr uint8_t kPbftFinalizedPeriodApplyStatusMissingPayload = 3;
 
 PbftSyncPeriodAdmissionFact makeAdmissionFact() {
   PbftSyncPeriodAdmissionFact fact;
@@ -110,10 +115,36 @@ PbftFinalizationIntentFact makeFinalizationFact() {
   fact.last_saved_period_lambda = 0;
   fact.dynamic_blocks_per_year = 1000;
   fact.dpos_blocks_per_year = 500;
+  fact.pbft_head_payload = {'{', '"', 'h', 'e', 'a', 'd', '"', ':', 't', 'r', 'u', 'e', '}'};
   fact.period_data_rlp = {0xc0};
   fact.ordered_dag_block_hashes = {PbftFinalizationHash{h256(2)}, PbftFinalizationHash{h256(3)}};
   fact.ordered_transaction_hashes = {PbftFinalizationHash{h256(4)}};
   return fact;
+}
+
+std::filesystem::path uniqueTempDir(const std::string& name) {
+  const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+  auto path = std::filesystem::temp_directory_path() / (name + "_" + std::to_string(nonce));
+  std::filesystem::create_directories(path);
+  return path;
+}
+
+rust::Vec<uint8_t> bytes(std::initializer_list<uint8_t> values) {
+  rust::Vec<uint8_t> out;
+  out.reserve(values.size());
+  for (auto value : values) {
+    out.push_back(value);
+  }
+  return out;
+}
+
+rust::Vec<uint8_t> hashBytes(const std::array<uint8_t, 32>& hash) {
+  rust::Vec<uint8_t> out;
+  out.reserve(hash.size());
+  for (auto value : hash) {
+    out.push_back(value);
+  }
+  return out;
 }
 
 void expectNoFinalizationCleanup(const PbftFinalizationCleanupPlan& cleanup) {
@@ -137,6 +168,7 @@ void expectNoFinalizationStorageWrites(const PbftFinalizationStorageWritePlan& s
   EXPECT_FALSE(storage.apply_dynamic_lambda_update);
   EXPECT_FALSE(storage.persist_period_lambda);
   EXPECT_FALSE(storage.persist_executed_pbft_status);
+  EXPECT_TRUE(storage.pbft_head_payload.empty());
   EXPECT_TRUE(storage.period_data_rlp.empty());
   EXPECT_TRUE(storage.dag_block_period_writes.empty());
   EXPECT_TRUE(storage.transaction_location_writes.empty());
@@ -285,6 +317,9 @@ TEST(RustPbftSyncTest, FinalizationIntentAcceptsAnchoredBlockAndMapsCleanup) {
   EXPECT_EQ(plan.storage_write_intent.period_lambda, 1500);
   EXPECT_EQ(plan.storage_write_intent.blocks_per_year, 1000);
   EXPECT_TRUE(plan.storage_write_intent.executed_pbft_status);
+  EXPECT_EQ(std::vector<uint8_t>(plan.storage_write_intent.pbft_head_payload.begin(),
+                                 plan.storage_write_intent.pbft_head_payload.end()),
+            (std::vector<uint8_t>{'{', '"', 'h', 'e', 'a', 'd', '"', ':', 't', 'r', 'u', 'e', '}'}));
   ASSERT_EQ(plan.storage_write_intent.period_data_rlp.size(), 1);
   EXPECT_EQ(plan.storage_write_intent.period_data_rlp[0], 0xc0);
   ASSERT_EQ(plan.storage_write_intent.dag_block_period_writes.size(), 2);
@@ -365,4 +400,62 @@ TEST(RustPbftSyncTest, FinalizationIntentRejectsMalformedCertVoteFacts) {
   EXPECT_FALSE(plan.finalize_block);
   EXPECT_EQ(plan.status, kPbftFinalizationStatusCertVoteBlockMismatch);
   expectNoFinalizationStorageWrites(plan.storage_write_intent);
+}
+
+TEST(RustPbftSyncTest, FinalizedPeriodStorageAppenderWritesPrimaryBatch) {
+  constexpr uint8_t kDagBlocksColumn = 4;
+  constexpr uint8_t kTransactionsColumn = 6;
+  const auto test_dir = uniqueTempDir("rustaxa_pbft_finalized_period_apply");
+
+  auto storage = create_storage(test_dir.string());
+  auto seed_batch = storage->create_write_batch();
+  storage->batch_put(seed_batch, kDagBlocksColumn, hashBytes(h256(2)), bytes({0xda}));
+  storage->batch_put(seed_batch, kTransactionsColumn, hashBytes(h256(4)), bytes({0xd0}));
+  storage->commit_write_batch(seed_batch, false);
+
+  const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
+  auto batch_id = storage->create_write_batch();
+  const auto result =
+      append_pbft_finalized_period_storage_writes(*storage, batch_id, plan.storage_write_intent);
+
+  EXPECT_EQ(result.status, kPbftFinalizedPeriodApplyStatusApplied);
+  EXPECT_TRUE(result.wrote_pbft_head);
+  EXPECT_TRUE(result.wrote_period_data);
+  EXPECT_EQ(result.dag_index_writes, 2);
+  EXPECT_EQ(result.transaction_location_writes, 1);
+
+  storage->commit_write_batch(batch_id, false);
+
+  const auto pbft_head = storage->get_pbft_head(h256(8));
+  EXPECT_EQ(std::vector<uint8_t>(pbft_head.begin(), pbft_head.end()),
+            (std::vector<uint8_t>{'{', '"', 'h', 'e', 'a', 'd', '"', ':', 't', 'r', 'u', 'e', '}'}));
+  const auto period_data = storage->get_period_data_raw(101);
+  EXPECT_EQ(std::vector<uint8_t>(period_data.begin(), period_data.end()), (std::vector<uint8_t>{0xc0}));
+  EXPECT_TRUE(storage->get_transaction(h256(4)).empty());
+
+  const auto dag_lookup = storage->get_dag_block_period_lookup(h256(2));
+  EXPECT_TRUE(dag_lookup.found);
+  EXPECT_EQ(dag_lookup.period, 101);
+  EXPECT_EQ(dag_lookup.position, 0);
+  EXPECT_FALSE(storage->get_transaction_location(h256(4)).empty());
+
+  std::filesystem::remove_all(test_dir);
+}
+
+TEST(RustPbftSyncTest, FinalizedPeriodStorageAppenderRejectsMissingPayload) {
+  const auto test_dir = uniqueTempDir("rustaxa_pbft_finalized_period_missing_payload");
+  auto storage = create_storage(test_dir.string());
+  auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
+  plan.storage_write_intent.pbft_head_payload.clear();
+
+  auto batch_id = storage->create_write_batch();
+  const auto result =
+      append_pbft_finalized_period_storage_writes(*storage, batch_id, plan.storage_write_intent);
+
+  EXPECT_EQ(result.status, kPbftFinalizedPeriodApplyStatusMissingPayload);
+  EXPECT_FALSE(result.wrote_pbft_head);
+  EXPECT_FALSE(result.wrote_period_data);
+  storage->drop_write_batch(batch_id);
+
+  std::filesystem::remove_all(test_dir);
 }

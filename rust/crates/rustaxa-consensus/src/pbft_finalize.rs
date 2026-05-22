@@ -215,6 +215,12 @@ pub struct PbftFinalizationStorageWriteIntent {
     pub blocks_per_year: u32,
     /// Executed status value to persist.
     pub executed_pbft_status: bool,
+    /// Opaque PBFT head payload using the legacy-compatible JSON encoding.
+    ///
+    /// The C++ PBFT chain shim still owns this serialization while Rust owns
+    /// the storage write-set. Native persistence treats the bytes as canonical
+    /// payload and stores them under `pbft_head_hash` without reformatting.
+    pub pbft_head_payload: Vec<u8>,
     /// Canonical period-data RLP payload to write.
     pub period_data_rlp: Vec<u8>,
     /// Finalized DAG block period index writes in storage order.
@@ -244,6 +250,7 @@ impl PbftFinalizationStorageWriteIntent {
             period_lambda: 0,
             blocks_per_year: 0,
             executed_pbft_status: false,
+            pbft_head_payload: Vec::new(),
             period_data_rlp: Vec::new(),
             dag_block_period_writes: Vec::new(),
             transaction_location_writes: Vec::new(),
@@ -296,6 +303,8 @@ pub struct PbftFinalizationIntentFact {
     pub dynamic_blocks_per_year: u32,
     /// Genesis-configured pre-Cacti blocks-per-year value.
     pub dpos_blocks_per_year: u32,
+    /// Legacy-compatible PBFT head payload for native Rust storage writes.
+    pub pbft_head_payload: Vec<u8>,
     /// Canonical period-data RLP payload that native Rust storage will write.
     pub period_data_rlp: Vec<u8>,
     /// Ordered finalized DAG block hashes.
@@ -368,6 +377,7 @@ impl PbftFinalizationPlan {
                 period_lambda: fact.block_lambda,
                 blocks_per_year,
                 executed_pbft_status: true,
+                pbft_head_payload: fact.pbft_head_payload,
                 period_data_rlp: fact.period_data_rlp,
                 dag_block_period_writes: positioned_hashes(fact.ordered_dag_block_hashes),
                 transaction_location_writes: positioned_hashes(fact.ordered_transaction_hashes),
@@ -414,7 +424,7 @@ pub fn plan_pbft_finalization_intent(fact: PbftFinalizationIntentFact) -> PbftFi
         return PbftFinalizationPlan::reject(PbftFinalizationStatus::CertVoteBlockMismatch, anchor);
     }
 
-    if fact.period_data_rlp.is_empty() {
+    if fact.pbft_head_payload.is_empty() || fact.period_data_rlp.is_empty() {
         return PbftFinalizationPlan::reject(
             PbftFinalizationStatus::StorageFactsIncomplete,
             anchor,
@@ -481,6 +491,7 @@ mod tests {
             last_saved_period_lambda: 0,
             dynamic_blocks_per_year: 1_000,
             dpos_blocks_per_year: 500,
+            pbft_head_payload: br#"{"head":true}"#.to_vec(),
             period_data_rlp: vec![0xc0],
             ordered_dag_block_hashes: vec![hash(1), hash(2)],
             ordered_transaction_hashes: vec![hash(3), hash(4)],
@@ -515,6 +526,10 @@ mod tests {
         assert_eq!(plan.storage_write_intent.period_lambda, 1_500);
         assert_eq!(plan.storage_write_intent.blocks_per_year, 1_000);
         assert!(plan.storage_write_intent.executed_pbft_status);
+        assert_eq!(
+            plan.storage_write_intent.pbft_head_payload,
+            br#"{"head":true}"#.to_vec()
+        );
         assert_eq!(plan.storage_write_intent.period_data_rlp, vec![0xc0]);
         assert_eq!(
             plan.storage_write_intent.dag_block_period_writes,
@@ -628,6 +643,15 @@ mod tests {
         assert_eq!(plan.status, PbftFinalizationStatus::StorageFactsIncomplete);
         assert!(plan.storage_write_intent.period_data_rlp.is_empty());
         assert!(plan.storage_write_intent.dag_block_period_writes.is_empty());
+
+        let mut fact = accepted_fact();
+        fact.pbft_head_payload.clear();
+
+        let plan = plan_pbft_finalization_intent(fact);
+
+        assert!(!plan.finalize_block);
+        assert_eq!(plan.status, PbftFinalizationStatus::StorageFactsIncomplete);
+        assert!(plan.storage_write_intent.pbft_head_payload.is_empty());
     }
 
     #[test]

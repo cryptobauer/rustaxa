@@ -282,6 +282,8 @@ rustaxa::BridgeStorage& DbStorage::rustStorage() { return *rust_storage_.value()
 
 const rustaxa::BridgeStorage& DbStorage::rustStorage() const { return *rust_storage_.value(); }
 
+uint64_t DbStorage::rustBatchId(Batch& batch) { return getOrCreateRustBatch(batch); }
+
 void DbStorage::setGenesisHash(const h256& genesis_hash) {
   auto bytes = into_bytes_array(genesis_hash);
   rust_storage_.value()->set_genesis_hash(bytes);
