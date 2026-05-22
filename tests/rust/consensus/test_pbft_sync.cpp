@@ -41,6 +41,11 @@ constexpr uint8_t kPbftSyncNextCheckCheckRewardVotes = 2;
 constexpr uint8_t kPbftSyncNextCheckCheckTransactions = 4;
 constexpr uint8_t kPbftSyncTransactionWarningMissing = 1;
 constexpr uint8_t kPbftSyncTransactionWarningFinalized = 2;
+constexpr uint8_t kPbftFinalizationAnchorNull = 0;
+constexpr uint8_t kPbftFinalizationAnchorAnchored = 1;
+constexpr uint8_t kPbftFinalizationStatusAccepted = 0;
+constexpr uint8_t kPbftFinalizationStatusBlockAlreadyInChain = 1;
+constexpr uint8_t kPbftFinalizationStatusPillarDependencyMissing = 4;
 
 PbftSyncPeriodAdmissionFact makeAdmissionFact() {
   PbftSyncPeriodAdmissionFact fact;
@@ -77,6 +82,20 @@ PbftSyncProcessPeriodDataRuntimeFact makeRuntimeFact() {
   fact.pillar_votes_status = kPbftSyncFactNotChecked;
   fact.previous_cert_votes_present = true;
   fact.previous_cert_first_vote_has_weight = false;
+  return fact;
+}
+
+PbftFinalizationIntentFact makeFinalizationFact() {
+  PbftFinalizationIntentFact fact;
+  fact.block_period = 101;
+  fact.block_prev_hash = h256(1);
+  fact.chain_last_hash = h256(1);
+  fact.chain_last_period = 100;
+  fact.block_in_chain = false;
+  fact.pivot_dag_anchor_hash = h256(8);
+  fact.has_pillar_block = false;
+  fact.pillar_block_finalized = false;
+  fact.request_dynamic_lambda_update = true;
   return fact;
 }
 
@@ -186,4 +205,53 @@ TEST(RustPbftSyncTest, ProcessPeriodRuntimeWaitsAndAccepts) {
   ASSERT_EQ(plan.warnings.size(), 1);
   EXPECT_EQ(plan.warnings[0].kind, kPbftSyncTransactionWarningMissing);
   EXPECT_TRUE(plan.contains_finalized_transaction_warning);
+}
+
+TEST(RustPbftSyncTest, FinalizationIntentAcceptsAnchoredBlockAndMapsCleanup) {
+  const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
+
+  EXPECT_TRUE(plan.finalize_block);
+  EXPECT_EQ(plan.anchor, kPbftFinalizationAnchorAnchored);
+  EXPECT_EQ(plan.status, kPbftFinalizationStatusAccepted);
+  EXPECT_TRUE(plan.executed_pbft_block);
+  EXPECT_TRUE(plan.cleanup.persist_pbft_block_metadata);
+  EXPECT_TRUE(plan.cleanup.reset_reward_votes);
+  EXPECT_TRUE(plan.cleanup.set_dag_block_order);
+  EXPECT_TRUE(plan.cleanup.update_sortition_params);
+  EXPECT_TRUE(plan.cleanup.update_finalized_transactions_status);
+  EXPECT_TRUE(plan.cleanup.update_pbft_chain);
+  EXPECT_TRUE(plan.cleanup.clear_anchor_dag_cache);
+  EXPECT_TRUE(plan.cleanup.finalize_final_chain);
+  EXPECT_TRUE(plan.cleanup.maybe_update_dynamic_lambda);
+  EXPECT_TRUE(plan.cleanup.advance_period);
+}
+
+TEST(RustPbftSyncTest, FinalizationIntentClassifiesNullAnchorAndRejectsExplicitly) {
+  auto fact = makeFinalizationFact();
+  fact.pivot_dag_anchor_hash = h256(0);
+  fact.request_dynamic_lambda_update = false;
+
+  auto plan = plan_pbft_finalization_intent(std::move(fact));
+
+  EXPECT_TRUE(plan.finalize_block);
+  EXPECT_EQ(plan.anchor, kPbftFinalizationAnchorNull);
+  EXPECT_FALSE(plan.cleanup.update_sortition_params);
+  EXPECT_FALSE(plan.cleanup.maybe_update_dynamic_lambda);
+
+  fact = makeFinalizationFact();
+  fact.block_in_chain = true;
+  plan = plan_pbft_finalization_intent(std::move(fact));
+
+  EXPECT_FALSE(plan.finalize_block);
+  EXPECT_EQ(plan.status, kPbftFinalizationStatusBlockAlreadyInChain);
+  EXPECT_FALSE(plan.cleanup.advance_period);
+
+  fact = makeFinalizationFact();
+  fact.has_pillar_block = true;
+  fact.pillar_block_finalized = false;
+  plan = plan_pbft_finalization_intent(std::move(fact));
+
+  EXPECT_FALSE(plan.finalize_block);
+  EXPECT_EQ(plan.status, kPbftFinalizationStatusPillarDependencyMissing);
+  EXPECT_FALSE(plan.cleanup.finalize_final_chain);
 }

@@ -3,6 +3,7 @@ mod ffi;
 mod final_chain;
 mod gas_pricer;
 mod pbft_chain;
+mod pbft_finalize;
 mod pbft_sync;
 mod period_data_queue;
 mod pillar_votes;

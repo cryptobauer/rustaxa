@@ -490,7 +490,10 @@ The current Rust starting point is intentionally small:
    transactions, pillar data, or pillar votes until all required facts are present, then returns accept/drop/wait/report
    side-effect intent. This keeps sleeps, queue mutation, peer reporting, live vote/transaction managers, and
    `PeriodData` materialization in the shim while making `NotChecked` facts explicit runtime work rather than implicit
-   acceptance.
+   acceptance. PBFT finalization execution now has a Rust-planned intent contract as well: the shim supplies accepted
+   block, PBFT head, anchor, pillar-finalization, and dynamic-lambda facts, and Rust returns explicit cleanup/finalize/
+   advance-period flags before C++ applies the existing DB, DAG, transaction-manager, PBFT-chain, FinalChain, and timer
+   side effects in the legacy order.
    `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
    selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
    lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode

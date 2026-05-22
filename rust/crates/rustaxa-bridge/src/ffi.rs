@@ -2,6 +2,7 @@ use crate::dag::*;
 use crate::final_chain::*;
 use crate::gas_pricer::*;
 use crate::pbft_chain::*;
+use crate::pbft_finalize::*;
 use crate::pbft_sync::*;
 use crate::period_data_queue::*;
 use crate::pillar_votes::*;
@@ -525,6 +526,42 @@ pub mod rustaxa_ffi {
         transaction_query_plan: PbftSyncTransactionQueryPlan,
         warnings: Vec<PbftSyncTransactionWarning>,
         contains_finalized_transaction_warning: bool,
+    }
+
+    /// C++-originated fact bundle for deterministic PBFT finalization intent planning.
+    struct PbftFinalizationIntentFact {
+        block_period: u64,
+        block_prev_hash: [u8; 32],
+        chain_last_hash: [u8; 32],
+        chain_last_period: u64,
+        block_in_chain: bool,
+        pivot_dag_anchor_hash: [u8; 32],
+        has_pillar_block: bool,
+        pillar_block_finalized: bool,
+        request_dynamic_lambda_update: bool,
+    }
+
+    /// Rust-planned cleanup flags for the PBFT finalization side-effect sequence.
+    struct PbftFinalizationCleanupPlan {
+        persist_pbft_block_metadata: bool,
+        reset_reward_votes: bool,
+        set_dag_block_order: bool,
+        update_sortition_params: bool,
+        update_finalized_transactions_status: bool,
+        update_pbft_chain: bool,
+        clear_anchor_dag_cache: bool,
+        finalize_final_chain: bool,
+        maybe_update_dynamic_lambda: bool,
+        advance_period: bool,
+    }
+
+    /// Bridge-safe PBFT finalization intent returned to the C++ shim.
+    struct PbftFinalizationIntentPlan {
+        finalize_block: bool,
+        anchor: u8,
+        executed_pbft_block: bool,
+        status: u8,
+        cleanup: PbftFinalizationCleanupPlan,
     }
 
     struct PbftBlockValidationResult {
@@ -2192,6 +2229,9 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_sync_process_period_data_runtime(
             fact: PbftSyncProcessPeriodDataRuntimeFact,
         ) -> PbftSyncProcessPeriodDataRuntimePlan;
+        pub fn plan_pbft_finalization_intent(
+            fact: PbftFinalizationIntentFact,
+        ) -> PbftFinalizationIntentPlan;
 
         // Consensus proposed PBFT blocks
 

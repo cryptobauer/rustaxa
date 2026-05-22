@@ -1,6 +1,7 @@
 pub mod dag;
 pub mod gas_pricer;
 pub mod pbft_chain;
+pub mod pbft_finalize;
 pub mod pbft_sync;
 pub mod period_data_queue;
 pub mod pillar_votes;
@@ -16,6 +17,10 @@ mod final_chain;
 pub use final_chain::FinalChain;
 pub use gas_pricer::{GasPriceOracle, GasPricerConfig};
 pub use pbft_chain::PbftChain;
+pub use pbft_finalize::{
+    PbftFinalizationAnchor, PbftFinalizationCleanupIntent, PbftFinalizationIntentFact,
+    PbftFinalizationPlan, PbftFinalizationStatus, plan_pbft_finalization_intent,
+};
 pub use pbft_sync::{
     PbftSyncFactStatus, PbftSyncFinalChainHashStatus, PbftSyncPeriodAdmissionDecision,
     PbftSyncPeriodAdmissionFact, PbftSyncPeriodAdmissionPlan, PbftSyncPeriodAdmissionStatus,
