@@ -529,7 +529,20 @@ pub mod rustaxa_ffi {
     }
 
     /// C++-originated fact bundle for deterministic PBFT finalization intent planning.
+    struct PbftFinalizationHash {
+        hash: [u8; 32],
+    }
+
+    /// Hash plus finalized-position metadata for native-ready storage indexes.
+    struct PbftFinalizationPositionedHash {
+        hash: [u8; 32],
+        position: u32,
+    }
+
+    /// C++-originated fact bundle for deterministic PBFT finalization intent planning.
     struct PbftFinalizationIntentFact {
+        block_hash: [u8; 32],
+        pbft_head_hash: [u8; 32],
         block_period: u64,
         block_prev_hash: [u8; 32],
         chain_last_hash: [u8; 32],
@@ -539,6 +552,19 @@ pub mod rustaxa_ffi {
         has_pillar_block: bool,
         pillar_block_finalized: bool,
         request_dynamic_lambda_update: bool,
+        cert_vote_count: u64,
+        sample_cert_vote_block_hash: [u8; 32],
+        sample_cert_vote_period: u64,
+        sample_cert_vote_round: u64,
+        sample_cert_vote_step: u64,
+        block_lambda: u32,
+        last_saved_period_lambda_found: bool,
+        last_saved_period_lambda: u32,
+        dynamic_blocks_per_year: u32,
+        dpos_blocks_per_year: u32,
+        period_data_rlp: Vec<u8>,
+        ordered_dag_block_hashes: Vec<PbftFinalizationHash>,
+        ordered_transaction_hashes: Vec<PbftFinalizationHash>,
     }
 
     /// Rust-planned cleanup flags for the PBFT finalization side-effect sequence.
@@ -555,6 +581,31 @@ pub mod rustaxa_ffi {
         advance_period: bool,
     }
 
+    /// Rust-planned storage-write flags for PBFT finalization persistence planning.
+    struct PbftFinalizationStorageWritePlan {
+        persist_pbft_head: bool,
+        persist_period_data: bool,
+        reset_reward_votes: bool,
+        update_sortition_params: bool,
+        apply_dynamic_lambda_update: bool,
+        persist_period_lambda: bool,
+        persist_executed_pbft_status: bool,
+        pbft_block_hash: [u8; 32],
+        pbft_head_hash: [u8; 32],
+        block_period: u64,
+        null_anchor: bool,
+        reward_vote_period: u64,
+        reward_vote_round: u64,
+        reward_vote_step: u64,
+        reward_vote_block_hash: [u8; 32],
+        period_lambda: u32,
+        blocks_per_year: u32,
+        executed_pbft_status: bool,
+        period_data_rlp: Vec<u8>,
+        dag_block_period_writes: Vec<PbftFinalizationPositionedHash>,
+        transaction_location_writes: Vec<PbftFinalizationPositionedHash>,
+    }
+
     /// Bridge-safe PBFT finalization intent returned to the C++ shim.
     struct PbftFinalizationIntentPlan {
         finalize_block: bool,
@@ -562,6 +613,7 @@ pub mod rustaxa_ffi {
         executed_pbft_block: bool,
         status: u8,
         cleanup: PbftFinalizationCleanupPlan,
+        storage_write_intent: PbftFinalizationStorageWritePlan,
     }
 
     struct PbftBlockValidationResult {

@@ -19,7 +19,8 @@ pub use gas_pricer::{GasPriceOracle, GasPricerConfig};
 pub use pbft_chain::PbftChain;
 pub use pbft_finalize::{
     PbftFinalizationAnchor, PbftFinalizationCleanupIntent, PbftFinalizationIntentFact,
-    PbftFinalizationPlan, PbftFinalizationStatus, plan_pbft_finalization_intent,
+    PbftFinalizationPlan, PbftFinalizationPositionedHash, PbftFinalizationStatus,
+    PbftFinalizationStorageWriteIntent, plan_pbft_finalization_intent,
 };
 pub use pbft_sync::{
     PbftSyncFactStatus, PbftSyncFinalChainHashStatus, PbftSyncPeriodAdmissionDecision,

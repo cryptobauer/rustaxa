@@ -493,7 +493,12 @@ The current Rust starting point is intentionally small:
    acceptance. PBFT finalization execution now has a Rust-planned intent contract as well: the shim supplies accepted
    block, PBFT head, anchor, pillar-finalization, and dynamic-lambda facts, and Rust returns explicit cleanup/finalize/
    advance-period flags before C++ applies the existing DB, DAG, transaction-manager, PBFT-chain, FinalChain, and timer
-   side effects in the legacy order.
+   side effects in the legacy order. Rust also now plans the native-ready PBFT finalization storage write set: the shim
+   supplies PBFT head key, canonical period-data RLP, ordered finalized DAG hashes, reordered transaction hashes,
+   certified-vote identity, and lambda facts, and Rust returns primary-batch write flags, positioned DAG/transaction
+   index writes, period-lambda persistence, executed-status persistence, and `blocks_per_year`. C++ still executes those
+   writes today, but the next DB-write slice can replace that executor with one Rust storage batch consuming the same
+   plan.
    `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
    selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
    lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode

@@ -46,6 +46,8 @@ constexpr uint8_t kPbftFinalizationAnchorAnchored = 1;
 constexpr uint8_t kPbftFinalizationStatusAccepted = 0;
 constexpr uint8_t kPbftFinalizationStatusBlockAlreadyInChain = 1;
 constexpr uint8_t kPbftFinalizationStatusPillarDependencyMissing = 4;
+constexpr uint8_t kPbftFinalizationStatusEmptyCertVotes = 5;
+constexpr uint8_t kPbftFinalizationStatusCertVoteBlockMismatch = 6;
 
 PbftSyncPeriodAdmissionFact makeAdmissionFact() {
   PbftSyncPeriodAdmissionFact fact;
@@ -87,6 +89,8 @@ PbftSyncProcessPeriodDataRuntimeFact makeRuntimeFact() {
 
 PbftFinalizationIntentFact makeFinalizationFact() {
   PbftFinalizationIntentFact fact;
+  fact.block_hash = h256(9);
+  fact.pbft_head_hash = h256(8);
   fact.block_period = 101;
   fact.block_prev_hash = h256(1);
   fact.chain_last_hash = h256(1);
@@ -96,7 +100,46 @@ PbftFinalizationIntentFact makeFinalizationFact() {
   fact.has_pillar_block = false;
   fact.pillar_block_finalized = false;
   fact.request_dynamic_lambda_update = true;
+  fact.cert_vote_count = 3;
+  fact.sample_cert_vote_block_hash = h256(9);
+  fact.sample_cert_vote_period = 101;
+  fact.sample_cert_vote_round = 2;
+  fact.sample_cert_vote_step = 5;
+  fact.block_lambda = 1500;
+  fact.last_saved_period_lambda_found = false;
+  fact.last_saved_period_lambda = 0;
+  fact.dynamic_blocks_per_year = 1000;
+  fact.dpos_blocks_per_year = 500;
+  fact.period_data_rlp = {0xc0};
+  fact.ordered_dag_block_hashes = {PbftFinalizationHash{h256(2)}, PbftFinalizationHash{h256(3)}};
+  fact.ordered_transaction_hashes = {PbftFinalizationHash{h256(4)}};
   return fact;
+}
+
+void expectNoFinalizationCleanup(const PbftFinalizationCleanupPlan& cleanup) {
+  EXPECT_FALSE(cleanup.persist_pbft_block_metadata);
+  EXPECT_FALSE(cleanup.reset_reward_votes);
+  EXPECT_FALSE(cleanup.set_dag_block_order);
+  EXPECT_FALSE(cleanup.update_sortition_params);
+  EXPECT_FALSE(cleanup.update_finalized_transactions_status);
+  EXPECT_FALSE(cleanup.update_pbft_chain);
+  EXPECT_FALSE(cleanup.clear_anchor_dag_cache);
+  EXPECT_FALSE(cleanup.finalize_final_chain);
+  EXPECT_FALSE(cleanup.maybe_update_dynamic_lambda);
+  EXPECT_FALSE(cleanup.advance_period);
+}
+
+void expectNoFinalizationStorageWrites(const PbftFinalizationStorageWritePlan& storage) {
+  EXPECT_FALSE(storage.persist_pbft_head);
+  EXPECT_FALSE(storage.persist_period_data);
+  EXPECT_FALSE(storage.reset_reward_votes);
+  EXPECT_FALSE(storage.update_sortition_params);
+  EXPECT_FALSE(storage.apply_dynamic_lambda_update);
+  EXPECT_FALSE(storage.persist_period_lambda);
+  EXPECT_FALSE(storage.persist_executed_pbft_status);
+  EXPECT_TRUE(storage.period_data_rlp.empty());
+  EXPECT_TRUE(storage.dag_block_period_writes.empty());
+  EXPECT_TRUE(storage.transaction_location_writes.empty());
 }
 
 }  // namespace
@@ -224,6 +267,47 @@ TEST(RustPbftSyncTest, FinalizationIntentAcceptsAnchoredBlockAndMapsCleanup) {
   EXPECT_TRUE(plan.cleanup.finalize_final_chain);
   EXPECT_TRUE(plan.cleanup.maybe_update_dynamic_lambda);
   EXPECT_TRUE(plan.cleanup.advance_period);
+  EXPECT_TRUE(plan.storage_write_intent.persist_pbft_head);
+  EXPECT_TRUE(plan.storage_write_intent.persist_period_data);
+  EXPECT_TRUE(plan.storage_write_intent.reset_reward_votes);
+  EXPECT_TRUE(plan.storage_write_intent.update_sortition_params);
+  EXPECT_TRUE(plan.storage_write_intent.apply_dynamic_lambda_update);
+  EXPECT_TRUE(plan.storage_write_intent.persist_period_lambda);
+  EXPECT_TRUE(plan.storage_write_intent.persist_executed_pbft_status);
+  EXPECT_EQ(plan.storage_write_intent.pbft_block_hash, h256(9));
+  EXPECT_EQ(plan.storage_write_intent.pbft_head_hash, h256(8));
+  EXPECT_EQ(plan.storage_write_intent.block_period, 101);
+  EXPECT_FALSE(plan.storage_write_intent.null_anchor);
+  EXPECT_EQ(plan.storage_write_intent.reward_vote_period, 101);
+  EXPECT_EQ(plan.storage_write_intent.reward_vote_round, 2);
+  EXPECT_EQ(plan.storage_write_intent.reward_vote_step, 5);
+  EXPECT_EQ(plan.storage_write_intent.reward_vote_block_hash, h256(9));
+  EXPECT_EQ(plan.storage_write_intent.period_lambda, 1500);
+  EXPECT_EQ(plan.storage_write_intent.blocks_per_year, 1000);
+  EXPECT_TRUE(plan.storage_write_intent.executed_pbft_status);
+  ASSERT_EQ(plan.storage_write_intent.period_data_rlp.size(), 1);
+  EXPECT_EQ(plan.storage_write_intent.period_data_rlp[0], 0xc0);
+  ASSERT_EQ(plan.storage_write_intent.dag_block_period_writes.size(), 2);
+  EXPECT_EQ(plan.storage_write_intent.dag_block_period_writes[0].hash, h256(2));
+  EXPECT_EQ(plan.storage_write_intent.dag_block_period_writes[0].position, 0);
+  EXPECT_EQ(plan.storage_write_intent.dag_block_period_writes[1].hash, h256(3));
+  EXPECT_EQ(plan.storage_write_intent.dag_block_period_writes[1].position, 1);
+  ASSERT_EQ(plan.storage_write_intent.transaction_location_writes.size(), 1);
+  EXPECT_EQ(plan.storage_write_intent.transaction_location_writes[0].hash, h256(4));
+  EXPECT_EQ(plan.storage_write_intent.transaction_location_writes[0].position, 0);
+}
+
+TEST(RustPbftSyncTest, FinalizationIntentRejectsAlreadyPersistedBlock) {
+  auto fact = makeFinalizationFact();
+  fact.block_in_chain = true;
+
+  const auto plan = plan_pbft_finalization_intent(std::move(fact));
+
+  EXPECT_FALSE(plan.finalize_block);
+  EXPECT_EQ(plan.status, kPbftFinalizationStatusBlockAlreadyInChain);
+  EXPECT_FALSE(plan.executed_pbft_block);
+  expectNoFinalizationCleanup(plan.cleanup);
+  expectNoFinalizationStorageWrites(plan.storage_write_intent);
 }
 
 TEST(RustPbftSyncTest, FinalizationIntentClassifiesNullAnchorAndRejectsExplicitly) {
@@ -237,6 +321,11 @@ TEST(RustPbftSyncTest, FinalizationIntentClassifiesNullAnchorAndRejectsExplicitl
   EXPECT_EQ(plan.anchor, kPbftFinalizationAnchorNull);
   EXPECT_FALSE(plan.cleanup.update_sortition_params);
   EXPECT_FALSE(plan.cleanup.maybe_update_dynamic_lambda);
+  EXPECT_FALSE(plan.storage_write_intent.update_sortition_params);
+  EXPECT_FALSE(plan.storage_write_intent.apply_dynamic_lambda_update);
+  EXPECT_FALSE(plan.storage_write_intent.persist_period_lambda);
+  EXPECT_TRUE(plan.storage_write_intent.null_anchor);
+  EXPECT_EQ(plan.storage_write_intent.blocks_per_year, 500);
 
   fact = makeFinalizationFact();
   fact.block_in_chain = true;
@@ -245,6 +334,7 @@ TEST(RustPbftSyncTest, FinalizationIntentClassifiesNullAnchorAndRejectsExplicitl
   EXPECT_FALSE(plan.finalize_block);
   EXPECT_EQ(plan.status, kPbftFinalizationStatusBlockAlreadyInChain);
   EXPECT_FALSE(plan.cleanup.advance_period);
+  expectNoFinalizationStorageWrites(plan.storage_write_intent);
 
   fact = makeFinalizationFact();
   fact.has_pillar_block = true;
@@ -254,4 +344,25 @@ TEST(RustPbftSyncTest, FinalizationIntentClassifiesNullAnchorAndRejectsExplicitl
   EXPECT_FALSE(plan.finalize_block);
   EXPECT_EQ(plan.status, kPbftFinalizationStatusPillarDependencyMissing);
   EXPECT_FALSE(plan.cleanup.finalize_final_chain);
+  expectNoFinalizationCleanup(plan.cleanup);
+  expectNoFinalizationStorageWrites(plan.storage_write_intent);
+}
+
+TEST(RustPbftSyncTest, FinalizationIntentRejectsMalformedCertVoteFacts) {
+  auto fact = makeFinalizationFact();
+  fact.cert_vote_count = 0;
+
+  auto plan = plan_pbft_finalization_intent(std::move(fact));
+
+  EXPECT_FALSE(plan.finalize_block);
+  EXPECT_EQ(plan.status, kPbftFinalizationStatusEmptyCertVotes);
+  expectNoFinalizationStorageWrites(plan.storage_write_intent);
+
+  fact = makeFinalizationFact();
+  fact.sample_cert_vote_block_hash = h256(10);
+  plan = plan_pbft_finalization_intent(std::move(fact));
+
+  EXPECT_FALSE(plan.finalize_block);
+  EXPECT_EQ(plan.status, kPbftFinalizationStatusCertVoteBlockMismatch);
+  expectNoFinalizationStorageWrites(plan.storage_write_intent);
 }
