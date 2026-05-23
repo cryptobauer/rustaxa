@@ -616,6 +616,9 @@ pub mod rustaxa_ffi {
         sortition_params_change_period: u64,
         sortition_params_change_interval_efficiency: u16,
         sortition_params_change_threshold_upper: u16,
+        has_reward_votes_reset: bool,
+        reward_votes_bundle_rlp: Vec<u8>,
+        extra_reward_vote_hashes: Vec<PbftFinalizationHash>,
     }
 
     /// Result from appending Rust-owned finalized-period storage writes to an existing batch.

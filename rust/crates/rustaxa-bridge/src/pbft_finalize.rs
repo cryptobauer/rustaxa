@@ -40,8 +40,10 @@ const APPEND_STAGE_PRIMARY_FINALIZATION: u8 = 0;
 const APPEND_STAGE_DYNAMIC_LAMBDA: u8 = 1;
 const APPEND_STAGE_EXECUTED_STATUS: u8 = 2;
 const APPEND_STAGE_SORTITION_PARAMS_CHANGE: u8 = 3;
+const APPEND_STAGE_REWARD_VOTES_RESET: u8 = 4;
 const PBFT_MGR_FIELD_LAMBDA: u8 = 2;
 const PBFT_MGR_STATUS_EXECUTED_BLOCK: u8 = 0;
+const PBFT_TWO_T_PLUS_ONE_CERT_VOTED_TYPE: u8 = 1;
 const SINGLE_VALUE_KEY: [u8; 4] = 0i32.to_le_bytes();
 
 /// Appends one explicit PBFT finalization persistence stage to an existing Rust
@@ -52,6 +54,7 @@ const SINGLE_VALUE_KEY: [u8; 4] = 0i32.to_le_bytes();
 /// - `1`: dynamic-lambda post-adjustment writes.
 /// - `2`: executed-status write after FinalChain dispatch.
 /// - `3`: sortition params-change write emitted by the Rust sortition runtime.
+/// - `4`: reward-vote reset write emitted by the reward-vote reset path.
 ///
 /// `write_set` is validated for stage compatibility; unknown stages return
 /// `APPLY_STATUS_REJECTED_WRITE_SET`.
@@ -82,6 +85,11 @@ pub fn append_pbft_finalization_storage_write(
                 storage, batch_id, write_set, &stage,
             )
         }
+        APPEND_STAGE_REWARD_VOTES_RESET => {
+            append_pbft_finalization_reward_votes_reset_storage_write_impl(
+                storage, batch_id, write_set, &stage,
+            )
+        }
         _ => Ok(apply_result(
             APPLY_STATUS_REJECTED_WRITE_SET,
             write_set,
@@ -101,6 +109,9 @@ fn empty_stage(stage: u8) -> FfiPbftFinalizationStorageWriteStage {
         sortition_params_change_period: 0,
         sortition_params_change_interval_efficiency: 0,
         sortition_params_change_threshold_upper: 0,
+        has_reward_votes_reset: false,
+        reward_votes_bundle_rlp: Vec::new(),
+        extra_reward_vote_hashes: Vec::new(),
     }
 }
 
@@ -180,6 +191,9 @@ pub fn append_pbft_finalization_dynamic_lambda_storage_writes(
             sortition_params_change_period: 0,
             sortition_params_change_interval_efficiency: 0,
             sortition_params_change_threshold_upper: 0,
+            has_reward_votes_reset: false,
+            reward_votes_bundle_rlp: Vec::new(),
+            extra_reward_vote_hashes: Vec::new(),
         },
     )
 }
@@ -672,6 +686,117 @@ fn append_pbft_finalization_sortition_storage_write_impl(
     Ok(sidecar_apply_result(status, write_set, ""))
 }
 
+fn append_pbft_finalization_reward_votes_reset_storage_write_impl(
+    storage: &BridgeStorage,
+    batch_id: u64,
+    write_set: &FfiPbftFinalizationStorageWritePlan,
+    stage: &FfiPbftFinalizationStorageWriteStage,
+) -> Result<FfiPbftFinalizedPeriodApplyResult> {
+    if !write_set.reset_reward_votes {
+        return Ok(sidecar_apply_result(
+            APPLY_STATUS_REJECTED_WRITE_SET,
+            write_set,
+            "PBFT_FINALIZE_REWARD_VOTES_RESET_NOT_REQUESTED",
+        ));
+    }
+
+    if !stage.has_reward_votes_reset {
+        return Ok(sidecar_apply_result(
+            APPLY_STATUS_REJECTED_WRITE_SET,
+            write_set,
+            "PBFT_FINALIZE_MISSING_REWARD_VOTES_RESET_FACTS",
+        ));
+    }
+
+    if stage.reward_votes_bundle_rlp.is_empty() {
+        return Ok(sidecar_apply_result(
+            APPLY_STATUS_MISSING_REQUIRED_PAYLOAD,
+            write_set,
+            "PBFT_FINALIZE_MISSING_REWARD_VOTES_BUNDLE_RLP",
+        ));
+    }
+
+    let rewards_bundle = rlp::Rlp::new(stage.reward_votes_bundle_rlp.as_slice());
+    if !rewards_bundle.is_list() {
+        return Ok(sidecar_apply_result(
+            APPLY_STATUS_MISSING_REQUIRED_PAYLOAD,
+            write_set,
+            "PBFT_FINALIZE_REWARD_VOTES_BUNDLE_NOT_LIST",
+        ));
+    }
+    let rewards_count = match rewards_bundle.item_count() {
+        Ok(count) => count,
+        Err(_) => {
+            return Ok(sidecar_apply_result(
+                APPLY_STATUS_MISSING_REQUIRED_PAYLOAD,
+                write_set,
+                "PBFT_FINALIZE_REWARD_VOTES_BUNDLE_NOT_LIST",
+            ));
+        }
+    };
+    if rewards_count == 0 {
+        return Ok(sidecar_apply_result(
+            APPLY_STATUS_MISSING_REQUIRED_PAYLOAD,
+            write_set,
+            "PBFT_FINALIZE_REWARD_VOTES_BUNDLE_EMPTY",
+        ));
+    }
+
+    let cert_voted_key = [PBFT_TWO_T_PLUS_ONE_CERT_VOTED_TYPE];
+    let mut already_applied = storage
+        .0
+        .get_raw(Column::LatestRoundTwoTPlusOneVotes, &cert_voted_key)?
+        .as_deref()
+        == Some(stage.reward_votes_bundle_rlp.as_slice());
+    for vote_hash in &stage.extra_reward_vote_hashes {
+        let vote_hash = H256::from(vote_hash.hash);
+        already_applied &= storage
+            .0
+            .get_raw(Column::ExtraRewardVotes, vote_hash.as_bytes())?
+            .is_none();
+    }
+
+    {
+        let mut batches = storage
+            .1
+            .lock()
+            .map_err(|_| anyhow!("batch registry lock poisoned"))?;
+        let batch = batches
+            .get_mut(&batch_id)
+            .ok_or_else(|| anyhow!("unknown batch id: {batch_id}"))?;
+        storage
+            .0
+            .batch_delete_raw(batch, Column::LatestRoundTwoTPlusOneVotes, &cert_voted_key)
+            .context("PBFT_FINALIZE_BATCH_DELETE_REWARD_VOTES_BUNDLE")?;
+        storage
+            .0
+            .batch_put_raw(
+                batch,
+                Column::LatestRoundTwoTPlusOneVotes,
+                &cert_voted_key,
+                &stage.reward_votes_bundle_rlp,
+            )
+            .context("PBFT_FINALIZE_BATCH_REPLACE_REWARD_VOTES_BUNDLE")?;
+        for vote_hash in &stage.extra_reward_vote_hashes {
+            storage
+                .0
+                .batch_delete_raw(
+                    batch,
+                    Column::ExtraRewardVotes,
+                    H256::from(vote_hash.hash).as_bytes(),
+                )
+                .context("PBFT_FINALIZE_BATCH_DELETE_EXTRA_REWARD_VOTE")?;
+        }
+    }
+
+    let status = if already_applied {
+        APPLY_STATUS_ALREADY_APPLIED_SAME_VALUES
+    } else {
+        APPLY_STATUS_APPLIED
+    };
+    Ok(sidecar_apply_result(status, write_set, ""))
+}
+
 impl From<FfiPbftFinalizationIntentFact> for PbftFinalizationIntentFact {
     fn from(value: FfiPbftFinalizationIntentFact) -> Self {
         Self {
@@ -913,6 +1038,14 @@ mod tests {
         std::env::temp_dir().join(format!("{name}_{nonce}"))
     }
 
+    fn reward_vote_bundle_rlp(raw_votes: Vec<Vec<u8>>) -> Vec<u8> {
+        let mut stream = rlp::RlpStream::new_list(raw_votes.len());
+        for vote in raw_votes {
+            stream.append(&vote);
+        }
+        stream.out().to_vec()
+    }
+
     #[test]
     fn bridge_bridge_accepts_anchored_block_and_maps_cleanup_intent() {
         let plan = plan_pbft_finalization_intent(fact());
@@ -1143,6 +1276,9 @@ mod tests {
                     sortition_params_change_period: 0,
                     sortition_params_change_interval_efficiency: 0,
                     sortition_params_change_threshold_upper: 0,
+                    has_reward_votes_reset: false,
+                    reward_votes_bundle_rlp: Vec::new(),
+                    extra_reward_vote_hashes: Vec::new(),
                 },
             )
             .expect("unknown stage should return status");
@@ -1184,6 +1320,9 @@ mod tests {
                     sortition_params_change_period: 10,
                     sortition_params_change_interval_efficiency: 2_500,
                     sortition_params_change_threshold_upper: 1_300,
+                    has_reward_votes_reset: false,
+                    reward_votes_bundle_rlp: Vec::new(),
+                    extra_reward_vote_hashes: Vec::new(),
                 },
             )
             .expect("sortition stage should append");
@@ -1225,6 +1364,9 @@ mod tests {
                     sortition_params_change_period: 10,
                     sortition_params_change_interval_efficiency: 2_500,
                     sortition_params_change_threshold_upper: 1_300,
+                    has_reward_votes_reset: false,
+                    reward_votes_bundle_rlp: Vec::new(),
+                    extra_reward_vote_hashes: Vec::new(),
                 },
             )
             .expect("sortition retry should return status");
@@ -1394,6 +1536,225 @@ mod tests {
             assert!(storage
                 .get_pbft_mgr_status(EXECUTED_BLOCK_STATUS_FIELD)
                 .expect("executed status should load"));
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn appends_reward_vote_reset_and_removes_extra_reward_votes() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_reward_votes_reset_apply");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let plan = plan_pbft_finalization_intent(fact());
+            let mut seed_batch = storage.0.create_write_batch();
+            storage
+                .0
+                .batch_put_raw(
+                    &mut seed_batch,
+                    Column::ExtraRewardVotes,
+                    &[11u8; 32],
+                    &[0xDE],
+                )
+                .expect("extra reward vote 1 should seed");
+            storage
+                .0
+                .batch_put_raw(
+                    &mut seed_batch,
+                    Column::ExtraRewardVotes,
+                    &[12u8; 32],
+                    &[0xAD],
+                )
+                .expect("extra reward vote 2 should seed");
+            storage
+                .0
+                .commit_write_batch_with_sync(seed_batch, false)
+                .expect("seed extras should commit");
+
+            let bundle = reward_vote_bundle_rlp(vec![vec![0x01], vec![0x02]]);
+            let batch_id = storage
+                .create_write_batch()
+                .expect("reward-vote batch should be created");
+            let result = append_pbft_finalization_storage_write(
+                &storage,
+                batch_id,
+                &plan.storage_write_intent,
+                FfiPbftFinalizationStorageWriteStage {
+                    stage: APPEND_STAGE_REWARD_VOTES_RESET,
+                    rounds_count_dynamic_lambda: 0,
+                    dynamic_lambda: 0,
+                    has_sortition_params_change: false,
+                    sortition_params_change_period: 0,
+                    sortition_params_change_interval_efficiency: 0,
+                    sortition_params_change_threshold_upper: 0,
+                    has_reward_votes_reset: true,
+                    reward_votes_bundle_rlp: bundle.clone(),
+                    extra_reward_vote_hashes: vec![
+                        FfiPbftFinalizationHash { hash: [11; 32] },
+                        FfiPbftFinalizationHash { hash: [12; 32] },
+                    ],
+                },
+            )
+            .expect("reward-vote reset stage should append");
+            assert_eq!(result.status, APPLY_STATUS_APPLIED_TEST);
+            storage
+                .commit_write_batch(batch_id, false)
+                .expect("reward-vote reset batch should commit");
+
+            assert_eq!(
+                storage
+                    .0
+                    .get_raw(
+                        Column::LatestRoundTwoTPlusOneVotes,
+                        &[PBFT_TWO_T_PLUS_ONE_CERT_VOTED_TYPE],
+                    )
+                    .expect("reward-vote bundle should load")
+                    .expect("reward-vote bundle should be persisted"),
+                bundle,
+            );
+            assert!(storage
+                .0
+                .get_raw(Column::ExtraRewardVotes, &[11; 32])
+                .expect("extra reward lookup should succeed")
+                .is_none());
+            assert!(storage
+                .0
+                .get_raw(Column::ExtraRewardVotes, &[12; 32])
+                .expect("extra reward lookup should succeed")
+                .is_none());
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn reward_vote_reset_stage_is_idempotent_when_bundle_and_extras_are_already_reset() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_reward_votes_reset_idempotent");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let plan = plan_pbft_finalization_intent(fact());
+            let bundle = reward_vote_bundle_rlp(vec![vec![0x03], vec![0x04]]);
+            let mut seed_batch = storage.0.create_write_batch();
+            storage
+                .0
+                .batch_put_raw(
+                    &mut seed_batch,
+                    Column::LatestRoundTwoTPlusOneVotes,
+                    &[PBFT_TWO_T_PLUS_ONE_CERT_VOTED_TYPE],
+                    &bundle,
+                )
+                .expect("reward-vote bundle should seed");
+            storage
+                .0
+                .commit_write_batch_with_sync(seed_batch, false)
+                .expect("seed batch should commit");
+
+            let batch_id = storage
+                .create_write_batch()
+                .expect("idempotent reward-vote batch should be created");
+            let result = append_pbft_finalization_storage_write(
+                &storage,
+                batch_id,
+                &plan.storage_write_intent,
+                FfiPbftFinalizationStorageWriteStage {
+                    stage: APPEND_STAGE_REWARD_VOTES_RESET,
+                    rounds_count_dynamic_lambda: 0,
+                    dynamic_lambda: 0,
+                    has_sortition_params_change: false,
+                    sortition_params_change_period: 0,
+                    sortition_params_change_interval_efficiency: 0,
+                    sortition_params_change_threshold_upper: 0,
+                    has_reward_votes_reset: true,
+                    reward_votes_bundle_rlp: bundle,
+                    extra_reward_vote_hashes: Vec::new(),
+                },
+            )
+            .expect("idempotent reward-vote stage should return status");
+            assert_eq!(result.status, APPLY_STATUS_ALREADY_APPLIED_TEST);
+            assert_eq!(result.error_code, "");
+            storage
+                .drop_write_batch(batch_id)
+                .expect("idempotent reward-vote batch should drop");
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn rejects_reward_vote_reset_with_invalid_payloads() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_reward_votes_reset_reject");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let plan = plan_pbft_finalization_intent(fact());
+
+            let batch_id = storage
+                .create_write_batch()
+                .expect("invalid reset batch should be created");
+            let result = append_pbft_finalization_storage_write(
+                &storage,
+                batch_id,
+                &plan.storage_write_intent,
+                FfiPbftFinalizationStorageWriteStage {
+                    stage: APPEND_STAGE_REWARD_VOTES_RESET,
+                    rounds_count_dynamic_lambda: 0,
+                    dynamic_lambda: 0,
+                    has_sortition_params_change: false,
+                    sortition_params_change_period: 0,
+                    sortition_params_change_interval_efficiency: 0,
+                    sortition_params_change_threshold_upper: 0,
+                    has_reward_votes_reset: false,
+                    reward_votes_bundle_rlp: vec![0x99],
+                    extra_reward_vote_hashes: Vec::new(),
+                },
+            )
+            .expect("missing reward-vote flag should return status");
+            assert_eq!(result.status, APPLY_STATUS_REJECTED_TEST);
+            assert_eq!(
+                result.error_code,
+                "PBFT_FINALIZE_MISSING_REWARD_VOTES_RESET_FACTS"
+            );
+            storage
+                .drop_write_batch(batch_id)
+                .expect("invalid reset batch should drop");
+        }
+
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let plan = plan_pbft_finalization_intent(fact());
+            let empty_bundle_batch = storage
+                .create_write_batch()
+                .expect("empty-list reset batch should be created");
+            let result = append_pbft_finalization_storage_write(
+                &storage,
+                empty_bundle_batch,
+                &plan.storage_write_intent,
+                FfiPbftFinalizationStorageWriteStage {
+                    stage: APPEND_STAGE_REWARD_VOTES_RESET,
+                    rounds_count_dynamic_lambda: 0,
+                    dynamic_lambda: 0,
+                    has_sortition_params_change: false,
+                    sortition_params_change_period: 0,
+                    sortition_params_change_interval_efficiency: 0,
+                    sortition_params_change_threshold_upper: 0,
+                    has_reward_votes_reset: true,
+                    reward_votes_bundle_rlp: vec![0xc0],
+                    extra_reward_vote_hashes: Vec::new(),
+                },
+            )
+            .expect("empty reward-vote bundle should return status");
+            assert_eq!(result.status, APPLY_STATUS_MISSING_PAYLOAD_TEST);
+            assert_eq!(result.error_code, "PBFT_FINALIZE_REWARD_VOTES_BUNDLE_EMPTY");
+            storage
+                .drop_write_batch(empty_bundle_batch)
+                .expect("empty-list reset batch should drop");
         }
 
         let _ = fs::remove_dir_all(temp_dir);

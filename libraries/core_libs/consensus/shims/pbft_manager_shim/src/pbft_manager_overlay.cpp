@@ -106,13 +106,26 @@ rust::Vec<rustaxa::PbftSyncTransactionHash> toBridgeTransactionHashes(const std:
 }
 
 rustaxa::PbftFinalizationStorageWriteStage makeFinalizationStorageStage(uint8_t stage) {
-  return rustaxa::PbftFinalizationStorageWriteStage{stage, 0, 0, false, 0, 0, 0};
+  rustaxa::PbftFinalizationStorageWriteStage write_stage{};
+  write_stage.stage = stage;
+  write_stage.rounds_count_dynamic_lambda = 0;
+  write_stage.dynamic_lambda = 0;
+  write_stage.has_sortition_params_change = false;
+  write_stage.sortition_params_change_period = 0;
+  write_stage.sortition_params_change_interval_efficiency = 0;
+  write_stage.sortition_params_change_threshold_upper = 0;
+  write_stage.has_reward_votes_reset = false;
+
+  return write_stage;
 }
 
 rustaxa::PbftFinalizationStorageWriteStage makeSortitionFinalizationStorageStage(const SortitionParamsChange &change) {
-  return rustaxa::PbftFinalizationStorageWriteStage{
-      kPbftFinalizationStorageStageSortition, 0, 0, true, change.period, change.interval_efficiency,
-      change.vrf_params.threshold_upper};
+  auto write_stage = makeFinalizationStorageStage(kPbftFinalizationStorageStageSortition);
+  write_stage.has_sortition_params_change = true;
+  write_stage.sortition_params_change_period = change.period;
+  write_stage.sortition_params_change_interval_efficiency = change.interval_efficiency;
+  write_stage.sortition_params_change_threshold_upper = change.vrf_params.threshold_upper;
+  return write_stage;
 }
 
 std::vector<trx_hash_t> fromBridgeTransactionHashes(const rust::Vec<rustaxa::PbftSyncTransactionHash> &hashes) {
@@ -2383,10 +2396,11 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
 
     rustaxa::PbftFinalizedPeriodApplyResult dynamic_lambda_result{};
     try {
+      auto dynamic_lambda_stage = makeFinalizationStorageStage(kPbftFinalizationStorageStageDynamicLambda);
+      dynamic_lambda_stage.rounds_count_dynamic_lambda = rounds_count_dynamic_lambda_;
+      dynamic_lambda_stage.dynamic_lambda = dynamic_lambda_;
       dynamic_lambda_result = rustaxa::append_pbft_finalization_storage_write(
-          db_->rustStorage(), db_->rustBatchId(batch), finalization_plan.storage_write_intent,
-          rustaxa::PbftFinalizationStorageWriteStage{kPbftFinalizationStorageStageDynamicLambda,
-                                                     rounds_count_dynamic_lambda_, dynamic_lambda_, false, 0, 0, 0});
+          db_->rustStorage(), db_->rustBatchId(batch), finalization_plan.storage_write_intent, dynamic_lambda_stage);
     } catch (const std::exception &e) {
       rounds_count_dynamic_lambda_ = previous_rounds_count_dynamic_lambda;
       dynamic_lambda_ = previous_dynamic_lambda;
