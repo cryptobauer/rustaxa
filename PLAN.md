@@ -501,10 +501,13 @@ The current Rust starting point is intentionally small:
    to the shim's Rust-backed storage batch. The PBFT finalization persistence bridge now exposes one staged Rust appender
    for primary finalized-period writes, post-live-mutation dynamic-lambda persistence, and post-FinalChain-dispatch
    executed-status persistence; compatibility wrappers remain for the older appender entrypoints. The C++ shim calls the
-   staged API while preserving the existing batch/commit boundaries so reward-vote reset, sortition writes, dynamic-lambda
-   live rollback, and executed-status ordering keep their recovery semantics. C++ still owns reward-vote reset, sortition
-   writes, dynamic-lambda calculation/live mutation, FinalChain updates, and live PBFT runtime mutation until those
-   sidecar APIs move across the bridge.
+   staged API while preserving the existing batch/commit boundaries so reward-vote reset, sortition live updates,
+   dynamic-lambda live rollback, and executed-status ordering keep their recovery semantics. Rust now also owns PBFT finalization
+   sortition-change persistence: the sortition shim updates the live Rust runtime and returns the emitted threshold
+   change, then the PBFT staged storage appender encodes and appends the `SortitionParamsChange` row into the same
+   primary finalization batch. C++ still owns reward-vote reset, sortition live-state mutation, dynamic-lambda
+   calculation/live mutation, FinalChain updates, and live PBFT runtime mutation until those sidecar APIs move across
+   the bridge.
    `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
    selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
    lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode

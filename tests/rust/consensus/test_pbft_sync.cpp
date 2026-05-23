@@ -58,6 +58,17 @@ constexpr uint8_t kPbftMgrStatusExecutedBlock = 0;
 constexpr uint8_t kPbftFinalizationStorageStagePrimary = 0;
 constexpr uint8_t kPbftFinalizationStorageStageDynamicLambda = 1;
 constexpr uint8_t kPbftFinalizationStorageStageExecutedStatus = 2;
+constexpr uint8_t kPbftFinalizationStorageStageSortition = 3;
+
+PbftFinalizationStorageWriteStage finalizationStorageStage(uint8_t stage) {
+  return PbftFinalizationStorageWriteStage{stage, 0, 0, false, 0, 0, 0};
+}
+
+PbftFinalizationStorageWriteStage sortitionFinalizationStorageStage(uint64_t period, uint16_t interval_efficiency,
+                                                                    uint16_t threshold_upper) {
+  return PbftFinalizationStorageWriteStage{
+      kPbftFinalizationStorageStageSortition, 0, 0, true, period, interval_efficiency, threshold_upper};
+}
 
 PbftSyncPeriodAdmissionFact makeAdmissionFact() {
   PbftSyncPeriodAdmissionFact fact;
@@ -421,8 +432,7 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageAppenderWritesPrimaryBatch) {
   const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
   auto batch_id = storage->create_write_batch();
   const auto result = append_pbft_finalization_storage_write(
-      *storage, batch_id, plan.storage_write_intent,
-      PbftFinalizationStorageWriteStage{kPbftFinalizationStorageStagePrimary, 0, 0});
+      *storage, batch_id, plan.storage_write_intent, finalizationStorageStage(kPbftFinalizationStorageStagePrimary));
 
   EXPECT_EQ(result.status, kPbftFinalizedPeriodApplyStatusApplied);
   EXPECT_TRUE(result.wrote_pbft_head);
@@ -448,10 +458,21 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageAppenderWritesPrimaryBatch) {
   EXPECT_FALSE(period_lambda.found);
   EXPECT_FALSE(storage->get_pbft_mgr_status(kPbftMgrStatusExecutedBlock));
 
+  auto sortition_batch_id = storage->create_write_batch();
+  const auto sortition_result = append_pbft_finalization_storage_write(
+      *storage, sortition_batch_id, plan.storage_write_intent, sortitionFinalizationStorageStage(101, 2500, 1300));
+
+  EXPECT_EQ(sortition_result.status, kPbftFinalizedPeriodApplyStatusApplied);
+  EXPECT_FALSE(sortition_result.wrote_pbft_head);
+  EXPECT_FALSE(sortition_result.wrote_period_data);
+
+  storage->commit_write_batch(sortition_batch_id, false);
+  EXPECT_FALSE(storage->get_params_change_for_period(101).empty());
+
   auto dynamic_lambda_batch_id = storage->create_write_batch();
   const auto dynamic_lambda_result = append_pbft_finalization_storage_write(
       *storage, dynamic_lambda_batch_id, plan.storage_write_intent,
-      PbftFinalizationStorageWriteStage{kPbftFinalizationStorageStageDynamicLambda, 7, 1450});
+      PbftFinalizationStorageWriteStage{kPbftFinalizationStorageStageDynamicLambda, 7, 1450, false, 0, 0, 0});
 
   EXPECT_EQ(dynamic_lambda_result.status, kPbftFinalizedPeriodApplyStatusApplied);
   EXPECT_FALSE(dynamic_lambda_result.wrote_pbft_head);
@@ -466,15 +487,14 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageAppenderWritesPrimaryBatch) {
   EXPECT_EQ(storage->get_pbft_mgr_field(kPbftMgrFieldLambda), 1450);
 
   auto executed_status_batch_id = storage->create_write_batch();
-  const auto executed_status_result = append_pbft_finalization_storage_write(
-      *storage, executed_status_batch_id, plan.storage_write_intent,
-      PbftFinalizationStorageWriteStage{kPbftFinalizationStorageStageExecutedStatus, 0, 0});
+  const auto executed_status_result =
+      append_pbft_finalization_storage_write(*storage, executed_status_batch_id, plan.storage_write_intent,
+                                             finalizationStorageStage(kPbftFinalizationStorageStageExecutedStatus));
 
   EXPECT_EQ(executed_status_result.status, kPbftFinalizedPeriodApplyStatusApplied);
 
   storage->commit_write_batch(executed_status_batch_id, false);
-  EXPECT_EQ(storage->get_pbft_mgr_status(kPbftMgrStatusExecutedBlock),
-            plan.storage_write_intent.executed_pbft_status);
+  EXPECT_EQ(storage->get_pbft_mgr_status(kPbftMgrStatusExecutedBlock), plan.storage_write_intent.executed_pbft_status);
 
   std::filesystem::remove_all(test_dir);
 }
@@ -487,8 +507,7 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageAppenderRejectsMissingPayload) {
 
   auto batch_id = storage->create_write_batch();
   const auto result = append_pbft_finalization_storage_write(
-      *storage, batch_id, plan.storage_write_intent,
-      PbftFinalizationStorageWriteStage{kPbftFinalizationStorageStagePrimary, 0, 0});
+      *storage, batch_id, plan.storage_write_intent, finalizationStorageStage(kPbftFinalizationStorageStagePrimary));
 
   EXPECT_EQ(result.status, kPbftFinalizedPeriodApplyStatusMissingPayload);
   EXPECT_FALSE(result.wrote_pbft_head);

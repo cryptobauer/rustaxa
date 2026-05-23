@@ -28,6 +28,7 @@ use rustaxa_consensus::pbft_finalize::{
     PbftFinalizationCleanupIntent, PbftFinalizationIntentFact, PbftFinalizationPlan,
     PbftFinalizationPositionedHash, PbftFinalizationStorageWriteIntent,
 };
+use rustaxa_consensus::sortition::SortitionParamsChange;
 use rustaxa_storage::Column;
 
 const APPLY_STATUS_APPLIED: u8 = 0;
@@ -38,6 +39,7 @@ const APPLY_STATUS_CONFLICTING_EXISTING_WRITE: u8 = 4;
 const APPEND_STAGE_PRIMARY_FINALIZATION: u8 = 0;
 const APPEND_STAGE_DYNAMIC_LAMBDA: u8 = 1;
 const APPEND_STAGE_EXECUTED_STATUS: u8 = 2;
+const APPEND_STAGE_SORTITION_PARAMS_CHANGE: u8 = 3;
 const PBFT_MGR_FIELD_LAMBDA: u8 = 2;
 const PBFT_MGR_STATUS_EXECUTED_BLOCK: u8 = 0;
 const SINGLE_VALUE_KEY: [u8; 4] = 0i32.to_le_bytes();
@@ -49,6 +51,7 @@ const SINGLE_VALUE_KEY: [u8; 4] = 0i32.to_le_bytes();
 /// - `0`: primary finalized-period writes (`append_pbft_finalized_period_storage_writes`).
 /// - `1`: dynamic-lambda post-adjustment writes.
 /// - `2`: executed-status write after FinalChain dispatch.
+/// - `3`: sortition params-change write emitted by the Rust sortition runtime.
 ///
 /// `write_set` is validated for stage compatibility; unknown stages return
 /// `APPLY_STATUS_REJECTED_WRITE_SET`.
@@ -74,6 +77,11 @@ pub fn append_pbft_finalization_storage_write(
                 storage, batch_id, write_set,
             )
         }
+        APPEND_STAGE_SORTITION_PARAMS_CHANGE => {
+            append_pbft_finalization_sortition_storage_write_impl(
+                storage, batch_id, write_set, &stage,
+            )
+        }
         _ => Ok(apply_result(
             APPLY_STATUS_REJECTED_WRITE_SET,
             write_set,
@@ -81,6 +89,18 @@ pub fn append_pbft_finalization_storage_write(
             0,
             "PBFT_FINALIZE_UNKNOWN_STORAGE_WRITE_STAGE",
         )),
+    }
+}
+
+fn empty_stage(stage: u8) -> FfiPbftFinalizationStorageWriteStage {
+    FfiPbftFinalizationStorageWriteStage {
+        stage,
+        rounds_count_dynamic_lambda: 0,
+        dynamic_lambda: 0,
+        has_sortition_params_change: false,
+        sortition_params_change_period: 0,
+        sortition_params_change_interval_efficiency: 0,
+        sortition_params_change_threshold_upper: 0,
     }
 }
 
@@ -122,11 +142,7 @@ pub fn append_pbft_finalized_period_storage_writes(
         storage,
         batch_id,
         write_set,
-        FfiPbftFinalizationStorageWriteStage {
-            stage: APPEND_STAGE_PRIMARY_FINALIZATION,
-            rounds_count_dynamic_lambda: 0,
-            dynamic_lambda: 0,
-        },
+        empty_stage(APPEND_STAGE_PRIMARY_FINALIZATION),
     )
 }
 
@@ -160,6 +176,10 @@ pub fn append_pbft_finalization_dynamic_lambda_storage_writes(
             stage: APPEND_STAGE_DYNAMIC_LAMBDA,
             rounds_count_dynamic_lambda,
             dynamic_lambda,
+            has_sortition_params_change: false,
+            sortition_params_change_period: 0,
+            sortition_params_change_interval_efficiency: 0,
+            sortition_params_change_threshold_upper: 0,
         },
     )
 }
@@ -179,11 +199,7 @@ pub fn append_pbft_finalization_executed_status_storage_write(
         storage,
         batch_id,
         write_set,
-        FfiPbftFinalizationStorageWriteStage {
-            stage: APPEND_STAGE_EXECUTED_STATUS,
-            rounds_count_dynamic_lambda: 0,
-            dynamic_lambda: 0,
-        },
+        empty_stage(APPEND_STAGE_EXECUTED_STATUS),
     )
 }
 
@@ -575,6 +591,87 @@ fn append_pbft_finalization_executed_status_storage_write_impl(
     Ok(sidecar_apply_result(status, write_set, ""))
 }
 
+fn append_pbft_finalization_sortition_storage_write_impl(
+    storage: &BridgeStorage,
+    batch_id: u64,
+    write_set: &FfiPbftFinalizationStorageWritePlan,
+    stage: &FfiPbftFinalizationStorageWriteStage,
+) -> Result<FfiPbftFinalizedPeriodApplyResult> {
+    if !write_set.update_sortition_params {
+        return Ok(apply_result(
+            APPLY_STATUS_REJECTED_WRITE_SET,
+            write_set,
+            0,
+            0,
+            "PBFT_FINALIZE_SORTITION_PARAMS_UPDATE_NOT_REQUESTED",
+        ));
+    }
+
+    if !stage.has_sortition_params_change {
+        return Ok(apply_result(
+            APPLY_STATUS_REJECTED_WRITE_SET,
+            write_set,
+            0,
+            0,
+            "PBFT_FINALIZE_MISSING_SORTITION_PARAMS_CHANGE_FACTS",
+        ));
+    }
+
+    let change = SortitionParamsChange {
+        period: stage.sortition_params_change_period,
+        interval_efficiency: stage.sortition_params_change_interval_efficiency,
+        threshold_upper: stage.sortition_params_change_threshold_upper,
+    };
+    let change_rlp = change.to_rlp_bytes();
+    if check_existing_value(
+        storage,
+        Column::SortitionParamsChange,
+        &change.period.to_le_bytes(),
+        &change_rlp,
+        "PBFT_FINALIZE_CONFLICTING_SORTITION_PARAMS_CHANGE",
+    )? {
+        return Ok(apply_result(
+            APPLY_STATUS_CONFLICTING_EXISTING_WRITE,
+            write_set,
+            0,
+            0,
+            "PBFT_FINALIZE_CONFLICTING_SORTITION_PARAMS_CHANGE",
+        ));
+    }
+
+    let already_applied = storage
+        .0
+        .get_raw(Column::SortitionParamsChange, &change.period.to_le_bytes())?
+        .as_deref()
+        == Some(change_rlp.as_slice());
+
+    {
+        let mut batches = storage
+            .1
+            .lock()
+            .map_err(|_| anyhow!("batch registry lock poisoned"))?;
+        let batch = batches
+            .get_mut(&batch_id)
+            .ok_or_else(|| anyhow!("unknown batch id: {batch_id}"))?;
+        storage
+            .0
+            .batch_put_raw(
+                batch,
+                Column::SortitionParamsChange,
+                &change.period.to_le_bytes(),
+                &change_rlp,
+            )
+            .context("PBFT_FINALIZE_BATCH_SORTITION_CHANGE")?;
+    }
+
+    let status = if already_applied {
+        APPLY_STATUS_ALREADY_APPLIED_SAME_VALUES
+    } else {
+        APPLY_STATUS_APPLIED
+    };
+    Ok(sidecar_apply_result(status, write_set, ""))
+}
+
 impl From<FfiPbftFinalizationIntentFact> for PbftFinalizationIntentFact {
     fn from(value: FfiPbftFinalizationIntentFact) -> Self {
         Self {
@@ -763,6 +860,7 @@ mod tests {
     use crate::storage::create_storage;
     use rustaxa_consensus::pbft_finalize::PbftFinalizationAnchor::{Anchored, Null};
     use rustaxa_consensus::pbft_finalize::PbftFinalizationStatus;
+    use rustaxa_consensus::sortition::SortitionParamsChange;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1041,6 +1139,10 @@ mod tests {
                     stage: 255,
                     rounds_count_dynamic_lambda: 0,
                     dynamic_lambda: 0,
+                    has_sortition_params_change: false,
+                    sortition_params_change_period: 0,
+                    sortition_params_change_interval_efficiency: 0,
+                    sortition_params_change_threshold_upper: 0,
                 },
             )
             .expect("unknown stage should return status");
@@ -1054,6 +1156,113 @@ mod tests {
             storage
                 .drop_write_batch(batch_id)
                 .expect("unknown-stage batch should drop");
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn appends_sortition_params_change_from_finalization_stage() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_sortition_stage");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let plan = plan_pbft_finalization_intent(fact());
+            let batch_id = storage
+                .create_write_batch()
+                .expect("sortition batch should be created");
+            let result = append_pbft_finalization_storage_write(
+                &storage,
+                batch_id,
+                &plan.storage_write_intent,
+                FfiPbftFinalizationStorageWriteStage {
+                    stage: APPEND_STAGE_SORTITION_PARAMS_CHANGE,
+                    rounds_count_dynamic_lambda: 0,
+                    dynamic_lambda: 0,
+                    has_sortition_params_change: true,
+                    sortition_params_change_period: 10,
+                    sortition_params_change_interval_efficiency: 2_500,
+                    sortition_params_change_threshold_upper: 1_300,
+                },
+            )
+            .expect("sortition stage should append");
+            assert_eq!(result.status, APPLY_STATUS_APPLIED_TEST);
+            assert!(!result.wrote_pbft_head);
+            assert!(!result.wrote_period_data);
+            storage
+                .commit_write_batch(batch_id, false)
+                .expect("sortition batch should commit");
+
+            let persisted = storage
+                .0
+                .get_raw(Column::SortitionParamsChange, &10_u64.to_le_bytes())
+                .expect("sortition change lookup should succeed")
+                .expect("sortition change should be written");
+            let decoded = SortitionParamsChange::from_rlp_bytes(persisted.as_ref())
+                .expect("sortition change should decode");
+            assert_eq!(
+                decoded,
+                SortitionParamsChange {
+                    period: 10,
+                    interval_efficiency: 2_500,
+                    threshold_upper: 1_300
+                }
+            );
+
+            let retry_batch = storage
+                .create_write_batch()
+                .expect("retry sortition batch should be created");
+            let retry_result = append_pbft_finalization_storage_write(
+                &storage,
+                retry_batch,
+                &plan.storage_write_intent,
+                FfiPbftFinalizationStorageWriteStage {
+                    stage: APPEND_STAGE_SORTITION_PARAMS_CHANGE,
+                    rounds_count_dynamic_lambda: 0,
+                    dynamic_lambda: 0,
+                    has_sortition_params_change: true,
+                    sortition_params_change_period: 10,
+                    sortition_params_change_interval_efficiency: 2_500,
+                    sortition_params_change_threshold_upper: 1_300,
+                },
+            )
+            .expect("sortition retry should return status");
+            assert_eq!(retry_result.status, APPLY_STATUS_ALREADY_APPLIED_TEST);
+            storage
+                .drop_write_batch(retry_batch)
+                .expect("retry sortition batch should drop");
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn rejects_missing_sortition_params_change_facts() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_sortition_stage_reject");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let plan = plan_pbft_finalization_intent(fact());
+            let batch_id = storage
+                .create_write_batch()
+                .expect("sortition reject batch should be created");
+            let result = append_pbft_finalization_storage_write(
+                &storage,
+                batch_id,
+                &plan.storage_write_intent,
+                empty_stage(APPEND_STAGE_SORTITION_PARAMS_CHANGE),
+            )
+            .expect("missing sortition facts should return status");
+            assert_eq!(result.status, APPLY_STATUS_REJECTED_TEST);
+            assert_eq!(
+                result.error_code,
+                "PBFT_FINALIZE_MISSING_SORTITION_PARAMS_CHANGE_FACTS"
+            );
+            storage
+                .drop_write_batch(batch_id)
+                .expect("sortition reject batch should drop");
         }
 
         let _ = fs::remove_dir_all(temp_dir);

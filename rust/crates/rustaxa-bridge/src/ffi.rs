@@ -612,6 +612,10 @@ pub mod rustaxa_ffi {
         stage: u8,
         rounds_count_dynamic_lambda: u32,
         dynamic_lambda: u32,
+        has_sortition_params_change: bool,
+        sortition_params_change_period: u64,
+        sortition_params_change_interval_efficiency: u16,
+        sortition_params_change_threshold_upper: u16,
     }
 
     /// Result from appending Rust-owned finalized-period storage writes to an existing batch.

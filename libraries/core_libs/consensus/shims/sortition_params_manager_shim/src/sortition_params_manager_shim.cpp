@@ -156,17 +156,26 @@ uint16_t SortitionParamsManager::calculateDagEfficiency(const PeriodData& block)
 
 void SortitionParamsManager::pbftBlockPushed(const PeriodData& block, Batch& batch,
                                              PbftPeriod non_empty_pbft_chain_size) {
+  const auto block_change = applyBlockForSortitionRuntime(block, non_empty_pbft_chain_size);
+  if (block_change.has_value()) {
+    db_->saveSortitionParamsChange(block.pbft_blk->getPeriod(), *block_change, batch);
+  }
+}
+
+std::optional<SortitionParamsChange> SortitionParamsManager::applyBlockForSortitionRuntime(
+    const PeriodData& block, PbftPeriod non_empty_pbft_chain_size) {
   const auto counts = period_efficiency_counts(block);
   const auto period = block.pbft_blk->getPeriod();
   auto outcome = rust_sortition_params_manager_.value()->sortition_record_finalized_period(
       period, counts.has_pivot, counts.unique_transactions, counts.total_dag_transaction_refs,
       non_empty_pbft_chain_size);
+  std::optional<SortitionParamsChange> params_change;
   if (outcome.changed) {
-    auto params_change = from_rust_change(outcome);
-    db_->saveSortitionParamsChange(period, params_change, batch);
+    params_change = from_rust_change(outcome);
   }
   params_changes_ = from_rust_changes(rust_sortition_params_manager_.value()->sortition_params_changes());
   apply_rust_params(sortition_config_, rust_sortition_params_manager_.value()->sortition_current_params());
+  return params_change;
 }
 
 uint16_t SortitionParamsManager::averageDagEfficiency() {

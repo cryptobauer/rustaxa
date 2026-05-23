@@ -55,6 +55,7 @@ constexpr uint8_t kPbftFinalizedPeriodApplyStatusAlreadyApplied = 1;
 constexpr uint8_t kPbftFinalizationStorageStagePrimary = 0;
 constexpr uint8_t kPbftFinalizationStorageStageDynamicLambda = 1;
 constexpr uint8_t kPbftFinalizationStorageStageExecutedStatus = 2;
+constexpr uint8_t kPbftFinalizationStorageStageSortition = 3;
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t &hash) { return hash.asArray(); }
 
@@ -102,6 +103,16 @@ rust::Vec<rustaxa::PbftSyncTransactionHash> toBridgeTransactionHashes(const std:
     out.push_back(rustaxa::PbftSyncTransactionHash{toBridgeHash(hash)});
   }
   return out;
+}
+
+rustaxa::PbftFinalizationStorageWriteStage makeFinalizationStorageStage(uint8_t stage) {
+  return rustaxa::PbftFinalizationStorageWriteStage{stage, 0, 0, false, 0, 0, 0};
+}
+
+rustaxa::PbftFinalizationStorageWriteStage makeSortitionFinalizationStorageStage(const SortitionParamsChange &change) {
+  return rustaxa::PbftFinalizationStorageWriteStage{
+      kPbftFinalizationStorageStageSortition, 0, 0, true, change.period, change.interval_efficiency,
+      change.vrf_params.threshold_upper};
 }
 
 std::vector<trx_hash_t> fromBridgeTransactionHashes(const rust::Vec<rustaxa::PbftSyncTransactionHash> &hashes) {
@@ -696,7 +707,6 @@ void PbftManager::adjustDynamicLambda(PbftPeriod finalized_period, PbftRound fin
     LOG(log_nf_) << "Increase dynamic_lambda by " << kCactiHfCfg.lambda_change << " to " << dynamic_lambda_
                  << ", period " << finalized_period << ", round " << finalized_round;
   }
-
 }
 
 uint32_t PbftManager::getRoundLambda(PbftRound round) const {
@@ -2279,7 +2289,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
   try {
     primary_storage_result = rustaxa::append_pbft_finalization_storage_write(
         db_->rustStorage(), db_->rustBatchId(batch), finalization_plan.storage_write_intent,
-        rustaxa::PbftFinalizationStorageWriteStage{kPbftFinalizationStorageStagePrimary, 0, 0});
+        makeFinalizationStorageStage(kPbftFinalizationStorageStagePrimary));
   } catch (const std::exception &e) {
     LOG(log_er_) << "Rust PBFT finalized-period storage appender failed for block " << pbft_block_hash << ", period "
                  << block_pbft_period << ": " << e.what();
@@ -2301,9 +2311,30 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
 
   // pass pbft with dag blocks and transactions to adjust difficulty
   if (finalization_plan.storage_write_intent.update_sortition_params) {
-    dag_mgr_->sortitionParamsManager().pbftBlockPushed(period_data, batch,
-                                                       pbft_chain_->getPbftChainSizeExcludingEmptyPbftBlocks() + 1);
+    auto sortition_params_change = dag_mgr_->sortitionParamsManager().applyBlockForSortitionRuntime(
+        period_data, pbft_chain_->getPbftChainSizeExcludingEmptyPbftBlocks() + 1);
+    if (sortition_params_change.has_value()) {
+      rustaxa::PbftFinalizedPeriodApplyResult sortition_storage_result{};
+      try {
+        sortition_storage_result = rustaxa::append_pbft_finalization_storage_write(
+            db_->rustStorage(), db_->rustBatchId(batch), finalization_plan.storage_write_intent,
+            makeSortitionFinalizationStorageStage(*sortition_params_change));
+      } catch (const std::exception &e) {
+        LOG(log_er_) << "Rust PBFT finalized-period sortition storage appender failed for block " << pbft_block_hash
+                     << ", period " << block_pbft_period << ": " << e.what();
+        return false;
+      }
+      if (sortition_storage_result.status != kPbftFinalizedPeriodApplyStatusApplied &&
+          sortition_storage_result.status != kPbftFinalizedPeriodApplyStatusAlreadyApplied) {
+        LOG(log_er_) << "Rust PBFT finalized-period sortition storage appender rejected block " << pbft_block_hash
+                     << ", period " << block_pbft_period << ", status "
+                     << static_cast<uint32_t>(sortition_storage_result.status) << ", error "
+                     << static_cast<std::string>(sortition_storage_result.error_code);
+        return false;
+      }
+    }
   }
+
   {
     // This makes sure that no DAG block or transaction can be added or change state in transaction and dag manager
     // when finalizing pbft block with dag blocks and transactions
@@ -2355,7 +2386,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       dynamic_lambda_result = rustaxa::append_pbft_finalization_storage_write(
           db_->rustStorage(), db_->rustBatchId(batch), finalization_plan.storage_write_intent,
           rustaxa::PbftFinalizationStorageWriteStage{kPbftFinalizationStorageStageDynamicLambda,
-                                                     rounds_count_dynamic_lambda_, dynamic_lambda_});
+                                                     rounds_count_dynamic_lambda_, dynamic_lambda_, false, 0, 0, 0});
     } catch (const std::exception &e) {
       rounds_count_dynamic_lambda_ = previous_rounds_count_dynamic_lambda;
       dynamic_lambda_ = previous_dynamic_lambda;
@@ -2389,7 +2420,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       try {
         executed_status_result = rustaxa::append_pbft_finalization_storage_write(
             db_->rustStorage(), db_->rustBatchId(batch), finalization_plan.storage_write_intent,
-            rustaxa::PbftFinalizationStorageWriteStage{kPbftFinalizationStorageStageExecutedStatus, 0, 0});
+            makeFinalizationStorageStage(kPbftFinalizationStorageStageExecutedStatus));
       } catch (const std::exception &e) {
         LOG(log_er_) << "Rust PBFT executed-status storage appender failed for block " << pbft_block_hash << ", period "
                      << block_pbft_period << ": " << e.what();

@@ -16,10 +16,10 @@ namespace taraxa {
  * Rust-mode sortition parameter manager facade.
  *
  * The facade preserves the public C++ API while routing deterministic
- * efficiency sampling and VRF threshold updates to Rust. Storage ownership and
- * batch atomicity remain in C++: the shim loads historical changes, translates
- * PeriodData into compact counts, and persists Rust-emitted changes into the
- * caller-provided batch.
+ * efficiency sampling and VRF threshold updates to Rust. Startup storage reads
+ * and non-finalization callers keep the legacy C++ batch surface, while PBFT
+ * finalization can ask this shim for the emitted change and persist it through
+ * the Rust staged finalization storage appender.
  *
  * Inputs and outputs match the legacy SortitionParamsManager surface. PeriodData
  * is reduced to a pivot flag, finalized unique transaction count, and total DAG
@@ -58,6 +58,18 @@ class SortitionParamsManager {
    * interval. The C++ facade persists that change into the provided batch.
    */
   void pbftBlockPushed(const PeriodData& block, Batch& batch, PbftPeriod non_empty_pbft_chain_size);
+
+  /**
+   * Rust-only entry for PBFT finalization updates.
+   *
+   * Updates live Rust sortition state for the finalized PBFT block and returns a change payload when a threshold
+   * interval boundary is crossed.
+   *
+   * This method does not persist anything into C++ storage; PBFT finalization routes the returned change through the
+   * Rust staged finalization storage appender while preserving the caller's batch commit boundary.
+   */
+  std::optional<SortitionParamsChange> applyBlockForSortitionRuntime(const PeriodData& block,
+                                                                     PbftPeriod non_empty_pbft_chain_size);
 
   /**
    * Returns the current interval average DAG efficiency.
