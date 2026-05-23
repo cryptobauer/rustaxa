@@ -17,6 +17,7 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
     PbftFinalizationPositionedHash as FfiPbftFinalizationPositionedHash,
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
+    PbftFinalizationStorageWriteStage as FfiPbftFinalizationStorageWriteStage,
     PbftFinalizedPeriodApplyResult as FfiPbftFinalizedPeriodApplyResult,
 };
 use crate::ffi::BridgeStorage;
@@ -34,9 +35,54 @@ const APPLY_STATUS_ALREADY_APPLIED_SAME_VALUES: u8 = 1;
 const APPLY_STATUS_REJECTED_WRITE_SET: u8 = 2;
 const APPLY_STATUS_MISSING_REQUIRED_PAYLOAD: u8 = 3;
 const APPLY_STATUS_CONFLICTING_EXISTING_WRITE: u8 = 4;
+const APPEND_STAGE_PRIMARY_FINALIZATION: u8 = 0;
+const APPEND_STAGE_DYNAMIC_LAMBDA: u8 = 1;
+const APPEND_STAGE_EXECUTED_STATUS: u8 = 2;
 const PBFT_MGR_FIELD_LAMBDA: u8 = 2;
 const PBFT_MGR_STATUS_EXECUTED_BLOCK: u8 = 0;
 const SINGLE_VALUE_KEY: [u8; 4] = 0i32.to_le_bytes();
+
+/// Appends one explicit PBFT finalization persistence stage to an existing Rust
+/// storage batch.
+///
+/// Stage values:
+/// - `0`: primary finalized-period writes (`append_pbft_finalized_period_storage_writes`).
+/// - `1`: dynamic-lambda post-adjustment writes.
+/// - `2`: executed-status write after FinalChain dispatch.
+///
+/// `write_set` is validated for stage compatibility; unknown stages return
+/// `APPLY_STATUS_REJECTED_WRITE_SET`.
+pub fn append_pbft_finalization_storage_write(
+    storage: &BridgeStorage,
+    batch_id: u64,
+    write_set: &FfiPbftFinalizationStorageWritePlan,
+    stage: FfiPbftFinalizationStorageWriteStage,
+) -> Result<FfiPbftFinalizedPeriodApplyResult> {
+    match stage.stage {
+        APPEND_STAGE_PRIMARY_FINALIZATION => {
+            append_pbft_finalized_period_storage_writes_impl(storage, batch_id, write_set)
+        }
+        APPEND_STAGE_DYNAMIC_LAMBDA => append_pbft_finalization_dynamic_lambda_storage_writes_impl(
+            storage,
+            batch_id,
+            write_set,
+            stage.rounds_count_dynamic_lambda,
+            stage.dynamic_lambda,
+        ),
+        APPEND_STAGE_EXECUTED_STATUS => {
+            append_pbft_finalization_executed_status_storage_write_impl(
+                storage, batch_id, write_set,
+            )
+        }
+        _ => Ok(apply_result(
+            APPLY_STATUS_REJECTED_WRITE_SET,
+            write_set,
+            0,
+            0,
+            "PBFT_FINALIZE_UNKNOWN_STORAGE_WRITE_STAGE",
+        )),
+    }
+}
 
 /// C++/Rust bridge entry for one deterministic PBFT finalization intent.
 pub fn plan_pbft_finalization_intent(
@@ -68,6 +114,80 @@ pub fn plan_pbft_finalization_intent(
 ///   is mutable chain-head state and is intentionally replaced when present.
 /// - Storage backend or unknown-batch failures are returned as bridge errors.
 pub fn append_pbft_finalized_period_storage_writes(
+    storage: &BridgeStorage,
+    batch_id: u64,
+    write_set: &FfiPbftFinalizationStorageWritePlan,
+) -> Result<FfiPbftFinalizedPeriodApplyResult> {
+    append_pbft_finalization_storage_write(
+        storage,
+        batch_id,
+        write_set,
+        FfiPbftFinalizationStorageWriteStage {
+            stage: APPEND_STAGE_PRIMARY_FINALIZATION,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 0,
+        },
+    )
+}
+
+/// Appends dynamic-lambda persistence after C++ has applied the existing lambda
+/// adjustment policy to its live `PbftManager` fields.
+///
+/// Inputs:
+/// - `storage` and `batch_id` identify the Rust-backed batch owned by C++.
+/// - `write_set` is the accepted PBFT finalization storage intent.
+/// - `rounds_count_dynamic_lambda` and `dynamic_lambda` are the post-adjust live
+///   values that must become durable with the optional period-lambda row.
+///
+/// Outputs and invariants:
+/// - Returns the same apply status envelope as the primary appender.
+/// - Rejects write sets that did not request dynamic-lambda persistence.
+/// - Treats `period_lambda` as immutable for a finalized period and reports a
+///   conflict when an existing value differs. Manager lambda and round-count
+///   fields are mutable PBFT manager state and are overwritten.
+pub fn append_pbft_finalization_dynamic_lambda_storage_writes(
+    storage: &BridgeStorage,
+    batch_id: u64,
+    write_set: &FfiPbftFinalizationStorageWritePlan,
+    rounds_count_dynamic_lambda: u32,
+    dynamic_lambda: u32,
+) -> Result<FfiPbftFinalizedPeriodApplyResult> {
+    append_pbft_finalization_storage_write(
+        storage,
+        batch_id,
+        write_set,
+        FfiPbftFinalizationStorageWriteStage {
+            stage: APPEND_STAGE_DYNAMIC_LAMBDA,
+            rounds_count_dynamic_lambda,
+            dynamic_lambda,
+        },
+    )
+}
+
+/// Appends the PBFT manager executed-block status after FinalChain finalization
+/// has been dispatched.
+///
+/// This preserves the legacy ordering where durable `ExecutedBlock=true` is not
+/// written before the final-chain path is invoked, while keeping the byte-level
+/// persistence in Rust.
+pub fn append_pbft_finalization_executed_status_storage_write(
+    storage: &BridgeStorage,
+    batch_id: u64,
+    write_set: &FfiPbftFinalizationStorageWritePlan,
+) -> Result<FfiPbftFinalizedPeriodApplyResult> {
+    append_pbft_finalization_storage_write(
+        storage,
+        batch_id,
+        write_set,
+        FfiPbftFinalizationStorageWriteStage {
+            stage: APPEND_STAGE_EXECUTED_STATUS,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 0,
+        },
+    )
+}
+
+fn append_pbft_finalized_period_storage_writes_impl(
     storage: &BridgeStorage,
     batch_id: u64,
     write_set: &FfiPbftFinalizationStorageWritePlan,
@@ -306,22 +426,7 @@ pub fn append_pbft_finalized_period_storage_writes(
     ))
 }
 
-/// Appends dynamic-lambda persistence after C++ has applied the existing lambda
-/// adjustment policy to its live `PbftManager` fields.
-///
-/// Inputs:
-/// - `storage` and `batch_id` identify the Rust-backed batch owned by C++.
-/// - `write_set` is the accepted PBFT finalization storage intent.
-/// - `rounds_count_dynamic_lambda` and `dynamic_lambda` are the post-adjust live
-///   values that must become durable with the optional period-lambda row.
-///
-/// Outputs and invariants:
-/// - Returns the same apply status envelope as the primary appender.
-/// - Rejects write sets that did not request dynamic-lambda persistence.
-/// - Treats `period_lambda` as immutable for a finalized period and reports a
-///   conflict when an existing value differs. Manager lambda and round-count
-///   fields are mutable PBFT manager state and are overwritten.
-pub fn append_pbft_finalization_dynamic_lambda_storage_writes(
+fn append_pbft_finalization_dynamic_lambda_storage_writes_impl(
     storage: &BridgeStorage,
     batch_id: u64,
     write_set: &FfiPbftFinalizationStorageWritePlan,
@@ -421,13 +526,7 @@ pub fn append_pbft_finalization_dynamic_lambda_storage_writes(
     Ok(sidecar_apply_result(status, write_set, ""))
 }
 
-/// Appends the PBFT manager executed-block status after FinalChain finalization
-/// has been dispatched.
-///
-/// This preserves the legacy ordering where durable `ExecutedBlock=true` is not
-/// written before the final-chain path is invoked, while keeping the byte-level
-/// persistence in Rust.
-pub fn append_pbft_finalization_executed_status_storage_write(
+fn append_pbft_finalization_executed_status_storage_write_impl(
     storage: &BridgeStorage,
     batch_id: u64,
     write_set: &FfiPbftFinalizationStorageWritePlan,
@@ -670,6 +769,7 @@ mod tests {
 
     const APPLY_STATUS_APPLIED_TEST: u8 = 0;
     const APPLY_STATUS_ALREADY_APPLIED_TEST: u8 = 1;
+    const APPLY_STATUS_REJECTED_TEST: u8 = 2;
     const APPLY_STATUS_MISSING_PAYLOAD_TEST: u8 = 3;
     const APPLY_STATUS_CONFLICT_TEST: u8 = 4;
     const EXECUTED_BLOCK_STATUS_FIELD: u8 = 0;
@@ -917,6 +1017,43 @@ mod tests {
             storage
                 .drop_write_batch(batch_id)
                 .expect("conflict batch should drop");
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn rejects_unknown_finalization_storage_stage() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_unknown_stage");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let plan = plan_pbft_finalization_intent(fact());
+            let batch_id = storage
+                .create_write_batch()
+                .expect("unknown-stage batch should be created");
+            let result = append_pbft_finalization_storage_write(
+                &storage,
+                batch_id,
+                &plan.storage_write_intent,
+                FfiPbftFinalizationStorageWriteStage {
+                    stage: 255,
+                    rounds_count_dynamic_lambda: 0,
+                    dynamic_lambda: 0,
+                },
+            )
+            .expect("unknown stage should return status");
+            assert_eq!(result.status, APPLY_STATUS_REJECTED_TEST);
+            assert_eq!(
+                result.error_code,
+                "PBFT_FINALIZE_UNKNOWN_STORAGE_WRITE_STAGE"
+            );
+            assert!(!result.wrote_pbft_head);
+            assert!(!result.wrote_period_data);
+            storage
+                .drop_write_batch(batch_id)
+                .expect("unknown-stage batch should drop");
         }
 
         let _ = fs::remove_dir_all(temp_dir);

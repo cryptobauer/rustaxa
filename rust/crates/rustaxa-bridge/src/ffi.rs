@@ -608,6 +608,12 @@ pub mod rustaxa_ffi {
         transaction_location_writes: Vec<PbftFinalizationPositionedHash>,
     }
 
+    struct PbftFinalizationStorageWriteStage {
+        stage: u8,
+        rounds_count_dynamic_lambda: u32,
+        dynamic_lambda: u32,
+    }
+
     /// Result from appending Rust-owned finalized-period storage writes to an existing batch.
     struct PbftFinalizedPeriodApplyResult {
         status: u8,
@@ -2298,6 +2304,12 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_finalization_intent(
             fact: PbftFinalizationIntentFact,
         ) -> PbftFinalizationIntentPlan;
+        pub fn append_pbft_finalization_storage_write(
+            storage: &BridgeStorage,
+            batch_id: u64,
+            write_set: &PbftFinalizationStorageWritePlan,
+            stage: PbftFinalizationStorageWriteStage,
+        ) -> Result<PbftFinalizedPeriodApplyResult>;
         pub fn append_pbft_finalized_period_storage_writes(
             storage: &BridgeStorage,
             batch_id: u64,

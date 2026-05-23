@@ -498,11 +498,13 @@ The current Rust starting point is intentionally small:
    certified-vote identity, and lambda facts, and Rust returns primary-batch write flags, positioned DAG/transaction
    index writes, period-lambda persistence, executed-status persistence, and `blocks_per_year`. Rust now appends the
    PBFT head, PBFT hash-to-period, period-data RLP, finalized DAG indexes, transaction indexes, and pending-row deletes
-   to the shim's Rust-backed storage batch. Rust also owns the byte-level dynamic-lambda persistence sidecar after C++
-   applies the live lambda adjustment policy, and appends the executed-PBFT status in a separate post-FinalChain-dispatch
-   batch so legacy recovery ordering stays intact. C++ still owns reward-vote reset, sortition writes, dynamic-lambda
-   calculation/live mutation, FinalChain updates, and live PBFT runtime mutation until those sidecar APIs move across
-   the bridge.
+   to the shim's Rust-backed storage batch. The PBFT finalization persistence bridge now exposes one staged Rust appender
+   for primary finalized-period writes, post-live-mutation dynamic-lambda persistence, and post-FinalChain-dispatch
+   executed-status persistence; compatibility wrappers remain for the older appender entrypoints. The C++ shim calls the
+   staged API while preserving the existing batch/commit boundaries so reward-vote reset, sortition writes, dynamic-lambda
+   live rollback, and executed-status ordering keep their recovery semantics. C++ still owns reward-vote reset, sortition
+   writes, dynamic-lambda calculation/live mutation, FinalChain updates, and live PBFT runtime mutation until those
+   sidecar APIs move across the bridge.
    `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
    selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
    lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode

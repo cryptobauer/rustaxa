@@ -52,6 +52,9 @@ constexpr uint8_t kPbftSyncRuntimeActionContractError = 5;
 constexpr uint8_t kPbftFinalizationStatusAccepted = 0;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusApplied = 0;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusAlreadyApplied = 1;
+constexpr uint8_t kPbftFinalizationStorageStagePrimary = 0;
+constexpr uint8_t kPbftFinalizationStorageStageDynamicLambda = 1;
+constexpr uint8_t kPbftFinalizationStorageStageExecutedStatus = 2;
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t &hash) { return hash.asArray(); }
 
@@ -2274,8 +2277,9 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
   auto batch = db_->createWriteBatch();
   rustaxa::PbftFinalizedPeriodApplyResult primary_storage_result{};
   try {
-    primary_storage_result = rustaxa::append_pbft_finalized_period_storage_writes(
-        db_->rustStorage(), db_->rustBatchId(batch), finalization_plan.storage_write_intent);
+    primary_storage_result = rustaxa::append_pbft_finalization_storage_write(
+        db_->rustStorage(), db_->rustBatchId(batch), finalization_plan.storage_write_intent,
+        rustaxa::PbftFinalizationStorageWriteStage{kPbftFinalizationStorageStagePrimary, 0, 0});
   } catch (const std::exception &e) {
     LOG(log_er_) << "Rust PBFT finalized-period storage appender failed for block " << pbft_block_hash << ", period "
                  << block_pbft_period << ": " << e.what();
@@ -2348,9 +2352,10 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
 
     rustaxa::PbftFinalizedPeriodApplyResult dynamic_lambda_result{};
     try {
-      dynamic_lambda_result = rustaxa::append_pbft_finalization_dynamic_lambda_storage_writes(
+      dynamic_lambda_result = rustaxa::append_pbft_finalization_storage_write(
           db_->rustStorage(), db_->rustBatchId(batch), finalization_plan.storage_write_intent,
-          rounds_count_dynamic_lambda_, dynamic_lambda_);
+          rustaxa::PbftFinalizationStorageWriteStage{kPbftFinalizationStorageStageDynamicLambda,
+                                                     rounds_count_dynamic_lambda_, dynamic_lambda_});
     } catch (const std::exception &e) {
       rounds_count_dynamic_lambda_ = previous_rounds_count_dynamic_lambda;
       dynamic_lambda_ = previous_dynamic_lambda;
@@ -2382,8 +2387,9 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       batch = db_->createWriteBatch();
       rustaxa::PbftFinalizedPeriodApplyResult executed_status_result{};
       try {
-        executed_status_result = rustaxa::append_pbft_finalization_executed_status_storage_write(
-            db_->rustStorage(), db_->rustBatchId(batch), finalization_plan.storage_write_intent);
+        executed_status_result = rustaxa::append_pbft_finalization_storage_write(
+            db_->rustStorage(), db_->rustBatchId(batch), finalization_plan.storage_write_intent,
+            rustaxa::PbftFinalizationStorageWriteStage{kPbftFinalizationStorageStageExecutedStatus, 0, 0});
       } catch (const std::exception &e) {
         LOG(log_er_) << "Rust PBFT executed-status storage appender failed for block " << pbft_block_hash << ", period "
                      << block_pbft_period << ": " << e.what();
