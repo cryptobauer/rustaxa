@@ -6,10 +6,10 @@
 //! inline limit keep their [`bytes::Bytes`] allocation to avoid copying large
 //! buffers into every arena slot.
 //!
-//! [`PacketId`](crate::arena::PacketId) combines a monotonic packet identifier
-//! with the slot index and generation. Slot indexes are local to one arena and
-//! may be reused after removal, while the generation distinguishes stale handles
-//! from the packet currently occupying the same slot.
+//! [`PacketId`](crate::arena::PacketId) combines the arena id, slot index, and
+//! slot generation. Slot indexes are local to one arena and may be reused after
+//! removal, while the generation distinguishes stale handles from the packet
+//! currently occupying the same slot.
 
 use anyhow::ensure;
 use chrono::Utc;
@@ -22,17 +22,16 @@ use rustaxa_types::ethereum::NodeId;
 use rustaxa_types::time::Microseconds;
 
 static ARENA_COUNTER: AtomicUsize = AtomicUsize::new(0);
-static PACKET_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// Arena handle assigned when a packet is inserted.
 ///
-/// A packet id pairs a monotonic process-local identifier with the slot index
-/// and generation used for fast arena access. The slot index can be reused
-/// after removal, so lookups validate the generation before returning a packet.
+/// A packet id identifies the owning arena plus the slot generation used for
+/// stale-handle detection. The slot index can be reused after removal, so
+/// lookups validate the whole handle before returning a packet.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PacketId {
-    /// Monotonic process-local id used to identify packet insertion order.
-    internal_id: usize,
+    /// Process-local id of the arena that owns the slot.
+    arena_id: usize,
 
     /// Slot index inside the arena.
     index: usize,
@@ -85,7 +84,7 @@ impl Default for PacketPayload {
 /// with arena-optimized payload storage.
 #[derive(Debug, Clone)]
 pub struct Packet {
-    /// Monotonic process-local packet identifier.
+    /// Arena handle assigned to this packet.
     pub id: PacketId,
 
     /// Wall-clock receive timestamp in microseconds.
@@ -114,10 +113,16 @@ impl Packet {
     ///
     /// Payloads up to [`INLINE_LIMIT`] bytes are copied into the packet entry.
     /// Larger payloads retain the provided [`bytes::Bytes`] handle.
-    fn new(from_node: NodeId, payload: bytes::Bytes, index: usize, generation: usize) -> Self {
+    fn new(
+        from_node: NodeId,
+        payload: bytes::Bytes,
+        arena_id: usize,
+        index: usize,
+        generation: usize,
+    ) -> Self {
         Packet {
             id: PacketId {
-                internal_id: PACKET_COUNTER.fetch_add(1, Ordering::Relaxed),
+                arena_id,
                 index,
                 generation,
             },
@@ -153,10 +158,13 @@ pub enum BorrowError {
     Busy,
 
     /// The supplied packet handle does not match the packet currently stored in the slot.
+    ///
+    /// This covers stale generations and handles from another arena that happen
+    /// to reference an in-range slot index.
     #[error("Packet handle mismatch with current handle: {0:?}")]
     StaleHandle(PacketId),
 
-    /// The supplied packet handle references a slot outside this arena.
+    /// The supplied packet handle references a slot index outside this arena.
     #[error("Packet handle is outside this arena: {0:?}")]
     InvalidHandle(PacketId),
 
@@ -247,8 +255,8 @@ pub struct Reservation {
 /// Fixed-slot packet arena.
 ///
 /// The arena owns packets and returns [`PacketId`] handles for later lookup or
-/// removal. Each handle contains an arena-local slot index plus a generation
-/// for stale-handle detection.
+/// removal. Each handle contains the arena id, an arena-local slot index, and a
+/// generation for stale-handle detection.
 pub struct Arena {
     id: usize,
     size: usize,
@@ -308,9 +316,9 @@ impl Arena {
 
     /// Inserts a packet into a previously reserved slot and returns its handle.
     ///
-    /// The returned [`PacketId`] includes the slot index, slot generation, and
-    /// packet's monotonic process-local id. Reservations from another arena or
-    /// from a slot that is no longer writable are rejected.
+    /// The returned [`PacketId`] includes this arena's id, the slot index, and
+    /// the slot generation. Reservations from another arena or from a slot that
+    /// is no longer writable are rejected.
     pub fn insert(
         &self,
         reservation: Reservation,
@@ -334,6 +342,7 @@ impl Arena {
         let packet = Packet::new(
             from_node,
             payload,
+            self.id,
             reservation.index,
             reservation.generation,
         );
@@ -348,7 +357,8 @@ impl Arena {
     /// Removes a packet from the arena and frees the slot for reuse.
     ///
     /// Returns [`BorrowError::StaleHandle`] when the supplied [`PacketId`]
-    /// refers to an older generation of the same slot.
+    /// refers to an older generation of the same slot or a packet from another
+    /// arena at the same slot index.
     pub fn remove(&self, id: PacketId) -> Result<bool, BorrowError> {
         let Some(slot) = self.slots.get(id.index) else {
             return Err(BorrowError::InvalidHandle(id));
@@ -372,8 +382,8 @@ impl Arena {
 
     /// Returns the packet identified by `packet_id`, if it is still present.
     ///
-    /// The slot generation must match, so stale packet ids do not resolve to
-    /// newer packets that reused the same slot.
+    /// The arena id and slot generation must match, so stale packet ids do not
+    /// resolve to newer packets that reused the same slot.
     pub fn borrow(&self, id: PacketId) -> Result<PacketReadGuard<'_>, BorrowError> {
         let Some(slot) = self.slots.get(id.index) else {
             return Err(BorrowError::InvalidHandle(id));
@@ -438,7 +448,7 @@ mod tests {
         let from_node = test_nodeid();
         let payload = test_payload1();
         let checkpoint1 = chrono::Utc::now().timestamp_micros();
-        let packet1 = Packet::new(from_node, payload.clone(), 0, 0);
+        let packet1 = Packet::new(from_node, payload.clone(), 0, 0, 0);
         let checkpoint2 = chrono::Utc::now().timestamp_micros();
 
         assert!(packet1.received >= Microseconds(checkpoint1 as u64));
@@ -447,18 +457,6 @@ mod tests {
         assert_eq!(packet1.payload(), [0xc3, 0x01, 0x02, 0x03]);
         assert_eq!(packet1.id.index, 0);
         assert_eq!(packet1.id.generation, 0);
-    }
-
-    #[test]
-    fn test_packet_id_increments() {
-        let from_node = test_nodeid();
-        let payload = test_payload1();
-        let packet1 = Packet::new(from_node, payload.clone(), 0, 0);
-        let packet2 = Packet::new(from_node, payload.clone(), 1, 0);
-        assert!(
-            packet2.id.internal_id > packet1.id.internal_id,
-            "PacketId should increment"
-        );
     }
 
     #[test]
@@ -474,7 +472,7 @@ mod tests {
     fn test_small_buffer_optimization_inline() {
         let from_node = test_nodeid();
         let payload = test_payload_inline();
-        let packet = Packet::new(from_node, payload.clone(), 0, 0);
+        let packet = Packet::new(from_node, payload.clone(), 0, 0, 0);
         // Should use Inline variant
         match &packet.payload {
             PacketPayload::Inline { len, buf } => {
@@ -490,7 +488,7 @@ mod tests {
     fn test_small_buffer_optimization_heap() {
         let from_node = test_nodeid();
         let payload = test_payload_heap();
-        let packet = Packet::new(from_node, payload.clone(), 0, 0);
+        let packet = Packet::new(from_node, payload.clone(), 0, 0, 0);
         // Should use Heap variant
         match &packet.payload {
             PacketPayload::Heap(bytes) => {
@@ -620,7 +618,7 @@ mod tests {
     fn test_borrow_and_remove_reject_out_of_range_handle() {
         let arena = Arena::new(1).expect("arena should be created");
         let invalid = PacketId {
-            internal_id: 0,
+            arena_id: 0,
             index: 99,
             generation: 0,
         };
@@ -639,7 +637,7 @@ mod tests {
     fn test_borrow_and_remove_reject_free_and_writing_slots() {
         let arena = Arena::new(2).expect("arena should be created");
         let free_handle = PacketId {
-            internal_id: 0,
+            arena_id: 0,
             index: 0,
             generation: 0,
         };
@@ -655,7 +653,7 @@ mod tests {
 
         let reservation = arena.try_reserve().expect("slot should be reserved");
         let writing_handle = PacketId {
-            internal_id: 0,
+            arena_id: 0,
             index: reservation.index,
             generation: reservation.generation,
         };
