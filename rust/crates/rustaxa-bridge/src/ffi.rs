@@ -2303,6 +2303,18 @@ pub mod rustaxa_ffi {
             batch_id: u64,
             write_set: &PbftFinalizationStorageWritePlan,
         ) -> Result<PbftFinalizedPeriodApplyResult>;
+        pub fn append_pbft_finalization_dynamic_lambda_storage_writes(
+            storage: &BridgeStorage,
+            batch_id: u64,
+            write_set: &PbftFinalizationStorageWritePlan,
+            rounds_count_dynamic_lambda: u32,
+            dynamic_lambda: u32,
+        ) -> Result<PbftFinalizedPeriodApplyResult>;
+        pub fn append_pbft_finalization_executed_status_storage_write(
+            storage: &BridgeStorage,
+            batch_id: u64,
+            write_set: &PbftFinalizationStorageWritePlan,
+        ) -> Result<PbftFinalizedPeriodApplyResult>;
 
         // Consensus proposed PBFT blocks
 

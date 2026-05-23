@@ -744,11 +744,11 @@ class PbftManager {
   void processPillarBlock(PbftPeriod period);
 
   /**
-   * @brief Adjust dynamic lambda
+   * @brief Adjust dynamic lambda live state after a finalized PBFT block.
    *
    * @param finalized_period period, in which block was finalized
    * @param finalized_round round, in which block was finalized
-   * @param write_batch
+   * @param write_batch retained for API compatibility; Rust appends the resulting durable fields
    */
   void adjustDynamicLambda(PbftPeriod finalized_period, PbftRound finalized_round, Batch &write_batch);
 

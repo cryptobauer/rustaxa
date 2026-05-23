@@ -661,7 +661,7 @@ void PbftManager::resetPbftConsensus(PbftRound round) {
   current_round_start_datetime_ = std::chrono::system_clock::now();
 }
 
-void PbftManager::adjustDynamicLambda(PbftPeriod finalized_period, PbftRound finalized_round, Batch &write_batch) {
+void PbftManager::adjustDynamicLambda(PbftPeriod finalized_period, PbftRound finalized_round, Batch &) {
   const auto &kCactiHfCfg = kGenesisConfig.state.hardforks.cacti_hf;
   rounds_count_dynamic_lambda_ += finalized_round;
 
@@ -694,8 +694,6 @@ void PbftManager::adjustDynamicLambda(PbftPeriod finalized_period, PbftRound fin
                  << ", period " << finalized_period << ", round " << finalized_round;
   }
 
-  db_->saveRoundsCountDynamicLambda(rounds_count_dynamic_lambda_, write_batch);
-  db_->addPbftMgrFieldToBatch(PbftMgrField::Lambda, dynamic_lambda_, write_batch);
 }
 
 uint32_t PbftManager::getRoundLambda(PbftRound round) const {
@@ -2341,16 +2339,34 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
   if (finalization_plan.storage_write_intent.apply_dynamic_lambda_update) {
     batch = db_->createWriteBatch();
 
-    // Save period lambda to db in case it's value changed or if it was not saved to db yet
-    // ! Important: save period lambds before adjusting dynamic lambda for the next period (adjustDynamicLambda)
-    if (finalization_plan.storage_write_intent.persist_period_lambda) {
-      db_->savePeriodLambda(block_pbft_period, finalization_plan.storage_write_intent.period_lambda, batch);
-    }
-
     blocks_per_year = finalization_plan.storage_write_intent.blocks_per_year;
 
     // Adjust dynamic lambda
+    const auto previous_rounds_count_dynamic_lambda = rounds_count_dynamic_lambda_;
+    const auto previous_dynamic_lambda = dynamic_lambda_;
     adjustDynamicLambda(block_pbft_period, sample_cert_vote->getRound(), batch);
+
+    rustaxa::PbftFinalizedPeriodApplyResult dynamic_lambda_result{};
+    try {
+      dynamic_lambda_result = rustaxa::append_pbft_finalization_dynamic_lambda_storage_writes(
+          db_->rustStorage(), db_->rustBatchId(batch), finalization_plan.storage_write_intent,
+          rounds_count_dynamic_lambda_, dynamic_lambda_);
+    } catch (const std::exception &e) {
+      rounds_count_dynamic_lambda_ = previous_rounds_count_dynamic_lambda;
+      dynamic_lambda_ = previous_dynamic_lambda;
+      LOG(log_er_) << "Rust PBFT dynamic-lambda storage appender failed for block " << pbft_block_hash << ", period "
+                   << block_pbft_period << ": " << e.what();
+      return false;
+    }
+    if (dynamic_lambda_result.status != kPbftFinalizedPeriodApplyStatusApplied &&
+        dynamic_lambda_result.status != kPbftFinalizedPeriodApplyStatusAlreadyApplied) {
+      rounds_count_dynamic_lambda_ = previous_rounds_count_dynamic_lambda;
+      dynamic_lambda_ = previous_dynamic_lambda;
+      LOG(log_er_) << "Rust PBFT dynamic-lambda storage appender rejected block " << pbft_block_hash << ", period "
+                   << block_pbft_period << ", status " << static_cast<uint32_t>(dynamic_lambda_result.status)
+                   << ", error " << static_cast<std::string>(dynamic_lambda_result.error_code);
+      return false;
+    }
 
     db_->commitWriteBatch(batch);
   } else {
@@ -2363,7 +2379,24 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
 
   if (finalization_plan.executed_pbft_block) {
     if (finalization_plan.storage_write_intent.persist_executed_pbft_status) {
-      db_->savePbftMgrStatus(PbftMgrStatus::ExecutedBlock, finalization_plan.storage_write_intent.executed_pbft_status);
+      batch = db_->createWriteBatch();
+      rustaxa::PbftFinalizedPeriodApplyResult executed_status_result{};
+      try {
+        executed_status_result = rustaxa::append_pbft_finalization_executed_status_storage_write(
+            db_->rustStorage(), db_->rustBatchId(batch), finalization_plan.storage_write_intent);
+      } catch (const std::exception &e) {
+        LOG(log_er_) << "Rust PBFT executed-status storage appender failed for block " << pbft_block_hash << ", period "
+                     << block_pbft_period << ": " << e.what();
+        return false;
+      }
+      if (executed_status_result.status != kPbftFinalizedPeriodApplyStatusApplied &&
+          executed_status_result.status != kPbftFinalizedPeriodApplyStatusAlreadyApplied) {
+        LOG(log_er_) << "Rust PBFT executed-status storage appender rejected block " << pbft_block_hash << ", period "
+                     << block_pbft_period << ", status " << static_cast<uint32_t>(executed_status_result.status)
+                     << ", error " << static_cast<std::string>(executed_status_result.error_code);
+        return false;
+      }
+      db_->commitWriteBatch(batch);
     }
     executed_pbft_block_ = finalization_plan.storage_write_intent.executed_pbft_status;
   }

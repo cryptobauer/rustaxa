@@ -8,7 +8,7 @@
 //! The finalized-period storage appender is the first native persistence cutover
 //! for this path. It appends the storage records that are already represented as
 //! stable keys and canonical bytes to a Rust storage batch supplied by the shim.
-//! Live VoteManager, sortition, FinalChain, dynamic-lambda, and PBFT runtime
+//! Live VoteManager, sortition manager mutation, FinalChain, and PBFT runtime
 //! side effects remain caller-owned until their Rust transition APIs exist.
 
 use crate::ffi::rustaxa_ffi::{
@@ -34,6 +34,9 @@ const APPLY_STATUS_ALREADY_APPLIED_SAME_VALUES: u8 = 1;
 const APPLY_STATUS_REJECTED_WRITE_SET: u8 = 2;
 const APPLY_STATUS_MISSING_REQUIRED_PAYLOAD: u8 = 3;
 const APPLY_STATUS_CONFLICTING_EXISTING_WRITE: u8 = 4;
+const PBFT_MGR_FIELD_LAMBDA: u8 = 2;
+const PBFT_MGR_STATUS_EXECUTED_BLOCK: u8 = 0;
+const SINGLE_VALUE_KEY: [u8; 4] = 0i32.to_le_bytes();
 
 /// C++/Rust bridge entry for one deterministic PBFT finalization intent.
 pub fn plan_pbft_finalization_intent(
@@ -54,7 +57,7 @@ pub fn plan_pbft_finalization_intent(
 /// - count fields report how many finalized DAG/transaction indexes were appended.
 ///
 /// Invariants and edge behavior:
-/// - The function appends only primary finalized-period records: PBFT head,
+/// - The function appends primary finalized-period records: PBFT head,
 ///   PBFT hash-to-period, period-data RLP, DAG finalized indexes, transaction
 ///   finalized indexes, and deletes of pending DAG/transaction rows.
 /// - It does not commit the batch. C++ commits the same Rust-backed batch after
@@ -303,6 +306,176 @@ pub fn append_pbft_finalized_period_storage_writes(
     ))
 }
 
+/// Appends dynamic-lambda persistence after C++ has applied the existing lambda
+/// adjustment policy to its live `PbftManager` fields.
+///
+/// Inputs:
+/// - `storage` and `batch_id` identify the Rust-backed batch owned by C++.
+/// - `write_set` is the accepted PBFT finalization storage intent.
+/// - `rounds_count_dynamic_lambda` and `dynamic_lambda` are the post-adjust live
+///   values that must become durable with the optional period-lambda row.
+///
+/// Outputs and invariants:
+/// - Returns the same apply status envelope as the primary appender.
+/// - Rejects write sets that did not request dynamic-lambda persistence.
+/// - Treats `period_lambda` as immutable for a finalized period and reports a
+///   conflict when an existing value differs. Manager lambda and round-count
+///   fields are mutable PBFT manager state and are overwritten.
+pub fn append_pbft_finalization_dynamic_lambda_storage_writes(
+    storage: &BridgeStorage,
+    batch_id: u64,
+    write_set: &FfiPbftFinalizationStorageWritePlan,
+    rounds_count_dynamic_lambda: u32,
+    dynamic_lambda: u32,
+) -> Result<FfiPbftFinalizedPeriodApplyResult> {
+    if !write_set.apply_dynamic_lambda_update {
+        return Ok(apply_result(
+            APPLY_STATUS_REJECTED_WRITE_SET,
+            write_set,
+            0,
+            0,
+            "PBFT_FINALIZE_DYNAMIC_LAMBDA_NOT_REQUESTED",
+        ));
+    }
+
+    let mut already_applied = true;
+    if write_set.persist_period_lambda {
+        let period_key = write_set.block_period.to_le_bytes();
+        let period_lambda = write_set.period_lambda.to_le_bytes();
+        if check_existing_value(
+            storage,
+            Column::PeriodLambda,
+            &period_key,
+            &period_lambda,
+            "PBFT_FINALIZE_CONFLICTING_PERIOD_LAMBDA",
+        )? {
+            return Ok(apply_result(
+                APPLY_STATUS_CONFLICTING_EXISTING_WRITE,
+                write_set,
+                0,
+                0,
+                "PBFT_FINALIZE_CONFLICTING_PERIOD_LAMBDA",
+            ));
+        }
+        already_applied &= storage
+            .0
+            .get_raw(Column::PeriodLambda, &period_key)?
+            .is_some();
+    }
+    already_applied &= storage
+        .0
+        .get_raw(Column::RoundsCountDynamicLambda, &SINGLE_VALUE_KEY)?
+        .as_deref()
+        == Some(&rounds_count_dynamic_lambda.to_le_bytes());
+    already_applied &= storage
+        .0
+        .get_raw(Column::PbftMgrRoundStep, &[PBFT_MGR_FIELD_LAMBDA])?
+        .as_deref()
+        == Some(&dynamic_lambda.to_le_bytes());
+
+    {
+        let mut batches = storage
+            .1
+            .lock()
+            .map_err(|_| anyhow!("batch registry lock poisoned"))?;
+        let batch = batches
+            .get_mut(&batch_id)
+            .ok_or_else(|| anyhow!("unknown batch id: {batch_id}"))?;
+
+        if write_set.persist_period_lambda {
+            storage
+                .0
+                .batch_put_raw(
+                    batch,
+                    Column::PeriodLambda,
+                    &write_set.block_period.to_le_bytes(),
+                    &write_set.period_lambda.to_le_bytes(),
+                )
+                .context("PBFT_FINALIZE_BATCH_PERIOD_LAMBDA")?;
+        }
+        storage
+            .0
+            .batch_put_raw(
+                batch,
+                Column::RoundsCountDynamicLambda,
+                &SINGLE_VALUE_KEY,
+                &rounds_count_dynamic_lambda.to_le_bytes(),
+            )
+            .context("PBFT_FINALIZE_BATCH_DYNAMIC_LAMBDA_ROUNDS")?;
+        storage
+            .0
+            .batch_put_raw(
+                batch,
+                Column::PbftMgrRoundStep,
+                &[PBFT_MGR_FIELD_LAMBDA],
+                &dynamic_lambda.to_le_bytes(),
+            )
+            .context("PBFT_FINALIZE_BATCH_DYNAMIC_LAMBDA_FIELD")?;
+    }
+
+    let status = if already_applied {
+        APPLY_STATUS_ALREADY_APPLIED_SAME_VALUES
+    } else {
+        APPLY_STATUS_APPLIED
+    };
+    Ok(sidecar_apply_result(status, write_set, ""))
+}
+
+/// Appends the PBFT manager executed-block status after FinalChain finalization
+/// has been dispatched.
+///
+/// This preserves the legacy ordering where durable `ExecutedBlock=true` is not
+/// written before the final-chain path is invoked, while keeping the byte-level
+/// persistence in Rust.
+pub fn append_pbft_finalization_executed_status_storage_write(
+    storage: &BridgeStorage,
+    batch_id: u64,
+    write_set: &FfiPbftFinalizationStorageWritePlan,
+) -> Result<FfiPbftFinalizedPeriodApplyResult> {
+    if !write_set.persist_executed_pbft_status {
+        return Ok(apply_result(
+            APPLY_STATUS_REJECTED_WRITE_SET,
+            write_set,
+            0,
+            0,
+            "PBFT_FINALIZE_EXECUTED_STATUS_NOT_REQUESTED",
+        ));
+    }
+
+    let status_key = [PBFT_MGR_STATUS_EXECUTED_BLOCK];
+    let already_applied = storage
+        .0
+        .get_raw(Column::PbftMgrStatus, &status_key)?
+        .as_deref()
+        == Some(&[u8::from(write_set.executed_pbft_status)]);
+
+    {
+        let mut batches = storage
+            .1
+            .lock()
+            .map_err(|_| anyhow!("batch registry lock poisoned"))?;
+        let batch = batches
+            .get_mut(&batch_id)
+            .ok_or_else(|| anyhow!("unknown batch id: {batch_id}"))?;
+        storage
+            .0
+            .batch_put_raw(
+                batch,
+                Column::PbftMgrStatus,
+                &status_key,
+                &[u8::from(write_set.executed_pbft_status)],
+            )
+            .context("PBFT_FINALIZE_BATCH_EXECUTED_STATUS")?;
+    }
+
+    let status = if already_applied {
+        APPLY_STATUS_ALREADY_APPLIED_SAME_VALUES
+    } else {
+        APPLY_STATUS_APPLIED
+    };
+    Ok(sidecar_apply_result(status, write_set, ""))
+}
+
 impl From<FfiPbftFinalizationIntentFact> for PbftFinalizationIntentFact {
     fn from(value: FfiPbftFinalizationIntentFact) -> Self {
         Self {
@@ -445,6 +618,23 @@ fn apply_result(
     }
 }
 
+fn sidecar_apply_result(
+    status: u8,
+    write_set: &FfiPbftFinalizationStorageWritePlan,
+    error_code: &str,
+) -> FfiPbftFinalizedPeriodApplyResult {
+    FfiPbftFinalizedPeriodApplyResult {
+        status,
+        wrote_pbft_head: false,
+        wrote_period_data: false,
+        dag_index_writes: 0,
+        transaction_location_writes: 0,
+        block_period: write_set.block_period,
+        pbft_block_hash: write_set.pbft_block_hash,
+        error_code: error_code.to_string(),
+    }
+}
+
 impl From<PbftFinalizationPositionedHash> for FfiPbftFinalizationPositionedHash {
     fn from(value: PbftFinalizationPositionedHash) -> Self {
         Self {
@@ -482,6 +672,7 @@ mod tests {
     const APPLY_STATUS_ALREADY_APPLIED_TEST: u8 = 1;
     const APPLY_STATUS_MISSING_PAYLOAD_TEST: u8 = 3;
     const APPLY_STATUS_CONFLICT_TEST: u8 = 4;
+    const EXECUTED_BLOCK_STATUS_FIELD: u8 = 0;
 
     fn fact() -> FfiPbftFinalizationIntentFact {
         FfiPbftFinalizationIntentFact {
@@ -656,6 +847,15 @@ mod tests {
                 .get_transaction_location(&[3; 32])
                 .expect("transaction location should load")
                 .is_empty());
+            assert!(
+                !storage
+                    .get_period_lambda(10, false)
+                    .expect("period lambda should remain sidecar-owned")
+                    .found
+            );
+            assert!(!storage
+                .get_pbft_mgr_status(EXECUTED_BLOCK_STATUS_FIELD)
+                .expect("executed status should remain sidecar-owned"));
 
             let retry_batch = storage
                 .create_write_batch()
@@ -717,6 +917,137 @@ mod tests {
             storage
                 .drop_write_batch(batch_id)
                 .expect("conflict batch should drop");
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn appends_dynamic_lambda_storage_writes_after_live_adjustment() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_dynamic_lambda_apply");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let plan = plan_pbft_finalization_intent(fact());
+            let batch_id = storage
+                .create_write_batch()
+                .expect("dynamic-lambda batch should be created");
+            let result = append_pbft_finalization_dynamic_lambda_storage_writes(
+                &storage,
+                batch_id,
+                &plan.storage_write_intent,
+                7,
+                1_450,
+            )
+            .expect("dynamic-lambda append should succeed");
+            assert_eq!(result.status, APPLY_STATUS_APPLIED_TEST);
+            assert!(!result.wrote_pbft_head);
+            assert!(!result.wrote_period_data);
+            storage
+                .commit_write_batch(batch_id, false)
+                .expect("dynamic-lambda batch should commit");
+
+            let period_lambda = storage
+                .get_period_lambda(10, false)
+                .expect("period lambda should load");
+            assert!(period_lambda.found);
+            assert_eq!(period_lambda.value, 1_500);
+            assert_eq!(
+                storage
+                    .get_rounds_count_dynamic_lambda()
+                    .expect("rounds count should load"),
+                7
+            );
+            assert_eq!(
+                storage
+                    .get_pbft_mgr_field(PBFT_MGR_FIELD_LAMBDA)
+                    .expect("lambda field should load"),
+                1_450
+            );
+
+            let retry_batch = storage
+                .create_write_batch()
+                .expect("retry dynamic-lambda batch should be created");
+            let retry_result = append_pbft_finalization_dynamic_lambda_storage_writes(
+                &storage,
+                retry_batch,
+                &plan.storage_write_intent,
+                7,
+                1_450,
+            )
+            .expect("dynamic-lambda retry should succeed");
+            assert_eq!(retry_result.status, APPLY_STATUS_ALREADY_APPLIED_TEST);
+            storage
+                .drop_write_batch(retry_batch)
+                .expect("retry dynamic-lambda batch should drop");
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn rejects_conflicting_dynamic_lambda_period_value() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_dynamic_lambda_reject");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let plan = plan_pbft_finalization_intent(fact());
+            storage
+                .save_period_lambda(10, 1_600)
+                .expect("lambda mismatch should seed");
+            let lambda_batch = storage
+                .create_write_batch()
+                .expect("conflicting-lambda batch should be created");
+            let lambda_result = append_pbft_finalization_dynamic_lambda_storage_writes(
+                &storage,
+                lambda_batch,
+                &plan.storage_write_intent,
+                7,
+                1_450,
+            )
+            .expect("lambda mismatch should return status");
+            assert_eq!(lambda_result.status, APPLY_STATUS_CONFLICT_TEST);
+            assert_eq!(
+                lambda_result.error_code,
+                "PBFT_FINALIZE_CONFLICTING_PERIOD_LAMBDA"
+            );
+            storage
+                .drop_write_batch(lambda_batch)
+                .expect("lambda-conflict batch should drop");
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn appends_executed_status_after_final_chain_dispatch() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_executed_status_apply");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let plan = plan_pbft_finalization_intent(fact());
+            storage
+                .save_pbft_mgr_status(EXECUTED_BLOCK_STATUS_FIELD, false)
+                .expect("previous executed status should seed");
+            let status_batch = storage
+                .create_write_batch()
+                .expect("status overwrite batch should be created");
+            let status_result = append_pbft_finalization_executed_status_storage_write(
+                &storage,
+                status_batch,
+                &plan.storage_write_intent,
+            )
+            .expect("status overwrite should append");
+            assert_eq!(status_result.status, APPLY_STATUS_APPLIED_TEST);
+            storage
+                .commit_write_batch(status_batch, false)
+                .expect("status overwrite batch should commit");
+            assert!(storage
+                .get_pbft_mgr_status(EXECUTED_BLOCK_STATUS_FIELD)
+                .expect("executed status should load"));
         }
 
         let _ = fs::remove_dir_all(temp_dir);
