@@ -396,7 +396,7 @@ impl Arena {
     }
 
     /// Returns the fixed slot capacity of the arena.
-    pub fn capacity(&self) -> usize {
+    pub fn size(&self) -> usize {
         self.size
     }
 }
@@ -407,6 +407,7 @@ mod tests {
     use bytes::Bytes;
     use ethereum_types::H512;
     use std::mem;
+    use std::sync::mpsc;
     use std::sync::{Arc, Barrier};
     use std::thread;
 
@@ -503,7 +504,7 @@ mod tests {
     #[test]
     fn test_arena_creation() {
         let arena = Arena::new(1024).expect("power-of-two arena size should be valid");
-        assert_eq!(arena.capacity(), 1024);
+        assert_eq!(arena.size(), 1024);
         assert_eq!(arena.next_slot.load(Ordering::Relaxed), 0);
         assert!(
             arena
@@ -569,7 +570,7 @@ mod tests {
             .insert(reservation, from_node, payload)
             .expect("insert should succeed");
 
-        assert_eq!(arena.capacity(), 4);
+        assert_eq!(arena.size(), 4);
         let retrieved = arena.borrow(packet_id).expect("packet should be present");
         assert_eq!(retrieved.id.index, packet_id.index);
         assert_eq!(retrieved.id.generation, packet_id.generation);
@@ -687,7 +688,7 @@ mod tests {
             .insert(reservation3, from_node, test_payload_heap())
             .expect("insert should succeed");
 
-        assert_eq!(arena.capacity(), 4);
+        assert_eq!(arena.size(), 4);
         assert_eq!(
             arena.borrow(key1).unwrap().payload(),
             [0xc3, 0x01, 0x02, 0x03]
@@ -711,13 +712,13 @@ mod tests {
             .insert(reservation, from_node, test_payload1())
             .expect("insert should succeed");
 
-        assert_eq!(arena.capacity(), 4);
+        assert_eq!(arena.size(), 4);
         assert_eq!(
             arena.borrow(key).unwrap().payload(),
             [0xc3, 0x01, 0x02, 0x03]
         );
         assert!(arena.remove(key).unwrap());
-        assert_eq!(arena.capacity(), 4);
+        assert_eq!(arena.size(), 4);
         assert!(matches!(
             arena.borrow(key),
             Err(BorrowError::StaleHandle(_))
@@ -931,6 +932,63 @@ mod tests {
             assert_eq!(packet.payload(), vec![packet.payload()[0]; 4].as_slice());
         }
         assert!(arena.try_reserve().is_none());
+    }
+
+    #[test]
+    fn test_producer_consumer_wraparound_chase() {
+        const CAPACITY: usize = 4;
+        const PACKETS: usize = 64;
+
+        let arena = Arc::new(Arena::new(CAPACITY).expect("arena should be created"));
+        let (tx, rx) = mpsc::sync_channel::<PacketId>(CAPACITY);
+        let from_node = test_nodeid();
+
+        let producer = {
+            let arena = Arc::clone(&arena);
+            thread::spawn(move || {
+                for i in 0..PACKETS {
+                    let reservation = loop {
+                        if let Some(reservation) = arena.try_reserve() {
+                            break reservation;
+                        }
+                        thread::yield_now();
+                    };
+                    let payload = Bytes::from(vec![(i % 251) as u8; 8]);
+                    let packet_id = arena
+                        .insert(reservation, from_node, payload)
+                        .expect("insert should succeed");
+                    tx.send(packet_id)
+                        .expect("consumer should receive packet id");
+                }
+            })
+        };
+
+        let consumer = {
+            let arena = Arc::clone(&arena);
+            thread::spawn(move || {
+                let mut seen_generations = Vec::with_capacity(PACKETS);
+
+                for i in 0..PACKETS {
+                    let packet_id = rx.recv().expect("producer should send packet id");
+                    let packet = arena.borrow(packet_id).expect("packet should be readable");
+                    assert_eq!(packet.payload(), vec![(i % 251) as u8; 8].as_slice());
+                    seen_generations.push(packet_id.generation);
+                    drop(packet);
+                    arena.remove(packet_id).expect("packet should be removable");
+                }
+
+                seen_generations
+            })
+        };
+
+        producer.join().expect("producer should not panic");
+        let seen_generations = consumer.join().expect("consumer should not panic");
+
+        assert!(
+            seen_generations.iter().copied().max().unwrap_or_default() > 0,
+            "test should force slot reuse after wrapping over capacity"
+        );
+        assert!(arena.try_reserve().is_some());
     }
 
     #[test]
