@@ -4,12 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1.0.100"
 bytes = "1.11.1"
 chrono = "0.4.44"
 ethereum-types = "0.16.0"
 rlp = "0.6.1"
 rustaxa-types = { version = "0.1.0", path = "../rustaxa-types" }
 slab = "0.4.12"
+thiserror = "2.0.17"
 
 [dev-dependencies]
 criterion = "0.7"

@@ -21,7 +21,7 @@ fn bench_insert(c: &mut Criterion) {
 
     for (name, payload_size, fill) in [
         ("small", 128usize, 0x11u8),
-        ("inline_limit", 1944usize, 0x22u8),
+        ("inline_limit", 1936usize, 0x22u8),
         ("heap", 4096usize, 0x33u8),
     ] {
         group.throughput(Throughput::Bytes(payload_size as u64));
@@ -30,9 +30,12 @@ fn bench_insert(c: &mut Criterion) {
             &payload_size,
             |b, &size| {
                 b.iter(|| {
-                    let mut arena = Arena::new(1024);
+                    let arena = Arena::new(1024).expect("arena should be created");
                     let payload = payload_of_size(size, fill);
-                    let packet_id = arena.insert(from_node, payload);
+                    let reservation = arena.try_reserve().expect("slot should be reserved");
+                    let packet_id = arena
+                        .insert(reservation, from_node, payload)
+                        .expect("insert should succeed");
                     black_box(packet_id);
                 });
             },
@@ -48,15 +51,19 @@ fn bench_insert_get_remove_roundtrip(c: &mut Criterion) {
 
     c.bench_function("arena_insert_get_remove_roundtrip", |b| {
         b.iter(|| {
-            let mut arena = Arena::new(1024);
-            let packet_id = arena.insert(from_node, payload.clone());
+            let arena = Arena::new(1024).expect("arena should be created");
+            let reservation = arena.try_reserve().expect("slot should be reserved");
+            let packet_id = arena
+                .insert(reservation, from_node, payload.clone())
+                .expect("insert should succeed");
 
-            let packet = arena.get(packet_id).expect("inserted packet should exist");
+            let packet = arena
+                .borrow(packet_id)
+                .expect("inserted packet should exist");
             black_box(packet.payload());
+            drop(packet);
 
-            let removed = arena
-                .try_remove(packet_id)
-                .expect("inserted packet should be removable");
+            let removed = arena.remove(packet_id).expect("packet should be removable");
             black_box(removed);
         });
     });
@@ -67,19 +74,23 @@ fn bench_fifo_like_workload(c: &mut Criterion) {
 
     c.bench_function("arena_fifo_like_workload", |b| {
         b.iter(|| {
-            let mut arena = Arena::new(4096);
+            let arena = Arena::new(4096).expect("arena should be created");
             let mut keys = Vec::with_capacity(2048);
 
             for i in 0..2048usize {
                 let payload = payload_of_size(256, (i % 251) as u8);
-                let packet_id = arena.insert(from_node, payload);
+                let reservation = arena.try_reserve().expect("slot should be reserved");
+                let packet_id = arena
+                    .insert(reservation, from_node, payload)
+                    .expect("insert should succeed");
                 keys.push(packet_id);
             }
 
             for key in keys {
-                let packet = arena.get(key).expect("packet should exist");
+                let packet = arena.borrow(key).expect("packet should exist");
                 black_box(packet.payload().len());
-                let removed = arena.try_remove(key).expect("packet should be removable");
+                drop(packet);
+                let removed = arena.remove(key).expect("packet should be removable");
                 black_box(removed);
             }
         });
