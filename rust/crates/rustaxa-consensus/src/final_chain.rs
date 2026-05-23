@@ -589,6 +589,18 @@ impl FinalChain {
         }
 
         let execution = self.execute_native_transactions(&transactions)?;
+        let pre_magnolia_fee_reward_period = self.pre_magnolia_fee_reward_period(pbft.period);
+        let dpos_fee_rewards = if pre_magnolia_fee_reward_period {
+            BTreeMap::new()
+        } else {
+            self.dpos_fee_rewards_by_validator(&finalized_dag_blocks, &execution.transaction_fees)?
+        };
+        if pre_magnolia_fee_reward_period {
+            self.credit_pre_magnolia_pbft_fee_reward(
+                pbft.author.into(),
+                total_transaction_fees(&execution.transaction_fees)?,
+            )?;
+        }
         let receipts_rlp = encode_receipts_rlp(&execution.receipts);
         let parent_hash = self
             .block_hash(self.last_block_number()?)?
@@ -619,11 +631,8 @@ impl FinalChain {
             )
             .signed_pbft_block(SignedPbftBlockRlp::new(&pbft_block_rlp)),
         )?;
-        let dpos_snapshot = self.plan_dpos_snapshot(
-            pbft.period,
-            self.dpos_fee_rewards_by_validator(&finalized_dag_blocks, &execution.transaction_fees)?,
-            execution.dpos_registrations,
-        )?;
+        let dpos_snapshot =
+            self.plan_dpos_snapshot(pbft.period, dpos_fee_rewards, execution.dpos_registrations)?;
         let dpos_snapshot_rlp = encode_dpos_snapshot_rlp(&dpos_snapshot);
         let account_snapshot = self.current_account_snapshot()?;
         let account_snapshot_rlp = encode_account_snapshot_rlp(&account_snapshot);
@@ -658,6 +667,47 @@ impl FinalChain {
         self.insert_dpos_snapshot(pbft.period, dpos_snapshot)?;
 
         Ok((full_header.into_vec(), execution.receipts))
+    }
+
+    /// Reports whether transaction fees still belong to the PBFT beneficiary.
+    ///
+    /// The configured boundary is the Magnolia block number passed through the
+    /// bridge. It is exclusive, matching legacy C++ reward planning:
+    /// `period < magnolia_hf.block_num` credits gas fees to the PBFT block
+    /// beneficiary, while Magnolia and later periods route fees through DPoS
+    /// commission rewards. A zero boundary means Magnolia behavior is active
+    /// from genesis.
+    fn pre_magnolia_fee_reward_period(&self, block_number: u64) -> bool {
+        self.dag_vdf_sortition_total_vote_count_until_period != 0
+            && block_number < self.dag_vdf_sortition_total_vote_count_until_period
+    }
+
+    /// Credits legacy pre-Magnolia gas fees to the PBFT block beneficiary.
+    ///
+    /// Inputs are the beneficiary address decoded from the signed PBFT block and
+    /// the total gas fee already deducted by transaction execution. The method
+    /// creates an empty beneficiary account when needed, preserves nonce/code
+    /// fields, and reports overflow without partially mutating account state.
+    fn credit_pre_magnolia_pbft_fee_reward(
+        &self,
+        beneficiary: [u8; 20],
+        reward: U256,
+    ) -> Result<(), anyhow::Error> {
+        if reward.is_zero() {
+            return Ok(());
+        }
+        let mut accounts = self
+            .accounts
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain account lock poisoned"))?;
+        let account = accounts.entry(beneficiary).or_insert_with(empty_account);
+        let balance = u256_from_big_endian(&account.balance);
+        account.balance = u256_to_big_endian(
+            balance
+                .checked_add(reward)
+                .ok_or_else(|| anyhow::anyhow!("pre-Magnolia PBFT beneficiary reward overflow"))?,
+        );
+        Ok(())
     }
 
     fn finalization_execution_status(
@@ -1515,6 +1565,22 @@ fn empty_account() -> Account {
         code_hash: [0; 32],
         code_size: 0,
     }
+}
+
+/// Sums executed transaction fees for legacy pre-Magnolia PBFT rewards.
+///
+/// The input preserves each transaction hash alongside its gas fee so the same
+/// execution facts can also feed post-Magnolia DAG-author commission planning.
+/// This helper ignores the hashes, returns zero for empty blocks, and reports
+/// overflow as a consensus execution error.
+fn total_transaction_fees(transaction_fees: &[([u8; 32], U256)]) -> Result<U256, anyhow::Error> {
+    transaction_fees
+        .iter()
+        .try_fold(U256::zero(), |total, (_, fee)| {
+            total
+                .checked_add(*fee)
+                .ok_or_else(|| anyhow::anyhow!("transaction fee total overflow"))
+        })
 }
 
 /// Returns the temporary Rust gas estimate for native non-DPoS read calls.
@@ -2858,6 +2924,77 @@ mod tests {
                 .unwrap()
                 .nonce,
             1
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_credits_pre_magnolia_fee_to_pbft_beneficiary() {
+        let path = temp_db_path("finalize-pre-magnolia-fee");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let receiver = [0x32; 20];
+        let signing_key = SigningKey::from_slice(&[8u8; 32]).unwrap();
+        let sender: [u8; 20] = address_from_signing_key(&signing_key).into();
+        let pbft_block = signed_pbft_block(&signing_key, period, 88);
+        let transaction_rlp = vec![0xc1, 0x81];
+        let transaction = test_transaction(
+            0xB1,
+            sender,
+            Some(receiver),
+            0,
+            U256::from(13u64),
+            U256::from(2u64),
+            50_000,
+            vec![],
+            transaction_rlp.clone(),
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&transaction_rlp),
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(sender, U256::from(1_000_000u64))],
+            vec![],
+            GenesisDposConfig {
+                eligibility_balance_threshold: vec![],
+                vote_eligibility_balance_step: vec![],
+                validator_maximum_stake: vec![],
+                dag_vdf_sortition_total_vote_count_until_period: 2,
+            },
+        )
+        .unwrap();
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(pbft_block, vec![transaction], vec![])
+            .unwrap();
+
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (1, VALUE_TRANSFER_GAS, VALUE_TRANSFER_GAS)
+        );
+        assert_eq!(
+            balance_of(&final_chain, sender),
+            U256::from(1_000_000u64) - U256::from(13u64)
+        );
+        assert_eq!(balance_of(&final_chain, receiver), U256::from(13u64));
+        assert_eq!(
+            u256_from_big_endian(
+                &final_chain
+                    .account_at_block(period, sender)
+                    .unwrap()
+                    .unwrap()
+                    .balance
+            ),
+            U256::from(1_000_000u64) - U256::from(13u64)
         );
 
         drop(final_chain);
