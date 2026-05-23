@@ -1390,6 +1390,7 @@ dependencies = [
 name = "rustaxa-arena"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bytes",
  "chrono",
  "criterion 0.7.0",
@@ -1397,6 +1398,7 @@ dependencies = [
  "rlp 0.6.1",
  "rustaxa-types",
  "slab",
+ "thiserror",
 ]
 
 [[package]]
