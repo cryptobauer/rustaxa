@@ -323,6 +323,26 @@ if(RUSTAXA_ENABLE_VERIFIED_VOTES)
     )
 endif()
 
+if((RUSTAXA_ENABLE_PILLAR_VOTES OR RUSTAXA_ENABLE_PROPOSED_BLOCKS) AND RUSTAXA_ENABLE_VERIFIED_VOTES AND RUSTAXA_ENABLE_STORAGE)
+    if(NOT RUSTAXA_ENABLE)
+        message(FATAL_ERROR "VoteManager shim requires RUSTAXA_ENABLE")
+    endif()
+
+    # In Rust pillar-votes/proposed-blocks mode, inject a header overlay that
+    # remaps legacy VoteManager to VoteManagerOld and exposes a Rust-compatible
+    # shim facade.
+    target_include_directories(core_libs BEFORE PUBLIC
+                             ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/vote_manager_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/vote_manager_shim/src/vote_manager_shim.cpp)
+
+    # Compile the legacy implementation as VoteManagerOld.
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/vote_manager/vote_manager.cpp
+        PROPERTIES
+        COMPILE_DEFINITIONS "VoteManager=VoteManagerOld"
+    )
+endif()
+
 if(RUSTAXA_ENABLE_PILLAR_VOTES)
     if(NOT RUSTAXA_ENABLE)
         message(FATAL_ERROR "RUSTAXA_ENABLE_PILLAR_VOTES requires RUSTAXA_ENABLE")

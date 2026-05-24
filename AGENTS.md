@@ -41,6 +41,15 @@ This repository is the Rust rewrite track for Taraxa. Keep day-to-day work align
   branches to original upstream headers/sources unless the task owner explicitly approves a temporary guarded hook.
   Before closeout, run `git diff upstream-main -- <original C++ paths>` for any upstream-owned files you touched; the
   expected result is empty or an explicitly documented temporary exception.
+- Accepted temporary hook pattern: when a full shim copy would duplicate too much legacy implementation, the task owner
+  may approve changing an upstream-owned class's implementation-state section from `private` to `protected` with a TODO
+  that names the Rust overlay migration debt. The shim may then inherit from `<Class>Old`, let inherited methods delegate
+  to the legacy state machine, and override only the Rust-owned methods that need direct state access. When using this
+  pattern, still declare and define shim-owned public methods for the inherited public API: each unported method should
+  explicitly forward to `<Class>Old::<method>` and include a TODO at the forwarding call site naming the Rust migration
+  work that remains. This keeps temporary legacy delegation auditable instead of implicit. This is still temporary debt:
+  do not add Rust bridge includes or Rust-only methods to the original class, keep all Rust routing in shim-owned files,
+  and document the upstream-owned header diff before closeout.
 - If a rewrite slice temporarily touches an upstream-owned C++ file because a complete class shim is not ready yet, keep
   the change guarded and track it as temporary debt. Revert that file back to its upstream shape as soon as a complete
   shim can own the Rust-mode routing.

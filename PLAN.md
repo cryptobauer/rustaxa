@@ -501,9 +501,11 @@ The current Rust starting point is intentionally small:
    to the shim's Rust-backed storage batch. The PBFT finalization persistence bridge now exposes one staged Rust appender
    for primary finalized-period writes, post-live-mutation dynamic-lambda persistence, and post-FinalChain-dispatch
    executed-status persistence; compatibility wrappers remain for the older appender entrypoints. The C++ shim calls the
-   staged API while preserving the existing batch/commit boundaries. Reward-vote reset persistence is staged and bridge-ready,
-   but production routing is blocked until the upstream `VoteManager` overlay owns reset-side mutation handoff.
-   Rust now also owns PBFT finalization
+   staged API while preserving the existing batch/commit boundaries. The Rust-mode `VoteManager` overlay now uses the
+   approved temporary protected-state hook to inherit unported behavior from `VoteManagerOld` while owning reward-vote
+   reset persistence handoff in shim code: it selects the live cert-vote bundle in C++, appends the stage-4 Rust storage
+   writes for latest cert votes and stale extra reward-vote deletes into the caller's finalization batch, and mutates
+   live reward metadata only after Rust accepts the stage. Rust now also owns PBFT finalization
    sortition-change persistence: the sortition shim updates the live Rust runtime and returns the emitted threshold
    change, then the PBFT staged storage appender encodes and appends the `SortitionParamsChange` row into the same
    primary finalization batch. C++ still owns reward-vote reset, sortition live-state mutation, dynamic-lambda

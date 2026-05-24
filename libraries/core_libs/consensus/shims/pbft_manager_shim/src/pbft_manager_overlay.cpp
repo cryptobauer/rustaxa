@@ -2318,8 +2318,15 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
 
   // Replace current reward votes
   if (finalization_plan.storage_write_intent.reset_reward_votes) {
-    vote_mgr_->resetRewardVotes(sample_cert_vote->getPeriod(), sample_cert_vote->getRound(),
-                                sample_cert_vote->getStep(), sample_cert_vote->getBlockHash(), batch);
+    const auto reward_votes_reset_result =
+        vote_mgr_->resetRewardVotesForFinalization(finalization_plan.storage_write_intent, batch);
+    if (reward_votes_reset_result.status != kPbftFinalizedPeriodApplyStatusApplied &&
+        reward_votes_reset_result.status != kPbftFinalizedPeriodApplyStatusAlreadyApplied) {
+      LOG(log_er_) << "Rust PBFT finalized-period reward-vote reset rejected block " << pbft_block_hash << ", period "
+                   << block_pbft_period << ", status " << static_cast<uint32_t>(reward_votes_reset_result.status)
+                   << ", error " << static_cast<std::string>(reward_votes_reset_result.error_code);
+      return false;
+    }
   }
 
   // pass pbft with dag blocks and transactions to adjust difficulty
