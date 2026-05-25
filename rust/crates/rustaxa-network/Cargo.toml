@@ -1,0 +1,13 @@
+[package]
+name = "rustaxa-network"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+bytes = "1.11.1"
+chrono = "0.4.44"
+ethereum-types = "0.16.0"
+rtrb = "0.3.4"
+rustaxa-arena = { version = "0.1.0", path = "../rustaxa-arena" }
+rustaxa-types = { version = "0.1.0", path = "../rustaxa-types" }

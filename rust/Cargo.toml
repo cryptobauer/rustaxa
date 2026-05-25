@@ -3,6 +3,7 @@ members = [
     "crates/rustaxa-arena",
     "crates/rustaxa-bridge",
     "crates/rustaxa-consensus",
+    "crates/rustaxa-network",
     "crates/rustaxa-storage",
     "crates/rustaxa-types",
     "crates/rustaxa-vdf",
