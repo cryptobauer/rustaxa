@@ -17,8 +17,10 @@ use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, TryLockError};
 use thiserror::Error;
 
+/// Process-local counter used to assign each arena a distinct id.
 static ARENA_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+/// Maximum number of slots a reservation attempt probes before reporting full.
 const RESERVER_ATTEMPTS: u8 = 16;
 
 /// Fixed-slot arena.
@@ -27,10 +29,19 @@ const RESERVER_ATTEMPTS: u8 = 16;
 /// removal. Each handle contains the arena id, an arena-local slot index, and a
 /// generation for stale-handle detection.
 pub struct Arena<T> {
+    /// Process-local id used to reject handles from another arena.
     id: usize,
+
+    /// Fixed number of slots owned by this arena.
     size: usize,
+
+    /// Mask used to wrap monotonically increasing slot positions.
     bitmask: usize,
+
+    /// Preallocated fixed-size slot storage.
     slots: Vec<Slot<T>>,
+
+    /// Next candidate slot index for producer reservation.
     next_slot: AtomicUsize,
 }
 
@@ -178,9 +189,15 @@ where
     }
 }
 
+/// Single arena slot with generation, lifecycle state, and stored data.
 struct Slot<T> {
+    /// Generation incremented every time the slot is removed and freed.
     generation: AtomicUsize,
-    state: AtomicU8, // `SlotState`
+
+    /// Current [`SlotState`] encoded as `u8` for atomic transitions.
+    state: AtomicU8,
+
+    /// Stored value protected while a reader or remover holds the slot.
     data: Mutex<T>,
 }
 
@@ -200,13 +217,21 @@ where
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum SlotState {
+    /// Slot is available for a producer reservation.
     Free = 0,
+
+    /// Slot has been reserved by a producer and is not visible to consumers.
     Writing = 1,
+
+    /// Slot contains a published value.
     Occupied = 2,
+
+    /// Slot is currently borrowed by a consumer.
     Reading = 3,
 }
 
 impl SlotState {
+    /// Returns the byte representation stored in [`Slot::state`].
     fn as_u8(self) -> u8 {
         self as u8
     }
@@ -234,7 +259,10 @@ pub struct SlotId {
 /// The guard holds the slot mutex while it is alive and restores the slot state
 /// to occupied when dropped.
 pub struct SlotReadGuard<'a, T> {
+    /// Slot whose state is restored when the guard is dropped.
     slot: &'a Slot<T>,
+
+    /// Locked value borrowed from the slot.
     data: MutexGuard<'a, T>,
 }
 
@@ -260,8 +288,13 @@ impl<T> Drop for SlotReadGuard<'_, T> {
 /// from free to writing. Passing it to [`Arena::insert`] publishes the value
 /// and returns a shareable [`SlotId`].
 pub struct Reservation {
+    /// Process-local id of the arena that owns the reserved slot.
     arena_id: usize,
+
+    /// Slot index reserved for one pending insertion.
     index: usize,
+
+    /// Slot generation observed when the reservation was acquired.
     generation: usize,
 }
 
