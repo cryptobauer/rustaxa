@@ -6,6 +6,7 @@ mod pbft_chain;
 mod pbft_finalize;
 mod pbft_sync;
 mod period_data_queue;
+mod pillar_chain;
 mod pillar_votes;
 mod proposed_blocks;
 mod slashing;

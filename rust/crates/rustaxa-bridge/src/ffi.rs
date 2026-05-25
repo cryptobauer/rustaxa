@@ -5,6 +5,7 @@ use crate::pbft_chain::*;
 use crate::pbft_finalize::*;
 use crate::pbft_sync::*;
 use crate::period_data_queue::*;
+use crate::pillar_chain::*;
 use crate::pillar_votes::*;
 use crate::proposed_blocks::*;
 use crate::slashing::*;
@@ -828,6 +829,44 @@ pub mod rustaxa_ffi {
     struct PillarVoteRelevancePlan {
         status: u8,
         is_relevant: bool,
+    }
+
+    /// Validator vote-count snapshot fact supplied for pillar-block planning.
+    struct PillarValidatorVoteCount {
+        address: [u8; 20],
+        vote_count: u64,
+    }
+
+    /// One signed validator vote-count change planned for a pillar block.
+    struct PillarValidatorVoteCountChange {
+        address: [u8; 20],
+        vote_count_change: i32,
+    }
+
+    /// Parent-linkage facts for one candidate pillar block.
+    struct PillarBlockLinkageFact {
+        pillar_block_period: u64,
+        pillar_block_previous_hash: [u8; 32],
+        first_pillar_block_period: u64,
+        pillar_blocks_interval: u64,
+        has_last_finalized_pillar_block: bool,
+        last_finalized_period: u64,
+        last_finalized_hash: [u8; 32],
+    }
+
+    /// Result of deterministic pillar-block parent-linkage planning.
+    ///
+    /// Status values:
+    /// - `0` - valid non-first block
+    /// - `1` - valid first pillar block
+    /// - `2` - missing last finalized pillar block
+    /// - `3` - period mismatch
+    /// - `4` - previous hash mismatch
+    /// - `5` - interval overflow
+    struct PillarBlockLinkagePlan {
+        status: u8,
+        valid: bool,
+        expected_previous_period: u64,
     }
 
     struct UniqueVoterCheckOutcome {
@@ -3135,6 +3174,17 @@ pub mod rustaxa_ffi {
         pub fn plan_pillar_vote_relevance(
             fact: PillarVoteRelevanceFact,
         ) -> Result<PillarVoteRelevancePlan>;
+
+        /// Computes ordered validator vote-count changes for a pillar block.
+        pub fn plan_pillar_vote_count_changes(
+            current_vote_counts: Vec<PillarValidatorVoteCount>,
+            previous_vote_counts: Vec<PillarValidatorVoteCount>,
+        ) -> Result<Vec<PillarValidatorVoteCountChange>>;
+
+        /// Validates pillar-block parent linkage.
+        pub fn plan_pillar_block_linkage(
+            fact: PillarBlockLinkageFact,
+        ) -> Result<PillarBlockLinkagePlan>;
 
         // Consensus sortition
 

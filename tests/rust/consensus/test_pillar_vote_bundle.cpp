@@ -54,6 +54,26 @@ rustaxa::PillarVoteRelevanceFact makeRelevanceFact(uint64_t vote_period, uint64_
   return fact;
 }
 
+rustaxa::PillarValidatorVoteCount makeVoteCount(uint8_t address, uint64_t vote_count) {
+  rustaxa::PillarValidatorVoteCount fact{};
+  fact.address = makeVoter(address);
+  fact.vote_count = vote_count;
+  return fact;
+}
+
+rustaxa::PillarBlockLinkageFact makeLinkageFact(uint64_t period, uint64_t previous_hash, bool has_last_finalized,
+                                                uint64_t last_period, uint64_t last_hash) {
+  rustaxa::PillarBlockLinkageFact fact{};
+  fact.pillar_block_period = period;
+  fact.pillar_block_previous_hash = makeHash(previous_hash);
+  fact.first_pillar_block_period = 10;
+  fact.pillar_blocks_interval = 10;
+  fact.has_last_finalized_pillar_block = has_last_finalized;
+  fact.last_finalized_period = last_period;
+  fact.last_finalized_hash = makeHash(last_hash);
+  return fact;
+}
+
 rust::Slice<const uint8_t> makeSlice(const taraxa::bytes& bytes) {
   return rust::Slice<const uint8_t>(bytes.data(), bytes.size());
 }
@@ -153,6 +173,59 @@ TEST(PillarVoteRelevanceBridgeTest, planPillarVoteRelevanceRejectsKnownVote) {
 
   EXPECT_FALSE(known_vote.is_relevant);
   EXPECT_EQ(known_vote.status, 1);
+}
+
+TEST(PillarChainPlanningBridgeTest, planPillarVoteCountChangesMatchesLegacyOrdering) {
+  rust::Vec<rustaxa::PillarValidatorVoteCount> current;
+  current.push_back(makeVoteCount(3, 9));
+  current.push_back(makeVoteCount(1, 3));
+  current.push_back(makeVoteCount(4, 4));
+
+  rust::Vec<rustaxa::PillarValidatorVoteCount> previous;
+  previous.push_back(makeVoteCount(3, 5));
+  previous.push_back(makeVoteCount(2, 8));
+  previous.push_back(makeVoteCount(1, 3));
+
+  const auto changes = rustaxa::plan_pillar_vote_count_changes(std::move(current), std::move(previous));
+
+  ASSERT_EQ(changes.size(), 3);
+  EXPECT_EQ(changes[0].address, makeVoter(2));
+  EXPECT_EQ(changes[0].vote_count_change, -8);
+  EXPECT_EQ(changes[1].address, makeVoter(3));
+  EXPECT_EQ(changes[1].vote_count_change, 4);
+  EXPECT_EQ(changes[2].address, makeVoter(4));
+  EXPECT_EQ(changes[2].vote_count_change, 4);
+}
+
+TEST(PillarChainPlanningBridgeTest, planPillarVoteCountChangesPreservesFirstBlockOrder) {
+  rust::Vec<rustaxa::PillarValidatorVoteCount> current;
+  current.push_back(makeVoteCount(3, 9));
+  current.push_back(makeVoteCount(1, 3));
+
+  rust::Vec<rustaxa::PillarValidatorVoteCount> previous;
+
+  const auto changes = rustaxa::plan_pillar_vote_count_changes(std::move(current), std::move(previous));
+
+  ASSERT_EQ(changes.size(), 2);
+  EXPECT_EQ(changes[0].address, makeVoter(3));
+  EXPECT_EQ(changes[0].vote_count_change, 9);
+  EXPECT_EQ(changes[1].address, makeVoter(1));
+  EXPECT_EQ(changes[1].vote_count_change, 3);
+}
+
+TEST(PillarChainPlanningBridgeTest, planPillarBlockLinkageReportsStatus) {
+  const auto first = rustaxa::plan_pillar_block_linkage(makeLinkageFact(10, 0, false, 0, 0));
+  EXPECT_TRUE(first.valid);
+  EXPECT_EQ(first.status, 1);
+
+  const auto valid_next = rustaxa::plan_pillar_block_linkage(makeLinkageFact(20, 777, true, 10, 777));
+  EXPECT_TRUE(valid_next.valid);
+  EXPECT_EQ(valid_next.status, 0);
+  EXPECT_EQ(valid_next.expected_previous_period, 20);
+
+  const auto wrong_hash = rustaxa::plan_pillar_block_linkage(makeLinkageFact(20, 778, true, 10, 777));
+  EXPECT_FALSE(wrong_hash.valid);
+  EXPECT_EQ(wrong_hash.status, 4);
 }
 
 TEST(PillarVoteInspectionBridgeTest, inspectPillarVoteRecoversSameVoterAsCpp) {

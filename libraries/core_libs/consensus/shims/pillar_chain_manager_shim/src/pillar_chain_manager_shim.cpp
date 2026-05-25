@@ -5,8 +5,6 @@
 #include <cassert>
 #include <exception>
 #include <libff/common/profiling.hpp>
-#include <map>
-#include <unordered_map>
 
 #include "config/hardfork.hpp"
 #include "final_chain/final_chain.hpp"
@@ -22,6 +20,7 @@ namespace taraxa::pillar_chain {
 namespace {
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t& hash) { return hash.asArray(); }
+std::array<uint8_t, 20> toBridgeAddress(const addr_t& address) { return address.asArray(); }
 addr_t fromBridgeAddress(const std::array<uint8_t, 20>& address) {
   return addr_t(address.data(), addr_t::ConstructFromPointer);
 }
@@ -66,6 +65,49 @@ PillarVoteValidationPlanStatus fromRelevanceStatus(PillarVoteRelevancePlanStatus
     default:
       return PillarVoteValidationPlanStatus::kUnknown;
   }
+}
+
+rustaxa::PillarValidatorVoteCount toBridgeVoteCount(const state_api::ValidatorVoteCount& vote_count) {
+  rustaxa::PillarValidatorVoteCount out{};
+  out.address = toBridgeAddress(vote_count.addr);
+  out.vote_count = vote_count.vote_count;
+  return out;
+}
+
+rust::Vec<rustaxa::PillarValidatorVoteCount> toBridgeVoteCounts(
+    const std::vector<state_api::ValidatorVoteCount>& vote_counts) {
+  rust::Vec<rustaxa::PillarValidatorVoteCount> out;
+  out.reserve(vote_counts.size());
+  for (const auto& vote_count : vote_counts) {
+    out.push_back(toBridgeVoteCount(vote_count));
+  }
+  return out;
+}
+
+std::vector<PillarBlock::ValidatorVoteCountChange> fromBridgeVoteCountChanges(
+    const rust::Vec<rustaxa::PillarValidatorVoteCountChange>& changes) {
+  std::vector<PillarBlock::ValidatorVoteCountChange> out;
+  out.reserve(changes.size());
+  for (const auto& change : changes) {
+    out.emplace_back(fromBridgeAddress(change.address), change.vote_count_change);
+  }
+  return out;
+}
+
+rustaxa::PillarBlockLinkageFact toBridgeLinkageFact(const FicusHardforkConfig& ficus_hf_config,
+                                                    const std::shared_ptr<PillarBlock>& pillar_block,
+                                                    const std::shared_ptr<PillarBlock>& last_finalized_pillar_block) {
+  rustaxa::PillarBlockLinkageFact fact{};
+  fact.pillar_block_period = pillar_block->getPeriod();
+  fact.pillar_block_previous_hash = toBridgeHash(pillar_block->getPreviousBlockHash());
+  fact.first_pillar_block_period = ficus_hf_config.firstPillarBlockPeriod();
+  fact.pillar_blocks_interval = ficus_hf_config.pillar_blocks_interval;
+  fact.has_last_finalized_pillar_block = static_cast<bool>(last_finalized_pillar_block);
+  if (last_finalized_pillar_block) {
+    fact.last_finalized_period = last_finalized_pillar_block->getPeriod();
+    fact.last_finalized_hash = toBridgeHash(last_finalized_pillar_block->getHash());
+  }
+  return fact;
 }
 
 }  // namespace
@@ -298,13 +340,15 @@ std::shared_ptr<PillarBlock> PillarChainManager::createPillarBlock(
 
   // First ever pillar block
   if (period == kFicusHfConfig.firstPillarBlockPeriod()) {
-    // First pillar block - use all current votes counts as changes
-    votes_count_changes.reserve(new_vote_counts.size());
-    std::transform(new_vote_counts.begin(), new_vote_counts.end(), std::back_inserter(votes_count_changes),
-                   [](const auto& vote_count) {
-                     return PillarBlock::ValidatorVoteCountChange(vote_count.addr,
-                                                                  static_cast<int32_t>(vote_count.vote_count));
-                   });
+    try {
+      rust::Vec<rustaxa::PillarValidatorVoteCount> empty_previous_vote_counts;
+      votes_count_changes = fromBridgeVoteCountChanges(rustaxa::plan_pillar_vote_count_changes(
+          toBridgeVoteCounts(new_vote_counts), std::move(empty_previous_vote_counts)));
+    } catch (const std::exception& e) {
+      LOG(log_er_) << "Unable to plan first pillar block vote-count changes in Rust for period " << period << ": "
+                   << e.what();
+      return nullptr;
+    }
   } else {
     const auto last_finalized_pillar_block = getLastFinalizedPillarBlock();
     // This should never happen !!!
@@ -326,7 +370,14 @@ std::shared_ptr<PillarBlock> PillarChainManager::createPillarBlock(
     previous_pillar_block_hash = last_finalized_pillar_block->getHash();
 
     // Get validators vote counts changes between the current and previous pillar block
-    votes_count_changes = getOrderedValidatorsVoteCountsChanges(new_vote_counts, current_pillar_block_vote_counts_);
+    try {
+      votes_count_changes = fromBridgeVoteCountChanges(rustaxa::plan_pillar_vote_count_changes(
+          toBridgeVoteCounts(new_vote_counts), toBridgeVoteCounts(current_pillar_block_vote_counts_)));
+    } catch (const std::exception& e) {
+      LOG(log_er_) << "Unable to plan pillar block vote-count changes in Rust for period " << period << ": "
+                   << e.what();
+      return nullptr;
+    }
   }
 
   const auto pillar_block = std::make_shared<PillarBlock>(period, block_header->state_root, previous_pillar_block_hash,
@@ -613,24 +664,36 @@ std::vector<std::shared_ptr<PillarVote>> PillarChainManager::getVerifiedPillarVo
 }
 
 bool PillarChainManager::isValidPillarBlock(const std::shared_ptr<PillarBlock>& pillar_block) const {
-  // First pillar block
-  if (pillar_block->getPeriod() == kFicusHfConfig.firstPillarBlockPeriod()) {
-    return true;
+  if (!pillar_block) {
+    LOG(log_er_) << "Invalid pillar block: null block";
+    return false;
   }
 
   const auto last_finalized_pillar_block = getLastFinalizedPillarBlock();
-  assert(last_finalized_pillar_block);
+  try {
+    const auto plan = rustaxa::plan_pillar_block_linkage(
+        toBridgeLinkageFact(kFicusHfConfig, pillar_block, last_finalized_pillar_block));
+    if (plan.valid) {
+      return true;
+    }
 
-  // Check if some block was not skipped
-  if (pillar_block->getPeriod() - kFicusHfConfig.pillar_blocks_interval == last_finalized_pillar_block->getPeriod() &&
-      pillar_block->getPreviousBlockHash() == last_finalized_pillar_block->getHash()) {
-    return true;
+    if (!last_finalized_pillar_block) {
+      LOG(log_er_) << "Invalid pillar block: missing last finalized pillar block, new pillar block "
+                   << pillar_block->getHash() << "(" << pillar_block->getPeriod() << "), linkage status "
+                   << static_cast<uint64_t>(plan.status);
+    } else {
+      LOG(log_er_) << "Invalid pillar block: last finalized pillar block(period): "
+                   << last_finalized_pillar_block->getHash() << "(" << last_finalized_pillar_block->getPeriod()
+                   << "), new pillar block: " << pillar_block->getHash() << "(" << pillar_block->getPeriod()
+                   << "), parent block hash: " << pillar_block->getPreviousBlockHash() << ", expected period "
+                   << plan.expected_previous_period << ", linkage status " << static_cast<uint64_t>(plan.status);
+    }
+    return false;
+  } catch (const std::exception& e) {
+    LOG(log_er_) << "Unable to validate pillar block linkage in Rust for " << pillar_block->getHash() << ": "
+                 << e.what();
+    return false;
   }
-
-  LOG(log_er_) << "Invalid pillar block: last finalized pillar bock(period): " << last_finalized_pillar_block->getHash()
-               << "(" << last_finalized_pillar_block->getPeriod() << "), new pillar block: " << pillar_block->getHash()
-               << "(" << pillar_block->getPeriod() << "), parent block hash: " << pillar_block->getPreviousBlockHash();
-  return false;
 }
 
 std::optional<uint64_t> PillarChainManager::getPillarConsensusThreshold(PbftPeriod period) const {
@@ -650,66 +713,8 @@ std::optional<uint64_t> PillarChainManager::getPillarConsensusThreshold(PbftPeri
 std::vector<PillarBlock::ValidatorVoteCountChange> PillarChainManager::getOrderedValidatorsVoteCountsChanges(
     const std::vector<state_api::ValidatorVoteCount>& current_vote_counts,
     const std::vector<state_api::ValidatorVoteCount>& previous_pillar_block_vote_counts) {
-  auto transformToMap = [](const std::vector<state_api::ValidatorVoteCount>& vote_counts) {
-    std::unordered_map<addr_t, state_api::ValidatorVoteCount> vote_counts_map;
-    for (auto&& vote_count : vote_counts) {
-      vote_counts_map.emplace(vote_count.addr, vote_count);
-    }
-
-    return vote_counts_map;
-  };
-
-  assert(!previous_pillar_block_vote_counts.empty());
-
-  auto current_vote_counts_map = transformToMap(current_vote_counts);
-  auto previous_vote_counts_map = transformToMap(previous_pillar_block_vote_counts);
-
-  // First create ordered map so the changes are ordered by validator addresses
-  std::map<addr_t, PillarBlock::ValidatorVoteCountChange> changes_map;
-  for (auto& current_vote_count : current_vote_counts_map) {
-    auto previous_vote_count = previous_vote_counts_map.find(current_vote_count.first);
-
-    // Previous vote counts does not contain validator address from current vote counts -> new vote count(delegator)
-    if (previous_vote_count == previous_vote_counts_map.end()) {
-      changes_map.emplace(
-          current_vote_count.second.addr,
-          PillarBlock::ValidatorVoteCountChange(current_vote_count.second.addr,
-                                                static_cast<int32_t>(current_vote_count.second.vote_count)));
-      continue;
-    }
-
-    // Previous vote counts contains validator address from current vote counts -> substitute the vote counts
-    if (const auto vote_count_change =
-            static_cast<int64_t>(current_vote_count.second.vote_count - previous_vote_count->second.vote_count);
-        vote_count_change != 0) {
-      changes_map.emplace(current_vote_count.first,
-                          PillarBlock::ValidatorVoteCountChange(current_vote_count.first, vote_count_change));
-    }
-
-    // Delete item from previous_vote_counts - based on left vote counts we know which delegators undelegated all tokens
-    previous_vote_counts_map.erase(previous_vote_count);
-  }
-
-  // All previous vote counts that were not deleted are delegators who undelegated all of their tokens between current
-  // and previous pillar block. Add these vote counts as negative numbers into changes
-  for (auto& previous_vote_count_left : previous_vote_counts_map) {
-    auto vote_count_change = changes_map
-                                 .emplace(previous_vote_count_left.second.addr,
-                                          PillarBlock::ValidatorVoteCountChange(
-                                              previous_vote_count_left.second.addr,
-                                              static_cast<int32_t>(previous_vote_count_left.second.vote_count)))
-                                 .first;
-    vote_count_change->second.vote_count_change_ *= -1;
-  }
-
-  // Transform ordered map of changes to vector
-  std::vector<PillarBlock::ValidatorVoteCountChange> changes;
-  changes.reserve(changes_map.size());
-  std::transform(std::make_move_iterator(changes_map.begin()), std::make_move_iterator(changes_map.end()),
-                 std::back_inserter(changes),
-                 [](auto&& vote_count_change) { return std::move(vote_count_change.second); });
-
-  return changes;
+  return fromBridgeVoteCountChanges(rustaxa::plan_pillar_vote_count_changes(
+      toBridgeVoteCounts(current_vote_counts), toBridgeVoteCounts(previous_pillar_block_vote_counts)));
 }
 
 void PillarChainManager::setNetwork(std::weak_ptr<Network> network) { network_ = std::move(network); }

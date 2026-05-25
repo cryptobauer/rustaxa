@@ -515,7 +515,12 @@ The current Rust starting point is intentionally small:
    change, then the PBFT staged storage appender encodes and appends the `SortitionParamsChange` row into the same
    primary finalization batch. C++ still owns reward-vote reset, sortition live-state mutation, dynamic-lambda
    calculation/live mutation, FinalChain updates, and live PBFT runtime mutation until those sidecar APIs move across
-   the bridge.
+   the bridge. The full Rust-mode `PillarChainManager` overlay now keeps original pillar manager files clean while Rust
+   owns deterministic pillar-vote relevance/inspection/insertion and the first pillar-block planning slice: validator
+   vote-count deltas are planned in Rust from C++-supplied FinalChain snapshots, and pillar-block first/period/parent
+   linkage is validated by Rust before C++ materializes or persists `PillarBlock` objects. C++ still owns bridge
+   root/epoch facts, DPoS reads, live `PillarVote` sidecars, signing, storage writes, event emission, network requests,
+   and finalization orchestration.
    `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
    selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
    lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode

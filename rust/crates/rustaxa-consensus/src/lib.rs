@@ -4,6 +4,7 @@ pub mod pbft_chain;
 pub mod pbft_finalize;
 pub mod pbft_sync;
 pub mod period_data_queue;
+pub mod pillar_chain;
 pub mod pillar_votes;
 pub mod proposed_blocks;
 pub mod slashing;
@@ -28,6 +29,11 @@ pub use pbft_sync::{
     PbftSyncTransactionWarning, PbftSyncTransactionWarningKind, plan_pbft_sync_period_admission,
 };
 pub use period_data_queue::PeriodDataQueue;
+pub use pillar_chain::{
+    PillarBlockLinkageFact, PillarBlockLinkagePlan, PillarBlockLinkageStatus,
+    PillarValidatorVoteCount, PillarValidatorVoteCountChange, plan_pillar_block_linkage,
+    plan_pillar_vote_count_changes,
+};
 pub use pillar_votes::{
     PillarVoteBundleAcceptedVote, PillarVoteBundlePlan, PillarVoteBundlePlanner,
     PillarVoteBundleValidationStatus, PillarVoteFact, PillarVoteIdentity, PillarVoteInsertOutcome,
