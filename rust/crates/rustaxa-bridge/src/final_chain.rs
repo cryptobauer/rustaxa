@@ -32,6 +32,31 @@ pub fn create_final_chain(
     genesis_validators: Vec<rustaxa_ffi::GenesisValidator>,
     genesis_dpos_config: rustaxa_ffi::GenesisDposConfig,
 ) -> Result<Box<BridgeFinalChain>, anyhow::Error> {
+    create_final_chain_with_rewards_config(
+        storage,
+        block_gas_limit,
+        genesis_timestamp,
+        genesis_accounts,
+        genesis_validators,
+        genesis_dpos_config,
+        rustaxa_ffi::FinalChainRewardsConfig {
+            committee_size: 0,
+            magnolia_period: 0,
+            aspen_part_one_period: u64::MAX,
+            frequency_rules: Vec::new(),
+        },
+    )
+}
+
+pub fn create_final_chain_with_rewards_config(
+    storage: &BridgeStorage,
+    block_gas_limit: u64,
+    genesis_timestamp: u64,
+    genesis_accounts: Vec<rustaxa_ffi::GenesisAccount>,
+    genesis_validators: Vec<rustaxa_ffi::GenesisValidator>,
+    genesis_dpos_config: rustaxa_ffi::GenesisDposConfig,
+    rewards_config: rustaxa_ffi::FinalChainRewardsConfig,
+) -> Result<Box<BridgeFinalChain>, anyhow::Error> {
     let genesis_accounts = genesis_accounts
         .into_iter()
         .map(|account| rustaxa_consensus::GenesisAccount {
@@ -69,7 +94,7 @@ pub fn create_final_chain(
             }
         })
         .collect();
-    let final_chain = FinalChain::new(
+    let final_chain = FinalChain::new_with_rewards_config(
         storage.0.clone(),
         block_gas_limit,
         genesis_timestamp,
@@ -83,6 +108,16 @@ pub fn create_final_chain(
             delegation_delay: genesis_dpos_config.delegation_delay,
             dag_vdf_sortition_total_vote_count_until_period: genesis_dpos_config
                 .dag_vdf_sortition_total_vote_count_until_period,
+        },
+        rustaxa_consensus::FinalChainRewardsConfig {
+            committee_size: rewards_config.committee_size,
+            magnolia_period: rewards_config.magnolia_period,
+            aspen_part_one_period: rewards_config.aspen_part_one_period,
+            rewards_distribution_frequency: rewards_config
+                .frequency_rules
+                .into_iter()
+                .map(|rule| (rule.from_period, rule.frequency))
+                .collect(),
         },
     )?;
     Ok(Box::new(BridgeFinalChain(final_chain)))
@@ -292,6 +327,21 @@ impl BridgeFinalChain {
         transactions: Vec<rustaxa_ffi::FinalizationTransaction>,
         finalized_dag_blocks: Vec<rustaxa_ffi::FinalizationDagBlock>,
     ) -> Result<rustaxa_ffi::FinalizationOutcome, anyhow::Error> {
+        self.finalize_block_with_rewards_context(
+            pbft_block_rlp,
+            transactions,
+            finalized_dag_blocks,
+            0,
+        )
+    }
+
+    pub fn finalize_block_with_rewards_context(
+        self: &BridgeFinalChain,
+        pbft_block_rlp: Vec<u8>,
+        transactions: Vec<rustaxa_ffi::FinalizationTransaction>,
+        finalized_dag_blocks: Vec<rustaxa_ffi::FinalizationDagBlock>,
+        blocks_per_year: u32,
+    ) -> Result<rustaxa_ffi::FinalizationOutcome, anyhow::Error> {
         let transactions = transactions
             .into_iter()
             .map(|transaction| rustaxa_consensus::FinalizationTransaction {
@@ -314,6 +364,7 @@ impl BridgeFinalChain {
             .into_iter()
             .map(|dag_block| rustaxa_consensus::FinalizationDagBlock {
                 author: dag_block.author,
+                difficulty: dag_block.difficulty,
                 transaction_hashes: dag_block
                     .transaction_hashes
                     .into_iter()
@@ -321,9 +372,12 @@ impl BridgeFinalChain {
                     .collect(),
             })
             .collect();
-        let (block_header_rlp, receipts) =
-            self.0
-                .finalize_block(pbft_block_rlp, transactions, finalized_dag_blocks)?;
+        let (block_header_rlp, receipts) = self.0.finalize_block_with_rewards_context(
+            pbft_block_rlp,
+            transactions,
+            finalized_dag_blocks,
+            blocks_per_year,
+        )?;
         Ok(rustaxa_ffi::FinalizationOutcome {
             block_header_rlp,
             receipts: receipts

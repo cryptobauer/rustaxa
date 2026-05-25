@@ -109,6 +109,23 @@ pub struct GenesisDposConfig {
     pub dag_vdf_sortition_total_vote_count_until_period: u64,
 }
 
+/// Rewards and hardfork configuration used by Rust native finalization.
+///
+/// This is intentionally separate from `GenesisDposConfig`: DPoS genesis
+/// fields describe validator/stake initialization, while rewards configuration
+/// controls post-execution reward-stat planning for finalized blocks.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct FinalChainRewardsConfig {
+    /// Committee size used by legacy rewards stats for max vote-weight bounds.
+    pub committee_size: u32,
+    /// First period where Magnolia fee rewards are active.
+    pub magnolia_period: u64,
+    /// First period where Aspen part-one DAG reward counting is active.
+    pub aspen_part_one_period: u64,
+    /// Rewards distribution frequency changes keyed by starting period.
+    pub rewards_distribution_frequency: Vec<(u64, u32)>,
+}
+
 /// Read-only FinalChain call request routed from C++ into Rust.
 ///
 /// This type intentionally models the execution-facing fields Rust needs for
@@ -159,6 +176,8 @@ pub struct FinalChainCallOutcome {
 pub struct FinalizationDagBlock {
     /// DAG block author address bytes.
     pub author: [u8; 20],
+    /// Legacy VDF difficulty used by Aspen DAG reward counting.
+    pub difficulty: u16,
     /// Transaction hashes carried by this DAG block.
     pub transaction_hashes: Vec<[u8; 32]>,
 }

@@ -9,8 +9,9 @@ pub use dag::DagBlock;
 pub use final_chain::{
     Account, BlockHeaderContext, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount,
     FinalChainBlockHeader, FinalChainBlockHeaderBuilder, FinalChainCallOutcome,
-    FinalChainCallRequest, FinalizationDagBlock, FinalizationTransaction, GenesisAccount,
-    GenesisDposConfig, GenesisValidator, GenesisValidatorMetadata, StoredFinalChainBlockHeader,
+    FinalChainCallRequest, FinalChainRewardsConfig, FinalizationDagBlock, FinalizationTransaction,
+    GenesisAccount, GenesisDposConfig, GenesisValidator, GenesisValidatorMetadata,
+    StoredFinalChainBlockHeader,
 };
 pub use pbft::PbftBlockMetadata;
 pub use pillar::{

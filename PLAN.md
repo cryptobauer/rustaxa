@@ -243,12 +243,14 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     caught up to the finalized head, so transaction purge and proposal filtering do not silently use genesis state after
     restart.
   - Because Rust finalization is scoped to post-Magnolia execution, native transaction fees are assigned to validator
-    commission rewards by finalized DAG block author and transaction hash.
+    commission rewards by finalized DAG block author and transaction hash through the shared Rust rewards-stat planner,
+    using bridged Magnolia/Aspen rewards configuration, DAG difficulty, and `blocks_per_year` facts.
   - non-genesis DPoS queries still throw when the queried block has not been finalized through Rust snapshot
     maintenance; DPoS transitions beyond the supported validator-registration/delegation subset and legacy databases without Rust
     account snapshots remain explicit gaps.
   - selected DPoS precompile reads through `FinalChain::call` are Rust-backed for `getTotalEligibleVotesCount()` and
-    `getValidator(address)`.
+    `getValidator(address)`. These precompile reads use the exact finalized-block snapshot, while DAG authorization and
+    explicit eligibility APIs still use the configured delegation-delay snapshot.
 - Unimplemented public shim methods throw rather than falling back to `FinalChainOld`.
 
 ### FinalChain Storage Touchpoints
@@ -537,9 +539,10 @@ The current Rust starting point is intentionally small:
     ports are real. The `rewards::Stats` surface now has a Rust-mode overlay: Rust accepts finalized-period facts,
     computes legacy-compatible `BlockStats` RLP, tracks interval cache/distribution boundaries, appends non-boundary
     cache writes to the caller-owned Rust storage batch, and mirrors post-commit interval clears without changing the
-    legacy FinalChain ordering. The active Rust `FinalChain` shim has its own native finalization path and still bypasses
-    this `rewards::Stats` surface; unifying that path with Rust rewards-stat planning, `StateAPI::distribute_rewards`,
-    and account reward mutation remains future work. Double-voting proof planning and already-verified pillar-vote
+    legacy FinalChain ordering. The active Rust `FinalChain` native finalization path now builds finalized-period reward
+    facts and reuses the Rust planner for current-period post-Magnolia fee commission attribution. Persisting interval
+    reward-stat cache rows from native FinalChain, bridging cert-vote facts into that native path, and moving
+    `StateAPI::distribute_rewards` plus account reward mutation into Rust remain future work. Double-voting proof planning and already-verified pillar-vote
     aggregation are Rust-backed; broader slashing state transitions, pillar signing/recovery, and
     `PillarChainManager` orchestration still depend on future FinalChain/state ports.
 

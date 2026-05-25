@@ -15,10 +15,11 @@ use rustaxa_types::codec::rlp::final_chain::{
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::{
     Account, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount,
-    FinalChainCallOutcome, FinalChainCallRequest, FinalizationDagBlock, FinalizationTransaction,
-    GenesisAccount, GenesisDposConfig, GenesisValidator, StoredFinalChainBlockHeader,
+    FinalChainCallOutcome, FinalChainCallRequest, FinalChainRewardsConfig, FinalizationDagBlock,
+    FinalizationTransaction, GenesisAccount, GenesisDposConfig, GenesisValidator,
+    StoredFinalChainBlockHeader,
 };
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::Mutex;
 use triehash::ordered_trie_root;
@@ -68,6 +69,9 @@ pub struct FinalChain {
     /// Exclusive period boundary below which legacy DAG VDF sortition uses the
     /// snapshot total eligible vote count.
     dag_vdf_sortition_total_vote_count_until_period: u64,
+    /// Hardfork and interval rules used by Rust rewards-stat planning during
+    /// native finalization.
+    rewards_config: FinalChainRewardsConfig,
     /// Account snapshots keyed by finalized block number for proposal-period
     /// account reads. Missing accounts remain absent from each snapshot.
     account_snapshots: Mutex<HashMap<u64, HashMap<[u8; 20], Account>>>,
@@ -113,6 +117,26 @@ impl FinalChain {
         genesis_accounts: Vec<GenesisAccount>,
         genesis_validators: Vec<GenesisValidator>,
         genesis_dpos_config: GenesisDposConfig,
+    ) -> Result<Self> {
+        Self::new_with_rewards_config(
+            storage,
+            block_gas_limit,
+            genesis_timestamp,
+            genesis_accounts,
+            genesis_validators,
+            genesis_dpos_config,
+            FinalChainRewardsConfig::default(),
+        )
+    }
+
+    pub fn new_with_rewards_config(
+        storage: Arc<Storage>,
+        block_gas_limit: u64,
+        genesis_timestamp: u64,
+        genesis_accounts: Vec<GenesisAccount>,
+        genesis_validators: Vec<GenesisValidator>,
+        genesis_dpos_config: GenesisDposConfig,
+        rewards_config: FinalChainRewardsConfig,
     ) -> Result<Self> {
         let genesis_accounts: HashMap<[u8; 20], Account> = genesis_accounts
             .into_iter()
@@ -208,6 +232,7 @@ impl FinalChain {
             dag_vdf_sortition_max_vote_count,
             dag_vdf_sortition_total_vote_count_until_period: genesis_dpos_config
                 .dag_vdf_sortition_total_vote_count_until_period,
+            rewards_config,
             account_snapshots: Mutex::new(HashMap::from([(0, genesis_accounts.clone())])),
             latest_account_snapshot_block: Mutex::new(0),
             dpos_snapshots: Mutex::new(HashMap::from([(
@@ -541,10 +566,11 @@ impl FinalChain {
         let mut selector = [0u8; 4];
         selector.copy_from_slice(&request.input[..4]);
         let code_retval = match selector {
-            DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR => {
-                abi_word_from_u64(self.dpos_eligible_total_vote_count(request.block_number)?)
-                    .to_vec()
-            }
+            DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR => abi_word_from_u64(
+                self.dpos_snapshot_at_finalized_block(request.block_number)?
+                    .total_vote_count,
+            )
+            .to_vec(),
             DPOS_GET_VALIDATOR_SELECTOR => {
                 let validator =
                     decode_abi_address_argument(&request.input, "getValidator(address)")?;
@@ -608,6 +634,22 @@ impl FinalChain {
         transactions: Vec<FinalizationTransaction>,
         finalized_dag_blocks: Vec<FinalizationDagBlock>,
     ) -> Result<(Vec<u8>, Vec<Vec<u8>>), anyhow::Error> {
+        self.finalize_block_with_rewards_context(
+            pbft_block_rlp,
+            transactions,
+            finalized_dag_blocks,
+            0,
+        )
+    }
+
+    /// Finalizes a PBFT block with caller-supplied reward-rate context.
+    pub fn finalize_block_with_rewards_context(
+        &self,
+        pbft_block_rlp: Vec<u8>,
+        transactions: Vec<FinalizationTransaction>,
+        finalized_dag_blocks: Vec<FinalizationDagBlock>,
+        blocks_per_year: u32,
+    ) -> Result<(Vec<u8>, Vec<Vec<u8>>), anyhow::Error> {
         let pbft =
             rustaxa_types::PbftBlockMetadata::try_from(SignedPbftBlockRlp::new(&pbft_block_rlp))?;
         let transaction_count = self.transaction_count(pbft.period)?;
@@ -623,7 +665,13 @@ impl FinalChain {
         let dpos_fee_rewards = if pre_magnolia_fee_reward_period {
             BTreeMap::new()
         } else {
-            self.dpos_fee_rewards_by_validator(&finalized_dag_blocks, &execution.transaction_fees)?
+            self.current_period_fee_rewards_from_stats(
+                &pbft,
+                &transactions,
+                &finalized_dag_blocks,
+                &execution.transaction_fees,
+                blocks_per_year,
+            )?
         };
         if pre_magnolia_fee_reward_period {
             self.credit_pre_magnolia_pbft_fee_reward(
@@ -708,8 +756,8 @@ impl FinalChain {
     /// commission rewards. A zero boundary means Magnolia behavior is active
     /// from genesis.
     fn pre_magnolia_fee_reward_period(&self, block_number: u64) -> bool {
-        self.dag_vdf_sortition_total_vote_count_until_period != 0
-            && block_number < self.dag_vdf_sortition_total_vote_count_until_period
+        self.rewards_config.magnolia_period != 0
+            && block_number < self.rewards_config.magnolia_period
     }
 
     /// Credits legacy pre-Magnolia gas fees to the PBFT block beneficiary.
@@ -960,6 +1008,28 @@ impl FinalChain {
             .cloned())
     }
 
+    /// Returns the DPoS snapshot produced for the requested finalized block.
+    ///
+    /// Read-only DPoS precompile calls use the current finalized validator
+    /// state. Delegation-delay snapshot selection is reserved for DAG
+    /// authorization and explicit DPoS eligibility APIs.
+    fn dpos_snapshot_at_finalized_block(
+        &self,
+        block_number: u64,
+    ) -> Result<DposSnapshot, anyhow::Error> {
+        self.dpos_snapshots
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain DPoS snapshot lock poisoned"))?
+            .get(&block_number)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Rust FinalChain DPoS snapshot for finalized block {} is not implemented",
+                    block_number
+                )
+            })
+    }
+
     /// Loads Rust-persisted historical DPoS snapshots for finalized blocks.
     ///
     /// Missing snapshot payloads are left absent so pre-existing databases do
@@ -1092,13 +1162,15 @@ impl FinalChain {
     /// The returned struct contains dynamic string fields, so the ABI payload
     /// starts with an offset word followed by the tuple head and ABI string
     /// tails. Stake, commission reward, owner, commission, description, and
-    /// endpoint are read from the requested DPoS snapshot.
+    /// endpoint are read from the exact finalized-block DPoS snapshot. DAG
+    /// authorization queries intentionally apply the configured delegation
+    /// delay before selecting a snapshot.
     fn encode_dpos_validator(
         &self,
         block_number: u64,
         validator: [u8; 20],
     ) -> Result<Vec<u8>, anyhow::Error> {
-        let snapshot = self.dpos_snapshot(block_number)?;
+        let snapshot = self.dpos_snapshot_at_finalized_block(block_number)?;
         let total_stake = snapshot
             .total_stakes
             .get(&validator)
@@ -1434,44 +1506,92 @@ impl FinalChain {
         Ok(())
     }
 
-    /// Computes transaction-fee rewards by finalized DAG block author.
+    /// Computes current-period transaction-fee rewards through the shared Rust
+    /// rewards-stat planner.
     ///
-    /// Each finalized transaction fee is assigned to the first finalized DAG
-    /// block that references that transaction hash, matching the pre-Aspen C++
-    /// rewards behavior used by the current FinalChain tests.
-    fn dpos_fee_rewards_by_validator(
+    /// Native Rust FinalChain keeps account and DPoS snapshot mutation local for
+    /// now, but fee attribution must share the same Magnolia/Aspen DAG rules as
+    /// the `rewards::Stats` shim. The current-period `BlockStats` RLP is decoded
+    /// directly because FinalChain applies post-Magnolia commission rewards at
+    /// finalization time instead of waiting for a broader rewards distribution
+    /// rewrite.
+    fn current_period_fee_rewards_from_stats(
         &self,
+        pbft: &rustaxa_types::PbftBlockMetadata,
+        finalized_transactions: &[FinalizationTransaction],
         finalized_dag_blocks: &[FinalizationDagBlock],
         transaction_fees: &[([u8; 32], U256)],
+        blocks_per_year: u32,
     ) -> Result<BTreeMap<[u8; 20], U256>, anyhow::Error> {
-        let mut fee_by_transaction_hash = transaction_fees
+        let gas_used_by_hash = transaction_fees
             .iter()
-            .copied()
-            .collect::<HashMap<[u8; 32], U256>>();
-        let block_transaction_hashes = fee_by_transaction_hash
-            .keys()
-            .copied()
-            .collect::<HashSet<_>>();
-        let mut rewards_by_validator = BTreeMap::new();
+            .map(|(hash, fee)| {
+                let transaction = finalized_transactions
+                    .iter()
+                    .find(|transaction| transaction.hash == *hash)
+                    .ok_or_else(|| anyhow::anyhow!("missing transaction for executed fee hash"))?;
+                let gas_price = u256_from_big_endian(&transaction.gas_price);
+                let gas_used = gas_used_from_fee(*fee, gas_price)?;
+                Ok((*hash, gas_used))
+            })
+            .collect::<Result<HashMap<_, _>>>()?;
 
-        for dag_block in finalized_dag_blocks {
-            for transaction_hash in &dag_block.transaction_hashes {
-                if !block_transaction_hashes.contains(transaction_hash) {
-                    continue;
-                }
-                let Some(fee) = fee_by_transaction_hash.remove(transaction_hash) else {
-                    continue;
-                };
-                let reward = rewards_by_validator
-                    .entry(dag_block.author)
-                    .or_insert_with(U256::zero);
-                *reward = reward
-                    .checked_add(fee)
-                    .ok_or_else(|| anyhow::anyhow!("validator fee reward overflow"))?;
-            }
+        let fact = crate::rewards_stats::FinalizedRewardsPeriodFact {
+            period: pbft.period,
+            block_author: pbft.author,
+            blocks_per_year,
+            dpos_eligible_total_vote_count: self
+                .dpos_eligible_total_vote_count(pbft.period.saturating_sub(1))?,
+            transactions: finalized_transactions
+                .iter()
+                .map(|transaction| crate::rewards_stats::RewardTransactionFact {
+                    hash: H256::from(transaction.hash),
+                    gas_price: u256_from_big_endian(&transaction.gas_price),
+                    gas_used: *gas_used_by_hash.get(&transaction.hash).unwrap_or(&0),
+                })
+                .collect(),
+            dag_blocks: finalized_dag_blocks
+                .iter()
+                .map(|dag_block| crate::rewards_stats::RewardDagBlockFact {
+                    author: dag_block.author.into(),
+                    difficulty: dag_block.difficulty,
+                    transaction_hashes: dag_block
+                        .transaction_hashes
+                        .iter()
+                        .copied()
+                        .map(H256::from)
+                        .collect(),
+                })
+                .collect(),
+            cert_votes: Vec::new(),
+        };
+        let mut runtime = crate::rewards_stats::RewardsStatsRuntime::new(
+            crate::rewards_stats::RewardsStatsConfig {
+                committee_size: self.rewards_config.committee_size,
+                magnolia_period: self.rewards_config.magnolia_period,
+                aspen_part_one_period: self.rewards_config.aspen_part_one_period,
+            },
+            self.rewards_config
+                .rewards_distribution_frequency
+                .iter()
+                .map(
+                    |(from_period, frequency)| crate::rewards_stats::RewardsFrequencyRule {
+                        from_period: *from_period,
+                        frequency: *frequency,
+                    },
+                )
+                .collect(),
+            Vec::new(),
+        )?;
+        let plan = runtime.process_period(fact);
+        if plan.status != crate::rewards_stats::RewardsStatsStatus::Applied {
+            anyhow::bail!(
+                "Rust FinalChain::finalize rewards stats rejected period {}: {}",
+                plan.current_period,
+                plan.error_code
+            );
         }
-
-        Ok(rewards_by_validator)
+        fee_rewards_from_block_stats_rlp(&plan.current_block_stats_rlp)
     }
 }
 
@@ -1811,6 +1931,26 @@ fn u256_from_big_endian(bytes: &[u8]) -> U256 {
     U256::from_big_endian(bytes)
 }
 
+fn gas_used_from_fee(fee: U256, gas_price: U256) -> Result<u64, anyhow::Error> {
+    if gas_price.is_zero() {
+        anyhow::ensure!(
+            fee.is_zero(),
+            "transaction fee is nonzero while gas price is zero"
+        );
+        return Ok(0);
+    }
+    let gas_used = fee / gas_price;
+    anyhow::ensure!(
+        fee % gas_price == U256::zero(),
+        "transaction fee is not divisible by gas price"
+    );
+    anyhow::ensure!(
+        gas_used <= U256::from(u64::MAX),
+        "transaction gas used does not fit into u64"
+    );
+    Ok(gas_used.as_u64())
+}
+
 fn u256_to_big_endian(value: U256) -> Vec<u8> {
     let bytes = value.to_big_endian();
     let first_nonzero = bytes
@@ -1828,6 +1968,23 @@ fn empty_account() -> Account {
         code_hash: [0; 32],
         code_size: 0,
     }
+}
+
+fn fee_rewards_from_block_stats_rlp(
+    block_stats_rlp: &[u8],
+) -> Result<BTreeMap<[u8; 20], U256>, anyhow::Error> {
+    let block_stats = Rlp::new(block_stats_rlp);
+    let validators = block_stats.at(2)?;
+    let mut rewards = BTreeMap::new();
+    for entry in validators.iter() {
+        let validator = entry.val_at::<ethereum_types::H160>(0)?.0;
+        let stats = entry.at(1)?;
+        let fee_reward = stats.val_at::<U256>(2)?;
+        if !fee_reward.is_zero() {
+            rewards.insert(validator, fee_reward);
+        }
+    }
+    Ok(rewards)
 }
 
 /// Sums executed transaction fees for legacy pre-Magnolia PBFT rewards.
@@ -3350,7 +3507,7 @@ mod tests {
             &pbft_block,
             std::slice::from_ref(&transaction_rlp),
         );
-        let final_chain = FinalChain::new(
+        let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
             100_000,
             0,
@@ -3363,6 +3520,10 @@ mod tests {
                 minimum_deposit: vec![],
                 delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 2,
+            },
+            FinalChainRewardsConfig {
+                magnolia_period: 2,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -3450,6 +3611,7 @@ mod tests {
                 vec![transaction.clone()],
                 vec![FinalizationDagBlock {
                     author: dag_author,
+                    difficulty: 0,
                     transaction_hashes: vec![transaction.hash],
                 }],
             )
@@ -3571,6 +3733,77 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("snapshot for block 2")
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn dpos_call_reads_current_snapshot_with_delegation_delay() {
+        let path = temp_db_path("dpos-call-current-snapshot");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let sender = [0x31; 20];
+        let receiver = [0x32; 20];
+        let dag_author = [0x33; 20];
+        let genesis_validator = genesis_validator(dag_author, U256::from(10_000u64));
+        let signing_key = SigningKey::from_slice(&[13u8; 32]).unwrap();
+        let pbft_block = signed_pbft_block(&signing_key, period, 122);
+        let transaction_rlp = vec![0xc1, 0x86];
+        let transaction = test_transaction(
+            0xF7,
+            sender,
+            Some(receiver),
+            0,
+            U256::from(1u64),
+            U256::from(2u64),
+            50_000,
+            vec![],
+            transaction_rlp.clone(),
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&transaction_rlp),
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(sender, U256::from(1_000_000u64))],
+            vec![genesis_validator],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                delegation_delay: 5,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+        )
+        .unwrap();
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(
+                pbft_block,
+                vec![transaction.clone()],
+                vec![FinalizationDagBlock {
+                    author: dag_author,
+                    difficulty: 0,
+                    transaction_hashes: vec![transaction.hash],
+                }],
+            )
+            .unwrap();
+        let validator_info = final_chain
+            .call(dpos_call_request(period, get_validator_input(dag_author)))
+            .unwrap();
+
+        assert_eq!(
+            u256_from_big_endian(&validator_info.code_retval[64..96]),
+            U256::from(receipt_fields(&receipts[0]).1 * 2)
         );
 
         drop(final_chain);

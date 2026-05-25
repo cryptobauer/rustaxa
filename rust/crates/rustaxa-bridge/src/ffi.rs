@@ -1099,6 +1099,13 @@ pub mod rustaxa_ffi {
         dag_vdf_sortition_total_vote_count_until_period: u64,
     }
 
+    struct FinalChainRewardsConfig {
+        committee_size: u32,
+        magnolia_period: u64,
+        aspen_part_one_period: u64,
+        frequency_rules: Vec<RewardsFrequencyRule>,
+    }
+
     struct AccountLookup {
         found: bool,
         nonce: u64,
@@ -1696,6 +1703,7 @@ pub mod rustaxa_ffi {
 
     struct FinalizationDagBlock {
         author: [u8; 20],
+        difficulty: u16,
         transaction_hashes: Vec<DagHash>,
     }
 
@@ -3606,6 +3614,16 @@ pub mod rustaxa_ffi {
             genesis_dpos_config: GenesisDposConfig,
         ) -> Result<Box<BridgeFinalChain>>;
 
+        pub fn create_final_chain_with_rewards_config(
+            storage: &BridgeStorage,
+            block_gas_limit: u64,
+            genesis_timestamp: u64,
+            genesis_accounts: Vec<GenesisAccount>,
+            genesis_validators: Vec<GenesisValidator>,
+            genesis_dpos_config: GenesisDposConfig,
+            rewards_config: FinalChainRewardsConfig,
+        ) -> Result<Box<BridgeFinalChain>>;
+
         pub fn get_last_block_number(self: &BridgeFinalChain) -> Result<u64>;
         pub fn get_block_number(
             self: &BridgeFinalChain,
@@ -3667,6 +3685,13 @@ pub mod rustaxa_ffi {
             pbft_block_rlp: Vec<u8>,
             transactions: Vec<FinalizationTransaction>,
             finalized_dag_blocks: Vec<FinalizationDagBlock>,
+        ) -> Result<FinalizationOutcome>;
+        pub fn finalize_block_with_rewards_context(
+            self: &BridgeFinalChain,
+            pbft_block_rlp: Vec<u8>,
+            transactions: Vec<FinalizationTransaction>,
+            finalized_dag_blocks: Vec<FinalizationDagBlock>,
+            blocks_per_year: u32,
         ) -> Result<FinalizationOutcome>;
         pub fn get_transaction_rlps(self: &BridgeFinalChain, period: u64) -> Result<Vec<TxRlp>>;
         pub fn get_transaction_receipt(

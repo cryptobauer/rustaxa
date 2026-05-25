@@ -75,6 +75,7 @@ rust::Vec<rustaxa::FinalizationDagBlock> make_finalization_dag_blocks(
   for (const auto& dag_block : dag_blocks) {
     rustaxa::FinalizationDagBlock rust_dag_block;
     rust_dag_block.author = into_address_array(dag_block->getSender());
+    rust_dag_block.difficulty = dag_block->getDifficulty();
     rust_dag_block.transaction_hashes.reserve(dag_block->getTrxs().size());
     for (const auto& transaction_hash : dag_block->getTrxs()) {
       rustaxa::DagHash rust_transaction_hash;
@@ -149,6 +150,21 @@ rustaxa::GenesisDposConfig make_genesis_dpos_config(const state_api::DPOSConfig&
   return dpos_config;
 }
 
+rustaxa::FinalChainRewardsConfig make_final_chain_rewards_config(const taraxa::FullNodeConfig& config) {
+  rustaxa::FinalChainRewardsConfig rewards_config;
+  rewards_config.committee_size = config.genesis.pbft.committee_size;
+  rewards_config.magnolia_period = config.genesis.state.hardforks.magnolia_hf.block_num;
+  rewards_config.aspen_part_one_period = config.genesis.state.hardforks.aspen_hf.block_num_part_one;
+  rewards_config.frequency_rules.reserve(config.genesis.state.hardforks.rewards_distribution_frequency.size());
+  for (const auto& [from_period, frequency] : config.genesis.state.hardforks.rewards_distribution_frequency) {
+    rustaxa::RewardsFrequencyRule rule{};
+    rule.from_period = from_period;
+    rule.frequency = frequency;
+    rewards_config.frequency_rules.push_back(rule);
+  }
+  return rewards_config;
+}
+
 h256 into_h256(const rust::Vec<uint8_t>& bytes, const char* api_name) {
   if (bytes.size() != 32) {
     throw DbException("FinalChain::" + std::string(api_name) + " returned invalid hash size: expected 32, got " +
@@ -180,10 +196,11 @@ FinalChain::FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullN
                        const addr_t& node_addr) {
   (void)node_addr;
   delegation_delay_ = config.genesis.state.dpos.delegation_delay;
-  rust_final_chain_ = rustaxa::create_final_chain(
+  rust_final_chain_ = rustaxa::create_final_chain_with_rewards_config(
       db->rustStorage(), config.genesis.pbft.gas_limit, config.genesis.dag_genesis_block.getTimestamp(),
       make_genesis_accounts(config.genesis.state), make_genesis_validators(config.genesis.state),
-      make_genesis_dpos_config(config.genesis.state.dpos, config.genesis.state.hardforks.magnolia_hf.block_num));
+      make_genesis_dpos_config(config.genesis.state.dpos, config.genesis.state.hardforks.magnolia_hf.block_num),
+      make_final_chain_rewards_config(config));
 }
 
 void FinalChain::stop() {}
@@ -191,12 +208,13 @@ void FinalChain::stop() {}
 EthBlockNumber FinalChain::delegationDelay() const { return delegation_delay_; }
 
 std::future<std::shared_ptr<const FinalizationResult>> FinalChain::finalize(
-    PeriodData&& period_data, std::vector<h256>&& finalized_dag_blk_hashes, uint32_t,
+    PeriodData&& period_data, std::vector<h256>&& finalized_dag_blk_hashes, uint32_t blocks_per_year,
     std::shared_ptr<DagBlock>&& anchor) {
   (void)anchor;
-  auto outcome = rust_final_chain_.value()->finalize_block(into_rust_vec(period_data.pbft_blk->rlp(true)),
-                                                           make_finalization_transactions(period_data.transactions),
-                                                           make_finalization_dag_blocks(period_data.dag_blocks));
+  auto outcome =
+      rust_final_chain_.value()->finalize_block_with_rewards_context(
+          into_rust_vec(period_data.pbft_blk->rlp(true)), make_finalization_transactions(period_data.transactions),
+          make_finalization_dag_blocks(period_data.dag_blocks), blocks_per_year);
   auto header_data = into_string(outcome.block_header_rlp);
   auto header = BlockHeader::fromRLP(dev::RLP(header_data));
   TransactionReceipts receipts;

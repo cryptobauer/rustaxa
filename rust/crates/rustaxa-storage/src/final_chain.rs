@@ -202,6 +202,7 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
     /// absolute execution counters. Outputs are durable database records only.
     /// LAST_NUMBER remains the final write in the batch, so a committed block is
     /// never visible without the supplied snapshot payloads and status counters.
+    #[allow(clippy::too_many_arguments)]
     pub fn write_block_header_with_snapshots_and_execution_status(
         &self,
         number: u64,

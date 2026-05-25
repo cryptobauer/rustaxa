@@ -50,8 +50,8 @@ pub use rewards_stats::{
 };
 pub use rustaxa_types::{
     Account, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount,
-    FinalChainCallRequest, FinalizationDagBlock, FinalizationTransaction, GenesisAccount,
-    GenesisDposConfig, GenesisValidator, GenesisValidatorMetadata,
+    FinalChainCallRequest, FinalChainRewardsConfig, FinalizationDagBlock, FinalizationTransaction,
+    GenesisAccount, GenesisDposConfig, GenesisValidator, GenesisValidatorMetadata,
 };
 pub use slashing::{
     DoubleVotingProofInput, DoubleVotingProofPlan, DoubleVotingProofPlanStatus,
