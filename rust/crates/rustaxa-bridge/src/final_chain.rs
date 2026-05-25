@@ -342,6 +342,23 @@ impl BridgeFinalChain {
         finalized_dag_blocks: Vec<rustaxa_ffi::FinalizationDagBlock>,
         blocks_per_year: u32,
     ) -> Result<rustaxa_ffi::FinalizationOutcome, anyhow::Error> {
+        self.finalize_block_with_rewards_facts(
+            pbft_block_rlp,
+            transactions,
+            finalized_dag_blocks,
+            blocks_per_year,
+            Vec::new(),
+        )
+    }
+
+    pub fn finalize_block_with_rewards_facts(
+        self: &BridgeFinalChain,
+        pbft_block_rlp: Vec<u8>,
+        transactions: Vec<rustaxa_ffi::FinalizationTransaction>,
+        finalized_dag_blocks: Vec<rustaxa_ffi::FinalizationDagBlock>,
+        blocks_per_year: u32,
+        cert_votes: Vec<rustaxa_ffi::RewardsCertVoteFact>,
+    ) -> Result<rustaxa_ffi::FinalizationOutcome, anyhow::Error> {
         let transactions = transactions
             .into_iter()
             .map(|transaction| rustaxa_consensus::FinalizationTransaction {
@@ -372,11 +389,20 @@ impl BridgeFinalChain {
                     .collect(),
             })
             .collect();
-        let (block_header_rlp, receipts) = self.0.finalize_block_with_rewards_context(
+        let cert_votes = cert_votes
+            .into_iter()
+            .map(|vote| rustaxa_consensus::RewardCertVoteFact {
+                voter: vote.voter.into(),
+                weight: vote.weight,
+                period: vote.period,
+            })
+            .collect();
+        let (block_header_rlp, receipts) = self.0.finalize_block_with_rewards_facts(
             pbft_block_rlp,
             transactions,
             finalized_dag_blocks,
             blocks_per_year,
+            cert_votes,
         )?;
         Ok(rustaxa_ffi::FinalizationOutcome {
             block_header_rlp,

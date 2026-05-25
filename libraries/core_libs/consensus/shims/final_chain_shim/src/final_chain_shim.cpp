@@ -1,5 +1,6 @@
 #include <array>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 
 #include "final_chain/final_chain.hpp"
@@ -85,6 +86,24 @@ rust::Vec<rustaxa::FinalizationDagBlock> make_finalization_dag_blocks(
     rust_dag_blocks.push_back(std::move(rust_dag_block));
   }
   return rust_dag_blocks;
+}
+
+rust::Vec<rustaxa::RewardsCertVoteFact> make_rewards_cert_votes(
+    const std::vector<std::shared_ptr<PbftVote>>& cert_votes) {
+  rust::Vec<rustaxa::RewardsCertVoteFact> rust_votes;
+  rust_votes.reserve(cert_votes.size());
+  for (const auto& vote : cert_votes) {
+    auto weight = vote->getWeight();
+    if (!weight) {
+      throw std::runtime_error("FinalChain::finalize cert vote is missing validator weight");
+    }
+    rustaxa::RewardsCertVoteFact fact{};
+    fact.voter = into_address_array(vote->getVoterAddr());
+    fact.weight = *weight;
+    fact.period = vote->getPeriod();
+    rust_votes.push_back(fact);
+  }
+  return rust_votes;
 }
 
 rust::Vec<rustaxa::GenesisAccount> make_genesis_accounts(const state_api::Config& config) {
@@ -212,9 +231,10 @@ std::future<std::shared_ptr<const FinalizationResult>> FinalChain::finalize(
     std::shared_ptr<DagBlock>&& anchor) {
   (void)anchor;
   auto outcome =
-      rust_final_chain_.value()->finalize_block_with_rewards_context(
+      rust_final_chain_.value()->finalize_block_with_rewards_facts(
           into_rust_vec(period_data.pbft_blk->rlp(true)), make_finalization_transactions(period_data.transactions),
-          make_finalization_dag_blocks(period_data.dag_blocks), blocks_per_year);
+          make_finalization_dag_blocks(period_data.dag_blocks), blocks_per_year,
+          make_rewards_cert_votes(period_data.previous_block_cert_votes));
   auto header_data = into_string(outcome.block_header_rlp);
   auto header = BlockHeader::fromRLP(dev::RLP(header_data));
   TransactionReceipts receipts;

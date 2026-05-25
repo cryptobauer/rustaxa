@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use ethereum_types::H256;
 use std::sync::Arc;
 
@@ -17,6 +17,26 @@ pub struct FinalChainExecutionStatus {
     pub executed_dag_block_count: u64,
     /// Total number of transactions executed by finalized PBFT blocks.
     pub executed_transaction_count: u64,
+}
+
+/// Rewards-stat cache mutation committed with finalized-block visibility.
+///
+/// Native Rust FinalChain uses this intent to keep legacy `BlockRewardsStats`
+/// cache rows in the same database batch as the finalized block header,
+/// snapshots, execution counters, and `LAST_NUMBER`. A cache-current-period
+/// update writes the supplied current block stats under `current_period`; a
+/// clear update removes all cached interval rows after the current period has
+/// reached a distribution boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FinalChainRewardsStatsUpdate<'a> {
+    /// Finalized PBFT period whose rewards-stat planner produced the update.
+    pub current_period: u64,
+    /// Whether to persist `current_block_stats_rlp` for later distribution.
+    pub cache_current_period: bool,
+    /// Whether to clear every persisted rewards-stat cache row.
+    pub clear_cached_stats: bool,
+    /// Legacy-compatible `rewards::BlockStats` RLP for `current_period`.
+    pub current_block_stats_rlp: &'a [u8],
 }
 
 pub struct FinalChainRepository<D: DbReader> {
@@ -213,6 +233,37 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
         account_snapshot_rlp: Option<&[u8]>,
         execution_status: Option<FinalChainExecutionStatus>,
     ) -> Result<()> {
+        self.write_block_header_with_snapshots_execution_status_and_rewards_stats(
+            number,
+            hash,
+            stored_header_rlp,
+            receipts_rlp,
+            dpos_snapshot_rlp,
+            account_snapshot_rlp,
+            execution_status,
+            None,
+        )
+    }
+
+    /// Persists finalized-block state and optional rewards-stat cache mutation
+    /// in one batch.
+    ///
+    /// Inputs match `write_block_header_with_snapshots_and_execution_status`
+    /// with an additional rewards-stat cache intent. If supplied, the cache
+    /// mutation is committed before `LAST_NUMBER`, so startup cannot observe the
+    /// new finalized head without the corresponding native rewards cache state.
+    #[allow(clippy::too_many_arguments)]
+    pub fn write_block_header_with_snapshots_execution_status_and_rewards_stats(
+        &self,
+        number: u64,
+        hash: H256,
+        stored_header_rlp: &[u8],
+        receipts_rlp: &[u8],
+        dpos_snapshot_rlp: Option<&[u8]>,
+        account_snapshot_rlp: Option<&[u8]>,
+        execution_status: Option<FinalChainExecutionStatus>,
+        rewards_stats_update: Option<FinalChainRewardsStatsUpdate<'_>>,
+    ) -> Result<()> {
         const DB_META_LAST_NUMBER: u32 = 1;
 
         let mut batch = self.db.create_batch();
@@ -269,6 +320,28 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
                 &[StatusField::ExecutedTrxCount as u8],
                 &execution_status.executed_transaction_count.to_le_bytes(),
             )?;
+        }
+        if let Some(update) = rewards_stats_update {
+            if update.cache_current_period && update.clear_cached_stats {
+                bail!("final-chain rewards stats update cannot both cache and clear");
+            }
+            if update.cache_current_period && update.current_block_stats_rlp.is_empty() {
+                bail!("final-chain rewards stats update is missing current block stats RLP");
+            }
+            if update.clear_cached_stats {
+                for item in self.db.iter(Column::BlockRewardsStats) {
+                    let (key, _) = item?;
+                    self.db
+                        .batch_delete(&mut batch, Column::BlockRewardsStats, &key)?;
+                }
+            } else if update.cache_current_period {
+                self.db.batch_put(
+                    &mut batch,
+                    Column::BlockRewardsStats,
+                    &update.current_period.to_le_bytes(),
+                    update.current_block_stats_rlp,
+                )?;
+            }
         }
         self.db.batch_put(
             &mut batch,

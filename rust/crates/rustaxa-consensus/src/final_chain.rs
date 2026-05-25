@@ -3,11 +3,18 @@ use crate::dag::{
     DAG_VERIFY_DPOS_STATUS_NOT_ELIGIBLE, DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE,
     DagDposAuthorizationFacts,
 };
+use crate::rewards_stats::{
+    FinalizedRewardsPeriodFact, RewardCertVoteFact, RewardDagBlockFact, RewardTransactionFact,
+    RewardsFrequencyRule, RewardsStatsConfig, RewardsStatsPeriodRlp, RewardsStatsRuntime,
+    RewardsStatsStatus,
+};
 use anyhow::Result;
 use ethereum_types::{H256, U256};
 use keccak_hasher::KeccakHasher;
 use rlp::Rlp;
-use rustaxa_storage::{FinalChainExecutionStatus, StatusField, Storage};
+use rustaxa_storage::{
+    FinalChainExecutionStatus, FinalChainRewardsStatsUpdate, StatusField, Storage,
+};
 use rustaxa_types::codec::rlp::final_chain::{
     LegacyBlockHeaderRlp, LegacyBlockHeaderRlpInput, StoredBlockHeaderRlp,
     StoredBlockHeaderRlpOwned,
@@ -72,6 +79,12 @@ pub struct FinalChain {
     /// Hardfork and interval rules used by Rust rewards-stat planning during
     /// native finalization.
     rewards_config: FinalChainRewardsConfig,
+    /// Mutable reward-stat interval cache used by native finalization.
+    ///
+    /// The runtime is loaded from persisted `BlockRewardsStats` rows on startup
+    /// and replaced only after a finalized block and its rewards-cache mutation
+    /// have committed successfully.
+    rewards_stats_runtime: Mutex<RewardsStatsRuntime>,
     /// Account snapshots keyed by finalized block number for proposal-period
     /// account reads. Missing accounts remain absent from each snapshot.
     account_snapshots: Mutex<HashMap<u64, HashMap<[u8; 20], Account>>>,
@@ -104,6 +117,30 @@ struct DposSnapshot {
     total_vote_count: u64,
     /// Delegated stake by validator and delegator at this block.
     delegations: DposDelegations,
+}
+
+struct NativeRewardsStatsPlan {
+    fee_rewards_by_validator: BTreeMap<[u8; 20], U256>,
+    storage_update: Option<OwnedRewardsStatsUpdate>,
+    runtime_after_commit: RewardsStatsRuntime,
+}
+
+struct OwnedRewardsStatsUpdate {
+    current_period: u64,
+    cache_current_period: bool,
+    clear_cached_stats: bool,
+    current_block_stats_rlp: Vec<u8>,
+}
+
+impl OwnedRewardsStatsUpdate {
+    fn as_storage_update(&self) -> FinalChainRewardsStatsUpdate<'_> {
+        FinalChainRewardsStatsUpdate {
+            current_period: self.current_period,
+            cache_current_period: self.cache_current_period,
+            clear_cached_stats: self.clear_cached_stats,
+            current_block_stats_rlp: &self.current_block_stats_rlp,
+        }
+    }
 }
 
 impl FinalChain {
@@ -214,6 +251,7 @@ impl FinalChain {
 
         let dag_vdf_sortition_max_vote_count =
             dpos_vdf_sortition_max_vote_count(&genesis_dpos_config)?;
+        let rewards_stats_runtime = rewards_stats_runtime_from_storage(&storage, &rewards_config)?;
         let final_chain = FinalChain {
             storage,
             block_gas_limit,
@@ -233,6 +271,7 @@ impl FinalChain {
             dag_vdf_sortition_total_vote_count_until_period: genesis_dpos_config
                 .dag_vdf_sortition_total_vote_count_until_period,
             rewards_config,
+            rewards_stats_runtime: Mutex::new(rewards_stats_runtime),
             account_snapshots: Mutex::new(HashMap::from([(0, genesis_accounts.clone())])),
             latest_account_snapshot_block: Mutex::new(0),
             dpos_snapshots: Mutex::new(HashMap::from([(
@@ -650,6 +689,25 @@ impl FinalChain {
         finalized_dag_blocks: Vec<FinalizationDagBlock>,
         blocks_per_year: u32,
     ) -> Result<(Vec<u8>, Vec<Vec<u8>>), anyhow::Error> {
+        self.finalize_block_with_rewards_facts(
+            pbft_block_rlp,
+            transactions,
+            finalized_dag_blocks,
+            blocks_per_year,
+            Vec::new(),
+        )
+    }
+
+    /// Finalizes a PBFT block with caller-supplied reward-rate and cert-vote
+    /// facts.
+    pub fn finalize_block_with_rewards_facts(
+        &self,
+        pbft_block_rlp: Vec<u8>,
+        transactions: Vec<FinalizationTransaction>,
+        finalized_dag_blocks: Vec<FinalizationDagBlock>,
+        blocks_per_year: u32,
+        cert_votes: Vec<RewardCertVoteFact>,
+    ) -> Result<(Vec<u8>, Vec<Vec<u8>>), anyhow::Error> {
         let pbft =
             rustaxa_types::PbftBlockMetadata::try_from(SignedPbftBlockRlp::new(&pbft_block_rlp))?;
         let transaction_count = self.transaction_count(pbft.period)?;
@@ -662,16 +720,18 @@ impl FinalChain {
 
         let execution = self.execute_native_transactions(&transactions)?;
         let pre_magnolia_fee_reward_period = self.pre_magnolia_fee_reward_period(pbft.period);
+        let rewards_stats_plan = self.native_rewards_stats_plan(
+            &pbft,
+            &transactions,
+            &finalized_dag_blocks,
+            &execution.transaction_fees,
+            blocks_per_year,
+            cert_votes,
+        )?;
         let dpos_fee_rewards = if pre_magnolia_fee_reward_period {
             BTreeMap::new()
         } else {
-            self.current_period_fee_rewards_from_stats(
-                &pbft,
-                &transactions,
-                &finalized_dag_blocks,
-                &execution.transaction_fees,
-                blocks_per_year,
-            )?
+            rewards_stats_plan.fee_rewards_by_validator.clone()
         };
         if pre_magnolia_fee_reward_period {
             self.credit_pre_magnolia_pbft_fee_reward(
@@ -718,9 +778,13 @@ impl FinalChain {
             finalized_dag_blocks.len() as u64,
             transactions.len() as u64,
         )?;
+        let rewards_stats_storage_update = rewards_stats_plan
+            .storage_update
+            .as_ref()
+            .map(OwnedRewardsStatsUpdate::as_storage_update);
         self.storage
             .final_chain()
-            .write_block_header_with_snapshots_and_execution_status(
+            .write_block_header_with_snapshots_execution_status_and_rewards_stats(
                 pbft.period,
                 full_header.hash()?,
                 stored_header_rlp.as_bytes(),
@@ -728,6 +792,7 @@ impl FinalChain {
                 Some(&dpos_snapshot_rlp),
                 Some(&account_snapshot_rlp),
                 Some(execution_status),
+                rewards_stats_storage_update,
             )?;
         for (position, transaction) in transactions.iter().enumerate() {
             self.storage.transaction().write_location(
@@ -743,6 +808,7 @@ impl FinalChain {
         }
         self.insert_account_snapshot(pbft.period, account_snapshot)?;
         self.insert_dpos_snapshot(pbft.period, dpos_snapshot)?;
+        self.commit_rewards_stats_runtime(rewards_stats_plan.runtime_after_commit)?;
 
         Ok((full_header.into_vec(), execution.receipts))
     }
@@ -1506,23 +1572,21 @@ impl FinalChain {
         Ok(())
     }
 
-    /// Computes current-period transaction-fee rewards through the shared Rust
-    /// rewards-stat planner.
+    /// Plans rewards-stat lifecycle work for one native finalized period.
     ///
-    /// Native Rust FinalChain keeps account and DPoS snapshot mutation local for
-    /// now, but fee attribution must share the same Magnolia/Aspen DAG rules as
-    /// the `rewards::Stats` shim. The current-period `BlockStats` RLP is decoded
-    /// directly because FinalChain applies post-Magnolia commission rewards at
-    /// finalization time instead of waiting for a broader rewards distribution
-    /// rewrite.
-    fn current_period_fee_rewards_from_stats(
+    /// The returned plan contains DPoS commission rewards extracted from the
+    /// planner's distribution stats, a storage cache intent for the finalization
+    /// batch, and the rewards runtime state that should replace the live runtime
+    /// only after the surrounding finalization writes commit.
+    fn native_rewards_stats_plan(
         &self,
         pbft: &rustaxa_types::PbftBlockMetadata,
         finalized_transactions: &[FinalizationTransaction],
         finalized_dag_blocks: &[FinalizationDagBlock],
         transaction_fees: &[([u8; 32], U256)],
         blocks_per_year: u32,
-    ) -> Result<BTreeMap<[u8; 20], U256>, anyhow::Error> {
+        cert_votes: Vec<RewardCertVoteFact>,
+    ) -> Result<NativeRewardsStatsPlan, anyhow::Error> {
         let gas_used_by_hash = transaction_fees
             .iter()
             .map(|(hash, fee)| {
@@ -1536,15 +1600,19 @@ impl FinalChain {
             })
             .collect::<Result<HashMap<_, _>>>()?;
 
-        let fact = crate::rewards_stats::FinalizedRewardsPeriodFact {
+        let dpos_eligible_total_vote_count = if let Some(vote) = cert_votes.first() {
+            self.dpos_eligible_total_vote_count(vote.period.saturating_sub(1))?
+        } else {
+            u64::from(self.rewards_config.committee_size)
+        };
+        let fact = FinalizedRewardsPeriodFact {
             period: pbft.period,
             block_author: pbft.author,
             blocks_per_year,
-            dpos_eligible_total_vote_count: self
-                .dpos_eligible_total_vote_count(pbft.period.saturating_sub(1))?,
+            dpos_eligible_total_vote_count,
             transactions: finalized_transactions
                 .iter()
-                .map(|transaction| crate::rewards_stats::RewardTransactionFact {
+                .map(|transaction| RewardTransactionFact {
                     hash: H256::from(transaction.hash),
                     gas_price: u256_from_big_endian(&transaction.gas_price),
                     gas_used: *gas_used_by_hash.get(&transaction.hash).unwrap_or(&0),
@@ -1552,7 +1620,7 @@ impl FinalChain {
                 .collect(),
             dag_blocks: finalized_dag_blocks
                 .iter()
-                .map(|dag_block| crate::rewards_stats::RewardDagBlockFact {
+                .map(|dag_block| RewardDagBlockFact {
                     author: dag_block.author.into(),
                     difficulty: dag_block.difficulty,
                     transaction_hashes: dag_block
@@ -1563,35 +1631,51 @@ impl FinalChain {
                         .collect(),
                 })
                 .collect(),
-            cert_votes: Vec::new(),
+            cert_votes,
         };
-        let mut runtime = crate::rewards_stats::RewardsStatsRuntime::new(
-            crate::rewards_stats::RewardsStatsConfig {
-                committee_size: self.rewards_config.committee_size,
-                magnolia_period: self.rewards_config.magnolia_period,
-                aspen_part_one_period: self.rewards_config.aspen_part_one_period,
-            },
-            self.rewards_config
-                .rewards_distribution_frequency
-                .iter()
-                .map(
-                    |(from_period, frequency)| crate::rewards_stats::RewardsFrequencyRule {
-                        from_period: *from_period,
-                        frequency: *frequency,
-                    },
-                )
-                .collect(),
-            Vec::new(),
-        )?;
+        let mut runtime = self
+            .rewards_stats_runtime
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain rewards stats runtime lock poisoned"))?
+            .clone();
         let plan = runtime.process_period(fact);
-        if plan.status != crate::rewards_stats::RewardsStatsStatus::Applied {
+        if plan.status != RewardsStatsStatus::Applied {
             anyhow::bail!(
                 "Rust FinalChain::finalize rewards stats rejected period {}: {}",
                 plan.current_period,
                 plan.error_code
             );
         }
-        fee_rewards_from_block_stats_rlp(&plan.current_block_stats_rlp)
+        let fee_rewards_by_validator =
+            fee_rewards_from_distribution_stats(&plan.distribution_stats)?;
+        let storage_update = (plan.cache_current_period || plan.clear_cached_stats).then(|| {
+            OwnedRewardsStatsUpdate {
+                current_period: plan.current_period,
+                cache_current_period: plan.cache_current_period,
+                clear_cached_stats: plan.clear_cached_stats,
+                current_block_stats_rlp: plan.current_block_stats_rlp.clone(),
+            }
+        });
+        if plan.clear_cached_stats {
+            runtime.clear_committed(plan.current_period);
+        }
+        Ok(NativeRewardsStatsPlan {
+            fee_rewards_by_validator,
+            storage_update,
+            runtime_after_commit: runtime,
+        })
+    }
+
+    fn commit_rewards_stats_runtime(
+        &self,
+        runtime_after_commit: RewardsStatsRuntime,
+    ) -> Result<(), anyhow::Error> {
+        *self
+            .rewards_stats_runtime
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain rewards stats runtime lock poisoned"))? =
+            runtime_after_commit;
+        Ok(())
     }
 }
 
@@ -1607,6 +1691,66 @@ fn decode_u64_le(raw: &[u8], field: &str) -> Result<u64, anyhow::Error> {
     let mut bytes = [0u8; 8];
     bytes.copy_from_slice(raw);
     Ok(u64::from_le_bytes(bytes))
+}
+
+fn rewards_stats_runtime_from_storage(
+    storage: &Arc<Storage>,
+    rewards_config: &FinalChainRewardsConfig,
+) -> Result<RewardsStatsRuntime, anyhow::Error> {
+    let last_block_number = storage
+        .final_chain()
+        .meta_value(FinalChain::DB_META_LAST_NUMBER)?
+        .map(|raw| decode_u64_le(&raw, "final_chain_meta/LAST_NUMBER"))
+        .transpose()?
+        .unwrap_or_default();
+    let frequency = rewards_distribution_frequency(
+        &rewards_config.rewards_distribution_frequency,
+        last_block_number,
+    );
+    let persisted_stats = if last_block_number != 0
+        && frequency > 1
+        && last_block_number.is_multiple_of(u64::from(frequency))
+    {
+        storage.metadata().clear_block_rewards_stats()?;
+        Vec::new()
+    } else {
+        storage
+            .metadata()
+            .block_rewards_stats_rlp()?
+            .into_iter()
+            .map(|(period, data)| RewardsStatsPeriodRlp { period, data })
+            .collect()
+    };
+
+    RewardsStatsRuntime::new(
+        RewardsStatsConfig {
+            committee_size: rewards_config.committee_size,
+            magnolia_period: rewards_config.magnolia_period,
+            aspen_part_one_period: rewards_config.aspen_part_one_period,
+        },
+        rewards_frequency_rules(rewards_config),
+        persisted_stats,
+    )
+}
+
+fn rewards_frequency_rules(rewards_config: &FinalChainRewardsConfig) -> Vec<RewardsFrequencyRule> {
+    rewards_config
+        .rewards_distribution_frequency
+        .iter()
+        .map(|(from_period, frequency)| RewardsFrequencyRule {
+            from_period: *from_period,
+            frequency: *frequency,
+        })
+        .collect()
+}
+
+fn rewards_distribution_frequency(rules: &[(u64, u32)], period: u64) -> u32 {
+    rules
+        .iter()
+        .rev()
+        .find(|(from_period, _)| *from_period <= period)
+        .map(|(_, frequency)| *frequency)
+        .unwrap_or(1)
 }
 
 fn h256_from_slice(raw: &[u8], field: &str) -> Result<ethereum_types::H256, anyhow::Error> {
@@ -1982,6 +2126,21 @@ fn fee_rewards_from_block_stats_rlp(
         let fee_reward = stats.val_at::<U256>(2)?;
         if !fee_reward.is_zero() {
             rewards.insert(validator, fee_reward);
+        }
+    }
+    Ok(rewards)
+}
+
+fn fee_rewards_from_distribution_stats(
+    distribution_stats: &[RewardsStatsPeriodRlp],
+) -> Result<BTreeMap<[u8; 20], U256>, anyhow::Error> {
+    let mut rewards = BTreeMap::new();
+    for stats in distribution_stats {
+        for (validator, reward) in fee_rewards_from_block_stats_rlp(&stats.data)? {
+            let current = rewards.entry(validator).or_insert_with(U256::zero);
+            *current = current
+                .checked_add(reward)
+                .ok_or_else(|| anyhow::anyhow!("validator distributed fee reward overflow"))?;
         }
     }
     Ok(rewards)
@@ -3733,6 +3892,225 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("snapshot for block 2")
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_persists_and_reloads_rewards_stats_interval_cache() {
+        let path = temp_db_path("finalize-rewards-stats-cache");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let sender = [0x24; 20];
+        let receiver = [0x25; 20];
+        let dag_author = [0x26; 20];
+        let genesis_validator = genesis_validator(dag_author, U256::from(10_000u64));
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: vec![],
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let rewards_config = FinalChainRewardsConfig {
+            committee_size: 100,
+            magnolia_period: 0,
+            aspen_part_one_period: u64::MAX,
+            rewards_distribution_frequency: vec![(0, 2)],
+        };
+        let signing_key = SigningKey::from_slice(&[14u8; 32]).unwrap();
+        let period_one = 1u64;
+        let period_two = 2u64;
+        let gas_price = U256::from(2u64);
+        let period_one_pbft = signed_pbft_block(&signing_key, period_one, 131);
+        let period_one_rlp = vec![0xc1, 0x91];
+        let period_one_transaction = test_transaction(
+            0x91,
+            sender,
+            Some(receiver),
+            0,
+            U256::from(1u64),
+            gas_price,
+            50_000,
+            vec![],
+            period_one_rlp.clone(),
+        );
+        write_period_data(
+            &storage,
+            period_one,
+            &period_one_pbft,
+            std::slice::from_ref(&period_one_rlp),
+        );
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(sender, U256::from(1_000_000u64))],
+            vec![genesis_validator.clone()],
+            genesis_dpos_config.clone(),
+            rewards_config.clone(),
+        )
+        .unwrap();
+
+        final_chain
+            .finalize_block(
+                period_one_pbft,
+                vec![period_one_transaction.clone()],
+                vec![FinalizationDagBlock {
+                    author: dag_author,
+                    difficulty: 0,
+                    transaction_hashes: vec![period_one_transaction.hash],
+                }],
+            )
+            .unwrap();
+        assert_eq!(
+            storage.metadata().block_rewards_stats_rlp().unwrap().len(),
+            1
+        );
+        let validator_info = final_chain
+            .call(dpos_call_request(
+                period_one,
+                get_validator_input(dag_author),
+            ))
+            .unwrap();
+        assert_eq!(
+            u256_from_big_endian(&validator_info.code_retval[64..96]),
+            U256::zero()
+        );
+        drop(final_chain);
+
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(sender, U256::from(1_000_000u64))],
+            vec![genesis_validator],
+            genesis_dpos_config,
+            rewards_config,
+        )
+        .unwrap();
+        let period_two_pbft = signed_pbft_block(&signing_key, period_two, 132);
+        let period_two_rlp = vec![0xc1, 0x92];
+        let period_two_transaction = test_transaction(
+            0x92,
+            sender,
+            Some(receiver),
+            1,
+            U256::from(1u64),
+            gas_price,
+            50_000,
+            vec![],
+            period_two_rlp.clone(),
+        );
+        write_period_data(
+            &storage,
+            period_two,
+            &period_two_pbft,
+            std::slice::from_ref(&period_two_rlp),
+        );
+
+        final_chain
+            .finalize_block(
+                period_two_pbft,
+                vec![period_two_transaction.clone()],
+                vec![FinalizationDagBlock {
+                    author: dag_author,
+                    difficulty: 0,
+                    transaction_hashes: vec![period_two_transaction.hash],
+                }],
+            )
+            .unwrap();
+
+        assert!(
+            storage
+                .metadata()
+                .block_rewards_stats_rlp()
+                .unwrap()
+                .is_empty()
+        );
+        let validator_info = final_chain
+            .call(dpos_call_request(
+                period_two,
+                get_validator_input(dag_author),
+            ))
+            .unwrap();
+        assert_eq!(
+            u256_from_big_endian(&validator_info.code_retval[64..96]),
+            U256::from(VALUE_TRANSFER_GAS * 4)
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_rejects_duplicate_rewards_cert_voters_without_publishing_block() {
+        let path = temp_db_path("finalize-duplicate-cert-voters");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x27; 20];
+        let genesis_validator = genesis_validator(validator, U256::from(10_000u64));
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: vec![],
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let signing_key = SigningKey::from_slice(&[15u8; 32]).unwrap();
+        let period = 1u64;
+        let pbft_block = signed_pbft_block(&signing_key, period, 141);
+        write_period_data(&storage, period, &pbft_block, &[]);
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![],
+            vec![genesis_validator],
+            genesis_dpos_config,
+            FinalChainRewardsConfig {
+                committee_size: 100,
+                magnolia_period: 0,
+                aspen_part_one_period: u64::MAX,
+                rewards_distribution_frequency: vec![(0, 2)],
+            },
+        )
+        .unwrap();
+
+        let error = final_chain
+            .finalize_block_with_rewards_facts(
+                pbft_block,
+                vec![],
+                vec![],
+                0,
+                vec![
+                    RewardCertVoteFact {
+                        voter: validator.into(),
+                        weight: 10,
+                        period,
+                    },
+                    RewardCertVoteFact {
+                        voter: validator.into(),
+                        weight: 11,
+                        period,
+                    },
+                ],
+            )
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("REWARDS_STATS_DUPLICATE_VOTER"));
+        assert_eq!(final_chain.last_block_number().unwrap(), 0);
+        assert!(
+            storage
+                .metadata()
+                .block_rewards_stats_rlp()
+                .unwrap()
+                .is_empty()
         );
 
         drop(final_chain);

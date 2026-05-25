@@ -3693,6 +3693,14 @@ pub mod rustaxa_ffi {
             finalized_dag_blocks: Vec<FinalizationDagBlock>,
             blocks_per_year: u32,
         ) -> Result<FinalizationOutcome>;
+        pub fn finalize_block_with_rewards_facts(
+            self: &BridgeFinalChain,
+            pbft_block_rlp: Vec<u8>,
+            transactions: Vec<FinalizationTransaction>,
+            finalized_dag_blocks: Vec<FinalizationDagBlock>,
+            blocks_per_year: u32,
+            cert_votes: Vec<RewardsCertVoteFact>,
+        ) -> Result<FinalizationOutcome>;
         pub fn get_transaction_rlps(self: &BridgeFinalChain, period: u64) -> Result<Vec<TxRlp>>;
         pub fn get_transaction_receipt(
             self: &BridgeFinalChain,

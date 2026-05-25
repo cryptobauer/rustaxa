@@ -20,6 +20,7 @@ pub use db::StorageWriteBatch;
 pub use error::StorageError;
 pub use final_chain::FinalChainExecutionStatus;
 pub use final_chain::FinalChainRepository;
+pub use final_chain::FinalChainRewardsStatsUpdate;
 pub use metadata::MetadataRepository;
 pub use pbft::PbftRepository;
 pub use period::PeriodRepository;
