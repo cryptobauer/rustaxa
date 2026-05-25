@@ -8,6 +8,7 @@ add_executable(rust_consensus_tests
     test_pbft_sync.cpp
     test_pillar_vote_bundle.cpp
     test_proposed_blocks.cpp
+    test_rewards_stats.cpp
     test_sortition.cpp
 )
 

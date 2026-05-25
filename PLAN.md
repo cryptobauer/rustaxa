@@ -534,9 +534,12 @@ The current Rust starting point is intentionally small:
    pool-mode minimum-price flooring through Rust. Pool mode requires the Rust-backed transaction queue so
    `TransactionManager::getMinGasPriceForBlockInclusion()` reads Rust queue metadata rather than legacy queue state.
 10. Port deterministic rewards, remaining slashing behavior, and pillar calculations after DPoS and final-chain query
-    ports are real. Double-voting proof planning and already-verified pillar-vote aggregation are Rust-backed; broader
-    slashing state transitions, pillar signing/recovery, and `PillarChainManager` orchestration still depend on future
-    FinalChain/state ports.
+    ports are real. The first rewards-stat slice is now Rust-owned as a deterministic runtime and bridge planner: Rust
+    accepts finalized-period facts, computes legacy-compatible `BlockStats` RLP, tracks interval cache/distribution
+    boundaries, and can append cache write/clear intents to a caller-owned Rust storage batch. Production routing through
+    a rewards stats overlay, `StateAPI::distribute_rewards`, and account reward mutation remain C++-owned. Double-voting
+    proof planning and already-verified pillar-vote aggregation are Rust-backed; broader slashing state transitions,
+    pillar signing/recovery, and `PillarChainManager` orchestration still depend on future FinalChain/state ports.
 
 ### First Implementation Slice
 
@@ -580,6 +583,9 @@ Use targeted validation before broad integration runs:
 - Pillar vote aggregation or PBFT sync bundle validation changes should run Rust validation plus `rust_consensus_tests`
   and `pillar_votes_shim_test` when `RUSTAXA_ENABLE_PILLAR_VOTES` is enabled; manager-path changes should also run
   targeted `pbft_manager_test`/`pillar_chain_test` coverage and any affected final-chain or full-node tests.
+- Rewards-stat planner changes should run Rust validation plus the Rust rewards-stat unit tests, `rust_consensus_tests`,
+  and `rewards_stats_test`; add final-chain/full-node coverage when the C++ rewards stats overlay or reward distribution
+  routing changes.
 - Shim startup behavior should be validated with a Rust-enabled node smoke test when consensus shims change.
 
 ## Validation Matrix

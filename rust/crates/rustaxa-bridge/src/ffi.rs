@@ -8,6 +8,7 @@ use crate::period_data_queue::*;
 use crate::pillar_chain::*;
 use crate::pillar_votes::*;
 use crate::proposed_blocks::*;
+use crate::rewards_stats::*;
 use crate::slashing::*;
 use crate::sortition::*;
 use crate::storage::*;
@@ -31,6 +32,7 @@ use rustaxa_consensus::transaction_queue::{TransactionQueue, TransactionQueueEnt
 use rustaxa_consensus::verified_votes::VerifiedVotes;
 use rustaxa_consensus::FinalChain;
 use rustaxa_consensus::PillarVotes;
+use rustaxa_consensus::RewardsStatsRuntime;
 use rustaxa_storage::Storage;
 use rustaxa_storage::StorageWriteBatch;
 use std::collections::HashMap;
@@ -65,6 +67,8 @@ pub struct BridgeDagManagerRuntime {
 pub struct BridgePbftChain(pub PbftChain);
 
 pub struct BridgeProposedBlocks(pub ProposedBlocks);
+
+pub struct BridgeRewardsStatsRuntime(pub RewardsStatsRuntime);
 
 pub struct BridgeSlashingProofPlanner(pub Mutex<SlashingProofPlanner>);
 
@@ -175,6 +179,80 @@ pub mod rustaxa_ffi {
     struct PeriodRlp {
         period: u64,
         data: Vec<u8>,
+    }
+
+    /// Generic 32-byte hash fact used by rewards-stat bridge payloads.
+    struct RewardsHash {
+        hash: [u8; 32],
+    }
+
+    /// Hardfork and committee configuration for Rust rewards-stat planning.
+    struct RewardsStatsConfig {
+        committee_size: u32,
+        magnolia_period: u64,
+        aspen_part_one_period: u64,
+    }
+
+    /// Rewards distribution frequency rule active from `from_period` onward.
+    struct RewardsFrequencyRule {
+        from_period: u64,
+        frequency: u32,
+    }
+
+    /// Finalized transaction fee fact for one PBFT period.
+    struct RewardsTransactionFact {
+        hash: [u8; 32],
+        gas_price_be: Vec<u8>,
+        gas_used: u64,
+    }
+
+    /// Finalized DAG block fact for rewards-stat planning.
+    struct RewardsDagBlockFact {
+        author: [u8; 20],
+        difficulty: u16,
+        transaction_hashes: Vec<RewardsHash>,
+    }
+
+    /// Previous-block cert-vote fact for rewards-stat planning.
+    struct RewardsCertVoteFact {
+        voter: [u8; 20],
+        weight: u64,
+        period: u64,
+    }
+
+    /// C++-originated fact bundle for one finalized PBFT period.
+    struct RewardsStatsProcessFact {
+        period: u64,
+        block_author: [u8; 20],
+        blocks_per_year: u32,
+        dpos_eligible_total_vote_count: u64,
+        transactions: Vec<RewardsTransactionFact>,
+        dag_blocks: Vec<RewardsDagBlockFact>,
+        cert_votes: Vec<RewardsCertVoteFact>,
+    }
+
+    /// Result from Rust rewards-stat processing.
+    ///
+    /// Status values:
+    /// - `0` - applied
+    /// - `1` - rejected
+    struct RewardsStatsProcessResult {
+        status: u8,
+        error_code: String,
+        current_period: u64,
+        cache_current_period: bool,
+        clear_cached_stats: bool,
+        current_block_stats_rlp: Vec<u8>,
+        distribution_stats: Vec<PeriodRlp>,
+    }
+
+    /// Result from appending rewards-stat cache writes to a Rust storage batch.
+    struct RewardsStatsApplyResult {
+        status: u8,
+        current_period: u64,
+        wrote_current_period: bool,
+        cleared_cached_stats: bool,
+        error_code: String,
     }
 
     struct TxRlp {
@@ -2461,6 +2539,30 @@ pub mod rustaxa_ffi {
         pub fn proposed_blocks_snapshot(
             self: &BridgeProposedBlocks,
         ) -> Vec<ProposedBlockPeriodHashes>;
+
+        // Consensus rewards stats
+
+        type BridgeRewardsStatsRuntime;
+
+        pub fn create_rewards_stats_runtime(
+            storage: &BridgeStorage,
+            config: RewardsStatsConfig,
+            frequency_rules: Vec<RewardsFrequencyRule>,
+            last_block_number: u64,
+        ) -> Result<Box<BridgeRewardsStatsRuntime>>;
+        pub fn process_finalized_period_rewards_stats(
+            self: &mut BridgeRewardsStatsRuntime,
+            fact: RewardsStatsProcessFact,
+        ) -> RewardsStatsProcessResult;
+        pub fn rewards_stats_runtime_clear_committed(
+            self: &mut BridgeRewardsStatsRuntime,
+            current_period: u64,
+        );
+        pub fn append_rewards_stats_storage_writes(
+            storage: &BridgeStorage,
+            batch_id: u64,
+            plan: &RewardsStatsProcessResult,
+        ) -> Result<RewardsStatsApplyResult>;
 
         // Consensus period-data queue
 

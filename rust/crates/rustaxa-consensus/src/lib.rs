@@ -7,6 +7,7 @@ pub mod period_data_queue;
 pub mod pillar_chain;
 pub mod pillar_votes;
 pub mod proposed_blocks;
+pub mod rewards_stats;
 pub mod slashing;
 pub mod sortition;
 pub mod transaction_manager;
@@ -42,6 +43,11 @@ pub use pillar_votes::{
     inspect_pillar_vote_from_rlp, plan_pillar_vote_relevance,
 };
 pub use proposed_blocks::ProposedBlocks;
+pub use rewards_stats::{
+    FinalizedRewardsPeriodFact, RewardCertVoteFact, RewardDagBlockFact, RewardTransactionFact,
+    RewardsFrequencyRule, RewardsStatsConfig, RewardsStatsPeriodRlp, RewardsStatsProcessPlan,
+    RewardsStatsRuntime, RewardsStatsStatus,
+};
 pub use rustaxa_types::{
     Account, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount,
     FinalChainCallRequest, FinalizationDagBlock, FinalizationTransaction, GenesisAccount,
