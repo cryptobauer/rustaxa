@@ -1002,12 +1002,20 @@ pub mod rustaxa_ffi {
         description: String,
         endpoint: String,
         total_stake: Vec<u8>,
+        delegations: Vec<GenesisDelegation>,
+    }
+
+    struct GenesisDelegation {
+        delegator: [u8; 20],
+        stake: Vec<u8>,
     }
 
     struct GenesisDposConfig {
         eligibility_balance_threshold: Vec<u8>,
         vote_eligibility_balance_step: Vec<u8>,
         validator_maximum_stake: Vec<u8>,
+        minimum_deposit: Vec<u8>,
+        delegation_delay: u64,
         // Exclusive period boundary below which legacy DAG VDF sortition uses
         // the snapshot total eligible vote count as denominator.
         dag_vdf_sortition_total_vote_count_until_period: u64,

@@ -125,6 +125,13 @@ rust::Vec<rustaxa::GenesisValidator> make_genesis_validators(const state_api::Co
       total_stake += amount;
     }
     genesis_validator.total_stake = into_big_endian_vec(total_stake);
+    genesis_validator.delegations.reserve(validator.delegations.size());
+    for (const auto& [delegator, amount] : validator.delegations) {
+      rustaxa::GenesisDelegation genesis_delegation;
+      genesis_delegation.delegator = into_address_array(delegator);
+      genesis_delegation.stake = into_big_endian_vec(amount);
+      genesis_validator.delegations.push_back(std::move(genesis_delegation));
+    }
     validators.push_back(std::move(genesis_validator));
   }
   return validators;
@@ -136,6 +143,8 @@ rustaxa::GenesisDposConfig make_genesis_dpos_config(const state_api::DPOSConfig&
   dpos_config.eligibility_balance_threshold = into_big_endian_vec(config.eligibility_balance_threshold);
   dpos_config.vote_eligibility_balance_step = into_big_endian_vec(config.vote_eligibility_balance_step);
   dpos_config.validator_maximum_stake = into_big_endian_vec(config.validator_maximum_stake);
+  dpos_config.minimum_deposit = into_big_endian_vec(config.minimum_deposit);
+  dpos_config.delegation_delay = config.delegation_delay;
   dpos_config.dag_vdf_sortition_total_vote_count_until_period = dag_vdf_sortition_total_vote_count_until_period;
   return dpos_config;
 }

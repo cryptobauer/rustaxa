@@ -3506,6 +3506,8 @@ mod tests {
                 eligibility_balance_threshold: vec![],
                 vote_eligibility_balance_step: U256::one().to_big_endian().to_vec(),
                 validator_maximum_stake: U256::from(30_000u64).to_big_endian().to_vec(),
+                minimum_deposit: vec![],
+                delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
         )
@@ -3717,6 +3719,8 @@ mod tests {
                 eligibility_balance_threshold: vec![],
                 vote_eligibility_balance_step: U256::one().to_big_endian().to_vec(),
                 validator_maximum_stake: U256::from(30_000u64).to_big_endian().to_vec(),
+                minimum_deposit: vec![],
+                delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
         )
@@ -4461,6 +4465,8 @@ mod tests {
                 eligibility_balance_threshold: vec![1],
                 vote_eligibility_balance_step: vec![1],
                 validator_maximum_stake: vec![1],
+                minimum_deposit: vec![],
+                delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
         )
@@ -4507,6 +4513,8 @@ mod tests {
                 eligibility_balance_threshold: vec![1],
                 vote_eligibility_balance_step: vec![1],
                 validator_maximum_stake: vec![1],
+                minimum_deposit: vec![],
+                delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
         )
@@ -4671,6 +4679,8 @@ mod tests {
                 eligibility_balance_threshold: vec![1],
                 vote_eligibility_balance_step: vec![1],
                 validator_maximum_stake: vec![1],
+                minimum_deposit: vec![],
+                delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
         )
@@ -5306,6 +5316,8 @@ mod tests {
                 eligibility_balance_threshold: vec![1],
                 vote_eligibility_balance_step: vec![1],
                 validator_maximum_stake: vec![1],
+                minimum_deposit: vec![],
+                delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
         )
@@ -5386,6 +5398,8 @@ mod tests {
                 eligibility_balance_threshold: vec![1],
                 vote_eligibility_balance_step: vec![1],
                 validator_maximum_stake: vec![1],
+                minimum_deposit: vec![],
+                delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
         )
@@ -5438,6 +5452,8 @@ mod tests {
                 eligibility_balance_threshold: vec![1],
                 vote_eligibility_balance_step: vec![1],
                 validator_maximum_stake: vec![1],
+                minimum_deposit: vec![],
+                delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
         )
@@ -5499,6 +5515,8 @@ mod tests {
                 eligibility_balance_threshold: vec![1],
                 vote_eligibility_balance_step: vec![1],
                 validator_maximum_stake: vec![1],
+                minimum_deposit: vec![],
+                delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
         )
@@ -5562,6 +5580,8 @@ mod tests {
                 eligibility_balance_threshold: vec![1],
                 vote_eligibility_balance_step: vec![1],
                 validator_maximum_stake: vec![1],
+                minimum_deposit: vec![],
+                delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
         )
@@ -5669,6 +5689,8 @@ mod tests {
                 eligibility_balance_threshold: vec![1],
                 vote_eligibility_balance_step: vec![1],
                 validator_maximum_stake: vec![1],
+                minimum_deposit: vec![],
+                delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
         )
@@ -5711,6 +5733,8 @@ mod tests {
                 eligibility_balance_threshold: vec![1],
                 vote_eligibility_balance_step: vec![1],
                 validator_maximum_stake: vec![1],
+                minimum_deposit: vec![],
+                delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
         )
@@ -5768,6 +5792,8 @@ mod tests {
                 eligibility_balance_threshold: vec![1],
                 vote_eligibility_balance_step: vec![1],
                 validator_maximum_stake: vec![1],
+                minimum_deposit: vec![],
+                delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
         )

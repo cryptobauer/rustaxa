@@ -50,11 +50,16 @@ pub fn create_final_chain(
                 description,
                 endpoint,
                 total_stake,
+                delegations,
             } = validator;
             rustaxa_consensus::GenesisValidator {
                 address,
                 vrf_key,
                 total_stake,
+                delegations: delegations
+                    .into_iter()
+                    .map(|delegation| (delegation.delegator, delegation.stake))
+                    .collect(),
                 metadata: rustaxa_consensus::GenesisValidatorMetadata {
                     owner,
                     commission,
@@ -74,6 +79,8 @@ pub fn create_final_chain(
             eligibility_balance_threshold: genesis_dpos_config.eligibility_balance_threshold,
             vote_eligibility_balance_step: genesis_dpos_config.vote_eligibility_balance_step,
             validator_maximum_stake: genesis_dpos_config.validator_maximum_stake,
+            minimum_deposit: genesis_dpos_config.minimum_deposit,
+            delegation_delay: genesis_dpos_config.delegation_delay,
             dag_vdf_sortition_total_vote_count_until_period: genesis_dpos_config
                 .dag_vdf_sortition_total_vote_count_until_period,
         },
@@ -386,6 +393,10 @@ mod tests {
             description: "".to_string(),
             endpoint: "".to_string(),
             total_stake: u256_be(stake),
+            delegations: vec![rustaxa_ffi::GenesisDelegation {
+                delegator: address,
+                stake: u256_be(stake),
+            }],
         }
     }
 
@@ -404,6 +415,8 @@ mod tests {
                 eligibility_balance_threshold: u256_be(1_000),
                 vote_eligibility_balance_step: u256_be(1_000),
                 validator_maximum_stake: u256_be(30_000),
+                minimum_deposit: vec![],
+                delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
         )

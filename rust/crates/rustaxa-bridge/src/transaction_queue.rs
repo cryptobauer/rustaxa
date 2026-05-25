@@ -390,6 +390,8 @@ mod tests {
                 eligibility_balance_threshold: vec![1],
                 vote_eligibility_balance_step: vec![1],
                 validator_maximum_stake: vec![1],
+                minimum_deposit: vec![],
+                delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
         )

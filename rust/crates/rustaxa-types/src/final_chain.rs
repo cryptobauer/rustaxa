@@ -49,6 +49,13 @@ pub struct GenesisValidator {
     pub vrf_key: [u8; 32],
     /// Effective genesis validator stake as an unsigned big-endian integer byte string.
     pub total_stake: Vec<u8>,
+    /// Per-delegator genesis stakes for this validator.
+    ///
+    /// Each tuple carries `(delegator_address, stake)` where stake is an
+    /// unsigned big-endian integer byte string. The Rust DPoS snapshot uses this
+    /// ledger to validate undelegation and redelegation ownership without
+    /// routing contract semantics back through C++.
+    pub delegations: Vec<([u8; 20], Vec<u8>)>,
     /// Genesis-seeded user-visible validator metadata.
     pub metadata: GenesisValidatorMetadata,
 }
@@ -91,6 +98,12 @@ pub struct GenesisDposConfig {
     pub vote_eligibility_balance_step: Vec<u8>,
     /// Maximum allowed effective stake for a genesis validator.
     pub validator_maximum_stake: Vec<u8>,
+    /// Minimum delegation amount accepted by the DPoS contract, encoded as an
+    /// unsigned big-endian integer byte string.
+    pub minimum_deposit: Vec<u8>,
+    /// Number of finalized blocks by which DPoS state reads lag newly applied
+    /// delegation changes.
+    pub delegation_delay: u64,
     /// Exclusive period boundary below which legacy DAG VDF sortition uses the
     /// total eligible vote count as denominator.
     pub dag_vdf_sortition_total_vote_count_until_period: u64,

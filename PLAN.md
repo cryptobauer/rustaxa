@@ -232,10 +232,12 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     packing, block construction, signing, and add-block wiring, while Rust owns proposer eligibility status decisions,
     legacy VRF input bytes, and deterministic tip-selection policy.
   - Rust finalization appends DPoS snapshots for finalized native-transfer blocks and the Rust-supported
-    `registerValidator(address,bytes,bytes,uint16,string,string)` DPoS contract subset. Snapshots are persisted
-    atomically with finalized block indexes, executed DAG/transaction status counters, and `lastBlockNumber`. Startup
-    reloads persisted historical DPoS snapshots so PBFT, DAG, and pillar reads can reuse block-scoped Rust FinalChain
-    facts after restart.
+    `registerValidator(address,bytes,bytes,uint16,string,string)`, `delegate(address)`,
+    `undelegate(address,uint256)`, and `reDelegate(address,address,uint256)` DPoS contract subset. The Rust snapshot
+    persists validator stake/vote aggregates plus a validator/delegator stake ledger seeded from genesis delegations so
+    undelegation and redelegation ownership checks stay in Rust. Snapshots are persisted atomically with finalized block
+    indexes, executed DAG/transaction status counters, and `lastBlockNumber`. Startup reloads persisted historical DPoS
+    snapshots so PBFT, DAG, and pillar reads can reuse block-scoped Rust FinalChain facts after restart.
   - Rust finalization persists account snapshots atomically with finalized block indexes plus `lastBlockNumber`.
     Startup reloads persisted account snapshots and only serves latest account reads when the Rust account snapshot has
     caught up to the finalized head, so transaction purge and proposal filtering do not silently use genesis state after
@@ -243,7 +245,7 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
   - Because Rust finalization is scoped to post-Magnolia execution, native transaction fees are assigned to validator
     commission rewards by finalized DAG block author and transaction hash.
   - non-genesis DPoS queries still throw when the queried block has not been finalized through Rust snapshot
-    maintenance; DPoS transitions beyond the supported validator-registration subset and legacy databases without Rust
+    maintenance; DPoS transitions beyond the supported validator-registration/delegation subset and legacy databases without Rust
     account snapshots remain explicit gaps.
   - selected DPoS precompile reads through `FinalChain::call` are Rust-backed for `getTotalEligibleVotesCount()` and
     `getValidator(address)`.
