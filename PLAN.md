@@ -505,7 +505,12 @@ The current Rust starting point is intentionally small:
    approved temporary protected-state hook to inherit unported behavior from `VoteManagerOld` while owning reward-vote
    reset persistence handoff in shim code: it selects the live cert-vote bundle in C++, appends the stage-4 Rust storage
    writes for latest cert votes and stale extra reward-vote deletes into the caller's finalization batch, and mutates
-   live reward metadata only after Rust accepts the stage. Rust now also owns PBFT finalization
+   live reward metadata only after Rust accepts the stage. The same overlay now routes deterministic verified-vote live
+   state methods through the Rust-backed `VerifiedVotes` facade instead of `VoteManagerOld`: insertion/uniqueness,
+   vote presence and snapshots, proposal-vote selection, cleanup, 2t+1 block/bundle lookups, next-round detection,
+   current round persistence of non-cert bundles, and network t+1 step reads use Rust-owned metadata while C++ keeps
+   live `PbftVote` sidecars, slashing submission, threshold lookup, DB writes, and reward/own-vote persistence. Rust now
+   also owns PBFT finalization
    sortition-change persistence: the sortition shim updates the live Rust runtime and returns the emitted threshold
    change, then the PBFT staged storage appender encodes and appends the `SortitionParamsChange` row into the same
    primary finalization batch. C++ still owns reward-vote reset, sortition live-state mutation, dynamic-lambda

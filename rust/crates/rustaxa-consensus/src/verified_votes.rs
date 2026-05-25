@@ -148,6 +148,14 @@ struct StepVotes {
     unique_voters: BTreeMap<H160, UniqueVoterVotes>,
 }
 
+/// Step-level snapshot for one voted block hash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepVotesSnapshotEntry {
+    pub block_hash: H256,
+    pub total_weight: u64,
+    pub vote_hashes: Vec<H256>,
+}
+
 /// 2t+1 voted block hash and step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VotedBlock {
@@ -196,6 +204,19 @@ pub struct VotedValueInsertOutcome {
     pub inserted: bool,
     pub total_weight: u64,
     pub votes_count: usize,
+}
+
+/// Result of one deterministic verified-vote insertion with optional threshold
+/// decisioning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AddVerifiedVoteOutcome {
+    pub inserted: bool,
+    pub total_weight: u64,
+    pub votes_count: usize,
+    pub conflicting_vote_hash: Option<H256>,
+    pub used_secondary_slot: bool,
+    pub duplicate_vote_hash: bool,
+    pub threshold_decision: Option<ThresholdDecisionOutcome>,
 }
 
 /// Outcome of an atomic verified-vote insert operation.
@@ -541,6 +562,37 @@ impl VerifiedVotes {
         }
     }
 
+    /// Adds one verified vote and, when requested, applies deterministic
+    /// threshold effects for that vote.
+    ///
+    /// This is the smallest full primitive for deterministic VoteManager
+    /// transitions: uniqueness and voted-value insertion happen atomically, and
+    /// callers may request threshold processing in the same call.
+    pub fn add_verified_vote(
+        &mut self,
+        vote: VerifiedVote,
+        two_t_plus_one_threshold: Option<u64>,
+    ) -> Result<AddVerifiedVoteOutcome> {
+        let outcome = self.insert_vote_atomic(vote.clone())?;
+
+        let threshold_decision = match (outcome.inserted, two_t_plus_one_threshold) {
+            (true, Some(threshold)) => {
+                Some(self.apply_threshold_decision(&vote, outcome.total_weight, threshold)?)
+            }
+            _ => None,
+        };
+
+        Ok(AddVerifiedVoteOutcome {
+            inserted: outcome.inserted,
+            total_weight: outcome.total_weight,
+            votes_count: outcome.votes_count,
+            conflicting_vote_hash: outcome.conflicting_vote_hash,
+            used_secondary_slot: outcome.used_secondary_slot,
+            duplicate_vote_hash: outcome.duplicate_vote_hash,
+            threshold_decision,
+        })
+    }
+
     /// Returns true when vote hash exists under exact period/round/step/value key.
     pub fn vote_in_verified_map(
         &self,
@@ -555,6 +607,28 @@ impl VerifiedVotes {
             .and_then(|step_votes| step_votes.votes.get(&block_hash))
             .map(|votes_with_weight| votes_with_weight.votes.contains_key(&vote_hash))
             .unwrap_or(false)
+    }
+
+    /// Returns all voted values and vote hashes for one step.
+    pub fn get_step_votes(
+        &self,
+        period: u64,
+        round: u64,
+        step: u64,
+    ) -> Option<Vec<StepVotesSnapshotEntry>> {
+        self.get_round(period, round).and_then(|round_votes| {
+            round_votes.step_votes.get(&step).map(|step_votes| {
+                step_votes
+                    .votes
+                    .iter()
+                    .map(|(hash, votes)| StepVotesSnapshotEntry {
+                        block_hash: *hash,
+                        total_weight: votes.weight,
+                        vote_hashes: votes.votes.keys().copied().collect(),
+                    })
+                    .collect()
+            })
+        })
     }
 
     /// Sets network t+1 step marker for an existing round.
@@ -1465,5 +1539,58 @@ mod tests {
         assert_eq!(snapshot[0].round, 1);
         assert_eq!(snapshot[1].period, 3);
         assert_eq!(snapshot[1].round, 2);
+    }
+
+    #[test]
+    fn get_step_votes_returns_deterministic_bucket_snapshot() {
+        let mut verified = VerifiedVotes::new();
+
+        let first = vote(10, 77, 1, 1, 1, 5, PbftVoteType::Cert, 1);
+        let second = vote(11, 77, 2, 1, 1, 5, PbftVoteType::Cert, 2);
+        let third = vote(12, 88, 3, 1, 1, 5, PbftVoteType::Cert, 3);
+
+        verified.insert_voted_value(first).unwrap();
+        verified.insert_voted_value(second).unwrap();
+        verified.insert_voted_value(third).unwrap();
+
+        let step_votes = verified.get_step_votes(1, 1, 5).expect("step should exist");
+
+        assert_eq!(step_votes.len(), 2);
+        assert_eq!(step_votes[0].block_hash, h256(77));
+        assert_eq!(step_votes[0].total_weight, 3);
+        assert_eq!(step_votes[0].vote_hashes, vec![h256(10), h256(11)]);
+        assert_eq!(step_votes[1].block_hash, h256(88));
+        assert_eq!(step_votes[1].total_weight, 3);
+        assert_eq!(step_votes[1].vote_hashes, vec![h256(12)]);
+    }
+
+    #[test]
+    fn add_verified_vote_can_apply_threshold_decisions() {
+        let mut verified = VerifiedVotes::new();
+
+        let soft_a = vote(1, 44, 1, 2, 1, 2, PbftVoteType::Next, 2);
+        let soft_b = vote(2, 44, 2, 2, 1, 2, PbftVoteType::Next, 3);
+
+        let below = verified
+            .add_verified_vote(soft_a, Some(3))
+            .expect("add should insert vote");
+        assert!(below.inserted);
+        assert!(below.threshold_decision.is_some());
+        let below_decision = below.threshold_decision.expect("threshold decision");
+        assert_eq!(below_decision.t_plus_one_reached, true);
+        assert_eq!(below_decision.two_t_plus_one_reached, false);
+
+        let above = verified
+            .add_verified_vote(soft_b, Some(5))
+            .expect("add should insert vote and reach threshold");
+        assert!(above.inserted);
+        assert!(above.threshold_decision.is_some());
+        let above_decision = above.threshold_decision.expect("threshold decision");
+        assert_eq!(above_decision.two_t_plus_one_reached, true);
+        assert!(above_decision.two_t_plus_one_insert_outcome.is_some());
+        assert_eq!(
+            above_decision.two_t_plus_one_kind,
+            Some(TwoTPlusOneVotedBlockType::NextVotedBlock)
+        );
     }
 }

@@ -850,6 +850,35 @@ pub mod rustaxa_ffi {
         votes_count: usize,
     }
 
+    struct VerifiedStepVotesEntry {
+        block_hash: [u8; 32],
+        total_weight: u64,
+        vote_hashes: Vec<DagHash>,
+    }
+
+    struct VerifiedStepVotesLookup {
+        found: bool,
+        entries: Vec<VerifiedStepVotesEntry>,
+    }
+
+    struct VerifiedVoteAddOutcome {
+        inserted: bool,
+        total_weight: u64,
+        votes_count: usize,
+        conflict_found: bool,
+        conflicting_vote_hash: [u8; 32],
+        used_secondary_slot: bool,
+        duplicate_vote_hash: bool,
+        threshold_applied: bool,
+        t_plus_one_reached: bool,
+        network_t_plus_one_step_updated: bool,
+        two_t_plus_one_reached: bool,
+        two_t_plus_one_kind_found: bool,
+        two_t_plus_one_kind: u8,
+        two_t_plus_one_round_found: bool,
+        two_t_plus_one_inserted: bool,
+    }
+
     struct AtomicVoteInsertOutcome {
         inserted: bool,
         total_weight: u64,
@@ -3032,10 +3061,22 @@ pub mod rustaxa_ffi {
             round: u64,
             kind: u8,
         ) -> Result<TwoTPlusOneVotesLookup>;
+        pub fn verified_votes_get_step_votes(
+            self: &BridgeVerifiedVotes,
+            period: u64,
+            round: u64,
+            step: u64,
+        ) -> VerifiedStepVotesLookup;
         pub fn verified_votes_cleanup_votes_by_period(
             self: &mut BridgeVerifiedVotes,
             pbft_period: u64,
         );
+        pub fn verified_votes_add_verified_vote(
+            self: &mut BridgeVerifiedVotes,
+            vote: VerifiedVotePayload,
+            two_t_plus_one_threshold: u64,
+            apply_threshold_decision: bool,
+        ) -> Result<VerifiedVoteAddOutcome>;
         pub fn verified_votes_snapshot_votes(
             self: &BridgeVerifiedVotes,
         ) -> Vec<VerifiedVotePayload>;

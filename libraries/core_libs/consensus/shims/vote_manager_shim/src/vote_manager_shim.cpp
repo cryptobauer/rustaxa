@@ -1,9 +1,13 @@
 #include <libdevcore/RLP.h>
 
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 
+#include "common/constants.hpp"
+#include "pbft/pbft_manager.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
+#include "slashing_manager/slashing_manager.hpp"
 #include "storage/storage.hpp"
 #include "vote/pbft_vote.hpp"
 #include "vote_manager/vote_manager.hpp"
@@ -85,43 +89,170 @@ void VoteManager::setNetwork(std::weak_ptr<Network> network) {
 }
 
 bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
-  // TODO(rustaxa): move verified-vote insertion to Rust.
-  return VoteManagerOld::addVerifiedVote(vote);
+  assert(vote->getWeight().has_value());
+  const auto hash = vote->getHash();
+  const auto weight = *vote->getWeight();
+  if (!weight) {
+    LOG(log_er_) << "Unable to add vote " << hash << " into the verified queue. Invalid vote weight";
+    return false;
+  }
+
+  bool is_valid_potential_reward_vote = false;
+  if (vote->getPeriod() < current_pbft_period_) {
+    is_valid_potential_reward_vote = isValidRewardVoteForRust(vote);
+    if (!is_valid_potential_reward_vote) {
+      LOG(log_tr_) << "Old vote " << vote->getHash().abridged() << " vote period" << vote->getPeriod()
+                   << " current period " << current_pbft_period_;
+      return false;
+    }
+  }
+
+  const auto insert_outcome = verified_votes_.insertVerifiedVoteAtomic(vote);
+  if (insert_outcome.conflicting_vote) {
+    LOG(log_wr_) << "Non unique vote " << vote->getHash().abridged() << " (race condition)";
+    slashing_manager_->submitDoubleVotingProof(vote, *insert_outcome.conflicting_vote);
+    return false;
+  }
+
+  const auto votes_with_weight = insert_outcome.votes_with_weight;
+  if (!votes_with_weight) {
+    return false;
+  }
+
+  LOG(log_nf_) << "Added verified vote: " << hash;
+  LOG(log_dg_) << "Added verified vote: " << *vote;
+
+  if (is_valid_potential_reward_vote) {
+    extra_reward_votes_.emplace_back(vote->getHash());
+    db_->saveExtraRewardVote(vote);
+  }
+
+  // TODO(rustaxa): move PBFT threshold calculation and cache ownership to Rust.
+  const auto two_t_plus_one = VoteManagerOld::getPbftTwoTPlusOne(vote->getPeriod() - 1, vote->getType());
+  if (!two_t_plus_one.has_value()) [[unlikely]] {
+    LOG(log_er_) << "Cannot set(or not) 2t+1 voted block as 2t+1 threshold is unavailable, vote " << vote->getHash();
+    return true;
+  }
+
+  const auto threshold_decision =
+      verified_votes_.decideThresholdEffects(vote, votes_with_weight->weight, *two_t_plus_one);
+  if (threshold_decision.set_network_t_plus_one_step) {
+    LOG(log_nf_) << "Set t+1 next voted block " << vote->getHash() << " for period " << vote->getPeriod() << ", round "
+                 << vote->getRound() << ", step " << vote->getStep();
+  }
+
+  if (!threshold_decision.inserted_two_t_plus_one_voted_block_type) {
+    return true;
+  }
+
+  if (vote->getType() != PbftVoteTypes::cert_vote && vote->getPeriod() == current_pbft_period_ &&
+      vote->getRound() == current_pbft_round_) {
+    std::vector<std::shared_ptr<PbftVote>> votes;
+    votes.reserve(votes_with_weight->votes.size());
+    for (const auto& tmp_vote : votes_with_weight->votes) {
+      votes.push_back(tmp_vote.second);
+    }
+
+    db_->replaceTwoTPlusOneVotes(*threshold_decision.inserted_two_t_plus_one_voted_block_type, votes);
+  }
+
+  return true;
 }
 
 bool VoteManager::voteInVerifiedMap(std::shared_ptr<PbftVote> const& vote) const {
-  // TODO(rustaxa): move verified-vote lookup to Rust.
-  return VoteManagerOld::voteInVerifiedMap(vote);
+  const auto step_votes_map = verified_votes_.getStepVotes(vote->getPeriod(), vote->getRound(), vote->getStep());
+  if (!step_votes_map) {
+    return false;
+  }
+
+  const auto found_voted_value_it = step_votes_map->votes.find(vote->getBlockHash());
+  if (found_voted_value_it == step_votes_map->votes.end()) {
+    return false;
+  }
+
+  return found_voted_value_it->second.votes.find(vote->getHash()) != found_voted_value_it->second.votes.end();
 }
 
 std::pair<bool, std::shared_ptr<PbftVote>> VoteManager::isUniqueVote(const std::shared_ptr<PbftVote>& vote) const {
-  // TODO(rustaxa): move unique-vote conflict detection to Rust.
-  return VoteManagerOld::isUniqueVote(vote);
+  const auto step_votes_map = verified_votes_.getStepVotes(vote->getPeriod(), vote->getRound(), vote->getStep());
+  if (!step_votes_map) {
+    return {true, nullptr};
+  }
+
+  const auto found_voter_it = step_votes_map->unique_voters.find(vote->getVoterAddr());
+  if (found_voter_it == step_votes_map->unique_voters.end()) {
+    return {true, nullptr};
+  }
+
+  if (found_voter_it->second.first->getHash() == vote->getHash()) {
+    return {true, nullptr};
+  }
+
+  if (vote->getType() == PbftVoteTypes::next_vote && vote->getStep() % 2) {
+    if (found_voter_it->second.second == nullptr) {
+      if (found_voter_it->second.first->getBlockHash() == kNullBlockHash && vote->getBlockHash() != kNullBlockHash) {
+        return {true, nullptr};
+      }
+      if (found_voter_it->second.first->getBlockHash() != kNullBlockHash && vote->getBlockHash() == kNullBlockHash) {
+        return {true, nullptr};
+      }
+    } else if (found_voter_it->second.second->getHash() == vote->getHash()) {
+      return {true, nullptr};
+    }
+  }
+
+  std::stringstream err;
+  err << "Non unique vote: "
+      << ", new vote hash (voted value): " << vote->getHash().abridged() << " (" << vote->getBlockHash().abridged()
+      << ")"
+      << ", orig. vote hash (voted value): " << found_voter_it->second.first->getHash().abridged() << " ("
+      << found_voter_it->second.first->getBlockHash().abridged() << ")";
+  if (found_voter_it->second.second != nullptr) {
+    err << ", orig. vote 2 hash (voted value): " << found_voter_it->second.second->getHash().abridged() << " ("
+        << found_voter_it->second.second->getBlockHash().abridged() << ")";
+  }
+  err << ", round: " << vote->getRound() << ", step: " << vote->getStep() << ", voter: " << vote->getVoterAddr();
+  LOG(log_er_) << err.str();
+
+  if (found_voter_it->second.second && vote->getHash() != found_voter_it->second.second->getHash()) {
+    return {false, found_voter_it->second.second};
+  }
+  return {false, found_voter_it->second.first};
 }
 
-std::vector<std::shared_ptr<PbftVote>> VoteManager::getVerifiedVotes() const {
-  // TODO(rustaxa): move verified-vote snapshots to Rust.
-  return VoteManagerOld::getVerifiedVotes();
-}
+std::vector<std::shared_ptr<PbftVote>> VoteManager::getVerifiedVotes() const { return verified_votes_.votes(); }
 
-uint64_t VoteManager::getVerifiedVotesSize() const {
-  // TODO(rustaxa): move verified-vote accounting to Rust.
-  return VoteManagerOld::getVerifiedVotesSize();
-}
+uint64_t VoteManager::getVerifiedVotesSize() const { return verified_votes_.size(); }
 
-void VoteManager::cleanupVotesByPeriod(PbftPeriod pbft_period) {
-  // TODO(rustaxa): move period vote cleanup to Rust.
-  VoteManagerOld::cleanupVotesByPeriod(pbft_period);
-}
+void VoteManager::cleanupVotesByPeriod(PbftPeriod pbft_period) { verified_votes_.cleanupVotesByPeriod(pbft_period); }
 
 std::vector<std::shared_ptr<PbftVote>> VoteManager::getProposalVotes(PbftPeriod period, PbftRound round) const {
-  // TODO(rustaxa): move proposal-vote selection to Rust.
-  return VoteManagerOld::getProposalVotes(period, round);
+  const auto& step_votes = verified_votes_.getStepVotes(period, round, PbftStates::value_proposal_state);
+  if (!step_votes) {
+    return {};
+  }
+
+  std::vector<std::shared_ptr<PbftVote>> proposal_votes;
+  for (const auto& voted_value : step_votes->votes) {
+    for (const auto& vote_pair : voted_value.second.votes) {
+      proposal_votes.emplace_back(vote_pair.second);
+    }
+  }
+
+  return proposal_votes;
 }
 
 std::optional<PbftRound> VoteManager::determineNewRound(PbftPeriod current_pbft_period, PbftRound current_pbft_round) {
-  // TODO(rustaxa): move PBFT round advancement planning to Rust.
-  return VoteManagerOld::determineNewRound(current_pbft_period, current_pbft_round);
+  const auto decision = verified_votes_.determineRoundAdvance(current_pbft_period, current_pbft_round);
+  if (!decision) {
+    return {};
+  }
+
+  LOG(log_nf_) << "New round " << decision->new_round << " determined for period " << current_pbft_period
+               << ". Found 2t+1 votes for block " << decision->voted_block.hash << " in round "
+               << decision->supporting_round << ", step " << decision->voted_block.step;
+
+  return decision->new_round;
 }
 
 void VoteManager::resetRewardVotes(PbftPeriod period, PbftRound round, PbftStep step, const blk_hash_t& block_hash,
@@ -203,29 +334,101 @@ bool VoteManager::genAndValidateVrfSortition(PbftPeriod pbft_period, PbftRound p
 
 std::optional<blk_hash_t> VoteManager::getTwoTPlusOneVotedBlock(PbftPeriod period, PbftRound round,
                                                                 TwoTPlusOneVotedBlockType type) const {
-  // TODO(rustaxa): move two-t-plus-one voted-block selection to Rust.
-  return VoteManagerOld::getTwoTPlusOneVotedBlock(period, round, type);
+  const auto voted_block = verified_votes_.getTwoTPlusOneVotedBlock(period, round, type);
+  if (!voted_block) {
+    return {};
+  }
+  return voted_block->hash;
 }
 
 std::vector<std::shared_ptr<PbftVote>> VoteManager::getTwoTPlusOneVotedBlockVotes(
     PbftPeriod period, PbftRound round, TwoTPlusOneVotedBlockType type) const {
-  // TODO(rustaxa): move two-t-plus-one vote bundle selection to Rust.
-  return VoteManagerOld::getTwoTPlusOneVotedBlockVotes(period, round, type);
+  return verified_votes_.getTwoTPlusOneVotedBlockVotes(period, round, type);
 }
 
 StepVotes VoteManager::getStepVotes(PbftPeriod period, PbftRound round, PbftStep step) const {
-  // TODO(rustaxa): move step-vote snapshots to Rust.
-  return VoteManagerOld::getStepVotes(period, round, step);
+  return verified_votes_.getStepVotes(period, round, step).value_or(StepVotes{});
 }
 
 void VoteManager::setCurrentPbftPeriodAndRound(PbftPeriod pbft_period, PbftRound pbft_round) {
-  // TODO(rustaxa): move current PBFT period/round state tracking to Rust.
-  VoteManagerOld::setCurrentPbftPeriodAndRound(pbft_period, pbft_round);
+  current_pbft_period_ = pbft_period;
+  current_pbft_round_ = pbft_round;
+
+  auto round_votes = verified_votes_.getRoundVotes(pbft_period, pbft_round);
+  if (!round_votes) {
+    return;
+  }
+
+  for (const auto& two_t_plus_one_voted_block : round_votes->two_t_plus_one_voted_blocks_) {
+    const auto two_t_plus_one_voted_block_type = two_t_plus_one_voted_block.first;
+    if (two_t_plus_one_voted_block_type == TwoTPlusOneVotedBlockType::CertVotedBlock) {
+      continue;
+    }
+
+    const auto& [two_t_plus_one_voted_block_hash, two_t_plus_one_voted_block_step] = two_t_plus_one_voted_block.second;
+    const auto found_step_votes_it = round_votes->step_votes.find(two_t_plus_one_voted_block_step);
+    if (found_step_votes_it == round_votes->step_votes.end()) {
+      LOG(log_er_) << "Unable to find 2t+1 votes in verified_votes for period " << pbft_period << ", round "
+                   << pbft_round << ", step " << two_t_plus_one_voted_block_step;
+      assert(false);
+      return;
+    }
+
+    const auto found_verified_votes_it = found_step_votes_it->second.votes.find(two_t_plus_one_voted_block_hash);
+    if (found_verified_votes_it == found_step_votes_it->second.votes.end()) {
+      LOG(log_er_) << "Unable to find 2t+1 votes in verified_votes for period " << pbft_period << ", round "
+                   << pbft_round << ", step " << two_t_plus_one_voted_block_step << ", block hash "
+                   << two_t_plus_one_voted_block_hash;
+      assert(false);
+      return;
+    }
+
+    std::vector<std::shared_ptr<PbftVote>> votes;
+    votes.reserve(found_verified_votes_it->second.votes.size());
+    for (const auto& vote : found_verified_votes_it->second.votes) {
+      votes.push_back(vote.second);
+    }
+
+    db_->replaceTwoTPlusOneVotes(two_t_plus_one_voted_block_type, votes);
+  }
 }
 
 PbftStep VoteManager::getNetworkTplusOneNextVotingStep(PbftPeriod period, PbftRound round) const {
-  // TODO(rustaxa): move network next-vote step analysis to Rust.
-  return VoteManagerOld::getNetworkTplusOneNextVotingStep(period, round);
+  auto round_votes = verified_votes_.getRoundVotes(period, round);
+  if (!round_votes) {
+    return 0;
+  }
+
+  return round_votes->network_t_plus_one_step;
+}
+
+bool VoteManager::isValidRewardVoteForRust(const std::shared_ptr<PbftVote>& vote) const {
+  std::shared_lock lock(reward_votes_info_mutex_);
+  if (vote->getType() != PbftVoteTypes::cert_vote) {
+    LOG(log_tr_) << "Invalid reward vote: type " << static_cast<uint64_t>(vote->getType())
+                 << " is different from cert type";
+    return false;
+  }
+
+  if (vote->getBlockHash() != reward_votes_block_hash_) {
+    LOG(log_tr_) << "Invalid reward vote: block hash " << vote->getBlockHash()
+                 << " is different from reward_votes_block_hash " << reward_votes_block_hash_;
+    return false;
+  }
+
+  if (vote->getPeriod() != reward_votes_period_) {
+    LOG(log_tr_) << "Invalid reward vote: period " << vote->getPeriod()
+                 << " is different from reward_votes_block_period " << reward_votes_period_;
+    return false;
+  }
+
+  if (vote->getRound() > reward_votes_round_ + 100) {
+    LOG(log_wr_) << "Invalid reward vote: round " << vote->getRound() << " exceeded max round "
+                 << reward_votes_round_ + 100;
+    return false;
+  }
+
+  return true;
 }
 
 rustaxa::PbftFinalizedPeriodApplyResult VoteManager::resetRewardVotesForFinalization(

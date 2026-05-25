@@ -100,6 +100,9 @@ class VoteManager : public VoteManagerOld {
    */
   rustaxa::PbftFinalizedPeriodApplyResult resetRewardVotesForFinalization(
       const rustaxa::PbftFinalizationStorageWritePlan& write_intent, Batch& batch);
+
+ private:
+  bool isValidRewardVoteForRust(const std::shared_ptr<PbftVote>& vote) const;
 };
 
 }  // namespace taraxa

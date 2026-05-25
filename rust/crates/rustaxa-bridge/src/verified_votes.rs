@@ -2,12 +2,14 @@ use crate::ffi::rustaxa_ffi::{
     AtomicVoteInsertOutcome, DagHash, DetermineNewRoundOutcome, NetworkTPlusOneStepLookup,
     RoundMarkerSnapshot, ThresholdDecisionOutcome, TwoTPlusOneInsertOutcome,
     TwoTPlusOneSnapshotEntry, TwoTPlusOneVotedBlockLookup, TwoTPlusOneVotesLookup,
-    UniqueVoterCheckOutcome, UniqueVoterInsertOutcome, VerifiedVotePayload,
-    VotedValueInsertOutcome,
+    UniqueVoterCheckOutcome, UniqueVoterInsertOutcome, VerifiedStepVotesEntry,
+    VerifiedStepVotesLookup, VerifiedVoteAddOutcome as FfiVerifiedVoteAddOutcome,
+    VerifiedVotePayload, VotedValueInsertOutcome,
 };
 use crate::ffi::BridgeVerifiedVotes;
 use ethereum_types::{H160, H256};
 use rustaxa_consensus::verified_votes::{
+    AddVerifiedVoteOutcome as ConsensusAddVerifiedVoteOutcome,
     DetermineNewRoundOutcome as ConsensusDetermineNewRoundOutcome, PbftVoteType,
     ThresholdDecisionOutcome as ConsensusThresholdDecisionOutcome,
     TwoTPlusOneInsertOutcome as ConsensusTwoTPlusOneInsertOutcome, TwoTPlusOneVotedBlockType,
@@ -236,6 +238,57 @@ impl BridgeVerifiedVotes {
         })
     }
 
+    /// Returns all voted values and their vote hashes for one step.
+    pub fn verified_votes_get_step_votes(
+        &self,
+        period: u64,
+        round: u64,
+        step: u64,
+    ) -> VerifiedStepVotesLookup {
+        let Some(step_votes) = self.0.get_step_votes(period, round, step) else {
+            return VerifiedStepVotesLookup {
+                found: false,
+                entries: Vec::new(),
+            };
+        };
+
+        VerifiedStepVotesLookup {
+            found: true,
+            entries: step_votes
+                .into_iter()
+                .map(|entry| VerifiedStepVotesEntry {
+                    block_hash: entry.block_hash.into(),
+                    total_weight: entry.total_weight,
+                    vote_hashes: entry
+                        .vote_hashes
+                        .into_iter()
+                        .map(|vote_hash| DagHash {
+                            hash: vote_hash.into(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Adds one vote fact with optional threshold side effects.
+    pub fn verified_votes_add_verified_vote(
+        &mut self,
+        vote: VerifiedVotePayload,
+        two_t_plus_one_threshold: u64,
+        apply_threshold_decision: bool,
+    ) -> Result<FfiVerifiedVoteAddOutcome, anyhow::Error> {
+        let vote = payload_to_vote(vote)?;
+        let threshold = if apply_threshold_decision {
+            Some(two_t_plus_one_threshold)
+        } else {
+            None
+        };
+
+        let outcome = self.0.add_verified_vote(vote, threshold)?;
+        Ok(outcome_to_ffi_add_vote_outcome(outcome))
+    }
+
     /// Removes periods lower than `pbft_period`.
     pub fn verified_votes_cleanup_votes_by_period(&mut self, pbft_period: u64) {
         self.0.cleanup_votes_by_period(pbft_period);
@@ -302,6 +355,59 @@ impl From<rustaxa_consensus::verified_votes::VotedValueInsertOutcome> for VotedV
     }
 }
 
+fn outcome_to_ffi_add_vote_outcome(
+    value: ConsensusAddVerifiedVoteOutcome,
+) -> FfiVerifiedVoteAddOutcome {
+    let (
+        threshold_applied,
+        t_plus_one_reached,
+        network_t_plus_one_step_updated,
+        two_t_plus_one_reached,
+        two_t_plus_one_kind_found,
+        two_t_plus_one_kind,
+        two_t_plus_one_round_found,
+        two_t_plus_one_inserted,
+    ) = value
+        .threshold_decision
+        .map(|threshold| {
+            (
+                true,
+                threshold.t_plus_one_reached,
+                threshold.network_t_plus_one_step_updated,
+                threshold.two_t_plus_one_reached,
+                threshold.two_t_plus_one_kind.is_some(),
+                threshold.two_t_plus_one_kind.map(Into::into).unwrap_or(0),
+                threshold
+                    .two_t_plus_one_insert_outcome
+                    .map(|outcome| outcome.round_found)
+                    .unwrap_or(false),
+                threshold
+                    .two_t_plus_one_insert_outcome
+                    .map(|outcome| outcome.inserted)
+                    .unwrap_or(false),
+            )
+        })
+        .unwrap_or((false, false, false, false, false, 0u8, false, false));
+
+    FfiVerifiedVoteAddOutcome {
+        inserted: value.inserted,
+        total_weight: value.total_weight,
+        votes_count: value.votes_count,
+        conflict_found: value.conflicting_vote_hash.is_some(),
+        conflicting_vote_hash: value.conflicting_vote_hash.unwrap_or_default().into(),
+        used_secondary_slot: value.used_secondary_slot,
+        duplicate_vote_hash: value.duplicate_vote_hash,
+        threshold_applied,
+        t_plus_one_reached,
+        network_t_plus_one_step_updated,
+        two_t_plus_one_reached,
+        two_t_plus_one_kind_found,
+        two_t_plus_one_kind,
+        two_t_plus_one_round_found,
+        two_t_plus_one_inserted,
+    }
+}
+
 impl From<ConsensusTwoTPlusOneInsertOutcome> for TwoTPlusOneInsertOutcome {
     fn from(value: ConsensusTwoTPlusOneInsertOutcome) -> Self {
         Self {
@@ -359,5 +465,65 @@ impl From<VerifiedVote> for VerifiedVotePayload {
             vote_type: value.vote_type.into(),
             weight: value.weight,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hash(id: u64) -> [u8; 32] {
+        H256::from_low_u64_be(id).into()
+    }
+
+    fn address(id: u64) -> [u8; 20] {
+        H160::from_low_u64_be(id).into()
+    }
+
+    fn payload(
+        vote_hash: u64,
+        block_hash: u64,
+        voter: u64,
+        step: u64,
+        weight: u64,
+    ) -> VerifiedVotePayload {
+        VerifiedVotePayload {
+            vote_hash: hash(vote_hash),
+            block_hash: hash(block_hash),
+            voter: address(voter),
+            period: 3,
+            round: 2,
+            step,
+            vote_type: PbftVoteType::Next.into(),
+            weight,
+        }
+    }
+
+    #[test]
+    fn bridge_add_verified_vote_reports_threshold_and_step_snapshot() {
+        let mut votes = create_verified_votes_index();
+
+        let first = votes
+            .verified_votes_add_verified_vote(payload(1, 44, 1, 5, 3), 5, true)
+            .expect("first vote is accepted");
+        assert!(first.inserted);
+        assert!(first.threshold_applied);
+        assert!(first.t_plus_one_reached);
+        assert!(!first.two_t_plus_one_reached);
+
+        let second = votes
+            .verified_votes_add_verified_vote(payload(2, 44, 2, 5, 2), 5, true)
+            .expect("second vote is accepted");
+        assert!(second.inserted);
+        assert!(second.two_t_plus_one_reached);
+        assert!(second.two_t_plus_one_kind_found);
+        assert!(second.two_t_plus_one_inserted);
+
+        let step_votes = votes.verified_votes_get_step_votes(3, 2, 5);
+        assert!(step_votes.found);
+        assert_eq!(step_votes.entries.len(), 1);
+        assert_eq!(step_votes.entries[0].block_hash, hash(44));
+        assert_eq!(step_votes.entries[0].total_weight, 5);
+        assert_eq!(step_votes.entries[0].vote_hashes.len(), 2);
     }
 }
