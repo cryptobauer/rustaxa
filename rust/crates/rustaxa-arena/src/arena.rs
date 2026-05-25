@@ -21,128 +21,6 @@ static ARENA_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 const RESERVER_ATTEMPTS: u8 = 16;
 
-/// Arena handle assigned when a value is inserted.
-///
-/// A slot id identifies the owning arena plus the slot generation used for
-/// stale-handle detection. The slot index can be reused after removal, so
-/// lookups validate the whole handle before returning a value.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SlotId {
-    /// Process-local id of the arena that owns the slot.
-    arena_id: usize,
-
-    /// Slot index inside the arena.
-    index: usize,
-
-    /// Slot generation used to reject stale handles after reuse.
-    generation: usize,
-}
-
-/// Error returned when a slot handle cannot be borrowed or removed.
-#[derive(Error, Debug)]
-pub enum BorrowError {
-    /// The slot is currently locked by another reader or remover.
-    #[error("Slot is already borrowed")]
-    Busy,
-
-    /// The supplied handle does not match the value currently stored in the slot.
-    ///
-    /// This covers stale generations and handles from another arena that happen
-    /// to reference an in-range slot index.
-    #[error("slot handle mismatch with current handle: {0:?}")]
-    StaleHandle(SlotId),
-
-    /// The supplied handle references a slot index outside this arena.
-    #[error("slot handle is outside this arena: {0:?}")]
-    InvalidHandle(SlotId),
-
-    /// The slot mutex was poisoned by a panic while locked.
-    #[error("slot mutex is poisoned")]
-    Poisoned,
-}
-
-/// Error returned when a reserved slot cannot be filled.
-#[derive(Error, Debug)]
-pub enum InsertError {
-    /// The reservation does not belong to this arena or no longer matches the slot state.
-    #[error("Reservation does not match a writable slot")]
-    InvalidReservation,
-
-    /// The slot mutex was poisoned by a panic while locked.
-    #[error("slot mutex is poisoned")]
-    Poisoned,
-}
-
-struct Slot<T> {
-    generation: AtomicUsize,
-    state: AtomicU8,
-    data: Mutex<T>,
-}
-
-impl<T> Default for Slot<T>
-where
-    T: Default,
-{
-    fn default() -> Self {
-        Self {
-            generation: AtomicUsize::new(0),
-            state: AtomicU8::new(SlotState::Free.as_u8()),
-            data: Mutex::new(T::default()),
-        }
-    }
-}
-
-#[repr(u8)]
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-enum SlotState {
-    Free = 0,
-    Writing = 1,
-    Occupied = 2,
-    Reading = 3,
-}
-
-impl SlotState {
-    fn as_u8(self) -> u8 {
-        self as u8
-    }
-}
-
-/// Read guard for a value borrowed from the arena.
-///
-/// The guard holds the slot mutex while it is alive and restores the slot state
-/// to occupied when dropped.
-pub struct SlotReadGuard<'a, T> {
-    slot: &'a Slot<T>,
-    data: MutexGuard<'a, T>,
-}
-
-impl<T> Deref for SlotReadGuard<'_, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl<T> Drop for SlotReadGuard<'_, T> {
-    fn drop(&mut self) {
-        self.slot
-            .state
-            .store(SlotState::Occupied.as_u8(), Ordering::Release);
-    }
-}
-
-/// Producer-owned reservation for an arena slot.
-///
-/// A reservation is created by [`Arena::try_reserve`] after the slot has moved
-/// from free to writing. Passing it to [`Arena::insert`] publishes the value
-/// and returns a shareable [`SlotId`].
-pub struct Reservation {
-    arena_id: usize,
-    index: usize,
-    generation: usize,
-}
-
 /// Fixed-slot arena.
 ///
 /// The arena owns values and returns [`SlotId`] handles for later lookup or
@@ -298,6 +176,128 @@ where
     pub fn size(&self) -> usize {
         self.size
     }
+}
+
+struct Slot<T> {
+    generation: AtomicUsize,
+    state: AtomicU8, // `SlotState`
+    data: Mutex<T>,
+}
+
+impl<T> Default for Slot<T>
+where
+    T: Default,
+{
+    fn default() -> Self {
+        Self {
+            generation: AtomicUsize::new(0),
+            state: AtomicU8::new(SlotState::Free.as_u8()),
+            data: Mutex::new(T::default()),
+        }
+    }
+}
+
+#[repr(u8)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum SlotState {
+    Free = 0,
+    Writing = 1,
+    Occupied = 2,
+    Reading = 3,
+}
+
+impl SlotState {
+    fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
+/// Arena handle assigned when a value is inserted.
+///
+/// A slot id identifies the owning arena plus the slot generation used for
+/// stale-handle detection. The slot index can be reused after removal, so
+/// lookups validate the whole handle before returning a value.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SlotId {
+    /// Process-local id of the arena that owns the slot.
+    arena_id: usize,
+
+    /// Slot index inside the arena.
+    index: usize,
+
+    /// Slot generation used to reject stale handles after reuse.
+    generation: usize,
+}
+
+/// Read guard for a value borrowed from the arena.
+///
+/// The guard holds the slot mutex while it is alive and restores the slot state
+/// to occupied when dropped.
+pub struct SlotReadGuard<'a, T> {
+    slot: &'a Slot<T>,
+    data: MutexGuard<'a, T>,
+}
+
+impl<T> Deref for SlotReadGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl<T> Drop for SlotReadGuard<'_, T> {
+    fn drop(&mut self) {
+        self.slot
+            .state
+            .store(SlotState::Occupied.as_u8(), Ordering::Release);
+    }
+}
+
+/// Producer-owned reservation for an arena slot.
+///
+/// A reservation is created by [`Arena::try_reserve`] after the slot has moved
+/// from free to writing. Passing it to [`Arena::insert`] publishes the value
+/// and returns a shareable [`SlotId`].
+pub struct Reservation {
+    arena_id: usize,
+    index: usize,
+    generation: usize,
+}
+
+/// Error returned when a slot handle cannot be borrowed or removed.
+#[derive(Error, Debug)]
+pub enum BorrowError {
+    /// The slot is currently locked by another reader or remover.
+    #[error("Slot is already borrowed")]
+    Busy,
+
+    /// The supplied handle does not match the value currently stored in the slot.
+    ///
+    /// This covers stale generations and handles from another arena that happen
+    /// to reference an in-range slot index.
+    #[error("slot handle mismatch with current handle: {0:?}")]
+    StaleHandle(SlotId),
+
+    /// The supplied handle references a slot index outside this arena.
+    #[error("slot handle is outside this arena: {0:?}")]
+    InvalidHandle(SlotId),
+
+    /// The slot mutex was poisoned by a panic while locked.
+    #[error("slot mutex is poisoned")]
+    Poisoned,
+}
+
+/// Error returned when a reserved slot cannot be filled.
+#[derive(Error, Debug)]
+pub enum InsertError {
+    /// The reservation does not belong to this arena or no longer matches the slot state.
+    #[error("Reservation does not match a writable slot")]
+    InvalidReservation,
+
+    /// The slot mutex was poisoned by a panic while locked.
+    #[error("slot mutex is poisoned")]
+    Poisoned,
 }
 
 #[cfg(test)]
