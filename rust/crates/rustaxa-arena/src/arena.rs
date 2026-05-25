@@ -1,35 +1,33 @@
-//! Fixed-slot packet arena for network ingress buffering.
+//! Fixed-slot arena for bounded handoff pipelines.
 //!
-//! The arena stores packet metadata and common small payloads together in
-//! preallocated slots so queue processing can usually read packet state and
-//! bytes without following an additional heap pointer. Payloads larger than the
-//! inline limit keep their [`bytes::Bytes`] allocation to avoid copying large
-//! buffers into every arena slot.
+//! The arena stores generic values in preallocated slots and returns stable
+//! handles that can be sent through an external queue. Producers reserve a slot,
+//! write a value, and publish the returned [`SlotId`](crate::arena::SlotId).
+//! Consumers borrow the value by handle and remove it when processing is
+//! complete.
 //!
-//! [`PacketId`](crate::arena::PacketId) combines the arena id, slot index, and
-//! slot generation. Slot indexes are local to one arena and may be reused after
-//! removal, while the generation distinguishes stale handles from the packet
+//! [`SlotId`](crate::arena::SlotId) combines the arena id, slot index, and slot
+//! generation. Slot indexes are local to one arena and may be reused after
+//! removal, while the generation distinguishes stale handles from the value
 //! currently occupying the same slot.
 
 use anyhow::ensure;
-use chrono::Utc;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, TryLockError};
 use thiserror::Error;
 
-use rustaxa_types::ethereum::NodeId;
-use rustaxa_types::time::Microseconds;
-
 static ARENA_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-/// Arena handle assigned when a packet is inserted.
+const RESERVER_ATTEMPTS: u8 = 16;
+
+/// Arena handle assigned when a value is inserted.
 ///
-/// A packet id identifies the owning arena plus the slot generation used for
+/// A slot id identifies the owning arena plus the slot generation used for
 /// stale-handle detection. The slot index can be reused after removal, so
-/// lookups validate the whole handle before returning a packet.
+/// lookups validate the whole handle before returning a value.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct PacketId {
+pub struct SlotId {
     /// Process-local id of the arena that owns the slot.
     arena_id: usize,
 
@@ -40,188 +38,56 @@ pub struct PacketId {
     generation: usize,
 }
 
-/// Target in-memory size for a packet stored in the arena.
-///
-/// Keeping packets at a fixed size gives predictable slot entry layout and
-/// keeps common packet payload bytes close to the packet metadata.
-#[allow(dead_code)]
-const PACKET_SIZE: usize = 2048;
-
-/// Maximum payload size stored directly inside a packet.
-///
-/// Larger payloads are stored as [`bytes::Bytes`] to avoid copying unusually
-/// large buffers into every arena slot.
-const INLINE_LIMIT: usize = 1936;
-
-/// Packet payload storage optimized for common small packets.
-///
-/// Small payloads are stored inline to improve data locality for packets held
-/// in arena slots. Large payloads keep their shared [`bytes::Bytes`] allocation.
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone)]
-enum PacketPayload {
-    /// Payload bytes stored directly in the packet arena entry.
-    ///
-    /// The `len` field records the number of initialized bytes in `buf`.
-    Inline { len: usize, buf: [u8; INLINE_LIMIT] },
-
-    /// Payload bytes stored outside the fixed-size packet entry.
-    Heap(bytes::Bytes),
-}
-
-impl Default for PacketPayload {
-    fn default() -> Self {
-        Self::Inline {
-            len: 0,
-            buf: [0; INLINE_LIMIT],
-        }
-    }
-}
-
-/// Network packet retained in the arena.
-///
-/// The packet keeps metadata needed for queueing and peer attribution together
-/// with arena-optimized payload storage.
-#[derive(Debug, Clone)]
-pub struct Packet {
-    /// Arena handle assigned to this packet.
-    pub id: PacketId,
-
-    /// Wall-clock receive timestamp in microseconds.
-    pub received: Microseconds,
-
-    /// Node that sent the packet.
-    pub from_node: NodeId,
-
-    /// Packet bytes, stored inline when they fit in [`INLINE_LIMIT`].
-    payload: PacketPayload,
-}
-
-impl Default for Packet {
-    fn default() -> Self {
-        Self {
-            id: PacketId::default(),
-            received: Microseconds(0),
-            from_node: NodeId(ethereum_types::H512::from([0u8; 64])),
-            payload: PacketPayload::default(),
-        }
-    }
-}
-
-impl Packet {
-    /// Creates a packet from the sender id and payload bytes.
-    ///
-    /// Payloads up to [`INLINE_LIMIT`] bytes are copied into the packet entry.
-    /// Larger payloads retain the provided [`bytes::Bytes`] handle.
-    fn new(
-        from_node: NodeId,
-        payload: bytes::Bytes,
-        arena_id: usize,
-        index: usize,
-        generation: usize,
-    ) -> Self {
-        Packet {
-            id: PacketId {
-                arena_id,
-                index,
-                generation,
-            },
-            received: Microseconds(Utc::now().timestamp_micros() as u64),
-            from_node,
-            payload: if payload.len() > INLINE_LIMIT {
-                PacketPayload::Heap(payload)
-            } else {
-                let mut buf = [0u8; INLINE_LIMIT];
-                buf[..payload.len()].copy_from_slice(&payload);
-                PacketPayload::Inline {
-                    len: payload.len(),
-                    buf,
-                }
-            },
-        }
-    }
-
-    /// Returns the packet payload as a byte slice.
-    pub fn payload(&self) -> &[u8] {
-        match &self.payload {
-            PacketPayload::Heap(bytes) => bytes.as_ref(),
-            PacketPayload::Inline { len, buf } => &buf[..*len],
-        }
-    }
-}
-
-/// Error returned when a packet handle cannot be borrowed or removed.
+/// Error returned when a slot handle cannot be borrowed or removed.
 #[derive(Error, Debug)]
 pub enum BorrowError {
-    /// The packet slot is currently locked by another reader or remover.
+    /// The slot is currently locked by another reader or remover.
     #[error("Slot is already borrowed")]
     Busy,
 
-    /// The supplied packet handle does not match the packet currently stored in the slot.
+    /// The supplied handle does not match the value currently stored in the slot.
     ///
     /// This covers stale generations and handles from another arena that happen
     /// to reference an in-range slot index.
-    #[error("Packet handle mismatch with current handle: {0:?}")]
-    StaleHandle(PacketId),
+    #[error("slot handle mismatch with current handle: {0:?}")]
+    StaleHandle(SlotId),
 
-    /// The supplied packet handle references a slot index outside this arena.
-    #[error("Packet handle is outside this arena: {0:?}")]
-    InvalidHandle(PacketId),
+    /// The supplied handle references a slot index outside this arena.
+    #[error("slot handle is outside this arena: {0:?}")]
+    InvalidHandle(SlotId),
 
-    /// The packet mutex was poisoned by a panic while locked.
-    #[error("Packet mutex is poisoned")]
+    /// The slot mutex was poisoned by a panic while locked.
+    #[error("slot mutex is poisoned")]
     Poisoned,
 }
 
-/// Error returned when a reserved packet slot cannot be filled.
+/// Error returned when a reserved slot cannot be filled.
 #[derive(Error, Debug)]
 pub enum InsertError {
     /// The reservation does not belong to this arena or no longer matches the slot state.
     #[error("Reservation does not match a writable slot")]
     InvalidReservation,
 
-    /// The packet mutex was poisoned by a panic while locked.
-    #[error("Packet mutex is poisoned")]
+    /// The slot mutex was poisoned by a panic while locked.
+    #[error("slot mutex is poisoned")]
     Poisoned,
 }
 
-/// Read guard for a packet borrowed from the arena.
-///
-/// The guard holds the slot mutex while it is alive and restores the slot state
-/// to occupied when dropped.
-pub struct PacketReadGuard<'a> {
-    slot: &'a Slot,
-    packet: MutexGuard<'a, Packet>,
-}
-
-impl Deref for PacketReadGuard<'_> {
-    type Target = Packet;
-
-    fn deref(&self) -> &Self::Target {
-        &self.packet
-    }
-}
-
-impl Drop for PacketReadGuard<'_> {
-    fn drop(&mut self) {
-        self.slot
-            .state
-            .store(SlotState::Occupied.as_u8(), Ordering::Release);
-    }
-}
-
-struct Slot {
+struct Slot<T> {
     generation: AtomicUsize,
     state: AtomicU8,
-    packet: Mutex<Packet>,
+    data: Mutex<T>,
 }
 
-impl Default for Slot {
+impl<T> Default for Slot<T>
+where
+    T: Default,
+{
     fn default() -> Self {
         Self {
             generation: AtomicUsize::new(0),
             state: AtomicU8::new(SlotState::Free.as_u8()),
-            packet: Mutex::new(Packet::default()),
+            data: Mutex::new(T::default()),
         }
     }
 }
@@ -241,34 +107,60 @@ impl SlotState {
     }
 }
 
+/// Read guard for a value borrowed from the arena.
+///
+/// The guard holds the slot mutex while it is alive and restores the slot state
+/// to occupied when dropped.
+pub struct SlotReadGuard<'a, T> {
+    slot: &'a Slot<T>,
+    data: MutexGuard<'a, T>,
+}
+
+impl<T> Deref for SlotReadGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl<T> Drop for SlotReadGuard<'_, T> {
+    fn drop(&mut self) {
+        self.slot
+            .state
+            .store(SlotState::Occupied.as_u8(), Ordering::Release);
+    }
+}
+
 /// Producer-owned reservation for an arena slot.
 ///
 /// A reservation is created by [`Arena::try_reserve`] after the slot has moved
-/// from free to writing. Passing it to [`Arena::insert`] publishes the packet
-/// and returns a shareable [`PacketId`].
+/// from free to writing. Passing it to [`Arena::insert`] publishes the value
+/// and returns a shareable [`SlotId`].
 pub struct Reservation {
     arena_id: usize,
     index: usize,
     generation: usize,
 }
 
-/// Fixed-slot packet arena.
+/// Fixed-slot arena.
 ///
-/// The arena owns packets and returns [`PacketId`] handles for later lookup or
+/// The arena owns values and returns [`SlotId`] handles for later lookup or
 /// removal. Each handle contains the arena id, an arena-local slot index, and a
 /// generation for stale-handle detection.
-pub struct Arena {
+pub struct Arena<T> {
     id: usize,
     size: usize,
     bitmask: usize,
-    slots: Vec<Slot>,
+    slots: Vec<Slot<T>>,
     next_slot: AtomicUsize,
 }
 
-impl Arena {
-    const RESERVE_ATTEMPTS: u8 = 16;
-
-    /// Creates an empty arena with exactly `size` packet slots.
+impl<T> Arena<T>
+where
+    T: Default,
+{
+    /// Creates an empty arena with exactly `size` slots.
     ///
     /// The size must be a power of two so slot indexes can be selected from a
     /// wrapping forward scan.
@@ -284,12 +176,12 @@ impl Arena {
         })
     }
 
-    /// Reserves a free slot for packet insertion.
+    /// Reserves a free slot for value insertion.
     ///
     /// A reservation is producer-owned and is not visible to consumers until it
     /// is passed to [`Arena::insert`].
     pub fn try_reserve(&self) -> Option<Reservation> {
-        for _ in 0..Arena::RESERVE_ATTEMPTS {
+        for _ in 0..RESERVER_ATTEMPTS {
             let next_free = self.next_slot.fetch_add(1, Ordering::AcqRel) & self.bitmask;
             let slot = &self.slots[next_free];
 
@@ -314,17 +206,12 @@ impl Arena {
         None
     }
 
-    /// Inserts a packet into a previously reserved slot and returns its handle.
+    /// Inserts a value into a previously reserved slot and returns its handle.
     ///
-    /// The returned [`PacketId`] includes this arena's id, the slot index, and
+    /// The returned [`SlotId`] includes this arena's id, the slot index, and
     /// the slot generation. Reservations from another arena or from a slot that
     /// is no longer writable are rejected.
-    pub fn insert(
-        &self,
-        reservation: Reservation,
-        from_node: NodeId,
-        payload: bytes::Bytes,
-    ) -> Result<PacketId, InsertError> {
+    pub fn insert(&self, reservation: Reservation, data: T) -> Result<SlotId, InsertError> {
         if reservation.arena_id != self.id {
             return Err(InsertError::InvalidReservation);
         }
@@ -339,39 +226,38 @@ impl Arena {
             return Err(InsertError::InvalidReservation);
         }
 
-        let packet = Packet::new(
-            from_node,
-            payload,
-            self.id,
-            reservation.index,
-            reservation.generation,
-        );
-        let packet_id = packet.id;
-        *slot.packet.lock().map_err(|_| InsertError::Poisoned)? = packet;
+        *slot.data.lock().map_err(|_| InsertError::Poisoned)? = data;
         slot.state
             .store(SlotState::Occupied.as_u8(), Ordering::Relaxed);
 
-        Ok(packet_id)
+        Ok(SlotId {
+            arena_id: self.id,
+            index: reservation.index,
+            generation: reservation.generation,
+        })
     }
 
-    /// Removes a packet from the arena and frees the slot for reuse.
+    /// Removes a value from the arena and frees the slot for reuse.
     ///
-    /// Returns [`BorrowError::StaleHandle`] when the supplied [`PacketId`]
-    /// refers to an older generation of the same slot or a packet from another
+    /// Returns [`BorrowError::StaleHandle`] when the supplied [`SlotId`]
+    /// refers to an older generation of the same slot or a value from another
     /// arena at the same slot index.
-    pub fn remove(&self, id: PacketId) -> Result<bool, BorrowError> {
+    pub fn remove(&self, id: SlotId) -> Result<bool, BorrowError> {
         let Some(slot) = self.slots.get(id.index) else {
             return Err(BorrowError::InvalidHandle(id));
         };
 
-        let packet = match slot.packet.try_lock() {
-            Ok(packet) => packet,
+        match slot.data.try_lock() {
             Err(TryLockError::WouldBlock) => return Err(BorrowError::Busy),
             Err(TryLockError::Poisoned(_)) => return Err(BorrowError::Poisoned),
+            Ok(_) => (),
         };
 
-        if slot.state.load(Ordering::Acquire) != SlotState::Occupied.as_u8() || packet.id != id {
-            return Err(BorrowError::StaleHandle(packet.id));
+        if id.arena_id != self.id
+            || slot.state.load(Ordering::Acquire) != SlotState::Occupied.as_u8()
+            || id.generation != slot.generation.load(Ordering::Acquire)
+        {
+            return Err(BorrowError::StaleHandle(id));
         }
 
         slot.generation.fetch_add(1, Ordering::Relaxed);
@@ -380,29 +266,32 @@ impl Arena {
         Ok(true)
     }
 
-    /// Returns the packet identified by `packet_id`, if it is still present.
+    /// Returns the value identified by `id`, if it is still present.
     ///
-    /// The arena id and slot generation must match, so stale packet ids do not
-    /// resolve to newer packets that reused the same slot.
-    pub fn borrow(&self, id: PacketId) -> Result<PacketReadGuard<'_>, BorrowError> {
+    /// The arena id and slot generation must match, so stale slot ids do not
+    /// resolve to newer values that reused the same slot.
+    pub fn borrow(&self, id: SlotId) -> Result<SlotReadGuard<'_, T>, BorrowError> {
         let Some(slot) = self.slots.get(id.index) else {
             return Err(BorrowError::InvalidHandle(id));
         };
 
-        let packet = match slot.packet.try_lock() {
-            Ok(packet) => packet,
+        let data = match slot.data.try_lock() {
+            Ok(data) => data,
             Err(TryLockError::WouldBlock) => return Err(BorrowError::Busy),
             Err(TryLockError::Poisoned(_)) => return Err(BorrowError::Poisoned),
         };
 
-        if slot.state.load(Ordering::Acquire) != SlotState::Occupied.as_u8() || packet.id != id {
-            return Err(BorrowError::StaleHandle(packet.id));
+        if id.arena_id != self.id
+            || slot.state.load(Ordering::Acquire) != SlotState::Occupied.as_u8()
+            || id.generation != slot.generation.load(Ordering::Acquire)
+        {
+            return Err(BorrowError::StaleHandle(id));
         }
 
         slot.state
             .store(SlotState::Reading.as_u8(), Ordering::Release);
 
-        Ok(PacketReadGuard { slot, packet })
+        Ok(SlotReadGuard { slot, data })
     }
 
     /// Returns the fixed slot capacity of the arena.
@@ -414,94 +303,28 @@ impl Arena {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::Bytes;
-    use ethereum_types::H512;
-    use std::mem;
     use std::sync::mpsc;
     use std::sync::{Arc, Barrier};
     use std::thread;
 
-    fn test_nodeid() -> NodeId {
-        // All zeros except last byte for uniqueness
-        let mut arr = [0u8; 64];
-        arr[63] = 1;
-        NodeId(H512::from(arr))
+    #[derive(Debug, Default, Clone, PartialEq, Eq)]
+    struct TestValue {
+        sequence: usize,
+        payload: Vec<u8>,
     }
 
-    fn test_payload1() -> Bytes {
-        // Simple RLP-encoded list [1, 2, 3]
-        Bytes::from(vec![0xc3, 0x01, 0x02, 0x03])
-    }
-
-    fn test_payload_inline() -> Bytes {
-        // Exactly INLINE_LIMIT bytes
-        Bytes::from(vec![0xAB; INLINE_LIMIT])
-    }
-
-    fn test_payload_heap() -> Bytes {
-        // INLINE_LIMIT + 1 bytes
-        Bytes::from(vec![0xCD; INLINE_LIMIT + 1])
-    }
-
-    #[test]
-    fn test_packet_create() {
-        let from_node = test_nodeid();
-        let payload = test_payload1();
-        let checkpoint1 = chrono::Utc::now().timestamp_micros();
-        let packet1 = Packet::new(from_node, payload.clone(), 0, 0, 0);
-        let checkpoint2 = chrono::Utc::now().timestamp_micros();
-
-        assert!(packet1.received >= Microseconds(checkpoint1 as u64));
-        assert!(packet1.received <= Microseconds(checkpoint2 as u64));
-        assert_eq!(packet1.from_node, from_node);
-        assert_eq!(packet1.payload(), [0xc3, 0x01, 0x02, 0x03]);
-        assert_eq!(packet1.id.index, 0);
-        assert_eq!(packet1.id.generation, 0);
-    }
-
-    #[test]
-    fn test_packet_size_is_2048() {
-        assert_eq!(
-            mem::size_of::<Packet>(),
-            PACKET_SIZE,
-            "Packet size is not 2048 bytes"
-        );
-    }
-
-    #[test]
-    fn test_small_buffer_optimization_inline() {
-        let from_node = test_nodeid();
-        let payload = test_payload_inline();
-        let packet = Packet::new(from_node, payload.clone(), 0, 0, 0);
-        // Should use Inline variant
-        match &packet.payload {
-            PacketPayload::Inline { len, buf } => {
-                assert_eq!(*len, INLINE_LIMIT);
-                assert_eq!(&buf[..*len], &payload[..]);
+    impl TestValue {
+        fn new(sequence: usize, len: usize) -> Self {
+            Self {
+                sequence,
+                payload: vec![(sequence % 251) as u8; len],
             }
-            _ => panic!("Expected Inline variant for small buffer optimization"),
         }
-        assert_eq!(packet.payload(), &payload[..]);
-    }
-
-    #[test]
-    fn test_small_buffer_optimization_heap() {
-        let from_node = test_nodeid();
-        let payload = test_payload_heap();
-        let packet = Packet::new(from_node, payload.clone(), 0, 0, 0);
-        // Should use Heap variant
-        match &packet.payload {
-            PacketPayload::Heap(bytes) => {
-                assert_eq!(bytes.as_ref(), &payload[..]);
-            }
-            _ => panic!("Expected Heap variant for large buffer"),
-        }
-        assert_eq!(packet.payload(), &payload[..]);
     }
 
     #[test]
     fn test_arena_creation() {
-        let arena = Arena::new(1024).expect("power-of-two arena size should be valid");
+        let arena = Arena::<TestValue>::new(1024).expect("power-of-two arena size should be valid");
         assert_eq!(arena.size(), 1024);
         assert_eq!(arena.next_slot.load(Ordering::Relaxed), 0);
         assert!(
@@ -514,13 +337,13 @@ mod tests {
 
     #[test]
     fn test_arena_rejects_non_power_of_two_size() {
-        assert!(Arena::new(0).is_err());
-        assert!(Arena::new(6).is_err());
+        assert!(Arena::<TestValue>::new(0).is_err());
+        assert!(Arena::<TestValue>::new(6).is_err());
     }
 
     #[test]
     fn test_reserve_scans_forward_and_reports_full() {
-        let arena = Arena::new(2).expect("arena should be created");
+        let arena = Arena::<TestValue>::new(2).expect("arena should be created");
 
         let reservation1 = arena.try_reserve().expect("first slot should be reserved");
         let reservation2 = arena.try_reserve().expect("second slot should be reserved");
@@ -531,68 +354,59 @@ mod tests {
     }
 
     #[test]
-    fn test_reserve_scans_past_first_thirty_two_occupied_slots() {
-        let arena = Arena::new(64).expect("arena should be created");
-        let from_node = test_nodeid();
-        let mut keys = Vec::with_capacity(64);
+    fn test_reserve_scans_within_probe_limit() {
+        let arena = Arena::<TestValue>::new(32).expect("arena should be created");
+        let mut keys = Vec::with_capacity(32);
 
-        for _ in 0..64 {
+        for i in 0..32 {
             let reservation = arena.try_reserve().expect("slot should be reserved");
             keys.push(
                 arena
-                    .insert(reservation, from_node, test_payload1())
+                    .insert(reservation, TestValue::new(i, 4))
                     .expect("insert should succeed"),
             );
         }
 
         arena
             .remove(keys[8])
-            .expect("packet beyond first 32 slots should be removed");
+            .expect("value within probe limit should be removed");
 
         let reservation = arena
             .try_reserve()
-            .expect("forward scan should find the free slot beyond 32 probes");
+            .expect("forward scan should find the free slot within the probe limit");
         assert_eq!(reservation.index, 8);
     }
 
     #[test]
     fn test_arena_insert_and_borrow() {
-        let arena = Arena::new(4).expect("arena should be created");
-        let from_node = test_nodeid();
-        let payload = test_payload1();
-        let expected_payload = payload.clone();
-        let expected_node = from_node;
+        let arena = Arena::<TestValue>::new(4).expect("arena should be created");
+        let value = TestValue::new(7, 4);
         let reservation = arena.try_reserve().expect("slot should be reserved");
 
-        let packet_id = arena
-            .insert(reservation, from_node, payload)
+        let slot_id = arena
+            .insert(reservation, value.clone())
             .expect("insert should succeed");
 
         assert_eq!(arena.size(), 4);
-        let retrieved = arena.borrow(packet_id).expect("packet should be present");
-        assert_eq!(retrieved.id.index, packet_id.index);
-        assert_eq!(retrieved.id.generation, packet_id.generation);
-        assert_eq!(retrieved.from_node, expected_node);
-        assert_eq!(retrieved.payload(), expected_payload.as_ref());
+        let retrieved = arena.borrow(slot_id).expect("value should be present");
+        assert_eq!(*retrieved, value);
     }
 
     #[test]
     fn test_insert_rejects_cross_arena_reservation() {
-        let arena_a = Arena::new(1).expect("first arena should be created");
-        let arena_b = Arena::new(1).expect("second arena should be created");
-        let from_node = test_nodeid();
+        let arena_a = Arena::<TestValue>::new(1).expect("first arena should be created");
+        let arena_b = Arena::<TestValue>::new(1).expect("second arena should be created");
         let reservation = arena_a.try_reserve().expect("slot should be reserved");
 
         assert!(matches!(
-            arena_b.insert(reservation, from_node, test_payload1()),
+            arena_b.insert(reservation, TestValue::new(0, 4)),
             Err(InsertError::InvalidReservation)
         ));
     }
 
     #[test]
     fn test_insert_rejects_stale_reservation_after_slot_reuse() {
-        let arena = Arena::new(1).expect("arena should be created");
-        let from_node = test_nodeid();
+        let arena = Arena::<TestValue>::new(1).expect("arena should be created");
         let stale_reservation = Reservation {
             arena_id: arena.id,
             index: 0,
@@ -601,23 +415,23 @@ mod tests {
 
         let reservation = arena.try_reserve().expect("slot should be reserved");
         let key = arena
-            .insert(reservation, from_node, test_payload1())
+            .insert(reservation, TestValue::new(1, 4))
             .expect("insert should succeed");
-        arena.remove(key).expect("packet should be removed");
+        arena.remove(key).expect("value should be removed");
 
         let current_reservation = arena.try_reserve().expect("slot should be reusable");
         assert_eq!(current_reservation.generation, 1);
 
         assert!(matches!(
-            arena.insert(stale_reservation, from_node, test_payload_inline()),
+            arena.insert(stale_reservation, TestValue::new(2, 4)),
             Err(InsertError::InvalidReservation)
         ));
     }
 
     #[test]
     fn test_borrow_and_remove_reject_out_of_range_handle() {
-        let arena = Arena::new(1).expect("arena should be created");
-        let invalid = PacketId {
+        let arena = Arena::<TestValue>::new(1).expect("arena should be created");
+        let invalid = SlotId {
             arena_id: 0,
             index: 99,
             generation: 0,
@@ -635,9 +449,9 @@ mod tests {
 
     #[test]
     fn test_borrow_and_remove_reject_free_and_writing_slots() {
-        let arena = Arena::new(2).expect("arena should be created");
-        let free_handle = PacketId {
-            arena_id: 0,
+        let arena = Arena::<TestValue>::new(2).expect("arena should be created");
+        let free_handle = SlotId {
+            arena_id: arena.id,
             index: 0,
             generation: 0,
         };
@@ -652,8 +466,8 @@ mod tests {
         ));
 
         let reservation = arena.try_reserve().expect("slot should be reserved");
-        let writing_handle = PacketId {
-            arena_id: 0,
+        let writing_handle = SlotId {
+            arena_id: arena.id,
             index: reservation.index,
             generation: reservation.generation,
         };
@@ -670,51 +484,72 @@ mod tests {
 
     #[test]
     fn test_arena_insert_multiple_and_borrow() {
-        let arena = Arena::new(4).expect("arena should be created");
-        let from_node = test_nodeid();
+        let arena = Arena::<TestValue>::new(4).expect("arena should be created");
 
         let reservation1 = arena.try_reserve().expect("first slot should be reserved");
         let key1 = arena
-            .insert(reservation1, from_node, test_payload1())
+            .insert(reservation1, TestValue::new(1, 4))
             .expect("insert should succeed");
         let reservation2 = arena.try_reserve().expect("second slot should be reserved");
         let key2 = arena
-            .insert(reservation2, from_node, test_payload_inline())
+            .insert(reservation2, TestValue::new(2, 8))
             .expect("insert should succeed");
         let reservation3 = arena.try_reserve().expect("third slot should be reserved");
         let key3 = arena
-            .insert(reservation3, from_node, test_payload_heap())
+            .insert(reservation3, TestValue::new(3, 16))
             .expect("insert should succeed");
 
         assert_eq!(arena.size(), 4);
-        assert_eq!(
-            arena.borrow(key1).unwrap().payload(),
-            [0xc3, 0x01, 0x02, 0x03]
-        );
-        assert_eq!(
-            arena.borrow(key2).unwrap().payload(),
-            vec![0xAB; INLINE_LIMIT].as_slice()
-        );
-        assert_eq!(
-            arena.borrow(key3).unwrap().payload(),
-            vec![0xCD; INLINE_LIMIT + 1].as_slice()
-        );
+        assert_eq!(arena.borrow(key1).unwrap().payload.len(), 4);
+        assert_eq!(arena.borrow(key2).unwrap().payload.len(), 8);
+        assert_eq!(arena.borrow(key3).unwrap().payload.len(), 16);
+    }
+
+    #[test]
+    fn test_borrow_and_remove_reject_cross_arena_handle() {
+        let arena_a = Arena::<TestValue>::new(1).expect("first arena should be created");
+        let arena_b = Arena::<TestValue>::new(1).expect("second arena should be created");
+
+        let reservation_a = arena_a
+            .try_reserve()
+            .expect("first slot should be reserved");
+        let key_a = arena_a
+            .insert(reservation_a, TestValue::new(1, 4))
+            .expect("insert should succeed");
+        let reservation_b = arena_b
+            .try_reserve()
+            .expect("second slot should be reserved");
+        let key_b = arena_b
+            .insert(reservation_b, TestValue::new(2, 4))
+            .expect("insert should succeed");
+
+        let cross_arena = SlotId {
+            arena_id: key_b.arena_id,
+            index: key_a.index,
+            generation: key_a.generation,
+        };
+
+        assert!(matches!(
+            arena_a.borrow(cross_arena),
+            Err(BorrowError::StaleHandle(handle)) if handle == cross_arena
+        ));
+        assert!(matches!(
+            arena_a.remove(cross_arena),
+            Err(BorrowError::StaleHandle(handle)) if handle == cross_arena
+        ));
     }
 
     #[test]
     fn test_arena_remove() {
-        let arena = Arena::new(4).expect("arena should be created");
-        let from_node = test_nodeid();
+        let arena = Arena::<TestValue>::new(4).expect("arena should be created");
+        let value = TestValue::new(1, 4);
         let reservation = arena.try_reserve().expect("slot should be reserved");
         let key = arena
-            .insert(reservation, from_node, test_payload1())
+            .insert(reservation, value.clone())
             .expect("insert should succeed");
 
         assert_eq!(arena.size(), 4);
-        assert_eq!(
-            arena.borrow(key).unwrap().payload(),
-            [0xc3, 0x01, 0x02, 0x03]
-        );
+        assert_eq!(*arena.borrow(key).unwrap(), value);
         assert!(arena.remove(key).unwrap());
         assert_eq!(arena.size(), 4);
         assert!(matches!(
@@ -725,53 +560,49 @@ mod tests {
 
     #[test]
     fn test_borrow_guard_blocks_other_borrowers_until_drop() {
-        let arena = Arena::new(4).expect("arena should be created");
-        let from_node = test_nodeid();
+        let arena = Arena::<TestValue>::new(4).expect("arena should be created");
+        let value = TestValue::new(1, 4);
         let reservation = arena.try_reserve().expect("slot should be reserved");
         let key = arena
-            .insert(reservation, from_node, test_payload1())
+            .insert(reservation, value.clone())
             .expect("insert should succeed");
 
-        let guard = arena.borrow(key).expect("packet should be borrowed");
+        let guard = arena.borrow(key).expect("value should be borrowed");
 
         assert!(matches!(arena.borrow(key), Err(BorrowError::Busy)));
         assert!(matches!(arena.remove(key), Err(BorrowError::Busy)));
 
         drop(guard);
 
-        assert_eq!(
-            arena.borrow(key).unwrap().payload(),
-            [0xc3, 0x01, 0x02, 0x03]
-        );
+        assert_eq!(*arena.borrow(key).unwrap(), value);
     }
 
     #[test]
     fn test_remove_frees_slot_for_new_generation() {
-        let arena = Arena::new(2).expect("arena should be created");
-        let from_node = test_nodeid();
+        let arena = Arena::<TestValue>::new(2).expect("arena should be created");
 
         let first_reservation = arena.try_reserve().expect("first slot should be reserved");
         assert_eq!(first_reservation.index, 0);
         let first_key = arena
-            .insert(first_reservation, from_node, test_payload1())
+            .insert(first_reservation, TestValue::new(1, 4))
             .expect("insert should succeed");
 
         let second_reservation = arena.try_reserve().expect("second slot should be reserved");
         assert_eq!(second_reservation.index, 1);
         let second_key = arena
-            .insert(second_reservation, from_node, test_payload_inline())
+            .insert(second_reservation, TestValue::new(2, 8))
             .expect("insert should succeed");
 
         arena
             .remove(first_key)
-            .expect("first packet should be removed");
+            .expect("first value should be removed");
 
         let reused_reservation = arena.try_reserve().expect("freed slot should be reserved");
         assert_eq!(reused_reservation.index, first_key.index);
         assert_eq!(reused_reservation.generation, first_key.generation + 1);
 
         let reused_key = arena
-            .insert(reused_reservation, from_node, test_payload_heap())
+            .insert(reused_reservation, TestValue::new(3, 16))
             .expect("insert should succeed");
         assert_eq!(reused_key.index, first_key.index);
         assert_eq!(reused_key.generation, first_key.generation + 1);
@@ -781,52 +612,45 @@ mod tests {
             arena.borrow(first_key),
             Err(BorrowError::StaleHandle(_))
         ));
-        assert_eq!(
-            arena.borrow(reused_key).unwrap().payload(),
-            vec![0xCD; INLINE_LIMIT + 1].as_slice()
-        );
-        assert_eq!(
-            arena.borrow(second_key).unwrap().payload(),
-            vec![0xAB; INLINE_LIMIT].as_slice()
-        );
+        assert_eq!(arena.borrow(reused_key).unwrap().sequence, 3);
+        assert_eq!(arena.borrow(second_key).unwrap().sequence, 2);
     }
 
     #[test]
     fn test_remove_rejects_stale_handle_after_reuse() {
-        let arena = Arena::new(1).expect("arena should be created");
-        let from_node = test_nodeid();
+        let arena = Arena::<TestValue>::new(1).expect("arena should be created");
 
         let first_reservation = arena.try_reserve().expect("slot should be reserved");
         let first_key = arena
-            .insert(first_reservation, from_node, test_payload1())
+            .insert(first_reservation, TestValue::new(1, 4))
             .expect("insert should succeed");
-        arena.remove(first_key).expect("packet should be removed");
+        arena.remove(first_key).expect("value should be removed");
 
         let reused_reservation = arena.try_reserve().expect("slot should be reusable");
         let reused_key = arena
-            .insert(reused_reservation, from_node, test_payload_inline())
+            .insert(reused_reservation, TestValue::new(2, 4))
             .expect("insert should succeed");
 
         assert!(matches!(
             arena.remove(first_key),
-            Err(BorrowError::StaleHandle(current)) if current == reused_key
+            Err(BorrowError::StaleHandle(stale)) if stale == first_key
         ));
+        assert_eq!(arena.borrow(reused_key).unwrap().sequence, 2);
     }
 
     #[test]
     fn test_borrow_reports_poisoned_mutex() {
-        let arena = Arc::new(Arena::new(1).expect("arena should be created"));
-        let from_node = test_nodeid();
+        let arena = Arc::new(Arena::<TestValue>::new(1).expect("arena should be created"));
         let reservation = arena.try_reserve().expect("slot should be reserved");
         let key = arena
-            .insert(reservation, from_node, test_payload1())
+            .insert(reservation, TestValue::new(1, 4))
             .expect("insert should succeed");
 
         let poisoner = {
             let arena = Arc::clone(&arena);
             thread::spawn(move || {
-                let _guard = arena.slots[key.index].packet.lock().unwrap();
-                panic!("poison packet mutex");
+                let _guard = arena.slots[key.index].data.lock().unwrap();
+                panic!("poison slot mutex");
             })
         };
         assert!(poisoner.join().is_err());
@@ -837,20 +661,20 @@ mod tests {
 
     #[test]
     fn test_insert_reports_poisoned_mutex() {
-        let arena = Arc::new(Arena::new(1).expect("arena should be created"));
+        let arena = Arc::new(Arena::<TestValue>::new(1).expect("arena should be created"));
 
         let poisoner = {
             let arena = Arc::clone(&arena);
             thread::spawn(move || {
-                let _guard = arena.slots[0].packet.lock().unwrap();
-                panic!("poison packet mutex");
+                let _guard = arena.slots[0].data.lock().unwrap();
+                panic!("poison slot mutex");
             })
         };
         assert!(poisoner.join().is_err());
 
         let reservation = arena.try_reserve().expect("slot should be reserved");
         assert!(matches!(
-            arena.insert(reservation, test_nodeid(), test_payload1()),
+            arena.insert(reservation, TestValue::new(1, 4)),
             Err(InsertError::Poisoned)
         ));
     }
@@ -859,7 +683,7 @@ mod tests {
     fn test_concurrent_reservations_are_unique() {
         const THREADS: usize = 8;
 
-        let arena = Arc::new(Arena::new(THREADS).expect("arena should be created"));
+        let arena = Arc::new(Arena::<TestValue>::new(THREADS).expect("arena should be created"));
         let barrier = Arc::new(Barrier::new(THREADS));
         let mut handles = Vec::with_capacity(THREADS);
 
@@ -899,9 +723,8 @@ mod tests {
     fn test_concurrent_producers_can_reserve_and_insert() {
         const THREADS: usize = 8;
 
-        let arena = Arc::new(Arena::new(THREADS).expect("arena should be created"));
+        let arena = Arc::new(Arena::<TestValue>::new(THREADS).expect("arena should be created"));
         let barrier = Arc::new(Barrier::new(THREADS));
-        let from_node = test_nodeid();
         let mut handles = Vec::with_capacity(THREADS);
 
         for thread_id in 0..THREADS {
@@ -910,9 +733,8 @@ mod tests {
             handles.push(thread::spawn(move || {
                 barrier.wait();
                 let reservation = arena.try_reserve().expect("slot should be reserved");
-                let payload = Bytes::from(vec![thread_id as u8; 4]);
                 arena
-                    .insert(reservation, from_node, payload)
+                    .insert(reservation, TestValue::new(thread_id, 4))
                     .expect("insert should succeed")
             }));
         }
@@ -924,10 +746,13 @@ mod tests {
 
         assert_eq!(keys.len(), THREADS);
         for key in keys {
-            let packet = arena
+            let value = arena
                 .borrow(key)
-                .expect("inserted packet should be readable");
-            assert_eq!(packet.payload(), vec![packet.payload()[0]; 4].as_slice());
+                .expect("inserted value should be readable");
+            assert_eq!(
+                value.payload.as_slice(),
+                vec![(value.sequence % 251) as u8; 4]
+            );
         }
         assert!(arena.try_reserve().is_none());
     }
@@ -937,9 +762,8 @@ mod tests {
         const CAPACITY: usize = 4;
         const PACKETS: usize = 64;
 
-        let arena = Arc::new(Arena::new(CAPACITY).expect("arena should be created"));
-        let (tx, rx) = mpsc::sync_channel::<PacketId>(CAPACITY);
-        let from_node = test_nodeid();
+        let arena = Arc::new(Arena::<TestValue>::new(CAPACITY).expect("arena should be created"));
+        let (tx, rx) = mpsc::sync_channel::<SlotId>(CAPACITY);
 
         let producer = {
             let arena = Arc::clone(&arena);
@@ -951,12 +775,10 @@ mod tests {
                         }
                         thread::yield_now();
                     };
-                    let payload = Bytes::from(vec![(i % 251) as u8; 8]);
-                    let packet_id = arena
-                        .insert(reservation, from_node, payload)
+                    let slot_id = arena
+                        .insert(reservation, TestValue::new(i, 8))
                         .expect("insert should succeed");
-                    tx.send(packet_id)
-                        .expect("consumer should receive packet id");
+                    tx.send(slot_id).expect("consumer should receive slot id");
                 }
             })
         };
@@ -967,12 +789,13 @@ mod tests {
                 let mut seen_generations = Vec::with_capacity(PACKETS);
 
                 for i in 0..PACKETS {
-                    let packet_id = rx.recv().expect("producer should send packet id");
-                    let packet = arena.borrow(packet_id).expect("packet should be readable");
-                    assert_eq!(packet.payload(), vec![(i % 251) as u8; 8].as_slice());
-                    seen_generations.push(packet_id.generation);
-                    drop(packet);
-                    arena.remove(packet_id).expect("packet should be removable");
+                    let slot_id = rx.recv().expect("producer should send slot id");
+                    let value = arena.borrow(slot_id).expect("value should be readable");
+                    assert_eq!(value.sequence, i);
+                    assert_eq!(value.payload.as_slice(), vec![(i % 251) as u8; 8]);
+                    seen_generations.push(slot_id.generation);
+                    drop(value);
+                    arena.remove(slot_id).expect("value should be removable");
                 }
 
                 seen_generations
@@ -991,11 +814,10 @@ mod tests {
 
     #[test]
     fn test_cross_thread_borrow_blocks_remove_until_guard_drops() {
-        let arena = Arena::new(1).expect("arena should be created");
-        let from_node = test_nodeid();
+        let arena = Arena::<TestValue>::new(1).expect("arena should be created");
         let reservation = arena.try_reserve().expect("slot should be reserved");
         let key = arena
-            .insert(reservation, from_node, test_payload1())
+            .insert(reservation, TestValue::new(1, 4))
             .expect("insert should succeed");
         let arena = Arc::new(arena);
         let borrowed = Arc::new(Barrier::new(2));
@@ -1006,10 +828,10 @@ mod tests {
             let borrowed = Arc::clone(&borrowed);
             let release = Arc::clone(&release);
             thread::spawn(move || {
-                let guard = arena.borrow(key).expect("reader should borrow packet");
+                let guard = arena.borrow(key).expect("reader should borrow value");
                 borrowed.wait();
                 release.wait();
-                assert_eq!(guard.payload(), [0xc3, 0x01, 0x02, 0x03]);
+                assert_eq!(guard.sequence, 1);
             })
         };
 
@@ -1027,11 +849,10 @@ mod tests {
 
     #[test]
     fn test_cross_thread_remove_allows_reuse_on_main_thread() {
-        let arena = Arena::new(1).expect("arena should be created");
-        let from_node = test_nodeid();
+        let arena = Arena::<TestValue>::new(1).expect("arena should be created");
         let first_reservation = arena.try_reserve().expect("slot should be reserved");
         let first_key = arena
-            .insert(first_reservation, from_node, test_payload1())
+            .insert(first_reservation, TestValue::new(1, 4))
             .expect("insert should succeed");
         let arena = Arc::new(arena);
 
