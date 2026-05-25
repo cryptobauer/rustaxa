@@ -1,4 +1,4 @@
-//! Fixed-slot storage for network packets moving through Rustaxa ingress queues.
+//! Fixed-slot storage for values moving through Rustaxa handoff queues.
 
-/// Packet arena and arena-owned packet handle types.
+/// Generic arena and arena-owned slot handle types.
 pub mod arena;
