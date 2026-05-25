@@ -534,12 +534,14 @@ The current Rust starting point is intentionally small:
    pool-mode minimum-price flooring through Rust. Pool mode requires the Rust-backed transaction queue so
    `TransactionManager::getMinGasPriceForBlockInclusion()` reads Rust queue metadata rather than legacy queue state.
 10. Port deterministic rewards, remaining slashing behavior, and pillar calculations after DPoS and final-chain query
-    ports are real. The first rewards-stat slice is now Rust-owned as a deterministic runtime and bridge planner: Rust
-    accepts finalized-period facts, computes legacy-compatible `BlockStats` RLP, tracks interval cache/distribution
-    boundaries, and can append cache write/clear intents to a caller-owned Rust storage batch. Production routing through
-    a rewards stats overlay, `StateAPI::distribute_rewards`, and account reward mutation remain C++-owned. Double-voting
-    proof planning and already-verified pillar-vote aggregation are Rust-backed; broader slashing state transitions,
-    pillar signing/recovery, and `PillarChainManager` orchestration still depend on future FinalChain/state ports.
+    ports are real. The `rewards::Stats` surface now has a Rust-mode overlay: Rust accepts finalized-period facts,
+    computes legacy-compatible `BlockStats` RLP, tracks interval cache/distribution boundaries, appends non-boundary
+    cache writes to the caller-owned Rust storage batch, and mirrors post-commit interval clears without changing the
+    legacy FinalChain ordering. The active Rust `FinalChain` shim has its own native finalization path and still bypasses
+    this `rewards::Stats` surface; unifying that path with Rust rewards-stat planning, `StateAPI::distribute_rewards`,
+    and account reward mutation remains future work. Double-voting proof planning and already-verified pillar-vote
+    aggregation are Rust-backed; broader slashing state transitions, pillar signing/recovery, and
+    `PillarChainManager` orchestration still depend on future FinalChain/state ports.
 
 ### First Implementation Slice
 

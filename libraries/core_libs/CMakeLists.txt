@@ -214,6 +214,30 @@ if(RUSTAXA_ENABLE_FINAL_CHAIN)
     )
 endif()
 
+if(RUSTAXA_ENABLE_REWARDS_STATS)
+    if(NOT RUSTAXA_ENABLE)
+        message(FATAL_ERROR "RUSTAXA_ENABLE_REWARDS_STATS requires RUSTAXA_ENABLE")
+    endif()
+    if(NOT RUSTAXA_ENABLE_STORAGE)
+        message(FATAL_ERROR "RUSTAXA_ENABLE_REWARDS_STATS requires RUSTAXA_ENABLE_STORAGE")
+    endif()
+    if(NOT RUSTAXA_ENABLE_FINAL_CHAIN)
+        message(FATAL_ERROR "RUSTAXA_ENABLE_REWARDS_STATS requires RUSTAXA_ENABLE_FINAL_CHAIN")
+    endif()
+
+    # In Rust rewards-stats mode, inject a header overlay that remaps legacy
+    # rewards::Stats to rewards::StatsOld and exposes a Rust-backed facade.
+    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/rewards_stats_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/rewards_stats_shim/src/rewards_stats_shim.cpp)
+
+    # Compile the legacy implementation as rewards::StatsOld.
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/rewards/rewards_stats.cpp
+        PROPERTIES
+        COMPILE_DEFINITIONS "Stats=StatsOld"
+    )
+endif()
+
 if(RUSTAXA_ENABLE_SORTITION_PARAMS)
     if(NOT RUSTAXA_ENABLE)
         message(FATAL_ERROR "RUSTAXA_ENABLE_SORTITION_PARAMS requires RUSTAXA_ENABLE")
