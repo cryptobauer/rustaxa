@@ -1400,6 +1400,7 @@ dependencies = [
  "bytes",
  "chrono",
  "criterion 0.7.0",
+ "crossbeam-utils",
  "ethereum-types",
  "rlp 0.6.1",
  "rustaxa-types",

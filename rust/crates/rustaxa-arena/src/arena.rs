@@ -12,6 +12,7 @@
 //! currently occupying the same slot.
 
 use anyhow::ensure;
+use crossbeam_utils::CachePadded;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, TryLockError};
@@ -35,14 +36,23 @@ pub struct Arena<T> {
     /// Fixed number of slots owned by this arena.
     size: usize,
 
-    /// Mask used to wrap monotonically increasing slot positions.
-    bitmask: usize,
+    /// Hot reservation cursor isolated from unrelated arena fields.
+    cursor: CachePadded<ArenaCursor>,
 
     /// Preallocated fixed-size slot storage.
-    slots: Vec<Slot<T>>,
+    slots: CachePadded<Vec<SlotMeta>>,
 
+    /// Stored value protected while a reader or remover holds the slot.
+    data: CachePadded<Vec<Mutex<T>>>,
+}
+
+/// Producer reservation state used together on the hot reservation path.
+struct ArenaCursor {
     /// Next candidate slot index for producer reservation.
-    next_slot: AtomicUsize,
+    next: AtomicUsize,
+
+    /// Mask used to wrap monotonically increasing slot positions.
+    bitmask: usize,
 }
 
 impl<T> Arena<T>
@@ -55,36 +65,42 @@ where
     /// wrapping forward scan.
     pub fn new(size: usize) -> Result<Self, anyhow::Error> {
         ensure!(size.is_power_of_two(), "arena size must be power of 2");
-        let slots = (0..size).map(|_| Slot::default()).collect();
+        let slots = (0..size).map(|_| SlotMeta::default()).collect();
+        let data = (0..size).map(|_| Mutex::new(T::default())).collect();
         Ok(Arena {
             id: ARENA_COUNTER.fetch_add(1, Ordering::Relaxed),
-            bitmask: size - 1,
             size,
-            slots,
-            next_slot: AtomicUsize::new(0),
+            cursor: CachePadded::new(ArenaCursor {
+                next: AtomicUsize::new(0),
+                bitmask: size - 1,
+            }),
+            slots: CachePadded::new(slots),
+            data: CachePadded::new(data),
         })
     }
 
     /// Reserves a free slot for value insertion.
     ///
     /// A reservation is producer-owned and is not visible to consumers until it
-    /// is passed to [`Arena::insert`].
-    pub fn try_reserve(&self) -> Option<Reservation> {
+    /// is passed to [`Arena::insert`]. Returns [`TryReserveError::AttemptsExceeded`]
+    /// when the bounded forward scan does not find a free slot.
+    pub fn try_reserve(&self) -> Result<SlotReservationGuard<'_>, TryReserveError> {
         for _ in 0..RESERVER_ATTEMPTS {
-            let next_free = self.next_slot.fetch_add(1, Ordering::AcqRel) & self.bitmask;
+            let next_free = self.cursor.next.fetch_add(1, Ordering::AcqRel) & self.cursor.bitmask;
             let slot = &self.slots[next_free];
 
             if slot
                 .state
                 .compare_exchange(
                     SlotState::Free.as_u8(),
-                    SlotState::Writing.as_u8(),
+                    SlotState::Reserved.as_u8(),
                     Ordering::Acquire,
                     Ordering::Relaxed,
                 )
                 .is_ok()
             {
-                return Some(Reservation {
+                return Ok(SlotReservationGuard {
+                    slot,
                     arena_id: self.id,
                     index: next_free,
                     generation: slot.generation.load(Ordering::Relaxed),
@@ -92,7 +108,9 @@ where
             }
         }
 
-        None
+        Err(TryReserveError::AttemptsExceeded {
+            attempts: RESERVER_ATTEMPTS,
+        })
     }
 
     /// Inserts a value into a previously reserved slot and returns its handle.
@@ -100,7 +118,11 @@ where
     /// The returned [`SlotId`] includes this arena's id, the slot index, and
     /// the slot generation. Reservations from another arena or from a slot that
     /// is no longer writable are rejected.
-    pub fn insert(&self, reservation: Reservation, data: T) -> Result<SlotId, InsertError> {
+    pub fn insert(
+        &self,
+        reservation: SlotReservationGuard<'_>,
+        data: T,
+    ) -> Result<SlotId, InsertError> {
         if reservation.arena_id != self.id {
             return Err(InsertError::InvalidReservation);
         }
@@ -109,15 +131,17 @@ where
             return Err(InsertError::InvalidReservation);
         };
 
-        if slot.state.load(Ordering::Acquire) != SlotState::Writing.as_u8()
+        if slot.state.load(Ordering::Acquire) != SlotState::Reserved.as_u8()
             || slot.generation.load(Ordering::Acquire) != reservation.generation
         {
             return Err(InsertError::InvalidReservation);
         }
 
-        *slot.data.lock().map_err(|_| InsertError::Poisoned)? = data;
+        *self.data[reservation.index]
+            .lock()
+            .map_err(|_| InsertError::Poisoned)? = data;
         slot.state
-            .store(SlotState::Occupied.as_u8(), Ordering::Relaxed);
+            .store(SlotState::Occupied.as_u8(), Ordering::Release);
 
         Ok(SlotId {
             arena_id: self.id,
@@ -136,21 +160,20 @@ where
             return Err(BorrowError::InvalidHandle(id));
         };
 
-        match slot.data.try_lock() {
+        // Fast first check before mutex.
+        self.ensure_occupied_handle(slot, id)?;
+
+        match self.data[id.index].try_lock() {
             Err(TryLockError::WouldBlock) => return Err(BorrowError::Busy),
             Err(TryLockError::Poisoned(_)) => return Err(BorrowError::Poisoned),
             Ok(_) => (),
         };
 
-        if id.arena_id != self.id
-            || slot.state.load(Ordering::Acquire) != SlotState::Occupied.as_u8()
-            || id.generation != slot.generation.load(Ordering::Acquire)
-        {
-            return Err(BorrowError::StaleHandle(id));
-        }
+        // Check again under mutex.
+        self.ensure_occupied_handle(slot, id)?;
 
         slot.generation.fetch_add(1, Ordering::Relaxed);
-        slot.state.store(SlotState::Free.as_u8(), Ordering::Relaxed);
+        slot.state.store(SlotState::Free.as_u8(), Ordering::Release);
 
         Ok(true)
     }
@@ -164,18 +187,17 @@ where
             return Err(BorrowError::InvalidHandle(id));
         };
 
-        let data = match slot.data.try_lock() {
+        // Fast first check before mutex.
+        self.ensure_occupied_handle(slot, id)?;
+
+        let data = match self.data[id.index].try_lock() {
             Ok(data) => data,
             Err(TryLockError::WouldBlock) => return Err(BorrowError::Busy),
             Err(TryLockError::Poisoned(_)) => return Err(BorrowError::Poisoned),
         };
 
-        if id.arena_id != self.id
-            || slot.state.load(Ordering::Acquire) != SlotState::Occupied.as_u8()
-            || id.generation != slot.generation.load(Ordering::Acquire)
-        {
-            return Err(BorrowError::StaleHandle(id));
-        }
+        // Check again under mutex.
+        self.ensure_occupied_handle(slot, id)?;
 
         slot.state
             .store(SlotState::Reading.as_u8(), Ordering::Release);
@@ -187,29 +209,38 @@ where
     pub fn size(&self) -> usize {
         self.size
     }
+
+    /// Validates that `id` identifies the current occupied value in `slot`.
+    fn ensure_occupied_handle(&self, slot: &SlotMeta, id: SlotId) -> Result<(), BorrowError> {
+        let state = slot.state.load(Ordering::Acquire);
+        let generation = slot.generation.load(Ordering::Acquire);
+
+        if id.arena_id != self.id || id.generation != generation {
+            return Err(BorrowError::StaleHandle(id));
+        }
+
+        match state {
+            state if state == SlotState::Occupied.as_u8() => Ok(()),
+            state if state == SlotState::Reading.as_u8() => Err(BorrowError::Busy),
+            _ => Err(BorrowError::StaleHandle(id)),
+        }
+    }
 }
 
 /// Single arena slot with generation, lifecycle state, and stored data.
-struct Slot<T> {
+struct SlotMeta {
     /// Generation incremented every time the slot is removed and freed.
     generation: AtomicUsize,
 
     /// Current [`SlotState`] encoded as `u8` for atomic transitions.
     state: AtomicU8,
-
-    /// Stored value protected while a reader or remover holds the slot.
-    data: Mutex<T>,
 }
 
-impl<T> Default for Slot<T>
-where
-    T: Default,
-{
+impl Default for SlotMeta {
     fn default() -> Self {
         Self {
             generation: AtomicUsize::new(0),
             state: AtomicU8::new(SlotState::Free.as_u8()),
-            data: Mutex::new(T::default()),
         }
     }
 }
@@ -221,7 +252,7 @@ enum SlotState {
     Free = 0,
 
     /// Slot has been reserved by a producer and is not visible to consumers.
-    Writing = 1,
+    Reserved = 1,
 
     /// Slot contains a published value.
     Occupied = 2,
@@ -231,9 +262,20 @@ enum SlotState {
 }
 
 impl SlotState {
-    /// Returns the byte representation stored in [`Slot::state`].
+    /// Returns the byte representation stored in [`SlotMeta::state`].
     fn as_u8(self) -> u8 {
         self as u8
+    }
+
+    /// Returns a human-readable name for debug assertions.
+    fn name_from_u8(state: u8) -> &'static str {
+        match state {
+            state if state == Self::Free.as_u8() => "free",
+            state if state == Self::Reserved.as_u8() => "reserved",
+            state if state == Self::Occupied.as_u8() => "occupied",
+            state if state == Self::Reading.as_u8() => "reading",
+            _ => "unknown",
+        }
     }
 }
 
@@ -260,7 +302,7 @@ pub struct SlotId {
 /// to occupied when dropped.
 pub struct SlotReadGuard<'a, T> {
     /// Slot whose state is restored when the guard is dropped.
-    slot: &'a Slot<T>,
+    slot: &'a SlotMeta,
 
     /// Locked value borrowed from the slot.
     data: MutexGuard<'a, T>,
@@ -285,9 +327,12 @@ impl<T> Drop for SlotReadGuard<'_, T> {
 /// Producer-owned reservation for an arena slot.
 ///
 /// A reservation is created by [`Arena::try_reserve`] after the slot has moved
-/// from free to writing. Passing it to [`Arena::insert`] publishes the value
+/// from free to reserved. Passing it to [`Arena::insert`] publishes the value
 /// and returns a shareable [`SlotId`].
-pub struct Reservation {
+pub struct SlotReservationGuard<'a> {
+    /// Slot whose state is restored when the guard is dropped.
+    slot: &'a SlotMeta,
+
     /// Process-local id of the arena that owns the reserved slot.
     arena_id: usize,
 
@@ -296,6 +341,41 @@ pub struct Reservation {
 
     /// Slot generation observed when the reservation was acquired.
     generation: usize,
+}
+
+impl Drop for SlotReservationGuard<'_> {
+    fn drop(&mut self) {
+        if self.slot.generation.load(Ordering::Acquire) != self.generation {
+            let state = self.slot.state.load(Ordering::Acquire);
+            debug_assert_ne!(
+                state,
+                SlotState::Reserved.as_u8(),
+                "reservation generation changed while slot is still reserved"
+            );
+            return;
+        }
+
+        match self.slot.state.compare_exchange(
+            SlotState::Reserved.as_u8(),
+            SlotState::Free.as_u8(),
+            Ordering::Release,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {
+                // Reservation was abandoned before insert; slot is available again.
+            }
+            Err(state) if state == SlotState::Occupied.as_u8() => {
+                // Reservation was consumed by insert.
+            }
+            Err(state) => {
+                debug_assert!(
+                    state == SlotState::Occupied.as_u8(),
+                    "reservation dropped while slot is in unexpected state: {} ({state})",
+                    SlotState::name_from_u8(state)
+                );
+            }
+        }
+    }
 }
 
 /// Error returned when a slot handle cannot be borrowed or removed.
@@ -333,6 +413,17 @@ pub enum InsertError {
     Poisoned,
 }
 
+/// Error returned when a slot cannot be reserved.
+#[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TryReserveError {
+    /// The bounded reservation scan did not find a free slot.
+    #[error("reservation scan exceeded {attempts} attempts")]
+    AttemptsExceeded {
+        /// Number of slots probed before giving up.
+        attempts: u8,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,7 +450,7 @@ mod tests {
     fn test_arena_creation() {
         let arena = Arena::<TestValue>::new(1024).expect("power-of-two arena size should be valid");
         assert_eq!(arena.size(), 1024);
-        assert_eq!(arena.next_slot.load(Ordering::Relaxed), 0);
+        assert_eq!(arena.cursor.next.load(Ordering::Relaxed), 0);
         assert!(
             arena
                 .slots
@@ -383,7 +474,12 @@ mod tests {
 
         assert_eq!(reservation1.index, 0);
         assert_eq!(reservation2.index, 1);
-        assert!(arena.try_reserve().is_none());
+        assert!(matches!(
+            arena.try_reserve(),
+            Err(TryReserveError::AttemptsExceeded {
+                attempts: RESERVER_ATTEMPTS
+            })
+        ));
     }
 
     #[test]
@@ -440,12 +536,6 @@ mod tests {
     #[test]
     fn test_insert_rejects_stale_reservation_after_slot_reuse() {
         let arena = Arena::<TestValue>::new(1).expect("arena should be created");
-        let stale_reservation = Reservation {
-            arena_id: arena.id,
-            index: 0,
-            generation: 0,
-        };
-
         let reservation = arena.try_reserve().expect("slot should be reserved");
         let key = arena
             .insert(reservation, TestValue::new(1, 4))
@@ -454,11 +544,22 @@ mod tests {
 
         let current_reservation = arena.try_reserve().expect("slot should be reusable");
         assert_eq!(current_reservation.generation, 1);
+        let current_key = arena
+            .insert(current_reservation, TestValue::new(2, 4))
+            .expect("insert should succeed");
+
+        let stale_reservation = SlotReservationGuard {
+            slot: &arena.slots[0],
+            arena_id: arena.id,
+            index: 0,
+            generation: 0,
+        };
 
         assert!(matches!(
-            arena.insert(stale_reservation, TestValue::new(2, 4)),
+            arena.insert(stale_reservation, TestValue::new(3, 4)),
             Err(InsertError::InvalidReservation)
         ));
+        assert_eq!(arena.borrow(current_key).unwrap().sequence, 2);
     }
 
     #[test]
@@ -481,7 +582,7 @@ mod tests {
     }
 
     #[test]
-    fn test_borrow_and_remove_reject_free_and_writing_slots() {
+    fn test_borrow_and_remove_reject_free_and_reserved_slots() {
         let arena = Arena::<TestValue>::new(2).expect("arena should be created");
         let free_handle = SlotId {
             arena_id: arena.id,
@@ -513,6 +614,27 @@ mod tests {
             arena.remove(writing_handle),
             Err(BorrowError::StaleHandle(_))
         ));
+    }
+
+    #[test]
+    fn test_dropped_reservation_frees_slot() {
+        let arena = Arena::<TestValue>::new(1).expect("arena should be created");
+
+        {
+            let reservation = arena.try_reserve().expect("slot should be reserved");
+            assert_eq!(reservation.index, 0);
+            assert!(matches!(
+                arena.try_reserve(),
+                Err(TryReserveError::AttemptsExceeded {
+                    attempts: RESERVER_ATTEMPTS
+                })
+            ));
+        }
+
+        let reservation = arena
+            .try_reserve()
+            .expect("dropped reservation should free the slot");
+        assert_eq!(reservation.index, 0);
     }
 
     #[test]
@@ -682,7 +804,7 @@ mod tests {
         let poisoner = {
             let arena = Arc::clone(&arena);
             thread::spawn(move || {
-                let _guard = arena.slots[key.index].data.lock().unwrap();
+                let _guard = arena.data[key.index].lock().unwrap();
                 panic!("poison slot mutex");
             })
         };
@@ -699,7 +821,7 @@ mod tests {
         let poisoner = {
             let arena = Arc::clone(&arena);
             thread::spawn(move || {
-                let _guard = arena.slots[0].data.lock().unwrap();
+                let _guard = arena.data[0].lock().unwrap();
                 panic!("poison slot mutex");
             })
         };
@@ -718,16 +840,21 @@ mod tests {
 
         let arena = Arc::new(Arena::<TestValue>::new(THREADS).expect("arena should be created"));
         let barrier = Arc::new(Barrier::new(THREADS));
+        let release = Arc::new(Barrier::new(THREADS));
         let mut handles = Vec::with_capacity(THREADS);
 
         for _ in 0..THREADS {
             let arena = Arc::clone(&arena);
             let barrier = Arc::clone(&barrier);
+            let release = Arc::clone(&release);
             handles.push(thread::spawn(move || {
                 barrier.wait();
-                arena
+                let reservation = arena
                     .try_reserve()
-                    .expect("each thread should reserve one slot")
+                    .expect("each thread should reserve one slot");
+                let result = (reservation.index, reservation.generation);
+                release.wait();
+                result
             }));
         }
 
@@ -736,20 +863,16 @@ mod tests {
             .map(|handle| handle.join().expect("reservation thread should not panic"))
             .collect::<Vec<_>>();
 
-        reservations.sort_by_key(|reservation| reservation.index);
+        reservations.sort_by_key(|reservation| reservation.0);
         assert_eq!(
             reservations
                 .iter()
-                .map(|reservation| reservation.index)
+                .map(|reservation| reservation.0)
                 .collect::<Vec<_>>(),
             (0..THREADS).collect::<Vec<_>>()
         );
-        assert!(
-            reservations
-                .iter()
-                .all(|reservation| reservation.generation == 0)
-        );
-        assert!(arena.try_reserve().is_none());
+        assert!(reservations.iter().all(|reservation| reservation.1 == 0));
+        assert!(arena.try_reserve().is_ok());
     }
 
     #[test]
@@ -787,7 +910,12 @@ mod tests {
                 vec![(value.sequence % 251) as u8; 4]
             );
         }
-        assert!(arena.try_reserve().is_none());
+        assert!(matches!(
+            arena.try_reserve(),
+            Err(TryReserveError::AttemptsExceeded {
+                attempts: RESERVER_ATTEMPTS
+            })
+        ));
     }
 
     #[test]
@@ -803,7 +931,7 @@ mod tests {
             thread::spawn(move || {
                 for i in 0..PACKETS {
                     let reservation = loop {
-                        if let Some(reservation) = arena.try_reserve() {
+                        if let Ok(reservation) = arena.try_reserve() {
                             break reservation;
                         }
                         thread::yield_now();
@@ -842,7 +970,7 @@ mod tests {
             seen_generations.iter().copied().max().unwrap_or_default() > 0,
             "test should force slot reuse after wrapping over capacity"
         );
-        assert!(arena.try_reserve().is_some());
+        assert!(arena.try_reserve().is_ok());
     }
 
     #[test]

@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = "1.0.100"
 bytes = "1.11.1"
 chrono = "0.4.44"
+crossbeam-utils = "0.8.21"
 ethereum-types = "0.16.0"
 rlp = "0.6.1"
 rustaxa-types = { version = "0.1.0", path = "../rustaxa-types" }
