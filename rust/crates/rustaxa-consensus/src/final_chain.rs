@@ -53,10 +53,13 @@ const DPOS_DELEGATE_SELECTOR: [u8; 4] = [0x5c, 0x19, 0xa9, 0x5c];
 const DPOS_UNDELEGATE_SELECTOR: [u8; 4] = [0x4d, 0x99, 0xdd, 0x16];
 const DPOS_REDELEGATE_SELECTOR: [u8; 4] = [0x70, 0x38, 0x12, 0xcc];
 const DPOS_REGISTER_VALIDATOR_SELECTOR: [u8; 4] = [0xd6, 0xfd, 0xc1, 0x27];
+const DPOS_CLAIM_REWARDS_SELECTOR: [u8; 4] = [0xef, 0x5c, 0xfb, 0x8c];
+const DPOS_CLAIM_ALL_REWARDS_SELECTOR: [u8; 4] = [0x0b, 0x83, 0xa7, 0x27];
 const DPOS_REGISTER_VALIDATOR_GAS: u64 = 80_000;
 const DPOS_DELEGATE_GAS: u64 = 40_000;
 const DPOS_UNDELEGATE_GAS: u64 = 60_000;
 const DPOS_REDELEGATE_GAS: u64 = 80_000;
+const DPOS_CLAIM_REWARDS_GAS: u64 = 40_000;
 const DPOS_GET_DELEGATIONS_MAX_COUNT: usize = 20;
 const ASPEN_YIELD_PRECISION: u64 = 1_000_000;
 
@@ -877,8 +880,11 @@ impl FinalChain {
             rewards_stats_plan.fee_rewards_by_validator.clone()
         };
         let mut account_snapshot = execution.accounts;
-        let mut dpos_snapshot =
-            self.plan_dpos_snapshot(pbft.period, execution.dpos_transactions)?;
+        let mut dpos_snapshot = self.plan_dpos_snapshot(
+            pbft.period,
+            execution.dpos_transactions,
+            &mut account_snapshot,
+        )?;
         let minted_reward_plan = self.plan_minted_rewards(
             pbft.period,
             &rewards_stats_plan.distribution_stats,
@@ -1600,7 +1606,10 @@ impl FinalChain {
                     DposTransaction::Delegate { amount, .. } => {
                         *amount = u256_to_big_endian(value);
                     }
-                    DposTransaction::Undelegate { .. } | DposTransaction::Redelegate { .. } => {}
+                    DposTransaction::Undelegate { .. }
+                    | DposTransaction::Redelegate { .. }
+                    | DposTransaction::ClaimRewards { .. }
+                    | DposTransaction::ClaimAllRewards { .. } => {}
                 }
             }
             let required_gas = if let Some(dpos_transaction) = dpos_transaction.as_ref() {
@@ -1609,6 +1618,8 @@ impl FinalChain {
                     DposTransaction::Delegate { .. } => DPOS_DELEGATE_GAS,
                     DposTransaction::Undelegate { .. } => DPOS_UNDELEGATE_GAS,
                     DposTransaction::Redelegate { .. } => DPOS_REDELEGATE_GAS,
+                    DposTransaction::ClaimRewards { .. }
+                    | DposTransaction::ClaimAllRewards { .. } => DPOS_CLAIM_REWARDS_GAS,
                 }
             } else {
                 VALUE_TRANSFER_GAS
@@ -1662,6 +1673,21 @@ impl FinalChain {
 
             if status_code == 1 {
                 if let Some(dpos_tx) = dpos_transaction {
+                    if matches!(
+                        dpos_tx,
+                        DposTransaction::Register(_) | DposTransaction::Delegate { .. }
+                    ) && !value.is_zero()
+                    {
+                        let dpos_account = accounts
+                            .entry(DPOS_CONTRACT_ADDRESS)
+                            .or_insert_with(empty_account);
+                        let current_contract_balance = u256_from_big_endian(&dpos_account.balance);
+                        dpos_account.balance = u256_to_big_endian(
+                            current_contract_balance
+                                .checked_add(value)
+                                .ok_or_else(|| anyhow::anyhow!("DPoS contract balance overflow"))?,
+                        );
+                    }
                     dpos_transactions.push(dpos_tx);
                 } else {
                     let receiver_address = transaction.receiver.ok_or_else(|| {
@@ -2036,23 +2062,92 @@ impl FinalChain {
         )
     }
 
-    fn ensure_delegator_reward_claim_not_required(
+    fn apply_dpos_delegator_reward_claim(
         &self,
-        snapshot: &DposSnapshot,
+        snapshot: &mut DposSnapshot,
+        accounts: &mut HashMap<[u8; 20], Account>,
         validator: [u8; 20],
         delegator: [u8; 20],
-        stake: U256,
     ) -> Result<(), anyhow::Error> {
-        let reward = self.pending_delegator_reward(
-            snapshot,
-            validator,
-            delegator,
-            &u256_to_big_endian(stake),
-        )?;
+        let delegator_stake = snapshot
+            .delegations
+            .get(&validator)
+            .ok_or_else(|| {
+                anyhow::anyhow!("Rust FinalChain::finalize DPoS delegation does not exist")
+            })?
+            .get(&delegator)
+            .map(|bytes| u256_from_big_endian(bytes))
+            .ok_or_else(|| {
+                anyhow::anyhow!("Rust FinalChain::finalize DPoS delegator stake does not exist")
+            })?;
+        let previous_cursor = snapshot
+            .delegation_reward_cursors
+            .get(&validator)
+            .and_then(|cursors| cursors.get(&delegator))
+            .map(|bytes| u256_from_big_endian(bytes))
+            .unwrap_or_default();
+        let reward_cursor = self.checkpoint_validator_reward_per_stake(snapshot, validator)?;
         anyhow::ensure!(
-            reward.is_zero(),
-            "Rust FinalChain::finalize DPoS stake mutation requires reward claim support"
+            reward_cursor >= previous_cursor,
+            "DPoS delegation reward cursor exceeds validator reward state"
         );
+        let reward =
+            self.delegator_reward_from_per_stake(reward_cursor - previous_cursor, delegator_stake)?;
+        let dpos_contract_balance = u256_from_big_endian(
+            accounts
+                .entry(DPOS_CONTRACT_ADDRESS)
+                .or_insert_with(empty_account)
+                .balance
+                .as_slice(),
+        );
+        if reward > dpos_contract_balance {
+            anyhow::bail!(
+                "Rust FinalChain::finalize DPoS contract balance insufficient for reward claim"
+            );
+        }
+
+        snapshot
+            .delegation_reward_cursors
+            .entry(validator)
+            .or_default()
+            .insert(delegator, u256_to_big_endian(reward_cursor));
+
+        if reward.is_zero() {
+            return Ok(());
+        }
+
+        let dpos_account = accounts
+            .entry(DPOS_CONTRACT_ADDRESS)
+            .or_insert_with(empty_account);
+        dpos_account.balance = u256_to_big_endian(
+            dpos_contract_balance
+                .checked_sub(reward)
+                .ok_or_else(|| anyhow::anyhow!("DPoS contract reward underflow"))?,
+        );
+        let delegator_account = accounts.entry(delegator).or_insert_with(empty_account);
+        let current_delegator_balance = u256_from_big_endian(&delegator_account.balance);
+        delegator_account.balance = u256_to_big_endian(
+            current_delegator_balance
+                .checked_add(reward)
+                .ok_or_else(|| anyhow::anyhow!("DPoS delegator reward overflow"))?,
+        );
+        Ok(())
+    }
+
+    fn apply_dpos_claim_all_rewards(
+        &self,
+        snapshot: &mut DposSnapshot,
+        accounts: &mut HashMap<[u8; 20], Account>,
+        delegator: [u8; 20],
+    ) -> Result<(), anyhow::Error> {
+        let validators = snapshot
+            .delegator_validators
+            .get(&delegator)
+            .cloned()
+            .unwrap_or_default();
+        for validator in validators {
+            self.apply_dpos_delegator_reward_claim(snapshot, accounts, validator, delegator)?;
+        }
         Ok(())
     }
 
@@ -2065,6 +2160,7 @@ impl FinalChain {
         &self,
         block_number: u64,
         dpos_transactions: Vec<DposTransaction>,
+        accounts: &mut HashMap<[u8; 20], Account>,
     ) -> Result<DposSnapshot, anyhow::Error> {
         let snapshots = self
             .dpos_snapshots
@@ -2086,14 +2182,26 @@ impl FinalChain {
                     validator,
                     amount,
                 } => {
-                    self.apply_dpos_delegate(&mut snapshot, delegator, validator, amount)?;
+                    self.apply_dpos_delegate(
+                        &mut snapshot,
+                        accounts,
+                        delegator,
+                        validator,
+                        amount,
+                    )?;
                 }
                 DposTransaction::Undelegate {
                     delegator,
                     validator,
                     amount,
                 } => {
-                    self.apply_dpos_undelegate(&mut snapshot, delegator, validator, amount)?;
+                    self.apply_dpos_undelegate(
+                        &mut snapshot,
+                        accounts,
+                        delegator,
+                        validator,
+                        amount,
+                    )?;
                 }
                 DposTransaction::Redelegate {
                     delegator,
@@ -2101,7 +2209,28 @@ impl FinalChain {
                     to,
                     amount,
                 } => {
-                    self.apply_dpos_redelegate(&mut snapshot, delegator, from, to, amount)?;
+                    self.apply_dpos_redelegate(
+                        &mut snapshot,
+                        accounts,
+                        delegator,
+                        from,
+                        to,
+                        amount,
+                    )?;
+                }
+                DposTransaction::ClaimRewards {
+                    delegator,
+                    validator,
+                } => {
+                    self.apply_dpos_delegator_reward_claim(
+                        &mut snapshot,
+                        accounts,
+                        validator,
+                        delegator,
+                    )?;
+                }
+                DposTransaction::ClaimAllRewards { delegator } => {
+                    self.apply_dpos_claim_all_rewards(&mut snapshot, accounts, delegator)?;
                 }
             }
         }
@@ -2177,6 +2306,7 @@ impl FinalChain {
     fn apply_dpos_delegate(
         &self,
         snapshot: &mut DposSnapshot,
+        accounts: &mut HashMap<[u8; 20], Account>,
         delegator: [u8; 20],
         validator: [u8; 20],
         amount: Vec<u8>,
@@ -2201,17 +2331,21 @@ impl FinalChain {
             .map(|bytes| u256_from_big_endian(bytes))
             .unwrap_or_default();
         if !current_delegation.is_zero() {
-            self.ensure_delegator_reward_claim_not_required(
-                snapshot,
-                validator,
-                delegator,
-                current_delegation,
-            )?;
+            self.apply_dpos_delegator_reward_claim(snapshot, accounts, validator, delegator)?;
         }
-        let reward_cursor = self.checkpoint_validator_reward_per_stake(snapshot, validator)?;
+        let reward_cursor = if current_delegation.is_zero() {
+            self.checkpoint_validator_reward_per_stake(snapshot, validator)?
+        } else {
+            U256::zero()
+        };
         let delegations = snapshot.delegations.entry(validator).or_default();
         if current_delegation.is_zero() {
             add_delegator_validator(&mut snapshot.delegator_validators, delegator, validator);
+            snapshot
+                .delegation_reward_cursors
+                .entry(validator)
+                .or_default()
+                .insert(delegator, u256_to_big_endian(reward_cursor));
         }
         delegations.insert(
             delegator,
@@ -2221,11 +2355,6 @@ impl FinalChain {
                     .ok_or_else(|| anyhow::anyhow!("DPoS delegation addition overflow"))?,
             ),
         );
-        snapshot
-            .delegation_reward_cursors
-            .entry(validator)
-            .or_default()
-            .insert(delegator, u256_to_big_endian(reward_cursor));
         self.set_validator_stake(snapshot, validator, new_stake)
     }
 
@@ -2262,6 +2391,7 @@ impl FinalChain {
     fn apply_dpos_undelegate(
         &self,
         snapshot: &mut DposSnapshot,
+        accounts: &mut HashMap<[u8; 20], Account>,
         delegator: [u8; 20],
         validator: [u8; 20],
         amount: Vec<u8>,
@@ -2290,13 +2420,7 @@ impl FinalChain {
         if current_stake < remove_amount {
             anyhow::bail!("Rust FinalChain::finalize DPoS stake underflows on undelegate");
         }
-        self.ensure_delegator_reward_claim_not_required(
-            snapshot,
-            validator,
-            delegator,
-            current_delegation,
-        )?;
-        let reward_cursor = self.checkpoint_validator_reward_per_stake(snapshot, validator)?;
+        self.apply_dpos_delegator_reward_claim(snapshot, accounts, validator, delegator)?;
         let delegations = snapshot.delegations.get_mut(&validator).ok_or_else(|| {
             anyhow::anyhow!("Rust FinalChain::finalize DPoS delegation does not exist")
         })?;
@@ -2309,11 +2433,6 @@ impl FinalChain {
             }
         } else {
             delegations.insert(delegator, u256_to_big_endian(new_delegation));
-            snapshot
-                .delegation_reward_cursors
-                .entry(validator)
-                .or_default()
-                .insert(delegator, u256_to_big_endian(reward_cursor));
         }
         let new_stake = current_stake - remove_amount;
         self.set_validator_stake(snapshot, validator, new_stake)
@@ -2322,6 +2441,7 @@ impl FinalChain {
     fn apply_dpos_redelegate(
         &self,
         snapshot: &mut DposSnapshot,
+        accounts: &mut HashMap<[u8; 20], Account>,
         delegator: [u8; 20],
         from: [u8; 20],
         to: [u8; 20],
@@ -2341,8 +2461,8 @@ impl FinalChain {
             anyhow::bail!("Rust FinalChain::finalize DPoS stake underflows on redelegate")
         }
         let amount = u256_to_big_endian(amount);
-        self.apply_dpos_undelegate(snapshot, delegator, from, amount.clone())?;
-        self.apply_dpos_delegate(snapshot, delegator, to, amount)?;
+        self.apply_dpos_undelegate(snapshot, accounts, delegator, from, amount.clone())?;
+        self.apply_dpos_delegate(snapshot, accounts, delegator, to, amount)?;
         Ok(())
     }
 
@@ -3323,6 +3443,19 @@ fn decode_dpos_transaction(
     let mut selector = [0u8; 4];
     selector.copy_from_slice(&input[..4]);
     match selector {
+        DPOS_CLAIM_REWARDS_SELECTOR => {
+            let validator = decode_abi_address_argument(input, "claimRewards(address)")?;
+            Ok(DposTransaction::ClaimRewards {
+                delegator: owner,
+                validator,
+            })
+        }
+        DPOS_CLAIM_ALL_REWARDS_SELECTOR => {
+            if input.len() != 4 {
+                anyhow::bail!("claimAllRewards input is malformed");
+            }
+            Ok(DposTransaction::ClaimAllRewards { delegator: owner })
+        }
         DPOS_REGISTER_VALIDATOR_SELECTOR => {
             let registration = decode_dpos_register_validator(input, owner)?;
             Ok(DposTransaction::Register(registration))
@@ -3598,6 +3731,13 @@ enum DposTransaction {
         from: [u8; 20],
         to: [u8; 20],
         amount: Vec<u8>,
+    },
+    ClaimRewards {
+        delegator: [u8; 20],
+        validator: [u8; 20],
+    },
+    ClaimAllRewards {
+        delegator: [u8; 20],
     },
 }
 
@@ -3925,6 +4065,16 @@ mod tests {
         let mut input = DPOS_DELEGATE_SELECTOR.to_vec();
         input.extend_from_slice(&abi_word_from_address(validator));
         input
+    }
+
+    fn claim_rewards_input(validator: [u8; 20]) -> Vec<u8> {
+        let mut input = DPOS_CLAIM_REWARDS_SELECTOR.to_vec();
+        input.extend_from_slice(&abi_word_from_address(validator));
+        input
+    }
+
+    fn claim_all_rewards_input() -> Vec<u8> {
+        DPOS_CLAIM_ALL_REWARDS_SELECTOR.to_vec()
     }
 
     fn undelegate_input(validator: [u8; 20], amount: U256) -> Vec<u8> {
@@ -5126,7 +5276,7 @@ mod tests {
     }
 
     #[test]
-    fn finalize_block_rejects_dpos_stake_mutation_that_requires_reward_claim() {
+    fn finalize_block_supports_auto_claim_on_dpos_stake_mutation() {
         let path = temp_db_path("finalize-dpos-mutation-with-pending-reward");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let validator = [0x68; 20];
@@ -5208,6 +5358,7 @@ mod tests {
             U256::from(10_000u64),
             U256::from(150u64),
         );
+        let first_period_contract_balance = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
 
         let second_period = 2u64;
         let second_pbft = signed_pbft_block(&signing_key, second_period, 202);
@@ -5229,12 +5380,332 @@ mod tests {
             std::slice::from_ref(&delegate_tx.rlp),
         );
 
-        let err = final_chain
+        final_chain
             .finalize_block(second_pbft, vec![delegate_tx], vec![])
-            .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("DPoS stake mutation requires reward claim support")
+            .unwrap();
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            first_period_contract_balance - U256::from(150u64) + U256::from(1_000u64)
+        );
+        assert_eq!(balance_of(&final_chain, validator), U256::from(999_149u64));
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_supports_claim_all_rewards() {
+        let path = temp_db_path("finalize-dpos-claim-all-rewards");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x70; 20];
+        let receiver = [0x71; 20];
+        let signing_key = SigningKey::from_slice(&[21u8; 32]).unwrap();
+        let first_period = 1u64;
+        let first_pbft = signed_pbft_block(&signing_key, first_period, 203);
+        let transaction_rlp = vec![0xc1, 0xD1];
+        let transaction = test_transaction(
+            0xD1,
+            validator,
+            Some(receiver),
+            0,
+            U256::from(1u64),
+            U256::zero(),
+            50_000,
+            vec![],
+            transaction_rlp.clone(),
+        );
+        let transaction_hash = transaction.hash;
+        write_period_data(
+            &storage,
+            first_period,
+            &first_pbft,
+            std::slice::from_ref(&transaction_rlp),
+        );
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(validator, U256::from(1_000_000u64))],
+            vec![genesis_validator_with_metadata(
+                validator,
+                U256::from(10_000u64),
+                [0x72; 20],
+                2_500,
+                "validator",
+                "endpoint",
+            )],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+            FinalChainRewardsConfig {
+                committee_size: 100,
+                magnolia_period: 0,
+                aspen_part_one_period: u64::MAX,
+                aspen_part_two_period: 0,
+                max_block_author_reward_percent: 0,
+                dag_proposers_reward_percent: 100,
+                yield_percentage: 20,
+                dpos_blocks_per_year: 10,
+                rewards_distribution_frequency: vec![(0, 1)],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        final_chain
+            .finalize_block(
+                first_pbft,
+                vec![transaction],
+                vec![FinalizationDagBlock {
+                    author: validator,
+                    difficulty: 0,
+                    transaction_hashes: vec![transaction_hash],
+                }],
+            )
+            .unwrap();
+        assert_single_delegation(
+            &final_chain,
+            first_period,
+            validator,
+            validator,
+            U256::from(10_000u64),
+            U256::from(150u64),
+        );
+        let first_period_contract_balance = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
+
+        let second_period = 2u64;
+        let second_pbft = signed_pbft_block(&signing_key, second_period, 204);
+        let claim_tx = test_transaction(
+            0xD2,
+            validator,
+            Some(DPOS_CONTRACT_ADDRESS),
+            1,
+            U256::zero(),
+            U256::zero(),
+            100_000,
+            claim_all_rewards_input(),
+            vec![0xc1, 0xD2],
+        );
+        write_period_data(
+            &storage,
+            second_period,
+            &second_pbft,
+            std::slice::from_ref(&claim_tx.rlp),
+        );
+
+        final_chain
+            .finalize_block(second_pbft, vec![claim_tx], vec![])
+            .unwrap();
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            first_period_contract_balance - U256::from(150u64)
+        );
+        assert_eq!(
+            balance_of(&final_chain, validator),
+            U256::from(1_000_149u64)
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_supports_claim_rewards() {
+        let path = temp_db_path("finalize-dpos-claim-rewards");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x73; 20];
+        let receiver = [0x74; 20];
+        let signing_key = SigningKey::from_slice(&[22u8; 32]).unwrap();
+        let first_period = 1u64;
+        let first_pbft = signed_pbft_block(&signing_key, first_period, 205);
+        let transaction_rlp = vec![0xc1, 0xE1];
+        let transaction = test_transaction(
+            0xE1,
+            validator,
+            Some(receiver),
+            0,
+            U256::from(1u64),
+            U256::zero(),
+            50_000,
+            vec![],
+            transaction_rlp.clone(),
+        );
+        let transaction_hash = transaction.hash;
+        write_period_data(
+            &storage,
+            first_period,
+            &first_pbft,
+            std::slice::from_ref(&transaction_rlp),
+        );
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(validator, U256::from(1_000_000u64))],
+            vec![genesis_validator_with_metadata(
+                validator,
+                U256::from(10_000u64),
+                [0x75; 20],
+                2_500,
+                "validator",
+                "endpoint",
+            )],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+            FinalChainRewardsConfig {
+                committee_size: 100,
+                magnolia_period: 0,
+                aspen_part_one_period: u64::MAX,
+                aspen_part_two_period: 0,
+                max_block_author_reward_percent: 0,
+                dag_proposers_reward_percent: 100,
+                yield_percentage: 20,
+                dpos_blocks_per_year: 10,
+                rewards_distribution_frequency: vec![(0, 1)],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        final_chain
+            .finalize_block(
+                first_pbft,
+                vec![transaction],
+                vec![FinalizationDagBlock {
+                    author: validator,
+                    difficulty: 0,
+                    transaction_hashes: vec![transaction_hash],
+                }],
+            )
+            .unwrap();
+        assert_single_delegation(
+            &final_chain,
+            first_period,
+            validator,
+            validator,
+            U256::from(10_000u64),
+            U256::from(150u64),
+        );
+        let first_period_contract_balance = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
+
+        let second_period = 2u64;
+        let second_pbft = signed_pbft_block(&signing_key, second_period, 206);
+        let claim_tx = test_transaction(
+            0xE2,
+            validator,
+            Some(DPOS_CONTRACT_ADDRESS),
+            1,
+            U256::zero(),
+            U256::zero(),
+            100_000,
+            claim_rewards_input(validator),
+            vec![0xc1, 0xE2],
+        );
+        write_period_data(
+            &storage,
+            second_period,
+            &second_pbft,
+            std::slice::from_ref(&claim_tx.rlp),
+        );
+
+        final_chain
+            .finalize_block(second_pbft, vec![claim_tx], vec![])
+            .unwrap();
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            first_period_contract_balance - U256::from(150u64)
+        );
+        assert_eq!(
+            balance_of(&final_chain, validator),
+            U256::from(1_000_149u64)
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn dpos_claim_checkpoint_preserves_other_delegator_rewards() {
+        let path = temp_db_path("dpos-claim-preserves-other-delegator-rewards");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x76; 20];
+        let delegator = [0x77; 20];
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            100_000,
+            0,
+            vec![],
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+        )
+        .unwrap();
+        let mut snapshot = final_chain.dpos_snapshot_at_finalized_block(0).unwrap();
+        snapshot
+            .delegations
+            .entry(validator)
+            .or_default()
+            .insert(delegator, u256_to_big_endian(U256::from(10_000u64)));
+        add_delegator_validator(&mut snapshot.delegator_validators, delegator, validator);
+        snapshot
+            .delegation_reward_cursors
+            .entry(validator)
+            .or_default()
+            .insert(delegator, Vec::new());
+        snapshot
+            .delegator_rewards
+            .insert(validator, u256_to_big_endian(U256::from(150u64)));
+        snapshot
+            .total_stakes
+            .insert(validator, u256_to_big_endian(U256::from(20_000u64)));
+
+        let mut accounts = HashMap::new();
+        accounts.insert(
+            DPOS_CONTRACT_ADDRESS,
+            Account {
+                balance: u256_to_big_endian(U256::from(150u64)),
+                ..empty_account()
+            },
+        );
+
+        final_chain
+            .apply_dpos_delegator_reward_claim(&mut snapshot, &mut accounts, validator, validator)
+            .unwrap();
+        final_chain
+            .apply_dpos_delegator_reward_claim(&mut snapshot, &mut accounts, validator, delegator)
+            .unwrap();
+
+        assert_eq!(
+            u256_from_big_endian(&accounts.get(&validator).unwrap().balance),
+            U256::from(75u64)
+        );
+        assert_eq!(
+            u256_from_big_endian(&accounts.get(&delegator).unwrap().balance),
+            U256::from(75u64)
+        );
+        assert_eq!(
+            u256_from_big_endian(&accounts.get(&DPOS_CONTRACT_ADDRESS).unwrap().balance),
+            U256::zero()
         );
 
         drop(final_chain);

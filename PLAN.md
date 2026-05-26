@@ -254,9 +254,10 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     Rust reward stats into staged validator commission and delegator reward pools, credits the DPoS contract account with
     the minted total, migrates part-one minted tokens into durable total supply at the Aspen part-two boundary, and writes
     header `total_reward` from the Rust plan. Rust-backed FinalChain shim reads now expose DPoS total delegated, yield,
-    total supply, and read-only delegator reward pages backed by Rust F1 reward cursors. Stake mutations that would
-    trigger Go's auto-claim path now fail explicitly until claim execution moves to Rust; claim execution remains future
-    work.
+    total supply, and read-only delegator reward pages backed by Rust F1 reward cursors. Rust now executes delegator
+    `claimRewards(address)`, current-ABI `claimAllRewards()`, and stake-mutation auto-claims by moving reward balances
+    through staged Rust account/DPoS snapshots. DPoS claim/stake event receipt logs, dynamic claim-all gas, and the
+    legacy batch claim-all ABI remain future work.
   - non-genesis DPoS queries still throw when the queried block has not been finalized through Rust snapshot
     maintenance; DPoS transitions beyond the supported validator-registration/delegation subset and legacy databases without Rust
     account snapshots remain explicit gaps.
@@ -557,9 +558,9 @@ The current Rust starting point is intentionally small:
     interval cache rows in the finalized-block batch, reloads cached stats on startup, applies interval-boundary
     fee commission rewards from the Rust planner to staged Rust account/DPoS snapshots, and now handles fixed-yield plus
     Aspen part-two dynamic-yield minted block/DAG/vote distribution, total-supply migration, Rust-backed supply/yield and
-    delegator reward-page reads, and header `total_reward` natively. Stake mutations with pending delegator rewards still
-    stop at an explicit Rust claim-support gap. Moving claim execution and legacy `BlockStats`
-    carrier ownership fully into Rust remain future work. Double-voting proof planning and already-verified pillar-vote
+    delegator reward-page reads, claim balance/cursor updates, and header `total_reward` natively. Moving DPoS event
+    receipt parity, dynamic claim-all gas and legacy batch ABI behavior, and legacy `BlockStats` carrier ownership fully
+    into Rust remain future work. Double-voting proof planning and already-verified pillar-vote
     aggregation are Rust-backed; broader slashing state transitions, pillar signing/recovery, and
     `PillarChainManager` orchestration still depend on future FinalChain/state ports.
 

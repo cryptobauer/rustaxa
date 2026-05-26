@@ -108,6 +108,30 @@ class RustFinalChainTest : public ::testing::Test {
     return input;
   }
 
+  static rust::Vec<uint8_t> get_claim_rewards_input(std::array<uint8_t, 20> validator) {
+    rust::Vec<uint8_t> input;
+    input.push_back(0xef);
+    input.push_back(0x5c);
+    input.push_back(0xfb);
+    input.push_back(0x8c);
+    for (auto i = 0; i < 12; ++i) {
+      input.push_back(0);
+    }
+    for (const auto byte : validator) {
+      input.push_back(byte);
+    }
+    return input;
+  }
+
+  static rust::Vec<uint8_t> get_claim_all_rewards_input() {
+    rust::Vec<uint8_t> input;
+    input.push_back(0x0b);
+    input.push_back(0x83);
+    input.push_back(0xa7);
+    input.push_back(0x27);
+    return input;
+  }
+
   static uint64_t abi_word_u64(const rust::Vec<uint8_t>& data, size_t offset) {
     uint64_t value = 0;
     for (auto i = offset + 24; i < offset + 32; ++i) {
@@ -255,4 +279,19 @@ TEST_F(RustFinalChainTest, DposCallReturnsGenesisValidatorMetadata) {
   EXPECT_EQ(abi_word_u64(outcome.code_retval, 256), 320u);
   EXPECT_EQ(abi_string_at(outcome.code_retval, 32, 256), "bridge validator metadata");
   EXPECT_EQ(abi_string_at(outcome.code_retval, 32, 320), "https://validator.example");
+}
+
+TEST_F(RustFinalChainTest, DposCallRejectsClaimSelectors) {
+  const auto validator_address = address(0x10);
+  auto storage = create_storage(test_dir.string());
+  auto final_chain = create_final_chain(*storage, 0, 0, genesis_accounts(), genesis_validators(validator_address),
+                                        genesis_dpos_config());
+
+  auto claim_rewards_outcome = final_chain->call(dpos_call(0, get_claim_rewards_input(validator_address)));
+  ASSERT_EQ(std::string(claim_rewards_outcome.code_err), "Rust FinalChain::call unsupported DPoS selector 0xef5cfb8c");
+  EXPECT_EQ(std::string(claim_rewards_outcome.consensus_err), "");
+
+  auto claim_all_outcome = final_chain->call(dpos_call(0, get_claim_all_rewards_input()));
+  ASSERT_EQ(std::string(claim_all_outcome.code_err), "Rust FinalChain::call unsupported DPoS selector 0x0b83a727");
+  EXPECT_EQ(std::string(claim_all_outcome.consensus_err), "");
 }
