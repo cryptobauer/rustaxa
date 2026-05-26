@@ -43,6 +43,13 @@ pub fn create_final_chain(
             committee_size: 0,
             magnolia_period: 0,
             aspen_part_one_period: u64::MAX,
+            aspen_part_two_period: 0,
+            max_block_author_reward_percent: 0,
+            dag_proposers_reward_percent: 0,
+            yield_percentage: 0,
+            dpos_blocks_per_year: 0,
+            aspen_max_supply: Vec::new(),
+            aspen_generated_rewards: Vec::new(),
             frequency_rules: Vec::new(),
         },
     )
@@ -113,6 +120,13 @@ pub fn create_final_chain_with_rewards_config(
             committee_size: rewards_config.committee_size,
             magnolia_period: rewards_config.magnolia_period,
             aspen_part_one_period: rewards_config.aspen_part_one_period,
+            aspen_part_two_period: rewards_config.aspen_part_two_period,
+            max_block_author_reward_percent: rewards_config.max_block_author_reward_percent,
+            dag_proposers_reward_percent: rewards_config.dag_proposers_reward_percent,
+            yield_percentage: rewards_config.yield_percentage,
+            dpos_blocks_per_year: rewards_config.dpos_blocks_per_year,
+            aspen_max_supply: rewards_config.aspen_max_supply,
+            aspen_generated_rewards: rewards_config.aspen_generated_rewards,
             rewards_distribution_frequency: rewards_config
                 .frequency_rules
                 .into_iter()

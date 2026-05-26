@@ -113,7 +113,8 @@ pub struct GenesisDposConfig {
 ///
 /// This is intentionally separate from `GenesisDposConfig`: DPoS genesis
 /// fields describe validator/stake initialization, while rewards configuration
-/// controls post-execution reward-stat planning for finalized blocks.
+/// controls post-execution reward-stat planning and fixed-yield reward
+/// distribution for finalized blocks.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct FinalChainRewardsConfig {
     /// Committee size used by legacy rewards stats for max vote-weight bounds.
@@ -122,6 +123,29 @@ pub struct FinalChainRewardsConfig {
     pub magnolia_period: u64,
     /// First period where Aspen part-one DAG reward counting is active.
     pub aspen_part_one_period: u64,
+    /// First period where Aspen part-two dynamic-yield rewards are active.
+    ///
+    /// Rust native finalization currently distributes fixed-yield rewards only.
+    /// A zero value keeps the part-two path disabled for rewrite tests and
+    /// local configurations that do not provide the hardfork boundary.
+    pub aspen_part_two_period: u64,
+    /// Maximum percentage of a block reward paid to the PBFT block author as a
+    /// cert-vote inclusion bonus.
+    pub max_block_author_reward_percent: u16,
+    /// Percentage of a block reward allocated to DAG proposers when the
+    /// finalized period has cert-vote weight.
+    pub dag_proposers_reward_percent: u16,
+    /// Fixed annual DPoS yield percentage used before Aspen part two.
+    pub yield_percentage: u16,
+    /// Configured fixed-yield block count per year.
+    pub dpos_blocks_per_year: u32,
+    /// Aspen part-two maximum supply encoded as an unsigned big-endian integer.
+    pub aspen_max_supply: Vec<u8>,
+    /// Aspen part-one generated rewards encoded as an unsigned big-endian
+    /// integer. Rust snapshots seed their minted-token counter from this value
+    /// so fixed-yield rewards can advance the same durable state before the
+    /// dynamic-yield rewrite lands.
+    pub aspen_generated_rewards: Vec<u8>,
     /// Rewards distribution frequency changes keyed by starting period.
     pub rewards_distribution_frequency: Vec<(u64, u32)>,
 }

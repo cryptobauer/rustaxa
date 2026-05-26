@@ -8,12 +8,13 @@
 //! legacy-compatible `BlockStats` RLP bytes plus explicit cache/clear intents.
 //!
 //! The module intentionally does not distribute rewards or mutate account state.
-//! State API reward distribution remains outside this boundary until the state
-//! execution rewrite owns those side effects.
+//! Callers that own staged final-chain state can decode the legacy distribution
+//! rows into typed reward inputs and apply the side effects in their own atomic
+//! persistence boundary.
 
 use anyhow::{Context, Result, anyhow, bail};
 use ethereum_types::{H160, H256, U256};
-use rlp::RlpStream;
+use rlp::{Rlp, RlpStream};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Hardfork and committee configuration used by reward-stat planning.
@@ -110,6 +111,36 @@ impl RewardsStatsStatus {
 pub struct RewardsStatsPeriodRlp {
     pub period: u64,
     pub data: Vec<u8>,
+}
+
+/// Per-validator facts decoded from legacy `BlockStats` distribution RLP.
+///
+/// The values are the deterministic activity counters and fee ownership used
+/// by reward distribution. They intentionally do not mutate account or DPoS
+/// state; FinalChain decides how to split rewards across validator commission,
+/// delegator pools, and executable account balance.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RewardsValidatorDistribution {
+    pub dag_blocks_count: u32,
+    pub vote_weight: u64,
+    pub fees_rewards: U256,
+}
+
+/// One finalized period's reward-distribution inputs decoded from legacy
+/// `BlockStats` RLP.
+///
+/// This is a typed view over the compatibility payload already returned to C++
+/// shims. It preserves per-period boundaries because legacy StateAPI reward
+/// distribution runs once per cached block stat at distribution time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RewardsBlockDistribution {
+    pub period: u64,
+    pub block_author: H160,
+    pub blocks_per_year: u32,
+    pub validators_stats: BTreeMap<[u8; 20], RewardsValidatorDistribution>,
+    pub total_dag_blocks_count: u32,
+    pub total_votes_weight: u64,
+    pub max_votes_weight: u64,
 }
 
 /// Plan returned after processing one finalized period.
@@ -467,6 +498,62 @@ impl ValidatorStats {
     }
 }
 
+/// Decodes legacy distribution-stat RLP rows into typed Rust reward inputs.
+///
+/// Inputs are the exact `distribution_stats` rows from
+/// `RewardsStatsProcessPlan`. Malformed RLP, truncated validator entries, or
+/// duplicate validators inside one row are returned as errors so callers do not
+/// silently compute rewards from partial facts.
+pub fn decode_rewards_block_distributions(
+    distribution_stats: &[RewardsStatsPeriodRlp],
+) -> Result<Vec<RewardsBlockDistribution>> {
+    distribution_stats
+        .iter()
+        .map(|stats| decode_rewards_block_distribution(stats.period, &stats.data))
+        .collect()
+}
+
+fn decode_rewards_block_distribution(period: u64, data: &[u8]) -> Result<RewardsBlockDistribution> {
+    let block_stats = Rlp::new(data);
+    anyhow::ensure!(
+        block_stats.item_count()? == 6,
+        "REWARDS_STATS_BLOCK_RLP_ITEM_COUNT"
+    );
+    let validators = block_stats.at(2)?;
+    let mut validators_stats = BTreeMap::new();
+    for entry in validators.iter() {
+        anyhow::ensure!(
+            entry.item_count()? == 2,
+            "REWARDS_STATS_VALIDATOR_ENTRY_ITEM_COUNT"
+        );
+        let validator = entry.val_at::<H160>(0)?.0;
+        let stats = entry.at(1)?;
+        anyhow::ensure!(
+            stats.item_count()? == 3,
+            "REWARDS_STATS_VALIDATOR_STATS_ITEM_COUNT"
+        );
+        let replaced = validators_stats.insert(
+            validator,
+            RewardsValidatorDistribution {
+                dag_blocks_count: stats.val_at(0)?,
+                vote_weight: stats.val_at(1)?,
+                fees_rewards: stats.val_at(2)?,
+            },
+        );
+        anyhow::ensure!(replaced.is_none(), "REWARDS_STATS_DUPLICATE_VALIDATOR_RLP");
+    }
+
+    Ok(RewardsBlockDistribution {
+        period,
+        block_author: block_stats.val_at(0)?,
+        blocks_per_year: block_stats.val_at(1)?,
+        validators_stats,
+        total_dag_blocks_count: block_stats.val_at(3)?,
+        total_votes_weight: block_stats.val_at(4)?,
+        max_votes_weight: block_stats.val_at(5)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -581,6 +668,38 @@ mod tests {
         let next = runtime.process_period(fact(6));
         assert_eq!(next.distribution_stats.len(), 1);
         assert_eq!(next.distribution_stats[0].period, 6);
+    }
+
+    #[test]
+    fn decodes_structured_distribution_stats() {
+        let mut runtime = runtime(2);
+
+        assert!(
+            runtime
+                .process_period(fact(5))
+                .distribution_stats
+                .is_empty()
+        );
+        let plan = runtime.process_period(fact(6));
+        let decoded = decode_rewards_block_distributions(&plan.distribution_stats).unwrap();
+
+        assert_eq!(
+            decoded.iter().map(|stats| stats.period).collect::<Vec<_>>(),
+            vec![5, 6]
+        );
+        assert_eq!(decoded[0].block_author, addr(1));
+        assert_eq!(decoded[0].blocks_per_year, 1234);
+        assert_eq!(decoded[0].total_dag_blocks_count, 2);
+        assert_eq!(decoded[0].total_votes_weight, 40);
+        assert_eq!(decoded[0].max_votes_weight, 90);
+        assert_eq!(
+            decoded[0].validators_stats.get(&addr(2).0).unwrap(),
+            &RewardsValidatorDistribution {
+                dag_blocks_count: 1,
+                vote_weight: 0,
+                fees_rewards: U256::from(20u64),
+            }
+        );
     }
 
     #[test]

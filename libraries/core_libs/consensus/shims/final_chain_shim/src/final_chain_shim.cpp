@@ -174,6 +174,14 @@ rustaxa::FinalChainRewardsConfig make_final_chain_rewards_config(const taraxa::F
   rewards_config.committee_size = config.genesis.pbft.committee_size;
   rewards_config.magnolia_period = config.genesis.state.hardforks.magnolia_hf.block_num;
   rewards_config.aspen_part_one_period = config.genesis.state.hardforks.aspen_hf.block_num_part_one;
+  rewards_config.aspen_part_two_period = config.genesis.state.hardforks.aspen_hf.block_num_part_two;
+  rewards_config.max_block_author_reward_percent = config.genesis.state.dpos.max_block_author_reward;
+  rewards_config.dag_proposers_reward_percent = config.genesis.state.dpos.dag_proposers_reward;
+  rewards_config.yield_percentage = config.genesis.state.dpos.yield_percentage;
+  rewards_config.dpos_blocks_per_year = config.genesis.state.dpos.blocks_per_year;
+  rewards_config.aspen_max_supply = into_big_endian_vec(config.genesis.state.hardforks.aspen_hf.max_supply);
+  rewards_config.aspen_generated_rewards =
+      into_big_endian_vec(config.genesis.state.hardforks.aspen_hf.generated_rewards);
   rewards_config.frequency_rules.reserve(config.genesis.state.hardforks.rewards_distribution_frequency.size());
   for (const auto& [from_period, frequency] : config.genesis.state.hardforks.rewards_distribution_frequency) {
     rustaxa::RewardsFrequencyRule rule{};

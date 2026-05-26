@@ -3,8 +3,9 @@
 //! The bridge exposes a Rust-owned rewards-stat runtime to C++ shims using
 //! plain facts and legacy-compatible `BlockStats` RLP bytes. It also appends the
 //! cache persistence/clear intent to an existing Rust storage batch so rewards
-//! stats can later become atomic with finalized-period commits. Account reward
-//! distribution remains a C++/StateAPI responsibility for this slice.
+//! stats can later become atomic with finalized-period commits. The standalone
+//! bridge remains side-effect free; Rust native FinalChain owns any staged
+//! reward-distribution mutations it derives from these stats.
 
 use crate::ffi::rustaxa_ffi::{
     PeriodRlp as FfiPeriodRlp, RewardsCertVoteFact as FfiRewardsCertVoteFact,

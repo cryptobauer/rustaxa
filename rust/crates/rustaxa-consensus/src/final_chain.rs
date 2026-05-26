@@ -5,8 +5,8 @@ use crate::dag::{
 };
 use crate::rewards_stats::{
     FinalizedRewardsPeriodFact, RewardCertVoteFact, RewardDagBlockFact, RewardTransactionFact,
-    RewardsFrequencyRule, RewardsStatsConfig, RewardsStatsPeriodRlp, RewardsStatsRuntime,
-    RewardsStatsStatus,
+    RewardsBlockDistribution, RewardsFrequencyRule, RewardsStatsConfig, RewardsStatsPeriodRlp,
+    RewardsStatsRuntime, RewardsStatsStatus, decode_rewards_block_distributions,
 };
 use anyhow::Result;
 use ethereum_types::{H256, U256};
@@ -98,15 +98,17 @@ pub struct FinalChain {
 /// Point-in-time DPoS vote-count view keyed by final-chain block number.
 ///
 /// The snapshot stores the Rust-owned subset currently needed by consensus and
-/// RPC tests: validator stake, vote counts, accumulated commission rewards, and
-/// validator metadata, and VRF keys. Finalization appends block-keyed snapshots
-/// instead of answering historical queries from stale genesis data.
+/// RPC tests: validator stake, vote counts, accumulated validator/delegator
+/// rewards, validator metadata, and VRF keys. Finalization appends block-keyed
+/// snapshots instead of answering historical queries from stale genesis data.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DposSnapshot {
     /// Total stake by validator address at this block.
     total_stakes: BTreeMap<[u8; 20], Vec<u8>>,
     /// Accumulated commission reward by validator address at this block.
     commission_rewards: BTreeMap<[u8; 20], Vec<u8>>,
+    /// Accumulated delegator reward pool by validator address at this block.
+    delegator_rewards: BTreeMap<[u8; 20], Vec<u8>>,
     /// Validator metadata by validator address at this block.
     validator_metadata: BTreeMap<[u8; 20], DposValidatorMetadata>,
     /// Validator VRF keys by validator address at this block.
@@ -117,12 +119,27 @@ struct DposSnapshot {
     total_vote_count: u64,
     /// Delegated stake by validator and delegator at this block.
     delegations: DposDelegations,
+    /// Aspen part-one minted-token counter at this block.
+    minted_tokens: Vec<u8>,
 }
 
 struct NativeRewardsStatsPlan {
     fee_rewards_by_validator: BTreeMap<[u8; 20], U256>,
+    distribution_stats: Vec<RewardsBlockDistribution>,
     storage_update: Option<OwnedRewardsStatsUpdate>,
     runtime_after_commit: RewardsStatsRuntime,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct DposRewardDeltas {
+    commission_rewards: BTreeMap<[u8; 20], U256>,
+    delegator_rewards: BTreeMap<[u8; 20], U256>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct MintedRewardPlan {
+    dpos_rewards: DposRewardDeltas,
+    total_minted_reward: U256,
 }
 
 struct OwnedRewardsStatsUpdate {
@@ -252,6 +269,7 @@ impl FinalChain {
         let dag_vdf_sortition_max_vote_count =
             dpos_vdf_sortition_max_vote_count(&genesis_dpos_config)?;
         let rewards_stats_runtime = rewards_stats_runtime_from_storage(&storage, &rewards_config)?;
+        let genesis_minted_tokens = rewards_config.aspen_generated_rewards.clone();
         let final_chain = FinalChain {
             storage,
             block_gas_limit,
@@ -279,6 +297,7 @@ impl FinalChain {
                 DposSnapshot {
                     total_stakes: genesis_dpos_total_stakes,
                     commission_rewards: BTreeMap::new(),
+                    delegator_rewards: BTreeMap::new(),
                     validator_metadata: genesis_dpos_validator_metadata,
                     vrf_keys: genesis_vrf_keys
                         .iter()
@@ -287,6 +306,7 @@ impl FinalChain {
                     vote_counts: genesis_dpos_vote_counts,
                     total_vote_count: genesis_dpos_total_vote_count,
                     delegations: genesis_dpos_delegations,
+                    minted_tokens: genesis_minted_tokens,
                 },
             )])),
         };
@@ -734,6 +754,13 @@ impl FinalChain {
             rewards_stats_plan.fee_rewards_by_validator.clone()
         };
         let mut account_snapshot = execution.accounts;
+        let mut dpos_snapshot =
+            self.plan_dpos_snapshot(pbft.period, execution.dpos_transactions)?;
+        let minted_reward_plan = self.plan_fixed_yield_minted_rewards(
+            &rewards_stats_plan.distribution_stats,
+            &dpos_snapshot,
+        )?;
+        let mut dpos_reward_deltas = minted_reward_plan.dpos_rewards;
         if pre_magnolia_fee_reward_period {
             self.credit_pre_magnolia_pbft_fee_reward(
                 &mut account_snapshot,
@@ -741,8 +768,22 @@ impl FinalChain {
                 total_transaction_fees(&execution.transaction_fees)?,
             )?;
         } else {
+            merge_reward_map(
+                &mut dpos_reward_deltas.commission_rewards,
+                &dpos_fee_rewards,
+            )?;
             self.credit_post_magnolia_dpos_fee_rewards(&mut account_snapshot, &dpos_fee_rewards)?;
         }
+        self.credit_dpos_contract_minted_rewards(
+            &mut account_snapshot,
+            minted_reward_plan.total_minted_reward,
+        )?;
+        self.apply_dpos_reward_deltas(
+            &mut dpos_snapshot,
+            dpos_reward_deltas,
+            pbft.period,
+            minted_reward_plan.total_minted_reward,
+        )?;
         let receipts_rlp = encode_receipts_rlp(&execution.receipts);
         let parent_hash = self
             .block_hash(self.last_block_number()?)?
@@ -762,7 +803,7 @@ impl FinalChain {
             ),
             log_bloom: vec![0; 256],
             gas_used: execution.gas_used,
-            total_reward: ethereum_types::U256::zero(),
+            total_reward: minted_reward_plan.total_minted_reward,
         };
         let stored_header_rlp = StoredBlockHeaderRlpOwned::from(&stored_header);
         let full_header = LegacyBlockHeaderRlp::try_from(
@@ -773,8 +814,6 @@ impl FinalChain {
             )
             .signed_pbft_block(SignedPbftBlockRlp::new(&pbft_block_rlp)),
         )?;
-        let dpos_snapshot =
-            self.plan_dpos_snapshot(pbft.period, dpos_fee_rewards, execution.dpos_transactions)?;
         let dpos_snapshot_rlp = encode_dpos_snapshot_rlp(&dpos_snapshot);
         let account_snapshot_rlp = encode_account_snapshot_rlp(&account_snapshot);
         let execution_status = self.finalization_execution_status(
@@ -886,6 +925,252 @@ impl FinalChain {
                 .checked_add(reward)
                 .ok_or_else(|| anyhow::anyhow!("DPoS contract fee reward balance overflow"))?,
         );
+        Ok(())
+    }
+
+    /// Credits fixed-yield minted rewards to the Rust DPoS contract account.
+    ///
+    /// The DPoS snapshot records ownership of the minted reward through
+    /// commission and delegator pools. The executable account mutation mirrors
+    /// legacy DPoS precompile accounting by increasing the DPoS contract
+    /// balance by the minted total. Transaction fees are credited separately and
+    /// are not included in `total_minted_reward`.
+    fn credit_dpos_contract_minted_rewards(
+        &self,
+        accounts: &mut HashMap<[u8; 20], Account>,
+        total_minted_reward: U256,
+    ) -> Result<(), anyhow::Error> {
+        if total_minted_reward.is_zero() {
+            return Ok(());
+        }
+        let account = accounts
+            .entry(DPOS_CONTRACT_ADDRESS)
+            .or_insert_with(empty_account);
+        let balance = u256_from_big_endian(&account.balance);
+        account.balance = u256_to_big_endian(
+            balance
+                .checked_add(total_minted_reward)
+                .ok_or_else(|| anyhow::anyhow!("DPoS contract minted reward balance overflow"))?,
+        );
+        Ok(())
+    }
+
+    /// Plans fixed-yield minted DPoS rewards for decoded distribution stats.
+    ///
+    /// Rust currently implements the legacy fixed-yield formula used before
+    /// Aspen part two. If a configured nonzero Aspen part-two boundary is
+    /// reached while rewards are active, the method rejects finalization rather
+    /// than approximating the dynamic yield-curve and supply migration rules.
+    fn plan_fixed_yield_minted_rewards(
+        &self,
+        distribution_stats: &[RewardsBlockDistribution],
+        snapshot: &DposSnapshot,
+    ) -> Result<MintedRewardPlan, anyhow::Error> {
+        let mut plan = MintedRewardPlan::default();
+        let block_reward = self.fixed_yield_block_reward(snapshot)?;
+        if block_reward.is_zero() {
+            return Ok(plan);
+        }
+
+        for stats in distribution_stats {
+            if self.rewards_config.aspen_part_two_period != 0
+                && stats.period >= self.rewards_config.aspen_part_two_period
+            {
+                anyhow::bail!(
+                    "Rust FinalChain fixed-yield reward distribution does not support Aspen part two"
+                );
+            }
+
+            let mut dag_proposers_reward = block_reward;
+            let mut votes_reward = U256::zero();
+            let mut block_author_reward = U256::zero();
+            if stats.total_votes_weight > 0 {
+                dag_proposers_reward = percent_of(
+                    block_reward,
+                    self.rewards_config.dag_proposers_reward_percent,
+                    "DAG proposer reward",
+                )?;
+                votes_reward = block_reward
+                    .checked_sub(dag_proposers_reward)
+                    .ok_or_else(|| anyhow::anyhow!("vote reward subtraction underflow"))?;
+                let bonus_reward = percent_of(
+                    block_reward,
+                    self.rewards_config.max_block_author_reward_percent,
+                    "block author reward",
+                )?;
+                votes_reward = votes_reward
+                    .checked_sub(bonus_reward)
+                    .ok_or_else(|| anyhow::anyhow!("block author reward exceeds vote reward"))?;
+                let max_votes_weight = stats.max_votes_weight.max(stats.total_votes_weight);
+                block_author_reward = if max_votes_weight == stats.total_votes_weight {
+                    bonus_reward
+                } else {
+                    let two_t_plus_one = max_votes_weight
+                        .checked_mul(2)
+                        .and_then(|value| value.checked_div(3))
+                        .and_then(|value| value.checked_add(1))
+                        .ok_or_else(|| anyhow::anyhow!("reward max vote weight overflow"))?;
+                    let denominator =
+                        max_votes_weight
+                            .checked_sub(two_t_plus_one)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("reward max vote weight denominator underflow")
+                            })?;
+                    if denominator == 0 {
+                        U256::zero()
+                    } else {
+                        let bonus_votes_weight =
+                            stats.total_votes_weight.saturating_sub(two_t_plus_one);
+                        bonus_reward
+                            .checked_mul(U256::from(bonus_votes_weight))
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("block author reward multiplication overflow")
+                            })?
+                            / U256::from(denominator)
+                    }
+                };
+            }
+
+            if !block_author_reward.is_zero() {
+                self.add_minted_validator_reward(
+                    snapshot,
+                    &mut plan,
+                    stats.block_author.0,
+                    block_author_reward,
+                )?;
+            }
+
+            for (validator, validator_stats) in &stats.validators_stats {
+                let mut validator_reward = U256::zero();
+                if validator_stats.dag_blocks_count > 0 {
+                    anyhow::ensure!(
+                        stats.total_dag_blocks_count > 0,
+                        "reward DAG block count is zero while validator DAG count is nonzero"
+                    );
+                    let dag_reward = dag_proposers_reward
+                        .checked_mul(U256::from(validator_stats.dag_blocks_count))
+                        .ok_or_else(|| anyhow::anyhow!("DAG reward multiplication overflow"))?
+                        / U256::from(stats.total_dag_blocks_count);
+                    validator_reward = validator_reward
+                        .checked_add(dag_reward)
+                        .ok_or_else(|| anyhow::anyhow!("validator DAG reward overflow"))?;
+                }
+                if validator_stats.vote_weight > 0 {
+                    anyhow::ensure!(
+                        stats.total_votes_weight > 0,
+                        "reward total vote weight is zero while validator vote weight is nonzero"
+                    );
+                    let vote_reward = votes_reward
+                        .checked_mul(U256::from(validator_stats.vote_weight))
+                        .ok_or_else(|| anyhow::anyhow!("vote reward multiplication overflow"))?
+                        / U256::from(stats.total_votes_weight);
+                    validator_reward = validator_reward
+                        .checked_add(vote_reward)
+                        .ok_or_else(|| anyhow::anyhow!("validator vote reward overflow"))?;
+                }
+                if !validator_reward.is_zero() {
+                    self.add_minted_validator_reward(
+                        snapshot,
+                        &mut plan,
+                        *validator,
+                        validator_reward,
+                    )?;
+                }
+            }
+        }
+
+        Ok(plan)
+    }
+
+    fn fixed_yield_block_reward(&self, snapshot: &DposSnapshot) -> Result<U256, anyhow::Error> {
+        let amount_delegated =
+            snapshot
+                .total_stakes
+                .values()
+                .try_fold(U256::zero(), |total, stake| {
+                    total
+                        .checked_add(u256_from_big_endian(stake))
+                        .ok_or_else(|| anyhow::anyhow!("DPoS total delegated stake overflow"))
+                })?;
+        if amount_delegated.is_zero() || self.rewards_config.yield_percentage == 0 {
+            return Ok(U256::zero());
+        }
+        anyhow::ensure!(
+            self.rewards_config.dpos_blocks_per_year != 0,
+            "fixed-yield reward distribution requires nonzero DPoS blocks per year"
+        );
+        let denominator = U256::from(100u64)
+            .checked_mul(U256::from(self.rewards_config.dpos_blocks_per_year))
+            .ok_or_else(|| anyhow::anyhow!("fixed-yield reward denominator overflow"))?;
+        Ok(amount_delegated
+            .checked_mul(U256::from(self.rewards_config.yield_percentage))
+            .ok_or_else(|| anyhow::anyhow!("fixed-yield reward multiplication overflow"))?
+            / denominator)
+    }
+
+    fn add_minted_validator_reward(
+        &self,
+        snapshot: &DposSnapshot,
+        plan: &mut MintedRewardPlan,
+        validator: [u8; 20],
+        reward: U256,
+    ) -> Result<(), anyhow::Error> {
+        let Some(metadata) = snapshot.validator_metadata.get(&validator) else {
+            return Ok(());
+        };
+        let commission = percent_of_max_commission(reward, metadata.commission)?;
+        let delegator_reward = reward
+            .checked_sub(commission)
+            .ok_or_else(|| anyhow::anyhow!("delegator reward subtraction underflow"))?;
+        merge_reward_value(
+            &mut plan.dpos_rewards.commission_rewards,
+            validator,
+            commission,
+        )?;
+        merge_reward_value(
+            &mut plan.dpos_rewards.delegator_rewards,
+            validator,
+            delegator_reward,
+        )?;
+        plan.total_minted_reward = plan
+            .total_minted_reward
+            .checked_add(reward)
+            .ok_or_else(|| anyhow::anyhow!("total minted reward overflow"))?;
+        Ok(())
+    }
+
+    /// Applies validated DPoS reward deltas to a staged snapshot.
+    ///
+    /// The caller must pass a clone that has not been persisted or published.
+    /// The method updates commission rewards, delegator reward pools, and the
+    /// Aspen part-one minted-token counter using checked arithmetic.
+    fn apply_dpos_reward_deltas(
+        &self,
+        snapshot: &mut DposSnapshot,
+        rewards: DposRewardDeltas,
+        block_number: u64,
+        total_minted_reward: U256,
+    ) -> Result<(), anyhow::Error> {
+        apply_reward_map(
+            &mut snapshot.commission_rewards,
+            rewards.commission_rewards,
+            "validator commission reward overflow",
+        )?;
+        apply_reward_map(
+            &mut snapshot.delegator_rewards,
+            rewards.delegator_rewards,
+            "validator delegator reward overflow",
+        )?;
+        if !total_minted_reward.is_zero()
+            && block_number >= self.rewards_config.aspen_part_one_period
+        {
+            let current = u256_from_big_endian(&snapshot.minted_tokens);
+            snapshot.minted_tokens = u256_to_big_endian(
+                current
+                    .checked_add(total_minted_reward)
+                    .ok_or_else(|| anyhow::anyhow!("Aspen minted-token counter overflow"))?,
+            );
+        }
         Ok(())
     }
 
@@ -1322,12 +1607,12 @@ impl FinalChain {
 
     /// Plans the DPoS snapshot for a newly finalized block.
     ///
-    /// The new snapshot clones the previous block state and applies any
-    /// post-Magnolia transaction-fee commission rewards computed for this block.
+    /// The new snapshot clones the previous block state and applies finalized
+    /// DPoS transactions. Reward deltas are applied separately after native
+    /// reward planning has completed so overflow can abort before persistence.
     fn plan_dpos_snapshot(
         &self,
         block_number: u64,
-        fee_rewards_by_validator: BTreeMap<[u8; 20], U256>,
         dpos_transactions: Vec<DposTransaction>,
     ) -> Result<DposSnapshot, anyhow::Error> {
         let snapshots = self
@@ -1369,21 +1654,6 @@ impl FinalChain {
                 }
             }
         }
-        for (validator, reward) in fee_rewards_by_validator {
-            let current = snapshot
-                .commission_rewards
-                .get(&validator)
-                .map(|bytes| u256_from_big_endian(bytes))
-                .unwrap_or_default();
-            snapshot.commission_rewards.insert(
-                validator,
-                u256_to_big_endian(
-                    current
-                        .checked_add(reward)
-                        .ok_or_else(|| anyhow::anyhow!("validator commission reward overflow"))?,
-                ),
-            );
-        }
         Ok(snapshot)
     }
 
@@ -1416,6 +1686,10 @@ impl FinalChain {
             .insert(registration.validator, registration.stake.clone());
         snapshot
             .commission_rewards
+            .entry(registration.validator)
+            .or_default();
+        snapshot
+            .delegator_rewards
             .entry(registration.validator)
             .or_default();
         snapshot
@@ -1686,8 +1960,8 @@ impl FinalChain {
                 plan.error_code
             );
         }
-        let fee_rewards_by_validator =
-            fee_rewards_from_distribution_stats(&plan.distribution_stats)?;
+        let distribution_stats = decode_rewards_block_distributions(&plan.distribution_stats)?;
+        let fee_rewards_by_validator = fee_rewards_from_distribution_stats(&distribution_stats)?;
         let storage_update = (plan.cache_current_period || plan.clear_cached_stats).then(|| {
             OwnedRewardsStatsUpdate {
                 current_period: plan.current_period,
@@ -1701,6 +1975,7 @@ impl FinalChain {
         }
         Ok(NativeRewardsStatsPlan {
             fee_rewards_by_validator,
+            distribution_stats,
             storage_update,
             runtime_after_commit: runtime,
         })
@@ -1801,7 +2076,7 @@ fn h256_from_slice(raw: &[u8], field: &str) -> Result<ethereum_types::H256, anyh
 }
 
 fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Vec<u8> {
-    let mut stream = rlp::RlpStream::new_list(7);
+    let mut stream = rlp::RlpStream::new_list(9);
     append_address_bytes_map(&mut stream, &snapshot.total_stakes);
     append_address_bytes_map(&mut stream, &snapshot.commission_rewards);
     append_validator_metadata_map(&mut stream, &snapshot.validator_metadata);
@@ -1809,14 +2084,16 @@ fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Vec<u8> {
     append_vote_count_map(&mut stream, &snapshot.vote_counts);
     stream.append(&snapshot.total_vote_count);
     append_delegations_map(&mut stream, &snapshot.delegations);
+    append_address_bytes_map(&mut stream, &snapshot.delegator_rewards);
+    stream.append(&snapshot.minted_tokens.as_slice());
     stream.out().to_vec()
 }
 
 fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
     let rlp = Rlp::new(raw);
     let item_count = rlp.item_count()?;
-    if item_count != 5 && item_count != 6 && item_count != 7 {
-        anyhow::bail!("DPoS snapshot RLP must contain exactly five, six, or seven items");
+    if item_count != 5 && item_count != 6 && item_count != 7 && item_count != 9 {
+        anyhow::bail!("DPoS snapshot RLP must contain exactly five, six, seven, or nine items");
     }
     let total_stakes = decode_address_bytes_map(&rlp.at(0)?, "total stakes")?;
     let commission_rewards = decode_address_bytes_map(&rlp.at(1)?, "commission rewards")?;
@@ -1826,7 +2103,7 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
             decode_address_fixed_hash_map(&rlp.at(3)?, "VRF key")?,
             decode_vote_count_map(&rlp.at(4)?)?,
             rlp.val_at(5)?,
-            if item_count == 7 {
+            if item_count >= 7 {
                 decode_delegations_map(&rlp.at(6)?)?
             } else {
                 synthesize_self_delegations(&total_stakes)
@@ -1840,14 +2117,26 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
             synthesize_self_delegations(&total_stakes),
         )
     };
+    let delegator_rewards = if item_count == 9 {
+        decode_address_bytes_map(&rlp.at(7)?, "delegator rewards")?
+    } else {
+        BTreeMap::new()
+    };
+    let minted_tokens = if item_count == 9 {
+        rlp.at(8)?.data()?.to_vec()
+    } else {
+        Vec::new()
+    };
     Ok(DposSnapshot {
         total_stakes,
         commission_rewards,
+        delegator_rewards,
         validator_metadata,
         vrf_keys,
         vote_counts,
         total_vote_count,
         delegations,
+        minted_tokens,
     })
 }
 
@@ -2154,36 +2443,82 @@ fn empty_account() -> Account {
     }
 }
 
-fn fee_rewards_from_block_stats_rlp(
-    block_stats_rlp: &[u8],
+fn fee_rewards_from_distribution_stats(
+    distribution_stats: &[RewardsBlockDistribution],
 ) -> Result<BTreeMap<[u8; 20], U256>, anyhow::Error> {
-    let block_stats = Rlp::new(block_stats_rlp);
-    let validators = block_stats.at(2)?;
     let mut rewards = BTreeMap::new();
-    for entry in validators.iter() {
-        let validator = entry.val_at::<ethereum_types::H160>(0)?.0;
-        let stats = entry.at(1)?;
-        let fee_reward = stats.val_at::<U256>(2)?;
-        if !fee_reward.is_zero() {
-            rewards.insert(validator, fee_reward);
+    for stats in distribution_stats {
+        for (validator, validator_stats) in &stats.validators_stats {
+            if !validator_stats.fees_rewards.is_zero() {
+                merge_reward_value(&mut rewards, *validator, validator_stats.fees_rewards)?;
+            }
         }
     }
     Ok(rewards)
 }
 
-fn fee_rewards_from_distribution_stats(
-    distribution_stats: &[RewardsStatsPeriodRlp],
-) -> Result<BTreeMap<[u8; 20], U256>, anyhow::Error> {
-    let mut rewards = BTreeMap::new();
-    for stats in distribution_stats {
-        for (validator, reward) in fee_rewards_from_block_stats_rlp(&stats.data)? {
-            let current = rewards.entry(validator).or_insert_with(U256::zero);
-            *current = current
-                .checked_add(reward)
-                .ok_or_else(|| anyhow::anyhow!("validator distributed fee reward overflow"))?;
-        }
+fn merge_reward_map(
+    target: &mut BTreeMap<[u8; 20], U256>,
+    source: &BTreeMap<[u8; 20], U256>,
+) -> Result<(), anyhow::Error> {
+    for (validator, reward) in source {
+        merge_reward_value(target, *validator, *reward)?;
     }
-    Ok(rewards)
+    Ok(())
+}
+
+fn merge_reward_value(
+    target: &mut BTreeMap<[u8; 20], U256>,
+    validator: [u8; 20],
+    reward: U256,
+) -> Result<(), anyhow::Error> {
+    if reward.is_zero() {
+        return Ok(());
+    }
+    let current = target.entry(validator).or_insert_with(U256::zero);
+    *current = current
+        .checked_add(reward)
+        .ok_or_else(|| anyhow::anyhow!("validator reward delta overflow"))?;
+    Ok(())
+}
+
+fn apply_reward_map(
+    target: &mut BTreeMap<[u8; 20], Vec<u8>>,
+    rewards: BTreeMap<[u8; 20], U256>,
+    overflow_message: &'static str,
+) -> Result<(), anyhow::Error> {
+    for (validator, reward) in rewards {
+        if reward.is_zero() {
+            continue;
+        }
+        let current = target
+            .get(&validator)
+            .map(|bytes| u256_from_big_endian(bytes))
+            .unwrap_or_default();
+        target.insert(
+            validator,
+            u256_to_big_endian(
+                current
+                    .checked_add(reward)
+                    .ok_or_else(|| anyhow::anyhow!(overflow_message))?,
+            ),
+        );
+    }
+    Ok(())
+}
+
+fn percent_of(value: U256, percent: u16, label: &'static str) -> Result<U256, anyhow::Error> {
+    Ok(value
+        .checked_mul(U256::from(percent))
+        .ok_or_else(|| anyhow::anyhow!("{label} percentage multiplication overflow"))?
+        / U256::from(100u64))
+}
+
+fn percent_of_max_commission(value: U256, commission: u16) -> Result<U256, anyhow::Error> {
+    Ok(value
+        .checked_mul(U256::from(commission))
+        .ok_or_else(|| anyhow::anyhow!("validator commission multiplication overflow"))?
+        / U256::from(10_000u64))
 }
 
 /// Sums executed transaction fees for legacy pre-Magnolia PBFT rewards.
@@ -3949,6 +4284,168 @@ mod tests {
     }
 
     #[test]
+    fn finalize_block_distributes_fixed_yield_minted_dag_rewards() {
+        let path = temp_db_path("finalize-fixed-yield-minted-rewards");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let sender = [0x61; 20];
+        let receiver = [0x62; 20];
+        let dag_author = [0x63; 20];
+        let genesis_validator = genesis_validator_with_metadata(
+            dag_author,
+            U256::from(10_000u64),
+            [0x64; 20],
+            2_500,
+            "validator",
+            "endpoint",
+        );
+        let signing_key = SigningKey::from_slice(&[18u8; 32]).unwrap();
+        let pbft_block = signed_pbft_block(&signing_key, period, 181);
+        let transaction_rlp = vec![0xc1, 0xA1];
+        let transaction = test_transaction(
+            0xA1,
+            sender,
+            Some(receiver),
+            0,
+            U256::from(1u64),
+            U256::zero(),
+            50_000,
+            vec![],
+            transaction_rlp.clone(),
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&transaction_rlp),
+        );
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(sender, U256::from(1_000_000u64))],
+            vec![genesis_validator],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+            FinalChainRewardsConfig {
+                committee_size: 100,
+                magnolia_period: 0,
+                aspen_part_one_period: u64::MAX,
+                aspen_part_two_period: 0,
+                max_block_author_reward_percent: 0,
+                dag_proposers_reward_percent: 100,
+                yield_percentage: 20,
+                dpos_blocks_per_year: 10,
+                rewards_distribution_frequency: vec![(0, 1)],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let (header_rlp, _) = final_chain
+            .finalize_block(
+                pbft_block,
+                vec![transaction.clone()],
+                vec![FinalizationDagBlock {
+                    author: dag_author,
+                    difficulty: 0,
+                    transaction_hashes: vec![transaction.hash],
+                }],
+            )
+            .unwrap();
+
+        assert_eq!(
+            Rlp::new(&header_rlp).val_at::<U256>(11).unwrap(),
+            U256::from(200u64)
+        );
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            U256::from(200u64)
+        );
+        let validator_info = final_chain
+            .call(dpos_call_request(period, get_validator_input(dag_author)))
+            .unwrap();
+        assert_eq!(
+            u256_from_big_endian(&validator_info.code_retval[64..96]),
+            U256::from(50u64)
+        );
+        let snapshot = final_chain
+            .dpos_snapshot_at_finalized_block(period)
+            .unwrap();
+        assert_eq!(
+            snapshot
+                .delegator_rewards
+                .get(&dag_author)
+                .map(|reward| u256_from_big_endian(reward))
+                .unwrap(),
+            U256::from(150u64)
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_rejects_aspen_part_two_minted_distribution_without_publishing_block() {
+        let path = temp_db_path("finalize-aspen-part-two-rewards-gap");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x65; 20];
+        let signing_key = SigningKey::from_slice(&[19u8; 32]).unwrap();
+        let period = 1u64;
+        let pbft_block = signed_pbft_block(&signing_key, period, 191);
+        write_period_data(&storage, period, &pbft_block, &[]);
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![],
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+            FinalChainRewardsConfig {
+                committee_size: 100,
+                magnolia_period: 0,
+                aspen_part_one_period: 0,
+                aspen_part_two_period: 1,
+                yield_percentage: 20,
+                dpos_blocks_per_year: 10,
+                rewards_distribution_frequency: vec![(0, 1)],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let error = final_chain
+            .finalize_block(pbft_block, vec![], vec![])
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("does not support Aspen part two"));
+        assert_eq!(final_chain.last_block_number().unwrap(), 0);
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            U256::zero()
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn finalize_block_persists_and_reloads_rewards_stats_interval_cache() {
         let path = temp_db_path("finalize-rewards-stats-cache");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
@@ -3969,6 +4466,7 @@ mod tests {
             magnolia_period: 0,
             aspen_part_one_period: u64::MAX,
             rewards_distribution_frequency: vec![(0, 2)],
+            ..Default::default()
         };
         let signing_key = SigningKey::from_slice(&[14u8; 32]).unwrap();
         let period_one = 1u64;
@@ -4155,6 +4653,7 @@ mod tests {
                 magnolia_period: 0,
                 aspen_part_one_period: u64::MAX,
                 rewards_distribution_frequency: vec![(0, 1)],
+                ..Default::default()
             },
         )
         .unwrap();
@@ -4220,6 +4719,7 @@ mod tests {
                 magnolia_period: 0,
                 aspen_part_one_period: u64::MAX,
                 rewards_distribution_frequency: vec![(0, 2)],
+                ..Default::default()
             },
         )
         .unwrap();

@@ -1103,6 +1103,13 @@ pub mod rustaxa_ffi {
         committee_size: u32,
         magnolia_period: u64,
         aspen_part_one_period: u64,
+        aspen_part_two_period: u64,
+        max_block_author_reward_percent: u16,
+        dag_proposers_reward_percent: u16,
+        yield_percentage: u16,
+        dpos_blocks_per_year: u32,
+        aspen_max_supply: Vec<u8>,
+        aspen_generated_rewards: Vec<u8>,
         frequency_rules: Vec<RewardsFrequencyRule>,
     }
 

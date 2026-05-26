@@ -45,8 +45,9 @@ pub use pillar_votes::{
 pub use proposed_blocks::ProposedBlocks;
 pub use rewards_stats::{
     FinalizedRewardsPeriodFact, RewardCertVoteFact, RewardDagBlockFact, RewardTransactionFact,
-    RewardsFrequencyRule, RewardsStatsConfig, RewardsStatsPeriodRlp, RewardsStatsProcessPlan,
-    RewardsStatsRuntime, RewardsStatsStatus,
+    RewardsBlockDistribution, RewardsFrequencyRule, RewardsStatsConfig, RewardsStatsPeriodRlp,
+    RewardsStatsProcessPlan, RewardsStatsRuntime, RewardsStatsStatus, RewardsValidatorDistribution,
+    decode_rewards_block_distributions,
 };
 pub use rustaxa_types::{
     Account, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount,
