@@ -48,8 +48,10 @@ pub fn create_final_chain(
             dag_proposers_reward_percent: 0,
             yield_percentage: 0,
             dpos_blocks_per_year: 0,
+            genesis_balance_sum: Vec::new(),
             aspen_max_supply: Vec::new(),
             aspen_generated_rewards: Vec::new(),
+            cacti_period: 0,
             frequency_rules: Vec::new(),
         },
     )
@@ -125,8 +127,10 @@ pub fn create_final_chain_with_rewards_config(
             dag_proposers_reward_percent: rewards_config.dag_proposers_reward_percent,
             yield_percentage: rewards_config.yield_percentage,
             dpos_blocks_per_year: rewards_config.dpos_blocks_per_year,
+            genesis_balance_sum: rewards_config.genesis_balance_sum,
             aspen_max_supply: rewards_config.aspen_max_supply,
             aspen_generated_rewards: rewards_config.aspen_generated_rewards,
+            cacti_period: rewards_config.cacti_period,
             rewards_distribution_frequency: rewards_config
                 .frequency_rules
                 .into_iter()
@@ -286,6 +290,27 @@ impl BridgeFinalChain {
                 stake: stake.stake,
             })
             .collect())
+    }
+
+    pub fn get_dpos_total_amount_delegated(
+        self: &BridgeFinalChain,
+        block_number: u64,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        self.0.dpos_total_amount_delegated(block_number)
+    }
+
+    pub fn get_dpos_yield(
+        self: &BridgeFinalChain,
+        block_number: u64,
+    ) -> Result<u64, anyhow::Error> {
+        self.0.dpos_yield(block_number)
+    }
+
+    pub fn get_dpos_total_supply(
+        self: &BridgeFinalChain,
+        block_number: u64,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        self.0.dpos_total_supply(block_number)
     }
 
     pub fn get_dpos_validators_eligible_vote_counts(

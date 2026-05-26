@@ -139,13 +139,19 @@ pub struct FinalChainRewardsConfig {
     pub yield_percentage: u16,
     /// Configured fixed-yield block count per year.
     pub dpos_blocks_per_year: u32,
+    /// Genesis account balance sum encoded as an unsigned big-endian integer.
+    ///
+    /// Aspen part-two supply migration adds this value to the durable
+    /// part-one minted-token counter and generated rewards.
+    pub genesis_balance_sum: Vec<u8>,
     /// Aspen part-two maximum supply encoded as an unsigned big-endian integer.
     pub aspen_max_supply: Vec<u8>,
     /// Aspen part-one generated rewards encoded as an unsigned big-endian
-    /// integer. Rust snapshots seed their minted-token counter from this value
-    /// so fixed-yield rewards can advance the same durable state before the
-    /// dynamic-yield rewrite lands.
+    /// integer. Aspen part-two migration adds it to the genesis balance sum and
+    /// the pre-migration minted-token counter.
     pub aspen_generated_rewards: Vec<u8>,
+    /// First period where Cacti reward stats provide dynamic blocks-per-year.
+    pub cacti_period: u64,
     /// Rewards distribution frequency changes keyed by starting period.
     pub rewards_distribution_frequency: Vec<(u64, u32)>,
 }

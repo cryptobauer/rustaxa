@@ -154,6 +154,9 @@ TEST_F(RustFinalChainTest, DposQueriesUseGenesisSnapshotAtBlockZero) {
   ASSERT_EQ(stakes.size(), 1u);
   EXPECT_EQ(stakes[0].address, validator_address);
   EXPECT_EQ(bytes(stakes[0].stake), bytes(u64_be(10000)));
+  EXPECT_EQ(bytes(final_chain->get_dpos_total_amount_delegated(0)), bytes(u64_be(10000)));
+  EXPECT_EQ(final_chain->get_dpos_yield(0), 0u);
+  EXPECT_TRUE(final_chain->get_dpos_total_supply(0).empty());
 
   const auto vote_counts = final_chain->get_dpos_validators_eligible_vote_counts(0);
   ASSERT_EQ(vote_counts.size(), 1u);

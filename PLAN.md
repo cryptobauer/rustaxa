@@ -250,10 +250,11 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     distribution boundaries after applying interval rewards. Native execution and reward account mutation now use a
     staged account map that is published only after finalization storage commits; post-Magnolia transaction fees credit
     the Rust DPoS contract account while the DPoS snapshot records per-validator commission ownership. Rust native
-    finalization also distributes fixed-yield minted block/DAG/vote rewards from decoded Rust reward stats into staged
-    validator commission and delegator reward pools, credits the DPoS contract account with the minted total, and writes
-    header `total_reward` for the supported fixed-yield path. Aspen part-two dynamic yield-curve and total-supply
-    migration remain explicit future Rust reward-distribution work.
+    finalization also distributes fixed-yield and Aspen part-two dynamic-yield minted block/DAG/vote rewards from decoded
+    Rust reward stats into staged validator commission and delegator reward pools, credits the DPoS contract account with
+    the minted total, migrates part-one minted tokens into durable total supply at the Aspen part-two boundary, and writes
+    header `total_reward` from the Rust plan. Rust-backed FinalChain shim reads now expose DPoS total delegated, yield,
+    and total supply. Claim execution and full per-delegator F1 reward-read parity remain future work.
   - non-genesis DPoS queries still throw when the queried block has not been finalized through Rust snapshot
     maintenance; DPoS transitions beyond the supported validator-registration/delegation subset and legacy databases without Rust
     account snapshots remain explicit gaps.
@@ -551,10 +552,10 @@ The current Rust starting point is intentionally small:
     legacy FinalChain ordering. The active Rust `FinalChain` native finalization path now owns a long-lived
     rewards-stats runtime, builds finalized-period facts with bridged previous-block cert votes, persists/clears
     interval cache rows in the finalized-block batch, reloads cached stats on startup, applies interval-boundary
-    fee commission rewards from the Rust planner to staged Rust account/DPoS snapshots, and now handles fixed-yield
-    minted block/DAG/vote distribution plus header `total_reward` natively. Moving Aspen part-two dynamic yield and
-    supply migration, claim/reward-pool read APIs, and legacy `BlockStats` carrier ownership fully into Rust remain
-    future work. Double-voting proof planning and already-verified pillar-vote
+    fee commission rewards from the Rust planner to staged Rust account/DPoS snapshots, and now handles fixed-yield plus
+    Aspen part-two dynamic-yield minted block/DAG/vote distribution, total-supply migration, Rust-backed supply/yield
+    reads, and header `total_reward` natively. Moving claim execution, full per-delegator F1 reward-read parity, and
+    legacy `BlockStats` carrier ownership fully into Rust remain future work. Double-voting proof planning and already-verified pillar-vote
     aggregation are Rust-backed; broader slashing state transitions, pillar signing/recovery, and
     `PillarChainManager` orchestration still depend on future FinalChain/state ports.
 

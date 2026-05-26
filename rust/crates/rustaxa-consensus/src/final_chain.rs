@@ -53,6 +53,7 @@ const DPOS_REGISTER_VALIDATOR_GAS: u64 = 80_000;
 const DPOS_DELEGATE_GAS: u64 = 40_000;
 const DPOS_UNDELEGATE_GAS: u64 = 60_000;
 const DPOS_REDELEGATE_GAS: u64 = 80_000;
+const ASPEN_YIELD_PRECISION: u64 = 1_000_000;
 
 /// Rust final-chain domain surface used by the C++ shim.
 pub struct FinalChain {
@@ -121,6 +122,12 @@ struct DposSnapshot {
     delegations: DposDelegations,
     /// Aspen part-one minted-token counter at this block.
     minted_tokens: Vec<u8>,
+    /// Aspen part-two total supply at this block.
+    ///
+    /// Empty bytes mean the Go-compatible lazy migration has not happened yet.
+    total_supply: Vec<u8>,
+    /// Aspen part-two yield fraction scaled by `ASPEN_YIELD_PRECISION`.
+    current_yield: u64,
 }
 
 struct NativeRewardsStatsPlan {
@@ -140,6 +147,15 @@ struct DposRewardDeltas {
 struct MintedRewardPlan {
     dpos_rewards: DposRewardDeltas,
     total_minted_reward: U256,
+    total_supply_after: Option<U256>,
+    current_yield: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BlockRewardContext {
+    block_reward: U256,
+    total_supply_before: Option<U256>,
+    current_yield: u64,
 }
 
 struct OwnedRewardsStatsUpdate {
@@ -192,6 +208,23 @@ impl FinalChain {
         genesis_dpos_config: GenesisDposConfig,
         rewards_config: FinalChainRewardsConfig,
     ) -> Result<Self> {
+        let genesis_account_balance_sum = genesis_accounts
+            .iter()
+            .try_fold(U256::zero(), |total, account| {
+                total.checked_add(u256_from_big_endian(&account.balance))
+            });
+        let mut rewards_config = rewards_config;
+        if rewards_config.genesis_balance_sum.is_empty() {
+            if let Some(genesis_account_balance_sum) = genesis_account_balance_sum {
+                rewards_config.genesis_balance_sum =
+                    u256_to_big_endian(genesis_account_balance_sum);
+            } else {
+                anyhow::ensure!(
+                    rewards_config.aspen_part_two_period == 0,
+                    "genesis account balance sum overflow"
+                );
+            }
+        }
         let genesis_accounts: HashMap<[u8; 20], Account> = genesis_accounts
             .into_iter()
             .map(|account| {
@@ -269,7 +302,6 @@ impl FinalChain {
         let dag_vdf_sortition_max_vote_count =
             dpos_vdf_sortition_max_vote_count(&genesis_dpos_config)?;
         let rewards_stats_runtime = rewards_stats_runtime_from_storage(&storage, &rewards_config)?;
-        let genesis_minted_tokens = rewards_config.aspen_generated_rewards.clone();
         let final_chain = FinalChain {
             storage,
             block_gas_limit,
@@ -306,7 +338,9 @@ impl FinalChain {
                     vote_counts: genesis_dpos_vote_counts,
                     total_vote_count: genesis_dpos_total_vote_count,
                     delegations: genesis_dpos_delegations,
-                    minted_tokens: genesis_minted_tokens,
+                    minted_tokens: Vec::new(),
+                    total_supply: Vec::new(),
+                    current_yield: 0,
                 },
             )])),
         };
@@ -557,6 +591,47 @@ impl FinalChain {
             .collect())
     }
 
+    /// Returns the block-scoped total amount delegated in DPoS.
+    ///
+    /// The value is derived from the Rust DPoS snapshot total-stake map and is
+    /// encoded as unsigned big-endian bytes for C++ `u256` conversion.
+    pub fn dpos_total_amount_delegated(&self, block_number: u64) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(u256_to_big_endian(
+            self.dpos_total_amount_delegated_u256(block_number)?,
+        ))
+    }
+
+    /// Returns the block-scoped Aspen part-two yield value.
+    ///
+    /// Before Aspen part two this matches the legacy state API and returns
+    /// zero. After part two, the value is the persisted yield fraction scaled
+    /// by `ASPEN_YIELD_PRECISION`.
+    pub fn dpos_yield(&self, block_number: u64) -> Result<u64, anyhow::Error> {
+        if !self.aspen_part_two_active(block_number) {
+            return Ok(0);
+        }
+        Ok(self
+            .dpos_snapshot_at_finalized_block(block_number)?
+            .current_yield)
+    }
+
+    /// Returns the block-scoped Aspen part-two total supply.
+    ///
+    /// Before Aspen part two this matches the legacy state API and returns
+    /// zero. After part two, missing supply is surfaced as an explicit Rust
+    /// state error instead of silently falling back to legacy C++.
+    pub fn dpos_total_supply(&self, block_number: u64) -> Result<Vec<u8>, anyhow::Error> {
+        if !self.aspen_part_two_active(block_number) {
+            return Ok(Vec::new());
+        }
+        let snapshot = self.dpos_snapshot_at_finalized_block(block_number)?;
+        anyhow::ensure!(
+            !snapshot.total_supply.is_empty(),
+            "Rust FinalChain Aspen total supply is missing for block {block_number}"
+        );
+        Ok(snapshot.total_supply)
+    }
+
     /// Returns nonzero validator eligible vote counts at a block, sorted by validator address.
     pub fn dpos_validators_eligible_vote_counts(
         &self,
@@ -756,7 +831,8 @@ impl FinalChain {
         let mut account_snapshot = execution.accounts;
         let mut dpos_snapshot =
             self.plan_dpos_snapshot(pbft.period, execution.dpos_transactions)?;
-        let minted_reward_plan = self.plan_fixed_yield_minted_rewards(
+        let minted_reward_plan = self.plan_minted_rewards(
+            pbft.period,
             &rewards_stats_plan.distribution_stats,
             &dpos_snapshot,
         )?;
@@ -783,6 +859,8 @@ impl FinalChain {
             dpos_reward_deltas,
             pbft.period,
             minted_reward_plan.total_minted_reward,
+            minted_reward_plan.total_supply_after,
+            minted_reward_plan.current_yield,
         )?;
         let receipts_rlp = encode_receipts_rlp(&execution.receipts);
         let parent_hash = self
@@ -955,30 +1033,40 @@ impl FinalChain {
         Ok(())
     }
 
-    /// Plans fixed-yield minted DPoS rewards for decoded distribution stats.
+    /// Plans minted DPoS rewards for decoded distribution stats.
     ///
-    /// Rust currently implements the legacy fixed-yield formula used before
-    /// Aspen part two. If a configured nonzero Aspen part-two boundary is
-    /// reached while rewards are active, the method rejects finalization rather
-    /// than approximating the dynamic yield-curve and supply migration rules.
-    fn plan_fixed_yield_minted_rewards(
+    /// Before Aspen part two this uses the fixed annual yield formula. At and
+    /// after Aspen part two, it performs the Go-compatible lazy supply
+    /// migration, calculates the dynamic yield curve with integer arithmetic,
+    /// and advances the transient supply after each decoded rewards period.
+    fn plan_minted_rewards(
         &self,
+        current_block_number: u64,
         distribution_stats: &[RewardsBlockDistribution],
         snapshot: &DposSnapshot,
     ) -> Result<MintedRewardPlan, anyhow::Error> {
         let mut plan = MintedRewardPlan::default();
-        let block_reward = self.fixed_yield_block_reward(snapshot)?;
-        if block_reward.is_zero() {
-            return Ok(plan);
-        }
+        let mut dynamic_total_supply = if snapshot.total_supply.is_empty() {
+            None
+        } else {
+            Some(u256_from_big_endian(&snapshot.total_supply))
+        };
 
         for stats in distribution_stats {
-            if self.rewards_config.aspen_part_two_period != 0
-                && stats.period >= self.rewards_config.aspen_part_two_period
-            {
-                anyhow::bail!(
-                    "Rust FinalChain fixed-yield reward distribution does not support Aspen part two"
-                );
+            let reward_context = self.minted_block_reward(
+                current_block_number,
+                stats,
+                snapshot,
+                dynamic_total_supply,
+            )?;
+            let block_reward = reward_context.block_reward;
+            if block_reward.is_zero() {
+                if let Some(total_supply) = reward_context.total_supply_before {
+                    dynamic_total_supply = Some(total_supply);
+                    plan.total_supply_after = Some(total_supply);
+                    plan.current_yield = reward_context.current_yield;
+                }
+                continue;
             }
 
             let mut dag_proposers_reward = block_reward;
@@ -1031,6 +1119,7 @@ impl FinalChain {
                 };
             }
 
+            let minted_before_stats = plan.total_minted_reward;
             if !block_author_reward.is_zero() {
                 self.add_minted_validator_reward(
                     snapshot,
@@ -1077,21 +1166,58 @@ impl FinalChain {
                     )?;
                 }
             }
+            if let Some(total_supply_before) = reward_context.total_supply_before {
+                let minted_for_stats = plan
+                    .total_minted_reward
+                    .checked_sub(minted_before_stats)
+                    .ok_or_else(|| anyhow::anyhow!("stats minted reward subtraction underflow"))?;
+                let total_supply_after = total_supply_before
+                    .checked_add(minted_for_stats)
+                    .ok_or_else(|| anyhow::anyhow!("Aspen total supply overflow"))?;
+                dynamic_total_supply = Some(total_supply_after);
+                plan.total_supply_after = Some(total_supply_after);
+                plan.current_yield = reward_context.current_yield;
+            }
         }
 
         Ok(plan)
     }
 
+    fn minted_block_reward(
+        &self,
+        current_block_number: u64,
+        stats: &RewardsBlockDistribution,
+        snapshot: &DposSnapshot,
+        dynamic_total_supply: Option<U256>,
+    ) -> Result<BlockRewardContext, anyhow::Error> {
+        if self.aspen_part_two_active(current_block_number) {
+            let total_supply_before = match dynamic_total_supply {
+                Some(total_supply) => total_supply,
+                None => self.initial_aspen_part_two_supply(snapshot)?,
+            };
+            let current_yield = self.aspen_current_yield(total_supply_before)?;
+            let block_reward = self.aspen_dynamic_block_reward(
+                current_block_number,
+                stats,
+                snapshot,
+                current_yield,
+            )?;
+            return Ok(BlockRewardContext {
+                block_reward,
+                total_supply_before: Some(total_supply_before),
+                current_yield,
+            });
+        }
+
+        Ok(BlockRewardContext {
+            block_reward: self.fixed_yield_block_reward(snapshot)?,
+            total_supply_before: None,
+            current_yield: 0,
+        })
+    }
+
     fn fixed_yield_block_reward(&self, snapshot: &DposSnapshot) -> Result<U256, anyhow::Error> {
-        let amount_delegated =
-            snapshot
-                .total_stakes
-                .values()
-                .try_fold(U256::zero(), |total, stake| {
-                    total
-                        .checked_add(u256_from_big_endian(stake))
-                        .ok_or_else(|| anyhow::anyhow!("DPoS total delegated stake overflow"))
-                })?;
+        let amount_delegated = total_staked_amount(snapshot)?;
         if amount_delegated.is_zero() || self.rewards_config.yield_percentage == 0 {
             return Ok(U256::zero());
         }
@@ -1106,6 +1232,90 @@ impl FinalChain {
             .checked_mul(U256::from(self.rewards_config.yield_percentage))
             .ok_or_else(|| anyhow::anyhow!("fixed-yield reward multiplication overflow"))?
             / denominator)
+    }
+
+    fn initial_aspen_part_two_supply(
+        &self,
+        snapshot: &DposSnapshot,
+    ) -> Result<U256, anyhow::Error> {
+        let genesis_balance_sum = u256_from_big_endian(&self.rewards_config.genesis_balance_sum);
+        let generated_rewards = u256_from_big_endian(&self.rewards_config.aspen_generated_rewards);
+        let minted_tokens = u256_from_big_endian(&snapshot.minted_tokens);
+        genesis_balance_sum
+            .checked_add(generated_rewards)
+            .and_then(|total| total.checked_add(minted_tokens))
+            .ok_or_else(|| anyhow::anyhow!("Aspen initial total supply overflow"))
+    }
+
+    fn aspen_current_yield(&self, total_supply: U256) -> Result<u64, anyhow::Error> {
+        anyhow::ensure!(
+            !total_supply.is_zero(),
+            "Aspen dynamic yield requires nonzero total supply"
+        );
+        let max_supply = u256_from_big_endian(&self.rewards_config.aspen_max_supply);
+        anyhow::ensure!(
+            max_supply >= total_supply,
+            "Aspen maximum supply is below current total supply"
+        );
+        let yield_value = max_supply
+            .checked_sub(total_supply)
+            .and_then(|remaining| remaining.checked_mul(U256::from(ASPEN_YIELD_PRECISION)))
+            .ok_or_else(|| anyhow::anyhow!("Aspen dynamic yield multiplication overflow"))?
+            / total_supply;
+        anyhow::ensure!(
+            yield_value <= U256::from(u64::MAX),
+            "Aspen dynamic yield does not fit into u64"
+        );
+        Ok(yield_value.as_u64())
+    }
+
+    fn aspen_dynamic_block_reward(
+        &self,
+        current_block_number: u64,
+        stats: &RewardsBlockDistribution,
+        snapshot: &DposSnapshot,
+        current_yield: u64,
+    ) -> Result<U256, anyhow::Error> {
+        let amount_delegated = total_staked_amount(snapshot)?;
+        if amount_delegated.is_zero() || current_yield == 0 {
+            return Ok(U256::zero());
+        }
+        let blocks_per_year = self.reward_blocks_per_year(current_block_number, stats)?;
+        let denominator = U256::from(ASPEN_YIELD_PRECISION)
+            .checked_mul(U256::from(blocks_per_year))
+            .ok_or_else(|| anyhow::anyhow!("Aspen dynamic reward denominator overflow"))?;
+        amount_delegated
+            .checked_mul(U256::from(current_yield))
+            .ok_or_else(|| anyhow::anyhow!("Aspen dynamic reward multiplication overflow"))
+            .map(|reward| reward / denominator)
+    }
+
+    fn reward_blocks_per_year(
+        &self,
+        current_block_number: u64,
+        stats: &RewardsBlockDistribution,
+    ) -> Result<u32, anyhow::Error> {
+        let blocks_per_year = if self.rewards_config.cacti_period != 0
+            && current_block_number >= self.rewards_config.cacti_period
+        {
+            anyhow::ensure!(
+                stats.blocks_per_year != 0,
+                "Cacti reward distribution requires runtime blocks per year"
+            );
+            stats.blocks_per_year
+        } else {
+            self.rewards_config.dpos_blocks_per_year
+        };
+        anyhow::ensure!(
+            blocks_per_year != 0,
+            "reward distribution requires nonzero DPoS blocks per year"
+        );
+        Ok(blocks_per_year)
+    }
+
+    fn aspen_part_two_active(&self, block_number: u64) -> bool {
+        self.rewards_config.aspen_part_two_period != 0
+            && block_number >= self.rewards_config.aspen_part_two_period
     }
 
     fn add_minted_validator_reward(
@@ -1143,13 +1353,15 @@ impl FinalChain {
     ///
     /// The caller must pass a clone that has not been persisted or published.
     /// The method updates commission rewards, delegator reward pools, and the
-    /// Aspen part-one minted-token counter using checked arithmetic.
+    /// Aspen reward-supply counters using checked arithmetic.
     fn apply_dpos_reward_deltas(
         &self,
         snapshot: &mut DposSnapshot,
         rewards: DposRewardDeltas,
         block_number: u64,
         total_minted_reward: U256,
+        total_supply_after: Option<U256>,
+        current_yield: u64,
     ) -> Result<(), anyhow::Error> {
         apply_reward_map(
             &mut snapshot.commission_rewards,
@@ -1161,6 +1373,14 @@ impl FinalChain {
             rewards.delegator_rewards,
             "validator delegator reward overflow",
         )?;
+        if self.aspen_part_two_active(block_number) {
+            if let Some(total_supply_after) = total_supply_after {
+                snapshot.total_supply = u256_to_big_endian(total_supply_after);
+                snapshot.current_yield = current_yield;
+                snapshot.minted_tokens.clear();
+            }
+            return Ok(());
+        }
         if !total_minted_reward.is_zero()
             && block_number >= self.rewards_config.aspen_part_one_period
         {
@@ -1171,6 +1391,7 @@ impl FinalChain {
                     .ok_or_else(|| anyhow::anyhow!("Aspen minted-token counter overflow"))?,
             );
         }
+        snapshot.current_yield = 0;
         Ok(())
     }
 
@@ -1412,6 +1633,10 @@ impl FinalChain {
                     block_number
                 )
             })
+    }
+
+    fn dpos_total_amount_delegated_u256(&self, block_number: u64) -> Result<U256, anyhow::Error> {
+        total_staked_amount(&self.dpos_snapshot_at_finalized_block(block_number)?)
     }
 
     /// Loads Rust-persisted historical DPoS snapshots for finalized blocks.
@@ -2076,7 +2301,7 @@ fn h256_from_slice(raw: &[u8], field: &str) -> Result<ethereum_types::H256, anyh
 }
 
 fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Vec<u8> {
-    let mut stream = rlp::RlpStream::new_list(9);
+    let mut stream = rlp::RlpStream::new_list(11);
     append_address_bytes_map(&mut stream, &snapshot.total_stakes);
     append_address_bytes_map(&mut stream, &snapshot.commission_rewards);
     append_validator_metadata_map(&mut stream, &snapshot.validator_metadata);
@@ -2086,14 +2311,19 @@ fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Vec<u8> {
     append_delegations_map(&mut stream, &snapshot.delegations);
     append_address_bytes_map(&mut stream, &snapshot.delegator_rewards);
     stream.append(&snapshot.minted_tokens.as_slice());
+    stream.append(&snapshot.total_supply.as_slice());
+    stream.append(&snapshot.current_yield);
     stream.out().to_vec()
 }
 
 fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
     let rlp = Rlp::new(raw);
     let item_count = rlp.item_count()?;
-    if item_count != 5 && item_count != 6 && item_count != 7 && item_count != 9 {
-        anyhow::bail!("DPoS snapshot RLP must contain exactly five, six, seven, or nine items");
+    if item_count != 5 && item_count != 6 && item_count != 7 && item_count != 9 && item_count != 11
+    {
+        anyhow::bail!(
+            "DPoS snapshot RLP must contain exactly five, six, seven, nine, or eleven items"
+        );
     }
     let total_stakes = decode_address_bytes_map(&rlp.at(0)?, "total stakes")?;
     let commission_rewards = decode_address_bytes_map(&rlp.at(1)?, "commission rewards")?;
@@ -2117,15 +2347,20 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
             synthesize_self_delegations(&total_stakes),
         )
     };
-    let delegator_rewards = if item_count == 9 {
+    let delegator_rewards = if item_count >= 9 {
         decode_address_bytes_map(&rlp.at(7)?, "delegator rewards")?
     } else {
         BTreeMap::new()
     };
-    let minted_tokens = if item_count == 9 {
+    let minted_tokens = if item_count >= 9 {
         rlp.at(8)?.data()?.to_vec()
     } else {
         Vec::new()
+    };
+    let (total_supply, current_yield) = if item_count == 11 {
+        (rlp.at(9)?.data()?.to_vec(), rlp.val_at(10)?)
+    } else {
+        (Vec::new(), 0)
     };
     Ok(DposSnapshot {
         total_stakes,
@@ -2137,6 +2372,8 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
         total_vote_count,
         delegations,
         minted_tokens,
+        total_supply,
+        current_yield,
     })
 }
 
@@ -2505,6 +2742,17 @@ fn apply_reward_map(
         );
     }
     Ok(())
+}
+
+fn total_staked_amount(snapshot: &DposSnapshot) -> Result<U256, anyhow::Error> {
+    snapshot
+        .total_stakes
+        .values()
+        .try_fold(U256::zero(), |total, stake| {
+            total
+                .checked_add(u256_from_big_endian(stake))
+                .ok_or_else(|| anyhow::anyhow!("DPoS total delegated stake overflow"))
+        })
 }
 
 fn percent_of(value: U256, percent: u16, label: &'static str) -> Result<U256, anyhow::Error> {
@@ -4393,20 +4641,45 @@ mod tests {
     }
 
     #[test]
-    fn finalize_block_rejects_aspen_part_two_minted_distribution_without_publishing_block() {
-        let path = temp_db_path("finalize-aspen-part-two-rewards-gap");
+    fn finalize_block_distributes_aspen_part_two_dynamic_rewards_and_supply() {
+        let path = temp_db_path("finalize-aspen-part-two-dynamic-rewards");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let validator = [0x65; 20];
+        let receiver = [0x66; 20];
         let signing_key = SigningKey::from_slice(&[19u8; 32]).unwrap();
         let period = 1u64;
         let pbft_block = signed_pbft_block(&signing_key, period, 191);
-        write_period_data(&storage, period, &pbft_block, &[]);
+        let transaction_rlp = vec![0xc1, 0xB1];
+        let transaction = test_transaction(
+            0xB1,
+            validator,
+            Some(receiver),
+            0,
+            U256::from(1u64),
+            U256::zero(),
+            50_000,
+            vec![],
+            transaction_rlp.clone(),
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&transaction_rlp),
+        );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
             100_000,
             0,
-            vec![],
-            vec![genesis_validator(validator, U256::from(10_000u64))],
+            vec![genesis_account(validator, U256::from(1_000_000u64))],
+            vec![genesis_validator_with_metadata(
+                validator,
+                U256::from(10_000u64),
+                [0x67; 20],
+                2_500,
+                "validator",
+                "endpoint",
+            )],
             GenesisDposConfig {
                 eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
                 vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
@@ -4420,24 +4693,69 @@ mod tests {
                 magnolia_period: 0,
                 aspen_part_one_period: 0,
                 aspen_part_two_period: 1,
-                yield_percentage: 20,
+                max_block_author_reward_percent: 0,
+                dag_proposers_reward_percent: 100,
                 dpos_blocks_per_year: 10,
+                genesis_balance_sum: u256_to_big_endian(U256::from(1_000_000u64)),
+                aspen_max_supply: u256_to_big_endian(U256::from(2_000_000u64)),
                 rewards_distribution_frequency: vec![(0, 1)],
                 ..Default::default()
             },
         )
         .unwrap();
 
-        let error = final_chain
-            .finalize_block(pbft_block, vec![], vec![])
-            .unwrap_err()
-            .to_string();
+        let (header_rlp, _) = final_chain
+            .finalize_block(
+                pbft_block,
+                vec![transaction.clone()],
+                vec![FinalizationDagBlock {
+                    author: validator,
+                    difficulty: 0,
+                    transaction_hashes: vec![transaction.hash],
+                }],
+            )
+            .unwrap();
 
-        assert!(error.contains("does not support Aspen part two"));
-        assert_eq!(final_chain.last_block_number().unwrap(), 0);
+        assert_eq!(
+            Rlp::new(&header_rlp).val_at::<U256>(11).unwrap(),
+            U256::from(1_000u64)
+        );
         assert_eq!(
             balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
-            U256::zero()
+            U256::from(1_000u64)
+        );
+        assert_eq!(
+            final_chain.dpos_total_amount_delegated(period).unwrap(),
+            u256_to_big_endian(U256::from(10_000u64))
+        );
+        assert_eq!(final_chain.dpos_yield(period).unwrap(), 1_000_000);
+        assert_eq!(
+            final_chain.dpos_total_supply(period).unwrap(),
+            u256_to_big_endian(U256::from(1_001_000u64))
+        );
+        let validator_info = final_chain
+            .call(dpos_call_request(period, get_validator_input(validator)))
+            .unwrap();
+        assert_eq!(
+            u256_from_big_endian(&validator_info.code_retval[64..96]),
+            U256::from(250u64)
+        );
+        let snapshot = final_chain
+            .dpos_snapshot_at_finalized_block(period)
+            .unwrap();
+        assert!(snapshot.minted_tokens.is_empty());
+        assert_eq!(
+            u256_from_big_endian(&snapshot.total_supply),
+            U256::from(1_001_000u64)
+        );
+        assert_eq!(snapshot.current_yield, 1_000_000);
+        assert_eq!(
+            snapshot
+                .delegator_rewards
+                .get(&validator)
+                .map(|reward| u256_from_big_endian(reward))
+                .unwrap(),
+            U256::from(750u64)
         );
 
         drop(final_chain);

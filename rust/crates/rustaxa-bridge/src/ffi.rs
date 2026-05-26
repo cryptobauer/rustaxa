@@ -1108,8 +1108,10 @@ pub mod rustaxa_ffi {
         dag_proposers_reward_percent: u16,
         yield_percentage: u16,
         dpos_blocks_per_year: u32,
+        genesis_balance_sum: Vec<u8>,
         aspen_max_supply: Vec<u8>,
         aspen_generated_rewards: Vec<u8>,
+        cacti_period: u64,
         frequency_rules: Vec<RewardsFrequencyRule>,
     }
 
@@ -3672,6 +3674,13 @@ pub mod rustaxa_ffi {
             self: &BridgeFinalChain,
             block_number: u64,
         ) -> Result<Vec<DposValidatorStake>>;
+        pub fn get_dpos_total_amount_delegated(
+            self: &BridgeFinalChain,
+            block_number: u64,
+        ) -> Result<Vec<u8>>;
+        pub fn get_dpos_yield(self: &BridgeFinalChain, block_number: u64) -> Result<u64>;
+        pub fn get_dpos_total_supply(self: &BridgeFinalChain, block_number: u64)
+            -> Result<Vec<u8>>;
         pub fn get_dpos_validators_eligible_vote_counts(
             self: &BridgeFinalChain,
             block_number: u64,

@@ -179,9 +179,15 @@ rustaxa::FinalChainRewardsConfig make_final_chain_rewards_config(const taraxa::F
   rewards_config.dag_proposers_reward_percent = config.genesis.state.dpos.dag_proposers_reward;
   rewards_config.yield_percentage = config.genesis.state.dpos.yield_percentage;
   rewards_config.dpos_blocks_per_year = config.genesis.state.dpos.blocks_per_year;
+  u256 genesis_balance_sum = 0;
+  for (const auto& [_, balance] : config.genesis.state.initial_balances) {
+    genesis_balance_sum += balance;
+  }
+  rewards_config.genesis_balance_sum = into_big_endian_vec(genesis_balance_sum);
   rewards_config.aspen_max_supply = into_big_endian_vec(config.genesis.state.hardforks.aspen_hf.max_supply);
   rewards_config.aspen_generated_rewards =
       into_big_endian_vec(config.genesis.state.hardforks.aspen_hf.generated_rewards);
+  rewards_config.cacti_period = config.genesis.state.hardforks.cacti_hf.block_num;
   rewards_config.frequency_rules.reserve(config.genesis.state.hardforks.rewards_distribution_frequency.size());
   for (const auto& [from_period, frequency] : config.genesis.state.hardforks.rewards_distribution_frequency) {
     rustaxa::RewardsFrequencyRule rule{};
@@ -464,7 +470,10 @@ std::vector<state_api::ValidatorStake> FinalChain::dposValidatorsTotalStakes(Eth
   return stakes;
 }
 
-uint256_t FinalChain::dposTotalAmountDelegated(EthBlockNumber) const { return {}; }
+uint256_t FinalChain::dposTotalAmountDelegated(EthBlockNumber blk_num) const {
+  auto delegated = rust_final_chain_.value()->get_dpos_total_amount_delegated(blk_num);
+  return dev::fromBigEndian<u256>(dev::bytes(delegated.begin(), delegated.end()));
+}
 
 std::vector<state_api::ValidatorVoteCount> FinalChain::dposValidatorsEligibleVoteCounts(EthBlockNumber blk_num) const {
   auto rust_vote_counts = rust_final_chain_.value()->get_dpos_validators_eligible_vote_counts(blk_num);
@@ -479,9 +488,14 @@ std::vector<state_api::ValidatorVoteCount> FinalChain::dposValidatorsEligibleVot
   return vote_counts;
 }
 
-uint64_t FinalChain::dposYield(EthBlockNumber) const { return 0; }
+uint64_t FinalChain::dposYield(EthBlockNumber blk_num) const {
+  return rust_final_chain_.value()->get_dpos_yield(blk_num);
+}
 
-u256 FinalChain::dposTotalSupply(EthBlockNumber) const { return {}; }
+u256 FinalChain::dposTotalSupply(EthBlockNumber blk_num) const {
+  auto supply = rust_final_chain_.value()->get_dpos_total_supply(blk_num);
+  return dev::fromBigEndian<u256>(dev::bytes(supply.begin(), supply.end()));
+}
 
 h256 FinalChain::getBridgeRoot(EthBlockNumber) const { return {}; }
 
