@@ -71,6 +71,43 @@ class RustFinalChainTest : public ::testing::Test {
     return input;
   }
 
+  static rust::Vec<uint8_t> get_total_delegation_input(std::array<uint8_t, 20> delegator_address) {
+    rust::Vec<uint8_t> input;
+    input.push_back(0xfc);
+    input.push_back(0x5e);
+    input.push_back(0x7e);
+    input.push_back(0x09);
+    for (auto i = 0; i < 12; ++i) {
+      input.push_back(0);
+    }
+    for (const auto byte : delegator_address) {
+      input.push_back(byte);
+    }
+    return input;
+  }
+
+  static rust::Vec<uint8_t> get_delegations_input(std::array<uint8_t, 20> delegator_address, uint32_t batch) {
+    rust::Vec<uint8_t> input;
+    input.push_back(0x8b);
+    input.push_back(0x49);
+    input.push_back(0xd3);
+    input.push_back(0x94);
+    for (auto i = 0; i < 12; ++i) {
+      input.push_back(0);
+    }
+    for (const auto byte : delegator_address) {
+      input.push_back(byte);
+    }
+    for (auto i = 0; i < 28; ++i) {
+      input.push_back(0);
+    }
+    input.push_back(static_cast<uint8_t>((batch >> 24) & 0xff));
+    input.push_back(static_cast<uint8_t>((batch >> 16) & 0xff));
+    input.push_back(static_cast<uint8_t>((batch >> 8) & 0xff));
+    input.push_back(static_cast<uint8_t>(batch & 0xff));
+    return input;
+  }
+
   static uint64_t abi_word_u64(const rust::Vec<uint8_t>& data, size_t offset) {
     uint64_t value = 0;
     for (auto i = offset + 24; i < offset + 32; ++i) {
@@ -157,6 +194,24 @@ TEST_F(RustFinalChainTest, DposQueriesUseGenesisSnapshotAtBlockZero) {
   EXPECT_EQ(bytes(final_chain->get_dpos_total_amount_delegated(0)), bytes(u64_be(10000)));
   EXPECT_EQ(final_chain->get_dpos_yield(0), 0u);
   EXPECT_TRUE(final_chain->get_dpos_total_supply(0).empty());
+
+  auto total_delegation = final_chain->call(dpos_call(0, get_total_delegation_input(validator_address)));
+  ASSERT_EQ(std::string(total_delegation.code_err), "");
+  ASSERT_EQ(std::string(total_delegation.consensus_err), "");
+  EXPECT_EQ(abi_word_u64(total_delegation.code_retval, 0), 10'000u);
+
+  auto delegations = final_chain->call(dpos_call(0, get_delegations_input(validator_address, 0)));
+  ASSERT_EQ(std::string(delegations.code_err), "");
+  ASSERT_EQ(std::string(delegations.consensus_err), "");
+  ASSERT_EQ(delegations.code_retval.size(), 192u);
+  EXPECT_EQ(abi_word_u64(delegations.code_retval, 0), 64u);
+  EXPECT_EQ(abi_word_u64(delegations.code_retval, 32), 1u);
+  EXPECT_EQ(abi_word_u64(delegations.code_retval, 64), 1u);
+  const auto validator_word = abi_address_word(validator_address);
+  EXPECT_EQ(std::vector<uint8_t>(delegations.code_retval.begin() + 96, delegations.code_retval.begin() + 128),
+            std::vector<uint8_t>(validator_word.begin(), validator_word.end()));
+  EXPECT_EQ(abi_word_u64(delegations.code_retval, 128), 10'000u);
+  EXPECT_EQ(abi_word_u64(delegations.code_retval, 160), 0u);
 
   const auto vote_counts = final_chain->get_dpos_validators_eligible_vote_counts(0);
   ASSERT_EQ(vote_counts.size(), 1u);

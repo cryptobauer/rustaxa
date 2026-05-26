@@ -32,6 +32,8 @@ use std::sync::Mutex;
 use triehash::ordered_trie_root;
 
 type DposDelegations = BTreeMap<[u8; 20], BTreeMap<[u8; 20], Vec<u8>>>;
+type DposDelegationRewardCursors = BTreeMap<[u8; 20], BTreeMap<[u8; 20], Vec<u8>>>;
+type DposDelegatorValidators = BTreeMap<[u8; 20], Vec<[u8; 20]>>;
 
 const EMPTY_TRIE_ROOT: [u8; 32] = [
     0x56, 0xe8, 0x1f, 0x17, 0x1b, 0xcc, 0x55, 0xa6, 0xff, 0x83, 0x45, 0xe6, 0x92, 0xc0, 0xf8, 0x6e,
@@ -45,6 +47,8 @@ const DPOS_CONTRACT_ADDRESS: [u8; 20] = [
 ];
 const DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR: [u8; 4] = [0xde, 0x8e, 0x4b, 0x50];
 const DPOS_GET_VALIDATOR_SELECTOR: [u8; 4] = [0x19, 0x04, 0xbb, 0x2e];
+const DPOS_GET_DELEGATIONS_SELECTOR: [u8; 4] = [0x8b, 0x49, 0xd3, 0x94];
+const DPOS_GET_TOTAL_DELEGATION_SELECTOR: [u8; 4] = [0xfc, 0x5e, 0x7e, 0x09];
 const DPOS_DELEGATE_SELECTOR: [u8; 4] = [0x5c, 0x19, 0xa9, 0x5c];
 const DPOS_UNDELEGATE_SELECTOR: [u8; 4] = [0x4d, 0x99, 0xdd, 0x16];
 const DPOS_REDELEGATE_SELECTOR: [u8; 4] = [0x70, 0x38, 0x12, 0xcc];
@@ -53,6 +57,7 @@ const DPOS_REGISTER_VALIDATOR_GAS: u64 = 80_000;
 const DPOS_DELEGATE_GAS: u64 = 40_000;
 const DPOS_UNDELEGATE_GAS: u64 = 60_000;
 const DPOS_REDELEGATE_GAS: u64 = 80_000;
+const DPOS_GET_DELEGATIONS_MAX_COUNT: usize = 20;
 const ASPEN_YIELD_PRECISION: u64 = 1_000_000;
 
 /// Rust final-chain domain surface used by the C++ shim.
@@ -120,6 +125,17 @@ struct DposSnapshot {
     total_vote_count: u64,
     /// Delegated stake by validator and delegator at this block.
     delegations: DposDelegations,
+    /// Delegator-to-validator iteration order used by DPoS paged reads.
+    delegator_validators: DposDelegatorValidators,
+    /// F1 reward cursor by validator and delegator at this block.
+    ///
+    /// Each cursor is the validator's cumulative rewards-per-one-stake value
+    /// at the delegator's last stake mutation. Read-only reward queries
+    /// subtract it from the validator's current cumulative value without
+    /// claiming or mutating reward pools.
+    delegation_reward_cursors: DposDelegationRewardCursors,
+    /// Current F1 cumulative rewards-per-one-stake by validator.
+    validator_reward_per_stake: BTreeMap<[u8; 20], Vec<u8>>,
     /// Aspen part-one minted-token counter at this block.
     minted_tokens: Vec<u8>,
     /// Aspen part-two total supply at this block.
@@ -286,6 +302,20 @@ impl FinalChain {
                 (*address, validator_delegations)
             })
             .collect::<BTreeMap<_, _>>();
+        let genesis_dpos_delegation_reward_cursors = genesis_dpos_delegations
+            .iter()
+            .map(|(validator, delegations)| {
+                (
+                    *validator,
+                    delegations
+                        .keys()
+                        .map(|delegator| (*delegator, Vec::new()))
+                        .collect::<BTreeMap<_, _>>(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let genesis_dpos_delegator_validators =
+            delegator_validators_from_delegations(&genesis_dpos_delegations);
         let genesis_dpos_total_vote_count =
             genesis_vrf_keys
                 .iter()
@@ -338,6 +368,9 @@ impl FinalChain {
                     vote_counts: genesis_dpos_vote_counts,
                     total_vote_count: genesis_dpos_total_vote_count,
                     delegations: genesis_dpos_delegations,
+                    delegator_validators: genesis_dpos_delegator_validators,
+                    delegation_reward_cursors: genesis_dpos_delegation_reward_cursors,
+                    validator_reward_per_stake: BTreeMap::new(),
                     minted_tokens: Vec::new(),
                     total_supply: Vec::new(),
                     current_yield: 0,
@@ -709,6 +742,21 @@ impl FinalChain {
                 let validator =
                     decode_abi_address_argument(&request.input, "getValidator(address)")?;
                 self.encode_dpos_validator(request.block_number, validator)?
+            }
+            DPOS_GET_TOTAL_DELEGATION_SELECTOR => {
+                let delegator =
+                    decode_abi_address_argument(&request.input, "getTotalDelegation(address)")?;
+                self.encode_dpos_total_delegation(request.block_number, delegator)?
+            }
+            DPOS_GET_DELEGATIONS_SELECTOR => {
+                let delegator =
+                    decode_abi_address_argument(&request.input, "getDelegations(address,uint32)")?;
+                let batch = decode_abi_u32_argument(
+                    &request.input,
+                    36,
+                    "getDelegations(address,uint32) batch",
+                )?;
+                self.encode_dpos_delegations(request.block_number, delegator, batch)?
             }
             _ => {
                 return Ok(FinalChainCallOutcome {
@@ -1349,6 +1397,71 @@ impl FinalChain {
         Ok(())
     }
 
+    fn current_validator_reward_per_stake(
+        &self,
+        snapshot: &DposSnapshot,
+        validator: [u8; 20],
+    ) -> Result<U256, anyhow::Error> {
+        let base = snapshot
+            .validator_reward_per_stake
+            .get(&validator)
+            .map(|bytes| u256_from_big_endian(bytes))
+            .unwrap_or_default();
+        let rewards_pool = snapshot
+            .delegator_rewards
+            .get(&validator)
+            .map(|bytes| u256_from_big_endian(bytes))
+            .unwrap_or_default();
+        let stake = snapshot
+            .total_stakes
+            .get(&validator)
+            .map(|bytes| u256_from_big_endian(bytes))
+            .unwrap_or_default();
+        if rewards_pool.is_zero() || stake.is_zero() {
+            return Ok(base);
+        }
+        base.checked_add(self.reward_per_stake(rewards_pool, stake)?)
+            .ok_or_else(|| anyhow::anyhow!("validator reward-per-stake overflow"))
+    }
+
+    fn reward_per_stake(&self, rewards_pool: U256, stake: U256) -> Result<U256, anyhow::Error> {
+        anyhow::ensure!(
+            !stake.is_zero(),
+            "DPoS reward-per-stake calculation requires nonzero stake"
+        );
+        rewards_pool
+            .checked_mul(u256_from_big_endian(&self.dpos_validator_maximum_stake))
+            .ok_or_else(|| anyhow::anyhow!("DPoS reward-per-stake multiplication overflow"))
+            .map(|value| value / stake)
+    }
+
+    fn delegator_reward_from_per_stake(
+        &self,
+        reward_per_stake: U256,
+        stake: U256,
+    ) -> Result<U256, anyhow::Error> {
+        if reward_per_stake.is_zero() || stake.is_zero() {
+            return Ok(U256::zero());
+        }
+        reward_per_stake
+            .checked_mul(stake)
+            .ok_or_else(|| anyhow::anyhow!("DPoS delegator reward multiplication overflow"))
+            .map(|value| value / u256_from_big_endian(&self.dpos_validator_maximum_stake))
+    }
+
+    fn checkpoint_validator_reward_per_stake(
+        &self,
+        snapshot: &mut DposSnapshot,
+        validator: [u8; 20],
+    ) -> Result<U256, anyhow::Error> {
+        let reward_per_stake = self.current_validator_reward_per_stake(snapshot, validator)?;
+        snapshot
+            .validator_reward_per_stake
+            .insert(validator, u256_to_big_endian(reward_per_stake));
+        snapshot.delegator_rewards.insert(validator, Vec::new());
+        Ok(reward_per_stake)
+    }
+
     /// Applies validated DPoS reward deltas to a staged snapshot.
     ///
     /// The caller must pass a clone that has not been persisted or published.
@@ -1830,6 +1943,119 @@ impl FinalChain {
         Ok(output)
     }
 
+    fn encode_dpos_total_delegation(
+        &self,
+        block_number: u64,
+        delegator: [u8; 20],
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        let snapshot = self.dpos_snapshot_at_finalized_block(block_number)?;
+        let total = snapshot
+            .delegations
+            .values()
+            .filter_map(|delegations| delegations.get(&delegator))
+            .try_fold(U256::zero(), |total, stake| {
+                total
+                    .checked_add(u256_from_big_endian(stake))
+                    .ok_or_else(|| anyhow::anyhow!("DPoS total delegation overflow"))
+            })?;
+        Ok(abi_word_from_u256_bytes(&u256_to_big_endian(total))?.to_vec())
+    }
+
+    fn encode_dpos_delegations(
+        &self,
+        block_number: u64,
+        delegator: [u8; 20],
+        batch: u32,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        let snapshot = self.dpos_snapshot_at_finalized_block(block_number)?;
+        let validator_order = snapshot
+            .delegator_validators
+            .get(&delegator)
+            .cloned()
+            .unwrap_or_default();
+        let delegations = validator_order
+            .iter()
+            .filter_map(|validator| {
+                snapshot
+                    .delegations
+                    .get(validator)
+                    .and_then(|validator_delegations| validator_delegations.get(&delegator))
+                    .map(|stake| (*validator, stake.as_slice()))
+            })
+            .collect::<Vec<_>>();
+
+        let start = usize::try_from(batch)
+            .map_err(|_| anyhow::anyhow!("getDelegations batch does not fit into usize"))?
+            .checked_mul(DPOS_GET_DELEGATIONS_MAX_COUNT)
+            .ok_or_else(|| anyhow::anyhow!("getDelegations batch offset overflow"))?;
+        let end_index = start
+            .checked_add(DPOS_GET_DELEGATIONS_MAX_COUNT)
+            .ok_or_else(|| anyhow::anyhow!("getDelegations batch end overflow"))?;
+        let page = delegations
+            .iter()
+            .skip(start)
+            .take(DPOS_GET_DELEGATIONS_MAX_COUNT)
+            .collect::<Vec<_>>();
+        let is_end = end_index >= delegations.len();
+
+        let mut output = Vec::new();
+        output.extend_from_slice(&abi_word_from_u64(64));
+        output.extend_from_slice(&abi_word_from_bool(is_end));
+        output.extend_from_slice(&abi_word_from_usize(page.len(), "getDelegations length")?);
+        for (validator, stake) in page {
+            let reward = self.pending_delegator_reward(&snapshot, *validator, delegator, stake)?;
+            output.extend_from_slice(&abi_word_from_address(*validator));
+            output.extend_from_slice(&abi_word_from_u256_bytes(stake)?);
+            output.extend_from_slice(&abi_word_from_u256_bytes(&u256_to_big_endian(reward))?);
+        }
+        Ok(output)
+    }
+
+    fn pending_delegator_reward(
+        &self,
+        snapshot: &DposSnapshot,
+        validator: [u8; 20],
+        delegator: [u8; 20],
+        stake: &[u8],
+    ) -> Result<U256, anyhow::Error> {
+        let current_reward_per_stake =
+            self.current_validator_reward_per_stake(snapshot, validator)?;
+        let cursor = snapshot
+            .delegation_reward_cursors
+            .get(&validator)
+            .and_then(|cursors| cursors.get(&delegator))
+            .map(|bytes| u256_from_big_endian(bytes))
+            .unwrap_or_default();
+        anyhow::ensure!(
+            current_reward_per_stake >= cursor,
+            "DPoS delegation reward cursor exceeds validator reward state"
+        );
+        self.delegator_reward_from_per_stake(
+            current_reward_per_stake - cursor,
+            u256_from_big_endian(stake),
+        )
+    }
+
+    fn ensure_delegator_reward_claim_not_required(
+        &self,
+        snapshot: &DposSnapshot,
+        validator: [u8; 20],
+        delegator: [u8; 20],
+        stake: U256,
+    ) -> Result<(), anyhow::Error> {
+        let reward = self.pending_delegator_reward(
+            snapshot,
+            validator,
+            delegator,
+            &u256_to_big_endian(stake),
+        )?;
+        anyhow::ensure!(
+            reward.is_zero(),
+            "Rust FinalChain::finalize DPoS stake mutation requires reward claim support"
+        );
+        Ok(())
+    }
+
     /// Plans the DPoS snapshot for a newly finalized block.
     ///
     /// The new snapshot clones the previous block state and applies finalized
@@ -1931,6 +2157,20 @@ impl FinalChain {
         snapshot
             .delegations
             .insert(registration.validator, delegations);
+        add_delegator_validator(
+            &mut snapshot.delegator_validators,
+            registration.validator,
+            registration.validator,
+        );
+        let mut reward_cursors = BTreeMap::new();
+        reward_cursors.insert(registration.validator, Vec::new());
+        snapshot
+            .delegation_reward_cursors
+            .insert(registration.validator, reward_cursors);
+        snapshot
+            .validator_reward_per_stake
+            .entry(registration.validator)
+            .or_default();
         Ok(())
     }
 
@@ -1960,6 +2200,19 @@ impl FinalChain {
             .get(&delegator)
             .map(|bytes| u256_from_big_endian(bytes))
             .unwrap_or_default();
+        if !current_delegation.is_zero() {
+            self.ensure_delegator_reward_claim_not_required(
+                snapshot,
+                validator,
+                delegator,
+                current_delegation,
+            )?;
+        }
+        let reward_cursor = self.checkpoint_validator_reward_per_stake(snapshot, validator)?;
+        let delegations = snapshot.delegations.entry(validator).or_default();
+        if current_delegation.is_zero() {
+            add_delegator_validator(&mut snapshot.delegator_validators, delegator, validator);
+        }
         delegations.insert(
             delegator,
             u256_to_big_endian(
@@ -1968,6 +2221,11 @@ impl FinalChain {
                     .ok_or_else(|| anyhow::anyhow!("DPoS delegation addition overflow"))?,
             ),
         );
+        snapshot
+            .delegation_reward_cursors
+            .entry(validator)
+            .or_default()
+            .insert(delegator, u256_to_big_endian(reward_cursor));
         self.set_validator_stake(snapshot, validator, new_stake)
     }
 
@@ -2013,10 +2271,12 @@ impl FinalChain {
         };
         let current_stake = u256_from_big_endian(stake);
         let remove_amount = u256_from_big_endian(&amount);
-        let delegations = snapshot.delegations.get_mut(&validator).ok_or_else(|| {
-            anyhow::anyhow!("Rust FinalChain::finalize DPoS delegation does not exist")
-        })?;
-        let current_delegation = delegations
+        let current_delegation = snapshot
+            .delegations
+            .get(&validator)
+            .ok_or_else(|| {
+                anyhow::anyhow!("Rust FinalChain::finalize DPoS delegation does not exist")
+            })?
             .get(&delegator)
             .map(|bytes| u256_from_big_endian(bytes))
             .ok_or_else(|| {
@@ -2030,11 +2290,30 @@ impl FinalChain {
         if current_stake < remove_amount {
             anyhow::bail!("Rust FinalChain::finalize DPoS stake underflows on undelegate");
         }
+        self.ensure_delegator_reward_claim_not_required(
+            snapshot,
+            validator,
+            delegator,
+            current_delegation,
+        )?;
+        let reward_cursor = self.checkpoint_validator_reward_per_stake(snapshot, validator)?;
+        let delegations = snapshot.delegations.get_mut(&validator).ok_or_else(|| {
+            anyhow::anyhow!("Rust FinalChain::finalize DPoS delegation does not exist")
+        })?;
         let new_delegation = current_delegation - remove_amount;
         if new_delegation.is_zero() {
             delegations.remove(&delegator);
+            remove_delegator_validator(&mut snapshot.delegator_validators, delegator, validator);
+            if let Some(cursors) = snapshot.delegation_reward_cursors.get_mut(&validator) {
+                cursors.remove(&delegator);
+            }
         } else {
             delegations.insert(delegator, u256_to_big_endian(new_delegation));
+            snapshot
+                .delegation_reward_cursors
+                .entry(validator)
+                .or_default()
+                .insert(delegator, u256_to_big_endian(reward_cursor));
         }
         let new_stake = current_stake - remove_amount;
         self.set_validator_stake(snapshot, validator, new_stake)
@@ -2301,7 +2580,7 @@ fn h256_from_slice(raw: &[u8], field: &str) -> Result<ethereum_types::H256, anyh
 }
 
 fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Vec<u8> {
-    let mut stream = rlp::RlpStream::new_list(11);
+    let mut stream = rlp::RlpStream::new_list(14);
     append_address_bytes_map(&mut stream, &snapshot.total_stakes);
     append_address_bytes_map(&mut stream, &snapshot.commission_rewards);
     append_validator_metadata_map(&mut stream, &snapshot.validator_metadata);
@@ -2313,16 +2592,24 @@ fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Vec<u8> {
     stream.append(&snapshot.minted_tokens.as_slice());
     stream.append(&snapshot.total_supply.as_slice());
     stream.append(&snapshot.current_yield);
+    append_address_bytes_map(&mut stream, &snapshot.validator_reward_per_stake);
+    append_delegations_map(&mut stream, &snapshot.delegation_reward_cursors);
+    append_delegator_validators_map(&mut stream, &snapshot.delegator_validators);
     stream.out().to_vec()
 }
 
 fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
     let rlp = Rlp::new(raw);
     let item_count = rlp.item_count()?;
-    if item_count != 5 && item_count != 6 && item_count != 7 && item_count != 9 && item_count != 11
+    if item_count != 5
+        && item_count != 6
+        && item_count != 7
+        && item_count != 9
+        && item_count != 11
+        && item_count != 14
     {
         anyhow::bail!(
-            "DPoS snapshot RLP must contain exactly five, six, seven, nine, or eleven items"
+            "DPoS snapshot RLP must contain exactly five, six, seven, nine, eleven, or fourteen items"
         );
     }
     let total_stakes = decode_address_bytes_map(&rlp.at(0)?, "total stakes")?;
@@ -2357,10 +2644,25 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
     } else {
         Vec::new()
     };
-    let (total_supply, current_yield) = if item_count == 11 {
+    let (total_supply, current_yield) = if item_count >= 11 {
         (rlp.at(9)?.data()?.to_vec(), rlp.val_at(10)?)
     } else {
         (Vec::new(), 0)
+    };
+    let validator_reward_per_stake = if item_count >= 14 {
+        decode_address_bytes_map(&rlp.at(11)?, "validator reward per stake")?
+    } else {
+        BTreeMap::new()
+    };
+    let delegation_reward_cursors = if item_count >= 14 {
+        decode_delegations_map(&rlp.at(12)?)?
+    } else {
+        synthesize_empty_delegation_cursors(&delegations)
+    };
+    let delegator_validators = if item_count >= 14 {
+        decode_delegator_validators_map(&rlp.at(13)?)?
+    } else {
+        delegator_validators_from_delegations(&delegations)
     };
     Ok(DposSnapshot {
         total_stakes,
@@ -2371,6 +2673,9 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
         vote_counts,
         total_vote_count,
         delegations,
+        delegator_validators,
+        delegation_reward_cursors,
+        validator_reward_per_stake,
         minted_tokens,
         total_supply,
         current_yield,
@@ -2482,6 +2787,18 @@ fn append_delegations_map(stream: &mut rlp::RlpStream, map: &DposDelegations) {
     }
 }
 
+fn append_delegator_validators_map(stream: &mut rlp::RlpStream, map: &DposDelegatorValidators) {
+    stream.begin_list(map.len());
+    for (delegator, validators) in map {
+        stream.begin_list(2);
+        stream.append(&delegator.as_slice());
+        stream.begin_list(validators.len());
+        for validator in validators {
+            stream.append(&validator.as_slice());
+        }
+    }
+}
+
 fn decode_delegations_map(rlp: &Rlp<'_>) -> Result<DposDelegations, anyhow::Error> {
     let mut map = BTreeMap::new();
     for item in rlp.iter() {
@@ -2504,6 +2821,27 @@ fn decode_delegations_map(rlp: &Rlp<'_>) -> Result<DposDelegations, anyhow::Erro
     Ok(map)
 }
 
+fn decode_delegator_validators_map(
+    rlp: &Rlp<'_>,
+) -> Result<DposDelegatorValidators, anyhow::Error> {
+    let mut map = BTreeMap::new();
+    for item in rlp.iter() {
+        if item.item_count()? != 2 {
+            anyhow::bail!(
+                "DPoS snapshot delegator validators entry must contain exactly two items"
+            );
+        }
+        let delegator = decode_address(&item.at(0)?, "delegator validators delegator")?;
+        let validators = item
+            .at(1)?
+            .iter()
+            .map(|validator| decode_address(&validator, "delegator validator address"))
+            .collect::<Result<Vec<_>>>()?;
+        map.insert(delegator, validators);
+    }
+    Ok(map)
+}
+
 fn synthesize_self_delegations(total_stakes: &BTreeMap<[u8; 20], Vec<u8>>) -> DposDelegations {
     total_stakes
         .iter()
@@ -2513,6 +2851,63 @@ fn synthesize_self_delegations(total_stakes: &BTreeMap<[u8; 20], Vec<u8>>) -> Dp
             (*validator, delegations)
         })
         .collect()
+}
+
+fn synthesize_empty_delegation_cursors(
+    delegations: &DposDelegations,
+) -> DposDelegationRewardCursors {
+    delegations
+        .iter()
+        .map(|(validator, delegators)| {
+            (
+                *validator,
+                delegators
+                    .keys()
+                    .map(|delegator| (*delegator, Vec::new()))
+                    .collect::<BTreeMap<_, _>>(),
+            )
+        })
+        .collect()
+}
+
+fn delegator_validators_from_delegations(delegations: &DposDelegations) -> DposDelegatorValidators {
+    let mut map = BTreeMap::new();
+    for (validator, validator_delegations) in delegations {
+        for delegator in validator_delegations.keys() {
+            add_delegator_validator(&mut map, *delegator, *validator);
+        }
+    }
+    map
+}
+
+fn add_delegator_validator(
+    map: &mut DposDelegatorValidators,
+    delegator: [u8; 20],
+    validator: [u8; 20],
+) {
+    let validators = map.entry(delegator).or_default();
+    if !validators.contains(&validator) {
+        validators.push(validator);
+    }
+}
+
+fn remove_delegator_validator(
+    map: &mut DposDelegatorValidators,
+    delegator: [u8; 20],
+    validator: [u8; 20],
+) {
+    let Some(validators) = map.get_mut(&delegator) else {
+        return;
+    };
+    if let Some(position) = validators
+        .iter()
+        .position(|existing| *existing == validator)
+    {
+        validators.swap_remove(position);
+    }
+    if validators.is_empty() {
+        map.remove(&delegator);
+    }
 }
 
 fn decode_address_fixed_hash_map(
@@ -2823,11 +3218,32 @@ fn decode_abi_address_argument_with_offset(
     Ok(address)
 }
 
+fn decode_abi_u32_argument(
+    input: &[u8],
+    start: usize,
+    function_name: &str,
+) -> Result<u32, anyhow::Error> {
+    if input.len() < start + 32 {
+        anyhow::bail!("{function_name} input is shorter than selector plus ABI argument");
+    }
+    anyhow::ensure!(
+        input[start..start + 28].iter().all(|byte| *byte == 0),
+        "{function_name} argument does not fit into uint32"
+    );
+    let mut bytes = [0u8; 4];
+    bytes.copy_from_slice(&input[start + 28..start + 32]);
+    Ok(u32::from_be_bytes(bytes))
+}
+
 /// Encodes a `u64` as a right-aligned Solidity ABI word.
 fn abi_word_from_u64(value: u64) -> [u8; 32] {
     let mut word = [0u8; 32];
     word[24..].copy_from_slice(&value.to_be_bytes());
     word
+}
+
+fn abi_word_from_bool(value: bool) -> [u8; 32] {
+    abi_word_from_u64(if value { 1 } else { 0 })
 }
 
 /// Encodes a `usize` ABI offset or length as a Solidity ABI word.
@@ -3406,6 +3822,67 @@ mod tests {
         input.extend_from_slice(&[0u8; 12]);
         input.extend_from_slice(&validator);
         input
+    }
+
+    fn get_total_delegation_input(delegator: [u8; 20]) -> Vec<u8> {
+        let mut input = DPOS_GET_TOTAL_DELEGATION_SELECTOR.to_vec();
+        input.extend_from_slice(&[0u8; 12]);
+        input.extend_from_slice(&delegator);
+        input
+    }
+
+    fn get_delegations_input(delegator: [u8; 20], batch: u32) -> Vec<u8> {
+        let mut input = DPOS_GET_DELEGATIONS_SELECTOR.to_vec();
+        input.extend_from_slice(&[0u8; 12]);
+        input.extend_from_slice(&delegator);
+        input.extend_from_slice(&[0u8; 28]);
+        input.extend_from_slice(&batch.to_be_bytes());
+        input
+    }
+
+    fn assert_single_delegation(
+        final_chain: &FinalChain,
+        block_number: u64,
+        delegator: [u8; 20],
+        validator: [u8; 20],
+        stake: U256,
+        rewards: U256,
+    ) {
+        let total_delegation = final_chain
+            .call(dpos_call_request(
+                block_number,
+                get_total_delegation_input(delegator),
+            ))
+            .unwrap();
+        assert_eq!(u256_from_big_endian(&total_delegation.code_retval), stake);
+
+        let delegations = final_chain
+            .call(dpos_call_request(
+                block_number,
+                get_delegations_input(delegator, 0),
+            ))
+            .unwrap();
+        assert_eq!(
+            u256_from_big_endian(&delegations.code_retval[0..32]),
+            U256::from(64u64)
+        );
+        assert_eq!(
+            u256_from_big_endian(&delegations.code_retval[32..64]),
+            U256::one()
+        );
+        assert_eq!(
+            u256_from_big_endian(&delegations.code_retval[64..96]),
+            U256::one()
+        );
+        assert_eq!(&delegations.code_retval[108..128], &validator);
+        assert_eq!(
+            u256_from_big_endian(&delegations.code_retval[128..160]),
+            stake
+        );
+        assert_eq!(
+            u256_from_big_endian(&delegations.code_retval[160..192]),
+            rewards
+        );
     }
 
     fn abi_word_from_bytes_offset(offset: usize) -> [u8; 32] {
@@ -4634,6 +5111,131 @@ mod tests {
                 .unwrap(),
             U256::from(150u64)
         );
+        assert_single_delegation(
+            &final_chain,
+            period,
+            dag_author,
+            dag_author,
+            U256::from(10_000u64),
+            U256::from(150u64),
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_rejects_dpos_stake_mutation_that_requires_reward_claim() {
+        let path = temp_db_path("finalize-dpos-mutation-with-pending-reward");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x68; 20];
+        let receiver = [0x69; 20];
+        let signing_key = SigningKey::from_slice(&[20u8; 32]).unwrap();
+        let first_period = 1u64;
+        let first_pbft = signed_pbft_block(&signing_key, first_period, 201);
+        let transaction_rlp = vec![0xc1, 0xC1];
+        let transaction = test_transaction(
+            0xC1,
+            validator,
+            Some(receiver),
+            0,
+            U256::from(1u64),
+            U256::zero(),
+            50_000,
+            vec![],
+            transaction_rlp.clone(),
+        );
+        let transaction_hash = transaction.hash;
+        write_period_data(
+            &storage,
+            first_period,
+            &first_pbft,
+            std::slice::from_ref(&transaction_rlp),
+        );
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(validator, U256::from(1_000_000u64))],
+            vec![genesis_validator_with_metadata(
+                validator,
+                U256::from(10_000u64),
+                [0x6a; 20],
+                2_500,
+                "validator",
+                "endpoint",
+            )],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+            FinalChainRewardsConfig {
+                committee_size: 100,
+                magnolia_period: 0,
+                aspen_part_one_period: u64::MAX,
+                aspen_part_two_period: 0,
+                max_block_author_reward_percent: 0,
+                dag_proposers_reward_percent: 100,
+                yield_percentage: 20,
+                dpos_blocks_per_year: 10,
+                rewards_distribution_frequency: vec![(0, 1)],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        final_chain
+            .finalize_block(
+                first_pbft,
+                vec![transaction],
+                vec![FinalizationDagBlock {
+                    author: validator,
+                    difficulty: 0,
+                    transaction_hashes: vec![transaction_hash],
+                }],
+            )
+            .unwrap();
+        assert_single_delegation(
+            &final_chain,
+            first_period,
+            validator,
+            validator,
+            U256::from(10_000u64),
+            U256::from(150u64),
+        );
+
+        let second_period = 2u64;
+        let second_pbft = signed_pbft_block(&signing_key, second_period, 202);
+        let delegate_tx = test_transaction(
+            0xC2,
+            validator,
+            Some(DPOS_CONTRACT_ADDRESS),
+            1,
+            U256::from(1_000u64),
+            U256::zero(),
+            100_000,
+            delegate_input(validator),
+            vec![0xc1, 0xC2],
+        );
+        write_period_data(
+            &storage,
+            second_period,
+            &second_pbft,
+            std::slice::from_ref(&delegate_tx.rlp),
+        );
+
+        let err = final_chain
+            .finalize_block(second_pbft, vec![delegate_tx], vec![])
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("DPoS stake mutation requires reward claim support")
+        );
 
         drop(final_chain);
         drop(storage);
@@ -4756,6 +5358,14 @@ mod tests {
                 .map(|reward| u256_from_big_endian(reward))
                 .unwrap(),
             U256::from(750u64)
+        );
+        assert_single_delegation(
+            &final_chain,
+            period,
+            validator,
+            validator,
+            U256::from(10_000u64),
+            U256::from(750u64),
         );
 
         drop(final_chain);

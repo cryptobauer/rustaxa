@@ -254,13 +254,16 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     Rust reward stats into staged validator commission and delegator reward pools, credits the DPoS contract account with
     the minted total, migrates part-one minted tokens into durable total supply at the Aspen part-two boundary, and writes
     header `total_reward` from the Rust plan. Rust-backed FinalChain shim reads now expose DPoS total delegated, yield,
-    and total supply. Claim execution and full per-delegator F1 reward-read parity remain future work.
+    total supply, and read-only delegator reward pages backed by Rust F1 reward cursors. Stake mutations that would
+    trigger Go's auto-claim path now fail explicitly until claim execution moves to Rust; claim execution remains future
+    work.
   - non-genesis DPoS queries still throw when the queried block has not been finalized through Rust snapshot
     maintenance; DPoS transitions beyond the supported validator-registration/delegation subset and legacy databases without Rust
     account snapshots remain explicit gaps.
-  - selected DPoS precompile reads through `FinalChain::call` are Rust-backed for `getTotalEligibleVotesCount()` and
-    `getValidator(address)`. These precompile reads use the exact finalized-block snapshot, while DAG authorization and
-    explicit eligibility APIs still use the configured delegation-delay snapshot.
+  - selected DPoS precompile reads through `FinalChain::call` are Rust-backed for `getTotalEligibleVotesCount()`,
+    `getValidator(address)`, `getTotalDelegation(address)`, and `getDelegations(address,uint32)`. These precompile reads
+    use the exact finalized-block snapshot, while DAG authorization and explicit eligibility APIs still use the
+    configured delegation-delay snapshot.
 - Unimplemented public shim methods throw rather than falling back to `FinalChainOld`.
 
 ### FinalChain Storage Touchpoints
@@ -553,9 +556,10 @@ The current Rust starting point is intentionally small:
     rewards-stats runtime, builds finalized-period facts with bridged previous-block cert votes, persists/clears
     interval cache rows in the finalized-block batch, reloads cached stats on startup, applies interval-boundary
     fee commission rewards from the Rust planner to staged Rust account/DPoS snapshots, and now handles fixed-yield plus
-    Aspen part-two dynamic-yield minted block/DAG/vote distribution, total-supply migration, Rust-backed supply/yield
-    reads, and header `total_reward` natively. Moving claim execution, full per-delegator F1 reward-read parity, and
-    legacy `BlockStats` carrier ownership fully into Rust remain future work. Double-voting proof planning and already-verified pillar-vote
+    Aspen part-two dynamic-yield minted block/DAG/vote distribution, total-supply migration, Rust-backed supply/yield and
+    delegator reward-page reads, and header `total_reward` natively. Stake mutations with pending delegator rewards still
+    stop at an explicit Rust claim-support gap. Moving claim execution and legacy `BlockStats`
+    carrier ownership fully into Rust remain future work. Double-voting proof planning and already-verified pillar-vote
     aggregation are Rust-backed; broader slashing state transitions, pillar signing/recovery, and
     `PillarChainManager` orchestration still depend on future FinalChain/state ports.
 
