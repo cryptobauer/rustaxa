@@ -247,7 +247,9 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     using bridged Magnolia/Aspen rewards configuration, DAG difficulty, `blocks_per_year`, and previous-block cert-vote
     facts. The native FinalChain path owns a long-lived Rust rewards-stats runtime, persists non-boundary interval cache
     rows in the finalized-block batch before `lastBlockNumber`, reloads cached stats on startup, and clears the cache at
-    distribution boundaries after applying interval fee rewards.
+    distribution boundaries after applying interval fee rewards. Native execution and fee-reward account mutation now
+    use a staged account map that is published only after finalization storage commits; post-Magnolia transaction fees
+    also credit the Rust DPoS contract account while the DPoS snapshot records per-validator commission ownership.
   - non-genesis DPoS queries still throw when the queried block has not been finalized through Rust snapshot
     maintenance; DPoS transitions beyond the supported validator-registration/delegation subset and legacy databases without Rust
     account snapshots remain explicit gaps.
@@ -545,7 +547,8 @@ The current Rust starting point is intentionally small:
     legacy FinalChain ordering. The active Rust `FinalChain` native finalization path now owns a long-lived
     rewards-stats runtime, builds finalized-period facts with bridged previous-block cert votes, persists/clears
     interval cache rows in the finalized-block batch, reloads cached stats on startup, and applies interval-boundary
-    fee commission rewards from the Rust planner. Moving `StateAPI::distribute_rewards`, account reward mutation, and
+    fee commission rewards from the Rust planner to staged Rust account/DPoS snapshots. Moving full
+    `StateAPI::distribute_rewards` minted block/DAG/vote rewards, reward-pool accounting, header `total_reward`, and
     legacy `BlockStats` carrier ownership into Rust remain future work. Double-voting proof planning and already-verified pillar-vote
     aggregation are Rust-backed; broader slashing state transitions, pillar signing/recovery, and
     `PillarChainManager` orchestration still depend on future FinalChain/state ports.

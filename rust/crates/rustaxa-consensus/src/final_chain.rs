@@ -733,11 +733,15 @@ impl FinalChain {
         } else {
             rewards_stats_plan.fee_rewards_by_validator.clone()
         };
+        let mut account_snapshot = execution.accounts;
         if pre_magnolia_fee_reward_period {
             self.credit_pre_magnolia_pbft_fee_reward(
+                &mut account_snapshot,
                 pbft.author.into(),
                 total_transaction_fees(&execution.transaction_fees)?,
             )?;
+        } else {
+            self.credit_post_magnolia_dpos_fee_rewards(&mut account_snapshot, &dpos_fee_rewards)?;
         }
         let receipts_rlp = encode_receipts_rlp(&execution.receipts);
         let parent_hash = self
@@ -772,7 +776,6 @@ impl FinalChain {
         let dpos_snapshot =
             self.plan_dpos_snapshot(pbft.period, dpos_fee_rewards, execution.dpos_transactions)?;
         let dpos_snapshot_rlp = encode_dpos_snapshot_rlp(&dpos_snapshot);
-        let account_snapshot = self.current_account_snapshot()?;
         let account_snapshot_rlp = encode_account_snapshot_rlp(&account_snapshot);
         let execution_status = self.finalization_execution_status(
             finalized_dag_blocks.len() as u64,
@@ -834,22 +837,54 @@ impl FinalChain {
     /// fields, and reports overflow without partially mutating account state.
     fn credit_pre_magnolia_pbft_fee_reward(
         &self,
+        accounts: &mut HashMap<[u8; 20], Account>,
         beneficiary: [u8; 20],
         reward: U256,
     ) -> Result<(), anyhow::Error> {
         if reward.is_zero() {
             return Ok(());
         }
-        let mut accounts = self
-            .accounts
-            .lock()
-            .map_err(|_| anyhow::anyhow!("final-chain account lock poisoned"))?;
         let account = accounts.entry(beneficiary).or_insert_with(empty_account);
         let balance = u256_from_big_endian(&account.balance);
         account.balance = u256_to_big_endian(
             balance
                 .checked_add(reward)
                 .ok_or_else(|| anyhow::anyhow!("pre-Magnolia PBFT beneficiary reward overflow"))?,
+        );
+        Ok(())
+    }
+
+    /// Credits post-Magnolia fee rewards to the Rust DPoS contract account.
+    ///
+    /// Native rewards-stat planning separately records per-validator commission
+    /// ownership in the DPoS snapshot. The executable account mutation mirrors
+    /// the legacy DPoS precompile behavior for transaction fees by accumulating
+    /// the distributed fee total on the DPoS contract balance before the
+    /// account snapshot is persisted with final-chain visibility.
+    fn credit_post_magnolia_dpos_fee_rewards(
+        &self,
+        accounts: &mut HashMap<[u8; 20], Account>,
+        fee_rewards_by_validator: &BTreeMap<[u8; 20], U256>,
+    ) -> Result<(), anyhow::Error> {
+        let reward =
+            fee_rewards_by_validator
+                .values()
+                .try_fold(U256::zero(), |total, reward| {
+                    total.checked_add(*reward).ok_or_else(|| {
+                        anyhow::anyhow!("post-Magnolia DPoS fee reward total overflow")
+                    })
+                })?;
+        if reward.is_zero() {
+            return Ok(());
+        }
+        let account = accounts
+            .entry(DPOS_CONTRACT_ADDRESS)
+            .or_insert_with(empty_account);
+        let balance = u256_from_big_endian(&account.balance);
+        account.balance = u256_to_big_endian(
+            balance
+                .checked_add(reward)
+                .ok_or_else(|| anyhow::anyhow!("DPoS contract fee reward balance overflow"))?,
         );
         Ok(())
     }
@@ -917,10 +952,7 @@ impl FinalChain {
         &self,
         transactions: &[FinalizationTransaction],
     ) -> Result<NativeExecution, anyhow::Error> {
-        let mut accounts = self
-            .accounts
-            .lock()
-            .map_err(|_| anyhow::anyhow!("final-chain account lock poisoned"))?;
+        let mut accounts = self.current_account_snapshot()?;
         let mut receipts = Vec::with_capacity(transactions.len());
         let mut transaction_fees = Vec::with_capacity(transactions.len());
         let mut dpos_transactions = Vec::new();
@@ -1041,6 +1073,7 @@ impl FinalChain {
         }
 
         Ok(NativeExecution {
+            accounts,
             receipts,
             gas_used: cumulative_gas_used,
             transaction_fees,
@@ -1560,15 +1593,22 @@ impl FinalChain {
         block_number: u64,
         accounts: HashMap<[u8; 20], Account>,
     ) -> Result<(), anyhow::Error> {
-        self.account_snapshots
+        let mut live_accounts = self
+            .accounts
             .lock()
-            .map_err(|_| anyhow::anyhow!("final-chain account snapshot lock poisoned"))?
-            .insert(block_number, accounts);
-        *self
+            .map_err(|_| anyhow::anyhow!("final-chain account lock poisoned"))?;
+        let mut snapshots = self
+            .account_snapshots
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain account snapshot lock poisoned"))?;
+        let mut latest_snapshot_block = self
             .latest_account_snapshot_block
             .lock()
-            .map_err(|_| anyhow::anyhow!("final-chain latest account snapshot lock poisoned"))? =
-            block_number;
+            .map_err(|_| anyhow::anyhow!("final-chain latest account snapshot lock poisoned"))?;
+
+        *live_accounts = accounts.clone();
+        snapshots.insert(block_number, accounts);
+        *latest_snapshot_block = block_number;
         Ok(())
     }
 
@@ -2535,6 +2575,7 @@ fn synthetic_state_root(period: u64) -> ethereum_types::H256 {
 
 /// Result of applying the Rust native-transfer subset for one final-chain block.
 struct NativeExecution {
+    accounts: HashMap<[u8; 20], Account>,
     receipts: Vec<Vec<u8>>,
     gas_used: u64,
     transaction_fees: Vec<([u8; 32], U256)>,
@@ -3789,6 +3830,10 @@ mod tests {
             U256::from(VALUE_TRANSFER_GAS * 2)
         );
         assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            U256::from(VALUE_TRANSFER_GAS * 2)
+        );
+        assert_eq!(
             final_chain
                 .dpos_eligible_vote_count(period, dag_author)
                 .unwrap(),
@@ -3886,6 +3931,10 @@ mod tests {
             u256_from_big_endian(&validator_info.code_retval[64..96]),
             U256::from(VALUE_TRANSFER_GAS * 2)
         );
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            U256::from(VALUE_TRANSFER_GAS * 2)
+        );
         assert!(
             final_chain
                 .dpos_eligible_total_vote_count(period + 1)
@@ -3980,6 +4029,10 @@ mod tests {
             u256_from_big_endian(&validator_info.code_retval[64..96]),
             U256::zero()
         );
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            U256::zero()
+        );
         drop(final_chain);
 
         let final_chain = FinalChain::new_with_rewards_config(
@@ -4040,6 +4093,96 @@ mod tests {
         assert_eq!(
             u256_from_big_endian(&validator_info.code_retval[64..96]),
             U256::from(VALUE_TRANSFER_GAS * 4)
+        );
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            U256::from(VALUE_TRANSFER_GAS * 4)
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_rejects_dpos_fee_reward_account_overflow_without_publishing_block() {
+        let path = temp_db_path("finalize-dpos-fee-reward-overflow");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let sender = [0x28; 20];
+        let receiver = [0x29; 20];
+        let dag_author = [0x2A; 20];
+        let genesis_validator = genesis_validator(dag_author, U256::from(10_000u64));
+        let signing_key = SigningKey::from_slice(&[16u8; 32]).unwrap();
+        let pbft_block = signed_pbft_block(&signing_key, period, 151);
+        let transaction_rlp = vec![0xc1, 0x93];
+        let transaction = test_transaction(
+            0x93,
+            sender,
+            Some(receiver),
+            0,
+            U256::from(1u64),
+            U256::from(2u64),
+            50_000,
+            vec![],
+            transaction_rlp.clone(),
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&transaction_rlp),
+        );
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![
+                genesis_account(sender, U256::from(1_000_000u64)),
+                genesis_account(DPOS_CONTRACT_ADDRESS, U256::MAX),
+            ],
+            vec![genesis_validator],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+            FinalChainRewardsConfig {
+                committee_size: 100,
+                magnolia_period: 0,
+                aspen_part_one_period: u64::MAX,
+                rewards_distribution_frequency: vec![(0, 1)],
+            },
+        )
+        .unwrap();
+
+        let error = final_chain
+            .finalize_block(
+                pbft_block,
+                vec![transaction.clone()],
+                vec![FinalizationDagBlock {
+                    author: dag_author,
+                    difficulty: 0,
+                    transaction_hashes: vec![transaction.hash],
+                }],
+            )
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("DPoS contract fee reward balance overflow"));
+        assert_eq!(final_chain.last_block_number().unwrap(), 0);
+        assert_eq!(balance_of(&final_chain, sender), U256::from(1_000_000u64));
+        assert_eq!(balance_of(&final_chain, receiver), U256::zero());
+        assert_eq!(balance_of(&final_chain, DPOS_CONTRACT_ADDRESS), U256::MAX);
+        assert!(
+            storage
+                .metadata()
+                .block_rewards_stats_rlp()
+                .unwrap()
+                .is_empty()
         );
 
         drop(final_chain);
