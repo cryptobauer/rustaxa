@@ -256,8 +256,10 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     header `total_reward` from the Rust plan. Rust-backed FinalChain shim reads now expose DPoS total delegated, yield,
     total supply, and read-only delegator reward pages backed by Rust F1 reward cursors. Rust now executes delegator
     `claimRewards(address)`, current-ABI `claimAllRewards()`, and stake-mutation auto-claims by moving reward balances
-    through staged Rust account/DPoS snapshots. DPoS claim/stake event receipt logs, dynamic claim-all gas, and the
-    legacy batch claim-all ABI remain future work.
+    through staged Rust account/DPoS snapshots. Receipts for the supported native DPoS subset now carry Rust-generated
+    legacy ABI logs for validator registration, delegation, undelegation, redelegation, direct claims, claim-all, and
+    stake-mutation auto-claims, with the block header bloom derived from those logs. Dynamic claim-all gas, the legacy
+    batch claim-all ABI, log-bloom index routing, and unsupported DPoS methods remain future work.
   - non-genesis DPoS queries still throw when the queried block has not been finalized through Rust snapshot
     maintenance; DPoS transitions beyond the supported validator-registration/delegation subset and legacy databases without Rust
     account snapshots remain explicit gaps.

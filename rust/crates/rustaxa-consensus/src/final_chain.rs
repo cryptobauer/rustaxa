@@ -55,6 +55,26 @@ const DPOS_REDELEGATE_SELECTOR: [u8; 4] = [0x70, 0x38, 0x12, 0xcc];
 const DPOS_REGISTER_VALIDATOR_SELECTOR: [u8; 4] = [0xd6, 0xfd, 0xc1, 0x27];
 const DPOS_CLAIM_REWARDS_SELECTOR: [u8; 4] = [0xef, 0x5c, 0xfb, 0x8c];
 const DPOS_CLAIM_ALL_REWARDS_SELECTOR: [u8; 4] = [0x0b, 0x83, 0xa7, 0x27];
+const DPOS_DELEGATED_TOPIC: [u8; 32] = [
+    0xe5, 0x54, 0x1a, 0x6b, 0x61, 0x03, 0xd4, 0xfa, 0x7e, 0x02, 0x1e, 0xd5, 0x4f, 0xad, 0x39, 0xc6,
+    0x6f, 0x27, 0xa7, 0x6b, 0xd1, 0x3d, 0x37, 0x4c, 0xf6, 0x24, 0x0a, 0xe6, 0xbd, 0x0b, 0xb7, 0x2b,
+];
+const DPOS_UNDELEGATED_TOPIC: [u8; 32] = [
+    0x4d, 0x10, 0xbd, 0x04, 0x97, 0x75, 0xc7, 0x7b, 0xd7, 0xf2, 0x55, 0x19, 0x5a, 0xfb, 0xa5, 0x08,
+    0x80, 0x28, 0xec, 0xb3, 0xc7, 0xc2, 0x77, 0xd3, 0x93, 0xcc, 0xff, 0x79, 0x34, 0xf2, 0xf9, 0x2c,
+];
+const DPOS_REDELEGATED_TOPIC: [u8; 32] = [
+    0x12, 0xe1, 0x44, 0xc2, 0x7d, 0x0b, 0xad, 0x08, 0xab, 0xc7, 0x7c, 0x66, 0xa6, 0x40, 0xb5, 0xcf,
+    0x15, 0xa0, 0x3a, 0x93, 0xf6, 0x58, 0x2f, 0x40, 0xde, 0x69, 0x32, 0xb0, 0x33, 0xa5, 0xfa, 0x5e,
+];
+const DPOS_REWARDS_CLAIMED_TOPIC: [u8; 32] = [
+    0x93, 0x10, 0xcc, 0xfc, 0xb8, 0xde, 0x72, 0x3f, 0x57, 0x8a, 0x9e, 0x42, 0x82, 0xea, 0x9f, 0x52,
+    0x1f, 0x05, 0xae, 0x40, 0xdc, 0x08, 0xf3, 0x06, 0x8d, 0xfa, 0xd5, 0x28, 0xa6, 0x5e, 0xe3, 0xc7,
+];
+const DPOS_VALIDATOR_REGISTERED_TOPIC: [u8; 32] = [
+    0xd0, 0x95, 0x01, 0x34, 0x84, 0x73, 0x47, 0x4a, 0x20, 0xc7, 0x72, 0xc7, 0x9c, 0x65, 0x3e, 0x1f,
+    0xd7, 0xe8, 0xb4, 0x37, 0xe4, 0x18, 0xfe, 0x23, 0x5d, 0x27, 0x7d, 0x2c, 0x88, 0x85, 0x32, 0x51,
+];
 const DPOS_REGISTER_VALIDATOR_GAS: u64 = 80_000;
 const DPOS_DELEGATE_GAS: u64 = 40_000;
 const DPOS_UNDELEGATE_GAS: u64 = 60_000;
@@ -864,13 +884,19 @@ impl FinalChain {
             );
         }
 
-        let execution = self.execute_native_transactions(&transactions)?;
+        let NativeExecution {
+            accounts: mut account_snapshot,
+            mut receipts,
+            gas_used,
+            transaction_fees,
+            dpos_transactions,
+        } = self.execute_native_transactions(&transactions)?;
         let pre_magnolia_fee_reward_period = self.pre_magnolia_fee_reward_period(pbft.period);
         let rewards_stats_plan = self.native_rewards_stats_plan(
             &pbft,
             &transactions,
             &finalized_dag_blocks,
-            &execution.transaction_fees,
+            &transaction_fees,
             blocks_per_year,
             cert_votes,
         )?;
@@ -879,11 +905,11 @@ impl FinalChain {
         } else {
             rewards_stats_plan.fee_rewards_by_validator.clone()
         };
-        let mut account_snapshot = execution.accounts;
         let mut dpos_snapshot = self.plan_dpos_snapshot(
             pbft.period,
-            execution.dpos_transactions,
+            dpos_transactions,
             &mut account_snapshot,
+            &mut receipts,
         )?;
         let minted_reward_plan = self.plan_minted_rewards(
             pbft.period,
@@ -895,7 +921,7 @@ impl FinalChain {
             self.credit_pre_magnolia_pbft_fee_reward(
                 &mut account_snapshot,
                 pbft.author.into(),
-                total_transaction_fees(&execution.transaction_fees)?,
+                total_transaction_fees(&transaction_fees)?,
             )?;
         } else {
             merge_reward_map(
@@ -916,7 +942,8 @@ impl FinalChain {
             minted_reward_plan.total_supply_after,
             minted_reward_plan.current_yield,
         )?;
-        let receipts_rlp = encode_receipts_rlp(&execution.receipts);
+        let encoded_receipts = encode_native_receipts(&receipts);
+        let receipts_rlp = encode_receipts_rlp(&encoded_receipts);
         let parent_hash = self
             .block_hash(self.last_block_number()?)?
             .map(|bytes| h256_from_slice(&bytes, "parent final-chain hash"))
@@ -930,11 +957,9 @@ impl FinalChain {
                     .iter()
                     .map(|transaction| transaction.rlp.as_slice()),
             ),
-            receipts_root: ordered_root(
-                execution.receipts.iter().map(|receipt| receipt.as_slice()),
-            ),
-            log_bloom: vec![0; 256],
-            gas_used: execution.gas_used,
+            receipts_root: ordered_root(encoded_receipts.iter().map(|receipt| receipt.as_slice())),
+            log_bloom: block_log_bloom(&receipts),
+            gas_used,
             total_reward: minted_reward_plan.total_minted_reward,
         };
         let stored_header_rlp = StoredBlockHeaderRlpOwned::from(&stored_header);
@@ -977,14 +1002,14 @@ impl FinalChain {
             )?;
             self.storage.final_chain().write_receipt_by_trx_hash(
                 H256::from(transaction.hash),
-                &execution.receipts[position],
+                &encoded_receipts[position],
             )?;
         }
         self.insert_account_snapshot(pbft.period, account_snapshot)?;
         self.insert_dpos_snapshot(pbft.period, dpos_snapshot)?;
         self.commit_rewards_stats_runtime(rewards_stats_plan.runtime_after_commit)?;
 
-        Ok((full_header.into_vec(), execution.receipts))
+        Ok((full_header.into_vec(), encoded_receipts))
     }
 
     /// Reports whether transaction fees still belong to the PBFT beneficiary.
@@ -1583,7 +1608,7 @@ impl FinalChain {
         let mut dpos_transactions = Vec::new();
         let mut cumulative_gas_used = 0u64;
 
-        for transaction in transactions {
+        for (position, transaction) in transactions.iter().enumerate() {
             let mut dpos_transaction = if transaction.receiver == Some(DPOS_CONTRACT_ADDRESS) {
                 Some(decode_dpos_transaction(
                     &transaction.data,
@@ -1688,7 +1713,7 @@ impl FinalChain {
                                 .ok_or_else(|| anyhow::anyhow!("DPoS contract balance overflow"))?,
                         );
                     }
-                    dpos_transactions.push(dpos_tx);
+                    dpos_transactions.push((position, dpos_tx));
                 } else {
                     let receiver_address = transaction.receiver.ok_or_else(|| {
                         anyhow::anyhow!("native value transfer missing receiver after validation")
@@ -1709,11 +1734,13 @@ impl FinalChain {
                     );
                 }
             }
-            receipts.push(encode_receipt_rlp(
+            receipts.push(NativeReceipt {
                 status_code,
                 gas_used,
                 cumulative_gas_used,
-            ));
+                logs: Vec::new(),
+                new_contract_address: None,
+            });
             transaction_fees.push((transaction.hash, gas_cost));
         }
 
@@ -2068,7 +2095,7 @@ impl FinalChain {
         accounts: &mut HashMap<[u8; 20], Account>,
         validator: [u8; 20],
         delegator: [u8; 20],
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<Vec<ReceiptLog>, anyhow::Error> {
         let delegator_stake = snapshot
             .delegations
             .get(&validator)
@@ -2113,7 +2140,7 @@ impl FinalChain {
             .insert(delegator, u256_to_big_endian(reward_cursor));
 
         if reward.is_zero() {
-            return Ok(());
+            return Ok(Vec::new());
         }
 
         let dpos_account = accounts
@@ -2131,7 +2158,9 @@ impl FinalChain {
                 .checked_add(reward)
                 .ok_or_else(|| anyhow::anyhow!("DPoS delegator reward overflow"))?,
         );
-        Ok(())
+        Ok(vec![dpos_rewards_claimed_log(
+            delegator, validator, reward,
+        )?])
     }
 
     fn apply_dpos_claim_all_rewards(
@@ -2139,16 +2168,19 @@ impl FinalChain {
         snapshot: &mut DposSnapshot,
         accounts: &mut HashMap<[u8; 20], Account>,
         delegator: [u8; 20],
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<Vec<ReceiptLog>, anyhow::Error> {
         let validators = snapshot
             .delegator_validators
             .get(&delegator)
             .cloned()
             .unwrap_or_default();
+        let mut logs = Vec::new();
         for validator in validators {
-            self.apply_dpos_delegator_reward_claim(snapshot, accounts, validator, delegator)?;
+            logs.extend(
+                self.apply_dpos_delegator_reward_claim(snapshot, accounts, validator, delegator)?,
+            );
         }
-        Ok(())
+        Ok(logs)
     }
 
     /// Plans the DPoS snapshot for a newly finalized block.
@@ -2159,8 +2191,9 @@ impl FinalChain {
     fn plan_dpos_snapshot(
         &self,
         block_number: u64,
-        dpos_transactions: Vec<DposTransaction>,
+        dpos_transactions: Vec<(usize, DposTransaction)>,
         accounts: &mut HashMap<[u8; 20], Account>,
+        receipts: &mut [NativeReceipt],
     ) -> Result<DposSnapshot, anyhow::Error> {
         let snapshots = self
             .dpos_snapshots
@@ -2172,67 +2205,61 @@ impl FinalChain {
         let mut snapshot = snapshots.get(&previous_block).cloned().ok_or_else(|| {
             anyhow::anyhow!("missing previous DPoS snapshot for block {previous_block}")
         })?;
-        for dpos_tx in dpos_transactions {
-            match dpos_tx {
+        for (position, dpos_tx) in dpos_transactions {
+            let logs = match dpos_tx {
                 DposTransaction::Register(registration) => {
-                    self.apply_dpos_registration(&mut snapshot, registration)?;
+                    self.apply_dpos_registration(&mut snapshot, registration)?
                 }
                 DposTransaction::Delegate {
                     delegator,
                     validator,
                     amount,
                 } => {
-                    self.apply_dpos_delegate(
-                        &mut snapshot,
-                        accounts,
-                        delegator,
-                        validator,
-                        amount,
-                    )?;
+                    self.apply_dpos_delegate(&mut snapshot, accounts, delegator, validator, amount)?
                 }
                 DposTransaction::Undelegate {
                     delegator,
                     validator,
                     amount,
-                } => {
-                    self.apply_dpos_undelegate(
-                        &mut snapshot,
-                        accounts,
-                        delegator,
-                        validator,
-                        amount,
-                    )?;
-                }
+                } => self.apply_dpos_undelegate(
+                    &mut snapshot,
+                    accounts,
+                    delegator,
+                    validator,
+                    amount,
+                )?,
                 DposTransaction::Redelegate {
                     delegator,
                     from,
                     to,
                     amount,
-                } => {
-                    self.apply_dpos_redelegate(
-                        &mut snapshot,
-                        accounts,
-                        delegator,
-                        from,
-                        to,
-                        amount,
-                    )?;
-                }
+                } => self.apply_dpos_redelegate(
+                    &mut snapshot,
+                    accounts,
+                    delegator,
+                    from,
+                    to,
+                    amount,
+                )?,
                 DposTransaction::ClaimRewards {
                     delegator,
                     validator,
-                } => {
-                    self.apply_dpos_delegator_reward_claim(
-                        &mut snapshot,
-                        accounts,
-                        validator,
-                        delegator,
-                    )?;
-                }
+                } => self.apply_dpos_delegator_reward_claim(
+                    &mut snapshot,
+                    accounts,
+                    validator,
+                    delegator,
+                )?,
                 DposTransaction::ClaimAllRewards { delegator } => {
-                    self.apply_dpos_claim_all_rewards(&mut snapshot, accounts, delegator)?;
+                    self.apply_dpos_claim_all_rewards(&mut snapshot, accounts, delegator)?
                 }
-            }
+            };
+            let receipt = receipts.get_mut(position).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "DPoS receipt position {position} is outside finalized transaction list"
+                )
+            })?;
+            receipt.logs = logs;
         }
         Ok(snapshot)
     }
@@ -2241,7 +2268,7 @@ impl FinalChain {
         &self,
         snapshot: &mut DposSnapshot,
         registration: DposRegistration,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<Vec<ReceiptLog>, anyhow::Error> {
         if snapshot.total_stakes.contains_key(&registration.validator) {
             anyhow::bail!("Rust FinalChain::finalize DPoS validator is already registered");
         }
@@ -2272,6 +2299,7 @@ impl FinalChain {
             .delegator_rewards
             .entry(registration.validator)
             .or_default();
+        let owner = registration.metadata.owner;
         snapshot
             .validator_metadata
             .insert(registration.validator, registration.metadata);
@@ -2300,7 +2328,15 @@ impl FinalChain {
             .validator_reward_per_stake
             .entry(registration.validator)
             .or_default();
-        Ok(())
+        let mut logs = vec![dpos_validator_registered_log(registration.validator)];
+        if !u256_from_big_endian(&registration.stake).is_zero() {
+            logs.push(dpos_delegated_log(
+                owner,
+                registration.validator,
+                u256_from_big_endian(&registration.stake),
+            )?);
+        }
+        Ok(logs)
     }
 
     fn apply_dpos_delegate(
@@ -2310,7 +2346,7 @@ impl FinalChain {
         delegator: [u8; 20],
         validator: [u8; 20],
         amount: Vec<u8>,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<Vec<ReceiptLog>, anyhow::Error> {
         let Some(stake) = snapshot.total_stakes.get(&validator) else {
             anyhow::bail!("Rust FinalChain::finalize DPoS validator does not exist for delegate")
         };
@@ -2330,9 +2366,11 @@ impl FinalChain {
             .get(&delegator)
             .map(|bytes| u256_from_big_endian(bytes))
             .unwrap_or_default();
-        if !current_delegation.is_zero() {
-            self.apply_dpos_delegator_reward_claim(snapshot, accounts, validator, delegator)?;
-        }
+        let mut logs = if current_delegation.is_zero() {
+            Vec::new()
+        } else {
+            self.apply_dpos_delegator_reward_claim(snapshot, accounts, validator, delegator)?
+        };
         let reward_cursor = if current_delegation.is_zero() {
             self.checkpoint_validator_reward_per_stake(snapshot, validator)?
         } else {
@@ -2355,7 +2393,9 @@ impl FinalChain {
                     .ok_or_else(|| anyhow::anyhow!("DPoS delegation addition overflow"))?,
             ),
         );
-        self.set_validator_stake(snapshot, validator, new_stake)
+        self.set_validator_stake(snapshot, validator, new_stake)?;
+        logs.push(dpos_delegated_log(delegator, validator, add_amount)?);
+        Ok(logs)
     }
 
     fn set_validator_stake(
@@ -2395,7 +2435,7 @@ impl FinalChain {
         delegator: [u8; 20],
         validator: [u8; 20],
         amount: Vec<u8>,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<Vec<ReceiptLog>, anyhow::Error> {
         let Some(stake) = snapshot.total_stakes.get(&validator) else {
             anyhow::bail!("Rust FinalChain::finalize DPoS validator does not exist for undelegate")
         };
@@ -2420,7 +2460,8 @@ impl FinalChain {
         if current_stake < remove_amount {
             anyhow::bail!("Rust FinalChain::finalize DPoS stake underflows on undelegate");
         }
-        self.apply_dpos_delegator_reward_claim(snapshot, accounts, validator, delegator)?;
+        let mut logs =
+            self.apply_dpos_delegator_reward_claim(snapshot, accounts, validator, delegator)?;
         let delegations = snapshot.delegations.get_mut(&validator).ok_or_else(|| {
             anyhow::anyhow!("Rust FinalChain::finalize DPoS delegation does not exist")
         })?;
@@ -2435,7 +2476,9 @@ impl FinalChain {
             delegations.insert(delegator, u256_to_big_endian(new_delegation));
         }
         let new_stake = current_stake - remove_amount;
-        self.set_validator_stake(snapshot, validator, new_stake)
+        self.set_validator_stake(snapshot, validator, new_stake)?;
+        logs.push(dpos_undelegated_log(delegator, validator, remove_amount)?);
+        Ok(logs)
     }
 
     fn apply_dpos_redelegate(
@@ -2446,7 +2489,7 @@ impl FinalChain {
         from: [u8; 20],
         to: [u8; 20],
         amount: Vec<u8>,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<Vec<ReceiptLog>, anyhow::Error> {
         let amount = u256_from_big_endian(&amount);
         let from_stake = snapshot
             .total_stakes
@@ -2461,9 +2504,23 @@ impl FinalChain {
             anyhow::bail!("Rust FinalChain::finalize DPoS stake underflows on redelegate")
         }
         let amount = u256_to_big_endian(amount);
-        self.apply_dpos_undelegate(snapshot, accounts, delegator, from, amount.clone())?;
-        self.apply_dpos_delegate(snapshot, accounts, delegator, to, amount)?;
-        Ok(())
+        let mut logs = self
+            .apply_dpos_undelegate(snapshot, accounts, delegator, from, amount.clone())?
+            .into_iter()
+            .filter(is_dpos_rewards_claimed_log)
+            .collect::<Vec<_>>();
+        logs.extend(
+            self.apply_dpos_delegate(snapshot, accounts, delegator, to, amount.clone())?
+                .into_iter()
+                .filter(is_dpos_rewards_claimed_log),
+        );
+        logs.push(dpos_redelegated_log(
+            delegator,
+            from,
+            to,
+            u256_from_big_endian(&amount),
+        )?);
+        Ok(logs)
     }
 
     fn insert_dpos_snapshot(
@@ -3138,14 +3195,141 @@ fn encode_receipts_rlp(receipts: &[Vec<u8>]) -> Vec<u8> {
     stream.out().to_vec()
 }
 
-fn encode_receipt_rlp(status_code: u8, gas_used: u64, cumulative_gas_used: u64) -> Vec<u8> {
+fn encode_native_receipts(receipts: &[NativeReceipt]) -> Vec<Vec<u8>> {
+    receipts.iter().map(encode_receipt_rlp).collect()
+}
+
+fn encode_receipt_rlp(receipt: &NativeReceipt) -> Vec<u8> {
     let mut stream = rlp::RlpStream::new_list(5);
-    stream.append(&status_code);
-    stream.append(&gas_used);
-    stream.append(&cumulative_gas_used);
-    stream.begin_list(0);
-    stream.append(&0u8);
+    stream.append(&receipt.status_code);
+    stream.append(&receipt.gas_used);
+    stream.append(&receipt.cumulative_gas_used);
+    stream.begin_list(receipt.logs.len());
+    for log in &receipt.logs {
+        stream.begin_list(3);
+        stream.append(&log.address.as_slice());
+        stream.begin_list(log.topics.len());
+        for topic in &log.topics {
+            stream.append(&topic.as_slice());
+        }
+        stream.append(&log.data.as_slice());
+    }
+    if let Some(address) = receipt.new_contract_address {
+        stream.append(&address.as_slice());
+    } else {
+        stream.append(&0u8);
+    }
     stream.out().to_vec()
+}
+
+fn block_log_bloom(receipts: &[NativeReceipt]) -> Vec<u8> {
+    let mut bloom = vec![0u8; 256];
+    for receipt in receipts {
+        for log in &receipt.logs {
+            add_bloom_value(&mut bloom, &log.address);
+            for topic in &log.topics {
+                add_bloom_value(&mut bloom, topic);
+            }
+        }
+    }
+    bloom
+}
+
+fn add_bloom_value(bloom: &mut [u8], value: &[u8]) {
+    use tiny_keccak::{Hasher, Keccak};
+
+    let mut hasher = Keccak::v256();
+    hasher.update(value);
+    let mut hash = [0u8; 32];
+    hasher.finalize(&mut hash);
+    for offset in [0usize, 2, 4] {
+        let index = (((hash[offset] as usize) << 8) | hash[offset + 1] as usize) & 2047;
+        bloom[255 - index / 8] |= 1 << (index % 8);
+    }
+}
+
+fn dpos_delegated_log(
+    delegator: [u8; 20],
+    validator: [u8; 20],
+    amount: U256,
+) -> Result<ReceiptLog, anyhow::Error> {
+    dpos_amount_log(
+        DPOS_DELEGATED_TOPIC,
+        vec![address_topic(delegator), address_topic(validator)],
+        amount,
+    )
+}
+
+fn dpos_undelegated_log(
+    delegator: [u8; 20],
+    validator: [u8; 20],
+    amount: U256,
+) -> Result<ReceiptLog, anyhow::Error> {
+    dpos_amount_log(
+        DPOS_UNDELEGATED_TOPIC,
+        vec![address_topic(delegator), address_topic(validator)],
+        amount,
+    )
+}
+
+fn dpos_redelegated_log(
+    delegator: [u8; 20],
+    from: [u8; 20],
+    to: [u8; 20],
+    amount: U256,
+) -> Result<ReceiptLog, anyhow::Error> {
+    dpos_amount_log(
+        DPOS_REDELEGATED_TOPIC,
+        vec![
+            address_topic(delegator),
+            address_topic(from),
+            address_topic(to),
+        ],
+        amount,
+    )
+}
+
+fn dpos_rewards_claimed_log(
+    account: [u8; 20],
+    validator: [u8; 20],
+    amount: U256,
+) -> Result<ReceiptLog, anyhow::Error> {
+    dpos_amount_log(
+        DPOS_REWARDS_CLAIMED_TOPIC,
+        vec![address_topic(account), address_topic(validator)],
+        amount,
+    )
+}
+
+fn dpos_validator_registered_log(validator: [u8; 20]) -> ReceiptLog {
+    ReceiptLog {
+        address: DPOS_CONTRACT_ADDRESS,
+        topics: vec![DPOS_VALIDATOR_REGISTERED_TOPIC, address_topic(validator)],
+        data: Vec::new(),
+    }
+}
+
+fn dpos_amount_log(
+    event_topic: [u8; 32],
+    mut indexed_topics: Vec<[u8; 32]>,
+    amount: U256,
+) -> Result<ReceiptLog, anyhow::Error> {
+    let mut topics = Vec::with_capacity(indexed_topics.len() + 1);
+    topics.push(event_topic);
+    topics.append(&mut indexed_topics);
+    Ok(ReceiptLog {
+        address: DPOS_CONTRACT_ADDRESS,
+        topics,
+        data: abi_word_from_u256_bytes(&u256_to_big_endian(amount))?.to_vec(),
+    })
+}
+
+fn address_topic(address: [u8; 20]) -> [u8; 32] {
+    abi_word_from_address(address)
+}
+
+fn is_dpos_rewards_claimed_log(log: &ReceiptLog) -> bool {
+    log.topics.first() == Some(&DPOS_REWARDS_CLAIMED_TOPIC)
 }
 
 fn ordered_root<'a>(values: impl Iterator<Item = &'a [u8]>) -> H256 {
@@ -3708,10 +3892,26 @@ fn synthetic_state_root(period: u64) -> ethereum_types::H256 {
 /// Result of applying the Rust native-transfer subset for one final-chain block.
 struct NativeExecution {
     accounts: HashMap<[u8; 20], Account>,
-    receipts: Vec<Vec<u8>>,
+    receipts: Vec<NativeReceipt>,
     gas_used: u64,
     transaction_fees: Vec<([u8; 32], U256)>,
-    dpos_transactions: Vec<DposTransaction>,
+    dpos_transactions: Vec<(usize, DposTransaction)>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NativeReceipt {
+    status_code: u8,
+    gas_used: u64,
+    cumulative_gas_used: u64,
+    logs: Vec<ReceiptLog>,
+    new_contract_address: Option<[u8; 20]>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ReceiptLog {
+    address: [u8; 20],
+    topics: Vec<[u8; 32]>,
+    data: Vec<u8>,
 }
 
 enum DposTransaction {
@@ -3935,6 +4135,51 @@ mod tests {
             receipt.val_at(1).unwrap(),
             receipt.val_at(2).unwrap(),
         )
+    }
+
+    fn receipt_logs(receipt_rlp: &[u8]) -> Vec<ReceiptLog> {
+        let receipt = Rlp::new(receipt_rlp);
+        let logs_rlp = receipt.at(3).unwrap();
+        let mut logs = Vec::new();
+        for index in 0..logs_rlp.item_count().unwrap() {
+            let log_rlp = logs_rlp.at(index).unwrap();
+            let address_bytes = log_rlp.at(0).unwrap().data().unwrap();
+            let mut address = [0u8; 20];
+            address.copy_from_slice(address_bytes);
+            let topics_rlp = log_rlp.at(1).unwrap();
+            let mut topics = Vec::new();
+            for topic_index in 0..topics_rlp.item_count().unwrap() {
+                let topic_bytes = topics_rlp.at(topic_index).unwrap().data().unwrap();
+                let mut topic = [0u8; 32];
+                topic.copy_from_slice(topic_bytes);
+                topics.push(topic);
+            }
+            logs.push(ReceiptLog {
+                address,
+                topics,
+                data: log_rlp.at(2).unwrap().data().unwrap().to_vec(),
+            });
+        }
+        logs
+    }
+
+    fn assert_dpos_amount_log(
+        log: &ReceiptLog,
+        event_topic: [u8; 32],
+        indexed_topics: Vec<[u8; 32]>,
+        amount: U256,
+    ) {
+        let mut topics = Vec::with_capacity(indexed_topics.len() + 1);
+        topics.push(event_topic);
+        topics.extend(indexed_topics);
+        assert_eq!(log.address, DPOS_CONTRACT_ADDRESS);
+        assert_eq!(log.topics, topics);
+        assert_eq!(
+            log.data,
+            abi_word_from_u256_bytes(&u256_to_big_endian(amount))
+                .unwrap()
+                .to_vec()
+        );
     }
 
     fn balance_of(final_chain: &FinalChain, address: [u8; 20]) -> U256 {
@@ -5380,9 +5625,23 @@ mod tests {
             std::slice::from_ref(&delegate_tx.rlp),
         );
 
-        final_chain
+        let (_header_rlp, receipts) = final_chain
             .finalize_block(second_pbft, vec![delegate_tx], vec![])
             .unwrap();
+        let logs = receipt_logs(&receipts[0]);
+        assert_eq!(logs.len(), 2);
+        assert_dpos_amount_log(
+            &logs[0],
+            DPOS_REWARDS_CLAIMED_TOPIC,
+            vec![address_topic(validator), address_topic(validator)],
+            U256::from(150u64),
+        );
+        assert_dpos_amount_log(
+            &logs[1],
+            DPOS_DELEGATED_TOPIC,
+            vec![address_topic(validator), address_topic(validator)],
+            U256::from(1_000u64),
+        );
         assert_eq!(
             balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
             first_period_contract_balance - U256::from(150u64) + U256::from(1_000u64)
@@ -5499,9 +5758,17 @@ mod tests {
             std::slice::from_ref(&claim_tx.rlp),
         );
 
-        final_chain
+        let (_header_rlp, receipts) = final_chain
             .finalize_block(second_pbft, vec![claim_tx], vec![])
             .unwrap();
+        let logs = receipt_logs(&receipts[0]);
+        assert_eq!(logs.len(), 1);
+        assert_dpos_amount_log(
+            &logs[0],
+            DPOS_REWARDS_CLAIMED_TOPIC,
+            vec![address_topic(validator), address_topic(validator)],
+            U256::from(150u64),
+        );
         assert_eq!(
             balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
             first_period_contract_balance - U256::from(150u64)
@@ -5621,9 +5888,17 @@ mod tests {
             std::slice::from_ref(&claim_tx.rlp),
         );
 
-        final_chain
+        let (_header_rlp, receipts) = final_chain
             .finalize_block(second_pbft, vec![claim_tx], vec![])
             .unwrap();
+        let logs = receipt_logs(&receipts[0]);
+        assert_eq!(logs.len(), 1);
+        assert_dpos_amount_log(
+            &logs[0],
+            DPOS_REWARDS_CLAIMED_TOPIC,
+            vec![address_topic(validator), address_topic(validator)],
+            U256::from(150u64),
+        );
         assert_eq!(
             balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
             first_period_contract_balance - U256::from(150u64)
@@ -6294,6 +6569,22 @@ mod tests {
             receipt_fields(&receipts[0]),
             (1, DPOS_REGISTER_VALIDATOR_GAS, DPOS_REGISTER_VALIDATOR_GAS)
         );
+        let logs = receipt_logs(&receipts[0]);
+        assert_eq!(logs.len(), 2);
+        assert_eq!(
+            logs[0],
+            ReceiptLog {
+                address: DPOS_CONTRACT_ADDRESS,
+                topics: vec![DPOS_VALIDATOR_REGISTERED_TOPIC, address_topic(validator)],
+                data: Vec::new(),
+            }
+        );
+        assert_dpos_amount_log(
+            &logs[1],
+            DPOS_DELEGATED_TOPIC,
+            vec![address_topic(owner), address_topic(validator)],
+            stake,
+        );
         assert_eq!(
             final_chain
                 .dpos_eligible_vote_count(period, validator)
@@ -6445,6 +6736,14 @@ mod tests {
                 DPOS_DELEGATE_GAS,
                 DPOS_REGISTER_VALIDATOR_GAS + DPOS_DELEGATE_GAS
             )
+        );
+        let delegate_logs = receipt_logs(&receipts[1]);
+        assert_eq!(delegate_logs.len(), 1);
+        assert_dpos_amount_log(
+            &delegate_logs[0],
+            DPOS_DELEGATED_TOPIC,
+            vec![address_topic(owner), address_topic(validator)],
+            U256::from(4_000u64),
         );
         assert_eq!(
             final_chain
