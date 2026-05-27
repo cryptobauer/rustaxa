@@ -185,6 +185,17 @@ impl BridgeFinalChain {
         self.0.transaction_count(period)
     }
 
+    /// Returns finalized block numbers whose Rust FinalChain bloom index
+    /// contains the supplied query bloom over the inclusive block range.
+    pub fn get_blocks_with_bloom(
+        self: &BridgeFinalChain,
+        bloom: &[u8; 256],
+        from: u64,
+        to: u64,
+    ) -> Result<Vec<u64>, anyhow::Error> {
+        self.0.with_block_bloom(bloom, from, to)
+    }
+
     pub fn get_account(
         self: &BridgeFinalChain,
         address: &[u8; 20],

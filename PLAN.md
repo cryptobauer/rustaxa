@@ -258,8 +258,10 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     `claimRewards(address)`, current-ABI `claimAllRewards()`, and stake-mutation auto-claims by moving reward balances
     through staged Rust account/DPoS snapshots. Receipts for the supported native DPoS subset now carry Rust-generated
     legacy ABI logs for validator registration, delegation, undelegation, redelegation, direct claims, claim-all, and
-    stake-mutation auto-claims, with the block header bloom derived from those logs. Dynamic claim-all gas, the legacy
-    batch claim-all ABI, log-bloom index routing, and unsupported DPoS methods remain future work.
+    stake-mutation auto-claims, with the block header bloom derived from those logs. The active Rust finalization path
+    also persists the legacy two-level `final_chain_log_blooms_index` chunks with author-augmented blooms and routes
+    `FinalChain::withBlockBloom` through Rust. Dynamic claim-all gas, the legacy batch claim-all ABI, and unsupported
+    DPoS methods remain future work.
   - non-genesis DPoS queries still throw when the queried block has not been finalized through Rust snapshot
     maintenance; DPoS transitions beyond the supported validator-registration/delegation subset and legacy databases without Rust
     account snapshots remain explicit gaps.

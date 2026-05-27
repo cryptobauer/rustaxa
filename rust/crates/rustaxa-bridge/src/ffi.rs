@@ -3645,6 +3645,12 @@ pub mod rustaxa_ffi {
             hash: &[u8; 32],
         ) -> Result<Vec<u8>>;
         pub fn get_transaction_count(self: &BridgeFinalChain, period: u64) -> Result<u64>;
+        pub fn get_blocks_with_bloom(
+            self: &BridgeFinalChain,
+            bloom: &[u8; 256],
+            from: u64,
+            to: u64,
+        ) -> Result<Vec<u64>>;
         pub fn get_account(self: &BridgeFinalChain, address: &[u8; 20]) -> Result<AccountLookup>;
         pub fn get_account_at_block(
             self: &BridgeFinalChain,

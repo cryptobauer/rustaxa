@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use ethereum_types::H256;
+use ethereum_types::{H256, U256};
 use std::sync::Arc;
 
 use crate::db::{DbReader, DbWriter};
@@ -37,6 +37,93 @@ pub struct FinalChainRewardsStatsUpdate<'a> {
     pub clear_cached_stats: bool,
     /// Legacy-compatible `rewards::BlockStats` RLP for `current_period`.
     pub current_block_stats_rlp: &'a [u8],
+}
+
+/// Number of bloom entries stored in one legacy FinalChain bloom-index chunk.
+pub const FINAL_CHAIN_BLOOM_INDEX_SIZE: usize = 16;
+/// Number of recursive bloom-index levels used by legacy FinalChain queries.
+pub const FINAL_CHAIN_BLOOM_INDEX_LEVELS: u64 = 2;
+/// Byte width of one Ethereum log bloom.
+pub const FINAL_CHAIN_LOG_BLOOM_BYTES: usize = 256;
+
+/// Fixed-width FinalChain log bloom stored in index chunks.
+pub type FinalChainLogBloom = [u8; FINAL_CHAIN_LOG_BLOOM_BYTES];
+/// Legacy RLP list of bloom entries for one FinalChain bloom-index chunk.
+pub type FinalChainLogBloomChunk = [FinalChainLogBloom; FINAL_CHAIN_BLOOM_INDEX_SIZE];
+
+/// Log-bloom index mutation committed with finalized-block visibility.
+///
+/// The bloom must already include the receipt-log bloom plus legacy author
+/// bloom augmentation. The repository ORs it into every legacy index level and
+/// writes all affected chunks before publishing `LAST_NUMBER`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FinalChainLogBloomIndexUpdate<'a> {
+    /// Finalized block number being inserted into the bloom index.
+    pub block_number: u64,
+    /// Receipt and author bloom used by legacy FinalChain bloom queries.
+    pub bloom: &'a FinalChainLogBloom,
+}
+
+/// Returns the legacy FinalChain bloom chunk identifier.
+///
+/// C++ maps `(level, index)` to `h256(index * 0xff + level)`, encoded as a
+/// 32-byte big-endian integer. Overflow is rejected so callers do not silently
+/// address the wrong chunk for very large synthetic inputs.
+pub fn final_chain_log_bloom_chunk_id(level: u64, index: u64) -> Result<H256> {
+    let value = U256::from(index)
+        .checked_mul(U256::from(0xffu64))
+        .and_then(|value| value.checked_add(U256::from(level)))
+        .ok_or_else(|| anyhow::anyhow!("final-chain bloom chunk id overflow"))?;
+    Ok(H256::from(value.to_big_endian()))
+}
+
+/// Returns an all-zero legacy bloom-index chunk.
+pub fn zero_final_chain_log_bloom_chunk() -> FinalChainLogBloomChunk {
+    [[0u8; FINAL_CHAIN_LOG_BLOOM_BYTES]; FINAL_CHAIN_BLOOM_INDEX_SIZE]
+}
+
+/// Decodes a legacy FinalChain bloom-index chunk.
+///
+/// Missing chunks are all-zero chunks. Present chunks must be an RLP list of
+/// exactly sixteen raw 256-byte blooms; malformed data is returned as an error
+/// so Rust-mode queries do not silently skip persisted facts.
+pub fn decode_final_chain_log_bloom_chunk(raw: Option<&[u8]>) -> Result<FinalChainLogBloomChunk> {
+    let Some(raw) = raw else {
+        return Ok(zero_final_chain_log_bloom_chunk());
+    };
+    if raw.is_empty() {
+        return Ok(zero_final_chain_log_bloom_chunk());
+    }
+
+    let rlp = rlp::Rlp::new(raw);
+    let item_count = rlp.item_count()?;
+    if item_count != FINAL_CHAIN_BLOOM_INDEX_SIZE {
+        bail!(
+            "final-chain bloom chunk has {item_count} entries, expected {FINAL_CHAIN_BLOOM_INDEX_SIZE}"
+        );
+    }
+
+    let mut chunk = zero_final_chain_log_bloom_chunk();
+    for (index, bloom) in chunk.iter_mut().enumerate() {
+        let data = rlp.at(index)?.data()?;
+        if data.len() != FINAL_CHAIN_LOG_BLOOM_BYTES {
+            bail!(
+                "final-chain bloom chunk entry {index} has {} bytes, expected {FINAL_CHAIN_LOG_BLOOM_BYTES}",
+                data.len()
+            );
+        }
+        bloom.copy_from_slice(data);
+    }
+    Ok(chunk)
+}
+
+/// Encodes a legacy FinalChain bloom-index chunk as an RLP list of raw blooms.
+pub fn encode_final_chain_log_bloom_chunk(chunk: &FinalChainLogBloomChunk) -> Vec<u8> {
+    let mut stream = rlp::RlpStream::new_list(FINAL_CHAIN_BLOOM_INDEX_SIZE);
+    for bloom in chunk {
+        stream.append(&bloom.as_slice());
+    }
+    stream.out().to_vec()
 }
 
 pub struct FinalChainRepository<D: DbReader> {
@@ -242,16 +329,18 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
             account_snapshot_rlp,
             execution_status,
             None,
+            None,
         )
     }
 
-    /// Persists finalized-block state and optional rewards-stat cache mutation
-    /// in one batch.
+    /// Persists finalized-block state, optional rewards-stat cache mutation,
+    /// and optional log-bloom index mutation in one batch.
     ///
     /// Inputs match `write_block_header_with_snapshots_and_execution_status`
-    /// with an additional rewards-stat cache intent. If supplied, the cache
-    /// mutation is committed before `LAST_NUMBER`, so startup cannot observe the
-    /// new finalized head without the corresponding native rewards cache state.
+    /// with additional rewards-stat and log-bloom index intents. If supplied,
+    /// both mutations are committed before `LAST_NUMBER`, so startup cannot
+    /// observe the new finalized head without the corresponding native cache and
+    /// bloom-index state.
     #[allow(clippy::too_many_arguments)]
     pub fn write_block_header_with_snapshots_execution_status_and_rewards_stats(
         &self,
@@ -263,6 +352,7 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
         account_snapshot_rlp: Option<&[u8]>,
         execution_status: Option<FinalChainExecutionStatus>,
         rewards_stats_update: Option<FinalChainRewardsStatsUpdate<'_>>,
+        log_bloom_index_update: Option<FinalChainLogBloomIndexUpdate<'_>>,
     ) -> Result<()> {
         const DB_META_LAST_NUMBER: u32 = 1;
 
@@ -343,6 +433,9 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
                 )?;
             }
         }
+        if let Some(update) = log_bloom_index_update {
+            self.write_log_bloom_index_update(&mut batch, update)?;
+        }
         self.db.batch_put(
             &mut batch,
             Column::FinalChainMeta,
@@ -350,6 +443,33 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
             &number.to_le_bytes(),
         )?;
         self.db.commit_batch(batch)
+    }
+
+    fn write_log_bloom_index_update(
+        &self,
+        batch: &mut D::Batch,
+        update: FinalChainLogBloomIndexUpdate<'_>,
+    ) -> Result<()> {
+        let mut index = update.block_number;
+        for level in 0..FINAL_CHAIN_BLOOM_INDEX_LEVELS {
+            let chunk_index = index / FINAL_CHAIN_BLOOM_INDEX_SIZE as u64;
+            let chunk_id = final_chain_log_bloom_chunk_id(level, chunk_index)?;
+            let raw = self.log_blooms_chunk_raw(chunk_id)?;
+            let mut chunk = decode_final_chain_log_bloom_chunk(raw.as_deref())?;
+            let slot = (index % FINAL_CHAIN_BLOOM_INDEX_SIZE as u64) as usize;
+            for (stored, added) in chunk[slot].iter_mut().zip(update.bloom.iter()) {
+                *stored |= *added;
+            }
+            let encoded = encode_final_chain_log_bloom_chunk(&chunk);
+            self.db.batch_put(
+                batch,
+                Column::FinalChainLogBloomsIndex,
+                chunk_id.as_bytes(),
+                &encoded,
+            )?;
+            index /= FINAL_CHAIN_BLOOM_INDEX_SIZE as u64;
+        }
+        Ok(())
     }
 
     /// Persists one finalized transaction receipt by transaction hash.
@@ -375,6 +495,11 @@ mod tests {
         data: RwLock<HashMap<String, BTreeMap<Vec<u8>, Vec<u8>>>>,
     }
 
+    enum BatchOp {
+        Put(Column, Vec<u8>, Vec<u8>),
+        Delete(Column, Vec<u8>),
+    }
+
     impl MockFinalChainStore {
         fn new() -> Self {
             MockFinalChainStore {
@@ -388,6 +513,13 @@ mod tests {
                 .entry(col.name().to_string())
                 .or_insert_with(BTreeMap::new);
             cf.insert(key.to_vec(), value.to_vec());
+        }
+
+        fn delete(&self, col: Column, key: &[u8]) {
+            let mut data = self.data.write().unwrap();
+            if let Some(cf) = data.get_mut(col.name()) {
+                cf.remove(key);
+            }
         }
     }
 
@@ -469,6 +601,52 @@ mod tests {
             } else {
                 Box::new(std::iter::empty())
             }
+        }
+    }
+
+    impl DbWriter for MockFinalChainStore {
+        type Batch = Vec<BatchOp>;
+
+        fn create_batch(&self) -> Self::Batch {
+            Vec::new()
+        }
+
+        fn batch_put(
+            &self,
+            batch: &mut Self::Batch,
+            col: Column,
+            key: &[u8],
+            value: &[u8],
+        ) -> Result<()> {
+            batch.push(BatchOp::Put(col, key.to_vec(), value.to_vec()));
+            Ok(())
+        }
+
+        fn batch_delete(&self, batch: &mut Self::Batch, col: Column, key: &[u8]) -> Result<()> {
+            batch.push(BatchOp::Delete(col, key.to_vec()));
+            Ok(())
+        }
+
+        fn commit_batch(&self, batch: Self::Batch) -> Result<()> {
+            for op in batch {
+                match op {
+                    BatchOp::Put(col, key, value) => {
+                        MockFinalChainStore::put(self, col, &key, &value)
+                    }
+                    BatchOp::Delete(col, key) => MockFinalChainStore::delete(self, col, &key),
+                }
+            }
+            Ok(())
+        }
+
+        fn put(&self, col: Column, key: &[u8], value: &[u8]) -> Result<()> {
+            MockFinalChainStore::put(self, col, key, value);
+            Ok(())
+        }
+
+        fn delete(&self, col: Column, key: &[u8]) -> Result<()> {
+            MockFinalChainStore::delete(self, col, key);
+            Ok(())
         }
     }
 
@@ -573,6 +751,85 @@ mod tests {
 
         let result = repo.log_blooms_chunk_raw(chunk_id).unwrap();
         assert_eq!(result, Some(b"chunk".to_vec()));
+    }
+
+    #[test]
+    fn test_log_bloom_chunk_id_matches_legacy_integer_mapping() {
+        assert_eq!(
+            final_chain_log_bloom_chunk_id(1, 2).unwrap(),
+            H256::from_low_u64_be(0x1ff)
+        );
+    }
+
+    #[test]
+    fn test_log_bloom_chunk_codec_round_trips_and_rejects_malformed_entries() {
+        let mut chunk = zero_final_chain_log_bloom_chunk();
+        chunk[3][17] = 0x80;
+        chunk[3][99] = 0x02;
+
+        let encoded = encode_final_chain_log_bloom_chunk(&chunk);
+        let decoded = decode_final_chain_log_bloom_chunk(Some(&encoded)).unwrap();
+        assert_eq!(decoded, chunk);
+        assert_eq!(
+            decode_final_chain_log_bloom_chunk(None).unwrap(),
+            zero_final_chain_log_bloom_chunk()
+        );
+
+        let mut malformed = rlp::RlpStream::new_list(FINAL_CHAIN_BLOOM_INDEX_SIZE);
+        for index in 0..FINAL_CHAIN_BLOOM_INDEX_SIZE {
+            let len = if index == 4 {
+                FINAL_CHAIN_LOG_BLOOM_BYTES - 1
+            } else {
+                FINAL_CHAIN_LOG_BLOOM_BYTES
+            };
+            malformed.append(&vec![0u8; len]);
+        }
+        assert!(decode_final_chain_log_bloom_chunk(Some(&malformed.out())).is_err());
+    }
+
+    #[test]
+    fn test_write_block_header_updates_log_bloom_index_before_last_number() {
+        let db = Arc::new(MockFinalChainStore::new());
+        let repo = FinalChainRepository::new(db.clone());
+        let mut bloom = [0u8; FINAL_CHAIN_LOG_BLOOM_BYTES];
+        bloom[0] = 0x01;
+        bloom[255] = 0x80;
+
+        repo.write_block_header_with_snapshots_execution_status_and_rewards_stats(
+            17,
+            H256::from_low_u64_be(0x5555),
+            b"header",
+            b"receipts",
+            None,
+            None,
+            None,
+            None,
+            Some(FinalChainLogBloomIndexUpdate {
+                block_number: 17,
+                bloom: &bloom,
+            }),
+        )
+        .unwrap();
+
+        let level_zero_chunk_id = final_chain_log_bloom_chunk_id(0, 1).unwrap();
+        let level_zero_raw = repo
+            .log_blooms_chunk_raw(level_zero_chunk_id)
+            .unwrap()
+            .unwrap();
+        let level_zero_chunk = decode_final_chain_log_bloom_chunk(Some(&level_zero_raw)).unwrap();
+        assert_eq!(level_zero_chunk[1], bloom);
+
+        let level_one_chunk_id = final_chain_log_bloom_chunk_id(1, 0).unwrap();
+        let level_one_raw = repo
+            .log_blooms_chunk_raw(level_one_chunk_id)
+            .unwrap()
+            .unwrap();
+        let level_one_chunk = decode_final_chain_log_bloom_chunk(Some(&level_one_raw)).unwrap();
+        assert_eq!(level_one_chunk[1], bloom);
+        assert_eq!(
+            repo.meta_value(1).unwrap(),
+            Some(17u64.to_le_bytes().to_vec())
+        );
     }
 
     #[test]

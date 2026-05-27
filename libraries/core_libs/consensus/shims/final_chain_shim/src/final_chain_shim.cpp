@@ -368,8 +368,16 @@ uint64_t FinalChain::transactionCount(std::optional<EthBlockNumber> n) const {
   return rust_final_chain_.value()->get_transaction_count(static_cast<uint64_t>(n.value_or(lastBlockNumber())));
 }
 
-std::vector<EthBlockNumber> FinalChain::withBlockBloom(LogBloom const&, EthBlockNumber, EthBlockNumber) const {
-  return {};
+std::vector<EthBlockNumber> FinalChain::withBlockBloom(LogBloom const& b, EthBlockNumber from, EthBlockNumber to) const {
+  std::array<uint8_t, 256> bloom{};
+  std::memcpy(bloom.data(), b.data(), bloom.size());
+  auto rust_blocks = rust_final_chain_.value()->get_blocks_with_bloom(bloom, from, to);
+  std::vector<EthBlockNumber> blocks;
+  blocks.reserve(rust_blocks.size());
+  for (auto const block : rust_blocks) {
+    blocks.push_back(block);
+  }
+  return blocks;
 }
 
 std::optional<state_api::Account> FinalChain::getAccount(addr_t const& addr, std::optional<EthBlockNumber> blk_n) const {

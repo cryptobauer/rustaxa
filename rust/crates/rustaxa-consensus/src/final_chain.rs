@@ -13,7 +13,9 @@ use ethereum_types::{H256, U256};
 use keccak_hasher::KeccakHasher;
 use rlp::Rlp;
 use rustaxa_storage::{
-    FinalChainExecutionStatus, FinalChainRewardsStatsUpdate, StatusField, Storage,
+    FINAL_CHAIN_BLOOM_INDEX_LEVELS, FINAL_CHAIN_BLOOM_INDEX_SIZE, FinalChainExecutionStatus,
+    FinalChainLogBloom, FinalChainLogBloomIndexUpdate, FinalChainRewardsStatsUpdate, StatusField,
+    Storage, decode_final_chain_log_bloom_chunk, final_chain_log_bloom_chunk_id,
 };
 use rustaxa_types::codec::rlp::final_chain::{
     LegacyBlockHeaderRlp, LegacyBlockHeaderRlpInput, StoredBlockHeaderRlp,
@@ -430,6 +432,89 @@ impl FinalChain {
 
     pub fn block_hash(&self, num: u64) -> Result<Option<Vec<u8>>, anyhow::Error> {
         self.storage.final_chain().block_hash_by_number(num)
+    }
+
+    /// Returns finalized block numbers whose indexed bloom contains `bloom`.
+    ///
+    /// Inputs are the query bloom and inclusive block-number range. The lookup
+    /// follows the legacy two-level FinalChain bloom index exactly: missing
+    /// chunks decode as zero chunks, malformed persisted chunks are errors, and
+    /// a stored bloom matches when every bit in the query bloom is present.
+    pub fn with_block_bloom(
+        &self,
+        bloom: &FinalChainLogBloom,
+        from: u64,
+        to: u64,
+    ) -> Result<Vec<u64>, anyhow::Error> {
+        if from > to {
+            return Ok(Vec::new());
+        }
+
+        let root_level = FINAL_CHAIN_BLOOM_INDEX_LEVELS - 1;
+        let root_units = final_chain_bloom_index_units(FINAL_CHAIN_BLOOM_INDEX_LEVELS)?;
+        let first_index = from / root_units;
+        let last_index = to / root_units + u64::from(!to.is_multiple_of(root_units));
+        let mut result = Vec::new();
+        for index in first_index..=last_index {
+            self.with_block_bloom_at(bloom, from, to, root_level, index, &mut result)?;
+        }
+        Ok(result)
+    }
+
+    fn with_block_bloom_at(
+        &self,
+        bloom: &FinalChainLogBloom,
+        from: u64,
+        to: u64,
+        level: u64,
+        index: u64,
+        result: &mut Vec<u64>,
+    ) -> Result<(), anyhow::Error> {
+        let course_units = final_chain_bloom_index_units(level + 1)?;
+        let fine_units = final_chain_bloom_index_units(level)?;
+        let range_start = index
+            .checked_mul(course_units)
+            .ok_or_else(|| anyhow::anyhow!("final-chain bloom query range overflow"))?;
+        let range_end = index
+            .checked_add(1)
+            .and_then(|value| value.checked_mul(course_units))
+            .and_then(|value| value.checked_sub(1))
+            .ok_or_else(|| anyhow::anyhow!("final-chain bloom query range overflow"))?;
+
+        if range_start > to || range_end < from {
+            return Ok(());
+        }
+
+        let offset_begin = if from > range_start {
+            (from - range_start) / fine_units
+        } else {
+            0
+        };
+        let offset_end = if to < range_end {
+            (to - range_start) / fine_units
+        } else {
+            FINAL_CHAIN_BLOOM_INDEX_SIZE as u64 - 1
+        };
+        let chunk_id = final_chain_log_bloom_chunk_id(level, index)?;
+        let raw = self.storage.final_chain().log_blooms_chunk_raw(chunk_id)?;
+        let chunk = decode_final_chain_log_bloom_chunk(raw.as_deref())?;
+
+        for offset in offset_begin..=offset_end {
+            let slot = offset as usize;
+            if !log_bloom_contains(&chunk[slot], bloom) {
+                continue;
+            }
+            let child_index = index
+                .checked_mul(FINAL_CHAIN_BLOOM_INDEX_SIZE as u64)
+                .and_then(|value| value.checked_add(offset))
+                .ok_or_else(|| anyhow::anyhow!("final-chain bloom child index overflow"))?;
+            if level == 0 {
+                result.push(child_index);
+            } else {
+                self.with_block_bloom_at(bloom, from, to, level - 1, child_index, result)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn block_header(&self, num: u64) -> Result<Option<Vec<u8>>, anyhow::Error> {
@@ -949,6 +1034,10 @@ impl FinalChain {
             .map(|bytes| h256_from_slice(&bytes, "parent final-chain hash"))
             .transpose()?
             .unwrap_or_default();
+        let header_log_bloom = block_log_bloom(&receipts);
+        let mut indexed_log_bloom = [0u8; 256];
+        indexed_log_bloom.copy_from_slice(&header_log_bloom);
+        add_bloom_value(&mut indexed_log_bloom, pbft.author.as_bytes());
         let stored_header = StoredFinalChainBlockHeader {
             parent_hash,
             state_root: synthetic_state_root(pbft.period),
@@ -958,7 +1047,7 @@ impl FinalChain {
                     .map(|transaction| transaction.rlp.as_slice()),
             ),
             receipts_root: ordered_root(encoded_receipts.iter().map(|receipt| receipt.as_slice())),
-            log_bloom: block_log_bloom(&receipts),
+            log_bloom: header_log_bloom,
             gas_used,
             total_reward: minted_reward_plan.total_minted_reward,
         };
@@ -992,6 +1081,10 @@ impl FinalChain {
                 Some(&account_snapshot_rlp),
                 Some(execution_status),
                 rewards_stats_storage_update,
+                Some(FinalChainLogBloomIndexUpdate {
+                    block_number: pbft.period,
+                    bloom: &indexed_log_bloom,
+                }),
             )?;
         for (position, transaction) in transactions.iter().enumerate() {
             self.storage.transaction().write_location(
@@ -3235,6 +3328,23 @@ fn block_log_bloom(receipts: &[NativeReceipt]) -> Vec<u8> {
     bloom
 }
 
+fn final_chain_bloom_index_units(level_count: u64) -> Result<u64, anyhow::Error> {
+    let mut units = 1u64;
+    for _ in 0..level_count {
+        units = units
+            .checked_mul(FINAL_CHAIN_BLOOM_INDEX_SIZE as u64)
+            .ok_or_else(|| anyhow::anyhow!("final-chain bloom index unit overflow"))?;
+    }
+    Ok(units)
+}
+
+fn log_bloom_contains(stored: &FinalChainLogBloom, query: &FinalChainLogBloom) -> bool {
+    stored
+        .iter()
+        .zip(query.iter())
+        .all(|(stored, query)| stored & query == *query)
+}
+
 fn add_bloom_value(bloom: &mut [u8], value: &[u8]) {
     use tiny_keccak::{Hasher, Keccak};
 
@@ -4161,6 +4271,12 @@ mod tests {
             });
         }
         logs
+    }
+
+    fn bloom_query_for_value(value: &[u8]) -> FinalChainLogBloom {
+        let mut bloom = [0u8; 256];
+        add_bloom_value(&mut bloom, value);
+        bloom
     }
 
     fn assert_dpos_amount_log(
@@ -6612,6 +6728,27 @@ mod tests {
             &validator_info.code_retval[192..224],
             &abi_word_from_address(owner)
         );
+        let register_topic_bloom = bloom_query_for_value(&DPOS_VALIDATOR_REGISTERED_TOPIC);
+        assert_eq!(
+            final_chain
+                .with_block_bloom(&register_topic_bloom, period, period)
+                .unwrap(),
+            vec![period]
+        );
+        assert!(
+            final_chain
+                .with_block_bloom(&register_topic_bloom, period + 1, period + 1)
+                .unwrap()
+                .is_empty()
+        );
+        let pbft_author: [u8; 20] = address_from_signing_key(&signing_key).into();
+        let author_bloom = bloom_query_for_value(&pbft_author);
+        assert_eq!(
+            final_chain
+                .with_block_bloom(&author_bloom, period, period)
+                .unwrap(),
+            vec![period]
+        );
 
         drop(final_chain);
         drop(storage);
@@ -6639,6 +6776,16 @@ mod tests {
         assert_eq!(facts.vrf_key, Some(vrf_key));
         assert_eq!(facts.sender_eligible_vote_count, 5);
         assert_eq!(facts.eligibility_status, DAG_VERIFY_DPOS_STATUS_ELIGIBLE);
+        assert_eq!(
+            final_chain
+                .with_block_bloom(
+                    &bloom_query_for_value(&DPOS_VALIDATOR_REGISTERED_TOPIC),
+                    period,
+                    period
+                )
+                .unwrap(),
+            vec![period]
+        );
         let genesis_facts = final_chain
             .dag_dpos_authorization_facts(0, validator)
             .unwrap();
