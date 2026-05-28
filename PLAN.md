@@ -233,11 +233,13 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     legacy VRF input bytes, and deterministic tip-selection policy.
   - Rust finalization appends DPoS snapshots for finalized native-transfer blocks and the Rust-supported
     `registerValidator(address,bytes,bytes,uint16,string,string)`, `delegate(address)`,
-    `undelegate(address,uint256)`, `reDelegate(address,address,uint256)`, `setValidatorInfo(address,string,string)`,
+    `undelegate(address,uint256)`, `undelegateV2(address,uint256)`, `confirmUndelegateV2(address,uint64)`,
+    `cancelUndelegateV2(address,uint64)`, `reDelegate(address,address,uint256)`, `setValidatorInfo(address,string,string)`,
     and `setCommission(address,uint16)` DPoS contract subset. The Rust snapshot
     persists validator stake/vote aggregates plus a validator/delegator stake ledger seeded from genesis delegations so
     undelegation and redelegation ownership checks stay in Rust. It also persists validator insertion order and
-    commission-change block numbers so paged validator reads and owner commission rules remain restart-durable. Snapshots
+    commission-change block numbers plus V2 undelegation queues with per-delegator IDs so paged validator/undelegation
+    reads and owner commission rules remain restart-durable. Snapshots
     are persisted atomically with finalized block indexes, executed DAG/transaction status counters, and `lastBlockNumber`. Startup reloads persisted historical DPoS
     snapshots so PBFT, DAG, and pillar reads can reuse block-scoped Rust FinalChain facts after restart.
   - Rust finalization persists account snapshots atomically with finalized block indexes plus `lastBlockNumber`.
@@ -261,7 +263,8 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     updates, current-ABI `claimAllRewards()`, and
     stake-mutation auto-claims by moving reward balances through staged Rust account/DPoS snapshots. Receipts for the
     supported native DPoS subset now carry Rust-generated legacy ABI logs for validator registration, delegation,
-    undelegation, redelegation, direct claims, commission claims, validator info/commission updates, claim-all, and
+    undelegation, V2 undelegation creation/confirmation/cancelation, redelegation, direct claims, commission claims,
+    validator info/commission updates, claim-all, and
     stake-mutation auto-claims, with the block header bloom derived from those logs. Supported DPoS owner validation
     failures now persist failed receipts without mutating DPoS state. Rust native finalization now accepts
     both the current `claimAllRewards()` ABI and the legacy pre-fix `claimAllRewards(uint32)` batch ABI, gates the batch
@@ -273,7 +276,8 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     account snapshots remain explicit gaps.
   - selected DPoS precompile reads through `FinalChain::call` are Rust-backed for `getTotalEligibleVotesCount()`,
     `getValidator(address)`, `getValidators(uint32)`, `getValidatorsFor(address,uint32)`,
-    `getTotalDelegation(address)`, and `getDelegations(address,uint32)`. These precompile reads
+    `getTotalDelegation(address)`, `getDelegations(address,uint32)`, `getUndelegationsV2(address,uint32)`,
+    and `getUndelegationV2(address,address,uint64)`. These precompile reads
     use the exact finalized-block snapshot, while DAG authorization and explicit eligibility APIs still use the
     configured delegation-delay snapshot.
 - Unimplemented public shim methods throw rather than falling back to `FinalChainOld`.
@@ -300,8 +304,8 @@ FinalChain currently depends on:
 1. Keep read/index parity stable.
 2. Migrate transaction, receipt, log query helpers, and bloom search parity.
 3. Continue finalization/write path parity beyond the current Rust append-block, counter, and index writes.
-4. Continue DPoS and account snapshot parity beyond native transfers and validator registration: delegation mutations,
-   jailing, slashing, rewards distribution, contract-call state transitions, and broader state trie/code/storage recovery.
+4. Continue DPoS and account snapshot parity beyond native transfers and validator registration: remaining DPoS contract
+   methods, jailing, slashing, rewards distribution, contract-call state transitions, and broader state trie/code/storage recovery.
 5. Defer broader StateAPI, bridge-heavy APIs, pruning, snapshots, and state-transition boundaries until there is a clear Rust/EVM integration strategy.
 
 High-risk APIs:

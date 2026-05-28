@@ -1111,10 +1111,14 @@ pub mod rustaxa_ffi {
         dag_proposers_reward_percent: u16,
         yield_percentage: u16,
         dpos_blocks_per_year: u32,
+        dpos_delegation_locking_period: u64,
+        cornus_period: u64,
+        cornus_delegation_locking_period: u64,
         genesis_balance_sum: Vec<u8>,
         aspen_max_supply: Vec<u8>,
         aspen_generated_rewards: Vec<u8>,
         cacti_period: u64,
+        cacti_delegation_locking_period: u64,
         frequency_rules: Vec<RewardsFrequencyRule>,
     }
 

@@ -182,6 +182,10 @@ rustaxa::FinalChainRewardsConfig make_final_chain_rewards_config(const taraxa::F
   rewards_config.dag_proposers_reward_percent = config.genesis.state.dpos.dag_proposers_reward;
   rewards_config.yield_percentage = config.genesis.state.dpos.yield_percentage;
   rewards_config.dpos_blocks_per_year = config.genesis.state.dpos.blocks_per_year;
+  rewards_config.dpos_delegation_locking_period = config.genesis.state.dpos.delegation_locking_period;
+  rewards_config.cornus_period = config.genesis.state.hardforks.cornus_hf.block_num;
+  rewards_config.cornus_delegation_locking_period =
+      config.genesis.state.hardforks.cornus_hf.delegation_locking_period;
   u256 genesis_balance_sum = 0;
   for (const auto& [_, balance] : config.genesis.state.initial_balances) {
     genesis_balance_sum += balance;
@@ -191,6 +195,8 @@ rustaxa::FinalChainRewardsConfig make_final_chain_rewards_config(const taraxa::F
   rewards_config.aspen_generated_rewards =
       into_big_endian_vec(config.genesis.state.hardforks.aspen_hf.generated_rewards);
   rewards_config.cacti_period = config.genesis.state.hardforks.cacti_hf.block_num;
+  rewards_config.cacti_delegation_locking_period =
+      config.genesis.state.hardforks.cacti_hf.delegation_locking_period;
   rewards_config.frequency_rules.reserve(config.genesis.state.hardforks.rewards_distribution_frequency.size());
   for (const auto& [from_period, frequency] : config.genesis.state.hardforks.rewards_distribution_frequency) {
     rustaxa::RewardsFrequencyRule rule{};

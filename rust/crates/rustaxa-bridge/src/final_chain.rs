@@ -49,10 +49,14 @@ pub fn create_final_chain(
             dag_proposers_reward_percent: 0,
             yield_percentage: 0,
             dpos_blocks_per_year: 0,
+            dpos_delegation_locking_period: 0,
+            cornus_period: 0,
+            cornus_delegation_locking_period: 0,
             genesis_balance_sum: Vec::new(),
             aspen_max_supply: Vec::new(),
             aspen_generated_rewards: Vec::new(),
             cacti_period: 0,
+            cacti_delegation_locking_period: 0,
             frequency_rules: Vec::new(),
         },
     )
@@ -131,10 +135,14 @@ pub fn create_final_chain_with_rewards_config(
             dag_proposers_reward_percent: rewards_config.dag_proposers_reward_percent,
             yield_percentage: rewards_config.yield_percentage,
             dpos_blocks_per_year: rewards_config.dpos_blocks_per_year,
+            dpos_delegation_locking_period: rewards_config.dpos_delegation_locking_period,
+            cornus_period: rewards_config.cornus_period,
+            cornus_delegation_locking_period: rewards_config.cornus_delegation_locking_period,
             genesis_balance_sum: rewards_config.genesis_balance_sum,
             aspen_max_supply: rewards_config.aspen_max_supply,
             aspen_generated_rewards: rewards_config.aspen_generated_rewards,
             cacti_period: rewards_config.cacti_period,
+            cacti_delegation_locking_period: rewards_config.cacti_delegation_locking_period,
             rewards_distribution_frequency: rewards_config
                 .frequency_rules
                 .into_iter()

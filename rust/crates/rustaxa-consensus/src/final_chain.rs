@@ -36,6 +36,27 @@ use triehash::ordered_trie_root;
 type DposDelegations = BTreeMap<[u8; 20], BTreeMap<[u8; 20], Vec<u8>>>;
 type DposDelegationRewardCursors = BTreeMap<[u8; 20], BTreeMap<[u8; 20], Vec<u8>>>;
 type DposDelegatorValidators = BTreeMap<[u8; 20], Vec<[u8; 20]>>;
+type DposUndelegationsV2 = BTreeMap<[u8; 20], Vec<DposValidatorUndelegationsV2>>;
+
+/// Pending V2 undelegations for one validator in legacy iterable-map order.
+///
+/// The Go precompile keeps a per-delegator validator iterable map and each
+/// validator has its own iterable ID map. Removals use swap-remove ordering, so
+/// Rust stores explicit vectors instead of sorted maps to preserve paged read
+/// parity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DposValidatorUndelegationsV2 {
+    validator: [u8; 20],
+    entries: Vec<DposUndelegationV2Entry>,
+}
+
+/// One pending V2 undelegation request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DposUndelegationV2Entry {
+    id: u64,
+    amount: Vec<u8>,
+    block: u64,
+}
 
 const EMPTY_TRIE_ROOT: [u8; 32] = [
     0x56, 0xe8, 0x1f, 0x17, 0x1b, 0xcc, 0x55, 0xa6, 0xff, 0x83, 0x45, 0xe6, 0x92, 0xc0, 0xf8, 0x6e,
@@ -51,9 +72,14 @@ const DPOS_CONTRACT_ADDRESS: [u8; 20] = [
 const DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR: [u8; 4] = [0xde, 0x8e, 0x4b, 0x50];
 const DPOS_GET_VALIDATOR_SELECTOR: [u8; 4] = [0x19, 0x04, 0xbb, 0x2e];
 const DPOS_GET_DELEGATIONS_SELECTOR: [u8; 4] = [0x8b, 0x49, 0xd3, 0x94];
+const DPOS_GET_UNDELEGATIONS_V2_SELECTOR: [u8; 4] = [0x78, 0xdf, 0x66, 0xe3];
+const DPOS_GET_UNDELEGATION_V2_SELECTOR: [u8; 4] = [0xc1, 0x10, 0x7e, 0x27];
 const DPOS_GET_TOTAL_DELEGATION_SELECTOR: [u8; 4] = [0xfc, 0x5e, 0x7e, 0x09];
 const DPOS_DELEGATE_SELECTOR: [u8; 4] = [0x5c, 0x19, 0xa9, 0x5c];
 const DPOS_UNDELEGATE_SELECTOR: [u8; 4] = [0x4d, 0x99, 0xdd, 0x16];
+const DPOS_UNDELEGATE_V2_SELECTOR: [u8; 4] = [0xbd, 0x0e, 0x7f, 0xcc];
+const DPOS_CONFIRM_UNDELEGATE_V2_SELECTOR: [u8; 4] = [0x78, 0x8d, 0x09, 0x74];
+const DPOS_CANCEL_UNDELEGATE_V2_SELECTOR: [u8; 4] = [0xb6, 0xe1, 0xe3, 0x29];
 const DPOS_REDELEGATE_SELECTOR: [u8; 4] = [0x70, 0x38, 0x12, 0xcc];
 const DPOS_REGISTER_VALIDATOR_SELECTOR: [u8; 4] = [0xd6, 0xfd, 0xc1, 0x27];
 const DPOS_CLAIM_REWARDS_SELECTOR: [u8; 4] = [0xef, 0x5c, 0xfb, 0x8c];
@@ -71,6 +97,18 @@ const DPOS_DELEGATED_TOPIC: [u8; 32] = [
 const DPOS_UNDELEGATED_TOPIC: [u8; 32] = [
     0x4d, 0x10, 0xbd, 0x04, 0x97, 0x75, 0xc7, 0x7b, 0xd7, 0xf2, 0x55, 0x19, 0x5a, 0xfb, 0xa5, 0x08,
     0x80, 0x28, 0xec, 0xb3, 0xc7, 0xc2, 0x77, 0xd3, 0x93, 0xcc, 0xff, 0x79, 0x34, 0xf2, 0xf9, 0x2c,
+];
+const DPOS_UNDELEGATED_V2_TOPIC: [u8; 32] = [
+    0xcf, 0xe7, 0xd7, 0x12, 0xcc, 0x67, 0xda, 0xf9, 0xa8, 0xd0, 0x0e, 0x8c, 0xca, 0x58, 0x81, 0x94,
+    0x8b, 0xc5, 0x28, 0x98, 0x8f, 0xc3, 0x1a, 0x07, 0x1e, 0xff, 0xa1, 0xdb, 0xe6, 0xdc, 0x91, 0xef,
+];
+const DPOS_UNDELEGATE_CONFIRMED_V2_TOPIC: [u8; 32] = [
+    0xa6, 0x37, 0xe5, 0x66, 0xd8, 0x25, 0x68, 0xef, 0xa4, 0xbd, 0x8c, 0x58, 0x8e, 0x17, 0x23, 0x2a,
+    0xee, 0x48, 0x38, 0x73, 0xfa, 0x17, 0xfb, 0x87, 0x3f, 0x6d, 0x39, 0x8b, 0xa8, 0x5e, 0xd5, 0x7c,
+];
+const DPOS_UNDELEGATE_CANCELED_V2_TOPIC: [u8; 32] = [
+    0xe0, 0x47, 0x45, 0x58, 0xd9, 0xb6, 0xee, 0x7a, 0x45, 0xf2, 0xd6, 0xd1, 0x2e, 0xff, 0xd2, 0x19,
+    0x09, 0xb5, 0x33, 0x60, 0xeb, 0x73, 0xed, 0xa6, 0xcf, 0x0f, 0x19, 0x70, 0x31, 0x73, 0x8f, 0xee,
 ];
 const DPOS_REDELEGATED_TOPIC: [u8; 32] = [
     0x12, 0xe1, 0x44, 0xc2, 0x7d, 0x0b, 0xad, 0x08, 0xab, 0xc7, 0x7c, 0x66, 0xa6, 0x40, 0xb5, 0xcf,
@@ -106,6 +144,7 @@ const DPOS_SET_COMMISSION_GAS: u64 = 20_000;
 const DPOS_SET_VALIDATOR_INFO_GAS: u64 = 20_000;
 const DPOS_BATCH_GET_REWARDS_GAS: u64 = 5_000;
 const DPOS_GET_DELEGATIONS_MAX_COUNT: usize = 20;
+const DPOS_GET_UNDELEGATIONS_MAX_COUNT: usize = 20;
 const DPOS_GET_VALIDATORS_MAX_COUNT: usize = 20;
 const DPOS_CLAIM_ALL_REWARDS_MAX_COUNT: usize = 10;
 const DPOS_MAX_COMMISSION: u16 = 10_000;
@@ -127,6 +166,11 @@ pub struct FinalChain {
     dpos_commission_change_delta: u16,
     dpos_commission_change_frequency: u32,
     dpos_delegation_delay: u64,
+    dpos_delegation_locking_period: u64,
+    dpos_cornus_period: u64,
+    dpos_cornus_delegation_locking_period: u64,
+    dpos_cacti_period: u64,
+    dpos_cacti_delegation_locking_period: u64,
     /// DAG VDF sortition vote-count ceiling after the configured legacy
     /// total-vote-count compatibility boundary.
     ///
@@ -201,6 +245,10 @@ struct DposSnapshot {
     total_supply: Vec<u8>,
     /// Aspen part-two yield fraction scaled by `ASPEN_YIELD_PRECISION`.
     current_yield: u64,
+    /// Pending V2 undelegations by delegator, preserving legacy iterable-map order.
+    undelegations_v2: DposUndelegationsV2,
+    /// Last assigned V2 undelegation ID by delegator.
+    undelegation_v2_last_ids: BTreeMap<[u8; 20], u64>,
 }
 
 struct NativeRewardsStatsPlan {
@@ -393,6 +441,11 @@ impl FinalChain {
         let dag_vdf_sortition_max_vote_count =
             dpos_vdf_sortition_max_vote_count(&genesis_dpos_config)?;
         let rewards_stats_runtime = rewards_stats_runtime_from_storage(&storage, &rewards_config)?;
+        let dpos_delegation_locking_period = rewards_config.dpos_delegation_locking_period;
+        let dpos_cornus_period = rewards_config.cornus_period;
+        let dpos_cornus_delegation_locking_period = rewards_config.cornus_delegation_locking_period;
+        let dpos_cacti_period = rewards_config.cacti_period;
+        let dpos_cacti_delegation_locking_period = rewards_config.cacti_delegation_locking_period;
         let final_chain = FinalChain {
             storage,
             block_gas_limit,
@@ -410,6 +463,11 @@ impl FinalChain {
             dpos_commission_change_delta: genesis_dpos_config.commission_change_delta,
             dpos_commission_change_frequency: genesis_dpos_config.commission_change_frequency,
             dpos_delegation_delay: genesis_dpos_config.delegation_delay,
+            dpos_delegation_locking_period,
+            dpos_cornus_period,
+            dpos_cornus_delegation_locking_period,
+            dpos_cacti_period,
+            dpos_cacti_delegation_locking_period,
             dag_vdf_sortition_max_vote_count,
             dag_vdf_sortition_total_vote_count_until_period: genesis_dpos_config
                 .dag_vdf_sortition_total_vote_count_until_period,
@@ -438,6 +496,8 @@ impl FinalChain {
                     minted_tokens: Vec::new(),
                     total_supply: Vec::new(),
                     current_yield: 0,
+                    undelegations_v2: BTreeMap::new(),
+                    undelegation_v2_last_ids: BTreeMap::new(),
                 },
             )])),
         };
@@ -917,6 +977,60 @@ impl FinalChain {
                     "getDelegations(address,uint32) batch",
                 )?;
                 self.encode_dpos_delegations(request.block_number, delegator, batch)?
+            }
+            DPOS_GET_UNDELEGATIONS_V2_SELECTOR => {
+                if !self.is_on_cornus(request.block_number) {
+                    return Ok(FinalChainCallOutcome {
+                        gas_used,
+                        code_err: "Method not supported".to_string(),
+                        ..Default::default()
+                    });
+                }
+                let delegator = decode_abi_address_argument(
+                    &request.input,
+                    "getUndelegationsV2(address,uint32)",
+                )?;
+                let batch = decode_abi_u32_argument(
+                    &request.input,
+                    36,
+                    "getUndelegationsV2(address,uint32) batch",
+                )?;
+                self.encode_dpos_undelegations_v2(request.block_number, delegator, batch)?
+            }
+            DPOS_GET_UNDELEGATION_V2_SELECTOR => {
+                if !self.is_on_cornus(request.block_number) {
+                    return Ok(FinalChainCallOutcome {
+                        gas_used,
+                        code_err: "Method not supported".to_string(),
+                        ..Default::default()
+                    });
+                }
+                let delegator = decode_abi_address_argument_with_offset(
+                    &request.input,
+                    4,
+                    "getUndelegationV2 delegator",
+                )?;
+                let validator = decode_abi_address_argument_with_offset(
+                    &request.input,
+                    36,
+                    "getUndelegationV2 validator",
+                )?;
+                let id = decode_abi_word_as_u64(&request.input, 68, "getUndelegationV2 id")?;
+                match self.encode_dpos_undelegation_v2(
+                    request.block_number,
+                    delegator,
+                    validator,
+                    id,
+                )? {
+                    Some(output) => output,
+                    None => {
+                        return Ok(FinalChainCallOutcome {
+                            gas_used,
+                            code_err: "Undelegation does not exist".to_string(),
+                            ..Default::default()
+                        });
+                    }
+                }
             }
             _ => {
                 return Ok(FinalChainCallOutcome {
@@ -1762,6 +1876,7 @@ impl FinalChain {
                     transaction.sender,
                     block_number,
                     self.rewards_config.fix_claim_all_block_num,
+                    self.dpos_cornus_period,
                 )?)
             } else if !transaction.data.is_empty() || transaction.receiver.is_none() {
                 anyhow::bail!(
@@ -1781,12 +1896,16 @@ impl FinalChain {
                         *amount = u256_to_big_endian(value);
                     }
                     DposTransaction::Undelegate { .. }
+                    | DposTransaction::UndelegateV2 { .. }
+                    | DposTransaction::ConfirmUndelegateV2 { .. }
+                    | DposTransaction::CancelUndelegateV2 { .. }
                     | DposTransaction::Redelegate { .. }
                     | DposTransaction::ClaimRewards { .. }
                     | DposTransaction::ClaimCommissionRewards { .. }
                     | DposTransaction::SetValidatorInfo { .. }
                     | DposTransaction::SetCommission { .. }
-                    | DposTransaction::ClaimAllRewards { .. } => {}
+                    | DposTransaction::ClaimAllRewards { .. }
+                    | DposTransaction::MethodNotSupported => {}
                 }
             }
             let dpos_nonpayable_value_failure = dpos_transaction.as_ref().is_some_and(|dpos_tx| {
@@ -1801,6 +1920,9 @@ impl FinalChain {
                     DposTransaction::Register(_) => DPOS_REGISTER_VALIDATOR_GAS,
                     DposTransaction::Delegate { .. } => DPOS_DELEGATE_GAS,
                     DposTransaction::Undelegate { .. } => DPOS_UNDELEGATE_GAS,
+                    DposTransaction::UndelegateV2 { .. } => DPOS_UNDELEGATE_GAS,
+                    DposTransaction::ConfirmUndelegateV2 { .. } => DPOS_DEFAULT_METHOD_GAS,
+                    DposTransaction::CancelUndelegateV2 { .. } => DPOS_UNDELEGATE_GAS,
                     DposTransaction::Redelegate { .. } => DPOS_REDELEGATE_GAS,
                     DposTransaction::ClaimRewards { .. } => DPOS_CLAIM_REWARDS_GAS,
                     DposTransaction::ClaimCommissionRewards { .. } => {
@@ -1823,6 +1945,7 @@ impl FinalChain {
                             anyhow::anyhow!("claimAllRewards gas multiplication overflow")
                         })?
                     }
+                    DposTransaction::MethodNotSupported => 0,
                 }
             } else {
                 VALUE_TRANSFER_GAS
@@ -2185,7 +2308,61 @@ impl FinalChain {
                     .checked_mul(DPOS_BATCH_GET_REWARDS_GAS)
                     .ok_or_else(|| anyhow::anyhow!("getDelegations gas multiplication overflow"))
             }
+            DPOS_GET_UNDELEGATIONS_V2_SELECTOR => {
+                if !self.is_on_cornus(request.block_number) {
+                    return Ok(0);
+                }
+                let snapshot = self.dpos_snapshot_at_finalized_block(request.block_number)?;
+                let delegator = decode_abi_address_argument(
+                    &request.input,
+                    "getUndelegationsV2(address,uint32)",
+                )?;
+                let batch = decode_abi_u32_argument(
+                    &request.input,
+                    36,
+                    "getUndelegationsV2(address,uint32) batch",
+                )?;
+                let storage_reads =
+                    dpos_undelegations_v2_storage_read_count(&snapshot, delegator, batch)?;
+                storage_reads
+                    .checked_mul(DPOS_BATCH_GET_REWARDS_GAS)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("getUndelegationsV2 gas multiplication overflow")
+                    })
+            }
+            DPOS_GET_UNDELEGATION_V2_SELECTOR => {
+                decode_abi_address_argument_with_offset(
+                    &request.input,
+                    4,
+                    "getUndelegationV2 delegator",
+                )?;
+                decode_abi_address_argument_with_offset(
+                    &request.input,
+                    36,
+                    "getUndelegationV2 validator",
+                )?;
+                decode_abi_word_as_u64(&request.input, 68, "getUndelegationV2 id")?;
+                if self.is_on_cornus(request.block_number) {
+                    Ok(DPOS_GET_METHOD_GAS)
+                } else {
+                    Ok(0)
+                }
+            }
             _ => Ok(0),
+        }
+    }
+
+    fn is_on_cornus(&self, block_number: u64) -> bool {
+        block_number >= self.dpos_cornus_period
+    }
+
+    fn dpos_delegation_locking_period(&self, block_number: u64) -> u64 {
+        if self.dpos_cacti_period != 0 && block_number >= self.dpos_cacti_period {
+            self.dpos_cacti_delegation_locking_period
+        } else if self.is_on_cornus(block_number) {
+            self.dpos_cornus_delegation_locking_period
+        } else {
+            self.dpos_delegation_locking_period
         }
     }
 
@@ -2254,7 +2431,9 @@ impl FinalChain {
         output.extend_from_slice(&abi_word_from_u256_bytes(commission_reward)?);
         output.extend_from_slice(&abi_word_from_u64(u64::from(metadata.commission)));
         output.extend_from_slice(&abi_word_from_u64(metadata.last_commission_change));
-        output.extend_from_slice(&abi_word_from_u64(0));
+        output.extend_from_slice(&abi_word_from_u64(u64::from(
+            dpos_undelegations_v2_count_for_validator(snapshot, validator),
+        )));
         output.extend_from_slice(&abi_word_from_address(metadata.owner));
         output.extend_from_slice(&abi_word_from_usize(
             description_offset,
@@ -2452,6 +2631,58 @@ impl FinalChain {
             output.extend_from_slice(&abi_word_from_u256_bytes(&u256_to_big_endian(reward))?);
         }
         Ok(output)
+    }
+
+    fn encode_dpos_undelegations_v2(
+        &self,
+        block_number: u64,
+        delegator: [u8; 20],
+        batch: u32,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        let snapshot = self.dpos_snapshot_at_finalized_block(block_number)?;
+        let start = usize::try_from(batch)
+            .map_err(|_| anyhow::anyhow!("getUndelegationsV2 batch does not fit into usize"))?
+            .checked_mul(DPOS_GET_UNDELEGATIONS_MAX_COUNT)
+            .ok_or_else(|| anyhow::anyhow!("getUndelegationsV2 batch offset overflow"))?;
+        let flattened = dpos_undelegations_v2_for_delegator(&snapshot, delegator);
+        let end_index = start
+            .checked_add(DPOS_GET_UNDELEGATIONS_MAX_COUNT)
+            .ok_or_else(|| anyhow::anyhow!("getUndelegationsV2 batch end overflow"))?;
+        let page = flattened
+            .iter()
+            .skip(start)
+            .take(DPOS_GET_UNDELEGATIONS_MAX_COUNT)
+            .copied()
+            .collect::<Vec<_>>();
+        let is_end = end_index >= flattened.len();
+
+        let mut output = Vec::new();
+        output.extend_from_slice(&abi_word_from_u64(64));
+        output.extend_from_slice(&abi_word_from_bool(is_end));
+        output.extend_from_slice(&abi_word_from_usize(
+            page.len(),
+            "getUndelegationsV2 length",
+        )?);
+        for (validator, entry) in page {
+            encode_dpos_undelegation_v2_payload(&mut output, &snapshot, validator, entry)?;
+        }
+        Ok(output)
+    }
+
+    fn encode_dpos_undelegation_v2(
+        &self,
+        block_number: u64,
+        delegator: [u8; 20],
+        validator: [u8; 20],
+        id: u64,
+    ) -> Result<Option<Vec<u8>>, anyhow::Error> {
+        let snapshot = self.dpos_snapshot_at_finalized_block(block_number)?;
+        let Some(entry) = find_undelegation_v2(&snapshot, delegator, validator, id) else {
+            return Ok(None);
+        };
+        let mut output = Vec::new();
+        encode_dpos_undelegation_v2_payload(&mut output, &snapshot, validator, entry)?;
+        Ok(Some(output))
     }
 
     fn pending_delegator_reward(
@@ -2771,6 +3002,41 @@ impl FinalChain {
                     validator,
                     amount,
                 )?),
+                DposTransaction::UndelegateV2 {
+                    delegator,
+                    validator,
+                    amount,
+                } => self.apply_dpos_undelegate_v2(
+                    &mut snapshot,
+                    accounts,
+                    delegator,
+                    validator,
+                    amount,
+                    block_number,
+                )?,
+                DposTransaction::ConfirmUndelegateV2 {
+                    delegator,
+                    validator,
+                    id,
+                } => self.apply_dpos_confirm_undelegate_v2(
+                    &mut snapshot,
+                    accounts,
+                    delegator,
+                    validator,
+                    id,
+                    block_number,
+                )?,
+                DposTransaction::CancelUndelegateV2 {
+                    delegator,
+                    validator,
+                    id,
+                } => self.apply_dpos_cancel_undelegate_v2(
+                    &mut snapshot,
+                    accounts,
+                    delegator,
+                    validator,
+                    id,
+                )?,
                 DposTransaction::Redelegate {
                     delegator,
                     from,
@@ -2826,6 +3092,7 @@ impl FinalChain {
                 DposTransaction::ClaimAllRewards { delegator, batch } => DposApplyOutcome::success(
                     self.apply_dpos_claim_all_rewards(&mut snapshot, accounts, delegator, batch)?,
                 ),
+                DposTransaction::MethodNotSupported => DposApplyOutcome::contract_failure(),
             };
             let receipt = receipts.get_mut(position).ok_or_else(|| {
                 anyhow::anyhow!(
@@ -3014,11 +3281,208 @@ impl FinalChain {
         validator: [u8; 20],
         amount: Vec<u8>,
     ) -> Result<Vec<ReceiptLog>, anyhow::Error> {
+        let remove_amount = u256_from_big_endian(&amount);
+        let mut logs = self.remove_dpos_delegation_stake(
+            snapshot,
+            accounts,
+            delegator,
+            validator,
+            remove_amount,
+        )?;
+        logs.push(dpos_undelegated_log(delegator, validator, remove_amount)?);
+        Ok(logs)
+    }
+
+    fn apply_dpos_undelegate_v2(
+        &self,
+        snapshot: &mut DposSnapshot,
+        accounts: &mut HashMap<[u8; 20], Account>,
+        delegator: [u8; 20],
+        validator: [u8; 20],
+        amount: Vec<u8>,
+        block_number: u64,
+    ) -> Result<DposApplyOutcome, anyhow::Error> {
+        let remove_amount = u256_from_big_endian(&amount);
+        if self.dpos_delegation_removal_contract_failure(
+            snapshot,
+            delegator,
+            validator,
+            remove_amount,
+        ) {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
+        let mut logs = self.remove_dpos_delegation_stake(
+            snapshot,
+            accounts,
+            delegator,
+            validator,
+            remove_amount,
+        )?;
+        let id = create_undelegation_v2(
+            snapshot,
+            delegator,
+            validator,
+            u256_to_big_endian(remove_amount),
+            block_number
+                .checked_add(self.dpos_delegation_locking_period(block_number))
+                .ok_or_else(|| anyhow::anyhow!("DPoS undelegation unlock block overflow"))?,
+        )?;
+        logs.push(dpos_undelegated_v2_log(
+            delegator,
+            validator,
+            id,
+            remove_amount,
+        )?);
+        Ok(DposApplyOutcome::success(logs))
+    }
+
+    fn apply_dpos_confirm_undelegate_v2(
+        &self,
+        snapshot: &mut DposSnapshot,
+        accounts: &mut HashMap<[u8; 20], Account>,
+        delegator: [u8; 20],
+        validator: [u8; 20],
+        id: u64,
+        block_number: u64,
+    ) -> Result<DposApplyOutcome, anyhow::Error> {
+        let Some(entry) = find_undelegation_v2(snapshot, delegator, validator, id).cloned() else {
+            return Ok(DposApplyOutcome::contract_failure());
+        };
+        if entry.block > block_number {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
+        remove_undelegation_v2(snapshot, delegator, validator, id);
+        let amount = u256_from_big_endian(&entry.amount);
+        let dpos_contract_balance = u256_from_big_endian(
+            accounts
+                .entry(DPOS_CONTRACT_ADDRESS)
+                .or_insert_with(empty_account)
+                .balance
+                .as_slice(),
+        );
+        if dpos_contract_balance < amount {
+            anyhow::bail!("DPoS contract balance insufficient for undelegation V2 confirmation");
+        }
+        let dpos_account = accounts
+            .entry(DPOS_CONTRACT_ADDRESS)
+            .or_insert_with(empty_account);
+        dpos_account.balance = u256_to_big_endian(dpos_contract_balance - amount);
+        let delegator_account = accounts.entry(delegator).or_insert_with(empty_account);
+        let delegator_balance = u256_from_big_endian(&delegator_account.balance);
+        delegator_account.balance = u256_to_big_endian(
+            delegator_balance
+                .checked_add(amount)
+                .ok_or_else(|| anyhow::anyhow!("DPoS undelegation V2 confirmation overflow"))?,
+        );
+        Ok(DposApplyOutcome::success(vec![
+            dpos_undelegate_confirmed_v2_log(delegator, validator, id, amount)?,
+        ]))
+    }
+
+    fn apply_dpos_cancel_undelegate_v2(
+        &self,
+        snapshot: &mut DposSnapshot,
+        accounts: &mut HashMap<[u8; 20], Account>,
+        delegator: [u8; 20],
+        validator: [u8; 20],
+        id: u64,
+    ) -> Result<DposApplyOutcome, anyhow::Error> {
+        let Some(entry) = find_undelegation_v2(snapshot, delegator, validator, id).cloned() else {
+            return Ok(DposApplyOutcome::contract_failure());
+        };
+        if !snapshot.total_stakes.contains_key(&validator) {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
+        let amount = u256_from_big_endian(&entry.amount);
+        let mut logs = if snapshot
+            .delegations
+            .get(&validator)
+            .and_then(|delegations| delegations.get(&delegator))
+            .is_some()
+        {
+            self.apply_dpos_delegator_reward_claim(snapshot, accounts, validator, delegator)?
+        } else {
+            let reward_cursor = self.checkpoint_validator_reward_per_stake(snapshot, validator)?;
+            add_delegator_validator(&mut snapshot.delegator_validators, delegator, validator);
+            snapshot
+                .delegation_reward_cursors
+                .entry(validator)
+                .or_default()
+                .insert(delegator, u256_to_big_endian(reward_cursor));
+            Vec::new()
+        };
+        let current_delegation = snapshot
+            .delegations
+            .entry(validator)
+            .or_default()
+            .get(&delegator)
+            .map(|bytes| u256_from_big_endian(bytes))
+            .unwrap_or_default();
+        snapshot.delegations.entry(validator).or_default().insert(
+            delegator,
+            u256_to_big_endian(
+                current_delegation
+                    .checked_add(amount)
+                    .ok_or_else(|| anyhow::anyhow!("DPoS undelegation V2 cancel overflow"))?,
+            ),
+        );
+        let current_stake = snapshot
+            .total_stakes
+            .get(&validator)
+            .map(|bytes| u256_from_big_endian(bytes))
+            .unwrap_or_default();
+        self.set_validator_stake(
+            snapshot,
+            validator,
+            current_stake
+                .checked_add(amount)
+                .ok_or_else(|| anyhow::anyhow!("DPoS undelegation V2 cancel stake overflow"))?,
+        )?;
+        remove_undelegation_v2(snapshot, delegator, validator, id);
+        logs.push(dpos_undelegate_canceled_v2_log(
+            delegator, validator, id, amount,
+        )?);
+        Ok(DposApplyOutcome::success(logs))
+    }
+
+    fn dpos_delegation_removal_contract_failure(
+        &self,
+        snapshot: &DposSnapshot,
+        delegator: [u8; 20],
+        validator: [u8; 20],
+        amount: U256,
+    ) -> bool {
+        let Some(stake) = snapshot.total_stakes.get(&validator) else {
+            return true;
+        };
+        let current_stake = u256_from_big_endian(stake);
+        let Some(current_delegation) = snapshot
+            .delegations
+            .get(&validator)
+            .and_then(|delegations| delegations.get(&delegator))
+            .map(|bytes| u256_from_big_endian(bytes))
+        else {
+            return true;
+        };
+        if current_delegation < amount || current_stake < amount {
+            return true;
+        }
+        let remaining = current_delegation - amount;
+        !remaining.is_zero() && remaining < u256_from_big_endian(&self.dpos_minimum_deposit)
+    }
+
+    fn remove_dpos_delegation_stake(
+        &self,
+        snapshot: &mut DposSnapshot,
+        accounts: &mut HashMap<[u8; 20], Account>,
+        delegator: [u8; 20],
+        validator: [u8; 20],
+        remove_amount: U256,
+    ) -> Result<Vec<ReceiptLog>, anyhow::Error> {
         let Some(stake) = snapshot.total_stakes.get(&validator) else {
             anyhow::bail!("Rust FinalChain::finalize DPoS validator does not exist for undelegate")
         };
         let current_stake = u256_from_big_endian(stake);
-        let remove_amount = u256_from_big_endian(&amount);
         let current_delegation = snapshot
             .delegations
             .get(&validator)
@@ -3038,12 +3502,17 @@ impl FinalChain {
         if current_stake < remove_amount {
             anyhow::bail!("Rust FinalChain::finalize DPoS stake underflows on undelegate");
         }
-        let mut logs =
+        let new_delegation = current_delegation - remove_amount;
+        if !new_delegation.is_zero()
+            && new_delegation < u256_from_big_endian(&self.dpos_minimum_deposit)
+        {
+            anyhow::bail!("Rust FinalChain::finalize DPoS remaining delegation is below minimum");
+        }
+        let logs =
             self.apply_dpos_delegator_reward_claim(snapshot, accounts, validator, delegator)?;
         let delegations = snapshot.delegations.get_mut(&validator).ok_or_else(|| {
             anyhow::anyhow!("Rust FinalChain::finalize DPoS delegation does not exist")
         })?;
-        let new_delegation = current_delegation - remove_amount;
         if new_delegation.is_zero() {
             delegations.remove(&delegator);
             remove_delegator_validator(&mut snapshot.delegator_validators, delegator, validator);
@@ -3055,7 +3524,6 @@ impl FinalChain {
         }
         let new_stake = current_stake - remove_amount;
         self.set_validator_stake(snapshot, validator, new_stake)?;
-        logs.push(dpos_undelegated_log(delegator, validator, remove_amount)?);
         Ok(logs)
     }
 
@@ -3335,7 +3803,7 @@ fn h256_from_slice(raw: &[u8], field: &str) -> Result<ethereum_types::H256, anyh
 }
 
 fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Vec<u8> {
-    let mut stream = rlp::RlpStream::new_list(15);
+    let mut stream = rlp::RlpStream::new_list(17);
     append_address_bytes_map(&mut stream, &snapshot.total_stakes);
     append_address_bytes_map(&mut stream, &snapshot.commission_rewards);
     append_validator_metadata_map(&mut stream, &snapshot.validator_metadata);
@@ -3351,6 +3819,8 @@ fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Vec<u8> {
     append_delegations_map(&mut stream, &snapshot.delegation_reward_cursors);
     append_delegator_validators_map(&mut stream, &snapshot.delegator_validators);
     append_address_vec(&mut stream, &snapshot.validator_order);
+    append_undelegations_v2_map(&mut stream, &snapshot.undelegations_v2);
+    append_address_u64_map(&mut stream, &snapshot.undelegation_v2_last_ids);
     stream.out().to_vec()
 }
 
@@ -3364,9 +3834,10 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
         && item_count != 11
         && item_count != 14
         && item_count != 15
+        && item_count != 17
     {
         anyhow::bail!(
-            "DPoS snapshot RLP must contain exactly five, six, seven, nine, eleven, fourteen, or fifteen items"
+            "DPoS snapshot RLP must contain exactly five, six, seven, nine, eleven, fourteen, fifteen, or seventeen items"
         );
     }
     let total_stakes = decode_address_bytes_map(&rlp.at(0)?, "total stakes")?;
@@ -3426,6 +3897,16 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
     } else {
         total_stakes.keys().copied().collect()
     };
+    let undelegations_v2 = if item_count >= 17 {
+        decode_undelegations_v2_map(&rlp.at(15)?)?
+    } else {
+        BTreeMap::new()
+    };
+    let undelegation_v2_last_ids = if item_count >= 17 {
+        decode_address_u64_map(&rlp.at(16)?, "undelegation V2 last id")?
+    } else {
+        BTreeMap::new()
+    };
     Ok(DposSnapshot {
         total_stakes,
         commission_rewards,
@@ -3442,6 +3923,8 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
         minted_tokens,
         total_supply,
         current_yield,
+        undelegations_v2,
+        undelegation_v2_last_ids,
     })
 }
 
@@ -3570,6 +4053,35 @@ fn append_delegator_validators_map(stream: &mut rlp::RlpStream, map: &DposDelega
     }
 }
 
+fn append_undelegations_v2_map(stream: &mut rlp::RlpStream, map: &DposUndelegationsV2) {
+    stream.begin_list(map.len());
+    for (delegator, validator_groups) in map {
+        stream.begin_list(2);
+        stream.append(&delegator.as_slice());
+        stream.begin_list(validator_groups.len());
+        for group in validator_groups {
+            stream.begin_list(2);
+            stream.append(&group.validator.as_slice());
+            stream.begin_list(group.entries.len());
+            for entry in &group.entries {
+                stream.begin_list(3);
+                stream.append(&entry.id);
+                stream.append(&entry.amount.as_slice());
+                stream.append(&entry.block);
+            }
+        }
+    }
+}
+
+fn append_address_u64_map(stream: &mut rlp::RlpStream, map: &BTreeMap<[u8; 20], u64>) {
+    stream.begin_list(map.len());
+    for (address, value) in map {
+        stream.begin_list(2);
+        stream.append(&address.as_slice());
+        stream.append(value);
+    }
+}
+
 fn decode_delegations_map(rlp: &Rlp<'_>) -> Result<DposDelegations, anyhow::Error> {
     let mut map = BTreeMap::new();
     for item in rlp.iter() {
@@ -3588,6 +4100,53 @@ fn decode_delegations_map(rlp: &Rlp<'_>) -> Result<DposDelegations, anyhow::Erro
             );
         }
         map.insert(validator, delegations);
+    }
+    Ok(map)
+}
+
+fn decode_undelegations_v2_map(rlp: &Rlp<'_>) -> Result<DposUndelegationsV2, anyhow::Error> {
+    let mut map = BTreeMap::new();
+    for item in rlp.iter() {
+        if item.item_count()? != 2 {
+            anyhow::bail!("DPoS V2 undelegation delegator entry must contain exactly two items");
+        }
+        let delegator = decode_address(&item.at(0)?, "V2 undelegation delegator")?;
+        let mut validator_groups = Vec::new();
+        for validator_item in item.at(1)?.iter() {
+            if validator_item.item_count()? != 2 {
+                anyhow::bail!(
+                    "DPoS V2 undelegation validator entry must contain exactly two items"
+                );
+            }
+            let validator = decode_address(&validator_item.at(0)?, "V2 undelegation validator")?;
+            let mut entries = Vec::new();
+            for entry_item in validator_item.at(1)?.iter() {
+                if entry_item.item_count()? != 3 {
+                    anyhow::bail!("DPoS V2 undelegation item must contain exactly three items");
+                }
+                entries.push(DposUndelegationV2Entry {
+                    id: entry_item.val_at(0)?,
+                    amount: entry_item.val_at(1)?,
+                    block: entry_item.val_at(2)?,
+                });
+            }
+            validator_groups.push(DposValidatorUndelegationsV2 { validator, entries });
+        }
+        map.insert(delegator, validator_groups);
+    }
+    Ok(map)
+}
+
+fn decode_address_u64_map(
+    rlp: &Rlp<'_>,
+    field: &str,
+) -> Result<BTreeMap<[u8; 20], u64>, anyhow::Error> {
+    let mut map = BTreeMap::new();
+    for item in rlp.iter() {
+        if item.item_count()? != 2 {
+            anyhow::bail!("DPoS snapshot {field} entry must contain exactly two items");
+        }
+        map.insert(decode_address(&item.at(0)?, field)?, item.val_at(1)?);
     }
     Ok(map)
 }
@@ -3679,6 +4238,154 @@ fn remove_delegator_validator(
     if validators.is_empty() {
         map.remove(&delegator);
     }
+}
+
+fn create_undelegation_v2(
+    snapshot: &mut DposSnapshot,
+    delegator: [u8; 20],
+    validator: [u8; 20],
+    amount: Vec<u8>,
+    block: u64,
+) -> Result<u64, anyhow::Error> {
+    let id = snapshot
+        .undelegation_v2_last_ids
+        .get(&delegator)
+        .copied()
+        .unwrap_or_default()
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("DPoS undelegation V2 id overflow"))?;
+    snapshot.undelegation_v2_last_ids.insert(delegator, id);
+    let validators = snapshot.undelegations_v2.entry(delegator).or_default();
+    if let Some(group) = validators
+        .iter_mut()
+        .find(|group| group.validator == validator)
+    {
+        group
+            .entries
+            .push(DposUndelegationV2Entry { id, amount, block });
+    } else {
+        validators.push(DposValidatorUndelegationsV2 {
+            validator,
+            entries: vec![DposUndelegationV2Entry { id, amount, block }],
+        });
+    }
+    Ok(id)
+}
+
+fn remove_undelegation_v2(
+    snapshot: &mut DposSnapshot,
+    delegator: [u8; 20],
+    validator: [u8; 20],
+    id: u64,
+) -> bool {
+    let Some(validators) = snapshot.undelegations_v2.get_mut(&delegator) else {
+        return false;
+    };
+    let Some(validator_position) = validators
+        .iter()
+        .position(|group| group.validator == validator)
+    else {
+        return false;
+    };
+    let group = &mut validators[validator_position];
+    let Some(entry_position) = group.entries.iter().position(|entry| entry.id == id) else {
+        return false;
+    };
+    group.entries.swap_remove(entry_position);
+    if group.entries.is_empty() {
+        validators.swap_remove(validator_position);
+    }
+    if validators.is_empty() {
+        snapshot.undelegations_v2.remove(&delegator);
+    }
+    true
+}
+
+fn find_undelegation_v2(
+    snapshot: &DposSnapshot,
+    delegator: [u8; 20],
+    validator: [u8; 20],
+    id: u64,
+) -> Option<&DposUndelegationV2Entry> {
+    snapshot
+        .undelegations_v2
+        .get(&delegator)?
+        .iter()
+        .find(|group| group.validator == validator)?
+        .entries
+        .iter()
+        .find(|entry| entry.id == id)
+}
+
+fn dpos_undelegations_v2_for_delegator(
+    snapshot: &DposSnapshot,
+    delegator: [u8; 20],
+) -> Vec<([u8; 20], &DposUndelegationV2Entry)> {
+    snapshot
+        .undelegations_v2
+        .get(&delegator)
+        .map(|validators| {
+            validators
+                .iter()
+                .flat_map(|group| group.entries.iter().map(|entry| (group.validator, entry)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn dpos_undelegations_v2_count_for_validator(snapshot: &DposSnapshot, validator: [u8; 20]) -> u16 {
+    let count = snapshot
+        .undelegations_v2
+        .values()
+        .flat_map(|validators| validators.iter())
+        .filter(|group| group.validator == validator)
+        .map(|group| group.entries.len())
+        .sum::<usize>();
+    u16::try_from(count).unwrap_or(u16::MAX)
+}
+
+fn dpos_undelegations_v2_storage_read_count(
+    snapshot: &DposSnapshot,
+    delegator: [u8; 20],
+    batch: u32,
+) -> Result<u64, anyhow::Error> {
+    let mut to_skip = u64::from(batch)
+        .checked_mul(DPOS_GET_UNDELEGATIONS_MAX_COUNT as u64)
+        .ok_or_else(|| anyhow::anyhow!("getUndelegationsV2 batch offset overflow"))?;
+    let mut reads = 0u64;
+    let mut processed = 0u64;
+    let Some(validators) = snapshot.undelegations_v2.get(&delegator) else {
+        return Ok(0);
+    };
+    for group in validators {
+        reads = reads
+            .checked_add(2)
+            .ok_or_else(|| anyhow::anyhow!("getUndelegationsV2 read count overflow"))?;
+        let undelegations_count = group.entries.len() as u64;
+        if undelegations_count <= to_skip {
+            to_skip -= undelegations_count;
+            continue;
+        }
+        let remaining_page = (DPOS_GET_UNDELEGATIONS_MAX_COUNT as u64)
+            .checked_sub(processed)
+            .ok_or_else(|| anyhow::anyhow!("getUndelegationsV2 processed count overflow"))?;
+        let left = undelegations_count - to_skip;
+        let to_process = left.min(remaining_page);
+        processed = processed
+            .checked_add(to_process)
+            .ok_or_else(|| anyhow::anyhow!("getUndelegationsV2 processed count overflow"))?;
+        reads =
+            reads
+                .checked_add(to_process.checked_mul(2).ok_or_else(|| {
+                    anyhow::anyhow!("getUndelegationsV2 item read count overflow")
+                })?)
+                .ok_or_else(|| anyhow::anyhow!("getUndelegationsV2 read count overflow"))?;
+        to_skip = 0;
+        if processed == DPOS_GET_UNDELEGATIONS_MAX_COUNT as u64 {
+            break;
+        }
+    }
+    Ok(reads)
 }
 
 fn decode_address_fixed_hash_map(
@@ -3891,6 +4598,57 @@ fn dpos_undelegated_log(
     )
 }
 
+fn dpos_undelegated_v2_log(
+    delegator: [u8; 20],
+    validator: [u8; 20],
+    id: u64,
+    amount: U256,
+) -> Result<ReceiptLog, anyhow::Error> {
+    dpos_amount_log(
+        DPOS_UNDELEGATED_V2_TOPIC,
+        vec![
+            address_topic(delegator),
+            address_topic(validator),
+            u64_topic(id),
+        ],
+        amount,
+    )
+}
+
+fn dpos_undelegate_confirmed_v2_log(
+    delegator: [u8; 20],
+    validator: [u8; 20],
+    id: u64,
+    amount: U256,
+) -> Result<ReceiptLog, anyhow::Error> {
+    dpos_amount_log(
+        DPOS_UNDELEGATE_CONFIRMED_V2_TOPIC,
+        vec![
+            address_topic(delegator),
+            address_topic(validator),
+            u64_topic(id),
+        ],
+        amount,
+    )
+}
+
+fn dpos_undelegate_canceled_v2_log(
+    delegator: [u8; 20],
+    validator: [u8; 20],
+    id: u64,
+    amount: U256,
+) -> Result<ReceiptLog, anyhow::Error> {
+    dpos_amount_log(
+        DPOS_UNDELEGATE_CANCELED_V2_TOPIC,
+        vec![
+            address_topic(delegator),
+            address_topic(validator),
+            u64_topic(id),
+        ],
+        amount,
+    )
+}
+
 fn dpos_redelegated_log(
     delegator: [u8; 20],
     from: [u8; 20],
@@ -3972,6 +4730,10 @@ fn dpos_amount_log(
         topics,
         data: abi_word_from_u256_bytes(&u256_to_big_endian(amount))?.to_vec(),
     })
+}
+
+fn u64_topic(value: u64) -> [u8; 32] {
+    abi_word_from_u64(value)
 }
 
 fn address_topic(address: [u8; 20]) -> [u8; 32] {
@@ -4199,6 +4961,16 @@ fn decode_abi_word_as_u32(input: &[u8], offset: usize, field: &str) -> Result<u3
     Ok(u32::from_be_bytes(bytes))
 }
 
+fn decode_abi_word_as_u64(input: &[u8], offset: usize, field: &str) -> Result<u64, anyhow::Error> {
+    let word = abi_word(input, offset, field)?;
+    if word[..24].iter().any(|byte| *byte != 0) {
+        anyhow::bail!("{field} argument does not fit into uint64");
+    }
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&word[24..32]);
+    Ok(u64::from_be_bytes(bytes))
+}
+
 /// Encodes a `u64` as a right-aligned Solidity ABI word.
 fn abi_word_from_u64(value: u64) -> [u8; 32] {
     let mut word = [0u8; 32];
@@ -4263,6 +5035,22 @@ fn abi_padded_len(len: usize) -> Result<usize, anyhow::Error> {
         .ok_or_else(|| anyhow::anyhow!("ABI dynamic value length overflow"))
 }
 
+fn encode_dpos_undelegation_v2_payload(
+    output: &mut Vec<u8>,
+    snapshot: &DposSnapshot,
+    validator: [u8; 20],
+    entry: &DposUndelegationV2Entry,
+) -> Result<(), anyhow::Error> {
+    output.extend_from_slice(&abi_word_from_u256_bytes(&entry.amount)?);
+    output.extend_from_slice(&abi_word_from_u64(entry.block));
+    output.extend_from_slice(&abi_word_from_address(validator));
+    output.extend_from_slice(&abi_word_from_bool(
+        snapshot.total_stakes.contains_key(&validator),
+    ));
+    output.extend_from_slice(&abi_word_from_u64(entry.id));
+    Ok(())
+}
+
 /// Formats a four-byte call selector without a `0x` prefix.
 fn selector_hex(selector: [u8; 4]) -> String {
     selector
@@ -4282,6 +5070,7 @@ fn decode_dpos_transaction(
     owner: [u8; 20],
     block_number: u64,
     fix_claim_all_block_num: u64,
+    cornus_period: u64,
 ) -> Result<DposTransaction, anyhow::Error> {
     if input.len() < 4 {
         anyhow::bail!("Rust FinalChain::finalize DPoS transaction input is missing selector");
@@ -4365,6 +5154,53 @@ fn decode_dpos_transaction(
                 delegator: owner,
                 validator,
                 amount,
+            })
+        }
+        DPOS_UNDELEGATE_V2_SELECTOR => {
+            if block_number < cornus_period {
+                return Ok(DposTransaction::MethodNotSupported);
+            }
+            if input.len() < 4 + 2 * 32 {
+                anyhow::bail!("undelegateV2 input is shorter than selector plus ABI head");
+            }
+            let validator = decode_abi_address_argument(input, "undelegateV2(address,...)")?;
+            let amount = decode_abi_word_as_vec(input, 4 + 32, "undelegateV2 amount")?;
+            Ok(DposTransaction::UndelegateV2 {
+                delegator: owner,
+                validator,
+                amount,
+            })
+        }
+        DPOS_CONFIRM_UNDELEGATE_V2_SELECTOR => {
+            if block_number < cornus_period {
+                return Ok(DposTransaction::MethodNotSupported);
+            }
+            if input.len() < 4 + 2 * 32 {
+                anyhow::bail!("confirmUndelegateV2 input is shorter than selector plus ABI head");
+            }
+            let validator =
+                decode_abi_address_argument(input, "confirmUndelegateV2(address,uint64)")?;
+            let id = decode_abi_word_as_u64(input, 4 + 32, "confirmUndelegateV2 id")?;
+            Ok(DposTransaction::ConfirmUndelegateV2 {
+                delegator: owner,
+                validator,
+                id,
+            })
+        }
+        DPOS_CANCEL_UNDELEGATE_V2_SELECTOR => {
+            if block_number < cornus_period {
+                return Ok(DposTransaction::MethodNotSupported);
+            }
+            if input.len() < 4 + 2 * 32 {
+                anyhow::bail!("cancelUndelegateV2 input is shorter than selector plus ABI head");
+            }
+            let validator =
+                decode_abi_address_argument(input, "cancelUndelegateV2(address,uint64)")?;
+            let id = decode_abi_word_as_u64(input, 4 + 32, "cancelUndelegateV2 id")?;
+            Ok(DposTransaction::CancelUndelegateV2 {
+                delegator: owner,
+                validator,
+                id,
             })
         }
         DPOS_REDELEGATE_SELECTOR => {
@@ -4638,6 +5474,11 @@ fn update_dpos_claim_gas_snapshot(
             delegator,
             validator,
             amount,
+        }
+        | DposTransaction::UndelegateV2 {
+            delegator,
+            validator,
+            amount,
         } => {
             update_dpos_claim_gas_snapshot_remove(snapshot, *delegator, *validator, amount)?;
         }
@@ -4668,10 +5509,13 @@ fn update_dpos_claim_gas_snapshot(
                 .insert(*delegator, u256_to_big_endian(next));
         }
         DposTransaction::ClaimRewards { .. }
+        | DposTransaction::ConfirmUndelegateV2 { .. }
+        | DposTransaction::CancelUndelegateV2 { .. }
         | DposTransaction::ClaimCommissionRewards { .. }
         | DposTransaction::SetValidatorInfo { .. }
         | DposTransaction::SetCommission { .. }
-        | DposTransaction::ClaimAllRewards { .. } => {}
+        | DposTransaction::ClaimAllRewards { .. }
+        | DposTransaction::MethodNotSupported => {}
     }
     Ok(())
 }
@@ -4823,6 +5667,21 @@ enum DposTransaction {
         validator: [u8; 20],
         amount: Vec<u8>,
     },
+    UndelegateV2 {
+        delegator: [u8; 20],
+        validator: [u8; 20],
+        amount: Vec<u8>,
+    },
+    ConfirmUndelegateV2 {
+        delegator: [u8; 20],
+        validator: [u8; 20],
+        id: u64,
+    },
+    CancelUndelegateV2 {
+        delegator: [u8; 20],
+        validator: [u8; 20],
+        id: u64,
+    },
     Redelegate {
         delegator: [u8; 20],
         from: [u8; 20],
@@ -4852,6 +5711,7 @@ enum DposTransaction {
         delegator: [u8; 20],
         batch: Option<u32>,
     },
+    MethodNotSupported,
 }
 
 /// DPoS validator registration decoded from the Rust-supported contract subset.
@@ -5308,7 +6168,7 @@ mod tests {
     fn decode_dpos_transaction_gates_legacy_claim_all_batch_selector() {
         let owner = [0x44; 20];
         let decoded =
-            decode_dpos_transaction(&claim_all_rewards_batch_input(7), owner, 9, 10).unwrap();
+            decode_dpos_transaction(&claim_all_rewards_batch_input(7), owner, 9, 10, 0).unwrap();
         match decoded {
             DposTransaction::ClaimAllRewards {
                 delegator,
@@ -5317,7 +6177,8 @@ mod tests {
             _ => panic!("expected legacy batched claimAllRewards"),
         }
 
-        let err = match decode_dpos_transaction(&claim_all_rewards_batch_input(0), owner, 10, 10) {
+        let err = match decode_dpos_transaction(&claim_all_rewards_batch_input(0), owner, 10, 10, 0)
+        {
             Ok(_) => {
                 panic!("expected legacy batched claimAllRewards to be rejected at fix boundary")
             }
@@ -5330,7 +6191,7 @@ mod tests {
 
         let mut malformed_batch_input = claim_all_rewards_batch_input(1);
         malformed_batch_input.push(0);
-        let err = match decode_dpos_transaction(&malformed_batch_input, owner, 9, 10) {
+        let err = match decode_dpos_transaction(&malformed_batch_input, owner, 9, 10, 0) {
             Ok(_) => panic!("expected malformed legacy batched claimAllRewards to be rejected"),
             Err(err) => err,
         };
@@ -5339,7 +6200,8 @@ mod tests {
                 .contains("claimAllRewards(uint32) input is malformed")
         );
 
-        let decoded = decode_dpos_transaction(&claim_all_rewards_input(), owner, 10, 10).unwrap();
+        let decoded =
+            decode_dpos_transaction(&claim_all_rewards_input(), owner, 10, 10, 0).unwrap();
         match decoded {
             DposTransaction::ClaimAllRewards {
                 delegator,
@@ -5350,7 +6212,7 @@ mod tests {
 
         let validator = [0x45; 20];
         let decoded =
-            decode_dpos_transaction(&claim_commission_rewards_input(validator), owner, 10, 10)
+            decode_dpos_transaction(&claim_commission_rewards_input(validator), owner, 10, 10, 0)
                 .unwrap();
         match decoded {
             DposTransaction::ClaimCommissionRewards {
@@ -5364,7 +6226,8 @@ mod tests {
         }
 
         let decoded =
-            decode_dpos_transaction(&set_commission_input(validator, 1250), owner, 10, 10).unwrap();
+            decode_dpos_transaction(&set_commission_input(validator, 1250), owner, 10, 10, 0)
+                .unwrap();
         match decoded {
             DposTransaction::SetCommission {
                 owner: decoded_owner,
@@ -5383,6 +6246,7 @@ mod tests {
             owner,
             10,
             10,
+            0,
         )
         .unwrap();
         match decoded {
@@ -5413,6 +6277,42 @@ mod tests {
         let mut input = DPOS_UNDELEGATE_SELECTOR.to_vec();
         input.extend_from_slice(&abi_word_from_address(validator));
         input.extend_from_slice(&abi_word_from_u256_bytes(&u256_to_big_endian(amount)).unwrap());
+        input
+    }
+
+    fn undelegate_v2_input(validator: [u8; 20], amount: U256) -> Vec<u8> {
+        let mut input = DPOS_UNDELEGATE_V2_SELECTOR.to_vec();
+        input.extend_from_slice(&abi_word_from_address(validator));
+        input.extend_from_slice(&abi_word_from_u256_bytes(&u256_to_big_endian(amount)).unwrap());
+        input
+    }
+
+    fn confirm_undelegate_v2_input(validator: [u8; 20], id: u64) -> Vec<u8> {
+        let mut input = DPOS_CONFIRM_UNDELEGATE_V2_SELECTOR.to_vec();
+        input.extend_from_slice(&abi_word_from_address(validator));
+        input.extend_from_slice(&abi_word_from_u64(id));
+        input
+    }
+
+    fn cancel_undelegate_v2_input(validator: [u8; 20], id: u64) -> Vec<u8> {
+        let mut input = DPOS_CANCEL_UNDELEGATE_V2_SELECTOR.to_vec();
+        input.extend_from_slice(&abi_word_from_address(validator));
+        input.extend_from_slice(&abi_word_from_u64(id));
+        input
+    }
+
+    fn get_undelegations_v2_input(delegator: [u8; 20], batch: u32) -> Vec<u8> {
+        let mut input = DPOS_GET_UNDELEGATIONS_V2_SELECTOR.to_vec();
+        input.extend_from_slice(&abi_word_from_address(delegator));
+        input.extend_from_slice(&abi_word_from_u64(u64::from(batch)));
+        input
+    }
+
+    fn get_undelegation_v2_input(delegator: [u8; 20], validator: [u8; 20], id: u64) -> Vec<u8> {
+        let mut input = DPOS_GET_UNDELEGATION_V2_SELECTOR.to_vec();
+        input.extend_from_slice(&abi_word_from_address(delegator));
+        input.extend_from_slice(&abi_word_from_address(validator));
+        input.extend_from_slice(&abi_word_from_u64(id));
         input
     }
 
@@ -8523,6 +9423,366 @@ mod tests {
             final_chain.dpos_eligible_total_vote_count(period).unwrap(),
             7
         );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_supports_undelegation_v2_confirm_lifecycle() {
+        let path = temp_db_path("finalize-dpos-undelegate-v2-confirm");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x61; 20];
+        let signing_key = SigningKey::from_slice(&[21u8; 32]).unwrap();
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let rewards_config = FinalChainRewardsConfig {
+            cornus_period: 0,
+            cornus_delegation_locking_period: 2,
+            ..Default::default()
+        };
+        let period_one = 1u64;
+        let period_one_block = signed_pbft_block(&signing_key, period_one, 161);
+        let undelegate_tx = test_transaction(
+            0xC1,
+            validator,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::zero(),
+            U256::zero(),
+            100_000,
+            undelegate_v2_input(validator, U256::from(3_000u64)),
+            vec![0xc1, 0xc1],
+        );
+        write_period_data(
+            &storage,
+            period_one,
+            &period_one_block,
+            &[undelegate_tx.rlp.clone()],
+        );
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            200_000,
+            0,
+            vec![
+                genesis_account(validator, U256::from(1_000_000u64)),
+                genesis_account(DPOS_CONTRACT_ADDRESS, U256::from(10_000u64)),
+            ],
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            genesis_dpos_config.clone(),
+            rewards_config.clone(),
+        )
+        .unwrap();
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(period_one_block, vec![undelegate_tx], vec![])
+            .unwrap();
+
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (1, DPOS_UNDELEGATE_GAS, DPOS_UNDELEGATE_GAS)
+        );
+        let logs = receipt_logs(&receipts[0]);
+        assert_eq!(logs.len(), 1);
+        assert_dpos_amount_log(
+            &logs[0],
+            DPOS_UNDELEGATED_V2_TOPIC,
+            vec![
+                address_topic(validator),
+                address_topic(validator),
+                u64_topic(1),
+            ],
+            U256::from(3_000u64),
+        );
+        assert_single_delegation(
+            &final_chain,
+            period_one,
+            validator,
+            validator,
+            U256::from(7_000u64),
+            U256::zero(),
+        );
+        let pending = final_chain
+            .call(dpos_call_request(
+                period_one,
+                get_undelegations_v2_input(validator, 0),
+            ))
+            .unwrap();
+        assert_eq!(pending.gas_used, 20_000);
+        assert_eq!(
+            u256_from_big_endian(&pending.code_retval[32..64]),
+            U256::one()
+        );
+        assert_eq!(
+            u256_from_big_endian(&pending.code_retval[64..96]),
+            U256::one()
+        );
+        assert_eq!(
+            u256_from_big_endian(&pending.code_retval[96..128]),
+            U256::from(3_000u64)
+        );
+        assert_eq!(
+            u256_from_big_endian(&pending.code_retval[128..160]),
+            U256::from(3u64)
+        );
+        assert_eq!(&pending.code_retval[172..192], &validator);
+        assert_eq!(
+            u256_from_big_endian(&pending.code_retval[192..224]),
+            U256::one()
+        );
+        assert_eq!(
+            u256_from_big_endian(&pending.code_retval[224..256]),
+            U256::one()
+        );
+
+        drop(final_chain);
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            200_000,
+            0,
+            vec![
+                genesis_account(validator, U256::from(1_000_000u64)),
+                genesis_account(DPOS_CONTRACT_ADDRESS, U256::from(10_000u64)),
+            ],
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            genesis_dpos_config,
+            rewards_config,
+        )
+        .unwrap();
+        assert_eq!(
+            final_chain
+                .call(dpos_call_request(
+                    period_one,
+                    get_undelegation_v2_input(validator, validator, 1),
+                ))
+                .unwrap()
+                .code_err,
+            ""
+        );
+
+        let period_two = 2u64;
+        let period_two_block = signed_pbft_block(&signing_key, period_two, 162);
+        let locked_confirm_tx = test_transaction(
+            0xC2,
+            validator,
+            Some(DPOS_CONTRACT_ADDRESS),
+            1,
+            U256::zero(),
+            U256::zero(),
+            100_000,
+            confirm_undelegate_v2_input(validator, 1),
+            vec![0xc1, 0xc2],
+        );
+        write_period_data(
+            &storage,
+            period_two,
+            &period_two_block,
+            &[locked_confirm_tx.rlp.clone()],
+        );
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(period_two_block, vec![locked_confirm_tx], vec![])
+            .unwrap();
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (0, DPOS_DEFAULT_METHOD_GAS, DPOS_DEFAULT_METHOD_GAS)
+        );
+        assert!(receipt_logs(&receipts[0]).is_empty());
+
+        let period_three = 3u64;
+        let period_three_block = signed_pbft_block(&signing_key, period_three, 163);
+        let confirm_tx = test_transaction(
+            0xC3,
+            validator,
+            Some(DPOS_CONTRACT_ADDRESS),
+            2,
+            U256::zero(),
+            U256::zero(),
+            100_000,
+            confirm_undelegate_v2_input(validator, 1),
+            vec![0xc1, 0xc3],
+        );
+        write_period_data(
+            &storage,
+            period_three,
+            &period_three_block,
+            &[confirm_tx.rlp.clone()],
+        );
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(period_three_block, vec![confirm_tx], vec![])
+            .unwrap();
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (1, DPOS_DEFAULT_METHOD_GAS, DPOS_DEFAULT_METHOD_GAS)
+        );
+        let logs = receipt_logs(&receipts[0]);
+        assert_eq!(logs.len(), 1);
+        assert_dpos_amount_log(
+            &logs[0],
+            DPOS_UNDELEGATE_CONFIRMED_V2_TOPIC,
+            vec![
+                address_topic(validator),
+                address_topic(validator),
+                u64_topic(1),
+            ],
+            U256::from(3_000u64),
+        );
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            U256::from(7_000u64)
+        );
+        assert_eq!(
+            balance_of(&final_chain, validator),
+            U256::from(1_003_000u64)
+        );
+        let empty_page = final_chain
+            .call(dpos_call_request(
+                period_three,
+                get_undelegations_v2_input(validator, 0),
+            ))
+            .unwrap();
+        assert_eq!(empty_page.gas_used, 0);
+        assert_eq!(
+            u256_from_big_endian(&empty_page.code_retval[64..96]),
+            U256::zero()
+        );
+        let missing = final_chain
+            .call(dpos_call_request(
+                period_three,
+                get_undelegation_v2_input(validator, validator, 1),
+            ))
+            .unwrap();
+        assert_eq!(missing.code_err, "Undelegation does not exist");
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_supports_undelegation_v2_cancel_lifecycle() {
+        let path = temp_db_path("finalize-dpos-undelegate-v2-cancel");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x62; 20];
+        let signing_key = SigningKey::from_slice(&[22u8; 32]).unwrap();
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let rewards_config = FinalChainRewardsConfig {
+            cornus_period: 0,
+            cornus_delegation_locking_period: 10,
+            ..Default::default()
+        };
+        let period_one = 1u64;
+        let period_one_block = signed_pbft_block(&signing_key, period_one, 171);
+        let undelegate_tx = test_transaction(
+            0xD1,
+            validator,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::zero(),
+            U256::zero(),
+            100_000,
+            undelegate_v2_input(validator, U256::from(4_000u64)),
+            vec![0xc1, 0xd1],
+        );
+        write_period_data(
+            &storage,
+            period_one,
+            &period_one_block,
+            &[undelegate_tx.rlp.clone()],
+        );
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            200_000,
+            0,
+            vec![
+                genesis_account(validator, U256::from(1_000_000u64)),
+                genesis_account(DPOS_CONTRACT_ADDRESS, U256::from(10_000u64)),
+            ],
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            genesis_dpos_config,
+            rewards_config,
+        )
+        .unwrap();
+        final_chain
+            .finalize_block(period_one_block, vec![undelegate_tx], vec![])
+            .unwrap();
+
+        let period_two = 2u64;
+        let period_two_block = signed_pbft_block(&signing_key, period_two, 172);
+        let cancel_tx = test_transaction(
+            0xD2,
+            validator,
+            Some(DPOS_CONTRACT_ADDRESS),
+            1,
+            U256::zero(),
+            U256::zero(),
+            100_000,
+            cancel_undelegate_v2_input(validator, 1),
+            vec![0xc1, 0xd2],
+        );
+        write_period_data(
+            &storage,
+            period_two,
+            &period_two_block,
+            &[cancel_tx.rlp.clone()],
+        );
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(period_two_block, vec![cancel_tx], vec![])
+            .unwrap();
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (1, DPOS_UNDELEGATE_GAS, DPOS_UNDELEGATE_GAS)
+        );
+        let logs = receipt_logs(&receipts[0]);
+        assert_eq!(logs.len(), 1);
+        assert_dpos_amount_log(
+            &logs[0],
+            DPOS_UNDELEGATE_CANCELED_V2_TOPIC,
+            vec![
+                address_topic(validator),
+                address_topic(validator),
+                u64_topic(1),
+            ],
+            U256::from(4_000u64),
+        );
+        assert_single_delegation(
+            &final_chain,
+            period_two,
+            validator,
+            validator,
+            U256::from(10_000u64),
+            U256::zero(),
+        );
+        assert_eq!(
+            final_chain
+                .dpos_eligible_vote_count(period_two, validator)
+                .unwrap(),
+            10
+        );
+        let empty_page = final_chain
+            .call(dpos_call_request(
+                period_two,
+                get_undelegations_v2_input(validator, 0),
+            ))
+            .unwrap();
+        assert_eq!(empty_page.gas_used, 0);
 
         drop(final_chain);
         drop(storage);

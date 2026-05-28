@@ -152,6 +152,12 @@ pub struct FinalChainRewardsConfig {
     pub yield_percentage: u16,
     /// Configured fixed-yield block count per year.
     pub dpos_blocks_per_year: u32,
+    /// Legacy DPoS undelegation locking period before Cornus overrides it.
+    pub dpos_delegation_locking_period: u64,
+    /// First period where Cornus DPoS V2 undelegation methods are active.
+    pub cornus_period: u64,
+    /// DPoS undelegation locking period after Cornus and before Cacti.
+    pub cornus_delegation_locking_period: u64,
     /// Genesis account balance sum encoded as an unsigned big-endian integer.
     ///
     /// Aspen part-two supply migration adds this value to the durable
@@ -165,6 +171,8 @@ pub struct FinalChainRewardsConfig {
     pub aspen_generated_rewards: Vec<u8>,
     /// First period where Cacti reward stats provide dynamic blocks-per-year.
     pub cacti_period: u64,
+    /// DPoS undelegation locking period after Cacti.
+    pub cacti_delegation_locking_period: u64,
     /// Rewards distribution frequency changes keyed by starting period.
     pub rewards_distribution_frequency: Vec<(u64, u32)>,
 }
@@ -181,10 +189,14 @@ impl Default for FinalChainRewardsConfig {
             dag_proposers_reward_percent: 0,
             yield_percentage: 0,
             dpos_blocks_per_year: 0,
+            dpos_delegation_locking_period: 0,
+            cornus_period: 0,
+            cornus_delegation_locking_period: 0,
             genesis_balance_sum: Vec::new(),
             aspen_max_supply: Vec::new(),
             aspen_generated_rewards: Vec::new(),
             cacti_period: 0,
+            cacti_delegation_locking_period: 0,
             rewards_distribution_frequency: Vec::new(),
         }
     }
