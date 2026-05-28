@@ -197,6 +197,8 @@ rustaxa::FinalChainRewardsConfig make_final_chain_rewards_config(const taraxa::F
   rewards_config.cacti_period = config.genesis.state.hardforks.cacti_hf.block_num;
   rewards_config.cacti_delegation_locking_period =
       config.genesis.state.hardforks.cacti_hf.delegation_locking_period;
+  rewards_config.magnolia_jail_time = config.genesis.state.hardforks.magnolia_hf.jail_time;
+  rewards_config.cacti_jail_time = config.genesis.state.hardforks.cacti_hf.jail_time;
   rewards_config.frequency_rules.reserve(config.genesis.state.hardforks.rewards_distribution_frequency.size());
   for (const auto& [from_period, frequency] : config.genesis.state.hardforks.rewards_distribution_frequency) {
     rustaxa::RewardsFrequencyRule rule{};

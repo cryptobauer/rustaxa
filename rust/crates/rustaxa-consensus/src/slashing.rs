@@ -8,18 +8,281 @@
 //! insertion; those remain live-node responsibilities on the C++ side until the
 //! surrounding transaction pipeline is moved to Rust.
 
-use anyhow::{Result, ensure};
-use ethereum_types::{H256, U256};
-use rlp::RlpStream;
+use anyhow::{Result, anyhow, ensure};
+use ethereum_types::{H160, H256, U256};
+use rlp::{Rlp, RlpStream};
 use std::collections::{HashSet, VecDeque};
 use tiny_keccak::{Hasher, Keccak};
 
 const DOUBLE_VOTING_PROOF_FUNCTION: &str = "commitDoubleVotingProof(bytes,bytes)";
 const DOUBLE_VOTING_GAS_LIMIT: u64 = 100_000;
 const WORD_SIZE: usize = 32;
+const SIGNATURE_SIZE: usize = 65;
+const VRF_SORTITION_PROOF_SIZE: usize = 80;
 const SLASHING_CONTRACT: [u8; 20] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xEE,
 ];
+
+/// Decoded legacy PBFT sortition fields required for double-vote slot checks.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct LegacyVrfPbftSortition {
+    /// PBFT period carried inside the VRF sortition payload.
+    pub period: u64,
+    /// PBFT round carried inside the VRF sortition payload.
+    pub round: u32,
+    /// PBFT step carried inside the VRF sortition payload.
+    pub step: u32,
+    /// Legacy 80-byte VRF proof bytes preserved for vote-hash parity.
+    pub proof: [u8; VRF_SORTITION_PROOF_SIZE],
+}
+
+/// PBFT vote metadata extracted from legacy calldata payload.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct LegacyPbftVoteMetadata {
+    /// PBFT block hash that this vote targets.
+    pub block_hash: H256,
+    /// Legacy unsigned vote hash recovered from block hash and sortition RLP.
+    pub vote_hash: H256,
+    /// PBFT period extracted from the embedded sortition payload.
+    pub period: u64,
+    /// PBFT round extracted from the embedded sortition payload.
+    pub round: u32,
+    /// PBFT step extracted from the embedded sortition payload.
+    pub step: u32,
+    /// Optional vote weight present in some persisted legacy vote RLPs.
+    pub weight: Option<u64>,
+}
+
+/// Compact verified fact for legacy PBFT double-vote proof payload inspection.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct VerifiedLegacyDoubleVotingProof {
+    /// Validator address recovered from both vote signatures.
+    pub offender: H160,
+    /// Canonical duplicate-detection key derived from sorted vote hashes.
+    pub proof_key: H256,
+    /// Vote hashes sorted by byte order so callers can persist stable proof facts.
+    pub sorted_vote_hashes: [H256; 2],
+    /// Metadata for the first ABI `bytes` vote payload.
+    pub vote_a: LegacyPbftVoteMetadata,
+    /// Metadata for the second ABI `bytes` vote payload.
+    pub vote_b: LegacyPbftVoteMetadata,
+}
+
+/// Verifies one legacy `commitDoubleVotingProof(bytes,bytes)` calldata payload.
+///
+/// It performs ABI decoding, legacy PbftVote parsing, signature recovery,
+/// and the same slot/hash/sanity checks that the contract enforces.
+pub fn verify_legacy_double_voting_proof_call_data(
+    calldata: &[u8],
+) -> Result<VerifiedLegacyDoubleVotingProof> {
+    let (vote_a_rlp, vote_b_rlp) = decode_commit_double_voting_call_data(calldata)?;
+    let vote_a = decode_legacy_pbft_vote(vote_a_rlp)?;
+    let vote_b = decode_legacy_pbft_vote(vote_b_rlp)?;
+
+    ensure!(
+        vote_a.metadata.vote_hash != vote_b.metadata.vote_hash,
+        "votes are identical"
+    );
+    ensure!(
+        vote_a.metadata.period == vote_b.metadata.period,
+        "invalid votes period/round/step"
+    );
+    ensure!(
+        vote_a.metadata.round == vote_b.metadata.round,
+        "invalid votes period/round/step"
+    );
+    ensure!(
+        vote_a.metadata.step == vote_b.metadata.step,
+        "invalid votes period/round/step"
+    );
+
+    ensure!(
+        vote_a.metadata.block_hash != vote_b.metadata.block_hash,
+        "invalid votes block hash"
+    );
+
+    if vote_a.metadata.step >= 5 && vote_a.metadata.step % 2 == 1 {
+        let vote_a_zero = vote_a.metadata.block_hash.is_zero();
+        let vote_b_zero = vote_b.metadata.block_hash.is_zero();
+        ensure!(
+            vote_a_zero == vote_b_zero,
+            "invalid mixed zero/non-zero next-vote block hashes"
+        );
+    }
+
+    let vote_a_offender = recover_validator_address(&vote_a.metadata.vote_hash, &vote_a.signature)
+        .ok_or_else(|| anyhow!("invalid vote signature"))?;
+    let vote_b_offender = recover_validator_address(&vote_b.metadata.vote_hash, &vote_b.signature)
+        .ok_or_else(|| anyhow!("invalid vote signature"))?;
+
+    ensure!(
+        vote_a_offender == vote_b_offender,
+        "invalid votes validator"
+    );
+
+    let sorted_vote_hashes = if vote_a.metadata.vote_hash < vote_b.metadata.vote_hash {
+        [vote_a.metadata.vote_hash, vote_b.metadata.vote_hash]
+    } else {
+        [vote_b.metadata.vote_hash, vote_a.metadata.vote_hash]
+    };
+
+    Ok(VerifiedLegacyDoubleVotingProof {
+        offender: vote_a_offender,
+        proof_key: double_voting_proof_hash(sorted_vote_hashes[0], sorted_vote_hashes[1]),
+        sorted_vote_hashes,
+        vote_a: vote_a.metadata,
+        vote_b: vote_b.metadata,
+    })
+}
+
+#[derive(Debug)]
+struct DecodedLegacyPbftVote {
+    metadata: LegacyPbftVoteMetadata,
+    signature: [u8; SIGNATURE_SIZE],
+}
+
+fn decode_commit_double_voting_call_data(calldata: &[u8]) -> Result<(&[u8], &[u8])> {
+    ensure!(
+        calldata.len() >= 4,
+        "commitDoubleVotingProof calldata is too short"
+    );
+    ensure!(
+        calldata.starts_with(&function_selector(DOUBLE_VOTING_PROOF_FUNCTION)),
+        "calldata selector does not match commitDoubleVotingProof(bytes,bytes)"
+    );
+    ensure!(
+        calldata.len() >= 4 + 2 * WORD_SIZE,
+        "commitDoubleVotingProof calldata must contain two argument offsets"
+    );
+
+    let offset_a = decode_call_data_offset(&calldata[4..36], "vote_a offset")?;
+    let offset_b = decode_call_data_offset(&calldata[36..68], "vote_b offset")?;
+
+    let vote_a = decode_call_data_bytes(calldata, offset_a, "vote_a")?;
+    let vote_b = decode_call_data_bytes(calldata, offset_b, "vote_b")?;
+
+    Ok((vote_a, vote_b))
+}
+
+fn decode_call_data_offset(word: &[u8], field: &str) -> Result<usize> {
+    ensure!(word.len() == WORD_SIZE, "{field} must be one ABI word");
+    ensure!(
+        word[..24].iter().all(|byte| *byte == 0),
+        "{field} exceeds supported address width"
+    );
+    let mut tail = [0u8; 8];
+    tail.copy_from_slice(&word[24..WORD_SIZE]);
+    Ok(u64::from_be_bytes(tail) as usize)
+}
+
+fn decode_call_data_bytes<'a>(calldata: &'a [u8], offset: usize, field: &str) -> Result<&'a [u8]> {
+    let offset = offset
+        .checked_add(4)
+        .ok_or_else(|| anyhow!("{field} absolute offset overflow"))?;
+    let header = offset
+        .checked_add(WORD_SIZE)
+        .ok_or_else(|| anyhow!("{field} offset overflow"))?;
+    ensure!(
+        offset >= 4 + WORD_SIZE * 2 && header <= calldata.len(),
+        "{field} offset out of bounds"
+    );
+
+    let length = decode_call_data_offset(&calldata[offset..header], &format!("{field} length"))?;
+    let end = header
+        .checked_add(length)
+        .ok_or_else(|| anyhow!("{field} payload length overflows"))?;
+    ensure!(
+        end <= calldata.len(),
+        "{field} payload exceeds calldata bounds"
+    );
+
+    Ok(&calldata[header..end])
+}
+
+fn decode_legacy_pbft_vote(vote_rlp: &[u8]) -> Result<DecodedLegacyPbftVote> {
+    let vote = Rlp::new(vote_rlp);
+    let item_count = vote.item_count()?;
+    ensure!(
+        item_count == 3 || item_count == 4,
+        "legacy PbftVote must contain block_hash, vrf_sortition and signature"
+    );
+
+    let block_hash: H256 = vote.val_at(0)?;
+    let vrf_sortition = vote.val_at::<Vec<u8>>(1)?;
+    let signature = vote.val_at::<Vec<u8>>(2)?;
+    ensure!(
+        signature.len() == SIGNATURE_SIZE,
+        "legacy PbftVote signature must be exactly 65 bytes"
+    );
+
+    let mut signature_bytes = [0u8; SIGNATURE_SIZE];
+    signature_bytes.copy_from_slice(&signature);
+
+    let sortition = decode_legacy_vrf_sortition(&vrf_sortition)?;
+    let vote_hash = legacy_pbft_vote_hash(block_hash, &vrf_sortition);
+    let weight = if item_count == 4 {
+        Some(vote.val_at(3)?)
+    } else {
+        None
+    };
+
+    Ok(DecodedLegacyPbftVote {
+        metadata: LegacyPbftVoteMetadata {
+            block_hash,
+            vote_hash,
+            period: sortition.period,
+            round: sortition.round,
+            step: sortition.step,
+            weight,
+        },
+        signature: signature_bytes,
+    })
+}
+
+fn decode_legacy_vrf_sortition(vrf_sortition: &[u8]) -> Result<LegacyVrfPbftSortition> {
+    let vrf = Rlp::new(vrf_sortition);
+    ensure!(
+        vrf.item_count()? == 4,
+        "VrfPbftSortition RLP must contain period, round, step, proof"
+    );
+
+    let period = vrf.val_at(0)?;
+    let round = vrf.val_at(1)?;
+    let step = vrf.val_at(2)?;
+    let proof: Vec<u8> = vrf.val_at(3)?;
+    ensure!(
+        proof.len() == VRF_SORTITION_PROOF_SIZE,
+        "VrfPbftSortition proof must be exactly 80 bytes"
+    );
+    let mut proof_bytes = [0u8; VRF_SORTITION_PROOF_SIZE];
+    proof_bytes.copy_from_slice(&proof);
+
+    Ok(LegacyVrfPbftSortition {
+        period,
+        round,
+        step,
+        proof: proof_bytes,
+    })
+}
+
+fn recover_validator_address(hash: &H256, signature: &[u8; SIGNATURE_SIZE]) -> Option<H160> {
+    use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
+
+    let recovery_id = RecoveryId::try_from(signature[64]).ok()?;
+    let signature = Signature::try_from(&signature[..SIGNATURE_SIZE - 1]).ok()?;
+    let public_key =
+        VerifyingKey::recover_from_prehash(hash.as_bytes(), &signature, recovery_id).ok()?;
+    let uncompressed = public_key.to_encoded_point(false);
+    let public_key_hash = keccak256(&uncompressed.as_bytes()[1..]);
+    Some(H160::from_slice(&public_key_hash.as_bytes()[12..]))
+}
+
+fn legacy_pbft_vote_hash(block_hash: H256, vrf_sortition_rlp: &[u8]) -> H256 {
+    let mut stream = RlpStream::new_list(2);
+    stream.append(&block_hash);
+    stream.append(&vrf_sortition_rlp);
+    keccak256(&stream.out())
+}
 
 /// Account facts for a configured wallet that may submit a slashing proof.
 ///
@@ -284,6 +547,8 @@ fn keccak256(data: &[u8]) -> H256 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use k256::ecdsa::SigningKey;
+    use rlp::RlpStream;
 
     fn hash(byte: u8) -> H256 {
         H256([byte; 32])
@@ -328,6 +593,159 @@ mod tests {
 
     fn h256_hex(value: &str) -> H256 {
         H256(hex_bytes(value).try_into().unwrap())
+    }
+
+    fn sign_vote(
+        signing_key: &SigningKey,
+        block_hash: H256,
+        vrf_sortition_rlp: &[u8],
+        signature_override: Option<[u8; SIGNATURE_SIZE]>,
+        weight: Option<u64>,
+    ) -> (Vec<u8>, [u8; SIGNATURE_SIZE]) {
+        let vote_hash = legacy_pbft_vote_hash(block_hash, vrf_sortition_rlp);
+        let signature = signature_override.unwrap_or_else(|| {
+            let (sig, recovery_id) = signing_key
+                .sign_prehash_recoverable(vote_hash.as_bytes())
+                .unwrap();
+            let signature = sig.to_bytes();
+            let mut combined = [0u8; SIGNATURE_SIZE];
+            combined[..64].copy_from_slice(&signature);
+            combined[64] = recovery_id.to_byte();
+            combined
+        });
+
+        let mut stream = RlpStream::new_list(if weight.is_some() { 4 } else { 3 });
+        stream.append(&block_hash);
+        stream.append(&vrf_sortition_rlp);
+        stream.append(&signature.as_slice());
+        if let Some(weight) = weight {
+            stream.append(&weight);
+        }
+        (stream.out().to_vec(), signature)
+    }
+
+    fn encode_vrf_sortition(period: u64, round: u64, step: u64, proof_byte: u8) -> Vec<u8> {
+        let mut sortition = RlpStream::new_list(4);
+        sortition.append(&period);
+        sortition.append(&round);
+        sortition.append(&step);
+        sortition.append(&vec![proof_byte; VRF_SORTITION_PROOF_SIZE]);
+        sortition.out().to_vec()
+    }
+
+    fn address_from_signing_key(signing_key: &SigningKey) -> H160 {
+        let public_key = signing_key.verifying_key().to_encoded_point(false);
+        let public_key_hash = keccak256(&public_key.as_bytes()[1..]);
+        H160::from_slice(&public_key_hash.as_bytes()[12..])
+    }
+
+    #[test]
+    fn verifies_valid_legacy_double_voting_call_data() {
+        let signing_key = SigningKey::from_slice(&[0x11; 32]).unwrap();
+        let sortition_a = encode_vrf_sortition(10, 2, 4, 0x5a);
+        let sortition_b = sortition_a.clone();
+
+        let (vote_a, _) = sign_vote(
+            &signing_key,
+            H256::from_low_u64_be(7),
+            &sortition_a,
+            None,
+            None,
+        );
+        let (vote_b, _) = sign_vote(
+            &signing_key,
+            H256::from_low_u64_be(8),
+            &sortition_b,
+            None,
+            Some(3),
+        );
+        let calldata = commit_double_voting_proof_call_data(&vote_a, &vote_b);
+
+        let verified = verify_legacy_double_voting_proof_call_data(&calldata).unwrap();
+
+        assert_eq!(verified.offender, address_from_signing_key(&signing_key));
+        assert_eq!(verified.vote_a.period, 10);
+        assert_eq!(verified.vote_b.round, 2);
+        assert_eq!(verified.vote_a.block_hash, H256::from_low_u64_be(7));
+        assert_eq!(verified.vote_b.block_hash, H256::from_low_u64_be(8));
+
+        assert_eq!(
+            verified.proof_key,
+            double_voting_proof_hash(
+                legacy_pbft_vote_hash(H256::from_low_u64_be(7), &sortition_a),
+                legacy_pbft_vote_hash(H256::from_low_u64_be(8), &sortition_b),
+            )
+        );
+    }
+
+    #[test]
+    fn rejects_legacy_double_voting_call_data_when_period_round_or_step_mismatch() {
+        let signing_key = SigningKey::from_slice(&[0x22; 32]).unwrap();
+        let sortition_a = encode_vrf_sortition(10, 2, 4, 0x33);
+        let sortition_b = encode_vrf_sortition(11, 2, 4, 0x33);
+
+        let (vote_a, _) = sign_vote(
+            &signing_key,
+            H256::from_low_u64_be(11),
+            &sortition_a,
+            None,
+            None,
+        );
+        let (vote_b, _) = sign_vote(
+            &signing_key,
+            H256::from_low_u64_be(12),
+            &sortition_b,
+            None,
+            None,
+        );
+
+        let calldata = commit_double_voting_proof_call_data(&vote_a, &vote_b);
+        assert!(verify_legacy_double_voting_proof_call_data(&calldata).is_err());
+    }
+
+    #[test]
+    fn rejects_legacy_double_voting_call_data_with_invalid_signature() {
+        let signing_key = SigningKey::from_slice(&[0x33; 32]).unwrap();
+        let sortition = encode_vrf_sortition(15, 3, 4, 0x44);
+
+        let (vote_a, _) = sign_vote(
+            &signing_key,
+            H256::from_low_u64_be(21),
+            &sortition,
+            None,
+            None,
+        );
+
+        let mut invalid_signature = [0xFFu8; SIGNATURE_SIZE];
+        invalid_signature[64] = 4;
+        let (vote_b, _) = sign_vote(
+            &signing_key,
+            H256::from_low_u64_be(22),
+            &sortition,
+            Some(invalid_signature),
+            None,
+        );
+
+        let calldata = commit_double_voting_proof_call_data(&vote_a, &vote_b);
+        assert!(verify_legacy_double_voting_proof_call_data(&calldata).is_err());
+    }
+
+    #[test]
+    fn rejects_mixed_zero_next_vote_hashes_for_odd_steps() {
+        let signing_key = SigningKey::from_slice(&[0x44; 32]).unwrap();
+        let sortition = encode_vrf_sortition(9, 1, 5, 0x55);
+
+        let (vote_a, _) = sign_vote(&signing_key, H256::zero(), &sortition, None, None);
+        let (vote_b, _) = sign_vote(
+            &signing_key,
+            H256::from_low_u64_be(99),
+            &sortition,
+            None,
+            None,
+        );
+
+        let calldata = commit_double_voting_proof_call_data(&vote_a, &vote_b);
+        assert!(verify_legacy_double_voting_proof_call_data(&calldata).is_err());
     }
 
     #[test]

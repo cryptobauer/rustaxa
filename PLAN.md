@@ -271,8 +271,13 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     selector on `fix_claim_all_block_num`, and charges claim-all gas from the staged Rust DPoS delegation view. The active
     Rust finalization path also persists the legacy two-level `final_chain_log_blooms_index` chunks with author-augmented
     blooms and routes `FinalChain::withBlockBloom` through Rust. Unsupported DPoS methods remain future work.
+    Rust native finalization also executes the slashing `commitDoubleVotingProof(bytes,bytes)` precompile path for
+    legacy PBFT vote RLPs: Rust decodes the calldata, recovers both vote signers, validates the double-vote facts,
+    persists restart-durable jail blocks, jailed-validator order, and duplicate-proof keys in the DPoS snapshot, emits
+    the legacy `Jailed(address,uint64,uint64,uint8)` log, and derives effective DPoS eligibility/total vote counts from
+    the Rust jail state. Slashing read calls for `getJailBlock(address)` and `getJailedValidators()` are Rust-backed.
   - non-genesis DPoS queries still throw when the queried block has not been finalized through Rust snapshot
-    maintenance; DPoS transitions beyond the supported validator-registration/delegation/owner-update subset and legacy databases without Rust
+    maintenance; DPoS transitions beyond the supported validator-registration/delegation/owner-update/slashing subset and legacy databases without Rust
     account snapshots remain explicit gaps.
   - selected DPoS precompile reads through `FinalChain::call` are Rust-backed for `getTotalEligibleVotesCount()`,
     `getValidator(address)`, `getValidators(uint32)`, `getValidatorsFor(address,uint32)`,
@@ -305,7 +310,8 @@ FinalChain currently depends on:
 2. Migrate transaction, receipt, log query helpers, and bloom search parity.
 3. Continue finalization/write path parity beyond the current Rust append-block, counter, and index writes.
 4. Continue DPoS and account snapshot parity beyond native transfers and validator registration: remaining DPoS contract
-   methods, jailing, slashing, rewards distribution, contract-call state transitions, and broader state trie/code/storage recovery.
+   methods, broader slashing surfaces, rewards distribution, contract-call state transitions, and broader state
+   trie/code/storage recovery.
 5. Defer broader StateAPI, bridge-heavy APIs, pruning, snapshots, and state-transition boundaries until there is a clear Rust/EVM integration strategy.
 
 High-risk APIs:
@@ -564,7 +570,7 @@ The current Rust starting point is intentionally small:
    finalized-block history restoration through Rust storage, live finalized-block gas-price updates through Rust, and
    pool-mode minimum-price flooring through Rust. Pool mode requires the Rust-backed transaction queue so
    `TransactionManager::getMinGasPriceForBlockInclusion()` reads Rust queue metadata rather than legacy queue state.
-10. Port deterministic rewards, remaining slashing behavior, and pillar calculations after DPoS and final-chain query
+10. Port deterministic rewards, remaining slashing-manager/runtime behavior, and pillar calculations after DPoS and final-chain query
     ports are real. The `rewards::Stats` surface now has a Rust-mode overlay: Rust accepts finalized-period facts,
     computes legacy-compatible `BlockStats` RLP, tracks interval cache/distribution boundaries, appends non-boundary
     cache writes to the caller-owned Rust storage batch, and mirrors post-commit interval clears without changing the
@@ -576,8 +582,9 @@ The current Rust starting point is intentionally small:
     delegator reward-page reads, validator paging reads, owner metadata/commission updates, claim balance/cursor updates,
     commission reward claims, claim-all dynamic gas plus legacy batch ABI compatibility, and header `total_reward`
     natively. Moving unsupported DPoS event receipt parity and legacy
-    `BlockStats` carrier ownership fully into Rust remain future work. Double-voting proof planning and already-verified pillar-vote
-    aggregation are Rust-backed; broader slashing state transitions, pillar signing/recovery, and
+    `BlockStats` carrier ownership fully into Rust remain future work. Double-voting proof planning, Rust FinalChain
+    double-vote jailing, slashing read calls, and already-verified pillar-vote aggregation are Rust-backed; slashing
+    transaction construction/signing, pillar signing/recovery, and
     `PillarChainManager` orchestration still depend on future FinalChain/state ports.
 
 ### First Implementation Slice

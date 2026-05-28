@@ -8,6 +8,9 @@ use crate::rewards_stats::{
     RewardsBlockDistribution, RewardsFrequencyRule, RewardsStatsConfig, RewardsStatsPeriodRlp,
     RewardsStatsRuntime, RewardsStatsStatus, decode_rewards_block_distributions,
 };
+use crate::slashing::{
+    VerifiedLegacyDoubleVotingProof, verify_legacy_double_voting_proof_call_data,
+};
 use anyhow::Result;
 use ethereum_types::{H256, U256};
 use keccak_hasher::KeccakHasher;
@@ -28,7 +31,7 @@ use rustaxa_types::{
     FinalizationTransaction, GenesisAccount, GenesisDposConfig, GenesisValidator,
     StoredFinalChainBlockHeader,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::Mutex;
 use triehash::ordered_trie_root;
@@ -68,6 +71,9 @@ const DPOS_DEFAULT_METHOD_GAS: u64 = 20_000;
 const DPOS_GET_METHOD_GAS: u64 = 5_000;
 const DPOS_CONTRACT_ADDRESS: [u8; 20] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xfe,
+];
+const SLASHING_CONTRACT_ADDRESS: [u8; 20] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xee,
 ];
 const DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR: [u8; 4] = [0xde, 0x8e, 0x4b, 0x50];
 const DPOS_GET_VALIDATOR_SELECTOR: [u8; 4] = [0x19, 0x04, 0xbb, 0x2e];
@@ -134,6 +140,16 @@ const DPOS_VALIDATOR_REGISTERED_TOPIC: [u8; 32] = [
     0xd0, 0x95, 0x01, 0x34, 0x84, 0x73, 0x47, 0x4a, 0x20, 0xc7, 0x72, 0xc7, 0x9c, 0x65, 0x3e, 0x1f,
     0xd7, 0xe8, 0xb4, 0x37, 0xe4, 0x18, 0xfe, 0x23, 0x5d, 0x27, 0x7d, 0x2c, 0x88, 0x85, 0x32, 0x51,
 ];
+const SLASHING_COMMIT_DOUBLE_VOTING_PROOF_SELECTOR: [u8; 4] = [0xfa, 0xc7, 0xc9, 0x4a];
+const SLASHING_GET_JAIL_BLOCK_SELECTOR: [u8; 4] = [0x30, 0x1f, 0xd3, 0x8c];
+const SLASHING_GET_JAILED_VALIDATORS_SELECTOR: [u8; 4] = [0x73, 0x9f, 0x30, 0xe2];
+const SLASHING_JAILED_TOPIC: [u8; 32] = [
+    0x91, 0x46, 0xfd, 0xb6, 0xf5, 0x6d, 0x90, 0x9a, 0xb9, 0x59, 0x90, 0x1f, 0xa5, 0x29, 0xb5, 0xb0,
+    0x86, 0x15, 0xac, 0x9e, 0x70, 0x17, 0xc3, 0xa5, 0x5a, 0xe8, 0x60, 0xa9, 0xe9, 0x85, 0x7e, 0x6c,
+];
+const SLASHING_COMMIT_DOUBLE_VOTING_PROOF_GAS: u64 = 20_000;
+const SLASHING_GET_METHOD_GAS: u64 = 5_000;
+const SLASHING_DOUBLE_VOTING_BEHAVIOUR: u8 = 1;
 const DPOS_REGISTER_VALIDATOR_GAS: u64 = 80_000;
 const DPOS_DELEGATE_GAS: u64 = 40_000;
 const DPOS_UNDELEGATE_GAS: u64 = 60_000;
@@ -249,6 +265,15 @@ struct DposSnapshot {
     undelegations_v2: DposUndelegationsV2,
     /// Last assigned V2 undelegation ID by delegator.
     undelegation_v2_last_ids: BTreeMap<[u8; 20], u64>,
+    /// Jail end block by validator address for Rust-executed slashing proofs.
+    ///
+    /// Entries remain after list cleanup so `getJailBlock(address)` can return
+    /// the last persisted jail block just like the legacy storage field.
+    slashing_jail_blocks: BTreeMap<[u8; 20], u64>,
+    /// Legacy-order jailed validator list after end-block cleanup.
+    slashing_jailed_validators: Vec<[u8; 20]>,
+    /// Canonical double-voting proof keys already committed by Rust execution.
+    slashing_double_voting_proofs: BTreeSet<[u8; 32]>,
 }
 
 struct NativeRewardsStatsPlan {
@@ -498,6 +523,9 @@ impl FinalChain {
                     current_yield: 0,
                     undelegations_v2: BTreeMap::new(),
                     undelegation_v2_last_ids: BTreeMap::new(),
+                    slashing_jail_blocks: BTreeMap::new(),
+                    slashing_jailed_validators: Vec::new(),
+                    slashing_double_voting_proofs: BTreeSet::new(),
                 },
             )])),
         };
@@ -727,16 +755,14 @@ impl FinalChain {
         block_number: u64,
         address: [u8; 20],
     ) -> Result<u64, anyhow::Error> {
-        Ok(*self
-            .dpos_snapshot(block_number)?
-            .vote_counts
-            .get(&address)
-            .unwrap_or(&0))
+        let snapshot = self.dpos_snapshot(block_number)?;
+        Ok(self.dpos_effective_vote_count(&snapshot, block_number, address))
     }
 
     /// Returns the total DPoS eligible vote count at a block.
     pub fn dpos_eligible_total_vote_count(&self, block_number: u64) -> Result<u64, anyhow::Error> {
-        Ok(self.dpos_snapshot(block_number)?.total_vote_count)
+        let snapshot = self.dpos_snapshot(block_number)?;
+        self.dpos_effective_total_vote_count(&snapshot, block_number)
     }
 
     /// Returns whether the validator has nonzero DPoS eligible votes at a block.
@@ -793,10 +819,11 @@ impl FinalChain {
             });
         }
 
-        let sender_eligible_vote_count = *snapshot.vote_counts.get(&sender).unwrap_or(&0);
+        let sender_eligible_vote_count =
+            self.dpos_effective_vote_count(&snapshot, block_number, sender);
         let vdf_sortition_max_vote_count =
             if block_number < self.dag_vdf_sortition_total_vote_count_until_period {
-                snapshot.total_vote_count
+                self.dpos_effective_total_vote_count(&snapshot, block_number)?
             } else {
                 self.dag_vdf_sortition_max_vote_count
             };
@@ -877,14 +904,18 @@ impl FinalChain {
         &self,
         block_number: u64,
     ) -> Result<Vec<DposValidatorVoteCount>, anyhow::Error> {
-        Ok(self
-            .dpos_snapshot(block_number)?
+        let snapshot = self.dpos_snapshot(block_number)?;
+        Ok(snapshot
             .vote_counts
-            .iter()
-            .filter(|(_, vote_count)| **vote_count > 0)
+            .keys()
+            .map(|address| {
+                let vote_count = self.dpos_effective_vote_count(&snapshot, block_number, *address);
+                (*address, vote_count)
+            })
+            .filter(|(_, vote_count)| *vote_count > 0)
             .map(|(address, vote_count)| DposValidatorVoteCount {
-                address: *address,
-                vote_count: *vote_count,
+                address,
+                vote_count,
             })
             .collect())
     }
@@ -904,6 +935,10 @@ impl FinalChain {
     ) -> Result<FinalChainCallOutcome, anyhow::Error> {
         if let Some(outcome) = self.validate_call_funds_and_gas(&request)? {
             return Ok(outcome);
+        }
+
+        if request.receiver == Some(SLASHING_CONTRACT_ADDRESS) {
+            return self.slashing_call(request);
         }
 
         if request.receiver != Some(DPOS_CONTRACT_ADDRESS) {
@@ -940,11 +975,13 @@ impl FinalChain {
             });
         }
         let code_retval = match selector {
-            DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR => abi_word_from_u64(
-                self.dpos_snapshot_at_finalized_block(request.block_number)?
-                    .total_vote_count,
-            )
-            .to_vec(),
+            DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR => {
+                let snapshot = self.dpos_snapshot_at_finalized_block(request.block_number)?;
+                abi_word_from_u64(
+                    self.dpos_effective_total_vote_count(&snapshot, request.block_number)?,
+                )
+                .to_vec()
+            }
             DPOS_GET_VALIDATOR_SELECTOR => {
                 let validator =
                     decode_abi_address_argument(&request.input, "getValidator(address)")?;
@@ -1051,6 +1088,68 @@ impl FinalChain {
         })
     }
 
+    fn slashing_call(
+        &self,
+        request: FinalChainCallRequest,
+    ) -> Result<FinalChainCallOutcome, anyhow::Error> {
+        if request.input.len() < 4 {
+            return Ok(FinalChainCallOutcome {
+                gas_used: 0,
+                code_err: "Rust FinalChain::call slashing input is missing selector".to_string(),
+                ..Default::default()
+            });
+        }
+        let mut selector = [0u8; 4];
+        selector.copy_from_slice(&request.input[..4]);
+        let gas_used = match selector {
+            SLASHING_GET_JAIL_BLOCK_SELECTOR | SLASHING_GET_JAILED_VALIDATORS_SELECTOR => {
+                SLASHING_GET_METHOD_GAS
+            }
+            SLASHING_COMMIT_DOUBLE_VOTING_PROOF_SELECTOR => SLASHING_COMMIT_DOUBLE_VOTING_PROOF_GAS,
+            _ => 0,
+        };
+        if request.gas_limit < gas_used {
+            return Ok(FinalChainCallOutcome {
+                gas_used: request.gas_limit,
+                code_err: "out of gas".to_string(),
+                ..Default::default()
+            });
+        }
+        let snapshot = self.dpos_snapshot(request.block_number)?;
+        let code_retval = match selector {
+            SLASHING_GET_JAIL_BLOCK_SELECTOR => {
+                let validator =
+                    decode_abi_address_argument(&request.input, "getJailBlock(address)")?;
+                abi_word_from_u64(
+                    snapshot
+                        .slashing_jail_blocks
+                        .get(&validator)
+                        .copied()
+                        .unwrap_or_default(),
+                )
+                .to_vec()
+            }
+            SLASHING_GET_JAILED_VALIDATORS_SELECTOR => {
+                encode_abi_address_array(&snapshot.slashing_jailed_validators)
+            }
+            _ => {
+                return Ok(FinalChainCallOutcome {
+                    gas_used,
+                    code_err: format!(
+                        "Rust FinalChain::call unsupported slashing selector 0x{}",
+                        selector_hex(selector)
+                    ),
+                    ..Default::default()
+                });
+            }
+        };
+        Ok(FinalChainCallOutcome {
+            code_retval,
+            gas_used,
+            ..Default::default()
+        })
+    }
+
     /// Returns canonical transaction RLPs for a finalized period.
     pub fn transaction_rlps(&self, period: u64) -> Result<Vec<Vec<u8>>, anyhow::Error> {
         let period_data = self.storage.period().data_raw(period)?;
@@ -1140,7 +1239,7 @@ impl FinalChain {
             mut receipts,
             gas_used,
             transaction_fees,
-            dpos_transactions,
+            contract_transactions,
         } = self.execute_native_transactions(pbft.period, &transactions)?;
         let pre_magnolia_fee_reward_period = self.pre_magnolia_fee_reward_period(pbft.period);
         let rewards_stats_plan = self.native_rewards_stats_plan(
@@ -1158,7 +1257,7 @@ impl FinalChain {
         };
         let mut dpos_snapshot = self.plan_dpos_snapshot(
             pbft.period,
-            dpos_transactions,
+            contract_transactions,
             &mut account_snapshot,
             &mut receipts,
         )?;
@@ -1865,29 +1964,33 @@ impl FinalChain {
         let mut accounts = self.current_account_snapshot()?;
         let mut receipts = Vec::with_capacity(transactions.len());
         let mut transaction_fees = Vec::with_capacity(transactions.len());
-        let mut dpos_transactions = Vec::new();
+        let mut contract_transactions = Vec::new();
         let mut cumulative_gas_used = 0u64;
         let mut dpos_gas_snapshot = self.dpos_snapshot(self.last_block_number()?)?;
 
         for (position, transaction) in transactions.iter().enumerate() {
-            let mut dpos_transaction = if transaction.receiver == Some(DPOS_CONTRACT_ADDRESS) {
-                Some(decode_dpos_transaction(
+            let mut contract_transaction = if transaction.receiver == Some(DPOS_CONTRACT_ADDRESS) {
+                Some(NativeContractTransaction::Dpos(decode_dpos_transaction(
                     &transaction.data,
                     transaction.sender,
                     block_number,
                     self.rewards_config.fix_claim_all_block_num,
                     self.dpos_cornus_period,
-                )?)
+                )?))
+            } else if transaction.receiver == Some(SLASHING_CONTRACT_ADDRESS) {
+                Some(NativeContractTransaction::Slashing(
+                    decode_slashing_transaction(&transaction.data)?,
+                ))
             } else if !transaction.data.is_empty() || transaction.receiver.is_none() {
                 anyhow::bail!(
-                    "Rust FinalChain::finalize currently supports only native value transfers and selected DPoS actions"
+                    "Rust FinalChain::finalize currently supports only native value transfers and selected DPoS/slashing actions"
                 );
             } else {
                 None
             };
             let gas_price = u256_from_big_endian(&transaction.gas_price);
             let value = u256_from_big_endian(&transaction.value);
-            if let Some(dpos_tx) = dpos_transaction.as_mut() {
+            if let Some(NativeContractTransaction::Dpos(dpos_tx)) = contract_transaction.as_mut() {
                 match dpos_tx {
                     DposTransaction::Register(registration) => {
                         registration.stake = u256_to_big_endian(value);
@@ -1908,44 +2011,57 @@ impl FinalChain {
                     | DposTransaction::MethodNotSupported => {}
                 }
             }
-            let dpos_nonpayable_value_failure = dpos_transaction.as_ref().is_some_and(|dpos_tx| {
-                !value.is_zero()
-                    && !matches!(
-                        dpos_tx,
-                        DposTransaction::Register(_) | DposTransaction::Delegate { .. }
-                    )
-            });
-            let required_gas = if let Some(dpos_transaction) = dpos_transaction.as_ref() {
-                match dpos_transaction {
-                    DposTransaction::Register(_) => DPOS_REGISTER_VALIDATOR_GAS,
-                    DposTransaction::Delegate { .. } => DPOS_DELEGATE_GAS,
-                    DposTransaction::Undelegate { .. } => DPOS_UNDELEGATE_GAS,
-                    DposTransaction::UndelegateV2 { .. } => DPOS_UNDELEGATE_GAS,
-                    DposTransaction::ConfirmUndelegateV2 { .. } => DPOS_DEFAULT_METHOD_GAS,
-                    DposTransaction::CancelUndelegateV2 { .. } => DPOS_UNDELEGATE_GAS,
-                    DposTransaction::Redelegate { .. } => DPOS_REDELEGATE_GAS,
-                    DposTransaction::ClaimRewards { .. } => DPOS_CLAIM_REWARDS_GAS,
-                    DposTransaction::ClaimCommissionRewards { .. } => {
-                        DPOS_CLAIM_COMMISSION_REWARDS_GAS
+            let contract_nonpayable_value_failure =
+                contract_transaction.as_ref().is_some_and(|contract_tx| {
+                    !value.is_zero()
+                        && !matches!(
+                            contract_tx,
+                            NativeContractTransaction::Dpos(
+                                DposTransaction::Register(_) | DposTransaction::Delegate { .. }
+                            )
+                        )
+                });
+            let required_gas = if let Some(contract_transaction) = contract_transaction.as_ref() {
+                match contract_transaction {
+                    NativeContractTransaction::Dpos(dpos_transaction) => match dpos_transaction {
+                        DposTransaction::Register(_) => DPOS_REGISTER_VALIDATOR_GAS,
+                        DposTransaction::Delegate { .. } => DPOS_DELEGATE_GAS,
+                        DposTransaction::Undelegate { .. } => DPOS_UNDELEGATE_GAS,
+                        DposTransaction::UndelegateV2 { .. } => DPOS_UNDELEGATE_GAS,
+                        DposTransaction::ConfirmUndelegateV2 { .. } => DPOS_DEFAULT_METHOD_GAS,
+                        DposTransaction::CancelUndelegateV2 { .. } => DPOS_UNDELEGATE_GAS,
+                        DposTransaction::Redelegate { .. } => DPOS_REDELEGATE_GAS,
+                        DposTransaction::ClaimRewards { .. } => DPOS_CLAIM_REWARDS_GAS,
+                        DposTransaction::ClaimCommissionRewards { .. } => {
+                            DPOS_CLAIM_COMMISSION_REWARDS_GAS
+                        }
+                        DposTransaction::SetValidatorInfo { .. } => DPOS_SET_VALIDATOR_INFO_GAS,
+                        DposTransaction::SetCommission { .. } => DPOS_SET_COMMISSION_GAS,
+                        DposTransaction::ClaimAllRewards { delegator, batch } => {
+                            let claim_items = dpos_claim_all_rewards_item_count(
+                                &dpos_gas_snapshot,
+                                *delegator,
+                                *batch,
+                            )?;
+                            let per_item_gas = DPOS_CLAIM_REWARDS_GAS
+                                .checked_add(DPOS_BATCH_GET_REWARDS_GAS)
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!("claimAllRewards per-item gas overflow")
+                                })?;
+                            claim_items.checked_mul(per_item_gas).ok_or_else(|| {
+                                anyhow::anyhow!("claimAllRewards gas multiplication overflow")
+                            })?
+                        }
+                        DposTransaction::MethodNotSupported => 0,
+                    },
+                    NativeContractTransaction::Slashing(slashing_transaction) => {
+                        match slashing_transaction {
+                            SlashingTransaction::CommitDoubleVotingProof(_) => {
+                                SLASHING_COMMIT_DOUBLE_VOTING_PROOF_GAS
+                            }
+                            SlashingTransaction::MethodNotSupported => 0,
+                        }
                     }
-                    DposTransaction::SetValidatorInfo { .. } => DPOS_SET_VALIDATOR_INFO_GAS,
-                    DposTransaction::SetCommission { .. } => DPOS_SET_COMMISSION_GAS,
-                    DposTransaction::ClaimAllRewards { delegator, batch } => {
-                        let claim_items = dpos_claim_all_rewards_item_count(
-                            &dpos_gas_snapshot,
-                            *delegator,
-                            *batch,
-                        )?;
-                        let per_item_gas = DPOS_CLAIM_REWARDS_GAS
-                            .checked_add(DPOS_BATCH_GET_REWARDS_GAS)
-                            .ok_or_else(|| {
-                                anyhow::anyhow!("claimAllRewards per-item gas overflow")
-                            })?;
-                        claim_items.checked_mul(per_item_gas).ok_or_else(|| {
-                            anyhow::anyhow!("claimAllRewards gas multiplication overflow")
-                        })?
-                    }
-                    DposTransaction::MethodNotSupported => 0,
                 }
             } else {
                 VALUE_TRANSFER_GAS
@@ -1976,7 +2092,7 @@ impl FinalChain {
                     .checked_mul(U256::from(gas_used))
                     .ok_or_else(|| anyhow::anyhow!("transaction gas cost overflow"))?;
                 if status_code == 1 {
-                    let charged_value = if dpos_nonpayable_value_failure {
+                    let charged_value = if contract_nonpayable_value_failure {
                         U256::zero()
                     } else {
                         value
@@ -2003,33 +2119,38 @@ impl FinalChain {
                 .ok_or_else(|| anyhow::anyhow!("cumulative gas used overflow"))?;
 
             if status_code == 1 {
-                if dpos_nonpayable_value_failure {
+                if contract_nonpayable_value_failure {
                     status_code = 0;
-                } else if let Some(dpos_tx) = dpos_transaction {
-                    if matches!(
-                        dpos_tx,
-                        DposTransaction::Register(_) | DposTransaction::Delegate { .. }
-                    ) && !value.is_zero()
-                    {
-                        let dpos_account = accounts
-                            .entry(DPOS_CONTRACT_ADDRESS)
-                            .or_insert_with(empty_account);
-                        let current_contract_balance = u256_from_big_endian(&dpos_account.balance);
-                        dpos_account.balance = u256_to_big_endian(
-                            current_contract_balance
-                                .checked_add(value)
-                                .ok_or_else(|| anyhow::anyhow!("DPoS contract balance overflow"))?,
-                        );
+                } else if let Some(contract_tx) = contract_transaction {
+                    if let NativeContractTransaction::Dpos(dpos_tx) = &contract_tx {
+                        if matches!(
+                            dpos_tx,
+                            DposTransaction::Register(_) | DposTransaction::Delegate { .. }
+                        ) && !value.is_zero()
+                        {
+                            let dpos_account = accounts
+                                .entry(DPOS_CONTRACT_ADDRESS)
+                                .or_insert_with(empty_account);
+                            let current_contract_balance =
+                                u256_from_big_endian(&dpos_account.balance);
+                            dpos_account.balance = u256_to_big_endian(
+                                current_contract_balance.checked_add(value).ok_or_else(|| {
+                                    anyhow::anyhow!("DPoS contract balance overflow")
+                                })?,
+                            );
+                        }
+                        update_dpos_claim_gas_snapshot(&mut dpos_gas_snapshot, dpos_tx)?;
                     }
-                    update_dpos_claim_gas_snapshot(&mut dpos_gas_snapshot, &dpos_tx)?;
-                    dpos_transactions.push((position, dpos_tx));
+                    contract_transactions.push((position, contract_tx));
                 } else {
                     let receiver_address = transaction.receiver.ok_or_else(|| {
                         anyhow::anyhow!("native value transfer missing receiver after validation")
                     })?;
-                    if receiver_address == DPOS_CONTRACT_ADDRESS {
+                    if receiver_address == DPOS_CONTRACT_ADDRESS
+                        || receiver_address == SLASHING_CONTRACT_ADDRESS
+                    {
                         anyhow::bail!(
-                            "Rust FinalChain::finalize unsupported DPoS transaction selector"
+                            "Rust FinalChain::finalize unsupported native precompile transaction selector"
                         );
                     }
                     let receiver = accounts
@@ -2058,7 +2179,7 @@ impl FinalChain {
             receipts,
             gas_used: cumulative_gas_used,
             transaction_fees,
-            dpos_transactions,
+            contract_transactions,
         })
     }
 
@@ -2354,6 +2475,58 @@ impl FinalChain {
 
     fn is_on_cornus(&self, block_number: u64) -> bool {
         block_number >= self.dpos_cornus_period
+    }
+
+    fn magnolia_active(&self, block_number: u64) -> bool {
+        self.rewards_config.magnolia_period != 0
+            && block_number >= self.rewards_config.magnolia_period
+    }
+
+    fn cacti_active(&self, block_number: u64) -> bool {
+        self.rewards_config.cacti_period != 0 && block_number >= self.rewards_config.cacti_period
+    }
+
+    fn slashing_is_jailed(
+        &self,
+        snapshot: &DposSnapshot,
+        block_number: u64,
+        validator: [u8; 20],
+    ) -> bool {
+        self.magnolia_active(block_number)
+            && snapshot
+                .slashing_jail_blocks
+                .get(&validator)
+                .is_some_and(|jail_block| *jail_block >= block_number)
+    }
+
+    fn dpos_effective_vote_count(
+        &self,
+        snapshot: &DposSnapshot,
+        block_number: u64,
+        validator: [u8; 20],
+    ) -> u64 {
+        if self.cacti_active(block_number)
+            && self.slashing_is_jailed(snapshot, block_number, validator)
+        {
+            return 0;
+        }
+        *snapshot.vote_counts.get(&validator).unwrap_or(&0)
+    }
+
+    fn dpos_effective_total_vote_count(
+        &self,
+        snapshot: &DposSnapshot,
+        block_number: u64,
+    ) -> Result<u64, anyhow::Error> {
+        let mut total = snapshot.total_vote_count;
+        for validator in &snapshot.slashing_jailed_validators {
+            if self.slashing_is_jailed(snapshot, block_number, *validator) {
+                total = total
+                    .checked_sub(*snapshot.vote_counts.get(validator).unwrap_or(&0))
+                    .ok_or_else(|| anyhow::anyhow!("DPoS jailed vote subtraction underflow"))?;
+            }
+        }
+        Ok(total)
     }
 
     fn dpos_delegation_locking_period(&self, block_number: u64) -> u64 {
@@ -2961,7 +3134,7 @@ impl FinalChain {
     fn plan_dpos_snapshot(
         &self,
         block_number: u64,
-        dpos_transactions: Vec<(usize, DposTransaction)>,
+        contract_transactions: Vec<(usize, NativeContractTransaction)>,
         accounts: &mut HashMap<[u8; 20], Account>,
         receipts: &mut [NativeReceipt],
     ) -> Result<DposSnapshot, anyhow::Error> {
@@ -2975,134 +3148,218 @@ impl FinalChain {
         let mut snapshot = snapshots.get(&previous_block).cloned().ok_or_else(|| {
             anyhow::anyhow!("missing previous DPoS snapshot for block {previous_block}")
         })?;
-        for (position, dpos_tx) in dpos_transactions {
-            let outcome = match dpos_tx {
-                DposTransaction::Register(registration) => DposApplyOutcome::success(
-                    self.apply_dpos_registration(&mut snapshot, registration, block_number)?,
-                ),
-                DposTransaction::Delegate {
-                    delegator,
-                    validator,
-                    amount,
-                } => DposApplyOutcome::success(self.apply_dpos_delegate(
-                    &mut snapshot,
-                    accounts,
-                    delegator,
-                    validator,
-                    amount,
-                )?),
-                DposTransaction::Undelegate {
-                    delegator,
-                    validator,
-                    amount,
-                } => DposApplyOutcome::success(self.apply_dpos_undelegate(
-                    &mut snapshot,
-                    accounts,
-                    delegator,
-                    validator,
-                    amount,
-                )?),
-                DposTransaction::UndelegateV2 {
-                    delegator,
-                    validator,
-                    amount,
-                } => self.apply_dpos_undelegate_v2(
-                    &mut snapshot,
-                    accounts,
-                    delegator,
-                    validator,
-                    amount,
-                    block_number,
-                )?,
-                DposTransaction::ConfirmUndelegateV2 {
-                    delegator,
-                    validator,
-                    id,
-                } => self.apply_dpos_confirm_undelegate_v2(
-                    &mut snapshot,
-                    accounts,
-                    delegator,
-                    validator,
-                    id,
-                    block_number,
-                )?,
-                DposTransaction::CancelUndelegateV2 {
-                    delegator,
-                    validator,
-                    id,
-                } => self.apply_dpos_cancel_undelegate_v2(
-                    &mut snapshot,
-                    accounts,
-                    delegator,
-                    validator,
-                    id,
-                )?,
-                DposTransaction::Redelegate {
-                    delegator,
-                    from,
-                    to,
-                    amount,
-                } => DposApplyOutcome::success(self.apply_dpos_redelegate(
-                    &mut snapshot,
-                    accounts,
-                    delegator,
-                    from,
-                    to,
-                    amount,
-                )?),
-                DposTransaction::ClaimRewards {
-                    delegator,
-                    validator,
-                } => DposApplyOutcome::success(self.apply_dpos_delegator_reward_claim(
-                    &mut snapshot,
-                    accounts,
-                    validator,
-                    delegator,
-                )?),
-                DposTransaction::ClaimCommissionRewards { owner, validator } => self
-                    .apply_dpos_commission_reward_claim(
+        let delayed_snapshot_block = block_number.saturating_sub(self.dpos_delegation_delay);
+        let slashing_validator_snapshot = if delayed_snapshot_block == block_number {
+            None
+        } else {
+            snapshots.get(&delayed_snapshot_block).cloned()
+        };
+        for (position, contract_tx) in contract_transactions {
+            let outcome = match contract_tx {
+                NativeContractTransaction::Dpos(dpos_tx) => match dpos_tx {
+                    DposTransaction::Register(registration) => DposApplyOutcome::success(
+                        self.apply_dpos_registration(&mut snapshot, registration, block_number)?,
+                    ),
+                    DposTransaction::Delegate {
+                        delegator,
+                        validator,
+                        amount,
+                    } => DposApplyOutcome::success(self.apply_dpos_delegate(
                         &mut snapshot,
                         accounts,
+                        delegator,
+                        validator,
+                        amount,
+                    )?),
+                    DposTransaction::Undelegate {
+                        delegator,
+                        validator,
+                        amount,
+                    } => DposApplyOutcome::success(self.apply_dpos_undelegate(
+                        &mut snapshot,
+                        accounts,
+                        delegator,
+                        validator,
+                        amount,
+                    )?),
+                    DposTransaction::UndelegateV2 {
+                        delegator,
+                        validator,
+                        amount,
+                    } => self.apply_dpos_undelegate_v2(
+                        &mut snapshot,
+                        accounts,
+                        delegator,
+                        validator,
+                        amount,
+                        block_number,
+                    )?,
+                    DposTransaction::ConfirmUndelegateV2 {
+                        delegator,
+                        validator,
+                        id,
+                    } => self.apply_dpos_confirm_undelegate_v2(
+                        &mut snapshot,
+                        accounts,
+                        delegator,
+                        validator,
+                        id,
+                        block_number,
+                    )?,
+                    DposTransaction::CancelUndelegateV2 {
+                        delegator,
+                        validator,
+                        id,
+                    } => self.apply_dpos_cancel_undelegate_v2(
+                        &mut snapshot,
+                        accounts,
+                        delegator,
+                        validator,
+                        id,
+                    )?,
+                    DposTransaction::Redelegate {
+                        delegator,
+                        from,
+                        to,
+                        amount,
+                    } => DposApplyOutcome::success(self.apply_dpos_redelegate(
+                        &mut snapshot,
+                        accounts,
+                        delegator,
+                        from,
+                        to,
+                        amount,
+                    )?),
+                    DposTransaction::ClaimRewards {
+                        delegator,
+                        validator,
+                    } => DposApplyOutcome::success(self.apply_dpos_delegator_reward_claim(
+                        &mut snapshot,
+                        accounts,
+                        validator,
+                        delegator,
+                    )?),
+                    DposTransaction::ClaimCommissionRewards { owner, validator } => self
+                        .apply_dpos_commission_reward_claim(
+                            &mut snapshot,
+                            accounts,
+                            owner,
+                            validator,
+                        )?,
+                    DposTransaction::SetValidatorInfo {
                         owner,
                         validator,
+                        description,
+                        endpoint,
+                    } => self.apply_dpos_validator_info_update(
+                        &mut snapshot,
+                        owner,
+                        validator,
+                        description,
+                        endpoint,
                     )?,
-                DposTransaction::SetValidatorInfo {
-                    owner,
-                    validator,
-                    description,
-                    endpoint,
-                } => self.apply_dpos_validator_info_update(
-                    &mut snapshot,
-                    owner,
-                    validator,
-                    description,
-                    endpoint,
-                )?,
-                DposTransaction::SetCommission {
-                    owner,
-                    validator,
-                    commission,
-                } => self.apply_dpos_commission_update(
-                    &mut snapshot,
-                    owner,
-                    validator,
-                    commission,
-                    block_number,
-                )?,
-                DposTransaction::ClaimAllRewards { delegator, batch } => DposApplyOutcome::success(
-                    self.apply_dpos_claim_all_rewards(&mut snapshot, accounts, delegator, batch)?,
-                ),
-                DposTransaction::MethodNotSupported => DposApplyOutcome::contract_failure(),
+                    DposTransaction::SetCommission {
+                        owner,
+                        validator,
+                        commission,
+                    } => self.apply_dpos_commission_update(
+                        &mut snapshot,
+                        owner,
+                        validator,
+                        commission,
+                        block_number,
+                    )?,
+                    DposTransaction::ClaimAllRewards { delegator, batch } => {
+                        DposApplyOutcome::success(self.apply_dpos_claim_all_rewards(
+                            &mut snapshot,
+                            accounts,
+                            delegator,
+                            batch,
+                        )?)
+                    }
+                    DposTransaction::MethodNotSupported => DposApplyOutcome::contract_failure(),
+                },
+                NativeContractTransaction::Slashing(slashing_tx) => self
+                    .apply_slashing_transaction(
+                        &mut snapshot,
+                        slashing_validator_snapshot.as_ref(),
+                        block_number,
+                        slashing_tx,
+                    )?,
             };
             let receipt = receipts.get_mut(position).ok_or_else(|| {
                 anyhow::anyhow!(
-                    "DPoS receipt position {position} is outside finalized transaction list"
+                    "native contract receipt position {position} is outside finalized transaction list"
                 )
             })?;
             receipt.status_code = outcome.status_code;
             receipt.logs = outcome.logs;
         }
+        cleanup_slashing_jailed_validators(&mut snapshot, block_number);
         Ok(snapshot)
+    }
+
+    fn apply_slashing_transaction(
+        &self,
+        snapshot: &mut DposSnapshot,
+        validator_snapshot: Option<&DposSnapshot>,
+        block_number: u64,
+        slashing_tx: SlashingTransaction,
+    ) -> Result<DposApplyOutcome, anyhow::Error> {
+        match slashing_tx {
+            SlashingTransaction::CommitDoubleVotingProof(proof) => match *proof {
+                Ok(proof) => self.apply_slashing_double_voting_proof(
+                    snapshot,
+                    validator_snapshot,
+                    block_number,
+                    proof,
+                ),
+                Err(_) => Ok(DposApplyOutcome::contract_failure()),
+            },
+            SlashingTransaction::MethodNotSupported => Ok(DposApplyOutcome::contract_failure()),
+        }
+    }
+
+    fn apply_slashing_double_voting_proof(
+        &self,
+        snapshot: &mut DposSnapshot,
+        validator_snapshot: Option<&DposSnapshot>,
+        block_number: u64,
+        proof: VerifiedLegacyDoubleVotingProof,
+    ) -> Result<DposApplyOutcome, anyhow::Error> {
+        if !self.magnolia_active(block_number) {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
+        let mut offender = [0u8; 20];
+        offender.copy_from_slice(proof.offender.as_bytes());
+        let validator_exists = validator_snapshot
+            .map(|snapshot| snapshot.total_stakes.contains_key(&offender))
+            .unwrap_or_else(|| snapshot.total_stakes.contains_key(&offender));
+        if !validator_exists {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
+        let mut proof_key = [0u8; 32];
+        proof_key.copy_from_slice(proof.proof_key.as_bytes());
+        if !snapshot.slashing_double_voting_proofs.insert(proof_key) {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
+        let jail_time = if self.cacti_active(block_number) {
+            self.rewards_config.cacti_jail_time
+        } else {
+            self.rewards_config.magnolia_jail_time
+        };
+        let jail_block = block_number
+            .checked_add(jail_time)
+            .ok_or_else(|| anyhow::anyhow!("slashing jail block overflow"))?;
+        snapshot.slashing_jail_blocks.insert(offender, jail_block);
+        if !snapshot.slashing_jailed_validators.contains(&offender) {
+            snapshot.slashing_jailed_validators.push(offender);
+        }
+        Ok(DposApplyOutcome::success(vec![slashing_jailed_log(
+            offender,
+            block_number,
+            jail_block,
+        )?]))
     }
 
     fn apply_dpos_registration(
@@ -3803,7 +4060,7 @@ fn h256_from_slice(raw: &[u8], field: &str) -> Result<ethereum_types::H256, anyh
 }
 
 fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Vec<u8> {
-    let mut stream = rlp::RlpStream::new_list(17);
+    let mut stream = rlp::RlpStream::new_list(20);
     append_address_bytes_map(&mut stream, &snapshot.total_stakes);
     append_address_bytes_map(&mut stream, &snapshot.commission_rewards);
     append_validator_metadata_map(&mut stream, &snapshot.validator_metadata);
@@ -3821,6 +4078,9 @@ fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Vec<u8> {
     append_address_vec(&mut stream, &snapshot.validator_order);
     append_undelegations_v2_map(&mut stream, &snapshot.undelegations_v2);
     append_address_u64_map(&mut stream, &snapshot.undelegation_v2_last_ids);
+    append_address_u64_map(&mut stream, &snapshot.slashing_jail_blocks);
+    append_address_vec(&mut stream, &snapshot.slashing_jailed_validators);
+    append_fixed_hash_set(&mut stream, &snapshot.slashing_double_voting_proofs);
     stream.out().to_vec()
 }
 
@@ -3835,9 +4095,10 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
         && item_count != 14
         && item_count != 15
         && item_count != 17
+        && item_count != 20
     {
         anyhow::bail!(
-            "DPoS snapshot RLP must contain exactly five, six, seven, nine, eleven, fourteen, fifteen, or seventeen items"
+            "DPoS snapshot RLP must contain exactly five, six, seven, nine, eleven, fourteen, fifteen, seventeen, or twenty items"
         );
     }
     let total_stakes = decode_address_bytes_map(&rlp.at(0)?, "total stakes")?;
@@ -3907,6 +4168,21 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
     } else {
         BTreeMap::new()
     };
+    let slashing_jail_blocks = if item_count >= 20 {
+        decode_address_u64_map(&rlp.at(17)?, "slashing jail block")?
+    } else {
+        BTreeMap::new()
+    };
+    let slashing_jailed_validators = if item_count >= 20 {
+        decode_address_vec(&rlp.at(18)?, "slashing jailed validator")?
+    } else {
+        Vec::new()
+    };
+    let slashing_double_voting_proofs = if item_count >= 20 {
+        decode_fixed_hash_set(&rlp.at(19)?, "slashing double voting proof")?
+    } else {
+        BTreeSet::new()
+    };
     Ok(DposSnapshot {
         total_stakes,
         commission_rewards,
@@ -3925,6 +4201,9 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
         current_yield,
         undelegations_v2,
         undelegation_v2_last_ids,
+        slashing_jail_blocks,
+        slashing_jailed_validators,
+        slashing_double_voting_proofs,
     })
 }
 
@@ -4082,6 +4361,13 @@ fn append_address_u64_map(stream: &mut rlp::RlpStream, map: &BTreeMap<[u8; 20], 
     }
 }
 
+fn append_fixed_hash_set(stream: &mut rlp::RlpStream, values: &BTreeSet<[u8; 32]>) {
+    stream.begin_list(values.len());
+    for value in values {
+        stream.append(&value.as_slice());
+    }
+}
+
 fn decode_delegations_map(rlp: &Rlp<'_>) -> Result<DposDelegations, anyhow::Error> {
     let mut map = BTreeMap::new();
     for item in rlp.iter() {
@@ -4149,6 +4435,12 @@ fn decode_address_u64_map(
         map.insert(decode_address(&item.at(0)?, field)?, item.val_at(1)?);
     }
     Ok(map)
+}
+
+fn decode_fixed_hash_set(rlp: &Rlp<'_>, field: &str) -> Result<BTreeSet<[u8; 32]>, anyhow::Error> {
+    rlp.iter()
+        .map(|item| decode_fixed_hash(&item, field))
+        .collect()
 }
 
 fn decode_delegator_validators_map(
@@ -4299,6 +4591,15 @@ fn remove_undelegation_v2(
         snapshot.undelegations_v2.remove(&delegator);
     }
     true
+}
+
+fn cleanup_slashing_jailed_validators(snapshot: &mut DposSnapshot, block_number: u64) {
+    snapshot.slashing_jailed_validators.retain(|validator| {
+        snapshot
+            .slashing_jail_blocks
+            .get(validator)
+            .is_some_and(|jail_block| *jail_block > block_number)
+    });
 }
 
 fn find_undelegation_v2(
@@ -4717,6 +5018,23 @@ fn dpos_commission_set_log(
     })
 }
 
+fn slashing_jailed_log(
+    validator: [u8; 20],
+    start_block: u64,
+    end_block: u64,
+) -> Result<ReceiptLog, anyhow::Error> {
+    Ok(ReceiptLog {
+        address: SLASHING_CONTRACT_ADDRESS,
+        topics: vec![
+            SLASHING_JAILED_TOPIC,
+            address_topic(validator),
+            u64_topic(start_block),
+            u64_topic(end_block),
+        ],
+        data: abi_word_from_u64(u64::from(SLASHING_DOUBLE_VOTING_BEHAVIOUR)).to_vec(),
+    })
+}
+
 fn dpos_amount_log(
     event_topic: [u8; 32],
     mut indexed_topics: Vec<[u8; 32]>,
@@ -4996,6 +5314,16 @@ fn abi_word_from_address(address: [u8; 20]) -> [u8; 32] {
     word
 }
 
+fn encode_abi_address_array(addresses: &[[u8; 20]]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(64 + addresses.len() * 32);
+    output.extend_from_slice(&abi_word_from_u64(32));
+    output.extend_from_slice(&abi_word_from_u64(addresses.len() as u64));
+    for address in addresses {
+        output.extend_from_slice(&abi_word_from_address(*address));
+    }
+    output
+}
+
 /// Encodes unsigned big-endian integer bytes as a Solidity ABI U256 word.
 fn abi_word_from_u256_bytes(bytes: &[u8]) -> Result<[u8; 32], anyhow::Error> {
     if bytes.len() > 32 {
@@ -5057,6 +5385,28 @@ fn selector_hex(selector: [u8; 4]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>()
+}
+
+/// Decodes Rust-supported slashing contract method payloads.
+///
+/// The slashing precompile exposes read methods plus
+/// `commitDoubleVotingProof(bytes,bytes)`. Finalization stores malformed proof
+/// payloads as contract-failure transactions so ordinary bad user input cannot
+/// abort block execution.
+fn decode_slashing_transaction(input: &[u8]) -> Result<SlashingTransaction, anyhow::Error> {
+    if input.len() < 4 {
+        return Ok(SlashingTransaction::MethodNotSupported);
+    }
+    let mut selector = [0u8; 4];
+    selector.copy_from_slice(&input[..4]);
+    match selector {
+        SLASHING_COMMIT_DOUBLE_VOTING_PROOF_SELECTOR => {
+            Ok(SlashingTransaction::CommitDoubleVotingProof(Box::new(
+                verify_legacy_double_voting_proof_call_data(input).map_err(|err| err.to_string()),
+            )))
+        }
+        _ => Ok(SlashingTransaction::MethodNotSupported),
+    }
 }
 
 /// Decodes Rust-supported DPoS contract method payloads.
@@ -5614,7 +5964,7 @@ struct NativeExecution {
     receipts: Vec<NativeReceipt>,
     gas_used: u64,
     transaction_fees: Vec<([u8; 32], U256)>,
-    dpos_transactions: Vec<(usize, DposTransaction)>,
+    contract_transactions: Vec<(usize, NativeContractTransaction)>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -5711,6 +6061,16 @@ enum DposTransaction {
         delegator: [u8; 20],
         batch: Option<u32>,
     },
+    MethodNotSupported,
+}
+
+enum NativeContractTransaction {
+    Dpos(DposTransaction),
+    Slashing(SlashingTransaction),
+}
+
+enum SlashingTransaction {
+    CommitDoubleVotingProof(Box<std::result::Result<VerifiedLegacyDoubleVotingProof, String>>),
     MethodNotSupported,
 }
 
@@ -5979,6 +6339,83 @@ mod tests {
             gas_limit: 1_000_000,
             input,
         }
+    }
+
+    fn slashing_call_request(block_number: u64, input: Vec<u8>) -> FinalChainCallRequest {
+        FinalChainCallRequest {
+            block_number,
+            sender: [0u8; 20],
+            receiver: Some(SLASHING_CONTRACT_ADDRESS),
+            value: vec![],
+            gas_price: vec![],
+            gas_limit: 1_000_000,
+            input,
+        }
+    }
+
+    fn legacy_vrf_sortition_rlp(period: u64, round: u32, step: u32, proof_byte: u8) -> Vec<u8> {
+        let mut stream = RlpStream::new_list(4);
+        stream.append(&period);
+        stream.append(&round);
+        stream.append(&step);
+        stream.append(&vec![proof_byte; 80]);
+        stream.out().to_vec()
+    }
+
+    fn legacy_pbft_vote_hash(block_hash: H256, vrf_sortition_rlp: &[u8]) -> H256 {
+        let mut stream = RlpStream::new_list(2);
+        stream.append(&block_hash);
+        stream.append(&vrf_sortition_rlp);
+        keccak256(&stream.out())
+    }
+
+    fn signed_legacy_pbft_vote(
+        signing_key: &SigningKey,
+        block_hash: H256,
+        vrf_sortition_rlp: &[u8],
+    ) -> Vec<u8> {
+        let vote_hash = legacy_pbft_vote_hash(block_hash, vrf_sortition_rlp);
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(vote_hash.as_bytes())
+            .unwrap();
+        let mut signature_bytes = signature.to_bytes().to_vec();
+        signature_bytes.push(recovery_id.to_byte());
+
+        let mut stream = RlpStream::new_list(3);
+        stream.append(&block_hash);
+        stream.append(&vrf_sortition_rlp);
+        stream.append(&signature_bytes);
+        stream.out().to_vec()
+    }
+
+    fn abi_bytes_tail(value: &[u8]) -> Vec<u8> {
+        let mut output = abi_word_from_u64(value.len() as u64).to_vec();
+        output.extend_from_slice(value);
+        output.resize(32 + value.len().div_ceil(32) * 32, 0);
+        output
+    }
+
+    fn commit_double_voting_proof_input(vote_a: &[u8], vote_b: &[u8]) -> Vec<u8> {
+        let tail_a = abi_bytes_tail(vote_a);
+        let tail_b = abi_bytes_tail(vote_b);
+        let offset_a = 64u64;
+        let offset_b = offset_a + tail_a.len() as u64;
+        let mut input = SLASHING_COMMIT_DOUBLE_VOTING_PROOF_SELECTOR.to_vec();
+        input.extend_from_slice(&abi_word_from_u64(offset_a));
+        input.extend_from_slice(&abi_word_from_u64(offset_b));
+        input.extend_from_slice(&tail_a);
+        input.extend_from_slice(&tail_b);
+        input
+    }
+
+    fn get_jail_block_input(validator: [u8; 20]) -> Vec<u8> {
+        let mut input = SLASHING_GET_JAIL_BLOCK_SELECTOR.to_vec();
+        input.extend_from_slice(&abi_word_from_address(validator));
+        input
+    }
+
+    fn get_jailed_validators_input() -> Vec<u8> {
+        SLASHING_GET_JAILED_VALIDATORS_SELECTOR.to_vec()
     }
 
     fn get_validator_input(validator: [u8; 20]) -> Vec<u8> {
@@ -6921,6 +7358,154 @@ mod tests {
             facts.eligibility_status, DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE,
             "missing snapshot must be carried as data"
         );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_executes_slashing_double_vote_and_filters_dpos_votes() {
+        let path = temp_db_path("finalize-slashing-double-vote");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator_key = SigningKey::from_slice(&[0x51; 32]).unwrap();
+        let validator_h160 = address_from_signing_key(&validator_key);
+        let mut validator = [0u8; 20];
+        validator.copy_from_slice(validator_h160.as_bytes());
+        let submitter = [0x52; 20];
+        let period = 1u64;
+        let block_signing_key = SigningKey::from_slice(&[0x53; 32]).unwrap();
+        let pbft = signed_pbft_block(&block_signing_key, period, 241);
+        let sortition = legacy_vrf_sortition_rlp(period, 2, 4, 0x5a);
+        let vote_a =
+            signed_legacy_pbft_vote(&validator_key, H256::from_low_u64_be(100), &sortition);
+        let vote_b =
+            signed_legacy_pbft_vote(&validator_key, H256::from_low_u64_be(101), &sortition);
+        let input = commit_double_voting_proof_input(&vote_a, &vote_b);
+        let first_tx_rlp = vec![0xc1, 0xD1];
+        let second_tx_rlp = vec![0xc1, 0xD2];
+        let first_tx = test_transaction(
+            0xD1,
+            submitter,
+            Some(SLASHING_CONTRACT_ADDRESS),
+            0,
+            U256::zero(),
+            U256::zero(),
+            100_000,
+            input.clone(),
+            first_tx_rlp.clone(),
+        );
+        let duplicate_tx = test_transaction(
+            0xD2,
+            submitter,
+            Some(SLASHING_CONTRACT_ADDRESS),
+            1,
+            U256::zero(),
+            U256::zero(),
+            100_000,
+            input,
+            second_tx_rlp.clone(),
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft,
+            &[first_tx_rlp.clone(), second_tx_rlp.clone()],
+        );
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            300_000,
+            0,
+            vec![genesis_account(submitter, U256::from(1_000_000u64))],
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+            FinalChainRewardsConfig {
+                magnolia_period: 1,
+                cacti_period: 1,
+                magnolia_jail_time: 2,
+                cacti_jail_time: 2,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let (_header, receipts) = final_chain
+            .finalize_block(pbft, vec![first_tx, duplicate_tx], vec![])
+            .unwrap();
+
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (
+                1,
+                SLASHING_COMMIT_DOUBLE_VOTING_PROOF_GAS,
+                SLASHING_COMMIT_DOUBLE_VOTING_PROOF_GAS
+            )
+        );
+        assert_eq!(
+            receipt_fields(&receipts[1]),
+            (
+                0,
+                SLASHING_COMMIT_DOUBLE_VOTING_PROOF_GAS,
+                SLASHING_COMMIT_DOUBLE_VOTING_PROOF_GAS * 2
+            )
+        );
+        let logs = receipt_logs(&receipts[0]);
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].address, SLASHING_CONTRACT_ADDRESS);
+        assert_eq!(
+            logs[0].topics,
+            vec![
+                SLASHING_JAILED_TOPIC,
+                address_topic(validator),
+                u64_topic(period),
+                u64_topic(period + 2)
+            ]
+        );
+        assert_eq!(
+            logs[0].data,
+            abi_word_from_u64(u64::from(SLASHING_DOUBLE_VOTING_BEHAVIOUR)).to_vec()
+        );
+        assert_eq!(
+            final_chain
+                .dpos_eligible_vote_count(period, validator)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            final_chain.dpos_eligible_total_vote_count(period).unwrap(),
+            0
+        );
+        let jail_block = final_chain
+            .call(slashing_call_request(
+                period,
+                get_jail_block_input(validator),
+            ))
+            .unwrap();
+        assert_eq!(
+            u256_from_big_endian(&jail_block.code_retval),
+            U256::from(period + 2)
+        );
+        let jailed_validators = final_chain
+            .call(slashing_call_request(period, get_jailed_validators_input()))
+            .unwrap();
+        assert_eq!(
+            u256_from_big_endian(&jailed_validators.code_retval[0..32]),
+            U256::from(32)
+        );
+        assert_eq!(
+            u256_from_big_endian(&jailed_validators.code_retval[32..64]),
+            U256::from(1)
+        );
+        assert_eq!(&jailed_validators.code_retval[76..96], &validator);
 
         drop(final_chain);
         drop(storage);

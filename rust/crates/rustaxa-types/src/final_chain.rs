@@ -173,6 +173,10 @@ pub struct FinalChainRewardsConfig {
     pub cacti_period: u64,
     /// DPoS undelegation locking period after Cacti.
     pub cacti_delegation_locking_period: u64,
+    /// Number of finalized blocks a validator remains jailed before Cacti.
+    pub magnolia_jail_time: u64,
+    /// Number of finalized blocks a validator remains jailed after Cacti.
+    pub cacti_jail_time: u64,
     /// Rewards distribution frequency changes keyed by starting period.
     pub rewards_distribution_frequency: Vec<(u64, u32)>,
 }
@@ -197,6 +201,8 @@ impl Default for FinalChainRewardsConfig {
             aspen_generated_rewards: Vec::new(),
             cacti_period: 0,
             cacti_delegation_locking_period: 0,
+            magnolia_jail_time: 0,
+            cacti_jail_time: 0,
             rewards_distribution_frequency: Vec::new(),
         }
     }

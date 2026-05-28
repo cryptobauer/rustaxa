@@ -57,6 +57,8 @@ pub fn create_final_chain(
             aspen_generated_rewards: Vec::new(),
             cacti_period: 0,
             cacti_delegation_locking_period: 0,
+            magnolia_jail_time: 0,
+            cacti_jail_time: 0,
             frequency_rules: Vec::new(),
         },
     )
@@ -143,6 +145,8 @@ pub fn create_final_chain_with_rewards_config(
             aspen_generated_rewards: rewards_config.aspen_generated_rewards,
             cacti_period: rewards_config.cacti_period,
             cacti_delegation_locking_period: rewards_config.cacti_delegation_locking_period,
+            magnolia_jail_time: rewards_config.magnolia_jail_time,
+            cacti_jail_time: rewards_config.cacti_jail_time,
             rewards_distribution_frequency: rewards_config
                 .frequency_rules
                 .into_iter()

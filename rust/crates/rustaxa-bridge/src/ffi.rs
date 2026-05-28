@@ -1119,6 +1119,8 @@ pub mod rustaxa_ffi {
         aspen_generated_rewards: Vec<u8>,
         cacti_period: u64,
         cacti_delegation_locking_period: u64,
+        magnolia_jail_time: u64,
+        cacti_jail_time: u64,
         frequency_rules: Vec<RewardsFrequencyRule>,
     }
 
