@@ -58,6 +58,7 @@ const DPOS_REGISTER_VALIDATOR_SELECTOR: [u8; 4] = [0xd6, 0xfd, 0xc1, 0x27];
 const DPOS_CLAIM_REWARDS_SELECTOR: [u8; 4] = [0xef, 0x5c, 0xfb, 0x8c];
 const DPOS_CLAIM_ALL_REWARDS_SELECTOR: [u8; 4] = [0x0b, 0x83, 0xa7, 0x27];
 const DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR: [u8; 4] = [0x09, 0xb7, 0x2e, 0x00];
+const DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR: [u8; 4] = [0xd0, 0xee, 0xbf, 0xe2];
 const DPOS_DELEGATED_TOPIC: [u8; 32] = [
     0xe5, 0x54, 0x1a, 0x6b, 0x61, 0x03, 0xd4, 0xfa, 0x7e, 0x02, 0x1e, 0xd5, 0x4f, 0xad, 0x39, 0xc6,
     0x6f, 0x27, 0xa7, 0x6b, 0xd1, 0x3d, 0x37, 0x4c, 0xf6, 0x24, 0x0a, 0xe6, 0xbd, 0x0b, 0xb7, 0x2b,
@@ -74,6 +75,10 @@ const DPOS_REWARDS_CLAIMED_TOPIC: [u8; 32] = [
     0x93, 0x10, 0xcc, 0xfc, 0xb8, 0xde, 0x72, 0x3f, 0x57, 0x8a, 0x9e, 0x42, 0x82, 0xea, 0x9f, 0x52,
     0x1f, 0x05, 0xae, 0x40, 0xdc, 0x08, 0xf3, 0x06, 0x8d, 0xfa, 0xd5, 0x28, 0xa6, 0x5e, 0xe3, 0xc7,
 ];
+const DPOS_COMMISSION_REWARDS_CLAIMED_TOPIC: [u8; 32] = [
+    0xf0, 0xec, 0x9e, 0x0f, 0x6a, 0xdd, 0x85, 0x0a, 0x17, 0x38, 0xc5, 0x82, 0x22, 0x44, 0xe2, 0x6f,
+    0xfc, 0x3d, 0x1f, 0x14, 0xda, 0x75, 0x37, 0xaa, 0x24, 0x05, 0x82, 0xb2, 0x5a, 0xf1, 0x2a, 0xd0,
+];
 const DPOS_VALIDATOR_REGISTERED_TOPIC: [u8; 32] = [
     0xd0, 0x95, 0x01, 0x34, 0x84, 0x73, 0x47, 0x4a, 0x20, 0xc7, 0x72, 0xc7, 0x9c, 0x65, 0x3e, 0x1f,
     0xd7, 0xe8, 0xb4, 0x37, 0xe4, 0x18, 0xfe, 0x23, 0x5d, 0x27, 0x7d, 0x2c, 0x88, 0x85, 0x32, 0x51,
@@ -83,6 +88,7 @@ const DPOS_DELEGATE_GAS: u64 = 40_000;
 const DPOS_UNDELEGATE_GAS: u64 = 60_000;
 const DPOS_REDELEGATE_GAS: u64 = 80_000;
 const DPOS_CLAIM_REWARDS_GAS: u64 = 40_000;
+const DPOS_CLAIM_COMMISSION_REWARDS_GAS: u64 = 20_000;
 const DPOS_BATCH_GET_REWARDS_GAS: u64 = 5_000;
 const DPOS_GET_DELEGATIONS_MAX_COUNT: usize = 20;
 const DPOS_CLAIM_ALL_REWARDS_MAX_COUNT: usize = 10;
@@ -1734,6 +1740,7 @@ impl FinalChain {
                     DposTransaction::Undelegate { .. }
                     | DposTransaction::Redelegate { .. }
                     | DposTransaction::ClaimRewards { .. }
+                    | DposTransaction::ClaimCommissionRewards { .. }
                     | DposTransaction::ClaimAllRewards { .. } => {}
                 }
             }
@@ -1744,6 +1751,9 @@ impl FinalChain {
                     DposTransaction::Undelegate { .. } => DPOS_UNDELEGATE_GAS,
                     DposTransaction::Redelegate { .. } => DPOS_REDELEGATE_GAS,
                     DposTransaction::ClaimRewards { .. } => DPOS_CLAIM_REWARDS_GAS,
+                    DposTransaction::ClaimCommissionRewards { .. } => {
+                        DPOS_CLAIM_COMMISSION_REWARDS_GAS
+                    }
                     DposTransaction::ClaimAllRewards { delegator, batch } => {
                         let claim_items = dpos_claim_all_rewards_item_count(
                             &dpos_gas_snapshot,
@@ -2325,6 +2335,67 @@ impl FinalChain {
         Ok(logs)
     }
 
+    fn apply_dpos_commission_reward_claim(
+        &self,
+        snapshot: &mut DposSnapshot,
+        accounts: &mut HashMap<[u8; 20], Account>,
+        owner: [u8; 20],
+        validator: [u8; 20],
+    ) -> Result<Vec<ReceiptLog>, anyhow::Error> {
+        let metadata = snapshot.validator_metadata.get(&validator).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Rust FinalChain::finalize DPoS validator does not exist for commission claim"
+            )
+        })?;
+        anyhow::ensure!(
+            metadata.owner == owner,
+            "Rust FinalChain::finalize DPoS commission claim owner mismatch"
+        );
+
+        let reward = snapshot
+            .commission_rewards
+            .get(&validator)
+            .map(|bytes| u256_from_big_endian(bytes))
+            .unwrap_or_default();
+        let dpos_contract_balance = u256_from_big_endian(
+            accounts
+                .entry(DPOS_CONTRACT_ADDRESS)
+                .or_insert_with(empty_account)
+                .balance
+                .as_slice(),
+        );
+        if reward > dpos_contract_balance {
+            anyhow::bail!(
+                "Rust FinalChain::finalize DPoS contract balance insufficient for commission reward claim"
+            );
+        }
+
+        snapshot
+            .commission_rewards
+            .insert(validator, u256_to_big_endian(U256::zero()));
+        if !reward.is_zero() {
+            let dpos_account = accounts
+                .entry(DPOS_CONTRACT_ADDRESS)
+                .or_insert_with(empty_account);
+            dpos_account.balance = u256_to_big_endian(
+                dpos_contract_balance
+                    .checked_sub(reward)
+                    .ok_or_else(|| anyhow::anyhow!("DPoS contract commission reward underflow"))?,
+            );
+            let owner_account = accounts.entry(owner).or_insert_with(empty_account);
+            let current_owner_balance = u256_from_big_endian(&owner_account.balance);
+            owner_account.balance = u256_to_big_endian(
+                current_owner_balance
+                    .checked_add(reward)
+                    .ok_or_else(|| anyhow::anyhow!("DPoS commission reward overflow"))?,
+            );
+        }
+
+        Ok(vec![dpos_commission_rewards_claimed_log(
+            owner, validator, reward,
+        )?])
+    }
+
     /// Plans the DPoS snapshot for a newly finalized block.
     ///
     /// The new snapshot clones the previous block state and applies finalized
@@ -2392,6 +2463,13 @@ impl FinalChain {
                     validator,
                     delegator,
                 )?,
+                DposTransaction::ClaimCommissionRewards { owner, validator } => self
+                    .apply_dpos_commission_reward_claim(
+                        &mut snapshot,
+                        accounts,
+                        owner,
+                        validator,
+                    )?,
                 DposTransaction::ClaimAllRewards { delegator, batch } => {
                     self.apply_dpos_claim_all_rewards(&mut snapshot, accounts, delegator, batch)?
                 }
@@ -3460,6 +3538,18 @@ fn dpos_rewards_claimed_log(
     )
 }
 
+fn dpos_commission_rewards_claimed_log(
+    account: [u8; 20],
+    validator: [u8; 20],
+    amount: U256,
+) -> Result<ReceiptLog, anyhow::Error> {
+    dpos_amount_log(
+        DPOS_COMMISSION_REWARDS_CLAIMED_TOPIC,
+        vec![address_topic(account), address_topic(validator)],
+        amount,
+    )
+}
+
 fn dpos_validator_registered_log(validator: [u8; 20]) -> ReceiptLog {
     ReceiptLog {
         address: DPOS_CONTRACT_ADDRESS,
@@ -3805,6 +3895,10 @@ fn decode_dpos_transaction(
                 validator,
             })
         }
+        DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR => {
+            let validator = decode_abi_address_argument(input, "claimCommissionRewards(address)")?;
+            Ok(DposTransaction::ClaimCommissionRewards { owner, validator })
+        }
         DPOS_CLAIM_ALL_REWARDS_SELECTOR => {
             if input.len() != 4 {
                 anyhow::bail!("claimAllRewards input is malformed");
@@ -4135,7 +4229,9 @@ fn update_dpos_claim_gas_snapshot(
                 .or_default()
                 .insert(*delegator, u256_to_big_endian(next));
         }
-        DposTransaction::ClaimRewards { .. } | DposTransaction::ClaimAllRewards { .. } => {}
+        DposTransaction::ClaimRewards { .. }
+        | DposTransaction::ClaimCommissionRewards { .. }
+        | DposTransaction::ClaimAllRewards { .. } => {}
     }
     Ok(())
 }
@@ -4273,6 +4369,10 @@ enum DposTransaction {
     },
     ClaimRewards {
         delegator: [u8; 20],
+        validator: [u8; 20],
+    },
+    ClaimCommissionRewards {
+        owner: [u8; 20],
         validator: [u8; 20],
     },
     ClaimAllRewards {
@@ -4664,6 +4764,12 @@ mod tests {
         input
     }
 
+    fn claim_commission_rewards_input(validator: [u8; 20]) -> Vec<u8> {
+        let mut input = DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR.to_vec();
+        input.extend_from_slice(&abi_word_from_address(validator));
+        input
+    }
+
     fn claim_all_rewards_input() -> Vec<u8> {
         DPOS_CLAIM_ALL_REWARDS_SELECTOR.to_vec()
     }
@@ -4716,6 +4822,21 @@ mod tests {
                 batch: None,
             } => assert_eq!(delegator, owner),
             _ => panic!("expected current no-arg claimAllRewards"),
+        }
+
+        let validator = [0x45; 20];
+        let decoded =
+            decode_dpos_transaction(&claim_commission_rewards_input(validator), owner, 10, 10)
+                .unwrap();
+        match decoded {
+            DposTransaction::ClaimCommissionRewards {
+                owner: decoded_owner,
+                validator: decoded_validator,
+            } => {
+                assert_eq!(decoded_owner, owner);
+                assert_eq!(decoded_validator, validator);
+            }
+            _ => panic!("expected claimCommissionRewards"),
         }
     }
 
@@ -5918,6 +6039,148 @@ mod tests {
             dag_author,
             U256::from(10_000u64),
             U256::from(150u64),
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_supports_claim_commission_rewards() {
+        let path = temp_db_path("finalize-dpos-claim-commission-rewards");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let first_period = 1u64;
+        let second_period = 2u64;
+        let sender = [0x24; 20];
+        let receiver = [0x25; 20];
+        let validator = [0x26; 20];
+        let owner = [0x27; 20];
+        let genesis_validator = genesis_validator_with_metadata(
+            validator,
+            U256::from(10_000u64),
+            owner,
+            0,
+            "validator",
+            "endpoint",
+        );
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: vec![],
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let signing_key = SigningKey::from_slice(&[33u8; 32]).unwrap();
+        let first_pbft = signed_pbft_block(&signing_key, first_period, 221);
+        let first_transaction_rlp = vec![0xc1, 0x91];
+        let first_transaction = test_transaction(
+            0x91,
+            sender,
+            Some(receiver),
+            0,
+            U256::from(1u64),
+            U256::from(2u64),
+            50_000,
+            vec![],
+            first_transaction_rlp.clone(),
+        );
+        write_period_data(
+            &storage,
+            first_period,
+            &first_pbft,
+            std::slice::from_ref(&first_transaction_rlp),
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(sender, U256::from(1_000_000u64))],
+            vec![genesis_validator],
+            genesis_dpos_config,
+        )
+        .unwrap();
+
+        final_chain
+            .finalize_block(
+                first_pbft,
+                vec![first_transaction.clone()],
+                vec![FinalizationDagBlock {
+                    author: validator,
+                    difficulty: 0,
+                    transaction_hashes: vec![first_transaction.hash],
+                }],
+            )
+            .unwrap();
+        let commission_reward = U256::from(VALUE_TRANSFER_GAS * 2);
+        let validator_info = final_chain
+            .call(dpos_call_request(
+                first_period,
+                get_validator_input(validator),
+            ))
+            .unwrap();
+        assert_eq!(
+            u256_from_big_endian(&validator_info.code_retval[64..96]),
+            commission_reward
+        );
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            commission_reward
+        );
+
+        let second_pbft = signed_pbft_block(&signing_key, second_period, 222);
+        let claim_tx = test_transaction(
+            0x92,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::zero(),
+            U256::zero(),
+            100_000,
+            claim_commission_rewards_input(validator),
+            vec![0xc1, 0x92],
+        );
+        write_period_data(
+            &storage,
+            second_period,
+            &second_pbft,
+            std::slice::from_ref(&claim_tx.rlp),
+        );
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(second_pbft, vec![claim_tx], vec![])
+            .unwrap();
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (
+                1,
+                DPOS_CLAIM_COMMISSION_REWARDS_GAS,
+                DPOS_CLAIM_COMMISSION_REWARDS_GAS,
+            )
+        );
+        let logs = receipt_logs(&receipts[0]);
+        assert_eq!(logs.len(), 1);
+        assert_dpos_amount_log(
+            &logs[0],
+            DPOS_COMMISSION_REWARDS_CLAIMED_TOPIC,
+            vec![address_topic(owner), address_topic(validator)],
+            commission_reward,
+        );
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            U256::zero()
+        );
+        assert_eq!(balance_of(&final_chain, owner), commission_reward);
+        let validator_info = final_chain
+            .call(dpos_call_request(
+                second_period,
+                get_validator_input(validator),
+            ))
+            .unwrap();
+        assert_eq!(
+            u256_from_big_endian(&validator_info.code_retval[64..96]),
+            U256::zero()
         );
 
         drop(final_chain);

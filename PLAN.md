@@ -255,10 +255,11 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     the minted total, migrates part-one minted tokens into durable total supply at the Aspen part-two boundary, and writes
     header `total_reward` from the Rust plan. Rust-backed FinalChain shim reads now expose DPoS total delegated, yield,
     total supply, and read-only delegator reward pages backed by Rust F1 reward cursors. Rust now executes delegator
-    `claimRewards(address)`, current-ABI `claimAllRewards()`, and stake-mutation auto-claims by moving reward balances
-    through staged Rust account/DPoS snapshots. Receipts for the supported native DPoS subset now carry Rust-generated
-    legacy ABI logs for validator registration, delegation, undelegation, redelegation, direct claims, claim-all, and
-    stake-mutation auto-claims, with the block header bloom derived from those logs. Rust native finalization now accepts
+    `claimRewards(address)`, validator-owner `claimCommissionRewards(address)`, current-ABI `claimAllRewards()`, and
+    stake-mutation auto-claims by moving reward balances through staged Rust account/DPoS snapshots. Receipts for the
+    supported native DPoS subset now carry Rust-generated legacy ABI logs for validator registration, delegation,
+    undelegation, redelegation, direct claims, commission claims, claim-all, and stake-mutation auto-claims, with the
+    block header bloom derived from those logs. Rust native finalization now accepts
     both the current `claimAllRewards()` ABI and the legacy pre-fix `claimAllRewards(uint32)` batch ABI, gates the batch
     selector on `fix_claim_all_block_num`, and charges claim-all gas from the staged Rust DPoS delegation view. The active
     Rust finalization path also persists the legacy two-level `final_chain_log_blooms_index` chunks with author-augmented
@@ -563,9 +564,9 @@ The current Rust starting point is intentionally small:
     interval cache rows in the finalized-block batch, reloads cached stats on startup, applies interval-boundary
     fee commission rewards from the Rust planner to staged Rust account/DPoS snapshots, and now handles fixed-yield plus
     Aspen part-two dynamic-yield minted block/DAG/vote distribution, total-supply migration, Rust-backed supply/yield and
-    delegator reward-page reads, claim balance/cursor updates, claim-all dynamic gas plus legacy batch ABI compatibility,
-    and header `total_reward` natively. Moving unsupported DPoS event receipt parity and legacy `BlockStats` carrier
-    ownership fully into Rust remain future work. Double-voting proof planning and already-verified pillar-vote
+    delegator reward-page reads, claim balance/cursor updates, commission reward claims, claim-all dynamic gas plus legacy
+    batch ABI compatibility, and header `total_reward` natively. Moving unsupported DPoS event receipt parity and legacy
+    `BlockStats` carrier ownership fully into Rust remain future work. Double-voting proof planning and already-verified pillar-vote
     aggregation are Rust-backed; broader slashing state transitions, pillar signing/recovery, and
     `PillarChainManager` orchestration still depend on future FinalChain/state ports.
 
