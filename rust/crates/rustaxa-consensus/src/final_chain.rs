@@ -57,6 +57,7 @@ const DPOS_REDELEGATE_SELECTOR: [u8; 4] = [0x70, 0x38, 0x12, 0xcc];
 const DPOS_REGISTER_VALIDATOR_SELECTOR: [u8; 4] = [0xd6, 0xfd, 0xc1, 0x27];
 const DPOS_CLAIM_REWARDS_SELECTOR: [u8; 4] = [0xef, 0x5c, 0xfb, 0x8c];
 const DPOS_CLAIM_ALL_REWARDS_SELECTOR: [u8; 4] = [0x0b, 0x83, 0xa7, 0x27];
+const DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR: [u8; 4] = [0x09, 0xb7, 0x2e, 0x00];
 const DPOS_DELEGATED_TOPIC: [u8; 32] = [
     0xe5, 0x54, 0x1a, 0x6b, 0x61, 0x03, 0xd4, 0xfa, 0x7e, 0x02, 0x1e, 0xd5, 0x4f, 0xad, 0x39, 0xc6,
     0x6f, 0x27, 0xa7, 0x6b, 0xd1, 0x3d, 0x37, 0x4c, 0xf6, 0x24, 0x0a, 0xe6, 0xbd, 0x0b, 0xb7, 0x2b,
@@ -82,7 +83,9 @@ const DPOS_DELEGATE_GAS: u64 = 40_000;
 const DPOS_UNDELEGATE_GAS: u64 = 60_000;
 const DPOS_REDELEGATE_GAS: u64 = 80_000;
 const DPOS_CLAIM_REWARDS_GAS: u64 = 40_000;
+const DPOS_BATCH_GET_REWARDS_GAS: u64 = 5_000;
 const DPOS_GET_DELEGATIONS_MAX_COUNT: usize = 20;
+const DPOS_CLAIM_ALL_REWARDS_MAX_COUNT: usize = 10;
 const ASPEN_YIELD_PRECISION: u64 = 1_000_000;
 
 /// Rust final-chain domain surface used by the C++ shim.
@@ -975,7 +978,7 @@ impl FinalChain {
             gas_used,
             transaction_fees,
             dpos_transactions,
-        } = self.execute_native_transactions(&transactions)?;
+        } = self.execute_native_transactions(pbft.period, &transactions)?;
         let pre_magnolia_fee_reward_period = self.pre_magnolia_fee_reward_period(pbft.period);
         let rewards_stats_plan = self.native_rewards_stats_plan(
             &pbft,
@@ -1693,6 +1696,7 @@ impl FinalChain {
 
     fn execute_native_transactions(
         &self,
+        block_number: u64,
         transactions: &[FinalizationTransaction],
     ) -> Result<NativeExecution, anyhow::Error> {
         let mut accounts = self.current_account_snapshot()?;
@@ -1700,12 +1704,15 @@ impl FinalChain {
         let mut transaction_fees = Vec::with_capacity(transactions.len());
         let mut dpos_transactions = Vec::new();
         let mut cumulative_gas_used = 0u64;
+        let mut dpos_gas_snapshot = self.dpos_snapshot(self.last_block_number()?)?;
 
         for (position, transaction) in transactions.iter().enumerate() {
             let mut dpos_transaction = if transaction.receiver == Some(DPOS_CONTRACT_ADDRESS) {
                 Some(decode_dpos_transaction(
                     &transaction.data,
                     transaction.sender,
+                    block_number,
+                    self.rewards_config.fix_claim_all_block_num,
                 )?)
             } else if !transaction.data.is_empty() || transaction.receiver.is_none() {
                 anyhow::bail!(
@@ -1736,8 +1743,22 @@ impl FinalChain {
                     DposTransaction::Delegate { .. } => DPOS_DELEGATE_GAS,
                     DposTransaction::Undelegate { .. } => DPOS_UNDELEGATE_GAS,
                     DposTransaction::Redelegate { .. } => DPOS_REDELEGATE_GAS,
-                    DposTransaction::ClaimRewards { .. }
-                    | DposTransaction::ClaimAllRewards { .. } => DPOS_CLAIM_REWARDS_GAS,
+                    DposTransaction::ClaimRewards { .. } => DPOS_CLAIM_REWARDS_GAS,
+                    DposTransaction::ClaimAllRewards { delegator, batch } => {
+                        let claim_items = dpos_claim_all_rewards_item_count(
+                            &dpos_gas_snapshot,
+                            *delegator,
+                            *batch,
+                        )?;
+                        let per_item_gas = DPOS_CLAIM_REWARDS_GAS
+                            .checked_add(DPOS_BATCH_GET_REWARDS_GAS)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("claimAllRewards per-item gas overflow")
+                            })?;
+                        claim_items.checked_mul(per_item_gas).ok_or_else(|| {
+                            anyhow::anyhow!("claimAllRewards gas multiplication overflow")
+                        })?
+                    }
                 }
             } else {
                 VALUE_TRANSFER_GAS
@@ -1806,6 +1827,7 @@ impl FinalChain {
                                 .ok_or_else(|| anyhow::anyhow!("DPoS contract balance overflow"))?,
                         );
                     }
+                    update_dpos_claim_gas_snapshot(&mut dpos_gas_snapshot, &dpos_tx)?;
                     dpos_transactions.push((position, dpos_tx));
                 } else {
                     let receiver_address = transaction.receiver.ok_or_else(|| {
@@ -2261,16 +2283,43 @@ impl FinalChain {
         snapshot: &mut DposSnapshot,
         accounts: &mut HashMap<[u8; 20], Account>,
         delegator: [u8; 20],
+        batch: Option<u32>,
     ) -> Result<Vec<ReceiptLog>, anyhow::Error> {
         let validators = snapshot
             .delegator_validators
             .get(&delegator)
             .cloned()
             .unwrap_or_default();
+        let start = if let Some(batch) = batch {
+            usize::try_from(batch)
+                .map_err(|_| {
+                    anyhow::anyhow!("claimAllRewards batch index does not fit into usize")
+                })?
+                .checked_mul(DPOS_CLAIM_ALL_REWARDS_MAX_COUNT)
+                .ok_or_else(|| anyhow::anyhow!("claimAllRewards batch start offset overflow"))?
+        } else {
+            0usize
+        };
+        let claim_count = match batch {
+            None => validators.len() as u64,
+            Some(batch) => dpos_batch_items_count(
+                validators.len() as u64,
+                batch,
+                u64::try_from(DPOS_CLAIM_ALL_REWARDS_MAX_COUNT).map_err(|_| {
+                    anyhow::anyhow!("claimAllRewards batch max count does not fit into u64")
+                })?,
+            )?,
+        };
+        if start > 0 && start >= validators.len() {
+            return Ok(Vec::new());
+        }
+        let claim_count = usize::try_from(claim_count).map_err(|_| {
+            anyhow::anyhow!("claimAllRewards batch item count does not fit into usize")
+        })?;
         let mut logs = Vec::new();
-        for validator in validators {
+        for validator in validators.iter().skip(start).take(claim_count) {
             logs.extend(
-                self.apply_dpos_delegator_reward_claim(snapshot, accounts, validator, delegator)?,
+                self.apply_dpos_delegator_reward_claim(snapshot, accounts, *validator, delegator)?,
             );
         }
         Ok(logs)
@@ -2343,8 +2392,8 @@ impl FinalChain {
                     validator,
                     delegator,
                 )?,
-                DposTransaction::ClaimAllRewards { delegator } => {
-                    self.apply_dpos_claim_all_rewards(&mut snapshot, accounts, delegator)?
+                DposTransaction::ClaimAllRewards { delegator, batch } => {
+                    self.apply_dpos_claim_all_rewards(&mut snapshot, accounts, delegator, batch)?
                 }
             };
             let receipt = receipts.get_mut(position).ok_or_else(|| {
@@ -3649,6 +3698,16 @@ fn decode_abi_u32_argument(
     Ok(u32::from_be_bytes(bytes))
 }
 
+fn decode_abi_word_as_u32(input: &[u8], offset: usize, field: &str) -> Result<u32, anyhow::Error> {
+    let word = abi_word(input, offset, field)?;
+    if word[..28].iter().any(|byte| *byte != 0) {
+        anyhow::bail!("{field} argument does not fit into uint32");
+    }
+    let mut bytes = [0u8; 4];
+    bytes.copy_from_slice(&word[28..32]);
+    Ok(u32::from_be_bytes(bytes))
+}
+
 /// Encodes a `u64` as a right-aligned Solidity ABI word.
 fn abi_word_from_u64(value: u64) -> [u8; 32] {
     let mut word = [0u8; 32];
@@ -3730,6 +3789,8 @@ fn selector_hex(selector: [u8; 4]) -> String {
 fn decode_dpos_transaction(
     input: &[u8],
     owner: [u8; 20],
+    block_number: u64,
+    fix_claim_all_block_num: u64,
 ) -> Result<DposTransaction, anyhow::Error> {
     if input.len() < 4 {
         anyhow::bail!("Rust FinalChain::finalize DPoS transaction input is missing selector");
@@ -3748,7 +3809,26 @@ fn decode_dpos_transaction(
             if input.len() != 4 {
                 anyhow::bail!("claimAllRewards input is malformed");
             }
-            Ok(DposTransaction::ClaimAllRewards { delegator: owner })
+            Ok(DposTransaction::ClaimAllRewards {
+                delegator: owner,
+                batch: None,
+            })
+        }
+        DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR => {
+            if block_number >= fix_claim_all_block_num {
+                anyhow::bail!(
+                    "Rust FinalChain::finalize unsupported DPoS selector 0x{}",
+                    selector_hex(selector)
+                );
+            }
+            if input.len() != 4 + 32 {
+                anyhow::bail!("claimAllRewards(uint32) input is malformed");
+            }
+            let batch = decode_abi_word_as_u32(input, 4, "claimAllRewards(uint32) batch")?;
+            Ok(DposTransaction::ClaimAllRewards {
+                delegator: owner,
+                batch: Some(batch),
+            })
         }
         DPOS_REGISTER_VALIDATOR_SELECTOR => {
             let registration = decode_dpos_register_validator(input, owner)?;
@@ -3957,6 +4037,155 @@ fn dpos_vote_count(
     Ok(votes.as_u64())
 }
 
+fn dpos_claim_all_rewards_item_count(
+    snapshot: &DposSnapshot,
+    delegator: [u8; 20],
+    batch: Option<u32>,
+) -> Result<u64, anyhow::Error> {
+    let validator_count = snapshot
+        .delegator_validators
+        .get(&delegator)
+        .map(|validators| validators.len())
+        .unwrap_or(0);
+    let validator_count = u64::try_from(validator_count)
+        .map_err(|_| anyhow::anyhow!("DPoS delegator validator count does not fit into u64"))?;
+    match batch {
+        None => Ok(validator_count),
+        Some(batch) => dpos_batch_items_count(
+            validator_count,
+            batch,
+            DPOS_CLAIM_ALL_REWARDS_MAX_COUNT as u64,
+        ),
+    }
+}
+
+fn update_dpos_claim_gas_snapshot(
+    snapshot: &mut DposSnapshot,
+    dpos_tx: &DposTransaction,
+) -> Result<(), anyhow::Error> {
+    match dpos_tx {
+        DposTransaction::Register(registration) => {
+            if !u256_from_big_endian(&registration.stake).is_zero() {
+                add_delegator_validator(
+                    &mut snapshot.delegator_validators,
+                    registration.validator,
+                    registration.validator,
+                );
+                snapshot
+                    .delegations
+                    .entry(registration.validator)
+                    .or_default()
+                    .insert(registration.validator, registration.stake.clone());
+            }
+        }
+        DposTransaction::Delegate {
+            delegator,
+            validator,
+            amount,
+        } => {
+            add_delegator_validator(&mut snapshot.delegator_validators, *delegator, *validator);
+            let current = snapshot
+                .delegations
+                .entry(*validator)
+                .or_default()
+                .get(delegator)
+                .map(|bytes| u256_from_big_endian(bytes))
+                .unwrap_or_default();
+            let next = current
+                .checked_add(u256_from_big_endian(amount))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("claimAllRewards gas snapshot delegation overflow")
+                })?;
+            snapshot
+                .delegations
+                .entry(*validator)
+                .or_default()
+                .insert(*delegator, u256_to_big_endian(next));
+        }
+        DposTransaction::Undelegate {
+            delegator,
+            validator,
+            amount,
+        } => {
+            update_dpos_claim_gas_snapshot_remove(snapshot, *delegator, *validator, amount)?;
+        }
+        DposTransaction::Redelegate {
+            delegator,
+            from,
+            to,
+            amount,
+        } => {
+            update_dpos_claim_gas_snapshot_remove(snapshot, *delegator, *from, amount)?;
+            add_delegator_validator(&mut snapshot.delegator_validators, *delegator, *to);
+            let current = snapshot
+                .delegations
+                .entry(*to)
+                .or_default()
+                .get(delegator)
+                .map(|bytes| u256_from_big_endian(bytes))
+                .unwrap_or_default();
+            let next = current
+                .checked_add(u256_from_big_endian(amount))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("claimAllRewards gas snapshot redelegation overflow")
+                })?;
+            snapshot
+                .delegations
+                .entry(*to)
+                .or_default()
+                .insert(*delegator, u256_to_big_endian(next));
+        }
+        DposTransaction::ClaimRewards { .. } | DposTransaction::ClaimAllRewards { .. } => {}
+    }
+    Ok(())
+}
+
+fn update_dpos_claim_gas_snapshot_remove(
+    snapshot: &mut DposSnapshot,
+    delegator: [u8; 20],
+    validator: [u8; 20],
+    amount: &[u8],
+) -> Result<(), anyhow::Error> {
+    let Some(delegations) = snapshot.delegations.get_mut(&validator) else {
+        return Ok(());
+    };
+    let Some(current) = delegations
+        .get(&delegator)
+        .map(|bytes| u256_from_big_endian(bytes))
+    else {
+        return Ok(());
+    };
+    let remove = u256_from_big_endian(amount);
+    if current <= remove {
+        delegations.remove(&delegator);
+        remove_delegator_validator(&mut snapshot.delegator_validators, delegator, validator);
+    } else {
+        delegations.insert(delegator, u256_to_big_endian(current - remove));
+    }
+    Ok(())
+}
+
+fn dpos_batch_items_count(
+    actual_count: u64,
+    batch: u32,
+    max_batch_items_count: u64,
+) -> Result<u64, anyhow::Error> {
+    if max_batch_items_count == 0 {
+        anyhow::bail!("claimAllRewards max batch size must be greater than zero");
+    }
+    if actual_count == 0 {
+        return Ok(1);
+    }
+    let batch_index = u64::from(batch);
+    let start = batch_index
+        .checked_mul(max_batch_items_count)
+        .ok_or_else(|| anyhow::anyhow!("claimAllRewards batch start index overflow"))?;
+    if start >= actual_count {
+        return Ok(1);
+    }
+    Ok(max_batch_items_count.min(actual_count - start))
+}
+
 fn dpos_vdf_sortition_max_vote_count(
     genesis_dpos_config: &GenesisDposConfig,
 ) -> Result<u64, anyhow::Error> {
@@ -4048,6 +4277,7 @@ enum DposTransaction {
     },
     ClaimAllRewards {
         delegator: [u8; 20],
+        batch: Option<u32>,
     },
 }
 
@@ -4436,6 +4666,65 @@ mod tests {
 
     fn claim_all_rewards_input() -> Vec<u8> {
         DPOS_CLAIM_ALL_REWARDS_SELECTOR.to_vec()
+    }
+
+    fn claim_all_rewards_batch_input(batch: u32) -> Vec<u8> {
+        let mut input = DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR.to_vec();
+        input.extend_from_slice(&abi_word_from_u64(u64::from(batch)));
+        input
+    }
+
+    #[test]
+    fn decode_dpos_transaction_gates_legacy_claim_all_batch_selector() {
+        let owner = [0x44; 20];
+        let decoded =
+            decode_dpos_transaction(&claim_all_rewards_batch_input(7), owner, 9, 10).unwrap();
+        match decoded {
+            DposTransaction::ClaimAllRewards {
+                delegator,
+                batch: Some(7),
+            } => assert_eq!(delegator, owner),
+            _ => panic!("expected legacy batched claimAllRewards"),
+        }
+
+        let err = match decode_dpos_transaction(&claim_all_rewards_batch_input(0), owner, 10, 10) {
+            Ok(_) => {
+                panic!("expected legacy batched claimAllRewards to be rejected at fix boundary")
+            }
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("unsupported DPoS selector 0x09b72e00")
+        );
+
+        let mut malformed_batch_input = claim_all_rewards_batch_input(1);
+        malformed_batch_input.push(0);
+        let err = match decode_dpos_transaction(&malformed_batch_input, owner, 9, 10) {
+            Ok(_) => panic!("expected malformed legacy batched claimAllRewards to be rejected"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("claimAllRewards(uint32) input is malformed")
+        );
+
+        let decoded = decode_dpos_transaction(&claim_all_rewards_input(), owner, 10, 10).unwrap();
+        match decoded {
+            DposTransaction::ClaimAllRewards {
+                delegator,
+                batch: None,
+            } => assert_eq!(delegator, owner),
+            _ => panic!("expected current no-arg claimAllRewards"),
+        }
+    }
+
+    #[test]
+    fn claim_all_batch_item_count_matches_legacy_page_gas_rules() {
+        assert_eq!(dpos_batch_items_count(0, 0, 10).unwrap(), 1);
+        assert_eq!(dpos_batch_items_count(12, 0, 10).unwrap(), 10);
+        assert_eq!(dpos_batch_items_count(12, 1, 10).unwrap(), 2);
+        assert_eq!(dpos_batch_items_count(12, 2, 10).unwrap(), 1);
     }
 
     fn undelegate_input(validator: [u8; 20], amount: U256) -> Vec<u8> {
@@ -5828,6 +6117,7 @@ mod tests {
                 yield_percentage: 20,
                 dpos_blocks_per_year: 10,
                 rewards_distribution_frequency: vec![(0, 1)],
+                fix_claim_all_block_num: u64::MAX,
                 ..Default::default()
             },
         )
@@ -5877,6 +6167,146 @@ mod tests {
         let (_header_rlp, receipts) = final_chain
             .finalize_block(second_pbft, vec![claim_tx], vec![])
             .unwrap();
+        let claim_all_gas = DPOS_CLAIM_REWARDS_GAS + DPOS_BATCH_GET_REWARDS_GAS;
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (1, claim_all_gas, claim_all_gas)
+        );
+        let logs = receipt_logs(&receipts[0]);
+        assert_eq!(logs.len(), 1);
+        assert_dpos_amount_log(
+            &logs[0],
+            DPOS_REWARDS_CLAIMED_TOPIC,
+            vec![address_topic(validator), address_topic(validator)],
+            U256::from(150u64),
+        );
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            first_period_contract_balance - U256::from(150u64)
+        );
+        assert_eq!(
+            balance_of(&final_chain, validator),
+            U256::from(1_000_149u64)
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_supports_legacy_batch_claim_all_rewards() {
+        let path = temp_db_path("finalize-dpos-claim-all-rewards-batch");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x70; 20];
+        let receiver = [0x71; 20];
+        let signing_key = SigningKey::from_slice(&[21u8; 32]).unwrap();
+        let first_period = 1u64;
+        let first_pbft = signed_pbft_block(&signing_key, first_period, 207);
+        let transaction_rlp = vec![0xc1, 0xD3];
+        let transaction = test_transaction(
+            0xD3,
+            validator,
+            Some(receiver),
+            0,
+            U256::from(1u64),
+            U256::zero(),
+            50_000,
+            vec![],
+            transaction_rlp.clone(),
+        );
+        let transaction_hash = transaction.hash;
+        write_period_data(
+            &storage,
+            first_period,
+            &first_pbft,
+            std::slice::from_ref(&transaction_rlp),
+        );
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(validator, U256::from(1_000_000u64))],
+            vec![genesis_validator_with_metadata(
+                validator,
+                U256::from(10_000u64),
+                [0x72; 20],
+                2_500,
+                "validator",
+                "endpoint",
+            )],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+            FinalChainRewardsConfig {
+                committee_size: 100,
+                magnolia_period: 0,
+                aspen_part_one_period: u64::MAX,
+                aspen_part_two_period: 0,
+                max_block_author_reward_percent: 0,
+                dag_proposers_reward_percent: 100,
+                yield_percentage: 20,
+                dpos_blocks_per_year: 10,
+                rewards_distribution_frequency: vec![(0, 1)],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        final_chain
+            .finalize_block(
+                first_pbft,
+                vec![transaction],
+                vec![FinalizationDagBlock {
+                    author: validator,
+                    difficulty: 0,
+                    transaction_hashes: vec![transaction_hash],
+                }],
+            )
+            .unwrap();
+        assert_single_delegation(
+            &final_chain,
+            first_period,
+            validator,
+            validator,
+            U256::from(10_000u64),
+            U256::from(150u64),
+        );
+        let first_period_contract_balance = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
+
+        let second_period = 2u64;
+        let second_pbft = signed_pbft_block(&signing_key, second_period, 208);
+        let claim_tx = test_transaction(
+            0xD4,
+            validator,
+            Some(DPOS_CONTRACT_ADDRESS),
+            1,
+            U256::zero(),
+            U256::zero(),
+            100_000,
+            claim_all_rewards_batch_input(0),
+            vec![0xc1, 0xD4],
+        );
+        write_period_data(
+            &storage,
+            second_period,
+            &second_pbft,
+            std::slice::from_ref(&claim_tx.rlp),
+        );
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(second_pbft, vec![claim_tx], vec![])
+            .unwrap();
+        let claim_all_gas = DPOS_CLAIM_REWARDS_GAS + DPOS_BATCH_GET_REWARDS_GAS;
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (1, claim_all_gas, claim_all_gas)
+        );
         let logs = receipt_logs(&receipts[0]);
         assert_eq!(logs.len(), 1);
         assert_dpos_amount_log(

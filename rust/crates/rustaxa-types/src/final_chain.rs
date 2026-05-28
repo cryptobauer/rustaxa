@@ -115,7 +115,7 @@ pub struct GenesisDposConfig {
 /// fields describe validator/stake initialization, while rewards configuration
 /// controls post-execution reward-stat planning and fixed-yield reward
 /// distribution for finalized blocks.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FinalChainRewardsConfig {
     /// Committee size used by legacy rewards stats for max vote-weight bounds.
     pub committee_size: u32,
@@ -123,6 +123,11 @@ pub struct FinalChainRewardsConfig {
     pub magnolia_period: u64,
     /// First period where Aspen part-one DAG reward counting is active.
     pub aspen_part_one_period: u64,
+    /// First period where the legacy pre-Aspen `claimAllRewards(uint32)` ABI is disabled.
+    ///
+    /// A value of `u64::MAX` keeps the compatibility ABI enabled for local
+    /// rewrite tests that do not configure the hardfork boundary.
+    pub fix_claim_all_block_num: u64,
     /// First period where Aspen part-two dynamic-yield rewards are active.
     ///
     /// Rust native finalization currently distributes fixed-yield rewards only.
@@ -154,6 +159,27 @@ pub struct FinalChainRewardsConfig {
     pub cacti_period: u64,
     /// Rewards distribution frequency changes keyed by starting period.
     pub rewards_distribution_frequency: Vec<(u64, u32)>,
+}
+
+impl Default for FinalChainRewardsConfig {
+    fn default() -> Self {
+        Self {
+            committee_size: 0,
+            magnolia_period: 0,
+            aspen_part_one_period: 0,
+            fix_claim_all_block_num: u64::MAX,
+            aspen_part_two_period: 0,
+            max_block_author_reward_percent: 0,
+            dag_proposers_reward_percent: 0,
+            yield_percentage: 0,
+            dpos_blocks_per_year: 0,
+            genesis_balance_sum: Vec::new(),
+            aspen_max_supply: Vec::new(),
+            aspen_generated_rewards: Vec::new(),
+            cacti_period: 0,
+            rewards_distribution_frequency: Vec::new(),
+        }
+    }
 }
 
 /// Read-only FinalChain call request routed from C++ into Rust.

@@ -1103,6 +1103,7 @@ pub mod rustaxa_ffi {
         committee_size: u32,
         magnolia_period: u64,
         aspen_part_one_period: u64,
+        fix_claim_all_block_num: u64,
         aspen_part_two_period: u64,
         max_block_author_reward_percent: u16,
         dag_proposers_reward_percent: u16,
