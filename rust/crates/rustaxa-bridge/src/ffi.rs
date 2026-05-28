@@ -1093,6 +1093,8 @@ pub mod rustaxa_ffi {
         vote_eligibility_balance_step: Vec<u8>,
         validator_maximum_stake: Vec<u8>,
         minimum_deposit: Vec<u8>,
+        commission_change_delta: u16,
+        commission_change_frequency: u32,
         delegation_delay: u64,
         // Exclusive period boundary below which legacy DAG VDF sortition uses
         // the snapshot total eligible vote count as denominator.

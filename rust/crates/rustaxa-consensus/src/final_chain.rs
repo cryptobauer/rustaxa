@@ -43,7 +43,8 @@ const EMPTY_TRIE_ROOT: [u8; 32] = [
 ];
 const VALUE_TRANSFER_GAS: u64 = 21_000;
 const CONTRACT_CREATION_ESTIMATE_GAS: u64 = 0x5dcc5;
-const DPOS_READ_CALL_GAS: u64 = 21_300;
+const DPOS_DEFAULT_METHOD_GAS: u64 = 20_000;
+const DPOS_GET_METHOD_GAS: u64 = 5_000;
 const DPOS_CONTRACT_ADDRESS: [u8; 20] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xfe,
 ];
@@ -59,6 +60,10 @@ const DPOS_CLAIM_REWARDS_SELECTOR: [u8; 4] = [0xef, 0x5c, 0xfb, 0x8c];
 const DPOS_CLAIM_ALL_REWARDS_SELECTOR: [u8; 4] = [0x0b, 0x83, 0xa7, 0x27];
 const DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR: [u8; 4] = [0x09, 0xb7, 0x2e, 0x00];
 const DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR: [u8; 4] = [0xd0, 0xee, 0xbf, 0xe2];
+const DPOS_SET_COMMISSION_SELECTOR: [u8; 4] = [0xf0, 0x00, 0x32, 0x2c];
+const DPOS_SET_VALIDATOR_INFO_SELECTOR: [u8; 4] = [0x0b, 0xab, 0xea, 0x4c];
+const DPOS_GET_VALIDATORS_SELECTOR: [u8; 4] = [0x19, 0xd8, 0x02, 0x4f];
+const DPOS_GET_VALIDATORS_FOR_SELECTOR: [u8; 4] = [0x72, 0x4a, 0xc6, 0xb0];
 const DPOS_DELEGATED_TOPIC: [u8; 32] = [
     0xe5, 0x54, 0x1a, 0x6b, 0x61, 0x03, 0xd4, 0xfa, 0x7e, 0x02, 0x1e, 0xd5, 0x4f, 0xad, 0x39, 0xc6,
     0x6f, 0x27, 0xa7, 0x6b, 0xd1, 0x3d, 0x37, 0x4c, 0xf6, 0x24, 0x0a, 0xe6, 0xbd, 0x0b, 0xb7, 0x2b,
@@ -79,6 +84,14 @@ const DPOS_COMMISSION_REWARDS_CLAIMED_TOPIC: [u8; 32] = [
     0xf0, 0xec, 0x9e, 0x0f, 0x6a, 0xdd, 0x85, 0x0a, 0x17, 0x38, 0xc5, 0x82, 0x22, 0x44, 0xe2, 0x6f,
     0xfc, 0x3d, 0x1f, 0x14, 0xda, 0x75, 0x37, 0xaa, 0x24, 0x05, 0x82, 0xb2, 0x5a, 0xf1, 0x2a, 0xd0,
 ];
+const DPOS_COMMISSION_SET_TOPIC: [u8; 32] = [
+    0xc9, 0x09, 0xda, 0xf7, 0x78, 0xd1, 0x80, 0xf4, 0x3d, 0xac, 0x53, 0xb5, 0x5d, 0x0d, 0xe9, 0x34,
+    0xd2, 0xf1, 0xe0, 0xb7, 0x04, 0x12, 0xca, 0x27, 0x49, 0x82, 0xe4, 0xe6, 0xe8, 0x94, 0xeb, 0x1a,
+];
+const DPOS_VALIDATOR_INFO_SET_TOPIC: [u8; 32] = [
+    0x7a, 0xa2, 0x0e, 0x1f, 0x59, 0x76, 0x4c, 0x90, 0x66, 0x57, 0x8f, 0xeb, 0xd6, 0x88, 0xa5, 0x13,
+    0x75, 0xad, 0xbd, 0x65, 0x4a, 0xff, 0x86, 0xce, 0xf5, 0x65, 0x93, 0xa1, 0x7a, 0x99, 0x07, 0x1d,
+];
 const DPOS_VALIDATOR_REGISTERED_TOPIC: [u8; 32] = [
     0xd0, 0x95, 0x01, 0x34, 0x84, 0x73, 0x47, 0x4a, 0x20, 0xc7, 0x72, 0xc7, 0x9c, 0x65, 0x3e, 0x1f,
     0xd7, 0xe8, 0xb4, 0x37, 0xe4, 0x18, 0xfe, 0x23, 0x5d, 0x27, 0x7d, 0x2c, 0x88, 0x85, 0x32, 0x51,
@@ -89,9 +102,15 @@ const DPOS_UNDELEGATE_GAS: u64 = 60_000;
 const DPOS_REDELEGATE_GAS: u64 = 80_000;
 const DPOS_CLAIM_REWARDS_GAS: u64 = 40_000;
 const DPOS_CLAIM_COMMISSION_REWARDS_GAS: u64 = 20_000;
+const DPOS_SET_COMMISSION_GAS: u64 = 20_000;
+const DPOS_SET_VALIDATOR_INFO_GAS: u64 = 20_000;
 const DPOS_BATCH_GET_REWARDS_GAS: u64 = 5_000;
 const DPOS_GET_DELEGATIONS_MAX_COUNT: usize = 20;
+const DPOS_GET_VALIDATORS_MAX_COUNT: usize = 20;
 const DPOS_CLAIM_ALL_REWARDS_MAX_COUNT: usize = 10;
+const DPOS_MAX_COMMISSION: u16 = 10_000;
+const DPOS_MAX_DESCRIPTION_LENGTH: usize = 100;
+const DPOS_MAX_ENDPOINT_LENGTH: usize = 50;
 const ASPEN_YIELD_PRECISION: u64 = 1_000_000;
 
 /// Rust final-chain domain surface used by the C++ shim.
@@ -105,6 +124,8 @@ pub struct FinalChain {
     dpos_vote_eligibility_balance_step: Vec<u8>,
     dpos_validator_maximum_stake: Vec<u8>,
     dpos_minimum_deposit: Vec<u8>,
+    dpos_commission_change_delta: u16,
+    dpos_commission_change_frequency: u32,
     dpos_delegation_delay: u64,
     /// DAG VDF sortition vote-count ceiling after the configured legacy
     /// total-vote-count compatibility boundary.
@@ -159,6 +180,8 @@ struct DposSnapshot {
     total_vote_count: u64,
     /// Delegated stake by validator and delegator at this block.
     delegations: DposDelegations,
+    /// Validator insertion order used by legacy-compatible paged DPoS reads.
+    validator_order: Vec<[u8; 20]>,
     /// Delegator-to-validator iteration order used by DPoS paged reads.
     delegator_validators: DposDelegatorValidators,
     /// F1 reward cursor by validator and delegator at this block.
@@ -290,6 +313,10 @@ impl FinalChain {
                 )
             })
             .collect();
+        let genesis_validator_order = genesis_validators
+            .iter()
+            .map(|validator| validator.address)
+            .collect::<Vec<_>>();
         let genesis_vrf_keys = genesis_validators
             .into_iter()
             .map(|validator| {
@@ -380,6 +407,8 @@ impl FinalChain {
                 .clone(),
             dpos_validator_maximum_stake: genesis_dpos_config.validator_maximum_stake.clone(),
             dpos_minimum_deposit: genesis_dpos_config.minimum_deposit.clone(),
+            dpos_commission_change_delta: genesis_dpos_config.commission_change_delta,
+            dpos_commission_change_frequency: genesis_dpos_config.commission_change_frequency,
             dpos_delegation_delay: genesis_dpos_config.delegation_delay,
             dag_vdf_sortition_max_vote_count,
             dag_vdf_sortition_total_vote_count_until_period: genesis_dpos_config
@@ -402,6 +431,7 @@ impl FinalChain {
                     vote_counts: genesis_dpos_vote_counts,
                     total_vote_count: genesis_dpos_total_vote_count,
                     delegations: genesis_dpos_delegations,
+                    validator_order: genesis_validator_order,
                     delegator_validators: genesis_dpos_delegator_validators,
                     delegation_reward_cursors: genesis_dpos_delegation_reward_cursors,
                     validator_reward_per_stake: BTreeMap::new(),
@@ -831,17 +861,9 @@ impl FinalChain {
             });
         }
 
-        if request.gas_limit < DPOS_READ_CALL_GAS {
-            return Ok(FinalChainCallOutcome {
-                gas_used: request.gas_limit,
-                code_err: "out of gas".to_string(),
-                ..Default::default()
-            });
-        }
-
         if request.input.len() < 4 {
             return Ok(FinalChainCallOutcome {
-                gas_used: DPOS_READ_CALL_GAS,
+                gas_used: 0,
                 code_err: "Rust FinalChain::call DPoS input is missing selector".to_string(),
                 ..Default::default()
             });
@@ -849,6 +871,14 @@ impl FinalChain {
 
         let mut selector = [0u8; 4];
         selector.copy_from_slice(&request.input[..4]);
+        let gas_used = self.dpos_call_required_gas(&request, selector)?;
+        if request.gas_limit < gas_used {
+            return Ok(FinalChainCallOutcome {
+                gas_used: request.gas_limit,
+                code_err: "out of gas".to_string(),
+                ..Default::default()
+            });
+        }
         let code_retval = match selector {
             DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR => abi_word_from_u64(
                 self.dpos_snapshot_at_finalized_block(request.block_number)?
@@ -859,6 +889,19 @@ impl FinalChain {
                 let validator =
                     decode_abi_address_argument(&request.input, "getValidator(address)")?;
                 self.encode_dpos_validator(request.block_number, validator)?
+            }
+            DPOS_GET_VALIDATORS_SELECTOR => {
+                let batch = decode_abi_u32_argument(&request.input, 4, "getValidators(uint32)")?;
+                self.encode_dpos_validators(request.block_number, batch)?
+            }
+            DPOS_GET_VALIDATORS_FOR_SELECTOR => {
+                let owner = decode_abi_address_argument_with_offset(
+                    &request.input,
+                    4,
+                    "getValidatorsFor owner",
+                )?;
+                let batch = decode_abi_u32_argument(&request.input, 36, "getValidatorsFor batch")?;
+                self.encode_dpos_validators_for(request.block_number, owner, batch)?
             }
             DPOS_GET_TOTAL_DELEGATION_SELECTOR => {
                 let delegator =
@@ -877,7 +920,7 @@ impl FinalChain {
             }
             _ => {
                 return Ok(FinalChainCallOutcome {
-                    gas_used: DPOS_READ_CALL_GAS,
+                    gas_used,
                     code_err: format!(
                         "Rust FinalChain::call unsupported DPoS selector 0x{}",
                         selector_hex(selector)
@@ -889,7 +932,7 @@ impl FinalChain {
 
         Ok(FinalChainCallOutcome {
             code_retval,
-            gas_used: DPOS_READ_CALL_GAS,
+            gas_used,
             ..Default::default()
         })
     }
@@ -1741,9 +1784,18 @@ impl FinalChain {
                     | DposTransaction::Redelegate { .. }
                     | DposTransaction::ClaimRewards { .. }
                     | DposTransaction::ClaimCommissionRewards { .. }
+                    | DposTransaction::SetValidatorInfo { .. }
+                    | DposTransaction::SetCommission { .. }
                     | DposTransaction::ClaimAllRewards { .. } => {}
                 }
             }
+            let dpos_nonpayable_value_failure = dpos_transaction.as_ref().is_some_and(|dpos_tx| {
+                !value.is_zero()
+                    && !matches!(
+                        dpos_tx,
+                        DposTransaction::Register(_) | DposTransaction::Delegate { .. }
+                    )
+            });
             let required_gas = if let Some(dpos_transaction) = dpos_transaction.as_ref() {
                 match dpos_transaction {
                     DposTransaction::Register(_) => DPOS_REGISTER_VALIDATOR_GAS,
@@ -1754,6 +1806,8 @@ impl FinalChain {
                     DposTransaction::ClaimCommissionRewards { .. } => {
                         DPOS_CLAIM_COMMISSION_REWARDS_GAS
                     }
+                    DposTransaction::SetValidatorInfo { .. } => DPOS_SET_VALIDATOR_INFO_GAS,
+                    DposTransaction::SetCommission { .. } => DPOS_SET_COMMISSION_GAS,
                     DposTransaction::ClaimAllRewards { delegator, batch } => {
                         let claim_items = dpos_claim_all_rewards_item_count(
                             &dpos_gas_snapshot,
@@ -1799,8 +1853,13 @@ impl FinalChain {
                     .checked_mul(U256::from(gas_used))
                     .ok_or_else(|| anyhow::anyhow!("transaction gas cost overflow"))?;
                 if status_code == 1 {
+                    let charged_value = if dpos_nonpayable_value_failure {
+                        U256::zero()
+                    } else {
+                        value
+                    };
                     let total_cost = gas_cost
-                        .checked_add(value)
+                        .checked_add(charged_value)
                         .ok_or_else(|| anyhow::anyhow!("transaction total cost overflow"))?;
                     if sender_balance < total_cost {
                         anyhow::bail!(
@@ -1821,7 +1880,9 @@ impl FinalChain {
                 .ok_or_else(|| anyhow::anyhow!("cumulative gas used overflow"))?;
 
             if status_code == 1 {
-                if let Some(dpos_tx) = dpos_transaction {
+                if dpos_nonpayable_value_failure {
+                    status_code = 0;
+                } else if let Some(dpos_tx) = dpos_transaction {
                     if matches!(
                         dpos_tx,
                         DposTransaction::Register(_) | DposTransaction::Delegate { .. }
@@ -2057,6 +2118,77 @@ impl FinalChain {
         Ok(None)
     }
 
+    fn dpos_call_required_gas(
+        &self,
+        request: &FinalChainCallRequest,
+        selector: [u8; 4],
+    ) -> Result<u64, anyhow::Error> {
+        match selector {
+            DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR => Ok(DPOS_DEFAULT_METHOD_GAS),
+            DPOS_GET_VALIDATOR_SELECTOR => Ok(DPOS_GET_METHOD_GAS),
+            DPOS_GET_VALIDATORS_SELECTOR => {
+                let snapshot = self.dpos_snapshot_at_finalized_block(request.block_number)?;
+                let batch = decode_abi_u32_argument(&request.input, 4, "getValidators(uint32)")?;
+                let items = dpos_batch_items_count(
+                    snapshot.validator_order.len() as u64,
+                    batch,
+                    DPOS_GET_VALIDATORS_MAX_COUNT as u64,
+                )?;
+                items
+                    .checked_mul(DPOS_BATCH_GET_REWARDS_GAS)
+                    .ok_or_else(|| anyhow::anyhow!("getValidators gas multiplication overflow"))
+            }
+            DPOS_GET_VALIDATORS_FOR_SELECTOR => {
+                self.dpos_snapshot_at_finalized_block(request.block_number)?;
+                decode_abi_address_argument_with_offset(
+                    &request.input,
+                    4,
+                    "getValidatorsFor owner",
+                )?;
+                decode_abi_u32_argument(&request.input, 36, "getValidatorsFor batch")?;
+                (DPOS_GET_VALIDATORS_MAX_COUNT as u64)
+                    .checked_mul(DPOS_BATCH_GET_REWARDS_GAS)
+                    .ok_or_else(|| anyhow::anyhow!("getValidatorsFor gas multiplication overflow"))
+            }
+            DPOS_GET_TOTAL_DELEGATION_SELECTOR => {
+                let snapshot = self.dpos_snapshot_at_finalized_block(request.block_number)?;
+                let delegator =
+                    decode_abi_address_argument(&request.input, "getTotalDelegation(address)")?;
+                let count = snapshot
+                    .delegator_validators
+                    .get(&delegator)
+                    .map(Vec::len)
+                    .unwrap_or_default() as u64;
+                count
+                    .checked_mul(DPOS_BATCH_GET_REWARDS_GAS)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("getTotalDelegation gas multiplication overflow")
+                    })
+            }
+            DPOS_GET_DELEGATIONS_SELECTOR => {
+                let snapshot = self.dpos_snapshot_at_finalized_block(request.block_number)?;
+                let delegator =
+                    decode_abi_address_argument(&request.input, "getDelegations(address,uint32)")?;
+                let batch = decode_abi_u32_argument(
+                    &request.input,
+                    36,
+                    "getDelegations(address,uint32) batch",
+                )?;
+                let count = snapshot
+                    .delegator_validators
+                    .get(&delegator)
+                    .map(Vec::len)
+                    .unwrap_or_default() as u64;
+                let items =
+                    dpos_batch_items_count(count, batch, DPOS_GET_DELEGATIONS_MAX_COUNT as u64)?;
+                items
+                    .checked_mul(DPOS_BATCH_GET_REWARDS_GAS)
+                    .ok_or_else(|| anyhow::anyhow!("getDelegations gas multiplication overflow"))
+            }
+            _ => Ok(0),
+        }
+    }
+
     /// Encodes the DPoS `getValidator(address)` return value using C++ ABI parity.
     ///
     /// The returned struct contains dynamic string fields, so the ABI payload
@@ -2071,11 +2203,26 @@ impl FinalChain {
         validator: [u8; 20],
     ) -> Result<Vec<u8>, anyhow::Error> {
         let snapshot = self.dpos_snapshot_at_finalized_block(block_number)?;
+        let mut output = Vec::new();
+        output.extend_from_slice(&abi_word_from_u64(32));
+        output.extend_from_slice(
+            &self.encode_dpos_validator_basic_info_payload(&snapshot, validator)?,
+        );
+        Ok(output)
+    }
+
+    fn encode_dpos_validator_basic_info_payload(
+        &self,
+        snapshot: &DposSnapshot,
+        validator: [u8; 20],
+    ) -> Result<Vec<u8>, anyhow::Error> {
         let total_stake = snapshot
             .total_stakes
             .get(&validator)
             .map(Vec::as_slice)
-            .unwrap_or_default();
+            .ok_or_else(|| {
+                anyhow::anyhow!("Rust FinalChain::call DPoS validator does not exist")
+            })?;
         let commission_reward = snapshot
             .commission_rewards
             .get(&validator)
@@ -2085,7 +2232,9 @@ impl FinalChain {
             .validator_metadata
             .get(&validator)
             .cloned()
-            .unwrap_or_default();
+            .ok_or_else(|| {
+                anyhow::anyhow!("Rust FinalChain::call DPoS validator metadata is missing")
+            })?;
         let description_offset = 8usize
             .checked_mul(32)
             .ok_or_else(|| anyhow::anyhow!("validator ABI tuple head size overflow"))?;
@@ -2101,11 +2250,10 @@ impl FinalChain {
             .ok_or_else(|| anyhow::anyhow!("validator ABI output size overflow"))?;
 
         let mut output = Vec::with_capacity(output_capacity);
-        output.extend_from_slice(&abi_word_from_u64(32));
         output.extend_from_slice(&abi_word_from_u256_bytes(total_stake)?);
         output.extend_from_slice(&abi_word_from_u256_bytes(commission_reward)?);
         output.extend_from_slice(&abi_word_from_u64(u64::from(metadata.commission)));
-        output.extend_from_slice(&abi_word_from_u64(0));
+        output.extend_from_slice(&abi_word_from_u64(metadata.last_commission_change));
         output.extend_from_slice(&abi_word_from_u64(0));
         output.extend_from_slice(&abi_word_from_address(metadata.owner));
         output.extend_from_slice(&abi_word_from_usize(
@@ -2118,6 +2266,123 @@ impl FinalChain {
         )?);
         output.extend_from_slice(&abi_string_tail(&metadata.description)?);
         output.extend_from_slice(&abi_string_tail(&metadata.endpoint)?);
+        Ok(output)
+    }
+
+    fn encode_dpos_validators(
+        &self,
+        block_number: u64,
+        batch: u32,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        let snapshot = self.dpos_snapshot_at_finalized_block(block_number)?;
+        let start = usize::try_from(batch)
+            .map_err(|_| anyhow::anyhow!("getValidators batch does not fit into usize"))?
+            .checked_mul(DPOS_GET_VALIDATORS_MAX_COUNT)
+            .ok_or_else(|| anyhow::anyhow!("getValidators batch offset overflow"))?;
+        let end_index = start
+            .checked_add(DPOS_GET_VALIDATORS_MAX_COUNT)
+            .ok_or_else(|| anyhow::anyhow!("getValidators batch end overflow"))?;
+        let page = snapshot
+            .validator_order
+            .iter()
+            .filter(|validator| snapshot.total_stakes.contains_key(*validator))
+            .skip(start)
+            .take(DPOS_GET_VALIDATORS_MAX_COUNT)
+            .copied()
+            .collect::<Vec<_>>();
+        self.encode_dpos_validator_page(
+            &snapshot,
+            &page,
+            end_index >= snapshot.validator_order.len(),
+        )
+    }
+
+    fn encode_dpos_validators_for(
+        &self,
+        block_number: u64,
+        owner: [u8; 20],
+        batch: u32,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        let snapshot = self.dpos_snapshot_at_finalized_block(block_number)?;
+        let to_skip = usize::try_from(batch)
+            .map_err(|_| anyhow::anyhow!("getValidatorsFor batch does not fit into usize"))?
+            .checked_mul(DPOS_GET_VALIDATORS_MAX_COUNT)
+            .ok_or_else(|| anyhow::anyhow!("getValidatorsFor batch offset overflow"))?;
+        let mut skipped = 0usize;
+        let mut page = Vec::new();
+        let mut is_end = true;
+        for validator in &snapshot.validator_order {
+            let Some(metadata) = snapshot.validator_metadata.get(validator) else {
+                continue;
+            };
+            if metadata.owner != owner {
+                continue;
+            }
+            if skipped < to_skip {
+                skipped += 1;
+                continue;
+            }
+            if page.len() == DPOS_GET_VALIDATORS_MAX_COUNT {
+                is_end = false;
+                break;
+            }
+            page.push(*validator);
+        }
+        self.encode_dpos_validator_page(&snapshot, &page, is_end)
+    }
+
+    fn encode_dpos_validator_page(
+        &self,
+        snapshot: &DposSnapshot,
+        validators: &[[u8; 20]],
+        is_end: bool,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        let payloads = validators
+            .iter()
+            .map(|validator| self.encode_dpos_validator_data_payload(snapshot, *validator))
+            .collect::<Result<Vec<_>>>()?;
+        let offsets_len = validators
+            .len()
+            .checked_mul(32)
+            .ok_or_else(|| anyhow::anyhow!("validator page offsets size overflow"))?;
+        let mut array_tail = Vec::new();
+        array_tail.extend_from_slice(&abi_word_from_usize(
+            validators.len(),
+            "validator page length",
+        )?);
+        let mut next_offset = 32usize
+            .checked_add(offsets_len)
+            .ok_or_else(|| anyhow::anyhow!("validator page first offset overflow"))?;
+        for payload in &payloads {
+            array_tail.extend_from_slice(&abi_word_from_usize(
+                next_offset,
+                "validator page element offset",
+            )?);
+            next_offset = next_offset
+                .checked_add(payload.len())
+                .ok_or_else(|| anyhow::anyhow!("validator page element offset overflow"))?;
+        }
+        for payload in payloads {
+            array_tail.extend_from_slice(&payload);
+        }
+
+        let mut output = Vec::new();
+        output.extend_from_slice(&abi_word_from_u64(64));
+        output.extend_from_slice(&abi_word_from_bool(is_end));
+        output.extend_from_slice(&array_tail);
+        Ok(output)
+    }
+
+    fn encode_dpos_validator_data_payload(
+        &self,
+        snapshot: &DposSnapshot,
+        validator: [u8; 20],
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        let info_payload = self.encode_dpos_validator_basic_info_payload(snapshot, validator)?;
+        let mut output = Vec::new();
+        output.extend_from_slice(&abi_word_from_address(validator));
+        output.extend_from_slice(&abi_word_from_u64(64));
+        output.extend_from_slice(&info_payload);
         Ok(output)
     }
 
@@ -2341,16 +2606,13 @@ impl FinalChain {
         accounts: &mut HashMap<[u8; 20], Account>,
         owner: [u8; 20],
         validator: [u8; 20],
-    ) -> Result<Vec<ReceiptLog>, anyhow::Error> {
-        let metadata = snapshot.validator_metadata.get(&validator).ok_or_else(|| {
-            anyhow::anyhow!(
-                "Rust FinalChain::finalize DPoS validator does not exist for commission claim"
-            )
-        })?;
-        anyhow::ensure!(
-            metadata.owner == owner,
-            "Rust FinalChain::finalize DPoS commission claim owner mismatch"
-        );
+    ) -> Result<DposApplyOutcome, anyhow::Error> {
+        let Some(metadata) = snapshot.validator_metadata.get(&validator) else {
+            return Ok(DposApplyOutcome::contract_failure());
+        };
+        if metadata.owner != owner {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
 
         let reward = snapshot
             .commission_rewards
@@ -2391,9 +2653,73 @@ impl FinalChain {
             );
         }
 
-        Ok(vec![dpos_commission_rewards_claimed_log(
-            owner, validator, reward,
-        )?])
+        Ok(DposApplyOutcome::success(vec![
+            dpos_commission_rewards_claimed_log(owner, validator, reward)?,
+        ]))
+    }
+
+    fn apply_dpos_validator_info_update(
+        &self,
+        snapshot: &mut DposSnapshot,
+        owner: [u8; 20],
+        validator: [u8; 20],
+        description: String,
+        endpoint: String,
+    ) -> Result<DposApplyOutcome, anyhow::Error> {
+        if endpoint.len() > DPOS_MAX_ENDPOINT_LENGTH
+            || description.len() > DPOS_MAX_DESCRIPTION_LENGTH
+        {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
+        let Some(metadata) = snapshot.validator_metadata.get_mut(&validator) else {
+            return Ok(DposApplyOutcome::contract_failure());
+        };
+        if metadata.owner != owner {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
+        metadata.description = description;
+        metadata.endpoint = endpoint;
+        Ok(DposApplyOutcome::success(vec![
+            dpos_validator_info_set_log(validator),
+        ]))
+    }
+
+    fn apply_dpos_commission_update(
+        &self,
+        snapshot: &mut DposSnapshot,
+        owner: [u8; 20],
+        validator: [u8; 20],
+        commission: u16,
+        block_number: u64,
+    ) -> Result<DposApplyOutcome, anyhow::Error> {
+        if commission > DPOS_MAX_COMMISSION {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
+        let Some(metadata) = snapshot.validator_metadata.get_mut(&validator) else {
+            return Ok(DposApplyOutcome::contract_failure());
+        };
+        if metadata.owner != owner {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
+        if self.dpos_commission_change_frequency != 0
+            && block_number
+                < metadata
+                    .last_commission_change
+                    .saturating_add(u64::from(self.dpos_commission_change_frequency))
+        {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
+        if self.dpos_commission_change_delta != 0 {
+            let delta = commission.abs_diff(metadata.commission);
+            if delta > self.dpos_commission_change_delta {
+                return Ok(DposApplyOutcome::contract_failure());
+            }
+        }
+        metadata.commission = commission;
+        metadata.last_commission_change = block_number;
+        Ok(DposApplyOutcome::success(vec![dpos_commission_set_log(
+            validator, commission,
+        )?]))
     }
 
     /// Plans the DPoS snapshot for a newly finalized block.
@@ -2419,50 +2745,54 @@ impl FinalChain {
             anyhow::anyhow!("missing previous DPoS snapshot for block {previous_block}")
         })?;
         for (position, dpos_tx) in dpos_transactions {
-            let logs = match dpos_tx {
-                DposTransaction::Register(registration) => {
-                    self.apply_dpos_registration(&mut snapshot, registration)?
-                }
+            let outcome = match dpos_tx {
+                DposTransaction::Register(registration) => DposApplyOutcome::success(
+                    self.apply_dpos_registration(&mut snapshot, registration, block_number)?,
+                ),
                 DposTransaction::Delegate {
                     delegator,
                     validator,
                     amount,
-                } => {
-                    self.apply_dpos_delegate(&mut snapshot, accounts, delegator, validator, amount)?
-                }
-                DposTransaction::Undelegate {
-                    delegator,
-                    validator,
-                    amount,
-                } => self.apply_dpos_undelegate(
+                } => DposApplyOutcome::success(self.apply_dpos_delegate(
                     &mut snapshot,
                     accounts,
                     delegator,
                     validator,
                     amount,
-                )?,
+                )?),
+                DposTransaction::Undelegate {
+                    delegator,
+                    validator,
+                    amount,
+                } => DposApplyOutcome::success(self.apply_dpos_undelegate(
+                    &mut snapshot,
+                    accounts,
+                    delegator,
+                    validator,
+                    amount,
+                )?),
                 DposTransaction::Redelegate {
                     delegator,
                     from,
                     to,
                     amount,
-                } => self.apply_dpos_redelegate(
+                } => DposApplyOutcome::success(self.apply_dpos_redelegate(
                     &mut snapshot,
                     accounts,
                     delegator,
                     from,
                     to,
                     amount,
-                )?,
+                )?),
                 DposTransaction::ClaimRewards {
                     delegator,
                     validator,
-                } => self.apply_dpos_delegator_reward_claim(
+                } => DposApplyOutcome::success(self.apply_dpos_delegator_reward_claim(
                     &mut snapshot,
                     accounts,
                     validator,
                     delegator,
-                )?,
+                )?),
                 DposTransaction::ClaimCommissionRewards { owner, validator } => self
                     .apply_dpos_commission_reward_claim(
                         &mut snapshot,
@@ -2470,16 +2800,40 @@ impl FinalChain {
                         owner,
                         validator,
                     )?,
-                DposTransaction::ClaimAllRewards { delegator, batch } => {
-                    self.apply_dpos_claim_all_rewards(&mut snapshot, accounts, delegator, batch)?
-                }
+                DposTransaction::SetValidatorInfo {
+                    owner,
+                    validator,
+                    description,
+                    endpoint,
+                } => self.apply_dpos_validator_info_update(
+                    &mut snapshot,
+                    owner,
+                    validator,
+                    description,
+                    endpoint,
+                )?,
+                DposTransaction::SetCommission {
+                    owner,
+                    validator,
+                    commission,
+                } => self.apply_dpos_commission_update(
+                    &mut snapshot,
+                    owner,
+                    validator,
+                    commission,
+                    block_number,
+                )?,
+                DposTransaction::ClaimAllRewards { delegator, batch } => DposApplyOutcome::success(
+                    self.apply_dpos_claim_all_rewards(&mut snapshot, accounts, delegator, batch)?,
+                ),
             };
             let receipt = receipts.get_mut(position).ok_or_else(|| {
                 anyhow::anyhow!(
                     "DPoS receipt position {position} is outside finalized transaction list"
                 )
             })?;
-            receipt.logs = logs;
+            receipt.status_code = outcome.status_code;
+            receipt.logs = outcome.logs;
         }
         Ok(snapshot)
     }
@@ -2488,6 +2842,7 @@ impl FinalChain {
         &self,
         snapshot: &mut DposSnapshot,
         registration: DposRegistration,
+        block_number: u64,
     ) -> Result<Vec<ReceiptLog>, anyhow::Error> {
         if snapshot.total_stakes.contains_key(&registration.validator) {
             anyhow::bail!("Rust FinalChain::finalize DPoS validator is already registered");
@@ -2520,9 +2875,12 @@ impl FinalChain {
             .entry(registration.validator)
             .or_default();
         let owner = registration.metadata.owner;
+        let mut metadata = registration.metadata;
+        metadata.last_commission_change = block_number;
         snapshot
             .validator_metadata
-            .insert(registration.validator, registration.metadata);
+            .insert(registration.validator, metadata);
+        snapshot.validator_order.push(registration.validator);
         snapshot
             .vrf_keys
             .insert(registration.validator, registration.vrf_key);
@@ -2977,7 +3335,7 @@ fn h256_from_slice(raw: &[u8], field: &str) -> Result<ethereum_types::H256, anyh
 }
 
 fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Vec<u8> {
-    let mut stream = rlp::RlpStream::new_list(14);
+    let mut stream = rlp::RlpStream::new_list(15);
     append_address_bytes_map(&mut stream, &snapshot.total_stakes);
     append_address_bytes_map(&mut stream, &snapshot.commission_rewards);
     append_validator_metadata_map(&mut stream, &snapshot.validator_metadata);
@@ -2992,6 +3350,7 @@ fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Vec<u8> {
     append_address_bytes_map(&mut stream, &snapshot.validator_reward_per_stake);
     append_delegations_map(&mut stream, &snapshot.delegation_reward_cursors);
     append_delegator_validators_map(&mut stream, &snapshot.delegator_validators);
+    append_address_vec(&mut stream, &snapshot.validator_order);
     stream.out().to_vec()
 }
 
@@ -3004,9 +3363,10 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
         && item_count != 9
         && item_count != 11
         && item_count != 14
+        && item_count != 15
     {
         anyhow::bail!(
-            "DPoS snapshot RLP must contain exactly five, six, seven, nine, eleven, or fourteen items"
+            "DPoS snapshot RLP must contain exactly five, six, seven, nine, eleven, fourteen, or fifteen items"
         );
     }
     let total_stakes = decode_address_bytes_map(&rlp.at(0)?, "total stakes")?;
@@ -3061,6 +3421,11 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
     } else {
         delegator_validators_from_delegations(&delegations)
     };
+    let validator_order = if item_count >= 15 {
+        decode_address_vec(&rlp.at(14)?, "validator order")?
+    } else {
+        total_stakes.keys().copied().collect()
+    };
     Ok(DposSnapshot {
         total_stakes,
         commission_rewards,
@@ -3070,6 +3435,7 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
         vote_counts,
         total_vote_count,
         delegations,
+        validator_order,
         delegator_validators,
         delegation_reward_cursors,
         validator_reward_per_stake,
@@ -3143,12 +3509,20 @@ fn append_validator_metadata_map(
 ) {
     stream.begin_list(map.len());
     for (address, metadata) in map {
-        stream.begin_list(5);
+        stream.begin_list(6);
         stream.append(&address.as_slice());
         stream.append(&metadata.owner.as_slice());
         stream.append(&metadata.commission);
+        stream.append(&metadata.last_commission_change);
         stream.append(&metadata.description.as_str());
         stream.append(&metadata.endpoint.as_str());
+    }
+}
+
+fn append_address_vec(stream: &mut rlp::RlpStream, addresses: &[[u8; 20]]) {
+    stream.begin_list(addresses.len());
+    for address in addresses {
+        stream.append(&address.as_slice());
     }
 }
 
@@ -3343,20 +3717,28 @@ fn decode_validator_metadata_map(
 ) -> Result<BTreeMap<[u8; 20], DposValidatorMetadata>, anyhow::Error> {
     let mut map = BTreeMap::new();
     for item in rlp.iter() {
-        if item.item_count()? != 5 {
-            anyhow::bail!("DPoS snapshot metadata entry must contain exactly five items");
+        let item_count = item.item_count()?;
+        if item_count != 5 && item_count != 6 {
+            anyhow::bail!("DPoS snapshot metadata entry must contain exactly five or six items");
         }
         map.insert(
             decode_address(&item.at(0)?, "validator metadata address")?,
             DposValidatorMetadata {
                 owner: decode_address(&item.at(1)?, "validator metadata owner")?,
                 commission: item.val_at(2)?,
-                description: item.val_at(3)?,
-                endpoint: item.val_at(4)?,
+                last_commission_change: if item_count >= 6 { item.val_at(3)? } else { 0 },
+                description: item.val_at(if item_count >= 6 { 4 } else { 3 })?,
+                endpoint: item.val_at(if item_count >= 6 { 5 } else { 4 })?,
             },
         );
     }
     Ok(map)
+}
+
+fn decode_address_vec(rlp: &Rlp<'_>, field: &str) -> Result<Vec<[u8; 20]>, anyhow::Error> {
+    rlp.iter()
+        .map(|item| decode_address(&item, field))
+        .collect()
 }
 
 fn decode_vote_count_map(rlp: &Rlp<'_>) -> Result<BTreeMap<[u8; 20], u64>, anyhow::Error> {
@@ -3556,6 +3938,25 @@ fn dpos_validator_registered_log(validator: [u8; 20]) -> ReceiptLog {
         topics: vec![DPOS_VALIDATOR_REGISTERED_TOPIC, address_topic(validator)],
         data: Vec::new(),
     }
+}
+
+fn dpos_validator_info_set_log(validator: [u8; 20]) -> ReceiptLog {
+    ReceiptLog {
+        address: DPOS_CONTRACT_ADDRESS,
+        topics: vec![DPOS_VALIDATOR_INFO_SET_TOPIC, address_topic(validator)],
+        data: Vec::new(),
+    }
+}
+
+fn dpos_commission_set_log(
+    validator: [u8; 20],
+    commission: u16,
+) -> Result<ReceiptLog, anyhow::Error> {
+    Ok(ReceiptLog {
+        address: DPOS_CONTRACT_ADDRESS,
+        topics: vec![DPOS_COMMISSION_SET_TOPIC, address_topic(validator)],
+        data: abi_word_from_u64(u64::from(commission)).to_vec(),
+    })
 }
 
 fn dpos_amount_log(
@@ -3899,6 +4300,24 @@ fn decode_dpos_transaction(
             let validator = decode_abi_address_argument(input, "claimCommissionRewards(address)")?;
             Ok(DposTransaction::ClaimCommissionRewards { owner, validator })
         }
+        DPOS_SET_VALIDATOR_INFO_SELECTOR => {
+            let (validator, description, endpoint) = decode_dpos_set_validator_info(input)?;
+            Ok(DposTransaction::SetValidatorInfo {
+                owner,
+                validator,
+                description,
+                endpoint,
+            })
+        }
+        DPOS_SET_COMMISSION_SELECTOR => {
+            let validator = decode_abi_address_argument(input, "setCommission(address,uint16)")?;
+            let commission = decode_abi_word_as_u16(input, 4 + 32, "setCommission commission")?;
+            Ok(DposTransaction::SetCommission {
+                owner,
+                validator,
+                commission,
+            })
+        }
         DPOS_CLAIM_ALL_REWARDS_SELECTOR => {
             if input.len() != 4 {
                 anyhow::bail!("claimAllRewards input is malformed");
@@ -4021,6 +4440,7 @@ fn decode_dpos_register_validator(
         metadata: DposValidatorMetadata {
             owner,
             commission,
+            last_commission_change: 0,
             description: decode_abi_dynamic_string(
                 input,
                 description_offset,
@@ -4033,6 +4453,24 @@ fn decode_dpos_register_validator(
             )?,
         },
     })
+}
+
+fn decode_dpos_set_validator_info(
+    input: &[u8],
+) -> Result<([u8; 20], String, String), anyhow::Error> {
+    if input.len() < 4 + 3 * 32 {
+        anyhow::bail!("setValidatorInfo input is shorter than selector plus ABI head");
+    }
+    let validator =
+        decode_abi_address_argument_with_offset(input, 4, "setValidatorInfo validator")?;
+    let description_offset =
+        decode_abi_word_as_usize(input, 4 + 32, "setValidatorInfo description offset")?;
+    let endpoint_offset =
+        decode_abi_word_as_usize(input, 4 + 2 * 32, "setValidatorInfo endpoint offset")?;
+    let description =
+        decode_abi_dynamic_string(input, description_offset, "setValidatorInfo description")?;
+    let endpoint = decode_abi_dynamic_string(input, endpoint_offset, "setValidatorInfo endpoint")?;
+    Ok((validator, description, endpoint))
 }
 
 fn decode_abi_word_as_usize(
@@ -4231,6 +4669,8 @@ fn update_dpos_claim_gas_snapshot(
         }
         DposTransaction::ClaimRewards { .. }
         | DposTransaction::ClaimCommissionRewards { .. }
+        | DposTransaction::SetValidatorInfo { .. }
+        | DposTransaction::SetCommission { .. }
         | DposTransaction::ClaimAllRewards { .. } => {}
     }
     Ok(())
@@ -4349,6 +4789,28 @@ struct ReceiptLog {
     data: Vec<u8>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DposApplyOutcome {
+    status_code: u8,
+    logs: Vec<ReceiptLog>,
+}
+
+impl DposApplyOutcome {
+    fn success(logs: Vec<ReceiptLog>) -> Self {
+        Self {
+            status_code: 1,
+            logs,
+        }
+    }
+
+    fn contract_failure() -> Self {
+        Self {
+            status_code: 0,
+            logs: Vec::new(),
+        }
+    }
+}
+
 enum DposTransaction {
     Register(DposRegistration),
     Delegate {
@@ -4374,6 +4836,17 @@ enum DposTransaction {
     ClaimCommissionRewards {
         owner: [u8; 20],
         validator: [u8; 20],
+    },
+    SetValidatorInfo {
+        owner: [u8; 20],
+        validator: [u8; 20],
+        description: String,
+        endpoint: String,
+    },
+    SetCommission {
+        owner: [u8; 20],
+        validator: [u8; 20],
+        commission: u16,
     },
     ClaimAllRewards {
         delegator: [u8; 20],
@@ -4671,6 +5144,19 @@ mod tests {
         input
     }
 
+    fn get_validators_input(batch: u32) -> Vec<u8> {
+        let mut input = DPOS_GET_VALIDATORS_SELECTOR.to_vec();
+        input.extend_from_slice(&abi_word_from_u64(u64::from(batch)));
+        input
+    }
+
+    fn get_validators_for_input(owner: [u8; 20], batch: u32) -> Vec<u8> {
+        let mut input = DPOS_GET_VALIDATORS_FOR_SELECTOR.to_vec();
+        input.extend_from_slice(&abi_word_from_address(owner));
+        input.extend_from_slice(&abi_word_from_u64(u64::from(batch)));
+        input
+    }
+
     fn assert_single_delegation(
         final_chain: &FinalChain,
         block_number: u64,
@@ -4714,6 +5200,24 @@ mod tests {
             u256_from_big_endian(&delegations.code_retval[160..192]),
             rewards
         );
+    }
+
+    fn validator_page_addresses(output: &[u8]) -> (Vec<[u8; 20]>, bool) {
+        assert_eq!(u256_from_big_endian(&output[0..32]), U256::from(64u64));
+        let is_end = u256_from_big_endian(&output[32..64]) == U256::one();
+        let array_start = 64usize;
+        let len = u256_from_big_endian(&output[array_start..array_start + 32]).as_usize();
+        let mut addresses = Vec::with_capacity(len);
+        for index in 0..len {
+            let offset_start = array_start + 32 + index * 32;
+            let payload_offset =
+                u256_from_big_endian(&output[offset_start..offset_start + 32]).as_usize();
+            let payload_start = array_start + payload_offset;
+            let mut address = [0u8; 20];
+            address.copy_from_slice(&output[payload_start + 12..payload_start + 32]);
+            addresses.push(address);
+        }
+        (addresses, is_end)
     }
 
     fn abi_word_from_bytes_offset(offset: usize) -> [u8; 32] {
@@ -4767,6 +5271,26 @@ mod tests {
     fn claim_commission_rewards_input(validator: [u8; 20]) -> Vec<u8> {
         let mut input = DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR.to_vec();
         input.extend_from_slice(&abi_word_from_address(validator));
+        input
+    }
+
+    fn set_commission_input(validator: [u8; 20], commission: u16) -> Vec<u8> {
+        let mut input = DPOS_SET_COMMISSION_SELECTOR.to_vec();
+        input.extend_from_slice(&abi_word_from_address(validator));
+        input.extend_from_slice(&abi_word_from_u64(u64::from(commission)));
+        input
+    }
+
+    fn set_validator_info_input(validator: [u8; 20], description: &str, endpoint: &str) -> Vec<u8> {
+        let description_offset = 3 * 32;
+        let endpoint_offset =
+            description_offset + abi_dynamic_string_tail_len(description).unwrap();
+        let mut input = DPOS_SET_VALIDATOR_INFO_SELECTOR.to_vec();
+        input.extend_from_slice(&abi_word_from_address(validator));
+        input.extend_from_slice(&abi_word_from_bytes_offset(description_offset));
+        input.extend_from_slice(&abi_word_from_bytes_offset(endpoint_offset));
+        input.extend_from_slice(&abi_string_tail(description).unwrap());
+        input.extend_from_slice(&abi_string_tail(endpoint).unwrap());
         input
     }
 
@@ -4837,6 +5361,43 @@ mod tests {
                 assert_eq!(decoded_validator, validator);
             }
             _ => panic!("expected claimCommissionRewards"),
+        }
+
+        let decoded =
+            decode_dpos_transaction(&set_commission_input(validator, 1250), owner, 10, 10).unwrap();
+        match decoded {
+            DposTransaction::SetCommission {
+                owner: decoded_owner,
+                validator: decoded_validator,
+                commission,
+            } => {
+                assert_eq!(decoded_owner, owner);
+                assert_eq!(decoded_validator, validator);
+                assert_eq!(commission, 1250);
+            }
+            _ => panic!("expected setCommission"),
+        }
+
+        let decoded = decode_dpos_transaction(
+            &set_validator_info_input(validator, "new description", "new endpoint"),
+            owner,
+            10,
+            10,
+        )
+        .unwrap();
+        match decoded {
+            DposTransaction::SetValidatorInfo {
+                owner: decoded_owner,
+                validator: decoded_validator,
+                description,
+                endpoint,
+            } => {
+                assert_eq!(decoded_owner, owner);
+                assert_eq!(decoded_validator, validator);
+                assert_eq!(description, "new description");
+                assert_eq!(endpoint, "new endpoint");
+            }
+            _ => panic!("expected setValidatorInfo"),
         }
     }
 
@@ -4911,6 +5472,8 @@ mod tests {
             vote_eligibility_balance_step: u256_to_big_endian(vote_step),
             validator_maximum_stake: u256_to_big_endian(maximum_stake),
             minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
             delegation_delay: 0,
             dag_vdf_sortition_total_vote_count_until_period,
         };
@@ -5124,6 +5687,87 @@ mod tests {
                 .map(|vote_count| (vote_count.address, vote_count.vote_count))
                 .collect::<Vec<_>>(),
             vec![(first_validator, 10), (second_validator, 25)]
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn call_reads_dpos_validator_pages_in_legacy_order() {
+        let path = temp_db_path("dpos-validator-pages");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let first_validator = [0x30; 20];
+        let second_validator = [0x10; 20];
+        let third_validator = [0x20; 20];
+        let first_owner = [0x41; 20];
+        let second_owner = [0x42; 20];
+
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![
+                genesis_validator_with_metadata(
+                    first_validator,
+                    U256::from(10_000u64),
+                    first_owner,
+                    100,
+                    "first",
+                    "first endpoint",
+                ),
+                genesis_validator_with_metadata(
+                    second_validator,
+                    U256::from(10_000u64),
+                    second_owner,
+                    200,
+                    "second",
+                    "second endpoint",
+                ),
+                genesis_validator_with_metadata(
+                    third_validator,
+                    U256::from(10_000u64),
+                    first_owner,
+                    300,
+                    "third",
+                    "third endpoint",
+                ),
+            ],
+            U256::from(1_000u64),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+
+        let all_validators = final_chain
+            .call(dpos_call_request(0, get_validators_input(0)))
+            .unwrap();
+        assert_eq!(all_validators.gas_used, 15_000);
+        assert_eq!(
+            validator_page_addresses(&all_validators.code_retval),
+            (
+                vec![first_validator, second_validator, third_validator],
+                true
+            )
+        );
+
+        let out_of_range = final_chain
+            .call(dpos_call_request(0, get_validators_input(1)))
+            .unwrap();
+        assert_eq!(out_of_range.gas_used, 5_000);
+        assert_eq!(
+            validator_page_addresses(&out_of_range.code_retval),
+            (vec![], true)
+        );
+
+        let owner_validators = final_chain
+            .call(dpos_call_request(
+                0,
+                get_validators_for_input(first_owner, 0),
+            ))
+            .unwrap();
+        assert_eq!(owner_validators.gas_used, 100_000);
+        assert_eq!(
+            validator_page_addresses(&owner_validators.code_retval),
+            (vec![first_validator, third_validator], true)
         );
 
         drop(final_chain);
@@ -5402,6 +6046,8 @@ mod tests {
                 vote_eligibility_balance_step: u256_to_big_endian(U256::one()),
                 validator_maximum_stake: u256_to_big_endian(U256::MAX),
                 minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
                 delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
@@ -5432,6 +6078,8 @@ mod tests {
                 vote_eligibility_balance_step: u256_to_big_endian(U256::one()),
                 validator_maximum_stake: u256_to_big_endian(U256::from(10_000u64)),
                 minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
                 delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
@@ -5462,6 +6110,8 @@ mod tests {
                 vote_eligibility_balance_step: u256_to_big_endian(U256::zero()),
                 validator_maximum_stake: u256_to_big_endian(U256::from(10_000u64)),
                 minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
                 delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
@@ -5699,6 +6349,8 @@ mod tests {
                 vote_eligibility_balance_step: vec![],
                 validator_maximum_stake: vec![],
                 minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
                 delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 2,
             },
@@ -5752,6 +6404,8 @@ mod tests {
             vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
             validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
             minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
             delegation_delay: 0,
             dag_vdf_sortition_total_vote_count_until_period: 0,
         };
@@ -5976,6 +6630,8 @@ mod tests {
                 vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
                 validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
                 minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
                 delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
@@ -6069,6 +6725,8 @@ mod tests {
             vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
             validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
             minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
             delegation_delay: 0,
             dag_vdf_sortition_total_vote_count_until_period: 0,
         };
@@ -6189,6 +6847,178 @@ mod tests {
     }
 
     #[test]
+    fn finalize_block_supports_validator_owner_updates_and_failed_receipts() {
+        let path = temp_db_path("finalize-dpos-validator-owner-updates");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let validator = [0x30; 20];
+        let owner = [0x31; 20];
+        let wrong_owner = [0x32; 20];
+        let genesis_validator = genesis_validator_with_metadata(
+            validator,
+            U256::from(10_000u64),
+            owner,
+            1_000,
+            "old description",
+            "old endpoint",
+        );
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: vec![],
+            commission_change_delta: 500,
+            commission_change_frequency: 0,
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let signing_key = SigningKey::from_slice(&[34u8; 32]).unwrap();
+        let pbft = signed_pbft_block(&signing_key, period, 231);
+        let failed_info_tx = test_transaction(
+            0xA0,
+            wrong_owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::zero(),
+            U256::zero(),
+            100_000,
+            set_validator_info_input(validator, "bad description", "bad endpoint"),
+            vec![0xc1, 0xA0],
+        );
+        let info_tx = test_transaction(
+            0xA1,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::zero(),
+            U256::zero(),
+            100_000,
+            set_validator_info_input(validator, "new description", "new endpoint"),
+            vec![0xc1, 0xA1],
+        );
+        let commission_tx = test_transaction(
+            0xA2,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            1,
+            U256::zero(),
+            U256::zero(),
+            100_000,
+            set_commission_input(validator, 1_500),
+            vec![0xc1, 0xA2],
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft,
+            &[
+                failed_info_tx.rlp.clone(),
+                info_tx.rlp.clone(),
+                commission_tx.rlp.clone(),
+            ],
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            300_000,
+            0,
+            vec![
+                genesis_account(owner, U256::from(1_000_000u64)),
+                genesis_account(wrong_owner, U256::from(1_000_000u64)),
+            ],
+            vec![genesis_validator.clone()],
+            genesis_dpos_config.clone(),
+        )
+        .unwrap();
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(pbft, vec![failed_info_tx, info_tx, commission_tx], vec![])
+            .unwrap();
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (0, DPOS_SET_VALIDATOR_INFO_GAS, DPOS_SET_VALIDATOR_INFO_GAS)
+        );
+        assert!(receipt_logs(&receipts[0]).is_empty());
+        assert_eq!(
+            receipt_fields(&receipts[1]),
+            (
+                1,
+                DPOS_SET_VALIDATOR_INFO_GAS,
+                DPOS_SET_VALIDATOR_INFO_GAS * 2,
+            )
+        );
+        let info_logs = receipt_logs(&receipts[1]);
+        assert_eq!(info_logs.len(), 1);
+        assert_eq!(info_logs[0], dpos_validator_info_set_log(validator));
+        assert_eq!(
+            receipt_fields(&receipts[2]),
+            (
+                1,
+                DPOS_SET_COMMISSION_GAS,
+                DPOS_SET_VALIDATOR_INFO_GAS * 2 + DPOS_SET_COMMISSION_GAS,
+            )
+        );
+        let commission_logs = receipt_logs(&receipts[2]);
+        assert_eq!(commission_logs.len(), 1);
+        assert_eq!(
+            commission_logs[0],
+            dpos_commission_set_log(validator, 1_500).unwrap()
+        );
+
+        let validator_info = final_chain
+            .call(dpos_call_request(period, get_validator_input(validator)))
+            .unwrap();
+        assert_eq!(
+            u256_from_big_endian(&validator_info.code_retval[96..128]),
+            U256::from(1_500u64)
+        );
+        assert_eq!(
+            u256_from_big_endian(&validator_info.code_retval[128..160]),
+            U256::from(period)
+        );
+        let description_offset =
+            u256_from_big_endian(&validator_info.code_retval[224..256]).as_usize();
+        let endpoint_offset =
+            u256_from_big_endian(&validator_info.code_retval[256..288]).as_usize();
+        assert_abi_string_tail(
+            &validator_info.code_retval,
+            32,
+            description_offset,
+            "new description",
+        );
+        assert_abi_string_tail(
+            &validator_info.code_retval,
+            32,
+            endpoint_offset,
+            "new endpoint",
+        );
+
+        drop(final_chain);
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            300_000,
+            0,
+            vec![
+                genesis_account(owner, U256::from(1_000_000u64)),
+                genesis_account(wrong_owner, U256::from(1_000_000u64)),
+            ],
+            vec![genesis_validator],
+            genesis_dpos_config,
+        )
+        .unwrap();
+        let validator_info = final_chain
+            .call(dpos_call_request(period, get_validator_input(validator)))
+            .unwrap();
+        assert_eq!(
+            u256_from_big_endian(&validator_info.code_retval[128..160]),
+            U256::from(period)
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn finalize_block_supports_auto_claim_on_dpos_stake_mutation() {
         let path = temp_db_path("finalize-dpos-mutation-with-pending-reward");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
@@ -6234,6 +7064,8 @@ mod tests {
                 vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
                 validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
                 minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
                 delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
@@ -6367,6 +7199,8 @@ mod tests {
                 vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
                 validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
                 minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
                 delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
@@ -6503,6 +7337,8 @@ mod tests {
                 vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
                 validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
                 minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
                 delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
@@ -6638,6 +7474,8 @@ mod tests {
                 vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
                 validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
                 minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
                 delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
@@ -6739,6 +7577,8 @@ mod tests {
                 vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
                 validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
                 minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
                 delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
@@ -6842,6 +7682,8 @@ mod tests {
                 vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
                 validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
                 minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
                 delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
@@ -6941,6 +7783,8 @@ mod tests {
             vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
             validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
             minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
             delegation_delay: 0,
             dag_vdf_sortition_total_vote_count_until_period: 0,
         };
@@ -7128,6 +7972,8 @@ mod tests {
                 vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
                 validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
                 minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
                 delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
@@ -7183,6 +8029,8 @@ mod tests {
             vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
             validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
             minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
             delegation_delay: 0,
             dag_vdf_sortition_total_vote_count_until_period: 0,
         };
@@ -7284,6 +8132,8 @@ mod tests {
                 vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
                 validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
                 minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
                 delegation_delay: 5,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
@@ -7329,6 +8179,8 @@ mod tests {
             vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
             validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
             minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
             delegation_delay: 0,
             dag_vdf_sortition_total_vote_count_until_period: 0,
         };
@@ -7506,6 +8358,8 @@ mod tests {
             vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
             validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
             minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
             delegation_delay: 0,
             dag_vdf_sortition_total_vote_count_until_period: 0,
         };
@@ -7621,6 +8475,8 @@ mod tests {
             vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
             validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
             minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
             delegation_delay: 0,
             dag_vdf_sortition_total_vote_count_until_period: 0,
         };
@@ -7686,6 +8542,8 @@ mod tests {
             vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
             validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
             minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
             delegation_delay: 0,
             dag_vdf_sortition_total_vote_count_until_period: 0,
         };

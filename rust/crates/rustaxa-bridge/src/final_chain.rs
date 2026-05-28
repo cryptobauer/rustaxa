@@ -115,6 +115,8 @@ pub fn create_final_chain_with_rewards_config(
             vote_eligibility_balance_step: genesis_dpos_config.vote_eligibility_balance_step,
             validator_maximum_stake: genesis_dpos_config.validator_maximum_stake,
             minimum_deposit: genesis_dpos_config.minimum_deposit,
+            commission_change_delta: genesis_dpos_config.commission_change_delta,
+            commission_change_frequency: genesis_dpos_config.commission_change_frequency,
             delegation_delay: genesis_dpos_config.delegation_delay,
             dag_vdf_sortition_total_vote_count_until_period: genesis_dpos_config
                 .dag_vdf_sortition_total_vote_count_until_period,
@@ -548,6 +550,8 @@ mod tests {
                 vote_eligibility_balance_step: u256_be(1_000),
                 validator_maximum_stake: u256_be(30_000),
                 minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
                 delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },

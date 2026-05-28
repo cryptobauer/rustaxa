@@ -164,6 +164,8 @@ rustaxa::GenesisDposConfig make_genesis_dpos_config(const state_api::DPOSConfig&
   dpos_config.vote_eligibility_balance_step = into_big_endian_vec(config.vote_eligibility_balance_step);
   dpos_config.validator_maximum_stake = into_big_endian_vec(config.validator_maximum_stake);
   dpos_config.minimum_deposit = into_big_endian_vec(config.minimum_deposit);
+  dpos_config.commission_change_delta = config.commission_change_delta;
+  dpos_config.commission_change_frequency = config.commission_change_frequency;
   dpos_config.delegation_delay = config.delegation_delay;
   dpos_config.dag_vdf_sortition_total_vote_count_until_period = dag_vdf_sortition_total_vote_count_until_period;
   return dpos_config;

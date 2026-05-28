@@ -391,6 +391,8 @@ mod tests {
                 vote_eligibility_balance_step: vec![1],
                 validator_maximum_stake: vec![1],
                 minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
                 delegation_delay: 0,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },

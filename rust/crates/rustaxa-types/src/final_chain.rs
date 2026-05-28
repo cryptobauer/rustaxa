@@ -63,15 +63,18 @@ pub struct GenesisValidator {
 /// Validator metadata stored in a block-keyed DPoS snapshot.
 ///
 /// Snapshot metadata is separated from stake and reward counters because stake
-/// and rewards change through finalization, while this slice only supports
-/// genesis-seeded metadata. Future DPoS transactions can update these fields in
-/// the snapshot without changing the read-only ABI encoder.
+/// and rewards change through finalization. Owner-controlled DPoS contract
+/// calls mutate these fields in the same block snapshot as stake/reward state,
+/// so historical reads observe the validator info that was current at the
+/// requested finalized block.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DposValidatorMetadata {
     /// Validator owner address bytes in canonical address order.
     pub owner: [u8; 20],
     /// Validator commission value represented as the contract's `uint16`.
     pub commission: u16,
+    /// Finalized block number of the latest accepted commission change.
+    pub last_commission_change: u64,
     /// Human-readable validator description encoded as UTF-8.
     pub description: String,
     /// Validator endpoint encoded as UTF-8.
@@ -83,6 +86,7 @@ impl From<&GenesisValidator> for DposValidatorMetadata {
         Self {
             owner: validator.metadata.owner,
             commission: validator.metadata.commission,
+            last_commission_change: 0,
             description: validator.metadata.description.clone(),
             endpoint: validator.metadata.endpoint.clone(),
         }
@@ -101,6 +105,10 @@ pub struct GenesisDposConfig {
     /// Minimum delegation amount accepted by the DPoS contract, encoded as an
     /// unsigned big-endian integer byte string.
     pub minimum_deposit: Vec<u8>,
+    /// Maximum absolute commission change accepted by `setCommission`.
+    pub commission_change_delta: u16,
+    /// Minimum block distance between accepted commission changes.
+    pub commission_change_frequency: u32,
     /// Number of finalized blocks by which DPoS state reads lag newly applied
     /// delegation changes.
     pub delegation_delay: u64,

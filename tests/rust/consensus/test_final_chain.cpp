@@ -108,6 +108,44 @@ class RustFinalChainTest : public ::testing::Test {
     return input;
   }
 
+  static rust::Vec<uint8_t> get_validators_input(uint32_t batch) {
+    rust::Vec<uint8_t> input;
+    input.push_back(0x19);
+    input.push_back(0xd8);
+    input.push_back(0x02);
+    input.push_back(0x4f);
+    for (auto i = 0; i < 28; ++i) {
+      input.push_back(0);
+    }
+    input.push_back(static_cast<uint8_t>((batch >> 24) & 0xff));
+    input.push_back(static_cast<uint8_t>((batch >> 16) & 0xff));
+    input.push_back(static_cast<uint8_t>((batch >> 8) & 0xff));
+    input.push_back(static_cast<uint8_t>(batch & 0xff));
+    return input;
+  }
+
+  static rust::Vec<uint8_t> get_validators_for_input(std::array<uint8_t, 20> owner, uint32_t batch) {
+    rust::Vec<uint8_t> input;
+    input.push_back(0x72);
+    input.push_back(0x4a);
+    input.push_back(0xc6);
+    input.push_back(0xb0);
+    for (auto i = 0; i < 12; ++i) {
+      input.push_back(0);
+    }
+    for (const auto byte : owner) {
+      input.push_back(byte);
+    }
+    for (auto i = 0; i < 28; ++i) {
+      input.push_back(0);
+    }
+    input.push_back(static_cast<uint8_t>((batch >> 24) & 0xff));
+    input.push_back(static_cast<uint8_t>((batch >> 16) & 0xff));
+    input.push_back(static_cast<uint8_t>((batch >> 8) & 0xff));
+    input.push_back(static_cast<uint8_t>(batch & 0xff));
+    return input;
+  }
+
   static rust::Vec<uint8_t> get_claim_rewards_input(std::array<uint8_t, 20> validator) {
     rust::Vec<uint8_t> input;
     input.push_back(0xef);
@@ -152,6 +190,21 @@ class RustFinalChainTest : public ::testing::Test {
     return std::string(data.begin() + tail_start + 32, data.begin() + tail_start + 32 + size);
   }
 
+  static std::vector<std::array<uint8_t, 20>> validator_page_addresses(const rust::Vec<uint8_t>& data) {
+    const auto array_start = static_cast<size_t>(abi_word_u64(data, 0));
+    const auto size = static_cast<size_t>(abi_word_u64(data, array_start));
+    std::vector<std::array<uint8_t, 20>> addresses;
+    addresses.reserve(size);
+    for (auto i = 0u; i < size; ++i) {
+      const auto offset = static_cast<size_t>(abi_word_u64(data, array_start + 32 + i * 32));
+      const auto payload_start = array_start + offset;
+      std::array<uint8_t, 20> validator{};
+      std::copy(data.begin() + payload_start + 12, data.begin() + payload_start + 32, validator.begin());
+      addresses.push_back(validator);
+    }
+    return addresses;
+  }
+
   static std::vector<uint8_t> bytes(const rust::Vec<uint8_t>& value) {
     return std::vector<uint8_t>(value.begin(), value.end());
   }
@@ -163,21 +216,29 @@ class RustFinalChainTest : public ::testing::Test {
     config.eligibility_balance_threshold = u64_be(1000);
     config.vote_eligibility_balance_step = u64_be(1000);
     config.validator_maximum_stake = u64_be(30000);
+    config.commission_change_delta = 500;
+    config.commission_change_frequency = 7;
     config.dag_vdf_sortition_total_vote_count_until_period = 0;
     return config;
   }
 
-  static rust::Vec<GenesisValidator> genesis_validators(std::array<uint8_t, 20> validator_address) {
-    rust::Vec<GenesisValidator> validators;
+  static GenesisValidator genesis_validator(std::array<uint8_t, 20> validator_address,
+                                            std::array<uint8_t, 20> owner = address(0x11),
+                                            std::string description = "bridge validator metadata") {
     GenesisValidator validator;
     validator.address = validator_address;
-    validator.owner = address(0x11);
+    validator.owner = owner;
     validator.vrf_key = vrf_key(0xA0);
     validator.commission = 12;
-    validator.description = rust::String("bridge validator metadata");
+    validator.description = rust::String(description);
     validator.endpoint = rust::String("https://validator.example");
     validator.total_stake = u64_be(10000);
-    validators.push_back(std::move(validator));
+    return validator;
+  }
+
+  static rust::Vec<GenesisValidator> genesis_validators(std::array<uint8_t, 20> validator_address) {
+    rust::Vec<GenesisValidator> validators;
+    validators.push_back(genesis_validator(validator_address));
     return validators;
   }
 
@@ -279,6 +340,33 @@ TEST_F(RustFinalChainTest, DposCallReturnsGenesisValidatorMetadata) {
   EXPECT_EQ(abi_word_u64(outcome.code_retval, 256), 320u);
   EXPECT_EQ(abi_string_at(outcome.code_retval, 32, 256), "bridge validator metadata");
   EXPECT_EQ(abi_string_at(outcome.code_retval, 32, 320), "https://validator.example");
+}
+
+TEST_F(RustFinalChainTest, DposCallReturnsGenesisValidatorPages) {
+  const auto first_validator = address(0x30);
+  const auto second_validator = address(0x10);
+  const auto first_owner = address(0x11);
+  const auto second_owner = address(0x22);
+  rust::Vec<GenesisValidator> validators;
+  validators.push_back(genesis_validator(first_validator, first_owner, "first"));
+  validators.push_back(genesis_validator(second_validator, second_owner, "second"));
+
+  auto storage = create_storage(test_dir.string());
+  auto final_chain =
+      create_final_chain(*storage, 0, 0, genesis_accounts(), std::move(validators), genesis_dpos_config());
+
+  auto all = final_chain->call(dpos_call(0, get_validators_input(0)));
+  ASSERT_EQ(std::string(all.code_err), "");
+  ASSERT_EQ(std::string(all.consensus_err), "");
+  EXPECT_EQ(all.gas_used, 10'000u);
+  EXPECT_EQ(abi_word_u64(all.code_retval, 32), 1u);
+  EXPECT_EQ(validator_page_addresses(all.code_retval), (std::vector{first_validator, second_validator}));
+
+  auto by_owner = final_chain->call(dpos_call(0, get_validators_for_input(first_owner, 0)));
+  ASSERT_EQ(std::string(by_owner.code_err), "");
+  ASSERT_EQ(std::string(by_owner.consensus_err), "");
+  EXPECT_EQ(by_owner.gas_used, 100'000u);
+  EXPECT_EQ(validator_page_addresses(by_owner.code_retval), (std::vector{first_validator}));
 }
 
 TEST_F(RustFinalChainTest, DposCallRejectsClaimSelectors) {
