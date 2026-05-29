@@ -548,8 +548,9 @@ The current Rust starting point is intentionally small:
    dynamic-lambda calculation for PBFT finalization: it returns the ordered mixed-executor action list, block-period
    lambda, reward `blocks_per_year`, post-adjust rounds count, post-adjust dynamic lambda, and increase/decrease
    telemetry flags. The PBFT overlay consumes those Rust outputs and no longer calls the C++ dynamic-lambda adjustment
-   routine from the Rust-mode finalization path, while still applying the returned live fields and persistence stages
-   in shim code. The Rust-mode `VoteManager` overlay now uses the
+   routine from the Rust-mode finalization path. Rust now also owns a finalization runtime session cursor: the overlay
+   asks Rust for each action, executes the temporary C++ live effect, and reports success/failure back before Rust
+   advances the session. The Rust-mode `VoteManager` overlay now uses the
    approved temporary protected-state hook to inherit unported behavior from `VoteManagerOld` while owning reward-vote
    reset persistence handoff in shim code: it selects the live cert-vote bundle in C++, passes the stage-4 Rust storage
    facts into the Rust-owned finalization apply batch, and mutates live reward metadata only after Rust commits the
@@ -561,9 +562,10 @@ The current Rust starting point is intentionally small:
    also owns PBFT finalization
    sortition-change persistence: the sortition shim updates the live Rust runtime and returns the emitted threshold
    change, then the PBFT staged storage appender encodes and appends the `SortitionParamsChange` row into the same
-   primary finalization batch. C++ still owns reward-vote reset, sortition live-state mutation, dynamic-lambda
-   calculation/live mutation, FinalChain updates, and live PBFT runtime mutation until those sidecar APIs move across
-   the bridge. The full Rust-mode `PillarChainManager` overlay now keeps original pillar manager files clean while Rust
+   primary finalization batch. C++ still owns reward-vote reset live metadata, sortition live-state mutation,
+   dynamic-lambda live-field assignment from Rust output, FinalChain dispatch, and live PBFT runtime mutation until
+   those sidecar APIs move across the bridge. The full Rust-mode `PillarChainManager` overlay now keeps original pillar
+   manager files clean while Rust
    owns deterministic pillar-vote relevance/inspection/insertion and the first pillar-block planning slice: validator
    vote-count deltas are planned in Rust from C++-supplied FinalChain snapshots, and pillar-block first/period/parent
    linkage is validated by Rust before C++ materializes or persists `PillarBlock` objects. C++ still owns bridge

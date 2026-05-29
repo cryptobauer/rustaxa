@@ -70,6 +70,10 @@ pub struct BridgeProposedBlocks(pub ProposedBlocks);
 
 pub struct BridgeRewardsStatsRuntime(pub RewardsStatsRuntime);
 
+pub struct BridgePbftFinalizationRuntimeSession {
+    pub state: rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeState,
+}
+
 pub struct BridgeSlashingProofPlanner(pub Mutex<SlashingProofPlanner>);
 
 pub struct BridgePeriodDataQueue(pub PeriodDataQueue);
@@ -740,6 +744,17 @@ pub mod rustaxa_ffi {
         finalize_block: bool,
         status: u8,
         actions: Vec<u8>,
+        error_code: String,
+    }
+
+    /// One Rust-owned PBFT finalization runtime-session step.
+    struct PbftFinalizationRuntimeSessionStep {
+        status: u8,
+        cursor: u32,
+        action: u8,
+        has_action: bool,
+        complete: bool,
+        can_continue: bool,
         error_code: String,
     }
 
@@ -2537,6 +2552,23 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_finalization_runtime(
             plan: &PbftFinalizationIntentPlan,
         ) -> PbftFinalizationRuntimePlan;
+        type BridgePbftFinalizationRuntimeSession;
+        pub fn create_pbft_finalization_runtime_session(
+            plan: &PbftFinalizationIntentPlan,
+        ) -> Box<BridgePbftFinalizationRuntimeSession>;
+        pub fn pbft_finalization_runtime_session_next(
+            self: &mut BridgePbftFinalizationRuntimeSession,
+        ) -> PbftFinalizationRuntimeSessionStep;
+        pub fn pbft_finalization_runtime_session_report(
+            self: &mut BridgePbftFinalizationRuntimeSession,
+            cursor: u32,
+            action: u8,
+            success: bool,
+            action_status: u8,
+        ) -> PbftFinalizationRuntimeSessionStep;
+        pub fn abort_pbft_finalization_runtime_session(
+            self: &mut BridgePbftFinalizationRuntimeSession,
+        );
         pub fn plan_pbft_dynamic_lambda(fact: PbftDynamicLambdaFact) -> PbftDynamicLambdaPlan;
         pub fn append_pbft_finalization_storage_write(
             storage: &BridgeStorage,

@@ -53,8 +53,6 @@ constexpr uint8_t kPbftFinalizationStatusPillarDependencyMissing = 4;
 constexpr uint8_t kPbftFinalizationStatusEmptyCertVotes = 5;
 constexpr uint8_t kPbftFinalizationStatusCertVoteBlockMismatch = 6;
 constexpr uint8_t kPbftFinalizationRuntimeActionPrimaryStorage = 0;
-constexpr uint8_t kPbftFinalizationRuntimeActionRewardResetStorage = 1;
-constexpr uint8_t kPbftFinalizationRuntimeActionSortitionStorage = 2;
 constexpr uint8_t kPbftFinalizationRuntimeActionCommitRewardReset = 3;
 constexpr uint8_t kPbftFinalizationRuntimeActionSetDagOrder = 4;
 constexpr uint8_t kPbftFinalizationRuntimeActionUpdateTransactions = 5;
@@ -65,6 +63,10 @@ constexpr uint8_t kPbftFinalizationRuntimeActionFinalizeFinalChain = 9;
 constexpr uint8_t kPbftFinalizationRuntimeActionPersistExecutedStatus = 10;
 constexpr uint8_t kPbftFinalizationRuntimeActionSetExecutedFlag = 11;
 constexpr uint8_t kPbftFinalizationRuntimeActionAdvancePeriod = 12;
+constexpr uint8_t kPbftFinalizationRuntimeStatusActive = 0;
+constexpr uint8_t kPbftFinalizationRuntimeStatusComplete = 1;
+constexpr uint8_t kPbftFinalizationRuntimeStatusActionMismatch = 3;
+constexpr uint8_t kPbftFinalizationRuntimeStatusActionFailed = 4;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusApplied = 0;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusAlreadyApplied = 1;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusRejected = 2;
@@ -491,8 +493,6 @@ TEST(RustPbftSyncTest, FinalizationRuntimePlanOrdersMixedExecutorActions) {
   const std::vector<uint8_t> actions(runtime.actions.begin(), runtime.actions.end());
   EXPECT_EQ(actions, (std::vector<uint8_t>{
                          kPbftFinalizationRuntimeActionPrimaryStorage,
-                         kPbftFinalizationRuntimeActionRewardResetStorage,
-                         kPbftFinalizationRuntimeActionSortitionStorage,
                          kPbftFinalizationRuntimeActionCommitRewardReset,
                          kPbftFinalizationRuntimeActionSetDagOrder,
                          kPbftFinalizationRuntimeActionUpdateTransactions,
@@ -511,6 +511,59 @@ TEST(RustPbftSyncTest, FinalizationRuntimePlanOrdersMixedExecutorActions) {
   const auto rejected_runtime = plan_pbft_finalization_runtime(rejected_intent);
   EXPECT_FALSE(rejected_runtime.finalize_block);
   EXPECT_TRUE(rejected_runtime.actions.empty());
+}
+
+TEST(RustPbftSyncTest, FinalizationRuntimeSessionOwnsCursorAndCompletion) {
+  const auto intent = plan_pbft_finalization_intent(makeFinalizationFact());
+  auto session = create_pbft_finalization_runtime_session(intent);
+
+  auto step = session->pbft_finalization_runtime_session_next();
+  EXPECT_EQ(step.status, kPbftFinalizationRuntimeStatusActive);
+  EXPECT_TRUE(step.has_action);
+  EXPECT_EQ(step.cursor, 0);
+  EXPECT_EQ(step.action, kPbftFinalizationRuntimeActionPrimaryStorage);
+  EXPECT_FALSE(step.complete);
+
+  std::vector<uint8_t> actions;
+  while (step.has_action) {
+    actions.push_back(step.action);
+    step = session->pbft_finalization_runtime_session_report(step.cursor, step.action, true, 0);
+  }
+
+  EXPECT_TRUE(step.complete);
+  EXPECT_EQ(step.status, kPbftFinalizationRuntimeStatusComplete);
+  EXPECT_EQ(actions, (std::vector<uint8_t>{
+                         kPbftFinalizationRuntimeActionPrimaryStorage,
+                         kPbftFinalizationRuntimeActionCommitRewardReset,
+                         kPbftFinalizationRuntimeActionSetDagOrder,
+                         kPbftFinalizationRuntimeActionUpdateTransactions,
+                         kPbftFinalizationRuntimeActionUpdatePbftChain,
+                         kPbftFinalizationRuntimeActionClearAnchorCache,
+                         kPbftFinalizationRuntimeActionApplyDynamicLambda,
+                         kPbftFinalizationRuntimeActionFinalizeFinalChain,
+                         kPbftFinalizationRuntimeActionPersistExecutedStatus,
+                         kPbftFinalizationRuntimeActionSetExecutedFlag,
+                         kPbftFinalizationRuntimeActionAdvancePeriod,
+                     }));
+}
+
+TEST(RustPbftSyncTest, FinalizationRuntimeSessionStopsOnFailureOrMismatch) {
+  const auto intent = plan_pbft_finalization_intent(makeFinalizationFact());
+  auto session = create_pbft_finalization_runtime_session(intent);
+
+  auto failed = session->pbft_finalization_runtime_session_report(
+      0, kPbftFinalizationRuntimeActionPrimaryStorage, false, 77);
+  EXPECT_EQ(failed.status, kPbftFinalizationRuntimeStatusActionFailed);
+  EXPECT_FALSE(failed.has_action);
+  EXPECT_EQ(failed.cursor, 0);
+  EXPECT_EQ(std::string(failed.error_code), "PBFT_FINALIZE_RUNTIME_ACTION_STATUS_77");
+
+  session = create_pbft_finalization_runtime_session(intent);
+  auto mismatch = session->pbft_finalization_runtime_session_report(
+      1, kPbftFinalizationRuntimeActionPrimaryStorage, true, 0);
+  EXPECT_EQ(mismatch.status, kPbftFinalizationRuntimeStatusActionMismatch);
+  EXPECT_FALSE(mismatch.has_action);
+  EXPECT_EQ(std::string(mismatch.error_code), "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH");
 }
 
 TEST(RustPbftSyncTest, DynamicLambdaPlannerMatchesCactiAdjustmentPolicy) {

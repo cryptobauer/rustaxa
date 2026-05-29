@@ -177,6 +177,27 @@ impl PbftFinalizationRuntimeAction {
             Self::Complete => 13,
         }
     }
+
+    /// Decodes a stable bridge action code from C++.
+    pub const fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::ApplyPrimaryStorage),
+            1 => Some(Self::ApplyRewardVotesResetStorage),
+            2 => Some(Self::ApplySortitionStorage),
+            3 => Some(Self::CommitRewardVotesResetRuntime),
+            4 => Some(Self::SetDagBlockOrder),
+            5 => Some(Self::UpdateFinalizedTransactions),
+            6 => Some(Self::UpdatePbftChain),
+            7 => Some(Self::ClearAnchorDagCache),
+            8 => Some(Self::ApplyDynamicLambda),
+            9 => Some(Self::FinalizeFinalChain),
+            10 => Some(Self::PersistExecutedStatus),
+            11 => Some(Self::SetExecutedFlag),
+            12 => Some(Self::AdvancePeriod),
+            13 => Some(Self::Complete),
+            _ => None,
+        }
+    }
 }
 
 /// Ordered runtime plan derived from an already accepted finalization intent.
@@ -192,6 +213,90 @@ pub struct PbftFinalizationRuntimePlan {
     pub status: PbftFinalizationStatus,
     /// Ordered side-effect actions for the shim executor.
     pub actions: Vec<PbftFinalizationRuntimeAction>,
+}
+
+/// Runtime executor state status for the PBFT finalization action script.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftFinalizationRuntimeStatus {
+    /// Runtime is ready to return or accept another action.
+    Active,
+    /// Runtime completed all planned actions successfully.
+    Complete,
+    /// Runtime was created from a rejected finalization plan.
+    RejectedPlan,
+    /// Caller reported an action that does not match the next Rust-planned action.
+    ActionMismatch,
+    /// Caller reported that the planned action failed.
+    ActionFailed,
+    /// Runtime state is internally inconsistent.
+    ContractError,
+    /// Unknown status code decoded from a bridge value.
+    Unknown,
+}
+
+impl PbftFinalizationRuntimeStatus {
+    /// Stable bridge code for C++.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Active => 0,
+            Self::Complete => 1,
+            Self::RejectedPlan => 2,
+            Self::ActionMismatch => 3,
+            Self::ActionFailed => 4,
+            Self::ContractError => 255,
+            Self::Unknown => 254,
+        }
+    }
+}
+
+/// Stateful Rust-owned PBFT finalization runtime script.
+///
+/// C++ owns live side effects for now, but Rust owns the action cursor and
+/// validates that the shim reports each side effect in the planned order.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftFinalizationRuntimeState {
+    /// Finalization candidate status carried from the intent planner.
+    pub finalization_status: PbftFinalizationStatus,
+    /// Runtime executor status.
+    pub runtime_status: PbftFinalizationRuntimeStatus,
+    /// Ordered side-effect script.
+    pub actions: Vec<PbftFinalizationRuntimeAction>,
+    /// Index of the next action Rust expects C++ to execute.
+    pub next_action_index: u32,
+    /// Last successfully reported action, if any.
+    pub last_action: Option<PbftFinalizationRuntimeAction>,
+    /// Failed or mismatched action, if any.
+    pub failed_action: Option<PbftFinalizationRuntimeAction>,
+    /// Stable bridge-visible error code for terminal failures.
+    pub error_code: String,
+}
+
+/// Next runtime action requested by Rust.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftFinalizationRuntimeStep {
+    /// Runtime executor status at the time of the request.
+    pub runtime_status: PbftFinalizationRuntimeStatus,
+    /// True when `action` is populated and should be executed by C++.
+    pub has_action: bool,
+    /// Action that C++ should execute next.
+    pub action: Option<PbftFinalizationRuntimeAction>,
+    /// Index of `action` in the runtime script.
+    pub action_index: u32,
+    /// True when the runtime has completed all actions.
+    pub complete: bool,
+    /// Stable bridge-visible error code for terminal failures.
+    pub error_code: String,
+}
+
+/// Result reported by C++ after executing one runtime action.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftFinalizationRuntimeActionResult {
+    /// Action C++ believes it just executed.
+    pub action: PbftFinalizationRuntimeAction,
+    /// Whether the action completed successfully.
+    pub success: bool,
+    /// Optional stable error code supplied by the C++ executor.
+    pub error_code: String,
 }
 
 /// Cacti dynamic-lambda configuration needed by the Rust planner.
@@ -607,12 +712,6 @@ pub fn plan_pbft_finalization_runtime(plan: &PbftFinalizationPlan) -> PbftFinali
     {
         actions.push(PbftFinalizationRuntimeAction::ApplyPrimaryStorage);
     }
-    if plan.storage_write_intent.reset_reward_votes {
-        actions.push(PbftFinalizationRuntimeAction::ApplyRewardVotesResetStorage);
-    }
-    if plan.storage_write_intent.update_sortition_params {
-        actions.push(PbftFinalizationRuntimeAction::ApplySortitionStorage);
-    }
     if plan.cleanup.reset_reward_votes {
         actions.push(PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime);
     }
@@ -649,6 +748,162 @@ pub fn plan_pbft_finalization_runtime(plan: &PbftFinalizationPlan) -> PbftFinali
         status: plan.status,
         actions,
     }
+}
+
+/// Starts a stateful PBFT finalization runtime executor from a runtime plan.
+///
+/// The executor owns only ordering state. It never mutates storage or live
+/// consensus objects; C++ must call `next_pbft_finalization_runtime_action`,
+/// execute the returned action, and report the result through
+/// `report_pbft_finalization_runtime_action`.
+pub fn start_pbft_finalization_runtime(
+    plan: &PbftFinalizationRuntimePlan,
+) -> PbftFinalizationRuntimeState {
+    if !plan.finalize_block || plan.status != PbftFinalizationStatus::Accepted {
+        return PbftFinalizationRuntimeState {
+            finalization_status: plan.status,
+            runtime_status: PbftFinalizationRuntimeStatus::RejectedPlan,
+            actions: Vec::new(),
+            next_action_index: 0,
+            last_action: None,
+            failed_action: None,
+            error_code: "PBFT_FINALIZE_RUNTIME_REJECTED_PLAN".to_string(),
+        };
+    }
+
+    if plan.actions.is_empty() {
+        return PbftFinalizationRuntimeState {
+            finalization_status: plan.status,
+            runtime_status: PbftFinalizationRuntimeStatus::ContractError,
+            actions: Vec::new(),
+            next_action_index: 0,
+            last_action: None,
+            failed_action: None,
+            error_code: "PBFT_FINALIZE_RUNTIME_EMPTY_SCRIPT".to_string(),
+        };
+    }
+
+    PbftFinalizationRuntimeState {
+        finalization_status: plan.status,
+        runtime_status: PbftFinalizationRuntimeStatus::Active,
+        actions: plan.actions.clone(),
+        next_action_index: 0,
+        last_action: None,
+        failed_action: None,
+        error_code: String::new(),
+    }
+}
+
+/// Returns the next Rust-planned PBFT finalization action.
+///
+/// A completed or failed runtime returns no action and carries the terminal
+/// status/error. An active runtime that has consumed every action transitions to
+/// `Complete` at the returned step boundary.
+pub fn next_pbft_finalization_runtime_action(
+    state: &PbftFinalizationRuntimeState,
+) -> PbftFinalizationRuntimeStep {
+    if state.runtime_status != PbftFinalizationRuntimeStatus::Active {
+        return PbftFinalizationRuntimeStep {
+            runtime_status: state.runtime_status,
+            has_action: false,
+            action: None,
+            action_index: state.next_action_index,
+            complete: state.runtime_status == PbftFinalizationRuntimeStatus::Complete,
+            error_code: state.error_code.clone(),
+        };
+    }
+
+    let action_index = state.next_action_index as usize;
+    if action_index == state.actions.len() {
+        return PbftFinalizationRuntimeStep {
+            runtime_status: PbftFinalizationRuntimeStatus::Complete,
+            has_action: false,
+            action: None,
+            action_index: state.next_action_index,
+            complete: true,
+            error_code: String::new(),
+        };
+    }
+
+    let Some(action) = state.actions.get(action_index).copied() else {
+        return PbftFinalizationRuntimeStep {
+            runtime_status: PbftFinalizationRuntimeStatus::ContractError,
+            has_action: false,
+            action: None,
+            action_index: state.next_action_index,
+            complete: false,
+            error_code: "PBFT_FINALIZE_RUNTIME_CURSOR_OUT_OF_RANGE".to_string(),
+        };
+    };
+
+    PbftFinalizationRuntimeStep {
+        runtime_status: PbftFinalizationRuntimeStatus::Active,
+        has_action: true,
+        action: Some(action),
+        action_index: state.next_action_index,
+        complete: false,
+        error_code: String::new(),
+    }
+}
+
+/// Advances the PBFT finalization runtime after C++ executes one action.
+///
+/// The reported action must exactly match the next Rust-planned action. Failed
+/// actions put the runtime into a terminal `ActionFailed` state; mismatches put
+/// it into `ActionMismatch`. Successful reports advance the cursor and mark the
+/// runtime complete when the final action has been reported.
+pub fn report_pbft_finalization_runtime_action(
+    mut state: PbftFinalizationRuntimeState,
+    result: PbftFinalizationRuntimeActionResult,
+) -> PbftFinalizationRuntimeState {
+    if state.runtime_status != PbftFinalizationRuntimeStatus::Active {
+        state.runtime_status = PbftFinalizationRuntimeStatus::ContractError;
+        state.failed_action = Some(result.action);
+        if state.error_code.is_empty() {
+            state.error_code = "PBFT_FINALIZE_RUNTIME_NOT_ACTIVE".to_string();
+        }
+        return state;
+    }
+
+    let step = next_pbft_finalization_runtime_action(&state);
+    if step.runtime_status != PbftFinalizationRuntimeStatus::Active || !step.has_action {
+        state.runtime_status = PbftFinalizationRuntimeStatus::ContractError;
+        state.failed_action = Some(result.action);
+        state.error_code = if step.error_code.is_empty() {
+            "PBFT_FINALIZE_RUNTIME_NO_ACTION".to_string()
+        } else {
+            step.error_code
+        };
+        return state;
+    }
+
+    let expected_action = step
+        .action
+        .expect("active runtime step with has_action must carry action");
+    if result.action != expected_action {
+        state.runtime_status = PbftFinalizationRuntimeStatus::ActionMismatch;
+        state.failed_action = Some(result.action);
+        state.error_code = "PBFT_FINALIZE_RUNTIME_ACTION_MISMATCH".to_string();
+        return state;
+    }
+
+    if !result.success {
+        state.runtime_status = PbftFinalizationRuntimeStatus::ActionFailed;
+        state.failed_action = Some(result.action);
+        state.error_code = if result.error_code.is_empty() {
+            "PBFT_FINALIZE_RUNTIME_ACTION_FAILED".to_string()
+        } else {
+            result.error_code
+        };
+        return state;
+    }
+
+    state.last_action = Some(result.action);
+    state.next_action_index += 1;
+    if state.next_action_index as usize == state.actions.len() {
+        state.runtime_status = PbftFinalizationRuntimeStatus::Complete;
+    }
+    state
 }
 
 /// Computes the block lambda and post-finalization dynamic-lambda state.
@@ -751,7 +1006,8 @@ fn is_dynamic_lambda_change_interval(
     lambda_change_interval: u32,
 ) -> bool {
     lambda_change_interval == 1
-        || (block_number > cacti_block_num && block_number % u64::from(lambda_change_interval) == 0)
+        || (block_number > cacti_block_num
+            && block_number.is_multiple_of(u64::from(lambda_change_interval)))
 }
 
 fn calc_blocks_per_year(lambda_ms: u32, delay_ms: u32) -> Option<u32> {
@@ -1038,8 +1294,6 @@ mod tests {
             runtime.actions,
             vec![
                 PbftFinalizationRuntimeAction::ApplyPrimaryStorage,
-                PbftFinalizationRuntimeAction::ApplyRewardVotesResetStorage,
-                PbftFinalizationRuntimeAction::ApplySortitionStorage,
                 PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
                 PbftFinalizationRuntimeAction::SetDagBlockOrder,
                 PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
@@ -1052,6 +1306,102 @@ mod tests {
                 PbftFinalizationRuntimeAction::AdvancePeriod,
             ]
         );
+    }
+
+    #[test]
+    fn finalization_runtime_session_advances_only_after_matching_reports() {
+        let plan = plan_pbft_finalization_intent(accepted_fact());
+        let runtime = plan_pbft_finalization_runtime(&plan);
+        let mut state = start_pbft_finalization_runtime(&runtime);
+
+        let step = next_pbft_finalization_runtime_action(&state);
+        assert_eq!(step.runtime_status, PbftFinalizationRuntimeStatus::Active);
+        assert!(step.has_action);
+        assert_eq!(
+            step.action,
+            Some(PbftFinalizationRuntimeAction::ApplyPrimaryStorage)
+        );
+        assert_eq!(step.action_index, 0);
+
+        state = report_pbft_finalization_runtime_action(
+            state,
+            PbftFinalizationRuntimeActionResult {
+                action: PbftFinalizationRuntimeAction::ApplyPrimaryStorage,
+                success: true,
+                error_code: String::new(),
+            },
+        );
+
+        let step = next_pbft_finalization_runtime_action(&state);
+        assert_eq!(step.runtime_status, PbftFinalizationRuntimeStatus::Active);
+        assert_eq!(
+            step.action,
+            Some(PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime)
+        );
+        assert_eq!(step.action_index, 1);
+    }
+
+    #[test]
+    fn finalization_runtime_session_rejects_mismatched_and_failed_reports() {
+        let plan = plan_pbft_finalization_intent(accepted_fact());
+        let runtime = plan_pbft_finalization_runtime(&plan);
+        let state = start_pbft_finalization_runtime(&runtime);
+
+        let mismatch = report_pbft_finalization_runtime_action(
+            state.clone(),
+            PbftFinalizationRuntimeActionResult {
+                action: PbftFinalizationRuntimeAction::FinalizeFinalChain,
+                success: true,
+                error_code: String::new(),
+            },
+        );
+        assert_eq!(
+            mismatch.runtime_status,
+            PbftFinalizationRuntimeStatus::ActionMismatch
+        );
+        assert_eq!(mismatch.error_code, "PBFT_FINALIZE_RUNTIME_ACTION_MISMATCH");
+
+        let failed = report_pbft_finalization_runtime_action(
+            state,
+            PbftFinalizationRuntimeActionResult {
+                action: PbftFinalizationRuntimeAction::ApplyPrimaryStorage,
+                success: false,
+                error_code: "PRIMARY_FAILED".to_string(),
+            },
+        );
+        assert_eq!(
+            failed.runtime_status,
+            PbftFinalizationRuntimeStatus::ActionFailed
+        );
+        assert_eq!(failed.next_action_index, 0);
+        assert_eq!(failed.error_code, "PRIMARY_FAILED");
+    }
+
+    #[test]
+    fn finalization_runtime_session_completes_after_last_action() {
+        let plan = plan_pbft_finalization_intent(accepted_fact());
+        let runtime = plan_pbft_finalization_runtime(&plan);
+        let mut state = start_pbft_finalization_runtime(&runtime);
+
+        for action in runtime.actions {
+            state = report_pbft_finalization_runtime_action(
+                state,
+                PbftFinalizationRuntimeActionResult {
+                    action,
+                    success: true,
+                    error_code: String::new(),
+                },
+            );
+        }
+
+        assert_eq!(
+            state.runtime_status,
+            PbftFinalizationRuntimeStatus::Complete
+        );
+        let step = next_pbft_finalization_runtime_action(&state);
+        assert_eq!(step.runtime_status, PbftFinalizationRuntimeStatus::Complete);
+        assert!(step.complete);
+        assert!(!step.has_action);
     }
 
     #[test]
