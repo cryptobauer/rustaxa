@@ -556,6 +556,44 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageAppenderWritesPrimaryBatch) {
   std::filesystem::remove_all(test_dir);
 }
 
+TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyCommitsOwnedBatch) {
+  constexpr uint8_t kDagBlocksColumn = 4;
+  constexpr uint8_t kTransactionsColumn = 6;
+  const auto test_dir = uniqueTempDir("rustaxa_pbft_finalized_period_owned_apply");
+
+  auto storage = create_storage(test_dir.string());
+  auto seed_batch = storage->create_write_batch();
+  storage->batch_put(seed_batch, kDagBlocksColumn, hashBytes(h256(2)), bytes({0xda}));
+  storage->batch_put(seed_batch, kTransactionsColumn, hashBytes(h256(4)), bytes({0xd0}));
+  storage->commit_write_batch(seed_batch, false);
+  storage->save_extra_reward_vote(h256(12), bytes({0xee}));
+
+  const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
+  rust::Vec<PbftFinalizationStorageWriteStage> stages;
+  stages.push_back(finalizationStorageStage(kPbftFinalizationStorageStagePrimary));
+  stages.push_back(rewardResetFinalizationStorageStage(bytes({0xc2, 0x01, 0x02}), {h256(12)}));
+  stages.push_back(sortitionFinalizationStorageStage(101, 2500, 1300));
+
+  const auto result =
+      apply_pbft_finalization_storage_writes(*storage, plan.storage_write_intent, std::move(stages), false);
+
+  EXPECT_EQ(result.status, kPbftFinalizedPeriodApplyStatusApplied);
+  EXPECT_TRUE(result.wrote_pbft_head);
+  EXPECT_TRUE(result.wrote_period_data);
+  EXPECT_EQ(result.dag_index_writes, 2);
+  EXPECT_EQ(result.transaction_location_writes, 1);
+  const auto period_data = storage->get_period_data_raw(101);
+  EXPECT_EQ(std::vector<uint8_t>(period_data.begin(), period_data.end()), (std::vector<uint8_t>{0xc0}));
+  EXPECT_TRUE(storage->get_transaction(h256(4)).empty());
+  const auto reward_votes = storage->get_all_two_t_plus_one_votes();
+  ASSERT_EQ(reward_votes.size(), 2);
+  EXPECT_EQ(std::vector<uint8_t>(reward_votes[0].data.begin(), reward_votes[0].data.end()),
+            (std::vector<uint8_t>{0x01}));
+  EXPECT_FALSE(storage->get_params_change_for_period(101).empty());
+
+  std::filesystem::remove_all(test_dir);
+}
+
 TEST(RustPbftSyncTest, FinalizedPeriodStorageAppenderRejectsRewardResetMissingFacts) {
   const auto test_dir = uniqueTempDir("rustaxa_pbft_reward_reset_stage_rejected");
   auto storage = create_storage(test_dir.string());

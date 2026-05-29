@@ -2297,34 +2297,19 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     return false;
   }
 
-  auto batch = db_->createWriteBatch();
-  rustaxa::PbftFinalizedPeriodApplyResult primary_storage_result{};
-  try {
-    primary_storage_result = rustaxa::append_pbft_finalization_storage_write(
-        db_->rustStorage(), db_->rustBatchId(batch), finalization_plan.storage_write_intent,
-        makeFinalizationStorageStage(kPbftFinalizationStorageStagePrimary));
-  } catch (const std::exception &e) {
-    LOG(log_er_) << "Rust PBFT finalized-period storage appender failed for block " << pbft_block_hash << ", period "
-                 << block_pbft_period << ": " << e.what();
-    return false;
-  }
-  if (primary_storage_result.status != kPbftFinalizedPeriodApplyStatusApplied &&
-      primary_storage_result.status != kPbftFinalizedPeriodApplyStatusAlreadyApplied) {
-    LOG(log_er_) << "Rust PBFT finalized-period storage appender rejected block " << pbft_block_hash << ", period "
-                 << block_pbft_period << ", status " << static_cast<uint32_t>(primary_storage_result.status)
-                 << ", error " << static_cast<std::string>(primary_storage_result.error_code);
-    return false;
-  }
+  rust::Vec<rustaxa::PbftFinalizationStorageWriteStage> first_persistence_stages;
+  first_persistence_stages.push_back(makeFinalizationStorageStage(kPbftFinalizationStorageStagePrimary));
 
   // Replace current reward votes
+  bool should_commit_reward_vote_metadata = false;
   if (finalization_plan.storage_write_intent.reset_reward_votes) {
-    const auto reward_votes_reset_result =
-        vote_mgr_->resetRewardVotesForFinalization(finalization_plan.storage_write_intent, batch);
-    if (reward_votes_reset_result.status != kPbftFinalizedPeriodApplyStatusApplied &&
-        reward_votes_reset_result.status != kPbftFinalizedPeriodApplyStatusAlreadyApplied) {
-      LOG(log_er_) << "Rust PBFT finalized-period reward-vote reset rejected block " << pbft_block_hash << ", period "
-                   << block_pbft_period << ", status " << static_cast<uint32_t>(reward_votes_reset_result.status)
-                   << ", error " << static_cast<std::string>(reward_votes_reset_result.error_code);
+    try {
+      first_persistence_stages.push_back(
+          vote_mgr_->rewardVotesResetStageForFinalization(finalization_plan.storage_write_intent));
+      should_commit_reward_vote_metadata = true;
+    } catch (const std::exception &e) {
+      LOG(log_er_) << "Rust PBFT finalized-period reward-vote reset facts failed for block " << pbft_block_hash
+                   << ", period " << block_pbft_period << ": " << e.what();
       return false;
     }
   }
@@ -2334,24 +2319,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     auto sortition_params_change = dag_mgr_->sortitionParamsManager().applyBlockForSortitionRuntime(
         period_data, pbft_chain_->getPbftChainSizeExcludingEmptyPbftBlocks() + 1);
     if (sortition_params_change.has_value()) {
-      rustaxa::PbftFinalizedPeriodApplyResult sortition_storage_result{};
-      try {
-        sortition_storage_result = rustaxa::append_pbft_finalization_storage_write(
-            db_->rustStorage(), db_->rustBatchId(batch), finalization_plan.storage_write_intent,
-            makeSortitionFinalizationStorageStage(*sortition_params_change));
-      } catch (const std::exception &e) {
-        LOG(log_er_) << "Rust PBFT finalized-period sortition storage appender failed for block " << pbft_block_hash
-                     << ", period " << block_pbft_period << ": " << e.what();
-        return false;
-      }
-      if (sortition_storage_result.status != kPbftFinalizedPeriodApplyStatusApplied &&
-          sortition_storage_result.status != kPbftFinalizedPeriodApplyStatusAlreadyApplied) {
-        LOG(log_er_) << "Rust PBFT finalized-period sortition storage appender rejected block " << pbft_block_hash
-                     << ", period " << block_pbft_period << ", status "
-                     << static_cast<uint32_t>(sortition_storage_result.status) << ", error "
-                     << static_cast<std::string>(sortition_storage_result.error_code);
-        return false;
-      }
+      first_persistence_stages.push_back(makeSortitionFinalizationStorageStage(*sortition_params_change));
     }
   }
 
@@ -2361,8 +2329,26 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     std::unique_lock dag_lock(dag_mgr_->getDagMutex());
     std::unique_lock trx_lock(trx_mgr_->getTransactionsMutex());
 
-    // Commit DB
-    db_->commitWriteBatch(batch);
+    rustaxa::PbftFinalizedPeriodApplyResult primary_storage_result{};
+    try {
+      primary_storage_result = rustaxa::apply_pbft_finalization_storage_writes(
+          db_->rustStorage(), finalization_plan.storage_write_intent, std::move(first_persistence_stages),
+          false);
+    } catch (const std::exception &e) {
+      LOG(log_er_) << "Rust PBFT finalized-period storage apply failed for block " << pbft_block_hash << ", period "
+                   << block_pbft_period << ": " << e.what();
+      return false;
+    }
+    if (primary_storage_result.status != kPbftFinalizedPeriodApplyStatusApplied &&
+        primary_storage_result.status != kPbftFinalizedPeriodApplyStatusAlreadyApplied) {
+      LOG(log_er_) << "Rust PBFT finalized-period storage apply rejected block " << pbft_block_hash << ", period "
+                   << block_pbft_period << ", status " << static_cast<uint32_t>(primary_storage_result.status)
+                   << ", error " << static_cast<std::string>(primary_storage_result.error_code);
+      return false;
+    }
+    if (should_commit_reward_vote_metadata) {
+      vote_mgr_->commitRewardVotesResetForFinalization(finalization_plan.storage_write_intent);
+    }
 
     // Set DAG blocks period
     auto const &anchor_hash = period_data.pbft_blk->getPivotDagBlockHash();
@@ -2392,22 +2378,24 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
   // Dynamic lambda was introduced in cacti hardfork -> it affects the number of blocks generated per year, which
   // affects rewards distribution
   if (finalization_plan.storage_write_intent.apply_dynamic_lambda_update) {
-    batch = db_->createWriteBatch();
-
     blocks_per_year = finalization_plan.storage_write_intent.blocks_per_year;
 
     // Adjust dynamic lambda
     const auto previous_rounds_count_dynamic_lambda = rounds_count_dynamic_lambda_;
     const auto previous_dynamic_lambda = dynamic_lambda_;
-    adjustDynamicLambda(block_pbft_period, sample_cert_vote->getRound(), batch);
+    auto dynamic_lambda_batch = db_->createWriteBatch();
+    adjustDynamicLambda(block_pbft_period, sample_cert_vote->getRound(), dynamic_lambda_batch);
 
     rustaxa::PbftFinalizedPeriodApplyResult dynamic_lambda_result{};
     try {
       auto dynamic_lambda_stage = makeFinalizationStorageStage(kPbftFinalizationStorageStageDynamicLambda);
       dynamic_lambda_stage.rounds_count_dynamic_lambda = rounds_count_dynamic_lambda_;
       dynamic_lambda_stage.dynamic_lambda = dynamic_lambda_;
-      dynamic_lambda_result = rustaxa::append_pbft_finalization_storage_write(
-          db_->rustStorage(), db_->rustBatchId(batch), finalization_plan.storage_write_intent, dynamic_lambda_stage);
+      rust::Vec<rustaxa::PbftFinalizationStorageWriteStage> dynamic_lambda_stages;
+      dynamic_lambda_stages.push_back(std::move(dynamic_lambda_stage));
+      dynamic_lambda_result = rustaxa::apply_pbft_finalization_storage_writes(
+          db_->rustStorage(), finalization_plan.storage_write_intent, std::move(dynamic_lambda_stages),
+          false);
     } catch (const std::exception &e) {
       rounds_count_dynamic_lambda_ = previous_rounds_count_dynamic_lambda;
       dynamic_lambda_ = previous_dynamic_lambda;
@@ -2424,8 +2412,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                    << ", error " << static_cast<std::string>(dynamic_lambda_result.error_code);
       return false;
     }
-
-    db_->commitWriteBatch(batch);
   } else {
     blocks_per_year = finalization_plan.storage_write_intent.blocks_per_year;
   }
@@ -2436,12 +2422,13 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
 
   if (finalization_plan.executed_pbft_block) {
     if (finalization_plan.storage_write_intent.persist_executed_pbft_status) {
-      batch = db_->createWriteBatch();
       rustaxa::PbftFinalizedPeriodApplyResult executed_status_result{};
       try {
-        executed_status_result = rustaxa::append_pbft_finalization_storage_write(
-            db_->rustStorage(), db_->rustBatchId(batch), finalization_plan.storage_write_intent,
-            makeFinalizationStorageStage(kPbftFinalizationStorageStageExecutedStatus));
+        rust::Vec<rustaxa::PbftFinalizationStorageWriteStage> executed_status_stages;
+        executed_status_stages.push_back(makeFinalizationStorageStage(kPbftFinalizationStorageStageExecutedStatus));
+        executed_status_result = rustaxa::apply_pbft_finalization_storage_writes(
+            db_->rustStorage(), finalization_plan.storage_write_intent, std::move(executed_status_stages),
+            false);
       } catch (const std::exception &e) {
         LOG(log_er_) << "Rust PBFT executed-status storage appender failed for block " << pbft_block_hash << ", period "
                      << block_pbft_period << ": " << e.what();
@@ -2454,7 +2441,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                      << ", error " << static_cast<std::string>(executed_status_result.error_code);
         return false;
       }
-      db_->commitWriteBatch(batch);
     }
     executed_pbft_block_ = finalization_plan.storage_write_intent.executed_pbft_status;
   }

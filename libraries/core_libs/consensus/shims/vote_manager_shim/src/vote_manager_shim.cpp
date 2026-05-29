@@ -431,8 +431,8 @@ bool VoteManager::isValidRewardVoteForRust(const std::shared_ptr<PbftVote>& vote
   return true;
 }
 
-rustaxa::PbftFinalizedPeriodApplyResult VoteManager::resetRewardVotesForFinalization(
-    const rustaxa::PbftFinalizationStorageWritePlan& write_intent, Batch& batch) {
+rustaxa::PbftFinalizationStorageWriteStage VoteManager::rewardVotesResetStageForFinalization(
+    const rustaxa::PbftFinalizationStorageWritePlan& write_intent) {
   const auto period = static_cast<PbftPeriod>(write_intent.reward_vote_period);
   const auto round = static_cast<PbftRound>(write_intent.reward_vote_round);
   const auto step = static_cast<PbftStep>(write_intent.reward_vote_step);
@@ -442,16 +442,14 @@ rustaxa::PbftFinalizedPeriodApplyResult VoteManager::resetRewardVotesForFinaliza
   if (!round_votes) {
     LOG(log_er_) << "resetRewardVotes missing round " << round << " or period " << period;
     assert(false);
-    return rewardResetResult(kPbftFinalizedPeriodApplyStatusRejected, period, block_hash,
-                             "PBFT_FINALIZE_MISSING_REWARD_VOTES_ROUND");
+    throw std::runtime_error("PBFT_FINALIZE_MISSING_REWARD_VOTES_ROUND");
   }
 
   auto found_step_it = round_votes->step_votes.find(step);
   if (found_step_it == round_votes->step_votes.end()) {
     LOG(log_er_) << "resetRewardVotes missing step" << step;
     assert(false);
-    return rewardResetResult(kPbftFinalizedPeriodApplyStatusRejected, period, block_hash,
-                             "PBFT_FINALIZE_MISSING_REWARD_VOTES_STEP");
+    throw std::runtime_error("PBFT_FINALIZE_MISSING_REWARD_VOTES_STEP");
   }
 
   auto found_two_t_plus_one_voted_block =
@@ -459,22 +457,19 @@ rustaxa::PbftFinalizedPeriodApplyResult VoteManager::resetRewardVotesForFinaliza
   if (found_two_t_plus_one_voted_block == round_votes->two_t_plus_one_voted_blocks_.end()) {
     LOG(log_er_) << "resetRewardVotes missing cert voted block";
     assert(false);
-    return rewardResetResult(kPbftFinalizedPeriodApplyStatusRejected, period, block_hash,
-                             "PBFT_FINALIZE_MISSING_REWARD_VOTES_CERT_BLOCK");
+    throw std::runtime_error("PBFT_FINALIZE_MISSING_REWARD_VOTES_CERT_BLOCK");
   }
   if (found_two_t_plus_one_voted_block->second.hash != block_hash) {
     LOG(log_er_) << "resetRewardVotes incorrect block " << found_two_t_plus_one_voted_block->second.step << " expected "
                  << block_hash;
     assert(false);
-    return rewardResetResult(kPbftFinalizedPeriodApplyStatusRejected, period, block_hash,
-                             "PBFT_FINALIZE_REWARD_VOTES_CERT_BLOCK_MISMATCH");
+    throw std::runtime_error("PBFT_FINALIZE_REWARD_VOTES_CERT_BLOCK_MISMATCH");
   }
   auto found_voted_value_it = found_step_it->second.votes.find(block_hash);
   if (found_voted_value_it == found_step_it->second.votes.end()) {
     LOG(log_er_) << "resetRewardVotes missing vote block " << block_hash;
     assert(false);
-    return rewardResetResult(kPbftFinalizedPeriodApplyStatusRejected, period, block_hash,
-                             "PBFT_FINALIZE_MISSING_REWARD_VOTES_BLOCK");
+    throw std::runtime_error("PBFT_FINALIZE_MISSING_REWARD_VOTES_BLOCK");
   }
 
   std::vector<std::shared_ptr<PbftVote>> votes;
@@ -482,13 +477,13 @@ rustaxa::PbftFinalizedPeriodApplyResult VoteManager::resetRewardVotesForFinaliza
   for (const auto& tmp_vote : found_voted_value_it->second.votes) {
     votes.push_back(tmp_vote.second);
   }
+  return makeRewardResetWriteStage(votes, extra_reward_votes_);
+}
 
-  auto result = rustaxa::append_pbft_finalization_storage_write(
-      db_->rustStorage(), db_->rustBatchId(batch), write_intent, makeRewardResetWriteStage(votes, extra_reward_votes_));
-  if (result.status != kPbftFinalizedPeriodApplyStatusApplied &&
-      result.status != kPbftFinalizedPeriodApplyStatusAlreadyApplied) {
-    return result;
-  }
+void VoteManager::commitRewardVotesResetForFinalization(const rustaxa::PbftFinalizationStorageWritePlan& write_intent) {
+  const auto period = static_cast<PbftPeriod>(write_intent.reward_vote_period);
+  const auto round = static_cast<PbftRound>(write_intent.reward_vote_round);
+  const auto block_hash = blk_hash_t(write_intent.reward_vote_block_hash.data(), blk_hash_t::ConstructFromPointer);
 
   {
     std::scoped_lock lock(reward_votes_info_mutex_);
@@ -500,6 +495,28 @@ rustaxa::PbftFinalizedPeriodApplyResult VoteManager::resetRewardVotesForFinaliza
 
   LOG(log_dg_) << "Reward votes info reset to: block_hash: " << block_hash << ", period: " << period
                << ", round: " << round;
+}
+
+rustaxa::PbftFinalizedPeriodApplyResult VoteManager::resetRewardVotesForFinalization(
+    const rustaxa::PbftFinalizationStorageWritePlan& write_intent, Batch& batch) {
+  const auto period = static_cast<PbftPeriod>(write_intent.reward_vote_period);
+  const auto block_hash = blk_hash_t(write_intent.reward_vote_block_hash.data(), blk_hash_t::ConstructFromPointer);
+
+  rustaxa::PbftFinalizationStorageWriteStage stage{};
+  try {
+    stage = rewardVotesResetStageForFinalization(write_intent);
+  } catch (const std::exception& e) {
+    return rewardResetResult(kPbftFinalizedPeriodApplyStatusRejected, period, block_hash, e.what());
+  }
+
+  auto result =
+      rustaxa::append_pbft_finalization_storage_write(db_->rustStorage(), db_->rustBatchId(batch), write_intent, stage);
+  if (result.status != kPbftFinalizedPeriodApplyStatusApplied &&
+      result.status != kPbftFinalizedPeriodApplyStatusAlreadyApplied) {
+    return result;
+  }
+
+  commitRewardVotesResetForFinalization(write_intent);
   return result;
 }
 

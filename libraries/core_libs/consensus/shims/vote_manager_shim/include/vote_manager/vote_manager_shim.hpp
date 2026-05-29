@@ -100,6 +100,42 @@ class VoteManager : public VoteManagerOld {
    */
   rustaxa::PbftFinalizedPeriodApplyResult resetRewardVotesForFinalization(
       const rustaxa::PbftFinalizationStorageWritePlan& write_intent, Batch& batch);
+  /**
+   * Builds the Rust reward-vote reset storage stage without mutating live
+   * reward metadata.
+   *
+   * Inputs:
+   * - `write_intent`: Rust-planned finalization write intent carrying the
+   *   certified vote period, round, step, and block hash.
+   *
+   * Outputs:
+   * - A bridge stage containing the certified-vote bundle RLP and stale
+   *   extra-reward vote hashes.
+   *
+   * Invariants:
+   * - The stage is derived from inherited live `VerifiedVotes` sidecars.
+   * - Missing or mismatched live state throws before the caller can commit a
+   *   finalized-period persistence batch.
+   * - Live reward metadata is unchanged; callers must invoke
+   *   `commitRewardVotesResetForFinalization` after Rust commits the stage.
+   */
+  rustaxa::PbftFinalizationStorageWriteStage rewardVotesResetStageForFinalization(
+      const rustaxa::PbftFinalizationStorageWritePlan& write_intent);
+
+  /**
+   * Applies live reward-vote metadata after a Rust-owned finalization batch has
+   * committed the reward-vote reset stage.
+   *
+   * Inputs:
+   * - `write_intent`: same Rust-planned intent used to build and commit the
+   *   reward-vote reset stage.
+   *
+   * Invariants:
+   * - Must be called only after Rust reports `Applied` or `AlreadyApplied` for
+   *   the corresponding reward-vote reset stage.
+   * - Clears stale extra-reward vote tracking to match the committed storage.
+   */
+  void commitRewardVotesResetForFinalization(const rustaxa::PbftFinalizationStorageWritePlan& write_intent);
 
  private:
   bool isValidRewardVoteForRust(const std::shared_ptr<PbftVote>& vote) const;

@@ -2497,6 +2497,12 @@ pub mod rustaxa_ffi {
             write_set: &PbftFinalizationStorageWritePlan,
             stage: PbftFinalizationStorageWriteStage,
         ) -> Result<PbftFinalizedPeriodApplyResult>;
+        pub fn apply_pbft_finalization_storage_writes(
+            storage: &BridgeStorage,
+            write_set: &PbftFinalizationStorageWritePlan,
+            stages: Vec<PbftFinalizationStorageWriteStage>,
+            sync: bool,
+        ) -> Result<PbftFinalizedPeriodApplyResult>;
         pub fn append_pbft_finalized_period_storage_writes(
             storage: &BridgeStorage,
             batch_id: u64,

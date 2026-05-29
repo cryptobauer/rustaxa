@@ -5,11 +5,12 @@
 //! Rust performs deterministic intent planning and returns bridge-safe flags and
 //! status codes so C++ can apply side effects explicitly.
 //!
-//! The finalized-period storage appender is the first native persistence cutover
-//! for this path. It appends the storage records that are already represented as
-//! stable keys and canonical bytes to a Rust storage batch supplied by the shim.
-//! Live VoteManager, sortition manager mutation, FinalChain, and PBFT runtime
-//! side effects remain caller-owned until their Rust transition APIs exist.
+//! The finalized-period storage apply path is the first native persistence
+//! cutover for this path. It writes the storage records that are already
+//! represented as stable keys and canonical bytes through Rust-owned storage
+//! batches. Live VoteManager, sortition manager mutation, FinalChain, and PBFT
+//! runtime side effects remain caller-owned until their Rust transition APIs
+//! exist.
 
 use crate::ffi::rustaxa_ffi::{
     PbftFinalizationCleanupPlan as FfiPbftFinalizationCleanupPlan,
@@ -100,6 +101,68 @@ pub fn append_pbft_finalization_storage_write(
     }
 }
 
+/// Applies one or more PBFT finalization persistence stages in a Rust-owned
+/// storage batch.
+///
+/// Inputs:
+/// - `storage`: shared Rust storage bridge used by the C++ storage shim.
+/// - `write_set`: accepted PBFT finalization storage intent from the Rust planner.
+/// - `stages`: ordered persistence stages to append to one batch.
+/// - `sync`: whether the storage commit should use a synchronous write option.
+///
+/// Outputs:
+/// - The combined apply result. A rejected, missing-payload, or conflicting
+///   stage result is returned immediately after the uncommitted batch is
+///   dropped.
+///
+/// Invariants and edge behavior:
+/// - Stages are appended in the supplied order and committed atomically in one
+///   Rust storage batch.
+/// - Existing staged append APIs remain the compatibility surface for callers
+///   that still need to append into a larger caller-owned batch.
+/// - Empty stage lists are rejected without creating durable writes.
+/// - Rust storage or batch-registry failures are returned as bridge errors; the
+///   helper attempts to drop the owned batch before returning those errors.
+pub fn apply_pbft_finalization_storage_writes(
+    storage: &BridgeStorage,
+    write_set: &FfiPbftFinalizationStorageWritePlan,
+    stages: Vec<FfiPbftFinalizationStorageWriteStage>,
+    sync: bool,
+) -> Result<FfiPbftFinalizedPeriodApplyResult> {
+    if stages.is_empty() {
+        return Ok(sidecar_apply_result(
+            APPLY_STATUS_REJECTED_WRITE_SET,
+            write_set,
+            "PBFT_FINALIZE_NO_STORAGE_WRITE_STAGES",
+        ));
+    }
+
+    let batch_id = storage
+        .create_write_batch()
+        .context("PBFT_FINALIZE_CREATE_APPLY_BATCH")?;
+    let result =
+        apply_pbft_finalization_storage_writes_to_batch(storage, batch_id, write_set, stages);
+    match result {
+        Ok(result) if result_is_success(result.status) => {
+            if let Err(err) = storage.commit_write_batch(batch_id, sync) {
+                let _ = storage.drop_write_batch(batch_id);
+                return Err(err).context("PBFT_FINALIZE_COMMIT_APPLY_BATCH");
+            }
+            Ok(result)
+        }
+        Ok(result) => {
+            storage
+                .drop_write_batch(batch_id)
+                .context("PBFT_FINALIZE_DROP_REJECTED_APPLY_BATCH")?;
+            Ok(result)
+        }
+        Err(err) => {
+            let _ = storage.drop_write_batch(batch_id);
+            Err(err)
+        }
+    }
+}
+
 fn empty_stage(stage: u8) -> FfiPbftFinalizationStorageWriteStage {
     FfiPbftFinalizationStorageWriteStage {
         stage,
@@ -113,6 +176,24 @@ fn empty_stage(stage: u8) -> FfiPbftFinalizationStorageWriteStage {
         reward_votes_bundle_rlp: Vec::new(),
         extra_reward_vote_hashes: Vec::new(),
     }
+}
+
+fn apply_pbft_finalization_storage_writes_to_batch(
+    storage: &BridgeStorage,
+    batch_id: u64,
+    write_set: &FfiPbftFinalizationStorageWritePlan,
+    stages: Vec<FfiPbftFinalizationStorageWriteStage>,
+) -> Result<FfiPbftFinalizedPeriodApplyResult> {
+    let mut combined =
+        sidecar_apply_result(APPLY_STATUS_ALREADY_APPLIED_SAME_VALUES, write_set, "");
+    for stage in stages {
+        let result = append_pbft_finalization_storage_write(storage, batch_id, write_set, stage)?;
+        if !result_is_success(result.status) {
+            return Ok(result);
+        }
+        combined = merge_apply_results(combined, result, write_set);
+    }
+    Ok(combined)
 }
 
 /// C++/Rust bridge entry for one deterministic PBFT finalization intent.
@@ -956,6 +1037,33 @@ fn sidecar_apply_result(
     }
 }
 
+fn result_is_success(status: u8) -> bool {
+    status == APPLY_STATUS_APPLIED || status == APPLY_STATUS_ALREADY_APPLIED_SAME_VALUES
+}
+
+fn merge_apply_results(
+    combined: FfiPbftFinalizedPeriodApplyResult,
+    next: FfiPbftFinalizedPeriodApplyResult,
+    write_set: &FfiPbftFinalizationStorageWritePlan,
+) -> FfiPbftFinalizedPeriodApplyResult {
+    let status = if combined.status == APPLY_STATUS_APPLIED || next.status == APPLY_STATUS_APPLIED {
+        APPLY_STATUS_APPLIED
+    } else {
+        APPLY_STATUS_ALREADY_APPLIED_SAME_VALUES
+    };
+    FfiPbftFinalizedPeriodApplyResult {
+        status,
+        wrote_pbft_head: combined.wrote_pbft_head || next.wrote_pbft_head,
+        wrote_period_data: combined.wrote_period_data || next.wrote_period_data,
+        dag_index_writes: combined.dag_index_writes + next.dag_index_writes,
+        transaction_location_writes: combined.transaction_location_writes
+            + next.transaction_location_writes,
+        block_period: write_set.block_period,
+        pbft_block_hash: write_set.pbft_block_hash,
+        error_code: String::new(),
+    }
+}
+
 impl From<PbftFinalizationPositionedHash> for FfiPbftFinalizationPositionedHash {
     fn from(value: PbftFinalizationPositionedHash) -> Self {
         Self {
@@ -1044,6 +1152,39 @@ mod tests {
             stream.append(&vote);
         }
         stream.out().to_vec()
+    }
+
+    fn sortition_stage(period: u64) -> FfiPbftFinalizationStorageWriteStage {
+        FfiPbftFinalizationStorageWriteStage {
+            stage: APPEND_STAGE_SORTITION_PARAMS_CHANGE,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 0,
+            has_sortition_params_change: true,
+            sortition_params_change_period: period,
+            sortition_params_change_interval_efficiency: 2_500,
+            sortition_params_change_threshold_upper: 1_300,
+            has_reward_votes_reset: false,
+            reward_votes_bundle_rlp: Vec::new(),
+            extra_reward_vote_hashes: Vec::new(),
+        }
+    }
+
+    fn reward_reset_stage(
+        bundle: Vec<u8>,
+        extra_hash: [u8; 32],
+    ) -> FfiPbftFinalizationStorageWriteStage {
+        FfiPbftFinalizationStorageWriteStage {
+            stage: APPEND_STAGE_REWARD_VOTES_RESET,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 0,
+            has_sortition_params_change: false,
+            sortition_params_change_period: 0,
+            sortition_params_change_interval_efficiency: 0,
+            sortition_params_change_threshold_upper: 0,
+            has_reward_votes_reset: true,
+            reward_votes_bundle_rlp: bundle,
+            extra_reward_vote_hashes: vec![FfiPbftFinalizationHash { hash: extra_hash }],
+        }
     }
 
     #[test]
@@ -1201,6 +1342,82 @@ mod tests {
             storage
                 .drop_write_batch(retry_batch)
                 .expect("retry batch should drop");
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn applies_primary_reward_and_sortition_stages_in_one_rust_owned_batch() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_finalization_apply_owned_batch");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let mut seed = storage.0.create_write_batch();
+            storage
+                .0
+                .batch_put_raw(&mut seed, Column::DagBlocks, &[1u8; 32], &[0xDA])
+                .expect("pending DAG block should seed");
+            storage
+                .0
+                .batch_put_raw(&mut seed, Column::Transactions, &[3u8; 32], &[0xD0])
+                .expect("pending transaction should seed");
+            storage
+                .0
+                .batch_put_raw(&mut seed, Column::ExtraRewardVotes, &[9u8; 32], &[0xEE])
+                .expect("extra reward vote should seed");
+            storage
+                .0
+                .commit_write_batch_with_sync(seed, false)
+                .expect("seed batch should commit");
+
+            let plan = plan_pbft_finalization_intent(fact());
+            let bundle = reward_vote_bundle_rlp(vec![vec![0x01], vec![0x02]]);
+            let result = apply_pbft_finalization_storage_writes(
+                &storage,
+                &plan.storage_write_intent,
+                vec![
+                    empty_stage(APPEND_STAGE_PRIMARY_FINALIZATION),
+                    reward_reset_stage(bundle.clone(), [9; 32]),
+                    sortition_stage(10),
+                ],
+                false,
+            )
+            .expect("Rust-owned finalization batch should apply");
+
+            assert_eq!(result.status, APPLY_STATUS_APPLIED_TEST);
+            assert!(result.wrote_pbft_head);
+            assert!(result.wrote_period_data);
+            assert_eq!(result.dag_index_writes, 2);
+            assert_eq!(result.transaction_location_writes, 1);
+            assert_eq!(
+                storage
+                    .get_period_data_raw(10)
+                    .expect("period data should load"),
+                vec![0xc0]
+            );
+            assert_eq!(
+                storage
+                    .0
+                    .get_raw(
+                        Column::LatestRoundTwoTPlusOneVotes,
+                        &[PBFT_TWO_T_PLUS_ONE_CERT_VOTED_TYPE],
+                    )
+                    .expect("reward-vote bundle lookup should succeed")
+                    .expect("reward-vote bundle should exist"),
+                bundle
+            );
+            assert!(storage
+                .0
+                .get_raw(Column::ExtraRewardVotes, &[9; 32])
+                .expect("stale extra reward lookup should succeed")
+                .is_none());
+            assert!(storage
+                .0
+                .get_raw(Column::SortitionParamsChange, &10_u64.to_le_bytes())
+                .expect("sortition change lookup should succeed")
+                .is_some());
         }
 
         let _ = fs::remove_dir_all(temp_dir);

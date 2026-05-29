@@ -540,11 +540,15 @@ The current Rust starting point is intentionally small:
    to the shim's Rust-backed storage batch. The PBFT finalization persistence bridge now exposes one staged Rust appender
    for primary finalized-period writes, post-live-mutation dynamic-lambda persistence, and post-FinalChain-dispatch
    executed-status persistence; compatibility wrappers remain for the older appender entrypoints. The C++ shim calls the
-   staged API while preserving the existing batch/commit boundaries. The Rust-mode `VoteManager` overlay now uses the
+   staged API while preserving the existing batch/commit boundaries. Rust now also owns the storage-batch lifecycle for
+   PBFT finalization persistence stages: the bridge creates, appends, commits, or drops Rust storage batches for the
+   primary finalized-period/reward-reset/sortition group, dynamic-lambda persistence, and executed-status persistence,
+   while the PBFT overlay still owns live DAG, transaction-manager, PBFT-chain, FinalChain, timer, and period-advance
+   side effects in the legacy order. The Rust-mode `VoteManager` overlay now uses the
    approved temporary protected-state hook to inherit unported behavior from `VoteManagerOld` while owning reward-vote
-   reset persistence handoff in shim code: it selects the live cert-vote bundle in C++, appends the stage-4 Rust storage
-   writes for latest cert votes and stale extra reward-vote deletes into the caller's finalization batch, and mutates
-   live reward metadata only after Rust accepts the stage. The same overlay now routes deterministic verified-vote live
+   reset persistence handoff in shim code: it selects the live cert-vote bundle in C++, passes the stage-4 Rust storage
+   facts into the Rust-owned finalization apply batch, and mutates live reward metadata only after Rust commits the
+   stage. The same overlay now routes deterministic verified-vote live
    state methods through the Rust-backed `VerifiedVotes` facade instead of `VoteManagerOld`: insertion/uniqueness,
    vote presence and snapshots, proposal-vote selection, cleanup, 2t+1 block/bundle lookups, next-round detection,
    current round persistence of non-cert bundles, and network t+1 step reads use Rust-owned metadata while C++ keeps
