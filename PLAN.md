@@ -544,7 +544,12 @@ The current Rust starting point is intentionally small:
    PBFT finalization persistence stages: the bridge creates, appends, commits, or drops Rust storage batches for the
    primary finalized-period/reward-reset/sortition group, dynamic-lambda persistence, and executed-status persistence,
    while the PBFT overlay still owns live DAG, transaction-manager, PBFT-chain, FinalChain, timer, and period-advance
-   side effects in the legacy order. The Rust-mode `VoteManager` overlay now uses the
+   side effects in the legacy order. Rust now owns a side-effect-free finalization runtime stepper and the Cacti
+   dynamic-lambda calculation for PBFT finalization: it returns the ordered mixed-executor action list, block-period
+   lambda, reward `blocks_per_year`, post-adjust rounds count, post-adjust dynamic lambda, and increase/decrease
+   telemetry flags. The PBFT overlay consumes those Rust outputs and no longer calls the C++ dynamic-lambda adjustment
+   routine from the Rust-mode finalization path, while still applying the returned live fields and persistence stages
+   in shim code. The Rust-mode `VoteManager` overlay now uses the
    approved temporary protected-state hook to inherit unported behavior from `VoteManagerOld` while owning reward-vote
    reset persistence handoff in shim code: it selects the live cert-vote bundle in C++, passes the stage-4 Rust storage
    facts into the Rust-owned finalization apply batch, and mutates live reward metadata only after Rust commits the

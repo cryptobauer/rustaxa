@@ -13,10 +13,14 @@
 //! exist.
 
 use crate::ffi::rustaxa_ffi::{
+    PbftDynamicLambdaConfig as FfiPbftDynamicLambdaConfig,
+    PbftDynamicLambdaFact as FfiPbftDynamicLambdaFact,
+    PbftDynamicLambdaPlan as FfiPbftDynamicLambdaPlan,
     PbftFinalizationCleanupPlan as FfiPbftFinalizationCleanupPlan,
     PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact,
     PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
     PbftFinalizationPositionedHash as FfiPbftFinalizationPositionedHash,
+    PbftFinalizationRuntimePlan as FfiPbftFinalizationRuntimePlan,
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
     PbftFinalizationStorageWriteStage as FfiPbftFinalizationStorageWriteStage,
     PbftFinalizedPeriodApplyResult as FfiPbftFinalizedPeriodApplyResult,
@@ -25,9 +29,13 @@ use crate::ffi::BridgeStorage;
 use anyhow::{anyhow, Context, Result};
 use ethereum_types::H256;
 use rustaxa_consensus::pbft_finalize::{
+    plan_pbft_dynamic_lambda as plan_domain_pbft_dynamic_lambda,
     plan_pbft_finalization_intent as plan_domain_pbft_finalization_intent,
+    plan_pbft_finalization_runtime as plan_domain_pbft_finalization_runtime,
+    PbftDynamicLambdaConfig, PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationAnchor,
     PbftFinalizationCleanupIntent, PbftFinalizationIntentFact, PbftFinalizationPlan,
-    PbftFinalizationPositionedHash, PbftFinalizationStorageWriteIntent,
+    PbftFinalizationPositionedHash, PbftFinalizationRuntimeAction, PbftFinalizationStatus,
+    PbftFinalizationStorageWriteIntent,
 };
 use rustaxa_consensus::sortition::SortitionParamsChange;
 use rustaxa_storage::Column;
@@ -201,6 +209,35 @@ pub fn plan_pbft_finalization_intent(
     fact: FfiPbftFinalizationIntentFact,
 ) -> FfiPbftFinalizationIntentPlan {
     plan_domain_pbft_finalization_intent(fact.into()).into()
+}
+
+/// C++/Rust bridge entry for the ordered PBFT finalization runtime script.
+///
+/// Inputs:
+/// - `plan`: finalization intent returned by `plan_pbft_finalization_intent`.
+///
+/// Outputs:
+/// - Stable runtime action codes in the order the mixed shim executor must
+///   apply side effects.
+///
+/// Rejected plans return no actions. This keeps finalization candidate
+/// decisions, live runtime sequencing, and storage-apply status in separate
+/// bridge status spaces.
+pub fn plan_pbft_finalization_runtime(
+    plan: &FfiPbftFinalizationIntentPlan,
+) -> FfiPbftFinalizationRuntimePlan {
+    let domain_plan = PbftFinalizationPlan::from(plan);
+    plan_domain_pbft_finalization_runtime(&domain_plan).into()
+}
+
+/// C++/Rust bridge entry for Cacti dynamic-lambda calculation.
+///
+/// Inputs are only live pre-state, finalized-period facts, and Cacti config.
+/// The function does not read storage or mutate live state. On success, C++ must
+/// assign the returned live fields before passing them to the dynamic-lambda
+/// storage stage.
+pub fn plan_pbft_dynamic_lambda(fact: FfiPbftDynamicLambdaFact) -> FfiPbftDynamicLambdaPlan {
+    plan_domain_pbft_dynamic_lambda(fact.into()).into()
 }
 
 /// Appends Rust-owned finalized-period storage writes to an existing bridge batch.
@@ -918,8 +955,53 @@ impl From<FfiPbftFinalizationIntentFact> for PbftFinalizationIntentFact {
     }
 }
 
+impl From<FfiPbftDynamicLambdaConfig> for PbftDynamicLambdaConfig {
+    fn from(value: FfiPbftDynamicLambdaConfig) -> Self {
+        Self {
+            cacti_block_num: value.cacti_block_num,
+            lambda_min: value.lambda_min,
+            lambda_max: value.lambda_max,
+            lambda_default: value.lambda_default,
+            lambda_change_interval: value.lambda_change_interval,
+            lambda_change: value.lambda_change,
+            consensus_delay: value.consensus_delay,
+            dpos_blocks_per_year: value.dpos_blocks_per_year,
+        }
+    }
+}
+
+impl From<FfiPbftDynamicLambdaFact> for PbftDynamicLambdaFact {
+    fn from(value: FfiPbftDynamicLambdaFact) -> Self {
+        Self {
+            dynamic_lambda_active: value.dynamic_lambda_active,
+            finalized_period: value.finalized_period,
+            finalized_round: value.finalized_round,
+            pre_adjust_rounds_count_dynamic_lambda: value.pre_adjust_rounds_count_dynamic_lambda,
+            pre_adjust_dynamic_lambda: value.pre_adjust_dynamic_lambda,
+            config: value.config.into(),
+        }
+    }
+}
+
 impl From<PbftFinalizationCleanupIntent> for FfiPbftFinalizationCleanupPlan {
     fn from(value: PbftFinalizationCleanupIntent) -> Self {
+        Self {
+            persist_pbft_block_metadata: value.persist_pbft_block_metadata,
+            reset_reward_votes: value.reset_reward_votes,
+            set_dag_block_order: value.set_dag_block_order,
+            update_sortition_params: value.update_sortition_params,
+            update_finalized_transactions_status: value.update_finalized_transactions_status,
+            update_pbft_chain: value.update_pbft_chain,
+            clear_anchor_dag_cache: value.clear_anchor_dag_cache,
+            finalize_final_chain: value.finalize_final_chain,
+            maybe_update_dynamic_lambda: value.maybe_update_dynamic_lambda,
+            advance_period: value.advance_period,
+        }
+    }
+}
+
+impl From<&FfiPbftFinalizationCleanupPlan> for PbftFinalizationCleanupIntent {
+    fn from(value: &FfiPbftFinalizationCleanupPlan) -> Self {
         Self {
             persist_pbft_block_metadata: value.persist_pbft_block_metadata,
             reset_reward_votes: value.reset_reward_votes,
@@ -967,6 +1049,49 @@ impl From<PbftFinalizationStorageWriteIntent> for FfiPbftFinalizationStorageWrit
                 .transaction_location_writes
                 .into_iter()
                 .map(Into::into)
+                .collect(),
+        }
+    }
+}
+
+impl From<&FfiPbftFinalizationStorageWritePlan> for PbftFinalizationStorageWriteIntent {
+    fn from(value: &FfiPbftFinalizationStorageWritePlan) -> Self {
+        Self {
+            persist_pbft_head: value.persist_pbft_head,
+            persist_period_data: value.persist_period_data,
+            reset_reward_votes: value.reset_reward_votes,
+            update_sortition_params: value.update_sortition_params,
+            apply_dynamic_lambda_update: value.apply_dynamic_lambda_update,
+            persist_period_lambda: value.persist_period_lambda,
+            persist_executed_pbft_status: value.persist_executed_pbft_status,
+            pbft_block_hash: H256::from(value.pbft_block_hash),
+            pbft_head_hash: H256::from(value.pbft_head_hash),
+            block_period: value.block_period,
+            null_anchor: value.null_anchor,
+            reward_vote_period: value.reward_vote_period,
+            reward_vote_round: value.reward_vote_round,
+            reward_vote_step: value.reward_vote_step,
+            reward_vote_block_hash: H256::from(value.reward_vote_block_hash),
+            period_lambda: value.period_lambda,
+            blocks_per_year: value.blocks_per_year,
+            executed_pbft_status: value.executed_pbft_status,
+            pbft_head_payload: value.pbft_head_payload.clone(),
+            period_data_rlp: value.period_data_rlp.clone(),
+            dag_block_period_writes: value
+                .dag_block_period_writes
+                .iter()
+                .map(|hash| PbftFinalizationPositionedHash {
+                    hash: H256::from(hash.hash),
+                    position: hash.position,
+                })
+                .collect(),
+            transaction_location_writes: value
+                .transaction_location_writes
+                .iter()
+                .map(|hash| PbftFinalizationPositionedHash {
+                    hash: H256::from(hash.hash),
+                    position: hash.position,
+                })
                 .collect(),
         }
     }
@@ -1086,6 +1211,57 @@ impl From<PbftFinalizationPlan> for FfiPbftFinalizationIntentPlan {
     }
 }
 
+impl From<&FfiPbftFinalizationIntentPlan> for PbftFinalizationPlan {
+    fn from(value: &FfiPbftFinalizationIntentPlan) -> Self {
+        Self {
+            finalize_block: value.finalize_block,
+            anchor: PbftFinalizationAnchor::from_u8(value.anchor),
+            executed_pbft_block: value.executed_pbft_block,
+            cleanup: (&value.cleanup).into(),
+            storage_write_intent: (&value.storage_write_intent).into(),
+            status: PbftFinalizationStatus::from_u8(value.status),
+        }
+    }
+}
+
+impl From<PbftDynamicLambdaPlan> for FfiPbftDynamicLambdaPlan {
+    fn from(value: PbftDynamicLambdaPlan) -> Self {
+        let error_code = if value.status == PbftFinalizationStatus::ContractError {
+            "PBFT_DYNAMIC_LAMBDA_CONTRACT_ERROR".to_string()
+        } else {
+            String::new()
+        };
+        Self {
+            apply_dynamic_lambda_update: value.apply_dynamic_lambda_update,
+            period_lambda: value.period_lambda,
+            blocks_per_year: value.blocks_per_year,
+            rounds_count_dynamic_lambda: value.rounds_count_dynamic_lambda,
+            dynamic_lambda: value.dynamic_lambda,
+            decreased_dynamic_lambda: value.decreased_dynamic_lambda,
+            increased_dynamic_lambda: value.increased_dynamic_lambda,
+            status: value.status.as_u8(),
+            error_code,
+        }
+    }
+}
+
+impl From<rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimePlan>
+    for FfiPbftFinalizationRuntimePlan
+{
+    fn from(value: rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimePlan) -> Self {
+        Self {
+            finalize_block: value.finalize_block,
+            status: value.status.as_u8(),
+            actions: value
+                .actions
+                .into_iter()
+                .map(PbftFinalizationRuntimeAction::as_u8)
+                .collect(),
+            error_code: String::new(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1135,6 +1311,26 @@ mod tests {
                 FfiPbftFinalizationHash { hash: [2; 32] },
             ],
             ordered_transaction_hashes: vec![FfiPbftFinalizationHash { hash: [3; 32] }],
+        }
+    }
+
+    fn dynamic_lambda_fact() -> FfiPbftDynamicLambdaFact {
+        FfiPbftDynamicLambdaFact {
+            dynamic_lambda_active: true,
+            finalized_period: 20,
+            finalized_round: 1,
+            pre_adjust_rounds_count_dynamic_lambda: 9,
+            pre_adjust_dynamic_lambda: 1_500,
+            config: FfiPbftDynamicLambdaConfig {
+                cacti_block_num: 10,
+                lambda_min: 500,
+                lambda_max: 1_500,
+                lambda_default: 2_000,
+                lambda_change_interval: 10,
+                lambda_change: 10,
+                consensus_delay: 400,
+                dpos_blocks_per_year: 500,
+            },
         }
     }
 
@@ -1244,6 +1440,47 @@ mod tests {
             rejected_plan.status,
             PbftFinalizationStatus::PillarDependencyMissing.as_u8()
         );
+    }
+
+    #[test]
+    fn runtime_planner_maps_ordered_finalization_actions() {
+        let plan = plan_pbft_finalization_intent(fact());
+
+        let runtime = plan_pbft_finalization_runtime(&plan);
+
+        assert!(runtime.finalize_block);
+        assert_eq!(runtime.status, PbftFinalizationStatus::Accepted.as_u8());
+        assert_eq!(
+            runtime.actions,
+            vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        );
+        assert!(runtime.error_code.is_empty());
+    }
+
+    #[test]
+    fn dynamic_lambda_planner_maps_next_state_for_bridge() {
+        let plan = plan_pbft_dynamic_lambda(dynamic_lambda_fact());
+
+        assert_eq!(plan.status, PbftFinalizationStatus::Accepted.as_u8());
+        assert!(plan.error_code.is_empty());
+        assert!(plan.apply_dynamic_lambda_update);
+        assert_eq!(plan.period_lambda, 1_500);
+        assert_eq!(plan.blocks_per_year, 9_275_294);
+        assert_eq!(plan.rounds_count_dynamic_lambda, 0);
+        assert_eq!(plan.dynamic_lambda, 1_490);
+        assert!(plan.decreased_dynamic_lambda);
+        assert!(!plan.increased_dynamic_lambda);
+
+        let mut disabled = dynamic_lambda_fact();
+        disabled.dynamic_lambda_active = false;
+        let disabled_plan = plan_pbft_dynamic_lambda(disabled);
+        assert_eq!(
+            disabled_plan.status,
+            PbftFinalizationStatus::Accepted.as_u8()
+        );
+        assert!(!disabled_plan.apply_dynamic_lambda_update);
+        assert_eq!(disabled_plan.blocks_per_year, 500);
+        assert_eq!(disabled_plan.dynamic_lambda, 1_500);
     }
 
     #[test]

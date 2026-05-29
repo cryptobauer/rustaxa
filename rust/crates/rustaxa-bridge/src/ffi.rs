@@ -700,6 +700,49 @@ pub mod rustaxa_ffi {
         extra_reward_vote_hashes: Vec<PbftFinalizationHash>,
     }
 
+    /// Cacti dynamic-lambda configuration for Rust PBFT finalization planning.
+    struct PbftDynamicLambdaConfig {
+        cacti_block_num: u64,
+        lambda_min: u32,
+        lambda_max: u32,
+        lambda_default: u32,
+        lambda_change_interval: u32,
+        lambda_change: u32,
+        consensus_delay: u32,
+        dpos_blocks_per_year: u32,
+    }
+
+    /// Dynamic-lambda fact bundle for one PBFT finalization.
+    struct PbftDynamicLambdaFact {
+        dynamic_lambda_active: bool,
+        finalized_period: u64,
+        finalized_round: u64,
+        pre_adjust_rounds_count_dynamic_lambda: u32,
+        pre_adjust_dynamic_lambda: u32,
+        config: PbftDynamicLambdaConfig,
+    }
+
+    /// Rust-planned dynamic-lambda state for one PBFT finalization.
+    struct PbftDynamicLambdaPlan {
+        apply_dynamic_lambda_update: bool,
+        period_lambda: u32,
+        blocks_per_year: u32,
+        rounds_count_dynamic_lambda: u32,
+        dynamic_lambda: u32,
+        decreased_dynamic_lambda: bool,
+        increased_dynamic_lambda: bool,
+        status: u8,
+        error_code: String,
+    }
+
+    /// Ordered runtime-side actions for PBFT finalization.
+    struct PbftFinalizationRuntimePlan {
+        finalize_block: bool,
+        status: u8,
+        actions: Vec<u8>,
+        error_code: String,
+    }
+
     /// Result from appending Rust-owned finalized-period storage writes to an existing batch.
     struct PbftFinalizedPeriodApplyResult {
         status: u8,
@@ -2491,6 +2534,10 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_finalization_intent(
             fact: PbftFinalizationIntentFact,
         ) -> PbftFinalizationIntentPlan;
+        pub fn plan_pbft_finalization_runtime(
+            plan: &PbftFinalizationIntentPlan,
+        ) -> PbftFinalizationRuntimePlan;
+        pub fn plan_pbft_dynamic_lambda(fact: PbftDynamicLambdaFact) -> PbftDynamicLambdaPlan;
         pub fn append_pbft_finalization_storage_write(
             storage: &BridgeStorage,
             batch_id: u64,

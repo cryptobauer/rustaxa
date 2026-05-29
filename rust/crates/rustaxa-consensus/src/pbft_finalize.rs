@@ -118,6 +118,145 @@ impl PbftFinalizationStatus {
     }
 }
 
+/// Ordered runtime-side actions for an accepted PBFT finalization path.
+///
+/// These actions are stable bridge codes. They describe the sequence the C++
+/// shim must still execute while ownership is split between Rust-planned
+/// persistence and legacy live objects. The list is intentionally explicit so
+/// each side effect can be migrated to Rust one action at a time without hiding
+/// a legacy fallback.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftFinalizationRuntimeAction {
+    /// Apply primary finalized-period storage writes.
+    ApplyPrimaryStorage,
+    /// Apply reward-vote reset storage writes in the primary batch.
+    ApplyRewardVotesResetStorage,
+    /// Apply sortition parameter storage writes in the primary batch.
+    ApplySortitionStorage,
+    /// Commit reward-vote reset metadata to the live vote manager.
+    CommitRewardVotesResetRuntime,
+    /// Update finalized DAG block ordering in the live DAG manager.
+    SetDagBlockOrder,
+    /// Update finalized transaction bookkeeping in the live transaction manager.
+    UpdateFinalizedTransactions,
+    /// Update the live PBFT chain head.
+    UpdatePbftChain,
+    /// Clear cached anchor DAG order state.
+    ClearAnchorDagCache,
+    /// Apply dynamic-lambda live state from the Rust dynamic-lambda planner.
+    ApplyDynamicLambda,
+    /// Dispatch final-chain finalization for the accepted period.
+    FinalizeFinalChain,
+    /// Persist the executed-PBFT status after final-chain dispatch.
+    PersistExecutedStatus,
+    /// Mark the live PBFT manager as having executed the block.
+    SetExecutedFlag,
+    /// Advance the PBFT manager period.
+    AdvancePeriod,
+    /// Terminal marker reserved for future fully Rust-owned runtimes.
+    Complete,
+}
+
+impl PbftFinalizationRuntimeAction {
+    /// Stable bridge code for C++.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::ApplyPrimaryStorage => 0,
+            Self::ApplyRewardVotesResetStorage => 1,
+            Self::ApplySortitionStorage => 2,
+            Self::CommitRewardVotesResetRuntime => 3,
+            Self::SetDagBlockOrder => 4,
+            Self::UpdateFinalizedTransactions => 5,
+            Self::UpdatePbftChain => 6,
+            Self::ClearAnchorDagCache => 7,
+            Self::ApplyDynamicLambda => 8,
+            Self::FinalizeFinalChain => 9,
+            Self::PersistExecutedStatus => 10,
+            Self::SetExecutedFlag => 11,
+            Self::AdvancePeriod => 12,
+            Self::Complete => 13,
+        }
+    }
+}
+
+/// Ordered runtime plan derived from an already accepted finalization intent.
+///
+/// Inputs are the accepted/rejected finalization intent. Outputs are bridge
+/// action codes in the order the mixed Rust/C++ runtime must execute them. A
+/// rejected intent returns no actions and preserves the rejection status.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftFinalizationRuntimePlan {
+    /// True when the candidate should execute finalization side effects.
+    pub finalize_block: bool,
+    /// Finalization planner status carried through for telemetry.
+    pub status: PbftFinalizationStatus,
+    /// Ordered side-effect actions for the shim executor.
+    pub actions: Vec<PbftFinalizationRuntimeAction>,
+}
+
+/// Cacti dynamic-lambda configuration needed by the Rust planner.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PbftDynamicLambdaConfig {
+    /// Cacti hardfork activation period used by interval checks.
+    pub cacti_block_num: u64,
+    /// Minimum dynamic lambda for round 1.
+    pub lambda_min: u32,
+    /// Maximum dynamic lambda for round 1.
+    pub lambda_max: u32,
+    /// Default lambda used in rounds greater than 1.
+    pub lambda_default: u32,
+    /// Number of finalized blocks between possible lambda decreases.
+    pub lambda_change_interval: u32,
+    /// Milliseconds added or subtracted by one adjustment.
+    pub lambda_change: u32,
+    /// Approximate consensus delay used for blocks-per-year calculation.
+    pub consensus_delay: u32,
+    /// Pre-Cacti configured blocks-per-year value.
+    pub dpos_blocks_per_year: u32,
+}
+
+/// Dynamic-lambda planner input for one PBFT finalization.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PbftDynamicLambdaFact {
+    /// Whether the finalized period is in the dynamic-lambda hardfork range.
+    pub dynamic_lambda_active: bool,
+    /// Finalized PBFT period.
+    pub finalized_period: u64,
+    /// Certified round for the finalized block.
+    pub finalized_round: u64,
+    /// Live rounds-count value before applying this finalization.
+    pub pre_adjust_rounds_count_dynamic_lambda: u32,
+    /// Live dynamic-lambda value before applying this finalization.
+    pub pre_adjust_dynamic_lambda: u32,
+    /// Cacti dynamic-lambda and reward-rate configuration.
+    pub config: PbftDynamicLambdaConfig,
+}
+
+/// Rust-computed dynamic-lambda result for one PBFT finalization.
+///
+/// The result contains the lambda used by the finalized block, the reward-rate
+/// blocks-per-year input for final-chain rewards, and the post-adjust live
+/// lambda fields that the shim must assign before persisting the lambda stage.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftDynamicLambdaPlan {
+    /// Whether dynamic-lambda persistence and live mutation should run.
+    pub apply_dynamic_lambda_update: bool,
+    /// Lambda used by the finalized block.
+    pub period_lambda: u32,
+    /// Blocks per year for reward calculation.
+    pub blocks_per_year: u32,
+    /// Post-adjust rounds-count live state.
+    pub rounds_count_dynamic_lambda: u32,
+    /// Post-adjust dynamic-lambda live state.
+    pub dynamic_lambda: u32,
+    /// True when the interval decrease branch changed lambda.
+    pub decreased_dynamic_lambda: bool,
+    /// True when the slow-round increase branch changed lambda.
+    pub increased_dynamic_lambda: bool,
+    /// Explicit status for invalid planner inputs.
+    pub status: PbftFinalizationStatus,
+}
+
 /// Minimal bounded cleanup intent for deterministic finalize-path side-effects.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct PbftFinalizationCleanupIntent {
@@ -449,6 +588,183 @@ pub fn plan_pbft_finalization_intent(fact: PbftFinalizationIntentFact) -> PbftFi
     PbftFinalizationPlan::accept(anchor, fact)
 }
 
+/// Builds the ordered runtime action script for a finalization intent.
+///
+/// The function is side-effect-free and deliberately mirrors the current shim
+/// executor order. Rejected plans produce no actions so callers cannot
+/// accidentally perform partial finalization from a failed candidate decision.
+pub fn plan_pbft_finalization_runtime(plan: &PbftFinalizationPlan) -> PbftFinalizationRuntimePlan {
+    if !plan.finalize_block || plan.status != PbftFinalizationStatus::Accepted {
+        return PbftFinalizationRuntimePlan {
+            finalize_block: false,
+            status: plan.status,
+            actions: Vec::new(),
+        };
+    }
+
+    let mut actions = Vec::new();
+    if plan.storage_write_intent.persist_pbft_head || plan.storage_write_intent.persist_period_data
+    {
+        actions.push(PbftFinalizationRuntimeAction::ApplyPrimaryStorage);
+    }
+    if plan.storage_write_intent.reset_reward_votes {
+        actions.push(PbftFinalizationRuntimeAction::ApplyRewardVotesResetStorage);
+    }
+    if plan.storage_write_intent.update_sortition_params {
+        actions.push(PbftFinalizationRuntimeAction::ApplySortitionStorage);
+    }
+    if plan.cleanup.reset_reward_votes {
+        actions.push(PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime);
+    }
+    if plan.cleanup.set_dag_block_order {
+        actions.push(PbftFinalizationRuntimeAction::SetDagBlockOrder);
+    }
+    if plan.cleanup.update_finalized_transactions_status {
+        actions.push(PbftFinalizationRuntimeAction::UpdateFinalizedTransactions);
+    }
+    if plan.cleanup.update_pbft_chain {
+        actions.push(PbftFinalizationRuntimeAction::UpdatePbftChain);
+    }
+    if plan.cleanup.clear_anchor_dag_cache {
+        actions.push(PbftFinalizationRuntimeAction::ClearAnchorDagCache);
+    }
+    if plan.storage_write_intent.apply_dynamic_lambda_update {
+        actions.push(PbftFinalizationRuntimeAction::ApplyDynamicLambda);
+    }
+    if plan.cleanup.finalize_final_chain {
+        actions.push(PbftFinalizationRuntimeAction::FinalizeFinalChain);
+    }
+    if plan.storage_write_intent.persist_executed_pbft_status {
+        actions.push(PbftFinalizationRuntimeAction::PersistExecutedStatus);
+    }
+    if plan.executed_pbft_block {
+        actions.push(PbftFinalizationRuntimeAction::SetExecutedFlag);
+    }
+    if plan.cleanup.advance_period {
+        actions.push(PbftFinalizationRuntimeAction::AdvancePeriod);
+    }
+
+    PbftFinalizationRuntimePlan {
+        finalize_block: true,
+        status: plan.status,
+        actions,
+    }
+}
+
+/// Computes the block lambda and post-finalization dynamic-lambda state.
+///
+/// This is the Rust source of truth for the Cacti dynamic-lambda algorithm. It
+/// does not read storage or mutate live state. Invalid config that would make
+/// interval or reward-rate arithmetic undefined returns `ContractError`.
+pub fn plan_pbft_dynamic_lambda(fact: PbftDynamicLambdaFact) -> PbftDynamicLambdaPlan {
+    if !fact.dynamic_lambda_active {
+        return PbftDynamicLambdaPlan {
+            apply_dynamic_lambda_update: false,
+            period_lambda: 0,
+            blocks_per_year: fact.config.dpos_blocks_per_year,
+            rounds_count_dynamic_lambda: fact.pre_adjust_rounds_count_dynamic_lambda,
+            dynamic_lambda: fact.pre_adjust_dynamic_lambda,
+            decreased_dynamic_lambda: false,
+            increased_dynamic_lambda: false,
+            status: PbftFinalizationStatus::Accepted,
+        };
+    }
+
+    if fact.finalized_round == 0 || fact.config.lambda_change_interval == 0 {
+        return dynamic_lambda_contract_error(fact);
+    }
+
+    let period_lambda = if fact.finalized_round == 1 {
+        fact.pre_adjust_dynamic_lambda
+    } else {
+        fact.config.lambda_default
+    };
+    let Some(blocks_per_year) = calc_blocks_per_year(period_lambda, fact.config.consensus_delay)
+    else {
+        return dynamic_lambda_contract_error(fact);
+    };
+    if fact.finalized_round > u32::MAX as u64 {
+        return dynamic_lambda_contract_error(fact);
+    }
+    let Some(mut rounds_count_dynamic_lambda) = fact
+        .pre_adjust_rounds_count_dynamic_lambda
+        .checked_add(fact.finalized_round as u32)
+    else {
+        return dynamic_lambda_contract_error(fact);
+    };
+
+    let mut dynamic_lambda = fact.pre_adjust_dynamic_lambda;
+    let mut decreased_dynamic_lambda = false;
+    let mut increased_dynamic_lambda = false;
+
+    if is_dynamic_lambda_change_interval(
+        fact.finalized_period,
+        fact.config.cacti_block_num,
+        fact.config.lambda_change_interval,
+    ) {
+        if rounds_count_dynamic_lambda == fact.config.lambda_change_interval
+            && dynamic_lambda > fact.config.lambda_min
+        {
+            dynamic_lambda = dynamic_lambda
+                .saturating_sub(fact.config.lambda_change)
+                .max(fact.config.lambda_min);
+            decreased_dynamic_lambda = true;
+        }
+        rounds_count_dynamic_lambda = 0;
+    }
+
+    if fact.finalized_round > 1 && dynamic_lambda < fact.config.lambda_max {
+        dynamic_lambda = dynamic_lambda
+            .saturating_add(fact.config.lambda_change)
+            .min(fact.config.lambda_max);
+        increased_dynamic_lambda = true;
+    }
+
+    PbftDynamicLambdaPlan {
+        apply_dynamic_lambda_update: true,
+        period_lambda,
+        blocks_per_year,
+        rounds_count_dynamic_lambda,
+        dynamic_lambda,
+        decreased_dynamic_lambda,
+        increased_dynamic_lambda,
+        status: PbftFinalizationStatus::Accepted,
+    }
+}
+
+fn dynamic_lambda_contract_error(fact: PbftDynamicLambdaFact) -> PbftDynamicLambdaPlan {
+    PbftDynamicLambdaPlan {
+        apply_dynamic_lambda_update: fact.dynamic_lambda_active,
+        period_lambda: 0,
+        blocks_per_year: fact.config.dpos_blocks_per_year,
+        rounds_count_dynamic_lambda: fact.pre_adjust_rounds_count_dynamic_lambda,
+        dynamic_lambda: fact.pre_adjust_dynamic_lambda,
+        decreased_dynamic_lambda: false,
+        increased_dynamic_lambda: false,
+        status: PbftFinalizationStatus::ContractError,
+    }
+}
+
+fn is_dynamic_lambda_change_interval(
+    block_number: u64,
+    cacti_block_num: u64,
+    lambda_change_interval: u32,
+) -> bool {
+    lambda_change_interval == 1
+        || (block_number > cacti_block_num && block_number % u64::from(lambda_change_interval) == 0)
+}
+
+fn calc_blocks_per_year(lambda_ms: u32, delay_ms: u32) -> Option<u32> {
+    let expected_block_time = u64::from(lambda_ms)
+        .checked_mul(2)?
+        .checked_add(u64::from(delay_ms))?;
+    if expected_block_time == 0 {
+        return None;
+    }
+    let year_ms = 365_u64 * 24 * 60 * 60 * 1000;
+    u32::try_from(year_ms / expected_block_time).ok()
+}
+
 fn positioned_hashes(hashes: Vec<H256>) -> Vec<PbftFinalizationPositionedHash> {
     hashes
         .into_iter()
@@ -495,6 +811,26 @@ mod tests {
             period_data_rlp: vec![0xc0],
             ordered_dag_block_hashes: vec![hash(1), hash(2)],
             ordered_transaction_hashes: vec![hash(3), hash(4)],
+        }
+    }
+
+    fn dynamic_lambda_fact() -> PbftDynamicLambdaFact {
+        PbftDynamicLambdaFact {
+            dynamic_lambda_active: true,
+            finalized_period: 20,
+            finalized_round: 1,
+            pre_adjust_rounds_count_dynamic_lambda: 9,
+            pre_adjust_dynamic_lambda: 1_500,
+            config: PbftDynamicLambdaConfig {
+                cacti_block_num: 10,
+                lambda_min: 500,
+                lambda_max: 1_500,
+                lambda_default: 2_000,
+                lambda_change_interval: 10,
+                lambda_change: 10,
+                consensus_delay: 400,
+                dpos_blocks_per_year: 500,
+            },
         }
     }
 
@@ -688,5 +1024,147 @@ mod tests {
 
         assert!(!plan.finalize_block);
         assert_eq!(plan.status, PbftFinalizationStatus::PreviousHashMismatch);
+    }
+
+    #[test]
+    fn finalization_runtime_orders_accepted_side_effects() {
+        let plan = plan_pbft_finalization_intent(accepted_fact());
+
+        let runtime = plan_pbft_finalization_runtime(&plan);
+
+        assert!(runtime.finalize_block);
+        assert_eq!(runtime.status, PbftFinalizationStatus::Accepted);
+        assert_eq!(
+            runtime.actions,
+            vec![
+                PbftFinalizationRuntimeAction::ApplyPrimaryStorage,
+                PbftFinalizationRuntimeAction::ApplyRewardVotesResetStorage,
+                PbftFinalizationRuntimeAction::ApplySortitionStorage,
+                PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
+                PbftFinalizationRuntimeAction::SetDagBlockOrder,
+                PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
+                PbftFinalizationRuntimeAction::UpdatePbftChain,
+                PbftFinalizationRuntimeAction::ClearAnchorDagCache,
+                PbftFinalizationRuntimeAction::ApplyDynamicLambda,
+                PbftFinalizationRuntimeAction::FinalizeFinalChain,
+                PbftFinalizationRuntimeAction::PersistExecutedStatus,
+                PbftFinalizationRuntimeAction::SetExecutedFlag,
+                PbftFinalizationRuntimeAction::AdvancePeriod,
+            ]
+        );
+    }
+
+    #[test]
+    fn finalization_runtime_omits_sortition_and_lambda_for_null_anchor_without_cacti() {
+        let mut fact = accepted_fact();
+        fact.pivot_dag_anchor_hash = H256::zero();
+        fact.request_dynamic_lambda_update = false;
+        let plan = plan_pbft_finalization_intent(fact);
+
+        let runtime = plan_pbft_finalization_runtime(&plan);
+
+        assert!(runtime.finalize_block);
+        assert!(
+            !runtime
+                .actions
+                .contains(&PbftFinalizationRuntimeAction::ApplySortitionStorage)
+        );
+        assert!(
+            !runtime
+                .actions
+                .contains(&PbftFinalizationRuntimeAction::ApplyDynamicLambda)
+        );
+        assert!(
+            runtime
+                .actions
+                .contains(&PbftFinalizationRuntimeAction::FinalizeFinalChain)
+        );
+    }
+
+    #[test]
+    fn finalization_runtime_rejected_plan_has_no_actions() {
+        let mut fact = accepted_fact();
+        fact.block_in_chain = true;
+        let plan = plan_pbft_finalization_intent(fact);
+
+        let runtime = plan_pbft_finalization_runtime(&plan);
+
+        assert!(!runtime.finalize_block);
+        assert_eq!(runtime.status, PbftFinalizationStatus::BlockAlreadyInChain);
+        assert!(runtime.actions.is_empty());
+    }
+
+    #[test]
+    fn dynamic_lambda_decreases_on_exact_interval_and_round_one() {
+        let plan = plan_pbft_dynamic_lambda(dynamic_lambda_fact());
+
+        assert_eq!(plan.status, PbftFinalizationStatus::Accepted);
+        assert!(plan.apply_dynamic_lambda_update);
+        assert_eq!(plan.period_lambda, 1_500);
+        assert_eq!(plan.blocks_per_year, 9_275_294);
+        assert_eq!(plan.rounds_count_dynamic_lambda, 0);
+        assert_eq!(plan.dynamic_lambda, 1_490);
+        assert!(plan.decreased_dynamic_lambda);
+        assert!(!plan.increased_dynamic_lambda);
+    }
+
+    #[test]
+    fn dynamic_lambda_increases_for_late_round_and_clamps_to_max() {
+        let mut fact = dynamic_lambda_fact();
+        fact.finalized_period = 21;
+        fact.finalized_round = 2;
+        fact.pre_adjust_rounds_count_dynamic_lambda = 3;
+        fact.pre_adjust_dynamic_lambda = 1_495;
+
+        let plan = plan_pbft_dynamic_lambda(fact);
+
+        assert_eq!(plan.status, PbftFinalizationStatus::Accepted);
+        assert_eq!(plan.period_lambda, 2_000);
+        assert_eq!(plan.rounds_count_dynamic_lambda, 5);
+        assert_eq!(plan.dynamic_lambda, 1_500);
+        assert!(!plan.decreased_dynamic_lambda);
+        assert!(plan.increased_dynamic_lambda);
+    }
+
+    #[test]
+    fn dynamic_lambda_decrease_then_increase_preserves_legacy_order() {
+        let mut fact = dynamic_lambda_fact();
+        fact.finalized_round = 2;
+        fact.pre_adjust_rounds_count_dynamic_lambda = 8;
+        fact.pre_adjust_dynamic_lambda = 1_000;
+
+        let plan = plan_pbft_dynamic_lambda(fact);
+
+        assert_eq!(plan.rounds_count_dynamic_lambda, 0);
+        assert_eq!(plan.dynamic_lambda, 1_000);
+        assert!(plan.decreased_dynamic_lambda);
+        assert!(plan.increased_dynamic_lambda);
+    }
+
+    #[test]
+    fn dynamic_lambda_disabled_uses_dpos_rate_without_mutation() {
+        let mut fact = dynamic_lambda_fact();
+        fact.dynamic_lambda_active = false;
+
+        let plan = plan_pbft_dynamic_lambda(fact);
+
+        assert_eq!(plan.status, PbftFinalizationStatus::Accepted);
+        assert!(!plan.apply_dynamic_lambda_update);
+        assert_eq!(plan.period_lambda, 0);
+        assert_eq!(plan.blocks_per_year, 500);
+        assert_eq!(plan.rounds_count_dynamic_lambda, 9);
+        assert_eq!(plan.dynamic_lambda, 1_500);
+    }
+
+    #[test]
+    fn dynamic_lambda_rejects_invalid_interval() {
+        let mut fact = dynamic_lambda_fact();
+        fact.config.lambda_change_interval = 0;
+
+        let plan = plan_pbft_dynamic_lambda(fact);
+
+        assert_eq!(plan.status, PbftFinalizationStatus::ContractError);
+        assert!(plan.apply_dynamic_lambda_update);
+        assert_eq!(plan.dynamic_lambda, 1_500);
     }
 }

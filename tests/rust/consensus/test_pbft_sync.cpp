@@ -52,6 +52,19 @@ constexpr uint8_t kPbftFinalizationStatusBlockAlreadyInChain = 1;
 constexpr uint8_t kPbftFinalizationStatusPillarDependencyMissing = 4;
 constexpr uint8_t kPbftFinalizationStatusEmptyCertVotes = 5;
 constexpr uint8_t kPbftFinalizationStatusCertVoteBlockMismatch = 6;
+constexpr uint8_t kPbftFinalizationRuntimeActionPrimaryStorage = 0;
+constexpr uint8_t kPbftFinalizationRuntimeActionRewardResetStorage = 1;
+constexpr uint8_t kPbftFinalizationRuntimeActionSortitionStorage = 2;
+constexpr uint8_t kPbftFinalizationRuntimeActionCommitRewardReset = 3;
+constexpr uint8_t kPbftFinalizationRuntimeActionSetDagOrder = 4;
+constexpr uint8_t kPbftFinalizationRuntimeActionUpdateTransactions = 5;
+constexpr uint8_t kPbftFinalizationRuntimeActionUpdatePbftChain = 6;
+constexpr uint8_t kPbftFinalizationRuntimeActionClearAnchorCache = 7;
+constexpr uint8_t kPbftFinalizationRuntimeActionApplyDynamicLambda = 8;
+constexpr uint8_t kPbftFinalizationRuntimeActionFinalizeFinalChain = 9;
+constexpr uint8_t kPbftFinalizationRuntimeActionPersistExecutedStatus = 10;
+constexpr uint8_t kPbftFinalizationRuntimeActionSetExecutedFlag = 11;
+constexpr uint8_t kPbftFinalizationRuntimeActionAdvancePeriod = 12;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusApplied = 0;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusAlreadyApplied = 1;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusRejected = 2;
@@ -165,6 +178,27 @@ PbftFinalizationIntentFact makeFinalizationFact() {
   fact.period_data_rlp = {0xc0};
   fact.ordered_dag_block_hashes = {PbftFinalizationHash{h256(2)}, PbftFinalizationHash{h256(3)}};
   fact.ordered_transaction_hashes = {PbftFinalizationHash{h256(4)}};
+  return fact;
+}
+
+PbftDynamicLambdaFact makeDynamicLambdaFact() {
+  PbftDynamicLambdaConfig config;
+  config.cacti_block_num = 10;
+  config.lambda_min = 500;
+  config.lambda_max = 1500;
+  config.lambda_default = 2000;
+  config.lambda_change_interval = 10;
+  config.lambda_change = 10;
+  config.consensus_delay = 400;
+  config.dpos_blocks_per_year = 500;
+
+  PbftDynamicLambdaFact fact;
+  fact.dynamic_lambda_active = true;
+  fact.finalized_period = 20;
+  fact.finalized_round = 1;
+  fact.pre_adjust_rounds_count_dynamic_lambda = 9;
+  fact.pre_adjust_dynamic_lambda = 1500;
+  fact.config = config;
   return fact;
 }
 
@@ -446,6 +480,70 @@ TEST(RustPbftSyncTest, FinalizationIntentRejectsMalformedCertVoteFacts) {
   EXPECT_FALSE(plan.finalize_block);
   EXPECT_EQ(plan.status, kPbftFinalizationStatusCertVoteBlockMismatch);
   expectNoFinalizationStorageWrites(plan.storage_write_intent);
+}
+
+TEST(RustPbftSyncTest, FinalizationRuntimePlanOrdersMixedExecutorActions) {
+  const auto intent = plan_pbft_finalization_intent(makeFinalizationFact());
+  const auto runtime = plan_pbft_finalization_runtime(intent);
+
+  EXPECT_TRUE(runtime.finalize_block);
+  EXPECT_EQ(runtime.status, kPbftFinalizationStatusAccepted);
+  const std::vector<uint8_t> actions(runtime.actions.begin(), runtime.actions.end());
+  EXPECT_EQ(actions, (std::vector<uint8_t>{
+                         kPbftFinalizationRuntimeActionPrimaryStorage,
+                         kPbftFinalizationRuntimeActionRewardResetStorage,
+                         kPbftFinalizationRuntimeActionSortitionStorage,
+                         kPbftFinalizationRuntimeActionCommitRewardReset,
+                         kPbftFinalizationRuntimeActionSetDagOrder,
+                         kPbftFinalizationRuntimeActionUpdateTransactions,
+                         kPbftFinalizationRuntimeActionUpdatePbftChain,
+                         kPbftFinalizationRuntimeActionClearAnchorCache,
+                         kPbftFinalizationRuntimeActionApplyDynamicLambda,
+                         kPbftFinalizationRuntimeActionFinalizeFinalChain,
+                         kPbftFinalizationRuntimeActionPersistExecutedStatus,
+                         kPbftFinalizationRuntimeActionSetExecutedFlag,
+                         kPbftFinalizationRuntimeActionAdvancePeriod,
+                     }));
+
+  auto rejected_fact = makeFinalizationFact();
+  rejected_fact.block_in_chain = true;
+  const auto rejected_intent = plan_pbft_finalization_intent(std::move(rejected_fact));
+  const auto rejected_runtime = plan_pbft_finalization_runtime(rejected_intent);
+  EXPECT_FALSE(rejected_runtime.finalize_block);
+  EXPECT_TRUE(rejected_runtime.actions.empty());
+}
+
+TEST(RustPbftSyncTest, DynamicLambdaPlannerMatchesCactiAdjustmentPolicy) {
+  auto plan = plan_pbft_dynamic_lambda(makeDynamicLambdaFact());
+
+  EXPECT_EQ(plan.status, kPbftFinalizationStatusAccepted);
+  EXPECT_TRUE(plan.apply_dynamic_lambda_update);
+  EXPECT_EQ(plan.period_lambda, 1500);
+  EXPECT_EQ(plan.blocks_per_year, 9275294);
+  EXPECT_EQ(plan.rounds_count_dynamic_lambda, 0);
+  EXPECT_EQ(plan.dynamic_lambda, 1490);
+  EXPECT_TRUE(plan.decreased_dynamic_lambda);
+  EXPECT_FALSE(plan.increased_dynamic_lambda);
+
+  auto fact = makeDynamicLambdaFact();
+  fact.finalized_period = 21;
+  fact.finalized_round = 2;
+  fact.pre_adjust_rounds_count_dynamic_lambda = 3;
+  fact.pre_adjust_dynamic_lambda = 1495;
+  plan = plan_pbft_dynamic_lambda(fact);
+  EXPECT_EQ(plan.period_lambda, 2000);
+  EXPECT_EQ(plan.rounds_count_dynamic_lambda, 5);
+  EXPECT_EQ(plan.dynamic_lambda, 1500);
+  EXPECT_FALSE(plan.decreased_dynamic_lambda);
+  EXPECT_TRUE(plan.increased_dynamic_lambda);
+
+  fact = makeDynamicLambdaFact();
+  fact.dynamic_lambda_active = false;
+  plan = plan_pbft_dynamic_lambda(fact);
+  EXPECT_EQ(plan.status, kPbftFinalizationStatusAccepted);
+  EXPECT_FALSE(plan.apply_dynamic_lambda_update);
+  EXPECT_EQ(plan.blocks_per_year, 500);
+  EXPECT_EQ(plan.dynamic_lambda, 1500);
 }
 
 TEST(RustPbftSyncTest, FinalizedPeriodStorageAppenderWritesPrimaryBatch) {
