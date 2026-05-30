@@ -570,6 +570,35 @@ TEST(RustPbftSyncTest, FinalizationRuntimeSessionStopsOnFailureOrMismatch) {
   EXPECT_EQ(std::string(mismatch.error_code), "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH");
 }
 
+TEST(RustPbftSyncTest, FinalizationResumeRuntimeSessionOwnsTailReplayCursor) {
+  PbftFinalizationResumePlan resume;
+  resume.status = kPbftFinalizationResumeStatusNeedsFinalChainReplay;
+  resume.duplicate_classified = true;
+  resume.complete = false;
+  resume.replay_actions.push_back(kPbftFinalizationRuntimeActionFinalizeFinalChain);
+  resume.replay_actions.push_back(kPbftFinalizationRuntimeActionPersistExecutedStatus);
+  resume.replay_actions.push_back(kPbftFinalizationRuntimeActionSetExecutedFlag);
+  resume.replay_actions.push_back(kPbftFinalizationRuntimeActionAdvancePeriod);
+  resume.error_code = "PBFT_FINALIZE_RESUME_NEEDS_FINAL_CHAIN_REPLAY";
+  auto session = create_pbft_finalization_resume_runtime_session(resume);
+
+  auto step = session->pbft_finalization_runtime_session_next();
+  std::vector<uint8_t> actions;
+  while (step.has_action) {
+    actions.push_back(step.action);
+    step = session->pbft_finalization_runtime_session_report(step.cursor, step.action, true, 0);
+  }
+
+  EXPECT_TRUE(step.complete);
+  EXPECT_EQ(step.status, kPbftFinalizationRuntimeStatusComplete);
+  EXPECT_EQ(actions, (std::vector<uint8_t>{
+                         kPbftFinalizationRuntimeActionFinalizeFinalChain,
+                         kPbftFinalizationRuntimeActionPersistExecutedStatus,
+                         kPbftFinalizationRuntimeActionSetExecutedFlag,
+                         kPbftFinalizationRuntimeActionAdvancePeriod,
+                     }));
+}
+
 TEST(RustPbftSyncTest, DynamicLambdaPlannerMatchesCactiAdjustmentPolicy) {
   auto plan = plan_pbft_dynamic_lambda(makeDynamicLambdaFact());
 

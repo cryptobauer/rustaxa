@@ -58,6 +58,9 @@ constexpr uint8_t kPbftFinalizationStorageStageExecutedStatus = 2;
 constexpr uint8_t kPbftFinalizationStorageStageSortition = 3;
 constexpr uint8_t kPbftFinalizationRuntimeStatusActive = 0;
 constexpr uint8_t kPbftFinalizationRuntimeStatusComplete = 1;
+constexpr uint8_t kPbftFinalizationResumeStatusNeedsFinalChainReplay = 2;
+constexpr uint8_t kPbftFinalizationResumeStatusNeedsExecutedStatusPersistence = 3;
+constexpr uint8_t kPbftFinalizationResumeStatusNeedsDynamicLambdaPersistence = 6;
 constexpr uint8_t kPbftFinalizationRuntimeActionApplyPrimaryStorage = 0;
 constexpr uint8_t kPbftFinalizationRuntimeActionCommitRewardVotesReset = 3;
 constexpr uint8_t kPbftFinalizationRuntimeActionSetDagBlockOrder = 4;
@@ -2341,6 +2344,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     return false;
   }
   if (block_in_chain) {
+    bool resume_executed = false;
     try {
       const auto resume_plan = rustaxa::inspect_pbft_finalization_resume(
           db_->rustStorage(), finalization_plan.storage_write_intent, final_chain_->lastBlockNumber());
@@ -2349,6 +2353,131 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                    << block_pbft_period << ", status " << static_cast<uint32_t>(resume_plan.status)
                    << ", complete " << resume_plan.complete << ", replay actions " << resume_plan.replay_actions.size()
                    << ", error " << static_cast<std::string>(resume_plan.error_code);
+      if (resume_plan.status == kPbftFinalizationResumeStatusNeedsDynamicLambdaPersistence) {
+        LOG(log_er_) << "Rust PBFT finalization resume requires dynamic-lambda persistence for block "
+                     << pbft_block_hash << ", period " << block_pbft_period
+                     << ". Dynamic-lambda resume execution remains disabled until the live-state replay contract is "
+                        "durable.";
+      } else if (resume_plan.status == kPbftFinalizationResumeStatusNeedsFinalChainReplay ||
+                 resume_plan.status == kPbftFinalizationResumeStatusNeedsExecutedStatusPersistence) {
+        auto resume_runtime_session = rustaxa::create_pbft_finalization_resume_runtime_session(resume_plan);
+        auto begin_resume_action = [&](uint8_t expected_action, rustaxa::PbftFinalizationRuntimeSessionStep &step) {
+          step = resume_runtime_session->pbft_finalization_runtime_session_next();
+          if (!step.has_action || step.action != expected_action ||
+              step.status != kPbftFinalizationRuntimeStatusActive) {
+            LOG(log_er_) << "Rust PBFT finalization resume expected action "
+                         << static_cast<uint32_t>(expected_action) << " for block " << pbft_block_hash << ", period "
+                         << block_pbft_period << ", got action " << static_cast<uint32_t>(step.action) << ", status "
+                         << static_cast<uint32_t>(step.status) << ", error "
+                         << static_cast<std::string>(step.error_code);
+            resume_runtime_session->abort_pbft_finalization_runtime_session();
+            return false;
+          }
+          return true;
+        };
+        auto report_resume_action = [&](const rustaxa::PbftFinalizationRuntimeSessionStep &step, bool success,
+                                        uint8_t action_status) {
+          const auto next_step = resume_runtime_session->pbft_finalization_runtime_session_report(
+              step.cursor, step.action, success, action_status);
+          if (!success || (next_step.status != kPbftFinalizationRuntimeStatusActive &&
+                           next_step.status != kPbftFinalizationRuntimeStatusComplete)) {
+            LOG(log_er_) << "Rust PBFT finalization resume action " << static_cast<uint32_t>(step.action)
+                         << " failed for block " << pbft_block_hash << ", period " << block_pbft_period
+                         << ", status " << static_cast<uint32_t>(next_step.status) << ", error "
+                         << static_cast<std::string>(next_step.error_code);
+            return false;
+          }
+          return true;
+        };
+
+        rustaxa::PbftFinalizationRuntimeSessionStep resume_step{};
+        if (resume_plan.status == kPbftFinalizationResumeStatusNeedsFinalChainReplay) {
+          if (final_chain_->lastBlockNumber() + 1 != block_pbft_period) {
+            LOG(log_er_) << "Rust PBFT finalization resume refused non-sequential FinalChain replay for block "
+                         << pbft_block_hash << ", period " << block_pbft_period << ", FinalChain last block "
+                         << final_chain_->lastBlockNumber();
+            resume_runtime_session->abort_pbft_finalization_runtime_session();
+            return false;
+          }
+          if (!begin_resume_action(kPbftFinalizationRuntimeActionFinalizeFinalChain, resume_step)) {
+            return false;
+          }
+          finalize_(std::move(period_data), std::move(dag_blocks_order),
+                    finalization_plan.storage_write_intent.blocks_per_year);
+          if (final_chain_->lastBlockNumber() < block_pbft_period) {
+            report_resume_action(resume_step, false, 255);
+            return false;
+          }
+          if (!report_resume_action(resume_step, true, 0)) {
+            return false;
+          }
+        }
+
+        if (resume_plan.status == kPbftFinalizationResumeStatusNeedsFinalChainReplay ||
+            resume_plan.status == kPbftFinalizationResumeStatusNeedsExecutedStatusPersistence) {
+          if (resume_runtime_session->pbft_finalization_runtime_session_next().action ==
+              kPbftFinalizationRuntimeActionPersistExecutedStatus) {
+            if (!begin_resume_action(kPbftFinalizationRuntimeActionPersistExecutedStatus, resume_step)) {
+              return false;
+            }
+            rustaxa::PbftFinalizedPeriodApplyResult executed_status_result{};
+            try {
+              rust::Vec<rustaxa::PbftFinalizationStorageWriteStage> executed_status_stages;
+              executed_status_stages.push_back(
+                  makeFinalizationStorageStage(kPbftFinalizationStorageStageExecutedStatus));
+              executed_status_result = rustaxa::apply_pbft_finalization_storage_writes(
+                  db_->rustStorage(), finalization_plan.storage_write_intent, std::move(executed_status_stages),
+                  false);
+            } catch (const std::exception &e) {
+              LOG(log_er_) << "Rust PBFT resume executed-status storage appender failed for block " << pbft_block_hash
+                           << ", period " << block_pbft_period << ": " << e.what();
+              report_resume_action(resume_step, false, 255);
+              return false;
+            }
+            if (executed_status_result.status != kPbftFinalizedPeriodApplyStatusApplied &&
+                executed_status_result.status != kPbftFinalizedPeriodApplyStatusAlreadyApplied) {
+              LOG(log_er_) << "Rust PBFT resume executed-status storage appender rejected block " << pbft_block_hash
+                           << ", period " << block_pbft_period << ", status "
+                           << static_cast<uint32_t>(executed_status_result.status) << ", error "
+                           << static_cast<std::string>(executed_status_result.error_code);
+              report_resume_action(resume_step, false, executed_status_result.status);
+              return false;
+            }
+            if (!report_resume_action(resume_step, true, executed_status_result.status)) {
+              return false;
+            }
+          }
+        }
+
+        if (resume_plan.status == kPbftFinalizationResumeStatusNeedsFinalChainReplay) {
+          if (!begin_resume_action(kPbftFinalizationRuntimeActionSetExecutedFlag, resume_step)) {
+            return false;
+          }
+          executed_pbft_block_ = finalization_plan.storage_write_intent.executed_pbft_status;
+          if (!report_resume_action(resume_step, true, 0)) {
+            return false;
+          }
+          if (!begin_resume_action(kPbftFinalizationRuntimeActionAdvancePeriod, resume_step)) {
+            return false;
+          }
+          advancePeriod();
+          if (!report_resume_action(resume_step, true, 0)) {
+            return false;
+          }
+        }
+
+        const auto final_resume_step = resume_runtime_session->pbft_finalization_runtime_session_next();
+        if (!final_resume_step.complete || final_resume_step.status != kPbftFinalizationRuntimeStatusComplete) {
+          LOG(log_er_) << "Rust PBFT finalization resume runtime did not complete for block " << pbft_block_hash
+                       << ", period " << block_pbft_period << ", status "
+                       << static_cast<uint32_t>(final_resume_step.status) << ", action "
+                       << static_cast<uint32_t>(final_resume_step.action) << ", error "
+                       << static_cast<std::string>(final_resume_step.error_code);
+          resume_runtime_session->abort_pbft_finalization_runtime_session();
+          return false;
+        }
+        resume_executed = true;
+      }
     } catch (const std::exception &e) {
       LOG(log_er_) << "Rust PBFT finalization resume inspection failed for duplicate block " << pbft_block_hash
                    << ", period " << block_pbft_period << ": " << e.what();
@@ -2358,7 +2487,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                    << (*cert_voted_block_for_round_)->getBlockHash() << " has been pushed into chain already";
       assert(false);
     }
-    return false;
+    return resume_executed;
   }
   const auto finalization_runtime_plan = rustaxa::plan_pbft_finalization_runtime(finalization_plan);
   if (!finalization_runtime_plan.finalize_block ||

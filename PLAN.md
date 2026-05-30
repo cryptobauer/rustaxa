@@ -554,9 +554,14 @@ The current Rust starting point is intentionally small:
    restart-adjacent blocks: Rust inspects the durable hash-to-period, period-data, finalized DAG/transaction indexes,
    optional period-lambda, executed-status, and FinalChain height facts and returns complete, replay-needed,
    missing-primary, or conflicting-primary classifications instead of letting the shim treat `pbftBlockInDb` as a blind
-   duplicate. This classifier does not yet replay ambiguous C++ live side effects because DAG manager mutation,
-   transaction sidecars, PBFT-chain live state, timers, reward metadata, and period reset still lack a durable
-   Rust-owned action cursor. The Rust-mode `VoteManager` overlay now uses the
+   duplicate. The duplicate path now consumes that classification through a Rust-owned resume runtime session for the
+   storage-proven tail only: when primary finalization and dynamic lambda are already durable and FinalChain is exactly
+   one period behind, the overlay replays FinalChain finalization, persists executed status through Rust, sets the live
+   executed flag, advances the PBFT period, and reports each action back to Rust before the cursor advances. Dynamic
+   lambda gaps, missing/conflicting primary facts, and complete duplicates remain explicit no-replay paths. This
+   classifier/session does not yet replay ambiguous C++ live side effects because DAG manager mutation, transaction
+   sidecars, PBFT-chain live state, timers, reward metadata, sortition live state, and pillar post-processing still lack
+   a durable Rust-owned action cursor. The Rust-mode `VoteManager` overlay now uses the
    approved temporary protected-state hook to inherit unported behavior from `VoteManagerOld` while owning reward-vote
    reset persistence handoff in shim code: it selects the live cert-vote bundle in C++, passes the stage-4 Rust storage
    facts into the Rust-owned finalization apply batch, and mutates live reward metadata only after Rust commits the

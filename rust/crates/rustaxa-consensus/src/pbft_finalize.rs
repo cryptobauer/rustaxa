@@ -883,6 +883,61 @@ pub fn start_pbft_finalization_runtime(
     }
 }
 
+/// Starts a Rust-owned runtime executor from a durable resume plan.
+///
+/// The resume executor shares the normal finalization cursor/report contract,
+/// but its action list is restricted to replay actions derived from durable
+/// storage facts. Complete resume plans return a completed runtime with no
+/// action. Rejected or unsafe resume classifications return `RejectedPlan` so
+/// C++ cannot accidentally execute ambiguous live side effects.
+pub fn start_pbft_finalization_resume_runtime(
+    plan: &PbftFinalizationResumePlan,
+) -> PbftFinalizationRuntimeState {
+    if plan.complete && plan.replay_actions.is_empty() {
+        return PbftFinalizationRuntimeState {
+            finalization_status: PbftFinalizationStatus::Accepted,
+            runtime_status: PbftFinalizationRuntimeStatus::Complete,
+            actions: Vec::new(),
+            next_action_index: 0,
+            last_action: None,
+            failed_action: None,
+            error_code: String::new(),
+        };
+    }
+
+    if plan.replay_actions.is_empty()
+        || !matches!(
+            plan.status,
+            PbftFinalizationResumeStatus::NeedsFinalChainReplay
+                | PbftFinalizationResumeStatus::NeedsExecutedStatusPersistence
+        )
+    {
+        return PbftFinalizationRuntimeState {
+            finalization_status: PbftFinalizationStatus::BlockAlreadyInChain,
+            runtime_status: PbftFinalizationRuntimeStatus::RejectedPlan,
+            actions: Vec::new(),
+            next_action_index: 0,
+            last_action: None,
+            failed_action: None,
+            error_code: if plan.error_code.is_empty() {
+                "PBFT_FINALIZE_RESUME_RUNTIME_REJECTED_PLAN".to_string()
+            } else {
+                plan.error_code.clone()
+            },
+        };
+    }
+
+    PbftFinalizationRuntimeState {
+        finalization_status: PbftFinalizationStatus::Accepted,
+        runtime_status: PbftFinalizationRuntimeStatus::Active,
+        actions: plan.replay_actions.clone(),
+        next_action_index: 0,
+        last_action: None,
+        failed_action: None,
+        error_code: String::new(),
+    }
+}
+
 /// Returns the next Rust-planned PBFT finalization action.
 ///
 /// A completed or failed runtime returns no action and carries the terminal
@@ -1454,6 +1509,94 @@ mod tests {
         assert_eq!(
             plan.replay_actions,
             vec![PbftFinalizationRuntimeAction::ApplyDynamicLambda]
+        );
+    }
+
+    #[test]
+    fn resume_runtime_session_uses_only_replay_actions() {
+        let resume = PbftFinalizationResumePlan {
+            status: PbftFinalizationResumeStatus::NeedsFinalChainReplay,
+            duplicate_classified: true,
+            complete: false,
+            replay_actions: vec![
+                PbftFinalizationRuntimeAction::FinalizeFinalChain,
+                PbftFinalizationRuntimeAction::PersistExecutedStatus,
+                PbftFinalizationRuntimeAction::SetExecutedFlag,
+                PbftFinalizationRuntimeAction::AdvancePeriod,
+            ],
+            error_code: "PBFT_FINALIZE_RESUME_NEEDS_FINAL_CHAIN_REPLAY".to_string(),
+        };
+        let mut state = start_pbft_finalization_resume_runtime(&resume);
+
+        let mut seen = Vec::new();
+        loop {
+            let step = next_pbft_finalization_runtime_action(&state);
+            if step.complete {
+                assert_eq!(step.runtime_status, PbftFinalizationRuntimeStatus::Complete);
+                break;
+            }
+            let action = step.action.expect("active step should carry action");
+            seen.push(action);
+            state = report_pbft_finalization_runtime_action(
+                state,
+                PbftFinalizationRuntimeActionResult {
+                    action,
+                    success: true,
+                    error_code: String::new(),
+                },
+            );
+        }
+
+        assert_eq!(seen, resume.replay_actions);
+    }
+
+    #[test]
+    fn resume_runtime_rejects_unsafe_or_complete_plans_without_actions() {
+        let complete = PbftFinalizationResumePlan {
+            status: PbftFinalizationResumeStatus::Complete,
+            duplicate_classified: true,
+            complete: true,
+            replay_actions: Vec::new(),
+            error_code: String::new(),
+        };
+        let state = start_pbft_finalization_resume_runtime(&complete);
+        assert_eq!(
+            state.runtime_status,
+            PbftFinalizationRuntimeStatus::Complete
+        );
+
+        let unsafe_plan = PbftFinalizationResumePlan {
+            status: PbftFinalizationResumeStatus::MissingPrimaryFacts,
+            duplicate_classified: true,
+            complete: false,
+            replay_actions: Vec::new(),
+            error_code: "PBFT_FINALIZE_RESUME_MISSING_PRIMARY_FACTS".to_string(),
+        };
+        let state = start_pbft_finalization_resume_runtime(&unsafe_plan);
+        assert_eq!(
+            state.runtime_status,
+            PbftFinalizationRuntimeStatus::RejectedPlan
+        );
+        assert_eq!(
+            state.error_code,
+            "PBFT_FINALIZE_RESUME_MISSING_PRIMARY_FACTS"
+        );
+
+        let dynamic_gap = PbftFinalizationResumePlan {
+            status: PbftFinalizationResumeStatus::NeedsDynamicLambdaPersistence,
+            duplicate_classified: true,
+            complete: false,
+            replay_actions: vec![PbftFinalizationRuntimeAction::ApplyDynamicLambda],
+            error_code: "PBFT_FINALIZE_RESUME_NEEDS_DYNAMIC_LAMBDA".to_string(),
+        };
+        let state = start_pbft_finalization_resume_runtime(&dynamic_gap);
+        assert_eq!(
+            state.runtime_status,
+            PbftFinalizationRuntimeStatus::RejectedPlan
+        );
+        assert_eq!(
+            state.error_code,
+            "PBFT_FINALIZE_RESUME_NEEDS_DYNAMIC_LAMBDA"
         );
     }
 

@@ -2581,6 +2581,9 @@ pub mod rustaxa_ffi {
         pub fn create_pbft_finalization_runtime_session(
             plan: &PbftFinalizationIntentPlan,
         ) -> Box<BridgePbftFinalizationRuntimeSession>;
+        pub fn create_pbft_finalization_resume_runtime_session(
+            plan: &PbftFinalizationResumePlan,
+        ) -> Box<BridgePbftFinalizationRuntimeSession>;
         pub fn pbft_finalization_runtime_session_next(
             self: &mut BridgePbftFinalizationRuntimeSession,
         ) -> PbftFinalizationRuntimeSessionStep;

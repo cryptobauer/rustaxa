@@ -37,12 +37,13 @@ use rustaxa_consensus::pbft_finalize::{
     plan_pbft_finalization_intent as plan_domain_pbft_finalization_intent,
     plan_pbft_finalization_resume as plan_domain_pbft_finalization_resume,
     plan_pbft_finalization_runtime as plan_domain_pbft_finalization_runtime,
-    report_pbft_finalization_runtime_action, start_pbft_finalization_runtime,
-    PbftDynamicLambdaConfig, PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationAnchor,
-    PbftFinalizationCleanupIntent, PbftFinalizationIntentFact, PbftFinalizationPlan,
-    PbftFinalizationPositionedHash, PbftFinalizationResumeFact, PbftFinalizationResumePlan,
-    PbftFinalizationRuntimeAction, PbftFinalizationRuntimeActionResult,
-    PbftFinalizationRuntimeStatus, PbftFinalizationStatus, PbftFinalizationStorageWriteIntent,
+    report_pbft_finalization_runtime_action, start_pbft_finalization_resume_runtime,
+    start_pbft_finalization_runtime, PbftDynamicLambdaConfig, PbftDynamicLambdaFact,
+    PbftDynamicLambdaPlan, PbftFinalizationAnchor, PbftFinalizationCleanupIntent,
+    PbftFinalizationIntentFact, PbftFinalizationPlan, PbftFinalizationPositionedHash,
+    PbftFinalizationResumeFact, PbftFinalizationResumePlan, PbftFinalizationRuntimeAction,
+    PbftFinalizationRuntimeActionResult, PbftFinalizationRuntimeStatus, PbftFinalizationStatus,
+    PbftFinalizationStorageWriteIntent,
 };
 use rustaxa_consensus::sortition::SortitionParamsChange;
 use rustaxa_storage::Column;
@@ -253,6 +254,22 @@ pub fn create_pbft_finalization_runtime_session(
     let runtime_plan = plan_domain_pbft_finalization_runtime(&domain_plan);
     Box::new(BridgePbftFinalizationRuntimeSession {
         state: start_pbft_finalization_runtime(&runtime_plan),
+    })
+}
+
+/// Creates a Rust-owned runtime session for a durable PBFT finalization resume
+/// plan.
+///
+/// The returned session uses the same next/report cursor contract as normal
+/// finalization. Its action script is the resume plan's storage-derived replay
+/// actions, so C++ can only execute the bounded tail that Rust classified as
+/// safe from durable facts.
+pub fn create_pbft_finalization_resume_runtime_session(
+    plan: &FfiPbftFinalizationResumePlan,
+) -> Box<BridgePbftFinalizationRuntimeSession> {
+    let domain_plan = PbftFinalizationResumePlan::from(plan);
+    Box::new(BridgePbftFinalizationRuntimeSession {
+        state: start_pbft_finalization_resume_runtime(&domain_plan),
     })
 }
 
@@ -1257,6 +1274,42 @@ impl From<FfiPbftFinalizationResumeFact> for PbftFinalizationResumeFact {
     }
 }
 
+impl From<&FfiPbftFinalizationResumePlan> for PbftFinalizationResumePlan {
+    fn from(value: &FfiPbftFinalizationResumePlan) -> Self {
+        Self {
+            status: match value.status {
+                0 => rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::NotPersisted,
+                1 => rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::Complete,
+                2 => {
+                    rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::NeedsFinalChainReplay
+                }
+                3 => {
+                    rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::NeedsExecutedStatusPersistence
+                }
+                4 => {
+                    rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::MissingPrimaryFacts
+                }
+                5 => {
+                    rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::ConflictingPrimaryFacts
+                }
+                6 => {
+                    rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::NeedsDynamicLambdaPersistence
+                }
+                255 => rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::ContractError,
+                _ => rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::Unknown,
+            },
+            duplicate_classified: value.duplicate_classified,
+            complete: value.complete,
+            replay_actions: value
+                .replay_actions
+                .iter()
+                .filter_map(|action| PbftFinalizationRuntimeAction::from_u8(*action))
+                .collect(),
+            error_code: value.error_code.to_string(),
+        }
+    }
+}
+
 impl From<PbftFinalizationResumePlan> for FfiPbftFinalizationResumePlan {
     fn from(value: PbftFinalizationResumePlan) -> Self {
         Self {
@@ -1795,6 +1848,35 @@ mod tests {
         assert_eq!(mismatch.status, 3);
         assert!(!mismatch.has_action);
         assert_eq!(mismatch.error_code, "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH");
+    }
+
+    #[test]
+    fn resume_runtime_session_drives_storage_derived_tail_actions() {
+        let resume = FfiPbftFinalizationResumePlan {
+            status: 2,
+            duplicate_classified: true,
+            complete: false,
+            replay_actions: vec![9, 10, 11, 12],
+            error_code: "PBFT_FINALIZE_RESUME_NEEDS_FINAL_CHAIN_REPLAY".to_string(),
+        };
+        let mut session = create_pbft_finalization_resume_runtime_session(&resume);
+
+        let mut step = pbft_finalization_runtime_session_next(&mut session);
+        let mut actions = Vec::new();
+        while step.has_action {
+            actions.push(step.action);
+            step = pbft_finalization_runtime_session_report(
+                &mut session,
+                step.cursor,
+                step.action,
+                true,
+                0,
+            );
+        }
+
+        assert_eq!(actions, vec![9, 10, 11, 12]);
+        assert!(step.complete);
+        assert_eq!(step.status, RUNTIME_STATUS_COMPLETE);
     }
 
     #[test]
