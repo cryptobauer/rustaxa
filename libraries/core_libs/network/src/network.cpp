@@ -29,6 +29,9 @@
 #include "network/tarcap/stats/node_stats.hpp"
 #include "network/tarcap/stats/time_period_packets_stats.hpp"
 #include "network/tarcap/taraxa_capability.hpp"
+#ifdef RUSTAXA_ENABLE_NETWORK
+#include "network/tarcap/taraxa_capability_shim.hpp"
+#endif
 #ifndef RUSTAXA_ENABLE
 #include "pbft/pbft_manager.hpp"
 #endif
@@ -100,7 +103,11 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
           [pbft_mgr]() { return pbft_mgr->periodDataQueueEmpty(); },
 #endif
           kConf.getFirstWallet().node_addr)),
-      periodic_events_tp_(kPeriodicEventsThreadCount, false) {
+      periodic_events_tp_(kPeriodicEventsThreadCount, false)
+#ifdef RUSTAXA_ENABLE_NETWORK
+      , rust_network_shim_(std::make_unique<network::tarcap::RustaxaNetworkShim>(kConf.network.ddos_protection.max_packets_queue_size))
+#endif
+{
   auto const &node_addr = kConf.getFirstWallet().node_addr;
   LOG_OBJECTS_CREATE("NETWORK");
   LOG(log_nf_) << "Read Network Config: " << std::endl << config.network << std::endl;
@@ -181,6 +188,9 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
 #else
         final_chain
 #endif
+#ifdef RUSTAXA_ENABLE_NETWORK
+        , *rust_network_shim_
+#endif
     );
     capabilities.emplace_back(latest_tarcap);
 
@@ -207,6 +217,9 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
         consensus_application, rust_consensus_network_api_,
 #else
         final_chain,
+#endif
+#ifdef RUSTAXA_ENABLE_NETWORK
+        *rust_network_shim_,
 #endif
         network::tarcap::TaraxaCapability::kInitV5VersionHandlers);
     capabilities.emplace_back(v5_tarcap);

@@ -253,6 +253,11 @@ if(RUSTAXA_ENABLE)
     target_link_libraries(core_libs PUBLIC rustaxa-bridge RocksDB::rocksdb)
 endif()
 
+if(RUSTAXA_ENABLE_NETWORK)
+    target_include_directories(core_libs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/network_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/network_shim/src/taraxa_capability_shim.cpp)
+endif()
+
 install(TARGETS core_libs
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

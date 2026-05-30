@@ -1,4 +1,7 @@
 #include "network/tarcap/taraxa_capability.hpp"
+#ifdef RUSTAXA_ENABLE_NETWORK
+#include "network/tarcap/taraxa_capability_shim.hpp"
+#endif
 
 #include <chrono>
 #include <cstdint>
@@ -116,6 +119,9 @@ TaraxaCapability::TaraxaCapability(
 #else
     std::shared_ptr<final_chain::FinalChain> final_chain,
 #endif
+#ifdef RUSTAXA_ENABLE_NETWORK
+    RustaxaNetworkShim &rust_network_shim,
+#endif
     InitPacketsHandlers init_packets_handlers)
     : version_(version),
       all_packets_stats_(std::move(packets_stats)),
@@ -129,6 +135,9 @@ TaraxaCapability::TaraxaCapability(
 #ifdef RUSTAXA_ENABLE
       ,
       rust_consensus_network_api_(std::move(consensus_network_api))
+#endif
+#ifdef RUSTAXA_ENABLE_NETWORK
+      , rust_network_shim_(rust_network_shim)
 #endif
 {
   // const std::string logs_prefix = "V" + std::to_string(version) + "_";
@@ -275,6 +284,7 @@ void TaraxaCapability::interpretCapabilityPacket(std::weak_ptr<dev::p2p::Session
     return;
   }
 
+#ifndef RUSTAXA_ENABLE_NETWORK
   const auto [hp_queue_size, mp_queue_size, lp_queue_size] = thread_pool_->getQueueSize();
   const size_t tp_queue_size = hp_queue_size + mp_queue_size + lp_queue_size;
 
@@ -316,6 +326,15 @@ void TaraxaCapability::interpretCapabilityPacket(std::weak_ptr<dev::p2p::Session
   //       not support move semantics so we can take advantage of it...
   auto packet_bytes = _r.data().toBytes();
   thread_pool_->push({version(), threadpool::PacketData(packet_type, node_id, std::move(packet_bytes))});
+#else
+  const bool enqueued = rust_network_shim_.ingestPacket(packet_type, node_id, _r);
+  if (!enqueued) {
+    handlePacketQueueOverLimit(host, node_id, kConf.network.ddos_protection.max_packets_queue_size);
+  } else {
+    queue_over_limit_ = false;
+    last_disconnect_number_of_peers_ = 0;
+  }
+#endif
 }
 
 void TaraxaCapability::handlePacketQueueOverLimit(std::shared_ptr<dev::p2p::Host> host, dev::p2p::NodeID node_id,

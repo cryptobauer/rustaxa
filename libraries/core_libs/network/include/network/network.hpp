@@ -24,6 +24,9 @@ namespace taraxa {
 namespace network::tarcap {
 class TimePeriodPacketsStats;
 class NodeStats;
+#ifdef RUSTAXA_ENABLE_NETWORK
+class RustaxaNetworkShim;
+#endif
 }  // namespace network::tarcap
 
 class PbftBlock;
@@ -191,6 +194,9 @@ class Network {
 
 #ifdef RUSTAXA_ENABLE
   network::ConsensusNetworkApiShared rust_consensus_network_api_;
+#ifdef RUSTAXA_ENABLE_NETWORK
+  std::unique_ptr<network::tarcap::RustaxaNetworkShim> rust_network_shim_;
+#endif
 #endif
 
   LOG_OBJECTS_DEFINE
