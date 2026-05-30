@@ -67,6 +67,8 @@ constexpr uint8_t kPbftFinalizationRuntimeStatusActive = 0;
 constexpr uint8_t kPbftFinalizationRuntimeStatusComplete = 1;
 constexpr uint8_t kPbftFinalizationRuntimeStatusActionMismatch = 3;
 constexpr uint8_t kPbftFinalizationRuntimeStatusActionFailed = 4;
+constexpr uint8_t kPbftFinalizationLiveMutationStatusAccepted = 0;
+constexpr uint8_t kPbftFinalizationLiveMutationStatusDagCountMismatch = 7;
 constexpr uint8_t kPbftFinalizationResumeStatusNotPersisted = 0;
 constexpr uint8_t kPbftFinalizationResumeStatusComplete = 1;
 constexpr uint8_t kPbftFinalizationResumeStatusNeedsFinalChainReplay = 2;
@@ -396,6 +398,7 @@ TEST(RustPbftSyncTest, FinalizationIntentAcceptsAnchoredBlockAndMapsCleanup) {
   EXPECT_EQ(plan.storage_write_intent.pbft_head_hash, h256(8));
   EXPECT_EQ(plan.storage_write_intent.block_period, 101);
   EXPECT_FALSE(plan.storage_write_intent.null_anchor);
+  EXPECT_EQ(plan.storage_write_intent.anchor_hash, h256(8));
   EXPECT_EQ(plan.storage_write_intent.reward_vote_period, 101);
   EXPECT_EQ(plan.storage_write_intent.reward_vote_round, 2);
   EXPECT_EQ(plan.storage_write_intent.reward_vote_step, 5);
@@ -416,6 +419,28 @@ TEST(RustPbftSyncTest, FinalizationIntentAcceptsAnchoredBlockAndMapsCleanup) {
   ASSERT_EQ(plan.storage_write_intent.transaction_location_writes.size(), 1);
   EXPECT_EQ(plan.storage_write_intent.transaction_location_writes[0].hash, h256(4));
   EXPECT_EQ(plan.storage_write_intent.transaction_location_writes[0].position, 0);
+}
+
+TEST(RustPbftSyncTest, FinalizationLiveMutationReportsValidateAgainstPlan) {
+  const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
+
+  PbftFinalizationLiveMutationReport report{};
+  report.action = kPbftFinalizationRuntimeActionSetDagOrder;
+  report.block_period = 101;
+  report.pbft_block_hash = h256(9);
+  report.anchor_hash = h256(8);
+  report.dag_finalized_count = 2;
+
+  auto validation = validate_pbft_finalization_live_mutation_report(plan, report);
+  EXPECT_TRUE(validation.accepted);
+  EXPECT_EQ(validation.status, kPbftFinalizationLiveMutationStatusAccepted);
+  EXPECT_EQ(validation.action, kPbftFinalizationRuntimeActionSetDagOrder);
+
+  report.dag_finalized_count = 1;
+  validation = validate_pbft_finalization_live_mutation_report(plan, report);
+  EXPECT_FALSE(validation.accepted);
+  EXPECT_EQ(validation.status, kPbftFinalizationLiveMutationStatusDagCountMismatch);
+  EXPECT_EQ(std::string(validation.error_code), "PBFT_FINALIZE_LIVE_MUTATION_DAG_COUNT_MISMATCH");
 }
 
 TEST(RustPbftSyncTest, FinalizationIntentRejectsAlreadyPersistedBlock) {
@@ -555,16 +580,16 @@ TEST(RustPbftSyncTest, FinalizationRuntimeSessionStopsOnFailureOrMismatch) {
   const auto intent = plan_pbft_finalization_intent(makeFinalizationFact());
   auto session = create_pbft_finalization_runtime_session(intent);
 
-  auto failed = session->pbft_finalization_runtime_session_report(
-      0, kPbftFinalizationRuntimeActionPrimaryStorage, false, 77);
+  auto failed =
+      session->pbft_finalization_runtime_session_report(0, kPbftFinalizationRuntimeActionPrimaryStorage, false, 77);
   EXPECT_EQ(failed.status, kPbftFinalizationRuntimeStatusActionFailed);
   EXPECT_FALSE(failed.has_action);
   EXPECT_EQ(failed.cursor, 0);
   EXPECT_EQ(std::string(failed.error_code), "PBFT_FINALIZE_RUNTIME_ACTION_STATUS_77");
 
   session = create_pbft_finalization_runtime_session(intent);
-  auto mismatch = session->pbft_finalization_runtime_session_report(
-      1, kPbftFinalizationRuntimeActionPrimaryStorage, true, 0);
+  auto mismatch =
+      session->pbft_finalization_runtime_session_report(1, kPbftFinalizationRuntimeActionPrimaryStorage, true, 0);
   EXPECT_EQ(mismatch.status, kPbftFinalizationRuntimeStatusActionMismatch);
   EXPECT_FALSE(mismatch.has_action);
   EXPECT_EQ(std::string(mismatch.error_code), "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH");
@@ -789,8 +814,8 @@ TEST(RustPbftSyncTest, FinalizationResumeInspectorClassifiesCrashWindows) {
 
   rust::Vec<PbftFinalizationStorageWriteStage> primary_stages;
   primary_stages.push_back(finalizationStorageStage(kPbftFinalizationStorageStagePrimary));
-  auto result = apply_pbft_finalization_storage_writes(*storage, plan.storage_write_intent, std::move(primary_stages),
-                                                       false);
+  auto result =
+      apply_pbft_finalization_storage_writes(*storage, plan.storage_write_intent, std::move(primary_stages), false);
   EXPECT_EQ(result.status, kPbftFinalizedPeriodApplyStatusApplied);
 
   resume = inspect_pbft_finalization_resume(*storage, plan.storage_write_intent, 100);
@@ -803,8 +828,8 @@ TEST(RustPbftSyncTest, FinalizationResumeInspectorClassifiesCrashWindows) {
   dynamic_lambda_stage.dynamic_lambda = 1450;
   rust::Vec<PbftFinalizationStorageWriteStage> dynamic_stages;
   dynamic_stages.push_back(std::move(dynamic_lambda_stage));
-  result = apply_pbft_finalization_storage_writes(*storage, plan.storage_write_intent, std::move(dynamic_stages),
-                                                  false);
+  result =
+      apply_pbft_finalization_storage_writes(*storage, plan.storage_write_intent, std::move(dynamic_stages), false);
   EXPECT_EQ(result.status, kPbftFinalizedPeriodApplyStatusApplied);
 
   resume = inspect_pbft_finalization_resume(*storage, plan.storage_write_intent, 100);
@@ -819,8 +844,8 @@ TEST(RustPbftSyncTest, FinalizationResumeInspectorClassifiesCrashWindows) {
 
   rust::Vec<PbftFinalizationStorageWriteStage> executed_stages;
   executed_stages.push_back(finalizationStorageStage(kPbftFinalizationStorageStageExecutedStatus));
-  result = apply_pbft_finalization_storage_writes(*storage, plan.storage_write_intent, std::move(executed_stages),
-                                                  false);
+  result =
+      apply_pbft_finalization_storage_writes(*storage, plan.storage_write_intent, std::move(executed_stages), false);
   EXPECT_EQ(result.status, kPbftFinalizedPeriodApplyStatusApplied);
 
   resume = inspect_pbft_finalization_resume(*storage, plan.storage_write_intent, 101);

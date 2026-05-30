@@ -302,6 +302,7 @@ fn finalized_status_command_report(
         removed_non_finalized,
         queue_erased,
         finalized_account_purged: Vec::new(),
+        accepted_count: outcome.accepted.len() as u64,
         purge_transaction_queue: outcome.purge_transaction_queue,
     }
 }

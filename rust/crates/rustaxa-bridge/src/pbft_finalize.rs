@@ -19,9 +19,12 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationCleanupPlan as FfiPbftFinalizationCleanupPlan,
     PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact,
     PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
+    PbftFinalizationLiveMutationReport as FfiPbftFinalizationLiveMutationReport,
+    PbftFinalizationLiveMutationValidation as FfiPbftFinalizationLiveMutationValidation,
     PbftFinalizationPositionedHash as FfiPbftFinalizationPositionedHash,
     PbftFinalizationResumeFact as FfiPbftFinalizationResumeFact,
     PbftFinalizationResumePlan as FfiPbftFinalizationResumePlan,
+    PbftFinalizationRuntimeActionReport as FfiPbftFinalizationRuntimeActionReport,
     PbftFinalizationRuntimePlan as FfiPbftFinalizationRuntimePlan,
     PbftFinalizationRuntimeSessionStep as FfiPbftFinalizationRuntimeSessionStep,
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
@@ -38,9 +41,11 @@ use rustaxa_consensus::pbft_finalize::{
     plan_pbft_finalization_resume as plan_domain_pbft_finalization_resume,
     plan_pbft_finalization_runtime as plan_domain_pbft_finalization_runtime,
     report_pbft_finalization_runtime_action, start_pbft_finalization_resume_runtime,
-    start_pbft_finalization_runtime, PbftDynamicLambdaConfig, PbftDynamicLambdaFact,
-    PbftDynamicLambdaPlan, PbftFinalizationAnchor, PbftFinalizationCleanupIntent,
-    PbftFinalizationIntentFact, PbftFinalizationPlan, PbftFinalizationPositionedHash,
+    start_pbft_finalization_runtime,
+    validate_pbft_finalization_live_mutation_report as validate_domain_pbft_finalization_live_mutation_report,
+    PbftDynamicLambdaConfig, PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationAnchor,
+    PbftFinalizationCleanupIntent, PbftFinalizationIntentFact, PbftFinalizationLiveMutationReport,
+    PbftFinalizationLiveMutationValidation, PbftFinalizationPlan, PbftFinalizationPositionedHash,
     PbftFinalizationResumeFact, PbftFinalizationResumePlan, PbftFinalizationRuntimeAction,
     PbftFinalizationRuntimeActionResult, PbftFinalizationRuntimeStatus, PbftFinalizationStatus,
     PbftFinalizationStorageWriteIntent,
@@ -323,6 +328,72 @@ pub fn pbft_finalization_runtime_session_report(
     next_pbft_finalization_runtime_action(&session.state).into()
 }
 
+/// Reports one structured PBFT finalization action result back to the Rust-owned
+/// runtime session.
+///
+/// This entrypoint preserves action-specific error codes in the Rust terminal
+/// state. The legacy scalar-status report API remains as a compatibility wrapper
+/// for callers that only need generic status-code errors.
+pub fn pbft_finalization_runtime_session_report_action(
+    session: &mut BridgePbftFinalizationRuntimeSession,
+    report: FfiPbftFinalizationRuntimeActionReport,
+) -> FfiPbftFinalizationRuntimeSessionStep {
+    let step = next_pbft_finalization_runtime_action(&session.state);
+    if step.action_index != report.cursor {
+        session.state.runtime_status = PbftFinalizationRuntimeStatus::ActionMismatch;
+        session.state.error_code = "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH".to_string();
+        return next_pbft_finalization_runtime_action(&session.state).into();
+    }
+
+    let Some(action) = PbftFinalizationRuntimeAction::from_u8(report.action) else {
+        session.state.runtime_status = PbftFinalizationRuntimeStatus::ActionMismatch;
+        session.state.error_code = "PBFT_FINALIZE_RUNTIME_UNKNOWN_ACTION".to_string();
+        return next_pbft_finalization_runtime_action(&session.state).into();
+    };
+
+    let error_code = if report.success {
+        String::new()
+    } else if report.error_code.is_empty() {
+        format!("PBFT_FINALIZE_RUNTIME_ACTION_STATUS_{}", report.status)
+    } else {
+        report.error_code.to_string()
+    };
+    let state = session.state.clone();
+    session.state = report_pbft_finalization_runtime_action(
+        state,
+        PbftFinalizationRuntimeActionResult {
+            action,
+            success: report.success,
+            error_code,
+        },
+    );
+    next_pbft_finalization_runtime_action(&session.state).into()
+}
+
+/// Validates a post-action live mutation report against the accepted Rust PBFT
+/// finalization plan.
+///
+/// C++ still executes the DAG, TransactionManager, and PBFT-chain shim calls, but
+/// the Rust planner verifies their post-state proofs before the PBFT runtime
+/// cursor is advanced.
+pub fn validate_pbft_finalization_live_mutation_report(
+    plan: &FfiPbftFinalizationIntentPlan,
+    report: FfiPbftFinalizationLiveMutationReport,
+) -> FfiPbftFinalizationLiveMutationValidation {
+    if PbftFinalizationRuntimeAction::from_u8(report.action).is_none() {
+        return FfiPbftFinalizationLiveMutationValidation {
+            accepted: false,
+            status:
+                rustaxa_consensus::pbft_finalize::PbftFinalizationLiveMutationStatus::UnknownAction
+                    .as_u8(),
+            action: report.action,
+            error_code: "PBFT_FINALIZE_LIVE_MUTATION_UNKNOWN_ACTION".to_string(),
+        };
+    }
+    let domain_plan = PbftFinalizationPlan::from(plan);
+    validate_domain_pbft_finalization_live_mutation_report(&domain_plan, report.into()).into()
+}
+
 /// Aborts a Rust-owned PBFT finalization runtime session after C++ gives up on
 /// the mixed executor path.
 pub fn abort_pbft_finalization_runtime_session(session: &mut BridgePbftFinalizationRuntimeSession) {
@@ -477,6 +548,15 @@ impl BridgePbftFinalizationRuntimeSession {
         action_status: u8,
     ) -> FfiPbftFinalizationRuntimeSessionStep {
         pbft_finalization_runtime_session_report(self, cursor, action, success, action_status)
+    }
+
+    /// Reports one structured action result back to this Rust-owned PBFT
+    /// finalization runtime session.
+    pub fn pbft_finalization_runtime_session_report_action(
+        &mut self,
+        report: FfiPbftFinalizationRuntimeActionReport,
+    ) -> FfiPbftFinalizationRuntimeSessionStep {
+        pbft_finalization_runtime_session_report_action(self, report)
     }
 
     /// Aborts this runtime session after C++ gives up on the mixed executor path.
@@ -1357,6 +1437,7 @@ impl From<PbftFinalizationStorageWriteIntent> for FfiPbftFinalizationStorageWrit
             pbft_head_hash: value.pbft_head_hash.0,
             block_period: value.block_period,
             null_anchor: value.null_anchor,
+            anchor_hash: value.anchor_hash.0,
             reward_vote_period: value.reward_vote_period,
             reward_vote_round: value.reward_vote_round,
             reward_vote_step: value.reward_vote_step,
@@ -1394,6 +1475,7 @@ impl From<&FfiPbftFinalizationStorageWritePlan> for PbftFinalizationStorageWrite
             pbft_head_hash: H256::from(value.pbft_head_hash),
             block_period: value.block_period,
             null_anchor: value.null_anchor,
+            anchor_hash: H256::from(value.anchor_hash),
             reward_vote_period: value.reward_vote_period,
             reward_vote_round: value.reward_vote_round,
             reward_vote_step: value.reward_vote_step,
@@ -1608,6 +1690,34 @@ impl From<rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStep>
     }
 }
 
+impl From<FfiPbftFinalizationLiveMutationReport> for PbftFinalizationLiveMutationReport {
+    fn from(value: FfiPbftFinalizationLiveMutationReport) -> Self {
+        Self {
+            action: PbftFinalizationRuntimeAction::from_u8(value.action)
+                .unwrap_or(PbftFinalizationRuntimeAction::Complete),
+            block_period: value.block_period,
+            pbft_block_hash: H256::from(value.pbft_block_hash),
+            anchor_hash: H256::from(value.anchor_hash),
+            dag_finalized_count: value.dag_finalized_count,
+            finalized_transaction_count: value.finalized_transaction_count,
+            pbft_chain_size: value.pbft_chain_size,
+            pbft_chain_head_hash: H256::from(value.pbft_chain_head_hash),
+            pbft_chain_last_anchor_hash: H256::from(value.pbft_chain_last_anchor_hash),
+        }
+    }
+}
+
+impl From<PbftFinalizationLiveMutationValidation> for FfiPbftFinalizationLiveMutationValidation {
+    fn from(value: PbftFinalizationLiveMutationValidation) -> Self {
+        Self {
+            accepted: value.accepted,
+            status: value.status.as_u8(),
+            action: value.action.as_u8(),
+            error_code: value.error_code,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1626,6 +1736,8 @@ mod tests {
     const APPLY_STATUS_MISSING_PAYLOAD_TEST: u8 = 3;
     const APPLY_STATUS_CONFLICT_TEST: u8 = 4;
     const EXECUTED_BLOCK_STATUS_FIELD: u8 = 0;
+    const LIVE_STATUS_ACCEPTED_TEST: u8 = 0;
+    const LIVE_STATUS_TRANSACTION_COUNT_MISMATCH_TEST: u8 = 8;
 
     fn fact() -> FfiPbftFinalizationIntentFact {
         FfiPbftFinalizationIntentFact {
@@ -1749,6 +1861,7 @@ mod tests {
         assert!(plan.storage_write_intent.persist_executed_pbft_status);
         assert_eq!(plan.storage_write_intent.pbft_block_hash, [7; 32]);
         assert_eq!(plan.storage_write_intent.pbft_head_hash, [8; 32]);
+        assert_eq!(plan.storage_write_intent.anchor_hash, [4; 32]);
         assert_eq!(plan.storage_write_intent.reward_vote_block_hash, [7; 32]);
         assert_eq!(plan.storage_write_intent.period_lambda, 1_500);
         assert_eq!(plan.storage_write_intent.blocks_per_year, 1_000);
@@ -1848,6 +1961,65 @@ mod tests {
         assert_eq!(mismatch.status, 3);
         assert!(!mismatch.has_action);
         assert_eq!(mismatch.error_code, "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH");
+    }
+
+    #[test]
+    fn runtime_session_preserves_structured_action_error_codes() {
+        let plan = plan_pbft_finalization_intent(fact());
+        let mut session = create_pbft_finalization_runtime_session(&plan);
+
+        let failed = pbft_finalization_runtime_session_report_action(
+            &mut session,
+            FfiPbftFinalizationRuntimeActionReport {
+                cursor: 0,
+                action: 0,
+                success: false,
+                status: 7,
+                error_code: "PBFT_FINALIZE_DAG_ORDER_APPLY_FAILED".to_string(),
+            },
+        );
+
+        assert_eq!(failed.status, 4);
+        assert_eq!(failed.error_code, "PBFT_FINALIZE_DAG_ORDER_APPLY_FAILED");
+    }
+
+    #[test]
+    fn live_mutation_validation_maps_bridge_reports() {
+        let plan = plan_pbft_finalization_intent(fact());
+
+        let accepted = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            FfiPbftFinalizationLiveMutationReport {
+                action: 5,
+                block_period: 10,
+                pbft_block_hash: [7; 32],
+                anchor_hash: [4; 32],
+                dag_finalized_count: 0,
+                finalized_transaction_count: 1,
+                pbft_chain_size: 0,
+                pbft_chain_head_hash: [0; 32],
+                pbft_chain_last_anchor_hash: [0; 32],
+            },
+        );
+        assert!(accepted.accepted);
+        assert_eq!(accepted.status, LIVE_STATUS_ACCEPTED_TEST);
+
+        let rejected = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            FfiPbftFinalizationLiveMutationReport {
+                action: 5,
+                block_period: 10,
+                pbft_block_hash: [7; 32],
+                anchor_hash: [4; 32],
+                dag_finalized_count: 0,
+                finalized_transaction_count: 0,
+                pbft_chain_size: 0,
+                pbft_chain_head_hash: [0; 32],
+                pbft_chain_last_anchor_hash: [0; 32],
+            },
+        );
+        assert!(!rejected.accepted);
+        assert_eq!(rejected.status, LIVE_STATUS_TRANSACTION_COUNT_MISMATCH_TEST);
     }
 
     #[test]

@@ -38,9 +38,9 @@ class TransactionManager : public TransactionManagerOld {
   TransactionManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db,
                      std::shared_ptr<final_chain::FinalChain> final_chain, addr_t node_addr)
       : TransactionManagerOld(conf, db, std::move(final_chain), node_addr),
-        runtime_(rustaxa::create_transaction_manager_runtime(db->getStatusField(StatusDbField::TrxCount),
-                                                             rustaxa::TransactionQueueConfig{
-                                                                 conf.transactions_pool_size})) {}
+        runtime_(rustaxa::create_transaction_manager_runtime(
+            db->getStatusField(StatusDbField::TrxCount),
+            rustaxa::TransactionQueueConfig{conf.transactions_pool_size})) {}
 
   TransactionManager(const TransactionManager &) = delete;
   TransactionManager(TransactionManager &&) = delete;
@@ -178,6 +178,16 @@ class TransactionManager : public TransactionManagerOld {
    * runtime; C++ logs returned side effects.
    */
   void updateFinalizedTransactionsStatus(const PeriodData &period_data);
+
+  /**
+   * Apply finalized-status transitions and return the Rust-owned command report.
+   *
+   * This is the same Rust-backed mutation as `updateFinalizedTransactionsStatus`,
+   * but exposes the typed report so PBFT finalization can prove the live mutation
+   * back to its Rust runtime cursor before advancing.
+   */
+  rustaxa::TransactionManagerFinalizedStatusCommandReport updateFinalizedTransactionsStatusForPbftFinalization(
+      const PeriodData &period_data);
 
   /**
    * Warm Rust-owned recently-finalized sidecars from canonical period-data RLP payloads.

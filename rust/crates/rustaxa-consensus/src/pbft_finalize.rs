@@ -26,6 +26,7 @@
 //!   applies the writes in this slice, but Rust owns the decision and facts.
 //! - `status`: explicit decision status code for metrics/logging/telemetry.
 use ethereum_types::H256;
+use std::collections::HashSet;
 
 /// Null-anchor / anchored status reported in a planner plan.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -213,6 +214,95 @@ pub struct PbftFinalizationRuntimePlan {
     pub status: PbftFinalizationStatus,
     /// Ordered side-effect actions for the shim executor.
     pub actions: Vec<PbftFinalizationRuntimeAction>,
+}
+
+/// Validation status for Rust-owned PBFT finalization live-mutation reports.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftFinalizationLiveMutationStatus {
+    /// The reported live mutation matches the accepted Rust finalization plan.
+    Accepted,
+    /// The finalization plan is not an accepted executable plan.
+    PlanNotAccepted,
+    /// The reported action is not part of the Rust-planned runtime script.
+    ActionNotPlanned,
+    /// The reported action is not one of the live mutations validated here.
+    ActionNotLiveMutation,
+    /// Reported block period does not match the accepted finalization plan.
+    PeriodMismatch,
+    /// Reported PBFT block hash does not match the accepted finalization plan.
+    BlockHashMismatch,
+    /// Reported DAG anchor does not match the accepted finalization plan.
+    AnchorMismatch,
+    /// DAG finalized-count proof does not match the planned finalized DAG set.
+    DagFinalizedCountMismatch,
+    /// Transaction finalized-count proof does not match the planned transaction set.
+    TransactionFinalizedCountMismatch,
+    /// PBFT chain head after mutation does not match the finalized block.
+    PbftChainHeadMismatch,
+    /// PBFT chain non-null anchor after mutation does not match the finalized anchor.
+    PbftChainAnchorMismatch,
+    /// The report carried an unknown action code.
+    UnknownAction,
+}
+
+impl PbftFinalizationLiveMutationStatus {
+    /// Stable bridge code for C++.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Accepted => 0,
+            Self::PlanNotAccepted => 1,
+            Self::ActionNotPlanned => 2,
+            Self::ActionNotLiveMutation => 3,
+            Self::PeriodMismatch => 4,
+            Self::BlockHashMismatch => 5,
+            Self::AnchorMismatch => 6,
+            Self::DagFinalizedCountMismatch => 7,
+            Self::TransactionFinalizedCountMismatch => 8,
+            Self::PbftChainHeadMismatch => 9,
+            Self::PbftChainAnchorMismatch => 10,
+            Self::UnknownAction => 255,
+        }
+    }
+}
+
+/// C++ executor report for PBFT finalization live mutations.
+///
+/// Inputs are post-action facts gathered from Rust-backed subsystem shims. Rust
+/// validates that the observed mutation matches the accepted finalization plan
+/// before the PBFT runtime cursor is advanced.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftFinalizationLiveMutationReport {
+    /// Runtime action being reported.
+    pub action: PbftFinalizationRuntimeAction,
+    /// Finalized PBFT period observed by the executor.
+    pub block_period: u64,
+    /// Finalized PBFT block hash observed by the executor.
+    pub pbft_block_hash: H256,
+    /// DAG anchor hash used for this finalization.
+    pub anchor_hash: H256,
+    /// Number of unique DAG blocks finalized by the Rust-backed DAG runtime.
+    pub dag_finalized_count: u64,
+    /// Number of transactions accepted by the Rust-backed finalized-status update.
+    pub finalized_transaction_count: u64,
+    /// PBFT chain size after the Rust-backed PBFT-chain mutation.
+    pub pbft_chain_size: u64,
+    /// PBFT chain head hash after the Rust-backed PBFT-chain mutation.
+    pub pbft_chain_head_hash: H256,
+    /// PBFT chain last non-null anchor after the Rust-backed PBFT-chain mutation.
+    pub pbft_chain_last_anchor_hash: H256,
+}
+
+/// Result of validating one PBFT finalization live-mutation report.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftFinalizationLiveMutationValidation {
+    /// Whether the report is accepted and the runtime cursor may advance.
+    pub accepted: bool,
+    /// Stable status code for bridge reporting.
+    pub status: PbftFinalizationLiveMutationStatus,
+    /// Action that was validated.
+    pub action: PbftFinalizationRuntimeAction,
+    /// Stable error code, empty on success.
+    pub error_code: String,
 }
 
 /// Durable resume classification for an already-persisted PBFT block.
@@ -534,6 +624,8 @@ pub struct PbftFinalizationStorageWriteIntent {
     pub block_period: u64,
     /// Whether PBFT-head metadata should encode a null-anchor block.
     pub null_anchor: bool,
+    /// Finalized DAG anchor hash, or zero for null-anchor blocks.
+    pub anchor_hash: H256,
     /// Certified-vote period used by reward-vote reset.
     pub reward_vote_period: u64,
     /// Certified-vote round used by reward-vote reset.
@@ -576,6 +668,7 @@ impl PbftFinalizationStorageWriteIntent {
             pbft_head_hash: H256::zero(),
             block_period: 0,
             null_anchor: false,
+            anchor_hash: H256::zero(),
             reward_vote_period: 0,
             reward_vote_round: 0,
             reward_vote_step: 0,
@@ -703,6 +796,7 @@ impl PbftFinalizationPlan {
                 pbft_head_hash: fact.pbft_head_hash,
                 block_period: fact.block_period,
                 null_anchor: anchor == PbftFinalizationAnchor::Null,
+                anchor_hash: fact.pivot_dag_anchor_hash,
                 reward_vote_period: fact.sample_cert_vote_period,
                 reward_vote_round: fact.sample_cert_vote_round,
                 reward_vote_step: fact.sample_cert_vote_step,
@@ -1050,6 +1144,122 @@ pub fn report_pbft_finalization_runtime_action(
     state
 }
 
+/// Validates a Rust-backed live-mutation report before the PBFT runtime cursor advances.
+///
+/// The report must match an accepted finalization plan and one of the live
+/// mutation actions still executed through subsystem shims. This gives Rust
+/// ownership of the action proof while C++ remains the temporary object
+/// materializer and lock owner.
+pub fn validate_pbft_finalization_live_mutation_report(
+    plan: &PbftFinalizationPlan,
+    report: PbftFinalizationLiveMutationReport,
+) -> PbftFinalizationLiveMutationValidation {
+    let reject = |status: PbftFinalizationLiveMutationStatus, error_code: &str| {
+        PbftFinalizationLiveMutationValidation {
+            accepted: false,
+            status,
+            action: report.action,
+            error_code: error_code.to_string(),
+        }
+    };
+
+    if !plan.finalize_block || plan.status != PbftFinalizationStatus::Accepted {
+        return reject(
+            PbftFinalizationLiveMutationStatus::PlanNotAccepted,
+            "PBFT_FINALIZE_LIVE_MUTATION_PLAN_NOT_ACCEPTED",
+        );
+    }
+
+    let runtime_plan = plan_pbft_finalization_runtime(plan);
+    if !runtime_plan.actions.contains(&report.action) {
+        return reject(
+            PbftFinalizationLiveMutationStatus::ActionNotPlanned,
+            "PBFT_FINALIZE_LIVE_MUTATION_ACTION_NOT_PLANNED",
+        );
+    }
+
+    if !matches!(
+        report.action,
+        PbftFinalizationRuntimeAction::SetDagBlockOrder
+            | PbftFinalizationRuntimeAction::UpdateFinalizedTransactions
+            | PbftFinalizationRuntimeAction::UpdatePbftChain
+    ) {
+        return reject(
+            PbftFinalizationLiveMutationStatus::ActionNotLiveMutation,
+            "PBFT_FINALIZE_LIVE_MUTATION_UNSUPPORTED_ACTION",
+        );
+    }
+
+    if report.block_period != plan.storage_write_intent.block_period {
+        return reject(
+            PbftFinalizationLiveMutationStatus::PeriodMismatch,
+            "PBFT_FINALIZE_LIVE_MUTATION_PERIOD_MISMATCH",
+        );
+    }
+    if report.pbft_block_hash != plan.storage_write_intent.pbft_block_hash {
+        return reject(
+            PbftFinalizationLiveMutationStatus::BlockHashMismatch,
+            "PBFT_FINALIZE_LIVE_MUTATION_BLOCK_HASH_MISMATCH",
+        );
+    }
+    if report.anchor_hash != plan.storage_write_intent.anchor_hash {
+        return reject(
+            PbftFinalizationLiveMutationStatus::AnchorMismatch,
+            "PBFT_FINALIZE_LIVE_MUTATION_ANCHOR_MISMATCH",
+        );
+    }
+
+    match report.action {
+        PbftFinalizationRuntimeAction::SetDagBlockOrder => {
+            let expected =
+                unique_positioned_hash_count(&plan.storage_write_intent.dag_block_period_writes);
+            if report.dag_finalized_count != expected {
+                return reject(
+                    PbftFinalizationLiveMutationStatus::DagFinalizedCountMismatch,
+                    "PBFT_FINALIZE_LIVE_MUTATION_DAG_COUNT_MISMATCH",
+                );
+            }
+        }
+        PbftFinalizationRuntimeAction::UpdateFinalizedTransactions => {
+            let expected = unique_positioned_hash_count(
+                &plan.storage_write_intent.transaction_location_writes,
+            );
+            if report.finalized_transaction_count != expected {
+                return reject(
+                    PbftFinalizationLiveMutationStatus::TransactionFinalizedCountMismatch,
+                    "PBFT_FINALIZE_LIVE_MUTATION_TRANSACTION_COUNT_MISMATCH",
+                );
+            }
+        }
+        PbftFinalizationRuntimeAction::UpdatePbftChain => {
+            if report.pbft_chain_size != plan.storage_write_intent.block_period
+                || report.pbft_chain_head_hash != plan.storage_write_intent.pbft_block_hash
+            {
+                return reject(
+                    PbftFinalizationLiveMutationStatus::PbftChainHeadMismatch,
+                    "PBFT_FINALIZE_LIVE_MUTATION_PBFT_CHAIN_HEAD_MISMATCH",
+                );
+            }
+            if !plan.storage_write_intent.null_anchor
+                && report.pbft_chain_last_anchor_hash != plan.storage_write_intent.anchor_hash
+            {
+                return reject(
+                    PbftFinalizationLiveMutationStatus::PbftChainAnchorMismatch,
+                    "PBFT_FINALIZE_LIVE_MUTATION_PBFT_CHAIN_ANCHOR_MISMATCH",
+                );
+            }
+        }
+        _ => unreachable!("live mutation action checked above"),
+    }
+
+    PbftFinalizationLiveMutationValidation {
+        accepted: true,
+        status: PbftFinalizationLiveMutationStatus::Accepted,
+        action: report.action,
+        error_code: String::new(),
+    }
+}
+
 /// Classifies durable PBFT finalization state for an already-persisted block.
 ///
 /// This planner is deliberately separate from normal finalization admission:
@@ -1266,6 +1476,14 @@ fn positioned_hashes(hashes: Vec<H256>) -> Vec<PbftFinalizationPositionedHash> {
             position: position as u32,
         })
         .collect()
+}
+
+fn unique_positioned_hash_count(writes: &[PbftFinalizationPositionedHash]) -> u64 {
+    writes
+        .iter()
+        .map(|write| write.hash)
+        .collect::<HashSet<_>>()
+        .len() as u64
 }
 
 #[cfg(test)]
@@ -1812,6 +2030,125 @@ mod tests {
         assert_eq!(step.runtime_status, PbftFinalizationRuntimeStatus::Complete);
         assert!(step.complete);
         assert!(!step.has_action);
+    }
+
+    #[test]
+    fn live_mutation_report_accepts_rust_backed_dag_transaction_and_chain_proofs() {
+        let plan = plan_pbft_finalization_intent(accepted_fact());
+
+        let dag = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            PbftFinalizationLiveMutationReport {
+                action: PbftFinalizationRuntimeAction::SetDagBlockOrder,
+                block_period: 10,
+                pbft_block_hash: hash(99),
+                anchor_hash: hash(123),
+                dag_finalized_count: 2,
+                finalized_transaction_count: 0,
+                pbft_chain_size: 0,
+                pbft_chain_head_hash: H256::zero(),
+                pbft_chain_last_anchor_hash: H256::zero(),
+            },
+        );
+        assert!(dag.accepted);
+        assert_eq!(dag.status, PbftFinalizationLiveMutationStatus::Accepted);
+
+        let transactions = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            PbftFinalizationLiveMutationReport {
+                action: PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
+                block_period: 10,
+                pbft_block_hash: hash(99),
+                anchor_hash: hash(123),
+                dag_finalized_count: 0,
+                finalized_transaction_count: 2,
+                pbft_chain_size: 0,
+                pbft_chain_head_hash: H256::zero(),
+                pbft_chain_last_anchor_hash: H256::zero(),
+            },
+        );
+        assert!(transactions.accepted);
+
+        let chain = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            PbftFinalizationLiveMutationReport {
+                action: PbftFinalizationRuntimeAction::UpdatePbftChain,
+                block_period: 10,
+                pbft_block_hash: hash(99),
+                anchor_hash: hash(123),
+                dag_finalized_count: 0,
+                finalized_transaction_count: 0,
+                pbft_chain_size: 10,
+                pbft_chain_head_hash: hash(99),
+                pbft_chain_last_anchor_hash: hash(123),
+            },
+        );
+        assert!(chain.accepted);
+    }
+
+    #[test]
+    fn live_mutation_report_rejects_unplanned_and_mismatched_proofs() {
+        let mut fact = accepted_fact();
+        fact.ordered_dag_block_hashes = vec![hash(1), hash(1), hash(2)];
+        let plan = plan_pbft_finalization_intent(fact);
+
+        let dag = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            PbftFinalizationLiveMutationReport {
+                action: PbftFinalizationRuntimeAction::SetDagBlockOrder,
+                block_period: 10,
+                pbft_block_hash: hash(99),
+                anchor_hash: hash(123),
+                dag_finalized_count: 3,
+                finalized_transaction_count: 0,
+                pbft_chain_size: 0,
+                pbft_chain_head_hash: H256::zero(),
+                pbft_chain_last_anchor_hash: H256::zero(),
+            },
+        );
+        assert!(!dag.accepted);
+        assert_eq!(
+            dag.status,
+            PbftFinalizationLiveMutationStatus::DagFinalizedCountMismatch
+        );
+
+        let chain = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            PbftFinalizationLiveMutationReport {
+                action: PbftFinalizationRuntimeAction::UpdatePbftChain,
+                block_period: 10,
+                pbft_block_hash: hash(99),
+                anchor_hash: hash(123),
+                dag_finalized_count: 0,
+                finalized_transaction_count: 0,
+                pbft_chain_size: 9,
+                pbft_chain_head_hash: hash(99),
+                pbft_chain_last_anchor_hash: hash(123),
+            },
+        );
+        assert_eq!(
+            chain.status,
+            PbftFinalizationLiveMutationStatus::PbftChainHeadMismatch
+        );
+
+        let unsupported = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            PbftFinalizationLiveMutationReport {
+                action: PbftFinalizationRuntimeAction::FinalizeFinalChain,
+                block_period: 10,
+                pbft_block_hash: hash(99),
+                anchor_hash: hash(123),
+                dag_finalized_count: 0,
+                finalized_transaction_count: 0,
+                pbft_chain_size: 0,
+                pbft_chain_head_hash: H256::zero(),
+                pbft_chain_last_anchor_hash: H256::zero(),
+            },
+        );
+        assert_eq!(
+            unsupported.status,
+            PbftFinalizationLiveMutationStatus::ActionNotLiveMutation
+        );
     }
 
     #[test]

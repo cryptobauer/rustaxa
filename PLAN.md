@@ -543,14 +543,18 @@ The current Rust starting point is intentionally small:
    staged API while preserving the existing batch/commit boundaries. Rust now also owns the storage-batch lifecycle for
    PBFT finalization persistence stages: the bridge creates, appends, commits, or drops Rust storage batches for the
    primary finalized-period/reward-reset/sortition group, dynamic-lambda persistence, and executed-status persistence,
-   while the PBFT overlay still owns live DAG, transaction-manager, PBFT-chain, FinalChain, timer, and period-advance
-   side effects in the legacy order. Rust now owns a side-effect-free finalization runtime stepper and the Cacti
+   while the PBFT overlay still owns live FinalChain, timer, period-advance, and remaining object-materialization side
+   effects in the legacy order. Rust now owns a side-effect-free finalization runtime stepper and the Cacti
    dynamic-lambda calculation for PBFT finalization: it returns the ordered mixed-executor action list, block-period
    lambda, reward `blocks_per_year`, post-adjust rounds count, post-adjust dynamic lambda, and increase/decrease
    telemetry flags. The PBFT overlay consumes those Rust outputs and no longer calls the C++ dynamic-lambda adjustment
    routine from the Rust-mode finalization path. Rust now also owns a finalization runtime session cursor: the overlay
    asks Rust for each action, executes the temporary C++ live effect, and reports success/failure back before Rust
-   advances the session. The bridge also exposes a storage-backed PBFT finalization resume classifier for duplicate or
+   advances the session. DAG finalized-order mutation, transaction finalized-status sidecar cleanup, and PBFT-chain live
+   head updates now report structured post-state proofs back to Rust before the cursor advances: Rust validates the
+   finalized DAG count, finalized transaction count, finalized period, PBFT block hash, anchor hash, PBFT-chain size, and
+   PBFT-chain head/anchor state against the accepted finalization plan. The bridge also exposes a storage-backed PBFT
+   finalization resume classifier for duplicate or
    restart-adjacent blocks: Rust inspects the durable hash-to-period, period-data, finalized DAG/transaction indexes,
    optional period-lambda, executed-status, and FinalChain height facts and returns complete, replay-needed,
    missing-primary, or conflicting-primary classifications instead of letting the shim treat `pbftBlockInDb` as a blind
@@ -559,9 +563,9 @@ The current Rust starting point is intentionally small:
    one period behind, the overlay replays FinalChain finalization, persists executed status through Rust, sets the live
    executed flag, advances the PBFT period, and reports each action back to Rust before the cursor advances. Dynamic
    lambda gaps, missing/conflicting primary facts, and complete duplicates remain explicit no-replay paths. This
-   classifier/session does not yet replay ambiguous C++ live side effects because DAG manager mutation, transaction
-   sidecars, PBFT-chain live state, timers, reward metadata, sortition live state, and pillar post-processing still lack
-   a durable Rust-owned action cursor. The Rust-mode `VoteManager` overlay now uses the
+   classifier/session does not yet replay ambiguous C++ live side effects because timers, reward metadata, sortition live
+   state, pillar post-processing, and broader startup recovery still lack durable Rust-owned replay contracts. The
+   Rust-mode `VoteManager` overlay now uses the
    approved temporary protected-state hook to inherit unported behavior from `VoteManagerOld` while owning reward-vote
    reset persistence handoff in shim code: it selects the live cert-vote bundle in C++, passes the stage-4 Rust storage
    facts into the Rust-owned finalization apply batch, and mutates live reward metadata only after Rust commits the

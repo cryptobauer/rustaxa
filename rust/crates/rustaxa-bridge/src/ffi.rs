@@ -678,6 +678,7 @@ pub mod rustaxa_ffi {
         pbft_head_hash: [u8; 32],
         block_period: u64,
         null_anchor: bool,
+        anchor_hash: [u8; 32],
         reward_vote_period: u64,
         reward_vote_round: u64,
         reward_vote_step: u64,
@@ -755,6 +756,36 @@ pub mod rustaxa_ffi {
         has_action: bool,
         complete: bool,
         can_continue: bool,
+        error_code: String,
+    }
+
+    /// Structured report for one PBFT finalization runtime action.
+    struct PbftFinalizationRuntimeActionReport {
+        cursor: u32,
+        action: u8,
+        success: bool,
+        status: u8,
+        error_code: String,
+    }
+
+    /// Post-action facts for Rust validation of live PBFT finalization mutations.
+    struct PbftFinalizationLiveMutationReport {
+        action: u8,
+        block_period: u64,
+        pbft_block_hash: [u8; 32],
+        anchor_hash: [u8; 32],
+        dag_finalized_count: u64,
+        finalized_transaction_count: u64,
+        pbft_chain_size: u64,
+        pbft_chain_head_hash: [u8; 32],
+        pbft_chain_last_anchor_hash: [u8; 32],
+    }
+
+    /// Result of validating a live PBFT finalization mutation report in Rust.
+    struct PbftFinalizationLiveMutationValidation {
+        accepted: bool,
+        status: u8,
+        action: u8,
         error_code: String,
     }
 
@@ -1712,6 +1743,7 @@ pub mod rustaxa_ffi {
         removed_non_finalized: Vec<TransactionManagerHashCommand>,
         queue_erased: Vec<TransactionManagerHashCommand>,
         finalized_account_purged: Vec<TransactionManagerHashCommand>,
+        accepted_count: u64,
         purge_transaction_queue: bool,
     }
 
@@ -2594,9 +2626,17 @@ pub mod rustaxa_ffi {
             success: bool,
             action_status: u8,
         ) -> PbftFinalizationRuntimeSessionStep;
+        pub fn pbft_finalization_runtime_session_report_action(
+            self: &mut BridgePbftFinalizationRuntimeSession,
+            report: PbftFinalizationRuntimeActionReport,
+        ) -> PbftFinalizationRuntimeSessionStep;
         pub fn abort_pbft_finalization_runtime_session(
             self: &mut BridgePbftFinalizationRuntimeSession,
         );
+        pub fn validate_pbft_finalization_live_mutation_report(
+            plan: &PbftFinalizationIntentPlan,
+            report: PbftFinalizationLiveMutationReport,
+        ) -> PbftFinalizationLiveMutationValidation;
         pub fn inspect_pbft_finalization_resume(
             storage: &BridgeStorage,
             write_set: &PbftFinalizationStorageWritePlan,

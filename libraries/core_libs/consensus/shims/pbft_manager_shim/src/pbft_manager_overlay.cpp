@@ -256,10 +256,8 @@ rustaxa::PbftFinalizationIntentFact makePbftFinalizationIntentFact(
 }
 
 rustaxa::PbftDynamicLambdaFact makePbftDynamicLambdaFact(const HardforksConfig &hardforks,
-                                                         uint32_t dpos_blocks_per_year,
-                                                         bool dynamic_lambda_active,
-                                                         PbftPeriod finalized_period,
-                                                         PbftRound finalized_round,
+                                                         uint32_t dpos_blocks_per_year, bool dynamic_lambda_active,
+                                                         PbftPeriod finalized_period, PbftRound finalized_round,
                                                          uint32_t rounds_count_dynamic_lambda,
                                                          uint32_t dynamic_lambda) {
   const auto &cacti_hf = hardforks.cacti_hf;
@@ -2327,8 +2325,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
 
   const auto planner_chain_last_hash =
       block_in_chain ? period_data.pbft_blk->getPrevBlockHash() : pbft_chain_->getHeadHash();
-  const auto planner_chain_last_period =
-      block_in_chain ? block_pbft_period - 1 : pbft_chain_->getPbftChainSize();
+  const auto planner_chain_last_period = block_in_chain ? block_pbft_period - 1 : pbft_chain_->getPbftChainSize();
   const auto planner_pillar_block_finalized = block_in_chain ? true : pillar_block_finalized;
   const auto finalization_plan = rustaxa::plan_pbft_finalization_intent(makePbftFinalizationIntentFact(
       period_data, planner_chain_last_hash, pbft_chain_->getLastPbftBlockHash(), planner_chain_last_period, false,
@@ -2350,9 +2347,9 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           db_->rustStorage(), finalization_plan.storage_write_intent, final_chain_->lastBlockNumber());
       LOG(log_nf_) << "PBFT block: " << pbft_block_hash << " in DB already.";
       LOG(log_dg_) << "Rust PBFT finalization resume classified duplicate block " << pbft_block_hash << ", period "
-                   << block_pbft_period << ", status " << static_cast<uint32_t>(resume_plan.status)
-                   << ", complete " << resume_plan.complete << ", replay actions " << resume_plan.replay_actions.size()
-                   << ", error " << static_cast<std::string>(resume_plan.error_code);
+                   << block_pbft_period << ", status " << static_cast<uint32_t>(resume_plan.status) << ", complete "
+                   << resume_plan.complete << ", replay actions " << resume_plan.replay_actions.size() << ", error "
+                   << static_cast<std::string>(resume_plan.error_code);
       if (resume_plan.status == kPbftFinalizationResumeStatusNeedsDynamicLambdaPersistence) {
         LOG(log_er_) << "Rust PBFT finalization resume requires dynamic-lambda persistence for block "
                      << pbft_block_hash << ", period " << block_pbft_period
@@ -2365,11 +2362,10 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           step = resume_runtime_session->pbft_finalization_runtime_session_next();
           if (!step.has_action || step.action != expected_action ||
               step.status != kPbftFinalizationRuntimeStatusActive) {
-            LOG(log_er_) << "Rust PBFT finalization resume expected action "
-                         << static_cast<uint32_t>(expected_action) << " for block " << pbft_block_hash << ", period "
-                         << block_pbft_period << ", got action " << static_cast<uint32_t>(step.action) << ", status "
-                         << static_cast<uint32_t>(step.status) << ", error "
-                         << static_cast<std::string>(step.error_code);
+            LOG(log_er_) << "Rust PBFT finalization resume expected action " << static_cast<uint32_t>(expected_action)
+                         << " for block " << pbft_block_hash << ", period " << block_pbft_period << ", got action "
+                         << static_cast<uint32_t>(step.action) << ", status " << static_cast<uint32_t>(step.status)
+                         << ", error " << static_cast<std::string>(step.error_code);
             resume_runtime_session->abort_pbft_finalization_runtime_session();
             return false;
           }
@@ -2382,8 +2378,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           if (!success || (next_step.status != kPbftFinalizationRuntimeStatusActive &&
                            next_step.status != kPbftFinalizationRuntimeStatusComplete)) {
             LOG(log_er_) << "Rust PBFT finalization resume action " << static_cast<uint32_t>(step.action)
-                         << " failed for block " << pbft_block_hash << ", period " << block_pbft_period
-                         << ", status " << static_cast<uint32_t>(next_step.status) << ", error "
+                         << " failed for block " << pbft_block_hash << ", period " << block_pbft_period << ", status "
+                         << static_cast<uint32_t>(next_step.status) << ", error "
                          << static_cast<std::string>(next_step.error_code);
             return false;
           }
@@ -2426,8 +2422,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
               executed_status_stages.push_back(
                   makeFinalizationStorageStage(kPbftFinalizationStorageStageExecutedStatus));
               executed_status_result = rustaxa::apply_pbft_finalization_storage_writes(
-                  db_->rustStorage(), finalization_plan.storage_write_intent, std::move(executed_status_stages),
-                  false);
+                  db_->rustStorage(), finalization_plan.storage_write_intent, std::move(executed_status_stages), false);
             } catch (const std::exception &e) {
               LOG(log_er_) << "Rust PBFT resume executed-status storage appender failed for block " << pbft_block_hash
                            << ", period " << block_pbft_period << ": " << e.what();
@@ -2510,8 +2505,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
   auto finalization_runtime_session = rustaxa::create_pbft_finalization_runtime_session(finalization_plan);
   auto begin_runtime_action = [&](uint8_t expected_action, rustaxa::PbftFinalizationRuntimeSessionStep &step) {
     step = finalization_runtime_session->pbft_finalization_runtime_session_next();
-    if (!step.has_action || step.action != expected_action ||
-        step.status != kPbftFinalizationRuntimeStatusActive) {
+    if (!step.has_action || step.action != expected_action || step.status != kPbftFinalizationRuntimeStatusActive) {
       LOG(log_er_) << "Rust PBFT finalization runtime expected action " << static_cast<uint32_t>(expected_action)
                    << " for block " << pbft_block_hash << ", period " << block_pbft_period << ", got action "
                    << static_cast<uint32_t>(step.action) << ", status " << static_cast<uint32_t>(step.status)
@@ -2523,8 +2517,13 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
   };
   auto report_runtime_action = [&](const rustaxa::PbftFinalizationRuntimeSessionStep &step, bool success,
                                    uint8_t action_status) {
-    const auto next_step = finalization_runtime_session->pbft_finalization_runtime_session_report(
-        step.cursor, step.action, success, action_status);
+    rustaxa::PbftFinalizationRuntimeActionReport report;
+    report.cursor = step.cursor;
+    report.action = step.action;
+    report.success = success;
+    report.status = action_status;
+    report.error_code = success ? "" : "PBFT_FINALIZE_RUNTIME_ACTION_FAILED";
+    const auto next_step = finalization_runtime_session->pbft_finalization_runtime_session_report_action(report);
     if (!success) {
       LOG(log_er_) << "Rust PBFT finalization runtime action " << static_cast<uint32_t>(step.action)
                    << " failed for block " << pbft_block_hash << ", period " << block_pbft_period << ", status "
@@ -2541,6 +2540,46 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       return false;
     }
     return true;
+  };
+  auto report_runtime_action_detail = [&](const rustaxa::PbftFinalizationRuntimeSessionStep &step, bool success,
+                                          uint8_t action_status, std::string error_code) {
+    rustaxa::PbftFinalizationRuntimeActionReport report;
+    report.cursor = step.cursor;
+    report.action = step.action;
+    report.success = success;
+    report.status = action_status;
+    report.error_code = std::move(error_code);
+    const auto next_step = finalization_runtime_session->pbft_finalization_runtime_session_report_action(report);
+    if (!success) {
+      LOG(log_er_) << "Rust PBFT finalization runtime action " << static_cast<uint32_t>(step.action)
+                   << " failed for block " << pbft_block_hash << ", period " << block_pbft_period << ", status "
+                   << static_cast<uint32_t>(next_step.status) << ", error "
+                   << static_cast<std::string>(next_step.error_code);
+      return false;
+    }
+    if (next_step.status != kPbftFinalizationRuntimeStatusActive &&
+        next_step.status != kPbftFinalizationRuntimeStatusComplete) {
+      LOG(log_er_) << "Rust PBFT finalization runtime rejected action " << static_cast<uint32_t>(step.action)
+                   << " for block " << pbft_block_hash << ", period " << block_pbft_period << ", status "
+                   << static_cast<uint32_t>(next_step.status) << ", error "
+                   << static_cast<std::string>(next_step.error_code);
+      return false;
+    }
+    return true;
+  };
+  auto validate_live_mutation = [&](uint8_t action, uint64_t dag_finalized_count,
+                                    uint64_t finalized_transaction_count) {
+    rustaxa::PbftFinalizationLiveMutationReport report;
+    report.action = action;
+    report.block_period = block_pbft_period;
+    report.pbft_block_hash = toBridgeHash(pbft_block_hash);
+    report.anchor_hash = toBridgeHash(period_data.pbft_blk->getPivotDagBlockHash());
+    report.dag_finalized_count = dag_finalized_count;
+    report.finalized_transaction_count = finalized_transaction_count;
+    report.pbft_chain_size = pbft_chain_->getPbftChainSize();
+    report.pbft_chain_head_hash = toBridgeHash(pbft_chain_->getLastPbftBlockHash());
+    report.pbft_chain_last_anchor_hash = toBridgeHash(pbft_chain_->getLastNonNullPbftBlockAnchor());
+    return rustaxa::validate_pbft_finalization_live_mutation_report(finalization_plan, report);
   };
 
   rustaxa::PbftFinalizationRuntimeSessionStep runtime_step{};
@@ -2583,8 +2622,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     rustaxa::PbftFinalizedPeriodApplyResult primary_storage_result{};
     try {
       primary_storage_result = rustaxa::apply_pbft_finalization_storage_writes(
-          db_->rustStorage(), finalization_plan.storage_write_intent, std::move(first_persistence_stages),
-          false);
+          db_->rustStorage(), finalization_plan.storage_write_intent, std::move(first_persistence_stages), false);
     } catch (const std::exception &e) {
       LOG(log_er_) << "Rust PBFT finalized-period storage apply failed for block " << pbft_block_hash << ", period "
                    << block_pbft_period << ": " << e.what();
@@ -2618,8 +2656,16 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       if (!begin_runtime_action(kPbftFinalizationRuntimeActionSetDagBlockOrder, runtime_step)) {
         return false;
       }
-      dag_mgr_->setDagBlockOrder(anchor_hash, block_pbft_period, dag_blocks_order);
-      if (!report_runtime_action(runtime_step, true, 0)) {
+      const auto finalized_dag_count = dag_mgr_->setDagBlockOrder(anchor_hash, block_pbft_period, dag_blocks_order);
+      const auto live_validation =
+          validate_live_mutation(kPbftFinalizationRuntimeActionSetDagBlockOrder, finalized_dag_count, 0);
+      if (!live_validation.accepted) {
+        LOG(log_er_) << "Rust PBFT finalization DAG live mutation rejected for block " << pbft_block_hash << ", period "
+                     << block_pbft_period << ", status " << static_cast<uint32_t>(live_validation.status) << ", error "
+                     << static_cast<std::string>(live_validation.error_code);
+      }
+      if (!report_runtime_action_detail(runtime_step, live_validation.accepted, live_validation.status,
+                                        static_cast<std::string>(live_validation.error_code))) {
         return false;
       }
     }
@@ -2628,8 +2674,17 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       if (!begin_runtime_action(kPbftFinalizationRuntimeActionUpdateFinalizedTransactions, runtime_step)) {
         return false;
       }
-      trx_mgr_->updateFinalizedTransactionsStatus(period_data);
-      if (!report_runtime_action(runtime_step, true, 0)) {
+      const auto finalized_transaction_report =
+          trx_mgr_->updateFinalizedTransactionsStatusForPbftFinalization(period_data);
+      const auto live_validation = validate_live_mutation(kPbftFinalizationRuntimeActionUpdateFinalizedTransactions, 0,
+                                                          finalized_transaction_report.accepted_count);
+      if (!live_validation.accepted) {
+        LOG(log_er_) << "Rust PBFT finalization transaction live mutation rejected for block " << pbft_block_hash
+                     << ", period " << block_pbft_period << ", status " << static_cast<uint32_t>(live_validation.status)
+                     << ", error " << static_cast<std::string>(live_validation.error_code);
+      }
+      if (!report_runtime_action_detail(runtime_step, live_validation.accepted, live_validation.status,
+                                        static_cast<std::string>(live_validation.error_code))) {
         return false;
       }
     }
@@ -2640,7 +2695,14 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
         return false;
       }
       pbft_chain_->updatePbftChain(pbft_block_hash, anchor_hash);
-      if (!report_runtime_action(runtime_step, true, 0)) {
+      const auto live_validation = validate_live_mutation(kPbftFinalizationRuntimeActionUpdatePbftChain, 0, 0);
+      if (!live_validation.accepted) {
+        LOG(log_er_) << "Rust PBFT finalization PBFT-chain live mutation rejected for block " << pbft_block_hash
+                     << ", period " << block_pbft_period << ", status " << static_cast<uint32_t>(live_validation.status)
+                     << ", error " << static_cast<std::string>(live_validation.error_code);
+      }
+      if (!report_runtime_action_detail(runtime_step, live_validation.accepted, live_validation.status,
+                                        static_cast<std::string>(live_validation.error_code))) {
         return false;
       }
     }
@@ -2682,8 +2744,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       rust::Vec<rustaxa::PbftFinalizationStorageWriteStage> dynamic_lambda_stages;
       dynamic_lambda_stages.push_back(std::move(dynamic_lambda_stage));
       dynamic_lambda_result = rustaxa::apply_pbft_finalization_storage_writes(
-          db_->rustStorage(), finalization_plan.storage_write_intent, std::move(dynamic_lambda_stages),
-          false);
+          db_->rustStorage(), finalization_plan.storage_write_intent, std::move(dynamic_lambda_stages), false);
     } catch (const std::exception &e) {
       rounds_count_dynamic_lambda_ = previous_rounds_count_dynamic_lambda;
       dynamic_lambda_ = previous_dynamic_lambda;
@@ -2737,8 +2798,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
         rust::Vec<rustaxa::PbftFinalizationStorageWriteStage> executed_status_stages;
         executed_status_stages.push_back(makeFinalizationStorageStage(kPbftFinalizationStorageStageExecutedStatus));
         executed_status_result = rustaxa::apply_pbft_finalization_storage_writes(
-            db_->rustStorage(), finalization_plan.storage_write_intent, std::move(executed_status_stages),
-            false);
+            db_->rustStorage(), finalization_plan.storage_write_intent, std::move(executed_status_stages), false);
       } catch (const std::exception &e) {
         LOG(log_er_) << "Rust PBFT executed-status storage appender failed for block " << pbft_block_hash << ", period "
                      << block_pbft_period << ": " << e.what();
@@ -2780,8 +2840,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
   const auto final_runtime_step = finalization_runtime_session->pbft_finalization_runtime_session_next();
   if (!final_runtime_step.complete || final_runtime_step.status != kPbftFinalizationRuntimeStatusComplete) {
     LOG(log_er_) << "Rust PBFT finalization runtime did not complete for block " << pbft_block_hash << ", period "
-                 << block_pbft_period << ", status " << static_cast<uint32_t>(final_runtime_step.status)
-                 << ", action " << static_cast<uint32_t>(final_runtime_step.action) << ", error "
+                 << block_pbft_period << ", status " << static_cast<uint32_t>(final_runtime_step.status) << ", action "
+                 << static_cast<uint32_t>(final_runtime_step.action) << ", error "
                  << static_cast<std::string>(final_runtime_step.error_code);
     finalization_runtime_session->abort_pbft_finalization_runtime_session();
     return false;

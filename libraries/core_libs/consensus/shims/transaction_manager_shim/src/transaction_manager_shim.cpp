@@ -3,8 +3,8 @@
 #include <cstring>
 #include <future>
 #include <mutex>
-#include <shared_mutex>
 #include <optional>
+#include <shared_mutex>
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
@@ -114,7 +114,7 @@ std::shared_ptr<Transaction> materializeTransactionView(const rustaxa::Transacti
 }
 
 std::shared_ptr<Transaction> materializeQueuedTransaction(const rustaxa::TransactionQueueStoredTransaction& stored,
-                                                         const char* error_prefix) {
+                                                          const char* error_prefix) {
   if (!stored.found) {
     return nullptr;
   }
@@ -181,7 +181,8 @@ rustaxa::LegacyTransactionInspection inspectRegularTransaction(const std::shared
   }
   auto envelope = [&]() {
     try {
-      return rustaxa::inspect_legacy_transaction_rlp(toBridgeBytes(transaction->rlp()), kLegacyTransactionSourceRegular);
+      return rustaxa::inspect_legacy_transaction_rlp(toBridgeBytes(transaction->rlp()),
+                                                     kLegacyTransactionSourceRegular);
     } catch (const std::exception& e) {
       throw std::runtime_error(std::string(error_prefix) + ": " + e.what());
     }
@@ -322,9 +323,10 @@ class TransactionManagerRustShimAccess {
     const auto fact = buildValidatedInsertRuntimeFact(manager, envelope, insert_non_proposable);
     return [&]() {
       try {
-        return manager.runtime_->transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report(
-            manager.final_chain_->rustFinalChainForRust(), fact,
-            toRuntimeQueueInsertInput(envelope, false, manager.final_chain_->lastBlockNumber()));
+        return manager.runtime_
+            ->transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report(
+                manager.final_chain_->rustFinalChainForRust(), fact,
+                toRuntimeQueueInsertInput(envelope, false, manager.final_chain_->lastBlockNumber()));
       } catch (const std::exception& e) {
         throw std::runtime_error(std::string("RUST_TX_MANAGER_ADMISSION_EXECUTION_FAILED: ") + e.what());
       }
@@ -494,9 +496,9 @@ class TransactionManagerRustShimAccess {
    * Runs Rust-backed deterministic transaction packing against the legacy manager's live C++ state.
    *
    * The friend accessor exists only because the migration facade must reuse existing private pool, lock, cache, and
-   * FinalChain members without copying the whole transaction lifecycle into shim-owned C++ code. Rust owns the candidate
-   * scan, accepted ordering, invalid-estimate demotion, and stop decisions; C++ owns transaction materialization,
-   * estimation, and logging.
+   * FinalChain members without copying the whole transaction lifecycle into shim-owned C++ code. Rust owns the
+   * candidate scan, accepted ordering, invalid-estimate demotion, and stop decisions; C++ owns transaction
+   * materialization, estimation, and logging.
    */
   static std::pair<SharedTransactions, std::vector<uint64_t>> packTrxs(TransactionManagerOld& manager,
                                                                        PbftPeriod proposal_period,
@@ -507,9 +509,9 @@ class TransactionManagerRustShimAccess {
     try {
       {
         std::unique_lock transactions_lock(manager.transactions_mutex_);
-        rust_manager.runtime_->transaction_manager_runtime_pack_begin(
-            weight_limit, kMinTxGas, proposal_period, rust_manager.kEstimateGasLimit,
-            manager.final_chain_->lastBlockNumber());
+        rust_manager.runtime_->transaction_manager_runtime_pack_begin(weight_limit, kMinTxGas, proposal_period,
+                                                                      rust_manager.kEstimateGasLimit,
+                                                                      manager.final_chain_->lastBlockNumber());
         session_active = true;
       }
 
@@ -528,13 +530,14 @@ class TransactionManagerRustShimAccess {
       while (step.request_estimate) {
         const auto& candidate = step.candidate;
         if (!candidate.found) {
-          throw std::runtime_error("Rust transaction manager runtime requested estimation for a missing pack candidate");
+          throw std::runtime_error(
+              "Rust transaction manager runtime requested estimation for a missing pack candidate");
         }
 
         const auto estimate = executePackCandidateGasEstimation(rust_manager, candidate, proposal_period);
         if (estimate.gas_used < kMinTxGas) {
           LOG(manager.log_er_) << "Transaction " << fromBridgeHash(candidate.hash)
-                              << " has invalid estimation: " << estimate.gas_used;
+                               << " has invalid estimation: " << estimate.gas_used;
         }
 
         rustaxa::TransactionPackSessionEstimateInput estimate_input;
@@ -598,7 +601,8 @@ class TransactionManagerRustShimAccess {
       return;
     }
     if (!manager.final_chain_) {
-      throw DbException("RUST_STORAGE_DAG_TX_PERSIST_FAILED: FinalChain is required for non-empty DAG transaction save");
+      throw DbException(
+          "RUST_STORAGE_DAG_TX_PERSIST_FAILED: FinalChain is required for non-empty DAG transaction save");
     }
 
     std::unique_lock transactions_lock(manager.transactions_mutex_);
@@ -744,7 +748,7 @@ class TransactionManagerRustShimAccess {
                 std::move(requests), 0);
           }
           return manager.runtime_->transaction_manager_runtime_lookup_transaction_views(manager.db_->rustStorage(),
-                                                                                       std::move(requests), 0);
+                                                                                        std::move(requests), 0);
         } catch (const std::exception& e) {
           if (proposal_period.has_value()) {
             throw DbException(std::string("RUST_TX_MANAGER_PROPOSAL_VIEW_LOOKUP_FAILED: ") + e.what());
@@ -1043,7 +1047,8 @@ class TransactionManagerRustShimAccess {
     }
   }
 
-  static void updateFinalizedTransactionsStatus(TransactionManager& manager, const PeriodData& period_data) {
+  static rustaxa::TransactionManagerFinalizedStatusCommandReport updateFinalizedTransactionsStatusReport(
+      TransactionManager& manager, const PeriodData& period_data) {
     const auto recently_finalized_transactions_periods =
         kRecentlyFinalizedTransactionsFactor * manager.final_chain_->delegationDelay();
 
@@ -1062,8 +1067,7 @@ class TransactionManagerRustShimAccess {
       try {
         return rustaxa::update_finalized_transactions_status_command_report_with_runtime_and_final_chain(
             *manager.runtime_, manager.db_->rustStorage(), manager.final_chain_->rustFinalChainForRust(),
-            period_data.pbft_blk->getPeriod(),
-            recently_finalized_transactions_periods, std::move(facts));
+            period_data.pbft_blk->getPeriod(), recently_finalized_transactions_periods, std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: ") + e.what());
       }
@@ -1076,6 +1080,11 @@ class TransactionManagerRustShimAccess {
     for (const auto& erased : report.queue_erased) {
       LOG(manager.log_dg_) << "Transaction " << fromBridgeHash(erased.hash) << " removed from transactions_pool_";
     }
+    return report;
+  }
+
+  static void updateFinalizedTransactionsStatus(TransactionManager& manager, const PeriodData& period_data) {
+    updateFinalizedTransactionsStatusReport(manager, period_data);
   }
 };
 
@@ -1165,6 +1174,11 @@ void TransactionManager::removeNonFinalizedTransactions(std::unordered_set<trx_h
 
 void TransactionManager::updateFinalizedTransactionsStatus(const PeriodData& period_data) {
   TransactionManagerRustShimAccess::updateFinalizedTransactionsStatus(*this, period_data);
+}
+
+rustaxa::TransactionManagerFinalizedStatusCommandReport
+TransactionManager::updateFinalizedTransactionsStatusForPbftFinalization(const PeriodData& period_data) {
+  return TransactionManagerRustShimAccess::updateFinalizedTransactionsStatusReport(*this, period_data);
 }
 
 void TransactionManager::initializeRecentlyFinalizedTransactions(const PeriodData& period_data) {
