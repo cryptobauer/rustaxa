@@ -62,6 +62,9 @@ class IDagBlockPacketHandler;
 
 class PbftSyncingState;
 class TaraxaPeer;
+#ifdef RUSTAXA_ENABLE_NETWORK
+class RustaxaNetworkShim;
+#endif
 
 class TaraxaCapability final : public dev::p2p::CapabilityFace {
  public:
@@ -127,6 +130,9 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
                    network::ConsensusNetworkApiShared consensus_network_api,
 #else
                    std::shared_ptr<final_chain::FinalChain> final_chain,
+#endif
+#ifdef RUSTAXA_ENABLE_NETWORK
+                   RustaxaNetworkShim &rust_network_shim,
 #endif
                    InitPacketsHandlers init_packets_handlers = kInitLatestVersionHandlers);
 
@@ -219,6 +225,9 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
 
 #ifdef RUSTAXA_ENABLE
   network::ConsensusNetworkApiShared rust_consensus_network_api_;
+#ifdef RUSTAXA_ENABLE_NETWORK
+  RustaxaNetworkShim &rust_network_shim_;
+#endif
 #endif
 
   LOG_OBJECTS_DEFINE
