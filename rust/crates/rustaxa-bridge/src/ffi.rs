@@ -3,6 +3,7 @@ use crate::final_chain::*;
 use crate::gas_pricer::*;
 use crate::pbft_chain::*;
 use crate::pbft_finalize::*;
+use crate::pbft_manager::*;
 use crate::pbft_sync::*;
 use crate::period_data_queue::*;
 use crate::pillar_chain::*;
@@ -72,6 +73,10 @@ pub struct BridgeRewardsStatsRuntime(pub RewardsStatsRuntime);
 
 pub struct BridgePbftFinalizationRuntimeSession {
     pub state: rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeState,
+}
+
+pub struct BridgePbftManagerRuntimeSession {
+    pub state: rustaxa_consensus::pbft_manager::PbftManagerRuntimeSession,
 }
 
 pub struct BridgeSlashingProofPlanner(pub Mutex<SlashingProofPlanner>);
@@ -745,6 +750,43 @@ pub mod rustaxa_ffi {
         finalize_block: bool,
         status: u8,
         actions: Vec<u8>,
+        error_code: String,
+    }
+
+    /// C++-originated facts for one Rust-owned PBFT manager daemon tick.
+    struct PbftManagerRuntimeTickFact {
+        tick_id: u64,
+        state: u8,
+        period: u64,
+        round: u64,
+        step: u64,
+        network_available: bool,
+        network_pbft_syncing: bool,
+        has_eligible_wallet: bool,
+    }
+
+    /// One Rust-owned PBFT manager runtime-session step.
+    struct PbftManagerRuntimeSessionStep {
+        status: u8,
+        cursor: u32,
+        action: u8,
+        has_action: bool,
+        complete: bool,
+        restart_loop: bool,
+        can_continue: bool,
+        tick_id: u64,
+        error_code: String,
+    }
+
+    /// Structured PBFT manager action report from C++.
+    struct PbftManagerRuntimeActionReport {
+        cursor: u32,
+        action: u8,
+        success: bool,
+        result: u8,
+        go_finish_state: bool,
+        loop_back_finish_state: bool,
+        has_eligible_wallet: bool,
         error_code: String,
     }
 
@@ -2623,6 +2665,10 @@ pub mod rustaxa_ffi {
         pub fn create_pbft_finalization_runtime_session(
             plan: &PbftFinalizationIntentPlan,
         ) -> Box<BridgePbftFinalizationRuntimeSession>;
+        type BridgePbftManagerRuntimeSession;
+        pub fn create_pbft_manager_runtime_session(
+            fact: PbftManagerRuntimeTickFact,
+        ) -> Box<BridgePbftManagerRuntimeSession>;
         pub fn create_pbft_finalization_resume_runtime_session(
             plan: &PbftFinalizationResumePlan,
         ) -> Box<BridgePbftFinalizationRuntimeSession>;
@@ -2640,9 +2686,17 @@ pub mod rustaxa_ffi {
             self: &mut BridgePbftFinalizationRuntimeSession,
             report: PbftFinalizationRuntimeActionReport,
         ) -> PbftFinalizationRuntimeSessionStep;
+        pub fn pbft_manager_runtime_session_next(
+            self: &mut BridgePbftManagerRuntimeSession,
+        ) -> PbftManagerRuntimeSessionStep;
+        pub fn pbft_manager_runtime_session_report(
+            self: &mut BridgePbftManagerRuntimeSession,
+            report: PbftManagerRuntimeActionReport,
+        ) -> PbftManagerRuntimeSessionStep;
         pub fn abort_pbft_finalization_runtime_session(
             self: &mut BridgePbftFinalizationRuntimeSession,
         );
+        pub fn abort_pbft_manager_runtime_session(self: &mut BridgePbftManagerRuntimeSession);
         pub fn validate_pbft_finalization_live_mutation_report(
             plan: &PbftFinalizationIntentPlan,
             report: PbftFinalizationLiveMutationReport,

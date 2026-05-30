@@ -529,7 +529,13 @@ The current Rust starting point is intentionally small:
    transactions, pillar data, or pillar votes until all required facts are present, then returns accept/drop/wait/report
    side-effect intent. This keeps sleeps, queue mutation, peer reporting, live vote/transaction managers, and
    `PeriodData` materialization in the shim while making `NotChecked` facts explicit runtime work rather than implicit
-   acceptance. PBFT finalization execution now has a Rust-planned intent contract as well: the shim supplies accepted
+   acceptance. Rust now also owns the first PBFT manager daemon-tick runtime session: the overlay supplies current
+   state/period/round/step, network sync status, and post-prestate eligible-wallet reports, and Rust returns a cursor-managed script for
+   synced-block processing, optional vote broadcast/cert-block push, round advance, ineligible-wallet sleep, the current
+   PBFT state action, state transitions, and final sleep. C++ still executes each live action, but must report the result
+   back before Rust advances the cursor; cert-push and round-advance progress complete the session with a restart-loop
+   intent, while certify and second-finish branches are selected from explicit reported flags. PBFT finalization
+   execution now has a Rust-planned intent contract as well: the shim supplies accepted
    block, PBFT head, anchor, pillar-finalization, and dynamic-lambda facts, and Rust returns explicit cleanup/finalize/
    advance-period flags before C++ applies the existing DB, DAG, transaction-manager, PBFT-chain, FinalChain, and timer
    side effects in the legacy order. Rust also now plans the native-ready PBFT finalization storage write set: the shim

@@ -73,8 +73,50 @@ constexpr uint8_t kPbftFinalizationRuntimeActionPersistExecutedStatus = 10;
 constexpr uint8_t kPbftFinalizationRuntimeActionSetExecutedFlag = 11;
 constexpr uint8_t kPbftFinalizationRuntimeActionAdvancePeriod = 12;
 constexpr uint8_t kPbftFinalizationRuntimeActionCommitSortitionRuntime = 14;
+constexpr uint8_t kPbftManagerRuntimeStatusActive = 0;
+constexpr uint8_t kPbftManagerRuntimeStatusComplete = 1;
+constexpr uint8_t kPbftManagerRuntimeActionProcessSyncedPbftBlocks = 0;
+constexpr uint8_t kPbftManagerRuntimeActionMaybeBroadcastVotes = 1;
+constexpr uint8_t kPbftManagerRuntimeActionTryPushCertVotesBlock = 2;
+constexpr uint8_t kPbftManagerRuntimeActionTryAdvanceRound = 3;
+constexpr uint8_t kPbftManagerRuntimeActionSleepIneligiblePollingInterval = 4;
+constexpr uint8_t kPbftManagerRuntimeActionRunValueProposal = 5;
+constexpr uint8_t kPbftManagerRuntimeActionTransitionToFilter = 6;
+constexpr uint8_t kPbftManagerRuntimeActionRunFilter = 7;
+constexpr uint8_t kPbftManagerRuntimeActionTransitionToCertify = 8;
+constexpr uint8_t kPbftManagerRuntimeActionRunCertify = 9;
+constexpr uint8_t kPbftManagerRuntimeActionTransitionToFinish = 10;
+constexpr uint8_t kPbftManagerRuntimeActionDelayCertifyPoll = 11;
+constexpr uint8_t kPbftManagerRuntimeActionRunFirstFinish = 12;
+constexpr uint8_t kPbftManagerRuntimeActionTransitionToFinishPolling = 13;
+constexpr uint8_t kPbftManagerRuntimeActionRunSecondFinish = 14;
+constexpr uint8_t kPbftManagerRuntimeActionLoopBackFinish = 15;
+constexpr uint8_t kPbftManagerRuntimeActionDelayFinishPoll = 16;
+constexpr uint8_t kPbftManagerRuntimeActionSleepUntilNextStep = 17;
+constexpr uint8_t kPbftManagerRuntimeResultNoProgressContinue = 0;
+constexpr uint8_t kPbftManagerRuntimeResultProgressRestartLoop = 1;
+constexpr uint8_t kPbftManagerRuntimeResultStateActionDone = 2;
+constexpr uint8_t kPbftManagerRuntimeResultTransitionApplied = 3;
+constexpr uint8_t kPbftManagerRuntimeResultSleepApplied = 4;
+constexpr uint8_t kPbftManagerRuntimeResultExecutorError = 255;
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t &hash) { return hash.asArray(); }
+
+uint8_t toPbftManagerRuntimeState(PbftStates state) {
+  switch (state) {
+    case value_proposal_state:
+      return 0;
+    case filter_state:
+      return 1;
+    case certify_state:
+      return 2;
+    case finish_state:
+      return 3;
+    case finish_polling_state:
+      return 4;
+  }
+  return 254;
+}
 
 rust::Vec<uint8_t> toBridgeBytes(const dev::bytes &bytes) {
   rust::Vec<uint8_t> out;
@@ -421,51 +463,162 @@ void PbftManager::stop() {
  * users from which have received valid round p credentials
  */
 void PbftManager::run() {
+  uint64_t rust_runtime_tick_id = 0;
   while (!stopped_) {
-    if (stateOperations_()) {
+    auto [round, period] = getPbftRoundAndPeriod();
+    LOG(log_tr_) << "PBFT current period: " << period << ", round: " << round << ", step " << step_;
+
+    auto net = network_.lock();
+    const auto &wallets = eligible_wallets_.getWallets(period);
+    const bool has_eligible_wallet =
+        std::any_of(wallets.cbegin(), wallets.cend(), [](const auto &wallet) { return wallet.first; });
+
+    rustaxa::PbftManagerRuntimeTickFact fact{};
+    fact.tick_id = ++rust_runtime_tick_id;
+    fact.state = toPbftManagerRuntimeState(state_);
+    fact.period = period;
+    fact.round = round;
+    fact.step = step_;
+    fact.network_available = static_cast<bool>(net);
+    fact.network_pbft_syncing = net && net->pbft_syncing();
+    fact.has_eligible_wallet = has_eligible_wallet;
+
+    auto runtime_session = rustaxa::create_pbft_manager_runtime_session(fact);
+    auto report_action = [&](const rustaxa::PbftManagerRuntimeSessionStep &step, uint8_t result, bool success = true,
+                             const std::string &error_code = "") {
+      const auto current_period = getPbftPeriod();
+      const auto &current_wallets = eligible_wallets_.getWallets(current_period);
+      rustaxa::PbftManagerRuntimeActionReport report{};
+      report.cursor = step.cursor;
+      report.action = step.action;
+      report.success = success;
+      report.result = result;
+      report.go_finish_state = go_finish_state_;
+      report.loop_back_finish_state = loop_back_finish_state_;
+      report.has_eligible_wallet = std::any_of(
+          current_wallets.cbegin(), current_wallets.cend(), [](const auto &wallet) { return wallet.first; });
+      report.error_code = error_code;
+      return runtime_session->pbft_manager_runtime_session_report(std::move(report));
+    };
+
+    bool restart_loop = false;
+    while (!stopped_) {
+      auto step = runtime_session->pbft_manager_runtime_session_next();
+      if (step.status == kPbftManagerRuntimeStatusComplete || step.complete) {
+        restart_loop = step.restart_loop;
+        break;
+      }
+
+      if (step.status != kPbftManagerRuntimeStatusActive || !step.has_action) {
+        LOG(log_er_) << "Rust PBFT manager runtime rejected tick " << step.tick_id << ", status "
+                     << static_cast<uint32_t>(step.status) << ", error " << static_cast<std::string>(step.error_code);
+        runtime_session->abort_pbft_manager_runtime_session();
+        assert(false);
+        restart_loop = true;
+        break;
+      }
+
+      switch (step.action) {
+        case kPbftManagerRuntimeActionProcessSyncedPbftBlocks:
+          pushSyncedPbftBlocksIntoChain();
+          step = report_action(step, kPbftManagerRuntimeResultStateActionDone);
+          break;
+        case kPbftManagerRuntimeActionMaybeBroadcastVotes:
+          broadcastVotes();
+          step = report_action(step, kPbftManagerRuntimeResultStateActionDone);
+          break;
+        case kPbftManagerRuntimeActionTryPushCertVotesBlock:
+          step = report_action(step, tryPushCertVotesBlock() ? kPbftManagerRuntimeResultProgressRestartLoop
+                                                             : kPbftManagerRuntimeResultNoProgressContinue);
+          break;
+        case kPbftManagerRuntimeActionTryAdvanceRound:
+          step = report_action(step, advanceRound() ? kPbftManagerRuntimeResultProgressRestartLoop
+                                                    : kPbftManagerRuntimeResultNoProgressContinue);
+          break;
+        case kPbftManagerRuntimeActionSleepIneligiblePollingInterval:
+          std::this_thread::sleep_for(std::chrono::milliseconds(kPollingIntervalMs));
+          step = report_action(step, kPbftManagerRuntimeResultSleepApplied);
+          break;
+        case kPbftManagerRuntimeActionRunValueProposal:
+          proposeBlock_();
+          step = report_action(step, kPbftManagerRuntimeResultStateActionDone);
+          break;
+        case kPbftManagerRuntimeActionTransitionToFilter:
+          setFilterState_();
+          step = report_action(step, kPbftManagerRuntimeResultTransitionApplied);
+          break;
+        case kPbftManagerRuntimeActionRunFilter:
+          identifyBlock_();
+          step = report_action(step, kPbftManagerRuntimeResultStateActionDone);
+          break;
+        case kPbftManagerRuntimeActionTransitionToCertify:
+          setCertifyState_();
+          step = report_action(step, kPbftManagerRuntimeResultTransitionApplied);
+          break;
+        case kPbftManagerRuntimeActionRunCertify:
+          certifyBlock_();
+          step = report_action(step, kPbftManagerRuntimeResultStateActionDone);
+          break;
+        case kPbftManagerRuntimeActionTransitionToFinish:
+          setFinishState_();
+          step = report_action(step, kPbftManagerRuntimeResultTransitionApplied);
+          break;
+        case kPbftManagerRuntimeActionDelayCertifyPoll:
+          next_step_time_ms_ += kPollingIntervalMs;
+          step = report_action(step, kPbftManagerRuntimeResultSleepApplied);
+          break;
+        case kPbftManagerRuntimeActionRunFirstFinish:
+          firstFinish_();
+          step = report_action(step, kPbftManagerRuntimeResultStateActionDone);
+          break;
+        case kPbftManagerRuntimeActionTransitionToFinishPolling:
+          setFinishPollingState_();
+          step = report_action(step, kPbftManagerRuntimeResultTransitionApplied);
+          break;
+        case kPbftManagerRuntimeActionRunSecondFinish:
+          secondFinish_();
+          step = report_action(step, kPbftManagerRuntimeResultStateActionDone);
+          break;
+        case kPbftManagerRuntimeActionLoopBackFinish:
+          loopBackFinishState_();
+          printVotingSummary();
+          step = report_action(step, kPbftManagerRuntimeResultTransitionApplied);
+          break;
+        case kPbftManagerRuntimeActionDelayFinishPoll:
+          next_step_time_ms_ += kPollingIntervalMs;
+          step = report_action(step, kPbftManagerRuntimeResultSleepApplied);
+          break;
+        case kPbftManagerRuntimeActionSleepUntilNextStep:
+          LOG(log_tr_) << "next step time(ms): " << next_step_time_ms_.count() << ", step " << step_;
+          sleep_();
+          step = report_action(step, kPbftManagerRuntimeResultSleepApplied);
+          break;
+        default:
+          LOG(log_er_) << "Unknown Rust PBFT manager runtime action " << static_cast<uint32_t>(step.action);
+          step = report_action(step, kPbftManagerRuntimeResultExecutorError, false,
+                               "PBFT_MANAGER_RUNTIME_UNKNOWN_CPP_ACTION");
+          break;
+      }
+
+      if (!step.can_continue) {
+        LOG(log_er_) << "Rust PBFT manager runtime failed tick " << step.tick_id << ", status "
+                     << static_cast<uint32_t>(step.status) << ", action " << static_cast<uint32_t>(step.action)
+                     << ", error " << static_cast<std::string>(step.error_code);
+        runtime_session->abort_pbft_manager_runtime_session();
+        assert(false);
+        restart_loop = true;
+        break;
+      }
+
+      if (step.complete) {
+        restart_loop = step.restart_loop;
+        break;
+      }
+    }
+
+    if (restart_loop) {
       continue;
     }
-
-    // PBFT states
-    switch (state_) {
-      case value_proposal_state:
-        proposeBlock_();
-        setFilterState_();
-        break;
-      case filter_state:
-        identifyBlock_();
-        setCertifyState_();
-        break;
-      case certify_state:
-        certifyBlock_();
-        if (go_finish_state_) {
-          setFinishState_();
-        } else {
-          next_step_time_ms_ += kPollingIntervalMs;
-        }
-        break;
-      case finish_state:
-        firstFinish_();
-        setFinishPollingState_();
-        break;
-      case finish_polling_state:
-        secondFinish_();
-        if (loop_back_finish_state_) {
-          loopBackFinishState_();
-
-          // Print voting summary for current round
-          printVotingSummary();
-        } else {
-          next_step_time_ms_ += kPollingIntervalMs;
-        }
-        break;
-      default:
-        LOG(log_er_) << "Unknown PBFT state " << state_;
-        assert(false);
-    }
-
-    LOG(log_tr_) << "next step time(ms): " << next_step_time_ms_.count() << ", step " << step_;
-    sleep_();
   }
 }
 

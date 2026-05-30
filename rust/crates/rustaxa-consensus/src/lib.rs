@@ -2,6 +2,7 @@ pub mod dag;
 pub mod gas_pricer;
 pub mod pbft_chain;
 pub mod pbft_finalize;
+pub mod pbft_manager;
 pub mod pbft_sync;
 pub mod period_data_queue;
 pub mod pillar_chain;
@@ -23,6 +24,13 @@ pub use pbft_finalize::{
     PbftFinalizationAnchor, PbftFinalizationCleanupIntent, PbftFinalizationIntentFact,
     PbftFinalizationPlan, PbftFinalizationPositionedHash, PbftFinalizationStatus,
     PbftFinalizationStorageWriteIntent, plan_pbft_finalization_intent,
+};
+pub use pbft_manager::{
+    PbftManagerRuntimeAction, PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
+    PbftManagerRuntimeSession, PbftManagerRuntimeSessionStep, PbftManagerRuntimeStateCode,
+    PbftManagerRuntimeStatus, PbftManagerRuntimeTickFact, abort_pbft_manager_runtime_session,
+    create_pbft_manager_runtime_session, next_pbft_manager_runtime_action,
+    report_pbft_manager_runtime_action,
 };
 pub use pbft_sync::{
     PbftSyncFactStatus, PbftSyncFinalChainHashStatus, PbftSyncPeriodAdmissionDecision,
