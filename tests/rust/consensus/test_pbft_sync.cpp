@@ -67,6 +67,10 @@ constexpr uint8_t kPbftFinalizationRuntimeStatusActive = 0;
 constexpr uint8_t kPbftFinalizationRuntimeStatusComplete = 1;
 constexpr uint8_t kPbftFinalizationRuntimeStatusActionMismatch = 3;
 constexpr uint8_t kPbftFinalizationRuntimeStatusActionFailed = 4;
+constexpr uint8_t kPbftFinalizationResumeStatusNotPersisted = 0;
+constexpr uint8_t kPbftFinalizationResumeStatusComplete = 1;
+constexpr uint8_t kPbftFinalizationResumeStatusNeedsFinalChainReplay = 2;
+constexpr uint8_t kPbftFinalizationResumeStatusNeedsDynamicLambda = 6;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusApplied = 0;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusAlreadyApplied = 1;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusRejected = 2;
@@ -741,6 +745,60 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyCommitsOwnedBatch) {
   EXPECT_EQ(std::vector<uint8_t>(reward_votes[0].data.begin(), reward_votes[0].data.end()),
             (std::vector<uint8_t>{0x01}));
   EXPECT_FALSE(storage->get_params_change_for_period(101).empty());
+
+  std::filesystem::remove_all(test_dir);
+}
+
+TEST(RustPbftSyncTest, FinalizationResumeInspectorClassifiesCrashWindows) {
+  const auto test_dir = uniqueTempDir("rustaxa_pbft_finalization_resume");
+  auto storage = create_storage(test_dir.string());
+  auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
+
+  auto resume = inspect_pbft_finalization_resume(*storage, plan.storage_write_intent, 100);
+  EXPECT_EQ(resume.status, kPbftFinalizationResumeStatusNotPersisted);
+  EXPECT_FALSE(resume.duplicate_classified);
+
+  rust::Vec<PbftFinalizationStorageWriteStage> primary_stages;
+  primary_stages.push_back(finalizationStorageStage(kPbftFinalizationStorageStagePrimary));
+  auto result = apply_pbft_finalization_storage_writes(*storage, plan.storage_write_intent, std::move(primary_stages),
+                                                       false);
+  EXPECT_EQ(result.status, kPbftFinalizedPeriodApplyStatusApplied);
+
+  resume = inspect_pbft_finalization_resume(*storage, plan.storage_write_intent, 100);
+  EXPECT_EQ(resume.status, kPbftFinalizationResumeStatusNeedsDynamicLambda);
+  EXPECT_EQ(resume.replay_actions.size(), 1);
+  EXPECT_EQ(resume.replay_actions[0], kPbftFinalizationRuntimeActionApplyDynamicLambda);
+
+  auto dynamic_lambda_stage = finalizationStorageStage(kPbftFinalizationStorageStageDynamicLambda);
+  dynamic_lambda_stage.rounds_count_dynamic_lambda = 7;
+  dynamic_lambda_stage.dynamic_lambda = 1450;
+  rust::Vec<PbftFinalizationStorageWriteStage> dynamic_stages;
+  dynamic_stages.push_back(std::move(dynamic_lambda_stage));
+  result = apply_pbft_finalization_storage_writes(*storage, plan.storage_write_intent, std::move(dynamic_stages),
+                                                  false);
+  EXPECT_EQ(result.status, kPbftFinalizedPeriodApplyStatusApplied);
+
+  resume = inspect_pbft_finalization_resume(*storage, plan.storage_write_intent, 100);
+  EXPECT_EQ(resume.status, kPbftFinalizationResumeStatusNeedsFinalChainReplay);
+  const std::vector<uint8_t> replay_actions(resume.replay_actions.begin(), resume.replay_actions.end());
+  EXPECT_EQ(replay_actions, (std::vector<uint8_t>{
+                                kPbftFinalizationRuntimeActionFinalizeFinalChain,
+                                kPbftFinalizationRuntimeActionPersistExecutedStatus,
+                                kPbftFinalizationRuntimeActionSetExecutedFlag,
+                                kPbftFinalizationRuntimeActionAdvancePeriod,
+                            }));
+
+  rust::Vec<PbftFinalizationStorageWriteStage> executed_stages;
+  executed_stages.push_back(finalizationStorageStage(kPbftFinalizationStorageStageExecutedStatus));
+  result = apply_pbft_finalization_storage_writes(*storage, plan.storage_write_intent, std::move(executed_stages),
+                                                  false);
+  EXPECT_EQ(result.status, kPbftFinalizedPeriodApplyStatusApplied);
+
+  resume = inspect_pbft_finalization_resume(*storage, plan.storage_write_intent, 101);
+  EXPECT_EQ(resume.status, kPbftFinalizationResumeStatusComplete);
+  EXPECT_TRUE(resume.duplicate_classified);
+  EXPECT_TRUE(resume.complete);
+  EXPECT_TRUE(resume.replay_actions.empty());
 
   std::filesystem::remove_all(test_dir);
 }

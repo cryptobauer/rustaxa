@@ -550,7 +550,13 @@ The current Rust starting point is intentionally small:
    telemetry flags. The PBFT overlay consumes those Rust outputs and no longer calls the C++ dynamic-lambda adjustment
    routine from the Rust-mode finalization path. Rust now also owns a finalization runtime session cursor: the overlay
    asks Rust for each action, executes the temporary C++ live effect, and reports success/failure back before Rust
-   advances the session. The Rust-mode `VoteManager` overlay now uses the
+   advances the session. The bridge also exposes a storage-backed PBFT finalization resume classifier for duplicate or
+   restart-adjacent blocks: Rust inspects the durable hash-to-period, period-data, finalized DAG/transaction indexes,
+   optional period-lambda, executed-status, and FinalChain height facts and returns complete, replay-needed,
+   missing-primary, or conflicting-primary classifications instead of letting the shim treat `pbftBlockInDb` as a blind
+   duplicate. This classifier does not yet replay ambiguous C++ live side effects because DAG manager mutation,
+   transaction sidecars, PBFT-chain live state, timers, reward metadata, and period reset still lack a durable
+   Rust-owned action cursor. The Rust-mode `VoteManager` overlay now uses the
    approved temporary protected-state hook to inherit unported behavior from `VoteManagerOld` while owning reward-vote
    reset persistence handoff in shim code: it selects the live cert-vote bundle in C++, passes the stage-4 Rust storage
    facts into the Rust-owned finalization apply batch, and mutates live reward metadata only after Rust commits the

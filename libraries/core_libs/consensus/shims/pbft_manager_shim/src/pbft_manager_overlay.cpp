@@ -2251,15 +2251,10 @@ void PbftManager::finalize_(PeriodData &&period_data, std::vector<h256> &&finali
 bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shared_ptr<PbftVote>> &&cert_votes) {
   auto const &pbft_block_hash = period_data.pbft_blk->getBlockHash();
   const auto block_in_chain = db_->pbftBlockInDb(pbft_block_hash);
-  if (block_in_chain) {
-    const auto duplicate_plan = rustaxa::plan_pbft_finalization_intent(makePbftFinalizationIntentFact(
-        period_data, pbft_chain_->getHeadHash(), pbft_chain_->getLastPbftBlockHash(), pbft_chain_->getPbftChainSize(),
-        block_in_chain, false, kGenesisConfig.state.hardforks.isOnCactiHardfork(period_data.pbft_blk->getPeriod()), 0,
-        kNullBlockHash, 0, 0, 0, 0, false, 0, 0, kGenesisConfig.state.dpos.blocks_per_year, std::vector<blk_hash_t>{},
-        std::vector<trx_hash_t>{}, ""));
+  if (block_in_chain && cert_votes.empty()) {
     LOG(log_nf_) << "PBFT block: " << pbft_block_hash << " in DB already.";
-    LOG(log_dg_) << "Rust PBFT finalization planner rejected duplicate block " << pbft_block_hash << ", status "
-                 << static_cast<uint32_t>(duplicate_plan.status);
+    LOG(log_dg_) << "Rust PBFT finalization resume classifier cannot inspect duplicate block " << pbft_block_hash
+                 << " because certified-vote facts are unavailable.";
     if (cert_voted_block_for_round_.has_value() && (*cert_voted_block_for_round_)->getBlockHash() == pbft_block_hash) {
       LOG(log_er_) << "Last cert voted value should be kNullBlockHash. Block hash "
                    << (*cert_voted_block_for_round_)->getBlockHash() << " has been pushed into chain already";
@@ -2291,7 +2286,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
   bool pillar_block_finalized = false;
 
   // To finalize the pbft block that includes pillar block hash, pillar block needs to be finalized first
-  if (kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(block_pbft_period)) {
+  if (!block_in_chain && kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(block_pbft_period)) {
     // Note: presence of pillar block hash in extra data was already validated in validatePbftBlock
     const auto pillar_block_hash = period_data.pbft_blk->getExtraData()->getPillarBlockHash();
 
@@ -2327,9 +2322,14 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     transaction_order.emplace_back(transaction->getHash());
   }
 
+  const auto planner_chain_last_hash =
+      block_in_chain ? period_data.pbft_blk->getPrevBlockHash() : pbft_chain_->getHeadHash();
+  const auto planner_chain_last_period =
+      block_in_chain ? block_pbft_period - 1 : pbft_chain_->getPbftChainSize();
+  const auto planner_pillar_block_finalized = block_in_chain ? true : pillar_block_finalized;
   const auto finalization_plan = rustaxa::plan_pbft_finalization_intent(makePbftFinalizationIntentFact(
-      period_data, pbft_chain_->getHeadHash(), pbft_chain_->getLastPbftBlockHash(), pbft_chain_->getPbftChainSize(),
-      false, pillar_block_finalized, dynamic_lambda_enabled, cert_votes.size(), sample_cert_vote->getBlockHash(),
+      period_data, planner_chain_last_hash, pbft_chain_->getLastPbftBlockHash(), planner_chain_last_period, false,
+      planner_pillar_block_finalized, dynamic_lambda_enabled, cert_votes.size(), sample_cert_vote->getBlockHash(),
       sample_cert_vote->getPeriod(), sample_cert_vote->getRound(), sample_cert_vote->getStep(), block_lambda,
       last_saved_period_lambda.has_value(), last_saved_period_lambda.value_or(0), dynamic_blocks_per_year,
       kGenesisConfig.state.dpos.blocks_per_year, dag_blocks_order, transaction_order,
@@ -2338,6 +2338,26 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     LOG(log_er_) << "Rust PBFT finalization planner rejected block " << pbft_block_hash << ", period "
                  << block_pbft_period << ", round " << block_pbft_round << ", status "
                  << static_cast<uint32_t>(finalization_plan.status);
+    return false;
+  }
+  if (block_in_chain) {
+    try {
+      const auto resume_plan = rustaxa::inspect_pbft_finalization_resume(
+          db_->rustStorage(), finalization_plan.storage_write_intent, final_chain_->lastBlockNumber());
+      LOG(log_nf_) << "PBFT block: " << pbft_block_hash << " in DB already.";
+      LOG(log_dg_) << "Rust PBFT finalization resume classified duplicate block " << pbft_block_hash << ", period "
+                   << block_pbft_period << ", status " << static_cast<uint32_t>(resume_plan.status)
+                   << ", complete " << resume_plan.complete << ", replay actions " << resume_plan.replay_actions.size()
+                   << ", error " << static_cast<std::string>(resume_plan.error_code);
+    } catch (const std::exception &e) {
+      LOG(log_er_) << "Rust PBFT finalization resume inspection failed for duplicate block " << pbft_block_hash
+                   << ", period " << block_pbft_period << ": " << e.what();
+    }
+    if (cert_voted_block_for_round_.has_value() && (*cert_voted_block_for_round_)->getBlockHash() == pbft_block_hash) {
+      LOG(log_er_) << "Last cert voted value should be kNullBlockHash. Block hash "
+                   << (*cert_voted_block_for_round_)->getBlockHash() << " has been pushed into chain already";
+      assert(false);
+    }
     return false;
   }
   const auto finalization_runtime_plan = rustaxa::plan_pbft_finalization_runtime(finalization_plan);

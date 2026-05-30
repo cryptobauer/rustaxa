@@ -758,6 +758,31 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
+    /// Storage-derived duplicate/resume facts for an already-persisted PBFT block.
+    struct PbftFinalizationResumeFact {
+        block_in_chain: bool,
+        block_period: u64,
+        final_chain_last_block: u64,
+        pbft_period_mapping_matches: bool,
+        period_data_matches: bool,
+        dag_positions_match: bool,
+        transaction_positions_match: bool,
+        missing_primary_facts: bool,
+        conflicting_primary_facts: bool,
+        dynamic_lambda_required: bool,
+        dynamic_lambda_persisted: bool,
+        executed_status_persisted: bool,
+    }
+
+    /// Rust classification of durable PBFT finalization resume state.
+    struct PbftFinalizationResumePlan {
+        status: u8,
+        duplicate_classified: bool,
+        complete: bool,
+        replay_actions: Vec<u8>,
+        error_code: String,
+    }
+
     /// Result from appending Rust-owned finalized-period storage writes to an existing batch.
     struct PbftFinalizedPeriodApplyResult {
         status: u8,
@@ -2569,6 +2594,11 @@ pub mod rustaxa_ffi {
         pub fn abort_pbft_finalization_runtime_session(
             self: &mut BridgePbftFinalizationRuntimeSession,
         );
+        pub fn inspect_pbft_finalization_resume(
+            storage: &BridgeStorage,
+            write_set: &PbftFinalizationStorageWritePlan,
+            final_chain_last_block: u64,
+        ) -> Result<PbftFinalizationResumePlan>;
         pub fn plan_pbft_dynamic_lambda(fact: PbftDynamicLambdaFact) -> PbftDynamicLambdaPlan;
         pub fn append_pbft_finalization_storage_write(
             storage: &BridgeStorage,

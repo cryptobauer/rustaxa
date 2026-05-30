@@ -20,6 +20,8 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact,
     PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
     PbftFinalizationPositionedHash as FfiPbftFinalizationPositionedHash,
+    PbftFinalizationResumeFact as FfiPbftFinalizationResumeFact,
+    PbftFinalizationResumePlan as FfiPbftFinalizationResumePlan,
     PbftFinalizationRuntimePlan as FfiPbftFinalizationRuntimePlan,
     PbftFinalizationRuntimeSessionStep as FfiPbftFinalizationRuntimeSessionStep,
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
@@ -33,13 +35,14 @@ use rustaxa_consensus::pbft_finalize::{
     next_pbft_finalization_runtime_action,
     plan_pbft_dynamic_lambda as plan_domain_pbft_dynamic_lambda,
     plan_pbft_finalization_intent as plan_domain_pbft_finalization_intent,
+    plan_pbft_finalization_resume as plan_domain_pbft_finalization_resume,
     plan_pbft_finalization_runtime as plan_domain_pbft_finalization_runtime,
     report_pbft_finalization_runtime_action, start_pbft_finalization_runtime,
     PbftDynamicLambdaConfig, PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationAnchor,
     PbftFinalizationCleanupIntent, PbftFinalizationIntentFact, PbftFinalizationPlan,
-    PbftFinalizationPositionedHash, PbftFinalizationRuntimeAction,
-    PbftFinalizationRuntimeActionResult, PbftFinalizationRuntimeStatus, PbftFinalizationStatus,
-    PbftFinalizationStorageWriteIntent,
+    PbftFinalizationPositionedHash, PbftFinalizationResumeFact, PbftFinalizationResumePlan,
+    PbftFinalizationRuntimeAction, PbftFinalizationRuntimeActionResult,
+    PbftFinalizationRuntimeStatus, PbftFinalizationStatus, PbftFinalizationStorageWriteIntent,
 };
 use rustaxa_consensus::sortition::SortitionParamsChange;
 use rustaxa_storage::Column;
@@ -310,6 +313,132 @@ pub fn abort_pbft_finalization_runtime_session(session: &mut BridgePbftFinalizat
         session.state.runtime_status = PbftFinalizationRuntimeStatus::ActionFailed;
         session.state.error_code = "PBFT_FINALIZE_RUNTIME_ABORTED".to_string();
     }
+}
+
+/// Inspects Rust-owned finalized-period storage for a duplicate PBFT block and
+/// returns a durable resume classification.
+///
+/// Inputs:
+/// - `storage`: Rust storage bridge used by the C++ storage shim.
+/// - `write_set`: expected finalized-period write set for the duplicate block.
+/// - `final_chain_last_block`: C++ FinalChain durable height, which Rust cannot
+///   read from consensus storage.
+///
+/// Outputs:
+/// - A bridge-safe resume plan. The plan classifies whether primary PBFT
+///   finalization storage is complete, whether dynamic-lambda and executed
+///   status are durable, and which durable replay actions remain visible.
+///
+/// Edge behavior:
+/// - Mutable PBFT-head JSON is not used for conflict detection because startup
+///   may already have recovered the live PBFT chain from that head. Immutable
+///   hash-period, period-data, DAG-position, transaction-position, period
+///   lambda, and executed-status rows are checked exactly.
+/// - Storage conflicts are never repaired by this API.
+pub fn inspect_pbft_finalization_resume(
+    storage: &BridgeStorage,
+    write_set: &FfiPbftFinalizationStorageWritePlan,
+    final_chain_last_block: u64,
+) -> Result<FfiPbftFinalizationResumePlan> {
+    let fact = inspect_pbft_finalization_resume_fact(storage, write_set, final_chain_last_block)?;
+    Ok(plan_domain_pbft_finalization_resume(fact.into()).into())
+}
+
+fn inspect_pbft_finalization_resume_fact(
+    storage: &BridgeStorage,
+    write_set: &FfiPbftFinalizationStorageWritePlan,
+    final_chain_last_block: u64,
+) -> Result<FfiPbftFinalizationResumeFact> {
+    let pbft_block_hash = H256::from(write_set.pbft_block_hash);
+    let period_key = write_set.block_period.to_le_bytes();
+    let period_value = write_set.block_period.to_le_bytes();
+
+    let pbft_period_value = storage
+        .0
+        .get_raw(Column::PbftBlockPeriod, pbft_block_hash.as_bytes())?;
+    let block_in_chain = pbft_period_value.is_some();
+    let pbft_period_mapping_matches = pbft_period_value.as_deref() == Some(period_value.as_slice());
+    let mut missing_primary_facts = pbft_period_value.is_none();
+    let mut conflicting_primary_facts = pbft_period_value.is_some() && !pbft_period_mapping_matches;
+
+    let period_data_value = storage.0.get_raw(Column::PeriodData, &period_key)?;
+    let period_data_matches =
+        period_data_value.as_deref() == Some(write_set.period_data_rlp.as_slice());
+    missing_primary_facts |= period_data_value.is_none();
+    conflicting_primary_facts |= period_data_value.is_some() && !period_data_matches;
+
+    let mut dag_positions_match = true;
+    for write in &write_set.dag_block_period_writes {
+        let hash = H256::from(write.hash);
+        let expected = block_position_rlp(write_set.block_period, write.position);
+        match storage.0.get_raw(Column::DagBlockPeriod, hash.as_bytes())? {
+            Some(actual) if actual == expected => {}
+            Some(_) => {
+                dag_positions_match = false;
+                conflicting_primary_facts = true;
+            }
+            None => {
+                dag_positions_match = false;
+                missing_primary_facts = true;
+            }
+        }
+    }
+
+    let mut transaction_positions_match = true;
+    for write in &write_set.transaction_location_writes {
+        let hash = H256::from(write.hash);
+        let expected = block_position_rlp(write_set.block_period, write.position);
+        match storage.0.get_raw(Column::TrxPeriod, hash.as_bytes())? {
+            Some(actual) if actual == expected => {}
+            Some(_) => {
+                transaction_positions_match = false;
+                conflicting_primary_facts = true;
+            }
+            None => {
+                transaction_positions_match = false;
+                missing_primary_facts = true;
+            }
+        }
+    }
+
+    let dynamic_lambda_persisted = if write_set.apply_dynamic_lambda_update {
+        if write_set.persist_period_lambda {
+            storage
+                .0
+                .get_raw(Column::PeriodLambda, &period_key)?
+                .as_deref()
+                == Some(&write_set.period_lambda.to_le_bytes())
+        } else {
+            true
+        }
+    } else {
+        true
+    };
+
+    let executed_status_persisted = if write_set.persist_executed_pbft_status {
+        storage
+            .0
+            .get_raw(Column::PbftMgrStatus, &[PBFT_MGR_STATUS_EXECUTED_BLOCK])?
+            .as_deref()
+            == Some(&[u8::from(write_set.executed_pbft_status)])
+    } else {
+        true
+    };
+
+    Ok(FfiPbftFinalizationResumeFact {
+        block_in_chain,
+        block_period: write_set.block_period,
+        final_chain_last_block,
+        pbft_period_mapping_matches,
+        period_data_matches,
+        dag_positions_match,
+        transaction_positions_match,
+        missing_primary_facts,
+        conflicting_primary_facts,
+        dynamic_lambda_required: write_set.apply_dynamic_lambda_update,
+        dynamic_lambda_persisted,
+        executed_status_persisted,
+    })
 }
 
 impl BridgePbftFinalizationRuntimeSession {
@@ -1109,6 +1238,41 @@ impl From<PbftFinalizationCleanupIntent> for FfiPbftFinalizationCleanupPlan {
     }
 }
 
+impl From<FfiPbftFinalizationResumeFact> for PbftFinalizationResumeFact {
+    fn from(value: FfiPbftFinalizationResumeFact) -> Self {
+        Self {
+            block_in_chain: value.block_in_chain,
+            block_period: value.block_period,
+            final_chain_last_block: value.final_chain_last_block,
+            pbft_period_mapping_matches: value.pbft_period_mapping_matches,
+            period_data_matches: value.period_data_matches,
+            dag_positions_match: value.dag_positions_match,
+            transaction_positions_match: value.transaction_positions_match,
+            missing_primary_facts: value.missing_primary_facts,
+            conflicting_primary_facts: value.conflicting_primary_facts,
+            dynamic_lambda_required: value.dynamic_lambda_required,
+            dynamic_lambda_persisted: value.dynamic_lambda_persisted,
+            executed_status_persisted: value.executed_status_persisted,
+        }
+    }
+}
+
+impl From<PbftFinalizationResumePlan> for FfiPbftFinalizationResumePlan {
+    fn from(value: PbftFinalizationResumePlan) -> Self {
+        Self {
+            status: value.status.as_u8(),
+            duplicate_classified: value.duplicate_classified,
+            complete: value.complete,
+            replay_actions: value
+                .replay_actions
+                .into_iter()
+                .map(PbftFinalizationRuntimeAction::as_u8)
+                .collect(),
+            error_code: value.error_code,
+        }
+    }
+}
+
 impl From<&FfiPbftFinalizationCleanupPlan> for PbftFinalizationCleanupIntent {
     fn from(value: &FfiPbftFinalizationCleanupPlan) -> Self {
         Self {
@@ -1831,6 +1995,74 @@ mod tests {
                 .get_raw(Column::SortitionParamsChange, &10_u64.to_le_bytes())
                 .expect("sortition change lookup should succeed")
                 .is_some());
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn resume_inspector_classifies_primary_finalization_crash_windows() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_finalization_resume");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let plan = plan_pbft_finalization_intent(fact());
+
+            let missing = inspect_pbft_finalization_resume(&storage, &plan.storage_write_intent, 9)
+                .expect("resume inspection should run");
+            assert_eq!(missing.status, 0);
+            assert!(!missing.duplicate_classified);
+
+            let primary = apply_pbft_finalization_storage_writes(
+                &storage,
+                &plan.storage_write_intent,
+                vec![empty_stage(APPEND_STAGE_PRIMARY_FINALIZATION)],
+                false,
+            )
+            .expect("primary stage should apply");
+            assert_eq!(primary.status, APPLY_STATUS_APPLIED_TEST);
+
+            let needs_dynamic =
+                inspect_pbft_finalization_resume(&storage, &plan.storage_write_intent, 9)
+                    .expect("resume inspection should run");
+            assert_eq!(needs_dynamic.status, 6);
+            assert_eq!(needs_dynamic.replay_actions, vec![8]);
+
+            let mut dynamic_stage = empty_stage(APPEND_STAGE_DYNAMIC_LAMBDA);
+            dynamic_stage.rounds_count_dynamic_lambda = 7;
+            dynamic_stage.dynamic_lambda = 1450;
+            let dynamic = apply_pbft_finalization_storage_writes(
+                &storage,
+                &plan.storage_write_intent,
+                vec![dynamic_stage],
+                false,
+            )
+            .expect("dynamic stage should apply");
+            assert_eq!(dynamic.status, APPLY_STATUS_APPLIED_TEST);
+
+            let needs_final_chain =
+                inspect_pbft_finalization_resume(&storage, &plan.storage_write_intent, 9)
+                    .expect("resume inspection should run");
+            assert_eq!(needs_final_chain.status, 2);
+            assert_eq!(needs_final_chain.replay_actions, vec![9, 10, 11, 12]);
+
+            let executed = apply_pbft_finalization_storage_writes(
+                &storage,
+                &plan.storage_write_intent,
+                vec![empty_stage(APPEND_STAGE_EXECUTED_STATUS)],
+                false,
+            )
+            .expect("executed stage should apply");
+            assert_eq!(executed.status, APPLY_STATUS_APPLIED_TEST);
+
+            let complete =
+                inspect_pbft_finalization_resume(&storage, &plan.storage_write_intent, 10)
+                    .expect("resume inspection should run");
+            assert_eq!(complete.status, 1);
+            assert!(complete.duplicate_classified);
+            assert!(complete.complete);
+            assert!(complete.replay_actions.is_empty());
         }
 
         let _ = fs::remove_dir_all(temp_dir);

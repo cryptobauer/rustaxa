@@ -215,6 +215,95 @@ pub struct PbftFinalizationRuntimePlan {
     pub actions: Vec<PbftFinalizationRuntimeAction>,
 }
 
+/// Durable resume classification for an already-persisted PBFT block.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftFinalizationResumeStatus {
+    /// The candidate is not known to finalized-period storage.
+    NotPersisted,
+    /// Durable finalization state is complete for this block.
+    Complete,
+    /// Primary finalized-period storage is present, but FinalChain still needs replay.
+    NeedsFinalChainReplay,
+    /// FinalChain is caught up, but executed-status persistence is still missing.
+    NeedsExecutedStatusPersistence,
+    /// Required primary finalized-period facts are missing.
+    MissingPrimaryFacts,
+    /// Primary finalized-period facts conflict with the expected block payload.
+    ConflictingPrimaryFacts,
+    /// Dynamic-lambda persistence is required before final-chain replay is safe.
+    NeedsDynamicLambdaPersistence,
+    /// Internal contract error or impossible status in transport facts.
+    ContractError,
+    /// Unknown status code produced from bridge inputs.
+    Unknown,
+}
+
+impl PbftFinalizationResumeStatus {
+    /// Stable bridge code for C++.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::NotPersisted => 0,
+            Self::Complete => 1,
+            Self::NeedsFinalChainReplay => 2,
+            Self::NeedsExecutedStatusPersistence => 3,
+            Self::MissingPrimaryFacts => 4,
+            Self::ConflictingPrimaryFacts => 5,
+            Self::NeedsDynamicLambdaPersistence => 6,
+            Self::ContractError => 255,
+            Self::Unknown => 254,
+        }
+    }
+}
+
+/// Storage-derived facts used to classify a duplicate PBFT finalization.
+///
+/// The facts intentionally describe durable storage only. They do not claim
+/// whether C++ live side effects such as DAG manager mutation, transaction
+/// sidecars, timers, or period advancement completed, because those do not yet
+/// have a durable Rust-owned cursor.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PbftFinalizationResumeFact {
+    /// Whether PBFT block-to-period storage says this block was already persisted.
+    pub block_in_chain: bool,
+    /// Finalized PBFT block period.
+    pub block_period: u64,
+    /// Highest FinalChain block durably finalized.
+    pub final_chain_last_block: u64,
+    /// Whether the PBFT block hash maps to the expected period.
+    pub pbft_period_mapping_matches: bool,
+    /// Whether the period-data row exists and matches the expected canonical RLP.
+    pub period_data_matches: bool,
+    /// Whether all planned DAG finalized-position indexes exist with expected values.
+    pub dag_positions_match: bool,
+    /// Whether all planned transaction finalized-location indexes exist with expected values.
+    pub transaction_positions_match: bool,
+    /// Whether any required primary finalized-period fact is missing.
+    pub missing_primary_facts: bool,
+    /// Whether any immutable finalized-period fact conflicts with expected values.
+    pub conflicting_primary_facts: bool,
+    /// Whether dynamic-lambda persistence is required for this block.
+    pub dynamic_lambda_required: bool,
+    /// Whether required dynamic-lambda period state already matches storage.
+    pub dynamic_lambda_persisted: bool,
+    /// Whether executed PBFT status already matches the expected value.
+    pub executed_status_persisted: bool,
+}
+
+/// Rust classification for an already-persisted PBFT finalization candidate.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftFinalizationResumePlan {
+    /// Stable resume status.
+    pub status: PbftFinalizationResumeStatus,
+    /// True when the duplicate path should not be treated as a blind duplicate.
+    pub duplicate_classified: bool,
+    /// True when durable state is complete and no replay is needed.
+    pub complete: bool,
+    /// Ordered durable replay actions that are safe to reason about from storage facts.
+    pub replay_actions: Vec<PbftFinalizationRuntimeAction>,
+    /// Stable bridge-visible error code for non-complete classifications.
+    pub error_code: String,
+}
+
 /// Runtime executor state status for the PBFT finalization action script.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum PbftFinalizationRuntimeStatus {
@@ -906,6 +995,98 @@ pub fn report_pbft_finalization_runtime_action(
     state
 }
 
+/// Classifies durable PBFT finalization state for an already-persisted block.
+///
+/// This planner is deliberately separate from normal finalization admission:
+/// `plan_pbft_finalization_intent` still rejects `block_in_chain=true`, while
+/// this function inspects storage-derived facts for duplicate/restart paths.
+/// It only returns actions whose need can be inferred from durable state. Live
+/// DAG, transaction, vote, timer, and period-reset replay remain explicit debt
+/// until those side effects have Rust-owned durable cursors.
+pub fn plan_pbft_finalization_resume(
+    fact: PbftFinalizationResumeFact,
+) -> PbftFinalizationResumePlan {
+    if !fact.block_in_chain {
+        return PbftFinalizationResumePlan {
+            status: PbftFinalizationResumeStatus::NotPersisted,
+            duplicate_classified: false,
+            complete: false,
+            replay_actions: Vec::new(),
+            error_code: "PBFT_FINALIZE_RESUME_NOT_PERSISTED".to_string(),
+        };
+    }
+
+    if fact.conflicting_primary_facts {
+        return PbftFinalizationResumePlan {
+            status: PbftFinalizationResumeStatus::ConflictingPrimaryFacts,
+            duplicate_classified: true,
+            complete: false,
+            replay_actions: Vec::new(),
+            error_code: "PBFT_FINALIZE_RESUME_CONFLICTING_PRIMARY_FACTS".to_string(),
+        };
+    }
+
+    let primary_complete = fact.pbft_period_mapping_matches
+        && fact.period_data_matches
+        && fact.dag_positions_match
+        && fact.transaction_positions_match
+        && !fact.missing_primary_facts;
+    if !primary_complete {
+        return PbftFinalizationResumePlan {
+            status: PbftFinalizationResumeStatus::MissingPrimaryFacts,
+            duplicate_classified: true,
+            complete: false,
+            replay_actions: Vec::new(),
+            error_code: "PBFT_FINALIZE_RESUME_MISSING_PRIMARY_FACTS".to_string(),
+        };
+    }
+
+    if fact.dynamic_lambda_required && !fact.dynamic_lambda_persisted {
+        return PbftFinalizationResumePlan {
+            status: PbftFinalizationResumeStatus::NeedsDynamicLambdaPersistence,
+            duplicate_classified: true,
+            complete: false,
+            replay_actions: vec![PbftFinalizationRuntimeAction::ApplyDynamicLambda],
+            error_code: "PBFT_FINALIZE_RESUME_NEEDS_DYNAMIC_LAMBDA".to_string(),
+        };
+    }
+
+    if fact.final_chain_last_block < fact.block_period {
+        let mut replay_actions = Vec::new();
+        replay_actions.push(PbftFinalizationRuntimeAction::FinalizeFinalChain);
+        if !fact.executed_status_persisted {
+            replay_actions.push(PbftFinalizationRuntimeAction::PersistExecutedStatus);
+        }
+        replay_actions.push(PbftFinalizationRuntimeAction::SetExecutedFlag);
+        replay_actions.push(PbftFinalizationRuntimeAction::AdvancePeriod);
+        return PbftFinalizationResumePlan {
+            status: PbftFinalizationResumeStatus::NeedsFinalChainReplay,
+            duplicate_classified: true,
+            complete: false,
+            replay_actions,
+            error_code: "PBFT_FINALIZE_RESUME_NEEDS_FINAL_CHAIN_REPLAY".to_string(),
+        };
+    }
+
+    if !fact.executed_status_persisted {
+        return PbftFinalizationResumePlan {
+            status: PbftFinalizationResumeStatus::NeedsExecutedStatusPersistence,
+            duplicate_classified: true,
+            complete: false,
+            replay_actions: vec![PbftFinalizationRuntimeAction::PersistExecutedStatus],
+            error_code: "PBFT_FINALIZE_RESUME_NEEDS_EXECUTED_STATUS".to_string(),
+        };
+    }
+
+    PbftFinalizationResumePlan {
+        status: PbftFinalizationResumeStatus::Complete,
+        duplicate_classified: true,
+        complete: true,
+        replay_actions: Vec::new(),
+        error_code: String::new(),
+    }
+}
+
 /// Computes the block lambda and post-finalization dynamic-lambda state.
 ///
 /// This is the Rust source of truth for the Cacti dynamic-lambda algorithm. It
@@ -1188,6 +1369,92 @@ mod tests {
         assert!(!plan.storage_write_intent.persist_period_data);
         assert!(!plan.storage_write_intent.reset_reward_votes);
         assert!(!plan.storage_write_intent.persist_executed_pbft_status);
+    }
+
+    #[test]
+    fn resume_classifier_distinguishes_complete_replay_and_corrupt_storage() {
+        let complete = PbftFinalizationResumeFact {
+            block_in_chain: true,
+            block_period: 10,
+            final_chain_last_block: 10,
+            pbft_period_mapping_matches: true,
+            period_data_matches: true,
+            dag_positions_match: true,
+            transaction_positions_match: true,
+            missing_primary_facts: false,
+            conflicting_primary_facts: false,
+            dynamic_lambda_required: true,
+            dynamic_lambda_persisted: true,
+            executed_status_persisted: true,
+        };
+        let plan = plan_pbft_finalization_resume(complete);
+        assert_eq!(plan.status, PbftFinalizationResumeStatus::Complete);
+        assert!(plan.complete);
+        assert!(plan.replay_actions.is_empty());
+
+        let mut needs_final_chain = complete;
+        needs_final_chain.final_chain_last_block = 9;
+        needs_final_chain.executed_status_persisted = false;
+        let plan = plan_pbft_finalization_resume(needs_final_chain);
+        assert_eq!(
+            plan.status,
+            PbftFinalizationResumeStatus::NeedsFinalChainReplay
+        );
+        assert_eq!(
+            plan.replay_actions,
+            vec![
+                PbftFinalizationRuntimeAction::FinalizeFinalChain,
+                PbftFinalizationRuntimeAction::PersistExecutedStatus,
+                PbftFinalizationRuntimeAction::SetExecutedFlag,
+                PbftFinalizationRuntimeAction::AdvancePeriod,
+            ]
+        );
+
+        let mut missing = complete;
+        missing.period_data_matches = false;
+        missing.missing_primary_facts = true;
+        let plan = plan_pbft_finalization_resume(missing);
+        assert_eq!(
+            plan.status,
+            PbftFinalizationResumeStatus::MissingPrimaryFacts
+        );
+        assert!(plan.replay_actions.is_empty());
+
+        let mut conflicting = complete;
+        conflicting.conflicting_primary_facts = true;
+        let plan = plan_pbft_finalization_resume(conflicting);
+        assert_eq!(
+            plan.status,
+            PbftFinalizationResumeStatus::ConflictingPrimaryFacts
+        );
+        assert!(plan.replay_actions.is_empty());
+    }
+
+    #[test]
+    fn resume_classifier_requires_dynamic_lambda_before_final_chain_replay() {
+        let plan = plan_pbft_finalization_resume(PbftFinalizationResumeFact {
+            block_in_chain: true,
+            block_period: 10,
+            final_chain_last_block: 9,
+            pbft_period_mapping_matches: true,
+            period_data_matches: true,
+            dag_positions_match: true,
+            transaction_positions_match: true,
+            missing_primary_facts: false,
+            conflicting_primary_facts: false,
+            dynamic_lambda_required: true,
+            dynamic_lambda_persisted: false,
+            executed_status_persisted: false,
+        });
+
+        assert_eq!(
+            plan.status,
+            PbftFinalizationResumeStatus::NeedsDynamicLambdaPersistence
+        );
+        assert_eq!(
+            plan.replay_actions,
+            vec![PbftFinalizationRuntimeAction::ApplyDynamicLambda]
+        );
     }
 
     #[test]
