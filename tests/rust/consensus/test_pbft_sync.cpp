@@ -63,6 +63,7 @@ constexpr uint8_t kPbftFinalizationRuntimeActionFinalizeFinalChain = 9;
 constexpr uint8_t kPbftFinalizationRuntimeActionPersistExecutedStatus = 10;
 constexpr uint8_t kPbftFinalizationRuntimeActionSetExecutedFlag = 11;
 constexpr uint8_t kPbftFinalizationRuntimeActionAdvancePeriod = 12;
+constexpr uint8_t kPbftFinalizationRuntimeActionCommitSortitionRuntime = 14;
 constexpr uint8_t kPbftFinalizationRuntimeStatusActive = 0;
 constexpr uint8_t kPbftFinalizationRuntimeStatusComplete = 1;
 constexpr uint8_t kPbftFinalizationRuntimeStatusActionMismatch = 3;
@@ -522,6 +523,7 @@ TEST(RustPbftSyncTest, FinalizationRuntimePlanOrdersMixedExecutorActions) {
   const std::vector<uint8_t> actions(runtime.actions.begin(), runtime.actions.end());
   EXPECT_EQ(actions, (std::vector<uint8_t>{
                          kPbftFinalizationRuntimeActionPrimaryStorage,
+                         kPbftFinalizationRuntimeActionCommitSortitionRuntime,
                          kPbftFinalizationRuntimeActionCommitRewardReset,
                          kPbftFinalizationRuntimeActionSetDagOrder,
                          kPbftFinalizationRuntimeActionUpdateTransactions,
@@ -563,6 +565,7 @@ TEST(RustPbftSyncTest, FinalizationRuntimeSessionOwnsCursorAndCompletion) {
   EXPECT_EQ(step.status, kPbftFinalizationRuntimeStatusComplete);
   EXPECT_EQ(actions, (std::vector<uint8_t>{
                          kPbftFinalizationRuntimeActionPrimaryStorage,
+                         kPbftFinalizationRuntimeActionCommitSortitionRuntime,
                          kPbftFinalizationRuntimeActionCommitRewardReset,
                          kPbftFinalizationRuntimeActionSetDagOrder,
                          kPbftFinalizationRuntimeActionUpdateTransactions,

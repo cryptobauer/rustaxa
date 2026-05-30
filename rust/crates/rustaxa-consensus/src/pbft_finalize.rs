@@ -156,6 +156,8 @@ pub enum PbftFinalizationRuntimeAction {
     AdvancePeriod,
     /// Terminal marker reserved for future fully Rust-owned runtimes.
     Complete,
+    /// Commit the live sortition runtime after primary storage has succeeded.
+    CommitSortitionRuntime,
 }
 
 impl PbftFinalizationRuntimeAction {
@@ -176,6 +178,7 @@ impl PbftFinalizationRuntimeAction {
             Self::SetExecutedFlag => 11,
             Self::AdvancePeriod => 12,
             Self::Complete => 13,
+            Self::CommitSortitionRuntime => 14,
         }
     }
 
@@ -196,6 +199,7 @@ impl PbftFinalizationRuntimeAction {
             11 => Some(Self::SetExecutedFlag),
             12 => Some(Self::AdvancePeriod),
             13 => Some(Self::Complete),
+            14 => Some(Self::CommitSortitionRuntime),
             _ => None,
         }
     }
@@ -245,6 +249,10 @@ pub enum PbftFinalizationLiveMutationStatus {
     RewardVotesMetadataMismatch,
     /// Stale extra reward votes were not cleared after the reset metadata commit.
     RewardVotesExtraVotesNotCleared,
+    /// Sortition emitted change facts do not match the finalized period contract.
+    SortitionChangeMismatch,
+    /// Sortition post-commit live state does not match the emitted change.
+    SortitionLiveStateMismatch,
     /// The report carried an unknown action code.
     UnknownAction,
 }
@@ -266,6 +274,8 @@ impl PbftFinalizationLiveMutationStatus {
             Self::PbftChainAnchorMismatch => 10,
             Self::RewardVotesMetadataMismatch => 11,
             Self::RewardVotesExtraVotesNotCleared => 12,
+            Self::SortitionChangeMismatch => 13,
+            Self::SortitionLiveStateMismatch => 14,
             Self::UnknownAction => 255,
         }
     }
@@ -304,6 +314,18 @@ pub struct PbftFinalizationLiveMutationReport {
     pub reward_votes_block_hash: H256,
     /// Number of stale extra reward-vote sidecars remaining after live reset.
     pub reward_votes_extra_count: u64,
+    /// Whether the committed sortition update emitted a persisted parameter change.
+    pub sortition_changed: bool,
+    /// Sortition change period emitted by the live runtime.
+    pub sortition_change_period: u64,
+    /// Sortition interval efficiency emitted by the live runtime.
+    pub sortition_change_interval_efficiency: u16,
+    /// Sortition threshold upper emitted by the live runtime.
+    pub sortition_change_threshold_upper: u16,
+    /// Current live sortition threshold after the commit.
+    pub sortition_current_threshold_upper: u16,
+    /// Number of cached live sortition parameter changes after the commit.
+    pub sortition_params_changes_count: u64,
 }
 
 /// Result of validating one PBFT finalization live-mutation report.
@@ -909,6 +931,9 @@ pub fn plan_pbft_finalization_runtime(plan: &PbftFinalizationPlan) -> PbftFinali
     {
         actions.push(PbftFinalizationRuntimeAction::ApplyPrimaryStorage);
     }
+    if plan.cleanup.update_sortition_params {
+        actions.push(PbftFinalizationRuntimeAction::CommitSortitionRuntime);
+    }
     if plan.cleanup.reset_reward_votes {
         actions.push(PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime);
     }
@@ -1195,6 +1220,7 @@ pub fn validate_pbft_finalization_live_mutation_report(
     if !matches!(
         report.action,
         PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime
+            | PbftFinalizationRuntimeAction::CommitSortitionRuntime
             | PbftFinalizationRuntimeAction::SetDagBlockOrder
             | PbftFinalizationRuntimeAction::UpdateFinalizedTransactions
             | PbftFinalizationRuntimeAction::UpdatePbftChain
@@ -1240,6 +1266,25 @@ pub fn validate_pbft_finalization_live_mutation_report(
                 return reject(
                     PbftFinalizationLiveMutationStatus::RewardVotesExtraVotesNotCleared,
                     "PBFT_FINALIZE_LIVE_MUTATION_REWARD_VOTES_EXTRA_NOT_CLEARED",
+                );
+            }
+        }
+        PbftFinalizationRuntimeAction::CommitSortitionRuntime => {
+            if report.sortition_changed
+                && report.sortition_change_period != plan.storage_write_intent.block_period
+            {
+                return reject(
+                    PbftFinalizationLiveMutationStatus::SortitionChangeMismatch,
+                    "PBFT_FINALIZE_LIVE_MUTATION_SORTITION_CHANGE_MISMATCH",
+                );
+            }
+            if report.sortition_changed
+                && report.sortition_current_threshold_upper
+                    != report.sortition_change_threshold_upper
+            {
+                return reject(
+                    PbftFinalizationLiveMutationStatus::SortitionLiveStateMismatch,
+                    "PBFT_FINALIZE_LIVE_MUTATION_SORTITION_STATE_MISMATCH",
                 );
             }
         }
@@ -1592,6 +1637,12 @@ mod tests {
             reward_votes_round: 2,
             reward_votes_block_hash: hash(99),
             reward_votes_extra_count: 0,
+            sortition_changed: false,
+            sortition_change_period: 0,
+            sortition_change_interval_efficiency: 0,
+            sortition_change_threshold_upper: 0,
+            sortition_current_threshold_upper: 0,
+            sortition_params_changes_count: 0,
         }
     }
 
@@ -1973,6 +2024,7 @@ mod tests {
             runtime.actions,
             vec![
                 PbftFinalizationRuntimeAction::ApplyPrimaryStorage,
+                PbftFinalizationRuntimeAction::CommitSortitionRuntime,
                 PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
                 PbftFinalizationRuntimeAction::SetDagBlockOrder,
                 PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
@@ -2015,7 +2067,7 @@ mod tests {
         assert_eq!(step.runtime_status, PbftFinalizationRuntimeStatus::Active);
         assert_eq!(
             step.action,
-            Some(PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime)
+            Some(PbftFinalizationRuntimeAction::CommitSortitionRuntime)
         );
         assert_eq!(step.action_index, 1);
     }
@@ -2103,6 +2155,20 @@ mod tests {
         );
         assert!(reward_votes.accepted);
 
+        let sortition = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            PbftFinalizationLiveMutationReport {
+                sortition_changed: true,
+                sortition_change_period: 10,
+                sortition_change_interval_efficiency: 2_500,
+                sortition_change_threshold_upper: 1_300,
+                sortition_current_threshold_upper: 1_300,
+                sortition_params_changes_count: 2,
+                ..live_report(PbftFinalizationRuntimeAction::CommitSortitionRuntime)
+            },
+        );
+        assert!(sortition.accepted);
+
         let transactions = validate_pbft_finalization_live_mutation_report(
             &plan,
             PbftFinalizationLiveMutationReport {
@@ -2176,6 +2242,21 @@ mod tests {
         assert_eq!(
             reward_votes.status,
             PbftFinalizationLiveMutationStatus::RewardVotesExtraVotesNotCleared
+        );
+
+        let sortition = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            PbftFinalizationLiveMutationReport {
+                sortition_changed: true,
+                sortition_change_period: 11,
+                sortition_change_threshold_upper: 1_300,
+                sortition_current_threshold_upper: 1_300,
+                ..live_report(PbftFinalizationRuntimeAction::CommitSortitionRuntime)
+            },
+        );
+        assert_eq!(
+            sortition.status,
+            PbftFinalizationLiveMutationStatus::SortitionChangeMismatch
         );
     }
 

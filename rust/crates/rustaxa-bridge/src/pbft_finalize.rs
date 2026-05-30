@@ -1707,6 +1707,12 @@ impl From<FfiPbftFinalizationLiveMutationReport> for PbftFinalizationLiveMutatio
             reward_votes_round: value.reward_votes_round,
             reward_votes_block_hash: H256::from(value.reward_votes_block_hash),
             reward_votes_extra_count: value.reward_votes_extra_count,
+            sortition_changed: value.sortition_changed,
+            sortition_change_period: value.sortition_change_period,
+            sortition_change_interval_efficiency: value.sortition_change_interval_efficiency,
+            sortition_change_threshold_upper: value.sortition_change_threshold_upper,
+            sortition_current_threshold_upper: value.sortition_current_threshold_upper,
+            sortition_params_changes_count: value.sortition_params_changes_count,
         }
     }
 }
@@ -1913,7 +1919,10 @@ mod tests {
 
         assert!(runtime.finalize_block);
         assert_eq!(runtime.status, PbftFinalizationStatus::Accepted.as_u8());
-        assert_eq!(runtime.actions, vec![0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        assert_eq!(
+            runtime.actions,
+            vec![0, 14, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        );
         assert!(runtime.error_code.is_empty());
     }
 
@@ -1932,7 +1941,7 @@ mod tests {
         let step = pbft_finalization_runtime_session_report(&mut session, 0, 0, true, 0);
         assert_eq!(step.status, RUNTIME_STATUS_ACTIVE);
         assert_eq!(step.cursor, 1);
-        assert_eq!(step.action, 3);
+        assert_eq!(step.action, 14);
 
         let mut cursor = step.cursor;
         let mut action = step.action;
@@ -2007,6 +2016,12 @@ mod tests {
                 reward_votes_round: 2,
                 reward_votes_block_hash: [7; 32],
                 reward_votes_extra_count: 0,
+                sortition_changed: false,
+                sortition_change_period: 0,
+                sortition_change_interval_efficiency: 0,
+                sortition_change_threshold_upper: 0,
+                sortition_current_threshold_upper: 0,
+                sortition_params_changes_count: 0,
             },
         );
         assert!(accepted.accepted);
@@ -2028,6 +2043,12 @@ mod tests {
                 reward_votes_round: 2,
                 reward_votes_block_hash: [7; 32],
                 reward_votes_extra_count: 0,
+                sortition_changed: false,
+                sortition_change_period: 0,
+                sortition_change_interval_efficiency: 0,
+                sortition_change_threshold_upper: 0,
+                sortition_current_threshold_upper: 0,
+                sortition_params_changes_count: 0,
             },
         );
         assert!(!rejected.accepted);
@@ -2049,6 +2070,12 @@ mod tests {
                 reward_votes_round: 2,
                 reward_votes_block_hash: [7; 32],
                 reward_votes_extra_count: 1,
+                sortition_changed: false,
+                sortition_change_period: 0,
+                sortition_change_interval_efficiency: 0,
+                sortition_change_threshold_upper: 0,
+                sortition_current_threshold_upper: 0,
+                sortition_params_changes_count: 0,
             },
         );
         assert!(!reward_rejected.accepted);

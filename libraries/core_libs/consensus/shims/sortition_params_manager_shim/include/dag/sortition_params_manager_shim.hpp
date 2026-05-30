@@ -72,6 +72,46 @@ class SortitionParamsManager {
                                                                      PbftPeriod non_empty_pbft_chain_size);
 
   /**
+   * Preview a PBFT-finalization sortition update without mutating live Rust state.
+   *
+   * Inputs:
+   * - Finalized period data and the post-finalization non-empty PBFT-chain size.
+   *
+   * Outputs:
+   * - Optional sortition parameter change that must be persisted in the primary
+   *   PBFT finalization batch before the live sortition runtime is committed.
+   *
+   * Invariants and edge behavior:
+   * - Does not publish threshold/counter changes to live callers.
+   * - Throws on malformed efficiency facts before storage stages are built.
+   */
+  std::optional<SortitionParamsChange> prepareBlockForSortitionFinalization(
+      const PeriodData& block, PbftPeriod non_empty_pbft_chain_size);
+
+  /**
+   * Commit a previously previewed PBFT-finalization sortition update.
+   *
+   * Inputs:
+   * - The same finalized period data and post-finalization non-empty PBFT-chain
+   *   size used for the preview.
+   * - The optional previewed change that was included in the committed primary
+   *   finalization storage batch.
+   * - The Rust-planned PBFT finalization write intent used for live proof identity.
+   *
+   * Outputs:
+   * - A Rust-verifiable PBFT finalization live-mutation report.
+   *
+   * Invariants and edge behavior:
+   * - Mutates live sortition state only after the caller has committed primary
+   *   finalization storage.
+   * - Throws if the live Rust transition diverges from the previewed change.
+   */
+  rustaxa::PbftFinalizationLiveMutationReport commitPreparedBlockForSortitionFinalization(
+      const PeriodData& block, PbftPeriod non_empty_pbft_chain_size,
+      const std::optional<SortitionParamsChange>& prepared_change,
+      const rustaxa::PbftFinalizationStorageWritePlan& write_intent);
+
+  /**
    * Returns the current interval average DAG efficiency.
    */
   uint16_t averageDagEfficiency();

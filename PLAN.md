@@ -550,11 +550,15 @@ The current Rust starting point is intentionally small:
    telemetry flags. The PBFT overlay consumes those Rust outputs and no longer calls the C++ dynamic-lambda adjustment
    routine from the Rust-mode finalization path. Rust now also owns a finalization runtime session cursor: the overlay
    asks Rust for each action, executes the temporary C++ live effect, and reports success/failure back before Rust
-   advances the session. Reward-vote reset metadata commit, DAG finalized-order mutation, transaction finalized-status
-   sidecar cleanup, and PBFT-chain live head updates now run behind shim-owned executors that return structured
-   post-state proofs back to Rust before the cursor advances: Rust validates the finalized DAG count, finalized
-   transaction count, finalized period, PBFT block hash, anchor hash, reward-vote period/round/block metadata, stale
-   extra-reward-vote cleanup, PBFT-chain size, and PBFT-chain head/anchor state against the accepted finalization plan.
+   advances the session. PBFT finalization sortition update is now two-phase: the sortition shim previews the Rust
+   threshold transition without mutating live state, the emitted change is included in the existing primary finalization
+   storage batch, and only after that batch commits does the shim commit live sortition runtime state and report the
+   action back to the Rust cursor. Reward-vote reset metadata commit, DAG finalized-order mutation, transaction
+   finalized-status sidecar cleanup, sortition runtime commit, and PBFT-chain live head updates now run behind shim-owned
+   executors that return structured post-state proofs back to Rust before the cursor advances: Rust validates the
+   finalized DAG count, finalized transaction count, finalized period, PBFT block hash, anchor hash, reward-vote
+   period/round/block metadata, stale extra-reward-vote cleanup, sortition change period/current-threshold facts,
+   PBFT-chain size, and PBFT-chain head/anchor state against the accepted finalization plan.
    The bridge also exposes a storage-backed PBFT
    finalization resume classifier for duplicate or
    restart-adjacent blocks: Rust inspects the durable hash-to-period, period-data, finalized DAG/transaction indexes,
@@ -565,8 +569,9 @@ The current Rust starting point is intentionally small:
    one period behind, the overlay replays FinalChain finalization, persists executed status through Rust, sets the live
    executed flag, advances the PBFT period, and reports each action back to Rust before the cursor advances. Dynamic
    lambda gaps, missing/conflicting primary facts, and complete duplicates remain explicit no-replay paths. This
-   classifier/session does not yet replay ambiguous C++ live side effects because timers, reward metadata, sortition live
-   state, pillar post-processing, and broader startup recovery still lack durable Rust-owned replay contracts. The
+   classifier/session does not yet replay ambiguous C++ live side effects because timers, reward metadata, sortition
+   live-state replay after duplicate admission, pillar post-processing, and broader startup recovery still lack durable
+   Rust-owned replay contracts. The
    Rust-mode `VoteManager` overlay now uses the
    approved temporary protected-state hook to inherit unported behavior from `VoteManagerOld` while owning reward-vote
    reset persistence handoff in shim code: it selects the live cert-vote bundle in C++, passes the stage-4 Rust storage
@@ -577,10 +582,10 @@ The current Rust starting point is intentionally small:
    current round persistence of non-cert bundles, and network t+1 step reads use Rust-owned metadata while C++ keeps
    live `PbftVote` sidecars, slashing submission, threshold lookup, DB writes, and reward/own-vote persistence. Rust now
    also owns PBFT finalization
-   sortition-change persistence: the sortition shim updates the live Rust runtime and returns the emitted threshold
-   change, then the PBFT staged storage appender encodes and appends the `SortitionParamsChange` row into the same
-   primary finalization batch. C++ still owns sortition live-state mutation, dynamic-lambda live-field assignment from
-   Rust output, FinalChain dispatch, and live PBFT runtime mutation until those sidecar APIs move across the bridge.
+   sortition-change persistence: the sortition shim now previews the live Rust runtime transition, returns the emitted
+   threshold change for storage staging, and commits the same transition only after the PBFT staged storage appender has
+   committed the primary batch. C++ still owns dynamic-lambda live-field assignment from Rust output, FinalChain
+   dispatch, and live PBFT runtime mutation until those sidecar APIs move across the bridge.
    Reward-vote reset live metadata is still physically mutated in the vote-manager shim, but the action is now an
    explicit Rust-validated executor report instead of an unproved PBFT-manager side effect. The full Rust-mode
    `PillarChainManager` overlay now keeps original pillar

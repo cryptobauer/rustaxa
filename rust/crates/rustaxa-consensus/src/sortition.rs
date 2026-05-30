@@ -324,6 +324,22 @@ impl SortitionParamsManager {
         Ok(None)
     }
 
+    /// Previews one finalized PBFT block efficiency sample without mutating runtime state.
+    ///
+    /// Inputs and outputs match `record_finalized_period`, but all counter,
+    /// threshold, and parameter-change mutations are applied only to a cloned
+    /// runtime. PBFT finalization uses this to build the durable storage stage
+    /// before committing live sortition state after the primary batch succeeds.
+    pub fn preview_finalized_period(
+        &self,
+        period: u64,
+        dag_efficiency: Option<u16>,
+        non_empty_pbft_chain_size: u64,
+    ) -> Result<Option<SortitionParamsChange>> {
+        let mut preview = self.clone();
+        preview.record_finalized_period(period, dag_efficiency, non_empty_pbft_chain_size)
+    }
+
     /// Restores one already-finalized non-empty PBFT block into the current efficiency window.
     ///
     /// Recovery never emits parameter changes because persisted changes are
@@ -771,5 +787,32 @@ mod tests {
             manager.current_params().vrf.threshold_upper,
             change.threshold_upper
         );
+    }
+
+    #[test]
+    fn runtime_manager_preview_does_not_mutate_until_recorded() {
+        let (mut manager, _) =
+            SortitionParamsManager::from_persisted_rlp(runtime_cfg(), Vec::new()).unwrap();
+
+        let preview = manager
+            .preview_finalized_period(10, Some(25 * ONE_PERCENT), 1)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(preview.period, 10);
+        assert_eq!(manager.current_params().vrf.threshold_upper, 10_000);
+        assert_eq!(manager.params_changes().len(), 1);
+
+        let committed = manager
+            .record_finalized_period(10, Some(25 * ONE_PERCENT), 1)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(committed, preview);
+        assert_eq!(
+            manager.current_params().vrf.threshold_upper,
+            committed.threshold_upper
+        );
+        assert_eq!(manager.params_changes().len(), 2);
     }
 }

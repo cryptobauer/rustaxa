@@ -72,6 +72,7 @@ constexpr uint8_t kPbftFinalizationRuntimeActionFinalizeFinalChain = 9;
 constexpr uint8_t kPbftFinalizationRuntimeActionPersistExecutedStatus = 10;
 constexpr uint8_t kPbftFinalizationRuntimeActionSetExecutedFlag = 11;
 constexpr uint8_t kPbftFinalizationRuntimeActionAdvancePeriod = 12;
+constexpr uint8_t kPbftFinalizationRuntimeActionCommitSortitionRuntime = 14;
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t &hash) { return hash.asArray(); }
 
@@ -2594,11 +2595,14 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
   }
 
   // pass pbft with dag blocks and transactions to adjust difficulty
+  std::optional<SortitionParamsChange> prepared_sortition_params_change;
+  bool should_commit_sortition_runtime = false;
   if (finalization_plan.storage_write_intent.update_sortition_params) {
-    auto sortition_params_change = dag_mgr_->sortitionParamsManager().applyBlockForSortitionRuntime(
+    prepared_sortition_params_change = dag_mgr_->sortitionParamsManager().prepareBlockForSortitionFinalization(
         period_data, pbft_chain_->getPbftChainSizeExcludingEmptyPbftBlocks() + 1);
-    if (sortition_params_change.has_value()) {
-      first_persistence_stages.push_back(makeSortitionFinalizationStorageStage(*sortition_params_change));
+    should_commit_sortition_runtime = true;
+    if (prepared_sortition_params_change.has_value()) {
+      first_persistence_stages.push_back(makeSortitionFinalizationStorageStage(*prepared_sortition_params_change));
     }
   }
 
@@ -2628,6 +2632,24 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
     if (!report_runtime_action(runtime_step, true, primary_storage_result.status)) {
       return false;
+    }
+    if (should_commit_sortition_runtime) {
+      if (!begin_runtime_action(kPbftFinalizationRuntimeActionCommitSortitionRuntime, runtime_step)) {
+        return false;
+      }
+      const auto sortition_report = dag_mgr_->sortitionParamsManager().commitPreparedBlockForSortitionFinalization(
+          period_data, pbft_chain_->getPbftChainSizeExcludingEmptyPbftBlocks() + 1, prepared_sortition_params_change,
+          finalization_plan.storage_write_intent);
+      const auto live_validation = validate_live_mutation(sortition_report);
+      if (!live_validation.accepted) {
+        LOG(log_er_) << "Rust PBFT finalization sortition live mutation rejected for block " << pbft_block_hash
+                     << ", period " << block_pbft_period << ", status " << static_cast<uint32_t>(live_validation.status)
+                     << ", error " << static_cast<std::string>(live_validation.error_code);
+      }
+      if (!report_runtime_action_detail(runtime_step, live_validation.accepted, live_validation.status,
+                                        static_cast<std::string>(live_validation.error_code))) {
+        return false;
+      }
     }
     if (should_commit_reward_vote_metadata) {
       if (!begin_runtime_action(kPbftFinalizationRuntimeActionCommitRewardVotesReset, runtime_step)) {

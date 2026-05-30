@@ -783,6 +783,12 @@ pub mod rustaxa_ffi {
         reward_votes_round: u64,
         reward_votes_block_hash: [u8; 32],
         reward_votes_extra_count: u64,
+        sortition_changed: bool,
+        sortition_change_period: u64,
+        sortition_change_interval_efficiency: u16,
+        sortition_change_threshold_upper: u16,
+        sortition_current_threshold_upper: u16,
+        sortition_params_changes_count: u64,
     }
 
     /// Result of validating a live PBFT finalization mutation report in Rust.
@@ -3513,6 +3519,24 @@ pub mod rustaxa_ffi {
             unique_transactions: u64,
             total_dag_transaction_refs: u64,
             non_empty_pbft_chain_size: u64,
+        ) -> Result<SortitionParamsChangeResult>;
+        pub fn sortition_preview_finalized_period(
+            self: &BridgeSortitionParamsManager,
+            period: u64,
+            has_pivot: bool,
+            unique_transactions: u64,
+            total_dag_transaction_refs: u64,
+            non_empty_pbft_chain_size: u64,
+        ) -> Result<SortitionParamsChangeResult>;
+        pub fn sortition_commit_finalized_period(
+            self: &mut BridgeSortitionParamsManager,
+            period: u64,
+            has_pivot: bool,
+            unique_transactions: u64,
+            total_dag_transaction_refs: u64,
+            non_empty_pbft_chain_size: u64,
+            expected_changed: bool,
+            expected_change: SortitionParamsChangePayload,
         ) -> Result<SortitionParamsChangeResult>;
         pub fn sortition_average_dag_efficiency(self: &BridgeSortitionParamsManager)
             -> Result<u16>;

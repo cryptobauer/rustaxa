@@ -8,6 +8,8 @@
 namespace taraxa {
 namespace {
 
+constexpr uint8_t kPbftFinalizationRuntimeActionCommitSortitionRuntime = 14;
+
 struct PeriodEfficiencyCounts {
   bool has_pivot = false;
   uint64_t unique_transactions = 0;
@@ -85,6 +87,24 @@ PeriodEfficiencyCounts period_efficiency_counts(const PeriodData& block) {
     counts.total_dag_transaction_refs += dag_block->getTrxs().size();
   }
   return counts;
+}
+
+rustaxa::PbftFinalizationLiveMutationReport makeSortitionFinalizationLiveReport(
+    const rustaxa::PbftFinalizationStorageWritePlan& write_intent,
+    const rustaxa::SortitionParamsChangeResult& outcome, uint16_t current_threshold_upper,
+    uint64_t params_changes_count) {
+  rustaxa::PbftFinalizationLiveMutationReport report{};
+  report.action = kPbftFinalizationRuntimeActionCommitSortitionRuntime;
+  report.block_period = write_intent.block_period;
+  report.pbft_block_hash = write_intent.pbft_block_hash;
+  report.anchor_hash = write_intent.anchor_hash;
+  report.sortition_changed = outcome.changed;
+  report.sortition_change_period = outcome.period;
+  report.sortition_change_interval_efficiency = outcome.interval_efficiency;
+  report.sortition_change_threshold_upper = outcome.threshold_upper;
+  report.sortition_current_threshold_upper = current_threshold_upper;
+  report.sortition_params_changes_count = params_changes_count;
+  return report;
 }
 
 [[noreturn]] void throw_unimplemented_sortition_api(const char* api_name) {
@@ -176,6 +196,39 @@ std::optional<SortitionParamsChange> SortitionParamsManager::applyBlockForSortit
   params_changes_ = from_rust_changes(rust_sortition_params_manager_.value()->sortition_params_changes());
   apply_rust_params(sortition_config_, rust_sortition_params_manager_.value()->sortition_current_params());
   return params_change;
+}
+
+std::optional<SortitionParamsChange> SortitionParamsManager::prepareBlockForSortitionFinalization(
+    const PeriodData& block, PbftPeriod non_empty_pbft_chain_size) {
+  const auto counts = period_efficiency_counts(block);
+  const auto period = block.pbft_blk->getPeriod();
+  auto outcome = rust_sortition_params_manager_.value()->sortition_preview_finalized_period(
+      period, counts.has_pivot, counts.unique_transactions, counts.total_dag_transaction_refs,
+      non_empty_pbft_chain_size);
+  if (outcome.changed) {
+    return from_rust_change(outcome);
+  }
+  return std::nullopt;
+}
+
+rustaxa::PbftFinalizationLiveMutationReport SortitionParamsManager::commitPreparedBlockForSortitionFinalization(
+    const PeriodData& block, PbftPeriod non_empty_pbft_chain_size,
+    const std::optional<SortitionParamsChange>& prepared_change,
+    const rustaxa::PbftFinalizationStorageWritePlan& write_intent) {
+  const auto counts = period_efficiency_counts(block);
+  const auto period = block.pbft_blk->getPeriod();
+  rustaxa::SortitionParamsChangePayload expected_change{};
+  if (prepared_change.has_value()) {
+    expected_change = to_rust_change(*prepared_change);
+  }
+  auto outcome = rust_sortition_params_manager_.value()->sortition_commit_finalized_period(
+      period, counts.has_pivot, counts.unique_transactions, counts.total_dag_transaction_refs,
+      non_empty_pbft_chain_size, prepared_change.has_value(), expected_change);
+  params_changes_ = from_rust_changes(rust_sortition_params_manager_.value()->sortition_params_changes());
+  const auto current_params = rust_sortition_params_manager_.value()->sortition_current_params();
+  apply_rust_params(sortition_config_, current_params);
+  return makeSortitionFinalizationLiveReport(write_intent, outcome, current_params.threshold_upper,
+                                             params_changes_.size());
 }
 
 uint16_t SortitionParamsManager::averageDagEfficiency() {

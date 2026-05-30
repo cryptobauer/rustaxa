@@ -4,7 +4,7 @@
 //! sortition manager. C++ owns storage and batch persistence; Rust owns runtime
 //! state transitions and returns typed change payloads for C++ to persist.
 
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use rustaxa_consensus::sortition::{
     calculate_dag_efficiency, SortitionConfig, SortitionParams, SortitionParamsChange,
     SortitionParamsManager, VdfParams, VrfParams,
@@ -79,6 +79,24 @@ impl From<SortitionParamsChange> for rustaxa_ffi::SortitionParamsChangeResult {
             threshold_upper: change.threshold_upper,
         }
     }
+}
+
+fn empty_change_result() -> rustaxa_ffi::SortitionParamsChangeResult {
+    rustaxa_ffi::SortitionParamsChangeResult {
+        changed: false,
+        period: 0,
+        interval_efficiency: 0,
+        threshold_upper: 0,
+    }
+}
+
+fn change_result(
+    change: Option<SortitionParamsChange>,
+) -> rustaxa_ffi::SortitionParamsChangeResult {
+    change.map_or_else(
+        empty_change_result,
+        rustaxa_ffi::SortitionParamsChangeResult::from,
+    )
 }
 
 impl BridgeSortitionParamsManager {
@@ -159,15 +177,65 @@ impl BridgeSortitionParamsManager {
             self.0
                 .record_finalized_period(period, dag_efficiency, non_empty_pbft_chain_size)?
         else {
-            return Ok(rustaxa_ffi::SortitionParamsChangeResult {
-                changed: false,
-                period: 0,
-                interval_efficiency: 0,
-                threshold_upper: 0,
-            });
+            return Ok(empty_change_result());
         };
 
         Ok(change.into())
+    }
+
+    /// Previews a finalized-period sortition transition without mutating runtime state.
+    ///
+    /// The returned change, when present, is suitable for inclusion in the PBFT
+    /// primary finalization storage batch. Callers must later commit the same
+    /// transition through `commit_finalized_period` after storage succeeds.
+    pub fn preview_finalized_period(
+        &self,
+        period: u64,
+        has_pivot: bool,
+        unique_transactions: u64,
+        total_dag_transaction_refs: u64,
+        non_empty_pbft_chain_size: u64,
+    ) -> Result<rustaxa_ffi::SortitionParamsChangeResult> {
+        let dag_efficiency = self.efficiency_from_counts(
+            has_pivot,
+            unique_transactions,
+            total_dag_transaction_refs,
+        )?;
+        let change =
+            self.0
+                .preview_finalized_period(period, dag_efficiency, non_empty_pbft_chain_size)?;
+        Ok(change_result(change))
+    }
+
+    /// Commits a finalized-period sortition transition and verifies it matches the preview.
+    ///
+    /// Inputs are the same period facts used by the preview phase plus the
+    /// expected optional change. Any mismatch returns an error before C++ can
+    /// report success to the PBFT finalization runtime cursor.
+    pub fn commit_finalized_period(
+        &mut self,
+        period: u64,
+        has_pivot: bool,
+        unique_transactions: u64,
+        total_dag_transaction_refs: u64,
+        non_empty_pbft_chain_size: u64,
+        expected_changed: bool,
+        expected_change: rustaxa_ffi::SortitionParamsChangePayload,
+    ) -> Result<rustaxa_ffi::SortitionParamsChangeResult> {
+        let expected = expected_changed.then(|| SortitionParamsChange::from(expected_change));
+        let dag_efficiency = self.efficiency_from_counts(
+            has_pivot,
+            unique_transactions,
+            total_dag_transaction_refs,
+        )?;
+        let actual =
+            self.0
+                .record_finalized_period(period, dag_efficiency, non_empty_pbft_chain_size)?;
+        ensure!(
+            actual == expected,
+            "PBFT_FINALIZE_SORTITION_CHANGE_MISMATCH"
+        );
+        Ok(change_result(actual))
     }
 
     /// Returns the average of currently collected DAG efficiency samples.
@@ -251,6 +319,46 @@ impl BridgeSortitionParamsManager {
             unique_transactions,
             total_dag_transaction_refs,
             non_empty_pbft_chain_size,
+        )
+    }
+
+    /// CXX-exported method previewing a finalized period without mutating sortition state.
+    pub fn sortition_preview_finalized_period(
+        &self,
+        period: u64,
+        has_pivot: bool,
+        unique_transactions: u64,
+        total_dag_transaction_refs: u64,
+        non_empty_pbft_chain_size: u64,
+    ) -> Result<rustaxa_ffi::SortitionParamsChangeResult> {
+        self.preview_finalized_period(
+            period,
+            has_pivot,
+            unique_transactions,
+            total_dag_transaction_refs,
+            non_empty_pbft_chain_size,
+        )
+    }
+
+    /// CXX-exported method committing a previously previewed finalized period.
+    pub fn sortition_commit_finalized_period(
+        &mut self,
+        period: u64,
+        has_pivot: bool,
+        unique_transactions: u64,
+        total_dag_transaction_refs: u64,
+        non_empty_pbft_chain_size: u64,
+        expected_changed: bool,
+        expected_change: rustaxa_ffi::SortitionParamsChangePayload,
+    ) -> Result<rustaxa_ffi::SortitionParamsChangeResult> {
+        self.commit_finalized_period(
+            period,
+            has_pivot,
+            unique_transactions,
+            total_dag_transaction_refs,
+            non_empty_pbft_chain_size,
+            expected_changed,
+            expected_change,
         )
     }
 

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <exception>
 
 #include "rustaxa-bridge/ffi.rs.h"
 
@@ -55,6 +56,44 @@ TEST(RustSortitionTest, ManagerEmitsThresholdChangeForInterval) {
   ASSERT_EQ(changes.size(), 2);
   EXPECT_EQ(changes[1].period, 2);
   EXPECT_EQ(changes[1].threshold_upper, second.threshold_upper);
+}
+
+TEST(RustSortitionTest, PreviewDoesNotPublishThresholdUntilCommit) {
+  auto manager = create_sortition_params_manager(runtime_config(), initial_changes());
+
+  auto first_preview = manager->sortition_preview_finalized_period(1, true, 25, 100, 1);
+  EXPECT_FALSE(first_preview.changed);
+  EXPECT_EQ(manager->sortition_current_params().threshold_upper, 2000);
+
+  SortitionParamsChangePayload no_change;
+  auto first_commit = manager->sortition_commit_finalized_period(1, true, 25, 100, 1, false, no_change);
+  EXPECT_FALSE(first_commit.changed);
+
+  auto second_preview = manager->sortition_preview_finalized_period(2, true, 25, 100, 2);
+  ASSERT_TRUE(second_preview.changed);
+  EXPECT_EQ(manager->sortition_current_params().threshold_upper, 2000);
+
+  SortitionParamsChangePayload expected;
+  expected.period = second_preview.period;
+  expected.interval_efficiency = second_preview.interval_efficiency;
+  expected.threshold_upper = second_preview.threshold_upper;
+  auto second_commit = manager->sortition_commit_finalized_period(2, true, 25, 100, 2, true, expected);
+
+  ASSERT_TRUE(second_commit.changed);
+  EXPECT_EQ(second_commit.period, second_preview.period);
+  EXPECT_EQ(manager->sortition_current_params().threshold_upper, second_preview.threshold_upper);
+}
+
+TEST(RustSortitionTest, CommitRejectsPreviewMismatch) {
+  auto manager = create_sortition_params_manager(runtime_config(), initial_changes());
+  auto preview = manager->sortition_preview_finalized_period(1, true, 25, 100, 1);
+  EXPECT_FALSE(preview.changed);
+
+  SortitionParamsChangePayload unexpected;
+  unexpected.period = 1;
+  unexpected.interval_efficiency = 25 * 100;
+  unexpected.threshold_upper = 1234;
+  EXPECT_THROW(manager->sortition_commit_finalized_period(1, true, 25, 100, 1, true, unexpected), std::exception);
 }
 
 TEST(RustSortitionTest, ParamsForPeriodAppliesStorageChangePayload) {
