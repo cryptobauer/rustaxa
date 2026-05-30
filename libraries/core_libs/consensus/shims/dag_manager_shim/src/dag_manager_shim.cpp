@@ -27,6 +27,7 @@ constexpr uint8_t kDagVerifyVdfStatusValid = 1;
 constexpr uint8_t kDagVerifyVdfStatusInvalid = 2;
 constexpr uint8_t kDagVerifyDposStatusNotChecked = 0;
 constexpr uint8_t kDagVerifyDposStatusSnapshotUnavailable = 1;
+constexpr uint8_t kPbftFinalizationRuntimeActionSetDagBlockOrder = 4;
 
 std::array<uint8_t, 32> to_bridge_hash(const blk_hash_t &hash) { return hash.asArray(); }
 
@@ -685,6 +686,20 @@ uint DagManager::setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, v
     throw std::runtime_error(std::string("DagManager: failed to apply finalized DAG order in Rust runtime: ") +
                              e.what());
   }
+}
+
+rustaxa::PbftFinalizationLiveMutationReport DagManager::setDagBlockOrderForPbftFinalization(
+    blk_hash_t const &anchor, PbftPeriod period, vec_blk_t const &dag_order,
+    const rustaxa::PbftFinalizationStorageWritePlan &write_intent) {
+  const auto finalized_count = setDagBlockOrder(anchor, period, dag_order);
+
+  rustaxa::PbftFinalizationLiveMutationReport report{};
+  report.action = kPbftFinalizationRuntimeActionSetDagBlockOrder;
+  report.block_period = write_intent.block_period;
+  report.pbft_block_hash = write_intent.pbft_block_hash;
+  report.anchor_hash = write_intent.anchor_hash;
+  report.dag_finalized_count = finalized_count;
+  return report;
 }
 
 std::optional<std::pair<blk_hash_t, std::vector<blk_hash_t>>> DagManager::getLatestPivotAndTips() const {

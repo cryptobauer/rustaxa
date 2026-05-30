@@ -1703,6 +1703,10 @@ impl From<FfiPbftFinalizationLiveMutationReport> for PbftFinalizationLiveMutatio
             pbft_chain_size: value.pbft_chain_size,
             pbft_chain_head_hash: H256::from(value.pbft_chain_head_hash),
             pbft_chain_last_anchor_hash: H256::from(value.pbft_chain_last_anchor_hash),
+            reward_votes_period: value.reward_votes_period,
+            reward_votes_round: value.reward_votes_round,
+            reward_votes_block_hash: H256::from(value.reward_votes_block_hash),
+            reward_votes_extra_count: value.reward_votes_extra_count,
         }
     }
 }
@@ -1999,6 +2003,10 @@ mod tests {
                 pbft_chain_size: 0,
                 pbft_chain_head_hash: [0; 32],
                 pbft_chain_last_anchor_hash: [0; 32],
+                reward_votes_period: 10,
+                reward_votes_round: 2,
+                reward_votes_block_hash: [7; 32],
+                reward_votes_extra_count: 0,
             },
         );
         assert!(accepted.accepted);
@@ -2016,10 +2024,35 @@ mod tests {
                 pbft_chain_size: 0,
                 pbft_chain_head_hash: [0; 32],
                 pbft_chain_last_anchor_hash: [0; 32],
+                reward_votes_period: 10,
+                reward_votes_round: 2,
+                reward_votes_block_hash: [7; 32],
+                reward_votes_extra_count: 0,
             },
         );
         assert!(!rejected.accepted);
         assert_eq!(rejected.status, LIVE_STATUS_TRANSACTION_COUNT_MISMATCH_TEST);
+
+        let reward_rejected = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            FfiPbftFinalizationLiveMutationReport {
+                action: 3,
+                block_period: 10,
+                pbft_block_hash: [7; 32],
+                anchor_hash: [4; 32],
+                dag_finalized_count: 0,
+                finalized_transaction_count: 0,
+                pbft_chain_size: 0,
+                pbft_chain_head_hash: [0; 32],
+                pbft_chain_last_anchor_hash: [0; 32],
+                reward_votes_period: 10,
+                reward_votes_round: 2,
+                reward_votes_block_hash: [7; 32],
+                reward_votes_extra_count: 1,
+            },
+        );
+        assert!(!reward_rejected.accepted);
+        assert_eq!(reward_rejected.status, 12);
     }
 
     #[test]

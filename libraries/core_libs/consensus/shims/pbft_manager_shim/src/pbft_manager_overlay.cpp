@@ -2567,18 +2567,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
     return true;
   };
-  auto validate_live_mutation = [&](uint8_t action, uint64_t dag_finalized_count,
-                                    uint64_t finalized_transaction_count) {
-    rustaxa::PbftFinalizationLiveMutationReport report;
-    report.action = action;
-    report.block_period = block_pbft_period;
-    report.pbft_block_hash = toBridgeHash(pbft_block_hash);
-    report.anchor_hash = toBridgeHash(period_data.pbft_blk->getPivotDagBlockHash());
-    report.dag_finalized_count = dag_finalized_count;
-    report.finalized_transaction_count = finalized_transaction_count;
-    report.pbft_chain_size = pbft_chain_->getPbftChainSize();
-    report.pbft_chain_head_hash = toBridgeHash(pbft_chain_->getLastPbftBlockHash());
-    report.pbft_chain_last_anchor_hash = toBridgeHash(pbft_chain_->getLastNonNullPbftBlockAnchor());
+  auto validate_live_mutation = [&](const rustaxa::PbftFinalizationLiveMutationReport &report) {
     return rustaxa::validate_pbft_finalization_live_mutation_report(finalization_plan, report);
   };
 
@@ -2644,8 +2633,16 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       if (!begin_runtime_action(kPbftFinalizationRuntimeActionCommitRewardVotesReset, runtime_step)) {
         return false;
       }
-      vote_mgr_->commitRewardVotesResetForFinalization(finalization_plan.storage_write_intent);
-      if (!report_runtime_action(runtime_step, true, 0)) {
+      const auto reward_votes_report =
+          vote_mgr_->commitRewardVotesResetForFinalization(finalization_plan.storage_write_intent);
+      const auto live_validation = validate_live_mutation(reward_votes_report);
+      if (!live_validation.accepted) {
+        LOG(log_er_) << "Rust PBFT finalization reward-vote live mutation rejected for block " << pbft_block_hash
+                     << ", period " << block_pbft_period << ", status " << static_cast<uint32_t>(live_validation.status)
+                     << ", error " << static_cast<std::string>(live_validation.error_code);
+      }
+      if (!report_runtime_action_detail(runtime_step, live_validation.accepted, live_validation.status,
+                                        static_cast<std::string>(live_validation.error_code))) {
         return false;
       }
     }
@@ -2656,9 +2653,9 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       if (!begin_runtime_action(kPbftFinalizationRuntimeActionSetDagBlockOrder, runtime_step)) {
         return false;
       }
-      const auto finalized_dag_count = dag_mgr_->setDagBlockOrder(anchor_hash, block_pbft_period, dag_blocks_order);
-      const auto live_validation =
-          validate_live_mutation(kPbftFinalizationRuntimeActionSetDagBlockOrder, finalized_dag_count, 0);
+      const auto dag_report = dag_mgr_->setDagBlockOrderForPbftFinalization(
+          anchor_hash, block_pbft_period, dag_blocks_order, finalization_plan.storage_write_intent);
+      const auto live_validation = validate_live_mutation(dag_report);
       if (!live_validation.accepted) {
         LOG(log_er_) << "Rust PBFT finalization DAG live mutation rejected for block " << pbft_block_hash << ", period "
                      << block_pbft_period << ", status " << static_cast<uint32_t>(live_validation.status) << ", error "
@@ -2674,10 +2671,9 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       if (!begin_runtime_action(kPbftFinalizationRuntimeActionUpdateFinalizedTransactions, runtime_step)) {
         return false;
       }
-      const auto finalized_transaction_report =
-          trx_mgr_->updateFinalizedTransactionsStatusForPbftFinalization(period_data);
-      const auto live_validation = validate_live_mutation(kPbftFinalizationRuntimeActionUpdateFinalizedTransactions, 0,
-                                                          finalized_transaction_report.accepted_count);
+      const auto finalized_transaction_report = trx_mgr_->updateFinalizedTransactionsStatusForPbftFinalization(
+          period_data, finalization_plan.storage_write_intent);
+      const auto live_validation = validate_live_mutation(finalized_transaction_report);
       if (!live_validation.accepted) {
         LOG(log_er_) << "Rust PBFT finalization transaction live mutation rejected for block " << pbft_block_hash
                      << ", period " << block_pbft_period << ", status " << static_cast<uint32_t>(live_validation.status)
@@ -2694,8 +2690,10 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       if (!begin_runtime_action(kPbftFinalizationRuntimeActionUpdatePbftChain, runtime_step)) {
         return false;
       }
-      pbft_chain_->updatePbftChain(pbft_block_hash, anchor_hash);
-      const auto live_validation = validate_live_mutation(kPbftFinalizationRuntimeActionUpdatePbftChain, 0, 0);
+      const auto pbft_chain_report =
+          pbft_chain_->updatePbftChainForPbftFinalization(pbft_block_hash, anchor_hash,
+                                                          finalization_plan.storage_write_intent);
+      const auto live_validation = validate_live_mutation(pbft_chain_report);
       if (!live_validation.accepted) {
         LOG(log_er_) << "Rust PBFT finalization PBFT-chain live mutation rejected for block " << pbft_block_hash
                      << ", period " << block_pbft_period << ", status " << static_cast<uint32_t>(live_validation.status)

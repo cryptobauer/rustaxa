@@ -779,6 +779,10 @@ pub mod rustaxa_ffi {
         pbft_chain_size: u64,
         pbft_chain_head_hash: [u8; 32],
         pbft_chain_last_anchor_hash: [u8; 32],
+        reward_votes_period: u64,
+        reward_votes_round: u64,
+        reward_votes_block_hash: [u8; 32],
+        reward_votes_extra_count: u64,
     }
 
     /// Result of validating a live PBFT finalization mutation report in Rust.

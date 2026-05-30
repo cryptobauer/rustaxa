@@ -241,6 +241,10 @@ pub enum PbftFinalizationLiveMutationStatus {
     PbftChainHeadMismatch,
     /// PBFT chain non-null anchor after mutation does not match the finalized anchor.
     PbftChainAnchorMismatch,
+    /// Reward-vote live metadata does not match the Rust-planned reset facts.
+    RewardVotesMetadataMismatch,
+    /// Stale extra reward votes were not cleared after the reset metadata commit.
+    RewardVotesExtraVotesNotCleared,
     /// The report carried an unknown action code.
     UnknownAction,
 }
@@ -260,6 +264,8 @@ impl PbftFinalizationLiveMutationStatus {
             Self::TransactionFinalizedCountMismatch => 8,
             Self::PbftChainHeadMismatch => 9,
             Self::PbftChainAnchorMismatch => 10,
+            Self::RewardVotesMetadataMismatch => 11,
+            Self::RewardVotesExtraVotesNotCleared => 12,
             Self::UnknownAction => 255,
         }
     }
@@ -290,6 +296,14 @@ pub struct PbftFinalizationLiveMutationReport {
     pub pbft_chain_head_hash: H256,
     /// PBFT chain last non-null anchor after the Rust-backed PBFT-chain mutation.
     pub pbft_chain_last_anchor_hash: H256,
+    /// Reward-vote period after the Rust-validated live metadata reset.
+    pub reward_votes_period: u64,
+    /// Reward-vote round after the Rust-validated live metadata reset.
+    pub reward_votes_round: u64,
+    /// Reward-vote block hash after the Rust-validated live metadata reset.
+    pub reward_votes_block_hash: H256,
+    /// Number of stale extra reward-vote sidecars remaining after live reset.
+    pub reward_votes_extra_count: u64,
 }
 
 /// Result of validating one PBFT finalization live-mutation report.
@@ -1180,7 +1194,8 @@ pub fn validate_pbft_finalization_live_mutation_report(
 
     if !matches!(
         report.action,
-        PbftFinalizationRuntimeAction::SetDagBlockOrder
+        PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime
+            | PbftFinalizationRuntimeAction::SetDagBlockOrder
             | PbftFinalizationRuntimeAction::UpdateFinalizedTransactions
             | PbftFinalizationRuntimeAction::UpdatePbftChain
     ) {
@@ -1210,6 +1225,24 @@ pub fn validate_pbft_finalization_live_mutation_report(
     }
 
     match report.action {
+        PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime => {
+            if report.reward_votes_period != plan.storage_write_intent.reward_vote_period
+                || report.reward_votes_round != plan.storage_write_intent.reward_vote_round
+                || report.reward_votes_block_hash
+                    != plan.storage_write_intent.reward_vote_block_hash
+            {
+                return reject(
+                    PbftFinalizationLiveMutationStatus::RewardVotesMetadataMismatch,
+                    "PBFT_FINALIZE_LIVE_MUTATION_REWARD_VOTES_METADATA_MISMATCH",
+                );
+            }
+            if report.reward_votes_extra_count != 0 {
+                return reject(
+                    PbftFinalizationLiveMutationStatus::RewardVotesExtraVotesNotCleared,
+                    "PBFT_FINALIZE_LIVE_MUTATION_REWARD_VOTES_EXTRA_NOT_CLEARED",
+                );
+            }
+        }
         PbftFinalizationRuntimeAction::SetDagBlockOrder => {
             let expected =
                 unique_positioned_hash_count(&plan.storage_write_intent.dag_block_period_writes);
@@ -1541,6 +1574,24 @@ mod tests {
                 consensus_delay: 400,
                 dpos_blocks_per_year: 500,
             },
+        }
+    }
+
+    fn live_report(action: PbftFinalizationRuntimeAction) -> PbftFinalizationLiveMutationReport {
+        PbftFinalizationLiveMutationReport {
+            action,
+            block_period: 10,
+            pbft_block_hash: hash(99),
+            anchor_hash: hash(123),
+            dag_finalized_count: 0,
+            finalized_transaction_count: 0,
+            pbft_chain_size: 0,
+            pbft_chain_head_hash: H256::zero(),
+            pbft_chain_last_anchor_hash: H256::zero(),
+            reward_votes_period: 10,
+            reward_votes_round: 2,
+            reward_votes_block_hash: hash(99),
+            reward_votes_extra_count: 0,
         }
     }
 
@@ -2039,32 +2090,24 @@ mod tests {
         let dag = validate_pbft_finalization_live_mutation_report(
             &plan,
             PbftFinalizationLiveMutationReport {
-                action: PbftFinalizationRuntimeAction::SetDagBlockOrder,
-                block_period: 10,
-                pbft_block_hash: hash(99),
-                anchor_hash: hash(123),
                 dag_finalized_count: 2,
-                finalized_transaction_count: 0,
-                pbft_chain_size: 0,
-                pbft_chain_head_hash: H256::zero(),
-                pbft_chain_last_anchor_hash: H256::zero(),
+                ..live_report(PbftFinalizationRuntimeAction::SetDagBlockOrder)
             },
         );
         assert!(dag.accepted);
         assert_eq!(dag.status, PbftFinalizationLiveMutationStatus::Accepted);
 
+        let reward_votes = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            live_report(PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime),
+        );
+        assert!(reward_votes.accepted);
+
         let transactions = validate_pbft_finalization_live_mutation_report(
             &plan,
             PbftFinalizationLiveMutationReport {
-                action: PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
-                block_period: 10,
-                pbft_block_hash: hash(99),
-                anchor_hash: hash(123),
-                dag_finalized_count: 0,
                 finalized_transaction_count: 2,
-                pbft_chain_size: 0,
-                pbft_chain_head_hash: H256::zero(),
-                pbft_chain_last_anchor_hash: H256::zero(),
+                ..live_report(PbftFinalizationRuntimeAction::UpdateFinalizedTransactions)
             },
         );
         assert!(transactions.accepted);
@@ -2072,15 +2115,10 @@ mod tests {
         let chain = validate_pbft_finalization_live_mutation_report(
             &plan,
             PbftFinalizationLiveMutationReport {
-                action: PbftFinalizationRuntimeAction::UpdatePbftChain,
-                block_period: 10,
-                pbft_block_hash: hash(99),
-                anchor_hash: hash(123),
-                dag_finalized_count: 0,
-                finalized_transaction_count: 0,
                 pbft_chain_size: 10,
                 pbft_chain_head_hash: hash(99),
                 pbft_chain_last_anchor_hash: hash(123),
+                ..live_report(PbftFinalizationRuntimeAction::UpdatePbftChain)
             },
         );
         assert!(chain.accepted);
@@ -2095,15 +2133,8 @@ mod tests {
         let dag = validate_pbft_finalization_live_mutation_report(
             &plan,
             PbftFinalizationLiveMutationReport {
-                action: PbftFinalizationRuntimeAction::SetDagBlockOrder,
-                block_period: 10,
-                pbft_block_hash: hash(99),
-                anchor_hash: hash(123),
                 dag_finalized_count: 3,
-                finalized_transaction_count: 0,
-                pbft_chain_size: 0,
-                pbft_chain_head_hash: H256::zero(),
-                pbft_chain_last_anchor_hash: H256::zero(),
+                ..live_report(PbftFinalizationRuntimeAction::SetDagBlockOrder)
             },
         );
         assert!(!dag.accepted);
@@ -2115,15 +2146,10 @@ mod tests {
         let chain = validate_pbft_finalization_live_mutation_report(
             &plan,
             PbftFinalizationLiveMutationReport {
-                action: PbftFinalizationRuntimeAction::UpdatePbftChain,
-                block_period: 10,
-                pbft_block_hash: hash(99),
-                anchor_hash: hash(123),
-                dag_finalized_count: 0,
-                finalized_transaction_count: 0,
                 pbft_chain_size: 9,
                 pbft_chain_head_hash: hash(99),
                 pbft_chain_last_anchor_hash: hash(123),
+                ..live_report(PbftFinalizationRuntimeAction::UpdatePbftChain)
             },
         );
         assert_eq!(
@@ -2133,21 +2159,23 @@ mod tests {
 
         let unsupported = validate_pbft_finalization_live_mutation_report(
             &plan,
-            PbftFinalizationLiveMutationReport {
-                action: PbftFinalizationRuntimeAction::FinalizeFinalChain,
-                block_period: 10,
-                pbft_block_hash: hash(99),
-                anchor_hash: hash(123),
-                dag_finalized_count: 0,
-                finalized_transaction_count: 0,
-                pbft_chain_size: 0,
-                pbft_chain_head_hash: H256::zero(),
-                pbft_chain_last_anchor_hash: H256::zero(),
-            },
+            live_report(PbftFinalizationRuntimeAction::FinalizeFinalChain),
         );
         assert_eq!(
             unsupported.status,
             PbftFinalizationLiveMutationStatus::ActionNotLiveMutation
+        );
+
+        let reward_votes = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            PbftFinalizationLiveMutationReport {
+                reward_votes_extra_count: 1,
+                ..live_report(PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime)
+            },
+        );
+        assert_eq!(
+            reward_votes.status,
+            PbftFinalizationLiveMutationStatus::RewardVotesExtraVotesNotCleared
         );
     }
 

@@ -19,6 +19,7 @@ constexpr uint8_t kPbftFinalizedPeriodApplyStatusApplied = 0;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusAlreadyApplied = 1;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusRejected = 2;
 constexpr uint8_t kPbftFinalizationStorageStageRewardVotesReset = 4;
+constexpr uint8_t kPbftFinalizationRuntimeActionCommitRewardVotesReset = 3;
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t& hash) { return hash.asArray(); }
 
@@ -48,6 +49,20 @@ rustaxa::PbftFinalizedPeriodApplyResult rewardResetResult(uint8_t status, PbftPe
   result.pbft_block_hash = toBridgeHash(block_hash);
   result.error_code = rust::String(error_code);
   return result;
+}
+
+rustaxa::PbftFinalizationLiveMutationReport makeRewardVotesResetLiveReport(
+    const rustaxa::PbftFinalizationStorageWritePlan& write_intent, uint64_t extra_reward_votes_count) {
+  rustaxa::PbftFinalizationLiveMutationReport report{};
+  report.action = kPbftFinalizationRuntimeActionCommitRewardVotesReset;
+  report.block_period = write_intent.block_period;
+  report.pbft_block_hash = write_intent.pbft_block_hash;
+  report.anchor_hash = write_intent.anchor_hash;
+  report.reward_votes_period = write_intent.reward_vote_period;
+  report.reward_votes_round = write_intent.reward_vote_round;
+  report.reward_votes_block_hash = write_intent.reward_vote_block_hash;
+  report.reward_votes_extra_count = extra_reward_votes_count;
+  return report;
 }
 
 rustaxa::PbftFinalizationStorageWritePlan makeRewardResetWritePlan(PbftPeriod period, PbftRound round, PbftStep step,
@@ -480,7 +495,8 @@ rustaxa::PbftFinalizationStorageWriteStage VoteManager::rewardVotesResetStageFor
   return makeRewardResetWriteStage(votes, extra_reward_votes_);
 }
 
-void VoteManager::commitRewardVotesResetForFinalization(const rustaxa::PbftFinalizationStorageWritePlan& write_intent) {
+rustaxa::PbftFinalizationLiveMutationReport VoteManager::commitRewardVotesResetForFinalization(
+    const rustaxa::PbftFinalizationStorageWritePlan& write_intent) {
   const auto period = static_cast<PbftPeriod>(write_intent.reward_vote_period);
   const auto round = static_cast<PbftRound>(write_intent.reward_vote_round);
   const auto block_hash = blk_hash_t(write_intent.reward_vote_block_hash.data(), blk_hash_t::ConstructFromPointer);
@@ -495,6 +511,7 @@ void VoteManager::commitRewardVotesResetForFinalization(const rustaxa::PbftFinal
 
   LOG(log_dg_) << "Reward votes info reset to: block_hash: " << block_hash << ", period: " << period
                << ", round: " << round;
+  return makeRewardVotesResetLiveReport(write_intent, extra_reward_votes_.size());
 }
 
 rustaxa::PbftFinalizedPeriodApplyResult VoteManager::resetRewardVotesForFinalization(

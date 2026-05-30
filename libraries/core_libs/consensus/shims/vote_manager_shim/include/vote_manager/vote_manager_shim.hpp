@@ -134,8 +134,13 @@ class VoteManager : public VoteManagerOld {
    * - Must be called only after Rust reports `Applied` or `AlreadyApplied` for
    *   the corresponding reward-vote reset stage.
    * - Clears stale extra-reward vote tracking to match the committed storage.
+   *
+   * Outputs:
+   * - A Rust-verifiable post-mutation report proving the live metadata now
+   *   matches the accepted finalization plan and stale extra votes were cleared.
    */
-  void commitRewardVotesResetForFinalization(const rustaxa::PbftFinalizationStorageWritePlan& write_intent);
+  rustaxa::PbftFinalizationLiveMutationReport commitRewardVotesResetForFinalization(
+      const rustaxa::PbftFinalizationStorageWritePlan& write_intent);
 
  private:
   bool isValidRewardVoteForRust(const std::shared_ptr<PbftVote>& vote) const;

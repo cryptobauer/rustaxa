@@ -105,6 +105,16 @@ class PbftChain {
   void updatePbftChain(blk_hash_t const& pbft_block_hash, blk_hash_t const& anchor_hash);
 
   /**
+   * Updates the in-memory Rust PBFT chain head and returns a Rust-verifiable PBFT finalization live-action report.
+   *
+   * Inputs are the finalized block hash, finalized anchor hash, and the Rust-planned finalization write intent.
+   * The returned report carries post-mutation chain size/head/anchor facts that Rust validates before advancing.
+   */
+  rustaxa::PbftFinalizationLiveMutationReport updatePbftChainForPbftFinalization(
+      blk_hash_t const& pbft_block_hash, blk_hash_t const& anchor_hash,
+      const rustaxa::PbftFinalizationStorageWritePlan& write_intent);
+
+  /**
    * Verifies that `pbft_block` extends the current Rust PBFT head.
    *
    * Returns false for period or previous-hash mismatch and throws only for unexpected bridge errors.

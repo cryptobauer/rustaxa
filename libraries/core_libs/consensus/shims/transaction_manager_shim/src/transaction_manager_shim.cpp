@@ -19,6 +19,8 @@
 namespace taraxa {
 namespace {
 
+constexpr uint8_t kPbftFinalizationRuntimeActionUpdateFinalizedTransactions = 5;
+
 std::array<uint8_t, 32> toBridgeHash(const trx_hash_t& hash) {
   std::array<uint8_t, 32> bytes{};
   std::memcpy(bytes.data(), hash.data(), bytes.size());
@@ -1179,6 +1181,20 @@ void TransactionManager::updateFinalizedTransactionsStatus(const PeriodData& per
 rustaxa::TransactionManagerFinalizedStatusCommandReport
 TransactionManager::updateFinalizedTransactionsStatusForPbftFinalization(const PeriodData& period_data) {
   return TransactionManagerRustShimAccess::updateFinalizedTransactionsStatusReport(*this, period_data);
+}
+
+rustaxa::PbftFinalizationLiveMutationReport TransactionManager::updateFinalizedTransactionsStatusForPbftFinalization(
+    const PeriodData& period_data, const rustaxa::PbftFinalizationStorageWritePlan& write_intent) {
+  const auto status_report =
+      TransactionManagerRustShimAccess::updateFinalizedTransactionsStatusReport(*this, period_data);
+
+  rustaxa::PbftFinalizationLiveMutationReport report{};
+  report.action = kPbftFinalizationRuntimeActionUpdateFinalizedTransactions;
+  report.block_period = write_intent.block_period;
+  report.pbft_block_hash = write_intent.pbft_block_hash;
+  report.anchor_hash = write_intent.anchor_hash;
+  report.finalized_transaction_count = status_report.accepted_count;
+  return report;
 }
 
 void TransactionManager::initializeRecentlyFinalizedTransactions(const PeriodData& period_data) {
