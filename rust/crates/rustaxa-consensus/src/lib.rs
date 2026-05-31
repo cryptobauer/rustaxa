@@ -5,6 +5,7 @@ pub mod pbft_chain;
 pub mod pbft_finalize;
 pub mod pbft_manager;
 pub mod pbft_sync;
+pub mod pbft_vote_progress;
 pub mod period_data_queue;
 pub mod pillar_chain;
 pub mod pillar_votes;
@@ -42,6 +43,10 @@ pub use pbft_sync::{
     PbftSyncFactStatus, PbftSyncFinalChainHashStatus, PbftSyncPeriodAdmissionDecision,
     PbftSyncPeriodAdmissionFact, PbftSyncPeriodAdmissionPlan, PbftSyncPeriodAdmissionStatus,
     PbftSyncTransactionWarning, PbftSyncTransactionWarningKind, plan_pbft_sync_period_admission,
+};
+pub use pbft_vote_progress::{
+    PbftVoteIdentity, PbftVoteProgressContext, PbftVoteProgressFact, PbftVoteProgressIntent,
+    PbftVoteProgressPlan, PbftVoteProgressStatus, plan_pbft_vote_progress,
 };
 pub use period_data_queue::PeriodDataQueue;
 pub use pillar_chain::{

@@ -455,8 +455,9 @@ The current Rust starting point is intentionally small:
   DAG transaction persistence planning plus Rust-storage batch commits, Rust-storage-backed `TransactionManager`
   transaction lookup and non-finalized recovery payload loading, Rust-planned finalized transaction filter/verification
   helpers, Rust-planned transaction verification and validated-insert admission, shim-owned live non-finalized/pool/count
-  read helpers, and a Rust-backed `GasPricer` oracle for finalized-block history, minimum-price flooring, and percentile
-  bid selection.
+  read helpers, a side-effect-free PBFT vote-progress protocol planner that stages verified-vote insertion reports into
+  typed known/admit/slashing/gossip/progress intents, and a Rust-backed `GasPricer` oracle for finalized-block history,
+  minimum-price flooring, and percentile bid selection.
   The Rust-enabled `SlashingManager` overlay now routes deterministic double-voting proof planning, duplicate-proof
   cache decisions, submitter selection, and slashing contract calldata construction through Rust while C++ keeps live
   vote objects, account reads, gas bidding, transaction signing, and transaction-pool insertion.
@@ -495,7 +496,9 @@ The current Rust starting point is intentionally small:
 4. Add ingress-compatible Rust inspection/planning surfaces as adjacent slices are touched. PBFT vote, DAG block,
    transaction, pillar vote, and PBFT sync work should accept canonical bytes or compact facts, optionally create
    enrichment records, and return route/admit/drop/gossip/request-sync/peer-action intents rather than depending on
-   network handler objects or eager C++ materialized objects.
+   network handler objects or eager C++ materialized objects. The first PBFT vote-progress planner now keeps this
+   Rust-domain-only: it emits typed intents and consumes the authoritative `VerifiedVotes` insertion report, but it is
+   not yet production-routed through the C++ vote packet or `VoteManager` shell.
 5. Port DAG graph operations before broader `DagManager` orchestration: pivot/tip availability, ghost path, ordering,
    counters, storage-facing queries, and deterministic `verifyBlock` reject decisions.
 6. Define Rust ports for DPoS eligibility, eligible vote count, total vote count, and VRF key access. The current
