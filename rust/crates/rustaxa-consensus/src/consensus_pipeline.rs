@@ -10,6 +10,14 @@
 //! This is intentionally lightweight scaffolding, not a stable public API.
 //! Type names, variants, and payload fields are expected to change as the first
 //! real network-to-consensus pipeline integration proves the shape.
+//!
+//! Consensus business logic should be expressed as deterministic protocol
+//! planners over explicit state views. A planner receives a consensus event or
+//! command plus borrowed facts, then returns a [`ConsensusPlan`]. The plan
+//! describes the protocol transition to execute: ordered effects, future write
+//! intents, follow-up events, and validation outcome data. Planners should not
+//! own long-lived data, perform I/O, spawn async work, or directly mutate
+//! pipeline, network, storage, or peer state.
 
 /// Identifies the logical consensus data pipeline that owns an event.
 ///
@@ -250,23 +258,25 @@ pub enum ConsensusEffect {
     DrivePbftProgress,
 }
 
-/// Minimal decision envelope returned by a consensus pipeline planner.
+/// Minimal protocol plan returned by a deterministic consensus planner.
 ///
-/// This envelope is side-effect-free. Callers are responsible for executing
-/// effects through the appropriate network, peer-state, or consensus executor.
+/// This envelope is side-effect-free: it describes the planned protocol state
+/// transition but does not execute it. Callers are responsible for applying
+/// effects through the appropriate network, peer-state, storage, or consensus
+/// executor.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ConsensusDecision {
-    /// Pipeline that produced the decision.
+pub struct ConsensusPlan {
+    /// Pipeline that produced the plan.
     pub pipeline: PipelineKind,
-    /// Origin the decision applies to.
+    /// Origin the plan applies to.
     pub origin: EventOrigin,
     /// Ordered effects to execute outside the planner.
     pub effects: Vec<ConsensusEffect>,
 }
 
-impl ConsensusDecision {
-    /// Creates a decision and preserves the caller-provided effect order. Empty
-    /// effect lists are valid and represent a no-op decision.
+impl ConsensusPlan {
+    /// Creates a protocol plan and preserves the caller-provided effect order.
+    /// Empty effect lists are valid and represent a no-op plan.
     #[must_use]
     pub fn new(pipeline: PipelineKind, origin: EventOrigin, effects: Vec<ConsensusEffect>) -> Self {
         Self {
@@ -358,9 +368,9 @@ mod tests {
     }
 
     #[test]
-    fn decision_preserves_ordered_effects() {
+    fn plan_preserves_ordered_effects() {
         let origin = EventOrigin::IngressPayload(IngressPayloadRef(7));
-        let decision = ConsensusDecision::new(
+        let plan = ConsensusPlan::new(
             PipelineKind::PbftVoteProgress,
             origin,
             vec![
@@ -371,11 +381,11 @@ mod tests {
             ],
         );
 
-        assert_eq!(decision.pipeline, PipelineKind::PbftVoteProgress);
-        assert_eq!(decision.origin, origin);
-        assert!(decision.contains(ConsensusEffect::DrivePbftProgress));
+        assert_eq!(plan.pipeline, PipelineKind::PbftVoteProgress);
+        assert_eq!(plan.origin, origin);
+        assert!(plan.contains(ConsensusEffect::DrivePbftProgress));
         assert_eq!(
-            decision.effects,
+            plan.effects,
             vec![
                 ConsensusEffect::MarkKnown,
                 ConsensusEffect::Admit,

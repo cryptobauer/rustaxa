@@ -25,7 +25,7 @@ Required test coverage and parity gates for the Rust consensus model are defined
 - Keep network callbacks, daemon threads, peer gossip, and full-node orchestration in C++ until the Rust domain services are stable.
 - New consensus rewrite APIs must be shaped for the upcoming application-owned arena/data pipeline even before the
   concrete pipeline API lands. Prefer canonical bytes, compact facts, ingress-payload-addressable enrichment, and typed
-  decisions/effects over eager C++ object materialization.
+  protocol plans/effects over eager C++ object materialization.
 
 ## Planned Arena/Data Pipeline Direction
 
@@ -89,13 +89,30 @@ Future Rust ingress-adjacent APIs should keep these pipeline facts and effects s
 represented as typed effects, such as request-sync, block-peer-order, mark-known, admit, gossip, report-malicious,
 enqueue-period-data, or drive-PBFT-progress, rather than hidden mutation of another pipeline's state.
 
+## Consensus Protocol Planner Model
+
+Consensus business logic should be expressed as deterministic protocol planners over explicit state views. A planner
+receives a consensus event or command, compact facts, config/time inputs, and borrowed state views, then returns a
+protocol plan. The plan describes the protocol state transition implied by the input: validation outcome data, ordered
+state/write intents, follow-up consensus events, and external effects.
+
+The planner itself must stay side-effect-free. It should not own long-lived consensus data, write storage, send network
+messages, spawn Tokio tasks, block on async I/O, or mutate another pipeline directly. Runtime workers, actors,
+ring-buffer stages, Tokio tasks, and effect executors may schedule planners and apply returned plans at the boundary, but
+consensus rules should not be hidden inside mailbox-local actor state or async task choreography.
+
+The term "transition" means the consensus system's protocol state is transitioning, not that each input produces only a
+small transformation. A single PBFT vote event can legitimately plan known-vote marking, vote admission, proposed-block
+sidecar admission, threshold updates, slashing proof emission, gossip, and PBFT progress triggers as one protocol plan
+when those are the deterministic consequences of the event and current state view.
+
 ## Current Rust Starting Point
 
 | Area | Rust location | Status | Notes |
 | --- | --- | --- | --- |
 | FinalChain read/index helper | `rust/crates/rustaxa-consensus/src/final_chain.rs` | `rust-backed` for selected FinalChain reads | Exists because FinalChain work started before consensus. It is not a PBFT/DAG port yet. |
 | Consensus crate root | `rust/crates/rustaxa-consensus/src/lib.rs` | `rust-backed` for DAG graph | Exports the DAG graph model used by the C++ `Dag` wrapper and selected FinalChain read helpers. |
-| Consensus event pipeline scaffold | `rust/crates/rustaxa-consensus/src/consensus_pipeline.rs` | scaffold | Defines only consensus-layer pipeline vocabulary: logical pipeline kinds, opaque ingress payload references, event origins, typed consensus events, the first `PbftVoteEvent`, and typed cross-pipeline effects. These names, variants, and payload fields are provisional and open to change until production routing proves the boundaries. `NetworkEvent`, prefilter decisions, dispatcher classification, and ring-buffer allocation are intentionally excluded and should live in the network crate or a dedicated pipeline crate. This scaffold does not decode payload bytes, mutate consensus state, or route production handlers yet. |
+| Consensus event pipeline scaffold | `rust/crates/rustaxa-consensus/src/consensus_pipeline.rs` | scaffold | Defines only consensus-layer pipeline vocabulary: logical pipeline kinds, opaque ingress payload references, event origins, typed consensus events, the first `PbftVoteEvent`, typed cross-pipeline effects, and the provisional `ConsensusPlan` envelope returned by side-effect-free protocol planners. These names, variants, and payload fields are provisional and open to change until production routing proves the boundaries. `NetworkEvent`, prefilter decisions, dispatcher classification, and ring-buffer allocation are intentionally excluded and should live in the network crate or a dedicated pipeline crate. This scaffold does not decode payload bytes, mutate consensus state, or route production handlers yet. |
 | Shared DAG/PBFT types | `rust/crates/rustaxa-types/src/{dag.rs,pbft.rs}` and codec modules | partial | Useful for future consensus domain types, but not yet a full consensus model. |
 | Storage ports | `rust/crates/rustaxa-storage/src/{dag.rs,pbft.rs,pillar.rs}` | partial infra | Use through narrow domain-facing ports; do not let consensus logic depend on broad storage APIs. |
 

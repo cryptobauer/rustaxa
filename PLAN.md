@@ -85,6 +85,13 @@ Core rules:
   as `ConsensusEvent`, `PbftVoteEvent`, `ConsensusEffect`, and opaque ingress payload references used to decode arena
   bytes late. These consensus pipeline types are provisional scaffolding until the first routed pipeline lands; names,
   variants, and payload fields are expected to change as the design is validated.
+- Consensus business logic should be expressed as deterministic protocol planners, not as async tasks, actors, or
+  workflows that own data. A planner receives a consensus event or command plus explicit borrowed state views/facts and
+  returns a protocol plan: validation outcome data, ordered state/write intents, follow-up consensus events, and external
+  effects. The plan describes the protocol state transition, but the planner must not perform I/O, spawn Tokio work,
+  write storage, send network messages, or mutate another pipeline directly. Runtime workers, actors, Tokio tasks, ring
+  buffers, and effect executors may schedule and apply plans at the boundary; they should not hide consensus rules inside
+  mailbox-local state.
 - Hard rule for Rust-enabled paths: never forward, delegate, or rely on inherited behavior from legacy C++ implementations. Any not-yet-ported API must stay explicit in the shim as a documented stub/no-op/throw until Rust parity lands. If fallback is proposed, require explicit task-owner approval first.
 - Hard rule: preserve existing test intent. Do not loosen or rewrite tests to accommodate Rust rewrite regressions; fix implementation parity first. Only change tests when product behavior is intentionally changed and documented.
 - Documentation rule: whenever adding or changing rewrite code, document modules, types, and functions as complete units (purpose, inputs, outputs, invariants, and error or edge behavior), not just isolated lines.
@@ -403,8 +410,8 @@ Rules:
 - Keep networking callbacks, thread orchestration, and broad node integration in C++ until the Rust domain services are stable.
 - Shape new ingress-adjacent consensus APIs for the upcoming application-owned arena pipeline even before the concrete
   API exists. Prefer functions that can consume raw payload bytes or compact arena-backed facts, produce small
-  decisions/effects, and defer C++ `PbftVote`, `PbftBlock`, `DagBlock`, `PeriodData`, and `Transaction` materialization
-  until a compatibility executor truly needs those objects.
+  protocol plans/effects, and defer C++ `PbftVote`, `PbftBlock`, `DagBlock`, `PeriodData`, and `Transaction`
+  materialization until a compatibility executor truly needs those objects.
 - The first network-to-Rust call is expected to be
   `pub fn ingest_network_packet(self: &mut BridgeNetwork, packet_type: u8, from_node: [u8; 64], data: Vec<u8>) -> Result<bool>;`.
   Consensus code must not interpret its `bool` as payload validity or consensus acceptance; it only indicates whether
@@ -420,6 +427,12 @@ Rules:
   ownership of these event units between stages instead of exposing shared mutable message objects. The current event
   names and payload shapes are deliberately open to change while the first production pipeline integration proves the
   right boundaries.
+- Express consensus business logic as deterministic protocol planners over explicit state views. A planner receives a
+  consensus event or command, compact facts, config/time inputs, and borrowed state views, then returns a protocol plan.
+  The plan may include validation outcome data, ordered effects, storage/write intents, and follow-up consensus events.
+  This is the concrete meaning of a protocol state transition: the observed consensus state plus an input maps to the
+  next intended state and effects, while execution remains outside the planner. Tokio, actors, and ring-buffer workers
+  belong around the planner as scheduling/execution machinery, not inside the consensus rule implementation.
 
 ### Current Consensus Shape
 

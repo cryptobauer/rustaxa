@@ -19,7 +19,7 @@ pub mod verified_votes;
 mod final_chain;
 
 pub use consensus_pipeline::{
-    Address20, ConsensusDecision, ConsensusEffect, ConsensusEvent, DagBlockEvent, DagSyncEvent,
+    Address20, ConsensusEffect, ConsensusEvent, ConsensusPlan, DagBlockEvent, DagSyncEvent,
     EventOrigin, Hash32, IngressPayloadRef, PbftSyncEvent, PbftVoteEvent, PbftVoteFacts,
     PeerStatusEvent, PillarVoteEvent, PipelineKind, TransactionEvent,
 };
