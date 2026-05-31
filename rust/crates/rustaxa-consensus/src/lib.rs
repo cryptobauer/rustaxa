@@ -1,3 +1,4 @@
+pub mod consensus_pipeline;
 pub mod dag;
 pub mod gas_pricer;
 pub mod pbft_chain;
@@ -17,6 +18,11 @@ pub mod verified_votes;
 
 mod final_chain;
 
+pub use consensus_pipeline::{
+    Address20, ConsensusDecision, ConsensusEffect, ConsensusEvent, DagBlockEvent, DagSyncEvent,
+    EventOrigin, Hash32, IngressPayloadRef, PbftSyncEvent, PbftVoteEvent, PbftVoteFacts,
+    PeerStatusEvent, PillarVoteEvent, PipelineKind, TransactionEvent,
+};
 pub use final_chain::FinalChain;
 pub use gas_pricer::{GasPriceOracle, GasPricerConfig};
 pub use pbft_chain::PbftChain;
