@@ -23,6 +23,47 @@ Required test coverage and parity gates for the Rust consensus model are defined
 - Main-only files referenced from upstream-owned C++ files must be included only behind `RUSTAXA_ENABLE=1` or a narrower Rustaxa feature guard.
 - Treat DPoS eligibility and vote-count behavior as required consensus functionality. Temporary defaults must stay visible in this tracker.
 - Keep network callbacks, daemon threads, peer gossip, and full-node orchestration in C++ until the Rust domain services are stable.
+- New consensus rewrite APIs must be shaped for the upcoming application-owned arena/data pipeline even before the
+  concrete pipeline API lands. Prefer canonical bytes, compact facts, slot-addressable enrichment, and typed
+  decisions/effects over eager C++ packet/object materialization.
+
+## Planned Arena/Data Pipeline Direction
+
+The parallel Rust network rewrite will land an application-owned arena pipeline before this consensus feature branch is
+merged. The first ingress point is expected to accept latest-tarcap packet bytes from
+`TaraxaCapability::interpretCapabilityPacket`, write them into an application-global packet arena, and report only
+whether ingestion succeeded. Network-level outcomes such as drop, disconnect, mark-malicious, gossip, or sync request
+will be emitted later by pipeline stages as egress events; they are not part of the ingress success contract.
+
+The planned initial CXX bridge entry point is:
+
+```rust
+pub fn ingest_network_packet(
+    self: &mut BridgeNetwork,
+    packet_type: u8,
+    from_node: [u8; 64],
+    data: Vec<u8>,
+) -> Result<bool>;
+```
+
+This API is latest-tarcap-only. Its `bool` reports ingestion success only: `true` means the packet bytes were accepted
+into the application arena/pipeline. Broken packet, protocol rejection, consensus rejection, peer action, gossip, sync,
+drop, and disconnect outcomes are produced later by downstream pipeline stages and network egress events.
+
+Consensus rewrite slices should assume this future direction:
+
+- Pipeline communication is by slot id. A stage may wrap the packet slot id with small route/source/priority metadata,
+  but large derived data should live in packet or enrichment arenas and be referenced by slot id.
+- Each packet is handled by only one thread at a time. Pipeline stages should model ownership transfer of a slot event,
+  not fanout over shared mutable packet state.
+- Materialization should be delayed. Packet-adjacent Rust code should inspect raw bytes, produce compact facts or
+  enrichment records only when useful, and avoid constructing C++ `PbftVote`, `PbftBlock`, `DagBlock`, `PeriodData`, or
+  `Transaction` objects unless a temporary compatibility executor requires them.
+- Consensus domain identity remains hash/period/round/step/voter/level based. Slot ids are data-plane handles and should
+  not become consensus identities.
+- Intermediate modules between network ingress and consensus, such as prefilters or route classifiers, are expected.
+  Consensus-facing APIs should be callable from those stages with raw bytes, slot-backed views, or compact facts instead
+  of requiring network handler objects.
 
 ## Current Rust Starting Point
 
@@ -193,6 +234,7 @@ Open questions:
 | Sortition params routing | Rust validation plus `rust_consensus_tests`, `sortition_test`, and `sortition_params_manager_shim_test` |
 | PBFT chain/proposed-block/queue routing | Rust validation plus `rust_consensus_tests`, `pbft_chain_test`, `pbft_chain_shim_test`, `proposed_blocks_shim_test`, `period_data_queue_shim_test`, and relevant `pbft_manager_test` cases |
 | Vote aggregation/eligibility | Rust validation plus `rust_consensus_tests`, `verified_votes_shim_test`, `vote_test`, relevant `pbft_manager_test`, and DPoS/state API coverage |
+| Packet inspection/enrichment planning | Rust validation plus packet-shape unit tests and C++ parity/golden-vector coverage for each routed packet family; add scheduler or egress-event tests once the network pipeline lands |
 | Transaction queue behavior | Rust validation plus `transaction_queue_shim_test`, queue-focused `transaction_test`, `gas_pricer_test`, and affected DAG/PBFT tests when manager/proposer packing changes |
 | Slashing proof planning | Rust validation plus `slashing_manager_shim_test`; Rust byte-level proof-hash and calldata fixtures are required, with richer C++ legacy vote/submission transcripts still useful when available |
 | Pillar vote aggregation and sync bundle validation | Rust validation plus `rust_consensus_tests` and `pillar_votes_shim_test`; broaden to `pbft_manager_test` and `pillar_chain_test` when manager behavior is touched |
@@ -225,3 +267,4 @@ Open questions:
 | Decide CXX bridge shape for consensus hashes and vectors | `rust-backed` for DAG graph | DAG bridge uses fixed bytes and explicit boundary conversion; revisit if PBFT/vote bridges need richer payloads. |
 | Add C++/Rust DAG parity fixture | `rust-backed` | Rust bridge fixture tests and C++ public API regression tests landed. Direct in-process legacy-vs-Rust comparison remains optional if duplicate dependency symbols are resolved. |
 | Vote packet duplicate-with-block delivery gap | `deferred` | Reproduced in `PbftManagerTest.propose_block_and_vote_broadcast`: some peers can miss proposed-block insertion when vote paths short-circuit in network packet handlers. Do not patch upstream-owned network C++ in this rewrite stream; track as network-module follow-up and resolve via rewrite-side network shim when network work starts. |
+| Prepare consensus ingress for arena data pipeline | `not-started` | Future network ingress will call `BridgeNetwork::ingest_network_packet(packet_type, from_node, data)` for latest-tarcap packet bytes, store accepted bytes in an application-owned arena, and communicate by packet/enrichment slot ids after that. The returned `bool` is ingestion success only, not packet validity or consensus acceptance. Consensus slices should add raw-byte inspection and compact-fact planning surfaces for PBFT votes, DAG block packets, transaction packets, pillar votes, and PBFT sync data as those modules are touched. The goal is to let prefilter and consensus stages drop or route packets before expensive materialization, then emit typed egress effects for the network module. |

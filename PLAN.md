@@ -61,6 +61,16 @@ Core rules:
   handles, and existing storage/FinalChain/DAG/transaction/vote coverage for reuse opportunities. Prefer connecting the
   new path to those Rust implementations, even if that makes the slice slightly larger, when it reduces future C++
   ownership and keeps behavior on the path to full Rust replacement.
+- Future network ingress will use an application-owned arena/data pipeline: the latest tarcap packet bytes enter Rust
+  once, receive a long-lived slot id, and then move through single-owner pipeline stages by slot id. Large derived facts
+  may live in additional arenas and be referenced from small slot metadata. Until that API lands, new consensus rewrite
+  work should still be shaped for it: preserve canonical bytes, decode late, avoid unnecessary copies, avoid eager C++
+  object materialization, and return typed decisions/effects that a future network egress pipeline can execute.
+  The planned initial CXX bridge entry point is:
+  `pub fn ingest_network_packet(self: &mut BridgeNetwork, packet_type: u8, from_node: [u8; 64], data: Vec<u8>) -> Result<bool>;`.
+  This latest-tarcap-only API reports ingestion success only: `true` means the packet bytes were accepted into the
+  application arena/pipeline, while later protocol, consensus, peer, gossip, drop, or disconnect outcomes are emitted by
+  downstream pipeline stages.
 - Hard rule for Rust-enabled paths: never forward, delegate, or rely on inherited behavior from legacy C++ implementations. Any not-yet-ported API must stay explicit in the shim as a documented stub/no-op/throw until Rust parity lands. If fallback is proposed, require explicit task-owner approval first.
 - Hard rule: preserve existing test intent. Do not loosen or rewrite tests to accommodate Rust rewrite regressions; fix implementation parity first. Only change tests when product behavior is intentionally changed and documented.
 - Documentation rule: whenever adding or changing rewrite code, document modules, types, and functions as complete units (purpose, inputs, outputs, invariants, and error or edge behavior), not just isolated lines.
@@ -377,6 +387,14 @@ Rules:
   declarations supplied by the temporary `pbft_manager_shim` header overlay.
 - Treat `dposIsEligible` and related vote-count methods as real consensus work, not permanent dummy behavior.
 - Keep networking callbacks, thread orchestration, and broad node integration in C++ until the Rust domain services are stable.
+- Shape new packet-adjacent consensus APIs for the upcoming application-owned arena pipeline even before the concrete
+  API exists. Prefer functions that can consume raw packet bytes or compact arena-backed facts, produce small
+  decisions/effects, and defer C++ `PbftVote`, `PbftBlock`, `DagBlock`, `PeriodData`, and `Transaction` materialization
+  until a compatibility executor truly needs those objects.
+- The first network-to-Rust call is expected to be
+  `pub fn ingest_network_packet(self: &mut BridgeNetwork, packet_type: u8, from_node: [u8; 64], data: Vec<u8>) -> Result<bool>;`.
+  Consensus code must not interpret its `bool` as packet validity or consensus acceptance; it only indicates whether
+  the network packet was accepted into the arena-backed data pipeline.
 
 ### Current Consensus Shape
 
@@ -436,23 +454,27 @@ The current Rust starting point is intentionally small:
 1. Inventory consensus APIs, dependencies, tests, and current Rust shim gaps.
 2. Create a tracker that classifies each item as Rust-backed, shim-stubbed, C++-owned temporary, or out of scope.
 3. Introduce pure Rust domain types for PBFT rounds, steps, votes, DAG ordering metadata, and eligibility outputs.
-4. Port DAG graph operations before broader `DagManager` orchestration: pivot/tip availability, ghost path, ordering,
+4. Add packet-ingress-compatible Rust inspection/planning surfaces as adjacent slices are touched. PBFT vote, DAG block,
+   transaction packet, pillar vote, and PBFT sync work should accept canonical bytes or compact facts, optionally create
+   enrichment records, and return route/admit/drop/gossip/request-sync/peer-action intents rather than depending on
+   network handler objects or eager C++ materialized packets.
+5. Port DAG graph operations before broader `DagManager` orchestration: pivot/tip availability, ghost path, ordering,
    counters, storage-facing queries, and deterministic `verifyBlock` reject decisions.
-5. Define Rust ports for DPoS eligibility, eligible vote count, total vote count, and VRF key access. The current
+6. Define Rust ports for DPoS eligibility, eligible vote count, total vote count, and VRF key access. The current
    `DagManager` shim now gets those DPoS/VRF facts from a Rust FinalChain bridge bundle and routes embedded VRF proof
    verification, DAG VDF payload decode, difficulty calculation, legacy-modulus Wesolowski proof check, status-coded
    VDF/DPoS fact envelope, legacy VRF/VDF message construction, verify-side VDF denominator policy, and reject ordering
    through Rust. The Rust-mode `DagBlockProposer` overlay now routes proposer eligibility status decisions, legacy VRF
    input construction, and deterministic tip selection through Rust while preserving the C++ thread/network shell.
-6. Replace the temporary `dposIsEligible` shim behavior once the eligibility port has a real implementation.
-7. Finish the PBFT support slice by adding broader manager-level validation around the now Rust-backed primitives:
+7. Replace the temporary `dposIsEligible` shim behavior once the eligibility port has a real implementation.
+8. Finish the PBFT support slice by adding broader manager-level validation around the now Rust-backed primitives:
    `PbftChain` head updates, persisted-head preview, and next-block validation route through Rust under
    `RUSTAXA_ENABLE_PBFT_CHAIN`; proposed-block membership, validity flags, RLP snapshots, and cleanup planning route
    through Rust under `RUSTAXA_ENABLE_PROPOSED_BLOCKS`; period-data queue admission, effective size, pop vote-source
    decisions, and cleanup planning route through Rust under `RUSTAXA_ENABLE_PERIOD_DATA_QUEUE`.
-8. Split the Rust-mode `PbftManager` overlay into Rust services for round/step transitions, proposal handling, vote
+9. Split the Rust-mode `PbftManager` overlay into Rust services for round/step transitions, proposal handling, vote
    thresholding, and finalization decisions.
-9. Port transaction queue behavior before transaction manager orchestration. The Rust-mode `TransactionQueue` overlay
+10. Port transaction queue behavior before transaction manager orchestration. The Rust-mode `TransactionQueue` overlay
    now routes deterministic queue metadata, per-account nonce ordering, same-nonce replacement, non-proposer expiry
    planning, pool limits, gas-price threshold accounting, queued transaction RLP payload retention, known-transaction
    cache expiry, overflow/drop observation state, and finalized-account purge planning through Rust while C++
