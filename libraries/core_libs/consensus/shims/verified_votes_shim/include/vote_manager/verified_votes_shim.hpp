@@ -64,6 +64,31 @@ class VerifiedVotes {
   };
 
   /**
+   * Outcome of one Rust-owned verified-vote add with optional threshold effects.
+   *
+   * Purpose:
+   * - Preserves the exact live-sidecar facts C++ executors still need while
+   *   exposing the flat Rust mutation report consumed by protocol planners.
+   *
+   * Outputs:
+   * - `report` carries inserted/duplicate/conflict/threshold facts from Rust.
+   * - `conflicting_vote` is populated when Rust selected an existing live vote
+   *   for slashing.
+   * - `votes_with_weight` is populated only after a successful insertion and
+   *   mirrors the voted-value bucket used for current-round 2t+1 persistence.
+   *
+   * Invariants:
+   * - Live sidecars are inserted only after Rust accepts the vote.
+   * - Missing live sidecars for Rust-selected hashes remain hard invariant
+   *   errors, matching the existing shim facade contract.
+   */
+  struct AddVerifiedVoteOutcome {
+    rustaxa::VerifiedVoteAddOutcome report{};
+    std::optional<std::shared_ptr<PbftVote>> conflicting_vote;
+    std::optional<VotesWithWeight> votes_with_weight;
+  };
+
+  /**
    * Rust-evaluated threshold effects for one inserted verified vote.
    *
    * Purpose:
@@ -173,6 +198,21 @@ class VerifiedVotes {
    * `VoteManager` can process one consistent insertion outcome.
    */
   AtomicInsertOutcome insertVerifiedVoteAtomic(const std::shared_ptr<PbftVote>& vote);
+
+  /**
+   * Atomically inserts a verified vote and applies Rust-owned threshold effects.
+   *
+   * Inputs:
+   * - `vote`: live C++ vote sidecar with a non-zero calculated weight.
+   * - `two_t_plus_one`: optional threshold for this vote's period/type. When
+   *   empty, insertion still runs but threshold side effects are skipped.
+   *
+   * Outputs:
+   * - A flat Rust mutation report plus live sidecar references needed by the
+   *   C++ `VoteManager` executor.
+   */
+  AddVerifiedVoteOutcome addVerifiedVoteWithThreshold(const std::shared_ptr<PbftVote>& vote,
+                                                      std::optional<uint64_t> two_t_plus_one);
 
   /**
    * Sets `network_t_plus_one_step` for vote's (`period`, `round`) entry when present.

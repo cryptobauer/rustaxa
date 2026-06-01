@@ -9,10 +9,10 @@
 //!
 //! The current planner is intentionally staged because verified-vote insertion
 //! is a real state mutation. A first call with no insert report returns a
-//! `PendingVerifiedVoteInsert` plan carrying an [`InsertVerifiedVote`] intent.
-//! After the executor applies that intent to the Rust-backed verified-vote
-//! index, a second call with the [`AddVerifiedVoteOutcome`] turns the mutation
-//! report into slashing, reward-vote, gossip, and PBFT-progress intents.
+//! `PendingVerifiedVoteInsert` plan carrying only insert-safe intents. After
+//! the executor applies that intent to the Rust-backed verified-vote index, a
+//! second call with the [`AddVerifiedVoteOutcome`] turns the mutation report
+//! into durable reward-vote, slashing, gossip, and PBFT-progress intents.
 //!
 //! [`InsertVerifiedVote`]: PbftVoteProgressIntent::InsertVerifiedVote
 //! [`VerifiedVotes`]: crate::verified_votes::VerifiedVotes
@@ -330,7 +330,7 @@ pub fn plan_pbft_vote_progress(
     };
 
     let Some(add_vote_outcome) = add_vote_report else {
-        let mut intents = vec![
+        let intents = vec![
             PbftVoteProgressIntent::MarkKnown {
                 vote_hash: fact.identity.vote_hash,
             },
@@ -339,11 +339,6 @@ pub fn plan_pbft_vote_progress(
                 two_t_plus_one_threshold: context.two_t_plus_one_threshold,
             },
         ];
-        if fact.valid_stale_reward_vote {
-            intents.push(PbftVoteProgressIntent::PersistExtraRewardVote {
-                vote_hash: fact.identity.vote_hash,
-            });
-        }
         return PbftVoteProgressPlan::terminal(
             PbftVoteProgressStatus::PendingVerifiedVoteInsert,
             intents,
@@ -540,7 +535,7 @@ mod tests {
     }
 
     #[test]
-    fn validated_stale_reward_vote_produces_insert_and_persistence_intents() {
+    fn validated_stale_reward_vote_precheck_defers_persistence_until_insert_succeeds() {
         let mut facts = fact(identity(2, 3, 9, 1, 3, 11), PbftVoteType::Cert, 1);
         facts.valid_stale_reward_vote = true;
 
@@ -554,7 +549,14 @@ mod tests {
             intent,
             PbftVoteProgressIntent::InsertVerifiedVote { .. }
         )));
-        assert!(plan.contains_intent(|intent| matches!(
+        assert!(!plan.contains_intent(|intent| matches!(
+            intent,
+            PbftVoteProgressIntent::PersistExtraRewardVote { .. }
+        )));
+
+        let post_insert =
+            plan_pbft_vote_progress(facts, context(), Some(add_outcome(true, false, None, None)));
+        assert!(post_insert.contains_intent(|intent| matches!(
             intent,
             PbftVoteProgressIntent::PersistExtraRewardVote { vote_hash }
                 if *vote_hash == facts.identity.vote_hash

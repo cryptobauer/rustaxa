@@ -5,6 +5,7 @@ use crate::pbft_chain::*;
 use crate::pbft_finalize::*;
 use crate::pbft_manager::*;
 use crate::pbft_sync::*;
+use crate::pbft_vote_progress::*;
 use crate::period_data_queue::*;
 use crate::pillar_chain::*;
 use crate::pillar_votes::*;
@@ -952,6 +953,75 @@ pub mod rustaxa_ffi {
         step: u64,
         vote_type: u8,
         weight: u64,
+    }
+
+    /// Compact facts for one PBFT vote-progress planning pass.
+    ///
+    /// The vote payload carries canonical consensus identity and weight facts;
+    /// booleans carry caller-supplied ingress or validation state. This payload
+    /// intentionally does not own packet bytes, live `PbftVote` objects, or
+    /// verified-vote state.
+    struct PbftVoteProgressFact {
+        vote: VerifiedVotePayload,
+        vote_already_known: bool,
+        carries_proposed_block: bool,
+        valid_stale_reward_vote: bool,
+    }
+
+    /// Scalar context for one PBFT vote-progress planning pass.
+    ///
+    /// `has_two_t_plus_one_threshold` gates whether the threshold value should
+    /// be passed to the verified-vote executor. `max_future_period_delta`
+    /// remains caller-controlled so production routes can preserve legacy
+    /// prevalidated-vote behavior while future ingress stages can tighten it.
+    struct PbftVoteProgressContext {
+        current_period: u64,
+        current_round: u64,
+        max_future_period_delta: u64,
+        has_two_t_plus_one_threshold: bool,
+        two_t_plus_one_threshold: u64,
+        require_proposed_block_sidecar: bool,
+        slashing_enabled: bool,
+    }
+
+    /// Pre-mutation PBFT vote-progress decision for C++ executors.
+    ///
+    /// `status` matches `PbftVoteProgressStatus::as_u8()` in
+    /// `rustaxa-consensus`. A true `should_insert_verified_vote` means the shim
+    /// should execute exactly one verified-vote insertion mutation, then call
+    /// `pbft_vote_progress_plan_after_add`.
+    struct PbftVoteProgressPrecheckPlan {
+        status: u8,
+        error_code: String,
+        should_insert_verified_vote: bool,
+        has_two_t_plus_one_threshold: bool,
+        two_t_plus_one_threshold: u64,
+    }
+
+    /// Post-mutation PBFT vote-progress execution decision for C++ executors.
+    ///
+    /// This is intentionally operation-specific for `VoteManager::addVerifiedVote`:
+    /// network/ingress effects stay outside this route, while in-scope durable
+    /// side effects are exposed as direct booleans and payloads.
+    struct PbftVoteProgressExecutionPlan {
+        status: u8,
+        error_code: String,
+        accepted: bool,
+        report_slashing: bool,
+        slashing_incoming_vote_hash: [u8; 32],
+        slashing_conflicting_vote_hash: [u8; 32],
+        persist_extra_reward_vote: bool,
+        extra_reward_vote_hash: [u8; 32],
+        network_t_plus_one_step_updated: bool,
+        drive_pbft_progress: bool,
+        progress_period: u64,
+        progress_round: u64,
+        persist_two_t_plus_one_votes: bool,
+        two_t_plus_one_kind: u8,
+        two_t_plus_one_period: u64,
+        two_t_plus_one_round: u64,
+        two_t_plus_one_step: u64,
+        two_t_plus_one_block_hash: [u8; 32],
     }
 
     /// Plain payload for a pillar vote carried across the CXX boundary.
@@ -3483,6 +3553,18 @@ pub mod rustaxa_ffi {
         pub fn verified_votes_snapshot_round_markers(
             self: &BridgeVerifiedVotes,
         ) -> Vec<RoundMarkerSnapshot>;
+
+        // PBFT vote-progress protocol planner
+
+        pub fn pbft_vote_progress_plan_precheck(
+            fact: PbftVoteProgressFact,
+            context: PbftVoteProgressContext,
+        ) -> Result<PbftVoteProgressPrecheckPlan>;
+        pub fn pbft_vote_progress_plan_after_add(
+            fact: PbftVoteProgressFact,
+            context: PbftVoteProgressContext,
+            add_vote_outcome: VerifiedVoteAddOutcome,
+        ) -> Result<PbftVoteProgressExecutionPlan>;
 
         // Consensus pillar votes
 

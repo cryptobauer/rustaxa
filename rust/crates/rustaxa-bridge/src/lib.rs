@@ -6,6 +6,7 @@ mod pbft_chain;
 mod pbft_finalize;
 mod pbft_manager;
 mod pbft_sync;
+mod pbft_vote_progress;
 mod period_data_queue;
 mod pillar_chain;
 mod pillar_votes;

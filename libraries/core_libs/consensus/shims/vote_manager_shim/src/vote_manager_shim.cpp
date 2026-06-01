@@ -1,5 +1,6 @@
 #include <libdevcore/RLP.h>
 
+#include <limits>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
@@ -22,6 +23,8 @@ constexpr uint8_t kPbftFinalizationStorageStageRewardVotesReset = 4;
 constexpr uint8_t kPbftFinalizationRuntimeActionCommitRewardVotesReset = 3;
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t& hash) { return hash.asArray(); }
+
+std::array<uint8_t, 20> toBridgeAddress(const addr_t& address) { return address.asArray(); }
 
 rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& bytes) {
   rust::Vec<uint8_t> out;
@@ -96,6 +99,36 @@ rustaxa::PbftFinalizationStorageWriteStage makeRewardResetWriteStage(
   return write_stage;
 }
 
+rustaxa::VerifiedVotePayload toBridgeVerifiedVotePayload(const std::shared_ptr<PbftVote>& vote) {
+  return rustaxa::VerifiedVotePayload{toBridgeHash(vote->getHash()), toBridgeHash(vote->getBlockHash()),
+                                      toBridgeAddress(vote->getVoterAddr()), vote->getPeriod(),
+                                      vote->getRound(), vote->getStep(), static_cast<uint8_t>(vote->getType()),
+                                      *vote->getWeight()};
+}
+
+rustaxa::PbftVoteProgressFact makeVoteProgressFact(const std::shared_ptr<PbftVote>& vote,
+                                                   bool valid_stale_reward_vote) {
+  rustaxa::PbftVoteProgressFact fact{};
+  fact.vote = toBridgeVerifiedVotePayload(vote);
+  fact.vote_already_known = false;
+  fact.carries_proposed_block = true;
+  fact.valid_stale_reward_vote = valid_stale_reward_vote;
+  return fact;
+}
+
+rustaxa::PbftVoteProgressContext makeVoteProgressContext(PbftPeriod current_period, PbftRound current_round,
+                                                         std::optional<uint64_t> two_t_plus_one) {
+  rustaxa::PbftVoteProgressContext context{};
+  context.current_period = current_period;
+  context.current_round = current_round;
+  context.max_future_period_delta = std::numeric_limits<uint64_t>::max();
+  context.has_two_t_plus_one_threshold = two_t_plus_one.has_value();
+  context.two_t_plus_one_threshold = two_t_plus_one.value_or(0);
+  context.require_proposed_block_sidecar = false;
+  context.slashing_enabled = true;
+  return context;
+}
+
 }  // namespace
 
 void VoteManager::setNetwork(std::weak_ptr<Network> network) {
@@ -104,7 +137,11 @@ void VoteManager::setNetwork(std::weak_ptr<Network> network) {
 }
 
 bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
-  assert(vote->getWeight().has_value());
+  if (!vote || !vote->getWeight().has_value()) {
+    LOG(log_er_) << "Unable to add vote into the verified queue. Missing vote or vote weight";
+    return false;
+  }
+
   const auto hash = vote->getHash();
   const auto weight = *vote->getWeight();
   if (!weight) {
@@ -122,55 +159,68 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
     }
   }
 
-  const auto insert_outcome = verified_votes_.insertVerifiedVoteAtomic(vote);
-  if (insert_outcome.conflicting_vote) {
-    LOG(log_wr_) << "Non unique vote " << vote->getHash().abridged() << " (race condition)";
-    slashing_manager_->submitDoubleVotingProof(vote, *insert_outcome.conflicting_vote);
+  // TODO(rustaxa): move PBFT threshold calculation and cache ownership to Rust.
+  const auto two_t_plus_one = VoteManagerOld::getPbftTwoTPlusOne(vote->getPeriod() - 1, vote->getType());
+  const auto progress_fact = makeVoteProgressFact(vote, is_valid_potential_reward_vote);
+  const auto progress_context =
+      makeVoteProgressContext(current_pbft_period_, current_pbft_round_, two_t_plus_one);
+
+  const auto precheck_plan = rustaxa::pbft_vote_progress_plan_precheck(progress_fact, progress_context);
+  if (!precheck_plan.should_insert_verified_vote) {
     return false;
   }
 
-  const auto votes_with_weight = insert_outcome.votes_with_weight;
-  if (!votes_with_weight) {
+  const auto add_outcome = verified_votes_.addVerifiedVoteWithThreshold(vote, two_t_plus_one);
+  const auto execution_plan =
+      rustaxa::pbft_vote_progress_plan_after_add(progress_fact, progress_context, add_outcome.report);
+
+  if (execution_plan.report_slashing) {
+    LOG(log_wr_) << "Non unique vote " << vote->getHash().abridged() << " (race condition)";
+    if (!add_outcome.conflicting_vote) {
+      throw std::runtime_error("VoteManager Rust vote-progress planner requested slashing without conflict sidecar");
+    }
+    slashing_manager_->submitDoubleVotingProof(vote, *add_outcome.conflicting_vote);
     return false;
+  }
+
+  if (!execution_plan.accepted) {
+    return false;
+  }
+
+  const auto votes_with_weight = add_outcome.votes_with_weight;
+  if (!votes_with_weight) {
+    throw std::runtime_error("VoteManager Rust vote-progress planner accepted vote without inserted vote sidecars");
   }
 
   LOG(log_nf_) << "Added verified vote: " << hash;
   LOG(log_dg_) << "Added verified vote: " << *vote;
 
-  if (is_valid_potential_reward_vote) {
+  if (execution_plan.persist_extra_reward_vote) {
     extra_reward_votes_.emplace_back(vote->getHash());
     db_->saveExtraRewardVote(vote);
   }
 
-  // TODO(rustaxa): move PBFT threshold calculation and cache ownership to Rust.
-  const auto two_t_plus_one = VoteManagerOld::getPbftTwoTPlusOne(vote->getPeriod() - 1, vote->getType());
   if (!two_t_plus_one.has_value()) [[unlikely]] {
     LOG(log_er_) << "Cannot set(or not) 2t+1 voted block as 2t+1 threshold is unavailable, vote " << vote->getHash();
     return true;
   }
 
-  const auto threshold_decision =
-      verified_votes_.decideThresholdEffects(vote, votes_with_weight->weight, *two_t_plus_one);
-  if (threshold_decision.set_network_t_plus_one_step) {
+  if (execution_plan.network_t_plus_one_step_updated) {
     LOG(log_nf_) << "Set t+1 next voted block " << vote->getHash() << " for period " << vote->getPeriod() << ", round "
                  << vote->getRound() << ", step " << vote->getStep();
   }
 
-  if (!threshold_decision.inserted_two_t_plus_one_voted_block_type) {
+  if (!execution_plan.persist_two_t_plus_one_votes) {
     return true;
   }
 
-  if (vote->getType() != PbftVoteTypes::cert_vote && vote->getPeriod() == current_pbft_period_ &&
-      vote->getRound() == current_pbft_round_) {
-    std::vector<std::shared_ptr<PbftVote>> votes;
-    votes.reserve(votes_with_weight->votes.size());
-    for (const auto& tmp_vote : votes_with_weight->votes) {
-      votes.push_back(tmp_vote.second);
-    }
-
-    db_->replaceTwoTPlusOneVotes(*threshold_decision.inserted_two_t_plus_one_voted_block_type, votes);
+  std::vector<std::shared_ptr<PbftVote>> votes;
+  votes.reserve(votes_with_weight->votes.size());
+  for (const auto& tmp_vote : votes_with_weight->votes) {
+    votes.push_back(tmp_vote.second);
   }
 
+  db_->replaceTwoTPlusOneVotes(static_cast<TwoTPlusOneVotedBlockType>(execution_plan.two_t_plus_one_kind), votes);
   return true;
 }
 

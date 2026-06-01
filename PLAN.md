@@ -456,7 +456,8 @@ The current Rust starting point is intentionally small:
   transaction lookup and non-finalized recovery payload loading, Rust-planned finalized transaction filter/verification
   helpers, Rust-planned transaction verification and validated-insert admission, shim-owned live non-finalized/pool/count
   read helpers, a side-effect-free PBFT vote-progress protocol planner that stages verified-vote insertion reports into
-  typed known/admit/slashing/gossip/progress intents, and a Rust-backed `GasPricer` oracle for finalized-block history,
+  typed known/admit/slashing/gossip/progress intents plus an operation-specific CXX bridge for Rust-mode
+  `VoteManager::addVerifiedVote` execution, and a Rust-backed `GasPricer` oracle for finalized-block history,
   minimum-price flooring, and percentile bid selection.
   The Rust-enabled `SlashingManager` overlay now routes deterministic double-voting proof planning, duplicate-proof
   cache decisions, submitter selection, and slashing contract calldata construction through Rust while C++ keeps live
@@ -496,9 +497,10 @@ The current Rust starting point is intentionally small:
 4. Add ingress-compatible Rust inspection/planning surfaces as adjacent slices are touched. PBFT vote, DAG block,
    transaction, pillar vote, and PBFT sync work should accept canonical bytes or compact facts, optionally create
    enrichment records, and return route/admit/drop/gossip/request-sync/peer-action intents rather than depending on
-   network handler objects or eager C++ materialized objects. The first PBFT vote-progress planner now keeps this
-   Rust-domain-only: it emits typed intents and consumes the authoritative `VerifiedVotes` insertion report, but it is
-   not yet production-routed through the C++ vote packet or `VoteManager` shell.
+   network handler objects or eager C++ materialized objects. The first PBFT vote-progress planner now routes
+   Rust-mode `VoteManager::addVerifiedVote` through a precheck plan, one authoritative Rust-backed `VerifiedVotes`
+   add/threshold mutation, and a post-add execution plan. Packet ingress, peer-known marking, gossip, and proposed-block
+   sidecar routing remain deferred to the future vote pipeline.
 5. Port DAG graph operations before broader `DagManager` orchestration: pivot/tip availability, ghost path, ordering,
    counters, storage-facing queries, and deterministic `verifyBlock` reject decisions.
 6. Define Rust ports for DPoS eligibility, eligible vote count, total vote count, and VRF key access. The current
@@ -648,9 +650,11 @@ The current Rust starting point is intentionally small:
    stage. The same overlay now routes deterministic verified-vote live
    state methods through the Rust-backed `VerifiedVotes` facade instead of `VoteManagerOld`: insertion/uniqueness,
    vote presence and snapshots, proposal-vote selection, cleanup, 2t+1 block/bundle lookups, next-round detection,
-   current round persistence of non-cert bundles, and network t+1 step reads use Rust-owned metadata while C++ keeps
-   live `PbftVote` sidecars, slashing submission, threshold lookup, DB writes, and reward/own-vote persistence. Rust now
-   also owns PBFT finalization
+   current round persistence of non-cert bundles, and network t+1 step reads use Rust-owned metadata. `addVerifiedVote`
+   now also uses the Rust PBFT vote-progress planner to gate insertion, consume the Rust mutation report, classify
+   duplicates/conflicts, and expose slashing, reward persistence, PBFT progress, and current-round 2t+1 persistence
+   decisions while C++ keeps live `PbftVote` sidecars, threshold lookup, slashing submission, DB writes, logging,
+   reward/own-vote persistence, and deferred network effects. Rust now also owns PBFT finalization
    sortition-change persistence: the sortition shim now previews the live Rust runtime transition, returns the emitted
    threshold change for storage staging, and commits the same transition only after the PBFT staged storage appender has
    committed the primary batch. C++ still owns dynamic-lambda live-field assignment from Rust output, FinalChain

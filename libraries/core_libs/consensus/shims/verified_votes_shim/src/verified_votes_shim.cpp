@@ -281,6 +281,31 @@ VerifiedVotes::AtomicInsertOutcome VerifiedVotes::insertVerifiedVoteAtomic(const
   return AtomicInsertOutcome{std::nullopt, requireInsertedVotesWithWeightLocked(vote, outcome.total_weight)};
 }
 
+VerifiedVotes::AddVerifiedVoteOutcome VerifiedVotes::addVerifiedVoteWithThreshold(
+    const std::shared_ptr<PbftVote>& vote, std::optional<uint64_t> two_t_plus_one) {
+  std::scoped_lock lock(verified_votes_access_);
+  const auto payload = toBridgeVotePayload(vote);
+  const auto outcome = rust_verified_votes_->verified_votes_add_verified_vote(
+      payload, two_t_plus_one.value_or(0), two_t_plus_one.has_value());
+
+  AddVerifiedVoteOutcome result{};
+  result.report = outcome;
+
+  if (outcome.conflict_found) {
+    const auto conflict_hash = fromBridgeHash(outcome.conflicting_vote_hash);
+    result.conflicting_vote = requireLiveVote(conflict_hash);
+    return result;
+  }
+
+  if (!outcome.inserted) {
+    return result;
+  }
+
+  live_votes_[vote->getHash()] = vote;
+  result.votes_with_weight = requireInsertedVotesWithWeightLocked(vote, outcome.total_weight);
+  return result;
+}
+
 void VerifiedVotes::setNetworkTPlusOneStep(std::shared_ptr<PbftVote> vote) {
   std::scoped_lock lock(verified_votes_access_);
   rust_verified_votes_->verified_votes_set_network_t_plus_one_step(vote->getPeriod(), vote->getRound(),
