@@ -12,6 +12,34 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 
+const PBFT_VOTE_PERSISTENCE_STATUS_APPLIED: u8 = 0;
+const PBFT_VOTE_PERSISTENCE_STATUS_REJECTED: u8 = 1;
+
+fn pbft_vote_persistence_applied(applied_writes: u64) -> rustaxa_ffi::PbftVotePersistenceResult {
+    rustaxa_ffi::PbftVotePersistenceResult {
+        status: PBFT_VOTE_PERSISTENCE_STATUS_APPLIED,
+        applied_writes,
+        error_code: String::new(),
+    }
+}
+
+fn pbft_vote_persistence_rejected(error_code: &str) -> rustaxa_ffi::PbftVotePersistenceResult {
+    rustaxa_ffi::PbftVotePersistenceResult {
+        status: PBFT_VOTE_PERSISTENCE_STATUS_REJECTED,
+        applied_writes: 0,
+        error_code: error_code.to_string(),
+    }
+}
+
+fn validate_two_t_plus_one_kind(kind: u8) -> bool {
+    kind <= 3
+}
+
+fn validate_votes_bundle_rlp(bytes: &[u8]) -> bool {
+    let rlp = rlp::Rlp::new(bytes);
+    rlp.is_list() && rlp.item_count().is_ok()
+}
+
 pub fn create_storage(path: &str) -> Result<Box<BridgeStorage>, anyhow::Error> {
     let path_buf = PathBuf::from(path);
     let config = Config::new(path_buf);
@@ -698,6 +726,131 @@ impl BridgeStorage {
         self.0
             .pbft()
             .write_extra_reward_vote(H256::from(*hash), &vote_rlp)
+    }
+
+    /// Persists VoteManager durable effects for one accepted PBFT vote.
+    ///
+    /// Inputs:
+    /// - `write`: optional extra reward-vote record and optional latest-round
+    ///   2t+1 vote bundle selected by the VoteManager progress planner.
+    ///
+    /// Outputs:
+    /// - A bridge result with `status = 0` on success or `status = 1` plus a
+    ///   stable error code on validation/storage failure.
+    ///
+    /// Invariants and edge behavior:
+    /// - Both optional effects are applied through one Rust storage batch.
+    /// - 2t+1 bundle replacement is delete-plus-put atomic.
+    /// - Vote bytes are persisted as provided by C++ and are not decoded into
+    ///   C++ vote objects in Rust storage.
+    pub fn persist_pbft_vote_progress(
+        &self,
+        write: rustaxa_ffi::PbftVoteProgressPersistenceWrite,
+    ) -> Result<rustaxa_ffi::PbftVotePersistenceResult, anyhow::Error> {
+        let mut batch = self.0.create_write_batch();
+        let mut applied_writes = 0;
+
+        if write.has_extra_reward_vote {
+            let vote = write.extra_reward_vote;
+            if self
+                .0
+                .pbft()
+                .write_extra_reward_vote_in_batch(&mut batch, H256::from(vote.hash), &vote.vote_rlp)
+                .is_err()
+            {
+                return Ok(pbft_vote_persistence_rejected(
+                    "PBFT_VOTE_PERSIST_STORAGE_FAILURE",
+                ));
+            }
+            applied_writes += 1;
+        }
+
+        if write.has_two_t_plus_one_bundle {
+            let bundle = write.two_t_plus_one_bundle;
+            if !validate_two_t_plus_one_kind(bundle.kind) {
+                return Ok(pbft_vote_persistence_rejected(
+                    "PBFT_VOTE_PERSIST_INVALID_TWO_T_PLUS_ONE_KIND",
+                ));
+            }
+            if !validate_votes_bundle_rlp(&bundle.votes_bundle_rlp) {
+                return Ok(pbft_vote_persistence_rejected(
+                    "PBFT_VOTE_PERSIST_MALFORMED_TWO_T_PLUS_ONE_BUNDLE",
+                ));
+            }
+            if self
+                .0
+                .pbft()
+                .replace_two_t_plus_one_votes_in_batch(
+                    &mut batch,
+                    bundle.kind,
+                    &bundle.votes_bundle_rlp,
+                )
+                .is_err()
+            {
+                return Ok(pbft_vote_persistence_rejected(
+                    "PBFT_VOTE_PERSIST_STORAGE_FAILURE",
+                ));
+            }
+            applied_writes += 1;
+        }
+
+        if self.0.commit_write_batch_with_sync(batch, false).is_err() {
+            return Ok(pbft_vote_persistence_rejected(
+                "PBFT_VOTE_PERSIST_STORAGE_FAILURE",
+            ));
+        }
+
+        Ok(pbft_vote_persistence_applied(applied_writes))
+    }
+
+    /// Appends VoteManager own-vote cleanup to a caller-owned Rust storage batch.
+    ///
+    /// Inputs:
+    /// - `batch_id`: bridge batch registry id associated with the caller's C++
+    ///   `Batch`.
+    /// - `vote_hashes`: exact latest-round own-vote keys to delete.
+    ///
+    /// Outputs:
+    /// - A bridge result with `status = 0` after the deletes are appended or
+    ///   `status = 1` plus a stable error code if the batch is unknown or
+    ///   storage rejects the append.
+    ///
+    /// Invariants and edge behavior:
+    /// - The caller owns the eventual commit through `commit_write_batch`.
+    /// - Missing keys are RocksDB delete no-ops, matching legacy semantics.
+    pub fn append_clear_own_verified_votes(
+        &self,
+        batch_id: u64,
+        vote_hashes: Vec<rustaxa_ffi::PbftFinalizationHash>,
+    ) -> Result<rustaxa_ffi::PbftVotePersistenceResult, anyhow::Error> {
+        let mut batches = match self.1.lock() {
+            Ok(batches) => batches,
+            Err(_) => {
+                return Ok(pbft_vote_persistence_rejected(
+                    "PBFT_VOTE_PERSIST_BATCH_REGISTRY_POISONED",
+                ));
+            }
+        };
+        let Some(batch) = batches.get_mut(&batch_id) else {
+            return Ok(pbft_vote_persistence_rejected(
+                "PBFT_VOTE_PERSIST_UNKNOWN_BATCH",
+            ));
+        };
+
+        for hash in &vote_hashes {
+            if self
+                .0
+                .pbft()
+                .remove_own_verified_vote_in_batch(batch, H256::from(hash.hash))
+                .is_err()
+            {
+                return Ok(pbft_vote_persistence_rejected(
+                    "PBFT_VOTE_PERSIST_STORAGE_FAILURE",
+                ));
+            }
+        }
+
+        Ok(pbft_vote_persistence_applied(vote_hashes.len() as u64))
     }
 
     pub fn transaction_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {

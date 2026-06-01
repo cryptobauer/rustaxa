@@ -43,8 +43,24 @@ class StorageTest : public ::testing::Test {
     return hash;
   }
 
+  static rust::Vec<uint8_t> bytes(std::initializer_list<uint8_t> values) {
+    rust::Vec<uint8_t> out;
+    out.reserve(values.size());
+    for (auto value : values) {
+      out.push_back(value);
+    }
+    return out;
+  }
+
+  static std::vector<uint8_t> to_std_vec(const rust::Vec<uint8_t>& values) {
+    return std::vector<uint8_t>(values.begin(), values.end());
+  }
+
   std::filesystem::path test_dir;
 };
+
+constexpr uint8_t kPbftVotePersistenceApplied = 0;
+constexpr uint8_t kPbftVotePersistenceRejected = 1;
 
 TEST_F(StorageTest, CreateStorage) {
   auto storage = create_storage(test_dir.string());
@@ -123,4 +139,106 @@ TEST_F(StorageTest, DagBlockPeriodLookupReflectsFoundState) {
   EXPECT_TRUE(found.found);
   EXPECT_EQ(found.period, 7u);
   EXPECT_EQ(found.position, 4u);
+}
+
+TEST_F(StorageTest, PersistPbftVoteProgressGroupsRewardAndTwoTPlusOneWrites) {
+  auto storage = create_storage(test_dir.string());
+
+  PbftVoteProgressPersistenceWrite write{};
+  write.has_extra_reward_vote = true;
+  write.extra_reward_vote.hash = h256(0x44);
+  write.extra_reward_vote.vote_rlp = bytes({0x71});
+  write.has_two_t_plus_one_bundle = true;
+  write.two_t_plus_one_bundle.kind = 0;
+  write.two_t_plus_one_bundle.period = 10;
+  write.two_t_plus_one_bundle.round = 2;
+  write.two_t_plus_one_bundle.step = 3;
+  write.two_t_plus_one_bundle.block_hash = h256(0x55);
+  write.two_t_plus_one_bundle.votes_bundle_rlp = bytes({0xC2, 0x01, 0x02});
+
+  auto result = storage->persist_pbft_vote_progress(write);
+  EXPECT_EQ(result.status, kPbftVotePersistenceApplied);
+  EXPECT_EQ(result.applied_writes, 2u);
+  EXPECT_TRUE(result.error_code.empty());
+
+  auto reward_votes = storage->get_reward_votes();
+  ASSERT_EQ(reward_votes.size(), 1u);
+  EXPECT_EQ(to_std_vec(reward_votes[0].data), std::vector<uint8_t>({0x71}));
+
+  auto two_t_plus_one_votes = storage->get_all_two_t_plus_one_votes();
+  ASSERT_EQ(two_t_plus_one_votes.size(), 2u);
+  EXPECT_EQ(to_std_vec(two_t_plus_one_votes[0].data), std::vector<uint8_t>({0x01}));
+  EXPECT_EQ(to_std_vec(two_t_plus_one_votes[1].data), std::vector<uint8_t>({0x02}));
+}
+
+TEST_F(StorageTest, PersistPbftVoteProgressRejectsInvalidTwoTPlusOneKind) {
+  auto storage = create_storage(test_dir.string());
+
+  PbftVoteProgressPersistenceWrite write{};
+  write.has_two_t_plus_one_bundle = true;
+  write.two_t_plus_one_bundle.kind = 99;
+  write.two_t_plus_one_bundle.votes_bundle_rlp = bytes({0xC1, 0x01});
+
+  auto result = storage->persist_pbft_vote_progress(write);
+  EXPECT_EQ(result.status, kPbftVotePersistenceRejected);
+  EXPECT_FALSE(result.error_code.empty());
+  EXPECT_TRUE(storage->get_all_two_t_plus_one_votes().empty());
+}
+
+TEST_F(StorageTest, PersistPbftVoteProgressRejectsMalformedTwoTPlusOneBundle) {
+  auto storage = create_storage(test_dir.string());
+
+  PbftVoteProgressPersistenceWrite write{};
+  write.has_two_t_plus_one_bundle = true;
+  write.two_t_plus_one_bundle.kind = 0;
+  write.two_t_plus_one_bundle.votes_bundle_rlp = bytes({0x01});
+
+  auto result = storage->persist_pbft_vote_progress(write);
+  EXPECT_EQ(result.status, kPbftVotePersistenceRejected);
+  EXPECT_FALSE(result.error_code.empty());
+  EXPECT_TRUE(storage->get_all_two_t_plus_one_votes().empty());
+}
+
+TEST_F(StorageTest, AppendClearOwnVerifiedVotesWaitsForCallerBatchCommit) {
+  auto storage = create_storage(test_dir.string());
+  auto own_vote_hash = h256(0x66);
+  storage->save_own_verified_vote(own_vote_hash, bytes({0x72}));
+  ASSERT_EQ(storage->get_own_verified_votes().size(), 1u);
+
+  rust::Vec<PbftFinalizationHash> vote_hashes;
+  vote_hashes.push_back(PbftFinalizationHash{own_vote_hash});
+  auto batch_id = storage->create_write_batch();
+  auto result = storage->append_clear_own_verified_votes(batch_id, std::move(vote_hashes));
+  EXPECT_EQ(result.status, kPbftVotePersistenceApplied);
+  EXPECT_EQ(result.applied_writes, 1u);
+  EXPECT_EQ(storage->get_own_verified_votes().size(), 1u);
+
+  storage->commit_write_batch(batch_id, false);
+  EXPECT_TRUE(storage->get_own_verified_votes().empty());
+}
+
+TEST_F(StorageTest, AppendClearOwnVerifiedVotesDropLeavesVotes) {
+  auto storage = create_storage(test_dir.string());
+  auto own_vote_hash = h256(0x77);
+  storage->save_own_verified_vote(own_vote_hash, bytes({0x73}));
+
+  rust::Vec<PbftFinalizationHash> vote_hashes;
+  vote_hashes.push_back(PbftFinalizationHash{own_vote_hash});
+  auto batch_id = storage->create_write_batch();
+  auto result = storage->append_clear_own_verified_votes(batch_id, std::move(vote_hashes));
+  EXPECT_EQ(result.status, kPbftVotePersistenceApplied);
+
+  storage->drop_write_batch(batch_id);
+  ASSERT_EQ(storage->get_own_verified_votes().size(), 1u);
+  EXPECT_EQ(to_std_vec(storage->get_own_verified_votes()[0].data), std::vector<uint8_t>({0x73}));
+}
+
+TEST_F(StorageTest, AppendClearOwnVerifiedVotesRejectsUnknownBatch) {
+  auto storage = create_storage(test_dir.string());
+
+  rust::Vec<PbftFinalizationHash> vote_hashes;
+  vote_hashes.push_back(PbftFinalizationHash{h256(0x88)});
+  auto result = storage->append_clear_own_verified_votes(999999, std::move(vote_hashes));
+  EXPECT_EQ(result.status, kPbftVotePersistenceRejected);
+  EXPECT_FALSE(result.error_code.empty());
 }

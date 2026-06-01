@@ -34,10 +34,11 @@ Handles PBFT blocks and chain state.
 
 ### 4. VoteRepository
 Handles consensus votes.
-- [ ] `saveOwnVerifiedVote`, `getOwnVerifiedVotes`
-- [ ] `replaceTwoTPlusOneVotes`, `getAllTwoTPlusOneVotes`
+- [x] `saveOwnVerifiedVote`, `getOwnVerifiedVotes`
+- [x] `replaceTwoTPlusOneVotes`, `getAllTwoTPlusOneVotes`
 - [ ] `getPeriodCertVotes`
-- [ ] `getRewardVotes`, `saveExtraRewardVote`
+- [x] `getRewardVotes`, `saveExtraRewardVote`
+- [x] VoteManager-specific Rust bridge operations for accepted-vote progress persistence and caller-owned own-vote cleanup batches
 
 ### 5. PillarRepository
 Handles Pillar Chain blocks and votes.

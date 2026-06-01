@@ -186,6 +186,33 @@ impl<D: DbReader + DbWriter> PbftRepository<D> {
             .put(Column::LatestRoundOwnVotes, vote_hash.as_bytes(), vote_rlp)
     }
 
+    /// Appends one locally produced verified vote payload to a caller-owned storage batch.
+    ///
+    /// Inputs:
+    /// - `batch`: Rust storage write batch that owns the eventual atomic commit.
+    /// - `vote_hash`: canonical PBFT vote hash used as the latest own-vote key.
+    /// - `vote_rlp`: weighted PBFT vote bytes, matching `PbftVote::rlp(true, true)`.
+    ///
+    /// Outputs:
+    /// - Appends a put in `latest_round_own_votes`.
+    ///
+    /// Invariants and edge behavior:
+    /// - Existing keys are overwritten, matching RocksDB put semantics used by
+    ///   the legacy C++ path.
+    pub fn write_own_verified_vote_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        vote_hash: H256,
+        vote_rlp: &[u8],
+    ) -> Result<()> {
+        self.db.batch_put(
+            batch,
+            Column::LatestRoundOwnVotes,
+            vote_hash.as_bytes(),
+            vote_rlp,
+        )
+    }
+
     /// Replaces a full 2t+1 vote bundle for the given vote type.
     /// C++ mapping: `DbStorage::replaceTwoTPlusOneVotes(TwoTPlusOneVotedBlockType, const std::vector<std::shared_ptr<PbftVote>>&)`.
     pub fn replace_two_t_plus_one_votes(
@@ -203,11 +230,69 @@ impl<D: DbReader + DbWriter> PbftRepository<D> {
         )
     }
 
+    /// Appends a full 2t+1 vote bundle replacement to a caller-owned storage batch.
+    ///
+    /// Inputs:
+    /// - `batch`: Rust storage write batch that owns the eventual atomic commit.
+    /// - `vote_type`: C++-compatible `TwoTPlusOneVotedBlockType` discriminant.
+    /// - `votes_bundle_rlp`: RLP list containing weighted PBFT vote payloads.
+    ///
+    /// Outputs:
+    /// - Appends delete-then-put operations for the latest-round 2t+1 vote slot.
+    ///
+    /// Invariants and edge behavior:
+    /// - The vote type must be one of the C++ discriminants `0..=3`.
+    /// - The bundle is keyed only by vote type to preserve legacy
+    ///   "latest-round" semantics.
+    pub fn replace_two_t_plus_one_votes_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        vote_type: u8,
+        votes_bundle_rlp: &[u8],
+    ) -> Result<()> {
+        Self::validate_two_t_plus_one_vote_type(vote_type)?;
+        self.db
+            .batch_delete(batch, Column::LatestRoundTwoTPlusOneVotes, &[vote_type])?;
+        self.db.batch_put(
+            batch,
+            Column::LatestRoundTwoTPlusOneVotes,
+            &[vote_type],
+            votes_bundle_rlp,
+        )
+    }
+
     /// Stores one extra reward vote payload.
     /// C++ mapping: `DbStorage::saveExtraRewardVote(const std::shared_ptr<PbftVote>&)`.
     pub fn write_extra_reward_vote(&self, vote_hash: H256, vote_rlp: &[u8]) -> Result<()> {
         self.db
             .put(Column::ExtraRewardVotes, vote_hash.as_bytes(), vote_rlp)
+    }
+
+    /// Appends one extra reward vote payload to a caller-owned storage batch.
+    ///
+    /// Inputs:
+    /// - `batch`: Rust storage write batch that owns the eventual atomic commit.
+    /// - `vote_hash`: canonical PBFT vote hash used as the extra reward-vote key.
+    /// - `vote_rlp`: weighted PBFT vote bytes, matching `PbftVote::rlp(true, true)`.
+    ///
+    /// Outputs:
+    /// - Appends a put in `extra_reward_votes`.
+    ///
+    /// Invariants and edge behavior:
+    /// - Existing keys are overwritten, matching RocksDB put semantics used by
+    ///   the legacy C++ path.
+    pub fn write_extra_reward_vote_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        vote_hash: H256,
+        vote_rlp: &[u8],
+    ) -> Result<()> {
+        self.db.batch_put(
+            batch,
+            Column::ExtraRewardVotes,
+            vote_hash.as_bytes(),
+            vote_rlp,
+        )
     }
 
     /// Stores the latest cert-voted block together with the round number.
@@ -251,11 +336,53 @@ impl<D: DbReader + DbWriter> PbftRepository<D> {
             .delete(Column::LatestRoundOwnVotes, vote_hash.as_bytes())
     }
 
+    /// Appends removal of one cached own verified vote to a caller-owned storage batch.
+    ///
+    /// Inputs:
+    /// - `batch`: Rust storage write batch that owns the eventual atomic commit.
+    /// - `vote_hash`: canonical PBFT vote hash used as the latest own-vote key.
+    ///
+    /// Outputs:
+    /// - Appends a delete in `latest_round_own_votes`.
+    ///
+    /// Invariants and edge behavior:
+    /// - Missing keys are treated as RocksDB delete no-ops, matching legacy
+    ///   storage behavior.
+    pub fn remove_own_verified_vote_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        vote_hash: H256,
+    ) -> Result<()> {
+        self.db
+            .batch_delete(batch, Column::LatestRoundOwnVotes, vote_hash.as_bytes())
+    }
+
     /// Removes one cached extra reward vote by vote hash.
     /// C++ mapping: `DbStorage::removeExtraRewardVotes(const std::vector<vote_hash_t>&, Batch&)`.
     pub fn remove_extra_reward_vote(&self, vote_hash: H256) -> Result<()> {
         self.db
             .delete(Column::ExtraRewardVotes, vote_hash.as_bytes())
+    }
+
+    /// Appends removal of one cached extra reward vote to a caller-owned storage batch.
+    ///
+    /// Inputs:
+    /// - `batch`: Rust storage write batch that owns the eventual atomic commit.
+    /// - `vote_hash`: canonical PBFT vote hash used as the extra reward-vote key.
+    ///
+    /// Outputs:
+    /// - Appends a delete in `extra_reward_votes`.
+    ///
+    /// Invariants and edge behavior:
+    /// - Missing keys are treated as RocksDB delete no-ops, matching legacy
+    ///   storage behavior.
+    pub fn remove_extra_reward_vote_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        vote_hash: H256,
+    ) -> Result<()> {
+        self.db
+            .batch_delete(batch, Column::ExtraRewardVotes, vote_hash.as_bytes())
     }
 
     fn validate_two_t_plus_one_vote_type(vote_type: u8) -> Result<()> {
@@ -272,9 +399,14 @@ impl<D: DbReader + DbWriter> PbftRepository<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::DbIterator;
+    use crate::db::{DbIterator, DbWriter};
     use std::collections::{BTreeMap, HashMap};
     use std::sync::RwLock;
+
+    enum MockBatchOp {
+        Put(Column, Vec<u8>, Vec<u8>),
+        Delete(Column, Vec<u8>),
+    }
 
     struct MockPbftStore {
         data: RwLock<HashMap<String, BTreeMap<Vec<u8>, Vec<u8>>>>,
@@ -293,6 +425,13 @@ mod tests {
                 .entry(col.name().to_string())
                 .or_insert_with(BTreeMap::new);
             cf.insert(key.to_vec(), value.to_vec());
+        }
+
+        fn delete(&self, col: Column, key: &[u8]) {
+            let mut data = self.data.write().unwrap();
+            if let Some(cf) = data.get_mut(col.name()) {
+                cf.remove(key);
+            }
         }
     }
 
@@ -374,6 +513,50 @@ mod tests {
             } else {
                 Box::new(std::iter::empty())
             }
+        }
+    }
+
+    impl DbWriter for MockPbftStore {
+        type Batch = Vec<MockBatchOp>;
+
+        fn create_batch(&self) -> Self::Batch {
+            Vec::new()
+        }
+
+        fn batch_put(
+            &self,
+            batch: &mut Self::Batch,
+            col: Column,
+            key: &[u8],
+            value: &[u8],
+        ) -> Result<()> {
+            batch.push(MockBatchOp::Put(col, key.to_vec(), value.to_vec()));
+            Ok(())
+        }
+
+        fn batch_delete(&self, batch: &mut Self::Batch, col: Column, key: &[u8]) -> Result<()> {
+            batch.push(MockBatchOp::Delete(col, key.to_vec()));
+            Ok(())
+        }
+
+        fn commit_batch(&self, batch: Self::Batch) -> Result<()> {
+            for op in batch {
+                match op {
+                    MockBatchOp::Put(col, key, value) => self.put(col, &key, &value),
+                    MockBatchOp::Delete(col, key) => self.delete(col, &key),
+                }
+            }
+            Ok(())
+        }
+
+        fn put(&self, col: Column, key: &[u8], value: &[u8]) -> Result<()> {
+            MockPbftStore::put(self, col, key, value);
+            Ok(())
+        }
+
+        fn delete(&self, col: Column, key: &[u8]) -> Result<()> {
+            MockPbftStore::delete(self, col, key);
+            Ok(())
         }
     }
 
@@ -529,5 +712,88 @@ mod tests {
         let mut res = repo.reward_votes_rlp().unwrap();
         res.sort();
         assert_eq!(res, vec![vec![0xF1], vec![0xF2]]);
+    }
+
+    #[test]
+    fn test_vote_writes_wait_for_batch_commit() {
+        let db = Arc::new(MockPbftStore::new());
+        let repo = PbftRepository::new(db.clone());
+        let own_hash = H256::from_low_u64_be(31);
+        let reward_hash = H256::from_low_u64_be(32);
+
+        let mut batch = DbWriter::create_batch(db.as_ref());
+        repo.write_own_verified_vote_in_batch(&mut batch, own_hash, &[0xA1])
+            .unwrap();
+        repo.write_extra_reward_vote_in_batch(&mut batch, reward_hash, &[0xB1])
+            .unwrap();
+
+        assert!(repo.own_verified_votes_rlp().unwrap().is_empty());
+        assert!(repo.reward_votes_rlp().unwrap().is_empty());
+
+        DbWriter::commit_batch(db.as_ref(), batch).unwrap();
+
+        assert_eq!(repo.own_verified_votes_rlp().unwrap(), vec![vec![0xA1]]);
+        assert_eq!(repo.reward_votes_rlp().unwrap(), vec![vec![0xB1]]);
+    }
+
+    #[test]
+    fn test_vote_deletes_wait_for_batch_commit() {
+        let db = Arc::new(MockPbftStore::new());
+        let repo = PbftRepository::new(db.clone());
+        let own_hash = H256::from_low_u64_be(41);
+        let reward_hash = H256::from_low_u64_be(42);
+        db.put(Column::LatestRoundOwnVotes, own_hash.as_bytes(), &[0xA1]);
+        db.put(Column::ExtraRewardVotes, reward_hash.as_bytes(), &[0xB1]);
+
+        let mut batch = DbWriter::create_batch(db.as_ref());
+        repo.remove_own_verified_vote_in_batch(&mut batch, own_hash)
+            .unwrap();
+        repo.remove_extra_reward_vote_in_batch(&mut batch, reward_hash)
+            .unwrap();
+
+        assert_eq!(repo.own_verified_votes_rlp().unwrap(), vec![vec![0xA1]]);
+        assert_eq!(repo.reward_votes_rlp().unwrap(), vec![vec![0xB1]]);
+
+        DbWriter::commit_batch(db.as_ref(), batch).unwrap();
+
+        assert!(repo.own_verified_votes_rlp().unwrap().is_empty());
+        assert!(repo.reward_votes_rlp().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_two_t_plus_one_batch_replaces_bundle() {
+        let db = Arc::new(MockPbftStore::new());
+        let repo = PbftRepository::new(db.clone());
+        let vote_type = TwoTPlusOneVotedBlockType::SoftVoted as u8;
+
+        let mut old_bundle = rlp::RlpStream::new_list(1);
+        old_bundle.append_raw(&[0xC1, 0xA1], 1);
+        db.put(
+            Column::LatestRoundTwoTPlusOneVotes,
+            &[vote_type],
+            old_bundle.out().as_ref(),
+        );
+
+        let mut new_bundle = rlp::RlpStream::new_list(1);
+        new_bundle.append_raw(&[0xC1, 0xB1], 1);
+        let mut batch = DbWriter::create_batch(db.as_ref());
+        repo.replace_two_t_plus_one_votes_in_batch(
+            &mut batch,
+            vote_type,
+            new_bundle.out().as_ref(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            repo.all_two_t_plus_one_votes_rlp().unwrap(),
+            vec![vec![0xC1, 0xA1]]
+        );
+
+        DbWriter::commit_batch(db.as_ref(), batch).unwrap();
+
+        assert_eq!(
+            repo.all_two_t_plus_one_votes_rlp().unwrap(),
+            vec![vec![0xC1, 0xB1]]
+        );
     }
 }

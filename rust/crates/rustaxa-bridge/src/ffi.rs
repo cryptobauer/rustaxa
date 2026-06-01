@@ -521,6 +521,53 @@ pub mod rustaxa_ffi {
         data: Vec<u8>,
     }
 
+    /// PBFT vote payload crossing the CXX bridge for storage persistence.
+    ///
+    /// `hash` is the RocksDB key and `vote_rlp` is the weighted
+    /// `PbftVote::rlp(true, true)` payload. Rust storage treats the bytes as
+    /// canonical storage bytes and does not materialize C++ vote objects.
+    struct PbftVoteStorageRecord {
+        hash: [u8; 32],
+        vote_rlp: Vec<u8>,
+    }
+
+    /// Latest-round 2t+1 vote bundle crossing the CXX bridge for storage persistence.
+    ///
+    /// `kind` matches C++ `TwoTPlusOneVotedBlockType` discriminants:
+    /// soft = 0, cert = 1, next = 2, and next-null = 3. The metadata fields
+    /// describe the live VoteManager facts that selected the bundle; the DB key
+    /// remains only `kind` to preserve legacy latest-round semantics.
+    struct PbftTwoTPlusOneVoteBundle {
+        kind: u8,
+        period: u64,
+        round: u64,
+        step: u64,
+        block_hash: [u8; 32],
+        votes_bundle_rlp: Vec<u8>,
+    }
+
+    /// Operation-level VoteManager persistence request for one accepted vote.
+    ///
+    /// The bridge applies both optional writes through a single Rust storage
+    /// batch so replacing a 2t+1 bundle is delete-plus-put atomic.
+    struct PbftVoteProgressPersistenceWrite {
+        has_extra_reward_vote: bool,
+        extra_reward_vote: PbftVoteStorageRecord,
+        has_two_t_plus_one_bundle: bool,
+        two_t_plus_one_bundle: PbftTwoTPlusOneVoteBundle,
+    }
+
+    /// Result for VoteManager PBFT vote persistence bridge operations.
+    ///
+    /// `status` values are local to the bridge contract: 0 = applied,
+    /// 1 = rejected. `applied_writes` counts logical vote-family writes
+    /// accepted into the Rust-owned batch or direct operation.
+    struct PbftVotePersistenceResult {
+        status: u8,
+        applied_writes: u64,
+        error_code: String,
+    }
+
     struct PbftChainHeadPayload {
         head_hash: [u8; 32],
         size: u64,
@@ -4040,6 +4087,15 @@ pub mod rustaxa_ffi {
             hash: &[u8; 32],
             vote_rlp: Vec<u8>,
         ) -> Result<()>;
+        pub fn persist_pbft_vote_progress(
+            self: &BridgeStorage,
+            write: PbftVoteProgressPersistenceWrite,
+        ) -> Result<PbftVotePersistenceResult>;
+        pub fn append_clear_own_verified_votes(
+            self: &BridgeStorage,
+            batch_id: u64,
+            vote_hashes: Vec<PbftFinalizationHash>,
+        ) -> Result<PbftVotePersistenceResult>;
 
         pub fn transaction_in_db(self: &BridgeStorage, hash: &[u8; 32]) -> Result<bool>;
         pub fn transaction_finalized(self: &BridgeStorage, hash: &[u8; 32]) -> Result<bool>;

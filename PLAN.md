@@ -660,8 +660,11 @@ The current Rust starting point is intentionally small:
    current round persistence of non-cert bundles, and network t+1 step reads use Rust-owned metadata. `addVerifiedVote`
    now also uses the Rust PBFT vote-progress planner to gate insertion, consume the Rust mutation report, classify
    duplicates/conflicts, and expose slashing, reward persistence, PBFT progress, and current-round 2t+1 persistence
-   decisions while C++ keeps live `PbftVote` sidecars, slashing submission, DB writes, logging, reward/own-vote
-   persistence, and deferred network effects. `validateVote`, `voteAlreadyValidated`, `getPbftTwoTPlusOne`, and
+   decisions while C++ keeps live `PbftVote` sidecars, slashing submission, logging, and deferred network effects. PBFT
+   vote persistence for own verified votes, extra reward votes, and latest-round 2t+1 bundles now routes through
+   VoteManager-specific `rustaxa-storage` bridge operations: Rust owns the immediate vote-progress write batch and the
+   caller-owned own-vote cleanup batch appender, while the shim mutates temporary live sidecars only after Rust accepts
+   the durable operation. `validateVote`, `voteAlreadyValidated`, `getPbftTwoTPlusOne`, and
    `genAndValidateVrfSortition` now route away from `VoteManagerOld`: Rust owns validation/replay planning, canonical
    received-vote RLP inspection, signed and unsigned vote hash derivation, recovered voter identity, signature and VRF
    proof checks, Rust-computed received-vote weight, the replay cache, PBFT sortition-threshold formula, and local
