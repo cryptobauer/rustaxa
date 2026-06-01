@@ -1,6 +1,39 @@
 use chrono::Utc;
+use num_enum::{IntoPrimitive, TryFromPrimitive};
 use rustaxa_types::ethereum::NodeId;
 use rustaxa_types::time::Microseconds;
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
+#[repr(u8)]
+pub enum PacketType {
+    // Consensus packets with high processing priority
+    HighPriorityPackets,
+    VotePacket, // Vote packer can contain (optional) also pbft block
+    GetNextVotesSyncPacket,
+    VotesBundlePacket,
+
+    // Standard packets with mid processing priority
+    MidPriorityPackets,
+    DagBlockPacket,
+    // DagSyncPacket has mid priority as it is also used for ad-hoc syncing in case new dag blocks miss tips/pivot
+    DagSyncPacket,
+    TransactionPacket,
+
+    // Non critical packets with low processing priority
+    LowPriorityPackets,
+    StatusPacket,
+    GetPbftSyncPacket,
+    PbftSyncPacket,
+    GetDagSyncPacket,
+    PillarVotePacket,
+    GetPillarVotesBundlePacket,
+    PillarVotesBundlePacket,
+    PbftBlocksBundlePacket,
+
+    PacketCount,
+
+    Unknown = 254,
+}
 
 /// Target in-memory size for a packet used by the network pipeline.
 ///
@@ -13,14 +46,14 @@ const PACKET_SIZE: usize = 2048;
 ///
 /// Larger payloads are stored as [`bytes::Bytes`] to avoid copying unusually
 /// large buffers into every packet value.
-const INLINE_LIMIT: usize = 1960;
+const INLINE_LIMIT: usize = 1952;
 
 /// Packet payload storage optimized for common small packets.
 ///
 /// Small payloads are stored inline to improve data locality. Large payloads
 /// keep their shared [`bytes::Bytes`] allocation.
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum PacketPayload {
     /// Payload bytes stored directly in the packet value.
     ///
@@ -44,13 +77,16 @@ impl Default for PacketPayload {
 ///
 /// The packet keeps metadata needed for queueing and peer attribution together
 /// with payload storage optimized for the common small-packet path.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Packet {
-    /// Wall-clock receive timestamp in microseconds.
-    pub received: Microseconds,
+    /// Type of the packet.
+    packet_type: PacketType,
 
     /// Node that sent the packet.
     pub from_node: NodeId,
+
+    /// Wall-clock receive timestamp in microseconds.
+    pub received: Microseconds,
 
     /// Packet bytes, stored inline when they fit in the inline payload limit.
     payload: PacketPayload,
@@ -59,8 +95,9 @@ pub struct Packet {
 impl Default for Packet {
     fn default() -> Self {
         Self {
-            received: Microseconds(0),
+            packet_type: PacketType::Unknown,
             from_node: NodeId(ethereum_types::H512::from([0u8; 64])),
+            received: Microseconds(0),
             payload: PacketPayload::default(),
         }
     }
@@ -71,10 +108,11 @@ impl Packet {
     ///
     /// Payloads up to the inline payload limit are copied into the packet entry.
     /// Larger payloads retain the provided [`bytes::Bytes`] handle.
-    pub fn new(from_node: NodeId, payload: bytes::Bytes) -> Self {
+    pub fn new(packet_type: PacketType, from_node: NodeId, payload: bytes::Bytes) -> Self {
         Packet {
-            received: Microseconds(Utc::now().timestamp_micros() as u64),
+            packet_type,
             from_node,
+            received: Microseconds(Utc::now().timestamp_micros() as u64),
             payload: if payload.len() > INLINE_LIMIT {
                 PacketPayload::Heap(payload)
             } else {
@@ -123,11 +161,32 @@ mod tests {
     }
 
     #[test]
+    fn test_packet_type_create() {
+        assert_eq!(
+            PacketType::try_from_primitive(0).unwrap(),
+            PacketType::HighPriorityPackets
+        );
+        assert_eq!(
+            PacketType::try_from_primitive(1).unwrap(),
+            PacketType::VotePacket
+        );
+        assert_eq!(
+            PacketType::try_from_primitive(17).unwrap(),
+            PacketType::PacketCount
+        );
+        assert!(PacketType::try_from_primitive(18).is_err());
+        assert_eq!(
+            PacketType::try_from_primitive(254).unwrap(),
+            PacketType::Unknown
+        );
+    }
+
+    #[test]
     fn test_packet_create() {
         let from_node = test_node_id();
         let payload = test_payload1();
         let checkpoint1 = Utc::now().timestamp_micros();
-        let packet = Packet::new(from_node, payload.clone());
+        let packet = Packet::new(PacketType::DagBlockPacket, from_node, payload.clone());
         let checkpoint2 = Utc::now().timestamp_micros();
 
         assert!(packet.received >= Microseconds(checkpoint1 as u64));
@@ -149,7 +208,7 @@ mod tests {
     fn test_small_buffer_optimization_inline() {
         let from_node = test_node_id();
         let payload = test_payload_inline();
-        let packet = Packet::new(from_node, payload.clone());
+        let packet = Packet::new(PacketType::GetPbftSyncPacket, from_node, payload.clone());
 
         match &packet.payload {
             PacketPayload::Inline { len, buf } => {
@@ -165,7 +224,7 @@ mod tests {
     fn test_small_buffer_optimization_heap() {
         let from_node = test_node_id();
         let payload = test_payload_heap();
-        let packet = Packet::new(from_node, payload.clone());
+        let packet = Packet::new(PacketType::LowPriorityPackets, from_node, payload.clone());
 
         match &packet.payload {
             PacketPayload::Heap(bytes) => {
