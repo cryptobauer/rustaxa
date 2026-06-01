@@ -6,6 +6,7 @@ use crate::pbft_finalize::*;
 use crate::pbft_manager::*;
 use crate::pbft_sync::*;
 use crate::pbft_vote_progress::*;
+use crate::pbft_vote_validation::*;
 use crate::period_data_queue::*;
 use crate::pillar_chain::*;
 use crate::pillar_votes::*;
@@ -85,6 +86,14 @@ pub struct BridgeSlashingProofPlanner(pub Mutex<SlashingProofPlanner>);
 pub struct BridgePeriodDataQueue(pub PeriodDataQueue);
 
 pub struct BridgeVerifiedVotes(pub VerifiedVotes);
+
+/// Bridge-owned runtime for PBFT vote validation sidecars.
+///
+/// The runtime stores replay-protection hashes in Rust while validation facts
+/// and live vote objects are still sourced by the C++ `VoteManager` shim.
+pub struct BridgePbftVoteValidationRuntime {
+    pub replay_cache: Mutex<rustaxa_consensus::PbftVoteReplayCache>,
+}
 
 pub struct BridgePillarVotes(pub PillarVotes);
 
@@ -1022,6 +1031,65 @@ pub mod rustaxa_ffi {
         two_t_plus_one_round: u64,
         two_t_plus_one_step: u64,
         two_t_plus_one_block_hash: [u8; 32],
+    }
+
+    /// Explicit caller facts for one Rust-planned PBFT vote validation pass.
+    ///
+    /// The C++ shim owns live vote materialization, FinalChain/key lookups,
+    /// cryptographic checks, and mutable weight calculation for now. Rust owns
+    /// the validation decision and replay-marker timing from these facts.
+    struct PbftVoteValidationFact {
+        vote_type: u8,
+        dpos_vote_count_ready: bool,
+        dpos_vote_count: u64,
+        vrf_key_ready: bool,
+        has_vrf_key: bool,
+        signature_ready: bool,
+        signature_valid: bool,
+        vrf_sortition_ready: bool,
+        vrf_sortition_valid: bool,
+        total_dpos_vote_count_ready: bool,
+        total_dpos_vote_count: u64,
+        weight_ready: bool,
+        weight: u64,
+        future_dpos_state: bool,
+        unknown_error: bool,
+        committee_size: u64,
+        number_of_proposers: u64,
+    }
+
+    /// Rust PBFT vote validation decision for C++ boundary executors.
+    struct PbftVoteValidationPlan {
+        status: u8,
+        error_code: String,
+        accepted: bool,
+        rejected: bool,
+        mark_validated_replay: bool,
+        has_sortition_threshold: bool,
+        sortition_threshold: u64,
+    }
+
+    /// Explicit caller facts for locally generated proposer sortition screening.
+    struct PbftProposerSortitionFact {
+        dpos_vote_count_ready: bool,
+        dpos_vote_count: u64,
+        total_dpos_vote_count_ready: bool,
+        total_dpos_vote_count: u64,
+        weight_ready: bool,
+        weight: u64,
+        future_dpos_state: bool,
+        unknown_error: bool,
+        number_of_proposers: u64,
+    }
+
+    /// Rust screening decision for one locally generated proposer sortition.
+    struct PbftProposerSortitionPlan {
+        status: u8,
+        error_code: String,
+        accepted: bool,
+        rejected: bool,
+        has_sortition_threshold: bool,
+        sortition_threshold: u64,
     }
 
     /// Plain payload for a pillar vote carried across the CXX boundary.
@@ -3565,6 +3633,34 @@ pub mod rustaxa_ffi {
             context: PbftVoteProgressContext,
             add_vote_outcome: VerifiedVoteAddOutcome,
         ) -> Result<PbftVoteProgressExecutionPlan>;
+
+        // PBFT vote validation planner
+
+        pub fn pbft_vote_sortition_threshold_for_bridge(
+            total_dpos_vote_count: u64,
+            vote_type: u8,
+            committee_size: u64,
+            number_of_proposers: u64,
+        ) -> Result<u64>;
+        type BridgePbftVoteValidationRuntime;
+        pub fn create_pbft_vote_validation_runtime(
+            max_size: usize,
+            delete_step: usize,
+        ) -> Box<BridgePbftVoteValidationRuntime>;
+        pub fn pbft_vote_replay_contains(
+            self: &BridgePbftVoteValidationRuntime,
+            vote_hash: &[u8; 32],
+        ) -> bool;
+        pub fn pbft_vote_replay_insert(
+            self: &BridgePbftVoteValidationRuntime,
+            vote_hash: &[u8; 32],
+        ) -> bool;
+        pub fn pbft_vote_validation_plan(
+            fact: PbftVoteValidationFact,
+        ) -> Result<PbftVoteValidationPlan>;
+        pub fn pbft_proposer_sortition_plan(
+            fact: PbftProposerSortitionFact,
+        ) -> Result<PbftProposerSortitionPlan>;
 
         // Consensus pillar votes
 

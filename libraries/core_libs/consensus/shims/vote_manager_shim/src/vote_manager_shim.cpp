@@ -4,6 +4,7 @@
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
 
 #include "common/constants.hpp"
 #include "pbft/pbft_manager.hpp"
@@ -21,6 +22,12 @@ constexpr uint8_t kPbftFinalizedPeriodApplyStatusAlreadyApplied = 1;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusRejected = 2;
 constexpr uint8_t kPbftFinalizationStorageStageRewardVotesReset = 4;
 constexpr uint8_t kPbftFinalizationRuntimeActionCommitRewardVotesReset = 3;
+constexpr uint8_t kPbftVoteValidationStatusValid = 1;
+constexpr uint8_t kPbftVoteValidationStatusZeroStake = 2;
+constexpr uint8_t kPbftVoteValidationStatusMissingVrfKey = 3;
+constexpr uint8_t kPbftVoteValidationStatusInvalidSignature = 4;
+constexpr uint8_t kPbftVoteValidationStatusInvalidVrfProof = 5;
+constexpr uint8_t kPbftVoteValidationStatusZeroWeight = 6;
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t& hash) { return hash.asArray(); }
 
@@ -129,7 +136,30 @@ rustaxa::PbftVoteProgressContext makeVoteProgressContext(PbftPeriod current_peri
   return context;
 }
 
+rustaxa::PbftVoteValidationFact makeVoteValidationFact(PbftVoteTypes vote_type, const PbftConfig& config) {
+  rustaxa::PbftVoteValidationFact fact{};
+  fact.vote_type = static_cast<uint8_t>(vote_type);
+  fact.committee_size = config.committee_size;
+  fact.number_of_proposers = config.number_of_proposers;
+  return fact;
+}
+
+rustaxa::PbftProposerSortitionFact makeProposerSortitionFact(const PbftConfig& config) {
+  rustaxa::PbftProposerSortitionFact fact{};
+  fact.number_of_proposers = config.number_of_proposers;
+  return fact;
+}
+
 }  // namespace
+
+VoteManager::VoteManager(const FullNodeConfig& config, std::shared_ptr<DbStorage> db,
+                         std::shared_ptr<PbftChain> pbft_chain,
+                         std::shared_ptr<final_chain::FinalChain> final_chain,
+                         std::shared_ptr<KeyManager> key_manager,
+                         std::shared_ptr<SlashingManager> slashing_manager)
+    : VoteManagerOld(config, std::move(db), std::move(pbft_chain), std::move(final_chain), std::move(key_manager),
+                     std::move(slashing_manager)),
+      vote_validation_runtime_(rustaxa::create_pbft_vote_validation_runtime(1000000, 1000)) {}
 
 void VoteManager::setNetwork(std::weak_ptr<Network> network) {
   // TODO(rustaxa): move VoteManager network wiring to Rust/shim-owned state.
@@ -377,24 +407,194 @@ std::shared_ptr<PbftVote> VoteManager::generateVote(const blk_hash_t& blockhash,
 }
 
 std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<PbftVote>& vote, bool strict) const {
-  // TODO(rustaxa): move PBFT vote validation to Rust.
-  return VoteManagerOld::validateVote(vote, strict);
+  if (!vote) {
+    return {false, "Invalid vote: null vote"};
+  }
+
+  std::stringstream err_msg;
+  const uint64_t vote_period = vote->getPeriod();
+  auto validation_fact = makeVoteValidationFact(vote->getType(), kPbftConfig);
+
+  uint64_t voter_dpos_votes_count = 0;
+  try {
+    voter_dpos_votes_count = final_chain_->dposEligibleVoteCount(vote_period - 1, vote->getVoterAddr());
+    validation_fact.dpos_vote_count_ready = true;
+    validation_fact.dpos_vote_count = voter_dpos_votes_count;
+  } catch (state_api::ErrFutureBlock& e) {
+    validation_fact.future_dpos_state = true;
+    (void)rustaxa::pbft_vote_validation_plan(validation_fact);
+    err_msg << "Unable to validate vote " << vote->getHash() << " against dpos contract. It's period (" << vote_period
+            << ") is too far ahead of actual finalized pbft chain size (" << final_chain_->lastBlockNumber()
+            << "). Err msg: " << e.what();
+    return {false, err_msg.str()};
+  } catch (...) {
+    validation_fact.unknown_error = true;
+    (void)rustaxa::pbft_vote_validation_plan(validation_fact);
+    err_msg << "Invalid vote " << vote->getHash() << ": unknown error during validation";
+    return {false, err_msg.str()};
+  }
+
+  auto validation_plan = rustaxa::pbft_vote_validation_plan(validation_fact);
+  if (validation_plan.mark_validated_replay) {
+    vote_validation_runtime_->pbft_vote_replay_insert(toBridgeHash(vote->getHash()));
+  }
+  if (validation_plan.status == kPbftVoteValidationStatusZeroStake) {
+    err_msg << "Invalid vote " << vote->getHash() << ": author " << vote->getVoterAddr() << " has zero stake";
+    return {false, err_msg.str()};
+  }
+
+  try {
+    const auto pk = key_manager_->getVrfKey(vote_period - 1, vote->getVoterAddr());
+    validation_fact.vrf_key_ready = true;
+    validation_fact.has_vrf_key = pk != nullptr;
+    validation_plan = rustaxa::pbft_vote_validation_plan(validation_fact);
+    if (validation_plan.status == kPbftVoteValidationStatusMissingVrfKey) {
+      err_msg << "No vrf key mapped for vote author " << vote->getVoterAddr();
+      return {false, err_msg.str()};
+    }
+
+    validation_fact.signature_ready = true;
+    validation_fact.signature_valid = vote->verifyVote();
+    validation_plan = rustaxa::pbft_vote_validation_plan(validation_fact);
+    if (validation_plan.status == kPbftVoteValidationStatusInvalidSignature) {
+      err_msg << "Invalid vote " << vote->getHash() << ": invalid signature";
+      return {false, err_msg.str()};
+    }
+
+    validation_fact.vrf_sortition_ready = true;
+    validation_fact.vrf_sortition_valid = vote->verifyVrfSortition(*pk, strict);
+    validation_plan = rustaxa::pbft_vote_validation_plan(validation_fact);
+    if (validation_plan.status == kPbftVoteValidationStatusInvalidVrfProof) {
+      err_msg << "Invalid vote " << vote->getHash() << ": invalid vrf proof";
+      return {false, err_msg.str()};
+    }
+
+    const uint64_t total_dpos_votes_count = final_chain_->dposEligibleTotalVoteCount(vote_period - 1);
+    validation_fact.total_dpos_vote_count_ready = true;
+    validation_fact.total_dpos_vote_count = total_dpos_votes_count;
+    validation_plan = rustaxa::pbft_vote_validation_plan(validation_fact);
+    if (!validation_plan.has_sortition_threshold) {
+      throw std::runtime_error("Rust PBFT vote validation did not return a sortition threshold");
+    }
+
+    validation_fact.weight_ready = true;
+    validation_fact.weight =
+        vote->calculateWeight(voter_dpos_votes_count, total_dpos_votes_count, validation_plan.sortition_threshold);
+    validation_plan = rustaxa::pbft_vote_validation_plan(validation_fact);
+    if (validation_plan.status == kPbftVoteValidationStatusZeroWeight) {
+      err_msg << "Invalid vote " << vote->getHash() << ": zero weight";
+      return {false, err_msg.str()};
+    }
+  } catch (state_api::ErrFutureBlock& e) {
+    validation_fact.future_dpos_state = true;
+    (void)rustaxa::pbft_vote_validation_plan(validation_fact);
+    err_msg << "Unable to validate vote " << vote->getHash() << " against dpos contract. It's period (" << vote_period
+            << ") is too far ahead of actual finalized pbft chain size (" << final_chain_->lastBlockNumber()
+            << "). Err msg: " << e.what();
+    return {false, err_msg.str()};
+  } catch (...) {
+    validation_fact.unknown_error = true;
+    (void)rustaxa::pbft_vote_validation_plan(validation_fact);
+    err_msg << "Invalid vote " << vote->getHash() << ": unknown error during validation";
+    return {false, err_msg.str()};
+  }
+
+  if (validation_plan.status != kPbftVoteValidationStatusValid || !validation_plan.accepted) {
+    err_msg << "Invalid vote " << vote->getHash() << ": unknown error during validation";
+    return {false, err_msg.str()};
+  }
+
+  return {true, ""};
 }
 
 std::optional<uint64_t> VoteManager::getPbftTwoTPlusOne(PbftPeriod pbft_period, PbftVoteTypes vote_type) const {
-  // TODO(rustaxa): move PBFT threshold calculation and cache ownership to Rust.
-  return VoteManagerOld::getPbftTwoTPlusOne(pbft_period, vote_type);
+  {
+    std::shared_lock lock(current_two_t_plus_one_mutex_);
+    const auto cached_two_t_plus_one_it = current_two_t_plus_one_.find(vote_type);
+    if (cached_two_t_plus_one_it != current_two_t_plus_one_.end()) {
+      const auto [cached_period, cached_two_t_plus_one] = cached_two_t_plus_one_it->second;
+      if (pbft_period == cached_period && cached_two_t_plus_one) {
+        return cached_two_t_plus_one;
+      }
+    }
+  }
+
+  uint64_t total_dpos_votes_count = 0;
+  try {
+    total_dpos_votes_count = final_chain_->dposEligibleTotalVoteCount(pbft_period);
+  } catch (state_api::ErrFutureBlock& e) {
+    LOG(log_er_) << "Unable to calculate 2t + 1 for period: " << pbft_period
+                 << ". Period is too far ahead of actual finalized pbft chain size (" << final_chain_->lastBlockNumber()
+                 << "). Err msg: " << e.what();
+    return {};
+  }
+
+  const auto sortition_threshold = rustaxa::pbft_vote_sortition_threshold_for_bridge(
+      total_dpos_votes_count, static_cast<uint8_t>(vote_type), kPbftConfig.committee_size,
+      kPbftConfig.number_of_proposers);
+  const auto two_t_plus_one = sortition_threshold * 2 / 3 + 1;
+
+  // TODO(rustaxa): move 2t+1 threshold cache ownership to Rust.
+  if (pbft_period == pbft_chain_->getPbftChainSize()) {
+    std::scoped_lock lock(current_two_t_plus_one_mutex_);
+    current_two_t_plus_one_[vote_type] = std::make_pair(pbft_period, two_t_plus_one);
+  }
+
+  return two_t_plus_one;
 }
 
 bool VoteManager::voteAlreadyValidated(const vote_hash_t& vote_hash) const {
-  // TODO(rustaxa): move validated-vote replay protection to Rust.
-  return VoteManagerOld::voteAlreadyValidated(vote_hash);
+  return vote_validation_runtime_->pbft_vote_replay_contains(toBridgeHash(vote_hash));
 }
 
 bool VoteManager::genAndValidateVrfSortition(PbftPeriod pbft_period, PbftRound pbft_round,
                                              const WalletConfig& wallet) const {
-  // TODO(rustaxa): move VRF sortition validation to Rust.
-  return VoteManagerOld::genAndValidateVrfSortition(pbft_period, pbft_round, wallet);
+  VrfPbftSortition vrf_sortition(wallet.vrf_secret,
+                                 {PbftVoteTypes::propose_vote, pbft_period, pbft_round, 1});
+  auto sortition_fact = makeProposerSortitionFact(kPbftConfig);
+
+  try {
+    const uint64_t voter_dpos_votes_count = final_chain_->dposEligibleVoteCount(pbft_period - 1, wallet.node_addr);
+    sortition_fact.dpos_vote_count_ready = true;
+    sortition_fact.dpos_vote_count = voter_dpos_votes_count;
+    auto sortition_plan = rustaxa::pbft_proposer_sortition_plan(sortition_fact);
+    if (sortition_plan.rejected) {
+      LOG(log_er_) << "Generated vrf sortition for period " << pbft_period << ", round " << pbft_round
+                   << " is invalid. Voter dpos vote count is zero";
+      return false;
+    }
+
+    const uint64_t total_dpos_votes_count = final_chain_->dposEligibleTotalVoteCount(pbft_period - 1);
+    sortition_fact.total_dpos_vote_count_ready = true;
+    sortition_fact.total_dpos_vote_count = total_dpos_votes_count;
+    sortition_plan = rustaxa::pbft_proposer_sortition_plan(sortition_fact);
+    if (!sortition_plan.has_sortition_threshold) {
+      throw std::runtime_error("Rust PBFT proposer sortition did not return a sortition threshold");
+    }
+
+    sortition_fact.weight_ready = true;
+    sortition_fact.weight = vrf_sortition.calculateWeight(voter_dpos_votes_count, total_dpos_votes_count,
+                                                          sortition_plan.sortition_threshold, wallet.node_pk);
+    sortition_plan = rustaxa::pbft_proposer_sortition_plan(sortition_fact);
+    if (!sortition_plan.accepted) {
+      LOG(log_dg_) << "Generated vrf sortition for period " << pbft_period << ", round " << pbft_round
+                   << " is invalid. Vrf sortition is zero";
+      return false;
+    }
+  } catch (state_api::ErrFutureBlock& e) {
+    sortition_fact.future_dpos_state = true;
+    (void)rustaxa::pbft_proposer_sortition_plan(sortition_fact);
+    LOG(log_er_) << "Unable to generate vrf sortition for period " << pbft_period << ", round " << pbft_round
+                 << ". Period is too far ahead of actual finalized pbft chain size (" << final_chain_->lastBlockNumber()
+                 << "). Err msg: " << e.what();
+    return false;
+  } catch (...) {
+    sortition_fact.unknown_error = true;
+    (void)rustaxa::pbft_proposer_sortition_plan(sortition_fact);
+    return false;
+  }
+
+  return true;
 }
 
 std::optional<blk_hash_t> VoteManager::getTwoTPlusOneVotedBlock(PbftPeriod period, PbftRound round,

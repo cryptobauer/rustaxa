@@ -6,6 +6,7 @@ pub mod pbft_finalize;
 pub mod pbft_manager;
 pub mod pbft_sync;
 pub mod pbft_vote_progress;
+pub mod pbft_vote_validation;
 pub mod period_data_queue;
 pub mod pillar_chain;
 pub mod pillar_votes;
@@ -47,6 +48,11 @@ pub use pbft_sync::{
 pub use pbft_vote_progress::{
     PbftVoteIdentity, PbftVoteProgressContext, PbftVoteProgressFact, PbftVoteProgressIntent,
     PbftVoteProgressPlan, PbftVoteProgressStatus, plan_pbft_vote_progress,
+};
+pub use pbft_vote_validation::{
+    PbftProposerSortitionFact, PbftProposerSortitionPlan, PbftProposerSortitionStatus,
+    PbftVoteReplayCache, PbftVoteValidationFact, PbftVoteValidationPlan, PbftVoteValidationStatus,
+    pbft_vote_sortition_threshold, plan_pbft_proposer_sortition, plan_pbft_vote_validation,
 };
 pub use period_data_queue::PeriodDataQueue;
 pub use pillar_chain::{

@@ -28,7 +28,20 @@ namespace taraxa {
  */
 class VoteManager : public VoteManagerOld {
  public:
-  using VoteManagerOld::VoteManagerOld;
+  /**
+   * Constructs the Rust-mode VoteManager overlay.
+   *
+   * Inputs mirror the legacy `VoteManager` constructor. The overlay initializes
+   * the inherited legacy state machine plus Rust-owned validation sidecars used
+   * by routed methods.
+   *
+   * Invariants:
+   * - Public C++ API remains identical during the rewrite.
+   * - Unported methods keep explicit shim-local forwarding TODOs.
+   */
+  VoteManager(const FullNodeConfig& config, std::shared_ptr<DbStorage> db, std::shared_ptr<PbftChain> pbft_chain,
+              std::shared_ptr<final_chain::FinalChain> final_chain, std::shared_ptr<KeyManager> key_manager,
+              std::shared_ptr<SlashingManager> slashing_manager);
 
   void setNetwork(std::weak_ptr<Network> network);
   bool addVerifiedVote(const std::shared_ptr<PbftVote>& vote);
@@ -144,6 +157,7 @@ class VoteManager : public VoteManagerOld {
 
  private:
   bool isValidRewardVoteForRust(const std::shared_ptr<PbftVote>& vote) const;
+  ::rust::Box<rustaxa::BridgePbftVoteValidationRuntime> vote_validation_runtime_;
 };
 
 }  // namespace taraxa
