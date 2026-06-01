@@ -1,3 +1,5 @@
+mod arena;
+mod network_ingress;
 mod application_host_ffi;
 mod consensus_host_ports;
 mod dag_transaction_service;
