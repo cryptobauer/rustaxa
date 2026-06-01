@@ -1,3 +1,7 @@
+use crate::arena::create_packet_arena;
+use crate::network_ingress::*;
+use rustaxa_arena::arena::Arena;
+use rustaxa_network::{network::Network, packet::Packet};
 use crate::consensus_host_ports::*;
 pub(crate) use crate::dag_transaction_service::BridgeApp;
 pub use crate::dag_transaction_service::BridgeConsensusApplication;
@@ -28,6 +32,9 @@ pub struct BridgeConsensusNetworkApi(pub(crate) Arc<rustaxa_consensus::Consensus
 /// The bridge owns no sibling protocol state, storage handle, mutex, or
 /// readiness flag. It maps stable CXX inputs and outputs around the native
 /// composition without changing the native siblings' lock domains.
+pub struct BridgeNetwork(pub Network);
+pub struct BridgePacketArena(pub Arc<Arena<Packet>>);
+
 #[cxx::bridge(namespace = "rustaxa")]
 pub mod rustaxa_ffi {
     /// Public/query JSON view for PBFT block extra data.
@@ -1306,5 +1313,25 @@ pub mod rustaxa_ffi {
             application: &BridgeConsensusApplication,
             request: PublicTransactionSubmissionRequest,
         ) -> Result<PublicTransactionSubmissionReport>;
+        // Network
+
+        type BridgeNetwork;
+
+        pub fn create_network(
+            arena: &BridgePacketArena,
+            queue_size: usize,
+        ) -> Result<Box<BridgeNetwork>>;
+        pub fn ingest_network_packet(
+            self: &mut BridgeNetwork,
+            packet_type: u8,
+            from_node: [u8; 64],
+            data: Vec<u8>,
+        ) -> Result<bool>;
+
+        // Arena
+
+        type BridgePacketArena;
+
+        pub fn create_packet_arena(size: usize) -> Result<Box<BridgePacketArena>>;
     }
 }

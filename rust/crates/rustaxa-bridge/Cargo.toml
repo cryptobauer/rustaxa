@@ -9,6 +9,7 @@ crate-type = ["staticlib"]
 [dependencies]
 cxx = "1.0"
 rustaxa-consensus = { path = "../rustaxa-consensus" }
+rustaxa-network = { path = "../rustaxa-network" }
 rustaxa-storage = { path = "../rustaxa-storage" }
 rustaxa-types = { path = "../rustaxa-types" }
 anyhow = "1.0.100"
@@ -16,6 +17,10 @@ ethereum-types = "0.16.0"
 rlp = "0.6"
 k256 = { version = "0.13", features = ["ecdsa"] }
 tiny-keccak = { version = "2.0", features = ["keccak"] }
+
+num_enum = "0.7.6"
+bytes = "1.11.1"
+rustaxa-arena = { path = "../rustaxa-arena" }
 
 [build-dependencies]
 cxx-build = "1.0"

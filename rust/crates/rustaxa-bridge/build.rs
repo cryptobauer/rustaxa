@@ -28,6 +28,8 @@ fn main() {
         });
     }
 
+    println!("cargo:rerun-if-changed=src/arena.rs");
+    println!("cargo:rerun-if-changed=src/network_ingress.rs");
     println!("cargo:rerun-if-changed=src/ffi.rs");
     println!("cargo:rerun-if-changed=src/application_host_ffi.rs");
     println!("cargo:rerun-if-env-changed=RUSTAXA_APPLICATION_HOST_BRIDGE_OUT");
