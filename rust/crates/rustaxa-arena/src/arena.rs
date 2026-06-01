@@ -379,7 +379,7 @@ impl Drop for SlotReservationGuard<'_> {
 }
 
 /// Error returned when a slot handle cannot be borrowed or removed.
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BorrowError {
     /// The slot is currently locked by another reader or remover.
     #[error("Slot is already borrowed")]
@@ -402,7 +402,7 @@ pub enum BorrowError {
 }
 
 /// Error returned when a reserved slot cannot be filled.
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InsertError {
     /// The reservation does not belong to this arena or no longer matches the slot state.
     #[error("Reservation does not match a writable slot")]

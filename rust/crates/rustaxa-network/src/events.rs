@@ -1,18 +1,22 @@
 use rustaxa_arena::arena::SlotId;
 
-/// Event notifying a DAG ingress stage that a packet is ready to process.
-pub struct IncomingDagEvent {
-    packet_id: SlotId,
+pub struct NetworkEvent {
+    pub slot: SlotId,
 }
 
-impl IncomingDagEvent {
+/// Event notifying a DAG ingress stage that a packet is ready to process.
+pub struct DagEvent {
+    slot: SlotId,
+}
+
+impl DagEvent {
     /// Creates a DAG ingress event for a packet stored in the arena.
-    pub fn new(packet_id: SlotId) -> Self {
-        Self { packet_id }
+    pub fn new(slot: SlotId) -> Self {
+        Self { slot }
     }
 
     /// Returns the arena slot id for the packet to process.
     pub fn packet_id(&self) -> SlotId {
-        self.packet_id
+        self.slot
     }
 }

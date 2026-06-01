@@ -7,6 +7,12 @@ pub struct NodeId(
     pub H512,
 );
 
+impl NodeId {
+    pub fn new(bytes: [u8; 64]) -> Self {
+        Self(H512::from(bytes))
+    }
+}
+
 impl Default for NodeId {
     fn default() -> Self {
         Self(H512::from([0u8; 64]))

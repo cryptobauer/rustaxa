@@ -7,7 +7,10 @@ edition = "2024"
 anyhow = "1.0.102"
 bytes = "1.11.1"
 chrono = "0.4.44"
+crossbeam-utils = "0.8.21"
 ethereum-types = "0.16.0"
+num_enum = "0.7.6"
 rtrb = "0.3.4"
 rustaxa-arena = { version = "0.1.0", path = "../rustaxa-arena" }
 rustaxa-types = { version = "0.1.0", path = "../rustaxa-types" }
+thiserror = "2.0.18"
