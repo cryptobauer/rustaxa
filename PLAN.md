@@ -458,8 +458,10 @@ The current Rust starting point is intentionally small:
   read helpers, a side-effect-free PBFT vote-progress protocol planner that stages verified-vote insertion reports into
   typed known/admit/slashing/gossip/progress intents plus an operation-specific CXX bridge for Rust-mode
   `VoteManager::addVerifiedVote` execution, Rust-owned PBFT vote validation planning with replay-cache storage,
-  sortition-threshold calculation, and local proposer-sortition screening for the Rust-mode `VoteManager` overlay, and
-  a Rust-backed `GasPricer` oracle for finalized-block history, minimum-price flooring, and percentile bid selection.
+  canonical PBFT vote RLP inspection, signed/unsigned vote hashing, signature recovery, VRF proof verification,
+  Rust-computed received-vote weight, sortition-threshold calculation, and local proposer-sortition screening for the
+  Rust-mode `VoteManager` overlay, and a Rust-backed `GasPricer` oracle for finalized-block history, minimum-price
+  flooring, and percentile bid selection.
   The Rust-enabled `SlashingManager` overlay now routes deterministic double-voting proof planning, duplicate-proof
   cache decisions, submitter selection, and slashing contract calldata construction through Rust while C++ keeps live
   vote objects, account reads, gas bidding, transaction signing, and transaction-pool insertion.
@@ -502,8 +504,10 @@ The current Rust starting point is intentionally small:
    Rust-mode `VoteManager::addVerifiedVote` through a precheck plan, one authoritative Rust-backed `VerifiedVotes`
    add/threshold mutation, and a post-add execution plan. Packet ingress, peer-known marking, gossip, and proposed-block
    sidecar routing remain deferred to the future vote pipeline. PBFT vote validation now also has a Rust planner and
-   bridge runtime: C++ supplies DPoS/key/crypto/weight facts, while Rust owns final accept/reject statuses, replay-marker
-   timing and storage, local proposer-sortition screening, and the sortition-threshold formula.
+   bridge runtime: C++ supplies DPoS/key facts, while Rust owns canonical vote-byte inspection, signature/VRF facts,
+   Rust-computed received-vote weight, final accept/reject statuses, replay-marker timing and storage,
+   local proposer-sortition screening, and the sortition-threshold formula. C++ still performs the temporary
+   `PbftVote::weight_` live sidecar mutation and parity-checks it against the Rust weight.
 5. Port DAG graph operations before broader `DagManager` orchestration: pivot/tip availability, ghost path, ordering,
    counters, storage-facing queries, and deterministic `verifyBlock` reject decisions.
 6. Define Rust ports for DPoS eligibility, eligible vote count, total vote count, and VRF key access. The current
@@ -658,10 +662,12 @@ The current Rust starting point is intentionally small:
    duplicates/conflicts, and expose slashing, reward persistence, PBFT progress, and current-round 2t+1 persistence
    decisions while C++ keeps live `PbftVote` sidecars, slashing submission, DB writes, logging, reward/own-vote
    persistence, and deferred network effects. `validateVote`, `voteAlreadyValidated`, `getPbftTwoTPlusOne`, and
-   `genAndValidateVrfSortition` now route away from `VoteManagerOld`: Rust owns validation/replay planning, the replay
-   cache, PBFT sortition-threshold formula, and local proposer-sortition screening, while C++ temporarily supplies
-   FinalChain/key-manager facts, signature/VRF verification results, live `PbftVote::calculateWeight` mutation, and the
-   threshold cache. Rust now also owns PBFT finalization
+   `genAndValidateVrfSortition` now route away from `VoteManagerOld`: Rust owns validation/replay planning, canonical
+   received-vote RLP inspection, signed and unsigned vote hash derivation, recovered voter identity, signature and VRF
+   proof checks, Rust-computed received-vote weight, the replay cache, PBFT sortition-threshold formula, and local
+   proposer-sortition screening, while C++ temporarily supplies FinalChain/key-manager facts, performs only the live
+   `PbftVote::calculateWeight` sidecar mutation after a Rust parity check, and keeps the threshold cache. Rust now also
+   owns PBFT finalization
    sortition-change persistence: the sortition shim now previews the live Rust runtime transition, returns the emitted
    threshold change for storage staging, and commits the same transition only after the PBFT staged storage appender has
    committed the primary batch. C++ still owns dynamic-lambda live-field assignment from Rust output, FinalChain

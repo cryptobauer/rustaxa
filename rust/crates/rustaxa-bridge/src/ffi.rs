@@ -1069,6 +1069,66 @@ pub mod rustaxa_ffi {
         sortition_threshold: u64,
     }
 
+    /// Result of inspecting canonical legacy PBFT vote RLP in Rust.
+    struct PbftCanonicalVoteInspection {
+        status: u8,
+        error_code: String,
+        vote_hash: [u8; 32],
+        signing_hash: [u8; 32],
+        block_hash: [u8; 32],
+        period: u64,
+        round: u64,
+        step: u64,
+        vote_type: u8,
+        recovered_public_key: [u8; 64],
+        recovered_voter: [u8; 20],
+        signature_valid: bool,
+        vrf_proof: [u8; 80],
+        has_embedded_weight: bool,
+        embedded_weight: u64,
+    }
+
+    /// External node-state facts used by Rust canonical PBFT vote validation.
+    struct PbftVoteValidationExternalFacts {
+        voter_dpos_ready: bool,
+        voter_dpos_vote_count: u64,
+        total_dpos_ready: bool,
+        total_dpos_vote_count: u64,
+        future_dpos_state: bool,
+        unknown_error: bool,
+        vrf_key_ready: bool,
+        has_vrf_key: bool,
+        vrf_public_key: [u8; 32],
+        strict_vrf: bool,
+        committee_size: u64,
+        number_of_proposers: u64,
+    }
+
+    /// Complete Rust result for validating one canonical legacy PBFT vote.
+    struct PbftCanonicalVoteValidation {
+        status: u8,
+        error_code: String,
+        accepted: bool,
+        rejected: bool,
+        mark_validated_replay: bool,
+        vote_hash: [u8; 32],
+        signing_hash: [u8; 32],
+        block_hash: [u8; 32],
+        period: u64,
+        round: u64,
+        step: u64,
+        vote_type: u8,
+        recovered_voter: [u8; 20],
+        recovered_public_key: [u8; 64],
+        signature_valid: bool,
+        vrf_valid: bool,
+        has_sortition_threshold: bool,
+        sortition_threshold: u64,
+        weight_calculated: bool,
+        calculated_weight: u64,
+        vrf_output: [u8; 64],
+    }
+
     /// Explicit caller facts for locally generated proposer sortition screening.
     struct PbftProposerSortitionFact {
         dpos_vote_count_ready: bool,
@@ -3658,6 +3718,11 @@ pub mod rustaxa_ffi {
         pub fn pbft_vote_validation_plan(
             fact: PbftVoteValidationFact,
         ) -> Result<PbftVoteValidationPlan>;
+        pub fn pbft_inspect_canonical_vote(vote_rlp: &[u8]) -> Result<PbftCanonicalVoteInspection>;
+        pub fn pbft_validate_canonical_vote(
+            vote_rlp: &[u8],
+            facts: PbftVoteValidationExternalFacts,
+        ) -> Result<PbftCanonicalVoteValidation>;
         pub fn pbft_proposer_sortition_plan(
             fact: PbftProposerSortitionFact,
         ) -> Result<PbftProposerSortitionPlan>;

@@ -28,10 +28,18 @@ constexpr uint8_t kPbftVoteValidationStatusMissingVrfKey = 3;
 constexpr uint8_t kPbftVoteValidationStatusInvalidSignature = 4;
 constexpr uint8_t kPbftVoteValidationStatusInvalidVrfProof = 5;
 constexpr uint8_t kPbftVoteValidationStatusZeroWeight = 6;
+constexpr uint8_t kPbftVoteValidationStatusInvalidVoteType = 9;
+constexpr uint8_t kPbftCanonicalVoteInspectionStatusValid = 0;
+constexpr uint8_t kPbftCanonicalVoteInspectionStatusMalformedRlp = 1;
+constexpr uint8_t kPbftCanonicalVoteInspectionStatusInvalidSignature = 2;
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t& hash) { return hash.asArray(); }
 
 std::array<uint8_t, 20> toBridgeAddress(const addr_t& address) { return address.asArray(); }
+
+addr_t fromBridgeAddress(const std::array<uint8_t, 20>& address) {
+  return addr_t(address.data(), addr_t::ConstructFromPointer);
+}
 
 rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& bytes) {
   rust::Vec<uint8_t> out;
@@ -40,6 +48,10 @@ rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& bytes) {
     out.push_back(byte);
   }
   return out;
+}
+
+rust::Slice<const uint8_t> toBridgeByteSlice(const rust::Vec<uint8_t>& bytes) {
+  return rust::Slice<const uint8_t>(bytes.data(), bytes.size());
 }
 
 rust::Vec<rustaxa::PbftFinalizationHash> toBridgeRewardVoteHashes(const std::vector<vote_hash_t>& hashes) {
@@ -107,9 +119,13 @@ rustaxa::PbftFinalizationStorageWriteStage makeRewardResetWriteStage(
 }
 
 rustaxa::VerifiedVotePayload toBridgeVerifiedVotePayload(const std::shared_ptr<PbftVote>& vote) {
-  return rustaxa::VerifiedVotePayload{toBridgeHash(vote->getHash()), toBridgeHash(vote->getBlockHash()),
-                                      toBridgeAddress(vote->getVoterAddr()), vote->getPeriod(),
-                                      vote->getRound(), vote->getStep(), static_cast<uint8_t>(vote->getType()),
+  return rustaxa::VerifiedVotePayload{toBridgeHash(vote->getHash()),
+                                      toBridgeHash(vote->getBlockHash()),
+                                      toBridgeAddress(vote->getVoterAddr()),
+                                      vote->getPeriod(),
+                                      vote->getRound(),
+                                      vote->getStep(),
+                                      static_cast<uint8_t>(vote->getType()),
                                       *vote->getWeight()};
 }
 
@@ -136,12 +152,12 @@ rustaxa::PbftVoteProgressContext makeVoteProgressContext(PbftPeriod current_peri
   return context;
 }
 
-rustaxa::PbftVoteValidationFact makeVoteValidationFact(PbftVoteTypes vote_type, const PbftConfig& config) {
-  rustaxa::PbftVoteValidationFact fact{};
-  fact.vote_type = static_cast<uint8_t>(vote_type);
-  fact.committee_size = config.committee_size;
-  fact.number_of_proposers = config.number_of_proposers;
-  return fact;
+rustaxa::PbftVoteValidationExternalFacts makeVoteValidationExternalFacts(bool strict, const PbftConfig& config) {
+  rustaxa::PbftVoteValidationExternalFacts facts{};
+  facts.strict_vrf = strict;
+  facts.committee_size = config.committee_size;
+  facts.number_of_proposers = config.number_of_proposers;
+  return facts;
 }
 
 rustaxa::PbftProposerSortitionFact makeProposerSortitionFact(const PbftConfig& config) {
@@ -153,10 +169,8 @@ rustaxa::PbftProposerSortitionFact makeProposerSortitionFact(const PbftConfig& c
 }  // namespace
 
 VoteManager::VoteManager(const FullNodeConfig& config, std::shared_ptr<DbStorage> db,
-                         std::shared_ptr<PbftChain> pbft_chain,
-                         std::shared_ptr<final_chain::FinalChain> final_chain,
-                         std::shared_ptr<KeyManager> key_manager,
-                         std::shared_ptr<SlashingManager> slashing_manager)
+                         std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
+                         std::shared_ptr<KeyManager> key_manager, std::shared_ptr<SlashingManager> slashing_manager)
     : VoteManagerOld(config, std::move(db), std::move(pbft_chain), std::move(final_chain), std::move(key_manager),
                      std::move(slashing_manager)),
       vote_validation_runtime_(rustaxa::create_pbft_vote_validation_runtime(1000000, 1000)) {}
@@ -192,8 +206,7 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
   // TODO(rustaxa): move PBFT threshold calculation and cache ownership to Rust.
   const auto two_t_plus_one = VoteManagerOld::getPbftTwoTPlusOne(vote->getPeriod() - 1, vote->getType());
   const auto progress_fact = makeVoteProgressFact(vote, is_valid_potential_reward_vote);
-  const auto progress_context =
-      makeVoteProgressContext(current_pbft_period_, current_pbft_round_, two_t_plus_one);
+  const auto progress_context = makeVoteProgressContext(current_pbft_period_, current_pbft_round_, two_t_plus_one);
 
   const auto precheck_plan = rustaxa::pbft_vote_progress_plan_precheck(progress_fact, progress_context);
   if (!precheck_plan.should_insert_verified_vote) {
@@ -412,94 +425,136 @@ std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<Pbf
   }
 
   std::stringstream err_msg;
-  const uint64_t vote_period = vote->getPeriod();
-  auto validation_fact = makeVoteValidationFact(vote->getType(), kPbftConfig);
+  const auto canonical_vote_rlp = toBridgeBytes(vote->rlp(true, false));
+  const auto inspection = rustaxa::pbft_inspect_canonical_vote(toBridgeByteSlice(canonical_vote_rlp));
+  if (inspection.status == kPbftCanonicalVoteInspectionStatusMalformedRlp) {
+    err_msg << "Invalid vote " << vote->getHash() << ": malformed canonical PBFT vote RLP";
+    return {false, err_msg.str()};
+  }
+
+  if (toBridgeHash(vote->getHash()) != inspection.vote_hash ||
+      toBridgeHash(vote->getBlockHash()) != inspection.block_hash || vote->getPeriod() != inspection.period ||
+      vote->getRound() != inspection.round || vote->getStep() != inspection.step ||
+      static_cast<uint8_t>(vote->getType()) != inspection.vote_type) {
+    err_msg << "Invalid vote " << vote->getHash()
+            << ": Rust canonical PBFT vote inspection mismatched C++ vote identity";
+    return {false, err_msg.str()};
+  }
+
+  if (inspection.status == kPbftCanonicalVoteInspectionStatusInvalidSignature) {
+    vote_validation_runtime_->pbft_vote_replay_insert(inspection.vote_hash);
+    err_msg << "Invalid vote " << vote->getHash() << ": invalid signature";
+    return {false, err_msg.str()};
+  }
+
+  if (inspection.status != kPbftCanonicalVoteInspectionStatusValid) {
+    err_msg << "Invalid vote " << vote->getHash() << ": unknown Rust canonical PBFT vote inspection status "
+            << static_cast<uint32_t>(inspection.status);
+    return {false, err_msg.str()};
+  }
+
+  const uint64_t vote_period = inspection.period;
+  const auto recovered_voter = fromBridgeAddress(inspection.recovered_voter);
+  auto external_facts = makeVoteValidationExternalFacts(strict, kPbftConfig);
+  rustaxa::PbftCanonicalVoteValidation validation{};
 
   uint64_t voter_dpos_votes_count = 0;
   try {
-    voter_dpos_votes_count = final_chain_->dposEligibleVoteCount(vote_period - 1, vote->getVoterAddr());
-    validation_fact.dpos_vote_count_ready = true;
-    validation_fact.dpos_vote_count = voter_dpos_votes_count;
+    voter_dpos_votes_count = final_chain_->dposEligibleVoteCount(vote_period - 1, recovered_voter);
+    external_facts.voter_dpos_ready = true;
+    external_facts.voter_dpos_vote_count = voter_dpos_votes_count;
   } catch (state_api::ErrFutureBlock& e) {
-    validation_fact.future_dpos_state = true;
-    (void)rustaxa::pbft_vote_validation_plan(validation_fact);
+    external_facts.future_dpos_state = true;
+    (void)rustaxa::pbft_validate_canonical_vote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
     err_msg << "Unable to validate vote " << vote->getHash() << " against dpos contract. It's period (" << vote_period
             << ") is too far ahead of actual finalized pbft chain size (" << final_chain_->lastBlockNumber()
             << "). Err msg: " << e.what();
     return {false, err_msg.str()};
   } catch (...) {
-    validation_fact.unknown_error = true;
-    (void)rustaxa::pbft_vote_validation_plan(validation_fact);
+    external_facts.unknown_error = true;
+    (void)rustaxa::pbft_validate_canonical_vote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
     err_msg << "Invalid vote " << vote->getHash() << ": unknown error during validation";
     return {false, err_msg.str()};
   }
 
-  auto validation_plan = rustaxa::pbft_vote_validation_plan(validation_fact);
-  if (validation_plan.mark_validated_replay) {
-    vote_validation_runtime_->pbft_vote_replay_insert(toBridgeHash(vote->getHash()));
+  validation = rustaxa::pbft_validate_canonical_vote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
+  if (validation.mark_validated_replay) {
+    vote_validation_runtime_->pbft_vote_replay_insert(validation.vote_hash);
   }
-  if (validation_plan.status == kPbftVoteValidationStatusZeroStake) {
-    err_msg << "Invalid vote " << vote->getHash() << ": author " << vote->getVoterAddr() << " has zero stake";
+  if (validation.status == kPbftVoteValidationStatusZeroStake) {
+    err_msg << "Invalid vote " << vote->getHash() << ": author " << recovered_voter << " has zero stake";
+    return {false, err_msg.str()};
+  }
+  if (validation.status == kPbftVoteValidationStatusInvalidVoteType) {
+    err_msg << "Invalid vote " << vote->getHash() << ": invalid PBFT vote type";
     return {false, err_msg.str()};
   }
 
   try {
-    const auto pk = key_manager_->getVrfKey(vote_period - 1, vote->getVoterAddr());
-    validation_fact.vrf_key_ready = true;
-    validation_fact.has_vrf_key = pk != nullptr;
-    validation_plan = rustaxa::pbft_vote_validation_plan(validation_fact);
-    if (validation_plan.status == kPbftVoteValidationStatusMissingVrfKey) {
-      err_msg << "No vrf key mapped for vote author " << vote->getVoterAddr();
-      return {false, err_msg.str()};
+    const auto pk = key_manager_->getVrfKey(vote_period - 1, recovered_voter);
+    external_facts.vrf_key_ready = true;
+    external_facts.has_vrf_key = pk != nullptr;
+    if (pk != nullptr) {
+      external_facts.vrf_public_key = pk->asArray();
     }
 
-    validation_fact.signature_ready = true;
-    validation_fact.signature_valid = vote->verifyVote();
-    validation_plan = rustaxa::pbft_vote_validation_plan(validation_fact);
-    if (validation_plan.status == kPbftVoteValidationStatusInvalidSignature) {
+    validation = rustaxa::pbft_validate_canonical_vote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
+    if (validation.mark_validated_replay) {
+      vote_validation_runtime_->pbft_vote_replay_insert(validation.vote_hash);
+    }
+    if (validation.status == kPbftVoteValidationStatusMissingVrfKey) {
+      err_msg << "No vrf key mapped for vote author " << recovered_voter;
+      return {false, err_msg.str()};
+    }
+    if (validation.status == kPbftVoteValidationStatusInvalidSignature) {
       err_msg << "Invalid vote " << vote->getHash() << ": invalid signature";
       return {false, err_msg.str()};
     }
-
-    validation_fact.vrf_sortition_ready = true;
-    validation_fact.vrf_sortition_valid = vote->verifyVrfSortition(*pk, strict);
-    validation_plan = rustaxa::pbft_vote_validation_plan(validation_fact);
-    if (validation_plan.status == kPbftVoteValidationStatusInvalidVrfProof) {
+    if (validation.status == kPbftVoteValidationStatusInvalidVrfProof) {
       err_msg << "Invalid vote " << vote->getHash() << ": invalid vrf proof";
       return {false, err_msg.str()};
     }
 
     const uint64_t total_dpos_votes_count = final_chain_->dposEligibleTotalVoteCount(vote_period - 1);
-    validation_fact.total_dpos_vote_count_ready = true;
-    validation_fact.total_dpos_vote_count = total_dpos_votes_count;
-    validation_plan = rustaxa::pbft_vote_validation_plan(validation_fact);
-    if (!validation_plan.has_sortition_threshold) {
+    external_facts.total_dpos_ready = true;
+    external_facts.total_dpos_vote_count = total_dpos_votes_count;
+    validation = rustaxa::pbft_validate_canonical_vote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
+    if (validation.mark_validated_replay) {
+      vote_validation_runtime_->pbft_vote_replay_insert(validation.vote_hash);
+    }
+    if (!validation.has_sortition_threshold) {
       throw std::runtime_error("Rust PBFT vote validation did not return a sortition threshold");
     }
-
-    validation_fact.weight_ready = true;
-    validation_fact.weight =
-        vote->calculateWeight(voter_dpos_votes_count, total_dpos_votes_count, validation_plan.sortition_threshold);
-    validation_plan = rustaxa::pbft_vote_validation_plan(validation_fact);
-    if (validation_plan.status == kPbftVoteValidationStatusZeroWeight) {
+    if (validation.status == kPbftVoteValidationStatusZeroWeight) {
       err_msg << "Invalid vote " << vote->getHash() << ": zero weight";
       return {false, err_msg.str()};
     }
+    if (!validation.weight_calculated) {
+      throw std::runtime_error("Rust PBFT vote validation accepted validation facts without a calculated weight");
+    }
+
+    // TODO(rustaxa): remove this legacy sidecar mutation once Rust owns the live PBFT vote object or the shim has a
+    // Rust-owned verified-vote payload path that no longer requires `PbftVote::weight_`.
+    const auto cpp_weight =
+        vote->calculateWeight(voter_dpos_votes_count, total_dpos_votes_count, validation.sortition_threshold);
+    if (cpp_weight != validation.calculated_weight) {
+      throw std::runtime_error("Rust PBFT vote weight does not match legacy C++ sidecar weight");
+    }
   } catch (state_api::ErrFutureBlock& e) {
-    validation_fact.future_dpos_state = true;
-    (void)rustaxa::pbft_vote_validation_plan(validation_fact);
+    external_facts.future_dpos_state = true;
+    (void)rustaxa::pbft_validate_canonical_vote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
     err_msg << "Unable to validate vote " << vote->getHash() << " against dpos contract. It's period (" << vote_period
             << ") is too far ahead of actual finalized pbft chain size (" << final_chain_->lastBlockNumber()
             << "). Err msg: " << e.what();
     return {false, err_msg.str()};
   } catch (...) {
-    validation_fact.unknown_error = true;
-    (void)rustaxa::pbft_vote_validation_plan(validation_fact);
+    external_facts.unknown_error = true;
+    (void)rustaxa::pbft_validate_canonical_vote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
     err_msg << "Invalid vote " << vote->getHash() << ": unknown error during validation";
     return {false, err_msg.str()};
   }
 
-  if (validation_plan.status != kPbftVoteValidationStatusValid || !validation_plan.accepted) {
+  if (validation.status != kPbftVoteValidationStatusValid || !validation.accepted) {
     err_msg << "Invalid vote " << vote->getHash() << ": unknown error during validation";
     return {false, err_msg.str()};
   }
@@ -529,9 +584,9 @@ std::optional<uint64_t> VoteManager::getPbftTwoTPlusOne(PbftPeriod pbft_period, 
     return {};
   }
 
-  const auto sortition_threshold = rustaxa::pbft_vote_sortition_threshold_for_bridge(
-      total_dpos_votes_count, static_cast<uint8_t>(vote_type), kPbftConfig.committee_size,
-      kPbftConfig.number_of_proposers);
+  const auto sortition_threshold =
+      rustaxa::pbft_vote_sortition_threshold_for_bridge(total_dpos_votes_count, static_cast<uint8_t>(vote_type),
+                                                        kPbftConfig.committee_size, kPbftConfig.number_of_proposers);
   const auto two_t_plus_one = sortition_threshold * 2 / 3 + 1;
 
   // TODO(rustaxa): move 2t+1 threshold cache ownership to Rust.
@@ -549,8 +604,7 @@ bool VoteManager::voteAlreadyValidated(const vote_hash_t& vote_hash) const {
 
 bool VoteManager::genAndValidateVrfSortition(PbftPeriod pbft_period, PbftRound pbft_round,
                                              const WalletConfig& wallet) const {
-  VrfPbftSortition vrf_sortition(wallet.vrf_secret,
-                                 {PbftVoteTypes::propose_vote, pbft_period, pbft_round, 1});
+  VrfPbftSortition vrf_sortition(wallet.vrf_secret, {PbftVoteTypes::propose_vote, pbft_period, pbft_round, 1});
   auto sortition_fact = makeProposerSortitionFact(kPbftConfig);
 
   try {

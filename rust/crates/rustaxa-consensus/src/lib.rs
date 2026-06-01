@@ -50,9 +50,12 @@ pub use pbft_vote_progress::{
     PbftVoteProgressPlan, PbftVoteProgressStatus, plan_pbft_vote_progress,
 };
 pub use pbft_vote_validation::{
+    PbftCanonicalVoteInspection, PbftCanonicalVoteInspectionStatus, PbftCanonicalVoteValidation,
     PbftProposerSortitionFact, PbftProposerSortitionPlan, PbftProposerSortitionStatus,
-    PbftVoteReplayCache, PbftVoteValidationFact, PbftVoteValidationPlan, PbftVoteValidationStatus,
+    PbftVoteReplayCache, PbftVoteValidationExternalFacts, PbftVoteValidationFact,
+    PbftVoteValidationPlan, PbftVoteValidationStatus, inspect_canonical_pbft_vote,
     pbft_vote_sortition_threshold, plan_pbft_proposer_sortition, plan_pbft_vote_validation,
+    validate_canonical_pbft_vote,
 };
 pub use period_data_queue::PeriodDataQueue;
 pub use pillar_chain::{
