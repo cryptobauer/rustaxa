@@ -1,5 +1,6 @@
 #include <libdevcore/RLP.h>
 
+#include <algorithm>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -33,11 +34,22 @@ constexpr uint8_t kPbftVoteValidationStatusInvalidVoteType = 9;
 constexpr uint8_t kPbftCanonicalVoteInspectionStatusValid = 0;
 constexpr uint8_t kPbftCanonicalVoteInspectionStatusMalformedRlp = 1;
 constexpr uint8_t kPbftCanonicalVoteInspectionStatusInvalidSignature = 2;
+constexpr uint8_t kPbftVoteGenerationStatusGenerated = 0;
+constexpr uint8_t kPbftVoteGenerationStatusZeroStake = 4;
+constexpr uint8_t kPbftVoteGenerationStatusZeroTotalDpos = 5;
+constexpr uint8_t kPbftVoteGenerationStatusZeroWeight = 6;
 constexpr uint8_t kPbftVotePersistenceStatusApplied = 0;
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t& hash) { return hash.asArray(); }
 
 std::array<uint8_t, 20> toBridgeAddress(const addr_t& address) { return address.asArray(); }
+
+template <size_t N, typename FixedHash>
+std::array<uint8_t, N> toBridgeFixedBytes(const FixedHash& value) {
+  std::array<uint8_t, N> out{};
+  std::copy(value.data(), value.data() + N, out.begin());
+  return out;
+}
 
 addr_t fromBridgeAddress(const std::array<uint8_t, 20>& address) {
   return addr_t(address.data(), addr_t::ConstructFromPointer);
@@ -45,6 +57,15 @@ addr_t fromBridgeAddress(const std::array<uint8_t, 20>& address) {
 
 rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& bytes) {
   rust::Vec<uint8_t> out;
+  out.reserve(bytes.size());
+  for (const auto byte : bytes) {
+    out.push_back(byte);
+  }
+  return out;
+}
+
+dev::bytes fromBridgeBytes(const rust::Vec<uint8_t>& bytes) {
+  dev::bytes out;
   out.reserve(bytes.size());
   for (const auto byte : bytes) {
     out.push_back(byte);
@@ -228,6 +249,83 @@ rustaxa::PbftProposerSortitionFact makeProposerSortitionFact(const PbftConfig& c
   rustaxa::PbftProposerSortitionFact fact{};
   fact.number_of_proposers = config.number_of_proposers;
   return fact;
+}
+
+rustaxa::PbftVoteGenerationInput makeVoteGenerationInput(const blk_hash_t& blockhash, PbftVoteTypes vote_type,
+                                                         PbftPeriod period, PbftRound round, PbftStep step,
+                                                         const WalletConfig& wallet) {
+  rustaxa::PbftVoteGenerationInput input{};
+  input.block_hash = toBridgeHash(blockhash);
+  input.vote_type = static_cast<uint8_t>(vote_type);
+  input.period = period;
+  input.round = round;
+  input.step = step;
+  input.node_secret = toBridgeFixedBytes<32>(wallet.node_secret);
+  input.vrf_secret = toBridgeFixedBytes<64>(wallet.vrf_secret);
+  input.expected_voter = toBridgeAddress(wallet.node_addr);
+  input.expected_vrf_public_key = toBridgeFixedBytes<32>(wallet.vrf_pk);
+  return input;
+}
+
+rustaxa::PbftVoteWeightFacts makeVoteWeightFacts(uint64_t voter_dpos_votes_count, uint64_t total_dpos_votes_count,
+                                                 uint64_t committee_size, uint64_t number_of_proposers) {
+  rustaxa::PbftVoteWeightFacts facts{};
+  facts.voter_dpos_vote_count = voter_dpos_votes_count;
+  facts.total_dpos_vote_count = total_dpos_votes_count;
+  facts.committee_size = committee_size;
+  facts.number_of_proposers = number_of_proposers;
+  return facts;
+}
+
+void requireRustVoteGenerationRejected(const rustaxa::PbftGeneratedVote& generated, uint8_t expected_status,
+                                       const char* operation) {
+  if (!generated.accepted && generated.status == expected_status) {
+    return;
+  }
+
+  std::stringstream err;
+  err << "Rust PBFT vote generation parity failed for " << operation << ": expected status "
+      << static_cast<uint32_t>(expected_status) << ", got status " << static_cast<uint32_t>(generated.status)
+      << " error " << static_cast<std::string>(generated.error_code);
+  throw std::runtime_error(err.str());
+}
+
+void requireRustVoteGenerationMatches(const std::shared_ptr<PbftVote>& vote,
+                                      const rustaxa::PbftGeneratedVote& generated, bool expect_weight) {
+  if (!vote) {
+    throw std::runtime_error("Rust PBFT vote generation parity cannot compare a null C++ vote");
+  }
+  if (!generated.accepted || generated.status != kPbftVoteGenerationStatusGenerated) {
+    std::stringstream err;
+    err << "Rust PBFT vote generation rejected a legacy-generated vote: status "
+        << static_cast<uint32_t>(generated.status) << " error " << static_cast<std::string>(generated.error_code);
+    throw std::runtime_error(err.str());
+  }
+
+  const auto canonical_vote_rlp = toBridgeBytes(vote->rlp(true, false));
+  const auto inspection = rustaxa::pbft_inspect_canonical_vote(toBridgeByteSlice(canonical_vote_rlp));
+  if (inspection.status != kPbftCanonicalVoteInspectionStatusValid) {
+    throw std::runtime_error("Rust PBFT vote generation parity cannot inspect the legacy-generated vote");
+  }
+
+  if (toBridgeHash(vote->getHash()) != generated.vote_hash || inspection.signing_hash != generated.signing_hash ||
+      toBridgeHash(vote->getBlockHash()) != generated.block_hash || vote->getPeriod() != generated.period ||
+      vote->getRound() != generated.round || vote->getStep() != generated.step ||
+      static_cast<uint8_t>(vote->getType()) != generated.vote_type ||
+      toBridgeAddress(vote->getVoterAddr()) != generated.voter ||
+      toBridgeFixedBytes<64>(vote->getVoter()) != generated.voter_public_key ||
+      toBridgeFixedBytes<80>(vote->getSortitionProof()) != generated.vrf_proof) {
+    throw std::runtime_error("Rust PBFT vote generation facts do not match legacy C++ vote facts");
+  }
+
+  if (expect_weight) {
+    if (!generated.has_weight || !vote->getWeight().has_value() || *vote->getWeight() != generated.weight ||
+        fromBridgeBytes(generated.vote_rlp) != vote->rlp(true, true)) {
+      throw std::runtime_error("Rust weighted PBFT vote generation bytes do not match legacy C++ vote bytes");
+    }
+  } else if (generated.has_weight || fromBridgeBytes(generated.vote_rlp) != vote->rlp(true, false)) {
+    throw std::runtime_error("Rust PBFT vote generation bytes do not match legacy C++ vote bytes");
+  }
 }
 
 }  // namespace
@@ -516,14 +614,71 @@ void VoteManager::clearOwnVerifiedVotes(Batch& write_batch) {
 std::shared_ptr<PbftVote> VoteManager::generateVoteWithWeight(const blk_hash_t& blockhash, PbftVoteTypes vote_type,
                                                               PbftPeriod period, PbftRound round, PbftStep step,
                                                               const WalletConfig& wallet) {
-  // TODO(rustaxa): move weighted PBFT vote generation to Rust.
-  return VoteManagerOld::generateVoteWithWeight(blockhash, vote_type, period, round, step, wallet);
+  const auto generation_input = makeVoteGenerationInput(blockhash, vote_type, period, round, step, wallet);
+  uint64_t voter_dpos_votes_count = 0;
+  uint64_t total_dpos_votes_count = 0;
+  uint64_t pbft_sortition_threshold = 0;
+
+  try {
+    voter_dpos_votes_count = final_chain_->dposEligibleVoteCount(period - 1, wallet.node_addr);
+    if (!voter_dpos_votes_count) {
+      const auto generated = rustaxa::pbft_generate_signed_vote_with_weight(
+          generation_input,
+          makeVoteWeightFacts(voter_dpos_votes_count, 0, kPbftConfig.committee_size, kPbftConfig.number_of_proposers));
+      requireRustVoteGenerationRejected(generated, kPbftVoteGenerationStatusZeroStake, "zero-stake weighted vote");
+      return nullptr;
+    }
+
+    total_dpos_votes_count = final_chain_->dposEligibleTotalVoteCount(period - 1);
+    pbft_sortition_threshold =
+        rustaxa::pbft_vote_sortition_threshold_for_bridge(total_dpos_votes_count, static_cast<uint8_t>(vote_type),
+                                                          kPbftConfig.committee_size, kPbftConfig.number_of_proposers);
+
+  } catch (state_api::ErrFutureBlock& e) {
+    LOG(log_er_) << "Unable to place vote for period: " << period << ", round: " << round << ", step: " << step
+                 << ", voted block hash: " << blockhash.abridged() << ". "
+                 << "Period is too far ahead of actual finalized pbft chain size (" << final_chain_->lastBlockNumber()
+                 << "). Err msg: " << e.what();
+
+    return nullptr;
+  }
+
+  if (!total_dpos_votes_count) {
+    const auto generated = rustaxa::pbft_generate_signed_vote_with_weight(
+        generation_input, makeVoteWeightFacts(voter_dpos_votes_count, total_dpos_votes_count,
+                                              kPbftConfig.committee_size, kPbftConfig.number_of_proposers));
+    requireRustVoteGenerationRejected(generated, kPbftVoteGenerationStatusZeroTotalDpos, "zero-total weighted vote");
+    return nullptr;
+  }
+
+  // TODO(rustaxa): replace this temporary legacy sidecar construction with direct materialization from
+  // `generated.vote_rlp` once Rust-generated vote sidecars are covered by integration tests.
+  auto vote = generateVote(blockhash, vote_type, period, round, step, wallet);
+  vote->calculateWeight(voter_dpos_votes_count, total_dpos_votes_count, pbft_sortition_threshold);
+
+  const auto generated = rustaxa::pbft_generate_signed_vote_with_weight(
+      generation_input, makeVoteWeightFacts(voter_dpos_votes_count, total_dpos_votes_count, kPbftConfig.committee_size,
+                                            kPbftConfig.number_of_proposers));
+
+  if (*vote->getWeight() == 0) {
+    requireRustVoteGenerationRejected(generated, kPbftVoteGenerationStatusZeroWeight, "zero-weight weighted vote");
+    return nullptr;
+  }
+
+  requireRustVoteGenerationMatches(vote, generated, true);
+  return vote;
 }
 
 std::shared_ptr<PbftVote> VoteManager::generateVote(const blk_hash_t& blockhash, PbftVoteTypes type, PbftPeriod period,
                                                     PbftRound round, PbftStep step, const WalletConfig& wallet) {
-  // TODO(rustaxa): move PBFT vote generation to Rust.
-  return VoteManagerOld::generateVote(blockhash, type, period, round, step, wallet);
+  const auto generated =
+      rustaxa::pbft_generate_signed_vote(makeVoteGenerationInput(blockhash, type, period, round, step, wallet));
+
+  // TODO(rustaxa): replace this temporary legacy sidecar construction with direct materialization from
+  // `generated.vote_rlp` once Rust-generated vote sidecars are covered by integration tests.
+  auto vote = VoteManagerOld::generateVote(blockhash, type, period, round, step, wallet);
+  requireRustVoteGenerationMatches(vote, generated, false);
+  return vote;
 }
 
 std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<PbftVote>& vote, bool strict) const {

@@ -786,14 +786,23 @@ fn decode_legacy_vrf_sortition(vrf_sortition_rlp: &[u8]) -> Result<LegacyVrfSort
     })
 }
 
-fn legacy_pbft_vote_signing_hash(block_hash: H256, vrf_sortition_rlp: &[u8]) -> H256 {
+/// Computes the legacy PBFT vote pre-signature hash.
+///
+/// Inputs are the voted block hash and encoded `VrfPbftSortition` payload.
+/// The output must match C++ `PbftVote::sha3(false)` and is shared by Rust
+/// validation and generation so both paths use one canonical byte contract.
+pub(crate) fn legacy_pbft_vote_signing_hash(block_hash: H256, vrf_sortition_rlp: &[u8]) -> H256 {
     let mut stream = RlpStream::new_list(2);
     stream.append(&block_hash);
     stream.append(&vrf_sortition_rlp);
     keccak256(&stream.out())
 }
 
-fn legacy_pbft_vote_signed_hash(
+/// Computes the legacy signed PBFT vote identifier.
+///
+/// The output must match C++ `PbftVote::sha3(true)` for an unweighted canonical
+/// vote. Embedded storage weight is not part of the vote identifier.
+pub(crate) fn legacy_pbft_vote_signed_hash(
     block_hash: H256,
     vrf_sortition_rlp: &[u8],
     signature: &[u8; SIGNATURE_BYTES],
@@ -805,7 +814,10 @@ fn legacy_pbft_vote_signed_hash(
     keccak256(&stream.out())
 }
 
-fn legacy_vrf_message_rlp(period: u64, round: u64, step: u64) -> Vec<u8> {
+/// Encodes the legacy PBFT VRF message `[period, round, step]`.
+///
+/// This is the exact message signed by Taraxa VRF for PBFT vote sortition.
+pub(crate) fn legacy_vrf_message_rlp(period: u64, round: u64, step: u64) -> Vec<u8> {
     let mut stream = RlpStream::new_list(3);
     stream.append(&period);
     stream.append(&round);
@@ -846,7 +858,11 @@ fn verify_pbft_vrf_output(
     }
 }
 
-fn calculate_pbft_vote_weight(
+/// Calculates the legacy PBFT vote weight from DPoS facts and VRF output.
+///
+/// The public-key input is the 64-byte uncompressed secp256k1 key without the
+/// `0x04` prefix. It mirrors C++ `VrfPbftSortition::calculateWeight`.
+pub(crate) fn calculate_pbft_vote_weight(
     stake: u64,
     total_dpos_vote_count: u64,
     threshold: u64,
@@ -1024,7 +1040,8 @@ const fn vote_validation_error_code(status: PbftVoteValidationStatus) -> &'stati
     }
 }
 
-fn keccak256(data: &[u8]) -> H256 {
+/// Computes Keccak-256 for legacy Taraxa consensus payloads.
+pub(crate) fn keccak256(data: &[u8]) -> H256 {
     let mut output = [0u8; 32];
     let mut hasher = Keccak::v256();
     hasher.update(data);

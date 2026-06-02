@@ -5,6 +5,7 @@ use crate::pbft_chain::*;
 use crate::pbft_finalize::*;
 use crate::pbft_manager::*;
 use crate::pbft_sync::*;
+use crate::pbft_vote_generation::*;
 use crate::pbft_vote_progress::*;
 use crate::pbft_vote_validation::*;
 use crate::period_data_queue::*;
@@ -1174,6 +1175,57 @@ pub mod rustaxa_ffi {
         weight_calculated: bool,
         calculated_weight: u64,
         vrf_output: [u8; 64],
+    }
+
+    /// Rust PBFT vote generation input supplied by the C++ VoteManager shim.
+    ///
+    /// Secrets are ephemeral call inputs only; Rust does not store them in a
+    /// runtime handle. Expected identity fields let Rust reject mismatched
+    /// wallet material before returning canonical vote bytes.
+    struct PbftVoteGenerationInput {
+        block_hash: [u8; 32],
+        vote_type: u8,
+        period: u64,
+        round: u64,
+        step: u64,
+        node_secret: [u8; 32],
+        vrf_secret: [u8; 64],
+        expected_voter: [u8; 20],
+        expected_vrf_public_key: [u8; 32],
+    }
+
+    /// DPoS facts used by Rust to embed a legacy PBFT vote weight.
+    struct PbftVoteWeightFacts {
+        voter_dpos_vote_count: u64,
+        total_dpos_vote_count: u64,
+        committee_size: u64,
+        number_of_proposers: u64,
+    }
+
+    /// Rust-generated canonical PBFT vote payload.
+    ///
+    /// `vote_rlp` is a signed 3-field legacy vote for unweighted generation and
+    /// a signed 4-field weighted vote when `has_weight` is true. `vote_hash`
+    /// remains the unweighted signed vote hash used as the consensus identity.
+    struct PbftGeneratedVote {
+        status: u8,
+        error_code: String,
+        accepted: bool,
+        vote_hash: [u8; 32],
+        signing_hash: [u8; 32],
+        block_hash: [u8; 32],
+        voter: [u8; 20],
+        voter_public_key: [u8; 64],
+        vrf_public_key: [u8; 32],
+        vrf_proof: [u8; 80],
+        vrf_output: [u8; 64],
+        period: u64,
+        round: u64,
+        step: u64,
+        vote_type: u8,
+        has_weight: bool,
+        weight: u64,
+        vote_rlp: Vec<u8>,
     }
 
     /// Explicit caller facts for locally generated proposer sortition screening.
@@ -3770,6 +3822,13 @@ pub mod rustaxa_ffi {
             vote_rlp: &[u8],
             facts: PbftVoteValidationExternalFacts,
         ) -> Result<PbftCanonicalVoteValidation>;
+        pub fn pbft_generate_signed_vote(
+            input: PbftVoteGenerationInput,
+        ) -> Result<PbftGeneratedVote>;
+        pub fn pbft_generate_signed_vote_with_weight(
+            input: PbftVoteGenerationInput,
+            facts: PbftVoteWeightFacts,
+        ) -> Result<PbftGeneratedVote>;
         pub fn pbft_proposer_sortition_plan(
             fact: PbftProposerSortitionFact,
         ) -> Result<PbftProposerSortitionPlan>;
