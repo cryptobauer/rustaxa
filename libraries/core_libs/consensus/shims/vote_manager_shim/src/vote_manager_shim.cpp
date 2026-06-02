@@ -425,14 +425,18 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
   const auto progress_fact = makeVoteProgressFact(vote, is_valid_potential_reward_vote);
   const auto progress_context = makeVoteProgressContext(current_pbft_period_, current_pbft_round_, two_t_plus_one);
 
-  const auto precheck_plan = rustaxa::pbft_vote_progress_plan_precheck(progress_fact, progress_context);
+  auto pipeline_session = rustaxa::create_pbft_vote_pipeline_session(progress_fact, progress_context);
+  const auto precheck_plan = pipeline_session->pbft_vote_pipeline_precheck();
   if (!precheck_plan.should_insert_verified_vote) {
     return false;
   }
+  const auto pipeline_two_t_plus_one =
+      precheck_plan.has_two_t_plus_one_threshold
+          ? std::optional<uint64_t>{precheck_plan.two_t_plus_one_threshold}
+          : std::nullopt;
 
-  const auto add_outcome = verified_votes_.addVerifiedVoteWithThreshold(vote, two_t_plus_one);
-  const auto execution_plan =
-      rustaxa::pbft_vote_progress_plan_after_add(progress_fact, progress_context, add_outcome.report);
+  const auto add_outcome = verified_votes_.addVerifiedVoteWithThreshold(vote, pipeline_two_t_plus_one);
+  const auto execution_plan = pipeline_session->pbft_vote_pipeline_complete(add_outcome.report);
 
   if (execution_plan.report_slashing) {
     LOG(log_wr_) << "Non unique vote " << vote->getHash().abridged() << " (race condition)";
@@ -455,7 +459,7 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
   LOG(log_nf_) << "Added verified vote: " << hash;
   LOG(log_dg_) << "Added verified vote: " << *vote;
 
-  if (!two_t_plus_one.has_value()) [[unlikely]] {
+  if (!pipeline_two_t_plus_one.has_value()) [[unlikely]] {
     if (execution_plan.persist_extra_reward_vote) {
       persistVoteProgressToRustStorage(*db_, vote, std::nullopt, {});
       extra_reward_votes_.emplace_back(vote->getHash());

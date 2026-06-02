@@ -85,7 +85,7 @@ pub fn pbft_vote_progress_plan_after_add(
     Ok(execution_plan_to_ffi(plan, domain_fact, context))
 }
 
-fn fact_to_domain(value: FfiPbftVoteProgressFact) -> Result<PbftVoteProgressFact> {
+pub(crate) fn fact_to_domain(value: FfiPbftVoteProgressFact) -> Result<PbftVoteProgressFact> {
     Ok(PbftVoteProgressFact {
         identity: PbftVoteIdentity {
             vote_hash: H256::from(value.vote.vote_hash),
@@ -103,7 +103,7 @@ fn fact_to_domain(value: FfiPbftVoteProgressFact) -> Result<PbftVoteProgressFact
     })
 }
 
-fn context_to_domain(value: &FfiPbftVoteProgressContext) -> PbftVoteProgressContext {
+pub(crate) fn context_to_domain(value: &FfiPbftVoteProgressContext) -> PbftVoteProgressContext {
     PbftVoteProgressContext {
         current_period: value.current_period,
         max_future_period_delta: value.max_future_period_delta,
@@ -115,7 +115,9 @@ fn context_to_domain(value: &FfiPbftVoteProgressContext) -> PbftVoteProgressCont
     }
 }
 
-fn add_outcome_to_domain(value: VerifiedVoteAddOutcome) -> Result<AddVerifiedVoteOutcome> {
+pub(crate) fn add_outcome_to_domain(
+    value: VerifiedVoteAddOutcome,
+) -> Result<AddVerifiedVoteOutcome> {
     let threshold_decision = if value.threshold_applied {
         Some(ThresholdDecisionOutcome {
             t_plus_one_reached: value.t_plus_one_reached,
@@ -149,7 +151,7 @@ fn add_outcome_to_domain(value: VerifiedVoteAddOutcome) -> Result<AddVerifiedVot
     })
 }
 
-fn execution_plan_to_ffi(
+pub(crate) fn execution_plan_to_ffi(
     plan: PbftVoteProgressPlan,
     fact: PbftVoteProgressFact,
     context: FfiPbftVoteProgressContext,
@@ -214,7 +216,7 @@ fn execution_plan_to_ffi(
     }
 }
 
-const fn error_code(status: PbftVoteProgressStatus) -> &'static str {
+pub(crate) const fn error_code(status: PbftVoteProgressStatus) -> &'static str {
     match status {
         PbftVoteProgressStatus::PendingVerifiedVoteInsert
         | PbftVoteProgressStatus::Accepted
@@ -225,6 +227,9 @@ const fn error_code(status: PbftVoteProgressStatus) -> &'static str {
         PbftVoteProgressStatus::RejectedStalePeriod => "PBFT_VOTE_PROGRESS_STALE_PERIOD",
         PbftVoteProgressStatus::RejectedFuturePeriod => "PBFT_VOTE_PROGRESS_FUTURE_PERIOD",
         PbftVoteProgressStatus::RejectedInvalidVote => "PBFT_VOTE_PROGRESS_INVALID_VOTE",
+        PbftVoteProgressStatus::RejectedExecutorReport => {
+            "PBFT_VOTE_PROGRESS_REJECTED_EXECUTOR_REPORT"
+        }
         PbftVoteProgressStatus::MissingProposedBlockSidecar => {
             "PBFT_VOTE_PROGRESS_MISSING_PROPOSED_BLOCK_SIDECAR"
         }
@@ -272,6 +277,7 @@ mod tests {
 
     fn add_outcome() -> VerifiedVoteAddOutcome {
         VerifiedVoteAddOutcome {
+            vote: vote(1),
             inserted: false,
             total_weight: 0,
             votes_count: 0,

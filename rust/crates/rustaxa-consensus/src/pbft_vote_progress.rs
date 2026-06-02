@@ -108,6 +108,8 @@ pub enum PbftVoteProgressStatus {
     MissingProposedBlockSidecar,
     /// Duplicate voter-slot conflict was reported for slashing.
     ConflictingVote,
+    /// Executor report did not match the vote transition being completed.
+    RejectedExecutorReport,
 }
 
 impl PbftVoteProgressStatus {
@@ -125,6 +127,7 @@ impl PbftVoteProgressStatus {
             Self::RejectedInvalidVote => 7,
             Self::MissingProposedBlockSidecar => 8,
             Self::ConflictingVote => 9,
+            Self::RejectedExecutorReport => 10,
         }
     }
 }
@@ -520,6 +523,7 @@ mod tests {
             8
         );
         assert_eq!(PbftVoteProgressStatus::ConflictingVote.as_u8(), 9);
+        assert_eq!(PbftVoteProgressStatus::RejectedExecutorReport.as_u8(), 10);
     }
 
     #[test]

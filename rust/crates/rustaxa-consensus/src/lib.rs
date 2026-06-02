@@ -8,6 +8,7 @@ pub mod pbft_reward_votes;
 pub mod pbft_sync;
 pub mod pbft_thresholds;
 pub mod pbft_vote_generation;
+pub mod pbft_vote_pipeline;
 pub mod pbft_vote_progress;
 pub mod pbft_vote_validation;
 pub mod period_data_queue;
@@ -59,6 +60,10 @@ pub use pbft_thresholds::{
 pub use pbft_vote_generation::{
     PbftGeneratedVote, PbftVoteGenerationInput, PbftVoteGenerationStatus, PbftVoteWeightFacts,
     generate_pbft_vote, generate_pbft_vote_with_weight,
+};
+pub use pbft_vote_pipeline::{
+    PbftVotePipelineSession, PbftVotePipelineStatus, PbftVotePipelineStep,
+    create_pbft_vote_pipeline_session,
 };
 pub use pbft_vote_progress::{
     PbftVoteIdentity, PbftVoteProgressContext, PbftVoteProgressFact, PbftVoteProgressIntent,

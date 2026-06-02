@@ -278,6 +278,7 @@ impl BridgeVerifiedVotes {
         two_t_plus_one_threshold: u64,
         apply_threshold_decision: bool,
     ) -> Result<FfiVerifiedVoteAddOutcome, anyhow::Error> {
+        let report_vote = copy_vote_payload(&vote);
         let vote = payload_to_vote(vote)?;
         let threshold = if apply_threshold_decision {
             Some(two_t_plus_one_threshold)
@@ -286,7 +287,7 @@ impl BridgeVerifiedVotes {
         };
 
         let outcome = self.0.add_verified_vote(vote, threshold)?;
-        Ok(outcome_to_ffi_add_vote_outcome(outcome))
+        Ok(outcome_to_ffi_add_vote_outcome(report_vote, outcome))
     }
 
     /// Removes periods lower than `pbft_period`.
@@ -332,6 +333,19 @@ impl BridgeVerifiedVotes {
     }
 }
 
+fn copy_vote_payload(value: &VerifiedVotePayload) -> VerifiedVotePayload {
+    VerifiedVotePayload {
+        vote_hash: value.vote_hash,
+        block_hash: value.block_hash,
+        voter: value.voter,
+        period: value.period,
+        round: value.round,
+        step: value.step,
+        vote_type: value.vote_type,
+        weight: value.weight,
+    }
+}
+
 fn payload_to_vote(value: VerifiedVotePayload) -> Result<VerifiedVote, anyhow::Error> {
     VerifiedVote::new(
         H256::from(value.vote_hash),
@@ -356,6 +370,7 @@ impl From<rustaxa_consensus::verified_votes::VotedValueInsertOutcome> for VotedV
 }
 
 fn outcome_to_ffi_add_vote_outcome(
+    vote: VerifiedVotePayload,
     value: ConsensusAddVerifiedVoteOutcome,
 ) -> FfiVerifiedVoteAddOutcome {
     let (
@@ -390,6 +405,7 @@ fn outcome_to_ffi_add_vote_outcome(
         .unwrap_or((false, false, false, false, false, 0u8, false, false));
 
     FfiVerifiedVoteAddOutcome {
+        vote,
         inserted: value.inserted,
         total_weight: value.total_weight,
         votes_count: value.votes_count,
