@@ -677,8 +677,11 @@ The current Rust starting point is intentionally small:
    zero-stake, zero-total-DPoS, and zero-weight outcomes as stable statuses. The shim now materializes local
    `PbftVote` sidecars directly from Rust-generated signed or weighted RLP, hydrates the temporary C++ VRF credential
    cache with local VRF verification, and persists locally generated own votes through Rust storage using the
-   Rust-generated weighted bytes. C++ still owns the temporary live sidecar type, FinalChain fact sourcing, logging, and
-   broader PBFT manager/network orchestration.
+   Rust-generated weighted bytes. `checkRewardVotes` now uses a Rust reward-vote selection planner: C++ supplies the
+   PBFT block's requested reward-vote hashes plus compact live membership facts for the preferred reward round and
+   reverse-ordered period rounds, Rust decides whether the references are valid, and C++ only maps accepted hashes back
+   to temporary live sidecars when callers request copied votes. C++ still owns the temporary live sidecar type,
+   FinalChain fact sourcing, logging, reward-vote sidecar mapping, and broader PBFT manager/network orchestration.
    owns PBFT finalization
    sortition-change persistence: the sortition shim now previews the live Rust runtime transition, returns the emitted
    threshold change for storage staging, and commits the same transition only after the PBFT staged storage appender has

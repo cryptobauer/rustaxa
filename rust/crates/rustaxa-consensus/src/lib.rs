@@ -4,6 +4,7 @@ pub mod gas_pricer;
 pub mod pbft_chain;
 pub mod pbft_finalize;
 pub mod pbft_manager;
+pub mod pbft_reward_votes;
 pub mod pbft_sync;
 pub mod pbft_vote_generation;
 pub mod pbft_vote_progress;
@@ -40,6 +41,10 @@ pub use pbft_manager::{
     PbftManagerRuntimeStatus, PbftManagerRuntimeTickFact, abort_pbft_manager_runtime_session,
     create_pbft_manager_runtime_session, next_pbft_manager_runtime_action,
     report_pbft_manager_runtime_action,
+};
+pub use pbft_reward_votes::{
+    PbftRewardVoteRoundCandidate, PbftRewardVoteSelectionFact, PbftRewardVoteSelectionPlan,
+    PbftRewardVotesStatus, plan_pbft_reward_votes,
 };
 pub use pbft_sync::{
     PbftSyncFactStatus, PbftSyncFinalChainHashStatus, PbftSyncPeriodAdmissionDecision,

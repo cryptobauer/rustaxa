@@ -4,6 +4,7 @@ use crate::gas_pricer::*;
 use crate::pbft_chain::*;
 use crate::pbft_finalize::*;
 use crate::pbft_manager::*;
+use crate::pbft_reward_votes::*;
 use crate::pbft_sync::*;
 use crate::pbft_vote_generation::*;
 use crate::pbft_vote_progress::*;
@@ -1079,6 +1080,53 @@ pub mod rustaxa_ffi {
         two_t_plus_one_round: u64,
         two_t_plus_one_step: u64,
         two_t_plus_one_block_hash: [u8; 32],
+    }
+
+    /// Compact reward-vote membership facts for one PBFT round.
+    ///
+    /// The C++ VoteManager shim supplies one candidate for the preferred
+    /// reward round and a reverse-ordered list of all known period rounds.
+    /// `vote_hashes` contains only votes in the cert-vote step bucket for the
+    /// expected reward block hash; C++ sidecar objects never cross this bridge.
+    struct PbftRewardVoteRoundCandidate {
+        round: u64,
+        has_cert_step: bool,
+        has_reward_block: bool,
+        vote_hashes: Vec<PbftFinalizationHash>,
+    }
+
+    /// Fact-only input for Rust-planned PBFT reward-vote selection.
+    ///
+    /// `requested_vote_hashes` are the hashes embedded in the PBFT block being
+    /// checked. Rust first evaluates `preferred_round`, then scans
+    /// `period_rounds` in caller-supplied order to preserve legacy reverse
+    /// round lookup.
+    struct PbftRewardVoteSelectionFact {
+        block_period: u64,
+        reward_period: u64,
+        preferred_reward_round: u64,
+        reward_block_hash: [u8; 32],
+        requested_vote_hashes: Vec<PbftFinalizationHash>,
+        has_preferred_round: bool,
+        preferred_round: PbftRewardVoteRoundCandidate,
+        has_reward_period: bool,
+        period_rounds: Vec<PbftRewardVoteRoundCandidate>,
+    }
+
+    /// Rust-planned PBFT reward-vote selection output.
+    ///
+    /// When `accepted` is true, `selected_vote_hashes` preserves the PBFT
+    /// block's requested order. C++ maps those hashes back to live `PbftVote`
+    /// sidecars only if the caller requested copied votes.
+    struct PbftRewardVoteSelectionPlan {
+        accepted: bool,
+        status: u8,
+        error_code: String,
+        selected_period: u64,
+        selected_round: u64,
+        selected_block_hash: [u8; 32],
+        selected_vote_hashes: Vec<PbftFinalizationHash>,
+        missing_vote_hash: [u8; 32],
     }
 
     /// Explicit caller facts for one Rust-planned PBFT vote validation pass.
@@ -3792,6 +3840,12 @@ pub mod rustaxa_ffi {
             context: PbftVoteProgressContext,
             add_vote_outcome: VerifiedVoteAddOutcome,
         ) -> Result<PbftVoteProgressExecutionPlan>;
+
+        // PBFT reward-vote selection planner
+
+        pub fn pbft_reward_votes_plan(
+            fact: PbftRewardVoteSelectionFact,
+        ) -> PbftRewardVoteSelectionPlan;
 
         // PBFT vote validation planner
 

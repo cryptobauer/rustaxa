@@ -5,6 +5,7 @@ mod gas_pricer;
 mod pbft_chain;
 mod pbft_finalize;
 mod pbft_manager;
+mod pbft_reward_votes;
 mod pbft_sync;
 mod pbft_vote_generation;
 mod pbft_vote_progress;

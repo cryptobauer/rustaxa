@@ -134,6 +134,53 @@ TEST_F(VoteTest, rust_generated_own_vote_materializes_persists_and_reloads) {
   EXPECT_EQ(*reloaded_votes[0]->getWeight(), *vote->getWeight());
 }
 
+TEST_F(VoteTest, rust_reward_vote_check_accepts_reverse_round_fallback) {
+  auto node = create_nodes(1, true /*start*/).front();
+  node->getPbftManager()->stop();
+  clearAllVotes({node});
+
+  constexpr PbftPeriod reward_period = 1;
+  constexpr PbftRound preferred_round = 1;
+  constexpr PbftRound fallback_round = 2;
+  const auto cert_step = static_cast<PbftStep>(PbftVoteTypes::cert_vote);
+  const blk_hash_t reward_block_hash(10);
+  auto vote_mgr = node->getVoteManager();
+  const auto& wallet = node->getConfig().getFirstWallet();
+
+  auto preferred_vote =
+      genDummyVote(PbftVoteTypes::cert_vote, reward_period, preferred_round, cert_step, reward_block_hash, vote_mgr,
+                   wallet);
+  auto fallback_vote =
+      genDummyVote(PbftVoteTypes::cert_vote, reward_period, fallback_round, cert_step, reward_block_hash, vote_mgr,
+                   wallet);
+  ASSERT_TRUE(vote_mgr->addVerifiedVote(preferred_vote));
+  ASSERT_TRUE(vote_mgr->addVerifiedVote(fallback_vote));
+
+  auto batch = DbStorage::createWriteBatch();
+  vote_mgr->resetRewardVotes(reward_period, preferred_round, cert_step, reward_block_hash, batch);
+
+  std::vector<vote_hash_t> reward_vote_hashes{fallback_vote->getHash()};
+  auto pbft_block = std::make_shared<PbftBlock>(blk_hash_t(1), blk_hash_t(2), blk_hash_t(3), blk_hash_t(4), 2,
+                                                wallet.node_addr, wallet.node_secret, reward_vote_hashes);
+
+  auto [valid_without_copy, no_votes] = vote_mgr->checkRewardVotes(pbft_block, false);
+  EXPECT_TRUE(valid_without_copy);
+  EXPECT_TRUE(no_votes.empty());
+
+  auto [valid_with_copy, copied_votes] = vote_mgr->checkRewardVotes(pbft_block, true);
+  ASSERT_TRUE(valid_with_copy);
+  ASSERT_EQ(copied_votes.size(), 1);
+  EXPECT_EQ(copied_votes[0]->getHash(), fallback_vote->getHash());
+
+  std::vector<vote_hash_t> missing_reward_vote_hashes{vote_hash_t(99)};
+  auto missing_reward_block =
+      std::make_shared<PbftBlock>(blk_hash_t(1), blk_hash_t(2), blk_hash_t(3), blk_hash_t(4), 2, wallet.node_addr,
+                                  wallet.node_secret, missing_reward_vote_hashes);
+  auto [valid_missing, missing_votes] = vote_mgr->checkRewardVotes(missing_reward_block, true);
+  EXPECT_FALSE(valid_missing);
+  EXPECT_TRUE(missing_votes.empty());
+}
+
 // Generate a vote, send the vote from node2 to node1
 TEST_F(VoteTest, transfer_vote) {
   auto node_cfgs = make_node_cfgs(2);

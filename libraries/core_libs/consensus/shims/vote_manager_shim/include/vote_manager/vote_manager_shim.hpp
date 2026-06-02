@@ -72,6 +72,27 @@ class VoteManager : public VoteManagerOld {
    */
   void resetRewardVotes(PbftPeriod period, PbftRound round, PbftStep step, const blk_hash_t& block_hash, Batch& batch);
 
+  /**
+   * Validates and optionally materializes reward votes referenced by a PBFT block.
+   *
+   * Inputs:
+   * - `pbft_block`: block whose reward-vote hash list should be checked against
+   *   live certified votes for the current reward-vote metadata.
+   * - `copy_votes`: when true, return the selected live `PbftVote` sidecars in
+   *   the same order as the PBFT block's reward-vote hash list.
+   *
+   * Outputs:
+   * - `{true, votes}` when Rust accepts the reward-vote references.
+   * - `{false, {}}` when the preferred round and reverse period scan cannot
+   *   satisfy the requested hashes.
+   *
+   * Invariants and edge behavior:
+   * - Rust owns the deterministic preferred-round and reverse-round selection
+   *   decision from compact membership facts.
+   * - C++ only snapshots live verified-vote buckets and maps accepted hashes
+   *   back to temporary sidecars when requested.
+   * - Period-one blocks accept with no reward votes.
+   */
   std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> checkRewardVotes(const std::shared_ptr<PbftBlock>& pbft_block,
                                                                            bool copy_votes);
   /**
