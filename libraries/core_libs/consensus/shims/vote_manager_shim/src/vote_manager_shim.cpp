@@ -39,6 +39,8 @@ constexpr uint8_t kPbftVoteGenerationStatusZeroStake = 4;
 constexpr uint8_t kPbftVoteGenerationStatusZeroTotalDpos = 5;
 constexpr uint8_t kPbftVoteGenerationStatusZeroWeight = 6;
 constexpr uint8_t kPbftVotePersistenceStatusApplied = 0;
+constexpr uint8_t kPbftTwoTPlusOneThresholdStatusAvailable = 0;
+constexpr uint8_t kPbftTwoTPlusOneThresholdStatusNeedsDposTotal = 1;
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t& hash) { return hash.asArray(); }
 
@@ -414,8 +416,12 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
     }
   }
 
-  // TODO(rustaxa): move PBFT threshold calculation and cache ownership to Rust.
-  const auto two_t_plus_one = VoteManagerOld::getPbftTwoTPlusOne(vote->getPeriod() - 1, vote->getType());
+  if (vote->getPeriod() == 0) {
+    LOG(log_er_) << "Unable to add vote " << hash << " into the verified queue. Invalid zero vote period";
+    return false;
+  }
+
+  const auto two_t_plus_one = getPbftTwoTPlusOne(vote->getPeriod() - 1, vote->getType());
   const auto progress_fact = makeVoteProgressFact(vote, is_valid_potential_reward_vote);
   const auto progress_context = makeVoteProgressContext(current_pbft_period_, current_pbft_round_, two_t_plus_one);
 
@@ -948,39 +954,63 @@ std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<Pbf
 }
 
 std::optional<uint64_t> VoteManager::getPbftTwoTPlusOne(PbftPeriod pbft_period, PbftVoteTypes vote_type) const {
-  {
-    std::shared_lock lock(current_two_t_plus_one_mutex_);
-    const auto cached_two_t_plus_one_it = current_two_t_plus_one_.find(vote_type);
-    if (cached_two_t_plus_one_it != current_two_t_plus_one_.end()) {
-      const auto [cached_period, cached_two_t_plus_one] = cached_two_t_plus_one_it->second;
-      if (pbft_period == cached_period && cached_two_t_plus_one) {
-        return cached_two_t_plus_one;
-      }
-    }
+  rustaxa::PbftTwoTPlusOneThresholdFact threshold_fact{};
+  threshold_fact.pbft_period = pbft_period;
+  threshold_fact.vote_type = static_cast<uint8_t>(vote_type);
+  threshold_fact.current_pbft_chain_size = pbft_chain_->getPbftChainSize();
+  threshold_fact.committee_size = kPbftConfig.committee_size;
+  threshold_fact.number_of_proposers = kPbftConfig.number_of_proposers;
+
+  auto threshold_plan = vote_validation_runtime_->pbft_two_t_plus_one_threshold(threshold_fact);
+  if (threshold_plan.status == kPbftTwoTPlusOneThresholdStatusAvailable && threshold_plan.has_threshold) {
+    return threshold_plan.threshold;
+  }
+  if (threshold_plan.status != kPbftTwoTPlusOneThresholdStatusNeedsDposTotal ||
+      !threshold_plan.needs_total_dpos_votes) {
+    LOG(log_er_) << "Unable to calculate 2t + 1 for period: " << pbft_period << ". Rust threshold status "
+                 << static_cast<uint32_t>(threshold_plan.status) << " error "
+                 << static_cast<std::string>(threshold_plan.error_code);
+    return {};
   }
 
   uint64_t total_dpos_votes_count = 0;
   try {
     total_dpos_votes_count = final_chain_->dposEligibleTotalVoteCount(pbft_period);
   } catch (state_api::ErrFutureBlock& e) {
+    threshold_fact.future_dpos_state = true;
+    (void)vote_validation_runtime_->pbft_two_t_plus_one_threshold(threshold_fact);
     LOG(log_er_) << "Unable to calculate 2t + 1 for period: " << pbft_period
                  << ". Period is too far ahead of actual finalized pbft chain size (" << final_chain_->lastBlockNumber()
                  << "). Err msg: " << e.what();
     return {};
+  } catch (const std::exception& e) {
+    threshold_fact.unknown_error = true;
+    threshold_plan = vote_validation_runtime_->pbft_two_t_plus_one_threshold(threshold_fact);
+    LOG(log_er_) << "Unable to calculate 2t + 1 for period: " << pbft_period << ". Err msg: " << e.what()
+                 << ". Rust threshold status " << static_cast<uint32_t>(threshold_plan.status) << " error "
+                 << static_cast<std::string>(threshold_plan.error_code);
+    return {};
+  } catch (...) {
+    threshold_fact.unknown_error = true;
+    threshold_plan = vote_validation_runtime_->pbft_two_t_plus_one_threshold(threshold_fact);
+    LOG(log_er_) << "Unable to calculate 2t + 1 for period: " << pbft_period << ". Unknown error. Rust threshold status "
+                 << static_cast<uint32_t>(threshold_plan.status) << " error "
+                 << static_cast<std::string>(threshold_plan.error_code);
+    return {};
   }
 
-  const auto sortition_threshold =
-      rustaxa::pbft_vote_sortition_threshold_for_bridge(total_dpos_votes_count, static_cast<uint8_t>(vote_type),
-                                                        kPbftConfig.committee_size, kPbftConfig.number_of_proposers);
-  const auto two_t_plus_one = sortition_threshold * 2 / 3 + 1;
-
-  // TODO(rustaxa): move 2t+1 threshold cache ownership to Rust.
-  if (pbft_period == pbft_chain_->getPbftChainSize()) {
-    std::scoped_lock lock(current_two_t_plus_one_mutex_);
-    current_two_t_plus_one_[vote_type] = std::make_pair(pbft_period, two_t_plus_one);
+  threshold_fact.current_pbft_chain_size = pbft_chain_->getPbftChainSize();
+  threshold_fact.has_total_dpos_votes_count = true;
+  threshold_fact.total_dpos_votes_count = total_dpos_votes_count;
+  threshold_plan = vote_validation_runtime_->pbft_two_t_plus_one_threshold(threshold_fact);
+  if (threshold_plan.status == kPbftTwoTPlusOneThresholdStatusAvailable && threshold_plan.has_threshold) {
+    return threshold_plan.threshold;
   }
 
-  return two_t_plus_one;
+  LOG(log_er_) << "Unable to calculate 2t + 1 for period: " << pbft_period << ". Rust threshold status "
+               << static_cast<uint32_t>(threshold_plan.status) << " error "
+               << static_cast<std::string>(threshold_plan.error_code);
+  return {};
 }
 
 bool VoteManager::voteAlreadyValidated(const vote_hash_t& vote_hash) const {

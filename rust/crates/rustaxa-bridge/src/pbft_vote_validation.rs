@@ -10,6 +10,8 @@ use crate::ffi::rustaxa_ffi::{
     PbftCanonicalVoteValidation as FfiPbftCanonicalVoteValidation,
     PbftProposerSortitionFact as FfiPbftProposerSortitionFact,
     PbftProposerSortitionPlan as FfiPbftProposerSortitionPlan,
+    PbftTwoTPlusOneThresholdFact as FfiPbftTwoTPlusOneThresholdFact,
+    PbftTwoTPlusOneThresholdPlan as FfiPbftTwoTPlusOneThresholdPlan,
     PbftVoteValidationExternalFacts as FfiPbftVoteValidationExternalFacts,
     PbftVoteValidationFact as FfiPbftVoteValidationFact,
     PbftVoteValidationPlan as FfiPbftVoteValidationPlan,
@@ -17,6 +19,10 @@ use crate::ffi::rustaxa_ffi::{
 use crate::ffi::BridgePbftVoteValidationRuntime;
 use anyhow::Result;
 use ethereum_types::H256;
+use rustaxa_consensus::pbft_thresholds::{
+    PbftTwoTPlusOneThresholdFact, PbftTwoTPlusOneThresholdPlan, PbftTwoTPlusOneThresholdRuntime,
+    PbftTwoTPlusOneThresholdStatus,
+};
 use rustaxa_consensus::pbft_vote_validation::{
     inspect_canonical_pbft_vote, pbft_vote_sortition_threshold, plan_pbft_proposer_sortition,
     plan_pbft_vote_validation, validate_canonical_pbft_vote, PbftCanonicalVoteInspection,
@@ -41,6 +47,7 @@ pub fn create_pbft_vote_validation_runtime(
 ) -> Box<BridgePbftVoteValidationRuntime> {
     Box::new(BridgePbftVoteValidationRuntime {
         replay_cache: Mutex::new(PbftVoteReplayCache::new(max_size, delete_step)),
+        threshold_runtime: Mutex::new(PbftTwoTPlusOneThresholdRuntime::new()),
     })
 }
 
@@ -62,6 +69,47 @@ impl BridgePbftVoteValidationRuntime {
             .lock()
             .expect("PBFT vote replay cache mutex poisoned")
             .insert(H256::from(*vote_hash))
+    }
+
+    /// Returns a Rust-owned PBFT `2t+1` threshold plan.
+    ///
+    /// C++ supplies FinalChain/PBFT-chain scalar facts. Rust owns cache lookup,
+    /// threshold calculation, cache update policy, and failure-status mapping.
+    pub fn pbft_two_t_plus_one_threshold(
+        &self,
+        fact: FfiPbftTwoTPlusOneThresholdFact,
+    ) -> FfiPbftTwoTPlusOneThresholdPlan {
+        let vote_type = match PbftVoteType::try_from(fact.vote_type) {
+            Ok(vote_type) => vote_type,
+            Err(_) => {
+                return threshold_plan_to_ffi(PbftTwoTPlusOneThresholdPlan {
+                    status: PbftTwoTPlusOneThresholdStatus::InvalidVoteType,
+                    error_code: "PBFT_TWO_T_PLUS_ONE_INVALID_VOTE_TYPE",
+                    has_threshold: false,
+                    threshold: 0,
+                    sortition_threshold: 0,
+                    needs_total_dpos_votes: false,
+                    cache_hit: false,
+                    cached: false,
+                });
+            }
+        };
+
+        let mut runtime = self
+            .threshold_runtime
+            .lock()
+            .expect("PBFT 2t+1 threshold runtime mutex poisoned");
+        threshold_plan_to_ffi(runtime.plan_threshold(PbftTwoTPlusOneThresholdFact {
+            pbft_period: fact.pbft_period,
+            vote_type,
+            current_pbft_chain_size: fact.current_pbft_chain_size,
+            committee_size: fact.committee_size,
+            number_of_proposers: fact.number_of_proposers,
+            has_total_dpos_votes_count: fact.has_total_dpos_votes_count,
+            total_dpos_votes_count: fact.total_dpos_votes_count,
+            future_dpos_state: fact.future_dpos_state,
+            unknown_error: fact.unknown_error,
+        }))
     }
 }
 
@@ -117,6 +165,19 @@ pub fn pbft_vote_validation_plan(
         has_sortition_threshold: plan.has_sortition_threshold,
         sortition_threshold: plan.sortition_threshold,
     })
+}
+
+fn threshold_plan_to_ffi(plan: PbftTwoTPlusOneThresholdPlan) -> FfiPbftTwoTPlusOneThresholdPlan {
+    FfiPbftTwoTPlusOneThresholdPlan {
+        status: plan.status.as_u8(),
+        error_code: plan.error_code.to_owned(),
+        has_threshold: plan.has_threshold,
+        threshold: plan.threshold,
+        sortition_threshold: plan.sortition_threshold,
+        needs_total_dpos_votes: plan.needs_total_dpos_votes,
+        cache_hit: plan.cache_hit,
+        cached: plan.cached,
+    }
 }
 
 /// Inspects peer-controlled canonical PBFT vote RLP in Rust.
@@ -396,6 +457,86 @@ mod tests {
             pbft_vote_sortition_threshold_for_bridge(12, 3, 50, 20).unwrap(),
             12
         );
+    }
+
+    #[test]
+    fn bridge_threshold_runtime_requests_facts_then_caches_current_period() {
+        let runtime = create_pbft_vote_validation_runtime(100, 10);
+        let missing = runtime.pbft_two_t_plus_one_threshold(FfiPbftTwoTPlusOneThresholdFact {
+            pbft_period: 4,
+            vote_type: 3,
+            current_pbft_chain_size: 4,
+            committee_size: 90,
+            number_of_proposers: 20,
+            has_total_dpos_votes_count: false,
+            total_dpos_votes_count: 0,
+            future_dpos_state: false,
+            unknown_error: false,
+        });
+        assert_eq!(missing.status, 1);
+        assert!(missing.needs_total_dpos_votes);
+
+        let computed = runtime.pbft_two_t_plus_one_threshold(FfiPbftTwoTPlusOneThresholdFact {
+            pbft_period: 4,
+            vote_type: 3,
+            current_pbft_chain_size: 4,
+            committee_size: 90,
+            number_of_proposers: 20,
+            has_total_dpos_votes_count: true,
+            total_dpos_votes_count: 90,
+            future_dpos_state: false,
+            unknown_error: false,
+        });
+        assert_eq!(computed.status, 0);
+        assert_eq!(computed.sortition_threshold, 90);
+        assert_eq!(computed.threshold, 61);
+        assert!(computed.cached);
+
+        let cached = runtime.pbft_two_t_plus_one_threshold(FfiPbftTwoTPlusOneThresholdFact {
+            pbft_period: 4,
+            vote_type: 3,
+            current_pbft_chain_size: 4,
+            committee_size: 90,
+            number_of_proposers: 20,
+            has_total_dpos_votes_count: false,
+            total_dpos_votes_count: 0,
+            future_dpos_state: false,
+            unknown_error: false,
+        });
+        assert_eq!(cached.threshold, 61);
+        assert!(cached.cache_hit);
+    }
+
+    #[test]
+    fn bridge_threshold_runtime_maps_failure_statuses() {
+        let runtime = create_pbft_vote_validation_runtime(100, 10);
+        let invalid = runtime.pbft_two_t_plus_one_threshold(FfiPbftTwoTPlusOneThresholdFact {
+            pbft_period: 4,
+            vote_type: 99,
+            current_pbft_chain_size: 4,
+            committee_size: 90,
+            number_of_proposers: 20,
+            has_total_dpos_votes_count: true,
+            total_dpos_votes_count: 90,
+            future_dpos_state: false,
+            unknown_error: false,
+        });
+        assert_eq!(invalid.status, 4);
+        assert_eq!(invalid.error_code, "PBFT_TWO_T_PLUS_ONE_INVALID_VOTE_TYPE");
+
+        let future = runtime.pbft_two_t_plus_one_threshold(FfiPbftTwoTPlusOneThresholdFact {
+            pbft_period: 4,
+            vote_type: 3,
+            current_pbft_chain_size: 4,
+            committee_size: 90,
+            number_of_proposers: 20,
+            has_total_dpos_votes_count: false,
+            total_dpos_votes_count: 0,
+            future_dpos_state: true,
+            unknown_error: false,
+        });
+        assert_eq!(future.status, 2);
+        assert!(!future.has_threshold);
     }
 
     #[test]

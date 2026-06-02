@@ -95,6 +95,7 @@ pub struct BridgeVerifiedVotes(pub VerifiedVotes);
 /// and live vote objects are still sourced by the C++ `VoteManager` shim.
 pub struct BridgePbftVoteValidationRuntime {
     pub replay_cache: Mutex<rustaxa_consensus::PbftVoteReplayCache>,
+    pub threshold_runtime: Mutex<rustaxa_consensus::PbftTwoTPlusOneThresholdRuntime>,
 }
 
 pub struct BridgePillarVotes(pub PillarVotes);
@@ -1163,6 +1164,31 @@ pub mod rustaxa_ffi {
         mark_validated_replay: bool,
         has_sortition_threshold: bool,
         sortition_threshold: u64,
+    }
+
+    /// Caller facts for Rust-owned PBFT `2t+1` threshold lookup and caching.
+    struct PbftTwoTPlusOneThresholdFact {
+        pbft_period: u64,
+        vote_type: u8,
+        current_pbft_chain_size: u64,
+        committee_size: u64,
+        number_of_proposers: u64,
+        has_total_dpos_votes_count: bool,
+        total_dpos_votes_count: u64,
+        future_dpos_state: bool,
+        unknown_error: bool,
+    }
+
+    /// Rust PBFT `2t+1` threshold lookup result.
+    struct PbftTwoTPlusOneThresholdPlan {
+        status: u8,
+        error_code: String,
+        has_threshold: bool,
+        threshold: u64,
+        sortition_threshold: u64,
+        needs_total_dpos_votes: bool,
+        cache_hit: bool,
+        cached: bool,
     }
 
     /// Result of inspecting canonical legacy PBFT vote RLP in Rust.
@@ -3868,6 +3894,10 @@ pub mod rustaxa_ffi {
             self: &BridgePbftVoteValidationRuntime,
             vote_hash: &[u8; 32],
         ) -> bool;
+        pub fn pbft_two_t_plus_one_threshold(
+            self: &BridgePbftVoteValidationRuntime,
+            fact: PbftTwoTPlusOneThresholdFact,
+        ) -> PbftTwoTPlusOneThresholdPlan;
         pub fn pbft_vote_validation_plan(
             fact: PbftVoteValidationFact,
         ) -> Result<PbftVoteValidationPlan>;

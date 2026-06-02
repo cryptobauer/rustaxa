@@ -19,6 +19,9 @@ namespace taraxa {
  * - Inherited methods use the same base state as the overridden reset path.
  * - Own verified votes, extra reward votes, and latest-round 2t+1 bundles use
  *   `rustaxa-storage` for durable writes in Rust mode.
+ * - PBFT `2t+1` threshold lookup and current-period cache ownership live in
+ *   the Rust vote-validation runtime; C++ supplies only FinalChain/PBFT-chain
+ *   scalar facts when Rust reports a cache miss.
  * - Reward-vote reset appends the stage-4 Rust finalization storage write to
  *   the caller-owned batch and mutates live reward metadata only after Rust
  *   accepts the durable write stage.
@@ -170,6 +173,27 @@ class VoteManager : public VoteManagerOld {
   std::shared_ptr<PbftVote> generateVote(const blk_hash_t& blockhash, PbftVoteTypes type, PbftPeriod period,
                                          PbftRound round, PbftStep step, const WalletConfig& wallet);
   std::pair<bool, std::string> validateVote(const std::shared_ptr<PbftVote>& vote, bool strict = true) const;
+  /**
+   * Returns the PBFT `2t+1` threshold for an eligibility period and vote type.
+   *
+   * Inputs:
+   * - `pbft_period`: eligibility period used for the FinalChain total DPoS
+   *   vote-count lookup.
+   * - `vote_type`: proposal/soft/cert/next vote family selecting the Rust
+   *   sortition threshold rule.
+   *
+   * Outputs:
+   * - Threshold value when Rust has a cache hit or accepts the supplied
+   *   FinalChain total-vote fact.
+   * - Empty optional when FinalChain is behind, the vote type is invalid, or
+   *   the threshold runtime rejects the supplied facts.
+   *
+   * Invariants and edge behavior:
+   * - Rust owns cache lookup and update policy; C++ does not read or mutate the
+   *   inherited legacy threshold cache in Rust mode.
+   * - Only current PBFT-chain-size thresholds are cached, matching legacy
+   *   VoteManager behavior.
+   */
   std::optional<uint64_t> getPbftTwoTPlusOne(PbftPeriod pbft_period, PbftVoteTypes vote_type) const;
   bool voteAlreadyValidated(const vote_hash_t& vote_hash) const;
   bool genAndValidateVrfSortition(PbftPeriod pbft_period, PbftRound pbft_round, const WalletConfig& wallet) const;

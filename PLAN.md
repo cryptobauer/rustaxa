@@ -459,8 +459,8 @@ The current Rust starting point is intentionally small:
   typed known/admit/slashing/gossip/progress intents plus an operation-specific CXX bridge for Rust-mode
   `VoteManager::addVerifiedVote` execution, Rust-owned PBFT vote validation planning with replay-cache storage,
   canonical PBFT vote RLP inspection, signed/unsigned vote hashing, signature recovery, VRF proof verification,
-  Rust-computed received-vote weight, sortition-threshold calculation, local proposer-sortition screening, and
-  Rust-owned local PBFT vote byte generation/signing for canonical signed and weighted vote payloads with shim-side
+  Rust-computed received-vote weight, sortition-threshold calculation, Rust-owned PBFT `2t+1` threshold cache, local
+  proposer-sortition screening, and Rust-owned local PBFT vote byte generation/signing for canonical signed and weighted vote payloads with shim-side
   parity checks against temporary C++ live sidecars for the Rust-mode `VoteManager` overlay, and a Rust-backed
   `GasPricer` oracle for finalized-block history, minimum-price
   flooring, and percentile bid selection.
@@ -669,9 +669,10 @@ The current Rust starting point is intentionally small:
    the durable operation. `validateVote`, `voteAlreadyValidated`, `getPbftTwoTPlusOne`, and
    `genAndValidateVrfSortition` now route away from `VoteManagerOld`: Rust owns validation/replay planning, canonical
    received-vote RLP inspection, signed and unsigned vote hash derivation, recovered voter identity, signature and VRF
-   proof checks, Rust-computed received-vote weight, the replay cache, PBFT sortition-threshold formula, and local
-   proposer-sortition screening, while C++ temporarily supplies FinalChain/key-manager facts, performs only the live
-   `PbftVote::calculateWeight` sidecar mutation after a Rust parity check, and keeps the threshold cache. Rust now also
+   proof checks, Rust-computed received-vote weight, the replay cache, PBFT sortition-threshold formula, Rust-owned
+   `2t+1` threshold lookup/current-period cache, and local proposer-sortition screening, while C++ temporarily supplies
+   FinalChain/key-manager facts and performs only the live `PbftVote::calculateWeight` sidecar mutation after a Rust
+   parity check. Rust now also
    generates local PBFT vote bytes in a side-effect-free bridge API: it derives the VRF proof/output, signs the legacy
    unsigned vote hash, returns canonical signed or weighted `PbftVote` RLP plus hashes/identity facts, and reports
    zero-stake, zero-total-DPoS, and zero-weight outcomes as stable statuses. The shim now materializes local
