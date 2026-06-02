@@ -328,6 +328,26 @@ void requireRustVoteGenerationMatches(const std::shared_ptr<PbftVote>& vote,
   }
 }
 
+std::shared_ptr<PbftVote> materializeRustGeneratedVote(const rustaxa::PbftGeneratedVote& generated,
+                                                       const WalletConfig& wallet, bool expect_weight) {
+  if (!generated.accepted || generated.status != kPbftVoteGenerationStatusGenerated) {
+    std::stringstream err;
+    err << "Rust PBFT vote generation rejected local vote materialization: status "
+        << static_cast<uint32_t>(generated.status) << " error " << static_cast<std::string>(generated.error_code);
+    throw std::runtime_error(err.str());
+  }
+  if (generated.vote_rlp.empty() || generated.has_weight != expect_weight) {
+    throw std::runtime_error("Rust PBFT vote generation returned an invalid materialization payload");
+  }
+
+  auto vote = std::make_shared<PbftVote>(fromBridgeBytes(generated.vote_rlp));
+  if (!vote->verifyVrfSortition(wallet.vrf_pk, true)) {
+    throw std::runtime_error("Rust-generated PBFT vote failed local VRF hydration");
+  }
+  requireRustVoteGenerationMatches(vote, generated, expect_weight);
+  return vote;
+}
+
 }  // namespace
 
 VoteManager::VoteManager(const FullNodeConfig& config, std::shared_ptr<DbStorage> db,
@@ -617,7 +637,6 @@ std::shared_ptr<PbftVote> VoteManager::generateVoteWithWeight(const blk_hash_t& 
   const auto generation_input = makeVoteGenerationInput(blockhash, vote_type, period, round, step, wallet);
   uint64_t voter_dpos_votes_count = 0;
   uint64_t total_dpos_votes_count = 0;
-  uint64_t pbft_sortition_threshold = 0;
 
   try {
     voter_dpos_votes_count = final_chain_->dposEligibleVoteCount(period - 1, wallet.node_addr);
@@ -630,9 +649,6 @@ std::shared_ptr<PbftVote> VoteManager::generateVoteWithWeight(const blk_hash_t& 
     }
 
     total_dpos_votes_count = final_chain_->dposEligibleTotalVoteCount(period - 1);
-    pbft_sortition_threshold =
-        rustaxa::pbft_vote_sortition_threshold_for_bridge(total_dpos_votes_count, static_cast<uint8_t>(vote_type),
-                                                          kPbftConfig.committee_size, kPbftConfig.number_of_proposers);
 
   } catch (state_api::ErrFutureBlock& e) {
     LOG(log_er_) << "Unable to place vote for period: " << period << ", round: " << round << ", step: " << step
@@ -651,34 +667,23 @@ std::shared_ptr<PbftVote> VoteManager::generateVoteWithWeight(const blk_hash_t& 
     return nullptr;
   }
 
-  // TODO(rustaxa): replace this temporary legacy sidecar construction with direct materialization from
-  // `generated.vote_rlp` once Rust-generated vote sidecars are covered by integration tests.
-  auto vote = generateVote(blockhash, vote_type, period, round, step, wallet);
-  vote->calculateWeight(voter_dpos_votes_count, total_dpos_votes_count, pbft_sortition_threshold);
-
   const auto generated = rustaxa::pbft_generate_signed_vote_with_weight(
       generation_input, makeVoteWeightFacts(voter_dpos_votes_count, total_dpos_votes_count, kPbftConfig.committee_size,
                                             kPbftConfig.number_of_proposers));
 
-  if (*vote->getWeight() == 0) {
+  if (generated.status == kPbftVoteGenerationStatusZeroWeight) {
     requireRustVoteGenerationRejected(generated, kPbftVoteGenerationStatusZeroWeight, "zero-weight weighted vote");
     return nullptr;
   }
 
-  requireRustVoteGenerationMatches(vote, generated, true);
-  return vote;
+  return materializeRustGeneratedVote(generated, wallet, true);
 }
 
 std::shared_ptr<PbftVote> VoteManager::generateVote(const blk_hash_t& blockhash, PbftVoteTypes type, PbftPeriod period,
                                                     PbftRound round, PbftStep step, const WalletConfig& wallet) {
   const auto generated =
       rustaxa::pbft_generate_signed_vote(makeVoteGenerationInput(blockhash, type, period, round, step, wallet));
-
-  // TODO(rustaxa): replace this temporary legacy sidecar construction with direct materialization from
-  // `generated.vote_rlp` once Rust-generated vote sidecars are covered by integration tests.
-  auto vote = VoteManagerOld::generateVote(blockhash, type, period, round, step, wallet);
-  requireRustVoteGenerationMatches(vote, generated, false);
-  return vote;
+  return materializeRustGeneratedVote(generated, wallet, false);
 }
 
 std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<PbftVote>& vote, bool strict) const {

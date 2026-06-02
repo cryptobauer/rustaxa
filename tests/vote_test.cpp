@@ -101,6 +101,39 @@ TEST_F(VoteTest, reconstruct_votes) {
   EXPECT_EQ(vote1, vote2);
 }
 
+TEST_F(VoteTest, rust_generated_own_vote_materializes_persists_and_reloads) {
+  auto node = create_nodes(1, true /*start*/).front();
+  node->getPbftManager()->stop();
+  clearAllVotes({node});
+
+  auto vote = node->getVoteManager()->generateVoteWithWeight(blk_hash_t(9), PbftVoteTypes::propose_vote, 1, 1, 1,
+                                                             node->getConfig().getFirstWallet());
+  ASSERT_NE(vote, nullptr);
+  ASSERT_TRUE(vote->getWeight().has_value());
+  EXPECT_GT(*vote->getWeight(), 0);
+  EXPECT_TRUE(vote->getCredential());
+  const auto weighted_vote_rlp = vote->rlp(true, true);
+  const auto gossip_vote_rlp = vote->rlp(true, false);
+  EXPECT_NE(gossip_vote_rlp, weighted_vote_rlp);
+
+  node->getVoteManager()->saveOwnVerifiedVote(vote);
+  const auto own_votes = node->getVoteManager()->getOwnVerifiedVotes();
+  ASSERT_EQ(own_votes.size(), 1);
+  EXPECT_EQ(own_votes[0]->rlp(true, true), weighted_vote_rlp);
+
+#ifdef RUSTAXA_ENABLE
+  const auto raw_stored_votes = node->getDB()->rustStorage().get_own_verified_votes();
+  ASSERT_EQ(raw_stored_votes.size(), 1);
+  EXPECT_EQ(dev::bytes(raw_stored_votes[0].data.begin(), raw_stored_votes[0].data.end()), weighted_vote_rlp);
+#endif
+
+  const auto reloaded_votes = node->getDB()->getOwnVerifiedVotes();
+  ASSERT_EQ(reloaded_votes.size(), 1);
+  EXPECT_EQ(reloaded_votes[0]->rlp(true, true), weighted_vote_rlp);
+  ASSERT_TRUE(reloaded_votes[0]->getWeight().has_value());
+  EXPECT_EQ(*reloaded_votes[0]->getWeight(), *vote->getWeight());
+}
+
 // Generate a vote, send the vote from node2 to node1
 TEST_F(VoteTest, transfer_vote) {
   auto node_cfgs = make_node_cfgs(2);
