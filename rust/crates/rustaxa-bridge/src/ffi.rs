@@ -9,6 +9,7 @@ use crate::pbft_sync::*;
 use crate::pbft_vote_admission::*;
 use crate::pbft_vote_event::*;
 use crate::pbft_vote_generation::*;
+use crate::pbft_vote_payload::*;
 use crate::pbft_vote_pipeline::*;
 use crate::pbft_vote_progress::*;
 use crate::pbft_vote_validation::*;
@@ -4101,6 +4102,16 @@ pub mod rustaxa_ffi {
             input: PbftVoteGenerationInput,
             facts: PbftVoteWeightFacts,
         ) -> Result<PbftGeneratedVote>;
+        pub fn pbft_vote_weighted_payload_from_canonical_vote(
+            canonical_vote_rlp: &[u8],
+            weight: u64,
+        ) -> Result<PbftVoteStorageRecord>;
+        pub fn pbft_vote_slashing_payload_from_canonical_vote(
+            canonical_vote_rlp: &[u8],
+        ) -> Result<PbftVoteStorageRecord>;
+        pub fn pbft_vote_bundle_payload_from_records(
+            records: Vec<PbftVoteStorageRecord>,
+        ) -> Result<Vec<u8>>;
         pub fn pbft_proposer_sortition_plan(
             fact: PbftProposerSortitionFact,
         ) -> Result<PbftProposerSortitionPlan>;

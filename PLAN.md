@@ -469,8 +469,9 @@ The current Rust starting point is intentionally small:
   `GasPricer` oracle for finalized-block history, minimum-price
   flooring, and percentile bid selection.
   The Rust-enabled `SlashingManager` overlay now routes deterministic double-voting proof planning, duplicate-proof
-  cache decisions, submitter selection, and slashing contract calldata construction through Rust while C++ keeps live
-  vote objects, account reads, gas bidding, transaction signing, and transaction-pool insertion.
+  cache decisions, unweighted vote evidence payload normalization, submitter selection, and slashing contract calldata
+  construction through Rust while C++ keeps live vote objects, account reads, gas bidding, transaction signing, and
+  transaction-pool insertion.
 - `rustaxa-types` contains shared Rust domain and codec types, including the legacy transaction envelope used by
   Rust-enabled transaction-manager shims to decode canonical RLP bytes, hash transactions, recover/validate senders,
   compute intrinsic gas coverage, and surface deterministic nonce/gas/value/cost facts without calling C++
@@ -671,12 +672,15 @@ The current Rust starting point is intentionally small:
    facts, Rust owns canonical validation, replay-marker intent, calculated weight, event/progress fact construction,
    the underlying pipeline session, insertion gating, transition-key binding to the authoritative Rust mutation report,
    duplicate/conflict classification, and slashing/reward/progress/current-round 2t+1 persistence decisions. C++ keeps
-   live `PbftVote` sidecars, temporary weight hydration for legacy sidecar compatibility, slashing submission, logging,
-   and deferred network effects. PBFT
-   vote persistence for own verified votes, extra reward votes, and latest-round 2t+1 bundles now routes through
-   VoteManager-specific `rustaxa-storage` bridge operations: Rust owns the immediate vote-progress write batch and the
-   caller-owned own-vote cleanup batch appender, while the shim mutates temporary live sidecars only after Rust accepts
-   the durable operation. `validateVote`, `voteAlreadyValidated`, `getPbftTwoTPlusOne`, and
+   live `PbftVote` sidecars, temporary weight hydration for legacy sidecar compatibility, slashing transaction
+   construction/submission, logging, and deferred network effects. PBFT
+   vote persistence for own verified votes, extra reward votes, finalized reward-vote resets, and latest-round 2t+1
+   bundles now routes through VoteManager-specific `rustaxa-storage` bridge operations and Rust-owned vote payload
+   builders: Rust constructs the weighted storage RLP records and raw vote-bundle RLP from canonical signed vote bytes
+   plus the authoritative calculated weight, owns the immediate vote-progress write batch and the caller-owned own-vote
+   cleanup batch appender, and normalizes unweighted slashing evidence RLP before the Rust slashing planner builds
+   calldata. The shim mutates temporary live sidecars only after Rust accepts the durable operation. `validateVote`,
+   `voteAlreadyValidated`, `getPbftTwoTPlusOne`, and
    `genAndValidateVrfSortition` now route away from `VoteManagerOld`: Rust owns validation/replay planning, canonical
    received-vote RLP inspection, signed and unsigned vote hash derivation, recovered voter identity, signature and VRF
    proof checks, Rust-computed received-vote weight, the replay cache, PBFT sortition-threshold formula, Rust-owned

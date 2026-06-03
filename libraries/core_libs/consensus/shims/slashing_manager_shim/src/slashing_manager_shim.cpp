@@ -42,8 +42,25 @@ rust::Vec<uint8_t> to_bridge_bytes(const bytes& input) {
   return out;
 }
 
+rust::Slice<const uint8_t> to_bridge_byte_slice(const rust::Vec<uint8_t>& bytes) {
+  return rust::Slice<const uint8_t>(bytes.data(), bytes.size());
+}
+
 addr_t from_bridge_address(const std::array<uint8_t, 20>& address) {
   return addr_t(address.data(), addr_t::ConstructFromPointer);
+}
+
+rustaxa::PbftVoteStorageRecord make_slashing_vote_payload(const std::shared_ptr<PbftVote>& vote) {
+  if (!vote) {
+    throw std::runtime_error("SlashingManager cannot build a payload for a null PBFT vote");
+  }
+
+  auto canonical_vote_rlp = to_bridge_bytes(vote->rlp(true, false));
+  auto record = rustaxa::pbft_vote_slashing_payload_from_canonical_vote(to_bridge_byte_slice(canonical_vote_rlp));
+  if (record.hash != to_bridge_hash(vote->getHash())) {
+    throw std::runtime_error("Rust PBFT slashing payload hash mismatches live vote hash");
+  }
+  return record;
 }
 
 rust::Vec<rustaxa::SlashingSubmitterFact> submitter_facts(const FullNodeConfig& config,
@@ -82,17 +99,20 @@ bool SlashingManager::submitDoubleVotingProof(const std::shared_ptr<PbftVote>& v
     throw std::logic_error("SlashingManager requires FinalChain, TransactionManager, and GasPricer");
   }
 
+  auto vote_a_payload = make_slashing_vote_payload(vote_a);
+  auto vote_b_payload = make_slashing_vote_payload(vote_b);
+
   rustaxa::DoubleVotingProofInput input;
-  input.vote_a_hash = to_bridge_hash(vote_a->getHash());
-  input.vote_b_hash = to_bridge_hash(vote_b->getHash());
+  input.vote_a_hash = vote_a_payload.hash;
+  input.vote_b_hash = vote_b_payload.hash;
   input.vote_a_period = vote_a->getPeriod();
   input.vote_b_period = vote_b->getPeriod();
   input.vote_a_round = vote_a->getRound();
   input.vote_b_round = vote_b->getRound();
   input.vote_a_step = vote_a->getStep();
   input.vote_b_step = vote_b->getStep();
-  input.vote_a_rlp = to_bridge_bytes(vote_a->rlp());
-  input.vote_b_rlp = to_bridge_bytes(vote_b->rlp());
+  input.vote_a_rlp = std::move(vote_a_payload.vote_rlp);
+  input.vote_b_rlp = std::move(vote_b_payload.vote_rlp);
   input.submitters = submitter_facts(kConfig, final_chain_);
 
   const auto plan = planner_->slashing_plan_double_voting_proof(std::move(input));

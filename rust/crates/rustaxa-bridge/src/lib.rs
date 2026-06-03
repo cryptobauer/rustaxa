@@ -10,6 +10,7 @@ mod pbft_sync;
 mod pbft_vote_admission;
 mod pbft_vote_event;
 mod pbft_vote_generation;
+mod pbft_vote_payload;
 mod pbft_vote_pipeline;
 mod pbft_vote_progress;
 mod pbft_vote_validation;
