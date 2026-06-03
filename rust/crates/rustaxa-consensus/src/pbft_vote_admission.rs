@@ -55,6 +55,9 @@ impl PbftVoteAdmissionStatus {
 pub struct PbftVoteAdmissionPrecheck {
     /// Admission-stage status after the call.
     pub admission_status: PbftVoteAdmissionStatus,
+    /// Canonical validation result when this admission was created from
+    /// validation facts instead of a pre-weighted live sidecar.
+    pub validation: Option<PbftCanonicalVoteValidation>,
     /// Event fact derivation status.
     pub event_status: PbftVoteEventFactStatus,
     /// Stable event/admission error code for bridge and log consumers.
@@ -81,6 +84,7 @@ pub struct PbftVoteAdmissionExecution {
 /// Runtime state for one PBFT vote admission.
 #[derive(Debug, Clone)]
 pub struct PbftVoteAdmissionSession {
+    validation: Option<PbftCanonicalVoteValidation>,
     event_fact: PbftVoteEventFact,
     pipeline_session: Option<PbftVotePipelineSession>,
     stage: PbftVoteAdmissionStatus,
@@ -128,7 +132,7 @@ impl PbftVoteAdmissionSession {
         context: PbftVoteProgressContext,
     ) -> Self {
         let event_fact = build_pbft_vote_event_fact_from_validation(validation, flags);
-        Self::from_event_fact(event_fact, context)
+        Self::from_event_fact_with_validation(Some(validation.clone()), event_fact, context)
     }
 
     /// Creates an admission session from an already-derived event fact.
@@ -137,6 +141,21 @@ impl PbftVoteAdmissionSession {
     /// cache event facts in an enrichment arena before admission.
     #[must_use]
     pub fn from_event_fact(
+        event_fact: PbftVoteEventFact,
+        context: PbftVoteProgressContext,
+    ) -> Self {
+        Self::from_event_fact_with_validation(None, event_fact, context)
+    }
+
+    /// Creates an admission session from an event fact and optional validation
+    /// result.
+    ///
+    /// `validation` is retained only as transition metadata for bridge
+    /// prechecks. The progress pipeline still operates on compact progress
+    /// facts and remains side-effect-free.
+    #[must_use]
+    pub fn from_event_fact_with_validation(
+        validation: Option<PbftCanonicalVoteValidation>,
         event_fact: PbftVoteEventFact,
         context: PbftVoteProgressContext,
     ) -> Self {
@@ -149,6 +168,7 @@ impl PbftVoteAdmissionSession {
             PbftVoteAdmissionStatus::EventRejected
         };
         Self {
+            validation,
             event_fact,
             pipeline_session,
             stage,
@@ -165,6 +185,13 @@ impl PbftVoteAdmissionSession {
     #[must_use]
     pub const fn event_fact(&self) -> &PbftVoteEventFact {
         &self.event_fact
+    }
+
+    /// Returns the canonical validation result when the session was created
+    /// through the validation-backed admission boundary.
+    #[must_use]
+    pub const fn validation(&self) -> Option<&PbftCanonicalVoteValidation> {
+        self.validation.as_ref()
     }
 
     /// Returns the compact progress fact when event derivation succeeded.
@@ -186,6 +213,7 @@ impl PbftVoteAdmissionSession {
             self.stage = PbftVoteAdmissionStatus::Complete;
             return PbftVoteAdmissionPrecheck {
                 admission_status: PbftVoteAdmissionStatus::EventRejected,
+                validation: self.validation.clone(),
                 event_status: self.event_fact.status,
                 error_code: self.event_fact.error_code,
                 progress_fact: None,
@@ -214,6 +242,7 @@ impl PbftVoteAdmissionSession {
 
         PbftVoteAdmissionPrecheck {
             admission_status: self.stage,
+            validation: self.validation.clone(),
             event_status: self.event_fact.status,
             error_code: if step.progress_plan.status == PbftVoteProgressStatus::RejectedInvalidVote
             {
@@ -264,6 +293,7 @@ impl PbftVoteAdmissionSession {
     fn invalid_precheck(&self) -> PbftVoteAdmissionPrecheck {
         PbftVoteAdmissionPrecheck {
             admission_status: PbftVoteAdmissionStatus::InvalidStage,
+            validation: self.validation.clone(),
             event_status: self.event_fact.status,
             error_code: "PBFT_VOTE_ADMISSION_INVALID_STAGE",
             progress_fact: self.event_fact.progress_fact,
@@ -295,6 +325,26 @@ pub fn create_pbft_vote_admission_session(
     context: PbftVoteProgressContext,
 ) -> anyhow::Result<PbftVoteAdmissionSession> {
     PbftVoteAdmissionSession::from_canonical_vote(canonical_vote_rlp, weight, flags, context)
+}
+
+/// Creates a PBFT vote admission session from a canonical validation result.
+///
+/// Inputs:
+/// - `validation`: authoritative Rust validation output for the canonical vote.
+/// - `flags`: ingress and stale-reward facts supplied by the caller.
+/// - `context`: scalar state view for vote-progress planning.
+///
+/// Outputs:
+/// - A validation-backed admission session that carries the validation result
+///   through precheck and only creates a progress pipeline when validation
+///   accepted with a non-zero calculated weight.
+#[must_use]
+pub fn create_pbft_vote_admission_session_from_validation(
+    validation: &PbftCanonicalVoteValidation,
+    flags: PbftVoteEventFactFlags,
+    context: PbftVoteProgressContext,
+) -> PbftVoteAdmissionSession {
+    PbftVoteAdmissionSession::from_validation(validation, flags, context)
 }
 
 #[cfg(test)]
@@ -376,6 +426,23 @@ mod tests {
         }
     }
 
+    fn validation_facts() -> crate::PbftVoteValidationExternalFacts {
+        crate::PbftVoteValidationExternalFacts {
+            voter_dpos_ready: true,
+            voter_dpos_vote_count: 42,
+            total_dpos_ready: true,
+            total_dpos_vote_count: 100,
+            future_dpos_state: false,
+            unknown_error: false,
+            vrf_key_ready: true,
+            has_vrf_key: true,
+            vrf_public_key: vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            strict_vrf: true,
+            committee_size: 100,
+            number_of_proposers: 20,
+        }
+    }
+
     #[test]
     fn admission_session_derives_fact_then_accepts_executor_report() {
         let vote_rlp = signed_vote_rlp();
@@ -405,6 +472,29 @@ mod tests {
             terminal.pipeline_step.progress_plan.status,
             PbftVoteProgressStatus::Accepted
         );
+    }
+
+    #[test]
+    fn validation_backed_admission_uses_calculated_weight() {
+        let vote_rlp = signed_vote_rlp();
+        let validation = validate_canonical_pbft_vote(&vote_rlp, validation_facts()).unwrap();
+        assert_eq!(validation.status, PbftVoteValidationStatus::Valid);
+        assert_eq!(validation.calculated_weight, 42);
+
+        let mut session =
+            create_pbft_vote_admission_session_from_validation(&validation, flags(), context());
+        let precheck = session.precheck();
+
+        assert_eq!(
+            precheck.admission_status,
+            PbftVoteAdmissionStatus::AwaitingVerifiedVoteInsert
+        );
+        assert_eq!(
+            precheck.validation.as_ref().unwrap().vote_hash,
+            validation.vote_hash
+        );
+        assert_eq!(precheck.event_status, PbftVoteEventFactStatus::Ready);
+        assert_eq!(precheck.progress_fact.unwrap().weight, 42);
     }
 
     #[test]

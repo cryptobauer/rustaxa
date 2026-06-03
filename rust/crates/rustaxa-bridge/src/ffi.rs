@@ -1187,6 +1187,8 @@ pub mod rustaxa_ffi {
     /// executor performs the verified-vote insertion mutation.
     struct PbftVoteAdmissionPrecheckPlan {
         admission_status: u8,
+        has_validation: bool,
+        validation: PbftCanonicalVoteValidation,
         event_status: u8,
         pipeline_status: u8,
         status: u8,
@@ -4026,6 +4028,12 @@ pub mod rustaxa_ffi {
         pub fn create_pbft_vote_admission_session(
             canonical_vote_rlp: &[u8],
             weight: u64,
+            flags: PbftVoteEventFactFlags,
+            context: PbftVoteProgressContext,
+        ) -> Result<Box<BridgePbftVoteAdmissionSession>>;
+        pub fn create_pbft_vote_admission_session_from_validation_facts(
+            canonical_vote_rlp: &[u8],
+            validation_facts: PbftVoteValidationExternalFacts,
             flags: PbftVoteEventFactFlags,
             context: PbftVoteProgressContext,
         ) -> Result<Box<BridgePbftVoteAdmissionSession>>;

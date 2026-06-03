@@ -248,6 +248,7 @@ void requireVoteProgressFactMatches(const rustaxa::PbftVoteProgressFact& fact, c
   }
 
   if (fact.vote.vote_hash != toBridgeHash(vote->getHash()) || fact.vote.block_hash != toBridgeHash(vote->getBlockHash()) ||
+      fact.vote.voter != toBridgeAddress(vote->getVoterAddr()) ||
       fact.vote.period != vote->getPeriod() || fact.vote.round != vote->getRound() ||
       fact.vote.step != vote->getStep() || fact.vote.vote_type != static_cast<uint8_t>(vote->getType()) ||
       fact.vote.weight != *vote->getWeight()) {
@@ -394,18 +395,12 @@ void VoteManager::setNetwork(std::weak_ptr<Network> network) {
 }
 
 bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
-  if (!vote || !vote->getWeight().has_value()) {
-    LOG(log_er_) << "Unable to add vote into the verified queue. Missing vote or vote weight";
+  if (!vote) {
+    LOG(log_er_) << "Unable to add vote into the verified queue. Missing vote";
     return false;
   }
 
   const auto hash = vote->getHash();
-  const auto weight = *vote->getWeight();
-  if (!weight) {
-    LOG(log_er_) << "Unable to add vote " << hash << " into the verified queue. Invalid vote weight";
-    return false;
-  }
-
   bool is_valid_potential_reward_vote = false;
   if (vote->getPeriod() < current_pbft_period_) {
     is_valid_potential_reward_vote = isValidRewardVoteForRust(vote);
@@ -425,15 +420,85 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
   const auto progress_context = makeVoteProgressContext(current_pbft_period_, current_pbft_round_, two_t_plus_one);
 
   const auto canonical_vote_rlp = toBridgeBytes(vote->rlp(true, false));
-  auto admission_session = rustaxa::create_pbft_vote_admission_session(
-      toBridgeByteSlice(canonical_vote_rlp), weight, makeVoteEventFactFlags(is_valid_potential_reward_vote),
+  const auto inspection = rustaxa::pbft_inspect_canonical_vote(toBridgeByteSlice(canonical_vote_rlp));
+  if (inspection.status != kPbftCanonicalVoteInspectionStatusValid) {
+    LOG(log_er_) << "VoteManager Rust PBFT vote admission rejected vote " << hash
+                 << " during canonical inspection, status: " << static_cast<uint32_t>(inspection.status)
+                 << ", error: " << static_cast<std::string>(inspection.error_code);
+    if (inspection.status == kPbftCanonicalVoteInspectionStatusInvalidSignature) {
+      vote_validation_runtime_->pbft_vote_replay_insert(inspection.vote_hash);
+    }
+    return false;
+  }
+  if (toBridgeHash(vote->getHash()) != inspection.vote_hash ||
+      toBridgeHash(vote->getBlockHash()) != inspection.block_hash || vote->getPeriod() != inspection.period ||
+      vote->getRound() != inspection.round || vote->getStep() != inspection.step ||
+      static_cast<uint8_t>(vote->getType()) != inspection.vote_type ||
+      toBridgeAddress(vote->getVoterAddr()) != inspection.recovered_voter) {
+    throw std::runtime_error("VoteManager Rust PBFT vote admission inspection mismatched live vote sidecar");
+  }
+
+  auto external_facts = makeVoteValidationExternalFacts(true, kPbftConfig);
+  const auto recovered_voter = fromBridgeAddress(inspection.recovered_voter);
+  try {
+    external_facts.voter_dpos_vote_count = final_chain_->dposEligibleVoteCount(vote->getPeriod() - 1, recovered_voter);
+    external_facts.voter_dpos_ready = true;
+
+    const auto pk = key_manager_->getVrfKey(vote->getPeriod() - 1, recovered_voter);
+    external_facts.vrf_key_ready = true;
+    external_facts.has_vrf_key = pk != nullptr;
+    if (pk != nullptr) {
+      external_facts.vrf_public_key = pk->asArray();
+    }
+
+    external_facts.total_dpos_vote_count = final_chain_->dposEligibleTotalVoteCount(vote->getPeriod() - 1);
+    external_facts.total_dpos_ready = true;
+  } catch (state_api::ErrFutureBlock& e) {
+    external_facts.future_dpos_state = true;
+    LOG(log_er_) << "Unable to admit vote " << hash << " against dpos contract. Its period (" << vote->getPeriod()
+                 << ") is too far ahead of actual finalized pbft chain size (" << final_chain_->lastBlockNumber()
+                 << "). Err msg: " << e.what();
+    return false;
+  } catch (const std::exception& e) {
+    external_facts.unknown_error = true;
+    LOG(log_er_) << "Unable to admit vote " << hash << ". Err msg: " << e.what();
+    return false;
+  } catch (...) {
+    external_facts.unknown_error = true;
+    LOG(log_er_) << "Unable to admit vote " << hash << ". Unknown error";
+    return false;
+  }
+
+  auto admission_session = rustaxa::create_pbft_vote_admission_session_from_validation_facts(
+      toBridgeByteSlice(canonical_vote_rlp), external_facts, makeVoteEventFactFlags(is_valid_potential_reward_vote),
       progress_context);
   const auto precheck_plan = admission_session->pbft_vote_admission_precheck();
+  if (precheck_plan.has_validation && precheck_plan.validation.mark_validated_replay) {
+    vote_validation_runtime_->pbft_vote_replay_insert(precheck_plan.validation.vote_hash);
+  }
+  if (!precheck_plan.has_validation || !precheck_plan.validation.accepted ||
+      precheck_plan.validation.status != kPbftVoteValidationStatusValid) {
+    LOG(log_er_) << "VoteManager Rust PBFT vote admission rejected vote " << vote->getHash()
+                 << " during validation, status: "
+                 << static_cast<uint32_t>(precheck_plan.has_validation ? precheck_plan.validation.status : 0)
+                 << ", error: " << static_cast<std::string>(precheck_plan.error_code);
+    return false;
+  }
   if (!precheck_plan.has_progress_fact) {
     LOG(log_er_) << "VoteManager Rust PBFT vote admission rejected vote " << vote->getHash()
                  << ", status: " << static_cast<uint32_t>(precheck_plan.status)
                  << ", error: " << static_cast<std::string>(precheck_plan.error_code);
     return false;
+  }
+  if (!precheck_plan.validation.has_sortition_threshold || !precheck_plan.validation.weight_calculated) {
+    throw std::runtime_error("VoteManager Rust PBFT vote admission accepted validation without weight facts");
+  }
+  // TODO(rustaxa): remove this legacy sidecar hydration once VerifiedVotes accepts Rust-owned vote payloads directly.
+  const auto cpp_weight =
+      vote->calculateWeight(external_facts.voter_dpos_vote_count, external_facts.total_dpos_vote_count,
+                            precheck_plan.validation.sortition_threshold);
+  if (cpp_weight != precheck_plan.validation.calculated_weight) {
+    throw std::runtime_error("VoteManager Rust PBFT vote admission weight mismatched legacy sidecar hydration");
   }
   requireVoteProgressFactMatches(precheck_plan.progress_fact, vote);
   if (!precheck_plan.should_insert_verified_vote) {

@@ -6,12 +6,14 @@
 //! network effects while Rust owns the deterministic admission ordering.
 
 use crate::ffi::rustaxa_ffi::{
+    PbftCanonicalVoteValidation as FfiPbftCanonicalVoteValidation,
     PbftVoteAdmissionExecutionPlan as FfiPbftVoteAdmissionExecutionPlan,
     PbftVoteAdmissionPrecheckPlan as FfiPbftVoteAdmissionPrecheckPlan,
     PbftVoteEventFactFlags as FfiPbftVoteEventFactFlags,
     PbftVotePipelineTransitionKey as FfiPbftVotePipelineTransitionKey,
     PbftVoteProgressContext as FfiPbftVoteProgressContext,
     PbftVoteProgressFact as FfiPbftVoteProgressFact,
+    PbftVoteValidationExternalFacts as FfiPbftVoteValidationExternalFacts,
     VerifiedVoteAddOutcome as FfiVerifiedVoteAddOutcome, VerifiedVotePayload,
 };
 use crate::ffi::BridgePbftVoteAdmissionSession;
@@ -21,12 +23,16 @@ use crate::pbft_vote_progress::{
 use anyhow::Result;
 use rustaxa_consensus::pbft_vote_admission::{
     create_pbft_vote_admission_session as create_domain_pbft_vote_admission_session,
+    create_pbft_vote_admission_session_from_validation as create_domain_pbft_vote_admission_session_from_validation,
     PbftVoteAdmissionExecution, PbftVoteAdmissionPrecheck, PbftVoteAdmissionSession,
 };
 use rustaxa_consensus::pbft_vote_event::PbftVoteEventFactFlags;
 use rustaxa_consensus::pbft_vote_pipeline::{PbftVotePipelineStatus, PbftVotePipelineStep};
 use rustaxa_consensus::pbft_vote_progress::{
     PbftVoteProgressFact, PbftVoteProgressIntent, PbftVoteProgressPlan, PbftVoteProgressStatus,
+};
+use rustaxa_consensus::pbft_vote_validation::{
+    validate_canonical_pbft_vote, PbftVoteValidationExternalFacts,
 };
 
 /// Creates one Rust-owned PBFT vote admission session from canonical vote bytes.
@@ -58,6 +64,38 @@ pub fn create_pbft_vote_admission_session(
     }))
 }
 
+/// Creates one validation-backed PBFT vote admission session from canonical vote bytes.
+///
+/// Inputs:
+/// - `canonical_vote_rlp`: legacy `PbftVote::rlp(true, false)` bytes.
+/// - `validation_facts`: FinalChain/key/VRF facts collected by the C++ shim.
+/// - `flags`: ingress and stale-reward facts.
+/// - `context`: scalar vote-progress context.
+///
+/// Outputs:
+/// - A session that carries the full Rust validation result through precheck
+///   and uses the Rust-calculated validation weight for any verified-vote
+///   mutation request.
+pub fn create_pbft_vote_admission_session_from_validation_facts(
+    canonical_vote_rlp: &[u8],
+    validation_facts: FfiPbftVoteValidationExternalFacts,
+    flags: FfiPbftVoteEventFactFlags,
+    context: FfiPbftVoteProgressContext,
+) -> Result<Box<BridgePbftVoteAdmissionSession>> {
+    let validation = validate_canonical_pbft_vote(
+        canonical_vote_rlp,
+        validation_facts_to_domain(validation_facts),
+    )?;
+    Ok(Box::new(BridgePbftVoteAdmissionSession {
+        state: create_domain_pbft_vote_admission_session_from_validation(
+            &validation,
+            flags_to_domain(flags),
+            context_to_domain(&context),
+        ),
+        context,
+    }))
+}
+
 impl BridgePbftVoteAdmissionSession {
     /// Returns this session's pre-insert admission plan.
     pub fn pbft_vote_admission_precheck(&mut self) -> FfiPbftVoteAdmissionPrecheckPlan {
@@ -85,6 +123,25 @@ fn flags_to_domain(value: FfiPbftVoteEventFactFlags) -> PbftVoteEventFactFlags {
         vote_already_known: value.vote_already_known,
         carries_proposed_block: value.carries_proposed_block,
         valid_stale_reward_vote: value.valid_stale_reward_vote,
+    }
+}
+
+fn validation_facts_to_domain(
+    value: FfiPbftVoteValidationExternalFacts,
+) -> PbftVoteValidationExternalFacts {
+    PbftVoteValidationExternalFacts {
+        voter_dpos_ready: value.voter_dpos_ready,
+        voter_dpos_vote_count: value.voter_dpos_vote_count,
+        total_dpos_ready: value.total_dpos_ready,
+        total_dpos_vote_count: value.total_dpos_vote_count,
+        future_dpos_state: value.future_dpos_state,
+        unknown_error: value.unknown_error,
+        vrf_key_ready: value.vrf_key_ready,
+        has_vrf_key: value.has_vrf_key,
+        vrf_public_key: value.vrf_public_key,
+        strict_vrf: value.strict_vrf,
+        committee_size: value.committee_size,
+        number_of_proposers: value.number_of_proposers,
     }
 }
 
@@ -142,6 +199,12 @@ fn precheck_to_ffi(
 
     FfiPbftVoteAdmissionPrecheckPlan {
         admission_status: precheck.admission_status.as_u8(),
+        has_validation: precheck.validation.is_some(),
+        validation: precheck
+            .validation
+            .clone()
+            .map(FfiPbftCanonicalVoteValidation::from)
+            .unwrap_or_else(empty_validation),
         event_status: precheck.event_status.as_u8(),
         pipeline_status,
         status: progress_status,
@@ -276,6 +339,32 @@ fn empty_progress_fact() -> FfiPbftVoteProgressFact {
     progress_fact_to_ffi(empty_domain_progress_fact())
 }
 
+fn empty_validation() -> FfiPbftCanonicalVoteValidation {
+    FfiPbftCanonicalVoteValidation {
+        status: 0,
+        error_code: String::new(),
+        accepted: false,
+        rejected: false,
+        mark_validated_replay: false,
+        vote_hash: [0; 32],
+        signing_hash: [0; 32],
+        block_hash: [0; 32],
+        period: 0,
+        round: 0,
+        step: 0,
+        vote_type: 0,
+        recovered_voter: [0; 20],
+        recovered_public_key: [0; 64],
+        signature_valid: false,
+        vrf_valid: false,
+        has_sortition_threshold: false,
+        sortition_threshold: 0,
+        weight_calculated: false,
+        calculated_weight: 0,
+        vrf_output: [0; 64],
+    }
+}
+
 fn empty_domain_progress_fact() -> PbftVoteProgressFact {
     PbftVoteProgressFact {
         identity: rustaxa_consensus::PbftVoteIdentity {
@@ -369,6 +458,23 @@ mod tests {
         generated.vote_rlp.into_iter().collect()
     }
 
+    fn validation_facts() -> FfiPbftVoteValidationExternalFacts {
+        FfiPbftVoteValidationExternalFacts {
+            voter_dpos_ready: true,
+            voter_dpos_vote_count: 42,
+            total_dpos_ready: true,
+            total_dpos_vote_count: 100,
+            future_dpos_state: false,
+            unknown_error: false,
+            vrf_key_ready: true,
+            has_vrf_key: true,
+            vrf_public_key: rustaxa_vdf::vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            strict_vrf: true,
+            committee_size: 100,
+            number_of_proposers: 20,
+        }
+    }
+
     fn add_outcome(vote: VerifiedVotePayload) -> FfiVerifiedVoteAddOutcome {
         FfiVerifiedVoteAddOutcome {
             vote,
@@ -411,6 +517,30 @@ mod tests {
             precheck.transition_key.vote_hash
         );
         assert!(execution.accepted);
+    }
+
+    #[test]
+    fn admission_bridge_validation_backed_precheck_carries_validation_result() {
+        let mut session = create_pbft_vote_admission_session_from_validation_facts(
+            &vote_rlp(),
+            validation_facts(),
+            flags(),
+            context(),
+        )
+        .unwrap();
+        let precheck = session.pbft_vote_admission_precheck();
+
+        assert_eq!(precheck.admission_status, 2);
+        assert_eq!(precheck.event_status, 0);
+        assert_eq!(precheck.validation.status, 1);
+        assert!(precheck.has_validation);
+        assert!(precheck.validation.accepted);
+        assert_eq!(precheck.validation.calculated_weight, 42);
+        assert_eq!(precheck.progress_fact.vote.weight, 42);
+        assert_eq!(
+            precheck.validation.vote_hash,
+            precheck.progress_fact.vote.vote_hash
+        );
     }
 
     #[test]

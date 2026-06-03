@@ -62,6 +62,7 @@ pub use pbft_thresholds::{
 pub use pbft_vote_admission::{
     PbftVoteAdmissionExecution, PbftVoteAdmissionPrecheck, PbftVoteAdmissionSession,
     PbftVoteAdmissionStatus, create_pbft_vote_admission_session,
+    create_pbft_vote_admission_session_from_validation,
 };
 pub use pbft_vote_event::{
     PbftVoteEventFact, PbftVoteEventFactFlags, PbftVoteEventFactStatus, build_pbft_vote_event_fact,
