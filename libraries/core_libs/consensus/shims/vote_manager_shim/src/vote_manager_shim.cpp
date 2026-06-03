@@ -34,6 +34,7 @@ constexpr uint8_t kPbftVoteValidationStatusInvalidVoteType = 9;
 constexpr uint8_t kPbftCanonicalVoteInspectionStatusValid = 0;
 constexpr uint8_t kPbftCanonicalVoteInspectionStatusMalformedRlp = 1;
 constexpr uint8_t kPbftCanonicalVoteInspectionStatusInvalidSignature = 2;
+constexpr uint8_t kPbftVoteEventFactStatusReady = 0;
 constexpr uint8_t kPbftVoteGenerationStatusGenerated = 0;
 constexpr uint8_t kPbftVoteGenerationStatusZeroStake = 4;
 constexpr uint8_t kPbftVoteGenerationStatusZeroTotalDpos = 5;
@@ -143,17 +144,6 @@ rustaxa::PbftFinalizationStorageWriteStage makeRewardResetWriteStage(
   return write_stage;
 }
 
-rustaxa::VerifiedVotePayload toBridgeVerifiedVotePayload(const std::shared_ptr<PbftVote>& vote) {
-  return rustaxa::VerifiedVotePayload{toBridgeHash(vote->getHash()),
-                                      toBridgeHash(vote->getBlockHash()),
-                                      toBridgeAddress(vote->getVoterAddr()),
-                                      vote->getPeriod(),
-                                      vote->getRound(),
-                                      vote->getStep(),
-                                      static_cast<uint8_t>(vote->getType()),
-                                      *vote->getWeight()};
-}
-
 rustaxa::PbftVoteStorageRecord makeVoteStorageRecord(const std::shared_ptr<PbftVote>& vote) {
   if (!vote) {
     throw std::runtime_error("VoteManager cannot persist a null PBFT vote");
@@ -247,11 +237,33 @@ void persistVoteProgressToRustStorage(DbStorage& db, const std::shared_ptr<PbftV
 
 rustaxa::PbftVoteProgressFact makeVoteProgressFact(const std::shared_ptr<PbftVote>& vote,
                                                    bool valid_stale_reward_vote) {
-  rustaxa::PbftVoteProgressFact fact{};
-  fact.vote = toBridgeVerifiedVotePayload(vote);
-  fact.vote_already_known = false;
-  fact.carries_proposed_block = true;
-  fact.valid_stale_reward_vote = valid_stale_reward_vote;
+  if (!vote || !vote->getWeight().has_value()) {
+    throw std::runtime_error("VoteManager cannot derive PBFT vote progress facts without a weighted vote sidecar");
+  }
+
+  rustaxa::PbftVoteEventFactFlags flags{};
+  flags.vote_already_known = false;
+  flags.carries_proposed_block = true;
+  flags.valid_stale_reward_vote = valid_stale_reward_vote;
+
+  const auto canonical_vote_rlp = toBridgeBytes(vote->rlp(true, false));
+  const auto event_fact = rustaxa::pbft_vote_event_fact_from_canonical_vote(toBridgeByteSlice(canonical_vote_rlp),
+                                                                           *vote->getWeight(), flags);
+  if (event_fact.status != kPbftVoteEventFactStatusReady || !event_fact.has_progress_fact) {
+    std::stringstream err;
+    err << "VoteManager Rust PBFT vote event fact derivation failed for vote " << vote->getHash() << ": "
+        << static_cast<std::string>(event_fact.error_code);
+    throw std::runtime_error(err.str());
+  }
+
+  const auto& fact = event_fact.progress_fact;
+  if (fact.vote.vote_hash != toBridgeHash(vote->getHash()) || fact.vote.block_hash != toBridgeHash(vote->getBlockHash()) ||
+      fact.vote.period != vote->getPeriod() || fact.vote.round != vote->getRound() ||
+      fact.vote.step != vote->getStep() || fact.vote.vote_type != static_cast<uint8_t>(vote->getType()) ||
+      fact.vote.weight != *vote->getWeight()) {
+    throw std::runtime_error("VoteManager Rust PBFT vote event fact derivation mismatched live vote sidecar");
+  }
+
   return fact;
 }
 

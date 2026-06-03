@@ -7,6 +7,7 @@ pub mod pbft_manager;
 pub mod pbft_reward_votes;
 pub mod pbft_sync;
 pub mod pbft_thresholds;
+pub mod pbft_vote_event;
 pub mod pbft_vote_generation;
 pub mod pbft_vote_pipeline;
 pub mod pbft_vote_progress;
@@ -56,6 +57,10 @@ pub use pbft_sync::{
 pub use pbft_thresholds::{
     PbftTwoTPlusOneThresholdFact, PbftTwoTPlusOneThresholdPlan, PbftTwoTPlusOneThresholdRuntime,
     PbftTwoTPlusOneThresholdStatus,
+};
+pub use pbft_vote_event::{
+    PbftVoteEventFact, PbftVoteEventFactFlags, PbftVoteEventFactStatus, build_pbft_vote_event_fact,
+    build_pbft_vote_event_fact_from_validation,
 };
 pub use pbft_vote_generation::{
     PbftGeneratedVote, PbftVoteGenerationInput, PbftVoteGenerationStatus, PbftVoteWeightFacts,

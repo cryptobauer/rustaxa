@@ -6,6 +6,7 @@ use crate::pbft_finalize::*;
 use crate::pbft_manager::*;
 use crate::pbft_reward_votes::*;
 use crate::pbft_sync::*;
+use crate::pbft_vote_event::*;
 use crate::pbft_vote_generation::*;
 use crate::pbft_vote_pipeline::*;
 use crate::pbft_vote_progress::*;
@@ -1031,6 +1032,39 @@ pub mod rustaxa_ffi {
         vote_already_known: bool,
         carries_proposed_block: bool,
         valid_stale_reward_vote: bool,
+    }
+
+    /// Caller-supplied flags for deriving PBFT vote event facts from canonical bytes.
+    struct PbftVoteEventFactFlags {
+        vote_already_known: bool,
+        carries_proposed_block: bool,
+        valid_stale_reward_vote: bool,
+    }
+
+    /// Compact PBFT vote event facts derived from canonical vote bytes.
+    ///
+    /// Status values:
+    /// - `0` - ready
+    /// - `1` - malformed RLP
+    /// - `2` - invalid signature
+    /// - `3` - invalid zero weight
+    /// - `4` - validation pending
+    /// - `5` - validation rejected
+    /// - `6` - accepted validation did not include a calculated weight
+    struct PbftVoteEventFact {
+        status: u8,
+        error_code: String,
+        has_progress_fact: bool,
+        progress_fact: PbftVoteProgressFact,
+    }
+
+    /// Validation-backed PBFT vote fact boundary result.
+    struct PbftVoteFactBoundaryResult {
+        status: u8,
+        error_code: String,
+        validation: PbftCanonicalVoteValidation,
+        has_progress_fact: bool,
+        progress_fact: PbftVoteProgressFact,
     }
 
     /// Scalar context for one PBFT vote-progress planning pass.
@@ -3975,6 +4009,16 @@ pub mod rustaxa_ffi {
             vote_rlp: &[u8],
             facts: PbftVoteValidationExternalFacts,
         ) -> Result<PbftCanonicalVoteValidation>;
+        pub fn pbft_vote_event_fact_from_canonical_vote(
+            canonical_vote_rlp: &[u8],
+            weight: u64,
+            flags: PbftVoteEventFactFlags,
+        ) -> Result<PbftVoteEventFact>;
+        pub fn pbft_derive_vote_progress_fact_from_canonical_vote(
+            canonical_vote_rlp: &[u8],
+            validation_facts: PbftVoteValidationExternalFacts,
+            flags: PbftVoteEventFactFlags,
+        ) -> Result<PbftVoteFactBoundaryResult>;
         pub fn pbft_generate_signed_vote(
             input: PbftVoteGenerationInput,
         ) -> Result<PbftGeneratedVote>;
