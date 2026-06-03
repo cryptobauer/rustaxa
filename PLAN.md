@@ -455,9 +455,10 @@ The current Rust starting point is intentionally small:
   DAG transaction persistence planning plus Rust-storage batch commits, Rust-storage-backed `TransactionManager`
   transaction lookup and non-finalized recovery payload loading, Rust-planned finalized transaction filter/verification
   helpers, Rust-planned transaction verification and validated-insert admission, shim-owned live non-finalized/pool/count
-  read helpers, a canonical PBFT vote event fact boundary, a side-effect-free PBFT vote-progress protocol planner plus
-  a Rust-owned PBFT vote pipeline session that stages verified-vote insertion reports into typed
-  known/admit/slashing/gossip/progress intents and exposes an operation-specific CXX bridge for Rust-mode
+  read helpers, a canonical PBFT vote event fact boundary, a Rust-owned PBFT vote admission session that composes
+  event-fact derivation with the vote pipeline precheck/completion boundary, a side-effect-free PBFT vote-progress
+  protocol planner plus a Rust-owned PBFT vote pipeline session that stages verified-vote insertion reports into typed
+  known/admit/slashing/gossip/progress intents and exposes operation-specific CXX bridge surfaces for Rust-mode
   `VoteManager::addVerifiedVote` execution, Rust-owned PBFT vote validation
   planning with replay-cache storage,
   canonical PBFT vote RLP inspection, signed/unsigned vote hashing, signature recovery, VRF proof verification,
@@ -504,11 +505,11 @@ The current Rust starting point is intentionally small:
 4. Add ingress-compatible Rust inspection/planning surfaces as adjacent slices are touched. PBFT vote, DAG block,
    transaction, pillar vote, and PBFT sync work should accept canonical bytes or compact facts, optionally create
    enrichment records, and return route/admit/drop/gossip/request-sync/peer-action intents rather than depending on
-   network handler objects or eager C++ materialized objects. The first PBFT vote-progress runtime now derives compact
-   progress facts from canonical PBFT vote RLP in Rust before routing Rust-mode `VoteManager::addVerifiedVote` through
-   one Rust-owned pipeline session: the session returns a precheck plan with a transition key, C++ executes one
-   authoritative Rust-backed `VerifiedVotes` add/threshold mutation, and Rust accepts only a matching executor report
-   before returning the terminal execution plan. Packet ingress, peer-known marking, gossip, and proposed-block
+   network handler objects or eager C++ materialized objects. The first PBFT vote-progress runtime now routes
+   Rust-mode `VoteManager::addVerifiedVote` through a Rust admission session: Rust derives compact progress facts from
+   canonical PBFT vote RLP, owns the underlying pipeline session, returns a precheck plan with a transition key, accepts
+   only a matching authoritative Rust-backed `VerifiedVotes` add/threshold mutation report, and then returns the
+   terminal execution plan. Packet ingress, peer-known marking, gossip, and proposed-block
    sidecar routing remain deferred to the future vote pipeline. PBFT vote validation now also has a Rust planner and
    bridge runtime: C++ supplies DPoS/key facts, while Rust owns canonical vote-byte inspection, signature/VRF facts,
    Rust-computed received-vote weight, final accept/reject statuses, replay-marker timing and storage,
@@ -664,11 +665,11 @@ The current Rust starting point is intentionally small:
    state methods through the Rust-backed `VerifiedVotes` facade instead of `VoteManagerOld`: insertion/uniqueness,
    vote presence and snapshots, proposal-vote selection, cleanup, 2t+1 block/bundle lookups, next-round detection,
    current round persistence of non-cert bundles, and network t+1 step reads use Rust-owned metadata. `addVerifiedVote`
-   now asks Rust to derive compact event/progress facts from canonical vote RLP, parity-checks those facts against the
-   temporary live sidecar, then enters a Rust PBFT vote pipeline session to gate insertion, bind the transition key to
-   the authoritative Rust mutation report, classify duplicates/conflicts, and expose slashing, reward persistence, PBFT
-   progress, and current-round 2t+1 persistence decisions while C++ keeps live `PbftVote` sidecars, slashing
-   submission, logging, and deferred network effects. PBFT
+   now enters a Rust PBFT vote admission session that derives compact event/progress facts from canonical vote RLP,
+   parity-checks those facts against the temporary live sidecar, owns the underlying pipeline session, gates insertion,
+   binds the transition key to the authoritative Rust mutation report, classifies duplicates/conflicts, and exposes
+   slashing, reward persistence, PBFT progress, and current-round 2t+1 persistence decisions while C++ keeps live
+   `PbftVote` sidecars, slashing submission, logging, and deferred network effects. PBFT
    vote persistence for own verified votes, extra reward votes, and latest-round 2t+1 bundles now routes through
    VoteManager-specific `rustaxa-storage` bridge operations: Rust owns the immediate vote-progress write batch and the
    caller-owned own-vote cleanup batch appender, while the shim mutates temporary live sidecars only after Rust accepts

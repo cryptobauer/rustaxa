@@ -7,6 +7,7 @@ mod pbft_finalize;
 mod pbft_manager;
 mod pbft_reward_votes;
 mod pbft_sync;
+mod pbft_vote_admission;
 mod pbft_vote_event;
 mod pbft_vote_generation;
 mod pbft_vote_pipeline;

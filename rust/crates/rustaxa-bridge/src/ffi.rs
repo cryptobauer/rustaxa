@@ -6,6 +6,7 @@ use crate::pbft_finalize::*;
 use crate::pbft_manager::*;
 use crate::pbft_reward_votes::*;
 use crate::pbft_sync::*;
+use crate::pbft_vote_admission::*;
 use crate::pbft_vote_event::*;
 use crate::pbft_vote_generation::*;
 use crate::pbft_vote_pipeline::*;
@@ -87,6 +88,11 @@ pub struct BridgePbftManagerRuntimeSession {
 
 pub struct BridgePbftVotePipelineSession {
     pub state: rustaxa_consensus::PbftVotePipelineSession,
+    pub context: rustaxa_ffi::PbftVoteProgressContext,
+}
+
+pub struct BridgePbftVoteAdmissionSession {
+    pub state: rustaxa_consensus::PbftVoteAdmissionSession,
     pub context: rustaxa_ffi::PbftVoteProgressContext,
 }
 
@@ -1150,6 +1156,53 @@ pub mod rustaxa_ffi {
 
     /// Post-mutation PBFT vote pipeline execution decision.
     struct PbftVotePipelineExecutionPlan {
+        pipeline_status: u8,
+        status: u8,
+        error_code: String,
+        transition_key: PbftVotePipelineTransitionKey,
+        accepted: bool,
+        report_slashing: bool,
+        slashing_incoming_vote_hash: [u8; 32],
+        slashing_conflicting_vote_hash: [u8; 32],
+        persist_extra_reward_vote: bool,
+        extra_reward_vote_hash: [u8; 32],
+        network_t_plus_one_step_updated: bool,
+        drive_pbft_progress: bool,
+        progress_period: u64,
+        progress_round: u64,
+        persist_two_t_plus_one_votes: bool,
+        two_t_plus_one_kind: u8,
+        two_t_plus_one_period: u64,
+        two_t_plus_one_round: u64,
+        two_t_plus_one_step: u64,
+        two_t_plus_one_block_hash: [u8; 32],
+        complete: bool,
+    }
+
+    /// Pre-mutation PBFT vote admission decision for C++ executors.
+    ///
+    /// The admission session owns event-fact derivation and the underlying
+    /// pipeline precheck. The `progress_fact` payload is Rust-derived and is
+    /// provided so temporary C++ live sidecars can be parity-checked before the
+    /// executor performs the verified-vote insertion mutation.
+    struct PbftVoteAdmissionPrecheckPlan {
+        admission_status: u8,
+        event_status: u8,
+        pipeline_status: u8,
+        status: u8,
+        error_code: String,
+        transition_key: PbftVotePipelineTransitionKey,
+        has_progress_fact: bool,
+        progress_fact: PbftVoteProgressFact,
+        should_insert_verified_vote: bool,
+        has_two_t_plus_one_threshold: bool,
+        two_t_plus_one_threshold: u64,
+        complete: bool,
+    }
+
+    /// Post-mutation PBFT vote admission execution decision.
+    struct PbftVoteAdmissionExecutionPlan {
+        admission_status: u8,
         pipeline_status: u8,
         status: u8,
         error_code: String,
@@ -3969,6 +4022,20 @@ pub mod rustaxa_ffi {
             self: &mut BridgePbftVotePipelineSession,
             add_vote_outcome: VerifiedVoteAddOutcome,
         ) -> PbftVotePipelineExecutionPlan;
+        type BridgePbftVoteAdmissionSession;
+        pub fn create_pbft_vote_admission_session(
+            canonical_vote_rlp: &[u8],
+            weight: u64,
+            flags: PbftVoteEventFactFlags,
+            context: PbftVoteProgressContext,
+        ) -> Result<Box<BridgePbftVoteAdmissionSession>>;
+        pub fn pbft_vote_admission_precheck(
+            self: &mut BridgePbftVoteAdmissionSession,
+        ) -> PbftVoteAdmissionPrecheckPlan;
+        pub fn pbft_vote_admission_complete(
+            self: &mut BridgePbftVoteAdmissionSession,
+            add_vote_outcome: VerifiedVoteAddOutcome,
+        ) -> PbftVoteAdmissionExecutionPlan;
 
         // PBFT reward-vote selection planner
 
