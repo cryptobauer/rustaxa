@@ -137,6 +137,63 @@ class VerifiedVotes {
   uint64_t size() const;
 
   /**
+   * Returns whether `vote_hash` is retained in Rust validation replay state.
+   *
+   * Purpose:
+   * - Lets Rust-mode `VoteManager::voteAlreadyValidated` query the same Rust
+   *   runtime that owns PBFT vote admission and verified-vote state.
+   *
+   * Invariants:
+   * - No legacy validation cache is read in Rust mode.
+   */
+  bool replayContains(const vote_hash_t& vote_hash) const;
+
+  /**
+   * Inserts `vote_hash` into Rust validation replay state.
+   *
+   * Purpose:
+   * - Preserves existing validation replay timing while moving replay storage
+   *   into the same Rust runtime that owns admission.
+   *
+   * Outputs:
+   * - true only when the hash was newly inserted.
+   */
+  bool replayInsert(const vote_hash_t& vote_hash) const;
+
+  /**
+   * Plans or computes the PBFT `2t+1` threshold from Rust runtime cache state.
+   *
+   * Inputs:
+   * - `fact`: scalar PBFT-chain/FinalChain facts collected by `VoteManager`.
+   *
+   * Outputs:
+   * - Rust threshold lookup result with stable status and cache-hit flags.
+   *
+   * Invariants:
+   * - Cache ownership is co-located with admission and verified-vote state.
+   */
+  rustaxa::PbftTwoTPlusOneThresholdPlan twoTPlusOneThreshold(
+      const rustaxa::PbftTwoTPlusOneThresholdFact& fact) const;
+
+  /**
+   * Validates canonical PBFT vote bytes through the unified Rust vote runtime.
+   *
+   * Inputs:
+   * - `canonical_vote_rlp`: signed unweighted PBFT vote bytes.
+   * - `validation_facts`: FinalChain/key/config facts supplied by `VoteManager`.
+   *
+   * Outputs:
+   * - Rust validation result plus explicit replay-cache mutation facts.
+   *
+   * Invariants:
+   * - Replay marking is applied inside the same Rust runtime that owns
+   *   admission and verified-vote state.
+   */
+  rustaxa::PbftVoteRuntimeValidationResult validateCanonicalVote(
+      rust::Slice<const uint8_t> canonical_vote_rlp,
+      rustaxa::PbftVoteValidationExternalFacts validation_facts) const;
+
+  /**
    * Returns flattened verified-vote objects from all indexed voted values.
    */
   std::vector<std::shared_ptr<PbftVote>> votes() const;
@@ -308,7 +365,7 @@ class VerifiedVotes {
   void pruneLiveVotesToSnapshotLocked();
 
   mutable std::shared_mutex verified_votes_access_;
-  ::rust::Box<rustaxa::BridgeVerifiedVotes> rust_verified_votes_;
+  mutable ::rust::Box<rustaxa::BridgeVerifiedVotes> rust_verified_votes_;
   std::unordered_map<vote_hash_t, std::shared_ptr<PbftVote>> live_votes_;
 
   LOG_OBJECTS_DEFINE

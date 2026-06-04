@@ -1,9 +1,12 @@
 //! CXX bridge wrappers for PBFT vote validation planning.
 //!
-//! The bridge exposes Rust-owned validation decisions to the C++ `VoteManager`
-//! shim without transferring ownership of live vote objects or cryptographic
-//! primitives. C++ supplies explicit lookup, crypto, and weight facts; Rust
-//! returns stable statuses, replay-marker intent, and threshold values.
+//! The bridge exposes Rust-owned validation decisions without transferring
+//! ownership of live vote objects or cryptographic primitives. The production
+//! `VoteManager` shim uses the `BridgeVerifiedVotes` facade so validation
+//! replay protection, threshold caching, verified-vote metadata, and retained
+//! vote payloads share one Rust runtime. The stateful runtime in this module is
+//! kept only as compatibility/test scaffolding until the older standalone
+//! validation bridge API is retired.
 
 use crate::ffi::rustaxa_ffi::{
     PbftCanonicalVoteInspection as FfiPbftCanonicalVoteInspection,
@@ -32,15 +35,19 @@ use rustaxa_consensus::pbft_vote_validation::{
 use rustaxa_consensus::verified_votes::PbftVoteType;
 use std::sync::Mutex;
 
-/// Creates a Rust-owned PBFT vote validation runtime.
+/// Creates a compatibility PBFT vote validation runtime.
 ///
 /// Inputs:
 /// - `max_size`: maximum retained replay hashes.
 /// - `delete_step`: number of oldest hashes evicted when capacity is crossed.
 ///
 /// Outputs:
-/// - A bridge handle whose replay cache is independent from verified-vote
-///   storage and can be queried by `VoteManager::voteAlreadyValidated`.
+/// - A bridge handle whose replay/threshold caches are independent from
+///   verified-vote storage.
+///
+/// Production Rust-mode vote-manager routing should use `BridgeVerifiedVotes`
+/// instead, so validation replay, threshold cache, vote metadata, and retained
+/// payloads stay in one runtime.
 pub fn create_pbft_vote_validation_runtime(
     max_size: usize,
     delete_step: usize,
@@ -167,7 +174,9 @@ pub fn pbft_vote_validation_plan(
     })
 }
 
-fn threshold_plan_to_ffi(plan: PbftTwoTPlusOneThresholdPlan) -> FfiPbftTwoTPlusOneThresholdPlan {
+pub(crate) fn threshold_plan_to_ffi(
+    plan: PbftTwoTPlusOneThresholdPlan,
+) -> FfiPbftTwoTPlusOneThresholdPlan {
     FfiPbftTwoTPlusOneThresholdPlan {
         status: plan.status.as_u8(),
         error_code: plan.error_code.to_owned(),

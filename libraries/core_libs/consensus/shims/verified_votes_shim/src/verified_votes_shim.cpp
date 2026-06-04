@@ -150,6 +150,31 @@ uint64_t VerifiedVotes::size() const {
   return rust_verified_votes_->verified_votes_size();
 }
 
+bool VerifiedVotes::replayContains(const vote_hash_t& vote_hash) const {
+  std::shared_lock lock(verified_votes_access_);
+  const auto bridge_hash = toBridgeHash(vote_hash);
+  return rust_verified_votes_->verified_votes_replay_contains(bridge_hash);
+}
+
+bool VerifiedVotes::replayInsert(const vote_hash_t& vote_hash) const {
+  std::scoped_lock lock(verified_votes_access_);
+  const auto bridge_hash = toBridgeHash(vote_hash);
+  return rust_verified_votes_->verified_votes_replay_insert(bridge_hash);
+}
+
+rustaxa::PbftTwoTPlusOneThresholdPlan VerifiedVotes::twoTPlusOneThreshold(
+    const rustaxa::PbftTwoTPlusOneThresholdFact& fact) const {
+  std::scoped_lock lock(verified_votes_access_);
+  return rust_verified_votes_->verified_votes_two_t_plus_one_threshold(fact);
+}
+
+rustaxa::PbftVoteRuntimeValidationResult VerifiedVotes::validateCanonicalVote(
+    rust::Slice<const uint8_t> canonical_vote_rlp,
+    rustaxa::PbftVoteValidationExternalFacts validation_facts) const {
+  std::scoped_lock lock(verified_votes_access_);
+  return rust_verified_votes_->verified_votes_validate_canonical_vote(canonical_vote_rlp, validation_facts);
+}
+
 std::vector<std::shared_ptr<PbftVote>> VerifiedVotes::votes() const {
   std::shared_lock lock(verified_votes_access_);
 

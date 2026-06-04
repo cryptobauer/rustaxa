@@ -1,17 +1,23 @@
 use crate::ffi::rustaxa_ffi::{
     AtomicVoteInsertOutcome, DagHash, DetermineNewRoundOutcome, NetworkTPlusOneStepLookup,
-    PbftTwoTPlusOneVoteBundle, PbftVoteAdmissionRuntimeResult, PbftVoteEventFactFlags,
-    PbftVoteProgressContext as FfiPbftVoteProgressContext, PbftVoteStorageRecord,
-    PbftVoteValidationExternalFacts, RoundMarkerSnapshot, ThresholdDecisionOutcome,
-    TwoTPlusOneInsertOutcome, TwoTPlusOneSnapshotEntry, TwoTPlusOneVotedBlockLookup,
-    TwoTPlusOneVotesLookup, UniqueVoterCheckOutcome, UniqueVoterInsertOutcome,
-    VerifiedStepVotesEntry, VerifiedStepVotesLookup,
+    PbftTwoTPlusOneThresholdFact as FfiPbftTwoTPlusOneThresholdFact,
+    PbftTwoTPlusOneThresholdPlan as FfiPbftTwoTPlusOneThresholdPlan, PbftTwoTPlusOneVoteBundle,
+    PbftVoteAdmissionRuntimeResult, PbftVoteEventFactFlags,
+    PbftVoteProgressContext as FfiPbftVoteProgressContext, PbftVoteRuntimeValidationResult,
+    PbftVoteStorageRecord, PbftVoteValidationExternalFacts, RoundMarkerSnapshot,
+    ThresholdDecisionOutcome, TwoTPlusOneInsertOutcome, TwoTPlusOneSnapshotEntry,
+    TwoTPlusOneVotedBlockLookup, TwoTPlusOneVotesLookup, UniqueVoterCheckOutcome,
+    UniqueVoterInsertOutcome, VerifiedStepVotesEntry, VerifiedStepVotesLookup,
     VerifiedVoteAddOutcome as FfiVerifiedVoteAddOutcome, VerifiedVotePayload,
     VotedValueInsertOutcome,
 };
 use crate::ffi::BridgeVerifiedVotes;
 use crate::pbft_vote_progress::{context_to_domain, execution_plan_to_ffi};
+use crate::pbft_vote_validation::threshold_plan_to_ffi;
 use ethereum_types::{H160, H256};
+use rustaxa_consensus::pbft_thresholds::{
+    PbftTwoTPlusOneThresholdFact, PbftTwoTPlusOneThresholdPlan, PbftTwoTPlusOneThresholdStatus,
+};
 use rustaxa_consensus::pbft_vote_event::PbftVoteEventFactFlags as DomainPbftVoteEventFactFlags;
 use rustaxa_consensus::pbft_vote_validation::{
     validate_canonical_pbft_vote, PbftCanonicalVoteValidation,
@@ -35,6 +41,77 @@ impl BridgeVerifiedVotes {
     /// Returns count of stored verified vote hashes.
     pub fn verified_votes_size(&self) -> u64 {
         self.0.verified_votes().size()
+    }
+
+    /// Returns whether `vote_hash` is in runtime-owned validation replay protection.
+    pub fn verified_votes_replay_contains(&self, vote_hash: &[u8; 32]) -> bool {
+        self.0.replay_contains(H256::from(*vote_hash))
+    }
+
+    /// Inserts `vote_hash` into runtime-owned validation replay protection.
+    pub fn verified_votes_replay_insert(&mut self, vote_hash: &[u8; 32]) -> bool {
+        self.0.replay_insert(H256::from(*vote_hash))
+    }
+
+    /// Returns a Rust-owned PBFT `2t+1` threshold plan.
+    pub fn verified_votes_two_t_plus_one_threshold(
+        &mut self,
+        fact: FfiPbftTwoTPlusOneThresholdFact,
+    ) -> FfiPbftTwoTPlusOneThresholdPlan {
+        let vote_type = match PbftVoteType::try_from(fact.vote_type) {
+            Ok(vote_type) => vote_type,
+            Err(_) => {
+                return threshold_plan_to_ffi(PbftTwoTPlusOneThresholdPlan {
+                    status: PbftTwoTPlusOneThresholdStatus::InvalidVoteType,
+                    error_code: "PBFT_TWO_T_PLUS_ONE_INVALID_VOTE_TYPE",
+                    has_threshold: false,
+                    threshold: 0,
+                    sortition_threshold: 0,
+                    needs_total_dpos_votes: false,
+                    cache_hit: false,
+                    cached: false,
+                });
+            }
+        };
+
+        threshold_plan_to_ffi(
+            self.0
+                .plan_two_t_plus_one_threshold(PbftTwoTPlusOneThresholdFact {
+                    pbft_period: fact.pbft_period,
+                    vote_type,
+                    current_pbft_chain_size: fact.current_pbft_chain_size,
+                    committee_size: fact.committee_size,
+                    number_of_proposers: fact.number_of_proposers,
+                    has_total_dpos_votes_count: fact.has_total_dpos_votes_count,
+                    total_dpos_votes_count: fact.total_dpos_votes_count,
+                    future_dpos_state: fact.future_dpos_state,
+                    unknown_error: fact.unknown_error,
+                }),
+        )
+    }
+
+    /// Validates canonical PBFT vote bytes and mutates runtime replay state
+    /// when Rust validation requests replay protection.
+    pub fn verified_votes_validate_canonical_vote(
+        &mut self,
+        canonical_vote_rlp: &[u8],
+        validation_facts: PbftVoteValidationExternalFacts,
+    ) -> Result<PbftVoteRuntimeValidationResult, anyhow::Error> {
+        let validation = validate_canonical_pbft_vote(
+            canonical_vote_rlp,
+            validation_facts_to_domain(validation_facts),
+        )?;
+        let replay = self.0.record_validation_replay(&validation);
+        Ok(PbftVoteRuntimeValidationResult {
+            status: validation.status.as_u8(),
+            error_code: validation.error_code.to_owned(),
+            accepted: validation.accepted,
+            rejected: validation.rejected,
+            validation: validation.into(),
+            replay_should_mark: replay.should_mark,
+            replay_inserted: replay.inserted,
+            replay_already_present: replay.already_present,
+        })
     }
 
     /// Checks unique-voter acceptance for `vote`.
@@ -501,7 +578,9 @@ fn runtime_outcome_to_ffi(
             .unwrap_or(false),
         rejected: !validation.accepted,
         has_validation: true,
-        replay_inserted: validation.mark_validated_replay,
+        replay_should_mark: outcome.replay.should_mark,
+        replay_inserted: outcome.replay.inserted,
+        replay_already_present: outcome.replay.already_present,
         validation: validation.into(),
         has_vote: progress_fact.is_some(),
         vote,
@@ -787,6 +866,39 @@ mod tests {
             vote_type: PbftVoteType::Next.into(),
             weight,
         }
+    }
+
+    fn threshold_fact(has_total_dpos_votes_count: bool) -> FfiPbftTwoTPlusOneThresholdFact {
+        FfiPbftTwoTPlusOneThresholdFact {
+            pbft_period: 3,
+            vote_type: PbftVoteType::Cert.into(),
+            current_pbft_chain_size: 3,
+            committee_size: 100,
+            number_of_proposers: 20,
+            has_total_dpos_votes_count,
+            total_dpos_votes_count: if has_total_dpos_votes_count { 100 } else { 0 },
+            future_dpos_state: false,
+            unknown_error: false,
+        }
+    }
+
+    #[test]
+    fn bridge_facade_owns_replay_and_threshold_cache() {
+        let mut votes = create_verified_votes_index();
+        let vote_hash = hash(99);
+
+        assert!(!votes.verified_votes_replay_contains(&vote_hash));
+        assert!(votes.verified_votes_replay_insert(&vote_hash));
+        assert!(!votes.verified_votes_replay_insert(&vote_hash));
+        assert!(votes.verified_votes_replay_contains(&vote_hash));
+
+        let plan = votes.verified_votes_two_t_plus_one_threshold(threshold_fact(true));
+        assert!(plan.has_threshold);
+        assert!(plan.cached);
+
+        let cached = votes.verified_votes_two_t_plus_one_threshold(threshold_fact(false));
+        assert!(cached.cache_hit);
+        assert_eq!(cached.threshold, plan.threshold);
     }
 
     #[test]

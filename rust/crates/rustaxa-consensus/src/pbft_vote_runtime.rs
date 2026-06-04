@@ -12,6 +12,9 @@ use std::collections::BTreeMap;
 use anyhow::{Result, anyhow};
 use ethereum_types::H256;
 
+use crate::pbft_thresholds::{
+    PbftTwoTPlusOneThresholdFact, PbftTwoTPlusOneThresholdPlan, PbftTwoTPlusOneThresholdRuntime,
+};
 use crate::pbft_vote_admission::{
     PbftVoteAdmissionExecution, PbftVoteAdmissionPrecheck, PbftVoteAdmissionSession,
 };
@@ -21,7 +24,7 @@ use crate::pbft_vote_payload::{
     build_weighted_pbft_vote_payload,
 };
 use crate::pbft_vote_progress::PbftVoteProgressContext;
-use crate::pbft_vote_validation::PbftCanonicalVoteValidation;
+use crate::pbft_vote_validation::{PbftCanonicalVoteValidation, PbftVoteReplayCache};
 use crate::verified_votes::{AddVerifiedVoteOutcome, VerifiedVote, VerifiedVotes, VotesWithWeight};
 
 /// Canonical and weighted PBFT vote payloads retained for one admitted vote.
@@ -55,11 +58,24 @@ pub struct PbftVoteRuntimeSlashingPayloads {
     pub conflicting: PbftVotePayloadRecord,
 }
 
+/// Runtime replay-cache result for one validation or admission transition.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PbftVoteRuntimeReplayOutcome {
+    /// Whether validation reached a state that should be replay-protected.
+    pub should_mark: bool,
+    /// Whether the runtime inserted a new replay-cache entry.
+    pub inserted: bool,
+    /// Whether the replay entry already existed before this transition.
+    pub already_present: bool,
+}
+
 /// Complete result of one validation-backed vote admission transition.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftVoteRuntimeAdmissionOutcome {
     /// Pre-mutation planner output, including validation and progress facts.
     pub precheck: PbftVoteAdmissionPrecheck,
+    /// Replay-cache mutation result for this transition.
+    pub replay: PbftVoteRuntimeReplayOutcome,
     /// Terminal execution plan after the runtime applied the verified-vote
     /// mutation, when a mutation was requested.
     pub execution: Option<PbftVoteAdmissionExecution>,
@@ -81,10 +97,18 @@ pub struct PbftVoteRuntimeAdmissionOutcome {
 /// The runtime owns deterministic verified-vote metadata and the byte payloads
 /// needed after admission. It does not own live C++ `PbftVote` objects, storage
 /// handles, network peers, or transaction submission.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct PbftVoteAdmissionRuntime {
     verified_votes: VerifiedVotes,
+    replay_cache: PbftVoteReplayCache,
+    threshold_runtime: PbftTwoTPlusOneThresholdRuntime,
     payloads: BTreeMap<H256, PbftVoteRuntimePayload>,
+}
+
+impl Default for PbftVoteAdmissionRuntime {
+    fn default() -> Self {
+        Self::new_with_replay_cache(1_000_000, 1_000)
+    }
 }
 
 impl PbftVoteAdmissionRuntime {
@@ -92,6 +116,27 @@ impl PbftVoteAdmissionRuntime {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Creates an empty PBFT vote admission runtime with explicit replay-cache
+    /// bounds.
+    ///
+    /// Inputs:
+    /// - `replay_max_size`: maximum retained validated vote hashes.
+    /// - `replay_delete_step`: number of oldest hashes removed after capacity
+    ///   is crossed.
+    ///
+    /// Outputs:
+    /// - Runtime owning verified-vote state, replay protection, threshold
+    ///   cache, and retained vote payload sidecars.
+    #[must_use]
+    pub fn new_with_replay_cache(replay_max_size: usize, replay_delete_step: usize) -> Self {
+        Self {
+            verified_votes: VerifiedVotes::new(),
+            replay_cache: PbftVoteReplayCache::new(replay_max_size, replay_delete_step),
+            threshold_runtime: PbftTwoTPlusOneThresholdRuntime::new(),
+            payloads: BTreeMap::new(),
+        }
     }
 
     /// Returns immutable access to the Rust verified-vote index.
@@ -119,6 +164,62 @@ impl PbftVoteAdmissionRuntime {
         self.payloads
             .get(&vote_hash)
             .map(|payload| &payload.slashing)
+    }
+
+    /// Returns whether `vote_hash` is already retained in validation replay
+    /// protection.
+    #[must_use]
+    pub fn replay_contains(&self, vote_hash: H256) -> bool {
+        self.replay_cache.contains(vote_hash)
+    }
+
+    /// Inserts `vote_hash` into validation replay protection.
+    ///
+    /// The return value is true only when the hash was newly retained.
+    pub fn replay_insert(&mut self, vote_hash: H256) -> bool {
+        self.replay_cache.insert(vote_hash)
+    }
+
+    /// Applies replay-cache marking for one validation result.
+    ///
+    /// Inputs:
+    /// - `validation`: canonical vote validation output carrying Rust's
+    ///   replay-marker intent.
+    ///
+    /// Outputs:
+    /// - Explicit replay decision and mutation facts so bridge callers do not
+    ///   confuse "should mark" with "newly inserted."
+    pub fn record_validation_replay(
+        &mut self,
+        validation: &PbftCanonicalVoteValidation,
+    ) -> PbftVoteRuntimeReplayOutcome {
+        let should_mark = validation.mark_validated_replay;
+        if !should_mark {
+            return PbftVoteRuntimeReplayOutcome {
+                should_mark,
+                inserted: false,
+                already_present: false,
+            };
+        }
+        let already_present = self.replay_contains(validation.vote_hash);
+        let inserted = self.replay_insert(validation.vote_hash);
+        PbftVoteRuntimeReplayOutcome {
+            should_mark,
+            inserted,
+            already_present,
+        }
+    }
+
+    /// Plans or computes the PBFT `2t+1` threshold from Rust-owned cache state.
+    ///
+    /// Inputs are explicit scalar facts supplied by the C++ boundary after
+    /// FinalChain/PBFT-chain reads. The runtime owns cache lookup/update policy
+    /// so threshold state is co-located with vote admission state.
+    pub fn plan_two_t_plus_one_threshold(
+        &mut self,
+        fact: PbftTwoTPlusOneThresholdFact,
+    ) -> PbftTwoTPlusOneThresholdPlan {
+        self.threshold_runtime.plan_threshold(fact)
     }
 
     /// Removes votes and payloads for periods older than `pbft_period`.
@@ -170,9 +271,11 @@ impl PbftVoteAdmissionRuntime {
     ) -> Result<PbftVoteRuntimeAdmissionOutcome> {
         let mut session = PbftVoteAdmissionSession::from_validation(validation, flags, context);
         let precheck = session.precheck();
+        let replay = self.record_validation_replay(validation);
         if !precheck.should_insert() {
             return Ok(PbftVoteRuntimeAdmissionOutcome {
                 precheck,
+                replay,
                 execution: None,
                 add_outcome: None,
                 storage_vote: None,
@@ -282,6 +385,7 @@ impl PbftVoteAdmissionRuntime {
 
         Ok(PbftVoteRuntimeAdmissionOutcome {
             precheck,
+            replay,
             execution: Some(execution),
             add_outcome: Some(add_outcome),
             storage_vote: retained_storage_vote,
@@ -409,6 +513,20 @@ mod tests {
         }
     }
 
+    fn threshold_fact(has_total_dpos_votes_count: bool) -> PbftTwoTPlusOneThresholdFact {
+        PbftTwoTPlusOneThresholdFact {
+            pbft_period: 12,
+            vote_type: PbftVoteType::Cert,
+            current_pbft_chain_size: 12,
+            committee_size: 100,
+            number_of_proposers: 20,
+            has_total_dpos_votes_count,
+            total_dpos_votes_count: if has_total_dpos_votes_count { 100 } else { 0 },
+            future_dpos_state: false,
+            unknown_error: false,
+        }
+    }
+
     #[test]
     fn runtime_admits_vote_and_retains_payloads() {
         let rlp = vote_rlp([1; 32], 3);
@@ -431,6 +549,28 @@ mod tests {
         assert!(outcome.storage_vote.is_some());
         assert!(runtime.weighted_payload(validation.vote_hash).is_some());
         assert!(runtime.slashing_payload(validation.vote_hash).is_some());
+        assert!(runtime.replay_contains(validation.vote_hash));
+    }
+
+    #[test]
+    fn runtime_owns_replay_cache_and_thresholds() {
+        let mut runtime = PbftVoteAdmissionRuntime::new_with_replay_cache(1, 1);
+        let first_hash = H256::from_low_u64_be(1);
+        let second_hash = H256::from_low_u64_be(2);
+
+        assert!(runtime.replay_insert(first_hash));
+        assert!(!runtime.replay_insert(first_hash));
+        assert!(runtime.replay_contains(first_hash));
+        assert!(runtime.replay_insert(second_hash));
+        assert!(!runtime.replay_contains(first_hash));
+        assert!(runtime.replay_contains(second_hash));
+
+        let plan = runtime.plan_two_t_plus_one_threshold(threshold_fact(true));
+        assert!(plan.has_threshold);
+
+        let cached = runtime.plan_two_t_plus_one_threshold(threshold_fact(false));
+        assert!(cached.cache_hit);
+        assert_eq!(cached.threshold, plan.threshold);
     }
 
     #[test]

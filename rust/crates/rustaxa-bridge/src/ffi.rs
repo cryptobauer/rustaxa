@@ -103,10 +103,11 @@ pub struct BridgePeriodDataQueue(pub PeriodDataQueue);
 
 pub struct BridgeVerifiedVotes(pub PbftVoteAdmissionRuntime);
 
-/// Bridge-owned runtime for PBFT vote validation sidecars.
+/// Compatibility runtime for older PBFT vote validation bridge tests.
 ///
-/// The runtime stores replay-protection hashes in Rust while validation facts
-/// and live vote objects are still sourced by the C++ `VoteManager` shim.
+/// Production Rust-mode `VoteManager` routing uses `BridgeVerifiedVotes`, whose
+/// `PbftVoteAdmissionRuntime` owns validation replay protection, threshold
+/// caching, verified-vote metadata, and retained vote payloads together.
 pub struct BridgePbftVoteValidationRuntime {
     pub replay_cache: Mutex<rustaxa_consensus::PbftVoteReplayCache>,
     pub threshold_runtime: Mutex<rustaxa_consensus::PbftTwoTPlusOneThresholdRuntime>,
@@ -1244,7 +1245,9 @@ pub mod rustaxa_ffi {
         rejected: bool,
         has_validation: bool,
         validation: PbftCanonicalVoteValidation,
+        replay_should_mark: bool,
         replay_inserted: bool,
+        replay_already_present: bool,
         has_vote: bool,
         vote: VerifiedVotePayload,
         has_verified_vote_add: bool,
@@ -1262,6 +1265,19 @@ pub mod rustaxa_ffi {
         drive_pbft_progress: bool,
         progress_period: u64,
         progress_round: u64,
+    }
+
+    /// Runtime-owned validation result for callers that validate without
+    /// admitting a vote into verified-vote state.
+    struct PbftVoteRuntimeValidationResult {
+        status: u8,
+        error_code: String,
+        accepted: bool,
+        rejected: bool,
+        validation: PbftCanonicalVoteValidation,
+        replay_should_mark: bool,
+        replay_inserted: bool,
+        replay_already_present: bool,
     }
 
     /// Compact reward-vote membership facts for one PBFT round.
@@ -3945,6 +3961,23 @@ pub mod rustaxa_ffi {
 
         pub fn create_verified_votes_index() -> Box<BridgeVerifiedVotes>;
         pub fn verified_votes_size(self: &BridgeVerifiedVotes) -> u64;
+        pub fn verified_votes_replay_contains(
+            self: &BridgeVerifiedVotes,
+            vote_hash: &[u8; 32],
+        ) -> bool;
+        pub fn verified_votes_replay_insert(
+            self: &mut BridgeVerifiedVotes,
+            vote_hash: &[u8; 32],
+        ) -> bool;
+        pub fn verified_votes_two_t_plus_one_threshold(
+            self: &mut BridgeVerifiedVotes,
+            fact: PbftTwoTPlusOneThresholdFact,
+        ) -> PbftTwoTPlusOneThresholdPlan;
+        pub fn verified_votes_validate_canonical_vote(
+            self: &mut BridgeVerifiedVotes,
+            canonical_vote_rlp: &[u8],
+            validation_facts: PbftVoteValidationExternalFacts,
+        ) -> Result<PbftVoteRuntimeValidationResult>;
         pub fn verified_votes_check_unique_voter(
             self: &BridgeVerifiedVotes,
             vote: VerifiedVotePayload,

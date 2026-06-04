@@ -514,12 +514,13 @@ The current Rust starting point is intentionally small:
    FinalChain/key facts, Rust validates the canonical PBFT vote RLP, carries the validation result and calculated
    weight into compact progress facts, mutates the single Rust-owned `VerifiedVotes` runtime, retains weighted storage
    payloads and unweighted slashing evidence payloads, and returns one terminal executor report. Packet ingress,
-   peer-known marking, gossip, proposed-block sidecar routing, and replay-cache unification remain deferred to future
-   vote-pipeline slices. PBFT vote validation now also has a Rust planner and
-   bridge runtime: C++ supplies DPoS/key facts, while Rust owns canonical vote-byte inspection, signature/VRF facts,
-   Rust-computed received-vote weight, final accept/reject statuses, replay-marker timing and storage,
-   local proposer-sortition screening, and the sortition-threshold formula. C++ still performs the temporary
-   `PbftVote::weight_` live sidecar mutation and parity-checks it against the Rust weight.
+   peer-known marking, gossip, and proposed-block sidecar routing remain deferred to future vote-pipeline slices.
+   Replay protection and PBFT `2t+1` threshold caching now live in the same Rust `VerifiedVotes`/admission runtime that
+   owns verified-vote mutation. PBFT vote validation now also has Rust planner surfaces for compatibility/testing:
+   C++ supplies DPoS/key facts, while Rust owns canonical vote-byte inspection, signature/VRF facts, Rust-computed
+   received-vote weight, final accept/reject statuses, replay-marker timing and storage, local proposer-sortition
+   screening, and the sortition-threshold formula. C++ still performs the temporary `PbftVote::weight_` live sidecar
+   mutation and parity-checks it against the Rust weight.
 5. Port DAG graph operations before broader `DagManager` orchestration: pivot/tip availability, ghost path, ordering,
    counters, storage-facing queries, and deterministic `verifyBlock` reject decisions.
 6. Define Rust ports for DPoS eligibility, eligible vote count, total vote count, and VRF key access. The current

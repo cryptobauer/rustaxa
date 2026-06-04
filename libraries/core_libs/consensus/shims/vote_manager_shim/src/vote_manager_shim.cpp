@@ -57,6 +57,10 @@ addr_t fromBridgeAddress(const std::array<uint8_t, 20>& address) {
   return addr_t(address.data(), addr_t::ConstructFromPointer);
 }
 
+vote_hash_t fromBridgeVoteHash(const std::array<uint8_t, 32>& hash) {
+  return vote_hash_t(hash.data(), vote_hash_t::ConstructFromPointer);
+}
+
 rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& bytes) {
   rust::Vec<uint8_t> out;
   out.reserve(bytes.size());
@@ -437,8 +441,7 @@ VoteManager::VoteManager(const FullNodeConfig& config, std::shared_ptr<DbStorage
                          std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
                          std::shared_ptr<KeyManager> key_manager, std::shared_ptr<SlashingManager> slashing_manager)
     : VoteManagerOld(config, std::move(db), std::move(pbft_chain), std::move(final_chain), std::move(key_manager),
-                     std::move(slashing_manager)),
-      vote_validation_runtime_(rustaxa::create_pbft_vote_validation_runtime(1000000, 1000)) {}
+                     std::move(slashing_manager)) {}
 
 void VoteManager::setNetwork(std::weak_ptr<Network> network) {
   // TODO(rustaxa): move VoteManager network wiring to Rust/shim-owned state.
@@ -477,7 +480,7 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
                  << " during canonical inspection, status: " << static_cast<uint32_t>(inspection.status)
                  << ", error: " << static_cast<std::string>(inspection.error_code);
     if (inspection.status == kPbftCanonicalVoteInspectionStatusInvalidSignature) {
-      vote_validation_runtime_->pbft_vote_replay_insert(inspection.vote_hash);
+      verified_votes_.replayInsert(fromBridgeVoteHash(inspection.vote_hash));
     }
     return false;
   }
@@ -523,9 +526,6 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
   const auto runtime_result =
       verified_votes_.admitValidatedVote(toBridgeByteSlice(canonical_vote_rlp), external_facts,
                                          makeVoteEventFactFlags(is_valid_potential_reward_vote), progress_context);
-  if (runtime_result.has_validation && runtime_result.replay_inserted) {
-    vote_validation_runtime_->pbft_vote_replay_insert(runtime_result.validation.vote_hash);
-  }
   if (!runtime_result.has_validation || !runtime_result.validation.accepted ||
       runtime_result.validation.status != kPbftVoteValidationStatusValid) {
     LOG(log_er_) << "VoteManager Rust PBFT vote admission rejected vote " << vote->getHash()
@@ -948,7 +948,7 @@ std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<Pbf
   }
 
   if (inspection.status == kPbftCanonicalVoteInspectionStatusInvalidSignature) {
-    vote_validation_runtime_->pbft_vote_replay_insert(inspection.vote_hash);
+    verified_votes_.replayInsert(fromBridgeVoteHash(inspection.vote_hash));
     err_msg << "Invalid vote " << vote->getHash() << ": invalid signature";
     return {false, err_msg.str()};
   }
@@ -971,22 +971,19 @@ std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<Pbf
     external_facts.voter_dpos_vote_count = voter_dpos_votes_count;
   } catch (state_api::ErrFutureBlock& e) {
     external_facts.future_dpos_state = true;
-    (void)rustaxa::pbft_validate_canonical_vote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
+    (void)verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
     err_msg << "Unable to validate vote " << vote->getHash() << " against dpos contract. It's period (" << vote_period
             << ") is too far ahead of actual finalized pbft chain size (" << final_chain_->lastBlockNumber()
             << "). Err msg: " << e.what();
     return {false, err_msg.str()};
   } catch (...) {
     external_facts.unknown_error = true;
-    (void)rustaxa::pbft_validate_canonical_vote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
+    (void)verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
     err_msg << "Invalid vote " << vote->getHash() << ": unknown error during validation";
     return {false, err_msg.str()};
   }
 
-  validation = rustaxa::pbft_validate_canonical_vote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
-  if (validation.mark_validated_replay) {
-    vote_validation_runtime_->pbft_vote_replay_insert(validation.vote_hash);
-  }
+  validation = verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts).validation;
   if (validation.status == kPbftVoteValidationStatusZeroStake) {
     err_msg << "Invalid vote " << vote->getHash() << ": author " << recovered_voter << " has zero stake";
     return {false, err_msg.str()};
@@ -1004,10 +1001,7 @@ std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<Pbf
       external_facts.vrf_public_key = pk->asArray();
     }
 
-    validation = rustaxa::pbft_validate_canonical_vote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
-    if (validation.mark_validated_replay) {
-      vote_validation_runtime_->pbft_vote_replay_insert(validation.vote_hash);
-    }
+    validation = verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts).validation;
     if (validation.status == kPbftVoteValidationStatusMissingVrfKey) {
       err_msg << "No vrf key mapped for vote author " << recovered_voter;
       return {false, err_msg.str()};
@@ -1024,10 +1018,7 @@ std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<Pbf
     const uint64_t total_dpos_votes_count = final_chain_->dposEligibleTotalVoteCount(vote_period - 1);
     external_facts.total_dpos_ready = true;
     external_facts.total_dpos_vote_count = total_dpos_votes_count;
-    validation = rustaxa::pbft_validate_canonical_vote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
-    if (validation.mark_validated_replay) {
-      vote_validation_runtime_->pbft_vote_replay_insert(validation.vote_hash);
-    }
+    validation = verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts).validation;
     if (!validation.has_sortition_threshold) {
       throw std::runtime_error("Rust PBFT vote validation did not return a sortition threshold");
     }
@@ -1048,14 +1039,14 @@ std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<Pbf
     }
   } catch (state_api::ErrFutureBlock& e) {
     external_facts.future_dpos_state = true;
-    (void)rustaxa::pbft_validate_canonical_vote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
+    (void)verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
     err_msg << "Unable to validate vote " << vote->getHash() << " against dpos contract. It's period (" << vote_period
             << ") is too far ahead of actual finalized pbft chain size (" << final_chain_->lastBlockNumber()
             << "). Err msg: " << e.what();
     return {false, err_msg.str()};
   } catch (...) {
     external_facts.unknown_error = true;
-    (void)rustaxa::pbft_validate_canonical_vote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
+    (void)verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
     err_msg << "Invalid vote " << vote->getHash() << ": unknown error during validation";
     return {false, err_msg.str()};
   }
@@ -1076,7 +1067,7 @@ std::optional<uint64_t> VoteManager::getPbftTwoTPlusOne(PbftPeriod pbft_period, 
   threshold_fact.committee_size = kPbftConfig.committee_size;
   threshold_fact.number_of_proposers = kPbftConfig.number_of_proposers;
 
-  auto threshold_plan = vote_validation_runtime_->pbft_two_t_plus_one_threshold(threshold_fact);
+  auto threshold_plan = verified_votes_.twoTPlusOneThreshold(threshold_fact);
   if (threshold_plan.status == kPbftTwoTPlusOneThresholdStatusAvailable && threshold_plan.has_threshold) {
     return threshold_plan.threshold;
   }
@@ -1093,21 +1084,21 @@ std::optional<uint64_t> VoteManager::getPbftTwoTPlusOne(PbftPeriod pbft_period, 
     total_dpos_votes_count = final_chain_->dposEligibleTotalVoteCount(pbft_period);
   } catch (state_api::ErrFutureBlock& e) {
     threshold_fact.future_dpos_state = true;
-    (void)vote_validation_runtime_->pbft_two_t_plus_one_threshold(threshold_fact);
+    (void)verified_votes_.twoTPlusOneThreshold(threshold_fact);
     LOG(log_er_) << "Unable to calculate 2t + 1 for period: " << pbft_period
                  << ". Period is too far ahead of actual finalized pbft chain size (" << final_chain_->lastBlockNumber()
                  << "). Err msg: " << e.what();
     return {};
   } catch (const std::exception& e) {
     threshold_fact.unknown_error = true;
-    threshold_plan = vote_validation_runtime_->pbft_two_t_plus_one_threshold(threshold_fact);
+    threshold_plan = verified_votes_.twoTPlusOneThreshold(threshold_fact);
     LOG(log_er_) << "Unable to calculate 2t + 1 for period: " << pbft_period << ". Err msg: " << e.what()
                  << ". Rust threshold status " << static_cast<uint32_t>(threshold_plan.status) << " error "
                  << static_cast<std::string>(threshold_plan.error_code);
     return {};
   } catch (...) {
     threshold_fact.unknown_error = true;
-    threshold_plan = vote_validation_runtime_->pbft_two_t_plus_one_threshold(threshold_fact);
+    threshold_plan = verified_votes_.twoTPlusOneThreshold(threshold_fact);
     LOG(log_er_) << "Unable to calculate 2t + 1 for period: " << pbft_period << ". Unknown error. Rust threshold status "
                  << static_cast<uint32_t>(threshold_plan.status) << " error "
                  << static_cast<std::string>(threshold_plan.error_code);
@@ -1117,7 +1108,7 @@ std::optional<uint64_t> VoteManager::getPbftTwoTPlusOne(PbftPeriod pbft_period, 
   threshold_fact.current_pbft_chain_size = pbft_chain_->getPbftChainSize();
   threshold_fact.has_total_dpos_votes_count = true;
   threshold_fact.total_dpos_votes_count = total_dpos_votes_count;
-  threshold_plan = vote_validation_runtime_->pbft_two_t_plus_one_threshold(threshold_fact);
+  threshold_plan = verified_votes_.twoTPlusOneThreshold(threshold_fact);
   if (threshold_plan.status == kPbftTwoTPlusOneThresholdStatusAvailable && threshold_plan.has_threshold) {
     return threshold_plan.threshold;
   }
@@ -1129,7 +1120,7 @@ std::optional<uint64_t> VoteManager::getPbftTwoTPlusOne(PbftPeriod pbft_period, 
 }
 
 bool VoteManager::voteAlreadyValidated(const vote_hash_t& vote_hash) const {
-  return vote_validation_runtime_->pbft_vote_replay_contains(toBridgeHash(vote_hash));
+  return verified_votes_.replayContains(vote_hash);
 }
 
 bool VoteManager::genAndValidateVrfSortition(PbftPeriod pbft_period, PbftRound pbft_round,

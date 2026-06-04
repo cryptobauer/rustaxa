@@ -19,9 +19,9 @@ namespace taraxa {
  * - Inherited methods use the same base state as the overridden reset path.
  * - Own verified votes, extra reward votes, and latest-round 2t+1 bundles use
  *   `rustaxa-storage` for durable writes in Rust mode.
- * - PBFT `2t+1` threshold lookup and current-period cache ownership live in
- *   the Rust vote-validation runtime; C++ supplies only FinalChain/PBFT-chain
- *   scalar facts when Rust reports a cache miss.
+ * - PBFT replay protection and `2t+1` threshold cache ownership live in the
+ *   same Rust runtime as verified-vote admission; C++ supplies only
+ *   FinalChain/PBFT-chain scalar facts when Rust reports a cache miss.
  * - Reward-vote reset appends the stage-4 Rust finalization storage write to
  *   the caller-owned batch and mutates live reward metadata only after Rust
  *   accepts the durable write stage.
@@ -37,8 +37,8 @@ class VoteManager : public VoteManagerOld {
    * Constructs the Rust-mode VoteManager overlay.
    *
    * Inputs mirror the legacy `VoteManager` constructor. The overlay initializes
-   * the inherited legacy state machine plus Rust-owned validation sidecars used
-   * by routed methods.
+   * the inherited legacy state machine; PBFT vote validation/admission state is
+   * owned by the Rust-backed `VerifiedVotes` facade.
    *
    * Invariants:
    * - Public C++ API remains identical during the rewrite.
@@ -268,7 +268,6 @@ class VoteManager : public VoteManagerOld {
 
  private:
   bool isValidRewardVoteForRust(const std::shared_ptr<PbftVote>& vote) const;
-  ::rust::Box<rustaxa::BridgePbftVoteValidationRuntime> vote_validation_runtime_;
 };
 
 }  // namespace taraxa
