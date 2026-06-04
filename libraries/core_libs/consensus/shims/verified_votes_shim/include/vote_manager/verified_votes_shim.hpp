@@ -282,13 +282,16 @@ class VerifiedVotes {
    * - `context`: current PBFT period/round and optional 2t+1 threshold facts.
    *
    * Outputs:
-   * - A flat Rust mutation/executor report with validation, insertion,
-   *   slashing, and persistence payloads.
+   * - A flat Rust mutation/executor report with validation, replay, insertion,
+   *   peer-known, proposed-block sidecar, gossip, slashing, persistence,
+   *   threshold, and PBFT-progress intents.
    *
    * Invariants:
    * - This call mutates only Rust verified-vote state and retained payload
-   *   sidecars. It does not attach a live C++ `PbftVote` object; callers must
-   *   call `attachRuntimeAcceptedVote` after hydrating the accepted sidecar.
+   *   sidecars. It does not attach a live C++ `PbftVote` object or execute
+   *   network/storage/slashing side effects; callers must execute returned
+   *   intents and call `attachRuntimeAcceptedVote` after hydrating the accepted
+   *   sidecar.
    */
   rustaxa::PbftVoteAdmissionRuntimeResult admitValidatedVote(
       rust::Slice<const uint8_t> canonical_vote_rlp, rustaxa::PbftVoteValidationExternalFacts validation_facts,

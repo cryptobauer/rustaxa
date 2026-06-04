@@ -25,7 +25,9 @@ use crate::pbft_vote_payload::{
 };
 use crate::pbft_vote_progress::PbftVoteProgressContext;
 use crate::pbft_vote_validation::{PbftCanonicalVoteValidation, PbftVoteReplayCache};
-use crate::verified_votes::{AddVerifiedVoteOutcome, VerifiedVote, VerifiedVotes, VotesWithWeight};
+use crate::verified_votes::{
+    AddVerifiedVoteOutcome, TwoTPlusOneVotedBlockType, VerifiedVote, VerifiedVotes, VotesWithWeight,
+};
 
 /// Canonical and weighted PBFT vote payloads retained for one admitted vote.
 ///
@@ -43,6 +45,16 @@ pub struct PbftVoteRuntimePayload {
 /// Runtime-built 2t+1 vote bundle ready for storage persistence.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftVoteRuntimeBundle {
+    /// Threshold family whose vote bundle reached `2t+1`.
+    pub kind: TwoTPlusOneVotedBlockType,
+    /// PBFT period for the persisted bundle.
+    pub period: u64,
+    /// PBFT round for the persisted bundle.
+    pub round: u64,
+    /// PBFT step of the vote that triggered persistence.
+    pub step: u64,
+    /// Block hash selected by the threshold family.
+    pub block_hash: H256,
     /// Number of weighted vote records included in the bundle.
     pub votes_count: usize,
     /// Raw legacy RLP list of weighted vote records.
@@ -376,6 +388,11 @@ impl PbftVoteAdmissionRuntime {
                 })?);
             }
             Some(PbftVoteRuntimeBundle {
+                kind,
+                period: fact.identity.period,
+                round: fact.identity.round,
+                step: fact.identity.step,
+                block_hash: fact.identity.block_hash,
                 votes_count: records.len(),
                 votes_bundle_rlp: build_weighted_pbft_vote_bundle(&records)?,
             })
@@ -506,6 +523,7 @@ mod tests {
     fn context(threshold: Option<u64>) -> PbftVoteProgressContext {
         PbftVoteProgressContext {
             current_period: 12,
+            current_round: 2,
             max_future_period_delta: 0,
             two_t_plus_one_threshold: threshold,
             require_proposed_block_sidecar: false,

@@ -137,6 +137,13 @@ fn execution_to_ffi(
         error_code: progress.error_code,
         transition_key: transition_key(&session.state),
         accepted: progress.accepted,
+        mark_vote_known: progress.mark_vote_known,
+        mark_vote_known_hash: progress.mark_vote_known_hash,
+        request_proposed_block_sidecar: progress.request_proposed_block_sidecar,
+        proposed_block_sidecar_hash: progress.proposed_block_sidecar_hash,
+        proposed_block_sidecar_period: progress.proposed_block_sidecar_period,
+        gossip_vote: progress.gossip_vote,
+        gossip_vote_hash: progress.gossip_vote_hash,
         report_slashing: progress.report_slashing,
         slashing_incoming_vote_hash: progress.slashing_incoming_vote_hash,
         slashing_conflicting_vote_hash: progress.slashing_conflicting_vote_hash,
@@ -258,6 +265,8 @@ mod tests {
         let execution = session.pbft_vote_pipeline_complete(add_outcome());
         assert_eq!(execution.pipeline_status, 2);
         assert!(execution.accepted);
+        assert!(execution.mark_vote_known);
+        assert!(execution.gossip_vote);
         assert_eq!(
             execution.transition_key.vote_hash,
             precheck.transition_key.vote_hash

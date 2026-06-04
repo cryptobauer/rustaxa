@@ -4,9 +4,11 @@
 //! operation-specific payloads for the C++ `VoteManager` shim. C++ supplies
 //! compact vote facts and, after applying the authoritative verified-vote
 //! mutation, feeds the flattened mutation report back into this module. The
-//! returned execution plan names only the side effects this route may execute:
-//! reward persistence, slashing submission, PBFT progress notification, and
-//! current-round 2t+1 vote-bundle persistence.
+//! returned execution plan names the side effects this route may execute:
+//! peer-known marking, proposed-block sidecar routing, gossip, reward
+//! persistence, slashing submission, PBFT progress notification, and
+//! current-round 2t+1 vote-bundle persistence. C++ remains the executor for
+//! effects that touch peers, networking, storage handles, or live sidecars.
 
 use crate::ffi::rustaxa_ffi::{
     PbftVoteProgressContext as FfiPbftVoteProgressContext,
@@ -106,6 +108,7 @@ pub(crate) fn fact_to_domain(value: FfiPbftVoteProgressFact) -> Result<PbftVoteP
 pub(crate) fn context_to_domain(value: &FfiPbftVoteProgressContext) -> PbftVoteProgressContext {
     PbftVoteProgressContext {
         current_period: value.current_period,
+        current_round: value.current_round,
         max_future_period_delta: value.max_future_period_delta,
         two_t_plus_one_threshold: value
             .has_two_t_plus_one_threshold
@@ -153,14 +156,28 @@ pub(crate) fn add_outcome_to_domain(
 
 pub(crate) fn execution_plan_to_ffi(
     plan: PbftVoteProgressPlan,
-    fact: PbftVoteProgressFact,
-    context: FfiPbftVoteProgressContext,
+    _fact: PbftVoteProgressFact,
+    _context: FfiPbftVoteProgressContext,
 ) -> FfiPbftVoteProgressExecutionPlan {
     let slashing = plan.intents.iter().find_map(|intent| match intent {
         PbftVoteProgressIntent::ReportSlashing {
             incoming_vote_hash,
             conflicting_vote_hash,
         } => Some((*incoming_vote_hash, *conflicting_vote_hash)),
+        _ => None,
+    });
+    let mark_vote_known = plan.intents.iter().find_map(|intent| match intent {
+        PbftVoteProgressIntent::MarkKnown { vote_hash } => Some(*vote_hash),
+        _ => None,
+    });
+    let proposed_block_sidecar = plan.intents.iter().find_map(|intent| match intent {
+        PbftVoteProgressIntent::RequestProposedBlockSidecar { block_hash, period } => {
+            Some((*block_hash, *period))
+        }
+        _ => None,
+    });
+    let gossip_vote = plan.intents.iter().find_map(|intent| match intent {
+        PbftVoteProgressIntent::GossipVote { vote_hash } => Some(*vote_hash),
         _ => None,
     });
     let extra_reward_vote = plan.intents.iter().find_map(|intent| match intent {
@@ -171,18 +188,17 @@ pub(crate) fn execution_plan_to_ffi(
         PbftVoteProgressIntent::DrivePbftProgress { period, round } => Some((*period, *round)),
         _ => None,
     });
-
-    let threshold = plan.threshold_decision;
-    let two_t_plus_one_kind = threshold.and_then(|decision| decision.two_t_plus_one_kind);
-    let persist_two_t_plus_one_votes = threshold.is_some_and(|decision| {
-        decision
-            .two_t_plus_one_insert_outcome
-            .is_some_and(|outcome| outcome.round_found && outcome.inserted)
-            && decision.two_t_plus_one_kind.is_some()
-            && fact.vote_type != PbftVoteType::Cert
-            && fact.identity.period == context.current_period
-            && fact.identity.round == context.current_round
+    let two_t_plus_one = plan.intents.iter().find_map(|intent| match intent {
+        PbftVoteProgressIntent::PersistTwoTPlusOneVotes {
+            kind,
+            period,
+            round,
+            step,
+            block_hash,
+        } => Some((*kind, *period, *round, *step, *block_hash)),
+        _ => None,
     });
+    let threshold = plan.threshold_decision;
 
     FfiPbftVoteProgressExecutionPlan {
         status: plan.status.as_u8(),
@@ -191,6 +207,18 @@ pub(crate) fn execution_plan_to_ffi(
             plan.status,
             PbftVoteProgressStatus::Accepted | PbftVoteProgressStatus::AcceptedWithProgress
         ),
+        mark_vote_known: mark_vote_known.is_some(),
+        mark_vote_known_hash: mark_vote_known.unwrap_or_default().into(),
+        request_proposed_block_sidecar: proposed_block_sidecar.is_some(),
+        proposed_block_sidecar_hash: proposed_block_sidecar
+            .map(|(block_hash, _)| block_hash)
+            .unwrap_or_default()
+            .into(),
+        proposed_block_sidecar_period: proposed_block_sidecar
+            .map(|(_, period)| period)
+            .unwrap_or_default(),
+        gossip_vote: gossip_vote.is_some(),
+        gossip_vote_hash: gossip_vote.unwrap_or_default().into(),
         report_slashing: slashing.is_some(),
         slashing_incoming_vote_hash: slashing
             .map(|(incoming, _)| incoming)
@@ -207,12 +235,23 @@ pub(crate) fn execution_plan_to_ffi(
         drive_pbft_progress: drive_progress.is_some(),
         progress_period: drive_progress.map(|(period, _)| period).unwrap_or_default(),
         progress_round: drive_progress.map(|(_, round)| round).unwrap_or_default(),
-        persist_two_t_plus_one_votes,
-        two_t_plus_one_kind: two_t_plus_one_kind.map(Into::into).unwrap_or_default(),
-        two_t_plus_one_period: fact.identity.period,
-        two_t_plus_one_round: fact.identity.round,
-        two_t_plus_one_step: fact.identity.step,
-        two_t_plus_one_block_hash: fact.identity.block_hash.into(),
+        persist_two_t_plus_one_votes: two_t_plus_one.is_some(),
+        two_t_plus_one_kind: two_t_plus_one
+            .map(|(kind, _, _, _, _)| kind.into())
+            .unwrap_or_default(),
+        two_t_plus_one_period: two_t_plus_one
+            .map(|(_, period, _, _, _)| period)
+            .unwrap_or_default(),
+        two_t_plus_one_round: two_t_plus_one
+            .map(|(_, _, round, _, _)| round)
+            .unwrap_or_default(),
+        two_t_plus_one_step: two_t_plus_one
+            .map(|(_, _, _, step, _)| step)
+            .unwrap_or_default(),
+        two_t_plus_one_block_hash: two_t_plus_one
+            .map(|(_, _, _, _, block_hash)| block_hash)
+            .unwrap_or_default()
+            .into(),
     }
 }
 
@@ -317,6 +356,9 @@ mod tests {
 
         assert_eq!(plan.status, 9);
         assert!(!plan.accepted);
+        assert!(plan.mark_vote_known);
+        assert_eq!(plan.mark_vote_known_hash, [1; 32]);
+        assert!(!plan.gossip_vote);
         assert!(plan.report_slashing);
         assert_eq!(plan.slashing_conflicting_vote_hash, [9; 32]);
         assert!(!plan.persist_extra_reward_vote);
@@ -342,6 +384,9 @@ mod tests {
 
         assert_eq!(plan.status, 2);
         assert!(plan.accepted);
+        assert!(plan.mark_vote_known);
+        assert!(plan.gossip_vote);
+        assert_eq!(plan.gossip_vote_hash, [1; 32]);
         assert!(plan.drive_pbft_progress);
         assert!(plan.network_t_plus_one_step_updated);
         assert!(plan.persist_two_t_plus_one_votes);
@@ -375,7 +420,27 @@ mod tests {
         let plan = pbft_vote_progress_plan_after_add(stale_fact, ctx, accepted).unwrap();
 
         assert!(plan.accepted);
+        assert!(plan.gossip_vote);
         assert!(plan.persist_extra_reward_vote);
         assert_eq!(plan.extra_reward_vote_hash, [1; 32]);
+    }
+
+    #[test]
+    fn bridge_precheck_flattens_missing_proposed_block_sidecar_request() {
+        let mut fact = fact(1);
+        fact.vote.vote_type = 1;
+        fact.carries_proposed_block = false;
+        let mut context = context();
+        context.require_proposed_block_sidecar = true;
+
+        let domain_fact = fact_to_domain(fact).unwrap();
+        let plan = plan_pbft_vote_progress(domain_fact, context_to_domain(&context), None);
+        let ffi = execution_plan_to_ffi(plan, domain_fact, context);
+
+        assert!(!ffi.accepted);
+        assert!(!ffi.mark_vote_known);
+        assert!(ffi.request_proposed_block_sidecar);
+        assert_eq!(ffi.proposed_block_sidecar_hash, [2; 32]);
+        assert_eq!(ffi.proposed_block_sidecar_period, 10);
     }
 }

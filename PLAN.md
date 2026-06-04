@@ -456,8 +456,9 @@ The current Rust starting point is intentionally small:
   transaction lookup and non-finalized recovery payload loading, Rust-planned finalized transaction filter/verification
   helpers, Rust-planned transaction verification and validated-insert admission, shim-owned live non-finalized/pool/count
   read helpers, a canonical PBFT vote event fact boundary, a Rust-owned validation-backed PBFT vote admission runtime
-  that composes canonical validation, event-fact derivation, verified-vote mutation, threshold planning, and retained
-  storage/slashing vote payload sidecars, a
+  that composes canonical validation, event-fact derivation, verified-vote mutation, threshold planning, retained
+  storage/slashing vote payload sidecars, and typed executor intents for peer-known marking, proposed-block sidecar
+  routing, gossip, and PBFT progress, a
   side-effect-free PBFT vote-progress protocol planner plus a Rust-owned PBFT vote pipeline session that stages
   verified-vote insertion reports into typed
   known/admit/slashing/gossip/progress intents and exposes operation-specific CXX bridge surfaces for Rust-mode
@@ -513,8 +514,9 @@ The current Rust starting point is intentionally small:
    Rust-mode `VoteManager::addVerifiedVote` through a validation-backed Rust admission runtime: C++ supplies
    FinalChain/key facts, Rust validates the canonical PBFT vote RLP, carries the validation result and calculated
    weight into compact progress facts, mutates the single Rust-owned `VerifiedVotes` runtime, retains weighted storage
-   payloads and unweighted slashing evidence payloads, and returns one terminal executor report. Packet ingress,
-   peer-known marking, gossip, and proposed-block sidecar routing remain deferred to future vote-pipeline slices.
+   payloads and unweighted slashing evidence payloads, and returns one terminal executor report with Rust-planned
+   peer-known, proposed-block sidecar, gossip, storage, slashing, threshold, and PBFT-progress intents. Packet ingress
+   still executes peer/network effects outside consensus until the network pipeline boundary moves to Rust.
    Replay protection and PBFT `2t+1` threshold caching now live in the same Rust `VerifiedVotes`/admission runtime that
    owns verified-vote mutation. PBFT vote validation now also has Rust planner surfaces for compatibility/testing:
    C++ supplies DPoS/key facts, while Rust owns canonical vote-byte inspection, signature/VRF facts, Rust-computed

@@ -115,6 +115,11 @@ impl BridgeVerifiedVotes {
     }
 
     /// Checks unique-voter acceptance for `vote`.
+    ///
+    /// Compatibility/test helper only. Production Rust-mode vote-manager
+    /// mutation should enter through `verified_votes_admit_validated_vote` so
+    /// canonical validation, replay, retained payloads, threshold updates, and
+    /// executor intents stay in one runtime transition.
     pub fn verified_votes_check_unique_voter(
         &self,
         vote: VerifiedVotePayload,
@@ -129,6 +134,9 @@ impl BridgeVerifiedVotes {
     }
 
     /// Inserts `vote` into unique-voter tracking.
+    ///
+    /// Compatibility/test helper only; see
+    /// `verified_votes_check_unique_voter` for production routing notes.
     pub fn verified_votes_insert_unique_voter(
         &mut self,
         vote: VerifiedVotePayload,
@@ -145,6 +153,9 @@ impl BridgeVerifiedVotes {
     }
 
     /// Inserts `vote` into voted-value aggregation.
+    ///
+    /// Compatibility/test helper only; production admission must retain the
+    /// canonical vote payload sidecars through `verified_votes_admit_validated_vote`.
     pub fn verified_votes_insert_voted_value(
         &mut self,
         vote: VerifiedVotePayload,
@@ -157,6 +168,9 @@ impl BridgeVerifiedVotes {
     ///
     /// This returns conflict details for slashing decisions when uniqueness
     /// fails and voted-value aggregation counters when insertion succeeds.
+    /// Compatibility/test helper only; production routing should not bypass the
+    /// canonical admission runtime because threshold bundles and slashing
+    /// evidence require retained payload records.
     pub fn verified_votes_insert_vote_atomic(
         &mut self,
         vote: VerifiedVotePayload,
@@ -178,6 +192,9 @@ impl BridgeVerifiedVotes {
     ///
     /// The caller provides `total_weight` for vote's voted-value bucket and
     /// `two_t_plus_one_threshold` for this vote type/period.
+    /// Compatibility/test helper only. Production admission applies threshold
+    /// decisions inside `verified_votes_admit_validated_vote` so bundle
+    /// persistence can use Rust-retained weighted payloads.
     pub fn verified_votes_apply_threshold_decision(
         &mut self,
         vote: VerifiedVotePayload,
@@ -548,15 +565,13 @@ fn runtime_outcome_to_ffi(
     } else {
         empty_storage_record()
     };
-    let two_t_plus_one_bundle = if let (Some(progress), Some(bundle)) =
-        (progress.as_ref(), outcome.two_t_plus_one_bundle)
-    {
+    let two_t_plus_one_bundle = if let Some(bundle) = outcome.two_t_plus_one_bundle {
         PbftTwoTPlusOneVoteBundle {
-            kind: progress.two_t_plus_one_kind,
-            period: progress.two_t_plus_one_period,
-            round: progress.two_t_plus_one_round,
-            step: progress.two_t_plus_one_step,
-            block_hash: progress.two_t_plus_one_block_hash,
+            kind: bundle.kind.into(),
+            period: bundle.period,
+            round: bundle.round,
+            step: bundle.step,
+            block_hash: bundle.block_hash.into(),
             votes_bundle_rlp: bundle.votes_bundle_rlp,
         }
     } else {
@@ -600,6 +615,34 @@ fn runtime_outcome_to_ffi(
             .map(|progress| progress.persist_two_t_plus_one_votes)
             .unwrap_or(false),
         two_t_plus_one_bundle,
+        mark_vote_known: progress
+            .as_ref()
+            .map(|progress| progress.mark_vote_known)
+            .unwrap_or(false),
+        mark_vote_known_hash: progress
+            .as_ref()
+            .map(|progress| progress.mark_vote_known_hash)
+            .unwrap_or_default(),
+        request_proposed_block_sidecar: progress
+            .as_ref()
+            .map(|progress| progress.request_proposed_block_sidecar)
+            .unwrap_or(false),
+        proposed_block_sidecar_hash: progress
+            .as_ref()
+            .map(|progress| progress.proposed_block_sidecar_hash)
+            .unwrap_or_default(),
+        proposed_block_sidecar_period: progress
+            .as_ref()
+            .map(|progress| progress.proposed_block_sidecar_period)
+            .unwrap_or_default(),
+        gossip_vote: progress
+            .as_ref()
+            .map(|progress| progress.gossip_vote)
+            .unwrap_or(false),
+        gossip_vote_hash: progress
+            .as_ref()
+            .map(|progress| progress.gossip_vote_hash)
+            .unwrap_or_default(),
         report_slashing: progress
             .as_ref()
             .map(|progress| progress.report_slashing)
@@ -840,6 +883,17 @@ impl From<VerifiedVote> for VerifiedVotePayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustaxa_consensus::pbft_vote_admission::{
+        PbftVoteAdmissionExecution, PbftVoteAdmissionPrecheck, PbftVoteAdmissionStatus,
+    };
+    use rustaxa_consensus::pbft_vote_event::PbftVoteEventFactStatus;
+    use rustaxa_consensus::pbft_vote_pipeline::{PbftVotePipelineStatus, PbftVotePipelineStep};
+    use rustaxa_consensus::pbft_vote_progress::{
+        PbftVoteIdentity, PbftVoteProgressFact, PbftVoteProgressIntent, PbftVoteProgressPlan,
+        PbftVoteProgressStatus,
+    };
+    use rustaxa_consensus::pbft_vote_runtime::PbftVoteRuntimeReplayOutcome;
+    use rustaxa_consensus::pbft_vote_validation::PbftVoteValidationStatus;
 
     fn hash(id: u64) -> [u8; 32] {
         H256::from_low_u64_be(id).into()
@@ -927,5 +981,123 @@ mod tests {
         assert_eq!(step_votes.entries[0].block_hash, hash(44));
         assert_eq!(step_votes.entries[0].total_weight, 5);
         assert_eq!(step_votes.entries[0].vote_hashes.len(), 2);
+    }
+
+    #[test]
+    fn runtime_result_flattens_vote_executor_intents() {
+        let vote_hash = H256::from(hash(77));
+        let block_hash = H256::from(hash(88));
+        let voter = H160::from(address(99));
+        let validation = PbftCanonicalVoteValidation {
+            status: PbftVoteValidationStatus::Valid,
+            error_code: "",
+            accepted: true,
+            rejected: false,
+            mark_validated_replay: true,
+            vote_hash,
+            signing_hash: H256::from(hash(78)),
+            block_hash,
+            period: 3,
+            round: 2,
+            step: 4,
+            vote_type: PbftVoteType::Next,
+            recovered_voter: voter,
+            recovered_public_key: [0; 64],
+            signature_valid: true,
+            vrf_valid: true,
+            has_sortition_threshold: true,
+            sortition_threshold: 5,
+            weight_calculated: true,
+            calculated_weight: 5,
+            vrf_output: [0; 64],
+        };
+        let progress_fact = PbftVoteProgressFact {
+            identity: PbftVoteIdentity {
+                vote_hash,
+                block_hash,
+                period: 3,
+                round: 2,
+                step: 4,
+                voter,
+            },
+            vote_type: PbftVoteType::Next,
+            weight: 5,
+            vote_already_known: false,
+            carries_proposed_block: true,
+            valid_stale_reward_vote: false,
+        };
+        let context = FfiPbftVoteProgressContext {
+            current_period: 3,
+            current_round: 2,
+            max_future_period_delta: 1,
+            has_two_t_plus_one_threshold: true,
+            two_t_plus_one_threshold: 5,
+            require_proposed_block_sidecar: false,
+            slashing_enabled: true,
+        };
+        let add_outcome = ConsensusAddVerifiedVoteOutcome {
+            inserted: true,
+            total_weight: 5,
+            votes_count: 1,
+            conflicting_vote_hash: None,
+            used_secondary_slot: false,
+            duplicate_vote_hash: false,
+            threshold_decision: None,
+        };
+        let progress_plan = PbftVoteProgressPlan {
+            status: PbftVoteProgressStatus::Accepted,
+            intents: vec![
+                PbftVoteProgressIntent::MarkKnown { vote_hash },
+                PbftVoteProgressIntent::GossipVote { vote_hash },
+                PbftVoteProgressIntent::DrivePbftProgress {
+                    period: 3,
+                    round: 2,
+                },
+            ],
+            add_vote_outcome: Some(add_outcome),
+            threshold_decision: None,
+            conflicting_vote_hash: None,
+        };
+        let outcome = PbftVoteRuntimeAdmissionOutcome {
+            precheck: PbftVoteAdmissionPrecheck {
+                admission_status: PbftVoteAdmissionStatus::AwaitingVerifiedVoteInsert,
+                validation: Some(validation.clone()),
+                event_status: PbftVoteEventFactStatus::Ready,
+                error_code: "",
+                progress_fact: Some(progress_fact),
+                pipeline_step: None,
+                complete: false,
+            },
+            replay: PbftVoteRuntimeReplayOutcome {
+                should_mark: true,
+                inserted: true,
+                already_present: false,
+            },
+            execution: Some(PbftVoteAdmissionExecution {
+                admission_status: PbftVoteAdmissionStatus::Complete,
+                pipeline_step: PbftVotePipelineStep {
+                    pipeline_status: PbftVotePipelineStatus::Complete,
+                    progress_plan,
+                    complete: true,
+                },
+                complete: true,
+            }),
+            add_outcome: Some(add_outcome),
+            storage_vote: None,
+            two_t_plus_one_bundle: None,
+            slashing_payloads: None,
+        };
+
+        let result = runtime_outcome_to_ffi(validation, outcome, context);
+
+        assert!(result.accepted);
+        assert!(result.mark_vote_known);
+        assert_eq!(result.mark_vote_known_hash, hash(77));
+        assert!(result.gossip_vote);
+        assert_eq!(result.gossip_vote_hash, hash(77));
+        assert!(!result.request_proposed_block_sidecar);
+        assert!(result.drive_pbft_progress);
+        assert_eq!(result.progress_period, 3);
+        assert_eq!(result.progress_round, 2);
     }
 }

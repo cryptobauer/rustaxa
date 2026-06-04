@@ -214,6 +214,7 @@ mod tests {
     const fn context() -> PbftVoteProgressContext {
         PbftVoteProgressContext {
             current_period: 10,
+            current_round: 1,
             max_future_period_delta: 1,
             two_t_plus_one_threshold: Some(2),
             require_proposed_block_sidecar: false,

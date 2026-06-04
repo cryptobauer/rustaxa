@@ -311,6 +311,24 @@ void requireRuntimeAdmissionVoteMatches(const rustaxa::VerifiedVotePayload& fact
   }
 }
 
+void requireRuntimeVoteTransitionIntentsMatch(const rustaxa::PbftVoteAdmissionRuntimeResult& result,
+                                              const std::shared_ptr<PbftVote>& vote) {
+  if (!vote) {
+    throw std::runtime_error("VoteManager cannot validate PBFT vote transition intents without a live sidecar");
+  }
+
+  const auto vote_hash = toBridgeHash(vote->getHash());
+  if (result.mark_vote_known && result.mark_vote_known_hash != vote_hash) {
+    throw std::runtime_error("VoteManager Rust PBFT vote transition returned mismatched peer-known intent");
+  }
+  if (result.gossip_vote && result.gossip_vote_hash != vote_hash) {
+    throw std::runtime_error("VoteManager Rust PBFT vote transition returned mismatched gossip intent");
+  }
+  if (result.request_proposed_block_sidecar) {
+    throw std::runtime_error("VoteManager Rust PBFT vote transition requested unsupported proposed-block sidecar fetch");
+  }
+}
+
 rustaxa::PbftVoteProgressContext makeVoteProgressContext(PbftPeriod current_period, PbftRound current_round,
                                                          std::optional<uint64_t> two_t_plus_one) {
   rustaxa::PbftVoteProgressContext context{};
@@ -526,6 +544,10 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
   const auto runtime_result =
       verified_votes_.admitValidatedVote(toBridgeByteSlice(canonical_vote_rlp), external_facts,
                                          makeVoteEventFactFlags(is_valid_potential_reward_vote), progress_context);
+  requireRuntimeVoteTransitionIntentsMatch(runtime_result, vote);
+  // TODO(rustaxa): execute peer-known and gossip intents directly from this Rust transition once vote ingress carries
+  // peer/network executor handles into the consensus pipeline. Network packet handlers and PBFT manager callers still
+  // execute those effects after this Rust-owned transition accepts the vote.
   if (!runtime_result.has_validation || !runtime_result.validation.accepted ||
       runtime_result.validation.status != kPbftVoteValidationStatusValid) {
     LOG(log_er_) << "VoteManager Rust PBFT vote admission rejected vote " << vote->getHash()

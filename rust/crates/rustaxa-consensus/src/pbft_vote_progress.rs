@@ -75,6 +75,8 @@ pub struct PbftVoteProgressFact {
 pub struct PbftVoteProgressContext {
     /// Current local PBFT period.
     pub current_period: u64,
+    /// Current local PBFT round.
+    pub current_round: u64,
     /// Maximum accepted future period skew for this planning pass.
     pub max_future_period_delta: u64,
     /// Optional 2t+1 threshold. `None` means threshold effects are not planned.
@@ -175,6 +177,19 @@ pub enum PbftVoteProgressIntent {
         /// Vote hash to gossip.
         vote_hash: H256,
     },
+    /// Persist the current-round `2t+1` vote bundle selected by threshold progress.
+    PersistTwoTPlusOneVotes {
+        /// Threshold family that reached `2t+1`.
+        kind: crate::verified_votes::TwoTPlusOneVotedBlockType,
+        /// PBFT period for the persisted bundle.
+        period: u64,
+        /// PBFT round for the persisted bundle.
+        round: u64,
+        /// PBFT step of the vote that triggered persistence.
+        step: u64,
+        /// Block hash selected by the threshold family.
+        block_hash: H256,
+    },
     /// Drive PBFT progress checks after t+1 or 2t+1 threshold progress.
     DrivePbftProgress {
         /// PBFT period whose vote state changed.
@@ -231,6 +246,7 @@ impl PbftVoteProgressPlan {
                 PbftVoteProgressIntent::PersistExtraRewardVote { .. } => ConsensusEffect::Admit,
                 PbftVoteProgressIntent::ReportSlashing { .. } => ConsensusEffect::ReportMalicious,
                 PbftVoteProgressIntent::GossipVote { .. } => ConsensusEffect::Gossip,
+                PbftVoteProgressIntent::PersistTwoTPlusOneVotes { .. } => ConsensusEffect::Admit,
                 PbftVoteProgressIntent::DrivePbftProgress { .. } => {
                     ConsensusEffect::DrivePbftProgress
                 }
@@ -414,6 +430,23 @@ fn plan_from_add_vote_outcome(
             vote_hash: fact.identity.vote_hash,
         });
     }
+    if let Some(decision) = add_vote_outcome.threshold_decision
+        && let Some(kind) = decision.two_t_plus_one_kind
+        && decision
+            .two_t_plus_one_insert_outcome
+            .is_some_and(|outcome| outcome.round_found && outcome.inserted)
+        && fact.vote_type != PbftVoteType::Cert
+        && fact.identity.period == context.current_period
+        && fact.identity.round == context.current_round
+    {
+        intents.push(PbftVoteProgressIntent::PersistTwoTPlusOneVotes {
+            kind,
+            period: fact.identity.period,
+            round: fact.identity.round,
+            step: fact.identity.step,
+            block_hash: fact.identity.block_hash,
+        });
+    }
     if drive_progress {
         intents.push(PbftVoteProgressIntent::DrivePbftProgress {
             period: fact.identity.period,
@@ -484,6 +517,7 @@ mod tests {
     const fn context() -> PbftVoteProgressContext {
         PbftVoteProgressContext {
             current_period: 10,
+            current_round: 1,
             max_future_period_delta: 1,
             two_t_plus_one_threshold: Some(2),
             require_proposed_block_sidecar: false,
