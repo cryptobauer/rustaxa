@@ -455,8 +455,9 @@ The current Rust starting point is intentionally small:
   DAG transaction persistence planning plus Rust-storage batch commits, Rust-storage-backed `TransactionManager`
   transaction lookup and non-finalized recovery payload loading, Rust-planned finalized transaction filter/verification
   helpers, Rust-planned transaction verification and validated-insert admission, shim-owned live non-finalized/pool/count
-  read helpers, a canonical PBFT vote event fact boundary, a Rust-owned validation-backed PBFT vote admission session
-  that composes canonical validation, event-fact derivation, and the vote pipeline precheck/completion boundary, a
+  read helpers, a canonical PBFT vote event fact boundary, a Rust-owned validation-backed PBFT vote admission runtime
+  that composes canonical validation, event-fact derivation, verified-vote mutation, threshold planning, and retained
+  storage/slashing vote payload sidecars, a
   side-effect-free PBFT vote-progress protocol planner plus a Rust-owned PBFT vote pipeline session that stages
   verified-vote insertion reports into typed
   known/admit/slashing/gossip/progress intents and exposes operation-specific CXX bridge surfaces for Rust-mode
@@ -470,8 +471,9 @@ The current Rust starting point is intentionally small:
   flooring, and percentile bid selection.
   The Rust-enabled `SlashingManager` overlay now routes deterministic double-voting proof planning, duplicate-proof
   cache decisions, unweighted vote evidence payload normalization, submitter selection, and slashing contract calldata
-  construction through Rust while C++ keeps live vote objects, account reads, gas bidding, transaction signing, and
-  transaction-pool insertion.
+  construction through Rust; the PBFT vote admission route now passes Rust-normalized unweighted payload records, while
+  C++ keeps account reads, gas bidding, transaction signing, transaction-pool insertion, and the live-vote overload for
+  remaining compatibility callers.
 - `rustaxa-types` contains shared Rust domain and codec types, including the legacy transaction envelope used by
   Rust-enabled transaction-manager shims to decode canonical RLP bytes, hash transactions, recover/validate senders,
   compute intrinsic gas coverage, and surface deterministic nonce/gas/value/cost facts without calling C++
@@ -508,12 +510,12 @@ The current Rust starting point is intentionally small:
    transaction, pillar vote, and PBFT sync work should accept canonical bytes or compact facts, optionally create
    enrichment records, and return route/admit/drop/gossip/request-sync/peer-action intents rather than depending on
    network handler objects or eager C++ materialized objects. The first PBFT vote-progress runtime now routes
-   Rust-mode `VoteManager::addVerifiedVote` through a validation-backed Rust admission session: C++ supplies
+   Rust-mode `VoteManager::addVerifiedVote` through a validation-backed Rust admission runtime: C++ supplies
    FinalChain/key facts, Rust validates the canonical PBFT vote RLP, carries the validation result and calculated
-   weight into compact progress facts, owns the underlying pipeline session, returns a precheck plan with a transition
-   key, accepts only a matching authoritative Rust-backed `VerifiedVotes` add/threshold mutation report, and then
-   returns the terminal execution plan. Packet ingress, peer-known marking, gossip, and proposed-block
-   sidecar routing remain deferred to the future vote pipeline. PBFT vote validation now also has a Rust planner and
+   weight into compact progress facts, mutates the single Rust-owned `VerifiedVotes` runtime, retains weighted storage
+   payloads and unweighted slashing evidence payloads, and returns one terminal executor report. Packet ingress,
+   peer-known marking, gossip, proposed-block sidecar routing, and replay-cache unification remain deferred to future
+   vote-pipeline slices. PBFT vote validation now also has a Rust planner and
    bridge runtime: C++ supplies DPoS/key facts, while Rust owns canonical vote-byte inspection, signature/VRF facts,
    Rust-computed received-vote weight, final accept/reject statuses, replay-marker timing and storage,
    local proposer-sortition screening, and the sortition-threshold formula. C++ still performs the temporary
@@ -668,12 +670,12 @@ The current Rust starting point is intentionally small:
    state methods through the Rust-backed `VerifiedVotes` facade instead of `VoteManagerOld`: insertion/uniqueness,
    vote presence and snapshots, proposal-vote selection, cleanup, 2t+1 block/bundle lookups, next-round detection,
    current round persistence of non-cert bundles, and network t+1 step reads use Rust-owned metadata. `addVerifiedVote`
-   now enters a validation-backed Rust PBFT vote admission session: the shim collects only FinalChain/key-manager
+   now enters a validation-backed Rust PBFT vote admission runtime: the shim collects only FinalChain/key-manager
    facts, Rust owns canonical validation, replay-marker intent, calculated weight, event/progress fact construction,
-   the underlying pipeline session, insertion gating, transition-key binding to the authoritative Rust mutation report,
-   duplicate/conflict classification, and slashing/reward/progress/current-round 2t+1 persistence decisions. C++ keeps
+   insertion gating, authoritative verified-vote mutation and threshold decisions, duplicate/conflict classification,
+   retained slashing payload pairs, and storage-ready extra-reward/current-round 2t+1 payloads. C++ keeps
    live `PbftVote` sidecars, temporary weight hydration for legacy sidecar compatibility, slashing transaction
-   construction/submission, logging, and deferred network effects. PBFT
+   construction/submission from Rust-normalized payloads, logging, and deferred network effects. PBFT
    vote persistence for own verified votes, extra reward votes, finalized reward-vote resets, and latest-round 2t+1
    bundles now routes through VoteManager-specific `rustaxa-storage` bridge operations and Rust-owned vote payload
    builders: Rust constructs the weighted storage RLP records and raw vote-bundle RLP from canonical signed vote bytes

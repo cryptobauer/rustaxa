@@ -631,6 +631,25 @@ impl VerifiedVotes {
         })
     }
 
+    /// Returns the aggregate voted-value bucket for one exact vote target.
+    ///
+    /// This is a read-only helper for runtime bridges that need the same
+    /// weight and vote-hash set as legacy C++ `VotesWithWeight` after Rust has
+    /// applied one insertion. It clones only the selected bucket and does not
+    /// expose mutable access to internal maps.
+    pub fn votes_with_weight(
+        &self,
+        period: u64,
+        round: u64,
+        step: u64,
+        block_hash: H256,
+    ) -> Option<VotesWithWeight> {
+        self.get_round(period, round)
+            .and_then(|round_votes| round_votes.step_votes.get(&step))
+            .and_then(|step_votes| step_votes.votes.get(&block_hash))
+            .cloned()
+    }
+
     /// Sets network t+1 step marker for an existing round.
     ///
     /// Returns `true` when round existed and marker was updated.

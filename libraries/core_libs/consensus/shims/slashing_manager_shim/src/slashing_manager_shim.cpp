@@ -63,6 +63,16 @@ rustaxa::PbftVoteStorageRecord make_slashing_vote_payload(const std::shared_ptr<
   return record;
 }
 
+rustaxa::PbftVoteStorageRecord clone_vote_record(const rustaxa::PbftVoteStorageRecord& record) {
+  rustaxa::PbftVoteStorageRecord out;
+  out.hash = record.hash;
+  out.vote_rlp.reserve(record.vote_rlp.size());
+  for (const auto byte : record.vote_rlp) {
+    out.vote_rlp.push_back(byte);
+  }
+  return out;
+}
+
 rust::Vec<rustaxa::SlashingSubmitterFact> submitter_facts(const FullNodeConfig& config,
                                                           const std::shared_ptr<final_chain::FinalChain>& final_chain) {
   rust::Vec<rustaxa::SlashingSubmitterFact> facts;
@@ -115,6 +125,39 @@ bool SlashingManager::submitDoubleVotingProof(const std::shared_ptr<PbftVote>& v
   input.vote_b_rlp = std::move(vote_b_payload.vote_rlp);
   input.submitters = submitter_facts(kConfig, final_chain_);
 
+  return submitDoubleVotingProofInput(std::move(input));
+}
+
+bool SlashingManager::submitDoubleVotingProof(const rustaxa::PbftVoteStorageRecord& vote_a,
+                                              const rustaxa::PbftVoteStorageRecord& vote_b, PbftPeriod period,
+                                              PbftRound round, PbftStep step) {
+  if (vote_a.vote_rlp.empty() || vote_b.vote_rlp.empty()) {
+    return false;
+  }
+  if (!final_chain_ || !trx_manager_ || !gas_pricer_) {
+    throw std::logic_error("SlashingManager requires FinalChain, TransactionManager, and GasPricer");
+  }
+
+  auto vote_a_payload = clone_vote_record(vote_a);
+  auto vote_b_payload = clone_vote_record(vote_b);
+
+  rustaxa::DoubleVotingProofInput input;
+  input.vote_a_hash = vote_a_payload.hash;
+  input.vote_b_hash = vote_b_payload.hash;
+  input.vote_a_period = period;
+  input.vote_b_period = period;
+  input.vote_a_round = round;
+  input.vote_b_round = round;
+  input.vote_a_step = step;
+  input.vote_b_step = step;
+  input.vote_a_rlp = std::move(vote_a_payload.vote_rlp);
+  input.vote_b_rlp = std::move(vote_b_payload.vote_rlp);
+  input.submitters = submitter_facts(kConfig, final_chain_);
+
+  return submitDoubleVotingProofInput(std::move(input));
+}
+
+bool SlashingManager::submitDoubleVotingProofInput(rustaxa::DoubleVotingProofInput input) {
   const auto plan = planner_->slashing_plan_double_voting_proof(std::move(input));
   if (!plan.should_submit) {
     return false;

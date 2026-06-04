@@ -187,6 +187,30 @@ rustaxa::PbftTwoTPlusOneVoteBundle makeTwoTPlusOneVoteBundle(TwoTPlusOneVotedBlo
   return bundle;
 }
 
+rustaxa::PbftVoteStorageRecord cloneVoteStorageRecord(const rustaxa::PbftVoteStorageRecord& record) {
+  rustaxa::PbftVoteStorageRecord out;
+  out.hash = record.hash;
+  out.vote_rlp.reserve(record.vote_rlp.size());
+  for (const auto byte : record.vote_rlp) {
+    out.vote_rlp.push_back(byte);
+  }
+  return out;
+}
+
+rustaxa::PbftTwoTPlusOneVoteBundle cloneTwoTPlusOneVoteBundle(const rustaxa::PbftTwoTPlusOneVoteBundle& bundle) {
+  rustaxa::PbftTwoTPlusOneVoteBundle out;
+  out.kind = bundle.kind;
+  out.period = bundle.period;
+  out.round = bundle.round;
+  out.step = bundle.step;
+  out.block_hash = bundle.block_hash;
+  out.votes_bundle_rlp.reserve(bundle.votes_bundle_rlp.size());
+  for (const auto byte : bundle.votes_bundle_rlp) {
+    out.votes_bundle_rlp.push_back(byte);
+  }
+  return out;
+}
+
 rustaxa::PbftRewardVoteRoundCandidate makeRewardVoteRoundCandidate(PbftRound round,
                                                                    const RoundVerifiedVotes* round_votes,
                                                                    const blk_hash_t& reward_block_hash) {
@@ -244,6 +268,24 @@ void persistVoteProgressToRustStorage(DbStorage& db, const std::shared_ptr<PbftV
   requireApplied(db.rustStorage().persist_pbft_vote_progress(write), "vote progress");
 }
 
+void persistVoteProgressPayloadsToRustStorage(DbStorage& db, bool has_extra_reward_vote,
+                                              const rustaxa::PbftVoteStorageRecord& extra_reward_vote,
+                                              bool has_two_t_plus_one_bundle,
+                                              const rustaxa::PbftTwoTPlusOneVoteBundle& two_t_plus_one_bundle) {
+  rustaxa::PbftVoteProgressPersistenceWrite write{};
+  if (has_extra_reward_vote) {
+    write.has_extra_reward_vote = true;
+    write.extra_reward_vote = cloneVoteStorageRecord(extra_reward_vote);
+  }
+
+  if (has_two_t_plus_one_bundle) {
+    write.has_two_t_plus_one_bundle = true;
+    write.two_t_plus_one_bundle = cloneTwoTPlusOneVoteBundle(two_t_plus_one_bundle);
+  }
+
+  requireApplied(db.rustStorage().persist_pbft_vote_progress(write), "vote progress");
+}
+
 rustaxa::PbftVoteEventFactFlags makeVoteEventFactFlags(bool valid_stale_reward_vote) {
   rustaxa::PbftVoteEventFactFlags flags{};
   flags.vote_already_known = false;
@@ -252,17 +294,16 @@ rustaxa::PbftVoteEventFactFlags makeVoteEventFactFlags(bool valid_stale_reward_v
   return flags;
 }
 
-void requireVoteProgressFactMatches(const rustaxa::PbftVoteProgressFact& fact, const std::shared_ptr<PbftVote>& vote) {
+void requireRuntimeAdmissionVoteMatches(const rustaxa::VerifiedVotePayload& fact, const std::shared_ptr<PbftVote>& vote) {
   if (!vote || !vote->getWeight().has_value()) {
-    throw std::runtime_error("VoteManager cannot derive PBFT vote progress facts without a weighted vote sidecar");
+    throw std::runtime_error("VoteManager cannot attach PBFT vote admission result without a weighted vote sidecar");
   }
 
-  if (fact.vote.vote_hash != toBridgeHash(vote->getHash()) || fact.vote.block_hash != toBridgeHash(vote->getBlockHash()) ||
-      fact.vote.voter != toBridgeAddress(vote->getVoterAddr()) ||
-      fact.vote.period != vote->getPeriod() || fact.vote.round != vote->getRound() ||
-      fact.vote.step != vote->getStep() || fact.vote.vote_type != static_cast<uint8_t>(vote->getType()) ||
-      fact.vote.weight != *vote->getWeight()) {
-    throw std::runtime_error("VoteManager Rust PBFT vote admission fact mismatched live vote sidecar");
+  if (fact.vote_hash != toBridgeHash(vote->getHash()) || fact.block_hash != toBridgeHash(vote->getBlockHash()) ||
+      fact.voter != toBridgeAddress(vote->getVoterAddr()) || fact.period != vote->getPeriod() ||
+      fact.round != vote->getRound() || fact.step != vote->getStep() ||
+      fact.vote_type != static_cast<uint8_t>(vote->getType()) || fact.weight != *vote->getWeight()) {
+    throw std::runtime_error("VoteManager Rust PBFT vote admission result mismatched live vote sidecar");
   }
 }
 
@@ -479,63 +520,54 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
     return false;
   }
 
-  auto admission_session = rustaxa::create_pbft_vote_admission_session_from_validation_facts(
-      toBridgeByteSlice(canonical_vote_rlp), external_facts, makeVoteEventFactFlags(is_valid_potential_reward_vote),
-      progress_context);
-  const auto precheck_plan = admission_session->pbft_vote_admission_precheck();
-  if (precheck_plan.has_validation && precheck_plan.validation.mark_validated_replay) {
-    vote_validation_runtime_->pbft_vote_replay_insert(precheck_plan.validation.vote_hash);
+  const auto runtime_result =
+      verified_votes_.admitValidatedVote(toBridgeByteSlice(canonical_vote_rlp), external_facts,
+                                         makeVoteEventFactFlags(is_valid_potential_reward_vote), progress_context);
+  if (runtime_result.has_validation && runtime_result.replay_inserted) {
+    vote_validation_runtime_->pbft_vote_replay_insert(runtime_result.validation.vote_hash);
   }
-  if (!precheck_plan.has_validation || !precheck_plan.validation.accepted ||
-      precheck_plan.validation.status != kPbftVoteValidationStatusValid) {
+  if (!runtime_result.has_validation || !runtime_result.validation.accepted ||
+      runtime_result.validation.status != kPbftVoteValidationStatusValid) {
     LOG(log_er_) << "VoteManager Rust PBFT vote admission rejected vote " << vote->getHash()
                  << " during validation, status: "
-                 << static_cast<uint32_t>(precheck_plan.has_validation ? precheck_plan.validation.status : 0)
-                 << ", error: " << static_cast<std::string>(precheck_plan.error_code);
+                 << static_cast<uint32_t>(runtime_result.has_validation ? runtime_result.validation.status : 0)
+                 << ", error: " << static_cast<std::string>(runtime_result.error_code);
     return false;
   }
-  if (!precheck_plan.has_progress_fact) {
+  if (!runtime_result.has_vote) {
     LOG(log_er_) << "VoteManager Rust PBFT vote admission rejected vote " << vote->getHash()
-                 << ", status: " << static_cast<uint32_t>(precheck_plan.status)
-                 << ", error: " << static_cast<std::string>(precheck_plan.error_code);
+                 << ", status: " << static_cast<uint32_t>(runtime_result.status)
+                 << ", error: " << static_cast<std::string>(runtime_result.error_code);
     return false;
   }
-  if (!precheck_plan.validation.has_sortition_threshold || !precheck_plan.validation.weight_calculated) {
+  if (!runtime_result.validation.has_sortition_threshold || !runtime_result.validation.weight_calculated) {
     throw std::runtime_error("VoteManager Rust PBFT vote admission accepted validation without weight facts");
   }
-  // TODO(rustaxa): remove this legacy sidecar hydration once VerifiedVotes accepts Rust-owned vote payloads directly.
+  // TODO(rustaxa): remove this legacy sidecar hydration once VoteManager no longer keeps live C++ PbftVote sidecars.
   const auto cpp_weight =
       vote->calculateWeight(external_facts.voter_dpos_vote_count, external_facts.total_dpos_vote_count,
-                            precheck_plan.validation.sortition_threshold);
-  if (cpp_weight != precheck_plan.validation.calculated_weight) {
+                            runtime_result.validation.sortition_threshold);
+  if (cpp_weight != runtime_result.validation.calculated_weight) {
     throw std::runtime_error("VoteManager Rust PBFT vote admission weight mismatched legacy sidecar hydration");
   }
-  requireVoteProgressFactMatches(precheck_plan.progress_fact, vote);
-  if (!precheck_plan.should_insert_verified_vote) {
-    return false;
-  }
-  const auto pipeline_two_t_plus_one =
-      precheck_plan.has_two_t_plus_one_threshold
-          ? std::optional<uint64_t>{precheck_plan.two_t_plus_one_threshold}
-          : std::nullopt;
+  requireRuntimeAdmissionVoteMatches(runtime_result.vote, vote);
 
-  const auto add_outcome = verified_votes_.addVerifiedVoteWithThreshold(vote, pipeline_two_t_plus_one);
-  const auto execution_plan = admission_session->pbft_vote_admission_complete(add_outcome.report);
-
-  if (execution_plan.report_slashing) {
+  if (runtime_result.report_slashing) {
     LOG(log_wr_) << "Non unique vote " << vote->getHash().abridged() << " (race condition)";
-    if (!add_outcome.conflicting_vote) {
-      throw std::runtime_error("VoteManager Rust vote-progress planner requested slashing without conflict sidecar");
-    }
-    slashing_manager_->submitDoubleVotingProof(vote, *add_outcome.conflicting_vote);
+    slashing_manager_->submitDoubleVotingProof(runtime_result.slashing_incoming_vote,
+                                               runtime_result.slashing_conflicting_vote, vote->getPeriod(),
+                                               vote->getRound(), vote->getStep());
     return false;
   }
 
-  if (!execution_plan.accepted) {
+  if (!runtime_result.accepted) {
     return false;
   }
+  if (!runtime_result.has_storage_vote) {
+    throw std::runtime_error("VoteManager Rust PBFT vote admission accepted without a storage payload");
+  }
 
-  const auto votes_with_weight = add_outcome.votes_with_weight;
+  const auto votes_with_weight = verified_votes_.attachRuntimeAcceptedVote(vote, runtime_result);
   if (!votes_with_weight) {
     throw std::runtime_error("VoteManager Rust vote-progress planner accepted vote without inserted vote sidecars");
   }
@@ -543,38 +575,34 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
   LOG(log_nf_) << "Added verified vote: " << hash;
   LOG(log_dg_) << "Added verified vote: " << *vote;
 
-  if (!pipeline_two_t_plus_one.has_value()) [[unlikely]] {
-    if (execution_plan.persist_extra_reward_vote) {
-      persistVoteProgressToRustStorage(*db_, vote, std::nullopt, {});
+  if (!two_t_plus_one.has_value()) [[unlikely]] {
+    if (runtime_result.persist_extra_reward_vote) {
+      persistVoteProgressPayloadsToRustStorage(*db_, true, runtime_result.extra_reward_vote, false,
+                                               runtime_result.two_t_plus_one_bundle);
       extra_reward_votes_.emplace_back(vote->getHash());
     }
     LOG(log_er_) << "Cannot set(or not) 2t+1 voted block as 2t+1 threshold is unavailable, vote " << vote->getHash();
     return true;
   }
 
-  if (execution_plan.network_t_plus_one_step_updated) {
+  if (runtime_result.network_t_plus_one_step_updated) {
     LOG(log_nf_) << "Set t+1 next voted block " << vote->getHash() << " for period " << vote->getPeriod() << ", round "
                  << vote->getRound() << ", step " << vote->getStep();
   }
 
-  if (!execution_plan.persist_two_t_plus_one_votes) {
-    if (execution_plan.persist_extra_reward_vote) {
-      persistVoteProgressToRustStorage(*db_, vote, std::nullopt, {});
+  if (!runtime_result.persist_two_t_plus_one_votes) {
+    if (runtime_result.persist_extra_reward_vote) {
+      persistVoteProgressPayloadsToRustStorage(*db_, true, runtime_result.extra_reward_vote, false,
+                                               runtime_result.two_t_plus_one_bundle);
       extra_reward_votes_.emplace_back(vote->getHash());
     }
     return true;
   }
 
-  std::vector<std::shared_ptr<PbftVote>> votes;
-  votes.reserve(votes_with_weight->votes.size());
-  for (const auto& tmp_vote : votes_with_weight->votes) {
-    votes.push_back(tmp_vote.second);
-  }
-
-  persistVoteProgressToRustStorage(
-      *db_, execution_plan.persist_extra_reward_vote ? vote : nullptr,
-      static_cast<TwoTPlusOneVotedBlockType>(execution_plan.two_t_plus_one_kind), votes);
-  if (execution_plan.persist_extra_reward_vote) {
+  persistVoteProgressPayloadsToRustStorage(*db_, runtime_result.persist_extra_reward_vote,
+                                           runtime_result.extra_reward_vote, true,
+                                           runtime_result.two_t_plus_one_bundle);
+  if (runtime_result.persist_extra_reward_vote) {
     extra_reward_votes_.emplace_back(vote->getHash());
   }
   return true;

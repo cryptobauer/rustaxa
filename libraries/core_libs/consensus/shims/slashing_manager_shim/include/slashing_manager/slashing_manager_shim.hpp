@@ -52,7 +52,25 @@ class SlashingManager {
    */
   bool submitDoubleVotingProof(const std::shared_ptr<PbftVote>& vote_a, const std::shared_ptr<PbftVote>& vote_b);
 
+  /**
+   * Attempts to submit a double-voting proof from Rust-normalized vote payloads.
+   *
+   * Inputs:
+   * - `vote_a`, `vote_b`: unweighted signed PBFT vote records produced by the
+   *   Rust admission runtime.
+   * - `period`, `round`, `step`: shared PBFT slot metadata for both votes.
+   *
+   * Output and error behavior match the live-vote overload. This overload is
+   * used by Rust-owned vote admission so slashing no longer needs a live C++
+   * sidecar for the conflicting vote.
+   */
+  bool submitDoubleVotingProof(const rustaxa::PbftVoteStorageRecord& vote_a,
+                               const rustaxa::PbftVoteStorageRecord& vote_b, PbftPeriod period, PbftRound round,
+                               PbftStep step);
+
  private:
+  bool submitDoubleVotingProofInput(rustaxa::DoubleVotingProofInput input);
+
   std::shared_ptr<final_chain::FinalChain> final_chain_;
   std::shared_ptr<TransactionManager> trx_manager_;
   std::shared_ptr<GasPricer> gas_pricer_;

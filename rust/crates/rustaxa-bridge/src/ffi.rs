@@ -38,8 +38,8 @@ use rustaxa_consensus::transaction_manager::{
     TransactionManagerSidecar, TransactionPackingPlanner,
 };
 use rustaxa_consensus::transaction_queue::{TransactionQueue, TransactionQueueEntry};
-use rustaxa_consensus::verified_votes::VerifiedVotes;
 use rustaxa_consensus::FinalChain;
+use rustaxa_consensus::PbftVoteAdmissionRuntime;
 use rustaxa_consensus::PillarVotes;
 use rustaxa_consensus::RewardsStatsRuntime;
 use rustaxa_storage::Storage;
@@ -101,7 +101,7 @@ pub struct BridgeSlashingProofPlanner(pub Mutex<SlashingProofPlanner>);
 
 pub struct BridgePeriodDataQueue(pub PeriodDataQueue);
 
-pub struct BridgeVerifiedVotes(pub VerifiedVotes);
+pub struct BridgeVerifiedVotes(pub PbftVoteAdmissionRuntime);
 
 /// Bridge-owned runtime for PBFT vote validation sidecars.
 ///
@@ -1227,6 +1227,41 @@ pub mod rustaxa_ffi {
         two_t_plus_one_step: u64,
         two_t_plus_one_block_hash: [u8; 32],
         complete: bool,
+    }
+
+    /// Runtime-owned PBFT vote admission transition result.
+    ///
+    /// This is the production-oriented `VoteManager::addVerifiedVote` bridge
+    /// result: Rust validates canonical bytes from caller-supplied facts,
+    /// mutates the Rust-owned verified-vote index, records vote payload
+    /// sidecars, and returns explicit executor effects. C++ still executes
+    /// storage writes, slashing transaction submission, logging, and temporary
+    /// live sidecar materialization.
+    struct PbftVoteAdmissionRuntimeResult {
+        status: u8,
+        error_code: String,
+        accepted: bool,
+        rejected: bool,
+        has_validation: bool,
+        validation: PbftCanonicalVoteValidation,
+        replay_inserted: bool,
+        has_vote: bool,
+        vote: VerifiedVotePayload,
+        has_verified_vote_add: bool,
+        verified_vote_add: VerifiedVoteAddOutcome,
+        has_storage_vote: bool,
+        storage_vote: PbftVoteStorageRecord,
+        persist_extra_reward_vote: bool,
+        extra_reward_vote: PbftVoteStorageRecord,
+        persist_two_t_plus_one_votes: bool,
+        two_t_plus_one_bundle: PbftTwoTPlusOneVoteBundle,
+        report_slashing: bool,
+        slashing_incoming_vote: PbftVoteStorageRecord,
+        slashing_conflicting_vote: PbftVoteStorageRecord,
+        network_t_plus_one_step_updated: bool,
+        drive_pbft_progress: bool,
+        progress_period: u64,
+        progress_round: u64,
     }
 
     /// Compact reward-vote membership facts for one PBFT round.
@@ -3992,6 +4027,13 @@ pub mod rustaxa_ffi {
             two_t_plus_one_threshold: u64,
             apply_threshold_decision: bool,
         ) -> Result<VerifiedVoteAddOutcome>;
+        pub fn verified_votes_admit_validated_vote(
+            self: &mut BridgeVerifiedVotes,
+            canonical_vote_rlp: &[u8],
+            validation_facts: PbftVoteValidationExternalFacts,
+            flags: PbftVoteEventFactFlags,
+            context: PbftVoteProgressContext,
+        ) -> Result<PbftVoteAdmissionRuntimeResult>;
         pub fn verified_votes_snapshot_votes(
             self: &BridgeVerifiedVotes,
         ) -> Vec<VerifiedVotePayload>;

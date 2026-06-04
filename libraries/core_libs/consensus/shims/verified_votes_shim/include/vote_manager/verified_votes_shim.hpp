@@ -215,6 +215,47 @@ class VerifiedVotes {
                                                       std::optional<uint64_t> two_t_plus_one);
 
   /**
+   * Runs one Rust-owned PBFT vote admission transition against this facade's
+   * verified-vote runtime.
+   *
+   * Inputs:
+   * - `canonical_vote_rlp`: signed unweighted vote bytes for the incoming vote.
+   * - `validation_facts`: FinalChain/key facts collected by `VoteManager`.
+   * - `flags`: ingress and reward-vote flags for progress planning.
+   * - `context`: current PBFT period/round and optional 2t+1 threshold facts.
+   *
+   * Outputs:
+   * - A flat Rust mutation/executor report with validation, insertion,
+   *   slashing, and persistence payloads.
+   *
+   * Invariants:
+   * - This call mutates only Rust verified-vote state and retained payload
+   *   sidecars. It does not attach a live C++ `PbftVote` object; callers must
+   *   call `attachRuntimeAcceptedVote` after hydrating the accepted sidecar.
+   */
+  rustaxa::PbftVoteAdmissionRuntimeResult admitValidatedVote(
+      rust::Slice<const uint8_t> canonical_vote_rlp, rustaxa::PbftVoteValidationExternalFacts validation_facts,
+      rustaxa::PbftVoteEventFactFlags flags, rustaxa::PbftVoteProgressContext context);
+
+  /**
+   * Attaches the C++ live sidecar for a vote already accepted by Rust runtime.
+   *
+   * Inputs:
+   * - `vote`: live `PbftVote` object with calculated weight matching Rust.
+   * - `result`: runtime admission result returned by `admitValidatedVote`.
+   *
+   * Outputs:
+   * - The inserted voted-value bucket when Rust inserted the vote.
+   * - Empty optional when the runtime report was not an accepted insertion.
+   *
+   * Error behavior:
+   * - Hash/weight/report mismatches are hard invariant errors because Rust has
+   *   already mutated the authoritative verified-vote state.
+   */
+  std::optional<VotesWithWeight> attachRuntimeAcceptedVote(
+      const std::shared_ptr<PbftVote>& vote, const rustaxa::PbftVoteAdmissionRuntimeResult& result);
+
+  /**
    * Sets `network_t_plus_one_step` for vote's (`period`, `round`) entry when present.
    */
   void setNetworkTPlusOneStep(std::shared_ptr<PbftVote> vote);

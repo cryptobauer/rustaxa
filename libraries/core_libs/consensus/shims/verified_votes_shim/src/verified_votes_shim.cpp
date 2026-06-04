@@ -306,6 +306,34 @@ VerifiedVotes::AddVerifiedVoteOutcome VerifiedVotes::addVerifiedVoteWithThreshol
   return result;
 }
 
+rustaxa::PbftVoteAdmissionRuntimeResult VerifiedVotes::admitValidatedVote(
+    rust::Slice<const uint8_t> canonical_vote_rlp, rustaxa::PbftVoteValidationExternalFacts validation_facts,
+    rustaxa::PbftVoteEventFactFlags flags, rustaxa::PbftVoteProgressContext context) {
+  std::scoped_lock lock(verified_votes_access_);
+  return rust_verified_votes_->verified_votes_admit_validated_vote(canonical_vote_rlp, validation_facts, flags, context);
+}
+
+std::optional<VotesWithWeight> VerifiedVotes::attachRuntimeAcceptedVote(
+    const std::shared_ptr<PbftVote>& vote, const rustaxa::PbftVoteAdmissionRuntimeResult& result) {
+  if (!vote) {
+    throw verifiedVotesError("cannot attach null runtime-accepted vote");
+  }
+  if (!result.accepted || !result.has_verified_vote_add || !result.verified_vote_add.inserted) {
+    return std::nullopt;
+  }
+  if (result.vote.vote_hash != toBridgeHash(vote->getHash()) ||
+      result.verified_vote_add.vote.vote_hash != toBridgeHash(vote->getHash())) {
+    throw verifiedVotesError("runtime admission accepted a different vote hash than the live sidecar");
+  }
+  if (!vote->getWeight().has_value() || *vote->getWeight() != result.verified_vote_add.vote.weight) {
+    throw verifiedVotesError("runtime admission weight mismatches the live sidecar");
+  }
+
+  std::scoped_lock lock(verified_votes_access_);
+  live_votes_[vote->getHash()] = vote;
+  return requireInsertedVotesWithWeightLocked(vote, result.verified_vote_add.total_weight);
+}
+
 void VerifiedVotes::setNetworkTPlusOneStep(std::shared_ptr<PbftVote> vote) {
   std::scoped_lock lock(verified_votes_access_);
   rust_verified_votes_->verified_votes_set_network_t_plus_one_step(vote->getPeriod(), vote->getRound(),
