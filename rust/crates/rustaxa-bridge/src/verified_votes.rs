@@ -1,5 +1,6 @@
 use crate::ffi::rustaxa_ffi::{
     AtomicVoteInsertOutcome, DagHash, DetermineNewRoundOutcome, NetworkTPlusOneStepLookup,
+    PbftFinalizationHash, PbftRewardVotePayloadSelection as FfiPbftRewardVotePayloadSelection,
     PbftTwoTPlusOneThresholdFact as FfiPbftTwoTPlusOneThresholdFact,
     PbftTwoTPlusOneThresholdPlan as FfiPbftTwoTPlusOneThresholdPlan, PbftTwoTPlusOneVoteBundle,
     PbftVoteAdmissionRuntimeResult, PbftVoteEventFactFlags, PbftVotePayloadLookup,
@@ -15,6 +16,7 @@ use crate::ffi::BridgeVerifiedVotes;
 use crate::pbft_vote_progress::{context_to_domain, execution_plan_to_ffi};
 use crate::pbft_vote_validation::threshold_plan_to_ffi;
 use ethereum_types::{H160, H256};
+use rustaxa_consensus::pbft_reward_votes::PbftRewardVotesStatus;
 use rustaxa_consensus::pbft_thresholds::{
     PbftTwoTPlusOneThresholdFact, PbftTwoTPlusOneThresholdPlan, PbftTwoTPlusOneThresholdStatus,
 };
@@ -523,6 +525,52 @@ impl BridgeVerifiedVotes {
         }
     }
 
+    /// Selects PBFT reward votes from Rust-owned metadata and retained payloads.
+    ///
+    /// This is the production bridge for `VoteManager::checkRewardVotes`: Rust
+    /// builds preferred/reverse-round candidates from the verified-vote runtime,
+    /// applies the reward planner, and resolves retained weighted records in
+    /// PBFT-block requested-hash order. Metadata-only compatibility helper
+    /// inserts that lack retained payloads are rejected as invariant errors.
+    pub fn verified_votes_select_reward_vote_payloads(
+        &self,
+        block_period: u64,
+        reward_period: u64,
+        preferred_reward_round: u64,
+        reward_block_hash: &[u8; 32],
+        requested_vote_hashes: Vec<PbftFinalizationHash>,
+    ) -> Result<FfiPbftRewardVotePayloadSelection, anyhow::Error> {
+        let selection = self.0.select_reward_vote_payloads(
+            block_period,
+            reward_period,
+            preferred_reward_round,
+            H256::from(*reward_block_hash),
+            requested_vote_hashes
+                .into_iter()
+                .map(|hash| H256::from(hash.hash))
+                .collect(),
+        )?;
+        Ok(FfiPbftRewardVotePayloadSelection {
+            accepted: selection.accepted,
+            status: selection.status.as_u8(),
+            error_code: reward_error_code(selection.status).to_owned(),
+            selected_period: selection.selected_period,
+            selected_round: selection.selected_round,
+            selected_block_hash: selection.selected_block_hash.into(),
+            selected_vote_hashes: selection
+                .selected_vote_hashes
+                .into_iter()
+                .map(|hash| PbftFinalizationHash { hash: hash.into() })
+                .collect(),
+            selected_records: selection
+                .selected_records
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            missing_vote_hash: selection.missing_vote_hash.unwrap_or_default().into(),
+        })
+    }
+
     /// Returns deterministic 2t+1 mapping snapshot.
     pub fn verified_votes_snapshot_two_t_plus_one(&self) -> Vec<TwoTPlusOneSnapshotEntry> {
         self.0
@@ -591,6 +639,20 @@ fn validation_facts_to_domain(
         strict_vrf: value.strict_vrf,
         committee_size: value.committee_size,
         number_of_proposers: value.number_of_proposers,
+    }
+}
+
+const fn reward_error_code(status: PbftRewardVotesStatus) -> &'static str {
+    match status {
+        PbftRewardVotesStatus::FirstPeriod | PbftRewardVotesStatus::Accepted => "",
+        PbftRewardVotesStatus::MissingPreferredRound => "PBFT_REWARD_VOTES_MISSING_PREFERRED_ROUND",
+        PbftRewardVotesStatus::MissingRewardPeriod => "PBFT_REWARD_VOTES_MISSING_REWARD_PERIOD",
+        PbftRewardVotesStatus::MissingCertStep => "PBFT_REWARD_VOTES_MISSING_CERT_STEP",
+        PbftRewardVotesStatus::MissingRewardBlock => "PBFT_REWARD_VOTES_MISSING_REWARD_BLOCK",
+        PbftRewardVotesStatus::MissingRewardVote => "PBFT_REWARD_VOTES_MISSING_REWARD_VOTE",
+        PbftRewardVotesStatus::MissingRetainedPayload => {
+            "PBFT_REWARD_VOTES_MISSING_RETAINED_PAYLOAD"
+        }
     }
 }
 
@@ -1185,6 +1247,60 @@ mod tests {
         assert_eq!(payloads.votes.len(), 2);
         assert!(payloads.votes.iter().any(|vote| vote.hash == first_hash));
         assert!(payloads.votes.iter().any(|vote| vote.hash == second_hash));
+    }
+
+    #[test]
+    fn bridge_selects_reward_vote_payloads_in_requested_order() {
+        let mut votes = create_verified_votes_index();
+        let first = generated_vote([0x33; 32], NODE_SECRET);
+        let second = generated_vote([0x33; 32], NODE_SECRET_TWO);
+        let first_hash: [u8; 32] = first.vote_hash.into();
+        let second_hash: [u8; 32] = second.vote_hash.into();
+
+        votes
+            .verified_votes_admit_validated_vote(
+                &first.vote_rlp,
+                validation_facts(),
+                runtime_flags(),
+                runtime_context(80),
+            )
+            .expect("first generated vote is admitted");
+        votes
+            .verified_votes_admit_validated_vote(
+                &second.vote_rlp,
+                validation_facts(),
+                runtime_flags(),
+                runtime_context(80),
+            )
+            .expect("second generated vote is admitted");
+
+        let selection = votes
+            .verified_votes_select_reward_vote_payloads(
+                13,
+                12,
+                2,
+                &[0x33; 32],
+                vec![
+                    PbftFinalizationHash { hash: second_hash },
+                    PbftFinalizationHash { hash: first_hash },
+                ],
+            )
+            .expect("reward payload selection succeeds");
+
+        assert!(selection.accepted);
+        assert_eq!(selection.selected_round, 2);
+        assert_eq!(
+            selection
+                .selected_vote_hashes
+                .iter()
+                .map(|hash| hash.hash)
+                .collect::<Vec<_>>(),
+            vec![second_hash, first_hash]
+        );
+        assert_eq!(selection.selected_records.len(), 2);
+        assert_eq!(selection.selected_records[0].hash, second_hash);
+        assert_eq!(selection.selected_records[1].hash, first_hash);
+        assert!(selection.error_code.is_empty());
     }
 
     #[test]

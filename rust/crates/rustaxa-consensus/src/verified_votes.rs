@@ -14,6 +14,8 @@ use anyhow::{Result, anyhow};
 use ethereum_types::{H160, H256};
 use std::collections::BTreeMap;
 
+use crate::pbft_reward_votes::PbftRewardVoteRoundCandidate;
+
 /// PBFT vote type encoded as legacy numeric step-compatible values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
@@ -629,6 +631,75 @@ impl VerifiedVotes {
                     .collect()
             })
         })
+    }
+
+    /// Returns compact PBFT reward-vote membership facts for one candidate round.
+    ///
+    /// Inputs:
+    /// - `period` and `round` identify the verified-vote round to inspect.
+    /// - `reward_block_hash` is the certified block hash expected by the PBFT
+    ///   block reward-vote reference.
+    ///
+    /// Outputs:
+    /// - `None` when the requested round is absent.
+    /// - A candidate carrying cert-step/block-bucket presence and the vote
+    ///   hashes currently recorded for the reward block otherwise.
+    ///
+    /// Invariants and edge behavior:
+    /// - The candidate contains only metadata; payload bytes remain owned by
+    ///   `PbftVoteAdmissionRuntime`.
+    /// - Vote hashes are returned in deterministic verified-vote map order.
+    pub fn reward_vote_round_candidate(
+        &self,
+        period: u64,
+        round: u64,
+        reward_block_hash: H256,
+    ) -> Option<PbftRewardVoteRoundCandidate> {
+        let round_votes = self.get_round(period, round)?;
+        let Some(step_votes) = round_votes.step_votes.get(&(PbftVoteType::Cert as u64)) else {
+            return Some(PbftRewardVoteRoundCandidate {
+                round,
+                has_cert_step: false,
+                has_reward_block: false,
+                vote_hashes: Vec::new(),
+            });
+        };
+        let Some(votes_with_weight) = step_votes.votes.get(&reward_block_hash) else {
+            return Some(PbftRewardVoteRoundCandidate {
+                round,
+                has_cert_step: true,
+                has_reward_block: false,
+                vote_hashes: Vec::new(),
+            });
+        };
+
+        Some(PbftRewardVoteRoundCandidate {
+            round,
+            has_cert_step: true,
+            has_reward_block: true,
+            vote_hashes: votes_with_weight.votes.keys().copied().collect(),
+        })
+    }
+
+    /// Returns reward-vote candidate rounds for `period` in reverse round order.
+    ///
+    /// This mirrors the legacy reward-vote search order while keeping the
+    /// candidate construction inside the Rust verified-vote index.
+    pub fn reward_vote_period_candidates_rev(
+        &self,
+        period: u64,
+        reward_block_hash: H256,
+    ) -> Option<Vec<PbftRewardVoteRoundCandidate>> {
+        let rounds = self.votes.get(&period)?;
+        Some(
+            rounds
+                .keys()
+                .rev()
+                .filter_map(|round| {
+                    self.reward_vote_round_candidate(period, *round, reward_block_hash)
+                })
+                .collect(),
+        )
     }
 
     /// Returns the aggregate voted-value bucket for one exact vote target.

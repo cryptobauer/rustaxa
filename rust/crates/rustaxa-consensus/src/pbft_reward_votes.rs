@@ -29,6 +29,8 @@ pub enum PbftRewardVotesStatus {
     MissingRewardBlock,
     /// At least one requested reward-vote hash was missing from all candidate rounds.
     MissingRewardVote,
+    /// Rust metadata selected a vote whose retained weighted payload is missing.
+    MissingRetainedPayload,
 }
 
 impl PbftRewardVotesStatus {
@@ -43,6 +45,7 @@ impl PbftRewardVotesStatus {
             Self::MissingCertStep => 4,
             Self::MissingRewardBlock => 5,
             Self::MissingRewardVote => 6,
+            Self::MissingRetainedPayload => 7,
         }
     }
 }

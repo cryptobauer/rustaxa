@@ -95,6 +95,9 @@ const fn error_code(status: PbftRewardVotesStatus) -> &'static str {
         PbftRewardVotesStatus::MissingCertStep => "PBFT_REWARD_VOTES_MISSING_CERT_STEP",
         PbftRewardVotesStatus::MissingRewardBlock => "PBFT_REWARD_VOTES_MISSING_REWARD_BLOCK",
         PbftRewardVotesStatus::MissingRewardVote => "PBFT_REWARD_VOTES_MISSING_REWARD_VOTE",
+        PbftRewardVotesStatus::MissingRetainedPayload => {
+            "PBFT_REWARD_VOTES_MISSING_RETAINED_PAYLOAD"
+        }
     }
 }
 

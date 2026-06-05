@@ -92,8 +92,8 @@ pub use pbft_vote_progress::{
     PbftVoteProgressPlan, PbftVoteProgressStatus, plan_pbft_vote_progress,
 };
 pub use pbft_vote_runtime::{
-    PbftVoteAdmissionRuntime, PbftVoteRuntimeAdmissionOutcome, PbftVoteRuntimeBundle,
-    PbftVoteRuntimePayload, PbftVoteRuntimeSlashingPayloads,
+    PbftRewardVotePayloadSelection, PbftVoteAdmissionRuntime, PbftVoteRuntimeAdmissionOutcome,
+    PbftVoteRuntimeBundle, PbftVoteRuntimePayload, PbftVoteRuntimeSlashingPayloads,
 };
 pub use pbft_vote_validation::{
     PbftCanonicalVoteInspection, PbftCanonicalVoteInspectionStatus, PbftCanonicalVoteValidation,

@@ -1415,6 +1415,24 @@ pub mod rustaxa_ffi {
         missing_vote_hash: [u8; 32],
     }
 
+    /// Rust-owned PBFT reward-vote materialization output.
+    ///
+    /// This keeps reward-vote selection under the `BridgeVerifiedVotes`
+    /// runtime that owns verified-vote metadata and retained weighted payloads.
+    /// When `accepted` is true, `selected_records` is ordered exactly like
+    /// `selected_vote_hashes`.
+    struct PbftRewardVotePayloadSelection {
+        accepted: bool,
+        status: u8,
+        error_code: String,
+        selected_period: u64,
+        selected_round: u64,
+        selected_block_hash: [u8; 32],
+        selected_vote_hashes: Vec<PbftFinalizationHash>,
+        selected_records: Vec<PbftVoteStorageRecord>,
+        missing_vote_hash: [u8; 32],
+    }
+
     /// Explicit caller facts for one Rust-planned PBFT vote validation pass.
     ///
     /// The C++ shim owns live vote materialization, FinalChain/key lookups,
@@ -4178,6 +4196,14 @@ pub mod rustaxa_ffi {
             self: &BridgeVerifiedVotes,
             vote_hash: &[u8; 32],
         ) -> PbftVotePayloadLookup;
+        pub fn verified_votes_select_reward_vote_payloads(
+            self: &BridgeVerifiedVotes,
+            block_period: u64,
+            reward_period: u64,
+            preferred_reward_round: u64,
+            reward_block_hash: &[u8; 32],
+            requested_vote_hashes: Vec<PbftFinalizationHash>,
+        ) -> Result<PbftRewardVotePayloadSelection>;
         pub fn verified_votes_snapshot_two_t_plus_one(
             self: &BridgeVerifiedVotes,
         ) -> Vec<TwoTPlusOneSnapshotEntry>;

@@ -462,7 +462,9 @@ The current Rust starting point is intentionally small:
   admission report consumed by latest-tarcap vote handlers, so single-vote and bundle paths mark peers/votes known,
   report slashing, and gossip only after Rust admission has accepted the vote. Generic legacy snapshot and 2t+1 APIs on
   the `VerifiedVotes` overlay now materialize temporary `PbftVote` sidecars from Rust-retained weighted payload bytes
-  instead of skipping missing live sidecars. Metadata-only compatibility/test helper inserts may still fall back to
+  instead of skipping missing live sidecars. Reward-vote validation and materialization now enter the same runtime:
+  Rust builds preferred-round and reverse-period candidates from Rust-owned verified-vote metadata and returns selected
+  retained weighted records in PBFT-block requested order. Metadata-only compatibility/test helper inserts may still fall back to
   `live_votes_` until those helpers are removed, but production-admitted votes treat missing retained payloads as
   invariant errors. The crate also contains a side-effect-free PBFT vote-progress protocol planner
   plus a Rust-owned PBFT vote pipeline session that stages
@@ -710,12 +712,12 @@ The current Rust starting point is intentionally small:
    zero-stake, zero-total-DPoS, and zero-weight outcomes as stable statuses. The shim now materializes local
    `PbftVote` sidecars directly from Rust-generated signed or weighted RLP, hydrates the temporary C++ VRF credential
    cache with local VRF verification, and persists locally generated own votes through Rust storage using the
-   Rust-generated weighted bytes. `checkRewardVotes` now uses a Rust reward-vote selection planner: C++ supplies the
-   PBFT block's requested reward-vote hashes plus compact live membership facts for the preferred reward round and
-   reverse-ordered period rounds, Rust decides whether the references are valid, and C++ only maps accepted hashes back
-   to Rust-materialized temporary sidecars when callers request copied votes. Rust-retained weighted payloads now back
-   verified-vote snapshots and 2t+1 bundle reads, so missing C++ live sidecars no longer produce partial generic
-   snapshot or 2t+1 results. C++ still owns the temporary live sidecar type,
+   Rust-generated weighted bytes. `checkRewardVotes` now calls the Rust verified-vote runtime to build reward-vote
+   candidates from Rust metadata, evaluate the preferred round and reverse period scan, and resolve selected retained
+   weighted records in the PBFT block's requested hash order; C++ only materializes those records into temporary
+   sidecars when callers request copied votes. Rust-retained weighted payloads now back verified-vote snapshots,
+   reward-vote materialization, and 2t+1 bundle reads, so missing C++ live sidecars no longer produce partial generic
+   snapshot, reward, or 2t+1 results. C++ still owns the temporary live sidecar type,
    FinalChain fact sourcing, logging, reward-vote sidecar mapping, and broader PBFT manager/network orchestration.
    owns PBFT finalization
    sortition-change persistence: the sortition shim now previews the live Rust runtime transition, returns the emitted

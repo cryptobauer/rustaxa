@@ -89,6 +89,23 @@ class VerifiedVotes {
   };
 
   /**
+   * Reward-vote selection resolved from Rust-owned metadata and payloads.
+   *
+   * Purpose:
+   * - Carries Rust's reward-vote selection report plus optional temporary
+   *   `PbftVote` sidecars materialized from retained weighted payload records.
+   *
+   * Invariants:
+   * - `votes` is populated only when the caller requested materialization and
+   *   Rust accepted the reward-vote references.
+   * - Materialized votes preserve the PBFT block's requested vote-hash order.
+   */
+  struct RewardVotePayloadSelection {
+    rustaxa::PbftRewardVotePayloadSelection report{};
+    std::vector<std::shared_ptr<PbftVote>> votes;
+  };
+
+  /**
    * Rust-evaluated threshold effects for one inserted verified vote.
    *
    * Purpose:
@@ -234,6 +251,25 @@ class VerifiedVotes {
    */
   std::vector<std::shared_ptr<PbftVote>> getTwoTPlusOneVotedBlockVotes(PbftPeriod period, PbftRound round,
                                                                        TwoTPlusOneVotedBlockType type) const;
+  /**
+   * Selects PBFT reward votes through the Rust verified-vote runtime.
+   *
+   * Inputs:
+   * - Reward-vote metadata plus hashes referenced by a PBFT block.
+   * - `materialize_votes`: when true, decode selected weighted records into
+   *   temporary `PbftVote` sidecars.
+   *
+   * Outputs:
+   * - Rust selection report and optional materialized votes.
+   *
+   * Edge behavior:
+   * - Missing retained payloads for selected votes are bridge invariant errors.
+   */
+  RewardVotePayloadSelection selectRewardVotePayloads(PbftPeriod block_period, PbftPeriod reward_period,
+                                                      PbftRound preferred_reward_round,
+                                                      const blk_hash_t& reward_block_hash,
+                                                      const std::vector<vote_hash_t>& requested_vote_hashes,
+                                                      bool materialize_votes) const;
 
   /**
    * Removes votes for periods older than `pbft_period`.

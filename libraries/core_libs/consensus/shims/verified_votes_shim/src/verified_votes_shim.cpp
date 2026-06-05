@@ -45,6 +45,15 @@ rustaxa::VerifiedVotePayload VerifiedVotes::toBridgeVotePayload(const std::share
                                       requireVoteWeight(vote)};
 }
 
+rust::Vec<rustaxa::PbftFinalizationHash> toBridgeVoteHashes(const std::vector<vote_hash_t>& hashes) {
+  rust::Vec<rustaxa::PbftFinalizationHash> out;
+  out.reserve(hashes.size());
+  for (const auto& hash : hashes) {
+    out.push_back(rustaxa::PbftFinalizationHash{hash.asArray()});
+  }
+  return out;
+}
+
 std::shared_ptr<PbftVote> VerifiedVotes::materializeWeightedPayload(
     const rustaxa::PbftVoteStorageRecord& record) const {
   bytes vote_rlp;
@@ -318,6 +327,35 @@ std::vector<std::shared_ptr<PbftVote>> VerifiedVotes::getTwoTPlusOneVotedBlockVo
       throw verifiedVotesError("Rust retained 2t+1 payload mismatches mapped voted block");
     }
     out.push_back(std::move(vote));
+  }
+  return out;
+}
+
+VerifiedVotes::RewardVotePayloadSelection VerifiedVotes::selectRewardVotePayloads(
+    PbftPeriod block_period, PbftPeriod reward_period, PbftRound preferred_reward_round,
+    const blk_hash_t& reward_block_hash, const std::vector<vote_hash_t>& requested_vote_hashes,
+    bool materialize_votes) const {
+  std::shared_lock lock(verified_votes_access_);
+  auto selection = rust_verified_votes_->verified_votes_select_reward_vote_payloads(
+      block_period, reward_period, preferred_reward_round, toBridgeHash(reward_block_hash),
+      toBridgeVoteHashes(requested_vote_hashes));
+
+  RewardVotePayloadSelection out{};
+  out.report = std::move(selection);
+  if (!out.report.accepted || !materialize_votes) {
+    return out;
+  }
+
+  out.votes.reserve(out.report.selected_records.size());
+  const auto expected_block_hash = fromBridgeHash(out.report.selected_block_hash);
+  for (const auto& record : out.report.selected_records) {
+    auto vote = materializeWeightedPayload(record);
+    if (vote->getPeriod() != out.report.selected_period || vote->getRound() != out.report.selected_round ||
+        vote->getStep() != static_cast<PbftStep>(PbftVoteTypes::cert_vote) ||
+        vote->getBlockHash() != expected_block_hash) {
+      throw verifiedVotesError("Rust reward-vote payload selection returned mismatched weighted payload");
+    }
+    out.votes.push_back(std::move(vote));
   }
   return out;
 }

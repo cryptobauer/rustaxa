@@ -215,35 +215,6 @@ rustaxa::PbftTwoTPlusOneVoteBundle cloneTwoTPlusOneVoteBundle(const rustaxa::Pbf
   return out;
 }
 
-rustaxa::PbftRewardVoteRoundCandidate makeRewardVoteRoundCandidate(PbftRound round,
-                                                                   const RoundVerifiedVotes* round_votes,
-                                                                   const blk_hash_t& reward_block_hash) {
-  rustaxa::PbftRewardVoteRoundCandidate candidate{};
-  candidate.round = round;
-  if (!round_votes) {
-    return candidate;
-  }
-
-  const auto found_step_votes_it = round_votes->step_votes.find(static_cast<PbftStep>(PbftVoteTypes::cert_vote));
-  candidate.has_cert_step = found_step_votes_it != round_votes->step_votes.end();
-  if (!candidate.has_cert_step) {
-    return candidate;
-  }
-
-  const auto found_verified_votes_it = found_step_votes_it->second.votes.find(reward_block_hash);
-  candidate.has_reward_block = found_verified_votes_it != found_step_votes_it->second.votes.end();
-  if (!candidate.has_reward_block) {
-    return candidate;
-  }
-
-  candidate.vote_hashes.reserve(found_verified_votes_it->second.votes.size());
-  for (const auto& [vote_hash, _] : found_verified_votes_it->second.votes) {
-    candidate.vote_hashes.push_back(rustaxa::PbftFinalizationHash{toBridgeHash(vote_hash)});
-  }
-
-  return candidate;
-}
-
 void requireApplied(const rustaxa::PbftVotePersistenceResult& result, const char* operation) {
   if (result.status == kPbftVotePersistenceStatusApplied) {
     return;
@@ -770,28 +741,21 @@ std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> VoteManager::checkReward
     reward_votes_round = reward_votes_round_;
   }
 
-  const auto preferred_round_votes = verified_votes_.getRoundVotes(reward_votes_period, reward_votes_round);
-  const auto period_votes = verified_votes_.getPeriodVotes(reward_votes_period);
-
-  rustaxa::PbftRewardVoteSelectionFact fact{};
-  fact.block_period = pbft_block->getPeriod();
-  fact.reward_period = reward_votes_period;
-  fact.preferred_reward_round = reward_votes_round;
-  fact.reward_block_hash = toBridgeHash(reward_votes_block_hash);
-  fact.requested_vote_hashes = toBridgeRewardVoteHashes(pbft_block->getRewardVotes());
-  fact.has_preferred_round = preferred_round_votes.has_value();
-  fact.preferred_round = makeRewardVoteRoundCandidate(
-      reward_votes_round, preferred_round_votes ? &*preferred_round_votes : nullptr, reward_votes_block_hash);
-  fact.has_reward_period = period_votes.has_value();
-  if (period_votes) {
-    fact.period_rounds.reserve(period_votes->size());
-    for (auto round_it = period_votes->rbegin(); round_it != period_votes->rend(); ++round_it) {
-      fact.period_rounds.push_back(
-          makeRewardVoteRoundCandidate(round_it->first, &round_it->second, reward_votes_block_hash));
-    }
+  VerifiedVotes::RewardVotePayloadSelection selection{};
+  try {
+    selection =
+        verified_votes_.selectRewardVotePayloads(pbft_block->getPeriod(), reward_votes_period, reward_votes_round,
+                                                 reward_votes_block_hash, pbft_block->getRewardVotes(), copy_votes);
+  } catch (const std::exception& e) {
+    LOG(log_er_) << "Rust reward-vote payload selection failed for block " << pbft_block->getBlockHash()
+                 << ", period: " << pbft_block->getPeriod() << ", reward_votes_period: " << reward_votes_period
+                 << ", reward_votes_round_: " << reward_votes_round
+                 << ", reward_votes_block_hash: " << reward_votes_block_hash << ", error: " << e.what();
+    assert(false);
+    return {false, {}};
   }
 
-  const auto plan = rustaxa::pbft_reward_votes_plan(std::move(fact));
+  const auto& plan = selection.report;
   if (!plan.accepted) {
     LOG(log_er_) << "No (or not enough) reward votes found for block " << pbft_block->getBlockHash()
                  << ", period: " << pbft_block->getPeriod() << ", prev. block hash: " << pbft_block->getPrevBlockHash()
@@ -807,45 +771,7 @@ std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> VoteManager::checkReward
     return {true, {}};
   }
 
-  const auto selected_round_votes = verified_votes_.getRoundVotes(static_cast<PbftPeriod>(plan.selected_period),
-                                                                  static_cast<PbftRound>(plan.selected_round));
-  if (!selected_round_votes) {
-    LOG(log_er_) << "Rust reward-vote planner selected missing round " << plan.selected_round << " for period "
-                 << plan.selected_period;
-    assert(false);
-    return {false, {}};
-  }
-
-  const auto found_step_votes_it =
-      selected_round_votes->step_votes.find(static_cast<PbftStep>(PbftVoteTypes::cert_vote));
-  if (found_step_votes_it == selected_round_votes->step_votes.end()) {
-    LOG(log_er_) << "Rust reward-vote planner selected round without cert step " << plan.selected_round;
-    assert(false);
-    return {false, {}};
-  }
-
-  const auto selected_block_hash = blk_hash_t(plan.selected_block_hash.data(), blk_hash_t::ConstructFromPointer);
-  const auto found_verified_votes_it = found_step_votes_it->second.votes.find(selected_block_hash);
-  if (found_verified_votes_it == found_step_votes_it->second.votes.end()) {
-    LOG(log_er_) << "Rust reward-vote planner selected missing reward block " << selected_block_hash;
-    assert(false);
-    return {false, {}};
-  }
-
-  std::vector<std::shared_ptr<PbftVote>> found_reward_votes;
-  found_reward_votes.reserve(plan.selected_vote_hashes.size());
-  for (const auto& selected_vote_hash : plan.selected_vote_hashes) {
-    const auto vote_hash = vote_hash_t(selected_vote_hash.hash.data(), vote_hash_t::ConstructFromPointer);
-    const auto found_vote = found_verified_votes_it->second.votes.find(vote_hash);
-    if (found_vote == found_verified_votes_it->second.votes.end()) {
-      LOG(log_er_) << "Rust reward-vote planner selected missing vote " << vote_hash;
-      assert(false);
-      return {false, {}};
-    }
-    found_reward_votes.push_back(found_vote->second);
-  }
-
-  return {true, std::move(found_reward_votes)};
+  return {true, std::move(selection.votes)};
 }
 
 std::vector<std::shared_ptr<PbftVote>> VoteManager::getRewardVotes() {
@@ -1314,45 +1240,35 @@ rustaxa::PbftFinalizationStorageWriteStage VoteManager::rewardVotesResetStageFor
   const auto step = static_cast<PbftStep>(write_intent.reward_vote_step);
   const auto block_hash = blk_hash_t(write_intent.reward_vote_block_hash.data(), blk_hash_t::ConstructFromPointer);
 
-  const auto& round_votes = verified_votes_.getRoundVotes(period, round);
-  if (!round_votes) {
-    LOG(log_er_) << "resetRewardVotes missing round " << round << " or period " << period;
-    assert(false);
-    throw std::runtime_error("PBFT_FINALIZE_MISSING_REWARD_VOTES_ROUND");
-  }
-
-  auto found_step_it = round_votes->step_votes.find(step);
-  if (found_step_it == round_votes->step_votes.end()) {
-    LOG(log_er_) << "resetRewardVotes missing step" << step;
-    assert(false);
-    throw std::runtime_error("PBFT_FINALIZE_MISSING_REWARD_VOTES_STEP");
-  }
-
-  auto found_two_t_plus_one_voted_block =
-      round_votes->two_t_plus_one_voted_blocks_.find(TwoTPlusOneVotedBlockType::CertVotedBlock);
-  if (found_two_t_plus_one_voted_block == round_votes->two_t_plus_one_voted_blocks_.end()) {
-    LOG(log_er_) << "resetRewardVotes missing cert voted block";
+  const auto found_two_t_plus_one_voted_block =
+      verified_votes_.getTwoTPlusOneVotedBlock(period, round, TwoTPlusOneVotedBlockType::CertVotedBlock);
+  if (!found_two_t_plus_one_voted_block.has_value()) {
+    LOG(log_er_) << "resetRewardVotes missing cert voted block for period " << period << ", round " << round;
     assert(false);
     throw std::runtime_error("PBFT_FINALIZE_MISSING_REWARD_VOTES_CERT_BLOCK");
   }
-  if (found_two_t_plus_one_voted_block->second.hash != block_hash) {
-    LOG(log_er_) << "resetRewardVotes incorrect block " << found_two_t_plus_one_voted_block->second.step << " expected "
+  if (found_two_t_plus_one_voted_block->hash != block_hash) {
+    LOG(log_er_) << "resetRewardVotes incorrect block " << found_two_t_plus_one_voted_block->hash << " expected "
                  << block_hash;
     assert(false);
     throw std::runtime_error("PBFT_FINALIZE_REWARD_VOTES_CERT_BLOCK_MISMATCH");
   }
-  auto found_voted_value_it = found_step_it->second.votes.find(block_hash);
-  if (found_voted_value_it == found_step_it->second.votes.end()) {
-    LOG(log_er_) << "resetRewardVotes missing vote block " << block_hash;
+
+  if (found_two_t_plus_one_voted_block->step != step) {
+    LOG(log_er_) << "resetRewardVotes incorrect cert-vote step " << found_two_t_plus_one_voted_block->step
+                 << " expected " << step;
     assert(false);
-    throw std::runtime_error("PBFT_FINALIZE_MISSING_REWARD_VOTES_BLOCK");
+    throw std::runtime_error("PBFT_FINALIZE_REWARD_VOTES_CERT_BLOCK_STEP_MISMATCH");
   }
 
-  std::vector<std::shared_ptr<PbftVote>> votes;
-  votes.reserve(found_voted_value_it->second.votes.size());
-  for (const auto& tmp_vote : found_voted_value_it->second.votes) {
-    votes.push_back(tmp_vote.second);
+  auto votes = verified_votes_.getTwoTPlusOneVotedBlockVotes(period, round, TwoTPlusOneVotedBlockType::CertVotedBlock);
+  if (votes.empty()) {
+    LOG(log_er_) << "resetRewardVotes missing cert voted block payloads for period " << period << ", round " << round
+                 << ", step " << step;
+    assert(false);
+    throw std::runtime_error("PBFT_FINALIZE_MISSING_REWARD_VOTES_CERT_BLOCK_PAYLOADS");
   }
+
   return makeRewardResetWriteStage(votes, extra_reward_votes_);
 }
 

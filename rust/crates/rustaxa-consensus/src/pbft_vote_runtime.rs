@@ -12,6 +12,10 @@ use std::collections::BTreeMap;
 use anyhow::{Result, anyhow};
 use ethereum_types::H256;
 
+use crate::pbft_reward_votes::{
+    PbftRewardVoteRoundCandidate, PbftRewardVoteSelectionFact, PbftRewardVoteSelectionPlan,
+    PbftRewardVotesStatus, plan_pbft_reward_votes,
+};
 use crate::pbft_thresholds::{
     PbftTwoTPlusOneThresholdFact, PbftTwoTPlusOneThresholdPlan, PbftTwoTPlusOneThresholdRuntime,
 };
@@ -68,6 +72,31 @@ pub struct PbftVoteRuntimeSlashingPayloads {
     pub incoming: PbftVotePayloadRecord,
     /// Existing conflicting vote payload from the runtime sidecar.
     pub conflicting: PbftVotePayloadRecord,
+}
+
+/// Rust-owned PBFT reward-vote selection with retained weighted payloads.
+///
+/// The selection mirrors legacy reward-vote lookup order while keeping the
+/// candidate construction and payload resolution under the vote admission
+/// runtime that owns verified-vote metadata and retained bytes.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftRewardVotePayloadSelection {
+    /// True when the PBFT block reward-vote references are accepted.
+    pub accepted: bool,
+    /// Stable reward-vote selection status.
+    pub status: PbftRewardVotesStatus,
+    /// Reward period used for lookup.
+    pub selected_period: u64,
+    /// Round that satisfied the requested vote hashes.
+    pub selected_round: u64,
+    /// Reward block hash used for lookup.
+    pub selected_block_hash: H256,
+    /// Requested vote hashes in PBFT-block order when accepted.
+    pub selected_vote_hashes: Vec<H256>,
+    /// Retained weighted records in the same order as `selected_vote_hashes`.
+    pub selected_records: Vec<PbftVotePayloadRecord>,
+    /// First missing vote hash when selection failed or payload retention is incomplete.
+    pub missing_vote_hash: Option<H256>,
 }
 
 /// Runtime replay-cache result for one validation or admission transition.
@@ -221,6 +250,104 @@ impl PbftVoteAdmissionRuntime {
             })?);
         }
         Ok(Some(records))
+    }
+
+    /// Selects PBFT reward votes and resolves retained weighted payloads.
+    ///
+    /// Inputs:
+    /// - `block_period`: period of the PBFT block being validated.
+    /// - `reward_period`, `preferred_reward_round`, and `reward_block_hash`:
+    ///   current reward-vote metadata maintained by the vote manager.
+    /// - `requested_vote_hashes`: hashes listed by the PBFT block, whose order
+    ///   must be preserved for temporary C++ sidecar materialization.
+    ///
+    /// Outputs:
+    /// - Rejected selection statuses from the side-effect-free reward planner.
+    /// - Accepted selection metadata plus retained weighted payload records in
+    ///   requested-hash order.
+    ///
+    /// Error behavior:
+    /// - If an accepted selected vote hash has no retained weighted payload,
+    ///   this returns a hard error because production reward selection must
+    ///   operate on the unified Rust runtime, not metadata-only compatibility
+    ///   helper inserts.
+    pub fn select_reward_vote_payloads(
+        &self,
+        block_period: u64,
+        reward_period: u64,
+        preferred_reward_round: u64,
+        reward_block_hash: H256,
+        requested_vote_hashes: Vec<H256>,
+    ) -> Result<PbftRewardVotePayloadSelection> {
+        let preferred_round_lookup = self.verified_votes.reward_vote_round_candidate(
+            reward_period,
+            preferred_reward_round,
+            reward_block_hash,
+        );
+        let has_preferred_round = preferred_round_lookup.is_some();
+        let preferred_round =
+            preferred_round_lookup.unwrap_or_else(|| PbftRewardVoteRoundCandidate {
+                round: preferred_reward_round,
+                has_cert_step: false,
+                has_reward_block: false,
+                vote_hashes: Vec::new(),
+            });
+        let period_rounds_lookup = self
+            .verified_votes
+            .reward_vote_period_candidates_rev(reward_period, reward_block_hash);
+        let has_reward_period = period_rounds_lookup.is_some();
+        let period_rounds = period_rounds_lookup.unwrap_or_default();
+        let fact = PbftRewardVoteSelectionFact {
+            block_period,
+            reward_period,
+            preferred_reward_round,
+            reward_block_hash,
+            requested_vote_hashes,
+            has_preferred_round,
+            preferred_round,
+            has_reward_period,
+            period_rounds,
+        };
+        let plan = plan_pbft_reward_votes(fact);
+        self.resolve_reward_vote_payload_selection(plan)
+    }
+
+    fn resolve_reward_vote_payload_selection(
+        &self,
+        plan: PbftRewardVoteSelectionPlan,
+    ) -> Result<PbftRewardVotePayloadSelection> {
+        if !plan.accepted {
+            return Ok(PbftRewardVotePayloadSelection {
+                accepted: false,
+                status: plan.status,
+                selected_period: plan.selected_period,
+                selected_round: plan.selected_round,
+                selected_block_hash: plan.selected_block_hash,
+                selected_vote_hashes: plan.selected_vote_hashes,
+                selected_records: Vec::new(),
+                missing_vote_hash: plan.missing_vote_hash,
+            });
+        }
+
+        let mut records = Vec::with_capacity(plan.selected_vote_hashes.len());
+        for vote_hash in &plan.selected_vote_hashes {
+            records.push(self.weighted_payload(*vote_hash).cloned().ok_or_else(|| {
+                anyhow!(
+                    "PBFT reward-vote selection missing retained weighted payload for vote {vote_hash:#x}"
+                )
+            })?);
+        }
+
+        Ok(PbftRewardVotePayloadSelection {
+            accepted: true,
+            status: plan.status,
+            selected_period: plan.selected_period,
+            selected_round: plan.selected_round,
+            selected_block_hash: plan.selected_block_hash,
+            selected_vote_hashes: plan.selected_vote_hashes,
+            selected_records: records,
+            missing_vote_hash: None,
+        })
     }
 
     /// Returns the slashing payload for `vote_hash`, when retained.
@@ -499,7 +626,8 @@ mod tests {
     use crate::pbft_vote_validation::{
         PbftVoteValidationExternalFacts, validate_canonical_pbft_vote,
     };
-    use crate::verified_votes::PbftVoteType;
+    use crate::verified_votes::{PbftVoteType, VerifiedVote};
+    use ethereum_types::H160;
     use k256::ecdsa::SigningKey;
     use rustaxa_vdf::vrf;
     use tiny_keccak::{Hasher, Keccak};
@@ -525,11 +653,21 @@ mod tests {
     }
 
     fn vote_rlp_from_secret(block_hash: [u8; 32], step: u64, node_secret: [u8; 32]) -> Vec<u8> {
+        vote_rlp_for(block_hash, 12, 2, step, node_secret)
+    }
+
+    fn vote_rlp_for(
+        block_hash: [u8; 32],
+        period: u64,
+        round: u64,
+        step: u64,
+        node_secret: [u8; 32],
+    ) -> Vec<u8> {
         generate_pbft_vote(PbftVoteGenerationInput {
             block_hash: block_hash.into(),
             vote_type: PbftVoteType::Cert,
-            period: 12,
-            round: 2,
+            period,
+            round,
             step,
             node_secret,
             vrf_secret: VRF_SECRET,
@@ -684,6 +822,94 @@ mod tests {
                 .two_t_plus_one_weighted_payloads(12, 3, TwoTPlusOneVotedBlockType::CertVotedBlock)
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn runtime_selects_reward_payloads_from_reverse_round_in_requested_order() {
+        let mut runtime = PbftVoteAdmissionRuntime::new();
+        let reward_block = [6; 32];
+        let preferred = VerifiedVote::new(
+            H256::from_low_u64_be(1),
+            H256::from(reward_block),
+            H160::from_low_u64_be(1),
+            12,
+            1,
+            3,
+            PbftVoteType::Cert,
+            1,
+        )
+        .unwrap();
+        runtime
+            .verified_votes_mut()
+            .add_verified_vote(preferred, None)
+            .unwrap();
+
+        let first = vote_rlp_for(reward_block, 12, 2, 3, NODE_SECRET);
+        let second = vote_rlp_for(reward_block, 12, 2, 3, NODE_SECRET_TWO);
+        let first_validation = validation(&first);
+        let second_validation = validation(&second);
+        runtime
+            .admit_validated_vote(&first, &first_validation, flags(), context(Some(80)))
+            .unwrap();
+        runtime
+            .admit_validated_vote(&second, &second_validation, flags(), context(Some(80)))
+            .unwrap();
+
+        let selection = runtime
+            .select_reward_vote_payloads(
+                13,
+                12,
+                1,
+                H256::from(reward_block),
+                vec![second_validation.vote_hash, first_validation.vote_hash],
+            )
+            .unwrap();
+
+        assert!(selection.accepted);
+        assert_eq!(selection.selected_round, 2);
+        assert_eq!(
+            selection.selected_vote_hashes,
+            vec![second_validation.vote_hash, first_validation.vote_hash]
+        );
+        assert_eq!(selection.selected_records.len(), 2);
+        assert_eq!(
+            selection.selected_records[0].hash,
+            second_validation.vote_hash
+        );
+        assert_eq!(
+            selection.selected_records[1].hash,
+            first_validation.vote_hash
+        );
+    }
+
+    #[test]
+    fn runtime_errors_when_selected_reward_payload_is_missing() {
+        let mut runtime = PbftVoteAdmissionRuntime::new();
+        let vote_hash = H256::from_low_u64_be(77);
+        let reward_block = H256::from_low_u64_be(88);
+        let metadata_only_vote = VerifiedVote::new(
+            vote_hash,
+            reward_block,
+            H160::from_low_u64_be(9),
+            12,
+            1,
+            3,
+            PbftVoteType::Cert,
+            1,
+        )
+        .unwrap();
+        runtime
+            .verified_votes_mut()
+            .add_verified_vote(metadata_only_vote, None)
+            .unwrap();
+
+        let err = runtime
+            .select_reward_vote_payloads(13, 12, 1, reward_block, vec![vote_hash])
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("missing retained weighted payload")
         );
     }
 
