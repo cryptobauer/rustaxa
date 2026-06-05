@@ -17,6 +17,20 @@ namespace taraxa::network::tarcap {
  */
 class ExtVotesPacketHandler : public PacketHandler {
  public:
+  /**
+   * Result returned by the temporary vote packet executor.
+   *
+   * Rust-enabled builds populate network-facing effect flags from the
+   * Rust-owned VoteManager admission report. Legacy builds use only
+   * `accepted`; callers keep the existing legacy mark/gossip behavior.
+   */
+  struct VoteProcessingResult {
+    bool accepted = false;
+    bool mark_vote_known = false;
+    bool gossip_vote = false;
+    bool report_slashing = false;
+  };
+
   ExtVotesPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                         std::shared_ptr<TimePeriodPacketsStats> packets_stats, std::shared_ptr<PbftManager> pbft_mgr,
                         std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
@@ -36,10 +50,10 @@ class ExtVotesPacketHandler : public PacketHandler {
    * @param pbft_block
    * @param peer
    * @param validate_max_round_step
-   * @return if vote was successfully processed, otherwise false
+   * @return vote processing result and Rust-planned temporary network effects
    */
-  bool processVote(const std::shared_ptr<PbftVote>& vote, const std::shared_ptr<PbftBlock>& pbft_block,
-                   const std::shared_ptr<TaraxaPeer>& peer, bool validate_max_round_step);
+  VoteProcessingResult processVote(const std::shared_ptr<PbftVote>& vote, const std::shared_ptr<PbftBlock>& pbft_block,
+                                   const std::shared_ptr<TaraxaPeer>& peer, bool validate_max_round_step);
 
   /**
    * @brief Checks is vote is relevant for current pbft state in terms of period, round and type

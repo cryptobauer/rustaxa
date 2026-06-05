@@ -27,9 +27,9 @@ ExtVotesPacketHandler::ExtVotesPacketHandler(const FullNodeConfig &conf, std::sh
       vote_mgr_(std::move(vote_mgr)),
       slashing_manager_(std::move(slashing_manager)) {}
 
-bool ExtVotesPacketHandler::processVote(const std::shared_ptr<PbftVote> &vote,
-                                        const std::shared_ptr<PbftBlock> &pbft_block,
-                                        const std::shared_ptr<TaraxaPeer> &peer, bool validate_max_round_step) {
+ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
+    const std::shared_ptr<PbftVote> &vote, const std::shared_ptr<PbftBlock> &pbft_block,
+    const std::shared_ptr<TaraxaPeer> &peer, bool validate_max_round_step) {
   if (pbft_block && !validateVoteAndBlock(vote, pbft_block)) {
     throw MaliciousPeerException("Received vote's voted value != received pbft block");
   }
@@ -41,7 +41,7 @@ bool ExtVotesPacketHandler::processVote(const std::shared_ptr<PbftVote> &vote,
   // admission, proposed-block handling, logging, and gossip.
   if (vote_mgr_->voteAlreadyValidated(vote->getHash())) {
     LOG(this->log_dg_) << "Received vote " << vote->getHash() << " has already been validated";
-    return false;
+    return {};
   }
 
   const auto [current_pbft_round, current_pbft_period] = pbft_mgr_->getPbftRoundAndPeriod();
@@ -81,31 +81,37 @@ bool ExtVotesPacketHandler::processVote(const std::shared_ptr<PbftVote> &vote,
     LOG(this->log_wr_) << "Vote ingress plan rejected vote " << vote->getHash()
                        << ". Status: " << static_cast<uint32_t>(ingress_plan.status)
                        << ", error: " << static_cast<std::string>(ingress_plan.error_code);
-    return false;
+    return {};
   }
 
-  if (!vote_mgr_->addVerifiedVote(vote)) {
+  const auto admission_report = vote_mgr_->addVerifiedVoteWithReport(vote);
+  VoteProcessingResult result{};
+  result.accepted = admission_report.accepted;
+  result.mark_vote_known = admission_report.mark_vote_known;
+  result.gossip_vote = admission_report.gossip_vote;
+  result.report_slashing = admission_report.report_slashing;
+  if (!result.accepted) {
     LOG(this->log_dg_) << "Vote " << vote->getHash() << " was not admitted by Rust vote transition";
-    return false;
+    return result;
   }
 
   if (pbft_block) {
     pbft_mgr_->processProposedBlock(pbft_block);
   }
 
-  return true;
+  return result;
 #endif
 
   if (vote_mgr_->voteInVerifiedMap(vote)) {
     LOG(this->log_dg_) << "Vote " << vote->getHash() << " already inserted in verified queue";
-    return false;
+    return {};
   }
 
   // Validate vote's period, round and step min/max values
   if (const auto vote_valid = validateVotePeriodRoundStep(vote, peer, validate_max_round_step); !vote_valid.first) {
     LOG(this->log_wr_) << "Vote period/round/step " << vote->getHash()
                        << " validation failed. Err: " << vote_valid.second;
-    return false;
+    return {};
   }
 
   // Check if vote is unique per period, round & step & voter -> each address can generate just 1 vote
@@ -119,19 +125,19 @@ bool ExtVotesPacketHandler::processVote(const std::shared_ptr<PbftVote> &vote,
   // Validate vote's signature, vrf, etc...
   if (const auto vote_valid = vote_mgr_->validateVote(vote); !vote_valid.first) {
     LOG(this->log_wr_) << "Vote " << vote->getHash() << " validation failed. Err: " << vote_valid.second;
-    return false;
+    return {};
   }
 
   if (!vote_mgr_->addVerifiedVote(vote)) {
     LOG(this->log_dg_) << "Vote " << vote->getHash() << " already inserted in verified queue(race condition)";
-    return false;
+    return {};
   }
 
   if (pbft_block) {
     pbft_mgr_->processProposedBlock(pbft_block);
   }
 
-  return true;
+  return {.accepted = true, .mark_vote_known = true, .gossip_vote = true};
 }
 
 std::pair<bool, std::string> ExtVotesPacketHandler::validateVotePeriodRoundStep(const std::shared_ptr<PbftVote> &vote,

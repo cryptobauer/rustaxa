@@ -1,5 +1,3 @@
-#include "vote_manager/verified_votes.hpp"
-
 #include <algorithm>
 #include <mutex>
 #include <stdexcept>
@@ -8,6 +6,7 @@
 
 #include "common/constants.hpp"
 #include "vote/pbft_vote.hpp"
+#include "vote_manager/verified_votes.hpp"
 
 namespace taraxa {
 namespace {
@@ -36,10 +35,14 @@ rustaxa::VerifiedVotePayload VerifiedVotes::toBridgeVotePayload(const std::share
     throw verifiedVotesError("cannot bridge null vote");
   }
 
-  return rustaxa::VerifiedVotePayload{
-      toBridgeHash(vote->getHash()), toBridgeHash(vote->getBlockHash()), toBridgeAddress(vote->getVoterAddr()),
-      vote->getPeriod(),           vote->getRound(),                    vote->getStep(),
-      static_cast<uint8_t>(vote->getType()), requireVoteWeight(vote)};
+  return rustaxa::VerifiedVotePayload{toBridgeHash(vote->getHash()),
+                                      toBridgeHash(vote->getBlockHash()),
+                                      toBridgeAddress(vote->getVoterAddr()),
+                                      vote->getPeriod(),
+                                      vote->getRound(),
+                                      vote->getStep(),
+                                      static_cast<uint8_t>(vote->getType()),
+                                      requireVoteWeight(vote)};
 }
 
 const std::shared_ptr<PbftVote>& VerifiedVotes::requireLiveVote(const vote_hash_t& vote_hash) const {
@@ -96,7 +99,13 @@ PeriodVerifiedVotesMap VerifiedVotes::buildSnapshotState() const {
   for (const auto& vote_data : votes_snapshot) {
     const auto vote_hash = fromBridgeHash(vote_data.vote_hash);
     const auto block_hash = fromBridgeHash(vote_data.block_hash);
-    auto vote = requireLiveVote(vote_hash);
+    const auto live_vote_it = live_votes_.find(vote_hash);
+    if (live_vote_it == live_votes_.end()) {
+      // TODO(rustaxa): delete this skip once public C++ snapshot APIs no longer materialize
+      // temporary live `PbftVote` sidecars from Rust-owned verified-vote metadata.
+      continue;
+    }
+    auto vote = live_vote_it->second;
 
     auto& round_votes = state[vote_data.period][static_cast<PbftRound>(vote_data.round)];
     auto& step_votes = round_votes.step_votes[static_cast<PbftStep>(vote_data.step)];
@@ -183,8 +192,7 @@ rustaxa::PbftTwoTPlusOneThresholdPlan VerifiedVotes::twoTPlusOneThreshold(
 }
 
 rustaxa::PbftVoteRuntimeValidationResult VerifiedVotes::validateCanonicalVote(
-    rust::Slice<const uint8_t> canonical_vote_rlp,
-    rustaxa::PbftVoteValidationExternalFacts validation_facts) const {
+    rust::Slice<const uint8_t> canonical_vote_rlp, rustaxa::PbftVoteValidationExternalFacts validation_facts) const {
   std::scoped_lock lock(verified_votes_access_);
   return rust_verified_votes_->verified_votes_validate_canonical_vote(canonical_vote_rlp, validation_facts);
 }
@@ -196,7 +204,12 @@ std::vector<std::shared_ptr<PbftVote>> VerifiedVotes::votes() const {
   const auto snapshot = rust_verified_votes_->verified_votes_snapshot_votes();
   out.reserve(snapshot.size());
   for (const auto& vote : snapshot) {
-    out.push_back(requireLiveVote(fromBridgeHash(vote.vote_hash)));
+    const auto live_vote_it = live_votes_.find(fromBridgeHash(vote.vote_hash));
+    if (live_vote_it == live_votes_.end()) {
+      // TODO(rustaxa): delete this skip once callers consume Rust-owned vote payload views directly.
+      continue;
+    }
+    out.push_back(live_vote_it->second);
   }
   return out;
 }
@@ -246,8 +259,8 @@ std::optional<const StepVotes> VerifiedVotes::getStepVotes(PbftPeriod period, Pb
 std::optional<VotedBlock> VerifiedVotes::getTwoTPlusOneVotedBlock(PbftPeriod period, PbftRound round,
                                                                   TwoTPlusOneVotedBlockType type) const {
   std::shared_lock lock(verified_votes_access_);
-  const auto lookup = rust_verified_votes_->verified_votes_get_two_t_plus_one_voted_block(
-      period, round, static_cast<uint8_t>(type));
+  const auto lookup =
+      rust_verified_votes_->verified_votes_get_two_t_plus_one_voted_block(period, round, static_cast<uint8_t>(type));
   if (!lookup.found) {
     return std::nullopt;
   }
@@ -267,7 +280,12 @@ std::vector<std::shared_ptr<PbftVote>> VerifiedVotes::getTwoTPlusOneVotedBlockVo
   std::vector<std::shared_ptr<PbftVote>> out;
   out.reserve(lookup.vote_hashes.size());
   for (const auto& vote_hash : lookup.vote_hashes) {
-    out.push_back(requireLiveVote(fromBridgeHash(vote_hash.hash)));
+    const auto live_vote_it = live_votes_.find(fromBridgeHash(vote_hash.hash));
+    if (live_vote_it == live_votes_.end()) {
+      // TODO(rustaxa): delete this skip once 2t+1 callers consume Rust-owned vote payload views directly.
+      continue;
+    }
+    out.push_back(live_vote_it->second);
   }
   return out;
 }
@@ -324,8 +342,8 @@ VerifiedVotes::AddVerifiedVoteOutcome VerifiedVotes::addVerifiedVoteWithThreshol
     const std::shared_ptr<PbftVote>& vote, std::optional<uint64_t> two_t_plus_one) {
   std::scoped_lock lock(verified_votes_access_);
   const auto payload = toBridgeVotePayload(vote);
-  const auto outcome = rust_verified_votes_->verified_votes_add_verified_vote(
-      payload, two_t_plus_one.value_or(0), two_t_plus_one.has_value());
+  const auto outcome = rust_verified_votes_->verified_votes_add_verified_vote(payload, two_t_plus_one.value_or(0),
+                                                                              two_t_plus_one.has_value());
 
   AddVerifiedVoteOutcome result{};
   result.report = outcome;
@@ -349,7 +367,8 @@ rustaxa::PbftVoteAdmissionRuntimeResult VerifiedVotes::admitValidatedVote(
     rust::Slice<const uint8_t> canonical_vote_rlp, rustaxa::PbftVoteValidationExternalFacts validation_facts,
     rustaxa::PbftVoteEventFactFlags flags, rustaxa::PbftVoteProgressContext context) {
   std::scoped_lock lock(verified_votes_access_);
-  return rust_verified_votes_->verified_votes_admit_validated_vote(canonical_vote_rlp, validation_facts, flags, context);
+  return rust_verified_votes_->verified_votes_admit_validated_vote(canonical_vote_rlp, validation_facts, flags,
+                                                                   context);
 }
 
 std::optional<VotesWithWeight> VerifiedVotes::attachRuntimeAcceptedVote(

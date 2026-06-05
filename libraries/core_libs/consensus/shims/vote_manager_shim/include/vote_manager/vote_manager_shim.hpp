@@ -34,6 +34,34 @@ namespace taraxa {
 class VoteManager : public VoteManagerOld {
  public:
   /**
+   * Network-facing executor report for Rust PBFT vote admission.
+   *
+   * Purpose:
+   * - Carries the Rust-planned ingress/network effects that are safe for the
+   *   temporary packet-handler executor to apply after `VoteManager` has
+   *   validated, inserted, and persisted the vote through Rust-owned runtime
+   *   state.
+   *
+   * Invariants:
+   * - `accepted` means the vote was admitted and any VoteManager-owned storage
+   *   or slashing side effects have already been applied.
+   * - Hash fields are populated only when their matching boolean is true.
+   * - Slashing submission remains owned by `VoteManager` in this slice; the
+   *   `report_slashing` flag lets packet handlers apply peer-action policy.
+   */
+  struct PbftVoteAdmissionReport {
+    bool accepted = false;
+    bool mark_vote_known = false;
+    vote_hash_t mark_vote_known_hash;
+    bool gossip_vote = false;
+    vote_hash_t gossip_vote_hash;
+    bool report_slashing = false;
+    bool drive_pbft_progress = false;
+    PbftPeriod progress_period = 0;
+    PbftRound progress_round = 0;
+  };
+
+  /**
    * Constructs the Rust-mode VoteManager overlay.
    *
    * Inputs mirror the legacy `VoteManager` constructor. The overlay initializes
@@ -49,6 +77,23 @@ class VoteManager : public VoteManagerOld {
               std::shared_ptr<SlashingManager> slashing_manager);
 
   void setNetwork(std::weak_ptr<Network> network);
+  /**
+   * Validates and admits a PBFT vote through the Rust-owned admission runtime.
+   *
+   * Inputs:
+   * - `vote` is the temporary live C++ sidecar whose canonical RLP is inspected
+   *   and validated by Rust before any verified-vote runtime mutation.
+   *
+   * Outputs:
+   * - Returns the terminal Rust admission outcome plus packet-handler effects
+   *   that C++ may execute after admission.
+   *
+   * Edge behavior:
+   * - Duplicate, invalid, or non-admitted votes return `accepted == false`.
+   * - Double-vote evidence is submitted inside `VoteManager`; callers use
+   *   `report_slashing` only for peer-action policy.
+   */
+  PbftVoteAdmissionReport addVerifiedVoteWithReport(const std::shared_ptr<PbftVote>& vote);
   bool addVerifiedVote(const std::shared_ptr<PbftVote>& vote);
   bool voteInVerifiedMap(std::shared_ptr<PbftVote> const& vote) const;
   std::pair<bool, std::shared_ptr<PbftVote>> isUniqueVote(const std::shared_ptr<PbftVote>& vote) const;

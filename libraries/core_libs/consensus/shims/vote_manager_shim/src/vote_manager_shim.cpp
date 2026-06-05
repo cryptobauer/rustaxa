@@ -250,8 +250,7 @@ void requireApplied(const rustaxa::PbftVotePersistenceResult& result, const char
   }
 
   std::stringstream err;
-  err << "Rust PBFT vote persistence rejected " << operation << ": "
-      << static_cast<std::string>(result.error_code);
+  err << "Rust PBFT vote persistence rejected " << operation << ": " << static_cast<std::string>(result.error_code);
   throw std::runtime_error(err.str());
 }
 
@@ -298,7 +297,8 @@ rustaxa::PbftVoteEventFactFlags makeVoteEventFactFlags(bool valid_stale_reward_v
   return flags;
 }
 
-void requireRuntimeAdmissionVoteMatches(const rustaxa::VerifiedVotePayload& fact, const std::shared_ptr<PbftVote>& vote) {
+void requireRuntimeAdmissionVoteMatches(const rustaxa::VerifiedVotePayload& fact,
+                                        const std::shared_ptr<PbftVote>& vote) {
   if (!vote || !vote->getWeight().has_value()) {
     throw std::runtime_error("VoteManager cannot attach PBFT vote admission result without a weighted vote sidecar");
   }
@@ -325,7 +325,8 @@ void requireRuntimeVoteTransitionIntentsMatch(const rustaxa::PbftVoteAdmissionRu
     throw std::runtime_error("VoteManager Rust PBFT vote transition returned mismatched gossip intent");
   }
   if (result.request_proposed_block_sidecar) {
-    throw std::runtime_error("VoteManager Rust PBFT vote transition requested unsupported proposed-block sidecar fetch");
+    throw std::runtime_error(
+        "VoteManager Rust PBFT vote transition requested unsupported proposed-block sidecar fetch");
   }
 }
 
@@ -467,9 +468,14 @@ void VoteManager::setNetwork(std::weak_ptr<Network> network) {
 }
 
 bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
+  return addVerifiedVoteWithReport(vote).accepted;
+}
+
+VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(const std::shared_ptr<PbftVote>& vote) {
+  PbftVoteAdmissionReport report{};
   if (!vote) {
     LOG(log_er_) << "Unable to add vote into the verified queue. Missing vote";
-    return false;
+    return report;
   }
 
   const auto hash = vote->getHash();
@@ -479,13 +485,13 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
     if (!is_valid_potential_reward_vote) {
       LOG(log_tr_) << "Old vote " << vote->getHash().abridged() << " vote period" << vote->getPeriod()
                    << " current period " << current_pbft_period_;
-      return false;
+      return report;
     }
   }
 
   if (vote->getPeriod() == 0) {
     LOG(log_er_) << "Unable to add vote " << hash << " into the verified queue. Invalid zero vote period";
-    return false;
+    return report;
   }
 
   const auto two_t_plus_one = getPbftTwoTPlusOne(vote->getPeriod() - 1, vote->getType());
@@ -500,7 +506,7 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
     if (inspection.status == kPbftCanonicalVoteInspectionStatusInvalidSignature) {
       verified_votes_.replayInsert(fromBridgeVoteHash(inspection.vote_hash));
     }
-    return false;
+    return report;
   }
   if (toBridgeHash(vote->getHash()) != inspection.vote_hash ||
       toBridgeHash(vote->getBlockHash()) != inspection.block_hash || vote->getPeriod() != inspection.period ||
@@ -530,37 +536,43 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
     LOG(log_er_) << "Unable to admit vote " << hash << " against dpos contract. Its period (" << vote->getPeriod()
                  << ") is too far ahead of actual finalized pbft chain size (" << final_chain_->lastBlockNumber()
                  << "). Err msg: " << e.what();
-    return false;
+    return report;
   } catch (const std::exception& e) {
     external_facts.unknown_error = true;
     LOG(log_er_) << "Unable to admit vote " << hash << ". Err msg: " << e.what();
-    return false;
+    return report;
   } catch (...) {
     external_facts.unknown_error = true;
     LOG(log_er_) << "Unable to admit vote " << hash << ". Unknown error";
-    return false;
+    return report;
   }
 
   const auto runtime_result =
       verified_votes_.admitValidatedVote(toBridgeByteSlice(canonical_vote_rlp), external_facts,
                                          makeVoteEventFactFlags(is_valid_potential_reward_vote), progress_context);
   requireRuntimeVoteTransitionIntentsMatch(runtime_result, vote);
-  // TODO(rustaxa): execute peer-known and gossip intents directly from this Rust transition once vote ingress carries
-  // peer/network executor handles into the consensus pipeline. Network packet handlers and PBFT manager callers still
-  // execute those effects after this Rust-owned transition accepts the vote.
+  report.mark_vote_known = runtime_result.mark_vote_known;
+  report.mark_vote_known_hash = fromBridgeVoteHash(runtime_result.mark_vote_known_hash);
+  report.gossip_vote = runtime_result.gossip_vote;
+  report.gossip_vote_hash = fromBridgeVoteHash(runtime_result.gossip_vote_hash);
+  report.report_slashing = runtime_result.report_slashing;
+  report.drive_pbft_progress = runtime_result.drive_pbft_progress;
+  report.progress_period = runtime_result.progress_period;
+  report.progress_round = runtime_result.progress_round;
+
   if (!runtime_result.has_validation || !runtime_result.validation.accepted ||
       runtime_result.validation.status != kPbftVoteValidationStatusValid) {
     LOG(log_er_) << "VoteManager Rust PBFT vote admission rejected vote " << vote->getHash()
                  << " during validation, status: "
                  << static_cast<uint32_t>(runtime_result.has_validation ? runtime_result.validation.status : 0)
                  << ", error: " << static_cast<std::string>(runtime_result.error_code);
-    return false;
+    return report;
   }
   if (!runtime_result.has_vote) {
     LOG(log_er_) << "VoteManager Rust PBFT vote admission rejected vote " << vote->getHash()
                  << ", status: " << static_cast<uint32_t>(runtime_result.status)
                  << ", error: " << static_cast<std::string>(runtime_result.error_code);
-    return false;
+    return report;
   }
   if (!runtime_result.validation.has_sortition_threshold || !runtime_result.validation.weight_calculated) {
     throw std::runtime_error("VoteManager Rust PBFT vote admission accepted validation without weight facts");
@@ -579,16 +591,16 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
     slashing_manager_->submitDoubleVotingProof(runtime_result.slashing_incoming_vote,
                                                runtime_result.slashing_conflicting_vote, vote->getPeriod(),
                                                vote->getRound(), vote->getStep());
-    return false;
+    return report;
   }
 
   if (!runtime_result.accepted) {
-    return false;
+    return report;
   }
   if (!runtime_result.has_verified_vote_add || !runtime_result.verified_vote_add.inserted) {
     LOG(log_dg_) << "VoteManager Rust PBFT vote admission accepted vote " << vote->getHash()
                  << " without a new verified-vote insertion";
-    return false;
+    return report;
   }
   if (!runtime_result.has_storage_vote) {
     throw std::runtime_error("VoteManager Rust PBFT vote admission accepted without a storage payload");
@@ -609,7 +621,8 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
       extra_reward_votes_.emplace_back(vote->getHash());
     }
     LOG(log_er_) << "Cannot set(or not) 2t+1 voted block as 2t+1 threshold is unavailable, vote " << vote->getHash();
-    return true;
+    report.accepted = true;
+    return report;
   }
 
   if (runtime_result.network_t_plus_one_step_updated) {
@@ -623,7 +636,8 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
                                                runtime_result.two_t_plus_one_bundle);
       extra_reward_votes_.emplace_back(vote->getHash());
     }
-    return true;
+    report.accepted = true;
+    return report;
   }
 
   persistVoteProgressPayloadsToRustStorage(*db_, runtime_result.persist_extra_reward_vote,
@@ -632,7 +646,8 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
   if (runtime_result.persist_extra_reward_vote) {
     extra_reward_votes_.emplace_back(vote->getHash());
   }
-  return true;
+  report.accepted = true;
+  return report;
 }
 
 bool VoteManager::voteInVerifiedMap(std::shared_ptr<PbftVote> const& vote) const {
@@ -765,9 +780,8 @@ std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> VoteManager::checkReward
   fact.reward_block_hash = toBridgeHash(reward_votes_block_hash);
   fact.requested_vote_hashes = toBridgeRewardVoteHashes(pbft_block->getRewardVotes());
   fact.has_preferred_round = preferred_round_votes.has_value();
-  fact.preferred_round = makeRewardVoteRoundCandidate(reward_votes_round,
-                                                      preferred_round_votes ? &*preferred_round_votes : nullptr,
-                                                      reward_votes_block_hash);
+  fact.preferred_round = makeRewardVoteRoundCandidate(
+      reward_votes_round, preferred_round_votes ? &*preferred_round_votes : nullptr, reward_votes_block_hash);
   fact.has_reward_period = period_votes.has_value();
   if (period_votes) {
     fact.period_rounds.reserve(period_votes->size());
@@ -780,10 +794,8 @@ std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> VoteManager::checkReward
   const auto plan = rustaxa::pbft_reward_votes_plan(std::move(fact));
   if (!plan.accepted) {
     LOG(log_er_) << "No (or not enough) reward votes found for block " << pbft_block->getBlockHash()
-                 << ", period: " << pbft_block->getPeriod()
-                 << ", prev. block hash: " << pbft_block->getPrevBlockHash()
-                 << ", reward_votes_period: " << reward_votes_period
-                 << ", reward_votes_round_: " << reward_votes_round
+                 << ", period: " << pbft_block->getPeriod() << ", prev. block hash: " << pbft_block->getPrevBlockHash()
+                 << ", reward_votes_period: " << reward_votes_period << ", reward_votes_round_: " << reward_votes_round
                  << ", selected_round: " << plan.selected_round
                  << ", reward_votes_block_hash: " << reward_votes_block_hash
                  << ", status: " << static_cast<uint32_t>(plan.status)
@@ -795,9 +807,8 @@ std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> VoteManager::checkReward
     return {true, {}};
   }
 
-  const auto selected_round_votes =
-      verified_votes_.getRoundVotes(static_cast<PbftPeriod>(plan.selected_period),
-                                    static_cast<PbftRound>(plan.selected_round));
+  const auto selected_round_votes = verified_votes_.getRoundVotes(static_cast<PbftPeriod>(plan.selected_period),
+                                                                  static_cast<PbftRound>(plan.selected_round));
   if (!selected_round_votes) {
     LOG(log_er_) << "Rust reward-vote planner selected missing round " << plan.selected_round << " for period "
                  << plan.selected_period;
@@ -813,8 +824,7 @@ std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> VoteManager::checkReward
     return {false, {}};
   }
 
-  const auto selected_block_hash =
-      blk_hash_t(plan.selected_block_hash.data(), blk_hash_t::ConstructFromPointer);
+  const auto selected_block_hash = blk_hash_t(plan.selected_block_hash.data(), blk_hash_t::ConstructFromPointer);
   const auto found_verified_votes_it = found_step_votes_it->second.votes.find(selected_block_hash);
   if (found_verified_votes_it == found_step_votes_it->second.votes.end()) {
     LOG(log_er_) << "Rust reward-vote planner selected missing reward block " << selected_block_hash;
@@ -876,9 +886,7 @@ void VoteManager::saveOwnVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
   own_verified_votes_.push_back(vote);
 }
 
-std::vector<std::shared_ptr<PbftVote>> VoteManager::getOwnVerifiedVotes() {
-  return own_verified_votes_;
-}
+std::vector<std::shared_ptr<PbftVote>> VoteManager::getOwnVerifiedVotes() { return own_verified_votes_; }
 
 void VoteManager::clearOwnVerifiedVotes(Batch& write_batch) {
   std::vector<vote_hash_t> own_vote_hashes;
@@ -890,10 +898,9 @@ void VoteManager::clearOwnVerifiedVotes(Batch& write_batch) {
     own_vote_hashes.emplace_back(vote->getHash());
   }
 
-  requireApplied(
-      db_->rustStorage().append_clear_own_verified_votes(db_->rustBatchId(write_batch),
-                                                         toBridgeRewardVoteHashes(own_vote_hashes)),
-      "own verified vote cleanup");
+  requireApplied(db_->rustStorage().append_clear_own_verified_votes(db_->rustBatchId(write_batch),
+                                                                    toBridgeRewardVoteHashes(own_vote_hashes)),
+                 "own verified vote cleanup");
   own_verified_votes_.clear();
 }
 
@@ -1028,7 +1035,8 @@ std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<Pbf
       external_facts.vrf_public_key = pk->asArray();
     }
 
-    validation = verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts).validation;
+    validation =
+        verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts).validation;
     if (validation.status == kPbftVoteValidationStatusMissingVrfKey) {
       err_msg << "No vrf key mapped for vote author " << recovered_voter;
       return {false, err_msg.str()};
@@ -1045,7 +1053,8 @@ std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<Pbf
     const uint64_t total_dpos_votes_count = final_chain_->dposEligibleTotalVoteCount(vote_period - 1);
     external_facts.total_dpos_ready = true;
     external_facts.total_dpos_vote_count = total_dpos_votes_count;
-    validation = verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts).validation;
+    validation =
+        verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts).validation;
     if (!validation.has_sortition_threshold) {
       throw std::runtime_error("Rust PBFT vote validation did not return a sortition threshold");
     }
@@ -1126,9 +1135,9 @@ std::optional<uint64_t> VoteManager::getPbftTwoTPlusOne(PbftPeriod pbft_period, 
   } catch (...) {
     threshold_fact.unknown_error = true;
     threshold_plan = verified_votes_.twoTPlusOneThreshold(threshold_fact);
-    LOG(log_er_) << "Unable to calculate 2t + 1 for period: " << pbft_period << ". Unknown error. Rust threshold status "
-                 << static_cast<uint32_t>(threshold_plan.status) << " error "
-                 << static_cast<std::string>(threshold_plan.error_code);
+    LOG(log_er_) << "Unable to calculate 2t + 1 for period: " << pbft_period
+                 << ". Unknown error. Rust threshold status " << static_cast<uint32_t>(threshold_plan.status)
+                 << " error " << static_cast<std::string>(threshold_plan.error_code);
     return {};
   }
 

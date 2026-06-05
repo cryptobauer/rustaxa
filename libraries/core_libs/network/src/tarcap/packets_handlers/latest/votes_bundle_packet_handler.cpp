@@ -15,7 +15,7 @@ namespace {
 constexpr uint8_t kPbftVoteIngressStatusUnsupportedBundleProposeVote = 7;
 constexpr uint8_t kPbftVoteIngressStatusBundleVoteMismatch = 8;
 
-rustaxa::PbftVoteIngressFact makeVoteIngressFact(const std::shared_ptr<PbftVote>& vote) {
+rustaxa::PbftVoteIngressFact makeVoteIngressFact(const std::shared_ptr<PbftVote> &vote) {
   rustaxa::PbftVoteIngressFact fact{};
   fact.period = vote->getPeriod();
   fact.round = vote->getRound();
@@ -60,8 +60,8 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
   ingress_context.max_future_period_delta = this->kConf.network.ddos_protection.vote_accepting_periods;
   ingress_context.max_future_round_delta = this->kConf.network.ddos_protection.vote_accepting_rounds;
   ingress_context.max_future_step_delta = this->kConf.network.ddos_protection.vote_accepting_steps;
-  ingress_context.validate_max_round_step = !(votes_bundle_votes_type == PbftVoteTypes::cert_vote ||
-                                              votes_bundle_votes_type == PbftVoteTypes::next_vote);
+  ingress_context.validate_max_round_step =
+      !(votes_bundle_votes_type == PbftVoteTypes::cert_vote || votes_bundle_votes_type == PbftVoteTypes::next_vote);
   ingress_context.source_peer_is_voter = reference_vote->getVoter() == peer->getId();
   ingress_context.can_request_pbft_sync =
       std::chrono::system_clock::now() - last_pbft_block_sync_request_time_ > kSyncRequestInterval;
@@ -69,7 +69,7 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
       std::chrono::system_clock::now() - last_votes_sync_request_time_ > kSyncRequestInterval;
 
   const auto reference_fact = makeVoteIngressFact(reference_vote);
-  for (const auto& vote : packet.votes_bundle.votes) {
+  for (const auto &vote : packet.votes_bundle.votes) {
     const auto ingress_plan =
         rustaxa::pbft_vote_bundle_ingress_plan(reference_fact, makeVoteIngressFact(vote), ingress_context);
     if (ingress_plan.accepted) {
@@ -122,8 +122,14 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
   }
 
   size_t processed_votes_count = 0;
+#ifdef RUSTAXA_ENABLE
+  std::vector<std::shared_ptr<PbftVote>> processed_votes;
+  processed_votes.reserve(packet.votes_bundle.votes.size());
+#endif
   for (const auto &vote : packet.votes_bundle.votes) {
+#ifndef RUSTAXA_ENABLE
     peer->markPbftVoteAsKnown(vote->getHash());
+#endif
 
     // Do not process vote that has already been validated
     if (vote_mgr_->voteAlreadyValidated(vote->getHash())) {
@@ -135,10 +141,21 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
                  << vote->getRound() << ", step " << vote->getStep() << ", voter " << vote->getVoterAddr()
                  << " as part of votes bundle";
 
-    if (!processVote(vote, nullptr, peer, check_max_round_step)) {
+    const auto process_result = processVote(vote, nullptr, peer, check_max_round_step);
+    if (process_result.report_slashing) {
+      throw MaliciousPeerException("Received double vote", vote->getVoter());
+    }
+    if (!process_result.accepted) {
       continue;
     }
 
+#ifdef RUSTAXA_ENABLE
+    if (process_result.mark_vote_known) {
+      peer->markPbftVoteAsKnown(vote->getHash());
+    }
+
+    processed_votes.emplace_back(vote);
+#endif
     processed_votes_count++;
   }
 
@@ -146,7 +163,11 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
                << " ) sync votes from peer " << peer->getId() << ". Votes period " << reference_vote->getPeriod()
                << ", round " << reference_vote->getRound() << ", step " << reference_vote->getStep();
 
+#ifdef RUSTAXA_ENABLE
+  onNewPbftVotesBundle(processed_votes, false, peer->getId());
+#else
   onNewPbftVotesBundle(packet.votes_bundle.votes, false, peer->getId());
+#endif
 }
 
 }  // namespace taraxa::network::tarcap

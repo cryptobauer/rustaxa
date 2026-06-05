@@ -65,18 +65,34 @@ void VotePacketHandler::process(const threadpool::PacketData &packet_data, const
       throw MaliciousPeerException(err_msg.str());
     }
 
+#ifndef RUSTAXA_ENABLE
     peer->markPbftBlockAsKnown(packet.optional_data->pbft_block->getBlockHash());
+#endif
     pbft_block = packet.optional_data->pbft_block;
   }
 
-  if (!processVote(packet.vote, pbft_block, peer, true)) {
+  const auto process_result = processVote(packet.vote, pbft_block, peer, true);
+  if (process_result.report_slashing) {
+    throw MaliciousPeerException("Received double vote", packet.vote->getVoter());
+  }
+  if (!process_result.accepted) {
     return;
   }
 
-  // Do not mark it before, as peers have small caches of known votes. Only mark gossiping votes
-  peer->markPbftVoteAsKnown(vote_hash);
+#ifdef RUSTAXA_ENABLE
+  if (pbft_block) {
+    peer->markPbftBlockAsKnown(pbft_block->getBlockHash());
+  }
+#endif
 
-  pbft_mgr_->gossipVote(packet.vote, pbft_block);
+  // Do not mark it before, as peers have small caches of known votes. Only mark gossiping votes
+  if (process_result.mark_vote_known) {
+    peer->markPbftVoteAsKnown(vote_hash);
+  }
+
+  if (process_result.gossip_vote) {
+    pbft_mgr_->gossipVote(packet.vote, pbft_block);
+  }
 }
 
 }  // namespace taraxa::network::tarcap

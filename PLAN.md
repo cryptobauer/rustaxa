@@ -458,8 +458,13 @@ The current Rust starting point is intentionally small:
   read helpers, a canonical PBFT vote event fact boundary, a Rust-owned validation-backed PBFT vote admission runtime
   that composes canonical validation, event-fact derivation, verified-vote mutation, threshold planning, retained
   storage/slashing vote payload sidecars, and typed executor intents for peer-known marking, proposed-block sidecar
-  routing, gossip, and PBFT progress, a
-  side-effect-free PBFT vote-progress protocol planner plus a Rust-owned PBFT vote pipeline session that stages
+  routing, gossip, and PBFT progress. The Rust-mode `VoteManager` shim exposes those intents through a temporary
+  admission report consumed by latest-tarcap vote handlers, so single-vote and bundle paths mark peers/votes known,
+  report slashing, and gossip only after Rust admission has accepted the vote. Generic legacy snapshot APIs on the
+  `VerifiedVotes` overlay may temporarily skip missing live `PbftVote` sidecars while Rust remains authoritative for
+  retained vote payloads; this compatibility tolerance should disappear when remaining callers stop materializing live
+  sidecars from Rust-owned vote state. The crate also contains a side-effect-free PBFT vote-progress protocol planner
+  plus a Rust-owned PBFT vote pipeline session that stages
   verified-vote insertion reports into typed
   known/admit/slashing/gossip/progress intents, a side-effect-free PBFT vote ingress planner for deterministic
   single-vote and bundle relevance/window/sync-hint/drop decisions, and exposes operation-specific CXX bridge surfaces for Rust-mode
@@ -516,11 +521,14 @@ The current Rust starting point is intentionally small:
    FinalChain/key facts, Rust validates the canonical PBFT vote RLP, carries the validation result and calculated
    weight into compact progress facts, mutates the single Rust-owned `VerifiedVotes` runtime, retains weighted storage
    payloads and unweighted slashing evidence payloads, and returns one terminal executor report with Rust-planned
-   peer-known, proposed-block sidecar, gossip, storage, slashing, threshold, and PBFT-progress intents. PBFT vote packet
-   ingress now has a compact-fact Rust planner for relevance, period/round/step windows, proposed-vote bundle rejection,
+   peer-known, proposed-block sidecar, gossip, storage, slashing, threshold, and PBFT-progress intents. Latest-tarcap
+   single-vote and bundle handlers now execute those peer-known, slashing, and gossip intents from a shim-owned
+   admission report after Rust admission accepts the vote; bundle rebroadcast in Rust mode is limited to accepted votes.
+   PBFT vote packet ingress now has a compact-fact Rust planner for relevance, period/round/step windows, proposed-vote bundle rejection,
    bundle identity consistency, and PBFT/next-vote sync hints. Latest-tarcap packet handlers currently call this planner
    through guarded temporary hooks in Rust-enabled builds, while C++ still decodes packets, supplies live peer/sidecar
-   facts, and executes network effects until the network/tarcap pipeline overlay owns those routes.
+   facts, and executes network effects until the network/tarcap pipeline overlay owns those routes. The guarded latest-
+   tarcap method signature changes are temporary network-hook debt, not the target API shape.
    Replay protection and PBFT `2t+1` threshold caching now live in the same Rust `VerifiedVotes`/admission runtime that
    owns verified-vote mutation. PBFT vote validation now also has Rust planner surfaces for compatibility/testing:
    C++ supplies DPoS/key facts, while Rust owns canonical vote-byte inspection, signature/VRF facts, Rust-computed
