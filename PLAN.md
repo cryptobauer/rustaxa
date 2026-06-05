@@ -461,7 +461,8 @@ The current Rust starting point is intentionally small:
   routing, gossip, and PBFT progress, a
   side-effect-free PBFT vote-progress protocol planner plus a Rust-owned PBFT vote pipeline session that stages
   verified-vote insertion reports into typed
-  known/admit/slashing/gossip/progress intents and exposes operation-specific CXX bridge surfaces for Rust-mode
+  known/admit/slashing/gossip/progress intents, a side-effect-free PBFT vote ingress planner for deterministic
+  single-vote and bundle relevance/window/sync-hint/drop decisions, and exposes operation-specific CXX bridge surfaces for Rust-mode
   `VoteManager::addVerifiedVote` execution, Rust-owned PBFT vote validation
   planning with replay-cache storage,
   canonical PBFT vote RLP inspection, signed/unsigned vote hashing, signature recovery, VRF proof verification,
@@ -515,8 +516,11 @@ The current Rust starting point is intentionally small:
    FinalChain/key facts, Rust validates the canonical PBFT vote RLP, carries the validation result and calculated
    weight into compact progress facts, mutates the single Rust-owned `VerifiedVotes` runtime, retains weighted storage
    payloads and unweighted slashing evidence payloads, and returns one terminal executor report with Rust-planned
-   peer-known, proposed-block sidecar, gossip, storage, slashing, threshold, and PBFT-progress intents. Packet ingress
-   still executes peer/network effects outside consensus until the network pipeline boundary moves to Rust.
+   peer-known, proposed-block sidecar, gossip, storage, slashing, threshold, and PBFT-progress intents. PBFT vote packet
+   ingress now has a compact-fact Rust planner for relevance, period/round/step windows, proposed-vote bundle rejection,
+   bundle identity consistency, and PBFT/next-vote sync hints. Latest-tarcap packet handlers currently call this planner
+   through guarded temporary hooks in Rust-enabled builds, while C++ still decodes packets, supplies live peer/sidecar
+   facts, and executes network effects until the network/tarcap pipeline overlay owns those routes.
    Replay protection and PBFT `2t+1` threshold caching now live in the same Rust `VerifiedVotes`/admission runtime that
    owns verified-vote mutation. PBFT vote validation now also has Rust planner surfaces for compatibility/testing:
    C++ supplies DPoS/key facts, while Rust owns canonical vote-byte inspection, signature/VRF facts, Rust-computed

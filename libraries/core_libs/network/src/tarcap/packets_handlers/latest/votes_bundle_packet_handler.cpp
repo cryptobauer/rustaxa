@@ -1,10 +1,31 @@
 #include "network/tarcap/packets_handlers/latest/votes_bundle_packet_handler.hpp"
 
 #include "pbft/pbft_manager.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
 #include "vote/votes_bundle_rlp.hpp"
 #include "vote_manager/vote_manager.hpp"
 
 namespace taraxa::network::tarcap {
+
+#ifdef RUSTAXA_ENABLE
+namespace {
+
+constexpr uint8_t kPbftVoteIngressStatusUnsupportedBundleProposeVote = 7;
+constexpr uint8_t kPbftVoteIngressStatusBundleVoteMismatch = 8;
+
+rustaxa::PbftVoteIngressFact makeVoteIngressFact(const std::shared_ptr<PbftVote>& vote) {
+  rustaxa::PbftVoteIngressFact fact{};
+  fact.period = vote->getPeriod();
+  fact.round = vote->getRound();
+  fact.step = vote->getStep();
+  fact.vote_type = static_cast<uint8_t>(vote->getType());
+  return fact;
+}
+
+}  // namespace
+#endif
 
 VotesBundlePacketHandler::VotesBundlePacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                                                    std::shared_ptr<TimePeriodPacketsStats> packets_stats,
@@ -31,6 +52,49 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
   const auto &reference_vote = packet.votes_bundle.votes.front();
   const auto votes_bundle_votes_type = reference_vote->getType();
 
+#ifdef RUSTAXA_ENABLE
+  rustaxa::PbftVoteIngressContext ingress_context{};
+  ingress_context.current_period = current_pbft_period;
+  ingress_context.current_round = current_pbft_round;
+  ingress_context.current_step = pbft_mgr_->getPbftStep();
+  ingress_context.max_future_period_delta = this->kConf.network.ddos_protection.vote_accepting_periods;
+  ingress_context.max_future_round_delta = this->kConf.network.ddos_protection.vote_accepting_rounds;
+  ingress_context.max_future_step_delta = this->kConf.network.ddos_protection.vote_accepting_steps;
+  ingress_context.validate_max_round_step = !(votes_bundle_votes_type == PbftVoteTypes::cert_vote ||
+                                              votes_bundle_votes_type == PbftVoteTypes::next_vote);
+  ingress_context.source_peer_is_voter = reference_vote->getVoter() == peer->getId();
+  ingress_context.can_request_pbft_sync =
+      std::chrono::system_clock::now() - last_pbft_block_sync_request_time_ > kSyncRequestInterval;
+  ingress_context.can_request_next_votes_sync =
+      std::chrono::system_clock::now() - last_votes_sync_request_time_ > kSyncRequestInterval;
+
+  const auto reference_fact = makeVoteIngressFact(reference_vote);
+  for (const auto& vote : packet.votes_bundle.votes) {
+    const auto ingress_plan =
+        rustaxa::pbft_vote_bundle_ingress_plan(reference_fact, makeVoteIngressFact(vote), ingress_context);
+    if (ingress_plan.accepted) {
+      continue;
+    }
+
+    if (ingress_plan.status == kPbftVoteIngressStatusUnsupportedBundleProposeVote) {
+      LOG(log_er_) << "Dropping votes bundle packet due to received \"propose\" votes from " << peer->getId()
+                   << ". The peer may be a malicious player, will be disconnected";
+      disconnect(peer->getId(), dev::p2p::UserReason);
+      return;
+    }
+    if (ingress_plan.status == kPbftVoteIngressStatusBundleVoteMismatch) {
+      throw MaliciousPeerException("Received PBFT votes bundle with mixed vote identity");
+    }
+
+    LOG(log_wr_) << "Drop votes sync bundle as Rust ingress plan rejected it. Votes (period, round, step) = ("
+                 << reference_vote->getPeriod() << ", " << reference_vote->getRound() << ", "
+                 << reference_vote->getStep() << "). Current PBFT (period, round, step) = (" << current_pbft_period
+                 << ", " << current_pbft_round << ", " << pbft_mgr_->getPbftStep()
+                 << "), status: " << static_cast<uint32_t>(ingress_plan.status)
+                 << ", error: " << static_cast<std::string>(ingress_plan.error_code);
+    return;
+  }
+#else
   // Votes sync bundles are allowed to contain only votes bundles of the same type, period, round and step so if first
   // vote is irrelevant, all of them are
   if (!isPbftRelevantVote(packet.votes_bundle.votes[0])) {
@@ -48,6 +112,7 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
     disconnect(peer->getId(), dev::p2p::UserReason);
     return;
   }
+#endif
 
   // Process processStandardVote is called with false in case of next votes bundle -> does not check max boundaries
   // for round and step to actually being able to sync the current round in case network is stalled

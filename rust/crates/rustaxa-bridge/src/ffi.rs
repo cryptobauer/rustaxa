@@ -9,6 +9,7 @@ use crate::pbft_sync::*;
 use crate::pbft_vote_admission::*;
 use crate::pbft_vote_event::*;
 use crate::pbft_vote_generation::*;
+use crate::pbft_vote_ingress::*;
 use crate::pbft_vote_payload::*;
 use crate::pbft_vote_pipeline::*;
 use crate::pbft_vote_progress::*;
@@ -1047,6 +1048,53 @@ pub mod rustaxa_ffi {
         vote_already_known: bool,
         carries_proposed_block: bool,
         valid_stale_reward_vote: bool,
+    }
+
+    /// Compact PBFT vote facts used by Rust-planned ingress gates.
+    ///
+    /// C++ still owns packet decoding and live vote materialization. This
+    /// payload carries only the scalar fields needed to decide relevance,
+    /// period/round/step windows, and bundle-shape policy.
+    struct PbftVoteIngressFact {
+        period: u64,
+        round: u64,
+        step: u64,
+        vote_type: u8,
+    }
+
+    /// Local PBFT state and network-window policy for one vote ingress plan.
+    ///
+    /// Zero max-window values disable the matching upper-bound check, matching
+    /// the legacy network DDoS-protection configuration semantics. The
+    /// `can_request_*` booleans keep peer-timer throttling in C++ while letting
+    /// Rust decide whether the vote shape is eligible to trigger a sync hint.
+    struct PbftVoteIngressContext {
+        current_period: u64,
+        current_round: u64,
+        current_step: u64,
+        max_future_period_delta: u64,
+        max_future_round_delta: u64,
+        max_future_step_delta: u64,
+        validate_max_round_step: bool,
+        source_peer_is_voter: bool,
+        can_request_pbft_sync: bool,
+        can_request_next_votes_sync: bool,
+    }
+
+    /// Side-effect-free PBFT vote ingress plan.
+    ///
+    /// C++ executes returned sync hints and continues to admission only when
+    /// `accepted` is true. `status` matches `PbftVoteIngressStatus::as_u8()` in
+    /// `rustaxa-consensus`.
+    struct PbftVoteIngressPlan {
+        status: u8,
+        error_code: String,
+        accepted: bool,
+        relevant: bool,
+        request_pbft_sync: bool,
+        request_next_votes_sync: bool,
+        checking_round: u64,
+        checking_step: u64,
     }
 
     /// Compact PBFT vote event facts derived from canonical vote bytes.
@@ -4117,6 +4165,15 @@ pub mod rustaxa_ffi {
             context: PbftVoteProgressContext,
             add_vote_outcome: VerifiedVoteAddOutcome,
         ) -> Result<PbftVoteProgressExecutionPlan>;
+        pub fn pbft_vote_ingress_plan(
+            fact: PbftVoteIngressFact,
+            context: PbftVoteIngressContext,
+        ) -> Result<PbftVoteIngressPlan>;
+        pub fn pbft_vote_bundle_ingress_plan(
+            reference: PbftVoteIngressFact,
+            vote: PbftVoteIngressFact,
+            context: PbftVoteIngressContext,
+        ) -> Result<PbftVoteIngressPlan>;
         type BridgePbftVotePipelineSession;
         pub fn create_pbft_vote_pipeline_session(
             fact: PbftVoteProgressFact,

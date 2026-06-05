@@ -54,24 +54,38 @@ VotesWithWeight VerifiedVotes::requireInsertedVotesWithWeightLocked(const std::s
                                                                     uint64_t total_weight) const {
   VotesWithWeight value{};
   value.weight = total_weight;
-  const auto state = buildSnapshotState();
-  const auto period_it = state.find(vote->getPeriod());
-  if (period_it == state.end()) {
-    throw verifiedVotesError("Rust inserted voted value but C++ snapshot has no matching period");
+  const auto step_votes =
+      rust_verified_votes_->verified_votes_get_step_votes(vote->getPeriod(), vote->getRound(), vote->getStep());
+  if (!step_votes.found) {
+    throw verifiedVotesError("Rust inserted voted value but Rust step lookup has no matching step");
   }
-  const auto round_it = period_it->second.find(vote->getRound());
-  if (round_it == period_it->second.end()) {
-    throw verifiedVotesError("Rust inserted voted value but C++ snapshot has no matching round");
+
+  bool found_block = false;
+  for (const auto& entry : step_votes.entries) {
+    if (fromBridgeHash(entry.block_hash) != vote->getBlockHash()) {
+      continue;
+    }
+    found_block = true;
+    if (entry.total_weight != total_weight) {
+      throw verifiedVotesError("Rust inserted voted value weight mismatches Rust step lookup");
+    }
+
+    // TODO(rustaxa): delete this live-sidecar reconstruction once PBFT vote progress no longer returns
+    // `VotesWithWeight` for compatibility callers. Rust owns threshold and persistence payloads on the production path.
+    for (const auto& vote_hash : entry.vote_hashes) {
+      const auto hash = fromBridgeHash(vote_hash.hash);
+      const auto live_vote = live_votes_.find(hash);
+      if (live_vote != live_votes_.end()) {
+        value.votes.insert({hash, live_vote->second});
+      } else if (hash == vote->getHash()) {
+        throw verifiedVotesError("Rust inserted current vote but C++ live sidecar is missing");
+      }
+    }
+    break;
   }
-  const auto step_it = round_it->second.step_votes.find(vote->getStep());
-  if (step_it == round_it->second.step_votes.end()) {
-    throw verifiedVotesError("Rust inserted voted value but C++ snapshot has no matching step");
+  if (!found_block) {
+    throw verifiedVotesError("Rust inserted voted value but Rust step lookup has no matching block bucket");
   }
-  const auto found = step_it->second.votes.find(vote->getBlockHash());
-  if (found == step_it->second.votes.end()) {
-    throw verifiedVotesError("Rust inserted voted value but C++ snapshot has no matching block bucket");
-  }
-  value.votes = found->second.votes;
   return value;
 }
 

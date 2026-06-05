@@ -6,6 +6,9 @@
 #include "vote/pbft_vote.hpp"
 #include "vote/votes_bundle_rlp.hpp"
 #include "vote_manager/vote_manager.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
 
 namespace taraxa::network::tarcap {
 
@@ -30,6 +33,68 @@ bool ExtVotesPacketHandler::processVote(const std::shared_ptr<PbftVote> &vote,
   if (pbft_block && !validateVoteAndBlock(vote, pbft_block)) {
     throw MaliciousPeerException("Received vote's voted value != received pbft block");
   }
+
+#ifdef RUSTAXA_ENABLE
+  // TODO(rustaxa): move this temporary network-handler hook into the future
+  // tarcap/network pipeline overlay. Rust decides deterministic PBFT vote
+  // ingress gates here; C++ still executes peer sync requests, live sidecar
+  // admission, proposed-block handling, logging, and gossip.
+  if (vote_mgr_->voteAlreadyValidated(vote->getHash())) {
+    LOG(this->log_dg_) << "Received vote " << vote->getHash() << " has already been validated";
+    return false;
+  }
+
+  const auto [current_pbft_round, current_pbft_period] = pbft_mgr_->getPbftRoundAndPeriod();
+  rustaxa::PbftVoteIngressFact ingress_fact{};
+  ingress_fact.period = vote->getPeriod();
+  ingress_fact.round = vote->getRound();
+  ingress_fact.step = vote->getStep();
+  ingress_fact.vote_type = static_cast<uint8_t>(vote->getType());
+
+  rustaxa::PbftVoteIngressContext ingress_context{};
+  ingress_context.current_period = current_pbft_period;
+  ingress_context.current_round = current_pbft_round;
+  ingress_context.current_step = pbft_mgr_->getPbftStep();
+  ingress_context.max_future_period_delta = this->kConf.network.ddos_protection.vote_accepting_periods;
+  ingress_context.max_future_round_delta = this->kConf.network.ddos_protection.vote_accepting_rounds;
+  ingress_context.max_future_step_delta = this->kConf.network.ddos_protection.vote_accepting_steps;
+  ingress_context.validate_max_round_step = validate_max_round_step;
+  ingress_context.source_peer_is_voter = vote->getVoter() == peer->getId();
+  ingress_context.can_request_pbft_sync =
+      std::chrono::system_clock::now() - last_pbft_block_sync_request_time_ > kSyncRequestInterval;
+  ingress_context.can_request_next_votes_sync =
+      std::chrono::system_clock::now() - last_votes_sync_request_time_ > kSyncRequestInterval;
+
+  const auto ingress_plan = rustaxa::pbft_vote_ingress_plan(ingress_fact, ingress_context);
+  if (!ingress_plan.accepted) {
+    if (ingress_plan.request_pbft_sync) {
+      this->sealAndSend(
+          peer->getId(), SubprotocolPacketType::kGetPbftSyncPacket,
+          encodePacketRlp(GetPbftSyncPacket{std::max(vote->getPeriod() - 1, peer->pbft_chain_size_.load())}));
+      last_pbft_block_sync_request_time_ = std::chrono::system_clock::now();
+    }
+    if (ingress_plan.request_next_votes_sync) {
+      this->requestPbftNextVotesAtPeriodRound(peer->getId(), current_pbft_period, current_pbft_round);
+      last_votes_sync_request_time_ = std::chrono::system_clock::now();
+    }
+
+    LOG(this->log_wr_) << "Vote ingress plan rejected vote " << vote->getHash()
+                       << ". Status: " << static_cast<uint32_t>(ingress_plan.status)
+                       << ", error: " << static_cast<std::string>(ingress_plan.error_code);
+    return false;
+  }
+
+  if (!vote_mgr_->addVerifiedVote(vote)) {
+    LOG(this->log_dg_) << "Vote " << vote->getHash() << " was not admitted by Rust vote transition";
+    return false;
+  }
+
+  if (pbft_block) {
+    pbft_mgr_->processProposedBlock(pbft_block);
+  }
+
+  return true;
+#endif
 
   if (vote_mgr_->voteInVerifiedMap(vote)) {
     LOG(this->log_dg_) << "Vote " << vote->getHash() << " already inserted in verified queue";

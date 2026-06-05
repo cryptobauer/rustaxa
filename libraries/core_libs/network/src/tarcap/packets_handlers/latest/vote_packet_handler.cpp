@@ -20,8 +20,6 @@ void VotePacketHandler::process(const threadpool::PacketData &packet_data, const
   // Decode packet rlp into packet object
   auto packet = decodePacketRlp<VotePacket>(packet_data.rlp_);
 
-  const auto [current_pbft_round, current_pbft_period] = pbft_mgr_->getPbftRoundAndPeriod();
-
   if (packet.optional_data.has_value()) {
     LOG(log_dg_) << "Received vote " << packet.vote->getHash().abridged() << ", period " << packet.vote->getPeriod()
                  << ", round " << packet.vote->getRound() << ", step " << packet.vote->getStep() << ", voter "
@@ -40,6 +38,8 @@ void VotePacketHandler::process(const threadpool::PacketData &packet_data, const
 
   const auto vote_hash = packet.vote->getHash();
 
+#ifndef RUSTAXA_ENABLE
+  const auto [current_pbft_round, current_pbft_period] = pbft_mgr_->getPbftRoundAndPeriod();
   if (!isPbftRelevantVote(packet.vote)) {
     LOG(log_dg_) << "Drop irrelevant vote " << vote_hash << " for current pbft state. Vote (period, round, step) = ("
                  << packet.vote->getPeriod() << ", " << packet.vote->getRound() << ", " << packet.vote->getStep()
@@ -53,6 +53,7 @@ void VotePacketHandler::process(const threadpool::PacketData &packet_data, const
     LOG(log_dg_) << "Received vote " << vote_hash << " has already been validated";
     return;
   }
+#endif
 
   std::shared_ptr<PbftBlock> pbft_block;
   if (packet.optional_data.has_value()) {

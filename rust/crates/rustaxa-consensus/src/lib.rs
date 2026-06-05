@@ -10,6 +10,7 @@ pub mod pbft_thresholds;
 pub mod pbft_vote_admission;
 pub mod pbft_vote_event;
 pub mod pbft_vote_generation;
+pub mod pbft_vote_ingress;
 pub mod pbft_vote_payload;
 pub mod pbft_vote_pipeline;
 pub mod pbft_vote_progress;
@@ -73,6 +74,10 @@ pub use pbft_vote_event::{
 pub use pbft_vote_generation::{
     PbftGeneratedVote, PbftVoteGenerationInput, PbftVoteGenerationStatus, PbftVoteWeightFacts,
     generate_pbft_vote, generate_pbft_vote_with_weight,
+};
+pub use pbft_vote_ingress::{
+    PbftVoteIngressContext, PbftVoteIngressFact, PbftVoteIngressPlan, PbftVoteIngressStatus,
+    plan_pbft_vote_bundle_ingress, plan_pbft_vote_ingress,
 };
 pub use pbft_vote_payload::{
     PbftVotePayloadRecord, build_slashing_pbft_vote_payload, build_weighted_pbft_vote_bundle,

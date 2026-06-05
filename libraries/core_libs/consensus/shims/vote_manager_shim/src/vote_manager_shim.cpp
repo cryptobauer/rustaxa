@@ -585,6 +585,11 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
   if (!runtime_result.accepted) {
     return false;
   }
+  if (!runtime_result.has_verified_vote_add || !runtime_result.verified_vote_add.inserted) {
+    LOG(log_dg_) << "VoteManager Rust PBFT vote admission accepted vote " << vote->getHash()
+                 << " without a new verified-vote insertion";
+    return false;
+  }
   if (!runtime_result.has_storage_vote) {
     throw std::runtime_error("VoteManager Rust PBFT vote admission accepted without a storage payload");
   }
