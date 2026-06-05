@@ -170,6 +170,59 @@ impl PbftVoteAdmissionRuntime {
             .map(|payload| &payload.weighted)
     }
 
+    /// Returns all retained weighted PBFT vote payloads in deterministic vote-hash order.
+    ///
+    /// The returned records are suitable for temporary legacy materialization
+    /// and network egress. The runtime only exposes payloads whose
+    /// verified-vote metadata still exists, because cleanup prunes payloads
+    /// against the verified-vote snapshot.
+    #[must_use]
+    pub fn weighted_payloads(&self) -> Vec<PbftVotePayloadRecord> {
+        self.payloads
+            .values()
+            .map(|payload| payload.weighted.clone())
+            .collect()
+    }
+
+    /// Returns retained weighted payloads for one Rust-owned 2t+1 mapping.
+    ///
+    /// Inputs:
+    /// - `period`, `round`, and `kind` select the 2t+1 voted-block mapping.
+    ///
+    /// Outputs:
+    /// - `None` when the mapping is absent.
+    /// - Ordered weighted records for the mapped voted block when present.
+    ///
+    /// Error behavior:
+    /// - Missing retained payloads for mapped vote hashes are hard errors
+    ///   because verified-vote metadata and payload retention must advance
+    ///   together.
+    pub fn two_t_plus_one_weighted_payloads(
+        &self,
+        period: u64,
+        round: u64,
+        kind: TwoTPlusOneVotedBlockType,
+    ) -> Result<Option<Vec<PbftVotePayloadRecord>>> {
+        if self
+            .verified_votes
+            .get_two_t_plus_one_voted_block(period, round, kind)
+            .is_none()
+        {
+            return Ok(None);
+        }
+
+        let vote_hashes = self
+            .verified_votes
+            .get_two_t_plus_one_voted_block_vote_hashes(period, round, kind);
+        let mut records = Vec::with_capacity(vote_hashes.len());
+        for vote_hash in vote_hashes {
+            records.push(self.weighted_payload(vote_hash).cloned().ok_or_else(|| {
+                anyhow!("PBFT vote runtime missing weighted payload for 2t+1 vote {vote_hash:#x}")
+            })?);
+        }
+        Ok(Some(records))
+    }
+
     /// Returns the slashing payload for `vote_hash`, when retained.
     #[must_use]
     pub fn slashing_payload(&self, vote_hash: H256) -> Option<&PbftVotePayloadRecord> {
@@ -568,6 +621,11 @@ mod tests {
         assert!(runtime.weighted_payload(validation.vote_hash).is_some());
         assert!(runtime.slashing_payload(validation.vote_hash).is_some());
         assert!(runtime.replay_contains(validation.vote_hash));
+
+        let payloads = runtime.weighted_payloads();
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(payloads[0].hash, validation.vote_hash);
+        assert!(!payloads[0].vote_rlp.is_empty());
     }
 
     #[test]
@@ -609,6 +667,24 @@ mod tests {
         let bundle = outcome.two_t_plus_one_bundle.unwrap();
         assert_eq!(bundle.votes_count, 2);
         assert!(!bundle.votes_bundle_rlp.is_empty());
+
+        let payloads = runtime
+            .two_t_plus_one_weighted_payloads(12, 2, TwoTPlusOneVotedBlockType::CertVotedBlock)
+            .unwrap()
+            .expect("cert mapping is retained");
+        assert_eq!(payloads.len(), 2);
+        let payload_hashes = payloads
+            .into_iter()
+            .map(|payload| payload.hash)
+            .collect::<Vec<_>>();
+        assert!(payload_hashes.contains(&first_validation.vote_hash));
+        assert!(payload_hashes.contains(&second_validation.vote_hash));
+        assert!(
+            runtime
+                .two_t_plus_one_weighted_payloads(12, 3, TwoTPlusOneVotedBlockType::CertVotedBlock)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

@@ -45,6 +45,48 @@ rustaxa::VerifiedVotePayload VerifiedVotes::toBridgeVotePayload(const std::share
                                       requireVoteWeight(vote)};
 }
 
+std::shared_ptr<PbftVote> VerifiedVotes::materializeWeightedPayload(
+    const rustaxa::PbftVoteStorageRecord& record) const {
+  bytes vote_rlp;
+  vote_rlp.reserve(record.vote_rlp.size());
+  for (const auto byte : record.vote_rlp) {
+    vote_rlp.push_back(byte);
+  }
+
+  auto vote = std::make_shared<PbftVote>(vote_rlp);
+  const auto expected_hash = fromBridgeHash(record.hash);
+  if (vote->getHash() != expected_hash) {
+    throw verifiedVotesError("Rust retained weighted payload hash mismatches materialized vote");
+  }
+  if (!vote->getWeight().has_value() || *vote->getWeight() == 0) {
+    throw verifiedVotesError("Rust retained weighted payload decoded without non-zero weight");
+  }
+  return vote;
+}
+
+std::shared_ptr<PbftVote> VerifiedVotes::materializeVoteForSnapshot(
+    const rustaxa::VerifiedVotePayload& vote_data) const {
+  const auto vote_hash = fromBridgeHash(vote_data.vote_hash);
+  const auto payload_lookup = rust_verified_votes_->verified_votes_weighted_payload(vote_data.vote_hash);
+  if (payload_lookup.found) {
+    auto vote = materializeWeightedPayload(payload_lookup.vote);
+    if (vote->getBlockHash() != fromBridgeHash(vote_data.block_hash) || vote->getPeriod() != vote_data.period ||
+        vote->getRound() != vote_data.round || vote->getStep() != vote_data.step ||
+        static_cast<uint8_t>(vote->getType()) != vote_data.vote_type || *vote->getWeight() != vote_data.weight) {
+      throw verifiedVotesError("Rust retained weighted payload mismatches verified-vote metadata");
+    }
+    return vote;
+  }
+
+  // TODO(rustaxa): remove this compatibility fallback once low-level bridge test helpers stop inserting
+  // verified-vote metadata without retaining weighted payload bytes through the admission runtime.
+  const auto live_vote = live_votes_.find(vote_hash);
+  if (live_vote == live_votes_.end()) {
+    throw verifiedVotesError("missing Rust retained weighted payload for vote " + vote_hash.hex().substr(0, 16));
+  }
+  return live_vote->second;
+}
+
 const std::shared_ptr<PbftVote>& VerifiedVotes::requireLiveVote(const vote_hash_t& vote_hash) const {
   const auto found = live_votes_.find(vote_hash);
   if (found == live_votes_.end()) {
@@ -99,13 +141,7 @@ PeriodVerifiedVotesMap VerifiedVotes::buildSnapshotState() const {
   for (const auto& vote_data : votes_snapshot) {
     const auto vote_hash = fromBridgeHash(vote_data.vote_hash);
     const auto block_hash = fromBridgeHash(vote_data.block_hash);
-    const auto live_vote_it = live_votes_.find(vote_hash);
-    if (live_vote_it == live_votes_.end()) {
-      // TODO(rustaxa): delete this skip once public C++ snapshot APIs no longer materialize
-      // temporary live `PbftVote` sidecars from Rust-owned verified-vote metadata.
-      continue;
-    }
-    auto vote = live_vote_it->second;
+    auto vote = materializeVoteForSnapshot(vote_data);
 
     auto& round_votes = state[vote_data.period][static_cast<PbftRound>(vote_data.round)];
     auto& step_votes = round_votes.step_votes[static_cast<PbftStep>(vote_data.step)];
@@ -203,13 +239,8 @@ std::vector<std::shared_ptr<PbftVote>> VerifiedVotes::votes() const {
   std::vector<std::shared_ptr<PbftVote>> out;
   const auto snapshot = rust_verified_votes_->verified_votes_snapshot_votes();
   out.reserve(snapshot.size());
-  for (const auto& vote : snapshot) {
-    const auto live_vote_it = live_votes_.find(fromBridgeHash(vote.vote_hash));
-    if (live_vote_it == live_votes_.end()) {
-      // TODO(rustaxa): delete this skip once callers consume Rust-owned vote payload views directly.
-      continue;
-    }
-    out.push_back(live_vote_it->second);
+  for (const auto& vote_data : snapshot) {
+    out.push_back(materializeVoteForSnapshot(vote_data));
   }
   return out;
 }
@@ -271,21 +302,22 @@ std::optional<VotedBlock> VerifiedVotes::getTwoTPlusOneVotedBlock(PbftPeriod per
 std::vector<std::shared_ptr<PbftVote>> VerifiedVotes::getTwoTPlusOneVotedBlockVotes(
     PbftPeriod period, PbftRound round, TwoTPlusOneVotedBlockType type) const {
   std::shared_lock lock(verified_votes_access_);
-  const auto lookup = rust_verified_votes_->verified_votes_get_two_t_plus_one_voted_block_votes(
+  const auto lookup = rust_verified_votes_->verified_votes_get_two_t_plus_one_voted_block_payloads(
       period, round, static_cast<uint8_t>(type));
   if (!lookup.found) {
     return {};
   }
 
   std::vector<std::shared_ptr<PbftVote>> out;
-  out.reserve(lookup.vote_hashes.size());
-  for (const auto& vote_hash : lookup.vote_hashes) {
-    const auto live_vote_it = live_votes_.find(fromBridgeHash(vote_hash.hash));
-    if (live_vote_it == live_votes_.end()) {
-      // TODO(rustaxa): delete this skip once 2t+1 callers consume Rust-owned vote payload views directly.
-      continue;
+  out.reserve(lookup.votes.size());
+  const auto expected_block_hash = fromBridgeHash(lookup.block_hash);
+  for (const auto& record : lookup.votes) {
+    auto vote = materializeWeightedPayload(record);
+    if (vote->getPeriod() != period || vote->getRound() != round || vote->getStep() != lookup.step ||
+        vote->getBlockHash() != expected_block_hash) {
+      throw verifiedVotesError("Rust retained 2t+1 payload mismatches mapped voted block");
     }
-    out.push_back(live_vote_it->second);
+    out.push_back(std::move(vote));
   }
   return out;
 }

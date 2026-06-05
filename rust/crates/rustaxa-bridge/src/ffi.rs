@@ -550,6 +550,17 @@ pub mod rustaxa_ffi {
         vote_rlp: Vec<u8>,
     }
 
+    /// Lookup result for a retained Rust PBFT vote payload.
+    ///
+    /// When `found` is true, `vote` carries the weighted
+    /// `PbftVote::rlp(true, true)` bytes retained by the Rust admission
+    /// runtime. C++ may temporarily materialize a `PbftVote` sidecar from this
+    /// payload, but Rust remains the source of truth for payload retention.
+    struct PbftVotePayloadLookup {
+        found: bool,
+        vote: PbftVoteStorageRecord,
+    }
+
     /// Latest-round 2t+1 vote bundle crossing the CXX bridge for storage persistence.
     ///
     /// `kind` matches C++ `TwoTPlusOneVotedBlockType` discriminants:
@@ -1853,6 +1864,13 @@ pub mod rustaxa_ffi {
         block_hash: [u8; 32],
         step: u64,
         vote_hashes: Vec<DagHash>,
+    }
+
+    struct TwoTPlusOneVotePayloadsLookup {
+        found: bool,
+        block_hash: [u8; 32],
+        step: u64,
+        votes: Vec<PbftVoteStorageRecord>,
     }
 
     struct NetworkTPlusOneStepLookup {
@@ -4121,6 +4139,12 @@ pub mod rustaxa_ffi {
             round: u64,
             kind: u8,
         ) -> Result<TwoTPlusOneVotesLookup>;
+        pub fn verified_votes_get_two_t_plus_one_voted_block_payloads(
+            self: &BridgeVerifiedVotes,
+            period: u64,
+            round: u64,
+            kind: u8,
+        ) -> Result<TwoTPlusOneVotePayloadsLookup>;
         pub fn verified_votes_get_step_votes(
             self: &BridgeVerifiedVotes,
             period: u64,
@@ -4147,6 +4171,13 @@ pub mod rustaxa_ffi {
         pub fn verified_votes_snapshot_votes(
             self: &BridgeVerifiedVotes,
         ) -> Vec<VerifiedVotePayload>;
+        pub fn verified_votes_snapshot_weighted_payloads(
+            self: &BridgeVerifiedVotes,
+        ) -> Vec<PbftVoteStorageRecord>;
+        pub fn verified_votes_weighted_payload(
+            self: &BridgeVerifiedVotes,
+            vote_hash: &[u8; 32],
+        ) -> PbftVotePayloadLookup;
         pub fn verified_votes_snapshot_two_t_plus_one(
             self: &BridgeVerifiedVotes,
         ) -> Vec<TwoTPlusOneSnapshotEntry>;

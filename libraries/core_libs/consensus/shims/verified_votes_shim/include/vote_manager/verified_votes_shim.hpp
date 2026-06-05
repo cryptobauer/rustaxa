@@ -172,8 +172,7 @@ class VerifiedVotes {
    * Invariants:
    * - Cache ownership is co-located with admission and verified-vote state.
    */
-  rustaxa::PbftTwoTPlusOneThresholdPlan twoTPlusOneThreshold(
-      const rustaxa::PbftTwoTPlusOneThresholdFact& fact) const;
+  rustaxa::PbftTwoTPlusOneThresholdPlan twoTPlusOneThreshold(const rustaxa::PbftTwoTPlusOneThresholdFact& fact) const;
 
   /**
    * Validates canonical PBFT vote bytes through the unified Rust vote runtime.
@@ -190,11 +189,17 @@ class VerifiedVotes {
    *   admission and verified-vote state.
    */
   rustaxa::PbftVoteRuntimeValidationResult validateCanonicalVote(
-      rust::Slice<const uint8_t> canonical_vote_rlp,
-      rustaxa::PbftVoteValidationExternalFacts validation_facts) const;
+      rust::Slice<const uint8_t> canonical_vote_rlp, rustaxa::PbftVoteValidationExternalFacts validation_facts) const;
 
   /**
    * Returns flattened verified-vote objects from all indexed voted values.
+   *
+   * Invariants:
+   * - Production-admitted votes are materialized from Rust-retained weighted
+   *   payload bytes, not from the temporary `live_votes_` sidecar map.
+   * - Compatibility/test helper inserts that do not retain weighted payloads
+   *   may still use `live_votes_` until those helpers are removed.
+   * - Missing both retained payload and compatibility sidecar is a hard error.
    */
   std::vector<std::shared_ptr<PbftVote>> votes() const;
 
@@ -221,6 +226,11 @@ class VerifiedVotes {
 
   /**
    * Returns all votes for the selected 2t+1 voted block, or empty vector when missing.
+   *
+   * Invariants:
+   * - When Rust has a 2t+1 mapping, Rust must also have retained weighted
+   *   payload bytes for every selected vote hash. Missing payloads are bridge
+   *   invariant errors, not partial results.
    */
   std::vector<std::shared_ptr<PbftVote>> getTwoTPlusOneVotedBlockVotes(PbftPeriod period, PbftRound round,
                                                                        TwoTPlusOneVotedBlockType type) const;
@@ -293,9 +303,10 @@ class VerifiedVotes {
    *   intents and call `attachRuntimeAcceptedVote` after hydrating the accepted
    *   sidecar.
    */
-  rustaxa::PbftVoteAdmissionRuntimeResult admitValidatedVote(
-      rust::Slice<const uint8_t> canonical_vote_rlp, rustaxa::PbftVoteValidationExternalFacts validation_facts,
-      rustaxa::PbftVoteEventFactFlags flags, rustaxa::PbftVoteProgressContext context);
+  rustaxa::PbftVoteAdmissionRuntimeResult admitValidatedVote(rust::Slice<const uint8_t> canonical_vote_rlp,
+                                                             rustaxa::PbftVoteValidationExternalFacts validation_facts,
+                                                             rustaxa::PbftVoteEventFactFlags flags,
+                                                             rustaxa::PbftVoteProgressContext context);
 
   /**
    * Attaches the C++ live sidecar for a vote already accepted by Rust runtime.
@@ -312,8 +323,8 @@ class VerifiedVotes {
    * - Hash/weight/report mismatches are hard invariant errors because Rust has
    *   already mutated the authoritative verified-vote state.
    */
-  std::optional<VotesWithWeight> attachRuntimeAcceptedVote(
-      const std::shared_ptr<PbftVote>& vote, const rustaxa::PbftVoteAdmissionRuntimeResult& result);
+  std::optional<VotesWithWeight> attachRuntimeAcceptedVote(const std::shared_ptr<PbftVote>& vote,
+                                                           const rustaxa::PbftVoteAdmissionRuntimeResult& result);
 
   /**
    * Sets `network_t_plus_one_step` for vote's (`period`, `round`) entry when present.
@@ -361,6 +372,8 @@ class VerifiedVotes {
   static std::array<uint8_t, 20> toBridgeAddress(const addr_t& address);
   static uint256_hash_t fromBridgeHash(const std::array<uint8_t, 32>& hash);
   rustaxa::VerifiedVotePayload toBridgeVotePayload(const std::shared_ptr<PbftVote>& vote) const;
+  std::shared_ptr<PbftVote> materializeWeightedPayload(const rustaxa::PbftVoteStorageRecord& record) const;
+  std::shared_ptr<PbftVote> materializeVoteForSnapshot(const rustaxa::VerifiedVotePayload& vote_data) const;
   const std::shared_ptr<PbftVote>& requireLiveVote(const vote_hash_t& vote_hash) const;
   VotesWithWeight requireInsertedVotesWithWeightLocked(const std::shared_ptr<PbftVote>& vote,
                                                        uint64_t total_weight) const;

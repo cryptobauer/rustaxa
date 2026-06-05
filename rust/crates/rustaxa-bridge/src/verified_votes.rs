@@ -2,14 +2,14 @@ use crate::ffi::rustaxa_ffi::{
     AtomicVoteInsertOutcome, DagHash, DetermineNewRoundOutcome, NetworkTPlusOneStepLookup,
     PbftTwoTPlusOneThresholdFact as FfiPbftTwoTPlusOneThresholdFact,
     PbftTwoTPlusOneThresholdPlan as FfiPbftTwoTPlusOneThresholdPlan, PbftTwoTPlusOneVoteBundle,
-    PbftVoteAdmissionRuntimeResult, PbftVoteEventFactFlags,
+    PbftVoteAdmissionRuntimeResult, PbftVoteEventFactFlags, PbftVotePayloadLookup,
     PbftVoteProgressContext as FfiPbftVoteProgressContext, PbftVoteRuntimeValidationResult,
     PbftVoteStorageRecord, PbftVoteValidationExternalFacts, RoundMarkerSnapshot,
     ThresholdDecisionOutcome, TwoTPlusOneInsertOutcome, TwoTPlusOneSnapshotEntry,
-    TwoTPlusOneVotedBlockLookup, TwoTPlusOneVotesLookup, UniqueVoterCheckOutcome,
-    UniqueVoterInsertOutcome, VerifiedStepVotesEntry, VerifiedStepVotesLookup,
-    VerifiedVoteAddOutcome as FfiVerifiedVoteAddOutcome, VerifiedVotePayload,
-    VotedValueInsertOutcome,
+    TwoTPlusOneVotePayloadsLookup, TwoTPlusOneVotedBlockLookup, TwoTPlusOneVotesLookup,
+    UniqueVoterCheckOutcome, UniqueVoterInsertOutcome, VerifiedStepVotesEntry,
+    VerifiedStepVotesLookup, VerifiedVoteAddOutcome as FfiVerifiedVoteAddOutcome,
+    VerifiedVotePayload, VotedValueInsertOutcome,
 };
 use crate::ffi::BridgeVerifiedVotes;
 use crate::pbft_vote_progress::{context_to_domain, execution_plan_to_ffi};
@@ -354,6 +354,52 @@ impl BridgeVerifiedVotes {
         })
     }
 
+    /// Gets retained weighted vote payloads for one mapped 2t+1 voted block.
+    ///
+    /// The payloads are returned in the same deterministic order as the
+    /// verified-vote hash lookup. C++ may materialize temporary live sidecars
+    /// from the weighted RLP bytes, but missing retained payloads are reported
+    /// as hard errors because Rust owns both metadata and payload retention.
+    pub fn verified_votes_get_two_t_plus_one_voted_block_payloads(
+        &self,
+        period: u64,
+        round: u64,
+        kind: u8,
+    ) -> Result<TwoTPlusOneVotePayloadsLookup, anyhow::Error> {
+        let kind = TwoTPlusOneVotedBlockType::try_from(kind)?;
+        let voted = self
+            .0
+            .verified_votes()
+            .get_two_t_plus_one_voted_block(period, round, kind);
+        let Some(voted) = voted else {
+            return Ok(TwoTPlusOneVotePayloadsLookup {
+                found: false,
+                block_hash: [0u8; 32],
+                step: 0,
+                votes: Vec::new(),
+            });
+        };
+
+        let votes = self
+            .0
+            .two_t_plus_one_weighted_payloads(period, round, kind)?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "PBFT vote runtime lost 2t+1 mapping while resolving retained payloads"
+                )
+            })?
+            .into_iter()
+            .map(Into::into)
+            .collect();
+
+        Ok(TwoTPlusOneVotePayloadsLookup {
+            found: true,
+            block_hash: voted.hash.into(),
+            step: voted.step,
+            votes,
+        })
+    }
+
     /// Returns all voted values and their vote hashes for one step.
     pub fn verified_votes_get_step_votes(
         &self,
@@ -448,6 +494,33 @@ impl BridgeVerifiedVotes {
             .into_iter()
             .map(Into::into)
             .collect()
+    }
+
+    /// Returns all retained weighted PBFT vote payloads in deterministic order.
+    ///
+    /// This is the temporary materialization boundary for legacy C++ APIs that
+    /// still return `PbftVote` objects. The Rust admission runtime remains the
+    /// authoritative owner of these bytes.
+    pub fn verified_votes_snapshot_weighted_payloads(&self) -> Vec<PbftVoteStorageRecord> {
+        self.0
+            .weighted_payloads()
+            .into_iter()
+            .map(Into::into)
+            .collect()
+    }
+
+    /// Returns one retained weighted PBFT vote payload by canonical vote hash.
+    pub fn verified_votes_weighted_payload(&self, vote_hash: &[u8; 32]) -> PbftVotePayloadLookup {
+        let Some(vote) = self.0.weighted_payload(H256::from(*vote_hash)).cloned() else {
+            return PbftVotePayloadLookup {
+                found: false,
+                vote: empty_storage_record(),
+            };
+        };
+        PbftVotePayloadLookup {
+            found: true,
+            vote: vote.into(),
+        }
     }
 
     /// Returns deterministic 2t+1 mapping snapshot.
@@ -894,6 +967,19 @@ mod tests {
     };
     use rustaxa_consensus::pbft_vote_runtime::PbftVoteRuntimeReplayOutcome;
     use rustaxa_consensus::pbft_vote_validation::PbftVoteValidationStatus;
+    use rustaxa_consensus::{generate_pbft_vote, PbftVoteGenerationInput};
+    use rustaxa_vdf::vrf;
+    use tiny_keccak::{Hasher, Keccak};
+
+    const NODE_SECRET: [u8; 32] = [0x35; 32];
+    const NODE_SECRET_TWO: [u8; 32] = [0x42; 32];
+    const VRF_SECRET: [u8; 64] = [
+        0x90, 0xf5, 0x9a, 0x7e, 0xe7, 0xa3, 0x92, 0xc8, 0x11, 0xc5, 0xd2, 0x99, 0xb5, 0x57, 0xa4,
+        0xe0, 0x9e, 0x61, 0x0d, 0xe7, 0xd1, 0x09, 0xd6, 0xb3, 0xfc, 0xb1, 0x9a, 0xb8, 0xd5, 0x1c,
+        0x9a, 0x0d, 0x93, 0x1f, 0x5e, 0x7d, 0xb0, 0x7c, 0x99, 0x69, 0xe4, 0x38, 0xdb, 0x7e, 0x28,
+        0x7e, 0xab, 0xba, 0xac, 0xa4, 0x9c, 0xa4, 0x14, 0xf5, 0xf3, 0xa4, 0x02, 0xea, 0x69, 0x97,
+        0xad, 0xe4, 0x00, 0x81,
+    ];
 
     fn hash(id: u64) -> [u8; 32] {
         H256::from_low_u64_be(id).into()
@@ -901,6 +987,71 @@ mod tests {
 
     fn address(id: u64) -> [u8; 20] {
         H160::from_low_u64_be(id).into()
+    }
+
+    fn voter_from_secret(secret: &[u8; 32]) -> [u8; 20] {
+        let key = k256::ecdsa::SigningKey::from_slice(secret).unwrap();
+        let public_key = key.verifying_key().to_encoded_point(false);
+        let mut output = [0_u8; 32];
+        let mut hasher = Keccak::v256();
+        hasher.update(&public_key.as_bytes()[1..]);
+        hasher.finalize(&mut output);
+        output[12..].try_into().unwrap()
+    }
+
+    fn generated_vote(
+        block_hash: [u8; 32],
+        node_secret: [u8; 32],
+    ) -> rustaxa_consensus::PbftGeneratedVote {
+        generate_pbft_vote(PbftVoteGenerationInput {
+            block_hash: block_hash.into(),
+            vote_type: PbftVoteType::Cert,
+            period: 12,
+            round: 2,
+            step: 3,
+            node_secret,
+            vrf_secret: VRF_SECRET,
+            expected_voter: voter_from_secret(&node_secret).into(),
+            expected_vrf_public_key: vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+        })
+        .unwrap()
+    }
+
+    fn validation_facts() -> PbftVoteValidationExternalFacts {
+        PbftVoteValidationExternalFacts {
+            voter_dpos_ready: true,
+            voter_dpos_vote_count: 40,
+            total_dpos_ready: true,
+            total_dpos_vote_count: 100,
+            future_dpos_state: false,
+            unknown_error: false,
+            vrf_key_ready: true,
+            has_vrf_key: true,
+            vrf_public_key: vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            strict_vrf: true,
+            committee_size: 100,
+            number_of_proposers: 20,
+        }
+    }
+
+    fn runtime_flags() -> PbftVoteEventFactFlags {
+        PbftVoteEventFactFlags {
+            vote_already_known: false,
+            carries_proposed_block: true,
+            valid_stale_reward_vote: false,
+        }
+    }
+
+    fn runtime_context(threshold: u64) -> FfiPbftVoteProgressContext {
+        FfiPbftVoteProgressContext {
+            current_period: 12,
+            current_round: 2,
+            max_future_period_delta: 0,
+            has_two_t_plus_one_threshold: true,
+            two_t_plus_one_threshold: threshold,
+            require_proposed_block_sidecar: false,
+            slashing_enabled: true,
+        }
     }
 
     fn payload(
@@ -981,6 +1132,59 @@ mod tests {
         assert_eq!(step_votes.entries[0].block_hash, hash(44));
         assert_eq!(step_votes.entries[0].total_weight, 5);
         assert_eq!(step_votes.entries[0].vote_hashes.len(), 2);
+    }
+
+    #[test]
+    fn bridge_admission_exposes_retained_weighted_payloads() {
+        let mut votes = create_verified_votes_index();
+        let first = generated_vote([0x22; 32], NODE_SECRET);
+        let second = generated_vote([0x22; 32], NODE_SECRET_TWO);
+        let first_hash: [u8; 32] = first.vote_hash.into();
+        let second_hash: [u8; 32] = second.vote_hash.into();
+
+        let first_result = votes
+            .verified_votes_admit_validated_vote(
+                &first.vote_rlp,
+                validation_facts(),
+                runtime_flags(),
+                runtime_context(80),
+            )
+            .expect("first generated vote is admitted");
+        assert!(first_result.accepted);
+        assert!(first_result.has_storage_vote);
+
+        let snapshot = votes.verified_votes_snapshot_weighted_payloads();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].hash, first_hash);
+        assert!(!snapshot[0].vote_rlp.is_empty());
+
+        let lookup = votes.verified_votes_weighted_payload(&first_hash);
+        assert!(lookup.found);
+        assert_eq!(lookup.vote.hash, first_hash);
+
+        let second_result = votes
+            .verified_votes_admit_validated_vote(
+                &second.vote_rlp,
+                validation_facts(),
+                runtime_flags(),
+                runtime_context(80),
+            )
+            .expect("second generated vote is admitted");
+        assert!(second_result.accepted);
+
+        let payloads = votes
+            .verified_votes_get_two_t_plus_one_voted_block_payloads(
+                12,
+                2,
+                TwoTPlusOneVotedBlockType::CertVotedBlock.into(),
+            )
+            .expect("2t+1 retained payload lookup succeeds");
+        assert!(payloads.found);
+        assert_eq!(payloads.block_hash, [0x22; 32]);
+        assert_eq!(payloads.step, 3);
+        assert_eq!(payloads.votes.len(), 2);
+        assert!(payloads.votes.iter().any(|vote| vote.hash == first_hash));
+        assert!(payloads.votes.iter().any(|vote| vote.hash == second_hash));
     }
 
     #[test]

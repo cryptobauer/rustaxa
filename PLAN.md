@@ -460,10 +460,11 @@ The current Rust starting point is intentionally small:
   storage/slashing vote payload sidecars, and typed executor intents for peer-known marking, proposed-block sidecar
   routing, gossip, and PBFT progress. The Rust-mode `VoteManager` shim exposes those intents through a temporary
   admission report consumed by latest-tarcap vote handlers, so single-vote and bundle paths mark peers/votes known,
-  report slashing, and gossip only after Rust admission has accepted the vote. Generic legacy snapshot APIs on the
-  `VerifiedVotes` overlay may temporarily skip missing live `PbftVote` sidecars while Rust remains authoritative for
-  retained vote payloads; this compatibility tolerance should disappear when remaining callers stop materializing live
-  sidecars from Rust-owned vote state. The crate also contains a side-effect-free PBFT vote-progress protocol planner
+  report slashing, and gossip only after Rust admission has accepted the vote. Generic legacy snapshot and 2t+1 APIs on
+  the `VerifiedVotes` overlay now materialize temporary `PbftVote` sidecars from Rust-retained weighted payload bytes
+  instead of skipping missing live sidecars. Metadata-only compatibility/test helper inserts may still fall back to
+  `live_votes_` until those helpers are removed, but production-admitted votes treat missing retained payloads as
+  invariant errors. The crate also contains a side-effect-free PBFT vote-progress protocol planner
   plus a Rust-owned PBFT vote pipeline session that stages
   verified-vote insertion reports into typed
   known/admit/slashing/gossip/progress intents, a side-effect-free PBFT vote ingress planner for deterministic
@@ -712,7 +713,9 @@ The current Rust starting point is intentionally small:
    Rust-generated weighted bytes. `checkRewardVotes` now uses a Rust reward-vote selection planner: C++ supplies the
    PBFT block's requested reward-vote hashes plus compact live membership facts for the preferred reward round and
    reverse-ordered period rounds, Rust decides whether the references are valid, and C++ only maps accepted hashes back
-   to temporary live sidecars when callers request copied votes. C++ still owns the temporary live sidecar type,
+   to Rust-materialized temporary sidecars when callers request copied votes. Rust-retained weighted payloads now back
+   verified-vote snapshots and 2t+1 bundle reads, so missing C++ live sidecars no longer produce partial generic
+   snapshot or 2t+1 results. C++ still owns the temporary live sidecar type,
    FinalChain fact sourcing, logging, reward-vote sidecar mapping, and broader PBFT manager/network orchestration.
    owns PBFT finalization
    sortition-change persistence: the sortition shim now previews the live Rust runtime transition, returns the emitted
