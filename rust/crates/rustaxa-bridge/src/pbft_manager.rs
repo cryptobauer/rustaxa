@@ -316,6 +316,49 @@ pub fn pbft_manager_runtime_apply_transition_storage_write(
     ))
 }
 
+/// Applies the delayed executed-block manager-status reset through Rust storage.
+///
+/// Inputs:
+/// - `runtime`: Rust-owned scalar PBFT manager cursor.
+/// - `storage`: shared Rust storage bridge handle.
+///
+/// Outputs:
+/// - `status = 0` after the durable `ExecutedBlock` status is set to false and
+///   the runtime snapshot is updated.
+/// - `status = 1` with the prior snapshot when storage rejects the write.
+///
+/// Invariants and edge behavior:
+/// - C++ must call this only after preserving the legacy
+///   `waitForPeriodFinalization()` ordering.
+/// - The Rust runtime changes only after the Rust storage write succeeds.
+/// - The returned snapshot is the authoritative source for C++ live mirrors.
+pub fn pbft_manager_runtime_apply_executed_block_reset(
+    runtime: &mut BridgePbftManagerRuntime,
+    storage: &BridgeStorage,
+) -> anyhow::Result<FfiPbftManagerTransitionRuntimeApplyResult> {
+    if storage
+        .0
+        .pbft()
+        .write_manager_status(PBFT_MGR_STATUS_EXECUTED_BLOCK, false)
+        .is_err()
+    {
+        return Ok(transition_runtime_apply_result(
+            TRANSITION_STORAGE_STATUS_REJECTED,
+            0,
+            runtime.state.snapshot(),
+            "PBFT_MANAGER_EXECUTED_BLOCK_RESET_WRITE_FAILURE".to_string(),
+        ));
+    }
+
+    runtime.state.apply_committed_executed_block_reset();
+    Ok(transition_runtime_apply_result(
+        TRANSITION_STORAGE_STATUS_APPLIED,
+        1,
+        runtime.state.snapshot(),
+        String::new(),
+    ))
+}
+
 /// Creates an owned PBFT manager runtime session from one daemon-tick fact bundle.
 pub fn create_pbft_manager_runtime_session(
     fact: FfiPbftManagerRuntimeTickFact,
@@ -1138,6 +1181,48 @@ mod tests {
             assert!(!storage.get_pbft_mgr_status(2).unwrap());
             assert!(!storage.get_pbft_mgr_status(3).unwrap());
             assert!(storage.get_own_verified_votes().unwrap().is_empty());
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_runtime_persists_executed_block_reset_before_snapshot_update() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_executed_reset");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            storage
+                .save_pbft_mgr_field(0, 1)
+                .expect("round seed should persist");
+            storage
+                .save_pbft_mgr_field(1, 1)
+                .expect("step seed should persist");
+            storage
+                .save_pbft_mgr_field(2, 1_500)
+                .expect("lambda seed should persist");
+            storage
+                .save_pbft_mgr_status(PBFT_MGR_STATUS_EXECUTED_BLOCK, true)
+                .expect("executed status should persist");
+
+            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
+                .expect("runtime should restore");
+            assert!(pbft_manager_runtime_snapshot(&runtime).executed_pbft_block);
+            assert!(storage
+                .get_pbft_mgr_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)
+                .expect("status should load"));
+
+            let result = pbft_manager_runtime_apply_executed_block_reset(&mut runtime, &storage)
+                .expect("executed-block reset should not throw");
+
+            assert_eq!(result.status, TRANSITION_STORAGE_STATUS_APPLIED);
+            assert_eq!(result.applied_writes, 1);
+            assert!(!result.snapshot.executed_pbft_block);
+            assert!(!pbft_manager_runtime_snapshot(&runtime).executed_pbft_block);
+            assert!(!storage
+                .get_pbft_mgr_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)
+                .expect("status should load"));
         }
 
         let _ = fs::remove_dir_all(temp_dir);

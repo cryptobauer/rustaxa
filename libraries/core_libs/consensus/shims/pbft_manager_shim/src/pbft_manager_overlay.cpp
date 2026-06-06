@@ -1141,8 +1141,16 @@ void PbftManager::resetPbftConsensus(PbftRound round) {
 
   if (plan.reset_executed_block_status) {
     waitForPeriodFinalization();
-    db_->savePbftMgrStatus(PbftMgrStatus::ExecutedBlock, false);
-    executed_pbft_block_ = false;
+    const auto reset_result =
+        rustaxa::pbft_manager_runtime_apply_executed_block_reset(*pbft_manager_runtime_.value(), db_->rustStorage());
+    if (reset_result.status != kPbftManagerTransitionStorageStatusApplied) {
+      throw std::runtime_error("Rust PBFT manager executed-block reset failed: " +
+                               static_cast<std::string>(reset_result.error_code));
+    }
+    applyPbftManagerRuntimeSnapshot(reset_result.snapshot, round_, step_, state_, current_round_lambda_,
+                                    next_step_time_ms_, rounds_count_dynamic_lambda_, dynamic_lambda_,
+                                    executed_pbft_block_, already_next_voted_value_,
+                                    already_next_voted_null_block_hash_);
   }
   if (plan.set_vote_manager_period_round) {
     vote_mgr_->setCurrentPbftPeriodAndRound(period, plan.new_round);

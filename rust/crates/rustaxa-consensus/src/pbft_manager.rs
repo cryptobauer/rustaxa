@@ -729,6 +729,19 @@ impl PbftManagerRuntime {
             self.snapshot.already_next_voted_null = false;
         }
     }
+
+    /// Records the delayed executed-block status reset after persistence.
+    ///
+    /// Reset-consensus plans keep the legacy wait-for-finalization ordering for
+    /// the durable `ExecutedBlock` manager status. The bridge calls this only
+    /// after that Rust storage write succeeds, so later C++ mirror updates are
+    /// sourced from an authoritative Rust runtime snapshot instead of a stale
+    /// pre-reset flag.
+    pub fn apply_committed_executed_block_reset(&mut self) {
+        self.snapshot.status = PbftManagerStartupRestoreStatus::Ready;
+        self.snapshot.executed_pbft_block = false;
+        self.snapshot.error_code.clear();
+    }
 }
 
 fn reject_startup_restore(error_code: &str) -> PbftManagerRuntimeSnapshot {
@@ -2302,6 +2315,19 @@ mod tests {
         assert_eq!(after.step, 4);
         assert_eq!(after.current_round_lambda_ms, 100);
         assert_eq!(after.next_step_time_ms, 200);
+    }
+
+    #[test]
+    fn runtime_snapshot_records_committed_executed_block_reset() {
+        let mut runtime = PbftManagerRuntime::new(restore_pbft_manager_runtime(startup_fact(2, 4)));
+        assert!(runtime.snapshot().executed_pbft_block);
+
+        runtime.apply_committed_executed_block_reset();
+        let after = runtime.snapshot();
+
+        assert_eq!(after.status, PbftManagerStartupRestoreStatus::Ready);
+        assert!(!after.executed_pbft_block);
+        assert!(after.error_code.is_empty());
     }
 
     #[test]

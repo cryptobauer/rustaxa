@@ -3569,6 +3569,10 @@ pub mod rustaxa_ffi {
             plan: PbftManagerTransitionPlan,
             own_vote_hashes: Vec<PbftFinalizationHash>,
         ) -> Result<PbftManagerTransitionRuntimeApplyResult>;
+        pub fn pbft_manager_runtime_apply_executed_block_reset(
+            runtime: &mut BridgePbftManagerRuntime,
+            storage: &BridgeStorage,
+        ) -> Result<PbftManagerTransitionRuntimeApplyResult>;
         type BridgePbftManagerRuntimeSession;
         pub fn create_pbft_manager_runtime_session(
             fact: PbftManagerRuntimeTickFact,
