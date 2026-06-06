@@ -1148,6 +1148,16 @@ std::vector<std::shared_ptr<PbftVote>> VoteManager::getTwoTPlusOneVotedBlockVote
   return verified_votes_.getTwoTPlusOneVotedBlockVotes(period, round, type);
 }
 
+rustaxa::PbftNextVotesBundleEgressPlan VoteManager::planNextVotesBundleEgress(PbftPeriod period,
+                                                                              PbftRound round) const {
+  return verified_votes_.planNextVotesBundleEgress(period, round);
+}
+
+rustaxa::PbftOptimizedVoteBundleBuildResult VoteManager::buildOptimizedVotesBundleEgress(
+    rustaxa::PbftOptimizedVoteBundleBuildRequest request) const {
+  return verified_votes_.buildOptimizedVotesBundleEgress(std::move(request));
+}
+
 StepVotes VoteManager::getStepVotes(PbftPeriod period, PbftRound round, PbftStep step) const {
   return verified_votes_.getStepVotes(period, round, step).value_or(StepVotes{});
 }

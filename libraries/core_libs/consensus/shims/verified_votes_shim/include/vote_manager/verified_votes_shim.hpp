@@ -251,6 +251,44 @@ class VerifiedVotes {
    */
   std::vector<std::shared_ptr<PbftVote>> getTwoTPlusOneVotedBlockVotes(PbftPeriod period, PbftRound round,
                                                                        TwoTPlusOneVotedBlockType type) const;
+
+  /**
+   * Plans optimized network egress for previous-round next-vote bundles.
+   *
+   * Inputs:
+   * - `period` and `round`: PBFT round whose Next/NextNull 2t+1 vote bundles
+   *   may be requested by a lagging peer.
+   *
+   * Outputs:
+   * - Rust-owned ordered vote-hash plans for NextVotedBlock and
+   *   NextVotedNullBlock, without materializing live `PbftVote` sidecars.
+   *
+   * Invariants and edge behavior:
+   * - C++ remains responsible for peer-known filtering, bundle chunking,
+   *   tarcap packet wrapping, and marking sent hashes known.
+   * - Missing mappings are represented as per-plan `found == false`, not as
+   *   exceptions, so the existing race retry path can decide what to do.
+   */
+  rustaxa::PbftNextVotesBundleEgressPlan planNextVotesBundleEgress(PbftPeriod period, PbftRound round) const;
+
+  /**
+   * Builds one optimized PBFT votes-bundle payload for network egress.
+   *
+   * Inputs:
+   * - `request`: peer-filtered, size-limited ordered vote hashes selected from
+   *   a plan returned by `planNextVotesBundleEgress`.
+   *
+   * Outputs:
+   * - On status 0, inner `OptimizedPbftVotesBundle` RLP bytes and the included
+   *   vote hashes in send order.
+   *
+   * Error behavior:
+   * - Stable non-zero status codes describe invalid kind, stale/mismatched
+   *   mappings, unknown hashes, missing retained payloads, and decode drift.
+   *   Callers must not send partial bundle bytes on non-zero status.
+   */
+  rustaxa::PbftOptimizedVoteBundleBuildResult buildOptimizedVotesBundleEgress(
+      rustaxa::PbftOptimizedVoteBundleBuildRequest request) const;
   /**
    * Selects PBFT reward votes through the Rust verified-vote runtime.
    *

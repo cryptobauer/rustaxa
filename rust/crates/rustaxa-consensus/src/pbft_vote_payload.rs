@@ -29,6 +29,28 @@ pub struct PbftVotePayloadRecord {
     pub vote_rlp: Vec<u8>,
 }
 
+/// Legacy-compatible optimized PBFT vote bundle for network egress.
+///
+/// `bundle_rlp` matches C++ `encodePbftVotesBundleRlp`: common
+/// block/period/round/step metadata plus raw per-vote optimized entries where
+/// each entry is `[vrf_proof, signature]`. It is the inner votes-bundle payload
+/// and is not a tarcap packet wrapper.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftOptimizedVoteBundlePayload {
+    /// Shared voted PBFT block hash.
+    pub block_hash: H256,
+    /// Shared PBFT period.
+    pub period: u64,
+    /// Shared PBFT round.
+    pub round: u64,
+    /// Shared PBFT vote step.
+    pub step: u64,
+    /// Vote hashes included in the same order as the optimized RLP entries.
+    pub vote_hashes: Vec<H256>,
+    /// Optimized legacy PBFT votes-bundle RLP bytes.
+    pub bundle_rlp: Vec<u8>,
+}
+
 /// Builds the weighted PBFT vote storage payload from canonical signed bytes.
 ///
 /// Inputs:
@@ -135,6 +157,78 @@ pub fn build_weighted_pbft_vote_bundle(records: &[PbftVotePayloadRecord]) -> Res
     Ok(stream.out().to_vec())
 }
 
+/// Builds a legacy optimized PBFT votes-bundle for network egress.
+///
+/// Inputs:
+/// - `records`: retained weighted PBFT vote payload records in the exact order
+///   the caller wants to send.
+/// - `block_hash`, `period`, `round`, and `step`: explicit 2t+1 mapping
+///   metadata selected by the verified-vote index.
+///
+/// Outputs:
+/// - Inner `OptimizedPbftVotesBundle` RLP bytes compatible with legacy network
+///   decoding. The tarcap packet wrapper remains a network-layer concern.
+///
+/// Invariants and edge behavior:
+/// - Empty bundles are rejected because legacy optimized bundle decoding
+///   expects shared metadata derived from at least one vote.
+/// - Every record must be a weighted retained payload whose canonical hash
+///   matches the record key.
+/// - Every decoded payload must match the requested block/period/round/step so
+///   callers cannot accidentally build a mixed-header network bundle.
+pub fn build_optimized_pbft_vote_bundle(
+    records: &[PbftVotePayloadRecord],
+    block_hash: H256,
+    period: u64,
+    round: u64,
+    step: u64,
+) -> Result<PbftOptimizedVoteBundlePayload> {
+    ensure!(
+        !records.is_empty(),
+        "PBFT optimized vote bundle requires at least one vote"
+    );
+
+    let mut vote_hashes = Vec::with_capacity(records.len());
+    let mut optimized_votes = Vec::with_capacity(records.len());
+    for record in records {
+        ensure_weighted_vote_payload(record)?;
+        let fields = decode_signed_vote_fields(&record.vote_rlp)?;
+        let inspection = inspect_canonical_pbft_vote(&record.vote_rlp)?;
+        ensure!(
+            inspection.block_hash == block_hash
+                && inspection.period == period
+                && inspection.round == round
+                && inspection.step == step,
+            "PBFT optimized vote bundle payload mismatches requested metadata"
+        );
+
+        let mut vote_stream = RlpStream::new_list(2);
+        vote_stream.append(&inspection.vrf_proof.as_slice());
+        vote_stream.append(&fields.signature.as_slice());
+        optimized_votes.push(vote_stream.out().to_vec());
+        vote_hashes.push(record.hash);
+    }
+
+    let mut stream = RlpStream::new_list(5);
+    stream.append(&block_hash);
+    stream.append(&period);
+    stream.append(&round);
+    stream.append(&step);
+    stream.begin_list(optimized_votes.len());
+    for vote_rlp in optimized_votes {
+        stream.append_raw(&vote_rlp, 1);
+    }
+
+    Ok(PbftOptimizedVoteBundlePayload {
+        block_hash,
+        period,
+        round,
+        step,
+        vote_hashes,
+        bundle_rlp: stream.out().to_vec(),
+    })
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct SignedVoteFields {
     block_hash: H256,
@@ -217,12 +311,16 @@ mod tests {
     }
 
     fn vote_rlp(block_hash: [u8; 32]) -> Vec<u8> {
+        vote_rlp_with(block_hash, 12, 2, 3)
+    }
+
+    fn vote_rlp_with(block_hash: [u8; 32], period: u64, round: u64, step: u64) -> Vec<u8> {
         let generated = generate_pbft_vote(PbftVoteGenerationInput {
             block_hash: block_hash.into(),
             vote_type: PbftVoteType::Cert,
-            period: 12,
-            round: 2,
-            step: 3,
+            period,
+            round,
+            step,
             node_secret: NODE_SECRET,
             vrf_secret: VRF_SECRET,
             expected_voter: voter_from_secret(&NODE_SECRET).into(),
@@ -270,5 +368,57 @@ mod tests {
         assert_eq!(decoded.item_count().unwrap(), 2);
         assert_eq!(decoded.at(0).unwrap().as_raw(), first.vote_rlp.as_slice());
         assert_eq!(decoded.at(1).unwrap().as_raw(), second.vote_rlp.as_slice());
+    }
+
+    #[test]
+    fn optimized_bundle_uses_shared_header_and_compact_vote_items() {
+        let first = build_weighted_pbft_vote_payload(&vote_rlp([3; 32]), 10).unwrap();
+        let second = build_weighted_pbft_vote_payload(&vote_rlp([3; 32]), 20).unwrap();
+
+        let bundle = build_optimized_pbft_vote_bundle(
+            &[first.clone(), second.clone()],
+            [3; 32].into(),
+            12,
+            2,
+            3,
+        )
+        .unwrap();
+        let decoded = Rlp::new(&bundle.bundle_rlp);
+
+        assert_eq!(bundle.vote_hashes, vec![first.hash, second.hash]);
+        assert_eq!(decoded.item_count().unwrap(), 5);
+        assert_eq!(decoded.val_at::<H256>(0).unwrap(), [3; 32].into());
+        assert_eq!(decoded.val_at::<u64>(1).unwrap(), 12);
+        assert_eq!(decoded.val_at::<u64>(2).unwrap(), 2);
+        assert_eq!(decoded.val_at::<u64>(3).unwrap(), 3);
+        assert_eq!(decoded.at(4).unwrap().item_count().unwrap(), 2);
+        assert_eq!(
+            decoded.at(4).unwrap().at(0).unwrap().item_count().unwrap(),
+            2
+        );
+        assert_eq!(
+            decoded.at(4).unwrap().at(1).unwrap().item_count().unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn optimized_bundle_rejects_empty_records() {
+        let err = build_optimized_pbft_vote_bundle(&[], [3; 32].into(), 12, 2, 3)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("requires at least one vote"));
+    }
+
+    #[test]
+    fn optimized_bundle_rejects_mixed_metadata() {
+        let first = build_weighted_pbft_vote_payload(&vote_rlp([3; 32]), 10).unwrap();
+        let second =
+            build_weighted_pbft_vote_payload(&vote_rlp_with([3; 32], 12, 4, 3), 20).unwrap();
+
+        let err = build_optimized_pbft_vote_bundle(&[first, second], [3; 32].into(), 12, 2, 3)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("mismatches requested metadata"));
     }
 }

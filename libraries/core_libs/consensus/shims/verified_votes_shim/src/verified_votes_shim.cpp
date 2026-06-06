@@ -311,6 +311,8 @@ std::optional<VotedBlock> VerifiedVotes::getTwoTPlusOneVotedBlock(PbftPeriod per
 std::vector<std::shared_ptr<PbftVote>> VerifiedVotes::getTwoTPlusOneVotedBlockVotes(
     PbftPeriod period, PbftRound round, TwoTPlusOneVotedBlockType type) const {
   std::shared_lock lock(verified_votes_access_);
+  // TODO(rustaxa): remove this compatibility materialization API once PBFT manager/finalization callers consume
+  // Rust-owned payload facts or optimized egress bytes directly.
   const auto lookup = rust_verified_votes_->verified_votes_get_two_t_plus_one_voted_block_payloads(
       period, round, static_cast<uint8_t>(type));
   if (!lookup.found) {
@@ -329,6 +331,18 @@ std::vector<std::shared_ptr<PbftVote>> VerifiedVotes::getTwoTPlusOneVotedBlockVo
     out.push_back(std::move(vote));
   }
   return out;
+}
+
+rustaxa::PbftNextVotesBundleEgressPlan VerifiedVotes::planNextVotesBundleEgress(PbftPeriod period,
+                                                                                PbftRound round) const {
+  std::shared_lock lock(verified_votes_access_);
+  return rust_verified_votes_->verified_votes_plan_next_votes_bundle_egress(period, round);
+}
+
+rustaxa::PbftOptimizedVoteBundleBuildResult VerifiedVotes::buildOptimizedVotesBundleEgress(
+    rustaxa::PbftOptimizedVoteBundleBuildRequest request) const {
+  std::shared_lock lock(verified_votes_access_);
+  return rust_verified_votes_->verified_votes_build_optimized_votes_bundle_egress(std::move(request));
 }
 
 VerifiedVotes::RewardVotePayloadSelection VerifiedVotes::selectRewardVotePayloads(

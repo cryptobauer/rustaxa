@@ -246,6 +246,30 @@ class VoteManager : public VoteManagerOld {
                                                      TwoTPlusOneVotedBlockType type) const;
   std::vector<std::shared_ptr<PbftVote>> getTwoTPlusOneVotedBlockVotes(PbftPeriod period, PbftRound round,
                                                                        TwoTPlusOneVotedBlockType type) const;
+  /**
+   * Plans previous-round next-vote bundle egress from Rust-owned vote payload metadata.
+   *
+   * Inputs:
+   * - `period` and `round`: PBFT round requested by get-next-votes sync.
+   *
+   * Outputs:
+   * - Ordered next and next-null vote-hash plans without materializing
+   *   `PbftVote` objects.
+   *
+   * Invariants:
+   * - Network code must still filter per-peer known votes and build/send
+   *   chunked tarcap packets at the boundary.
+   */
+  rustaxa::PbftNextVotesBundleEgressPlan planNextVotesBundleEgress(PbftPeriod period, PbftRound round) const;
+  /**
+   * Builds one optimized PBFT votes-bundle payload from a peer-filtered Rust egress request.
+   *
+   * Outputs:
+   * - On status 0, returns inner optimized votes-bundle RLP and included hashes
+   *   in send order; non-zero statuses must not be sent.
+   */
+  rustaxa::PbftOptimizedVoteBundleBuildResult buildOptimizedVotesBundleEgress(
+      rustaxa::PbftOptimizedVoteBundleBuildRequest request) const;
   StepVotes getStepVotes(PbftPeriod period, PbftRound round, PbftStep step) const;
   void setCurrentPbftPeriodAndRound(PbftPeriod pbft_period, PbftRound pbft_round);
   PbftStep getNetworkTplusOneNextVotingStep(PbftPeriod period, PbftRound round) const;

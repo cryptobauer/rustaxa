@@ -561,6 +561,65 @@ pub mod rustaxa_ffi {
         vote: PbftVoteStorageRecord,
     }
 
+    /// Per-family optimized PBFT vote-bundle egress plan.
+    ///
+    /// Status values are stable bridge codes:
+    /// 0 = ready, 1 = not found, 2 = empty request, 3 = unsupported kind,
+    /// 4 = mapping mismatch, 5 = requested hash is not in the 2t+1 plan,
+    /// 6 = requested hashes are not in plan order, 7 = missing retained
+    /// payload, 8 = payload decode error, 9 = payload metadata mismatch.
+    struct PbftOptimizedVoteBundlePlan {
+        found: bool,
+        status: u8,
+        error_code: String,
+        kind: u8,
+        block_hash: [u8; 32],
+        period: u64,
+        round: u64,
+        step: u64,
+        vote_hashes: Vec<PbftFinalizationHash>,
+    }
+
+    /// Combined get-next response plan for the previous PBFT round.
+    ///
+    /// Rust owns the next/next-null vote-hash selection from retained
+    /// verified-vote metadata. C++ owns peer-known filtering, chunking, tarcap
+    /// packet wrapping, and network send policy.
+    struct PbftNextVotesBundleEgressPlan {
+        status: u8,
+        error_code: String,
+        period: u64,
+        round: u64,
+        next_votes: PbftOptimizedVoteBundlePlan,
+        next_null_votes: PbftOptimizedVoteBundlePlan,
+    }
+
+    /// Request to build one peer-filtered optimized PBFT votes bundle.
+    ///
+    /// `vote_hashes` must be a non-empty ordered subsequence of the Rust plan
+    /// for `kind`; C++ uses this to filter already-known votes and split large
+    /// bundles without materializing `PbftVote` objects.
+    struct PbftOptimizedVoteBundleBuildRequest {
+        kind: u8,
+        block_hash: [u8; 32],
+        period: u64,
+        round: u64,
+        step: u64,
+        vote_hashes: Vec<PbftFinalizationHash>,
+    }
+
+    /// Result of building one optimized PBFT votes bundle.
+    ///
+    /// On status 0, `votes_bundle_rlp` is the inner
+    /// `OptimizedPbftVotesBundle` RLP payload and `vote_hashes` echoes the
+    /// included hashes in send order. It is not the tarcap packet wrapper.
+    struct PbftOptimizedVoteBundleBuildResult {
+        status: u8,
+        error_code: String,
+        vote_hashes: Vec<PbftFinalizationHash>,
+        votes_bundle_rlp: Vec<u8>,
+    }
+
     /// Latest-round 2t+1 vote bundle crossing the CXX bridge for storage persistence.
     ///
     /// `kind` matches C++ `TwoTPlusOneVotedBlockType` discriminants:
@@ -4163,6 +4222,15 @@ pub mod rustaxa_ffi {
             round: u64,
             kind: u8,
         ) -> Result<TwoTPlusOneVotePayloadsLookup>;
+        pub fn verified_votes_plan_next_votes_bundle_egress(
+            self: &BridgeVerifiedVotes,
+            period: u64,
+            round: u64,
+        ) -> PbftNextVotesBundleEgressPlan;
+        pub fn verified_votes_build_optimized_votes_bundle_egress(
+            self: &BridgeVerifiedVotes,
+            request: PbftOptimizedVoteBundleBuildRequest,
+        ) -> PbftOptimizedVoteBundleBuildResult;
         pub fn verified_votes_get_step_votes(
             self: &BridgeVerifiedVotes,
             period: u64,

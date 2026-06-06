@@ -1,6 +1,8 @@
 use crate::ffi::rustaxa_ffi::{
     AtomicVoteInsertOutcome, DagHash, DetermineNewRoundOutcome, NetworkTPlusOneStepLookup,
-    PbftFinalizationHash, PbftRewardVotePayloadSelection as FfiPbftRewardVotePayloadSelection,
+    PbftFinalizationHash, PbftNextVotesBundleEgressPlan, PbftOptimizedVoteBundleBuildRequest,
+    PbftOptimizedVoteBundleBuildResult, PbftOptimizedVoteBundlePlan,
+    PbftRewardVotePayloadSelection as FfiPbftRewardVotePayloadSelection,
     PbftTwoTPlusOneThresholdFact as FfiPbftTwoTPlusOneThresholdFact,
     PbftTwoTPlusOneThresholdPlan as FfiPbftTwoTPlusOneThresholdPlan, PbftTwoTPlusOneVoteBundle,
     PbftVoteAdmissionRuntimeResult, PbftVoteEventFactFlags, PbftVotePayloadLookup,
@@ -21,6 +23,7 @@ use rustaxa_consensus::pbft_thresholds::{
     PbftTwoTPlusOneThresholdFact, PbftTwoTPlusOneThresholdPlan, PbftTwoTPlusOneThresholdStatus,
 };
 use rustaxa_consensus::pbft_vote_event::PbftVoteEventFactFlags as DomainPbftVoteEventFactFlags;
+use rustaxa_consensus::pbft_vote_payload::build_optimized_pbft_vote_bundle;
 use rustaxa_consensus::pbft_vote_validation::{
     validate_canonical_pbft_vote, PbftCanonicalVoteValidation,
     PbftVoteValidationExternalFacts as DomainPbftVoteValidationExternalFacts,
@@ -33,6 +36,17 @@ use rustaxa_consensus::verified_votes::{
     VerifiedVote,
 };
 use rustaxa_consensus::{PbftVoteAdmissionRuntime, PbftVoteRuntimeAdmissionOutcome};
+
+const PBFT_OPTIMIZED_BUNDLE_READY: u8 = 0;
+const PBFT_OPTIMIZED_BUNDLE_NOT_FOUND: u8 = 1;
+const PBFT_OPTIMIZED_BUNDLE_EMPTY_REQUEST: u8 = 2;
+const PBFT_OPTIMIZED_BUNDLE_UNSUPPORTED_KIND: u8 = 3;
+const PBFT_OPTIMIZED_BUNDLE_MAPPING_MISMATCH: u8 = 4;
+const PBFT_OPTIMIZED_BUNDLE_HASH_NOT_IN_PLAN: u8 = 5;
+const PBFT_OPTIMIZED_BUNDLE_ORDER_MISMATCH: u8 = 6;
+const PBFT_OPTIMIZED_BUNDLE_MISSING_PAYLOAD: u8 = 7;
+const PBFT_OPTIMIZED_BUNDLE_PAYLOAD_DECODE_ERROR: u8 = 8;
+const PBFT_OPTIMIZED_BUNDLE_PAYLOAD_METADATA_MISMATCH: u8 = 9;
 
 /// Creates an empty Rust verified-votes index for the C++ vote-manager shim.
 pub fn create_verified_votes_index() -> Box<BridgeVerifiedVotes> {
@@ -402,6 +416,149 @@ impl BridgeVerifiedVotes {
         })
     }
 
+    /// Plans optimized PBFT next-vote bundle egress for a previous round.
+    ///
+    /// Rust selects ordered vote hashes for the next and next-null 2t+1
+    /// mappings. C++ uses this plan for peer-known filtering and chunking, then
+    /// calls `verified_votes_build_optimized_votes_bundle_egress` for each
+    /// chunk that should be sent.
+    pub fn verified_votes_plan_next_votes_bundle_egress(
+        &self,
+        period: u64,
+        round: u64,
+    ) -> PbftNextVotesBundleEgressPlan {
+        PbftNextVotesBundleEgressPlan {
+            status: PBFT_OPTIMIZED_BUNDLE_READY,
+            error_code: "PBFT_OPTIMIZED_VOTE_BUNDLE_READY".to_owned(),
+            period,
+            round,
+            next_votes: self.optimized_vote_bundle_plan(
+                period,
+                round,
+                TwoTPlusOneVotedBlockType::NextVotedBlock,
+            ),
+            next_null_votes: self.optimized_vote_bundle_plan(
+                period,
+                round,
+                TwoTPlusOneVotedBlockType::NextVotedNullBlock,
+            ),
+        }
+    }
+
+    /// Builds one peer-filtered optimized PBFT votes bundle from retained payloads.
+    ///
+    /// The request hashes must be a non-empty ordered subsequence of the Rust
+    /// 2t+1 plan for the requested kind. The output is the inner optimized
+    /// votes-bundle RLP; C++ remains responsible for tarcap packet wrapping,
+    /// peer send policy, and marking sent hashes known.
+    pub fn verified_votes_build_optimized_votes_bundle_egress(
+        &self,
+        request: PbftOptimizedVoteBundleBuildRequest,
+    ) -> PbftOptimizedVoteBundleBuildResult {
+        let kind = match TwoTPlusOneVotedBlockType::try_from(request.kind) {
+            Ok(kind) => kind,
+            Err(_) => {
+                return optimized_bundle_build_result(
+                    PBFT_OPTIMIZED_BUNDLE_UNSUPPORTED_KIND,
+                    "PBFT_OPTIMIZED_VOTE_BUNDLE_UNSUPPORTED_KIND",
+                    Vec::new(),
+                    Vec::new(),
+                );
+            }
+        };
+
+        let requested_hashes: Vec<H256> = request
+            .vote_hashes
+            .iter()
+            .map(|hash| H256::from(hash.hash))
+            .collect();
+        if requested_hashes.is_empty() {
+            return optimized_bundle_build_result(
+                PBFT_OPTIMIZED_BUNDLE_EMPTY_REQUEST,
+                "PBFT_OPTIMIZED_VOTE_BUNDLE_EMPTY_REQUEST",
+                Vec::new(),
+                Vec::new(),
+            );
+        }
+
+        let Some(voted) = self.0.verified_votes().get_two_t_plus_one_voted_block(
+            request.period,
+            request.round,
+            kind,
+        ) else {
+            return optimized_bundle_build_result(
+                PBFT_OPTIMIZED_BUNDLE_NOT_FOUND,
+                "PBFT_OPTIMIZED_VOTE_BUNDLE_NOT_FOUND",
+                requested_hashes,
+                Vec::new(),
+            );
+        };
+
+        if voted.hash != H256::from(request.block_hash) || voted.step != request.step {
+            return optimized_bundle_build_result(
+                PBFT_OPTIMIZED_BUNDLE_MAPPING_MISMATCH,
+                "PBFT_OPTIMIZED_VOTE_BUNDLE_MAPPING_MISMATCH",
+                requested_hashes,
+                Vec::new(),
+            );
+        }
+
+        let planned_hashes = self
+            .0
+            .verified_votes()
+            .get_two_t_plus_one_voted_block_vote_hashes(request.period, request.round, kind);
+        if let Err(status) = ensure_ordered_subsequence(&planned_hashes, &requested_hashes) {
+            return optimized_bundle_build_result(
+                status,
+                optimized_bundle_status_error_code(status),
+                requested_hashes,
+                Vec::new(),
+            );
+        }
+
+        let mut records = Vec::with_capacity(requested_hashes.len());
+        for vote_hash in &requested_hashes {
+            let Some(record) = self.0.weighted_payload(*vote_hash).cloned() else {
+                return optimized_bundle_build_result(
+                    PBFT_OPTIMIZED_BUNDLE_MISSING_PAYLOAD,
+                    "PBFT_OPTIMIZED_VOTE_BUNDLE_MISSING_RETAINED_PAYLOAD",
+                    requested_hashes,
+                    Vec::new(),
+                );
+            };
+            records.push(record);
+        }
+
+        match build_optimized_pbft_vote_bundle(
+            &records,
+            voted.hash,
+            request.period,
+            request.round,
+            voted.step,
+        ) {
+            Ok(bundle) => optimized_bundle_build_result(
+                PBFT_OPTIMIZED_BUNDLE_READY,
+                "PBFT_OPTIMIZED_VOTE_BUNDLE_READY",
+                bundle.vote_hashes,
+                bundle.bundle_rlp,
+            ),
+            Err(err) if err.to_string().contains("mismatches requested metadata") => {
+                optimized_bundle_build_result(
+                    PBFT_OPTIMIZED_BUNDLE_PAYLOAD_METADATA_MISMATCH,
+                    "PBFT_OPTIMIZED_VOTE_BUNDLE_PAYLOAD_METADATA_MISMATCH",
+                    requested_hashes,
+                    Vec::new(),
+                )
+            }
+            Err(_) => optimized_bundle_build_result(
+                PBFT_OPTIMIZED_BUNDLE_PAYLOAD_DECODE_ERROR,
+                "PBFT_OPTIMIZED_VOTE_BUNDLE_PAYLOAD_DECODE_ERROR",
+                requested_hashes,
+                Vec::new(),
+            ),
+        }
+    }
+
     /// Returns all voted values and their vote hashes for one step.
     pub fn verified_votes_get_step_votes(
         &self,
@@ -600,6 +757,118 @@ impl BridgeVerifiedVotes {
             })
             .collect()
     }
+
+    fn optimized_vote_bundle_plan(
+        &self,
+        period: u64,
+        round: u64,
+        kind: TwoTPlusOneVotedBlockType,
+    ) -> PbftOptimizedVoteBundlePlan {
+        let Some(voted) = self
+            .0
+            .verified_votes()
+            .get_two_t_plus_one_voted_block(period, round, kind)
+        else {
+            return optimized_bundle_plan(
+                false,
+                PBFT_OPTIMIZED_BUNDLE_NOT_FOUND,
+                "PBFT_OPTIMIZED_VOTE_BUNDLE_NOT_FOUND",
+                kind.into(),
+                H256::zero(),
+                period,
+                round,
+                0,
+                Vec::new(),
+            );
+        };
+
+        optimized_bundle_plan(
+            true,
+            PBFT_OPTIMIZED_BUNDLE_READY,
+            "PBFT_OPTIMIZED_VOTE_BUNDLE_READY",
+            kind.into(),
+            voted.hash,
+            period,
+            round,
+            voted.step,
+            self.0
+                .verified_votes()
+                .get_two_t_plus_one_voted_block_vote_hashes(period, round, kind),
+        )
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn optimized_bundle_plan(
+    found: bool,
+    status: u8,
+    error_code: &str,
+    kind: u8,
+    block_hash: H256,
+    period: u64,
+    round: u64,
+    step: u64,
+    vote_hashes: Vec<H256>,
+) -> PbftOptimizedVoteBundlePlan {
+    PbftOptimizedVoteBundlePlan {
+        found,
+        status,
+        error_code: error_code.to_owned(),
+        kind,
+        block_hash: block_hash.into(),
+        period,
+        round,
+        step,
+        vote_hashes: vote_hashes
+            .into_iter()
+            .map(|hash| PbftFinalizationHash { hash: hash.into() })
+            .collect(),
+    }
+}
+
+fn optimized_bundle_build_result(
+    status: u8,
+    error_code: &str,
+    vote_hashes: Vec<H256>,
+    votes_bundle_rlp: Vec<u8>,
+) -> PbftOptimizedVoteBundleBuildResult {
+    PbftOptimizedVoteBundleBuildResult {
+        status,
+        error_code: error_code.to_owned(),
+        vote_hashes: vote_hashes
+            .into_iter()
+            .map(|hash| PbftFinalizationHash { hash: hash.into() })
+            .collect(),
+        votes_bundle_rlp,
+    }
+}
+
+fn optimized_bundle_status_error_code(status: u8) -> &'static str {
+    match status {
+        PBFT_OPTIMIZED_BUNDLE_HASH_NOT_IN_PLAN => "PBFT_OPTIMIZED_VOTE_BUNDLE_HASH_NOT_IN_PLAN",
+        PBFT_OPTIMIZED_BUNDLE_ORDER_MISMATCH => "PBFT_OPTIMIZED_VOTE_BUNDLE_ORDER_MISMATCH",
+        _ => "PBFT_OPTIMIZED_VOTE_BUNDLE_ERROR",
+    }
+}
+
+fn ensure_ordered_subsequence(
+    planned_hashes: &[H256],
+    requested_hashes: &[H256],
+) -> Result<(), u8> {
+    let mut cursor = 0;
+    for requested_hash in requested_hashes {
+        let Some(relative_position) = planned_hashes[cursor..]
+            .iter()
+            .position(|planned_hash| planned_hash == requested_hash)
+        else {
+            if planned_hashes[..cursor].contains(requested_hash) {
+                return Err(PBFT_OPTIMIZED_BUNDLE_ORDER_MISMATCH);
+            }
+            return Err(PBFT_OPTIMIZED_BUNDLE_HASH_NOT_IN_PLAN);
+        };
+        cursor += relative_position + 1;
+    }
+    Ok(())
 }
 
 fn copy_vote_payload(value: &VerifiedVotePayload) -> VerifiedVotePayload {
@@ -1065,12 +1334,21 @@ mod tests {
         block_hash: [u8; 32],
         node_secret: [u8; 32],
     ) -> rustaxa_consensus::PbftGeneratedVote {
+        generated_vote_for_type(block_hash, node_secret, PbftVoteType::Cert, 3)
+    }
+
+    fn generated_vote_for_type(
+        block_hash: [u8; 32],
+        node_secret: [u8; 32],
+        vote_type: PbftVoteType,
+        step: u64,
+    ) -> rustaxa_consensus::PbftGeneratedVote {
         generate_pbft_vote(PbftVoteGenerationInput {
             block_hash: block_hash.into(),
-            vote_type: PbftVoteType::Cert,
+            vote_type,
             period: 12,
             round: 2,
-            step: 3,
+            step,
             node_secret,
             vrf_secret: VRF_SECRET,
             expected_voter: voter_from_secret(&node_secret).into(),
@@ -1247,6 +1525,132 @@ mod tests {
         assert_eq!(payloads.votes.len(), 2);
         assert!(payloads.votes.iter().any(|vote| vote.hash == first_hash));
         assert!(payloads.votes.iter().any(|vote| vote.hash == second_hash));
+    }
+
+    #[test]
+    fn bridge_builds_optimized_bundle_from_retained_payloads() {
+        let mut votes = create_verified_votes_index();
+        let first = generated_vote([0x24; 32], NODE_SECRET);
+        let second = generated_vote([0x24; 32], NODE_SECRET_TWO);
+        let first_hash: [u8; 32] = first.vote_hash.into();
+        let second_hash: [u8; 32] = second.vote_hash.into();
+
+        votes
+            .verified_votes_admit_validated_vote(
+                &first.vote_rlp,
+                validation_facts(),
+                runtime_flags(),
+                runtime_context(80),
+            )
+            .expect("first generated vote is admitted");
+        votes
+            .verified_votes_admit_validated_vote(
+                &second.vote_rlp,
+                validation_facts(),
+                runtime_flags(),
+                runtime_context(80),
+            )
+            .expect("second generated vote is admitted");
+
+        let lookup = votes
+            .verified_votes_get_two_t_plus_one_voted_block_votes(
+                12,
+                2,
+                TwoTPlusOneVotedBlockType::CertVotedBlock.into(),
+            )
+            .expect("2t+1 vote-hash lookup succeeds");
+        assert!(lookup.found);
+
+        let result = votes.verified_votes_build_optimized_votes_bundle_egress(
+            PbftOptimizedVoteBundleBuildRequest {
+                kind: TwoTPlusOneVotedBlockType::CertVotedBlock.into(),
+                block_hash: [0x24; 32],
+                period: 12,
+                round: 2,
+                step: 3,
+                vote_hashes: lookup
+                    .vote_hashes
+                    .into_iter()
+                    .map(|hash| PbftFinalizationHash { hash: hash.hash })
+                    .collect(),
+            },
+        );
+
+        assert_eq!(result.status, PBFT_OPTIMIZED_BUNDLE_READY);
+        assert_eq!(result.vote_hashes.len(), 2);
+        assert!(result
+            .vote_hashes
+            .iter()
+            .any(|hash| hash.hash == first_hash));
+        assert!(result
+            .vote_hashes
+            .iter()
+            .any(|hash| hash.hash == second_hash));
+        let decoded = rlp::Rlp::new(&result.votes_bundle_rlp);
+        assert_eq!(decoded.item_count().unwrap(), 5);
+        assert_eq!(decoded.val_at::<H256>(0).unwrap(), H256::from([0x24; 32]));
+        assert_eq!(decoded.val_at::<u64>(1).unwrap(), 12);
+        assert_eq!(decoded.val_at::<u64>(2).unwrap(), 2);
+        assert_eq!(decoded.val_at::<u64>(3).unwrap(), 3);
+        assert_eq!(decoded.at(4).unwrap().item_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn bridge_plans_next_vote_bundle_egress_and_rejects_order_drift() {
+        let mut votes = create_verified_votes_index();
+        let first = generated_vote_for_type([0x25; 32], NODE_SECRET, PbftVoteType::Next, 4);
+        let second = generated_vote_for_type([0x25; 32], NODE_SECRET_TWO, PbftVoteType::Next, 4);
+
+        votes
+            .verified_votes_admit_validated_vote(
+                &first.vote_rlp,
+                validation_facts(),
+                runtime_flags(),
+                runtime_context(80),
+            )
+            .expect("first generated vote is admitted");
+        votes
+            .verified_votes_admit_validated_vote(
+                &second.vote_rlp,
+                validation_facts(),
+                runtime_flags(),
+                runtime_context(80),
+            )
+            .expect("second generated vote is admitted");
+
+        let plan = votes.verified_votes_plan_next_votes_bundle_egress(12, 2);
+        assert_eq!(plan.status, PBFT_OPTIMIZED_BUNDLE_READY);
+        assert!(plan.next_votes.found);
+        assert_eq!(
+            plan.next_votes.kind,
+            u8::from(TwoTPlusOneVotedBlockType::NextVotedBlock)
+        );
+        assert_eq!(plan.next_votes.vote_hashes.len(), 2);
+        assert!(!plan.next_null_votes.found);
+
+        let kind = plan.next_votes.kind;
+        let block_hash = plan.next_votes.block_hash;
+        let period = plan.next_votes.period;
+        let round = plan.next_votes.round;
+        let step = plan.next_votes.step;
+        let mut reversed: Vec<PbftFinalizationHash> = plan
+            .next_votes
+            .vote_hashes
+            .into_iter()
+            .map(|hash| PbftFinalizationHash { hash: hash.hash })
+            .collect();
+        reversed.reverse();
+        let rejected = votes.verified_votes_build_optimized_votes_bundle_egress(
+            PbftOptimizedVoteBundleBuildRequest {
+                kind,
+                block_hash,
+                period,
+                round,
+                step,
+                vote_hashes: reversed,
+            },
+        );
+        assert_eq!(rejected.status, PBFT_OPTIMIZED_BUNDLE_ORDER_MISMATCH);
     }
 
     #[test]

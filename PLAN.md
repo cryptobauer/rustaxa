@@ -475,8 +475,11 @@ The current Rust starting point is intentionally small:
   planning with replay-cache storage,
   canonical PBFT vote RLP inspection, signed/unsigned vote hashing, signature recovery, VRF proof verification,
   Rust-computed received-vote weight, sortition-threshold calculation, Rust-owned PBFT `2t+1` threshold cache, local
-  proposer-sortition screening, and Rust-owned local PBFT vote byte generation/signing for canonical signed and weighted vote payloads with shim-side
-  parity checks against temporary C++ live sidecars for the Rust-mode `VoteManager` overlay, and a Rust-backed
+  proposer-sortition screening, Rust-owned local PBFT vote byte generation/signing for canonical signed and weighted
+  vote payloads with shim-side parity checks against temporary C++ live sidecars for the Rust-mode `VoteManager`
+  overlay, and Rust-owned optimized PBFT vote-bundle construction from retained weighted payload records for
+  get-next-votes egress. C++ still owns peer-known filtering, tarcap packet wrapping, splitting, send policy, and
+  known-vote marking at the network boundary. The crate also contains a Rust-backed
   `GasPricer` oracle for finalized-block history, minimum-price
   flooring, and percentile bid selection.
   The Rust-enabled `SlashingManager` overlay now routes deterministic double-voting proof planning, duplicate-proof
@@ -696,10 +699,11 @@ The current Rust starting point is intentionally small:
    construction/submission from Rust-normalized payloads, logging, and deferred network effects. PBFT
    vote persistence for own verified votes, extra reward votes, finalized reward-vote resets, and latest-round 2t+1
    bundles now routes through VoteManager-specific `rustaxa-storage` bridge operations and Rust-owned vote payload
-   builders: Rust constructs the weighted storage RLP records and raw vote-bundle RLP from canonical signed vote bytes
-   plus the authoritative calculated weight, owns the immediate vote-progress write batch and the caller-owned own-vote
-   cleanup batch appender, and normalizes unweighted slashing evidence RLP before the Rust slashing planner builds
-   calldata. The shim mutates temporary live sidecars only after Rust accepts the durable operation. `validateVote`,
+  builders: Rust constructs the weighted storage RLP records, raw weighted vote-bundle RLP for persistence, optimized
+  PBFT vote-bundle RLP for get-next network egress, and normalized unweighted slashing evidence RLP from canonical
+  signed vote bytes plus the authoritative calculated weight. Rust owns the immediate vote-progress write batch and the
+  caller-owned own-vote cleanup batch appender, and the Rust slashing planner consumes the normalized evidence before
+  building calldata. The shim mutates temporary live sidecars only after Rust accepts the durable operation. `validateVote`,
    `voteAlreadyValidated`, `getPbftTwoTPlusOne`, and
    `genAndValidateVrfSortition` now route away from `VoteManagerOld`: Rust owns validation/replay planning, canonical
    received-vote RLP inspection, signed and unsigned vote hash derivation, recovered voter identity, signature and VRF
