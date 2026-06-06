@@ -57,6 +57,10 @@ Core rules:
   implementation directly instead of re-centering behavior in C++. Prefer extending Rust crates, bridges, and shim-owned
   Rust handles over adding C++ orchestration or C++ data materialization, unless a concrete blocker is documented and
   accepted by the task owner.
+- Logging and observability are not architectural blockers for Rust ownership. Do not keep deterministic consensus
+  behavior in C++ merely because the legacy implementation logs at that point. Rust planners may return typed statuses,
+  telemetry facts, or executor reports that C++ logs temporarily, and logging can be moved, changed, or dropped in a
+  later observability cleanup without affecting the ownership decision.
 - Before selecting or implementing a rewrite slice, proactively inspect adjacent Rust crates, bridge APIs, shim-owned
   handles, and existing storage/FinalChain/DAG/transaction/vote coverage for reuse opportunities. Prefer connecting the
   new path to those Rust implementations, even if that makes the slice slightly larger, when it reduces future C++
@@ -408,6 +412,9 @@ Rules:
   declarations supplied by the temporary `pbft_manager_shim` header overlay.
 - Treat `dposIsEligible` and related vote-count methods as real consensus work, not permanent dummy behavior.
 - Keep networking callbacks, thread orchestration, and broad node integration in C++ until the Rust domain services are stable.
+- Ignore logging when deciding whether behavior can move to Rust. Logs are boundary observability, not consensus
+  ownership. Keep temporary C++ logging only as an executor/reporting detail while moving the underlying decision,
+  state transition, or persistence logic into Rust.
 - Shape new ingress-adjacent consensus APIs for the upcoming application-owned arena pipeline even before the concrete
   API exists. Prefer functions that can consume raw payload bytes or compact arena-backed facts, produce small
   protocol plans/effects, and defer C++ `PbftVote`, `PbftBlock`, `DagBlock`, `PeriodData`, and `Transaction`
@@ -433,6 +440,33 @@ Rules:
   This is the concrete meaning of a protocol state transition: the observed consensus state plus an input maps to the
   next intended state and effects, while execution remains outside the planner. Tokio, actors, and ring-buffer workers
   belong around the planner as scheduling/execution machinery, not inside the consensus rule implementation.
+
+### PBFT Manager Rust Ownership Boundary
+
+Target state: the PBFT manager protocol brain moves to Rust. The Rust-mode C++ overlay should become a compatibility
+shell and effect executor that supplies facts, calls a Rust-owned `PbftManagerRuntime`, executes returned effects, and
+reports effect results back to Rust before the runtime advances.
+
+Boundaries that should not move as part of the PBFT manager breakthrough:
+
+- Network/tarcap transport: peer connections, packet wrapping, gossip fanout, send policy, known-peer marking,
+  disconnect/report mechanics, and packet queue ownership stay outside the consensus manager migration. Rust may return
+  typed egress, mark-known, sync-request, and peer-report effects for the existing network executor to perform.
+- EVM/FinalChain execution: transaction execution, receipt/log bloom construction, gas execution, state transition
+  execution, and external contract execution stay in the existing FinalChain/EVM boundary until that execution layer is
+  migrated. Rust PBFT logic may plan finalization, validate facts, and request execution/finalization effects, but it
+  must not absorb EVM execution into the PBFT manager.
+- Live C++ API compatibility: temporary `PbftBlock`, `PbftVote`, `PeriodData`, `DagBlock`, `Transaction`, and
+  pillar sidecar materialization may remain in the overlay while public APIs and remaining callers require those types.
+- Node lifecycle and scheduling: daemon threads, sleeps, timers, startup/shutdown wiring, event emission mechanics, and
+  key-manager signing may stay as effect execution until the surrounding application pipeline owns them.
+
+Everything else inside `PbftManager` is in scope for Rust ownership: period/round/step state, daemon-tick control flow,
+proposal/certify/finish-polling transitions, sync-period admission, proposed-block selection and cleanup planning, vote
+and reward-vote selection, finalization planning and bounded resume, dynamic-lambda decisions, DAG/transaction cleanup
+planning, PBFT-chain head advancement plans, storage/write intents, cross-pipeline effects, and ordered side-effect
+contracts. Logging is explicitly not a boundary; it can stay temporarily in the C++ executor as reporting derived from
+Rust statuses and telemetry.
 
 ### Current Consensus Shape
 
@@ -624,8 +658,9 @@ The current Rust starting point is intentionally small:
    orchestration scaffolding and should be reduced over time by moving round/step/status planning into a Rust-owned PBFT
    manager runtime. The first PBFT orchestration slice now routes `processPeriodData` sync-period admission through a
    side-effect-free Rust planner: C++ still sources PBFT chain, FinalChain, reward/cert vote, transaction, and pillar
-   facts and still performs logging, waits, queue clears, peer reporting, and live object dispatch, while Rust owns the
-   deterministic accept/drop/wait/clear decision table. Missing or finalized transaction facts remain warn-only for
+   facts and still performs waits, queue clears, peer reporting, live object dispatch, and temporary log emission, while
+   Rust owns the deterministic accept/drop/wait/clear decision table. Logging is not a reason to leave the decision
+   table in C++. Missing or finalized transaction facts remain warn-only for
    compatibility and do not reject synced period data. Rust now also plans the sync-period transaction-finalization query:
    C++ extracts live DAG and period-data transaction hashes, Rust de-duplicates DAG references, removes hashes already
    supplied by period data, and returns the ordered finalized-storage lookup list before C++ performs the live
@@ -696,7 +731,8 @@ The current Rust starting point is intentionally small:
    insertion gating, authoritative verified-vote mutation and threshold decisions, duplicate/conflict classification,
    retained slashing payload pairs, and storage-ready extra-reward/current-round 2t+1 payloads. C++ keeps
    live `PbftVote` sidecars, temporary weight hydration for legacy sidecar compatibility, slashing transaction
-   construction/submission from Rust-normalized payloads, logging, and deferred network effects. PBFT
+   construction/submission from Rust-normalized payloads and deferred network effects. Temporary C++ logging around this
+   executor boundary is allowed but is not an ownership constraint. PBFT
    vote persistence for own verified votes, extra reward votes, finalized reward-vote resets, and latest-round 2t+1
    bundles now routes through VoteManager-specific `rustaxa-storage` bridge operations and Rust-owned vote payload
   builders: Rust constructs the weighted storage RLP records, raw weighted vote-bundle RLP for persistence, optimized
@@ -722,11 +758,12 @@ The current Rust starting point is intentionally small:
    sidecars when callers request copied votes. Rust-retained weighted payloads now back verified-vote snapshots,
    reward-vote materialization, and 2t+1 bundle reads, so missing C++ live sidecars no longer produce partial generic
    snapshot, reward, or 2t+1 results. C++ still owns the temporary live sidecar type,
-   FinalChain fact sourcing, logging, reward-vote sidecar mapping, and broader PBFT manager/network orchestration.
-   owns PBFT finalization
-   sortition-change persistence: the sortition shim now previews the live Rust runtime transition, returns the emitted
-   threshold change for storage staging, and commits the same transition only after the PBFT staged storage appender has
-   committed the primary batch. C++ still owns dynamic-lambda live-field assignment from Rust output, FinalChain
+   FinalChain fact sourcing, reward-vote sidecar mapping, and broader PBFT manager/network orchestration; logging may
+   remain temporarily at this boundary but should be ignored when choosing what logic moves to Rust. Rust owns PBFT
+   finalization sortition-change persistence: the sortition shim now previews the live Rust runtime transition, returns
+   the emitted threshold change for storage staging, and commits the same transition only after the PBFT staged storage
+   appender has committed the primary batch. C++ still owns dynamic-lambda live-field assignment from Rust output,
+   FinalChain
    dispatch, and live PBFT runtime mutation until those sidecar APIs move across the bridge.
    Reward-vote reset live metadata is still physically mutated in the vote-manager shim, but the action is now an
    explicit Rust-validated executor report instead of an unproved PBFT-manager side effect. The full Rust-mode

@@ -26,6 +26,12 @@ This repository is the Rust rewrite track for Taraxa. Keep day-to-day work align
   migrated storage/FinalChain/DAG/transaction/vote functionality. Prefer routing through those Rust implementations,
   even when it makes the slice moderately larger, if it reduces C++ ownership and advances the long-term goal of a
   complete Rust rewrite.
+- Hard rule: logging is not an architectural blocker for moving consensus behavior to Rust. Do not keep deterministic
+  logic in C++ merely because the legacy path logs there. Rust may return typed statuses, telemetry facts, or executor
+  reports that C++ logs temporarily; logging can be moved, changed, or deleted later without affecting ownership.
+- PBFT manager breakthrough boundary: move the protocol brain to Rust while keeping network/tarcap transport and
+  EVM/FinalChain execution outside the manager migration for now. Rust should return typed effects for those boundaries
+  instead of owning peer transport, packet wrapping, gossip fanout, gas/state execution, receipts, or contract execution.
 - In C++ files, prefer additive per-module guards (`#ifdef RUSTAXA_ENABLE_VDF`, `#ifdef RUSTAXA_ENABLE_STORAGE`, `#ifdef RUSTAXA_ENABLE_FINAL_CHAIN`) or the master `#ifdef RUSTAXA_ENABLE` for shim-overlay integration over deleting legacy logic.
 - For upstream-owned C++ classes, use the storage/final-chain overlay shim strategy instead of editing legacy files inline:
   add a shim include overlay, compile legacy implementation as `*Old`, and provide a shim class in shim-owned files. The
