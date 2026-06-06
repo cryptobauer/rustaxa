@@ -212,6 +212,22 @@ class VoteManager : public VoteManagerOld {
    * - Unknown Rust batch ids or storage errors propagate as exceptions.
    */
   void clearOwnVerifiedVotes(Batch& write_batch);
+  /**
+   * Clears only the Rust-mode live own-vote sidecar after Rust storage has
+   * already committed the matching `latest_round_own_votes` deletes.
+   *
+   * Inputs:
+   * - None. The durable delete set is supplied to the PBFT manager Rust
+   *   transition apply path before this method is called.
+   *
+   * Outputs:
+   * - Empties the in-memory own-vote vector.
+   *
+   * Invariants and edge behavior:
+   * - This method must only be called after the Rust storage transition apply
+   *   reports success. It intentionally performs no storage writes.
+   */
+  void clearOwnVerifiedVotesAfterRustPersistence();
   std::shared_ptr<PbftVote> generateVoteWithWeight(const blk_hash_t& blockhash, PbftVoteTypes vote_type,
                                                    PbftPeriod period, PbftRound round, PbftStep step,
                                                    const WalletConfig& wallet);

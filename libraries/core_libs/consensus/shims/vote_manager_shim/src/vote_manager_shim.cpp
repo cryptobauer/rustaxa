@@ -830,6 +830,8 @@ void VoteManager::clearOwnVerifiedVotes(Batch& write_batch) {
   own_verified_votes_.clear();
 }
 
+void VoteManager::clearOwnVerifiedVotesAfterRustPersistence() { own_verified_votes_.clear(); }
+
 std::shared_ptr<PbftVote> VoteManager::generateVoteWithWeight(const blk_hash_t& blockhash, PbftVoteTypes vote_type,
                                                               PbftPeriod period, PbftRound round, PbftStep step,
                                                               const WalletConfig& wallet) {

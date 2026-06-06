@@ -61,6 +61,7 @@ class StorageTest : public ::testing::Test {
 
 constexpr uint8_t kPbftVotePersistenceApplied = 0;
 constexpr uint8_t kPbftVotePersistenceRejected = 1;
+constexpr uint8_t kPbftManagerTransitionStorageApplied = 0;
 
 TEST_F(StorageTest, CreateStorage) {
   auto storage = create_storage(test_dir.string());
@@ -241,4 +242,40 @@ TEST_F(StorageTest, AppendClearOwnVerifiedVotesRejectsUnknownBatch) {
   auto result = storage->append_clear_own_verified_votes(999999, std::move(vote_hashes));
   EXPECT_EQ(result.status, kPbftVotePersistenceRejected);
   EXPECT_FALSE(result.error_code.empty());
+}
+
+TEST_F(StorageTest, ApplyPbftManagerTransitionStorageCommitsCursorStatusesAndOwnVoteCleanup) {
+  auto storage = create_storage(test_dir.string());
+  const auto own_vote_hash = h256(0x99);
+
+  storage->save_pbft_mgr_field(0, 1);
+  storage->save_pbft_mgr_field(1, 1);
+  storage->save_pbft_mgr_status(2, true);
+  storage->save_pbft_mgr_status(3, true);
+  storage->save_cert_voted_block_in_round(2, bytes({0xC0}));
+  storage->save_own_verified_vote(own_vote_hash, bytes({0x74}));
+
+  PbftManagerTransitionPlan plan{};
+  plan.status = 0;
+  plan.new_round = 7;
+  plan.new_step = 4;
+  plan.persist_round = true;
+  plan.persist_step = true;
+  plan.reset_next_voted_statuses = true;
+  plan.remove_cert_voted_block = true;
+  plan.clear_own_votes = true;
+
+  rust::Vec<PbftFinalizationHash> own_vote_hashes;
+  own_vote_hashes.push_back(PbftFinalizationHash{own_vote_hash});
+  auto result = apply_pbft_manager_transition_storage_write(*storage, plan, std::move(own_vote_hashes));
+
+  EXPECT_EQ(result.status, kPbftManagerTransitionStorageApplied);
+  EXPECT_EQ(result.applied_writes, 6u);
+  EXPECT_TRUE(result.error_code.empty());
+  EXPECT_EQ(storage->get_pbft_mgr_field(0), 7u);
+  EXPECT_EQ(storage->get_pbft_mgr_field(1), 4u);
+  EXPECT_FALSE(storage->get_pbft_mgr_status(2));
+  EXPECT_FALSE(storage->get_pbft_mgr_status(3));
+  EXPECT_TRUE(storage->get_cert_voted_block_in_round().empty());
+  EXPECT_TRUE(storage->get_own_verified_votes().empty());
 }

@@ -165,11 +165,62 @@ impl<D: DbReader + DbWriter> PbftRepository<D> {
             .put(Column::PbftMgrRoundStep, &[field], &value.to_le_bytes())
     }
 
+    /// Appends a PBFT manager numeric field write to a caller-owned batch.
+    ///
+    /// Inputs:
+    /// - `batch`: Rust storage write batch that owns the eventual atomic commit.
+    /// - `field`: C++-compatible `PbftMgrField` discriminant.
+    /// - `value`: absolute field value encoded as little-endian `uint32_t`.
+    ///
+    /// Outputs:
+    /// - Appends a put in `pbft_mgr_round_step`.
+    ///
+    /// Invariants and edge behavior:
+    /// - Missing values are not interpreted here; restart/default behavior is a
+    ///   read-side contract.
+    /// - Existing keys are overwritten, matching legacy RocksDB put semantics.
+    pub fn write_manager_field_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        field: u8,
+        value: u32,
+    ) -> Result<()> {
+        self.db.batch_put(
+            batch,
+            Column::PbftMgrRoundStep,
+            &[field],
+            &value.to_le_bytes(),
+        )
+    }
+
     /// Persists a PBFT manager status flag.
     /// C++ mapping: `DbStorage::savePbftMgrStatus(PbftMgrStatus, bool const&)`.
     pub fn write_manager_status(&self, field: u8, value: bool) -> Result<()> {
         self.db
             .put(Column::PbftMgrStatus, &[field], &[u8::from(value)])
+    }
+
+    /// Appends a PBFT manager status flag write to a caller-owned batch.
+    ///
+    /// Inputs:
+    /// - `batch`: Rust storage write batch that owns the eventual atomic commit.
+    /// - `field`: C++-compatible `PbftMgrStatus` discriminant.
+    /// - `value`: status value encoded with Rust/C++ bool compatibility
+    ///   (`0` for false, `1` for true).
+    ///
+    /// Outputs:
+    /// - Appends a put in `pbft_mgr_status`.
+    ///
+    /// Invariants and edge behavior:
+    /// - Existing keys are overwritten, matching legacy RocksDB put semantics.
+    pub fn write_manager_status_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        field: u8,
+        value: bool,
+    ) -> Result<()> {
+        self.db
+            .batch_put(batch, Column::PbftMgrStatus, &[field], &[u8::from(value)])
     }
 
     /// Stores serialized PBFT head bytes for a head hash.
@@ -320,6 +371,23 @@ impl<D: DbReader + DbWriter> PbftRepository<D> {
     pub fn remove_cert_voted_block_in_round(&self) -> Result<()> {
         self.db
             .delete(Column::CertVotedBlockInRound, &SINGLE_VALUE_KEY)
+    }
+
+    /// Appends removal of the cached cert-voted block to a caller-owned batch.
+    ///
+    /// Inputs:
+    /// - `batch`: Rust storage write batch that owns the eventual atomic commit.
+    ///
+    /// Outputs:
+    /// - Appends a delete in `cert_voted_block_in_round` at the legacy
+    ///   single-value key.
+    ///
+    /// Invariants and edge behavior:
+    /// - Missing keys are RocksDB delete no-ops, matching legacy storage
+    ///   behavior.
+    pub fn remove_cert_voted_block_in_round_in_batch(&self, batch: &mut D::Batch) -> Result<()> {
+        self.db
+            .batch_delete(batch, Column::CertVotedBlockInRound, &SINGLE_VALUE_KEY)
     }
 
     /// Removes one proposed PBFT block by hash.
@@ -734,6 +802,41 @@ mod tests {
 
         assert_eq!(repo.own_verified_votes_rlp().unwrap(), vec![vec![0xA1]]);
         assert_eq!(repo.reward_votes_rlp().unwrap(), vec![vec![0xB1]]);
+    }
+
+    #[test]
+    fn test_manager_transition_writes_wait_for_batch_commit() {
+        let db = Arc::new(MockPbftStore::new());
+        let repo = PbftRepository::new(db.clone());
+
+        db.put(Column::PbftMgrRoundStep, &[0], &1u32.to_le_bytes());
+        db.put(Column::PbftMgrRoundStep, &[1], &1u32.to_le_bytes());
+        db.put(Column::PbftMgrStatus, &[2], &[1]);
+        db.put(
+            Column::CertVotedBlockInRound,
+            &SINGLE_VALUE_KEY,
+            &[0xC2, 0x01, 0x02],
+        );
+
+        let mut batch = DbWriter::create_batch(db.as_ref());
+        repo.write_manager_field_in_batch(&mut batch, 0, 7).unwrap();
+        repo.write_manager_field_in_batch(&mut batch, 1, 4).unwrap();
+        repo.write_manager_status_in_batch(&mut batch, 2, false)
+            .unwrap();
+        repo.remove_cert_voted_block_in_round_in_batch(&mut batch)
+            .unwrap();
+
+        assert_eq!(repo.manager_field(0).unwrap(), Some(1));
+        assert_eq!(repo.manager_field(1).unwrap(), Some(1));
+        assert_eq!(repo.manager_status(2).unwrap(), Some(true));
+        assert!(repo.cert_voted_block_in_round_rlp().unwrap().is_some());
+
+        DbWriter::commit_batch(db.as_ref(), batch).unwrap();
+
+        assert_eq!(repo.manager_field(0).unwrap(), Some(7));
+        assert_eq!(repo.manager_field(1).unwrap(), Some(4));
+        assert_eq!(repo.manager_status(2).unwrap(), Some(false));
+        assert!(repo.cert_voted_block_in_round_rlp().unwrap().is_none());
     }
 
     #[test]

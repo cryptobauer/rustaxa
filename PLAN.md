@@ -680,9 +680,11 @@ The current Rust starting point is intentionally small:
    or no-op intents, and C++ only materializes live blocks/votes, storage mutations, and network effects. Rust now also
    owns PBFT manager cursor transitions for round reset, filter/certify/finish/finish-polling phase changes, finish
    loopback, polling delays, exponential lambda backoff, next-voted status resets, cert-voted sidecar cleanup, own-vote
-   clearing, and candidate round-advance validation. The shim applies Rust-planned field/status writes and live mirror
-   updates while keeping actual timers, FinalChain waits, VoteManager side effects, network effects, and compatibility
-   objects in C++. PBFT
+   clearing, and candidate round-advance validation. Rust storage now owns the transition persistence apply path for
+   manager round/step fields, next-voted status resets, cert-voted block cleanup, and latest own-vote cleanup in one
+   committed batch, dropping rejected batches before C++ live mirrors change. The shim only applies Rust-planned live
+   mirror updates after that Rust storage apply succeeds, while keeping actual timers, FinalChain waits, VoteManager
+   period/round side effects, network effects, and compatibility objects in C++. PBFT
    finalization
    execution now has a Rust-planned intent contract as well: the shim supplies accepted
    block, PBFT head, anchor, pillar-finalization, and dynamic-lambda facts, and Rust returns explicit cleanup/finalize/

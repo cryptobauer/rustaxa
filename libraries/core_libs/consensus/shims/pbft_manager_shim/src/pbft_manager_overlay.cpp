@@ -113,6 +113,7 @@ constexpr uint8_t kPbftManagerStateActionIntentNextVoteNullBlock = 8;
 constexpr uint8_t kPbftManagerStateActionIntentNextVotePreviousRoundValue = 9;
 constexpr uint8_t kPbftManagerStateActionIntentNextVoteCurrentSoftValue = 10;
 constexpr uint8_t kPbftManagerTransitionStatusReady = 0;
+constexpr uint8_t kPbftManagerTransitionStorageStatusApplied = 0;
 constexpr uint8_t kPbftManagerTransitionResetConsensus = 0;
 constexpr uint8_t kPbftManagerTransitionToFilter = 1;
 constexpr uint8_t kPbftManagerTransitionToCertify = 2;
@@ -297,24 +298,26 @@ void applyPbftManagerTransitionPlan(
     uint32_t &rebroadcast_votes_counter, bool &already_next_voted_value, bool &already_next_voted_null_block_hash,
     bool &print_cert_step_info, bool &print_second_finish_step_info,
     std::chrono::system_clock::time_point &second_finish_step_start_datetime) {
-  auto batch = db->createWriteBatch();
-  if (plan.persist_round) {
-    db->addPbftMgrFieldToBatch(PbftMgrField::Round, plan.new_round, batch);
-  }
-  if (plan.persist_step) {
-    db->addPbftMgrFieldToBatch(PbftMgrField::Step, plan.new_step, batch);
-  }
-  if (plan.reset_next_voted_statuses) {
-    db->addPbftMgrStatusToBatch(PbftMgrStatus::NextVotedNullBlockHash, false, batch);
-    db->addPbftMgrStatusToBatch(PbftMgrStatus::NextVotedSoftValue, false, batch);
-  }
-  if (plan.remove_cert_voted_block) {
-    db->removeCertVotedBlockInRound(batch);
-  }
+  rust::Vec<rustaxa::PbftFinalizationHash> own_vote_hashes;
   if (plan.clear_own_votes) {
-    vote_mgr->clearOwnVerifiedVotes(batch);
+    const auto own_verified_votes = vote_mgr->getOwnVerifiedVotes();
+    own_vote_hashes.reserve(own_verified_votes.size());
+    for (const auto &vote : own_verified_votes) {
+      if (!vote) {
+        throw std::runtime_error("PBFT manager transition cannot clear a null own verified vote");
+      }
+      rustaxa::PbftFinalizationHash hash{};
+      hash.hash = toBridgeHash(vote->getHash());
+      own_vote_hashes.push_back(hash);
+    }
   }
-  db->commitWriteBatch(batch);
+
+  const auto storage_result =
+      rustaxa::apply_pbft_manager_transition_storage_write(db->rustStorage(), plan, std::move(own_vote_hashes));
+  if (storage_result.status != kPbftManagerTransitionStorageStatusApplied) {
+    throw std::runtime_error("Rust PBFT manager transition storage apply failed: " +
+                             static_cast<std::string>(storage_result.error_code));
+  }
 
   round = plan.new_round;
   step = plan.new_step;
@@ -328,6 +331,9 @@ void applyPbftManagerTransitionPlan(
   }
   if (plan.remove_cert_voted_block) {
     cert_voted_block_for_round.reset();
+  }
+  if (plan.clear_own_votes) {
+    vote_mgr->clearOwnVerifiedVotesAfterRustPersistence();
   }
   if (plan.clear_broadcasted_votes) {
     current_round_broadcasted_votes.clear();
