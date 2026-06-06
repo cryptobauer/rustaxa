@@ -674,7 +674,11 @@ The current Rust starting point is intentionally small:
    synced-block processing, optional vote broadcast/cert-block push, round advance, ineligible-wallet sleep, the current
    PBFT state action, state transitions, and final sleep. C++ still executes each live action, but must report the result
    back before Rust advances the cursor; cert-push and round-advance progress complete the session with a restart-loop
-   intent, while certify and second-finish branches are selected from explicit reported flags. PBFT finalization
+   intent, while certify and second-finish branches are selected from explicit reported flags. Rust also now owns the
+   active PBFT state-action branch planner for value proposal, filtering, certify, first finish, and finish polling: the
+   shim supplies compact vote/timing/status facts, Rust returns typed proposal, soft-vote, cert-vote, next-vote, finish,
+   or no-op intents, and C++ only materializes live blocks/votes, storage mutations, and network effects. PBFT
+   finalization
    execution now has a Rust-planned intent contract as well: the shim supplies accepted
    block, PBFT head, anchor, pillar-finalization, and dynamic-lambda facts, and Rust returns explicit cleanup/finalize/
    advance-period flags before C++ applies the existing DB, DAG, transaction-manager, PBFT-chain, FinalChain, and timer

@@ -936,6 +936,39 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
+    /// C++-originated deterministic facts for one PBFT manager state action.
+    struct PbftManagerStateActionFact {
+        state: u8,
+        period: u64,
+        round: u64,
+        step: u64,
+        elapsed_round_ms: u64,
+        deadline_ms: u64,
+        current_round_lambda_ms: u64,
+        polling_interval_ms: u64,
+        has_previous_round_next_null: bool,
+        has_previous_round_next_value: bool,
+        previous_round_next_value_hash: [u8; 32],
+        has_current_round_soft_value: bool,
+        current_round_soft_value_hash: [u8; 32],
+        has_cert_voted_block: bool,
+        cert_voted_block_hash: [u8; 32],
+        already_next_voted_value: bool,
+        already_next_voted_null: bool,
+    }
+
+    /// Side-effect-free PBFT manager state-action plan for C++ execution.
+    struct PbftManagerStateActionPlan {
+        status: u8,
+        primary_intent: u8,
+        primary_hash: [u8; 32],
+        secondary_intent: u8,
+        secondary_hash: [u8; 32],
+        go_finish_state: bool,
+        loop_back_finish_state: bool,
+        error_code: String,
+    }
+
     /// One Rust-owned PBFT finalization runtime-session step.
     struct PbftFinalizationRuntimeSessionStep {
         status: u8,
@@ -3410,6 +3443,9 @@ pub mod rustaxa_ffi {
         pub fn create_pbft_manager_runtime_session(
             fact: PbftManagerRuntimeTickFact,
         ) -> Box<BridgePbftManagerRuntimeSession>;
+        pub fn plan_pbft_manager_state_action(
+            fact: PbftManagerStateActionFact,
+        ) -> PbftManagerStateActionPlan;
         pub fn create_pbft_finalization_resume_runtime_session(
             plan: &PbftFinalizationResumePlan,
         ) -> Box<BridgePbftFinalizationRuntimeSession>;

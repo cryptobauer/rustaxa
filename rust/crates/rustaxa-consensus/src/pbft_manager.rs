@@ -144,6 +144,8 @@ pub enum PbftManagerRuntimeAction {
     DelayFinishPoll,
     /// Sleep until the next planned step time.
     SleepUntilNextStep,
+    /// Unknown bridge action code.
+    Unknown,
 }
 
 impl PbftManagerRuntimeAction {
@@ -168,6 +170,7 @@ impl PbftManagerRuntimeAction {
             Self::LoopBackFinish => 15,
             Self::DelayFinishPoll => 16,
             Self::SleepUntilNextStep => 17,
+            Self::Unknown => 254,
         }
     }
 
@@ -192,7 +195,7 @@ impl PbftManagerRuntimeAction {
             15 => Some(Self::LoopBackFinish),
             16 => Some(Self::DelayFinishPoll),
             17 => Some(Self::SleepUntilNextStep),
-            _ => None,
+            _ => Some(Self::Unknown),
         }
     }
 }
@@ -264,6 +267,422 @@ pub struct PbftManagerRuntimeTickFact {
     /// Initial eligibility snapshot for telemetry. The runtime branch uses the
     /// post-prestate value reported by C++ after `TryAdvanceRound`.
     pub has_eligible_wallet: bool,
+}
+
+/// Stable action-intent codes for deterministic PBFT state actions.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerStateActionIntent {
+    /// No consensus-side work should be executed for this state action.
+    Noop,
+    /// Build and propose a fresh PBFT block for the current period/round.
+    ProposeNewBlock,
+    /// Re-propose the previous round's 2t+1 next-voted value.
+    ReproposePreviousRoundNextValue,
+    /// Identify the current round leader block and soft-vote it if present.
+    IdentifyLeaderAndSoftVote,
+    /// Soft-vote the previous round's 2t+1 next-voted value.
+    SoftVotePreviousRoundNextValue,
+    /// Cert-vote the current round's 2t+1 soft-voted value.
+    CertVoteCurrentSoftValue,
+    /// Move from certify polling to the finish state.
+    GoFinish,
+    /// Next-vote the block this node cert-voted in the current round.
+    NextVoteCertVotedBlock,
+    /// Next-vote the null block hash.
+    NextVoteNullBlock,
+    /// Next-vote the previous round's 2t+1 next-voted value.
+    NextVotePreviousRoundValue,
+    /// Next-vote the current round's 2t+1 soft-voted value.
+    NextVoteCurrentSoftValue,
+}
+
+impl PbftManagerStateActionIntent {
+    /// Stable bridge code for the state-action intent.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Noop => 0,
+            Self::ProposeNewBlock => 1,
+            Self::ReproposePreviousRoundNextValue => 2,
+            Self::IdentifyLeaderAndSoftVote => 3,
+            Self::SoftVotePreviousRoundNextValue => 4,
+            Self::CertVoteCurrentSoftValue => 5,
+            Self::GoFinish => 6,
+            Self::NextVoteCertVotedBlock => 7,
+            Self::NextVoteNullBlock => 8,
+            Self::NextVotePreviousRoundValue => 9,
+            Self::NextVoteCurrentSoftValue => 10,
+        }
+    }
+
+    /// Decodes a stable bridge state-action code.
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::ProposeNewBlock,
+            2 => Self::ReproposePreviousRoundNextValue,
+            3 => Self::IdentifyLeaderAndSoftVote,
+            4 => Self::SoftVotePreviousRoundNextValue,
+            5 => Self::CertVoteCurrentSoftValue,
+            6 => Self::GoFinish,
+            7 => Self::NextVoteCertVotedBlock,
+            8 => Self::NextVoteNullBlock,
+            9 => Self::NextVotePreviousRoundValue,
+            10 => Self::NextVoteCurrentSoftValue,
+            _ => Self::Noop,
+        }
+    }
+}
+
+/// Stable status codes for PBFT manager state-action planning.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerStateActionStatus {
+    /// The plan is usable by the C++ executor.
+    Ready,
+    /// The supplied state is unknown or unsupported.
+    InvalidState,
+    /// The supplied fact bundle is internally inconsistent.
+    InvalidFact,
+}
+
+impl PbftManagerStateActionStatus {
+    /// Stable bridge code for the state-action status.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Ready => 0,
+            Self::InvalidState => 1,
+            Self::InvalidFact => 2,
+        }
+    }
+}
+
+/// C++-originated facts for one PBFT manager state action.
+///
+/// The fact bundle is intentionally compact and contains only deterministic
+/// branch inputs. C++ remains responsible for sourcing those facts from live
+/// vote/proposed-block sidecars, executing returned intents, materializing
+/// blocks and votes, writing storage, and emitting network effects.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerStateActionFact {
+    /// State being executed.
+    pub state: PbftManagerRuntimeStateCode,
+    /// Current PBFT period.
+    pub period: u64,
+    /// Current PBFT round.
+    pub round: u64,
+    /// Current PBFT step.
+    pub step: u64,
+    /// Elapsed milliseconds in the current round.
+    pub elapsed_round_ms: u64,
+    /// PBFT deadline for the current round in milliseconds.
+    pub deadline_ms: u64,
+    /// Current round lambda in milliseconds.
+    pub current_round_lambda_ms: u64,
+    /// Polling interval used by the legacy manager loop.
+    pub polling_interval_ms: u64,
+    /// Whether the previous round has 2t+1 next votes for null.
+    pub has_previous_round_next_null: bool,
+    /// Whether the previous round has 2t+1 next votes for a block value.
+    pub has_previous_round_next_value: bool,
+    /// Previous round 2t+1 next-voted block value, when present.
+    pub previous_round_next_value_hash: [u8; 32],
+    /// Whether the current round has 2t+1 soft votes for a block value.
+    pub has_current_round_soft_value: bool,
+    /// Current round 2t+1 soft-voted block value, when present.
+    pub current_round_soft_value_hash: [u8; 32],
+    /// Whether this node already cert-voted a block in this round.
+    pub has_cert_voted_block: bool,
+    /// Current round cert-voted block hash, when present.
+    pub cert_voted_block_hash: [u8; 32],
+    /// Whether this node already emitted a next vote for a soft-voted value.
+    pub already_next_voted_value: bool,
+    /// Whether this node already emitted a null-block next vote.
+    pub already_next_voted_null: bool,
+}
+
+/// Side-effect-free PBFT manager state-action plan.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerStateActionPlan {
+    /// Planning status.
+    pub status: PbftManagerStateActionStatus,
+    /// Primary action intent for the C++ executor.
+    pub primary_intent: PbftManagerStateActionIntent,
+    /// Hash argument for the primary intent, if applicable.
+    pub primary_hash: [u8; 32],
+    /// Secondary action intent for states that can emit two vote attempts.
+    pub secondary_intent: PbftManagerStateActionIntent,
+    /// Hash argument for the secondary intent, if applicable.
+    pub secondary_hash: [u8; 32],
+    /// Planned value for `go_finish_state_`.
+    pub go_finish_state: bool,
+    /// Planned value for `loop_back_finish_state_`.
+    pub loop_back_finish_state: bool,
+    /// Stable error detail for rejected facts.
+    pub error_code: String,
+}
+
+fn ready_state_action_plan(
+    primary_intent: PbftManagerStateActionIntent,
+    primary_hash: [u8; 32],
+    secondary_intent: PbftManagerStateActionIntent,
+    secondary_hash: [u8; 32],
+    go_finish_state: bool,
+    loop_back_finish_state: bool,
+) -> PbftManagerStateActionPlan {
+    PbftManagerStateActionPlan {
+        status: PbftManagerStateActionStatus::Ready,
+        primary_intent,
+        primary_hash,
+        secondary_intent,
+        secondary_hash,
+        go_finish_state,
+        loop_back_finish_state,
+        error_code: String::new(),
+    }
+}
+
+fn reject_state_action_plan(
+    status: PbftManagerStateActionStatus,
+    error_code: &str,
+) -> PbftManagerStateActionPlan {
+    PbftManagerStateActionPlan {
+        status,
+        primary_intent: PbftManagerStateActionIntent::Noop,
+        primary_hash: [0; 32],
+        secondary_intent: PbftManagerStateActionIntent::Noop,
+        secondary_hash: [0; 32],
+        go_finish_state: false,
+        loop_back_finish_state: false,
+        error_code: error_code.to_string(),
+    }
+}
+
+/// Plans one PBFT manager state action from explicit protocol facts.
+///
+/// The plan is side-effect-free. It deliberately does not validate or
+/// materialize PBFT blocks, generate votes, write storage, sleep, gossip, or
+/// execute FinalChain/EVM logic. Those remain executor responsibilities around
+/// the Rust-owned protocol branch decision.
+pub fn plan_pbft_manager_state_action(
+    fact: PbftManagerStateActionFact,
+) -> PbftManagerStateActionPlan {
+    if fact.state == PbftManagerRuntimeStateCode::Unknown {
+        return reject_state_action_plan(
+            PbftManagerStateActionStatus::InvalidState,
+            "PBFT_MANAGER_STATE_ACTION_UNKNOWN_STATE",
+        );
+    }
+    if fact.period == 0 || fact.round == 0 || fact.step == 0 {
+        return reject_state_action_plan(
+            PbftManagerStateActionStatus::InvalidFact,
+            "PBFT_MANAGER_STATE_ACTION_INVALID_CURSOR",
+        );
+    }
+
+    match fact.state {
+        PbftManagerRuntimeStateCode::ValueProposal => plan_value_proposal_state_action(&fact),
+        PbftManagerRuntimeStateCode::Filter => plan_filter_state_action(&fact),
+        PbftManagerRuntimeStateCode::Certify => plan_certify_state_action(&fact),
+        PbftManagerRuntimeStateCode::Finish => plan_first_finish_state_action(&fact),
+        PbftManagerRuntimeStateCode::FinishPolling => plan_second_finish_state_action(&fact),
+        PbftManagerRuntimeStateCode::Unknown => unreachable!("unknown state rejected above"),
+    }
+}
+
+fn previous_round_starts_from_null(fact: &PbftManagerStateActionFact) -> bool {
+    fact.round == 1 || fact.has_previous_round_next_null
+}
+
+fn plan_value_proposal_state_action(
+    fact: &PbftManagerStateActionFact,
+) -> PbftManagerStateActionPlan {
+    if previous_round_starts_from_null(fact) {
+        return ready_state_action_plan(
+            PbftManagerStateActionIntent::ProposeNewBlock,
+            [0; 32],
+            PbftManagerStateActionIntent::Noop,
+            [0; 32],
+            false,
+            false,
+        );
+    }
+
+    if fact.has_previous_round_next_value {
+        return ready_state_action_plan(
+            PbftManagerStateActionIntent::ReproposePreviousRoundNextValue,
+            fact.previous_round_next_value_hash,
+            PbftManagerStateActionIntent::Noop,
+            [0; 32],
+            false,
+            false,
+        );
+    }
+
+    reject_state_action_plan(
+        PbftManagerStateActionStatus::InvalidFact,
+        "PBFT_MANAGER_VALUE_PROPOSAL_MISSING_PREVIOUS_ROUND_STARTING_VALUE",
+    )
+}
+
+fn plan_filter_state_action(fact: &PbftManagerStateActionFact) -> PbftManagerStateActionPlan {
+    if previous_round_starts_from_null(fact) {
+        return ready_state_action_plan(
+            PbftManagerStateActionIntent::IdentifyLeaderAndSoftVote,
+            [0; 32],
+            PbftManagerStateActionIntent::Noop,
+            [0; 32],
+            false,
+            false,
+        );
+    }
+
+    if fact.has_previous_round_next_value {
+        return ready_state_action_plan(
+            PbftManagerStateActionIntent::SoftVotePreviousRoundNextValue,
+            fact.previous_round_next_value_hash,
+            PbftManagerStateActionIntent::Noop,
+            [0; 32],
+            false,
+            false,
+        );
+    }
+
+    ready_state_action_plan(
+        PbftManagerStateActionIntent::Noop,
+        [0; 32],
+        PbftManagerStateActionIntent::Noop,
+        [0; 32],
+        false,
+        false,
+    )
+}
+
+fn plan_certify_state_action(fact: &PbftManagerStateActionFact) -> PbftManagerStateActionPlan {
+    let finish_deadline_ms = fact.deadline_ms.saturating_sub(fact.polling_interval_ms);
+    let go_finish_state = fact.elapsed_round_ms > finish_deadline_ms;
+    if go_finish_state {
+        return ready_state_action_plan(
+            PbftManagerStateActionIntent::GoFinish,
+            [0; 32],
+            PbftManagerStateActionIntent::Noop,
+            [0; 32],
+            true,
+            false,
+        );
+    }
+
+    if fact.elapsed_round_ms < fact.current_round_lambda_ms.saturating_mul(2) {
+        return ready_state_action_plan(
+            PbftManagerStateActionIntent::Noop,
+            [0; 32],
+            PbftManagerStateActionIntent::Noop,
+            [0; 32],
+            false,
+            false,
+        );
+    }
+
+    if fact.has_cert_voted_block || !fact.has_current_round_soft_value {
+        return ready_state_action_plan(
+            PbftManagerStateActionIntent::Noop,
+            [0; 32],
+            PbftManagerStateActionIntent::Noop,
+            [0; 32],
+            false,
+            false,
+        );
+    }
+
+    ready_state_action_plan(
+        PbftManagerStateActionIntent::CertVoteCurrentSoftValue,
+        fact.current_round_soft_value_hash,
+        PbftManagerStateActionIntent::Noop,
+        [0; 32],
+        false,
+        false,
+    )
+}
+
+fn plan_first_finish_state_action(fact: &PbftManagerStateActionFact) -> PbftManagerStateActionPlan {
+    if fact.has_cert_voted_block {
+        return ready_state_action_plan(
+            PbftManagerStateActionIntent::NextVoteCertVotedBlock,
+            fact.cert_voted_block_hash,
+            PbftManagerStateActionIntent::Noop,
+            [0; 32],
+            false,
+            false,
+        );
+    }
+
+    if fact.round >= 2 && fact.has_previous_round_next_null {
+        return ready_state_action_plan(
+            PbftManagerStateActionIntent::NextVoteNullBlock,
+            [0; 32],
+            PbftManagerStateActionIntent::Noop,
+            [0; 32],
+            false,
+            false,
+        );
+    }
+
+    if fact.has_previous_round_next_value {
+        return ready_state_action_plan(
+            PbftManagerStateActionIntent::NextVotePreviousRoundValue,
+            fact.previous_round_next_value_hash,
+            PbftManagerStateActionIntent::Noop,
+            [0; 32],
+            false,
+            false,
+        );
+    }
+
+    ready_state_action_plan(
+        PbftManagerStateActionIntent::NextVoteNullBlock,
+        [0; 32],
+        PbftManagerStateActionIntent::Noop,
+        [0; 32],
+        false,
+        false,
+    )
+}
+
+fn plan_second_finish_state_action(
+    fact: &PbftManagerStateActionFact,
+) -> PbftManagerStateActionPlan {
+    let primary = if !fact.already_next_voted_value && fact.has_current_round_soft_value {
+        PbftManagerStateActionIntent::NextVoteCurrentSoftValue
+    } else {
+        PbftManagerStateActionIntent::Noop
+    };
+    let primary_hash = if primary == PbftManagerStateActionIntent::NextVoteCurrentSoftValue {
+        fact.current_round_soft_value_hash
+    } else {
+        [0; 32]
+    };
+
+    let secondary = if !fact.has_cert_voted_block
+        && !fact.already_next_voted_null
+        && fact.round >= 2
+        && fact.has_previous_round_next_null
+    {
+        PbftManagerStateActionIntent::NextVoteNullBlock
+    } else {
+        PbftManagerStateActionIntent::Noop
+    };
+
+    let loop_back_finish_state = fact.elapsed_round_ms
+        > fact
+            .current_round_lambda_ms
+            .saturating_sub(fact.polling_interval_ms)
+            .saturating_mul(2);
+
+    ready_state_action_plan(
+        primary,
+        primary_hash,
+        secondary,
+        [0; 32],
+        false,
+        loop_back_finish_state,
+    )
 }
 
 /// One C++ action report for the Rust-owned PBFT manager runtime cursor.
@@ -456,6 +875,43 @@ fn report_error(report: &PbftManagerRuntimeActionReport, fallback: &str) -> Stri
     }
 }
 
+fn valid_action_result(
+    action: PbftManagerRuntimeAction,
+    result: PbftManagerRuntimeActionResultCode,
+) -> bool {
+    match action {
+        PbftManagerRuntimeAction::TryPushCertVotesBlock
+        | PbftManagerRuntimeAction::TryAdvanceRound => matches!(
+            result,
+            PbftManagerRuntimeActionResultCode::NoProgressContinue
+                | PbftManagerRuntimeActionResultCode::ProgressRestartLoop
+        ),
+        PbftManagerRuntimeAction::TransitionToFilter
+        | PbftManagerRuntimeAction::TransitionToCertify
+        | PbftManagerRuntimeAction::TransitionToFinish
+        | PbftManagerRuntimeAction::TransitionToFinishPolling
+        | PbftManagerRuntimeAction::LoopBackFinish => {
+            result == PbftManagerRuntimeActionResultCode::TransitionApplied
+        }
+        PbftManagerRuntimeAction::SleepIneligiblePollingInterval
+        | PbftManagerRuntimeAction::DelayCertifyPoll
+        | PbftManagerRuntimeAction::DelayFinishPoll
+        | PbftManagerRuntimeAction::SleepUntilNextStep => {
+            result == PbftManagerRuntimeActionResultCode::SleepApplied
+        }
+        PbftManagerRuntimeAction::ProcessSyncedPbftBlocks
+        | PbftManagerRuntimeAction::MaybeBroadcastVotes
+        | PbftManagerRuntimeAction::RunValueProposal
+        | PbftManagerRuntimeAction::RunFilter
+        | PbftManagerRuntimeAction::RunCertify
+        | PbftManagerRuntimeAction::RunFirstFinish
+        | PbftManagerRuntimeAction::RunSecondFinish => {
+            result == PbftManagerRuntimeActionResultCode::StateActionDone
+        }
+        PbftManagerRuntimeAction::Unknown => false,
+    }
+}
+
 /// Reports a C++-executed manager action and advances the Rust cursor.
 pub fn report_pbft_manager_runtime_action(
     mut session: PbftManagerRuntimeSession,
@@ -498,6 +954,14 @@ pub fn report_pbft_manager_runtime_action(
             session,
             PbftManagerRuntimeStatus::ActionFailed,
             report_error(&report, "PBFT_MANAGER_RUNTIME_ACTION_FAILED"),
+        );
+    }
+
+    if !valid_action_result(expected_action, report.result) {
+        return fail_session(
+            session,
+            PbftManagerRuntimeStatus::InvalidReport,
+            "PBFT_MANAGER_RUNTIME_RESULT_MISMATCH".to_string(),
         );
     }
 
@@ -617,6 +1081,28 @@ mod tests {
             loop_back_finish_state: false,
             has_eligible_wallet: true,
             error_code: String::new(),
+        }
+    }
+
+    fn state_fact(state: PbftManagerRuntimeStateCode) -> PbftManagerStateActionFact {
+        PbftManagerStateActionFact {
+            state,
+            period: 10,
+            round: 2,
+            step: 3,
+            elapsed_round_ms: 250,
+            deadline_ms: 1_000,
+            current_round_lambda_ms: 100,
+            polling_interval_ms: 100,
+            has_previous_round_next_null: false,
+            has_previous_round_next_value: false,
+            previous_round_next_value_hash: [0x11; 32],
+            has_current_round_soft_value: false,
+            current_round_soft_value_hash: [0x22; 32],
+            has_cert_voted_block: false,
+            cert_voted_block_hash: [0x33; 32],
+            already_next_voted_value: false,
+            already_next_voted_null: false,
         }
     }
 
@@ -740,8 +1226,14 @@ mod tests {
             }
             let action = step.action.expect("action");
             let mut action_report = report(step.cursor, action);
-            if action == PbftManagerRuntimeAction::TryAdvanceRound {
+            if matches!(
+                action,
+                PbftManagerRuntimeAction::TryPushCertVotesBlock
+                    | PbftManagerRuntimeAction::TryAdvanceRound
+            ) {
                 action_report.result = PbftManagerRuntimeActionResultCode::NoProgressContinue;
+            }
+            if action == PbftManagerRuntimeAction::TryAdvanceRound {
                 action_report.has_eligible_wallet = false;
             }
             session = report_pbft_manager_runtime_action(session, action_report);
@@ -826,5 +1318,138 @@ mod tests {
         bad_report.result = PbftManagerRuntimeActionResultCode::NoProgressContinue;
         let session = report_pbft_manager_runtime_action(session, bad_report);
         assert_eq!(session.status, PbftManagerRuntimeStatus::ActionMismatch);
+    }
+
+    #[test]
+    fn runtime_rejects_unknown_action_and_result_codes() {
+        let session =
+            create_pbft_manager_runtime_session(fact(PbftManagerRuntimeStateCode::Filter));
+        let step = next_pbft_manager_runtime_action(&session);
+
+        let mut bad_action = report(step.cursor, PbftManagerRuntimeAction::Unknown);
+        bad_action.result = PbftManagerRuntimeActionResultCode::StateActionDone;
+        let failed = report_pbft_manager_runtime_action(session.clone(), bad_action);
+        assert_eq!(failed.status, PbftManagerRuntimeStatus::ActionMismatch);
+
+        let mut bad_result = report(step.cursor, step.action.expect("action"));
+        bad_result.result = PbftManagerRuntimeActionResultCode::Unknown;
+        let failed = report_pbft_manager_runtime_action(session, bad_result);
+        assert_eq!(failed.status, PbftManagerRuntimeStatus::InvalidReport);
+        assert_eq!(failed.error_code, "PBFT_MANAGER_RUNTIME_RESULT_MISMATCH");
+    }
+
+    #[test]
+    fn state_action_planner_selects_value_proposal_starting_value() {
+        let mut fact = state_fact(PbftManagerRuntimeStateCode::ValueProposal);
+        fact.has_previous_round_next_null = true;
+        let plan = plan_pbft_manager_state_action(fact.clone());
+        assert_eq!(plan.status, PbftManagerStateActionStatus::Ready);
+        assert_eq!(
+            plan.primary_intent,
+            PbftManagerStateActionIntent::ProposeNewBlock
+        );
+
+        fact.has_previous_round_next_null = false;
+        fact.has_previous_round_next_value = true;
+        let plan = plan_pbft_manager_state_action(fact);
+        assert_eq!(
+            plan.primary_intent,
+            PbftManagerStateActionIntent::ReproposePreviousRoundNextValue
+        );
+        assert_eq!(plan.primary_hash, [0x11; 32]);
+    }
+
+    #[test]
+    fn state_action_planner_selects_filter_branches() {
+        let mut fact = state_fact(PbftManagerRuntimeStateCode::Filter);
+        fact.round = 1;
+        let plan = plan_pbft_manager_state_action(fact.clone());
+        assert_eq!(
+            plan.primary_intent,
+            PbftManagerStateActionIntent::IdentifyLeaderAndSoftVote
+        );
+
+        fact.round = 2;
+        fact.has_previous_round_next_value = true;
+        let plan = plan_pbft_manager_state_action(fact);
+        assert_eq!(
+            plan.primary_intent,
+            PbftManagerStateActionIntent::SoftVotePreviousRoundNextValue
+        );
+        assert_eq!(plan.primary_hash, [0x11; 32]);
+    }
+
+    #[test]
+    fn state_action_planner_selects_certify_timeout_and_vote() {
+        let mut fact = state_fact(PbftManagerRuntimeStateCode::Certify);
+        fact.elapsed_round_ms = 950;
+        let plan = plan_pbft_manager_state_action(fact.clone());
+        assert_eq!(plan.primary_intent, PbftManagerStateActionIntent::GoFinish);
+        assert!(plan.go_finish_state);
+
+        fact.elapsed_round_ms = 250;
+        fact.has_current_round_soft_value = true;
+        let plan = plan_pbft_manager_state_action(fact);
+        assert_eq!(
+            plan.primary_intent,
+            PbftManagerStateActionIntent::CertVoteCurrentSoftValue
+        );
+        assert_eq!(plan.primary_hash, [0x22; 32]);
+    }
+
+    #[test]
+    fn state_action_planner_selects_finish_votes() {
+        let mut fact = state_fact(PbftManagerRuntimeStateCode::Finish);
+        fact.has_cert_voted_block = true;
+        let plan = plan_pbft_manager_state_action(fact.clone());
+        assert_eq!(
+            plan.primary_intent,
+            PbftManagerStateActionIntent::NextVoteCertVotedBlock
+        );
+        assert_eq!(plan.primary_hash, [0x33; 32]);
+
+        fact.has_cert_voted_block = false;
+        fact.has_previous_round_next_null = true;
+        let plan = plan_pbft_manager_state_action(fact.clone());
+        assert_eq!(
+            plan.primary_intent,
+            PbftManagerStateActionIntent::NextVoteNullBlock
+        );
+
+        fact.has_previous_round_next_null = false;
+        fact.has_previous_round_next_value = true;
+        let plan = plan_pbft_manager_state_action(fact);
+        assert_eq!(
+            plan.primary_intent,
+            PbftManagerStateActionIntent::NextVotePreviousRoundValue
+        );
+        assert_eq!(plan.primary_hash, [0x11; 32]);
+    }
+
+    #[test]
+    fn state_action_planner_selects_second_finish_primary_secondary_and_loopback() {
+        let mut fact = state_fact(PbftManagerRuntimeStateCode::FinishPolling);
+        fact.current_round_lambda_ms = 1_000;
+        fact.has_current_round_soft_value = true;
+        fact.has_previous_round_next_null = true;
+        fact.elapsed_round_ms = 50;
+        let plan = plan_pbft_manager_state_action(fact.clone());
+        assert_eq!(
+            plan.primary_intent,
+            PbftManagerStateActionIntent::NextVoteCurrentSoftValue
+        );
+        assert_eq!(
+            plan.secondary_intent,
+            PbftManagerStateActionIntent::NextVoteNullBlock
+        );
+        assert!(!plan.loop_back_finish_state);
+
+        fact.elapsed_round_ms = 2_000;
+        fact.already_next_voted_value = true;
+        fact.already_next_voted_null = true;
+        let plan = plan_pbft_manager_state_action(fact);
+        assert_eq!(plan.primary_intent, PbftManagerStateActionIntent::Noop);
+        assert_eq!(plan.secondary_intent, PbftManagerStateActionIntent::Noop);
+        assert!(plan.loop_back_finish_state);
     }
 }

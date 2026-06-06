@@ -45,8 +45,10 @@ pub use pbft_finalize::{
 pub use pbft_manager::{
     PbftManagerRuntimeAction, PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
     PbftManagerRuntimeSession, PbftManagerRuntimeSessionStep, PbftManagerRuntimeStateCode,
-    PbftManagerRuntimeStatus, PbftManagerRuntimeTickFact, abort_pbft_manager_runtime_session,
-    create_pbft_manager_runtime_session, next_pbft_manager_runtime_action,
+    PbftManagerRuntimeStatus, PbftManagerRuntimeTickFact, PbftManagerStateActionFact,
+    PbftManagerStateActionIntent, PbftManagerStateActionPlan, PbftManagerStateActionStatus,
+    abort_pbft_manager_runtime_session, create_pbft_manager_runtime_session,
+    next_pbft_manager_runtime_action, plan_pbft_manager_state_action,
     report_pbft_manager_runtime_action,
 };
 pub use pbft_reward_votes::{

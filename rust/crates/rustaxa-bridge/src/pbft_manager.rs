@@ -9,14 +9,18 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerRuntimeActionReport as FfiPbftManagerRuntimeActionReport,
     PbftManagerRuntimeSessionStep as FfiPbftManagerRuntimeSessionStep,
     PbftManagerRuntimeTickFact as FfiPbftManagerRuntimeTickFact,
+    PbftManagerStateActionFact as FfiPbftManagerStateActionFact,
+    PbftManagerStateActionPlan as FfiPbftManagerStateActionPlan,
 };
 use crate::ffi::BridgePbftManagerRuntimeSession;
 use rustaxa_consensus::pbft_manager::{
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
     create_pbft_manager_runtime_session as create_domain_pbft_manager_runtime_session,
-    next_pbft_manager_runtime_action, report_pbft_manager_runtime_action, PbftManagerRuntimeAction,
-    PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
-    PbftManagerRuntimeSessionStep, PbftManagerRuntimeStateCode, PbftManagerRuntimeTickFact,
+    next_pbft_manager_runtime_action,
+    plan_pbft_manager_state_action as plan_domain_pbft_manager_state_action,
+    report_pbft_manager_runtime_action, PbftManagerRuntimeAction, PbftManagerRuntimeActionReport,
+    PbftManagerRuntimeActionResultCode, PbftManagerRuntimeSessionStep, PbftManagerRuntimeStateCode,
+    PbftManagerRuntimeTickFact, PbftManagerStateActionFact, PbftManagerStateActionPlan,
 };
 
 const RUNTIME_STATUS_ACTIVE: u8 = 0;
@@ -51,6 +55,13 @@ pub fn pbft_manager_runtime_session_report(
 /// Aborts this PBFT manager runtime session.
 pub fn abort_pbft_manager_runtime_session(session: &mut BridgePbftManagerRuntimeSession) {
     session.state = abort_domain_pbft_manager_runtime_session(session.state.clone());
+}
+
+/// Plans one deterministic PBFT manager state action from compact C++ facts.
+pub fn plan_pbft_manager_state_action(
+    fact: FfiPbftManagerStateActionFact,
+) -> FfiPbftManagerStateActionPlan {
+    plan_domain_pbft_manager_state_action(fact.into()).into()
 }
 
 impl BridgePbftManagerRuntimeSession {
@@ -93,13 +104,37 @@ impl From<FfiPbftManagerRuntimeActionReport> for PbftManagerRuntimeActionReport 
         Self {
             cursor: value.cursor,
             action: PbftManagerRuntimeAction::from_u8(value.action)
-                .unwrap_or(PbftManagerRuntimeAction::ProcessSyncedPbftBlocks),
+                .unwrap_or(PbftManagerRuntimeAction::Unknown),
             success: value.success,
             result: PbftManagerRuntimeActionResultCode::from_u8(value.result),
             go_finish_state: value.go_finish_state,
             loop_back_finish_state: value.loop_back_finish_state,
             has_eligible_wallet: value.has_eligible_wallet,
             error_code: value.error_code,
+        }
+    }
+}
+
+impl From<FfiPbftManagerStateActionFact> for PbftManagerStateActionFact {
+    fn from(value: FfiPbftManagerStateActionFact) -> Self {
+        Self {
+            state: PbftManagerRuntimeStateCode::from_u8(value.state),
+            period: value.period,
+            round: value.round,
+            step: value.step,
+            elapsed_round_ms: value.elapsed_round_ms,
+            deadline_ms: value.deadline_ms,
+            current_round_lambda_ms: value.current_round_lambda_ms,
+            polling_interval_ms: value.polling_interval_ms,
+            has_previous_round_next_null: value.has_previous_round_next_null,
+            has_previous_round_next_value: value.has_previous_round_next_value,
+            previous_round_next_value_hash: value.previous_round_next_value_hash,
+            has_current_round_soft_value: value.has_current_round_soft_value,
+            current_round_soft_value_hash: value.current_round_soft_value_hash,
+            has_cert_voted_block: value.has_cert_voted_block,
+            cert_voted_block_hash: value.cert_voted_block_hash,
+            already_next_voted_value: value.already_next_voted_value,
+            already_next_voted_null: value.already_next_voted_null,
         }
     }
 }
@@ -124,6 +159,21 @@ impl From<PbftManagerRuntimeSessionStep> for FfiPbftManagerRuntimeSessionStep {
     }
 }
 
+impl From<PbftManagerStateActionPlan> for FfiPbftManagerStateActionPlan {
+    fn from(value: PbftManagerStateActionPlan) -> Self {
+        Self {
+            status: value.status.as_u8(),
+            primary_intent: value.primary_intent.as_u8(),
+            primary_hash: value.primary_hash,
+            secondary_intent: value.secondary_intent.as_u8(),
+            secondary_hash: value.secondary_hash,
+            go_finish_state: value.go_finish_state,
+            loop_back_finish_state: value.loop_back_finish_state,
+            error_code: value.error_code,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,10 +187,17 @@ mod tests {
     const ACTION_RUN_CERTIFY: u8 = 9;
     const ACTION_TRANSITION_FINISH: u8 = 10;
     const ACTION_RUN_VALUE_PROPOSAL: u8 = 5;
+    const ACTION_RUN_FILTER: u8 = 7;
+    const ACTION_RUN_FIRST_FINISH: u8 = 12;
     const RESULT_CONTINUE: u8 = 0;
     const RESULT_PROGRESS_RESTART: u8 = 1;
     const RESULT_STATE_DONE: u8 = 2;
     const RESULT_TRANSITION: u8 = 3;
+    const RESULT_SLEEP: u8 = 4;
+    const STATE_ACTION_STATUS_READY: u8 = 0;
+    const STATE_ACTION_PROPOSE_NEW_BLOCK: u8 = 1;
+    const STATE_ACTION_SOFT_VOTE_PREVIOUS_VALUE: u8 = 4;
+    const STATE_ACTION_NEXT_VOTE_CERT_BLOCK: u8 = 7;
 
     fn fact(state: u8) -> FfiPbftManagerRuntimeTickFact {
         FfiPbftManagerRuntimeTickFact {
@@ -181,7 +238,13 @@ mod tests {
             seen.push(step.action);
             let result = match step.action {
                 ACTION_TRY_CERT | ACTION_TRY_ROUND => RESULT_CONTINUE,
-                ACTION_RUN_VALUE_PROPOSAL => RESULT_STATE_DONE,
+                ACTION_PROCESS_SYNCED
+                | ACTION_BROADCAST
+                | ACTION_RUN_VALUE_PROPOSAL
+                | ACTION_RUN_FILTER
+                | ACTION_RUN_CERTIFY
+                | ACTION_RUN_FIRST_FINISH => RESULT_STATE_DONE,
+                17 => RESULT_SLEEP,
                 _ => RESULT_TRANSITION,
             };
             let _ = pbft_manager_runtime_session_report(
@@ -262,5 +325,56 @@ mod tests {
 
         assert_eq!(failed.status, 3);
         assert!(!failed.can_continue);
+    }
+
+    fn state_fact(state: u8) -> FfiPbftManagerStateActionFact {
+        FfiPbftManagerStateActionFact {
+            state,
+            period: 10,
+            round: 2,
+            step: 3,
+            elapsed_round_ms: 250,
+            deadline_ms: 1_000,
+            current_round_lambda_ms: 100,
+            polling_interval_ms: 100,
+            has_previous_round_next_null: false,
+            has_previous_round_next_value: false,
+            previous_round_next_value_hash: [0x44; 32],
+            has_current_round_soft_value: false,
+            current_round_soft_value_hash: [0x55; 32],
+            has_cert_voted_block: false,
+            cert_voted_block_hash: [0x66; 32],
+            already_next_voted_value: false,
+            already_next_voted_null: false,
+        }
+    }
+
+    #[test]
+    fn bridge_plans_state_action_intents_with_hash_payloads() {
+        let mut value_fact = state_fact(STATE_VALUE_PROPOSAL);
+        value_fact.has_previous_round_next_null = true;
+        let value_plan = plan_pbft_manager_state_action(value_fact);
+        assert_eq!(value_plan.status, STATE_ACTION_STATUS_READY);
+        assert_eq!(value_plan.primary_intent, STATE_ACTION_PROPOSE_NEW_BLOCK);
+
+        let mut filter_fact = state_fact(1);
+        filter_fact.has_previous_round_next_value = true;
+        let filter_plan = plan_pbft_manager_state_action(filter_fact);
+        assert_eq!(filter_plan.status, STATE_ACTION_STATUS_READY);
+        assert_eq!(
+            filter_plan.primary_intent,
+            STATE_ACTION_SOFT_VOTE_PREVIOUS_VALUE
+        );
+        assert_eq!(filter_plan.primary_hash, [0x44; 32]);
+
+        let mut finish_fact = state_fact(3);
+        finish_fact.has_cert_voted_block = true;
+        let finish_plan = plan_pbft_manager_state_action(finish_fact);
+        assert_eq!(finish_plan.status, STATE_ACTION_STATUS_READY);
+        assert_eq!(
+            finish_plan.primary_intent,
+            STATE_ACTION_NEXT_VOTE_CERT_BLOCK
+        );
+        assert_eq!(finish_plan.primary_hash, [0x66; 32]);
     }
 }
