@@ -419,6 +419,201 @@ pub struct PbftManagerStateActionPlan {
     pub error_code: String,
 }
 
+/// Stable transition-kind codes for PBFT manager cursor mutation planning.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerTransitionKind {
+    /// Reset the consensus cursor for a new round.
+    ResetConsensus,
+    /// Move from value-proposal to filtering.
+    ToFilter,
+    /// Move from filtering to certifying.
+    ToCertify,
+    /// Move from certifying to first finish.
+    ToFinish,
+    /// Move from first finish to finish polling.
+    ToFinishPolling,
+    /// Loop from finish polling back to first finish.
+    LoopBackFinish,
+    /// Delay certify polling without changing phase.
+    DelayCertifyPoll,
+    /// Delay finish polling without changing phase.
+    DelayFinishPoll,
+    /// Unknown bridge transition code.
+    Unknown,
+}
+
+impl PbftManagerTransitionKind {
+    /// Stable bridge code for this transition kind.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::ResetConsensus => 0,
+            Self::ToFilter => 1,
+            Self::ToCertify => 2,
+            Self::ToFinish => 3,
+            Self::ToFinishPolling => 4,
+            Self::LoopBackFinish => 5,
+            Self::DelayCertifyPoll => 6,
+            Self::DelayFinishPoll => 7,
+            Self::Unknown => 254,
+        }
+    }
+
+    /// Decodes a stable bridge transition code.
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::ResetConsensus,
+            1 => Self::ToFilter,
+            2 => Self::ToCertify,
+            3 => Self::ToFinish,
+            4 => Self::ToFinishPolling,
+            5 => Self::LoopBackFinish,
+            6 => Self::DelayCertifyPoll,
+            7 => Self::DelayFinishPoll,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Stable status codes for PBFT manager transition planning.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerTransitionStatus {
+    /// The transition plan is usable by the C++ executor.
+    Ready,
+    /// The supplied transition kind is unknown.
+    InvalidKind,
+    /// The supplied facts are internally inconsistent.
+    InvalidFact,
+}
+
+impl PbftManagerTransitionStatus {
+    /// Stable bridge code for the transition status.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Ready => 0,
+            Self::InvalidKind => 1,
+            Self::InvalidFact => 2,
+        }
+    }
+}
+
+/// C++-originated facts for one PBFT manager cursor/status transition.
+///
+/// The fact bundle contains only scalar state, timing, and already-sourced
+/// network vote progress. Rust decides the resulting manager cursor, lambda,
+/// next-step deadline, and manager-status reset intents. C++ remains the
+/// executor for storage writes, VoteManager side effects, live status fields,
+/// timestamps, and compatibility logging.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerTransitionFact {
+    /// Transition kind requested by the runtime cursor.
+    pub kind: PbftManagerTransitionKind,
+    /// Current PBFT period.
+    pub period: u64,
+    /// Current PBFT round.
+    pub round: u64,
+    /// Current PBFT step.
+    pub step: u64,
+    /// Target round for `ResetConsensus`; ignored by phase transitions.
+    pub target_round: u64,
+    /// Current round lambda before the transition.
+    pub current_round_lambda_ms: u64,
+    /// Lambda calculated for the target round under Cacti.
+    pub target_round_lambda_ms: u64,
+    /// Genesis/default lambda used before Cacti and for exponential reset.
+    pub default_lambda_ms: u64,
+    /// Maximum exponential lambda.
+    pub max_exponential_lambda_ms: u64,
+    /// Odd step where exponential backoff starts.
+    pub max_steps: u64,
+    /// Greatest network t+1 next-voting step already sourced by C++.
+    pub network_next_voting_step: u64,
+    /// PBFT deadline for the current round in milliseconds.
+    pub deadline_ms: u64,
+    /// Polling interval used by finish polling.
+    pub polling_interval_ms: u64,
+    /// Current `next_step_time_ms_`.
+    pub next_step_time_ms: u64,
+    /// Whether the target period is on the Cacti hardfork.
+    pub cacti_hardfork: bool,
+    /// Whether a cert-voted block sidecar exists and may need removal.
+    pub has_cert_voted_block: bool,
+    /// Whether an executed PBFT block flag is set and requires executor reset.
+    pub executed_pbft_block: bool,
+}
+
+/// Side-effect-free plan for one PBFT manager cursor/status transition.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerTransitionPlan {
+    /// Planning status.
+    pub status: PbftManagerTransitionStatus,
+    /// Transition kind echoed back for executor validation.
+    pub kind: PbftManagerTransitionKind,
+    /// Planned PBFT state after the transition.
+    pub new_state: PbftManagerRuntimeStateCode,
+    /// Planned round after the transition.
+    pub new_round: u64,
+    /// Planned step after the transition.
+    pub new_step: u64,
+    /// Planned current-round lambda in milliseconds.
+    pub current_round_lambda_ms: u64,
+    /// Planned next-step deadline in milliseconds.
+    pub next_step_time_ms: u64,
+    /// Persist the planned round field.
+    pub persist_round: bool,
+    /// Persist the planned step field.
+    pub persist_step: bool,
+    /// Reset next-voted manager status bits and live flags.
+    pub reset_next_voted_statuses: bool,
+    /// Remove the saved cert-voted block if present.
+    pub remove_cert_voted_block: bool,
+    /// Clear local own-vote records through the VoteManager executor.
+    pub clear_own_votes: bool,
+    /// Clear current-round broadcast bookkeeping.
+    pub clear_broadcasted_votes: bool,
+    /// Reset current-round broadcast counters.
+    pub reset_broadcast_counters: bool,
+    /// Reset the executed-block manager status after period finalization.
+    pub reset_executed_block_status: bool,
+    /// Update the VoteManager period/round executor boundary.
+    pub set_vote_manager_period_round: bool,
+    /// Reset current round start time in C++.
+    pub reset_current_round_start: bool,
+    /// Reset second-finish polling start time in C++.
+    pub reset_second_finish_start: bool,
+    /// Set the certify-step log flag.
+    pub print_cert_step_info: bool,
+    /// Set the second-finish-step log flag.
+    pub print_second_finish_step_info: bool,
+    /// Stable error detail for rejected facts.
+    pub error_code: String,
+}
+
+/// C++-originated facts for deciding whether PBFT can advance to a new round.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerAdvanceRoundFact {
+    /// Current PBFT period.
+    pub period: u64,
+    /// Current PBFT round.
+    pub current_round: u64,
+    /// Whether C++/VoteManager found a candidate new round.
+    pub has_new_round: bool,
+    /// Candidate new round when present.
+    pub new_round: u64,
+}
+
+/// Side-effect-free plan for PBFT round advancement.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerAdvanceRoundPlan {
+    /// Planning status.
+    pub status: PbftManagerTransitionStatus,
+    /// Whether C++ should apply a reset transition to `target_round`.
+    pub should_advance: bool,
+    /// Planned target round when `should_advance` is true.
+    pub target_round: u64,
+    /// Stable error detail for rejected facts.
+    pub error_code: String,
+}
+
 fn ready_state_action_plan(
     primary_intent: PbftManagerStateActionIntent,
     primary_hash: [u8; 32],
@@ -452,6 +647,301 @@ fn reject_state_action_plan(
         go_finish_state: false,
         loop_back_finish_state: false,
         error_code: error_code.to_string(),
+    }
+}
+
+fn reject_transition_plan(
+    status: PbftManagerTransitionStatus,
+    kind: PbftManagerTransitionKind,
+    error_code: &str,
+) -> PbftManagerTransitionPlan {
+    PbftManagerTransitionPlan {
+        status,
+        kind,
+        new_state: PbftManagerRuntimeStateCode::Unknown,
+        new_round: 0,
+        new_step: 0,
+        current_round_lambda_ms: 0,
+        next_step_time_ms: 0,
+        persist_round: false,
+        persist_step: false,
+        reset_next_voted_statuses: false,
+        remove_cert_voted_block: false,
+        clear_own_votes: false,
+        clear_broadcasted_votes: false,
+        reset_broadcast_counters: false,
+        reset_executed_block_status: false,
+        set_vote_manager_period_round: false,
+        reset_current_round_start: false,
+        reset_second_finish_start: false,
+        print_cert_step_info: false,
+        print_second_finish_step_info: false,
+        error_code: error_code.to_string(),
+    }
+}
+
+fn transition_base_plan(
+    fact: &PbftManagerTransitionFact,
+    new_state: PbftManagerRuntimeStateCode,
+    new_round: u64,
+    new_step: u64,
+    current_round_lambda_ms: u64,
+    next_step_time_ms: u64,
+) -> PbftManagerTransitionPlan {
+    PbftManagerTransitionPlan {
+        status: PbftManagerTransitionStatus::Ready,
+        kind: fact.kind,
+        new_state,
+        new_round,
+        new_step,
+        current_round_lambda_ms,
+        next_step_time_ms,
+        persist_round: false,
+        persist_step: true,
+        reset_next_voted_statuses: false,
+        remove_cert_voted_block: false,
+        clear_own_votes: false,
+        clear_broadcasted_votes: false,
+        reset_broadcast_counters: false,
+        reset_executed_block_status: false,
+        set_vote_manager_period_round: false,
+        reset_current_round_start: false,
+        reset_second_finish_start: false,
+        print_cert_step_info: false,
+        print_second_finish_step_info: false,
+        error_code: String::new(),
+    }
+}
+
+fn planned_lambda_for_step(fact: &PbftManagerTransitionFact, new_step: u64) -> u64 {
+    if new_step >= fact.max_steps && new_step % 2 == 1 {
+        let mut lambda = if new_step == fact.max_steps {
+            fact.default_lambda_ms
+        } else {
+            fact.current_round_lambda_ms
+        };
+        let catch_up_delay = fact.max_steps.saturating_sub(4);
+        if fact.network_next_voting_step > new_step
+            && fact.network_next_voting_step - new_step >= catch_up_delay
+        {
+            fact.default_lambda_ms
+        } else if lambda < fact.max_exponential_lambda_ms {
+            lambda = lambda.saturating_mul(2).min(fact.max_exponential_lambda_ms);
+            lambda
+        } else {
+            lambda
+        }
+    } else {
+        fact.current_round_lambda_ms
+    }
+}
+
+fn validate_transition_fact(fact: &PbftManagerTransitionFact) -> Option<&'static str> {
+    if fact.kind == PbftManagerTransitionKind::Unknown {
+        return Some("PBFT_MANAGER_TRANSITION_UNKNOWN_KIND");
+    }
+    if fact.period == 0 || fact.round == 0 || fact.step == 0 {
+        return Some("PBFT_MANAGER_TRANSITION_INVALID_CURSOR");
+    }
+    if fact.current_round_lambda_ms == 0
+        || fact.default_lambda_ms == 0
+        || fact.max_exponential_lambda_ms == 0
+        || fact.max_steps == 0
+    {
+        return Some("PBFT_MANAGER_TRANSITION_INVALID_TIMING_FACTS");
+    }
+    if fact.kind == PbftManagerTransitionKind::ResetConsensus && fact.target_round == 0 {
+        return Some("PBFT_MANAGER_TRANSITION_INVALID_TARGET_ROUND");
+    }
+    None
+}
+
+/// Plans one PBFT manager cursor/status transition from explicit protocol facts.
+///
+/// The plan is side-effect-free. It owns the deterministic state/round/step,
+/// lambda, next-step timing, and manager-status reset decisions. C++ consumes
+/// the plan as an executor by persisting fields, updating live compatibility
+/// state, clearing sidecars, and setting timestamps.
+pub fn plan_pbft_manager_transition(fact: PbftManagerTransitionFact) -> PbftManagerTransitionPlan {
+    if let Some(error) = validate_transition_fact(&fact) {
+        let status = if fact.kind == PbftManagerTransitionKind::Unknown {
+            PbftManagerTransitionStatus::InvalidKind
+        } else {
+            PbftManagerTransitionStatus::InvalidFact
+        };
+        return reject_transition_plan(status, fact.kind, error);
+    }
+
+    match fact.kind {
+        PbftManagerTransitionKind::ResetConsensus => {
+            let lambda = if fact.cacti_hardfork {
+                fact.target_round_lambda_ms
+            } else {
+                fact.default_lambda_ms
+            };
+            if lambda == 0 {
+                return reject_transition_plan(
+                    PbftManagerTransitionStatus::InvalidFact,
+                    fact.kind,
+                    "PBFT_MANAGER_TRANSITION_INVALID_RESET_LAMBDA",
+                );
+            }
+            let mut plan = transition_base_plan(
+                &fact,
+                PbftManagerRuntimeStateCode::ValueProposal,
+                fact.target_round,
+                1,
+                lambda,
+                fact.next_step_time_ms,
+            );
+            plan.persist_round = true;
+            plan.reset_next_voted_statuses = true;
+            plan.remove_cert_voted_block = fact.has_cert_voted_block;
+            plan.clear_own_votes = true;
+            plan.clear_broadcasted_votes = true;
+            plan.reset_broadcast_counters = true;
+            plan.reset_executed_block_status = fact.executed_pbft_block;
+            plan.set_vote_manager_period_round = true;
+            plan.reset_current_round_start = true;
+            plan
+        }
+        PbftManagerTransitionKind::ToFilter => {
+            let new_step = fact.step.saturating_add(1);
+            let lambda = planned_lambda_for_step(&fact, new_step);
+            transition_base_plan(
+                &fact,
+                PbftManagerRuntimeStateCode::Filter,
+                fact.round,
+                new_step,
+                lambda,
+                lambda.saturating_mul(2),
+            )
+        }
+        PbftManagerTransitionKind::ToCertify => {
+            let new_step = fact.step.saturating_add(1);
+            let lambda = planned_lambda_for_step(&fact, new_step);
+            let mut plan = transition_base_plan(
+                &fact,
+                PbftManagerRuntimeStateCode::Certify,
+                fact.round,
+                new_step,
+                lambda,
+                lambda.saturating_mul(2),
+            );
+            plan.print_cert_step_info = true;
+            plan
+        }
+        PbftManagerTransitionKind::ToFinish => {
+            let new_step = fact.step.saturating_add(1);
+            let lambda = planned_lambda_for_step(&fact, new_step);
+            transition_base_plan(
+                &fact,
+                PbftManagerRuntimeStateCode::Finish,
+                fact.round,
+                new_step,
+                lambda,
+                fact.deadline_ms,
+            )
+        }
+        PbftManagerTransitionKind::ToFinishPolling => {
+            let new_step = fact.step.saturating_add(1);
+            let lambda = planned_lambda_for_step(&fact, new_step);
+            let mut plan = transition_base_plan(
+                &fact,
+                PbftManagerRuntimeStateCode::FinishPolling,
+                fact.round,
+                new_step,
+                lambda,
+                fact.next_step_time_ms
+                    .saturating_add(fact.polling_interval_ms),
+            );
+            plan.reset_next_voted_statuses = true;
+            plan.reset_second_finish_start = true;
+            plan.print_second_finish_step_info = true;
+            plan
+        }
+        PbftManagerTransitionKind::LoopBackFinish => {
+            let new_step = fact.step.saturating_add(1);
+            let lambda = planned_lambda_for_step(&fact, new_step);
+            let mut plan = transition_base_plan(
+                &fact,
+                PbftManagerRuntimeStateCode::Finish,
+                fact.round,
+                new_step,
+                lambda,
+                fact.next_step_time_ms
+                    .saturating_add(fact.polling_interval_ms),
+            );
+            plan.reset_next_voted_statuses = true;
+            plan
+        }
+        PbftManagerTransitionKind::DelayCertifyPoll => {
+            let mut plan = transition_base_plan(
+                &fact,
+                PbftManagerRuntimeStateCode::Certify,
+                fact.round,
+                fact.step,
+                fact.current_round_lambda_ms,
+                fact.next_step_time_ms
+                    .saturating_add(fact.polling_interval_ms),
+            );
+            plan.persist_step = false;
+            plan
+        }
+        PbftManagerTransitionKind::DelayFinishPoll => {
+            let mut plan = transition_base_plan(
+                &fact,
+                PbftManagerRuntimeStateCode::FinishPolling,
+                fact.round,
+                fact.step,
+                fact.current_round_lambda_ms,
+                fact.next_step_time_ms
+                    .saturating_add(fact.polling_interval_ms),
+            );
+            plan.persist_step = false;
+            plan
+        }
+        PbftManagerTransitionKind::Unknown => unreachable!("unknown transition rejected above"),
+    }
+}
+
+/// Plans whether a PBFT manager round-advance candidate should reset consensus.
+///
+/// C++ still sources the candidate from the VoteManager/verified-votes runtime,
+/// but Rust validates the protocol condition that advancement requires a
+/// strictly greater round before C++ applies the reset transition.
+pub fn plan_pbft_manager_advance_round(
+    fact: PbftManagerAdvanceRoundFact,
+) -> PbftManagerAdvanceRoundPlan {
+    if fact.period == 0 || fact.current_round == 0 {
+        return PbftManagerAdvanceRoundPlan {
+            status: PbftManagerTransitionStatus::InvalidFact,
+            should_advance: false,
+            target_round: 0,
+            error_code: "PBFT_MANAGER_ADVANCE_ROUND_INVALID_CURSOR".to_string(),
+        };
+    }
+    if !fact.has_new_round {
+        return PbftManagerAdvanceRoundPlan {
+            status: PbftManagerTransitionStatus::Ready,
+            should_advance: false,
+            target_round: 0,
+            error_code: String::new(),
+        };
+    }
+    if fact.new_round <= fact.current_round {
+        return PbftManagerAdvanceRoundPlan {
+            status: PbftManagerTransitionStatus::InvalidFact,
+            should_advance: false,
+            target_round: 0,
+            error_code: "PBFT_MANAGER_ADVANCE_ROUND_NON_INCREASING_ROUND".to_string(),
+        };
+    }
+    PbftManagerAdvanceRoundPlan {
+        status: PbftManagerTransitionStatus::Ready,
+        should_advance: true,
+        target_round: fact.new_round,
+        error_code: String::new(),
     }
 }
 
@@ -1106,6 +1596,28 @@ mod tests {
         }
     }
 
+    fn transition_fact(kind: PbftManagerTransitionKind) -> PbftManagerTransitionFact {
+        PbftManagerTransitionFact {
+            kind,
+            period: 10,
+            round: 2,
+            step: 3,
+            target_round: 4,
+            current_round_lambda_ms: 100,
+            target_round_lambda_ms: 400,
+            default_lambda_ms: 100,
+            max_exponential_lambda_ms: 60_000,
+            max_steps: 13,
+            network_next_voting_step: 0,
+            deadline_ms: 1_000,
+            polling_interval_ms: 100,
+            next_step_time_ms: 900,
+            cacti_hardfork: true,
+            has_cert_voted_block: true,
+            executed_pbft_block: true,
+        }
+    }
+
     fn drain_actions(mut session: PbftManagerRuntimeSession) -> Vec<PbftManagerRuntimeAction> {
         let mut actions = Vec::new();
         loop {
@@ -1451,5 +1963,145 @@ mod tests {
         assert_eq!(plan.primary_intent, PbftManagerStateActionIntent::Noop);
         assert_eq!(plan.secondary_intent, PbftManagerStateActionIntent::Noop);
         assert!(plan.loop_back_finish_state);
+    }
+
+    #[test]
+    fn transition_planner_selects_phase_targets_and_timing() {
+        let filter =
+            plan_pbft_manager_transition(transition_fact(PbftManagerTransitionKind::ToFilter));
+        assert_eq!(filter.status, PbftManagerTransitionStatus::Ready);
+        assert_eq!(filter.new_state, PbftManagerRuntimeStateCode::Filter);
+        assert_eq!(filter.new_round, 2);
+        assert_eq!(filter.new_step, 4);
+        assert_eq!(filter.current_round_lambda_ms, 100);
+        assert_eq!(filter.next_step_time_ms, 200);
+        assert!(filter.persist_step);
+
+        let certify =
+            plan_pbft_manager_transition(transition_fact(PbftManagerTransitionKind::ToCertify));
+        assert_eq!(certify.new_state, PbftManagerRuntimeStateCode::Certify);
+        assert!(certify.print_cert_step_info);
+
+        let finish =
+            plan_pbft_manager_transition(transition_fact(PbftManagerTransitionKind::ToFinish));
+        assert_eq!(finish.new_state, PbftManagerRuntimeStateCode::Finish);
+        assert_eq!(finish.next_step_time_ms, 1_000);
+
+        let finish_polling = plan_pbft_manager_transition(transition_fact(
+            PbftManagerTransitionKind::ToFinishPolling,
+        ));
+        assert_eq!(
+            finish_polling.new_state,
+            PbftManagerRuntimeStateCode::FinishPolling
+        );
+        assert_eq!(finish_polling.next_step_time_ms, 1_000);
+        assert!(finish_polling.reset_next_voted_statuses);
+        assert!(finish_polling.reset_second_finish_start);
+        assert!(finish_polling.print_second_finish_step_info);
+
+        let delay_certify = plan_pbft_manager_transition(transition_fact(
+            PbftManagerTransitionKind::DelayCertifyPoll,
+        ));
+        assert_eq!(
+            delay_certify.new_state,
+            PbftManagerRuntimeStateCode::Certify
+        );
+        assert_eq!(delay_certify.new_step, 3);
+        assert_eq!(delay_certify.next_step_time_ms, 1_000);
+        assert!(!delay_certify.persist_step);
+
+        let delay_finish = plan_pbft_manager_transition(transition_fact(
+            PbftManagerTransitionKind::DelayFinishPoll,
+        ));
+        assert_eq!(
+            delay_finish.new_state,
+            PbftManagerRuntimeStateCode::FinishPolling
+        );
+        assert_eq!(delay_finish.new_step, 3);
+        assert_eq!(delay_finish.next_step_time_ms, 1_000);
+        assert!(!delay_finish.persist_step);
+    }
+
+    #[test]
+    fn transition_planner_selects_reset_effects() {
+        let reset = plan_pbft_manager_transition(transition_fact(
+            PbftManagerTransitionKind::ResetConsensus,
+        ));
+        assert_eq!(reset.status, PbftManagerTransitionStatus::Ready);
+        assert_eq!(reset.new_state, PbftManagerRuntimeStateCode::ValueProposal);
+        assert_eq!(reset.new_round, 4);
+        assert_eq!(reset.new_step, 1);
+        assert_eq!(reset.current_round_lambda_ms, 400);
+        assert!(reset.persist_round);
+        assert!(reset.persist_step);
+        assert!(reset.reset_next_voted_statuses);
+        assert!(reset.remove_cert_voted_block);
+        assert!(reset.clear_own_votes);
+        assert!(reset.clear_broadcasted_votes);
+        assert!(reset.reset_broadcast_counters);
+        assert!(reset.reset_executed_block_status);
+        assert!(reset.set_vote_manager_period_round);
+        assert!(reset.reset_current_round_start);
+    }
+
+    #[test]
+    fn transition_planner_applies_finish_loopback_and_lambda_backoff() {
+        let mut fact = transition_fact(PbftManagerTransitionKind::LoopBackFinish);
+        fact.step = 12;
+        fact.current_round_lambda_ms = 100;
+        fact.next_step_time_ms = 900;
+        let plan = plan_pbft_manager_transition(fact);
+
+        assert_eq!(plan.status, PbftManagerTransitionStatus::Ready);
+        assert_eq!(plan.new_state, PbftManagerRuntimeStateCode::Finish);
+        assert_eq!(plan.new_step, 13);
+        assert_eq!(plan.current_round_lambda_ms, 200);
+        assert_eq!(plan.next_step_time_ms, 1_000);
+        assert!(plan.reset_next_voted_statuses);
+    }
+
+    #[test]
+    fn transition_planner_resets_lambda_when_network_is_far_ahead() {
+        let mut fact = transition_fact(PbftManagerTransitionKind::LoopBackFinish);
+        fact.step = 14;
+        fact.current_round_lambda_ms = 800;
+        fact.network_next_voting_step = 24;
+        let plan = plan_pbft_manager_transition(fact);
+
+        assert_eq!(plan.new_step, 15);
+        assert_eq!(plan.current_round_lambda_ms, 100);
+    }
+
+    #[test]
+    fn transition_and_advance_planners_reject_invalid_facts() {
+        let mut invalid = transition_fact(PbftManagerTransitionKind::ToFilter);
+        invalid.step = 0;
+        let plan = plan_pbft_manager_transition(invalid);
+        assert_eq!(plan.status, PbftManagerTransitionStatus::InvalidFact);
+        assert_eq!(plan.error_code, "PBFT_MANAGER_TRANSITION_INVALID_CURSOR");
+
+        let no_candidate = plan_pbft_manager_advance_round(PbftManagerAdvanceRoundFact {
+            period: 10,
+            current_round: 2,
+            has_new_round: false,
+            new_round: 0,
+        });
+        assert_eq!(no_candidate.status, PbftManagerTransitionStatus::Ready);
+        assert!(!no_candidate.should_advance);
+
+        let invalid_round = plan_pbft_manager_advance_round(PbftManagerAdvanceRoundFact {
+            period: 10,
+            current_round: 2,
+            has_new_round: true,
+            new_round: 2,
+        });
+        assert_eq!(
+            invalid_round.status,
+            PbftManagerTransitionStatus::InvalidFact
+        );
+        assert_eq!(
+            invalid_round.error_code,
+            "PBFT_MANAGER_ADVANCE_ROUND_NON_INCREASING_ROUND"
+        );
     }
 }

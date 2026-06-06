@@ -535,13 +535,6 @@ class PbftManager {
   void loopBackFinishState_();
 
   /**
-   * @brief If there are any synced PBFT blocks from peers, push the synced blocks in PBFT chain. Verify all received
-   * incoming votes. If there are enough certify votes, push voting PBFT block in PBFT chain
-   * @return true if there are enough certify votes voting on a new PBFT block, or PBFT goes to a forward round
-   */
-  bool stateOperations_();
-
-  /**
    * @brief PBFT proposal state. PBFT step 1. Propose a PBFT block and place a proposal vote on the block hash.
    */
   void proposeBlock_();

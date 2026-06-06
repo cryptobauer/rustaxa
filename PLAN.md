@@ -677,7 +677,12 @@ The current Rust starting point is intentionally small:
    intent, while certify and second-finish branches are selected from explicit reported flags. Rust also now owns the
    active PBFT state-action branch planner for value proposal, filtering, certify, first finish, and finish polling: the
    shim supplies compact vote/timing/status facts, Rust returns typed proposal, soft-vote, cert-vote, next-vote, finish,
-   or no-op intents, and C++ only materializes live blocks/votes, storage mutations, and network effects. PBFT
+   or no-op intents, and C++ only materializes live blocks/votes, storage mutations, and network effects. Rust now also
+   owns PBFT manager cursor transitions for round reset, filter/certify/finish/finish-polling phase changes, finish
+   loopback, polling delays, exponential lambda backoff, next-voted status resets, cert-voted sidecar cleanup, own-vote
+   clearing, and candidate round-advance validation. The shim applies Rust-planned field/status writes and live mirror
+   updates while keeping actual timers, FinalChain waits, VoteManager side effects, network effects, and compatibility
+   objects in C++. PBFT
    finalization
    execution now has a Rust-planned intent contract as well: the shim supplies accepted
    block, PBFT head, anchor, pillar-finalization, and dynamic-lambda facts, and Rust returns explicit cleanup/finalize/

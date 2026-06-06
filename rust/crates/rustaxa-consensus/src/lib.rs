@@ -43,12 +43,15 @@ pub use pbft_finalize::{
     PbftFinalizationStorageWriteIntent, plan_pbft_finalization_intent,
 };
 pub use pbft_manager::{
-    PbftManagerRuntimeAction, PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
-    PbftManagerRuntimeSession, PbftManagerRuntimeSessionStep, PbftManagerRuntimeStateCode,
-    PbftManagerRuntimeStatus, PbftManagerRuntimeTickFact, PbftManagerStateActionFact,
-    PbftManagerStateActionIntent, PbftManagerStateActionPlan, PbftManagerStateActionStatus,
+    PbftManagerAdvanceRoundFact, PbftManagerAdvanceRoundPlan, PbftManagerRuntimeAction,
+    PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode, PbftManagerRuntimeSession,
+    PbftManagerRuntimeSessionStep, PbftManagerRuntimeStateCode, PbftManagerRuntimeStatus,
+    PbftManagerRuntimeTickFact, PbftManagerStateActionFact, PbftManagerStateActionIntent,
+    PbftManagerStateActionPlan, PbftManagerStateActionStatus, PbftManagerTransitionFact,
+    PbftManagerTransitionKind, PbftManagerTransitionPlan, PbftManagerTransitionStatus,
     abort_pbft_manager_runtime_session, create_pbft_manager_runtime_session,
-    next_pbft_manager_runtime_action, plan_pbft_manager_state_action,
+    next_pbft_manager_runtime_action, plan_pbft_manager_advance_round,
+    plan_pbft_manager_state_action, plan_pbft_manager_transition,
     report_pbft_manager_runtime_action,
 };
 pub use pbft_reward_votes::{

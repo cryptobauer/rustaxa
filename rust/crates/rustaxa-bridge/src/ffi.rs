@@ -969,6 +969,68 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
+    /// C++-originated facts for one Rust-owned PBFT manager transition.
+    struct PbftManagerTransitionFact {
+        kind: u8,
+        period: u64,
+        round: u64,
+        step: u64,
+        target_round: u64,
+        current_round_lambda_ms: u64,
+        target_round_lambda_ms: u64,
+        default_lambda_ms: u64,
+        max_exponential_lambda_ms: u64,
+        max_steps: u64,
+        network_next_voting_step: u64,
+        deadline_ms: u64,
+        polling_interval_ms: u64,
+        next_step_time_ms: u64,
+        cacti_hardfork: bool,
+        has_cert_voted_block: bool,
+        executed_pbft_block: bool,
+    }
+
+    /// Side-effect-free PBFT manager transition plan for C++ execution.
+    struct PbftManagerTransitionPlan {
+        status: u8,
+        kind: u8,
+        new_state: u8,
+        new_round: u64,
+        new_step: u64,
+        current_round_lambda_ms: u64,
+        next_step_time_ms: u64,
+        persist_round: bool,
+        persist_step: bool,
+        reset_next_voted_statuses: bool,
+        remove_cert_voted_block: bool,
+        clear_own_votes: bool,
+        clear_broadcasted_votes: bool,
+        reset_broadcast_counters: bool,
+        reset_executed_block_status: bool,
+        set_vote_manager_period_round: bool,
+        reset_current_round_start: bool,
+        reset_second_finish_start: bool,
+        print_cert_step_info: bool,
+        print_second_finish_step_info: bool,
+        error_code: String,
+    }
+
+    /// C++-originated facts for Rust-owned PBFT round-advance planning.
+    struct PbftManagerAdvanceRoundFact {
+        period: u64,
+        current_round: u64,
+        has_new_round: bool,
+        new_round: u64,
+    }
+
+    /// Rust-owned PBFT round-advance plan.
+    struct PbftManagerAdvanceRoundPlan {
+        status: u8,
+        should_advance: bool,
+        target_round: u64,
+        error_code: String,
+    }
+
     /// One Rust-owned PBFT finalization runtime-session step.
     struct PbftFinalizationRuntimeSessionStep {
         status: u8,
@@ -3446,6 +3508,12 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_manager_state_action(
             fact: PbftManagerStateActionFact,
         ) -> PbftManagerStateActionPlan;
+        pub fn plan_pbft_manager_transition(
+            fact: PbftManagerTransitionFact,
+        ) -> PbftManagerTransitionPlan;
+        pub fn plan_pbft_manager_advance_round(
+            fact: PbftManagerAdvanceRoundFact,
+        ) -> PbftManagerAdvanceRoundPlan;
         pub fn create_pbft_finalization_resume_runtime_session(
             plan: &PbftFinalizationResumePlan,
         ) -> Box<BridgePbftFinalizationRuntimeSession>;

@@ -6,21 +6,29 @@
 //! advances.
 
 use crate::ffi::rustaxa_ffi::{
+    PbftManagerAdvanceRoundFact as FfiPbftManagerAdvanceRoundFact,
+    PbftManagerAdvanceRoundPlan as FfiPbftManagerAdvanceRoundPlan,
     PbftManagerRuntimeActionReport as FfiPbftManagerRuntimeActionReport,
     PbftManagerRuntimeSessionStep as FfiPbftManagerRuntimeSessionStep,
     PbftManagerRuntimeTickFact as FfiPbftManagerRuntimeTickFact,
     PbftManagerStateActionFact as FfiPbftManagerStateActionFact,
     PbftManagerStateActionPlan as FfiPbftManagerStateActionPlan,
+    PbftManagerTransitionFact as FfiPbftManagerTransitionFact,
+    PbftManagerTransitionPlan as FfiPbftManagerTransitionPlan,
 };
 use crate::ffi::BridgePbftManagerRuntimeSession;
 use rustaxa_consensus::pbft_manager::{
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
     create_pbft_manager_runtime_session as create_domain_pbft_manager_runtime_session,
     next_pbft_manager_runtime_action,
+    plan_pbft_manager_advance_round as plan_domain_pbft_manager_advance_round,
     plan_pbft_manager_state_action as plan_domain_pbft_manager_state_action,
-    report_pbft_manager_runtime_action, PbftManagerRuntimeAction, PbftManagerRuntimeActionReport,
-    PbftManagerRuntimeActionResultCode, PbftManagerRuntimeSessionStep, PbftManagerRuntimeStateCode,
-    PbftManagerRuntimeTickFact, PbftManagerStateActionFact, PbftManagerStateActionPlan,
+    plan_pbft_manager_transition as plan_domain_pbft_manager_transition,
+    report_pbft_manager_runtime_action, PbftManagerAdvanceRoundFact, PbftManagerAdvanceRoundPlan,
+    PbftManagerRuntimeAction, PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
+    PbftManagerRuntimeSessionStep, PbftManagerRuntimeStateCode, PbftManagerRuntimeTickFact,
+    PbftManagerStateActionFact, PbftManagerStateActionPlan, PbftManagerTransitionFact,
+    PbftManagerTransitionKind, PbftManagerTransitionPlan,
 };
 
 const RUNTIME_STATUS_ACTIVE: u8 = 0;
@@ -62,6 +70,20 @@ pub fn plan_pbft_manager_state_action(
     fact: FfiPbftManagerStateActionFact,
 ) -> FfiPbftManagerStateActionPlan {
     plan_domain_pbft_manager_state_action(fact.into()).into()
+}
+
+/// Plans one deterministic PBFT manager transition from compact C++ facts.
+pub fn plan_pbft_manager_transition(
+    fact: FfiPbftManagerTransitionFact,
+) -> FfiPbftManagerTransitionPlan {
+    plan_domain_pbft_manager_transition(fact.into()).into()
+}
+
+/// Plans whether a PBFT manager round-advance candidate should reset consensus.
+pub fn plan_pbft_manager_advance_round(
+    fact: FfiPbftManagerAdvanceRoundFact,
+) -> FfiPbftManagerAdvanceRoundPlan {
+    plan_domain_pbft_manager_advance_round(fact.into()).into()
 }
 
 impl BridgePbftManagerRuntimeSession {
@@ -139,6 +161,41 @@ impl From<FfiPbftManagerStateActionFact> for PbftManagerStateActionFact {
     }
 }
 
+impl From<FfiPbftManagerTransitionFact> for PbftManagerTransitionFact {
+    fn from(value: FfiPbftManagerTransitionFact) -> Self {
+        Self {
+            kind: PbftManagerTransitionKind::from_u8(value.kind),
+            period: value.period,
+            round: value.round,
+            step: value.step,
+            target_round: value.target_round,
+            current_round_lambda_ms: value.current_round_lambda_ms,
+            target_round_lambda_ms: value.target_round_lambda_ms,
+            default_lambda_ms: value.default_lambda_ms,
+            max_exponential_lambda_ms: value.max_exponential_lambda_ms,
+            max_steps: value.max_steps,
+            network_next_voting_step: value.network_next_voting_step,
+            deadline_ms: value.deadline_ms,
+            polling_interval_ms: value.polling_interval_ms,
+            next_step_time_ms: value.next_step_time_ms,
+            cacti_hardfork: value.cacti_hardfork,
+            has_cert_voted_block: value.has_cert_voted_block,
+            executed_pbft_block: value.executed_pbft_block,
+        }
+    }
+}
+
+impl From<FfiPbftManagerAdvanceRoundFact> for PbftManagerAdvanceRoundFact {
+    fn from(value: FfiPbftManagerAdvanceRoundFact) -> Self {
+        Self {
+            period: value.period,
+            current_round: value.current_round,
+            has_new_round: value.has_new_round,
+            new_round: value.new_round,
+        }
+    }
+}
+
 impl From<PbftManagerRuntimeSessionStep> for FfiPbftManagerRuntimeSessionStep {
     fn from(value: PbftManagerRuntimeSessionStep) -> Self {
         let status = value.status.as_u8();
@@ -174,12 +231,53 @@ impl From<PbftManagerStateActionPlan> for FfiPbftManagerStateActionPlan {
     }
 }
 
+impl From<PbftManagerTransitionPlan> for FfiPbftManagerTransitionPlan {
+    fn from(value: PbftManagerTransitionPlan) -> Self {
+        Self {
+            status: value.status.as_u8(),
+            kind: value.kind.as_u8(),
+            new_state: value.new_state.as_u8(),
+            new_round: value.new_round,
+            new_step: value.new_step,
+            current_round_lambda_ms: value.current_round_lambda_ms,
+            next_step_time_ms: value.next_step_time_ms,
+            persist_round: value.persist_round,
+            persist_step: value.persist_step,
+            reset_next_voted_statuses: value.reset_next_voted_statuses,
+            remove_cert_voted_block: value.remove_cert_voted_block,
+            clear_own_votes: value.clear_own_votes,
+            clear_broadcasted_votes: value.clear_broadcasted_votes,
+            reset_broadcast_counters: value.reset_broadcast_counters,
+            reset_executed_block_status: value.reset_executed_block_status,
+            set_vote_manager_period_round: value.set_vote_manager_period_round,
+            reset_current_round_start: value.reset_current_round_start,
+            reset_second_finish_start: value.reset_second_finish_start,
+            print_cert_step_info: value.print_cert_step_info,
+            print_second_finish_step_info: value.print_second_finish_step_info,
+            error_code: value.error_code,
+        }
+    }
+}
+
+impl From<PbftManagerAdvanceRoundPlan> for FfiPbftManagerAdvanceRoundPlan {
+    fn from(value: PbftManagerAdvanceRoundPlan) -> Self {
+        Self {
+            status: value.status.as_u8(),
+            should_advance: value.should_advance,
+            target_round: value.target_round,
+            error_code: value.error_code,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const STATE_VALUE_PROPOSAL: u8 = 0;
+    const STATE_FILTER: u8 = 1;
     const STATE_CERTIFY: u8 = 2;
+    const STATE_FINISH: u8 = 3;
     const ACTION_PROCESS_SYNCED: u8 = 0;
     const ACTION_BROADCAST: u8 = 1;
     const ACTION_TRY_CERT: u8 = 2;
@@ -198,6 +296,11 @@ mod tests {
     const STATE_ACTION_PROPOSE_NEW_BLOCK: u8 = 1;
     const STATE_ACTION_SOFT_VOTE_PREVIOUS_VALUE: u8 = 4;
     const STATE_ACTION_NEXT_VOTE_CERT_BLOCK: u8 = 7;
+    const TRANSITION_STATUS_READY: u8 = 0;
+    const TRANSITION_STATUS_INVALID_FACT: u8 = 2;
+    const TRANSITION_RESET: u8 = 0;
+    const TRANSITION_FILTER: u8 = 1;
+    const TRANSITION_LOOP_BACK_FINISH: u8 = 5;
 
     fn fact(state: u8) -> FfiPbftManagerRuntimeTickFact {
         FfiPbftManagerRuntimeTickFact {
@@ -349,6 +452,28 @@ mod tests {
         }
     }
 
+    fn transition_fact(kind: u8) -> FfiPbftManagerTransitionFact {
+        FfiPbftManagerTransitionFact {
+            kind,
+            period: 10,
+            round: 2,
+            step: 3,
+            target_round: 4,
+            current_round_lambda_ms: 100,
+            target_round_lambda_ms: 400,
+            default_lambda_ms: 100,
+            max_exponential_lambda_ms: 60_000,
+            max_steps: 13,
+            network_next_voting_step: 0,
+            deadline_ms: 1_000,
+            polling_interval_ms: 100,
+            next_step_time_ms: 900,
+            cacti_hardfork: true,
+            has_cert_voted_block: true,
+            executed_pbft_block: true,
+        }
+    }
+
     #[test]
     fn bridge_plans_state_action_intents_with_hash_payloads() {
         let mut value_fact = state_fact(STATE_VALUE_PROPOSAL);
@@ -376,5 +501,66 @@ mod tests {
             STATE_ACTION_NEXT_VOTE_CERT_BLOCK
         );
         assert_eq!(finish_plan.primary_hash, [0x66; 32]);
+    }
+
+    #[test]
+    fn bridge_plans_transition_fields_and_reset_effects() {
+        let filter = plan_pbft_manager_transition(transition_fact(TRANSITION_FILTER));
+        assert_eq!(filter.status, TRANSITION_STATUS_READY);
+        assert_eq!(filter.kind, TRANSITION_FILTER);
+        assert_eq!(filter.new_state, STATE_FILTER);
+        assert_eq!(filter.new_round, 2);
+        assert_eq!(filter.new_step, 4);
+        assert_eq!(filter.current_round_lambda_ms, 100);
+        assert_eq!(filter.next_step_time_ms, 200);
+        assert!(filter.persist_step);
+        assert!(!filter.persist_round);
+
+        let reset = plan_pbft_manager_transition(transition_fact(TRANSITION_RESET));
+        assert_eq!(reset.status, TRANSITION_STATUS_READY);
+        assert_eq!(reset.new_state, STATE_VALUE_PROPOSAL);
+        assert_eq!(reset.new_round, 4);
+        assert_eq!(reset.new_step, 1);
+        assert_eq!(reset.current_round_lambda_ms, 400);
+        assert!(reset.persist_round);
+        assert!(reset.persist_step);
+        assert!(reset.reset_next_voted_statuses);
+        assert!(reset.remove_cert_voted_block);
+        assert!(reset.clear_own_votes);
+        assert!(reset.reset_executed_block_status);
+        assert!(reset.set_vote_manager_period_round);
+    }
+
+    #[test]
+    fn bridge_plans_loopback_lambda_backoff_and_round_advance() {
+        let mut fact = transition_fact(TRANSITION_LOOP_BACK_FINISH);
+        fact.step = 12;
+        fact.next_step_time_ms = 900;
+        let plan = plan_pbft_manager_transition(fact);
+        assert_eq!(plan.status, TRANSITION_STATUS_READY);
+        assert_eq!(plan.new_state, STATE_FINISH);
+        assert_eq!(plan.new_step, 13);
+        assert_eq!(plan.current_round_lambda_ms, 200);
+        assert_eq!(plan.next_step_time_ms, 1_000);
+        assert!(plan.reset_next_voted_statuses);
+
+        let advance = plan_pbft_manager_advance_round(FfiPbftManagerAdvanceRoundFact {
+            period: 10,
+            current_round: 2,
+            has_new_round: true,
+            new_round: 5,
+        });
+        assert_eq!(advance.status, TRANSITION_STATUS_READY);
+        assert!(advance.should_advance);
+        assert_eq!(advance.target_round, 5);
+
+        let invalid = plan_pbft_manager_advance_round(FfiPbftManagerAdvanceRoundFact {
+            period: 10,
+            current_round: 2,
+            has_new_round: true,
+            new_round: 2,
+        });
+        assert_eq!(invalid.status, TRANSITION_STATUS_INVALID_FACT);
+        assert!(!invalid.should_advance);
     }
 }
