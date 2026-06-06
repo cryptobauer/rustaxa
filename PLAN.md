@@ -684,7 +684,12 @@ The current Rust starting point is intentionally small:
    manager round/step fields, next-voted status resets, cert-voted block cleanup, and latest own-vote cleanup in one
    committed batch, dropping rejected batches before C++ live mirrors change. The shim only applies Rust-planned live
    mirror updates after that Rust storage apply succeeds, while keeping actual timers, FinalChain waits, VoteManager
-   period/round side effects, network effects, and compatibility objects in C++. PBFT
+   period/round side effects, network effects, and compatibility objects in C++. Rust now also owns the long-lived PBFT
+   manager scalar runtime handle used by the overlay: startup restore reads persisted round/step/lambda/status facts
+   through Rust storage, applies legacy-compatible default and step-normalization rules, persists normalized startup step
+   state through Rust before C++ mirrors are updated, rejects missing Cacti dynamic-lambda facts explicitly, and advances
+   the runtime cursor only after a Rust-owned transition storage batch commits. C++ mirrors remain temporary compatibility
+   state until the remaining live side effects move behind Rust protocol plans. PBFT
    finalization
    execution now has a Rust-planned intent contract as well: the shim supplies accepted
    block, PBFT head, anchor, pillar-finalization, and dynamic-lambda facts, and Rust returns explicit cleanup/finalize/

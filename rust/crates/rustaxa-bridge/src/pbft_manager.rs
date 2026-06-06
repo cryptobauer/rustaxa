@@ -11,14 +11,18 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerAdvanceRoundPlan as FfiPbftManagerAdvanceRoundPlan,
     PbftManagerRuntimeActionReport as FfiPbftManagerRuntimeActionReport,
     PbftManagerRuntimeSessionStep as FfiPbftManagerRuntimeSessionStep,
+    PbftManagerRuntimeSnapshot as FfiPbftManagerRuntimeSnapshot,
     PbftManagerRuntimeTickFact as FfiPbftManagerRuntimeTickFact,
+    PbftManagerStartupFact as FfiPbftManagerStartupFact,
     PbftManagerStateActionFact as FfiPbftManagerStateActionFact,
     PbftManagerStateActionPlan as FfiPbftManagerStateActionPlan,
     PbftManagerTransitionFact as FfiPbftManagerTransitionFact,
     PbftManagerTransitionPlan as FfiPbftManagerTransitionPlan,
+    PbftManagerTransitionRuntimeApplyResult as FfiPbftManagerTransitionRuntimeApplyResult,
     PbftManagerTransitionStorageResult as FfiPbftManagerTransitionStorageResult,
 };
-use crate::ffi::{BridgePbftManagerRuntimeSession, BridgeStorage};
+use crate::ffi::{BridgePbftManagerRuntime, BridgePbftManagerRuntimeSession, BridgeStorage};
+use anyhow::anyhow;
 use rustaxa_consensus::pbft_manager::{
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
     create_pbft_manager_runtime_session as create_domain_pbft_manager_runtime_session,
@@ -26,11 +30,13 @@ use rustaxa_consensus::pbft_manager::{
     plan_pbft_manager_advance_round as plan_domain_pbft_manager_advance_round,
     plan_pbft_manager_state_action as plan_domain_pbft_manager_state_action,
     plan_pbft_manager_transition as plan_domain_pbft_manager_transition,
-    report_pbft_manager_runtime_action, PbftManagerAdvanceRoundFact, PbftManagerAdvanceRoundPlan,
-    PbftManagerRuntimeAction, PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
-    PbftManagerRuntimeSessionStep, PbftManagerRuntimeStateCode, PbftManagerRuntimeTickFact,
+    report_pbft_manager_runtime_action, restore_pbft_manager_runtime, PbftManagerAdvanceRoundFact,
+    PbftManagerAdvanceRoundPlan, PbftManagerRuntime, PbftManagerRuntimeAction,
+    PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
+    PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot, PbftManagerRuntimeStateCode,
+    PbftManagerRuntimeTickFact, PbftManagerStartupRestoreFact, PbftManagerStartupRestoreStatus,
     PbftManagerStateActionFact, PbftManagerStateActionPlan, PbftManagerTransitionFact,
-    PbftManagerTransitionKind, PbftManagerTransitionPlan,
+    PbftManagerTransitionKind, PbftManagerTransitionPlan, PbftManagerTransitionStatus,
 };
 use rustaxa_storage::StorageWriteBatch;
 
@@ -42,6 +48,8 @@ const TRANSITION_STORAGE_STATUS_APPLIED: u8 = 0;
 const TRANSITION_STORAGE_STATUS_REJECTED: u8 = 1;
 const PBFT_MGR_FIELD_ROUND: u8 = 0;
 const PBFT_MGR_FIELD_STEP: u8 = 1;
+const PBFT_MGR_FIELD_LAMBDA: u8 = 2;
+const PBFT_MGR_STATUS_EXECUTED_BLOCK: u8 = 0;
 const PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE: u8 = 2;
 const PBFT_MGR_STATUS_NEXT_VOTED_NULL_BLOCK_HASH: u8 = 3;
 
@@ -66,6 +74,47 @@ fn to_manager_u32(
     error_code: &str,
 ) -> Result<u32, FfiPbftManagerTransitionStorageResult> {
     u32::try_from(value).map_err(|_| transition_storage_rejected(error_code))
+}
+
+fn to_startup_u32(value: u64, field: &str) -> anyhow::Result<u32> {
+    u32::try_from(value).map_err(|_| anyhow!("PBFT_MANAGER_STARTUP_{field}_OVERFLOW"))
+}
+
+fn transition_status_from_u8(value: u8) -> PbftManagerTransitionStatus {
+    match value {
+        0 => PbftManagerTransitionStatus::Ready,
+        1 => PbftManagerTransitionStatus::InvalidKind,
+        2 => PbftManagerTransitionStatus::InvalidFact,
+        _ => PbftManagerTransitionStatus::InvalidFact,
+    }
+}
+
+fn domain_transition_plan_from_ffi(
+    value: &FfiPbftManagerTransitionPlan,
+) -> PbftManagerTransitionPlan {
+    PbftManagerTransitionPlan {
+        status: transition_status_from_u8(value.status),
+        kind: PbftManagerTransitionKind::from_u8(value.kind),
+        new_state: PbftManagerRuntimeStateCode::from_u8(value.new_state),
+        new_round: value.new_round,
+        new_step: value.new_step,
+        current_round_lambda_ms: value.current_round_lambda_ms,
+        next_step_time_ms: value.next_step_time_ms,
+        persist_round: value.persist_round,
+        persist_step: value.persist_step,
+        reset_next_voted_statuses: value.reset_next_voted_statuses,
+        remove_cert_voted_block: value.remove_cert_voted_block,
+        clear_own_votes: value.clear_own_votes,
+        clear_broadcasted_votes: value.clear_broadcasted_votes,
+        reset_broadcast_counters: value.reset_broadcast_counters,
+        reset_executed_block_status: value.reset_executed_block_status,
+        set_vote_manager_period_round: value.set_vote_manager_period_round,
+        reset_current_round_start: value.reset_current_round_start,
+        reset_second_finish_start: value.reset_second_finish_start,
+        print_cert_step_info: value.print_cert_step_info,
+        print_second_finish_step_info: value.print_second_finish_step_info,
+        error_code: value.error_code.clone(),
+    }
 }
 
 fn append_transition_storage_to_batch(
@@ -140,6 +189,131 @@ fn append_transition_storage_to_batch(
     }
 
     Ok(applied_writes)
+}
+
+/// Creates a long-lived Rust PBFT manager runtime from persisted storage facts.
+///
+/// Inputs:
+/// - `storage`: shared Rust storage bridge handle.
+/// - `fact`: startup period and lambda configuration supplied by the C++ shim.
+///
+/// Outputs:
+/// - A runtime handle seeded with a Rust-owned scalar PBFT manager snapshot.
+///
+/// Invariants and edge behavior:
+/// - Storage remains the source of durable manager fields/statuses.
+/// - Missing legacy round/step/lambda fields keep existing compatibility
+///   defaults through the storage repository.
+/// - Rejected startup facts return a Rust error before C++ mirrors are updated.
+pub fn create_pbft_manager_runtime_from_storage(
+    storage: &BridgeStorage,
+    fact: FfiPbftManagerStartupFact,
+) -> anyhow::Result<Box<BridgePbftManagerRuntime>> {
+    let pbft = storage.0.pbft();
+    let mut snapshot = restore_pbft_manager_runtime(PbftManagerStartupRestoreFact {
+        current_period: fact.current_period,
+        persisted_round: u64::from(pbft.manager_field(PBFT_MGR_FIELD_ROUND)?.unwrap_or(1)),
+        persisted_step: u64::from(pbft.manager_field(PBFT_MGR_FIELD_STEP)?.unwrap_or(1)),
+        cacti_active_at_chain_size: fact.cacti_active_at_chain_size,
+        rounds_count_dynamic_lambda: storage.0.metadata().rounds_count_dynamic_lambda()?,
+        persisted_dynamic_lambda_ms: pbft.manager_field(PBFT_MGR_FIELD_LAMBDA)?.unwrap_or(1),
+        genesis_lambda_ms: to_startup_u32(fact.genesis_lambda_ms, "GENESIS_LAMBDA")?,
+        cacti_lambda_max_ms: to_startup_u32(fact.cacti_lambda_max_ms, "CACTI_LAMBDA_MAX")?,
+        cacti_lambda_default_ms: to_startup_u32(
+            fact.cacti_lambda_default_ms,
+            "CACTI_LAMBDA_DEFAULT",
+        )?,
+        executed_pbft_block: pbft
+            .manager_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)?
+            .unwrap_or(false),
+        already_next_voted_value: pbft
+            .manager_status(PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE)?
+            .unwrap_or(false),
+        already_next_voted_null: pbft
+            .manager_status(PBFT_MGR_STATUS_NEXT_VOTED_NULL_BLOCK_HASH)?
+            .unwrap_or(false),
+    });
+
+    if snapshot.status != PbftManagerStartupRestoreStatus::Ready {
+        return Err(anyhow!(snapshot.error_code.clone()));
+    }
+    if snapshot.persist_normalized_step {
+        pbft.write_manager_field(
+            PBFT_MGR_FIELD_STEP,
+            u32::try_from(snapshot.step)
+                .map_err(|_| anyhow!("PBFT_MANAGER_STARTUP_NORMALIZED_STEP_OVERFLOW"))?,
+        )?;
+        snapshot.persist_normalized_step = false;
+    }
+
+    Ok(Box::new(BridgePbftManagerRuntime {
+        state: PbftManagerRuntime::new(snapshot),
+    }))
+}
+
+/// Returns the current Rust-owned PBFT manager runtime snapshot.
+pub fn pbft_manager_runtime_snapshot(
+    runtime: &BridgePbftManagerRuntime,
+) -> FfiPbftManagerRuntimeSnapshot {
+    runtime.state.snapshot().into()
+}
+
+fn transition_runtime_apply_result(
+    status: u8,
+    applied_writes: u64,
+    snapshot: PbftManagerRuntimeSnapshot,
+    error_code: String,
+) -> FfiPbftManagerTransitionRuntimeApplyResult {
+    FfiPbftManagerTransitionRuntimeApplyResult {
+        status,
+        applied_writes,
+        snapshot: snapshot.into(),
+        error_code,
+    }
+}
+
+/// Applies transition persistence through a long-lived PBFT manager runtime.
+///
+/// Inputs:
+/// - `runtime`: Rust-owned scalar PBFT manager cursor.
+/// - `storage`: shared Rust storage bridge handle.
+/// - `plan`: accepted transition plan.
+/// - `own_vote_hashes`: latest own-vote keys to delete when requested by the
+///   plan.
+///
+/// Outputs:
+/// - `status = 0` after storage commit and Rust cursor update.
+/// - `status = 1` with an unchanged snapshot on rejection.
+///
+/// Invariants and edge behavior:
+/// - The Rust runtime cursor advances only after the Rust storage batch commits.
+/// - C++ live mirrors must be updated from the returned snapshot only after an
+///   applied status.
+pub fn pbft_manager_runtime_apply_transition_storage_write(
+    runtime: &mut BridgePbftManagerRuntime,
+    storage: &BridgeStorage,
+    plan: FfiPbftManagerTransitionPlan,
+    own_vote_hashes: Vec<FfiPbftFinalizationHash>,
+) -> anyhow::Result<FfiPbftManagerTransitionRuntimeApplyResult> {
+    let domain_plan = domain_transition_plan_from_ffi(&plan);
+    let storage_result =
+        apply_pbft_manager_transition_storage_write(storage, plan, own_vote_hashes)?;
+    if storage_result.status != TRANSITION_STORAGE_STATUS_APPLIED {
+        return Ok(transition_runtime_apply_result(
+            TRANSITION_STORAGE_STATUS_REJECTED,
+            0,
+            runtime.state.snapshot(),
+            storage_result.error_code,
+        ));
+    }
+
+    runtime.state.apply_committed_transition(&domain_plan);
+    Ok(transition_runtime_apply_result(
+        TRANSITION_STORAGE_STATUS_APPLIED,
+        storage_result.applied_writes,
+        runtime.state.snapshot(),
+        String::new(),
+    ))
 }
 
 /// Creates an owned PBFT manager runtime session from one daemon-tick fact bundle.
@@ -445,6 +619,28 @@ impl From<PbftManagerRuntimeSessionStep> for FfiPbftManagerRuntimeSessionStep {
     }
 }
 
+impl From<PbftManagerRuntimeSnapshot> for FfiPbftManagerRuntimeSnapshot {
+    fn from(value: PbftManagerRuntimeSnapshot) -> Self {
+        Self {
+            status: value.status.as_u8(),
+            state: value.state.as_u8(),
+            period: value.period,
+            round: value.round,
+            step: value.step,
+            current_round_lambda_ms: value.current_round_lambda_ms,
+            next_step_time_ms: value.next_step_time_ms,
+            rounds_count_dynamic_lambda: value.rounds_count_dynamic_lambda,
+            dynamic_lambda_ms: value.dynamic_lambda_ms,
+            executed_pbft_block: value.executed_pbft_block,
+            already_next_voted_value: value.already_next_voted_value,
+            already_next_voted_null: value.already_next_voted_null,
+            persist_normalized_step: value.persist_normalized_step,
+            reset_second_finish_start: value.reset_second_finish_start,
+            error_code: value.error_code,
+        }
+    }
+}
+
 impl From<PbftManagerStateActionPlan> for FfiPbftManagerStateActionPlan {
     fn from(value: PbftManagerStateActionPlan) -> Self {
         Self {
@@ -529,6 +725,7 @@ mod tests {
     const STATE_ACTION_PROPOSE_NEW_BLOCK: u8 = 1;
     const STATE_ACTION_SOFT_VOTE_PREVIOUS_VALUE: u8 = 4;
     const STATE_ACTION_NEXT_VOTE_CERT_BLOCK: u8 = 7;
+    const STARTUP_STATUS_READY: u8 = 0;
     const TRANSITION_STATUS_READY: u8 = 0;
     const TRANSITION_STATUS_INVALID_FACT: u8 = 2;
     const TRANSITION_RESET: u8 = 0;
@@ -717,6 +914,16 @@ mod tests {
         }
     }
 
+    fn startup_fact() -> FfiPbftManagerStartupFact {
+        FfiPbftManagerStartupFact {
+            current_period: 10,
+            cacti_active_at_chain_size: true,
+            genesis_lambda_ms: 100,
+            cacti_lambda_max_ms: 1_500,
+            cacti_lambda_default_ms: 500,
+        }
+    }
+
     #[test]
     fn bridge_plans_state_action_intents_with_hash_payloads() {
         let mut value_fact = state_fact(STATE_VALUE_PROPOSAL);
@@ -805,6 +1012,179 @@ mod tests {
         });
         assert_eq!(invalid.status, TRANSITION_STATUS_INVALID_FACT);
         assert!(!invalid.should_advance);
+    }
+
+    #[test]
+    fn bridge_runtime_restores_startup_snapshot_and_persists_normalized_step() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_startup");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            storage
+                .save_pbft_mgr_field(0, 2)
+                .expect("round seed should persist");
+            storage
+                .save_pbft_mgr_field(1, 2)
+                .expect("step seed should persist");
+            storage
+                .save_pbft_mgr_field(2, 1_500)
+                .expect("lambda seed should persist");
+            storage
+                .save_pbft_mgr_status(0, true)
+                .expect("executed status should persist");
+            storage
+                .save_pbft_mgr_status(2, true)
+                .expect("next value status should persist");
+
+            let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
+                .expect("runtime should restore");
+            let snapshot = pbft_manager_runtime_snapshot(&runtime);
+
+            assert_eq!(snapshot.status, STARTUP_STATUS_READY);
+            assert_eq!(snapshot.state, STATE_FINISH);
+            assert_eq!(snapshot.period, 10);
+            assert_eq!(snapshot.round, 2);
+            assert_eq!(snapshot.step, 4);
+            assert_eq!(snapshot.current_round_lambda_ms, 500);
+            assert_eq!(snapshot.dynamic_lambda_ms, 1_500);
+            assert!(snapshot.executed_pbft_block);
+            assert!(snapshot.already_next_voted_value);
+            assert_eq!(storage.get_pbft_mgr_field(1).unwrap(), 4);
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_runtime_rejects_missing_cacti_lambda_without_mutation() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_startup_reject");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            storage
+                .save_pbft_mgr_field(0, 1)
+                .expect("round seed should persist");
+            storage
+                .save_pbft_mgr_field(1, 1)
+                .expect("step seed should persist");
+
+            let error = match create_pbft_manager_runtime_from_storage(&storage, startup_fact()) {
+                Ok(_) => panic!("missing cacti lambda should reject startup"),
+                Err(error) => error,
+            };
+            assert!(error
+                .to_string()
+                .contains("PBFT_MANAGER_STARTUP_MISSING_DYNAMIC_LAMBDA"));
+            assert_eq!(storage.get_pbft_mgr_field(1).unwrap(), 1);
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_runtime_applies_transition_storage_before_cursor_update() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_transition_apply");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let own_hash = [0xBC; 32];
+            storage
+                .save_pbft_mgr_field(0, 1)
+                .expect("round seed should persist");
+            storage
+                .save_pbft_mgr_field(1, 1)
+                .expect("step seed should persist");
+            storage
+                .save_pbft_mgr_field(2, 1_500)
+                .expect("lambda seed should persist");
+            storage
+                .save_pbft_mgr_status(2, true)
+                .expect("soft next status should persist");
+            storage
+                .save_pbft_mgr_status(3, true)
+                .expect("null next status should persist");
+            storage
+                .save_own_verified_vote(&own_hash, vec![0xC0])
+                .expect("own vote should persist");
+
+            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
+                .expect("runtime should restore");
+            let before = pbft_manager_runtime_snapshot(&runtime);
+            let plan = plan_pbft_manager_transition(transition_fact(TRANSITION_RESET));
+            let result = pbft_manager_runtime_apply_transition_storage_write(
+                &mut runtime,
+                &storage,
+                plan,
+                vec![FfiPbftFinalizationHash { hash: own_hash }],
+            )
+            .expect("runtime apply should not throw");
+
+            assert_eq!(result.status, TRANSITION_STORAGE_STATUS_APPLIED);
+            assert_eq!(result.snapshot.round, 4);
+            assert_eq!(result.snapshot.step, 1);
+            assert_eq!(result.snapshot.state, STATE_VALUE_PROPOSAL);
+            assert!(!result.snapshot.already_next_voted_value);
+            assert!(!result.snapshot.already_next_voted_null);
+            assert_ne!(before.round, result.snapshot.round);
+            let current = pbft_manager_runtime_snapshot(&runtime);
+            assert_eq!(current.round, result.snapshot.round);
+            assert_eq!(current.step, result.snapshot.step);
+            assert_eq!(current.state, result.snapshot.state);
+            assert_eq!(storage.get_pbft_mgr_field(0).unwrap(), 4);
+            assert_eq!(storage.get_pbft_mgr_field(1).unwrap(), 1);
+            assert!(!storage.get_pbft_mgr_status(2).unwrap());
+            assert!(!storage.get_pbft_mgr_status(3).unwrap());
+            assert!(storage.get_own_verified_votes().unwrap().is_empty());
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_runtime_rejected_transition_preserves_snapshot() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_transition_reject");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            storage
+                .save_pbft_mgr_field(0, 1)
+                .expect("round seed should persist");
+            storage
+                .save_pbft_mgr_field(1, 1)
+                .expect("step seed should persist");
+            storage
+                .save_pbft_mgr_field(2, 1_500)
+                .expect("lambda seed should persist");
+
+            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
+                .expect("runtime should restore");
+            let before = pbft_manager_runtime_snapshot(&runtime);
+            let mut plan = plan_pbft_manager_transition(transition_fact(TRANSITION_RESET));
+            plan.status = TRANSITION_STATUS_INVALID_FACT;
+            let result = pbft_manager_runtime_apply_transition_storage_write(
+                &mut runtime,
+                &storage,
+                plan,
+                Vec::new(),
+            )
+            .expect("runtime apply should return deterministic rejection");
+
+            assert_eq!(result.status, TRANSITION_STORAGE_STATUS_REJECTED);
+            assert_eq!(result.snapshot.round, before.round);
+            assert_eq!(result.snapshot.step, before.step);
+            assert_eq!(result.snapshot.state, before.state);
+            let current = pbft_manager_runtime_snapshot(&runtime);
+            assert_eq!(current.round, before.round);
+            assert_eq!(current.step, before.step);
+            assert_eq!(current.state, before.state);
+            assert_eq!(storage.get_pbft_mgr_field(0).unwrap(), 1);
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]

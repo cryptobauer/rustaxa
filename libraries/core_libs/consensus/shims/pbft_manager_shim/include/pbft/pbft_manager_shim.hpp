@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <thread>
 
 #include "common/types.hpp"
@@ -10,6 +11,7 @@
 #include "network/network.hpp"
 #include "pbft/period_data_queue.hpp"
 #include "pbft/proposed_blocks.hpp"
+#include "rustaxa-bridge/ffi.rs.h"
 #include "vote/pillar_vote.hpp"
 
 namespace taraxa {
@@ -821,6 +823,11 @@ class PbftManager {
 
   // Proposed blocks based on received propose votes
   ProposedBlocks proposed_blocks_;
+
+  // Rust-owned scalar PBFT manager cursor. C++ fields above are transitional
+  // mirrors updated from Rust snapshots after startup and transition storage
+  // commits.
+  std::optional<rust::Box<rustaxa::BridgePbftManagerRuntime>> pbft_manager_runtime_;
 
   // Wallets with flag if they are/are not dpos eligible for specified period
   EligibleWallets eligible_wallets_;

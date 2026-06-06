@@ -88,6 +88,10 @@ pub struct BridgePbftManagerRuntimeSession {
     pub state: rustaxa_consensus::pbft_manager::PbftManagerRuntimeSession,
 }
 
+pub struct BridgePbftManagerRuntime {
+    pub state: rustaxa_consensus::pbft_manager::PbftManagerRuntime,
+}
+
 pub struct BridgePbftVotePipelineSession {
     pub state: rustaxa_consensus::PbftVotePipelineSession,
     pub context: rustaxa_ffi::PbftVoteProgressContext,
@@ -911,6 +915,36 @@ pub mod rustaxa_ffi {
         has_eligible_wallet: bool,
     }
 
+    /// Configuration and current-period facts needed for Rust-owned PBFT
+    /// manager startup restore from storage.
+    struct PbftManagerStartupFact {
+        current_period: u64,
+        cacti_active_at_chain_size: bool,
+        genesis_lambda_ms: u64,
+        cacti_lambda_max_ms: u64,
+        cacti_lambda_default_ms: u64,
+    }
+
+    /// Rust-owned PBFT manager cursor snapshot used by the transitional C++
+    /// shim to mirror state after startup or transition commits.
+    struct PbftManagerRuntimeSnapshot {
+        status: u8,
+        state: u8,
+        period: u64,
+        round: u64,
+        step: u64,
+        current_round_lambda_ms: u64,
+        next_step_time_ms: u64,
+        rounds_count_dynamic_lambda: u32,
+        dynamic_lambda_ms: u32,
+        executed_pbft_block: bool,
+        already_next_voted_value: bool,
+        already_next_voted_null: bool,
+        persist_normalized_step: bool,
+        reset_second_finish_start: bool,
+        error_code: String,
+    }
+
     /// One Rust-owned PBFT manager runtime-session step.
     struct PbftManagerRuntimeSessionStep {
         status: u8,
@@ -1023,6 +1057,15 @@ pub mod rustaxa_ffi {
     struct PbftManagerTransitionStorageResult {
         status: u8,
         applied_writes: u64,
+        error_code: String,
+    }
+
+    /// Result from applying PBFT manager transition storage through the
+    /// long-lived Rust runtime handle.
+    struct PbftManagerTransitionRuntimeApplyResult {
+        status: u8,
+        applied_writes: u64,
+        snapshot: PbftManagerRuntimeSnapshot,
         error_code: String,
     }
 
@@ -3512,6 +3555,20 @@ pub mod rustaxa_ffi {
         pub fn create_pbft_finalization_runtime_session(
             plan: &PbftFinalizationIntentPlan,
         ) -> Box<BridgePbftFinalizationRuntimeSession>;
+        type BridgePbftManagerRuntime;
+        pub fn create_pbft_manager_runtime_from_storage(
+            storage: &BridgeStorage,
+            fact: PbftManagerStartupFact,
+        ) -> Result<Box<BridgePbftManagerRuntime>>;
+        pub fn pbft_manager_runtime_snapshot(
+            runtime: &BridgePbftManagerRuntime,
+        ) -> PbftManagerRuntimeSnapshot;
+        pub fn pbft_manager_runtime_apply_transition_storage_write(
+            runtime: &mut BridgePbftManagerRuntime,
+            storage: &BridgeStorage,
+            plan: PbftManagerTransitionPlan,
+            own_vote_hashes: Vec<PbftFinalizationHash>,
+        ) -> Result<PbftManagerTransitionRuntimeApplyResult>;
         type BridgePbftManagerRuntimeSession;
         pub fn create_pbft_manager_runtime_session(
             fact: PbftManagerRuntimeTickFact,

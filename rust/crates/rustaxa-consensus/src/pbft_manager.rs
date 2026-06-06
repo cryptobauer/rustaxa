@@ -588,6 +588,258 @@ pub struct PbftManagerTransitionPlan {
     pub error_code: String,
 }
 
+/// Stable status codes for PBFT manager runtime startup restore.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerStartupRestoreStatus {
+    /// Startup facts are valid and the runtime snapshot is usable.
+    Ready,
+    /// Startup facts are internally inconsistent or represent corrupted
+    /// persisted manager state.
+    InvalidFact,
+}
+
+impl PbftManagerStartupRestoreStatus {
+    /// Stable bridge code for the startup restore status.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Ready => 0,
+            Self::InvalidFact => 1,
+        }
+    }
+}
+
+/// Persisted and configuration facts used to restore the PBFT manager runtime.
+///
+/// The fact bundle is deliberately scalar-only. Storage and bridge code read
+/// persisted DB values, then Rust decides the normalized PBFT cursor and live
+/// startup flags without materializing PBFT blocks, votes, network handles, or
+/// FinalChain objects.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerStartupRestoreFact {
+    /// Current PBFT period at startup.
+    pub current_period: u64,
+    /// Persisted manager round, defaulted by storage compatibility to `1` when
+    /// absent.
+    pub persisted_round: u64,
+    /// Persisted manager step, defaulted by storage compatibility to `1` when
+    /// absent.
+    pub persisted_step: u64,
+    /// Whether the Cacti dynamic-lambda rules are active for
+    /// `current_period - 1`.
+    pub cacti_active_at_chain_size: bool,
+    /// Persisted rounds-count dynamic-lambda accumulator.
+    pub rounds_count_dynamic_lambda: u32,
+    /// Persisted dynamic lambda manager field, defaulted by storage
+    /// compatibility to `1` when absent.
+    pub persisted_dynamic_lambda_ms: u32,
+    /// Genesis PBFT lambda used before Cacti.
+    pub genesis_lambda_ms: u32,
+    /// Cacti maximum lambda used as live default before any finalized Cacti
+    /// period has saved a dynamic lambda.
+    pub cacti_lambda_max_ms: u32,
+    /// Cacti non-round-one lambda.
+    pub cacti_lambda_default_ms: u32,
+    /// Persisted executed-block manager status.
+    pub executed_pbft_block: bool,
+    /// Persisted next-voted-value manager status.
+    pub already_next_voted_value: bool,
+    /// Persisted next-voted-null manager status.
+    pub already_next_voted_null: bool,
+}
+
+/// Runtime cursor and live scalar facts restored for the PBFT manager shim.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerRuntimeSnapshot {
+    /// Restore/apply status.
+    pub status: PbftManagerStartupRestoreStatus,
+    /// Current PBFT manager state.
+    pub state: PbftManagerRuntimeStateCode,
+    /// Current PBFT period.
+    pub period: u64,
+    /// Current PBFT round.
+    pub round: u64,
+    /// Current PBFT step.
+    pub step: u64,
+    /// Current-round lambda in milliseconds.
+    pub current_round_lambda_ms: u64,
+    /// Next-step deadline in milliseconds.
+    pub next_step_time_ms: u64,
+    /// Live dynamic-lambda accumulator restored from storage.
+    pub rounds_count_dynamic_lambda: u32,
+    /// Live dynamic lambda in milliseconds.
+    pub dynamic_lambda_ms: u32,
+    /// Live executed-block flag.
+    pub executed_pbft_block: bool,
+    /// Live next-voted-value flag.
+    pub already_next_voted_value: bool,
+    /// Live next-voted-null flag.
+    pub already_next_voted_null: bool,
+    /// Whether startup normalized persisted step and must persist the new step
+    /// before C++ mirrors are updated.
+    pub persist_normalized_step: bool,
+    /// Whether C++ should reset the second-finish polling timestamp.
+    pub reset_second_finish_start: bool,
+    /// Stable error detail for rejected startup facts.
+    pub error_code: String,
+}
+
+/// Long-lived PBFT manager runtime cursor owned by Rust.
+///
+/// This runtime owns the scalar PBFT manager cursor restored from storage and
+/// updated after accepted transition storage commits. It does not own timers,
+/// network effects, FinalChain/EVM execution, or live C++ PBFT object
+/// materialization.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerRuntime {
+    snapshot: PbftManagerRuntimeSnapshot,
+}
+
+impl PbftManagerRuntime {
+    /// Creates a runtime from an already accepted startup snapshot.
+    pub fn new(snapshot: PbftManagerRuntimeSnapshot) -> Self {
+        Self { snapshot }
+    }
+
+    /// Returns the current Rust-owned scalar snapshot.
+    pub fn snapshot(&self) -> PbftManagerRuntimeSnapshot {
+        self.snapshot.clone()
+    }
+
+    /// Advances the Rust-owned scalar cursor after transition storage commits.
+    ///
+    /// The caller must only invoke this after the corresponding Rust storage
+    /// batch has been committed. Rejected plans are ignored so storage failure
+    /// cannot move the in-memory Rust cursor ahead of durable state.
+    pub fn apply_committed_transition(&mut self, plan: &PbftManagerTransitionPlan) {
+        if plan.status != PbftManagerTransitionStatus::Ready {
+            return;
+        }
+
+        self.snapshot.status = PbftManagerStartupRestoreStatus::Ready;
+        self.snapshot.state = plan.new_state;
+        self.snapshot.round = plan.new_round;
+        self.snapshot.step = plan.new_step;
+        self.snapshot.current_round_lambda_ms = plan.current_round_lambda_ms;
+        self.snapshot.next_step_time_ms = plan.next_step_time_ms;
+        self.snapshot.persist_normalized_step = false;
+        self.snapshot.reset_second_finish_start = plan.reset_second_finish_start;
+        self.snapshot.error_code.clear();
+        if plan.reset_next_voted_statuses {
+            self.snapshot.already_next_voted_value = false;
+            self.snapshot.already_next_voted_null = false;
+        }
+    }
+}
+
+fn reject_startup_restore(error_code: &str) -> PbftManagerRuntimeSnapshot {
+    PbftManagerRuntimeSnapshot {
+        status: PbftManagerStartupRestoreStatus::InvalidFact,
+        state: PbftManagerRuntimeStateCode::Unknown,
+        period: 0,
+        round: 0,
+        step: 0,
+        current_round_lambda_ms: 0,
+        next_step_time_ms: 0,
+        rounds_count_dynamic_lambda: 0,
+        dynamic_lambda_ms: 0,
+        executed_pbft_block: false,
+        already_next_voted_value: false,
+        already_next_voted_null: false,
+        persist_normalized_step: false,
+        reset_second_finish_start: false,
+        error_code: error_code.to_string(),
+    }
+}
+
+/// Restores the Rust-owned PBFT manager runtime cursor from persisted facts.
+///
+/// The restored snapshot mirrors legacy startup semantics: missing round/step
+/// default to one, steps below four restart in first-finish at step four, even
+/// steps restart in first-finish, and odd steps restart in finish-polling. Cacti
+/// dynamic lambda is restored from the persisted manager field after at least
+/// one Cacti period has finalized; a default `1` value in that case is rejected
+/// as corrupted storage to preserve the legacy safety check.
+pub fn restore_pbft_manager_runtime(
+    fact: PbftManagerStartupRestoreFact,
+) -> PbftManagerRuntimeSnapshot {
+    if fact.current_period == 0 || fact.persisted_round == 0 || fact.persisted_step == 0 {
+        return reject_startup_restore("PBFT_MANAGER_STARTUP_INVALID_CURSOR");
+    }
+    if fact.genesis_lambda_ms == 0
+        || fact.cacti_lambda_max_ms == 0
+        || fact.cacti_lambda_default_ms == 0
+    {
+        return reject_startup_restore("PBFT_MANAGER_STARTUP_INVALID_LAMBDA_CONFIG");
+    }
+
+    let chain_size = fact.current_period.saturating_sub(1);
+    let dynamic_lambda_ms = if fact.cacti_active_at_chain_size {
+        if chain_size >= 1 {
+            if fact.persisted_dynamic_lambda_ms == 1 {
+                return reject_startup_restore("PBFT_MANAGER_STARTUP_MISSING_DYNAMIC_LAMBDA");
+            }
+            fact.persisted_dynamic_lambda_ms
+        } else {
+            fact.cacti_lambda_max_ms
+        }
+    } else {
+        fact.cacti_lambda_max_ms
+    };
+
+    let current_round_lambda_ms = if fact.cacti_active_at_chain_size {
+        if fact.persisted_round == 1 {
+            dynamic_lambda_ms
+        } else {
+            fact.cacti_lambda_default_ms
+        }
+    } else {
+        fact.genesis_lambda_ms
+    };
+
+    let (state, step, persist_normalized_step, reset_second_finish_start) =
+        if fact.persisted_round == 1 && fact.persisted_step == 1 {
+            (PbftManagerRuntimeStateCode::ValueProposal, 1, false, false)
+        } else if fact.persisted_step < 4 {
+            (PbftManagerRuntimeStateCode::Finish, 4, true, false)
+        } else if fact.persisted_step % 2 == 0 {
+            (
+                PbftManagerRuntimeStateCode::Finish,
+                fact.persisted_step,
+                false,
+                false,
+            )
+        } else {
+            (
+                PbftManagerRuntimeStateCode::FinishPolling,
+                fact.persisted_step,
+                false,
+                true,
+            )
+        };
+
+    PbftManagerRuntimeSnapshot {
+        status: PbftManagerStartupRestoreStatus::Ready,
+        state,
+        period: fact.current_period,
+        round: fact.persisted_round,
+        step,
+        current_round_lambda_ms: u64::from(current_round_lambda_ms),
+        next_step_time_ms: 0,
+        rounds_count_dynamic_lambda: if fact.cacti_active_at_chain_size {
+            fact.rounds_count_dynamic_lambda
+        } else {
+            0
+        },
+        dynamic_lambda_ms,
+        executed_pbft_block: fact.executed_pbft_block,
+        already_next_voted_value: fact.already_next_voted_value,
+        already_next_voted_null: fact.already_next_voted_null,
+        persist_normalized_step,
+        reset_second_finish_start,
+        error_code: String::new(),
+    }
+}
+
 /// C++-originated facts for deciding whether PBFT can advance to a new round.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftManagerAdvanceRoundFact {
@@ -1618,6 +1870,23 @@ mod tests {
         }
     }
 
+    fn startup_fact(round: u64, step: u64) -> PbftManagerStartupRestoreFact {
+        PbftManagerStartupRestoreFact {
+            current_period: 10,
+            persisted_round: round,
+            persisted_step: step,
+            cacti_active_at_chain_size: true,
+            rounds_count_dynamic_lambda: 7,
+            persisted_dynamic_lambda_ms: 1_500,
+            genesis_lambda_ms: 100,
+            cacti_lambda_max_ms: 1_500,
+            cacti_lambda_default_ms: 500,
+            executed_pbft_block: true,
+            already_next_voted_value: true,
+            already_next_voted_null: false,
+        }
+    }
+
     fn drain_actions(mut session: PbftManagerRuntimeSession) -> Vec<PbftManagerRuntimeAction> {
         let mut actions = Vec::new();
         loop {
@@ -1963,6 +2232,76 @@ mod tests {
         assert_eq!(plan.primary_intent, PbftManagerStateActionIntent::Noop);
         assert_eq!(plan.secondary_intent, PbftManagerStateActionIntent::Noop);
         assert!(plan.loop_back_finish_state);
+    }
+
+    #[test]
+    fn startup_restore_normalizes_cursor_and_restores_status_flags() {
+        let snapshot = restore_pbft_manager_runtime(startup_fact(2, 2));
+
+        assert_eq!(snapshot.status, PbftManagerStartupRestoreStatus::Ready);
+        assert_eq!(snapshot.state, PbftManagerRuntimeStateCode::Finish);
+        assert_eq!(snapshot.round, 2);
+        assert_eq!(snapshot.step, 4);
+        assert_eq!(snapshot.current_round_lambda_ms, 500);
+        assert_eq!(snapshot.rounds_count_dynamic_lambda, 7);
+        assert_eq!(snapshot.dynamic_lambda_ms, 1_500);
+        assert!(snapshot.executed_pbft_block);
+        assert!(snapshot.already_next_voted_value);
+        assert!(!snapshot.already_next_voted_null);
+        assert!(snapshot.persist_normalized_step);
+    }
+
+    #[test]
+    fn startup_restore_maps_scratch_and_finish_polling_states() {
+        let scratch = restore_pbft_manager_runtime(startup_fact(1, 1));
+        assert_eq!(scratch.state, PbftManagerRuntimeStateCode::ValueProposal);
+        assert_eq!(scratch.step, 1);
+        assert!(!scratch.persist_normalized_step);
+        assert!(!scratch.reset_second_finish_start);
+
+        let polling = restore_pbft_manager_runtime(startup_fact(4, 5));
+        assert_eq!(polling.state, PbftManagerRuntimeStateCode::FinishPolling);
+        assert_eq!(polling.step, 5);
+        assert!(polling.reset_second_finish_start);
+    }
+
+    #[test]
+    fn startup_restore_rejects_missing_cacti_dynamic_lambda() {
+        let mut fact = startup_fact(1, 1);
+        fact.persisted_dynamic_lambda_ms = 1;
+        let snapshot = restore_pbft_manager_runtime(fact);
+
+        assert_eq!(
+            snapshot.status,
+            PbftManagerStartupRestoreStatus::InvalidFact
+        );
+        assert_eq!(
+            snapshot.error_code,
+            "PBFT_MANAGER_STARTUP_MISSING_DYNAMIC_LAMBDA"
+        );
+    }
+
+    #[test]
+    fn runtime_snapshot_advances_only_after_committed_transition_report() {
+        let mut runtime = PbftManagerRuntime::new(restore_pbft_manager_runtime(startup_fact(2, 4)));
+        let before = runtime.snapshot();
+        let rejected = reject_transition_plan(
+            PbftManagerTransitionStatus::InvalidFact,
+            PbftManagerTransitionKind::ToFilter,
+            "rejected",
+        );
+        runtime.apply_committed_transition(&rejected);
+        assert_eq!(runtime.snapshot(), before);
+
+        let plan =
+            plan_pbft_manager_transition(transition_fact(PbftManagerTransitionKind::ToFilter));
+        runtime.apply_committed_transition(&plan);
+        let after = runtime.snapshot();
+        assert_eq!(after.state, PbftManagerRuntimeStateCode::Filter);
+        assert_eq!(after.round, 2);
+        assert_eq!(after.step, 4);
+        assert_eq!(after.current_round_lambda_ms, 100);
+        assert_eq!(after.next_step_time_ms, 200);
     }
 
     #[test]
