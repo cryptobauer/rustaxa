@@ -28,6 +28,12 @@ if ! git config --global --get user.email >/dev/null 2>&1; then
   git config --global user.email "bender@cryptobauer.com"
 fi
 
+SIGNING_EMAIL="$(git config --global --get user.email)"
+SIGNING_PUBKEY="$(awk '{print $1 " " $2}' /root/.ssh/id_ed25519_cryptobauer.pub)"
+printf '%s %s\n' "$SIGNING_EMAIL" "$SIGNING_PUBKEY" > /root/.ssh/allowed_signers
+chmod 600 /root/.ssh/allowed_signers
+git config --global gpg.ssh.allowedSignersFile /root/.ssh/allowed_signers
+
 if [ -z "${SSH_AUTH_SOCK:-}" ]; then
   echo "Warning: SSH agent is not forwarded; pull/push/sign will fail until SSH_AUTH_SOCK is available"
 fi
