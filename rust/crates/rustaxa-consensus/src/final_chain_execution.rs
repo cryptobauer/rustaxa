@@ -8,8 +8,9 @@ use rustaxa_types::{FinalizationDagBlock, FinalizationTransaction};
 /// shim while arbitrary EVM execution remains outside Rust FinalChain.
 pub const FINAL_CHAIN_EXECUTION_MODE_NATIVE_ONLY: u8 = 0;
 /// Mode reserved for the future C++/Rust EVM executor port. Phase 1 can build
-/// and validate EVM requests and reports, but successful EVM-backed commit is
-/// still rejected until the executor result contract has parity coverage.
+/// and validate full ordered EVM requests and reports, but successful
+/// EVM-backed commit is still rejected until system transactions, state roots,
+/// rewards, and receipt publication have parity coverage.
 pub const FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED: u8 = 1;
 
 /// Session is ready to expose the next execution step.
@@ -66,11 +67,15 @@ pub struct FinalChainExecutionRequest {
     pub mode: u8,
 }
 
-/// One transaction selected for external EVM execution.
+/// One transaction in the ordered block execution stream.
 ///
-/// The runtime includes the original transaction facts plus the ordered block
-/// position and native classification. The executor must return matching
-/// positions and hashes; mismatches are treated as report forgery or stale work.
+/// When any arbitrary EVM transaction is present, the runtime exposes every
+/// bridge-provided finalized transaction in block order, including native value
+/// transfers and Rust-native contract actions. The executor must return
+/// matching positions and hashes for the full ordered request; mismatches are
+/// treated as report forgery or stale work. System transactions are still a
+/// separate boundary because their creation depends on bridge-contract state
+/// queries that have not moved to Rust yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FinalChainEvmTransactionInput {
     pub position: u64,
@@ -90,8 +95,8 @@ pub struct FinalChainEvmTransactionInput {
 ///
 /// `request_id` is deterministic for this request and must be echoed by the
 /// executor report. Phase 1 does not provide a state-trie handle yet; it exposes
-/// PBFT period, author, timestamp, gas limit, and the selected EVM transactions
-/// needed by the future executor bridge.
+/// PBFT period, author, timestamp, gas limit, and the complete ordered
+/// bridge-provided transaction stream needed by the future executor bridge.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainEvmExecutionRequest {
     pub request_id: [u8; 32],
@@ -100,6 +105,26 @@ pub struct FinalChainEvmExecutionRequest {
     pub timestamp: u64,
     pub block_gas_limit: u64,
     pub transactions: Vec<FinalChainEvmTransactionInput>,
+}
+
+/// One log topic emitted by an external EVM transaction result.
+///
+/// The wrapper keeps CXX bridge payloads plain while preserving the exact
+/// 32-byte topic shape used by the legacy receipt/log bloom path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FinalChainEvmLogTopic {
+    pub topic: [u8; 32],
+}
+
+/// One structured log emitted by an external EVM transaction result.
+///
+/// Structured logs travel with receipt RLP so Rust can validate and eventually
+/// publish receipt/log-bloom state without reparsing legacy C++ objects.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FinalChainEvmLog {
+    pub address: [u8; 20],
+    pub topics: Vec<FinalChainEvmLogTopic>,
+    pub data: Vec<u8>,
 }
 
 /// One transaction result reported by an external EVM executor.
@@ -115,6 +140,10 @@ pub struct FinalChainEvmTransactionResult {
     pub gas_used: u64,
     pub cumulative_gas_used: u64,
     pub receipt_rlp: Vec<u8>,
+    pub logs: Vec<FinalChainEvmLog>,
+    pub new_contract_address: Option<[u8; 20]>,
+    pub code_error: String,
+    pub consensus_error: String,
 }
 
 /// External EVM execution report returned to a runtime session.
@@ -244,7 +273,7 @@ pub fn final_chain_execution_session_next(
             external_evm_transaction_count: session
                 .evm_request
                 .as_ref()
-                .map(|request| request.transactions.len() as u64)
+                .map(|request| count_external_evm_transactions(&request.transactions))
                 .unwrap_or_default(),
             evm_request: session.evm_request.clone().unwrap_or_default(),
             error_code: session.error_code.clone(),
@@ -258,11 +287,13 @@ pub fn final_chain_execution_session_next(
         _ => {
             if let Some(evm_request) = session.evm_request.clone() {
                 session.status = FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM;
+                let external_evm_transaction_count =
+                    count_external_evm_transactions(&evm_request.transactions);
                 FinalChainExecutionStep {
                     status: session.status,
                     action: FINAL_CHAIN_EXECUTION_ACTION_EXECUTE_EXTERNAL_EVM,
                     period: session.metadata.period,
-                    external_evm_transaction_count: evm_request.transactions.len() as u64,
+                    external_evm_transaction_count,
                     evm_request,
                     error_code: String::new(),
                 }
@@ -314,6 +345,11 @@ pub fn final_chain_execution_session_report_evm(
         if expected.position != actual.position || expected.hash != actual.hash {
             session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
             session.error_code = "FINAL_CHAIN_EVM_REPORT_TRANSACTION_MISMATCH".to_string();
+            return final_chain_execution_session_next(session);
+        }
+        if actual.status > 1 {
+            session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+            session.error_code = "FINAL_CHAIN_EVM_REPORT_TRANSACTION_STATUS_INVALID".to_string();
             return final_chain_execution_session_next(session);
         }
         cumulative_gas_used = match cumulative_gas_used.checked_add(actual.gas_used) {
@@ -404,8 +440,9 @@ impl FinalChainExecutionSession {
         request: FinalChainExecutionRequest,
         metadata: rustaxa_types::PbftBlockMetadata,
     ) -> Self {
-        let evm_transactions = classify_external_evm_transactions(&request.transactions);
-        if evm_transactions.is_empty() {
+        let ordered_transactions = classify_ordered_execution_transactions(&request.transactions);
+        let external_evm_transaction_count = count_external_evm_transactions(&ordered_transactions);
+        if external_evm_transaction_count == 0 {
             return Self {
                 request,
                 metadata,
@@ -423,12 +460,12 @@ impl FinalChainExecutionSession {
             );
         }
         let evm_request = FinalChainEvmExecutionRequest {
-            request_id: execution_request_id(metadata.period, &evm_transactions),
+            request_id: execution_request_id(metadata.period, &ordered_transactions),
             period: metadata.period,
             block_author: metadata.author.into(),
             timestamp: metadata.timestamp,
             block_gas_limit: request.block_gas_limit,
-            transactions: evm_transactions,
+            transactions: ordered_transactions,
         };
         Self {
             request,
@@ -456,20 +493,15 @@ impl FinalChainExecutionSession {
     }
 }
 
-fn classify_external_evm_transactions(
+fn classify_ordered_execution_transactions(
     transactions: &[FinalizationTransaction],
 ) -> Vec<FinalChainEvmTransactionInput> {
     transactions
         .iter()
         .enumerate()
-        .filter_map(|(position, transaction)| {
+        .map(|(position, transaction)| {
             let kind = transaction_kind(transaction);
-            matches!(
-                kind,
-                FINAL_CHAIN_EXECUTION_TX_KIND_EXTERNAL_EVM_CALL
-                    | FINAL_CHAIN_EXECUTION_TX_KIND_EXTERNAL_EVM_CREATE
-            )
-            .then(|| FinalChainEvmTransactionInput {
+            FinalChainEvmTransactionInput {
                 position: position as u64,
                 hash: transaction.hash,
                 sender: transaction.sender,
@@ -481,9 +513,22 @@ fn classify_external_evm_transactions(
                 data: transaction.data.clone(),
                 rlp: transaction.rlp.clone(),
                 kind,
-            })
+            }
         })
         .collect()
+}
+
+fn count_external_evm_transactions(transactions: &[FinalChainEvmTransactionInput]) -> u64 {
+    transactions
+        .iter()
+        .filter(|transaction| {
+            matches!(
+                transaction.kind,
+                FINAL_CHAIN_EXECUTION_TX_KIND_EXTERNAL_EVM_CALL
+                    | FINAL_CHAIN_EXECUTION_TX_KIND_EXTERNAL_EVM_CREATE
+            )
+        })
+        .count() as u64
 }
 
 fn transaction_kind(transaction: &FinalizationTransaction) -> u8 {
@@ -578,6 +623,31 @@ mod tests {
         }
     }
 
+    fn evm_result(
+        tx: &FinalChainEvmTransactionInput,
+        status: u8,
+        gas_used: u64,
+        cumulative_gas_used: u64,
+        receipt_rlp: Vec<u8>,
+    ) -> FinalChainEvmTransactionResult {
+        FinalChainEvmTransactionResult {
+            position: tx.position,
+            hash: tx.hash,
+            status,
+            gas_used,
+            cumulative_gas_used,
+            receipt_rlp,
+            logs: vec![FinalChainEvmLog {
+                address: [0x44; 20],
+                topics: vec![FinalChainEvmLogTopic { topic: [0x55; 32] }],
+                data: vec![0x66],
+            }],
+            new_contract_address: None,
+            code_error: String::new(),
+            consensus_error: String::new(),
+        }
+    }
+
     fn signed_pbft_block_rlp(period: u64) -> Vec<u8> {
         let signing_key = SigningKey::from_slice(&[9u8; 32]).unwrap();
         let timestamp = 1234u64;
@@ -658,7 +728,7 @@ mod tests {
     }
 
     #[test]
-    fn external_evm_mode_builds_contract_call_request() {
+    fn external_evm_mode_builds_full_ordered_contract_call_request() {
         let transactions = vec![
             transaction(1, Some([9; 20]), Vec::new()),
             transaction(2, Some([8; 20]), vec![0xaa]),
@@ -682,15 +752,50 @@ mod tests {
         assert_eq!(step.period, 7);
         assert_eq!(step.evm_request.block_gas_limit, 1_000_000);
         assert_eq!(step.external_evm_transaction_count, 2);
-        assert_eq!(step.evm_request.transactions[0].position, 1);
+        assert_eq!(step.evm_request.transactions.len(), 3);
+        assert_eq!(step.evm_request.transactions[0].position, 0);
         assert_eq!(
             step.evm_request.transactions[0].kind,
-            FINAL_CHAIN_EXECUTION_TX_KIND_EXTERNAL_EVM_CALL
+            FINAL_CHAIN_EXECUTION_TX_KIND_NATIVE_VALUE_TRANSFER
         );
-        assert_eq!(step.evm_request.transactions[1].position, 2);
+        assert_eq!(step.evm_request.transactions[1].position, 1);
         assert_eq!(
             step.evm_request.transactions[1].kind,
+            FINAL_CHAIN_EXECUTION_TX_KIND_EXTERNAL_EVM_CALL
+        );
+        assert_eq!(step.evm_request.transactions[2].position, 2);
+        assert_eq!(
+            step.evm_request.transactions[2].kind,
             FINAL_CHAIN_EXECUTION_TX_KIND_EXTERNAL_EVM_CREATE
+        );
+    }
+
+    #[test]
+    fn evm_report_must_cover_full_ordered_transaction_request() {
+        let transactions = vec![
+            transaction(1, Some([9; 20]), Vec::new()),
+            transaction(2, Some([8; 20]), vec![0xaa]),
+        ];
+        let mut session = create_final_chain_execution_session(valid_request(
+            transactions,
+            FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
+        ));
+        let step = final_chain_execution_session_next(&mut session);
+        let tx = step.evm_request.transactions[1].clone();
+        let report = FinalChainEvmExecutionReport {
+            request_id: step.evm_request.request_id,
+            status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
+            state_root: [0x11; 32],
+            cumulative_gas_used: 1,
+            results: vec![evm_result(&tx, 1, 1, 1, vec![0xc0])],
+        };
+
+        let rejected = final_chain_execution_session_report_evm(&mut session, report);
+
+        assert_eq!(rejected.status, FINAL_CHAIN_EXECUTION_STATUS_REJECTED);
+        assert_eq!(
+            rejected.error_code,
+            "FINAL_CHAIN_EVM_REPORT_RESULT_COUNT_MISMATCH"
         );
     }
 
@@ -702,19 +807,15 @@ mod tests {
             FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
         ));
         let step = final_chain_execution_session_next(&mut session);
+        let mut mismatched_result =
+            evm_result(&step.evm_request.transactions[0], 1, 1, 1, vec![0xc0]);
+        mismatched_result.hash = [0xff; 32];
         let mut report = FinalChainEvmExecutionReport {
             request_id: step.evm_request.request_id,
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
             state_root: [0x11; 32],
             cumulative_gas_used: 1,
-            results: vec![FinalChainEvmTransactionResult {
-                position: 0,
-                hash: [0xff; 32],
-                status: 1,
-                gas_used: 1,
-                cumulative_gas_used: 1,
-                receipt_rlp: vec![0xc0],
-            }],
+            results: vec![mismatched_result],
         };
 
         let rejected = final_chain_execution_session_report_evm(&mut session, report.clone());
@@ -743,14 +844,7 @@ mod tests {
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
             state_root: [0x11; 32],
             cumulative_gas_used: 1,
-            results: vec![FinalChainEvmTransactionResult {
-                position: tx.position,
-                hash: tx.hash,
-                status: 1,
-                gas_used: 1,
-                cumulative_gas_used: 1,
-                receipt_rlp: vec![0xc0],
-            }],
+            results: vec![evm_result(&tx, 1, 1, 1, vec![0xc0])],
         };
 
         let rejected = final_chain_execution_session_report_evm(&mut session, report);
@@ -776,14 +870,7 @@ mod tests {
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
             state_root: [0x11; 32],
             cumulative_gas_used: 2,
-            results: vec![FinalChainEvmTransactionResult {
-                position: tx.position,
-                hash: tx.hash,
-                status: 1,
-                gas_used: 1,
-                cumulative_gas_used: 2,
-                receipt_rlp: vec![0xc0],
-            }],
+            results: vec![evm_result(&tx, 1, 1, 2, vec![0xc0])],
         };
 
         let rejected = final_chain_execution_session_report_evm(&mut session, report);
@@ -792,6 +879,32 @@ mod tests {
         assert_eq!(
             rejected.error_code,
             "FINAL_CHAIN_EVM_REPORT_CUMULATIVE_GAS_MISMATCH"
+        );
+    }
+
+    #[test]
+    fn evm_report_rejects_invalid_transaction_status() {
+        let transactions = vec![transaction(2, Some([8; 20]), vec![0xaa])];
+        let mut session = create_final_chain_execution_session(valid_request(
+            transactions,
+            FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
+        ));
+        let step = final_chain_execution_session_next(&mut session);
+        let tx = step.evm_request.transactions[0].clone();
+        let report = FinalChainEvmExecutionReport {
+            request_id: step.evm_request.request_id,
+            status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
+            state_root: [0x11; 32],
+            cumulative_gas_used: 1,
+            results: vec![evm_result(&tx, 2, 1, 1, vec![0xc0])],
+        };
+
+        let rejected = final_chain_execution_session_report_evm(&mut session, report);
+
+        assert_eq!(rejected.status, FINAL_CHAIN_EXECUTION_STATUS_REJECTED);
+        assert_eq!(
+            rejected.error_code,
+            "FINAL_CHAIN_EVM_REPORT_TRANSACTION_STATUS_INVALID"
         );
     }
 }

@@ -205,6 +205,28 @@ fn evm_report_from_ffi(
                 gas_used: result.gas_used,
                 cumulative_gas_used: result.cumulative_gas_used,
                 receipt_rlp: result.receipt_rlp,
+                logs: result
+                    .logs
+                    .into_iter()
+                    .map(|log| rustaxa_consensus::FinalChainEvmLog {
+                        address: log.address,
+                        topics: log
+                            .topics
+                            .into_iter()
+                            .map(|topic| rustaxa_consensus::FinalChainEvmLogTopic {
+                                topic: topic.topic,
+                            })
+                            .collect(),
+                        data: log.data,
+                    })
+                    .collect(),
+                new_contract_address: if result.new_contract_address_found {
+                    Some(result.new_contract_address)
+                } else {
+                    None
+                },
+                code_error: result.code_error,
+                consensus_error: result.consensus_error,
             })
             .collect(),
     }
@@ -956,6 +978,30 @@ mod tests {
         }
     }
 
+    fn ffi_evm_result(
+        transaction: &rustaxa_ffi::FinalChainEvmTransactionInput,
+        gas_used: u64,
+        cumulative_gas_used: u64,
+    ) -> rustaxa_ffi::FinalChainEvmTransactionResult {
+        rustaxa_ffi::FinalChainEvmTransactionResult {
+            position: transaction.position,
+            hash: transaction.hash,
+            status: 1,
+            gas_used,
+            cumulative_gas_used,
+            receipt_rlp: vec![0xc0],
+            logs: vec![rustaxa_ffi::FinalChainEvmLog {
+                address: [0x44; 20],
+                topics: vec![rustaxa_ffi::FinalChainEvmLogTopic { topic: [0x55; 32] }],
+                data: vec![0x66],
+            }],
+            new_contract_address_found: true,
+            new_contract_address: [0x77; 20],
+            code_error: String::new(),
+            consensus_error: String::new(),
+        }
+    }
+
     fn signed_pbft_block_rlp(period: u64) -> Vec<u8> {
         let signing_key = SigningKey::from_slice(&[9u8; 32]).unwrap();
         let timestamp = 1234u64;
@@ -1155,10 +1201,64 @@ mod tests {
         assert_eq!(step.period, 7);
         assert_eq!(step.evm_request.block_gas_limit, 1_000_000);
         assert_eq!(step.external_evm_transaction_count, 2);
-        assert_eq!(step.evm_request.transactions[0].position, 1);
+        assert_eq!(step.evm_request.transactions.len(), 3);
+        assert_eq!(step.evm_request.transactions[0].position, 0);
         assert!(step.evm_request.transactions[0].receiver_found);
-        assert_eq!(step.evm_request.transactions[1].position, 2);
-        assert!(!step.evm_request.transactions[1].receiver_found);
+        assert_eq!(step.evm_request.transactions[1].position, 1);
+        assert!(step.evm_request.transactions[1].receiver_found);
+        assert_eq!(step.evm_request.transactions[2].position, 2);
+        assert!(!step.evm_request.transactions[2].receiver_found);
+
+        drop(final_chain);
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_execution_session_accepts_typed_evm_report_until_commit_boundary() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_final_chain_execution_report");
+        let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
+        let final_chain = make_final_chain(storage_path, vec![]);
+        let mut session = create_final_chain_execution_session(
+            &final_chain,
+            rustaxa_ffi::FinalChainExecutionRequest {
+                pbft_block_rlp: signed_pbft_block_rlp(7),
+                transactions: vec![
+                    ffi_transaction(1, true, [9; 20], Vec::new()),
+                    ffi_transaction(2, true, [8; 20], vec![0xaa]),
+                ],
+                finalized_dag_blocks: Vec::new(),
+                blocks_per_year: 0,
+                cert_votes: Vec::new(),
+                block_gas_limit: 1_000_000,
+                mode: rustaxa_consensus::FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
+            },
+        )
+        .expect("session should be created");
+        let step = session
+            .final_chain_execution_session_next()
+            .expect("session step should convert");
+
+        let rejected = session
+            .final_chain_execution_session_report_evm(rustaxa_ffi::FinalChainEvmExecutionReport {
+                request_id: step.evm_request.request_id,
+                status: rustaxa_consensus::FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
+                state_root: [0x11; 32],
+                cumulative_gas_used: 2,
+                results: vec![
+                    ffi_evm_result(&step.evm_request.transactions[0], 1, 1),
+                    ffi_evm_result(&step.evm_request.transactions[1], 1, 2),
+                ],
+            })
+            .expect("typed report should convert");
+
+        assert_eq!(
+            rejected.status,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_STATUS_REJECTED
+        );
+        assert_eq!(
+            rejected.error_code,
+            "FINAL_CHAIN_EVM_REPORT_COMMIT_UNIMPLEMENTED"
+        );
 
         drop(final_chain);
         let _ = fs::remove_dir_all(temp_dir);

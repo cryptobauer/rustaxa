@@ -48,11 +48,12 @@ pub use final_chain_execution::{
     FINAL_CHAIN_EXECUTION_TX_KIND_EXTERNAL_EVM_CREATE,
     FINAL_CHAIN_EXECUTION_TX_KIND_NATIVE_VALUE_TRANSFER,
     FINAL_CHAIN_EXECUTION_TX_KIND_SLASHING_CONTRACT, FinalChainEvmExecutionReport,
-    FinalChainEvmExecutionRequest, FinalChainEvmTransactionInput, FinalChainEvmTransactionResult,
-    FinalChainExecutionCommitReport, FinalChainExecutionRequest, FinalChainExecutionSession,
-    FinalChainExecutionStep, abort_final_chain_execution_session,
-    commit_final_chain_execution_session, create_final_chain_execution_session,
-    final_chain_execution_session_next, final_chain_execution_session_report_evm,
+    FinalChainEvmExecutionRequest, FinalChainEvmLog, FinalChainEvmLogTopic,
+    FinalChainEvmTransactionInput, FinalChainEvmTransactionResult, FinalChainExecutionCommitReport,
+    FinalChainExecutionRequest, FinalChainExecutionSession, FinalChainExecutionStep,
+    abort_final_chain_execution_session, commit_final_chain_execution_session,
+    create_final_chain_execution_session, final_chain_execution_session_next,
+    final_chain_execution_session_report_evm,
 };
 pub use gas_pricer::{GasPriceOracle, GasPricerConfig};
 pub use pbft_chain::PbftChain;

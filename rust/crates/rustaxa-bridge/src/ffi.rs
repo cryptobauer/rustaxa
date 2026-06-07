@@ -2353,6 +2353,16 @@ pub mod rustaxa_ffi {
         transactions: Vec<FinalChainEvmTransactionInput>,
     }
 
+    struct FinalChainEvmLogTopic {
+        topic: [u8; 32],
+    }
+
+    struct FinalChainEvmLog {
+        address: [u8; 20],
+        topics: Vec<FinalChainEvmLogTopic>,
+        data: Vec<u8>,
+    }
+
     struct FinalChainEvmTransactionResult {
         position: u64,
         hash: [u8; 32],
@@ -2360,6 +2370,11 @@ pub mod rustaxa_ffi {
         gas_used: u64,
         cumulative_gas_used: u64,
         receipt_rlp: Vec<u8>,
+        logs: Vec<FinalChainEvmLog>,
+        new_contract_address_found: bool,
+        new_contract_address: [u8; 20],
+        code_error: String,
+        consensus_error: String,
     }
 
     struct FinalChainEvmExecutionReport {
