@@ -96,6 +96,7 @@ class FinalChain {
 
  private:
   EthBlockNumber delegation_delay_ = 0;
+  uint64_t block_gas_limit_ = 0;
   std::optional<::rust::Box<rustaxa::BridgeFinalChain>> rust_final_chain_;
 };
 

@@ -17,8 +17,9 @@ use keccak_hasher::KeccakHasher;
 use rlp::Rlp;
 use rustaxa_storage::{
     FINAL_CHAIN_BLOOM_INDEX_LEVELS, FINAL_CHAIN_BLOOM_INDEX_SIZE, FinalChainExecutionStatus,
-    FinalChainLogBloom, FinalChainLogBloomIndexUpdate, FinalChainRewardsStatsUpdate, StatusField,
-    Storage, decode_final_chain_log_bloom_chunk, final_chain_log_bloom_chunk_id,
+    FinalChainLogBloom, FinalChainLogBloomIndexUpdate, FinalChainRewardsStatsUpdate,
+    FinalChainTransactionIndexUpdate, StatusField, Storage, decode_final_chain_log_bloom_chunk,
+    final_chain_log_bloom_chunk_id,
 };
 use rustaxa_types::codec::rlp::final_chain::{
     LegacyBlockHeaderRlp, LegacyBlockHeaderRlpInput, StoredBlockHeaderRlp,
@@ -1358,6 +1359,16 @@ impl FinalChain {
             finalized_dag_blocks.len() as u64,
             transactions.len() as u64,
         )?;
+        let transaction_index_updates = transactions
+            .iter()
+            .enumerate()
+            .map(|(position, transaction)| FinalChainTransactionIndexUpdate {
+                transaction_hash: H256::from(transaction.hash),
+                position: position as u32,
+                is_system: false,
+                receipt_rlp: encoded_receipts[position].as_slice(),
+            })
+            .collect::<Vec<_>>();
         let rewards_stats_storage_update = rewards_stats_plan
             .storage_update
             .as_ref()
@@ -1377,19 +1388,8 @@ impl FinalChain {
                     block_number: pbft.period,
                     bloom: &indexed_log_bloom,
                 }),
+                &transaction_index_updates,
             )?;
-        for (position, transaction) in transactions.iter().enumerate() {
-            self.storage.transaction().write_location(
-                H256::from(transaction.hash),
-                pbft.period,
-                position as u32,
-                false,
-            )?;
-            self.storage.final_chain().write_receipt_by_trx_hash(
-                H256::from(transaction.hash),
-                &encoded_receipts[position],
-            )?;
-        }
         self.insert_account_snapshot(pbft.period, account_snapshot)?;
         self.insert_dpos_snapshot(pbft.period, dpos_snapshot)?;
         self.commit_rewards_stats_runtime(rewards_stats_plan.runtime_after_commit)?;

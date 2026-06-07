@@ -111,6 +111,7 @@ fn final_chain_execution_request_from_ffi(
             .into_iter()
             .map(reward_cert_vote_from_ffi)
             .collect(),
+        block_gas_limit: request.block_gas_limit,
         mode: request.mode,
     }
 }
@@ -128,6 +129,7 @@ fn final_chain_execution_request_from_compat(
         finalized_dag_blocks,
         blocks_per_year,
         cert_votes,
+        block_gas_limit: 0,
         mode: FINAL_CHAIN_EXECUTION_MODE_NATIVE_ONLY,
     })
 }
@@ -192,6 +194,7 @@ fn evm_report_from_ffi(
         request_id: report.request_id,
         status: report.status,
         state_root: report.state_root,
+        cumulative_gas_used: report.cumulative_gas_used,
         results: report
             .results
             .into_iter()
@@ -200,6 +203,7 @@ fn evm_report_from_ffi(
                 hash: result.hash,
                 status: result.status,
                 gas_used: result.gas_used,
+                cumulative_gas_used: result.cumulative_gas_used,
                 receipt_rlp: result.receipt_rlp,
             })
             .collect(),
@@ -1130,6 +1134,7 @@ mod tests {
                 finalized_dag_blocks: Vec::new(),
                 blocks_per_year: 0,
                 cert_votes: Vec::new(),
+                block_gas_limit: 1_000_000,
                 mode: rustaxa_consensus::FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
             },
         )
@@ -1148,6 +1153,7 @@ mod tests {
             rustaxa_consensus::FINAL_CHAIN_EXECUTION_ACTION_EXECUTE_EXTERNAL_EVM
         );
         assert_eq!(step.period, 7);
+        assert_eq!(step.evm_request.block_gas_limit, 1_000_000);
         assert_eq!(step.external_evm_transaction_count, 2);
         assert_eq!(step.evm_request.transactions[0].position, 1);
         assert!(step.evm_request.transactions[0].receiver_found);

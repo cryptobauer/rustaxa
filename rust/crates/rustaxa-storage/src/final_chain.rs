@@ -64,6 +64,24 @@ pub struct FinalChainLogBloomIndexUpdate<'a> {
     pub bloom: &'a FinalChainLogBloom,
 }
 
+/// Transaction index mutation committed with finalized-block visibility.
+///
+/// Each item writes the legacy finalized transaction location and receipt-by-hash
+/// lookup for one transaction in the finalized block. The repository commits
+/// these rows before `LAST_NUMBER`, so restart and RPC readers cannot observe a
+/// finalized head whose transaction index rows are missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FinalChainTransactionIndexUpdate<'a> {
+    /// Canonical transaction hash used by both legacy indexes.
+    pub transaction_hash: H256,
+    /// Zero-based transaction position in the finalized block.
+    pub position: u32,
+    /// Whether the location points to a system transaction.
+    pub is_system: bool,
+    /// Canonical legacy transaction receipt RLP.
+    pub receipt_rlp: &'a [u8],
+}
+
 /// Returns the legacy FinalChain bloom chunk identifier.
 ///
 /// C++ maps `(level, index)` to `h256(index * 0xff + level)`, encoded as a
@@ -330,6 +348,7 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
             execution_status,
             None,
             None,
+            &[],
         )
     }
 
@@ -353,6 +372,7 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
         execution_status: Option<FinalChainExecutionStatus>,
         rewards_stats_update: Option<FinalChainRewardsStatsUpdate<'_>>,
         log_bloom_index_update: Option<FinalChainLogBloomIndexUpdate<'_>>,
+        transaction_index_updates: &[FinalChainTransactionIndexUpdate<'_>],
     ) -> Result<()> {
         const DB_META_LAST_NUMBER: u32 = 1;
 
@@ -436,6 +456,9 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
         if let Some(update) = log_bloom_index_update {
             self.write_log_bloom_index_update(&mut batch, update)?;
         }
+        for update in transaction_index_updates {
+            self.write_transaction_index_update(number, &mut batch, *update)?;
+        }
         self.db.batch_put(
             &mut batch,
             Column::FinalChainMeta,
@@ -470,6 +493,32 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
             index /= FINAL_CHAIN_BLOOM_INDEX_SIZE as u64;
         }
         Ok(())
+    }
+
+    fn write_transaction_index_update(
+        &self,
+        block_number: u64,
+        batch: &mut D::Batch,
+        update: FinalChainTransactionIndexUpdate<'_>,
+    ) -> Result<()> {
+        let mut location = rlp::RlpStream::new_list(2 + usize::from(update.is_system));
+        location.append(&block_number);
+        location.append(&update.position);
+        if update.is_system {
+            location.append(&update.is_system);
+        }
+        self.db.batch_put(
+            batch,
+            Column::TrxPeriod,
+            update.transaction_hash.as_bytes(),
+            location.out().as_ref(),
+        )?;
+        self.db.batch_put(
+            batch,
+            Column::FinalChainReceiptByTrxHash,
+            update.transaction_hash.as_bytes(),
+            update.receipt_rlp,
+        )
     }
 
     /// Persists one finalized transaction receipt by transaction hash.
@@ -808,6 +857,12 @@ mod tests {
                 block_number: 17,
                 bloom: &bloom,
             }),
+            &[FinalChainTransactionIndexUpdate {
+                transaction_hash: H256::from_low_u64_be(0x7777),
+                position: 2,
+                is_system: false,
+                receipt_rlp: b"receipt-by-hash",
+            }],
         )
         .unwrap();
 
@@ -829,6 +884,22 @@ mod tests {
         assert_eq!(
             repo.meta_value(1).unwrap(),
             Some(17u64.to_le_bytes().to_vec())
+        );
+        assert_eq!(
+            db.get(Column::TrxPeriod, H256::from_low_u64_be(0x7777).as_bytes())
+                .unwrap()
+                .map(|value| value.to_vec()),
+            Some({
+                let mut stream = rlp::RlpStream::new_list(2);
+                stream.append(&17u64);
+                stream.append(&2u32);
+                stream.out().to_vec()
+            })
+        );
+        assert_eq!(
+            repo.receipt_by_trx_hash(H256::from_low_u64_be(0x7777))
+                .unwrap(),
+            Some(b"receipt-by-hash".to_vec())
         );
     }
 

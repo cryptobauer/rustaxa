@@ -62,6 +62,7 @@ pub struct FinalChainExecutionRequest {
     pub finalized_dag_blocks: Vec<FinalizationDagBlock>,
     pub blocks_per_year: u32,
     pub cert_votes: Vec<RewardCertVoteFact>,
+    pub block_gas_limit: u64,
     pub mode: u8,
 }
 
@@ -103,15 +104,16 @@ pub struct FinalChainEvmExecutionRequest {
 
 /// One transaction result reported by an external EVM executor.
 ///
-/// The current runtime validates only identity and ordering fields. Gas,
-/// receipt, and state-root data are retained for the future commit path and
-/// deliberately do not alter storage in Phase 1.
+/// The current runtime validates identity, ordering, cumulative gas, and basic
+/// receipt RLP shape. Receipt and state-root data are retained for the future
+/// commit path and deliberately do not alter storage until EVM parity is wired.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FinalChainEvmTransactionResult {
     pub position: u64,
     pub hash: [u8; 32],
     pub status: u8,
     pub gas_used: u64,
+    pub cumulative_gas_used: u64,
     pub receipt_rlp: Vec<u8>,
 }
 
@@ -125,6 +127,7 @@ pub struct FinalChainEvmExecutionReport {
     pub request_id: [u8; 32],
     pub status: u8,
     pub state_root: [u8; 32],
+    pub cumulative_gas_used: u64,
     pub results: Vec<FinalChainEvmTransactionResult>,
 }
 
@@ -301,12 +304,42 @@ pub fn final_chain_execution_session_report_evm(
         session.error_code = "FINAL_CHAIN_EVM_REPORT_RESULT_COUNT_MISMATCH".to_string();
         return final_chain_execution_session_next(session);
     }
+    if report.status != FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_REPORT_REJECTED".to_string();
+        return final_chain_execution_session_next(session);
+    }
+    let mut cumulative_gas_used = 0u64;
     for (expected, actual) in request.transactions.iter().zip(report.results.iter()) {
         if expected.position != actual.position || expected.hash != actual.hash {
             session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
             session.error_code = "FINAL_CHAIN_EVM_REPORT_TRANSACTION_MISMATCH".to_string();
             return final_chain_execution_session_next(session);
         }
+        cumulative_gas_used = match cumulative_gas_used.checked_add(actual.gas_used) {
+            Some(value) => value,
+            None => {
+                session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+                session.error_code = "FINAL_CHAIN_EVM_REPORT_GAS_OVERFLOW".to_string();
+                return final_chain_execution_session_next(session);
+            }
+        };
+        if actual.cumulative_gas_used != cumulative_gas_used {
+            session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+            session.error_code = "FINAL_CHAIN_EVM_REPORT_CUMULATIVE_GAS_MISMATCH".to_string();
+            return final_chain_execution_session_next(session);
+        }
+        let receipt = rlp::Rlp::new(&actual.receipt_rlp);
+        if !receipt.is_list() || receipt.item_count().is_err() {
+            session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+            session.error_code = "FINAL_CHAIN_EVM_REPORT_RECEIPT_RLP_MALFORMED".to_string();
+            return final_chain_execution_session_next(session);
+        }
+    }
+    if report.cumulative_gas_used != cumulative_gas_used {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_REPORT_TOTAL_GAS_MISMATCH".to_string();
+        return final_chain_execution_session_next(session);
     }
     session.report = Some(report);
     session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
@@ -394,10 +427,7 @@ impl FinalChainExecutionSession {
             period: metadata.period,
             block_author: metadata.author.into(),
             timestamp: metadata.timestamp,
-            block_gas_limit: evm_transactions
-                .iter()
-                .map(|transaction| transaction.gas_limit)
-                .sum(),
+            block_gas_limit: request.block_gas_limit,
             transactions: evm_transactions,
         };
         Self {
@@ -516,6 +546,7 @@ mod tests {
             finalized_dag_blocks: Vec::new(),
             blocks_per_year: 0,
             cert_votes: Vec::new(),
+            block_gas_limit: 1_000_000,
             mode,
         }
     }
@@ -649,6 +680,7 @@ mod tests {
             FINAL_CHAIN_EXECUTION_ACTION_EXECUTE_EXTERNAL_EVM
         );
         assert_eq!(step.period, 7);
+        assert_eq!(step.evm_request.block_gas_limit, 1_000_000);
         assert_eq!(step.external_evm_transaction_count, 2);
         assert_eq!(step.evm_request.transactions[0].position, 1);
         assert_eq!(
@@ -674,11 +706,13 @@ mod tests {
             request_id: step.evm_request.request_id,
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
             state_root: [0x11; 32],
+            cumulative_gas_used: 1,
             results: vec![FinalChainEvmTransactionResult {
                 position: 0,
                 hash: [0xff; 32],
                 status: 1,
                 gas_used: 1,
+                cumulative_gas_used: 1,
                 receipt_rlp: vec![0xc0],
             }],
         };
@@ -708,11 +742,13 @@ mod tests {
             request_id: step.evm_request.request_id,
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
             state_root: [0x11; 32],
+            cumulative_gas_used: 1,
             results: vec![FinalChainEvmTransactionResult {
                 position: tx.position,
                 hash: tx.hash,
                 status: 1,
                 gas_used: 1,
+                cumulative_gas_used: 1,
                 receipt_rlp: vec![0xc0],
             }],
         };
@@ -723,6 +759,39 @@ mod tests {
         assert_eq!(
             rejected.error_code,
             "FINAL_CHAIN_EVM_REPORT_COMMIT_UNIMPLEMENTED"
+        );
+    }
+
+    #[test]
+    fn evm_report_rejects_bad_cumulative_gas() {
+        let transactions = vec![transaction(2, Some([8; 20]), vec![0xaa])];
+        let mut session = create_final_chain_execution_session(valid_request(
+            transactions,
+            FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
+        ));
+        let step = final_chain_execution_session_next(&mut session);
+        let tx = step.evm_request.transactions[0].clone();
+        let report = FinalChainEvmExecutionReport {
+            request_id: step.evm_request.request_id,
+            status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
+            state_root: [0x11; 32],
+            cumulative_gas_used: 2,
+            results: vec![FinalChainEvmTransactionResult {
+                position: tx.position,
+                hash: tx.hash,
+                status: 1,
+                gas_used: 1,
+                cumulative_gas_used: 2,
+                receipt_rlp: vec![0xc0],
+            }],
+        };
+
+        let rejected = final_chain_execution_session_report_evm(&mut session, report);
+
+        assert_eq!(rejected.status, FINAL_CHAIN_EXECUTION_STATUS_REJECTED);
+        assert_eq!(
+            rejected.error_code,
+            "FINAL_CHAIN_EVM_REPORT_CUMULATIVE_GAS_MISMATCH"
         );
     }
 }

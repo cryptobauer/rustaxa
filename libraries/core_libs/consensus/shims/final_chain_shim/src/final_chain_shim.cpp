@@ -9,6 +9,11 @@
 namespace taraxa::final_chain {
 namespace {
 
+constexpr uint8_t kFinalChainExecutionModeExternalEvmAllowed = 1;
+constexpr uint8_t kFinalChainExecutionActionCommitNative = 1;
+constexpr uint8_t kFinalChainExecutionActionExecuteExternalEvm = 2;
+constexpr uint8_t kFinalChainExecutionActionReject = 3;
+
 std::array<uint8_t, 32> into_bytes_array(const h256& hash) {
   std::array<uint8_t, 32> bytes{};
   std::memcpy(bytes.data(), hash.data(), bytes.size());
@@ -106,6 +111,20 @@ rust::Vec<rustaxa::RewardsCertVoteFact> make_rewards_cert_votes(
   return rust_votes;
 }
 
+rustaxa::FinalChainExecutionRequest make_final_chain_execution_request(const PeriodData& period_data,
+                                                                       uint32_t blocks_per_year,
+                                                                       uint64_t block_gas_limit) {
+  rustaxa::FinalChainExecutionRequest request;
+  request.pbft_block_rlp = into_rust_vec(period_data.pbft_blk->rlp(true));
+  request.transactions = make_finalization_transactions(period_data.transactions);
+  request.finalized_dag_blocks = make_finalization_dag_blocks(period_data.dag_blocks);
+  request.blocks_per_year = blocks_per_year;
+  request.cert_votes = make_rewards_cert_votes(period_data.previous_block_cert_votes);
+  request.block_gas_limit = block_gas_limit;
+  request.mode = kFinalChainExecutionModeExternalEvmAllowed;
+  return request;
+}
+
 rust::Vec<rustaxa::GenesisAccount> make_genesis_accounts(const state_api::Config& config) {
   auto effective_balances = config.initial_balances;
   for (const auto& validator : config.dpos.initial_validators) {
@@ -184,8 +203,7 @@ rustaxa::FinalChainRewardsConfig make_final_chain_rewards_config(const taraxa::F
   rewards_config.dpos_blocks_per_year = config.genesis.state.dpos.blocks_per_year;
   rewards_config.dpos_delegation_locking_period = config.genesis.state.dpos.delegation_locking_period;
   rewards_config.cornus_period = config.genesis.state.hardforks.cornus_hf.block_num;
-  rewards_config.cornus_delegation_locking_period =
-      config.genesis.state.hardforks.cornus_hf.delegation_locking_period;
+  rewards_config.cornus_delegation_locking_period = config.genesis.state.hardforks.cornus_hf.delegation_locking_period;
   u256 genesis_balance_sum = 0;
   for (const auto& [_, balance] : config.genesis.state.initial_balances) {
     genesis_balance_sum += balance;
@@ -195,8 +213,7 @@ rustaxa::FinalChainRewardsConfig make_final_chain_rewards_config(const taraxa::F
   rewards_config.aspen_generated_rewards =
       into_big_endian_vec(config.genesis.state.hardforks.aspen_hf.generated_rewards);
   rewards_config.cacti_period = config.genesis.state.hardforks.cacti_hf.block_num;
-  rewards_config.cacti_delegation_locking_period =
-      config.genesis.state.hardforks.cacti_hf.delegation_locking_period;
+  rewards_config.cacti_delegation_locking_period = config.genesis.state.hardforks.cacti_hf.delegation_locking_period;
   rewards_config.magnolia_jail_time = config.genesis.state.hardforks.magnolia_hf.jail_time;
   rewards_config.cacti_jail_time = config.genesis.state.hardforks.cacti_hf.jail_time;
   rewards_config.frequency_rules.reserve(config.genesis.state.hardforks.rewards_distribution_frequency.size());
@@ -240,6 +257,7 @@ FinalChain::FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullN
                        const addr_t& node_addr) {
   (void)node_addr;
   delegation_delay_ = config.genesis.state.dpos.delegation_delay;
+  block_gas_limit_ = config.genesis.pbft.gas_limit;
   rust_final_chain_ = rustaxa::create_final_chain_with_rewards_config(
       db->rustStorage(), config.genesis.pbft.gas_limit, config.genesis.dag_genesis_block.getTimestamp(),
       make_genesis_accounts(config.genesis.state), make_genesis_validators(config.genesis.state),
@@ -255,16 +273,30 @@ std::future<std::shared_ptr<const FinalizationResult>> FinalChain::finalize(
     PeriodData&& period_data, std::vector<h256>&& finalized_dag_blk_hashes, uint32_t blocks_per_year,
     std::shared_ptr<DagBlock>&& anchor) {
   (void)anchor;
-  auto outcome =
-      rust_final_chain_.value()->finalize_block_with_rewards_facts(
-          into_rust_vec(period_data.pbft_blk->rlp(true)), make_finalization_transactions(period_data.transactions),
-          make_finalization_dag_blocks(period_data.dag_blocks), blocks_per_year,
-          make_rewards_cert_votes(period_data.previous_block_cert_votes));
-  auto header_data = into_string(outcome.block_header_rlp);
+  auto session = rustaxa::create_final_chain_execution_session(
+      *rust_final_chain_.value(), make_final_chain_execution_request(period_data, blocks_per_year, block_gas_limit_));
+  auto step = session->final_chain_execution_session_next();
+  if (step.action == kFinalChainExecutionActionExecuteExternalEvm) {
+    throw DbException("FinalChain::finalize external EVM execution is not wired in Rust shim mode; request has " +
+                      std::to_string(step.external_evm_transaction_count) + " external transaction(s)");
+  }
+  if (step.action == kFinalChainExecutionActionReject) {
+    throw DbException("FinalChain::finalize Rust execution runtime rejected request: " + std::string(step.error_code));
+  }
+  if (step.action != kFinalChainExecutionActionCommitNative) {
+    throw DbException("FinalChain::finalize Rust execution runtime returned unexpected action " +
+                      std::to_string(step.action));
+  }
+  auto commit_report = rustaxa::final_chain_execution_session_commit(*rust_final_chain_.value(), std::move(session));
+  if (!commit_report.error_code.empty()) {
+    throw DbException("FinalChain::finalize Rust execution runtime failed commit: " +
+                      std::string(commit_report.error_code));
+  }
+  auto header_data = into_string(commit_report.block_header_rlp);
   auto header = BlockHeader::fromRLP(dev::RLP(header_data));
   TransactionReceipts receipts;
-  receipts.reserve(outcome.receipts.size());
-  for (auto const& receipt : outcome.receipts) {
+  receipts.reserve(commit_report.receipts.size());
+  for (auto const& receipt : commit_report.receipts) {
     auto receipt_data = into_string(receipt.data);
     receipts.push_back(util::rlp_dec<TransactionReceipt>(dev::RLP(receipt_data)));
   }
@@ -379,7 +411,8 @@ uint64_t FinalChain::transactionCount(std::optional<EthBlockNumber> n) const {
   return rust_final_chain_.value()->get_transaction_count(static_cast<uint64_t>(n.value_or(lastBlockNumber())));
 }
 
-std::vector<EthBlockNumber> FinalChain::withBlockBloom(LogBloom const& b, EthBlockNumber from, EthBlockNumber to) const {
+std::vector<EthBlockNumber> FinalChain::withBlockBloom(LogBloom const& b, EthBlockNumber from,
+                                                       EthBlockNumber to) const {
   std::array<uint8_t, 256> bloom{};
   std::memcpy(bloom.data(), b.data(), bloom.size());
   auto rust_blocks = rust_final_chain_.value()->get_blocks_with_bloom(bloom, from, to);
@@ -391,7 +424,8 @@ std::vector<EthBlockNumber> FinalChain::withBlockBloom(LogBloom const& b, EthBlo
   return blocks;
 }
 
-std::optional<state_api::Account> FinalChain::getAccount(addr_t const& addr, std::optional<EthBlockNumber> blk_n) const {
+std::optional<state_api::Account> FinalChain::getAccount(addr_t const& addr,
+                                                         std::optional<EthBlockNumber> blk_n) const {
   auto rust_account = blk_n.has_value()
                           ? rust_final_chain_.value()->get_account_at_block(*blk_n, into_address_array(addr))
                           : rust_final_chain_.value()->get_account(into_address_array(addr));
@@ -411,9 +445,13 @@ std::optional<state_api::Account> FinalChain::getAccount(addr_t const& addr, std
 
 const rustaxa::BridgeFinalChain& FinalChain::rustFinalChainForRust() const { return *rust_final_chain_.value(); }
 
-h256 FinalChain::getAccountStorage(addr_t const&, u256 const&, std::optional<EthBlockNumber>) const { return {}; }
+h256 FinalChain::getAccountStorage(addr_t const&, u256 const&, std::optional<EthBlockNumber>) const {
+  throw_unimplemented_final_chain_api("getAccountStorage");
+}
 
-bytes FinalChain::getCode(addr_t const&, std::optional<EthBlockNumber>) const { return {}; }
+bytes FinalChain::getCode(addr_t const&, std::optional<EthBlockNumber>) const {
+  throw_unimplemented_final_chain_api("getCode");
+}
 
 state_api::ExecutionResult FinalChain::call(state_api::EVMTransaction const& trx,
                                             std::optional<EthBlockNumber> blk_n) const {
@@ -443,7 +481,7 @@ state_api::ExecutionResult FinalChain::call(state_api::EVMTransaction const& trx
 
 std::string FinalChain::trace(std::vector<state_api::EVMTransaction>, std::vector<state_api::EVMTransaction>,
                               EthBlockNumber, std::optional<state_api::Tracing>) const {
-  return {};
+  throw_unimplemented_final_chain_api("trace");
 }
 
 uint64_t FinalChain::dposEligibleTotalVoteCount(EthBlockNumber blk_num) const {
@@ -472,7 +510,7 @@ vrf_wrapper::vrf_pk_t FinalChain::dposGetVrfKey(EthBlockNumber blk_n, const addr
   return vrf_wrapper::vrf_pk_t(dev::bytes(rust_key.begin(), rust_key.end()));
 }
 
-void FinalChain::prune(EthBlockNumber) {}
+void FinalChain::prune(EthBlockNumber) { throw_unimplemented_final_chain_api("prune"); }
 
 void FinalChain::waitForFinalized() {}
 
@@ -516,9 +554,9 @@ u256 FinalChain::dposTotalSupply(EthBlockNumber blk_num) const {
   return dev::fromBigEndian<u256>(dev::bytes(supply.begin(), supply.end()));
 }
 
-h256 FinalChain::getBridgeRoot(EthBlockNumber) const { return {}; }
+h256 FinalChain::getBridgeRoot(EthBlockNumber) const { throw_unimplemented_final_chain_api("getBridgeRoot"); }
 
-h256 FinalChain::getBridgeEpoch(EthBlockNumber) const { return {}; }
+h256 FinalChain::getBridgeEpoch(EthBlockNumber) const { throw_unimplemented_final_chain_api("getBridgeEpoch"); }
 
 std::pair<val_t, bool> FinalChain::getBalance(addr_t const& addr) const {
   if (auto account = getAccount(addr)) {

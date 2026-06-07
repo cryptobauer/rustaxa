@@ -27,6 +27,7 @@ pub use final_chain::FinalChainLogBloomChunk;
 pub use final_chain::FinalChainLogBloomIndexUpdate;
 pub use final_chain::FinalChainRepository;
 pub use final_chain::FinalChainRewardsStatsUpdate;
+pub use final_chain::FinalChainTransactionIndexUpdate;
 pub use final_chain::decode_final_chain_log_bloom_chunk;
 pub use final_chain::encode_final_chain_log_bloom_chunk;
 pub use final_chain::final_chain_log_bloom_chunk_id;

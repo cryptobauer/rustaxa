@@ -2325,6 +2325,7 @@ pub mod rustaxa_ffi {
         finalized_dag_blocks: Vec<FinalizationDagBlock>,
         blocks_per_year: u32,
         cert_votes: Vec<RewardsCertVoteFact>,
+        block_gas_limit: u64,
         mode: u8,
     }
 
@@ -2357,6 +2358,7 @@ pub mod rustaxa_ffi {
         hash: [u8; 32],
         status: u8,
         gas_used: u64,
+        cumulative_gas_used: u64,
         receipt_rlp: Vec<u8>,
     }
 
@@ -2364,6 +2366,7 @@ pub mod rustaxa_ffi {
         request_id: [u8; 32],
         status: u8,
         state_root: [u8; 32],
+        cumulative_gas_used: u64,
         results: Vec<FinalChainEvmTransactionResult>,
     }
 

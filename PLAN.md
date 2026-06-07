@@ -313,12 +313,15 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     the legacy `Jailed(address,uint64,uint64,uint8)` log, and derives effective DPoS eligibility/total vote counts from
     the Rust jail state. Slashing read calls for `getJailBlock(address)` and `getJailedValidators()` are Rust-backed.
   - FinalChain native execution is now behind a Rust-owned `FinalChainExecutionRuntime` session boundary. The
-    compatibility bridge finalizer builds a native-only execution session, asks Rust for the next execution step, and
-    commits only when Rust returns a native commit action. Native value transfers plus the supported DPoS/slashing
-    precompile subset still commit through the existing Rust FinalChain finalizer. Arbitrary EVM contract calls and
-    contract creation now surface as typed external-EVM execution requests in the runtime session API rather than being
-    treated as FinalChain-owned execution. Successful EVM reports are shape-validated but rejected for commit until the
-    external executor/result contract has parity coverage and a state-root/receipt commit path.
+    C++ FinalChain shim now builds the session request directly, asks Rust for the next execution step, and commits only
+    when Rust returns a native commit action. Native value transfers plus the supported DPoS/slashing precompile subset
+    still commit through the existing Rust FinalChain finalizer. Arbitrary EVM contract calls and contract creation now
+    surface as typed external-EVM execution requests in the runtime session API rather than being treated as
+    FinalChain-owned execution. EVM reports validate request identity, transaction order, cumulative gas, and basic
+    receipt shape, but successful reports are still rejected for commit until the external executor/rewards result
+    contract has parity coverage and a state-root/receipt commit path. Native Rust finalization now publishes
+    transaction-location and receipt-by-hash indexes in the same Rust storage batch that publishes block visibility and
+    `LAST_NUMBER`, closing the previous native crash window where a finalized head could appear before those indexes.
   - PBFT manager fact collection now connects directly to the Rust FinalChain runtime for PBFT final-chain hash lookup
     and validation, total eligible vote counts, per-wallet eligible vote counts, and wallet eligibility refresh. Missing
     delayed headers or DPoS snapshots are returned to PBFT as typed Rust facts instead of re-centering those consensus
@@ -332,9 +335,9 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     and `getUndelegationV2(address,address,uint64)`. These precompile reads
     use the exact finalized-block snapshot, while DAG authorization and explicit eligibility APIs still use the
     configured delegation-delay snapshot.
-- Unimplemented public shim methods never fall back to `FinalChainOld`. Some still throw, while known placeholder
-  methods currently return neutral values and remain explicit gaps: `getAccountStorage`, `getCode`, `trace`, `prune`,
-  `waitForFinalized`, `getBridgeRoot`, `getBridgeEpoch`, and private `finalize_`.
+- Unimplemented public shim methods never fall back to `FinalChainOld`. `getAccountStorage`, `getCode`, `trace`,
+  `prune`, `getBridgeRoot`, `getBridgeEpoch`, and private `finalize_` throw explicit Rust-shim gaps. `waitForFinalized`
+  remains a no-op because the Rust shim finalization path is synchronous and returns a ready future.
 
 ### FinalChain Storage Touchpoints
 
@@ -358,9 +361,8 @@ FinalChain currently depends on:
 1. Keep Rust-backed read/index, transaction, receipt, bloom, account snapshot, DPoS snapshot, and PBFT fact-collection
    parity stable.
 2. Continue finalization/write path parity beyond the currently supported native-transfer, DPoS mutation/read, rewards,
-   bloom, slashing, and FinalChain execution-session subset. The immediate storage cleanup target is to consolidate
-   transaction-location and receipt-by-hash index writes into the same Rust-owned finalization commit plan/batch that
-   publishes finalized block visibility.
+   bloom, slashing, and FinalChain execution-session subset. The remaining storage cleanup target is to extend the same
+   Rust-owned finalization commit plan to system transactions and any future EVM-backed publication path.
 3. Keep EVM execution outside FinalChain while building the external executor port: request construction, report
    validation, state-root/receipt compatibility, and differential commit tests. Only after that port exists should
    unsupported contract-call and contract-creation state transitions publish FinalChain storage.
