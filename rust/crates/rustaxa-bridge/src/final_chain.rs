@@ -1,7 +1,11 @@
 use crate::ffi::rustaxa_ffi;
 use crate::ffi::BridgeFinalChain;
+use crate::ffi::BridgeFinalChainExecutionSession;
 use crate::ffi::BridgeStorage;
-use rustaxa_consensus::{Account, FinalChain};
+use rustaxa_consensus::{
+    Account, FinalChain, FINAL_CHAIN_EXECUTION_ACTION_COMMIT_NATIVE,
+    FINAL_CHAIN_EXECUTION_MODE_NATIVE_ONLY,
+};
 
 const PBFT_FINAL_CHAIN_FACT_STATUS_READY: u8 = 0;
 const PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE: u8 = 1;
@@ -39,6 +43,185 @@ fn pbft_final_chain_hash_result(
         expected_hash,
         actual_hash,
         error_code: error_code.into(),
+    }
+}
+
+fn finalization_transaction_from_ffi(
+    transaction: rustaxa_ffi::FinalizationTransaction,
+) -> rustaxa_consensus::FinalizationTransaction {
+    rustaxa_consensus::FinalizationTransaction {
+        hash: transaction.hash,
+        sender: transaction.sender,
+        receiver: if transaction.receiver_found {
+            Some(transaction.receiver)
+        } else {
+            None
+        },
+        nonce: transaction.nonce,
+        value: transaction.value,
+        gas_price: transaction.gas_price,
+        gas_limit: transaction.gas_limit,
+        data: transaction.data,
+        rlp: transaction.rlp,
+    }
+}
+
+fn finalized_dag_block_from_ffi(
+    dag_block: rustaxa_ffi::FinalizationDagBlock,
+) -> rustaxa_consensus::FinalizationDagBlock {
+    rustaxa_consensus::FinalizationDagBlock {
+        author: dag_block.author,
+        difficulty: dag_block.difficulty,
+        transaction_hashes: dag_block
+            .transaction_hashes
+            .into_iter()
+            .map(|hash| hash.hash)
+            .collect(),
+    }
+}
+
+fn reward_cert_vote_from_ffi(
+    vote: rustaxa_ffi::RewardsCertVoteFact,
+) -> rustaxa_consensus::RewardCertVoteFact {
+    rustaxa_consensus::RewardCertVoteFact {
+        voter: vote.voter.into(),
+        weight: vote.weight,
+        period: vote.period,
+    }
+}
+
+fn final_chain_execution_request_from_ffi(
+    request: rustaxa_ffi::FinalChainExecutionRequest,
+) -> rustaxa_consensus::FinalChainExecutionRequest {
+    rustaxa_consensus::FinalChainExecutionRequest {
+        pbft_block_rlp: request.pbft_block_rlp,
+        transactions: request
+            .transactions
+            .into_iter()
+            .map(finalization_transaction_from_ffi)
+            .collect(),
+        finalized_dag_blocks: request
+            .finalized_dag_blocks
+            .into_iter()
+            .map(finalized_dag_block_from_ffi)
+            .collect(),
+        blocks_per_year: request.blocks_per_year,
+        cert_votes: request
+            .cert_votes
+            .into_iter()
+            .map(reward_cert_vote_from_ffi)
+            .collect(),
+        mode: request.mode,
+    }
+}
+
+fn final_chain_execution_request_from_compat(
+    pbft_block_rlp: Vec<u8>,
+    transactions: Vec<rustaxa_ffi::FinalizationTransaction>,
+    finalized_dag_blocks: Vec<rustaxa_ffi::FinalizationDagBlock>,
+    blocks_per_year: u32,
+    cert_votes: Vec<rustaxa_ffi::RewardsCertVoteFact>,
+) -> rustaxa_consensus::FinalChainExecutionRequest {
+    final_chain_execution_request_from_ffi(rustaxa_ffi::FinalChainExecutionRequest {
+        pbft_block_rlp,
+        transactions,
+        finalized_dag_blocks,
+        blocks_per_year,
+        cert_votes,
+        mode: FINAL_CHAIN_EXECUTION_MODE_NATIVE_ONLY,
+    })
+}
+
+fn evm_transaction_input_to_ffi(
+    transaction: rustaxa_consensus::FinalChainEvmTransactionInput,
+) -> rustaxa_ffi::FinalChainEvmTransactionInput {
+    let (receiver_found, receiver) = match transaction.receiver {
+        Some(receiver) => (true, receiver),
+        None => (false, [0; 20]),
+    };
+    rustaxa_ffi::FinalChainEvmTransactionInput {
+        position: transaction.position,
+        hash: transaction.hash,
+        sender: transaction.sender,
+        receiver_found,
+        receiver,
+        nonce: transaction.nonce,
+        value: transaction.value,
+        gas_price: transaction.gas_price,
+        gas_limit: transaction.gas_limit,
+        data: transaction.data,
+        rlp: transaction.rlp,
+        kind: transaction.kind,
+    }
+}
+
+fn evm_request_to_ffi(
+    request: rustaxa_consensus::FinalChainEvmExecutionRequest,
+) -> rustaxa_ffi::FinalChainEvmExecutionRequest {
+    rustaxa_ffi::FinalChainEvmExecutionRequest {
+        request_id: request.request_id,
+        period: request.period,
+        block_author: request.block_author,
+        timestamp: request.timestamp,
+        block_gas_limit: request.block_gas_limit,
+        transactions: request
+            .transactions
+            .into_iter()
+            .map(evm_transaction_input_to_ffi)
+            .collect(),
+    }
+}
+
+fn execution_step_to_ffi(
+    step: rustaxa_consensus::FinalChainExecutionStep,
+) -> rustaxa_ffi::FinalChainExecutionStep {
+    rustaxa_ffi::FinalChainExecutionStep {
+        status: step.status,
+        action: step.action,
+        period: step.period,
+        external_evm_transaction_count: step.external_evm_transaction_count,
+        evm_request: evm_request_to_ffi(step.evm_request),
+        error_code: step.error_code,
+    }
+}
+
+fn evm_report_from_ffi(
+    report: rustaxa_ffi::FinalChainEvmExecutionReport,
+) -> rustaxa_consensus::FinalChainEvmExecutionReport {
+    rustaxa_consensus::FinalChainEvmExecutionReport {
+        request_id: report.request_id,
+        status: report.status,
+        state_root: report.state_root,
+        results: report
+            .results
+            .into_iter()
+            .map(|result| rustaxa_consensus::FinalChainEvmTransactionResult {
+                position: result.position,
+                hash: result.hash,
+                status: result.status,
+                gas_used: result.gas_used,
+                receipt_rlp: result.receipt_rlp,
+            })
+            .collect(),
+    }
+}
+
+fn commit_report_to_ffi(
+    report: rustaxa_consensus::FinalChainExecutionCommitReport,
+) -> rustaxa_ffi::FinalChainExecutionCommitReport {
+    rustaxa_ffi::FinalChainExecutionCommitReport {
+        status: report.status,
+        period: report.period,
+        block_header_rlp: report.block_header_rlp,
+        receipts: report
+            .receipts
+            .into_iter()
+            .map(|data| rustaxa_ffi::ReceiptRlp { data })
+            .collect(),
+        gas_used: report.gas_used,
+        executed_dag_blocks: report.executed_dag_blocks,
+        executed_transactions: report.executed_transactions,
+        error_code: report.error_code,
     }
 }
 
@@ -173,6 +356,52 @@ pub fn create_final_chain_with_rewards_config(
         },
     )?;
     Ok(Box::new(BridgeFinalChain(final_chain)))
+}
+
+pub fn create_final_chain_execution_session(
+    final_chain: &BridgeFinalChain,
+    request: rustaxa_ffi::FinalChainExecutionRequest,
+) -> Result<Box<BridgeFinalChainExecutionSession>, anyhow::Error> {
+    let _ = final_chain;
+    Ok(Box::new(BridgeFinalChainExecutionSession {
+        state: rustaxa_consensus::create_final_chain_execution_session(
+            final_chain_execution_request_from_ffi(request),
+        ),
+    }))
+}
+
+pub fn final_chain_execution_session_commit(
+    final_chain: &BridgeFinalChain,
+    session: Box<BridgeFinalChainExecutionSession>,
+) -> Result<rustaxa_ffi::FinalChainExecutionCommitReport, anyhow::Error> {
+    rustaxa_consensus::commit_final_chain_execution_session(&final_chain.0, session.state)
+        .map(commit_report_to_ffi)
+}
+
+pub fn abort_final_chain_execution_session(session: Box<BridgeFinalChainExecutionSession>) {
+    let _ = rustaxa_consensus::abort_final_chain_execution_session(session.state);
+}
+
+impl BridgeFinalChainExecutionSession {
+    pub fn final_chain_execution_session_next(
+        &mut self,
+    ) -> Result<rustaxa_ffi::FinalChainExecutionStep, anyhow::Error> {
+        Ok(execution_step_to_ffi(
+            rustaxa_consensus::final_chain_execution_session_next(&mut self.state),
+        ))
+    }
+
+    pub fn final_chain_execution_session_report_evm(
+        &mut self,
+        report: rustaxa_ffi::FinalChainEvmExecutionReport,
+    ) -> Result<rustaxa_ffi::FinalChainExecutionStep, anyhow::Error> {
+        Ok(execution_step_to_ffi(
+            rustaxa_consensus::final_chain_execution_session_report_evm(
+                &mut self.state,
+                evm_report_from_ffi(report),
+            ),
+        ))
+    }
 }
 
 impl BridgeFinalChain {
@@ -443,57 +672,33 @@ impl BridgeFinalChain {
         blocks_per_year: u32,
         cert_votes: Vec<rustaxa_ffi::RewardsCertVoteFact>,
     ) -> Result<rustaxa_ffi::FinalizationOutcome, anyhow::Error> {
-        let transactions = transactions
-            .into_iter()
-            .map(|transaction| rustaxa_consensus::FinalizationTransaction {
-                hash: transaction.hash,
-                sender: transaction.sender,
-                receiver: if transaction.receiver_found {
-                    Some(transaction.receiver)
-                } else {
-                    None
-                },
-                nonce: transaction.nonce,
-                value: transaction.value,
-                gas_price: transaction.gas_price,
-                gas_limit: transaction.gas_limit,
-                data: transaction.data,
-                rlp: transaction.rlp,
-            })
-            .collect();
-        let finalized_dag_blocks = finalized_dag_blocks
-            .into_iter()
-            .map(|dag_block| rustaxa_consensus::FinalizationDagBlock {
-                author: dag_block.author,
-                difficulty: dag_block.difficulty,
-                transaction_hashes: dag_block
-                    .transaction_hashes
-                    .into_iter()
-                    .map(|hash| hash.hash)
-                    .collect(),
-            })
-            .collect();
-        let cert_votes = cert_votes
-            .into_iter()
-            .map(|vote| rustaxa_consensus::RewardCertVoteFact {
-                voter: vote.voter.into(),
-                weight: vote.weight,
-                period: vote.period,
-            })
-            .collect();
-        let (block_header_rlp, receipts) = self.0.finalize_block_with_rewards_facts(
+        let request = final_chain_execution_request_from_compat(
             pbft_block_rlp,
             transactions,
             finalized_dag_blocks,
             blocks_per_year,
             cert_votes,
-        )?;
+        );
+        let mut session = BridgeFinalChainExecutionSession {
+            state: rustaxa_consensus::create_final_chain_execution_session(request),
+        };
+        let step = session.final_chain_execution_session_next()?;
+        if step.action != FINAL_CHAIN_EXECUTION_ACTION_COMMIT_NATIVE {
+            anyhow::bail!(
+                "Rust FinalChain execution runtime rejected finalize request: {}",
+                step.error_code
+            );
+        }
+        let report = final_chain_execution_session_commit(self, Box::new(session))?;
+        if !report.error_code.is_empty() {
+            anyhow::bail!(
+                "Rust FinalChain execution runtime failed finalize request: {}",
+                report.error_code
+            );
+        }
         Ok(rustaxa_ffi::FinalizationOutcome {
-            block_header_rlp,
-            receipts: receipts
-                .into_iter()
-                .map(|data| rustaxa_ffi::ReceiptRlp { data })
-                .collect(),
+            block_header_rlp: report.block_header_rlp,
+            receipts: report.receipts,
         })
     }
 
@@ -660,6 +865,9 @@ impl BridgeFinalChain {
 mod tests {
     use super::*;
     use crate::storage::create_storage;
+    use ethereum_types::H256;
+    use k256::ecdsa::SigningKey;
+    use rlp::RlpStream;
     use rustaxa_consensus::dag;
     use std::fs;
     use std::path::PathBuf;
@@ -722,6 +930,64 @@ mod tests {
             },
         )
         .expect("final chain should initialize")
+    }
+
+    fn ffi_transaction(
+        hash_byte: u8,
+        receiver_found: bool,
+        receiver: [u8; 20],
+        data: Vec<u8>,
+    ) -> rustaxa_ffi::FinalizationTransaction {
+        rustaxa_ffi::FinalizationTransaction {
+            hash: [hash_byte; 32],
+            sender: [1; 20],
+            receiver_found,
+            receiver,
+            nonce: 0,
+            value: vec![0],
+            gas_price: vec![0],
+            gas_limit: 21_000,
+            data,
+            rlp: vec![hash_byte],
+        }
+    }
+
+    fn signed_pbft_block_rlp(period: u64) -> Vec<u8> {
+        let signing_key = SigningKey::from_slice(&[9u8; 32]).unwrap();
+        let timestamp = 1234u64;
+        let mut unsigned_stream = RlpStream::new_list(7);
+        append_pbft_block_fields(&mut unsigned_stream, period, timestamp);
+        let message_hash = keccak256(&unsigned_stream.out());
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(message_hash.as_bytes())
+            .unwrap();
+        let mut signature_bytes = signature.to_bytes().to_vec();
+        signature_bytes.push(recovery_id.to_byte());
+
+        let mut signed_stream = RlpStream::new_list(8);
+        append_pbft_block_fields(&mut signed_stream, period, timestamp);
+        signed_stream.append(&signature_bytes);
+        signed_stream.out().to_vec()
+    }
+
+    fn append_pbft_block_fields(stream: &mut RlpStream, period: u64, timestamp: u64) {
+        stream.append(&H256::from_low_u64_be(10));
+        stream.append(&H256::from_low_u64_be(11));
+        stream.append(&H256::from_low_u64_be(12));
+        stream.append(&H256::from_low_u64_be(13));
+        stream.append(&period);
+        stream.append(&timestamp);
+        stream.begin_list(0);
+    }
+
+    fn keccak256(data: &[u8]) -> H256 {
+        use tiny_keccak::{Hasher, Keccak};
+
+        let mut hasher = Keccak::v256();
+        hasher.update(data);
+        let mut output = [0u8; 32];
+        hasher.finalize(&mut output);
+        H256::from(output)
     }
 
     #[test]
@@ -842,6 +1108,76 @@ mod tests {
             unavailable.address_facts[0].status,
             PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE
         );
+
+        drop(final_chain);
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_execution_session_requests_external_evm_for_contract_work() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_final_chain_execution_session");
+        let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
+        let final_chain = make_final_chain(storage_path, vec![]);
+        let mut session = create_final_chain_execution_session(
+            &final_chain,
+            rustaxa_ffi::FinalChainExecutionRequest {
+                pbft_block_rlp: signed_pbft_block_rlp(7),
+                transactions: vec![
+                    ffi_transaction(1, true, [9; 20], Vec::new()),
+                    ffi_transaction(2, true, [8; 20], vec![0xaa]),
+                    ffi_transaction(3, false, [0; 20], Vec::new()),
+                ],
+                finalized_dag_blocks: Vec::new(),
+                blocks_per_year: 0,
+                cert_votes: Vec::new(),
+                mode: rustaxa_consensus::FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
+            },
+        )
+        .expect("session should be created");
+
+        let step = session
+            .final_chain_execution_session_next()
+            .expect("session step should convert");
+
+        assert_eq!(
+            step.status,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM
+        );
+        assert_eq!(
+            step.action,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_ACTION_EXECUTE_EXTERNAL_EVM
+        );
+        assert_eq!(step.period, 7);
+        assert_eq!(step.external_evm_transaction_count, 2);
+        assert_eq!(step.evm_request.transactions[0].position, 1);
+        assert!(step.evm_request.transactions[0].receiver_found);
+        assert_eq!(step.evm_request.transactions[1].position, 2);
+        assert!(!step.evm_request.transactions[1].receiver_found);
+
+        drop(final_chain);
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_compat_finalizer_rejects_external_evm_before_commit() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_final_chain_execution_reject");
+        let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
+        let final_chain = make_final_chain(storage_path, vec![]);
+
+        let error = match final_chain.finalize_block_with_rewards_facts(
+            signed_pbft_block_rlp(7),
+            vec![ffi_transaction(1, true, [8; 20], vec![0xaa])],
+            Vec::new(),
+            0,
+            Vec::new(),
+        ) {
+            Ok(_) => panic!("external EVM transaction should not commit through native runtime"),
+            Err(error) => error,
+        };
+
+        assert!(error
+            .to_string()
+            .contains("FINAL_CHAIN_EXECUTION_REQUIRES_EXTERNAL_EVM"));
 
         drop(final_chain);
         let _ = fs::remove_dir_all(temp_dir);

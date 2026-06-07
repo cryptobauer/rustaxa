@@ -69,10 +69,10 @@ const VALUE_TRANSFER_GAS: u64 = 21_000;
 const CONTRACT_CREATION_ESTIMATE_GAS: u64 = 0x5dcc5;
 const DPOS_DEFAULT_METHOD_GAS: u64 = 20_000;
 const DPOS_GET_METHOD_GAS: u64 = 5_000;
-const DPOS_CONTRACT_ADDRESS: [u8; 20] = [
+pub(crate) const DPOS_CONTRACT_ADDRESS: [u8; 20] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xfe,
 ];
-const SLASHING_CONTRACT_ADDRESS: [u8; 20] = [
+pub(crate) const SLASHING_CONTRACT_ADDRESS: [u8; 20] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xee,
 ];
 const DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR: [u8; 4] = [0xde, 0x8e, 0x4b, 0x50];

@@ -28,6 +28,7 @@ pub mod transaction_queue;
 pub mod verified_votes;
 
 mod final_chain;
+pub mod final_chain_execution;
 
 pub use consensus_pipeline::{
     Address20, ConsensusEffect, ConsensusEvent, ConsensusPlan, DagBlockEvent, DagSyncEvent,
@@ -35,6 +36,24 @@ pub use consensus_pipeline::{
     PeerStatusEvent, PillarVoteEvent, PipelineKind, TransactionEvent,
 };
 pub use final_chain::FinalChain;
+pub use final_chain_execution::{
+    FINAL_CHAIN_EVM_REPORT_STATUS_REJECTED, FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
+    FINAL_CHAIN_EXECUTION_ACTION_COMMIT_NATIVE, FINAL_CHAIN_EXECUTION_ACTION_COMPLETE,
+    FINAL_CHAIN_EXECUTION_ACTION_EXECUTE_EXTERNAL_EVM, FINAL_CHAIN_EXECUTION_ACTION_REJECT,
+    FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED, FINAL_CHAIN_EXECUTION_MODE_NATIVE_ONLY,
+    FINAL_CHAIN_EXECUTION_STATUS_ABORTED, FINAL_CHAIN_EXECUTION_STATUS_COMPLETE,
+    FINAL_CHAIN_EXECUTION_STATUS_READY, FINAL_CHAIN_EXECUTION_STATUS_REJECTED,
+    FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM, FINAL_CHAIN_EXECUTION_TX_KIND_DPOS_CONTRACT,
+    FINAL_CHAIN_EXECUTION_TX_KIND_EXTERNAL_EVM_CALL,
+    FINAL_CHAIN_EXECUTION_TX_KIND_EXTERNAL_EVM_CREATE,
+    FINAL_CHAIN_EXECUTION_TX_KIND_NATIVE_VALUE_TRANSFER,
+    FINAL_CHAIN_EXECUTION_TX_KIND_SLASHING_CONTRACT, FinalChainEvmExecutionReport,
+    FinalChainEvmExecutionRequest, FinalChainEvmTransactionInput, FinalChainEvmTransactionResult,
+    FinalChainExecutionCommitReport, FinalChainExecutionRequest, FinalChainExecutionSession,
+    FinalChainExecutionStep, abort_final_chain_execution_session,
+    commit_final_chain_execution_session, create_final_chain_execution_session,
+    final_chain_execution_session_next, final_chain_execution_session_report_evm,
+};
 pub use gas_pricer::{GasPriceOracle, GasPricerConfig};
 pub use pbft_chain::PbftChain;
 pub use pbft_finalize::{

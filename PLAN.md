@@ -312,6 +312,13 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     persists restart-durable jail blocks, jailed-validator order, and duplicate-proof keys in the DPoS snapshot, emits
     the legacy `Jailed(address,uint64,uint64,uint8)` log, and derives effective DPoS eligibility/total vote counts from
     the Rust jail state. Slashing read calls for `getJailBlock(address)` and `getJailedValidators()` are Rust-backed.
+  - FinalChain native execution is now behind a Rust-owned `FinalChainExecutionRuntime` session boundary. The
+    compatibility bridge finalizer builds a native-only execution session, asks Rust for the next execution step, and
+    commits only when Rust returns a native commit action. Native value transfers plus the supported DPoS/slashing
+    precompile subset still commit through the existing Rust FinalChain finalizer. Arbitrary EVM contract calls and
+    contract creation now surface as typed external-EVM execution requests in the runtime session API rather than being
+    treated as FinalChain-owned execution. Successful EVM reports are shape-validated but rejected for commit until the
+    external executor/result contract has parity coverage and a state-root/receipt commit path.
   - PBFT manager fact collection now connects directly to the Rust FinalChain runtime for PBFT final-chain hash lookup
     and validation, total eligible vote counts, per-wallet eligible vote counts, and wallet eligibility refresh. Missing
     delayed headers or DPoS snapshots are returned to PBFT as typed Rust facts instead of re-centering those consensus
@@ -351,12 +358,18 @@ FinalChain currently depends on:
 1. Keep Rust-backed read/index, transaction, receipt, bloom, account snapshot, DPoS snapshot, and PBFT fact-collection
    parity stable.
 2. Continue finalization/write path parity beyond the currently supported native-transfer, DPoS mutation/read, rewards,
-   bloom, and slashing subset.
-3. Continue DPoS and account snapshot parity for remaining DPoS contract methods, broader slashing surfaces, unsupported
-   contract-call state transitions, and broader state trie/code/storage recovery.
-4. Replace neutral placeholder shim methods with Rust implementations or explicit throwing stubs as their callers are
+   bloom, slashing, and FinalChain execution-session subset. The immediate storage cleanup target is to consolidate
+   transaction-location and receipt-by-hash index writes into the same Rust-owned finalization commit plan/batch that
+   publishes finalized block visibility.
+3. Keep EVM execution outside FinalChain while building the external executor port: request construction, report
+   validation, state-root/receipt compatibility, and differential commit tests. Only after that port exists should
+   unsupported contract-call and contract-creation state transitions publish FinalChain storage.
+4. Continue DPoS and account snapshot parity for remaining DPoS contract methods, broader slashing surfaces, and broader
+   state trie/code/storage recovery.
+5. Replace neutral placeholder shim methods with Rust implementations or explicit throwing stubs as their callers are
    migrated.
-5. Defer broader StateAPI, bridge-heavy APIs, pruning, snapshots, and state-transition boundaries until there is a clear Rust/EVM integration strategy.
+6. Defer broader StateAPI, bridge-heavy APIs, pruning, snapshots, and state-transition boundaries until the external
+   EVM execution port is ready to carry those results without re-centering behavior in C++.
 
 High-risk APIs:
 
@@ -904,6 +917,8 @@ strategy and repeatable Makefile targets live in `doc/rewrite_validation_strateg
 
 1. Keep storage shim parity green while hardening Rust batch semantics.
 2. Add or update conformance coverage for any storage behavior that changes.
-3. Continue FinalChain read/query migration before write/finalization migration.
+3. Continue FinalChain execution-runtime migration: native-supported finalization already routes through Rust; next
+   slices should collapse remaining write-publication debt and connect the external EVM executor port without moving EVM
+   ownership into FinalChain.
 4. Introduce missing P0 FinalChain domain types with byte-compatible codecs.
 5. Keep `cpp-reference` synchronized for C++ intersection changes so upstream sync remains viable.

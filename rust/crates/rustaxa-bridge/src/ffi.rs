@@ -59,6 +59,10 @@ pub struct BridgeStorage(
 
 pub struct BridgeFinalChain(pub FinalChain);
 
+pub struct BridgeFinalChainExecutionSession {
+    pub state: rustaxa_consensus::FinalChainExecutionSession,
+}
+
 pub struct BridgeGasPricer(pub Mutex<GasPriceOracle>);
 
 pub struct BridgeDagGraph(pub DagGraph);
@@ -2313,6 +2317,74 @@ pub mod rustaxa_ffi {
 
     struct ReceiptRlp {
         data: Vec<u8>,
+    }
+
+    struct FinalChainExecutionRequest {
+        pbft_block_rlp: Vec<u8>,
+        transactions: Vec<FinalizationTransaction>,
+        finalized_dag_blocks: Vec<FinalizationDagBlock>,
+        blocks_per_year: u32,
+        cert_votes: Vec<RewardsCertVoteFact>,
+        mode: u8,
+    }
+
+    struct FinalChainEvmTransactionInput {
+        position: u64,
+        hash: [u8; 32],
+        sender: [u8; 20],
+        receiver_found: bool,
+        receiver: [u8; 20],
+        nonce: u64,
+        value: Vec<u8>,
+        gas_price: Vec<u8>,
+        gas_limit: u64,
+        data: Vec<u8>,
+        rlp: Vec<u8>,
+        kind: u8,
+    }
+
+    struct FinalChainEvmExecutionRequest {
+        request_id: [u8; 32],
+        period: u64,
+        block_author: [u8; 20],
+        timestamp: u64,
+        block_gas_limit: u64,
+        transactions: Vec<FinalChainEvmTransactionInput>,
+    }
+
+    struct FinalChainEvmTransactionResult {
+        position: u64,
+        hash: [u8; 32],
+        status: u8,
+        gas_used: u64,
+        receipt_rlp: Vec<u8>,
+    }
+
+    struct FinalChainEvmExecutionReport {
+        request_id: [u8; 32],
+        status: u8,
+        state_root: [u8; 32],
+        results: Vec<FinalChainEvmTransactionResult>,
+    }
+
+    struct FinalChainExecutionStep {
+        status: u8,
+        action: u8,
+        period: u64,
+        external_evm_transaction_count: u64,
+        evm_request: FinalChainEvmExecutionRequest,
+        error_code: String,
+    }
+
+    struct FinalChainExecutionCommitReport {
+        status: u8,
+        period: u64,
+        block_header_rlp: Vec<u8>,
+        receipts: Vec<ReceiptRlp>,
+        gas_used: u64,
+        executed_dag_blocks: u64,
+        executed_transactions: u64,
+        error_code: String,
     }
 
     struct DagHash {
@@ -5161,6 +5233,23 @@ pub mod rustaxa_ffi {
             blocks_per_year: u32,
             cert_votes: Vec<RewardsCertVoteFact>,
         ) -> Result<FinalizationOutcome>;
+        type BridgeFinalChainExecutionSession;
+        pub fn create_final_chain_execution_session(
+            final_chain: &BridgeFinalChain,
+            request: FinalChainExecutionRequest,
+        ) -> Result<Box<BridgeFinalChainExecutionSession>>;
+        pub fn final_chain_execution_session_next(
+            self: &mut BridgeFinalChainExecutionSession,
+        ) -> Result<FinalChainExecutionStep>;
+        pub fn final_chain_execution_session_report_evm(
+            self: &mut BridgeFinalChainExecutionSession,
+            report: FinalChainEvmExecutionReport,
+        ) -> Result<FinalChainExecutionStep>;
+        pub fn final_chain_execution_session_commit(
+            final_chain: &BridgeFinalChain,
+            session: Box<BridgeFinalChainExecutionSession>,
+        ) -> Result<FinalChainExecutionCommitReport>;
+        pub fn abort_final_chain_execution_session(session: Box<BridgeFinalChainExecutionSession>);
         pub fn get_transaction_rlps(self: &BridgeFinalChain, period: u64) -> Result<Vec<TxRlp>>;
         pub fn get_transaction_receipt(
             self: &BridgeFinalChain,
