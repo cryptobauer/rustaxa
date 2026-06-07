@@ -244,16 +244,17 @@ The FinalChain shim uses a header overlay pattern and can be enabled with:
 
 When enabled, legacy implementation compiles as `FinalChainOld`, and external call sites continue using `final_chain::FinalChain`.
 
-### Current Batch Status
+### Current Implementation Status
 
-- Batch 1 complete: additive shim scaffold plus Rust-backed chain index reads:
+- Rust-backed chain index reads:
   - `lastBlockNumber`
   - `blockNumber`
   - `blockHash`
-- Batch 2 complete: Rust-backed block header and transaction index reads:
+- Rust-backed block, transaction, receipt, and bloom reads:
   - `blockHeader`
   - `transactionLocation`
   - `transactionCount`
+  - transaction RLPs, transaction receipts, block receipts, and `withBlockBloom`
 - DPoS query boundary is partially Rust-backed:
   - genesis vote-count snapshot is derived in Rust from genesis validator stake.
   - `dposEligibleTotalVoteCount`, `dposEligibleVoteCount`, and `dposIsEligible` now preserve the `EthBlockNumber`
@@ -311,8 +312,12 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     persists restart-durable jail blocks, jailed-validator order, and duplicate-proof keys in the DPoS snapshot, emits
     the legacy `Jailed(address,uint64,uint64,uint8)` log, and derives effective DPoS eligibility/total vote counts from
     the Rust jail state. Slashing read calls for `getJailBlock(address)` and `getJailedValidators()` are Rust-backed.
-  - non-genesis DPoS queries still throw when the queried block has not been finalized through Rust snapshot
-    maintenance; DPoS transitions beyond the supported validator-registration/delegation/owner-update/slashing subset and legacy databases without Rust
+  - PBFT manager fact collection now connects directly to the Rust FinalChain runtime for PBFT final-chain hash lookup
+    and validation, total eligible vote counts, per-wallet eligible vote counts, and wallet eligibility refresh. Missing
+    delayed headers or DPoS snapshots are returned to PBFT as typed Rust facts instead of re-centering those consensus
+    decisions in C++ FinalChain orchestration.
+  - non-genesis DPoS queries still return typed errors or throw when the queried block has not been finalized through
+    Rust snapshot maintenance; DPoS transitions beyond the supported validator-registration/delegation/owner-update/slashing subset and legacy databases without Rust
     account snapshots remain explicit gaps.
   - selected DPoS precompile reads through `FinalChain::call` are Rust-backed for `getTotalEligibleVotesCount()`,
     `getValidator(address)`, `getValidators(uint32)`, `getValidatorsFor(address,uint32)`,
@@ -320,7 +325,9 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     and `getUndelegationV2(address,address,uint64)`. These precompile reads
     use the exact finalized-block snapshot, while DAG authorization and explicit eligibility APIs still use the
     configured delegation-delay snapshot.
-- Unimplemented public shim methods throw rather than falling back to `FinalChainOld`.
+- Unimplemented public shim methods never fall back to `FinalChainOld`. Some still throw, while known placeholder
+  methods currently return neutral values and remain explicit gaps: `getAccountStorage`, `getCode`, `trace`, `prune`,
+  `waitForFinalized`, `getBridgeRoot`, `getBridgeEpoch`, and private `finalize_`.
 
 ### FinalChain Storage Touchpoints
 
@@ -341,12 +348,14 @@ FinalChain currently depends on:
 
 ### FinalChain Sequencing
 
-1. Keep read/index parity stable.
-2. Migrate transaction, receipt, log query helpers, and bloom search parity.
-3. Continue finalization/write path parity beyond the current Rust append-block, counter, and index writes.
-4. Continue DPoS and account snapshot parity beyond native transfers and validator registration: remaining DPoS contract
-   methods, broader slashing surfaces, rewards distribution, contract-call state transitions, and broader state
-   trie/code/storage recovery.
+1. Keep Rust-backed read/index, transaction, receipt, bloom, account snapshot, DPoS snapshot, and PBFT fact-collection
+   parity stable.
+2. Continue finalization/write path parity beyond the currently supported native-transfer, DPoS mutation/read, rewards,
+   bloom, and slashing subset.
+3. Continue DPoS and account snapshot parity for remaining DPoS contract methods, broader slashing surfaces, unsupported
+   contract-call state transitions, and broader state trie/code/storage recovery.
+4. Replace neutral placeholder shim methods with Rust implementations or explicit throwing stubs as their callers are
+   migrated.
 5. Defer broader StateAPI, bridge-heavy APIs, pruning, snapshots, and state-transition boundaries until there is a clear Rust/EVM integration strategy.
 
 High-risk APIs:

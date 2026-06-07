@@ -2111,6 +2111,71 @@ pub mod rustaxa_ffi {
         value: u64,
     }
 
+    /// One address whose PBFT-facing FinalChain DPoS facts should be collected.
+    struct PbftFinalChainFactAddress {
+        address: [u8; 20],
+    }
+
+    /// PBFT-facing FinalChain fact request.
+    ///
+    /// `period` is the PBFT period used by existing C++ consensus callers.
+    /// `candidate_final_chain_hash` is checked only when
+    /// `validate_candidate_final_chain_hash` is true. `collect_final_chain_hash`
+    /// requests the proposal-time expected hash without validating a candidate.
+    /// Address facts are returned in the same order as `addresses`.
+    struct PbftFinalChainFactRequest {
+        period: u64,
+        candidate_final_chain_hash: [u8; 32],
+        collect_final_chain_hash: bool,
+        validate_candidate_final_chain_hash: bool,
+        collect_total_vote_count: bool,
+        collect_address_vote_counts: bool,
+        addresses: Vec<PbftFinalChainFactAddress>,
+    }
+
+    /// PBFT-facing FinalChain hash lookup or validation result.
+    ///
+    /// Status values preserve `PbftStateRootValidation` compatibility:
+    /// `0` means the expected FinalChain hash was found and, for validation,
+    /// matched the candidate; `1` means the required finalized header is not
+    /// available yet; `2` means the candidate hash mismatched the Rust-sourced
+    /// FinalChain hash.
+    struct PbftFinalChainHashResult {
+        status: u8,
+        expected_hash: [u8; 32],
+        actual_hash: [u8; 32],
+        error_code: String,
+    }
+
+    /// One ordered PBFT-facing FinalChain DPoS address fact.
+    ///
+    /// `status` is `0` when the vote count and eligibility are available and
+    /// `1` when the Rust FinalChain snapshot for the requested period is not
+    /// available.
+    struct PbftFinalChainAddressFact {
+        address: [u8; 20],
+        status: u8,
+        eligible: bool,
+        vote_count: u64,
+        error_code: String,
+    }
+
+    /// Grouped FinalChain facts sourced by Rust for PBFT manager decisions.
+    ///
+    /// `status` is `0` when all requested fact groups are ready and `1` when at
+    /// least one requested fact group is unavailable as data. Bridge
+    /// infrastructure failures still throw.
+    struct PbftFinalChainFacts {
+        status: u8,
+        last_block_number: u64,
+        final_chain_hash: PbftFinalChainHashResult,
+        total_vote_count_status: u8,
+        has_total_vote_count: bool,
+        total_vote_count: u64,
+        address_facts: Vec<PbftFinalChainAddressFact>,
+        error_code: String,
+    }
+
     struct GenesisAccount {
         address: [u8; 20],
         balance: Vec<u8>,
@@ -5076,5 +5141,9 @@ pub mod rustaxa_ffi {
             period: u64,
             position: u64,
         ) -> Result<Vec<u8>>;
+        pub fn collect_pbft_final_chain_facts(
+            self: &BridgeFinalChain,
+            request: PbftFinalChainFactRequest,
+        ) -> Result<PbftFinalChainFacts>;
     }
 }

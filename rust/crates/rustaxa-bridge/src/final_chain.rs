@@ -3,6 +3,10 @@ use crate::ffi::BridgeFinalChain;
 use crate::ffi::BridgeStorage;
 use rustaxa_consensus::{Account, FinalChain};
 
+const PBFT_FINAL_CHAIN_FACT_STATUS_READY: u8 = 0;
+const PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE: u8 = 1;
+const PBFT_FINAL_CHAIN_FACT_STATUS_INVALID: u8 = 2;
+
 fn account_to_lookup(account: Option<Account>) -> rustaxa_ffi::AccountLookup {
     match account {
         Some(account) => rustaxa_ffi::AccountLookup {
@@ -21,6 +25,20 @@ fn account_to_lookup(account: Option<Account>) -> rustaxa_ffi::AccountLookup {
             code_hash: [0; 32],
             code_size: 0,
         },
+    }
+}
+
+fn pbft_final_chain_hash_result(
+    status: u8,
+    expected_hash: [u8; 32],
+    actual_hash: [u8; 32],
+    error_code: impl Into<String>,
+) -> rustaxa_ffi::PbftFinalChainHashResult {
+    rustaxa_ffi::PbftFinalChainHashResult {
+        status,
+        expected_hash,
+        actual_hash,
+        error_code: error_code.into(),
     }
 }
 
@@ -501,6 +519,141 @@ impl BridgeFinalChain {
             .transaction_receipt_rlp(period, position)?
             .unwrap_or_default())
     }
+
+    /// Collects FinalChain facts needed by PBFT manager proposal, validation,
+    /// and wallet-eligibility decisions.
+    ///
+    /// The input uses PBFT period numbering and address order from C++. The
+    /// output preserves that order for address facts. Missing delayed
+    /// FinalChain headers or DPoS snapshots are returned as explicit status
+    /// data, while malformed storage and bridge infrastructure failures still
+    /// propagate as errors.
+    pub fn collect_pbft_final_chain_facts(
+        self: &BridgeFinalChain,
+        request: rustaxa_ffi::PbftFinalChainFactRequest,
+    ) -> Result<rustaxa_ffi::PbftFinalChainFacts, anyhow::Error> {
+        let last_block_number = self.0.last_block_number()?;
+        let final_chain_hash =
+            if request.collect_final_chain_hash || request.validate_candidate_final_chain_hash {
+                let expected_hash = self.0.pbft_final_chain_hash(request.period)?;
+                match expected_hash {
+                    Some(expected_hash)
+                        if request.validate_candidate_final_chain_hash
+                            && expected_hash != request.candidate_final_chain_hash =>
+                    {
+                        pbft_final_chain_hash_result(
+                            PBFT_FINAL_CHAIN_FACT_STATUS_INVALID,
+                            expected_hash,
+                            request.candidate_final_chain_hash,
+                            "PBFT_FINAL_CHAIN_HASH_MISMATCH",
+                        )
+                    }
+                    Some(expected_hash) => pbft_final_chain_hash_result(
+                        PBFT_FINAL_CHAIN_FACT_STATUS_READY,
+                        expected_hash,
+                        request.candidate_final_chain_hash,
+                        "",
+                    ),
+                    None => pbft_final_chain_hash_result(
+                        PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE,
+                        [0; 32],
+                        request.candidate_final_chain_hash,
+                        "PBFT_FINAL_CHAIN_HASH_MISSING",
+                    ),
+                }
+            } else {
+                pbft_final_chain_hash_result(
+                    PBFT_FINAL_CHAIN_FACT_STATUS_READY,
+                    [0; 32],
+                    request.candidate_final_chain_hash,
+                    "",
+                )
+            };
+
+        let (total_vote_count_status, has_total_vote_count, total_vote_count, total_error) =
+            if request.collect_total_vote_count {
+                match self.0.dpos_eligible_total_vote_count(request.period) {
+                    Ok(value) => (
+                        PBFT_FINAL_CHAIN_FACT_STATUS_READY,
+                        true,
+                        value,
+                        String::new(),
+                    ),
+                    Err(err) => (
+                        PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE,
+                        false,
+                        0,
+                        format!("PBFT_FINAL_CHAIN_TOTAL_VOTES_UNAVAILABLE: {err}"),
+                    ),
+                }
+            } else {
+                (PBFT_FINAL_CHAIN_FACT_STATUS_READY, false, 0, String::new())
+            };
+
+        let mut address_facts = Vec::new();
+        if request.collect_address_vote_counts {
+            address_facts.reserve(request.addresses.len());
+            for address in request.addresses {
+                match self
+                    .0
+                    .dpos_eligible_vote_count(request.period, address.address)
+                {
+                    Ok(vote_count) => {
+                        address_facts.push(rustaxa_ffi::PbftFinalChainAddressFact {
+                            address: address.address,
+                            status: PBFT_FINAL_CHAIN_FACT_STATUS_READY,
+                            eligible: vote_count > 0,
+                            vote_count,
+                            error_code: String::new(),
+                        });
+                    }
+                    Err(err) => {
+                        address_facts.push(rustaxa_ffi::PbftFinalChainAddressFact {
+                            address: address.address,
+                            status: PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE,
+                            eligible: false,
+                            vote_count: 0,
+                            error_code: format!("PBFT_FINAL_CHAIN_ADDRESS_FACT_UNAVAILABLE: {err}"),
+                        });
+                    }
+                }
+            }
+        }
+
+        let address_facts_ready = address_facts
+            .iter()
+            .all(|fact| fact.status == PBFT_FINAL_CHAIN_FACT_STATUS_READY);
+        let all_ready = final_chain_hash.status == PBFT_FINAL_CHAIN_FACT_STATUS_READY
+            && total_vote_count_status == PBFT_FINAL_CHAIN_FACT_STATUS_READY
+            && address_facts_ready;
+        let status = if all_ready {
+            PBFT_FINAL_CHAIN_FACT_STATUS_READY
+        } else if final_chain_hash.status == PBFT_FINAL_CHAIN_FACT_STATUS_INVALID {
+            PBFT_FINAL_CHAIN_FACT_STATUS_INVALID
+        } else {
+            PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE
+        };
+        let error_code = if status == PBFT_FINAL_CHAIN_FACT_STATUS_READY {
+            String::new()
+        } else if final_chain_hash.status != PBFT_FINAL_CHAIN_FACT_STATUS_READY {
+            final_chain_hash.error_code.clone()
+        } else if !total_error.is_empty() {
+            total_error.clone()
+        } else {
+            "PBFT_FINAL_CHAIN_ADDRESS_FACTS_UNAVAILABLE".to_string()
+        };
+
+        Ok(rustaxa_ffi::PbftFinalChainFacts {
+            status,
+            last_block_number,
+            final_chain_hash,
+            total_vote_count_status,
+            has_total_vote_count,
+            total_vote_count,
+            address_facts,
+            error_code,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -605,6 +758,89 @@ mod tests {
         assert_eq!(
             missing_snapshot.eligibility_status,
             dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE
+        );
+
+        drop(final_chain);
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_collects_pbft_final_chain_facts_from_rust_runtime() {
+        let validator = [0xB1u8; 20];
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_final_chain_facts");
+        let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
+        let final_chain =
+            make_final_chain(storage_path, vec![genesis_validator(validator, 10_000)]);
+
+        let ready = final_chain
+            .collect_pbft_final_chain_facts(rustaxa_ffi::PbftFinalChainFactRequest {
+                period: 0,
+                candidate_final_chain_hash: [0; 32],
+                collect_final_chain_hash: true,
+                validate_candidate_final_chain_hash: true,
+                collect_total_vote_count: true,
+                collect_address_vote_counts: true,
+                addresses: vec![rustaxa_ffi::PbftFinalChainFactAddress { address: validator }],
+            })
+            .expect("ready PBFT facts should not throw");
+        assert_eq!(ready.status, PBFT_FINAL_CHAIN_FACT_STATUS_READY);
+        assert_eq!(ready.last_block_number, 0);
+        assert_eq!(
+            ready.final_chain_hash.status,
+            PBFT_FINAL_CHAIN_FACT_STATUS_READY
+        );
+        assert_eq!(ready.final_chain_hash.expected_hash, [0; 32]);
+        assert!(ready.has_total_vote_count);
+        assert_eq!(ready.total_vote_count, 10);
+        assert_eq!(ready.address_facts.len(), 1);
+        assert_eq!(
+            ready.address_facts[0].status,
+            PBFT_FINAL_CHAIN_FACT_STATUS_READY
+        );
+        assert!(ready.address_facts[0].eligible);
+        assert_eq!(ready.address_facts[0].vote_count, 10);
+
+        let mismatch = final_chain
+            .collect_pbft_final_chain_facts(rustaxa_ffi::PbftFinalChainFactRequest {
+                period: 0,
+                candidate_final_chain_hash: [0xCC; 32],
+                collect_final_chain_hash: true,
+                validate_candidate_final_chain_hash: true,
+                collect_total_vote_count: false,
+                collect_address_vote_counts: false,
+                addresses: vec![],
+            })
+            .expect("mismatch should be returned as data");
+        assert_eq!(mismatch.status, PBFT_FINAL_CHAIN_FACT_STATUS_INVALID);
+        assert_eq!(
+            mismatch.final_chain_hash.status,
+            PBFT_FINAL_CHAIN_FACT_STATUS_INVALID
+        );
+        assert_eq!(
+            mismatch.final_chain_hash.error_code,
+            "PBFT_FINAL_CHAIN_HASH_MISMATCH"
+        );
+
+        let unavailable = final_chain
+            .collect_pbft_final_chain_facts(rustaxa_ffi::PbftFinalChainFactRequest {
+                period: 1,
+                candidate_final_chain_hash: [0; 32],
+                collect_final_chain_hash: true,
+                validate_candidate_final_chain_hash: true,
+                collect_total_vote_count: true,
+                collect_address_vote_counts: true,
+                addresses: vec![rustaxa_ffi::PbftFinalChainFactAddress { address: validator }],
+            })
+            .expect("missing snapshot/header should be returned as data");
+        assert_eq!(unavailable.status, PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE);
+        assert_eq!(
+            unavailable.final_chain_hash.status,
+            PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE
+        );
+        assert!(!unavailable.has_total_vote_count);
+        assert_eq!(
+            unavailable.address_facts[0].status,
+            PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE
         );
 
         drop(final_chain);

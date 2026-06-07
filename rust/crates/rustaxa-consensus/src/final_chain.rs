@@ -561,6 +561,33 @@ impl FinalChain {
         self.storage.final_chain().block_hash_by_number(num)
     }
 
+    /// Returns the FinalChain hash that a PBFT block for `period` must carry.
+    ///
+    /// This preserves the legacy PBFT/FinalChain delay contract used by the C++
+    /// manager: periods less than or equal to the configured delegation delay
+    /// use the zero hash, while later periods use the finalized header hash at
+    /// `period - delegation_delay`. A missing delayed header is returned as
+    /// `None` so PBFT callers can treat it as a typed "not finalized yet"
+    /// condition instead of an infrastructure error.
+    pub fn pbft_final_chain_hash(&self, period: u64) -> Result<Option<[u8; 32]>, anyhow::Error> {
+        if period <= self.dpos_delegation_delay {
+            return Ok(Some([0; 32]));
+        }
+
+        let lookup_block = period - self.dpos_delegation_delay;
+        let Some(hash) = self.block_hash(lookup_block)? else {
+            return Ok(None);
+        };
+        anyhow::ensure!(
+            hash.len() == 32,
+            "final_chain_blk_hash_by_number/{lookup_block} has invalid hash length: expected 32, got {}",
+            hash.len()
+        );
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&hash);
+        Ok(Some(out))
+    }
+
     /// Returns finalized block numbers whose indexed bloom contains `bloom`.
     ///
     /// Inputs are the query bloom and inclusive block-number range. The lookup
@@ -6884,6 +6911,38 @@ mod tests {
             final_chain.block_number(block_hash).unwrap(),
             Some(block_number)
         );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn pbft_final_chain_hash_preserves_delay_and_missing_header_semantics() {
+        let path = temp_db_path("pbft-final-chain-hash");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let mut batch = storage.create_write_batch();
+        let block_number = 7u64;
+        let block_hash = [0xFE; 32];
+
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::FinalChainBlkHashByNumber,
+                &block_number.to_le_bytes(),
+                &block_hash,
+            )
+            .unwrap();
+        storage.commit_write_batch_with_sync(batch, false).unwrap();
+
+        let final_chain = new_final_chain(storage.clone(), 0, 0, vec![], vec![]);
+
+        assert_eq!(final_chain.pbft_final_chain_hash(0).unwrap(), Some([0; 32]));
+        assert_eq!(
+            final_chain.pbft_final_chain_hash(block_number).unwrap(),
+            Some(block_hash)
+        );
+        assert_eq!(final_chain.pbft_final_chain_hash(8).unwrap(), None);
 
         drop(final_chain);
         drop(storage);
