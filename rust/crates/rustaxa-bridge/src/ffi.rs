@@ -954,6 +954,8 @@ pub mod rustaxa_ffi {
         complete: bool,
         restart_loop: bool,
         can_continue: bool,
+        has_target_round: bool,
+        target_round: u64,
         tick_id: u64,
         error_code: String,
     }
@@ -967,6 +969,8 @@ pub mod rustaxa_ffi {
         go_finish_state: bool,
         loop_back_finish_state: bool,
         has_eligible_wallet: bool,
+        has_new_round: bool,
+        new_round: u64,
         error_code: String,
     }
 
@@ -1066,22 +1070,6 @@ pub mod rustaxa_ffi {
         status: u8,
         applied_writes: u64,
         snapshot: PbftManagerRuntimeSnapshot,
-        error_code: String,
-    }
-
-    /// C++-originated facts for Rust-owned PBFT round-advance planning.
-    struct PbftManagerAdvanceRoundFact {
-        period: u64,
-        current_round: u64,
-        has_new_round: bool,
-        new_round: u64,
-    }
-
-    /// Rust-owned PBFT round-advance plan.
-    struct PbftManagerAdvanceRoundPlan {
-        status: u8,
-        should_advance: bool,
-        target_round: u64,
         error_code: String,
     }
 
@@ -3593,9 +3581,6 @@ pub mod rustaxa_ffi {
             plan: PbftManagerTransitionPlan,
             own_vote_hashes: Vec<PbftFinalizationHash>,
         ) -> Result<PbftManagerTransitionStorageResult>;
-        pub fn plan_pbft_manager_advance_round(
-            fact: PbftManagerAdvanceRoundFact,
-        ) -> PbftManagerAdvanceRoundPlan;
         pub fn create_pbft_finalization_resume_runtime_session(
             plan: &PbftFinalizationResumePlan,
         ) -> Box<BridgePbftFinalizationRuntimeSession>;

@@ -96,9 +96,11 @@ constexpr uint8_t kPbftManagerRuntimeActionTransitionToFilter = 6;
 constexpr uint8_t kPbftManagerRuntimeActionRunCertify = 9;
 constexpr uint8_t kPbftManagerRuntimeActionTransitionToFinish = 10;
 constexpr uint8_t kPbftManagerRuntimeActionSleepUntilNextStep = 17;
+constexpr uint8_t kPbftManagerRuntimeActionResetConsensus = 18;
 constexpr uint8_t kPbftManagerRuntimeStatusActive = 0;
 constexpr uint8_t kPbftManagerRuntimeStatusComplete = 1;
 constexpr uint8_t kPbftManagerRuntimeStatusActionMismatch = 3;
+constexpr uint8_t kPbftManagerRuntimeStatusInvalidReport = 5;
 constexpr uint8_t kPbftManagerRuntimeResultNoProgress = 0;
 constexpr uint8_t kPbftManagerRuntimeResultProgressRestart = 1;
 constexpr uint8_t kPbftManagerRuntimeResultStateDone = 2;
@@ -252,6 +254,8 @@ PbftManagerRuntimeActionReport managerRuntimeReport(uint32_t cursor, uint8_t act
   report.go_finish_state = false;
   report.loop_back_finish_state = false;
   report.has_eligible_wallet = true;
+  report.has_new_round = false;
+  report.new_round = 0;
   return report;
 }
 
@@ -471,6 +475,62 @@ TEST(RustPbftSyncTest, ManagerRuntimeCompletesWithRestartOnCertPushProgress) {
   EXPECT_EQ(step.status, kPbftManagerRuntimeStatusComplete);
   EXPECT_TRUE(step.complete);
   EXPECT_TRUE(step.restart_loop);
+}
+
+TEST(RustPbftSyncTest, ManagerRuntimeAdvanceRoundCandidateRequestsResetEffect) {
+  auto session = create_pbft_manager_runtime_session(makePbftManagerRuntimeTick(kPbftManagerRuntimeStateValueProposal));
+
+  auto step = session->pbft_manager_runtime_session_next();
+  ASSERT_EQ(step.action, kPbftManagerRuntimeActionProcessSyncedBlocks);
+  step = session->pbft_manager_runtime_session_report(
+      managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultStateDone));
+  ASSERT_EQ(step.action, kPbftManagerRuntimeActionMaybeBroadcastVotes);
+  step = session->pbft_manager_runtime_session_report(
+      managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultStateDone));
+  ASSERT_EQ(step.action, kPbftManagerRuntimeActionTryPushCertVotesBlock);
+  step = session->pbft_manager_runtime_session_report(
+      managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultNoProgress));
+  ASSERT_EQ(step.action, kPbftManagerRuntimeActionTryAdvanceRound);
+
+  auto report = managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultNoProgress);
+  report.has_new_round = true;
+  report.new_round = 5;
+  step = session->pbft_manager_runtime_session_report(std::move(report));
+
+  ASSERT_EQ(step.status, kPbftManagerRuntimeStatusActive);
+  ASSERT_TRUE(step.has_action);
+  EXPECT_EQ(step.action, kPbftManagerRuntimeActionResetConsensus);
+  EXPECT_TRUE(step.has_target_round);
+  EXPECT_EQ(step.target_round, 5);
+
+  step = session->pbft_manager_runtime_session_report(
+      managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultTransition));
+
+  EXPECT_EQ(step.status, kPbftManagerRuntimeStatusComplete);
+  EXPECT_TRUE(step.complete);
+  EXPECT_TRUE(step.restart_loop);
+}
+
+TEST(RustPbftSyncTest, ManagerRuntimeRejectsNonIncreasingAdvanceRoundCandidate) {
+  auto session = create_pbft_manager_runtime_session(makePbftManagerRuntimeTick(kPbftManagerRuntimeStateValueProposal));
+
+  auto step = session->pbft_manager_runtime_session_next();
+  step = session->pbft_manager_runtime_session_report(
+      managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultStateDone));
+  step = session->pbft_manager_runtime_session_report(
+      managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultStateDone));
+  step = session->pbft_manager_runtime_session_report(
+      managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultNoProgress));
+  ASSERT_EQ(step.action, kPbftManagerRuntimeActionTryAdvanceRound);
+
+  auto report = managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultNoProgress);
+  report.has_new_round = true;
+  report.new_round = 2;
+  step = session->pbft_manager_runtime_session_report(std::move(report));
+
+  EXPECT_EQ(step.status, kPbftManagerRuntimeStatusInvalidReport);
+  EXPECT_FALSE(step.can_continue);
+  EXPECT_FALSE(step.complete);
 }
 
 TEST(RustPbftSyncTest, ManagerRuntimeCertifyReportSelectsFinishTransition) {

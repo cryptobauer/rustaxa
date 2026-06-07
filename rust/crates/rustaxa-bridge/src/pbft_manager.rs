@@ -7,8 +7,6 @@
 
 use crate::ffi::rustaxa_ffi::{
     PbftFinalizationHash as FfiPbftFinalizationHash,
-    PbftManagerAdvanceRoundFact as FfiPbftManagerAdvanceRoundFact,
-    PbftManagerAdvanceRoundPlan as FfiPbftManagerAdvanceRoundPlan,
     PbftManagerRuntimeActionReport as FfiPbftManagerRuntimeActionReport,
     PbftManagerRuntimeSessionStep as FfiPbftManagerRuntimeSessionStep,
     PbftManagerRuntimeSnapshot as FfiPbftManagerRuntimeSnapshot,
@@ -27,12 +25,10 @@ use rustaxa_consensus::pbft_manager::{
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
     create_pbft_manager_runtime_session as create_domain_pbft_manager_runtime_session,
     next_pbft_manager_runtime_action,
-    plan_pbft_manager_advance_round as plan_domain_pbft_manager_advance_round,
     plan_pbft_manager_state_action as plan_domain_pbft_manager_state_action,
     plan_pbft_manager_transition as plan_domain_pbft_manager_transition,
-    report_pbft_manager_runtime_action, restore_pbft_manager_runtime, PbftManagerAdvanceRoundFact,
-    PbftManagerAdvanceRoundPlan, PbftManagerRuntime, PbftManagerRuntimeAction,
-    PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
+    report_pbft_manager_runtime_action, restore_pbft_manager_runtime, PbftManagerRuntime,
+    PbftManagerRuntimeAction, PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
     PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot, PbftManagerRuntimeStateCode,
     PbftManagerRuntimeTickFact, PbftManagerStartupRestoreFact, PbftManagerStartupRestoreStatus,
     PbftManagerStateActionFact, PbftManagerStateActionPlan, PbftManagerTransitionFact,
@@ -525,13 +521,6 @@ pub fn apply_pbft_manager_transition_storage_write(
     Ok(transition_storage_applied(applied_writes))
 }
 
-/// Plans whether a PBFT manager round-advance candidate should reset consensus.
-pub fn plan_pbft_manager_advance_round(
-    fact: FfiPbftManagerAdvanceRoundFact,
-) -> FfiPbftManagerAdvanceRoundPlan {
-    plan_domain_pbft_manager_advance_round(fact.into()).into()
-}
-
 impl BridgePbftManagerRuntimeSession {
     /// Returns the next requested action for this runtime session.
     pub fn pbft_manager_runtime_session_next(&mut self) -> FfiPbftManagerRuntimeSessionStep {
@@ -578,6 +567,8 @@ impl From<FfiPbftManagerRuntimeActionReport> for PbftManagerRuntimeActionReport 
             go_finish_state: value.go_finish_state,
             loop_back_finish_state: value.loop_back_finish_state,
             has_eligible_wallet: value.has_eligible_wallet,
+            has_new_round: value.has_new_round,
+            new_round: value.new_round,
             error_code: value.error_code,
         }
     }
@@ -631,17 +622,6 @@ impl From<FfiPbftManagerTransitionFact> for PbftManagerTransitionFact {
     }
 }
 
-impl From<FfiPbftManagerAdvanceRoundFact> for PbftManagerAdvanceRoundFact {
-    fn from(value: FfiPbftManagerAdvanceRoundFact) -> Self {
-        Self {
-            period: value.period,
-            current_round: value.current_round,
-            has_new_round: value.has_new_round,
-            new_round: value.new_round,
-        }
-    }
-}
-
 impl From<PbftManagerRuntimeSessionStep> for FfiPbftManagerRuntimeSessionStep {
     fn from(value: PbftManagerRuntimeSessionStep) -> Self {
         let status = value.status.as_u8();
@@ -656,6 +636,8 @@ impl From<PbftManagerRuntimeSessionStep> for FfiPbftManagerRuntimeSessionStep {
             complete: value.complete,
             restart_loop: value.restart_loop,
             can_continue: status == RUNTIME_STATUS_ACTIVE || status == RUNTIME_STATUS_COMPLETE,
+            has_target_round: value.has_target_round,
+            target_round: value.target_round,
             tick_id: value.tick_id,
             error_code: value.error_code,
         }
@@ -727,17 +709,6 @@ impl From<PbftManagerTransitionPlan> for FfiPbftManagerTransitionPlan {
     }
 }
 
-impl From<PbftManagerAdvanceRoundPlan> for FfiPbftManagerAdvanceRoundPlan {
-    fn from(value: PbftManagerAdvanceRoundPlan) -> Self {
-        Self {
-            status: value.status.as_u8(),
-            should_advance: value.should_advance,
-            target_round: value.target_round,
-            error_code: value.error_code,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -754,6 +725,7 @@ mod tests {
     const ACTION_BROADCAST: u8 = 1;
     const ACTION_TRY_CERT: u8 = 2;
     const ACTION_TRY_ROUND: u8 = 3;
+    const ACTION_RESET_CONSENSUS: u8 = 18;
     const ACTION_RUN_CERTIFY: u8 = 9;
     const ACTION_TRANSITION_FINISH: u8 = 10;
     const ACTION_RUN_VALUE_PROPOSAL: u8 = 5;
@@ -807,6 +779,8 @@ mod tests {
             go_finish_state: false,
             loop_back_finish_state: false,
             has_eligible_wallet: true,
+            has_new_round: false,
+            new_round: 0,
             error_code: String::new(),
         }
     }
@@ -896,6 +870,42 @@ mod tests {
             report(step.cursor, ACTION_TRY_CERT, RESULT_PROGRESS_RESTART),
         );
 
+        assert!(complete.complete);
+        assert!(complete.restart_loop);
+    }
+
+    #[test]
+    fn bridge_session_emits_reset_effect_for_round_advance_candidate() {
+        let mut session = create_pbft_manager_runtime_session(fact(STATE_VALUE_PROPOSAL));
+        for expected in [ACTION_PROCESS_SYNCED, ACTION_BROADCAST, ACTION_TRY_CERT] {
+            let step = pbft_manager_runtime_session_next(&mut session);
+            assert_eq!(step.action, expected);
+            let result = if expected == ACTION_TRY_CERT {
+                RESULT_CONTINUE
+            } else {
+                RESULT_STATE_DONE
+            };
+            let _ = pbft_manager_runtime_session_report(
+                &mut session,
+                report(step.cursor, expected, result),
+            );
+        }
+
+        let step = pbft_manager_runtime_session_next(&mut session);
+        assert_eq!(step.action, ACTION_TRY_ROUND);
+        let mut action_report = report(step.cursor, ACTION_TRY_ROUND, RESULT_CONTINUE);
+        action_report.has_new_round = true;
+        action_report.new_round = 6;
+        let reset = pbft_manager_runtime_session_report(&mut session, action_report);
+
+        assert_eq!(reset.action, ACTION_RESET_CONSENSUS);
+        assert!(reset.has_target_round);
+        assert_eq!(reset.target_round, 6);
+
+        let complete = pbft_manager_runtime_session_report(
+            &mut session,
+            report(reset.cursor, ACTION_RESET_CONSENSUS, RESULT_TRANSITION),
+        );
         assert!(complete.complete);
         assert!(complete.restart_loop);
     }
@@ -1025,7 +1035,7 @@ mod tests {
     }
 
     #[test]
-    fn bridge_plans_loopback_lambda_backoff_and_round_advance() {
+    fn bridge_plans_loopback_lambda_backoff() {
         let mut fact = transition_fact(TRANSITION_LOOP_BACK_FINISH);
         fact.step = 12;
         fact.next_step_time_ms = 900;
@@ -1036,25 +1046,6 @@ mod tests {
         assert_eq!(plan.current_round_lambda_ms, 200);
         assert_eq!(plan.next_step_time_ms, 1_000);
         assert!(plan.reset_next_voted_statuses);
-
-        let advance = plan_pbft_manager_advance_round(FfiPbftManagerAdvanceRoundFact {
-            period: 10,
-            current_round: 2,
-            has_new_round: true,
-            new_round: 5,
-        });
-        assert_eq!(advance.status, TRANSITION_STATUS_READY);
-        assert!(advance.should_advance);
-        assert_eq!(advance.target_round, 5);
-
-        let invalid = plan_pbft_manager_advance_round(FfiPbftManagerAdvanceRoundFact {
-            period: 10,
-            current_round: 2,
-            has_new_round: true,
-            new_round: 2,
-        });
-        assert_eq!(invalid.status, TRANSITION_STATUS_INVALID_FACT);
-        assert!(!invalid.should_advance);
     }
 
     #[test]

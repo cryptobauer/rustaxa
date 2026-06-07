@@ -477,12 +477,6 @@ class PbftManager {
   void broadcastVotes();
 
   /**
-   * @brief If node receives 2t+1 next votes for some block(including kNullBlockHash), advance round to + 1.
-   * @return true if PBFT round advanced, otherwise false
-   */
-  bool advanceRound();
-
-  /**
    * @brief If node receives 2t+1 cert votes for some valid block and pushes it to the chain, advance period to + 1.
    * @return true if PBFT period advanced, otherwise false
    */

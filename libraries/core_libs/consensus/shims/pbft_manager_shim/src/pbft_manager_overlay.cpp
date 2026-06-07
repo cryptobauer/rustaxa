@@ -94,6 +94,7 @@ constexpr uint8_t kPbftManagerRuntimeActionRunSecondFinish = 14;
 constexpr uint8_t kPbftManagerRuntimeActionLoopBackFinish = 15;
 constexpr uint8_t kPbftManagerRuntimeActionDelayFinishPoll = 16;
 constexpr uint8_t kPbftManagerRuntimeActionSleepUntilNextStep = 17;
+constexpr uint8_t kPbftManagerRuntimeActionResetConsensus = 18;
 constexpr uint8_t kPbftManagerRuntimeResultNoProgressContinue = 0;
 constexpr uint8_t kPbftManagerRuntimeResultProgressRestartLoop = 1;
 constexpr uint8_t kPbftManagerRuntimeResultStateActionDone = 2;
@@ -296,17 +297,6 @@ bool ensureTransitionPlanReady(const rustaxa::PbftManagerTransitionPlan &plan, L
   }
   LOG(log_er) << "Rust PBFT manager transition planner rejected facts, status " << static_cast<uint32_t>(plan.status)
               << ", error " << static_cast<std::string>(plan.error_code);
-  assert(false);
-  return false;
-}
-
-template <typename Logger>
-bool ensureAdvanceRoundPlanReady(const rustaxa::PbftManagerAdvanceRoundPlan &plan, Logger &log_er) {
-  if (plan.status == kPbftManagerTransitionStatusReady) {
-    return true;
-  }
-  LOG(log_er) << "Rust PBFT manager advance-round planner rejected facts, status "
-              << static_cast<uint32_t>(plan.status) << ", error " << static_cast<std::string>(plan.error_code);
   assert(false);
   return false;
 }
@@ -743,7 +733,8 @@ void PbftManager::run() {
 
     auto runtime_session = rustaxa::create_pbft_manager_runtime_session(fact);
     auto report_action = [&](const rustaxa::PbftManagerRuntimeSessionStep &step, uint8_t result, bool success = true,
-                             const std::string &error_code = "") {
+                             const std::string &error_code = "", bool has_new_round = false,
+                             PbftRound new_round = 0) {
       const auto current_period = getPbftPeriod();
       const auto &current_wallets = eligible_wallets_.getWallets(current_period);
       rustaxa::PbftManagerRuntimeActionReport report{};
@@ -755,6 +746,8 @@ void PbftManager::run() {
       report.loop_back_finish_state = loop_back_finish_state_;
       report.has_eligible_wallet = std::any_of(
           current_wallets.cbegin(), current_wallets.cend(), [](const auto &wallet) { return wallet.first; });
+      report.has_new_round = has_new_round;
+      report.new_round = new_round;
       report.error_code = error_code;
       return runtime_session->pbft_manager_runtime_session_report(std::move(report));
     };
@@ -809,9 +802,23 @@ void PbftManager::run() {
           step = report_action(step, tryPushCertVotesBlock() ? kPbftManagerRuntimeResultProgressRestartLoop
                                                              : kPbftManagerRuntimeResultNoProgressContinue);
           break;
-        case kPbftManagerRuntimeActionTryAdvanceRound:
-          step = report_action(step, advanceRound() ? kPbftManagerRuntimeResultProgressRestartLoop
-                                                    : kPbftManagerRuntimeResultNoProgressContinue);
+        case kPbftManagerRuntimeActionTryAdvanceRound: {
+          const auto [current_round, current_period] = getPbftRoundAndPeriod();
+          const auto new_round = vote_mgr_->determineNewRound(current_period, current_round);
+          step = report_action(step, kPbftManagerRuntimeResultNoProgressContinue, true, "", new_round.has_value(),
+                               new_round.value_or(0));
+          break;
+        }
+        case kPbftManagerRuntimeActionResetConsensus:
+          if (!step.has_target_round || step.target_round == 0) {
+            step = report_action(step, kPbftManagerRuntimeResultExecutorError, false,
+                                 "PBFT_MANAGER_RESET_CONSENSUS_MISSING_TARGET_ROUND");
+            break;
+          }
+          resetPbftConsensus(step.target_round);
+          LOG(log_nf_) << "Round advanced to: " << step.target_round << ", period " << getPbftPeriod() << ", step "
+                       << step_;
+          step = report_action(step, kPbftManagerRuntimeResultTransitionApplied);
           break;
         case kPbftManagerRuntimeActionSleepIneligiblePollingInterval:
           std::this_thread::sleep_for(std::chrono::milliseconds(kPollingIntervalMs));
@@ -1083,34 +1090,6 @@ bool PbftManager::advancePeriod() {
   proposed_blocks_.cleanupProposedPbftBlocksByPeriod(new_period);
 
   LOG(log_nf_) << "Period advanced to: " << new_period << ", round and step reset to 1";
-
-  // Restart while loop...
-  return true;
-}
-
-bool PbftManager::advanceRound() {
-  const auto [current_pbft_round, current_pbft_period] = getPbftRoundAndPeriod();
-
-  const auto new_round = vote_mgr_->determineNewRound(current_pbft_period, current_pbft_round);
-  rustaxa::PbftManagerAdvanceRoundFact fact{};
-  fact.period = current_pbft_period;
-  fact.current_round = current_pbft_round;
-  fact.has_new_round = new_round.has_value();
-  fact.new_round = new_round.value_or(0);
-
-  const auto plan = rustaxa::plan_pbft_manager_advance_round(fact);
-  if (!ensureAdvanceRoundPlanReady(plan, log_er_)) {
-    return false;
-  }
-  if (!plan.should_advance) {
-    return false;
-  }
-
-  // Reset consensus
-  resetPbftConsensus(plan.target_round);
-
-  LOG(log_nf_) << "Round advanced to: " << plan.target_round << ", period " << current_pbft_period << ", step "
-               << step_;
 
   // Restart while loop...
   return true;

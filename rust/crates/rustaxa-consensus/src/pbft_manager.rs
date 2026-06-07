@@ -16,8 +16,10 @@
 //! - Rust decides the order of manager actions for the tick.
 //! - C++ remains the sole owner of live objects, storage writes, network
 //!   dispatch, sleeps, and state mutation in this slice.
-//! - Early-progress actions such as cert-block push or round advance complete
-//!   the session with `restart_loop = true`, matching the old `continue` path.
+//! - Early-progress actions such as cert-block push complete the session with
+//!   `restart_loop = true`, matching the old `continue` path.
+//! - Round-advance candidates are reported as facts. Rust validates them and
+//!   emits an explicit `ResetConsensus` effect with the target round.
 //! - The active-state vs ineligible-sleep branch is selected from the
 //!   `has_eligible_wallet` report supplied after `TryAdvanceRound`.
 //! - Branches after `run_certify` and `run_second_finish` are selected only from
@@ -116,6 +118,8 @@ pub enum PbftManagerRuntimeAction {
     TryPushCertVotesBlock,
     /// Try to advance to a higher round from next-vote facts.
     TryAdvanceRound,
+    /// Reset consensus to a Rust-selected target round.
+    ResetConsensus,
     /// Sleep briefly when the node has no eligible wallet for active steps.
     SleepIneligiblePollingInterval,
     /// Execute value proposal behavior.
@@ -170,6 +174,7 @@ impl PbftManagerRuntimeAction {
             Self::LoopBackFinish => 15,
             Self::DelayFinishPoll => 16,
             Self::SleepUntilNextStep => 17,
+            Self::ResetConsensus => 18,
             Self::Unknown => 254,
         }
     }
@@ -195,6 +200,7 @@ impl PbftManagerRuntimeAction {
             15 => Some(Self::LoopBackFinish),
             16 => Some(Self::DelayFinishPoll),
             17 => Some(Self::SleepUntilNextStep),
+            18 => Some(Self::ResetConsensus),
             _ => Some(Self::Unknown),
         }
     }
@@ -1457,6 +1463,11 @@ pub struct PbftManagerRuntimeActionReport {
     pub loop_back_finish_state: bool,
     /// Current eligible-wallet state after the reported action.
     pub has_eligible_wallet: bool,
+    /// Whether C++/VoteManager found a candidate new round for
+    /// `TryAdvanceRound`.
+    pub has_new_round: bool,
+    /// Candidate new round reported for `TryAdvanceRound`, when present.
+    pub new_round: u64,
     /// Optional error detail from the C++ executor.
     pub error_code: String,
 }
@@ -1476,6 +1487,10 @@ pub struct PbftManagerRuntimeSessionStep {
     pub complete: bool,
     /// Whether C++ should restart the daemon loop immediately.
     pub restart_loop: bool,
+    /// Whether this step carries a target round for a reset-consensus effect.
+    pub has_target_round: bool,
+    /// Target round for `ResetConsensus` when `has_target_round` is true.
+    pub target_round: u64,
     /// Caller-local tick id.
     pub tick_id: u64,
     /// Stable error detail.
@@ -1495,6 +1510,8 @@ pub struct PbftManagerRuntimeSession {
     pub cursor: u32,
     /// Completed restart-loop signal.
     pub restart_loop: bool,
+    /// Target round attached to a pending `ResetConsensus` action.
+    pub reset_target_round: Option<u64>,
     /// Stable error detail.
     pub error_code: String,
 }
@@ -1506,6 +1523,7 @@ fn reject_session(fact: PbftManagerRuntimeTickFact, error_code: &str) -> PbftMan
         pending: VecDeque::new(),
         cursor: 0,
         restart_loop: false,
+        reset_target_round: None,
         error_code: error_code.to_string(),
     }
 }
@@ -1566,6 +1584,7 @@ pub fn create_pbft_manager_runtime_session(
         pending,
         cursor: 0,
         restart_loop: false,
+        reset_target_round: None,
         error_code: String::new(),
     }
 }
@@ -1582,22 +1601,33 @@ pub fn next_pbft_manager_runtime_action(
             has_action: false,
             complete: session.status == PbftManagerRuntimeStatus::Complete,
             restart_loop: session.restart_loop,
+            has_target_round: false,
+            target_round: 0,
             tick_id: session.fact.tick_id,
             error_code: session.error_code.clone(),
         };
     }
 
     match session.pending.front().copied() {
-        Some(action) => PbftManagerRuntimeSessionStep {
-            status: PbftManagerRuntimeStatus::Active,
-            cursor: session.cursor,
-            action: Some(action),
-            has_action: true,
-            complete: false,
-            restart_loop: false,
-            tick_id: session.fact.tick_id,
-            error_code: String::new(),
-        },
+        Some(action) => {
+            let target_round = if action == PbftManagerRuntimeAction::ResetConsensus {
+                session.reset_target_round.unwrap_or(0)
+            } else {
+                0
+            };
+            PbftManagerRuntimeSessionStep {
+                status: PbftManagerRuntimeStatus::Active,
+                cursor: session.cursor,
+                action: Some(action),
+                has_action: true,
+                complete: false,
+                restart_loop: false,
+                has_target_round: action == PbftManagerRuntimeAction::ResetConsensus,
+                target_round,
+                tick_id: session.fact.tick_id,
+                error_code: String::new(),
+            }
+        }
         None => PbftManagerRuntimeSessionStep {
             status: PbftManagerRuntimeStatus::Complete,
             cursor: session.cursor,
@@ -1605,6 +1635,8 @@ pub fn next_pbft_manager_runtime_action(
             has_action: false,
             complete: true,
             restart_loop: session.restart_loop,
+            has_target_round: false,
+            target_round: 0,
             tick_id: session.fact.tick_id,
             error_code: String::new(),
         },
@@ -1618,6 +1650,7 @@ fn fail_session(
 ) -> PbftManagerRuntimeSession {
     session.status = status;
     session.pending.clear();
+    session.reset_target_round = None;
     session.error_code = error_code;
     session
 }
@@ -1635,12 +1668,17 @@ fn valid_action_result(
     result: PbftManagerRuntimeActionResultCode,
 ) -> bool {
     match action {
-        PbftManagerRuntimeAction::TryPushCertVotesBlock
-        | PbftManagerRuntimeAction::TryAdvanceRound => matches!(
+        PbftManagerRuntimeAction::TryPushCertVotesBlock => matches!(
             result,
             PbftManagerRuntimeActionResultCode::NoProgressContinue
                 | PbftManagerRuntimeActionResultCode::ProgressRestartLoop
         ),
+        PbftManagerRuntimeAction::TryAdvanceRound => {
+            result == PbftManagerRuntimeActionResultCode::NoProgressContinue
+        }
+        PbftManagerRuntimeAction::ResetConsensus => {
+            result == PbftManagerRuntimeActionResultCode::TransitionApplied
+        }
         PbftManagerRuntimeAction::TransitionToFilter
         | PbftManagerRuntimeAction::TransitionToCertify
         | PbftManagerRuntimeAction::TransitionToFinish
@@ -1721,8 +1759,7 @@ pub fn report_pbft_manager_runtime_action(
     }
 
     match expected_action {
-        PbftManagerRuntimeAction::TryPushCertVotesBlock
-        | PbftManagerRuntimeAction::TryAdvanceRound => {
+        PbftManagerRuntimeAction::TryPushCertVotesBlock => {
             if report.result == PbftManagerRuntimeActionResultCode::ProgressRestartLoop {
                 session.status = PbftManagerRuntimeStatus::Complete;
                 session.pending.clear();
@@ -1730,15 +1767,41 @@ pub fn report_pbft_manager_runtime_action(
                 session.cursor = session.cursor.saturating_add(1);
                 return session;
             }
-            if expected_action == PbftManagerRuntimeAction::TryAdvanceRound {
-                if report.has_eligible_wallet {
-                    append_state_script(&mut session.pending, session.fact.state);
-                } else {
-                    session
-                        .pending
-                        .push_back(PbftManagerRuntimeAction::SleepIneligiblePollingInterval);
-                }
+        }
+        PbftManagerRuntimeAction::TryAdvanceRound => {
+            let advance_plan = plan_pbft_manager_advance_round(PbftManagerAdvanceRoundFact {
+                period: session.fact.period,
+                current_round: session.fact.round,
+                has_new_round: report.has_new_round,
+                new_round: report.new_round,
+            });
+            if advance_plan.status != PbftManagerTransitionStatus::Ready {
+                return fail_session(
+                    session,
+                    PbftManagerRuntimeStatus::InvalidReport,
+                    advance_plan.error_code,
+                );
             }
+            if advance_plan.should_advance {
+                session.reset_target_round = Some(advance_plan.target_round);
+                session
+                    .pending
+                    .push_front(PbftManagerRuntimeAction::ResetConsensus);
+            } else if report.has_eligible_wallet {
+                append_state_script(&mut session.pending, session.fact.state);
+            } else {
+                session
+                    .pending
+                    .push_back(PbftManagerRuntimeAction::SleepIneligiblePollingInterval);
+            }
+        }
+        PbftManagerRuntimeAction::ResetConsensus => {
+            session.status = PbftManagerRuntimeStatus::Complete;
+            session.pending.clear();
+            session.reset_target_round = None;
+            session.restart_loop = true;
+            session.cursor = session.cursor.saturating_add(1);
+            return session;
         }
         PbftManagerRuntimeAction::SleepIneligiblePollingInterval => {
             if report.result != PbftManagerRuntimeActionResultCode::SleepApplied {
@@ -1805,6 +1868,7 @@ pub fn abort_pbft_manager_runtime_session(
     session.status = PbftManagerRuntimeStatus::ContractError;
     session.pending.clear();
     session.restart_loop = false;
+    session.reset_target_round = None;
     session.error_code = "PBFT_MANAGER_RUNTIME_ABORTED".to_string();
     session
 }
@@ -1835,6 +1899,8 @@ mod tests {
             go_finish_state: false,
             loop_back_finish_state: false,
             has_eligible_wallet: true,
+            has_new_round: false,
+            new_round: 0,
             error_code: String::new(),
         }
     }
@@ -1919,7 +1985,8 @@ mod tests {
                 | PbftManagerRuntimeAction::TransitionToCertify
                 | PbftManagerRuntimeAction::TransitionToFinish
                 | PbftManagerRuntimeAction::TransitionToFinishPolling
-                | PbftManagerRuntimeAction::LoopBackFinish => {
+                | PbftManagerRuntimeAction::LoopBackFinish
+                | PbftManagerRuntimeAction::ResetConsensus => {
                     PbftManagerRuntimeActionResultCode::TransitionApplied
                 }
                 PbftManagerRuntimeAction::SleepUntilNextStep
@@ -1999,6 +2066,78 @@ mod tests {
         let final_step = next_pbft_manager_runtime_action(&session);
         assert!(final_step.complete);
         assert!(final_step.restart_loop);
+    }
+
+    #[test]
+    fn advance_round_candidate_emits_reset_effect_and_restarts_after_report() {
+        let mut session =
+            create_pbft_manager_runtime_session(fact(PbftManagerRuntimeStateCode::Filter));
+        for expected in [
+            PbftManagerRuntimeAction::ProcessSyncedPbftBlocks,
+            PbftManagerRuntimeAction::MaybeBroadcastVotes,
+            PbftManagerRuntimeAction::TryPushCertVotesBlock,
+        ] {
+            let step = next_pbft_manager_runtime_action(&session);
+            assert_eq!(step.action, Some(expected));
+            let mut action_report = report(step.cursor, expected);
+            if expected == PbftManagerRuntimeAction::TryPushCertVotesBlock {
+                action_report.result = PbftManagerRuntimeActionResultCode::NoProgressContinue;
+            }
+            session = report_pbft_manager_runtime_action(session, action_report);
+        }
+
+        let step = next_pbft_manager_runtime_action(&session);
+        assert_eq!(step.action, Some(PbftManagerRuntimeAction::TryAdvanceRound));
+        let mut action_report = report(step.cursor, PbftManagerRuntimeAction::TryAdvanceRound);
+        action_report.result = PbftManagerRuntimeActionResultCode::NoProgressContinue;
+        action_report.has_new_round = true;
+        action_report.new_round = 5;
+        session = report_pbft_manager_runtime_action(session, action_report);
+
+        let reset = next_pbft_manager_runtime_action(&session);
+        assert_eq!(reset.action, Some(PbftManagerRuntimeAction::ResetConsensus));
+        assert!(reset.has_target_round);
+        assert_eq!(reset.target_round, 5);
+
+        let mut reset_report = report(reset.cursor, PbftManagerRuntimeAction::ResetConsensus);
+        reset_report.result = PbftManagerRuntimeActionResultCode::TransitionApplied;
+        session = report_pbft_manager_runtime_action(session, reset_report);
+        let complete = next_pbft_manager_runtime_action(&session);
+        assert!(complete.complete);
+        assert!(complete.restart_loop);
+    }
+
+    #[test]
+    fn advance_round_rejects_non_increasing_candidate() {
+        let mut session =
+            create_pbft_manager_runtime_session(fact(PbftManagerRuntimeStateCode::Filter));
+        for expected in [
+            PbftManagerRuntimeAction::ProcessSyncedPbftBlocks,
+            PbftManagerRuntimeAction::MaybeBroadcastVotes,
+            PbftManagerRuntimeAction::TryPushCertVotesBlock,
+        ] {
+            let step = next_pbft_manager_runtime_action(&session);
+            assert_eq!(step.action, Some(expected));
+            let mut action_report = report(step.cursor, expected);
+            if expected == PbftManagerRuntimeAction::TryPushCertVotesBlock {
+                action_report.result = PbftManagerRuntimeActionResultCode::NoProgressContinue;
+            }
+            session = report_pbft_manager_runtime_action(session, action_report);
+        }
+
+        let step = next_pbft_manager_runtime_action(&session);
+        let mut action_report = report(step.cursor, PbftManagerRuntimeAction::TryAdvanceRound);
+        action_report.result = PbftManagerRuntimeActionResultCode::NoProgressContinue;
+        action_report.has_new_round = true;
+        action_report.new_round = 2;
+        session = report_pbft_manager_runtime_action(session, action_report);
+
+        let failed = next_pbft_manager_runtime_action(&session);
+        assert_eq!(failed.status, PbftManagerRuntimeStatus::InvalidReport);
+        assert_eq!(
+            failed.error_code,
+            "PBFT_MANAGER_ADVANCE_ROUND_NON_INCREASING_ROUND"
+        );
     }
 
     #[test]
