@@ -1,8 +1,11 @@
 use crate::final_chain::{DPOS_CONTRACT_ADDRESS, FinalChain, SLASHING_CONTRACT_ADDRESS};
 use crate::rewards_stats::RewardCertVoteFact;
 use anyhow::Context;
+use ethereum_types::{H256, U256};
+use keccak_hasher::KeccakHasher;
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::{FinalizationDagBlock, FinalizationTransaction};
+use triehash::ordered_trie_root;
 
 /// Native-only execution mode used by the current C++ `FinalChain::finalize`
 /// shim while arbitrary EVM execution remains outside Rust FinalChain.
@@ -23,6 +26,8 @@ pub const FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM: u8 = 2;
 pub const FINAL_CHAIN_EXECUTION_STATUS_REJECTED: u8 = 3;
 /// Session was aborted by its owner.
 pub const FINAL_CHAIN_EXECUTION_STATUS_ABORTED: u8 = 4;
+/// Session is waiting for post-execution external EVM rewards/state-root facts.
+pub const FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_REWARDS: u8 = 5;
 
 /// No work remains for the current session state.
 pub const FINAL_CHAIN_EXECUTION_ACTION_COMPLETE: u8 = 0;
@@ -32,6 +37,8 @@ pub const FINAL_CHAIN_EXECUTION_ACTION_COMMIT_NATIVE: u8 = 1;
 pub const FINAL_CHAIN_EXECUTION_ACTION_EXECUTE_EXTERNAL_EVM: u8 = 2;
 /// Reject the request and keep FinalChain storage untouched.
 pub const FINAL_CHAIN_EXECUTION_ACTION_REJECT: u8 = 3;
+/// Distribute rewards through the external EVM executor boundary.
+pub const FINAL_CHAIN_EXECUTION_ACTION_DISTRIBUTE_EXTERNAL_EVM_REWARDS: u8 = 4;
 
 /// Regular native value transfer.
 pub const FINAL_CHAIN_EXECUTION_TX_KIND_NATIVE_VALUE_TRANSFER: u8 = 0;
@@ -48,6 +55,11 @@ pub const FINAL_CHAIN_EXECUTION_TX_KIND_EXTERNAL_EVM_CREATE: u8 = 4;
 pub const FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS: u8 = 0;
 /// External EVM executor rejected the requested execution.
 pub const FINAL_CHAIN_EVM_REPORT_STATUS_REJECTED: u8 = 1;
+
+/// Successful external EVM rewards/state-root report.
+pub const FINAL_CHAIN_EVM_REWARDS_REPORT_STATUS_SUCCESS: u8 = 0;
+/// External EVM rewards/state-root executor rejected the requested distribution.
+pub const FINAL_CHAIN_EVM_REWARDS_REPORT_STATUS_REJECTED: u8 = 1;
 
 /// Complete FinalChain execution request owned by a runtime session.
 ///
@@ -160,6 +172,62 @@ pub struct FinalChainEvmExecutionReport {
     pub results: Vec<FinalChainEvmTransactionResult>,
 }
 
+/// Rewards request emitted after a valid external EVM execution report.
+///
+/// The request keeps rewards outside FinalChain execution while giving the
+/// future C++/Rust executor adapter enough deterministic facts to run the same
+/// post-transaction rewards distribution boundary as legacy C++.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FinalChainEvmRewardsRequest {
+    pub request_id: [u8; 32],
+    pub period: u64,
+    pub block_author: [u8; 20],
+    pub block_gas_used: u64,
+    pub transaction_gas_used: Vec<u64>,
+    pub transaction_fees: Vec<Vec<u8>>,
+    pub finalized_dag_block_count: u64,
+}
+
+/// Rewards/state-root facts returned by the external EVM executor boundary.
+///
+/// `state_root` is the post-rewards root that will eventually enter the
+/// FinalChain block header. `total_reward` is the legacy total-reward header
+/// field encoded as an unsigned big-endian integer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FinalChainEvmRewardsReport {
+    pub request_id: [u8; 32],
+    pub period: u64,
+    pub status: u8,
+    pub state_root: [u8; 32],
+    pub total_reward: Vec<u8>,
+}
+
+/// Non-mutating Rust plan for a future external-EVM FinalChain commit.
+///
+/// The plan proves Rust can derive the header/storage publication facts from
+/// typed EVM and rewards reports without touching `StateAPI`, `state_db/`, or
+/// FinalChain storage. Production commit remains disabled until this plan is
+/// connected to differential parity tests and an executor lifecycle that can
+/// safely commit or discard staged EVM state.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FinalChainExternalEvmCommitPlan {
+    pub request_id: [u8; 32],
+    pub period: u64,
+    pub post_execution_state_root: [u8; 32],
+    pub state_root: [u8; 32],
+    pub total_reward: Vec<u8>,
+    pub transactions_root: [u8; 32],
+    pub receipts_root: [u8; 32],
+    pub header_log_bloom: Vec<u8>,
+    pub indexed_log_bloom: Vec<u8>,
+    pub receipts_rlp: Vec<u8>,
+    pub encoded_receipts: Vec<Vec<u8>>,
+    pub gas_used: u64,
+    pub executed_dag_blocks: u64,
+    pub executed_transactions: u64,
+    pub error_code: String,
+}
+
 /// Next action for a FinalChain execution session.
 ///
 /// `status` describes the session state after producing the step. `action`
@@ -172,6 +240,7 @@ pub struct FinalChainExecutionStep {
     pub period: u64,
     pub external_evm_transaction_count: u64,
     pub evm_request: FinalChainEvmExecutionRequest,
+    pub evm_rewards_request: FinalChainEvmRewardsRequest,
     pub error_code: String,
 }
 
@@ -204,6 +273,8 @@ pub struct FinalChainExecutionSession {
     evm_request: Option<FinalChainEvmExecutionRequest>,
     status: u8,
     report: Option<FinalChainEvmExecutionReport>,
+    rewards_request: Option<FinalChainEvmRewardsRequest>,
+    external_evm_commit_plan: Option<FinalChainExternalEvmCommitPlan>,
     error_code: String,
 }
 
@@ -277,6 +348,15 @@ pub fn final_chain_execution_session_next(
                 .unwrap_or_default(),
             evm_request: session.evm_request.clone().unwrap_or_default(),
             error_code: session.error_code.clone(),
+            ..Default::default()
+        },
+        FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_REWARDS => FinalChainExecutionStep {
+            status: session.status,
+            action: FINAL_CHAIN_EXECUTION_ACTION_DISTRIBUTE_EXTERNAL_EVM_REWARDS,
+            period: session.metadata.period,
+            evm_rewards_request: session.rewards_request.clone().unwrap_or_default(),
+            error_code: session.error_code.clone(),
+            ..Default::default()
         },
         FINAL_CHAIN_EXECUTION_STATUS_COMPLETE => FinalChainExecutionStep {
             status: FINAL_CHAIN_EXECUTION_STATUS_COMPLETE,
@@ -296,6 +376,7 @@ pub fn final_chain_execution_session_next(
                     external_evm_transaction_count,
                     evm_request,
                     error_code: String::new(),
+                    ..Default::default()
                 }
             } else {
                 FinalChainExecutionStep {
@@ -305,6 +386,7 @@ pub fn final_chain_execution_session_next(
                     external_evm_transaction_count: 0,
                     evm_request: FinalChainEvmExecutionRequest::default(),
                     error_code: String::new(),
+                    ..Default::default()
                 }
             }
         }
@@ -313,9 +395,8 @@ pub fn final_chain_execution_session_next(
 
 /// Validates an external EVM report against the session's pending request.
 ///
-/// Phase 1 accepts report shape only. Even a successful report transitions to a
-/// rejected terminal state because Rust FinalChain cannot yet commit external
-/// EVM state roots and receipts.
+/// A successful report advances the session to the rewards/state-root boundary
+/// instead of committing storage. Failed reports stay terminal rejections.
 pub fn final_chain_execution_session_report_evm(
     session: &mut FinalChainExecutionSession,
     report: FinalChainEvmExecutionReport,
@@ -352,6 +433,13 @@ pub fn final_chain_execution_session_report_evm(
             session.error_code = "FINAL_CHAIN_EVM_REPORT_TRANSACTION_STATUS_INVALID".to_string();
             return final_chain_execution_session_next(session);
         }
+        let has_error = !actual.code_error.is_empty() || !actual.consensus_error.is_empty();
+        if (actual.status == 1) == has_error {
+            session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+            session.error_code =
+                "FINAL_CHAIN_EVM_REPORT_TRANSACTION_STATUS_ERROR_MISMATCH".to_string();
+            return final_chain_execution_session_next(session);
+        }
         cumulative_gas_used = match cumulative_gas_used.checked_add(actual.gas_used) {
             Some(value) => value,
             None => {
@@ -377,10 +465,87 @@ pub fn final_chain_execution_session_report_evm(
         session.error_code = "FINAL_CHAIN_EVM_REPORT_TOTAL_GAS_MISMATCH".to_string();
         return final_chain_execution_session_next(session);
     }
+    let rewards_request =
+        match build_external_evm_rewards_request(&session.request, request, &report) {
+            Ok(request) => request,
+            Err(error) => {
+                session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+                session.error_code = format!("FINAL_CHAIN_EVM_REWARDS_REQUEST_INVALID: {error:#}");
+                return final_chain_execution_session_next(session);
+            }
+        };
     session.report = Some(report);
-    session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
-    session.error_code = "FINAL_CHAIN_EVM_REPORT_COMMIT_UNIMPLEMENTED".to_string();
+    session.rewards_request = Some(rewards_request);
+    session.status = FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_REWARDS;
+    session.error_code.clear();
     final_chain_execution_session_next(session)
+}
+
+/// Validates external EVM rewards/state-root facts and builds a Rust commit
+/// plan without mutating FinalChain storage.
+///
+/// The returned plan contains the header roots, blooms, receipt payloads, gas,
+/// and execution counters that a future storage commit path will publish in one
+/// Rust-owned batch. The function intentionally does not call `StateAPI`, write
+/// `DbStorage`, or mark the session complete.
+pub fn final_chain_execution_session_plan_external_evm_commit(
+    session: &mut FinalChainExecutionSession,
+    rewards_report: FinalChainEvmRewardsReport,
+) -> FinalChainExternalEvmCommitPlan {
+    if session.status != FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_REWARDS {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_REWARDS_REPORT_UNEXPECTED".to_string();
+        return rejected_external_evm_commit_plan(&session.metadata, session.error_code.clone());
+    }
+    let Some(evm_request) = session.evm_request.as_ref() else {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_REWARDS_REPORT_WITHOUT_REQUEST".to_string();
+        return rejected_external_evm_commit_plan(&session.metadata, session.error_code.clone());
+    };
+    let Some(evm_report) = session.report.as_ref() else {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_REWARDS_REPORT_WITHOUT_EVM_REPORT".to_string();
+        return rejected_external_evm_commit_plan(&session.metadata, session.error_code.clone());
+    };
+    if rewards_report.request_id != evm_request.request_id {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_REWARDS_REPORT_REQUEST_ID_MISMATCH".to_string();
+        return rejected_external_evm_commit_plan(&session.metadata, session.error_code.clone());
+    }
+    if rewards_report.period != session.metadata.period {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_REWARDS_REPORT_PERIOD_MISMATCH".to_string();
+        return rejected_external_evm_commit_plan(&session.metadata, session.error_code.clone());
+    }
+    if rewards_report.status != FINAL_CHAIN_EVM_REWARDS_REPORT_STATUS_SUCCESS {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_REWARDS_REPORT_REJECTED".to_string();
+        return rejected_external_evm_commit_plan(&session.metadata, session.error_code.clone());
+    }
+    if rewards_report.total_reward.len() > 32 {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_REWARDS_REPORT_TOTAL_REWARD_OVERSIZED".to_string();
+        return rejected_external_evm_commit_plan(&session.metadata, session.error_code.clone());
+    }
+    match build_external_evm_commit_plan(
+        &session.request,
+        &session.metadata,
+        evm_request,
+        evm_report,
+        &rewards_report,
+    ) {
+        Ok(plan) => {
+            session.external_evm_commit_plan = Some(plan.clone());
+            session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+            session.error_code = "FINAL_CHAIN_EVM_COMMIT_UNIMPLEMENTED".to_string();
+            plan
+        }
+        Err(error) => {
+            session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+            session.error_code = format!("FINAL_CHAIN_EVM_COMMIT_PLAN_INVALID: {error:#}");
+            rejected_external_evm_commit_plan(&session.metadata, session.error_code.clone())
+        }
+    }
 }
 
 /// Commits a completed native FinalChain execution session.
@@ -449,6 +614,8 @@ impl FinalChainExecutionSession {
                 evm_request: None,
                 status: FINAL_CHAIN_EXECUTION_STATUS_READY,
                 report: None,
+                rewards_request: None,
+                external_evm_commit_plan: None,
                 error_code: String::new(),
             };
         }
@@ -460,7 +627,11 @@ impl FinalChainExecutionSession {
             );
         }
         let evm_request = FinalChainEvmExecutionRequest {
-            request_id: execution_request_id(metadata.period, &ordered_transactions),
+            request_id: execution_request_id(
+                &metadata,
+                request.block_gas_limit,
+                &ordered_transactions,
+            ),
             period: metadata.period,
             block_author: metadata.author.into(),
             timestamp: metadata.timestamp,
@@ -473,6 +644,8 @@ impl FinalChainExecutionSession {
             evm_request: Some(evm_request),
             status: FINAL_CHAIN_EXECUTION_STATUS_READY,
             report: None,
+            rewards_request: None,
+            external_evm_commit_plan: None,
             error_code: String::new(),
         }
     }
@@ -488,9 +661,184 @@ impl FinalChainExecutionSession {
             evm_request: None,
             status: FINAL_CHAIN_EXECUTION_STATUS_REJECTED,
             report: None,
+            rewards_request: None,
+            external_evm_commit_plan: None,
             error_code,
         }
     }
+}
+
+fn build_external_evm_rewards_request(
+    finalization_request: &FinalChainExecutionRequest,
+    request: &FinalChainEvmExecutionRequest,
+    report: &FinalChainEvmExecutionReport,
+) -> Result<FinalChainEvmRewardsRequest, anyhow::Error> {
+    let mut transaction_gas_used = Vec::with_capacity(report.results.len());
+    let mut transaction_fees = Vec::with_capacity(report.results.len());
+    for (transaction, result) in request.transactions.iter().zip(report.results.iter()) {
+        let fee = u256_from_big_endian(&transaction.gas_price)
+            .checked_mul(U256::from(result.gas_used))
+            .ok_or_else(|| anyhow::anyhow!("external EVM transaction fee overflow"))?;
+        transaction_gas_used.push(result.gas_used);
+        transaction_fees.push(u256_to_big_endian(fee));
+    }
+    Ok(FinalChainEvmRewardsRequest {
+        request_id: request.request_id,
+        period: request.period,
+        block_author: request.block_author,
+        block_gas_used: report.cumulative_gas_used,
+        transaction_gas_used,
+        transaction_fees,
+        finalized_dag_block_count: finalization_request.finalized_dag_blocks.len() as u64,
+    })
+}
+
+fn build_external_evm_commit_plan(
+    request: &FinalChainExecutionRequest,
+    metadata: &rustaxa_types::PbftBlockMetadata,
+    evm_request: &FinalChainEvmExecutionRequest,
+    evm_report: &FinalChainEvmExecutionReport,
+    rewards_report: &FinalChainEvmRewardsReport,
+) -> Result<FinalChainExternalEvmCommitPlan, anyhow::Error> {
+    if evm_request.transactions.len() != request.transactions.len() {
+        anyhow::bail!(
+            "external EVM request has {} transaction(s), finalization request has {}",
+            evm_request.transactions.len(),
+            request.transactions.len()
+        );
+    }
+    let encoded_receipts = evm_report
+        .results
+        .iter()
+        .map(validate_and_clone_external_evm_receipt)
+        .collect::<Result<Vec<_>, _>>()?;
+    let receipts_rlp = encode_receipts_rlp(&encoded_receipts);
+    let header_log_bloom =
+        block_log_bloom(evm_report.results.iter().flat_map(|result| &result.logs));
+    let mut indexed_log_bloom = header_log_bloom.clone();
+    add_bloom_value(&mut indexed_log_bloom, metadata.author.as_bytes());
+    Ok(FinalChainExternalEvmCommitPlan {
+        request_id: evm_request.request_id,
+        period: metadata.period,
+        post_execution_state_root: evm_report.state_root,
+        state_root: rewards_report.state_root,
+        total_reward: rewards_report.total_reward.clone(),
+        transactions_root: ordered_root(
+            request
+                .transactions
+                .iter()
+                .map(|transaction| transaction.rlp.as_slice()),
+        )
+        .into(),
+        receipts_root: ordered_root(encoded_receipts.iter().map(|receipt| receipt.as_slice()))
+            .into(),
+        header_log_bloom,
+        indexed_log_bloom,
+        receipts_rlp,
+        encoded_receipts,
+        gas_used: evm_report.cumulative_gas_used,
+        executed_dag_blocks: request.finalized_dag_blocks.len() as u64,
+        executed_transactions: request.transactions.len() as u64,
+        error_code: String::new(),
+    })
+}
+
+fn rejected_external_evm_commit_plan(
+    metadata: &rustaxa_types::PbftBlockMetadata,
+    error_code: String,
+) -> FinalChainExternalEvmCommitPlan {
+    FinalChainExternalEvmCommitPlan {
+        period: metadata.period,
+        error_code,
+        ..Default::default()
+    }
+}
+
+fn validate_and_clone_external_evm_receipt(
+    result: &FinalChainEvmTransactionResult,
+) -> Result<Vec<u8>, anyhow::Error> {
+    let encoded = encode_external_evm_receipt(result);
+    if encoded != result.receipt_rlp {
+        anyhow::bail!("external EVM typed receipt fields do not match receipt RLP");
+    }
+    Ok(result.receipt_rlp.clone())
+}
+
+fn encode_external_evm_receipt(result: &FinalChainEvmTransactionResult) -> Vec<u8> {
+    let mut stream = rlp::RlpStream::new_list(5);
+    stream.append(&result.status);
+    stream.append(&result.gas_used);
+    stream.append(&result.cumulative_gas_used);
+    stream.begin_list(result.logs.len());
+    for log in &result.logs {
+        stream.begin_list(3);
+        stream.append(&log.address.as_slice());
+        stream.begin_list(log.topics.len());
+        for topic in &log.topics {
+            stream.append(&topic.topic.as_slice());
+        }
+        stream.append(&log.data.as_slice());
+    }
+    if let Some(address) = result.new_contract_address {
+        stream.append(&address.as_slice());
+    } else {
+        stream.append(&0u8);
+    }
+    stream.out().to_vec()
+}
+
+fn encode_receipts_rlp(receipts: &[Vec<u8>]) -> Vec<u8> {
+    let mut stream = rlp::RlpStream::new_list(receipts.len());
+    for receipt in receipts {
+        stream.append_raw(receipt, 1);
+    }
+    stream.out().to_vec()
+}
+
+fn block_log_bloom<'a>(logs: impl Iterator<Item = &'a FinalChainEvmLog>) -> Vec<u8> {
+    let mut bloom = vec![0u8; 256];
+    for log in logs {
+        add_bloom_value(&mut bloom, &log.address);
+        for topic in &log.topics {
+            add_bloom_value(&mut bloom, &topic.topic);
+        }
+    }
+    bloom
+}
+
+fn add_bloom_value(bloom: &mut [u8], value: &[u8]) {
+    use tiny_keccak::{Hasher, Keccak};
+
+    let mut hash = [0u8; 32];
+    let mut hasher = Keccak::v256();
+    hasher.update(value);
+    hasher.finalize(&mut hash);
+
+    for offset in [0usize, 2, 4] {
+        let bit = (((hash[offset] as usize) << 8) | hash[offset + 1] as usize) & 2047;
+        let byte_index = bloom.len() - 1 - (bit / 8);
+        bloom[byte_index] |= 1u8 << (bit % 8);
+    }
+}
+
+fn ordered_root<'a>(values: impl Iterator<Item = &'a [u8]>) -> H256 {
+    H256::from_slice(ordered_trie_root::<KeccakHasher, _>(values).as_ref())
+}
+
+fn u256_from_big_endian(bytes: &[u8]) -> U256 {
+    U256::from_big_endian(bytes)
+}
+
+fn u256_to_big_endian(value: U256) -> Vec<u8> {
+    if value.is_zero() {
+        return vec![0];
+    }
+    let bytes = value.to_big_endian();
+    let first_nonzero = bytes
+        .iter()
+        .position(|byte| *byte != 0)
+        .unwrap_or(bytes.len() - 1);
+    bytes[first_nonzero..].to_vec()
 }
 
 fn classify_ordered_execution_transactions(
@@ -545,11 +893,18 @@ fn transaction_kind(transaction: &FinalizationTransaction) -> u8 {
     }
 }
 
-fn execution_request_id(period: u64, transactions: &[FinalChainEvmTransactionInput]) -> [u8; 32] {
+fn execution_request_id(
+    metadata: &rustaxa_types::PbftBlockMetadata,
+    block_gas_limit: u64,
+    transactions: &[FinalChainEvmTransactionInput],
+) -> [u8; 32] {
     use tiny_keccak::{Hasher, Keccak};
 
     let mut hasher = Keccak::v256();
-    hasher.update(&period.to_be_bytes());
+    hasher.update(&metadata.period.to_be_bytes());
+    hasher.update(metadata.author.as_bytes());
+    hasher.update(&metadata.timestamp.to_be_bytes());
+    hasher.update(&block_gas_limit.to_be_bytes());
     for transaction in transactions {
         hasher.update(&transaction.position.to_be_bytes());
         hasher.update(&transaction.hash);
@@ -646,6 +1001,17 @@ mod tests {
             code_error: String::new(),
             consensus_error: String::new(),
         }
+    }
+
+    fn evm_result_with_encoded_receipt(
+        tx: &FinalChainEvmTransactionInput,
+        status: u8,
+        gas_used: u64,
+        cumulative_gas_used: u64,
+    ) -> FinalChainEvmTransactionResult {
+        let mut result = evm_result(tx, status, gas_used, cumulative_gas_used, Vec::new());
+        result.receipt_rlp = encode_external_evm_receipt(&result);
+        result
     }
 
     fn signed_pbft_block_rlp(period: u64) -> Vec<u8> {
@@ -831,7 +1197,7 @@ mod tests {
     }
 
     #[test]
-    fn successful_evm_report_is_validated_but_not_committed_yet() {
+    fn successful_evm_report_requests_rewards_boundary() {
         let transactions = vec![transaction(2, Some([8; 20]), vec![0xaa])];
         let mut session = create_final_chain_execution_session(valid_request(
             transactions,
@@ -844,16 +1210,102 @@ mod tests {
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
             state_root: [0x11; 32],
             cumulative_gas_used: 1,
-            results: vec![evm_result(&tx, 1, 1, 1, vec![0xc0])],
+            results: vec![evm_result_with_encoded_receipt(&tx, 1, 1, 1)],
         };
 
-        let rejected = final_chain_execution_session_report_evm(&mut session, report);
+        let rewards = final_chain_execution_session_report_evm(&mut session, report);
 
-        assert_eq!(rejected.status, FINAL_CHAIN_EXECUTION_STATUS_REJECTED);
         assert_eq!(
-            rejected.error_code,
-            "FINAL_CHAIN_EVM_REPORT_COMMIT_UNIMPLEMENTED"
+            rewards.status,
+            FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_REWARDS
         );
+        assert_eq!(
+            rewards.action,
+            FINAL_CHAIN_EXECUTION_ACTION_DISTRIBUTE_EXTERNAL_EVM_REWARDS
+        );
+        assert_eq!(
+            rewards.evm_rewards_request.request_id,
+            step.evm_request.request_id
+        );
+        assert_eq!(rewards.evm_rewards_request.period, 7);
+        assert_eq!(rewards.evm_rewards_request.block_gas_used, 1);
+        assert_eq!(rewards.evm_rewards_request.transaction_gas_used, vec![1]);
+        assert_eq!(rewards.evm_rewards_request.transaction_fees, vec![vec![0]]);
+    }
+
+    #[test]
+    fn external_evm_rewards_report_builds_non_mutating_commit_plan() {
+        let transactions = vec![
+            transaction(1, Some([9; 20]), Vec::new()),
+            transaction(2, Some([8; 20]), vec![0xaa]),
+        ];
+        let mut session = create_final_chain_execution_session(valid_request(
+            transactions.clone(),
+            FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
+        ));
+        let step = final_chain_execution_session_next(&mut session);
+        let first = evm_result_with_encoded_receipt(&step.evm_request.transactions[0], 1, 2, 2);
+        let second = evm_result_with_encoded_receipt(&step.evm_request.transactions[1], 1, 3, 5);
+        let rewards = final_chain_execution_session_report_evm(
+            &mut session,
+            FinalChainEvmExecutionReport {
+                request_id: step.evm_request.request_id,
+                status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
+                state_root: [0x10; 32],
+                cumulative_gas_used: 5,
+                results: vec![first.clone(), second.clone()],
+            },
+        );
+        assert_eq!(
+            rewards.action,
+            FINAL_CHAIN_EXECUTION_ACTION_DISTRIBUTE_EXTERNAL_EVM_REWARDS
+        );
+
+        let plan = final_chain_execution_session_plan_external_evm_commit(
+            &mut session,
+            FinalChainEvmRewardsReport {
+                request_id: step.evm_request.request_id,
+                period: 7,
+                status: FINAL_CHAIN_EVM_REWARDS_REPORT_STATUS_SUCCESS,
+                state_root: [0x22; 32],
+                total_reward: vec![0x33],
+            },
+        );
+
+        assert!(plan.error_code.is_empty());
+        assert_eq!(plan.period, 7);
+        assert_eq!(plan.request_id, step.evm_request.request_id);
+        assert_eq!(plan.post_execution_state_root, [0x10; 32]);
+        assert_eq!(plan.state_root, [0x22; 32]);
+        assert_eq!(plan.total_reward, vec![0x33]);
+        assert_eq!(plan.gas_used, 5);
+        assert_eq!(plan.executed_dag_blocks, 0);
+        assert_eq!(plan.executed_transactions, 2);
+        assert_eq!(
+            plan.transactions_root,
+            <[u8; 32]>::from(ordered_root(
+                transactions.iter().map(|tx| tx.rlp.as_slice())
+            ))
+        );
+        assert_eq!(
+            plan.receipts_root,
+            <[u8; 32]>::from(ordered_root(
+                [first.receipt_rlp.as_slice(), second.receipt_rlp.as_slice()].into_iter()
+            ))
+        );
+        assert_eq!(
+            plan.encoded_receipts,
+            vec![first.receipt_rlp, second.receipt_rlp]
+        );
+        assert_eq!(
+            plan.receipts_rlp,
+            encode_receipts_rlp(&plan.encoded_receipts)
+        );
+        assert_eq!(plan.header_log_bloom.len(), 256);
+        assert_eq!(plan.indexed_log_bloom.len(), 256);
+        assert!(!plan.header_log_bloom.iter().all(|byte| *byte == 0));
+        assert_eq!(session.status, FINAL_CHAIN_EXECUTION_STATUS_REJECTED);
+        assert_eq!(session.error_code, "FINAL_CHAIN_EVM_COMMIT_UNIMPLEMENTED");
     }
 
     #[test]

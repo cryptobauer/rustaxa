@@ -320,9 +320,13 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     FinalChain-owned execution. When that boundary is needed, Rust now exposes the full ordered bridge-provided
     transaction stream in the EVM request rather than only the contract-call subset, while still reporting the count of
     transactions that require arbitrary EVM execution. EVM reports must cover that same full ordered request and validate
-    request identity, transaction order, cumulative gas, and basic receipt shape. Successful reports are still rejected
-    for commit until system transaction generation, the external executor/rewards result contract, and a
-    state-root/receipt commit path have parity coverage. Native Rust finalization now publishes
+    request identity, transaction order, cumulative gas, typed receipt status, and basic receipt shape. A valid EVM report
+    now advances to a Rust-owned rewards/state-root boundary, and a valid rewards report builds a non-mutating external
+    EVM commit plan with transaction/receipt trie roots, header and indexed log blooms, receipt payloads, gas,
+    post-rewards state root, total reward, and execution counters. The plan intentionally does not publish storage or
+    call `StateAPI` yet; system transaction generation, real executor lifecycle, differential parity, and the
+    state-root/receipt storage commit path remain required before unsupported contract-call and contract-creation state
+    transitions can finalize. Native Rust finalization now publishes
     transaction-location and receipt-by-hash indexes in the same Rust storage batch that publishes block visibility and
     `LAST_NUMBER`, closing the previous native crash window where a finalized head could appear before those indexes.
   - PBFT manager fact collection now connects directly to the Rust FinalChain runtime for PBFT final-chain hash lookup
@@ -368,8 +372,9 @@ FinalChain currently depends on:
    Rust-owned finalization commit plan to system transactions and any future EVM-backed publication path. The current EVM
    session request carries the ordered finalized transactions supplied by C++; Rust still needs bridge-contract state
    reads before it can generate and persist period system transactions itself.
-3. Keep EVM execution outside FinalChain while building the external executor port: request construction, report
-   validation, state-root/receipt compatibility, and differential commit tests. Only after that port exists should
+3. Keep EVM execution outside FinalChain while completing the external executor port: request construction, report
+   validation, rewards/state-root reporting, and non-mutating commit-plan derivation are Rust-owned; differential commit
+   tests, system-transaction facts, safe StateAPI lifecycle, and one-batch storage publication are still needed before
    unsupported contract-call and contract-creation state transitions publish FinalChain storage.
 4. Continue DPoS and account snapshot parity for remaining DPoS contract methods, broader slashing surfaces, and broader
    state trie/code/storage recovery.

@@ -2385,12 +2385,49 @@ pub mod rustaxa_ffi {
         results: Vec<FinalChainEvmTransactionResult>,
     }
 
+    struct FinalChainEvmRewardsRequest {
+        request_id: [u8; 32],
+        period: u64,
+        block_author: [u8; 20],
+        block_gas_used: u64,
+        transaction_gas_used: Vec<u64>,
+        transaction_fees: Vec<ReceiptRlp>,
+        finalized_dag_block_count: u64,
+    }
+
+    struct FinalChainEvmRewardsReport {
+        request_id: [u8; 32],
+        period: u64,
+        status: u8,
+        state_root: [u8; 32],
+        total_reward: Vec<u8>,
+    }
+
+    struct FinalChainExternalEvmCommitPlan {
+        request_id: [u8; 32],
+        period: u64,
+        post_execution_state_root: [u8; 32],
+        state_root: [u8; 32],
+        total_reward: Vec<u8>,
+        transactions_root: [u8; 32],
+        receipts_root: [u8; 32],
+        header_log_bloom: Vec<u8>,
+        indexed_log_bloom: Vec<u8>,
+        receipts_rlp: Vec<u8>,
+        encoded_receipts: Vec<ReceiptRlp>,
+        gas_used: u64,
+        executed_dag_blocks: u64,
+        executed_transactions: u64,
+        error_code: String,
+    }
+
     struct FinalChainExecutionStep {
         status: u8,
         action: u8,
         period: u64,
         external_evm_transaction_count: u64,
         evm_request: FinalChainEvmExecutionRequest,
+        evm_rewards_request: FinalChainEvmRewardsRequest,
         error_code: String,
     }
 
@@ -5263,6 +5300,10 @@ pub mod rustaxa_ffi {
             self: &mut BridgeFinalChainExecutionSession,
             report: FinalChainEvmExecutionReport,
         ) -> Result<FinalChainExecutionStep>;
+        pub fn final_chain_execution_session_plan_external_evm_commit(
+            self: &mut BridgeFinalChainExecutionSession,
+            rewards_report: FinalChainEvmRewardsReport,
+        ) -> Result<FinalChainExternalEvmCommitPlan>;
         pub fn final_chain_execution_session_commit(
             final_chain: &BridgeFinalChain,
             session: Box<BridgeFinalChainExecutionSession>,

@@ -174,6 +174,24 @@ fn evm_request_to_ffi(
     }
 }
 
+fn evm_rewards_request_to_ffi(
+    request: rustaxa_consensus::FinalChainEvmRewardsRequest,
+) -> rustaxa_ffi::FinalChainEvmRewardsRequest {
+    rustaxa_ffi::FinalChainEvmRewardsRequest {
+        request_id: request.request_id,
+        period: request.period,
+        block_author: request.block_author,
+        block_gas_used: request.block_gas_used,
+        transaction_gas_used: request.transaction_gas_used,
+        transaction_fees: request
+            .transaction_fees
+            .into_iter()
+            .map(|data| rustaxa_ffi::ReceiptRlp { data })
+            .collect(),
+        finalized_dag_block_count: request.finalized_dag_block_count,
+    }
+}
+
 fn execution_step_to_ffi(
     step: rustaxa_consensus::FinalChainExecutionStep,
 ) -> rustaxa_ffi::FinalChainExecutionStep {
@@ -183,6 +201,7 @@ fn execution_step_to_ffi(
         period: step.period,
         external_evm_transaction_count: step.external_evm_transaction_count,
         evm_request: evm_request_to_ffi(step.evm_request),
+        evm_rewards_request: evm_rewards_request_to_ffi(step.evm_rewards_request),
         error_code: step.error_code,
     }
 }
@@ -229,6 +248,44 @@ fn evm_report_from_ffi(
                 consensus_error: result.consensus_error,
             })
             .collect(),
+    }
+}
+
+fn evm_rewards_report_from_ffi(
+    report: rustaxa_ffi::FinalChainEvmRewardsReport,
+) -> rustaxa_consensus::FinalChainEvmRewardsReport {
+    rustaxa_consensus::FinalChainEvmRewardsReport {
+        request_id: report.request_id,
+        period: report.period,
+        status: report.status,
+        state_root: report.state_root,
+        total_reward: report.total_reward,
+    }
+}
+
+fn external_evm_commit_plan_to_ffi(
+    plan: rustaxa_consensus::FinalChainExternalEvmCommitPlan,
+) -> rustaxa_ffi::FinalChainExternalEvmCommitPlan {
+    rustaxa_ffi::FinalChainExternalEvmCommitPlan {
+        request_id: plan.request_id,
+        period: plan.period,
+        post_execution_state_root: plan.post_execution_state_root,
+        state_root: plan.state_root,
+        total_reward: plan.total_reward,
+        transactions_root: plan.transactions_root,
+        receipts_root: plan.receipts_root,
+        header_log_bloom: plan.header_log_bloom,
+        indexed_log_bloom: plan.indexed_log_bloom,
+        receipts_rlp: plan.receipts_rlp,
+        encoded_receipts: plan
+            .encoded_receipts
+            .into_iter()
+            .map(|data| rustaxa_ffi::ReceiptRlp { data })
+            .collect(),
+        gas_used: plan.gas_used,
+        executed_dag_blocks: plan.executed_dag_blocks,
+        executed_transactions: plan.executed_transactions,
+        error_code: plan.error_code,
     }
 }
 
@@ -425,6 +482,18 @@ impl BridgeFinalChainExecutionSession {
             rustaxa_consensus::final_chain_execution_session_report_evm(
                 &mut self.state,
                 evm_report_from_ffi(report),
+            ),
+        ))
+    }
+
+    pub fn final_chain_execution_session_plan_external_evm_commit(
+        &mut self,
+        rewards_report: rustaxa_ffi::FinalChainEvmRewardsReport,
+    ) -> Result<rustaxa_ffi::FinalChainExternalEvmCommitPlan, anyhow::Error> {
+        Ok(external_evm_commit_plan_to_ffi(
+            rustaxa_consensus::final_chain_execution_session_plan_external_evm_commit(
+                &mut self.state,
+                evm_rewards_report_from_ffi(rewards_report),
             ),
         ))
     }
@@ -983,13 +1052,13 @@ mod tests {
         gas_used: u64,
         cumulative_gas_used: u64,
     ) -> rustaxa_ffi::FinalChainEvmTransactionResult {
-        rustaxa_ffi::FinalChainEvmTransactionResult {
+        let mut result = rustaxa_ffi::FinalChainEvmTransactionResult {
             position: transaction.position,
             hash: transaction.hash,
             status: 1,
             gas_used,
             cumulative_gas_used,
-            receipt_rlp: vec![0xc0],
+            receipt_rlp: Vec::new(),
             logs: vec![rustaxa_ffi::FinalChainEvmLog {
                 address: [0x44; 20],
                 topics: vec![rustaxa_ffi::FinalChainEvmLogTopic { topic: [0x55; 32] }],
@@ -999,7 +1068,32 @@ mod tests {
             new_contract_address: [0x77; 20],
             code_error: String::new(),
             consensus_error: String::new(),
+        };
+        result.receipt_rlp = ffi_evm_receipt_rlp(&result);
+        result
+    }
+
+    fn ffi_evm_receipt_rlp(result: &rustaxa_ffi::FinalChainEvmTransactionResult) -> Vec<u8> {
+        let mut stream = RlpStream::new_list(5);
+        stream.append(&result.status);
+        stream.append(&result.gas_used);
+        stream.append(&result.cumulative_gas_used);
+        stream.begin_list(result.logs.len());
+        for log in &result.logs {
+            stream.begin_list(3);
+            stream.append(&log.address.as_slice());
+            stream.begin_list(log.topics.len());
+            for topic in &log.topics {
+                stream.append(&topic.topic.as_slice());
+            }
+            stream.append(&log.data.as_slice());
         }
+        if result.new_contract_address_found {
+            stream.append(&result.new_contract_address.as_slice());
+        } else {
+            stream.append(&0u8);
+        }
+        stream.out().to_vec()
     }
 
     fn signed_pbft_block_rlp(period: u64) -> Vec<u8> {
@@ -1214,7 +1308,7 @@ mod tests {
     }
 
     #[test]
-    fn bridge_execution_session_accepts_typed_evm_report_until_commit_boundary() {
+    fn bridge_execution_session_builds_external_evm_commit_plan() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_final_chain_execution_report");
         let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
         let final_chain = make_final_chain(storage_path, vec![]);
@@ -1238,7 +1332,7 @@ mod tests {
             .final_chain_execution_session_next()
             .expect("session step should convert");
 
-        let rejected = session
+        let rewards = session
             .final_chain_execution_session_report_evm(rustaxa_ffi::FinalChainEvmExecutionReport {
                 request_id: step.evm_request.request_id,
                 status: rustaxa_consensus::FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
@@ -1252,13 +1346,38 @@ mod tests {
             .expect("typed report should convert");
 
         assert_eq!(
-            rejected.status,
-            rustaxa_consensus::FINAL_CHAIN_EXECUTION_STATUS_REJECTED
+            rewards.status,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_REWARDS
         );
         assert_eq!(
-            rejected.error_code,
-            "FINAL_CHAIN_EVM_REPORT_COMMIT_UNIMPLEMENTED"
+            rewards.action,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_ACTION_DISTRIBUTE_EXTERNAL_EVM_REWARDS
         );
+        assert_eq!(rewards.evm_rewards_request.block_gas_used, 2);
+        assert_eq!(rewards.evm_rewards_request.transaction_gas_used, vec![1, 1]);
+
+        let plan = session
+            .final_chain_execution_session_plan_external_evm_commit(
+                rustaxa_ffi::FinalChainEvmRewardsReport {
+                    request_id: step.evm_request.request_id,
+                    period: 7,
+                    status: rustaxa_consensus::FINAL_CHAIN_EVM_REWARDS_REPORT_STATUS_SUCCESS,
+                    state_root: [0x22; 32],
+                    total_reward: vec![0x33],
+                },
+            )
+            .expect("commit plan should convert");
+
+        assert!(plan.error_code.is_empty());
+        assert_eq!(plan.period, 7);
+        assert_eq!(plan.post_execution_state_root, [0x11; 32]);
+        assert_eq!(plan.state_root, [0x22; 32]);
+        assert_eq!(plan.total_reward, vec![0x33]);
+        assert_eq!(plan.gas_used, 2);
+        assert_eq!(plan.executed_transactions, 2);
+        assert_eq!(plan.encoded_receipts.len(), 2);
+        assert_eq!(plan.header_log_bloom.len(), 256);
+        assert_eq!(plan.indexed_log_bloom.len(), 256);
 
         drop(final_chain);
         let _ = fs::remove_dir_all(temp_dir);
