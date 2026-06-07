@@ -598,8 +598,13 @@ The current Rust starting point is intentionally small:
    `RUSTAXA_ENABLE_PBFT_CHAIN`; proposed-block membership, validity flags, RLP snapshots, and cleanup planning route
    through Rust under `RUSTAXA_ENABLE_PROPOSED_BLOCKS`; period-data queue admission, effective size, pop vote-source
    decisions, and cleanup planning route through Rust under `RUSTAXA_ENABLE_PERIOD_DATA_QUEUE`.
-9. Split the Rust-mode `PbftManager` overlay into Rust services for round/step transitions, proposal handling, vote
-   thresholding, and finalization decisions.
+9. Continue shrinking the Rust-mode `PbftManager` overlay into Rust services for candidate validation and ordered
+   state-action scripts. The next removal target is to move `getValidPbftProposedBlock`, `validatePbftBlock`,
+   `validateFinalChainHash`, reward-vote availability, DAG-order/gas facts, and pillar-data checks into a grouped Rust
+   candidate planner that consumes the existing Rust FinalChain fact bundle and returns executor intents. After that
+   planner owns candidate acceptance, `identifyLeaderBlock`, `proposeBlock_`, `identifyBlock_`, `certifyBlock_`,
+   `firstFinish_`, and `secondFinish_` should collapse further into hash/object resolution plus vote/sign/gossip/storage
+   effect execution.
 10. Port transaction queue behavior before transaction manager orchestration. The Rust-mode `TransactionQueue` overlay
    now routes deterministic queue metadata, per-account nonce ordering, same-nonce replacement, non-proposer expiry
    planning, pool limits, gas-price threshold accounting, queued transaction RLP payload retention, known-transaction
@@ -687,6 +692,13 @@ The current Rust starting point is intentionally small:
    active PBFT state-action branch planner for value proposal, filtering, certify, first finish, and finish polling: the
    shim supplies compact vote/timing/status facts, Rust returns typed proposal, soft-vote, cert-vote, next-vote, finish,
    or no-op intents, and C++ only materializes live blocks/votes, storage mutations, and network effects. Rust now also
+   owns PBFT leader proposal ranking and selection: the shim supplies proposal vote identity, VRF credential, recovered
+   public key, weight, live candidate validation status, and pivot facts, while Rust computes the legacy
+   `getVoterIndexHash(credential, voter, index)` ranking over RLP bytes, applies the duplicate-rank overwrite rule,
+   skips already-in-chain/missing/invalid candidates, preserves the null-anchor fallback rule, and returns selected
+   vote/block hashes for C++ materialization. The shim-local `getProposal()` helper has been removed. C++ still owns
+   live `PbftBlock`/`PbftVote` object resolution, proposed-block validation fact collection, signing, storage mutation,
+   and gossip execution. Rust now also
    owns PBFT manager cursor transitions for round reset, filter/certify/finish/finish-polling phase changes, finish
    loopback, polling delays, exponential lambda backoff, next-voted status resets, cert-voted sidecar cleanup, own-vote
    clearing, and candidate round-advance validation. Rust storage now owns the transition persistence apply path for

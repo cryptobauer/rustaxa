@@ -7,6 +7,8 @@
 
 use crate::ffi::rustaxa_ffi::{
     PbftFinalizationHash as FfiPbftFinalizationHash,
+    PbftManagerLeaderCandidateFact as FfiPbftManagerLeaderCandidateFact,
+    PbftManagerLeaderSelectionPlan as FfiPbftManagerLeaderSelectionPlan,
     PbftManagerRuntimeActionReport as FfiPbftManagerRuntimeActionReport,
     PbftManagerRuntimeSessionStep as FfiPbftManagerRuntimeSessionStep,
     PbftManagerRuntimeSnapshot as FfiPbftManagerRuntimeSnapshot,
@@ -25,10 +27,13 @@ use rustaxa_consensus::pbft_manager::{
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
     create_pbft_manager_runtime_session as create_domain_pbft_manager_runtime_session,
     next_pbft_manager_runtime_action,
+    plan_pbft_manager_leader_selection as plan_domain_pbft_manager_leader_selection,
     plan_pbft_manager_state_action as plan_domain_pbft_manager_state_action,
     plan_pbft_manager_transition as plan_domain_pbft_manager_transition,
-    report_pbft_manager_runtime_action, restore_pbft_manager_runtime, PbftManagerRuntime,
-    PbftManagerRuntimeAction, PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
+    report_pbft_manager_runtime_action, restore_pbft_manager_runtime,
+    PbftManagerLeaderCandidateFact, PbftManagerLeaderCandidateStatus,
+    PbftManagerLeaderSelectionPlan, PbftManagerRuntime, PbftManagerRuntimeAction,
+    PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
     PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot, PbftManagerRuntimeStateCode,
     PbftManagerRuntimeTickFact, PbftManagerStartupRestoreFact, PbftManagerStartupRestoreStatus,
     PbftManagerStateActionFact, PbftManagerStateActionPlan, PbftManagerTransitionFact,
@@ -392,6 +397,17 @@ pub fn plan_pbft_manager_state_action(
     plan_domain_pbft_manager_state_action(fact.into()).into()
 }
 
+/// Plans deterministic PBFT leader selection from C++-resolved candidate facts.
+pub fn plan_pbft_manager_leader_selection(
+    candidates: Vec<FfiPbftManagerLeaderCandidateFact>,
+) -> FfiPbftManagerLeaderSelectionPlan {
+    let candidates = candidates
+        .into_iter()
+        .map(PbftManagerLeaderCandidateFact::from)
+        .collect();
+    plan_domain_pbft_manager_leader_selection(candidates).into()
+}
+
 /// Plans one deterministic PBFT manager transition from compact C++ facts.
 pub fn plan_pbft_manager_transition(
     fact: FfiPbftManagerTransitionFact,
@@ -598,6 +614,21 @@ impl From<FfiPbftManagerStateActionFact> for PbftManagerStateActionFact {
     }
 }
 
+impl From<FfiPbftManagerLeaderCandidateFact> for PbftManagerLeaderCandidateFact {
+    fn from(value: FfiPbftManagerLeaderCandidateFact) -> Self {
+        Self {
+            vote_hash: value.vote_hash.into(),
+            block_hash: value.block_hash.into(),
+            period: value.period,
+            credential: value.credential,
+            voter_public_key: value.voter_public_key,
+            weight: value.weight,
+            status: PbftManagerLeaderCandidateStatus::from_u8(value.status),
+            pivot_hash: value.pivot_hash.into(),
+        }
+    }
+}
+
 impl From<FfiPbftManagerTransitionFact> for PbftManagerTransitionFact {
     fn from(value: FfiPbftManagerTransitionFact) -> Self {
         Self {
@@ -681,6 +712,20 @@ impl From<PbftManagerStateActionPlan> for FfiPbftManagerStateActionPlan {
     }
 }
 
+impl From<PbftManagerLeaderSelectionPlan> for FfiPbftManagerLeaderSelectionPlan {
+    fn from(value: PbftManagerLeaderSelectionPlan) -> Self {
+        Self {
+            status: value.status.as_u8(),
+            selected: value.selected,
+            selected_vote_hash: value.selected_vote_hash.into(),
+            selected_block_hash: value.selected_block_hash.into(),
+            selected_period: value.selected_period,
+            selected_from_null_anchor: value.selected_from_null_anchor,
+            error_code: value.error_code.to_string(),
+        }
+    }
+}
+
 impl From<PbftManagerTransitionPlan> for FfiPbftManagerTransitionPlan {
     fn from(value: PbftManagerTransitionPlan) -> Self {
         Self {
@@ -733,6 +778,9 @@ mod tests {
     const ACTION_RUN_FIRST_FINISH: u8 = 12;
     const RESULT_CONTINUE: u8 = 0;
     const RESULT_PROGRESS_RESTART: u8 = 1;
+    const LEADER_STATUS_SELECTED: u8 = 0;
+    const LEADER_CANDIDATE_READY: u8 = 0;
+    const LEADER_CANDIDATE_INVALID: u8 = 3;
     const RESULT_STATE_DONE: u8 = 2;
     const RESULT_TRANSITION: u8 = 3;
     const RESULT_SLEEP: u8 = 4;
@@ -1384,5 +1432,41 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_plans_pbft_leader_selection_from_candidate_facts() {
+        let invalid = leader_candidate(1, 1, LEADER_CANDIDATE_INVALID, 9);
+        let fallback = leader_candidate(2, 2, LEADER_CANDIDATE_READY, 0);
+        let non_null = leader_candidate(3, 3, LEADER_CANDIDATE_READY, 8);
+        let expected_vote_hash = non_null.vote_hash;
+        let expected_block_hash = non_null.block_hash;
+
+        let plan = plan_pbft_manager_leader_selection(vec![invalid, fallback, non_null]);
+
+        assert_eq!(plan.status, LEADER_STATUS_SELECTED);
+        assert!(plan.selected);
+        assert!(!plan.selected_from_null_anchor);
+        assert_eq!(plan.selected_vote_hash, expected_vote_hash);
+        assert_eq!(plan.selected_block_hash, expected_block_hash);
+        assert_eq!(plan.selected_period, 11);
+    }
+
+    fn leader_candidate(
+        id: u8,
+        block: u8,
+        status: u8,
+        pivot: u8,
+    ) -> FfiPbftManagerLeaderCandidateFact {
+        FfiPbftManagerLeaderCandidateFact {
+            vote_hash: [id; 32],
+            block_hash: [block; 32],
+            period: 11,
+            credential: [id; 64],
+            voter_public_key: [id.wrapping_add(17); 64],
+            weight: 1,
+            status,
+            pivot_hash: [pivot; 32],
+        }
     }
 }

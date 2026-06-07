@@ -25,7 +25,10 @@
 //! - Branches after `run_certify` and `run_second_finish` are selected only from
 //!   explicit report flags returned by the C++ executor.
 
-use std::collections::VecDeque;
+use ethereum_types::H256;
+use rlp::RlpStream;
+use std::collections::{BTreeMap, VecDeque};
+use tiny_keccak::{Hasher, Keccak};
 
 /// Stable PBFT manager state codes used by the CXX bridge.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -42,6 +45,292 @@ pub enum PbftManagerRuntimeStateCode {
     FinishPolling,
     /// Unknown bridge state.
     Unknown,
+}
+
+/// Live-object availability status for one proposed PBFT leader candidate.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerLeaderCandidateStatus {
+    /// The candidate block resolved, passed current validation, and can be selected.
+    Ready,
+    /// The proposal vote pointed at the null PBFT block hash and must be ignored.
+    NullVoteBlockHash,
+    /// The candidate PBFT block is already present in the local PBFT chain.
+    BlockInChain,
+    /// C++ could not resolve or validate the proposed block for the vote.
+    BlockMissingOrInvalid,
+    /// The vote did not carry a positive proposer weight.
+    InvalidVoteWeight,
+    /// Unknown bridge status.
+    Unknown,
+}
+
+impl PbftManagerLeaderCandidateStatus {
+    /// Stable bridge code for the candidate status.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Ready => 0,
+            Self::NullVoteBlockHash => 1,
+            Self::BlockInChain => 2,
+            Self::BlockMissingOrInvalid => 3,
+            Self::InvalidVoteWeight => 4,
+            Self::Unknown => 254,
+        }
+    }
+
+    /// Decodes a stable bridge status code.
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Ready,
+            1 => Self::NullVoteBlockHash,
+            2 => Self::BlockInChain,
+            3 => Self::BlockMissingOrInvalid,
+            4 => Self::InvalidVoteWeight,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Rust-owned outcome for PBFT leader candidate selection.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerLeaderSelectionStatus {
+    /// A leader block/vote pair was selected.
+    Selected,
+    /// No proposal vote facts were supplied.
+    Empty,
+    /// Candidate facts were present, but none were selectable.
+    NoEligibleCandidate,
+    /// One or more candidate facts were malformed.
+    InvalidFact,
+}
+
+impl PbftManagerLeaderSelectionStatus {
+    /// Stable bridge code for the selection status.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Selected => 0,
+            Self::Empty => 1,
+            Self::NoEligibleCandidate => 2,
+            Self::InvalidFact => 3,
+        }
+    }
+}
+
+/// Candidate facts for deterministic PBFT leader selection.
+///
+/// Inputs:
+/// - `vote_hash` and `block_hash` identify the live C++ objects to materialize
+///   after Rust selection.
+/// - `credential` is the 64-byte VRF output from the proposal vote.
+/// - `voter_public_key` is the 64-byte secp256k1 public key recovered from the
+///   vote signature.
+/// - `weight` is the already-validated proposer vote weight.
+/// - `status` and `pivot_hash` summarize C++ live-object resolution and
+///   candidate validation. Rust uses these facts only after applying legacy
+///   proposal ranking.
+///
+/// Outputs are produced by `plan_pbft_manager_leader_selection`.
+///
+/// Invariants:
+/// - Candidate ordering is computed from the legacy minimum of
+///   `sha3(rlp([credential, voter_public_key, i]))` for `i = 1..=weight`.
+/// - Duplicate rank hashes retain the last input candidate, matching legacy
+///   `std::map<h256, vote>` assignment behavior.
+/// - Null-anchor candidates are eligible only as a fallback when no non-null
+///   candidate wins.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerLeaderCandidateFact {
+    /// Signed proposal vote hash.
+    pub vote_hash: H256,
+    /// Proposed PBFT block hash.
+    pub block_hash: H256,
+    /// Vote period used for live block lookup.
+    pub period: u64,
+    /// Proposal vote VRF output.
+    pub credential: [u8; 64],
+    /// Recovered voter public key.
+    pub voter_public_key: [u8; 64],
+    /// Validated proposal vote weight.
+    pub weight: u64,
+    /// Candidate live-object/validation status.
+    pub status: PbftManagerLeaderCandidateStatus,
+    /// Pivot DAG hash for a ready candidate block.
+    pub pivot_hash: H256,
+}
+
+/// Side-effect-free PBFT leader selection plan.
+///
+/// The selected hashes identify the C++ live vote/block pair to return from the
+/// shim. Empty and rejected plans return zero hashes and `selected = false`.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerLeaderSelectionPlan {
+    /// Selection status.
+    pub status: PbftManagerLeaderSelectionStatus,
+    /// True when `selected_vote_hash` and `selected_block_hash` are meaningful.
+    pub selected: bool,
+    /// Selected proposal vote hash.
+    pub selected_vote_hash: H256,
+    /// Selected PBFT block hash.
+    pub selected_block_hash: H256,
+    /// Selected vote period.
+    pub selected_period: u64,
+    /// True when the selected block is the null-anchor fallback.
+    pub selected_from_null_anchor: bool,
+    /// Stable diagnostic code for bridge/log consumers.
+    pub error_code: &'static str,
+}
+
+/// Computes the legacy PBFT proposer ranking hash for one vote index.
+///
+/// Inputs are the proposal vote VRF output, recovered voter public key, and
+/// one-based vote-weight index. The output matches C++ `getVoterIndexHash`:
+/// Keccak256 over RLP list `[credential, voter_public_key, index]`.
+#[must_use]
+pub fn pbft_manager_voter_index_hash(
+    credential: [u8; 64],
+    voter_public_key: [u8; 64],
+    index: u64,
+) -> H256 {
+    let mut stream = RlpStream::new_list(3);
+    stream.append(&credential.as_slice());
+    stream.append(&voter_public_key.as_slice());
+    stream.append(&index);
+    keccak256(&stream.out())
+}
+
+/// Computes the legacy proposal rank for a weighted PBFT proposal vote.
+///
+/// The rank is the lowest voter-index hash across the vote's positive weight.
+/// A zero weight has no valid rank and returns `None` so callers can surface an
+/// explicit invalid fact instead of silently selecting the vote.
+#[must_use]
+pub fn pbft_manager_proposal_rank_hash(
+    credential: [u8; 64],
+    voter_public_key: [u8; 64],
+    weight: u64,
+) -> Option<H256> {
+    if weight == 0 {
+        return None;
+    }
+
+    let mut lowest_hash = pbft_manager_voter_index_hash(credential, voter_public_key, 1);
+    for index in 2..=weight {
+        let candidate = pbft_manager_voter_index_hash(credential, voter_public_key, index);
+        if lowest_hash > candidate {
+            lowest_hash = candidate;
+        }
+    }
+    Some(lowest_hash)
+}
+
+/// Selects the PBFT leader candidate from C++-collected proposal facts.
+///
+/// C++ supplies live-object and validation status facts; Rust owns the
+/// deterministic rank ordering, duplicate-rank overwrite rule, in-chain/invalid
+/// skipping, and null-anchor fallback. The function does not materialize or
+/// mutate blocks or votes.
+#[must_use]
+pub fn plan_pbft_manager_leader_selection(
+    candidates: Vec<PbftManagerLeaderCandidateFact>,
+) -> PbftManagerLeaderSelectionPlan {
+    if candidates.is_empty() {
+        return pbft_manager_leader_no_selection(
+            PbftManagerLeaderSelectionStatus::Empty,
+            "PBFT_MANAGER_LEADER_EMPTY",
+        );
+    }
+
+    let mut ranked_candidates = BTreeMap::<H256, PbftManagerLeaderCandidateFact>::new();
+    for candidate in candidates {
+        if candidate.status == PbftManagerLeaderCandidateStatus::Unknown {
+            return pbft_manager_leader_no_selection(
+                PbftManagerLeaderSelectionStatus::InvalidFact,
+                "PBFT_MANAGER_LEADER_UNKNOWN_CANDIDATE_STATUS",
+            );
+        }
+        if candidate.weight == 0 {
+            ranked_candidates.insert(
+                candidate.vote_hash,
+                PbftManagerLeaderCandidateFact {
+                    status: PbftManagerLeaderCandidateStatus::InvalidVoteWeight,
+                    ..candidate
+                },
+            );
+            continue;
+        }
+        let Some(rank) = pbft_manager_proposal_rank_hash(
+            candidate.credential,
+            candidate.voter_public_key,
+            candidate.weight,
+        ) else {
+            return pbft_manager_leader_no_selection(
+                PbftManagerLeaderSelectionStatus::InvalidFact,
+                "PBFT_MANAGER_LEADER_INVALID_WEIGHT",
+            );
+        };
+        ranked_candidates.insert(rank, candidate);
+    }
+
+    let mut null_anchor_fallback = None;
+    for candidate in ranked_candidates.into_values() {
+        if candidate.status != PbftManagerLeaderCandidateStatus::Ready {
+            continue;
+        }
+        let from_null_anchor = candidate.pivot_hash == H256::zero();
+        if from_null_anchor {
+            if null_anchor_fallback.is_none() {
+                null_anchor_fallback = Some(candidate);
+            }
+            continue;
+        }
+        return pbft_manager_leader_selected(candidate, false);
+    }
+
+    if let Some(candidate) = null_anchor_fallback {
+        return pbft_manager_leader_selected(candidate, true);
+    }
+
+    pbft_manager_leader_no_selection(
+        PbftManagerLeaderSelectionStatus::NoEligibleCandidate,
+        "PBFT_MANAGER_LEADER_NO_ELIGIBLE_CANDIDATE",
+    )
+}
+
+fn pbft_manager_leader_selected(
+    candidate: PbftManagerLeaderCandidateFact,
+    selected_from_null_anchor: bool,
+) -> PbftManagerLeaderSelectionPlan {
+    PbftManagerLeaderSelectionPlan {
+        status: PbftManagerLeaderSelectionStatus::Selected,
+        selected: true,
+        selected_vote_hash: candidate.vote_hash,
+        selected_block_hash: candidate.block_hash,
+        selected_period: candidate.period,
+        selected_from_null_anchor,
+        error_code: "",
+    }
+}
+
+fn pbft_manager_leader_no_selection(
+    status: PbftManagerLeaderSelectionStatus,
+    error_code: &'static str,
+) -> PbftManagerLeaderSelectionPlan {
+    PbftManagerLeaderSelectionPlan {
+        status,
+        selected: false,
+        selected_vote_hash: H256::zero(),
+        selected_block_hash: H256::zero(),
+        selected_period: 0,
+        selected_from_null_anchor: false,
+        error_code,
+    }
+}
+
+fn keccak256(data: &[u8]) -> H256 {
+    let mut output = [0_u8; 32];
+    let mut hasher = Keccak::v256();
+    hasher.update(data);
+    hasher.finalize(&mut output);
+    H256::from(output)
 }
 
 impl PbftManagerRuntimeStateCode {
@@ -2607,5 +2896,104 @@ mod tests {
             invalid_round.error_code,
             "PBFT_MANAGER_ADVANCE_ROUND_NON_INCREASING_ROUND"
         );
+    }
+
+    #[test]
+    fn leader_selection_prefers_lowest_ranked_non_null_candidate() {
+        let mut high_rank = leader_candidate(1, 1, PbftManagerLeaderCandidateStatus::Ready, 9);
+        high_rank.weight = 2;
+        let low_rank = leader_candidate(2, 2, PbftManagerLeaderCandidateStatus::Ready, 10);
+        let null_anchor = leader_candidate(3, 3, PbftManagerLeaderCandidateStatus::Ready, 0);
+
+        let plan = plan_pbft_manager_leader_selection(vec![
+            high_rank.clone(),
+            low_rank.clone(),
+            null_anchor,
+        ]);
+        assert_eq!(plan.status, PbftManagerLeaderSelectionStatus::Selected);
+        assert!(plan.selected);
+        assert!(!plan.selected_from_null_anchor);
+
+        let high_rank_hash = pbft_manager_proposal_rank_hash(
+            high_rank.credential,
+            high_rank.voter_public_key,
+            high_rank.weight,
+        )
+        .unwrap();
+        let low_rank_hash =
+            pbft_manager_proposal_rank_hash(low_rank.credential, low_rank.voter_public_key, 1)
+                .unwrap();
+        let expected = if high_rank_hash < low_rank_hash {
+            high_rank
+        } else {
+            low_rank
+        };
+        assert_eq!(plan.selected_vote_hash, expected.vote_hash);
+        assert_eq!(plan.selected_block_hash, expected.block_hash);
+    }
+
+    #[test]
+    fn leader_selection_uses_null_anchor_only_as_fallback() {
+        let invalid = leader_candidate(
+            1,
+            1,
+            PbftManagerLeaderCandidateStatus::BlockMissingOrInvalid,
+            8,
+        );
+        let in_chain = leader_candidate(2, 2, PbftManagerLeaderCandidateStatus::BlockInChain, 9);
+        let null_anchor = leader_candidate(3, 3, PbftManagerLeaderCandidateStatus::Ready, 0);
+
+        let plan = plan_pbft_manager_leader_selection(vec![invalid, null_anchor.clone(), in_chain]);
+        assert_eq!(plan.status, PbftManagerLeaderSelectionStatus::Selected);
+        assert!(plan.selected_from_null_anchor);
+        assert_eq!(plan.selected_vote_hash, null_anchor.vote_hash);
+    }
+
+    #[test]
+    fn leader_selection_keeps_last_duplicate_rank_candidate() {
+        let first = leader_candidate(1, 1, PbftManagerLeaderCandidateStatus::Ready, 5);
+        let mut second = leader_candidate(2, 2, PbftManagerLeaderCandidateStatus::Ready, 6);
+        second.credential = first.credential;
+        second.voter_public_key = first.voter_public_key;
+        second.weight = first.weight;
+
+        let plan = plan_pbft_manager_leader_selection(vec![first, second.clone()]);
+        assert_eq!(plan.status, PbftManagerLeaderSelectionStatus::Selected);
+        assert_eq!(plan.selected_vote_hash, second.vote_hash);
+    }
+
+    #[test]
+    fn leader_selection_rejects_unknown_status_and_skips_invalid_weight() {
+        let unknown = leader_candidate(1, 1, PbftManagerLeaderCandidateStatus::Unknown, 1);
+        let plan = plan_pbft_manager_leader_selection(vec![unknown]);
+        assert_eq!(plan.status, PbftManagerLeaderSelectionStatus::InvalidFact);
+
+        let zero_weight = leader_candidate(2, 2, PbftManagerLeaderCandidateStatus::Ready, 2);
+        let plan = plan_pbft_manager_leader_selection(vec![PbftManagerLeaderCandidateFact {
+            weight: 0,
+            ..zero_weight
+        }]);
+        assert_eq!(
+            plan.status,
+            PbftManagerLeaderSelectionStatus::NoEligibleCandidate
+        );
+    }
+
+    fn leader_candidate(
+        id: u8,
+        block: u8,
+        status: PbftManagerLeaderCandidateStatus,
+        pivot: u8,
+    ) -> PbftManagerLeaderCandidateFact {
+        PbftManagerLeaderCandidateFact {
+            vote_hash: H256::from([id; 32]),
+            block_hash: H256::from([block; 32]),
+            period: 7,
+            credential: [id; 64],
+            voter_public_key: [id.wrapping_add(11); 64],
+            weight: 1,
+            status,
+            pivot_hash: H256::from([pivot; 32]),
+        }
     }
 }

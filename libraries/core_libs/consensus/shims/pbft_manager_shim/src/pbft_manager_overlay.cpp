@@ -124,10 +124,20 @@ constexpr uint8_t kPbftManagerTransitionToFinishPolling = 4;
 constexpr uint8_t kPbftManagerTransitionLoopBackFinish = 5;
 constexpr uint8_t kPbftManagerTransitionDelayCertifyPoll = 6;
 constexpr uint8_t kPbftManagerTransitionDelayFinishPoll = 7;
+constexpr uint8_t kPbftManagerLeaderCandidateReady = 0;
+constexpr uint8_t kPbftManagerLeaderCandidateNullVoteBlockHash = 1;
+constexpr uint8_t kPbftManagerLeaderCandidateBlockInChain = 2;
+constexpr uint8_t kPbftManagerLeaderCandidateBlockMissingOrInvalid = 3;
+constexpr uint8_t kPbftManagerLeaderCandidateInvalidVoteWeight = 4;
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t &hash) { return hash.asArray(); }
 
 std::array<uint8_t, 20> toBridgeAddress(const addr_t &address) { return address.asArray(); }
+
+template <size_t N, typename FixedHash>
+std::array<uint8_t, N> toBridgeFixedBytes(const FixedHash &value) {
+  return value.asArray();
+}
 
 uint256_hash_t fromBridgeHash(const std::array<uint8_t, 32> &hash) {
   return uint256_hash_t(hash.data(), uint256_hash_t::ConstructFromPointer);
@@ -2322,63 +2332,78 @@ std::optional<PbftBlockExtraData> PbftManager::createPbftBlockExtraData(PbftPeri
                             pillar_block_hash};
 }
 
-h256 PbftManager::getProposal(const std::shared_ptr<PbftVote> &vote) const {
-  auto lowest_hash = getVoterIndexHash(vote->getCredential(), vote->getVoter(), 1);
-  for (uint64_t i = 2; i <= vote->getWeight(); ++i) {
-    auto tmp_hash = getVoterIndexHash(vote->getCredential(), vote->getVoter(), i);
-    if (lowest_hash > tmp_hash) {
-      lowest_hash = tmp_hash;
-    }
-  }
-  return lowest_hash;
-}
-
 std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> PbftManager::identifyLeaderBlock(
     ProposedBlocks &propose_blocks, std::vector<std::shared_ptr<PbftVote>> &&propose_votes) {
   if (propose_votes.empty()) {
     return {};
   }
 
-  // Each leader candidate with <vote_signature_hash, vote>
-  std::map<h256, std::shared_ptr<PbftVote>> leader_candidates;
+  rust::Vec<rustaxa::PbftManagerLeaderCandidateFact> candidate_facts;
+  candidate_facts.reserve(propose_votes.size());
+  std::vector<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> materialized_candidates;
 
-  for (auto &&v : propose_votes) {
-    const auto proposed_block_hash = v->getBlockHash();
-    if (proposed_block_hash == kNullBlockHash) {
-      LOG(log_er_) << "Propose block hash should not be NULL. Vote " << v;
+  for (auto &&vote : propose_votes) {
+    rustaxa::PbftManagerLeaderCandidateFact fact;
+    fact.vote_hash = toBridgeHash(vote->getHash());
+    fact.block_hash = toBridgeHash(vote->getBlockHash());
+    fact.period = vote->getPeriod();
+    fact.credential = toBridgeFixedBytes<64>(vote->getCredential());
+    fact.voter_public_key = toBridgeFixedBytes<64>(vote->getVoter());
+    fact.pivot_hash = toBridgeHash(kNullBlockHash);
+
+    const auto weight = vote->getWeight();
+    if (!weight.has_value() || *weight == 0) {
+      fact.weight = 0;
+      fact.status = kPbftManagerLeaderCandidateInvalidVoteWeight;
+      candidate_facts.push_back(fact);
       continue;
     }
+    fact.weight = *weight;
 
-    leader_candidates[getProposal(v)] = std::move(v);
-  }
-
-  std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> empty_leader_block_data;
-  for (auto const &leader_vote : leader_candidates) {
-    const auto proposed_block_hash = leader_vote.second->getBlockHash();
+    const auto proposed_block_hash = vote->getBlockHash();
+    if (proposed_block_hash == kNullBlockHash) {
+      LOG(log_er_) << "Propose block hash should not be NULL. Vote " << vote;
+      fact.status = kPbftManagerLeaderCandidateNullVoteBlockHash;
+      candidate_facts.push_back(fact);
+      continue;
+    }
 
     if (pbft_chain_->findPbftBlockInChain(proposed_block_hash)) {
+      fact.status = kPbftManagerLeaderCandidateBlockInChain;
+      candidate_facts.push_back(fact);
       continue;
     }
 
-    auto leader_block = getValidPbftProposedBlock(propose_blocks, leader_vote.second->getPeriod(), proposed_block_hash);
+    auto leader_block = getValidPbftProposedBlock(propose_blocks, vote->getPeriod(), proposed_block_hash);
     if (!leader_block) {
       LOG(log_er_) << "Unable to get proposed block " << proposed_block_hash;
+      fact.status = kPbftManagerLeaderCandidateBlockMissingOrInvalid;
+      candidate_facts.push_back(fact);
       continue;
     }
 
-    if (leader_block->getPivotDagBlockHash() == kNullBlockHash) {
-      if (!empty_leader_block_data.has_value()) {
-        empty_leader_block_data = std::make_pair(leader_block, leader_vote.second);
-      }
-
-      continue;
-    }
-
-    return std::make_pair(leader_block, leader_vote.second);
+    fact.status = kPbftManagerLeaderCandidateReady;
+    fact.pivot_hash = toBridgeHash(leader_block->getPivotDagBlockHash());
+    materialized_candidates.emplace_back(leader_block, vote);
+    candidate_facts.push_back(fact);
   }
 
-  // no eligible leader
-  return empty_leader_block_data;
+  const auto plan = rustaxa::plan_pbft_manager_leader_selection(std::move(candidate_facts));
+  if (!plan.selected) {
+    return {};
+  }
+
+  const auto selected_vote_hash = fromBridgeHash(plan.selected_vote_hash);
+  const auto selected_block_hash = fromBridgeHash(plan.selected_block_hash);
+  for (auto &candidate : materialized_candidates) {
+    if (candidate.second->getHash() == selected_vote_hash && candidate.first->getBlockHash() == selected_block_hash) {
+      return std::make_pair(candidate.first, candidate.second);
+    }
+  }
+
+  LOG(log_er_) << "Rust PBFT leader selection returned missing live candidate vote " << selected_vote_hash << " block "
+               << selected_block_hash;
+  return {};
 }
 
 PbftStateRootValidation PbftManager::validateFinalChainHash(const std::shared_ptr<PbftBlock> &pbft_block) const {

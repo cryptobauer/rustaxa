@@ -623,13 +623,6 @@ class PbftManager {
       ProposedBlocks &propose_blocks, std::vector<std::shared_ptr<PbftVote>> &&propose_votes);
 
   /**
-   * @brief Calculate the lowest hash of a vote by vote weight
-   * @param vote vote
-   * @return lowest hash of a vote
-   */
-  h256 getProposal(const std::shared_ptr<PbftVote> &vote) const;
-
-  /**
    * @brief Validates pbft block. It checks if:
    *        - pbft_block's previous pbft block hash == node's latest finalized pbft block
    *        - node has all DAG blocks with correct ordering,
