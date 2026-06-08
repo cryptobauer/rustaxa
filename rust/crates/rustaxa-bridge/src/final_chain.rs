@@ -154,6 +154,31 @@ fn evm_transaction_input_to_ffi(
         data: transaction.data,
         rlp: transaction.rlp,
         kind: transaction.kind,
+        is_system: transaction.is_system,
+    }
+}
+
+fn system_transaction_request_to_ffi(
+    request: rustaxa_consensus::FinalChainSystemTransactionRequest,
+) -> rustaxa_ffi::FinalChainSystemTransactionRequest {
+    rustaxa_ffi::FinalChainSystemTransactionRequest {
+        request_id: request.request_id,
+        period: request.period,
+        regular_transaction_count: request.regular_transaction_count,
+    }
+}
+
+fn system_transaction_report_from_ffi(
+    report: rustaxa_ffi::FinalChainSystemTransactionReport,
+) -> rustaxa_consensus::FinalChainSystemTransactionReport {
+    rustaxa_consensus::FinalChainSystemTransactionReport {
+        request_id: report.request_id,
+        period: report.period,
+        transactions: report
+            .transactions
+            .into_iter()
+            .map(|transaction| transaction.data)
+            .collect(),
     }
 }
 
@@ -202,6 +227,9 @@ fn execution_step_to_ffi(
         external_evm_transaction_count: step.external_evm_transaction_count,
         evm_request: evm_request_to_ffi(step.evm_request),
         evm_rewards_request: evm_rewards_request_to_ffi(step.evm_rewards_request),
+        system_transaction_request: system_transaction_request_to_ffi(
+            step.system_transaction_request,
+        ),
         error_code: step.error_code,
     }
 }
@@ -283,6 +311,38 @@ fn external_evm_commit_plan_to_ffi(
             .map(|data| rustaxa_ffi::ReceiptRlp { data })
             .collect(),
         gas_used: plan.gas_used,
+        executed_dag_blocks: plan.executed_dag_blocks,
+        executed_transactions: plan.executed_transactions,
+        regular_transaction_count: plan.regular_transaction_count,
+        system_transaction_count: plan.system_transaction_count,
+        error_code: plan.error_code,
+    }
+}
+
+fn external_evm_publication_plan_to_ffi(
+    plan: rustaxa_consensus::FinalChainExternalEvmPublicationPlan,
+) -> rustaxa_ffi::FinalChainExternalEvmPublicationPlan {
+    rustaxa_ffi::FinalChainExternalEvmPublicationPlan {
+        request_id: plan.request_id,
+        period: plan.period,
+        block_hash: plan.block_hash,
+        block_header_rlp: plan.block_header_rlp,
+        stored_header_rlp: plan.stored_header_rlp,
+        receipts_rlp: plan.receipts_rlp,
+        indexed_log_bloom: plan.indexed_log_bloom,
+        system_transaction_hashes_rlp: plan.system_transaction_hashes_rlp,
+        transaction_publications: plan
+            .transaction_publications
+            .into_iter()
+            .map(
+                |publication| rustaxa_ffi::FinalChainExternalEvmTransactionPublication {
+                    transaction_hash: publication.transaction_hash,
+                    position: publication.position,
+                    is_system: publication.is_system,
+                    receipt_rlp: publication.receipt_rlp,
+                },
+            )
+            .collect(),
         executed_dag_blocks: plan.executed_dag_blocks,
         executed_transactions: plan.executed_transactions,
         error_code: plan.error_code,
@@ -486,6 +546,18 @@ impl BridgeFinalChainExecutionSession {
         ))
     }
 
+    pub fn final_chain_execution_session_report_system_transactions(
+        &mut self,
+        report: rustaxa_ffi::FinalChainSystemTransactionReport,
+    ) -> Result<rustaxa_ffi::FinalChainExecutionStep, anyhow::Error> {
+        Ok(execution_step_to_ffi(
+            rustaxa_consensus::final_chain_execution_session_report_system_transactions(
+                &mut self.state,
+                system_transaction_report_from_ffi(report),
+            ),
+        ))
+    }
+
     pub fn final_chain_execution_session_plan_external_evm_commit(
         &mut self,
         rewards_report: rustaxa_ffi::FinalChainEvmRewardsReport,
@@ -497,6 +569,18 @@ impl BridgeFinalChainExecutionSession {
             ),
         ))
     }
+}
+
+pub fn final_chain_execution_session_plan_external_evm_publication(
+    final_chain: &BridgeFinalChain,
+    session: &mut BridgeFinalChainExecutionSession,
+) -> Result<rustaxa_ffi::FinalChainExternalEvmPublicationPlan, anyhow::Error> {
+    Ok(external_evm_publication_plan_to_ffi(
+        rustaxa_consensus::final_chain_execution_session_plan_external_evm_publication(
+            &final_chain.0,
+            &mut session.state,
+        ),
+    ))
 }
 
 impl BridgeFinalChain {
@@ -1286,6 +1370,25 @@ mod tests {
 
         assert_eq!(
             step.status,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_STATUS_WAITING_SYSTEM_TRANSACTIONS
+        );
+        assert_eq!(
+            step.action,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_ACTION_PROVIDE_SYSTEM_TRANSACTIONS
+        );
+        assert_eq!(step.system_transaction_request.period, 7);
+        assert_eq!(step.system_transaction_request.regular_transaction_count, 3);
+        let step = session
+            .final_chain_execution_session_report_system_transactions(
+                rustaxa_ffi::FinalChainSystemTransactionReport {
+                    request_id: step.system_transaction_request.request_id,
+                    period: 7,
+                    transactions: Vec::new(),
+                },
+            )
+            .expect("system transaction report should convert");
+        assert_eq!(
+            step.status,
             rustaxa_consensus::FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM
         );
         assert_eq!(
@@ -1331,6 +1434,19 @@ mod tests {
         let step = session
             .final_chain_execution_session_next()
             .expect("session step should convert");
+        assert_eq!(
+            step.action,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_ACTION_PROVIDE_SYSTEM_TRANSACTIONS
+        );
+        let step = session
+            .final_chain_execution_session_report_system_transactions(
+                rustaxa_ffi::FinalChainSystemTransactionReport {
+                    request_id: step.system_transaction_request.request_id,
+                    period: 7,
+                    transactions: Vec::new(),
+                },
+            )
+            .expect("system transaction report should convert");
 
         let rewards = session
             .final_chain_execution_session_report_evm(rustaxa_ffi::FinalChainEvmExecutionReport {
@@ -1375,9 +1491,23 @@ mod tests {
         assert_eq!(plan.total_reward, vec![0x33]);
         assert_eq!(plan.gas_used, 2);
         assert_eq!(plan.executed_transactions, 2);
+        assert_eq!(plan.regular_transaction_count, 2);
+        assert_eq!(plan.system_transaction_count, 0);
         assert_eq!(plan.encoded_receipts.len(), 2);
         assert_eq!(plan.header_log_bloom.len(), 256);
         assert_eq!(plan.indexed_log_bloom.len(), 256);
+
+        let publication =
+            final_chain_execution_session_plan_external_evm_publication(&final_chain, &mut session)
+                .expect("publication plan should convert");
+        assert!(publication.error_code.is_empty());
+        assert_eq!(publication.period, 7);
+        assert!(!publication.block_header_rlp.is_empty());
+        assert!(!publication.stored_header_rlp.is_empty());
+        assert_eq!(publication.receipts_rlp, plan.receipts_rlp);
+        assert_eq!(publication.transaction_publications.len(), 2);
+        assert!(!publication.transaction_publications[0].is_system);
+        assert!(publication.system_transaction_hashes_rlp.len() == 1);
 
         drop(final_chain);
         let _ = fs::remove_dir_all(temp_dir);

@@ -346,6 +346,25 @@ impl FinalChain {
         )
     }
 
+    /// Returns the configured block gas limit used when materializing legacy
+    /// FinalChain block headers.
+    ///
+    /// The value is immutable for the runtime. External-EVM publication
+    /// planning uses it to derive header RLP and hash bytes without taking
+    /// ownership of EVM execution or storage commit.
+    pub(crate) fn block_gas_limit(&self) -> u64 {
+        self.block_gas_limit
+    }
+
+    /// Returns the genesis timestamp used by genesis header materialization.
+    ///
+    /// Non-genesis PBFT metadata supplies its own timestamp; this accessor keeps
+    /// the external-EVM publication planner on the same codec path as native
+    /// Rust finalization.
+    pub(crate) fn genesis_timestamp(&self) -> u64 {
+        self.genesis_timestamp
+    }
+
     pub fn new_with_rewards_config(
         storage: Arc<Storage>,
         block_gas_limit: u64,

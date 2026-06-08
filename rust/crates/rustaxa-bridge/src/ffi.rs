@@ -2342,6 +2342,19 @@ pub mod rustaxa_ffi {
         data: Vec<u8>,
         rlp: Vec<u8>,
         kind: u8,
+        is_system: bool,
+    }
+
+    struct FinalChainSystemTransactionRequest {
+        request_id: [u8; 32],
+        period: u64,
+        regular_transaction_count: u64,
+    }
+
+    struct FinalChainSystemTransactionReport {
+        request_id: [u8; 32],
+        period: u64,
+        transactions: Vec<TxRlp>,
     }
 
     struct FinalChainEvmExecutionRequest {
@@ -2418,6 +2431,30 @@ pub mod rustaxa_ffi {
         gas_used: u64,
         executed_dag_blocks: u64,
         executed_transactions: u64,
+        regular_transaction_count: u64,
+        system_transaction_count: u64,
+        error_code: String,
+    }
+
+    struct FinalChainExternalEvmTransactionPublication {
+        transaction_hash: [u8; 32],
+        position: u32,
+        is_system: bool,
+        receipt_rlp: Vec<u8>,
+    }
+
+    struct FinalChainExternalEvmPublicationPlan {
+        request_id: [u8; 32],
+        period: u64,
+        block_hash: [u8; 32],
+        block_header_rlp: Vec<u8>,
+        stored_header_rlp: Vec<u8>,
+        receipts_rlp: Vec<u8>,
+        indexed_log_bloom: Vec<u8>,
+        system_transaction_hashes_rlp: Vec<u8>,
+        transaction_publications: Vec<FinalChainExternalEvmTransactionPublication>,
+        executed_dag_blocks: u64,
+        executed_transactions: u64,
         error_code: String,
     }
 
@@ -2428,6 +2465,7 @@ pub mod rustaxa_ffi {
         external_evm_transaction_count: u64,
         evm_request: FinalChainEvmExecutionRequest,
         evm_rewards_request: FinalChainEvmRewardsRequest,
+        system_transaction_request: FinalChainSystemTransactionRequest,
         error_code: String,
     }
 
@@ -5300,10 +5338,18 @@ pub mod rustaxa_ffi {
             self: &mut BridgeFinalChainExecutionSession,
             report: FinalChainEvmExecutionReport,
         ) -> Result<FinalChainExecutionStep>;
+        pub fn final_chain_execution_session_report_system_transactions(
+            self: &mut BridgeFinalChainExecutionSession,
+            report: FinalChainSystemTransactionReport,
+        ) -> Result<FinalChainExecutionStep>;
         pub fn final_chain_execution_session_plan_external_evm_commit(
             self: &mut BridgeFinalChainExecutionSession,
             rewards_report: FinalChainEvmRewardsReport,
         ) -> Result<FinalChainExternalEvmCommitPlan>;
+        pub fn final_chain_execution_session_plan_external_evm_publication(
+            final_chain: &BridgeFinalChain,
+            session: &mut BridgeFinalChainExecutionSession,
+        ) -> Result<FinalChainExternalEvmPublicationPlan>;
         pub fn final_chain_execution_session_commit(
             final_chain: &BridgeFinalChain,
             session: Box<BridgeFinalChainExecutionSession>,
