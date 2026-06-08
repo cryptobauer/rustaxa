@@ -98,6 +98,13 @@ pub const FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH: u8 = 0;
 /// External EVM publication cannot be committed.
 pub const FINAL_CHAIN_EVM_COMMIT_DECISION_REJECTED: u8 = 1;
 
+/// External EVM publication was applied to Rust FinalChain storage.
+pub const FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED: u8 = 0;
+/// External EVM publication was rejected before mutating storage.
+pub const FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED: u8 = 1;
+/// External EVM publication was already present with matching block indexes.
+pub const FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED: u8 = 2;
+
 /// Complete FinalChain execution request owned by a runtime session.
 ///
 /// The payload preserves the existing bridge facts: signed PBFT block RLP,
@@ -364,6 +371,22 @@ pub struct FinalChainExternalEvmCommitDecision {
     pub plan_id: [u8; 32],
     pub period: u64,
     pub publication_block_hash: [u8; 32],
+    pub status: u8,
+    pub error_code: String,
+}
+
+/// Result of applying an external-EVM publication plan to FinalChain storage.
+///
+/// The report is returned only by the explicit publication API. It does not
+/// execute EVM or interact with `StateAPI`; it records whether the Rust-owned
+/// FinalChain batch applied, was already present, or was rejected before any
+/// storage mutation.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FinalChainExternalEvmPublicationReport {
+    pub request_id: [u8; 32],
+    pub plan_id: [u8; 32],
+    pub period: u64,
+    pub block_hash: [u8; 32],
     pub status: u8,
     pub error_code: String,
 }
@@ -860,8 +883,8 @@ pub fn final_chain_execution_session_plan_external_evm_publication(
 /// A committed lifecycle report must match the exact EVM execution root,
 /// post-rewards root, and publication block hash derived by Rust. Ready
 /// decisions remain non-mutating: the session is left rejected with an explicit
-/// storage-publication gap so production routing cannot publish FinalChain
-/// storage before the Rust-owned batch and differential parity are wired.
+/// explicit-publication requirement so compatibility finalization cannot publish
+/// external-EVM storage without calling the separate Rust publication API.
 pub fn final_chain_execution_session_report_external_evm_lifecycle(
     session: &mut FinalChainExecutionSession,
     report: FinalChainExternalEvmLifecycleReport,
@@ -964,7 +987,7 @@ pub fn final_chain_execution_session_report_external_evm_lifecycle(
     }
 
     session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
-    session.error_code = "FINAL_CHAIN_EVM_STORAGE_PUBLICATION_UNIMPLEMENTED".to_string();
+    session.error_code = "FINAL_CHAIN_EVM_PUBLICATION_REQUIRES_EXPLICIT_API".to_string();
     FinalChainExternalEvmCommitDecision {
         request_id: publication_plan.request_id,
         plan_id: publication_plan.plan_id,
@@ -1302,7 +1325,7 @@ fn build_external_evm_publication_plan(
         executed_transactions: commit_plan.executed_transactions,
         error_code: String::new(),
     };
-    publication.plan_id = external_evm_publication_plan_id(&publication);
+    publication.plan_id = final_chain_external_evm_publication_plan_id(&publication);
     Ok(publication)
 }
 
@@ -1450,7 +1473,9 @@ fn encode_system_transaction_hashes_rlp(hashes: impl Iterator<Item = [u8; 32]>) 
     stream.out().to_vec()
 }
 
-fn external_evm_publication_plan_id(plan: &FinalChainExternalEvmPublicationPlan) -> [u8; 32] {
+pub(crate) fn final_chain_external_evm_publication_plan_id(
+    plan: &FinalChainExternalEvmPublicationPlan,
+) -> [u8; 32] {
     use tiny_keccak::{Hasher, Keccak};
 
     let mut hasher = Keccak::v256();

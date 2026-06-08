@@ -3,6 +3,13 @@ use crate::dag::{
     DAG_VERIFY_DPOS_STATUS_NOT_ELIGIBLE, DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE,
     DagDposAuthorizationFacts,
 };
+use crate::final_chain_execution::{
+    FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH,
+    FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED, FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED,
+    FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED, FinalChainExternalEvmCommitDecision,
+    FinalChainExternalEvmPublicationPlan, FinalChainExternalEvmPublicationReport,
+    final_chain_external_evm_publication_plan_id,
+};
 use crate::rewards_stats::{
     FinalizedRewardsPeriodFact, RewardCertVoteFact, RewardDagBlockFact, RewardTransactionFact,
     RewardsBlockDistribution, RewardsFrequencyRule, RewardsStatsConfig, RewardsStatsPeriodRlp,
@@ -17,9 +24,9 @@ use keccak_hasher::KeccakHasher;
 use rlp::Rlp;
 use rustaxa_storage::{
     FINAL_CHAIN_BLOOM_INDEX_LEVELS, FINAL_CHAIN_BLOOM_INDEX_SIZE, FinalChainExecutionStatus,
-    FinalChainLogBloom, FinalChainLogBloomIndexUpdate, FinalChainRewardsStatsUpdate,
-    FinalChainTransactionIndexUpdate, StatusField, Storage, decode_final_chain_log_bloom_chunk,
-    final_chain_log_bloom_chunk_id,
+    FinalChainLogBloom, FinalChainLogBloomIndexUpdate, FinalChainPeriodSystemTransactionsUpdate,
+    FinalChainRewardsStatsUpdate, FinalChainTransactionIndexUpdate, StatusField, Storage,
+    decode_final_chain_log_bloom_chunk, final_chain_log_bloom_chunk_id,
 };
 use rustaxa_types::codec::rlp::final_chain::{
     LegacyBlockHeaderRlp, LegacyBlockHeaderRlpInput, StoredBlockHeaderRlp,
@@ -1229,6 +1236,162 @@ impl FinalChain {
         Ok(Some(receipts.at(position as usize)?.as_raw().to_vec()))
     }
 
+    /// Applies a validated external-EVM FinalChain publication plan.
+    ///
+    /// Inputs are the non-mutating Rust publication plan and the lifecycle
+    /// decision produced after the external executor reports committed staged
+    /// state. The method validates request identity, recomputes the plan id,
+    /// checks the current FinalChain head, and writes header, receipt,
+    /// transaction-location, receipt-by-hash, bloom-index, execution-counter,
+    /// period system transaction hash, and `LAST_NUMBER` rows in one Rust-owned
+    /// batch. It does not execute EVM, receive `StateAPI` handles, or mutate
+    /// external staged state.
+    pub fn publish_external_evm_publication(
+        &self,
+        plan: FinalChainExternalEvmPublicationPlan,
+        decision: FinalChainExternalEvmCommitDecision,
+    ) -> Result<FinalChainExternalEvmPublicationReport, anyhow::Error> {
+        if !plan.error_code.is_empty() {
+            return Ok(rejected_external_evm_publication_report(
+                &plan,
+                format!(
+                    "FINAL_CHAIN_EVM_PUBLICATION_PLAN_REJECTED: {}",
+                    plan.error_code
+                ),
+            ));
+        }
+        if decision.status != FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH {
+            return Ok(rejected_external_evm_publication_report(
+                &plan,
+                "FINAL_CHAIN_EVM_PUBLICATION_DECISION_NOT_READY",
+            ));
+        }
+        if !decision.error_code.is_empty() {
+            return Ok(rejected_external_evm_publication_report(
+                &plan,
+                format!(
+                    "FINAL_CHAIN_EVM_PUBLICATION_DECISION_REJECTED: {}",
+                    decision.error_code
+                ),
+            ));
+        }
+        if decision.request_id != plan.request_id {
+            return Ok(rejected_external_evm_publication_report(
+                &plan,
+                "FINAL_CHAIN_EVM_PUBLICATION_REQUEST_ID_MISMATCH",
+            ));
+        }
+        let recomputed_plan_id = final_chain_external_evm_publication_plan_id(&plan);
+        if plan.plan_id != recomputed_plan_id || decision.plan_id != recomputed_plan_id {
+            return Ok(rejected_external_evm_publication_report(
+                &plan,
+                "FINAL_CHAIN_EVM_PUBLICATION_PLAN_ID_MISMATCH",
+            ));
+        }
+        if decision.period != plan.period {
+            return Ok(rejected_external_evm_publication_report(
+                &plan,
+                "FINAL_CHAIN_EVM_PUBLICATION_PERIOD_MISMATCH",
+            ));
+        }
+        if decision.publication_block_hash != plan.block_hash {
+            return Ok(rejected_external_evm_publication_report(
+                &plan,
+                "FINAL_CHAIN_EVM_PUBLICATION_BLOCK_HASH_MISMATCH",
+            ));
+        }
+        if plan.indexed_log_bloom.len() != 256 {
+            return Ok(rejected_external_evm_publication_report(
+                &plan,
+                "FINAL_CHAIN_EVM_PUBLICATION_BLOOM_INVALID",
+            ));
+        }
+
+        let plan_hash = H256::from(plan.block_hash);
+        let indexed_period_for_hash = self.block_number(plan.block_hash)?;
+        if let Some(existing_hash) = self.block_hash(plan.period)? {
+            let existing_hash =
+                h256_from_slice(&existing_hash, "external EVM existing block hash")?;
+            if existing_hash == plan_hash && indexed_period_for_hash == Some(plan.period) {
+                return Ok(FinalChainExternalEvmPublicationReport {
+                    request_id: plan.request_id,
+                    plan_id: plan.plan_id,
+                    period: plan.period,
+                    block_hash: plan.block_hash,
+                    status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED,
+                    error_code: String::new(),
+                });
+            }
+            return Ok(rejected_external_evm_publication_report(
+                &plan,
+                "FINAL_CHAIN_EVM_PUBLICATION_EXISTING_BLOCK_CONFLICT",
+            ));
+        }
+        if indexed_period_for_hash.is_some() {
+            return Ok(rejected_external_evm_publication_report(
+                &plan,
+                "FINAL_CHAIN_EVM_PUBLICATION_EXISTING_HASH_CONFLICT",
+            ));
+        }
+
+        let last_block = self.last_block_number()?;
+        let expected_period = last_block
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("final-chain last block overflow"))?;
+        if plan.period != expected_period {
+            return Ok(rejected_external_evm_publication_report(
+                &plan,
+                "FINAL_CHAIN_EVM_PUBLICATION_HEAD_MISMATCH",
+            ));
+        }
+
+        let mut indexed_log_bloom = [0u8; 256];
+        indexed_log_bloom.copy_from_slice(&plan.indexed_log_bloom);
+        let transaction_index_updates = plan
+            .transaction_publications
+            .iter()
+            .map(|publication| FinalChainTransactionIndexUpdate {
+                transaction_hash: H256::from(publication.transaction_hash),
+                position: publication.position,
+                is_system: publication.is_system,
+                receipt_rlp: publication.receipt_rlp.as_slice(),
+            })
+            .collect::<Vec<_>>();
+        let execution_status = self
+            .finalization_execution_status(plan.executed_dag_blocks, plan.executed_transactions)?;
+
+        self.storage
+            .final_chain()
+            .write_block_header_with_snapshots_execution_status_and_rewards_stats(
+                plan.period,
+                plan_hash,
+                plan.stored_header_rlp.as_slice(),
+                plan.receipts_rlp.as_slice(),
+                None,
+                None,
+                Some(execution_status),
+                None,
+                Some(FinalChainLogBloomIndexUpdate {
+                    block_number: plan.period,
+                    bloom: &indexed_log_bloom,
+                }),
+                &transaction_index_updates,
+                Some(FinalChainPeriodSystemTransactionsUpdate {
+                    period: plan.period,
+                    hashes_rlp: plan.system_transaction_hashes_rlp.as_slice(),
+                }),
+            )?;
+
+        Ok(FinalChainExternalEvmPublicationReport {
+            request_id: plan.request_id,
+            plan_id: plan.plan_id,
+            period: plan.period,
+            block_hash: plan.block_hash,
+            status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED,
+            error_code: String::new(),
+        })
+    }
+
     /// Finalizes a PBFT block using the Rust-owned native transfer executor.
     pub fn finalize_block(
         &self,
@@ -1408,6 +1571,7 @@ impl FinalChain {
                     bloom: &indexed_log_bloom,
                 }),
                 &transaction_index_updates,
+                None,
             )?;
         self.insert_account_snapshot(pbft.period, account_snapshot)?;
         self.insert_dpos_snapshot(pbft.period, dpos_snapshot)?;
@@ -4021,6 +4185,20 @@ impl FinalChain {
             .map_err(|_| anyhow::anyhow!("final-chain rewards stats runtime lock poisoned"))? =
             runtime_after_commit;
         Ok(())
+    }
+}
+
+fn rejected_external_evm_publication_report(
+    plan: &FinalChainExternalEvmPublicationPlan,
+    error_code: impl Into<String>,
+) -> FinalChainExternalEvmPublicationReport {
+    FinalChainExternalEvmPublicationReport {
+        request_id: plan.request_id,
+        plan_id: plan.plan_id,
+        period: plan.period,
+        block_hash: plan.block_hash,
+        status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED,
+        error_code: error_code.into(),
     }
 }
 

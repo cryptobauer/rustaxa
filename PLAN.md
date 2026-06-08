@@ -330,11 +330,15 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     plan with stored/full header RLP, block hash, receipt payloads, transaction-location/receipt publication facts, and
     period system-transaction hash RLP. The publication plan has a deterministic plan id, and Rust now validates the
     external EVM staged-state lifecycle report against the request id, plan id, post-execution root, post-rewards root,
-    period, and publication block hash before returning a typed ready-to-publish decision. The plan and decision
-    intentionally do not publish storage or call `StateAPI`; differential parity, Rust-owned bridge-contract system
-    transaction generation, safe executor commit/discard smoke coverage, and the final one-batch state-root/receipt
-    storage publication path remain required before unsupported contract-call and contract-creation state transitions can
-    finalize. Native Rust finalization now publishes
+    period, and publication block hash before returning a typed ready-to-publish decision. A separate explicit Rust
+    publication API can now consume that plan and decision, recompute the plan id, validate the current FinalChain head,
+    and apply the external-EVM FinalChain storage rows in one Rust-owned batch: stored header, receipt-by-period,
+    hash/number indexes, receipt-by-transaction hash, transaction locations, bloom-index chunks, executed counters,
+    period system-transaction hashes, and `LAST_NUMBER` last. This publication API still does not execute EVM or call
+    `StateAPI`, and the compatibility `FinalChain::finalize` route remains blocked for arbitrary EVM sessions;
+    differential parity, Rust-owned bridge-contract system transaction generation, safe executor commit/discard smoke
+    coverage, and the live C++ executor adapter remain required before unsupported contract-call and contract-creation
+    state transitions can finalize in production. Native Rust finalization now publishes
     transaction-location and receipt-by-hash indexes in the same Rust storage batch that publishes block visibility and
     `LAST_NUMBER`, closing the previous native crash window where a finalized head could appear before those indexes.
   - PBFT manager fact collection now connects directly to the Rust FinalChain runtime for PBFT final-chain hash lookup
@@ -376,15 +380,16 @@ FinalChain currently depends on:
 1. Keep Rust-backed read/index, transaction, receipt, bloom, account snapshot, DPoS snapshot, and PBFT fact-collection
    parity stable.
 2. Continue finalization/write path parity beyond the currently supported native-transfer, DPoS mutation/read, rewards,
-   bloom, slashing, and FinalChain execution-session subset. The remaining storage cleanup target is to connect the
-   validated external-EVM publication decision to a Rust-owned batch. The current EVM session can consume
-   bridge-provided system transaction RLPs and include them in request/publication facts; Rust still needs
-   bridge-contract state reads before it can generate period system transactions itself.
+   bloom, slashing, and FinalChain execution-session subset. The external-EVM storage publication batch is now
+   Rust-owned behind an explicit API; production routing still needs the live executor adapter and parity gates before
+   the compatibility finalizer may call it. The current EVM session can consume bridge-provided system transaction RLPs
+   and include them in request/publication facts; Rust still needs bridge-contract state reads before it can generate
+   period system transactions itself.
 3. Keep EVM execution outside FinalChain while completing the external executor port: request construction, report
    validation, bridge-provided system-transaction fact validation, rewards/state-root reporting, and non-mutating
-   commit/publication-plan derivation plus lifecycle-report validation are Rust-owned; differential commit tests,
-   Rust-owned system-transaction generation, safe StateAPI lifecycle smoke coverage, and one-batch storage publication
-   are still needed before
+   commit/publication-plan derivation plus lifecycle-report validation and explicit one-batch storage publication are
+   Rust-owned; differential commit tests, Rust-owned system-transaction generation, safe StateAPI lifecycle smoke
+   coverage, and the live C++ executor adapter are still needed before
    unsupported contract-call and contract-creation state transitions publish FinalChain storage.
 4. Continue DPoS and account snapshot parity for remaining DPoS contract methods, broader slashing surfaces, and broader
    state trie/code/storage recovery.

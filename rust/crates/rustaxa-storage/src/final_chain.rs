@@ -82,6 +82,21 @@ pub struct FinalChainTransactionIndexUpdate<'a> {
     pub receipt_rlp: &'a [u8],
 }
 
+/// Period-level system transaction hash list committed with block visibility.
+///
+/// The payload is the legacy RLP list stored in `period_system_transactions`.
+/// External-EVM FinalChain publication commits this row in the same batch as
+/// header, receipt, transaction-index, bloom-index, counter, and `LAST_NUMBER`
+/// rows so restart and RPC readers cannot observe a finalized block whose
+/// system transaction hash list is missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FinalChainPeriodSystemTransactionsUpdate<'a> {
+    /// Finalized PBFT period whose system transaction hash list is being stored.
+    pub period: u64,
+    /// Canonical legacy RLP list of system transaction hashes.
+    pub hashes_rlp: &'a [u8],
+}
+
 /// Returns the legacy FinalChain bloom chunk identifier.
 ///
 /// C++ maps `(level, index)` to `h256(index * 0xff + level)`, encoded as a
@@ -349,6 +364,7 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
             None,
             None,
             &[],
+            None,
         )
     }
 
@@ -356,10 +372,11 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
     /// and optional log-bloom index mutation in one batch.
     ///
     /// Inputs match `write_block_header_with_snapshots_and_execution_status`
-    /// with additional rewards-stat and log-bloom index intents. If supplied,
-    /// both mutations are committed before `LAST_NUMBER`, so startup cannot
-    /// observe the new finalized head without the corresponding native cache and
-    /// bloom-index state.
+    /// with additional rewards-stat, log-bloom index, transaction-index, and
+    /// period system transaction intents. If supplied, all mutations are
+    /// committed before `LAST_NUMBER`, so startup cannot observe the new
+    /// finalized head without the corresponding native cache, bloom-index
+    /// state, transaction indexes, and period system transaction hash list.
     #[allow(clippy::too_many_arguments)]
     pub fn write_block_header_with_snapshots_execution_status_and_rewards_stats(
         &self,
@@ -373,6 +390,7 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
         rewards_stats_update: Option<FinalChainRewardsStatsUpdate<'_>>,
         log_bloom_index_update: Option<FinalChainLogBloomIndexUpdate<'_>>,
         transaction_index_updates: &[FinalChainTransactionIndexUpdate<'_>],
+        period_system_transactions_update: Option<FinalChainPeriodSystemTransactionsUpdate<'_>>,
     ) -> Result<()> {
         const DB_META_LAST_NUMBER: u32 = 1;
 
@@ -458,6 +476,20 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
         }
         for update in transaction_index_updates {
             self.write_transaction_index_update(number, &mut batch, *update)?;
+        }
+        if let Some(update) = period_system_transactions_update {
+            if update.period != number {
+                bail!(
+                    "final-chain period system transaction update period {} does not match block number {number}",
+                    update.period
+                );
+            }
+            self.db.batch_put(
+                &mut batch,
+                Column::PeriodSystemTransactions,
+                &update.period.to_le_bytes(),
+                update.hashes_rlp,
+            )?;
         }
         self.db.batch_put(
             &mut batch,
@@ -863,6 +895,10 @@ mod tests {
                 is_system: false,
                 receipt_rlp: b"receipt-by-hash",
             }],
+            Some(FinalChainPeriodSystemTransactionsUpdate {
+                period: 17,
+                hashes_rlp: b"system-hashes",
+            }),
         )
         .unwrap();
 
@@ -900,6 +936,12 @@ mod tests {
             repo.receipt_by_trx_hash(H256::from_low_u64_be(0x7777))
                 .unwrap(),
             Some(b"receipt-by-hash".to_vec())
+        );
+        assert_eq!(
+            db.get(Column::PeriodSystemTransactions, &17u64.to_le_bytes())
+                .unwrap()
+                .map(|value| value.to_vec()),
+            Some(b"system-hashes".to_vec())
         );
     }
 

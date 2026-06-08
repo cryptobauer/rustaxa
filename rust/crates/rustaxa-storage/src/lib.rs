@@ -25,6 +25,7 @@ pub use final_chain::FinalChainExecutionStatus;
 pub use final_chain::FinalChainLogBloom;
 pub use final_chain::FinalChainLogBloomChunk;
 pub use final_chain::FinalChainLogBloomIndexUpdate;
+pub use final_chain::FinalChainPeriodSystemTransactionsUpdate;
 pub use final_chain::FinalChainRepository;
 pub use final_chain::FinalChainRewardsStatsUpdate;
 pub use final_chain::FinalChainTransactionIndexUpdate;
