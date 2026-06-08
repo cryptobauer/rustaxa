@@ -40,6 +40,9 @@ pub const FINAL_CHAIN_EXECUTION_STATUS_WAITING_SYSTEM_TRANSACTIONS: u8 = 6;
 /// Session has built external-EVM commit facts and is ready to derive a
 /// publication plan, but live storage commit remains disabled.
 pub const FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_PUBLICATION: u8 = 7;
+/// Session has derived publication facts and is waiting for external EVM state
+/// lifecycle confirmation.
+pub const FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_LIFECYCLE: u8 = 8;
 
 /// No work remains for the current session state.
 pub const FINAL_CHAIN_EXECUTION_ACTION_COMPLETE: u8 = 0;
@@ -57,6 +60,8 @@ pub const FINAL_CHAIN_EXECUTION_ACTION_PROVIDE_SYSTEM_TRANSACTIONS: u8 = 5;
 /// Derive the Rust-owned external-EVM publication facts without mutating
 /// storage.
 pub const FINAL_CHAIN_EXECUTION_ACTION_PLAN_EXTERNAL_EVM_PUBLICATION: u8 = 6;
+/// Report the external EVM staged-state lifecycle before storage publication.
+pub const FINAL_CHAIN_EXECUTION_ACTION_REPORT_EXTERNAL_EVM_LIFECYCLE: u8 = 7;
 
 /// Regular native value transfer.
 pub const FINAL_CHAIN_EXECUTION_TX_KIND_NATIVE_VALUE_TRANSFER: u8 = 0;
@@ -80,6 +85,18 @@ pub const FINAL_CHAIN_EVM_REPORT_STATUS_REJECTED: u8 = 1;
 pub const FINAL_CHAIN_EVM_REWARDS_REPORT_STATUS_SUCCESS: u8 = 0;
 /// External EVM rewards/state-root executor rejected the requested distribution.
 pub const FINAL_CHAIN_EVM_REWARDS_REPORT_STATUS_REJECTED: u8 = 1;
+
+/// External EVM staged state was committed by the executor boundary.
+pub const FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED: u8 = 0;
+/// External EVM staged state was discarded by the executor boundary.
+pub const FINAL_CHAIN_EVM_LIFECYCLE_STATUS_DISCARDED: u8 = 1;
+/// External EVM staged state was rejected or never reached a commit-capable state.
+pub const FINAL_CHAIN_EVM_LIFECYCLE_STATUS_REJECTED: u8 = 2;
+
+/// External EVM publication can be committed once storage publication is wired.
+pub const FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH: u8 = 0;
+/// External EVM publication cannot be committed.
+pub const FINAL_CHAIN_EVM_COMMIT_DECISION_REJECTED: u8 = 1;
 
 /// Complete FinalChain execution request owned by a runtime session.
 ///
@@ -295,10 +312,13 @@ pub struct FinalChainExternalEvmTransactionPublication {
 /// The plan materializes the stored-header RLP, legacy full header RLP, block
 /// hash, receipt payloads, transaction index facts, and system-transaction hash
 /// list that the next slice can publish in one Rust-owned storage batch after a
-/// safe external EVM state lifecycle exists.
+/// safe external EVM state lifecycle exists. `plan_id` is a deterministic hash
+/// of those publication facts and must be echoed by the lifecycle report so
+/// stale staged-state decisions cannot be replayed across blocks.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainExternalEvmPublicationPlan {
     pub request_id: [u8; 32],
+    pub plan_id: [u8; 32],
     pub period: u64,
     pub block_hash: [u8; 32],
     pub block_header_rlp: Vec<u8>,
@@ -309,6 +329,42 @@ pub struct FinalChainExternalEvmPublicationPlan {
     pub transaction_publications: Vec<FinalChainExternalEvmTransactionPublication>,
     pub executed_dag_blocks: u64,
     pub executed_transactions: u64,
+    pub error_code: String,
+}
+
+/// External EVM staged-state lifecycle report.
+///
+/// The external executor owns `StateAPI`, `state_db/`, staged commit/discard,
+/// and any reward-state mutation. Rust validates only stable identity facts:
+/// request id, period, post-execution root, post-rewards root, publication
+/// block hash, lifecycle status, and error code. It never receives EVM handles
+/// or state diffs.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FinalChainExternalEvmLifecycleReport {
+    pub request_id: [u8; 32],
+    pub plan_id: [u8; 32],
+    pub period: u64,
+    pub post_execution_state_root: [u8; 32],
+    pub post_rewards_state_root: [u8; 32],
+    pub publication_block_hash: [u8; 32],
+    pub status: u8,
+    pub error_code: String,
+}
+
+/// Final Rust decision after external EVM lifecycle validation.
+///
+/// A ready decision proves Rust consensus has validated every deterministic
+/// fact needed for external-EVM FinalChain publication. The function returning
+/// this type still does not write storage; storage publication remains an
+/// explicit follow-up boundary until parity and safe `StateAPI` lifecycle tests
+/// are available.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FinalChainExternalEvmCommitDecision {
+    pub request_id: [u8; 32],
+    pub plan_id: [u8; 32],
+    pub period: u64,
+    pub publication_block_hash: [u8; 32],
+    pub status: u8,
     pub error_code: String,
 }
 
@@ -362,6 +418,7 @@ pub struct FinalChainExecutionSession {
     report: Option<FinalChainEvmExecutionReport>,
     rewards_request: Option<FinalChainEvmRewardsRequest>,
     external_evm_commit_plan: Option<FinalChainExternalEvmCommitPlan>,
+    external_evm_publication_plan: Option<FinalChainExternalEvmPublicationPlan>,
     error_code: String,
 }
 
@@ -462,6 +519,13 @@ pub fn final_chain_execution_session_next(
         FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_PUBLICATION => FinalChainExecutionStep {
             status: session.status,
             action: FINAL_CHAIN_EXECUTION_ACTION_PLAN_EXTERNAL_EVM_PUBLICATION,
+            period: session.metadata.period,
+            error_code: session.error_code.clone(),
+            ..Default::default()
+        },
+        FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_LIFECYCLE => FinalChainExecutionStep {
+            status: session.status,
+            action: FINAL_CHAIN_EXECUTION_ACTION_REPORT_EXTERNAL_EVM_LIFECYCLE,
             period: session.metadata.period,
             error_code: session.error_code.clone(),
             ..Default::default()
@@ -736,11 +800,11 @@ pub fn final_chain_execution_session_plan_external_evm_commit(
 
 /// Builds the external-EVM storage-publication facts without mutating storage.
 ///
-/// This is the last safe Rust-owned planning boundary before live EVM state
-/// lifecycle wiring. It materializes header bytes, receipt bytes, transaction
-/// index facts, system-transaction hash rows, and absolute execution counters,
-/// then leaves the session rejected with an explicit lifecycle gap so production
-/// routing cannot publish a block before `StateAPI` commit/discard parity exists.
+/// This materializes header bytes, receipt bytes, transaction index facts,
+/// system-transaction hash rows, a deterministic publication plan id, and
+/// absolute execution counters. Successful planning advances the session to
+/// external EVM lifecycle validation, but still does not publish storage or
+/// touch `StateAPI`.
 pub fn final_chain_execution_session_plan_external_evm_publication(
     final_chain: &FinalChain,
     session: &mut FinalChainExecutionSession,
@@ -777,8 +841,9 @@ pub fn final_chain_execution_session_plan_external_evm_publication(
         commit_plan,
     ) {
         Ok(publication) => {
-            session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
-            session.error_code = "FINAL_CHAIN_EVM_STATE_LIFECYCLE_UNIMPLEMENTED".to_string();
+            session.external_evm_publication_plan = Some(publication.clone());
+            session.status = FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_LIFECYCLE;
+            session.error_code.clear();
             publication
         }
         Err(error) => {
@@ -786,6 +851,127 @@ pub fn final_chain_execution_session_plan_external_evm_publication(
             session.error_code = format!("FINAL_CHAIN_EVM_PUBLICATION_INVALID: {error:#}");
             rejected_external_evm_publication_plan(&session.metadata, session.error_code.clone())
         }
+    }
+}
+
+/// Validates external EVM staged-state lifecycle facts and returns the final
+/// Rust commit decision.
+///
+/// A committed lifecycle report must match the exact EVM execution root,
+/// post-rewards root, and publication block hash derived by Rust. Ready
+/// decisions remain non-mutating: the session is left rejected with an explicit
+/// storage-publication gap so production routing cannot publish FinalChain
+/// storage before the Rust-owned batch and differential parity are wired.
+pub fn final_chain_execution_session_report_external_evm_lifecycle(
+    session: &mut FinalChainExecutionSession,
+    report: FinalChainExternalEvmLifecycleReport,
+) -> FinalChainExternalEvmCommitDecision {
+    if session.status != FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_LIFECYCLE {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_LIFECYCLE_UNEXPECTED".to_string();
+        return rejected_external_evm_commit_decision(
+            &session.metadata,
+            session.error_code.clone(),
+        );
+    }
+    let Some(commit_plan) = session.external_evm_commit_plan.as_ref() else {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_LIFECYCLE_WITHOUT_COMMIT_PLAN".to_string();
+        return rejected_external_evm_commit_decision(
+            &session.metadata,
+            session.error_code.clone(),
+        );
+    };
+    let Some(publication_plan) = session.external_evm_publication_plan.as_ref() else {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_LIFECYCLE_WITHOUT_PUBLICATION_PLAN".to_string();
+        return rejected_external_evm_commit_decision(
+            &session.metadata,
+            session.error_code.clone(),
+        );
+    };
+    if report.request_id != commit_plan.request_id {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_LIFECYCLE_REQUEST_ID_MISMATCH".to_string();
+        return rejected_external_evm_commit_decision(
+            &session.metadata,
+            session.error_code.clone(),
+        );
+    }
+    if report.plan_id != publication_plan.plan_id {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_LIFECYCLE_PLAN_ID_MISMATCH".to_string();
+        return rejected_external_evm_commit_decision(
+            &session.metadata,
+            session.error_code.clone(),
+        );
+    }
+    if report.period != session.metadata.period {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_LIFECYCLE_PERIOD_MISMATCH".to_string();
+        return rejected_external_evm_commit_decision(
+            &session.metadata,
+            session.error_code.clone(),
+        );
+    }
+    if report.post_execution_state_root != commit_plan.post_execution_state_root {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_LIFECYCLE_POST_EXECUTION_ROOT_MISMATCH".to_string();
+        return rejected_external_evm_commit_decision(
+            &session.metadata,
+            session.error_code.clone(),
+        );
+    }
+    if report.post_rewards_state_root != commit_plan.state_root {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_LIFECYCLE_POST_REWARDS_ROOT_MISMATCH".to_string();
+        return rejected_external_evm_commit_decision(
+            &session.metadata,
+            session.error_code.clone(),
+        );
+    }
+    if report.publication_block_hash != publication_plan.block_hash {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_LIFECYCLE_BLOCK_HASH_MISMATCH".to_string();
+        return rejected_external_evm_commit_decision(
+            &session.metadata,
+            session.error_code.clone(),
+        );
+    }
+    let has_error = !report.error_code.is_empty();
+    if report.status == FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED && has_error {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_LIFECYCLE_COMMITTED_WITH_ERROR".to_string();
+        return rejected_external_evm_commit_decision(
+            &session.metadata,
+            session.error_code.clone(),
+        );
+    }
+    if report.status != FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = if report.error_code.is_empty() {
+            "FINAL_CHAIN_EVM_LIFECYCLE_NOT_COMMITTED".to_string()
+        } else {
+            format!(
+                "FINAL_CHAIN_EVM_LIFECYCLE_NOT_COMMITTED: {}",
+                report.error_code
+            )
+        };
+        return rejected_external_evm_commit_decision(
+            &session.metadata,
+            session.error_code.clone(),
+        );
+    }
+
+    session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+    session.error_code = "FINAL_CHAIN_EVM_STORAGE_PUBLICATION_UNIMPLEMENTED".to_string();
+    FinalChainExternalEvmCommitDecision {
+        request_id: publication_plan.request_id,
+        plan_id: publication_plan.plan_id,
+        period: publication_plan.period,
+        publication_block_hash: publication_plan.block_hash,
+        status: FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH,
+        error_code: String::new(),
     }
 }
 
@@ -859,6 +1045,7 @@ impl FinalChainExecutionSession {
                 report: None,
                 rewards_request: None,
                 external_evm_commit_plan: None,
+                external_evm_publication_plan: None,
                 error_code: String::new(),
             };
         }
@@ -888,6 +1075,7 @@ impl FinalChainExecutionSession {
             report: None,
             rewards_request: None,
             external_evm_commit_plan: None,
+            external_evm_publication_plan: None,
             error_code: String::new(),
         }
     }
@@ -907,6 +1095,7 @@ impl FinalChainExecutionSession {
             report: None,
             rewards_request: None,
             external_evm_commit_plan: None,
+            external_evm_publication_plan: None,
             error_code,
         }
     }
@@ -1092,8 +1281,9 @@ fn build_external_evm_publication_plan(
             })
         })
         .collect::<Result<Vec<_>, anyhow::Error>>()?;
-    Ok(FinalChainExternalEvmPublicationPlan {
+    let mut publication = FinalChainExternalEvmPublicationPlan {
         request_id: commit_plan.request_id,
+        plan_id: [0; 32],
         period: metadata.period,
         block_hash: block_hash.into(),
         block_header_rlp: full_header.into_vec(),
@@ -1111,7 +1301,9 @@ fn build_external_evm_publication_plan(
         executed_dag_blocks: commit_plan.executed_dag_blocks,
         executed_transactions: commit_plan.executed_transactions,
         error_code: String::new(),
-    })
+    };
+    publication.plan_id = external_evm_publication_plan_id(&publication);
+    Ok(publication)
 }
 
 fn rejected_external_evm_commit_plan(
@@ -1131,6 +1323,18 @@ fn rejected_external_evm_publication_plan(
 ) -> FinalChainExternalEvmPublicationPlan {
     FinalChainExternalEvmPublicationPlan {
         period: metadata.period,
+        error_code,
+        ..Default::default()
+    }
+}
+
+fn rejected_external_evm_commit_decision(
+    metadata: &rustaxa_types::PbftBlockMetadata,
+    error_code: String,
+) -> FinalChainExternalEvmCommitDecision {
+    FinalChainExternalEvmCommitDecision {
+        period: metadata.period,
+        status: FINAL_CHAIN_EVM_COMMIT_DECISION_REJECTED,
         error_code,
         ..Default::default()
     }
@@ -1244,6 +1448,39 @@ fn encode_system_transaction_hashes_rlp(hashes: impl Iterator<Item = [u8; 32]>) 
         stream.append(&hash.as_slice());
     }
     stream.out().to_vec()
+}
+
+fn external_evm_publication_plan_id(plan: &FinalChainExternalEvmPublicationPlan) -> [u8; 32] {
+    use tiny_keccak::{Hasher, Keccak};
+
+    let mut hasher = Keccak::v256();
+    hasher.update(b"rustaxa-final-chain-external-evm-publication-plan-v1");
+    hasher.update(&plan.request_id);
+    hasher.update(&plan.period.to_be_bytes());
+    hasher.update(&plan.block_hash);
+    hash_bytes_with_len(&mut hasher, &plan.block_header_rlp);
+    hash_bytes_with_len(&mut hasher, &plan.stored_header_rlp);
+    hash_bytes_with_len(&mut hasher, &plan.receipts_rlp);
+    hash_bytes_with_len(&mut hasher, &plan.indexed_log_bloom);
+    hash_bytes_with_len(&mut hasher, &plan.system_transaction_hashes_rlp);
+    hasher.update(&(plan.transaction_publications.len() as u64).to_be_bytes());
+    for publication in &plan.transaction_publications {
+        hasher.update(&publication.transaction_hash);
+        hasher.update(&publication.position.to_be_bytes());
+        hasher.update(&[u8::from(publication.is_system)]);
+        hash_bytes_with_len(&mut hasher, &publication.receipt_rlp);
+    }
+    hasher.update(&plan.executed_dag_blocks.to_be_bytes());
+    hasher.update(&plan.executed_transactions.to_be_bytes());
+
+    let mut plan_id = [0u8; 32];
+    hasher.finalize(&mut plan_id);
+    plan_id
+}
+
+fn hash_bytes_with_len(hasher: &mut impl tiny_keccak::Hasher, bytes: &[u8]) {
+    hasher.update(&(bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
 }
 
 fn classify_ordered_execution_transactions(

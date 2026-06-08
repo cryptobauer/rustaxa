@@ -2445,6 +2445,7 @@ pub mod rustaxa_ffi {
 
     struct FinalChainExternalEvmPublicationPlan {
         request_id: [u8; 32],
+        plan_id: [u8; 32],
         period: u64,
         block_hash: [u8; 32],
         block_header_rlp: Vec<u8>,
@@ -2455,6 +2456,26 @@ pub mod rustaxa_ffi {
         transaction_publications: Vec<FinalChainExternalEvmTransactionPublication>,
         executed_dag_blocks: u64,
         executed_transactions: u64,
+        error_code: String,
+    }
+
+    struct FinalChainExternalEvmLifecycleReport {
+        request_id: [u8; 32],
+        plan_id: [u8; 32],
+        period: u64,
+        post_execution_state_root: [u8; 32],
+        post_rewards_state_root: [u8; 32],
+        publication_block_hash: [u8; 32],
+        status: u8,
+        error_code: String,
+    }
+
+    struct FinalChainExternalEvmCommitDecision {
+        request_id: [u8; 32],
+        plan_id: [u8; 32],
+        period: u64,
+        publication_block_hash: [u8; 32],
+        status: u8,
         error_code: String,
     }
 
@@ -5350,6 +5371,10 @@ pub mod rustaxa_ffi {
             final_chain: &BridgeFinalChain,
             session: &mut BridgeFinalChainExecutionSession,
         ) -> Result<FinalChainExternalEvmPublicationPlan>;
+        pub fn final_chain_execution_session_report_external_evm_lifecycle(
+            self: &mut BridgeFinalChainExecutionSession,
+            report: FinalChainExternalEvmLifecycleReport,
+        ) -> Result<FinalChainExternalEvmCommitDecision>;
         pub fn final_chain_execution_session_commit(
             final_chain: &BridgeFinalChain,
             session: Box<BridgeFinalChainExecutionSession>,

@@ -324,6 +324,7 @@ fn external_evm_publication_plan_to_ffi(
 ) -> rustaxa_ffi::FinalChainExternalEvmPublicationPlan {
     rustaxa_ffi::FinalChainExternalEvmPublicationPlan {
         request_id: plan.request_id,
+        plan_id: plan.plan_id,
         period: plan.period,
         block_hash: plan.block_hash,
         block_header_rlp: plan.block_header_rlp,
@@ -346,6 +347,34 @@ fn external_evm_publication_plan_to_ffi(
         executed_dag_blocks: plan.executed_dag_blocks,
         executed_transactions: plan.executed_transactions,
         error_code: plan.error_code,
+    }
+}
+
+fn external_evm_lifecycle_report_from_ffi(
+    report: rustaxa_ffi::FinalChainExternalEvmLifecycleReport,
+) -> rustaxa_consensus::FinalChainExternalEvmLifecycleReport {
+    rustaxa_consensus::FinalChainExternalEvmLifecycleReport {
+        request_id: report.request_id,
+        plan_id: report.plan_id,
+        period: report.period,
+        post_execution_state_root: report.post_execution_state_root,
+        post_rewards_state_root: report.post_rewards_state_root,
+        publication_block_hash: report.publication_block_hash,
+        status: report.status,
+        error_code: report.error_code,
+    }
+}
+
+fn external_evm_commit_decision_to_ffi(
+    decision: rustaxa_consensus::FinalChainExternalEvmCommitDecision,
+) -> rustaxa_ffi::FinalChainExternalEvmCommitDecision {
+    rustaxa_ffi::FinalChainExternalEvmCommitDecision {
+        request_id: decision.request_id,
+        plan_id: decision.plan_id,
+        period: decision.period,
+        publication_block_hash: decision.publication_block_hash,
+        status: decision.status,
+        error_code: decision.error_code,
     }
 }
 
@@ -566,6 +595,18 @@ impl BridgeFinalChainExecutionSession {
             rustaxa_consensus::final_chain_execution_session_plan_external_evm_commit(
                 &mut self.state,
                 evm_rewards_report_from_ffi(rewards_report),
+            ),
+        ))
+    }
+
+    pub fn final_chain_execution_session_report_external_evm_lifecycle(
+        &mut self,
+        report: rustaxa_ffi::FinalChainExternalEvmLifecycleReport,
+    ) -> Result<rustaxa_ffi::FinalChainExternalEvmCommitDecision, anyhow::Error> {
+        Ok(external_evm_commit_decision_to_ffi(
+            rustaxa_consensus::final_chain_execution_session_report_external_evm_lifecycle(
+                &mut self.state,
+                external_evm_lifecycle_report_from_ffi(report),
             ),
         ))
     }
@@ -1180,6 +1221,79 @@ mod tests {
         stream.out().to_vec()
     }
 
+    fn external_evm_publication_fixture(
+        prefix: &str,
+    ) -> (
+        PathBuf,
+        Box<BridgeFinalChain>,
+        Box<BridgeFinalChainExecutionSession>,
+        rustaxa_ffi::FinalChainExternalEvmCommitPlan,
+        rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
+    ) {
+        let temp_dir = unique_temp_dir(prefix);
+        let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
+        let final_chain = make_final_chain(storage_path, vec![]);
+        let mut session = create_final_chain_execution_session(
+            &final_chain,
+            rustaxa_ffi::FinalChainExecutionRequest {
+                pbft_block_rlp: signed_pbft_block_rlp(7),
+                transactions: vec![
+                    ffi_transaction(1, true, [9; 20], Vec::new()),
+                    ffi_transaction(2, true, [8; 20], vec![0xaa]),
+                ],
+                finalized_dag_blocks: Vec::new(),
+                blocks_per_year: 0,
+                cert_votes: Vec::new(),
+                block_gas_limit: 1_000_000,
+                mode: rustaxa_consensus::FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
+            },
+        )
+        .expect("session should be created");
+        let system_step = session
+            .final_chain_execution_session_next()
+            .expect("session step should convert");
+        let step = session
+            .final_chain_execution_session_report_system_transactions(
+                rustaxa_ffi::FinalChainSystemTransactionReport {
+                    request_id: system_step.system_transaction_request.request_id,
+                    period: 7,
+                    transactions: Vec::new(),
+                },
+            )
+            .expect("system transaction report should convert");
+        let rewards = session
+            .final_chain_execution_session_report_evm(rustaxa_ffi::FinalChainEvmExecutionReport {
+                request_id: step.evm_request.request_id,
+                status: rustaxa_consensus::FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
+                state_root: [0x11; 32],
+                cumulative_gas_used: 2,
+                results: vec![
+                    ffi_evm_result(&step.evm_request.transactions[0], 1, 1),
+                    ffi_evm_result(&step.evm_request.transactions[1], 1, 2),
+                ],
+            })
+            .expect("typed report should convert");
+        assert_eq!(
+            rewards.action,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_ACTION_DISTRIBUTE_EXTERNAL_EVM_REWARDS
+        );
+        let plan = session
+            .final_chain_execution_session_plan_external_evm_commit(
+                rustaxa_ffi::FinalChainEvmRewardsReport {
+                    request_id: step.evm_request.request_id,
+                    period: 7,
+                    status: rustaxa_consensus::FINAL_CHAIN_EVM_REWARDS_REPORT_STATUS_SUCCESS,
+                    state_root: [0x22; 32],
+                    total_reward: vec![0x33],
+                },
+            )
+            .expect("commit plan should convert");
+        let publication =
+            final_chain_execution_session_plan_external_evm_publication(&final_chain, &mut session)
+                .expect("publication plan should convert");
+        (temp_dir, final_chain, session, plan, publication)
+    }
+
     fn signed_pbft_block_rlp(period: u64) -> Vec<u8> {
         let signing_key = SigningKey::from_slice(&[9u8; 32]).unwrap();
         let timestamp = 1234u64;
@@ -1502,12 +1616,86 @@ mod tests {
                 .expect("publication plan should convert");
         assert!(publication.error_code.is_empty());
         assert_eq!(publication.period, 7);
+        assert_ne!(publication.plan_id, [0; 32]);
         assert!(!publication.block_header_rlp.is_empty());
         assert!(!publication.stored_header_rlp.is_empty());
         assert_eq!(publication.receipts_rlp, plan.receipts_rlp);
         assert_eq!(publication.transaction_publications.len(), 2);
         assert!(!publication.transaction_publications[0].is_system);
         assert!(publication.system_transaction_hashes_rlp.len() == 1);
+
+        let step = session
+            .final_chain_execution_session_next()
+            .expect("lifecycle step should convert");
+        assert_eq!(
+            step.status,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_LIFECYCLE
+        );
+        assert_eq!(
+            step.action,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_ACTION_REPORT_EXTERNAL_EVM_LIFECYCLE
+        );
+
+        let decision = session
+            .final_chain_execution_session_report_external_evm_lifecycle(
+                rustaxa_ffi::FinalChainExternalEvmLifecycleReport {
+                    request_id: publication.request_id,
+                    plan_id: publication.plan_id,
+                    period: publication.period,
+                    post_execution_state_root: plan.post_execution_state_root,
+                    post_rewards_state_root: plan.state_root,
+                    publication_block_hash: publication.block_hash,
+                    status: rustaxa_consensus::FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED,
+                    error_code: String::new(),
+                },
+            )
+            .expect("lifecycle decision should convert");
+        assert_eq!(
+            decision.status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH
+        );
+        assert_eq!(decision.request_id, publication.request_id);
+        assert_eq!(decision.plan_id, publication.plan_id);
+        assert_eq!(decision.publication_block_hash, publication.block_hash);
+        assert!(decision.error_code.is_empty());
+
+        drop(final_chain);
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_execution_session_rejects_external_evm_lifecycle_plan_mismatch() {
+        let (temp_dir, final_chain, mut session, plan, publication) =
+            external_evm_publication_fixture(
+                "rustaxa_bridge_final_chain_execution_lifecycle_mismatch",
+            );
+        let mut wrong_plan_id = publication.plan_id;
+        wrong_plan_id[0] ^= 0xff;
+
+        let decision = session
+            .final_chain_execution_session_report_external_evm_lifecycle(
+                rustaxa_ffi::FinalChainExternalEvmLifecycleReport {
+                    request_id: publication.request_id,
+                    plan_id: wrong_plan_id,
+                    period: publication.period,
+                    post_execution_state_root: plan.post_execution_state_root,
+                    post_rewards_state_root: plan.state_root,
+                    publication_block_hash: publication.block_hash,
+                    status: rustaxa_consensus::FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED,
+                    error_code: String::new(),
+                },
+            )
+            .expect("lifecycle rejection should convert");
+
+        assert_eq!(
+            decision.status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_COMMIT_DECISION_REJECTED
+        );
+        assert_eq!(decision.period, 7);
+        assert_eq!(
+            decision.error_code,
+            "FINAL_CHAIN_EVM_LIFECYCLE_PLAN_ID_MISMATCH"
+        );
 
         drop(final_chain);
         let _ = fs::remove_dir_all(temp_dir);
