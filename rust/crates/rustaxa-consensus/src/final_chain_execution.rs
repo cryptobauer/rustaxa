@@ -314,14 +314,29 @@ pub struct FinalChainExternalEvmTransactionPublication {
     pub receipt_rlp: Vec<u8>,
 }
 
+/// Rewards-stat cache mutation to publish with an external-EVM block.
+///
+/// The external executor still distributes rewards through the C++ `StateAPI`,
+/// but rewards-stat planning already runs through the Rust rewards runtime.
+/// These fields carry only the storage cache mutation that must be committed
+/// atomically with FinalChain block visibility.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FinalChainExternalEvmRewardsStatsUpdate {
+    pub current_period: u64,
+    pub cache_current_period: bool,
+    pub clear_cached_stats: bool,
+    pub current_block_stats_rlp: Vec<u8>,
+}
+
 /// Non-mutating publication plan for an external-EVM FinalChain block.
 ///
 /// The plan materializes the stored-header RLP, legacy full header RLP, block
-/// hash, receipt payloads, transaction index facts, and system-transaction hash
-/// list that the next slice can publish in one Rust-owned storage batch after a
-/// safe external EVM state lifecycle exists. `plan_id` is a deterministic hash
-/// of those publication facts and must be echoed by the lifecycle report so
-/// stale staged-state decisions cannot be replayed across blocks.
+/// hash, receipt payloads, transaction index facts, system-transaction hash
+/// list, and rewards-stat cache mutation that Rust publishes in one storage
+/// batch after a safe external EVM state lifecycle report. `plan_id` is a
+/// deterministic hash of those publication facts and must be echoed by the
+/// lifecycle report so stale staged-state decisions cannot be replayed across
+/// blocks.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainExternalEvmPublicationPlan {
     pub request_id: [u8; 32],
@@ -336,6 +351,7 @@ pub struct FinalChainExternalEvmPublicationPlan {
     pub transaction_publications: Vec<FinalChainExternalEvmTransactionPublication>,
     pub executed_dag_blocks: u64,
     pub executed_transactions: u64,
+    pub rewards_stats_update: FinalChainExternalEvmRewardsStatsUpdate,
     pub error_code: String,
 }
 
@@ -998,6 +1014,55 @@ pub fn final_chain_execution_session_report_external_evm_lifecycle(
     }
 }
 
+/// Attaches rewards-stat cache publication facts to an external-EVM plan.
+///
+/// The session planner derives all header, receipt, bloom, and transaction
+/// publication facts before the C++ executor distributes rewards. The executor
+/// then supplies the Rust rewards-stat cache mutation through this helper so
+/// the final plan id covers the complete Rust storage batch.
+fn final_chain_external_evm_publication_plan_with_rewards_stats(
+    mut plan: FinalChainExternalEvmPublicationPlan,
+    rewards_stats_update: FinalChainExternalEvmRewardsStatsUpdate,
+) -> FinalChainExternalEvmPublicationPlan {
+    plan.rewards_stats_update = rewards_stats_update;
+    plan.plan_id = final_chain_external_evm_publication_plan_id(&plan);
+    plan
+}
+
+/// Attaches rewards-stat facts to the session-owned external-EVM publication
+/// plan and returns the rehashed plan.
+///
+/// This must run after publication planning and before lifecycle reporting so
+/// lifecycle validation and storage publication agree on the same full plan id.
+pub fn final_chain_execution_session_attach_external_evm_rewards_stats(
+    session: &mut FinalChainExecutionSession,
+    rewards_stats_update: FinalChainExternalEvmRewardsStatsUpdate,
+) -> FinalChainExternalEvmPublicationPlan {
+    if session.status != FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_LIFECYCLE {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_REWARDS_STATS_UNEXPECTED".to_string();
+        return rejected_external_evm_publication_plan(
+            &session.metadata,
+            session.error_code.clone(),
+        );
+    }
+    let Some(publication_plan) = session.external_evm_publication_plan.take() else {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_REWARDS_STATS_WITHOUT_PUBLICATION_PLAN".to_string();
+        return rejected_external_evm_publication_plan(
+            &session.metadata,
+            session.error_code.clone(),
+        );
+    };
+
+    let publication_plan = final_chain_external_evm_publication_plan_with_rewards_stats(
+        publication_plan,
+        rewards_stats_update,
+    );
+    session.external_evm_publication_plan = Some(publication_plan.clone());
+    publication_plan
+}
+
 /// Commits a completed native FinalChain execution session.
 ///
 /// Only sessions whose next step is `COMMIT_NATIVE` are allowed to publish
@@ -1323,6 +1388,7 @@ fn build_external_evm_publication_plan(
         transaction_publications,
         executed_dag_blocks: commit_plan.executed_dag_blocks,
         executed_transactions: commit_plan.executed_transactions,
+        rewards_stats_update: FinalChainExternalEvmRewardsStatsUpdate::default(),
         error_code: String::new(),
     };
     publication.plan_id = final_chain_external_evm_publication_plan_id(&publication);
@@ -1497,6 +1563,13 @@ pub(crate) fn final_chain_external_evm_publication_plan_id(
     }
     hasher.update(&plan.executed_dag_blocks.to_be_bytes());
     hasher.update(&plan.executed_transactions.to_be_bytes());
+    hasher.update(&plan.rewards_stats_update.current_period.to_be_bytes());
+    hasher.update(&[u8::from(plan.rewards_stats_update.cache_current_period)]);
+    hasher.update(&[u8::from(plan.rewards_stats_update.clear_cached_stats)]);
+    hash_bytes_with_len(
+        &mut hasher,
+        &plan.rewards_stats_update.current_block_stats_rlp,
+    );
 
     let mut plan_id = [0u8; 32];
     hasher.finalize(&mut plan_id);

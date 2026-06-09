@@ -12,6 +12,11 @@
 
 namespace taraxa::rewards {
 
+struct FinalChainPublicationRewardsStats {
+  std::vector<BlockStats> distribution_stats;
+  rustaxa::FinalChainExternalEvmRewardsStatsUpdate storage_update;
+};
+
 /**
  * Rust-mode rewards statistics facade.
  *
@@ -65,10 +70,27 @@ class Stats {
                                        const std::vector<gas_t>& trxs_gas_used, Batch& write_batch);
 
   /**
+   * Processes rewards stats for Rust-owned external-EVM FinalChain publication.
+   *
+   * The returned `distribution_stats` are passed to `StateAPI::distribute_rewards`, while `storage_update` must be
+   * attached to the Rust external-EVM publication plan so cache rows are committed in the same FinalChain storage batch
+   * as the block header and indexes. This method does not append writes to a C++ batch.
+   */
+  FinalChainPublicationRewardsStats processStatsForFinalChainPublication(const PeriodData& current_blk,
+                                                                         uint32_t blocks_per_year,
+                                                                         const std::vector<gas_t>& trxs_gas_used);
+
+  /**
    * Clears the runtime cache after the surrounding finalization commit has
    * completed on a rewards distribution boundary.
    */
   void clear(uint64_t current_period);
+
+  /**
+   * Clears only in-memory rewards caches after Rust publication has already
+   * committed any required rewards-stat storage mutation.
+   */
+  void clearCommittedAfterFinalChainPublication(uint64_t current_period);
 
  protected:
   /**

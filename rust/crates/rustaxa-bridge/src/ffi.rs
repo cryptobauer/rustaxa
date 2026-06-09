@@ -2443,6 +2443,13 @@ pub mod rustaxa_ffi {
         receipt_rlp: Vec<u8>,
     }
 
+    struct FinalChainExternalEvmRewardsStatsUpdate {
+        current_period: u64,
+        cache_current_period: bool,
+        clear_cached_stats: bool,
+        current_block_stats_rlp: Vec<u8>,
+    }
+
     struct FinalChainExternalEvmPublicationPlan {
         request_id: [u8; 32],
         plan_id: [u8; 32],
@@ -2456,6 +2463,7 @@ pub mod rustaxa_ffi {
         transaction_publications: Vec<FinalChainExternalEvmTransactionPublication>,
         executed_dag_blocks: u64,
         executed_transactions: u64,
+        rewards_stats_update: FinalChainExternalEvmRewardsStatsUpdate,
         error_code: String,
     }
 
@@ -5376,6 +5384,10 @@ pub mod rustaxa_ffi {
             self: &mut BridgeFinalChainExecutionSession,
             rewards_report: FinalChainEvmRewardsReport,
         ) -> Result<FinalChainExternalEvmCommitPlan>;
+        pub fn final_chain_execution_session_attach_external_evm_rewards_stats(
+            self: &mut BridgeFinalChainExecutionSession,
+            rewards_stats_update: FinalChainExternalEvmRewardsStatsUpdate,
+        ) -> Result<FinalChainExternalEvmPublicationPlan>;
         pub fn final_chain_execution_session_plan_external_evm_publication(
             final_chain: &BridgeFinalChain,
             session: &mut BridgeFinalChainExecutionSession,

@@ -104,11 +104,48 @@ std::vector<BlockStats> Stats::processStats(const PeriodData& current_blk, uint3
   return decodeDistributionStats(plan.distribution_stats);
 }
 
+FinalChainPublicationRewardsStats Stats::processStatsForFinalChainPublication(
+    const PeriodData& current_blk, uint32_t blocks_per_year, const std::vector<gas_t>& trxs_gas_used) {
+  auto fact = makeProcessFact(current_blk, blocks_per_year, trxs_gas_used);
+  auto plan = rust_stats_->process_finalized_period_rewards_stats(std::move(fact));
+  if (plan.status != kRewardsStatsApplied) {
+    throw rewardsStatsError("planner rejected period " + std::to_string(plan.current_period) + ": " +
+                            std::string(plan.error_code));
+  }
+
+  if (plan.cache_current_period) {
+    blocks_stats_[plan.current_period] = decodeBlockStats(plan.current_block_stats_rlp);
+  } else if (plan.clear_cached_stats) {
+    blocks_stats_.clear();
+    for (const auto& stat : plan.distribution_stats) {
+      blocks_stats_[stat.period] = decodeBlockStats(stat.data);
+    }
+  }
+
+  FinalChainPublicationRewardsStats result;
+  result.distribution_stats = decodeDistributionStats(plan.distribution_stats);
+  result.storage_update.current_period = plan.current_period;
+  result.storage_update.cache_current_period = plan.cache_current_period;
+  result.storage_update.clear_cached_stats = plan.clear_cached_stats;
+  if (plan.cache_current_period) {
+    result.storage_update.current_block_stats_rlp = std::move(plan.current_block_stats_rlp);
+  }
+  return result;
+}
+
 void Stats::clear(uint64_t current_period) {
   const auto frequency = kHardforksConfig.getRewardsDistributionFrequency(current_period);
   if (frequency > 1 && current_period % frequency == 0) {
     blocks_stats_.clear();
     db_->deleteColumnData(DbStorage::Columns::block_rewards_stats);
+  }
+  rust_stats_->rewards_stats_runtime_clear_committed(current_period);
+}
+
+void Stats::clearCommittedAfterFinalChainPublication(uint64_t current_period) {
+  const auto frequency = kHardforksConfig.getRewardsDistributionFrequency(current_period);
+  if (frequency > 1 && current_period % frequency == 0) {
+    blocks_stats_.clear();
   }
   rust_stats_->rewards_stats_runtime_clear_committed(current_period);
 }

@@ -346,7 +346,30 @@ fn external_evm_publication_plan_to_ffi(
             .collect(),
         executed_dag_blocks: plan.executed_dag_blocks,
         executed_transactions: plan.executed_transactions,
+        rewards_stats_update: external_evm_rewards_stats_update_to_ffi(plan.rewards_stats_update),
         error_code: plan.error_code,
+    }
+}
+
+fn external_evm_rewards_stats_update_to_ffi(
+    update: rustaxa_consensus::FinalChainExternalEvmRewardsStatsUpdate,
+) -> rustaxa_ffi::FinalChainExternalEvmRewardsStatsUpdate {
+    rustaxa_ffi::FinalChainExternalEvmRewardsStatsUpdate {
+        current_period: update.current_period,
+        cache_current_period: update.cache_current_period,
+        clear_cached_stats: update.clear_cached_stats,
+        current_block_stats_rlp: update.current_block_stats_rlp,
+    }
+}
+
+fn external_evm_rewards_stats_update_from_ffi(
+    update: rustaxa_ffi::FinalChainExternalEvmRewardsStatsUpdate,
+) -> rustaxa_consensus::FinalChainExternalEvmRewardsStatsUpdate {
+    rustaxa_consensus::FinalChainExternalEvmRewardsStatsUpdate {
+        current_period: update.current_period,
+        cache_current_period: update.cache_current_period,
+        clear_cached_stats: update.clear_cached_stats,
+        current_block_stats_rlp: update.current_block_stats_rlp,
     }
 }
 
@@ -377,6 +400,7 @@ fn external_evm_publication_plan_from_ffi(
             .collect(),
         executed_dag_blocks: plan.executed_dag_blocks,
         executed_transactions: plan.executed_transactions,
+        rewards_stats_update: external_evm_rewards_stats_update_from_ffi(plan.rewards_stats_update),
         error_code: plan.error_code,
     }
 }
@@ -664,6 +688,18 @@ impl BridgeFinalChainExecutionSession {
             rustaxa_consensus::final_chain_execution_session_report_external_evm_lifecycle(
                 &mut self.state,
                 external_evm_lifecycle_report_from_ffi(report),
+            ),
+        ))
+    }
+
+    pub fn final_chain_execution_session_attach_external_evm_rewards_stats(
+        &mut self,
+        rewards_stats_update: rustaxa_ffi::FinalChainExternalEvmRewardsStatsUpdate,
+    ) -> Result<rustaxa_ffi::FinalChainExternalEvmPublicationPlan, anyhow::Error> {
+        Ok(external_evm_publication_plan_to_ffi(
+            rustaxa_consensus::final_chain_execution_session_attach_external_evm_rewards_stats(
+                &mut self.state,
+                external_evm_rewards_stats_update_from_ffi(rewards_stats_update),
             ),
         ))
     }
@@ -1828,6 +1864,81 @@ mod tests {
         );
 
         drop(reloaded);
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_publishes_external_evm_rewards_stats_with_publication_batch() {
+        let (temp_dir, final_chain, mut session, plan, publication) =
+            external_evm_publication_fixture(
+                "rustaxa_bridge_final_chain_external_evm_publish_rewards_stats",
+                1,
+            );
+        let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
+        let old_plan_id = publication.plan_id;
+        let rewards_stats_rlp = vec![0xc3, 0x01, 0x02, 0x03];
+
+        let publication = session
+            .final_chain_execution_session_attach_external_evm_rewards_stats(
+                rustaxa_ffi::FinalChainExternalEvmRewardsStatsUpdate {
+                    current_period: publication.period,
+                    cache_current_period: true,
+                    clear_cached_stats: false,
+                    current_block_stats_rlp: rewards_stats_rlp.clone(),
+                },
+            )
+            .expect("rewards stats update should attach");
+
+        assert_ne!(publication.plan_id, old_plan_id);
+        assert_eq!(publication.rewards_stats_update.current_period, 1);
+        assert!(publication.rewards_stats_update.cache_current_period);
+        assert_eq!(
+            publication.rewards_stats_update.current_block_stats_rlp,
+            rewards_stats_rlp
+        );
+
+        let decision = session
+            .final_chain_execution_session_report_external_evm_lifecycle(
+                rustaxa_ffi::FinalChainExternalEvmLifecycleReport {
+                    request_id: publication.request_id,
+                    plan_id: publication.plan_id,
+                    period: publication.period,
+                    post_execution_state_root: plan.post_execution_state_root,
+                    post_rewards_state_root: plan.state_root,
+                    publication_block_hash: publication.block_hash,
+                    status: rustaxa_consensus::FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED,
+                    error_code: String::new(),
+                },
+            )
+            .expect("lifecycle decision should convert");
+        let report = final_chain
+            .publish_external_evm_publication(publication, decision)
+            .expect("external EVM publication should convert");
+
+        assert_eq!(
+            report.status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED
+        );
+
+        drop(session);
+        drop(final_chain);
+        let storage = create_storage(storage_path).expect("storage should reopen");
+        let persisted_stats = storage.get_blocks_rewards_stats().unwrap();
+        assert_eq!(persisted_stats.len(), 1);
+        assert_eq!(persisted_stats[0].period, 1);
+        assert_eq!(persisted_stats[0].data, rewards_stats_rlp);
+        drop(storage);
+
+        let reloaded = make_final_chain(storage_path, vec![]);
+        assert_eq!(reloaded.get_last_block_number().unwrap(), 1);
+        drop(reloaded);
+        let storage =
+            create_storage(storage_path).expect("storage should reopen after final chain");
+        let persisted_stats = storage.get_blocks_rewards_stats().unwrap();
+        assert_eq!(persisted_stats.len(), 1);
+        assert_eq!(persisted_stats[0].period, 1);
+        assert_eq!(persisted_stats[0].data, vec![0xc3, 0x01, 0x02, 0x03]);
+        drop(storage);
         let _ = fs::remove_dir_all(temp_dir);
     }
 

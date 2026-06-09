@@ -8,7 +8,7 @@ use crate::final_chain_execution::{
     FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED, FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED,
     FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED, FinalChainExternalEvmCommitDecision,
     FinalChainExternalEvmPublicationPlan, FinalChainExternalEvmPublicationReport,
-    final_chain_external_evm_publication_plan_id,
+    FinalChainExternalEvmRewardsStatsUpdate, final_chain_external_evm_publication_plan_id,
 };
 use crate::rewards_stats::{
     FinalizedRewardsPeriodFact, RewardCertVoteFact, RewardDagBlockFact, RewardTransactionFact,
@@ -1306,6 +1306,16 @@ impl FinalChain {
                 "FINAL_CHAIN_EVM_PUBLICATION_BLOOM_INVALID",
             ));
         }
+        let rewards_stats_update =
+            match external_evm_rewards_stats_storage_update(&plan.rewards_stats_update) {
+                Ok(update) => update,
+                Err(error) => {
+                    return Ok(rejected_external_evm_publication_report(
+                        &plan,
+                        format!("FINAL_CHAIN_EVM_PUBLICATION_REWARDS_STATS_INVALID: {error:#}"),
+                    ));
+                }
+            };
 
         let plan_hash = H256::from(plan.block_hash);
         let indexed_period_for_hash = self.block_number(plan.block_hash)?;
@@ -1370,7 +1380,7 @@ impl FinalChain {
                 None,
                 None,
                 Some(execution_status),
-                None,
+                rewards_stats_update,
                 Some(FinalChainLogBloomIndexUpdate {
                     block_number: plan.period,
                     bloom: &indexed_log_bloom,
@@ -4200,6 +4210,36 @@ fn rejected_external_evm_publication_report(
         status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED,
         error_code: error_code.into(),
     }
+}
+
+fn external_evm_rewards_stats_storage_update(
+    update: &FinalChainExternalEvmRewardsStatsUpdate,
+) -> Result<Option<FinalChainRewardsStatsUpdate<'_>>, anyhow::Error> {
+    if update.cache_current_period && update.clear_cached_stats {
+        anyhow::bail!("external EVM rewards stats cannot both cache and clear");
+    }
+    if !update.cache_current_period
+        && !update.clear_cached_stats
+        && update.current_block_stats_rlp.is_empty()
+    {
+        return Ok(None);
+    }
+    if update.current_period == 0 {
+        anyhow::bail!("external EVM rewards stats period is missing");
+    }
+    if !update.cache_current_period && !update.current_block_stats_rlp.is_empty() {
+        anyhow::bail!("external EVM rewards stats RLP supplied without cache flag");
+    }
+    if update.cache_current_period && update.current_block_stats_rlp.is_empty() {
+        anyhow::bail!("external EVM rewards stats cache RLP is missing");
+    }
+
+    Ok(Some(FinalChainRewardsStatsUpdate {
+        current_period: update.current_period,
+        cache_current_period: update.cache_current_period,
+        clear_cached_stats: update.clear_cached_stats,
+        current_block_stats_rlp: update.current_block_stats_rlp.as_slice(),
+    }))
 }
 
 fn decode_u64_le(raw: &[u8], field: &str) -> Result<u64, anyhow::Error> {

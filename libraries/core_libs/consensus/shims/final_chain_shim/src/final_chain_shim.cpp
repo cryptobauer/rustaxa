@@ -526,9 +526,9 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
                       ": " + std::string(step.error_code));
   }
 
-  auto rewards_batch = db_->createWriteBatch();
-  auto rewards_stats = rewards_.processStats(period_data, blocks_per_year, transactions_gas_used, rewards_batch);
-  const auto& [state_root, total_reward] = state_api_.distribute_rewards(rewards_stats);
+  auto rewards_stats =
+      rewards_.processStatsForFinalChainPublication(period_data, blocks_per_year, transactions_gas_used);
+  const auto& [state_root, total_reward] = state_api_.distribute_rewards(rewards_stats.distribution_stats);
 
   rustaxa::FinalChainEvmRewardsReport rewards_report;
   rewards_report.request_id = step.evm_rewards_request.request_id;
@@ -546,6 +546,12 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
       rustaxa::final_chain_execution_session_plan_external_evm_publication(*rust_final_chain_.value(), *session);
   if (!publication_plan.error_code.empty()) {
     throw DbException("FinalChain::finalize Rust external EVM publication plan failed: " +
+                      std::string(publication_plan.error_code));
+  }
+  publication_plan =
+      session->final_chain_execution_session_attach_external_evm_rewards_stats(std::move(rewards_stats.storage_update));
+  if (!publication_plan.error_code.empty()) {
+    throw DbException("FinalChain::finalize Rust external EVM rewards-stats plan failed: " +
                       std::string(publication_plan.error_code));
   }
 
@@ -571,10 +577,7 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
     throw DbException("FinalChain::finalize Rust external EVM publication rejected: " +
                       std::string(publication_report.error_code));
   }
-  // TODO(Rust FinalChain): move external-EVM rewards-stat cache writes into the Rust publication batch so this
-  // temporary C++ rewards batch is not a second post-publication storage commit.
-  db_->commitWriteBatch(rewards_batch, db_->sync_write_);
-  rewards_.clear(period_data.pbft_blk->getPeriod());
+  rewards_.clearCommittedAfterFinalChainPublication(period_data.pbft_blk->getPeriod());
 
   num_executed_dag_blk_ += finalized_dag_blk_hashes.size();
   num_executed_trx_ += all_transactions.size();
