@@ -335,10 +335,16 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     and apply the external-EVM FinalChain storage rows in one Rust-owned batch: stored header, receipt-by-period,
     hash/number indexes, receipt-by-transaction hash, transaction locations, bloom-index chunks, executed counters,
     period system-transaction hashes, and `LAST_NUMBER` last. This publication API still does not execute EVM or call
-    `StateAPI`, and the compatibility `FinalChain::finalize` route remains blocked for arbitrary EVM sessions;
-    differential parity, Rust-owned bridge-contract system transaction generation, safe executor commit/discard smoke
-    coverage, and the live C++ executor adapter remain required before unsupported contract-call and contract-creation
-    state transitions can finalize in production. Native Rust finalization now publishes
+    `StateAPI`. The Rust-mode C++ FinalChain shim now owns the temporary external-EVM executor adapter for arbitrary
+    contract calls and contract creation: it reports bridge-contract system transaction RLPs to Rust, executes the
+    ordered EVM request through the existing C++ `StateAPI`, reports EVM receipts/logs and rewards/state-root facts back
+    to Rust, commits the staged `StateAPI` state after Rust has planned publication, and then calls the explicit Rust
+    publication API. Rust remains the authority for request identity, report validation, header/root/bloom derivation,
+    lifecycle decision validation, and FinalChain storage publication. External-EVM rewards-stat cache writes still use a
+    documented temporary C++ rewards batch after Rust publication; moving those cache writes into the Rust publication
+    batch is required to eliminate the remaining split storage commit. Differential parity, Rust-owned bridge-contract
+    system transaction generation, and a stronger two-phase `StateAPI` commit/discard contract remain required before
+    this temporary C++ executor boundary can shrink further. Native Rust finalization now publishes
     transaction-location and receipt-by-hash indexes in the same Rust storage batch that publishes block visibility and
     `LAST_NUMBER`, closing the previous native crash window where a finalized head could appear before those indexes.
   - PBFT manager fact collection now connects directly to the Rust FinalChain runtime for PBFT final-chain hash lookup
@@ -354,9 +360,11 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     and `getUndelegationV2(address,address,uint64)`. These precompile reads
     use the exact finalized-block snapshot, while DAG authorization and explicit eligibility APIs still use the
     configured delegation-delay snapshot.
-- Unimplemented public shim methods never fall back to `FinalChainOld`. `getAccountStorage`, `getCode`, `trace`,
-  `prune`, `getBridgeRoot`, `getBridgeEpoch`, and private `finalize_` throw explicit Rust-shim gaps. `waitForFinalized`
-  remains a no-op because the Rust shim finalization path is synchronous and returns a ready future.
+- Unimplemented public shim methods never fall back to `FinalChainOld`. `getAccountStorage`, `getCode`, `call`, and
+  `trace` route to C++ `StateAPI` only for blocks whose external-EVM state has been committed by the Rust-mode executor
+  adapter; otherwise they use the Rust FinalChain path where implemented or throw explicit Rust-shim gaps. `prune`,
+  `getBridgeRoot`, `getBridgeEpoch`, and private `finalize_` remain explicit Rust-shim gaps. `waitForFinalized` remains
+  a no-op because the Rust shim finalization path is synchronous and returns a ready future.
 
 ### FinalChain Storage Touchpoints
 
@@ -381,16 +389,18 @@ FinalChain currently depends on:
    parity stable.
 2. Continue finalization/write path parity beyond the currently supported native-transfer, DPoS mutation/read, rewards,
    bloom, slashing, and FinalChain execution-session subset. The external-EVM storage publication batch is now
-   Rust-owned behind an explicit API; production routing still needs the live executor adapter and parity gates before
-   the compatibility finalizer may call it. The current EVM session can consume bridge-provided system transaction RLPs
-   and include them in request/publication facts; Rust still needs bridge-contract state reads before it can generate
-   period system transactions itself.
+   Rust-owned behind an explicit API, and the Rust-mode compatibility finalizer now reaches it through the shim-owned
+   C++ external-EVM executor adapter. The current EVM session can consume bridge-provided system transaction RLPs and
+   include them in request/publication facts; Rust still needs bridge-contract state reads before it can generate period
+   system transactions itself.
 3. Keep EVM execution outside FinalChain while completing the external executor port: request construction, report
    validation, bridge-provided system-transaction fact validation, rewards/state-root reporting, and non-mutating
    commit/publication-plan derivation plus lifecycle-report validation and explicit one-batch storage publication are
-   Rust-owned; differential commit tests, Rust-owned system-transaction generation, safe StateAPI lifecycle smoke
-   coverage, and the live C++ executor adapter are still needed before
-   unsupported contract-call and contract-creation state transitions publish FinalChain storage.
+   Rust-owned; the temporary C++ adapter still owns `StateAPI` execution, rewards distribution, bridge-contract system
+   transaction creation, staged-state commit, and the temporary rewards-stat cache batch. The next parity work should
+   harden differential commit coverage, move external-EVM rewards-stat cache writes into the Rust publication batch,
+   add Rust-owned system-transaction generation, and define a safer `StateAPI` lifecycle boundary without moving EVM
+   execution into Rust.
 4. Continue DPoS and account snapshot parity for remaining DPoS contract methods, broader slashing surfaces, and broader
    state trie/code/storage recovery.
 5. Replace neutral placeholder shim methods with Rust implementations or explicit throwing stubs as their callers are

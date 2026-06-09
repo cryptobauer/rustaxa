@@ -1,5 +1,9 @@
 #pragma once
 
+#include <atomic>
+
+#include "final_chain/state_api.hpp"
+#include "rewards/rewards_stats.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 
 namespace taraxa::final_chain {
@@ -95,9 +99,36 @@ class FinalChain {
   SharedTransactionReceipts blockReceipts(std::optional<EthBlockNumber> n = {}) const;
 
  private:
+  /**
+   * Build bridge-contract system transactions for an external-EVM finalization period.
+   *
+   * The C++ executor boundary still owns bridge-contract state queries. Returned transactions are canonical
+   * `SystemTransaction` objects whose RLP bytes are reported to Rust before the EVM request is emitted.
+   */
+  std::vector<SharedTransaction> makeSystemTransactions(PbftPeriod blk_num);
+
+  /**
+   * Execute and publish an external-EVM FinalChain session.
+   *
+   * Rust owns request identity, report validation, publication planning, and FinalChain storage writes. This shim
+   * method owns only the temporary C++ executor side: system transaction creation, `StateAPI` transaction execution,
+   * rewards distribution, and staged `StateAPI` lifecycle commit.
+   */
+  std::shared_ptr<const FinalizationResult> finalizeExternalEvm(
+      rust::Box<rustaxa::BridgeFinalChainExecutionSession> session, rustaxa::FinalChainExecutionStep initial_step,
+      PeriodData&& period_data, std::vector<h256>&& finalized_dag_blk_hashes, uint32_t blocks_per_year,
+      std::shared_ptr<DagBlock>&& anchor);
+
+  std::shared_ptr<DbStorage> db_;
+  std::optional<::rust::Box<rustaxa::BridgeFinalChain>> rust_final_chain_;
   EthBlockNumber delegation_delay_ = 0;
   uint64_t block_gas_limit_ = 0;
-  std::optional<::rust::Box<rustaxa::BridgeFinalChain>> rust_final_chain_;
+  uint32_t max_levels_per_period_ = 0;
+  StateAPI state_api_;
+  rewards::Stats rewards_;
+  std::atomic<uint64_t> num_executed_dag_blk_ = 0;
+  std::atomic<uint64_t> num_executed_trx_ = 0;
+  const taraxa::FullNodeConfig& config_;
 };
 
 }  // namespace taraxa::final_chain
