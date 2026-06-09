@@ -100,19 +100,20 @@ class FinalChain {
 
  private:
   /**
-   * Build bridge-contract system transactions for an external-EVM finalization period.
+   * Collect bridge-contract facts and materialize Rust-planned system transactions for an external-EVM period.
    *
-   * The C++ executor boundary still owns bridge-contract state queries. Returned transactions are canonical
-   * `SystemTransaction` objects whose RLP bytes are reported to Rust before the EVM request is emitted.
+   * The C++ executor boundary still owns bridge-contract state queries and the `shouldFinalizeEpoch()` dry run. Rust
+   * owns the deterministic system transaction planning and canonical RLP construction. Returned `SystemTransaction`
+   * objects are temporary materialization for `StateAPI` execution only.
    */
-  std::vector<SharedTransaction> makeSystemTransactions(PbftPeriod blk_num);
+  std::vector<SharedTransaction> makeSystemTransactions(const rustaxa::FinalChainSystemTransactionRequest& request);
 
   /**
    * Execute and publish an external-EVM FinalChain session.
    *
    * Rust owns request identity, report validation, publication planning, and FinalChain storage writes. This shim
-   * method owns only the temporary C++ executor side: system transaction creation, `StateAPI` transaction execution,
-   * rewards distribution, and staged `StateAPI` lifecycle commit.
+   * method owns only the temporary C++ executor side: bridge-contract state fact collection, `StateAPI` transaction
+   * execution, rewards distribution, and staged `StateAPI` lifecycle commit.
    */
   std::shared_ptr<const FinalizationResult> finalizeExternalEvm(
       rust::Box<rustaxa::BridgeFinalChainExecutionSession> session, rustaxa::FinalChainExecutionStep initial_step,

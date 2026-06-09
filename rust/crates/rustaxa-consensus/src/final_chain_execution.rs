@@ -1,7 +1,7 @@
 use crate::final_chain::{DPOS_CONTRACT_ADDRESS, FinalChain, SLASHING_CONTRACT_ADDRESS};
 use crate::rewards_stats::RewardCertVoteFact;
 use anyhow::Context;
-use ethereum_types::{H256, U256};
+use ethereum_types::{H160, H256, U256};
 use keccak_hasher::KeccakHasher;
 use rustaxa_types::codec::rlp::final_chain::{
     LegacyBlockHeaderRlp, LegacyBlockHeaderRlpInput, StoredBlockHeaderRlp,
@@ -9,8 +9,8 @@ use rustaxa_types::codec::rlp::final_chain::{
 };
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::{
-    FinalizationDagBlock, FinalizationTransaction, LegacyTransactionEnvelope,
-    StoredFinalChainBlockHeader,
+    FinalizationDagBlock, FinalizationTransaction, LegacySystemTransactionInput,
+    LegacyTransactionEnvelope, StoredFinalChainBlockHeader, encode_legacy_system_transaction,
 };
 use triehash::ordered_trie_root;
 
@@ -35,7 +35,7 @@ pub const FINAL_CHAIN_EXECUTION_STATUS_REJECTED: u8 = 3;
 pub const FINAL_CHAIN_EXECUTION_STATUS_ABORTED: u8 = 4;
 /// Session is waiting for post-execution external EVM rewards/state-root facts.
 pub const FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_REWARDS: u8 = 5;
-/// Session is waiting for bridge-provided system transaction facts.
+/// Session is waiting for bridge fact collection and Rust-planned system transaction RLPs.
 pub const FINAL_CHAIN_EXECUTION_STATUS_WAITING_SYSTEM_TRANSACTIONS: u8 = 6;
 /// Session has built external-EVM commit facts and is ready to derive a
 /// publication plan, but live storage commit remains disabled.
@@ -129,9 +129,9 @@ pub struct FinalChainExecutionRequest {
 /// bridge-provided finalized transaction in block order, including native value
 /// transfers and Rust-native contract actions. The executor must return
 /// matching positions and hashes for the full ordered request; mismatches are
-/// treated as report forgery or stale work. System transactions are still a
-/// separate boundary because their creation depends on bridge-contract state
-/// queries that have not moved to Rust yet.
+/// treated as report forgery or stale work. System transactions are generated
+/// by Rust from bridge-contract state facts and appended before the external
+/// EVM request is emitted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FinalChainEvmTransactionInput {
     pub position: u64,
@@ -151,9 +151,9 @@ pub struct FinalChainEvmTransactionInput {
 /// Request for system transactions needed before external EVM execution.
 ///
 /// Rust emits this request when arbitrary EVM work is present. The temporary
-/// bridge owner may answer with zero or more canonical system transaction RLPs;
-/// Rust decodes them as `SystemTransaction`, appends them after regular period
-/// transactions, and includes them in the external EVM request identity.
+/// bridge owner answers by collecting bridge-contract state facts, asking Rust
+/// to plan canonical system transaction RLPs, and reporting those exact RLPs
+/// back through the session.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainSystemTransactionRequest {
     pub request_id: [u8; 32],
@@ -161,13 +161,44 @@ pub struct FinalChainSystemTransactionRequest {
     pub regular_transaction_count: u64,
 }
 
-/// System transaction facts supplied by the bridge boundary.
+/// System transaction RLPs reported by the bridge boundary.
 ///
 /// The report is side-effect-free. Rust validates identity and period, decodes
 /// every payload using the fixed Taraxa system sender, and rejects malformed
 /// bytes before constructing the external EVM request.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainSystemTransactionReport {
+    pub request_id: [u8; 32],
+    pub period: u64,
+    pub transactions: Vec<Vec<u8>>,
+}
+
+/// Bridge-contract state facts needed to plan external-EVM system transactions.
+///
+/// C++ still owns `StateAPI` reads and the `shouldFinalizeEpoch()` dry run.
+/// Rust owns the deterministic gate and C++-compatible unsigned
+/// `finalizeEpoch()` system transaction RLP construction from those facts.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FinalChainSystemTransactionPlanFact {
+    pub request_id: [u8; 32],
+    pub period: u64,
+    pub is_pillar_block_period: bool,
+    pub bridge_contract_address: [u8; 20],
+    pub bridge_contract_found: bool,
+    pub bridge_contract_has_code: bool,
+    pub should_finalize_epoch: bool,
+    pub system_account_nonce: u64,
+    pub block_gas_limit: u64,
+}
+
+/// Rust-planned system transaction RLPs for an external-EVM session.
+///
+/// The returned bytes are ready to report through
+/// [`final_chain_execution_session_report_system_transactions`] and to
+/// materialize temporarily as C++ `SystemTransaction` objects for `StateAPI`
+/// execution. Rust does not read bridge state or execute EVM here.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FinalChainSystemTransactionPlan {
     pub request_id: [u8; 32],
     pub period: u64,
     pub transactions: Vec<Vec<u8>>,
@@ -618,7 +649,49 @@ pub fn final_chain_execution_session_next(
     }
 }
 
-/// Validates bridge-provided system transaction facts and constructs the
+/// Plans bridge-contract system transaction RLPs for external-EVM execution.
+///
+/// The planner consumes only typed facts supplied by the C++ `StateAPI`
+/// boundary. It emits no transaction unless the period is a pillar block, the
+/// configured bridge contract exists with code, and the C++ dry-run result says
+/// the epoch should finalize. The happy path emits one unsigned legacy system
+/// transaction that calls `finalizeEpoch()` on the bridge contract.
+pub fn plan_external_evm_system_transactions(
+    fact: FinalChainSystemTransactionPlanFact,
+) -> Result<FinalChainSystemTransactionPlan, anyhow::Error> {
+    if fact.bridge_contract_has_code && !fact.bridge_contract_found {
+        anyhow::bail!("bridge contract cannot have code when it was not found");
+    }
+    if !fact.is_pillar_block_period
+        || !fact.bridge_contract_found
+        || !fact.bridge_contract_has_code
+        || !fact.should_finalize_epoch
+    {
+        return Ok(FinalChainSystemTransactionPlan {
+            request_id: fact.request_id,
+            period: fact.period,
+            transactions: Vec::new(),
+        });
+    }
+
+    let transaction = encode_legacy_system_transaction(&LegacySystemTransactionInput {
+        nonce: U256::from(fact.system_account_nonce),
+        value: U256::zero(),
+        gas_price: U256::zero(),
+        gas: fact.block_gas_limit,
+        data: solidity_no_arg_call("finalizeEpoch()"),
+        receiver: Some(H160::from(fact.bridge_contract_address)),
+        chain_id: 0,
+    });
+
+    Ok(FinalChainSystemTransactionPlan {
+        request_id: fact.request_id,
+        period: fact.period,
+        transactions: vec![transaction],
+    })
+}
+
+/// Validates Rust-planned system transaction RLPs and constructs the
 /// external EVM request over regular plus appended system transactions.
 ///
 /// The function does not execute or persist system transactions. It decodes
@@ -1223,6 +1296,14 @@ fn decode_system_transaction_inputs(
         .collect()
 }
 
+fn solidity_no_arg_call(signature: &str) -> Vec<u8> {
+    let mut output = [0u8; 32];
+    let mut hasher = tiny_keccak::Keccak::v256();
+    tiny_keccak::Hasher::update(&mut hasher, signature.as_bytes());
+    tiny_keccak::Hasher::finalize(hasher, &mut output);
+    output[..4].to_vec()
+}
+
 fn build_external_evm_rewards_request(
     finalization_request: &FinalChainExecutionRequest,
     request: &FinalChainEvmExecutionRequest,
@@ -1813,6 +1894,20 @@ mod tests {
         stream.out().to_vec()
     }
 
+    fn system_transaction_plan_fact() -> FinalChainSystemTransactionPlanFact {
+        FinalChainSystemTransactionPlanFact {
+            request_id: [0x42; 32],
+            period: 9,
+            is_pillar_block_period: true,
+            bridge_contract_address: [0x77; 20],
+            bridge_contract_found: true,
+            bridge_contract_has_code: true,
+            should_finalize_epoch: true,
+            system_account_nonce: 4,
+            block_gas_limit: 1_000_000,
+        }
+    }
+
     fn signed_pbft_block_rlp(period: u64) -> Vec<u8> {
         let signing_key = SigningKey::from_slice(&[9u8; 32]).unwrap();
         let timestamp = 1234u64;
@@ -1833,6 +1928,49 @@ mod tests {
 
     fn invalid_pbft_rlp() -> Vec<u8> {
         vec![0xc0]
+    }
+
+    #[test]
+    fn external_evm_system_transaction_planner_emits_finalize_epoch_rlp() {
+        let fact = system_transaction_plan_fact();
+        let plan = plan_external_evm_system_transactions(fact.clone()).unwrap();
+
+        assert_eq!(plan.request_id, fact.request_id);
+        assert_eq!(plan.period, fact.period);
+        assert_eq!(plan.transactions.len(), 1);
+        let envelope = LegacyTransactionEnvelope::decode_system(&plan.transactions[0]).unwrap();
+        assert_eq!(
+            envelope.sender,
+            Some(H160::from(rustaxa_types::TARAXA_SYSTEM_ACCOUNT))
+        );
+        assert_eq!(envelope.nonce, U256::from(fact.system_account_nonce));
+        assert_eq!(envelope.gas_price, U256::zero());
+        assert_eq!(envelope.gas, fact.block_gas_limit);
+        assert_eq!(
+            envelope.receiver,
+            Some(H160::from(fact.bridge_contract_address))
+        );
+        assert_eq!(envelope.value, U256::zero());
+        assert_eq!(envelope.data, solidity_no_arg_call("finalizeEpoch()"));
+        assert_eq!(envelope.chain_id, 0);
+    }
+
+    #[test]
+    fn external_evm_system_transaction_planner_gates_empty_cases() {
+        for mutate in [
+            |fact: &mut FinalChainSystemTransactionPlanFact| fact.is_pillar_block_period = false,
+            |fact: &mut FinalChainSystemTransactionPlanFact| {
+                fact.bridge_contract_found = false;
+                fact.bridge_contract_has_code = false;
+            },
+            |fact: &mut FinalChainSystemTransactionPlanFact| fact.bridge_contract_has_code = false,
+            |fact: &mut FinalChainSystemTransactionPlanFact| fact.should_finalize_epoch = false,
+        ] {
+            let mut fact = system_transaction_plan_fact();
+            mutate(&mut fact);
+            let plan = plan_external_evm_system_transactions(fact).unwrap();
+            assert!(plan.transactions.is_empty());
+        }
     }
 
     fn append_pbft_block_fields(stream: &mut RlpStream, period: u64, timestamp: u64) {

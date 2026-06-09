@@ -68,7 +68,8 @@ pub use final_chain_execution::{
     FinalChainExternalEvmCommitDecision, FinalChainExternalEvmCommitPlan,
     FinalChainExternalEvmLifecycleReport, FinalChainExternalEvmPublicationPlan,
     FinalChainExternalEvmPublicationReport, FinalChainExternalEvmRewardsStatsUpdate,
-    FinalChainExternalEvmTransactionPublication, FinalChainSystemTransactionReport,
+    FinalChainExternalEvmTransactionPublication, FinalChainSystemTransactionPlan,
+    FinalChainSystemTransactionPlanFact, FinalChainSystemTransactionReport,
     FinalChainSystemTransactionRequest, abort_final_chain_execution_session,
     commit_final_chain_execution_session, create_final_chain_execution_session,
     final_chain_execution_session_attach_external_evm_rewards_stats,
@@ -77,6 +78,7 @@ pub use final_chain_execution::{
     final_chain_execution_session_report_evm,
     final_chain_execution_session_report_external_evm_lifecycle,
     final_chain_execution_session_report_system_transactions,
+    plan_external_evm_system_transactions,
 };
 pub use gas_pricer::{GasPriceOracle, GasPricerConfig};
 pub use pbft_chain::PbftChain;

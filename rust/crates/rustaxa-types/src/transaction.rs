@@ -55,6 +55,25 @@ pub struct LegacyTransactionEnvelope {
     pub intrinsic_gas_covered: bool,
 }
 
+/// Unsigned legacy system transaction payload encoded by C++
+/// `SystemTransaction::streamRLP`.
+///
+/// The system transaction shape is the same nine-field legacy transaction RLP
+/// used by regular transactions, but the signature fields are replaced by
+/// `[chain_id, 0, 0]` and the sender is always the fixed Taraxa system account
+/// when decoded through [`LegacyTransactionEnvelope::decode_system`]. A
+/// `chain_id` of zero is valid here and matches the default C++ constructor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LegacySystemTransactionInput {
+    pub nonce: U256,
+    pub value: U256,
+    pub gas_price: U256,
+    pub gas: u64,
+    pub data: Vec<u8>,
+    pub receiver: Option<H160>,
+    pub chain_id: u64,
+}
+
 impl LegacyTransactionEnvelope {
     /// Decodes and inspects a regular signed legacy transaction.
     ///
@@ -81,6 +100,30 @@ impl LegacyTransactionEnvelope {
             .and_then(|gas_cost| gas_cost.checked_add(self.value))
             .ok_or_else(|| anyhow::anyhow!("legacy transaction cost overflow"))
     }
+}
+
+/// Encodes an unsigned legacy system transaction.
+///
+/// The returned bytes are canonical for the current C++ `SystemTransaction`
+/// implementation and can be decoded with
+/// [`LegacyTransactionEnvelope::decode_system`] to recover the fixed Taraxa
+/// system sender and transaction hash.
+pub fn encode_legacy_system_transaction(input: &LegacySystemTransactionInput) -> Vec<u8> {
+    let mut stream = RlpStream::new_list(LEGACY_TRANSACTION_FIELDS);
+    stream.append(&input.nonce);
+    stream.append(&input.gas_price);
+    stream.append(&input.gas);
+    if let Some(receiver) = input.receiver {
+        stream.append(&receiver);
+    } else {
+        stream.append(&0u8);
+    }
+    stream.append(&input.value);
+    stream.append(&input.data);
+    stream.append(&U256::from(input.chain_id));
+    stream.append(&U256::zero());
+    stream.append(&U256::zero());
+    stream.out().to_vec()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -168,6 +211,9 @@ fn decode_signature_scalar(rlp: &Rlp<'_>, field: usize) -> Result<U256> {
 
 fn chain_id_for_system(v: U256, r: U256, s: U256) -> Result<u64> {
     if r.is_zero() && s.is_zero() {
+        if v.is_zero() {
+            return Ok(0);
+        }
         return to_chain_id(v);
     }
     let (chain_id, _) = chain_and_recovery_id(v)?;
@@ -447,6 +493,32 @@ mod tests {
 
         assert_eq!(envelope.sender, Some(H160::from(TARAXA_SYSTEM_ACCOUNT)));
         assert_eq!(envelope.nonce, U256::from(3u64));
+        assert!(envelope.signature_valid);
+    }
+
+    #[test]
+    fn legacy_system_transaction_encoder_matches_cpp_unsigned_shape() {
+        let receiver = H160::from([0x77u8; 20]);
+        let data = vec![0x13, 0x37, 0xaa, 0xbb];
+        let rlp = encode_legacy_system_transaction(&LegacySystemTransactionInput {
+            nonce: U256::from(4u64),
+            value: U256::zero(),
+            gas_price: U256::zero(),
+            gas: 1_000_000,
+            data: data.clone(),
+            receiver: Some(receiver),
+            chain_id: 0,
+        });
+        let envelope = LegacyTransactionEnvelope::decode_system(&rlp).unwrap();
+
+        assert_eq!(envelope.sender, Some(H160::from(TARAXA_SYSTEM_ACCOUNT)));
+        assert_eq!(envelope.nonce, U256::from(4u64));
+        assert_eq!(envelope.gas_price, U256::zero());
+        assert_eq!(envelope.gas, 1_000_000);
+        assert_eq!(envelope.receiver, Some(receiver));
+        assert_eq!(envelope.value, U256::zero());
+        assert_eq!(envelope.data, data);
+        assert_eq!(envelope.chain_id, 0);
         assert!(envelope.signature_valid);
     }
 

@@ -422,44 +422,63 @@ std::future<std::shared_ptr<const FinalizationResult>> FinalChain::finalize(
   return ready_finalization_result(std::move(result));
 }
 
-std::vector<SharedTransaction> FinalChain::makeSystemTransactions(PbftPeriod blk_num) {
+std::vector<SharedTransaction> FinalChain::makeSystemTransactions(
+    const rustaxa::FinalChainSystemTransactionRequest& request) {
+  const auto bridge_contract_address = config_.genesis.state.hardforks.ficus_hf.bridge_contract_address;
+  const auto last_block_number = lastBlockNumber();
+  const auto is_pillar_block_period =
+      config_.genesis.state.hardforks.ficus_hf.isPillarBlockPeriod(request.period + delegationDelay());
+  const auto bridge_contract = state_api_.get_account(last_block_number, bridge_contract_address);
+  const auto bridge_contract_has_code = bridge_contract && bridge_contract->code_size;
+
+  bool should_finalize = false;
+  uint64_t system_account_nonce = 0;
+  if (is_pillar_block_period && bridge_contract_has_code) {
+    const static auto should_finalize_method = util::EncodingSolidity::packFunctionCall("shouldFinalizeEpoch()");
+    should_finalize =
+        u256(state_api_
+                 .dry_run_transaction(last_block_number,
+                                      state_api::EVMBlock{dev::ZeroAddress, block_gas_limit_, 0,
+                                                          BlockHeader::difficulty()},
+                                      state_api::EVMTransaction{
+                                          dev::ZeroAddress,
+                                          1,
+                                          bridge_contract_address,
+                                          state_api::ZeroAccount.nonce,
+                                          0,
+                                          10000000,
+                                          should_finalize_method,
+                                      })
+                 .code_retval)
+            .convert_to<bool>();
+    if (should_finalize) {
+      system_account_nonce =
+          state_api_.get_account(last_block_number, kTaraxaSystemAccount)
+              .value_or(state_api::ZeroAccount)
+              .nonce.convert_to<uint64_t>();
+    }
+  }
+
+  rustaxa::FinalChainSystemTransactionPlanFact fact;
+  fact.request_id = request.request_id;
+  fact.period = request.period;
+  fact.is_pillar_block_period = is_pillar_block_period;
+  fact.bridge_contract_address = into_address_array(bridge_contract_address);
+  fact.bridge_contract_found = bridge_contract.has_value();
+  fact.bridge_contract_has_code = bridge_contract_has_code;
+  fact.should_finalize_epoch = should_finalize;
+  fact.system_account_nonce = system_account_nonce;
+  fact.block_gas_limit = block_gas_limit_;
+  auto plan = rustaxa::plan_external_evm_system_transactions(std::move(fact));
+  if (plan.request_id != request.request_id || plan.period != request.period) {
+    throw DbException("FinalChain::makeSystemTransactions Rust plan identity mismatch");
+  }
+
   std::vector<SharedTransaction> system_transactions;
-  if (!config_.genesis.state.hardforks.ficus_hf.isPillarBlockPeriod(blk_num + delegationDelay())) {
-    return system_transactions;
+  system_transactions.reserve(plan.transactions.size());
+  for (const auto& tx_rlp : plan.transactions) {
+    system_transactions.push_back(std::make_shared<SystemTransaction>(into_bytes(tx_rlp.data)));
   }
-
-  const auto bridge_contract =
-      state_api_.get_account(lastBlockNumber(), config_.genesis.state.hardforks.ficus_hf.bridge_contract_address);
-  if (!bridge_contract || !bridge_contract->code_size) {
-    return system_transactions;
-  }
-
-  const static auto get_bridge_root_method = util::EncodingSolidity::packFunctionCall("shouldFinalizeEpoch()");
-  auto should_finalize =
-      u256(state_api_
-               .dry_run_transaction(
-                   lastBlockNumber(),
-                   state_api::EVMBlock{dev::ZeroAddress, block_gas_limit_, 0, BlockHeader::difficulty()},
-                   state_api::EVMTransaction{
-                       dev::ZeroAddress,
-                       1,
-                       config_.genesis.state.hardforks.ficus_hf.bridge_contract_address,
-                       state_api::ZeroAccount.nonce,
-                       0,
-                       10000000,
-                       get_bridge_root_method,
-                   })
-               .code_retval)
-          .convert_to<bool>();
-  if (!should_finalize) {
-    return system_transactions;
-  }
-
-  const static auto finalize_method = util::EncodingSolidity::packFunctionCall("finalizeEpoch()");
-  auto account = state_api_.get_account(lastBlockNumber(), kTaraxaSystemAccount).value_or(state_api::ZeroAccount);
-  system_transactions.push_back(
-      std::make_shared<SystemTransaction>(account.nonce, 0, 0, block_gas_limit_, finalize_method,
-                                          config_.genesis.state.hardforks.ficus_hf.bridge_contract_address));
   return system_transactions;
 }
 
@@ -471,7 +490,7 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
 
   auto all_transactions = period_data.transactions;
   if (step.action == kFinalChainExecutionActionProvideSystemTransactions) {
-    auto system_transactions = makeSystemTransactions(period_data.pbft_blk->getPeriod());
+    auto system_transactions = makeSystemTransactions(step.system_transaction_request);
     rustaxa::FinalChainSystemTransactionReport system_report;
     system_report.request_id = step.system_transaction_request.request_id;
     system_report.period = step.system_transaction_request.period;

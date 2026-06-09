@@ -321,9 +321,10 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     transaction stream in the EVM request rather than only the contract-call subset, while still reporting the count of
     transactions that require arbitrary EVM execution. EVM reports must cover that same full ordered request and validate
     request identity, transaction order, cumulative gas, typed receipt status, and basic receipt shape. External-EVM
-    sessions now request bridge-provided system transaction facts before emitting the EVM request, decode those canonical
-    system transaction RLPs in Rust with the fixed Taraxa system sender, append them after regular period transactions,
-    and include them in the EVM request identity and transaction roots. A valid EVM report now advances to a Rust-owned
+    sessions now request bridge-contract system transaction facts before emitting the EVM request, plan canonical
+    `finalizeEpoch()` system transaction RLPs in Rust from those facts, decode the planned RLPs with the fixed Taraxa
+    system sender, append them after regular period transactions, and include them in the EVM request identity and
+    transaction roots. A valid EVM report now advances to a Rust-owned
     rewards/state-root boundary, and a valid rewards report builds a non-mutating external EVM commit plan with
     transaction/receipt trie roots, header and indexed log blooms, receipt payloads, gas, post-rewards state root, total
     reward, regular/system transaction counts, and execution counters. Rust can also derive a non-mutating publication
@@ -336,15 +337,14 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     hash/number indexes, receipt-by-transaction hash, transaction locations, bloom-index chunks, executed counters,
     period system-transaction hashes, rewards-stat cache mutation, and `LAST_NUMBER` last. This publication API still
     does not execute EVM or call `StateAPI`. The Rust-mode C++ FinalChain shim now owns the temporary external-EVM
-    executor adapter for arbitrary contract calls and contract creation: it reports bridge-contract system transaction
-    RLPs to Rust, executes the
+    executor adapter for arbitrary contract calls and contract creation: it collects bridge-contract system transaction
+    facts through `StateAPI`, executes the
     ordered EVM request through the existing C++ `StateAPI`, reports EVM receipts/logs and rewards/state-root facts back
     to Rust, commits the staged `StateAPI` state after Rust has planned publication, and then calls the explicit Rust
     publication API. Rust remains the authority for request identity, report validation, header/root/bloom derivation,
     lifecycle decision validation, rewards-stat cache persistence, and FinalChain storage publication. Differential
-    parity, Rust-owned bridge-contract system transaction generation, and a stronger two-phase `StateAPI` commit/discard
-    contract remain required before this temporary C++ executor boundary can shrink further. Native Rust finalization now
-    publishes
+    parity and a stronger two-phase `StateAPI` commit/discard contract remain required before this temporary C++ executor
+    boundary can shrink further. Native Rust finalization now publishes
     transaction-location and receipt-by-hash indexes in the same Rust storage batch that publishes block visibility and
     `LAST_NUMBER`, closing the previous native crash window where a finalized head could appear before those indexes.
   - PBFT manager fact collection now connects directly to the Rust FinalChain runtime for PBFT final-chain hash lookup
@@ -390,16 +390,15 @@ FinalChain currently depends on:
 2. Continue finalization/write path parity beyond the currently supported native-transfer, DPoS mutation/read, rewards,
    bloom, slashing, and FinalChain execution-session subset. The external-EVM storage publication batch is now
    Rust-owned behind an explicit API, and the Rust-mode compatibility finalizer now reaches it through the shim-owned
-   C++ external-EVM executor adapter. The current EVM session can consume bridge-provided system transaction RLPs and
-   include them in request/publication facts; Rust still needs bridge-contract state reads before it can generate period
-   system transactions itself.
+   C++ external-EVM executor adapter. The current EVM session plans period bridge-contract system transaction RLPs in
+   Rust from C++ `StateAPI` facts and includes them in request/publication facts; Rust still needs bridge-contract state
+   reads before C++ can stop collecting those facts.
 3. Keep EVM execution outside FinalChain while completing the external executor port: request construction, report
-   validation, bridge-provided system-transaction fact validation, rewards/state-root reporting, and non-mutating
+   validation, Rust-owned system-transaction planning from bridge facts, rewards/state-root reporting, and non-mutating
    commit/publication-plan derivation plus lifecycle-report validation and explicit one-batch storage publication are
-   Rust-owned, including rewards-stat cache persistence; the temporary C++ adapter still owns `StateAPI` execution,
-   rewards distribution, bridge-contract system transaction creation, and staged-state commit. The next parity work
-   should harden differential commit coverage, add Rust-owned system-transaction generation, and define a safer `StateAPI`
-   lifecycle boundary without moving EVM execution into Rust.
+   Rust-owned, including rewards-stat cache persistence; the temporary C++ adapter still owns `StateAPI` fact collection,
+   `StateAPI` execution, rewards distribution, and staged-state commit. The next parity work should harden differential
+   commit coverage and define a safer `StateAPI` lifecycle boundary without moving EVM execution into Rust.
 4. Continue DPoS and account snapshot parity for remaining DPoS contract methods, broader slashing surfaces, and broader
    state trie/code/storage recovery.
 5. Replace neutral placeholder shim methods with Rust implementations or explicit throwing stubs as their callers are

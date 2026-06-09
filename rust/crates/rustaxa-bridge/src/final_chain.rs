@@ -182,6 +182,36 @@ fn system_transaction_report_from_ffi(
     }
 }
 
+fn system_transaction_plan_fact_from_ffi(
+    fact: rustaxa_ffi::FinalChainSystemTransactionPlanFact,
+) -> rustaxa_consensus::FinalChainSystemTransactionPlanFact {
+    rustaxa_consensus::FinalChainSystemTransactionPlanFact {
+        request_id: fact.request_id,
+        period: fact.period,
+        is_pillar_block_period: fact.is_pillar_block_period,
+        bridge_contract_address: fact.bridge_contract_address,
+        bridge_contract_found: fact.bridge_contract_found,
+        bridge_contract_has_code: fact.bridge_contract_has_code,
+        should_finalize_epoch: fact.should_finalize_epoch,
+        system_account_nonce: fact.system_account_nonce,
+        block_gas_limit: fact.block_gas_limit,
+    }
+}
+
+fn system_transaction_plan_to_ffi(
+    plan: rustaxa_consensus::FinalChainSystemTransactionPlan,
+) -> rustaxa_ffi::FinalChainSystemTransactionPlan {
+    rustaxa_ffi::FinalChainSystemTransactionPlan {
+        request_id: plan.request_id,
+        period: plan.period,
+        transactions: plan
+            .transactions
+            .into_iter()
+            .map(|data| rustaxa_ffi::TxRlp { data })
+            .collect(),
+    }
+}
+
 fn evm_request_to_ffi(
     request: rustaxa_consensus::FinalChainEvmExecutionRequest,
 ) -> rustaxa_ffi::FinalChainEvmExecutionRequest {
@@ -633,6 +663,15 @@ pub fn final_chain_execution_session_commit(
 
 pub fn abort_final_chain_execution_session(session: Box<BridgeFinalChainExecutionSession>) {
     let _ = rustaxa_consensus::abort_final_chain_execution_session(session.state);
+}
+
+pub fn plan_external_evm_system_transactions(
+    fact: rustaxa_ffi::FinalChainSystemTransactionPlanFact,
+) -> Result<rustaxa_ffi::FinalChainSystemTransactionPlan, anyhow::Error> {
+    rustaxa_consensus::plan_external_evm_system_transactions(system_transaction_plan_fact_from_ffi(
+        fact,
+    ))
+    .map(system_transaction_plan_to_ffi)
 }
 
 impl BridgeFinalChainExecutionSession {
@@ -1646,6 +1685,40 @@ mod tests {
 
         drop(final_chain);
         let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_plans_external_evm_system_transaction_rlp() {
+        let request_id = [0x42; 32];
+        let bridge_address = [0x77; 20];
+        let plan = plan_external_evm_system_transactions(
+            rustaxa_ffi::FinalChainSystemTransactionPlanFact {
+                request_id,
+                period: 7,
+                is_pillar_block_period: true,
+                bridge_contract_address: bridge_address,
+                bridge_contract_found: true,
+                bridge_contract_has_code: true,
+                should_finalize_epoch: true,
+                system_account_nonce: 4,
+                block_gas_limit: 1_000_000,
+            },
+        )
+        .expect("system transaction planner should convert");
+
+        assert_eq!(plan.request_id, request_id);
+        assert_eq!(plan.period, 7);
+        assert_eq!(plan.transactions.len(), 1);
+        let envelope =
+            rustaxa_types::LegacyTransactionEnvelope::decode_system(&plan.transactions[0].data)
+                .expect("planned system transaction should decode");
+        assert_eq!(
+            envelope.sender,
+            Some(rustaxa_types::TARAXA_SYSTEM_ACCOUNT.into())
+        );
+        assert_eq!(envelope.receiver, Some(bridge_address.into()));
+        assert_eq!(envelope.nonce, 4u64.into());
+        assert_eq!(envelope.gas, 1_000_000);
     }
 
     #[test]

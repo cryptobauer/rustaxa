@@ -2357,6 +2357,24 @@ pub mod rustaxa_ffi {
         transactions: Vec<TxRlp>,
     }
 
+    struct FinalChainSystemTransactionPlanFact {
+        request_id: [u8; 32],
+        period: u64,
+        is_pillar_block_period: bool,
+        bridge_contract_address: [u8; 20],
+        bridge_contract_found: bool,
+        bridge_contract_has_code: bool,
+        should_finalize_epoch: bool,
+        system_account_nonce: u64,
+        block_gas_limit: u64,
+    }
+
+    struct FinalChainSystemTransactionPlan {
+        request_id: [u8; 32],
+        period: u64,
+        transactions: Vec<TxRlp>,
+    }
+
     struct FinalChainEvmExecutionRequest {
         request_id: [u8; 32],
         period: u64,
@@ -5380,6 +5398,9 @@ pub mod rustaxa_ffi {
             self: &mut BridgeFinalChainExecutionSession,
             report: FinalChainSystemTransactionReport,
         ) -> Result<FinalChainExecutionStep>;
+        pub fn plan_external_evm_system_transactions(
+            fact: FinalChainSystemTransactionPlanFact,
+        ) -> Result<FinalChainSystemTransactionPlan>;
         pub fn final_chain_execution_session_plan_external_evm_commit(
             self: &mut BridgeFinalChainExecutionSession,
             rewards_report: FinalChainEvmRewardsReport,
