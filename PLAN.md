@@ -329,22 +329,23 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     transaction/receipt trie roots, header and indexed log blooms, receipt payloads, gas, post-rewards state root, total
     reward, regular/system transaction counts, and execution counters. Rust can also derive a non-mutating publication
     plan with stored/full header RLP, block hash, receipt payloads, transaction-location/receipt publication facts, and
-    period system-transaction hash RLP. The publication plan has a deterministic plan id, and Rust now validates the
-    external EVM staged-state lifecycle report against the request id, plan id, post-execution root, post-rewards root,
-    period, and publication block hash before returning a typed ready-to-publish decision. A separate explicit Rust
-    publication API can now consume that plan and decision, recompute the plan id, validate the current FinalChain head,
+    period system-transaction hash RLP. The publication plan has a deterministic plan id. Rust now validates a separate
+    external EVM state-commit intent against the request id, plan id, post-execution root, post-rewards root, period,
+    and publication block hash before C++ may call `StateAPI::transition_state_commit`; only after C++ reports a matching
+    committed staged-state lifecycle does Rust return a typed ready-to-publish decision. A separate explicit Rust
+    publication API can consume that plan and decision, recompute the plan id, validate the current FinalChain head,
     and apply the external-EVM FinalChain storage rows in one Rust-owned batch: stored header, receipt-by-period,
     hash/number indexes, receipt-by-transaction hash, transaction locations, bloom-index chunks, executed counters,
     period system-transaction hashes, rewards-stat cache mutation, and `LAST_NUMBER` last. This publication API still
     does not execute EVM or call `StateAPI`. The Rust-mode C++ FinalChain shim now owns the temporary external-EVM
     executor adapter for arbitrary contract calls and contract creation: it collects bridge-contract system transaction
-    facts through `StateAPI`, executes the
-    ordered EVM request through the existing C++ `StateAPI`, reports EVM receipts/logs and rewards/state-root facts back
-    to Rust, commits the staged `StateAPI` state after Rust has planned publication, and then calls the explicit Rust
-    publication API. Rust remains the authority for request identity, report validation, header/root/bloom derivation,
-    lifecycle decision validation, rewards-stat cache persistence, and FinalChain storage publication. Differential
-    parity and a stronger two-phase `StateAPI` commit/discard contract remain required before this temporary C++ executor
-    boundary can shrink further. Native Rust finalization now publishes
+    facts through `StateAPI`, executes the ordered EVM request through the existing C++ `StateAPI`, reports EVM
+    receipts/logs and rewards/state-root facts back to Rust, requests Rust's state-commit intent before committing the
+    staged `StateAPI` state, reports the committed lifecycle back to Rust, and then calls the explicit Rust publication
+    API. Rust remains the authority for request identity, report validation, header/root/bloom derivation, state-commit
+    intent validation, lifecycle decision validation, rewards-stat cache persistence, and FinalChain storage publication.
+    Differential parity, commit-failure handling, and an explicit discard report path remain required before this
+    temporary C++ executor boundary can shrink further. Native Rust finalization now publishes
     transaction-location and receipt-by-hash indexes in the same Rust storage batch that publishes block visibility and
     `LAST_NUMBER`, closing the previous native crash window where a finalized head could appear before those indexes.
   - PBFT manager fact collection now connects directly to the Rust FinalChain runtime for PBFT final-chain hash lookup
@@ -394,11 +395,12 @@ FinalChain currently depends on:
    Rust from C++ `StateAPI` facts and includes them in request/publication facts; Rust still needs bridge-contract state
    reads before C++ can stop collecting those facts.
 3. Keep EVM execution outside FinalChain while completing the external executor port: request construction, report
-   validation, Rust-owned system-transaction planning from bridge facts, rewards/state-root reporting, and non-mutating
-   commit/publication-plan derivation plus lifecycle-report validation and explicit one-batch storage publication are
-   Rust-owned, including rewards-stat cache persistence; the temporary C++ adapter still owns `StateAPI` fact collection,
-   `StateAPI` execution, rewards distribution, and staged-state commit. The next parity work should harden differential
-   commit coverage and define a safer `StateAPI` lifecycle boundary without moving EVM execution into Rust.
+   validation, Rust-owned system-transaction planning from bridge facts, rewards/state-root reporting, non-mutating
+   commit/publication-plan derivation, two-phase state-commit intent/lifecycle validation, and explicit one-batch storage
+   publication are Rust-owned, including rewards-stat cache persistence; the temporary C++ adapter still owns `StateAPI`
+   fact collection, `StateAPI` execution, rewards distribution, and the actual staged-state commit call. The next parity
+   work should harden differential commit coverage, commit-failure handling, and explicit discard reporting without
+   moving EVM execution into Rust.
 4. Continue DPoS and account snapshot parity for remaining DPoS contract methods, broader slashing surfaces, and broader
    state trie/code/storage recovery.
 5. Replace neutral placeholder shim methods with Rust implementations or explicit throwing stubs as their callers are

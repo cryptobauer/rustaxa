@@ -2485,6 +2485,24 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
+    struct FinalChainExternalEvmStateCommitRequest {
+        request_id: [u8; 32],
+        plan_id: [u8; 32],
+        period: u64,
+        post_execution_state_root: [u8; 32],
+        post_rewards_state_root: [u8; 32],
+        publication_block_hash: [u8; 32],
+    }
+
+    struct FinalChainExternalEvmStateCommitIntent {
+        request_id: [u8; 32],
+        plan_id: [u8; 32],
+        period: u64,
+        publication_block_hash: [u8; 32],
+        status: u8,
+        error_code: String,
+    }
+
     struct FinalChainExternalEvmLifecycleReport {
         request_id: [u8; 32],
         plan_id: [u8; 32],
@@ -5413,6 +5431,10 @@ pub mod rustaxa_ffi {
             final_chain: &BridgeFinalChain,
             session: &mut BridgeFinalChainExecutionSession,
         ) -> Result<FinalChainExternalEvmPublicationPlan>;
+        pub fn final_chain_execution_session_request_external_evm_state_commit(
+            self: &mut BridgeFinalChainExecutionSession,
+            request: FinalChainExternalEvmStateCommitRequest,
+        ) -> Result<FinalChainExternalEvmStateCommitIntent>;
         pub fn final_chain_execution_session_report_external_evm_lifecycle(
             self: &mut BridgeFinalChainExecutionSession,
             report: FinalChainExternalEvmLifecycleReport,

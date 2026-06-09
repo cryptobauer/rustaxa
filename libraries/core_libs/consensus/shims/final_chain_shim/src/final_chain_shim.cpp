@@ -25,6 +25,7 @@ constexpr uint8_t kFinalChainEvmReportStatusSuccess = 0;
 constexpr uint8_t kFinalChainEvmRewardsReportStatusSuccess = 0;
 constexpr uint8_t kFinalChainEvmLifecycleStatusCommitted = 0;
 constexpr uint8_t kFinalChainEvmCommitDecisionReadyToPublish = 0;
+constexpr uint8_t kFinalChainEvmStateCommitIntentReadyToCommit = 0;
 constexpr uint8_t kFinalChainEvmPublicationStatusApplied = 0;
 constexpr uint8_t kFinalChainEvmPublicationStatusAlreadyApplied = 2;
 
@@ -574,14 +575,29 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
                       std::string(publication_plan.error_code));
   }
 
+  rustaxa::FinalChainExternalEvmStateCommitRequest state_commit_request;
+  state_commit_request.request_id = publication_plan.request_id;
+  state_commit_request.plan_id = publication_plan.plan_id;
+  state_commit_request.period = publication_plan.period;
+  state_commit_request.post_execution_state_root = commit_plan.post_execution_state_root;
+  state_commit_request.post_rewards_state_root = commit_plan.state_root;
+  state_commit_request.publication_block_hash = publication_plan.block_hash;
+  auto state_commit_intent =
+      session->final_chain_execution_session_request_external_evm_state_commit(std::move(state_commit_request));
+  if (state_commit_intent.status != kFinalChainEvmStateCommitIntentReadyToCommit ||
+      !state_commit_intent.error_code.empty()) {
+    throw DbException("FinalChain::finalize Rust external EVM state commit intent rejected: " +
+                      std::string(state_commit_intent.error_code));
+  }
+
   state_api_.transition_state_commit();
   rustaxa::FinalChainExternalEvmLifecycleReport lifecycle_report;
-  lifecycle_report.request_id = publication_plan.request_id;
-  lifecycle_report.plan_id = publication_plan.plan_id;
-  lifecycle_report.period = publication_plan.period;
+  lifecycle_report.request_id = state_commit_intent.request_id;
+  lifecycle_report.plan_id = state_commit_intent.plan_id;
+  lifecycle_report.period = state_commit_intent.period;
   lifecycle_report.post_execution_state_root = commit_plan.post_execution_state_root;
   lifecycle_report.post_rewards_state_root = commit_plan.state_root;
-  lifecycle_report.publication_block_hash = publication_plan.block_hash;
+  lifecycle_report.publication_block_hash = state_commit_intent.publication_block_hash;
   lifecycle_report.status = kFinalChainEvmLifecycleStatusCommitted;
   lifecycle_report.error_code = rust::String();
   auto decision = session->final_chain_execution_session_report_external_evm_lifecycle(std::move(lifecycle_report));
