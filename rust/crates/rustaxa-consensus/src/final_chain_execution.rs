@@ -46,6 +46,9 @@ pub const FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_LIFECYCLE: u8 = 8;
 /// Session has accepted Rust-validated external EVM state commit intent and is
 /// waiting for the executor boundary to report the actual staged-state outcome.
 pub const FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_STATE_COMMIT: u8 = 9;
+/// Session has accepted committed external EVM lifecycle facts and is waiting
+/// for the Rust-owned FinalChain storage publication batch.
+pub const FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_STORAGE_PUBLICATION: u8 = 10;
 
 /// No work remains for the current session state.
 pub const FINAL_CHAIN_EXECUTION_ACTION_COMPLETE: u8 = 0;
@@ -67,6 +70,8 @@ pub const FINAL_CHAIN_EXECUTION_ACTION_PLAN_EXTERNAL_EVM_PUBLICATION: u8 = 6;
 pub const FINAL_CHAIN_EXECUTION_ACTION_REPORT_EXTERNAL_EVM_LIFECYCLE: u8 = 7;
 /// Request Rust approval before committing externally staged EVM state.
 pub const FINAL_CHAIN_EXECUTION_ACTION_REQUEST_EXTERNAL_EVM_STATE_COMMIT: u8 = 8;
+/// Publish the Rust-owned external EVM FinalChain storage batch.
+pub const FINAL_CHAIN_EXECUTION_ACTION_PUBLISH_EXTERNAL_EVM_STORAGE: u8 = 9;
 
 /// Regular native value transfer.
 pub const FINAL_CHAIN_EXECUTION_TX_KIND_NATIVE_VALUE_TRANSFER: u8 = 0;
@@ -534,6 +539,7 @@ pub struct FinalChainExecutionSession {
     external_evm_commit_plan: Option<FinalChainExternalEvmCommitPlan>,
     external_evm_publication_plan: Option<FinalChainExternalEvmPublicationPlan>,
     external_evm_state_commit_intent: Option<FinalChainExternalEvmStateCommitIntent>,
+    external_evm_commit_decision: Option<FinalChainExternalEvmCommitDecision>,
     error_code: String,
 }
 
@@ -652,6 +658,15 @@ pub fn final_chain_execution_session_next(
             error_code: session.error_code.clone(),
             ..Default::default()
         },
+        FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_STORAGE_PUBLICATION => {
+            FinalChainExecutionStep {
+                status: session.status,
+                action: FINAL_CHAIN_EXECUTION_ACTION_PUBLISH_EXTERNAL_EVM_STORAGE,
+                period: session.metadata.period,
+                error_code: session.error_code.clone(),
+                ..Default::default()
+            }
+        }
         FINAL_CHAIN_EXECUTION_STATUS_COMPLETE => FinalChainExecutionStep {
             status: FINAL_CHAIN_EXECUTION_STATUS_COMPLETE,
             action: FINAL_CHAIN_EXECUTION_ACTION_COMPLETE,
@@ -1066,8 +1081,9 @@ pub fn final_chain_execution_session_request_external_evm_state_commit(
 ///
 /// A committed lifecycle report must follow a ready state-commit intent and
 /// match the exact EVM execution root, post-rewards root, and publication block
-/// hash derived by Rust. Ready publication decisions remain non-mutating:
-/// callers must still use the separate Rust publication API to write storage.
+/// hash derived by Rust. Ready publication decisions remain non-mutating and
+/// advance the session to an explicit storage-publication action; callers must
+/// still drive that action before FinalChain storage is written.
 pub fn final_chain_execution_session_report_external_evm_lifecycle(
     session: &mut FinalChainExecutionSession,
     report: FinalChainExternalEvmLifecycleReport,
@@ -1176,9 +1192,7 @@ pub fn final_chain_execution_session_report_external_evm_lifecycle(
         );
     }
 
-    session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
-    session.error_code = "FINAL_CHAIN_EVM_PUBLICATION_REQUIRES_EXPLICIT_API".to_string();
-    FinalChainExternalEvmCommitDecision {
+    let decision = FinalChainExternalEvmCommitDecision {
         request_id: intent.request_id,
         plan_id: intent.plan_id,
         decision_id: final_chain_external_evm_commit_decision_id(
@@ -1191,7 +1205,87 @@ pub fn final_chain_execution_session_report_external_evm_lifecycle(
         publication_block_hash: intent.publication_block_hash,
         status: FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH,
         error_code: String::new(),
+    };
+    session.external_evm_commit_decision = Some(decision.clone());
+    session.status = FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_STORAGE_PUBLICATION;
+    session.error_code.clear();
+    decision
+}
+
+/// Publishes the session-owned external-EVM FinalChain storage batch.
+///
+/// The session must first expose
+/// `FINAL_CHAIN_EXECUTION_ACTION_PUBLISH_EXTERNAL_EVM_STORAGE` after successful
+/// lifecycle validation. Rust uses the plan and ready decision stored in the
+/// session, calls the lower-level FinalChain storage primitive, and then marks
+/// the session complete for applied/already-applied reports or rejected for any
+/// rejected publication report. EVM execution, rewards distribution, and
+/// `StateAPI` lifecycle ownership remain outside Rust.
+pub fn final_chain_execution_session_publish_external_evm_publication(
+    final_chain: &FinalChain,
+    session: &mut FinalChainExecutionSession,
+) -> Result<FinalChainExternalEvmPublicationReport, anyhow::Error> {
+    if session.status != FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_STORAGE_PUBLICATION {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_STORAGE_PUBLICATION_UNEXPECTED".to_string();
+        return Ok(rejected_session_external_evm_publication_report(
+            session,
+            session.error_code.clone(),
+        ));
     }
+    let Some(publication_plan) = session.external_evm_publication_plan.clone() else {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_STORAGE_PUBLICATION_WITHOUT_PLAN".to_string();
+        return Ok(rejected_session_external_evm_publication_report(
+            session,
+            session.error_code.clone(),
+        ));
+    };
+    let Some(decision) = session.external_evm_commit_decision.clone() else {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_STORAGE_PUBLICATION_WITHOUT_DECISION".to_string();
+        return Ok(rejected_session_external_evm_publication_report(
+            session,
+            session.error_code.clone(),
+        ));
+    };
+
+    let report = final_chain.publish_external_evm_publication(publication_plan, decision)?;
+    match report.status {
+        FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED
+        | FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED => {
+            if report.error_code.is_empty() {
+                session.status = FINAL_CHAIN_EXECUTION_STATUS_COMPLETE;
+                session.error_code.clear();
+            } else {
+                session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+                session.error_code = format!(
+                    "FINAL_CHAIN_EVM_STORAGE_PUBLICATION_APPLIED_WITH_ERROR: {}",
+                    report.error_code
+                );
+            }
+        }
+        FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED => {
+            session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+            session.error_code = if report.error_code.is_empty() {
+                "FINAL_CHAIN_EVM_STORAGE_PUBLICATION_REJECTED".to_string()
+            } else {
+                report.error_code.clone()
+            };
+        }
+        _ => {
+            session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+            session.error_code = if report.error_code.is_empty() {
+                "FINAL_CHAIN_EVM_STORAGE_PUBLICATION_STATUS_INVALID".to_string()
+            } else {
+                format!(
+                    "FINAL_CHAIN_EVM_STORAGE_PUBLICATION_STATUS_INVALID: {}",
+                    report.error_code
+                )
+            };
+        }
+    }
+    Ok(report)
 }
 
 /// Attaches rewards-stat cache publication facts to an external-EVM plan.
@@ -1315,6 +1409,7 @@ impl FinalChainExecutionSession {
                 external_evm_commit_plan: None,
                 external_evm_publication_plan: None,
                 external_evm_state_commit_intent: None,
+                external_evm_commit_decision: None,
                 error_code: String::new(),
             };
         }
@@ -1346,6 +1441,7 @@ impl FinalChainExecutionSession {
             external_evm_commit_plan: None,
             external_evm_publication_plan: None,
             external_evm_state_commit_intent: None,
+            external_evm_commit_decision: None,
             error_code: String::new(),
         }
     }
@@ -1367,8 +1463,28 @@ impl FinalChainExecutionSession {
             external_evm_commit_plan: None,
             external_evm_publication_plan: None,
             external_evm_state_commit_intent: None,
+            external_evm_commit_decision: None,
             error_code,
         }
+    }
+}
+
+fn rejected_session_external_evm_publication_report(
+    session: &FinalChainExecutionSession,
+    error_code: impl Into<String>,
+) -> FinalChainExternalEvmPublicationReport {
+    let (request_id, plan_id, block_hash) = session
+        .external_evm_publication_plan
+        .as_ref()
+        .map(|plan| (plan.request_id, plan.plan_id, plan.block_hash))
+        .unwrap_or_default();
+    FinalChainExternalEvmPublicationReport {
+        request_id,
+        plan_id,
+        period: session.metadata.period,
+        block_hash,
+        status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED,
+        error_code: error_code.into(),
     }
 }
 
@@ -2599,11 +2715,20 @@ mod tests {
         );
         assert_eq!(decision.publication_block_hash, publication_plan.block_hash);
         assert!(decision.error_code.is_empty());
-        assert_eq!(session.status, FINAL_CHAIN_EXECUTION_STATUS_REJECTED);
         assert_eq!(
-            session.error_code,
-            "FINAL_CHAIN_EVM_PUBLICATION_REQUIRES_EXPLICIT_API"
+            session.status,
+            FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_STORAGE_PUBLICATION
         );
+        let step = final_chain_execution_session_next(&mut session);
+        assert_eq!(
+            step.action,
+            FINAL_CHAIN_EXECUTION_ACTION_PUBLISH_EXTERNAL_EVM_STORAGE
+        );
+        assert_eq!(
+            step.status,
+            FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_STORAGE_PUBLICATION
+        );
+        assert!(step.error_code.is_empty());
     }
 
     #[test]
@@ -2635,6 +2760,9 @@ mod tests {
 
             assert_eq!(decision.status, FINAL_CHAIN_EVM_COMMIT_DECISION_REJECTED);
             assert_eq!(decision.error_code, expected);
+            let step = final_chain_execution_session_next(&mut session);
+            assert_eq!(step.action, FINAL_CHAIN_EXECUTION_ACTION_REJECT);
+            assert_eq!(step.status, FINAL_CHAIN_EXECUTION_STATUS_REJECTED);
         }
     }
 

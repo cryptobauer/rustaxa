@@ -5432,6 +5432,10 @@ pub mod rustaxa_ffi {
             final_chain: &BridgeFinalChain,
             session: &mut BridgeFinalChainExecutionSession,
         ) -> Result<FinalChainExternalEvmPublicationPlan>;
+        pub fn final_chain_execution_session_publish_external_evm_publication(
+            final_chain: &BridgeFinalChain,
+            session: &mut BridgeFinalChainExecutionSession,
+        ) -> Result<FinalChainExternalEvmPublicationReport>;
         pub fn final_chain_execution_session_request_external_evm_state_commit(
             self: &mut BridgeFinalChainExecutionSession,
             request: FinalChainExternalEvmStateCommitRequest,

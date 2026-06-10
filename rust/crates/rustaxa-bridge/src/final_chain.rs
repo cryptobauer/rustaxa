@@ -796,6 +796,18 @@ pub fn final_chain_execution_session_plan_external_evm_publication(
     ))
 }
 
+pub fn final_chain_execution_session_publish_external_evm_publication(
+    final_chain: &BridgeFinalChain,
+    session: &mut BridgeFinalChainExecutionSession,
+) -> Result<rustaxa_ffi::FinalChainExternalEvmPublicationReport, anyhow::Error> {
+    Ok(external_evm_publication_report_to_ffi(
+        rustaxa_consensus::final_chain_execution_session_publish_external_evm_publication(
+            &final_chain.0,
+            &mut session.state,
+        )?,
+    ))
+}
+
 impl BridgeFinalChain {
     pub fn get_last_block_number(self: &BridgeFinalChain) -> Result<u64, anyhow::Error> {
         self.0.last_block_number()
@@ -1491,6 +1503,13 @@ mod tests {
                 },
             )
             .expect("commit plan should convert");
+        let publication_step = session
+            .final_chain_execution_session_next()
+            .expect("publication planning step should convert");
+        assert_eq!(
+            publication_step.action,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_ACTION_PLAN_EXTERNAL_EVM_PUBLICATION
+        );
         let publication =
             final_chain_execution_session_plan_external_evm_publication(&final_chain, &mut session)
                 .expect("publication plan should convert");
@@ -1561,6 +1580,17 @@ mod tests {
         assert_ne!(decision.decision_id, [0; 32]);
         assert_eq!(decision.publication_block_hash, publication.block_hash);
         assert!(decision.error_code.is_empty());
+        let step = session
+            .final_chain_execution_session_next()
+            .expect("storage publication step should convert");
+        assert_eq!(
+            step.status,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_STORAGE_PUBLICATION
+        );
+        assert_eq!(
+            step.action,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_ACTION_PUBLISH_EXTERNAL_EVM_STORAGE
+        );
         decision
     }
 
@@ -1915,6 +1945,13 @@ mod tests {
         assert_eq!(plan.header_log_bloom.len(), 256);
         assert_eq!(plan.indexed_log_bloom.len(), 256);
 
+        let publication_step = session
+            .final_chain_execution_session_next()
+            .expect("publication planning step should convert");
+        assert_eq!(
+            publication_step.action,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_ACTION_PLAN_EXTERNAL_EVM_PUBLICATION
+        );
         let publication =
             final_chain_execution_session_plan_external_evm_publication(&final_chain, &mut session)
                 .expect("publication plan should convert");
@@ -1958,10 +1995,12 @@ mod tests {
         let first_receipt = publication.transaction_publications[0].receipt_rlp.clone();
         let topic_bloom = bloom_for_value(&[0x55; 32]);
 
-        let decision = ready_external_evm_commit_decision(&mut session, &plan, &publication);
-        let report = final_chain
-            .publish_external_evm_publication(publication, decision)
-            .expect("external EVM publication should convert");
+        let _decision = ready_external_evm_commit_decision(&mut session, &plan, &publication);
+        let report = final_chain_execution_session_publish_external_evm_publication(
+            &final_chain,
+            &mut session,
+        )
+        .expect("external EVM publication should convert");
 
         assert_eq!(
             report.status,
@@ -1972,6 +2011,13 @@ mod tests {
         assert_eq!(report.block_hash, block_hash);
         assert!(report.error_code.is_empty());
         assert_eq!(final_chain.get_last_block_number().unwrap(), 1);
+        let complete_step = session
+            .final_chain_execution_session_next()
+            .expect("completed publication step should convert");
+        assert_eq!(
+            complete_step.action,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_ACTION_COMPLETE
+        );
         assert_eq!(final_chain.get_block_hash(1).unwrap(), block_hash.to_vec());
         let block_number = final_chain.get_block_number(&block_hash).unwrap();
         assert!(block_number.found);
@@ -2043,10 +2089,12 @@ mod tests {
             rewards_stats_rlp
         );
 
-        let decision = ready_external_evm_commit_decision(&mut session, &plan, &publication);
-        let report = final_chain
-            .publish_external_evm_publication(publication, decision)
-            .expect("external EVM publication should convert");
+        let _decision = ready_external_evm_commit_decision(&mut session, &plan, &publication);
+        let report = final_chain_execution_session_publish_external_evm_publication(
+            &final_chain,
+            &mut session,
+        )
+        .expect("external EVM publication should convert");
 
         assert_eq!(
             report.status,
@@ -2072,6 +2120,41 @@ mod tests {
         assert_eq!(persisted_stats[0].period, 1);
         assert_eq!(persisted_stats[0].data, vec![0xc3, 0x01, 0x02, 0x03]);
         drop(storage);
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_session_rejects_external_evm_publication_before_publish_action() {
+        let (temp_dir, final_chain, mut session, _plan, _publication) =
+            external_evm_publication_fixture(
+                "rustaxa_bridge_final_chain_external_evm_publish_before_action",
+                1,
+            );
+
+        let report = final_chain_execution_session_publish_external_evm_publication(
+            &final_chain,
+            &mut session,
+        )
+        .expect("early publication rejection should convert");
+
+        assert_eq!(
+            report.status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED
+        );
+        assert_eq!(
+            report.error_code,
+            "FINAL_CHAIN_EVM_STORAGE_PUBLICATION_UNEXPECTED"
+        );
+        assert_eq!(final_chain.get_last_block_number().unwrap(), 0);
+        let step = session
+            .final_chain_execution_session_next()
+            .expect("rejected publication step should convert");
+        assert_eq!(
+            step.action,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_ACTION_REJECT
+        );
+
+        drop(final_chain);
         let _ = fs::remove_dir_all(temp_dir);
     }
 
