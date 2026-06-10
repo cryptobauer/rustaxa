@@ -1276,6 +1276,22 @@ impl FinalChain {
         })
     }
 
+    /// Clears the pending external-EVM publication marker after Rust receives
+    /// an explicit discarded staged-state outcome.
+    ///
+    /// This does not publish FinalChain storage and is not used for ambiguous
+    /// rejected state-commit failures. Keeping rejected markers durable lets
+    /// restart recovery compare them with the external `StateAPI` committed
+    /// descriptor instead of guessing whether the external commit partially
+    /// succeeded.
+    pub(crate) fn clear_external_evm_pending_publication_marker(
+        &self,
+    ) -> Result<(), anyhow::Error> {
+        self.storage
+            .final_chain()
+            .delete_external_evm_pending_publication()
+    }
+
     /// Recovers a pending external-EVM FinalChain publication after restart.
     ///
     /// Rust only publishes when the durable marker matches the external

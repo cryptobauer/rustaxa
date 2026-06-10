@@ -627,37 +627,36 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
                       std::string(pending_publication_report.error_code));
   }
 
-  rustaxa::FinalChainExternalEvmLifecycleReport lifecycle_report;
-  lifecycle_report.request_id = state_commit_intent.request_id;
-  lifecycle_report.plan_id = state_commit_intent.plan_id;
-  lifecycle_report.period = state_commit_intent.period;
-  lifecycle_report.post_execution_state_root = commit_plan.post_execution_state_root;
-  lifecycle_report.post_rewards_state_root = commit_plan.state_root;
-  lifecycle_report.publication_block_hash = state_commit_intent.publication_block_hash;
-  lifecycle_report.status = kFinalChainEvmLifecycleStatusCommitted;
-  lifecycle_report.error_code = rust::String();
+  rustaxa::FinalChainExternalEvmStateCommitResult state_commit_result;
+  state_commit_result.status = kFinalChainEvmLifecycleStatusCommitted;
+  state_commit_result.error_code = rust::String();
   try {
     state_api_.transition_state_commit();
   } catch (const std::exception& e) {
-    lifecycle_report.status = kFinalChainEvmLifecycleStatusRejected;
-    lifecycle_report.error_code = rust::String(std::string("STATE_API_COMMIT_FAILED: ") + e.what());
+    state_commit_result.status = kFinalChainEvmLifecycleStatusRejected;
+    state_commit_result.error_code = rust::String(std::string("STATE_API_COMMIT_FAILED: ") + e.what());
     auto rejected_decision =
-        session->final_chain_execution_session_report_external_evm_lifecycle(std::move(lifecycle_report));
+        rustaxa::final_chain_execution_session_report_external_evm_state_commit_result(*rust_final_chain_.value(),
+                                                                                      *session,
+                                                                                      std::move(state_commit_result));
     if (rejected_decision.status != kFinalChainEvmCommitDecisionRejected) {
       throw DbException("FinalChain::finalize Rust external EVM lifecycle unexpectedly accepted failed state commit");
     }
     throw DbException("FinalChain::finalize StateAPI external EVM state commit failed: " + std::string(e.what()));
   } catch (...) {
-    lifecycle_report.status = kFinalChainEvmLifecycleStatusRejected;
-    lifecycle_report.error_code = rust::String("STATE_API_COMMIT_FAILED");
+    state_commit_result.status = kFinalChainEvmLifecycleStatusRejected;
+    state_commit_result.error_code = rust::String("STATE_API_COMMIT_FAILED");
     auto rejected_decision =
-        session->final_chain_execution_session_report_external_evm_lifecycle(std::move(lifecycle_report));
+        rustaxa::final_chain_execution_session_report_external_evm_state_commit_result(*rust_final_chain_.value(),
+                                                                                      *session,
+                                                                                      std::move(state_commit_result));
     if (rejected_decision.status != kFinalChainEvmCommitDecisionRejected) {
       throw DbException("FinalChain::finalize Rust external EVM lifecycle unexpectedly accepted failed state commit");
     }
     throw DbException("FinalChain::finalize StateAPI external EVM state commit failed");
   }
-  auto decision = session->final_chain_execution_session_report_external_evm_lifecycle(std::move(lifecycle_report));
+  auto decision = rustaxa::final_chain_execution_session_report_external_evm_state_commit_result(
+      *rust_final_chain_.value(), *session, std::move(state_commit_result));
   if (decision.status != kFinalChainEvmCommitDecisionReadyToPublish || !decision.error_code.empty()) {
     throw DbException("FinalChain::finalize Rust external EVM lifecycle rejected: " + std::string(decision.error_code));
   }

@@ -342,17 +342,19 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     creation: it collects bridge-contract system transaction
     facts through `StateAPI`, executes the ordered EVM request through the existing C++ `StateAPI`, reports EVM
     receipts/logs and rewards/state-root facts back to Rust, requests Rust's state-commit intent before committing the
-    staged `StateAPI` state, reports committed lifecycle back to Rust, reports rejected lifecycle if the commit call
-    throws, and then calls the session-scoped Rust publication API only after Rust's next action asks for storage
-    publication. Ready publication decisions carry a Rust-generated decision id derived from the post-commit lifecycle
-    facts, so intent-shaped or hand-built decisions are rejected before storage mutation. Rust remains the authority for
-    request identity, report validation, header/root/bloom derivation, state-commit intent validation, lifecycle decision
-    validation, rewards-stat cache persistence, and FinalChain storage publication. Rust now persists a Rust-owned
-    pending-publication marker before the C++ `StateAPI` staged-state commit call; startup recovery compares that marker
-    with `StateAPI::get_last_committed_state_descriptor()` and only replays publication when the committed period and
+    staged `StateAPI` state, and then reports only the external state-commit result status plus diagnostic text to Rust.
+    Rust derives the lifecycle facts from the session-owned intent and commit plan, returns the ready-to-publish decision
+    only for committed outcomes, clears the pending marker only for explicit discarded outcomes, and keeps rejected or
+    ambiguous commit-call failures durable for startup recovery. The C++ shim calls the session-scoped Rust publication
+    API only after Rust's next action asks for storage publication. Ready publication decisions carry a Rust-generated
+    decision id derived from the post-commit lifecycle facts, so intent-shaped or hand-built decisions are rejected before
+    storage mutation. Rust remains the authority for request identity, report validation, header/root/bloom derivation,
+    state-commit intent validation, lifecycle decision validation, explicit discard/reject handling, rewards-stat cache
+    persistence, and FinalChain storage publication. Rust persists a Rust-owned pending-publication marker before the C++
+    `StateAPI` staged-state commit call; startup recovery compares that marker with
+    `StateAPI::get_last_committed_state_descriptor()` and only replays publication when the committed period and
     post-rewards state root match exactly. Successful live or recovered publication clears the marker in the same
-    Rust-owned storage batch as `LAST_NUMBER`. Differential parity and an explicit discard report path remain required
-    before this temporary C++ executor boundary can shrink further. Native Rust finalization
+    Rust-owned storage batch as `LAST_NUMBER`. Native Rust finalization
     now publishes transaction-location and receipt-by-hash indexes in the same Rust storage batch that publishes block
     visibility and `LAST_NUMBER`, closing the previous native crash window where a finalized head could appear before
     those indexes.
@@ -405,12 +407,13 @@ FinalChain currently depends on:
 3. Keep EVM execution outside FinalChain while completing the external executor port: request construction, report
    validation, Rust-owned system-transaction planning from bridge facts, rewards/state-root reporting, non-mutating
    commit/publication-plan derivation, two-phase state-commit intent/lifecycle validation, and session-gated one-batch
-   storage publication are Rust-owned, including rewards-stat cache persistence; the temporary C++ adapter still owns
-   `StateAPI` fact collection, `StateAPI` execution, rewards distribution, and the actual staged-state commit call. The
-   current shim persists a Rust pending-publication marker before the staged-state commit, reports commit-call failures
-   as rejected lifecycle before publication, and lets Rust recover the marker on startup only when the committed
-   `StateAPI` descriptor matches. The next parity work should harden differential commit coverage and explicit discard
-   reporting without moving EVM execution into Rust.
+   storage publication are Rust-owned, including rewards-stat cache persistence and explicit committed/discarded/rejected
+   state-commit result handling; the temporary C++ adapter still owns `StateAPI` fact collection, `StateAPI` execution,
+   rewards distribution, and the actual staged-state commit call. The current shim persists a Rust pending-publication
+   marker before the staged-state commit, reports only the external commit result status and diagnostic text, and lets
+   Rust either publish, clear a discarded marker, or retain an ambiguous rejected marker for startup recovery based on the
+   committed `StateAPI` descriptor. The next parity work should harden differential commit coverage without moving EVM
+   execution into Rust.
 4. Continue DPoS and account snapshot parity for remaining DPoS contract methods, broader slashing surfaces, and broader
    state trie/code/storage recovery.
 5. Replace neutral placeholder shim methods with Rust implementations or explicit throwing stubs as their callers are
@@ -964,8 +967,9 @@ strategy and repeatable Makefile targets live in `doc/rewrite_validation_strateg
 
 1. Keep storage shim parity green while hardening Rust batch semantics.
 2. Add or update conformance coverage for any storage behavior that changes.
-3. Continue FinalChain execution-runtime migration: native-supported finalization already routes through Rust; next
-   slices should harden explicit external-EVM discard reporting and connect the external EVM executor port without moving
-   EVM ownership into FinalChain.
+3. Continue FinalChain execution-runtime migration: native-supported finalization already routes through Rust, and
+   external-EVM orchestration now has Rust-owned request, plan, lifecycle-result, recovery, and publication decisions.
+   Next slices should harden differential external-EVM commit coverage and reduce temporary C++ `StateAPI` fact
+   collection without moving EVM ownership into FinalChain.
 4. Introduce missing P0 FinalChain domain types with byte-compatible codecs.
 5. Keep `cpp-reference` synchronized for C++ intersection changes so upstream sync remains viable.

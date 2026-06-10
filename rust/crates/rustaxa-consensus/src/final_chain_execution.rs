@@ -435,6 +435,20 @@ pub struct FinalChainExternalEvmStateCommitIntent {
     pub error_code: String,
 }
 
+/// External EVM state-commit result reported by the executor boundary.
+///
+/// This is the narrow production boundary after Rust has already accepted a
+/// [`FinalChainExternalEvmStateCommitIntent`]. C++ or a future executor adapter
+/// reports only whether its staged-state commit was committed, explicitly
+/// discarded, or rejected/ambiguous, plus an optional diagnostic. Rust derives
+/// request id, plan id, roots, and publication block hash from the session so
+/// deterministic lifecycle facts are not rematerialized outside consensus.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FinalChainExternalEvmStateCommitResult {
+    pub status: u8,
+    pub error_code: String,
+}
+
 /// External EVM staged-state lifecycle report.
 ///
 /// The external executor owns `StateAPI`, `state_db/`, staged commit/discard,
@@ -1213,6 +1227,70 @@ pub fn final_chain_execution_session_report_external_evm_lifecycle(
     session.status = FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_STORAGE_PUBLICATION;
     session.error_code.clear();
     decision
+}
+
+/// Reports the external EVM state-commit result through a Rust-owned lifecycle
+/// adapter.
+///
+/// The caller supplies only the executor boundary outcome. Rust reconstructs
+/// the full lifecycle report from the session-owned state-commit intent and
+/// commit plan, validates it through the same lifecycle path as compatibility
+/// tests, and advances to storage publication only for committed outcomes. An
+/// explicit discarded outcome clears the pending publication marker because the
+/// external owner has confirmed staged state did not commit. Rejected outcomes
+/// keep the marker intact so startup recovery can arbitrate ambiguous
+/// post-commit failures using the durable `StateAPI` descriptor.
+pub fn final_chain_execution_session_report_external_evm_state_commit_result(
+    final_chain: &FinalChain,
+    session: &mut FinalChainExecutionSession,
+    result: FinalChainExternalEvmStateCommitResult,
+) -> Result<FinalChainExternalEvmCommitDecision, anyhow::Error> {
+    if session.status != FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_STATE_COMMIT {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_STATE_COMMIT_RESULT_UNEXPECTED".to_string();
+        return Ok(rejected_external_evm_commit_decision(
+            &session.metadata,
+            session.error_code.clone(),
+        ));
+    }
+    let Some(intent) = session.external_evm_state_commit_intent.clone() else {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code =
+            "FINAL_CHAIN_EVM_STATE_COMMIT_RESULT_WITHOUT_STATE_COMMIT_INTENT".to_string();
+        return Ok(rejected_external_evm_commit_decision(
+            &session.metadata,
+            session.error_code.clone(),
+        ));
+    };
+    let Some(commit_plan) = session.external_evm_commit_plan.as_ref() else {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_STATE_COMMIT_RESULT_WITHOUT_COMMIT_PLAN".to_string();
+        return Ok(rejected_external_evm_commit_decision(
+            &session.metadata,
+            session.error_code.clone(),
+        ));
+    };
+
+    let status = result.status;
+    let decision = final_chain_execution_session_report_external_evm_lifecycle(
+        session,
+        FinalChainExternalEvmLifecycleReport {
+            request_id: intent.request_id,
+            plan_id: intent.plan_id,
+            period: intent.period,
+            post_execution_state_root: commit_plan.post_execution_state_root,
+            post_rewards_state_root: commit_plan.state_root,
+            publication_block_hash: intent.publication_block_hash,
+            status,
+            error_code: result.error_code,
+        },
+    );
+    if status == FINAL_CHAIN_EVM_LIFECYCLE_STATUS_DISCARDED
+        && decision.status == FINAL_CHAIN_EVM_COMMIT_DECISION_REJECTED
+    {
+        final_chain.clear_external_evm_pending_publication_marker()?;
+    }
+    Ok(decision)
 }
 
 /// Publishes the session-owned external-EVM FinalChain storage batch.
