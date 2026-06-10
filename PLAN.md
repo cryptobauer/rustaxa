@@ -341,13 +341,17 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     executor adapter for arbitrary contract calls and contract creation: it collects bridge-contract system transaction
     facts through `StateAPI`, executes the ordered EVM request through the existing C++ `StateAPI`, reports EVM
     receipts/logs and rewards/state-root facts back to Rust, requests Rust's state-commit intent before committing the
-    staged `StateAPI` state, reports the committed lifecycle back to Rust, and then calls the explicit Rust publication
-    API. Rust remains the authority for request identity, report validation, header/root/bloom derivation, state-commit
-    intent validation, lifecycle decision validation, rewards-stat cache persistence, and FinalChain storage publication.
-    Differential parity, commit-failure handling, and an explicit discard report path remain required before this
-    temporary C++ executor boundary can shrink further. Native Rust finalization now publishes
-    transaction-location and receipt-by-hash indexes in the same Rust storage batch that publishes block visibility and
-    `LAST_NUMBER`, closing the previous native crash window where a finalized head could appear before those indexes.
+    staged `StateAPI` state, reports committed lifecycle back to Rust, reports rejected lifecycle if the commit call
+    throws, and then calls the explicit Rust publication API only after Rust returns a ready-to-publish decision. Ready
+    publication decisions carry a Rust-generated decision id derived from the post-commit lifecycle facts, so
+    intent-shaped or hand-built decisions are rejected before storage mutation. Rust remains the authority for request
+    identity, report validation, header/root/bloom derivation, state-commit intent validation, lifecycle decision
+    validation, rewards-stat cache persistence, and FinalChain storage publication. Differential parity, durable
+    restart recovery for the crash window after `StateAPI` commit but before Rust publication, and an explicit discard
+    report path remain required before this temporary C++ executor boundary can shrink further. Native Rust finalization
+    now publishes transaction-location and receipt-by-hash indexes in the same Rust storage batch that publishes block
+    visibility and `LAST_NUMBER`, closing the previous native crash window where a finalized head could appear before
+    those indexes.
   - PBFT manager fact collection now connects directly to the Rust FinalChain runtime for PBFT final-chain hash lookup
     and validation, total eligible vote counts, per-wallet eligible vote counts, and wallet eligibility refresh. Missing
     delayed headers or DPoS snapshots are returned to PBFT as typed Rust facts instead of re-centering those consensus
@@ -398,9 +402,9 @@ FinalChain currently depends on:
    validation, Rust-owned system-transaction planning from bridge facts, rewards/state-root reporting, non-mutating
    commit/publication-plan derivation, two-phase state-commit intent/lifecycle validation, and explicit one-batch storage
    publication are Rust-owned, including rewards-stat cache persistence; the temporary C++ adapter still owns `StateAPI`
-   fact collection, `StateAPI` execution, rewards distribution, and the actual staged-state commit call. The next parity
-   work should harden differential commit coverage, commit-failure handling, and explicit discard reporting without
-   moving EVM execution into Rust.
+   fact collection, `StateAPI` execution, rewards distribution, and the actual staged-state commit call. The current shim
+   reports commit-call failures as rejected lifecycle before publication. The next parity work should harden differential
+   commit coverage, durable restart recovery, and explicit discard reporting without moving EVM execution into Rust.
 4. Continue DPoS and account snapshot parity for remaining DPoS contract methods, broader slashing surfaces, and broader
    state trie/code/storage recovery.
 5. Replace neutral placeholder shim methods with Rust implementations or explicit throwing stubs as their callers are

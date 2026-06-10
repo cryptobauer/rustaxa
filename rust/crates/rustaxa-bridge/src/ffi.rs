@@ -2517,6 +2517,7 @@ pub mod rustaxa_ffi {
     struct FinalChainExternalEvmCommitDecision {
         request_id: [u8; 32],
         plan_id: [u8; 32],
+        decision_id: [u8; 32],
         period: u64,
         publication_block_hash: [u8; 32],
         status: u8,

@@ -8,7 +8,8 @@ use crate::final_chain_execution::{
     FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED, FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED,
     FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED, FinalChainExternalEvmCommitDecision,
     FinalChainExternalEvmPublicationPlan, FinalChainExternalEvmPublicationReport,
-    FinalChainExternalEvmRewardsStatsUpdate, final_chain_external_evm_publication_plan_id,
+    FinalChainExternalEvmRewardsStatsUpdate, final_chain_external_evm_commit_decision_id,
+    final_chain_external_evm_publication_plan_id,
 };
 use crate::rewards_stats::{
     FinalizedRewardsPeriodFact, RewardCertVoteFact, RewardDagBlockFact, RewardTransactionFact,
@@ -1298,6 +1299,18 @@ impl FinalChain {
             return Ok(rejected_external_evm_publication_report(
                 &plan,
                 "FINAL_CHAIN_EVM_PUBLICATION_BLOCK_HASH_MISMATCH",
+            ));
+        }
+        let expected_decision_id = final_chain_external_evm_commit_decision_id(
+            decision.request_id,
+            decision.plan_id,
+            decision.period,
+            decision.publication_block_hash,
+        );
+        if decision.decision_id != expected_decision_id {
+            return Ok(rejected_external_evm_publication_report(
+                &plan,
+                "FINAL_CHAIN_EVM_PUBLICATION_DECISION_ID_MISMATCH",
             ));
         }
         if plan.indexed_log_bloom.len() != 256 {

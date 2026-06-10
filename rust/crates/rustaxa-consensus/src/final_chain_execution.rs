@@ -65,6 +65,8 @@ pub const FINAL_CHAIN_EXECUTION_ACTION_PROVIDE_SYSTEM_TRANSACTIONS: u8 = 5;
 pub const FINAL_CHAIN_EXECUTION_ACTION_PLAN_EXTERNAL_EVM_PUBLICATION: u8 = 6;
 /// Report the external EVM staged-state lifecycle before storage publication.
 pub const FINAL_CHAIN_EXECUTION_ACTION_REPORT_EXTERNAL_EVM_LIFECYCLE: u8 = 7;
+/// Request Rust approval before committing externally staged EVM state.
+pub const FINAL_CHAIN_EXECUTION_ACTION_REQUEST_EXTERNAL_EVM_STATE_COMMIT: u8 = 8;
 
 /// Regular native value transfer.
 pub const FINAL_CHAIN_EXECUTION_TX_KIND_NATIVE_VALUE_TRANSFER: u8 = 0;
@@ -447,14 +449,17 @@ pub struct FinalChainExternalEvmLifecycleReport {
 /// Final Rust decision after external EVM lifecycle validation.
 ///
 /// A ready decision proves Rust consensus has validated every deterministic
-/// fact needed for external-EVM FinalChain publication. The function returning
-/// this type still does not write storage; storage publication remains an
-/// explicit follow-up boundary until parity and safe `StateAPI` lifecycle tests
-/// are available.
+/// fact needed for external-EVM FinalChain publication after the executor
+/// reports committed staged state. `decision_id` is derived by Rust from the
+/// accepted post-commit lifecycle facts; the publication API rejects zero or
+/// mismatched ids so a state-commit intent cannot be accidentally reused as a
+/// publish decision. The function returning this type still does not write
+/// storage; storage publication remains an explicit follow-up boundary.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainExternalEvmCommitDecision {
     pub request_id: [u8; 32],
     pub plan_id: [u8; 32],
+    pub decision_id: [u8; 32],
     pub period: u64,
     pub publication_block_hash: [u8; 32],
     pub status: u8,
@@ -635,7 +640,7 @@ pub fn final_chain_execution_session_next(
         },
         FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_LIFECYCLE => FinalChainExecutionStep {
             status: session.status,
-            action: FINAL_CHAIN_EXECUTION_ACTION_REPORT_EXTERNAL_EVM_LIFECYCLE,
+            action: FINAL_CHAIN_EXECUTION_ACTION_REQUEST_EXTERNAL_EVM_STATE_COMMIT,
             period: session.metadata.period,
             error_code: session.error_code.clone(),
             ..Default::default()
@@ -1176,6 +1181,12 @@ pub fn final_chain_execution_session_report_external_evm_lifecycle(
     FinalChainExternalEvmCommitDecision {
         request_id: intent.request_id,
         plan_id: intent.plan_id,
+        decision_id: final_chain_external_evm_commit_decision_id(
+            intent.request_id,
+            intent.plan_id,
+            intent.period,
+            intent.publication_block_hash,
+        ),
         period: intent.period,
         publication_block_hash: intent.publication_block_hash,
         status: FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH,
@@ -1800,6 +1811,26 @@ pub(crate) fn final_chain_external_evm_publication_plan_id(
     let mut plan_id = [0u8; 32];
     hasher.finalize(&mut plan_id);
     plan_id
+}
+
+pub(crate) fn final_chain_external_evm_commit_decision_id(
+    request_id: [u8; 32],
+    plan_id: [u8; 32],
+    period: u64,
+    publication_block_hash: [u8; 32],
+) -> [u8; 32] {
+    use tiny_keccak::{Hasher, Keccak};
+
+    let mut hasher = Keccak::v256();
+    hasher.update(b"rustaxa-final-chain-external-evm-commit-decision-v1");
+    hasher.update(&request_id);
+    hasher.update(&plan_id);
+    hasher.update(&period.to_be_bytes());
+    hasher.update(&publication_block_hash);
+
+    let mut decision_id = [0u8; 32];
+    hasher.finalize(&mut decision_id);
+    decision_id
 }
 
 fn hash_bytes_with_len(hasher: &mut impl tiny_keccak::Hasher, bytes: &[u8]) {
@@ -2481,6 +2512,11 @@ mod tests {
     #[test]
     fn external_evm_state_commit_intent_must_match_rust_plan() {
         let (mut session, commit_plan, publication_plan) = external_evm_state_commit_session();
+        let step = final_chain_execution_session_next(&mut session);
+        assert_eq!(
+            step.action,
+            FINAL_CHAIN_EXECUTION_ACTION_REQUEST_EXTERNAL_EVM_STATE_COMMIT
+        );
         let mut request = state_commit_request(&commit_plan, &publication_plan);
         request.plan_id[0] ^= 0xff;
 
@@ -2530,6 +2566,11 @@ mod tests {
             session.status,
             FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_STATE_COMMIT
         );
+        let step = final_chain_execution_session_next(&mut session);
+        assert_eq!(
+            step.action,
+            FINAL_CHAIN_EXECUTION_ACTION_REPORT_EXTERNAL_EVM_LIFECYCLE
+        );
 
         let decision = final_chain_execution_session_report_external_evm_lifecycle(
             &mut session,
@@ -2547,6 +2588,15 @@ mod tests {
         );
         assert_eq!(decision.request_id, publication_plan.request_id);
         assert_eq!(decision.plan_id, publication_plan.plan_id);
+        assert_eq!(
+            decision.decision_id,
+            final_chain_external_evm_commit_decision_id(
+                publication_plan.request_id,
+                publication_plan.plan_id,
+                publication_plan.period,
+                publication_plan.block_hash,
+            )
+        );
         assert_eq!(decision.publication_block_hash, publication_plan.block_hash);
         assert!(decision.error_code.is_empty());
         assert_eq!(session.status, FINAL_CHAIN_EXECUTION_STATUS_REJECTED);
@@ -2586,6 +2636,66 @@ mod tests {
             assert_eq!(decision.status, FINAL_CHAIN_EVM_COMMIT_DECISION_REJECTED);
             assert_eq!(decision.error_code, expected);
         }
+    }
+
+    #[test]
+    fn external_evm_failed_lifecycle_preserves_executor_error() {
+        let (mut session, commit_plan, publication_plan) = external_evm_state_commit_session();
+        let intent = final_chain_execution_session_request_external_evm_state_commit(
+            &mut session,
+            state_commit_request(&commit_plan, &publication_plan),
+        );
+        assert_eq!(
+            intent.status,
+            FINAL_CHAIN_EVM_STATE_COMMIT_INTENT_READY_TO_COMMIT
+        );
+
+        let decision = final_chain_execution_session_report_external_evm_lifecycle(
+            &mut session,
+            lifecycle_report(
+                &commit_plan,
+                &publication_plan,
+                FINAL_CHAIN_EVM_LIFECYCLE_STATUS_REJECTED,
+                "STATE_API_COMMIT_FAILED: boom".to_string(),
+            ),
+        );
+
+        assert_eq!(decision.status, FINAL_CHAIN_EVM_COMMIT_DECISION_REJECTED);
+        assert_eq!(
+            decision.error_code,
+            "FINAL_CHAIN_EVM_LIFECYCLE_REJECTED: STATE_API_COMMIT_FAILED: boom"
+        );
+        assert_eq!(session.status, FINAL_CHAIN_EXECUTION_STATUS_REJECTED);
+    }
+
+    #[test]
+    fn external_evm_lifecycle_after_intent_must_keep_commit_facts() {
+        let (mut session, commit_plan, publication_plan) = external_evm_state_commit_session();
+        let intent = final_chain_execution_session_request_external_evm_state_commit(
+            &mut session,
+            state_commit_request(&commit_plan, &publication_plan),
+        );
+        assert_eq!(
+            intent.status,
+            FINAL_CHAIN_EVM_STATE_COMMIT_INTENT_READY_TO_COMMIT
+        );
+        let mut report = lifecycle_report(
+            &commit_plan,
+            &publication_plan,
+            FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED,
+            String::new(),
+        );
+        report.post_rewards_state_root[0] ^= 0xff;
+
+        let decision =
+            final_chain_execution_session_report_external_evm_lifecycle(&mut session, report);
+
+        assert_eq!(decision.status, FINAL_CHAIN_EVM_COMMIT_DECISION_REJECTED);
+        assert_eq!(
+            decision.error_code,
+            "FINAL_CHAIN_EVM_LIFECYCLE_POST_REWARDS_ROOT_MISMATCH"
+        );
+        assert_eq!(session.status, FINAL_CHAIN_EXECUTION_STATUS_REJECTED);
     }
 
     #[test]

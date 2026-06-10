@@ -21,10 +21,13 @@ constexpr uint8_t kFinalChainExecutionActionExecuteExternalEvm = 2;
 constexpr uint8_t kFinalChainExecutionActionReject = 3;
 constexpr uint8_t kFinalChainExecutionActionDistributeExternalEvmRewards = 4;
 constexpr uint8_t kFinalChainExecutionActionProvideSystemTransactions = 5;
+constexpr uint8_t kFinalChainExecutionActionRequestExternalEvmStateCommit = 8;
 constexpr uint8_t kFinalChainEvmReportStatusSuccess = 0;
 constexpr uint8_t kFinalChainEvmRewardsReportStatusSuccess = 0;
 constexpr uint8_t kFinalChainEvmLifecycleStatusCommitted = 0;
+constexpr uint8_t kFinalChainEvmLifecycleStatusRejected = 2;
 constexpr uint8_t kFinalChainEvmCommitDecisionReadyToPublish = 0;
+constexpr uint8_t kFinalChainEvmCommitDecisionRejected = 1;
 constexpr uint8_t kFinalChainEvmStateCommitIntentReadyToCommit = 0;
 constexpr uint8_t kFinalChainEvmPublicationStatusApplied = 0;
 constexpr uint8_t kFinalChainEvmPublicationStatusAlreadyApplied = 2;
@@ -574,6 +577,11 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
     throw DbException("FinalChain::finalize Rust external EVM rewards-stats plan failed: " +
                       std::string(publication_plan.error_code));
   }
+  auto state_commit_step = session->final_chain_execution_session_next();
+  if (state_commit_step.action != kFinalChainExecutionActionRequestExternalEvmStateCommit) {
+    throw DbException("FinalChain::finalize expected external EVM state commit request action, got " +
+                      std::to_string(state_commit_step.action) + ": " + std::string(state_commit_step.error_code));
+  }
 
   rustaxa::FinalChainExternalEvmStateCommitRequest state_commit_request;
   state_commit_request.request_id = publication_plan.request_id;
@@ -590,7 +598,6 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
                       std::string(state_commit_intent.error_code));
   }
 
-  state_api_.transition_state_commit();
   rustaxa::FinalChainExternalEvmLifecycleReport lifecycle_report;
   lifecycle_report.request_id = state_commit_intent.request_id;
   lifecycle_report.plan_id = state_commit_intent.plan_id;
@@ -600,6 +607,27 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
   lifecycle_report.publication_block_hash = state_commit_intent.publication_block_hash;
   lifecycle_report.status = kFinalChainEvmLifecycleStatusCommitted;
   lifecycle_report.error_code = rust::String();
+  try {
+    state_api_.transition_state_commit();
+  } catch (const std::exception& e) {
+    lifecycle_report.status = kFinalChainEvmLifecycleStatusRejected;
+    lifecycle_report.error_code = rust::String(std::string("STATE_API_COMMIT_FAILED: ") + e.what());
+    auto rejected_decision =
+        session->final_chain_execution_session_report_external_evm_lifecycle(std::move(lifecycle_report));
+    if (rejected_decision.status != kFinalChainEvmCommitDecisionRejected) {
+      throw DbException("FinalChain::finalize Rust external EVM lifecycle unexpectedly accepted failed state commit");
+    }
+    throw DbException("FinalChain::finalize StateAPI external EVM state commit failed: " + std::string(e.what()));
+  } catch (...) {
+    lifecycle_report.status = kFinalChainEvmLifecycleStatusRejected;
+    lifecycle_report.error_code = rust::String("STATE_API_COMMIT_FAILED");
+    auto rejected_decision =
+        session->final_chain_execution_session_report_external_evm_lifecycle(std::move(lifecycle_report));
+    if (rejected_decision.status != kFinalChainEvmCommitDecisionRejected) {
+      throw DbException("FinalChain::finalize Rust external EVM lifecycle unexpectedly accepted failed state commit");
+    }
+    throw DbException("FinalChain::finalize StateAPI external EVM state commit failed");
+  }
   auto decision = session->final_chain_execution_session_report_external_evm_lifecycle(std::move(lifecycle_report));
   if (decision.status != kFinalChainEvmCommitDecisionReadyToPublish || !decision.error_code.empty()) {
     throw DbException("FinalChain::finalize Rust external EVM lifecycle rejected: " + std::string(decision.error_code));
