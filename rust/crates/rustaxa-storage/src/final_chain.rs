@@ -97,6 +97,20 @@ pub struct FinalChainPeriodSystemTransactionsUpdate<'a> {
     pub hashes_rlp: &'a [u8],
 }
 
+/// Rust-owned external-EVM publication recovery marker.
+///
+/// The marker is stored in `final_chain_meta` under a Rust-prefixed key before
+/// the external `StateAPI` staged-state commit is attempted. If the process
+/// crashes after that commit but before FinalChain storage publication, startup
+/// can load this payload, verify the external committed state descriptor, and
+/// replay the Rust-owned publication batch without re-executing EVM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FinalChainExternalEvmPendingPublication<'a> {
+    /// Opaque Rust consensus payload containing the publication plan and
+    /// state-commit authorization facts.
+    pub payload: &'a [u8],
+}
+
 /// Returns the legacy FinalChain bloom chunk identifier.
 ///
 /// C++ maps `(level, index)` to `h256(index * 0xff + level)`, encoded as a
@@ -166,6 +180,8 @@ pub struct FinalChainRepository<D: DbReader> {
 impl<D: DbReader> FinalChainRepository<D> {
     const DPOS_SNAPSHOT_KEY_PREFIX: &'static [u8] = b"rustaxa:dpos_snapshot:";
     const ACCOUNT_SNAPSHOT_KEY_PREFIX: &'static [u8] = b"rustaxa:account_snapshot:";
+    const EXTERNAL_EVM_PENDING_PUBLICATION_KEY: &'static [u8] =
+        b"rustaxa:external_evm_pending_publication";
 
     /// Creates a final-chain repository over the shared database handle.
     pub fn new(db: Arc<D>) -> Self {
@@ -248,6 +264,21 @@ impl<D: DbReader> FinalChainRepository<D> {
         Ok(self
             .db
             .get(Column::FinalChainMeta, &Self::account_snapshot_key(number))?
+            .map(|value| value.as_ref().to_vec()))
+    }
+
+    /// Returns the pending external-EVM publication recovery marker.
+    ///
+    /// The payload is intentionally opaque to storage. Consensus code owns the
+    /// codec and validates it against `StateAPI` restart facts before replaying
+    /// publication.
+    pub fn external_evm_pending_publication_raw(&self) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .db
+            .get(
+                Column::FinalChainMeta,
+                Self::EXTERNAL_EVM_PENDING_PUBLICATION_KEY,
+            )?
             .map(|value| value.as_ref().to_vec()))
     }
 
@@ -365,6 +396,7 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
             None,
             &[],
             None,
+            false,
         )
     }
 
@@ -391,6 +423,7 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
         log_bloom_index_update: Option<FinalChainLogBloomIndexUpdate<'_>>,
         transaction_index_updates: &[FinalChainTransactionIndexUpdate<'_>],
         period_system_transactions_update: Option<FinalChainPeriodSystemTransactionsUpdate<'_>>,
+        external_evm_pending_publication_clear: bool,
     ) -> Result<()> {
         const DB_META_LAST_NUMBER: u32 = 1;
 
@@ -491,6 +524,13 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
                 update.hashes_rlp,
             )?;
         }
+        if external_evm_pending_publication_clear {
+            self.db.batch_delete(
+                &mut batch,
+                Column::FinalChainMeta,
+                Self::EXTERNAL_EVM_PENDING_PUBLICATION_KEY,
+            )?;
+        }
         self.db.batch_put(
             &mut batch,
             Column::FinalChainMeta,
@@ -498,6 +538,29 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
             &number.to_le_bytes(),
         )?;
         self.db.commit_batch(batch)
+    }
+
+    /// Persists the external-EVM pending publication marker.
+    ///
+    /// This write is separate from the later block-publication batch because it
+    /// must be durable before `StateAPI::transition_state_commit()` is called.
+    pub fn write_external_evm_pending_publication(
+        &self,
+        marker: FinalChainExternalEvmPendingPublication<'_>,
+    ) -> Result<()> {
+        self.db.put(
+            Column::FinalChainMeta,
+            Self::EXTERNAL_EVM_PENDING_PUBLICATION_KEY,
+            marker.payload,
+        )
+    }
+
+    /// Deletes the external-EVM pending publication marker.
+    pub fn delete_external_evm_pending_publication(&self) -> Result<()> {
+        self.db.delete(
+            Column::FinalChainMeta,
+            Self::EXTERNAL_EVM_PENDING_PUBLICATION_KEY,
+        )
     }
 
     fn write_log_bloom_index_update(
@@ -776,6 +839,24 @@ mod tests {
     }
 
     #[test]
+    fn test_external_evm_pending_publication_marker_round_trips_and_deletes() {
+        let db = Arc::new(MockFinalChainStore::new());
+        let repo = FinalChainRepository::new(db.clone());
+
+        repo.write_external_evm_pending_publication(FinalChainExternalEvmPendingPublication {
+            payload: b"pending-publication",
+        })
+        .unwrap();
+        assert_eq!(
+            repo.external_evm_pending_publication_raw().unwrap(),
+            Some(b"pending-publication".to_vec())
+        );
+
+        repo.delete_external_evm_pending_publication().unwrap();
+        assert_eq!(repo.external_evm_pending_publication_raw().unwrap(), None);
+    }
+
+    #[test]
     fn test_block_header_raw() {
         let db = Arc::new(MockFinalChainStore::new());
         let repo = FinalChainRepository::new(db.clone());
@@ -869,12 +950,16 @@ mod tests {
     }
 
     #[test]
-    fn test_write_block_header_updates_log_bloom_index_before_last_number() {
+    fn test_external_evm_publication_batch_clears_marker_and_updates_indexes_before_last_number() {
         let db = Arc::new(MockFinalChainStore::new());
         let repo = FinalChainRepository::new(db.clone());
         let mut bloom = [0u8; FINAL_CHAIN_LOG_BLOOM_BYTES];
         bloom[0] = 0x01;
         bloom[255] = 0x80;
+        repo.write_external_evm_pending_publication(FinalChainExternalEvmPendingPublication {
+            payload: b"stale-pending-publication",
+        })
+        .unwrap();
 
         repo.write_block_header_with_snapshots_execution_status_and_rewards_stats(
             17,
@@ -899,6 +984,7 @@ mod tests {
                 period: 17,
                 hashes_rlp: b"system-hashes",
             }),
+            true,
         )
         .unwrap();
 
@@ -943,6 +1029,7 @@ mod tests {
                 .map(|value| value.to_vec()),
             Some(b"system-hashes".to_vec())
         );
+        assert_eq!(repo.external_evm_pending_publication_raw().unwrap(), None);
     }
 
     #[test]

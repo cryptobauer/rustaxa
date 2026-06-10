@@ -1,4 +1,7 @@
-use crate::final_chain::{DPOS_CONTRACT_ADDRESS, FinalChain, SLASHING_CONTRACT_ADDRESS};
+use crate::final_chain::{
+    DPOS_CONTRACT_ADDRESS, FinalChain, SLASHING_CONTRACT_ADDRESS,
+    external_evm_pending_publication_marker,
+};
 use crate::rewards_stats::RewardCertVoteFact;
 use anyhow::Context;
 use ethereum_types::{H160, H256, U256};
@@ -1284,6 +1287,71 @@ pub fn final_chain_execution_session_publish_external_evm_publication(
                 )
             };
         }
+    }
+    Ok(report)
+}
+
+/// Persists the session-owned external-EVM pending publication recovery marker.
+///
+/// Callers must invoke this after Rust returns a ready state-commit intent and
+/// before calling `StateAPI::transition_state_commit()`. The marker does not
+/// authorize publication by itself; restart recovery still requires the C++
+/// StateAPI committed descriptor to match the marker period and post-rewards
+/// state root exactly.
+pub fn final_chain_execution_session_persist_external_evm_pending_publication(
+    final_chain: &FinalChain,
+    session: &mut FinalChainExecutionSession,
+) -> Result<FinalChainExternalEvmPublicationReport, anyhow::Error> {
+    if session.status != FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_STATE_COMMIT {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_PENDING_PUBLICATION_UNEXPECTED".to_string();
+        return Ok(rejected_session_external_evm_publication_report(
+            session,
+            session.error_code.clone(),
+        ));
+    }
+    let Some(publication_plan) = session.external_evm_publication_plan.clone() else {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_PENDING_PUBLICATION_WITHOUT_PLAN".to_string();
+        return Ok(rejected_session_external_evm_publication_report(
+            session,
+            session.error_code.clone(),
+        ));
+    };
+    let Some(commit_plan) = session.external_evm_commit_plan.as_ref() else {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_PENDING_PUBLICATION_WITHOUT_COMMIT_PLAN".to_string();
+        return Ok(rejected_session_external_evm_publication_report(
+            session,
+            session.error_code.clone(),
+        ));
+    };
+    let Some(intent) = session.external_evm_state_commit_intent.clone() else {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code =
+            "FINAL_CHAIN_EVM_PENDING_PUBLICATION_WITHOUT_STATE_COMMIT_INTENT".to_string();
+        return Ok(rejected_session_external_evm_publication_report(
+            session,
+            session.error_code.clone(),
+        ));
+    };
+    let report = final_chain.write_external_evm_pending_publication_marker(
+        external_evm_pending_publication_marker(
+            publication_plan,
+            intent,
+            commit_plan.post_execution_state_root,
+            commit_plan.state_root,
+        ),
+    )?;
+    if report.status == FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED && report.error_code.is_empty() {
+        session.error_code.clear();
+    } else {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = if report.error_code.is_empty() {
+            "FINAL_CHAIN_EVM_PENDING_PUBLICATION_REJECTED".to_string()
+        } else {
+            report.error_code.clone()
+        };
     }
     Ok(report)
 }

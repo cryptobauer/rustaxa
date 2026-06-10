@@ -808,6 +808,18 @@ pub fn final_chain_execution_session_publish_external_evm_publication(
     ))
 }
 
+pub fn final_chain_execution_session_persist_external_evm_pending_publication(
+    final_chain: &BridgeFinalChain,
+    session: &mut BridgeFinalChainExecutionSession,
+) -> Result<rustaxa_ffi::FinalChainExternalEvmPublicationReport, anyhow::Error> {
+    Ok(external_evm_publication_report_to_ffi(
+        rustaxa_consensus::final_chain_execution_session_persist_external_evm_pending_publication(
+            &final_chain.0,
+            &mut session.state,
+        )?,
+    ))
+}
+
 impl BridgeFinalChain {
     pub fn get_last_block_number(self: &BridgeFinalChain) -> Result<u64, anyhow::Error> {
         self.0.last_block_number()
@@ -872,6 +884,19 @@ impl BridgeFinalChain {
             self.0.publish_external_evm_publication(
                 external_evm_publication_plan_from_ffi(plan),
                 external_evm_commit_decision_from_ffi(decision),
+            )?,
+        ))
+    }
+
+    pub fn recover_external_evm_pending_publication(
+        self: &BridgeFinalChain,
+        committed_period: u64,
+        committed_state_root: &[u8; 32],
+    ) -> Result<rustaxa_ffi::FinalChainExternalEvmPublicationReport, anyhow::Error> {
+        Ok(external_evm_publication_report_to_ffi(
+            self.0.recover_external_evm_pending_publication(
+                committed_period,
+                *committed_state_root,
             )?,
         ))
     }
@@ -2153,6 +2178,133 @@ mod tests {
             step.action,
             rustaxa_consensus::FINAL_CHAIN_EXECUTION_ACTION_REJECT
         );
+
+        drop(final_chain);
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_recovers_external_evm_pending_publication_after_reopen() {
+        let (temp_dir, final_chain, mut session, plan, publication) =
+            external_evm_publication_fixture(
+                "rustaxa_bridge_final_chain_external_evm_recover_pending",
+                1,
+            );
+        let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
+        let request_id = publication.request_id;
+        let plan_id = publication.plan_id;
+        let block_hash = publication.block_hash;
+        let first_hash = publication.transaction_publications[0].transaction_hash;
+        let first_receipt = publication.transaction_publications[0].receipt_rlp.clone();
+
+        let _intent = request_external_evm_state_commit(&mut session, &plan, &publication);
+        let pending = final_chain_execution_session_persist_external_evm_pending_publication(
+            &final_chain,
+            &mut session,
+        )
+        .expect("pending marker should persist");
+        assert_eq!(
+            pending.status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED
+        );
+        assert_eq!(final_chain.get_last_block_number().unwrap(), 0);
+
+        drop(session);
+        drop(final_chain);
+        let reloaded = make_final_chain(storage_path, vec![]);
+        let report = reloaded
+            .recover_external_evm_pending_publication(1, &plan.state_root)
+            .expect("pending publication recovery should convert");
+
+        assert_eq!(
+            report.status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED
+        );
+        assert_eq!(report.request_id, request_id);
+        assert_eq!(report.plan_id, plan_id);
+        assert_eq!(report.block_hash, block_hash);
+        assert!(report.error_code.is_empty());
+        assert_eq!(reloaded.get_last_block_number().unwrap(), 1);
+        assert_eq!(reloaded.get_block_hash(1).unwrap(), block_hash.to_vec());
+        assert_eq!(
+            reloaded.get_transaction_receipt(1, 0).unwrap(),
+            first_receipt
+        );
+        assert!(!reloaded
+            .get_transaction_location(&first_hash)
+            .unwrap()
+            .is_empty());
+
+        drop(reloaded);
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_clears_external_evm_pending_publication_when_state_commit_did_not_happen() {
+        let (temp_dir, final_chain, mut session, plan, publication) =
+            external_evm_publication_fixture(
+                "rustaxa_bridge_final_chain_external_evm_recover_uncommitted",
+                1,
+            );
+
+        let _intent = request_external_evm_state_commit(&mut session, &plan, &publication);
+        final_chain_execution_session_persist_external_evm_pending_publication(
+            &final_chain,
+            &mut session,
+        )
+        .expect("pending marker should persist");
+        let report = final_chain
+            .recover_external_evm_pending_publication(0, &[0; 32])
+            .expect("uncommitted recovery should convert");
+
+        assert_eq!(
+            report.status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED
+        );
+        assert!(report.error_code.is_empty());
+        assert_eq!(final_chain.get_last_block_number().unwrap(), 0);
+        let second_report = final_chain
+            .recover_external_evm_pending_publication(1, &plan.state_root)
+            .expect("cleared recovery should convert");
+        assert_eq!(
+            second_report.status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED
+        );
+        assert_eq!(final_chain.get_last_block_number().unwrap(), 0);
+
+        drop(final_chain);
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_rejects_external_evm_pending_publication_recovery_root_mismatch() {
+        let (temp_dir, final_chain, mut session, plan, publication) =
+            external_evm_publication_fixture(
+                "rustaxa_bridge_final_chain_external_evm_recover_root_mismatch",
+                1,
+            );
+        let mut wrong_root = plan.state_root;
+        wrong_root[0] ^= 0xff;
+
+        let _intent = request_external_evm_state_commit(&mut session, &plan, &publication);
+        final_chain_execution_session_persist_external_evm_pending_publication(
+            &final_chain,
+            &mut session,
+        )
+        .expect("pending marker should persist");
+        let report = final_chain
+            .recover_external_evm_pending_publication(1, &wrong_root)
+            .expect("root mismatch recovery should convert");
+
+        assert_eq!(
+            report.status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED
+        );
+        assert_eq!(
+            report.error_code,
+            "FINAL_CHAIN_EVM_PENDING_PUBLICATION_STATE_ROOT_MISMATCH"
+        );
+        assert_eq!(final_chain.get_last_block_number().unwrap(), 0);
 
         drop(final_chain);
         let _ = fs::remove_dir_all(temp_dir);

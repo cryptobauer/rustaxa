@@ -22,6 +22,7 @@ pub use final_chain::FINAL_CHAIN_BLOOM_INDEX_LEVELS;
 pub use final_chain::FINAL_CHAIN_BLOOM_INDEX_SIZE;
 pub use final_chain::FINAL_CHAIN_LOG_BLOOM_BYTES;
 pub use final_chain::FinalChainExecutionStatus;
+pub use final_chain::FinalChainExternalEvmPendingPublication;
 pub use final_chain::FinalChainLogBloom;
 pub use final_chain::FinalChainLogBloomChunk;
 pub use final_chain::FinalChainLogBloomIndexUpdate;

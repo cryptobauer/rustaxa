@@ -109,6 +109,16 @@ class FinalChain {
   std::vector<SharedTransaction> makeSystemTransactions(const rustaxa::FinalChainSystemTransactionRequest& request);
 
   /**
+   * Complete any Rust-owned external-EVM FinalChain publication left pending by
+   * a crash after `StateAPI::transition_state_commit()`.
+   *
+   * The Rust recovery path owns marker validation and storage publication. This
+   * shim supplies only the committed `StateAPI` descriptor and returns its block
+   * number so rewards-stat startup can load cache state after recovery.
+   */
+  EthBlockNumber recoverExternalEvmPendingPublication();
+
+  /**
    * Execute and publish an external-EVM FinalChain session.
    *
    * Rust owns request identity, report validation, publication planning, and FinalChain storage writes. This shim

@@ -33,6 +33,7 @@ constexpr uint8_t kFinalChainEvmCommitDecisionReadyToPublish = 0;
 constexpr uint8_t kFinalChainEvmCommitDecisionRejected = 1;
 constexpr uint8_t kFinalChainEvmStateCommitIntentReadyToCommit = 0;
 constexpr uint8_t kFinalChainEvmPublicationStatusApplied = 0;
+constexpr uint8_t kFinalChainEvmPublicationStatusRejected = 1;
 constexpr uint8_t kFinalChainEvmPublicationStatusAlreadyApplied = 2;
 
 std::array<uint8_t, 32> into_bytes_array(const h256& hash) {
@@ -368,7 +369,7 @@ FinalChain::FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullN
       rewards_(
           config.genesis.pbft.committee_size, config.genesis.state.hardforks, db_,
           [this](EthBlockNumber n) { return dposEligibleTotalVoteCount(n); },
-          state_api_.get_last_committed_state_descriptor().blk_num),
+          recoverExternalEvmPendingPublication()),
       config_(config) {
   (void)node_addr;
   delegation_delay_ = config.genesis.state.dpos.delegation_delay;
@@ -376,6 +377,17 @@ FinalChain::FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullN
   max_levels_per_period_ = config.max_levels_per_period;
   num_executed_dag_blk_ = db_->getStatusField(taraxa::StatusDbField::ExecutedBlkCount);
   num_executed_trx_ = db_->getStatusField(taraxa::StatusDbField::ExecutedTrxCount);
+}
+
+EthBlockNumber FinalChain::recoverExternalEvmPendingPublication() {
+  auto state_descriptor = state_api_.get_last_committed_state_descriptor();
+  auto recovery_report = rust_final_chain_.value()->recover_external_evm_pending_publication(
+      state_descriptor.blk_num, into_bytes_array(state_descriptor.state_root));
+  if (recovery_report.status == kFinalChainEvmPublicationStatusRejected) {
+    throw DbException("FinalChain startup rejected Rust external EVM publication recovery: " +
+                      std::string(recovery_report.error_code));
+  }
+  return state_descriptor.blk_num;
 }
 
 void FinalChain::stop() {}
@@ -605,6 +617,14 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
       !state_commit_intent.error_code.empty()) {
     throw DbException("FinalChain::finalize Rust external EVM state commit intent rejected: " +
                       std::string(state_commit_intent.error_code));
+  }
+  auto pending_publication_report =
+      rustaxa::final_chain_execution_session_persist_external_evm_pending_publication(*rust_final_chain_.value(),
+                                                                                     *session);
+  if (pending_publication_report.status != kFinalChainEvmPublicationStatusApplied ||
+      !pending_publication_report.error_code.empty()) {
+    throw DbException("FinalChain::finalize Rust external EVM pending publication marker failed: " +
+                      std::string(pending_publication_report.error_code));
   }
 
   rustaxa::FinalChainExternalEvmLifecycleReport lifecycle_report;

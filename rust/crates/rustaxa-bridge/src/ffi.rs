@@ -5436,6 +5436,10 @@ pub mod rustaxa_ffi {
             final_chain: &BridgeFinalChain,
             session: &mut BridgeFinalChainExecutionSession,
         ) -> Result<FinalChainExternalEvmPublicationReport>;
+        pub fn final_chain_execution_session_persist_external_evm_pending_publication(
+            final_chain: &BridgeFinalChain,
+            session: &mut BridgeFinalChainExecutionSession,
+        ) -> Result<FinalChainExternalEvmPublicationReport>;
         pub fn final_chain_execution_session_request_external_evm_state_commit(
             self: &mut BridgeFinalChainExecutionSession,
             request: FinalChainExternalEvmStateCommitRequest,
@@ -5448,6 +5452,11 @@ pub mod rustaxa_ffi {
             self: &BridgeFinalChain,
             plan: FinalChainExternalEvmPublicationPlan,
             decision: FinalChainExternalEvmCommitDecision,
+        ) -> Result<FinalChainExternalEvmPublicationReport>;
+        pub fn recover_external_evm_pending_publication(
+            self: &BridgeFinalChain,
+            committed_period: u64,
+            committed_state_root: &[u8; 32],
         ) -> Result<FinalChainExternalEvmPublicationReport>;
         pub fn final_chain_execution_session_commit(
             final_chain: &BridgeFinalChain,
