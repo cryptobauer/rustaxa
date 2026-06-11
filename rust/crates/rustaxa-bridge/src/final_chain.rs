@@ -1377,7 +1377,7 @@ impl BridgeFinalChain {
 mod tests {
     use super::*;
     use crate::storage::create_storage;
-    use ethereum_types::H256;
+    use ethereum_types::{H256, U256};
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
     use rustaxa_consensus::dag;
@@ -1464,6 +1464,36 @@ mod tests {
         }
     }
 
+    fn ffi_transaction_with_fee(
+        hash_byte: u8,
+        receiver_found: bool,
+        receiver: [u8; 20],
+        data: Vec<u8>,
+        gas_price: u64,
+        gas_limit: u64,
+    ) -> rustaxa_ffi::FinalizationTransaction {
+        let mut transaction = ffi_transaction(hash_byte, receiver_found, receiver, data);
+        transaction.gas_price = u256_be(gas_price);
+        transaction.gas_limit = gas_limit;
+        transaction.rlp = vec![0xc0 | (hash_byte & 0x0f), hash_byte, gas_price as u8];
+        transaction
+    }
+
+    fn ffi_evm_log(
+        address: [u8; 20],
+        topics: Vec<[u8; 32]>,
+        data: Vec<u8>,
+    ) -> rustaxa_ffi::FinalChainEvmLog {
+        rustaxa_ffi::FinalChainEvmLog {
+            address,
+            topics: topics
+                .into_iter()
+                .map(|topic| rustaxa_ffi::FinalChainEvmLogTopic { topic })
+                .collect(),
+            data,
+        }
+    }
+
     fn ffi_evm_result(
         transaction: &rustaxa_ffi::FinalChainEvmTransactionInput,
         gas_used: u64,
@@ -1484,6 +1514,32 @@ mod tests {
             new_contract_address_found: true,
             new_contract_address: [0x77; 20],
             code_error: String::new(),
+            consensus_error: String::new(),
+        };
+        result.receipt_rlp = ffi_evm_receipt_rlp(&result);
+        result
+    }
+
+    fn ffi_evm_result_with_logs(
+        transaction: &rustaxa_ffi::FinalChainEvmTransactionInput,
+        status: u8,
+        gas_used: u64,
+        cumulative_gas_used: u64,
+        logs: Vec<rustaxa_ffi::FinalChainEvmLog>,
+        new_contract_address: Option<[u8; 20]>,
+        code_error: &str,
+    ) -> rustaxa_ffi::FinalChainEvmTransactionResult {
+        let mut result = rustaxa_ffi::FinalChainEvmTransactionResult {
+            position: transaction.position,
+            hash: transaction.hash,
+            status,
+            gas_used,
+            cumulative_gas_used,
+            receipt_rlp: Vec::new(),
+            logs,
+            new_contract_address_found: new_contract_address.is_some(),
+            new_contract_address: new_contract_address.unwrap_or_default(),
+            code_error: code_error.to_string(),
             consensus_error: String::new(),
         };
         result.receipt_rlp = ffi_evm_receipt_rlp(&result);
@@ -1513,6 +1569,33 @@ mod tests {
         stream.out().to_vec()
     }
 
+    fn receipts_list_rlp(receipts: &[Vec<u8>]) -> Vec<u8> {
+        let mut stream = RlpStream::new_list(receipts.len());
+        for receipt in receipts {
+            stream.append_raw(receipt, 1);
+        }
+        stream.out().to_vec()
+    }
+
+    fn hashes_list_rlp(hashes: impl IntoIterator<Item = [u8; 32]>) -> Vec<u8> {
+        let hashes = hashes.into_iter().collect::<Vec<_>>();
+        let mut stream = RlpStream::new_list(hashes.len());
+        for hash in hashes {
+            stream.append(&hash.as_slice());
+        }
+        stream.out().to_vec()
+    }
+
+    fn solidity_no_arg_call(signature: &str) -> Vec<u8> {
+        use tiny_keccak::{Hasher, Keccak};
+
+        let mut hasher = Keccak::v256();
+        let mut output = [0u8; 32];
+        hasher.update(signature.as_bytes());
+        hasher.finalize(&mut output);
+        output[..4].to_vec()
+    }
+
     fn bloom_for_value(value: &[u8]) -> [u8; 256] {
         use tiny_keccak::{Hasher, Keccak};
 
@@ -1528,6 +1611,47 @@ mod tests {
             bloom[byte_index] |= 1u8 << (bit % 8);
         }
         bloom
+    }
+
+    fn combined_bloom(values: impl IntoIterator<Item = Vec<u8>>) -> Vec<u8> {
+        let mut bloom = [0u8; 256];
+        for value in values {
+            let value_bloom = bloom_for_value(&value);
+            for (target, source) in bloom.iter_mut().zip(value_bloom.iter()) {
+                *target |= *source;
+            }
+        }
+        bloom.to_vec()
+    }
+
+    fn bloom_values_for_logs(logs: &[rustaxa_ffi::FinalChainEvmLog]) -> Vec<Vec<u8>> {
+        let mut values = Vec::new();
+        for log in logs {
+            values.push(log.address.to_vec());
+            for topic in &log.topics {
+                values.push(topic.topic.to_vec());
+            }
+        }
+        values
+    }
+
+    fn assert_transaction_location(
+        final_chain: &BridgeFinalChain,
+        hash: &[u8; 32],
+        period: u64,
+        position: u32,
+        is_system: bool,
+    ) {
+        let location = final_chain
+            .get_transaction_location(hash)
+            .expect("transaction location should load");
+        let rlp = rlp::Rlp::new(&location);
+        assert_eq!(rlp.item_count().unwrap(), 2 + usize::from(is_system));
+        assert_eq!(rlp.val_at::<u64>(0).unwrap(), period);
+        assert_eq!(rlp.val_at::<u32>(1).unwrap(), position);
+        if is_system {
+            assert!(rlp.val_at::<bool>(2).unwrap());
+        }
     }
 
     fn external_evm_publication_fixture(
@@ -2098,6 +2222,484 @@ mod tests {
 
         let _decision =
             ready_external_evm_commit_decision(&final_chain, &mut session, &plan, &publication);
+
+        drop(final_chain);
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_external_evm_differential_transcript_covers_roots_blooms_and_receipts() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_final_chain_external_evm_diff_transcript");
+        let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
+        let final_chain = make_final_chain(storage_path, vec![]);
+        let pbft_block_rlp = signed_pbft_block_rlp(1);
+        let transactions = vec![
+            ffi_transaction_with_fee(0x11, true, [0x91; 20], vec![0xaa], 2, 50_000),
+            ffi_transaction_with_fee(0x12, false, [0; 20], vec![0xbb, 0xcc], 3, 80_000),
+            ffi_transaction_with_fee(0x13, true, [0x93; 20], Vec::new(), 5, 21_000),
+        ];
+        let metadata = rustaxa_types::PbftBlockMetadata::try_from(
+            rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp::new(&pbft_block_rlp),
+        )
+        .expect("PBFT metadata should decode");
+        let mut session = create_final_chain_execution_session(
+            &final_chain,
+            rustaxa_ffi::FinalChainExecutionRequest {
+                pbft_block_rlp: pbft_block_rlp.clone(),
+                transactions,
+                finalized_dag_blocks: vec![
+                    rustaxa_ffi::FinalizationDagBlock {
+                        author: [0x31; 20],
+                        difficulty: 5,
+                        transaction_hashes: vec![rustaxa_ffi::DagHash { hash: [0x11; 32] }],
+                    },
+                    rustaxa_ffi::FinalizationDagBlock {
+                        author: [0x32; 20],
+                        difficulty: 8,
+                        transaction_hashes: vec![rustaxa_ffi::DagHash { hash: [0x12; 32] }],
+                    },
+                ],
+                blocks_per_year: 0,
+                cert_votes: Vec::new(),
+                block_gas_limit: 1_000_000,
+                mode: rustaxa_consensus::FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
+            },
+        )
+        .expect("session should be created");
+        let step = session
+            .final_chain_execution_session_next()
+            .expect("system step should convert");
+        let step = session
+            .final_chain_execution_session_report_system_transactions(
+                rustaxa_ffi::FinalChainSystemTransactionReport {
+                    request_id: step.system_transaction_request.request_id,
+                    period: 1,
+                    transactions: Vec::new(),
+                },
+            )
+            .expect("system transaction report should convert");
+        assert_eq!(
+            step.evm_request.transactions[0].kind,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_TX_KIND_EXTERNAL_EVM_CALL
+        );
+        assert_eq!(
+            step.evm_request.transactions[1].kind,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_TX_KIND_EXTERNAL_EVM_CREATE
+        );
+        assert_eq!(
+            step.evm_request.transactions[2].kind,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_TX_KIND_NATIVE_VALUE_TRANSFER
+        );
+
+        let logs_a = vec![
+            ffi_evm_log([0xA1; 20], vec![[0xB1; 32], [0xB2; 32]], vec![0x01]),
+            ffi_evm_log([0xA2; 20], vec![[0xB3; 32]], vec![0x02, 0x03]),
+        ];
+        let logs_b = vec![ffi_evm_log([0xA3; 20], vec![[0xB4; 32]], Vec::new())];
+        let mut bloom_values = bloom_values_for_logs(&logs_a);
+        bloom_values.extend(bloom_values_for_logs(&logs_b));
+        let result_a = ffi_evm_result_with_logs(
+            &step.evm_request.transactions[0],
+            1,
+            10,
+            10,
+            logs_a,
+            None,
+            "",
+        );
+        let result_b = ffi_evm_result_with_logs(
+            &step.evm_request.transactions[1],
+            1,
+            20,
+            30,
+            logs_b,
+            Some([0xC1; 20]),
+            "",
+        );
+        let result_c = ffi_evm_result_with_logs(
+            &step.evm_request.transactions[2],
+            0,
+            5,
+            35,
+            Vec::new(),
+            None,
+            "EXECUTION_REVERTED",
+        );
+        let expected_receipts = vec![
+            result_a.receipt_rlp.clone(),
+            result_b.receipt_rlp.clone(),
+            result_c.receipt_rlp.clone(),
+        ];
+        let rewards = session
+            .final_chain_execution_session_report_evm(rustaxa_ffi::FinalChainEvmExecutionReport {
+                request_id: step.evm_request.request_id,
+                status: rustaxa_consensus::FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
+                state_root: [0x41; 32],
+                cumulative_gas_used: 35,
+                results: vec![result_a, result_b, result_c],
+            })
+            .expect("EVM report should convert");
+        assert_eq!(rewards.evm_rewards_request.block_gas_used, 35);
+        assert_eq!(
+            rewards.evm_rewards_request.transaction_gas_used,
+            vec![10, 20, 5]
+        );
+        assert_eq!(
+            rewards.evm_rewards_request.transaction_fees[0].data,
+            u256_be(20)
+        );
+        assert_eq!(
+            rewards.evm_rewards_request.transaction_fees[1].data,
+            u256_be(60)
+        );
+        assert_eq!(
+            rewards.evm_rewards_request.transaction_fees[2].data,
+            u256_be(25)
+        );
+        assert_eq!(rewards.evm_rewards_request.finalized_dag_block_count, 2);
+
+        let commit_plan = session
+            .final_chain_execution_session_plan_external_evm_commit(
+                rustaxa_ffi::FinalChainEvmRewardsReport {
+                    request_id: step.evm_request.request_id,
+                    period: 1,
+                    status: rustaxa_consensus::FINAL_CHAIN_EVM_REWARDS_REPORT_STATUS_SUCCESS,
+                    state_root: [0x42; 32],
+                    total_reward: vec![0x99],
+                },
+            )
+            .expect("commit plan should convert");
+        let encoded_receipts = commit_plan
+            .encoded_receipts
+            .iter()
+            .map(|receipt| receipt.data.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(encoded_receipts, expected_receipts);
+        assert_eq!(
+            commit_plan.receipts_rlp,
+            receipts_list_rlp(&expected_receipts)
+        );
+        assert_eq!(commit_plan.post_execution_state_root, [0x41; 32]);
+        assert_eq!(commit_plan.state_root, [0x42; 32]);
+        assert_eq!(commit_plan.gas_used, 35);
+        assert_eq!(commit_plan.executed_dag_blocks, 2);
+        assert_eq!(commit_plan.executed_transactions, 3);
+        assert_eq!(commit_plan.regular_transaction_count, 3);
+        assert_eq!(commit_plan.system_transaction_count, 0);
+        assert_eq!(
+            commit_plan.header_log_bloom,
+            combined_bloom(bloom_values.clone())
+        );
+        bloom_values.push(metadata.author.as_bytes().to_vec());
+        assert_eq!(commit_plan.indexed_log_bloom, combined_bloom(bloom_values));
+
+        let publication_step = session
+            .final_chain_execution_session_next()
+            .expect("publication step should convert");
+        assert_eq!(
+            publication_step.action,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_ACTION_PLAN_EXTERNAL_EVM_PUBLICATION
+        );
+        let publication =
+            final_chain_execution_session_plan_external_evm_publication(&final_chain, &mut session)
+                .expect("publication plan should convert");
+        let genesis_hash = final_chain
+            .get_block_hash(0)
+            .expect("genesis block hash should load");
+        let stored_header = rustaxa_types::StoredFinalChainBlockHeader::try_from(
+            rustaxa_types::codec::rlp::final_chain::StoredBlockHeaderRlp::new(
+                &publication.stored_header_rlp,
+            ),
+        )
+        .expect("stored header should decode");
+        assert_eq!(stored_header.parent_hash, H256::from_slice(&genesis_hash));
+        assert_eq!(stored_header.state_root, H256::from([0x42; 32]));
+        assert_eq!(
+            stored_header.transactions_root,
+            H256::from(commit_plan.transactions_root)
+        );
+        assert_eq!(
+            stored_header.receipts_root,
+            H256::from(commit_plan.receipts_root)
+        );
+        assert_eq!(stored_header.log_bloom, commit_plan.header_log_bloom);
+        assert_eq!(stored_header.gas_used, 35);
+        assert_eq!(stored_header.total_reward, U256::from(0x99));
+        let full_header = rustaxa_types::codec::rlp::final_chain::LegacyBlockHeaderRlp::try_from(
+            rustaxa_types::codec::rlp::final_chain::LegacyBlockHeaderRlpInput::new(
+                rustaxa_types::codec::rlp::final_chain::StoredBlockHeaderRlp::new(
+                    &publication.stored_header_rlp,
+                ),
+                0,
+                0,
+            )
+            .signed_pbft_block(
+                rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp::new(&pbft_block_rlp),
+            ),
+        )
+        .expect("legacy full header should encode");
+        assert_eq!(
+            full_header.as_bytes(),
+            publication.block_header_rlp.as_slice()
+        );
+        assert_eq!(
+            full_header.hash().unwrap(),
+            H256::from(publication.block_hash)
+        );
+        assert_eq!(publication.transaction_publications.len(), 3);
+        for (index, expected_receipt) in expected_receipts.iter().enumerate() {
+            assert_eq!(
+                publication.transaction_publications[index].position,
+                index as u32
+            );
+            assert!(!publication.transaction_publications[index].is_system);
+            assert_eq!(
+                publication.transaction_publications[index].receipt_rlp,
+                *expected_receipt
+            );
+        }
+
+        let _decision = ready_external_evm_commit_decision(
+            &final_chain,
+            &mut session,
+            &commit_plan,
+            &publication,
+        );
+        let report = final_chain_execution_session_publish_external_evm_publication(
+            &final_chain,
+            &mut session,
+        )
+        .expect("publication should convert");
+        assert_eq!(
+            report.status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED
+        );
+        assert_external_evm_publication_audit_matches(&final_chain, &publication);
+        for publication in &publication.transaction_publications {
+            assert_transaction_location(
+                &final_chain,
+                &publication.transaction_hash,
+                1,
+                publication.position,
+                publication.is_system,
+            );
+            assert_eq!(
+                final_chain
+                    .get_transaction_receipt(1, publication.position as u64)
+                    .unwrap(),
+                publication.receipt_rlp
+            );
+        }
+        assert_eq!(
+            final_chain
+                .get_blocks_with_bloom(&bloom_for_value(&[0xB2; 32]), 1, 1)
+                .unwrap(),
+            vec![1]
+        );
+        assert_eq!(
+            final_chain
+                .get_blocks_with_bloom(&bloom_for_value(&[0xEE; 32]), 1, 1)
+                .unwrap(),
+            Vec::<u64>::new()
+        );
+
+        drop(final_chain);
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_external_evm_differential_transcript_covers_system_transaction_publication() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_final_chain_external_evm_diff_system");
+        let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
+        let final_chain = make_final_chain(storage_path, vec![]);
+        let mut session = create_final_chain_execution_session(
+            &final_chain,
+            rustaxa_ffi::FinalChainExecutionRequest {
+                pbft_block_rlp: signed_pbft_block_rlp(1),
+                transactions: vec![
+                    ffi_transaction_with_fee(0x21, true, [0x81; 20], vec![0x01], 7, 50_000),
+                    ffi_transaction_with_fee(0x22, true, [0x82; 20], Vec::new(), 11, 21_000),
+                ],
+                finalized_dag_blocks: Vec::new(),
+                blocks_per_year: 0,
+                cert_votes: Vec::new(),
+                block_gas_limit: 1_000_000,
+                mode: rustaxa_consensus::FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
+            },
+        )
+        .expect("session should be created");
+        let system_step = session
+            .final_chain_execution_session_next()
+            .expect("system step should convert");
+        let system_plan = plan_external_evm_system_transactions(
+            rustaxa_ffi::FinalChainSystemTransactionPlanFact {
+                request_id: system_step.system_transaction_request.request_id,
+                period: 1,
+                is_pillar_block_period: true,
+                bridge_contract_address: [0xAB; 20],
+                bridge_contract_found: true,
+                bridge_contract_has_code: true,
+                should_finalize_epoch: true,
+                system_account_nonce: 6,
+                block_gas_limit: 1_000_000,
+            },
+        )
+        .expect("system transaction plan should convert");
+        assert_eq!(system_plan.transactions.len(), 1);
+        let step = session
+            .final_chain_execution_session_report_system_transactions(
+                rustaxa_ffi::FinalChainSystemTransactionReport {
+                    request_id: system_step.system_transaction_request.request_id,
+                    period: 1,
+                    transactions: system_plan.transactions,
+                },
+            )
+            .expect("system transaction report should convert");
+        assert_eq!(step.evm_request.transactions.len(), 3);
+        let system_transaction = step.evm_request.transactions.last().unwrap();
+        assert!(system_transaction.is_system);
+        assert_eq!(system_transaction.position, 2);
+        assert_eq!(
+            system_transaction.kind,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_TX_KIND_SYSTEM
+        );
+        assert!(system_transaction.receiver_found);
+        assert_eq!(system_transaction.receiver, [0xAB; 20]);
+        assert_eq!(
+            system_transaction.data,
+            solidity_no_arg_call("finalizeEpoch()")
+        );
+        assert_eq!(
+            system_transaction.sender,
+            <[u8; 20]>::from(ethereum_types::H160::from(
+                rustaxa_types::TARAXA_SYSTEM_ACCOUNT
+            ))
+        );
+
+        let result_a = ffi_evm_result_with_logs(
+            &step.evm_request.transactions[0],
+            1,
+            7,
+            7,
+            vec![ffi_evm_log([0xD1; 20], vec![[0xD2; 32]], vec![0x01])],
+            None,
+            "",
+        );
+        let result_b = ffi_evm_result_with_logs(
+            &step.evm_request.transactions[1],
+            1,
+            8,
+            15,
+            Vec::new(),
+            None,
+            "",
+        );
+        let result_system = ffi_evm_result_with_logs(
+            &system_transaction,
+            1,
+            9,
+            24,
+            vec![ffi_evm_log([0xD3; 20], vec![[0xD4; 32]], vec![0x02])],
+            None,
+            "",
+        );
+        let expected_receipts = vec![
+            result_a.receipt_rlp.clone(),
+            result_b.receipt_rlp.clone(),
+            result_system.receipt_rlp.clone(),
+        ];
+        let rewards = session
+            .final_chain_execution_session_report_evm(rustaxa_ffi::FinalChainEvmExecutionReport {
+                request_id: step.evm_request.request_id,
+                status: rustaxa_consensus::FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
+                state_root: [0x51; 32],
+                cumulative_gas_used: 24,
+                results: vec![result_a, result_b, result_system],
+            })
+            .expect("EVM report should convert");
+        assert_eq!(
+            rewards.evm_rewards_request.transaction_gas_used,
+            vec![7, 8, 9]
+        );
+        assert_eq!(
+            rewards.evm_rewards_request.transaction_fees[0].data,
+            u256_be(49)
+        );
+        assert_eq!(
+            rewards.evm_rewards_request.transaction_fees[1].data,
+            u256_be(88)
+        );
+        assert_eq!(
+            rewards.evm_rewards_request.transaction_fees[2].data,
+            vec![0]
+        );
+
+        let commit_plan = session
+            .final_chain_execution_session_plan_external_evm_commit(
+                rustaxa_ffi::FinalChainEvmRewardsReport {
+                    request_id: step.evm_request.request_id,
+                    period: 1,
+                    status: rustaxa_consensus::FINAL_CHAIN_EVM_REWARDS_REPORT_STATUS_SUCCESS,
+                    state_root: [0x52; 32],
+                    total_reward: vec![0x10],
+                },
+            )
+            .expect("commit plan should convert");
+        let encoded_receipts = commit_plan
+            .encoded_receipts
+            .iter()
+            .map(|receipt| receipt.data.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(encoded_receipts, expected_receipts);
+        assert_eq!(
+            commit_plan.receipts_rlp,
+            receipts_list_rlp(&expected_receipts)
+        );
+        assert_eq!(commit_plan.regular_transaction_count, 2);
+        assert_eq!(commit_plan.system_transaction_count, 1);
+        assert_eq!(commit_plan.executed_transactions, 3);
+
+        let publication_step = session
+            .final_chain_execution_session_next()
+            .expect("publication step should convert");
+        assert_eq!(
+            publication_step.action,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_ACTION_PLAN_EXTERNAL_EVM_PUBLICATION
+        );
+        let publication =
+            final_chain_execution_session_plan_external_evm_publication(&final_chain, &mut session)
+                .expect("publication plan should convert");
+        assert_eq!(publication.transaction_publications.len(), 3);
+        assert!(publication.transaction_publications[2].is_system);
+        assert_eq!(publication.transaction_publications[2].position, 2);
+        assert_eq!(
+            publication.system_transaction_hashes_rlp,
+            hashes_list_rlp([system_transaction.hash])
+        );
+
+        let _decision = ready_external_evm_commit_decision(
+            &final_chain,
+            &mut session,
+            &commit_plan,
+            &publication,
+        );
+        let report = final_chain_execution_session_publish_external_evm_publication(
+            &final_chain,
+            &mut session,
+        )
+        .expect("publication should convert");
+        assert_eq!(
+            report.status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED
+        );
+        assert_external_evm_publication_audit_matches(&final_chain, &publication);
+        assert_transaction_location(&final_chain, &system_transaction.hash, 1, 2, true);
+        assert_eq!(
+            final_chain
+                .get_blocks_with_bloom(&bloom_for_value(&[0xD4; 32]), 1, 1)
+                .unwrap(),
+            vec![1]
+        );
 
         drop(final_chain);
         let _ = fs::remove_dir_all(temp_dir);

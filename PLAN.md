@@ -355,8 +355,9 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     `StateAPI::get_last_committed_state_descriptor()` and only replays publication when the committed period and
     post-rewards state root match exactly. Successful live or recovered publication clears the marker in the same
     Rust-owned storage batch as `LAST_NUMBER`. Rust now also exposes a read-only external-EVM publication audit for
-    parity coverage; bridge tests use it after live publication, restart recovery, and ambiguous rejected-then-recovered
-    publication to verify the stored header, hash indexes, receipt rows, transaction indexes, bloom leaf, system
+    parity coverage; bridge tests use it after live publication, restart recovery, ambiguous rejected-then-recovered
+    publication, representative call/create/failure receipt transcripts, and Rust-planned system-transaction publication
+    to verify the stored header, full header hash, hash indexes, receipt rows, transaction indexes, bloom leaf, system
     transaction hash row, and pending-marker clearance match the Rust publication plan. Native Rust finalization
     now publishes transaction-location and receipt-by-hash indexes in the same Rust storage batch that publishes block
     visibility and `LAST_NUMBER`, closing the previous native crash window where a finalized head could appear before
@@ -415,9 +416,11 @@ FinalChain currently depends on:
    rewards distribution, and the actual staged-state commit call. The current shim persists a Rust pending-publication
    marker before the staged-state commit, reports only the external commit result status and diagnostic text, and lets
    Rust either publish, clear a discarded marker, or retain an ambiguous rejected marker for startup recovery based on the
-   committed `StateAPI` descriptor. Rust bridge tests now audit live and recovered publications against the persisted
-   FinalChain rows. The next parity work should add broader legacy-vs-Rust differential commit fixtures without moving
-   EVM execution into Rust.
+   committed `StateAPI` descriptor. Rust bridge tests now audit live, recovered, and representative transcript
+   publications against the persisted FinalChain rows, including call/create/failure receipts, log blooms, full-header
+   bytes, transaction-location rows, and Rust-planned system transactions. A future broader C++ live-differential fixture
+   can compare legacy executor output against the same Rust publication transcript API without moving EVM execution into
+   Rust.
 4. Continue DPoS and account snapshot parity for remaining DPoS contract methods, broader slashing surfaces, and broader
    state trie/code/storage recovery.
 5. Replace neutral placeholder shim methods with Rust implementations or explicit throwing stubs as their callers are
@@ -973,8 +976,9 @@ strategy and repeatable Makefile targets live in `doc/rewrite_validation_strateg
 2. Add or update conformance coverage for any storage behavior that changes.
 3. Continue FinalChain execution-runtime migration: native-supported finalization already routes through Rust, and
    external-EVM orchestration now has Rust-owned request, plan, lifecycle-result, recovery, and publication decisions.
-   Publication-row audit coverage now verifies live and recovered Rust publication against persisted FinalChain rows.
-   Next slices should add broader legacy-vs-Rust external-EVM commit fixtures and reduce temporary C++ `StateAPI` fact
-   collection without moving EVM ownership into FinalChain.
+   Publication-row audit coverage now verifies live, recovered, and representative transcript Rust publication against
+   persisted FinalChain rows through the normal `rustaxa-bridge` test suite. Next slices should reduce temporary C++
+   `StateAPI` fact collection and, if needed for pre-merge confidence, add a live legacy-vs-Rust external-EVM transcript
+   fixture without moving EVM ownership into FinalChain.
 4. Introduce missing P0 FinalChain domain types with byte-compatible codecs.
 5. Keep `cpp-reference` synchronized for C++ intersection changes so upstream sync remains viable.
