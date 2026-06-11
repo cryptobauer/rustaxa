@@ -5,11 +5,14 @@ use crate::dag::{
 };
 use crate::final_chain_execution::{
     FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH,
+    FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STATUS_MATCHED,
+    FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STATUS_MISMATCH,
     FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED, FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED,
     FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED, FinalChainExternalEvmCommitDecision,
-    FinalChainExternalEvmPublicationPlan, FinalChainExternalEvmPublicationReport,
-    FinalChainExternalEvmRewardsStatsUpdate, FinalChainExternalEvmStateCommitIntent,
-    final_chain_external_evm_commit_decision_id, final_chain_external_evm_publication_plan_id,
+    FinalChainExternalEvmPublicationAuditReport, FinalChainExternalEvmPublicationPlan,
+    FinalChainExternalEvmPublicationReport, FinalChainExternalEvmRewardsStatsUpdate,
+    FinalChainExternalEvmStateCommitIntent, final_chain_external_evm_commit_decision_id,
+    final_chain_external_evm_publication_plan_id,
 };
 use crate::rewards_stats::{
     FinalizedRewardsPeriodFact, RewardCertVoteFact, RewardDagBlockFact, RewardTransactionFact,
@@ -1574,6 +1577,131 @@ impl FinalChain {
             status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED,
             error_code: String::new(),
         })
+    }
+
+    /// Audits an external-EVM publication plan against persisted FinalChain rows.
+    ///
+    /// This read-only parity helper is intended for tests and smoke validation
+    /// after live publication or restart recovery. It recomputes the plan id
+    /// and verifies that the Rust-owned publication batch wrote exactly the
+    /// storage rows described by the plan: stored header, hash indexes,
+    /// receipt-by-period, transaction locations, receipt-by-transaction hash,
+    /// bloom index leaf, period system transaction hashes, and pending marker
+    /// clearance. It does not execute EVM, mutate storage, or rely on C++
+    /// FinalChain materialization.
+    pub fn audit_external_evm_publication(
+        &self,
+        plan: FinalChainExternalEvmPublicationPlan,
+    ) -> Result<FinalChainExternalEvmPublicationAuditReport, anyhow::Error> {
+        let mut checked_fields = 0u64;
+
+        macro_rules! ensure_audit {
+            ($condition:expr, $error_code:expr $(,)?) => {{
+                checked_fields += 1;
+                if !$condition {
+                    return Ok(external_evm_publication_audit_report(
+                        &plan,
+                        checked_fields,
+                        FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STATUS_MISMATCH,
+                        $error_code,
+                    ));
+                }
+            }};
+        }
+
+        ensure_audit!(
+            plan.error_code.is_empty(),
+            format!(
+                "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_PLAN_REJECTED: {}",
+                plan.error_code
+            )
+        );
+        ensure_audit!(
+            plan.plan_id == final_chain_external_evm_publication_plan_id(&plan),
+            "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_PLAN_ID_MISMATCH",
+        );
+        ensure_audit!(
+            self.last_block_number()? >= plan.period,
+            "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_HEAD_BEFORE_PERIOD",
+        );
+        ensure_audit!(
+            self.storage
+                .final_chain()
+                .block_header_raw(plan.period)?
+                .as_deref()
+                == Some(plan.stored_header_rlp.as_slice()),
+            "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STORED_HEADER_MISMATCH",
+        );
+        ensure_audit!(
+            self.block_hash(plan.period)?.as_deref() == Some(plan.block_hash.as_slice()),
+            "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_BLOCK_HASH_INDEX_MISMATCH",
+        );
+        ensure_audit!(
+            self.block_number(plan.block_hash)? == Some(plan.period),
+            "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_BLOCK_NUMBER_INDEX_MISMATCH",
+        );
+        ensure_audit!(
+            self.storage.period().receipt(plan.period)? == plan.receipts_rlp,
+            "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_PERIOD_RECEIPTS_MISMATCH",
+        );
+        ensure_audit!(
+            self.storage
+                .transaction()
+                .period_system_hashes_rlp(plan.period)?
+                == plan.system_transaction_hashes_rlp,
+            "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_SYSTEM_TRANSACTION_HASHES_MISMATCH",
+        );
+        ensure_audit!(
+            self.storage
+                .final_chain()
+                .external_evm_pending_publication_raw()?
+                .is_none(),
+            "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_PENDING_MARKER_STILL_PRESENT",
+        );
+        ensure_audit!(
+            plan.indexed_log_bloom.len() == 256,
+            "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_BLOOM_INVALID",
+        );
+        let mut expected_bloom = [0u8; 256];
+        expected_bloom.copy_from_slice(&plan.indexed_log_bloom);
+        let chunk_index = plan.period / FINAL_CHAIN_BLOOM_INDEX_SIZE as u64;
+        let chunk_slot = (plan.period % FINAL_CHAIN_BLOOM_INDEX_SIZE as u64) as usize;
+        let chunk_id = final_chain_log_bloom_chunk_id(0, chunk_index)?;
+        let raw_chunk = self.storage.final_chain().log_blooms_chunk_raw(chunk_id)?;
+        let chunk = decode_final_chain_log_bloom_chunk(raw_chunk.as_deref())?;
+        ensure_audit!(
+            chunk[chunk_slot] == expected_bloom,
+            "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_BLOOM_INDEX_MISMATCH",
+        );
+
+        for publication in &plan.transaction_publications {
+            let expected_location = external_evm_transaction_location_rlp(
+                plan.period,
+                publication.position,
+                publication.is_system,
+            );
+            ensure_audit!(
+                self.transaction_location(publication.transaction_hash)?
+                    .as_deref()
+                    == Some(expected_location.as_slice()),
+                "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_TRANSACTION_LOCATION_MISMATCH",
+            );
+            ensure_audit!(
+                self.storage
+                    .final_chain()
+                    .receipt_by_trx_hash(H256::from(publication.transaction_hash))?
+                    .as_deref()
+                    == Some(publication.receipt_rlp.as_slice()),
+                "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_TRANSACTION_RECEIPT_MISMATCH",
+            );
+        }
+
+        Ok(external_evm_publication_audit_report(
+            &plan,
+            checked_fields,
+            FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STATUS_MATCHED,
+            String::new(),
+        ))
     }
 
     /// Finalizes a PBFT block using the Rust-owned native transfer executor.
@@ -4385,6 +4513,33 @@ fn rejected_external_evm_publication_report(
         status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED,
         error_code: error_code.into(),
     }
+}
+
+fn external_evm_publication_audit_report(
+    plan: &FinalChainExternalEvmPublicationPlan,
+    checked_fields: u64,
+    status: u8,
+    error_code: impl Into<String>,
+) -> FinalChainExternalEvmPublicationAuditReport {
+    FinalChainExternalEvmPublicationAuditReport {
+        request_id: plan.request_id,
+        plan_id: plan.plan_id,
+        period: plan.period,
+        block_hash: plan.block_hash,
+        checked_fields,
+        status,
+        error_code: error_code.into(),
+    }
+}
+
+fn external_evm_transaction_location_rlp(period: u64, position: u32, is_system: bool) -> Vec<u8> {
+    let mut stream = rlp::RlpStream::new_list(2 + usize::from(is_system));
+    stream.append(&period);
+    stream.append(&position);
+    if is_system {
+        stream.append(&is_system);
+    }
+    stream.out().to_vec()
 }
 
 fn external_evm_pending_publication_marker_id(

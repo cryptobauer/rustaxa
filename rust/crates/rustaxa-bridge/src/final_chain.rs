@@ -435,6 +435,44 @@ fn external_evm_publication_plan_from_ffi(
     }
 }
 
+#[cfg(test)]
+fn external_evm_publication_plan_from_ffi_ref(
+    plan: &rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
+) -> rustaxa_consensus::FinalChainExternalEvmPublicationPlan {
+    rustaxa_consensus::FinalChainExternalEvmPublicationPlan {
+        request_id: plan.request_id,
+        plan_id: plan.plan_id,
+        period: plan.period,
+        block_hash: plan.block_hash,
+        block_header_rlp: plan.block_header_rlp.clone(),
+        stored_header_rlp: plan.stored_header_rlp.clone(),
+        receipts_rlp: plan.receipts_rlp.clone(),
+        indexed_log_bloom: plan.indexed_log_bloom.clone(),
+        system_transaction_hashes_rlp: plan.system_transaction_hashes_rlp.clone(),
+        transaction_publications: plan
+            .transaction_publications
+            .iter()
+            .map(
+                |publication| rustaxa_consensus::FinalChainExternalEvmTransactionPublication {
+                    transaction_hash: publication.transaction_hash,
+                    position: publication.position,
+                    is_system: publication.is_system,
+                    receipt_rlp: publication.receipt_rlp.clone(),
+                },
+            )
+            .collect(),
+        executed_dag_blocks: plan.executed_dag_blocks,
+        executed_transactions: plan.executed_transactions,
+        rewards_stats_update: rustaxa_consensus::FinalChainExternalEvmRewardsStatsUpdate {
+            current_period: plan.rewards_stats_update.current_period,
+            cache_current_period: plan.rewards_stats_update.cache_current_period,
+            clear_cached_stats: plan.rewards_stats_update.clear_cached_stats,
+            current_block_stats_rlp: plan.rewards_stats_update.current_block_stats_rlp.clone(),
+        },
+        error_code: plan.error_code.clone(),
+    }
+}
+
 fn external_evm_state_commit_request_from_ffi(
     request: rustaxa_ffi::FinalChainExternalEvmStateCommitRequest,
 ) -> rustaxa_consensus::FinalChainExternalEvmStateCommitRequest {
@@ -922,6 +960,15 @@ impl BridgeFinalChain {
                 *committed_state_root,
             )?,
         ))
+    }
+
+    #[cfg(test)]
+    pub fn audit_external_evm_publication(
+        self: &BridgeFinalChain,
+        plan: &rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
+    ) -> Result<rustaxa_consensus::FinalChainExternalEvmPublicationAuditReport, anyhow::Error> {
+        self.0
+            .audit_external_evm_publication(external_evm_publication_plan_from_ffi_ref(plan))
     }
 
     pub fn get_account(
@@ -1644,6 +1691,28 @@ mod tests {
         decision
     }
 
+    fn assert_external_evm_publication_audit_matches(
+        final_chain: &BridgeFinalChain,
+        publication: &rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
+    ) {
+        let audit = final_chain
+            .audit_external_evm_publication(publication)
+            .expect("external EVM publication audit should run");
+        assert_eq!(
+            audit.status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STATUS_MATCHED
+        );
+        assert_eq!(audit.request_id, publication.request_id);
+        assert_eq!(audit.plan_id, publication.plan_id);
+        assert_eq!(audit.period, publication.period);
+        assert_eq!(audit.block_hash, publication.block_hash);
+        assert_eq!(
+            audit.checked_fields,
+            11 + publication.transaction_publications.len() as u64 * 2
+        );
+        assert!(audit.error_code.is_empty());
+    }
+
     fn signed_pbft_block_rlp(period: u64) -> Vec<u8> {
         let signing_key = SigningKey::from_slice(&[9u8; 32]).unwrap();
         let timestamp = 1234u64;
@@ -2088,6 +2157,21 @@ mod tests {
                 .unwrap(),
             vec![1]
         );
+        assert_external_evm_publication_audit_matches(&final_chain, &publication);
+        let mut mutated_publication = external_evm_publication_plan_from_ffi_ref(&publication);
+        mutated_publication.receipts_rlp.push(0xff);
+        let mutated_audit = final_chain
+            .0
+            .audit_external_evm_publication(mutated_publication)
+            .expect("mutated publication audit should run");
+        assert_eq!(
+            mutated_audit.status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STATUS_MISMATCH
+        );
+        assert_eq!(
+            mutated_audit.error_code,
+            "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_PLAN_ID_MISMATCH"
+        );
 
         drop(session);
         drop(final_chain);
@@ -2106,6 +2190,7 @@ mod tests {
             reloaded.get_blocks_with_bloom(&topic_bloom, 1, 1).unwrap(),
             vec![1]
         );
+        assert_external_evm_publication_audit_matches(&reloaded, &publication);
 
         drop(reloaded);
         let _ = fs::remove_dir_all(temp_dir);
@@ -2262,6 +2347,7 @@ mod tests {
             .get_transaction_location(&first_hash)
             .unwrap()
             .is_empty());
+        assert_external_evm_publication_audit_matches(&reloaded, &publication);
 
         drop(reloaded);
         let _ = fs::remove_dir_all(temp_dir);
@@ -2390,6 +2476,7 @@ mod tests {
             rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED
         );
         assert_eq!(final_chain.get_last_block_number().unwrap(), 1);
+        assert_external_evm_publication_audit_matches(&final_chain, &publication);
 
         drop(final_chain);
         let _ = fs::remove_dir_all(temp_dir);

@@ -123,6 +123,11 @@ pub const FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED: u8 = 1;
 /// External EVM publication was already present with matching block indexes.
 pub const FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED: u8 = 2;
 
+/// External EVM publication audit matched all persisted FinalChain rows.
+pub const FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STATUS_MATCHED: u8 = 0;
+/// External EVM publication audit found a missing or mismatched persisted row.
+pub const FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STATUS_MISMATCH: u8 = 1;
+
 /// Complete FinalChain execution request owned by a runtime session.
 ///
 /// The payload preserves the existing bridge facts: signed PBFT block RLP,
@@ -500,6 +505,24 @@ pub struct FinalChainExternalEvmPublicationReport {
     pub plan_id: [u8; 32],
     pub period: u64,
     pub block_hash: [u8; 32],
+    pub status: u8,
+    pub error_code: String,
+}
+
+/// Result of auditing an external-EVM publication plan against storage.
+///
+/// The audit is read-only and is intended for parity and smoke coverage after
+/// live publication or restart recovery. It checks that the Rust-owned
+/// publication batch materialized the exact header, hash indexes, receipts,
+/// transaction indexes, bloom index leaf, system-transaction hash row, and
+/// pending-marker state described by the plan.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FinalChainExternalEvmPublicationAuditReport {
+    pub request_id: [u8; 32],
+    pub plan_id: [u8; 32],
+    pub period: u64,
+    pub block_hash: [u8; 32],
+    pub checked_fields: u64,
     pub status: u8,
     pub error_code: String,
 }
