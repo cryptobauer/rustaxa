@@ -2898,34 +2898,6 @@ pub mod rustaxa_ffi {
         finalized_period: u64,
     }
 
-    /// Facts extracted by C++ before mutating the live transaction queue.
-    struct TransactionManagerValidatedInsertFact {
-        tx_hash: [u8; 32],
-        transaction_nonce: [u8; 32],
-        transaction_cost: [u8; 32],
-        gas_limit: u64,
-        propose_dag_gas_limit: u64,
-        insert_non_proposable: bool,
-        in_non_finalized_cache: bool,
-        in_recently_finalized_cache: bool,
-        account_found: bool,
-        account_nonce: [u8; 32],
-        account_balance: [u8; 32],
-    }
-
-    /// Facts extracted by C++ before queue insertion when Rust owns manager sidecars.
-    struct TransactionManagerValidatedInsertSidecarFact {
-        tx_hash: [u8; 32],
-        transaction_nonce: [u8; 32],
-        transaction_cost: [u8; 32],
-        gas_limit: u64,
-        propose_dag_gas_limit: u64,
-        insert_non_proposable: bool,
-        account_found: bool,
-        account_nonce: [u8; 32],
-        account_balance: [u8; 32],
-    }
-
     /// Facts for runtime validated insert with account facts sourced from
     /// FinalChain at execution time.
     struct TransactionManagerValidatedInsertRuntimeFact {
@@ -2936,18 +2908,6 @@ pub mod rustaxa_ffi {
         gas_limit: u64,
         propose_dag_gas_limit: u64,
         insert_non_proposable: bool,
-    }
-
-    /// Plan for C++ live queue insertion.
-    ///
-    /// `queue_action`:
-    /// - `0`: no queue mutation; return `status` directly
-    /// - `1`: insert as proposable
-    /// - `2`: insert as non-proposable
-    struct TransactionManagerValidatedInsertPlan {
-        status: u8,
-        queue_action: u8,
-        emit_transaction_added: bool,
     }
 
     /// Runtime-executed TransactionManager admission outcome.
@@ -4486,34 +4446,6 @@ pub mod rustaxa_ffi {
         pub fn transaction_manager_verify_transaction(
             fact: TransactionManagerVerifyTransactionFact,
         ) -> Result<TransactionManagerVerifyTransactionOutcome>;
-        /// Builds deterministic TransactionManager::insertTransaction admission plan.
-        pub fn transaction_manager_insert_transaction(
-            fact: TransactionManagerInsertTransactionFact,
-        ) -> Result<TransactionManagerInsertTransactionOutcome>;
-        /// Builds deterministic TransactionManager::insertTransaction plan using Rust sidecars.
-        pub fn transaction_manager_insert_transaction_with_sidecar(
-            sidecar: &BridgeTransactionManagerSidecar,
-            fact: TransactionManagerInsertTransactionFact,
-        ) -> Result<TransactionManagerInsertTransactionOutcome>;
-        /// Builds deterministic TransactionManager::insertTransaction plan using Rust runtime state.
-        pub fn transaction_manager_insert_transaction_with_runtime(
-            runtime: &BridgeTransactionManagerRuntime,
-            fact: TransactionManagerInsertTransactionFact,
-        ) -> Result<TransactionManagerInsertTransactionOutcome>;
-        /// Builds deterministic TransactionManager::insertValidatedTransaction plan.
-        pub fn transaction_manager_plan_validated_insert(
-            fact: TransactionManagerValidatedInsertFact,
-        ) -> Result<TransactionManagerValidatedInsertPlan>;
-        /// Builds deterministic TransactionManager::insertValidatedTransaction plan using Rust sidecars.
-        pub fn transaction_manager_plan_validated_insert_with_sidecar(
-            sidecar: &BridgeTransactionManagerSidecar,
-            fact: TransactionManagerValidatedInsertSidecarFact,
-        ) -> Result<TransactionManagerValidatedInsertPlan>;
-        /// Builds deterministic TransactionManager::insertValidatedTransaction plan using Rust runtime state.
-        pub fn transaction_manager_plan_validated_insert_with_runtime(
-            runtime: &BridgeTransactionManagerRuntime,
-            fact: TransactionManagerValidatedInsertSidecarFact,
-        ) -> Result<TransactionManagerValidatedInsertPlan>;
         /// Determines which hash inputs are not finalized in-memory and in storage.
         pub fn transaction_manager_filter_non_finalized(
             storage: &BridgeStorage,

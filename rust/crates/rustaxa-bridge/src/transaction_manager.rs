@@ -31,10 +31,8 @@ use crate::ffi::rustaxa_ffi::{
     TransactionManagerSidecarTransitionInput, TransactionManagerStoredTransactionLookup,
     TransactionManagerStoredTransactionRequest, TransactionManagerTransactionView,
     TransactionManagerTransactionViewPlan, TransactionManagerTransactionViewRequest,
-    TransactionManagerValidatedInsertFact, TransactionManagerValidatedInsertPlan,
-    TransactionManagerValidatedInsertRuntimeFact, TransactionManagerValidatedInsertSidecarFact,
-    TransactionManagerVerifyNotFinalizedFact, TransactionManagerVerifyNotFinalizedOutcome,
-    TransactionManagerVerifyNotFinalizedRuntimeFact,
+    TransactionManagerValidatedInsertRuntimeFact, TransactionManagerVerifyNotFinalizedFact,
+    TransactionManagerVerifyNotFinalizedOutcome, TransactionManagerVerifyNotFinalizedRuntimeFact,
     TransactionManagerVerifyNotFinalizedSidecarFact, TransactionManagerVerifyTransactionFact,
     TransactionManagerVerifyTransactionOutcome, TransactionPackEstimateOutcome,
     TransactionPackSelectedTransaction, TransactionPackSessionCandidate,
@@ -106,9 +104,6 @@ const TM_INSERT_TRANSACTION_STATUS_ALREADY_FINALIZED: u8 =
     TransactionManagerInsertTransactionStatus::AlreadyFinalized as u8;
 const TM_INSERT_TRANSACTION_STATUS_CANNOT_INSERT: u8 =
     TransactionManagerInsertTransactionStatus::CouldNotInsert as u8;
-const TM_VALIDATED_INSERT_QUEUE_ACTION_NONE: u8 = 0;
-const TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_PROPOSABLE: u8 = 1;
-const TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_NON_PROPOSABLE: u8 = 2;
 const TRANSACTION_QUEUE_DROP_WINDOW: Duration = Duration::from_secs(600);
 
 fn hash_command(hash: [u8; 32]) -> TransactionManagerHashCommand {
@@ -1123,8 +1118,8 @@ pub fn transaction_manager_verify_transaction(
     })
 }
 
-/// Builds a deterministic admission plan for C++ insertion pre-checks.
-pub fn transaction_manager_insert_transaction(
+/// Builds the insertion status mapping used by Rust-owned admission command reports.
+fn transaction_manager_insert_transaction(
     fact: TransactionManagerInsertTransactionFact,
 ) -> Result<TransactionManagerInsertTransactionOutcome> {
     let outcome = plan_insert_transaction(
@@ -1161,120 +1156,6 @@ pub fn transaction_manager_insert_transaction(
                 finalized_period_known: false,
             }
         }
-    })
-}
-
-/// Builds a deterministic admission plan for C++ insertion pre-checks using Rust-owned sidecars.
-///
-/// `fact.hash_known` is interpreted as the queue-known fact; Rust folds this with
-/// sidecar membership to make one known/admission decision.
-pub fn transaction_manager_insert_transaction_with_sidecar(
-    sidecar: &BridgeTransactionManagerSidecar,
-    fact: TransactionManagerInsertTransactionFact,
-) -> Result<TransactionManagerInsertTransactionOutcome> {
-    let tx_hash = H256::from(fact.tx_hash);
-    let hash_known = sidecar
-        .0
-        .is_transaction_known(TransactionManagerKnownFact {
-            hash: tx_hash,
-            queue_known: fact.hash_known,
-        })
-        .context("TM_INSERT_WITH_SIDECAR_KNOWN_CHECK_FAILED")?;
-
-    transaction_manager_insert_transaction(TransactionManagerInsertTransactionFact {
-        hash_known,
-        ..fact
-    })
-}
-
-/// Builds a deterministic admission plan using Rust-owned runtime queue and sidecar state.
-pub fn transaction_manager_insert_transaction_with_runtime(
-    runtime: &BridgeTransactionManagerRuntime,
-    fact: TransactionManagerInsertTransactionFact,
-) -> Result<TransactionManagerInsertTransactionOutcome> {
-    let _ = runtime;
-    transaction_manager_insert_transaction(fact)
-}
-
-/// Builds a deterministic pre-mutation plan for C++ live queue insertion.
-pub fn transaction_manager_plan_validated_insert(
-    fact: TransactionManagerValidatedInsertFact,
-) -> Result<TransactionManagerValidatedInsertPlan> {
-    let plan = plan_validated_insert(consensus_validated_insert_fact_from_ffi_fact(fact))?;
-    Ok(TransactionManagerValidatedInsertPlan {
-        status: queue_status_to_ffi(plan.status),
-        queue_action: if !plan.should_insert_queue {
-            TM_VALIDATED_INSERT_QUEUE_ACTION_NONE
-        } else if plan.queue_proposable {
-            TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_PROPOSABLE
-        } else {
-            TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_NON_PROPOSABLE
-        },
-        emit_transaction_added: plan.emit_transaction_added,
-    })
-}
-
-/// Builds a deterministic pre-mutation plan using Rust-owned sidecar membership.
-pub fn transaction_manager_plan_validated_insert_with_sidecar(
-    sidecar: &BridgeTransactionManagerSidecar,
-    fact: TransactionManagerValidatedInsertSidecarFact,
-) -> Result<TransactionManagerValidatedInsertPlan> {
-    let hash = H256::from(fact.tx_hash);
-    let plan = plan_validated_insert(ConsensusTransactionManagerValidatedInsertFact {
-        tx_hash: hash,
-        transaction_nonce: U256::from_big_endian(&fact.transaction_nonce),
-        transaction_cost: U256::from_big_endian(&fact.transaction_cost),
-        gas_limit: fact.gas_limit,
-        propose_dag_gas_limit: fact.propose_dag_gas_limit,
-        insert_non_proposable: fact.insert_non_proposable,
-        in_non_finalized_cache: sidecar.0.contains_non_finalized(hash),
-        in_recently_finalized_cache: sidecar.0.contains_recently_finalized(hash),
-        account_found: fact.account_found,
-        account_nonce: U256::from_big_endian(&fact.account_nonce),
-        account_balance: U256::from_big_endian(&fact.account_balance),
-    })?;
-    Ok(TransactionManagerValidatedInsertPlan {
-        status: queue_status_to_ffi(plan.status),
-        queue_action: if !plan.should_insert_queue {
-            TM_VALIDATED_INSERT_QUEUE_ACTION_NONE
-        } else if plan.queue_proposable {
-            TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_PROPOSABLE
-        } else {
-            TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_NON_PROPOSABLE
-        },
-        emit_transaction_added: plan.emit_transaction_added,
-    })
-}
-
-/// Builds a deterministic pre-mutation plan using Rust-owned runtime queue and sidecar state.
-pub fn transaction_manager_plan_validated_insert_with_runtime(
-    runtime: &BridgeTransactionManagerRuntime,
-    fact: TransactionManagerValidatedInsertSidecarFact,
-) -> Result<TransactionManagerValidatedInsertPlan> {
-    let hash = H256::from(fact.tx_hash);
-    let plan = plan_validated_insert(ConsensusTransactionManagerValidatedInsertFact {
-        tx_hash: hash,
-        transaction_nonce: U256::from_big_endian(&fact.transaction_nonce),
-        transaction_cost: U256::from_big_endian(&fact.transaction_cost),
-        gas_limit: fact.gas_limit,
-        propose_dag_gas_limit: fact.propose_dag_gas_limit,
-        insert_non_proposable: fact.insert_non_proposable,
-        in_non_finalized_cache: runtime.sidecar.contains_non_finalized(hash),
-        in_recently_finalized_cache: runtime.sidecar.contains_recently_finalized(hash),
-        account_found: fact.account_found,
-        account_nonce: U256::from_big_endian(&fact.account_nonce),
-        account_balance: U256::from_big_endian(&fact.account_balance),
-    })?;
-    Ok(TransactionManagerValidatedInsertPlan {
-        status: queue_status_to_ffi(plan.status),
-        queue_action: if !plan.should_insert_queue {
-            TM_VALIDATED_INSERT_QUEUE_ACTION_NONE
-        } else if plan.queue_proposable {
-            TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_PROPOSABLE
-        } else {
-            TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_NON_PROPOSABLE
-        },
-        emit_transaction_added: plan.emit_transaction_added,
     })
 }
 
@@ -3043,24 +2924,6 @@ fn consensus_insert_transaction_fact_from_ffi_fact(
     })
 }
 
-fn consensus_validated_insert_fact_from_ffi_fact(
-    fact: TransactionManagerValidatedInsertFact,
-) -> ConsensusTransactionManagerValidatedInsertFact {
-    ConsensusTransactionManagerValidatedInsertFact {
-        tx_hash: H256::from(fact.tx_hash),
-        transaction_nonce: U256::from_big_endian(&fact.transaction_nonce),
-        transaction_cost: U256::from_big_endian(&fact.transaction_cost),
-        gas_limit: fact.gas_limit,
-        propose_dag_gas_limit: fact.propose_dag_gas_limit,
-        insert_non_proposable: fact.insert_non_proposable,
-        in_non_finalized_cache: fact.in_non_finalized_cache,
-        in_recently_finalized_cache: fact.in_recently_finalized_cache,
-        account_found: fact.account_found,
-        account_nonce: U256::from_big_endian(&fact.account_nonce),
-        account_balance: U256::from_big_endian(&fact.account_balance),
-    }
-}
-
 fn queue_status_to_ffi(status: TransactionQueueInsertStatus) -> u8 {
     match status {
         TransactionQueueInsertStatus::Inserted => TransactionQueueInsertStatus::Inserted as u8,
@@ -3717,28 +3580,6 @@ mod tests {
         }
     }
 
-    fn validated_insert_fact(
-        tx_hash: u8,
-        account_found: bool,
-        account_nonce: u64,
-        account_balance: u64,
-        insert_non_proposable: bool,
-    ) -> TransactionManagerValidatedInsertFact {
-        TransactionManagerValidatedInsertFact {
-            tx_hash: [tx_hash; 32],
-            transaction_nonce: u256_bytes(1),
-            transaction_cost: u256_bytes(10),
-            gas_limit: 21_000,
-            propose_dag_gas_limit: 100_000,
-            insert_non_proposable,
-            in_non_finalized_cache: false,
-            in_recently_finalized_cache: false,
-            account_found,
-            account_nonce: u256_bytes(account_nonce),
-            account_balance: u256_bytes(account_balance),
-        }
-    }
-
     fn validated_insert_runtime_fact(
         tx_hash: u8,
         sender: [u8; 20],
@@ -3870,90 +3711,6 @@ mod tests {
             .status,
             TM_INSERT_TRANSACTION_STATUS_CANNOT_INSERT
         );
-    }
-
-    #[test]
-    fn bridge_insert_transaction_with_sidecar_combines_queue_known_and_sidecar_membership() {
-        let mut sidecar = create_transaction_manager_sidecar(5);
-        sidecar
-            .transaction_manager_sidecar_insert_non_finalized(
-                TransactionManagerSidecarInsertInput {
-                    hash: [7; 32],
-                    trx_rlp: vec![0x07],
-                },
-            )
-            .expect("sidecar insert should succeed");
-
-        let known = transaction_manager_insert_transaction_with_sidecar(
-            &sidecar,
-            insert_fact(
-                7,
-                false,
-                rustaxa_consensus::transaction_queue::TransactionQueueInsertStatus::Inserted as u8,
-                false,
-                0,
-            ),
-        )
-        .expect("insert-with-sidecar plan should compute");
-        assert_eq!(known.status, TM_INSERT_TRANSACTION_STATUS_ALREADY_KNOWN);
-
-        let finalized = transaction_manager_insert_transaction_with_sidecar(
-            &sidecar,
-            insert_fact(
-                8,
-                false,
-                rustaxa_consensus::transaction_queue::TransactionQueueInsertStatus::Known as u8,
-                true,
-                42,
-            ),
-        )
-        .expect("insert-with-sidecar plan should compute");
-        assert_eq!(
-            finalized.status,
-            TM_INSERT_TRANSACTION_STATUS_ALREADY_FINALIZED
-        );
-        assert!(finalized.finalized_period_known);
-        assert_eq!(finalized.finalized_period, 42);
-    }
-
-    #[test]
-    fn bridge_transaction_manager_plan_validated_insert_returns_queue_plan() {
-        let proposable = transaction_manager_plan_validated_insert(validated_insert_fact(
-            1, true, 0, 100, false,
-        ))
-        .expect("validated insert plan should compute");
-        assert_eq!(
-            proposable.queue_action,
-            TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_PROPOSABLE
-        );
-        assert!(proposable.emit_transaction_added);
-        assert_eq!(
-            proposable.status,
-            rustaxa_consensus::transaction_queue::TransactionQueueInsertStatus::Inserted as u8
-        );
-
-        let non_proposable =
-            transaction_manager_plan_validated_insert(validated_insert_fact(2, false, 0, 0, true))
-                .expect("validated insert plan should compute");
-        assert_eq!(
-            non_proposable.queue_action,
-            TM_VALIDATED_INSERT_QUEUE_ACTION_INSERT_NON_PROPOSABLE
-        );
-        assert_eq!(
-            non_proposable.status,
-            rustaxa_consensus::transaction_queue::TransactionQueueInsertStatus::InsertedNonProposable as u8
-        );
-        assert!(!non_proposable.emit_transaction_added);
-
-        let rejected =
-            transaction_manager_plan_validated_insert(validated_insert_fact(3, false, 0, 0, false))
-                .expect("validated insert plan should compute");
-        assert_eq!(rejected.queue_action, TM_VALIDATED_INSERT_QUEUE_ACTION_NONE);
-        assert_eq!(
-            rejected.status,
-            rustaxa_consensus::transaction_queue::TransactionQueueInsertStatus::Known as u8
-        );
-        assert!(!rejected.emit_transaction_added);
     }
 
     #[test]
