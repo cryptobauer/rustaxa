@@ -2950,16 +2950,6 @@ pub mod rustaxa_ffi {
         emit_transaction_added: bool,
     }
 
-    /// Runtime-executed insert outcome that includes concrete queue mutations.
-    struct TransactionManagerRuntimeValidatedInsertOutcome {
-        status: u8,
-        emit_transaction_added: bool,
-        inserted_hash_found: bool,
-        inserted_hash: [u8; 32],
-        demoted_hashes: Vec<TransactionQueueHash>,
-        overflow_removed_hashes: Vec<TransactionQueueHash>,
-    }
-
     /// Runtime-executed TransactionManager admission outcome.
     ///
     /// Rust owns the validated-admission queue mutation and the public
@@ -4277,17 +4267,6 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionManagerRuntime,
             input: TransactionQueueInsertInput,
         ) -> Result<TransactionQueueInsertOutcome>;
-        pub fn transaction_manager_runtime_insert_validated_transaction(
-            self: &mut BridgeTransactionManagerRuntime,
-            fact: TransactionManagerValidatedInsertSidecarFact,
-            input: TransactionQueueInsertInput,
-        ) -> Result<TransactionManagerRuntimeValidatedInsertOutcome>;
-        pub fn transaction_manager_runtime_insert_validated_transaction_with_final_chain(
-            self: &mut BridgeTransactionManagerRuntime,
-            final_chain: &BridgeFinalChain,
-            fact: TransactionManagerValidatedInsertRuntimeFact,
-            input: TransactionQueueInsertInput,
-        ) -> Result<TransactionManagerRuntimeValidatedInsertOutcome>;
         pub fn transaction_manager_runtime_insert_transaction_precheck(
             self: &BridgeTransactionManagerRuntime,
             hash: &[u8; 32],
@@ -4296,41 +4275,6 @@ pub mod rustaxa_ffi {
             self: &BridgeTransactionManagerRuntime,
             fact: TransactionManagerInsertTransactionFact,
         ) -> Result<TransactionManagerInsertTransactionOutcome>;
-        pub fn transaction_manager_runtime_execute_transaction_admission(
-            self: &mut BridgeTransactionManagerRuntime,
-            fact: TransactionManagerValidatedInsertSidecarFact,
-            input: TransactionQueueInsertInput,
-            has_finalized_period: bool,
-            finalized_period: u64,
-        ) -> Result<TransactionManagerRuntimeAdmissionOutcome>;
-        /// Executes admission with Rust-localized finalized-location completion.
-        pub fn transaction_manager_runtime_execute_transaction_admission_with_storage(
-            self: &mut BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
-            fact: TransactionManagerValidatedInsertSidecarFact,
-            input: TransactionQueueInsertInput,
-        ) -> Result<TransactionManagerRuntimeAdmissionOutcome>;
-        /// Executes admission and returns a typed command report.
-        pub fn transaction_manager_runtime_execute_transaction_admission_command_report(
-            self: &mut BridgeTransactionManagerRuntime,
-            fact: TransactionManagerValidatedInsertSidecarFact,
-            input: TransactionQueueInsertInput,
-            has_finalized_period: bool,
-            finalized_period: u64,
-        ) -> Result<TransactionManagerAdmissionCommandReport>;
-        /// Executes storage-completed admission and returns a typed command report.
-        pub fn transaction_manager_runtime_execute_transaction_admission_with_storage_command_report(
-            self: &mut BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
-            fact: TransactionManagerValidatedInsertSidecarFact,
-            input: TransactionQueueInsertInput,
-        ) -> Result<TransactionManagerAdmissionCommandReport>;
-        pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain(
-            self: &mut BridgeTransactionManagerRuntime,
-            final_chain: &BridgeFinalChain,
-            fact: TransactionManagerValidatedInsertRuntimeFact,
-            input: TransactionQueueInsertInput,
-        ) -> Result<TransactionManagerRuntimeAdmissionOutcome>;
         /// Executes FinalChain-backed admission and returns a typed command report.
         pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report(
             self: &mut BridgeTransactionManagerRuntime,
