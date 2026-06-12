@@ -566,8 +566,9 @@ The current Rust starting point is intentionally small:
   legacy DAG VRF/VDF message construction, DPoS authorization ordering, gas policy, Rust-backed transaction queue
   metadata/order/limit state, Rust-backed `TransactionManager::packTrxs` deterministic packing decisions, Rust-owned
   DAG transaction persistence planning plus Rust-storage batch commits, Rust-storage-backed `TransactionManager`
-  transaction lookup and non-finalized recovery payload loading, Rust-planned finalized transaction filter/verification
-  helpers, Rust-planned transaction verification and validated-insert admission, shim-owned live non-finalized/pool/count
+  transaction lookup and non-finalized recovery payload loading, runtime-backed finalized transaction
+  filter/verification helpers, Rust-planned transaction verification and runtime/FinalChain-backed validated admission,
+  shim-owned live non-finalized/pool/count
   read helpers, a canonical PBFT vote event fact boundary, a Rust-owned validation-backed PBFT vote admission runtime
   that composes canonical validation, event-fact derivation, verified-vote mutation, threshold planning, retained
   storage/slashing vote payload sidecars, and typed executor intents for peer-known marking, proposed-block sidecar
@@ -680,8 +681,8 @@ The current Rust starting point is intentionally small:
    planning, pool limits, gas-price threshold accounting, queued transaction RLP payload retention, known-transaction
    cache expiry, overflow/drop observation state, and finalized-account purge planning through Rust while C++
    materializes `Transaction` objects on demand. Finalized-account purge fact sourcing now reads accounts from the Rust
-   FinalChain runtime in both TransactionManager runtime cleanup and standalone `TransactionQueue::purge()`, leaving
-   fact-supplied bridge APIs as parity scaffolding only. The Rust-mode `TransactionManager` packing shim now routes proposal candidate
+   FinalChain runtime in both TransactionManager runtime cleanup and standalone `TransactionQueue::purge()`. The
+   Rust-mode `TransactionManager` packing shim now routes proposal candidate
    snapshotting, candidate scan, Rust-inspected envelope facts for candidate EVM input, declared-gas fit checks,
    invalid-estimate demotion mutation, accepted output ordering, accepted gas accumulation, and stop rules through a
    Rust runtime pack session. C++ drives packing through a narrow Rust step protocol that either asks for a required EVM
@@ -711,15 +712,17 @@ The current Rust starting point is intentionally small:
    hash and sender facts, and insert survivor sidecar payloads into the Rust runtime without returning count mirrors or a
    C++-applied recovery input list.
    `excludeFinalizedTransactions` and `verifyTransactionsNotFinalized` now inspect legacy transaction envelopes in Rust
-   for identity facts, then call Rust for latest FinalChain account nonce sourcing, sidecar membership,
-   finalized-storage checks, and deterministic filtering/short-circuit decisions. `verifyTransaction`,
+   for identity facts, then call runtime-backed Rust bridge APIs for sidecar membership, latest FinalChain account nonce
+   sourcing where required, finalized-storage checks, and deterministic filtering/short-circuit decisions; the older
+   storage-only and sidecar-only finalized filter/verification CXX entry points have been removed. `verifyTransaction`,
    `insertTransaction`, and `insertValidatedTransaction` now inspect the transaction envelope in Rust and call typed
    Rust admission command reports for exact verification reasons, legacy public insertion result text,
    latest FinalChain account sourcing, public insertion result mapping, staged known-fast-path prechecks, finalized-location mapping, Rust storage-completed admission
    support, and fused proposable/non-proposable admission with Rust-owned live queue mutation. Public
    `insertTransaction` now enters one Rust runtime operation that owns known precheck, verification decisioning,
    FinalChain-backed account/finalized lookup, queue mutation, and event/log intent before C++ maps legacy public error
-   strings. Known-hash insert decisions now route through the Rust runtime precheck instead of a shim-local early return,
+   strings. Direct standalone validated-insert planner CXX entry points have been removed, so public and validated
+   insertion paths must go through the Rust runtime command-report APIs. Known-hash insert decisions now route through the Rust runtime precheck instead of a shim-local early return,
    and `isTransactionKnown` now includes Rust sidecar membership checks alongside queue-known state. Rust now returns
    typed DAG-save, finalized-status, and admission command reports instead of generic lifecycle/action reports. These
    reports now carry direct hash receipts for the remaining C++ log/event sinks without redundant transaction-count

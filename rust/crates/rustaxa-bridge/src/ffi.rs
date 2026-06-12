@@ -2792,13 +2792,6 @@ pub mod rustaxa_ffi {
         trx_rlp: Vec<u8>,
     }
 
-    /// Input for finalized transaction filtering from legacy C++.
-    struct TransactionManagerFinalizedFilterFact {
-        input_index: u64,
-        hash: [u8; 32],
-        in_recently_finalized_cache: bool,
-    }
-
     /// Filtered finalized transaction action with preserved index mapping.
     struct TransactionManagerFilterAction {
         input_index: u64,
@@ -2808,23 +2801,6 @@ pub mod rustaxa_ffi {
     /// Finalized-filtering outcome for Rust-only decision logic.
     struct FinalizedTransactionFilterPlan {
         not_finalized: Vec<TransactionManagerFilterAction>,
-    }
-
-    /// Input for C++-owned `verifyTransactionsNotFinalized` decisions.
-    struct TransactionManagerVerifyNotFinalizedFact {
-        input_index: u64,
-        hash: [u8; 32],
-        transaction_nonce: [u8; 32],
-        sender_account_nonce: [u8; 32],
-        in_recently_finalized_cache: bool,
-    }
-
-    /// Input for Rust-owned sidecar `verifyTransactionsNotFinalized` decisions.
-    struct TransactionManagerVerifyNotFinalizedSidecarFact {
-        input_index: u64,
-        hash: [u8; 32],
-        transaction_nonce: [u8; 32],
-        sender_account_nonce: [u8; 32],
     }
 
     /// Input for Rust runtime `verifyTransactionsNotFinalized` decisions with
@@ -4446,38 +4422,11 @@ pub mod rustaxa_ffi {
         pub fn transaction_manager_verify_transaction(
             fact: TransactionManagerVerifyTransactionFact,
         ) -> Result<TransactionManagerVerifyTransactionOutcome>;
-        /// Determines which hash inputs are not finalized in-memory and in storage.
-        pub fn transaction_manager_filter_non_finalized(
-            storage: &BridgeStorage,
-            facts: Vec<TransactionManagerFinalizedFilterFact>,
-        ) -> Result<FinalizedTransactionFilterPlan>;
-        /// Determines which hash inputs are not finalized using Rust-owned sidecars and storage.
-        pub fn transaction_manager_filter_non_finalized_with_sidecar(
-            sidecar: &BridgeTransactionManagerSidecar,
-            storage: &BridgeStorage,
-            requests: Vec<TransactionManagerSidecarLookupRequest>,
-        ) -> Result<FinalizedTransactionFilterPlan>;
         pub fn transaction_manager_filter_non_finalized_with_runtime(
             runtime: &BridgeTransactionManagerRuntime,
             storage: &BridgeStorage,
             requests: Vec<TransactionManagerSidecarLookupRequest>,
         ) -> Result<FinalizedTransactionFilterPlan>;
-        /// Verifies a transaction sequence has no finalized entries.
-        pub fn transaction_manager_verify_not_finalized(
-            storage: &BridgeStorage,
-            facts: Vec<TransactionManagerVerifyNotFinalizedFact>,
-        ) -> Result<TransactionManagerVerifyNotFinalizedOutcome>;
-        /// Verifies a transaction sequence has no finalized entries using Rust-owned sidecars.
-        pub fn transaction_manager_verify_not_finalized_with_sidecar(
-            sidecar: &BridgeTransactionManagerSidecar,
-            storage: &BridgeStorage,
-            facts: Vec<TransactionManagerVerifyNotFinalizedSidecarFact>,
-        ) -> Result<TransactionManagerVerifyNotFinalizedOutcome>;
-        pub fn transaction_manager_verify_not_finalized_with_runtime(
-            runtime: &BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
-            facts: Vec<TransactionManagerVerifyNotFinalizedSidecarFact>,
-        ) -> Result<TransactionManagerVerifyNotFinalizedOutcome>;
         pub fn transaction_manager_verify_not_finalized_with_runtime_and_final_chain(
             runtime: &BridgeTransactionManagerRuntime,
             storage: &BridgeStorage,

@@ -18,27 +18,26 @@ use crate::ffi::rustaxa_ffi::{
     FinalizedTransactionStatusPlan, FinalizedTransactionStatusSidecarFact,
     NonFinalizedTransactionPayload, TransactionManagerAdmissionCommandReport,
     TransactionManagerAdmissionResult, TransactionManagerDagSaveCommandReport,
-    TransactionManagerFilterAction, TransactionManagerFinalizedFilterFact,
-    TransactionManagerFinalizedStatusCommandReport, TransactionManagerGasEstimationFact,
-    TransactionManagerGasEstimationPlan, TransactionManagerGasEstimationResult,
-    TransactionManagerHashCommand, TransactionManagerInsertTransactionFact,
-    TransactionManagerInsertTransactionOutcome, TransactionManagerPublicAdmissionCommandReport,
-    TransactionManagerPublicInsertResult, TransactionManagerRecoveryEntry,
-    TransactionManagerRuntimeAdmissionOutcome, TransactionManagerRuntimeQueueCleanupPlan,
-    TransactionManagerSidecarInsertInput, TransactionManagerSidecarKnownFact,
-    TransactionManagerSidecarLookup, TransactionManagerSidecarLookupPlan,
-    TransactionManagerSidecarLookupRequest, TransactionManagerSidecarRecoveryInsertInput,
-    TransactionManagerSidecarTransitionInput, TransactionManagerStoredTransactionLookup,
-    TransactionManagerStoredTransactionRequest, TransactionManagerTransactionView,
-    TransactionManagerTransactionViewPlan, TransactionManagerTransactionViewRequest,
-    TransactionManagerValidatedInsertRuntimeFact, TransactionManagerVerifyNotFinalizedFact,
+    TransactionManagerFilterAction, TransactionManagerFinalizedStatusCommandReport,
+    TransactionManagerGasEstimationFact, TransactionManagerGasEstimationPlan,
+    TransactionManagerGasEstimationResult, TransactionManagerHashCommand,
+    TransactionManagerInsertTransactionFact, TransactionManagerInsertTransactionOutcome,
+    TransactionManagerPublicAdmissionCommandReport, TransactionManagerPublicInsertResult,
+    TransactionManagerRecoveryEntry, TransactionManagerRuntimeAdmissionOutcome,
+    TransactionManagerRuntimeQueueCleanupPlan, TransactionManagerSidecarInsertInput,
+    TransactionManagerSidecarKnownFact, TransactionManagerSidecarLookup,
+    TransactionManagerSidecarLookupPlan, TransactionManagerSidecarLookupRequest,
+    TransactionManagerSidecarRecoveryInsertInput, TransactionManagerSidecarTransitionInput,
+    TransactionManagerStoredTransactionLookup, TransactionManagerStoredTransactionRequest,
+    TransactionManagerTransactionView, TransactionManagerTransactionViewPlan,
+    TransactionManagerTransactionViewRequest, TransactionManagerValidatedInsertRuntimeFact,
     TransactionManagerVerifyNotFinalizedOutcome, TransactionManagerVerifyNotFinalizedRuntimeFact,
-    TransactionManagerVerifyNotFinalizedSidecarFact, TransactionManagerVerifyTransactionFact,
-    TransactionManagerVerifyTransactionOutcome, TransactionPackEstimateOutcome,
-    TransactionPackSelectedTransaction, TransactionPackSessionCandidate,
-    TransactionPackSessionEstimateInput, TransactionPackSessionStep, TransactionQueueConfig,
-    TransactionQueueHash, TransactionQueueInsertInput, TransactionQueueInsertOutcome,
-    TransactionQueuePurgePlan, TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
+    TransactionManagerVerifyTransactionFact, TransactionManagerVerifyTransactionOutcome,
+    TransactionPackEstimateOutcome, TransactionPackSelectedTransaction,
+    TransactionPackSessionCandidate, TransactionPackSessionEstimateInput,
+    TransactionPackSessionStep, TransactionQueueConfig, TransactionQueueHash,
+    TransactionQueueInsertInput, TransactionQueueInsertOutcome, TransactionQueuePurgePlan,
+    TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
 };
 use crate::ffi::{
     BridgeFinalChain, BridgeStorage, BridgeTransactionManagerAdmissionExecution,
@@ -50,10 +49,8 @@ use ethereum_types::{H160, H256, U256};
 use rustaxa_consensus::transaction_manager::{
     plan_exclude_finalized_transactions as plan_exclude_finalized_transactions_from_storage,
     plan_finalized_transactions_status, plan_insert_transaction, plan_transactions_from_dag_block,
-    plan_validated_insert,
-    plan_verify_not_finalized_transactions as plan_verify_not_finalized_transactions_from_storage,
-    plan_verify_transaction, DagTransactionSaveFact as ConsensusDagTransactionSaveFact,
-    DagTransactionSavePayload,
+    plan_validated_insert, plan_verify_transaction,
+    DagTransactionSaveFact as ConsensusDagTransactionSaveFact, DagTransactionSavePayload,
     FinalizedTransactionFilterFact as ConsensusFinalizedTransactionFilterFact,
     FinalizedTransactionFilterPlan as ConsensusFinalizedTransactionFilterPlan,
     FinalizedTransactionStatusFact as ConsensusFinalizedTransactionStatusFact,
@@ -66,8 +63,6 @@ use rustaxa_consensus::transaction_manager::{
     TransactionManagerVerifyTransactionFact as ConsensusTransactionManagerVerifyTransactionFact,
     TransactionManagerVerifyTransactionStatus, TransactionPackCandidate, TransactionPackEstimate,
     TransactionPackingPlanner,
-    VerifyNotFinalizedTransactionFact as ConsensusVerifyNotFinalizedTransactionFact,
-    VerifyNotFinalizedTransactionPlan as ConsensusVerifyNotFinalizedTransactionPlan,
 };
 use rustaxa_consensus::transaction_queue::{
     TransactionQueue, TransactionQueueAccountNonceFact, TransactionQueueDemoteStatus,
@@ -1159,130 +1154,6 @@ fn transaction_manager_insert_transaction(
     })
 }
 
-/// Filters finalized transactions for one legacy C++ transaction-manager path.
-///
-/// Each fact already includes `recently_finalized` membership, so Rust only performs
-/// storage checks for cache misses. Facts from C++ are transformed into consensus
-/// facts and then back into bridge shapes without mutating live queues.
-pub fn transaction_manager_filter_non_finalized(
-    storage: &BridgeStorage,
-    facts: Vec<TransactionManagerFinalizedFilterFact>,
-) -> Result<FinalizedTransactionFilterPlan> {
-    let plan: ConsensusFinalizedTransactionFilterPlan =
-        plan_exclude_finalized_transactions_from_storage(
-            facts
-                .into_iter()
-                .map(consensus_filter_fact_from_ffi_fact)
-                .collect(),
-            |hash| {
-                storage
-                    .0
-                    .transaction()
-                    .finalized(hash)
-                    .context("TM_FILTER_FINALIZED_LOOKUP")
-            },
-        )?;
-
-    Ok(FinalizedTransactionFilterPlan {
-        not_finalized: plan
-            .not_finalized
-            .into_iter()
-            .map(|action| TransactionManagerFilterAction {
-                input_index: action.input_index,
-                hash: action.hash.0,
-            })
-            .collect(),
-    })
-}
-
-/// Verifies a transaction sequence contains no finalized hashes.
-///
-/// The rule mirrors `TransactionManager::verifyTransactionsNotFinalized`:
-/// `recently_finalized_transactions_` short-circuits immediately and storage lookup
-/// only runs when sender nonce is greater-or-equal to transaction nonce.
-pub fn transaction_manager_verify_not_finalized(
-    storage: &BridgeStorage,
-    facts: Vec<TransactionManagerVerifyNotFinalizedFact>,
-) -> Result<TransactionManagerVerifyNotFinalizedOutcome> {
-    let recent_indexes = facts
-        .iter()
-        .filter_map(|fact| fact.in_recently_finalized_cache.then_some(fact.input_index))
-        .collect::<std::collections::HashSet<_>>();
-    let plan: ConsensusVerifyNotFinalizedTransactionPlan =
-        plan_verify_not_finalized_transactions_from_storage(
-            facts
-                .into_iter()
-                .map(consensus_verify_not_finalized_fact_from_ffi_fact)
-                .collect(),
-            |hash| {
-                storage
-                    .0
-                    .transaction()
-                    .finalized(hash)
-                    .context("TM_VERIFY_FINALIZED_LOOKUP")
-            },
-        )?;
-
-    let mut out = TransactionManagerVerifyNotFinalizedOutcome {
-        is_finalized: false,
-        input_index: 0,
-        hash: [0; 32],
-        source: TM_VERIFY_NOT_FINALIZED_SOURCE_NONE,
-    };
-
-    if let Some(failure) = plan.finalized {
-        out.is_finalized = true;
-        out.input_index = failure.input_index;
-        out.hash = failure.hash.0;
-        out.source = if recent_indexes.contains(&failure.input_index) {
-            TM_VERIFY_NOT_FINALIZED_SOURCE_RECENT_SIDECAR
-        } else {
-            TM_VERIFY_NOT_FINALIZED_SOURCE_STORAGE
-        };
-    }
-
-    Ok(out)
-}
-
-/// Filters finalized transactions using Rust-owned live sidecars plus storage.
-pub fn transaction_manager_filter_non_finalized_with_sidecar(
-    sidecar: &BridgeTransactionManagerSidecar,
-    storage: &BridgeStorage,
-    requests: Vec<TransactionManagerSidecarLookupRequest>,
-) -> Result<FinalizedTransactionFilterPlan> {
-    let facts = requests
-        .into_iter()
-        .map(|request| {
-            let hash = H256::from(request.hash);
-            ConsensusFinalizedTransactionFilterFact {
-                input_index: request.input_index,
-                hash,
-                in_recently_finalized_cache: sidecar.0.contains_recently_finalized(hash),
-            }
-        })
-        .collect();
-
-    let plan: ConsensusFinalizedTransactionFilterPlan =
-        plan_exclude_finalized_transactions_from_storage(facts, |hash| {
-            storage
-                .0
-                .transaction()
-                .finalized(hash)
-                .context("TM_FILTER_FINALIZED_LOOKUP")
-        })?;
-
-    Ok(FinalizedTransactionFilterPlan {
-        not_finalized: plan
-            .not_finalized
-            .into_iter()
-            .map(|action| TransactionManagerFilterAction {
-                input_index: action.input_index,
-                hash: action.hash.0,
-            })
-            .collect(),
-    })
-}
-
 /// Filters finalized transactions using Rust runtime sidecars plus storage.
 pub fn transaction_manager_filter_non_finalized_with_runtime(
     runtime: &BridgeTransactionManagerRuntime,
@@ -1319,52 +1190,6 @@ pub fn transaction_manager_filter_non_finalized_with_runtime(
                 hash: action.hash.0,
             })
             .collect(),
-    })
-}
-
-/// Verifies transaction hashes against Rust-owned recent sidecars and storage.
-pub fn transaction_manager_verify_not_finalized_with_sidecar(
-    sidecar: &BridgeTransactionManagerSidecar,
-    storage: &BridgeStorage,
-    facts: Vec<TransactionManagerVerifyNotFinalizedSidecarFact>,
-) -> Result<TransactionManagerVerifyNotFinalizedOutcome> {
-    for fact in facts {
-        let hash = H256::from(fact.hash);
-        ensure!(
-            !hash.is_zero(),
-            "finalized verification transaction hash cannot be zero"
-        );
-        if sidecar.0.contains_recently_finalized(hash) {
-            return Ok(TransactionManagerVerifyNotFinalizedOutcome {
-                is_finalized: true,
-                input_index: fact.input_index,
-                hash: hash.0,
-                source: TM_VERIFY_NOT_FINALIZED_SOURCE_RECENT_SIDECAR,
-            });
-        }
-
-        if U256::from_big_endian(&fact.sender_account_nonce)
-            >= U256::from_big_endian(&fact.transaction_nonce)
-            && storage
-                .0
-                .transaction()
-                .finalized(hash)
-                .context("TM_VERIFY_FINALIZED_LOOKUP")?
-        {
-            return Ok(TransactionManagerVerifyNotFinalizedOutcome {
-                is_finalized: true,
-                input_index: fact.input_index,
-                hash: hash.0,
-                source: TM_VERIFY_NOT_FINALIZED_SOURCE_STORAGE,
-            });
-        }
-    }
-
-    Ok(TransactionManagerVerifyNotFinalizedOutcome {
-        is_finalized: false,
-        input_index: 0,
-        hash: [0; 32],
-        source: TM_VERIFY_NOT_FINALIZED_SOURCE_NONE,
     })
 }
 
@@ -1671,52 +1496,6 @@ fn keccak256(data: &[u8]) -> H256 {
     hasher.update(data);
     hasher.finalize(&mut output);
     H256::from(output)
-}
-
-/// Verifies transaction hashes against Rust runtime recent sidecars and storage.
-pub fn transaction_manager_verify_not_finalized_with_runtime(
-    runtime: &BridgeTransactionManagerRuntime,
-    storage: &BridgeStorage,
-    facts: Vec<TransactionManagerVerifyNotFinalizedSidecarFact>,
-) -> Result<TransactionManagerVerifyNotFinalizedOutcome> {
-    for fact in facts {
-        let hash = H256::from(fact.hash);
-        ensure!(
-            !hash.is_zero(),
-            "finalized verification transaction hash cannot be zero"
-        );
-        if runtime.sidecar.contains_recently_finalized(hash) {
-            return Ok(TransactionManagerVerifyNotFinalizedOutcome {
-                is_finalized: true,
-                input_index: fact.input_index,
-                hash: hash.0,
-                source: TM_VERIFY_NOT_FINALIZED_SOURCE_RECENT_SIDECAR,
-            });
-        }
-
-        if U256::from_big_endian(&fact.sender_account_nonce)
-            >= U256::from_big_endian(&fact.transaction_nonce)
-            && storage
-                .0
-                .transaction()
-                .finalized(hash)
-                .context("TM_VERIFY_FINALIZED_LOOKUP")?
-        {
-            return Ok(TransactionManagerVerifyNotFinalizedOutcome {
-                is_finalized: true,
-                input_index: fact.input_index,
-                hash: hash.0,
-                source: TM_VERIFY_NOT_FINALIZED_SOURCE_STORAGE,
-            });
-        }
-    }
-
-    Ok(TransactionManagerVerifyNotFinalizedOutcome {
-        is_finalized: false,
-        input_index: 0,
-        hash: [0; 32],
-        source: TM_VERIFY_NOT_FINALIZED_SOURCE_NONE,
-    })
 }
 
 /// Verifies transaction hashes against Rust runtime sidecars with sender nonce
@@ -2963,28 +2742,6 @@ fn consensus_finalized_status_fact_from_ffi_fact(
     }
 }
 
-fn consensus_filter_fact_from_ffi_fact(
-    fact: TransactionManagerFinalizedFilterFact,
-) -> ConsensusFinalizedTransactionFilterFact {
-    ConsensusFinalizedTransactionFilterFact {
-        input_index: fact.input_index,
-        hash: H256::from(fact.hash),
-        in_recently_finalized_cache: fact.in_recently_finalized_cache,
-    }
-}
-
-fn consensus_verify_not_finalized_fact_from_ffi_fact(
-    fact: TransactionManagerVerifyNotFinalizedFact,
-) -> ConsensusVerifyNotFinalizedTransactionFact {
-    ConsensusVerifyNotFinalizedTransactionFact {
-        input_index: fact.input_index,
-        hash: H256::from(fact.hash),
-        transaction_nonce: U256::from_big_endian(&fact.transaction_nonce),
-        sender_account_nonce: U256::from_big_endian(&fact.sender_account_nonce),
-        in_recently_finalized_cache: fact.in_recently_finalized_cache,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3508,34 +3265,6 @@ mod tests {
         }
     }
 
-    fn finalized_filter_fact(
-        input_index: u64,
-        hash: u8,
-        in_recently_finalized_cache: bool,
-    ) -> TransactionManagerFinalizedFilterFact {
-        TransactionManagerFinalizedFilterFact {
-            input_index,
-            hash: [hash; 32],
-            in_recently_finalized_cache,
-        }
-    }
-
-    fn verify_not_finalized_fact(
-        input_index: u64,
-        hash: u8,
-        transaction_nonce: u64,
-        sender_account_nonce: u64,
-        in_recently_finalized_cache: bool,
-    ) -> TransactionManagerVerifyNotFinalizedFact {
-        TransactionManagerVerifyNotFinalizedFact {
-            input_index,
-            hash: [hash; 32],
-            transaction_nonce: u256_bytes(transaction_nonce),
-            sender_account_nonce: u256_bytes(sender_account_nonce),
-            in_recently_finalized_cache,
-        }
-    }
-
     fn verify_fact(
         tx_hash: u8,
         chain_id: u64,
@@ -3714,88 +3443,62 @@ mod tests {
     }
 
     #[test]
-    fn bridge_transaction_manager_filter_non_finalized_skips_recent_and_finalized_storage() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_transaction_manager_filter_non_finalized");
+    fn bridge_transaction_manager_filter_non_finalized_with_runtime_uses_live_sidecar_and_storage()
+    {
+        let temp_dir =
+            unique_temp_dir("rustaxa_bridge_transaction_manager_runtime_filter_non_finalized");
         let storage = crate::storage::create_storage(
             temp_dir.to_str().expect("temp path should be valid UTF-8"),
         )
         .expect("storage should initialize");
+        let mut runtime =
+            create_transaction_manager_runtime(3, TransactionQueueConfig { max_size: 16 });
 
         storage
             .save_transaction_location(&[2u8; 32], 7, 0, false)
             .expect("finalized hash should be persisted in trx period");
+        runtime
+            .transaction_manager_runtime_insert_non_finalized(
+                TransactionManagerSidecarInsertInput {
+                    hash: [3; 32],
+                    trx_rlp: vec![0x03],
+                },
+            )
+            .expect("runtime sidecar insert should succeed");
+        runtime
+            .transaction_manager_runtime_apply_finalized_transition(
+                TransactionManagerSidecarTransitionInput {
+                    period: 7,
+                    hashes: vec![crate::ffi::rustaxa_ffi::TransactionManagerSidecarHash {
+                        hash: [3; 32],
+                    }],
+                },
+            )
+            .expect("runtime finalized transition should succeed");
 
-        let out = transaction_manager_filter_non_finalized(
+        let out = transaction_manager_filter_non_finalized_with_runtime(
+            &runtime,
             &storage,
             vec![
-                finalized_filter_fact(0, 1, false),
-                finalized_filter_fact(1, 2, false),
-                finalized_filter_fact(2, 3, true),
+                TransactionManagerSidecarLookupRequest {
+                    input_index: 0,
+                    hash: [1; 32],
+                },
+                TransactionManagerSidecarLookupRequest {
+                    input_index: 1,
+                    hash: [2; 32],
+                },
+                TransactionManagerSidecarLookupRequest {
+                    input_index: 2,
+                    hash: [3; 32],
+                },
             ],
         )
-        .expect("filtering plan should map finalized inputs");
+        .expect("runtime filtering plan should map finalized inputs");
 
         assert_eq!(out.not_finalized.len(), 1);
         assert_eq!(out.not_finalized[0].input_index, 0);
         assert_eq!(out.not_finalized[0].hash, [1; 32]);
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_transaction_manager_verify_not_finalized_honors_recent_cache_before_storage() {
-        let temp_dir =
-            unique_temp_dir("rustaxa_bridge_transaction_manager_verify_not_finalized_cache");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-
-        storage
-            .save_transaction_location(&[2u8; 32], 7, 0, false)
-            .expect("finalized hash should be persisted in trx period");
-
-        let out = transaction_manager_verify_not_finalized(
-            &storage,
-            vec![
-                verify_not_finalized_fact(0, 1, 2, 8, true),
-                verify_not_finalized_fact(1, 2, 1, 2, false),
-            ],
-        )
-        .expect("verify plan should short-circuit on cache");
-
-        assert!(out.is_finalized);
-        assert_eq!(out.input_index, 0);
-        assert_eq!(out.hash, [1; 32]);
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_transaction_manager_verify_not_finalized_performs_gated_storage_lookup() {
-        let temp_dir =
-            unique_temp_dir("rustaxa_bridge_transaction_manager_verify_not_finalized_lookup");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-
-        storage
-            .save_transaction_location(&[2u8; 32], 7, 0, false)
-            .expect("finalized hash should be persisted in trx period");
-
-        let out = transaction_manager_verify_not_finalized(
-            &storage,
-            vec![
-                verify_not_finalized_fact(0, 1, 10, 1, false),
-                verify_not_finalized_fact(1, 2, 2, 4, false),
-            ],
-        )
-        .expect("verify plan should fail on finalized input");
-
-        assert!(out.is_finalized);
-        assert_eq!(out.input_index, 1);
-        assert_eq!(out.hash, [2; 32]);
 
         let _ = fs::remove_dir_all(temp_dir);
     }
