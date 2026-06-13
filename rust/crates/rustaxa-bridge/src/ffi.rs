@@ -1011,18 +1011,6 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    /// C++-originated facts for one PBFT leader candidate.
-    struct PbftManagerLeaderCandidateFact {
-        vote_hash: [u8; 32],
-        block_hash: [u8; 32],
-        period: u64,
-        credential: [u8; 64],
-        voter_public_key: [u8; 64],
-        weight: u64,
-        status: u8,
-        pivot_hash: [u8; 32],
-    }
-
     /// C++ live lookup and validation facts for one PBFT proposal candidate.
     struct PbftManagerLeaderCandidateInputFact {
         vote_hash: [u8; 32],
@@ -1053,17 +1041,6 @@ pub mod rustaxa_ffi {
         selected_period: u64,
         selected_from_null_anchor: bool,
         valid_blocks: Vec<PbftManagerLeaderValidBlockCommand>,
-        error_code: String,
-    }
-
-    /// Side-effect-free PBFT leader selection plan for C++ materialization.
-    struct PbftManagerLeaderSelectionPlan {
-        status: u8,
-        selected: bool,
-        selected_vote_hash: [u8; 32],
-        selected_block_hash: [u8; 32],
-        selected_period: u64,
-        selected_from_null_anchor: bool,
         error_code: String,
     }
 
@@ -3860,9 +3837,6 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_manager_state_action(
             fact: PbftManagerStateActionFact,
         ) -> PbftManagerStateActionPlan;
-        pub fn plan_pbft_manager_leader_selection(
-            candidates: Vec<PbftManagerLeaderCandidateFact>,
-        ) -> PbftManagerLeaderSelectionPlan;
         pub fn plan_pbft_manager_leader_candidates(
             candidates: Vec<PbftManagerLeaderCandidateInputFact>,
         ) -> PbftManagerLeaderCandidatePlan;

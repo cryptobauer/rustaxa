@@ -670,12 +670,14 @@ The current Rust starting point is intentionally small:
    through Rust under `RUSTAXA_ENABLE_PROPOSED_BLOCKS`; period-data queue admission, effective size, pop vote-source
    decisions, and cleanup planning route through Rust under `RUSTAXA_ENABLE_PERIOD_DATA_QUEUE`.
 9. Continue shrinking the Rust-mode `PbftManager` overlay into Rust services for candidate validation and ordered
-   state-action scripts. The next removal target is to move `getValidPbftProposedBlock`, `validatePbftBlock`,
-   `validateFinalChainHash`, reward-vote availability, DAG-order/gas facts, and pillar-data checks into a grouped Rust
-   candidate planner that consumes the existing Rust FinalChain fact bundle and returns executor intents. After that
-   planner owns candidate acceptance, `identifyLeaderBlock`, `proposeBlock_`, `identifyBlock_`, `certifyBlock_`,
-   `firstFinish_`, and `secondFinish_` should collapse further into hash/object resolution plus vote/sign/gossip/storage
-   effect execution.
+   state-action scripts. The first grouped leader-candidate planner now owns proposal candidate status derivation,
+   mark-valid commands, and deterministic leader ranking; the C++ overlay only supplies live block lookup/validation
+   facts, applies returned mark-valid effects, and materializes the selected vote/block. The next removal target is to
+   move `getValidPbftProposedBlock`, `validatePbftBlock`, `validateFinalChainHash`, reward-vote availability,
+   DAG-order/gas facts, and pillar-data checks behind staged Rust fact requests that consume existing Rust FinalChain
+   bundles and return executor intents. After that planner owns deeper candidate acceptance, `identifyLeaderBlock`,
+   `proposeBlock_`, `identifyBlock_`, `certifyBlock_`, `firstFinish_`, and `secondFinish_` should collapse further into
+   hash/object resolution plus vote/sign/gossip/storage effect execution.
 10. Port transaction queue behavior before transaction manager orchestration. The Rust-mode `TransactionQueue` overlay
    now routes deterministic queue metadata, per-account nonce ordering, same-nonce replacement, non-proposer expiry
    planning, pool limits, gas-price threshold accounting, queued transaction RLP payload retention, known-transaction
