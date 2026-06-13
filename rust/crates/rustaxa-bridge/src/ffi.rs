@@ -1018,6 +1018,7 @@ pub mod rustaxa_ffi {
         pivot_hash: [u8; 32],
         pivot_is_null: bool,
         dag_order_cached: bool,
+        dag_order_required: bool,
         pillar_block_required: bool,
         dag_weight_check_required: bool,
         pbft_chain_status: u8,

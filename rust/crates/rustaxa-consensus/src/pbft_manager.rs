@@ -466,9 +466,10 @@ impl PbftManagerBlockValidationStatus {
 /// - Block identity fields let C++ correlate diagnostics and cached DAG state.
 /// - `*_status` fields report the result of live checks only after Rust asks for
 ///   the corresponding `next_check`.
-/// - `pivot_is_null`, `dag_order_cached`, `pillar_block_required`, and
-///   `dag_weight_check_required` encode deterministic branch conditions that
-///   C++ can derive from existing sidecars without deciding final acceptance.
+/// - `pivot_is_null`, `dag_order_cached`, `dag_order_required`,
+///   `pillar_block_required`, and `dag_weight_check_required` encode
+///   deterministic branch conditions that C++ can derive from existing sidecars
+///   without deciding final acceptance.
 ///
 /// Outputs are produced by `plan_pbft_manager_block_validation`.
 ///
@@ -489,6 +490,8 @@ pub struct PbftManagerBlockValidationFact {
     pub pivot_is_null: bool,
     /// True when the C++ DAG-order sidecar already has cached order for pivot.
     pub dag_order_cached: bool,
+    /// True when this validation context requires DAG order/hash validation.
+    pub dag_order_required: bool,
     /// True when hardfork rules require local pillar-block hash comparison.
     pub pillar_block_required: bool,
     /// True when the resolved DAG order must pass the weight check.
@@ -858,7 +861,7 @@ pub fn plan_pbft_manager_block_validation(
         );
     }
 
-    if fact.pivot_is_null || fact.dag_order_cached {
+    if fact.pivot_is_null || fact.dag_order_cached || !fact.dag_order_required {
         return pbft_manager_block_validation_accept();
     }
 
@@ -3822,6 +3825,21 @@ mod tests {
     }
 
     #[test]
+    fn block_validation_planner_can_skip_dag_order_for_sync_context() {
+        let mut fact = block_validation_fact();
+        fact.pbft_chain_status = PbftManagerBlockValidationFactStatus::Valid;
+        fact.final_chain_hash_status = PbftManagerBlockValidationFactStatus::Valid;
+        fact.reward_votes_status = PbftManagerBlockValidationFactStatus::Valid;
+        fact.extra_data_status = PbftManagerBlockValidationFactStatus::Valid;
+        fact.dag_order_required = false;
+
+        let plan = plan_pbft_manager_block_validation(fact);
+
+        assert_eq!(plan.action, PbftManagerBlockValidationAction::Accept);
+        assert_eq!(plan.status, PbftManagerBlockValidationStatus::Accepted);
+    }
+
+    #[test]
     fn block_validation_planner_requires_pillar_block_only_when_configured() {
         let mut fact = block_validation_fact();
         fact.pbft_chain_status = PbftManagerBlockValidationFactStatus::Valid;
@@ -3887,6 +3905,7 @@ mod tests {
             pivot_hash: H256::from([2; 32]),
             pivot_is_null: false,
             dag_order_cached: false,
+            dag_order_required: true,
             pillar_block_required: false,
             dag_weight_check_required: false,
             pbft_chain_status: PbftManagerBlockValidationFactStatus::NotChecked,

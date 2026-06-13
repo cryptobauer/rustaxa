@@ -635,6 +635,7 @@ impl From<FfiPbftManagerBlockValidationFact> for PbftManagerBlockValidationFact 
             pivot_hash: value.pivot_hash.into(),
             pivot_is_null: value.pivot_is_null,
             dag_order_cached: value.dag_order_cached,
+            dag_order_required: value.dag_order_required,
             pillar_block_required: value.pillar_block_required,
             dag_weight_check_required: value.dag_weight_check_required,
             pbft_chain_status: PbftManagerBlockValidationFactStatus::from_u8(
@@ -1628,6 +1629,7 @@ mod tests {
             pivot_hash: [2; 32],
             pivot_is_null: false,
             dag_order_cached: false,
+            dag_order_required: true,
             pillar_block_required: false,
             dag_weight_check_required: false,
             pbft_chain_status: BLOCK_VALIDATION_FACT_NOT_CHECKED,

@@ -140,21 +140,21 @@ struct ValidatePbftBlockPillarVotesWithRustResult {
 /**
  * Returns a stable string for a Rust bundle-planning status.
  */
-const char* validateSyncPillarVotesBundlePlanStatusString(ValidateSyncPillarVotesBundlePlanStatus status);
+const char *validateSyncPillarVotesBundlePlanStatusString(ValidateSyncPillarVotesBundlePlanStatus status);
 
 /**
  * Returns a stable string for the PBFT shim-level validation status.
  */
-const char* validatePbftBlockPillarVotesWithRustStatusString(ValidatePbftBlockPillarVotesWithRustStatus status);
+const char *validatePbftBlockPillarVotesWithRustStatusString(ValidatePbftBlockPillarVotesWithRustStatus status);
 
 /**
  * @brief Deterministic helper used by C++ sync flow to pre-validate synced pillar vote bundles
  * in Rust-enabled pillar-votes shim mode.
  */
 ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBundleDeterministically(
-    const std::vector<std::shared_ptr<PillarVote>>& pillar_votes, PbftPeriod required_votes_period,
-    const blk_hash_t& required_pillar_block_hash, uint64_t required_threshold,
-    const std::shared_ptr<final_chain::FinalChain>& final_chain);
+    const std::vector<std::shared_ptr<PillarVote>> &pillar_votes, PbftPeriod required_votes_period,
+    const blk_hash_t &required_pillar_block_hash, uint64_t required_threshold,
+    const std::shared_ptr<final_chain::FinalChain> &final_chain);
 
 /**
  * @brief Rust-enabled PBFT pillar-vote validation path owned by the shim layer.
@@ -163,8 +163,8 @@ ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBund
  * deterministic bundle acceptance through Rust.
  */
 ValidatePbftBlockPillarVotesWithRustResult validatePbftBlockPillarVotesWithRust(
-    const PeriodData& period_data, const std::shared_ptr<pillar_chain::PillarChainManager>& pillar_chain_mgr,
-    const std::shared_ptr<final_chain::FinalChain>& final_chain);
+    const PeriodData &period_data, const std::shared_ptr<pillar_chain::PillarChainManager> &pillar_chain_mgr,
+    const std::shared_ptr<final_chain::FinalChain> &final_chain);
 
 /**
  * @brief PbftManager class is a daemon that is used to finalize a bench of directed acyclic graph (DAG) blocks by using

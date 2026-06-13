@@ -675,12 +675,14 @@ The current Rust starting point is intentionally small:
    facts, applies returned mark-valid effects, and materializes the selected vote/block. PBFT proposed-block validation
    now also has a Rust-owned staged planner for the proposal path: Rust requests PBFT-chain, FinalChain hash,
    reward-vote, extra-data, pillar-block, DAG-order, and DAG-weight facts in legacy order, then returns accept/reject or
-   wait-for-finalization decisions while C++ still supplies the live object checks. The next removal target is to reuse
-   that validation planner from `processPeriodData` and then replace the remaining `getValidPbftProposedBlock`,
-   `validateFinalChainHash`, reward-vote availability, DAG-order/gas fact, and pillar-data decision glue with shared
-   Rust executor intents that consume existing Rust FinalChain bundles. After the shared planner owns deeper candidate
-   and sync acceptance, `identifyLeaderBlock`, `proposeBlock_`, `identifyBlock_`, `certifyBlock_`, `firstFinish_`, and
-   `secondFinish_` should collapse further into hash/object resolution plus vote/sign/gossip/storage effect execution.
+   wait-for-finalization decisions while C++ still supplies the live object checks. `processPeriodData` now reuses that
+   shared planner for the overlapping sync-path FinalChain, reward-vote, and extra-data checks before handing sync-only
+   cert-vote, transaction, pillar-vote, and peer/queue side effects back to the PBFT sync runtime planner. The next
+   removal target is to replace the remaining `getValidPbftProposedBlock`, `validateFinalChainHash`, DAG-order/gas fact,
+   cert-vote, transaction, and pillar-vote decision glue with shared Rust executor intents that consume existing Rust
+   FinalChain bundles. After the shared planner owns deeper candidate and sync acceptance, `identifyLeaderBlock`,
+   `proposeBlock_`, `identifyBlock_`, `certifyBlock_`, `firstFinish_`, and `secondFinish_` should collapse further into
+   hash/object resolution plus vote/sign/gossip/storage effect execution.
 10. Port transaction queue behavior before transaction manager orchestration. The Rust-mode `TransactionQueue` overlay
    now routes deterministic queue metadata, per-account nonce ordering, same-nonce replacement, non-proposer expiry
    planning, pool limits, gas-price threshold accounting, queued transaction RLP payload retention, known-transaction
