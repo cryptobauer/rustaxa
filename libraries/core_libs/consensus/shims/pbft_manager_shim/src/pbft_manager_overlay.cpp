@@ -127,6 +127,23 @@ constexpr uint8_t kPbftManagerTransitionDelayFinishPoll = 7;
 constexpr uint8_t kPbftManagerLeaderBlockAlreadyValid = 0;
 constexpr uint8_t kPbftManagerLeaderBlockValidated = 1;
 constexpr uint8_t kPbftManagerLeaderBlockRejected = 2;
+constexpr uint8_t kPbftManagerBlockValidationFactNotChecked = 0;
+constexpr uint8_t kPbftManagerBlockValidationFactValid = 1;
+constexpr uint8_t kPbftManagerBlockValidationFactInvalid = 2;
+constexpr uint8_t kPbftManagerBlockValidationFactMissing = 3;
+constexpr uint8_t kPbftManagerBlockValidationFactNotRequired = 4;
+constexpr uint8_t kPbftManagerBlockValidationActionRunCheck = 0;
+constexpr uint8_t kPbftManagerBlockValidationActionAccept = 1;
+constexpr uint8_t kPbftManagerBlockValidationActionReject = 2;
+constexpr uint8_t kPbftManagerBlockValidationActionWaitForFinalization = 3;
+constexpr uint8_t kPbftManagerBlockValidationActionContractError = 255;
+constexpr uint8_t kPbftManagerBlockValidationCheckPbftChain = 0;
+constexpr uint8_t kPbftManagerBlockValidationCheckFinalChainHash = 1;
+constexpr uint8_t kPbftManagerBlockValidationCheckRewardVotes = 2;
+constexpr uint8_t kPbftManagerBlockValidationCheckExtraData = 3;
+constexpr uint8_t kPbftManagerBlockValidationCheckPillarBlock = 4;
+constexpr uint8_t kPbftManagerBlockValidationCheckDagOrder = 5;
+constexpr uint8_t kPbftManagerBlockValidationCheckDagWeight = 6;
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t &hash) { return hash.asArray(); }
 
@@ -2501,92 +2518,152 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
     return false;
   }
 
-  // Validates pbft_block's previous block hash against pbft chain
-  if (!pbft_chain_->checkPbftBlockValidation(pbft_block)) {
-    return false;
-  }
-
   auto const &pbft_block_hash = pbft_block->getBlockHash();
-
-  if (validateFinalChainHash(pbft_block) != PbftStateRootValidation::Valid) {
-    return false;
-  }
-
-  // Validates reward votes
-  if (!vote_mgr_->checkRewardVotes(pbft_block, false).first) {
-    LOG(log_er_) << "Failed verifying reward votes for proposed PBFT block " << pbft_block_hash;
-    return false;
-  }
-
-  if (!validatePbftBlockExtraData(pbft_block)) {
-    return false;
-  }
-
-  // Validate optional pillar block hash
   const auto block_period = pbft_block->getPeriod();
-  if (kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(block_period)) {
-    const auto current_pillar_block = pillar_chain_mgr_->getCurrentPillarBlock();
-    if (!current_pillar_block) {
-      // This should never happen
-      LOG(log_er_) << "Unable to validate PBFT block " << pbft_block_hash << ", period " << block_period
-                   << ". No current pillar block present in node";
-      return false;
-    }
-
-    if (*pbft_block->getExtraData()->getPillarBlockHash() != current_pillar_block->getHash()) {
-      LOG(log_er_) << "PBFT block " << pbft_block_hash << " with period " << pbft_block->getPeriod()
-                   << " contains pillar block hash " << *pbft_block->getExtraData()->getPillarBlockHash()
-                   << ", which is different than the local current pillar block" << current_pillar_block->getHash()
-                   << " with period " << current_pillar_block->getPeriod();
-      return false;
-    }
-  }
-
   auto const &anchor_hash = pbft_block->getPivotDagBlockHash();
-  if (anchor_hash == kNullBlockHash) {
-    return true;
-  }
+  rustaxa::PbftManagerBlockValidationFact fact;
+  fact.block_hash = toBridgeHash(pbft_block_hash);
+  fact.period = block_period;
+  fact.pivot_hash = toBridgeHash(anchor_hash);
+  fact.pivot_is_null = anchor_hash == kNullBlockHash;
+  fact.dag_order_cached = anchor_dag_block_order_cache_.find(anchor_hash) != anchor_dag_block_order_cache_.end();
+  fact.pillar_block_required = kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(block_period);
+  fact.dag_weight_check_required = false;
+  fact.pbft_chain_status = kPbftManagerBlockValidationFactNotChecked;
+  fact.final_chain_hash_status = kPbftManagerBlockValidationFactNotChecked;
+  fact.reward_votes_status = kPbftManagerBlockValidationFactNotChecked;
+  fact.extra_data_status = kPbftManagerBlockValidationFactNotChecked;
+  fact.pillar_block_status = fact.pillar_block_required ? kPbftManagerBlockValidationFactNotChecked
+                                                        : kPbftManagerBlockValidationFactNotRequired;
+  fact.dag_order_status = kPbftManagerBlockValidationFactNotChecked;
+  fact.dag_weight_status = kPbftManagerBlockValidationFactNotChecked;
 
-  auto dag_order_it = anchor_dag_block_order_cache_.find(anchor_hash);
-  if (dag_order_it != anchor_dag_block_order_cache_.end()) {
-    return true;
-  }
+  while (true) {
+    const auto plan = rustaxa::plan_pbft_manager_block_validation(fact);
+    if (plan.action == kPbftManagerBlockValidationActionAccept) {
+      return true;
+    }
+    if (plan.action == kPbftManagerBlockValidationActionReject ||
+        plan.action == kPbftManagerBlockValidationActionWaitForFinalization) {
+      return false;
+    }
+    if (plan.action == kPbftManagerBlockValidationActionContractError) {
+      throw std::runtime_error("Rust PBFT block validation planner rejected bridge facts: " +
+                               std::string(plan.error_code));
+    }
+    if (plan.action != kPbftManagerBlockValidationActionRunCheck) {
+      throw std::runtime_error("Rust PBFT block validation planner returned unknown action");
+    }
 
-  auto dag_blocks_order = dag_mgr_->getDagBlockOrder(anchor_hash, pbft_block->getPeriod());
-  if (dag_blocks_order.empty()) {
-    LOG(log_er_) << "Missing dag blocks for proposed PBFT block " << pbft_block_hash;
-    return false;
-  }
+    if (plan.next_check == kPbftManagerBlockValidationCheckPbftChain) {
+      fact.pbft_chain_status = pbft_chain_->checkPbftBlockValidation(pbft_block)
+                                   ? kPbftManagerBlockValidationFactValid
+                                   : kPbftManagerBlockValidationFactInvalid;
+      continue;
+    }
 
-  auto calculated_order_hash = calculateOrderHash(dag_blocks_order);
-  if (calculated_order_hash != pbft_block->getOrderHash()) {
-    LOG(log_er_) << "Order hash incorrect. Pbft block: " << pbft_block_hash
-                 << ". Order hash: " << pbft_block->getOrderHash() << " . Calculated hash:" << calculated_order_hash
-                 << ". Dag order: " << dag_blocks_order;
-    return false;
-  }
+    if (plan.next_check == kPbftManagerBlockValidationCheckFinalChainHash) {
+      const auto validation_result = validateFinalChainHash(pbft_block);
+      if (validation_result == PbftStateRootValidation::Valid) {
+        fact.final_chain_hash_status = kPbftManagerBlockValidationFactValid;
+      } else if (validation_result == PbftStateRootValidation::Missing) {
+        fact.final_chain_hash_status = kPbftManagerBlockValidationFactMissing;
+      } else {
+        fact.final_chain_hash_status = kPbftManagerBlockValidationFactInvalid;
+      }
+      continue;
+    }
 
-  anchor_dag_block_order_cache_[anchor_hash].reserve(dag_blocks_order.size());
-  for (auto const &dag_blk_hash : dag_blocks_order) {
-    auto dag_block = dag_mgr_->getDagBlock(dag_blk_hash);
-    assert(dag_block);
-    anchor_dag_block_order_cache_[anchor_hash].emplace_back(std::move(dag_block));
-  }
+    if (plan.next_check == kPbftManagerBlockValidationCheckRewardVotes) {
+      if (!vote_mgr_->checkRewardVotes(pbft_block, false).first) {
+        LOG(log_er_) << "Failed verifying reward votes for proposed PBFT block " << pbft_block_hash;
+        fact.reward_votes_status = kPbftManagerBlockValidationFactInvalid;
+      } else {
+        fact.reward_votes_status = kPbftManagerBlockValidationFactValid;
+      }
+      continue;
+    }
 
-  auto last_pbft_block_hash = pbft_chain_->getLastPbftBlockHash();
-  if (last_pbft_block_hash) {
-    auto prev_pbft_block = pbft_chain_->getPbftBlockInChain(last_pbft_block_hash);
-    auto ghost = dag_mgr_->getGhostPath(prev_pbft_block.getPivotDagBlockHash());
-    if (ghost.size() > 1 && anchor_hash != ghost[1]) {
+    if (plan.next_check == kPbftManagerBlockValidationCheckExtraData) {
+      fact.extra_data_status = validatePbftBlockExtraData(pbft_block) ? kPbftManagerBlockValidationFactValid
+                                                                      : kPbftManagerBlockValidationFactInvalid;
+      continue;
+    }
+
+    if (plan.next_check == kPbftManagerBlockValidationCheckPillarBlock) {
+      const auto current_pillar_block = pillar_chain_mgr_->getCurrentPillarBlock();
+      if (!current_pillar_block) {
+        // This should never happen
+        LOG(log_er_) << "Unable to validate PBFT block " << pbft_block_hash << ", period " << block_period
+                     << ". No current pillar block present in node";
+        fact.pillar_block_status = kPbftManagerBlockValidationFactInvalid;
+        continue;
+      }
+
+      if (!pbft_block->getExtraData().has_value() || !pbft_block->getExtraData()->getPillarBlockHash().has_value() ||
+          *pbft_block->getExtraData()->getPillarBlockHash() != current_pillar_block->getHash()) {
+        LOG(log_er_) << "PBFT block " << pbft_block_hash << " with period " << pbft_block->getPeriod()
+                     << " contains pillar block hash "
+                     << (pbft_block->getExtraData().has_value() &&
+                                 pbft_block->getExtraData()->getPillarBlockHash().has_value()
+                             ? *pbft_block->getExtraData()->getPillarBlockHash()
+                             : kNullBlockHash)
+                     << ", which is different than the local current pillar block" << current_pillar_block->getHash()
+                     << " with period " << current_pillar_block->getPeriod();
+        fact.pillar_block_status = kPbftManagerBlockValidationFactInvalid;
+      } else {
+        fact.pillar_block_status = kPbftManagerBlockValidationFactValid;
+      }
+      continue;
+    }
+
+    if (plan.next_check == kPbftManagerBlockValidationCheckDagOrder) {
+      auto dag_blocks_order = dag_mgr_->getDagBlockOrder(anchor_hash, pbft_block->getPeriod());
+      if (dag_blocks_order.empty()) {
+        LOG(log_er_) << "Missing dag blocks for proposed PBFT block " << pbft_block_hash;
+        fact.dag_order_status = kPbftManagerBlockValidationFactMissing;
+        continue;
+      }
+
+      auto calculated_order_hash = calculateOrderHash(dag_blocks_order);
+      if (calculated_order_hash != pbft_block->getOrderHash()) {
+        LOG(log_er_) << "Order hash incorrect. Pbft block: " << pbft_block_hash
+                     << ". Order hash: " << pbft_block->getOrderHash() << " . Calculated hash:" << calculated_order_hash
+                     << ". Dag order: " << dag_blocks_order;
+        fact.dag_order_status = kPbftManagerBlockValidationFactInvalid;
+        continue;
+      }
+
+      anchor_dag_block_order_cache_[anchor_hash].reserve(dag_blocks_order.size());
+      for (auto const &dag_blk_hash : dag_blocks_order) {
+        auto dag_block = dag_mgr_->getDagBlock(dag_blk_hash);
+        assert(dag_block);
+        anchor_dag_block_order_cache_[anchor_hash].emplace_back(std::move(dag_block));
+      }
+
+      auto last_pbft_block_hash = pbft_chain_->getLastPbftBlockHash();
+      if (last_pbft_block_hash) {
+        auto prev_pbft_block = pbft_chain_->getPbftBlockInChain(last_pbft_block_hash);
+        auto ghost = dag_mgr_->getGhostPath(prev_pbft_block.getPivotDagBlockHash());
+        fact.dag_weight_check_required = ghost.size() > 1 && anchor_hash != ghost[1];
+      }
+      fact.dag_order_status = kPbftManagerBlockValidationFactValid;
+      continue;
+    }
+
+    if (plan.next_check == kPbftManagerBlockValidationCheckDagWeight) {
       if (!checkBlockWeight(anchor_dag_block_order_cache_[anchor_hash], block_period)) {
         LOG(log_er_) << "PBFT block " << pbft_block_hash << " weight exceeded max limit";
         anchor_dag_block_order_cache_.erase(anchor_hash);
-        return false;
+        fact.dag_weight_status = kPbftManagerBlockValidationFactInvalid;
+      } else {
+        fact.dag_weight_status = kPbftManagerBlockValidationFactValid;
       }
+      continue;
     }
-  }
 
-  return true;
+    throw std::runtime_error("Rust PBFT block validation planner returned unknown next check");
+  }
 }
 
 bool PbftManager::pushCertVotedPbftBlockIntoChain_(const std::shared_ptr<PbftBlock> &pbft_block,

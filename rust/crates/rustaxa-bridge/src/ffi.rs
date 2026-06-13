@@ -1011,6 +1011,32 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
+    /// C++ live fact bundle for Rust-owned PBFT block-validation orchestration.
+    struct PbftManagerBlockValidationFact {
+        block_hash: [u8; 32],
+        period: u64,
+        pivot_hash: [u8; 32],
+        pivot_is_null: bool,
+        dag_order_cached: bool,
+        pillar_block_required: bool,
+        dag_weight_check_required: bool,
+        pbft_chain_status: u8,
+        final_chain_hash_status: u8,
+        reward_votes_status: u8,
+        extra_data_status: u8,
+        pillar_block_status: u8,
+        dag_order_status: u8,
+        dag_weight_status: u8,
+    }
+
+    /// Next PBFT block-validation action requested by Rust.
+    struct PbftManagerBlockValidationPlan {
+        action: u8,
+        status: u8,
+        next_check: u8,
+        error_code: String,
+    }
+
     /// C++ live lookup and validation facts for one PBFT proposal candidate.
     struct PbftManagerLeaderCandidateInputFact {
         vote_hash: [u8; 32],
@@ -3837,6 +3863,9 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_manager_state_action(
             fact: PbftManagerStateActionFact,
         ) -> PbftManagerStateActionPlan;
+        pub fn plan_pbft_manager_block_validation(
+            fact: PbftManagerBlockValidationFact,
+        ) -> PbftManagerBlockValidationPlan;
         pub fn plan_pbft_manager_leader_candidates(
             candidates: Vec<PbftManagerLeaderCandidateInputFact>,
         ) -> PbftManagerLeaderCandidatePlan;

@@ -7,6 +7,8 @@
 
 use crate::ffi::rustaxa_ffi::{
     PbftFinalizationHash as FfiPbftFinalizationHash,
+    PbftManagerBlockValidationFact as FfiPbftManagerBlockValidationFact,
+    PbftManagerBlockValidationPlan as FfiPbftManagerBlockValidationPlan,
     PbftManagerLeaderCandidateInputFact as FfiPbftManagerLeaderCandidateInputFact,
     PbftManagerLeaderCandidatePlan as FfiPbftManagerLeaderCandidatePlan,
     PbftManagerLeaderValidBlockCommand as FfiPbftManagerLeaderValidBlockCommand,
@@ -28,13 +30,16 @@ use rustaxa_consensus::pbft_manager::{
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
     create_pbft_manager_runtime_session as create_domain_pbft_manager_runtime_session,
     next_pbft_manager_runtime_action,
+    plan_pbft_manager_block_validation as plan_domain_pbft_manager_block_validation,
     plan_pbft_manager_leader_candidates as plan_domain_pbft_manager_leader_candidates,
     plan_pbft_manager_state_action as plan_domain_pbft_manager_state_action,
     plan_pbft_manager_transition as plan_domain_pbft_manager_transition,
     report_pbft_manager_runtime_action, restore_pbft_manager_runtime,
-    PbftManagerLeaderBlockValidationStatus, PbftManagerLeaderCandidateInputFact,
-    PbftManagerLeaderCandidatePlan, PbftManagerLeaderValidBlockCommand, PbftManagerRuntime,
-    PbftManagerRuntimeAction, PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
+    PbftManagerBlockValidationFact, PbftManagerBlockValidationFactStatus,
+    PbftManagerBlockValidationPlan, PbftManagerLeaderBlockValidationStatus,
+    PbftManagerLeaderCandidateInputFact, PbftManagerLeaderCandidatePlan,
+    PbftManagerLeaderValidBlockCommand, PbftManagerRuntime, PbftManagerRuntimeAction,
+    PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
     PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot, PbftManagerRuntimeStateCode,
     PbftManagerRuntimeTickFact, PbftManagerStartupRestoreFact, PbftManagerStartupRestoreStatus,
     PbftManagerStateActionFact, PbftManagerStateActionPlan, PbftManagerTransitionFact,
@@ -398,6 +403,13 @@ pub fn plan_pbft_manager_state_action(
     plan_domain_pbft_manager_state_action(fact.into()).into()
 }
 
+/// Plans the next Rust-owned PBFT block validation check from live C++ facts.
+pub fn plan_pbft_manager_block_validation(
+    fact: FfiPbftManagerBlockValidationFact,
+) -> FfiPbftManagerBlockValidationPlan {
+    plan_domain_pbft_manager_block_validation(fact.into()).into()
+}
+
 /// Plans grouped PBFT proposal candidate validation, mark-valid commands, and leader selection.
 pub fn plan_pbft_manager_leader_candidates(
     candidates: Vec<FfiPbftManagerLeaderCandidateInputFact>,
@@ -615,6 +627,39 @@ impl From<FfiPbftManagerStateActionFact> for PbftManagerStateActionFact {
     }
 }
 
+impl From<FfiPbftManagerBlockValidationFact> for PbftManagerBlockValidationFact {
+    fn from(value: FfiPbftManagerBlockValidationFact) -> Self {
+        Self {
+            block_hash: value.block_hash.into(),
+            period: value.period,
+            pivot_hash: value.pivot_hash.into(),
+            pivot_is_null: value.pivot_is_null,
+            dag_order_cached: value.dag_order_cached,
+            pillar_block_required: value.pillar_block_required,
+            dag_weight_check_required: value.dag_weight_check_required,
+            pbft_chain_status: PbftManagerBlockValidationFactStatus::from_u8(
+                value.pbft_chain_status,
+            ),
+            final_chain_hash_status: PbftManagerBlockValidationFactStatus::from_u8(
+                value.final_chain_hash_status,
+            ),
+            reward_votes_status: PbftManagerBlockValidationFactStatus::from_u8(
+                value.reward_votes_status,
+            ),
+            extra_data_status: PbftManagerBlockValidationFactStatus::from_u8(
+                value.extra_data_status,
+            ),
+            pillar_block_status: PbftManagerBlockValidationFactStatus::from_u8(
+                value.pillar_block_status,
+            ),
+            dag_order_status: PbftManagerBlockValidationFactStatus::from_u8(value.dag_order_status),
+            dag_weight_status: PbftManagerBlockValidationFactStatus::from_u8(
+                value.dag_weight_status,
+            ),
+        }
+    }
+}
+
 impl From<FfiPbftManagerLeaderCandidateInputFact> for PbftManagerLeaderCandidateInputFact {
     fn from(value: FfiPbftManagerLeaderCandidateInputFact) -> Self {
         Self {
@@ -718,6 +763,17 @@ impl From<PbftManagerStateActionPlan> for FfiPbftManagerStateActionPlan {
     }
 }
 
+impl From<PbftManagerBlockValidationPlan> for FfiPbftManagerBlockValidationPlan {
+    fn from(value: PbftManagerBlockValidationPlan) -> Self {
+        Self {
+            action: value.action.as_u8(),
+            status: value.status.as_u8(),
+            next_check: value.next_check.as_u8(),
+            error_code: value.error_code.to_string(),
+        }
+    }
+}
+
 impl From<PbftManagerLeaderValidBlockCommand> for FfiPbftManagerLeaderValidBlockCommand {
     fn from(value: PbftManagerLeaderValidBlockCommand) -> Self {
         Self {
@@ -797,6 +853,17 @@ mod tests {
     const LEADER_STATUS_SELECTED: u8 = 0;
     const LEADER_BLOCK_VALIDATION_ALREADY_VALID: u8 = 0;
     const LEADER_BLOCK_VALIDATION_VALIDATED: u8 = 1;
+    const BLOCK_VALIDATION_FACT_NOT_CHECKED: u8 = 0;
+    const BLOCK_VALIDATION_FACT_VALID: u8 = 1;
+    const BLOCK_VALIDATION_FACT_MISSING: u8 = 3;
+    const BLOCK_VALIDATION_FACT_NOT_REQUIRED: u8 = 4;
+    const BLOCK_VALIDATION_ACTION_RUN_CHECK: u8 = 0;
+    const BLOCK_VALIDATION_ACTION_ACCEPT: u8 = 1;
+    const BLOCK_VALIDATION_ACTION_WAIT_FOR_FINALIZATION: u8 = 3;
+    const BLOCK_VALIDATION_STATUS_ACCEPTED: u8 = 1;
+    const BLOCK_VALIDATION_STATUS_FINAL_CHAIN_MISSING: u8 = 3;
+    const BLOCK_VALIDATION_CHECK_PBFT_CHAIN: u8 = 0;
+    const BLOCK_VALIDATION_CHECK_FINAL_CHAIN_HASH: u8 = 1;
     const RESULT_STATE_DONE: u8 = 2;
     const RESULT_TRANSITION: u8 = 3;
     const RESULT_SLEEP: u8 = 4;
@@ -1451,6 +1518,42 @@ mod tests {
     }
 
     #[test]
+    fn bridge_plans_pbft_block_validation_checks_and_acceptance() {
+        let plan = plan_pbft_manager_block_validation(block_validation_fact());
+        assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_RUN_CHECK);
+        assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_PBFT_CHAIN);
+
+        let mut final_chain_fact = block_validation_fact();
+        final_chain_fact.pbft_chain_status = BLOCK_VALIDATION_FACT_VALID;
+        let plan = plan_pbft_manager_block_validation(final_chain_fact);
+        assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_RUN_CHECK);
+        assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_FINAL_CHAIN_HASH);
+
+        let mut accept_fact = block_validation_fact();
+        accept_fact.pbft_chain_status = BLOCK_VALIDATION_FACT_VALID;
+        accept_fact.final_chain_hash_status = BLOCK_VALIDATION_FACT_VALID;
+        accept_fact.reward_votes_status = BLOCK_VALIDATION_FACT_VALID;
+        accept_fact.extra_data_status = BLOCK_VALIDATION_FACT_VALID;
+        accept_fact.pivot_is_null = true;
+        let plan = plan_pbft_manager_block_validation(accept_fact);
+        assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_ACCEPT);
+        assert_eq!(plan.status, BLOCK_VALIDATION_STATUS_ACCEPTED);
+    }
+
+    #[test]
+    fn bridge_pbft_block_validation_reports_final_chain_wait() {
+        let mut fact = block_validation_fact();
+        fact.pbft_chain_status = BLOCK_VALIDATION_FACT_VALID;
+        fact.final_chain_hash_status = BLOCK_VALIDATION_FACT_MISSING;
+
+        let plan = plan_pbft_manager_block_validation(fact);
+
+        assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_WAIT_FOR_FINALIZATION);
+        assert_eq!(plan.status, BLOCK_VALIDATION_STATUS_FINAL_CHAIN_MISSING);
+        assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_FINAL_CHAIN_HASH);
+    }
+
+    #[test]
     fn bridge_plans_pbft_leader_candidates_and_mark_valid_commands() {
         let missing_weight = leader_candidate_input(1, 1, LEADER_BLOCK_VALIDATION_VALIDATED);
         let in_chain = FfiPbftManagerLeaderCandidateInputFact {
@@ -1515,6 +1618,25 @@ mod tests {
             proposed_block_found: true,
             block_validation_status,
             pivot_hash: [block.wrapping_add(20); 32],
+        }
+    }
+
+    fn block_validation_fact() -> FfiPbftManagerBlockValidationFact {
+        FfiPbftManagerBlockValidationFact {
+            block_hash: [1; 32],
+            period: 11,
+            pivot_hash: [2; 32],
+            pivot_is_null: false,
+            dag_order_cached: false,
+            pillar_block_required: false,
+            dag_weight_check_required: false,
+            pbft_chain_status: BLOCK_VALIDATION_FACT_NOT_CHECKED,
+            final_chain_hash_status: BLOCK_VALIDATION_FACT_NOT_CHECKED,
+            reward_votes_status: BLOCK_VALIDATION_FACT_NOT_CHECKED,
+            extra_data_status: BLOCK_VALIDATION_FACT_NOT_CHECKED,
+            pillar_block_status: BLOCK_VALIDATION_FACT_NOT_REQUIRED,
+            dag_order_status: BLOCK_VALIDATION_FACT_NOT_CHECKED,
+            dag_weight_status: BLOCK_VALIDATION_FACT_NOT_CHECKED,
         }
     }
 }

@@ -295,6 +295,233 @@ pub struct PbftManagerLeaderCandidatePlan {
     pub error_code: &'static str,
 }
 
+/// Tri-state fact status for Rust-owned PBFT block validation orchestration.
+///
+/// C++ reports each live-object check with this status after Rust asks for the
+/// next check. `Missing` is distinct from `Invalid` for FinalChain lag and DAG
+/// order availability, where the caller may choose to retry or delay instead of
+/// treating the peer/block as malicious.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerBlockValidationFactStatus {
+    /// The fact has not been supplied yet.
+    NotChecked,
+    /// The live check accepted the fact.
+    Valid,
+    /// The live check rejected the fact.
+    Invalid,
+    /// The live check could not resolve required data.
+    Missing,
+    /// The check is not required for this block/context.
+    NotRequired,
+    /// Unknown bridge status.
+    Unknown,
+}
+
+impl PbftManagerBlockValidationFactStatus {
+    /// Stable bridge code for a PBFT block-validation fact status.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::NotChecked => 0,
+            Self::Valid => 1,
+            Self::Invalid => 2,
+            Self::Missing => 3,
+            Self::NotRequired => 4,
+            Self::Unknown => 254,
+        }
+    }
+
+    /// Decodes a stable bridge status code.
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::NotChecked,
+            1 => Self::Valid,
+            2 => Self::Invalid,
+            3 => Self::Missing,
+            4 => Self::NotRequired,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Next live check requested by Rust PBFT block validation planning.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerBlockValidationNextCheck {
+    /// No further live check is needed.
+    None,
+    /// Validate the block's previous PBFT hash against the current PBFT chain.
+    CheckPbftChain,
+    /// Validate the PBFT block FinalChain/state-root hash.
+    ValidateFinalChainHash,
+    /// Check reward-vote availability/validity for the candidate block.
+    CheckRewardVotes,
+    /// Validate PBFT block extra-data shape for the active hardfork.
+    ValidateExtraData,
+    /// Compare the embedded pillar block hash against the local pillar block.
+    ValidatePillarBlock,
+    /// Resolve and verify DAG order for the candidate pivot.
+    CheckDagOrder,
+    /// Check DAG block weight after Rust requested and C++ cached the order.
+    CheckDagWeight,
+    /// Unknown bridge status.
+    Unknown,
+}
+
+impl PbftManagerBlockValidationNextCheck {
+    /// Stable bridge code for the next requested check.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::None => 255,
+            Self::CheckPbftChain => 0,
+            Self::ValidateFinalChainHash => 1,
+            Self::CheckRewardVotes => 2,
+            Self::ValidateExtraData => 3,
+            Self::ValidatePillarBlock => 4,
+            Self::CheckDagOrder => 5,
+            Self::CheckDagWeight => 6,
+            Self::Unknown => 254,
+        }
+    }
+}
+
+/// PBFT block-validation runtime action selected by Rust.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerBlockValidationAction {
+    /// C++ must execute `next_check` and call the planner again with the result.
+    RunCheck,
+    /// The block is accepted by all required checks.
+    Accept,
+    /// The block is rejected by a supplied fact.
+    Reject,
+    /// The FinalChain/state-root fact is missing and the caller may wait/retry.
+    WaitForFinalization,
+    /// Supplied bridge facts violate the validation contract.
+    ContractError,
+}
+
+impl PbftManagerBlockValidationAction {
+    /// Stable bridge code for a PBFT block-validation action.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::RunCheck => 0,
+            Self::Accept => 1,
+            Self::Reject => 2,
+            Self::WaitForFinalization => 3,
+            Self::ContractError => 255,
+        }
+    }
+}
+
+/// Final PBFT block-validation status selected by Rust.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerBlockValidationStatus {
+    /// Validation is still waiting for C++ to run a requested check.
+    Pending,
+    /// All required checks accepted the PBFT block.
+    Accepted,
+    /// Previous PBFT hash/chain validation failed.
+    PbftChainInvalid,
+    /// FinalChain/state-root validation is behind execution.
+    FinalChainHashMissing,
+    /// FinalChain/state-root validation rejected the block.
+    FinalChainHashInvalid,
+    /// Reward votes rejected the block.
+    RewardVotesInvalid,
+    /// Extra-data shape rejected the block.
+    ExtraDataInvalid,
+    /// Embedded/local pillar block facts rejected the block.
+    PillarBlockInvalid,
+    /// DAG order could not be resolved.
+    DagOrderMissing,
+    /// DAG order hash rejected the block.
+    DagOrderInvalid,
+    /// DAG block weight rejected the block.
+    DagWeightInvalid,
+    /// Supplied bridge facts violate the validation contract.
+    InvalidBridgeFacts,
+}
+
+impl PbftManagerBlockValidationStatus {
+    /// Stable bridge code for a PBFT block-validation status.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Pending => 0,
+            Self::Accepted => 1,
+            Self::PbftChainInvalid => 2,
+            Self::FinalChainHashMissing => 3,
+            Self::FinalChainHashInvalid => 4,
+            Self::RewardVotesInvalid => 5,
+            Self::ExtraDataInvalid => 6,
+            Self::PillarBlockInvalid => 7,
+            Self::DagOrderMissing => 8,
+            Self::DagOrderInvalid => 9,
+            Self::DagWeightInvalid => 10,
+            Self::InvalidBridgeFacts => 255,
+        }
+    }
+}
+
+/// Compact fact bundle for Rust-owned PBFT block validation orchestration.
+///
+/// Inputs:
+/// - Block identity fields let C++ correlate diagnostics and cached DAG state.
+/// - `*_status` fields report the result of live checks only after Rust asks for
+///   the corresponding `next_check`.
+/// - `pivot_is_null`, `dag_order_cached`, `pillar_block_required`, and
+///   `dag_weight_check_required` encode deterministic branch conditions that
+///   C++ can derive from existing sidecars without deciding final acceptance.
+///
+/// Outputs are produced by `plan_pbft_manager_block_validation`.
+///
+/// Invariants and edge behavior:
+/// - Rust owns the ordering of all validation checks.
+/// - C++ owns live PBFT chain, FinalChain, reward-vote, pillar, and DAG queries.
+/// - Missing FinalChain hash facts return `WaitForFinalization`; proposal paths
+///   may treat that as rejection, while sync paths can wait and retry.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerBlockValidationFact {
+    /// Candidate PBFT block hash.
+    pub block_hash: H256,
+    /// Candidate PBFT period.
+    pub period: u64,
+    /// Candidate pivot DAG block hash.
+    pub pivot_hash: H256,
+    /// True when the pivot hash is the null DAG anchor.
+    pub pivot_is_null: bool,
+    /// True when the C++ DAG-order sidecar already has cached order for pivot.
+    pub dag_order_cached: bool,
+    /// True when hardfork rules require local pillar-block hash comparison.
+    pub pillar_block_required: bool,
+    /// True when the resolved DAG order must pass the weight check.
+    pub dag_weight_check_required: bool,
+    /// PBFT-chain previous-hash validation status.
+    pub pbft_chain_status: PbftManagerBlockValidationFactStatus,
+    /// FinalChain/state-root validation status.
+    pub final_chain_hash_status: PbftManagerBlockValidationFactStatus,
+    /// Reward-vote validation status.
+    pub reward_votes_status: PbftManagerBlockValidationFactStatus,
+    /// Extra-data validation status.
+    pub extra_data_status: PbftManagerBlockValidationFactStatus,
+    /// Pillar block validation status.
+    pub pillar_block_status: PbftManagerBlockValidationFactStatus,
+    /// DAG order lookup/hash validation status.
+    pub dag_order_status: PbftManagerBlockValidationFactStatus,
+    /// DAG weight validation status.
+    pub dag_weight_status: PbftManagerBlockValidationFactStatus,
+}
+
+/// Side-effect-free PBFT block-validation plan for C++ execution.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerBlockValidationPlan {
+    /// Runtime action C++ must take.
+    pub action: PbftManagerBlockValidationAction,
+    /// Current validation status.
+    pub status: PbftManagerBlockValidationStatus,
+    /// Next live-object check requested when `action == RunCheck`.
+    pub next_check: PbftManagerBlockValidationNextCheck,
+    /// Stable diagnostic code for bridge/log consumers.
+    pub error_code: &'static str,
+}
+
 /// Computes the legacy PBFT proposer ranking hash for one vote index.
 ///
 /// Inputs are the proposal vote VRF output, recovered voter public key, and
@@ -479,6 +706,255 @@ pub fn plan_pbft_manager_leader_candidates(
 
     let selection = plan_pbft_manager_leader_selection(selection_candidates);
     pbft_manager_candidate_plan_from_selection(selection, valid_blocks)
+}
+
+/// Plans the next step of PBFT block validation.
+///
+/// The planner is a side-effect-free state machine: C++ supplies the latest
+/// validation fact bundle, Rust requests the next live check, and C++ reports
+/// that result back into the next call. The accepted/rejected outcome is
+/// therefore Rust-owned even while live PBFT chain, FinalChain, reward-vote,
+/// pillar, and DAG objects remain outside Rust.
+#[must_use]
+pub fn plan_pbft_manager_block_validation(
+    fact: PbftManagerBlockValidationFact,
+) -> PbftManagerBlockValidationPlan {
+    if fact.pbft_chain_status == PbftManagerBlockValidationFactStatus::Unknown
+        || fact.final_chain_hash_status == PbftManagerBlockValidationFactStatus::Unknown
+        || fact.reward_votes_status == PbftManagerBlockValidationFactStatus::Unknown
+        || fact.extra_data_status == PbftManagerBlockValidationFactStatus::Unknown
+        || fact.pillar_block_status == PbftManagerBlockValidationFactStatus::Unknown
+        || fact.dag_order_status == PbftManagerBlockValidationFactStatus::Unknown
+        || fact.dag_weight_status == PbftManagerBlockValidationFactStatus::Unknown
+    {
+        return pbft_manager_block_validation_contract_error(
+            "PBFT_MANAGER_BLOCK_VALIDATION_UNKNOWN_FACT_STATUS",
+        );
+    }
+
+    match fact.pbft_chain_status {
+        PbftManagerBlockValidationFactStatus::NotChecked => {
+            return pbft_manager_block_validation_run_check(
+                PbftManagerBlockValidationNextCheck::CheckPbftChain,
+            );
+        }
+        PbftManagerBlockValidationFactStatus::Valid => {}
+        PbftManagerBlockValidationFactStatus::Invalid
+        | PbftManagerBlockValidationFactStatus::Missing => {
+            return pbft_manager_block_validation_reject(
+                PbftManagerBlockValidationStatus::PbftChainInvalid,
+                "PBFT_MANAGER_BLOCK_VALIDATION_PBFT_CHAIN_INVALID",
+            );
+        }
+        PbftManagerBlockValidationFactStatus::NotRequired
+        | PbftManagerBlockValidationFactStatus::Unknown => {
+            return pbft_manager_block_validation_contract_error(
+                "PBFT_MANAGER_BLOCK_VALIDATION_PBFT_CHAIN_STATUS_INVALID",
+            );
+        }
+    }
+
+    match fact.final_chain_hash_status {
+        PbftManagerBlockValidationFactStatus::NotChecked => {
+            return pbft_manager_block_validation_run_check(
+                PbftManagerBlockValidationNextCheck::ValidateFinalChainHash,
+            );
+        }
+        PbftManagerBlockValidationFactStatus::Valid => {}
+        PbftManagerBlockValidationFactStatus::Missing => {
+            return PbftManagerBlockValidationPlan {
+                action: PbftManagerBlockValidationAction::WaitForFinalization,
+                status: PbftManagerBlockValidationStatus::FinalChainHashMissing,
+                next_check: PbftManagerBlockValidationNextCheck::ValidateFinalChainHash,
+                error_code: "PBFT_MANAGER_BLOCK_VALIDATION_FINAL_CHAIN_HASH_MISSING",
+            };
+        }
+        PbftManagerBlockValidationFactStatus::Invalid => {
+            return pbft_manager_block_validation_reject(
+                PbftManagerBlockValidationStatus::FinalChainHashInvalid,
+                "PBFT_MANAGER_BLOCK_VALIDATION_FINAL_CHAIN_HASH_INVALID",
+            );
+        }
+        PbftManagerBlockValidationFactStatus::NotRequired
+        | PbftManagerBlockValidationFactStatus::Unknown => {
+            return pbft_manager_block_validation_contract_error(
+                "PBFT_MANAGER_BLOCK_VALIDATION_FINAL_CHAIN_STATUS_INVALID",
+            );
+        }
+    }
+
+    match fact.reward_votes_status {
+        PbftManagerBlockValidationFactStatus::NotChecked => {
+            return pbft_manager_block_validation_run_check(
+                PbftManagerBlockValidationNextCheck::CheckRewardVotes,
+            );
+        }
+        PbftManagerBlockValidationFactStatus::Valid => {}
+        PbftManagerBlockValidationFactStatus::Invalid
+        | PbftManagerBlockValidationFactStatus::Missing => {
+            return pbft_manager_block_validation_reject(
+                PbftManagerBlockValidationStatus::RewardVotesInvalid,
+                "PBFT_MANAGER_BLOCK_VALIDATION_REWARD_VOTES_INVALID",
+            );
+        }
+        PbftManagerBlockValidationFactStatus::NotRequired
+        | PbftManagerBlockValidationFactStatus::Unknown => {
+            return pbft_manager_block_validation_contract_error(
+                "PBFT_MANAGER_BLOCK_VALIDATION_REWARD_VOTES_STATUS_INVALID",
+            );
+        }
+    }
+
+    match fact.extra_data_status {
+        PbftManagerBlockValidationFactStatus::NotChecked => {
+            return pbft_manager_block_validation_run_check(
+                PbftManagerBlockValidationNextCheck::ValidateExtraData,
+            );
+        }
+        PbftManagerBlockValidationFactStatus::Valid => {}
+        PbftManagerBlockValidationFactStatus::Invalid
+        | PbftManagerBlockValidationFactStatus::Missing => {
+            return pbft_manager_block_validation_reject(
+                PbftManagerBlockValidationStatus::ExtraDataInvalid,
+                "PBFT_MANAGER_BLOCK_VALIDATION_EXTRA_DATA_INVALID",
+            );
+        }
+        PbftManagerBlockValidationFactStatus::NotRequired
+        | PbftManagerBlockValidationFactStatus::Unknown => {
+            return pbft_manager_block_validation_contract_error(
+                "PBFT_MANAGER_BLOCK_VALIDATION_EXTRA_DATA_STATUS_INVALID",
+            );
+        }
+    }
+
+    if fact.pillar_block_required {
+        match fact.pillar_block_status {
+            PbftManagerBlockValidationFactStatus::NotChecked => {
+                return pbft_manager_block_validation_run_check(
+                    PbftManagerBlockValidationNextCheck::ValidatePillarBlock,
+                );
+            }
+            PbftManagerBlockValidationFactStatus::Valid => {}
+            PbftManagerBlockValidationFactStatus::Invalid
+            | PbftManagerBlockValidationFactStatus::Missing => {
+                return pbft_manager_block_validation_reject(
+                    PbftManagerBlockValidationStatus::PillarBlockInvalid,
+                    "PBFT_MANAGER_BLOCK_VALIDATION_PILLAR_BLOCK_INVALID",
+                );
+            }
+            PbftManagerBlockValidationFactStatus::NotRequired
+            | PbftManagerBlockValidationFactStatus::Unknown => {
+                return pbft_manager_block_validation_contract_error(
+                    "PBFT_MANAGER_BLOCK_VALIDATION_PILLAR_BLOCK_STATUS_INVALID",
+                );
+            }
+        }
+    } else if fact.pillar_block_status == PbftManagerBlockValidationFactStatus::NotChecked {
+        // Normalize not-required checks so the C++ executor does not need to
+        // report unused facts for non-pillar periods.
+    } else if fact.pillar_block_status != PbftManagerBlockValidationFactStatus::NotRequired {
+        return pbft_manager_block_validation_contract_error(
+            "PBFT_MANAGER_BLOCK_VALIDATION_UNEXPECTED_PILLAR_BLOCK_STATUS",
+        );
+    }
+
+    if fact.pivot_is_null || fact.dag_order_cached {
+        return pbft_manager_block_validation_accept();
+    }
+
+    match fact.dag_order_status {
+        PbftManagerBlockValidationFactStatus::NotChecked => {
+            return pbft_manager_block_validation_run_check(
+                PbftManagerBlockValidationNextCheck::CheckDagOrder,
+            );
+        }
+        PbftManagerBlockValidationFactStatus::Valid => {}
+        PbftManagerBlockValidationFactStatus::Missing => {
+            return pbft_manager_block_validation_reject(
+                PbftManagerBlockValidationStatus::DagOrderMissing,
+                "PBFT_MANAGER_BLOCK_VALIDATION_DAG_ORDER_MISSING",
+            );
+        }
+        PbftManagerBlockValidationFactStatus::Invalid => {
+            return pbft_manager_block_validation_reject(
+                PbftManagerBlockValidationStatus::DagOrderInvalid,
+                "PBFT_MANAGER_BLOCK_VALIDATION_DAG_ORDER_INVALID",
+            );
+        }
+        PbftManagerBlockValidationFactStatus::NotRequired
+        | PbftManagerBlockValidationFactStatus::Unknown => {
+            return pbft_manager_block_validation_contract_error(
+                "PBFT_MANAGER_BLOCK_VALIDATION_DAG_ORDER_STATUS_INVALID",
+            );
+        }
+    }
+
+    if !fact.dag_weight_check_required {
+        return pbft_manager_block_validation_accept();
+    }
+
+    match fact.dag_weight_status {
+        PbftManagerBlockValidationFactStatus::NotChecked => {
+            pbft_manager_block_validation_run_check(
+                PbftManagerBlockValidationNextCheck::CheckDagWeight,
+            )
+        }
+        PbftManagerBlockValidationFactStatus::Valid => pbft_manager_block_validation_accept(),
+        PbftManagerBlockValidationFactStatus::Invalid
+        | PbftManagerBlockValidationFactStatus::Missing => pbft_manager_block_validation_reject(
+            PbftManagerBlockValidationStatus::DagWeightInvalid,
+            "PBFT_MANAGER_BLOCK_VALIDATION_DAG_WEIGHT_INVALID",
+        ),
+        PbftManagerBlockValidationFactStatus::NotRequired
+        | PbftManagerBlockValidationFactStatus::Unknown => {
+            pbft_manager_block_validation_contract_error(
+                "PBFT_MANAGER_BLOCK_VALIDATION_DAG_WEIGHT_STATUS_INVALID",
+            )
+        }
+    }
+}
+
+fn pbft_manager_block_validation_run_check(
+    next_check: PbftManagerBlockValidationNextCheck,
+) -> PbftManagerBlockValidationPlan {
+    PbftManagerBlockValidationPlan {
+        action: PbftManagerBlockValidationAction::RunCheck,
+        status: PbftManagerBlockValidationStatus::Pending,
+        next_check,
+        error_code: "",
+    }
+}
+
+fn pbft_manager_block_validation_accept() -> PbftManagerBlockValidationPlan {
+    PbftManagerBlockValidationPlan {
+        action: PbftManagerBlockValidationAction::Accept,
+        status: PbftManagerBlockValidationStatus::Accepted,
+        next_check: PbftManagerBlockValidationNextCheck::None,
+        error_code: "",
+    }
+}
+
+fn pbft_manager_block_validation_reject(
+    status: PbftManagerBlockValidationStatus,
+    error_code: &'static str,
+) -> PbftManagerBlockValidationPlan {
+    PbftManagerBlockValidationPlan {
+        action: PbftManagerBlockValidationAction::Reject,
+        status,
+        next_check: PbftManagerBlockValidationNextCheck::None,
+        error_code,
+    }
+}
+
+fn pbft_manager_block_validation_contract_error(
+    error_code: &'static str,
+) -> PbftManagerBlockValidationPlan {
+    PbftManagerBlockValidationPlan {
+        action: PbftManagerBlockValidationAction::ContractError,
+        status: PbftManagerBlockValidationStatus::InvalidBridgeFacts,
+        next_check: PbftManagerBlockValidationNextCheck::None,
+        error_code,
+    }
 }
 
 fn pbft_manager_candidate_plan_from_selection(
@@ -3251,6 +3727,125 @@ mod tests {
         );
     }
 
+    #[test]
+    fn block_validation_planner_drives_live_checks_in_legacy_order() {
+        let mut fact = block_validation_fact();
+
+        let plan = plan_pbft_manager_block_validation(fact.clone());
+        assert_eq!(plan.action, PbftManagerBlockValidationAction::RunCheck);
+        assert_eq!(
+            plan.next_check,
+            PbftManagerBlockValidationNextCheck::CheckPbftChain
+        );
+
+        fact.pbft_chain_status = PbftManagerBlockValidationFactStatus::Valid;
+        let plan = plan_pbft_manager_block_validation(fact.clone());
+        assert_eq!(
+            plan.next_check,
+            PbftManagerBlockValidationNextCheck::ValidateFinalChainHash
+        );
+
+        fact.final_chain_hash_status = PbftManagerBlockValidationFactStatus::Valid;
+        let plan = plan_pbft_manager_block_validation(fact.clone());
+        assert_eq!(
+            plan.next_check,
+            PbftManagerBlockValidationNextCheck::CheckRewardVotes
+        );
+
+        fact.reward_votes_status = PbftManagerBlockValidationFactStatus::Valid;
+        let plan = plan_pbft_manager_block_validation(fact.clone());
+        assert_eq!(
+            plan.next_check,
+            PbftManagerBlockValidationNextCheck::ValidateExtraData
+        );
+
+        fact.extra_data_status = PbftManagerBlockValidationFactStatus::Valid;
+        let plan = plan_pbft_manager_block_validation(fact.clone());
+        assert_eq!(
+            plan.next_check,
+            PbftManagerBlockValidationNextCheck::CheckDagOrder
+        );
+
+        fact.dag_order_status = PbftManagerBlockValidationFactStatus::Valid;
+        fact.dag_weight_check_required = true;
+        let plan = plan_pbft_manager_block_validation(fact.clone());
+        assert_eq!(
+            plan.next_check,
+            PbftManagerBlockValidationNextCheck::CheckDagWeight
+        );
+
+        fact.dag_weight_status = PbftManagerBlockValidationFactStatus::Valid;
+        let plan = plan_pbft_manager_block_validation(fact);
+        assert_eq!(plan.action, PbftManagerBlockValidationAction::Accept);
+        assert_eq!(plan.status, PbftManagerBlockValidationStatus::Accepted);
+    }
+
+    #[test]
+    fn block_validation_planner_handles_final_chain_wait_and_rejections() {
+        let mut fact = block_validation_fact();
+        fact.pbft_chain_status = PbftManagerBlockValidationFactStatus::Valid;
+        fact.final_chain_hash_status = PbftManagerBlockValidationFactStatus::Missing;
+        let plan = plan_pbft_manager_block_validation(fact.clone());
+        assert_eq!(
+            plan.action,
+            PbftManagerBlockValidationAction::WaitForFinalization
+        );
+        assert_eq!(
+            plan.status,
+            PbftManagerBlockValidationStatus::FinalChainHashMissing
+        );
+
+        fact.final_chain_hash_status = PbftManagerBlockValidationFactStatus::Invalid;
+        let plan = plan_pbft_manager_block_validation(fact);
+        assert_eq!(plan.action, PbftManagerBlockValidationAction::Reject);
+        assert_eq!(
+            plan.status,
+            PbftManagerBlockValidationStatus::FinalChainHashInvalid
+        );
+    }
+
+    #[test]
+    fn block_validation_planner_accepts_null_or_cached_anchor_without_dag_checks() {
+        let mut fact = block_validation_fact();
+        fact.pbft_chain_status = PbftManagerBlockValidationFactStatus::Valid;
+        fact.final_chain_hash_status = PbftManagerBlockValidationFactStatus::Valid;
+        fact.reward_votes_status = PbftManagerBlockValidationFactStatus::Valid;
+        fact.extra_data_status = PbftManagerBlockValidationFactStatus::Valid;
+        fact.pivot_is_null = true;
+        let plan = plan_pbft_manager_block_validation(fact.clone());
+        assert_eq!(plan.action, PbftManagerBlockValidationAction::Accept);
+
+        fact.pivot_is_null = false;
+        fact.dag_order_cached = true;
+        let plan = plan_pbft_manager_block_validation(fact);
+        assert_eq!(plan.action, PbftManagerBlockValidationAction::Accept);
+    }
+
+    #[test]
+    fn block_validation_planner_requires_pillar_block_only_when_configured() {
+        let mut fact = block_validation_fact();
+        fact.pbft_chain_status = PbftManagerBlockValidationFactStatus::Valid;
+        fact.final_chain_hash_status = PbftManagerBlockValidationFactStatus::Valid;
+        fact.reward_votes_status = PbftManagerBlockValidationFactStatus::Valid;
+        fact.extra_data_status = PbftManagerBlockValidationFactStatus::Valid;
+        fact.pillar_block_required = true;
+        fact.pillar_block_status = PbftManagerBlockValidationFactStatus::NotChecked;
+
+        let plan = plan_pbft_manager_block_validation(fact.clone());
+        assert_eq!(
+            plan.next_check,
+            PbftManagerBlockValidationNextCheck::ValidatePillarBlock
+        );
+
+        fact.pillar_block_status = PbftManagerBlockValidationFactStatus::Invalid;
+        let plan = plan_pbft_manager_block_validation(fact);
+        assert_eq!(plan.action, PbftManagerBlockValidationAction::Reject);
+        assert_eq!(
+            plan.status,
+            PbftManagerBlockValidationStatus::PillarBlockInvalid
+        );
+    }
+
     fn leader_candidate(
         id: u8,
         block: u8,
@@ -3282,6 +3877,25 @@ mod tests {
             proposed_block_found: true,
             block_validation_status: PbftManagerLeaderBlockValidationStatus::Validated,
             pivot_hash: H256::from([block.wrapping_add(20); 32]),
+        }
+    }
+
+    fn block_validation_fact() -> PbftManagerBlockValidationFact {
+        PbftManagerBlockValidationFact {
+            block_hash: H256::from([1; 32]),
+            period: 7,
+            pivot_hash: H256::from([2; 32]),
+            pivot_is_null: false,
+            dag_order_cached: false,
+            pillar_block_required: false,
+            dag_weight_check_required: false,
+            pbft_chain_status: PbftManagerBlockValidationFactStatus::NotChecked,
+            final_chain_hash_status: PbftManagerBlockValidationFactStatus::NotChecked,
+            reward_votes_status: PbftManagerBlockValidationFactStatus::NotChecked,
+            extra_data_status: PbftManagerBlockValidationFactStatus::NotChecked,
+            pillar_block_status: PbftManagerBlockValidationFactStatus::NotRequired,
+            dag_order_status: PbftManagerBlockValidationFactStatus::NotChecked,
+            dag_weight_status: PbftManagerBlockValidationFactStatus::NotChecked,
         }
     }
 }
