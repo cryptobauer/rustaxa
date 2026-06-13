@@ -676,7 +676,9 @@ The current Rust starting point is intentionally small:
    now runs through a Rust-owned proposed-block admission planner that requests sidecar lookup, live block validation,
    mark-valid mutation, acceptance, or rejection. PBFT manager state-action phases now consume that admission planner
    through one shim helper for Rust-planned proposal/filter/certify/finish block hashes instead of duplicating
-   phase-local lookup and validation branches. PBFT proposed-block validation also has a Rust-owned staged planner for
+   phase-local lookup and validation branches. Rust-planned state-action vote intents now also go through one shim
+   executor helper that centralizes live vote placement and next-vote status mirror persistence while Rust continues to
+   own the intent selection. PBFT proposed-block validation also has a Rust-owned staged planner for
    the proposal path: Rust requests PBFT-chain, FinalChain hash, reward-vote, extra-data, pillar-block, DAG-order, and
    DAG-weight facts in legacy order, then returns accept/reject or wait-for-finalization decisions while C++ still
    supplies the live object checks. `processPeriodData` now reuses that shared planner for the overlapping sync-path

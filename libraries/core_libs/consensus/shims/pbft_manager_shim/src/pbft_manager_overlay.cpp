@@ -1581,8 +1581,7 @@ std::shared_ptr<PbftBlock> PbftManager::getValidPbftProposedBlock(ProposedBlocks
     }
     if (plan.action == kPbftManagerCandidateAdmissionActionReject) {
       LOG(log_er_) << "Proposed block " << block_hash << " rejected by Rust admission planner, period " << period
-                   << ", status " << static_cast<uint64_t>(plan.status) << ", code "
-                   << std::string(plan.error_code);
+                   << ", status " << static_cast<uint64_t>(plan.status) << ", code " << std::string(plan.error_code);
       return nullptr;
     }
     if (plan.action == kPbftManagerCandidateAdmissionActionContractError) {
@@ -1730,6 +1729,28 @@ bool PbftManager::genAndPlaceVote(PbftVoteTypes vote_type, PbftPeriod period, Pb
   return success;
 }
 
+bool PbftManager::placeStateActionVote(PbftVoteTypes vote_type, PbftPeriod period, PbftRound round, PbftStep step,
+                                       const blk_hash_t &block_hash, std::shared_ptr<PbftBlock> pbft_block,
+                                       std::string_view action_context, std::optional<PbftMgrStatus> next_vote_status) {
+  const auto placed = genAndPlaceVote(vote_type, period, round, step, block_hash, std::move(pbft_block));
+  if (!placed) {
+    LOG(log_dg_) << action_context << ": failed to generate and place vote type " << static_cast<uint32_t>(vote_type)
+                 << " for " << block_hash << ". Period " << period << ", round " << round << ", step " << step;
+    return false;
+  }
+
+  if (next_vote_status.has_value()) {
+    db_->savePbftMgrStatus(*next_vote_status, true);
+    if (*next_vote_status == PbftMgrStatus::NextVotedSoftValue) {
+      already_next_voted_value_ = true;
+    } else if (*next_vote_status == PbftMgrStatus::NextVotedNullBlockHash) {
+      already_next_voted_null_block_hash_ = true;
+    }
+  }
+
+  return true;
+}
+
 bool PbftManager::genAndPlaceProposeVote(const std::shared_ptr<PbftBlock> &proposed_block,
                                          std::vector<std::shared_ptr<PbftVote>> &&reward_votes) {
   const auto [current_pbft_round, current_pbft_period] = getPbftRoundAndPeriod();
@@ -1845,8 +1866,7 @@ void PbftManager::proposeBlock_() {
 
     const auto next_voted_block_hash = fromBridgeHash(plan.primary_hash);
 
-    const auto next_voted_block =
-        admitStateActionPbftBlock(period, next_voted_block_hash, "Value proposal re-propose");
+    const auto next_voted_block = admitStateActionPbftBlock(period, next_voted_block_hash, "Value proposal re-propose");
     if (!next_voted_block) {
       return;
     }
@@ -1891,8 +1911,8 @@ void PbftManager::identifyBlock_() {
     LOG(log_dg_) << "Leader block identified " << leader_block_data->first->getBlockHash() << ", period " << period
                  << ", round " << round;
 
-    genAndPlaceVote(PbftVoteTypes::soft_vote, leader_block_data->first->getPeriod(), round, step_,
-                    leader_block_data->first->getBlockHash(), leader_block_data->first);
+    placeStateActionVote(PbftVoteTypes::soft_vote, leader_block_data->first->getPeriod(), round, step_,
+                         leader_block_data->first->getBlockHash(), leader_block_data->first, "Filter leader soft vote");
     return;
   }
 
@@ -1904,7 +1924,8 @@ void PbftManager::identifyBlock_() {
       return;
     }
 
-    genAndPlaceVote(PbftVoteTypes::soft_vote, period, round, step_, next_voted_block_hash, next_voted_block);
+    placeStateActionVote(PbftVoteTypes::soft_vote, period, round, step_, next_voted_block_hash, next_voted_block,
+                         "Filter previous-round soft vote");
     return;
   }
 
@@ -1974,9 +1995,8 @@ void PbftManager::certifyBlock_() {
   }
 
   // generate cert vote
-  if (!genAndPlaceVote(PbftVoteTypes::cert_vote, soft_voted_block->getPeriod(), round, step_,
-                       soft_voted_block->getBlockHash(), soft_voted_block)) {
-    LOG(log_dg_) << "Failed to generate and place cert vote for " << soft_voted_block->getBlockHash();
+  if (!placeStateActionVote(PbftVoteTypes::cert_vote, soft_voted_block->getPeriod(), round, step_,
+                            soft_voted_block->getBlockHash(), soft_voted_block, "Certify cert vote")) {
     return;
   }
 
@@ -2002,15 +2022,16 @@ void PbftManager::firstFinish_() {
     // It should never happen that node moved to the next period without cert_voted_block_for_round_ reset
     assert(cert_voted_block->getPeriod() == period);
 
-    genAndPlaceVote(PbftVoteTypes::next_vote, cert_voted_block->getPeriod(), round, step_,
-                    cert_voted_block->getBlockHash(), cert_voted_block);
+    placeStateActionVote(PbftVoteTypes::next_vote, cert_voted_block->getPeriod(), round, step_,
+                         cert_voted_block->getBlockHash(), cert_voted_block, "First finish cert-voted next vote");
     return;
   }
 
   if (plan.primary_intent == kPbftManagerStateActionIntentNextVoteNullBlock) {
     // Starting value in round 1 is always null block hash... So combined with other condition for next
     // voting null block hash...
-    genAndPlaceVote(PbftVoteTypes::next_vote, period, round, step_, kNullBlockHash);
+    placeStateActionVote(PbftVoteTypes::next_vote, period, round, step_, kNullBlockHash, nullptr,
+                         "First finish null next vote");
     return;
   }
 
@@ -2023,7 +2044,8 @@ void PbftManager::firstFinish_() {
       return;
     }
 
-    genAndPlaceVote(PbftVoteTypes::next_vote, period, round, step_, starting_value_hash, std::move(block));
+    placeStateActionVote(PbftVoteTypes::next_vote, period, round, step_, starting_value_hash, std::move(block),
+                         "First finish previous-round next vote");
     return;
   }
 
@@ -2054,10 +2076,9 @@ void PbftManager::secondFinish_() {
     const auto soft_voted_block_hash = fromBridgeHash(plan.primary_hash);
     const auto soft_voted_block =
         admitStateActionPbftBlock(period, soft_voted_block_hash, "Second finish next-vote current soft value");
-    if (soft_voted_block != nullptr &&
-        genAndPlaceVote(PbftVoteTypes::next_vote, period, round, step_, soft_voted_block_hash, soft_voted_block)) {
-      db_->savePbftMgrStatus(PbftMgrStatus::NextVotedSoftValue, true);
-      already_next_voted_value_ = true;
+    if (soft_voted_block != nullptr) {
+      placeStateActionVote(PbftVoteTypes::next_vote, period, round, step_, soft_voted_block_hash, soft_voted_block,
+                           "Second finish soft-value next vote", PbftMgrStatus::NextVotedSoftValue);
     }
   } else if (plan.primary_intent != kPbftManagerStateActionIntentNoop) {
     LOG(log_er_) << "Unsupported Rust PBFT second-finish primary intent " << static_cast<uint32_t>(plan.primary_intent);
@@ -2066,10 +2087,8 @@ void PbftManager::secondFinish_() {
   }
 
   if (plan.secondary_intent == kPbftManagerStateActionIntentNextVoteNullBlock) {
-    if (genAndPlaceVote(PbftVoteTypes::next_vote, period, round, step_, kNullBlockHash)) {
-      db_->savePbftMgrStatus(PbftMgrStatus::NextVotedNullBlockHash, true);
-      already_next_voted_null_block_hash_ = true;
-    }
+    placeStateActionVote(PbftVoteTypes::next_vote, period, round, step_, kNullBlockHash, nullptr,
+                         "Second finish null next vote", PbftMgrStatus::NextVotedNullBlockHash);
   } else if (plan.secondary_intent != kPbftManagerStateActionIntentNoop) {
     LOG(log_er_) << "Unsupported Rust PBFT second-finish secondary intent "
                  << static_cast<uint32_t>(plan.secondary_intent);

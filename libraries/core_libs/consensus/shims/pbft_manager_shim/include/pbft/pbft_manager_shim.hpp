@@ -575,6 +575,24 @@ class PbftManager {
                        const blk_hash_t &block_hash, std::shared_ptr<PbftBlock> pbft_block = nullptr);
 
   /**
+   * @brief Executes one Rust-planned PBFT state-action vote intent through the live C++ vote manager.
+   *
+   * @param vote_type vote type selected by the Rust state-action planner
+   * @param period PBFT period for the vote
+   * @param round PBFT round for the vote
+   * @param step PBFT step for the vote
+   * @param block_hash target block hash, or null block hash for null next-votes
+   * @param pbft_block admitted target block when the vote is for a concrete PBFT block
+   * @param action_context stable log context for the consuming manager phase
+   * @param next_vote_status optional manager status bit to persist after successful next-vote placement
+   * @return true when at least one eligible local wallet produced and stored the vote
+   */
+  bool placeStateActionVote(PbftVoteTypes vote_type, PbftPeriod period, PbftRound round, PbftStep step,
+                            const blk_hash_t &block_hash, std::shared_ptr<PbftBlock> pbft_block,
+                            std::string_view action_context,
+                            std::optional<PbftMgrStatus> next_vote_status = std::nullopt);
+
+  /**
    * @brief Generate propose vote for provided block place (gossip) it
    *
    * @param proposed_block
