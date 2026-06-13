@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <thread>
 
 #include "common/types.hpp"
@@ -688,6 +689,17 @@ class PbftManager {
    */
   std::shared_ptr<PbftBlock> getValidPbftProposedBlock(ProposedBlocks &proposed_blocks, PbftPeriod period,
                                                        const blk_hash_t &block_hash);
+
+  /**
+   * @brief Resolves a Rust-planned PBFT state-action block hash through the Rust proposed-block admission planner.
+   *
+   * @param period PBFT period of the requested block
+   * @param block_hash PBFT block hash selected by a Rust state-action plan
+   * @param action_context stable log context for the manager phase consuming the block
+   * @return admitted proposed block or nullptr when Rust admission rejects or lookup/validation fails
+   */
+  std::shared_ptr<PbftBlock> admitStateActionPbftBlock(PbftPeriod period, const blk_hash_t &block_hash,
+                                                       std::string_view action_context);
 
   /**
    * @brief Process synced PBFT blocks if PBFT syncing queue is not empty

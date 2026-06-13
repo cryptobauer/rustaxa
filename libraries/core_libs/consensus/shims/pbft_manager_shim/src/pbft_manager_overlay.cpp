@@ -1623,6 +1623,20 @@ std::shared_ptr<PbftBlock> PbftManager::getValidPbftProposedBlock(ProposedBlocks
   }
 }
 
+std::shared_ptr<PbftBlock> PbftManager::admitStateActionPbftBlock(PbftPeriod period, const blk_hash_t &block_hash,
+                                                                  std::string_view action_context) {
+  auto block = getValidPbftProposedBlock(proposed_blocks_, period, block_hash);
+  if (!block) {
+    LOG(log_er_) << action_context << ": Rust proposed-block admission rejected " << block_hash << ". Period " << period
+                 << ", round " << getPbftRound();
+    return nullptr;
+  }
+
+  assert(block->getPeriod() == period);
+  assert(block->getBlockHash() == block_hash);
+  return block;
+}
+
 bool PbftManager::genAndPlaceVote(PbftVoteTypes vote_type, PbftPeriod period, PbftRound round, PbftStep step,
                                   const blk_hash_t &block_hash, std::shared_ptr<PbftBlock> pbft_block) {
   if (pbft_block) {
@@ -1831,11 +1845,9 @@ void PbftManager::proposeBlock_() {
 
     const auto next_voted_block_hash = fromBridgeHash(plan.primary_hash);
 
-    const auto next_voted_block = getValidPbftProposedBlock(proposed_blocks_, period, next_voted_block_hash);
+    const auto next_voted_block =
+        admitStateActionPbftBlock(period, next_voted_block_hash, "Value proposal re-propose");
     if (!next_voted_block) {
-      // This should never happen - if so, we probably have a bug in storing the blocks in proposed_blocks_
-      LOG(log_er_) << "Unable to re-propose previous round next voted block " << next_voted_block_hash << ", period "
-                   << period << ", round " << round;
       return;
     }
 
@@ -1886,11 +1898,9 @@ void PbftManager::identifyBlock_() {
 
   if (plan.primary_intent == kPbftManagerStateActionIntentSoftVotePreviousRoundNextValue) {
     const auto next_voted_block_hash = fromBridgeHash(plan.primary_hash);
-    const auto next_voted_block = getValidPbftProposedBlock(proposed_blocks_, period, next_voted_block_hash);
+    const auto next_voted_block =
+        admitStateActionPbftBlock(period, next_voted_block_hash, "Filter soft-vote previous round next value");
     if (!next_voted_block) {
-      // This should never happen - if so, we probably have a bug in storing the blocks in proposed_blocks_
-      LOG(log_er_) << "Unable to soft-vote previous round next voted block " << next_voted_block_hash << ", period "
-                   << period << ", round " << round;
       return;
     }
 
@@ -1957,10 +1967,9 @@ void PbftManager::certifyBlock_() {
   }
 
   const auto soft_voted_block_hash = fromBridgeHash(plan.primary_hash);
-  const auto soft_voted_block = getValidPbftProposedBlock(proposed_blocks_, period, soft_voted_block_hash);
+  const auto soft_voted_block =
+      admitStateActionPbftBlock(period, soft_voted_block_hash, "Certify cert-vote current soft value");
   if (soft_voted_block == nullptr) {
-    LOG(log_dg_) << "Certify: invalid 2t+1 soft voted block " << soft_voted_block_hash << ". Period " << period
-                 << ",  round " << round;
     return;
   }
 
@@ -2009,11 +2018,8 @@ void PbftManager::firstFinish_() {
     // TODO: We should vote for any value that we first saw 2t+1 next votes for in previous round -> in current design
     // we dont know for which value we saw 2t+1 next votes as first so we prefer specific block if possible
     const auto starting_value_hash = fromBridgeHash(plan.primary_hash);
-    auto block = getValidPbftProposedBlock(proposed_blocks_, period, starting_value_hash);
+    auto block = admitStateActionPbftBlock(period, starting_value_hash, "First finish next-vote previous round value");
     if (!block) {
-      // This should never happen - if so, we probably have a bug in storing the blocks in proposed_blocks_
-      LOG(log_er_) << "Unable to first finish next-vote starting value " << starting_value_hash << ". Period " << period
-                   << ", round " << round;
       return;
     }
 
@@ -2046,12 +2052,10 @@ void PbftManager::secondFinish_() {
 
   if (plan.primary_intent == kPbftManagerStateActionIntentNextVoteCurrentSoftValue) {
     const auto soft_voted_block_hash = fromBridgeHash(plan.primary_hash);
-    const auto soft_voted_block = getValidPbftProposedBlock(proposed_blocks_, period, soft_voted_block_hash);
-    if (soft_voted_block == nullptr) {
-      LOG(log_dg_) << "Second finish: invalid 2t+1 soft voted block " << soft_voted_block_hash << ". Period " << period
-                   << ",  round " << round;
-    } else if (genAndPlaceVote(PbftVoteTypes::next_vote, period, round, step_, soft_voted_block_hash,
-                               soft_voted_block)) {
+    const auto soft_voted_block =
+        admitStateActionPbftBlock(period, soft_voted_block_hash, "Second finish next-vote current soft value");
+    if (soft_voted_block != nullptr &&
+        genAndPlaceVote(PbftVoteTypes::next_vote, period, round, step_, soft_voted_block_hash, soft_voted_block)) {
       db_->savePbftMgrStatus(PbftMgrStatus::NextVotedSoftValue, true);
       already_next_voted_value_ = true;
     }
