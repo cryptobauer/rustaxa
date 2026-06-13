@@ -1023,6 +1023,39 @@ pub mod rustaxa_ffi {
         pivot_hash: [u8; 32],
     }
 
+    /// C++ live lookup and validation facts for one PBFT proposal candidate.
+    struct PbftManagerLeaderCandidateInputFact {
+        vote_hash: [u8; 32],
+        block_hash: [u8; 32],
+        period: u64,
+        credential: [u8; 64],
+        voter_public_key: [u8; 64],
+        weight_found: bool,
+        weight: u64,
+        block_in_chain: bool,
+        proposed_block_found: bool,
+        block_validation_status: u8,
+        pivot_hash: [u8; 32],
+    }
+
+    /// Proposed block accepted by Rust candidate planning and ready to mark valid.
+    struct PbftManagerLeaderValidBlockCommand {
+        period: u64,
+        block_hash: [u8; 32],
+    }
+
+    /// Grouped PBFT leader-candidate plan for C++ materialization.
+    struct PbftManagerLeaderCandidatePlan {
+        status: u8,
+        selected: bool,
+        selected_vote_hash: [u8; 32],
+        selected_block_hash: [u8; 32],
+        selected_period: u64,
+        selected_from_null_anchor: bool,
+        valid_blocks: Vec<PbftManagerLeaderValidBlockCommand>,
+        error_code: String,
+    }
+
     /// Side-effect-free PBFT leader selection plan for C++ materialization.
     struct PbftManagerLeaderSelectionPlan {
         status: u8,
@@ -3830,6 +3863,9 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_manager_leader_selection(
             candidates: Vec<PbftManagerLeaderCandidateFact>,
         ) -> PbftManagerLeaderSelectionPlan;
+        pub fn plan_pbft_manager_leader_candidates(
+            candidates: Vec<PbftManagerLeaderCandidateInputFact>,
+        ) -> PbftManagerLeaderCandidatePlan;
         pub fn plan_pbft_manager_transition(
             fact: PbftManagerTransitionFact,
         ) -> PbftManagerTransitionPlan;

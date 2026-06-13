@@ -8,7 +8,10 @@
 use crate::ffi::rustaxa_ffi::{
     PbftFinalizationHash as FfiPbftFinalizationHash,
     PbftManagerLeaderCandidateFact as FfiPbftManagerLeaderCandidateFact,
+    PbftManagerLeaderCandidateInputFact as FfiPbftManagerLeaderCandidateInputFact,
+    PbftManagerLeaderCandidatePlan as FfiPbftManagerLeaderCandidatePlan,
     PbftManagerLeaderSelectionPlan as FfiPbftManagerLeaderSelectionPlan,
+    PbftManagerLeaderValidBlockCommand as FfiPbftManagerLeaderValidBlockCommand,
     PbftManagerRuntimeActionReport as FfiPbftManagerRuntimeActionReport,
     PbftManagerRuntimeSessionStep as FfiPbftManagerRuntimeSessionStep,
     PbftManagerRuntimeSnapshot as FfiPbftManagerRuntimeSnapshot,
@@ -27,12 +30,15 @@ use rustaxa_consensus::pbft_manager::{
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
     create_pbft_manager_runtime_session as create_domain_pbft_manager_runtime_session,
     next_pbft_manager_runtime_action,
+    plan_pbft_manager_leader_candidates as plan_domain_pbft_manager_leader_candidates,
     plan_pbft_manager_leader_selection as plan_domain_pbft_manager_leader_selection,
     plan_pbft_manager_state_action as plan_domain_pbft_manager_state_action,
     plan_pbft_manager_transition as plan_domain_pbft_manager_transition,
     report_pbft_manager_runtime_action, restore_pbft_manager_runtime,
-    PbftManagerLeaderCandidateFact, PbftManagerLeaderCandidateStatus,
-    PbftManagerLeaderSelectionPlan, PbftManagerRuntime, PbftManagerRuntimeAction,
+    PbftManagerLeaderBlockValidationStatus, PbftManagerLeaderCandidateFact,
+    PbftManagerLeaderCandidateInputFact, PbftManagerLeaderCandidatePlan,
+    PbftManagerLeaderCandidateStatus, PbftManagerLeaderSelectionPlan,
+    PbftManagerLeaderValidBlockCommand, PbftManagerRuntime, PbftManagerRuntimeAction,
     PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
     PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot, PbftManagerRuntimeStateCode,
     PbftManagerRuntimeTickFact, PbftManagerStartupRestoreFact, PbftManagerStartupRestoreStatus,
@@ -408,6 +414,17 @@ pub fn plan_pbft_manager_leader_selection(
     plan_domain_pbft_manager_leader_selection(candidates).into()
 }
 
+/// Plans grouped PBFT proposal candidate validation, mark-valid commands, and leader selection.
+pub fn plan_pbft_manager_leader_candidates(
+    candidates: Vec<FfiPbftManagerLeaderCandidateInputFact>,
+) -> FfiPbftManagerLeaderCandidatePlan {
+    let candidates = candidates
+        .into_iter()
+        .map(PbftManagerLeaderCandidateInputFact::from)
+        .collect();
+    plan_domain_pbft_manager_leader_candidates(candidates).into()
+}
+
 /// Plans one deterministic PBFT manager transition from compact C++ facts.
 pub fn plan_pbft_manager_transition(
     fact: FfiPbftManagerTransitionFact,
@@ -629,6 +646,26 @@ impl From<FfiPbftManagerLeaderCandidateFact> for PbftManagerLeaderCandidateFact 
     }
 }
 
+impl From<FfiPbftManagerLeaderCandidateInputFact> for PbftManagerLeaderCandidateInputFact {
+    fn from(value: FfiPbftManagerLeaderCandidateInputFact) -> Self {
+        Self {
+            vote_hash: value.vote_hash.into(),
+            block_hash: value.block_hash.into(),
+            period: value.period,
+            credential: value.credential,
+            voter_public_key: value.voter_public_key,
+            weight_found: value.weight_found,
+            weight: value.weight,
+            block_in_chain: value.block_in_chain,
+            proposed_block_found: value.proposed_block_found,
+            block_validation_status: PbftManagerLeaderBlockValidationStatus::from_u8(
+                value.block_validation_status,
+            ),
+            pivot_hash: value.pivot_hash.into(),
+        }
+    }
+}
+
 impl From<FfiPbftManagerTransitionFact> for PbftManagerTransitionFact {
     fn from(value: FfiPbftManagerTransitionFact) -> Self {
         Self {
@@ -726,6 +763,30 @@ impl From<PbftManagerLeaderSelectionPlan> for FfiPbftManagerLeaderSelectionPlan 
     }
 }
 
+impl From<PbftManagerLeaderValidBlockCommand> for FfiPbftManagerLeaderValidBlockCommand {
+    fn from(value: PbftManagerLeaderValidBlockCommand) -> Self {
+        Self {
+            period: value.period,
+            block_hash: value.block_hash.into(),
+        }
+    }
+}
+
+impl From<PbftManagerLeaderCandidatePlan> for FfiPbftManagerLeaderCandidatePlan {
+    fn from(value: PbftManagerLeaderCandidatePlan) -> Self {
+        Self {
+            status: value.status.as_u8(),
+            selected: value.selected,
+            selected_vote_hash: value.selected_vote_hash.into(),
+            selected_block_hash: value.selected_block_hash.into(),
+            selected_period: value.selected_period,
+            selected_from_null_anchor: value.selected_from_null_anchor,
+            valid_blocks: value.valid_blocks.into_iter().map(Into::into).collect(),
+            error_code: value.error_code.to_string(),
+        }
+    }
+}
+
 impl From<PbftManagerTransitionPlan> for FfiPbftManagerTransitionPlan {
     fn from(value: PbftManagerTransitionPlan) -> Self {
         Self {
@@ -781,6 +842,8 @@ mod tests {
     const LEADER_STATUS_SELECTED: u8 = 0;
     const LEADER_CANDIDATE_READY: u8 = 0;
     const LEADER_CANDIDATE_INVALID: u8 = 3;
+    const LEADER_BLOCK_VALIDATION_ALREADY_VALID: u8 = 0;
+    const LEADER_BLOCK_VALIDATION_VALIDATED: u8 = 1;
     const RESULT_STATE_DONE: u8 = 2;
     const RESULT_TRANSITION: u8 = 3;
     const RESULT_SLEEP: u8 = 4;
@@ -1452,6 +1515,54 @@ mod tests {
         assert_eq!(plan.selected_period, 11);
     }
 
+    #[test]
+    fn bridge_plans_pbft_leader_candidates_and_mark_valid_commands() {
+        let missing_weight = leader_candidate_input(1, 1, LEADER_BLOCK_VALIDATION_VALIDATED);
+        let in_chain = FfiPbftManagerLeaderCandidateInputFact {
+            block_in_chain: true,
+            ..leader_candidate_input(2, 2, LEADER_BLOCK_VALIDATION_VALIDATED)
+        };
+        let already_valid = FfiPbftManagerLeaderCandidateInputFact {
+            block_validation_status: LEADER_BLOCK_VALIDATION_ALREADY_VALID,
+            pivot_hash: [8; 32],
+            ..leader_candidate_input(3, 3, LEADER_BLOCK_VALIDATION_VALIDATED)
+        };
+        let validated = FfiPbftManagerLeaderCandidateInputFact {
+            pivot_hash: [9; 32],
+            ..leader_candidate_input(4, 4, LEADER_BLOCK_VALIDATION_VALIDATED)
+        };
+        let mut missing_weight = missing_weight;
+        missing_weight.weight_found = false;
+        let expected_vote_hash = validated.vote_hash;
+        let expected_block_hash = validated.block_hash;
+
+        let plan = plan_pbft_manager_leader_candidates(vec![
+            missing_weight,
+            in_chain,
+            already_valid,
+            validated,
+        ]);
+
+        assert_eq!(plan.status, LEADER_STATUS_SELECTED);
+        assert!(plan.selected);
+        assert_eq!(plan.selected_vote_hash, expected_vote_hash);
+        assert_eq!(plan.selected_block_hash, expected_block_hash);
+        assert_eq!(plan.valid_blocks.len(), 1);
+        assert_eq!(plan.valid_blocks[0].period, 11);
+        assert_eq!(plan.valid_blocks[0].block_hash, expected_block_hash);
+    }
+
+    #[test]
+    fn bridge_pbft_leader_candidates_reject_unknown_validation_status() {
+        let plan = plan_pbft_manager_leader_candidates(vec![leader_candidate_input(1, 1, 99)]);
+
+        assert_eq!(plan.status, 3);
+        assert_eq!(
+            plan.error_code,
+            "PBFT_MANAGER_LEADER_UNKNOWN_BLOCK_VALIDATION_STATUS"
+        );
+    }
+
     fn leader_candidate(
         id: u8,
         block: u8,
@@ -1467,6 +1578,26 @@ mod tests {
             weight: 1,
             status,
             pivot_hash: [pivot; 32],
+        }
+    }
+
+    fn leader_candidate_input(
+        id: u8,
+        block: u8,
+        block_validation_status: u8,
+    ) -> FfiPbftManagerLeaderCandidateInputFact {
+        FfiPbftManagerLeaderCandidateInputFact {
+            vote_hash: [id; 32],
+            block_hash: [block; 32],
+            period: 11,
+            credential: [id; 64],
+            voter_public_key: [id.wrapping_add(17); 64],
+            weight_found: true,
+            weight: 1,
+            block_in_chain: false,
+            proposed_block_found: true,
+            block_validation_status,
+            pivot_hash: [block.wrapping_add(20); 32],
         }
     }
 }

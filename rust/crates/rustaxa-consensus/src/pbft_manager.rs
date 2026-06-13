@@ -64,6 +64,41 @@ pub enum PbftManagerLeaderCandidateStatus {
     Unknown,
 }
 
+/// Validation result for a proposed PBFT block candidate.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerLeaderBlockValidationStatus {
+    /// The block was already marked valid in the proposed-block sidecar.
+    AlreadyValid,
+    /// C++ live validation accepted the block.
+    Validated,
+    /// C++ live validation rejected the block.
+    Rejected,
+    /// Unknown bridge status.
+    Unknown,
+}
+
+impl PbftManagerLeaderBlockValidationStatus {
+    /// Stable bridge code for proposed-block validation status.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::AlreadyValid => 0,
+            Self::Validated => 1,
+            Self::Rejected => 2,
+            Self::Unknown => 254,
+        }
+    }
+
+    /// Decodes a stable bridge status code.
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::AlreadyValid,
+            1 => Self::Validated,
+            2 => Self::Rejected,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 impl PbftManagerLeaderCandidateStatus {
     /// Stable bridge code for the candidate status.
     pub const fn as_u8(self) -> u8 {
@@ -88,6 +123,49 @@ impl PbftManagerLeaderCandidateStatus {
             _ => Self::Unknown,
         }
     }
+}
+
+/// Live facts for one proposal vote before Rust derives candidate status.
+///
+/// Inputs:
+/// - `vote_hash`, `block_hash`, `period`, `credential`, and
+///   `voter_public_key` identify and rank the proposal vote.
+/// - `weight_found` and `weight` describe the validated proposer weight.
+/// - `block_in_chain`, `proposed_block_found`, and `block_validation_status`
+///   summarize C++ live sidecar/PBFT-chain/DAG validation without deciding
+///   candidate eligibility in C++.
+/// - `pivot_hash` is the proposed block pivot hash when the block was found.
+///
+/// Outputs are produced by `plan_pbft_manager_leader_candidates`.
+///
+/// Invariants:
+/// - Rust owns the legacy candidate-status derivation and ranking.
+/// - C++ remains responsible for live object lookup and block validation until
+///   those dependencies move into Rust.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerLeaderCandidateInputFact {
+    /// Signed proposal vote hash.
+    pub vote_hash: H256,
+    /// Proposed PBFT block hash from the proposal vote.
+    pub block_hash: H256,
+    /// Vote period used for live block lookup.
+    pub period: u64,
+    /// Proposal vote VRF output.
+    pub credential: [u8; 64],
+    /// Recovered voter public key.
+    pub voter_public_key: [u8; 64],
+    /// True when proposer weight was present on the live vote.
+    pub weight_found: bool,
+    /// Validated proposer vote weight.
+    pub weight: u64,
+    /// True when the proposed block is already in the PBFT chain.
+    pub block_in_chain: bool,
+    /// True when the proposed-block sidecar resolved the block.
+    pub proposed_block_found: bool,
+    /// Proposed-block validation status.
+    pub block_validation_status: PbftManagerLeaderBlockValidationStatus,
+    /// Pivot DAG hash for a found proposed block.
+    pub pivot_hash: H256,
 }
 
 /// Rust-owned outcome for PBFT leader candidate selection.
@@ -175,6 +253,44 @@ pub struct PbftManagerLeaderSelectionPlan {
     pub selected_period: u64,
     /// True when the selected block is the null-anchor fallback.
     pub selected_from_null_anchor: bool,
+    /// Stable diagnostic code for bridge/log consumers.
+    pub error_code: &'static str,
+}
+
+/// Proposed-block command emitted by grouped PBFT candidate planning.
+///
+/// C++ applies this command to mark a proposed PBFT block valid only after Rust
+/// has accepted the corresponding validation report.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerLeaderValidBlockCommand {
+    /// PBFT period for the proposed block.
+    pub period: u64,
+    /// Proposed PBFT block hash to mark valid.
+    pub block_hash: H256,
+}
+
+/// Grouped PBFT leader-candidate plan.
+///
+/// The selection fields mirror `PbftManagerLeaderSelectionPlan`. The
+/// `valid_blocks` commands are emitted for unmarked candidate blocks whose live
+/// validation was reported as accepted, keeping proposed-block status mutation
+/// under the Rust-planned route.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerLeaderCandidatePlan {
+    /// Selection status.
+    pub status: PbftManagerLeaderSelectionStatus,
+    /// True when `selected_vote_hash` and `selected_block_hash` are meaningful.
+    pub selected: bool,
+    /// Selected proposal vote hash.
+    pub selected_vote_hash: H256,
+    /// Selected PBFT block hash.
+    pub selected_block_hash: H256,
+    /// Selected vote period.
+    pub selected_period: u64,
+    /// True when the selected block is the null-anchor fallback.
+    pub selected_from_null_anchor: bool,
+    /// Proposed blocks that C++ should mark valid.
+    pub valid_blocks: Vec<PbftManagerLeaderValidBlockCommand>,
     /// Stable diagnostic code for bridge/log consumers.
     pub error_code: &'static str,
 }
@@ -293,6 +409,92 @@ pub fn plan_pbft_manager_leader_selection(
         PbftManagerLeaderSelectionStatus::NoEligibleCandidate,
         "PBFT_MANAGER_LEADER_NO_ELIGIBLE_CANDIDATE",
     )
+}
+
+/// Derives PBFT proposal candidate statuses and selects the leader.
+///
+/// C++ supplies compact live lookup and validation facts for every proposal
+/// vote. Rust derives candidate status in the legacy order, emits mark-valid
+/// commands for accepted but previously unmarked blocks, and then applies the
+/// Rust-owned leader ranking/null-anchor fallback rules.
+#[must_use]
+pub fn plan_pbft_manager_leader_candidates(
+    candidates: Vec<PbftManagerLeaderCandidateInputFact>,
+) -> PbftManagerLeaderCandidatePlan {
+    let mut valid_blocks = Vec::new();
+    let mut selection_candidates = Vec::with_capacity(candidates.len());
+
+    for candidate in candidates {
+        let mut status = PbftManagerLeaderCandidateStatus::Ready;
+        let weight = if !candidate.weight_found || candidate.weight == 0 {
+            status = PbftManagerLeaderCandidateStatus::InvalidVoteWeight;
+            0
+        } else {
+            candidate.weight
+        };
+
+        if status == PbftManagerLeaderCandidateStatus::Ready {
+            if candidate.block_hash == H256::zero() {
+                status = PbftManagerLeaderCandidateStatus::NullVoteBlockHash;
+            } else if candidate.block_in_chain {
+                status = PbftManagerLeaderCandidateStatus::BlockInChain;
+            } else if !candidate.proposed_block_found {
+                status = PbftManagerLeaderCandidateStatus::BlockMissingOrInvalid;
+            } else {
+                match candidate.block_validation_status {
+                    PbftManagerLeaderBlockValidationStatus::AlreadyValid => {}
+                    PbftManagerLeaderBlockValidationStatus::Validated => {
+                        valid_blocks.push(PbftManagerLeaderValidBlockCommand {
+                            period: candidate.period,
+                            block_hash: candidate.block_hash,
+                        });
+                    }
+                    PbftManagerLeaderBlockValidationStatus::Rejected => {
+                        status = PbftManagerLeaderCandidateStatus::BlockMissingOrInvalid;
+                    }
+                    PbftManagerLeaderBlockValidationStatus::Unknown => {
+                        return pbft_manager_candidate_plan_from_selection(
+                            pbft_manager_leader_no_selection(
+                                PbftManagerLeaderSelectionStatus::InvalidFact,
+                                "PBFT_MANAGER_LEADER_UNKNOWN_BLOCK_VALIDATION_STATUS",
+                            ),
+                            valid_blocks,
+                        );
+                    }
+                }
+            }
+        }
+
+        selection_candidates.push(PbftManagerLeaderCandidateFact {
+            vote_hash: candidate.vote_hash,
+            block_hash: candidate.block_hash,
+            period: candidate.period,
+            credential: candidate.credential,
+            voter_public_key: candidate.voter_public_key,
+            weight,
+            status,
+            pivot_hash: candidate.pivot_hash,
+        });
+    }
+
+    let selection = plan_pbft_manager_leader_selection(selection_candidates);
+    pbft_manager_candidate_plan_from_selection(selection, valid_blocks)
+}
+
+fn pbft_manager_candidate_plan_from_selection(
+    selection: PbftManagerLeaderSelectionPlan,
+    valid_blocks: Vec<PbftManagerLeaderValidBlockCommand>,
+) -> PbftManagerLeaderCandidatePlan {
+    PbftManagerLeaderCandidatePlan {
+        status: selection.status,
+        selected: selection.selected,
+        selected_vote_hash: selection.selected_vote_hash,
+        selected_block_hash: selection.selected_block_hash,
+        selected_period: selection.selected_period,
+        selected_from_null_anchor: selection.selected_from_null_anchor,
+        valid_blocks,
+        error_code: selection.error_code,
+    }
 }
 
 fn pbft_manager_leader_selected(
@@ -2979,6 +3181,76 @@ mod tests {
         );
     }
 
+    #[test]
+    fn leader_candidate_planner_derives_statuses_and_mark_valid_commands() {
+        let invalid_weight = leader_candidate_input(1, 1);
+        let in_chain = PbftManagerLeaderCandidateInputFact {
+            block_in_chain: true,
+            ..leader_candidate_input(2, 2)
+        };
+        let missing = PbftManagerLeaderCandidateInputFact {
+            proposed_block_found: false,
+            ..leader_candidate_input(3, 3)
+        };
+        let valid = PbftManagerLeaderCandidateInputFact {
+            block_validation_status: PbftManagerLeaderBlockValidationStatus::Validated,
+            pivot_hash: H256::from([9; 32]),
+            ..leader_candidate_input(4, 4)
+        };
+        let mut invalid_weight = invalid_weight;
+        invalid_weight.weight_found = false;
+
+        let plan =
+            plan_pbft_manager_leader_candidates(vec![invalid_weight, in_chain, missing, valid]);
+
+        assert_eq!(plan.status, PbftManagerLeaderSelectionStatus::Selected);
+        assert!(plan.selected);
+        assert_eq!(plan.selected_vote_hash, H256::from([4; 32]));
+        assert_eq!(plan.selected_block_hash, H256::from([4; 32]));
+        assert_eq!(
+            plan.valid_blocks,
+            vec![PbftManagerLeaderValidBlockCommand {
+                period: 7,
+                block_hash: H256::from([4; 32]),
+            }]
+        );
+    }
+
+    #[test]
+    fn leader_candidate_planner_keeps_already_valid_blocks_out_of_mark_commands() {
+        let fallback = PbftManagerLeaderCandidateInputFact {
+            block_validation_status: PbftManagerLeaderBlockValidationStatus::AlreadyValid,
+            pivot_hash: H256::zero(),
+            ..leader_candidate_input(1, 1)
+        };
+        let selected = PbftManagerLeaderCandidateInputFact {
+            block_validation_status: PbftManagerLeaderBlockValidationStatus::AlreadyValid,
+            pivot_hash: H256::from([8; 32]),
+            ..leader_candidate_input(2, 2)
+        };
+
+        let plan = plan_pbft_manager_leader_candidates(vec![fallback, selected]);
+
+        assert_eq!(plan.status, PbftManagerLeaderSelectionStatus::Selected);
+        assert!(!plan.selected_from_null_anchor);
+        assert!(plan.valid_blocks.is_empty());
+        assert_eq!(plan.selected_block_hash, H256::from([2; 32]));
+    }
+
+    #[test]
+    fn leader_candidate_planner_rejects_unknown_validation_status() {
+        let plan = plan_pbft_manager_leader_candidates(vec![PbftManagerLeaderCandidateInputFact {
+            block_validation_status: PbftManagerLeaderBlockValidationStatus::Unknown,
+            ..leader_candidate_input(1, 1)
+        }]);
+
+        assert_eq!(plan.status, PbftManagerLeaderSelectionStatus::InvalidFact);
+        assert_eq!(
+            plan.error_code,
+            "PBFT_MANAGER_LEADER_UNKNOWN_BLOCK_VALIDATION_STATUS"
+        );
+    }
+
     fn leader_candidate(
         id: u8,
         block: u8,
@@ -2994,6 +3266,22 @@ mod tests {
             weight: 1,
             status,
             pivot_hash: H256::from([pivot; 32]),
+        }
+    }
+
+    fn leader_candidate_input(id: u8, block: u8) -> PbftManagerLeaderCandidateInputFact {
+        PbftManagerLeaderCandidateInputFact {
+            vote_hash: H256::from([id; 32]),
+            block_hash: H256::from([block; 32]),
+            period: 7,
+            credential: [id; 64],
+            voter_public_key: [id.wrapping_add(11); 64],
+            weight_found: true,
+            weight: 1,
+            block_in_chain: false,
+            proposed_block_found: true,
+            block_validation_status: PbftManagerLeaderBlockValidationStatus::Validated,
+            pivot_hash: H256::from([block.wrapping_add(20); 32]),
         }
     }
 }
