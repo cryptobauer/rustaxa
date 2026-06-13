@@ -77,6 +77,103 @@ pub enum PbftManagerLeaderBlockValidationStatus {
     Unknown,
 }
 
+/// Live validation status for one proposed-block admission attempt.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerCandidateAdmissionValidationStatus {
+    /// Rust has not requested live block validation yet.
+    NotChecked,
+    /// C++ live validation accepted the proposed block.
+    Valid,
+    /// C++ live validation rejected the proposed block.
+    Invalid,
+    /// Unknown bridge status.
+    Unknown,
+}
+
+impl PbftManagerCandidateAdmissionValidationStatus {
+    /// Stable bridge code for proposed-block admission validation status.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::NotChecked => 0,
+            Self::Valid => 1,
+            Self::Invalid => 2,
+            Self::Unknown => 254,
+        }
+    }
+
+    /// Decodes a stable bridge status code.
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::NotChecked,
+            1 => Self::Valid,
+            2 => Self::Invalid,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Runtime action for Rust-owned proposed-block admission.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerCandidateAdmissionAction {
+    /// C++ must lookup the live proposed block sidecar before retrying.
+    RequestLookup,
+    /// C++ must validate the found block and report the result.
+    RequestValidation,
+    /// The block is accepted for use by the caller.
+    Accept,
+    /// The block is rejected by supplied facts.
+    Reject,
+    /// Supplied bridge facts violate the admission contract.
+    ContractError,
+}
+
+impl PbftManagerCandidateAdmissionAction {
+    /// Stable bridge code for proposed-block admission action.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::RequestLookup => 0,
+            Self::RequestValidation => 1,
+            Self::Accept => 2,
+            Self::Reject => 3,
+            Self::ContractError => 255,
+        }
+    }
+}
+
+/// Final proposed-block admission status selected by Rust.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerCandidateAdmissionStatus {
+    /// The proposed-block sidecar lookup is still needed.
+    LookupRequired,
+    /// Live block validation is still needed.
+    ValidationRequired,
+    /// The block was already marked valid and is accepted.
+    AcceptedAlreadyValid,
+    /// The block was newly validated and is accepted.
+    AcceptedNewlyValidated,
+    /// The proposed-block sidecar did not contain the requested block.
+    BlockMissing,
+    /// Live block validation rejected the candidate.
+    ValidationRejected,
+    /// Supplied bridge facts violate the admission contract.
+    InvalidBridgeFacts,
+}
+
+impl PbftManagerCandidateAdmissionStatus {
+    /// Stable bridge code for proposed-block admission status.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::LookupRequired => 0,
+            Self::ValidationRequired => 1,
+            Self::AcceptedAlreadyValid => 2,
+            Self::AcceptedNewlyValidated => 3,
+            Self::BlockMissing => 4,
+            Self::ValidationRejected => 5,
+            Self::InvalidBridgeFacts => 255,
+        }
+    }
+}
+
 impl PbftManagerLeaderBlockValidationStatus {
     /// Stable bridge code for proposed-block validation status.
     pub const fn as_u8(self) -> u8 {
@@ -166,6 +263,52 @@ pub struct PbftManagerLeaderCandidateInputFact {
     pub block_validation_status: PbftManagerLeaderBlockValidationStatus,
     /// Pivot DAG hash for a found proposed block.
     pub pivot_hash: H256,
+}
+
+/// C++-originated facts for one proposed PBFT block admission attempt.
+///
+/// Inputs:
+/// - `period` and `block_hash` identify the candidate the caller wants to use.
+/// - `lookup_performed`, `proposed_block_found`, and
+///   `proposed_block_already_valid` report the proposed-block sidecar lookup.
+/// - `validation_status` reports the live validation result only after Rust
+///   asks for validation.
+///
+/// Outputs are produced by `plan_pbft_manager_candidate_admission`.
+///
+/// Invariants and edge behavior:
+/// - Rust owns the admission state machine and mark-valid decision.
+/// - C++ owns the live sidecar lookup, block validation checks, and sidecar
+///   mutation requested by the final plan.
+/// - Missing blocks and failed validation are explicit rejections; malformed
+///   fact order returns a contract error.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerCandidateAdmissionFact {
+    /// Candidate PBFT period.
+    pub period: u64,
+    /// Candidate PBFT block hash.
+    pub block_hash: H256,
+    /// True once C++ has looked up the proposed-block sidecar.
+    pub lookup_performed: bool,
+    /// True when the proposed-block sidecar resolved the candidate block.
+    pub proposed_block_found: bool,
+    /// True when the resolved proposed block was already marked valid.
+    pub proposed_block_already_valid: bool,
+    /// Live validation result supplied after Rust requests validation.
+    pub validation_status: PbftManagerCandidateAdmissionValidationStatus,
+}
+
+/// Side-effect-free proposed-block admission plan for C++ execution.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerCandidateAdmissionPlan {
+    /// Runtime action C++ must take.
+    pub action: PbftManagerCandidateAdmissionAction,
+    /// Current admission status.
+    pub status: PbftManagerCandidateAdmissionStatus,
+    /// True when C++ must mark the proposed block valid before returning it.
+    pub mark_valid: bool,
+    /// Stable diagnostic code for bridge/log consumers.
+    pub error_code: &'static str,
 }
 
 /// Rust-owned outcome for PBFT leader candidate selection.
@@ -568,6 +711,99 @@ pub fn pbft_manager_proposal_rank_hash(
     Some(lowest_hash)
 }
 
+/// Plans one proposed PBFT block admission attempt.
+///
+/// C++ supplies live sidecar lookup and validation facts in the order Rust
+/// requests them. Rust decides whether the block is missing, needs validation,
+/// should be returned immediately, should be marked valid, or must be rejected.
+/// The planner does not materialize or mutate proposed blocks.
+#[must_use]
+pub fn plan_pbft_manager_candidate_admission(
+    fact: PbftManagerCandidateAdmissionFact,
+) -> PbftManagerCandidateAdmissionPlan {
+    if fact.block_hash == H256::zero() {
+        return pbft_manager_candidate_admission_contract_error(
+            "PBFT_MANAGER_CANDIDATE_ADMISSION_ZERO_BLOCK_HASH",
+        );
+    }
+    if !fact.lookup_performed {
+        if fact.proposed_block_found
+            || fact.proposed_block_already_valid
+            || fact.validation_status != PbftManagerCandidateAdmissionValidationStatus::NotChecked
+        {
+            return pbft_manager_candidate_admission_contract_error(
+                "PBFT_MANAGER_CANDIDATE_ADMISSION_PRELOOKUP_FACTS",
+            );
+        }
+        return PbftManagerCandidateAdmissionPlan {
+            action: PbftManagerCandidateAdmissionAction::RequestLookup,
+            status: PbftManagerCandidateAdmissionStatus::LookupRequired,
+            mark_valid: false,
+            error_code: "PBFT_MANAGER_CANDIDATE_ADMISSION_LOOKUP_REQUIRED",
+        };
+    }
+
+    if !fact.proposed_block_found {
+        if fact.proposed_block_already_valid
+            || fact.validation_status != PbftManagerCandidateAdmissionValidationStatus::NotChecked
+        {
+            return pbft_manager_candidate_admission_contract_error(
+                "PBFT_MANAGER_CANDIDATE_ADMISSION_MISSING_BLOCK_FACTS",
+            );
+        }
+        return PbftManagerCandidateAdmissionPlan {
+            action: PbftManagerCandidateAdmissionAction::Reject,
+            status: PbftManagerCandidateAdmissionStatus::BlockMissing,
+            mark_valid: false,
+            error_code: "PBFT_MANAGER_CANDIDATE_ADMISSION_BLOCK_MISSING",
+        };
+    }
+
+    if fact.proposed_block_already_valid {
+        if fact.validation_status != PbftManagerCandidateAdmissionValidationStatus::NotChecked {
+            return pbft_manager_candidate_admission_contract_error(
+                "PBFT_MANAGER_CANDIDATE_ADMISSION_ALREADY_VALID_WITH_REPORT",
+            );
+        }
+        return PbftManagerCandidateAdmissionPlan {
+            action: PbftManagerCandidateAdmissionAction::Accept,
+            status: PbftManagerCandidateAdmissionStatus::AcceptedAlreadyValid,
+            mark_valid: false,
+            error_code: "PBFT_MANAGER_CANDIDATE_ADMISSION_ALREADY_VALID",
+        };
+    }
+
+    match fact.validation_status {
+        PbftManagerCandidateAdmissionValidationStatus::NotChecked => {
+            PbftManagerCandidateAdmissionPlan {
+                action: PbftManagerCandidateAdmissionAction::RequestValidation,
+                status: PbftManagerCandidateAdmissionStatus::ValidationRequired,
+                mark_valid: false,
+                error_code: "PBFT_MANAGER_CANDIDATE_ADMISSION_VALIDATION_REQUIRED",
+            }
+        }
+        PbftManagerCandidateAdmissionValidationStatus::Valid => PbftManagerCandidateAdmissionPlan {
+            action: PbftManagerCandidateAdmissionAction::Accept,
+            status: PbftManagerCandidateAdmissionStatus::AcceptedNewlyValidated,
+            mark_valid: true,
+            error_code: "PBFT_MANAGER_CANDIDATE_ADMISSION_VALIDATED",
+        },
+        PbftManagerCandidateAdmissionValidationStatus::Invalid => {
+            PbftManagerCandidateAdmissionPlan {
+                action: PbftManagerCandidateAdmissionAction::Reject,
+                status: PbftManagerCandidateAdmissionStatus::ValidationRejected,
+                mark_valid: false,
+                error_code: "PBFT_MANAGER_CANDIDATE_ADMISSION_VALIDATION_REJECTED",
+            }
+        }
+        PbftManagerCandidateAdmissionValidationStatus::Unknown => {
+            pbft_manager_candidate_admission_contract_error(
+                "PBFT_MANAGER_CANDIDATE_ADMISSION_UNKNOWN_VALIDATION_STATUS",
+            )
+        }
+    }
+}
+
 /// Selects the PBFT leader candidate from C++-collected proposal facts.
 ///
 /// C++ supplies live-object and validation status facts; Rust owns the
@@ -956,6 +1192,17 @@ fn pbft_manager_block_validation_contract_error(
         action: PbftManagerBlockValidationAction::ContractError,
         status: PbftManagerBlockValidationStatus::InvalidBridgeFacts,
         next_check: PbftManagerBlockValidationNextCheck::None,
+        error_code,
+    }
+}
+
+fn pbft_manager_candidate_admission_contract_error(
+    error_code: &'static str,
+) -> PbftManagerCandidateAdmissionPlan {
+    PbftManagerCandidateAdmissionPlan {
+        action: PbftManagerCandidateAdmissionAction::ContractError,
+        status: PbftManagerCandidateAdmissionStatus::InvalidBridgeFacts,
+        mark_valid: false,
         error_code,
     }
 }
@@ -3731,6 +3978,90 @@ mod tests {
     }
 
     #[test]
+    fn candidate_admission_plans_lookup_validation_and_mark_valid() {
+        let mut fact = candidate_admission_fact();
+
+        let plan = plan_pbft_manager_candidate_admission(fact.clone());
+        assert_eq!(
+            plan.action,
+            PbftManagerCandidateAdmissionAction::RequestLookup
+        );
+        assert_eq!(
+            plan.status,
+            PbftManagerCandidateAdmissionStatus::LookupRequired
+        );
+        assert!(!plan.mark_valid);
+
+        fact.lookup_performed = true;
+        fact.proposed_block_found = true;
+        let plan = plan_pbft_manager_candidate_admission(fact.clone());
+        assert_eq!(
+            plan.action,
+            PbftManagerCandidateAdmissionAction::RequestValidation
+        );
+        assert_eq!(
+            plan.status,
+            PbftManagerCandidateAdmissionStatus::ValidationRequired
+        );
+
+        fact.validation_status = PbftManagerCandidateAdmissionValidationStatus::Valid;
+        let plan = plan_pbft_manager_candidate_admission(fact);
+        assert_eq!(plan.action, PbftManagerCandidateAdmissionAction::Accept);
+        assert_eq!(
+            plan.status,
+            PbftManagerCandidateAdmissionStatus::AcceptedNewlyValidated
+        );
+        assert!(plan.mark_valid);
+    }
+
+    #[test]
+    fn candidate_admission_accepts_already_valid_and_rejects_missing() {
+        let already_valid = PbftManagerCandidateAdmissionFact {
+            lookup_performed: true,
+            proposed_block_found: true,
+            proposed_block_already_valid: true,
+            ..candidate_admission_fact()
+        };
+        let plan = plan_pbft_manager_candidate_admission(already_valid);
+        assert_eq!(plan.action, PbftManagerCandidateAdmissionAction::Accept);
+        assert_eq!(
+            plan.status,
+            PbftManagerCandidateAdmissionStatus::AcceptedAlreadyValid
+        );
+        assert!(!plan.mark_valid);
+
+        let missing = PbftManagerCandidateAdmissionFact {
+            lookup_performed: true,
+            proposed_block_found: false,
+            ..candidate_admission_fact()
+        };
+        let plan = plan_pbft_manager_candidate_admission(missing);
+        assert_eq!(plan.action, PbftManagerCandidateAdmissionAction::Reject);
+        assert_eq!(
+            plan.status,
+            PbftManagerCandidateAdmissionStatus::BlockMissing
+        );
+    }
+
+    #[test]
+    fn candidate_admission_rejects_bad_fact_order() {
+        let bad = PbftManagerCandidateAdmissionFact {
+            lookup_performed: false,
+            proposed_block_found: true,
+            ..candidate_admission_fact()
+        };
+        let plan = plan_pbft_manager_candidate_admission(bad);
+        assert_eq!(
+            plan.action,
+            PbftManagerCandidateAdmissionAction::ContractError
+        );
+        assert_eq!(
+            plan.status,
+            PbftManagerCandidateAdmissionStatus::InvalidBridgeFacts
+        );
+    }
+
+    #[test]
     fn block_validation_planner_drives_live_checks_in_legacy_order() {
         let mut fact = block_validation_fact();
 
@@ -3895,6 +4226,17 @@ mod tests {
             proposed_block_found: true,
             block_validation_status: PbftManagerLeaderBlockValidationStatus::Validated,
             pivot_hash: H256::from([block.wrapping_add(20); 32]),
+        }
+    }
+
+    fn candidate_admission_fact() -> PbftManagerCandidateAdmissionFact {
+        PbftManagerCandidateAdmissionFact {
+            period: 7,
+            block_hash: H256::from([1; 32]),
+            lookup_performed: false,
+            proposed_block_found: false,
+            proposed_block_already_valid: false,
+            validation_status: PbftManagerCandidateAdmissionValidationStatus::NotChecked,
         }
     }
 

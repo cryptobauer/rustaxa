@@ -9,6 +9,8 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationHash as FfiPbftFinalizationHash,
     PbftManagerBlockValidationFact as FfiPbftManagerBlockValidationFact,
     PbftManagerBlockValidationPlan as FfiPbftManagerBlockValidationPlan,
+    PbftManagerCandidateAdmissionFact as FfiPbftManagerCandidateAdmissionFact,
+    PbftManagerCandidateAdmissionPlan as FfiPbftManagerCandidateAdmissionPlan,
     PbftManagerLeaderCandidateInputFact as FfiPbftManagerLeaderCandidateInputFact,
     PbftManagerLeaderCandidatePlan as FfiPbftManagerLeaderCandidatePlan,
     PbftManagerLeaderValidBlockCommand as FfiPbftManagerLeaderValidBlockCommand,
@@ -31,15 +33,17 @@ use rustaxa_consensus::pbft_manager::{
     create_pbft_manager_runtime_session as create_domain_pbft_manager_runtime_session,
     next_pbft_manager_runtime_action,
     plan_pbft_manager_block_validation as plan_domain_pbft_manager_block_validation,
+    plan_pbft_manager_candidate_admission as plan_domain_pbft_manager_candidate_admission,
     plan_pbft_manager_leader_candidates as plan_domain_pbft_manager_leader_candidates,
     plan_pbft_manager_state_action as plan_domain_pbft_manager_state_action,
     plan_pbft_manager_transition as plan_domain_pbft_manager_transition,
     report_pbft_manager_runtime_action, restore_pbft_manager_runtime,
     PbftManagerBlockValidationFact, PbftManagerBlockValidationFactStatus,
-    PbftManagerBlockValidationPlan, PbftManagerLeaderBlockValidationStatus,
-    PbftManagerLeaderCandidateInputFact, PbftManagerLeaderCandidatePlan,
-    PbftManagerLeaderValidBlockCommand, PbftManagerRuntime, PbftManagerRuntimeAction,
-    PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
+    PbftManagerBlockValidationPlan, PbftManagerCandidateAdmissionFact,
+    PbftManagerCandidateAdmissionPlan, PbftManagerCandidateAdmissionValidationStatus,
+    PbftManagerLeaderBlockValidationStatus, PbftManagerLeaderCandidateInputFact,
+    PbftManagerLeaderCandidatePlan, PbftManagerLeaderValidBlockCommand, PbftManagerRuntime,
+    PbftManagerRuntimeAction, PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
     PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot, PbftManagerRuntimeStateCode,
     PbftManagerRuntimeTickFact, PbftManagerStartupRestoreFact, PbftManagerStartupRestoreStatus,
     PbftManagerStateActionFact, PbftManagerStateActionPlan, PbftManagerTransitionFact,
@@ -410,6 +414,13 @@ pub fn plan_pbft_manager_block_validation(
     plan_domain_pbft_manager_block_validation(fact.into()).into()
 }
 
+/// Plans one Rust-owned proposed PBFT block admission attempt from live C++ facts.
+pub fn plan_pbft_manager_candidate_admission(
+    fact: FfiPbftManagerCandidateAdmissionFact,
+) -> FfiPbftManagerCandidateAdmissionPlan {
+    plan_domain_pbft_manager_candidate_admission(fact.into()).into()
+}
+
 /// Plans grouped PBFT proposal candidate validation, mark-valid commands, and leader selection.
 pub fn plan_pbft_manager_leader_candidates(
     candidates: Vec<FfiPbftManagerLeaderCandidateInputFact>,
@@ -661,6 +672,21 @@ impl From<FfiPbftManagerBlockValidationFact> for PbftManagerBlockValidationFact 
     }
 }
 
+impl From<FfiPbftManagerCandidateAdmissionFact> for PbftManagerCandidateAdmissionFact {
+    fn from(value: FfiPbftManagerCandidateAdmissionFact) -> Self {
+        Self {
+            period: value.period,
+            block_hash: value.block_hash.into(),
+            lookup_performed: value.lookup_performed,
+            proposed_block_found: value.proposed_block_found,
+            proposed_block_already_valid: value.proposed_block_already_valid,
+            validation_status: PbftManagerCandidateAdmissionValidationStatus::from_u8(
+                value.validation_status,
+            ),
+        }
+    }
+}
+
 impl From<FfiPbftManagerLeaderCandidateInputFact> for PbftManagerLeaderCandidateInputFact {
     fn from(value: FfiPbftManagerLeaderCandidateInputFact) -> Self {
         Self {
@@ -775,6 +801,17 @@ impl From<PbftManagerBlockValidationPlan> for FfiPbftManagerBlockValidationPlan 
     }
 }
 
+impl From<PbftManagerCandidateAdmissionPlan> for FfiPbftManagerCandidateAdmissionPlan {
+    fn from(value: PbftManagerCandidateAdmissionPlan) -> Self {
+        Self {
+            action: value.action.as_u8(),
+            status: value.status.as_u8(),
+            mark_valid: value.mark_valid,
+            error_code: value.error_code.to_string(),
+        }
+    }
+}
+
 impl From<PbftManagerLeaderValidBlockCommand> for FfiPbftManagerLeaderValidBlockCommand {
     fn from(value: PbftManagerLeaderValidBlockCommand) -> Self {
         Self {
@@ -865,6 +902,14 @@ mod tests {
     const BLOCK_VALIDATION_STATUS_FINAL_CHAIN_MISSING: u8 = 3;
     const BLOCK_VALIDATION_CHECK_PBFT_CHAIN: u8 = 0;
     const BLOCK_VALIDATION_CHECK_FINAL_CHAIN_HASH: u8 = 1;
+    const CANDIDATE_ADMISSION_VALIDATION_NOT_CHECKED: u8 = 0;
+    const CANDIDATE_ADMISSION_VALIDATION_VALID: u8 = 1;
+    const CANDIDATE_ADMISSION_ACTION_REQUEST_LOOKUP: u8 = 0;
+    const CANDIDATE_ADMISSION_ACTION_REQUEST_VALIDATION: u8 = 1;
+    const CANDIDATE_ADMISSION_ACTION_ACCEPT: u8 = 2;
+    const CANDIDATE_ADMISSION_STATUS_LOOKUP_REQUIRED: u8 = 0;
+    const CANDIDATE_ADMISSION_STATUS_VALIDATION_REQUIRED: u8 = 1;
+    const CANDIDATE_ADMISSION_STATUS_ACCEPTED_NEWLY_VALIDATED: u8 = 3;
     const RESULT_STATE_DONE: u8 = 2;
     const RESULT_TRANSITION: u8 = 3;
     const RESULT_SLEEP: u8 = 4;
@@ -1555,6 +1600,35 @@ mod tests {
     }
 
     #[test]
+    fn bridge_plans_pbft_candidate_admission() {
+        let plan = plan_pbft_manager_candidate_admission(candidate_admission_fact());
+        assert_eq!(plan.action, CANDIDATE_ADMISSION_ACTION_REQUEST_LOOKUP);
+        assert_eq!(plan.status, CANDIDATE_ADMISSION_STATUS_LOOKUP_REQUIRED);
+        assert!(!plan.mark_valid);
+
+        let plan = plan_pbft_manager_candidate_admission(FfiPbftManagerCandidateAdmissionFact {
+            lookup_performed: true,
+            proposed_block_found: true,
+            ..candidate_admission_fact()
+        });
+        assert_eq!(plan.action, CANDIDATE_ADMISSION_ACTION_REQUEST_VALIDATION);
+        assert_eq!(plan.status, CANDIDATE_ADMISSION_STATUS_VALIDATION_REQUIRED);
+
+        let plan = plan_pbft_manager_candidate_admission(FfiPbftManagerCandidateAdmissionFact {
+            lookup_performed: true,
+            proposed_block_found: true,
+            validation_status: CANDIDATE_ADMISSION_VALIDATION_VALID,
+            ..candidate_admission_fact()
+        });
+        assert_eq!(plan.action, CANDIDATE_ADMISSION_ACTION_ACCEPT);
+        assert_eq!(
+            plan.status,
+            CANDIDATE_ADMISSION_STATUS_ACCEPTED_NEWLY_VALIDATED
+        );
+        assert!(plan.mark_valid);
+    }
+
+    #[test]
     fn bridge_plans_pbft_leader_candidates_and_mark_valid_commands() {
         let missing_weight = leader_candidate_input(1, 1, LEADER_BLOCK_VALIDATION_VALIDATED);
         let in_chain = FfiPbftManagerLeaderCandidateInputFact {
@@ -1619,6 +1693,17 @@ mod tests {
             proposed_block_found: true,
             block_validation_status,
             pivot_hash: [block.wrapping_add(20); 32],
+        }
+    }
+
+    fn candidate_admission_fact() -> FfiPbftManagerCandidateAdmissionFact {
+        FfiPbftManagerCandidateAdmissionFact {
+            period: 11,
+            block_hash: [1; 32],
+            lookup_performed: false,
+            proposed_block_found: false,
+            proposed_block_already_valid: false,
+            validation_status: CANDIDATE_ADMISSION_VALIDATION_NOT_CHECKED,
         }
     }
 

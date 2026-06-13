@@ -1038,6 +1038,24 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
+    /// C++-originated facts for one Rust-owned proposed-block admission attempt.
+    struct PbftManagerCandidateAdmissionFact {
+        period: u64,
+        block_hash: [u8; 32],
+        lookup_performed: bool,
+        proposed_block_found: bool,
+        proposed_block_already_valid: bool,
+        validation_status: u8,
+    }
+
+    /// Proposed-block admission plan for C++ lookup/validation execution.
+    struct PbftManagerCandidateAdmissionPlan {
+        action: u8,
+        status: u8,
+        mark_valid: bool,
+        error_code: String,
+    }
+
     /// C++ live lookup and validation facts for one PBFT proposal candidate.
     struct PbftManagerLeaderCandidateInputFact {
         vote_hash: [u8; 32],
@@ -3867,6 +3885,9 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_manager_block_validation(
             fact: PbftManagerBlockValidationFact,
         ) -> PbftManagerBlockValidationPlan;
+        pub fn plan_pbft_manager_candidate_admission(
+            fact: PbftManagerCandidateAdmissionFact,
+        ) -> PbftManagerCandidateAdmissionPlan;
         pub fn plan_pbft_manager_leader_candidates(
             candidates: Vec<PbftManagerLeaderCandidateInputFact>,
         ) -> PbftManagerLeaderCandidatePlan;
