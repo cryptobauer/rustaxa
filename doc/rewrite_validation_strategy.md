@@ -31,6 +31,7 @@ Use this tier for narrow Rust changes and as the base for broader rewrite work.
 cargo fmt --manifest-path rust/Cargo.toml --all --check
 cargo clippy --manifest-path rust/Cargo.toml
 cargo test --manifest-path rust/Cargo.toml
+make rewrite-storage-boundary-guard
 git diff --check
 ```
 
@@ -121,6 +122,12 @@ New Rust production routing requires:
 
 Temporary Rust shim defaults must be tracked and tested as explicit temporary behavior. They should not be hidden by
 delegation to legacy C++ implementation paths.
+
+For storage-retirement work, `make rewrite-storage-boundary-guard` is a regression guard for newly added Rust-mode C++
+storage routes. A passing guard means the current diff did not introduce unreviewed `DbStorage`, `db_`, C++ batch,
+`rustStorage`, or `rustBatchId` usage outside allowlisted compatibility areas. It does not mean all pre-existing
+`BridgeStorage` or `DbStorage` routes have been eliminated; those removals must be tracked in `PLAN.md` and verified by
+targeted call-site searches.
 
 ## Choosing The Narrowest Tier
 

@@ -149,7 +149,24 @@ telemetry.
 | PBFT vote generation planner | `rust/crates/rustaxa-consensus/src/pbft_vote_generation.rs`, `rust/crates/rustaxa-bridge/src/pbft_vote_generation.rs` | `partial` | Rust owns side-effect-free local PBFT vote byte generation: it validates vote type/step compatibility, derives the expected voter/VRF public key from ephemeral wallet secrets, creates the legacy PBFT VRF proof/output, signs `PbftVote::sha3(false)`, returns canonical signed or weighted `PbftVote` RLP, and reports zero-stake, zero-total-DPoS, and zero-weight outcomes as stable statuses. The Rust-mode `VoteManager` shim now materializes `generateVote` and `generateVoteWithWeight` sidecars directly from Rust-generated RLP, hydrates the temporary C++ VRF output cache through local VRF verification, and checks Rust hashes, signing hash, recovered identity, VRF proof, weight, and exact RLP bytes before returning the sidecar. Locally generated own-vote persistence therefore stores Rust-generated weighted vote bytes through Rust storage. C++ still owns the temporary `PbftVote` sidecar type, FinalChain fact sourcing, and PBFT manager/network orchestration; logging around these calls is temporary observability, not an ownership blocker. |
 | PBFT vote payload builders | `rust/crates/rustaxa-consensus/src/pbft_vote_payload.rs`, `rust/crates/rustaxa-bridge/src/pbft_vote_payload.rs` | `partial` | Rust owns legacy-compatible PBFT vote payload construction for post-admission side effects. It derives weighted storage RLP records from canonical signed vote bytes plus the authoritative calculated weight, builds raw weighted vote-bundle RLP for latest-round 2t+1 persistence and finalized reward-vote reset stages, builds optimized PBFT vote-bundle RLP for get-next network egress from retained weighted records, and normalizes unweighted signed vote RLP for slashing evidence so storage weights do not leak into slashing calldata. The Rust admission runtime now retains these payloads for accepted votes and returns storage/slashing-ready records to `VoteManager::addVerifiedVote`; the bridge also exposes plan/build status codes so C++ can peer-filter and chunk optimized egress without materializing `PbftVote` sidecars. C++ still selects live vote sidecars for remaining reload/finalization compatibility paths, supplies period/round/block metadata where Rust has not already returned it, executes Rust storage batches, wraps tarcap packets, marks sent vote hashes known, and submits signed slashing transactions. |
 | Shared DAG/PBFT types | `rust/crates/rustaxa-types/src/{dag.rs,pbft.rs}` and codec modules | partial | Useful for future consensus domain types, but not yet a full consensus model. |
-| Storage ports | `rust/crates/rustaxa-storage/src/{dag.rs,pbft.rs,pillar.rs}` | partial infra | Use through narrow domain-facing ports; do not let consensus logic depend on broad storage APIs. |
+| Storage ports | `rust/crates/rustaxa-storage/src/{dag.rs,pbft.rs,pillar.rs}` | partial infra | `rustaxa-storage` is the durable backend for migrated rows, but consensus storage ownership is not fully direct Rust yet. PBFT manager startup restore and sortition startup/replay/persist paths now use `Arc<rustaxa_storage::Storage>` from `rustaxa-consensus`; `taraxa_getPillarBlockData` uses a Rust read-only query in Rust mode. `BridgeStorage` remains the temporary CXX-facing handle for PBFT finalization, transaction-manager, DAG/proposed-block, rewards, gas-pricer, and selected manager glue, and `DbStorage` remains the app/storage-shim/query compatibility shell. New routes should move long-lived runtimes to direct `Arc<Storage>` ownership and remove bridge batch ids instead of adding broad storage APIs. |
+
+## Storage Boundary Status
+
+The storage rewrite is not finished. The current Rust-mode backend for migrated storage families is `rustaxa-storage`,
+but there are still two compatibility layers in active use:
+
+- `BridgeStorage` is a Rust bridge wrapper around the shared storage handle and bridge-side batch registry. It is not the
+  legacy C++ RocksDB implementation, but it is still a temporary CXX-facing storage API and should disappear from
+  consensus manager internals.
+- `DbStorage` is still the C++ lifecycle and compatibility shell. It is used by app startup, migrations/admin surfaces,
+  storage shim APIs, network/RPC/GraphQL/debug queries, and several consensus shims that have not yet moved to
+  long-lived Rust runtime ownership.
+
+Direct `rustaxa-storage` ownership is currently proven for PBFT manager scalar startup restore/normalization, sortition
+startup replay and threshold-change persistence, and the Rust-mode pillar-block-data RPC read. The next storage-retirement
+slices should be considered complete only when they remove existing `BridgeStorage`, `rustBatchId`, C++ batch, or
+`DbStorage` call sites from production Rust-mode consensus routes.
 
 ## Module Inventory
 
