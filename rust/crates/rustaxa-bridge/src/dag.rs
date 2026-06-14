@@ -12,7 +12,8 @@ use crate::ffi::rustaxa_ffi::{
     DagVerifyPrecheckResult, DagVerifyTransactionAvailabilityInput,
     DagVerifyTransactionAvailabilityResult, DagVerifyVdfDposDecision, DagVerifyVdfDposFacts,
     DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput,
-    DagVerifyVdfSortitionInput, DagVerifyVdfSortitionResult, SortitionRuntimeParams,
+    DagVerifyVdfSortitionInput, DagVerifyVdfSortitionResult, HashLookup, PeriodLookup,
+    SortitionRuntimeParams,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
 use crate::storage::transaction_rlp_lookups;
@@ -41,8 +42,12 @@ use rustaxa_consensus::dag::{
 };
 use rustaxa_consensus::sortition::{SortitionParams, VdfParams, VrfParams};
 use rustaxa_storage::StatusField;
+use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
+use rustaxa_types::pbft::PbftBlockLink;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
+
+const PBFT_BLOCK_POS_IN_PERIOD_DATA: usize = 0;
 
 const DAG_PROPOSER_ACTION_CONTINUE: u8 = 1;
 const DAG_PROPOSER_ACTION_SKIP: u8 = 2;
@@ -888,6 +893,58 @@ impl BridgeDagManagerRuntime {
         Ok(true)
     }
 
+    /// Resolves the finalized proposal period for a DAG level through the
+    /// runtime-owned Rust storage handle.
+    ///
+    /// Inputs and outputs mirror `DbStorage::getProposalPeriodForDagLevel`:
+    /// Rust storage returns the first persisted `(level -> period)` row at or
+    /// after the requested level. Missing rows are reported as `found = false`
+    /// instead of errors, while malformed storage/backend failures are errors.
+    pub fn dag_manager_runtime_proposal_period_for_level(
+        &self,
+        level: u64,
+    ) -> Result<PeriodLookup> {
+        let period = self
+            .storage
+            .dag()
+            .proposal_period_at_level(level)
+            .context("DAG_PROPOSAL_PERIOD_LOOKUP")?;
+        Ok(match period {
+            Some(period) => PeriodLookup {
+                found: true,
+                period,
+            },
+            None => PeriodLookup {
+                found: false,
+                period: 0,
+            },
+        })
+    }
+
+    /// Returns the canonical PBFT block hash for finalized `period`.
+    ///
+    /// The hash is derived from item 0 of the canonical `PeriodData` RLP stored
+    /// in Rust storage, matching legacy `DbStorage::getPeriodBlockHash`. Missing
+    /// period data returns `found = false`; corrupt period data is a bridge
+    /// error so C++ verification can reject rather than silently use bad facts.
+    pub fn dag_manager_runtime_period_block_hash(&self, period: u64) -> Result<HashLookup> {
+        let period_data = self
+            .storage
+            .period()
+            .data_raw(period)
+            .context("DAG_PERIOD_DATA_LOOKUP")?;
+        let Some(hash) = period_block_hash_from_period_data(&period_data)? else {
+            return Ok(HashLookup {
+                found: false,
+                hash: [0; 32],
+            });
+        };
+        Ok(HashLookup {
+            found: true,
+            hash: hash.into(),
+        })
+    }
+
     /// Reads persisted DAG counters directly from Rust storage.
     pub fn dag_manager_runtime_persistence_counters(&self) -> Result<DagPersistenceCounters> {
         let metadata = self.storage.metadata();
@@ -1361,6 +1418,20 @@ fn to_h256(hash: &[u8; 32]) -> H256 {
     H256::from(*hash)
 }
 
+fn period_block_hash_from_period_data(period_data_rlp: &[u8]) -> Result<Option<H256>> {
+    if period_data_rlp.is_empty() {
+        return Ok(None);
+    }
+
+    let period_rlp = rlp::Rlp::new(period_data_rlp);
+    let pbft_block_rlp = period_rlp
+        .at(PBFT_BLOCK_POS_IN_PERIOD_DATA)
+        .context("PERIOD_DATA_PBFT_BLOCK_RLP")?;
+    let link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(pbft_block_rlp.as_raw()))
+        .context("PERIOD_DATA_PBFT_BLOCK_HASH")?;
+    Ok(Some(link.block_hash))
+}
+
 fn to_domain_sortition_params(params: SortitionRuntimeParams) -> SortitionParams {
     SortitionParams {
         vrf: VrfParams {
@@ -1524,6 +1595,28 @@ mod tests {
         DagTransactionHash { hash: [byte; 32] }
     }
 
+    fn signed_pbft_block(period: u64, timestamp: u64) -> Vec<u8> {
+        let mut block = RlpStream::new_list(8);
+        block.append(&H256::from_low_u64_be(10));
+        block.append(&H256::from_low_u64_be(11));
+        block.append(&H256::from_low_u64_be(12));
+        block.append(&H256::from_low_u64_be(13));
+        block.append(&period);
+        block.append(&timestamp);
+        block.begin_list(0);
+        block.append(&vec![0u8; 65]);
+        block.out().to_vec()
+    }
+
+    fn period_data_with_pbft_block(pbft_block: &[u8]) -> Vec<u8> {
+        let mut period_data = RlpStream::new_list(4);
+        period_data.append_raw(pbft_block, 1);
+        period_data.append_empty_data();
+        period_data.append_empty_data();
+        period_data.begin_list(0);
+        period_data.out().to_vec()
+    }
+
     const SECRET_KEY: [u8; 64] = [
         0x90, 0xf5, 0x9a, 0x7e, 0xe7, 0xa3, 0x92, 0xc8, 0x11, 0xc5, 0xd2, 0x99, 0xb5, 0x57, 0xa4,
         0xe0, 0x9e, 0x61, 0x0d, 0xe7, 0xd1, 0x09, 0xd6, 0xb3, 0xfc, 0xb1, 0x9a, 0xb8, 0xd5, 0x1c,
@@ -1606,9 +1699,56 @@ mod tests {
             assert!(after.found);
             assert_eq!(after.period, 0);
 
+            let runtime_lookup = runtime
+                .dag_manager_runtime_proposal_period_for_level(100)
+                .expect("runtime lookup should succeed");
+            assert!(runtime_lookup.found);
+            assert_eq!(runtime_lookup.period, 0);
+
             assert!(!runtime
                 .dag_manager_runtime_ensure_proposal_period_mapping(100, 0)
                 .expect("idempotent ensure should succeed"));
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_period_block_hash_uses_rust_period_storage() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_period_hash");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("runtime should initialize");
+
+            let missing = runtime
+                .dag_manager_runtime_period_block_hash(7)
+                .expect("missing period lookup should succeed");
+            assert!(!missing.found);
+            assert_eq!(missing.hash, [0; 32]);
+
+            let pbft_block = signed_pbft_block(7, 99);
+            let expected_hash: [u8; 32] =
+                PbftBlockLink::try_from(SignedPbftBlockRlp::new(&pbft_block))
+                    .expect("test PBFT block should decode")
+                    .block_hash
+                    .into();
+            storage
+                .save_period_data(7, period_data_with_pbft_block(&pbft_block))
+                .expect("period data save should succeed");
+
+            let found = runtime
+                .dag_manager_runtime_period_block_hash(7)
+                .expect("period hash lookup should succeed");
+            assert!(found.found);
+            assert_eq!(found.hash, expected_hash);
+
+            storage
+                .save_period_data(8, vec![0x80])
+                .expect("corrupt period data save should succeed");
+            assert!(runtime.dag_manager_runtime_period_block_hash(8).is_err());
         }
 
         let _ = fs::remove_dir_all(&temp_dir);

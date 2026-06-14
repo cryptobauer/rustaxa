@@ -235,6 +235,15 @@ pub mod rustaxa_ffi {
         period: u64,
     }
 
+    /// Optional canonical hash lookup result.
+    ///
+    /// `found = false` means the backing storage row was absent. Decode and
+    /// backend failures are returned as bridge errors instead.
+    struct HashLookup {
+        found: bool,
+        hash: [u8; 32],
+    }
+
     struct PeriodLambda {
         found: bool,
         value: u32,
@@ -3768,6 +3777,14 @@ pub mod rustaxa_ffi {
             level: u64,
             period: u64,
         ) -> Result<bool>;
+        pub fn dag_manager_runtime_proposal_period_for_level(
+            self: &BridgeDagManagerRuntime,
+            level: u64,
+        ) -> Result<PeriodLookup>;
+        pub fn dag_manager_runtime_period_block_hash(
+            self: &BridgeDagManagerRuntime,
+            period: u64,
+        ) -> Result<HashLookup>;
         pub fn dag_manager_runtime_persistence_counters(
             self: &BridgeDagManagerRuntime,
         ) -> Result<DagPersistenceCounters>;

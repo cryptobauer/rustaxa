@@ -16,7 +16,6 @@ namespace taraxa {
 class TransactionManager;
 class KeyManager;
 class DagManager;
-class DbStorage;
 struct FullNodeConfig;
 
 namespace final_chain {
@@ -62,7 +61,7 @@ class DagBlockProposer {
  public:
   DagBlockProposer(const FullNodeConfig& config, std::shared_ptr<DagManager> dag_mgr,
                    std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<final_chain::FinalChain> final_chain,
-                   std::shared_ptr<DbStorage> db, std::shared_ptr<KeyManager> key_manager);
+                   std::shared_ptr<KeyManager> key_manager);
   ~DagBlockProposer() { stop(); }
   DagBlockProposer(const DagBlockProposer&) = delete;
   DagBlockProposer(DagBlockProposer&&) = delete;
@@ -149,7 +148,6 @@ class DagBlockProposer {
   std::shared_ptr<DagManager> dag_mgr_;
   std::shared_ptr<TransactionManager> trx_mgr_;
   std::shared_ptr<final_chain::FinalChain> final_chain_;
-  std::shared_ptr<DbStorage> db_;
   std::vector<std::thread> proposer_workers_;
   std::weak_ptr<Network> network_;
 

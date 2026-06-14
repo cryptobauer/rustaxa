@@ -485,7 +485,7 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
   uint8_t vdf_status = kDagVerifyVdfStatusValid;
   if (vrf_key_found) {
     try {
-      const auto proposal_period_hash = db_->getPeriodBlockHash(proposal_period);
+      const auto proposal_period_hash = getPeriodBlockHashForDagProposal(proposal_period);
       const auto block_rlp = blk->rlp(true);
       const auto sortition_params = sortition_params_manager_.getSortitionParams(proposal_period);
       const auto vdf_result = rustaxa::dag_verify_vdf_sortition_from_block(to_bridge_vdf_sortition_input(
@@ -821,6 +821,24 @@ uint64_t DagManager::getDagExpiryLevel() const {
 }
 
 uint64_t DagManager::getMaxLevelsPerPeriod() const { return max_levels_per_period_; }
+
+std::optional<PbftPeriod> DagManager::getProposalPeriodForDagLevel(level_t level) const {
+  std::shared_lock lock(rust_graphs_mutex_);
+  const auto lookup = rust_graphs_->runtime->dag_manager_runtime_proposal_period_for_level(level);
+  if (!lookup.found) {
+    return std::nullopt;
+  }
+  return lookup.period;
+}
+
+blk_hash_t DagManager::getPeriodBlockHashForDagProposal(PbftPeriod period) const {
+  std::shared_lock lock(rust_graphs_mutex_);
+  const auto lookup = rust_graphs_->runtime->dag_manager_runtime_period_block_hash(period);
+  if (!lookup.found) {
+    return {};
+  }
+  return from_bridge_hash(lookup.hash);
+}
 
 dev::bytes DagManager::getVdfMessage(blk_hash_t const &hash, SharedTransactions const &trxs) {
   std::vector<trx_hash_t> trx_hashes;

@@ -45,14 +45,13 @@ using namespace vdf_sortition;
 
 DagBlockProposer::DagBlockProposer(const FullNodeConfig& config, std::shared_ptr<DagManager> dag_mgr,
                                    std::shared_ptr<TransactionManager> trx_mgr,
-                                   std::shared_ptr<final_chain::FinalChain> final_chain, std::shared_ptr<DbStorage> db,
+                                   std::shared_ptr<final_chain::FinalChain> final_chain,
                                    std::shared_ptr<KeyManager> key_manager)
     : executor_(config.wallets.size()),
       total_trx_shards_(std::max(config.genesis.dag.block_proposer.shard, uint16_t(1))),
       dag_mgr_(std::move(dag_mgr)),
       trx_mgr_(std::move(trx_mgr)),
       final_chain_(std::move(final_chain)),
-      db_(std::move(db)),
       nodes_dag_proposers_data_(),
       kDagProposeGasLimit(
           std::min(config.propose_dag_gas_limit, config.genesis.getGasLimits(final_chain_->lastBlockNumber()).first)),
@@ -82,7 +81,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   assert(!frontier.pivot.isZero());
   const auto propose_level = getProposeLevel(frontier.pivot, frontier.tips) + 1;
 
-  const auto proposal_period = db_->getProposalPeriodForDagLevel(propose_level);
+  const auto proposal_period = dag_mgr_->getProposalPeriodForDagLevel(propose_level);
   if (!proposal_period.has_value()) {
     LOG(log_wr_) << "No proposal period for propose_level " << propose_level << " found";
     return false;
@@ -124,7 +123,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
     return false;
   }
 
-  const auto period_block_hash = db_->getPeriodBlockHash(*proposal_period);
+  const auto period_block_hash = dag_mgr_->getPeriodBlockHashForDagProposal(*proposal_period);
   const auto sortition_params = dag_mgr_->sortitionParamsManager().getSortitionParams(*proposal_period);
   vdf_sortition::VdfSortition vdf(sortition_params, node_dag_proposer_data->wallet.vrf_secret,
                                   dag_vrf_input(propose_level, period_block_hash), vote_count, max_vote_count);

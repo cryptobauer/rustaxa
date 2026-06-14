@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include "rustaxa-bridge/ffi.rs.h"
 
 namespace taraxa {
@@ -80,6 +82,21 @@ class DagManager : public DagManagerOld {
   const DagConfig &getDagConfig() const;
   uint64_t getDagExpiryLevel() const;
   uint64_t getMaxLevelsPerPeriod() const;
+  /**
+   * Resolves the proposal period for a DAG level through the Rust DAG runtime.
+   *
+   * Missing storage rows are returned as `std::nullopt`. Storage backend or
+   * decoding failures are propagated as bridge exceptions.
+   */
+  std::optional<PbftPeriod> getProposalPeriodForDagLevel(level_t level) const;
+  /**
+   * Returns the PBFT block hash for a finalized period through Rust storage.
+   *
+   * Missing period data preserves legacy storage behavior and returns the zero
+   * hash. Malformed period data propagates as a bridge exception so callers can
+   * reject invalid VDF inputs.
+   */
+  blk_hash_t getPeriodBlockHashForDagProposal(PbftPeriod period) const;
 
   static dev::bytes getVdfMessage(blk_hash_t const &hash, SharedTransactions const &trxs);
   static dev::bytes getVdfMessage(blk_hash_t const &hash, std::vector<trx_hash_t> const &trx_hashes);
