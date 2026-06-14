@@ -30,6 +30,7 @@ use crate::ffi::{BridgePbftManagerRuntime, BridgePbftManagerRuntimeSession, Brid
 use anyhow::anyhow;
 use rustaxa_consensus::pbft_manager::{
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
+    create_pbft_manager_runtime_from_storage as create_domain_pbft_manager_runtime_from_storage,
     create_pbft_manager_runtime_session as create_domain_pbft_manager_runtime_session,
     next_pbft_manager_runtime_action,
     plan_pbft_manager_block_validation as plan_domain_pbft_manager_block_validation,
@@ -37,16 +38,15 @@ use rustaxa_consensus::pbft_manager::{
     plan_pbft_manager_leader_candidates as plan_domain_pbft_manager_leader_candidates,
     plan_pbft_manager_state_action as plan_domain_pbft_manager_state_action,
     plan_pbft_manager_transition as plan_domain_pbft_manager_transition,
-    report_pbft_manager_runtime_action, restore_pbft_manager_runtime,
-    PbftManagerBlockValidationFact, PbftManagerBlockValidationFactStatus,
-    PbftManagerBlockValidationPlan, PbftManagerCandidateAdmissionFact,
-    PbftManagerCandidateAdmissionPlan, PbftManagerCandidateAdmissionValidationStatus,
-    PbftManagerLeaderBlockValidationStatus, PbftManagerLeaderCandidateInputFact,
-    PbftManagerLeaderCandidatePlan, PbftManagerLeaderValidBlockCommand, PbftManagerRuntime,
-    PbftManagerRuntimeAction, PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
-    PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot, PbftManagerRuntimeStateCode,
-    PbftManagerRuntimeTickFact, PbftManagerStartupRestoreFact, PbftManagerStartupRestoreStatus,
-    PbftManagerStateActionFact, PbftManagerStateActionPlan, PbftManagerTransitionFact,
+    report_pbft_manager_runtime_action, PbftManagerBlockValidationFact,
+    PbftManagerBlockValidationFactStatus, PbftManagerBlockValidationPlan,
+    PbftManagerCandidateAdmissionFact, PbftManagerCandidateAdmissionPlan,
+    PbftManagerCandidateAdmissionValidationStatus, PbftManagerLeaderBlockValidationStatus,
+    PbftManagerLeaderCandidateInputFact, PbftManagerLeaderCandidatePlan,
+    PbftManagerLeaderValidBlockCommand, PbftManagerRuntimeAction, PbftManagerRuntimeActionReport,
+    PbftManagerRuntimeActionResultCode, PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot,
+    PbftManagerRuntimeStateCode, PbftManagerRuntimeTickFact, PbftManagerStateActionFact,
+    PbftManagerStateActionPlan, PbftManagerStorageStartupFact, PbftManagerTransitionFact,
     PbftManagerTransitionKind, PbftManagerTransitionPlan, PbftManagerTransitionStatus,
 };
 use rustaxa_storage::StorageWriteBatch;
@@ -59,7 +59,6 @@ const TRANSITION_STORAGE_STATUS_APPLIED: u8 = 0;
 const TRANSITION_STORAGE_STATUS_REJECTED: u8 = 1;
 const PBFT_MGR_FIELD_ROUND: u8 = 0;
 const PBFT_MGR_FIELD_STEP: u8 = 1;
-const PBFT_MGR_FIELD_LAMBDA: u8 = 2;
 const PBFT_MGR_STATUS_EXECUTED_BLOCK: u8 = 0;
 const PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE: u8 = 2;
 const PBFT_MGR_STATUS_NEXT_VOTED_NULL_BLOCK_HASH: u8 = 3;
@@ -220,45 +219,22 @@ pub fn create_pbft_manager_runtime_from_storage(
     storage: &BridgeStorage,
     fact: FfiPbftManagerStartupFact,
 ) -> anyhow::Result<Box<BridgePbftManagerRuntime>> {
-    let pbft = storage.0.pbft();
-    let mut snapshot = restore_pbft_manager_runtime(PbftManagerStartupRestoreFact {
-        current_period: fact.current_period,
-        persisted_round: u64::from(pbft.manager_field(PBFT_MGR_FIELD_ROUND)?.unwrap_or(1)),
-        persisted_step: u64::from(pbft.manager_field(PBFT_MGR_FIELD_STEP)?.unwrap_or(1)),
-        cacti_active_at_chain_size: fact.cacti_active_at_chain_size,
-        rounds_count_dynamic_lambda: storage.0.metadata().rounds_count_dynamic_lambda()?,
-        persisted_dynamic_lambda_ms: pbft.manager_field(PBFT_MGR_FIELD_LAMBDA)?.unwrap_or(1),
-        genesis_lambda_ms: to_startup_u32(fact.genesis_lambda_ms, "GENESIS_LAMBDA")?,
-        cacti_lambda_max_ms: to_startup_u32(fact.cacti_lambda_max_ms, "CACTI_LAMBDA_MAX")?,
-        cacti_lambda_default_ms: to_startup_u32(
-            fact.cacti_lambda_default_ms,
-            "CACTI_LAMBDA_DEFAULT",
-        )?,
-        executed_pbft_block: pbft
-            .manager_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)?
-            .unwrap_or(false),
-        already_next_voted_value: pbft
-            .manager_status(PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE)?
-            .unwrap_or(false),
-        already_next_voted_null: pbft
-            .manager_status(PBFT_MGR_STATUS_NEXT_VOTED_NULL_BLOCK_HASH)?
-            .unwrap_or(false),
-    });
-
-    if snapshot.status != PbftManagerStartupRestoreStatus::Ready {
-        return Err(anyhow!(snapshot.error_code.clone()));
-    }
-    if snapshot.persist_normalized_step {
-        pbft.write_manager_field(
-            PBFT_MGR_FIELD_STEP,
-            u32::try_from(snapshot.step)
-                .map_err(|_| anyhow!("PBFT_MANAGER_STARTUP_NORMALIZED_STEP_OVERFLOW"))?,
-        )?;
-        snapshot.persist_normalized_step = false;
-    }
+    let runtime = create_domain_pbft_manager_runtime_from_storage(
+        &storage.0,
+        PbftManagerStorageStartupFact {
+            current_period: fact.current_period,
+            cacti_active_at_chain_size: fact.cacti_active_at_chain_size,
+            genesis_lambda_ms: to_startup_u32(fact.genesis_lambda_ms, "GENESIS_LAMBDA")?,
+            cacti_lambda_max_ms: to_startup_u32(fact.cacti_lambda_max_ms, "CACTI_LAMBDA_MAX")?,
+            cacti_lambda_default_ms: to_startup_u32(
+                fact.cacti_lambda_default_ms,
+                "CACTI_LAMBDA_DEFAULT",
+            )?,
+        },
+    )?;
 
     Ok(Box::new(BridgePbftManagerRuntime {
-        state: PbftManagerRuntime::new(snapshot),
+        state: runtime,
         storage: storage.0.clone(),
     }))
 }

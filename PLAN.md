@@ -242,6 +242,32 @@ Current Rust repositories include:
 3. Harden batch behavior for write-heavy paths with tests and conformance fixtures.
 4. Keep admin/snapshot/migration/light maintenance in C++ unless the scope changes.
 
+### DbStorage Retirement Plan
+
+Goal: Rust-mode consensus should depend directly on `rustaxa-storage`.
+`DbStorage` may remain as a compatibility shell for legacy/reference builds and external C++ APIs, but it must stop being
+the storage API used by Rust consensus managers, planners, and runtimes.
+
+Planned large slices:
+
+1. Define the native Rust consensus storage ownership rule. Rust consensus runtimes should use
+   `Arc<rustaxa_storage::Storage>` and repository APIs directly, not a new CXX-facing bridge storage abstraction.
+   Temporary bridge constructors may clone the shared `Arc<Storage>` out of `BridgeStorage`, but storage fact
+   collection, write ordering, and restart normalization should move into `rustaxa-consensus` functions that accept
+   `&rustaxa_storage::Storage` or `Arc<rustaxa_storage::Storage>`.
+2. Move consensus managers to direct `rustaxa-storage` ownership. Update Rust-mode PBFT manager, DAG manager, vote
+   manager, transaction manager, sortition, pillar chain, rewards, and gas-pricing shims so their long-lived Rust
+   runtimes own or receive `Arc<rustaxa_storage::Storage>` directly. C++ may still materialize legacy objects at
+   network/EVM/API boundaries.
+3. Remove C++ batch/storage orchestration from consensus. Replace `createWriteBatch`, `rustBatchId`,
+   `commitWriteBatch`, and C++ batch-driven append helpers in consensus shims with Rust-owned storage sessions and
+   commits. Atomic write ordering should be expressed in Rust storage transactions, not in C++.
+4. Move read/query surfaces off `DbStorage` or isolate them. Network sync, RPC, GraphQL, and debug/query paths should
+   use Rust storage query APIs or an explicit read-only query shim. These paths must not become consensus storage ports.
+5. Collapse `DbStorage` to compatibility-only. Delete or guard Rust-mode consensus accessors, remove obsolete C++
+   forwarding methods, and add boundary tests/guards that fail when Rust-mode consensus introduces new `DbStorage`
+   storage calls.
+
 Validation:
 
 - Always run `rust_storage_tests` for storage changes.

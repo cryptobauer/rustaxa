@@ -1,11 +1,12 @@
-//! Deterministic PBFT manager daemon-tick runtime planning.
+//! Deterministic PBFT manager runtime planning and storage-backed startup restore.
 //!
-//! This module owns the first Rust-side slice of PBFT manager orchestration: the
-//! ordered control-flow script for one daemon tick. It is intentionally
-//! side-effect-free. C++ supplies already-collected live facts, executes each
-//! requested action against the existing manager shell, then reports the result
-//! before Rust advances the cursor. Eligible-wallet state is reported after the
-//! pre-state cert/round checks so the runtime preserves the legacy branch order.
+//! This module owns Rust-side PBFT manager orchestration: storage-backed startup
+//! restoration for the long-lived runtime plus the ordered control-flow script
+//! for one daemon tick. Tick planning is intentionally side-effect-free. C++
+//! supplies already-collected live facts, executes each requested action against
+//! the existing manager shell, then reports the result before Rust advances the
+//! cursor. Eligible-wallet state is reported after the pre-state cert/round
+//! checks so the runtime preserves the legacy branch order.
 //!
 //! Inputs are a compact `PbftManagerRuntimeTickFact`: current PBFT state,
 //! period/round/step telemetry, network availability, sync status, and whether
@@ -14,8 +15,10 @@
 //!
 //! Invariants:
 //! - Rust decides the order of manager actions for the tick.
-//! - C++ remains the sole owner of live objects, storage writes, network
-//!   dispatch, sleeps, and state mutation in this slice.
+//! - C++ remains the temporary owner of live objects, network dispatch, sleeps,
+//!   and non-migrated state mutation in this slice.
+//! - Storage-backed startup reads and step normalization use
+//!   `rustaxa_storage::Storage` directly inside Rust.
 //! - Early-progress actions such as cert-block push complete the session with
 //!   `restart_loop = true`, matching the old `continue` path.
 //! - Round-advance candidates are reported as facts. Rust validates them and
@@ -25,10 +28,19 @@
 //! - Branches after `run_certify` and `run_second_finish` are selected only from
 //!   explicit report flags returned by the C++ executor.
 
+use anyhow::{Result, anyhow};
 use ethereum_types::H256;
 use rlp::RlpStream;
+use rustaxa_storage::Storage;
 use std::collections::{BTreeMap, VecDeque};
 use tiny_keccak::{Hasher, Keccak};
+
+const PBFT_MGR_FIELD_ROUND: u8 = 0;
+const PBFT_MGR_FIELD_STEP: u8 = 1;
+const PBFT_MGR_FIELD_LAMBDA: u8 = 2;
+const PBFT_MGR_STATUS_EXECUTED_BLOCK: u8 = 0;
+const PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE: u8 = 2;
+const PBFT_MGR_STATUS_NEXT_VOTED_NULL_BLOCK_HASH: u8 = 3;
 
 /// Stable PBFT manager state codes used by the CXX bridge.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -1870,6 +1882,40 @@ pub struct PbftManagerStartupRestoreFact {
     pub already_next_voted_null: bool,
 }
 
+/// Storage-backed PBFT manager startup configuration.
+///
+/// Purpose:
+/// - Carries only non-storage startup configuration into the native Rust
+///   storage restore path. Persisted manager fields and statuses are read
+///   directly from `rustaxa-storage` by
+///   `create_pbft_manager_runtime_from_storage`.
+///
+/// Inputs:
+/// - `current_period` is the PBFT period observed by the C++ compatibility
+///   shell at startup.
+/// - Cacti and lambda fields are configuration facts that are not stored in
+///   the PBFT manager storage columns.
+///
+/// Invariants and edge behavior:
+/// - Lambda values must be nonzero. Invalid or corrupted persisted storage
+///   facts are rejected with stable error labels from
+///   `restore_pbft_manager_runtime`.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PbftManagerStorageStartupFact {
+    /// Current PBFT period at startup.
+    pub current_period: u64,
+    /// Whether the Cacti dynamic-lambda rules are active for
+    /// `current_period - 1`.
+    pub cacti_active_at_chain_size: bool,
+    /// Genesis PBFT lambda used before Cacti.
+    pub genesis_lambda_ms: u32,
+    /// Cacti maximum lambda used as live default before any finalized Cacti
+    /// period has saved a dynamic lambda.
+    pub cacti_lambda_max_ms: u32,
+    /// Cacti non-round-one lambda.
+    pub cacti_lambda_default_ms: u32,
+}
+
 /// Runtime cursor and live scalar facts restored for the PBFT manager shim.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftManagerRuntimeSnapshot {
@@ -2074,6 +2120,70 @@ pub fn restore_pbft_manager_runtime(
         reset_second_finish_start,
         error_code: String::new(),
     }
+}
+
+/// Creates a PBFT manager runtime from `rustaxa-storage` directly.
+///
+/// Purpose:
+/// - Makes `rustaxa-consensus` the owner of PBFT manager startup storage
+///   reads and normalization. The bridge may temporarily pass the shared
+///   storage handle, but it no longer decides which storage rows form the
+///   runtime snapshot.
+///
+/// Inputs:
+/// - `storage` is the native Rust storage module.
+/// - `fact` contains only live/config facts that are not stored in PBFT manager
+///   columns.
+///
+/// Outputs:
+/// - A Rust-owned PBFT manager runtime seeded from durable storage.
+///
+/// Invariants and edge behavior:
+/// - Missing round/step/lambda fields preserve legacy compatibility defaults.
+/// - If persisted step normalization is required, the normalized step is
+///   written through `rustaxa-storage` before the returned runtime clears the
+///   `persist_normalized_step` flag.
+/// - Invalid startup facts return a stable error label and do not fall back to
+///   C++ storage behavior.
+pub fn create_pbft_manager_runtime_from_storage(
+    storage: &Storage,
+    fact: PbftManagerStorageStartupFact,
+) -> Result<PbftManagerRuntime> {
+    let pbft = storage.pbft();
+    let mut snapshot = restore_pbft_manager_runtime(PbftManagerStartupRestoreFact {
+        current_period: fact.current_period,
+        persisted_round: u64::from(pbft.manager_field(PBFT_MGR_FIELD_ROUND)?.unwrap_or(1)),
+        persisted_step: u64::from(pbft.manager_field(PBFT_MGR_FIELD_STEP)?.unwrap_or(1)),
+        cacti_active_at_chain_size: fact.cacti_active_at_chain_size,
+        rounds_count_dynamic_lambda: storage.metadata().rounds_count_dynamic_lambda()?,
+        persisted_dynamic_lambda_ms: pbft.manager_field(PBFT_MGR_FIELD_LAMBDA)?.unwrap_or(1),
+        genesis_lambda_ms: fact.genesis_lambda_ms,
+        cacti_lambda_max_ms: fact.cacti_lambda_max_ms,
+        cacti_lambda_default_ms: fact.cacti_lambda_default_ms,
+        executed_pbft_block: pbft
+            .manager_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)?
+            .unwrap_or(false),
+        already_next_voted_value: pbft
+            .manager_status(PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE)?
+            .unwrap_or(false),
+        already_next_voted_null: pbft
+            .manager_status(PBFT_MGR_STATUS_NEXT_VOTED_NULL_BLOCK_HASH)?
+            .unwrap_or(false),
+    });
+
+    if snapshot.status != PbftManagerStartupRestoreStatus::Ready {
+        return Err(anyhow!(snapshot.error_code.clone()));
+    }
+    if snapshot.persist_normalized_step {
+        pbft.write_manager_field(
+            PBFT_MGR_FIELD_STEP,
+            u32::try_from(snapshot.step)
+                .map_err(|_| anyhow!("PBFT_MANAGER_STARTUP_NORMALIZED_STEP_OVERFLOW"))?,
+        )?;
+        snapshot.persist_normalized_step = false;
+    }
+
+    Ok(PbftManagerRuntime::new(snapshot))
 }
 
 /// C++-originated facts for deciding whether PBFT can advance to a new round.
@@ -3093,6 +3203,18 @@ pub fn abort_pbft_manager_runtime_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustaxa_storage::{Config, Storage};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be available")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{name}_{nonce}"))
+    }
 
     fn fact(state: PbftManagerRuntimeStateCode) -> PbftManagerRuntimeTickFact {
         PbftManagerRuntimeTickFact {
@@ -3180,6 +3302,16 @@ mod tests {
             executed_pbft_block: true,
             already_next_voted_value: true,
             already_next_voted_null: false,
+        }
+    }
+
+    fn storage_startup_fact() -> PbftManagerStorageStartupFact {
+        PbftManagerStorageStartupFact {
+            current_period: 10,
+            cacti_active_at_chain_size: false,
+            genesis_lambda_ms: 1_000,
+            cacti_lambda_max_ms: 1_500,
+            cacti_lambda_default_ms: 500,
         }
     }
 
@@ -3648,6 +3780,74 @@ mod tests {
             snapshot.error_code,
             "PBFT_MANAGER_STARTUP_MISSING_DYNAMIC_LAMBDA"
         );
+    }
+
+    #[test]
+    fn storage_startup_restore_reads_rust_storage_and_persists_normalized_step() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_manager_storage_startup");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            storage
+                .pbft()
+                .write_manager_field(PBFT_MGR_FIELD_ROUND, 2)
+                .expect("round should persist");
+            storage
+                .pbft()
+                .write_manager_field(PBFT_MGR_FIELD_STEP, 2)
+                .expect("step should persist");
+            storage
+                .pbft()
+                .write_manager_status(PBFT_MGR_STATUS_EXECUTED_BLOCK, true)
+                .expect("executed status should persist");
+            storage
+                .pbft()
+                .write_manager_status(PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE, true)
+                .expect("next-voted status should persist");
+
+            let runtime =
+                create_pbft_manager_runtime_from_storage(&storage, storage_startup_fact())
+                    .expect("runtime should restore from Rust storage");
+            let snapshot = runtime.snapshot();
+
+            assert_eq!(snapshot.status, PbftManagerStartupRestoreStatus::Ready);
+            assert_eq!(snapshot.state, PbftManagerRuntimeStateCode::Finish);
+            assert_eq!(snapshot.round, 2);
+            assert_eq!(snapshot.step, 4);
+            assert_eq!(snapshot.current_round_lambda_ms, 1_000);
+            assert!(snapshot.executed_pbft_block);
+            assert!(snapshot.already_next_voted_value);
+            assert!(!snapshot.already_next_voted_null);
+            assert!(!snapshot.persist_normalized_step);
+            assert_eq!(
+                storage
+                    .pbft()
+                    .manager_field(PBFT_MGR_FIELD_STEP)
+                    .expect("normalized step should load"),
+                Some(4),
+            );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn storage_startup_restore_rejects_corrupt_rust_storage() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_manager_storage_corrupt_startup");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            storage
+                .pbft()
+                .write_manager_field(PBFT_MGR_FIELD_ROUND, 0)
+                .expect("corrupt round should persist");
+
+            let err = create_pbft_manager_runtime_from_storage(&storage, storage_startup_fact())
+                .expect_err("corrupt cursor should reject startup");
+            assert_eq!(err.to_string(), "PBFT_MANAGER_STARTUP_INVALID_CURSOR");
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]
