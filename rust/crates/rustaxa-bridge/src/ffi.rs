@@ -4941,6 +4941,14 @@ pub mod rustaxa_ffi {
             total_dag_transaction_refs: u64,
             non_empty_pbft_chain_size: u64,
         ) -> Result<SortitionParamsChangeResult>;
+        pub fn sortition_record_finalized_period_and_persist(
+            self: &mut BridgeSortitionParamsManager,
+            period: u64,
+            has_pivot: bool,
+            unique_transactions: u64,
+            total_dag_transaction_refs: u64,
+            non_empty_pbft_chain_size: u64,
+        ) -> Result<SortitionParamsChangeResult>;
         pub fn sortition_preview_finalized_period(
             self: &BridgeSortitionParamsManager,
             period: u64,
@@ -4969,11 +4977,6 @@ pub mod rustaxa_ffi {
             unique_transactions: u64,
             total_dag_transaction_refs: u64,
         ) -> SortitionEfficiencyResult;
-        pub fn sortition_append_params_change_to_batch(
-            self: &BridgeStorage,
-            batch_id: u64,
-            change: SortitionParamsChangePayload,
-        ) -> Result<()>;
 
         // Storage
 

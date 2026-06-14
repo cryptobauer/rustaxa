@@ -18,8 +18,9 @@ namespace taraxa {
  * The facade preserves the public C++ API while routing deterministic
  * efficiency sampling, VRF threshold updates, startup replay, and historical
  * parameter lookups to Rust. The legacy `pbftBlockPushed` API still receives a
- * C++ `Batch&`; this shim uses DbStorage only as the temporary Rust batch-id
- * registry for that compatibility surface.
+ * C++ `Batch&`; Rust mode keeps that argument only for API compatibility and
+ * persists emitted sortition changes through the Rust manager's native storage
+ * handle before live state is updated.
  *
  * Inputs and outputs match the legacy SortitionParamsManager surface. PeriodData
  * is reduced to a pivot flag, finalized unique transaction count, and total DAG
@@ -53,8 +54,9 @@ class SortitionParamsManager {
   /**
    * Processes one finalized non-empty PBFT block.
    *
-   * Rust updates the in-memory interval state and returns a parameter change when this block closes a changing
-   * interval. The C++ facade persists that change into the provided batch.
+   * Rust updates the interval state and persists any emitted parameter change
+   * through native Rust storage. The batch argument is ignored in Rust mode and
+   * remains only to preserve the public C++ API during migration.
    */
   void pbftBlockPushed(const PeriodData& block, Batch& batch, PbftPeriod non_empty_pbft_chain_size);
 
@@ -124,7 +126,6 @@ class SortitionParamsManager {
   const FullNodeConfig kConfig;
   SortitionConfig sortition_config_;
   std::shared_ptr<DbStorage> batch_owner_;
-  rustaxa::BridgeStorage* rust_storage_;
   std::deque<SortitionParamsChange> params_changes_;
   std::optional<::rust::Box<rustaxa::BridgeSortitionParamsManager>> rust_sortition_params_manager_;
 

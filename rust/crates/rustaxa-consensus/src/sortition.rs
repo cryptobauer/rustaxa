@@ -474,6 +474,42 @@ impl SortitionParamsManager {
         Ok(None)
     }
 
+    /// Records one finalized PBFT block and persists any emitted change through native Rust storage.
+    ///
+    /// This is the Rust-mode compatibility path for legacy callers that still
+    /// expose a C++ `Batch&` in their public API. The manager previews the
+    /// transition, writes the emitted sortition parameter change through the
+    /// attached `rustaxa-storage` handle, then commits the same transition to
+    /// live runtime state. If the live transition diverges from the preview, an
+    /// error is returned and the caller must treat the runtime as rejected.
+    pub fn record_finalized_period_and_persist(
+        &mut self,
+        period: u64,
+        dag_efficiency: Option<u16>,
+        non_empty_pbft_chain_size: u64,
+    ) -> Result<Option<SortitionParamsChange>> {
+        let storage = self
+            .storage
+            .as_ref()
+            .context("SORTITION_STORAGE_NOT_ATTACHED")?;
+        let expected =
+            self.preview_finalized_period(period, dag_efficiency, non_empty_pbft_chain_size)?;
+        if let Some(change) = expected {
+            storage
+                .metadata()
+                .write_sortition_params_change(change.period, &change.to_rlp_bytes())
+                .context("SORTITION_STORAGE_WRITE_EMITTED_CHANGE")?;
+        }
+
+        let actual =
+            self.record_finalized_period(period, dag_efficiency, non_empty_pbft_chain_size)?;
+        ensure!(
+            actual == expected,
+            "SORTITION_STORAGE_PERSISTED_CHANGE_MISMATCH"
+        );
+        Ok(actual)
+    }
+
     /// Previews one finalized PBFT block efficiency sample without mutating runtime state.
     ///
     /// Inputs and outputs match `record_finalized_period`, but all counter,
@@ -1122,6 +1158,35 @@ mod tests {
                     .average_dag_efficiency()
                     .expect("replayed average should exist"),
                 5_000
+            );
+        }
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn storage_runtime_persists_emitted_change_before_live_commit() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_sortition_persist");
+        {
+            let storage = storage_at(temp_dir.clone());
+            let mut manager = SortitionParamsManager::from_storage(runtime_cfg(), storage.clone())
+                .expect("manager should initialize");
+
+            let change = manager
+                .record_finalized_period_and_persist(9, Some(50 * ONE_PERCENT), 1)
+                .expect("change should persist")
+                .expect("changing interval should emit");
+            let stored = storage
+                .metadata()
+                .params_change_for_period_rlp(9)
+                .expect("storage lookup should succeed")
+                .expect("change should be durable");
+            assert_eq!(
+                SortitionParamsChange::from_rlp_bytes(&stored).unwrap(),
+                change
+            );
+            assert_eq!(
+                manager.current_params().vrf.threshold_upper,
+                change.threshold_upper
             );
         }
         let _ = fs::remove_dir_all(&temp_dir);

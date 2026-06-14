@@ -108,8 +108,7 @@ SortitionParamsManager::SortitionParamsManager(const addr_t& node_addr, const Fu
                                                std::shared_ptr<DbStorage> db)
     : kConfig(config),
       sortition_config_(config.genesis.sortition),
-      batch_owner_(std::move(db)),
-      rust_storage_(&batch_owner_->rustStorage()) {
+      batch_owner_(std::move(db)) {
   (void)node_addr;
 
   rust_sortition_params_manager_ = rustaxa::create_sortition_params_manager_from_storage(
@@ -138,11 +137,14 @@ uint16_t SortitionParamsManager::calculateDagEfficiency(const PeriodData& block)
 
 void SortitionParamsManager::pbftBlockPushed(const PeriodData& block, Batch& batch,
                                              PbftPeriod non_empty_pbft_chain_size) {
-  const auto block_change = applyBlockForSortitionRuntime(block, non_empty_pbft_chain_size);
-  if (block_change.has_value()) {
-    rust_storage_->sortition_append_params_change_to_batch(batch_owner_->rustBatchId(batch),
-                                                           to_rust_change(*block_change));
-  }
+  (void)batch;
+  const auto counts = period_efficiency_counts(block);
+  const auto period = block.pbft_blk->getPeriod();
+  rust_sortition_params_manager_.value()->sortition_record_finalized_period_and_persist(
+      period, counts.has_pivot, counts.unique_transactions, counts.total_dag_transaction_refs,
+      non_empty_pbft_chain_size);
+  params_changes_ = from_rust_changes(rust_sortition_params_manager_.value()->sortition_params_changes());
+  apply_rust_params(sortition_config_, rust_sortition_params_manager_.value()->sortition_current_params());
 }
 
 std::optional<SortitionParamsChange> SortitionParamsManager::applyBlockForSortitionRuntime(

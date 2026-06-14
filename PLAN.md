@@ -262,7 +262,9 @@ Planned large slices:
    lookup now live in `rustaxa-consensus` over native Rust storage handles.
 3. Remove C++ batch/storage orchestration from consensus. Replace `createWriteBatch`, `rustBatchId`,
    `commitWriteBatch`, and C++ batch-driven append helpers in consensus shims with Rust-owned storage sessions and
-   commits. Atomic write ordering should be expressed in Rust storage transactions, not in C++.
+   commits. Atomic write ordering should be expressed in Rust storage transactions, not in C++. Current progress:
+   sortition `pbftBlockPushed` no longer maps its C++ `Batch&` through `DbStorage::rustBatchId`; emitted threshold
+   changes are persisted by the Rust sortition manager before live state is updated.
 4. Move read/query surfaces off `DbStorage` or isolate them. Network sync, RPC, GraphQL, and debug/query paths should
    use Rust storage query APIs or an explicit read-only query shim. These paths must not become consensus storage ports.
 5. Collapse `DbStorage` to compatibility-only. Delete or guard Rust-mode consensus accessors, remove obsolete C++

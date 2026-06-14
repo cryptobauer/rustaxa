@@ -10,7 +10,6 @@ use rustaxa_consensus::sortition::{
     calculate_dag_efficiency, SortitionConfig, SortitionParams, SortitionParamsChange,
     SortitionParamsManager, VdfParams, VrfParams,
 };
-use rustaxa_storage::Column;
 use std::collections::VecDeque;
 
 use crate::ffi::{rustaxa_ffi, BridgeSortitionParamsManager, BridgeStorage};
@@ -212,6 +211,39 @@ impl BridgeSortitionParamsManager {
         Ok(change.into())
     }
 
+    /// Records a finalized period and persists any emitted threshold change
+    /// through the Rust storage handle owned by the manager.
+    ///
+    /// This replaces the legacy Rust-mode route where C++ provided a `Batch&`
+    /// solely so the storage shim could translate it into a bridge batch id.
+    /// The Rust manager writes the emitted sortition change before publishing
+    /// the live threshold transition.
+    pub fn record_finalized_period_and_persist(
+        &mut self,
+        period: u64,
+        has_pivot: bool,
+        unique_transactions: u64,
+        total_dag_transaction_refs: u64,
+        non_empty_pbft_chain_size: u64,
+    ) -> Result<rustaxa_ffi::SortitionParamsChangeResult> {
+        let dag_efficiency = self.efficiency_from_counts(
+            has_pivot,
+            unique_transactions,
+            total_dag_transaction_refs,
+        )?;
+
+        let Some(change) = self.manager.record_finalized_period_and_persist(
+            period,
+            dag_efficiency,
+            non_empty_pbft_chain_size,
+        )?
+        else {
+            return Ok(empty_change_result());
+        };
+
+        Ok(change.into())
+    }
+
     /// Previews a finalized-period sortition transition without mutating runtime state.
     ///
     /// The returned change, when present, is suitable for inclusion in the PBFT
@@ -364,6 +396,24 @@ impl BridgeSortitionParamsManager {
         )
     }
 
+    /// CXX-exported method recording and persisting a finalized-period sortition update.
+    pub fn sortition_record_finalized_period_and_persist(
+        &mut self,
+        period: u64,
+        has_pivot: bool,
+        unique_transactions: u64,
+        total_dag_transaction_refs: u64,
+        non_empty_pbft_chain_size: u64,
+    ) -> Result<rustaxa_ffi::SortitionParamsChangeResult> {
+        self.record_finalized_period_and_persist(
+            period,
+            has_pivot,
+            unique_transactions,
+            total_dag_transaction_refs,
+            non_empty_pbft_chain_size,
+        )
+    }
+
     /// CXX-exported method previewing a finalized period without mutating sortition state.
     pub fn sortition_preview_finalized_period(
         &self,
@@ -449,26 +499,6 @@ pub fn create_sortition_params_manager_from_storage(
     storage: &BridgeStorage,
 ) -> Result<Box<BridgeSortitionParamsManager>> {
     BridgeSortitionParamsManager::create_from_storage(config, storage)
-}
-
-impl BridgeStorage {
-    /// Appends a sortition parameter change to an existing Rust storage batch.
-    ///
-    /// The caller owns the eventual batch commit. Unknown batch ids are
-    /// returned as errors rather than creating implicit storage side effects.
-    pub fn sortition_append_params_change_to_batch(
-        &self,
-        batch_id: u64,
-        change: rustaxa_ffi::SortitionParamsChangePayload,
-    ) -> Result<()> {
-        let change = SortitionParamsChange::from(change);
-        self.batch_put(
-            batch_id,
-            Column::SortitionParamsChange as u8,
-            change.period.to_le_bytes().to_vec(),
-            change.to_rlp_bytes(),
-        )
-    }
 }
 
 #[cfg(test)]
@@ -647,34 +677,19 @@ mod tests {
     }
 
     #[test]
-    fn sortition_append_params_change_to_batch_waits_for_commit() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_sortition_batch");
+    fn sortition_record_finalized_period_and_persist_writes_change() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_sortition_persist");
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let batch_id = storage
-                .create_write_batch()
-                .expect("batch should be created");
-            storage
-                .sortition_append_params_change_to_batch(
-                    batch_id,
-                    rustaxa_ffi::SortitionParamsChangePayload {
-                        period: 9,
-                        interval_efficiency: 4_444,
-                        threshold_upper: 777,
-                    },
-                )
-                .expect("change should append");
-            assert!(storage
-                .0
-                .metadata()
-                .params_change_for_period_rlp(9)
-                .expect("lookup should succeed")
-                .is_none());
+            let mut manager =
+                create_sortition_params_manager_from_storage(runtime_config(), &storage)
+                    .expect("manager should initialize");
+            let result = manager
+                .sortition_record_finalized_period_and_persist(9, true, 1, 2, 1)
+                .expect("change should persist");
+            assert!(result.changed);
 
-            storage
-                .commit_write_batch(batch_id, false)
-                .expect("batch should commit");
             let stored = storage
                 .0
                 .metadata()
@@ -683,7 +698,7 @@ mod tests {
                 .expect("change should exist");
             let decoded =
                 SortitionParamsChange::from_rlp_bytes(&stored).expect("change should decode");
-            assert_eq!(decoded.threshold_upper, 777);
+            assert_eq!(decoded.threshold_upper, result.threshold_upper);
         }
         let _ = fs::remove_dir_all(&temp_dir);
     }
