@@ -9,12 +9,11 @@ namespace taraxa::network::tarcap {
 GetDagSyncPacketHandler::GetDagSyncPacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                                                  std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                                                  std::shared_ptr<TransactionManager> trx_mgr,
-                                                 std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<DbStorage> db,
-                                                 const addr_t &node_addr, const std::string &logs_prefix)
+                                                 std::shared_ptr<DagManager> dag_mgr, const addr_t &node_addr,
+                                                 const std::string &logs_prefix)
     : PacketHandler(conf, std::move(peers_state), std::move(packets_stats), node_addr, logs_prefix + "GET_DAG_SYNC_PH"),
       trx_mgr_(std::move(trx_mgr)),
-      dag_mgr_(std::move(dag_mgr)),
-      db_(std::move(db)) {}
+      dag_mgr_(std::move(dag_mgr)) {}
 
 void GetDagSyncPacketHandler::process(const threadpool::PacketData &packet_data,
                                       [[maybe_unused]] const std::shared_ptr<TaraxaPeer> &peer) {

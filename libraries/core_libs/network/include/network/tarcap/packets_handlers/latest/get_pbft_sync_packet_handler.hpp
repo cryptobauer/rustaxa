@@ -36,7 +36,9 @@ class GetPbftSyncPacketHandler : public PacketHandler {
   std::shared_ptr<PbftManager> pbft_mgr_;
   std::shared_ptr<PbftChain> pbft_chain_;
   std::shared_ptr<VoteManager> vote_mgr_;
+#ifndef RUSTAXA_ENABLE
   std::shared_ptr<DbStorage> db_;
+#endif
 };
 
 }  // namespace taraxa::network::tarcap

@@ -340,6 +340,14 @@ class PbftManager {
   PbftPeriod pbftSyncingPeriod() const;
 
   /**
+   * @brief Load canonical finalized period-data RLP for PBFT sync from Rust-owned storage.
+   *
+   * The Rust-mode network sync handler uses this as a read-only payload view so it does not route sync storage reads
+   * through `DbStorage`. An empty vector means the requested period is not available locally.
+   */
+  dev::bytes getPbftSyncPeriodDataRaw(PbftPeriod period) const;
+
+  /**
    * @brief Get PBFT blocks syncing queue size
    * @return PBFT syncing queue size
    */

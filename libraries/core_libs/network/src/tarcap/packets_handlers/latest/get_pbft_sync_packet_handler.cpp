@@ -25,8 +25,16 @@ GetPbftSyncPacketHandler::GetPbftSyncPacketHandler(const FullNodeConfig &conf, s
       pbft_syncing_state_(std::move(pbft_syncing_state)),
       pbft_mgr_(std::move(pbft_mgr)),
       pbft_chain_(std::move(pbft_chain)),
-      vote_mgr_(std::move(vote_mgr)),
-      db_(std::move(db)) {}
+      vote_mgr_(std::move(vote_mgr))
+#ifndef RUSTAXA_ENABLE
+      ,
+      db_(std::move(db))
+#endif
+{
+#ifdef RUSTAXA_ENABLE
+  (void)db;
+#endif
+}
 
 void GetPbftSyncPacketHandler::process(const threadpool::PacketData &packet_data,
                                        const std::shared_ptr<TaraxaPeer> &peer) {
@@ -98,7 +106,11 @@ void GetPbftSyncPacketHandler::sendPbftBlocks(const std::shared_ptr<TaraxaPeer> 
 
   for (auto block_period = from_period; block_period < from_period + blocks_to_transfer; block_period++) {
     bool last_block = (block_period == from_period + blocks_to_transfer - 1);
+#ifndef RUSTAXA_ENABLE
     auto period_data = db_->getPeriodDataRaw(block_period);
+#else
+    auto period_data = pbft_mgr_->getPbftSyncPeriodDataRaw(block_period);
+#endif
     if (period_data.empty()) {
       // This can happen when switching from light node to full node setting
       LOG(log_er_) << "DB corrupted. Cannot find period " << block_period << " PBFT block in db";

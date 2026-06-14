@@ -272,7 +272,7 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersion
                                                              pbft_chain, pbft_mgr, dag_mgr, db, genesis_hash, node_addr,
                                                              logs_prefix);
       packets_handlers->registerHandler<GetDagSyncPacketHandler>(config, peers_state, packets_stats, trx_mgr, dag_mgr,
-                                                                 db, node_addr, logs_prefix);
+                                                                 node_addr, logs_prefix);
 
       packets_handlers->registerHandler<DagSyncPacketHandler>(config, peers_state, packets_stats, pbft_syncing_state,
                                                               pbft_chain, pbft_mgr, dag_mgr, trx_mgr, db, node_addr,
@@ -327,7 +327,7 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitV5VersionHand
                                                              pbft_chain, pbft_mgr, dag_mgr, db, genesis_hash, node_addr,
                                                              logs_prefix);
       packets_handlers->registerHandler<GetDagSyncPacketHandler>(config, peers_state, packets_stats, trx_mgr, dag_mgr,
-                                                                 db, node_addr, logs_prefix);
+                                                                 node_addr, logs_prefix);
 
       packets_handlers->registerHandler<DagSyncPacketHandler>(config, peers_state, packets_stats, pbft_syncing_state,
                                                               pbft_chain, pbft_mgr, dag_mgr, trx_mgr, db, node_addr,

@@ -297,6 +297,29 @@ pub fn pbft_manager_runtime_cert_voted_block_in_round(
         .unwrap_or_default())
 }
 
+/// Loads finalized period data for PBFT sync through the runtime-owned Rust
+/// storage handle.
+///
+/// Inputs:
+/// - `runtime`: long-lived PBFT manager runtime created from Rust storage.
+/// - `period`: PBFT period requested by the network sync peer.
+///
+/// Outputs:
+/// - The canonical legacy `PeriodData` RLP payload when present.
+/// - An empty byte vector when the period is not available locally.
+///
+/// Invariants and edge behavior:
+/// - This is a read-only network payload view; C++ may only wrap the returned
+///   bytes into a sync packet.
+/// - Storage read errors are returned to C++ instead of being mapped to an
+///   empty result.
+pub fn pbft_manager_runtime_period_data_raw(
+    runtime: &BridgePbftManagerRuntime,
+    period: u64,
+) -> anyhow::Result<Vec<u8>> {
+    runtime.storage.period().data_raw(period)
+}
+
 fn transition_runtime_apply_result(
     status: u8,
     applied_writes: u64,
@@ -1482,6 +1505,44 @@ mod tests {
                     .get_cert_voted_block_in_round()
                     .expect("compatibility storage view should load")
             );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_runtime_reads_period_data_from_owned_storage() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_period_data");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            storage
+                .save_pbft_mgr_field(0, 1)
+                .expect("round seed should persist");
+            storage
+                .save_pbft_mgr_field(1, 1)
+                .expect("step seed should persist");
+            storage
+                .save_pbft_mgr_field(2, 1_500)
+                .expect("lambda seed should persist");
+            storage
+                .save_period_data(7, vec![0xC8, 0xC0, 0xC0, 0xC0, 0xC0, 0xC0])
+                .expect("period data should persist");
+
+            let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
+                .expect("runtime should restore");
+
+            assert_eq!(
+                pbft_manager_runtime_period_data_raw(&runtime, 7)
+                    .expect("runtime-owned storage read should succeed"),
+                storage
+                    .get_period_data_raw(7)
+                    .expect("compatibility storage view should load")
+            );
+            assert!(pbft_manager_runtime_period_data_raw(&runtime, 8)
+                .expect("missing period read should succeed")
+                .is_empty());
         }
 
         let _ = fs::remove_dir_all(temp_dir);

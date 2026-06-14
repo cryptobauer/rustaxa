@@ -3531,6 +3531,14 @@ PbftPeriod PbftManager::pbftSyncingPeriod() const {
   return std::max(sync_queue_.getPeriod(), pbft_chain_->getPbftChainSize());
 }
 
+dev::bytes PbftManager::getPbftSyncPeriodDataRaw(PbftPeriod period) const {
+  if (!pbft_manager_runtime_.has_value()) {
+    throw std::runtime_error("PBFT manager Rust runtime must be initialized before serving PBFT sync period data");
+  }
+  const auto period_data = rustaxa::pbft_manager_runtime_period_data_raw(*pbft_manager_runtime_.value(), period);
+  return dev::bytes(period_data.begin(), period_data.end());
+}
+
 std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> PbftManager::processPeriodData() {
   auto [period_data, cert_votes, node_id] = sync_queue_.pop();
   auto pbft_block_hash = period_data.pbft_blk->getBlockHash();
