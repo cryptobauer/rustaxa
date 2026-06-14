@@ -142,7 +142,17 @@ pub struct BridgePbftVoteValidationRuntime {
 
 pub struct BridgePillarVotes(pub PillarVotes);
 
-pub struct BridgeSortitionParamsManager(pub SortitionParamsManager);
+/// Bridge wrapper for the Rust sortition parameter manager.
+///
+/// The manager owns deterministic threshold/runtime state. When constructed
+/// from storage, `storage` is also retained so period-specific lookups and
+/// startup replay stay inside Rust instead of asking C++ to materialize storage
+/// facts. Compatibility constructors may leave `storage = None` and pass
+/// explicit facts for unit-level planner tests.
+pub struct BridgeSortitionParamsManager {
+    pub manager: SortitionParamsManager,
+    pub storage: Option<Arc<Storage>>,
+}
 
 /// Bridge-owned transaction queue handle.
 ///
@@ -4903,6 +4913,10 @@ pub mod rustaxa_ffi {
             config: SortitionRuntimeConfig,
             params_changes: Vec<SortitionParamsChangePayload>,
         ) -> Result<Box<BridgeSortitionParamsManager>>;
+        pub fn create_sortition_params_manager_from_storage(
+            config: SortitionRuntimeConfig,
+            storage: &BridgeStorage,
+        ) -> Result<Box<BridgeSortitionParamsManager>>;
         pub fn sortition_current_params(
             self: &BridgeSortitionParamsManager,
         ) -> SortitionRuntimeParams;
@@ -4911,6 +4925,10 @@ pub mod rustaxa_ffi {
             found: bool,
             change: SortitionParamsChangePayload,
         ) -> SortitionRuntimeParams;
+        pub fn sortition_params_for_period_from_storage(
+            self: &BridgeSortitionParamsManager,
+            period: u64,
+        ) -> Result<SortitionRuntimeParams>;
         pub fn sortition_restore_finalized_period(
             self: &mut BridgeSortitionParamsManager,
             has_pivot: bool,
@@ -4953,6 +4971,11 @@ pub mod rustaxa_ffi {
             unique_transactions: u64,
             total_dag_transaction_refs: u64,
         ) -> SortitionEfficiencyResult;
+        pub fn sortition_append_params_change_to_batch(
+            self: &BridgeStorage,
+            batch_id: u64,
+            change: SortitionParamsChangePayload,
+        ) -> Result<()>;
 
         // Storage
 

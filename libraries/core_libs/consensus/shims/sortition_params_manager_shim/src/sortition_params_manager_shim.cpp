@@ -62,15 +62,6 @@ void apply_rust_params(SortitionConfig& config, const rustaxa::SortitionRuntimeP
   config.vdf.lambda_bound = params.lambda_bound;
 }
 
-rust::Vec<rustaxa::SortitionParamsChangePayload> to_rust_changes(const std::deque<SortitionParamsChange>& changes) {
-  rust::Vec<rustaxa::SortitionParamsChangePayload> rust_changes;
-  rust_changes.reserve(changes.size());
-  for (const auto& change : changes) {
-    rust_changes.push_back(to_rust_change(change));
-  }
-  return rust_changes;
-}
-
 std::deque<SortitionParamsChange> from_rust_changes(const rust::Vec<rustaxa::SortitionParamsChangePayload>& changes) {
   std::deque<SortitionParamsChange> out;
   for (const auto& change : changes) {
@@ -115,39 +106,16 @@ rustaxa::PbftFinalizationLiveMutationReport makeSortitionFinalizationLiveReport(
 
 SortitionParamsManager::SortitionParamsManager(const addr_t& node_addr, const FullNodeConfig& config,
                                                std::shared_ptr<DbStorage> db)
-    : kConfig(config), sortition_config_(config.genesis.sortition), db_(std::move(db)) {
+    : kConfig(config),
+      sortition_config_(config.genesis.sortition),
+      batch_owner_(std::move(db)),
+      rust_storage_(&batch_owner_->rustStorage()) {
   (void)node_addr;
 
-  params_changes_ = db_->getLastSortitionParams(sortition_config_.changes_count_for_average);
-  if (params_changes_.empty()) {
-    auto batch = db_->createWriteBatch();
-    SortitionParamsChange change{0, sortition_config_.targetEfficiency(), sortition_config_.vrf};
-    db_->saveSortitionParamsChange(0, change, batch);
-    db_->commitWriteBatch(batch);
-    params_changes_.push_back(change);
-  } else {
-    sortition_config_.vrf = params_changes_.back().vrf_params;
-  }
-
-  rust_sortition_params_manager_ =
-      rustaxa::create_sortition_params_manager(to_rust_config(sortition_config_), to_rust_changes(params_changes_));
+  rust_sortition_params_manager_ = rustaxa::create_sortition_params_manager_from_storage(
+      to_rust_config(sortition_config_), batch_owner_->rustStorage());
   params_changes_ = from_rust_changes(rust_sortition_params_manager_.value()->sortition_params_changes());
   apply_rust_params(sortition_config_, rust_sortition_params_manager_.value()->sortition_current_params());
-
-  auto period = params_changes_.back().period + 1;
-  while (true) {
-    auto period_data = db_->getPeriodData(period);
-    if (!period_data.has_value()) {
-      break;
-    }
-
-    period++;
-    const auto counts = period_efficiency_counts(*period_data);
-    if (counts.has_pivot) {
-      rust_sortition_params_manager_.value()->sortition_restore_finalized_period(
-          counts.has_pivot, counts.unique_transactions, counts.total_dag_transaction_refs);
-    }
-  }
 }
 
 SortitionParams SortitionParamsManager::getSortitionParams(std::optional<PbftPeriod> for_period) const {
@@ -155,13 +123,7 @@ SortitionParams SortitionParamsManager::getSortitionParams(std::optional<PbftPer
     return from_rust_params(rust_sortition_params_manager_.value()->sortition_current_params());
   }
 
-  auto change = db_->getParamsChangeForPeriod(*for_period);
-  rustaxa::SortitionParamsChangePayload rust_change{};
-  if (change.has_value()) {
-    rust_change = to_rust_change(*change);
-  }
-  return from_rust_params(
-      rust_sortition_params_manager_.value()->sortition_params_for_period(change.has_value(), rust_change));
+  return from_rust_params(rust_sortition_params_manager_.value()->sortition_params_for_period_from_storage(*for_period));
 }
 
 uint16_t SortitionParamsManager::calculateDagEfficiency(const PeriodData& block) const {
@@ -178,7 +140,8 @@ void SortitionParamsManager::pbftBlockPushed(const PeriodData& block, Batch& bat
                                              PbftPeriod non_empty_pbft_chain_size) {
   const auto block_change = applyBlockForSortitionRuntime(block, non_empty_pbft_chain_size);
   if (block_change.has_value()) {
-    db_->saveSortitionParamsChange(block.pbft_blk->getPeriod(), *block_change, batch);
+    rust_storage_->sortition_append_params_change_to_batch(batch_owner_->rustBatchId(batch),
+                                                           to_rust_change(*block_change));
   }
 }
 

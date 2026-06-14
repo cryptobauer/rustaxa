@@ -16,17 +16,16 @@ namespace taraxa {
  * Rust-mode sortition parameter manager facade.
  *
  * The facade preserves the public C++ API while routing deterministic
- * efficiency sampling and VRF threshold updates to Rust. Startup storage reads
- * and non-finalization callers keep the legacy C++ batch surface, while PBFT
- * finalization can ask this shim for the emitted change and persist it through
- * the Rust staged finalization storage appender.
+ * efficiency sampling, VRF threshold updates, startup replay, and historical
+ * parameter lookups to Rust. The legacy `pbftBlockPushed` API still receives a
+ * C++ `Batch&`; this shim uses DbStorage only as the temporary Rust batch-id
+ * registry for that compatibility surface.
  *
  * Inputs and outputs match the legacy SortitionParamsManager surface. PeriodData
  * is reduced to a pivot flag, finalized unique transaction count, and total DAG
  * transaction references before crossing the bridge. SortitionParamsChange
- * values remain serialized by the existing C++ storage APIs. Unsupported
- * protected helper calls throw locally instead of falling back to
- * SortitionParamsManagerOld.
+ * values are stored through Rust storage APIs. Unsupported protected helper
+ * calls throw locally instead of falling back to SortitionParamsManagerOld.
  *
  * Invariants and edge behavior:
  * - Empty storage is initialized with the genesis VRF threshold at period 0.
@@ -124,7 +123,8 @@ class SortitionParamsManager {
  protected:
   const FullNodeConfig kConfig;
   SortitionConfig sortition_config_;
-  std::shared_ptr<DbStorage> db_;
+  std::shared_ptr<DbStorage> batch_owner_;
+  rustaxa::BridgeStorage* rust_storage_;
   std::deque<SortitionParamsChange> params_changes_;
   std::optional<::rust::Box<rustaxa::BridgeSortitionParamsManager>> rust_sortition_params_manager_;
 
