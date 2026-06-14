@@ -144,7 +144,12 @@ rewrite-validate-fast: ## Run fast Rust rewrite checks and whitespace validation
 	cargo fmt --manifest-path $(RUST_MANIFEST) --all --check
 	cargo clippy --manifest-path $(RUST_MANIFEST)
 	cargo test --manifest-path $(RUST_MANIFEST)
+	$(MAKE) rewrite-storage-boundary-guard
 	git diff --check
+
+.PHONY: rewrite-storage-boundary-guard
+rewrite-storage-boundary-guard: ## Reject newly added Rust-mode C++ consensus storage routes.
+	scripts/rewrite_storage_boundary_guard.sh
 
 .PHONY: rewrite-validate-storage
 rewrite-validate-storage: ## Run Rust storage bridge tests and C++ vs Rust storage conformance diff.

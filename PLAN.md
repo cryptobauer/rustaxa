@@ -187,6 +187,23 @@ The central storage lifecycle is pending-to-finalized:
 
 This makes `period_data` one of the highest-value Rust rewrite targets.
 
+### Rust-Mode Storage Boundary
+
+Target state: Rust-mode consensus and FinalChain code must not route storage reads or writes through C++.
+`rustaxa-storage` is the durable storage owner below the Rust consensus and FinalChain runtimes. The C++ compatibility
+shell may hold opaque Rust handles and translate legacy public API views, but it must not collect consensus facts from
+`DbStorage`, assemble storage batches, choose storage write ordering, or commit consensus/final-chain rows on behalf of
+Rust. Any remaining C++ storage access in Rust mode is temporary migration debt that should be removed by the relevant
+subsystem slice.
+
+The only accepted near-term exception is the external EVM boundary: `StateAPI` / `state_db` may remain behind the C++
+EVM executor adapter while arbitrary EVM execution is outside Rust. That exception must not be used to read or write
+`DbStorage` consensus/final-chain column families.
+
+New Rust-mode C++ storage routes are guarded by `scripts/rewrite_storage_boundary_guard.sh`, which is part of
+`make rewrite-validate-fast`. The guard checks newly added C++ lines for direct `DbStorage`, `db_->`, C++ batch, Rust
+storage-handle, and column-family usage outside the storage shim, legacy storage implementation, and tests.
+
 ### Current Rust Storage Coverage
 
 Rust-mode shim implementations live in `libraries/core_libs/consensus/shims/storage_shim/src/storage_shim.cpp`. Legacy `libraries/core_libs/storage/src/storage.cpp` remains legacy-only logic.
