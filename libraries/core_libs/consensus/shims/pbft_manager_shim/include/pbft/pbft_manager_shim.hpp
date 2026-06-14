@@ -348,6 +348,15 @@ class PbftManager {
   dev::bytes getPbftSyncPeriodDataRaw(PbftPeriod period) const;
 
   /**
+   * @brief Enable or disable PBFT sync snapshot creation through the Rust-mode PBFT manager boundary.
+   *
+   * Network sync uses this method when entering or leaving deep PBFT sync so packet handlers do not own or route
+   * storage handles. The storage shim remains the temporary snapshot lifecycle adapter until snapshot creation itself
+   * is migrated to Rust storage.
+   */
+  void setPbftSyncSnapshotCreationEnabled(bool enabled);
+
+  /**
    * @brief Get PBFT blocks syncing queue size
    * @return PBFT syncing queue size
    */

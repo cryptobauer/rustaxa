@@ -14,13 +14,20 @@ PbftSyncPacketHandler::PbftSyncPacketHandler(const FullNodeConfig &conf, std::sh
                                              std::shared_ptr<PbftSyncingState> pbft_syncing_state,
                                              std::shared_ptr<PbftChain> pbft_chain,
                                              std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
-                                             std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DbStorage> db,
+                                             std::shared_ptr<VoteManager> vote_mgr,
+#ifndef RUSTAXA_ENABLE
+                                             std::shared_ptr<DbStorage> db,
+#endif
                                              const addr_t &node_addr, const std::string &logs_prefix)
     : ISyncPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_syncing_state),
-                         std::move(pbft_chain), std::move(pbft_mgr), std::move(dag_mgr), std::move(db), node_addr,
-                         logs_prefix + "PBFT_SYNC_PH"),
+                         std::move(pbft_chain), std::move(pbft_mgr), std::move(dag_mgr),
+#ifndef RUSTAXA_ENABLE
+                         std::move(db),
+#endif
+                         node_addr, logs_prefix + "PBFT_SYNC_PH"),
       vote_mgr_(std::move(vote_mgr)),
-      periodic_events_tp_(1, true) {}
+      periodic_events_tp_(1, true) {
+}
 
 void PbftSyncPacketHandler::process(const threadpool::PacketData &packet_data,
                                     const std::shared_ptr<TaraxaPeer> &peer) {

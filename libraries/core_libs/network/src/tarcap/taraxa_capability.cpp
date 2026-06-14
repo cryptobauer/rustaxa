@@ -29,13 +29,22 @@
 
 namespace taraxa::network::tarcap {
 
+#ifdef RUSTAXA_ENABLE
+#define RUSTAXA_LEGACY_DB_ARG
+#else
+#define RUSTAXA_LEGACY_DB_ARG db,
+#endif
+
 TaraxaCapability::TaraxaCapability(
     TarcapVersion version, const FullNodeConfig &conf, const h256 &genesis_hash, std::weak_ptr<dev::p2p::Host> host,
     std::shared_ptr<network::threadpool::PacketsThreadPool> threadpool,
     std::shared_ptr<TimePeriodPacketsStats> packets_stats, std::shared_ptr<PbftSyncingState> syncing_state,
-    std::shared_ptr<DbStorage> db, std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<PbftChain> pbft_chain,
-    std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
-    std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<SlashingManager> slashing_manager,
+#ifndef RUSTAXA_ENABLE
+    std::shared_ptr<DbStorage> db,
+#endif
+    std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
+    std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
+    std::shared_ptr<SlashingManager> slashing_manager,
     std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr,
     std::shared_ptr<final_chain::FinalChain> final_chain, InitPacketsHandlers init_packets_handlers)
     : version_(version),
@@ -52,9 +61,13 @@ TaraxaCapability::TaraxaCapability(
   LOG_OBJECTS_CREATE(logs_prefix + "TARCAP");
 
   peers_state_ = std::make_shared<PeersState>(host, kConf);
-  packets_handlers_ = init_packets_handlers(logs_prefix, conf, genesis_hash, peers_state_, pbft_syncing_state_,
-                                            all_packets_stats_, db, pbft_mgr, pbft_chain, vote_mgr, dag_mgr, trx_mgr,
-                                            slashing_manager, pillar_chain_mgr, final_chain, version, node_addr);
+  packets_handlers_ =
+      init_packets_handlers(logs_prefix, conf, genesis_hash, peers_state_, pbft_syncing_state_, all_packets_stats_,
+#ifndef RUSTAXA_ENABLE
+                            db,
+#endif
+                            pbft_mgr, pbft_chain, vote_mgr, dag_mgr, trx_mgr, slashing_manager, pillar_chain_mgr,
+                            final_chain, version, node_addr);
 
   // Must be called after init_packets_handlers
   thread_pool_->setPacketsHandlers(version, packets_handlers_);
@@ -244,7 +257,10 @@ const std::shared_ptr<PeersState> &TaraxaCapability::getPeersState() { return pe
 const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersionHandlers =
     [](const std::string &logs_prefix, const FullNodeConfig &config, const h256 &genesis_hash,
        const std::shared_ptr<PeersState> &peers_state, const std::shared_ptr<PbftSyncingState> &pbft_syncing_state,
-       const std::shared_ptr<tarcap::TimePeriodPacketsStats> &packets_stats, const std::shared_ptr<DbStorage> &db,
+       const std::shared_ptr<tarcap::TimePeriodPacketsStats> &packets_stats,
+#ifndef RUSTAXA_ENABLE
+       const std::shared_ptr<DbStorage> &db,
+#endif
        const std::shared_ptr<PbftManager> &pbft_mgr, const std::shared_ptr<PbftChain> &pbft_chain,
        const std::shared_ptr<VoteManager> &vote_mgr, const std::shared_ptr<DagManager> &dag_mgr,
        const std::shared_ptr<TransactionManager> &trx_mgr, const std::shared_ptr<SlashingManager> &slashing_manager,
@@ -261,30 +277,30 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersion
 
       // Standard packets with mid processing priority
       packets_handlers->registerHandler<DagBlockPacketHandler>(config, peers_state, packets_stats, pbft_syncing_state,
-                                                               pbft_chain, pbft_mgr, dag_mgr, trx_mgr, db, node_addr,
-                                                               logs_prefix);
+                                                               pbft_chain, pbft_mgr, dag_mgr, trx_mgr,
+                                                               RUSTAXA_LEGACY_DB_ARG node_addr, logs_prefix);
 
       packets_handlers->registerHandler<TransactionPacketHandler>(config, peers_state, packets_stats, trx_mgr,
                                                                   node_addr, logs_prefix);
 
       // Non critical packets with low processing priority
-      packets_handlers->registerHandler<StatusPacketHandler>(config, peers_state, packets_stats, pbft_syncing_state,
-                                                             pbft_chain, pbft_mgr, dag_mgr, db, genesis_hash, node_addr,
-                                                             logs_prefix);
+      packets_handlers->registerHandler<StatusPacketHandler>(
+          config, peers_state, packets_stats, pbft_syncing_state, pbft_chain, pbft_mgr, dag_mgr,
+          RUSTAXA_LEGACY_DB_ARG genesis_hash, node_addr, logs_prefix);
       packets_handlers->registerHandler<GetDagSyncPacketHandler>(config, peers_state, packets_stats, trx_mgr, dag_mgr,
                                                                  node_addr, logs_prefix);
 
       packets_handlers->registerHandler<DagSyncPacketHandler>(config, peers_state, packets_stats, pbft_syncing_state,
-                                                              pbft_chain, pbft_mgr, dag_mgr, trx_mgr, db, node_addr,
-                                                              logs_prefix);
+                                                              pbft_chain, pbft_mgr, dag_mgr, trx_mgr,
+                                                              RUSTAXA_LEGACY_DB_ARG node_addr, logs_prefix);
 
       packets_handlers->registerHandler<GetPbftSyncPacketHandler>(config, peers_state, packets_stats,
                                                                   pbft_syncing_state, pbft_mgr, pbft_chain, vote_mgr,
-                                                                  db, node_addr, logs_prefix);
+                                                                  RUSTAXA_LEGACY_DB_ARG node_addr, logs_prefix);
 
       packets_handlers->registerHandler<PbftSyncPacketHandler>(config, peers_state, packets_stats, pbft_syncing_state,
-                                                               pbft_chain, pbft_mgr, dag_mgr, vote_mgr, db, node_addr,
-                                                               logs_prefix);
+                                                               pbft_chain, pbft_mgr, dag_mgr, vote_mgr,
+                                                               RUSTAXA_LEGACY_DB_ARG node_addr, logs_prefix);
       packets_handlers->registerHandler<PillarVotePacketHandler>(config, peers_state, packets_stats, pillar_chain_mgr,
                                                                  node_addr, logs_prefix);
       packets_handlers->registerHandler<GetPillarVotesBundlePacketHandler>(config, peers_state, packets_stats,
@@ -299,7 +315,10 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersion
 const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitV5VersionHandlers =
     [](const std::string &logs_prefix, const FullNodeConfig &config, const h256 &genesis_hash,
        const std::shared_ptr<PeersState> &peers_state, const std::shared_ptr<PbftSyncingState> &pbft_syncing_state,
-       const std::shared_ptr<tarcap::TimePeriodPacketsStats> &packets_stats, const std::shared_ptr<DbStorage> &db,
+       const std::shared_ptr<tarcap::TimePeriodPacketsStats> &packets_stats,
+#ifndef RUSTAXA_ENABLE
+       const std::shared_ptr<DbStorage> &db,
+#endif
        const std::shared_ptr<PbftManager> &pbft_mgr, const std::shared_ptr<PbftChain> &pbft_chain,
        const std::shared_ptr<VoteManager> &vote_mgr, const std::shared_ptr<DagManager> &dag_mgr,
        const std::shared_ptr<TransactionManager> &trx_mgr, const std::shared_ptr<SlashingManager> &slashing_manager,
@@ -316,30 +335,30 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitV5VersionHand
 
       // Standard packets with mid processing priority
       packets_handlers->registerHandler<DagBlockPacketHandler>(config, peers_state, packets_stats, pbft_syncing_state,
-                                                               pbft_chain, pbft_mgr, dag_mgr, trx_mgr, db, node_addr,
-                                                               logs_prefix);
+                                                               pbft_chain, pbft_mgr, dag_mgr, trx_mgr,
+                                                               RUSTAXA_LEGACY_DB_ARG node_addr, logs_prefix);
 
       packets_handlers->registerHandler<TransactionPacketHandler>(config, peers_state, packets_stats, trx_mgr,
                                                                   node_addr, logs_prefix);
 
       // Non critical packets with low processing priority
-      packets_handlers->registerHandler<StatusPacketHandler>(config, peers_state, packets_stats, pbft_syncing_state,
-                                                             pbft_chain, pbft_mgr, dag_mgr, db, genesis_hash, node_addr,
-                                                             logs_prefix);
+      packets_handlers->registerHandler<StatusPacketHandler>(
+          config, peers_state, packets_stats, pbft_syncing_state, pbft_chain, pbft_mgr, dag_mgr,
+          RUSTAXA_LEGACY_DB_ARG genesis_hash, node_addr, logs_prefix);
       packets_handlers->registerHandler<GetDagSyncPacketHandler>(config, peers_state, packets_stats, trx_mgr, dag_mgr,
                                                                  node_addr, logs_prefix);
 
       packets_handlers->registerHandler<DagSyncPacketHandler>(config, peers_state, packets_stats, pbft_syncing_state,
-                                                              pbft_chain, pbft_mgr, dag_mgr, trx_mgr, db, node_addr,
-                                                              logs_prefix);
+                                                              pbft_chain, pbft_mgr, dag_mgr, trx_mgr,
+                                                              RUSTAXA_LEGACY_DB_ARG node_addr, logs_prefix);
 
-      packets_handlers->registerHandler<v4::GetPbftSyncPacketHandler>(config, peers_state, packets_stats,
-                                                                      pbft_syncing_state, pbft_mgr, pbft_chain,
-                                                                      vote_mgr, db, node_addr, logs_prefix);
+      packets_handlers->registerHandler<v4::GetPbftSyncPacketHandler>(
+          config, peers_state, packets_stats, pbft_syncing_state, pbft_mgr, pbft_chain, vote_mgr,
+          RUSTAXA_LEGACY_DB_ARG node_addr, logs_prefix);
 
       packets_handlers->registerHandler<PbftSyncPacketHandler>(config, peers_state, packets_stats, pbft_syncing_state,
-                                                               pbft_chain, pbft_mgr, dag_mgr, vote_mgr, db, node_addr,
-                                                               logs_prefix);
+                                                               pbft_chain, pbft_mgr, dag_mgr, vote_mgr,
+                                                               RUSTAXA_LEGACY_DB_ARG node_addr, logs_prefix);
       packets_handlers->registerHandler<PillarVotePacketHandler>(config, peers_state, packets_stats, pillar_chain_mgr,
                                                                  node_addr, logs_prefix);
       packets_handlers->registerHandler<GetPillarVotesBundlePacketHandler>(config, peers_state, packets_stats,
@@ -348,5 +367,7 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitV5VersionHand
                                                                         pillar_chain_mgr, node_addr, logs_prefix);
       return packets_handlers;
     };
+
+#undef RUSTAXA_LEGACY_DB_ARG
 
 }  // namespace taraxa::network::tarcap

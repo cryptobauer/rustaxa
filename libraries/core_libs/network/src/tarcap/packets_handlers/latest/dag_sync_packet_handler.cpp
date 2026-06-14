@@ -13,12 +13,19 @@ DagSyncPacketHandler::DagSyncPacketHandler(const FullNodeConfig& conf, std::shar
                                            std::shared_ptr<PbftSyncingState> pbft_syncing_state,
                                            std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<PbftManager> pbft_mgr,
                                            std::shared_ptr<DagManager> dag_mgr,
-                                           std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<DbStorage> db,
+                                           std::shared_ptr<TransactionManager> trx_mgr,
+#ifndef RUSTAXA_ENABLE
+                                           std::shared_ptr<DbStorage> db,
+#endif
                                            const addr_t& node_addr, const std::string& logs_prefix)
     : ISyncPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_syncing_state),
-                         std::move(pbft_chain), std::move(pbft_mgr), std::move(dag_mgr), std::move(db), node_addr,
-                         logs_prefix + "DAG_SYNC_PH"),
-      trx_mgr_(std::move(trx_mgr)) {}
+                         std::move(pbft_chain), std::move(pbft_mgr), std::move(dag_mgr),
+#ifndef RUSTAXA_ENABLE
+                         std::move(db),
+#endif
+                         node_addr, logs_prefix + "DAG_SYNC_PH"),
+      trx_mgr_(std::move(trx_mgr)) {
+}
 
 void DagSyncPacketHandler::process(const threadpool::PacketData& packet_data, const std::shared_ptr<TaraxaPeer>& peer) {
   // Decode packet rlp into packet object

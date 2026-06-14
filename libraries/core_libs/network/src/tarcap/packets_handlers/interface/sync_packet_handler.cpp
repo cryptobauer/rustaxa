@@ -10,12 +10,19 @@ ISyncPacketHandler::ISyncPacketHandler(const FullNodeConfig& conf, std::shared_p
                                        std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                                        std::shared_ptr<PbftSyncingState> pbft_syncing_state,
                                        std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<PbftManager> pbft_mgr,
-                                       std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<DbStorage> db,
+                                       std::shared_ptr<DagManager> dag_mgr,
+#ifndef RUSTAXA_ENABLE
+                                       std::shared_ptr<DbStorage> db,
+#endif
                                        const addr_t& node_addr, const std::string& logs_prefix)
     : ExtSyncingPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_syncing_state),
-                              std::move(pbft_chain), std::move(pbft_mgr), std::move(dag_mgr), std::move(db), node_addr,
-                              logs_prefix),
-      kGenesisHash(kConf.genesis.genesisHash()) {}
+                              std::move(pbft_chain), std::move(pbft_mgr), std::move(dag_mgr),
+#ifndef RUSTAXA_ENABLE
+                              std::move(db),
+#endif
+                              node_addr, logs_prefix),
+      kGenesisHash(kConf.genesis.genesisHash()) {
+}
 
 void ISyncPacketHandler::startSyncingPbft() {
   if (pbft_syncing_state_->isPbftSyncing()) {
@@ -43,7 +50,11 @@ void ISyncPacketHandler::startSyncingPbft() {
     if (syncPeerPbft(pbft_sync_period + 1)) {
       // Disable snapshots only if are syncing from scratch
       if (pbft_syncing_state_->isDeepPbftSyncing()) {
+#ifdef RUSTAXA_ENABLE
+        pbft_mgr_->setPbftSyncSnapshotCreationEnabled(false);
+#else
         db_->disableSnapshots();
+#endif
       }
     } else {
       pbft_syncing_state_->setPbftSyncing(false);
@@ -52,7 +63,11 @@ void ISyncPacketHandler::startSyncingPbft() {
     LOG(this->log_nf_) << "Restarting syncing PBFT not needed since our pbft chain size: " << pbft_sync_period << "("
                        << pbft_chain_->getPbftChainSize() << ")"
                        << " is greater or equal than max node pbft chain size:" << peer->pbft_chain_size_;
+#ifdef RUSTAXA_ENABLE
+    pbft_mgr_->setPbftSyncSnapshotCreationEnabled(true);
+#else
     db_->enableSnapshots();
+#endif
   }
 }
 

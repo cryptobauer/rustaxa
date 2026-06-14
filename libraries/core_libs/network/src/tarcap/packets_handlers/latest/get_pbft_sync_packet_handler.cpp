@@ -18,7 +18,10 @@ GetPbftSyncPacketHandler::GetPbftSyncPacketHandler(const FullNodeConfig &conf, s
                                                    std::shared_ptr<PbftSyncingState> pbft_syncing_state,
                                                    std::shared_ptr<PbftManager> pbft_mgr,
                                                    std::shared_ptr<PbftChain> pbft_chain,
-                                                   std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DbStorage> db,
+                                                   std::shared_ptr<VoteManager> vote_mgr,
+#ifndef RUSTAXA_ENABLE
+                                                   std::shared_ptr<DbStorage> db,
+#endif
                                                    const addr_t &node_addr, const std::string &logs_prefix)
     : PacketHandler(conf, std::move(peers_state), std::move(packets_stats), node_addr,
                     logs_prefix + "GET_PBFT_SYNC_PH"),
@@ -31,9 +34,6 @@ GetPbftSyncPacketHandler::GetPbftSyncPacketHandler(const FullNodeConfig &conf, s
       db_(std::move(db))
 #endif
 {
-#ifdef RUSTAXA_ENABLE
-  (void)db;
-#endif
 }
 
 void GetPbftSyncPacketHandler::process(const threadpool::PacketData &packet_data,

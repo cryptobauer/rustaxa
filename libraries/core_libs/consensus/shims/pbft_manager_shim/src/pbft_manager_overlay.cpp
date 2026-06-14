@@ -3539,6 +3539,14 @@ dev::bytes PbftManager::getPbftSyncPeriodDataRaw(PbftPeriod period) const {
   return dev::bytes(period_data.begin(), period_data.end());
 }
 
+void PbftManager::setPbftSyncSnapshotCreationEnabled(bool enabled) {
+  if (enabled) {
+    db_->enableSnapshots();
+    return;
+  }
+  db_->disableSnapshots();
+}
+
 std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> PbftManager::processPeriodData() {
   auto [period_data, cert_votes, node_id] = sync_queue_.pop();
   auto pbft_block_hash = period_data.pbft_blk->getBlockHash();

@@ -57,7 +57,10 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
       const std::string &logs_prefix, const FullNodeConfig &config, const h256 &genesis_hash,
       const std::shared_ptr<PeersState> &peers_state, const std::shared_ptr<PbftSyncingState> &pbft_syncing_state,
 
-      const std::shared_ptr<tarcap::TimePeriodPacketsStats> &packets_stats, const std::shared_ptr<DbStorage> &db,
+      const std::shared_ptr<tarcap::TimePeriodPacketsStats> &packets_stats,
+#ifndef RUSTAXA_ENABLE
+      const std::shared_ptr<DbStorage> &db,
+#endif
       const std::shared_ptr<PbftManager> &pbft_mgr, const std::shared_ptr<PbftChain> &pbft_chain,
       const std::shared_ptr<VoteManager> &vote_mgr, const std::shared_ptr<DagManager> &dag_mgr,
       const std::shared_ptr<TransactionManager> &trx_mgr, const std::shared_ptr<SlashingManager> &slashing_manager,
@@ -75,7 +78,10 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
                    std::weak_ptr<dev::p2p::Host> host,
                    std::shared_ptr<network::threadpool::PacketsThreadPool> threadpool,
                    std::shared_ptr<TimePeriodPacketsStats> packets_stats,
-                   std::shared_ptr<PbftSyncingState> syncing_state, std::shared_ptr<DbStorage> db,
+                   std::shared_ptr<PbftSyncingState> syncing_state,
+#ifndef RUSTAXA_ENABLE
+                   std::shared_ptr<DbStorage> db,
+#endif
                    std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<PbftChain> pbft_chain,
                    std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
                    std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<SlashingManager> slashing_manager,

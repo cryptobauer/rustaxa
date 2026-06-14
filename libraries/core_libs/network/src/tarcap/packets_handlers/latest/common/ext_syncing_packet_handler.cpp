@@ -13,14 +13,22 @@ ExtSyncingPacketHandler::ExtSyncingPacketHandler(const FullNodeConfig &conf, std
                                                  std::shared_ptr<PbftSyncingState> pbft_syncing_state,
                                                  std::shared_ptr<PbftChain> pbft_chain,
                                                  std::shared_ptr<PbftManager> pbft_mgr,
-                                                 std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<DbStorage> db,
+                                                 std::shared_ptr<DagManager> dag_mgr,
+#ifndef RUSTAXA_ENABLE
+                                                 std::shared_ptr<DbStorage> db,
+#endif
                                                  const addr_t &node_addr, const std::string &log_channel_name)
     : PacketHandler(conf, std::move(peers_state), std::move(packets_stats), node_addr, log_channel_name),
       pbft_syncing_state_(std::move(pbft_syncing_state)),
       pbft_chain_(std::move(pbft_chain)),
       pbft_mgr_(std::move(pbft_mgr)),
-      dag_mgr_(std::move(dag_mgr)),
-      db_(std::move(db)) {}
+      dag_mgr_(std::move(dag_mgr))
+#ifndef RUSTAXA_ENABLE
+      ,
+      db_(std::move(db))
+#endif
+{
+}
 
 void ExtSyncingPacketHandler::requestPendingDagBlocks(std::shared_ptr<TaraxaPeer> peer) {
   if (!peer) {

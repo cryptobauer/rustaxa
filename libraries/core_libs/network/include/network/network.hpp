@@ -27,7 +27,10 @@ class PacketHandler;
 class Network {
  public:
   Network(const FullNodeConfig &config, const h256 &genesis_hash, const std::filesystem::path &network_file_path,
-          std::shared_ptr<DbStorage> db, std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<PbftChain> pbft_chain,
+#ifndef RUSTAXA_ENABLE
+          std::shared_ptr<DbStorage> db,
+#endif
+          std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<PbftChain> pbft_chain,
           std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
           std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<SlashingManager> slashing_manager,
           std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr,
