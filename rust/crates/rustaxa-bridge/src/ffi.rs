@@ -1241,22 +1241,6 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    /// Storage-derived duplicate/resume facts for an already-persisted PBFT block.
-    struct PbftFinalizationResumeFact {
-        block_in_chain: bool,
-        block_period: u64,
-        final_chain_last_block: u64,
-        pbft_period_mapping_matches: bool,
-        period_data_matches: bool,
-        dag_positions_match: bool,
-        transaction_positions_match: bool,
-        missing_primary_facts: bool,
-        conflicting_primary_facts: bool,
-        dynamic_lambda_required: bool,
-        dynamic_lambda_persisted: bool,
-        executed_status_persisted: bool,
-    }
-
     /// Rust classification of durable PBFT finalization resume state.
     struct PbftFinalizationResumePlan {
         status: u8,

@@ -22,7 +22,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationLiveMutationReport as FfiPbftFinalizationLiveMutationReport,
     PbftFinalizationLiveMutationValidation as FfiPbftFinalizationLiveMutationValidation,
     PbftFinalizationPositionedHash as FfiPbftFinalizationPositionedHash,
-    PbftFinalizationResumeFact as FfiPbftFinalizationResumeFact,
     PbftFinalizationResumePlan as FfiPbftFinalizationResumePlan,
     PbftFinalizationRuntimeActionReport as FfiPbftFinalizationRuntimeActionReport,
     PbftFinalizationRuntimePlan as FfiPbftFinalizationRuntimePlan,
@@ -36,10 +35,10 @@ use anyhow::{anyhow, Context, Result};
 use ethereum_types::H256;
 use rustaxa_consensus::pbft_finalize::{
     apply_pbft_finalization_storage_writes as apply_domain_pbft_finalization_storage_writes,
+    inspect_pbft_finalization_resume as inspect_domain_pbft_finalization_resume,
     next_pbft_finalization_runtime_action,
     plan_pbft_dynamic_lambda as plan_domain_pbft_dynamic_lambda,
     plan_pbft_finalization_intent as plan_domain_pbft_finalization_intent,
-    plan_pbft_finalization_resume as plan_domain_pbft_finalization_resume,
     plan_pbft_finalization_runtime as plan_domain_pbft_finalization_runtime,
     report_pbft_finalization_runtime_action, start_pbft_finalization_resume_runtime,
     start_pbft_finalization_runtime,
@@ -47,10 +46,9 @@ use rustaxa_consensus::pbft_finalize::{
     PbftDynamicLambdaConfig, PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationAnchor,
     PbftFinalizationCleanupIntent, PbftFinalizationIntentFact, PbftFinalizationLiveMutationReport,
     PbftFinalizationLiveMutationValidation, PbftFinalizationPlan, PbftFinalizationPositionedHash,
-    PbftFinalizationResumeFact, PbftFinalizationResumePlan, PbftFinalizationRuntimeAction,
-    PbftFinalizationRuntimeActionResult, PbftFinalizationRuntimeStatus, PbftFinalizationStatus,
-    PbftFinalizationStorageWriteIntent, PbftFinalizationStorageWriteStage,
-    PbftFinalizedPeriodApplyResult,
+    PbftFinalizationResumePlan, PbftFinalizationRuntimeAction, PbftFinalizationRuntimeActionResult,
+    PbftFinalizationRuntimeStatus, PbftFinalizationStatus, PbftFinalizationStorageWriteIntent,
+    PbftFinalizationStorageWriteStage, PbftFinalizedPeriodApplyResult,
 };
 use rustaxa_consensus::sortition::SortitionParamsChange;
 use rustaxa_storage::Column;
@@ -436,105 +434,9 @@ pub fn inspect_pbft_finalization_resume(
     write_set: &FfiPbftFinalizationStorageWritePlan,
     final_chain_last_block: u64,
 ) -> Result<FfiPbftFinalizationResumePlan> {
-    let fact = inspect_pbft_finalization_resume_fact(storage, write_set, final_chain_last_block)?;
-    Ok(plan_domain_pbft_finalization_resume(fact.into()).into())
-}
-
-fn inspect_pbft_finalization_resume_fact(
-    storage: &BridgeStorage,
-    write_set: &FfiPbftFinalizationStorageWritePlan,
-    final_chain_last_block: u64,
-) -> Result<FfiPbftFinalizationResumeFact> {
-    let pbft_block_hash = H256::from(write_set.pbft_block_hash);
-    let period_key = write_set.block_period.to_le_bytes();
-    let period_value = write_set.block_period.to_le_bytes();
-
-    let pbft_period_value = storage
-        .0
-        .get_raw(Column::PbftBlockPeriod, pbft_block_hash.as_bytes())?;
-    let block_in_chain = pbft_period_value.is_some();
-    let pbft_period_mapping_matches = pbft_period_value.as_deref() == Some(period_value.as_slice());
-    let mut missing_primary_facts = pbft_period_value.is_none();
-    let mut conflicting_primary_facts = pbft_period_value.is_some() && !pbft_period_mapping_matches;
-
-    let period_data_value = storage.0.get_raw(Column::PeriodData, &period_key)?;
-    let period_data_matches =
-        period_data_value.as_deref() == Some(write_set.period_data_rlp.as_slice());
-    missing_primary_facts |= period_data_value.is_none();
-    conflicting_primary_facts |= period_data_value.is_some() && !period_data_matches;
-
-    let mut dag_positions_match = true;
-    for write in &write_set.dag_block_period_writes {
-        let hash = H256::from(write.hash);
-        let expected = block_position_rlp(write_set.block_period, write.position);
-        match storage.0.get_raw(Column::DagBlockPeriod, hash.as_bytes())? {
-            Some(actual) if actual == expected => {}
-            Some(_) => {
-                dag_positions_match = false;
-                conflicting_primary_facts = true;
-            }
-            None => {
-                dag_positions_match = false;
-                missing_primary_facts = true;
-            }
-        }
-    }
-
-    let mut transaction_positions_match = true;
-    for write in &write_set.transaction_location_writes {
-        let hash = H256::from(write.hash);
-        let expected = block_position_rlp(write_set.block_period, write.position);
-        match storage.0.get_raw(Column::TrxPeriod, hash.as_bytes())? {
-            Some(actual) if actual == expected => {}
-            Some(_) => {
-                transaction_positions_match = false;
-                conflicting_primary_facts = true;
-            }
-            None => {
-                transaction_positions_match = false;
-                missing_primary_facts = true;
-            }
-        }
-    }
-
-    let dynamic_lambda_persisted = if write_set.apply_dynamic_lambda_update {
-        if write_set.persist_period_lambda {
-            storage
-                .0
-                .get_raw(Column::PeriodLambda, &period_key)?
-                .as_deref()
-                == Some(&write_set.period_lambda.to_le_bytes())
-        } else {
-            true
-        }
-    } else {
-        true
-    };
-
-    let executed_status_persisted = if write_set.persist_executed_pbft_status {
-        storage
-            .0
-            .get_raw(Column::PbftMgrStatus, &[PBFT_MGR_STATUS_EXECUTED_BLOCK])?
-            .as_deref()
-            == Some(&[u8::from(write_set.executed_pbft_status)])
-    } else {
-        true
-    };
-
-    Ok(FfiPbftFinalizationResumeFact {
-        block_in_chain,
-        block_period: write_set.block_period,
-        final_chain_last_block,
-        pbft_period_mapping_matches,
-        period_data_matches,
-        dag_positions_match,
-        transaction_positions_match,
-        missing_primary_facts,
-        conflicting_primary_facts,
-        dynamic_lambda_required: write_set.apply_dynamic_lambda_update,
-        dynamic_lambda_persisted,
-        executed_status_persisted,
-    })
+    let write_set: PbftFinalizationStorageWriteIntent = write_set.into();
+    inspect_domain_pbft_finalization_resume(&storage.0, &write_set, final_chain_last_block)
+        .map(Into::into)
 }
 
 impl BridgePbftFinalizationRuntimeSession {
@@ -1339,25 +1241,6 @@ impl From<PbftFinalizationCleanupIntent> for FfiPbftFinalizationCleanupPlan {
             finalize_final_chain: value.finalize_final_chain,
             maybe_update_dynamic_lambda: value.maybe_update_dynamic_lambda,
             advance_period: value.advance_period,
-        }
-    }
-}
-
-impl From<FfiPbftFinalizationResumeFact> for PbftFinalizationResumeFact {
-    fn from(value: FfiPbftFinalizationResumeFact) -> Self {
-        Self {
-            block_in_chain: value.block_in_chain,
-            block_period: value.block_period,
-            final_chain_last_block: value.final_chain_last_block,
-            pbft_period_mapping_matches: value.pbft_period_mapping_matches,
-            period_data_matches: value.period_data_matches,
-            dag_positions_match: value.dag_positions_match,
-            transaction_positions_match: value.transaction_positions_match,
-            missing_primary_facts: value.missing_primary_facts,
-            conflicting_primary_facts: value.conflicting_primary_facts,
-            dynamic_lambda_required: value.dynamic_lambda_required,
-            dynamic_lambda_persisted: value.dynamic_lambda_persisted,
-            executed_status_persisted: value.executed_status_persisted,
         }
     }
 }

@@ -23,6 +23,8 @@ Completed before this plan file:
 - Sortition startup replay and PBFT finalization threshold-change persistence already use native Rust storage ownership.
 - PBFT finalization storage apply now lives in `rustaxa-consensus::pbft_finalize` and commits ordered
   `rustaxa-storage` batches directly.
+- PBFT finalization resume inspection now lives in `rustaxa-consensus::pbft_finalize` and classifies duplicate/restart
+  state from direct `rustaxa-storage` reads; the bridge keeps the existing CXX DTO surface.
 - The Rust-mode FinalChain shim now serves `getBridgeRoot` / `getBridgeEpoch` from committed `StateAPI` reads or returns
   zero for native/no-bridge-contract runs, so the old unimplemented shim gap no longer blocks PBFT pillar processing.
 
@@ -37,6 +39,9 @@ Known current blockers / unrelated gaps:
 
 Goal: move already-persisted PBFT finalization classification out of `rustaxa-bridge` and into
 `rustaxa-consensus::pbft_finalize` over direct `rustaxa-storage` reads.
+
+Status: complete. The production bridge entry now converts the FFI write intent to the domain type, calls the
+consensus-owned inspector, and maps the returned plan back to the existing FFI DTO.
 
 Move:
 
@@ -320,4 +325,3 @@ Stop and re-plan before continuing a slice if:
 - A slice needs broad original upstream C++ edits instead of shim-owned overlay changes.
 - The change would weaken or retarget tests to make Rust mode pass.
 - Validation exposes a new non-storage PBFT runtime gap, such as the current second-finish primary-intent failure.
-

@@ -2275,6 +2275,133 @@ pub fn plan_pbft_finalization_resume(
     }
 }
 
+/// Inspects durable storage facts for a duplicate PBFT block and returns a resume execution plan.
+///
+/// Inputs:
+/// - `storage`: Rust storage handle containing finalized PBFT, DAG, transaction, lambda, and PBFT-manager rows.
+/// - `write_set`: expected finalized-period write set for the duplicate block.
+/// - `final_chain_last_block`: externally known durable FinalChain height.
+///
+/// Outputs:
+/// - A `PbftFinalizationResumePlan` that classifies the durable duplicate state and lists only replay actions whose
+///   need can be inferred from storage facts.
+///
+/// Invariants and edge behavior:
+/// - Mutable PBFT-head payloads are not conflict-checked because startup may already have rebuilt the live PBFT chain
+///   from that head.
+/// - Immutable finalized rows are compared byte-for-byte against the expected canonical bytes.
+/// - Storage/backend errors are returned as `Err`; missing or conflicting rows are encoded in the returned plan.
+/// - The function does not mutate storage or live state.
+pub fn inspect_pbft_finalization_resume(
+    storage: &Storage,
+    write_set: &PbftFinalizationStorageWriteIntent,
+    final_chain_last_block: u64,
+) -> Result<PbftFinalizationResumePlan> {
+    let fact = inspect_pbft_finalization_resume_fact(storage, write_set, final_chain_last_block)?;
+    Ok(plan_pbft_finalization_resume(fact))
+}
+
+/// Reads durable storage facts for duplicate-finalization resume classification.
+///
+/// Inputs are the same as `inspect_pbft_finalization_resume`. The output is the raw fact bundle consumed by
+/// `plan_pbft_finalization_resume`, which is retained as a pure classifier seam for tests and future callers that
+/// already sourced storage facts elsewhere.
+///
+/// Missing rows set `missing_primary_facts`; mismatched immutable rows set `conflicting_primary_facts`. Dynamic-lambda
+/// and executed-status facts are considered persisted when the accepted write set did not require those rows.
+pub fn inspect_pbft_finalization_resume_fact(
+    storage: &Storage,
+    write_set: &PbftFinalizationStorageWriteIntent,
+    final_chain_last_block: u64,
+) -> Result<PbftFinalizationResumeFact> {
+    let pbft_block_hash = write_set.pbft_block_hash;
+    let period_key = write_set.block_period.to_le_bytes();
+    let period_value = write_set.block_period.to_le_bytes();
+
+    let pbft_period_value = storage.get_raw(Column::PbftBlockPeriod, pbft_block_hash.as_bytes())?;
+    let block_in_chain = pbft_period_value.is_some();
+    let pbft_period_mapping_matches = pbft_period_value.as_deref() == Some(period_value.as_slice());
+    let mut missing_primary_facts = pbft_period_value.is_none();
+    let mut conflicting_primary_facts = pbft_period_value.is_some() && !pbft_period_mapping_matches;
+
+    let period_data_value = storage.get_raw(Column::PeriodData, &period_key)?;
+    let period_data_matches =
+        period_data_value.as_deref() == Some(write_set.period_data_rlp.as_slice());
+    missing_primary_facts |= period_data_value.is_none();
+    conflicting_primary_facts |= period_data_value.is_some() && !period_data_matches;
+
+    let mut dag_positions_match = true;
+    for write in &write_set.dag_block_period_writes {
+        let hash = write.hash;
+        let expected = block_position_rlp(write_set.block_period, write.position);
+        match storage.get_raw(Column::DagBlockPeriod, hash.as_bytes())? {
+            Some(actual) if actual == expected => {}
+            Some(_) => {
+                dag_positions_match = false;
+                conflicting_primary_facts = true;
+            }
+            None => {
+                dag_positions_match = false;
+                missing_primary_facts = true;
+            }
+        }
+    }
+
+    let mut transaction_positions_match = true;
+    for write in &write_set.transaction_location_writes {
+        let hash = write.hash;
+        let expected = block_position_rlp(write_set.block_period, write.position);
+        match storage.get_raw(Column::TrxPeriod, hash.as_bytes())? {
+            Some(actual) if actual == expected => {}
+            Some(_) => {
+                transaction_positions_match = false;
+                conflicting_primary_facts = true;
+            }
+            None => {
+                transaction_positions_match = false;
+                missing_primary_facts = true;
+            }
+        }
+    }
+
+    let dynamic_lambda_persisted = if write_set.apply_dynamic_lambda_update {
+        if write_set.persist_period_lambda {
+            storage
+                .get_raw(Column::PeriodLambda, &period_key)?
+                .as_deref()
+                == Some(&write_set.period_lambda.to_le_bytes())
+        } else {
+            true
+        }
+    } else {
+        true
+    };
+
+    let executed_status_persisted = if write_set.persist_executed_pbft_status {
+        storage
+            .get_raw(Column::PbftMgrStatus, &[PBFT_MGR_STATUS_EXECUTED_BLOCK])?
+            .as_deref()
+            == Some(&[u8::from(write_set.executed_pbft_status)])
+    } else {
+        true
+    };
+
+    Ok(PbftFinalizationResumeFact {
+        block_in_chain,
+        block_period: write_set.block_period,
+        final_chain_last_block,
+        pbft_period_mapping_matches,
+        period_data_matches,
+        dag_positions_match,
+        transaction_positions_match,
+        missing_primary_facts,
+        conflicting_primary_facts,
+        dynamic_lambda_required: write_set.apply_dynamic_lambda_update,
+        dynamic_lambda_persisted,
+        executed_status_persisted,
+    })
+}
+
 /// Computes the block lambda and post-finalization dynamic-lambda state.
 ///
 /// This is the Rust source of truth for the Cacti dynamic-lambda algorithm. It
@@ -3012,6 +3139,100 @@ mod tests {
             plan.replay_actions,
             vec![PbftFinalizationRuntimeAction::ApplyDynamicLambda]
         );
+    }
+
+    #[test]
+    fn resume_inspector_classifies_storage_backed_duplicate_restart_windows() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_finalize_resume");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            let mut write_set = storage_write_intent();
+            write_set.apply_dynamic_lambda_update = true;
+            write_set.persist_period_lambda = true;
+            write_set.persist_executed_pbft_status = true;
+            write_set.executed_pbft_status = true;
+
+            let missing = inspect_pbft_finalization_resume(&storage, &write_set, 9)
+                .expect("resume inspection should read storage state");
+            assert_eq!(missing.status, PbftFinalizationResumeStatus::NotPersisted);
+            assert!(!missing.duplicate_classified);
+            assert!(missing.replay_actions.is_empty());
+
+            let mut primary_batch = storage.create_write_batch();
+            let primary = append_pbft_finalized_period_storage_writes(
+                &storage,
+                &mut primary_batch,
+                &write_set,
+            )
+            .expect("primary stage should apply");
+            assert_eq!(primary.status, PbftFinalizedPeriodApplyStatus::Applied);
+            storage
+                .commit_write_batch_with_sync(primary_batch, false)
+                .expect("primary writes should commit");
+
+            let needs_dynamic = inspect_pbft_finalization_resume(&storage, &write_set, 9)
+                .expect("resume inspection");
+            assert_eq!(
+                needs_dynamic.status,
+                PbftFinalizationResumeStatus::NeedsDynamicLambdaPersistence
+            );
+            assert_eq!(
+                needs_dynamic.replay_actions,
+                vec![PbftFinalizationRuntimeAction::ApplyDynamicLambda]
+            );
+
+            let mut dynamic_batch = storage.create_write_batch();
+            let dynamic = append_pbft_finalization_dynamic_lambda_storage_writes(
+                &storage,
+                &mut dynamic_batch,
+                &write_set,
+                7,
+                1450,
+            )
+            .expect("dynamic-lambda stage should apply");
+            assert_eq!(dynamic.status, PbftFinalizedPeriodApplyStatus::Applied);
+            storage
+                .commit_write_batch_with_sync(dynamic_batch, false)
+                .expect("dynamic-lambda writes should commit");
+
+            let needs_final_chain = inspect_pbft_finalization_resume(&storage, &write_set, 9)
+                .expect("resume inspection");
+            assert_eq!(
+                needs_final_chain.status,
+                PbftFinalizationResumeStatus::NeedsFinalChainReplay
+            );
+            assert_eq!(
+                needs_final_chain.replay_actions,
+                vec![
+                    PbftFinalizationRuntimeAction::FinalizeFinalChain,
+                    PbftFinalizationRuntimeAction::PersistExecutedStatus,
+                    PbftFinalizationRuntimeAction::SetExecutedFlag,
+                    PbftFinalizationRuntimeAction::AdvancePeriod,
+                ]
+            );
+
+            let mut executed_batch = storage.create_write_batch();
+            let executed = append_pbft_finalization_executed_status_storage_write(
+                &storage,
+                &mut executed_batch,
+                &write_set,
+            )
+            .expect("executed status stage should apply");
+            assert_eq!(executed.status, PbftFinalizedPeriodApplyStatus::Applied);
+            storage
+                .commit_write_batch_with_sync(executed_batch, false)
+                .expect("executed status writes should commit");
+
+            let complete = inspect_pbft_finalization_resume(&storage, &write_set, 10)
+                .expect("resume inspection");
+            assert_eq!(complete.status, PbftFinalizationResumeStatus::Complete);
+            assert!(complete.duplicate_classified);
+            assert!(complete.complete);
+            assert!(complete.replay_actions.is_empty());
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]
