@@ -13,6 +13,10 @@
 #include "pillar_chain/pillar_block.hpp"
 #include "pillar_chain/pillar_votes.hpp"
 
+namespace rustaxa {
+struct BridgeStorage;
+}
+
 namespace taraxa {
 class DbStorage;
 class Network;
@@ -379,7 +383,8 @@ class PillarChainManager {
  private:
   const FicusHardforkConfig& kFicusHfConfig;
 
-  std::shared_ptr<DbStorage> db_;
+  std::shared_ptr<DbStorage> storage_owner_;
+  rustaxa::BridgeStorage* rust_storage_;
   std::weak_ptr<Network> network_;
   std::shared_ptr<final_chain::FinalChain> final_chain_;
   std::shared_ptr<KeyManager> key_manager_;
