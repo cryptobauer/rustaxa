@@ -256,6 +256,14 @@ h256 into_h256(const rust::Vec<uint8_t>& bytes, const char* api_name) {
   return h256(dev::bytes(bytes.begin(), bytes.end()));
 }
 
+h256 into_h256(const dev::bytes& bytes, const char* api_name) {
+  if (bytes.size() != 32) {
+    throw DbException("FinalChain::" + std::string(api_name) + " returned invalid hash size: expected 32, got " +
+                      std::to_string(bytes.size()));
+  }
+  return h256(bytes);
+}
+
 std::string into_string(const rust::Vec<uint8_t>& bytes) {
   return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
@@ -994,9 +1002,75 @@ u256 FinalChain::dposTotalSupply(EthBlockNumber blk_num) const {
   return dev::fromBigEndian<u256>(dev::bytes(supply.begin(), supply.end()));
 }
 
-h256 FinalChain::getBridgeRoot(EthBlockNumber) const { throw_unimplemented_final_chain_api("getBridgeRoot"); }
+h256 FinalChain::getBridgeRoot(EthBlockNumber blk_num) const {
+  const static auto get_bridge_root_method = util::EncodingSolidity::packFunctionCall("getBridgeRoot()");
+  const auto requested_block = blk_num;
+  const auto bridge_contract_address = config_.genesis.state.hardforks.ficus_hf.bridge_contract_address;
+  const auto state_descriptor = state_api_.get_last_committed_state_descriptor();
+  if (requested_block > state_descriptor.blk_num) {
+    const auto bridge_contract = state_api_.get_account(state_descriptor.blk_num, bridge_contract_address);
+    if (!bridge_contract || !bridge_contract->code_size) {
+      return ZeroHash();
+    }
+    throw DbException("FinalChain::getBridgeRoot requires committed external-EVM state for block " +
+                      std::to_string(requested_block));
+  }
+  const auto bridge_contract = state_api_.get_account(requested_block, bridge_contract_address);
+  if (!bridge_contract || !bridge_contract->code_size) {
+    return ZeroHash();
+  }
+  const auto block_header = blockHeader(requested_block);
+  if (!block_header) {
+    throw DbException("FinalChain::getBridgeRoot missing committed block header for block " +
+                      std::to_string(requested_block));
+  }
 
-h256 FinalChain::getBridgeEpoch(EthBlockNumber) const { throw_unimplemented_final_chain_api("getBridgeEpoch"); }
+  const auto result = state_api_.dry_run_transaction(
+      block_header->number,
+      {block_header->author, block_header->gas_limit, block_header->timestamp, BlockHeader::difficulty()},
+      state_api::EVMTransaction{dev::ZeroAddress, 1, bridge_contract_address, state_api::ZeroAccount.nonce, 0, 10000000,
+                                get_bridge_root_method});
+  if (!result.code_err.empty() || !result.consensus_err.empty()) {
+    throw DbException("FinalChain::getBridgeRoot bridge-contract read failed: " + result.code_err +
+                      result.consensus_err);
+  }
+  return into_h256(result.code_retval, "getBridgeRoot");
+}
+
+h256 FinalChain::getBridgeEpoch(EthBlockNumber blk_num) const {
+  const static auto get_bridge_epoch_method = util::EncodingSolidity::packFunctionCall("finalizedEpoch()");
+  const auto requested_block = blk_num;
+  const auto bridge_contract_address = config_.genesis.state.hardforks.ficus_hf.bridge_contract_address;
+  const auto state_descriptor = state_api_.get_last_committed_state_descriptor();
+  if (requested_block > state_descriptor.blk_num) {
+    const auto bridge_contract = state_api_.get_account(state_descriptor.blk_num, bridge_contract_address);
+    if (!bridge_contract || !bridge_contract->code_size) {
+      return ZeroHash();
+    }
+    throw DbException("FinalChain::getBridgeEpoch requires committed external-EVM state for block " +
+                      std::to_string(requested_block));
+  }
+  const auto bridge_contract = state_api_.get_account(requested_block, bridge_contract_address);
+  if (!bridge_contract || !bridge_contract->code_size) {
+    return ZeroHash();
+  }
+  const auto block_header = blockHeader(requested_block);
+  if (!block_header) {
+    throw DbException("FinalChain::getBridgeEpoch missing committed block header for block " +
+                      std::to_string(requested_block));
+  }
+
+  const auto result = state_api_.dry_run_transaction(
+      block_header->number,
+      {block_header->author, block_header->gas_limit, block_header->timestamp, BlockHeader::difficulty()},
+      state_api::EVMTransaction{dev::ZeroAddress, 1, bridge_contract_address, state_api::ZeroAccount.nonce, 0, 10000000,
+                                get_bridge_epoch_method});
+  if (!result.code_err.empty() || !result.consensus_err.empty()) {
+    throw DbException("FinalChain::getBridgeEpoch bridge-contract read failed: " + result.code_err +
+                      result.consensus_err);
+  }
+  return into_h256(result.code_retval, "getBridgeEpoch");
+}
 
 std::pair<val_t, bool> FinalChain::getBalance(addr_t const& addr) const {
   if (auto account = getAccount(addr)) {

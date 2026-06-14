@@ -465,11 +465,13 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     and `getUndelegationV2(address,address,uint64)`. These precompile reads
     use the exact finalized-block snapshot, while DAG authorization and explicit eligibility APIs still use the
     configured delegation-delay snapshot.
-- Unimplemented public shim methods never fall back to `FinalChainOld`. `getAccountStorage`, `getCode`, `call`, and
-  `trace` route to C++ `StateAPI` only for blocks whose external-EVM state has been committed by the Rust-mode executor
-  adapter; otherwise they use the Rust FinalChain path where implemented or throw explicit Rust-shim gaps. `prune`,
-  `getBridgeRoot`, `getBridgeEpoch`, and private `finalize_` remain explicit Rust-shim gaps. `waitForFinalized` remains
-  a no-op because the Rust shim finalization path is synchronous and returns a ready future.
+- Unimplemented public shim methods never fall back to `FinalChainOld`. `getAccountStorage`, `getCode`, `call`,
+  `getBridgeRoot`, `getBridgeEpoch`, and `trace` route to C++ `StateAPI` only for blocks whose external-EVM state has
+  been committed by the Rust-mode executor adapter; otherwise they use the Rust FinalChain path where implemented or
+  throw explicit Rust-shim gaps. Bridge root/epoch reads return zero when the configured bridge contract has no committed
+  code, preserving native/no-bridge execution without claiming external-EVM state support. `prune` and private
+  `finalize_` remain explicit Rust-shim gaps. `waitForFinalized` remains a no-op because the Rust shim finalization path
+  is synchronous and returns a ready future.
 
 ### FinalChain Storage Touchpoints
 
@@ -556,7 +558,8 @@ P1 todo:
 
 P2 later:
 
-- bridge-specific payload wrappers for `getBridgeRoot` and `getBridgeEpoch`
+- bridge-specific payload wrappers for `getBridgeRoot` and `getBridgeEpoch` if these reads move beyond the current
+  committed-StateAPI executor boundary
 - optional trace/debug JSON adapters if the trace path is migrated
 
 Recommended introduction order:
