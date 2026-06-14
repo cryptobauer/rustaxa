@@ -16,8 +16,8 @@ if [ $? -ne 0 ]; then
 fi
 
 if [ -z "$LLVM_VERSION" ]; then
-    echo "LLVM_VERSION is not specified. Defaulting to 18"
-    export LLVM_VERSION=18
+    echo "LLVM_VERSION is not specified. Defaulting to 19"
+    export LLVM_VERSION=19
 fi
 
 PROFILE_PATH=$(conan profile path clang)

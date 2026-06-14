@@ -10,6 +10,7 @@
 LLVM_VERSION?=19
 BUILD_OUTPUT_DIR?=/build
 CMAKE_BUILD_TYPE?=RelWithDebInfo
+CMAKE_COMPILER_LAUNCHER?=sccache
 CPP_INTERSECTION_PATHS?=
 CPP_INTERSECTION_BASE?=upstream-main
 CPP_INTERSECTION_HEAD?=main
@@ -54,12 +55,13 @@ help:  ## Show this help.
 .PHONY: configure
 configure: ## Configure the project locally.
 	mkdir -p $(BUILD_OUTPUT_DIR)
-	./scripts/config.sh
+	LLVM_VERSION=$(LLVM_VERSION) CMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) ./scripts/config.sh
 	conan install . -s "build_type=Release" -s "&:build_type=$(CMAKE_BUILD_TYPE)" --profile:host=clang --profile:build=clang --build=missing --output-folder=$(BUILD_OUTPUT_DIR)
 	cd $(BUILD_OUTPUT_DIR) && \
 	cmake $(CURDIR) \
 		-DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) \
-		-DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+		-DCMAKE_C_COMPILER_LAUNCHER=$(CMAKE_COMPILER_LAUNCHER) \
+		-DCMAKE_CXX_COMPILER_LAUNCHER=$(CMAKE_COMPILER_LAUNCHER) \
 		-DTARAXA_ENABLE_LTO=OFF \
 		-DTARAXA_STATIC_BUILD=ON \
 		-DTARAXA_GPERF=ON \
@@ -71,7 +73,12 @@ configure: ## Configure the project locally.
 		-DRUSTAXA_ENABLE_PBFT_CHAIN=ON \
 		-DRUSTAXA_ENABLE_PROPOSED_BLOCKS=ON \
 		-DRUSTAXA_ENABLE_PERIOD_DATA_QUEUE=ON \
+		-DRUSTAXA_ENABLE_VERIFIED_VOTES=ON \
 		-DRUSTAXA_ENABLE_PILLAR_VOTES=ON \
+		-DRUSTAXA_ENABLE_TRANSACTION_QUEUE=ON \
+		-DRUSTAXA_ENABLE_GAS_PRICER=ON \
+		-DRUSTAXA_ENABLE_SLASHING_MANAGER=ON \
+		-DRUSTAXA_ENABLE_REWARDS_STATS=ON \
 		-DLLVM_VERSION=$(LLVM_VERSION)
 
 .PHONY: build
@@ -79,7 +86,7 @@ build: ## Compile the project locally.
 	@if [ ! -f $(BUILD_OUTPUT_DIR)/CMakeCache.txt ]; then \
 		$(MAKE) configure; \
 	fi
-	cmake --build $(BUILD_OUTPUT_DIR) -j6 --target=taraxad
+	cmake --build $(BUILD_OUTPUT_DIR) -j12 --target=taraxad
 	cp $(BUILD_OUTPUT_DIR)/tests/CTestTestfile.cmake $(BUILD_OUTPUT_DIR)/bin/
 
 .PHONY: clean

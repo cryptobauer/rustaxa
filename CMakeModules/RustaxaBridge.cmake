@@ -95,6 +95,7 @@ add_custom_target(rust-workspace-build ALL
         "ROCKSDB_INCLUDE_DIR=${RUSTAXA_ROCKSDB_INCLUDE_DIRS}"
         "ROCKSDB_LIB_DIR=${RUSTAXA_ROCKSDB_LIB_DIRS}"
         "ROCKSDB_STATIC=1"
+        "TARAXA_VRF_LIB_DIR=${PROJECT_BINARY_DIR}/deps/taraxa-vrf/lib"
         "${CARGO_EXE}" build ${CARGO_MODE_ARGS} --target-dir "${RUST_TARGET_DIR}" -p rustaxa-bridge
 
     COMMAND ${CMAKE_COMMAND} -P "${FILTER_SCRIPT}"
@@ -108,6 +109,10 @@ add_custom_target(rust-workspace-build ALL
     BYPRODUCTS "${RUST_LIB}"
     VERBATIM
 )
+
+if(TARGET vrf_lib_submodule)
+    add_dependencies(rust-workspace-build vrf_lib_submodule)
+endif()
 
 # --- Imported Library ---
 

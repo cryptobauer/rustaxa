@@ -119,13 +119,18 @@ foreach(RUSTAXA_OPT RUSTAXA_ENABLE RUSTAXA_ENABLE_VDF RUSTAXA_ENABLE_STORAGE RUS
     endif()
 endforeach()
 
-# Use ccache to speed-up recompilation
-find_program(CCACHE_PROGRAM ccache)
-if (CCACHE_PROGRAM)
-    message(STATUS "Building with ccache")
-    set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CCACHE_PROGRAM}")
+# Use a compiler cache to speed-up recompilation
+find_program(COMPILER_CACHE_PROGRAM NAMES sccache ccache)
+if (COMPILER_CACHE_PROGRAM)
+    message(STATUS "Building with compiler cache: ${COMPILER_CACHE_PROGRAM}")
+    foreach(CACHED_LANG C CXX)
+        if (NOT CMAKE_${CACHED_LANG}_COMPILER_LAUNCHER OR CMAKE_${CACHED_LANG}_COMPILER_LAUNCHER STREQUAL "ccache")
+            set(CMAKE_${CACHED_LANG}_COMPILER_LAUNCHER "${COMPILER_CACHE_PROGRAM}" CACHE STRING
+                "${CACHED_LANG} compiler cache launcher" FORCE)
+        endif ()
+    endforeach()
 else ()
-    message(STATUS "Building without ccache")
+    message(STATUS "Building without compiler cache")
 endif ()
 
 # Mac OS
@@ -226,12 +231,11 @@ find_package(OpenSSL REQUIRED)
 set(JSONCPP_INCLUDE_DIR ${jsoncpp_INCLUDE_DIRS})
 include(ProjectJSONRPCCPP)
 
+# Add sub-directories cmakes
+add_subdirectory(submodules)
 if(RUSTAXA_ENABLE)
     include(CMakeModules/RustaxaBridge.cmake)
 endif()
-
-# Add sub-directories cmakes
-add_subdirectory(submodules)
 add_subdirectory(libraries)
 add_subdirectory(programs)
 add_subdirectory(tests)

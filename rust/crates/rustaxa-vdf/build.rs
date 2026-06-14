@@ -7,7 +7,5 @@ fn main() {
         .unwrap_or_else(|| PathBuf::from("/build/deps/taraxa-vrf/lib"));
 
     println!("cargo:rerun-if-env-changed=TARAXA_VRF_LIB_DIR");
-    if lib_dir.exists() {
-        println!("cargo:rustc-link-search=native={}", lib_dir.display());
-    }
+    println!("cargo:rustc-link-search=native={}", lib_dir.display());
 }
