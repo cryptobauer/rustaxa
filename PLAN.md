@@ -576,9 +576,10 @@ Rules:
 
 - Do not delegate Rust shim behavior back to legacy `FinalChainOld` or other old implementation methods.
 - Temporary Rust-mode gaps must be explicit shim-local defaults, no-ops, or tracked unimplemented paths.
-- Temporary guarded touches to upstream-owned C++ files should be removed once a complete shim can own Rust-mode routing;
-  currently `pbft_manager.cpp` has a narrow early-return hook for sync pillar-vote bundle planning, with helper
-  declarations supplied by the temporary `pbft_manager_shim` header overlay.
+- Temporary guarded touches to upstream-owned C++ files should be removed once a complete shim can own Rust-mode routing.
+  The PBFT manager pillar-vote sync hook has moved into the full `pbft_manager_shim` overlay; original
+  `pbft_manager.cpp` should stay clean versus `upstream-main`, with remaining debt tracked as overlay drift until Rust
+  owns the manager runtime.
 - Treat `dposIsEligible` and related vote-count methods as real consensus work, not permanent dummy behavior.
 - Keep networking callbacks, thread orchestration, and broad node integration in C++ until the Rust domain services are stable.
 - Ignore logging when deciding whether behavior can move to Rust. Logs are boundary observability, not consensus
@@ -647,7 +648,7 @@ The C++ consensus area includes:
 - Transaction flow: `TransactionManager`, `TransactionQueue`, gas pricing, and transaction proposal selection.
 - Pillar chain, rewards, slashing, and final-chain state/query integration.
 
-The current Rust starting point is intentionally small:
+The current Rust consensus footprint is broad but still incomplete:
 
 - `rustaxa-consensus` contains early FinalChain read/index logic, Rust-backed DAG graph state, Rust-backed
   sortition efficiency/threshold runtime state, Rust-backed PBFT chain head/validation state, and Rust-backed
@@ -1032,8 +1033,9 @@ The first Rust code slice should focus on `Dag` graph operations because the dom
 ### Risks
 
 - `PbftManager` is the largest and most coupled consensus class; port it only after DAG, vote, and chain primitives are stable.
-- DPoS eligibility depends on FinalChain/state surfaces; genesis-only DPoS query support must stay temporary and visible until
-  Rust finalization maintains block-keyed snapshots.
+- DPoS eligibility depends on FinalChain/state surfaces; the supported Rust snapshot and native-finalization subset must
+  keep unsupported contract methods, missing historical snapshots, and failed-receipt parity gaps explicit instead of
+  falling back silently.
 - Finalization crosses DAG, PBFT, storage, rewards, and state execution; port finalization decisions only after the read/query ports are real.
 - Consensus behavior is latency-sensitive and persistence-sensitive, so byte compatibility and deterministic ordering tests matter.
 
