@@ -144,14 +144,12 @@ pub struct BridgePillarVotes(pub PillarVotes);
 
 /// Bridge wrapper for the Rust sortition parameter manager.
 ///
-/// The manager owns deterministic threshold/runtime state. When constructed
-/// from storage, `storage` is also retained so period-specific lookups and
-/// startup replay stay inside Rust instead of asking C++ to materialize storage
-/// facts. Compatibility constructors may leave `storage = None` and pass
-/// explicit facts for unit-level planner tests.
+/// The manager owns deterministic threshold/runtime state. Production
+/// Rust-mode constructors attach native Rust storage inside
+/// `SortitionParamsManager`; compatibility constructors may remain storage-free
+/// and pass explicit facts for unit-level planner tests.
 pub struct BridgeSortitionParamsManager {
     pub manager: SortitionParamsManager,
-    pub storage: Option<Arc<Storage>>,
 }
 
 /// Bridge-owned transaction queue handle.

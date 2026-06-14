@@ -10,8 +10,11 @@
 //! - Threshold clamping always enforces `threshold_upper_min..=u16::MAX`.
 
 use anyhow::{Context, Result, ensure};
+use ethereum_types::H256;
 use rlp::{Decodable, DecoderError, Encodable, Rlp, RlpStream};
+use rustaxa_storage::Storage;
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
 
 /// Fixed-point unit representing `1.00%`.
 pub const ONE_PERCENT: u16 = 100;
@@ -19,6 +22,12 @@ pub const ONE_PERCENT: u16 = 100;
 pub const HUNDRED_PERCENT: u16 = 100 * ONE_PERCENT;
 /// Minimum allowed VRF threshold upper bound used by the C++ config.
 pub const THRESHOLD_UPPER_MIN_VALUE: u16 = 0x50;
+
+const PBFT_BLOCK_POS_IN_PERIOD_DATA: usize = 0;
+const DAG_BLOCKS_POS_IN_PERIOD_DATA: usize = 2;
+const TRANSACTIONS_POS_IN_PERIOD_DATA: usize = 3;
+const PBFT_PIVOT_DAG_BLOCK_HASH_POS: usize = 1;
+const FINALIZED_DAG_BUNDLE_TRANSACTION_INDEXES_POS: usize = 1;
 
 /// VRF selection parameters used by sortition.
 ///
@@ -193,19 +202,68 @@ pub fn calculate_dag_efficiency(
     Ok(((unique_transactions * HUNDRED_PERCENT as usize) / total_dag_transaction_refs) as u16)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PeriodEfficiencyCounts {
+    has_pivot: bool,
+    unique_transactions: u64,
+    total_dag_transaction_refs: u64,
+}
+
+fn decode_period_efficiency_counts(period_data_rlp: &[u8]) -> Result<PeriodEfficiencyCounts> {
+    let period = Rlp::new(period_data_rlp);
+    let pbft_block = period
+        .at(PBFT_BLOCK_POS_IN_PERIOD_DATA)
+        .context("SORTITION_PERIOD_DATA_PBFT_BLOCK")?;
+    let pivot: H256 = pbft_block
+        .val_at(PBFT_PIVOT_DAG_BLOCK_HASH_POS)
+        .context("SORTITION_PERIOD_DATA_PIVOT")?;
+    let transactions = period
+        .at(TRANSACTIONS_POS_IN_PERIOD_DATA)
+        .context("SORTITION_PERIOD_DATA_TRANSACTIONS")?;
+    let unique_transactions = u64::try_from(transactions.item_count()?)
+        .context("SORTITION_PERIOD_DATA_TRANSACTION_COUNT")?;
+
+    let dag_blocks = period
+        .at(DAG_BLOCKS_POS_IN_PERIOD_DATA)
+        .context("SORTITION_PERIOD_DATA_DAG_BLOCKS")?;
+    let total_dag_transaction_refs = if dag_blocks.is_empty() {
+        0
+    } else {
+        let transaction_indexes = dag_blocks
+            .at(FINALIZED_DAG_BUNDLE_TRANSACTION_INDEXES_POS)
+            .context("SORTITION_PERIOD_DATA_DAG_INDEXES")?;
+        let mut total = 0_u64;
+        for block_indexes in transaction_indexes.iter() {
+            total += u64::try_from(block_indexes.item_count()?)
+                .context("SORTITION_PERIOD_DATA_DAG_INDEX_COUNT")?;
+        }
+        total
+    };
+
+    Ok(PeriodEfficiencyCounts {
+        has_pivot: pivot != H256::zero(),
+        unique_transactions,
+        total_dag_transaction_refs,
+    })
+}
+
 /// Stateful runtime manager for sortition parameter updates.
 ///
 /// The manager mirrors the C++ `SortitionParamsManager` runtime state that is
 /// needed by C++ callers: cached parameter changes, collected interval
-/// efficiencies, ignored sample counter, and current VRF threshold. Storage I/O
-/// remains outside this type so bridge code can load and persist RLP payloads
-/// without delegating behavior to legacy C++.
-#[derive(Debug, Clone)]
+/// efficiencies, ignored sample counter, and current VRF threshold.
+///
+/// Production Rust-mode constructors attach an `Arc<rustaxa_storage::Storage>`
+/// so startup replay and period lookups use the native Rust storage module
+/// directly. Compatibility/unit-test constructors leave storage detached and
+/// operate only on explicit caller-provided facts.
+#[derive(Clone)]
 pub struct SortitionParamsManager {
     config: SortitionConfig,
     dag_efficiencies: VecDeque<u16>,
     ignored_efficiency_counter: u32,
     params_changes: VecDeque<SortitionParamsChange>,
+    storage: Option<Arc<Storage>>,
 }
 
 impl SortitionParamsManager {
@@ -235,6 +293,7 @@ impl SortitionParamsManager {
             dag_efficiencies: VecDeque::new(),
             ignored_efficiency_counter: 0,
             params_changes,
+            storage: None,
         })
     }
 
@@ -257,6 +316,75 @@ impl SortitionParamsManager {
             .is_empty()
             .then(|| SortitionParamsChange::genesis_default(config));
         Ok((Self::from_changes(config, params_changes)?, default_change))
+    }
+
+    /// Creates a production sortition manager from native Rust storage.
+    ///
+    /// Inputs:
+    /// - `config` supplies genesis/runtime threshold tuning values.
+    /// - `storage` is the authoritative `rustaxa-storage` handle shared by the
+    ///   Rust consensus runtime.
+    ///
+    /// Outputs:
+    /// - A manager whose live threshold state has been restored from persisted
+    ///   sortition changes and finalized period data.
+    /// - If storage has no change history, the period-zero default change is
+    ///   persisted before the manager is returned.
+    ///
+    /// Invariants and edge behavior:
+    /// - Persisted changes are loaded newest-limited but applied in
+    ///   chronological order.
+    /// - Finalized period replay starts after the newest loaded change and
+    ///   stops at the first missing period-data row.
+    /// - Malformed persisted RLP or impossible efficiency counters reject
+    ///   startup instead of synthesizing fallback state.
+    pub fn from_storage(config: SortitionConfig, storage: Arc<Storage>) -> Result<Self> {
+        let changes_rlp = storage
+            .metadata()
+            .last_sortition_params_changes_rlp(usize::from(config.changes_count_for_average))
+            .context("SORTITION_STORAGE_LOAD_CHANGES")?;
+        let (mut manager, default_change) = Self::from_persisted_rlp(config, changes_rlp)
+            .context("SORTITION_STORAGE_CREATE_RUNTIME")?;
+        if let Some(default_change) = default_change {
+            storage
+                .metadata()
+                .write_sortition_params_change(
+                    default_change.period,
+                    &default_change.to_rlp_bytes(),
+                )
+                .context("SORTITION_STORAGE_WRITE_DEFAULT_CHANGE")?;
+        }
+
+        let replay_start = manager
+            .params_changes()
+            .back()
+            .map(|change| change.period + 1)
+            .unwrap_or(1);
+        let mut period = replay_start;
+        loop {
+            let period_data = storage
+                .period()
+                .data_raw(period)
+                .with_context(|| format!("SORTITION_STORAGE_PERIOD_DATA:{period}"))?;
+            if period_data.is_empty() {
+                break;
+            }
+            let counts = decode_period_efficiency_counts(&period_data)
+                .with_context(|| format!("SORTITION_PERIOD_DATA_EFFICIENCY:{period}"))?;
+            if counts.has_pivot {
+                let dag_efficiency = calculate_dag_efficiency(
+                    usize::try_from(counts.unique_transactions)
+                        .context("SORTITION_REPLAY_UNIQUE_TRANSACTION_COUNT")?,
+                    usize::try_from(counts.total_dag_transaction_refs)
+                        .context("SORTITION_REPLAY_DAG_TRANSACTION_REF_COUNT")?,
+                )?;
+                manager.restore_finalized_period(Some(dag_efficiency))?;
+            }
+            period += 1;
+        }
+
+        manager.storage = Some(storage);
+        Ok(manager)
     }
 
     /// Returns current config-backed sortition parameters.
@@ -285,6 +413,28 @@ impl SortitionParamsManager {
             params.vrf.threshold_upper = change.threshold_upper;
         }
         params
+    }
+
+    /// Returns sortition parameters for `period` using the attached Rust storage.
+    ///
+    /// This is the production lookup path for Rust-mode consensus. The manager
+    /// reads the latest persisted parameter change at-or-before `period` from
+    /// `rustaxa-storage`, decodes the C++-compatible RLP payload, and applies
+    /// it to the current runtime configuration. Managers created without
+    /// storage return `SORTITION_STORAGE_NOT_ATTACHED`.
+    pub fn params_for_period_from_storage(&self, period: u64) -> Result<SortitionParams> {
+        let storage = self
+            .storage
+            .as_ref()
+            .context("SORTITION_STORAGE_NOT_ATTACHED")?;
+        let change = storage
+            .metadata()
+            .params_change_for_period_rlp(period)
+            .with_context(|| format!("SORTITION_STORAGE_CHANGE_FOR_PERIOD:{period}"))?
+            .map(|rlp| SortitionParamsChange::from_rlp_bytes(&rlp))
+            .transpose()
+            .context("SORTITION_STORAGE_CHANGE_DECODE")?;
+        Ok(self.params_for_period(change))
     }
 
     /// Records one finalized PBFT block efficiency sample.
@@ -609,6 +759,23 @@ fn get_closest_threshold(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rlp::RlpStream;
+    use rustaxa_storage::{Config, Storage};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let now_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after UNIX_EPOCH")
+            .as_nanos();
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("{prefix}_{now_ns}_{id}"))
+    }
 
     fn default_cfg() -> SortitionTuningConfig {
         SortitionTuningConfig {
@@ -635,6 +802,78 @@ mod tests {
             changing_interval: 1,
             computation_interval: 1,
         }
+    }
+
+    fn storage_at(path: PathBuf) -> Arc<Storage> {
+        Arc::new(Storage::new(Config::new(path)).expect("storage should initialize"))
+    }
+
+    fn pbft_block_rlp(period: u64, pivot: H256) -> Vec<u8> {
+        let mut block = RlpStream::new_list(8);
+        block.append(&H256::from_low_u64_be(1));
+        block.append(&pivot);
+        block.append(&H256::from_low_u64_be(2));
+        block.append(&H256::from_low_u64_be(3));
+        block.append(&period);
+        block.append(&123_u64);
+        block.begin_list(0);
+        block.append(&vec![0_u8; 65]);
+        block.out().to_vec()
+    }
+
+    fn finalized_dag_bundle_rlp(block_ref_counts: &[usize]) -> Vec<u8> {
+        let mut bundle = RlpStream::new_list(3);
+        bundle.begin_list(4);
+        for idx in 0..4_u64 {
+            bundle.append(&H256::from_low_u64_be(idx + 10));
+        }
+        bundle.begin_list(block_ref_counts.len());
+        for refs in block_ref_counts {
+            bundle.begin_list(*refs);
+            for idx in 0..*refs {
+                bundle.append(&idx);
+            }
+        }
+        bundle.begin_list(block_ref_counts.len());
+        for _ in block_ref_counts {
+            bundle.begin_list(7);
+            bundle.append(&H256::zero());
+            bundle.append(&1_u64);
+            bundle.append(&1_u64);
+            bundle.append(&Vec::<u8>::new());
+            bundle.begin_list(0);
+            bundle.append(&vec![0_u8; 65]);
+            bundle.append(&0_u64);
+        }
+        bundle.out().to_vec()
+    }
+
+    fn period_data_rlp(
+        period: u64,
+        pivot: H256,
+        unique_transactions: usize,
+        block_ref_counts: &[usize],
+    ) -> Vec<u8> {
+        let pbft_block = pbft_block_rlp(period, pivot);
+        let dag_bundle = finalized_dag_bundle_rlp(block_ref_counts);
+        let mut period_data = RlpStream::new_list(4);
+        period_data.append_raw(&pbft_block, 1);
+        period_data.append_empty_data();
+        period_data.append_raw(&dag_bundle, 1);
+        period_data.begin_list(unique_transactions);
+        for idx in 0..unique_transactions {
+            period_data.begin_list(9);
+            period_data.append(&0_u64);
+            period_data.append(&0_u64);
+            period_data.append(&0_u64);
+            period_data.append(&H256::from_low_u64_be(idx as u64 + 100));
+            period_data.append(&Vec::<u8>::new());
+            period_data.append(&0_u64);
+            period_data.append(&0_u64);
+            period_data.append(&0_u64);
+            period_data.append(&0_u64);
+        }
+        period_data.out().to_vec()
     }
 
     #[test]
@@ -814,5 +1053,77 @@ mod tests {
             committed.threshold_upper
         );
         assert_eq!(manager.params_changes().len(), 2);
+    }
+
+    #[test]
+    fn storage_runtime_persists_default_change() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_sortition_default");
+        {
+            let storage = storage_at(temp_dir.clone());
+            let manager = SortitionParamsManager::from_storage(runtime_cfg(), storage.clone())
+                .expect("manager should initialize");
+
+            assert_eq!(manager.params_changes().len(), 1);
+            let stored = storage
+                .metadata()
+                .last_sortition_params_changes_rlp(10)
+                .expect("storage lookup should succeed");
+            assert_eq!(stored.len(), 1);
+            let change = SortitionParamsChange::from_rlp_bytes(&stored[0])
+                .expect("default change should decode");
+            assert_eq!(change.period, 0);
+            assert_eq!(change.threshold_upper, 10_000);
+        }
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn storage_runtime_params_for_period_reads_rust_storage() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_sortition_period_lookup");
+        {
+            let storage = storage_at(temp_dir.clone());
+            let change = SortitionParamsChange {
+                period: 10,
+                interval_efficiency: 5_000,
+                threshold_upper: 1_234,
+            };
+            storage
+                .metadata()
+                .write_sortition_params_change(10, &change.to_rlp_bytes())
+                .expect("change should persist");
+            let manager = SortitionParamsManager::from_storage(runtime_cfg(), storage)
+                .expect("manager should initialize");
+
+            let params = manager
+                .params_for_period_from_storage(11)
+                .expect("storage lookup should succeed");
+            assert_eq!(params.vrf.threshold_upper, 1_234);
+        }
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn storage_runtime_replays_period_data_from_rust_storage() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_sortition_replay");
+        {
+            let storage = storage_at(temp_dir.clone());
+            storage
+                .period()
+                .write(
+                    1,
+                    &period_data_rlp(1, H256::from_low_u64_be(42), 2, &[2, 2]),
+                )
+                .expect("period data should persist");
+
+            let manager = SortitionParamsManager::from_storage(runtime_cfg(), storage)
+                .expect("manager should initialize");
+            assert_eq!(
+                manager
+                    .average_dag_efficiency()
+                    .expect("replayed average should exist"),
+                5_000
+            );
+        }
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 }

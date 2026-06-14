@@ -6,8 +6,6 @@
 //! period-specific threshold lookup.
 
 use anyhow::{ensure, Context, Result};
-use ethereum_types::H256;
-use rlp::Rlp;
 use rustaxa_consensus::sortition::{
     calculate_dag_efficiency, SortitionConfig, SortitionParams, SortitionParamsChange,
     SortitionParamsManager, VdfParams, VrfParams,
@@ -16,12 +14,6 @@ use rustaxa_storage::Column;
 use std::collections::VecDeque;
 
 use crate::ffi::{rustaxa_ffi, BridgeSortitionParamsManager, BridgeStorage};
-
-const PBFT_BLOCK_POS_IN_PERIOD_DATA: usize = 0;
-const DAG_BLOCKS_POS_IN_PERIOD_DATA: usize = 2;
-const TRANSACTIONS_POS_IN_PERIOD_DATA: usize = 3;
-const PBFT_PIVOT_DAG_BLOCK_HASH_POS: usize = 1;
-const FINALIZED_DAG_BUNDLE_TRANSACTION_INDEXES_POS: usize = 1;
 
 impl From<rustaxa_ffi::SortitionRuntimeConfig> for SortitionConfig {
     fn from(config: rustaxa_ffi::SortitionRuntimeConfig) -> Self {
@@ -109,51 +101,6 @@ fn change_result(
     )
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PeriodEfficiencyCounts {
-    has_pivot: bool,
-    unique_transactions: u64,
-    total_dag_transaction_refs: u64,
-}
-
-fn decode_period_efficiency_counts(period_data_rlp: &[u8]) -> Result<PeriodEfficiencyCounts> {
-    let period = Rlp::new(period_data_rlp);
-    let pbft_block = period
-        .at(PBFT_BLOCK_POS_IN_PERIOD_DATA)
-        .context("SORTITION_PERIOD_DATA_PBFT_BLOCK")?;
-    let pivot: H256 = pbft_block
-        .val_at(PBFT_PIVOT_DAG_BLOCK_HASH_POS)
-        .context("SORTITION_PERIOD_DATA_PIVOT")?;
-    let transactions = period
-        .at(TRANSACTIONS_POS_IN_PERIOD_DATA)
-        .context("SORTITION_PERIOD_DATA_TRANSACTIONS")?;
-    let unique_transactions = u64::try_from(transactions.item_count()?)
-        .context("SORTITION_PERIOD_DATA_TRANSACTION_COUNT")?;
-
-    let dag_blocks = period
-        .at(DAG_BLOCKS_POS_IN_PERIOD_DATA)
-        .context("SORTITION_PERIOD_DATA_DAG_BLOCKS")?;
-    let total_dag_transaction_refs = if dag_blocks.is_empty() {
-        0
-    } else {
-        let transaction_indexes = dag_blocks
-            .at(FINALIZED_DAG_BUNDLE_TRANSACTION_INDEXES_POS)
-            .context("SORTITION_PERIOD_DATA_DAG_INDEXES")?;
-        let mut total = 0_u64;
-        for block_indexes in transaction_indexes.iter() {
-            total += u64::try_from(block_indexes.item_count()?)
-                .context("SORTITION_PERIOD_DATA_DAG_INDEX_COUNT")?;
-        }
-        total
-    };
-
-    Ok(PeriodEfficiencyCounts {
-        has_pivot: pivot != H256::zero(),
-        unique_transactions,
-        total_dag_transaction_refs,
-    })
-}
-
 impl BridgeSortitionParamsManager {
     /// Creates a Rust sortition manager from persisted state supplied by C++.
     ///
@@ -171,10 +118,7 @@ impl BridgeSortitionParamsManager {
         let manager = SortitionParamsManager::from_changes(config.into(), params_changes)
             .context("create sortition params manager")?;
 
-        Ok(Box::new(Self {
-            manager,
-            storage: None,
-        }))
+        Ok(Box::new(Self { manager }))
     }
 
     /// Creates a Rust sortition manager from Rust storage.
@@ -189,59 +133,8 @@ impl BridgeSortitionParamsManager {
         config: rustaxa_ffi::SortitionRuntimeConfig,
         storage: &BridgeStorage,
     ) -> Result<Box<Self>> {
-        let config = SortitionConfig::from(config);
-        let changes_rlp = storage
-            .0
-            .metadata()
-            .last_sortition_params_changes_rlp(usize::from(config.changes_count_for_average))
-            .context("SORTITION_STORAGE_LOAD_CHANGES")?;
-        let (mut manager, default_change) =
-            SortitionParamsManager::from_persisted_rlp(config, changes_rlp)
-                .context("SORTITION_STORAGE_CREATE_RUNTIME")?;
-        if let Some(default_change) = default_change {
-            storage
-                .0
-                .metadata()
-                .write_sortition_params_change(
-                    default_change.period,
-                    &default_change.to_rlp_bytes(),
-                )
-                .context("SORTITION_STORAGE_WRITE_DEFAULT_CHANGE")?;
-        }
-
-        let replay_start = manager
-            .params_changes()
-            .back()
-            .map(|change| change.period + 1)
-            .unwrap_or(1);
-        let mut period = replay_start;
-        loop {
-            let period_data = storage
-                .0
-                .period()
-                .data_raw(period)
-                .with_context(|| format!("SORTITION_STORAGE_PERIOD_DATA:{period}"))?;
-            if period_data.is_empty() {
-                break;
-            }
-            let counts = decode_period_efficiency_counts(&period_data)
-                .with_context(|| format!("SORTITION_PERIOD_DATA_EFFICIENCY:{period}"))?;
-            if counts.has_pivot {
-                let dag_efficiency = calculate_dag_efficiency(
-                    usize::try_from(counts.unique_transactions)
-                        .context("SORTITION_REPLAY_UNIQUE_TRANSACTION_COUNT")?,
-                    usize::try_from(counts.total_dag_transaction_refs)
-                        .context("SORTITION_REPLAY_DAG_TRANSACTION_REF_COUNT")?,
-                )?;
-                manager.restore_finalized_period(Some(dag_efficiency))?;
-            }
-            period += 1;
-        }
-
-        Ok(Box::new(Self {
-            manager,
-            storage: Some(storage.0.clone()),
-        }))
+        let manager = SortitionParamsManager::from_storage(config.into(), storage.0.clone())?;
+        Ok(Box::new(Self { manager }))
     }
 
     /// Returns the manager's current runtime sortition parameters.
@@ -268,18 +161,7 @@ impl BridgeSortitionParamsManager {
         &self,
         period: u64,
     ) -> Result<rustaxa_ffi::SortitionRuntimeParams> {
-        let storage = self
-            .storage
-            .as_ref()
-            .context("SORTITION_STORAGE_NOT_ATTACHED")?;
-        let change = storage
-            .metadata()
-            .params_change_for_period_rlp(period)
-            .with_context(|| format!("SORTITION_STORAGE_CHANGE_FOR_PERIOD:{period}"))?
-            .map(|rlp| SortitionParamsChange::from_rlp_bytes(&rlp))
-            .transpose()
-            .context("SORTITION_STORAGE_CHANGE_DECODE")?;
-        Ok(self.manager.params_for_period(change).into())
+        Ok(self.manager.params_for_period_from_storage(period)?.into())
     }
 
     /// Restores a finalized period while rebuilding runtime state during startup.
@@ -593,6 +475,7 @@ impl BridgeStorage {
 mod tests {
     use super::*;
     use crate::storage::create_storage;
+    use ethereum_types::H256;
     use rlp::RlpStream;
     use std::fs;
     use std::path::PathBuf;

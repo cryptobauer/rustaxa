@@ -258,7 +258,8 @@ Planned large slices:
 2. Move consensus managers to direct `rustaxa-storage` ownership. Update Rust-mode PBFT manager, DAG manager, vote
    manager, transaction manager, sortition, pillar chain, rewards, and gas-pricing shims so their long-lived Rust
    runtimes own or receive `Arc<rustaxa_storage::Storage>` directly. C++ may still materialize legacy objects at
-   network/EVM/API boundaries.
+   network/EVM/API boundaries. Current progress: PBFT manager startup restore and sortition startup replay/period
+   lookup now live in `rustaxa-consensus` over native Rust storage handles.
 3. Remove C++ batch/storage orchestration from consensus. Replace `createWriteBatch`, `rustBatchId`,
    `commitWriteBatch`, and C++ batch-driven append helpers in consensus shims with Rust-owned storage sessions and
    commits. Atomic write ordering should be expressed in Rust storage transactions, not in C++.
