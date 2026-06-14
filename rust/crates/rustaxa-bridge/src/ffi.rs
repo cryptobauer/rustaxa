@@ -4983,6 +4983,7 @@ pub mod rustaxa_ffi {
         type BridgeStorage;
 
         pub fn create_storage(path: &str) -> Result<Box<BridgeStorage>>;
+        pub fn get_pillar_block_data_rlp(self: &BridgeStorage, period: u64) -> Result<Vec<u8>>;
         pub fn create_write_batch(self: &BridgeStorage) -> Result<u64>;
         pub fn batch_put(
             self: &BridgeStorage,

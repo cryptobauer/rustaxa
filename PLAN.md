@@ -267,6 +267,8 @@ Planned large slices:
    changes are persisted by the Rust sortition manager before live state is updated.
 4. Move read/query surfaces off `DbStorage` or isolate them. Network sync, RPC, GraphQL, and debug/query paths should
    use Rust storage query APIs or an explicit read-only query shim. These paths must not become consensus storage ports.
+   Current progress: `taraxa_getPillarBlockData` uses a read-only Rust storage query in Rust mode and only materializes
+   C++ pillar objects at the RPC JSON boundary.
 5. Collapse `DbStorage` to compatibility-only. Delete or guard Rust-mode consensus accessors, remove obsolete C++
    forwarding methods, and add boundary tests/guards that fail when Rust-mode consensus introduces new `DbStorage`
    storage calls.

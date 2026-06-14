@@ -9,6 +9,7 @@
 #include "config/version.hpp"
 #include "dag/dag_manager.hpp"
 #include "pbft/pbft_manager.hpp"
+#include "pillar_chain/pillar_block.hpp"
 #include "transaction/transaction_manager.hpp"
 
 using namespace std;
@@ -18,6 +19,12 @@ using namespace taraxa;
 using namespace ::taraxa::final_chain;
 
 namespace taraxa::net {
+
+#ifdef RUSTAXA_ENABLE
+namespace {
+dev::bytes fromRustBytes(const rust::Vec<uint8_t>& input) { return dev::bytes(input.begin(), input.end()); }
+}  // namespace
+#endif
 
 Taraxa::Taraxa(std::shared_ptr<AppBase> app) : app_(app) {
   Json::CharReaderBuilder builder;
@@ -242,6 +249,15 @@ Json::Value Taraxa::taraxa_getPillarBlockData(const std::string& pillar_block_pe
     if (!app->getConfig().genesis.state.hardforks.ficus_hf.isPillarBlockPeriod(pbft_period)) {
       return {};
     }
+
+#ifdef RUSTAXA_ENABLE
+    const auto pillar_block_data_rlp = app->getDB()->rustStorage().get_pillar_block_data_rlp(pbft_period);
+    if (pillar_block_data_rlp.empty()) {
+      return {};
+    }
+    const auto pillar_block_data_bytes = fromRustBytes(pillar_block_data_rlp);
+    return pillar_chain::PillarBlockData{dev::RLP(pillar_block_data_bytes)}.getJson(include_signatures);
+#endif
 
     const auto pillar_block = app->getDB()->getPillarBlock(pbft_period);
     if (!pillar_block) {
