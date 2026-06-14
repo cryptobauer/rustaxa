@@ -35,6 +35,7 @@ use crate::ffi::{BridgePbftFinalizationRuntimeSession, BridgeStorage};
 use anyhow::{anyhow, Context, Result};
 use ethereum_types::H256;
 use rustaxa_consensus::pbft_finalize::{
+    apply_pbft_finalization_storage_writes as apply_domain_pbft_finalization_storage_writes,
     next_pbft_finalization_runtime_action,
     plan_pbft_dynamic_lambda as plan_domain_pbft_dynamic_lambda,
     plan_pbft_finalization_intent as plan_domain_pbft_finalization_intent,
@@ -48,7 +49,8 @@ use rustaxa_consensus::pbft_finalize::{
     PbftFinalizationLiveMutationValidation, PbftFinalizationPlan, PbftFinalizationPositionedHash,
     PbftFinalizationResumeFact, PbftFinalizationResumePlan, PbftFinalizationRuntimeAction,
     PbftFinalizationRuntimeActionResult, PbftFinalizationRuntimeStatus, PbftFinalizationStatus,
-    PbftFinalizationStorageWriteIntent,
+    PbftFinalizationStorageWriteIntent, PbftFinalizationStorageWriteStage,
+    PbftFinalizedPeriodApplyResult,
 };
 use rustaxa_consensus::sortition::SortitionParamsChange;
 use rustaxa_storage::Column;
@@ -129,15 +131,16 @@ pub fn append_pbft_finalization_storage_write(
 /// storage batch.
 ///
 /// Inputs:
-/// - `storage`: shared Rust storage bridge used by the C++ storage shim.
+/// - `storage`: shared Rust storage bridge used only to access the native
+///   `rustaxa-storage` handle.
 /// - `write_set`: accepted PBFT finalization storage intent from the Rust planner.
 /// - `stages`: ordered persistence stages to append to one batch.
 /// - `sync`: whether the storage commit should use a synchronous write option.
 ///
 /// Outputs:
 /// - The combined apply result. A rejected, missing-payload, or conflicting
-///   stage result is returned immediately after the uncommitted batch is
-///   dropped.
+///   stage result is returned from the consensus-owned apply helper before any
+///   commit.
 ///
 /// Invariants and edge behavior:
 /// - Stages are appended in the supplied order and committed atomically in one
@@ -145,8 +148,8 @@ pub fn append_pbft_finalization_storage_write(
 /// - Existing staged append APIs remain the compatibility surface for callers
 ///   that still need to append into a larger caller-owned batch.
 /// - Empty stage lists are rejected without creating durable writes.
-/// - Rust storage or batch-registry failures are returned as bridge errors; the
-///   helper attempts to drop the owned batch before returning those errors.
+/// - Rust storage failures are returned as bridge errors. The bridge does not
+///   create, own, or commit a batch for this production apply path.
 pub fn apply_pbft_finalization_storage_writes(
     storage: &BridgeStorage,
     write_set: &FfiPbftFinalizationStorageWritePlan,
@@ -161,30 +164,16 @@ pub fn apply_pbft_finalization_storage_writes(
         ));
     }
 
-    let batch_id = storage
-        .create_write_batch()
-        .context("PBFT_FINALIZE_CREATE_APPLY_BATCH")?;
-    let result =
-        apply_pbft_finalization_storage_writes_to_batch(storage, batch_id, write_set, stages);
-    match result {
-        Ok(result) if result_is_success(result.status) => {
-            if let Err(err) = storage.commit_write_batch(batch_id, sync) {
-                let _ = storage.drop_write_batch(batch_id);
-                return Err(err).context("PBFT_FINALIZE_COMMIT_APPLY_BATCH");
-            }
-            Ok(result)
-        }
-        Ok(result) => {
-            storage
-                .drop_write_batch(batch_id)
-                .context("PBFT_FINALIZE_DROP_REJECTED_APPLY_BATCH")?;
-            Ok(result)
-        }
-        Err(err) => {
-            let _ = storage.drop_write_batch(batch_id);
-            Err(err)
-        }
-    }
+    let domain_stages = stages.into_iter().map(Into::into).collect();
+
+    Ok(apply_result_from_domain(
+        apply_domain_pbft_finalization_storage_writes(
+            storage.0.as_ref(),
+            &PbftFinalizationStorageWriteIntent::from(write_set),
+            domain_stages,
+            sync,
+        )?,
+    ))
 }
 
 fn empty_stage(stage: u8) -> FfiPbftFinalizationStorageWriteStage {
@@ -202,22 +191,41 @@ fn empty_stage(stage: u8) -> FfiPbftFinalizationStorageWriteStage {
     }
 }
 
-fn apply_pbft_finalization_storage_writes_to_batch(
-    storage: &BridgeStorage,
-    batch_id: u64,
-    write_set: &FfiPbftFinalizationStorageWritePlan,
-    stages: Vec<FfiPbftFinalizationStorageWriteStage>,
-) -> Result<FfiPbftFinalizedPeriodApplyResult> {
-    let mut combined =
-        sidecar_apply_result(APPLY_STATUS_ALREADY_APPLIED_SAME_VALUES, write_set, "");
-    for stage in stages {
-        let result = append_pbft_finalization_storage_write(storage, batch_id, write_set, stage)?;
-        if !result_is_success(result.status) {
-            return Ok(result);
+impl From<FfiPbftFinalizationStorageWriteStage> for PbftFinalizationStorageWriteStage {
+    fn from(value: FfiPbftFinalizationStorageWriteStage) -> Self {
+        Self {
+            stage: value.stage,
+            rounds_count_dynamic_lambda: value.rounds_count_dynamic_lambda,
+            dynamic_lambda: value.dynamic_lambda,
+            has_sortition_params_change: value.has_sortition_params_change,
+            sortition_params_change_period: value.sortition_params_change_period,
+            sortition_params_change_interval_efficiency: value
+                .sortition_params_change_interval_efficiency,
+            sortition_params_change_threshold_upper: value.sortition_params_change_threshold_upper,
+            has_reward_votes_reset: value.has_reward_votes_reset,
+            reward_votes_bundle_rlp: value.reward_votes_bundle_rlp,
+            extra_reward_vote_hashes: value
+                .extra_reward_vote_hashes
+                .into_iter()
+                .map(|hash| H256::from(hash.hash))
+                .collect(),
         }
-        combined = merge_apply_results(combined, result, write_set);
     }
-    Ok(combined)
+}
+
+fn apply_result_from_domain(
+    value: PbftFinalizedPeriodApplyResult,
+) -> FfiPbftFinalizedPeriodApplyResult {
+    FfiPbftFinalizedPeriodApplyResult {
+        status: value.status.as_u8(),
+        wrote_pbft_head: value.wrote_pbft_head,
+        wrote_period_data: value.wrote_period_data,
+        dag_index_writes: value.dag_index_writes,
+        transaction_location_writes: value.transaction_location_writes,
+        block_period: value.block_period,
+        pbft_block_hash: value.pbft_block_hash.0,
+        error_code: value.error_code,
+    }
 }
 
 /// C++/Rust bridge entry for one deterministic PBFT finalization intent.
@@ -1567,33 +1575,6 @@ fn sidecar_apply_result(
         block_period: write_set.block_period,
         pbft_block_hash: write_set.pbft_block_hash,
         error_code: error_code.to_string(),
-    }
-}
-
-fn result_is_success(status: u8) -> bool {
-    status == APPLY_STATUS_APPLIED || status == APPLY_STATUS_ALREADY_APPLIED_SAME_VALUES
-}
-
-fn merge_apply_results(
-    combined: FfiPbftFinalizedPeriodApplyResult,
-    next: FfiPbftFinalizedPeriodApplyResult,
-    write_set: &FfiPbftFinalizationStorageWritePlan,
-) -> FfiPbftFinalizedPeriodApplyResult {
-    let status = if combined.status == APPLY_STATUS_APPLIED || next.status == APPLY_STATUS_APPLIED {
-        APPLY_STATUS_APPLIED
-    } else {
-        APPLY_STATUS_ALREADY_APPLIED_SAME_VALUES
-    };
-    FfiPbftFinalizedPeriodApplyResult {
-        status,
-        wrote_pbft_head: combined.wrote_pbft_head || next.wrote_pbft_head,
-        wrote_period_data: combined.wrote_period_data || next.wrote_period_data,
-        dag_index_writes: combined.dag_index_writes + next.dag_index_writes,
-        transaction_location_writes: combined.transaction_location_writes
-            + next.transaction_location_writes,
-        block_period: write_set.block_period,
-        pbft_block_hash: write_set.pbft_block_hash,
-        error_code: String::new(),
     }
 }
 

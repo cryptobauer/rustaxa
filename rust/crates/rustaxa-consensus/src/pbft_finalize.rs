@@ -1,9 +1,11 @@
 //! Deterministic PBFT finalization intent planning.
 //!
 //! This module receives plain, C++-computed facts from the execute/finalize
-//! boundary and returns a bridge-safe intent that only captures runtime
-//! side-effects. No storage mutation, I/O, scheduling, locking, or DB reads are
-//! performed in this planner.
+//! boundary and returns a bridge-safe intent that captures runtime side-effects.
+//! The planner remains side-effect-free. This module also owns the Rust storage
+//! executor for planned finalization write intents: it applies ordered
+//! finalization stages through `rustaxa-storage` batches without routing the
+//! commit through C++ or bridge-owned batch ids.
 //!
 //! Inputs:
 //! - `block_period`, `block_prev_hash`, `chain_last_hash`, `chain_last_period`:
@@ -25,8 +27,28 @@
 //! - `storage_write_intent`: the PBFT persistence command shape. C++ still
 //!   applies the writes in this slice, but Rust owns the decision and facts.
 //! - `status`: explicit decision status code for metrics/logging/telemetry.
+use anyhow::{Context, Result};
 use ethereum_types::H256;
+use rlp::{Rlp, RlpStream};
+use rustaxa_storage::{Column, Storage, StorageWriteBatch};
 use std::collections::HashSet;
+
+use crate::sortition::SortitionParamsChange;
+
+const APPLY_STATUS_APPLIED: u8 = 0;
+const APPLY_STATUS_ALREADY_APPLIED_SAME_VALUES: u8 = 1;
+const APPLY_STATUS_REJECTED_WRITE_SET: u8 = 2;
+const APPLY_STATUS_MISSING_REQUIRED_PAYLOAD: u8 = 3;
+const APPLY_STATUS_CONFLICTING_EXISTING_WRITE: u8 = 4;
+const PBFT_MGR_FIELD_LAMBDA: u8 = 2;
+const PBFT_MGR_STATUS_EXECUTED_BLOCK: u8 = 0;
+const PBFT_TWO_T_PLUS_ONE_CERT_VOTED_TYPE: u8 = 1;
+const SINGLE_VALUE_KEY: [u8; 4] = 0i32.to_le_bytes();
+const APPEND_STAGE_PRIMARY_FINALIZATION: u8 = 0;
+const APPEND_STAGE_DYNAMIC_LAMBDA: u8 = 1;
+const APPEND_STAGE_EXECUTED_STATUS: u8 = 2;
+const APPEND_STAGE_SORTITION_PARAMS_CHANGE: u8 = 3;
+const APPEND_STAGE_REWARD_VOTES_RESET: u8 = 4;
 
 /// Null-anchor / anchored status reported in a planner plan.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -718,6 +740,829 @@ impl PbftFinalizationStorageWriteIntent {
             transaction_location_writes: Vec::new(),
         }
     }
+}
+
+/// Bounded storage-write stage passed to Rust-owned persisted-finalization helpers.
+///
+/// Stage payload is kept structurally close to bridge-facing inputs so bridge
+/// callers can move across with shallow conversions.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftFinalizationStorageWriteStage {
+    /// Stage code (`0`..`4`) from the legacy bridge schema.
+    pub stage: u8,
+    /// C++-legacy dynamic-lambda rounds-count value to persist.
+    pub rounds_count_dynamic_lambda: u32,
+    /// C++-legacy dynamic-lambda field value to persist.
+    pub dynamic_lambda: u32,
+    /// Gate for attaching a sortition params change payload.
+    pub has_sortition_params_change: bool,
+    /// Sortition change period.
+    pub sortition_params_change_period: u64,
+    /// Sortition change observed interval efficiency.
+    pub sortition_params_change_interval_efficiency: u16,
+    /// Sortition change upper threshold.
+    pub sortition_params_change_threshold_upper: u16,
+    /// Gate for attaching reward-vote reset payload.
+    pub has_reward_votes_reset: bool,
+    /// Reward-vote cert-voted bundle RLP.
+    pub reward_votes_bundle_rlp: Vec<u8>,
+    /// Extra cert-voted reward vote hashes to delete during reset.
+    pub extra_reward_vote_hashes: Vec<H256>,
+}
+
+impl Default for PbftFinalizationStorageWriteStage {
+    fn default() -> Self {
+        Self {
+            stage: APPEND_STAGE_PRIMARY_FINALIZATION,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 0,
+            has_sortition_params_change: false,
+            sortition_params_change_period: 0,
+            sortition_params_change_interval_efficiency: 0,
+            sortition_params_change_threshold_upper: 0,
+            has_reward_votes_reset: false,
+            reward_votes_bundle_rlp: Vec::new(),
+            extra_reward_vote_hashes: Vec::new(),
+        }
+    }
+}
+
+/// Result status for one PBFT finalization storage append stage.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftFinalizedPeriodApplyStatus {
+    /// Storage writes were appended with no conflicts.
+    Applied,
+    /// Write-set matched existing durable rows and no durable state changed.
+    AlreadyAppliedSameValues,
+    /// Stage was incompatible with accepted intent.
+    RejectedWriteSet,
+    /// Required payload data for requested stage was missing.
+    MissingRequiredPayload,
+    /// Requested write would overwrite an immutable row with different bytes.
+    ConflictingExistingWrite,
+}
+
+impl PbftFinalizedPeriodApplyStatus {
+    /// Stable status code used by bridge adapters and diagnostics.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Applied => APPLY_STATUS_APPLIED,
+            Self::AlreadyAppliedSameValues => APPLY_STATUS_ALREADY_APPLIED_SAME_VALUES,
+            Self::RejectedWriteSet => APPLY_STATUS_REJECTED_WRITE_SET,
+            Self::MissingRequiredPayload => APPLY_STATUS_MISSING_REQUIRED_PAYLOAD,
+            Self::ConflictingExistingWrite => APPLY_STATUS_CONFLICTING_EXISTING_WRITE,
+        }
+    }
+
+    /// Decodes a status payload emitted by legacy bridge callers.
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            APPLY_STATUS_APPLIED => Self::Applied,
+            APPLY_STATUS_ALREADY_APPLIED_SAME_VALUES => Self::AlreadyAppliedSameValues,
+            APPLY_STATUS_REJECTED_WRITE_SET => Self::RejectedWriteSet,
+            APPLY_STATUS_MISSING_REQUIRED_PAYLOAD => Self::MissingRequiredPayload,
+            APPLY_STATUS_CONFLICTING_EXISTING_WRITE => Self::ConflictingExistingWrite,
+            _ => Self::RejectedWriteSet,
+        }
+    }
+
+    /// Returns true when the stage result can be followed by additional stages.
+    pub const fn is_success(self) -> bool {
+        matches!(self, Self::Applied | Self::AlreadyAppliedSameValues)
+    }
+}
+
+/// Return payload for one or more persisted stage applications.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftFinalizedPeriodApplyResult {
+    /// Consolidated status code.
+    pub status: PbftFinalizedPeriodApplyStatus,
+    /// Whether PBFT head bytes were part of this stage.
+    pub wrote_pbft_head: bool,
+    /// Whether period-data bytes were part of this stage.
+    pub wrote_period_data: bool,
+    /// Number of DAG block-period index entries written.
+    pub dag_index_writes: usize,
+    /// Number of transaction location entries written.
+    pub transaction_location_writes: usize,
+    /// PBFT block period associated with this write intent.
+    pub block_period: u64,
+    /// PBFT block hash associated with this write intent.
+    pub pbft_block_hash: H256,
+    /// Optional diagnostics / rejection text.
+    pub error_code: String,
+}
+
+/// Appends one explicit PBFT finalization persistence stage to a Rust-owned batch.
+pub fn append_pbft_finalization_storage_write(
+    storage: &Storage,
+    batch: &mut StorageWriteBatch,
+    write_set: &PbftFinalizationStorageWriteIntent,
+    stage: PbftFinalizationStorageWriteStage,
+) -> Result<PbftFinalizedPeriodApplyResult> {
+    match stage.stage {
+        APPEND_STAGE_PRIMARY_FINALIZATION => {
+            append_pbft_finalized_period_storage_writes_impl(storage, batch, write_set)
+        }
+        APPEND_STAGE_DYNAMIC_LAMBDA => append_pbft_finalization_dynamic_lambda_storage_writes_impl(
+            storage,
+            batch,
+            write_set,
+            stage.rounds_count_dynamic_lambda,
+            stage.dynamic_lambda,
+        ),
+        APPEND_STAGE_EXECUTED_STATUS => {
+            append_pbft_finalization_executed_status_storage_write_impl(storage, batch, write_set)
+        }
+        APPEND_STAGE_SORTITION_PARAMS_CHANGE => {
+            append_pbft_finalization_sortition_storage_write_impl(storage, batch, write_set, &stage)
+        }
+        APPEND_STAGE_REWARD_VOTES_RESET => {
+            append_pbft_finalization_reward_votes_reset_storage_write_impl(
+                storage, batch, write_set, &stage,
+            )
+        }
+        _ => Ok(sidecar_apply_result(
+            PbftFinalizedPeriodApplyStatus::RejectedWriteSet,
+            write_set,
+            "PBFT_FINALIZE_UNKNOWN_STORAGE_WRITE_STAGE",
+        )),
+    }
+}
+
+/// Applies one or more PBFT finalization persistence stages in a Rust-owned batch.
+pub fn apply_pbft_finalization_storage_writes(
+    storage: &Storage,
+    write_set: &PbftFinalizationStorageWriteIntent,
+    stages: Vec<PbftFinalizationStorageWriteStage>,
+    sync: bool,
+) -> Result<PbftFinalizedPeriodApplyResult> {
+    if stages.is_empty() {
+        return Ok(sidecar_apply_result(
+            PbftFinalizedPeriodApplyStatus::RejectedWriteSet,
+            write_set,
+            "PBFT_FINALIZE_NO_STORAGE_WRITE_STAGES",
+        ));
+    }
+
+    let mut batch = storage.create_write_batch();
+    let result =
+        apply_pbft_finalization_storage_writes_to_batch(storage, &mut batch, write_set, stages)?;
+
+    if result.status.is_success() {
+        storage
+            .commit_write_batch_with_sync(batch, sync)
+            .context("PBFT_FINALIZE_COMMIT_APPLY_BATCH")?;
+    }
+
+    Ok(result)
+}
+
+/// Appends primary finalized-period writes to a Rust-owned batch.
+pub fn append_pbft_finalized_period_storage_writes(
+    storage: &Storage,
+    batch: &mut StorageWriteBatch,
+    write_set: &PbftFinalizationStorageWriteIntent,
+) -> Result<PbftFinalizedPeriodApplyResult> {
+    append_pbft_finalized_period_storage_writes_impl(storage, batch, write_set)
+}
+
+/// Appends dynamic-lambda persistence writes to a Rust-owned batch.
+pub fn append_pbft_finalization_dynamic_lambda_storage_writes(
+    storage: &Storage,
+    batch: &mut StorageWriteBatch,
+    write_set: &PbftFinalizationStorageWriteIntent,
+    rounds_count_dynamic_lambda: u32,
+    dynamic_lambda: u32,
+) -> Result<PbftFinalizedPeriodApplyResult> {
+    append_pbft_finalization_dynamic_lambda_storage_writes_impl(
+        storage,
+        batch,
+        write_set,
+        rounds_count_dynamic_lambda,
+        dynamic_lambda,
+    )
+}
+
+/// Appends executed-status persistence writes to a Rust-owned batch.
+pub fn append_pbft_finalization_executed_status_storage_write(
+    storage: &Storage,
+    batch: &mut StorageWriteBatch,
+    write_set: &PbftFinalizationStorageWriteIntent,
+) -> Result<PbftFinalizedPeriodApplyResult> {
+    append_pbft_finalization_executed_status_storage_write_impl(storage, batch, write_set)
+}
+
+fn apply_pbft_finalization_storage_writes_to_batch(
+    storage: &Storage,
+    batch: &mut StorageWriteBatch,
+    write_set: &PbftFinalizationStorageWriteIntent,
+    stages: Vec<PbftFinalizationStorageWriteStage>,
+) -> Result<PbftFinalizedPeriodApplyResult> {
+    let mut combined = sidecar_apply_result(
+        PbftFinalizedPeriodApplyStatus::AlreadyAppliedSameValues,
+        write_set,
+        "",
+    );
+
+    for stage in stages {
+        let result = append_pbft_finalization_storage_write(storage, batch, write_set, stage)?;
+        if !result.status.is_success() {
+            return Ok(result);
+        }
+        combined = merge_apply_results(combined, result, write_set);
+    }
+    Ok(combined)
+}
+
+fn append_pbft_finalized_period_storage_writes_impl(
+    storage: &Storage,
+    batch: &mut StorageWriteBatch,
+    write_set: &PbftFinalizationStorageWriteIntent,
+) -> Result<PbftFinalizedPeriodApplyResult> {
+    if !write_set.persist_pbft_head && !write_set.persist_period_data {
+        return Ok(apply_result(
+            PbftFinalizedPeriodApplyStatus::RejectedWriteSet,
+            write_set,
+            0,
+            0,
+            "PBFT_FINALIZE_REJECTED_WRITE_SET",
+        ));
+    }
+
+    if write_set.persist_pbft_head && write_set.pbft_head_payload.is_empty() {
+        return Ok(apply_result(
+            PbftFinalizedPeriodApplyStatus::MissingRequiredPayload,
+            write_set,
+            0,
+            0,
+            "PBFT_FINALIZE_MISSING_PBFT_HEAD_PAYLOAD",
+        ));
+    }
+
+    if write_set.persist_period_data && write_set.period_data_rlp.is_empty() {
+        return Ok(apply_result(
+            PbftFinalizedPeriodApplyStatus::MissingRequiredPayload,
+            write_set,
+            0,
+            0,
+            "PBFT_FINALIZE_MISSING_PERIOD_DATA_RLP",
+        ));
+    }
+
+    let mut already_applied = true;
+    let mut pending_deletes_absent = true;
+    let pbft_block_hash = write_set.pbft_block_hash;
+    let pbft_head_hash = write_set.pbft_head_hash;
+
+    if write_set.persist_pbft_head {
+        already_applied &= storage
+            .get_raw(Column::PbftHead, pbft_head_hash.as_bytes())?
+            .as_deref()
+            == Some(write_set.pbft_head_payload.as_slice());
+    }
+
+    if write_set.persist_period_data {
+        let period_key = write_set.block_period.to_le_bytes();
+        let period_value = write_set.block_period.to_le_bytes();
+        if check_existing_value(
+            storage,
+            Column::PbftBlockPeriod,
+            pbft_block_hash.as_bytes(),
+            &period_value,
+            "PBFT_FINALIZE_CONFLICTING_PBFT_PERIOD",
+        )? {
+            return Ok(apply_result(
+                PbftFinalizedPeriodApplyStatus::ConflictingExistingWrite,
+                write_set,
+                0,
+                0,
+                "PBFT_FINALIZE_CONFLICTING_PBFT_PERIOD",
+            ));
+        }
+        already_applied &= storage
+            .get_raw(Column::PbftBlockPeriod, pbft_block_hash.as_bytes())?
+            .is_some();
+
+        if check_existing_value(
+            storage,
+            Column::PeriodData,
+            &period_key,
+            &write_set.period_data_rlp,
+            "PBFT_FINALIZE_CONFLICTING_PERIOD_DATA",
+        )? {
+            return Ok(apply_result(
+                PbftFinalizedPeriodApplyStatus::ConflictingExistingWrite,
+                write_set,
+                0,
+                0,
+                "PBFT_FINALIZE_CONFLICTING_PERIOD_DATA",
+            ));
+        }
+        already_applied &= storage.get_raw(Column::PeriodData, &period_key)?.is_some();
+
+        for write in &write_set.dag_block_period_writes {
+            let hash = write.hash;
+            let value = block_position_rlp(write_set.block_period, write.position);
+            if check_existing_value(
+                storage,
+                Column::DagBlockPeriod,
+                hash.as_bytes(),
+                &value,
+                "PBFT_FINALIZE_CONFLICTING_DAG_PERIOD",
+            )? {
+                return Ok(apply_result(
+                    PbftFinalizedPeriodApplyStatus::ConflictingExistingWrite,
+                    write_set,
+                    0,
+                    0,
+                    "PBFT_FINALIZE_CONFLICTING_DAG_PERIOD",
+                ));
+            }
+            already_applied &= storage
+                .get_raw(Column::DagBlockPeriod, hash.as_bytes())?
+                .is_some();
+            pending_deletes_absent &= storage
+                .get_raw(Column::DagBlocks, hash.as_bytes())?
+                .is_none();
+        }
+
+        for write in &write_set.transaction_location_writes {
+            let hash = write.hash;
+            let value = block_position_rlp(write_set.block_period, write.position);
+            if check_existing_value(
+                storage,
+                Column::TrxPeriod,
+                hash.as_bytes(),
+                &value,
+                "PBFT_FINALIZE_CONFLICTING_TRANSACTION_LOCATION",
+            )? {
+                return Ok(apply_result(
+                    PbftFinalizedPeriodApplyStatus::ConflictingExistingWrite,
+                    write_set,
+                    0,
+                    0,
+                    "PBFT_FINALIZE_CONFLICTING_TRANSACTION_LOCATION",
+                ));
+            }
+            already_applied &= storage
+                .get_raw(Column::TrxPeriod, hash.as_bytes())?
+                .is_some();
+            pending_deletes_absent &= storage
+                .get_raw(Column::Transactions, hash.as_bytes())?
+                .is_none();
+        }
+    }
+
+    if write_set.persist_pbft_head {
+        storage
+            .batch_put_raw(
+                batch,
+                Column::PbftHead,
+                pbft_head_hash.as_bytes(),
+                &write_set.pbft_head_payload,
+            )
+            .context("PBFT_FINALIZE_BATCH_PBFT_HEAD")?;
+    }
+
+    if write_set.persist_period_data {
+        storage
+            .batch_put_raw(
+                batch,
+                Column::PbftBlockPeriod,
+                pbft_block_hash.as_bytes(),
+                &write_set.block_period.to_le_bytes(),
+            )
+            .context("PBFT_FINALIZE_BATCH_PBFT_PERIOD")?;
+        storage
+            .batch_put_raw(
+                batch,
+                Column::PeriodData,
+                &write_set.block_period.to_le_bytes(),
+                &write_set.period_data_rlp,
+            )
+            .context("PBFT_FINALIZE_BATCH_PERIOD_DATA")?;
+
+        for write in &write_set.dag_block_period_writes {
+            let hash = write.hash;
+            storage
+                .batch_delete_raw(batch, Column::DagBlocks, hash.as_bytes())
+                .context("PBFT_FINALIZE_BATCH_DELETE_PENDING_DAG")?;
+            storage
+                .batch_put_raw(
+                    batch,
+                    Column::DagBlockPeriod,
+                    hash.as_bytes(),
+                    &block_position_rlp(write_set.block_period, write.position),
+                )
+                .context("PBFT_FINALIZE_BATCH_DAG_PERIOD")?;
+        }
+
+        for write in &write_set.transaction_location_writes {
+            let hash = write.hash;
+            storage
+                .batch_delete_raw(batch, Column::Transactions, hash.as_bytes())
+                .context("PBFT_FINALIZE_BATCH_DELETE_PENDING_TRANSACTION")?;
+            storage
+                .batch_put_raw(
+                    batch,
+                    Column::TrxPeriod,
+                    hash.as_bytes(),
+                    &block_position_rlp(write_set.block_period, write.position),
+                )
+                .context("PBFT_FINALIZE_BATCH_TRANSACTION_LOCATION")?;
+        }
+    }
+
+    let status = if already_applied && pending_deletes_absent {
+        PbftFinalizedPeriodApplyStatus::AlreadyAppliedSameValues
+    } else {
+        PbftFinalizedPeriodApplyStatus::Applied
+    };
+
+    Ok(apply_result(
+        status,
+        write_set,
+        write_set.dag_block_period_writes.len(),
+        write_set.transaction_location_writes.len(),
+        "",
+    ))
+}
+
+fn append_pbft_finalization_dynamic_lambda_storage_writes_impl(
+    storage: &Storage,
+    batch: &mut StorageWriteBatch,
+    write_set: &PbftFinalizationStorageWriteIntent,
+    rounds_count_dynamic_lambda: u32,
+    dynamic_lambda: u32,
+) -> Result<PbftFinalizedPeriodApplyResult> {
+    if !write_set.apply_dynamic_lambda_update {
+        return Ok(apply_result(
+            PbftFinalizedPeriodApplyStatus::RejectedWriteSet,
+            write_set,
+            0,
+            0,
+            "PBFT_FINALIZE_DYNAMIC_LAMBDA_NOT_REQUESTED",
+        ));
+    }
+
+    let mut already_applied = true;
+    if write_set.persist_period_lambda {
+        let period_key = write_set.block_period.to_le_bytes();
+        let period_lambda = write_set.period_lambda.to_le_bytes();
+        if check_existing_value(
+            storage,
+            Column::PeriodLambda,
+            &period_key,
+            &period_lambda,
+            "PBFT_FINALIZE_CONFLICTING_PERIOD_LAMBDA",
+        )? {
+            return Ok(apply_result(
+                PbftFinalizedPeriodApplyStatus::ConflictingExistingWrite,
+                write_set,
+                0,
+                0,
+                "PBFT_FINALIZE_CONFLICTING_PERIOD_LAMBDA",
+            ));
+        }
+        already_applied &= storage
+            .get_raw(Column::PeriodLambda, &period_key)?
+            .is_some();
+    }
+
+    already_applied &= storage
+        .get_raw(Column::RoundsCountDynamicLambda, &SINGLE_VALUE_KEY)?
+        .as_deref()
+        == Some(&rounds_count_dynamic_lambda.to_le_bytes());
+    already_applied &= storage
+        .get_raw(Column::PbftMgrRoundStep, &[PBFT_MGR_FIELD_LAMBDA])?
+        .as_deref()
+        == Some(&dynamic_lambda.to_le_bytes());
+
+    if write_set.persist_period_lambda {
+        storage
+            .batch_put_raw(
+                batch,
+                Column::PeriodLambda,
+                &write_set.block_period.to_le_bytes(),
+                &write_set.period_lambda.to_le_bytes(),
+            )
+            .context("PBFT_FINALIZE_BATCH_PERIOD_LAMBDA")?;
+    }
+    storage
+        .batch_put_raw(
+            batch,
+            Column::RoundsCountDynamicLambda,
+            &SINGLE_VALUE_KEY,
+            &rounds_count_dynamic_lambda.to_le_bytes(),
+        )
+        .context("PBFT_FINALIZE_BATCH_DYNAMIC_LAMBDA_ROUNDS")?;
+    storage
+        .batch_put_raw(
+            batch,
+            Column::PbftMgrRoundStep,
+            &[PBFT_MGR_FIELD_LAMBDA],
+            &dynamic_lambda.to_le_bytes(),
+        )
+        .context("PBFT_FINALIZE_BATCH_DYNAMIC_LAMBDA_FIELD")?;
+
+    let status = if already_applied {
+        PbftFinalizedPeriodApplyStatus::AlreadyAppliedSameValues
+    } else {
+        PbftFinalizedPeriodApplyStatus::Applied
+    };
+    Ok(sidecar_apply_result(status, write_set, ""))
+}
+
+fn append_pbft_finalization_executed_status_storage_write_impl(
+    storage: &Storage,
+    batch: &mut StorageWriteBatch,
+    write_set: &PbftFinalizationStorageWriteIntent,
+) -> Result<PbftFinalizedPeriodApplyResult> {
+    if !write_set.persist_executed_pbft_status {
+        return Ok(apply_result(
+            PbftFinalizedPeriodApplyStatus::RejectedWriteSet,
+            write_set,
+            0,
+            0,
+            "PBFT_FINALIZE_EXECUTED_STATUS_NOT_REQUESTED",
+        ));
+    }
+
+    let status_key = [PBFT_MGR_STATUS_EXECUTED_BLOCK];
+    let already_applied = storage
+        .get_raw(Column::PbftMgrStatus, &status_key)?
+        .as_deref()
+        == Some(&[u8::from(write_set.executed_pbft_status)]);
+
+    storage
+        .batch_put_raw(
+            batch,
+            Column::PbftMgrStatus,
+            &status_key,
+            &[u8::from(write_set.executed_pbft_status)],
+        )
+        .context("PBFT_FINALIZE_BATCH_EXECUTED_STATUS")?;
+
+    let status = if already_applied {
+        PbftFinalizedPeriodApplyStatus::AlreadyAppliedSameValues
+    } else {
+        PbftFinalizedPeriodApplyStatus::Applied
+    };
+    Ok(sidecar_apply_result(status, write_set, ""))
+}
+
+fn append_pbft_finalization_sortition_storage_write_impl(
+    storage: &Storage,
+    batch: &mut StorageWriteBatch,
+    write_set: &PbftFinalizationStorageWriteIntent,
+    stage: &PbftFinalizationStorageWriteStage,
+) -> Result<PbftFinalizedPeriodApplyResult> {
+    if !write_set.update_sortition_params {
+        return Ok(apply_result(
+            PbftFinalizedPeriodApplyStatus::RejectedWriteSet,
+            write_set,
+            0,
+            0,
+            "PBFT_FINALIZE_SORTITION_PARAMS_UPDATE_NOT_REQUESTED",
+        ));
+    }
+
+    if !stage.has_sortition_params_change {
+        return Ok(apply_result(
+            PbftFinalizedPeriodApplyStatus::RejectedWriteSet,
+            write_set,
+            0,
+            0,
+            "PBFT_FINALIZE_MISSING_SORTITION_PARAMS_CHANGE_FACTS",
+        ));
+    }
+
+    let change = SortitionParamsChange {
+        period: stage.sortition_params_change_period,
+        interval_efficiency: stage.sortition_params_change_interval_efficiency,
+        threshold_upper: stage.sortition_params_change_threshold_upper,
+    };
+    let change_rlp = change.to_rlp_bytes();
+    if check_existing_value(
+        storage,
+        Column::SortitionParamsChange,
+        &change.period.to_le_bytes(),
+        &change_rlp,
+        "PBFT_FINALIZE_CONFLICTING_SORTITION_PARAMS_CHANGE",
+    )? {
+        return Ok(apply_result(
+            PbftFinalizedPeriodApplyStatus::ConflictingExistingWrite,
+            write_set,
+            0,
+            0,
+            "PBFT_FINALIZE_CONFLICTING_SORTITION_PARAMS_CHANGE",
+        ));
+    }
+
+    let already_applied = storage
+        .get_raw(Column::SortitionParamsChange, &change.period.to_le_bytes())?
+        .as_deref()
+        == Some(change_rlp.as_slice());
+
+    storage
+        .batch_put_raw(
+            batch,
+            Column::SortitionParamsChange,
+            &change.period.to_le_bytes(),
+            &change_rlp,
+        )
+        .context("PBFT_FINALIZE_BATCH_SORTITION_CHANGE")?;
+
+    let status = if already_applied {
+        PbftFinalizedPeriodApplyStatus::AlreadyAppliedSameValues
+    } else {
+        PbftFinalizedPeriodApplyStatus::Applied
+    };
+    Ok(sidecar_apply_result(status, write_set, ""))
+}
+
+fn append_pbft_finalization_reward_votes_reset_storage_write_impl(
+    storage: &Storage,
+    batch: &mut StorageWriteBatch,
+    write_set: &PbftFinalizationStorageWriteIntent,
+    stage: &PbftFinalizationStorageWriteStage,
+) -> Result<PbftFinalizedPeriodApplyResult> {
+    if !write_set.reset_reward_votes {
+        return Ok(sidecar_apply_result(
+            PbftFinalizedPeriodApplyStatus::RejectedWriteSet,
+            write_set,
+            "PBFT_FINALIZE_REWARD_VOTES_RESET_NOT_REQUESTED",
+        ));
+    }
+
+    if !stage.has_reward_votes_reset {
+        return Ok(sidecar_apply_result(
+            PbftFinalizedPeriodApplyStatus::RejectedWriteSet,
+            write_set,
+            "PBFT_FINALIZE_MISSING_REWARD_VOTES_RESET_FACTS",
+        ));
+    }
+
+    if stage.reward_votes_bundle_rlp.is_empty() {
+        return Ok(sidecar_apply_result(
+            PbftFinalizedPeriodApplyStatus::MissingRequiredPayload,
+            write_set,
+            "PBFT_FINALIZE_MISSING_REWARD_VOTES_BUNDLE_RLP",
+        ));
+    }
+
+    let rewards_bundle = Rlp::new(stage.reward_votes_bundle_rlp.as_slice());
+    if !rewards_bundle.is_list() {
+        return Ok(sidecar_apply_result(
+            PbftFinalizedPeriodApplyStatus::MissingRequiredPayload,
+            write_set,
+            "PBFT_FINALIZE_REWARD_VOTES_BUNDLE_NOT_LIST",
+        ));
+    }
+    let rewards_count = match rewards_bundle.item_count() {
+        Ok(count) => count,
+        Err(_) => {
+            return Ok(sidecar_apply_result(
+                PbftFinalizedPeriodApplyStatus::MissingRequiredPayload,
+                write_set,
+                "PBFT_FINALIZE_REWARD_VOTES_BUNDLE_NOT_LIST",
+            ));
+        }
+    };
+    if rewards_count == 0 {
+        return Ok(sidecar_apply_result(
+            PbftFinalizedPeriodApplyStatus::MissingRequiredPayload,
+            write_set,
+            "PBFT_FINALIZE_REWARD_VOTES_BUNDLE_EMPTY",
+        ));
+    }
+
+    let cert_voted_key = [PBFT_TWO_T_PLUS_ONE_CERT_VOTED_TYPE];
+    let mut already_applied = storage
+        .get_raw(Column::LatestRoundTwoTPlusOneVotes, &cert_voted_key)?
+        .as_deref()
+        == Some(stage.reward_votes_bundle_rlp.as_slice());
+    for vote_hash in &stage.extra_reward_vote_hashes {
+        already_applied &= storage
+            .get_raw(Column::ExtraRewardVotes, vote_hash.as_bytes())?
+            .is_none();
+    }
+
+    storage
+        .batch_delete_raw(batch, Column::LatestRoundTwoTPlusOneVotes, &cert_voted_key)
+        .context("PBFT_FINALIZE_BATCH_DELETE_REWARD_VOTES_BUNDLE")?;
+    storage
+        .batch_put_raw(
+            batch,
+            Column::LatestRoundTwoTPlusOneVotes,
+            &cert_voted_key,
+            &stage.reward_votes_bundle_rlp,
+        )
+        .context("PBFT_FINALIZE_BATCH_REPLACE_REWARD_VOTES_BUNDLE")?;
+    for vote_hash in &stage.extra_reward_vote_hashes {
+        storage
+            .batch_delete_raw(batch, Column::ExtraRewardVotes, vote_hash.as_bytes())
+            .context("PBFT_FINALIZE_BATCH_DELETE_EXTRA_REWARD_VOTE")?;
+    }
+
+    let status = if already_applied {
+        PbftFinalizedPeriodApplyStatus::AlreadyAppliedSameValues
+    } else {
+        PbftFinalizedPeriodApplyStatus::Applied
+    };
+    Ok(sidecar_apply_result(status, write_set, ""))
+}
+
+fn apply_result(
+    status: PbftFinalizedPeriodApplyStatus,
+    write_set: &PbftFinalizationStorageWriteIntent,
+    dag_index_writes: usize,
+    transaction_location_writes: usize,
+    error_code: &str,
+) -> PbftFinalizedPeriodApplyResult {
+    PbftFinalizedPeriodApplyResult {
+        status,
+        wrote_pbft_head: status != PbftFinalizedPeriodApplyStatus::RejectedWriteSet
+            && status != PbftFinalizedPeriodApplyStatus::MissingRequiredPayload
+            && status != PbftFinalizedPeriodApplyStatus::ConflictingExistingWrite
+            && write_set.persist_pbft_head,
+        wrote_period_data: status != PbftFinalizedPeriodApplyStatus::RejectedWriteSet
+            && status != PbftFinalizedPeriodApplyStatus::MissingRequiredPayload
+            && status != PbftFinalizedPeriodApplyStatus::ConflictingExistingWrite
+            && write_set.persist_period_data,
+        dag_index_writes,
+        transaction_location_writes,
+        block_period: write_set.block_period,
+        pbft_block_hash: write_set.pbft_block_hash,
+        error_code: error_code.to_string(),
+    }
+}
+
+fn sidecar_apply_result(
+    status: PbftFinalizedPeriodApplyStatus,
+    write_set: &PbftFinalizationStorageWriteIntent,
+    error_code: &str,
+) -> PbftFinalizedPeriodApplyResult {
+    PbftFinalizedPeriodApplyResult {
+        status,
+        wrote_pbft_head: false,
+        wrote_period_data: false,
+        dag_index_writes: 0,
+        transaction_location_writes: 0,
+        block_period: write_set.block_period,
+        pbft_block_hash: write_set.pbft_block_hash,
+        error_code: error_code.to_string(),
+    }
+}
+
+fn merge_apply_results(
+    combined: PbftFinalizedPeriodApplyResult,
+    next: PbftFinalizedPeriodApplyResult,
+    write_set: &PbftFinalizationStorageWriteIntent,
+) -> PbftFinalizedPeriodApplyResult {
+    let status = if combined.status == PbftFinalizedPeriodApplyStatus::Applied
+        || next.status == PbftFinalizedPeriodApplyStatus::Applied
+    {
+        PbftFinalizedPeriodApplyStatus::Applied
+    } else {
+        PbftFinalizedPeriodApplyStatus::AlreadyAppliedSameValues
+    };
+
+    PbftFinalizedPeriodApplyResult {
+        status,
+        wrote_pbft_head: combined.wrote_pbft_head || next.wrote_pbft_head,
+        wrote_period_data: combined.wrote_period_data || next.wrote_period_data,
+        dag_index_writes: combined.dag_index_writes + next.dag_index_writes,
+        transaction_location_writes: combined.transaction_location_writes
+            + next.transaction_location_writes,
+        block_period: write_set.block_period,
+        pbft_block_hash: write_set.pbft_block_hash,
+        error_code: String::new(),
+    }
+}
+
+fn check_existing_value(
+    storage: &Storage,
+    column: Column,
+    key: &[u8],
+    expected: &[u8],
+    error_code: &str,
+) -> Result<bool> {
+    let _ = error_code;
+    if let Some(existing) = storage.get_raw(column, key)? {
+        if existing != expected {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn block_position_rlp(period: u64, position: u32) -> Vec<u8> {
+    let mut stream = RlpStream::new_list(2);
+    stream.append(&period);
+    stream.append(&position);
+    stream.out().to_vec()
 }
 
 /// Input facts from C++ execute/finalize path.
@@ -1567,9 +2412,61 @@ fn unique_positioned_hash_count(writes: &[PbftFinalizationPositionedHash]) -> u6
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustaxa_storage::{Config, Storage};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be available")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{name}_{nonce}"))
+    }
 
     fn hash(v: u64) -> H256 {
         H256::from_low_u64_be(v)
+    }
+
+    fn storage_write_intent() -> PbftFinalizationStorageWriteIntent {
+        PbftFinalizationStorageWriteIntent {
+            persist_pbft_head: true,
+            persist_period_data: true,
+            reset_reward_votes: false,
+            update_sortition_params: false,
+            apply_dynamic_lambda_update: false,
+            persist_period_lambda: false,
+            persist_executed_pbft_status: false,
+            pbft_block_hash: hash(99),
+            pbft_head_hash: hash(88),
+            block_period: 10,
+            null_anchor: false,
+            anchor_hash: H256::zero(),
+            reward_vote_period: 10,
+            reward_vote_round: 2,
+            reward_vote_step: 5,
+            reward_vote_block_hash: hash(99),
+            period_lambda: 1_500,
+            blocks_per_year: 1_000,
+            executed_pbft_status: true,
+            pbft_head_payload: vec![0xde, 0xad, 0xbe, 0xef],
+            period_data_rlp: vec![0x82, 0x01, 0x02],
+            dag_block_period_writes: vec![
+                PbftFinalizationPositionedHash {
+                    hash: hash(1),
+                    position: 0,
+                },
+                PbftFinalizationPositionedHash {
+                    hash: hash(2),
+                    position: 1,
+                },
+            ],
+            transaction_location_writes: vec![PbftFinalizationPositionedHash {
+                hash: hash(3),
+                position: 0,
+            }],
+        }
     }
 
     fn accepted_fact() -> PbftFinalizationIntentFact {
@@ -1600,6 +2497,291 @@ mod tests {
             ordered_dag_block_hashes: vec![hash(1), hash(2)],
             ordered_transaction_hashes: vec![hash(3), hash(4)],
         }
+    }
+
+    #[test]
+    fn append_primary_storage_writes_head_period_data_and_indexes() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_finalize_primary_stage");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            let write_set = storage_write_intent();
+            let mut batch = storage.create_write_batch();
+
+            let result =
+                append_pbft_finalized_period_storage_writes(&storage, &mut batch, &write_set)
+                    .expect("primary stage append should succeed");
+
+            assert_eq!(result.status, PbftFinalizedPeriodApplyStatus::Applied);
+            assert!(result.wrote_pbft_head);
+            assert!(result.wrote_period_data);
+            assert_eq!(
+                result.dag_index_writes,
+                write_set.dag_block_period_writes.len()
+            );
+
+            storage
+                .commit_write_batch_with_sync(batch, false)
+                .expect("primary writes should commit");
+
+            assert_eq!(
+                storage
+                    .get_raw(Column::PbftHead, write_set.pbft_head_hash.as_bytes())
+                    .expect("should query pbft head"),
+                Some(write_set.pbft_head_payload.clone())
+            );
+            assert_eq!(
+                storage
+                    .get_raw(
+                        Column::PbftBlockPeriod,
+                        write_set.pbft_block_hash.as_bytes()
+                    )
+                    .expect("should query pbft block period"),
+                Some(write_set.block_period.to_le_bytes().to_vec())
+            );
+            assert_eq!(
+                storage
+                    .get_raw(Column::PeriodData, &write_set.block_period.to_le_bytes())
+                    .expect("should query period data"),
+                Some(write_set.period_data_rlp.clone())
+            );
+            assert_eq!(
+                storage
+                    .get_raw(Column::DagBlockPeriod, hash(1).as_bytes())
+                    .expect("should query dag period index"),
+                Some(block_position_rlp(write_set.block_period, 0))
+            );
+            assert_eq!(
+                storage
+                    .get_raw(Column::DagBlockPeriod, hash(2).as_bytes())
+                    .expect("should query dag period index"),
+                Some(block_position_rlp(write_set.block_period, 1))
+            );
+            assert_eq!(
+                storage
+                    .get_raw(Column::TrxPeriod, hash(3).as_bytes())
+                    .expect("should query tx index"),
+                Some(block_position_rlp(write_set.block_period, 0))
+            );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn append_primary_storage_is_idempotent_when_rows_already_match() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_finalize_primary_idempotent");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            let write_set = storage_write_intent();
+            let mut batch = storage.create_write_batch();
+            append_pbft_finalized_period_storage_writes(&storage, &mut batch, &write_set)
+                .expect("initial primary stage should apply");
+            storage
+                .commit_write_batch_with_sync(batch, false)
+                .expect("initial commit should succeed");
+
+            let mut batch = storage.create_write_batch();
+            let result =
+                append_pbft_finalized_period_storage_writes(&storage, &mut batch, &write_set)
+                    .expect("second apply should be idempotent");
+            assert_eq!(
+                result.status,
+                PbftFinalizedPeriodApplyStatus::AlreadyAppliedSameValues
+            );
+            storage
+                .commit_write_batch_with_sync(batch, false)
+                .expect("idempotent commit should succeed");
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn append_stage_rejects_unknown_stage() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_finalize_unknown_stage");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            let write_set = storage_write_intent();
+            let mut batch = storage.create_write_batch();
+
+            let result = append_pbft_finalization_storage_write(
+                &storage,
+                &mut batch,
+                &write_set,
+                PbftFinalizationStorageWriteStage {
+                    stage: 255,
+                    ..Default::default()
+                },
+            )
+            .expect("unknown stage should map to rejection status");
+
+            assert_eq!(
+                result.status,
+                PbftFinalizedPeriodApplyStatus::RejectedWriteSet
+            );
+            assert_eq!(
+                result.error_code,
+                "PBFT_FINALIZE_UNKNOWN_STORAGE_WRITE_STAGE"
+            );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn apply_storage_writes_does_not_commit_on_stage_reject() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_finalize_apply_rollback");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            let write_set = storage_write_intent();
+
+            let result = apply_pbft_finalization_storage_writes(
+                &storage,
+                &write_set,
+                vec![
+                    PbftFinalizationStorageWriteStage {
+                        stage: APPEND_STAGE_PRIMARY_FINALIZATION,
+                        ..Default::default()
+                    },
+                    PbftFinalizationStorageWriteStage {
+                        stage: APPEND_STAGE_EXECUTED_STATUS,
+                        ..Default::default()
+                    },
+                ],
+                false,
+            )
+            .expect("apply should return rejection path without transport error");
+
+            assert_eq!(
+                result.status,
+                PbftFinalizedPeriodApplyStatus::RejectedWriteSet
+            );
+            assert_eq!(
+                storage
+                    .get_raw(Column::PbftHead, write_set.pbft_head_hash.as_bytes())
+                    .expect("query should succeed"),
+                None
+            );
+            assert_eq!(
+                storage
+                    .get_raw(
+                        Column::PbftBlockPeriod,
+                        write_set.pbft_block_hash.as_bytes()
+                    )
+                    .expect("query should succeed"),
+                None
+            );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn append_dynamic_lambda_returns_applied_and_already_applied_paths() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_finalize_dynamic_lambda");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            let mut pre_batch = storage.create_write_batch();
+            storage
+                .batch_put_raw(
+                    &mut pre_batch,
+                    Column::RoundsCountDynamicLambda,
+                    &SINGLE_VALUE_KEY,
+                    &10u32.to_le_bytes(),
+                )
+                .expect("preseed rounds_count should persist");
+            storage
+                .batch_put_raw(
+                    &mut pre_batch,
+                    Column::PbftMgrRoundStep,
+                    &[PBFT_MGR_FIELD_LAMBDA],
+                    &2u32.to_le_bytes(),
+                )
+                .expect("preseed lambda should persist");
+            storage
+                .commit_write_batch_with_sync(pre_batch, false)
+                .expect("preseed commit should succeed");
+
+            let mut write_set = storage_write_intent();
+            write_set.persist_period_lambda = true;
+            write_set.apply_dynamic_lambda_update = true;
+            write_set.period_lambda = 2_000;
+
+            let mut preapplied_batch = storage.create_write_batch();
+            storage
+                .batch_put_raw(
+                    &mut preapplied_batch,
+                    Column::PeriodLambda,
+                    &write_set.block_period.to_le_bytes(),
+                    &write_set.period_lambda.to_le_bytes(),
+                )
+                .expect("preseed period lambda should persist");
+            storage
+                .commit_write_batch_with_sync(preapplied_batch, false)
+                .expect("preseed period lambda commit should succeed");
+
+            let mut batch = storage.create_write_batch();
+            let result = append_pbft_finalization_dynamic_lambda_storage_writes(
+                &storage, &mut batch, &write_set, 10, 2,
+            )
+            .expect("dynamic lambda stage should be recognized");
+
+            assert_eq!(
+                result.status,
+                PbftFinalizedPeriodApplyStatus::AlreadyAppliedSameValues
+            );
+            storage
+                .commit_write_batch_with_sync(batch, false)
+                .expect("idempotent dynamic lambda commit should succeed");
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn append_executed_status_detects_existing_value() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_finalize_executed_status");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            let mut pre_batch = storage.create_write_batch();
+            storage
+                .batch_put_raw(
+                    &mut pre_batch,
+                    Column::PbftMgrStatus,
+                    &[PBFT_MGR_STATUS_EXECUTED_BLOCK],
+                    &[1u8],
+                )
+                .expect("preseed executed status should persist");
+            storage
+                .commit_write_batch_with_sync(pre_batch, false)
+                .expect("preseed executed status commit should succeed");
+
+            let mut write_set = storage_write_intent();
+            write_set.persist_executed_pbft_status = true;
+            write_set.executed_pbft_status = true;
+
+            let mut batch = storage.create_write_batch();
+            let result = append_pbft_finalization_executed_status_storage_write(
+                &storage, &mut batch, &write_set,
+            )
+            .expect("executed status path should be applied");
+            assert_eq!(
+                result.status,
+                PbftFinalizedPeriodApplyStatus::AlreadyAppliedSameValues
+            );
+
+            storage
+                .commit_write_batch_with_sync(batch, false)
+                .expect("executed status commit should succeed");
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
     }
 
     fn dynamic_lambda_fact() -> PbftDynamicLambdaFact {

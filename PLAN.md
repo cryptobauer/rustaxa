@@ -302,8 +302,8 @@ Planned large slices:
    commits. Atomic write ordering should be expressed in Rust storage transactions, not in C++. Current progress:
    sortition `pbftBlockPushed` no longer maps its C++ `Batch&` through `DbStorage::rustBatchId`; emitted threshold
    changes are persisted by the Rust sortition manager before live state is updated. Remaining work: vote persistence,
-   finalization storage apply, FinalChain-adjacent status writes, and several bridge append helpers still use bridge
-   batches or shim-owned C++ batch orchestration.
+   FinalChain-adjacent status writes, finalization resume inspection, and several bridge append helpers still use bridge
+   storage handles, bridge batches, or shim-owned C++ batch orchestration.
 4. Move read/query surfaces off `DbStorage` or isolate them. Network sync, RPC, GraphQL, and debug/query paths should
    use Rust storage query APIs or an explicit read-only query shim. These paths must not become consensus storage ports.
    Current progress: `taraxa_getPillarBlockData` uses a read-only Rust storage query in Rust mode and only materializes
