@@ -3,7 +3,7 @@ set -eu
 
 usage() {
   cat <<'EOF'
-Usage: scripts/rewrite_storage_boundary_guard.sh [--base REV]
+Usage: scripts/rewrite_storage_boundary_guard.sh [--base REV] [--self-test]
 
 Checks newly added C++ lines for storage-boundary violations in Rust rewrite
 code. By default the guard checks staged and unstaged changes. With --base it
@@ -12,6 +12,7 @@ EOF
 }
 
 base=""
+self_test=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --base)
@@ -21,6 +22,9 @@ while [ "$#" -gt 0 ]; do
         exit 2
       fi
       base="$1"
+      ;;
+    --self-test)
+      self_test=1
       ;;
     -h|--help)
       usage
@@ -50,14 +54,18 @@ scan_diff() {
              path ~ /^tests\//
     }
 
+    function has_call(line, name) {
+      return line ~ "(^|[^[:alnum:]_])" name "[[:space:]]*\\("
+    }
+
     function is_forbidden(line) {
       return line ~ /std::shared_ptr[[:space:]]*<DbStorage>/ ||
              line ~ /DbStorage[[:space:]]*[\*&]/ ||
-             line ~ /\bdb_->/ ||
-             line ~ /\bcreateWriteBatch[[:space:]]*\(/ ||
-             line ~ /\bcommitWriteBatch[[:space:]]*\(/ ||
-             line ~ /\brustBatchId[[:space:]]*\(/ ||
-             line ~ /\brustStorage[[:space:]]*\(/ ||
+             line ~ /(^|[^[:alnum:]_])db_->/ ||
+             has_call(line, "createWriteBatch") ||
+             has_call(line, "commitWriteBatch") ||
+             has_call(line, "rustBatchId") ||
+             has_call(line, "rustStorage") ||
              line ~ /DbStorage::Columns/
     }
 
@@ -101,6 +109,40 @@ scan_diff() {
     }
   '
 }
+
+if [ "$self_test" -eq 1 ]; then
+  violations_file="$(mktemp)"
+  trap 'rm -f "$violations_file"' EXIT
+
+  cat <<'EOF' | scan_diff >"$violations_file" || true
+diff --git a/libraries/core_libs/network/rpc/Taraxa.cpp b/libraries/core_libs/network/rpc/Taraxa.cpp
+--- a/libraries/core_libs/network/rpc/Taraxa.cpp
++++ b/libraries/core_libs/network/rpc/Taraxa.cpp
+@@ -1,0 +1,1 @@
++auto bytes = app->getDB()->rustStorage().get_pillar_block_data_rlp(period);
+EOF
+  if [ ! -s "$violations_file" ]; then
+    echo "storage-boundary guard self-test failed: rustStorage() addition was not rejected" >&2
+    exit 1
+  fi
+
+  : >"$violations_file"
+  cat <<'EOF' | scan_diff >"$violations_file" || true
+diff --git a/libraries/core_libs/consensus/shims/storage_shim/src/storage_shim.cpp b/libraries/core_libs/consensus/shims/storage_shim/src/storage_shim.cpp
+--- a/libraries/core_libs/consensus/shims/storage_shim/src/storage_shim.cpp
++++ b/libraries/core_libs/consensus/shims/storage_shim/src/storage_shim.cpp
+@@ -1,0 +1,1 @@
++auto batch_id = rust_storage_.value()->create_write_batch();
+EOF
+  if [ -s "$violations_file" ]; then
+    echo "storage-boundary guard self-test failed: storage shim allowlist was rejected" >&2
+    cat "$violations_file" >&2
+    exit 1
+  fi
+
+  echo "Rust storage-boundary guard self-test passed."
+  exit 0
+fi
 
 violations_file="$(mktemp)"
 trap 'rm -f "$violations_file"' EXIT

@@ -271,7 +271,8 @@ Planned large slices:
    C++ pillar objects at the RPC JSON boundary.
 5. Collapse `DbStorage` to compatibility-only. Delete or guard Rust-mode consensus accessors, remove obsolete C++
    forwarding methods, and add boundary tests/guards that fail when Rust-mode consensus introduces new `DbStorage`
-   storage calls.
+   storage calls. Current progress: the storage-boundary guard has a required self-test and portable token matching for
+   `rustStorage`, `rustBatchId`, C++ batch APIs, and direct `db_` routes outside explicit compatibility allowlists.
 
 Validation:
 

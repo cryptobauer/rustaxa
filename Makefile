@@ -149,6 +149,7 @@ rewrite-validate-fast: ## Run fast Rust rewrite checks and whitespace validation
 
 .PHONY: rewrite-storage-boundary-guard
 rewrite-storage-boundary-guard: ## Reject newly added Rust-mode C++ consensus storage routes.
+	scripts/rewrite_storage_boundary_guard.sh --self-test
 	scripts/rewrite_storage_boundary_guard.sh
 
 .PHONY: rewrite-validate-storage
