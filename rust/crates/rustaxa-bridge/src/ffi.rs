@@ -92,8 +92,26 @@ pub struct BridgePbftManagerRuntimeSession {
     pub state: rustaxa_consensus::pbft_manager::PbftManagerRuntimeSession,
 }
 
+/// Long-lived Rust PBFT manager runtime used by the C++ compatibility shim.
+///
+/// Purpose:
+/// - Owns the scalar PBFT manager state machine together with the Rust storage
+///   handle required for restart-safe cursor/status persistence.
+///
+/// Inputs/outputs:
+/// - Constructed from a `BridgeStorage` handle during PBFT manager startup.
+/// - Consumed by runtime transition APIs that persist through
+///   `rustaxa-storage` without requiring C++ to pass storage back for each
+///   operation.
+///
+/// Invariants and edge behavior:
+/// - `storage` is the authoritative durable store for PBFT manager fields and
+///   statuses while `state` is updated only after Rust storage commits succeed.
+/// - C++ callers must update live compatibility mirrors only from snapshots
+///   returned by this runtime.
 pub struct BridgePbftManagerRuntime {
     pub state: rustaxa_consensus::pbft_manager::PbftManagerRuntime,
+    pub storage: Arc<Storage>,
 }
 
 pub struct BridgePbftVotePipelineSession {
@@ -3865,15 +3883,16 @@ pub mod rustaxa_ffi {
         pub fn pbft_manager_runtime_snapshot(
             runtime: &BridgePbftManagerRuntime,
         ) -> PbftManagerRuntimeSnapshot;
+        pub fn pbft_manager_runtime_cert_voted_block_in_round(
+            runtime: &BridgePbftManagerRuntime,
+        ) -> Result<Vec<u8>>;
         pub fn pbft_manager_runtime_apply_transition_storage_write(
             runtime: &mut BridgePbftManagerRuntime,
-            storage: &BridgeStorage,
             plan: PbftManagerTransitionPlan,
             own_vote_hashes: Vec<PbftFinalizationHash>,
         ) -> Result<PbftManagerTransitionRuntimeApplyResult>;
         pub fn pbft_manager_runtime_apply_executed_block_reset(
             runtime: &mut BridgePbftManagerRuntime,
-            storage: &BridgeStorage,
         ) -> Result<PbftManagerTransitionRuntimeApplyResult>;
         type BridgePbftManagerRuntimeSession;
         pub fn create_pbft_manager_runtime_session(

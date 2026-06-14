@@ -129,12 +129,12 @@ fn domain_transition_plan_from_ffi(
 }
 
 fn append_transition_storage_to_batch(
-    storage: &BridgeStorage,
+    storage: &rustaxa_storage::Storage,
     batch: &mut StorageWriteBatch,
     plan: &FfiPbftManagerTransitionPlan,
 ) -> Result<u64, FfiPbftManagerTransitionStorageResult> {
     let mut applied_writes = 0;
-    let pbft = storage.0.pbft();
+    let pbft = storage.pbft();
 
     if plan.persist_round {
         let round = to_manager_u32(
@@ -259,6 +259,7 @@ pub fn create_pbft_manager_runtime_from_storage(
 
     Ok(Box::new(BridgePbftManagerRuntime {
         state: PbftManagerRuntime::new(snapshot),
+        storage: storage.0.clone(),
     }))
 }
 
@@ -267,6 +268,33 @@ pub fn pbft_manager_runtime_snapshot(
     runtime: &BridgePbftManagerRuntime,
 ) -> FfiPbftManagerRuntimeSnapshot {
     runtime.state.snapshot().into()
+}
+
+/// Loads the persisted cert-voted PBFT block payload through the runtime-owned
+/// Rust storage handle.
+///
+/// Inputs:
+/// - `runtime`: long-lived PBFT manager runtime created from Rust storage.
+///
+/// Outputs:
+/// - The legacy two-item RLP payload `[round, pbft_block]` when a recovery
+///   block is present.
+/// - An empty byte vector when no cert-voted block is persisted.
+///
+/// Invariants and edge behavior:
+/// - This is a read-only compatibility view; Rust storage remains the source of
+///   truth and C++ may only decode the returned payload to populate temporary
+///   live sidecars.
+/// - Storage read errors are returned to C++ instead of being mapped to an
+///   empty result.
+pub fn pbft_manager_runtime_cert_voted_block_in_round(
+    runtime: &BridgePbftManagerRuntime,
+) -> anyhow::Result<Vec<u8>> {
+    Ok(runtime
+        .storage
+        .pbft()
+        .cert_voted_block_in_round_rlp()?
+        .unwrap_or_default())
 }
 
 fn transition_runtime_apply_result(
@@ -287,7 +315,6 @@ fn transition_runtime_apply_result(
 ///
 /// Inputs:
 /// - `runtime`: Rust-owned scalar PBFT manager cursor.
-/// - `storage`: shared Rust storage bridge handle.
 /// - `plan`: accepted transition plan.
 /// - `own_vote_hashes`: latest own-vote keys to delete when requested by the
 ///   plan.
@@ -297,18 +324,21 @@ fn transition_runtime_apply_result(
 /// - `status = 1` with an unchanged snapshot on rejection.
 ///
 /// Invariants and edge behavior:
-/// - The Rust runtime cursor advances only after the Rust storage batch commits.
+/// - The runtime-owned Rust storage handle performs the durable commit.
+/// - The Rust runtime cursor advances only after that storage batch commits.
 /// - C++ live mirrors must be updated from the returned snapshot only after an
 ///   applied status.
 pub fn pbft_manager_runtime_apply_transition_storage_write(
     runtime: &mut BridgePbftManagerRuntime,
-    storage: &BridgeStorage,
     plan: FfiPbftManagerTransitionPlan,
     own_vote_hashes: Vec<FfiPbftFinalizationHash>,
 ) -> anyhow::Result<FfiPbftManagerTransitionRuntimeApplyResult> {
     let domain_plan = domain_transition_plan_from_ffi(&plan);
-    let storage_result =
-        apply_pbft_manager_transition_storage_write(storage, plan, own_vote_hashes)?;
+    let storage_result = apply_pbft_manager_transition_storage_write_to_storage(
+        runtime.storage.as_ref(),
+        plan,
+        own_vote_hashes,
+    )?;
     if storage_result.status != TRANSITION_STORAGE_STATUS_APPLIED {
         return Ok(transition_runtime_apply_result(
             TRANSITION_STORAGE_STATUS_REJECTED,
@@ -331,7 +361,6 @@ pub fn pbft_manager_runtime_apply_transition_storage_write(
 ///
 /// Inputs:
 /// - `runtime`: Rust-owned scalar PBFT manager cursor.
-/// - `storage`: shared Rust storage bridge handle.
 ///
 /// Outputs:
 /// - `status = 0` after the durable `ExecutedBlock` status is set to false and
@@ -341,14 +370,14 @@ pub fn pbft_manager_runtime_apply_transition_storage_write(
 /// Invariants and edge behavior:
 /// - C++ must call this only after preserving the legacy
 ///   `waitForPeriodFinalization()` ordering.
-/// - The Rust runtime changes only after the Rust storage write succeeds.
+/// - The runtime-owned Rust storage handle performs the durable write.
+/// - The Rust runtime changes only after that Rust storage write succeeds.
 /// - The returned snapshot is the authoritative source for C++ live mirrors.
 pub fn pbft_manager_runtime_apply_executed_block_reset(
     runtime: &mut BridgePbftManagerRuntime,
-    storage: &BridgeStorage,
 ) -> anyhow::Result<FfiPbftManagerTransitionRuntimeApplyResult> {
-    if storage
-        .0
+    if runtime
+        .storage
         .pbft()
         .write_manager_status(PBFT_MGR_STATUS_EXECUTED_BLOCK, false)
         .is_err()
@@ -482,7 +511,7 @@ pub fn append_pbft_manager_transition_storage_write(
         ));
     };
 
-    match append_transition_storage_to_batch(storage, batch, &plan) {
+    match append_transition_storage_to_batch(storage.0.as_ref(), batch, &plan) {
         Ok(applied_writes) => Ok(transition_storage_applied(applied_writes)),
         Err(result) => Ok(result),
     }
@@ -512,6 +541,38 @@ pub fn apply_pbft_manager_transition_storage_write(
     plan: FfiPbftManagerTransitionPlan,
     own_vote_hashes: Vec<FfiPbftFinalizationHash>,
 ) -> Result<FfiPbftManagerTransitionStorageResult, anyhow::Error> {
+    apply_pbft_manager_transition_storage_write_to_storage(
+        storage.0.as_ref(),
+        plan,
+        own_vote_hashes,
+    )
+}
+
+/// Applies PBFT manager transition persistence through a Rust storage handle.
+///
+/// Inputs:
+/// - `storage`: Rust storage handle owned by the PBFT manager runtime or
+///   compatibility bridge.
+/// - `plan`: accepted transition plan from the PBFT manager planner/runtime.
+/// - `own_vote_hashes`: exact latest-round own-vote keys to delete when
+///   `plan.clear_own_votes` is set.
+///
+/// Outputs:
+/// - `status = 0` after the Rust batch commits.
+/// - `status = 1` with a stable error code if validation, appending, or commit
+///   fails. Rejected writes are dropped with the uncommitted Rust batch.
+///
+/// Invariants and edge behavior:
+/// - This owns the storage commit for manager cursor/status transitions.
+/// - Runtime callers must update the Rust state snapshot only after an applied
+///   result.
+/// - Executed-block reset remains outside this batch to preserve the
+///   post-`waitForPeriodFinalization()` legacy ordering.
+fn apply_pbft_manager_transition_storage_write_to_storage(
+    storage: &rustaxa_storage::Storage,
+    plan: FfiPbftManagerTransitionPlan,
+    own_vote_hashes: Vec<FfiPbftFinalizationHash>,
+) -> Result<FfiPbftManagerTransitionStorageResult, anyhow::Error> {
     if plan.status != TRANSITION_STATUS_READY {
         return Ok(transition_storage_rejected(
             "PBFT_MANAGER_TRANSITION_STORAGE_PLAN_NOT_READY",
@@ -523,7 +584,7 @@ pub fn apply_pbft_manager_transition_storage_write(
         ));
     }
 
-    let mut batch = storage.0.create_write_batch();
+    let mut batch = storage.create_write_batch();
     let mut applied_writes = match append_transition_storage_to_batch(storage, &mut batch, &plan) {
         Ok(applied_writes) => applied_writes,
         Err(result) => return Ok(result),
@@ -532,7 +593,6 @@ pub fn apply_pbft_manager_transition_storage_write(
     if plan.clear_own_votes {
         for hash in &own_vote_hashes {
             if storage
-                .0
                 .pbft()
                 .remove_own_verified_vote_in_batch(
                     &mut batch,
@@ -548,11 +608,7 @@ pub fn apply_pbft_manager_transition_storage_write(
         applied_writes += own_vote_hashes.len() as u64;
     }
 
-    if storage
-        .0
-        .commit_write_batch_with_sync(batch, false)
-        .is_err()
-    {
+    if storage.commit_write_batch_with_sync(batch, false).is_err() {
         return Ok(transition_storage_rejected(
             "PBFT_MANAGER_TRANSITION_STORAGE_COMMIT_FAILURE",
         ));
@@ -1327,7 +1383,6 @@ mod tests {
             let plan = plan_pbft_manager_transition(transition_fact(TRANSITION_RESET));
             let result = pbft_manager_runtime_apply_transition_storage_write(
                 &mut runtime,
-                &storage,
                 plan,
                 vec![FfiPbftFinalizationHash { hash: own_hash }],
             )
@@ -1381,7 +1436,7 @@ mod tests {
                 .get_pbft_mgr_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)
                 .expect("status should load"));
 
-            let result = pbft_manager_runtime_apply_executed_block_reset(&mut runtime, &storage)
+            let result = pbft_manager_runtime_apply_executed_block_reset(&mut runtime)
                 .expect("executed-block reset should not throw");
 
             assert_eq!(result.status, TRANSITION_STORAGE_STATUS_APPLIED);
@@ -1391,6 +1446,42 @@ mod tests {
             assert!(!storage
                 .get_pbft_mgr_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)
                 .expect("status should load"));
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_runtime_reads_cert_voted_block_from_owned_storage() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_cert_voted_block");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            storage
+                .save_pbft_mgr_field(0, 1)
+                .expect("round seed should persist");
+            storage
+                .save_pbft_mgr_field(1, 1)
+                .expect("step seed should persist");
+            storage
+                .save_pbft_mgr_field(2, 1_500)
+                .expect("lambda seed should persist");
+            storage
+                .save_cert_voted_block_in_round(3, vec![0xC0])
+                .expect("cert-voted block should persist");
+
+            let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
+                .expect("runtime should restore");
+            let runtime_payload = pbft_manager_runtime_cert_voted_block_in_round(&runtime)
+                .expect("runtime-owned storage read should succeed");
+
+            assert_eq!(
+                runtime_payload,
+                storage
+                    .get_cert_voted_block_in_round()
+                    .expect("compatibility storage view should load")
+            );
         }
 
         let _ = fs::remove_dir_all(temp_dir);
@@ -1418,13 +1509,9 @@ mod tests {
             let before = pbft_manager_runtime_snapshot(&runtime);
             let mut plan = plan_pbft_manager_transition(transition_fact(TRANSITION_RESET));
             plan.status = TRANSITION_STATUS_INVALID_FACT;
-            let result = pbft_manager_runtime_apply_transition_storage_write(
-                &mut runtime,
-                &storage,
-                plan,
-                Vec::new(),
-            )
-            .expect("runtime apply should return deterministic rejection");
+            let result =
+                pbft_manager_runtime_apply_transition_storage_write(&mut runtime, plan, Vec::new())
+                    .expect("runtime apply should return deterministic rejection");
 
             assert_eq!(result.status, TRANSITION_STORAGE_STATUS_REJECTED);
             assert_eq!(result.snapshot.round, before.round);

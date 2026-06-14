@@ -358,7 +358,7 @@ bool ensureTransitionPlanReady(const rustaxa::PbftManagerTransitionPlan &plan, L
 }
 
 void applyPbftManagerTransitionPlan(const rustaxa::PbftManagerTransitionPlan &plan,
-                                    const std::shared_ptr<DbStorage> &db, rustaxa::BridgePbftManagerRuntime &runtime,
+                                    rustaxa::BridgePbftManagerRuntime &runtime,
                                     const std::shared_ptr<VoteManager> &vote_mgr, std::atomic<PbftRound> &round,
                                     PbftStep &step, PbftStates &state, std::chrono::milliseconds &current_round_lambda,
                                     std::chrono::milliseconds &next_step_time, uint32_t &rounds_count_dynamic_lambda,
@@ -383,8 +383,8 @@ void applyPbftManagerTransitionPlan(const rustaxa::PbftManagerTransitionPlan &pl
     }
   }
 
-  const auto storage_result = rustaxa::pbft_manager_runtime_apply_transition_storage_write(
-      runtime, db->rustStorage(), plan, std::move(own_vote_hashes));
+  const auto storage_result =
+      rustaxa::pbft_manager_runtime_apply_transition_storage_write(runtime, plan, std::move(own_vote_hashes));
   if (storage_result.status != kPbftManagerTransitionStorageStatusApplied) {
     throw std::runtime_error("Rust PBFT manager transition storage apply failed: " +
                              static_cast<std::string>(storage_result.error_code));
@@ -806,7 +806,7 @@ void PbftManager::run() {
         return false;
       }
       applyPbftManagerTransitionPlan(
-          plan, db_, *pbft_manager_runtime_.value(), vote_mgr_, round_, step_, state_, current_round_lambda_,
+          plan, *pbft_manager_runtime_.value(), vote_mgr_, round_, step_, state_, current_round_lambda_,
           next_step_time_ms_, rounds_count_dynamic_lambda_, dynamic_lambda_, executed_pbft_block_,
           cert_voted_block_for_round_, current_round_broadcasted_votes_, broadcast_votes_counter_,
           rebroadcast_votes_counter_, already_next_voted_value_, already_next_voted_null_block_hash_,
@@ -1171,7 +1171,7 @@ void PbftManager::resetPbftConsensus(PbftRound round) {
     return;
   }
 
-  applyPbftManagerTransitionPlan(plan, db_, *pbft_manager_runtime_.value(), vote_mgr_, round_, step_, state_,
+  applyPbftManagerTransitionPlan(plan, *pbft_manager_runtime_.value(), vote_mgr_, round_, step_, state_,
                                  current_round_lambda_, next_step_time_ms_, rounds_count_dynamic_lambda_,
                                  dynamic_lambda_, executed_pbft_block_, cert_voted_block_for_round_,
                                  current_round_broadcasted_votes_, broadcast_votes_counter_, rebroadcast_votes_counter_,
@@ -1180,8 +1180,7 @@ void PbftManager::resetPbftConsensus(PbftRound round) {
 
   if (plan.reset_executed_block_status) {
     waitForPeriodFinalization();
-    const auto reset_result =
-        rustaxa::pbft_manager_runtime_apply_executed_block_reset(*pbft_manager_runtime_.value(), db_->rustStorage());
+    const auto reset_result = rustaxa::pbft_manager_runtime_apply_executed_block_reset(*pbft_manager_runtime_.value());
     if (reset_result.status != kPbftManagerTransitionStorageStatusApplied) {
       throw std::runtime_error("Rust PBFT manager executed-block reset failed: " +
                                static_cast<std::string>(reset_result.error_code));
@@ -1305,9 +1304,15 @@ void PbftManager::initialState() {
   //    LOG(log_er_) << "Old proposed blocks saved in db <period> -> <blocks count>: " << *err_msg;
   //  }
 
-  // Process saved cert voted block from db
-  if (auto cert_voted_block_data = db_->getCertVotedBlockInRound(); cert_voted_block_data.has_value()) {
-    const auto [cert_voted_block_round, cert_voted_block] = *cert_voted_block_data;
+  // Process saved cert voted block from Rust storage through the PBFT runtime.
+  const auto cert_voted_block_payload =
+      rustaxa::pbft_manager_runtime_cert_voted_block_in_round(*pbft_manager_runtime_.value());
+  if (!cert_voted_block_payload.empty()) {
+    const auto payload_bytes = dev::bytes(cert_voted_block_payload.begin(), cert_voted_block_payload.end());
+    const auto payload_rlp = dev::RLP(payload_bytes);
+    assert(payload_rlp.itemCount() == 2);
+    const auto cert_voted_block_round = payload_rlp[0].toInt<PbftRound>();
+    const auto cert_voted_block = std::make_shared<PbftBlock>(payload_rlp[1]);
     if (proposed_blocks_.pushProposedPbftBlock(cert_voted_block)) {
       LOG(log_nf_) << "Last cert voted block " << cert_voted_block->getBlockHash() << " with period "
                    << cert_voted_block->getPeriod() << ", round " << cert_voted_block_round
@@ -1354,7 +1359,7 @@ void PbftManager::setFilterState_() {
   if (!ensureTransitionPlanReady(plan, log_er_)) {
     return;
   }
-  applyPbftManagerTransitionPlan(plan, db_, *pbft_manager_runtime_.value(), vote_mgr_, round_, step_, state_,
+  applyPbftManagerTransitionPlan(plan, *pbft_manager_runtime_.value(), vote_mgr_, round_, step_, state_,
                                  current_round_lambda_, next_step_time_ms_, rounds_count_dynamic_lambda_,
                                  dynamic_lambda_, executed_pbft_block_, cert_voted_block_for_round_,
                                  current_round_broadcasted_votes_, broadcast_votes_counter_, rebroadcast_votes_counter_,
@@ -1373,7 +1378,7 @@ void PbftManager::setCertifyState_() {
   if (!ensureTransitionPlanReady(plan, log_er_)) {
     return;
   }
-  applyPbftManagerTransitionPlan(plan, db_, *pbft_manager_runtime_.value(), vote_mgr_, round_, step_, state_,
+  applyPbftManagerTransitionPlan(plan, *pbft_manager_runtime_.value(), vote_mgr_, round_, step_, state_,
                                  current_round_lambda_, next_step_time_ms_, rounds_count_dynamic_lambda_,
                                  dynamic_lambda_, executed_pbft_block_, cert_voted_block_for_round_,
                                  current_round_broadcasted_votes_, broadcast_votes_counter_, rebroadcast_votes_counter_,
@@ -1393,7 +1398,7 @@ void PbftManager::setFinishState_() {
   if (!ensureTransitionPlanReady(plan, log_er_)) {
     return;
   }
-  applyPbftManagerTransitionPlan(plan, db_, *pbft_manager_runtime_.value(), vote_mgr_, round_, step_, state_,
+  applyPbftManagerTransitionPlan(plan, *pbft_manager_runtime_.value(), vote_mgr_, round_, step_, state_,
                                  current_round_lambda_, next_step_time_ms_, rounds_count_dynamic_lambda_,
                                  dynamic_lambda_, executed_pbft_block_, cert_voted_block_for_round_,
                                  current_round_broadcasted_votes_, broadcast_votes_counter_, rebroadcast_votes_counter_,
@@ -1412,7 +1417,7 @@ void PbftManager::setFinishPollingState_() {
   if (!ensureTransitionPlanReady(plan, log_er_)) {
     return;
   }
-  applyPbftManagerTransitionPlan(plan, db_, *pbft_manager_runtime_.value(), vote_mgr_, round_, step_, state_,
+  applyPbftManagerTransitionPlan(plan, *pbft_manager_runtime_.value(), vote_mgr_, round_, step_, state_,
                                  current_round_lambda_, next_step_time_ms_, rounds_count_dynamic_lambda_,
                                  dynamic_lambda_, executed_pbft_block_, cert_voted_block_for_round_,
                                  current_round_broadcasted_votes_, broadcast_votes_counter_, rebroadcast_votes_counter_,
@@ -1431,7 +1436,7 @@ void PbftManager::loopBackFinishState_() {
   if (!ensureTransitionPlanReady(plan, log_er_)) {
     return;
   }
-  applyPbftManagerTransitionPlan(plan, db_, *pbft_manager_runtime_.value(), vote_mgr_, round_, step_, state_,
+  applyPbftManagerTransitionPlan(plan, *pbft_manager_runtime_.value(), vote_mgr_, round_, step_, state_,
                                  current_round_lambda_, next_step_time_ms_, rounds_count_dynamic_lambda_,
                                  dynamic_lambda_, executed_pbft_block_, cert_voted_block_for_round_,
                                  current_round_broadcasted_votes_, broadcast_votes_counter_, rebroadcast_votes_counter_,
