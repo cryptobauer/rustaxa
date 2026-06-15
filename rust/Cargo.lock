@@ -1305,6 +1305,7 @@ dependencies = [
  "rustaxa-storage",
  "rustaxa-types",
  "rustaxa-vdf",
+ "serde_json",
  "tiny-keccak",
  "triehash",
 ]

@@ -28,7 +28,8 @@ struct Transaction;
  * checks to Rust. It is a standalone facade and must not inherit from or delegate to `PbftChainOld`.
  *
  * Invariants:
- * - persisted PBFT head JSON formatting remains owned by the C++ shim for compatibility with existing DB records
+ * - Rust restores persisted PBFT head JSON and recovers the hidden last non-null DAG anchor from native storage
+ * - public PBFT head JSON formatting remains owned by the C++ shim for compatibility with existing callers
  * - Rust owns in-memory size, non-empty-size, latest block hash, and latest non-null DAG anchor state
  * - `getJsonStrForBlock` is a pure preview and does not mutate state or write storage
  * - `updatePbftChain` mutates only in-memory state; `PbftManager` remains responsible for batched persistence
@@ -36,9 +37,9 @@ struct Transaction;
 class PbftChain {
  public:
   /**
-   * Creates a Rust-backed PBFT chain and restores head state from `db`.
+   * Creates a Rust-backed PBFT chain and restores head state through `rustaxa-storage`.
    *
-   * If no persisted head exists, the constructor initializes the legacy zero-head record through `DbStorage`.
+   * If no persisted head exists, Rust initializes the legacy zero-head record through the native storage module.
    */
   explicit PbftChain(addr_t node_addr, std::shared_ptr<DbStorage> db);
   ~PbftChain();
@@ -74,7 +75,7 @@ class PbftChain {
   blk_hash_t getLastNonNullPbftBlockAnchor() const;
 
   /**
-   * Materializes a PBFT block by hash through storage.
+   * Materializes a PBFT block by hash from Rust storage.
    *
    * Throws `std::runtime_error` if the hash is not present, rather than falling back to legacy `PbftChainOld`.
    */
@@ -93,7 +94,7 @@ class PbftChain {
   std::string getJsonStrForBlock(blk_hash_t const& block_hash, bool null_anchor) const;
 
   /**
-   * Returns true if storage has a PBFT block-period index entry for `pbft_block_hash`.
+   * Returns true if Rust storage has a PBFT block-period index entry for `pbft_block_hash`.
    */
   bool findPbftBlockInChain(blk_hash_t const& pbft_block_hash);
 

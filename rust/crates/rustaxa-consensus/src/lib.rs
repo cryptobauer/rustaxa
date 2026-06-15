@@ -98,7 +98,10 @@ pub use final_chain_execution::{
     plan_external_evm_system_transactions,
 };
 pub use gas_pricer::{GasPriceOracle, GasPricerConfig};
-pub use pbft_chain::PbftChain;
+pub use pbft_chain::{
+    PbftBlockStorageLookup, PbftChain, PbftChainStorageRestore, load_pbft_block_from_storage,
+    pbft_block_exists_in_storage, restore_pbft_chain_from_storage,
+};
 pub use pbft_finalize::{
     PbftFinalizationAnchor, PbftFinalizationCleanupIntent, PbftFinalizationIntentFact,
     PbftFinalizationPeriodLambdaLookup, PbftFinalizationPlan, PbftFinalizationPositionedHash,

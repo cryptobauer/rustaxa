@@ -1,7 +1,15 @@
-use crate::ffi::rustaxa_ffi::{PbftBlockValidationResult, PbftChainHeadPayload};
+use crate::ffi::rustaxa_ffi::{
+    PbftBlockStorageLookup as FfiPbftBlockStorageLookup, PbftBlockValidationResult,
+    PbftChainHeadPayload, PbftChainStorageRestore as FfiPbftChainStorageRestore,
+};
 use crate::ffi::BridgePbftChain;
+use crate::ffi::BridgeStorage;
 use ethereum_types::H256;
-use rustaxa_consensus::pbft_chain::{PbftBlockValidation, PbftChain, PbftChainHead};
+use rustaxa_consensus::pbft_chain::{
+    load_pbft_block_from_storage, pbft_block_exists_in_storage,
+    restore_pbft_chain_from_storage as domain_restore_pbft_chain_from_storage,
+    PbftBlockStorageLookup, PbftBlockValidation, PbftChain, PbftChainHead, PbftChainStorageRestore,
+};
 
 const PBFT_VALIDATION_VALID: u8 = 0;
 const PBFT_VALIDATION_PERIOD_MISMATCH: u8 = 1;
@@ -15,6 +23,41 @@ pub fn create_pbft_chain(
     head: PbftChainHeadPayload,
 ) -> Result<Box<BridgePbftChain>, anyhow::Error> {
     Ok(Box::new(BridgePbftChain(PbftChain::new(head.into())?)))
+}
+
+/// Creates a Rust PBFT chain state model directly from native Rust storage.
+///
+/// The bridge is only a DTO adapter: storage recovery, legacy head parsing,
+/// default-head initialization, and last-anchor recovery are owned by
+/// `rustaxa-consensus`.
+pub fn create_pbft_chain_from_storage(
+    storage: &BridgeStorage,
+) -> Result<Box<BridgePbftChain>, anyhow::Error> {
+    let restored = domain_restore_pbft_chain_from_storage(storage.0.as_ref())?;
+    create_pbft_chain(restored.head.into())
+}
+
+/// Restores PBFT-chain storage facts without constructing a bridge runtime.
+pub fn restore_pbft_chain_storage(
+    storage: &BridgeStorage,
+) -> Result<FfiPbftChainStorageRestore, anyhow::Error> {
+    Ok(domain_restore_pbft_chain_from_storage(storage.0.as_ref())?.into())
+}
+
+/// Returns whether Rust storage contains a finalized PBFT block hash.
+pub fn pbft_chain_block_exists(
+    storage: &BridgeStorage,
+    block_hash: &[u8; 32],
+) -> Result<bool, anyhow::Error> {
+    pbft_block_exists_in_storage(storage.0.as_ref(), H256::from(*block_hash))
+}
+
+/// Loads canonical signed PBFT block RLP by hash from Rust storage.
+pub fn pbft_chain_block_rlp(
+    storage: &BridgeStorage,
+    block_hash: &[u8; 32],
+) -> Result<FfiPbftBlockStorageLookup, anyhow::Error> {
+    Ok(load_pbft_block_from_storage(storage.0.as_ref(), H256::from(*block_hash))?.into())
 }
 
 impl BridgePbftChain {
@@ -117,5 +160,144 @@ impl From<PbftChainHead> for PbftChainHeadPayload {
             last_pbft_block_hash: value.last_pbft_block_hash.into(),
             last_non_null_anchor_hash: value.last_non_null_pbft_dag_anchor_hash.into(),
         }
+    }
+}
+
+impl From<PbftChainStorageRestore> for FfiPbftChainStorageRestore {
+    fn from(value: PbftChainStorageRestore) -> Self {
+        Self {
+            head: value.head.into(),
+            initialized_default: value.initialized_default,
+        }
+    }
+}
+
+impl From<PbftBlockStorageLookup> for FfiPbftBlockStorageLookup {
+    fn from(value: PbftBlockStorageLookup) -> Self {
+        Self {
+            found: value.found,
+            block_rlp: value.block_rlp,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rlp::RlpStream;
+    use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
+    use rustaxa_types::pbft::PbftBlockLink;
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn hash(v: u64) -> H256 {
+        H256::from_low_u64_be(v)
+    }
+
+    fn unique_storage_path(name: &str) -> String {
+        let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("{name}_{}_{}", std::process::id(), id));
+        let _ = fs::remove_dir_all(&path);
+        path.to_str().expect("utf-8 temp path").to_string()
+    }
+
+    fn pbft_block_rlp(prev: H256, pivot: H256, period: u64) -> Vec<u8> {
+        let mut stream = RlpStream::new_list(8);
+        stream.append(&prev);
+        stream.append(&pivot);
+        stream.begin_list(0);
+        stream.begin_list(0);
+        stream.append(&period);
+        stream.append(&0u64);
+        stream.append(&0u64);
+        stream.append(&Vec::<u8>::new());
+        stream.out().to_vec()
+    }
+
+    fn period_data_rlp(block_rlp: &[u8]) -> Vec<u8> {
+        let mut stream = RlpStream::new_list(4);
+        stream.append_raw(block_rlp, 1);
+        stream.begin_list(0);
+        stream.begin_list(0);
+        stream.begin_list(0);
+        stream.out().to_vec()
+    }
+
+    #[test]
+    fn bridge_creates_pbft_chain_from_storage_and_recovers_anchor() {
+        let storage = crate::storage::create_storage(&unique_storage_path(
+            "rustaxa_bridge_pbft_chain_from_storage",
+        ))
+        .unwrap();
+        let first = pbft_block_rlp(H256::zero(), hash(100), 1);
+        let first_hash = PbftBlockLink::try_from(SignedPbftBlockRlp::new(&first))
+            .unwrap()
+            .block_hash;
+        let second = pbft_block_rlp(first_hash, H256::zero(), 2);
+        let second_hash = PbftBlockLink::try_from(SignedPbftBlockRlp::new(&second))
+            .unwrap()
+            .block_hash;
+        storage
+            .0
+            .period()
+            .write(1, &period_data_rlp(&first))
+            .unwrap();
+        storage.0.period().write_pbft_period(first_hash, 1).unwrap();
+        storage
+            .0
+            .period()
+            .write(2, &period_data_rlp(&second))
+            .unwrap();
+        storage
+            .0
+            .period()
+            .write_pbft_period(second_hash, 2)
+            .unwrap();
+        let legacy_head = format!(
+            r#"{{"head_hash":"0x{:064x}","size":2,"non_empty_size":1,"last_pbft_block_hash":"0x{:064x}"}}"#,
+            0, second_hash
+        );
+        storage
+            .0
+            .pbft()
+            .write_head(H256::zero(), legacy_head.as_bytes())
+            .unwrap();
+
+        let chain = create_pbft_chain_from_storage(&storage).unwrap();
+        let head = chain.pbft_chain_head();
+
+        assert_eq!(head.size, 2);
+        assert_eq!(head.non_empty_size, 1);
+        assert_eq!(H256::from(head.last_pbft_block_hash), second_hash);
+        assert_eq!(H256::from(head.last_non_null_anchor_hash), hash(100));
+    }
+
+    #[test]
+    fn bridge_pbft_chain_block_lookup_uses_storage() {
+        let storage = crate::storage::create_storage(&unique_storage_path(
+            "rustaxa_bridge_pbft_chain_block_lookup",
+        ))
+        .unwrap();
+        let block = pbft_block_rlp(H256::zero(), hash(9), 1);
+        let block_hash = PbftBlockLink::try_from(SignedPbftBlockRlp::new(&block))
+            .unwrap()
+            .block_hash;
+        storage
+            .0
+            .period()
+            .write(1, &period_data_rlp(&block))
+            .unwrap();
+        storage.0.period().write_pbft_period(block_hash, 1).unwrap();
+
+        let exists = pbft_chain_block_exists(&storage, &block_hash.into()).unwrap();
+        let loaded = pbft_chain_block_rlp(&storage, &block_hash.into()).unwrap();
+        let missing = pbft_chain_block_rlp(&storage, &hash(999).into()).unwrap();
+
+        assert!(exists);
+        assert!(loaded.found);
+        assert_eq!(loaded.block_rlp, block);
+        assert!(!missing.found);
     }
 }

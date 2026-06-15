@@ -549,7 +549,12 @@ own Rust storage owner is ready.
 Goal: move PBFT-chain head restore, head persistence, block-existence checks, and PBFT block payload lookups out of the
 `PbftChain` shim's `DbStorage` calls and into `rustaxa-consensus` over direct `rustaxa-storage`.
 
-Status: planned.
+Status: complete. `rustaxa-consensus::pbft_chain` now owns PBFT-chain head restore/default initialization, legacy
+head JSON parsing, last non-null anchor recovery, PBFT block existence checks, and PBFT block RLP lookup by hash over
+direct `rustaxa-storage`. The bridge exposes DTO-only storage helpers, and the C++ PBFT chain shim no longer calls
+`DbStorage::getPbftHead`, `DbStorage::savePbftHead`, `DbStorage::pbftBlockInDb`, or `DbStorage::getPbftBlock` for
+Rust-mode production behavior. The shim still receives `DbStorage` as the compatibility owner of the Rust storage handle
+and still materializes temporary C++ `PbftBlock` sidecars from Rust-returned canonical RLP.
 
 Current boundary:
 
@@ -585,6 +590,13 @@ Validation:
 - `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
 - `cmake --build /build --target pbft_chain_test --parallel 12`
 - focused PBFT manager/DAG tests that exercise chain-head recovery, noting pre-existing non-storage runtime gaps
+
+Validation note: the PBFT-chain storage-runtime slice passes `cargo fmt --manifest-path rust/Cargo.toml --all --check`,
+`cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`, `cargo test --manifest-path rust/Cargo.toml -p
+rustaxa-consensus pbft_chain`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_chain`,
+`cmake --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`, `cmake --build
+/build --target pbft_chain_test --parallel 12`, `/build/bin/pbft_chain_test`, the storage-boundary guard
+self-test/current-diff guard, and `git diff --check`.
 
 ## Slice 11: Proposed-Block Constructor And Persistence Runtime
 

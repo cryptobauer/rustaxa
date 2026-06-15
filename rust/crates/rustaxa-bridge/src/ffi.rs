@@ -708,6 +708,16 @@ pub mod rustaxa_ffi {
         last_non_null_anchor_hash: [u8; 32],
     }
 
+    struct PbftChainStorageRestore {
+        head: PbftChainHeadPayload,
+        initialized_default: bool,
+    }
+
+    struct PbftBlockStorageLookup {
+        found: bool,
+        block_rlp: Vec<u8>,
+    }
+
     /// Warning carried from side-effect-free PBFT sync admission planning.
     struct PbftSyncTransactionWarning {
         hash: [u8; 32],
@@ -3895,6 +3905,20 @@ pub mod rustaxa_ffi {
         type BridgePbftChain;
 
         pub fn create_pbft_chain(head: PbftChainHeadPayload) -> Result<Box<BridgePbftChain>>;
+        pub fn create_pbft_chain_from_storage(
+            storage: &BridgeStorage,
+        ) -> Result<Box<BridgePbftChain>>;
+        pub fn restore_pbft_chain_storage(
+            storage: &BridgeStorage,
+        ) -> Result<PbftChainStorageRestore>;
+        pub fn pbft_chain_block_exists(
+            storage: &BridgeStorage,
+            block_hash: &[u8; 32],
+        ) -> Result<bool>;
+        pub fn pbft_chain_block_rlp(
+            storage: &BridgeStorage,
+            block_hash: &[u8; 32],
+        ) -> Result<PbftBlockStorageLookup>;
         pub fn pbft_chain_head(self: &BridgePbftChain) -> PbftChainHeadPayload;
         pub fn pbft_chain_project_update(
             self: &BridgePbftChain,
