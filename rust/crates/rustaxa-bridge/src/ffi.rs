@@ -2084,6 +2084,32 @@ pub mod rustaxa_ffi {
         expected_previous_period: u64,
     }
 
+    /// Typed facts for Rust-side pillar-block shell planning.
+    struct PillarBlockCreationFact {
+        pillar_block_period: u64,
+        state_root: [u8; 32],
+        bridge_root: [u8; 32],
+        bridge_epoch: [u8; 32],
+        first_pillar_block_period: u64,
+        pillar_blocks_interval: u64,
+        has_last_finalized_pillar_block: bool,
+        last_finalized_period: u64,
+        last_finalized_hash: [u8; 32],
+    }
+
+    /// Rust-planned shell fields for temporary C++ `PillarBlock` materialization.
+    ///
+    /// Status values match `PillarBlockLinkagePlan`.
+    struct PillarBlockCreationPlan {
+        status: u8,
+        valid: bool,
+        expected_previous_period: u64,
+        previous_pillar_block_hash: [u8; 32],
+        state_root: [u8; 32],
+        bridge_root: [u8; 32],
+        bridge_epoch: [u8; 32],
+    }
+
     struct UniqueVoterCheckOutcome {
         is_unique: bool,
         conflict_found: bool,
@@ -4907,6 +4933,9 @@ pub mod rustaxa_ffi {
         pub fn plan_pillar_block_linkage(
             fact: PillarBlockLinkageFact,
         ) -> Result<PillarBlockLinkagePlan>;
+        pub fn plan_pillar_block_creation(
+            fact: PillarBlockCreationFact,
+        ) -> Result<PillarBlockCreationPlan>;
         pub fn apply_pillar_current_block_data_storage(
             storage: &BridgeStorage,
             data_rlp: Vec<u8>,

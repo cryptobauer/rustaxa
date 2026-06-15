@@ -312,18 +312,20 @@ sub-slice rebuilds `rust_consensus_tests` and `/build/bin/rust_consensus_tests` 
 Goal: move pillar-chain consensus storage and bridge root/epoch fact handling to Rust-owned ports while preserving the
 current FinalChain/EVM boundary.
 
-Status: in progress. Pillar manager current-block data, own pillar vote, and finalized pillar block persistence now route
+Status: complete. Pillar manager current-block data, own pillar vote, and finalized pillar block persistence now route
 through `rustaxa-consensus::pillar_chain` storage helpers over direct `rustaxa-storage`. The C++ pillar manager shim still
 materializes `PillarBlock`/`PillarVote`/period-data vote bundle RLP bytes and owns live mirrors, vote aggregation,
 gossip, and event emission. The older `BridgeStorage` pillar save/read methods remain as compatibility/query helpers but
-are no longer used by the Rust-mode pillar manager production write and restart/recovery read paths.
+are no longer used by the Rust-mode pillar manager production write and restart/recovery read paths. Pillar block
+creation also routes state root plus bridge root/epoch through an explicit Rust creation-plan DTO before temporary C++
+`PillarBlock` materialization.
 
 Move:
 
 - completed: pillar block persistence for finalized pillar blocks
 - completed: current pillar block data/own-vote persistence
 - completed: pillar-vote restart/recovery storage reads
-- bridge root/epoch fact DTOs consumed by Rust pillar planning
+- completed: bridge root/epoch fact DTOs consumed by Rust pillar planning
 
 Keep temporarily:
 
@@ -357,6 +359,12 @@ Validation note: the pillar restart/recovery read sub-slice passes `cargo test -
 --parallel 12`, and a narrow `/build/bin/pillar_chain_test` filter covering pillar DB, block/vote serialization, compact
 signature, and Rust-inspected pillar vote validation. The broad unfiltered `pillar_chain_test` runtime remains covered by
 the storage-write note above and is still blocked by PBFT/FinalChain boundary issues rather than pillar storage reads.
+
+Validation note: the bridge root/epoch creation-plan sub-slice passes `cargo test -p rustaxa-consensus pillar_chain`,
+`cargo test -p rustaxa-bridge pillar_chain`, `rust_storage_tests`, `cmake --build /build --target pillar_chain_test
+--parallel 12`, and the same narrow `/build/bin/pillar_chain_test` filter. The C++ shim still calls FinalChain/EVM for
+the root/epoch facts, but Rust now consumes those facts through typed planning before C++ materializes the temporary
+pillar block object.
 
 ## Slice 8: Consensus Read Surface Isolation
 

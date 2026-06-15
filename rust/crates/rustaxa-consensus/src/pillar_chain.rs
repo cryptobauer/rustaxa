@@ -151,6 +151,31 @@ pub struct PillarBlockLinkagePlan {
     pub expected_previous_period: u64,
 }
 
+/// Typed facts needed to plan the materialized shell of a new pillar block.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PillarBlockCreationFact {
+    pub pillar_block_period: u64,
+    pub state_root: H256,
+    pub bridge_root: H256,
+    pub bridge_epoch: H256,
+    pub first_pillar_block_period: u64,
+    pub pillar_blocks_interval: u64,
+    pub last_finalized_period: Option<u64>,
+    pub last_finalized_hash: Option<H256>,
+}
+
+/// Deterministic plan for the C++ pillar-block materialization boundary.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PillarBlockCreationPlan {
+    pub status: PillarBlockLinkageStatus,
+    pub valid: bool,
+    pub expected_previous_period: u64,
+    pub previous_pillar_block_hash: H256,
+    pub state_root: H256,
+    pub bridge_root: H256,
+    pub bridge_epoch: H256,
+}
+
 /// Validates pillar-block period and parent-hash linkage.
 ///
 /// Behavior mirrors the legacy manager:
@@ -218,6 +243,59 @@ pub fn plan_pillar_block_linkage(fact: PillarBlockLinkageFact) -> Result<PillarB
         status: PillarBlockLinkageStatus::Valid,
         valid: true,
         expected_previous_period: expected_period,
+    })
+}
+
+/// Plans the deterministic shell fields for a new pillar block.
+///
+/// Inputs:
+/// - `fact`: pillar period/config, finalized parent context, final-chain state
+///   root, and bridge root/epoch facts supplied by the boundary that still owns
+///   FinalChain/EVM calls.
+///
+/// Outputs:
+/// - Returns the parent hash, state root, bridge root, and bridge epoch that
+///   C++ should use when materializing the temporary `PillarBlock` object.
+/// - Returns an explicit linkage status when the candidate period cannot follow
+///   the finalized pillar context.
+///
+/// Invariants and edge behavior:
+/// - Bridge root and epoch are consumed as typed facts here so C++ does not pass
+///   them ad hoc directly into pillar-block construction.
+/// - The first pillar block always uses the null previous-pillar hash.
+/// - Non-first blocks use the last finalized pillar hash and validate the
+///   expected period interval before allowing materialization.
+pub fn plan_pillar_block_creation(
+    fact: PillarBlockCreationFact,
+) -> Result<PillarBlockCreationPlan> {
+    ensure!(
+        fact.last_finalized_period.is_some() == fact.last_finalized_hash.is_some(),
+        "last finalized period/hash options must be provided together"
+    );
+
+    let previous_pillar_block_hash = if fact.pillar_block_period == fact.first_pillar_block_period {
+        H256::zero()
+    } else {
+        fact.last_finalized_hash.unwrap_or_else(H256::zero)
+    };
+
+    let linkage = plan_pillar_block_linkage(PillarBlockLinkageFact {
+        pillar_block_period: fact.pillar_block_period,
+        pillar_block_previous_hash: previous_pillar_block_hash,
+        first_pillar_block_period: fact.first_pillar_block_period,
+        pillar_blocks_interval: fact.pillar_blocks_interval,
+        last_finalized_period: fact.last_finalized_period,
+        last_finalized_hash: fact.last_finalized_hash,
+    })?;
+
+    Ok(PillarBlockCreationPlan {
+        status: linkage.status,
+        valid: linkage.valid,
+        expected_previous_period: linkage.expected_previous_period,
+        previous_pillar_block_hash,
+        state_root: fact.state_root,
+        bridge_root: fact.bridge_root,
+        bridge_epoch: fact.bridge_epoch,
     })
 }
 
@@ -675,5 +753,46 @@ mod tests {
             wrong_hash.status,
             PillarBlockLinkageStatus::PreviousHashMismatch
         );
+    }
+
+    #[test]
+    fn pillar_block_creation_consumes_bridge_facts_and_parent_context() {
+        let plan = plan_pillar_block_creation(PillarBlockCreationFact {
+            pillar_block_period: 18,
+            state_root: H256::from_low_u64_be(0xA1),
+            bridge_root: H256::from_low_u64_be(0xB2),
+            bridge_epoch: H256::from_low_u64_be(0xC3),
+            first_pillar_block_period: 10,
+            pillar_blocks_interval: 8,
+            last_finalized_period: Some(10),
+            last_finalized_hash: Some(H256::from_low_u64_be(0xD4)),
+        })
+        .expect("creation planning should succeed");
+
+        assert!(plan.valid);
+        assert_eq!(plan.status, PillarBlockLinkageStatus::Valid);
+        assert_eq!(plan.previous_pillar_block_hash, H256::from_low_u64_be(0xD4));
+        assert_eq!(plan.state_root, H256::from_low_u64_be(0xA1));
+        assert_eq!(plan.bridge_root, H256::from_low_u64_be(0xB2));
+        assert_eq!(plan.bridge_epoch, H256::from_low_u64_be(0xC3));
+    }
+
+    #[test]
+    fn pillar_block_creation_uses_null_parent_for_first_block() {
+        let plan = plan_pillar_block_creation(PillarBlockCreationFact {
+            pillar_block_period: 10,
+            state_root: H256::from_low_u64_be(0xA1),
+            bridge_root: H256::from_low_u64_be(0xB2),
+            bridge_epoch: H256::from_low_u64_be(0xC3),
+            first_pillar_block_period: 10,
+            pillar_blocks_interval: 8,
+            last_finalized_period: None,
+            last_finalized_hash: None,
+        })
+        .expect("first block planning should succeed");
+
+        assert!(plan.valid);
+        assert_eq!(plan.status, PillarBlockLinkageStatus::FirstPillarBlock);
+        assert_eq!(plan.previous_pillar_block_hash, H256::zero());
     }
 }

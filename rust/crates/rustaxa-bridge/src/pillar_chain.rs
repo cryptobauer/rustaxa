@@ -8,6 +8,8 @@
 //! writes for pillar rows that this shim routes to `rustaxa-storage`.
 
 use crate::ffi::rustaxa_ffi::{
+    PillarBlockCreationFact as FfiPillarBlockCreationFact,
+    PillarBlockCreationPlan as FfiPillarBlockCreationPlan,
     PillarBlockLinkageFact as FfiPillarBlockLinkageFact,
     PillarBlockLinkagePlan as FfiPillarBlockLinkagePlan,
     PillarValidatorVoteCount as FfiPillarValidatorVoteCount,
@@ -21,10 +23,14 @@ use rustaxa_consensus::{
     load_latest_pillar_block_storage as consensus_load_latest_pillar_block_storage,
     load_own_pillar_block_vote_storage as consensus_load_own_pillar_block_vote_storage,
     load_pillar_period_data_storage as consensus_load_pillar_period_data_storage,
+    plan_pillar_block_creation as consensus_plan_pillar_block_creation,
     plan_pillar_block_linkage as consensus_plan_pillar_block_linkage,
     plan_pillar_vote_count_changes as consensus_plan_vote_count_changes,
     save_current_pillar_block_data_storage, save_finalized_pillar_block_storage,
-    save_own_pillar_block_vote_storage, PillarBlockLinkageFact as ConsensusPillarBlockLinkageFact,
+    save_own_pillar_block_vote_storage,
+    PillarBlockCreationFact as ConsensusPillarBlockCreationFact,
+    PillarBlockCreationPlan as ConsensusPillarBlockCreationPlan,
+    PillarBlockLinkageFact as ConsensusPillarBlockLinkageFact,
     PillarBlockLinkagePlan as ConsensusPillarBlockLinkagePlan,
     PillarValidatorVoteCount as ConsensusPillarValidatorVoteCount,
     PillarValidatorVoteCountChange as ConsensusPillarValidatorVoteCountChange,
@@ -62,6 +68,27 @@ pub fn plan_pillar_block_linkage(
 ) -> Result<FfiPillarBlockLinkagePlan> {
     Ok(FfiPillarBlockLinkagePlan::from(
         consensus_plan_pillar_block_linkage(linkage_fact_to_consensus(fact))?,
+    ))
+}
+
+/// Plans the shell fields used by temporary C++ `PillarBlock` materialization.
+///
+/// Inputs:
+/// - `fact`: typed pillar period/config, finalized parent, state root, and
+///   bridge root/epoch facts.
+///
+/// Outputs:
+/// - Returns CXX-safe hashes and linkage status that C++ uses to construct the
+///   current `PillarBlock` object.
+///
+/// Invariants and edge behavior:
+/// - Bridge root and epoch are consumed by Rust planning before C++ uses them.
+/// - Vote-count deltas remain planned separately in this slice.
+pub fn plan_pillar_block_creation(
+    fact: FfiPillarBlockCreationFact,
+) -> Result<FfiPillarBlockCreationPlan> {
+    Ok(FfiPillarBlockCreationPlan::from(
+        consensus_plan_pillar_block_creation(creation_fact_to_consensus(fact))?,
     ))
 }
 
@@ -211,6 +238,25 @@ fn linkage_fact_to_consensus(value: FfiPillarBlockLinkageFact) -> ConsensusPilla
     }
 }
 
+fn creation_fact_to_consensus(
+    value: FfiPillarBlockCreationFact,
+) -> ConsensusPillarBlockCreationFact {
+    ConsensusPillarBlockCreationFact {
+        pillar_block_period: value.pillar_block_period,
+        state_root: H256::from(value.state_root),
+        bridge_root: H256::from(value.bridge_root),
+        bridge_epoch: H256::from(value.bridge_epoch),
+        first_pillar_block_period: value.first_pillar_block_period,
+        pillar_blocks_interval: value.pillar_blocks_interval,
+        last_finalized_period: value
+            .has_last_finalized_pillar_block
+            .then_some(value.last_finalized_period),
+        last_finalized_hash: value
+            .has_last_finalized_pillar_block
+            .then_some(H256::from(value.last_finalized_hash)),
+    }
+}
+
 impl From<ConsensusPillarValidatorVoteCountChange> for FfiPillarValidatorVoteCountChange {
     fn from(value: ConsensusPillarValidatorVoteCountChange) -> Self {
         Self {
@@ -226,6 +272,20 @@ impl From<ConsensusPillarBlockLinkagePlan> for FfiPillarBlockLinkagePlan {
             status: value.status.as_u8(),
             valid: value.valid,
             expected_previous_period: value.expected_previous_period,
+        }
+    }
+}
+
+impl From<ConsensusPillarBlockCreationPlan> for FfiPillarBlockCreationPlan {
+    fn from(value: ConsensusPillarBlockCreationPlan) -> Self {
+        Self {
+            status: value.status as u8,
+            valid: value.valid,
+            expected_previous_period: value.expected_previous_period,
+            previous_pillar_block_hash: value.previous_pillar_block_hash.0,
+            state_root: value.state_root.0,
+            bridge_root: value.bridge_root.0,
+            bridge_epoch: value.bridge_epoch.0,
         }
     }
 }
@@ -307,6 +367,49 @@ mod tests {
 
         assert!(!invalid.valid);
         assert_eq!(invalid.status, 4);
+    }
+
+    #[test]
+    fn bridge_plans_pillar_block_creation_with_bridge_facts() {
+        let plan = plan_pillar_block_creation(FfiPillarBlockCreationFact {
+            pillar_block_period: 18,
+            state_root: hash(0xA1),
+            bridge_root: hash(0xB2),
+            bridge_epoch: hash(0xC3),
+            first_pillar_block_period: 10,
+            pillar_blocks_interval: 8,
+            has_last_finalized_pillar_block: true,
+            last_finalized_period: 10,
+            last_finalized_hash: hash(0xD4),
+        })
+        .expect("creation planning should succeed");
+
+        assert!(plan.valid);
+        assert_eq!(plan.status, 0);
+        assert_eq!(plan.previous_pillar_block_hash, hash(0xD4));
+        assert_eq!(plan.state_root, hash(0xA1));
+        assert_eq!(plan.bridge_root, hash(0xB2));
+        assert_eq!(plan.bridge_epoch, hash(0xC3));
+    }
+
+    #[test]
+    fn bridge_plans_first_pillar_block_creation_with_null_parent() {
+        let plan = plan_pillar_block_creation(FfiPillarBlockCreationFact {
+            pillar_block_period: 10,
+            state_root: hash(0xA1),
+            bridge_root: hash(0xB2),
+            bridge_epoch: hash(0xC3),
+            first_pillar_block_period: 10,
+            pillar_blocks_interval: 8,
+            has_last_finalized_pillar_block: false,
+            last_finalized_period: 0,
+            last_finalized_hash: [0; 32],
+        })
+        .expect("first creation planning should succeed");
+
+        assert!(plan.valid);
+        assert_eq!(plan.status, 1);
+        assert_eq!(plan.previous_pillar_block_hash, [0; 32]);
     }
 
     #[test]

@@ -27,6 +27,12 @@ addr_t fromBridgeAddress(const std::array<uint8_t, 20>& address) {
   return addr_t(address.data(), addr_t::ConstructFromPointer);
 }
 
+blk_hash_t fromBridgeBlockHash(const std::array<uint8_t, 32>& hash) {
+  return blk_hash_t(hash.data(), blk_hash_t::ConstructFromPointer);
+}
+
+h256 fromBridgeH256(const std::array<uint8_t, 32>& hash) { return h256(hash.data(), h256::ConstructFromPointer); }
+
 vote_hash_t fromBridgeHash(const std::array<uint8_t, 32>& hash) {
   return vote_hash_t(hash.data(), vote_hash_t::ConstructFromPointer);
 }
@@ -154,6 +160,25 @@ rustaxa::PillarBlockLinkageFact toBridgeLinkageFact(const FicusHardforkConfig& f
   rustaxa::PillarBlockLinkageFact fact{};
   fact.pillar_block_period = pillar_block->getPeriod();
   fact.pillar_block_previous_hash = toBridgeHash(pillar_block->getPreviousBlockHash());
+  fact.first_pillar_block_period = ficus_hf_config.firstPillarBlockPeriod();
+  fact.pillar_blocks_interval = ficus_hf_config.pillar_blocks_interval;
+  fact.has_last_finalized_pillar_block = static_cast<bool>(last_finalized_pillar_block);
+  if (last_finalized_pillar_block) {
+    fact.last_finalized_period = last_finalized_pillar_block->getPeriod();
+    fact.last_finalized_hash = toBridgeHash(last_finalized_pillar_block->getHash());
+  }
+  return fact;
+}
+
+rustaxa::PillarBlockCreationFact toBridgeCreationFact(
+    const FicusHardforkConfig& ficus_hf_config, PbftPeriod period,
+    const std::shared_ptr<const final_chain::BlockHeader>& block_header, const h256& bridge_root,
+    const h256& bridge_epoch, const std::shared_ptr<PillarBlock>& last_finalized_pillar_block) {
+  rustaxa::PillarBlockCreationFact fact{};
+  fact.pillar_block_period = period;
+  fact.state_root = toBridgeHash(block_header->state_root);
+  fact.bridge_root = toBridgeHash(bridge_root);
+  fact.bridge_epoch = toBridgeHash(bridge_epoch);
   fact.first_pillar_block_period = ficus_hf_config.firstPillarBlockPeriod();
   fact.pillar_blocks_interval = ficus_hf_config.pillar_blocks_interval;
   fact.has_last_finalized_pillar_block = static_cast<bool>(last_finalized_pillar_block);
@@ -393,9 +418,9 @@ PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_confi
 std::shared_ptr<PillarBlock> PillarChainManager::createPillarBlock(
     PbftPeriod period, const std::shared_ptr<const final_chain::BlockHeader>& block_header, const h256& bridge_root,
     const h256& bridge_epoch) {
-  blk_hash_t previous_pillar_block_hash{};  // null block hash
   auto new_vote_counts = final_chain_->dposValidatorsEligibleVoteCounts(period);
   std::vector<PillarBlock::ValidatorVoteCountChange> votes_count_changes;
+  std::shared_ptr<PillarBlock> last_finalized_pillar_block;
 
   // First ever pillar block
   if (period == kFicusHfConfig.firstPillarBlockPeriod()) {
@@ -409,7 +434,7 @@ std::shared_ptr<PillarBlock> PillarChainManager::createPillarBlock(
       return nullptr;
     }
   } else {
-    const auto last_finalized_pillar_block = getLastFinalizedPillarBlock();
+    last_finalized_pillar_block = getLastFinalizedPillarBlock();
     // This should never happen !!!
     if (!last_finalized_pillar_block) {
       LOG(log_er_) << "Empty last finalized pillar block, new pillar block period " << period;
@@ -426,8 +451,6 @@ std::shared_ptr<PillarBlock> PillarChainManager::createPillarBlock(
       return nullptr;
     }
 
-    previous_pillar_block_hash = last_finalized_pillar_block->getHash();
-
     // Get validators vote counts changes between the current and previous pillar block
     try {
       votes_count_changes = fromBridgeVoteCountChanges(rustaxa::plan_pillar_vote_count_changes(
@@ -439,8 +462,25 @@ std::shared_ptr<PillarBlock> PillarChainManager::createPillarBlock(
     }
   }
 
-  const auto pillar_block = std::make_shared<PillarBlock>(period, block_header->state_root, previous_pillar_block_hash,
-                                                          bridge_root, bridge_epoch, std::move(votes_count_changes));
+  rustaxa::PillarBlockCreationPlan creation_plan{};
+  try {
+    creation_plan = rustaxa::plan_pillar_block_creation(toBridgeCreationFact(
+        kFicusHfConfig, period, block_header, bridge_root, bridge_epoch, last_finalized_pillar_block));
+  } catch (const std::exception& e) {
+    LOG(log_er_) << "Unable to plan pillar block creation in Rust for period " << period << ": " << e.what();
+    return nullptr;
+  }
+  if (!creation_plan.valid) {
+    LOG(log_er_) << "Invalid pillar block creation plan for period " << period << ", linkage status "
+                 << static_cast<uint64_t>(creation_plan.status) << ", expected previous period "
+                 << creation_plan.expected_previous_period;
+    return nullptr;
+  }
+
+  const auto pillar_block = std::make_shared<PillarBlock>(
+      period, fromBridgeH256(creation_plan.state_root), fromBridgeBlockHash(creation_plan.previous_pillar_block_hash),
+      fromBridgeH256(creation_plan.bridge_root), fromBridgeH256(creation_plan.bridge_epoch),
+      std::move(votes_count_changes));
 
   // Check if some pillar block was not skipped
   if (!isValidPillarBlock(pillar_block)) {
