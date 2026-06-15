@@ -32,6 +32,7 @@ use anyhow::{Context, Result, anyhow};
 use ethereum_types::H256;
 use rlp::RlpStream;
 use rustaxa_storage::{Storage, StorageWriteBatch};
+use rustaxa_types::codec::rlp::dag::FinalizedDagBlockBundleRlp;
 use std::collections::{BTreeMap, VecDeque};
 use tiny_keccak::{Hasher, Keccak};
 
@@ -2009,6 +2010,35 @@ pub struct PbftManagerRuntime {
     snapshot: PbftManagerRuntimeSnapshot,
 }
 
+/// Storage-backed facts for replaying one finalized period during PBFT manager startup.
+///
+/// Inputs:
+/// - Loaded from `rustaxa-storage` by `load_pbft_manager_startup_replay_period`.
+///
+/// Outputs:
+/// - `period_data_rlp` is the canonical legacy `PeriodData` payload.
+/// - `finalized_dag_hashes` preserves the finalized DAG block order encoded in
+///   the period data.
+/// - `period_lambda` is the closest persisted dynamic lambda when requested by
+///   the startup replay path.
+///
+/// Invariants and edge behavior:
+/// - `found = false` means no period data was present; all payload fields are
+///   empty/default.
+/// - Malformed period data returns an error rather than falling back to C++
+///   storage decoding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PbftManagerStartupReplayPeriod {
+    /// Whether the requested period data exists in storage.
+    pub found: bool,
+    /// Canonical legacy `PeriodData` RLP bytes for C++ temporary sidecar materialization.
+    pub period_data_rlp: Vec<u8>,
+    /// Finalized DAG block hashes in persisted order.
+    pub finalized_dag_hashes: Vec<H256>,
+    /// Closest persisted dynamic lambda for this period, when requested and present.
+    pub period_lambda: Option<u32>,
+}
+
 impl PbftManagerRuntime {
     /// Creates a runtime from an already accepted startup snapshot.
     pub fn new(snapshot: PbftManagerRuntimeSnapshot) -> Self {
@@ -2230,6 +2260,68 @@ pub fn create_pbft_manager_runtime_from_storage(
     }
 
     Ok(PbftManagerRuntime::new(snapshot))
+}
+
+/// Loads one finalized period needed by the PBFT manager startup replay from
+/// native Rust storage.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+/// - `period`: finalized PBFT period to replay.
+/// - `load_period_lambda`: whether the caller needs the closest persisted
+///   dynamic-lambda value for Cacti reward replay.
+///
+/// Outputs:
+/// - `found = false` if the period data row is missing.
+/// - Otherwise the canonical period data RLP, finalized DAG hashes decoded from
+///   the period data, and optional period lambda.
+///
+/// Invariants and edge behavior:
+/// - The helper only reads storage and derives hashes from canonical stored
+///   bytes; C++ may still materialize temporary `PeriodData` objects from the
+///   returned RLP while the live replay boundary remains transitional.
+/// - Malformed period data is reported as an error so startup does not silently
+///   route through legacy `DbStorage` decoding.
+pub fn load_pbft_manager_startup_replay_period(
+    storage: &Storage,
+    period: u64,
+    load_period_lambda: bool,
+) -> Result<PbftManagerStartupReplayPeriod> {
+    let period_data_rlp = storage.period().data_raw(period)?;
+    if period_data_rlp.is_empty() {
+        return Ok(PbftManagerStartupReplayPeriod {
+            found: false,
+            period_data_rlp,
+            finalized_dag_hashes: Vec::new(),
+            period_lambda: None,
+        });
+    }
+
+    let finalized_dag_hashes = finalized_dag_hashes_from_period_data(&period_data_rlp)
+        .with_context(|| format!("PBFT_MANAGER_STARTUP_PERIOD_DATA_DAG_HASHES_INVALID:{period}"))?;
+    let period_lambda = if load_period_lambda {
+        storage.metadata().period_lambda(period, true)?
+    } else {
+        None
+    };
+
+    Ok(PbftManagerStartupReplayPeriod {
+        found: true,
+        period_data_rlp,
+        finalized_dag_hashes,
+        period_lambda,
+    })
+}
+
+fn finalized_dag_hashes_from_period_data(period_data_rlp: &[u8]) -> Result<Vec<H256>> {
+    let period_data = rlp::Rlp::new(period_data_rlp);
+    let dag_blocks_data = period_data.at(2)?;
+    let bundle = FinalizedDagBlockBundleRlp::new(dag_blocks_data.as_raw());
+    let mut hashes = Vec::with_capacity(dag_blocks_data.at(2)?.item_count()?);
+    for position in 0..dag_blocks_data.at(2)?.item_count()? {
+        hashes.push(keccak256(&bundle.canonical_block_rlp(position)?));
+    }
+    Ok(hashes)
 }
 
 /// Persists the delayed executed-block manager-status reset.
@@ -3574,6 +3666,51 @@ mod tests {
         }
     }
 
+    fn finalized_dag_bundle_rlp() -> (Vec<u8>, Vec<H256>) {
+        let mut compact_block = RlpStream::new_list(7);
+        compact_block.append(&H256::from_low_u64_be(1));
+        compact_block.append(&7u64);
+        compact_block.append(&123u64);
+        compact_block.append(&vec![0x44, 0x55]);
+        compact_block.append_list(&vec![H256::from_low_u64_be(2)]);
+        compact_block.append(&vec![0x66; 65]);
+        compact_block.append(&99u64);
+
+        let mut canonical_block = RlpStream::new_list(8);
+        canonical_block.append(&H256::from_low_u64_be(1));
+        canonical_block.append(&7u64);
+        canonical_block.append(&123u64);
+        canonical_block.append(&vec![0x44, 0x55]);
+        canonical_block.append_list(&vec![H256::from_low_u64_be(2)]);
+        let empty_transactions: Vec<H256> = Vec::new();
+        canonical_block.append_list(&empty_transactions);
+        canonical_block.append(&vec![0x66; 65]);
+        canonical_block.append(&99u64);
+        let expected_hash = keccak256(&canonical_block.out());
+
+        let ordered_transaction_hashes = RlpStream::new_list(0);
+        let mut transaction_indexes = RlpStream::new_list(1);
+        transaction_indexes.begin_list(0);
+        let mut compact_blocks = RlpStream::new_list(1);
+        compact_blocks.append_raw(&compact_block.out(), 1);
+
+        let mut bundle = RlpStream::new_list(3);
+        bundle.append_raw(&ordered_transaction_hashes.out(), 1);
+        bundle.append_raw(&transaction_indexes.out(), 1);
+        bundle.append_raw(&compact_blocks.out(), 1);
+
+        (bundle.out().to_vec(), vec![expected_hash])
+    }
+
+    fn period_data_with_dag_bundle(bundle: &[u8]) -> Vec<u8> {
+        let mut period_data = RlpStream::new_list(4);
+        period_data.append_empty_data();
+        period_data.append_empty_data();
+        period_data.append_raw(bundle, 1);
+        period_data.begin_list(0);
+        period_data.out().to_vec()
+    }
+
     fn drain_actions(mut session: PbftManagerRuntimeSession) -> Vec<PbftManagerRuntimeAction> {
         let mut actions = Vec::new();
         loop {
@@ -4085,6 +4222,54 @@ mod tests {
                     .expect("normalized step should load"),
                 Some(4),
             );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn startup_replay_period_loader_reads_period_lambda_and_finalized_dag_hashes() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_manager_startup_replay");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            let (bundle, expected_hashes) = finalized_dag_bundle_rlp();
+            let period_data = period_data_with_dag_bundle(&bundle);
+            storage
+                .period()
+                .write(12, &period_data)
+                .expect("period data should persist");
+            storage
+                .metadata()
+                .write_period_lambda(11, 1_234)
+                .expect("period lambda should persist");
+
+            let replay = load_pbft_manager_startup_replay_period(&storage, 12, true)
+                .expect("startup replay period should load");
+
+            assert!(replay.found);
+            assert_eq!(replay.period_data_rlp, period_data);
+            assert_eq!(replay.finalized_dag_hashes, expected_hashes);
+            assert_eq!(replay.period_lambda, Some(1_234));
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn startup_replay_period_loader_reports_missing_period_data_without_fallback() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_manager_startup_replay_missing");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+
+            let replay = load_pbft_manager_startup_replay_period(&storage, 99, true)
+                .expect("missing startup replay period should be explicit");
+
+            assert!(!replay.found);
+            assert!(replay.period_data_rlp.is_empty());
+            assert!(replay.finalized_dag_hashes.is_empty());
+            assert_eq!(replay.period_lambda, None);
         }
 
         let _ = fs::remove_dir_all(temp_dir);

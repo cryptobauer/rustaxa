@@ -378,10 +378,13 @@ default; RPC/GraphQL compatibility reads must carry an inline `RUSTAXA_QUERY_COM
 instead of silently expanding.
 Existing RPC/Debug query reads now carry that marker; the scan currently finds no GraphQL `getDB()`/`rustStorage()` query
 reads to annotate.
+PBFT manager startup replay now loads finalized period data, closest dynamic-lambda facts, and finalized DAG hash order
+through a `rustaxa-consensus::pbft_manager` storage helper over native `rustaxa-storage`; the bridge only adapts DTOs,
+and the C++ shim only materializes temporary `PeriodData` objects for the existing live replay calls.
 
 Move:
 
-- network sync read paths that feed deterministic consensus decisions
+- completed: network sync read paths that feed deterministic consensus decisions
 - in progress: RPC/GraphQL/debug reads that can use read-only Rust storage query APIs
 - in progress: app status/finalized-history reads that currently force bridge/storage compatibility methods into
   Rust-mode consensus ownership
@@ -415,6 +418,20 @@ reads with `RUSTAXA_QUERY_COMPAT_READ`, leaving them as visible compatibility re
 them. It passes the storage-boundary guard self-test and current-diff guard, `git diff --check`,
 `cmake --build /build --target rpc_plugin --parallel 12`, `cmake --build /build --target rpc_test --parallel 12`,
 `/build/bin/rpc_test`, and `rust_storage_tests`.
+
+Validation note: the PBFT manager startup replay read sub-slice moves the finalized-history reads used by restart replay
+from shim-local `DbStorage` compatibility calls to `rustaxa-consensus::pbft_manager` over direct `rustaxa-storage`. It
+keeps C++ `PeriodData` materialization and live replay calls temporary. Validate with PBFT manager Rust consensus/bridge
+tests, `rust_storage_tests`, the storage-boundary guard, and focused `pbft_manager_test` build/runtime coverage; broad
+runtime failures remain classified under the existing non-storage PBFT runtime gaps when reproduced. The sub-slice passes
+`cargo fmt --manifest-path rust/Cargo.toml --all --check`, `cargo check --manifest-path rust/Cargo.toml -p
+rustaxa-bridge`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pbft_manager`, `cargo test
+--manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_manager`, the storage-boundary guard self-test/current-diff guard,
+`git diff --check`, `rust_storage_tests`, and `cmake --build /build --target pbft_manager_test --parallel 12`. Running
+`/build/bin/pbft_manager_test` still fails the known broad Rust-mode PBFT runtime cases
+(`check_get_eligible_vote_count`, `pbft_manager_run_single_node`, `pbft_manager_run_multi_nodes`,
+`check_committeeSize_less_or_equal_to_activePlayers`, and `check_committeeSize_greater_than_activePlayers`), while all
+8 `PbftManagerWithDagCreation` tests pass.
 
 ## Slice 9: Collapse DbStorage To Compatibility Shell
 

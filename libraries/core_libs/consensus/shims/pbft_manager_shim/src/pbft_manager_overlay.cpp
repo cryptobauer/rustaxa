@@ -661,21 +661,24 @@ PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> 
 
   for (auto period = final_chain_->lastBlockNumber() + 1, curr_period = pbft_chain_->getPbftChainSize();
        period <= curr_period; ++period) {
-    auto period_data = db_->getPeriodData(period);
-    if (!period_data.has_value()) {
+    const auto replay_period = rustaxa::load_pbft_manager_startup_replay_period_storage(
+        db_->rustStorage(), period, kGenesisConfig.state.hardforks.isOnCactiHardfork(period));
+    if (!replay_period.found) {
       LOG(log_er_) << "DB corrupted - Cannot find PBFT block in period " << period << " in PBFT chain DB pbft_blocks.";
       assert(false);
     }
+    auto period_data =
+        PeriodData{dev::bytes(replay_period.period_data_rlp.begin(), replay_period.period_data_rlp.end())};
 
-    if (period_data->pbft_blk->getPeriod() != period) {
-      LOG(log_er_) << "DB corrupted - PBFT block hash " << period_data->pbft_blk->getBlockHash()
-                   << " has different period " << period_data->pbft_blk->getPeriod()
+    if (period_data.pbft_blk->getPeriod() != period) {
+      LOG(log_er_) << "DB corrupted - PBFT block hash " << period_data.pbft_blk->getBlockHash()
+                   << " has different period " << period_data.pbft_blk->getPeriod()
                    << " in block data than in block order db: " << period;
       assert(false);
     }
 
     // We need this section because votes need to be verified for reward distribution
-    for (const auto &v : period_data->previous_block_cert_votes) {
+    for (const auto &v : period_data.previous_block_cert_votes) {
       vote_mgr_->validateVote(v);
     }
 
@@ -683,22 +686,26 @@ PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> 
     // Dynamic lambda was introduced in cacti hardfork -> it affects the number of blocks generated per year, which
     // affects rewards distribution
     if (kGenesisConfig.state.hardforks.isOnCactiHardfork(period)) {
-      auto period_lambda = db_->getPeriodLambda(period, true);
-      if (!period_lambda.has_value()) {
+      if (!replay_period.has_period_lambda) {
         LOG(log_er_) << "DB corrupted - no dynamic lambda saved for period " << period;
         assert(false);
       }
 
       blocks_per_year = kGenesisConfig.calcBlocksPerYear(
-          *period_lambda,
+          replay_period.period_lambda,
           kGenesisConfig.state.hardforks.cacti_hf
               .consensus_delay /* approx time it takes to receive 2t+1 soft and cert votes after 2*lambda */);
     } else {
       blocks_per_year = kGenesisConfig.state.dpos.blocks_per_year;
     }
 
-    finalize_(std::move(*period_data), db_->getFinalizedDagBlockHashesByPeriod(period), blocks_per_year,
-              period == curr_period);
+    std::vector<blk_hash_t> finalized_dag_hashes;
+    finalized_dag_hashes.reserve(replay_period.finalized_dag_hashes.size());
+    for (const auto &hash : replay_period.finalized_dag_hashes) {
+      finalized_dag_hashes.push_back(fromBridgeHash(hash.hash));
+    }
+
+    finalize_(std::move(period_data), std::move(finalized_dag_hashes), blocks_per_year, period == curr_period);
   }
 
   PbftPeriod start_period = 1;
@@ -708,12 +715,14 @@ PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> 
     start_period = pbft_chain_->getPbftChainSize() - recently_finalized_transactions_periods;
   }
   for (PbftPeriod period = start_period; period <= pbft_chain_->getPbftChainSize(); period++) {
-    auto period_data = db_->getPeriodData(period);
-    if (!period_data.has_value()) {
+    const auto replay_period =
+        rustaxa::load_pbft_manager_startup_replay_period_storage(db_->rustStorage(), period, false);
+    if (!replay_period.found) {
       LOG(log_er_) << "DB corrupted - Cannot find PBFT block in period " << period << " in PBFT chain DB pbft_blocks.";
       assert(false);
     }
-    trx_mgr_->initializeRecentlyFinalizedTransactions(*period_data);
+    trx_mgr_->initializeRecentlyFinalizedTransactions(
+        PeriodData{dev::bytes(replay_period.period_data_rlp.begin(), replay_period.period_data_rlp.end())});
   }
 
   // Initialize PBFT status

@@ -964,6 +964,16 @@ pub mod rustaxa_ffi {
         cacti_lambda_default_ms: u64,
     }
 
+    /// Rust-owned storage facts for replaying one finalized period during PBFT
+    /// manager startup.
+    struct PbftManagerStartupReplayPeriod {
+        found: bool,
+        period_data_rlp: Vec<u8>,
+        finalized_dag_hashes: Vec<PbftFinalizationHash>,
+        has_period_lambda: bool,
+        period_lambda: u32,
+    }
+
     /// Rust-owned PBFT manager cursor snapshot used by the transitional C++
     /// shim to mirror state after startup or transition commits.
     struct PbftManagerRuntimeSnapshot {
@@ -3934,6 +3944,11 @@ pub mod rustaxa_ffi {
             storage: &BridgeStorage,
             fact: PbftManagerStartupFact,
         ) -> Result<Box<BridgePbftManagerRuntime>>;
+        pub fn load_pbft_manager_startup_replay_period_storage(
+            storage: &BridgeStorage,
+            period: u64,
+            load_period_lambda: bool,
+        ) -> Result<PbftManagerStartupReplayPeriod>;
         pub fn pbft_manager_runtime_snapshot(
             runtime: &BridgePbftManagerRuntime,
         ) -> PbftManagerRuntimeSnapshot;

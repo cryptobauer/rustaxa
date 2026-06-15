@@ -34,6 +34,7 @@ use rustaxa_consensus::pbft_manager::{
     apply_pbft_manager_transition_storage,
     create_pbft_manager_runtime_from_storage as create_domain_pbft_manager_runtime_from_storage,
     create_pbft_manager_runtime_session as create_domain_pbft_manager_runtime_session,
+    load_pbft_manager_startup_replay_period as load_domain_pbft_manager_startup_replay_period,
     next_pbft_manager_runtime_action,
     plan_pbft_manager_block_validation as plan_domain_pbft_manager_block_validation,
     plan_pbft_manager_candidate_admission as plan_domain_pbft_manager_candidate_admission,
@@ -148,6 +149,43 @@ pub fn create_pbft_manager_runtime_from_storage(
         state: runtime,
         storage: storage.0.clone(),
     }))
+}
+
+/// Loads one finalized period for PBFT manager startup replay from native Rust
+/// storage.
+///
+/// Inputs:
+/// - `storage`: shared Rust storage bridge handle.
+/// - `period`: finalized PBFT period to replay into temporary live C++ mirrors.
+/// - `load_period_lambda`: whether Cacti replay needs closest dynamic-lambda facts.
+///
+/// Outputs:
+/// - A CXX-safe payload containing the raw period data, finalized DAG hashes,
+///   and optional dynamic lambda.
+///
+/// Invariants and edge behavior:
+/// - The bridge only maps DTOs; storage reads and malformed-period handling are
+///   owned by `rustaxa-consensus`.
+/// - `found = false` is an explicit missing-period result and does not trigger
+///   a legacy storage fallback.
+pub fn load_pbft_manager_startup_replay_period_storage(
+    storage: &BridgeStorage,
+    period: u64,
+    load_period_lambda: bool,
+) -> anyhow::Result<crate::ffi::rustaxa_ffi::PbftManagerStartupReplayPeriod> {
+    let replay =
+        load_domain_pbft_manager_startup_replay_period(&storage.0, period, load_period_lambda)?;
+    Ok(crate::ffi::rustaxa_ffi::PbftManagerStartupReplayPeriod {
+        found: replay.found,
+        period_data_rlp: replay.period_data_rlp,
+        finalized_dag_hashes: replay
+            .finalized_dag_hashes
+            .into_iter()
+            .map(|hash| FfiPbftFinalizationHash { hash: hash.0 })
+            .collect(),
+        has_period_lambda: replay.period_lambda.is_some(),
+        period_lambda: replay.period_lambda.unwrap_or_default(),
+    })
 }
 
 /// Returns the current Rust-owned PBFT manager runtime snapshot.
@@ -1032,6 +1070,23 @@ mod tests {
         }
     }
 
+    fn empty_finalized_dag_period_data_rlp() -> Vec<u8> {
+        let ordered_transaction_hashes = rlp::RlpStream::new_list(0);
+        let transaction_indexes = rlp::RlpStream::new_list(0);
+        let compact_blocks = rlp::RlpStream::new_list(0);
+        let mut bundle = rlp::RlpStream::new_list(3);
+        bundle.append_raw(&ordered_transaction_hashes.out(), 1);
+        bundle.append_raw(&transaction_indexes.out(), 1);
+        bundle.append_raw(&compact_blocks.out(), 1);
+
+        let mut period_data = rlp::RlpStream::new_list(4);
+        period_data.append_empty_data();
+        period_data.append_empty_data();
+        period_data.append_raw(&bundle.out(), 1);
+        period_data.begin_list(0);
+        period_data.out().to_vec()
+    }
+
     #[test]
     fn bridge_plans_state_action_intents_with_hash_payloads() {
         let mut value_fact = state_fact(STATE_VALUE_PROPOSAL);
@@ -1379,6 +1434,41 @@ mod tests {
             assert!(pbft_manager_runtime_period_data_raw(&runtime, 8)
                 .expect("missing period read should succeed")
                 .is_empty());
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_loads_startup_replay_period_from_owned_storage() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_startup_replay_period");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let period_data = empty_finalized_dag_period_data_rlp();
+            storage
+                .save_period_data(12, period_data.clone())
+                .expect("period data should persist");
+            storage
+                .save_period_lambda(11, 1_234)
+                .expect("period lambda should persist");
+
+            let replay = load_pbft_manager_startup_replay_period_storage(&storage, 12, true)
+                .expect("startup replay read should succeed");
+
+            assert!(replay.found);
+            assert_eq!(replay.period_data_rlp, period_data);
+            assert!(replay.finalized_dag_hashes.is_empty());
+            assert!(replay.has_period_lambda);
+            assert_eq!(replay.period_lambda, 1_234);
+
+            let missing = load_pbft_manager_startup_replay_period_storage(&storage, 13, true)
+                .expect("missing startup replay read should succeed");
+            assert!(!missing.found);
+            assert!(missing.period_data_rlp.is_empty());
+            assert!(missing.finalized_dag_hashes.is_empty());
+            assert!(!missing.has_period_lambda);
         }
 
         let _ = fs::remove_dir_all(temp_dir);
