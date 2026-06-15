@@ -1530,6 +1530,8 @@ impl FinalChain {
                 "FINAL_CHAIN_EVM_PUBLICATION_HEAD_MISMATCH",
             ));
         }
+        let dpos_snapshot = self.dpos_snapshot_at_finalized_block(last_block)?;
+        let dpos_snapshot_rlp = encode_dpos_snapshot_rlp(&dpos_snapshot);
 
         let mut indexed_log_bloom = [0u8; 256];
         indexed_log_bloom.copy_from_slice(&plan.indexed_log_bloom);
@@ -1553,7 +1555,7 @@ impl FinalChain {
                 plan_hash,
                 plan.stored_header_rlp.as_slice(),
                 plan.receipts_rlp.as_slice(),
-                None,
+                Some(&dpos_snapshot_rlp),
                 None,
                 Some(execution_status),
                 rewards_stats_update,
@@ -1568,6 +1570,7 @@ impl FinalChain {
                 }),
                 true,
             )?;
+        self.insert_dpos_snapshot(plan.period, dpos_snapshot)?;
 
         Ok(FinalChainExternalEvmPublicationReport {
             request_id: plan.request_id,

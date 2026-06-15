@@ -2886,6 +2886,15 @@ pub mod rustaxa_ffi {
         sender: [u8; 20],
     }
 
+    /// Input for `verifyTransactionsNotFinalized` when sender nonce facts are
+    /// supplied by the C++ external-EVM boundary.
+    struct TransactionManagerVerifyNotFinalizedSidecarFact {
+        input_index: u64,
+        hash: [u8; 32],
+        transaction_nonce: [u8; 32],
+        sender_account_nonce: [u8; 32],
+    }
+
     /// Decision returned when the first finalized transaction is observed.
     ///
     /// `is_finalized` is false when all inputs are accepted.
@@ -2958,6 +2967,16 @@ pub mod rustaxa_ffi {
         gas_limit: u64,
         propose_dag_gas_limit: u64,
         insert_non_proposable: bool,
+    }
+
+    /// FinalChain facts collected by C++ when account state is still owned by
+    /// the external EVM adapter.
+    struct TransactionManagerFinalChainAdmissionFact {
+        account_found: bool,
+        account_nonce: [u8; 32],
+        account_balance: [u8; 32],
+        finalized_period_known: bool,
+        finalized_period: u64,
     }
 
     /// Runtime-executed TransactionManager admission outcome.
@@ -4311,12 +4330,27 @@ pub mod rustaxa_ffi {
             fact: TransactionManagerValidatedInsertRuntimeFact,
             input: TransactionQueueInsertInput,
         ) -> Result<TransactionManagerAdmissionCommandReport>;
+        /// Executes admission with FinalChain facts supplied by the C++ external-EVM boundary.
+        pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain_facts_command_report(
+            self: &mut BridgeTransactionManagerRuntime,
+            fact: TransactionManagerValidatedInsertRuntimeFact,
+            final_chain_fact: TransactionManagerFinalChainAdmissionFact,
+            input: TransactionQueueInsertInput,
+        ) -> Result<TransactionManagerAdmissionCommandReport>;
         /// Executes public insertTransaction verification and admission as one Rust-owned command.
         pub fn transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_command_report(
             self: &mut BridgeTransactionManagerRuntime,
             final_chain: &BridgeFinalChain,
             verify_fact: TransactionManagerVerifyTransactionFact,
             admission_fact: TransactionManagerValidatedInsertRuntimeFact,
+            input: TransactionQueueInsertInput,
+        ) -> Result<TransactionManagerPublicAdmissionCommandReport>;
+        /// Executes public insertTransaction verification and fact-backed admission as one Rust-owned command.
+        pub fn transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_facts_command_report(
+            self: &mut BridgeTransactionManagerRuntime,
+            verify_fact: TransactionManagerVerifyTransactionFact,
+            admission_fact: TransactionManagerValidatedInsertRuntimeFact,
+            final_chain_fact: TransactionManagerFinalChainAdmissionFact,
             input: TransactionQueueInsertInput,
         ) -> Result<TransactionManagerPublicAdmissionCommandReport>;
         pub fn transaction_manager_runtime_queue_erase(
@@ -4443,6 +4477,12 @@ pub mod rustaxa_ffi {
             storage: &BridgeStorage,
             facts: Vec<DagTransactionSaveSidecarFact>,
         ) -> Result<DagTransactionSaveOutcome>;
+        /// Applies DAG transaction persistence and returns a typed command report.
+        pub fn save_transactions_from_dag_block_command_report_with_runtime(
+            runtime: &mut BridgeTransactionManagerRuntime,
+            storage: &BridgeStorage,
+            facts: Vec<DagTransactionSaveSidecarFact>,
+        ) -> Result<TransactionManagerDagSaveCommandReport>;
         pub fn save_transactions_from_dag_block_with_runtime_and_final_chain(
             runtime: &mut BridgeTransactionManagerRuntime,
             storage: &BridgeStorage,
@@ -4525,6 +4565,11 @@ pub mod rustaxa_ffi {
             storage: &BridgeStorage,
             final_chain: &BridgeFinalChain,
             facts: Vec<TransactionManagerVerifyNotFinalizedRuntimeFact>,
+        ) -> Result<TransactionManagerVerifyNotFinalizedOutcome>;
+        pub fn transaction_manager_verify_not_finalized_with_runtime(
+            runtime: &BridgeTransactionManagerRuntime,
+            storage: &BridgeStorage,
+            facts: Vec<TransactionManagerVerifyNotFinalizedSidecarFact>,
         ) -> Result<TransactionManagerVerifyNotFinalizedOutcome>;
         /// Resolves transaction hashes through TransactionManager storage rules.
         pub fn transaction_manager_load_stored_transactions(

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
 
 #include "final_chain/state_api.hpp"
 #include "rewards/rewards_stats.hpp"
@@ -51,6 +52,15 @@ class FinalChain {
   uint64_t transactionCount(std::optional<EthBlockNumber> n = {}) const;
   std::vector<EthBlockNumber> withBlockBloom(LogBloom const& b, EthBlockNumber from, EthBlockNumber to) const;
 
+  /**
+   * Looks up account state at a finalized block.
+   *
+   * Rust mode first uses the external EVM state API for blocks that are
+   * committed there and otherwise uses the Rust account snapshot sidecar. If a
+   * polled EVM read races a Rust FinalChain publication and reports a future
+   * block, the method returns `std::nullopt` so callers can retry instead of
+   * aborting the consensus/RPC test process.
+   */
   std::optional<state_api::Account> getAccount(addr_t const& addr, std::optional<EthBlockNumber> blk_n = {}) const;
   /**
    * Return the Rust FinalChain runtime used by Rust-owned consensus shims.
@@ -61,9 +71,30 @@ class FinalChain {
    * `FinalChain` lifetime.
    */
   const rustaxa::BridgeFinalChain& rustFinalChainForRust() const;
+  /**
+   * Looks up contract storage through the external EVM state API.
+   *
+   * Future-state races return the zero hash, matching an unavailable storage
+   * value for retry-oriented callers while the Rust storage sidecar remains the
+   * durable FinalChain block owner.
+   */
   h256 getAccountStorage(addr_t const& addr, u256 const& key, std::optional<EthBlockNumber> blk_n = {}) const;
+  /**
+   * Looks up account bytecode through the external EVM state API.
+   *
+   * If the requested finalized block is visible in Rust storage but not yet
+   * committed in the external EVM state database, returns an empty byte vector
+   * so RPC/test polling can wait for publication to finish.
+   */
   bytes getCode(addr_t const& addr, std::optional<EthBlockNumber> blk_n = {}) const;
 
+  /**
+   * Executes a read-only call against committed external EVM state or the Rust
+   * native-call subset.
+   *
+   * External EVM future-state races are reported as `consensus_err` instead of
+   * escaping as exceptions, preserving the existing RPC error surface.
+   */
   state_api::ExecutionResult call(state_api::EVMTransaction const& trx, std::optional<EthBlockNumber> blk_n = {}) const;
   std::string trace(std::vector<state_api::EVMTransaction> state_trxs, std::vector<state_api::EVMTransaction> trxs,
                     EthBlockNumber blk_n, std::optional<state_api::Tracing> params = {}) const;
@@ -135,6 +166,7 @@ class FinalChain {
   EthBlockNumber delegation_delay_ = 0;
   uint64_t block_gas_limit_ = 0;
   uint32_t max_levels_per_period_ = 0;
+  mutable std::mutex state_api_mutex_;
   StateAPI state_api_;
   rewards::Stats rewards_;
   std::atomic<uint64_t> num_executed_dag_blk_ = 0;

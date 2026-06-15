@@ -388,7 +388,11 @@ FinalChain::FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullN
 }
 
 EthBlockNumber FinalChain::recoverExternalEvmPendingPublication() {
-  auto state_descriptor = state_api_.get_last_committed_state_descriptor();
+  state_api::StateDescriptor state_descriptor;
+  {
+    std::lock_guard lock(state_api_mutex_);
+    state_descriptor = state_api_.get_last_committed_state_descriptor();
+  }
   auto recovery_report = rust_final_chain_.value()->recover_external_evm_pending_publication(
       state_descriptor.blk_num, into_bytes_array(state_descriptor.state_root));
   if (recovery_report.status == kFinalChainEvmPublicationStatusRejected) {
@@ -452,39 +456,49 @@ std::future<std::shared_ptr<const FinalizationResult>> FinalChain::finalize(
 std::vector<SharedTransaction> FinalChain::makeSystemTransactions(
     const rustaxa::FinalChainSystemTransactionRequest& request) {
   const auto bridge_contract_address = config_.genesis.state.hardforks.ficus_hf.bridge_contract_address;
-  const auto last_block_number = lastBlockNumber();
-  const auto is_pillar_block_period =
-      config_.genesis.state.hardforks.ficus_hf.isPillarBlockPeriod(request.period + delegationDelay());
-  const auto bridge_contract = state_api_.get_account(last_block_number, bridge_contract_address);
-  const auto bridge_contract_has_code = bridge_contract && bridge_contract->code_size;
-
+  state_api::StateDescriptor state_descriptor;
+  std::optional<state_api::Account> bridge_contract;
   bool should_finalize = false;
   uint64_t system_account_nonce = 0;
-  if (is_pillar_block_period && bridge_contract_has_code) {
-    const static auto should_finalize_method = util::EncodingSolidity::packFunctionCall("shouldFinalizeEpoch()");
-    should_finalize =
-        u256(state_api_
-                 .dry_run_transaction(last_block_number,
-                                      state_api::EVMBlock{dev::ZeroAddress, block_gas_limit_, 0,
-                                                          BlockHeader::difficulty()},
-                                      state_api::EVMTransaction{
-                                          dev::ZeroAddress,
-                                          1,
-                                          bridge_contract_address,
-                                          state_api::ZeroAccount.nonce,
-                                          0,
-                                          10000000,
-                                          should_finalize_method,
-                                      })
-                 .code_retval)
-            .convert_to<bool>();
-    if (should_finalize) {
-      system_account_nonce =
-          state_api_.get_account(last_block_number, kTaraxaSystemAccount)
-              .value_or(state_api::ZeroAccount)
-              .nonce.convert_to<uint64_t>();
+  {
+    std::lock_guard lock(state_api_mutex_);
+    state_descriptor = state_api_.get_last_committed_state_descriptor();
+  }
+  const auto last_committed_evm_block = state_descriptor.blk_num;
+  const auto is_pillar_block_period =
+      config_.genesis.state.hardforks.ficus_hf.isPillarBlockPeriod(request.period + delegationDelay());
+
+  {
+    std::lock_guard lock(state_api_mutex_);
+    bridge_contract = state_api_.get_account(last_committed_evm_block, bridge_contract_address);
+    const auto bridge_contract_has_code = bridge_contract && bridge_contract->code_size;
+    if (is_pillar_block_period && bridge_contract_has_code) {
+      const static auto should_finalize_method = util::EncodingSolidity::packFunctionCall("shouldFinalizeEpoch()");
+      should_finalize =
+          u256(state_api_
+                   .dry_run_transaction(last_committed_evm_block,
+                                        state_api::EVMBlock{dev::ZeroAddress, block_gas_limit_, 0,
+                                                            BlockHeader::difficulty()},
+                                        state_api::EVMTransaction{
+                                            dev::ZeroAddress,
+                                            1,
+                                            bridge_contract_address,
+                                            state_api::ZeroAccount.nonce,
+                                            0,
+                                            10000000,
+                                            should_finalize_method,
+                                        })
+                   .code_retval)
+              .convert_to<bool>();
+      if (should_finalize) {
+        system_account_nonce =
+            state_api_.get_account(last_committed_evm_block, kTaraxaSystemAccount)
+                .value_or(state_api::ZeroAccount)
+                .nonce.convert_to<uint64_t>();
+      }
     }
   }
+  const auto bridge_contract_has_code = bridge_contract && bridge_contract->code_size;
 
   rustaxa::FinalChainSystemTransactionPlanFact fact;
   fact.request_id = request.request_id;
@@ -540,10 +554,15 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
   }
 
   auto evm_trxs = to_evm_transactions(all_transactions);
-  const auto& [exec_results] =
-      state_api_.execute_transactions({period_data.pbft_blk->getBeneficiary(), block_gas_limit_,
-                                       period_data.pbft_blk->getTimestamp(), BlockHeader::difficulty()},
-                                      evm_trxs);
+  std::vector<state_api::ExecutionResult> exec_results;
+  {
+    std::lock_guard lock(state_api_mutex_);
+    exec_results =
+        state_api_.execute_transactions({period_data.pbft_blk->getBeneficiary(), block_gas_limit_,
+                                         period_data.pbft_blk->getTimestamp(), BlockHeader::difficulty()},
+                                        evm_trxs)
+            .execution_results;
+  }
 
   TransactionReceipts receipts;
   receipts.reserve(exec_results.size());
@@ -574,7 +593,14 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
 
   auto rewards_stats =
       rewards_.processStatsForFinalChainPublication(period_data, blocks_per_year, transactions_gas_used);
-  const auto& [state_root, total_reward] = state_api_.distribute_rewards(rewards_stats.distribution_stats);
+  h256 state_root;
+  u256 total_reward;
+  {
+    std::lock_guard lock(state_api_mutex_);
+    const auto& rewards_result = state_api_.distribute_rewards(rewards_stats.distribution_stats);
+    state_root = rewards_result.state_root;
+    total_reward = rewards_result.total_reward;
+  }
 
   rustaxa::FinalChainEvmRewardsReport rewards_report;
   rewards_report.request_id = step.evm_rewards_request.request_id;
@@ -761,7 +787,9 @@ std::optional<h256> FinalChain::finalChainHash(EthBlockNumber n) const {
 }
 
 void FinalChain::updateStateConfig(const state_api::Config& new_config) {
+  std::lock_guard lock(state_api_mutex_);
   delegation_delay_ = new_config.dpos.delegation_delay;
+  state_api_.update_state_config(new_config);
 }
 
 std::shared_ptr<const TransactionHashes> FinalChain::transactionHashes(std::optional<EthBlockNumber> n) const {
@@ -829,10 +857,19 @@ std::vector<EthBlockNumber> FinalChain::withBlockBloom(LogBloom const& b, EthBlo
 
 std::optional<state_api::Account> FinalChain::getAccount(addr_t const& addr,
                                                          std::optional<EthBlockNumber> blk_n) const {
-  const auto state_descriptor = state_api_.get_last_committed_state_descriptor();
-  const auto requested_block = blk_n.value_or(lastBlockNumber());
+  state_api::StateDescriptor state_descriptor;
+  {
+    std::lock_guard lock(state_api_mutex_);
+    state_descriptor = state_api_.get_last_committed_state_descriptor();
+  }
+  const auto requested_block = blk_n.value_or(state_descriptor.blk_num);
   if (requested_block <= state_descriptor.blk_num) {
-    return state_api_.get_account(requested_block, addr);
+    try {
+      std::lock_guard lock(state_api_mutex_);
+      return state_api_.get_account(requested_block, addr);
+    } catch (const state_api::ErrFutureBlock&) {
+      return std::nullopt;
+    }
   }
 
   auto rust_account = blk_n.has_value()
@@ -855,37 +892,73 @@ std::optional<state_api::Account> FinalChain::getAccount(addr_t const& addr,
 const rustaxa::BridgeFinalChain& FinalChain::rustFinalChainForRust() const { return *rust_final_chain_.value(); }
 
 h256 FinalChain::getAccountStorage(addr_t const& addr, u256 const& key, std::optional<EthBlockNumber> blk_n) const {
-  const auto requested_block = blk_n.value_or(lastBlockNumber());
-  if (requested_block <= state_api_.get_last_committed_state_descriptor().blk_num) {
-    return state_api_.get_account_storage(requested_block, addr, key);
+  state_api::StateDescriptor state_descriptor;
+  {
+    std::lock_guard lock(state_api_mutex_);
+    state_descriptor = state_api_.get_last_committed_state_descriptor();
   }
-  throw_unimplemented_final_chain_api("getAccountStorage");
+  const auto requested_block = blk_n.value_or(state_descriptor.blk_num);
+  if (requested_block <= state_descriptor.blk_num) {
+    try {
+      std::lock_guard lock(state_api_mutex_);
+      return state_api_.get_account_storage(requested_block, addr, key);
+    } catch (const state_api::ErrFutureBlock&) {
+      return ZeroHash();
+    }
+  }
+  return ZeroHash();
 }
 
 bytes FinalChain::getCode(addr_t const& addr, std::optional<EthBlockNumber> blk_n) const {
-  const auto requested_block = blk_n.value_or(lastBlockNumber());
-  if (requested_block <= state_api_.get_last_committed_state_descriptor().blk_num) {
-    return state_api_.get_code_by_address(requested_block, addr);
+  state_api::StateDescriptor state_descriptor;
+  {
+    std::lock_guard lock(state_api_mutex_);
+    state_descriptor = state_api_.get_last_committed_state_descriptor();
   }
-  throw_unimplemented_final_chain_api("getCode");
+  const auto requested_block = blk_n.value_or(state_descriptor.blk_num);
+  if (requested_block <= state_descriptor.blk_num) {
+    try {
+      std::lock_guard lock(state_api_mutex_);
+      return state_api_.get_code_by_address(requested_block, addr);
+    } catch (const state_api::ErrFutureBlock&) {
+      return {};
+    }
+  }
+  return {};
 }
 
 state_api::ExecutionResult FinalChain::call(state_api::EVMTransaction const& trx,
                                             std::optional<EthBlockNumber> blk_n) const {
-  const auto requested_block = blk_n.value_or(lastBlockNumber());
-  if (requested_block <= state_api_.get_last_committed_state_descriptor().blk_num) {
-    const auto blk_header = blockHeader(requested_block);
+  state_api::StateDescriptor state_descriptor;
+  {
+    std::lock_guard lock(state_api_mutex_);
+    state_descriptor = state_api_.get_last_committed_state_descriptor();
+  }
+  const auto requested_block = blk_n.value_or(state_descriptor.blk_num);
+  if (requested_block <= state_descriptor.blk_num || state_descriptor.blk_num < lastBlockNumber()) {
+    const auto evm_block = std::min(requested_block, state_descriptor.blk_num);
+    const auto blk_header = blockHeader(evm_block);
     if (!blk_header) {
       throw std::runtime_error("Future block");
     }
-    return state_api_.dry_run_transaction(blk_header->number,
-                                          {
-                                              blk_header->author,
-                                              blk_header->gas_limit,
-                                              blk_header->timestamp,
-                                              BlockHeader::difficulty(),
-                                          },
-                                          trx);
+    try {
+      std::unique_lock lock(state_api_mutex_, std::defer_lock);
+      if (!blk_n.has_value()) {
+        lock.lock();
+      }
+      return state_api_.dry_run_transaction(blk_header->number,
+                                            {
+                                                blk_header->author,
+                                                blk_header->gas_limit,
+                                                blk_header->timestamp,
+                                                BlockHeader::difficulty(),
+                                            },
+                                            trx);
+    } catch (const state_api::ErrFutureBlock& e) {
+      state_api::ExecutionResult result;
+      result.consensus_err = e.what();
+      return result;
+    }
   }
 
   rustaxa::FinalChainCall request;
@@ -915,11 +988,17 @@ state_api::ExecutionResult FinalChain::call(state_api::EVMTransaction const& trx
 std::string FinalChain::trace(std::vector<state_api::EVMTransaction> state_trxs,
                               std::vector<state_api::EVMTransaction> trxs, EthBlockNumber blk_n,
                               std::optional<state_api::Tracing> params) const {
-  if (blk_n <= state_api_.get_last_committed_state_descriptor().blk_num) {
+  state_api::StateDescriptor state_descriptor;
+  {
+    std::lock_guard lock(state_api_mutex_);
+    state_descriptor = state_api_.get_last_committed_state_descriptor();
+  }
+  if (blk_n <= state_descriptor.blk_num) {
     const auto blk_header = blockHeader(blk_n);
     if (!blk_header) {
       throw std::runtime_error("Future block");
     }
+    std::lock_guard lock(state_api_mutex_);
     return dev::asString(state_api_.trace(blk_header->number,
                                           {
                                               blk_header->author,
@@ -1006,7 +1085,10 @@ h256 FinalChain::getBridgeRoot(EthBlockNumber blk_num) const {
   const static auto get_bridge_root_method = util::EncodingSolidity::packFunctionCall("getBridgeRoot()");
   const auto requested_block = blk_num;
   const auto bridge_contract_address = config_.genesis.state.hardforks.ficus_hf.bridge_contract_address;
-  const auto state_descriptor = state_api_.get_last_committed_state_descriptor();
+  state_api::ExecutionResult result;
+  {
+    std::lock_guard lock(state_api_mutex_);
+    const auto state_descriptor = state_api_.get_last_committed_state_descriptor();
   if (requested_block > state_descriptor.blk_num) {
     const auto bridge_contract = state_api_.get_account(state_descriptor.blk_num, bridge_contract_address);
     if (!bridge_contract || !bridge_contract->code_size) {
@@ -1025,11 +1107,12 @@ h256 FinalChain::getBridgeRoot(EthBlockNumber blk_num) const {
                       std::to_string(requested_block));
   }
 
-  const auto result = state_api_.dry_run_transaction(
-      block_header->number,
-      {block_header->author, block_header->gas_limit, block_header->timestamp, BlockHeader::difficulty()},
-      state_api::EVMTransaction{dev::ZeroAddress, 1, bridge_contract_address, state_api::ZeroAccount.nonce, 0, 10000000,
-                                get_bridge_root_method});
+    result = state_api_.dry_run_transaction(
+        block_header->number,
+        {block_header->author, block_header->gas_limit, block_header->timestamp, BlockHeader::difficulty()},
+        state_api::EVMTransaction{dev::ZeroAddress, 1, bridge_contract_address, state_api::ZeroAccount.nonce, 0,
+                                  10000000, get_bridge_root_method});
+  }
   if (!result.code_err.empty() || !result.consensus_err.empty()) {
     throw DbException("FinalChain::getBridgeRoot bridge-contract read failed: " + result.code_err +
                       result.consensus_err);
@@ -1041,7 +1124,10 @@ h256 FinalChain::getBridgeEpoch(EthBlockNumber blk_num) const {
   const static auto get_bridge_epoch_method = util::EncodingSolidity::packFunctionCall("finalizedEpoch()");
   const auto requested_block = blk_num;
   const auto bridge_contract_address = config_.genesis.state.hardforks.ficus_hf.bridge_contract_address;
-  const auto state_descriptor = state_api_.get_last_committed_state_descriptor();
+  state_api::ExecutionResult result;
+  {
+    std::lock_guard lock(state_api_mutex_);
+    const auto state_descriptor = state_api_.get_last_committed_state_descriptor();
   if (requested_block > state_descriptor.blk_num) {
     const auto bridge_contract = state_api_.get_account(state_descriptor.blk_num, bridge_contract_address);
     if (!bridge_contract || !bridge_contract->code_size) {
@@ -1060,11 +1146,12 @@ h256 FinalChain::getBridgeEpoch(EthBlockNumber blk_num) const {
                       std::to_string(requested_block));
   }
 
-  const auto result = state_api_.dry_run_transaction(
-      block_header->number,
-      {block_header->author, block_header->gas_limit, block_header->timestamp, BlockHeader::difficulty()},
-      state_api::EVMTransaction{dev::ZeroAddress, 1, bridge_contract_address, state_api::ZeroAccount.nonce, 0, 10000000,
-                                get_bridge_epoch_method});
+    result = state_api_.dry_run_transaction(
+        block_header->number,
+        {block_header->author, block_header->gas_limit, block_header->timestamp, BlockHeader::difficulty()},
+        state_api::EVMTransaction{dev::ZeroAddress, 1, bridge_contract_address, state_api::ZeroAccount.nonce, 0,
+                                  10000000, get_bridge_epoch_method});
+  }
   if (!result.code_err.empty() || !result.consensus_err.empty()) {
     throw DbException("FinalChain::getBridgeEpoch bridge-contract read failed: " + result.code_err +
                       result.consensus_err);

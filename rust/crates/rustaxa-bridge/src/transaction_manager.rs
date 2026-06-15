@@ -18,26 +18,27 @@ use crate::ffi::rustaxa_ffi::{
     FinalizedTransactionStatusPlan, FinalizedTransactionStatusSidecarFact,
     NonFinalizedTransactionPayload, TransactionManagerAdmissionCommandReport,
     TransactionManagerAdmissionResult, TransactionManagerDagSaveCommandReport,
-    TransactionManagerFilterAction, TransactionManagerFinalizedStatusCommandReport,
-    TransactionManagerGasEstimationFact, TransactionManagerGasEstimationPlan,
-    TransactionManagerGasEstimationResult, TransactionManagerHashCommand,
-    TransactionManagerInsertTransactionFact, TransactionManagerInsertTransactionOutcome,
-    TransactionManagerPublicAdmissionCommandReport, TransactionManagerPublicInsertResult,
-    TransactionManagerRecoveryEntry, TransactionManagerRuntimeAdmissionOutcome,
-    TransactionManagerRuntimeQueueCleanupPlan, TransactionManagerSidecarInsertInput,
-    TransactionManagerSidecarKnownFact, TransactionManagerSidecarLookup,
-    TransactionManagerSidecarLookupPlan, TransactionManagerSidecarLookupRequest,
-    TransactionManagerSidecarRecoveryInsertInput, TransactionManagerSidecarTransitionInput,
-    TransactionManagerStoredTransactionLookup, TransactionManagerStoredTransactionRequest,
-    TransactionManagerTransactionView, TransactionManagerTransactionViewPlan,
-    TransactionManagerTransactionViewRequest, TransactionManagerValidatedInsertRuntimeFact,
-    TransactionManagerVerifyNotFinalizedOutcome, TransactionManagerVerifyNotFinalizedRuntimeFact,
-    TransactionManagerVerifyTransactionFact, TransactionManagerVerifyTransactionOutcome,
-    TransactionPackEstimateOutcome, TransactionPackSelectedTransaction,
-    TransactionPackSessionCandidate, TransactionPackSessionEstimateInput,
-    TransactionPackSessionStep, TransactionQueueConfig, TransactionQueueHash,
-    TransactionQueueInsertInput, TransactionQueueInsertOutcome, TransactionQueuePurgePlan,
-    TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
+    TransactionManagerFilterAction, TransactionManagerFinalChainAdmissionFact,
+    TransactionManagerFinalizedStatusCommandReport, TransactionManagerGasEstimationFact,
+    TransactionManagerGasEstimationPlan, TransactionManagerGasEstimationResult,
+    TransactionManagerHashCommand, TransactionManagerInsertTransactionFact,
+    TransactionManagerInsertTransactionOutcome, TransactionManagerPublicAdmissionCommandReport,
+    TransactionManagerPublicInsertResult, TransactionManagerRecoveryEntry,
+    TransactionManagerRuntimeAdmissionOutcome, TransactionManagerRuntimeQueueCleanupPlan,
+    TransactionManagerSidecarInsertInput, TransactionManagerSidecarKnownFact,
+    TransactionManagerSidecarLookup, TransactionManagerSidecarLookupPlan,
+    TransactionManagerSidecarLookupRequest, TransactionManagerSidecarRecoveryInsertInput,
+    TransactionManagerSidecarTransitionInput, TransactionManagerStoredTransactionLookup,
+    TransactionManagerStoredTransactionRequest, TransactionManagerTransactionView,
+    TransactionManagerTransactionViewPlan, TransactionManagerTransactionViewRequest,
+    TransactionManagerValidatedInsertRuntimeFact, TransactionManagerVerifyNotFinalizedOutcome,
+    TransactionManagerVerifyNotFinalizedRuntimeFact,
+    TransactionManagerVerifyNotFinalizedSidecarFact, TransactionManagerVerifyTransactionFact,
+    TransactionManagerVerifyTransactionOutcome, TransactionPackEstimateOutcome,
+    TransactionPackSelectedTransaction, TransactionPackSessionCandidate,
+    TransactionPackSessionEstimateInput, TransactionPackSessionStep, TransactionQueueConfig,
+    TransactionQueueHash, TransactionQueueInsertInput, TransactionQueueInsertOutcome,
+    TransactionQueuePurgePlan, TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
 };
 use crate::ffi::{
     BridgeFinalChain, BridgeStorage, BridgeTransactionManagerAdmissionExecution,
@@ -775,6 +776,16 @@ pub fn save_transactions_from_dag_block_with_runtime(
 ) -> Result<DagTransactionSaveOutcome> {
     let execution = transaction_manager_runtime_execute_admission(runtime, storage, facts)?;
     transaction_manager_runtime_commit_admission(runtime, storage, execution)
+}
+
+/// Applies DAG transaction persistence and returns a typed command report.
+pub fn save_transactions_from_dag_block_command_report_with_runtime(
+    runtime: &mut BridgeTransactionManagerRuntime,
+    storage: &BridgeStorage,
+    facts: Vec<DagTransactionSaveSidecarFact>,
+) -> Result<TransactionManagerDagSaveCommandReport> {
+    let outcome = save_transactions_from_dag_block_with_runtime(runtime, storage, facts)?;
+    Ok(dag_save_command_report(&outcome))
 }
 
 /// Plans and persists accepted DAG-block transactions through the Rust runtime
@@ -1522,6 +1533,51 @@ pub fn transaction_manager_verify_not_finalized_with_runtime_and_final_chain(
         }
         let (_, sender_nonce, _) = final_chain_account_lookup(final_chain, &fact.sender)?;
         if sender_nonce >= U256::from_big_endian(&fact.transaction_nonce)
+            && storage
+                .0
+                .transaction()
+                .finalized(hash)
+                .context("TM_VERIFY_FINALIZED_LOOKUP")?
+        {
+            return Ok(TransactionManagerVerifyNotFinalizedOutcome {
+                is_finalized: true,
+                input_index: fact.input_index,
+                hash: hash.0,
+                source: TM_VERIFY_NOT_FINALIZED_SOURCE_STORAGE,
+            });
+        }
+    }
+    Ok(TransactionManagerVerifyNotFinalizedOutcome {
+        is_finalized: false,
+        input_index: 0,
+        hash: [0; 32],
+        source: TM_VERIFY_NOT_FINALIZED_SOURCE_NONE,
+    })
+}
+
+/// Verifies transaction hashes against Rust runtime sidecars with sender nonce
+/// facts supplied by the external-EVM compatibility boundary.
+pub fn transaction_manager_verify_not_finalized_with_runtime(
+    runtime: &BridgeTransactionManagerRuntime,
+    storage: &BridgeStorage,
+    facts: Vec<TransactionManagerVerifyNotFinalizedSidecarFact>,
+) -> Result<TransactionManagerVerifyNotFinalizedOutcome> {
+    for fact in facts {
+        let hash = H256::from(fact.hash);
+        ensure!(
+            !hash.is_zero(),
+            "finalized verification transaction hash cannot be zero"
+        );
+        if runtime.sidecar.contains_recently_finalized(hash) {
+            return Ok(TransactionManagerVerifyNotFinalizedOutcome {
+                is_finalized: true,
+                input_index: fact.input_index,
+                hash: hash.0,
+                source: TM_VERIFY_NOT_FINALIZED_SOURCE_RECENT_SIDECAR,
+            });
+        }
+        if U256::from_big_endian(&fact.sender_account_nonce)
+            >= U256::from_big_endian(&fact.transaction_nonce)
             && storage
                 .0
                 .transaction()
@@ -2317,6 +2373,82 @@ impl BridgeTransactionManagerRuntime {
         })
     }
 
+    /// Executes TransactionManager admission using account/finalization facts
+    /// supplied by the C++ external-EVM boundary.
+    ///
+    /// The deterministic admission decision, queue mutation, and public status
+    /// mapping remain Rust-owned. C++ supplies only the account and finalized
+    /// transaction facts that are still owned by the external EVM/FinalChain
+    /// compatibility shell.
+    fn transaction_manager_runtime_execute_transaction_admission_with_final_chain_facts(
+        &mut self,
+        fact: TransactionManagerValidatedInsertRuntimeFact,
+        final_chain_fact: TransactionManagerFinalChainAdmissionFact,
+        mut input: TransactionQueueInsertInput,
+    ) -> Result<TransactionManagerRuntimeAdmissionOutcome> {
+        ensure!(
+            input.hash == fact.tx_hash,
+            "TM_RUNTIME_VALIDATED_INSERT_HASH_MISMATCH"
+        );
+        ensure!(
+            input.nonce == fact.transaction_nonce,
+            "TM_RUNTIME_VALIDATED_INSERT_NONCE_MISMATCH"
+        );
+        ensure!(
+            input.gas == fact.gas_limit,
+            "TM_RUNTIME_VALIDATED_INSERT_GAS_MISMATCH"
+        );
+        let hash = H256::from(fact.tx_hash);
+        let plan = plan_validated_insert(ConsensusTransactionManagerValidatedInsertFact {
+            tx_hash: hash,
+            transaction_nonce: U256::from_big_endian(&fact.transaction_nonce),
+            transaction_cost: U256::from_big_endian(&fact.transaction_cost),
+            gas_limit: fact.gas_limit,
+            propose_dag_gas_limit: fact.propose_dag_gas_limit,
+            insert_non_proposable: fact.insert_non_proposable,
+            in_non_finalized_cache: self.sidecar.contains_non_finalized(hash),
+            in_recently_finalized_cache: self.sidecar.contains_recently_finalized(hash),
+            account_found: final_chain_fact.account_found,
+            account_nonce: U256::from_big_endian(&final_chain_fact.account_nonce),
+            account_balance: U256::from_big_endian(&final_chain_fact.account_balance),
+        })?;
+
+        let queue_outcome = if plan.should_insert_queue {
+            input.proposable = plan.queue_proposable;
+            self.transaction_manager_runtime_queue_insert(input)?
+        } else {
+            TransactionQueueInsertOutcome {
+                status: queue_status_to_ffi(plan.status),
+                inserted_hash_found: false,
+                inserted_hash: [0; 32],
+                demoted_hashes: Vec::new(),
+                overflow_removed_hashes: Vec::new(),
+            }
+        };
+        let insert_outcome =
+            transaction_manager_insert_transaction(TransactionManagerInsertTransactionFact {
+                tx_hash: fact.tx_hash,
+                hash_known: false,
+                queue_status: queue_outcome.status,
+                has_finalized_period: final_chain_fact.finalized_period_known,
+                finalized_period: final_chain_fact.finalized_period,
+            })?;
+
+        Ok(TransactionManagerRuntimeAdmissionOutcome {
+            insert_status: insert_outcome.status,
+            transaction_status: queue_outcome.status,
+            requires_finalized_lookup: false,
+            finalized_period_known: insert_outcome.finalized_period_known,
+            finalized_period: insert_outcome.finalized_period,
+            emit_transaction_added: plan.emit_transaction_added
+                && queue_outcome.status == TransactionQueueInsertStatus::Inserted as u8,
+            inserted_hash_found: queue_outcome.inserted_hash_found,
+            inserted_hash: queue_outcome.inserted_hash,
+            demoted_hashes: queue_outcome.demoted_hashes,
+            overflow_removed_hashes: queue_outcome.overflow_removed_hashes,
+        })
+    }
+
     /// Executes FinalChain-backed admission and returns a typed command report.
     pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report(
         &mut self,
@@ -2334,6 +2466,22 @@ impl BridgeTransactionManagerRuntime {
             !outcome.requires_finalized_lookup,
             "TM_RUNTIME_FINAL_CHAIN_ADMISSION_LOOKUP_INCOMPLETE"
         );
+        Ok(admission_command_report(&outcome))
+    }
+
+    /// Executes fact-backed admission and returns a typed command report.
+    pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain_facts_command_report(
+        &mut self,
+        fact: TransactionManagerValidatedInsertRuntimeFact,
+        final_chain_fact: TransactionManagerFinalChainAdmissionFact,
+        input: TransactionQueueInsertInput,
+    ) -> Result<TransactionManagerAdmissionCommandReport> {
+        let outcome = self
+            .transaction_manager_runtime_execute_transaction_admission_with_final_chain_facts(
+                fact,
+                final_chain_fact,
+                input,
+            )?;
         Ok(admission_command_report(&outcome))
     }
 
@@ -2385,6 +2533,77 @@ impl BridgeTransactionManagerRuntime {
             .transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report(
                 final_chain,
                 admission_fact,
+                input,
+            )?;
+        let public_result = public_insert_admission_result(&admission.admission);
+        Ok(public_admission_command_report(
+            TM_VERIFY_TRANSACTION_STATUS_ACCEPTED,
+            &TransactionManagerVerifyTransactionFact {
+                tx_hash,
+                chain_id: verification_chain_id,
+                expected_chain_id: verification_expected_chain_id,
+                gas_limit: 0,
+                max_gas_limit: 0,
+                last_block_number: 0,
+                cornus_active: false,
+                intrinsic_gas_covered: true,
+                signature_valid: true,
+                gas_price: [0; 32],
+                minimum_gas_price: [0; 32],
+            },
+            admission,
+            public_result,
+        ))
+    }
+
+    /// Executes public insert precheck, verification, and fact-backed admission.
+    pub fn transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_facts_command_report(
+        &mut self,
+        verify_fact: TransactionManagerVerifyTransactionFact,
+        admission_fact: TransactionManagerValidatedInsertRuntimeFact,
+        final_chain_fact: TransactionManagerFinalChainAdmissionFact,
+        input: TransactionQueueInsertInput,
+    ) -> Result<TransactionManagerPublicAdmissionCommandReport> {
+        let tx_hash = verify_fact.tx_hash;
+        let verification_chain_id = verify_fact.chain_id;
+        let verification_expected_chain_id = verify_fact.expected_chain_id;
+        ensure!(
+            tx_hash == admission_fact.tx_hash,
+            "TM_RUNTIME_PUBLIC_INSERT_VERIFY_HASH_MISMATCH"
+        );
+        let precheck = self.transaction_manager_runtime_insert_transaction_precheck(&tx_hash)?;
+        if precheck.status != TM_INSERT_TRANSACTION_STATUS_ACCEPTED {
+            return Ok(public_precheck_rejected_command_report(
+                precheck,
+                &verify_fact,
+            ));
+        }
+
+        let verify_outcome = transaction_manager_verify_transaction(verify_fact)?;
+        if verify_outcome.status != TM_VERIFY_TRANSACTION_STATUS_ACCEPTED {
+            let verify_fact = TransactionManagerVerifyTransactionFact {
+                tx_hash,
+                chain_id: verification_chain_id,
+                expected_chain_id: verification_expected_chain_id,
+                gas_limit: 0,
+                max_gas_limit: 0,
+                last_block_number: 0,
+                cornus_active: false,
+                intrinsic_gas_covered: true,
+                signature_valid: true,
+                gas_price: [0; 32],
+                minimum_gas_price: [0; 32],
+            };
+            return Ok(public_verification_rejected_command_report(
+                verify_outcome.status,
+                &verify_fact,
+            ));
+        }
+
+        let admission = self
+            .transaction_manager_runtime_execute_transaction_admission_with_final_chain_facts_command_report(
+                admission_fact,
+                final_chain_fact,
                 input,
             )?;
         let public_result = public_insert_admission_result(&admission.admission);
