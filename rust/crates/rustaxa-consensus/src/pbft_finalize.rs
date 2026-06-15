@@ -599,6 +599,27 @@ pub struct PbftDynamicLambdaPlan {
     pub status: PbftFinalizationStatus,
 }
 
+/// Optional dynamic-lambda storage lookup for PBFT finalization planning.
+///
+/// Inputs:
+/// - Produced by `load_pbft_finalization_last_period_lambda` over native
+///   `rustaxa-storage`.
+///
+/// Outputs:
+/// - `found = true` carries the closest persisted period lambda value.
+/// - `found = false` means no prior period-lambda row exists.
+///
+/// Invariants and edge behavior:
+/// - Decode/storage errors are returned by the loader; this type represents
+///   only successful lookup absence/presence.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PbftFinalizationPeriodLambdaLookup {
+    /// Whether a closest prior period lambda was found.
+    pub found: bool,
+    /// The found lambda value, or zero when absent.
+    pub value: u32,
+}
+
 /// Minimal bounded cleanup intent for deterministic finalize-path side-effects.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct PbftFinalizationCleanupIntent {
@@ -2483,6 +2504,35 @@ pub fn plan_pbft_dynamic_lambda(fact: PbftDynamicLambdaFact) -> PbftDynamicLambd
     }
 }
 
+/// Loads the closest persisted dynamic lambda for PBFT finalization planning.
+///
+/// Inputs:
+/// - `storage`: native `rustaxa-storage` handle.
+/// - `period`: upper-bound period for the lookup; storage searches the closest
+///   persisted lambda at or before this period.
+///
+/// Outputs:
+/// - `found = true` carries the closest persisted period-lambda value.
+/// - `found = false` means no period-lambda row exists at or before `period`.
+///
+/// Invariants and edge behavior:
+/// - This is a read-only helper used while PBFT finalization still materializes
+///   the surrounding plan in the C++ shim.
+/// - Missing values are represented explicitly instead of being defaulted.
+/// - Storage and decode errors are returned to the caller.
+pub fn load_pbft_finalization_last_period_lambda(
+    storage: &Storage,
+    period: u64,
+) -> Result<PbftFinalizationPeriodLambdaLookup> {
+    Ok(match storage.metadata().period_lambda(period, true)? {
+        Some(value) => PbftFinalizationPeriodLambdaLookup { found: true, value },
+        None => PbftFinalizationPeriodLambdaLookup {
+            found: false,
+            value: 0,
+        },
+    })
+}
+
 fn dynamic_lambda_contract_error(fact: PbftDynamicLambdaFact) -> PbftDynamicLambdaPlan {
     PbftDynamicLambdaPlan {
         apply_dynamic_lambda_update: fact.dynamic_lambda_active,
@@ -3763,6 +3813,54 @@ mod tests {
         assert_eq!(plan.blocks_per_year, 500);
         assert_eq!(plan.rounds_count_dynamic_lambda, 9);
         assert_eq!(plan.dynamic_lambda, 1_500);
+    }
+
+    #[test]
+    fn loads_finalization_last_period_lambda_from_storage() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_finalize_lambda_read");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            storage
+                .metadata()
+                .write_period_lambda(10, 1_500)
+                .expect("period lambda should persist");
+
+            let lookup = load_pbft_finalization_last_period_lambda(&storage, 11)
+                .expect("period lambda lookup should succeed");
+
+            assert_eq!(
+                lookup,
+                PbftFinalizationPeriodLambdaLookup {
+                    found: true,
+                    value: 1_500,
+                }
+            );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn reports_missing_finalization_last_period_lambda() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_finalize_lambda_missing");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+
+            let lookup = load_pbft_finalization_last_period_lambda(&storage, 11)
+                .expect("missing period lambda lookup should succeed");
+
+            assert_eq!(
+                lookup,
+                PbftFinalizationPeriodLambdaLookup {
+                    found: false,
+                    value: 0,
+                }
+            );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]

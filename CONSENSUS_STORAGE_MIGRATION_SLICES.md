@@ -381,6 +381,9 @@ reads to annotate.
 PBFT manager startup replay now loads finalized period data, closest dynamic-lambda facts, and finalized DAG hash order
 through a `rustaxa-consensus::pbft_manager` storage helper over native `rustaxa-storage`; the bridge only adapts DTOs,
 and the C++ shim only materializes temporary `PeriodData` objects for the existing live replay calls.
+PBFT finalization dynamic-lambda planning now also loads the prior saved period lambda through
+`rustaxa-consensus::pbft_finalize` over native `rustaxa-storage` instead of asking the PBFT manager shim to call
+`DbStorage::getPeriodLambda`.
 
 Move:
 
@@ -432,6 +435,22 @@ rustaxa-bridge`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensu
 (`check_get_eligible_vote_count`, `pbft_manager_run_single_node`, `pbft_manager_run_multi_nodes`,
 `check_committeeSize_less_or_equal_to_activePlayers`, and `check_committeeSize_greater_than_activePlayers`), while all
 8 `PbftManagerWithDagCreation` tests pass.
+
+Validation note: the PBFT finalization dynamic-lambda read sub-slice moves the prior-period lambda lookup used by
+finalization planning from shim-local `DbStorage::getPeriodLambda` to `rustaxa-consensus::pbft_finalize` over direct
+`rustaxa-storage`; the bridge maps only the existing CXX `PeriodLambda` DTO and the PBFT manager overlay passes that
+explicit found/value pair into the existing planner. It passes `cargo fmt --manifest-path rust/Cargo.toml --all --check`,
+`cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`, `cargo test --manifest-path rust/Cargo.toml -p
+rustaxa-consensus pbft_finalize`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_finalize`,
+`scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`,
+`git diff --check`, `cmake --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
+and `cmake --build /build --target pbft_manager_test --parallel 12`. Broad `/build/bin/pbft_manager_test` runtime
+coverage was attempted and terminated after reproducing the existing non-storage PBFT runtime gap: balance/final-chain
+execution mismatches, `Rust FinalChain DPoS snapshot for block 220 is not implemented`, PBFT sync period drift, and
+proposed-block bundle validation blocked behind the failed sync state. The focused
+`/build/bin/pbft_manager_test --gtest_filter=PbftManagerWithDagCreation.*` attempt also reproduced the same execution
+class via `trx_generation` (`getNumTransactionExecuted()` stayed at `111` while the test expected `1111`) and did not
+reach a clean gtest summary before termination. These failures do not point at the migrated period-lambda storage read.
 
 ## Slice 9: Collapse DbStorage To Compatibility Shell
 

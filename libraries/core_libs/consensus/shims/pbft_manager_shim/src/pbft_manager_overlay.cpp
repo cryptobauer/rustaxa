@@ -2933,8 +2933,11 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     return false;
   }
   const uint32_t block_lambda = dynamic_lambda_plan.period_lambda;
-  const auto last_saved_period_lambda =
-      dynamic_lambda_enabled ? db_->getPeriodLambda(block_pbft_period - 1, true) : std::optional<uint32_t>{};
+  rustaxa::PeriodLambda last_saved_period_lambda{};
+  if (dynamic_lambda_enabled) {
+    last_saved_period_lambda =
+        rustaxa::load_pbft_finalization_last_period_lambda_storage(db_->rustStorage(), block_pbft_period - 1);
+  }
   const uint32_t dynamic_blocks_per_year = dynamic_lambda_enabled ? dynamic_lambda_plan.blocks_per_year : 0;
   bool pillar_block_finalized = false;
 
@@ -2983,7 +2986,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       period_data, planner_chain_last_hash, pbft_chain_->getLastPbftBlockHash(), planner_chain_last_period, false,
       planner_pillar_block_finalized, dynamic_lambda_enabled, cert_votes.size(), sample_cert_vote->getBlockHash(),
       sample_cert_vote->getPeriod(), sample_cert_vote->getRound(), sample_cert_vote->getStep(), block_lambda,
-      last_saved_period_lambda.has_value(), last_saved_period_lambda.value_or(0), dynamic_blocks_per_year,
+      last_saved_period_lambda.found, last_saved_period_lambda.value, dynamic_blocks_per_year,
       kGenesisConfig.state.dpos.blocks_per_year, dag_blocks_order, transaction_order,
       pbft_chain_->getJsonStrForBlock(pbft_block_hash, null_anchor)));
   if (!finalization_plan.finalize_block || finalization_plan.status != kPbftFinalizationStatusAccepted) {

@@ -4033,6 +4033,10 @@ pub mod rustaxa_ffi {
             final_chain_last_block: u64,
         ) -> Result<PbftFinalizationResumePlan>;
         pub fn plan_pbft_dynamic_lambda(fact: PbftDynamicLambdaFact) -> PbftDynamicLambdaPlan;
+        pub fn load_pbft_finalization_last_period_lambda_storage(
+            storage: &BridgeStorage,
+            period: u64,
+        ) -> Result<PeriodLambda>;
         pub fn apply_pbft_finalization_storage_writes(
             storage: &BridgeStorage,
             write_set: &PbftFinalizationStorageWritePlan,
