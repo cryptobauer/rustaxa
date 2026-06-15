@@ -19,16 +19,19 @@ use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState,
 use crate::storage::transaction_rlp_lookups;
 use anyhow::{ensure, Context, Result};
 use ethereum_types::H256;
+#[cfg(test)]
+use rustaxa_consensus::dag::collect_finalization_cleanup_from_storage;
 use rustaxa_consensus::dag::{
-    collect_expired_transaction_cleanup_from_storage, construct_dag_vdf_message,
-    dag_block_transaction_hashes, decide_dag_verify_vdf_dpos_authorization, derive_frontier,
-    plan_dag_verify_transaction_query, plan_expired_transaction_cleanup,
-    plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
+    apply_finalization_cleanup_from_storage, collect_expired_transaction_cleanup_from_storage,
+    construct_dag_vdf_message, dag_block_transaction_hashes,
+    decide_dag_verify_vdf_dpos_authorization, derive_frontier, plan_dag_verify_transaction_query,
+    plan_expired_transaction_cleanup, plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
     validate_dag_verify_authorization, validate_dag_verify_gas, validate_dag_verify_precheck,
     validate_dag_verify_transaction_availability, validate_pivot_tips_metadata,
     verify_dag_vdf_sortition, verify_dag_vdf_sortition_from_block,
     DagExpiredTransactionFact as DomainDagExpiredTransactionFact, DagGraph,
     DagManagerBlock as DomainDagManagerBlock,
+    DagManagerFinalizationCleanupStoragePayload as DomainDagManagerFinalizationCleanupStoragePayload,
     DagManagerFinalizationPlan as DomainDagManagerFinalizationPlan,
     DagManagerSnapshot as DomainDagManagerSnapshot, DagManagerState,
     DagReferenceMetadata as ReferenceMetadata, DagTipGas,
@@ -403,6 +406,7 @@ impl BridgeDagManagerRuntime {
     /// This method is a narrow convenience wrapper over
     /// `dag_manager_runtime_expired_transaction_cleanup_payload` for callers that
     /// already have a full `DagManagerFinalizationPlan`.
+    #[cfg(test)]
     pub fn dag_manager_runtime_finalization_cleanup_payload(
         &self,
         plan: DagManagerFinalizationPlan,
@@ -415,42 +419,27 @@ impl BridgeDagManagerRuntime {
             remaining_hashes,
         } = plan;
 
-        let mut counter_updates = Vec::with_capacity(counter_update_hashes.len());
-        for hash in counter_update_hashes {
-            let block_hash = H256::from(hash.hash);
-            let block = self.storage.dag().by_hash(block_hash).with_context(|| {
-                format!("DAG_RUNTIME_FINALIZATION_COUNTER_BLOCK: {block_hash:?}")
-            })?;
-            counter_updates.push(DagFinalizedCounterUpdate {
-                hash: hash.hash,
-                level: block.level,
-                tips_count: block.tips.len() as u64,
-            });
-        }
+        let counter_update_hashes = counter_update_hashes
+            .into_iter()
+            .map(|hash| H256::from(hash.hash))
+            .collect::<Vec<_>>();
+        let expired_hashes = expired_hashes
+            .into_iter()
+            .map(|hash| H256::from(hash.hash))
+            .collect::<Vec<_>>();
+        let remaining_hashes = remaining_hashes
+            .into_iter()
+            .map(|hash| H256::from(hash.hash))
+            .collect::<Vec<_>>();
+        let payload = collect_finalization_cleanup_from_storage(
+            self.storage.as_ref(),
+            &counter_update_hashes,
+            &expired_hashes,
+            &remaining_hashes,
+        )
+        .context("DAG_RUNTIME_FINALIZATION_CLEANUP_BUILD_FAILED")?;
 
-        let mut expired_hashes_for_cleanup = Vec::with_capacity(expired_hashes.len());
-        let mut expired_hashes_for_payload = Vec::with_capacity(expired_hashes.len());
-        for hash in expired_hashes {
-            expired_hashes_for_cleanup.push(DagHash { hash: hash.hash });
-            expired_hashes_for_payload.push(DagHash { hash: hash.hash });
-        }
-
-        let remove_transaction_hashes = if expired_hashes_for_cleanup.is_empty() {
-            Vec::new()
-        } else {
-            self.dag_manager_runtime_expired_transaction_cleanup_payload(
-                expired_hashes_for_cleanup,
-                remaining_hashes,
-            )
-            .map(|payload| payload.remove_hashes)
-            .context("DAG_RUNTIME_FINALIZATION_CLEANUP_BUILD_FAILED")?
-        };
-
-        Ok(DagManagerFinalizationCleanupPayload {
-            counter_updates,
-            expired_hashes: expired_hashes_for_payload,
-            remove_transaction_hashes,
-        })
+        Ok(to_bridge_finalization_cleanup_payload(payload))
     }
 
     /// Applies one finalized DAG order through Rust state and Rust storage.
@@ -520,35 +509,31 @@ impl BridgeDagManagerRuntime {
         };
 
         let finalized_count = plan.finalized_count;
-        let cleanup = self
-            .dag_manager_runtime_finalization_cleanup_payload(plan)
-            .context("DAG_RUNTIME_FINALIZATION_CLEANUP_BUILD_FAILED")?;
-
-        let counter_updates = cleanup
-            .counter_updates
+        let counter_update_hashes = plan
+            .counter_update_hashes
             .iter()
-            .map(|update| (H256::from(update.hash), update.level, update.tips_count))
+            .map(|hash| H256::from(hash.hash))
             .collect::<Vec<_>>();
-        let expired_hashes = cleanup
+        let expired_hashes = plan
             .expired_hashes
             .iter()
             .map(|hash| H256::from(hash.hash))
             .collect::<Vec<_>>();
-        let expired_transaction_hashes = cleanup
-            .remove_transaction_hashes
+        let remaining_hashes = plan
+            .remaining_hashes
             .iter()
             .map(|hash| H256::from(hash.hash))
             .collect::<Vec<_>>();
-        self.storage
-            .dag()
-            .apply_finalization_cleanup(
-                &counter_updates,
-                &expired_hashes,
-                &expired_transaction_hashes,
-            )
-            .context("DAG_RUNTIME_FINALIZATION_STORAGE_APPLY")?;
+        let cleanup = apply_finalization_cleanup_from_storage(
+            self.storage.as_ref(),
+            &counter_update_hashes,
+            &expired_hashes,
+            &remaining_hashes,
+        )
+        .context("DAG_RUNTIME_FINALIZATION_STORAGE_APPLY")?;
 
         self.state = candidate_state;
+        let cleanup = to_bridge_finalization_cleanup_payload(cleanup);
 
         Ok(DagManagerFinalizationApplyPayload {
             finalized_count,
@@ -1453,6 +1438,24 @@ fn to_bridge_finalization_plan(
         expired_hashes: to_dag_hashes(plan.expired_hashes),
         remaining_hashes: to_dag_hashes(plan.remaining_hashes),
         remove_transaction_hashes: Vec::new(),
+    }
+}
+
+fn to_bridge_finalization_cleanup_payload(
+    payload: DomainDagManagerFinalizationCleanupStoragePayload,
+) -> DagManagerFinalizationCleanupPayload {
+    DagManagerFinalizationCleanupPayload {
+        counter_updates: payload
+            .counter_updates
+            .into_iter()
+            .map(|update| DagFinalizedCounterUpdate {
+                hash: update.hash.into(),
+                level: update.level,
+                tips_count: update.tips_count,
+            })
+            .collect(),
+        expired_hashes: to_dag_hashes(payload.expired_hashes),
+        remove_transaction_hashes: to_bridge_transaction_hashes(payload.remove_transaction_hashes),
     }
 }
 

@@ -205,7 +205,9 @@ Status: in progress. `rustaxa-consensus::proposed_blocks` now owns proposed PBFT
 `Column::ProposedPbftBlocks` and stale proposed-block cleanup deletes through one Rust-owned batch. The bridge updates
 the in-memory proposed-block index only after the consensus storage cleanup commits. `rustaxa-consensus::dag` now owns
 storage-backed expired DAG transaction cleanup fact collection by loading expired/remaining DAG block RLPs and finalized
-transaction membership directly from `rustaxa-storage`.
+transaction membership directly from `rustaxa-storage`. It also owns finalized DAG cleanup storage apply: counter/index
+facts are loaded from canonical DAG storage, expired DAG rows and expired non-finalized transaction rows are committed in
+one Rust-owned storage batch, and the bridge only maps the returned side-effect facts for temporary live sidecar cleanup.
 
 Move:
 

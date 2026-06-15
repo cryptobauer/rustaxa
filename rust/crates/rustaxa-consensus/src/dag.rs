@@ -235,6 +235,32 @@ pub struct DagExpiredTransactionCleanupStoragePayload {
     pub remove_hashes: Vec<H256>,
 }
 
+/// Storage facts required to update finalized DAG counters.
+///
+/// `hash` is the finalized DAG block hash, `level` is its persisted DAG level,
+/// and `tips_count` is the persisted number of tips used for legacy edge-count
+/// parity. These facts are loaded from `rustaxa-storage` so the bridge does not
+/// derive counter writes from C++ storage state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagFinalizedCounterUpdate {
+    pub hash: H256,
+    pub level: u64,
+    pub tips_count: u64,
+}
+
+/// Storage-backed cleanup payload for one finalized DAG order transition.
+///
+/// `counter_updates` are finalized counter/index facts loaded from storage,
+/// `expired_hashes` are non-finalized DAG payload rows to delete, and
+/// `remove_transaction_hashes` are non-finalized transaction payload rows to
+/// delete after finalized/retained references have been considered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagManagerFinalizationCleanupStoragePayload {
+    pub counter_updates: Vec<DagFinalizedCounterUpdate>,
+    pub expired_hashes: Vec<H256>,
+    pub remove_transaction_hashes: Vec<H256>,
+}
+
 /// Inputs for deterministic gas checks in `DagManager::verifyBlock`.
 ///
 /// C++ still owns live transaction lookup and EVM-backed transaction gas
@@ -747,6 +773,105 @@ pub fn collect_expired_transaction_cleanup_from_storage(
         expired_transaction_facts: expired_candidates,
         remove_hashes,
     })
+}
+
+/// Collects finalized DAG cleanup facts directly from Rust storage.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+/// - `counter_update_hashes`: finalized-order hashes that need persistent DAG
+///   counter/index updates because they were not already non-finalized.
+/// - `expired_hashes`: non-finalized DAG payload rows removed by the transition.
+/// - `remaining_hashes`: non-finalized DAG payload rows retained after the
+///   transition.
+///
+/// Output:
+/// - counter update facts loaded from persisted DAG block metadata.
+/// - expired DAG hashes preserved in caller order.
+/// - non-finalized transaction hashes that are safe to delete after finalized
+///   and retained references are filtered.
+///
+/// Edge behavior:
+/// - Missing counter-update blocks, expired blocks, or retained blocks are
+///   explicit errors.
+/// - No storage writes are performed; use
+///   `apply_finalization_cleanup_from_storage` to commit the resulting batch.
+pub fn collect_finalization_cleanup_from_storage(
+    storage: &Storage,
+    counter_update_hashes: &[H256],
+    expired_hashes: &[H256],
+    remaining_hashes: &[H256],
+) -> Result<DagManagerFinalizationCleanupStoragePayload> {
+    let mut counter_updates = Vec::with_capacity(counter_update_hashes.len());
+    for hash in counter_update_hashes {
+        let block = storage
+            .dag()
+            .by_hash(*hash)
+            .with_context(|| format!("DAG_STORAGE_FINALIZATION_COUNTER_BLOCK: {hash:?}"))?;
+        counter_updates.push(DagFinalizedCounterUpdate {
+            hash: *hash,
+            level: block.level,
+            tips_count: block.tips.len() as u64,
+        });
+    }
+
+    let remove_transaction_hashes = if expired_hashes.is_empty() {
+        Vec::new()
+    } else {
+        collect_expired_transaction_cleanup_from_storage(storage, expired_hashes, remaining_hashes)
+            .context("DAG_STORAGE_FINALIZATION_TRANSACTION_CLEANUP")?
+            .remove_hashes
+    };
+
+    Ok(DagManagerFinalizationCleanupStoragePayload {
+        counter_updates,
+        expired_hashes: expired_hashes.to_vec(),
+        remove_transaction_hashes,
+    })
+}
+
+/// Applies finalized DAG cleanup through one Rust-owned storage batch.
+///
+/// Inputs match `collect_finalization_cleanup_from_storage`.
+///
+/// Behavior:
+/// - loads all cleanup facts from `rustaxa-storage`.
+/// - commits counter/index updates, expired DAG deletes, and expired
+///   non-finalized transaction deletes through `rustaxa-storage` in one batch.
+/// - returns the committed cleanup payload so the C++ shim can perform
+///   temporary live sidecar cleanup without deriving storage writes.
+///
+/// Edge behavior:
+/// - If fact collection or the batch commit fails, no caller-owned live state
+///   should be mutated.
+pub fn apply_finalization_cleanup_from_storage(
+    storage: &Storage,
+    counter_update_hashes: &[H256],
+    expired_hashes: &[H256],
+    remaining_hashes: &[H256],
+) -> Result<DagManagerFinalizationCleanupStoragePayload> {
+    let payload = collect_finalization_cleanup_from_storage(
+        storage,
+        counter_update_hashes,
+        expired_hashes,
+        remaining_hashes,
+    )?;
+    let counter_updates = payload
+        .counter_updates
+        .iter()
+        .map(|update| (update.hash, update.level, update.tips_count))
+        .collect::<Vec<_>>();
+
+    storage
+        .dag()
+        .apply_finalization_cleanup(
+            &counter_updates,
+            &payload.expired_hashes,
+            &payload.remove_transaction_hashes,
+        )
+        .context("DAG_STORAGE_FINALIZATION_CLEANUP_APPLY")?;
+
+    Ok(payload)
 }
 
 /// Prepares deterministic VDF inputs for `DagManager::verifyBlock`.
@@ -2086,7 +2211,7 @@ fn hex_prefix(hash: &H256) -> String {
 mod tests {
     use super::*;
     use rlp::RlpStream;
-    use rustaxa_storage::{Config, Storage};
+    use rustaxa_storage::{Config, StatusField, Storage};
     use rustaxa_vdf::prover::{CancellationToken, WesolowskiProver};
     use rustaxa_vdf::sortition::{self, LegacySortitionParams};
     use rustaxa_vdf::vrf::public_key_from_secret;
@@ -2638,6 +2763,74 @@ mod tests {
             ]
         );
         assert_eq!(payload.remove_hashes, vec![h(1)]);
+    }
+
+    #[test]
+    fn finalization_cleanup_storage_applies_counter_and_expiry_batch() {
+        let storage = temp_storage("rustaxa_consensus_dag_finalization_cleanup");
+        storage
+            .dag()
+            .write(h(8), 8, 2, &dag_block_rlp_with_vdf(vec![0x88], &[]))
+            .unwrap();
+        storage
+            .dag()
+            .write(
+                h(3),
+                3,
+                0,
+                &dag_block_rlp_with_vdf(vec![0x11], &[h(1), h(2), h(1)]),
+            )
+            .unwrap();
+        storage
+            .dag()
+            .write(h(4), 4, 0, &dag_block_rlp_with_vdf(vec![0x22], &[h(3)]))
+            .unwrap();
+        storage
+            .dag()
+            .write(h(6), 6, 0, &dag_block_rlp_with_vdf(vec![0x33], &[h(3)]))
+            .unwrap();
+        storage.transaction().write(h(1), &[0xa1]).unwrap();
+        storage.transaction().write(h(2), &[0xa2]).unwrap();
+        storage.transaction().write(h(3), &[0xa3]).unwrap();
+        storage
+            .transaction()
+            .write_location(h(2), 7, 0, false)
+            .unwrap();
+
+        let payload =
+            apply_finalization_cleanup_from_storage(&storage, &[h(8)], &[h(3), h(4)], &[h(6)])
+                .unwrap();
+
+        assert_eq!(
+            payload.counter_updates,
+            vec![DagFinalizedCounterUpdate {
+                hash: h(8),
+                level: 7,
+                tips_count: 0,
+            }]
+        );
+        assert_eq!(payload.expired_hashes, vec![h(3), h(4)]);
+        assert_eq!(payload.remove_transaction_hashes, vec![h(1)]);
+        assert!(storage.dag().by_hash_rlp_optional(h(3)).unwrap().is_none());
+        assert!(storage.dag().by_hash_rlp_optional(h(4)).unwrap().is_none());
+        assert!(storage.dag().by_hash_rlp_optional(h(6)).unwrap().is_some());
+        assert!(storage.transaction().rlp(h(1)).unwrap().is_none());
+        assert_eq!(storage.transaction().rlp(h(2)).unwrap(), Some(vec![0xa2]));
+        assert_eq!(storage.transaction().rlp(h(3)).unwrap(), Some(vec![0xa3]));
+        assert_eq!(
+            storage
+                .metadata()
+                .status_field(StatusField::DagBlkCount as u8)
+                .unwrap(),
+            5
+        );
+        assert_eq!(
+            storage
+                .metadata()
+                .status_field(StatusField::DagEdgeCount as u8)
+                .unwrap(),
+            7
+        );
     }
 
     #[test]
