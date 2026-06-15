@@ -15,6 +15,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use ethereum_types::{H160, H256, U256};
 use rlp::{Rlp, RlpStream};
+use rustaxa_storage::{Column, Storage};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Hardfork and committee configuration used by reward-stat planning.
@@ -160,6 +161,32 @@ pub struct RewardsStatsProcessPlan {
     pub clear_cached_stats: bool,
     pub current_block_stats_rlp: Vec<u8>,
     pub distribution_stats: Vec<RewardsStatsPeriodRlp>,
+}
+
+/// Status returned by rewards-stat storage apply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RewardsStatsApplyStatus {
+    Applied,
+    Rejected,
+}
+
+impl RewardsStatsApplyStatus {
+    pub fn as_u8(self) -> u8 {
+        match self {
+            RewardsStatsApplyStatus::Applied => 0,
+            RewardsStatsApplyStatus::Rejected => 1,
+        }
+    }
+}
+
+/// Result of applying rewards-stat cache writes to Rust storage.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RewardsStatsStorageApplyResult {
+    pub status: RewardsStatsApplyStatus,
+    pub current_period: u64,
+    pub wrote_current_period: bool,
+    pub cleared_cached_stats: bool,
+    pub error_code: String,
 }
 
 /// In-memory rewards-stat runtime holding the current rewards interval cache.
@@ -469,6 +496,162 @@ impl RewardsStatsRuntime {
         validator_stats.vote_weight = vote.weight;
         Ok(())
     }
+}
+
+/// Creates a rewards-stat runtime seeded from native Rust storage.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+/// - `config` and `frequency_rules`: deterministic rewards-stat configuration.
+/// - `last_block_number`: legacy recovery cursor. When it is already on a
+///   distribution boundary, persisted interval rows are ignored because the
+///   runtime cache should restart empty.
+///
+/// Edge behavior:
+/// - Storage rows are loaded directly from `rustaxa-storage`.
+/// - This function does not clear storage; cache deletion remains an explicit
+///   committed apply operation.
+pub fn rewards_stats_runtime_from_storage(
+    storage: &Storage,
+    config: RewardsStatsConfig,
+    frequency_rules: Vec<RewardsFrequencyRule>,
+    last_block_number: u64,
+) -> Result<RewardsStatsRuntime> {
+    let should_ignore_persisted = last_block_number != 0
+        && rewards_distribution_frequency(&frequency_rules, last_block_number).is_some_and(
+            |frequency| frequency > 1 && last_block_number.is_multiple_of(u64::from(frequency)),
+        );
+    let persisted_stats = if should_ignore_persisted {
+        Vec::new()
+    } else {
+        storage
+            .metadata()
+            .block_rewards_stats_rlp()
+            .context("REWARDS_STATS_LOAD_PERSISTED")?
+            .into_iter()
+            .map(|(period, data)| RewardsStatsPeriodRlp { period, data })
+            .collect()
+    };
+
+    RewardsStatsRuntime::new(config, frequency_rules, persisted_stats)
+}
+
+/// Applies reward-stat cache writes or clears through one Rust-owned storage batch.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+/// - `plan`: successful result from `RewardsStatsRuntime::process_period`.
+/// - `sync`: commit sync flag passed to `rustaxa-storage`.
+///
+/// Behavior:
+/// - rejected plans are returned as rejected without mutating storage.
+/// - `clear_cached_stats` deletes every block-reward stats row in one committed batch.
+/// - `cache_current_period` persists the current block-stat RLP under the plan period.
+/// - frequency-one plans that require no cache write or clear return applied without
+///   committing an empty batch.
+pub fn apply_rewards_stats_storage_writes(
+    storage: &Storage,
+    plan: &RewardsStatsProcessPlan,
+    sync: bool,
+) -> Result<RewardsStatsStorageApplyResult> {
+    if plan.status != RewardsStatsStatus::Applied {
+        return Ok(rewards_stats_apply_result(
+            RewardsStatsApplyStatus::Rejected,
+            plan.current_period,
+            false,
+            false,
+            "REWARDS_STATS_REJECTED_PLAN",
+        ));
+    }
+
+    if plan.clear_cached_stats {
+        let mut batch = storage.create_write_batch();
+        for item in storage.iter(Column::BlockRewardsStats) {
+            let (key, _) = item.context("REWARDS_STATS_CLEAR_ITER")?;
+            storage
+                .batch_delete_raw(&mut batch, Column::BlockRewardsStats, &key)
+                .context("REWARDS_STATS_CLEAR_DELETE")?;
+        }
+        storage
+            .commit_write_batch_with_sync(batch, sync)
+            .context("REWARDS_STATS_CLEAR_COMMIT")?;
+        return Ok(rewards_stats_apply_result(
+            RewardsStatsApplyStatus::Applied,
+            plan.current_period,
+            false,
+            true,
+            "",
+        ));
+    }
+
+    if plan.cache_current_period {
+        if plan.current_block_stats_rlp.is_empty() {
+            return Ok(rewards_stats_apply_result(
+                RewardsStatsApplyStatus::Rejected,
+                plan.current_period,
+                false,
+                false,
+                "REWARDS_STATS_MISSING_CURRENT_BLOCK_STATS",
+            ));
+        }
+        let mut batch = storage.create_write_batch();
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::BlockRewardsStats,
+                &plan.current_period.to_le_bytes(),
+                &plan.current_block_stats_rlp,
+            )
+            .context("REWARDS_STATS_CACHE_WRITE")?;
+        storage
+            .commit_write_batch_with_sync(batch, sync)
+            .context("REWARDS_STATS_CACHE_COMMIT")?;
+        return Ok(rewards_stats_apply_result(
+            RewardsStatsApplyStatus::Applied,
+            plan.current_period,
+            true,
+            false,
+            "",
+        ));
+    }
+
+    Ok(rewards_stats_apply_result(
+        RewardsStatsApplyStatus::Applied,
+        plan.current_period,
+        false,
+        false,
+        "",
+    ))
+}
+
+fn rewards_stats_apply_result(
+    status: RewardsStatsApplyStatus,
+    current_period: u64,
+    wrote_current_period: bool,
+    cleared_cached_stats: bool,
+    error_code: &str,
+) -> RewardsStatsStorageApplyResult {
+    RewardsStatsStorageApplyResult {
+        status,
+        current_period,
+        wrote_current_period,
+        cleared_cached_stats,
+        error_code: error_code.to_string(),
+    }
+}
+
+fn rewards_distribution_frequency(rules: &[RewardsFrequencyRule], period: u64) -> Option<u32> {
+    if rules.is_empty() {
+        return Some(1);
+    }
+    Some(
+        rules
+            .iter()
+            .rev()
+            .find(|rule| rule.from_period <= period)
+            .map(|rule| rule.frequency)
+            .unwrap_or(1),
+    )
 }
 
 impl BlockStats {

@@ -1,11 +1,9 @@
 //! CXX bridge for Rust rewards-statistics planning.
 //!
 //! The bridge exposes a Rust-owned rewards-stat runtime to C++ shims using
-//! plain facts and legacy-compatible `BlockStats` RLP bytes. It also appends the
-//! cache persistence/clear intent to an existing Rust storage batch so rewards
-//! stats can later become atomic with finalized-period commits. The standalone
-//! bridge remains side-effect free; Rust native FinalChain owns any staged
-//! reward-distribution mutations it derives from these stats.
+//! plain facts and legacy-compatible `BlockStats` RLP bytes. Rewards-stat cache
+//! persistence and clearing are applied through Rust-owned storage batches in
+//! `rustaxa-consensus`; the bridge only maps CXX DTOs.
 
 use crate::ffi::rustaxa_ffi::{
     PeriodRlp as FfiPeriodRlp, RewardsCertVoteFact as FfiRewardsCertVoteFact,
@@ -16,12 +14,15 @@ use crate::ffi::rustaxa_ffi::{
 use crate::ffi::{BridgeRewardsStatsRuntime, BridgeStorage};
 use anyhow::{anyhow, Result};
 use ethereum_types::{H160, H256, U256};
+#[cfg(test)]
+use rustaxa_consensus::RewardsStatsRuntime;
 use rustaxa_consensus::{
-    FinalizedRewardsPeriodFact, RewardCertVoteFact, RewardDagBlockFact, RewardTransactionFact,
-    RewardsFrequencyRule, RewardsStatsConfig, RewardsStatsPeriodRlp, RewardsStatsProcessPlan,
-    RewardsStatsRuntime, RewardsStatsStatus,
+    apply_rewards_stats_storage_writes as domain_apply_rewards_stats_storage_writes,
+    rewards_stats_runtime_from_storage, FinalizedRewardsPeriodFact, RewardCertVoteFact,
+    RewardDagBlockFact, RewardTransactionFact, RewardsFrequencyRule, RewardsStatsApplyStatus,
+    RewardsStatsConfig, RewardsStatsPeriodRlp, RewardsStatsProcessPlan, RewardsStatsStatus,
+    RewardsStatsStorageApplyResult,
 };
-use rustaxa_storage::Column;
 
 const REWARDS_STATS_APPLY_STATUS_APPLIED: u8 = 0;
 const REWARDS_STATS_APPLY_STATUS_REJECTED: u8 = 1;
@@ -44,24 +45,8 @@ pub fn create_rewards_stats_runtime(
         .into_iter()
         .map(RewardsFrequencyRule::from)
         .collect::<Vec<_>>();
-    let should_ignore_persisted = last_block_number != 0
-        && effective_frequency(&frequency_rules, last_block_number).is_some_and(|frequency| {
-            frequency > 1 && last_block_number.is_multiple_of(u64::from(frequency))
-        });
-    let persisted_stats = if should_ignore_persisted {
-        Vec::new()
-    } else {
-        storage
-            .0
-            .metadata()
-            .block_rewards_stats_rlp()?
-            .into_iter()
-            .map(|(period, data)| RewardsStatsPeriodRlp { period, data })
-            .collect()
-    };
-
     Ok(Box::new(BridgeRewardsStatsRuntime(
-        RewardsStatsRuntime::new(config, frequency_rules, persisted_stats)?,
+        rewards_stats_runtime_from_storage(&storage.0, config, frequency_rules, last_block_number)?,
     )))
 }
 
@@ -113,106 +98,23 @@ pub fn rewards_stats_runtime_clear_committed(
     runtime.0.clear_committed(current_period);
 }
 
-/// Appends reward-stat cache writes or clears to an existing Rust storage batch.
+/// Applies reward-stat cache writes or clears through a Rust-owned storage batch.
 ///
 /// Inputs:
-/// - `storage` and `batch_id` identify a caller-owned batch.
+/// - `storage`: shared Rust storage handle.
 /// - `plan` is the successful result from `process_finalized_period_rewards_stats`.
+/// - `sync`: commit sync flag.
 ///
 /// Outputs:
-/// - `status` is `0` when the requested batch writes were appended and `1` when
+/// - `status` is `0` when the requested writes were committed and `1` when
 ///   the plan was rejected or internally inconsistent.
-/// - The function does not commit the batch.
-pub fn append_rewards_stats_storage_writes(
+pub fn apply_rewards_stats_storage_writes(
     storage: &BridgeStorage,
-    batch_id: u64,
     plan: &RewardsStatsProcessResult,
+    sync: bool,
 ) -> Result<RewardsStatsApplyResult> {
-    if plan.status != RewardsStatsStatus::Applied.as_u8() {
-        return Ok(apply_result(
-            REWARDS_STATS_APPLY_STATUS_REJECTED,
-            plan.current_period,
-            false,
-            false,
-            "REWARDS_STATS_REJECTED_PLAN",
-        ));
-    }
-
-    let mut batches = storage
-        .1
-        .lock()
-        .map_err(|_| anyhow!("batch registry lock poisoned"))?;
-    let batch = batches
-        .get_mut(&batch_id)
-        .ok_or_else(|| anyhow!("unknown batch id: {}", batch_id))?;
-
-    let mut wrote_current_period = false;
-    let mut cleared_cached_stats = false;
-
-    if plan.clear_cached_stats {
-        for item in storage.0.iter(Column::BlockRewardsStats) {
-            let (key, _) = item?;
-            storage
-                .0
-                .batch_delete_raw(batch, Column::BlockRewardsStats, &key)?;
-        }
-        cleared_cached_stats = true;
-    } else if plan.cache_current_period {
-        if plan.current_block_stats_rlp.is_empty() {
-            return Ok(apply_result(
-                REWARDS_STATS_APPLY_STATUS_REJECTED,
-                plan.current_period,
-                false,
-                false,
-                "REWARDS_STATS_MISSING_CURRENT_BLOCK_STATS",
-            ));
-        }
-        storage.0.batch_put_raw(
-            batch,
-            Column::BlockRewardsStats,
-            &plan.current_period.to_le_bytes(),
-            &plan.current_block_stats_rlp,
-        )?;
-        wrote_current_period = true;
-    }
-
-    Ok(apply_result(
-        REWARDS_STATS_APPLY_STATUS_APPLIED,
-        plan.current_period,
-        wrote_current_period,
-        cleared_cached_stats,
-        "",
-    ))
-}
-
-fn apply_result(
-    status: u8,
-    current_period: u64,
-    wrote_current_period: bool,
-    cleared_cached_stats: bool,
-    error_code: &str,
-) -> RewardsStatsApplyResult {
-    RewardsStatsApplyResult {
-        status,
-        current_period,
-        wrote_current_period,
-        cleared_cached_stats,
-        error_code: error_code.to_string(),
-    }
-}
-
-fn effective_frequency(rules: &[RewardsFrequencyRule], period: u64) -> Option<u32> {
-    if rules.is_empty() {
-        return Some(1);
-    }
-    Some(
-        rules
-            .iter()
-            .rev()
-            .find(|rule| rule.from_period <= period)
-            .map(|rule| rule.frequency)
-            .unwrap_or(1),
-    )
+    let plan = rewards_stats_process_plan_from_ffi(plan);
+    Ok(domain_apply_rewards_stats_storage_writes(&storage.0, &plan, sync)?.into())
 }
 
 fn finalized_fact_from_ffi(value: RewardsStatsProcessFact) -> Result<FinalizedRewardsPeriodFact> {
@@ -248,6 +150,31 @@ fn transaction_fact_from_ffi(value: FfiRewardsTransactionFact) -> Result<RewardT
         gas_price: U256::from_big_endian(&value.gas_price_be),
         gas_used: value.gas_used,
     })
+}
+
+fn rewards_stats_process_plan_from_ffi(
+    value: &RewardsStatsProcessResult,
+) -> RewardsStatsProcessPlan {
+    RewardsStatsProcessPlan {
+        status: if value.status == RewardsStatsStatus::Applied.as_u8() {
+            RewardsStatsStatus::Applied
+        } else {
+            RewardsStatsStatus::Rejected
+        },
+        error_code: value.error_code.clone(),
+        current_period: value.current_period,
+        cache_current_period: value.cache_current_period,
+        clear_cached_stats: value.clear_cached_stats,
+        current_block_stats_rlp: value.current_block_stats_rlp.clone(),
+        distribution_stats: value
+            .distribution_stats
+            .iter()
+            .map(|entry| RewardsStatsPeriodRlp {
+                period: entry.period,
+                data: entry.data.clone(),
+            })
+            .collect(),
+    }
 }
 
 impl From<FfiRewardsStatsConfig> for RewardsStatsConfig {
@@ -307,6 +234,21 @@ impl From<RewardsStatsProcessPlan> for RewardsStatsProcessResult {
                 .into_iter()
                 .map(FfiPeriodRlp::from)
                 .collect(),
+        }
+    }
+}
+
+impl From<RewardsStatsStorageApplyResult> for RewardsStatsApplyResult {
+    fn from(value: RewardsStatsStorageApplyResult) -> Self {
+        Self {
+            status: match value.status {
+                RewardsStatsApplyStatus::Applied => REWARDS_STATS_APPLY_STATUS_APPLIED,
+                RewardsStatsApplyStatus::Rejected => REWARDS_STATS_APPLY_STATUS_REJECTED,
+            },
+            current_period: value.current_period,
+            wrote_current_period: value.wrote_current_period,
+            cleared_cached_stats: value.cleared_cached_stats,
+            error_code: value.error_code,
         }
     }
 }

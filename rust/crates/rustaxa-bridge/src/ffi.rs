@@ -4069,10 +4069,10 @@ pub mod rustaxa_ffi {
             self: &mut BridgeRewardsStatsRuntime,
             current_period: u64,
         );
-        pub fn append_rewards_stats_storage_writes(
+        pub fn apply_rewards_stats_storage_writes(
             storage: &BridgeStorage,
-            batch_id: u64,
             plan: &RewardsStatsProcessResult,
+            sync: bool,
         ) -> Result<RewardsStatsApplyResult>;
 
         // Consensus period-data queue

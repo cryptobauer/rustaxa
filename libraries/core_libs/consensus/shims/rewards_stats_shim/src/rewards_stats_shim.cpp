@@ -223,7 +223,8 @@ BlockStats Stats::decodeBlockStats(const rust::Vec<uint8_t>& stats_rlp) const {
 }
 
 void Stats::appendStorageWrites(const rustaxa::RewardsStatsProcessResult& plan, Batch& write_batch) const {
-  auto result = rustaxa::append_rewards_stats_storage_writes(db_->rustStorage(), db_->rustBatchId(write_batch), plan);
+  (void)write_batch;
+  auto result = rustaxa::apply_rewards_stats_storage_writes(db_->rustStorage(), plan, false);
   if (result.status != kRewardsStatsApplied) {
     throw rewardsStatsError("storage appender rejected period " + std::to_string(result.current_period) + ": " +
                             std::string(result.error_code));

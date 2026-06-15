@@ -193,9 +193,11 @@ pub use proposed_blocks::{
 };
 pub use rewards_stats::{
     FinalizedRewardsPeriodFact, RewardCertVoteFact, RewardDagBlockFact, RewardTransactionFact,
-    RewardsBlockDistribution, RewardsFrequencyRule, RewardsStatsConfig, RewardsStatsPeriodRlp,
-    RewardsStatsProcessPlan, RewardsStatsRuntime, RewardsStatsStatus, RewardsValidatorDistribution,
-    decode_rewards_block_distributions,
+    RewardsBlockDistribution, RewardsFrequencyRule, RewardsStatsApplyStatus, RewardsStatsConfig,
+    RewardsStatsPeriodRlp, RewardsStatsProcessPlan, RewardsStatsRuntime, RewardsStatsStatus,
+    RewardsStatsStorageApplyResult, RewardsValidatorDistribution,
+    apply_rewards_stats_storage_writes, decode_rewards_block_distributions,
+    rewards_stats_runtime_from_storage,
 };
 pub use rustaxa_types::{
     Account, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount,

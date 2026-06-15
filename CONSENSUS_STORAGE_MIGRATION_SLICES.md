@@ -253,6 +253,11 @@ tracked as test compatibility debt outside the DAG storage sub-slice.
 Goal: finish consensus-owned storage around rewards stats and PBFT/FinalChain status rows without moving EVM execution
 inside the PBFT manager.
 
+Status: in progress. Rewards-stat startup reload and cache/clear persistence now live in
+`rustaxa-consensus::rewards_stats` over direct `rustaxa-storage` reads and Rust-owned write batches. The bridge creates
+the runtime from the consensus storage loader and exposes a DTO-only apply function; the old rewards-stat bridge batch-id
+appender has been removed from the CXX bridge surface, the rewards stats shim, and focused C++ test.
+
 Move:
 
 - rewards stats persistence still exposed through bridge append helpers
@@ -276,6 +281,11 @@ Validation:
 - final-chain execution Rust tests
 - focused FinalChain/PBFT C++ targets, noting existing unrelated failures separately
 - `rust_storage_tests`
+
+Validation note: the rewards-stat sub-slice passes targeted Rust rewards tests, Rust bridge rewards tests,
+`rust_storage_tests`, and the focused C++ `rewards_stats_test` target. The broader `rust_consensus_tests` target still
+fails at compile time in stale PBFT sync tests that reference the removed Slice 2 PBFT finalization appender API; the
+updated rewards bridge C++ test compiles before that known PBFT sync failure stops the target.
 
 ## Slice 7: Pillar Chain Storage And Bridge Root/Epoch Facts
 
