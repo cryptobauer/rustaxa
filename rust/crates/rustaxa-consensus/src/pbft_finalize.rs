@@ -875,7 +875,10 @@ pub struct PbftFinalizedPeriodApplyResult {
 }
 
 /// Appends one explicit PBFT finalization persistence stage to a Rust-owned batch.
-pub fn append_pbft_finalization_storage_write(
+///
+/// This is an internal stage dispatcher for `apply_pbft_finalization_storage_writes`;
+/// external callers must use the apply API so batch ownership stays in this module.
+fn append_pbft_finalization_storage_write(
     storage: &Storage,
     batch: &mut StorageWriteBatch,
     write_set: &PbftFinalizationStorageWriteIntent,
@@ -940,6 +943,7 @@ pub fn apply_pbft_finalization_storage_writes(
 }
 
 /// Appends primary finalized-period writes to a Rust-owned batch.
+#[cfg(test)]
 pub fn append_pbft_finalized_period_storage_writes(
     storage: &Storage,
     batch: &mut StorageWriteBatch,
@@ -949,6 +953,7 @@ pub fn append_pbft_finalized_period_storage_writes(
 }
 
 /// Appends dynamic-lambda persistence writes to a Rust-owned batch.
+#[cfg(test)]
 pub fn append_pbft_finalization_dynamic_lambda_storage_writes(
     storage: &Storage,
     batch: &mut StorageWriteBatch,
@@ -966,6 +971,7 @@ pub fn append_pbft_finalization_dynamic_lambda_storage_writes(
 }
 
 /// Appends executed-status persistence writes to a Rust-owned batch.
+#[cfg(test)]
 pub fn append_pbft_finalization_executed_status_storage_write(
     storage: &Storage,
     batch: &mut StorageWriteBatch,
