@@ -370,11 +370,17 @@ pillar block object.
 
 Goal: separate consensus storage reads from query/API compatibility reads and prevent new `DbStorage` consensus ports.
 
+Status: in progress. Gas-pricer finalized-history restoration now performs its FinalChain `LAST_NUMBER` and period-data
+walk inside `rustaxa-consensus::gas_pricer` over native `rustaxa-storage`; the bridge adapter only passes the shared
+storage handle and oracle lock. This removes bridge-local raw storage reads and period-data gas-price decoding from the
+deterministic gas-pricer initialization path.
+
 Move:
 
 - network sync read paths that feed deterministic consensus decisions
 - RPC/GraphQL/debug reads that can use read-only Rust storage query APIs
-- app status reads that currently force `DbStorage` compatibility methods into Rust-mode consensus ownership
+- in progress: app status/finalized-history reads that currently force bridge/storage compatibility methods into
+  Rust-mode consensus ownership
 
 Keep:
 
@@ -391,6 +397,10 @@ Validation:
 - storage-boundary guard
 - focused RPC/network sync tests
 - `rust_storage_tests`
+
+Validation note: the gas-pricer read-surface sub-slice passes `cargo test -p rustaxa-consensus gas_pricer`,
+`cargo test -p rustaxa-bridge gas_pricer`, `rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
+`scripts/rewrite_storage_boundary_guard.sh`, `gas_pricer_shim_test`, and `gas_pricer_test`.
 
 ## Slice 9: Collapse DbStorage To Compatibility Shell
 

@@ -7,15 +7,10 @@
 
 use crate::ffi::rustaxa_ffi::{GasPricerConfig, GasPricerGasPrice};
 use crate::ffi::{BridgeGasPricer, BridgeStorage};
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{anyhow, Result};
 use ethereum_types::U256;
-use rlp::Rlp;
 use rustaxa_consensus::gas_pricer::{GasPriceOracle, GasPricerConfig as DomainGasPricerConfig};
 use std::sync::Mutex;
-
-const FINAL_CHAIN_META_LAST_NUMBER: u32 = 1;
-const TRANSACTIONS_POS_IN_PERIOD_DATA: usize = 3;
-const TRANSACTION_GAS_PRICE_POS_IN_RLP: usize = 1;
 
 /// Creates a Rust gas-price oracle using legacy-compatible configuration.
 pub fn create_gas_pricer(config: GasPricerConfig) -> Result<Box<BridgeGasPricer>> {
@@ -59,42 +54,10 @@ impl BridgeGasPricer {
 
     /// Restores finalized-block history directly from Rust storage.
     ///
-    /// The walk starts at final-chain `LAST_NUMBER` and moves backwards until
-    /// history is full, genesis is reached, or a light node is missing period
-    /// transaction payloads. Full nodes treat a missing period payload as an
-    /// initialization error, matching the legacy assertion.
+    /// The deterministic storage walk is owned by `rustaxa-consensus`; the
+    /// bridge only adapts the shared storage handle and oracle lock.
     pub fn gas_pricer_init_from_storage(&self, storage: &BridgeStorage) -> Result<()> {
-        let latest_number = latest_final_chain_number(storage)?;
-        let mut block_number = latest_number;
-
-        while block_number > 0 {
-            {
-                let oracle = self.lock()?;
-                if oracle.history_full() {
-                    break;
-                }
-            }
-
-            let period_data = storage
-                .get_period_data_raw(block_number)
-                .with_context(|| format!("load period data for finalized block {block_number}"))?;
-            if period_data.is_empty() {
-                let oracle = self.lock()?;
-                if oracle.is_light_node() {
-                    break;
-                }
-                return Err(anyhow!(
-                    "missing finalized transactions for block {block_number} on full node"
-                ));
-            }
-
-            let gas_prices = gas_prices_from_period_data(&period_data).with_context(|| {
-                format!("decode transaction gas prices for period {block_number}")
-            })?;
-            self.lock()?.restore_finalized_block_gas_prices(gas_prices);
-            block_number -= 1;
-        }
-        Ok(())
+        self.lock()?.restore_from_storage(storage.0.as_ref())
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, GasPriceOracle>> {
@@ -102,33 +65,6 @@ impl BridgeGasPricer {
             .lock()
             .map_err(|_| anyhow!("gas pricer mutex poisoned"))
     }
-}
-
-fn latest_final_chain_number(storage: &BridgeStorage) -> Result<u64> {
-    let raw = storage
-        .get_final_chain_meta_value(FINAL_CHAIN_META_LAST_NUMBER)
-        .with_context(|| "load final chain LAST_NUMBER from metadata")?;
-    if raw.is_empty() {
-        return Ok(0);
-    }
-    ensure!(
-        raw.len() == std::mem::size_of::<u64>(),
-        "invalid final-chain LAST_NUMBER payload size: {}",
-        raw.len()
-    );
-    let mut bytes = [0u8; 8];
-    bytes.copy_from_slice(&raw);
-    Ok(u64::from_le_bytes(bytes))
-}
-
-fn gas_prices_from_period_data(period_data: &[u8]) -> Result<Vec<U256>> {
-    let rlp = Rlp::new(period_data);
-    let transactions = rlp.at(TRANSACTIONS_POS_IN_PERIOD_DATA)?;
-    let mut gas_prices = Vec::with_capacity(transactions.item_count()?);
-    for transaction in transactions.iter() {
-        gas_prices.push(transaction.val_at(TRANSACTION_GAS_PRICE_POS_IN_RLP)?);
-    }
-    Ok(gas_prices)
 }
 
 fn from_bridge_u256(value: &[u8; 32]) -> U256 {
@@ -242,21 +178,6 @@ mod tests {
             .to_string();
 
         assert!(err.contains("missing finalized transactions for block 3"));
-    }
-
-    #[test]
-    fn period_data_decoder_reads_legacy_transaction_gas_price_field() {
-        let mut period = RlpStream::new_list(4);
-        period.append_empty_data();
-        period.begin_list(0);
-        period.begin_list(0);
-        period.begin_list(2);
-        append_transaction(&mut period, 9);
-        append_transaction(&mut period, 4);
-
-        let prices = gas_prices_from_period_data(&period.out()).unwrap();
-
-        assert_eq!(prices, vec![U256::from(9), U256::from(4)]);
     }
 
     fn append_transaction(stream: &mut RlpStream, gas_price: u64) {

@@ -7,9 +7,15 @@
 //! applies the configured minimum price floor, and intentionally ignores
 //! zero-priced blocks exactly as the legacy implementation does.
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use ethereum_types::U256;
+use rlp::Rlp;
+use rustaxa_storage::Storage;
 use std::collections::VecDeque;
+
+const FINAL_CHAIN_META_LAST_NUMBER: u32 = 1;
+const TRANSACTIONS_POS_IN_PERIOD_DATA: usize = 3;
+const TRANSACTION_GAS_PRICE_POS_IN_RLP: usize = 1;
 
 /// Runtime configuration for [`GasPriceOracle`].
 ///
@@ -119,6 +125,50 @@ impl GasPriceOracle {
         self.push_front_price(min_price);
     }
 
+    /// Restores finalized-block gas-price history directly from Rust storage.
+    ///
+    /// Inputs:
+    /// - `storage`: native Rust storage handle containing FinalChain metadata
+    ///   and finalized period-data rows.
+    ///
+    /// Outputs:
+    /// - Mutates the oracle by walking finalized blocks from newest to oldest
+    ///   until configured history is full, genesis is reached, or light-node
+    ///   storage is missing a period-data row.
+    ///
+    /// Invariants and edge behavior:
+    /// - Full nodes treat missing finalized period data as an error because the
+    ///   deterministic gas-price history would be incomplete.
+    /// - Light nodes stop restoration on the first missing period data row,
+    ///   matching the legacy storage-backed gas-pricer behavior.
+    /// - If FinalChain `LAST_NUMBER` is missing, restoration is a no-op.
+    pub fn restore_from_storage(&mut self, storage: &Storage) -> Result<()> {
+        let latest_number = latest_final_chain_number(storage)?;
+        let mut block_number = latest_number;
+
+        while block_number > 0 && !self.history_full() {
+            let period_data = storage
+                .period()
+                .data_raw(block_number)
+                .with_context(|| format!("load period data for finalized block {block_number}"))?;
+            if period_data.is_empty() {
+                if self.is_light_node() {
+                    break;
+                }
+                return Err(anyhow!(
+                    "missing finalized transactions for block {block_number} on full node"
+                ));
+            }
+
+            let gas_prices = gas_prices_from_period_data(&period_data).with_context(|| {
+                format!("decode transaction gas prices for period {block_number}")
+            })?;
+            self.restore_finalized_block_gas_prices(gas_prices);
+            block_number -= 1;
+        }
+        Ok(())
+    }
+
     /// Returns true when the finalized-block history is at configured capacity.
     pub fn history_full(&self) -> bool {
         self.price_history.len() == self.config.history_blocks
@@ -163,9 +213,43 @@ impl GasPriceOracle {
     }
 }
 
+fn latest_final_chain_number(storage: &Storage) -> Result<u64> {
+    let Some(raw) = storage
+        .final_chain()
+        .meta_value(FINAL_CHAIN_META_LAST_NUMBER)
+        .with_context(|| "load final chain LAST_NUMBER from metadata")?
+    else {
+        return Ok(0);
+    };
+    ensure!(
+        raw.len() == std::mem::size_of::<u64>(),
+        "invalid final-chain LAST_NUMBER payload size: {}",
+        raw.len()
+    );
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&raw);
+    Ok(u64::from_le_bytes(bytes))
+}
+
+fn gas_prices_from_period_data(period_data: &[u8]) -> Result<Vec<U256>> {
+    let rlp = Rlp::new(period_data);
+    let transactions = rlp.at(TRANSACTIONS_POS_IN_PERIOD_DATA)?;
+    let mut gas_prices = Vec::with_capacity(transactions.item_count()?);
+    for transaction in transactions.iter() {
+        gas_prices.push(transaction.val_at(TRANSACTION_GAS_PRICE_POS_IN_RLP)?);
+    }
+    Ok(gas_prices)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ethereum_types::H256;
+    use rlp::RlpStream;
+    use rustaxa_storage::{Config, Storage};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn config(percentile: u64, minimum_price: u64, history_blocks: usize) -> GasPricerConfig {
         GasPricerConfig {
@@ -248,5 +332,124 @@ mod tests {
         let err = GasPriceOracle::new(config(101, 1, 1)).unwrap_err();
 
         assert!(err.to_string().contains("percentile"));
+    }
+
+    #[test]
+    fn restore_from_storage_populates_percentile_history() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_gas_pricer_restore_ok");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            init_gas_pricer_storage(&storage, &[(2, &[9, 5]), (1, &[8])]).unwrap();
+            seed_last_finalized_block(&storage, 2).unwrap();
+
+            let mut oracle = GasPriceOracle::new(config(50, 1, 10)).unwrap();
+
+            oracle.restore_from_storage(&storage).unwrap();
+
+            assert_eq!(oracle.bid(), U256::from(5));
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn restore_from_storage_light_node_stops_on_missing_period_data() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_gas_pricer_restore_light");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            init_gas_pricer_storage(&storage, &[(2, &[9])]).unwrap();
+            seed_last_finalized_block(&storage, 3).unwrap();
+
+            let mut light_config = config(100, 7, 10);
+            light_config.is_light_node = true;
+            let mut oracle = GasPriceOracle::new(light_config).unwrap();
+
+            oracle.restore_from_storage(&storage).unwrap();
+
+            assert_eq!(oracle.bid(), U256::from(7));
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn restore_from_storage_full_node_fails_on_missing_period_data() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_gas_pricer_restore_full");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            init_gas_pricer_storage(&storage, &[(2, &[9])]).unwrap();
+            seed_last_finalized_block(&storage, 3).unwrap();
+
+            let mut oracle = GasPriceOracle::new(config(100, 1, 10)).unwrap();
+
+            let err = oracle
+                .restore_from_storage(&storage)
+                .unwrap_err()
+                .to_string();
+
+            assert!(err.contains("missing finalized transactions for block 3"));
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn period_data_decoder_reads_legacy_transaction_gas_price_field() {
+        let mut period = RlpStream::new_list(4);
+        period.append_empty_data();
+        period.begin_list(0);
+        period.begin_list(0);
+        period.begin_list(2);
+        append_transaction(&mut period, 9);
+        append_transaction(&mut period, 4);
+
+        let prices = gas_prices_from_period_data(&period.out()).unwrap();
+
+        assert_eq!(prices, vec![U256::from(9), U256::from(4)]);
+    }
+
+    fn append_transaction(stream: &mut RlpStream, gas_price: u64) {
+        stream.begin_list(9);
+        stream.append(&0u64);
+        stream.append(&gas_price);
+        stream.append(&21000u64);
+        stream.append_empty_data();
+        stream.append(&0u64);
+        stream.append_empty_data();
+        stream.append(&27u64);
+        stream.append(&1u64);
+        stream.append(&1u64);
+    }
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be available")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{name}_{nonce}"))
+    }
+
+    fn seed_last_finalized_block(storage: &Storage, block: u64) -> Result<()> {
+        storage
+            .final_chain()
+            .write_block_header(block, H256::zero(), &[], &[])
+    }
+
+    fn init_gas_pricer_storage(storage: &Storage, blocks: &[(u64, &[u64])]) -> Result<()> {
+        for &(period, prices) in blocks {
+            let mut period_rlp = RlpStream::new_list(4);
+            period_rlp.append_empty_data();
+            period_rlp.append_empty_data();
+            period_rlp.begin_list(0);
+            period_rlp.begin_list(prices.len());
+            for &gas_price in prices {
+                append_transaction(&mut period_rlp, gas_price);
+            }
+            storage.period().write(period, &period_rlp.out())?;
+        }
+        Ok(())
     }
 }
