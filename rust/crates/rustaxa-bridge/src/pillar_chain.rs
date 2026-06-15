@@ -17,6 +17,10 @@ use crate::ffi::BridgeStorage;
 use anyhow::Result;
 use ethereum_types::{H160, H256};
 use rustaxa_consensus::{
+    load_current_pillar_block_data_storage as consensus_load_current_pillar_block_data_storage,
+    load_latest_pillar_block_storage as consensus_load_latest_pillar_block_storage,
+    load_own_pillar_block_vote_storage as consensus_load_own_pillar_block_vote_storage,
+    load_pillar_period_data_storage as consensus_load_pillar_period_data_storage,
     plan_pillar_block_linkage as consensus_plan_pillar_block_linkage,
     plan_pillar_vote_count_changes as consensus_plan_vote_count_changes,
     save_current_pillar_block_data_storage, save_finalized_pillar_block_storage,
@@ -119,6 +123,68 @@ pub fn apply_finalized_pillar_block_storage(
     pillar_block_rlp: Vec<u8>,
 ) -> Result<()> {
     save_finalized_pillar_block_storage(storage.0.as_ref(), period, &pillar_block_rlp)
+}
+
+/// Loads the local node's own pillar-block vote through consensus storage.
+///
+/// Inputs:
+/// - `storage`: shared Rust storage bridge handle.
+///
+/// Outputs:
+/// - Returns C++-decodable `PillarVote` RLP bytes, or empty bytes when missing.
+///
+/// Invariants and edge behavior:
+/// - The bridge performs no storage lookup itself; it forwards the read to the
+///   consensus storage helper.
+pub fn load_pillar_own_vote_storage(storage: &BridgeStorage) -> Result<Vec<u8>> {
+    consensus_load_own_pillar_block_vote_storage(storage.0.as_ref())
+}
+
+/// Loads current pillar-block sidecar data through consensus storage.
+///
+/// Inputs:
+/// - `storage`: shared Rust storage bridge handle.
+///
+/// Outputs:
+/// - Returns C++-decodable `CurrentPillarBlockDataDb` RLP bytes, or empty bytes
+///   when missing.
+///
+/// Invariants and edge behavior:
+/// - C++ remains responsible for decoding and live mirror hydration in this
+///   slice.
+pub fn load_pillar_current_block_data_storage(storage: &BridgeStorage) -> Result<Vec<u8>> {
+    consensus_load_current_pillar_block_data_storage(storage.0.as_ref())
+}
+
+/// Loads the latest finalized pillar block through consensus storage.
+///
+/// Inputs:
+/// - `storage`: shared Rust storage bridge handle.
+///
+/// Outputs:
+/// - Returns C++-decodable `PillarBlock` RLP bytes, or empty bytes when missing.
+///
+/// Invariants and edge behavior:
+/// - Latest-row ordering is delegated to `rustaxa-storage` via the consensus
+///   helper.
+pub fn load_latest_pillar_block_storage(storage: &BridgeStorage) -> Result<Vec<u8>> {
+    consensus_load_latest_pillar_block_storage(storage.0.as_ref())
+}
+
+/// Loads raw period data for pillar-vote recovery through consensus storage.
+///
+/// Inputs:
+/// - `storage`: shared Rust storage bridge handle.
+/// - `period`: finalized PBFT period to load.
+///
+/// Outputs:
+/// - Returns raw period-data RLP bytes, or empty bytes when missing.
+///
+/// Invariants and edge behavior:
+/// - Period-data decoding remains in C++ until the surrounding consensus read
+///   surface moves to Rust.
+pub fn load_pillar_period_data_storage(storage: &BridgeStorage, period: u64) -> Result<Vec<u8>> {
+    consensus_load_pillar_period_data_storage(storage.0.as_ref(), period)
 }
 
 fn vote_count_to_consensus(
@@ -276,6 +342,45 @@ mod tests {
                     .expect("pillar block should load"),
                 vec![0xC1, 0x03],
             );
+            assert_eq!(
+                load_pillar_current_block_data_storage(&storage)
+                    .expect("current pillar data should read"),
+                vec![0xC1, 0x01],
+            );
+            assert_eq!(
+                load_pillar_own_vote_storage(&storage).expect("own pillar vote should read"),
+                vec![0xC1, 0x02],
+            );
+            assert_eq!(
+                load_latest_pillar_block_storage(&storage)
+                    .expect("latest pillar block should read"),
+                vec![0xC1, 0x03],
+            );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_pillar_storage_reads_return_empty_when_missing() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_storage_missing_reads");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+
+            assert!(load_pillar_current_block_data_storage(&storage)
+                .expect("current pillar data should read")
+                .is_empty());
+            assert!(load_pillar_own_vote_storage(&storage)
+                .expect("own pillar vote should read")
+                .is_empty());
+            assert!(load_latest_pillar_block_storage(&storage)
+                .expect("latest pillar block should read")
+                .is_empty());
+            assert!(load_pillar_period_data_storage(&storage, 42)
+                .expect("period data should read")
+                .is_empty());
         }
 
         let _ = fs::remove_dir_all(temp_dir);

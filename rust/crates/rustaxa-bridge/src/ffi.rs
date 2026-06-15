@@ -4920,6 +4920,13 @@ pub mod rustaxa_ffi {
             period: u64,
             pillar_block_rlp: Vec<u8>,
         ) -> Result<()>;
+        pub fn load_pillar_own_vote_storage(storage: &BridgeStorage) -> Result<Vec<u8>>;
+        pub fn load_pillar_current_block_data_storage(storage: &BridgeStorage) -> Result<Vec<u8>>;
+        pub fn load_latest_pillar_block_storage(storage: &BridgeStorage) -> Result<Vec<u8>>;
+        pub fn load_pillar_period_data_storage(
+            storage: &BridgeStorage,
+            period: u64,
+        ) -> Result<Vec<u8>>;
 
         // Consensus sortition
 

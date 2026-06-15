@@ -364,23 +364,24 @@ PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_confi
       mutex_{} {
   LOG_OBJECTS_CREATE("PILLAR_CHAIN");
 
-  if (const auto vote = decodePillarVoteFromRustBytes(rust_storage_->get_own_pillar_block_vote()); vote) {
+  if (const auto vote = decodePillarVoteFromRustBytes(rustaxa::load_pillar_own_vote_storage(*rust_storage_)); vote) {
     addVerifiedPillarVote(vote);
   }
 
   if (auto&& current_pillar_block_data =
-          decodeCurrentPillarBlockDataFromRustBytes(rust_storage_->get_current_pillar_block_data());
+          decodeCurrentPillarBlockDataFromRustBytes(rustaxa::load_pillar_current_block_data_storage(*rust_storage_));
       current_pillar_block_data.has_value()) {
     current_pillar_block_ = std::move(current_pillar_block_data->pillar_block);
     current_pillar_block_vote_counts_ = std::move(current_pillar_block_data->vote_counts);
   }
 
-  if (auto&& latest_pillar_block = decodePillarBlockFromRustBytes(rust_storage_->get_latest_pillar_block());
+  if (auto&& latest_pillar_block =
+          decodePillarBlockFromRustBytes(rustaxa::load_latest_pillar_block_storage(*rust_storage_));
       latest_pillar_block) {
     last_finalized_pillar_block_ = std::move(latest_pillar_block);
 
     const auto last_finalized_pillar_block_votes = decodePeriodPillarVotesFromRustBytes(
-        rust_storage_->get_period_data_raw(last_finalized_pillar_block_->getPeriod() + 1));
+        rustaxa::load_pillar_period_data_storage(*rust_storage_, last_finalized_pillar_block_->getPeriod() + 1));
     // There should always be pillar votes stored in period data for finalized pillar block
     assert(!last_finalized_pillar_block_votes.empty());
     for (const auto& pillar_vote : last_finalized_pillar_block_votes) {
@@ -717,7 +718,8 @@ std::vector<std::shared_ptr<PillarVote>> PillarChainManager::getVerifiedPillarVo
 
   // No votes returned from memory, try db
   if (pillar_votes.empty()) {
-    pillar_votes = decodePeriodPillarVotesFromRustBytes(rust_storage_->get_period_data_raw(period));
+    pillar_votes =
+        decodePeriodPillarVotesFromRustBytes(rustaxa::load_pillar_period_data_storage(*rust_storage_, period));
   }
 
   return pillar_votes;

@@ -301,6 +301,86 @@ pub fn save_finalized_pillar_block_storage(
         .context("PILLAR_FINALIZED_BLOCK_WRITE")
 }
 
+/// Loads the local node's own pillar-block vote bytes through Rust storage.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+///
+/// Outputs:
+/// - Returns legacy-compatible `PillarVote` RLP bytes, or an empty vector when
+///   no own vote is stored.
+///
+/// Invariants and edge behavior:
+/// - This helper owns only the storage read. C++ still decodes and hydrates the
+///   live `PillarVote` object until pillar vote materialization moves to Rust.
+pub fn load_own_pillar_block_vote_storage(storage: &Storage) -> Result<Vec<u8>> {
+    Ok(storage
+        .pillar()
+        .own_vote_rlp()
+        .context("PILLAR_OWN_VOTE_READ")?
+        .unwrap_or_default())
+}
+
+/// Loads current pillar-block sidecar bytes through Rust storage.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+///
+/// Outputs:
+/// - Returns legacy-compatible `CurrentPillarBlockDataDb` RLP bytes, or an
+///   empty vector when no current pillar block is stored.
+///
+/// Invariants and edge behavior:
+/// - This helper owns only the durable storage read. C++ still decodes the
+///   sidecar and updates live manager mirrors in this slice.
+pub fn load_current_pillar_block_data_storage(storage: &Storage) -> Result<Vec<u8>> {
+    Ok(storage
+        .pillar()
+        .current_data_rlp()
+        .context("PILLAR_CURRENT_BLOCK_DATA_READ")?
+        .unwrap_or_default())
+}
+
+/// Loads the latest finalized pillar-block bytes through Rust storage.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+///
+/// Outputs:
+/// - Returns the newest stored pillar-block RLP bytes, or an empty vector when
+///   no finalized pillar block is stored.
+///
+/// Invariants and edge behavior:
+/// - This helper owns storage lookup ordering through `rustaxa-storage`.
+/// - C++ still decodes the returned bytes into a `PillarBlock` object.
+pub fn load_latest_pillar_block_storage(storage: &Storage) -> Result<Vec<u8>> {
+    Ok(storage
+        .pillar()
+        .latest_rlp()
+        .context("PILLAR_LATEST_BLOCK_READ")?
+        .unwrap_or_default())
+}
+
+/// Loads finalized period-data bytes used for pillar-vote recovery.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+/// - `period`: finalized PBFT period whose period-data row may contain pillar
+///   votes for the previous pillar block.
+///
+/// Outputs:
+/// - Returns raw period-data RLP bytes, or an empty vector when no row exists.
+///
+/// Invariants and edge behavior:
+/// - This helper intentionally returns raw period data because period-data
+///   decoding is still shared with other consensus paths in C++ for this slice.
+pub fn load_pillar_period_data_storage(storage: &Storage, period: u64) -> Result<Vec<u8>> {
+    storage
+        .period()
+        .data_raw(period)
+        .context("PILLAR_PERIOD_DATA_READ")
+}
+
 fn vote_counts_by_address(
     vote_counts: &[PillarValidatorVoteCount],
 ) -> BTreeMap<H160, PillarValidatorVoteCount> {
@@ -389,6 +469,52 @@ mod tests {
             assert_eq!(
                 storage.pillar().rlp(42).expect("pillar block should load"),
                 Some(vec![0xC1, 0x03]),
+            );
+            assert_eq!(
+                load_current_pillar_block_data_storage(&storage)
+                    .expect("current pillar data should read"),
+                vec![0xC1, 0x01],
+            );
+            assert_eq!(
+                load_own_pillar_block_vote_storage(&storage).expect("own pillar vote should read"),
+                vec![0xC1, 0x02],
+            );
+            assert_eq!(
+                load_latest_pillar_block_storage(&storage)
+                    .expect("latest pillar block should read"),
+                vec![0xC1, 0x03],
+            );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn pillar_storage_read_helpers_return_empty_when_missing() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pillar_storage_missing_reads");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+
+            assert!(
+                load_current_pillar_block_data_storage(&storage)
+                    .expect("current pillar data should read")
+                    .is_empty()
+            );
+            assert!(
+                load_own_pillar_block_vote_storage(&storage)
+                    .expect("own pillar vote should read")
+                    .is_empty()
+            );
+            assert!(
+                load_latest_pillar_block_storage(&storage)
+                    .expect("latest pillar block should read")
+                    .is_empty()
+            );
+            assert!(
+                load_pillar_period_data_storage(&storage, 42)
+                    .expect("period data should read")
+                    .is_empty()
             );
         }
 

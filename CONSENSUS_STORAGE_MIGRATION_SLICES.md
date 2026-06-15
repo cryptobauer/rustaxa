@@ -314,15 +314,15 @@ current FinalChain/EVM boundary.
 
 Status: in progress. Pillar manager current-block data, own pillar vote, and finalized pillar block persistence now route
 through `rustaxa-consensus::pillar_chain` storage helpers over direct `rustaxa-storage`. The C++ pillar manager shim still
-materializes `PillarBlock`/`PillarVote` RLP bytes and owns live mirrors, vote aggregation, gossip, and event emission.
-The older `BridgeStorage` pillar save methods remain as compatibility/query helpers but are no longer used by the
-Rust-mode pillar manager production write path.
+materializes `PillarBlock`/`PillarVote`/period-data vote bundle RLP bytes and owns live mirrors, vote aggregation,
+gossip, and event emission. The older `BridgeStorage` pillar save/read methods remain as compatibility/query helpers but
+are no longer used by the Rust-mode pillar manager production write and restart/recovery read paths.
 
 Move:
 
 - completed: pillar block persistence for finalized pillar blocks
 - completed: current pillar block data/own-vote persistence
-- pillar-vote restart/recovery storage reads
+- completed: pillar-vote restart/recovery storage reads
 - bridge root/epoch fact DTOs consumed by Rust pillar planning
 
 Keep temporarily:
@@ -351,6 +351,12 @@ storage write route: `PillarChainTest.votes_count_changes` fails after repeated 
 weight mismatched legacy sidecar hydration` errors, and the binary later aborts in `FinalChain::getBridgeRoot` because
 block 3 lacks committed external-EVM state. Keep the pillar storage route committed, but treat those runtime failures as
 follow-up PBFT/FinalChain boundary work rather than storage-write blockers.
+
+Validation note: the pillar restart/recovery read sub-slice passes `cargo test -p rustaxa-consensus pillar_chain`,
+`cargo test -p rustaxa-bridge pillar_chain`, `rust_storage_tests`, `cmake --build /build --target pillar_chain_test
+--parallel 12`, and a narrow `/build/bin/pillar_chain_test` filter covering pillar DB, block/vote serialization, compact
+signature, and Rust-inspected pillar vote validation. The broad unfiltered `pillar_chain_test` runtime remains covered by
+the storage-write note above and is still blocked by PBFT/FinalChain boundary issues rather than pillar storage reads.
 
 ## Slice 8: Consensus Read Surface Isolation
 
