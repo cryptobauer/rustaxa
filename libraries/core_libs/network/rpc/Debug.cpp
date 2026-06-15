@@ -87,7 +87,7 @@ Json::Value Debug::trace_replayBlockTransactions(const std::string& block_num, c
   const auto block = parse_blk_num(block_num);
   auto params = parse_tracking_parms(trace_params);
   if (auto node = app_.lock()) {
-    auto transactions = node->getDB()->getPeriodTransactions(block);
+    auto transactions = node->getDB()->getPeriodTransactions(block);  // RUSTAXA_QUERY_COMPAT_READ
     if (!transactions.has_value() || transactions->empty()) {
       return Json::Value(Json::arrayValue);
     }
@@ -109,7 +109,7 @@ Json::Value Debug::debug_getPeriodTransactionsWithReceipts(const std::string& _p
     auto final_chain = node->getFinalChain();
     auto period = dev::jsToInt(_period);
     auto block_hash = final_chain->blockHash(period);
-    auto trxs = node->getDB()->getPeriodTransactions(period);
+    auto trxs = node->getDB()->getPeriodTransactions(period);  // RUSTAXA_QUERY_COMPAT_READ
     if (!trxs.has_value() || trxs->empty()) {
       return Json::Value(Json::arrayValue);
     }
@@ -149,7 +149,7 @@ Json::Value Debug::debug_getPeriodDagBlocks(const std::string& _period) {
     }
 
     auto period = dev::jsToInt(_period);
-    auto dags = node->getDB()->getFinalizedDagBlockByPeriod(period);
+    auto dags = node->getDB()->getFinalizedDagBlockByPeriod(period);  // RUSTAXA_QUERY_COMPAT_READ
 
     return util::transformToJsonParallel(dags, [&period](const auto& dag, auto) {
       auto block_json = dag->getJson();
@@ -174,7 +174,7 @@ Json::Value Debug::debug_getPreviousBlockCertVotes(const std::string& _period) {
     Json::Value res(Json::objectValue);
 
     auto period = dev::jsToInt(_period);
-    auto votes = node->getDB()->getPeriodCertVotes(period);
+    auto votes = node->getDB()->getPeriodCertVotes(period);  // RUSTAXA_QUERY_COMPAT_READ
     if (votes.empty()) {
       return res;
     }

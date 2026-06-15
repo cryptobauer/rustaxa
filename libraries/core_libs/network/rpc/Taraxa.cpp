@@ -92,7 +92,7 @@ Json::Value Taraxa::taraxa_getDagBlockByHash(const string& _blockHash, bool _inc
 std::string Taraxa::taraxa_pbftBlockHashByPeriod(const std::string& _period) {
   try {
     auto app = tryGetApp();
-    auto db = app->getDB();
+    auto db = app->getDB();  // RUSTAXA_QUERY_COMPAT_READ
     auto blk = db->getPbftBlock(dev::jsToInt(_period));
     if (!blk.has_value()) {
       return {};
@@ -107,7 +107,7 @@ Json::Value Taraxa::taraxa_getScheduleBlockByPeriod(const std::string& _period) 
   try {
     auto app = tryGetApp();
     auto period = dev::jsToInt(_period);
-    auto db = app->getDB();
+    auto db = app->getDB();  // RUSTAXA_QUERY_COMPAT_READ
     auto blk = db->getPbftBlock(period);
     if (!blk.has_value()) {
       return Json::Value();
@@ -121,7 +121,7 @@ Json::Value Taraxa::taraxa_getScheduleBlockByPeriod(const std::string& _period) 
 Json::Value Taraxa::taraxa_getNodeVersions() {
   try {
     auto app = tryGetApp();
-    auto db = app->getDB();
+    auto db = app->getDB();  // RUSTAXA_QUERY_COMPAT_READ
     auto period = app->getFinalChain()->lastBlockNumber();
     const uint64_t max_blocks_to_process = 6000;
     std::map<addr_t, std::string> node_version_map;
@@ -173,7 +173,7 @@ Json::Value Taraxa::taraxa_getNodeVersions() {
 Json::Value Taraxa::taraxa_getDagBlockByLevel(const string& _blockLevel, bool _includeTransactions) {
   try {
     auto app = tryGetApp();
-    auto blocks = app->getDB()->getDagBlocksAtLevel(dev::jsToInt(_blockLevel), 1);
+    auto blocks = app->getDB()->getDagBlocksAtLevel(dev::jsToInt(_blockLevel), 1);  // RUSTAXA_QUERY_COMPAT_READ
     auto res = Json::Value(Json::arrayValue);
     for (auto const& b : blocks) {
       auto block_json = b->getJson();
@@ -203,8 +203,9 @@ Json::Value Taraxa::taraxa_getChainStats() {
   Json::Value res;
   if (auto app = app_.lock()) {
     res["pbft_period"] = Json::UInt64(app->getFinalChain()->lastBlockNumber());
-    res["dag_blocks_executed"] = Json::UInt64(app->getDB()->getNumBlockExecuted());
-    res["transactions_executed"] = Json::UInt64(app->getDB()->getNumTransactionExecuted());
+    res["dag_blocks_executed"] = Json::UInt64(app->getDB()->getNumBlockExecuted());  // RUSTAXA_QUERY_COMPAT_READ
+    res["transactions_executed"] =
+        Json::UInt64(app->getDB()->getNumTransactionExecuted());  // RUSTAXA_QUERY_COMPAT_READ
   }
 
   return res;
@@ -251,7 +252,8 @@ Json::Value Taraxa::taraxa_getPillarBlockData(const std::string& pillar_block_pe
     }
 
 #ifdef RUSTAXA_ENABLE
-    const auto pillar_block_data_rlp = app->getDB()->rustStorage().get_pillar_block_data_rlp(pbft_period);
+    const auto pillar_block_data_rlp =
+        app->getDB()->rustStorage().get_pillar_block_data_rlp(pbft_period);  // RUSTAXA_QUERY_COMPAT_READ
     if (pillar_block_data_rlp.empty()) {
       return {};
     }
@@ -259,12 +261,12 @@ Json::Value Taraxa::taraxa_getPillarBlockData(const std::string& pillar_block_pe
     return pillar_chain::PillarBlockData{dev::RLP(pillar_block_data_bytes)}.getJson(include_signatures);
 #endif
 
-    const auto pillar_block = app->getDB()->getPillarBlock(pbft_period);
+    const auto pillar_block = app->getDB()->getPillarBlock(pbft_period);  // RUSTAXA_QUERY_COMPAT_READ
     if (!pillar_block) {
       return {};
     }
 
-    const auto& pillar_votes = app->getDB()->getPeriodPillarVotes(pbft_period + 1);
+    const auto& pillar_votes = app->getDB()->getPeriodPillarVotes(pbft_period + 1);  // RUSTAXA_QUERY_COMPAT_READ
     if (pillar_votes.empty()) {
       return {};
     }
@@ -278,7 +280,7 @@ Json::Value Taraxa::taraxa_getPillarBlockData(const std::string& pillar_block_pe
 std::string Taraxa::taraxa_getPeriodLambda(const std::string& period) {
   try {
     auto app = tryGetApp();
-    auto db = app->getDB();
+    auto db = app->getDB();  // RUSTAXA_QUERY_COMPAT_READ
     auto period_lambda = db->getPeriodLambda(dev::jsToInt(period), false);
     if (!period_lambda.has_value()) {
       return {};

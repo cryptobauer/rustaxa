@@ -376,11 +376,13 @@ storage handle and oracle lock. This removes bridge-local raw storage reads and 
 deterministic gas-pricer initialization path. The storage-boundary guard now also rejects new C++ `getDB()` additions by
 default; RPC/GraphQL compatibility reads must carry an inline `RUSTAXA_QUERY_COMPAT_READ` marker so query debt is visible
 instead of silently expanding.
+Existing RPC/Debug query reads now carry that marker; the scan currently finds no GraphQL `getDB()`/`rustStorage()` query
+reads to annotate.
 
 Move:
 
 - network sync read paths that feed deterministic consensus decisions
-- RPC/GraphQL/debug reads that can use read-only Rust storage query APIs
+- in progress: RPC/GraphQL/debug reads that can use read-only Rust storage query APIs
 - in progress: app status/finalized-history reads that currently force bridge/storage compatibility methods into
   Rust-mode consensus ownership
 
@@ -407,6 +409,12 @@ Validation note: the gas-pricer read-surface sub-slice passes `cargo test -p rus
 Validation note: the guard-tightening sub-slice extends the storage-boundary guard self-test for new `getDB()` additions
 and documented RPC/GraphQL compatibility reads. It passes `scripts/rewrite_storage_boundary_guard.sh --self-test` and
 `scripts/rewrite_storage_boundary_guard.sh`.
+
+Validation note: the RPC query annotation sub-slice marks current RPC/Debug `getDB()` and direct `rustStorage()` query
+reads with `RUSTAXA_QUERY_COMPAT_READ`, leaving them as visible compatibility reads until read-only Rust query APIs replace
+them. It passes the storage-boundary guard self-test and current-diff guard, `git diff --check`,
+`cmake --build /build --target rpc_plugin --parallel 12`, `cmake --build /build --target rpc_test --parallel 12`,
+`/build/bin/rpc_test`, and `rust_storage_tests`.
 
 ## Slice 9: Collapse DbStorage To Compatibility Shell
 

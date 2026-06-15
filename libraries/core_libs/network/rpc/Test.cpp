@@ -23,7 +23,7 @@ Json::Value Test::get_sortition_change(const Json::Value &param1) {
   Json::Value res;
   if (auto node = app_.lock()) {
     uint64_t period = param1["period"].asUInt64();
-    auto params_change = node->getDB()->getParamsChangeForPeriod(period);
+    auto params_change = node->getDB()->getParamsChangeForPeriod(period);  // RUSTAXA_QUERY_COMPAT_READ
     res["interval_efficiency"] = params_change->interval_efficiency;
     res["period"] = params_change->period;
     res["threshold_upper"] = params_change->vrf_params.threshold_upper;
@@ -117,9 +117,9 @@ Json::Value Test::get_node_status() {
     res["syncing_seconds"] = Json::UInt64(node->getNetwork()->syncTimeSeconds());
     res["peer_count"] = Json::UInt64(node->getNetwork()->getPeerCount());
     res["node_count"] = Json::UInt64(node->getNetwork()->getNodeCount());
-    res["blk_executed"] = Json::UInt64(node->getDB()->getNumBlockExecuted());
-    res["blk_count"] = Json::UInt64(node->getDB()->getDagBlocksCount());
-    res["trx_executed"] = Json::UInt64(node->getDB()->getNumTransactionExecuted());
+    res["blk_executed"] = Json::UInt64(node->getDB()->getNumBlockExecuted());        // RUSTAXA_QUERY_COMPAT_READ
+    res["blk_count"] = Json::UInt64(node->getDB()->getDagBlocksCount());             // RUSTAXA_QUERY_COMPAT_READ
+    res["trx_executed"] = Json::UInt64(node->getDB()->getNumTransactionExecuted());  // RUSTAXA_QUERY_COMPAT_READ
     res["trx_count"] = Json::UInt64(node->getTransactionManager()->getTransactionCount());
     res["dag_level"] = Json::UInt64(node->getDagManager()->getMaxLevel());
     res["pbft_size"] = Json::UInt64(chain_size);
