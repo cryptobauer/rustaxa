@@ -78,6 +78,12 @@ Validation:
 
 Goal: remove production dependence on bridge batch append helpers for PBFT finalization side stages.
 
+Status: complete. PBFT manager Rust-mode finalization already commits primary, reward reset, sortition, dynamic-lambda,
+and executed-status stages through `apply_pbft_finalization_storage_writes`, which creates and commits a Rust-owned
+`rustaxa-storage` batch. The remaining VoteManager reward-reset compatibility path now also uses the Rust-owned apply API
+instead of `DbStorage::rustBatchId`, and raw PBFT finalization appenders are no longer exposed through the CXX bridge.
+Rust-side appender helpers remain only as compatibility/test scaffolding for staged write coverage.
+
 Move or delete:
 
 - `append_pbft_finalization_storage_write` production callers

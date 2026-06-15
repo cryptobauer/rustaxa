@@ -1307,6 +1307,7 @@ rustaxa::PbftFinalizedPeriodApplyResult VoteManager::resetRewardVotesForFinaliza
     const rustaxa::PbftFinalizationStorageWritePlan& write_intent, Batch& batch) {
   const auto period = static_cast<PbftPeriod>(write_intent.reward_vote_period);
   const auto block_hash = blk_hash_t(write_intent.reward_vote_block_hash.data(), blk_hash_t::ConstructFromPointer);
+  (void)batch;
 
   rustaxa::PbftFinalizationStorageWriteStage stage{};
   try {
@@ -1315,8 +1316,10 @@ rustaxa::PbftFinalizedPeriodApplyResult VoteManager::resetRewardVotesForFinaliza
     return rewardResetResult(kPbftFinalizedPeriodApplyStatusRejected, period, block_hash, e.what());
   }
 
-  auto result =
-      rustaxa::append_pbft_finalization_storage_write(db_->rustStorage(), db_->rustBatchId(batch), write_intent, stage);
+  rust::Vec<rustaxa::PbftFinalizationStorageWriteStage> stages;
+  stages.push_back(std::move(stage));
+  auto result = rustaxa::apply_pbft_finalization_storage_writes(db_->rustStorage(), write_intent, std::move(stages),
+                                                                false);
   if (result.status != kPbftFinalizedPeriodApplyStatusApplied &&
       result.status != kPbftFinalizedPeriodApplyStatusAlreadyApplied) {
     return result;

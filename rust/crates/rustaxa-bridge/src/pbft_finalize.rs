@@ -31,7 +31,9 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizedPeriodApplyResult as FfiPbftFinalizedPeriodApplyResult,
 };
 use crate::ffi::{BridgePbftFinalizationRuntimeSession, BridgeStorage};
-use anyhow::{anyhow, Context, Result};
+use anyhow::Result;
+#[cfg(test)]
+use anyhow::{anyhow, Context};
 use ethereum_types::H256;
 use rustaxa_consensus::pbft_finalize::{
     apply_pbft_finalization_storage_writes as apply_domain_pbft_finalization_storage_writes,
@@ -50,29 +52,44 @@ use rustaxa_consensus::pbft_finalize::{
     PbftFinalizationRuntimeStatus, PbftFinalizationStatus, PbftFinalizationStorageWriteIntent,
     PbftFinalizationStorageWriteStage, PbftFinalizedPeriodApplyResult,
 };
+#[cfg(test)]
 use rustaxa_consensus::sortition::SortitionParamsChange;
+#[cfg(test)]
 use rustaxa_storage::Column;
 
+#[cfg(test)]
 const APPLY_STATUS_APPLIED: u8 = 0;
+#[cfg(test)]
 const APPLY_STATUS_ALREADY_APPLIED_SAME_VALUES: u8 = 1;
 const APPLY_STATUS_REJECTED_WRITE_SET: u8 = 2;
+#[cfg(test)]
 const APPLY_STATUS_MISSING_REQUIRED_PAYLOAD: u8 = 3;
+#[cfg(test)]
 const APPLY_STATUS_CONFLICTING_EXISTING_WRITE: u8 = 4;
+#[cfg(test)]
 const APPEND_STAGE_PRIMARY_FINALIZATION: u8 = 0;
+#[cfg(test)]
 const APPEND_STAGE_DYNAMIC_LAMBDA: u8 = 1;
+#[cfg(test)]
 const APPEND_STAGE_EXECUTED_STATUS: u8 = 2;
+#[cfg(test)]
 const APPEND_STAGE_SORTITION_PARAMS_CHANGE: u8 = 3;
+#[cfg(test)]
 const APPEND_STAGE_REWARD_VOTES_RESET: u8 = 4;
+#[cfg(test)]
 const PBFT_MGR_FIELD_LAMBDA: u8 = 2;
+#[cfg(test)]
 const PBFT_MGR_STATUS_EXECUTED_BLOCK: u8 = 0;
+#[cfg(test)]
 const PBFT_TWO_T_PLUS_ONE_CERT_VOTED_TYPE: u8 = 1;
 const RUNTIME_STATUS_ACTIVE: u8 = 0;
 const RUNTIME_STATUS_COMPLETE: u8 = 1;
 const RUNTIME_NO_ACTION: u8 = 255;
+#[cfg(test)]
 const SINGLE_VALUE_KEY: [u8; 4] = 0i32.to_le_bytes();
 
-/// Appends one explicit PBFT finalization persistence stage to an existing Rust
-/// storage batch.
+/// Compatibility helper that appends one explicit PBFT finalization persistence
+/// stage to an existing Rust storage batch.
 ///
 /// Stage values:
 /// - `0`: primary finalized-period writes (`append_pbft_finalized_period_storage_writes`).
@@ -82,7 +99,11 @@ const SINGLE_VALUE_KEY: [u8; 4] = 0i32.to_le_bytes();
 /// - `4`: reward-vote reset write emitted by the reward-vote reset path.
 ///
 /// `write_set` is validated for stage compatibility; unknown stages return
-/// `APPLY_STATUS_REJECTED_WRITE_SET`.
+/// `APPLY_STATUS_REJECTED_WRITE_SET`. This helper is intentionally not exposed
+/// through the CXX bridge because Rust-mode production finalization must use
+/// `apply_pbft_finalization_storage_writes`, which owns batch creation, commit,
+/// and drop behavior inside Rust.
+#[cfg(test)]
 pub fn append_pbft_finalization_storage_write(
     storage: &BridgeStorage,
     batch_id: u64,
@@ -143,8 +164,7 @@ pub fn append_pbft_finalization_storage_write(
 /// Invariants and edge behavior:
 /// - Stages are appended in the supplied order and committed atomically in one
 ///   Rust storage batch.
-/// - Existing staged append APIs remain the compatibility surface for callers
-///   that still need to append into a larger caller-owned batch.
+/// - Staged append APIs remain Rust-side compatibility/test helpers only.
 /// - Empty stage lists are rejected without creating durable writes.
 /// - Rust storage failures are returned as bridge errors. The bridge does not
 ///   create, own, or commit a batch for this production apply path.
@@ -174,6 +194,7 @@ pub fn apply_pbft_finalization_storage_writes(
     ))
 }
 
+#[cfg(test)]
 fn empty_stage(stage: u8) -> FfiPbftFinalizationStorageWriteStage {
     FfiPbftFinalizationStorageWriteStage {
         stage,
@@ -485,7 +506,8 @@ pub fn plan_pbft_dynamic_lambda(fact: FfiPbftDynamicLambdaFact) -> FfiPbftDynami
     plan_domain_pbft_dynamic_lambda(fact.into()).into()
 }
 
-/// Appends Rust-owned finalized-period storage writes to an existing bridge batch.
+/// Rust-side compatibility helper that appends finalized-period storage writes
+/// to an existing bridge batch.
 ///
 /// Inputs:
 /// - `storage`: shared Rust storage bridge used by the C++ storage shim.
@@ -500,13 +522,14 @@ pub fn plan_pbft_dynamic_lambda(fact: FfiPbftDynamicLambdaFact) -> FfiPbftDynami
 /// - The function appends primary finalized-period records: PBFT head,
 ///   PBFT hash-to-period, period-data RLP, DAG finalized indexes, transaction
 ///   finalized indexes, and deletes of pending DAG/transaction rows.
-/// - It does not commit the batch. C++ commits the same Rust-backed batch after
-///   adding still-C++-owned reward-vote and sortition writes, preserving the
-///   current atomic commit boundary.
+/// - It does not commit the batch. Production Rust-mode finalization should use
+///   `apply_pbft_finalization_storage_writes` instead so batch ownership stays
+///   inside `rustaxa-consensus`.
 /// - Missing required payloads or conflicting existing immutable finalized
 ///   records return a non-applied status and do not mutate the batch. `PbftHead`
 ///   is mutable chain-head state and is intentionally replaced when present.
 /// - Storage backend or unknown-batch failures are returned as bridge errors.
+#[cfg(test)]
 pub fn append_pbft_finalized_period_storage_writes(
     storage: &BridgeStorage,
     batch_id: u64,
@@ -520,11 +543,11 @@ pub fn append_pbft_finalized_period_storage_writes(
     )
 }
 
-/// Appends dynamic-lambda persistence after C++ has applied the existing lambda
-/// adjustment policy to its live `PbftManager` fields.
+/// Rust-side compatibility helper that appends dynamic-lambda persistence after
+/// the caller has supplied the post-adjustment live `PbftManager` fields.
 ///
 /// Inputs:
-/// - `storage` and `batch_id` identify the Rust-backed batch owned by C++.
+/// - `storage` and `batch_id` identify a compatibility batch.
 /// - `write_set` is the accepted PBFT finalization storage intent.
 /// - `rounds_count_dynamic_lambda` and `dynamic_lambda` are the post-adjust live
 ///   values that must become durable with the optional period-lambda row.
@@ -535,6 +558,7 @@ pub fn append_pbft_finalized_period_storage_writes(
 /// - Treats `period_lambda` as immutable for a finalized period and reports a
 ///   conflict when an existing value differs. Manager lambda and round-count
 ///   fields are mutable PBFT manager state and are overwritten.
+#[cfg(test)]
 pub fn append_pbft_finalization_dynamic_lambda_storage_writes(
     storage: &BridgeStorage,
     batch_id: u64,
@@ -561,12 +585,13 @@ pub fn append_pbft_finalization_dynamic_lambda_storage_writes(
     )
 }
 
-/// Appends the PBFT manager executed-block status after FinalChain finalization
-/// has been dispatched.
+/// Rust-side compatibility helper that appends the PBFT manager executed-block
+/// status after FinalChain finalization has been dispatched.
 ///
 /// This preserves the legacy ordering where durable `ExecutedBlock=true` is not
 /// written before the final-chain path is invoked, while keeping the byte-level
 /// persistence in Rust.
+#[cfg(test)]
 pub fn append_pbft_finalization_executed_status_storage_write(
     storage: &BridgeStorage,
     batch_id: u64,
@@ -580,6 +605,7 @@ pub fn append_pbft_finalization_executed_status_storage_write(
     )
 }
 
+#[cfg(test)]
 fn append_pbft_finalized_period_storage_writes_impl(
     storage: &BridgeStorage,
     batch_id: u64,
@@ -819,6 +845,7 @@ fn append_pbft_finalized_period_storage_writes_impl(
     ))
 }
 
+#[cfg(test)]
 fn append_pbft_finalization_dynamic_lambda_storage_writes_impl(
     storage: &BridgeStorage,
     batch_id: u64,
@@ -919,6 +946,7 @@ fn append_pbft_finalization_dynamic_lambda_storage_writes_impl(
     Ok(sidecar_apply_result(status, write_set, ""))
 }
 
+#[cfg(test)]
 fn append_pbft_finalization_executed_status_storage_write_impl(
     storage: &BridgeStorage,
     batch_id: u64,
@@ -968,6 +996,7 @@ fn append_pbft_finalization_executed_status_storage_write_impl(
     Ok(sidecar_apply_result(status, write_set, ""))
 }
 
+#[cfg(test)]
 fn append_pbft_finalization_sortition_storage_write_impl(
     storage: &BridgeStorage,
     batch_id: u64,
@@ -1049,6 +1078,7 @@ fn append_pbft_finalization_sortition_storage_write_impl(
     Ok(sidecar_apply_result(status, write_set, ""))
 }
 
+#[cfg(test)]
 fn append_pbft_finalization_reward_votes_reset_storage_write_impl(
     storage: &BridgeStorage,
     batch_id: u64,
@@ -1396,6 +1426,7 @@ impl From<&FfiPbftFinalizationStorageWritePlan> for PbftFinalizationStorageWrite
     }
 }
 
+#[cfg(test)]
 fn block_position_rlp(period: u64, position: u32) -> Vec<u8> {
     let mut stream = rlp::RlpStream::new_list(2);
     stream.append(&period);
@@ -1403,6 +1434,7 @@ fn block_position_rlp(period: u64, position: u32) -> Vec<u8> {
     stream.out().to_vec()
 }
 
+#[cfg(test)]
 fn check_existing_value(
     storage: &BridgeStorage,
     column: Column,
@@ -1419,6 +1451,7 @@ fn check_existing_value(
     Ok(false)
 }
 
+#[cfg(test)]
 fn apply_result(
     status: u8,
     write_set: &FfiPbftFinalizationStorageWritePlan,

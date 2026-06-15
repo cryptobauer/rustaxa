@@ -296,16 +296,18 @@ class VoteManager : public VoteManagerOld {
    * Inputs:
    * - `write_intent`: Rust-planned PBFT finalization storage intent carrying
    *   reward vote period, round, step, and block hash facts.
-   * - `batch`: caller-owned PBFT finalization batch.
+   * - `batch`: legacy API parameter retained for upstream signature
+   *   compatibility. Rust mode commits this isolated compatibility reset through
+   *   a Rust-owned batch instead of appending to the caller batch.
    *
    * Outputs:
-   * - Rust appender status for the reward-vote reset stage.
+   * - Rust-owned apply status for the reward-vote reset stage.
    *
    * Invariants:
    * - The certified-vote bundle is selected from inherited live
    *   `VerifiedVotes` state.
-   * - Inherited reward metadata and stale extra-reward tracking are mutated
-   *   only after Rust returns `Applied` or `AlreadyApplied`.
+   * - Inherited reward metadata and stale extra-reward tracking are mutated only
+   *   after Rust commits and returns `Applied` or `AlreadyApplied`.
    */
   rustaxa::PbftFinalizedPeriodApplyResult resetRewardVotesForFinalization(
       const rustaxa::PbftFinalizationStorageWritePlan& write_intent, Batch& batch);
