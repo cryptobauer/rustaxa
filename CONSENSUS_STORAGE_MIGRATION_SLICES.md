@@ -203,7 +203,9 @@ Goal: move DAG/proposed-block consensus storage reads/writes into Rust runtimes 
 
 Status: in progress. `rustaxa-consensus::proposed_blocks` now owns proposed PBFT block storage restore from
 `Column::ProposedPbftBlocks` and stale proposed-block cleanup deletes through one Rust-owned batch. The bridge updates
-the in-memory proposed-block index only after the consensus storage cleanup commits.
+the in-memory proposed-block index only after the consensus storage cleanup commits. `rustaxa-consensus::dag` now owns
+storage-backed expired DAG transaction cleanup fact collection by loading expired/remaining DAG block RLPs and finalized
+transaction membership directly from `rustaxa-storage`.
 
 Move:
 
@@ -232,6 +234,11 @@ Validation:
 - DAG Rust tests
 - affected DAG/PBFT C++ tests
 - `rust_storage_tests`
+
+Validation note: the focused DAG/proposed-block/storage checks pass for the storage-owned proposed-block cleanup and
+expired-DAG transaction fact collection steps. The broad `rust_consensus_tests` target currently fails before DAG tests
+compile because stale PBFT sync tests still call the removed Slice 2 PBFT finalization bridge appender API; that is
+tracked as test compatibility debt outside the DAG storage sub-slice.
 
 ## Slice 6: Rewards And FinalChain-Adjacent Status Writes
 

@@ -20,13 +20,13 @@ use crate::storage::transaction_rlp_lookups;
 use anyhow::{ensure, Context, Result};
 use ethereum_types::H256;
 use rustaxa_consensus::dag::{
-    construct_dag_vdf_message, dag_block_transaction_hashes,
-    decide_dag_verify_vdf_dpos_authorization, derive_frontier, plan_dag_verify_transaction_query,
-    plan_expired_transaction_cleanup, plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
+    collect_expired_transaction_cleanup_from_storage, construct_dag_vdf_message,
+    dag_block_transaction_hashes, decide_dag_verify_vdf_dpos_authorization, derive_frontier,
+    plan_dag_verify_transaction_query, plan_expired_transaction_cleanup,
+    plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
     validate_dag_verify_authorization, validate_dag_verify_gas, validate_dag_verify_precheck,
     validate_dag_verify_transaction_availability, validate_pivot_tips_metadata,
     verify_dag_vdf_sortition, verify_dag_vdf_sortition_from_block,
-    DagExpiredTransactionCleanupPlan as DomainDagExpiredTransactionCleanupPlan,
     DagExpiredTransactionFact as DomainDagExpiredTransactionFact, DagGraph,
     DagManagerBlock as DomainDagManagerBlock,
     DagManagerFinalizationPlan as DomainDagManagerFinalizationPlan,
@@ -641,59 +641,23 @@ impl BridgeDagManagerRuntime {
         expired_hashes: Vec<DagHash>,
         remaining_hashes: Vec<DagHash>,
     ) -> Result<DagExpiredTransactionCleanupPayload> {
-        let mut finalized_cache = BTreeMap::new();
-        let mut expired_candidates = Vec::new();
-        let mut retained_transaction_hashes = Vec::new();
+        let expired_hashes = expired_hashes
+            .into_iter()
+            .map(|hash| H256::from(hash.hash))
+            .collect::<Vec<_>>();
+        let remaining_hashes = remaining_hashes
+            .into_iter()
+            .map(|hash| H256::from(hash.hash))
+            .collect::<Vec<_>>();
+        let payload = collect_expired_transaction_cleanup_from_storage(
+            self.storage.as_ref(),
+            &expired_hashes,
+            &remaining_hashes,
+        )
+        .context("DAG_RUNTIME_FINALIZATION_CLEANUP_STORAGE")?;
 
-        for hash in expired_hashes {
-            let block = self
-                .dag_manager_runtime_load_block(&hash.hash)
-                .context("DAG_RUNTIME_FINALIZATION_EXPIRED_BLOCK_LOAD")?;
-            ensure!(
-                block.found,
-                "DAG_RUNTIME_FINALIZATION_EXPIRED_BLOCK_MISSING: {:?}",
-                H256::from(hash.hash)
-            );
-
-            for trx_hash in dag_block_transaction_hashes(&block.block_rlp)
-                .context("DAG_RUNTIME_FINALIZATION_EXPIRED_BLOCK_TRANSACTIONS")?
-            {
-                let finalized = if let Some(finalized) = finalized_cache.get(&trx_hash) {
-                    *finalized
-                } else {
-                    let finalized = self
-                        .storage
-                        .transaction()
-                        .finalized(trx_hash)
-                        .context("DAG_RUNTIME_FINALIZATION_TRANSACTION_FINALIZED")?;
-                    finalized_cache.insert(trx_hash, finalized);
-                    finalized
-                };
-
-                expired_candidates.push(DomainDagExpiredTransactionFact {
-                    hash: trx_hash,
-                    finalized,
-                });
-            }
-        }
-
-        for hash in remaining_hashes {
-            let block = self
-                .dag_manager_runtime_load_block(&hash.hash)
-                .context("DAG_RUNTIME_FINALIZATION_REMAINING_BLOCK_LOAD")?;
-            ensure!(
-                block.found,
-                "DAG_RUNTIME_FINALIZATION_REMAINING_BLOCK_MISSING: {:?}",
-                H256::from(hash.hash)
-            );
-
-            retained_transaction_hashes.extend(
-                dag_block_transaction_hashes(&block.block_rlp)
-                    .context("DAG_RUNTIME_FINALIZATION_REMAINING_BLOCK_TRANSACTIONS")?,
-            );
-        }
-
-        let expired_transaction_facts = expired_candidates
+        let expired_transaction_facts = payload
+            .expired_transaction_facts
             .iter()
             .map(|candidate| DagExpiredTransactionFact {
                 hash: candidate.hash.0,
@@ -701,12 +665,9 @@ impl BridgeDagManagerRuntime {
             })
             .collect();
 
-        let DomainDagExpiredTransactionCleanupPlan { remove_hashes } =
-            plan_expired_transaction_cleanup(&expired_candidates, &retained_transaction_hashes);
-
         Ok(DagExpiredTransactionCleanupPayload {
             expired_transaction_facts,
-            remove_hashes: to_bridge_transaction_hashes(remove_hashes),
+            remove_hashes: to_bridge_transaction_hashes(payload.remove_hashes),
         })
     }
 

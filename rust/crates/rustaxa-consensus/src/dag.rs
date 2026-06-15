@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail, ensure};
 use ethereum_types::H256;
 use rlp::Rlp;
+use rustaxa_storage::Storage;
 use rustaxa_types::codec::rlp::dag::DagBlockRlp;
 use rustaxa_types::dag::DagBlock;
 use rustaxa_vdf::sortition::{self, LegacySortitionParams};
@@ -220,6 +221,17 @@ pub struct DagExpiredTransactionFact {
 /// remaining non-finalized DAG block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DagExpiredTransactionCleanupPlan {
+    pub remove_hashes: Vec<H256>,
+}
+
+/// Storage-backed expired DAG transaction cleanup payload.
+///
+/// `expired_transaction_facts` records the transaction references discovered in
+/// expired DAG blocks together with finalized-index facts. `remove_hashes`
+/// contains the planned non-finalized transaction rows to delete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagExpiredTransactionCleanupStoragePayload {
+    pub expired_transaction_facts: Vec<DagExpiredTransactionFact>,
     pub remove_hashes: Vec<H256>,
 }
 
@@ -656,6 +668,85 @@ pub fn plan_expired_transaction_cleanup(
         }
     }
     DagExpiredTransactionCleanupPlan { remove_hashes }
+}
+
+/// Collects expired DAG transaction cleanup facts directly from Rust storage.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+/// - `expired_hashes`: non-finalized DAG block hashes removed by a finalization
+///   transition.
+/// - `remaining_hashes`: non-finalized DAG block hashes retained after the
+///   transition.
+///
+/// Outputs:
+/// - Transaction facts from expired blocks in block/transaction order, with
+///   finalized membership sourced from `rustaxa-storage`.
+/// - The deterministic cleanup plan for non-finalized transaction rows that are
+///   not finalized and no longer referenced by retained blocks.
+///
+/// Invariants and edge behavior:
+/// - Missing expired or retained DAG block RLPs are explicit errors; callers
+///   must not mutate live state when storage cannot supply the facts.
+/// - Finalized transaction lookup is cached per hash for deterministic behavior
+///   and to avoid repeated storage reads for duplicate transaction refs.
+pub fn collect_expired_transaction_cleanup_from_storage(
+    storage: &Storage,
+    expired_hashes: &[H256],
+    remaining_hashes: &[H256],
+) -> Result<DagExpiredTransactionCleanupStoragePayload> {
+    let mut finalized_cache = BTreeMap::new();
+    let mut expired_candidates = Vec::new();
+    let mut retained_transaction_hashes = Vec::new();
+
+    for hash in expired_hashes {
+        let block_rlp = storage
+            .dag()
+            .by_hash_rlp_optional(*hash)
+            .context("DAG_STORAGE_EXPIRED_BLOCK_LOAD")?
+            .with_context(|| format!("DAG_STORAGE_EXPIRED_BLOCK_MISSING: {hash:?}"))?;
+
+        for trx_hash in dag_block_transaction_hashes(&block_rlp)
+            .context("DAG_STORAGE_EXPIRED_BLOCK_TRANSACTIONS")?
+        {
+            let finalized = if let Some(finalized) = finalized_cache.get(&trx_hash) {
+                *finalized
+            } else {
+                let finalized = storage
+                    .transaction()
+                    .finalized(trx_hash)
+                    .context("DAG_STORAGE_TRANSACTION_FINALIZED")?;
+                finalized_cache.insert(trx_hash, finalized);
+                finalized
+            };
+
+            expired_candidates.push(DagExpiredTransactionFact {
+                hash: trx_hash,
+                finalized,
+            });
+        }
+    }
+
+    for hash in remaining_hashes {
+        let block_rlp = storage
+            .dag()
+            .by_hash_rlp_optional(*hash)
+            .context("DAG_STORAGE_REMAINING_BLOCK_LOAD")?
+            .with_context(|| format!("DAG_STORAGE_REMAINING_BLOCK_MISSING: {hash:?}"))?;
+
+        retained_transaction_hashes.extend(
+            dag_block_transaction_hashes(&block_rlp)
+                .context("DAG_STORAGE_REMAINING_BLOCK_TRANSACTIONS")?,
+        );
+    }
+
+    let DagExpiredTransactionCleanupPlan { remove_hashes } =
+        plan_expired_transaction_cleanup(&expired_candidates, &retained_transaction_hashes);
+
+    Ok(DagExpiredTransactionCleanupStoragePayload {
+        expired_transaction_facts: expired_candidates,
+        remove_hashes,
+    })
 }
 
 /// Prepares deterministic VDF inputs for `DagManager::verifyBlock`.
@@ -1995,6 +2086,7 @@ fn hex_prefix(hash: &H256) -> String {
 mod tests {
     use super::*;
     use rlp::RlpStream;
+    use rustaxa_storage::{Config, Storage};
     use rustaxa_vdf::prover::{CancellationToken, WesolowskiProver};
     use rustaxa_vdf::sortition::{self, LegacySortitionParams};
     use rustaxa_vdf::vrf::public_key_from_secret;
@@ -2030,6 +2122,18 @@ mod tests {
             stream.append(transaction);
         }
         stream.out().to_vec()
+    }
+
+    fn temp_storage(name: &str) -> Storage {
+        let dir = std::env::temp_dir().join(format!(
+            "{name}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        Storage::new(Config::new(dir)).unwrap()
     }
 
     fn vdf_payload_rlp(difficulty: u16, proof: Vec<u8>, output: Vec<u8>) -> Vec<u8> {
@@ -2481,6 +2585,59 @@ mod tests {
         );
 
         assert_eq!(plan.remove_hashes, vec![h(1)]);
+    }
+
+    #[test]
+    fn expired_transaction_cleanup_storage_collects_facts_and_retained_refs() {
+        let storage = temp_storage("rustaxa_consensus_dag_expired_cleanup");
+        storage
+            .dag()
+            .write(
+                h(3),
+                3,
+                0,
+                &dag_block_rlp_with_vdf(vec![0x11], &[h(1), h(2), h(1)]),
+            )
+            .unwrap();
+        storage
+            .dag()
+            .write(h(4), 4, 0, &dag_block_rlp_with_vdf(vec![0x22], &[h(3)]))
+            .unwrap();
+        storage
+            .dag()
+            .write(h(6), 6, 0, &dag_block_rlp_with_vdf(vec![0x33], &[h(3)]))
+            .unwrap();
+        storage
+            .transaction()
+            .write_location(h(2), 7, 0, false)
+            .unwrap();
+
+        let payload =
+            collect_expired_transaction_cleanup_from_storage(&storage, &[h(3), h(4)], &[h(6)])
+                .unwrap();
+
+        assert_eq!(
+            payload.expired_transaction_facts,
+            vec![
+                DagExpiredTransactionFact {
+                    hash: h(1),
+                    finalized: false,
+                },
+                DagExpiredTransactionFact {
+                    hash: h(2),
+                    finalized: true,
+                },
+                DagExpiredTransactionFact {
+                    hash: h(1),
+                    finalized: false,
+                },
+                DagExpiredTransactionFact {
+                    hash: h(3),
+                    finalized: false,
+                },
+            ]
+        );
+        assert_eq!(payload.remove_hashes, vec![h(1)]);
     }
 
     #[test]
