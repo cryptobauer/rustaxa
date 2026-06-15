@@ -69,7 +69,9 @@ use rustaxa_consensus::transaction_queue::{
     TransactionQueue, TransactionQueueAccountNonceFact, TransactionQueueDemoteStatus,
     TransactionQueueEntry, TransactionQueueInsertStatus, TransactionQueuePurgeOutcome,
 };
-use rustaxa_consensus::transaction_storage::save_transaction_count;
+use rustaxa_consensus::transaction_storage::{
+    load_non_finalized_recovery_entries, save_transaction_count,
+};
 use rustaxa_types::LegacyTransactionEnvelope;
 use std::time::{Duration, Instant};
 
@@ -1598,45 +1600,17 @@ pub fn transaction_manager_verify_not_finalized_with_runtime(
 pub fn transaction_manager_load_nonfinalized_recovery(
     storage: &BridgeStorage,
 ) -> Result<Vec<TransactionManagerRecoveryEntry>> {
-    let transaction = storage.0.transaction();
-    let non_finalized = transaction.all_nonfinalized_with_hash()?;
-    let mut out = Vec::with_capacity(non_finalized.len());
-    let mut stale_hashes = Vec::new();
-
-    for (hash, tx_rlp) in non_finalized {
-        let finalized = transaction
-            .finalized(hash)
-            .context("TM_NONFINALIZED_RECOVERY_FINALIZED_LOOKUP")?;
-        if finalized {
-            stale_hashes.push(hash);
-        }
-
-        out.push(TransactionManagerRecoveryEntry {
-            hash: hash.0,
-            finalized,
-            tx_rlp,
-        });
-    }
-
-    if !stale_hashes.is_empty() {
-        let mut batch = storage.0.create_write_batch();
-        for hash in stale_hashes {
-            storage
-                .0
-                .batch_delete_raw(
-                    &mut batch,
-                    rustaxa_storage::Column::Transactions,
-                    hash.as_bytes(),
-                )
-                .context("TM_NONFINALIZED_RECOVERY_STALE_DELETE")?;
-        }
-        storage
-            .0
-            .commit_write_batch_with_sync(batch, false)
-            .context("TM_NONFINALIZED_RECOVERY_STALE_COMMIT")?;
-    }
-
-    Ok(out)
+    load_non_finalized_recovery_entries(&storage.0)
+        .context("TM_NONFINALIZED_RECOVERY_STORAGE")?
+        .into_iter()
+        .map(|entry| {
+            Ok(TransactionManagerRecoveryEntry {
+                hash: entry.hash.0,
+                finalized: entry.finalized,
+                tx_rlp: entry.trx_rlp,
+            })
+        })
+        .collect()
 }
 
 /// Returns Rust-validated sidecar inputs for non-finalized transaction recovery.

@@ -18,6 +18,17 @@ pub struct NonFinalizedTransactionStoragePayload {
     pub trx_rlp: Vec<u8>,
 }
 
+/// Stored non-finalized transaction row used by TransactionManager restart recovery.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct NonFinalizedTransactionRecoveryEntry {
+    /// Hash from the persisted non-finalized transaction key.
+    pub hash: H256,
+    /// True when the same hash is already indexed as finalized.
+    pub finalized: bool,
+    /// Canonical transaction RLP payload stored under the non-finalized key.
+    pub trx_rlp: Vec<u8>,
+}
+
 /// Persists accepted non-finalized transactions and the target transaction count.
 ///
 /// Inputs:
@@ -87,6 +98,63 @@ pub fn save_transaction_count(storage: &Storage, transaction_count: u64) -> Resu
         .context("TRANSACTION_MANAGER_COUNT_WRITE")
 }
 
+/// Loads non-finalized restart rows and removes stale finalized duplicates.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+///
+/// Outputs:
+/// - Returns every non-finalized row as a hash/RLP pair with a finalized
+///   classification.
+/// - If stale rows are found, commits one Rust-owned batch deleting those
+///   non-finalized transaction keys before returning.
+///
+/// Invariants and edge behavior:
+/// - Storage iteration order is preserved in the returned entries.
+/// - The finalized flag is derived from the finalized transaction index, not
+///   from C++ sidecars.
+/// - Malformed non-finalized keys and storage errors are reported without
+///   partially rebuilding live TransactionManager sidecars.
+pub fn load_non_finalized_recovery_entries(
+    storage: &Storage,
+) -> Result<Vec<NonFinalizedTransactionRecoveryEntry>> {
+    let transaction = storage.transaction();
+    let non_finalized = transaction
+        .all_nonfinalized_with_hash()
+        .context("TRANSACTION_MANAGER_NON_FINALIZED_RECOVERY_SCAN")?;
+    let mut out = Vec::with_capacity(non_finalized.len());
+    let mut stale_hashes = Vec::new();
+
+    for (hash, tx_rlp) in non_finalized {
+        let finalized = transaction
+            .finalized(hash)
+            .context("TRANSACTION_MANAGER_NON_FINALIZED_RECOVERY_FINALIZED_LOOKUP")?;
+        if finalized {
+            stale_hashes.push(hash);
+        }
+
+        out.push(NonFinalizedTransactionRecoveryEntry {
+            hash,
+            finalized,
+            trx_rlp: tx_rlp,
+        });
+    }
+
+    if !stale_hashes.is_empty() {
+        let mut batch = storage.create_write_batch();
+        for hash in stale_hashes {
+            storage
+                .batch_delete_raw(&mut batch, Column::Transactions, hash.as_bytes())
+                .context("TRANSACTION_MANAGER_NON_FINALIZED_RECOVERY_STALE_DELETE")?;
+        }
+        storage
+            .commit_write_batch_with_sync(batch, false)
+            .context("TRANSACTION_MANAGER_NON_FINALIZED_RECOVERY_STALE_COMMIT")?;
+    }
+
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +213,43 @@ mod tests {
                 .unwrap(),
             9
         );
+    }
+
+    #[test]
+    fn load_non_finalized_recovery_entries_marks_and_removes_stale_finalized_rows() {
+        let storage = temp_storage("rustaxa_consensus_transaction_storage_recovery");
+        let live_hash = H256::from([0x11; 32]);
+        let stale_hash = H256::from([0x22; 32]);
+
+        storage.transaction().write(live_hash, &[0xC1]).unwrap();
+        storage.transaction().write(stale_hash, &[0xC2]).unwrap();
+        storage
+            .transaction()
+            .write_location(stale_hash, 7, 3, false)
+            .unwrap();
+
+        let mut entries = load_non_finalized_recovery_entries(&storage).unwrap();
+        entries.sort_by_key(|entry| entry.hash);
+
+        assert_eq!(
+            entries,
+            vec![
+                NonFinalizedTransactionRecoveryEntry {
+                    hash: live_hash,
+                    finalized: false,
+                    trx_rlp: vec![0xC1],
+                },
+                NonFinalizedTransactionRecoveryEntry {
+                    hash: stale_hash,
+                    finalized: true,
+                    trx_rlp: vec![0xC2],
+                },
+            ]
+        );
+        assert_eq!(
+            storage.transaction().rlp(live_hash).unwrap(),
+            Some(vec![0xC1])
+        );
+        assert_eq!(storage.transaction().rlp(stale_hash).unwrap(), None);
     }
 }

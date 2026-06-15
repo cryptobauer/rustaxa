@@ -210,7 +210,8 @@ pub use transaction_manager::{
 };
 pub use transaction_queue::TransactionQueue;
 pub use transaction_storage::{
-    NonFinalizedTransactionStoragePayload, save_non_finalized_transactions, save_transaction_count,
+    NonFinalizedTransactionRecoveryEntry, NonFinalizedTransactionStoragePayload,
+    load_non_finalized_recovery_entries, save_non_finalized_transactions, save_transaction_count,
 };
 pub use verified_votes::VerifiedVotes;
 
