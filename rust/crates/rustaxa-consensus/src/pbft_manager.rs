@@ -28,7 +28,7 @@
 //! - Branches after `run_certify` and `run_second_finish` are selected only from
 //!   explicit report flags returned by the C++ executor.
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use ethereum_types::H256;
 use rlp::RlpStream;
 use rustaxa_storage::Storage;
@@ -2184,6 +2184,26 @@ pub fn create_pbft_manager_runtime_from_storage(
     }
 
     Ok(PbftManagerRuntime::new(snapshot))
+}
+
+/// Persists the delayed executed-block manager-status reset.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+///
+/// Outputs:
+/// - Writes `PbftMgrStatus::ExecutedBlock = false` through `rustaxa-storage`.
+///
+/// Invariants and edge behavior:
+/// - This owns only the durable status row. Callers must update live/runtime
+///   mirrors only after this function returns success.
+/// - The post-`waitForPeriodFinalization()` ordering remains owned by the
+///   PBFT manager runtime/shim boundary until that executor moves to Rust.
+pub fn apply_executed_block_reset_storage(storage: &Storage) -> Result<()> {
+    storage
+        .pbft()
+        .write_manager_status(PBFT_MGR_STATUS_EXECUTED_BLOCK, false)
+        .context("PBFT_MANAGER_EXECUTED_BLOCK_RESET_WRITE")
 }
 
 /// C++-originated facts for deciding whether PBFT can advance to a new round.

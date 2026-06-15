@@ -256,7 +256,9 @@ inside the PBFT manager.
 Status: in progress. Rewards-stat startup reload and cache/clear persistence now live in
 `rustaxa-consensus::rewards_stats` over direct `rustaxa-storage` reads and Rust-owned write batches. The bridge creates
 the runtime from the consensus storage loader and exposes a DTO-only apply function; the old rewards-stat bridge batch-id
-appender has been removed from the CXX bridge surface, the rewards stats shim, and focused C++ test.
+appender has been removed from the CXX bridge surface, the rewards stats shim, and focused C++ test. The delayed PBFT
+manager executed-block reset storage write now lives in `rustaxa-consensus::pbft_manager`; the bridge updates the runtime
+snapshot only after the consensus storage helper succeeds.
 
 Move:
 

@@ -30,6 +30,7 @@ use crate::ffi::{BridgePbftManagerRuntime, BridgePbftManagerRuntimeSession, Brid
 use anyhow::anyhow;
 use rustaxa_consensus::pbft_manager::{
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
+    apply_executed_block_reset_storage,
     create_pbft_manager_runtime_from_storage as create_domain_pbft_manager_runtime_from_storage,
     create_pbft_manager_runtime_session as create_domain_pbft_manager_runtime_session,
     next_pbft_manager_runtime_action,
@@ -59,6 +60,7 @@ const TRANSITION_STORAGE_STATUS_APPLIED: u8 = 0;
 const TRANSITION_STORAGE_STATUS_REJECTED: u8 = 1;
 const PBFT_MGR_FIELD_ROUND: u8 = 0;
 const PBFT_MGR_FIELD_STEP: u8 = 1;
+#[cfg(test)]
 const PBFT_MGR_STATUS_EXECUTED_BLOCK: u8 = 0;
 const PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE: u8 = 2;
 const PBFT_MGR_STATUS_NEXT_VOTED_NULL_BLOCK_HASH: u8 = 3;
@@ -375,12 +377,7 @@ pub fn pbft_manager_runtime_apply_transition_storage_write(
 pub fn pbft_manager_runtime_apply_executed_block_reset(
     runtime: &mut BridgePbftManagerRuntime,
 ) -> anyhow::Result<FfiPbftManagerTransitionRuntimeApplyResult> {
-    if runtime
-        .storage
-        .pbft()
-        .write_manager_status(PBFT_MGR_STATUS_EXECUTED_BLOCK, false)
-        .is_err()
-    {
+    if apply_executed_block_reset_storage(runtime.storage.as_ref()).is_err() {
         return Ok(transition_runtime_apply_result(
             TRANSITION_STORAGE_STATUS_REJECTED,
             0,
