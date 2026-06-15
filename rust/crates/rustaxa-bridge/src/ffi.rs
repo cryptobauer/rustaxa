@@ -5183,9 +5183,8 @@ pub mod rustaxa_ffi {
             self: &BridgeStorage,
             write: PbftVoteProgressPersistenceWrite,
         ) -> Result<PbftVotePersistenceResult>;
-        pub fn append_clear_own_verified_votes(
+        pub fn clear_own_verified_votes(
             self: &BridgeStorage,
-            batch_id: u64,
             vote_hashes: Vec<PbftFinalizationHash>,
         ) -> Result<PbftVotePersistenceResult>;
 

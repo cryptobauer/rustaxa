@@ -114,6 +114,13 @@ Validation:
 Goal: move VoteManager persistence from bridge batch helpers into a Rust-owned vote storage runtime over
 `rustaxa-storage`.
 
+Status: complete for VoteManager production persistence. `rustaxa-consensus::pbft_vote_storage` now owns Rust storage
+batches for locally generated own-vote writes, accepted vote-progress persistence, latest-round `2t+1` bundle writes,
+extra reward-vote writes, extra reward-vote cleanup, latest own-vote cleanup, and the finalized reward-vote reset stage
+already moved with Slice 2's finalization apply path. The bridge converts CXX DTOs only; VoteManager no longer calls
+`DbStorage::rustBatchId` or a bridge batch appender for vote persistence. C++ still materializes live `PbftVote` sidecars
+and supplies FinalChain/key-manager facts until those runtime boundaries move.
+
 Move:
 
 - locally generated own-vote persistence

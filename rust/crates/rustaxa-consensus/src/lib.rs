@@ -15,6 +15,7 @@ pub mod pbft_vote_payload;
 pub mod pbft_vote_pipeline;
 pub mod pbft_vote_progress;
 pub mod pbft_vote_runtime;
+pub mod pbft_vote_storage;
 pub mod pbft_vote_validation;
 pub mod period_data_queue;
 pub mod pillar_chain;
@@ -158,6 +159,11 @@ pub use pbft_vote_progress::{
 pub use pbft_vote_runtime::{
     PbftRewardVotePayloadSelection, PbftVoteAdmissionRuntime, PbftVoteRuntimeAdmissionOutcome,
     PbftVoteRuntimeBundle, PbftVoteRuntimePayload, PbftVoteRuntimeSlashingPayloads,
+};
+pub use pbft_vote_storage::{
+    PbftTwoTPlusOneVoteBundle, PbftVotePersistenceResult, PbftVotePersistenceStatus,
+    PbftVoteProgressPersistenceWrite, PbftVoteStorageRecord, clear_own_verified_votes,
+    persist_pbft_vote_progress, remove_extra_reward_votes, save_own_verified_vote,
 };
 pub use pbft_vote_validation::{
     PbftCanonicalVoteInspection, PbftCanonicalVoteInspectionStatus, PbftCanonicalVoteValidation,

@@ -815,6 +815,7 @@ void VoteManager::saveOwnVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
 std::vector<std::shared_ptr<PbftVote>> VoteManager::getOwnVerifiedVotes() { return own_verified_votes_; }
 
 void VoteManager::clearOwnVerifiedVotes(Batch& write_batch) {
+  (void)write_batch;
   std::vector<vote_hash_t> own_vote_hashes;
   own_vote_hashes.reserve(own_verified_votes_.size());
   for (const auto& vote : own_verified_votes_) {
@@ -824,8 +825,7 @@ void VoteManager::clearOwnVerifiedVotes(Batch& write_batch) {
     own_vote_hashes.emplace_back(vote->getHash());
   }
 
-  requireApplied(db_->rustStorage().append_clear_own_verified_votes(db_->rustBatchId(write_batch),
-                                                                    toBridgeRewardVoteHashes(own_vote_hashes)),
+  requireApplied(db_->rustStorage().clear_own_verified_votes(toBridgeRewardVoteHashes(own_vote_hashes)),
                  "own verified vote cleanup");
   own_verified_votes_.clear();
 }

@@ -3,6 +3,16 @@ use crate::ffi::BridgeStorage;
 use anyhow::Context;
 use ethereum_types::H256;
 use rlp::Rlp;
+use rustaxa_consensus::{
+    clear_own_verified_votes as domain_clear_own_verified_votes,
+    persist_pbft_vote_progress as domain_persist_pbft_vote_progress,
+    remove_extra_reward_votes as domain_remove_extra_reward_votes,
+    save_own_verified_vote as domain_save_own_verified_vote,
+    PbftTwoTPlusOneVoteBundle as DomainPbftTwoTPlusOneVoteBundle,
+    PbftVotePersistenceResult as DomainPbftVotePersistenceResult, PbftVotePersistenceStatus,
+    PbftVoteProgressPersistenceWrite as DomainPbftVoteProgressPersistenceWrite,
+    PbftVoteStorageRecord as DomainPbftVoteStorageRecord,
+};
 use rustaxa_storage::Column;
 use rustaxa_storage::Config;
 use rustaxa_storage::StatusField;
@@ -14,33 +24,60 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 
-const PBFT_VOTE_PERSISTENCE_STATUS_APPLIED: u8 = 0;
-const PBFT_VOTE_PERSISTENCE_STATUS_REJECTED: u8 = 1;
 const PILLAR_VOTES_POS_IN_PERIOD_DATA: usize = 4;
 
-fn pbft_vote_persistence_applied(applied_writes: u64) -> rustaxa_ffi::PbftVotePersistenceResult {
+fn pbft_vote_persistence_from_domain(
+    value: DomainPbftVotePersistenceResult,
+) -> rustaxa_ffi::PbftVotePersistenceResult {
     rustaxa_ffi::PbftVotePersistenceResult {
-        status: PBFT_VOTE_PERSISTENCE_STATUS_APPLIED,
-        applied_writes,
-        error_code: String::new(),
+        status: value.status.as_u8(),
+        applied_writes: value.applied_writes,
+        error_code: value.error_code,
     }
 }
 
-fn pbft_vote_persistence_rejected(error_code: &str) -> rustaxa_ffi::PbftVotePersistenceResult {
-    rustaxa_ffi::PbftVotePersistenceResult {
-        status: PBFT_VOTE_PERSISTENCE_STATUS_REJECTED,
-        applied_writes: 0,
-        error_code: error_code.to_string(),
+fn require_pbft_vote_persistence_applied(
+    result: DomainPbftVotePersistenceResult,
+) -> Result<(), anyhow::Error> {
+    if result.status == PbftVotePersistenceStatus::Applied {
+        return Ok(());
+    }
+    Err(anyhow::anyhow!(result.error_code))
+}
+
+fn vote_storage_record_to_domain(
+    value: rustaxa_ffi::PbftVoteStorageRecord,
+) -> DomainPbftVoteStorageRecord {
+    DomainPbftVoteStorageRecord {
+        hash: H256::from(value.hash),
+        vote_rlp: value.vote_rlp,
     }
 }
 
-fn validate_two_t_plus_one_kind(kind: u8) -> bool {
-    kind <= 3
+fn two_t_plus_one_bundle_to_domain(
+    value: rustaxa_ffi::PbftTwoTPlusOneVoteBundle,
+) -> DomainPbftTwoTPlusOneVoteBundle {
+    DomainPbftTwoTPlusOneVoteBundle {
+        kind: value.kind,
+        period: value.period,
+        round: value.round,
+        step: value.step,
+        block_hash: H256::from(value.block_hash),
+        votes_bundle_rlp: value.votes_bundle_rlp,
+    }
 }
 
-fn validate_votes_bundle_rlp(bytes: &[u8]) -> bool {
-    let rlp = rlp::Rlp::new(bytes);
-    rlp.is_list() && rlp.item_count().is_ok()
+fn vote_progress_write_to_domain(
+    value: rustaxa_ffi::PbftVoteProgressPersistenceWrite,
+) -> DomainPbftVoteProgressPersistenceWrite {
+    DomainPbftVoteProgressPersistenceWrite {
+        extra_reward_vote: value
+            .has_extra_reward_vote
+            .then(|| vote_storage_record_to_domain(value.extra_reward_vote)),
+        two_t_plus_one_bundle: value
+            .has_two_t_plus_one_bundle
+            .then(|| two_t_plus_one_bundle_to_domain(value.two_t_plus_one_bundle)),
+    }
 }
 
 pub fn create_storage(path: &str) -> Result<Box<BridgeStorage>, anyhow::Error> {
@@ -737,9 +774,13 @@ impl BridgeStorage {
         hash: &[u8; 32],
         vote_rlp: Vec<u8>,
     ) -> Result<(), anyhow::Error> {
-        self.0
-            .pbft()
-            .write_own_verified_vote(H256::from(*hash), &vote_rlp)
+        require_pbft_vote_persistence_applied(domain_save_own_verified_vote(
+            &self.0,
+            DomainPbftVoteStorageRecord {
+                hash: H256::from(*hash),
+                vote_rlp,
+            },
+        )?)
     }
 
     pub fn remove_cert_voted_block_in_round(&self) -> Result<(), anyhow::Error> {
@@ -751,11 +792,17 @@ impl BridgeStorage {
     }
 
     pub fn remove_own_verified_vote(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
-        self.0.pbft().remove_own_verified_vote(H256::from(*hash))
+        require_pbft_vote_persistence_applied(domain_clear_own_verified_votes(
+            &self.0,
+            vec![H256::from(*hash)],
+        )?)
     }
 
     pub fn remove_extra_reward_vote(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
-        self.0.pbft().remove_extra_reward_vote(H256::from(*hash))
+        require_pbft_vote_persistence_applied(domain_remove_extra_reward_votes(
+            &self.0,
+            vec![H256::from(*hash)],
+        )?)
     }
 
     pub fn replace_two_t_plus_one_votes(
@@ -763,9 +810,20 @@ impl BridgeStorage {
         vote_type: u8,
         votes_bundle_rlp: Vec<u8>,
     ) -> Result<(), anyhow::Error> {
-        self.0
-            .pbft()
-            .replace_two_t_plus_one_votes(vote_type, &votes_bundle_rlp)
+        require_pbft_vote_persistence_applied(domain_persist_pbft_vote_progress(
+            &self.0,
+            DomainPbftVoteProgressPersistenceWrite {
+                extra_reward_vote: None,
+                two_t_plus_one_bundle: Some(DomainPbftTwoTPlusOneVoteBundle {
+                    kind: vote_type,
+                    period: 0,
+                    round: 0,
+                    step: 0,
+                    block_hash: H256::zero(),
+                    votes_bundle_rlp,
+                }),
+            },
+        )?)
     }
 
     pub fn save_extra_reward_vote(
@@ -773,9 +831,16 @@ impl BridgeStorage {
         hash: &[u8; 32],
         vote_rlp: Vec<u8>,
     ) -> Result<(), anyhow::Error> {
-        self.0
-            .pbft()
-            .write_extra_reward_vote(H256::from(*hash), &vote_rlp)
+        require_pbft_vote_persistence_applied(domain_persist_pbft_vote_progress(
+            &self.0,
+            DomainPbftVoteProgressPersistenceWrite {
+                extra_reward_vote: Some(DomainPbftVoteStorageRecord {
+                    hash: H256::from(*hash),
+                    vote_rlp,
+                }),
+                two_t_plus_one_bundle: None,
+            },
+        )?)
     }
 
     /// Persists VoteManager durable effects for one accepted PBFT vote.
@@ -797,110 +862,34 @@ impl BridgeStorage {
         &self,
         write: rustaxa_ffi::PbftVoteProgressPersistenceWrite,
     ) -> Result<rustaxa_ffi::PbftVotePersistenceResult, anyhow::Error> {
-        let mut batch = self.0.create_write_batch();
-        let mut applied_writes = 0;
-
-        if write.has_extra_reward_vote {
-            let vote = write.extra_reward_vote;
-            if self
-                .0
-                .pbft()
-                .write_extra_reward_vote_in_batch(&mut batch, H256::from(vote.hash), &vote.vote_rlp)
-                .is_err()
-            {
-                return Ok(pbft_vote_persistence_rejected(
-                    "PBFT_VOTE_PERSIST_STORAGE_FAILURE",
-                ));
-            }
-            applied_writes += 1;
-        }
-
-        if write.has_two_t_plus_one_bundle {
-            let bundle = write.two_t_plus_one_bundle;
-            if !validate_two_t_plus_one_kind(bundle.kind) {
-                return Ok(pbft_vote_persistence_rejected(
-                    "PBFT_VOTE_PERSIST_INVALID_TWO_T_PLUS_ONE_KIND",
-                ));
-            }
-            if !validate_votes_bundle_rlp(&bundle.votes_bundle_rlp) {
-                return Ok(pbft_vote_persistence_rejected(
-                    "PBFT_VOTE_PERSIST_MALFORMED_TWO_T_PLUS_ONE_BUNDLE",
-                ));
-            }
-            if self
-                .0
-                .pbft()
-                .replace_two_t_plus_one_votes_in_batch(
-                    &mut batch,
-                    bundle.kind,
-                    &bundle.votes_bundle_rlp,
-                )
-                .is_err()
-            {
-                return Ok(pbft_vote_persistence_rejected(
-                    "PBFT_VOTE_PERSIST_STORAGE_FAILURE",
-                ));
-            }
-            applied_writes += 1;
-        }
-
-        if self.0.commit_write_batch_with_sync(batch, false).is_err() {
-            return Ok(pbft_vote_persistence_rejected(
-                "PBFT_VOTE_PERSIST_STORAGE_FAILURE",
-            ));
-        }
-
-        Ok(pbft_vote_persistence_applied(applied_writes))
+        Ok(pbft_vote_persistence_from_domain(
+            domain_persist_pbft_vote_progress(&self.0, vote_progress_write_to_domain(write))?,
+        ))
     }
 
-    /// Appends VoteManager own-vote cleanup to a caller-owned Rust storage batch.
+    /// Clears VoteManager own-vote rows through a Rust-owned storage batch.
     ///
     /// Inputs:
-    /// - `batch_id`: bridge batch registry id associated with the caller's C++
-    ///   `Batch`.
     /// - `vote_hashes`: exact latest-round own-vote keys to delete.
     ///
     /// Outputs:
-    /// - A bridge result with `status = 0` after the deletes are appended or
-    ///   `status = 1` plus a stable error code if the batch is unknown or
-    ///   storage rejects the append.
+    /// - A bridge result with `status = 0` after the Rust-owned batch commits
+    ///   or `status = 1` plus a stable error code if storage rejects the write.
     ///
     /// Invariants and edge behavior:
-    /// - The caller owns the eventual commit through `commit_write_batch`.
+    /// - The bridge does not expose or consume a C++ batch id for this path.
     /// - Missing keys are RocksDB delete no-ops, matching legacy semantics.
-    pub fn append_clear_own_verified_votes(
+    pub fn clear_own_verified_votes(
         &self,
-        batch_id: u64,
         vote_hashes: Vec<rustaxa_ffi::PbftFinalizationHash>,
     ) -> Result<rustaxa_ffi::PbftVotePersistenceResult, anyhow::Error> {
-        let mut batches = match self.1.lock() {
-            Ok(batches) => batches,
-            Err(_) => {
-                return Ok(pbft_vote_persistence_rejected(
-                    "PBFT_VOTE_PERSIST_BATCH_REGISTRY_POISONED",
-                ));
-            }
-        };
-        let Some(batch) = batches.get_mut(&batch_id) else {
-            return Ok(pbft_vote_persistence_rejected(
-                "PBFT_VOTE_PERSIST_UNKNOWN_BATCH",
-            ));
-        };
-
-        for hash in &vote_hashes {
-            if self
-                .0
-                .pbft()
-                .remove_own_verified_vote_in_batch(batch, H256::from(hash.hash))
-                .is_err()
-            {
-                return Ok(pbft_vote_persistence_rejected(
-                    "PBFT_VOTE_PERSIST_STORAGE_FAILURE",
-                ));
-            }
-        }
-
-        Ok(pbft_vote_persistence_applied(vote_hashes.len() as u64))
+        let hashes = vote_hashes
+            .into_iter()
+            .map(|hash| H256::from(hash.hash))
+            .collect();
+        Ok(pbft_vote_persistence_from_domain(
+            domain_clear_own_verified_votes(&self.0, hashes)?,
+        ))
     }
 
     pub fn transaction_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {

@@ -200,7 +200,7 @@ TEST_F(StorageTest, PersistPbftVoteProgressRejectsMalformedTwoTPlusOneBundle) {
   EXPECT_TRUE(storage->get_all_two_t_plus_one_votes().empty());
 }
 
-TEST_F(StorageTest, AppendClearOwnVerifiedVotesWaitsForCallerBatchCommit) {
+TEST_F(StorageTest, ClearOwnVerifiedVotesCommitsRustOwnedBatch) {
   auto storage = create_storage(test_dir.string());
   auto own_vote_hash = h256(0x66);
   storage->save_own_verified_vote(own_vote_hash, bytes({0x72}));
@@ -208,40 +208,21 @@ TEST_F(StorageTest, AppendClearOwnVerifiedVotesWaitsForCallerBatchCommit) {
 
   rust::Vec<PbftFinalizationHash> vote_hashes;
   vote_hashes.push_back(PbftFinalizationHash{own_vote_hash});
-  auto batch_id = storage->create_write_batch();
-  auto result = storage->append_clear_own_verified_votes(batch_id, std::move(vote_hashes));
+  auto result = storage->clear_own_verified_votes(std::move(vote_hashes));
   EXPECT_EQ(result.status, kPbftVotePersistenceApplied);
   EXPECT_EQ(result.applied_writes, 1u);
-  EXPECT_EQ(storage->get_own_verified_votes().size(), 1u);
-
-  storage->commit_write_batch(batch_id, false);
   EXPECT_TRUE(storage->get_own_verified_votes().empty());
 }
 
-TEST_F(StorageTest, AppendClearOwnVerifiedVotesDropLeavesVotes) {
+TEST_F(StorageTest, ClearOwnVerifiedVotesTreatsMissingVotesAsNoOpDeletes) {
   auto storage = create_storage(test_dir.string());
-  auto own_vote_hash = h256(0x77);
-  storage->save_own_verified_vote(own_vote_hash, bytes({0x73}));
 
   rust::Vec<PbftFinalizationHash> vote_hashes;
-  vote_hashes.push_back(PbftFinalizationHash{own_vote_hash});
-  auto batch_id = storage->create_write_batch();
-  auto result = storage->append_clear_own_verified_votes(batch_id, std::move(vote_hashes));
+  vote_hashes.push_back(PbftFinalizationHash{h256(0x77)});
+  auto result = storage->clear_own_verified_votes(std::move(vote_hashes));
   EXPECT_EQ(result.status, kPbftVotePersistenceApplied);
-
-  storage->drop_write_batch(batch_id);
-  ASSERT_EQ(storage->get_own_verified_votes().size(), 1u);
-  EXPECT_EQ(to_std_vec(storage->get_own_verified_votes()[0].data), std::vector<uint8_t>({0x73}));
-}
-
-TEST_F(StorageTest, AppendClearOwnVerifiedVotesRejectsUnknownBatch) {
-  auto storage = create_storage(test_dir.string());
-
-  rust::Vec<PbftFinalizationHash> vote_hashes;
-  vote_hashes.push_back(PbftFinalizationHash{h256(0x88)});
-  auto result = storage->append_clear_own_verified_votes(999999, std::move(vote_hashes));
-  EXPECT_EQ(result.status, kPbftVotePersistenceRejected);
-  EXPECT_FALSE(result.error_code.empty());
+  EXPECT_EQ(result.applied_writes, 1u);
+  EXPECT_TRUE(storage->get_own_verified_votes().empty());
 }
 
 TEST_F(StorageTest, ApplyPbftManagerTransitionStorageCommitsCursorStatusesAndOwnVoteCleanup) {
