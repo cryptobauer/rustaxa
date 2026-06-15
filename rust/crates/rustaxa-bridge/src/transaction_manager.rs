@@ -69,6 +69,7 @@ use rustaxa_consensus::transaction_queue::{
     TransactionQueue, TransactionQueueAccountNonceFact, TransactionQueueDemoteStatus,
     TransactionQueueEntry, TransactionQueueInsertStatus, TransactionQueuePurgeOutcome,
 };
+use rustaxa_consensus::transaction_storage::save_transaction_count;
 use rustaxa_types::LegacyTransactionEnvelope;
 use std::time::{Duration, Instant};
 
@@ -851,11 +852,7 @@ pub fn update_finalized_transactions_status(
     )?;
 
     if !plan.accepted_transactions.is_empty() {
-        storage
-            .save_status_field(
-                rustaxa_storage::StatusField::TrxCount as u8,
-                plan.target_transaction_count,
-            )
+        save_transaction_count(&storage.0, plan.target_transaction_count)
             .context("TM_FINALIZED_STATUS_TRXCOUNT_WRITE")?;
     }
 
@@ -911,11 +908,7 @@ pub fn update_finalized_transactions_status_with_sidecar(
     )?;
 
     if !plan.accepted_transactions.is_empty() {
-        storage
-            .save_status_field(
-                rustaxa_storage::StatusField::TrxCount as u8,
-                plan.target_transaction_count,
-            )
+        save_transaction_count(&storage.0, plan.target_transaction_count)
             .context("TM_FINALIZED_STATUS_TRXCOUNT_WRITE")?;
     }
 
@@ -996,11 +989,7 @@ pub fn update_finalized_transactions_status_with_runtime(
     )?;
 
     if !plan.accepted_transactions.is_empty() {
-        storage
-            .save_status_field(
-                rustaxa_storage::StatusField::TrxCount as u8,
-                plan.target_transaction_count,
-            )
+        save_transaction_count(&storage.0, plan.target_transaction_count)
             .context("TM_FINALIZED_STATUS_TRXCOUNT_WRITE")?;
     }
 

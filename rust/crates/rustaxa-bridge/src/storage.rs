@@ -7,15 +7,14 @@ use rustaxa_consensus::{
     clear_own_verified_votes as domain_clear_own_verified_votes,
     persist_pbft_vote_progress as domain_persist_pbft_vote_progress,
     remove_extra_reward_votes as domain_remove_extra_reward_votes,
-    save_own_verified_vote as domain_save_own_verified_vote,
+    save_non_finalized_transactions as domain_save_non_finalized_transactions,
+    save_own_verified_vote as domain_save_own_verified_vote, NonFinalizedTransactionStoragePayload,
     PbftTwoTPlusOneVoteBundle as DomainPbftTwoTPlusOneVoteBundle,
     PbftVotePersistenceResult as DomainPbftVotePersistenceResult, PbftVotePersistenceStatus,
     PbftVoteProgressPersistenceWrite as DomainPbftVoteProgressPersistenceWrite,
     PbftVoteStorageRecord as DomainPbftVoteStorageRecord,
 };
-use rustaxa_storage::Column;
 use rustaxa_storage::Config;
-use rustaxa_storage::StatusField;
 use rustaxa_storage::Storage;
 use rustaxa_types::pillar::RawPillarBlockData;
 use std::collections::HashMap;
@@ -1010,35 +1009,17 @@ impl BridgeStorage {
         transactions: Vec<rustaxa_ffi::NonFinalizedTransactionPayload>,
         transaction_count: u64,
     ) -> Result<(), anyhow::Error> {
-        let mut batch = self.0.create_write_batch();
-
-        for transaction in transactions {
-            let hash = H256::from(transaction.hash);
-            self.0
-                .batch_put_raw(
-                    &mut batch,
-                    Column::Transactions,
-                    hash.as_bytes(),
-                    &transaction.trx_rlp,
-                )
-                .context("NON_FINALIZED_TRANSACTION_BATCH_PUT")?;
-        }
-
-        let status_field = StatusField::TrxCount as u8;
-        self.0
-            .batch_put_raw(
-                &mut batch,
-                Column::Status,
-                &[status_field],
-                &transaction_count.to_le_bytes(),
-            )
-            .context("NON_FINALIZED_TRANSACTION_COUNT_WRITE")?;
-
-        self.0
-            .commit_write_batch_with_sync(batch, false)
-            .context("NON_FINALIZED_TRANSACTION_BATCH_COMMIT")?;
-
-        Ok(())
+        domain_save_non_finalized_transactions(
+            &self.0,
+            transactions
+                .into_iter()
+                .map(|transaction| NonFinalizedTransactionStoragePayload {
+                    hash: H256::from(transaction.hash),
+                    trx_rlp: transaction.trx_rlp,
+                })
+                .collect(),
+            transaction_count,
+        )
     }
 
     pub fn remove_transaction(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {

@@ -26,6 +26,7 @@ pub mod slashing;
 pub mod sortition;
 pub mod transaction_manager;
 pub mod transaction_queue;
+pub mod transaction_storage;
 pub mod verified_votes;
 
 mod final_chain;
@@ -208,6 +209,9 @@ pub use transaction_manager::{
     TransactionPackEstimateOutcome, TransactionPackingPlanner, plan_transactions_from_dag_block,
 };
 pub use transaction_queue::TransactionQueue;
+pub use transaction_storage::{
+    NonFinalizedTransactionStoragePayload, save_non_finalized_transactions, save_transaction_count,
+};
 pub use verified_votes::VerifiedVotes;
 
 pub use dag::dag_block_transaction_hashes;
