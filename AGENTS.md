@@ -74,6 +74,8 @@ This repository is the Rust rewrite track for Taraxa. Keep day-to-day work align
 
 - `make help`: list local development targets.
 - `make configure && make build`: configure Conan/CMake and compile `taraxad` using the default `/build` tree.
+- For direct CMake builds, always compile with 12 jobs, for example
+  `cmake --build /build --target pbft_manager_test --parallel 12`.
 - `cd /build/tests && ctest --output-on-failure`: run registered C++ and `go_test` suites.
 - `cd tests/py && ./run.sh -s --tb=short`: run Python integration tests.
 - `make rewrite-validate-fast`: run the Rust pre-commit checks (`cargo fmt --check`, `cargo clippy`, and `cargo test`) plus whitespace validation.
