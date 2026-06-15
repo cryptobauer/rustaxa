@@ -373,7 +373,9 @@ Goal: separate consensus storage reads from query/API compatibility reads and pr
 Status: in progress. Gas-pricer finalized-history restoration now performs its FinalChain `LAST_NUMBER` and period-data
 walk inside `rustaxa-consensus::gas_pricer` over native `rustaxa-storage`; the bridge adapter only passes the shared
 storage handle and oracle lock. This removes bridge-local raw storage reads and period-data gas-price decoding from the
-deterministic gas-pricer initialization path.
+deterministic gas-pricer initialization path. The storage-boundary guard now also rejects new C++ `getDB()` additions by
+default; RPC/GraphQL compatibility reads must carry an inline `RUSTAXA_QUERY_COMPAT_READ` marker so query debt is visible
+instead of silently expanding.
 
 Move:
 
@@ -401,6 +403,10 @@ Validation:
 Validation note: the gas-pricer read-surface sub-slice passes `cargo test -p rustaxa-consensus gas_pricer`,
 `cargo test -p rustaxa-bridge gas_pricer`, `rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
 `scripts/rewrite_storage_boundary_guard.sh`, `gas_pricer_shim_test`, and `gas_pricer_test`.
+
+Validation note: the guard-tightening sub-slice extends the storage-boundary guard self-test for new `getDB()` additions
+and documented RPC/GraphQL compatibility reads. It passes `scripts/rewrite_storage_boundary_guard.sh --self-test` and
+`scripts/rewrite_storage_boundary_guard.sh`.
 
 ## Slice 9: Collapse DbStorage To Compatibility Shell
 

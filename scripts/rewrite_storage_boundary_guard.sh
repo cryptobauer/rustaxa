@@ -54,6 +54,11 @@ scan_diff() {
              path ~ /^tests\//
     }
 
+    function is_query_compat_read(path, line) {
+      return (path ~ /^libraries\/core_libs\/network\/(rpc|graphql)\//) &&
+             line ~ /RUSTAXA_QUERY_COMPAT_READ/
+    }
+
     function has_call(line, name) {
       return line ~ "(^|[^[:alnum:]_])" name "[[:space:]]*\\("
     }
@@ -66,11 +71,13 @@ scan_diff() {
              has_call(line, "commitWriteBatch") ||
              has_call(line, "rustBatchId") ||
              has_call(line, "rustStorage") ||
+             has_call(line, "getDB") ||
              line ~ /DbStorage::Columns/
     }
 
     function report(line) {
-      if (path != "" && is_cpp_file(path) && !is_allowlisted(path) && is_forbidden(line)) {
+      if (path != "" && is_cpp_file(path) && !is_allowlisted(path) &&
+          !is_query_compat_read(path, line) && is_forbidden(line)) {
         printf "%s:%d: %s\n", path, new_line, line
         found = 1
       }
@@ -123,6 +130,33 @@ diff --git a/libraries/core_libs/network/rpc/Taraxa.cpp b/libraries/core_libs/ne
 EOF
   if [ ! -s "$violations_file" ]; then
     echo "storage-boundary guard self-test failed: rustStorage() addition was not rejected" >&2
+    exit 1
+  fi
+
+  : >"$violations_file"
+  cat <<'EOF' | scan_diff >"$violations_file" || true
+diff --git a/libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp b/libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp
+--- a/libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp
++++ b/libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp
+@@ -1,0 +1,1 @@
++auto db = app->getDB();
+EOF
+  if [ ! -s "$violations_file" ]; then
+    echo "storage-boundary guard self-test failed: getDB() addition was not rejected" >&2
+    exit 1
+  fi
+
+  : >"$violations_file"
+  cat <<'EOF' | scan_diff >"$violations_file" || true
+diff --git a/libraries/core_libs/network/rpc/Taraxa.cpp b/libraries/core_libs/network/rpc/Taraxa.cpp
+--- a/libraries/core_libs/network/rpc/Taraxa.cpp
++++ b/libraries/core_libs/network/rpc/Taraxa.cpp
+@@ -1,0 +1,1 @@
++auto db = app->getDB();  // RUSTAXA_QUERY_COMPAT_READ: legacy RPC compatibility read.
+EOF
+  if [ -s "$violations_file" ]; then
+    echo "storage-boundary guard self-test failed: documented query compatibility read was rejected" >&2
+    cat "$violations_file" >&2
     exit 1
   fi
 
