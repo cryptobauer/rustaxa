@@ -208,6 +208,9 @@ storage-backed expired DAG transaction cleanup fact collection by loading expire
 transaction membership directly from `rustaxa-storage`. It also owns finalized DAG cleanup storage apply: counter/index
 facts are loaded from canonical DAG storage, expired DAG rows and expired non-finalized transaction rows are committed in
 one Rust-owned storage batch, and the bridge only maps the returned side-effect facts for temporary live sidecar cleanup.
+Non-finalized DAG sync payload materialization now also loads selected DAG block RLPs and de-duplicated transaction RLP
+lookups in `rustaxa-consensus::dag` over direct `rustaxa-storage` reads; the bridge keeps only period/hash selection DTO
+mapping and network packet materialization.
 
 Move:
 

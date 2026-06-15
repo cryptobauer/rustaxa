@@ -7,23 +7,22 @@ use crate::ffi::rustaxa_ffi::{
     DagManagerRuntimeSyncSnapshot, DagManagerSnapshot, DagOrder, DagPersistenceCounters,
     DagPivotTipsValidation, DagProposerEligibilityDecision, DagProposerEligibilityInput,
     DagProposerTipCandidate, DagProposerTipSelection, DagReferenceMetadata, DagSyncBlockRlp,
-    DagTransactionHash, DagTransactionQueryPlan, DagVerifyAuthorizationInput,
-    DagVerifyAuthorizationResult, DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock,
-    DagVerifyPrecheckResult, DagVerifyTransactionAvailabilityInput,
-    DagVerifyTransactionAvailabilityResult, DagVerifyVdfDposDecision, DagVerifyVdfDposFacts,
-    DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput,
-    DagVerifyVdfSortitionInput, DagVerifyVdfSortitionResult, HashLookup, PeriodLookup,
-    SortitionRuntimeParams,
+    DagTransactionHash, DagTransactionQueryPlan, DagTransactionRlpLookup,
+    DagVerifyAuthorizationInput, DagVerifyAuthorizationResult, DagVerifyGasInput,
+    DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
+    DagVerifyTransactionAvailabilityInput, DagVerifyTransactionAvailabilityResult,
+    DagVerifyVdfDposDecision, DagVerifyVdfDposFacts, DagVerifyVdfPrepareInput,
+    DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
+    DagVerifyVdfSortitionResult, HashLookup, PeriodLookup, SortitionRuntimeParams,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
-use crate::storage::transaction_rlp_lookups;
 use anyhow::{ensure, Context, Result};
 use ethereum_types::H256;
 #[cfg(test)]
 use rustaxa_consensus::dag::collect_finalization_cleanup_from_storage;
 use rustaxa_consensus::dag::{
     apply_finalization_cleanup_from_storage, collect_expired_transaction_cleanup_from_storage,
-    construct_dag_vdf_message, dag_block_transaction_hashes,
+    collect_non_finalized_sync_payload_from_storage, construct_dag_vdf_message,
     decide_dag_verify_vdf_dpos_authorization, derive_frontier, plan_dag_verify_transaction_query,
     plan_expired_transaction_cleanup, plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
     validate_dag_verify_authorization, validate_dag_verify_gas, validate_dag_verify_precheck,
@@ -573,38 +572,21 @@ impl BridgeDagManagerRuntime {
         known_hashes: Vec<DagHash>,
     ) -> Result<DagManagerNonFinalizedSyncPayload> {
         let snapshot = self.dag_manager_runtime_non_finalized_sync_snapshot(known_hashes);
-
-        let mut transaction_hashes_by_block = Vec::with_capacity(snapshot.selected_hashes.len());
-        let mut blocks = Vec::with_capacity(snapshot.selected_hashes.len());
-
-        for hash in &snapshot.selected_hashes {
-            let block = self
-                .dag_manager_runtime_load_block(&hash.hash)
-                .context("DAG_RUNTIME_SYNC_BLOCK_LOAD")?;
-            ensure!(
-                block.found,
-                "selected non-finalized DAG block missing from storage"
-            );
-
-            let transactions = dag_block_transaction_hashes(&block.block_rlp)
-                .context("DAG_RUNTIME_SYNC_BLOCK_TRANSACTIONS")?;
-
-            transaction_hashes_by_block.push(transactions);
-            blocks.push(DagSyncBlockRlp {
-                hash: hash.hash,
-                block_rlp: block.block_rlp,
-            });
-        }
-
-        let transaction_query = plan_non_finalized_transaction_query(&transaction_hashes_by_block);
-        let transactions =
-            transaction_rlp_lookups(self.storage.as_ref(), transaction_query.query_hashes)
-                .context("DAG_RUNTIME_SYNC_TRANSACTION_LOOKUP")?;
+        let selected_hashes = snapshot
+            .selected_hashes
+            .iter()
+            .map(|hash| H256::from(hash.hash))
+            .collect::<Vec<_>>();
+        let payload = collect_non_finalized_sync_payload_from_storage(
+            self.storage.as_ref(),
+            &selected_hashes,
+        )
+        .context("DAG_RUNTIME_SYNC_STORAGE_PAYLOAD")?;
 
         Ok(DagManagerNonFinalizedSyncPayload {
             period: snapshot.period,
-            blocks,
-            transactions,
+            blocks: to_bridge_sync_blocks(payload.blocks),
+            transactions: to_bridge_transaction_rlp_lookups(payload.transactions),
         })
     }
 
@@ -1419,6 +1401,32 @@ fn to_bridge_transaction_hashes(hashes: Vec<H256>) -> Vec<DagTransactionHash> {
     hashes
         .into_iter()
         .map(|hash| DagTransactionHash { hash: hash.0 })
+        .collect()
+}
+
+fn to_bridge_sync_blocks(
+    blocks: Vec<rustaxa_consensus::dag::DagSyncBlockRlp>,
+) -> Vec<DagSyncBlockRlp> {
+    blocks
+        .into_iter()
+        .map(|block| DagSyncBlockRlp {
+            hash: block.hash.into(),
+            block_rlp: block.block_rlp,
+        })
+        .collect()
+}
+
+fn to_bridge_transaction_rlp_lookups(
+    lookups: Vec<rustaxa_consensus::dag::DagTransactionStorageLookup>,
+) -> Vec<DagTransactionRlpLookup> {
+    lookups
+        .into_iter()
+        .map(|lookup| DagTransactionRlpLookup {
+            hash: lookup.hash.into(),
+            found: lookup.found,
+            finalized: lookup.finalized,
+            tx_rlp: lookup.tx_rlp,
+        })
         .collect()
 }
 

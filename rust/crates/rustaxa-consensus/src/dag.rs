@@ -201,6 +201,41 @@ pub struct DagTransactionQueryPlan {
     pub query_hashes: Vec<H256>,
 }
 
+/// Canonical DAG block payload selected for non-finalized sync.
+///
+/// `hash` is the requested DAG block hash and `block_rlp` is the exact
+/// canonical payload loaded from `rustaxa-storage`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagSyncBlockRlp {
+    pub hash: H256,
+    pub block_rlp: Vec<u8>,
+}
+
+/// Transaction payload lookup selected for non-finalized DAG sync.
+///
+/// `finalized` is true when the payload came from a finalized transaction
+/// location instead of pending transaction storage. Missing hashes return
+/// `found = false` and an empty payload so the bridge can preserve legacy packet
+/// materialization behavior without deriving storage facts itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagTransactionStorageLookup {
+    pub hash: H256,
+    pub found: bool,
+    pub finalized: bool,
+    pub tx_rlp: Vec<u8>,
+}
+
+/// Storage-backed materialization payload for non-finalized DAG sync.
+///
+/// `blocks` preserves the selected DAG hash order. `transactions` contains
+/// de-duplicated transaction payload lookups in first-seen block/transaction
+/// order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagNonFinalizedSyncStoragePayload {
+    pub blocks: Vec<DagSyncBlockRlp>,
+    pub transactions: Vec<DagTransactionStorageLookup>,
+}
+
 /// Finalization fact for one transaction referenced by expired DAG blocks.
 ///
 /// Inputs:
@@ -656,6 +691,112 @@ pub fn plan_non_finalized_transaction_query(
         }
     }
     DagTransactionQueryPlan { query_hashes }
+}
+
+/// Collects non-finalized DAG sync payloads directly from Rust storage.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+/// - `selected_hashes`: DAG block hashes selected by the Rust DAG state for
+///   sync materialization.
+///
+/// Output:
+/// - canonical block RLPs in selected hash order.
+/// - unique transaction lookups in first-seen block/transaction order.
+///
+/// Edge behavior:
+/// - A selected DAG block missing from storage is an explicit error; callers
+///   must not emit a partial sync response from stale live state.
+/// - Missing transactions are represented in the lookup payload rather than
+///   treated as storage errors, matching the legacy sync packet surface.
+pub fn collect_non_finalized_sync_payload_from_storage(
+    storage: &Storage,
+    selected_hashes: &[H256],
+) -> Result<DagNonFinalizedSyncStoragePayload> {
+    let mut transaction_hashes_by_block = Vec::with_capacity(selected_hashes.len());
+    let mut blocks = Vec::with_capacity(selected_hashes.len());
+
+    for hash in selected_hashes {
+        let block_rlp = storage
+            .dag()
+            .by_hash_rlp_optional(*hash)
+            .context("DAG_STORAGE_SYNC_BLOCK_LOAD")?
+            .with_context(|| format!("DAG_STORAGE_SYNC_BLOCK_MISSING: {hash:?}"))?;
+
+        let transactions = dag_block_transaction_hashes(&block_rlp)
+            .context("DAG_STORAGE_SYNC_BLOCK_TRANSACTIONS")?;
+
+        transaction_hashes_by_block.push(transactions);
+        blocks.push(DagSyncBlockRlp {
+            hash: *hash,
+            block_rlp,
+        });
+    }
+
+    let transaction_query = plan_non_finalized_transaction_query(&transaction_hashes_by_block);
+    let transactions = transaction_storage_lookups(storage, &transaction_query.query_hashes)
+        .context("DAG_STORAGE_SYNC_TRANSACTION_LOOKUP")?;
+
+    Ok(DagNonFinalizedSyncStoragePayload {
+        blocks,
+        transactions,
+    })
+}
+
+fn transaction_storage_lookups(
+    storage: &Storage,
+    hashes: &[H256],
+) -> Result<Vec<DagTransactionStorageLookup>> {
+    let transaction = storage.transaction();
+    let mut out = Vec::with_capacity(hashes.len());
+
+    for hash in hashes {
+        let (tx_rlp, finalized) = if let Some(tx_rlp) = transaction
+            .rlp(*hash)
+            .context("DAG_STORAGE_TRANSACTION_RLP_PENDING_LOOKUP")?
+        {
+            (Some(tx_rlp), false)
+        } else if let Some(location_rlp) = transaction
+            .location_rlp(*hash)
+            .context("DAG_STORAGE_TRANSACTION_RLP_LOCATION_LOOKUP")?
+        {
+            let location = Rlp::new(&location_rlp);
+            let period = location
+                .val_at::<u64>(0)
+                .context("DAG_STORAGE_TRANSACTION_RLP_LOCATION_PERIOD")?;
+            let position = location
+                .val_at::<u32>(1)
+                .context("DAG_STORAGE_TRANSACTION_RLP_LOCATION_POSITION")?;
+            let is_system = location
+                .item_count()
+                .context("DAG_STORAGE_TRANSACTION_RLP_LOCATION_SHAPE")?
+                == 3
+                && location
+                    .val_at::<bool>(2)
+                    .context("DAG_STORAGE_TRANSACTION_RLP_LOCATION_SYSTEM_FLAG")?;
+            let tx_rlp = if is_system {
+                transaction
+                    .system_rlp(*hash)
+                    .context("DAG_STORAGE_TRANSACTION_RLP_SYSTEM_LOOKUP")?
+            } else {
+                transaction
+                    .by_period_position_rlp(period, position)
+                    .context("DAG_STORAGE_TRANSACTION_RLP_FINALIZED_LOOKUP")?
+            };
+            (tx_rlp, true)
+        } else {
+            (None, false)
+        };
+
+        out.push(DagTransactionStorageLookup {
+            hash: *hash,
+            found: tx_rlp.is_some(),
+            finalized,
+            tx_rlp: tx_rlp.unwrap_or_default(),
+        });
+    }
+
+    Ok(out)
 }
 
 /// Plans non-finalized transaction removals after expired DAG block cleanup.
@@ -2763,6 +2904,57 @@ mod tests {
             ]
         );
         assert_eq!(payload.remove_hashes, vec![h(1)]);
+    }
+
+    #[test]
+    fn non_finalized_sync_payload_storage_loads_blocks_and_dedupes_transactions() {
+        let storage = temp_storage("rustaxa_consensus_dag_sync_payload");
+        let block_a = dag_block_rlp_with_vdf(vec![0x11], &[h(1), h(2), h(1)]);
+        let block_b = dag_block_rlp_with_vdf(vec![0x22], &[h(3), h(2)]);
+        storage.dag().write(h(11), 11, 0, &block_a).unwrap();
+        storage.dag().write(h(12), 12, 0, &block_b).unwrap();
+        storage.transaction().write(h(1), &[0xa1]).unwrap();
+        storage.transaction().write(h(2), &[0xa2]).unwrap();
+
+        let payload =
+            collect_non_finalized_sync_payload_from_storage(&storage, &[h(11), h(12)]).unwrap();
+
+        assert_eq!(
+            payload.blocks,
+            vec![
+                DagSyncBlockRlp {
+                    hash: h(11),
+                    block_rlp: block_a,
+                },
+                DagSyncBlockRlp {
+                    hash: h(12),
+                    block_rlp: block_b,
+                },
+            ]
+        );
+        assert_eq!(
+            payload.transactions,
+            vec![
+                DagTransactionStorageLookup {
+                    hash: h(1),
+                    found: true,
+                    finalized: false,
+                    tx_rlp: vec![0xa1],
+                },
+                DagTransactionStorageLookup {
+                    hash: h(2),
+                    found: true,
+                    finalized: false,
+                    tx_rlp: vec![0xa2],
+                },
+                DagTransactionStorageLookup {
+                    hash: h(3),
+                    found: false,
+                    finalized: false,
+                    tx_rlp: Vec::new(),
+                },
+            ]
+        );
     }
 
     #[test]

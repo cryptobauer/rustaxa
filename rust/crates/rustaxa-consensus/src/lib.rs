@@ -224,6 +224,8 @@ pub use verified_votes::VerifiedVotes;
 pub use dag::dag_block_transaction_hashes;
 pub use dag::{
     DagExpiredTransactionCleanupStoragePayload, DagFinalizedCounterUpdate,
-    DagManagerFinalizationCleanupStoragePayload, apply_finalization_cleanup_from_storage,
+    DagManagerFinalizationCleanupStoragePayload, DagNonFinalizedSyncStoragePayload,
+    DagSyncBlockRlp, DagTransactionStorageLookup, apply_finalization_cleanup_from_storage,
     collect_expired_transaction_cleanup_from_storage, collect_finalization_cleanup_from_storage,
+    collect_non_finalized_sync_payload_from_storage,
 };
