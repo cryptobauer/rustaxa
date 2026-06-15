@@ -9,6 +9,15 @@ use anyhow::{Context, Result};
 use ethereum_types::H256;
 use rustaxa_storage::{Column, StatusField, Storage};
 
+/// Stored transaction lookup missed every storage source.
+pub const STORED_TRANSACTION_SOURCE_MISSING: u8 = 0;
+/// Stored transaction lookup found a pending non-finalized payload.
+pub const STORED_TRANSACTION_SOURCE_PENDING: u8 = 1;
+/// Stored transaction lookup found a finalized regular transaction payload.
+pub const STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR: u8 = 2;
+/// Stored transaction lookup found a finalized system transaction payload.
+pub const STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM: u8 = 3;
+
 /// Non-finalized transaction payload accepted by TransactionManager planning.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct NonFinalizedTransactionStoragePayload {
@@ -16,6 +25,30 @@ pub struct NonFinalizedTransactionStoragePayload {
     pub hash: H256,
     /// Canonical transaction RLP payload to store while non-finalized.
     pub trx_rlp: Vec<u8>,
+}
+
+/// Ordered transaction hash request for storage-backed TransactionManager lookups.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct StoredTransactionLookupRequest {
+    /// Caller-owned index echoed back so C++ can preserve request identity.
+    pub input_index: u64,
+    /// Canonical transaction hash to resolve from pending or finalized storage.
+    pub hash: H256,
+}
+
+/// Storage-backed TransactionManager lookup result.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct StoredTransactionLookup {
+    /// Caller-owned index from the request.
+    pub input_index: u64,
+    /// Canonical transaction hash that was requested.
+    pub hash: H256,
+    /// True when `tx_rlp` was loaded from one of the storage sources.
+    pub found: bool,
+    /// One of the `STORED_TRANSACTION_SOURCE_*` constants.
+    pub source: u8,
+    /// Canonical transaction RLP payload, or empty when `found` is false.
+    pub tx_rlp: Vec<u8>,
 }
 
 /// Stored non-finalized transaction row used by TransactionManager restart recovery.
@@ -98,6 +131,89 @@ pub fn save_transaction_count(storage: &Storage, transaction_count: u64) -> Resu
         .context("TRANSACTION_MANAGER_COUNT_WRITE")
 }
 
+/// Resolves pending and finalized transaction payloads from Rust storage.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+/// - `requests`: ordered transaction hash requests with caller indexes.
+///
+/// Outputs:
+/// - One lookup result per request, preserving request order.
+/// - Missing hashes are represented with `found = false`, source `MISSING`,
+///   and empty RLP bytes.
+///
+/// Invariants and edge behavior:
+/// - Pending non-finalized payloads take precedence over finalized locations,
+///   matching the legacy TransactionManager lookup order.
+/// - Finalized regular transaction payloads are resolved through period data
+///   position; finalized system payloads are resolved through the system
+///   transaction column.
+/// - Malformed location RLP or period-data RLP returns an error with a stable
+///   TransactionManager context label.
+pub fn load_stored_transactions(
+    storage: &Storage,
+    requests: Vec<StoredTransactionLookupRequest>,
+) -> Result<Vec<StoredTransactionLookup>> {
+    let transaction = storage.transaction();
+    let mut out = Vec::with_capacity(requests.len());
+
+    for request in requests {
+        let (tx_rlp, source) = if let Some(tx_rlp) = transaction
+            .rlp(request.hash)
+            .context("TRANSACTION_MANAGER_STORED_LOOKUP_PENDING")?
+        {
+            (Some(tx_rlp), STORED_TRANSACTION_SOURCE_PENDING)
+        } else if let Some(location_rlp) = transaction
+            .location_rlp(request.hash)
+            .context("TRANSACTION_MANAGER_STORED_LOOKUP_LOCATION")?
+        {
+            let location = rlp::Rlp::new(&location_rlp);
+            let period = location
+                .val_at::<u64>(0)
+                .context("TRANSACTION_MANAGER_STORED_LOOKUP_LOCATION_PERIOD")?;
+            let position = location
+                .val_at::<u32>(1)
+                .context("TRANSACTION_MANAGER_STORED_LOOKUP_LOCATION_POSITION")?;
+            let is_system = location
+                .item_count()
+                .context("TRANSACTION_MANAGER_STORED_LOOKUP_LOCATION_SHAPE")?
+                == 3
+                && location
+                    .val_at::<bool>(2)
+                    .context("TRANSACTION_MANAGER_STORED_LOOKUP_LOCATION_SYSTEM_FLAG")?;
+
+            let tx_rlp = if is_system {
+                transaction
+                    .system_rlp(request.hash)
+                    .context("TRANSACTION_MANAGER_STORED_LOOKUP_SYSTEM")?
+                    .map(|tx_rlp| (tx_rlp, STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM))
+            } else {
+                transaction
+                    .by_period_position_rlp(period, position)
+                    .context("TRANSACTION_MANAGER_STORED_LOOKUP_FINALIZED")?
+                    .map(|tx_rlp| (tx_rlp, STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR))
+            };
+
+            match tx_rlp {
+                Some((tx_rlp, source)) => (Some(tx_rlp), source),
+                None => (None, STORED_TRANSACTION_SOURCE_MISSING),
+            }
+        } else {
+            (None, STORED_TRANSACTION_SOURCE_MISSING)
+        };
+
+        out.push(StoredTransactionLookup {
+            input_index: request.input_index,
+            hash: request.hash,
+            found: tx_rlp.is_some(),
+            source,
+            tx_rlp: tx_rlp.unwrap_or_default(),
+        });
+    }
+
+    Ok(out)
+}
+
 /// Loads non-finalized restart rows and removes stale finalized duplicates.
 ///
 /// Inputs:
@@ -158,6 +274,7 @@ pub fn load_non_finalized_recovery_entries(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rlp::RlpStream;
     use rustaxa_storage::{Config, Storage};
 
     fn temp_storage(name: &str) -> Storage {
@@ -212,6 +329,105 @@ mod tests {
                 .status_field(StatusField::TrxCount as u8)
                 .unwrap(),
             9
+        );
+    }
+
+    #[test]
+    fn load_stored_transactions_preserves_order_and_classifies_sources() {
+        let storage = temp_storage("rustaxa_consensus_transaction_storage_lookup");
+
+        storage
+            .transaction()
+            .write(H256::from([1u8; 32]), &[0x11])
+            .unwrap();
+        storage
+            .transaction()
+            .write_location(H256::from([2u8; 32]), 9, 0, false)
+            .unwrap();
+        storage
+            .transaction()
+            .write_system(H256::from([4u8; 32]), &[0x44])
+            .unwrap();
+        storage
+            .transaction()
+            .write_location(H256::from([4u8; 32]), 9, 0, true)
+            .unwrap();
+
+        let mut txs = RlpStream::new_list(1);
+        txs.append_raw(&[0x22], 1);
+        let mut period_data = RlpStream::new_list(5);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&txs.out(), 1);
+        period_data.append_raw(&[0xC0], 1);
+
+        let mut batch = storage.create_write_batch();
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::PeriodData,
+                &9u64.to_le_bytes(),
+                period_data.out().as_ref(),
+            )
+            .unwrap();
+        storage.commit_write_batch_with_sync(batch, false).unwrap();
+
+        let out = load_stored_transactions(
+            &storage,
+            vec![
+                StoredTransactionLookupRequest {
+                    input_index: 7,
+                    hash: H256::from([2u8; 32]),
+                },
+                StoredTransactionLookupRequest {
+                    input_index: 8,
+                    hash: H256::from([3u8; 32]),
+                },
+                StoredTransactionLookupRequest {
+                    input_index: 9,
+                    hash: H256::from([1u8; 32]),
+                },
+                StoredTransactionLookupRequest {
+                    input_index: 10,
+                    hash: H256::from([4u8; 32]),
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            out,
+            vec![
+                StoredTransactionLookup {
+                    input_index: 7,
+                    hash: H256::from([2u8; 32]),
+                    found: true,
+                    source: STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR,
+                    tx_rlp: vec![0x22],
+                },
+                StoredTransactionLookup {
+                    input_index: 8,
+                    hash: H256::from([3u8; 32]),
+                    found: false,
+                    source: STORED_TRANSACTION_SOURCE_MISSING,
+                    tx_rlp: Vec::new(),
+                },
+                StoredTransactionLookup {
+                    input_index: 9,
+                    hash: H256::from([1u8; 32]),
+                    found: true,
+                    source: STORED_TRANSACTION_SOURCE_PENDING,
+                    tx_rlp: vec![0x11],
+                },
+                StoredTransactionLookup {
+                    input_index: 10,
+                    hash: H256::from([4u8; 32]),
+                    found: true,
+                    source: STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM,
+                    tx_rlp: vec![0x44],
+                },
+            ]
         );
     }
 

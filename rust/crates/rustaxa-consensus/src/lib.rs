@@ -211,7 +211,10 @@ pub use transaction_manager::{
 pub use transaction_queue::TransactionQueue;
 pub use transaction_storage::{
     NonFinalizedTransactionRecoveryEntry, NonFinalizedTransactionStoragePayload,
-    load_non_finalized_recovery_entries, save_non_finalized_transactions, save_transaction_count,
+    STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR, STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM,
+    STORED_TRANSACTION_SOURCE_MISSING, STORED_TRANSACTION_SOURCE_PENDING, StoredTransactionLookup,
+    StoredTransactionLookupRequest, load_non_finalized_recovery_entries, load_stored_transactions,
+    save_non_finalized_transactions, save_transaction_count,
 };
 pub use verified_votes::VerifiedVotes;
 

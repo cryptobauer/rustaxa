@@ -70,7 +70,10 @@ use rustaxa_consensus::transaction_queue::{
     TransactionQueueEntry, TransactionQueueInsertStatus, TransactionQueuePurgeOutcome,
 };
 use rustaxa_consensus::transaction_storage::{
-    load_non_finalized_recovery_entries, save_transaction_count,
+    load_non_finalized_recovery_entries, load_stored_transactions, save_transaction_count,
+    StoredTransactionLookupRequest, STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR,
+    STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM, STORED_TRANSACTION_SOURCE_MISSING,
+    STORED_TRANSACTION_SOURCE_PENDING,
 };
 use rustaxa_types::LegacyTransactionEnvelope;
 use std::time::{Duration, Instant};
@@ -1195,10 +1198,10 @@ pub fn transaction_manager_filter_non_finalized_with_runtime(
     })
 }
 
-const TM_STORED_TX_SOURCE_MISSING: u8 = 0;
-const TM_STORED_TX_SOURCE_PENDING: u8 = 1;
-const TM_STORED_TX_SOURCE_FINALIZED_REGULAR: u8 = 2;
-const TM_STORED_TX_SOURCE_FINALIZED_SYSTEM: u8 = 3;
+const TM_STORED_TX_SOURCE_MISSING: u8 = STORED_TRANSACTION_SOURCE_MISSING;
+const TM_STORED_TX_SOURCE_PENDING: u8 = STORED_TRANSACTION_SOURCE_PENDING;
+const TM_STORED_TX_SOURCE_FINALIZED_REGULAR: u8 = STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR;
+const TM_STORED_TX_SOURCE_FINALIZED_SYSTEM: u8 = STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM;
 const TM_VERIFY_NOT_FINALIZED_SOURCE_NONE: u8 = 0;
 const TM_VERIFY_NOT_FINALIZED_SOURCE_RECENT_SIDECAR: u8 = 1;
 const TM_VERIFY_NOT_FINALIZED_SOURCE_STORAGE: u8 = 2;
@@ -1257,65 +1260,28 @@ pub fn transaction_manager_load_stored_transactions(
     storage: &BridgeStorage,
     requests: Vec<TransactionManagerStoredTransactionRequest>,
 ) -> Result<Vec<TransactionManagerStoredTransactionLookup>> {
-    let mut out = Vec::with_capacity(requests.len());
-    let transaction = storage.0.transaction();
-
-    for request in requests {
-        let hash = H256::from(request.hash);
-        let (tx_rlp, source) = if let Some(tx_rlp) = transaction
-            .rlp(hash)
-            .context("TM_TRANSACTION_RLP_PENDING_LOOKUP")?
-        {
-            (Some(tx_rlp), TM_STORED_TX_SOURCE_PENDING)
-        } else if let Some(location_rlp) = transaction
-            .location_rlp(hash)
-            .context("TM_TRANSACTION_RLP_LOCATION_LOOKUP")?
-        {
-            let location = rlp::Rlp::new(&location_rlp);
-            let period = location
-                .val_at::<u64>(0)
-                .context("TM_TRANSACTION_RLP_LOCATION_PERIOD")?;
-            let position = location
-                .val_at::<u32>(1)
-                .context("TM_TRANSACTION_RLP_LOCATION_POSITION")?;
-            let is_system = location
-                .item_count()
-                .context("TM_TRANSACTION_RLP_LOCATION_SHAPE")?
-                == 3
-                && location
-                    .val_at::<bool>(2)
-                    .context("TM_TRANSACTION_RLP_LOCATION_SYSTEM_FLAG")?;
-            let tx_rlp = if is_system {
-                transaction
-                    .system_rlp(hash)
-                    .context("TM_TRANSACTION_RLP_SYSTEM_LOOKUP")?
-                    .map(|tx_rlp| (tx_rlp, TM_STORED_TX_SOURCE_FINALIZED_SYSTEM))
-            } else {
-                transaction
-                    .by_period_position_rlp(period, position)
-                    .context("TM_TRANSACTION_RLP_FINALIZED_LOOKUP")?
-                    .map(|tx_rlp| (tx_rlp, TM_STORED_TX_SOURCE_FINALIZED_REGULAR))
-            };
-
-            match tx_rlp {
-                Some((tx_rlp, source)) => (Some(tx_rlp), source),
-                None => (None, TM_STORED_TX_SOURCE_MISSING),
-            }
-        } else {
-            (None, TM_STORED_TX_SOURCE_MISSING)
-        };
-
-        out.push(TransactionManagerStoredTransactionLookup {
+    let requests = requests
+        .into_iter()
+        .map(|request| StoredTransactionLookupRequest {
             input_index: request.input_index,
-            hash: hash.0,
-            found: tx_rlp.is_some(),
-            source,
-            old_finalized: false,
-            tx_rlp: tx_rlp.unwrap_or_default(),
-        });
-    }
+            hash: H256::from(request.hash),
+        })
+        .collect();
 
-    Ok(out)
+    load_stored_transactions(&storage.0, requests)
+        .context("TM_TRANSACTION_RLP_STORAGE_LOOKUP")?
+        .into_iter()
+        .map(|lookup| {
+            Ok(TransactionManagerStoredTransactionLookup {
+                input_index: lookup.input_index,
+                hash: lookup.hash.0,
+                found: lookup.found,
+                source: lookup.source,
+                old_finalized: false,
+                tx_rlp: lookup.tx_rlp,
+            })
+        })
+        .collect()
 }
 
 /// Resolves storage-backed proposal transactions and filters finalized hits

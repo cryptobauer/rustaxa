@@ -156,10 +156,11 @@ Goal: remove TransactionManager consensus paths from `BridgeStorage` / `DbStorag
 Rust transaction runtime.
 
 Status: in progress. `rustaxa-consensus::transaction_storage` now owns Rust storage batches for DAG-block
-non-finalized transaction persistence, TransactionManager `TrxCount` status writes used by finalized-status updates, and
-restart recovery cleanup of stale finalized rows in the non-finalized transaction column. The bridge adapts CXX DTOs and
-no longer owns those batch write groups. The finalized-account queue purge remains documented compatibility debt until
-FinalChain account snapshots move fully to `rustaxa-storage`.
+non-finalized transaction persistence, TransactionManager `TrxCount` status writes used by finalized-status updates,
+stored transaction lookup source classification, and restart recovery cleanup of stale finalized rows in the
+non-finalized transaction column. The bridge adapts CXX DTOs and no longer owns those batch write groups or lookup
+classification rules. The finalized-account queue purge remains documented compatibility debt until FinalChain account
+snapshots move fully to `rustaxa-storage`.
 
 Move:
 
