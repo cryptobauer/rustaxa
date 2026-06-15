@@ -270,6 +270,59 @@ pub fn restore_proposed_blocks_from_storage(
     Ok(restored)
 }
 
+/// Persists one proposed PBFT block through native Rust storage.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+/// - `expected_period`: period observed by the live C++ sidecar.
+/// - `expected_hash`: block hash observed by the live C++ sidecar.
+/// - `block_rlp`: canonical signed PBFT block bytes to persist.
+///
+/// Outputs:
+/// - Decoded storage entry that should be inserted into the live
+///   `ProposedBlocks` index after the storage write succeeds.
+///
+/// Invariants and edge behavior:
+/// - The RLP must decode as a signed PBFT block link.
+/// - Decoded period/hash must match the C++ sidecar facts supplied by the
+///   caller; mismatches are rejected before storage mutation.
+/// - Existing proposed-block rows are overwritten, matching the legacy
+///   `DbStorage::saveProposedPbftBlock` put semantics.
+pub fn save_proposed_block_storage(
+    storage: &Storage,
+    expected_period: u64,
+    expected_hash: H256,
+    block_rlp: &[u8],
+) -> Result<ProposedBlockStorageEntry> {
+    let link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(block_rlp))
+        .context("PROPOSED_BLOCKS_SAVE_DECODE_BLOCK")?;
+    if link.period != expected_period {
+        return Err(anyhow!(
+            "PROPOSED_BLOCKS_SAVE_PERIOD_MISMATCH: expected {}, decoded {}",
+            expected_period,
+            link.period
+        ));
+    }
+    if link.block_hash != expected_hash {
+        return Err(anyhow!(
+            "PROPOSED_BLOCKS_SAVE_HASH_MISMATCH: expected {:?}, decoded {:?}",
+            expected_hash,
+            link.block_hash
+        ));
+    }
+
+    storage
+        .pbft()
+        .write_proposed(link.block_hash, block_rlp)
+        .context("PROPOSED_BLOCKS_SAVE_STORAGE")?;
+
+    Ok(ProposedBlockStorageEntry {
+        period: link.period,
+        block_hash: link.block_hash,
+        block_rlp: block_rlp.to_vec(),
+    })
+}
+
 /// Deletes stale proposed PBFT block rows from native Rust storage.
 ///
 /// Inputs:
@@ -502,6 +555,38 @@ mod tests {
             .to_string();
 
         assert!(err.contains("PROPOSED_BLOCKS_RESTORE_HASH_MISMATCH"));
+    }
+
+    #[test]
+    fn save_proposed_block_storage_validates_sidecar_facts_before_write() {
+        let storage = temp_storage("rustaxa_consensus_proposed_blocks_save");
+        let (rlp, link) = proposed_link_and_hash(9, 12_345);
+
+        let saved =
+            save_proposed_block_storage(&storage, link.period, link.block_hash, &rlp).unwrap();
+        let period_mismatch =
+            save_proposed_block_storage(&storage, link.period + 1, link.block_hash, &rlp)
+                .unwrap_err()
+                .to_string();
+        let hash_mismatch = save_proposed_block_storage(&storage, link.period, hash(999), &rlp)
+            .unwrap_err()
+            .to_string();
+
+        assert_eq!(saved.period, link.period);
+        assert_eq!(saved.block_hash, link.block_hash);
+        assert_eq!(saved.block_rlp, rlp);
+        assert_eq!(
+            storage
+                .pbft()
+                .proposed_rlp()
+                .unwrap()
+                .into_iter()
+                .next()
+                .unwrap(),
+            rlp
+        );
+        assert!(period_mismatch.contains("PROPOSED_BLOCKS_SAVE_PERIOD_MISMATCH"));
+        assert!(hash_mismatch.contains("PROPOSED_BLOCKS_SAVE_HASH_MISMATCH"));
     }
 
     #[test]

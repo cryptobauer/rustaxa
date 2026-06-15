@@ -201,7 +201,7 @@ pub use pillar_votes::{
 };
 pub use proposed_blocks::{
     ProposedBlockStorageEntry, ProposedBlocks, cleanup_proposed_blocks_storage,
-    restore_proposed_blocks_from_storage,
+    restore_proposed_blocks_from_storage, save_proposed_block_storage,
 };
 pub use rewards_stats::{
     FinalizedRewardsPeriodFact, RewardCertVoteFact, RewardDagBlockFact, RewardTransactionFact,

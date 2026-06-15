@@ -603,7 +603,12 @@ self-test/current-diff guard, and `git diff --check`.
 Goal: remove the remaining `DbStorage` ownership from `ProposedBlocks` by constructing the Rust index with native storage
 and routing save/restore/cleanup through one Rust-owned proposed-block runtime.
 
-Status: planned.
+Status: complete. `rustaxa-consensus::proposed_blocks` now owns proposed-block save validation and persistence through
+`save_proposed_block_storage`, in addition to the existing Rust-owned restore and stale cleanup paths. The bridge exposes
+a storage-backed push API that commits the proposed-block row before mutating the Rust live index, preserving legacy
+save-before-duplicate-detection ordering. The C++ shim no longer calls `DbStorage::saveProposedPbftBlock` and keeps
+`DbStorage` only as the lifetime owner for the Rust storage handle while temporary C++ `PbftBlock` sidecar materialization
+remains at the public API/network boundary.
 
 Current boundary:
 
@@ -636,6 +641,14 @@ Validation:
 - `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
 - `cmake --build /build --target pbft_manager_test --parallel 12`
 - focused proposed-block/PBFT sync tests where available
+
+Validation note: the proposed-block persistence-runtime slice passes `cargo fmt --manifest-path rust/Cargo.toml --all
+--check`, `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`, `cargo test --manifest-path rust/Cargo.toml
+-p rustaxa-consensus proposed_blocks`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge proposed_blocks`,
+`cmake --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`, `cmake --build
+/build --target pbft_manager_test --parallel 12`, `/build/bin/pbft_manager_test
+--gtest_filter=PbftManagerWithDagCreation.*`, the storage-boundary guard self-test/current-diff guard, and `git diff
+--check`.
 
 ## Slice 12: PBFT Sync And Network Egress Storage Queries
 

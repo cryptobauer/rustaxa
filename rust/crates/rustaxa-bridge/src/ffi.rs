@@ -4079,6 +4079,13 @@ pub mod rustaxa_ffi {
             block_hash: &[u8; 32],
             block_rlp: Vec<u8>,
         ) -> bool;
+        pub fn proposed_blocks_push_with_storage(
+            self: &mut BridgeProposedBlocks,
+            storage: &BridgeStorage,
+            period: u64,
+            block_hash: &[u8; 32],
+            block_rlp: Vec<u8>,
+        ) -> Result<bool>;
         pub fn proposed_blocks_mark_valid(
             self: &mut BridgeProposedBlocks,
             period: u64,

@@ -27,7 +27,7 @@ class Vote;
  * Invariants:
  * - Rust owns the canonical `(period, block hash) -> validation flag` index
  * - C++ owns live `PbftBlock` objects until the PBFT block model is ported
- * - Rust storage owns startup restore and stale-proposal cleanup when a DB handle is available
+ * - Rust storage owns proposed-block save, startup restore, and stale-proposal cleanup when a storage handle is available
  */
 class ProposedBlocks {
  public:
@@ -47,8 +47,8 @@ class ProposedBlocks {
   /**
    * Inserts a proposed PBFT block.
    *
-   * When `save_to_db` is true, the block is persisted before duplicate detection to match legacy behavior. Returns true
-   * only when the in-memory proposal index did not already contain the period/hash.
+   * When `save_to_db` is true, Rust persists the block before duplicate detection to match legacy behavior. Returns true
+   * only when the Rust in-memory proposal index did not already contain the period/hash.
    */
   bool pushProposedPbftBlock(const std::shared_ptr<PbftBlock>& proposed_block, bool save_to_db = true);
 
@@ -67,7 +67,7 @@ class ProposedBlocks {
    *   live C++ `PbftBlock` objects during PBFT startup.
    *
    * Inputs/outputs:
-   * - Requires `db_` to hold a Rust storage handle.
+   * - Requires the constructor to have received a Rust storage handle owner.
    * - Returns the number of persisted proposals newly inserted into the Rust index.
    *
    * Edge behavior:
@@ -96,7 +96,7 @@ class ProposedBlocks {
    *
    * Inputs/outputs:
    * - `period` is the first retained PBFT period.
-   * - When `db_` is present, Rust deletes stale storage keys in one batch before
+   * - When `rust_storage_` is present, Rust deletes stale storage keys in one batch before
    *   mutating the Rust index.
    * - When `db_` is null, only the in-memory Rust index is cleaned.
    *
@@ -122,7 +122,8 @@ class ProposedBlocks {
   static std::shared_ptr<PbftBlock> makeBlock(const rust::Vec<uint8_t>& block_rlp);
 
   mutable std::shared_mutex proposed_blocks_mutex_;
-  std::shared_ptr<DbStorage> db_;
+  std::shared_ptr<DbStorage> storage_owner_;
+  const rustaxa::BridgeStorage* rust_storage_ = nullptr;
   ::rust::Box<rustaxa::BridgeProposedBlocks> rust_blocks_;
 };
 

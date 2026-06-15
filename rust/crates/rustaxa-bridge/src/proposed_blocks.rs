@@ -6,8 +6,8 @@ use crate::ffi::BridgeStorage;
 use anyhow::Context;
 use ethereum_types::H256;
 use rustaxa_consensus::proposed_blocks::{
-    cleanup_proposed_blocks_storage, restore_proposed_blocks_from_storage, ProposedBlockPeriod,
-    ProposedBlocks,
+    cleanup_proposed_blocks_storage, restore_proposed_blocks_from_storage,
+    save_proposed_block_storage, ProposedBlockPeriod, ProposedBlocks,
 };
 
 /// Creates an empty Rust proposed-block index for the C++ PBFT shim.
@@ -24,6 +24,29 @@ impl BridgeProposedBlocks {
         block_rlp: Vec<u8>,
     ) -> bool {
         self.0.push(period, H256::from(*block_hash), block_rlp)
+    }
+
+    /// Persists a proposed PBFT block through Rust storage, then inserts it into
+    /// the Rust-owned live index.
+    ///
+    /// Storage is committed before live index mutation so failed writes or
+    /// sidecar/RLP mismatches cannot leave memory ahead of durable state.
+    /// Existing storage rows are overwritten before duplicate detection,
+    /// matching the legacy `DbStorage::saveProposedPbftBlock` ordering.
+    pub fn proposed_blocks_push_with_storage(
+        &mut self,
+        storage: &BridgeStorage,
+        period: u64,
+        block_hash: &[u8; 32],
+        block_rlp: Vec<u8>,
+    ) -> Result<bool, anyhow::Error> {
+        let entry = save_proposed_block_storage(
+            &storage.0,
+            period,
+            H256::from(*block_hash),
+            block_rlp.as_slice(),
+        )?;
+        Ok(self.0.push(entry.period, entry.block_hash, entry.block_rlp))
     }
 
     /// Marks an existing proposed PBFT block as valid.
@@ -268,6 +291,47 @@ mod tests {
             assert_eq!(snapshot[1].period, link_1.period);
             assert_eq!(snapshot[1].block_hashes.len(), 1);
             assert_eq!(snapshot[1].block_hashes[0].hash, link_1.block_hash.0);
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn push_with_storage_persists_before_live_index_insert() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_proposed_blocks_push_storage");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let (rlp, link) = proposed_link_and_hash(9, 12_345);
+            let mut index = create_proposed_blocks_index();
+
+            let inserted = index
+                .proposed_blocks_push_with_storage(
+                    &storage,
+                    link.period,
+                    &link.block_hash.0,
+                    rlp.clone(),
+                )
+                .expect("push with storage should succeed");
+            let duplicate = index
+                .proposed_blocks_push_with_storage(
+                    &storage,
+                    link.period,
+                    &link.block_hash.0,
+                    rlp.clone(),
+                )
+                .expect("duplicate storage put should still succeed");
+            let stored = storage
+                .0
+                .pbft()
+                .proposed_rlp()
+                .expect("proposed payload should read");
+
+            assert!(inserted);
+            assert!(!duplicate);
+            assert_eq!(stored, vec![rlp]);
+            assert!(index.proposed_blocks_contains(link.period, &link.block_hash.0));
         }
 
         let _ = fs::remove_dir_all(temp_dir);

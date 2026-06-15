@@ -27,7 +27,11 @@ std::shared_ptr<PbftBlock> ProposedBlocks::makeBlock(const rust::Vec<uint8_t>& b
 }
 
 ProposedBlocks::ProposedBlocks(std::shared_ptr<DbStorage> db)
-    : db_(std::move(db)), rust_blocks_(rustaxa::create_proposed_blocks_index()) {}
+    : storage_owner_(std::move(db)), rust_blocks_(rustaxa::create_proposed_blocks_index()) {
+  if (storage_owner_) {
+    rust_storage_ = &storage_owner_->rustStorage();
+  }
+}
 
 ProposedBlocks::~ProposedBlocks() = default;
 
@@ -38,15 +42,22 @@ bool ProposedBlocks::pushProposedPbftBlock(const std::shared_ptr<PbftBlock>& pro
 
   std::unique_lock lock(proposed_blocks_mutex_);
   auto block_rlp = proposed_block->rlp(true);
-  if (save_to_db) {
-    if (!db_) {
-      throw std::runtime_error("Cannot persist proposed PBFT block without DbStorage");
-    }
-    db_->saveProposedPbftBlock(proposed_block);
-  }
-
   const auto period = proposed_block->getPeriod();
   const auto block_hash = proposed_block->getBlockHash();
+  if (save_to_db) {
+    if (!rust_storage_) {
+      throw std::runtime_error("Cannot persist proposed PBFT block without Rust storage");
+    }
+    try {
+      return rust_blocks_->proposed_blocks_push_with_storage(*rust_storage_, period, toBridgeHash(block_hash),
+                                                             toBridgeBytes(block_rlp));
+    } catch (const std::exception& e) {
+      throw std::runtime_error(e.what());
+    } catch (...) {
+      throw std::runtime_error("Failed to persist proposed PBFT block using Rust storage");
+    }
+  }
+
   return rust_blocks_->proposed_blocks_push(period, toBridgeHash(block_hash), toBridgeBytes(block_rlp));
 }
 
@@ -66,13 +77,13 @@ void ProposedBlocks::markBlockAsValid(const std::shared_ptr<PbftBlock>& proposed
 }
 
 size_t ProposedBlocks::restoreFromStorage() {
-  if (!db_) {
-    throw std::runtime_error("Cannot restore proposed PBFT blocks without DbStorage");
+  if (!rust_storage_) {
+    throw std::runtime_error("Cannot restore proposed PBFT blocks without Rust storage");
   }
 
   std::unique_lock lock(proposed_blocks_mutex_);
   try {
-    return rust_blocks_->proposed_blocks_restore_from_storage(db_->rustStorage());
+    return rust_blocks_->proposed_blocks_restore_from_storage(*rust_storage_);
   } catch (const std::exception& e) {
     throw std::runtime_error(e.what());
   } catch (...) {
@@ -98,7 +109,7 @@ bool ProposedBlocks::isInProposedBlocks(PbftPeriod period, const blk_hash_t& blo
 
 void ProposedBlocks::cleanupProposedPbftBlocksByPeriod(PbftPeriod period) {
   std::unique_lock lock(proposed_blocks_mutex_);
-  if (!db_) {
+  if (!rust_storage_) {
     auto removed_periods = rust_blocks_->proposed_blocks_cleanup_candidates(period);
     for (const auto& removed_period : removed_periods) {
       rust_blocks_->proposed_blocks_remove_period(removed_period.period);
@@ -107,7 +118,7 @@ void ProposedBlocks::cleanupProposedPbftBlocksByPeriod(PbftPeriod period) {
   }
 
   try {
-    rust_blocks_->proposed_blocks_cleanup_with_storage(db_->rustStorage(), period);
+    rust_blocks_->proposed_blocks_cleanup_with_storage(*rust_storage_, period);
   } catch (const std::exception& e) {
     throw std::runtime_error(e.what());
   } catch (...) {
