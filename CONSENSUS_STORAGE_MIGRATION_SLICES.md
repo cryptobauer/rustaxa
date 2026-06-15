@@ -258,7 +258,10 @@ Status: in progress. Rewards-stat startup reload and cache/clear persistence now
 the runtime from the consensus storage loader and exposes a DTO-only apply function; the old rewards-stat bridge batch-id
 appender has been removed from the CXX bridge surface, the rewards stats shim, and focused C++ test. The delayed PBFT
 manager executed-block reset storage write now lives in `rustaxa-consensus::pbft_manager`; the bridge updates the runtime
-snapshot only after the consensus storage helper succeeds.
+snapshot only after the consensus storage helper succeeds. PBFT manager transition cursor/status persistence and
+latest-round own-vote cleanup now commit through `rustaxa-consensus::pbft_manager::apply_pbft_manager_transition_storage`
+over direct `rustaxa-storage`; the old bridge batch-id transition appender was removed from the CXX bridge surface and
+bridge tests now cover only the committed apply route.
 
 Move:
 
@@ -287,7 +290,11 @@ Validation:
 Validation note: the rewards-stat sub-slice passes targeted Rust rewards tests, Rust bridge rewards tests,
 `rust_storage_tests`, and the focused C++ `rewards_stats_test` target. The broader `rust_consensus_tests` target still
 fails at compile time in stale PBFT sync tests that reference the removed Slice 2 PBFT finalization appender API; the
-updated rewards bridge C++ test compiles before that known PBFT sync failure stops the target.
+updated rewards bridge C++ test compiles before that known PBFT sync failure stops the target. The PBFT manager
+transition-storage sub-slice passes `cargo test -p rustaxa-consensus pbft_manager` and
+`cargo test -p rustaxa-bridge pbft_manager`, plus `rust_storage_tests`. The broad `rust_consensus_tests` build was
+rerun for this sub-slice and still stops in the same stale PBFT sync appender compile errors before executing focused
+PBFT manager coverage.
 
 ## Slice 7: Pillar Chain Storage And Bridge Root/Epoch Facts
 

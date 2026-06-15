@@ -110,10 +110,11 @@ pub use pbft_manager::{
     PbftManagerRuntimeStatus, PbftManagerRuntimeTickFact, PbftManagerStateActionFact,
     PbftManagerStateActionIntent, PbftManagerStateActionPlan, PbftManagerStateActionStatus,
     PbftManagerStorageStartupFact, PbftManagerTransitionFact, PbftManagerTransitionKind,
-    PbftManagerTransitionPlan, PbftManagerTransitionStatus, abort_pbft_manager_runtime_session,
-    apply_executed_block_reset_storage, create_pbft_manager_runtime_from_storage,
-    create_pbft_manager_runtime_session, next_pbft_manager_runtime_action,
-    plan_pbft_manager_state_action, plan_pbft_manager_transition,
+    PbftManagerTransitionPlan, PbftManagerTransitionStatus, PbftManagerTransitionStorageResult,
+    PbftManagerTransitionStorageStatus, abort_pbft_manager_runtime_session,
+    apply_executed_block_reset_storage, apply_pbft_manager_transition_storage,
+    create_pbft_manager_runtime_from_storage, create_pbft_manager_runtime_session,
+    next_pbft_manager_runtime_action, plan_pbft_manager_state_action, plan_pbft_manager_transition,
     report_pbft_manager_runtime_action,
 };
 pub use pbft_reward_votes::{

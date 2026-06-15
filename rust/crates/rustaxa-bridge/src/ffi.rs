@@ -3945,11 +3945,6 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_manager_transition(
             fact: PbftManagerTransitionFact,
         ) -> PbftManagerTransitionPlan;
-        pub fn append_pbft_manager_transition_storage_write(
-            storage: &BridgeStorage,
-            batch_id: u64,
-            plan: PbftManagerTransitionPlan,
-        ) -> Result<PbftManagerTransitionStorageResult>;
         pub fn apply_pbft_manager_transition_storage_write(
             storage: &BridgeStorage,
             plan: PbftManagerTransitionPlan,

@@ -30,7 +30,7 @@ use crate::ffi::{BridgePbftManagerRuntime, BridgePbftManagerRuntimeSession, Brid
 use anyhow::anyhow;
 use rustaxa_consensus::pbft_manager::{
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
-    apply_executed_block_reset_storage,
+    apply_executed_block_reset_storage, apply_pbft_manager_transition_storage,
     create_pbft_manager_runtime_from_storage as create_domain_pbft_manager_runtime_from_storage,
     create_pbft_manager_runtime_session as create_domain_pbft_manager_runtime_session,
     next_pbft_manager_runtime_action,
@@ -49,43 +49,25 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerRuntimeStateCode, PbftManagerRuntimeTickFact, PbftManagerStateActionFact,
     PbftManagerStateActionPlan, PbftManagerStorageStartupFact, PbftManagerTransitionFact,
     PbftManagerTransitionKind, PbftManagerTransitionPlan, PbftManagerTransitionStatus,
+    PbftManagerTransitionStorageResult, PbftManagerTransitionStorageStatus,
 };
-use rustaxa_storage::StorageWriteBatch;
 
 const RUNTIME_STATUS_ACTIVE: u8 = 0;
 const RUNTIME_STATUS_COMPLETE: u8 = 1;
 const ACTION_NO_ACTION: u8 = 255;
-const TRANSITION_STATUS_READY: u8 = 0;
 const TRANSITION_STORAGE_STATUS_APPLIED: u8 = 0;
 const TRANSITION_STORAGE_STATUS_REJECTED: u8 = 1;
-const PBFT_MGR_FIELD_ROUND: u8 = 0;
-const PBFT_MGR_FIELD_STEP: u8 = 1;
 #[cfg(test)]
 const PBFT_MGR_STATUS_EXECUTED_BLOCK: u8 = 0;
-const PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE: u8 = 2;
-const PBFT_MGR_STATUS_NEXT_VOTED_NULL_BLOCK_HASH: u8 = 3;
 
-fn transition_storage_applied(applied_writes: u64) -> FfiPbftManagerTransitionStorageResult {
+fn transition_storage_result_from_domain(
+    result: PbftManagerTransitionStorageResult,
+) -> FfiPbftManagerTransitionStorageResult {
     FfiPbftManagerTransitionStorageResult {
-        status: TRANSITION_STORAGE_STATUS_APPLIED,
-        applied_writes,
-        error_code: String::new(),
+        status: result.status.as_u8(),
+        applied_writes: result.applied_writes,
+        error_code: result.error_code,
     }
-}
-
-fn transition_storage_rejected(error_code: &str) -> FfiPbftManagerTransitionStorageResult {
-    FfiPbftManagerTransitionStorageResult {
-        status: TRANSITION_STORAGE_STATUS_REJECTED,
-        applied_writes: 0,
-        error_code: error_code.to_string(),
-    }
-}
-
-fn to_manager_u32(
-    value: u64,
-    error_code: &str,
-) -> Result<u32, FfiPbftManagerTransitionStorageResult> {
-    u32::try_from(value).map_err(|_| transition_storage_rejected(error_code))
 }
 
 fn to_startup_u32(value: u64, field: &str) -> anyhow::Result<u32> {
@@ -127,80 +109,6 @@ fn domain_transition_plan_from_ffi(
         print_second_finish_step_info: value.print_second_finish_step_info,
         error_code: value.error_code.clone(),
     }
-}
-
-fn append_transition_storage_to_batch(
-    storage: &rustaxa_storage::Storage,
-    batch: &mut StorageWriteBatch,
-    plan: &FfiPbftManagerTransitionPlan,
-) -> Result<u64, FfiPbftManagerTransitionStorageResult> {
-    let mut applied_writes = 0;
-    let pbft = storage.pbft();
-
-    if plan.persist_round {
-        let round = to_manager_u32(
-            plan.new_round,
-            "PBFT_MANAGER_TRANSITION_STORAGE_ROUND_OVERFLOW",
-        )?;
-        if pbft
-            .write_manager_field_in_batch(batch, PBFT_MGR_FIELD_ROUND, round)
-            .is_err()
-        {
-            return Err(transition_storage_rejected(
-                "PBFT_MANAGER_TRANSITION_STORAGE_WRITE_FAILURE",
-            ));
-        }
-        applied_writes += 1;
-    }
-
-    if plan.persist_step {
-        let step = to_manager_u32(
-            plan.new_step,
-            "PBFT_MANAGER_TRANSITION_STORAGE_STEP_OVERFLOW",
-        )?;
-        if pbft
-            .write_manager_field_in_batch(batch, PBFT_MGR_FIELD_STEP, step)
-            .is_err()
-        {
-            return Err(transition_storage_rejected(
-                "PBFT_MANAGER_TRANSITION_STORAGE_WRITE_FAILURE",
-            ));
-        }
-        applied_writes += 1;
-    }
-
-    if plan.reset_next_voted_statuses {
-        if pbft
-            .write_manager_status_in_batch(batch, PBFT_MGR_STATUS_NEXT_VOTED_NULL_BLOCK_HASH, false)
-            .and_then(|_| {
-                pbft.write_manager_status_in_batch(
-                    batch,
-                    PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE,
-                    false,
-                )
-            })
-            .is_err()
-        {
-            return Err(transition_storage_rejected(
-                "PBFT_MANAGER_TRANSITION_STORAGE_WRITE_FAILURE",
-            ));
-        }
-        applied_writes += 2;
-    }
-
-    if plan.remove_cert_voted_block {
-        if pbft
-            .remove_cert_voted_block_in_round_in_batch(batch)
-            .is_err()
-        {
-            return Err(transition_storage_rejected(
-                "PBFT_MANAGER_TRANSITION_STORAGE_WRITE_FAILURE",
-            ));
-        }
-        applied_writes += 1;
-    }
-
-    Ok(applied_writes)
 }
 
 /// Creates a long-lived Rust PBFT manager runtime from persisted storage facts.
@@ -335,12 +243,17 @@ pub fn pbft_manager_runtime_apply_transition_storage_write(
     own_vote_hashes: Vec<FfiPbftFinalizationHash>,
 ) -> anyhow::Result<FfiPbftManagerTransitionRuntimeApplyResult> {
     let domain_plan = domain_transition_plan_from_ffi(&plan);
-    let storage_result = apply_pbft_manager_transition_storage_write_to_storage(
+    let own_vote_hashes: Vec<_> = own_vote_hashes
+        .into_iter()
+        .map(|hash| ethereum_types::H256::from(hash.hash))
+        .collect();
+    let storage_result = apply_pbft_manager_transition_storage(
         runtime.storage.as_ref(),
-        plan,
-        own_vote_hashes,
+        &domain_plan,
+        &own_vote_hashes,
+        false,
     )?;
-    if storage_result.status != TRANSITION_STORAGE_STATUS_APPLIED {
+    if storage_result.status != PbftManagerTransitionStorageStatus::Applied {
         return Ok(transition_runtime_apply_result(
             TRANSITION_STORAGE_STATUS_REJECTED,
             0,
@@ -464,55 +377,6 @@ pub fn plan_pbft_manager_transition(
     plan_domain_pbft_manager_transition(fact.into()).into()
 }
 
-/// Appends Rust-owned PBFT manager cursor/status transition writes to a batch.
-///
-/// Inputs:
-/// - `storage`: shared Rust storage bridge handle.
-/// - `batch_id`: caller-owned Rust storage batch id.
-/// - `plan`: accepted transition plan from the PBFT manager planner/runtime.
-///
-/// Outputs:
-/// - `status = 0` after all requested manager writes are appended.
-/// - `status = 1` with a stable error code if the plan or batch is invalid.
-///
-/// Invariants and edge behavior:
-/// - This function does not commit the batch. C++ owns the existing atomic
-///   transition boundary and may append VoteManager own-vote cleanup before
-///   committing.
-/// - Executed-block reset is intentionally not appended here because legacy
-///   ordering performs that write only after `waitForPeriodFinalization()`.
-/// - Live C++ mirrors are updated only after the caller commits this batch.
-pub fn append_pbft_manager_transition_storage_write(
-    storage: &BridgeStorage,
-    batch_id: u64,
-    plan: FfiPbftManagerTransitionPlan,
-) -> Result<FfiPbftManagerTransitionStorageResult, anyhow::Error> {
-    if plan.status != TRANSITION_STATUS_READY {
-        return Ok(transition_storage_rejected(
-            "PBFT_MANAGER_TRANSITION_STORAGE_PLAN_NOT_READY",
-        ));
-    }
-
-    let mut batches = match storage.1.lock() {
-        Ok(batches) => batches,
-        Err(_) => {
-            return Ok(transition_storage_rejected(
-                "PBFT_MANAGER_TRANSITION_STORAGE_BATCH_REGISTRY_POISONED",
-            ));
-        }
-    };
-    let Some(batch) = batches.get_mut(&batch_id) else {
-        return Ok(transition_storage_rejected(
-            "PBFT_MANAGER_TRANSITION_STORAGE_UNKNOWN_BATCH",
-        ));
-    };
-
-    match append_transition_storage_to_batch(storage.0.as_ref(), batch, &plan) {
-        Ok(applied_writes) => Ok(transition_storage_applied(applied_writes)),
-        Err(result) => Ok(result),
-    }
-}
-
 /// Applies Rust-owned PBFT manager transition persistence in one committed batch.
 ///
 /// Inputs:
@@ -537,80 +401,18 @@ pub fn apply_pbft_manager_transition_storage_write(
     plan: FfiPbftManagerTransitionPlan,
     own_vote_hashes: Vec<FfiPbftFinalizationHash>,
 ) -> Result<FfiPbftManagerTransitionStorageResult, anyhow::Error> {
-    apply_pbft_manager_transition_storage_write_to_storage(
+    let domain_plan = domain_transition_plan_from_ffi(&plan);
+    let own_vote_hashes: Vec<_> = own_vote_hashes
+        .into_iter()
+        .map(|hash| ethereum_types::H256::from(hash.hash))
+        .collect();
+    let result = apply_pbft_manager_transition_storage(
         storage.0.as_ref(),
-        plan,
-        own_vote_hashes,
-    )
-}
-
-/// Applies PBFT manager transition persistence through a Rust storage handle.
-///
-/// Inputs:
-/// - `storage`: Rust storage handle owned by the PBFT manager runtime or
-///   compatibility bridge.
-/// - `plan`: accepted transition plan from the PBFT manager planner/runtime.
-/// - `own_vote_hashes`: exact latest-round own-vote keys to delete when
-///   `plan.clear_own_votes` is set.
-///
-/// Outputs:
-/// - `status = 0` after the Rust batch commits.
-/// - `status = 1` with a stable error code if validation, appending, or commit
-///   fails. Rejected writes are dropped with the uncommitted Rust batch.
-///
-/// Invariants and edge behavior:
-/// - This owns the storage commit for manager cursor/status transitions.
-/// - Runtime callers must update the Rust state snapshot only after an applied
-///   result.
-/// - Executed-block reset remains outside this batch to preserve the
-///   post-`waitForPeriodFinalization()` legacy ordering.
-fn apply_pbft_manager_transition_storage_write_to_storage(
-    storage: &rustaxa_storage::Storage,
-    plan: FfiPbftManagerTransitionPlan,
-    own_vote_hashes: Vec<FfiPbftFinalizationHash>,
-) -> Result<FfiPbftManagerTransitionStorageResult, anyhow::Error> {
-    if plan.status != TRANSITION_STATUS_READY {
-        return Ok(transition_storage_rejected(
-            "PBFT_MANAGER_TRANSITION_STORAGE_PLAN_NOT_READY",
-        ));
-    }
-    if !plan.clear_own_votes && !own_vote_hashes.is_empty() {
-        return Ok(transition_storage_rejected(
-            "PBFT_MANAGER_TRANSITION_STORAGE_UNEXPECTED_OWN_VOTE_HASHES",
-        ));
-    }
-
-    let mut batch = storage.create_write_batch();
-    let mut applied_writes = match append_transition_storage_to_batch(storage, &mut batch, &plan) {
-        Ok(applied_writes) => applied_writes,
-        Err(result) => return Ok(result),
-    };
-
-    if plan.clear_own_votes {
-        for hash in &own_vote_hashes {
-            if storage
-                .pbft()
-                .remove_own_verified_vote_in_batch(
-                    &mut batch,
-                    ethereum_types::H256::from(hash.hash),
-                )
-                .is_err()
-            {
-                return Ok(transition_storage_rejected(
-                    "PBFT_MANAGER_TRANSITION_STORAGE_WRITE_FAILURE",
-                ));
-            }
-        }
-        applied_writes += own_vote_hashes.len() as u64;
-    }
-
-    if storage.commit_write_batch_with_sync(batch, false).is_err() {
-        return Ok(transition_storage_rejected(
-            "PBFT_MANAGER_TRANSITION_STORAGE_COMMIT_FAILURE",
-        ));
-    }
-
-    Ok(transition_storage_applied(applied_writes))
+        &domain_plan,
+        &own_vote_hashes,
+        false,
+    )?;
+    Ok(transition_storage_result_from_domain(result))
 }
 
 impl BridgePbftManagerRuntimeSession {
@@ -1567,85 +1369,6 @@ mod tests {
             assert_eq!(current.step, before.step);
             assert_eq!(current.state, before.state);
             assert_eq!(storage.get_pbft_mgr_field(0).unwrap(), 1);
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_appends_transition_storage_to_existing_batch() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_transition_storage");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            storage
-                .save_pbft_mgr_field(0, 1)
-                .expect("round seed should persist");
-            storage
-                .save_pbft_mgr_field(1, 1)
-                .expect("step seed should persist");
-            storage
-                .save_pbft_mgr_status(2, true)
-                .expect("soft next status should persist");
-            storage
-                .save_pbft_mgr_status(3, true)
-                .expect("null next status should persist");
-            storage
-                .save_cert_voted_block_in_round(1, vec![0xC0])
-                .expect("cert-voted seed should persist");
-
-            let batch_id = storage
-                .create_write_batch()
-                .expect("batch should be created");
-            let mut plan = plan_pbft_manager_transition(transition_fact(TRANSITION_RESET));
-            plan.remove_cert_voted_block = true;
-            let result = append_pbft_manager_transition_storage_write(&storage, batch_id, plan)
-                .expect("append should not throw");
-
-            assert_eq!(result.status, TRANSITION_STORAGE_STATUS_APPLIED);
-            assert_eq!(result.applied_writes, 5);
-            assert_eq!(storage.get_pbft_mgr_field(0).unwrap(), 1);
-            assert_eq!(storage.get_pbft_mgr_field(1).unwrap(), 1);
-            assert!(storage.get_pbft_mgr_status(2).unwrap());
-            assert!(storage.get_pbft_mgr_status(3).unwrap());
-            assert!(!storage.get_cert_voted_block_in_round().unwrap().is_empty());
-
-            storage
-                .commit_write_batch(batch_id, false)
-                .expect("batch commit should persist");
-
-            assert_eq!(storage.get_pbft_mgr_field(0).unwrap(), 4);
-            assert_eq!(storage.get_pbft_mgr_field(1).unwrap(), 1);
-            assert!(!storage.get_pbft_mgr_status(2).unwrap());
-            assert!(!storage.get_pbft_mgr_status(3).unwrap());
-            assert!(storage.get_cert_voted_block_in_round().unwrap().is_empty());
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_rejects_transition_storage_append_without_mutation() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_transition_storage_reject");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            storage
-                .save_pbft_mgr_field(0, 3)
-                .expect("round seed should persist");
-
-            let plan = plan_pbft_manager_transition(transition_fact(TRANSITION_RESET));
-            let result = append_pbft_manager_transition_storage_write(&storage, 999_999, plan)
-                .expect("append should return a deterministic rejection");
-
-            assert_eq!(result.status, TRANSITION_STORAGE_STATUS_REJECTED);
-            assert_eq!(
-                result.error_code,
-                "PBFT_MANAGER_TRANSITION_STORAGE_UNKNOWN_BATCH"
-            );
-            assert_eq!(storage.get_pbft_mgr_field(0).unwrap(), 3);
         }
 
         let _ = fs::remove_dir_all(temp_dir);
