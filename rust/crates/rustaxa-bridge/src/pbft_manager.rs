@@ -30,7 +30,8 @@ use crate::ffi::{BridgePbftManagerRuntime, BridgePbftManagerRuntimeSession, Brid
 use anyhow::anyhow;
 use rustaxa_consensus::pbft_manager::{
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
-    apply_executed_block_reset_storage, apply_pbft_manager_transition_storage,
+    apply_executed_block_reset_storage, apply_next_voted_status_storage,
+    apply_pbft_manager_transition_storage,
     create_pbft_manager_runtime_from_storage as create_domain_pbft_manager_runtime_from_storage,
     create_pbft_manager_runtime_session as create_domain_pbft_manager_runtime_session,
     next_pbft_manager_runtime_action,
@@ -375,6 +376,28 @@ pub fn plan_pbft_manager_transition(
     fact: FfiPbftManagerTransitionFact,
 ) -> FfiPbftManagerTransitionPlan {
     plan_domain_pbft_manager_transition(fact.into()).into()
+}
+
+/// Persists a successful next-vote PBFT manager status through consensus-owned storage.
+///
+/// Inputs:
+/// - `storage`: shared Rust storage bridge handle.
+/// - `status`: stable PBFT manager status id for next-voted soft value or
+///   next-voted null-block hash.
+///
+/// Outputs:
+/// - Returns success after the status row is durably set to `true`.
+///
+/// Invariants and edge behavior:
+/// - Vote generation, gossip, and live C++ flags remain shim executor
+///   side-effects.
+/// - Unsupported status ids are rejected by `rustaxa-consensus`; this is not a
+///   generic PBFT manager status write bridge.
+pub fn apply_pbft_manager_next_voted_status(
+    storage: &BridgeStorage,
+    status: u8,
+) -> anyhow::Result<()> {
+    apply_next_voted_status_storage(storage.0.as_ref(), status)
 }
 
 /// Applies Rust-owned PBFT manager transition persistence in one committed batch.
@@ -1255,6 +1278,33 @@ mod tests {
             assert!(!storage
                 .get_pbft_mgr_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)
                 .expect("status should load"));
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_persists_next_voted_status_through_consensus_storage() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_next_voted_status");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+
+            apply_pbft_manager_next_voted_status(&storage, 2)
+                .expect("soft next-voted status should persist");
+            apply_pbft_manager_next_voted_status(&storage, 3)
+                .expect("null next-voted status should persist");
+            let err =
+                apply_pbft_manager_next_voted_status(&storage, PBFT_MGR_STATUS_EXECUTED_BLOCK)
+                    .expect_err("generic manager status should reject");
+
+            assert!(storage.get_pbft_mgr_status(2).unwrap());
+            assert!(storage.get_pbft_mgr_status(3).unwrap());
+            assert_eq!(
+                err.to_string(),
+                "PBFT_MANAGER_NEXT_VOTED_STATUS_UNSUPPORTED"
+            );
         }
 
         let _ = fs::remove_dir_all(temp_dir);

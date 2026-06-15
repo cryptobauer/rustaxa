@@ -261,7 +261,9 @@ manager executed-block reset storage write now lives in `rustaxa-consensus::pbft
 snapshot only after the consensus storage helper succeeds. PBFT manager transition cursor/status persistence and
 latest-round own-vote cleanup now commit through `rustaxa-consensus::pbft_manager::apply_pbft_manager_transition_storage`
 over direct `rustaxa-storage`; the old bridge batch-id transition appender was removed from the CXX bridge surface and
-bridge tests now cover only the committed apply route.
+bridge tests now cover only the committed apply route. Successful next-vote manager status writes now route from the
+PBFT manager shim through `rustaxa-consensus::pbft_manager::apply_next_voted_status_storage`; the shim still owns vote
+generation, gossip, and live next-voted flags until the state-action executor moves to Rust.
 
 Move:
 
@@ -294,7 +296,11 @@ updated rewards bridge C++ test compiles before that known PBFT sync failure sto
 transition-storage sub-slice passes `cargo test -p rustaxa-consensus pbft_manager` and
 `cargo test -p rustaxa-bridge pbft_manager`, plus `rust_storage_tests`. The broad `rust_consensus_tests` build was
 rerun for this sub-slice and still stops in the same stale PBFT sync appender compile errors before executing focused
-PBFT manager coverage.
+PBFT manager coverage. The next-voted status sub-slice adds focused Rust consensus and bridge coverage for accepting only
+the next-voted status family. `pbft_manager_test` builds after the shim route change; running the binary still fails the
+known broad Rust-mode PBFT runtime cases (`check_get_eligible_vote_count`, `pbft_manager_run_single_node`,
+`pbft_manager_run_multi_nodes`, `check_committeeSize_less_or_equal_to_activePlayers`,
+`check_committeeSize_greater_than_activePlayers`) while the DAG-creation suite passes.
 
 ## Slice 7: Pillar Chain Storage And Bridge Root/Epoch Facts
 

@@ -2252,6 +2252,34 @@ pub fn apply_executed_block_reset_storage(storage: &Storage) -> Result<()> {
         .context("PBFT_MANAGER_EXECUTED_BLOCK_RESET_WRITE")
 }
 
+/// Persists a successful next-vote manager status through Rust storage.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+/// - `status`: PBFT manager status field. Only `NextVotedSoftValue` and
+///   `NextVotedNullBlockHash` are accepted.
+///
+/// Outputs:
+/// - Writes the accepted status row as `true`.
+///
+/// Invariants and edge behavior:
+/// - This helper owns only the durable status row. Vote generation, vote
+///   gossip, and live C++ mirror flags remain executor-side boundaries until
+///   the state-action executor moves to Rust.
+/// - Any status outside the next-voted family is rejected so this cannot become
+///   a generic PBFT manager status bridge.
+pub fn apply_next_voted_status_storage(storage: &Storage, status: u8) -> Result<()> {
+    match status {
+        PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE | PBFT_MGR_STATUS_NEXT_VOTED_NULL_BLOCK_HASH => {
+            storage
+                .pbft()
+                .write_manager_status(status, true)
+                .context("PBFT_MANAGER_NEXT_VOTED_STATUS_WRITE")
+        }
+        _ => Err(anyhow!("PBFT_MANAGER_NEXT_VOTED_STATUS_UNSUPPORTED")),
+    }
+}
+
 fn transition_storage_applied(applied_writes: u64) -> PbftManagerTransitionStorageResult {
     PbftManagerTransitionStorageResult {
         status: PbftManagerTransitionStorageStatus::Applied,
@@ -4202,6 +4230,43 @@ mod tests {
                     .manager_field(PBFT_MGR_FIELD_ROUND)
                     .expect("round should load"),
                 Some(3),
+            );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn next_voted_status_storage_persists_only_next_vote_family() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_manager_next_voted_status");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+
+            apply_next_voted_status_storage(&storage, PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE)
+                .expect("soft next-voted status should persist");
+            apply_next_voted_status_storage(&storage, PBFT_MGR_STATUS_NEXT_VOTED_NULL_BLOCK_HASH)
+                .expect("null next-voted status should persist");
+            let err = apply_next_voted_status_storage(&storage, PBFT_MGR_STATUS_EXECUTED_BLOCK)
+                .expect_err("generic PBFT manager status should reject");
+
+            assert_eq!(
+                storage
+                    .pbft()
+                    .manager_status(PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE)
+                    .expect("soft status should load"),
+                Some(true),
+            );
+            assert_eq!(
+                storage
+                    .pbft()
+                    .manager_status(PBFT_MGR_STATUS_NEXT_VOTED_NULL_BLOCK_HASH)
+                    .expect("null status should load"),
+                Some(true),
+            );
+            assert_eq!(
+                err.to_string(),
+                "PBFT_MANAGER_NEXT_VOTED_STATUS_UNSUPPORTED"
             );
         }
 
