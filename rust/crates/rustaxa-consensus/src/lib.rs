@@ -223,9 +223,14 @@ pub use verified_votes::VerifiedVotes;
 
 pub use dag::dag_block_transaction_hashes;
 pub use dag::{
-    DagExpiredTransactionCleanupStoragePayload, DagFinalizedCounterUpdate,
-    DagManagerFinalizationCleanupStoragePayload, DagNonFinalizedSyncStoragePayload,
-    DagSyncBlockRlp, DagTransactionStorageLookup, apply_finalization_cleanup_from_storage,
-    collect_expired_transaction_cleanup_from_storage, collect_finalization_cleanup_from_storage,
-    collect_non_finalized_sync_payload_from_storage,
+    DagBlockStorageLookup, DagExpiredTransactionCleanupStoragePayload, DagFinalizedCounterUpdate,
+    DagHashStorageLookup, DagManagerFinalizationCleanupStoragePayload,
+    DagNonFinalizedSyncStoragePayload, DagPeriodStorageLookup, DagPersistenceCounters,
+    DagSyncBlockRlp, DagTransactionStorageLookup, DagVerifyPrecheckStorageInput,
+    apply_finalization_cleanup_from_storage, collect_expired_transaction_cleanup_from_storage,
+    collect_finalization_cleanup_from_storage, collect_non_finalized_sync_payload_from_storage,
+    dag_block_exists_in_storage, dag_persistence_counters_from_storage,
+    ensure_proposal_period_mapping, load_dag_block_from_storage, period_block_hash_from_storage,
+    proposal_period_for_level_from_storage, save_dag_block_to_storage,
+    verify_precheck_from_storage,
 };

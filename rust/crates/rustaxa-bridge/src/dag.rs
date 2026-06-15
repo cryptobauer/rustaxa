@@ -23,11 +23,14 @@ use rustaxa_consensus::dag::collect_finalization_cleanup_from_storage;
 use rustaxa_consensus::dag::{
     apply_finalization_cleanup_from_storage, collect_expired_transaction_cleanup_from_storage,
     collect_non_finalized_sync_payload_from_storage, construct_dag_vdf_message,
-    decide_dag_verify_vdf_dpos_authorization, derive_frontier, plan_dag_verify_transaction_query,
+    dag_block_exists_in_storage, dag_persistence_counters_from_storage,
+    decide_dag_verify_vdf_dpos_authorization, derive_frontier, ensure_proposal_period_mapping,
+    load_dag_block_from_storage, period_block_hash_from_storage, plan_dag_verify_transaction_query,
     plan_expired_transaction_cleanup, plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
-    validate_dag_verify_authorization, validate_dag_verify_gas, validate_dag_verify_precheck,
+    proposal_period_for_level_from_storage, save_dag_block_to_storage,
+    validate_dag_verify_authorization, validate_dag_verify_gas,
     validate_dag_verify_transaction_availability, validate_pivot_tips_metadata,
-    verify_dag_vdf_sortition, verify_dag_vdf_sortition_from_block,
+    verify_dag_vdf_sortition, verify_dag_vdf_sortition_from_block, verify_precheck_from_storage,
     DagExpiredTransactionFact as DomainDagExpiredTransactionFact, DagGraph,
     DagManagerBlock as DomainDagManagerBlock,
     DagManagerFinalizationCleanupStoragePayload as DomainDagManagerFinalizationCleanupStoragePayload,
@@ -37,19 +40,19 @@ use rustaxa_consensus::dag::{
     DagVdfSortitionBlockInput as DomainDagVdfSortitionBlockInput,
     DagVdfSortitionInput as DomainDagVdfSortitionInput,
     DagVerifyAuthorizationInput as DomainDagVerifyAuthorizationInput,
-    DagVerifyGasInput as DomainDagVerifyGasInput, DagVerifyPrecheckInput,
+    DagVerifyGasInput as DomainDagVerifyGasInput,
+    DagVerifyPrecheckStorageInput as DomainDagVerifyPrecheckStorageInput,
     DagVerifyTransactionAvailabilityInput as DomainDagVerifyTransactionAvailabilityInput,
     DagVerifyVdfDposFacts as DomainDagVerifyVdfDposFacts,
     DagVerifyVdfPrepareInput as DomainDagVerifyVdfPrepareInput,
 };
 use rustaxa_consensus::sortition::{SortitionParams, VdfParams, VrfParams};
-use rustaxa_storage::StatusField;
+#[cfg(test)]
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
+#[cfg(test)]
 use rustaxa_types::pbft::PbftBlockLink;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
-
-const PBFT_BLOCK_POS_IN_PERIOD_DATA: usize = 0;
 
 const DAG_PROPOSER_ACTION_CONTINUE: u8 = 1;
 const DAG_PROPOSER_ACTION_SKIP: u8 = 2;
@@ -759,28 +762,15 @@ impl BridgeDagManagerRuntime {
     /// Returns whether Rust storage contains a DAG block in non-finalized or
     /// finalized storage.
     pub fn dag_manager_runtime_block_exists(&self, hash: &[u8; 32]) -> Result<bool> {
-        self.storage
-            .dag()
-            .exists(to_h256(hash))
-            .context("DAG_STORAGE_BLOCK_EXISTS")
+        dag_block_exists_in_storage(self.storage.as_ref(), to_h256(hash))
     }
 
     /// Loads canonical DAG block RLP from Rust storage.
     pub fn dag_manager_runtime_load_block(&self, hash: &[u8; 32]) -> Result<DagBlockLookup> {
-        let block_rlp = self
-            .storage
-            .dag()
-            .by_hash_rlp_optional(to_h256(hash))
-            .context("DAG_STORAGE_BLOCK_LOAD")?;
-        Ok(match block_rlp {
-            Some(block_rlp) => DagBlockLookup {
-                found: true,
-                block_rlp,
-            },
-            None => DagBlockLookup {
-                found: false,
-                block_rlp: Vec::new(),
-            },
+        let lookup = load_dag_block_from_storage(self.storage.as_ref(), to_h256(hash))?;
+        Ok(DagBlockLookup {
+            found: lookup.found,
+            block_rlp: lookup.block_rlp,
         })
     }
 
@@ -793,10 +783,13 @@ impl BridgeDagManagerRuntime {
         tips_count: u64,
         block_rlp: Vec<u8>,
     ) -> Result<()> {
-        self.storage
-            .dag()
-            .write(to_h256(hash), level, tips_count, &block_rlp)
-            .context("DAG_STORAGE_BLOCK_SAVE")
+        save_dag_block_to_storage(
+            self.storage.as_ref(),
+            to_h256(hash),
+            level,
+            tips_count,
+            &block_rlp,
+        )
     }
 
     /// Ensures the proposal-period mapping exists for `level`.
@@ -808,17 +801,7 @@ impl BridgeDagManagerRuntime {
         level: u64,
         period: u64,
     ) -> Result<bool> {
-        let dag = self.storage.dag();
-        if dag
-            .proposal_period_at_level(level)
-            .context("DAG_PROPOSAL_PERIOD_LOOKUP")?
-            == Some(period)
-        {
-            return Ok(false);
-        }
-        dag.write_proposal_period_at_level(level, period)
-            .context("DAG_PROPOSAL_PERIOD_WRITE")?;
-        Ok(true)
+        ensure_proposal_period_mapping(self.storage.as_ref(), level, period)
     }
 
     /// Resolves the finalized proposal period for a DAG level through the
@@ -832,20 +815,10 @@ impl BridgeDagManagerRuntime {
         &self,
         level: u64,
     ) -> Result<PeriodLookup> {
-        let period = self
-            .storage
-            .dag()
-            .proposal_period_at_level(level)
-            .context("DAG_PROPOSAL_PERIOD_LOOKUP")?;
-        Ok(match period {
-            Some(period) => PeriodLookup {
-                found: true,
-                period,
-            },
-            None => PeriodLookup {
-                found: false,
-                period: 0,
-            },
+        let lookup = proposal_period_for_level_from_storage(self.storage.as_ref(), level)?;
+        Ok(PeriodLookup {
+            found: lookup.found,
+            period: lookup.period,
         })
     }
 
@@ -856,33 +829,19 @@ impl BridgeDagManagerRuntime {
     /// period data returns `found = false`; corrupt period data is a bridge
     /// error so C++ verification can reject rather than silently use bad facts.
     pub fn dag_manager_runtime_period_block_hash(&self, period: u64) -> Result<HashLookup> {
-        let period_data = self
-            .storage
-            .period()
-            .data_raw(period)
-            .context("DAG_PERIOD_DATA_LOOKUP")?;
-        let Some(hash) = period_block_hash_from_period_data(&period_data)? else {
-            return Ok(HashLookup {
-                found: false,
-                hash: [0; 32],
-            });
-        };
+        let lookup = period_block_hash_from_storage(self.storage.as_ref(), period)?;
         Ok(HashLookup {
-            found: true,
-            hash: hash.into(),
+            found: lookup.found,
+            hash: lookup.hash.into(),
         })
     }
 
     /// Reads persisted DAG counters directly from Rust storage.
     pub fn dag_manager_runtime_persistence_counters(&self) -> Result<DagPersistenceCounters> {
-        let metadata = self.storage.metadata();
+        let counters = dag_persistence_counters_from_storage(self.storage.as_ref())?;
         Ok(DagPersistenceCounters {
-            dag_blocks: metadata
-                .status_field(StatusField::DagBlkCount as u8)
-                .context("DAG_STORAGE_COUNTERS")?,
-            dag_edges: metadata
-                .status_field(StatusField::DagEdgeCount as u8)
-                .context("DAG_STORAGE_COUNTERS")?,
+            dag_blocks: counters.dag_blocks,
+            dag_edges: counters.dag_edges,
         })
     }
 
@@ -896,24 +855,20 @@ impl BridgeDagManagerRuntime {
         &self,
         block: DagVerifyPrecheckBlock,
     ) -> Result<DagVerifyPrecheckResult> {
-        let proposal_period = self
-            .storage
-            .dag()
-            .proposal_period_at_level(block.level)
-            .context("DAG_PROPOSAL_PERIOD_LOOKUP")?;
         let tips = block
             .tips
             .into_iter()
             .map(|tip| H256::from(tip.hash))
             .collect::<Vec<_>>();
-        let precheck = validate_dag_verify_precheck(DagVerifyPrecheckInput {
-            block_level: block.level,
-            pivot: to_h256(&block.pivot),
-            tips,
-            proposal_period_found: proposal_period.is_some(),
-            proposal_period: proposal_period.unwrap_or(0),
-            dag_expiry_level: self.state.dag_expiry_level(),
-        });
+        let precheck = verify_precheck_from_storage(
+            self.storage.as_ref(),
+            DomainDagVerifyPrecheckStorageInput {
+                block_level: block.level,
+                pivot: to_h256(&block.pivot),
+                tips,
+                dag_expiry_level: self.state.dag_expiry_level(),
+            },
+        )?;
 
         Ok(DagVerifyPrecheckResult {
             continue_validation: precheck.continue_validation,
@@ -1344,20 +1299,6 @@ pub fn dag_verify_gas(input: DagVerifyGasInput) -> Result<DagVerifyGasResult> {
 
 fn to_h256(hash: &[u8; 32]) -> H256 {
     H256::from(*hash)
-}
-
-fn period_block_hash_from_period_data(period_data_rlp: &[u8]) -> Result<Option<H256>> {
-    if period_data_rlp.is_empty() {
-        return Ok(None);
-    }
-
-    let period_rlp = rlp::Rlp::new(period_data_rlp);
-    let pbft_block_rlp = period_rlp
-        .at(PBFT_BLOCK_POS_IN_PERIOD_DATA)
-        .context("PERIOD_DATA_PBFT_BLOCK_RLP")?;
-    let link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(pbft_block_rlp.as_raw()))
-        .context("PERIOD_DATA_PBFT_BLOCK_HASH")?;
-    Ok(Some(link.block_hash))
 }
 
 fn to_domain_sortition_params(params: SortitionRuntimeParams) -> SortitionParams {

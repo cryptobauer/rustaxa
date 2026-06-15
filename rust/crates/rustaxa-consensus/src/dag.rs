@@ -1,14 +1,18 @@
 use anyhow::{Context, Result, bail, ensure};
 use ethereum_types::H256;
 use rlp::Rlp;
-use rustaxa_storage::Storage;
+use rustaxa_storage::{StatusField, Storage};
 use rustaxa_types::codec::rlp::dag::DagBlockRlp;
+use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::dag::DagBlock;
+use rustaxa_types::pbft::PbftBlockLink;
 use rustaxa_vdf::sortition::{self, LegacySortitionParams};
 use rustaxa_vdf::vdf::{Solution as VdfSolution, WesolowskiVdf};
 use rustaxa_vdf::verifier::WesolowskiVerifier;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write;
+
+const PBFT_BLOCK_POS_IN_PERIOD_DATA: usize = 0;
 
 /// Deterministic DAG frontier derived from a ghost path and DAG leaves.
 ///
@@ -234,6 +238,50 @@ pub struct DagTransactionStorageLookup {
 pub struct DagNonFinalizedSyncStoragePayload {
     pub blocks: Vec<DagSyncBlockRlp>,
     pub transactions: Vec<DagTransactionStorageLookup>,
+}
+
+/// Storage lookup result for a canonical DAG block payload.
+///
+/// Missing blocks are represented with `found = false` and an empty payload so
+/// C++ compatibility callers can preserve their public optional-return shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagBlockStorageLookup {
+    pub found: bool,
+    pub block_rlp: Vec<u8>,
+}
+
+/// Storage lookup result for proposal-period rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagPeriodStorageLookup {
+    pub found: bool,
+    pub period: u64,
+}
+
+/// Storage lookup result for hash rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagHashStorageLookup {
+    pub found: bool,
+    pub hash: H256,
+}
+
+/// Persisted DAG block and edge counters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagPersistenceCounters {
+    pub dag_blocks: u64,
+    pub dag_edges: u64,
+}
+
+/// Storage-backed precheck input for deterministic DAG block verification.
+///
+/// The proposal-period fact is intentionally not supplied by the bridge; this
+/// helper reads it directly from `rustaxa-storage` before calling the pure
+/// precheck planner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagVerifyPrecheckStorageInput {
+    pub block_level: u64,
+    pub pivot: H256,
+    pub tips: Vec<H256>,
+    pub dag_expiry_level: u64,
 }
 
 /// Finalization fact for one transaction referenced by expired DAG blocks.
@@ -797,6 +845,165 @@ fn transaction_storage_lookups(
     }
 
     Ok(out)
+}
+
+/// Returns whether Rust storage contains a DAG block in non-finalized or
+/// finalized storage.
+pub fn dag_block_exists_in_storage(storage: &Storage, hash: H256) -> Result<bool> {
+    storage
+        .dag()
+        .exists(hash)
+        .context("DAG_STORAGE_BLOCK_EXISTS")
+}
+
+/// Loads canonical DAG block RLP from Rust storage.
+///
+/// Missing rows are returned as `found = false` rather than errors so C++
+/// compatibility accessors can preserve their optional lookup shape.
+pub fn load_dag_block_from_storage(storage: &Storage, hash: H256) -> Result<DagBlockStorageLookup> {
+    let block_rlp = storage
+        .dag()
+        .by_hash_rlp_optional(hash)
+        .context("DAG_STORAGE_BLOCK_LOAD")?;
+    Ok(match block_rlp {
+        Some(block_rlp) => DagBlockStorageLookup {
+            found: true,
+            block_rlp,
+        },
+        None => DagBlockStorageLookup {
+            found: false,
+            block_rlp: Vec::new(),
+        },
+    })
+}
+
+/// Persists one non-finalized DAG block through Rust storage.
+///
+/// The storage module updates persistent DAG block/edge counters atomically with
+/// the payload write. The consensus bridge supplies the canonical block hash,
+/// level, tip count, and RLP after validation succeeds.
+pub fn save_dag_block_to_storage(
+    storage: &Storage,
+    hash: H256,
+    level: u64,
+    tips_count: u64,
+    block_rlp: &[u8],
+) -> Result<()> {
+    storage
+        .dag()
+        .write(hash, level, tips_count, block_rlp)
+        .context("DAG_STORAGE_BLOCK_SAVE")
+}
+
+/// Ensures the proposal-period mapping exists for `level`.
+///
+/// Returns true when a mapping write was required and false when the existing
+/// lookup already resolves to `period`.
+pub fn ensure_proposal_period_mapping(storage: &Storage, level: u64, period: u64) -> Result<bool> {
+    let dag = storage.dag();
+    if dag
+        .proposal_period_at_level(level)
+        .context("DAG_PROPOSAL_PERIOD_LOOKUP")?
+        == Some(period)
+    {
+        return Ok(false);
+    }
+    dag.write_proposal_period_at_level(level, period)
+        .context("DAG_PROPOSAL_PERIOD_WRITE")?;
+    Ok(true)
+}
+
+/// Resolves the finalized proposal period for a DAG level through Rust storage.
+///
+/// Rust storage returns the first persisted `(level -> period)` row at or after
+/// the requested level. Missing rows are reported as `found = false`.
+pub fn proposal_period_for_level_from_storage(
+    storage: &Storage,
+    level: u64,
+) -> Result<DagPeriodStorageLookup> {
+    let period = storage
+        .dag()
+        .proposal_period_at_level(level)
+        .context("DAG_PROPOSAL_PERIOD_LOOKUP")?;
+    Ok(match period {
+        Some(period) => DagPeriodStorageLookup {
+            found: true,
+            period,
+        },
+        None => DagPeriodStorageLookup {
+            found: false,
+            period: 0,
+        },
+    })
+}
+
+/// Returns the canonical PBFT block hash for finalized `period`.
+///
+/// The hash is derived from item 0 of the canonical `PeriodData` RLP stored in
+/// Rust storage. Missing period data returns `found = false`; corrupt period
+/// data is an error.
+pub fn period_block_hash_from_storage(
+    storage: &Storage,
+    period: u64,
+) -> Result<DagHashStorageLookup> {
+    let period_data = storage
+        .period()
+        .data_raw(period)
+        .context("DAG_PERIOD_DATA_LOOKUP")?;
+    let Some(hash) = period_block_hash_from_period_data(&period_data)? else {
+        return Ok(DagHashStorageLookup {
+            found: false,
+            hash: H256::zero(),
+        });
+    };
+    Ok(DagHashStorageLookup { found: true, hash })
+}
+
+fn period_block_hash_from_period_data(period_data_rlp: &[u8]) -> Result<Option<H256>> {
+    if period_data_rlp.is_empty() {
+        return Ok(None);
+    }
+
+    let period_rlp = Rlp::new(period_data_rlp);
+    let pbft_block_rlp = period_rlp
+        .at(PBFT_BLOCK_POS_IN_PERIOD_DATA)
+        .context("PERIOD_DATA_PBFT_BLOCK_RLP")?;
+    let link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(pbft_block_rlp.as_raw()))
+        .context("PERIOD_DATA_PBFT_BLOCK_HASH")?;
+    Ok(Some(link.block_hash))
+}
+
+/// Reads persisted DAG counters directly from Rust storage.
+pub fn dag_persistence_counters_from_storage(storage: &Storage) -> Result<DagPersistenceCounters> {
+    let metadata = storage.metadata();
+    Ok(DagPersistenceCounters {
+        dag_blocks: metadata
+            .status_field(StatusField::DagBlkCount as u8)
+            .context("DAG_STORAGE_COUNTERS")?,
+        dag_edges: metadata
+            .status_field(StatusField::DagEdgeCount as u8)
+            .context("DAG_STORAGE_COUNTERS")?,
+    })
+}
+
+/// Runs deterministic DAG block verification prechecks against Rust storage
+/// facts and caller-supplied block metadata.
+pub fn verify_precheck_from_storage(
+    storage: &Storage,
+    input: DagVerifyPrecheckStorageInput,
+) -> Result<DagVerifyPrecheck> {
+    let proposal_period = storage
+        .dag()
+        .proposal_period_at_level(input.block_level)
+        .context("DAG_PROPOSAL_PERIOD_LOOKUP")?;
+    Ok(validate_dag_verify_precheck(DagVerifyPrecheckInput {
+        block_level: input.block_level,
+        pivot: input.pivot,
+        tips: input.tips,
+        proposal_period_found: proposal_period.is_some(),
+        proposal_period: proposal_period.unwrap_or(0),
+        dag_expiry_level: input.dag_expiry_level,
+    }))
 }
 
 /// Plans non-finalized transaction removals after expired DAG block cleanup.

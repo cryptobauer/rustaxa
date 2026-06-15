@@ -201,7 +201,7 @@ Validation:
 
 Goal: move DAG/proposed-block consensus storage reads/writes into Rust runtimes with direct `rustaxa-storage` access.
 
-Status: in progress. `rustaxa-consensus::proposed_blocks` now owns proposed PBFT block storage restore from
+Status: complete. `rustaxa-consensus::proposed_blocks` now owns proposed PBFT block storage restore from
 `Column::ProposedPbftBlocks` and stale proposed-block cleanup deletes through one Rust-owned batch. The bridge updates
 the in-memory proposed-block index only after the consensus storage cleanup commits. `rustaxa-consensus::dag` now owns
 storage-backed expired DAG transaction cleanup fact collection by loading expired/remaining DAG block RLPs and finalized
@@ -210,7 +210,10 @@ facts are loaded from canonical DAG storage, expired DAG rows and expired non-fi
 one Rust-owned storage batch, and the bridge only maps the returned side-effect facts for temporary live sidecar cleanup.
 Non-finalized DAG sync payload materialization now also loads selected DAG block RLPs and de-duplicated transaction RLP
 lookups in `rustaxa-consensus::dag` over direct `rustaxa-storage` reads; the bridge keeps only period/hash selection DTO
-mapping and network packet materialization.
+mapping and network packet materialization. The remaining DAG runtime scalar storage helpers for block existence/load/save,
+proposal-period lookup/write, period PBFT-block hash lookup, persistence counters, and verify-precheck proposal-period
+facts now route through `rustaxa-consensus::dag`; the bridge no longer owns direct DAG storage reads/writes in
+`rustaxa-bridge/src/dag.rs`.
 
 Move:
 
