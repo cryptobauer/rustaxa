@@ -253,7 +253,7 @@ tracked as test compatibility debt outside the DAG storage sub-slice.
 Goal: finish consensus-owned storage around rewards stats and PBFT/FinalChain status rows without moving EVM execution
 inside the PBFT manager.
 
-Status: in progress. Rewards-stat startup reload and cache/clear persistence now live in
+Status: complete. Rewards-stat startup reload and cache/clear persistence now live in
 `rustaxa-consensus::rewards_stats` over direct `rustaxa-storage` reads and Rust-owned write batches. The bridge creates
 the runtime from the consensus storage loader and exposes a DTO-only apply function; the old rewards-stat bridge batch-id
 appender has been removed from the CXX bridge surface, the rewards stats shim, and focused C++ test. The delayed PBFT
@@ -267,15 +267,19 @@ generation, gossip, and live next-voted flags until the state-action executor mo
 
 Move:
 
-- rewards stats persistence still exposed through bridge append helpers
-- FinalChain-adjacent PBFT manager status writes
-- executed-status reset/persist helpers that are not already owned by `rustaxa-consensus`
-- startup reload of rewards/stat cache rows where consensus logic depends on them
+- completed: rewards stats persistence formerly exposed through bridge append helpers
+- completed: FinalChain-adjacent PBFT manager status writes for transition resets, executed-block reset, and successful
+  next-vote status persistence
+- completed: startup reload of rewards/stat cache rows where consensus logic depends on them
+- completed: stale PBFT sync C++ tests now use the committed Rust-owned finalization apply API instead of removed bridge
+  batch appenders
 
 Keep temporarily:
 
 - FinalChain/EVM execution, receipts, contract execution, and state commits.
 - bridge-contract `StateAPI` reads at the accepted FinalChain shim boundary.
+- PBFT finalization test-only Rust append helpers remain in Rust unit-test compatibility paths; production and CXX bridge
+  validation use committed Rust-owned apply APIs.
 
 Done when:
 
@@ -300,7 +304,8 @@ PBFT manager coverage. The next-voted status sub-slice adds focused Rust consens
 the next-voted status family. `pbft_manager_test` builds after the shim route change; running the binary still fails the
 known broad Rust-mode PBFT runtime cases (`check_get_eligible_vote_count`, `pbft_manager_run_single_node`,
 `pbft_manager_run_multi_nodes`, `check_committeeSize_less_or_equal_to_activePlayers`,
-`check_committeeSize_greater_than_activePlayers`) while the DAG-creation suite passes.
+`check_committeeSize_greater_than_activePlayers`) while the DAG-creation suite passes. The stale PBFT sync test-fix
+sub-slice rebuilds `rust_consensus_tests` and `/build/bin/rust_consensus_tests` passes all 67 tests.
 
 ## Slice 7: Pillar Chain Storage And Bridge Root/Epoch Facts
 
