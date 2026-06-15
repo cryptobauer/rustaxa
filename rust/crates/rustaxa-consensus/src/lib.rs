@@ -181,7 +181,8 @@ pub use period_data_queue::PeriodDataQueue;
 pub use pillar_chain::{
     PillarBlockLinkageFact, PillarBlockLinkagePlan, PillarBlockLinkageStatus,
     PillarValidatorVoteCount, PillarValidatorVoteCountChange, plan_pillar_block_linkage,
-    plan_pillar_vote_count_changes,
+    plan_pillar_vote_count_changes, save_current_pillar_block_data_storage,
+    save_finalized_pillar_block_storage, save_own_pillar_block_vote_storage,
 };
 pub use pillar_votes::{
     PillarVoteBundleAcceptedVote, PillarVoteBundlePlan, PillarVoteBundlePlanner,

@@ -4907,6 +4907,19 @@ pub mod rustaxa_ffi {
         pub fn plan_pillar_block_linkage(
             fact: PillarBlockLinkageFact,
         ) -> Result<PillarBlockLinkagePlan>;
+        pub fn apply_pillar_current_block_data_storage(
+            storage: &BridgeStorage,
+            data_rlp: Vec<u8>,
+        ) -> Result<()>;
+        pub fn apply_pillar_own_vote_storage(
+            storage: &BridgeStorage,
+            vote_rlp: Vec<u8>,
+        ) -> Result<()>;
+        pub fn apply_finalized_pillar_block_storage(
+            storage: &BridgeStorage,
+            period: u64,
+            pillar_block_rlp: Vec<u8>,
+        ) -> Result<()>;
 
         // Consensus sortition
 

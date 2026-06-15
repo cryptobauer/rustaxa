@@ -312,10 +312,16 @@ sub-slice rebuilds `rust_consensus_tests` and `/build/bin/rust_consensus_tests` 
 Goal: move pillar-chain consensus storage and bridge root/epoch fact handling to Rust-owned ports while preserving the
 current FinalChain/EVM boundary.
 
+Status: in progress. Pillar manager current-block data, own pillar vote, and finalized pillar block persistence now route
+through `rustaxa-consensus::pillar_chain` storage helpers over direct `rustaxa-storage`. The C++ pillar manager shim still
+materializes `PillarBlock`/`PillarVote` RLP bytes and owns live mirrors, vote aggregation, gossip, and event emission.
+The older `BridgeStorage` pillar save methods remain as compatibility/query helpers but are no longer used by the
+Rust-mode pillar manager production write path.
+
 Move:
 
-- pillar block persistence
-- current pillar block data/own-vote persistence
+- completed: pillar block persistence for finalized pillar blocks
+- completed: current pillar block data/own-vote persistence
 - pillar-vote restart/recovery storage reads
 - bridge root/epoch fact DTOs consumed by Rust pillar planning
 
@@ -335,8 +341,16 @@ Done when:
 Validation:
 
 - pillar Rust tests
-- `pillar_chain_test`
+- `pillar_chain_test` build and targeted runtime coverage where the broader Rust-mode node path allows it
 - PBFT pillar-processing subset if available
+
+Validation note: the pillar storage-write sub-slice passes `cargo test -p rustaxa-consensus pillar_chain`,
+`cargo test -p rustaxa-bridge pillar_chain`, `rust_storage_tests`, and `cmake --build /build --target pillar_chain_test
+--parallel 12`. Running `/build/bin/pillar_chain_test` still exposes broader Rust-mode runtime gaps outside the moved
+storage write route: `PillarChainTest.votes_count_changes` fails after repeated `VoteManager Rust PBFT vote admission
+weight mismatched legacy sidecar hydration` errors, and the binary later aborts in `FinalChain::getBridgeRoot` because
+block 3 lacks committed external-EVM state. Keep the pillar storage route committed, but treat those runtime failures as
+follow-up PBFT/FinalChain boundary work rather than storage-write blockers.
 
 ## Slice 8: Consensus Read Surface Isolation
 

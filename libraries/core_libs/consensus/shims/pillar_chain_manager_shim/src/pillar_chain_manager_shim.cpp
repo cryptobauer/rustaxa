@@ -458,8 +458,8 @@ std::shared_ptr<PillarBlock> PillarChainManager::createPillarBlock(
 void PillarChainManager::saveNewPillarBlock(const std::shared_ptr<PillarBlock>& pillar_block,
                                             std::vector<state_api::ValidatorVoteCount>&& new_vote_counts) {
   std::scoped_lock<std::shared_mutex> lock(mutex_);
-  rust_storage_->save_current_pillar_block_data(
-      toRustBytes(util::rlp_enc(CurrentPillarBlockDataDb{pillar_block, new_vote_counts})));
+  rustaxa::apply_pillar_current_block_data_storage(
+      *rust_storage_, toRustBytes(util::rlp_enc(CurrentPillarBlockDataDb{pillar_block, new_vote_counts})));
   current_pillar_block_ = pillar_block;
   current_pillar_block_vote_counts_ = std::move(new_vote_counts);
 }
@@ -476,7 +476,7 @@ std::shared_ptr<PillarVote> PillarChainManager::genAndPlacePillarVote(PbftPeriod
                  << vote->getHash();
     return nullptr;
   }
-  rust_storage_->save_own_pillar_block_vote(toRustBytes(util::rlp_enc(vote)));
+  rustaxa::apply_pillar_own_vote_storage(*rust_storage_, toRustBytes(util::rlp_enc(vote)));
 
   if (auto net = network_.lock(); net && broadcast_vote) {
     net->gossipPillarBlockVote(vote);
@@ -524,7 +524,8 @@ std::vector<std::shared_ptr<PillarVote>> PillarChainManager::finalizePillarBlock
     return pillar_votes;
   }
 
-  rust_storage_->save_pillar_block(current_pillar_block->getPeriod(), toRustBytes(current_pillar_block->getRlp()));
+  rustaxa::apply_finalized_pillar_block_storage(*rust_storage_, current_pillar_block->getPeriod(),
+                                                toRustBytes(current_pillar_block->getRlp()));
   LOG(log_nf_) << "Pillar block " << pillar_block_hash << " with period " << current_pillar_block->getPeriod()
                << " finalized";
 

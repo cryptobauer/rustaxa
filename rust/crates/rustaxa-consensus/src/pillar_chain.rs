@@ -4,10 +4,13 @@
 //! storage, networking, live C++ objects, or FinalChain calls. C++ shims still
 //! source DPoS vote-count snapshots, construct `PillarBlock` objects, persist
 //! current/finalized pillar state, and emit events. Rust owns the deterministic
-//! vote-count delta ordering and pillar-block parent/period linkage decision.
+//! vote-count delta ordering, pillar-block parent/period linkage decision, and
+//! storage commits for pillar rows that the Rust-mode pillar manager routes
+//! through `rustaxa-storage`.
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use ethereum_types::{H160, H256};
+use rustaxa_storage::Storage;
 use std::collections::BTreeMap;
 
 /// Validator vote-count snapshot fact supplied by the C++ manager shim.
@@ -218,6 +221,86 @@ pub fn plan_pillar_block_linkage(fact: PillarBlockLinkageFact) -> Result<PillarB
     })
 }
 
+/// Persists the current pillar block sidecar data through Rust storage.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+/// - `data_rlp`: legacy-compatible `CurrentPillarBlockDataDb` RLP bytes
+///   produced by the current C++ materialization boundary.
+///
+/// Outputs:
+/// - Writes the current-pillar singleton row.
+///
+/// Invariants and edge behavior:
+/// - This helper owns only the durable storage row. C++ still owns
+///   `PillarBlock` materialization and live manager mirrors for now.
+/// - Empty payloads are rejected to avoid replacing a live current-pillar row
+///   with an undecodable value.
+pub fn save_current_pillar_block_data_storage(storage: &Storage, data_rlp: &[u8]) -> Result<()> {
+    ensure!(
+        !data_rlp.is_empty(),
+        "PILLAR_CURRENT_BLOCK_DATA_EMPTY_PAYLOAD"
+    );
+    storage
+        .pillar()
+        .write_current_data(data_rlp)
+        .context("PILLAR_CURRENT_BLOCK_DATA_WRITE")
+}
+
+/// Persists the local node's own pillar-block vote through Rust storage.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+/// - `vote_rlp`: legacy-compatible `PillarVote` RLP bytes.
+///
+/// Outputs:
+/// - Writes the current own-pillar-vote singleton row.
+///
+/// Invariants and edge behavior:
+/// - Vote signing, validation, gossip, and live vote aggregation remain C++
+///   executor boundaries for this slice.
+/// - Empty payloads are rejected because the row is later decoded as a concrete
+///   `PillarVote`.
+pub fn save_own_pillar_block_vote_storage(storage: &Storage, vote_rlp: &[u8]) -> Result<()> {
+    ensure!(!vote_rlp.is_empty(), "PILLAR_OWN_VOTE_EMPTY_PAYLOAD");
+    storage
+        .pillar()
+        .write_own_vote(vote_rlp)
+        .context("PILLAR_OWN_VOTE_WRITE")
+}
+
+/// Persists one finalized pillar block through Rust storage.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+/// - `period`: pillar block period used as the storage key.
+/// - `pillar_block_rlp`: canonical pillar-block RLP bytes from the C++
+///   materialized block.
+///
+/// Outputs:
+/// - Writes the finalized pillar-block row for `period`.
+///
+/// Invariants and edge behavior:
+/// - This helper owns only finalized pillar-block persistence. Above-threshold
+///   vote lookup, event emission, and live finalized/current mirrors remain at
+///   the shim boundary until the full manager executor moves to Rust.
+/// - Empty block payloads are rejected to avoid creating an undecodable pillar
+///   block record.
+pub fn save_finalized_pillar_block_storage(
+    storage: &Storage,
+    period: u64,
+    pillar_block_rlp: &[u8],
+) -> Result<()> {
+    ensure!(
+        !pillar_block_rlp.is_empty(),
+        "PILLAR_FINALIZED_BLOCK_EMPTY_PAYLOAD"
+    );
+    storage
+        .pillar()
+        .write(period, pillar_block_rlp)
+        .context("PILLAR_FINALIZED_BLOCK_WRITE")
+}
+
 fn vote_counts_by_address(
     vote_counts: &[PillarValidatorVoteCount],
 ) -> BTreeMap<H160, PillarValidatorVoteCount> {
@@ -247,6 +330,18 @@ fn i128_to_i32(value: i128) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustaxa_storage::{Config, Storage};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be available")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{name}_{nonce}"))
+    }
 
     fn addr(value: u64) -> H160 {
         H160::from_low_u64_be(value)
@@ -261,6 +356,73 @@ mod tests {
             address: addr(address),
             vote_count,
         }
+    }
+
+    #[test]
+    fn pillar_storage_helpers_persist_current_vote_and_finalized_block() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pillar_storage_helpers");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+
+            save_current_pillar_block_data_storage(&storage, &[0xC1, 0x01])
+                .expect("current pillar data should persist");
+            save_own_pillar_block_vote_storage(&storage, &[0xC1, 0x02])
+                .expect("own pillar vote should persist");
+            save_finalized_pillar_block_storage(&storage, 42, &[0xC1, 0x03])
+                .expect("finalized pillar block should persist");
+
+            assert_eq!(
+                storage
+                    .pillar()
+                    .current_data_rlp()
+                    .expect("current pillar data should load"),
+                Some(vec![0xC1, 0x01]),
+            );
+            assert_eq!(
+                storage
+                    .pillar()
+                    .own_vote_rlp()
+                    .expect("own pillar vote should load"),
+                Some(vec![0xC1, 0x02]),
+            );
+            assert_eq!(
+                storage.pillar().rlp(42).expect("pillar block should load"),
+                Some(vec![0xC1, 0x03]),
+            );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn pillar_storage_helpers_reject_empty_payloads() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pillar_storage_empty_payloads");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+
+            assert!(
+                save_current_pillar_block_data_storage(&storage, &[])
+                    .expect_err("empty current data should reject")
+                    .to_string()
+                    .contains("PILLAR_CURRENT_BLOCK_DATA_EMPTY_PAYLOAD")
+            );
+            assert!(
+                save_own_pillar_block_vote_storage(&storage, &[])
+                    .expect_err("empty own vote should reject")
+                    .to_string()
+                    .contains("PILLAR_OWN_VOTE_EMPTY_PAYLOAD")
+            );
+            assert!(
+                save_finalized_pillar_block_storage(&storage, 42, &[])
+                    .expect_err("empty pillar block should reject")
+                    .to_string()
+                    .contains("PILLAR_FINALIZED_BLOCK_EMPTY_PAYLOAD")
+            );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]
