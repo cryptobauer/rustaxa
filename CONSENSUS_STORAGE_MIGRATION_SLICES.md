@@ -461,11 +461,14 @@ VoteManager, sortition, pillar, DAG/proposed-block, transaction, and PBFT manage
 route through bridge-owned batch ids. The storage shim still owns an internal Rust batch map for temporary
 legacy-compatible `insert/remove/commitWriteBatch` behavior, but consensus callers no longer have a public API for
 extracting a Rust batch id.
+PBFT finalization bridge-owned batch appender scaffolding has also been deleted from `rustaxa-bridge`; bridge tests now
+exercise the production `apply_pbft_finalization_storage_writes` API, which creates and commits the Rust-owned batch in
+`rustaxa-consensus`.
 
 Move/remove:
 
 - completed: stale public `rustBatchId` production escape hatch
-- obsolete bridge storage appender APIs
+- completed: obsolete PBFT finalization bridge storage appender APIs
 - allowlisted consensus `DbStorage` routes that now have Rust runtime replacements
 - unguarded main-only dependencies in upstream-owned C++ files
 
@@ -488,6 +491,15 @@ private shim batch handling for legacy-compatible `insert/remove/commitWriteBatc
 `scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`,
 `git diff --check`, `cmake --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
 and `cmake --build /build --target core_libs --parallel 12`.
+
+Validation note: the PBFT finalization appender cleanup removes the obsolete `rustaxa-bridge` test-only appender helpers
+that wrote into bridge-owned batch ids. Bridge finalization tests now use the production Rust-owned
+`apply_pbft_finalization_storage_writes` path for primary, dynamic-lambda, executed-status, sortition, and reward-vote
+reset stages. It passes `cargo fmt --manifest-path rust/Cargo.toml --all --check`, `cargo check --manifest-path
+rust/Cargo.toml -p rustaxa-bridge`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_finalize`,
+`scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, `git diff
+--check`, `cmake --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`, and
+`cmake --build /build --target pbft_manager_test --parallel 12`.
 
 ## Stop Conditions
 
