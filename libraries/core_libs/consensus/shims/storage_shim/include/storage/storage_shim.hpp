@@ -240,7 +240,6 @@ class DbStorage : public DbStorageOld {
   void forEach(Column const& col, OnEntry const& f);
   rustaxa::BridgeStorage& rustStorage();
   const rustaxa::BridgeStorage& rustStorage() const;
-  uint64_t rustBatchId(Batch& batch);
 
   template <typename T>
   void clearColumnHistory(std::unordered_set<T>& to_keep, Column c) {

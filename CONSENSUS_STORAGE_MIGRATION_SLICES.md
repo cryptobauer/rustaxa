@@ -456,9 +456,15 @@ reach a clean gtest summary before termination. These failures do not point at t
 
 Goal: remove obsolete Rust-mode consensus storage hooks and make regressions visible.
 
+Status: in progress. The public `DbStorage::rustBatchId` shim method has been removed now that PBFT finalization,
+VoteManager, sortition, pillar, DAG/proposed-block, transaction, and PBFT manager transition production writes no longer
+route through bridge-owned batch ids. The storage shim still owns an internal Rust batch map for temporary
+legacy-compatible `insert/remove/commitWriteBatch` behavior, but consensus callers no longer have a public API for
+extracting a Rust batch id.
+
 Move/remove:
 
-- stale `rustBatchId` production use
+- completed: stale public `rustBatchId` production escape hatch
 - obsolete bridge storage appender APIs
 - allowlisted consensus `DbStorage` routes that now have Rust runtime replacements
 - unguarded main-only dependencies in upstream-owned C++ files
@@ -476,6 +482,12 @@ Validation:
 - `rust_storage_tests`
 - targeted C++ shim builds/tests for touched modules
 - broader CTest/Python integration gates only when the task owner accepts the cost
+
+Validation note: the `rustBatchId` cleanup sub-slice removes the unused public storage-shim method while preserving
+private shim batch handling for legacy-compatible `insert/remove/commitWriteBatch`. It passes
+`scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`,
+`git diff --check`, `cmake --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
+and `cmake --build /build --target core_libs --parallel 12`.
 
 ## Stop Conditions
 
