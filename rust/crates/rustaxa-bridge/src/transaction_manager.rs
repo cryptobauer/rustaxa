@@ -555,13 +555,7 @@ pub fn save_transactions_from_dag_block(
             .map(consensus_fact_from_ffi_fact)
             .collect(),
         current_transaction_count,
-        |hash| {
-            storage
-                .0
-                .transaction()
-                .finalized(hash)
-                .context("TM_DAG_TX_FINALIZED_LOOKUP_FAILED")
-        },
+        |hash| transaction_finalized(&storage.0, hash).context("TM_DAG_TX_FINALIZED_LOOKUP_FAILED"),
     )?;
 
     let mut accepted: Vec<DagTransactionSaveAccepted> =
@@ -626,13 +620,7 @@ pub fn save_transactions_from_dag_block_with_sidecar(
             })
             .collect(),
         sidecar.0.transaction_count(),
-        |hash| {
-            storage
-                .0
-                .transaction()
-                .finalized(hash)
-                .context("TM_DAG_TX_FINALIZED_LOOKUP_FAILED")
-        },
+        |hash| transaction_finalized(&storage.0, hash).context("TM_DAG_TX_FINALIZED_LOOKUP_FAILED"),
     )?;
 
     let mut accepted: Vec<DagTransactionSaveAccepted> =
@@ -696,13 +684,7 @@ pub fn transaction_manager_runtime_execute_admission(
             })
             .collect(),
         runtime.sidecar.transaction_count(),
-        |hash| {
-            storage
-                .0
-                .transaction()
-                .finalized(hash)
-                .context("TM_DAG_TX_FINALIZED_LOOKUP_FAILED")
-        },
+        |hash| transaction_finalized(&storage.0, hash).context("TM_DAG_TX_FINALIZED_LOOKUP_FAILED"),
     )?;
 
     let mut accepted: Vec<DagTransactionSaveAccepted> =
