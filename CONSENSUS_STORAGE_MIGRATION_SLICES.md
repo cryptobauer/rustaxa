@@ -158,7 +158,8 @@ Rust transaction runtime.
 Status: in progress. `rustaxa-consensus::transaction_storage` now owns Rust storage batches for DAG-block
 non-finalized transaction persistence, TransactionManager `TrxCount` status writes used by finalized-status updates,
 stored transaction lookup source classification, and restart recovery cleanup of stale finalized rows in the
-non-finalized transaction column. The bridge adapts CXX DTOs and no longer owns those batch write groups or lookup
+non-finalized transaction column. Finalized-index membership checks used by filter/verify gates are routed through the
+consensus storage runtime. The bridge adapts CXX DTOs and no longer owns those batch write groups or lookup
 classification rules. The finalized-account queue purge remains documented compatibility debt until FinalChain account
 snapshots move fully to `rustaxa-storage`.
 

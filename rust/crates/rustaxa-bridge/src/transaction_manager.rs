@@ -71,9 +71,9 @@ use rustaxa_consensus::transaction_queue::{
 };
 use rustaxa_consensus::transaction_storage::{
     load_non_finalized_recovery_entries, load_stored_transactions, save_transaction_count,
-    StoredTransactionLookupRequest, STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR,
-    STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM, STORED_TRANSACTION_SOURCE_MISSING,
-    STORED_TRANSACTION_SOURCE_PENDING,
+    transaction_finalized, StoredTransactionLookupRequest,
+    STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR, STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM,
+    STORED_TRANSACTION_SOURCE_MISSING, STORED_TRANSACTION_SOURCE_PENDING,
 };
 use rustaxa_types::LegacyTransactionEnvelope;
 use std::time::{Duration, Instant};
@@ -1179,11 +1179,7 @@ pub fn transaction_manager_filter_non_finalized_with_runtime(
 
     let plan: ConsensusFinalizedTransactionFilterPlan =
         plan_exclude_finalized_transactions_from_storage(facts, |hash| {
-            storage
-                .0
-                .transaction()
-                .finalized(hash)
-                .context("TM_FILTER_FINALIZED_LOOKUP")
+            transaction_finalized(&storage.0, hash).context("TM_FILTER_FINALIZED_LOOKUP")
         })?;
 
     Ok(FinalizedTransactionFilterPlan {
@@ -1490,11 +1486,7 @@ pub fn transaction_manager_verify_not_finalized_with_runtime_and_final_chain(
         }
         let (_, sender_nonce, _) = final_chain_account_lookup(final_chain, &fact.sender)?;
         if sender_nonce >= U256::from_big_endian(&fact.transaction_nonce)
-            && storage
-                .0
-                .transaction()
-                .finalized(hash)
-                .context("TM_VERIFY_FINALIZED_LOOKUP")?
+            && transaction_finalized(&storage.0, hash).context("TM_VERIFY_FINALIZED_LOOKUP")?
         {
             return Ok(TransactionManagerVerifyNotFinalizedOutcome {
                 is_finalized: true,
@@ -1535,11 +1527,7 @@ pub fn transaction_manager_verify_not_finalized_with_runtime(
         }
         if U256::from_big_endian(&fact.sender_account_nonce)
             >= U256::from_big_endian(&fact.transaction_nonce)
-            && storage
-                .0
-                .transaction()
-                .finalized(hash)
-                .context("TM_VERIFY_FINALIZED_LOOKUP")?
+            && transaction_finalized(&storage.0, hash).context("TM_VERIFY_FINALIZED_LOOKUP")?
         {
             return Ok(TransactionManagerVerifyNotFinalizedOutcome {
                 is_finalized: true,

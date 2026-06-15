@@ -131,6 +131,27 @@ pub fn save_transaction_count(storage: &Storage, transaction_count: u64) -> Resu
         .context("TRANSACTION_MANAGER_COUNT_WRITE")
 }
 
+/// Returns whether a transaction hash is indexed as finalized.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+/// - `hash`: canonical transaction hash to check.
+///
+/// Outputs:
+/// - `true` when the finalized transaction-location index contains the hash.
+///
+/// Invariants and edge behavior:
+/// - This is a storage fact lookup only; recent-finalized sidecars and
+///   account-nonce gates are supplied by the TransactionManager runtime
+///   boundary.
+/// - Storage backend errors are returned with TransactionManager context.
+pub fn transaction_finalized(storage: &Storage, hash: H256) -> Result<bool> {
+    storage
+        .transaction()
+        .finalized(hash)
+        .context("TRANSACTION_MANAGER_FINALIZED_LOOKUP")
+}
+
 /// Resolves pending and finalized transaction payloads from Rust storage.
 ///
 /// Inputs:
@@ -330,6 +351,21 @@ mod tests {
                 .unwrap(),
             9
         );
+    }
+
+    #[test]
+    fn transaction_finalized_reads_finalized_location_index() {
+        let storage = temp_storage("rustaxa_consensus_transaction_storage_finalized");
+        let hash = H256::from([0x33; 32]);
+
+        assert!(!transaction_finalized(&storage, hash).unwrap());
+
+        storage
+            .transaction()
+            .write_location(hash, 12, 1, false)
+            .unwrap();
+
+        assert!(transaction_finalized(&storage, hash).unwrap());
     }
 
     #[test]
