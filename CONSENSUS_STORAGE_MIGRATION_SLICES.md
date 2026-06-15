@@ -370,20 +370,25 @@ pillar block object.
 
 Goal: separate consensus storage reads from query/API compatibility reads and prevent new `DbStorage` consensus ports.
 
-Status: in progress. Gas-pricer finalized-history restoration now performs its FinalChain `LAST_NUMBER` and period-data
-walk inside `rustaxa-consensus::gas_pricer` over native `rustaxa-storage`; the bridge adapter only passes the shared
-storage handle and oracle lock. This removes bridge-local raw storage reads and period-data gas-price decoding from the
-deterministic gas-pricer initialization path. The storage-boundary guard now also rejects new C++ `getDB()` additions by
-default; RPC/GraphQL compatibility reads must carry an inline `RUSTAXA_QUERY_COMPAT_READ` marker so query debt is visible
-instead of silently expanding.
-Existing RPC/Debug query reads now carry that marker; the scan currently finds no GraphQL `getDB()`/`rustStorage()` query
-reads to annotate.
+Status: replanned / partially complete. Gas-pricer finalized-history restoration now performs its FinalChain
+`LAST_NUMBER` and period-data walk inside `rustaxa-consensus::gas_pricer` over native `rustaxa-storage`; the bridge
+adapter only passes the shared storage handle and oracle lock. This removes bridge-local raw storage reads and
+period-data gas-price decoding from the deterministic gas-pricer initialization path. The storage-boundary guard now also
+rejects new C++ `getDB()` additions by default; RPC/GraphQL compatibility reads must carry an inline
+`RUSTAXA_QUERY_COMPAT_READ` marker so query debt is visible instead of silently expanding.
+Existing RPC/Debug query reads now carry that marker. GraphQL does not currently add new `getDB()`/`rustStorage()`
+extractor calls, but it still has pre-existing `db_` compatibility reads that are tracked in Slice 13.
 PBFT manager startup replay now loads finalized period data, closest dynamic-lambda facts, and finalized DAG hash order
 through a `rustaxa-consensus::pbft_manager` storage helper over native `rustaxa-storage`; the bridge only adapts DTOs,
 and the C++ shim only materializes temporary `PeriodData` objects for the existing live replay calls.
 PBFT finalization dynamic-lambda planning now also loads the prior saved period lambda through
 `rustaxa-consensus::pbft_finalize` over native `rustaxa-storage` instead of asking the PBFT manager shim to call
 `DbStorage::getPeriodLambda`.
+
+Boundary replan: this slice is no longer a single implementation unit. The remaining read-surface work splits across
+query compatibility, PBFT-chain/proposed-block live sidecars, PBFT sync/network egress, and FinalChain/EVM facts. Those
+are tracked below as Slices 10-14 so implementation can continue without broadening Slice 8 into unrelated subsystem
+ownership changes.
 
 Move:
 
@@ -456,7 +461,7 @@ reach a clean gtest summary before termination. These failures do not point at t
 
 Goal: remove obsolete Rust-mode consensus storage hooks and make regressions visible.
 
-Status: in progress. The public `DbStorage::rustBatchId` shim method has been removed now that PBFT finalization,
+Status: replanned / stopped at boundary. The public `DbStorage::rustBatchId` shim method has been removed now that PBFT finalization,
 VoteManager, sortition, pillar, DAG/proposed-block, transaction, and PBFT manager transition production writes no longer
 route through bridge-owned batch ids. The storage shim still owns an internal Rust batch map for temporary
 legacy-compatible `insert/remove/commitWriteBatch` behavior, but consensus callers no longer have a public API for
@@ -518,6 +523,273 @@ rustaxa-bridge`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensu
 --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_finalize`, `scripts/rewrite_storage_boundary_guard.sh
 --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, `git diff --check`, `cmake --build /build --target
 rust_storage_tests --parallel 12`, and `/build/bin/rust_storage_tests`.
+
+## Boundary Replan: Remaining Storage/C++ Boundaries
+
+Replan date: 2026-06-15.
+
+The Slice 9 audit found no remaining public bridge-batch escape hatch or PBFT finalization appender route. The remaining
+`DbStorage`/C++ storage references cluster into five boundaries. They should be moved as separate slices because each
+boundary changes a different owner:
+
+- PBFT-chain head/history and proposed-block live sidecars still use `DbStorage` in shim-owned consensus classes.
+- PBFT sync and DAG/network packet handlers still carry `DbStorage` for network egress and sync materialization.
+- RPC/GraphQL/debug paths still expose compatibility query reads.
+- FinalChain/EVM execution and DPoS/account facts still run through the accepted external-EVM/state boundary.
+- App startup, admin/migration, storage-shim internals, tests, and legacy/reference code remain compatibility shell
+  responsibilities rather than consensus storage ownership.
+
+Stop rule for the next work: do not collapse these into one broad cleanup. Each slice must either retire a concrete
+`DbStorage` consensus route or document that the route is query/admin/legacy compatibility. Stop again if the slice
+requires moving external EVM execution, peer transport, tarcap scheduling, or broad upstream-owned C++ files before its
+own Rust storage owner is ready.
+
+## Slice 10: PBFT Chain Storage Runtime
+
+Goal: move PBFT-chain head restore, head persistence, block-existence checks, and PBFT block payload lookups out of the
+`PbftChain` shim's `DbStorage` calls and into `rustaxa-consensus` over direct `rustaxa-storage`.
+
+Status: planned.
+
+Current boundary:
+
+- `libraries/core_libs/consensus/shims/pbft_chain_shim/src/pbft_chain_shim.cpp` still calls `getPbftHead`,
+  `savePbftHead`, `pbftBlockInDb`, and `getPbftBlock`.
+- The shim also recovers the last non-null anchor by walking PBFT blocks through `DbStorage`.
+- C++ still materializes `PbftBlock` objects for public consensus APIs and existing callers.
+
+Move:
+
+- persisted PBFT-chain head load/initialize
+- last-non-null-anchor recovery from canonical PBFT block bytes
+- PBFT block existence lookup
+- PBFT block RLP lookup for temporary C++ materialization
+- head persistence/update writes currently emitted through `savePbftHead`
+
+Keep temporarily:
+
+- `PbftBlock` C++ object materialization at the public shim boundary
+- JSON string compatibility for the legacy PBFT-head payload until the storage layout is intentionally changed
+- network/API callers that still expect C++ `PbftBlock` instances
+
+Done when:
+
+- `PbftChain` Rust-mode production paths no longer call `DbStorage` methods for PBFT-chain storage facts or writes.
+- `rustaxa-consensus` owns PBFT-chain storage recovery semantics, including corrupt/missing block behavior.
+- C++ only maps Rust lookup results to temporary `PbftBlock` sidecars.
+
+Validation:
+
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pbft_chain`
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_chain`
+- `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+- `cmake --build /build --target pbft_chain_test --parallel 12`
+- focused PBFT manager/DAG tests that exercise chain-head recovery, noting pre-existing non-storage runtime gaps
+
+## Slice 11: Proposed-Block Constructor And Persistence Runtime
+
+Goal: remove the remaining `DbStorage` ownership from `ProposedBlocks` by constructing the Rust index with native storage
+and routing save/restore/cleanup through one Rust-owned proposed-block runtime.
+
+Status: planned.
+
+Current boundary:
+
+- `ProposedBlocks` stores `std::shared_ptr<DbStorage>` and calls `saveProposedPbftBlock`.
+- Restore and cleanup already call Rust storage helpers, but they still reach storage by extracting `db_->rustStorage()`.
+- The PBFT manager overlay still gets proposed-block snapshots as C++ sidecars.
+
+Move:
+
+- constructor wiring from `DbStorage` to an explicit Rust storage handle/runtime
+- proposed-block save when `save_to_db` is true
+- restore and cleanup routing so the shim no longer owns storage extraction
+- stale in-memory index updates after successful Rust storage commits
+
+Keep temporarily:
+
+- `PbftBlock` C++ materialization for proposer, validation, and network bundle paths
+- in-memory proposed-block snapshot APIs required by current PBFT sync egress
+
+Done when:
+
+- `ProposedBlocks` no longer stores or requires `DbStorage` in Rust mode.
+- Save/restore/cleanup are one Rust storage family with clear commit-before-live-mutation ordering.
+- Remaining C++ sidecar APIs are explicitly live-object compatibility, not storage ownership.
+
+Validation:
+
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus proposed_blocks`
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge proposed_blocks`
+- `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+- `cmake --build /build --target pbft_manager_test --parallel 12`
+- focused proposed-block/PBFT sync tests where available
+
+## Slice 12: PBFT Sync And Network Egress Storage Queries
+
+Goal: move storage-backed PBFT sync payload and network egress materialization into Rust query/runtime helpers while
+keeping peer transport, packet wrapping, and tarcap scheduling in C++.
+
+Status: planned.
+
+Current boundary:
+
+- Latest PBFT sync egress already calls `pbft_mgr_->getPbftSyncPeriodDataRaw` in Rust mode, but network handlers still
+  carry `DbStorage` and legacy branches call `getPeriodDataRaw`.
+- DAG sync and status handlers still receive `DbStorage` because network packet handlers predate the Rust storage
+  boundary.
+- Proposed-block bundle egress still enumerates temporary C++ sidecars.
+
+Move:
+
+- PBFT sync period-data lookup and reward-vote attachment facts into Rust-owned sync-query helpers
+- DAG sync payload storage reads that still happen in network handlers into existing `rustaxa-consensus::dag` storage
+  query APIs or narrow new APIs
+- packet payload selection and de-dup facts into Rust DTOs while C++ keeps final packet encoding/sending
+
+Keep temporarily:
+
+- tarcap peer transport, packet sealing, gossip fanout, scheduling, and peer-known state
+- final C++ packet object construction until the network ingress/egress arena work lands
+- legacy pure-C++ handler branches behind `RUSTAXA_ENABLE=0`
+
+Done when:
+
+- Rust-mode network sync handlers do not use `DbStorage` for deterministic consensus storage reads.
+- C++ network code receives typed sync payload/effect DTOs and only performs transport work.
+- Any remaining `DbStorage` member in network handlers is legacy/query compatibility or removed from Rust-mode builds.
+
+Validation:
+
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus dag pbft_manager`
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge dag pbft_manager`
+- `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+- focused DAG/PBFT sync C++ targets
+- storage-boundary guard self-test/current-diff guard
+
+## Slice 13: Query Compatibility Read Split
+
+Goal: separate RPC/GraphQL/debug compatibility reads from consensus storage ownership and prevent unmarked query debt
+from looking like unfinished consensus migration.
+
+Status: planned.
+
+Current boundary:
+
+- RPC and Debug `getDB()` reads are marked with `RUSTAXA_QUERY_COMPAT_READ`.
+- GraphQL query code still has `DbStorage` constructor/state and calls `getPbftBlock`, `getDagBlocksAtLevel`, and
+  `getFinalizedDagBlockByPeriod` without compatibility markers.
+- These reads serve API responses and should not block consensus storage ownership, but they should be visible debt.
+
+Move:
+
+- add explicit query compatibility markers to existing GraphQL storage reads, or route simple read-only responses through
+  Rust query APIs when the Rust API already exists
+- document any read-only Rust query helper introduced for RPC/GraphQL as API/query infrastructure, not consensus runtime
+  ownership
+- tighten the storage-boundary guard only after current GraphQL debt is annotated or routed
+
+Keep temporarily:
+
+- public JSON/GraphQL response materialization in C++
+- FinalChain/account/EVM query access through the accepted FinalChain boundary
+
+Done when:
+
+- Every Rust-mode RPC/GraphQL/debug `DbStorage` read is either replaced by a read-only Rust query API or marked as
+  `RUSTAXA_QUERY_COMPAT_READ`.
+- The storage-boundary guard rejects new unmarked GraphQL storage reads.
+- Query compatibility debt is not counted as consensus storage migration work.
+
+Validation:
+
+- `scripts/rewrite_storage_boundary_guard.sh --self-test`
+- `scripts/rewrite_storage_boundary_guard.sh`
+- `git diff --check`
+- `cmake --build /build --target rpc_plugin --parallel 12`
+- `cmake --build /build --target rpc_test --parallel 12 && /build/bin/rpc_test`
+- GraphQL build/test target if configured
+
+## Slice 14: FinalChain/EVM Fact Port For Consensus
+
+Goal: make FinalChain/EVM-derived facts consumed by consensus explicit Rust ports so PBFT, DAG, votes, pillar, rewards,
+and transaction cleanup no longer call C++ FinalChain or `DbStorage` for deterministic consensus facts.
+
+Status: planned and intentionally larger than a storage cleanup slice.
+
+Current boundary:
+
+- External EVM execution, state commits, receipts, bridge root/epoch reads, DPoS vote counts, account snapshots, and
+  system transaction construction remain outside the consensus storage migration.
+- This is the accepted boundary that explains current PBFT manager runtime failures such as external-EVM state gaps,
+  DPoS snapshot gaps, and transaction execution-count mismatches.
+- Finalized-account transaction queue purge was explicitly deferred from Slice 4 until FinalChain account snapshots move
+  to Rust-accessible facts.
+
+Move:
+
+- define narrow Rust consensus fact ports for DPoS vote counts/eligibility, VRF keys, bridge root/epoch, account nonce
+  and balance snapshots, and FinalChain height/header facts
+- feed those ports from the existing FinalChain shim first, then replace individual facts with Rust storage/state reads
+  as `rustaxa-consensus::final_chain` and `rustaxa-storage` coverage grows
+- move finalized-account queue purge facts out of C++ TransactionManager once account snapshots are available
+- convert PBFT/vote/DAG/pillar callers from ad hoc C++ FinalChain calls to typed fact DTOs or Rust runtime views
+
+Keep temporarily:
+
+- arbitrary EVM execution, gas/state execution, receipts, contract execution, and `state_db` commits
+- C++ `StateAPI` adapter for the external-EVM boundary
+- public FinalChain API materialization for RPC/GraphQL
+
+Done when:
+
+- Consensus decisions consume explicit Rust fact ports instead of directly calling C++ FinalChain/DbStorage.
+- Remaining C++ FinalChain work is limited to external EVM execution/state access and public query materialization.
+- PBFT runtime failures caused by missing DPoS/account/bridge facts have tracked Rust fact-port owners.
+
+Validation:
+
+- Rust final-chain/consensus tests for each fact port
+- focused PBFT manager, vote, DAG, pillar, and transaction-manager C++ tests for migrated facts
+- `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+- FinalChain smoke/subsystem validation when a migrated fact changes runtime behavior
+
+## Slice 15: Compatibility Shell Audit And Guard Hardening
+
+Goal: after Slices 10-14 land, make the remaining `DbStorage` surface intentionally compatibility-only and harden guards
+so regressions are caught before review.
+
+Status: planned final cleanup.
+
+Move/remove:
+
+- remove obsolete `DbStorage` members from Rust-mode consensus/network shim classes
+- delete bridge DTOs and helper functions made unused by the new runtimes
+- shrink allowlists in `scripts/rewrite_storage_boundary_guard.sh`
+- add checks for known shim paths once their storage route has moved
+- update `PLAN.md` and this file with the final compatibility-shell contract
+
+Keep:
+
+- storage shim internals that implement the public C++ compatibility API
+- legacy/reference implementation files and pure-C++ validation routes
+- app startup, migration/admin, backup/pruning, and read-only query compatibility until those areas receive their own
+  rewrite tracks
+
+Done when:
+
+- A code search shows no Rust-mode consensus production route using `DbStorage` as a storage API.
+- Remaining `DbStorage` usage is categorized as storage shim, legacy/reference, app lifecycle/admin, tests, or marked
+  query compatibility.
+- New consensus/storage regressions fail fast in `make rewrite-validate-fast`.
+
+Validation:
+
+- `make rewrite-validate-fast`
+- `scripts/rewrite_storage_boundary_guard.sh --self-test`
+- `scripts/rewrite_storage_boundary_guard.sh`
+- `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+- targeted C++ shim builds/tests for every touched module
 
 ## Stop Conditions
 
