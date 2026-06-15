@@ -466,14 +466,20 @@ exercise the production `apply_pbft_finalization_storage_writes` API, which crea
 `rustaxa-consensus`.
 The remaining PBFT finalization staged append helpers in `rustaxa-consensus` are now internal/test-only; the public
 storage API for finalization is the Rust-owned apply function.
+Remaining `DbStorage` references found by the Slice 9 audit are not stale bridge-batch appender routes. They are either
+legacy/reference implementations under original upstream paths, storage-shim internals, query/admin compatibility, or
+shim-owned live boundaries that still depend on FinalChain/external-EVM state, DAG/network synchronization, or temporary
+C++ sidecar materialization. Removing those in this slice would require broad original C++ edits or moving FinalChain/EVM
+execution ownership, so the slice stops here under the plan stop conditions.
 
 Move/remove:
 
 - completed: stale public `rustBatchId` production escape hatch
 - completed: obsolete PBFT finalization bridge storage appender APIs
 - completed: public PBFT finalization staged appender APIs
-- allowlisted consensus `DbStorage` routes that now have Rust runtime replacements
-- unguarded main-only dependencies in upstream-owned C++ files
+- audited: no remaining bridge-batch consensus `DbStorage` routes with already-available Rust storage replacements
+- deferred: remaining `DbStorage` routes tied to legacy/reference code, FinalChain/EVM, DAG/network, or sidecar boundaries
+- deferred: unguarded main-only dependency audit beyond shim-owned files; broad upstream-owned edits require re-planning
 
 Done when:
 
