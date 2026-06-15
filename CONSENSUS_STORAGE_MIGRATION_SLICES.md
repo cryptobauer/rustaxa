@@ -155,13 +155,17 @@ Validation:
 Goal: remove TransactionManager consensus paths from `BridgeStorage` / `DbStorage` and use direct Rust storage plus the
 Rust transaction runtime.
 
-Status: in progress. `rustaxa-consensus::transaction_storage` now owns Rust storage batches for DAG-block
-non-finalized transaction persistence, TransactionManager `TrxCount` status writes used by finalized-status updates,
-stored transaction lookup source classification, and restart recovery cleanup of stale finalized rows in the
-non-finalized transaction column. Finalized-index membership checks used by filter/verify gates are routed through the
-consensus storage runtime, including DAG-block admission duplicate/finalized checks. The bridge adapts CXX DTOs and no
-longer owns those batch write groups or lookup classification rules. The finalized-account queue purge remains
-documented compatibility debt until FinalChain account snapshots move fully to `rustaxa-storage`.
+Status: complete for TransactionManager-owned consensus storage. `rustaxa-consensus::transaction_storage` now owns Rust
+storage batches for DAG-block non-finalized transaction persistence, TransactionManager `TrxCount` status writes used by
+finalized-status updates, stored transaction lookup source classification, and restart recovery cleanup of stale
+finalized rows in the non-finalized transaction column. Finalized-index membership checks used by filter/verify gates are
+routed through the consensus storage runtime, including DAG-block admission duplicate/finalized checks. The bridge adapts
+CXX DTOs and no longer owns those batch write groups or lookup classification rules. Direct `storage.0.transaction()`
+reads have been removed from the TransactionManager bridge.
+
+Deferred gap: finalized-account queue purge still receives account facts through the current FinalChain compatibility
+boundary. Moving that read completely requires the upcoming FinalChain account snapshot migration to `rustaxa-storage`;
+forcing it through this slice would change the FinalChain boundary rather than finish TransactionManager-owned storage.
 
 Move:
 
@@ -171,7 +175,7 @@ Move:
 - transaction-count updates
 - proposal lookup storage misses
 - restart recovery of non-finalized transactions
-- finalized-account queue purge storage reads
+- finalized-account queue purge storage reads: deferred to the FinalChain account snapshot migration noted above
 
 Keep temporarily:
 
