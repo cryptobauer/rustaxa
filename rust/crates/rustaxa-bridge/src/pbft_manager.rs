@@ -970,6 +970,7 @@ mod tests {
     const RESULT_SLEEP: u8 = 4;
     const STATE_ACTION_STATUS_READY: u8 = 0;
     const STATE_ACTION_PROPOSE_NEW_BLOCK: u8 = 1;
+    const STATE_ACTION_CERT_VOTE_CURRENT_SOFT_VALUE: u8 = 5;
     const STATE_ACTION_SOFT_VOTE_PREVIOUS_VALUE: u8 = 4;
     const STATE_ACTION_NEXT_VOTE_CERT_BLOCK: u8 = 7;
     const STARTUP_STATUS_READY: u8 = 0;
@@ -1226,6 +1227,16 @@ mod tests {
             STATE_ACTION_SOFT_VOTE_PREVIOUS_VALUE
         );
         assert_eq!(filter_plan.primary_hash, [0x44; 32]);
+
+        let mut certify_fact = state_fact(STATE_CERTIFY);
+        certify_fact.has_current_round_soft_value = true;
+        let certify_plan = plan_pbft_manager_state_action(certify_fact);
+        assert_eq!(certify_plan.status, STATE_ACTION_STATUS_READY);
+        assert_eq!(
+            certify_plan.primary_intent,
+            STATE_ACTION_CERT_VOTE_CURRENT_SOFT_VALUE
+        );
+        assert_eq!(certify_plan.primary_hash, [0x55; 32]);
 
         let mut finish_fact = state_fact(3);
         finish_fact.has_cert_voted_block = true;

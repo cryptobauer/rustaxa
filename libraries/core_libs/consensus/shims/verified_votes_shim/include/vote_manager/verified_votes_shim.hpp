@@ -450,7 +450,8 @@ class VerifiedVotes {
   std::shared_ptr<PbftVote> materializeVoteForSnapshot(const rustaxa::VerifiedVotePayload& vote_data) const;
   const std::shared_ptr<PbftVote>& requireLiveVote(const vote_hash_t& vote_hash) const;
   VotesWithWeight requireInsertedVotesWithWeightLocked(const std::shared_ptr<PbftVote>& vote,
-                                                       uint64_t total_weight) const;
+                                                       uint64_t total_weight,
+                                                       bool allow_later_bucket_growth = false) const;
   PeriodVerifiedVotesMap buildSnapshotState() const;
   void pruneLiveVotesToSnapshotLocked();
 

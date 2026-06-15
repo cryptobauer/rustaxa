@@ -222,6 +222,23 @@ PbftStates fromPbftManagerRuntimeState(uint8_t state) {
   }
 }
 
+bool pbftManagerRuntimeActionMatchesLiveState(uint8_t action, PbftStates state) {
+  switch (action) {
+    case kPbftManagerRuntimeActionRunValueProposal:
+      return state == value_proposal_state;
+    case kPbftManagerRuntimeActionRunFilter:
+      return state == filter_state;
+    case kPbftManagerRuntimeActionRunCertify:
+      return state == certify_state;
+    case kPbftManagerRuntimeActionRunFirstFinish:
+      return state == finish_state;
+    case kPbftManagerRuntimeActionRunSecondFinish:
+      return state == finish_polling_state;
+    default:
+      return true;
+  }
+}
+
 void applyPbftManagerRuntimeSnapshot(const rustaxa::PbftManagerRuntimeSnapshot &snapshot, std::atomic<PbftRound> &round,
                                      PbftStep &step, PbftStates &state, std::chrono::milliseconds &current_round_lambda,
                                      std::chrono::milliseconds &next_step_time, uint32_t &rounds_count_dynamic_lambda,
@@ -827,6 +844,15 @@ void PbftManager::run() {
                      << static_cast<uint32_t>(step.status) << ", error " << static_cast<std::string>(step.error_code);
         runtime_session->abort_pbft_manager_runtime_session();
         assert(false);
+        restart_loop = true;
+        break;
+      }
+
+      if (!pbftManagerRuntimeActionMatchesLiveState(step.action, state_)) {
+        LOG(log_dg_) << "Rust PBFT manager runtime action " << static_cast<uint32_t>(step.action)
+                     << " no longer matches live PBFT state " << static_cast<uint32_t>(state_)
+                     << "; restarting daemon loop";
+        runtime_session->abort_pbft_manager_runtime_session();
         restart_loop = true;
         break;
       }

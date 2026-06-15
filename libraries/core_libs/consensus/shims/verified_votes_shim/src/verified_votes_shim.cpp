@@ -105,9 +105,9 @@ const std::shared_ptr<PbftVote>& VerifiedVotes::requireLiveVote(const vote_hash_
 }
 
 VotesWithWeight VerifiedVotes::requireInsertedVotesWithWeightLocked(const std::shared_ptr<PbftVote>& vote,
-                                                                    uint64_t total_weight) const {
+                                                                    uint64_t total_weight,
+                                                                    bool allow_later_bucket_growth) const {
   VotesWithWeight value{};
-  value.weight = total_weight;
   const auto step_votes =
       rust_verified_votes_->verified_votes_get_step_votes(vote->getPeriod(), vote->getRound(), vote->getStep());
   if (!step_votes.found) {
@@ -120,9 +120,10 @@ VotesWithWeight VerifiedVotes::requireInsertedVotesWithWeightLocked(const std::s
       continue;
     }
     found_block = true;
-    if (entry.total_weight != total_weight) {
+    if (entry.total_weight != total_weight && (!allow_later_bucket_growth || entry.total_weight < total_weight)) {
       throw verifiedVotesError("Rust inserted voted value weight mismatches Rust step lookup");
     }
+    value.weight = entry.total_weight;
 
     // TODO(rustaxa): delete this live-sidecar reconstruction once PBFT vote progress no longer returns
     // `VotesWithWeight` for compatibility callers. Rust owns threshold and persistence payloads on the production path.
@@ -401,7 +402,7 @@ std::optional<VotesWithWeight> VerifiedVotes::insertVotedValue(const std::shared
   }
 
   live_votes_[vote->getHash()] = vote;
-  return requireInsertedVotesWithWeightLocked(vote, outcome.total_weight);
+  return requireInsertedVotesWithWeightLocked(vote, outcome.total_weight, false);
 }
 
 VerifiedVotes::AtomicInsertOutcome VerifiedVotes::insertVerifiedVoteAtomic(const std::shared_ptr<PbftVote>& vote) {
@@ -473,7 +474,7 @@ std::optional<VotesWithWeight> VerifiedVotes::attachRuntimeAcceptedVote(
 
   std::scoped_lock lock(verified_votes_access_);
   live_votes_[vote->getHash()] = vote;
-  return requireInsertedVotesWithWeightLocked(vote, result.verified_vote_add.total_weight);
+  return requireInsertedVotesWithWeightLocked(vote, result.verified_vote_add.total_weight, true);
 }
 
 void VerifiedVotes::setNetworkTPlusOneStep(std::shared_ptr<PbftVote> vote) {
