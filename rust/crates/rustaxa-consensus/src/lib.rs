@@ -187,7 +187,10 @@ pub use pillar_votes::{
     PillarVoteRelevanceStatus, PillarVotes, PillarVotesLookup, VerifiedPillarVote,
     inspect_pillar_vote_from_rlp, plan_pillar_vote_relevance,
 };
-pub use proposed_blocks::ProposedBlocks;
+pub use proposed_blocks::{
+    ProposedBlockStorageEntry, ProposedBlocks, cleanup_proposed_blocks_storage,
+    restore_proposed_blocks_from_storage,
+};
 pub use rewards_stats::{
     FinalizedRewardsPeriodFact, RewardCertVoteFact, RewardDagBlockFact, RewardTransactionFact,
     RewardsBlockDistribution, RewardsFrequencyRule, RewardsStatsConfig, RewardsStatsPeriodRlp,

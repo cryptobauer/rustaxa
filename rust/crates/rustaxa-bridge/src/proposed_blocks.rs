@@ -3,13 +3,12 @@ use crate::ffi::rustaxa_ffi::{
 };
 use crate::ffi::BridgeProposedBlocks;
 use crate::ffi::BridgeStorage;
-use anyhow::{anyhow, Context};
+use anyhow::Context;
 use ethereum_types::H256;
-use rustaxa_consensus::proposed_blocks::{ProposedBlockPeriod, ProposedBlocks};
-use rustaxa_storage::Column;
-use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
-use rustaxa_types::pbft::PbftBlockLink;
-use std::convert::TryFrom;
+use rustaxa_consensus::proposed_blocks::{
+    cleanup_proposed_blocks_storage, restore_proposed_blocks_from_storage, ProposedBlockPeriod,
+    ProposedBlocks,
+};
 
 /// Creates an empty Rust proposed-block index for the C++ PBFT shim.
 pub fn create_proposed_blocks_index() -> Box<BridgeProposedBlocks> {
@@ -94,24 +93,11 @@ impl BridgeProposedBlocks {
         &mut self,
         storage: &BridgeStorage,
     ) -> Result<usize, anyhow::Error> {
-        let mut proposed_entries = Vec::new();
-        for item in storage.0.iter(Column::ProposedPbftBlocks) {
-            let (key, block_rlp) = item.context("PROPOSED_BLOCKS_RESTORE_STORAGE_ITER")?;
-            proposed_entries.push((key.into_vec(), block_rlp.into_vec()));
-        }
+        let proposed_entries = restore_proposed_blocks_from_storage(&storage.0)?;
         let mut restored = 0;
 
-        for (stored_key, block_rlp) in proposed_entries {
-            let link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(&block_rlp))
-                .context("PROPOSED_BLOCKS_RESTORE_DECODE_BLOCK")?;
-            if stored_key.as_slice() != link.block_hash.as_bytes() {
-                return Err(anyhow!(
-                    "PROPOSED_BLOCKS_RESTORE_HASH_MISMATCH: stored key {:?} decoded hash {:?}",
-                    stored_key,
-                    link.block_hash
-                ));
-            }
-            let inserted = self.0.push(link.period, link.block_hash, block_rlp);
+        for entry in proposed_entries {
+            let inserted = self.0.push(entry.period, entry.block_hash, entry.block_rlp);
             if inserted {
                 restored += 1;
             }
@@ -145,17 +131,8 @@ impl BridgeProposedBlocks {
             return Ok(Vec::new());
         }
 
-        let mut batch = storage.0.create_write_batch();
-        for period_hashes in &removed {
-            for hash in &period_hashes.block_hashes {
-                storage.0.batch_delete_raw(
-                    &mut batch,
-                    Column::ProposedPbftBlocks,
-                    hash.as_bytes(),
-                )?;
-            }
-        }
-        storage.0.commit_write_batch_with_sync(batch, false)?;
+        cleanup_proposed_blocks_storage(&storage.0, &removed)
+            .context("PROPOSED_BLOCKS_CLEANUP_STORAGE")?;
 
         for period_hashes in &removed {
             self.0.remove_period(period_hashes.period);
@@ -225,6 +202,9 @@ impl From<ProposedBlockPeriod> for ProposedBlockPeriodHashes {
 mod tests {
     use super::*;
     use crate::storage::create_storage;
+    use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
+    use rustaxa_types::pbft::PbftBlockLink;
+    use std::convert::TryFrom;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 

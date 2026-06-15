@@ -4,11 +4,16 @@
 //! and validation flags used by PBFT proposal handling. Legacy C++ behavior is
 //! preserved at the domain boundary: duplicate insertions are rejected, validity
 //! is tracked per `(period, hash)`, and stale-period cleanup returns removed
-//! block hashes so callers can remove persisted DB entries.
+//! block hashes. Native storage helpers own proposed-block restore and cleanup
+//! batches so the bridge does not iterate or mutate storage columns directly.
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use ethereum_types::H256;
+use rustaxa_storage::{Column, Storage};
+use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
+use rustaxa_types::pbft::PbftBlockLink;
 use std::collections::{BTreeMap, btree_map::Entry};
+use std::convert::TryFrom;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProposedBlockState {
@@ -52,6 +57,20 @@ pub struct ProposedBlockPeriodHashes {
 pub struct ProposedBlockPeriod {
     pub period: u64,
     pub blocks: Vec<ProposedBlockEntry>,
+}
+
+/// Proposed PBFT block restored from native storage.
+///
+/// The payload carries the decoded period/hash facts and preserves the stored
+/// canonical block bytes for the live proposed-block index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProposedBlockStorageEntry {
+    /// PBFT period decoded from the stored proposed block.
+    pub period: u64,
+    /// Canonical PBFT block hash decoded from the stored proposed block.
+    pub block_hash: H256,
+    /// Stored signed PBFT block RLP bytes.
+    pub block_rlp: Vec<u8>,
 }
 
 /// Rust-owned proposed PBFT block index.
@@ -210,9 +229,86 @@ impl ProposedBlocks {
     }
 }
 
+/// Restores proposed PBFT block facts from native Rust storage.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+///
+/// Outputs:
+/// - decoded proposed block entries in storage iteration order.
+///
+/// Invariants and edge behavior:
+/// - Each stored RLP is decoded through the Rust PBFT block codec.
+/// - The storage key must match the decoded canonical PBFT block hash.
+/// - Corrupt RLP, iterator failure, or hash mismatch is returned before the
+///   bridge mutates the in-memory proposed-block index.
+pub fn restore_proposed_blocks_from_storage(
+    storage: &Storage,
+) -> Result<Vec<ProposedBlockStorageEntry>> {
+    let mut restored = Vec::new();
+    for item in storage.iter(Column::ProposedPbftBlocks) {
+        let (key, block_rlp) = item.context("PROPOSED_BLOCKS_RESTORE_STORAGE_ITER")?;
+        let stored_key = key.into_vec();
+        let block_rlp = block_rlp.into_vec();
+        let link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(&block_rlp))
+            .context("PROPOSED_BLOCKS_RESTORE_DECODE_BLOCK")?;
+        if stored_key.as_slice() != link.block_hash.as_bytes() {
+            return Err(anyhow!(
+                "PROPOSED_BLOCKS_RESTORE_HASH_MISMATCH: stored key {:?} decoded hash {:?}",
+                stored_key,
+                link.block_hash
+            ));
+        }
+
+        restored.push(ProposedBlockStorageEntry {
+            period: link.period,
+            block_hash: link.block_hash,
+            block_rlp,
+        });
+    }
+
+    Ok(restored)
+}
+
+/// Deletes stale proposed PBFT block rows from native Rust storage.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+/// - `removed`: deterministic stale period/hash groups produced by the
+///   `ProposedBlocks` cleanup planner.
+///
+/// Outputs:
+/// - Commits one Rust-owned delete batch when `removed` is non-empty.
+///
+/// Invariants and edge behavior:
+/// - Empty cleanup candidates are a no-op and do not create a write batch.
+/// - In-memory cleanup remains the caller's responsibility after this function
+///   succeeds, preserving storage-first mutation ordering.
+pub fn cleanup_proposed_blocks_storage(
+    storage: &Storage,
+    removed: &[ProposedBlockPeriodHashes],
+) -> Result<()> {
+    if removed.is_empty() {
+        return Ok(());
+    }
+
+    let mut batch = storage.create_write_batch();
+    for period_hashes in removed {
+        for hash in &period_hashes.block_hashes {
+            storage
+                .batch_delete_raw(&mut batch, Column::ProposedPbftBlocks, hash.as_bytes())
+                .context("PROPOSED_BLOCKS_CLEANUP_DELETE")?;
+        }
+    }
+    storage
+        .commit_write_batch_with_sync(batch, false)
+        .context("PROPOSED_BLOCKS_CLEANUP_COMMIT")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustaxa_storage::{Config, Storage};
 
     fn hash(v: u64) -> H256 {
         H256::from_low_u64_be(v)
@@ -220,6 +316,38 @@ mod tests {
 
     fn rlp(bytes: &[u8]) -> Vec<u8> {
         bytes.to_vec()
+    }
+
+    fn temp_storage(name: &str) -> Storage {
+        let dir = std::env::temp_dir().join(format!(
+            "{name}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        Storage::new(Config::new(dir)).unwrap()
+    }
+
+    fn build_signed_pbft_block_rlp(period: u64, timestamp: u64) -> Vec<u8> {
+        let mut stream = rlp::RlpStream::new_list(8);
+        stream.append(&H256::from_low_u64_be(period));
+        stream.append(&H256::from_low_u64_be(period + 1));
+        stream.append(&H256::from_low_u64_be(period + 2));
+        stream.append(&H256::from_low_u64_be(period + 3));
+        stream.append(&period);
+        stream.append(&timestamp);
+        stream.append(&H256::from_low_u64_be(period + 4));
+        stream.append(&vec![0u8; 65]);
+        stream.out().to_vec()
+    }
+
+    fn proposed_link_and_hash(period: u64, timestamp: u64) -> (Vec<u8>, PbftBlockLink) {
+        let rlp = build_signed_pbft_block_rlp(period, timestamp);
+        let link =
+            PbftBlockLink::try_from(SignedPbftBlockRlp::new(&rlp)).expect("decode should succeed");
+        (rlp, link)
     }
 
     #[test]
@@ -305,5 +433,123 @@ mod tests {
         assert!(entries[1].is_valid);
         assert_eq!(entries[2].block_hash, hash(3));
         assert_eq!(entries[2].block_rlp, rlp(&[0xB3]));
+    }
+
+    #[test]
+    fn restore_proposed_blocks_from_storage_decodes_and_validates_keys() {
+        let storage = temp_storage("rustaxa_consensus_proposed_blocks_restore");
+        let (rlp_0, link_0) = proposed_link_and_hash(9, 12_345);
+        let (rlp_1, link_1) = proposed_link_and_hash(10, 12_346);
+
+        let mut batch = storage.create_write_batch();
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::ProposedPbftBlocks,
+                link_0.block_hash.as_bytes(),
+                &rlp_0,
+            )
+            .unwrap();
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::ProposedPbftBlocks,
+                link_1.block_hash.as_bytes(),
+                &rlp_1,
+            )
+            .unwrap();
+        storage.commit_write_batch_with_sync(batch, false).unwrap();
+
+        let restored = restore_proposed_blocks_from_storage(&storage).unwrap();
+
+        assert_eq!(
+            restored,
+            vec![
+                ProposedBlockStorageEntry {
+                    period: link_0.period,
+                    block_hash: link_0.block_hash,
+                    block_rlp: rlp_0,
+                },
+                ProposedBlockStorageEntry {
+                    period: link_1.period,
+                    block_hash: link_1.block_hash,
+                    block_rlp: rlp_1,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn restore_proposed_blocks_from_storage_rejects_hash_mismatched_key() {
+        let storage = temp_storage("rustaxa_consensus_proposed_blocks_restore_bad_key");
+        let (rlp, link) = proposed_link_and_hash(11, 43_001);
+        let wrong_hash = H256::from_low_u64_be(999);
+        assert_ne!(wrong_hash, link.block_hash);
+
+        let mut batch = storage.create_write_batch();
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::ProposedPbftBlocks,
+                wrong_hash.as_bytes(),
+                &rlp,
+            )
+            .unwrap();
+        storage.commit_write_batch_with_sync(batch, false).unwrap();
+
+        let err = restore_proposed_blocks_from_storage(&storage)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("PROPOSED_BLOCKS_RESTORE_HASH_MISMATCH"));
+    }
+
+    #[test]
+    fn cleanup_proposed_blocks_storage_deletes_candidates_only_after_commit() {
+        let storage = temp_storage("rustaxa_consensus_proposed_blocks_cleanup");
+        let (old_rlp, old_link) = proposed_link_and_hash(1, 42_001);
+        let (new_rlp, new_link) = proposed_link_and_hash(3, 42_002);
+
+        let mut batch = storage.create_write_batch();
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::ProposedPbftBlocks,
+                old_link.block_hash.as_bytes(),
+                &old_rlp,
+            )
+            .unwrap();
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::ProposedPbftBlocks,
+                new_link.block_hash.as_bytes(),
+                &new_rlp,
+            )
+            .unwrap();
+        storage.commit_write_batch_with_sync(batch, false).unwrap();
+
+        cleanup_proposed_blocks_storage(
+            &storage,
+            &[ProposedBlockPeriodHashes {
+                period: old_link.period,
+                block_hashes: vec![old_link.block_hash],
+            }],
+        )
+        .unwrap();
+
+        assert!(
+            storage
+                .get_raw(Column::ProposedPbftBlocks, old_link.block_hash.as_bytes())
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            storage
+                .get_raw(Column::ProposedPbftBlocks, new_link.block_hash.as_bytes())
+                .unwrap(),
+            Some(new_rlp)
+        );
+        cleanup_proposed_blocks_storage(&storage, &[]).unwrap();
     }
 }

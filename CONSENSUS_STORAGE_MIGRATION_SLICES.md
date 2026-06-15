@@ -201,6 +201,10 @@ Validation:
 
 Goal: move DAG/proposed-block consensus storage reads/writes into Rust runtimes with direct `rustaxa-storage` access.
 
+Status: in progress. `rustaxa-consensus::proposed_blocks` now owns proposed PBFT block storage restore from
+`Column::ProposedPbftBlocks` and stale proposed-block cleanup deletes through one Rust-owned batch. The bridge updates
+the in-memory proposed-block index only after the consensus storage cleanup commits.
+
 Move:
 
 - proposed PBFT block restore and cleanup completion
