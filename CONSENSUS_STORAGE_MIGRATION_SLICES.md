@@ -1414,7 +1414,9 @@ Validation:
 Goal: after Slices 16-22 land, make Slice 8 and Slice 9 objectively closable with a guard-backed audit rather than a
 manual judgment call.
 
-Status: planned final closure.
+Status: audited / blocked. Slice 22 closed the network/query compatibility shell, but the Slice 23 audit found remaining
+Rust-mode consensus shim storage routes that are not only storage-shim internals, tests, legacy/reference code, or marked
+query/network compatibility. Slice 8 and Slice 9 must stay open until the blocker slices below land.
 
 Move/remove:
 
@@ -1425,6 +1427,26 @@ Move/remove:
 - delete obsolete bridge DTOs/runtime wrappers made unused by Slices 16-22
 - update Slice 8 and Slice 9 statuses from replanned/stopped to complete only if the audit proves no consensus runtime
   storage route remains
+
+Audit result:
+
+- `scripts/rewrite_storage_boundary_guard.sh --self-test && scripts/rewrite_storage_boundary_guard.sh` passes for the
+  current diff, but that guard only prevents new additions and does not prove pre-existing routes are gone.
+- The network/query audit now passes: remaining `getDB()`, `rustStorage()`, `DbStorage`, and `db_->` references under
+  `libraries/core_libs/network/{rpc,graphql,src/tarcap}` and `libraries/core_libs/network/include/network/tarcap` are
+  marked with `RUSTAXA_QUERY_COMPAT_READ` or `RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY`.
+- Direct FinalChain DPoS fact calls under shim-owned consensus code are limited to the FinalChain shim fact provider.
+- Storage-shim `DbStorage` and batch APIs remain expected compatibility-shell internals.
+- Closure blockers remain in Rust-mode consensus shims:
+  - PBFT manager overlay still calls `db_->getDagBlockPeriod`, `db_->savePbftMgrField`, `db_->getProposedPbftBlocks`,
+    `db_->getOwnPillarBlockVote`, `db_->saveCertVotedBlockInRound`, `db_->pbftBlockInDb`, and snapshot toggles directly.
+  - Rewards stats shim still calls `db_->deleteColumnData(DbStorage::Columns::block_rewards_stats)` and
+    `db_->getBlocksRewardsStats`, and still extracts `db_->rustStorage()` at operation sites.
+  - TransactionManager and VoteManager shims still extract `db_->rustStorage()` in several operation methods. Those calls
+    use Rust storage APIs, but Slice 9 cannot close while operation-level storage handle extraction remains scattered
+    through C++ shims instead of runtime construction/wiring.
+  - FinalChain snapshot creation remains C++ app lifecycle/storage-shell compatibility and should stay outside consensus
+    closure unless snapshot ownership is explicitly rescoped.
 
 Keep:
 
@@ -1444,6 +1466,73 @@ Validation:
 - `scripts/rewrite_storage_boundary_guard.sh --self-test && scripts/rewrite_storage_boundary_guard.sh`
 - `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
 - targeted C++ builds/tests for any deleted shim/bridge helpers
+
+Validation note: the Slice 23 audit ran focused `rg` searches for `DbStorage`, `db_->`, `getDB()`, `rustStorage()`,
+`createWriteBatch`, `commitWriteBatch`, `rustBatchId`, `DbStorage::Columns`, and direct FinalChain DPoS facts across
+Rust-mode consensus shims, Rust bridge/runtime crates, and the network/query compatibility shell. The guard passes, but
+the audit evidence above contradicts closure, so Slices 8 and 9 remain open.
+
+## Slice 24: PBFT Manager Residual Storage Route Closure
+
+Goal: remove the remaining direct `DbStorage` API calls from the PBFT manager overlay or reclassify snapshot toggles as
+non-consensus lifecycle compatibility.
+
+Status: planned blocker for Slice 23.
+
+Move/remove:
+
+- route `getDagBlockPeriod`, `pbftBlockInDb`, cert-voted-block persistence, and Round/Step persistence through the
+  existing PBFT manager runtime/storage APIs or narrow new Rust runtime helpers
+- make proposed-block and own-pillar-vote startup restoration consume Rust-owned storage/runtime facts rather than
+  temporary `DbStorage` materialization where Rust equivalents already exist
+- keep snapshot enable/disable as app lifecycle compatibility only if documented with an explicit marker and excluded
+  from consensus storage closure
+
+Done when:
+
+- `pbft_manager_overlay.cpp` has no direct `db_->` consensus storage reads/writes
+- any remaining `db_` member use is constructor/runtime-handle ownership or documented lifecycle compatibility
+- PBFT manager Rust/bridge tests and focused C++ PBFT manager builds cover the moved routes
+
+## Slice 25: Rewards Stats Storage Runtime Closure
+
+Goal: make rewards-stats reload, clear, and write ownership fully Rust-runtime/storage-owned instead of using C++
+`DbStorage` column APIs.
+
+Status: planned blocker for Slice 23.
+
+Move/remove:
+
+- move `block_rewards_stats` reload and frequency-boundary clear into `rustaxa-consensus::rewards_stats` over
+  `rustaxa-storage`
+- replace `db_->deleteColumnData(DbStorage::Columns::block_rewards_stats)` and `db_->getBlocksRewardsStats` in the shim
+  with Rust runtime calls
+- remove operation-site `db_->rustStorage()` extraction from rewards stats once the runtime owns its storage handle
+
+Done when:
+
+- `rewards_stats_shim.cpp` has no direct `DbStorage::Columns` or `db_->` storage calls
+- rewards-stats Rust/bridge tests and focused C++ rewards stats builds cover restart/reload, clear, and write behavior
+
+## Slice 26: Operation-Level Rust Storage Handle Extraction Cleanup
+
+Goal: collapse remaining operation-level `db_->rustStorage()` extraction in consensus shims into runtime construction or
+shim-owned Rust handles so C++ no longer passes storage handles through deterministic operation methods.
+
+Status: planned blocker for Slice 23 after Slices 24 and 25.
+
+Move/remove:
+
+- finish the TransactionManager operation handle cleanup already identified by Slice 18
+- finish VoteManager operation handle cleanup for vote progress, own-vote cleanup, and finalization storage writes
+- audit PBFT chain, gas-pricer, sortition, proposed-block, pillar-chain, DAG, and FinalChain shims for constructor-only
+  storage handle ownership versus operation-site extraction
+
+Done when:
+
+- non-storage consensus shims no longer call `db_->rustStorage()` from operation methods
+- Slice 23 can rerun the closure audit and either mark Slices 8/9 complete or report only explicitly documented
+  app/query/lifecycle compatibility
 
 ## Stop Conditions
 
