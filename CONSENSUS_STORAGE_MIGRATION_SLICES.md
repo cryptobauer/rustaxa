@@ -1053,10 +1053,11 @@ Goal: complete the TransactionManager account/finalized fact boundary so transac
 finalized-status updates, and finalized-account purge run through Rust runtime facts rather than C++ storage/final-chain
 lookups.
 
-Status: partial. DAG-block transaction persistence, `verifyTransactionsNotFinalized`, and live transaction admission now
-source sender account nonce/balance and finalized-transaction location facts through Rust FinalChain-backed bridge helpers
-instead of C++ `FinalChain::getAccount` / `transactionLocation` calls. Finalized queue purge and broader account snapshot
-publication remain open.
+Status: complete for TransactionManager-owned account/finalized fact routing. DAG-block transaction persistence,
+`verifyTransactionsNotFinalized`, live transaction admission, proposal-period transaction filtering, and finalized-status
+queue cleanup now source sender account nonce/balance and finalized-transaction location facts through Rust
+FinalChain-backed bridge helpers instead of C++ `FinalChain::getAccount` / `transactionLocation` calls. The broader
+account snapshot publication/execution mismatch remains under Slice 21, not in TransactionManager-owned storage routing.
 
 Current boundary:
 
@@ -1064,8 +1065,8 @@ Current boundary:
   that shim-owned handle rather than extracting `db_->rustStorage()` per call.
 - DAG-save, verify-not-finalized, and live admission account/finalized facts now flow through `BridgeFinalChain`; public
   transaction admission no longer builds account nonce/balance/finalized-location facts in C++.
-- Finalized-account purge facts are still split between explicit Rust bridge helpers and deferred external-EVM/account
-  snapshot boundary handling.
+- Finalized-account purge facts now flow through the Rust runtime queue-cleanup helper, which collects account nonces
+  from `BridgeFinalChain` before mutating the Rust-owned queue.
 - The bridge has `*_with_runtime_and_final_chain` routes for account facts, proposal transaction filtering, and queue
   cleanup; remaining work should use those routes or narrower Rust runtime wrappers instead of adding C++ fact builders.
 
@@ -1075,7 +1076,7 @@ Move:
   `*_with_runtime_and_final_chain` routes
 - completed by Slice 26: remove direct `db_->rustStorage()` calls from TransactionManager operation methods; constructor
   wiring owns the Rust storage handle
-- remaining: move queue cleanup and finalized-account purge into a TransactionManager runtime method that owns the needed
+- completed: move queue cleanup and finalized-account purge into a TransactionManager runtime method that owns the needed
   Rust storage handle and `BridgeFinalChain` reference
 - collapse duplicated C++ command-report glue into typed Rust execution reports
 - document any remaining C++ transaction object materialization as sidecar/API compatibility
@@ -1091,8 +1092,8 @@ Done when:
 - completed sub-slice: DAG-save, verify-not-finalized, and live admission no longer call C++ `FinalChain::getAccount` or
   `transactionLocation`
 - completed sub-slice: TransactionManager consensus operations no longer extract `DbStorage`/`BridgeStorage` per call
-- finalized-account queue purge no longer depends on C++ account snapshots
-- Slice 8 can remove transaction account/finalized facts from its open read-surface list
+- completed sub-slice: finalized-account queue purge no longer depends on C++ account snapshots
+- Slice 8 can remove TransactionManager account/finalized facts from its open read-surface list
 - Slice 9 can categorize TransactionManager `DbStorage` ownership as constructor compatibility only
 
 Validation:
@@ -1121,6 +1122,15 @@ transaction_manager_shim_test --parallel 12 && /build/bin/transaction_manager_sh
 --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`,
 `scripts/rewrite_storage_boundary_guard.sh --self-test && scripts/rewrite_storage_boundary_guard.sh`, and `git diff
 --check`.
+
+Validation note: the finalized-account queue cleanup sub-slice switches finalized-status updates to
+`update_finalized_transactions_status_command_report_with_runtime_and_final_chain`, so Rust applies finalized status,
+collects purge account facts from `BridgeFinalChain`, and mutates the Rust-owned queue before returning logging-only
+command buckets to C++. Validate with `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge
+transaction_manager`, `cmake --build /build --target transaction_manager_shim_test --parallel 12 &&
+/build/bin/transaction_manager_shim_test`, `cmake --build /build --target rust_storage_tests --parallel 12 &&
+/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test &&
+scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
 
 ## Slice 19: Gas-Pricer Runtime Storage Ownership
 
@@ -1429,8 +1439,8 @@ manual judgment call.
 Status: re-audited / partially unblocked. The original Slice 23 blocker list was reduced by Slices 24-26: PBFT manager
 residual storage routes, rewards-stats column access, and operation-level `db_->rustStorage()` extraction in PBFT chain,
 VoteManager, and TransactionManager are closed. Slice 8 and Slice 9 still stay open because DAG proposal facts,
-TransactionManager finalized-account purge, and FinalChain/EVM account-publication facts remain broader runtime
-boundaries rather than compatibility-shell cleanup.
+DAG proposal facts and FinalChain/EVM account-publication facts remain broader runtime boundaries rather than
+compatibility-shell cleanup.
 
 Move/remove:
 
@@ -1461,9 +1471,8 @@ Audit result:
   - Slice 17: DAG proposer/verification still needs a full proposal-fact DTO/runtime for transaction selection,
     gas-estimation, sortition params, and DAG block materialization boundaries after direct authorization and finalized
     height calls were moved.
-  - Slice 18: TransactionManager still has finalized-account queue purge and account snapshot gaps tied to the
-    external-EVM/account boundary, even though DAG-save, verify-not-finalized, live admission, and storage-handle
-    extraction are now Rust-routed.
+  - Slice 18 is closed for TransactionManager-owned account/finalized routing; any remaining account snapshot mismatch is
+    now tracked under Slice 21's FinalChain publication boundary.
   - Slice 21: FinalChain publication still owns only part of the account/DPoS snapshot and execution-status surface; the
     broad PBFT runtime mismatch class remains there.
   - FinalChain snapshot creation remains C++ app lifecycle/storage-shell compatibility and should stay outside consensus
@@ -1492,8 +1501,8 @@ Validation note: the Slice 23 re-audit after Slices 24-26 ran focused `rg` searc
 `rustStorage()`, `createWriteBatch`, `commitWriteBatch`, `rustBatchId`, `DbStorage::Columns`, direct FinalChain DPoS
 facts, and account/finalized fact calls across Rust-mode consensus shims, Rust bridge/runtime crates, and the
 network/query compatibility shell. The guard passes, and the stale PBFT manager/rewards/VoteManager/TransactionManager
-operation-handle blockers are closed. Slices 8 and 9 remain open only for the remaining Slice 17/18/21 runtime fact
-boundaries listed above.
+operation-handle blockers are closed. Slices 8 and 9 remain open only for the remaining Slice 17 and Slice 21 runtime
+fact boundaries listed above.
 
 ## Slice 24: PBFT Manager Residual Storage Route Closure
 

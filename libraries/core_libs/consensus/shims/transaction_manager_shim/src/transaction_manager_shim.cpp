@@ -1075,10 +1075,9 @@ class TransactionManagerRustShimAccess {
 
     const auto report = [&]() {
       try {
-        // TODO(rustaxa): re-enable finalized-account queue purge from Rust once FinalChain account snapshots move fully
-        // to rustaxa-storage. The external-EVM compatibility boundary owns account state for this path today.
-        return rustaxa::update_finalized_transactions_status_command_report_with_runtime(
-            *manager.runtime_, *manager.rust_storage_, period_data.pbft_blk->getPeriod(),
+        return rustaxa::update_finalized_transactions_status_command_report_with_runtime_and_final_chain(
+            *manager.runtime_, *manager.rust_storage_, manager.final_chain_->rustFinalChainForRust(),
+            period_data.pbft_blk->getPeriod(),
             recently_finalized_transactions_periods, std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: ") + e.what());
@@ -1091,6 +1090,10 @@ class TransactionManagerRustShimAccess {
     }
     for (const auto& erased : report.queue_erased) {
       LOG(manager.log_dg_) << "Transaction " << fromBridgeHash(erased.hash) << " removed from transactions_pool_";
+    }
+    for (const auto& purged : report.finalized_account_purged) {
+      LOG(manager.log_dg_) << "Transaction " << fromBridgeHash(purged.hash)
+                           << " removed from transactions_pool_ by finalized account nonce";
     }
     return report;
   }
