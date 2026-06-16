@@ -1024,6 +1024,8 @@ proposer retry state for the empty packed result without a Rust plan.
 Rust now also owns the post-boundary retry cursor reset after VDF cancellation, stale-proof delay exit, and final local
 `addDagBlock` attempt completion. Those live proof, sleep, insertion, and network side effects remain in C++, but the
 sidecar retry values applied at those exits come from `rustaxa-consensus::dag`.
+The VDF wait loop and stale-proof delay still run in C++, but Rust now owns the deterministic cancellation and
+stale-after-sleep skip predicates that decide whether those side effects should stop the current attempt.
 
 Current boundary:
 
@@ -1056,6 +1058,9 @@ Current boundary:
   continues to VDF proof execution.
 - `DagBlockProposer` now routes VDF-cancelled, stale-after-sleep, and local add-attempt completion retry resets through
   `dag_proposer_plan_retry_reset`; C++ applies the returned cursor values while retaining the live side effects.
+- `DagBlockProposer` now routes in-flight VDF proof cancellation checks and stale-proof post-sleep continuation checks
+  through `dag_proposer_plan_vdf_wait` and `dag_proposer_plan_stale_proof`. C++ keeps the async proof task, cancellation
+  token, sleep, and latest-frontier polling.
 - Re-audit after Slice 18 confirms the remaining DAG proposal work is not blocked by TransactionManager account/finalized
   routing anymore; it is blocked by ownership of the DAG proposal runtime itself.
 
@@ -1095,6 +1100,8 @@ Move:
   provide the retry-state reset, while C++ still owns live pack execution and transaction sidecars
 - complete for post-boundary retry reset: `DagBlockProposer` now asks Rust for the retry cursor reset after VDF
   cancellation, stale-proof sleep exit, and final local DAG insertion attempt completion
+- complete for VDF progress predicates: `DagBlockProposer` now asks Rust whether to cancel an in-flight VDF proof and
+  whether a stale proof should skip after the compatibility sleep
 - remaining: move live transaction materialization, EVM gas estimation, async proof side effects, final `DagBlock`
   construction, and network/add-block effects when their owning runtime boundaries are ready
 
@@ -1252,6 +1259,16 @@ dag_proposer_retry_reset_bridge`, `cmake --build /build --target dag_shim_test -
 `/build/bin/dag_shim_test`, `cmake --build /build --target rust_storage_tests --parallel 12`,
 `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
 `scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
+
+Validation note: the VDF progress-predicate sub-slice adds `dag_proposer_plan_vdf_wait` and
+`dag_proposer_plan_stale_proof`, moving the deterministic cancellation predicate and stale-after-sleep skip decision into
+`rustaxa-consensus::dag`. C++ still owns async proof execution, cancellation-token plumbing, sleeping, and latest-frontier
+polling. It passes `cargo fmt --manifest-path rust/Cargo.toml --all --check`, `cargo test --manifest-path
+rust/Cargo.toml -p rustaxa-consensus dag_proposer_vdf`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge
+dag_proposer_vdf`, `cmake --build /build --target dag_shim_test --parallel 12`, `/build/bin/dag_shim_test`, `cmake
+--build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
+`scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff
+--check`.
 
 ## Slice 18: Transaction Account And Finalized Fact Port
 

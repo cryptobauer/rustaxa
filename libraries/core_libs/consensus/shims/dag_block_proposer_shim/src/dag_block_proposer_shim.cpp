@@ -92,7 +92,33 @@ rustaxa::DagProposerRetryResetPlan plan_retry_reset(uint64_t propose_level) {
   return rustaxa::dag_proposer_plan_retry_reset(std::move(input));
 }
 
+rustaxa::DagProposerVdfWaitPlan plan_vdf_wait(uint64_t propose_level, uint64_t latest_level, uint16_t vdf_difficulty,
+                                              uint16_t minimum_vdf_difficulty) {
+  rustaxa::DagProposerVdfWaitInput input;
+  input.proposal_level = propose_level;
+  input.latest_proposal_level = latest_level;
+  input.vdf_difficulty = vdf_difficulty;
+  input.minimum_vdf_difficulty = minimum_vdf_difficulty;
+  return rustaxa::dag_proposer_plan_vdf_wait(std::move(input));
+}
+
+rustaxa::DagProposerStaleProofPlan plan_stale_proof(uint64_t propose_level, uint64_t latest_level) {
+  rustaxa::DagProposerStaleProofInput input;
+  input.proposal_level = propose_level;
+  input.latest_proposal_level = latest_level;
+  return rustaxa::dag_proposer_plan_stale_proof(std::move(input));
+}
+
 void apply_retry_reset(const rustaxa::DagProposerRetryResetPlan& plan,
+                       const std::shared_ptr<DagBlockProposer::NodeDagProposerData>& node_dag_proposer_data) {
+  if (!plan.update_retry_state) {
+    return;
+  }
+  node_dag_proposer_data->last_propose_level = plan.next_last_propose_level;
+  node_dag_proposer_data->num_tries = static_cast<uint16_t>(plan.next_retry_count);
+}
+
+void apply_retry_reset(const rustaxa::DagProposerStaleProofPlan& plan,
                        const std::shared_ptr<DagBlockProposer::NodeDagProposerData>& node_dag_proposer_data) {
   if (!plan.update_retry_state) {
     return;
@@ -248,7 +274,8 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   std::future<void> result = sync.get_future();
   while (result.wait_for(std::chrono::milliseconds(100)) != std::future_status::ready) {
     const auto latest_level = dag_mgr_->getProposerFrontierFacts().propose_level;
-    if (latest_level > propose_level + 1 && vdf_difficulty > sortition_params.difficulty_min) {
+    const auto wait_plan = plan_vdf_wait(propose_level, latest_level, vdf_difficulty, sortition_params.difficulty_min);
+    if (wait_plan.cancel_in_flight_proof) {
       cancellation_token = true;
       break;
     }
@@ -263,8 +290,9 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   if (vdf_stale) {
     thisThreadSleepForSeconds(1);
     const auto latest_level = dag_mgr_->getProposerFrontierFacts().propose_level;
-    if (latest_level > propose_level) {
-      apply_retry_reset(plan_retry_reset(propose_level), node_dag_proposer_data);
+    const auto stale_plan = plan_stale_proof(propose_level, latest_level);
+    if (stale_plan.action != kDagProposerActionContinue) {
+      apply_retry_reset(stale_plan, node_dag_proposer_data);
       return false;
     }
   }

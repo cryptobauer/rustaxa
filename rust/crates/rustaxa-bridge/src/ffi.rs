@@ -3471,6 +3471,34 @@ pub mod rustaxa_ffi {
         next_retry_count: u64,
     }
 
+    /// Facts observed while waiting for an in-flight proposer VDF proof.
+    struct DagProposerVdfWaitInput {
+        proposal_level: u64,
+        latest_proposal_level: u64,
+        vdf_difficulty: u16,
+        minimum_vdf_difficulty: u16,
+    }
+
+    /// Rust-owned VDF wait decision.
+    struct DagProposerVdfWaitPlan {
+        cancel_in_flight_proof: bool,
+    }
+
+    /// Facts observed after the stale proposer VDF sleep.
+    struct DagProposerStaleProofInput {
+        proposal_level: u64,
+        latest_proposal_level: u64,
+    }
+
+    /// Rust-owned stale-proof continuation or skip decision.
+    struct DagProposerStaleProofPlan {
+        action: u8,
+        reason_code: u32,
+        update_retry_state: bool,
+        next_last_propose_level: u64,
+        next_retry_count: u64,
+    }
+
     /// C++-originated tip candidate facts for Rust proposer tip selection.
     struct DagProposerTipCandidate {
         hash: [u8; 32],
@@ -4056,6 +4084,11 @@ pub mod rustaxa_ffi {
         pub fn dag_proposer_plan_retry_reset(
             input: DagProposerRetryResetInput,
         ) -> DagProposerRetryResetPlan;
+        pub fn dag_proposer_plan_vdf_wait(input: DagProposerVdfWaitInput)
+            -> DagProposerVdfWaitPlan;
+        pub fn dag_proposer_plan_stale_proof(
+            input: DagProposerStaleProofInput,
+        ) -> DagProposerStaleProofPlan;
         pub fn dag_verify_authorization(
             input: DagVerifyAuthorizationInput,
         ) -> DagVerifyAuthorizationResult;

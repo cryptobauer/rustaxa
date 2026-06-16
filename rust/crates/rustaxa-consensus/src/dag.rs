@@ -821,6 +821,54 @@ pub struct DagProposerRetryResetPlan {
     pub next_retry_count: u64,
 }
 
+/// Input for checking whether an in-flight proposer VDF proof should be cancelled.
+///
+/// C++ still owns the async proof task and latest-frontier polling. Rust owns
+/// the deterministic comparison that decides whether a newer proposal level
+/// makes this proof obsolete for non-minimum difficulty work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagProposerVdfWaitInput {
+    pub proposal_level: u64,
+    pub latest_proposal_level: u64,
+    pub vdf_difficulty: u16,
+    pub minimum_vdf_difficulty: u16,
+}
+
+/// Decision emitted while C++ waits for the proposer VDF proof task.
+///
+/// `cancel_in_flight_proof` means the C++ compatibility shell should request
+/// cancellation and then apply the standard Rust-owned retry reset after the
+/// proof task observes the token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagProposerVdfWaitPlan {
+    pub cancel_in_flight_proof: bool,
+}
+
+/// Input for checking a stale proposer VDF result after the compatibility sleep.
+///
+/// C++ still performs the sleep and latest-frontier read. Rust owns the
+/// deterministic decision to skip the completed proof when a newer proposal
+/// level appeared during that delay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagProposerStaleProofInput {
+    pub proposal_level: u64,
+    pub latest_proposal_level: u64,
+}
+
+/// Decision emitted after a stale proposer VDF proof delay.
+///
+/// When `action == DAG_PROPOSER_ACTION_SKIP`, callers must apply the returned
+/// retry cursor before exiting the proposal attempt. `CONTINUE` means the proof
+/// is still usable by the compatibility block-construction path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagProposerStaleProofPlan {
+    pub action: u8,
+    pub reason_code: u32,
+    pub update_retry_state: bool,
+    pub next_last_propose_level: u64,
+    pub next_retry_count: u64,
+}
+
 /// Decision returned for the VDF and DPoS authorization stage.
 ///
 /// Output invariants:
@@ -1974,6 +2022,48 @@ pub fn plan_dag_proposer_retry_reset(
 ) -> DagProposerRetryResetPlan {
     DagProposerRetryResetPlan {
         update_retry_state: true,
+        next_last_propose_level: input.proposal_level,
+        next_retry_count: 0,
+    }
+}
+
+/// Plans whether a DAG proposer should cancel an in-flight VDF proof.
+///
+/// This preserves the legacy rule: cancel only when the latest proposal level
+/// has advanced by more than one and this attempt is not already at minimum
+/// difficulty. The planner performs no polling and owns no cancellation token.
+pub fn plan_dag_proposer_vdf_wait(input: DagProposerVdfWaitInput) -> DagProposerVdfWaitPlan {
+    DagProposerVdfWaitPlan {
+        cancel_in_flight_proof: input.latest_proposal_level
+            > input.proposal_level.saturating_add(1)
+            && input.vdf_difficulty > input.minimum_vdf_difficulty,
+    }
+}
+
+/// Plans whether a stale proposer VDF proof should be skipped after sleeping.
+///
+/// C++ provides the latest proposal level observed after the compatibility
+/// sleep. Rust owns the resulting action and retry cursor for the skip case.
+pub fn plan_dag_proposer_stale_proof(
+    input: DagProposerStaleProofInput,
+) -> DagProposerStaleProofPlan {
+    if input.latest_proposal_level > input.proposal_level {
+        let retry = plan_dag_proposer_retry_reset(DagProposerRetryResetInput {
+            proposal_level: input.proposal_level,
+        });
+        return DagProposerStaleProofPlan {
+            action: DAG_PROPOSER_ACTION_SKIP,
+            reason_code: DAG_PROPOSER_REASON_STALE_VDF_RETRY,
+            update_retry_state: retry.update_retry_state,
+            next_last_propose_level: retry.next_last_propose_level,
+            next_retry_count: retry.next_retry_count,
+        };
+    }
+
+    DagProposerStaleProofPlan {
+        action: DAG_PROPOSER_ACTION_CONTINUE,
+        reason_code: DAG_PROPOSER_REASON_OK,
+        update_retry_state: false,
         next_last_propose_level: input.proposal_level,
         next_retry_count: 0,
     }
@@ -5029,6 +5119,54 @@ mod tests {
         assert!(plan.update_retry_state);
         assert_eq!(plan.next_last_propose_level, 64);
         assert_eq!(plan.next_retry_count, 0);
+    }
+
+    #[test]
+    fn dag_proposer_vdf_wait_cancels_only_for_advanced_non_minimum_work() {
+        let plan = plan_dag_proposer_vdf_wait(DagProposerVdfWaitInput {
+            proposal_level: 10,
+            latest_proposal_level: 12,
+            vdf_difficulty: 5,
+            minimum_vdf_difficulty: 3,
+        });
+        assert!(plan.cancel_in_flight_proof);
+
+        let minimum = plan_dag_proposer_vdf_wait(DagProposerVdfWaitInput {
+            proposal_level: 10,
+            latest_proposal_level: 12,
+            vdf_difficulty: 3,
+            minimum_vdf_difficulty: 3,
+        });
+        assert!(!minimum.cancel_in_flight_proof);
+
+        let not_advanced = plan_dag_proposer_vdf_wait(DagProposerVdfWaitInput {
+            proposal_level: 10,
+            latest_proposal_level: 11,
+            vdf_difficulty: 5,
+            minimum_vdf_difficulty: 3,
+        });
+        assert!(!not_advanced.cancel_in_flight_proof);
+    }
+
+    #[test]
+    fn dag_proposer_stale_proof_skips_and_resets_when_level_advances() {
+        let plan = plan_dag_proposer_stale_proof(DagProposerStaleProofInput {
+            proposal_level: 10,
+            latest_proposal_level: 11,
+        });
+
+        assert_eq!(plan.action, DAG_PROPOSER_ACTION_SKIP);
+        assert_eq!(plan.reason_code, DAG_PROPOSER_REASON_STALE_VDF_RETRY);
+        assert!(plan.update_retry_state);
+        assert_eq!(plan.next_last_propose_level, 10);
+        assert_eq!(plan.next_retry_count, 0);
+
+        let continue_plan = plan_dag_proposer_stale_proof(DagProposerStaleProofInput {
+            proposal_level: 10,
+            latest_proposal_level: 10,
+        });
+        assert_eq!(continue_plan.action, DAG_PROPOSER_ACTION_CONTINUE);
+        assert!(!continue_plan.update_retry_state);
     }
 
     #[test]

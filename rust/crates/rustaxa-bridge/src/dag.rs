@@ -9,15 +9,16 @@ use crate::ffi::rustaxa_ffi::{
     DagProposerBlockConstructionInput, DagProposerBlockConstructionPlan,
     DagProposerEligibilityDecision, DagProposerEligibilityInput, DagProposerFrontierFacts,
     DagProposerPostPackInput, DagProposerPostPackPlan, DagProposerRetryResetInput,
-    DagProposerRetryResetPlan, DagProposerStorageBlockConstructionInput, DagProposerTipCandidate,
-    DagProposerTransactionPackRequest, DagReferenceMetadata, DagSyncBlockRlp, DagTransactionHash,
-    DagTransactionQueryPlan, DagTransactionRlpLookup, DagVerifyAuthorizationInput,
-    DagVerifyAuthorizationResult, DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock,
-    DagVerifyPrecheckResult, DagVerifyTransactionAvailabilityInput,
-    DagVerifyTransactionAvailabilityResult, DagVerifyVdfDposDecision, DagVerifyVdfDposFacts,
-    DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput,
-    DagVerifyVdfSortitionInput, DagVerifyVdfSortitionResult, HashLookup, PeriodLookup,
-    SortitionRuntimeParams,
+    DagProposerRetryResetPlan, DagProposerStaleProofInput, DagProposerStaleProofPlan,
+    DagProposerStorageBlockConstructionInput, DagProposerTipCandidate,
+    DagProposerTransactionPackRequest, DagProposerVdfWaitInput, DagProposerVdfWaitPlan,
+    DagReferenceMetadata, DagSyncBlockRlp, DagTransactionHash, DagTransactionQueryPlan,
+    DagTransactionRlpLookup, DagVerifyAuthorizationInput, DagVerifyAuthorizationResult,
+    DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
+    DagVerifyTransactionAvailabilityInput, DagVerifyTransactionAvailabilityResult,
+    DagVerifyVdfDposDecision, DagVerifyVdfDposFacts, DagVerifyVdfPrepareInput,
+    DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
+    DagVerifyVdfSortitionResult, HashLookup, PeriodLookup, SortitionRuntimeParams,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
 use anyhow::{ensure, Context, Result};
@@ -31,7 +32,8 @@ use rustaxa_consensus::dag::{
     decide_dag_verify_vdf_dpos_authorization, derive_frontier, ensure_proposal_period_mapping,
     load_dag_block_from_storage, period_block_hash_from_storage, plan_dag_proposer_attempt,
     plan_dag_proposer_block_construction, plan_dag_proposer_block_construction_from_storage,
-    plan_dag_proposer_post_pack, plan_dag_proposer_retry_reset, plan_dag_verify_transaction_query,
+    plan_dag_proposer_post_pack, plan_dag_proposer_retry_reset, plan_dag_proposer_stale_proof,
+    plan_dag_proposer_vdf_wait, plan_dag_verify_transaction_query,
     plan_expired_transaction_cleanup, plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
     proposal_period_for_level_from_storage, save_dag_block_to_storage,
     validate_dag_verify_authorization, validate_dag_verify_gas,
@@ -1325,6 +1327,43 @@ pub fn dag_proposer_plan_retry_reset(
         proposal_level: input.proposal_level,
     });
     DagProposerRetryResetPlan {
+        update_retry_state: plan.update_retry_state,
+        next_last_propose_level: plan.next_last_propose_level,
+        next_retry_count: plan.next_retry_count,
+    }
+}
+
+/// Plans whether the in-flight DAG proposer VDF proof should be cancelled.
+///
+/// The bridge carries only the latest proposal level and difficulty facts. C++
+/// retains the polling loop and cancellation token while Rust owns the
+/// deterministic cancellation predicate.
+pub fn dag_proposer_plan_vdf_wait(input: DagProposerVdfWaitInput) -> DagProposerVdfWaitPlan {
+    let plan = plan_dag_proposer_vdf_wait(rustaxa_consensus::dag::DagProposerVdfWaitInput {
+        proposal_level: input.proposal_level,
+        latest_proposal_level: input.latest_proposal_level,
+        vdf_difficulty: input.vdf_difficulty,
+        minimum_vdf_difficulty: input.minimum_vdf_difficulty,
+    });
+    DagProposerVdfWaitPlan {
+        cancel_in_flight_proof: plan.cancel_in_flight_proof,
+    }
+}
+
+/// Plans whether a stale DAG proposer VDF proof remains usable after sleeping.
+///
+/// C++ owns the sleep and latest-frontier read. Rust owns the resulting
+/// continue/skip action and the retry cursor for the skip case.
+pub fn dag_proposer_plan_stale_proof(
+    input: DagProposerStaleProofInput,
+) -> DagProposerStaleProofPlan {
+    let plan = plan_dag_proposer_stale_proof(rustaxa_consensus::dag::DagProposerStaleProofInput {
+        proposal_level: input.proposal_level,
+        latest_proposal_level: input.latest_proposal_level,
+    });
+    DagProposerStaleProofPlan {
+        action: plan.action,
+        reason_code: plan.reason_code,
         update_retry_state: plan.update_retry_state,
         next_last_propose_level: plan.next_last_propose_level,
         next_retry_count: plan.next_retry_count,
@@ -3418,6 +3457,32 @@ mod tests {
 
         assert!(plan.update_retry_state);
         assert_eq!(plan.next_last_propose_level, 23);
+        assert_eq!(plan.next_retry_count, 0);
+    }
+
+    #[test]
+    fn dag_proposer_vdf_wait_bridge_cancels_advanced_non_minimum_work() {
+        let plan = dag_proposer_plan_vdf_wait(DagProposerVdfWaitInput {
+            proposal_level: 7,
+            latest_proposal_level: 9,
+            vdf_difficulty: 4,
+            minimum_vdf_difficulty: 1,
+        });
+
+        assert!(plan.cancel_in_flight_proof);
+    }
+
+    #[test]
+    fn dag_proposer_stale_proof_bridge_skips_with_retry_reset() {
+        let plan = dag_proposer_plan_stale_proof(DagProposerStaleProofInput {
+            proposal_level: 7,
+            latest_proposal_level: 8,
+        });
+
+        assert_eq!(plan.action, DAG_PROPOSER_ACTION_SKIP);
+        assert_eq!(plan.reason_code, dag::DAG_PROPOSER_REASON_STALE_VDF_RETRY);
+        assert!(plan.update_retry_state);
+        assert_eq!(plan.next_last_propose_level, 7);
         assert_eq!(plan.next_retry_count, 0);
     }
 
