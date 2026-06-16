@@ -1005,15 +1005,15 @@ void PbftManager::run() {
 }
 
 std::pair<bool, PbftPeriod> PbftManager::getDagBlockPeriod(const blk_hash_t &hash) {
-  std::pair<bool, uint64_t> res;
-  auto value = db_->getDagBlockPeriod(hash);
-  if (value == nullptr) {
-    res.first = false;
-  } else {
-    res.first = true;
-    res.second = value->first;
+  if (!pbft_manager_runtime_.has_value()) {
+    throw std::runtime_error("PBFT manager Rust runtime must be initialized before reading DAG block period");
   }
-  return res;
+  const auto lookup =
+      rustaxa::pbft_manager_runtime_dag_block_period(*pbft_manager_runtime_.value(), toBridgeHash(hash));
+  if (!lookup.found) {
+    return {false, PbftPeriod{0}};
+  }
+  return {true, static_cast<PbftPeriod>(lookup.period)};
 }
 
 PbftPeriod PbftManager::getPbftPeriod() const { return pbft_chain_->getPbftChainSize() + 1; }
@@ -2925,7 +2925,11 @@ void PbftManager::finalize_(PeriodData &&period_data, std::vector<h256> &&finali
 
 bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shared_ptr<PbftVote>> &&cert_votes) {
   auto const &pbft_block_hash = period_data.pbft_blk->getBlockHash();
-  const auto block_in_chain = db_->pbftBlockInDb(pbft_block_hash);
+  if (!pbft_manager_runtime_.has_value()) {
+    throw std::runtime_error("PBFT manager Rust runtime must be initialized before reading PBFT block existence");
+  }
+  const auto block_in_chain =
+      rustaxa::pbft_manager_runtime_pbft_block_in_db(*pbft_manager_runtime_.value(), toBridgeHash(pbft_block_hash));
   if (block_in_chain && cert_votes.empty()) {
     LOG(log_nf_) << "PBFT block: " << pbft_block_hash << " in DB already.";
     LOG(log_dg_) << "Rust PBFT finalization resume classifier cannot inspect duplicate block " << pbft_block_hash

@@ -4026,6 +4026,14 @@ pub mod rustaxa_ffi {
             field: u8,
             value: u32,
         ) -> Result<PbftManagerRuntimeSnapshot>;
+        pub fn pbft_manager_runtime_dag_block_period(
+            runtime: &BridgePbftManagerRuntime,
+            hash: &[u8; 32],
+        ) -> Result<BlockPeriodLookup>;
+        pub fn pbft_manager_runtime_pbft_block_in_db(
+            runtime: &BridgePbftManagerRuntime,
+            hash: &[u8; 32],
+        ) -> Result<bool>;
         pub fn pbft_manager_runtime_load_finalization_last_period_lambda(
             runtime: &BridgePbftManagerRuntime,
             period: u64,

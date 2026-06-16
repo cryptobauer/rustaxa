@@ -6,7 +6,7 @@
 //! advances.
 
 use crate::ffi::rustaxa_ffi::{
-    PbftFinalizationHash as FfiPbftFinalizationHash,
+    BlockPeriodLookup as FfiBlockPeriodLookup, PbftFinalizationHash as FfiPbftFinalizationHash,
     PbftFinalizationResumePlan as FfiPbftFinalizationResumePlan,
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
     PbftFinalizationStorageWriteStage as FfiPbftFinalizationStorageWriteStage,
@@ -33,6 +33,8 @@ use crate::ffi::rustaxa_ffi::{
 };
 use crate::ffi::{BridgePbftManagerRuntime, BridgePbftManagerRuntimeSession, BridgeStorage};
 use anyhow::anyhow;
+use rustaxa_consensus::dag::dag_block_period_from_storage;
+use rustaxa_consensus::pbft_chain::pbft_block_exists_in_storage;
 use rustaxa_consensus::pbft_finalize::{
     apply_pbft_finalization_storage_writes as apply_domain_pbft_finalization_storage_writes,
     inspect_pbft_finalization_resume as inspect_domain_pbft_finalization_resume,
@@ -423,6 +425,52 @@ pub fn pbft_manager_runtime_apply_cursor_field(
     apply_pbft_manager_cursor_field_storage(runtime.storage.as_ref(), field, value)?;
     runtime.state.apply_committed_cursor_field(field, value);
     Ok(runtime.state.snapshot().into())
+}
+
+/// Resolves a finalized DAG block period through PBFT-manager runtime storage.
+///
+/// Inputs:
+/// - `runtime`: long-lived Rust PBFT manager runtime with its storage handle.
+/// - `hash`: canonical DAG block hash.
+///
+/// Outputs:
+/// - Returns a stable lookup DTO with `found = false` when the finalized DAG
+///   index has no row for `hash`.
+///
+/// Invariants and edge behavior:
+/// - C++ may still use the result to preserve existing optional-return APIs,
+///   but the durable lookup is owned by `rustaxa-consensus` over
+///   `rustaxa-storage`.
+pub fn pbft_manager_runtime_dag_block_period(
+    runtime: &BridgePbftManagerRuntime,
+    hash: &[u8; 32],
+) -> anyhow::Result<FfiBlockPeriodLookup> {
+    let lookup =
+        dag_block_period_from_storage(runtime.storage.as_ref(), ethereum_types::H256::from(*hash))?;
+    Ok(FfiBlockPeriodLookup {
+        found: lookup.found,
+        period: lookup.period,
+        position: lookup.position,
+    })
+}
+
+/// Checks PBFT block existence through PBFT-manager runtime storage.
+///
+/// Inputs:
+/// - `runtime`: long-lived Rust PBFT manager runtime with its storage handle.
+/// - `hash`: canonical PBFT block hash.
+///
+/// Outputs:
+/// - Returns whether the Rust PBFT block index contains `hash`.
+///
+/// Invariants and edge behavior:
+/// - This is a storage fact lookup only. PBFT block materialization for network
+///   and API compatibility remains outside this helper.
+pub fn pbft_manager_runtime_pbft_block_in_db(
+    runtime: &BridgePbftManagerRuntime,
+    hash: &[u8; 32],
+) -> anyhow::Result<bool> {
+    pbft_block_exists_in_storage(runtime.storage.as_ref(), ethereum_types::H256::from(*hash))
 }
 
 /// Loads the latest persisted dynamic lambda through PBFT-manager runtime storage.
@@ -1555,6 +1603,53 @@ mod tests {
             assert!(err
                 .to_string()
                 .contains("unsupported PBFT manager cursor field"));
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_runtime_reads_dag_period_and_pbft_existence_from_owned_storage() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_storage_facts");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            storage
+                .save_pbft_mgr_field(0, 1)
+                .expect("round seed should persist");
+            storage
+                .save_pbft_mgr_field(1, 1)
+                .expect("step seed should persist");
+            storage
+                .save_pbft_mgr_field(2, 1_500)
+                .expect("lambda seed should persist");
+            let dag_hash = [0xDA; 32];
+            let pbft_hash = [0xBE; 32];
+            storage
+                .save_dag_block_period(&dag_hash, 12, 4)
+                .expect("DAG period should persist");
+            storage
+                .save_pbft_block_period(&pbft_hash, 9)
+                .expect("PBFT period index should persist");
+            let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
+                .expect("runtime should restore");
+
+            let dag_lookup = pbft_manager_runtime_dag_block_period(&runtime, &dag_hash)
+                .expect("DAG period should load");
+            let missing_dag = pbft_manager_runtime_dag_block_period(&runtime, &[0xDB; 32])
+                .expect("missing DAG period should load");
+
+            assert!(dag_lookup.found);
+            assert_eq!(dag_lookup.period, 12);
+            assert_eq!(dag_lookup.position, 4);
+            assert!(!missing_dag.found);
+            assert!(pbft_manager_runtime_pbft_block_in_db(&runtime, &pbft_hash)
+                .expect("PBFT existence should load"));
+            assert!(
+                !pbft_manager_runtime_pbft_block_in_db(&runtime, &[0xBF; 32])
+                    .expect("missing PBFT existence should load")
+            );
         }
 
         let _ = fs::remove_dir_all(temp_dir);

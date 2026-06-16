@@ -257,6 +257,18 @@ pub struct DagPeriodStorageLookup {
     pub period: u64,
 }
 
+/// Storage lookup result for finalized DAG block period/position rows.
+///
+/// Missing rows are represented as `found = false` with zero values so C++
+/// compatibility callers can preserve the legacy optional-return shape without
+/// owning the storage lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagBlockPeriodStorageLookup {
+    pub found: bool,
+    pub period: u64,
+    pub position: u32,
+}
+
 /// Storage lookup result for hash rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DagHashStorageLookup {
@@ -933,6 +945,43 @@ pub fn proposal_period_for_level_from_storage(
         None => DagPeriodStorageLookup {
             found: false,
             period: 0,
+        },
+    })
+}
+
+/// Resolves a finalized DAG block's persisted PBFT period and position.
+///
+/// Inputs:
+/// - `storage`: Rust storage handle owned by the calling consensus runtime.
+/// - `hash`: canonical DAG block hash.
+///
+/// Outputs:
+/// - Returns `found = true` with `(period, position)` when the finalized DAG
+///   index contains `hash`, otherwise returns `found = false`.
+///
+/// Invariants and edge behavior:
+/// - This is the Rust-owned equivalent of the read portion of
+///   `DbStorage::getDagBlockPeriod` for consensus shims.
+/// - Corrupt storage or backend failures are propagated as errors rather than
+///   being converted to a missing row.
+pub fn dag_block_period_from_storage(
+    storage: &Storage,
+    hash: H256,
+) -> Result<DagBlockPeriodStorageLookup> {
+    let lookup = storage
+        .dag()
+        .period_optional(hash)
+        .context("DAG_BLOCK_PERIOD_LOOKUP")?;
+    Ok(match lookup {
+        Some((period, position)) => DagBlockPeriodStorageLookup {
+            found: true,
+            period,
+            position,
+        },
+        None => DagBlockPeriodStorageLookup {
+            found: false,
+            period: 0,
+            position: 0,
         },
     })
 }
@@ -3058,6 +3107,32 @@ mod tests {
         );
 
         assert_eq!(plan.remove_hashes, vec![h(1)]);
+    }
+
+    #[test]
+    fn dag_block_period_storage_lookup_reports_found_and_missing_rows() {
+        let storage = temp_storage("rustaxa_consensus_dag_block_period_lookup");
+        storage.dag().write_period(h(7), 12, 3).unwrap();
+
+        let found = dag_block_period_from_storage(&storage, h(7)).unwrap();
+        let missing = dag_block_period_from_storage(&storage, h(8)).unwrap();
+
+        assert_eq!(
+            found,
+            DagBlockPeriodStorageLookup {
+                found: true,
+                period: 12,
+                position: 3,
+            }
+        );
+        assert_eq!(
+            missing,
+            DagBlockPeriodStorageLookup {
+                found: false,
+                period: 0,
+                position: 0,
+            }
+        );
     }
 
     #[test]
