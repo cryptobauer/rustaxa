@@ -1150,6 +1150,16 @@ rustaxa-consensus dag_proposer`, `cmake --build /build --target rust_storage_tes
 `scripts/rewrite_storage_boundary_guard.sh`, `cmake --build /build --target dag_shim_test --parallel 12`,
 `/build/bin/dag_shim_test`, and `git diff --check`.
 
+Validation note: the DAG block-construction bridge payload cleanup removes unused `pruned_tips` and
+`skipped_missing_tips` fields from the CXX-facing `DagProposerBlockConstructionPlan`. The Rust domain still computes
+those facts for tests and internal planner semantics, while the bridge now exposes only the selected tips and block gas
+that the C++ compatibility shell consumes. It passes `cargo fmt --manifest-path rust/Cargo.toml --all --check`, `cargo
+test --manifest-path rust/Cargo.toml -p rustaxa-bridge dag_proposer_block_construction`, `cargo test --manifest-path
+rust/Cargo.toml -p rustaxa-consensus dag_proposer_block`, `cmake --build /build --target dag_shim_test --parallel 12`,
+`/build/bin/dag_shim_test`, `cmake --build /build --target rust_storage_tests --parallel 12`,
+`/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
+`scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
+
 ## Slice 18: Transaction Account And Finalized Fact Port
 
 Goal: complete the TransactionManager account/finalized fact boundary so transaction queue admission, packing,

@@ -1221,8 +1221,6 @@ pub fn dag_proposer_plan_block_construction(
             .map(|hash| DagHash { hash: hash.0 })
             .collect(),
         block_gas_estimation: plan.block_gas_estimation,
-        pruned_tips: plan.pruned_tips,
-        skipped_missing_tips: plan.skipped_missing_tips,
     }
 }
 
@@ -2955,8 +2953,6 @@ mod tests {
         });
 
         assert_eq!(plan.block_gas_estimation, 600);
-        assert!(plan.pruned_tips);
-        assert_eq!(plan.skipped_missing_tips, 1);
         let selected = plan
             .selected_tips
             .into_iter()

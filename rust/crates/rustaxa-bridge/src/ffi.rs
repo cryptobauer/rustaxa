@@ -3394,8 +3394,6 @@ pub mod rustaxa_ffi {
     struct DagProposerBlockConstructionPlan {
         selected_tips: Vec<DagHash>,
         block_gas_estimation: u64,
-        pruned_tips: bool,
-        skipped_missing_tips: u64,
     }
 
     /// Rust VDF and DPoS authorization decision.
