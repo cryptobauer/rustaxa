@@ -9,6 +9,7 @@ use rustaxa_types::pbft::PbftBlockLink;
 use rustaxa_vdf::sortition::{self, LegacySortitionParams};
 use rustaxa_vdf::vdf::{Solution as VdfSolution, WesolowskiVdf};
 use rustaxa_vdf::verifier::WesolowskiVerifier;
+use rustaxa_vdf::{vdf_sortition, vrf};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write;
@@ -156,6 +157,42 @@ pub const DAG_VERIFY_DPOS_STATUS_ELIGIBLE: u8 = 2;
 
 /// DPoS status: the sender is not eligible for the proposal period.
 pub const DAG_VERIFY_DPOS_STATUS_NOT_ELIGIBLE: u8 = 3;
+
+/// DAG proposer action: continue to the next local proposal stage.
+pub const DAG_PROPOSER_ACTION_CONTINUE: u8 = 1;
+/// DAG proposer action: skip this attempt and let the worker sleep.
+pub const DAG_PROPOSER_ACTION_SKIP: u8 = 2;
+/// DAG proposer action: retry later because an expected fact is not ready yet.
+pub const DAG_PROPOSER_ACTION_RETRY_LATER: u8 = 3;
+
+/// DAG proposer reason: all checks for the current stage passed.
+pub const DAG_PROPOSER_REASON_OK: u32 = 0;
+/// DAG proposer reason: no proposal-period mapping exists for the next DAG level.
+pub const DAG_PROPOSER_REASON_MISSING_PROPOSAL_PERIOD: u32 = 1;
+/// DAG proposer reason: the proposer has no VRF key in the DPoS snapshot.
+pub const DAG_PROPOSER_REASON_MISSING_VRF_KEY: u32 = 2;
+/// DAG proposer reason: wallet VRF public key does not match DPoS state.
+pub const DAG_PROPOSER_REASON_VRF_KEY_MISMATCH: u32 = 3;
+/// DAG proposer reason: DPoS state is unavailable for the proposal period.
+pub const DAG_PROPOSER_REASON_DPOS_UNAVAILABLE: u32 = 4;
+/// DAG proposer reason: proposer is not DPoS-eligible for the proposal period.
+pub const DAG_PROPOSER_REASON_NOT_ELIGIBLE: u32 = 5;
+/// DAG proposer reason: proposal vote denominator is zero.
+pub const DAG_PROPOSER_REASON_ZERO_DENOMINATOR: u32 = 6;
+/// DAG proposer reason: transaction pool is empty.
+pub const DAG_PROPOSER_REASON_TRANSACTION_POOL_EMPTY: u32 = 7;
+/// DAG proposer reason: non-finalized transaction count is above the proposal cap.
+pub const DAG_PROPOSER_REASON_NON_FINALIZED_TRANSACTION_LIMIT: u32 = 8;
+/// DAG proposer reason: FinalChain has not reached the proposal period yet.
+pub const DAG_PROPOSER_REASON_FINALIZED_PERIOD_NOT_READY: u32 = 9;
+/// DAG proposer reason: non-finalized DAG block count is above the hard pressure cap.
+pub const DAG_PROPOSER_REASON_NON_FINALIZED_DAG_LIMIT: u32 = 10;
+/// DAG proposer reason: low-difficulty non-finalized DAG pressure should delay the proposal.
+pub const DAG_PROPOSER_REASON_LOW_DIFFICULTY_DAG_PRESSURE: u32 = 11;
+/// DAG proposer reason: stale VDF difficulty should retry the same level later.
+pub const DAG_PROPOSER_REASON_STALE_VDF_RETRY: u32 = 12;
+/// DAG proposer reason: stale VDF difficulty started a new level retry window.
+pub const DAG_PROPOSER_REASON_STALE_VDF_RESET: u32 = 13;
 
 /// Inputs for deterministic `DagManager::verifyBlock` prechecks.
 ///
@@ -571,6 +608,164 @@ pub struct DagDposAuthorizationFacts {
     pub sender_eligible_vote_count: u64,
     pub vdf_sortition_max_vote_count: u64,
     pub eligibility_status: u8,
+}
+
+/// Rust-owned DAG proposer eligibility decision.
+///
+/// The action/reason pair uses the `DAG_PROPOSER_*` constants. Vote counts are populated when the proposer reaches a
+/// denominator-related decision or can continue to VDF probing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagProposerEligibilityDecision {
+    pub action: u8,
+    pub reason_code: u32,
+    pub vote_count: u64,
+    pub max_vote_count: u64,
+}
+
+/// Input facts for the DAG proposer pre-VDF attempt planner.
+///
+/// This stage owns deterministic proposal gating before local VRF/VDF proof work starts. Infrastructure callers still
+/// collect live pool sizes and FinalChain facts, but Rust decides whether the attempt should proceed to VDF preparation,
+/// sleep, or retry later.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagProposerPreVdfAttemptInput {
+    pub transaction_pool_size: u64,
+    pub non_finalized_transaction_count: u64,
+    pub max_non_finalized_transactions: u64,
+    pub proposal_period_found: bool,
+    pub proposal_period: u64,
+    pub proposal_level: u64,
+    pub last_finalized_period: u64,
+    pub dag_expiry_level_limit: u64,
+    pub wallet_vrf_public_key: [u8; 32],
+    pub authorization_facts: DagDposAuthorizationFacts,
+}
+
+/// Rust-owned DAG proposer pre-VDF attempt decision.
+///
+/// `action == DAG_PROPOSER_ACTION_CONTINUE` means C++ may compute the local VRF probe and VDF difficulty. `vote_count`
+/// and `max_vote_count` are valid only for that continue case. `old_proposal` is a warning fact, not a reject reason,
+/// preserving the legacy behavior that only logs old proposal attempts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagProposerPreVdfAttemptPlan {
+    pub action: u8,
+    pub reason_code: u32,
+    pub proposal_period: u64,
+    pub proposal_level: u64,
+    pub last_finalized_period: u64,
+    pub old_proposal: bool,
+    pub vote_count: u64,
+    pub max_vote_count: u64,
+}
+
+/// Input facts for the DAG proposer post-VDF attempt planner.
+///
+/// This stage owns deterministic proposal gating after local VRF probing has produced a VDF difficulty but before live
+/// transaction materialization. C++ still performs the local cryptographic proof work and later transaction packing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagProposerPostVdfAttemptInput {
+    pub frontier: DagProposerFrontierFacts,
+    pub vdf_difficulty: u16,
+    pub difficulty_min: u16,
+    pub difficulty_stale: u16,
+    pub max_non_finalized_dag_blocks: u64,
+    pub max_non_finalized_dag_blocks_low_difficulty: u64,
+    pub last_propose_level: u64,
+    pub retry_count: u64,
+    pub max_retry_count: u64,
+    pub proposal_period: u64,
+    pub proposal_weight_limit: u64,
+    pub total_transaction_shards: u16,
+    pub node_transaction_shard: u16,
+    pub shard_period_interval: u64,
+}
+
+/// Transaction packing request emitted by the Rust DAG proposer attempt planner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagProposerTransactionPackRequest {
+    pub proposal_period: u64,
+    pub weight_limit: u64,
+    pub total_transaction_shards: u16,
+    pub node_transaction_shard: u16,
+    pub shard_period_interval: u64,
+}
+
+/// Rust-owned DAG proposer post-VDF attempt decision.
+///
+/// `action == DAG_PROPOSER_ACTION_CONTINUE` means C++ may request live transaction packing with `transaction_request`.
+/// Retry state fields are authoritative when `retry_state_updated` is true and preserve legacy stale-difficulty retry
+/// behavior.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagProposerPostVdfAttemptPlan {
+    pub action: u8,
+    pub reason_code: u32,
+    pub proposal_level: u64,
+    pub vdf_stale: bool,
+    pub retry_state_updated: bool,
+    pub next_last_propose_level: u64,
+    pub next_retry_count: u64,
+    pub transaction_request: DagProposerTransactionPackRequest,
+}
+
+/// Input facts for the storage/runtime-backed DAG proposal attempt planner.
+///
+/// Rust owns deterministic proposal-attempt decisions and the local VRF probe needed to compute VDF difficulty. C++
+/// still owns network throttling, live transaction packing/materialization, EVM gas estimation, async VDF proof over
+/// selected transactions, final `DagBlock` construction, and network/add-block side effects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagProposerAttemptInput {
+    pub transaction_pool_size: u64,
+    pub non_finalized_transaction_count: u64,
+    pub max_non_finalized_transactions: u64,
+    pub frontier: DagProposerFrontierFacts,
+    pub proposal_period_found: bool,
+    pub proposal_period: u64,
+    pub last_finalized_period: u64,
+    pub dag_expiry_level_limit: u64,
+    pub period_block_hash_found: bool,
+    pub period_block_hash: H256,
+    pub wallet_vrf_public_key: [u8; 32],
+    pub wallet_vrf_secret: [u8; 64],
+    pub authorization_facts: DagDposAuthorizationFacts,
+    pub sortition_params: crate::sortition::SortitionParams,
+    pub max_non_finalized_dag_blocks: u64,
+    pub max_non_finalized_dag_blocks_low_difficulty: u64,
+    pub last_propose_level: u64,
+    pub retry_count: u64,
+    pub max_retry_count: u64,
+    pub proposal_weight_limit: u64,
+    pub total_transaction_shards: u16,
+    pub node_transaction_shard: u16,
+    pub shard_period_interval: u64,
+}
+
+/// Rust-owned DAG proposal attempt plan consumed by the C++ proposer shim.
+///
+/// `action == DAG_PROPOSER_ACTION_CONTINUE` means C++ may call live transaction packing with `transaction_request`.
+/// Expected skips/retries are represented by `reason_code`; malformed crypto/sortition inputs are returned as errors by
+/// [`plan_dag_proposer_attempt`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagProposerAttemptPlan {
+    pub action: u8,
+    pub reason_code: u32,
+    pub frontier: DagFrontier,
+    pub anchor: H256,
+    pub proposal_level: u64,
+    pub proposal_period_found: bool,
+    pub proposal_period: u64,
+    pub last_finalized_period: u64,
+    pub period_block_hash_found: bool,
+    pub period_block_hash: H256,
+    pub vrf_input: Vec<u8>,
+    pub vote_count: u64,
+    pub max_vote_count: u64,
+    pub vdf_difficulty: u16,
+    pub vdf_stale: bool,
+    pub old_proposal: bool,
+    pub update_retry_state: bool,
+    pub next_last_propose_level: u64,
+    pub next_retry_count: u64,
+    pub transaction_request: DagProposerTransactionPackRequest,
 }
 
 /// Decision returned for the VDF and DPoS authorization stage.
@@ -1586,6 +1781,291 @@ pub fn plan_dag_proposer_block_construction_from_storage(
             max_tips: input.max_tips,
         },
     ))
+}
+
+/// Plans one DAG proposal attempt up to the live transaction-packing boundary.
+///
+/// The planner performs no network work, no transaction materialization, no EVM gas estimation, and no async VDF proof.
+/// It does own the deterministic pre-transaction proposal decisions, including pool/period/finalized-height readiness,
+/// DPoS/VRF eligibility, local VRF probing for VDF difficulty, non-finalized DAG pressure, stale retry accounting, and
+/// the transaction-packing request facts.
+pub fn plan_dag_proposer_attempt(input: DagProposerAttemptInput) -> Result<DagProposerAttemptPlan> {
+    let pre_plan = plan_dag_proposer_pre_vdf_attempt(DagProposerPreVdfAttemptInput {
+        transaction_pool_size: input.transaction_pool_size,
+        non_finalized_transaction_count: input.non_finalized_transaction_count,
+        max_non_finalized_transactions: input.max_non_finalized_transactions,
+        proposal_period_found: input.proposal_period_found,
+        proposal_period: input.proposal_period,
+        proposal_level: input.frontier.propose_level,
+        last_finalized_period: input.last_finalized_period,
+        dag_expiry_level_limit: input.dag_expiry_level_limit,
+        wallet_vrf_public_key: input.wallet_vrf_public_key,
+        authorization_facts: input.authorization_facts,
+    });
+    let mut plan = DagProposerAttemptPlan {
+        action: pre_plan.action,
+        reason_code: pre_plan.reason_code,
+        frontier: input.frontier.frontier.clone(),
+        anchor: input.frontier.anchor,
+        proposal_level: input.frontier.propose_level,
+        proposal_period_found: input.proposal_period_found,
+        proposal_period: input.proposal_period,
+        last_finalized_period: input.last_finalized_period,
+        period_block_hash_found: input.period_block_hash_found,
+        period_block_hash: input.period_block_hash,
+        vrf_input: Vec::new(),
+        vote_count: pre_plan.vote_count,
+        max_vote_count: pre_plan.max_vote_count,
+        vdf_difficulty: 0,
+        vdf_stale: false,
+        old_proposal: pre_plan.old_proposal,
+        update_retry_state: false,
+        next_last_propose_level: input.last_propose_level,
+        next_retry_count: input.retry_count,
+        transaction_request: DagProposerTransactionPackRequest {
+            proposal_period: input.proposal_period,
+            weight_limit: input.proposal_weight_limit,
+            total_transaction_shards: input.total_transaction_shards,
+            node_transaction_shard: input.node_transaction_shard,
+            shard_period_interval: input.shard_period_interval,
+        },
+    };
+    if pre_plan.action != DAG_PROPOSER_ACTION_CONTINUE {
+        return Ok(plan);
+    }
+
+    let vrf_input = construct_dag_vrf_input(input.frontier.propose_level, input.period_block_hash);
+    let normalized_vote_count =
+        vdf_sortition::normalize_vote_count(pre_plan.vote_count, pre_plan.max_vote_count)?;
+    let vrf_proof = vrf::prove(&input.wallet_vrf_secret, &vrf_input)?;
+    let public_key = vrf::public_key_from_secret(&input.wallet_vrf_secret)?;
+    let vrf_output = vrf::verify_output(&public_key, &vrf_proof, &vrf_input)?
+        .ok_or_else(|| anyhow::anyhow!("Rust DAG proposer VRF proof did not verify"))?;
+    let threshold = vrf::threshold_from_output(&vrf_output, normalized_vote_count);
+    let vdf_difficulty = vdf_sortition::calculate_vdf_sortition_difficulty(
+        vdf_sortition::VdfSortitionVerifyConfig {
+            threshold_upper: input.sortition_params.vrf.threshold_upper,
+            difficulty_min: input.sortition_params.vdf.difficulty_min,
+            difficulty_max: input.sortition_params.vdf.difficulty_max,
+            difficulty_stale: input.sortition_params.vdf.difficulty_stale,
+            lambda_bound: input.sortition_params.vdf.lambda_bound,
+        },
+        threshold,
+    )?;
+
+    let post_plan = plan_dag_proposer_post_vdf_attempt(DagProposerPostVdfAttemptInput {
+        frontier: input.frontier,
+        vdf_difficulty,
+        difficulty_min: input.sortition_params.vdf.difficulty_min,
+        difficulty_stale: input.sortition_params.vdf.difficulty_stale,
+        max_non_finalized_dag_blocks: input.max_non_finalized_dag_blocks,
+        max_non_finalized_dag_blocks_low_difficulty: input
+            .max_non_finalized_dag_blocks_low_difficulty,
+        last_propose_level: input.last_propose_level,
+        retry_count: input.retry_count,
+        max_retry_count: input.max_retry_count,
+        proposal_period: input.proposal_period,
+        proposal_weight_limit: input.proposal_weight_limit,
+        total_transaction_shards: input.total_transaction_shards,
+        node_transaction_shard: input.node_transaction_shard,
+        shard_period_interval: input.shard_period_interval,
+    });
+    plan.action = post_plan.action;
+    plan.reason_code = post_plan.reason_code;
+    plan.vrf_input = vrf_input;
+    plan.vdf_difficulty = vdf_difficulty;
+    plan.vdf_stale = post_plan.vdf_stale;
+    plan.update_retry_state = post_plan.retry_state_updated;
+    plan.next_last_propose_level = post_plan.next_last_propose_level;
+    plan.next_retry_count = post_plan.next_retry_count;
+    plan.transaction_request = post_plan.transaction_request;
+    Ok(plan)
+}
+
+/// Plans the DAG proposer attempt up to local VRF/VDF probing.
+///
+/// Expected unavailable facts are returned as status decisions, not errors. This preserves the proposer loop behavior
+/// while moving proposal-period readiness, pool pressure, finalized-height readiness, and DPoS/VRF eligibility ordering
+/// into Rust.
+pub fn plan_dag_proposer_pre_vdf_attempt(
+    input: DagProposerPreVdfAttemptInput,
+) -> DagProposerPreVdfAttemptPlan {
+    let old_proposal = input
+        .proposal_period
+        .saturating_add(input.dag_expiry_level_limit)
+        < input.last_finalized_period;
+    let mut plan = DagProposerPreVdfAttemptPlan {
+        action: DAG_PROPOSER_ACTION_SKIP,
+        reason_code: DAG_PROPOSER_REASON_OK,
+        proposal_period: input.proposal_period,
+        proposal_level: input.proposal_level,
+        last_finalized_period: input.last_finalized_period,
+        old_proposal,
+        vote_count: 0,
+        max_vote_count: 0,
+    };
+
+    if input.transaction_pool_size == 0 {
+        plan.reason_code = DAG_PROPOSER_REASON_TRANSACTION_POOL_EMPTY;
+        return plan;
+    }
+    if input.non_finalized_transaction_count > input.max_non_finalized_transactions {
+        plan.reason_code = DAG_PROPOSER_REASON_NON_FINALIZED_TRANSACTION_LIMIT;
+        return plan;
+    }
+    if !input.proposal_period_found {
+        plan.reason_code = DAG_PROPOSER_REASON_MISSING_PROPOSAL_PERIOD;
+        return plan;
+    }
+    if input.last_finalized_period < input.proposal_period {
+        plan.action = DAG_PROPOSER_ACTION_RETRY_LATER;
+        plan.reason_code = DAG_PROPOSER_REASON_FINALIZED_PERIOD_NOT_READY;
+        return plan;
+    }
+
+    let eligibility =
+        plan_dag_proposer_eligibility(input.wallet_vrf_public_key, input.authorization_facts);
+    if eligibility.action != DAG_PROPOSER_ACTION_CONTINUE {
+        plan.action = eligibility.action;
+        plan.reason_code = eligibility.reason_code;
+        plan.vote_count = eligibility.vote_count;
+        plan.max_vote_count = eligibility.max_vote_count;
+        return plan;
+    }
+
+    plan.action = DAG_PROPOSER_ACTION_CONTINUE;
+    plan.reason_code = DAG_PROPOSER_REASON_OK;
+    plan.vote_count = eligibility.vote_count;
+    plan.max_vote_count = eligibility.max_vote_count;
+    plan
+}
+
+/// Plans the DAG proposer attempt after local VRF probing and before transaction packing.
+///
+/// Rust owns non-finalized DAG pressure and stale-difficulty retry decisions. C++ must apply the returned retry state
+/// when `retry_state_updated` is true and may request transaction packing only when `action == CONTINUE`.
+pub fn plan_dag_proposer_post_vdf_attempt(
+    input: DagProposerPostVdfAttemptInput,
+) -> DagProposerPostVdfAttemptPlan {
+    let transaction_request = DagProposerTransactionPackRequest {
+        proposal_period: input.proposal_period,
+        weight_limit: input.proposal_weight_limit,
+        total_transaction_shards: input.total_transaction_shards,
+        node_transaction_shard: input.node_transaction_shard,
+        shard_period_interval: input.shard_period_interval,
+    };
+    let mut plan = DagProposerPostVdfAttemptPlan {
+        action: DAG_PROPOSER_ACTION_SKIP,
+        reason_code: DAG_PROPOSER_REASON_OK,
+        proposal_level: input.frontier.propose_level,
+        vdf_stale: input.vdf_difficulty == input.difficulty_stale,
+        retry_state_updated: false,
+        next_last_propose_level: input.last_propose_level,
+        next_retry_count: input.retry_count,
+        transaction_request,
+    };
+
+    if input.frontier.frontier.pivot != input.frontier.anchor {
+        if input.frontier.non_finalized_block_count as u64 > input.max_non_finalized_dag_blocks {
+            plan.reason_code = DAG_PROPOSER_REASON_NON_FINALIZED_DAG_LIMIT;
+            return plan;
+        }
+        if input.frontier.non_finalized_min_difficulty < u32::from(input.vdf_difficulty)
+            && input.frontier.non_finalized_block_count as u64
+                > input.max_non_finalized_dag_blocks_low_difficulty
+        {
+            plan.reason_code = DAG_PROPOSER_REASON_LOW_DIFFICULTY_DAG_PRESSURE;
+            return plan;
+        }
+    }
+
+    if plan.vdf_stale {
+        if input.last_propose_level == input.frontier.propose_level {
+            if input.retry_count < input.max_retry_count {
+                plan.reason_code = DAG_PROPOSER_REASON_STALE_VDF_RETRY;
+                plan.retry_state_updated = true;
+                plan.next_retry_count = input.retry_count.saturating_add(1);
+                return plan;
+            }
+        } else {
+            plan.reason_code = DAG_PROPOSER_REASON_STALE_VDF_RESET;
+            plan.retry_state_updated = true;
+            plan.next_last_propose_level = input.frontier.propose_level;
+            plan.next_retry_count = 0;
+            return plan;
+        }
+    }
+
+    plan.action = DAG_PROPOSER_ACTION_CONTINUE;
+    plan.reason_code = DAG_PROPOSER_REASON_OK;
+    plan
+}
+
+fn plan_dag_proposer_eligibility(
+    wallet_vrf_public_key: [u8; 32],
+    authorization_facts: DagDposAuthorizationFacts,
+) -> DagProposerEligibilityDecision {
+    if !authorization_facts.vrf_key_found {
+        return dag_proposer_decision(
+            DAG_PROPOSER_ACTION_SKIP,
+            DAG_PROPOSER_REASON_MISSING_VRF_KEY,
+            0,
+            0,
+        );
+    }
+    if authorization_facts.vrf_key != Some(wallet_vrf_public_key) {
+        return dag_proposer_decision(
+            DAG_PROPOSER_ACTION_SKIP,
+            DAG_PROPOSER_REASON_VRF_KEY_MISMATCH,
+            0,
+            0,
+        );
+    }
+    if authorization_facts.eligibility_status == DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE {
+        return dag_proposer_decision(
+            DAG_PROPOSER_ACTION_RETRY_LATER,
+            DAG_PROPOSER_REASON_DPOS_UNAVAILABLE,
+            0,
+            0,
+        );
+    }
+    if authorization_facts.eligibility_status != DAG_VERIFY_DPOS_STATUS_ELIGIBLE {
+        return dag_proposer_decision(
+            DAG_PROPOSER_ACTION_SKIP,
+            DAG_PROPOSER_REASON_NOT_ELIGIBLE,
+            0,
+            0,
+        );
+    }
+    if authorization_facts.vdf_sortition_max_vote_count == 0 {
+        return dag_proposer_decision(
+            DAG_PROPOSER_ACTION_SKIP,
+            DAG_PROPOSER_REASON_ZERO_DENOMINATOR,
+            authorization_facts.sender_eligible_vote_count,
+            0,
+        );
+    }
+
+    dag_proposer_decision(
+        DAG_PROPOSER_ACTION_CONTINUE,
+        DAG_PROPOSER_REASON_OK,
+        authorization_facts.sender_eligible_vote_count,
+        authorization_facts.vdf_sortition_max_vote_count,
+    )
+}
+
+fn dag_proposer_decision(
+    action: u8,
+    reason_code: u32,
+    vote_count: u64,
+    max_vote_count: u64,
+) -> DagProposerEligibilityDecision {
+    DagProposerEligibilityDecision {
+        action,
+        reason_code,
+        vote_count,
+        max_vote_count,
+    }
 }
 
 /// Runs deterministic authorization checks for `DagManager::verifyBlock`.
@@ -2997,6 +3477,60 @@ mod tests {
         0xad, 0xe4, 0x00, 0x81,
     ];
 
+    fn proposer_attempt_input() -> DagProposerAttemptInput {
+        let vrf_key = public_key_from_secret(&SECRET_KEY).expect("public key from fixed secret");
+        DagProposerAttemptInput {
+            transaction_pool_size: 1,
+            non_finalized_transaction_count: 0,
+            max_non_finalized_transactions: 100,
+            frontier: DagProposerFrontierFacts {
+                frontier: DagFrontier {
+                    pivot: h(1),
+                    tips: vec![],
+                },
+                propose_level: 2,
+                anchor: h(1),
+                non_finalized_block_count: 0,
+                non_finalized_min_difficulty: u32::MAX,
+            },
+            proposal_period_found: true,
+            proposal_period: 3,
+            last_finalized_period: 3,
+            dag_expiry_level_limit: 100,
+            period_block_hash_found: true,
+            period_block_hash: h(9),
+            wallet_vrf_public_key: vrf_key,
+            wallet_vrf_secret: SECRET_KEY,
+            authorization_facts: DagDposAuthorizationFacts {
+                vrf_key: Some(vrf_key),
+                vrf_key_found: true,
+                sender_eligible_vote_count: 10,
+                vdf_sortition_max_vote_count: 20,
+                eligibility_status: DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
+            },
+            sortition_params: crate::sortition::SortitionParams {
+                vrf: crate::sortition::VrfParams {
+                    threshold_upper: u16::MAX,
+                },
+                vdf: crate::sortition::VdfParams {
+                    difficulty_min: 3,
+                    difficulty_max: 3,
+                    difficulty_stale: 9,
+                    lambda_bound: 128,
+                },
+            },
+            max_non_finalized_dag_blocks: 100,
+            max_non_finalized_dag_blocks_low_difficulty: 50,
+            last_propose_level: 0,
+            retry_count: 0,
+            max_retry_count: 20,
+            proposal_weight_limit: 1_000,
+            total_transaction_shards: 4,
+            node_transaction_shard: 2,
+            shard_period_interval: 10,
+        }
+    }
+
     #[test]
     fn genesis_graph_has_one_vertex_and_no_edges() {
         let graph = DagGraph::new(h(1));
@@ -4346,6 +4880,60 @@ mod tests {
         assert_eq!(plan.block_gas_estimation, 7);
         assert!(plan.pruned_tips);
         assert_eq!(plan.skipped_missing_tips, 1);
+    }
+
+    #[test]
+    fn dag_proposer_attempt_skips_before_fact_lookup_when_pool_empty() {
+        let mut input = proposer_attempt_input();
+        input.transaction_pool_size = 0;
+        input.proposal_period_found = false;
+        input.authorization_facts.vrf_key_found = false;
+
+        let plan = plan_dag_proposer_attempt(input).expect("plan");
+
+        assert_eq!(plan.action, DAG_PROPOSER_ACTION_SKIP);
+        assert_eq!(plan.reason_code, DAG_PROPOSER_REASON_TRANSACTION_POOL_EMPTY);
+        assert!(plan.vrf_input.is_empty());
+    }
+
+    #[test]
+    fn dag_proposer_attempt_requests_transaction_pack_on_success() {
+        let input = proposer_attempt_input();
+
+        let plan = plan_dag_proposer_attempt(input).expect("plan");
+
+        assert_eq!(plan.action, DAG_PROPOSER_ACTION_CONTINUE);
+        assert_eq!(plan.reason_code, DAG_PROPOSER_REASON_OK);
+        assert_eq!(plan.proposal_level, 2);
+        assert_eq!(plan.proposal_period, 3);
+        assert_eq!(plan.period_block_hash, h(9));
+        assert!(!plan.vrf_input.is_empty());
+        assert_eq!(plan.vote_count, 10);
+        assert_eq!(plan.max_vote_count, 20);
+        assert_eq!(plan.transaction_request.proposal_period, 3);
+        assert_eq!(plan.transaction_request.weight_limit, 1_000);
+        assert_eq!(plan.transaction_request.total_transaction_shards, 4);
+        assert_eq!(plan.transaction_request.node_transaction_shard, 2);
+        assert_eq!(plan.transaction_request.shard_period_interval, 10);
+        assert!(!plan.update_retry_state);
+    }
+
+    #[test]
+    fn dag_proposer_attempt_plans_stale_same_level_retry_update() {
+        let mut input = proposer_attempt_input();
+        input.sortition_params = sortition_params_for_vdf_tests(9);
+        input.last_propose_level = 2;
+        input.retry_count = 4;
+        input.max_retry_count = 20;
+
+        let plan = plan_dag_proposer_attempt(input).expect("plan");
+
+        assert_eq!(plan.action, DAG_PROPOSER_ACTION_SKIP);
+        assert_eq!(plan.reason_code, DAG_PROPOSER_REASON_STALE_VDF_RETRY);
+        assert!(plan.vdf_stale);
+        assert!(plan.update_retry_state);
+        assert_eq!(plan.next_last_propose_level, 2);
+        assert_eq!(plan.next_retry_count, 5);
     }
 
     fn record(hash: u64, pivot: u64, tips: &[u64], level: u64, difficulty: u64) -> DagManagerBlock {

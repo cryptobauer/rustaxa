@@ -117,14 +117,9 @@ class DagBlockProposer {
    * those boundaries move.
    */
   std::pair<SharedTransactions, std::vector<uint64_t>> getShardedTrxs(PbftPeriod proposal_period, uint64_t weight_limit,
-                                                                      const uint16_t node_trx_shard) const;
-
-  /**
-   * Checks only the finalized-period availability precondition.
-   *
-   * Full DPoS eligibility and VDF denominator facts are fetched from Rust FinalChain in `proposeDagBlock`.
-   */
-  bool hasDposSnapshotForProposal(PbftPeriod propose_period) const;
+                                                                      const uint16_t total_trx_shards,
+                                                                      const uint16_t node_trx_shard,
+                                                                      uint64_t shard_period_interval) const;
 
  private:
   const uint16_t max_num_tries_{20};

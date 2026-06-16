@@ -829,6 +829,11 @@ rustaxa::DagProposerBlockConstructionPlan DagManager::planProposerBlockConstruct
   return rust_graphs_->runtime->dag_manager_runtime_plan_proposal_block_construction(std::move(input));
 }
 
+rustaxa::DagProposerAttemptPlan DagManager::planProposerAttempt(rustaxa::DagProposerAttemptInput input) const {
+  std::shared_lock lock(rust_graphs_mutex_);
+  return rust_graphs_->runtime->dag_manager_runtime_plan_proposal_attempt(std::move(input));
+}
+
 std::optional<PbftPeriod> DagManager::getProposalPeriodForDagLevel(level_t level) const {
   std::shared_lock lock(rust_graphs_mutex_);
   const auto lookup = rust_graphs_->runtime->dag_manager_runtime_proposal_period_for_level(level);

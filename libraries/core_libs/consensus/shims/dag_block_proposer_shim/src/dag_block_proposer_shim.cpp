@@ -22,8 +22,10 @@ namespace {
 
 constexpr uint8_t kDagProposerActionContinue = 1;
 constexpr uint8_t kDagProposerActionRetryLater = 3;
+constexpr uint32_t kDagProposerReasonMissingProposalPeriod = 1;
 constexpr uint32_t kDagProposerReasonVrfKeyMismatch = 3;
 constexpr uint32_t kDagProposerReasonZeroDenominator = 6;
+constexpr uint32_t kDagProposerReasonFinalizedPeriodNotReady = 9;
 
 std::array<uint8_t, 32> to_bridge_hash(const blk_hash_t& hash) { return hash.asArray(); }
 
@@ -46,11 +48,6 @@ std::vector<blk_hash_t> from_bridge_dag_hashes(const rust::Vec<rustaxa::DagHash>
 
 dev::bytes to_bytes(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
 
-dev::bytes dag_vrf_input(level_t level, const blk_hash_t& proposal_period_hash) {
-  auto bytes = rustaxa::dag_vrf_input(level, to_bridge_hash(proposal_period_hash));
-  return to_bytes(bytes);
-}
-
 rustaxa::LegacySortitionParams to_legacy_sortition_params(const rustaxa::SortitionRuntimeParams& params) {
   rustaxa::LegacySortitionParams out;
   out.vrf_threshold_upper = params.threshold_upper;
@@ -58,16 +55,6 @@ rustaxa::LegacySortitionParams to_legacy_sortition_params(const rustaxa::Sortiti
   out.vdf_difficulty_max = params.difficulty_max;
   out.vdf_difficulty_stale = params.difficulty_stale;
   out.vdf_lambda_bound = params.lambda_bound;
-  return out;
-}
-
-rustaxa::VdfSortitionVerifyConfig to_vdf_sortition_config(const rustaxa::SortitionRuntimeParams& params) {
-  rustaxa::VdfSortitionVerifyConfig out;
-  out.threshold_upper = params.threshold_upper;
-  out.difficulty_min = params.difficulty_min;
-  out.difficulty_max = params.difficulty_max;
-  out.difficulty_stale = params.difficulty_stale;
-  out.lambda_bound = params.lambda_bound;
   return out;
 }
 
@@ -128,112 +115,88 @@ DagBlockProposer::DagBlockProposer(const FullNodeConfig& config, std::shared_ptr
 }
 
 bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData>& node_dag_proposer_data) {
-  if (trx_mgr_->getTransactionPoolSize() == 0) {
-    return false;
-  }
-
-  if (trx_mgr_->getNonfinalizedTrxSize() > kMaxNonFinalizedTransactions) {
-    return false;
-  }
-
   const auto frontier_facts = dag_mgr_->getProposerFrontierFacts();
-  DagFrontier frontier(from_bridge_hash(frontier_facts.pivot), from_bridge_dag_hashes(frontier_facts.tips));
+  const auto proposal_period = dag_mgr_->getProposalPeriodForDagLevel(frontier_facts.propose_level);
+  const auto last_finalized_period = rust_final_chain_last_block_number(*final_chain_);
+  rustaxa::DagDposAuthorizationFacts authorization_facts{};
+  rustaxa::SortitionRuntimeParams sortition_params{};
+  if (proposal_period.has_value() && last_finalized_period >= *proposal_period) {
+    authorization_facts =
+        rust_dag_authorization_facts(*final_chain_, *proposal_period, node_dag_proposer_data->wallet.node_addr);
+    sortition_params = dag_mgr_->sortitionParamsManager().rustSortitionParamsForRust(*proposal_period);
+  }
+
+  rustaxa::DagProposerAttemptInput attempt_input;
+  attempt_input.transaction_pool_size = trx_mgr_->getTransactionPoolSize();
+  attempt_input.non_finalized_transaction_count = trx_mgr_->getNonfinalizedTrxSize();
+  attempt_input.max_non_finalized_transactions = kMaxNonFinalizedTransactions;
+  attempt_input.frontier_facts = frontier_facts;
+  attempt_input.proposal_period_found = proposal_period.has_value();
+  attempt_input.proposal_period = proposal_period.value_or(0);
+  attempt_input.last_finalized_period = last_finalized_period;
+  attempt_input.dag_expiry_level_limit = kDagExpiryLevelLimit;
+  attempt_input.wallet_vrf_public_key = node_dag_proposer_data->wallet.vrf_pk.asArray();
+  attempt_input.wallet_vrf_secret = node_dag_proposer_data->wallet.vrf_secret.asArray();
+  attempt_input.authorization_facts = authorization_facts;
+  attempt_input.sortition_params = sortition_params;
+  attempt_input.max_non_finalized_dag_blocks = kMaxNonFinalizedDagBlocks;
+  attempt_input.max_non_finalized_dag_blocks_low_difficulty = kMaxNonFinalizedDagBlocksLowDifficulty;
+  attempt_input.last_propose_level = node_dag_proposer_data->last_propose_level;
+  attempt_input.retry_count = node_dag_proposer_data->num_tries;
+  attempt_input.max_retry_count = node_dag_proposer_data->max_num_tries;
+  attempt_input.proposal_weight_limit = kDagProposeGasLimit;
+  attempt_input.total_transaction_shards = total_trx_shards_;
+  attempt_input.node_transaction_shard = node_dag_proposer_data->trx_shard;
+  attempt_input.shard_period_interval = kShardProposePeriodInterval;
+
+  const auto attempt = dag_mgr_->planProposerAttempt(std::move(attempt_input));
+  DagFrontier frontier(from_bridge_hash(attempt.frontier_pivot), from_bridge_dag_hashes(attempt.frontier_tips));
   LOG(log_dg_) << "Get frontier with pivot: " << frontier.pivot << " tips: " << frontier.tips;
   assert(!frontier.pivot.isZero());
-  const auto propose_level = frontier_facts.propose_level;
-
-  const auto proposal_period = dag_mgr_->getProposalPeriodForDagLevel(propose_level);
-  if (!proposal_period.has_value()) {
-    LOG(log_wr_) << "No proposal period for propose_level " << propose_level << " found";
-    return false;
-  }
-
-  if (*proposal_period + kDagExpiryLevelLimit < rust_final_chain_last_block_number(*final_chain_)) {
+  const auto propose_level = attempt.proposal_level;
+  if (attempt.old_proposal) {
     LOG(log_wr_) << "Trying to propose old block " << propose_level;
   }
 
-  if (!hasDposSnapshotForProposal(*proposal_period)) {
-    return false;
-  }
-
-  const auto authorization_facts =
-      rust_dag_authorization_facts(*final_chain_, *proposal_period, node_dag_proposer_data->wallet.node_addr);
-  rustaxa::DagProposerEligibilityInput eligibility_input;
-  eligibility_input.proposal_period_found = true;
-  eligibility_input.wallet_vrf_public_key = node_dag_proposer_data->wallet.vrf_pk.asArray();
-  eligibility_input.authorization_facts = authorization_facts;
-  const auto eligibility = rustaxa::dag_proposer_check_eligibility(std::move(eligibility_input));
-  if (eligibility.action != kDagProposerActionContinue) {
-    if (eligibility.reason_code == kDagProposerReasonVrfKeyMismatch) {
+  if (attempt.action != kDagProposerActionContinue) {
+    if (attempt.update_retry_state) {
+      node_dag_proposer_data->last_propose_level = attempt.next_last_propose_level;
+      node_dag_proposer_data->num_tries = static_cast<uint16_t>(attempt.next_retry_count);
+    }
+    if (attempt.reason_code == kDagProposerReasonMissingProposalPeriod) {
+      LOG(log_wr_) << "No proposal period for propose_level " << propose_level << " found";
+    } else if (attempt.reason_code == kDagProposerReasonFinalizedPeriodNotReady) {
+      LOG(log_wr_) << "Last finalized block period " << attempt.last_finalized_period << " < propose_period "
+                   << attempt.proposal_period;
+    } else if (attempt.reason_code == kDagProposerReasonVrfKeyMismatch) {
       LOG(log_er_) << "VRF public key mismatch for DAG proposer " << node_dag_proposer_data->wallet.node_addr;
-    } else if (eligibility.reason_code == kDagProposerReasonZeroDenominator) {
+    } else if (attempt.reason_code == kDagProposerReasonZeroDenominator) {
       LOG(log_er_) << node_dag_proposer_data->wallet.node_addr
-                   << " total vote count 0 at proposal period: " << *proposal_period;
+                   << " total vote count 0 at proposal period: " << attempt.proposal_period;
     }
-    if (eligibility.action == kDagProposerActionRetryLater) {
-      LOG(log_wr_) << "DAG proposer eligibility facts unavailable at proposal period " << *proposal_period;
+    if (attempt.action == kDagProposerActionRetryLater) {
+      LOG(log_wr_) << "DAG proposer eligibility facts unavailable at proposal period " << attempt.proposal_period;
     }
     return false;
   }
 
-  const auto vote_count = eligibility.vote_count;
-  const auto max_vote_count = eligibility.max_vote_count;
+  const auto vote_count = attempt.vote_count;
+  const auto max_vote_count = attempt.max_vote_count;
   if (max_vote_count == 0) {
     LOG(log_er_) << node_dag_proposer_data->wallet.node_addr
-                 << " total vote count 0 at proposal period: " << *proposal_period;
+                 << " total vote count 0 at proposal period: " << attempt.proposal_period;
     return false;
   }
 
-  const auto period_block_hash = dag_mgr_->getPeriodBlockHashForDagProposal(*proposal_period);
-  const auto sortition_params = dag_mgr_->sortitionParamsManager().rustSortitionParamsForRust(*proposal_period);
-  const auto vrf_input = dag_vrf_input(propose_level, period_block_hash);
-  rust::Slice<const uint8_t> vrf_input_slice{vrf_input.data(), vrf_input.size()};
-  const auto normalized_vote_count = rustaxa::vdf_sortition_normalize_vote_count(vote_count, max_vote_count);
-  const auto vrf_probe =
-      rustaxa::prove_legacy_vrf_sortition(node_dag_proposer_data->wallet.vrf_secret.asArray(), vrf_input_slice,
-                                          normalized_vote_count);
-  if (!vrf_probe.ok) {
-    throw vdf_sortition::VdfSortition::InvalidVdfSortition(
-        "Rust DAG proposer VRF probe failed. status " + std::to_string(vrf_probe.status) + ": " +
-        std::string(vrf_probe.error));
-  }
-  const auto vdf_difficulty = rustaxa::vdf_sortition_difficulty(to_vdf_sortition_config(sortition_params),
-                                                               vrf_probe.threshold);
-  const bool vdf_stale = vdf_difficulty == sortition_params.difficulty_stale;
+  const auto vrf_input = to_bytes(attempt.vrf_input);
+  const auto vdf_difficulty = attempt.vdf_difficulty;
+  const bool vdf_stale = attempt.vdf_stale;
 
-  const auto anchor = from_bridge_hash(frontier_facts.anchor);
-  if (frontier.pivot != anchor) {
-    if (frontier_facts.non_finalized_block_count > kMaxNonFinalizedDagBlocks) {
-      return false;
-    }
-    if (frontier_facts.non_finalized_min_difficulty < vdf_difficulty &&
-        frontier_facts.non_finalized_block_count > kMaxNonFinalizedDagBlocksLowDifficulty) {
-      return false;
-    }
-  }
-
-  if (vdf_stale) {
-    if (node_dag_proposer_data->last_propose_level == propose_level) {
-      if (node_dag_proposer_data->num_tries < node_dag_proposer_data->max_num_tries) {
-        LOG(log_dg_) << node_dag_proposer_data->wallet.node_addr
-                     << " will not propose DAG block. Get difficulty at stale, tried "
-                     << node_dag_proposer_data->num_tries << " times.";
-        node_dag_proposer_data->num_tries++;
-        return false;
-      }
-    } else {
-      LOG(log_dg_)
-          << node_dag_proposer_data->wallet.node_addr
-          << " will not propose DAG block, will reset number of tries. Get difficulty at stale, current propose level "
-          << propose_level;
-      node_dag_proposer_data->last_propose_level = propose_level;
-      node_dag_proposer_data->num_tries = 0;
-      return false;
-    }
-  }
-
-  auto [transactions, estimations] =
-      getShardedTrxs(*proposal_period, kDagProposeGasLimit, node_dag_proposer_data->trx_shard);
+  auto [transactions, estimations] = getShardedTrxs(attempt.transaction_request.proposal_period,
+                                                    attempt.transaction_request.weight_limit,
+                                                    attempt.transaction_request.total_transaction_shards,
+                                                    attempt.transaction_request.node_transaction_shard,
+                                                    attempt.transaction_request.shard_period_interval);
   if (transactions.empty()) {
     node_dag_proposer_data->last_propose_level = propose_level;
     node_dag_proposer_data->num_tries = 0;
@@ -352,7 +315,8 @@ void DagBlockProposer::stop() {
 }
 
 std::pair<SharedTransactions, std::vector<uint64_t>> DagBlockProposer::getShardedTrxs(
-    PbftPeriod proposal_period, uint64_t weight_limit, const uint16_t node_trx_shard) const {
+    PbftPeriod proposal_period, uint64_t weight_limit, const uint16_t total_trx_shards,
+    const uint16_t node_trx_shard, uint64_t shard_period_interval) const {
   auto syncing = false;
   if (auto net = network_.lock()) {
     syncing = net->pbft_syncing();
@@ -362,8 +326,8 @@ std::pair<SharedTransactions, std::vector<uint64_t>> DagBlockProposer::getSharde
   }
 
   auto [transactions, estimations] =
-      trx_mgr_->packShardedTrxs(proposal_period, weight_limit, total_trx_shards_, node_trx_shard,
-                                kShardProposePeriodInterval);
+      trx_mgr_->packShardedTrxs(proposal_period, weight_limit, total_trx_shards, node_trx_shard,
+                                shard_period_interval);
   if (transactions.empty()) {
     LOG(log_tr_) << "Skip block proposer, zero sharded transactions ..." << std::endl;
     return {};
@@ -403,15 +367,6 @@ std::shared_ptr<DagBlock> DagBlockProposer::createDagBlock(DagFrontier&& frontie
 
   return std::make_shared<DagBlock>(frontier.pivot, std::move(level), std::move(frontier.tips), std::move(trx_hashes),
                                     plan.block_gas_estimation, std::move(vdf), node_secret);
-}
-
-bool DagBlockProposer::hasDposSnapshotForProposal(PbftPeriod propose_period) const {
-  const auto last_block_number = rust_final_chain_last_block_number(*final_chain_);
-  if (last_block_number < propose_period) {
-    LOG(log_wr_) << "Last finalized block period " << last_block_number << " < propose_period " << propose_period;
-    return false;
-  }
-  return true;
 }
 
 void DagBlockProposer::setNetwork(std::weak_ptr<Network> network) { network_ = std::move(network); }

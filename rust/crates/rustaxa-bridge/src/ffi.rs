@@ -3381,6 +3381,65 @@ pub mod rustaxa_ffi {
         max_vote_count: u64,
     }
 
+    /// C++-originated facts for Rust DAG proposal-attempt planning.
+    struct DagProposerAttemptInput {
+        transaction_pool_size: u64,
+        non_finalized_transaction_count: u64,
+        max_non_finalized_transactions: u64,
+        frontier_facts: DagProposerFrontierFacts,
+        proposal_period_found: bool,
+        proposal_period: u64,
+        last_finalized_period: u64,
+        dag_expiry_level_limit: u64,
+        wallet_vrf_public_key: [u8; 32],
+        wallet_vrf_secret: [u8; 64],
+        authorization_facts: DagDposAuthorizationFacts,
+        sortition_params: SortitionRuntimeParams,
+        max_non_finalized_dag_blocks: u64,
+        max_non_finalized_dag_blocks_low_difficulty: u64,
+        last_propose_level: u64,
+        retry_count: u64,
+        max_retry_count: u64,
+        proposal_weight_limit: u64,
+        total_transaction_shards: u16,
+        node_transaction_shard: u16,
+        shard_period_interval: u64,
+    }
+
+    /// Rust-planned transaction packing request for a DAG proposal attempt.
+    struct DagProposerTransactionPackRequest {
+        proposal_period: u64,
+        weight_limit: u64,
+        total_transaction_shards: u16,
+        node_transaction_shard: u16,
+        shard_period_interval: u64,
+    }
+
+    /// Rust-owned DAG proposal-attempt decision.
+    struct DagProposerAttemptPlan {
+        action: u8,
+        reason_code: u32,
+        frontier_pivot: [u8; 32],
+        frontier_tips: Vec<DagHash>,
+        anchor: [u8; 32],
+        proposal_level: u64,
+        proposal_period_found: bool,
+        proposal_period: u64,
+        last_finalized_period: u64,
+        period_block_hash_found: bool,
+        period_block_hash: [u8; 32],
+        vrf_input: Vec<u8>,
+        vote_count: u64,
+        max_vote_count: u64,
+        vdf_difficulty: u16,
+        vdf_stale: bool,
+        old_proposal: bool,
+        update_retry_state: bool,
+        next_last_propose_level: u64,
+        next_retry_count: u64,
+        transaction_request: DagProposerTransactionPackRequest,
+    }
+
     /// C++-originated tip candidate facts for Rust proposer tip selection.
     struct DagProposerTipCandidate {
         hash: [u8; 32],
@@ -3895,6 +3954,10 @@ pub mod rustaxa_ffi {
             self: &BridgeDagManagerRuntime,
             input: DagProposerStorageBlockConstructionInput,
         ) -> Result<DagProposerBlockConstructionPlan>;
+        pub fn dag_manager_runtime_plan_proposal_attempt(
+            self: &BridgeDagManagerRuntime,
+            input: DagProposerAttemptInput,
+        ) -> Result<DagProposerAttemptPlan>;
         pub fn dag_manager_runtime_ensure_proposal_period_mapping(
             self: &BridgeDagManagerRuntime,
             level: u64,

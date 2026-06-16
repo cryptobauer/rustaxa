@@ -5,16 +5,18 @@ use crate::ffi::rustaxa_ffi::{
     DagManagerFinalizationApplyPayload, DagManagerFinalizationCleanupPayload,
     DagManagerFinalizationPlan, DagManagerNonFinalizedSize, DagManagerNonFinalizedSyncPayload,
     DagManagerRuntimeSyncSnapshot, DagManagerSnapshot, DagOrder, DagPersistenceCounters,
-    DagPivotTipsValidation, DagProposerBlockConstructionInput, DagProposerBlockConstructionPlan,
+    DagPivotTipsValidation, DagProposerAttemptInput, DagProposerAttemptPlan,
+    DagProposerBlockConstructionInput, DagProposerBlockConstructionPlan,
     DagProposerEligibilityDecision, DagProposerEligibilityInput, DagProposerFrontierFacts,
-    DagProposerStorageBlockConstructionInput, DagProposerTipCandidate, DagReferenceMetadata,
-    DagSyncBlockRlp, DagTransactionHash, DagTransactionQueryPlan, DagTransactionRlpLookup,
-    DagVerifyAuthorizationInput, DagVerifyAuthorizationResult, DagVerifyGasInput,
-    DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
-    DagVerifyTransactionAvailabilityInput, DagVerifyTransactionAvailabilityResult,
-    DagVerifyVdfDposDecision, DagVerifyVdfDposFacts, DagVerifyVdfPrepareInput,
-    DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
-    DagVerifyVdfSortitionResult, HashLookup, PeriodLookup, SortitionRuntimeParams,
+    DagProposerStorageBlockConstructionInput, DagProposerTipCandidate,
+    DagProposerTransactionPackRequest, DagReferenceMetadata, DagSyncBlockRlp, DagTransactionHash,
+    DagTransactionQueryPlan, DagTransactionRlpLookup, DagVerifyAuthorizationInput,
+    DagVerifyAuthorizationResult, DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock,
+    DagVerifyPrecheckResult, DagVerifyTransactionAvailabilityInput,
+    DagVerifyTransactionAvailabilityResult, DagVerifyVdfDposDecision, DagVerifyVdfDposFacts,
+    DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput,
+    DagVerifyVdfSortitionInput, DagVerifyVdfSortitionResult, HashLookup, PeriodLookup,
+    SortitionRuntimeParams,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
 use anyhow::{ensure, Context, Result};
@@ -26,7 +28,7 @@ use rustaxa_consensus::dag::{
     collect_non_finalized_sync_payload_from_storage, construct_dag_vdf_message,
     dag_block_exists_in_storage, dag_persistence_counters_from_storage,
     decide_dag_verify_vdf_dpos_authorization, derive_frontier, ensure_proposal_period_mapping,
-    load_dag_block_from_storage, period_block_hash_from_storage,
+    load_dag_block_from_storage, period_block_hash_from_storage, plan_dag_proposer_attempt,
     plan_dag_proposer_block_construction, plan_dag_proposer_block_construction_from_storage,
     plan_dag_verify_transaction_query, plan_expired_transaction_cleanup,
     plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
@@ -39,6 +41,7 @@ use rustaxa_consensus::dag::{
     DagManagerFinalizationCleanupStoragePayload as DomainDagManagerFinalizationCleanupStoragePayload,
     DagManagerFinalizationPlan as DomainDagManagerFinalizationPlan,
     DagManagerSnapshot as DomainDagManagerSnapshot, DagManagerState,
+    DagProposerAttemptInput as DomainDagProposerAttemptInput,
     DagProposerBlockConstructionInput as DomainDagProposerBlockConstructionInput,
     DagProposerBlockConstructionPlan as DomainDagProposerBlockConstructionPlan,
     DagProposerStorageBlockConstructionInput as DomainDagProposerStorageBlockConstructionInput,
@@ -702,6 +705,31 @@ impl BridgeDagManagerRuntime {
         }
     }
 
+    /// Plans one DAG proposal attempt up to the live transaction-packing boundary.
+    ///
+    /// Rust owns pre-transaction proposal decision ordering, local VRF probing for VDF difficulty, non-finalized DAG
+    /// pressure, and stale retry effects. C++ applies the returned action and still owns network throttling, live
+    /// transaction packing/materialization, EVM gas estimation, async VDF proof, final `DagBlock` construction, and
+    /// network/add-block side effects.
+    pub fn dag_manager_runtime_plan_proposal_attempt(
+        &self,
+        input: DagProposerAttemptInput,
+    ) -> Result<DagProposerAttemptPlan> {
+        let period_block_hash = if input.proposal_period_found {
+            period_block_hash_from_storage(self.storage.as_ref(), input.proposal_period)?
+        } else {
+            rustaxa_consensus::dag::DagHashStorageLookup {
+                found: false,
+                hash: H256::zero(),
+            }
+        };
+        let plan = plan_dag_proposer_attempt(to_domain_dag_proposer_attempt_input(
+            input,
+            period_block_hash,
+        ))?;
+        Ok(to_bridge_dag_proposer_attempt_plan(plan))
+    }
+
     /// Returns the ghost path from a source block.
     pub fn dag_manager_runtime_ghost_path(&self, source: &[u8; 32]) -> Vec<DagHash> {
         to_dag_hashes(self.state.ghost_path(to_h256(source)))
@@ -1347,6 +1375,97 @@ fn to_domain_sortition_params(params: SortitionRuntimeParams) -> SortitionParams
     }
 }
 
+fn to_domain_dag_proposer_attempt_input(
+    input: DagProposerAttemptInput,
+    period_block_hash: rustaxa_consensus::dag::DagHashStorageLookup,
+) -> DomainDagProposerAttemptInput {
+    DomainDagProposerAttemptInput {
+        transaction_pool_size: input.transaction_pool_size,
+        non_finalized_transaction_count: input.non_finalized_transaction_count,
+        max_non_finalized_transactions: input.max_non_finalized_transactions,
+        frontier: to_domain_dag_proposer_frontier_facts(input.frontier_facts),
+        proposal_period_found: input.proposal_period_found,
+        proposal_period: input.proposal_period,
+        last_finalized_period: input.last_finalized_period,
+        dag_expiry_level_limit: input.dag_expiry_level_limit,
+        period_block_hash_found: period_block_hash.found,
+        period_block_hash: period_block_hash.hash,
+        wallet_vrf_public_key: input.wallet_vrf_public_key,
+        wallet_vrf_secret: input.wallet_vrf_secret,
+        authorization_facts: rustaxa_consensus::dag::DagDposAuthorizationFacts {
+            vrf_key: input.authorization_facts.vrf_key.as_slice().try_into().ok(),
+            vrf_key_found: input.authorization_facts.vrf_key_found,
+            sender_eligible_vote_count: input.authorization_facts.sender_eligible_vote_count,
+            vdf_sortition_max_vote_count: input.authorization_facts.vdf_sortition_max_vote_count,
+            eligibility_status: input.authorization_facts.eligibility_status,
+        },
+        sortition_params: to_domain_sortition_params(input.sortition_params),
+        max_non_finalized_dag_blocks: input.max_non_finalized_dag_blocks,
+        max_non_finalized_dag_blocks_low_difficulty: input
+            .max_non_finalized_dag_blocks_low_difficulty,
+        last_propose_level: input.last_propose_level,
+        retry_count: input.retry_count,
+        max_retry_count: input.max_retry_count,
+        proposal_weight_limit: input.proposal_weight_limit,
+        total_transaction_shards: input.total_transaction_shards,
+        node_transaction_shard: input.node_transaction_shard,
+        shard_period_interval: input.shard_period_interval,
+    }
+}
+
+fn to_domain_dag_proposer_frontier_facts(
+    facts: DagProposerFrontierFacts,
+) -> rustaxa_consensus::dag::DagProposerFrontierFacts {
+    rustaxa_consensus::dag::DagProposerFrontierFacts {
+        frontier: rustaxa_consensus::dag::DagFrontier {
+            pivot: H256::from(facts.pivot),
+            tips: facts
+                .tips
+                .into_iter()
+                .map(|hash| H256::from(hash.hash))
+                .collect(),
+        },
+        propose_level: facts.propose_level,
+        anchor: H256::from(facts.anchor),
+        non_finalized_block_count: facts.non_finalized_block_count as usize,
+        non_finalized_min_difficulty: facts.non_finalized_min_difficulty,
+    }
+}
+
+fn to_bridge_dag_proposer_attempt_plan(
+    plan: rustaxa_consensus::dag::DagProposerAttemptPlan,
+) -> DagProposerAttemptPlan {
+    DagProposerAttemptPlan {
+        action: plan.action,
+        reason_code: plan.reason_code,
+        frontier_pivot: plan.frontier.pivot.into(),
+        frontier_tips: to_dag_hashes(plan.frontier.tips),
+        anchor: plan.anchor.into(),
+        proposal_level: plan.proposal_level,
+        proposal_period_found: plan.proposal_period_found,
+        proposal_period: plan.proposal_period,
+        last_finalized_period: plan.last_finalized_period,
+        period_block_hash_found: plan.period_block_hash_found,
+        period_block_hash: plan.period_block_hash.into(),
+        vrf_input: plan.vrf_input,
+        vote_count: plan.vote_count,
+        max_vote_count: plan.max_vote_count,
+        vdf_difficulty: plan.vdf_difficulty,
+        vdf_stale: plan.vdf_stale,
+        old_proposal: plan.old_proposal,
+        update_retry_state: plan.update_retry_state,
+        next_last_propose_level: plan.next_last_propose_level,
+        next_retry_count: plan.next_retry_count,
+        transaction_request: DagProposerTransactionPackRequest {
+            proposal_period: plan.transaction_request.proposal_period,
+            weight_limit: plan.transaction_request.weight_limit,
+            total_transaction_shards: plan.transaction_request.total_transaction_shards,
+            node_transaction_shard: plan.transaction_request.node_transaction_shard,
+            shard_period_interval: plan.transaction_request.shard_period_interval,
+        },
+    }
+}
+
 fn to_vrf_output(vrf_output: Vec<u8>) -> Result<[u8; 64]> {
     const VRF_OUTPUT_BYTES: usize = 64;
 
@@ -1474,7 +1593,9 @@ fn to_domain_snapshot(snapshot: DagManagerSnapshot) -> DomainDagManagerSnapshot 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::rustaxa_ffi::DagDposAuthorizationFacts;
+    use crate::ffi::rustaxa_ffi::{
+        DagDposAuthorizationFacts, DagProposerAttemptInput, SortitionRuntimeParams,
+    };
     use crate::storage::create_storage;
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
@@ -1776,6 +1897,91 @@ mod tests {
                 .save_period_data(8, vec![0x80])
                 .expect("corrupt period data save should succeed");
             assert!(runtime.dag_manager_runtime_period_block_hash(8).is_err());
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_plan_proposal_attempt_uses_rust_storage_period_hash() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_proposal_attempt");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("runtime should initialize");
+
+            runtime
+                .dag_manager_runtime_ensure_proposal_period_mapping(1, 7)
+                .expect("proposal-period mapping should save");
+            let pbft_block = signed_pbft_block(7, 99);
+            let expected_hash: [u8; 32] =
+                PbftBlockLink::try_from(SignedPbftBlockRlp::new(&pbft_block))
+                    .expect("test PBFT block should decode")
+                    .block_hash
+                    .into();
+            storage
+                .save_period_data(7, period_data_with_pbft_block(&pbft_block))
+                .expect("period data save should succeed");
+
+            let vrf_key =
+                public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
+            let plan = runtime
+                .dag_manager_runtime_plan_proposal_attempt(DagProposerAttemptInput {
+                    transaction_pool_size: 1,
+                    non_finalized_transaction_count: 0,
+                    max_non_finalized_transactions: 100,
+                    frontier_facts: DagProposerFrontierFacts {
+                        pivot: [1u8; 32],
+                        tips: Vec::new(),
+                        propose_level: 1,
+                        anchor: [1u8; 32],
+                        non_finalized_block_count: 0,
+                        non_finalized_min_difficulty: u32::MAX,
+                    },
+                    proposal_period_found: true,
+                    proposal_period: 7,
+                    last_finalized_period: 7,
+                    dag_expiry_level_limit: 100,
+                    wallet_vrf_public_key: vrf_key,
+                    wallet_vrf_secret: SECRET_KEY,
+                    authorization_facts: DagDposAuthorizationFacts {
+                        vrf_key_found: true,
+                        vrf_key: vrf_key.to_vec(),
+                        sender_eligible_vote_count: 10,
+                        vdf_sortition_max_vote_count: 20,
+                        eligibility_status: dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
+                    },
+                    sortition_params: SortitionRuntimeParams {
+                        threshold_upper: u16::MAX,
+                        difficulty_min: 3,
+                        difficulty_max: 3,
+                        difficulty_stale: 9,
+                        lambda_bound: 128,
+                    },
+                    max_non_finalized_dag_blocks: 100,
+                    max_non_finalized_dag_blocks_low_difficulty: 50,
+                    last_propose_level: 0,
+                    retry_count: 0,
+                    max_retry_count: 20,
+                    proposal_weight_limit: 1_000,
+                    total_transaction_shards: 4,
+                    node_transaction_shard: 2,
+                    shard_period_interval: 10,
+                })
+                .expect("proposal attempt should plan");
+
+            assert_eq!(plan.action, DAG_PROPOSER_ACTION_CONTINUE);
+            assert_eq!(plan.proposal_level, 1);
+            assert!(plan.period_block_hash_found);
+            assert_eq!(plan.period_block_hash, expected_hash);
+            assert_eq!(plan.transaction_request.proposal_period, 7);
+            assert_eq!(plan.transaction_request.weight_limit, 1_000);
+            assert_eq!(plan.transaction_request.total_transaction_shards, 4);
+            assert_eq!(plan.transaction_request.node_transaction_shard, 2);
+            assert_eq!(plan.transaction_request.shard_period_interval, 10);
+            assert!(!plan.vrf_input.is_empty());
         }
 
         let _ = fs::remove_dir_all(&temp_dir);

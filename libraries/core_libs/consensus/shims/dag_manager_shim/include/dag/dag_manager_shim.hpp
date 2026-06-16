@@ -98,6 +98,13 @@ class DagManager : public DagManagerOld {
   rustaxa::DagProposerBlockConstructionPlan planProposerBlockConstruction(
       rustaxa::DagProposerStorageBlockConstructionInput input) const;
   /**
+   * Plans a DAG proposal attempt up to the live transaction-packing boundary.
+   *
+   * Rust collects DAG runtime/storage facts and owns the pre-transaction proposal decision. C++ supplies live outer facts
+   * such as transaction pool pressure, FinalChain authorization facts, wallet keys, and retry state.
+   */
+  rustaxa::DagProposerAttemptPlan planProposerAttempt(rustaxa::DagProposerAttemptInput input) const;
+  /**
    * Resolves the proposal period for a DAG level through the Rust DAG runtime.
    *
    * Missing storage rows are returned as `std::nullopt`. Storage backend or

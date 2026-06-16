@@ -1011,11 +1011,13 @@ checks are removed from the Rust-mode DAG proposer/manager shims. The DAG propos
 anchor, and non-finalized pressure facts from the Rust DAG runtime instead of recomputing them through C++ `DagBlock`
 lookups. Rust also owns proposer block-construction tip metadata lookup by loading frontier-tip DAG block RLP from
 `rustaxa-storage` and recovering tip senders in `rustaxa-types`, so C++ no longer calls `DagManager::getDagBlock` to
-feed the proposer tip-selection planner. A fuller `DagProposalFacts` or attempt-plan envelope remains open because
-transaction selection, gas estimation, and DAG block materialization still cross existing C++ live-runtime boundaries.
-VDF proof generation, pre-proof difficulty facts, and DAG proposal/verification sortition runtime params now route
-through Rust. The next DAG proposal step should be a coherent pre-transaction attempt planner, not another isolated fact
-port.
+feed the proposer tip-selection planner. VDF proof generation, pre-proof difficulty facts, and DAG proposal/verification
+sortition runtime params now route through Rust. The coherent pre-transaction attempt planner now lives in
+`rustaxa-consensus::dag`: Rust loads the proposal-period PBFT-block hash from `rustaxa-storage`, owns pool/period/final
+height readiness, DPoS/VRF eligibility, local VRF probing for proposer VDF difficulty, non-finalized DAG pressure, stale
+retry planning, and emits a typed transaction-packing request. C++ still supplies live transaction-pool counts,
+FinalChain authorization facts, wallet keys, and retry state, then applies the typed plan before the live transaction
+packing/materialization boundary.
 
 Current boundary:
 
@@ -1038,6 +1040,11 @@ Current boundary:
   the Rust DAG runtime. Rust loads tip RLP from `rustaxa-storage`, decodes level/gas facts, recovers the tip sender from
   the DAG block signature, and applies the existing Rust tip-pruning planner. C++ still materializes the final signed
   `DagBlock` after Rust returns selected tips and block gas.
+- `DagBlockProposer` now calls `DagManager::planProposerAttempt`, which routes the proposal attempt through the Rust DAG
+  runtime before transaction packing. Rust recomputes the authoritative frontier facts, loads the proposal-period PBFT
+  hash from `rustaxa-storage`, computes VRF input and pre-proof VDF difficulty, plans stale retry updates, and returns the
+  exact transaction-packing request. C++ keeps network throttling, transaction materialization, EVM gas estimation, async
+  VDF proof over selected transactions, final `DagBlock` construction, and add-block/network side effects.
 - Re-audit after Slice 18 confirms the remaining DAG proposal work is not blocked by TransactionManager account/finalized
   routing anymore; it is blocked by ownership of the DAG proposal runtime itself.
 
@@ -1047,8 +1054,9 @@ Move:
   and `BridgeFinalChain::get_dag_dpos_authorization_facts`
 - partially complete: proposer finalized-height checks now read the Rust FinalChain fact port instead of calling
   `FinalChain::lastBlockNumber`
-- remaining: define a `DagProposalFacts` Rust/bridge DTO containing proposal period, period block hash, last finalized period,
-  sender vote count, total vote count, VRF key status, and gas-limit facts needed by proposer/verification logic
+- complete for the pre-transaction attempt: define and route a Rust/bridge proposal-attempt DTO containing proposal
+  period, period PBFT-block hash, last finalized period, sender vote count, total vote count, VRF key status,
+  non-finalized DAG pressure facts, stale retry state, and transaction-packing request facts
 - completed earlier: load proposal-period and period-block-hash facts from `rustaxa-storage` in `rustaxa-consensus::dag`
 - completed: collect DPoS/VRF facts through `BridgeFinalChain` instead of the C++ FinalChain compatibility method
 - partially complete for transaction selection: proposer shard filtering moved from the DAG proposer shim into the Rust
@@ -1070,8 +1078,10 @@ Move:
   comparisons that previously recomputed levels through C++ block lookups
 - complete for proposer tip metadata: `DagBlockProposer` now sends frontier-tip hashes to the Rust DAG runtime, and
   `rustaxa-consensus::dag` loads/stages tip metadata from Rust storage before running the block-construction planner
-- remaining: route `DagBlockProposer` and `DagManager` shim decisions through the DTO while keeping C++ block/transaction
-  materialization temporary
+- complete for pre-transaction proposer decisions: `DagBlockProposer` and `DagManager` now route the proposal attempt
+  through the Rust planner while keeping C++ block/transaction materialization temporary
+- remaining: move live transaction materialization, EVM gas estimation, async proof side effects, final `DagBlock`
+  construction, and network/add-block effects when their owning runtime boundaries are ready
 
 Keep temporarily:
 
@@ -1116,7 +1126,7 @@ rustaxa-bridge transaction_manager`, `cmake --build /build --target dag_shim_tes
 `/build/bin/dag_shim_test`, `cmake --build /build --target transaction_manager_shim_test --parallel 12`,
 `/build/bin/transaction_manager_shim_test`, `cmake --build /build --target rust_storage_tests --parallel 12`,
 `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
-`scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
+`scripts/rewrite_storage_boundary_guard.sh`, `git diff --check`, and `.githooks/pre-commit`.
 
 Validation note: the DAG block-construction planner sub-slice moves proposer tip selection from bridge-local Rust into
 `rustaxa-consensus::dag`, adds `dag_proposer_plan_block_construction`, and routes
@@ -1191,6 +1201,20 @@ that the C++ compatibility shell consumes. It passes `cargo fmt --manifest-path 
 test --manifest-path rust/Cargo.toml -p rustaxa-bridge dag_proposer_block_construction`, `cargo test --manifest-path
 rust/Cargo.toml -p rustaxa-consensus dag_proposer_block`, `cmake --build /build --target dag_shim_test --parallel 12`,
 `/build/bin/dag_shim_test`, `cmake --build /build --target rust_storage_tests --parallel 12`,
+`/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
+`scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
+
+Validation note: the pre-transaction DAG proposal-attempt planner sub-slice moves proposal-period hash loading,
+pool/period/finalized-height gating, DPoS/VRF eligibility, local VRF difficulty probing, non-finalized DAG pressure,
+stale retry planning, and transaction-packing request formation into `rustaxa-consensus::dag`. The C++ proposer shim now
+applies the typed Rust action before live transaction packing and uses the Rust-emitted packing request fields. C++
+still owns network throttling, transaction materialization, EVM gas estimation, async VDF proof over selected
+transactions, final `DagBlock` construction, and add-block/network side effects. It passes `cargo fmt --manifest-path
+rust/Cargo.toml --all --check`, `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`, `cargo test
+--manifest-path rust/Cargo.toml -p rustaxa-consensus dag_proposer_attempt`, `cargo test --manifest-path rust/Cargo.toml
+-p rustaxa-bridge dag_manager_runtime_plan_proposal_attempt`, `cmake --build /build --target dag_shim_test --parallel
+12`, `/build/bin/dag_shim_test`, `cmake --build /build --target transaction_manager_shim_test --parallel 12`,
+`/build/bin/transaction_manager_shim_test`, `cmake --build /build --target rust_storage_tests --parallel 12`,
 `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
 `scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
 
