@@ -339,13 +339,20 @@ class PbftManager {
    */
   PbftPeriod pbftSyncingPeriod() const;
 
+  struct PbftSyncEgressPayload {
+    dev::bytes period_data_rlp;
+    bool attach_reward_votes{false};
+  };
+
   /**
-   * @brief Load canonical finalized period-data RLP for PBFT sync from Rust-owned storage.
+   * @brief Load the Rust-owned PBFT sync egress payload and sidecar attachment decision.
    *
-   * The Rust-mode network sync handler uses this as a read-only payload view so it does not route sync storage reads
-   * through `DbStorage`. An empty vector means the requested period is not available locally.
+   * Inputs are packet-position facts and temporary C++ reward-vote sidecar facts from the network handler. Rust loads the
+   * canonical PeriodData bytes from rustaxa-storage and decides whether the caller should attach the reward-vote bundle.
+   * Transport, packet encoding, and vote sidecar materialization remain outside this storage boundary.
    */
-  dev::bytes getPbftSyncPeriodDataRaw(PbftPeriod period) const;
+  PbftSyncEgressPayload getPbftSyncEgressPayload(PbftPeriod period, bool last_block, bool pbft_chain_synced,
+                                                bool reward_votes_present, PbftPeriod reward_votes_period) const;
 
   /**
    * @brief Enable or disable PBFT sync snapshot creation through the Rust-mode PBFT manager boundary.

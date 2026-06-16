@@ -776,6 +776,12 @@ pub mod rustaxa_ffi {
         transaction_query_plan: PbftSyncTransactionQueryPlan,
     }
 
+    /// Storage-backed PBFT sync egress payload for packet materialization.
+    struct PbftSyncEgressPayload {
+        period_data_rlp: Vec<u8>,
+        attach_reward_votes: bool,
+    }
+
     /// C++-originated fact bundle for staged PBFT sync runtime planning.
     struct PbftSyncProcessPeriodDataRuntimeFact {
         block_period: u64,
@@ -3950,6 +3956,14 @@ pub mod rustaxa_ffi {
             period_admission_fact: PbftSyncPeriodAdmissionFact,
             transaction_query_fact: PbftSyncTransactionQueryFact,
         ) -> PbftSyncRuntimePlan;
+        pub fn load_pbft_sync_egress_payload(
+            runtime: &BridgePbftManagerRuntime,
+            block_period: u64,
+            last_block: bool,
+            pbft_chain_synced: bool,
+            reward_votes_present: bool,
+            reward_votes_period: u64,
+        ) -> Result<PbftSyncEgressPayload>;
         pub fn plan_pbft_sync_process_period_data_runtime(
             fact: PbftSyncProcessPeriodDataRuntimeFact,
         ) -> PbftSyncProcessPeriodDataRuntimePlan;
@@ -3978,10 +3992,6 @@ pub mod rustaxa_ffi {
         ) -> PbftManagerRuntimeSnapshot;
         pub fn pbft_manager_runtime_cert_voted_block_in_round(
             runtime: &BridgePbftManagerRuntime,
-        ) -> Result<Vec<u8>>;
-        pub fn pbft_manager_runtime_period_data_raw(
-            runtime: &BridgePbftManagerRuntime,
-            period: u64,
         ) -> Result<Vec<u8>>;
         pub fn pbft_manager_runtime_apply_transition_storage_write(
             runtime: &mut BridgePbftManagerRuntime,

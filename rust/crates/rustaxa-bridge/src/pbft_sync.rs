@@ -6,6 +6,7 @@
 //! intent flags for the PBFT manager overlay to apply.
 
 use crate::ffi::rustaxa_ffi::{
+    PbftSyncEgressPayload as FfiPbftSyncEgressPayload,
     PbftSyncPeriodAdmissionFact as FfiPbftSyncPeriodAdmissionFact,
     PbftSyncPeriodAdmissionPlan as FfiPbftSyncPeriodAdmissionPlan,
     PbftSyncProcessPeriodDataRuntimeFact as FfiPbftSyncProcessPeriodDataRuntimeFact,
@@ -16,16 +17,19 @@ use crate::ffi::rustaxa_ffi::{
     PbftSyncTransactionQueryPlan as FfiPbftSyncTransactionQueryPlan,
     PbftSyncTransactionWarning as FfiPbftSyncTransactionWarning,
 };
+use crate::ffi::BridgePbftManagerRuntime;
 use ethereum_types::H256;
 use rustaxa_consensus::pbft_sync::{
+    load_pbft_sync_egress_payload as load_domain_pbft_sync_egress_payload,
     plan_pbft_sync_period_admission_runtime as plan_domain_pbft_sync_period_admission_runtime,
     plan_pbft_sync_process_period_data_runtime as plan_domain_pbft_sync_process_period_data_runtime,
     plan_pbft_sync_runtime as plan_domain_pbft_sync_runtime,
     plan_pbft_sync_transaction_query as plan_domain_pbft_sync_transaction_query,
     PbftSyncFactStatus, PbftSyncFinalChainHashStatus, PbftSyncPeriodAdmissionFact,
     PbftSyncPeriodAdmissionPlan, PbftSyncProcessPeriodDataRuntimeFact,
-    PbftSyncProcessPeriodDataRuntimePlan, PbftSyncRuntimeFinalChainHashStatus, PbftSyncRuntimePlan,
-    PbftSyncTransactionQueryFact, PbftSyncTransactionQueryPlan, PbftSyncTransactionWarning,
+    PbftSyncProcessPeriodDataRuntimePlan, PbftSyncRewardVoteAttachmentFact,
+    PbftSyncRuntimeFinalChainHashStatus, PbftSyncRuntimePlan, PbftSyncTransactionQueryFact,
+    PbftSyncTransactionQueryPlan, PbftSyncTransactionWarning,
 };
 
 /// Plans admission for one C++-originated synced PBFT period payload.
@@ -46,6 +50,36 @@ pub fn plan_pbft_sync_runtime(
 ) -> FfiPbftSyncRuntimePlan {
     plan_domain_pbft_sync_runtime(period_admission_fact.into(), transaction_query_fact.into())
         .into()
+}
+
+/// Loads the storage-backed payload for one PBFT sync egress packet.
+///
+/// C++ still owns packet wrapping, transport, and temporary reward-vote
+/// sidecar materialization. Rust owns the canonical `PeriodData` storage read
+/// and the deterministic decision about whether those sidecars belong on the
+/// packet.
+pub fn load_pbft_sync_egress_payload(
+    runtime: &BridgePbftManagerRuntime,
+    block_period: u64,
+    last_block: bool,
+    pbft_chain_synced: bool,
+    reward_votes_present: bool,
+    reward_votes_period: u64,
+) -> anyhow::Result<FfiPbftSyncEgressPayload> {
+    let payload = load_domain_pbft_sync_egress_payload(
+        runtime.storage.as_ref(),
+        PbftSyncRewardVoteAttachmentFact {
+            block_period,
+            last_block,
+            pbft_chain_synced,
+            reward_votes_present,
+            reward_votes_period,
+        },
+    )?;
+    Ok(FfiPbftSyncEgressPayload {
+        period_data_rlp: payload.period_data_rlp,
+        attach_reward_votes: payload.attach_reward_votes,
+    })
 }
 
 /// Plans the next staged PBFT sync runtime action for C++ `processPeriodData`.
@@ -229,10 +263,36 @@ impl From<PbftSyncTransactionWarning> for FfiPbftSyncTransactionWarning {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ffi::rustaxa_ffi::PbftManagerStartupFact as FfiPbftManagerStartupFact;
+    use crate::pbft_manager::create_pbft_manager_runtime_from_storage;
+    use crate::storage::create_storage;
     use rustaxa_consensus::pbft_sync::{
         PbftSyncAdmissionRuntimeAction, PbftSyncPeriodAdmissionDecision,
         PbftSyncPeriodAdmissionStatus, PbftSyncTransactionWarningKind,
     };
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "{name}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    fn startup_fact() -> FfiPbftManagerStartupFact {
+        FfiPbftManagerStartupFact {
+            current_period: 10,
+            cacti_active_at_chain_size: true,
+            genesis_lambda_ms: 100,
+            cacti_lambda_max_ms: 1_500,
+            cacti_lambda_default_ms: 500,
+        }
+    }
 
     fn fact() -> FfiPbftSyncPeriodAdmissionFact {
         FfiPbftSyncPeriodAdmissionFact {
@@ -431,5 +491,41 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![[4; 32]]
         );
+    }
+
+    #[test]
+    fn bridge_egress_payload_uses_runtime_storage_and_attachment_plan() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_sync_egress");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            storage
+                .save_pbft_mgr_field(0, 1)
+                .expect("round seed should persist");
+            storage
+                .save_pbft_mgr_field(1, 1)
+                .expect("step seed should persist");
+            storage
+                .save_pbft_mgr_field(2, 1_500)
+                .expect("lambda seed should persist");
+            storage
+                .save_period_data(9, vec![0xC8, 0xC0, 0xC1])
+                .expect("period data should persist");
+
+            let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
+                .expect("runtime should restore");
+            let payload = load_pbft_sync_egress_payload(&runtime, 9, true, true, true, 9)
+                .expect("egress payload should load");
+
+            assert_eq!(payload.period_data_rlp, vec![0xC8, 0xC0, 0xC1]);
+            assert!(payload.attach_reward_votes);
+
+            let payload = load_pbft_sync_egress_payload(&runtime, 9, true, true, true, 8)
+                .expect("egress payload should load");
+            assert!(!payload.attach_reward_votes);
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
     }
 }

@@ -109,7 +109,16 @@ void GetPbftSyncPacketHandler::sendPbftBlocks(const std::shared_ptr<TaraxaPeer> 
 #ifndef RUSTAXA_ENABLE
     auto period_data = db_->getPeriodDataRaw(block_period);
 #else
-    auto period_data = pbft_mgr_->getPbftSyncPeriodDataRaw(block_period);
+    std::vector<std::shared_ptr<PbftVote>> reward_votes;
+    if (pbft_chain_synced && last_block) {
+      reward_votes = vote_mgr_->getRewardVotes();
+      assert(!reward_votes.empty());
+    }
+    const auto reward_votes_present = !reward_votes.empty();
+    const auto reward_votes_period = reward_votes_present ? reward_votes[0]->getPeriod() : PbftPeriod{0};
+    auto sync_payload = pbft_mgr_->getPbftSyncEgressPayload(block_period, last_block, pbft_chain_synced,
+                                                            reward_votes_present, reward_votes_period);
+    auto period_data = std::move(sync_payload.period_data_rlp);
 #endif
     if (period_data.empty()) {
       // This can happen when switching from light node to full node setting
@@ -120,6 +129,7 @@ void GetPbftSyncPacketHandler::sendPbftBlocks(const std::shared_ptr<TaraxaPeer> 
     std::shared_ptr<PbftSyncPacketRaw> pbft_sync_packet;
 
     if (pbft_chain_synced && last_block) {
+#ifndef RUSTAXA_ENABLE
       // Latest finalized block cert votes are saved in db as reward votes for new blocks
       auto reward_votes = vote_mgr_->getRewardVotes();
       assert(!reward_votes.empty());
@@ -130,6 +140,14 @@ void GetPbftSyncPacketHandler::sendPbftBlocks(const std::shared_ptr<TaraxaPeer> 
       } else {
         pbft_sync_packet = std::make_shared<PbftSyncPacketRaw>(last_block, std::move(period_data));
       }
+#else
+      if (sync_payload.attach_reward_votes) {
+        pbft_sync_packet = std::make_shared<PbftSyncPacketRaw>(last_block, std::move(period_data),
+                                                               OptimizedPbftVotesBundle{std::move(reward_votes)});
+      } else {
+        pbft_sync_packet = std::make_shared<PbftSyncPacketRaw>(last_block, std::move(period_data));
+      }
+#endif
     } else {
       pbft_sync_packet = std::make_shared<PbftSyncPacketRaw>(last_block, std::move(period_data));
     }

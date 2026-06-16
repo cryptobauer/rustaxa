@@ -655,15 +655,25 @@ Validation note: the proposed-block persistence-runtime slice passes `cargo fmt 
 Goal: move storage-backed PBFT sync payload and network egress materialization into Rust query/runtime helpers while
 keeping peer transport, packet wrapping, and tarcap scheduling in C++.
 
-Status: planned.
+Status: complete. PBFT sync egress now routes through `rustaxa-consensus::pbft_sync` and
+`rustaxa-bridge::pbft_sync::load_pbft_sync_egress_payload`, which load canonical `PeriodData` bytes directly from the
+PBFT manager runtime's Rust storage handle and decide reward-vote bundle attachment from explicit packet/reward-vote
+facts. The old raw `pbft_manager_runtime_period_data_raw` bridge helper and `PbftManager::getPbftSyncPeriodDataRaw`
+shim method were removed so Rust-mode network egress has a single typed sync payload route. Latest/v4 packet handlers
+still own packet encoding, tarcap transport, peer state, and temporary `PbftVote` sidecars. DAG sync payload
+materialization was already owned by the DAG runtime's storage helpers from Slice 5; this slice keeps that boundary and
+does not move peer request scheduling or packet wrapping.
 
 Current boundary:
 
-- Latest PBFT sync egress already calls `pbft_mgr_->getPbftSyncPeriodDataRaw` in Rust mode, but network handlers still
-  carry `DbStorage` and legacy branches call `getPeriodDataRaw`.
-- DAG sync and status handlers still receive `DbStorage` because network packet handlers predate the Rust storage
-  boundary.
-- Proposed-block bundle egress still enumerates temporary C++ sidecars.
+- completed: latest/v4 PBFT sync egress uses a Rust-owned typed payload helper instead of a raw PBFT manager storage
+  getter.
+- completed: Rust-mode latest/v4 PBFT/DAG sync handlers compile out `DbStorage`; legacy `DbStorage` branches remain only
+  for `RUSTAXA_ENABLE=0`.
+- completed earlier: DAG sync storage payload reads use the DAG runtime storage helpers and return typed block/transaction
+  payload DTOs for C++ packet materialization.
+- remaining boundary: proposed-block bundle egress still enumerates temporary C++ sidecars because live proposed-block
+  materialization is outside this packet-storage slice.
 
 Move:
 
@@ -680,9 +690,10 @@ Keep temporarily:
 
 Done when:
 
-- Rust-mode network sync handlers do not use `DbStorage` for deterministic consensus storage reads.
-- C++ network code receives typed sync payload/effect DTOs and only performs transport work.
-- Any remaining `DbStorage` member in network handlers is legacy/query compatibility or removed from Rust-mode builds.
+- completed: Rust-mode network sync handlers do not use `DbStorage` for deterministic consensus storage reads.
+- completed for PBFT/DAG sync payloads: C++ network code receives typed sync payload/effect DTOs and only performs
+  transport work plus temporary sidecar packet wrapping.
+- completed: remaining `DbStorage` members in these handlers are compiled only for legacy/reference mode.
 
 Validation:
 
@@ -691,6 +702,17 @@ Validation:
 - `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
 - focused DAG/PBFT sync C++ targets
 - storage-boundary guard self-test/current-diff guard
+
+Validation note: the PBFT sync egress payload slice passes `cargo fmt --manifest-path rust/Cargo.toml --all --check`,
+`cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`, `cargo test --manifest-path rust/Cargo.toml -p
+rustaxa-consensus pbft_sync`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_sync`, `cargo test
+--manifest-path rust/Cargo.toml -p rustaxa-consensus dag`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge
+dag`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pbft_manager`, `cargo test --manifest-path
+rust/Cargo.toml -p rustaxa-bridge pbft_manager`, `cmake --build /build --target rust_storage_tests --parallel 12`,
+`/build/bin/rust_storage_tests`, `cmake --build /build --target pbft_manager_test --parallel 12`,
+`/build/bin/pbft_manager_test --gtest_filter=PbftManagerWithDagCreation.*`,
+`scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff
+--check`.
 
 ## Slice 13: Query Compatibility Read Split
 

@@ -3569,12 +3569,17 @@ PbftPeriod PbftManager::pbftSyncingPeriod() const {
   return std::max(sync_queue_.getPeriod(), pbft_chain_->getPbftChainSize());
 }
 
-dev::bytes PbftManager::getPbftSyncPeriodDataRaw(PbftPeriod period) const {
+PbftManager::PbftSyncEgressPayload PbftManager::getPbftSyncEgressPayload(PbftPeriod period, bool last_block,
+                                                                         bool pbft_chain_synced,
+                                                                         bool reward_votes_present,
+                                                                         PbftPeriod reward_votes_period) const {
   if (!pbft_manager_runtime_.has_value()) {
-    throw std::runtime_error("PBFT manager Rust runtime must be initialized before serving PBFT sync period data");
+    throw std::runtime_error("PBFT manager Rust runtime must be initialized before serving PBFT sync egress payload");
   }
-  const auto period_data = rustaxa::pbft_manager_runtime_period_data_raw(*pbft_manager_runtime_.value(), period);
-  return dev::bytes(period_data.begin(), period_data.end());
+  const auto payload =
+      rustaxa::load_pbft_sync_egress_payload(*pbft_manager_runtime_.value(), period, last_block, pbft_chain_synced,
+                                             reward_votes_present, reward_votes_period);
+  return {dev::bytes(payload.period_data_rlp.begin(), payload.period_data_rlp.end()), payload.attach_reward_votes};
 }
 
 void PbftManager::setPbftSyncSnapshotCreationEnabled(bool enabled) {
