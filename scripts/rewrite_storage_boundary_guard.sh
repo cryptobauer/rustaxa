@@ -6,8 +6,9 @@ usage() {
 Usage: scripts/rewrite_storage_boundary_guard.sh [--base REV] [--self-test]
 
 Checks newly added C++ lines for storage-boundary violations in Rust rewrite
-code. By default the guard checks staged and unstaged changes. With --base it
-checks additions introduced since the merge base with REV.
+code, including direct C++ FinalChain DPoS fact reads from consensus consumers.
+By default the guard checks staged and unstaged changes. With --base it checks
+additions introduced since the merge base with REV.
 EOF
 }
 
@@ -63,7 +64,11 @@ scan_diff() {
       return line ~ "(^|[^[:alnum:]_])" name "[[:space:]]*\\("
     }
 
-    function is_forbidden(line) {
+    function is_final_chain_fact_provider(path) {
+      return path ~ /^libraries\/core_libs\/consensus\/shims\/final_chain_shim\//
+    }
+
+    function is_forbidden_storage_route(line) {
       return line ~ /std::shared_ptr[[:space:]]*<DbStorage>/ ||
              line ~ /DbStorage[[:space:]]*[\*&]/ ||
              line ~ /(^|[^[:alnum:]_])db_->/ ||
@@ -75,9 +80,16 @@ scan_diff() {
              line ~ /DbStorage::Columns/
     }
 
+    function is_forbidden_final_chain_fact_route(path, line) {
+      return !is_final_chain_fact_provider(path) &&
+             (has_call(line, "dposEligibleVoteCount") ||
+              has_call(line, "dposEligibleTotalVoteCount"))
+    }
+
     function report(line) {
       if (path != "" && is_cpp_file(path) && !is_allowlisted(path) &&
-          !is_query_compat_read(path, line) && is_forbidden(line)) {
+          !is_query_compat_read(path, line) &&
+          (is_forbidden_storage_route(line) || is_forbidden_final_chain_fact_route(path, line))) {
         printf "%s:%d: %s\n", path, new_line, line
         found = 1
       }
@@ -189,6 +201,33 @@ EOF
 
   : >"$violations_file"
   cat <<'EOF' | scan_diff >"$violations_file" || true
+diff --git a/libraries/core_libs/consensus/shims/vote_manager_shim/src/vote_manager_shim.cpp b/libraries/core_libs/consensus/shims/vote_manager_shim/src/vote_manager_shim.cpp
+--- a/libraries/core_libs/consensus/shims/vote_manager_shim/src/vote_manager_shim.cpp
++++ b/libraries/core_libs/consensus/shims/vote_manager_shim/src/vote_manager_shim.cpp
+@@ -1,0 +1,1 @@
++auto weight = final_chain_->dposEligibleVoteCount(period, voter);
+EOF
+  if [ ! -s "$violations_file" ]; then
+    echo "storage-boundary guard self-test failed: direct FinalChain DPoS fact read was not rejected" >&2
+    exit 1
+  fi
+
+  : >"$violations_file"
+  cat <<'EOF' | scan_diff >"$violations_file" || true
+diff --git a/libraries/core_libs/consensus/shims/final_chain_shim/src/final_chain_shim.cpp b/libraries/core_libs/consensus/shims/final_chain_shim/src/final_chain_shim.cpp
+--- a/libraries/core_libs/consensus/shims/final_chain_shim/src/final_chain_shim.cpp
++++ b/libraries/core_libs/consensus/shims/final_chain_shim/src/final_chain_shim.cpp
+@@ -1,0 +1,1 @@
++uint64_t FinalChain::dposEligibleVoteCount(EthBlockNumber blk_num, addr_t const& addr) const {
+EOF
+  if [ -s "$violations_file" ]; then
+    echo "storage-boundary guard self-test failed: FinalChain fact-provider implementation was rejected" >&2
+    cat "$violations_file" >&2
+    exit 1
+  fi
+
+  : >"$violations_file"
+  cat <<'EOF' | scan_diff >"$violations_file" || true
 diff --git a/libraries/core_libs/consensus/shims/storage_shim/src/storage_shim.cpp b/libraries/core_libs/consensus/shims/storage_shim/src/storage_shim.cpp
 --- a/libraries/core_libs/consensus/shims/storage_shim/src/storage_shim.cpp
 +++ b/libraries/core_libs/consensus/shims/storage_shim/src/storage_shim.cpp
@@ -228,7 +267,8 @@ Rust storage-boundary guard failed.
 In Rust mode, C++ consensus/final-chain code must not add new storage routes.
 Move storage reads/writes into rustaxa-storage-backed Rust runtime APIs and keep
 C++ limited to transport, external EVM execution, signing, timers, logging, and
-legacy view translation.
+legacy view translation. Consensus consumers must also use typed Rust fact ports
+for FinalChain DPoS facts instead of adding new direct C++ FinalChain calls.
 
 Violations:
 EOF

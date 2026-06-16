@@ -202,7 +202,9 @@ EVM executor adapter while arbitrary EVM execution is outside Rust. That excepti
 
 New Rust-mode C++ storage routes are guarded by `scripts/rewrite_storage_boundary_guard.sh`, which is part of
 `make rewrite-validate-fast`. The guard checks newly added C++ lines for direct `DbStorage`, `db_->`, C++ batch, Rust
-storage-handle, and column-family usage outside the storage shim, legacy storage implementation, and tests.
+storage-handle, and column-family usage outside the storage shim, legacy storage implementation, and tests. It also
+rejects new direct C++ FinalChain DPoS fact reads from consensus consumers now that those paths have a typed Rust
+FinalChain fact port.
 
 Current state: storage is not fully direct-Rust yet. In Rust mode, the durable backend for migrated rows is
 `rustaxa-storage`, but storage ownership still crosses temporary compatibility layers. `BridgeStorage` remains the
@@ -219,6 +221,8 @@ The current direct-Rust consensus ownership is narrower and explicit:
   `Arc<rustaxa_storage::Storage>` and no longer map the finalization batch through `DbStorage::rustBatchId`.
 - `taraxa_getPillarBlockData` uses a Rust storage read in Rust mode and only materializes C++ pillar data at the RPC JSON
   boundary.
+- VoteManager DPoS vote-count and total-vote-count facts are collected through the Rust FinalChain PBFT fact port rather
+  than direct C++ `FinalChain::dposEligible*` calls.
 - The storage-boundary guard prevents new unreviewed C++ storage routes, but it does not imply the existing compatibility
   routes have been retired.
 
@@ -294,9 +298,10 @@ Planned large slices:
    manager, transaction manager, sortition, pillar chain, rewards, and gas-pricing shims so their long-lived Rust
    runtimes own or receive `Arc<rustaxa_storage::Storage>` directly. C++ may still materialize legacy objects at
    network/EVM/API boundaries. Current progress: PBFT manager startup restore and sortition startup replay/period
-   lookup now live in `rustaxa-consensus` over native Rust storage handles. Remaining work: PBFT finalization,
-   TransactionManager, DAG/proposed-block, VoteManager persistence, rewards, gas-pricer, and pillar-manager routes still
-   have `BridgeStorage` or `DbStorage` entry points.
+   lookup now live in `rustaxa-consensus` over native Rust storage handles; VoteManager persistence, PBFT chain/proposed
+   block storage, rewards, pillar storage, PBFT sync egress, and TransactionManager storage paths have Rust-owned storage
+   families. Remaining work: FinalChain/EVM/account facts, DAG proposal-validation facts, gas-pricer initialization, and
+   selected PBFT/transaction runtime boundaries still have `BridgeStorage`, `DbStorage`, or C++ FinalChain entry points.
 3. Remove C++ batch/storage orchestration from consensus. Replace `createWriteBatch`, `rustBatchId`,
    `commitWriteBatch`, and C++ batch-driven append helpers in consensus shims with Rust-owned storage sessions and
    commits. Atomic write ordering should be expressed in Rust storage transactions, not in C++. Current progress:
@@ -313,8 +318,9 @@ Planned large slices:
 5. Collapse `DbStorage` to compatibility-only. Delete or guard Rust-mode consensus accessors, remove obsolete C++
    forwarding methods, and add boundary tests/guards that fail when Rust-mode consensus introduces new `DbStorage`
    storage calls. Current progress: the storage-boundary guard has a required self-test and portable token matching for
-   `rustStorage`, `rustBatchId`, C++ batch APIs, and direct `db_` routes outside explicit compatibility allowlists.
-   Remaining work: remove the existing allowlisted compatibility routes as their Rust runtimes become authoritative.
+   `rustStorage`, `rustBatchId`, C++ batch APIs, direct `db_` routes outside explicit compatibility allowlists, and new
+   direct DPoS fact calls from consensus consumers. Remaining work: remove the existing allowlisted compatibility routes
+   and explicit FinalChain/EVM/DAG boundaries as their Rust runtimes become authoritative.
 
 Validation:
 

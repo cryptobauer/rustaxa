@@ -839,15 +839,18 @@ pbft_manager_test --parallel 12`, `/build/bin/pbft_manager_test --gtest_filter=P
 Goal: after Slices 10-14 land, make the remaining `DbStorage` surface intentionally compatibility-only and harden guards
 so regressions are caught before review.
 
-Status: planned final cleanup.
+Status: complete for the storage-boundary guard/audit cleanup. The remaining `DbStorage`/FinalChain references are
+categorized as compatibility shell, legacy/reference code, app/query/network materialization, or the explicit
+FinalChain/EVM/DAG/transaction boundaries tracked in Slice 14 and the Slice 8/9 replanning notes.
 
 Move/remove:
 
-- remove obsolete `DbStorage` members from Rust-mode consensus/network shim classes
-- delete bridge DTOs and helper functions made unused by the new runtimes
-- shrink allowlists in `scripts/rewrite_storage_boundary_guard.sh`
-- add checks for known shim paths once their storage route has moved
-- update `PLAN.md` and this file with the final compatibility-shell contract
+- completed: remove obsolete `DbStorage` members and raw PBFT sync helpers where Slices 10-13 made them unused
+- completed: delete bridge DTOs and helper functions made unused by the new runtimes
+- completed: harden `scripts/rewrite_storage_boundary_guard.sh` so new direct C++ DPoS fact reads from consensus
+  consumers fail the rewrite guard
+- completed: keep RPC/GraphQL query compatibility explicit through `RUSTAXA_QUERY_COMPAT_READ`
+- completed: update `PLAN.md` and this file with the compatibility-shell contract
 
 Keep:
 
@@ -855,13 +858,16 @@ Keep:
 - legacy/reference implementation files and pure-C++ validation routes
 - app startup, migration/admin, backup/pruning, and read-only query compatibility until those areas receive their own
   rewrite tracks
+- explicit FinalChain/EVM/account, DAG proposal-validation, and transaction-account boundaries tracked by Slice 14
 
 Done when:
 
-- A code search shows no Rust-mode consensus production route using `DbStorage` as a storage API.
-- Remaining `DbStorage` usage is categorized as storage shim, legacy/reference, app lifecycle/admin, tests, or marked
-  query compatibility.
-- New consensus/storage regressions fail fast in `make rewrite-validate-fast`.
+- completed for moved storage families: PBFT chain/proposed blocks/sync, rewards stats, pillar storage, TransactionManager
+  storage, PBFT manager startup/finalization, and VoteManager DPoS reads no longer add new C++ `DbStorage` or direct DPoS
+  routes.
+- remaining `DbStorage` usage is categorized as storage shim, legacy/reference, app lifecycle/admin, tests, marked query
+  compatibility, or explicit Slice 14 boundary work.
+- new consensus/storage regressions fail fast in `make rewrite-validate-fast`.
 
 Validation:
 
@@ -870,6 +876,11 @@ Validation:
 - `scripts/rewrite_storage_boundary_guard.sh`
 - `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
 - targeted C++ shim builds/tests for every touched module
+
+Validation note: the Slice 15 guard-hardening sub-slice passes `scripts/rewrite_storage_boundary_guard.sh --self-test`,
+`scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`. The pre-commit hook also ran
+`make rewrite-validate-fast` for the preceding Slice 14 commit successfully; remaining clippy output is the known
+pre-existing warning set documented in earlier slice validation notes.
 
 ## Stop Conditions
 
