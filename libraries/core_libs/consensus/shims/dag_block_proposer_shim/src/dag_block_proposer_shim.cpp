@@ -26,6 +26,7 @@ constexpr uint32_t kDagProposerReasonMissingProposalPeriod = 1;
 constexpr uint32_t kDagProposerReasonVrfKeyMismatch = 3;
 constexpr uint32_t kDagProposerReasonZeroDenominator = 6;
 constexpr uint32_t kDagProposerReasonFinalizedPeriodNotReady = 9;
+constexpr uint32_t kDagProposerReasonPackedTransactionsEmpty = 14;
 
 std::array<uint8_t, 32> to_bridge_hash(const blk_hash_t& hash) { return hash.asArray(); }
 
@@ -197,9 +198,18 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
                                                     attempt.transaction_request.total_transaction_shards,
                                                     attempt.transaction_request.node_transaction_shard,
                                                     attempt.transaction_request.shard_period_interval);
-  if (transactions.empty()) {
-    node_dag_proposer_data->last_propose_level = propose_level;
-    node_dag_proposer_data->num_tries = 0;
+  rustaxa::DagProposerPostPackInput post_pack_input;
+  post_pack_input.proposal_level = propose_level;
+  post_pack_input.packed_transaction_count = transactions.size();
+  const auto post_pack = rustaxa::dag_proposer_plan_post_pack(std::move(post_pack_input));
+  if (post_pack.action != kDagProposerActionContinue) {
+    if (post_pack.update_retry_state) {
+      node_dag_proposer_data->last_propose_level = post_pack.next_last_propose_level;
+      node_dag_proposer_data->num_tries = static_cast<uint16_t>(post_pack.next_retry_count);
+    }
+    if (post_pack.reason_code == kDagProposerReasonPackedTransactionsEmpty) {
+      LOG(log_tr_) << "Skip block proposer, zero sharded transactions ..." << std::endl;
+    }
     return false;
   }
 
@@ -328,10 +338,6 @@ std::pair<SharedTransactions, std::vector<uint64_t>> DagBlockProposer::getSharde
   auto [transactions, estimations] =
       trx_mgr_->packShardedTrxs(proposal_period, weight_limit, total_trx_shards, node_trx_shard,
                                 shard_period_interval);
-  if (transactions.empty()) {
-    LOG(log_tr_) << "Skip block proposer, zero sharded transactions ..." << std::endl;
-    return {};
-  }
   return {transactions, estimations};
 }
 

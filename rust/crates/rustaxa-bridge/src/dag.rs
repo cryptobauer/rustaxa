@@ -8,15 +8,15 @@ use crate::ffi::rustaxa_ffi::{
     DagPivotTipsValidation, DagProposerAttemptInput, DagProposerAttemptPlan,
     DagProposerBlockConstructionInput, DagProposerBlockConstructionPlan,
     DagProposerEligibilityDecision, DagProposerEligibilityInput, DagProposerFrontierFacts,
-    DagProposerStorageBlockConstructionInput, DagProposerTipCandidate,
-    DagProposerTransactionPackRequest, DagReferenceMetadata, DagSyncBlockRlp, DagTransactionHash,
-    DagTransactionQueryPlan, DagTransactionRlpLookup, DagVerifyAuthorizationInput,
-    DagVerifyAuthorizationResult, DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock,
-    DagVerifyPrecheckResult, DagVerifyTransactionAvailabilityInput,
-    DagVerifyTransactionAvailabilityResult, DagVerifyVdfDposDecision, DagVerifyVdfDposFacts,
-    DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput,
-    DagVerifyVdfSortitionInput, DagVerifyVdfSortitionResult, HashLookup, PeriodLookup,
-    SortitionRuntimeParams,
+    DagProposerPostPackInput, DagProposerPostPackPlan, DagProposerStorageBlockConstructionInput,
+    DagProposerTipCandidate, DagProposerTransactionPackRequest, DagReferenceMetadata,
+    DagSyncBlockRlp, DagTransactionHash, DagTransactionQueryPlan, DagTransactionRlpLookup,
+    DagVerifyAuthorizationInput, DagVerifyAuthorizationResult, DagVerifyGasInput,
+    DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
+    DagVerifyTransactionAvailabilityInput, DagVerifyTransactionAvailabilityResult,
+    DagVerifyVdfDposDecision, DagVerifyVdfDposFacts, DagVerifyVdfPrepareInput,
+    DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
+    DagVerifyVdfSortitionResult, HashLookup, PeriodLookup, SortitionRuntimeParams,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
 use anyhow::{ensure, Context, Result};
@@ -30,8 +30,8 @@ use rustaxa_consensus::dag::{
     decide_dag_verify_vdf_dpos_authorization, derive_frontier, ensure_proposal_period_mapping,
     load_dag_block_from_storage, period_block_hash_from_storage, plan_dag_proposer_attempt,
     plan_dag_proposer_block_construction, plan_dag_proposer_block_construction_from_storage,
-    plan_dag_verify_transaction_query, plan_expired_transaction_cleanup,
-    plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
+    plan_dag_proposer_post_pack, plan_dag_verify_transaction_query,
+    plan_expired_transaction_cleanup, plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
     proposal_period_for_level_from_storage, save_dag_block_to_storage,
     validate_dag_verify_authorization, validate_dag_verify_gas,
     validate_dag_verify_transaction_availability, validate_pivot_tips_metadata,
@@ -1290,6 +1290,26 @@ pub fn dag_proposer_plan_block_construction(
     });
 
     to_bridge_dag_proposer_block_construction_plan(plan)
+}
+
+/// Plans the deterministic DAG proposer action after live transaction packing.
+///
+/// The bridge intentionally carries only the packed transaction count and
+/// proposal level. Transaction bodies, EVM gas estimates, VDF proof execution,
+/// and final DAG block materialization remain outside Rust until those runtime
+/// boundaries move.
+pub fn dag_proposer_plan_post_pack(input: DagProposerPostPackInput) -> DagProposerPostPackPlan {
+    let plan = plan_dag_proposer_post_pack(rustaxa_consensus::dag::DagProposerPostPackInput {
+        proposal_level: input.proposal_level,
+        packed_transaction_count: input.packed_transaction_count,
+    });
+    DagProposerPostPackPlan {
+        action: plan.action,
+        reason_code: plan.reason_code,
+        update_retry_state: plan.update_retry_state,
+        next_last_propose_level: plan.next_last_propose_level,
+        next_retry_count: plan.next_retry_count,
+    }
 }
 
 fn to_domain_dag_proposer_tip_candidate(
@@ -3342,6 +3362,35 @@ mod tests {
             .map(|hash| hash.hash)
             .collect::<Vec<_>>();
         assert_eq!(selected, vec![[0x03; 32]]);
+    }
+
+    #[test]
+    fn dag_proposer_post_pack_bridge_resets_retry_state_for_empty_pack() {
+        let plan = dag_proposer_plan_post_pack(DagProposerPostPackInput {
+            proposal_level: 17,
+            packed_transaction_count: 0,
+        });
+
+        assert_eq!(plan.action, DAG_PROPOSER_ACTION_SKIP);
+        assert_eq!(
+            plan.reason_code,
+            dag::DAG_PROPOSER_REASON_PACKED_TRANSACTIONS_EMPTY
+        );
+        assert!(plan.update_retry_state);
+        assert_eq!(plan.next_last_propose_level, 17);
+        assert_eq!(plan.next_retry_count, 0);
+    }
+
+    #[test]
+    fn dag_proposer_post_pack_bridge_continues_for_non_empty_pack() {
+        let plan = dag_proposer_plan_post_pack(DagProposerPostPackInput {
+            proposal_level: 17,
+            packed_transaction_count: 3,
+        });
+
+        assert_eq!(plan.action, DAG_PROPOSER_ACTION_CONTINUE);
+        assert_eq!(plan.reason_code, DAG_PROPOSER_REASON_OK);
+        assert!(!plan.update_retry_state);
     }
 
     #[test]

@@ -1018,6 +1018,9 @@ height readiness, DPoS/VRF eligibility, local VRF probing for proposer VDF diffi
 retry planning, and emits a typed transaction-packing request. C++ still supplies live transaction-pool counts,
 FinalChain authorization facts, wallet keys, and retry state, then applies the typed plan before the live transaction
 packing/materialization boundary.
+After live transaction packing returns, Rust now also owns the deterministic post-pack empty-selection decision and retry
+state reset. C++ still performs the actual transaction materialization and gas-estimation loop, but it no longer mutates
+proposer retry state for the empty packed result without a Rust plan.
 
 Current boundary:
 
@@ -1045,6 +1048,9 @@ Current boundary:
   hash from `rustaxa-storage`, computes VRF input and pre-proof VDF difficulty, plans stale retry updates, and returns the
   exact transaction-packing request. C++ keeps network throttling, transaction materialization, EVM gas estimation, async
   VDF proof over selected transactions, final `DagBlock` construction, and add-block/network side effects.
+- `DagBlockProposer` now routes the post-pack packed-transaction-count decision through
+  `dag_proposer_plan_post_pack`; Rust returns the empty-pack skip reason and authoritative retry-state reset before C++
+  continues to VDF proof execution.
 - Re-audit after Slice 18 confirms the remaining DAG proposal work is not blocked by TransactionManager account/finalized
   routing anymore; it is blocked by ownership of the DAG proposal runtime itself.
 
@@ -1080,6 +1086,8 @@ Move:
   `rustaxa-consensus::dag` loads/stages tip metadata from Rust storage before running the block-construction planner
 - complete for pre-transaction proposer decisions: `DagBlockProposer` and `DagManager` now route the proposal attempt
   through the Rust planner while keeping C++ block/transaction materialization temporary
+- complete for post-pack empty selection: `DagBlockProposer` now asks Rust to classify zero packed transactions and
+  provide the retry-state reset, while C++ still owns live pack execution and transaction sidecars
 - remaining: move live transaction materialization, EVM gas estimation, async proof side effects, final `DagBlock`
   construction, and network/add-block effects when their owning runtime boundaries are ready
 
@@ -1215,6 +1223,16 @@ rust/Cargo.toml --all --check`, `cargo check --manifest-path rust/Cargo.toml -p 
 -p rustaxa-bridge dag_manager_runtime_plan_proposal_attempt`, `cmake --build /build --target dag_shim_test --parallel
 12`, `/build/bin/dag_shim_test`, `cmake --build /build --target transaction_manager_shim_test --parallel 12`,
 `/build/bin/transaction_manager_shim_test`, `cmake --build /build --target rust_storage_tests --parallel 12`,
+`/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
+`scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
+
+Validation note: the post-pack DAG proposer sub-slice adds `dag_proposer_plan_post_pack`, moving the empty packed
+transaction decision and retry-state reset into `rustaxa-consensus::dag` after the live transaction-packing boundary.
+Focused Rust and bridge tests cover empty and non-empty packed results. It passes `cargo fmt --manifest-path
+rust/Cargo.toml --all --check`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus
+dag_proposer_post_pack`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge
+dag_proposer_post_pack_bridge`, `cmake --build /build --target dag_shim_test --parallel 12`,
+`/build/bin/dag_shim_test`, `cmake --build /build --target rust_storage_tests --parallel 12`,
 `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
 `scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
 

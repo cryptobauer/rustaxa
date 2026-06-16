@@ -3444,6 +3444,21 @@ pub mod rustaxa_ffi {
         transaction_request: DagProposerTransactionPackRequest,
     }
 
+    /// Facts observed after the live transaction-packing boundary.
+    struct DagProposerPostPackInput {
+        proposal_level: u64,
+        packed_transaction_count: u64,
+    }
+
+    /// Rust-owned post-pack DAG proposer decision.
+    struct DagProposerPostPackPlan {
+        action: u8,
+        reason_code: u32,
+        update_retry_state: bool,
+        next_last_propose_level: u64,
+        next_retry_count: u64,
+    }
+
     /// C++-originated tip candidate facts for Rust proposer tip selection.
     struct DagProposerTipCandidate {
         hash: [u8; 32],
@@ -4023,6 +4038,9 @@ pub mod rustaxa_ffi {
         pub fn dag_proposer_plan_block_construction(
             input: DagProposerBlockConstructionInput,
         ) -> DagProposerBlockConstructionPlan;
+        pub fn dag_proposer_plan_post_pack(
+            input: DagProposerPostPackInput,
+        ) -> DagProposerPostPackPlan;
         pub fn dag_verify_authorization(
             input: DagVerifyAuthorizationInput,
         ) -> DagVerifyAuthorizationResult;

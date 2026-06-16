@@ -193,6 +193,8 @@ pub const DAG_PROPOSER_REASON_LOW_DIFFICULTY_DAG_PRESSURE: u32 = 11;
 pub const DAG_PROPOSER_REASON_STALE_VDF_RETRY: u32 = 12;
 /// DAG proposer reason: stale VDF difficulty started a new level retry window.
 pub const DAG_PROPOSER_REASON_STALE_VDF_RESET: u32 = 13;
+/// DAG proposer reason: live transaction packing selected no transactions.
+pub const DAG_PROPOSER_REASON_PACKED_TRANSACTIONS_EMPTY: u32 = 14;
 
 /// Inputs for deterministic `DagManager::verifyBlock` prechecks.
 ///
@@ -766,6 +768,33 @@ pub struct DagProposerAttemptPlan {
     pub next_last_propose_level: u64,
     pub next_retry_count: u64,
     pub transaction_request: DagProposerTransactionPackRequest,
+}
+
+/// Input facts for the DAG proposer post-pack planner.
+///
+/// This stage runs after the live transaction manager boundary returns. Rust
+/// owns the deterministic retry-state mutation for an empty packed result, but
+/// it does not inspect transaction bodies, estimate gas, build VDF payloads, or
+/// construct a `DagBlock`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagProposerPostPackInput {
+    pub proposal_level: u64,
+    pub packed_transaction_count: u64,
+}
+
+/// Rust-owned DAG proposer post-pack decision.
+///
+/// `action == DAG_PROPOSER_ACTION_CONTINUE` means C++ may continue to VDF proof
+/// execution and block construction with the already-materialized transaction
+/// list. Empty packed results return `SKIP` and carry the authoritative retry
+/// state reset that legacy code performed locally.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagProposerPostPackPlan {
+    pub action: u8,
+    pub reason_code: u32,
+    pub update_retry_state: bool,
+    pub next_last_propose_level: u64,
+    pub next_retry_count: u64,
 }
 
 /// Decision returned for the VDF and DPoS authorization stage.
@@ -1880,6 +1909,32 @@ pub fn plan_dag_proposer_attempt(input: DagProposerAttemptInput) -> Result<DagPr
     plan.next_retry_count = post_plan.next_retry_count;
     plan.transaction_request = post_plan.transaction_request;
     Ok(plan)
+}
+
+/// Plans the deterministic DAG proposer action after live transaction packing.
+///
+/// C++ still owns the live transaction-pool read, materialization, and EVM gas
+/// estimation boundary. Rust owns only the protocol decision for the observed
+/// packed count so retry state cannot silently diverge from the Rust proposer
+/// runtime.
+pub fn plan_dag_proposer_post_pack(input: DagProposerPostPackInput) -> DagProposerPostPackPlan {
+    if input.packed_transaction_count == 0 {
+        return DagProposerPostPackPlan {
+            action: DAG_PROPOSER_ACTION_SKIP,
+            reason_code: DAG_PROPOSER_REASON_PACKED_TRANSACTIONS_EMPTY,
+            update_retry_state: true,
+            next_last_propose_level: input.proposal_level,
+            next_retry_count: 0,
+        };
+    }
+
+    DagProposerPostPackPlan {
+        action: DAG_PROPOSER_ACTION_CONTINUE,
+        reason_code: DAG_PROPOSER_REASON_OK,
+        update_retry_state: false,
+        next_last_propose_level: input.proposal_level,
+        next_retry_count: 0,
+    }
 }
 
 /// Plans the DAG proposer attempt up to local VRF/VDF probing.
@@ -4894,6 +4949,35 @@ mod tests {
         assert_eq!(plan.action, DAG_PROPOSER_ACTION_SKIP);
         assert_eq!(plan.reason_code, DAG_PROPOSER_REASON_TRANSACTION_POOL_EMPTY);
         assert!(plan.vrf_input.is_empty());
+    }
+
+    #[test]
+    fn dag_proposer_post_pack_resets_retry_state_for_empty_pack() {
+        let plan = plan_dag_proposer_post_pack(DagProposerPostPackInput {
+            proposal_level: 42,
+            packed_transaction_count: 0,
+        });
+
+        assert_eq!(plan.action, DAG_PROPOSER_ACTION_SKIP);
+        assert_eq!(
+            plan.reason_code,
+            DAG_PROPOSER_REASON_PACKED_TRANSACTIONS_EMPTY
+        );
+        assert!(plan.update_retry_state);
+        assert_eq!(plan.next_last_propose_level, 42);
+        assert_eq!(plan.next_retry_count, 0);
+    }
+
+    #[test]
+    fn dag_proposer_post_pack_continues_for_non_empty_pack() {
+        let plan = plan_dag_proposer_post_pack(DagProposerPostPackInput {
+            proposal_level: 42,
+            packed_transaction_count: 2,
+        });
+
+        assert_eq!(plan.action, DAG_PROPOSER_ACTION_CONTINUE);
+        assert_eq!(plan.reason_code, DAG_PROPOSER_REASON_OK);
+        assert!(!plan.update_retry_state);
     }
 
     #[test]
