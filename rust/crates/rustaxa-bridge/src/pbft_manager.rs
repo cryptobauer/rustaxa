@@ -7,6 +7,10 @@
 
 use crate::ffi::rustaxa_ffi::{
     PbftFinalizationHash as FfiPbftFinalizationHash,
+    PbftFinalizationResumePlan as FfiPbftFinalizationResumePlan,
+    PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
+    PbftFinalizationStorageWriteStage as FfiPbftFinalizationStorageWriteStage,
+    PbftFinalizedPeriodApplyResult as FfiPbftFinalizedPeriodApplyResult,
     PbftManagerBlockValidationFact as FfiPbftManagerBlockValidationFact,
     PbftManagerBlockValidationPlan as FfiPbftManagerBlockValidationPlan,
     PbftManagerCandidateAdmissionFact as FfiPbftManagerCandidateAdmissionFact,
@@ -25,9 +29,16 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerTransitionPlan as FfiPbftManagerTransitionPlan,
     PbftManagerTransitionRuntimeApplyResult as FfiPbftManagerTransitionRuntimeApplyResult,
     PbftManagerTransitionStorageResult as FfiPbftManagerTransitionStorageResult,
+    PeriodLambda as FfiPeriodLambda,
 };
 use crate::ffi::{BridgePbftManagerRuntime, BridgePbftManagerRuntimeSession, BridgeStorage};
 use anyhow::anyhow;
+use rustaxa_consensus::pbft_finalize::{
+    apply_pbft_finalization_storage_writes as apply_domain_pbft_finalization_storage_writes,
+    inspect_pbft_finalization_resume as inspect_domain_pbft_finalization_resume,
+    load_pbft_finalization_last_period_lambda as load_domain_pbft_finalization_last_period_lambda,
+    PbftFinalizationStorageWriteIntent,
+};
 use rustaxa_consensus::pbft_manager::{
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
     apply_executed_block_reset_storage, apply_next_voted_status_storage,
@@ -347,6 +358,94 @@ pub fn pbft_manager_runtime_apply_next_voted_status(
     apply_next_voted_status_storage(runtime.storage.as_ref(), status)?;
     runtime.state.apply_committed_next_voted_status(status);
     Ok(())
+}
+
+/// Loads the latest persisted dynamic lambda through PBFT-manager runtime storage.
+///
+/// Inputs:
+/// - `runtime`: long-lived PBFT manager runtime with its Rust storage handle.
+/// - `period`: upper-bound period for the closest-at-or-before lambda lookup.
+///
+/// Outputs:
+/// - `PeriodLambda { found: true, value }` when a prior persisted lambda exists.
+/// - `PeriodLambda { found: false, value: 0 }` when no row exists.
+///
+/// Invariants and edge behavior:
+/// - This wrapper exists only to keep PBFT manager finalization paths on the
+///   runtime-owned storage handle; it does not change dynamic-lambda planning.
+pub fn pbft_manager_runtime_load_finalization_last_period_lambda(
+    runtime: &BridgePbftManagerRuntime,
+    period: u64,
+) -> anyhow::Result<FfiPeriodLambda> {
+    let lookup =
+        load_domain_pbft_finalization_last_period_lambda(runtime.storage.as_ref(), period)?;
+    Ok(FfiPeriodLambda {
+        found: lookup.found,
+        value: lookup.value,
+    })
+}
+
+/// Inspects duplicate PBFT finalization progress through runtime-owned storage.
+///
+/// Inputs:
+/// - `runtime`: long-lived PBFT manager runtime with its Rust storage handle.
+/// - `write_set`: expected finalized-period storage intent for the duplicate block.
+/// - `final_chain_last_block`: C++ FinalChain durable height, which Rust
+///   consensus storage cannot infer.
+///
+/// Outputs:
+/// - A bridge-safe resume classification describing which durable stages are
+///   complete and which runtime replay actions remain.
+///
+/// Invariants and edge behavior:
+/// - FinalChain execution remains a typed runtime action owned by C++ for now.
+/// - Storage conflicts are reported by the Rust resume inspector and are never
+///   repaired by this wrapper.
+pub fn pbft_manager_runtime_inspect_finalization_resume(
+    runtime: &BridgePbftManagerRuntime,
+    write_set: &FfiPbftFinalizationStorageWritePlan,
+    final_chain_last_block: u64,
+) -> anyhow::Result<FfiPbftFinalizationResumePlan> {
+    let write_set: PbftFinalizationStorageWriteIntent = write_set.into();
+    inspect_domain_pbft_finalization_resume(
+        runtime.storage.as_ref(),
+        &write_set,
+        final_chain_last_block,
+    )
+    .map(Into::into)
+}
+
+/// Applies PBFT finalization storage stages through runtime-owned storage.
+///
+/// Inputs:
+/// - `runtime`: long-lived PBFT manager runtime with its Rust storage handle.
+/// - `write_set`: accepted PBFT finalization storage intent from the Rust planner.
+/// - `stages`: ordered persistence stages to append to one Rust storage batch.
+/// - `sync`: whether the storage commit should use synchronous write options.
+///
+/// Outputs:
+/// - The combined finalized-period apply result from Rust consensus storage.
+///
+/// Invariants and edge behavior:
+/// - Batch creation, stage append, and commit are owned by Rust storage.
+/// - Empty stage lists and storage conflicts are rejected by the existing
+///   finalization storage helper without C++ batch participation.
+pub fn pbft_manager_runtime_apply_finalization_storage_writes(
+    runtime: &BridgePbftManagerRuntime,
+    write_set: &FfiPbftFinalizationStorageWritePlan,
+    stages: Vec<FfiPbftFinalizationStorageWriteStage>,
+    sync: bool,
+) -> anyhow::Result<FfiPbftFinalizedPeriodApplyResult> {
+    let write_set: PbftFinalizationStorageWriteIntent = write_set.into();
+    let stages = stages.into_iter().map(Into::into).collect();
+    Ok(crate::pbft_finalize::apply_result_from_domain(
+        apply_domain_pbft_finalization_storage_writes(
+            runtime.storage.as_ref(),
+            &write_set,
+            stages,
+            sync,
+        )?,
+    ))
 }
 
 /// Creates an owned PBFT manager runtime session from one daemon-tick fact bundle.
@@ -1350,6 +1449,36 @@ mod tests {
                 err.to_string(),
                 "PBFT_MANAGER_NEXT_VOTED_STATUS_UNSUPPORTED"
             );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_runtime_loads_finalization_lambda_from_owned_storage() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_finalization_lambda");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            storage
+                .save_pbft_mgr_field(2, 1_500)
+                .expect("lambda seed should persist");
+            storage
+                .save_period_lambda(10, 1_234)
+                .expect("period lambda should persist");
+            let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
+                .expect("runtime should restore");
+
+            let lookup = pbft_manager_runtime_load_finalization_last_period_lambda(&runtime, 11)
+                .expect("runtime lambda lookup should run");
+            let missing = pbft_manager_runtime_load_finalization_last_period_lambda(&runtime, 1)
+                .expect("runtime missing lambda lookup should run");
+
+            assert!(lookup.found);
+            assert_eq!(lookup.value, 1_234);
+            assert!(!missing.found);
+            assert_eq!(missing.value, 0);
         }
 
         let _ = fs::remove_dir_all(temp_dir);

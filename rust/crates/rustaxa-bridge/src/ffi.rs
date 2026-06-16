@@ -4005,6 +4005,21 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgePbftManagerRuntime,
             status: u8,
         ) -> Result<()>;
+        pub fn pbft_manager_runtime_load_finalization_last_period_lambda(
+            runtime: &BridgePbftManagerRuntime,
+            period: u64,
+        ) -> Result<PeriodLambda>;
+        pub fn pbft_manager_runtime_inspect_finalization_resume(
+            runtime: &BridgePbftManagerRuntime,
+            write_set: &PbftFinalizationStorageWritePlan,
+            final_chain_last_block: u64,
+        ) -> Result<PbftFinalizationResumePlan>;
+        pub fn pbft_manager_runtime_apply_finalization_storage_writes(
+            runtime: &BridgePbftManagerRuntime,
+            write_set: &PbftFinalizationStorageWritePlan,
+            stages: Vec<PbftFinalizationStorageWriteStage>,
+            sync: bool,
+        ) -> Result<PbftFinalizedPeriodApplyResult>;
         type BridgePbftManagerRuntimeSession;
         pub fn create_pbft_manager_runtime_session(
             fact: PbftManagerRuntimeTickFact,

@@ -1189,6 +1189,10 @@ Completed sub-slices:
   `pbft_manager_runtime_apply_next_voted_status()`, which persists through the runtime-owned Rust storage handle and
   advances the Rust runtime snapshot after the storage write commits. The redundant standalone
   `apply_pbft_manager_next_voted_status(storage, ...)` bridge entry point was removed.
+- finalization storage helpers: dynamic-lambda lookup, duplicate-finalization resume inspection, and all staged
+  finalized-period storage writes now have PBFT-manager-runtime wrapper entry points. The PBFT manager overlay uses those
+  wrappers for the finalization path, so finalization storage operations no longer take `db_->rustStorage()` at each
+  operation site.
 
 Keep temporarily:
 
@@ -1224,6 +1228,15 @@ Validation notes:
   admission reported missing Rust FinalChain DPoS snapshots for later blocks, and the process entered a repeated PBFT sync
   loop at synced period 84 before being terminated. This is the same integration boundary tracked for the later
   FinalChain/EVM slices, not a new next-voted-status storage issue.
+- Finalization runtime-storage sub-slice passed `cargo fmt --manifest-path rust/Cargo.toml --all --check`,
+  `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pbft_manager`,
+  `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pbft_finalize`,
+  `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_manager`,
+  `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_finalize`,
+  `cmake --build /build --target pbft_manager_test --parallel 12`,
+  `cmake --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
+  `scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and
+  `git diff --check`.
 
 ## Slice 21: FinalChain Publication And Status Write Boundary
 

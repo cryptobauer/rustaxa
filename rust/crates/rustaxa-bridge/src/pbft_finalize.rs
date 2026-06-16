@@ -158,7 +158,7 @@ impl From<FfiPbftFinalizationStorageWriteStage> for PbftFinalizationStorageWrite
     }
 }
 
-fn apply_result_from_domain(
+pub(crate) fn apply_result_from_domain(
     value: PbftFinalizedPeriodApplyResult,
 ) -> FfiPbftFinalizedPeriodApplyResult {
     FfiPbftFinalizedPeriodApplyResult {
