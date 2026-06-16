@@ -3381,12 +3381,6 @@ pub mod rustaxa_ffi {
         gas_estimation: u64,
     }
 
-    /// Rust producer-side tip selection result.
-    struct DagProposerTipSelection {
-        selected: Vec<DagHash>,
-        skipped_missing: u64,
-    }
-
     /// C++-originated DAG block construction facts for Rust proposer planning.
     struct DagProposerBlockConstructionInput {
         frontier_tips: Vec<DagProposerTipCandidate>,
@@ -3936,11 +3930,6 @@ pub mod rustaxa_ffi {
         pub fn dag_proposer_check_eligibility(
             input: DagProposerEligibilityInput,
         ) -> DagProposerEligibilityDecision;
-        pub fn dag_proposer_select_tips(
-            candidates: Vec<DagProposerTipCandidate>,
-            gas_limit: u64,
-            max_tips: u16,
-        ) -> DagProposerTipSelection;
         pub fn dag_proposer_plan_block_construction(
             input: DagProposerBlockConstructionInput,
         ) -> DagProposerBlockConstructionPlan;

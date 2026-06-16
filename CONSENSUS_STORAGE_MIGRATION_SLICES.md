@@ -1137,6 +1137,19 @@ CONSENSUS_STORAGE_MIGRATION_SLICES.md`, `cmake --build /build --target dag_shim_
 `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
 `scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
 
+Validation note: the DAG proposer bridge cleanup removes the now-unused standalone
+`dag_proposer_select_tips` CXX bridge API and `DagProposerTipSelection` DTO. Tip-selection policy stays in
+`rustaxa-consensus::dag` and is now exposed to C++ only through the fuller `dag_proposer_plan_block_construction`
+surface that owns gas accumulation, pruning, selected tips, and missing-tip counting together. It passes `rg -n
+"DagProposerTipSelection|dag_proposer_select_tips|plan_dag_proposer_tip_selection" rust/crates/rustaxa-bridge/src
+rust/crates/rustaxa-consensus/src libraries/core_libs/consensus/shims/dag_block_proposer_shim
+CONSENSUS_STORAGE_MIGRATION_SLICES.md`, `cargo fmt --manifest-path rust/Cargo.toml --all --check`, `cargo test
+--manifest-path rust/Cargo.toml -p rustaxa-bridge dag_proposer`, `cargo test --manifest-path rust/Cargo.toml -p
+rustaxa-consensus dag_proposer`, `cmake --build /build --target rust_storage_tests --parallel 12`,
+`/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
+`scripts/rewrite_storage_boundary_guard.sh`, `cmake --build /build --target dag_shim_test --parallel 12`,
+`/build/bin/dag_shim_test`, and `git diff --check`.
+
 ## Slice 18: Transaction Account And Finalized Fact Port
 
 Goal: complete the TransactionManager account/finalized fact boundary so transaction queue admission, packing,
@@ -1569,8 +1582,8 @@ Audit result:
   - PBFT chain, VoteManager, and TransactionManager operation-level Rust storage handle extraction.
 - Remaining closure blockers:
   - Slice 17: DAG proposer/verification still needs a full proposal-fact DTO/runtime for transaction selection,
-    gas-estimation, sortition params, and DAG block materialization boundaries after direct authorization and finalized
-    height calls were moved.
+    gas-estimation, tip metadata, and DAG block materialization boundaries after direct authorization, finalized-height,
+    sortition-param, and standalone tip-selection bridge surfaces were moved or retired.
   - Slice 18 is closed for TransactionManager-owned account/finalized routing; any remaining account snapshot mismatch is
     now tracked under Slice 21's FinalChain publication boundary.
   - Slice 21: FinalChain publication still owns only part of the account/DPoS snapshot and execution-status surface; the

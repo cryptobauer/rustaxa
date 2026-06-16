@@ -7,14 +7,13 @@ use crate::ffi::rustaxa_ffi::{
     DagManagerRuntimeSyncSnapshot, DagManagerSnapshot, DagOrder, DagPersistenceCounters,
     DagPivotTipsValidation, DagProposerBlockConstructionInput, DagProposerBlockConstructionPlan,
     DagProposerEligibilityDecision, DagProposerEligibilityInput, DagProposerTipCandidate,
-    DagProposerTipSelection, DagReferenceMetadata, DagSyncBlockRlp, DagTransactionHash,
-    DagTransactionQueryPlan, DagTransactionRlpLookup, DagVerifyAuthorizationInput,
-    DagVerifyAuthorizationResult, DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock,
-    DagVerifyPrecheckResult, DagVerifyTransactionAvailabilityInput,
-    DagVerifyTransactionAvailabilityResult, DagVerifyVdfDposDecision, DagVerifyVdfDposFacts,
-    DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput,
-    DagVerifyVdfSortitionInput, DagVerifyVdfSortitionResult, HashLookup, PeriodLookup,
-    SortitionRuntimeParams,
+    DagReferenceMetadata, DagSyncBlockRlp, DagTransactionHash, DagTransactionQueryPlan,
+    DagTransactionRlpLookup, DagVerifyAuthorizationInput, DagVerifyAuthorizationResult,
+    DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
+    DagVerifyTransactionAvailabilityInput, DagVerifyTransactionAvailabilityResult,
+    DagVerifyVdfDposDecision, DagVerifyVdfDposFacts, DagVerifyVdfPrepareInput,
+    DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
+    DagVerifyVdfSortitionResult, HashLookup, PeriodLookup, SortitionRuntimeParams,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
 use anyhow::{ensure, Context, Result};
@@ -27,9 +26,8 @@ use rustaxa_consensus::dag::{
     dag_block_exists_in_storage, dag_persistence_counters_from_storage,
     decide_dag_verify_vdf_dpos_authorization, derive_frontier, ensure_proposal_period_mapping,
     load_dag_block_from_storage, period_block_hash_from_storage,
-    plan_dag_proposer_block_construction, plan_dag_proposer_tip_selection,
-    plan_dag_verify_transaction_query, plan_expired_transaction_cleanup,
-    plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
+    plan_dag_proposer_block_construction, plan_dag_verify_transaction_query,
+    plan_expired_transaction_cleanup, plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
     proposal_period_for_level_from_storage, save_dag_block_to_storage,
     validate_dag_verify_authorization, validate_dag_verify_gas,
     validate_dag_verify_transaction_availability, validate_pivot_tips_metadata,
@@ -1194,38 +1192,6 @@ pub fn dag_proposer_check_eligibility(
         input.authorization_facts.sender_eligible_vote_count,
         input.authorization_facts.vdf_sortition_max_vote_count,
     )
-}
-
-/// Selects DAG block proposer tips from caller-provided tip metadata.
-///
-/// C++ owns live `DagBlock` lookup and passes flat candidate records. Rust owns
-/// deterministic ordering and gas-limit policy:
-/// - missing candidates are skipped and counted
-/// - found candidates from unique proposers are considered before duplicate
-///   proposer candidates
-/// - each group is ordered by descending level with stable input-order ties
-/// - selection stops before exceeding `gas_limit` or `max_tips`
-pub fn dag_proposer_select_tips(
-    candidates: Vec<DagProposerTipCandidate>,
-    gas_limit: u64,
-    max_tips: u16,
-) -> DagProposerTipSelection {
-    let selection = plan_dag_proposer_tip_selection(
-        candidates
-            .into_iter()
-            .map(to_domain_dag_proposer_tip_candidate)
-            .collect(),
-        gas_limit,
-        max_tips,
-    );
-    DagProposerTipSelection {
-        selected: selection
-            .selected
-            .into_iter()
-            .map(|hash| DagHash { hash: hash.0 })
-            .collect(),
-        skipped_missing: selection.skipped_missing,
-    }
 }
 
 /// Plans DAG block construction through the Rust consensus domain.
@@ -2947,56 +2913,6 @@ mod tests {
             unavailable.reason_code,
             DAG_PROPOSER_REASON_DPOS_UNAVAILABLE
         );
-    }
-
-    #[test]
-    fn dag_proposer_tip_selection_skips_missing_and_prefers_unique_higher_levels() {
-        let candidates = vec![
-            DagProposerTipCandidate {
-                hash: [0x01; 32],
-                found: true,
-                sender: [0xA1; 20],
-                level: 1,
-                gas_estimation: 100,
-            },
-            DagProposerTipCandidate {
-                hash: [0x02; 32],
-                found: false,
-                sender: [0; 20],
-                level: 0,
-                gas_estimation: 0,
-            },
-            DagProposerTipCandidate {
-                hash: [0x03; 32],
-                found: true,
-                sender: [0xB1; 20],
-                level: 2,
-                gas_estimation: 100,
-            },
-            DagProposerTipCandidate {
-                hash: [0x04; 32],
-                found: true,
-                sender: [0xB1; 20],
-                level: 3,
-                gas_estimation: 100,
-            },
-            DagProposerTipCandidate {
-                hash: [0x05; 32],
-                found: true,
-                sender: [0xC1; 20],
-                level: 1,
-                gas_estimation: 100,
-            },
-        ];
-
-        let selection = dag_proposer_select_tips(candidates, 250, 10);
-        assert_eq!(selection.skipped_missing, 1);
-        let selected = selection
-            .selected
-            .into_iter()
-            .map(|hash| hash.hash)
-            .collect::<Vec<_>>();
-        assert_eq!(selected, vec![[0x01; 32], [0x05; 32]]);
     }
 
     #[test]
