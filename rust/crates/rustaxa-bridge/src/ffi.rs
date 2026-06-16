@@ -4009,6 +4009,11 @@ pub mod rustaxa_ffi {
         pub fn pbft_manager_runtime_cert_voted_block_in_round(
             runtime: &BridgePbftManagerRuntime,
         ) -> Result<Vec<u8>>;
+        pub fn pbft_manager_runtime_save_cert_voted_block_in_round(
+            runtime: &BridgePbftManagerRuntime,
+            round: u32,
+            block_rlp: Vec<u8>,
+        ) -> Result<()>;
         pub fn pbft_manager_runtime_apply_transition_storage_write(
             runtime: &mut BridgePbftManagerRuntime,
             plan: PbftManagerTransitionPlan,

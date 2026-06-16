@@ -54,17 +54,18 @@ use rustaxa_consensus::pbft_manager::{
     plan_pbft_manager_leader_candidates as plan_domain_pbft_manager_leader_candidates,
     plan_pbft_manager_state_action as plan_domain_pbft_manager_state_action,
     plan_pbft_manager_transition as plan_domain_pbft_manager_transition,
-    report_pbft_manager_runtime_action, PbftManagerBlockValidationFact,
-    PbftManagerBlockValidationFactStatus, PbftManagerBlockValidationPlan,
-    PbftManagerCandidateAdmissionFact, PbftManagerCandidateAdmissionPlan,
-    PbftManagerCandidateAdmissionValidationStatus, PbftManagerLeaderBlockValidationStatus,
-    PbftManagerLeaderCandidateInputFact, PbftManagerLeaderCandidatePlan,
-    PbftManagerLeaderValidBlockCommand, PbftManagerRuntimeAction, PbftManagerRuntimeActionReport,
-    PbftManagerRuntimeActionResultCode, PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot,
-    PbftManagerRuntimeStateCode, PbftManagerRuntimeTickFact, PbftManagerStateActionFact,
-    PbftManagerStateActionPlan, PbftManagerStorageStartupFact, PbftManagerTransitionFact,
-    PbftManagerTransitionKind, PbftManagerTransitionPlan, PbftManagerTransitionStatus,
-    PbftManagerTransitionStorageResult, PbftManagerTransitionStorageStatus,
+    report_pbft_manager_runtime_action, save_cert_voted_block_in_round_storage,
+    PbftManagerBlockValidationFact, PbftManagerBlockValidationFactStatus,
+    PbftManagerBlockValidationPlan, PbftManagerCandidateAdmissionFact,
+    PbftManagerCandidateAdmissionPlan, PbftManagerCandidateAdmissionValidationStatus,
+    PbftManagerLeaderBlockValidationStatus, PbftManagerLeaderCandidateInputFact,
+    PbftManagerLeaderCandidatePlan, PbftManagerLeaderValidBlockCommand, PbftManagerRuntimeAction,
+    PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
+    PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot, PbftManagerRuntimeStateCode,
+    PbftManagerRuntimeTickFact, PbftManagerStateActionFact, PbftManagerStateActionPlan,
+    PbftManagerStorageStartupFact, PbftManagerTransitionFact, PbftManagerTransitionKind,
+    PbftManagerTransitionPlan, PbftManagerTransitionStatus, PbftManagerTransitionStorageResult,
+    PbftManagerTransitionStorageStatus,
 };
 
 const RUNTIME_STATUS_ACTIVE: u8 = 0;
@@ -273,6 +274,29 @@ pub fn pbft_manager_runtime_cert_voted_block_in_round(
         .pbft()
         .cert_voted_block_in_round_rlp()?
         .unwrap_or_default())
+}
+
+/// Persists the latest cert-voted PBFT block through runtime-owned storage.
+///
+/// Inputs:
+/// - `runtime`: long-lived PBFT manager runtime created from Rust storage.
+/// - `round`: PBFT round that produced the cert vote.
+/// - `block_rlp`: canonical signed PBFT block RLP payload.
+///
+/// Outputs:
+/// - Returns success after the legacy cert-voted-block recovery row is written.
+///
+/// Invariants and edge behavior:
+/// - The bridge only adapts CXX-safe bytes and the scalar round; row encoding
+///   and validation live in `rustaxa-consensus`.
+/// - C++ must update its live `cert_voted_block_for_round_` sidecar only after
+///   this call succeeds.
+pub fn pbft_manager_runtime_save_cert_voted_block_in_round(
+    runtime: &BridgePbftManagerRuntime,
+    round: u32,
+    block_rlp: Vec<u8>,
+) -> anyhow::Result<()> {
+    save_cert_voted_block_in_round_storage(runtime.storage.as_ref(), u64::from(round), &block_rlp)
 }
 
 fn transition_runtime_apply_result(
@@ -1709,12 +1733,26 @@ mod tests {
                 .expect("runtime should restore");
             let runtime_payload = pbft_manager_runtime_cert_voted_block_in_round(&runtime)
                 .expect("runtime-owned storage read should succeed");
-
             assert_eq!(
                 runtime_payload,
                 storage
                     .get_cert_voted_block_in_round()
                     .expect("compatibility storage view should load")
+            );
+
+            pbft_manager_runtime_save_cert_voted_block_in_round(&runtime, 4, vec![0xC0])
+                .expect("runtime-owned storage write should succeed");
+            let rewritten_payload = pbft_manager_runtime_cert_voted_block_in_round(&runtime)
+                .expect("rewritten cert-voted block should load");
+            let err = pbft_manager_runtime_save_cert_voted_block_in_round(&runtime, 5, Vec::new())
+                .expect_err("empty cert-voted block payload should reject");
+
+            let rewritten_rlp = rlp::Rlp::new(&rewritten_payload);
+            assert_eq!(rewritten_rlp.at(0).unwrap().as_val::<u64>().unwrap(), 4);
+            assert_eq!(rewritten_rlp.at(1).unwrap().as_raw(), &[0xC0]);
+            assert_eq!(
+                err.to_string(),
+                "PBFT_MANAGER_CERT_VOTED_BLOCK_EMPTY_PAYLOAD"
             );
         }
 

@@ -2351,6 +2351,35 @@ pub fn apply_pbft_manager_cursor_field_storage(
     }
 }
 
+/// Persists the PBFT manager's latest cert-voted block through Rust storage.
+///
+/// Inputs:
+/// - `storage`: shared Rust storage handle owned by the PBFT manager runtime.
+/// - `round`: PBFT round that produced the cert vote.
+/// - `block_rlp`: canonical signed PBFT block RLP payload.
+///
+/// Outputs:
+/// - Stores the legacy `[round, block_rlp]` row in
+///   `cert_voted_block_in_round` and returns after the write completes.
+///
+/// Invariants and edge behavior:
+/// - Empty block payloads are rejected before storage writes because restart
+///   recovery cannot materialize a PBFT block from an empty sidecar.
+/// - The row is overwritten on each successful cert vote, matching legacy
+///   RocksDB put semantics.
+pub fn save_cert_voted_block_in_round_storage(
+    storage: &Storage,
+    round: u64,
+    block_rlp: &[u8],
+) -> Result<()> {
+    if block_rlp.is_empty() {
+        return Err(anyhow!("PBFT_MANAGER_CERT_VOTED_BLOCK_EMPTY_PAYLOAD"));
+    }
+    storage
+        .pbft()
+        .write_cert_voted_block_in_round(round, block_rlp)
+}
+
 /// Loads one finalized period needed by the PBFT manager startup replay from
 /// native Rust storage.
 ///
@@ -4367,6 +4396,36 @@ mod tests {
             assert!(
                 err.to_string()
                     .contains("unsupported PBFT manager cursor field")
+            );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn cert_voted_block_storage_write_persists_legacy_payload() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_manager_cert_voted_write");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+
+            save_cert_voted_block_in_round_storage(&storage, 5, &[0xC0])
+                .expect("cert-voted block should persist");
+            let err = save_cert_voted_block_in_round_storage(&storage, 6, &[])
+                .expect_err("empty PBFT block payload should reject");
+
+            let payload = storage
+                .pbft()
+                .cert_voted_block_in_round_rlp()
+                .expect("cert-voted block should load")
+                .expect("cert-voted block should exist");
+            let rlp = rlp::Rlp::new(&payload);
+            assert_eq!(rlp.item_count().unwrap(), 2);
+            assert_eq!(rlp.at(0).unwrap().as_val::<u64>().unwrap(), 5);
+            assert_eq!(rlp.at(1).unwrap().as_raw(), &[0xC0]);
+            assert_eq!(
+                err.to_string(),
+                "PBFT_MANAGER_CERT_VOTED_BLOCK_EMPTY_PAYLOAD"
             );
         }
 

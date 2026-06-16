@@ -1484,29 +1484,30 @@ overlay updates `round_` / `step_` only after the Rust storage write succeeds. D
 intentionally rejected by this cursor API because that state remains owned by the finalization/dynamic-lambda storage
 paths. DAG block period lookup and PBFT block existence checks now also route through PBFT-manager runtime helpers backed
 by `rustaxa-consensus::dag` and `rustaxa-consensus::pbft_chain`, so the overlay no longer calls
-`db_->getDagBlockPeriod` or `db_->pbftBlockInDb`.
+`db_->getDagBlockPeriod` or `db_->pbftBlockInDb`. Cert-voted-block persistence now writes through a PBFT-manager runtime
+helper backed by `rustaxa-consensus::pbft_manager`; the overlay updates the live `cert_voted_block_for_round_` sidecar
+only after the Rust storage write succeeds.
 
 Move/remove:
 
-- route cert-voted-block persistence through the existing PBFT manager runtime/storage APIs or narrow new Rust runtime
-  helpers
 - completed: Round/Step persistence routes through the PBFT manager runtime's Rust storage handle instead of direct
   `db_->savePbftMgrField`
 - completed: DAG block period lookup routes through the PBFT manager runtime's Rust storage handle instead of direct
   `db_->getDagBlockPeriod`
 - completed: PBFT block existence checks route through the PBFT manager runtime's Rust storage handle instead of direct
   `db_->pbftBlockInDb`
+- completed: cert-voted-block persistence routes through the PBFT manager runtime's Rust storage handle instead of
+  direct `db_->saveCertVotedBlockInRound`
 - make proposed-block and own-pillar-vote startup restoration consume Rust-owned storage/runtime facts rather than
   temporary `DbStorage` materialization where Rust equivalents already exist
 - keep snapshot enable/disable as app lifecycle compatibility only if documented with an explicit marker and excluded
   from consensus storage closure
 
-Remaining PBFT manager overlay storage routes after the DAG/PBFT lookup sub-slice:
+Remaining PBFT manager overlay storage routes after the cert-voted-block persistence sub-slice:
 
 - runtime construction still extracts `db_->rustStorage()` as the Rust storage-handle owner
 - startup/proposed-block restoration still calls `db_->getProposedPbftBlocks`
 - startup pillar-vote restoration still calls `db_->getOwnPillarBlockVote`
-- cert-voted-block persistence still calls `db_->saveCertVotedBlockInRound`
 - snapshot enable/disable still calls `db_->enableSnapshots` / `db_->disableSnapshots` and needs lifecycle
   compatibility classification
 
@@ -1529,6 +1530,13 @@ Validation note: the DAG period / PBFT existence sub-slice passes `cargo fmt --m
 pbft_manager`, `cmake --build /build --target pbft_manager_test --parallel 12`, `cmake --build /build --target
 rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh
 --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
+
+Validation note: the cert-voted-block persistence sub-slice passes `cargo fmt --manifest-path rust/Cargo.toml --all
+--check`, `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`, `cargo test --manifest-path rust/Cargo.toml
+-p rustaxa-consensus pbft_manager`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_manager`,
+`cmake --build /build --target pbft_manager_test --parallel 12`, `cmake --build /build --target rust_storage_tests
+--parallel 12`, `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
+`scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
 
 ## Slice 25: Rewards Stats Storage Runtime Closure
 

@@ -2062,8 +2062,12 @@ void PbftManager::certifyBlock_() {
     return;
   }
 
+  if (!pbft_manager_runtime_.has_value()) {
+    throw std::runtime_error("PBFT manager Rust runtime must be initialized before persisting cert-voted block");
+  }
+  rustaxa::pbft_manager_runtime_save_cert_voted_block_in_round(*pbft_manager_runtime_.value(), round,
+                                                               toBridgeBytes(soft_voted_block->rlp(true)));
   cert_voted_block_for_round_ = soft_voted_block;
-  db_->saveCertVotedBlockInRound(round, soft_voted_block);
 }
 
 void PbftManager::firstFinish_() {
