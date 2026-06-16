@@ -383,8 +383,9 @@ FinalChain::FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullN
   delegation_delay_ = config.genesis.state.dpos.delegation_delay;
   block_gas_limit_ = config.genesis.pbft.gas_limit;
   max_levels_per_period_ = config.max_levels_per_period;
-  num_executed_dag_blk_ = db_->getStatusField(taraxa::StatusDbField::ExecutedBlkCount);
-  num_executed_trx_ = db_->getStatusField(taraxa::StatusDbField::ExecutedTrxCount);
+  auto execution_status = rust_final_chain_.value()->get_execution_status();
+  num_executed_dag_blk_ = execution_status.executed_dag_block_count;
+  num_executed_trx_ = execution_status.executed_transaction_count;
 }
 
 EthBlockNumber FinalChain::recoverExternalEvmPendingPublication() {

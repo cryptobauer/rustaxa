@@ -756,6 +756,16 @@ impl FinalChain {
         self.storage.transaction().count(period)
     }
 
+    /// Returns the persisted FinalChain execution counters from Rust storage.
+    ///
+    /// These counters are absolute values published with finalized-block
+    /// visibility. C++ shims may mirror them into temporary sidecar atomics for
+    /// legacy public API compatibility, but consensus storage ownership remains
+    /// in `rustaxa-storage`.
+    pub fn execution_status(&self) -> Result<FinalChainExecutionStatus, anyhow::Error> {
+        self.finalization_execution_status(0, 0)
+    }
+
     /// Returns the latest in-memory account view tracked by Rust finalization.
     pub fn account(&self, address: [u8; 20]) -> Result<Option<Account>, anyhow::Error> {
         let last_block = self.last_block_number()?;

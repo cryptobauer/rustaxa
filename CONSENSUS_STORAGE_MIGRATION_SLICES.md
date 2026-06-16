@@ -1258,9 +1258,10 @@ execution or `state_db` ownership.
 Status: partial. External-EVM FinalChain publication already commits the main header, receipt, transaction index,
 execution-counter, DPoS snapshot, rewards-stat, system-transaction hash, and pending-marker cleanup rows through
 `rustaxa-consensus::FinalChain` over `rustaxa-storage`. This sub-slice also moved the proposal-period DAG-level mapping
-row from the FinalChain C++ shim's post-publication `DbStorage` batch into the Rust publication plan and batch. Remaining
-work is still needed for the broader `getNumTransactionExecuted()`/DPoS/account snapshot mismatch class without violating
-the external-EVM boundary.
+row from the FinalChain C++ shim's post-publication `DbStorage` batch into the Rust publication plan and batch. The
+FinalChain shim also now hydrates its temporary executed DAG/transaction counter sidecars from a typed Rust FinalChain
+execution-status query instead of `DbStorage::getStatusField`. Remaining work is still needed for the broader
+`getNumTransactionExecuted()`/DPoS/account snapshot mismatch class without violating the external-EVM boundary.
 
 Current boundary:
 
@@ -1269,6 +1270,9 @@ Current boundary:
   batch, and audit.
 - Rust publication owns executed block/transaction counters, system transaction indexes, and final-chain publication
   rows around the C++ `StateAPI` execution adapter.
+- FinalChain shim constructor counter sidecars now read the persisted executed block/transaction counters through
+  `BridgeFinalChain::get_execution_status`, leaving those atomics as public API/live compatibility mirrors rather than
+  storage owners.
 - PBFT runtime failures currently reproduce execution-count mismatches (`111` vs `1111`) and missing DPoS snapshot
   publication; those are not storage-shim bugs but publication-boundary gaps.
 
@@ -1277,6 +1281,8 @@ Move:
 - completed for proposal-period mapping: define a Rust publication report/plan field that records the anchor-derived
   DAG-level mapping and commits it with final-chain indexes, executed counters, DPoS snapshot sidecars,
   system-transaction hashes, rewards stats, and pending-publication marker cleanup after C++ `StateAPI` reports success
+- completed for startup counter hydration: expose a Rust FinalChain execution-status query and use it to hydrate the C++
+  compatibility counters without `DbStorage::getStatusField`
 - remaining: extend publication ownership for account snapshot sidecars and the DPoS/account facts that still explain
   the broad PBFT runtime mismatches
 - keep C++ as the executor that produces receipts/state roots, but make Rust validate and commit the durable publication
@@ -1312,6 +1318,13 @@ Validation note: the proposal-period publication sub-slice passes `cargo fmt --m
 attempted and still fails before a clean summary: `FinalChainTest.coin_transfers` reports Rust-mode account balance
 mismatches and `FinalChainTest.nonce_test` segfaults. Treat those as the remaining FinalChain/EVM/account execution
 boundary tracked by this slice, not as a proposal-period publication storage regression.
+
+Validation note: the execution-status startup sub-slice passes `cargo fmt --manifest-path rust/Cargo.toml --all --check`,
+`cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`, `cargo test --manifest-path rust/Cargo.toml -p
+rustaxa-consensus final_chain`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge final_chain`, `cmake
+--build /build --target final_chain_test --parallel 12`, `cmake --build /build --target rust_storage_tests --parallel
+12`, `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
+`scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
 
 ## Slice 22: Network And Query Compatibility Shell Split
 

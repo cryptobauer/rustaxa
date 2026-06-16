@@ -966,6 +966,16 @@ impl BridgeFinalChain {
         self.0.transaction_count(period)
     }
 
+    pub fn get_execution_status(
+        self: &BridgeFinalChain,
+    ) -> Result<rustaxa_ffi::FinalChainExecutionStatus, anyhow::Error> {
+        let status = self.0.execution_status()?;
+        Ok(rustaxa_ffi::FinalChainExecutionStatus {
+            executed_dag_block_count: status.executed_dag_block_count,
+            executed_transaction_count: status.executed_transaction_count,
+        })
+    }
+
     /// Returns finalized block numbers whose Rust FinalChain bloom index
     /// contains the supplied query bloom over the inclusive block range.
     pub fn get_blocks_with_bloom(
@@ -2788,6 +2798,9 @@ mod tests {
         assert_eq!(report.block_hash, block_hash);
         assert!(report.error_code.is_empty());
         assert_eq!(final_chain.get_last_block_number().unwrap(), 1);
+        let execution_status = final_chain.get_execution_status().unwrap();
+        assert_eq!(execution_status.executed_dag_block_count, 0);
+        assert_eq!(execution_status.executed_transaction_count, 2);
         let complete_step = session
             .final_chain_execution_session_next()
             .expect("completed publication step should convert");

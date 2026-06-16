@@ -2264,6 +2264,11 @@ pub mod rustaxa_ffi {
         value: u64,
     }
 
+    struct FinalChainExecutionStatus {
+        executed_dag_block_count: u64,
+        executed_transaction_count: u64,
+    }
+
     /// One address whose PBFT-facing FinalChain DPoS facts should be collected.
     struct PbftFinalChainFactAddress {
         address: [u8; 20],
@@ -5422,6 +5427,7 @@ pub mod rustaxa_ffi {
             hash: &[u8; 32],
         ) -> Result<Vec<u8>>;
         pub fn get_transaction_count(self: &BridgeFinalChain, period: u64) -> Result<u64>;
+        pub fn get_execution_status(self: &BridgeFinalChain) -> Result<FinalChainExecutionStatus>;
         pub fn get_blocks_with_bloom(
             self: &BridgeFinalChain,
             bloom: &[u8; 256],
