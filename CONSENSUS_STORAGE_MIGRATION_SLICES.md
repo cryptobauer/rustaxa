@@ -2013,6 +2013,146 @@ rustaxa-bridge slashing`, `cmake --build /build --target slashing_manager_shim_t
 `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
 `scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
 
+## Boundary Replan After Slice 17 VDF Progress
+
+The Slice 17 re-audit after the post-pack, retry-reset, and VDF-progress sub-slices confirms that the remaining DAG
+proposal work is no longer blocked by missing proposal facts. The remaining blockers are ownership boundaries:
+
+- live transaction materialization and EVM gas estimation still run through the TransactionManager/FinalChain
+  compatibility shell
+- final signed `DagBlock` construction and `DagManager::addDagBlock` side effects still require C++ DAG block objects
+- FinalChain external-EVM publication still lacks either a complete account snapshot fact source or an explicit
+  crash-safe recovery contract that downstream PBFT consumers can use
+
+The next slices intentionally cross those boundaries in larger units. Do not add more single-field DAG proposal DTOs
+unless they are part of one of these owners.
+
+## Slice 28: DAG Proposal Transaction Payload Session
+
+Goal: move the DAG proposer transaction selection result from live C++ transaction objects toward Rust-owned canonical
+payload facts so the proposer can build its VDF message and block-intent data without materializing every transaction in
+C++ first.
+
+Move:
+
+- extend the TransactionManager proposal-packing session to return ordered transaction hashes and canonical transaction
+  payload bytes, not just live C++ sidecar selections
+- keep EVM gas estimation as an explicit adapter call that returns typed gas facts to Rust
+- let `rustaxa-consensus::dag` consume the ordered payload facts for VDF-message planning and block-intent inputs
+
+Keep temporarily:
+
+- C++ EVM gas estimation and account/state execution
+- public `Transaction` objects for API/network compatibility
+- transaction pool mutation and live sidecar cleanup until the transaction runtime owns those effects
+
+Done when:
+
+- DAG proposer VDF message and transaction hash list can be derived from Rust-returned proposal payload facts
+- C++ does not need to materialize proposal transactions before the VDF-message/block-intent planning stages
+- gas estimation remains the only live per-transaction C++ callback in the proposal path
+
+Validation:
+
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus dag transaction_manager`
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge dag transaction_manager`
+- `cmake --build /build --target transaction_manager_shim_test --parallel 12`
+- `cmake --build /build --target dag_shim_test --parallel 12`
+- `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+
+## Slice 29: DAG Block Intent And Add-Block Effects
+
+Goal: replace final DAG proposer C++ block assembly with a Rust DAG block intent that carries canonical block bytes,
+side-effect intents, and compatibility materialization data.
+
+Move:
+
+- move final proposer block assembly inputs into `rustaxa-consensus::dag`: frontier, selected transaction hashes,
+  gas facts, VDF payload, level, and signer facts
+- return a typed add-block effect that separates storage/state updates from network gossip and compatibility sidecars
+- keep `DagManager::addDagBlock` as the temporary executor of the returned effect only until the DAG manager runtime owns
+  live graph mutation and network-facing side effects
+
+Keep temporarily:
+
+- network/tarcap packet wrapping and gossip
+- C++ `DagBlock` materialization at API/network boundaries
+- any EVM-derived gas facts until Slice 28 removes the remaining proposal callback
+
+Done when:
+
+- the proposer no longer constructs the final signed `DagBlock` directly before asking Rust for the protocol outcome
+- Rust returns the canonical block intent and ordered side effects that C++ executes at the boundary
+- remaining C++ work is effect execution/materialization, not protocol decision or storage ownership
+
+Validation:
+
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus dag`
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge dag`
+- `cmake --build /build --target dag_shim_test --parallel 12 && /build/bin/dag_shim_test`
+- `cmake --build /build --target dag_test --parallel 12`
+- `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+
+## Slice 30: FinalChain Account Publication Contract
+
+Goal: unblock Slice 21 by defining the durable contract for account snapshot publication around the accepted external-EVM
+boundary without pretending touched accounts are a complete snapshot.
+
+Move:
+
+- choose one explicit contract: either the external executor supplies a complete account snapshot payload/root before
+  Rust publication, or Rust persists a crash-safe "account snapshot unavailable" publication marker that downstream
+  consensus consumers treat as an explicit unavailable fact
+- include the account-publication status in pending-publication markers, restart recovery, audit reports, and PBFT-facing
+  publication facts
+- keep DPoS snapshot publication and execution-counter publication in the same Rust storage session
+
+Keep temporarily:
+
+- arbitrary EVM execution, contract execution, receipts, bridge root/epoch reads, and `state_db` commit
+- public FinalChain query materialization through the compatibility shell
+
+Done when:
+
+- external-EVM publication has a restart-safe account-snapshot contract instead of an implicit missing row
+- PBFT and transaction consumers receive typed account-publication availability facts rather than failing through
+  scattered C++/FinalChain lookups
+- Slice 21 can classify remaining EVM work as execution/query compatibility, not consensus storage ownership
+
+Validation:
+
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus final_chain`
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge final_chain`
+- `cmake --build /build --target final_chain_test --parallel 12`
+- focused PBFT manager or network test that currently fails on account-snapshot availability, if it reaches the same
+  boundary after this contract lands
+- `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+
+## Slice 31: Slice 8/9 Final Closure Audit
+
+Goal: rerun the closure audit only after Slices 28-30 have landed, then mark Slice 8 and Slice 9 complete if no consensus
+runtime storage route remains outside documented compatibility shells.
+
+Move/remove:
+
+- rerun the `DbStorage`, `db_->`, `rustStorage`, direct FinalChain fact, and C++ batch searches across consensus shims
+- delete obsolete DAG proposal bridge DTOs, temporary materialization helpers, and stale tracker text made unused by the
+  DAG block-intent route
+- tighten the boundary guard if any old allowlist entry no longer has a legitimate compatibility category
+
+Done when:
+
+- Slices 8 and 9 can name exact residual compatibility categories and no longer list Slice 17 or Slice 21 blockers
+- the storage-boundary guard catches new consensus storage routing through C++ compatibility APIs
+- the audit result is committed with the final closure status
+
+Validation:
+
+- `make rewrite-validate-fast`
+- `scripts/rewrite_storage_boundary_guard.sh --self-test && scripts/rewrite_storage_boundary_guard.sh`
+- `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+- targeted DAG/FinalChain/PBFT builds for any helper deletion or guard tightening
+
 ## Stop Conditions
 
 Stop and re-plan before continuing a slice if:
