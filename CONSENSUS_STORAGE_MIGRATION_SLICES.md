@@ -1486,7 +1486,8 @@ paths. DAG block period lookup and PBFT block existence checks now also route th
 by `rustaxa-consensus::dag` and `rustaxa-consensus::pbft_chain`, so the overlay no longer calls
 `db_->getDagBlockPeriod` or `db_->pbftBlockInDb`. Cert-voted-block persistence now writes through a PBFT-manager runtime
 helper backed by `rustaxa-consensus::pbft_manager`; the overlay updates the live `cert_voted_block_for_round_` sidecar
-only after the Rust storage write succeeds.
+only after the Rust storage write succeeds. Own pillar vote rebroadcast now reads through the PBFT-manager runtime's
+Rust storage handle and materializes a temporary C++ `PillarVote` only for the existing network gossip boundary.
 
 Move/remove:
 
@@ -1498,16 +1499,18 @@ Move/remove:
   `db_->pbftBlockInDb`
 - completed: cert-voted-block persistence routes through the PBFT manager runtime's Rust storage handle instead of
   direct `db_->saveCertVotedBlockInRound`
-- make proposed-block and own-pillar-vote startup restoration consume Rust-owned storage/runtime facts rather than
-  temporary `DbStorage` materialization where Rust equivalents already exist
+- completed: own pillar vote rebroadcast reads through the PBFT manager runtime's Rust storage handle instead of direct
+  `db_->getOwnPillarBlockVote`
+- keep the non-Rust proposed-block startup restore branch as legacy-only while Rust mode uses
+  `proposed_blocks_.restoreFromStorage()`
 - keep snapshot enable/disable as app lifecycle compatibility only if documented with an explicit marker and excluded
   from consensus storage closure
 
-Remaining PBFT manager overlay storage routes after the cert-voted-block persistence sub-slice:
+Remaining PBFT manager overlay storage routes after the own pillar vote rebroadcast sub-slice:
 
 - runtime construction still extracts `db_->rustStorage()` as the Rust storage-handle owner
-- startup/proposed-block restoration still calls `db_->getProposedPbftBlocks`
-- startup pillar-vote restoration still calls `db_->getOwnPillarBlockVote`
+- non-Rust proposed-block restoration still calls `db_->getProposedPbftBlocks` in the `RUSTAXA_ENABLE_PROPOSED_BLOCKS`
+  fallback branch
 - snapshot enable/disable still calls `db_->enableSnapshots` / `db_->disableSnapshots` and needs lifecycle
   compatibility classification
 
@@ -1537,6 +1540,13 @@ Validation note: the cert-voted-block persistence sub-slice passes `cargo fmt --
 `cmake --build /build --target pbft_manager_test --parallel 12`, `cmake --build /build --target rust_storage_tests
 --parallel 12`, `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
 `scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
+
+Validation note: the own pillar vote rebroadcast sub-slice passes `cargo fmt --manifest-path rust/Cargo.toml --all
+--check`, `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`, `cargo test --manifest-path rust/Cargo.toml
+-p rustaxa-bridge pbft_manager`, `cmake --build /build --target pbft_manager_test --parallel 12`, `cmake --build
+/build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
+`scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff
+--check`.
 
 ## Slice 25: Rewards Stats Storage Runtime Closure
 

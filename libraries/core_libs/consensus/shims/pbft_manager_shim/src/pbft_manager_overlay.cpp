@@ -1531,7 +1531,10 @@ void PbftManager::broadcastVotes() {
     }
 
     // Broadcast own pillar vote
-    if (const auto &own_pillar_vote = db_->getOwnPillarBlockVote(); own_pillar_vote) {
+    const auto own_pillar_vote_rlp = rustaxa::pbft_manager_runtime_own_pillar_block_vote(*pbft_manager_runtime_.value());
+    if (!own_pillar_vote_rlp.empty()) {
+      const auto payload_bytes = dev::bytes(own_pillar_vote_rlp.begin(), own_pillar_vote_rlp.end());
+      const auto own_pillar_vote = std::make_shared<PillarVote>(dev::RLP(payload_bytes));
       net->gossipPillarBlockVote(own_pillar_vote, rebroadcast);
     }
   };

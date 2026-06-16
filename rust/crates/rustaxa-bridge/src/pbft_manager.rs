@@ -67,6 +67,7 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerTransitionPlan, PbftManagerTransitionStatus, PbftManagerTransitionStorageResult,
     PbftManagerTransitionStorageStatus,
 };
+use rustaxa_consensus::pillar_chain::load_own_pillar_block_vote_storage;
 
 const RUNTIME_STATUS_ACTIVE: u8 = 0;
 const RUNTIME_STATUS_COMPLETE: u8 = 1;
@@ -297,6 +298,26 @@ pub fn pbft_manager_runtime_save_cert_voted_block_in_round(
     block_rlp: Vec<u8>,
 ) -> anyhow::Result<()> {
     save_cert_voted_block_in_round_storage(runtime.storage.as_ref(), u64::from(round), &block_rlp)
+}
+
+/// Loads the local node's own pillar-block vote through PBFT-manager runtime storage.
+///
+/// Inputs:
+/// - `runtime`: long-lived PBFT manager runtime created from Rust storage.
+///
+/// Outputs:
+/// - Returns C++-decodable `PillarVote` RLP bytes, or empty bytes when no own
+///   pillar vote is stored.
+///
+/// Invariants and edge behavior:
+/// - The durable read is owned by `rustaxa-consensus::pillar_chain` over the
+///   PBFT manager runtime's storage handle.
+/// - C++ still materializes the temporary `PillarVote` sidecar for network
+///   gossip until pillar vote network payloads move to Rust.
+pub fn pbft_manager_runtime_own_pillar_block_vote(
+    runtime: &BridgePbftManagerRuntime,
+) -> anyhow::Result<Vec<u8>> {
+    load_own_pillar_block_vote_storage(runtime.storage.as_ref())
 }
 
 fn transition_runtime_apply_result(
@@ -1754,6 +1775,37 @@ mod tests {
                 err.to_string(),
                 "PBFT_MANAGER_CERT_VOTED_BLOCK_EMPTY_PAYLOAD"
             );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_runtime_reads_own_pillar_vote_from_owned_storage() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_own_pillar_vote");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            storage
+                .save_pbft_mgr_field(0, 1)
+                .expect("round seed should persist");
+            storage
+                .save_pbft_mgr_field(1, 1)
+                .expect("step seed should persist");
+            storage
+                .save_pbft_mgr_field(2, 1_500)
+                .expect("lambda seed should persist");
+            storage
+                .save_own_pillar_block_vote(vec![0xC0])
+                .expect("own pillar vote should persist");
+            let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
+                .expect("runtime should restore");
+
+            let vote_rlp = pbft_manager_runtime_own_pillar_block_vote(&runtime)
+                .expect("runtime-owned pillar vote should load");
+
+            assert_eq!(vote_rlp, vec![0xC0]);
         }
 
         let _ = fs::remove_dir_all(temp_dir);

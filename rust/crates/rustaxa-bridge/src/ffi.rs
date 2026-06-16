@@ -4014,6 +4014,9 @@ pub mod rustaxa_ffi {
             round: u32,
             block_rlp: Vec<u8>,
         ) -> Result<()>;
+        pub fn pbft_manager_runtime_own_pillar_block_vote(
+            runtime: &BridgePbftManagerRuntime,
+        ) -> Result<Vec<u8>>;
         pub fn pbft_manager_runtime_apply_transition_storage_write(
             runtime: &mut BridgePbftManagerRuntime,
             plan: PbftManagerTransitionPlan,
