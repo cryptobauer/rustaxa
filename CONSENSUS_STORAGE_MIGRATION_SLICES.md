@@ -1604,22 +1604,24 @@ rust_consensus_tests --parallel 12`, `/build/bin/rust_consensus_tests --gtest_fi
 Goal: collapse remaining operation-level `db_->rustStorage()` extraction in consensus shims into runtime construction or
 shim-owned Rust handles so C++ no longer passes storage handles through deterministic operation methods.
 
-Status: in progress. The PBFT chain sub-slice is complete: `BridgePbftChain` can now be
-constructed with an owned Rust storage handle, and PBFT block existence/load operations are runtime methods over that
-handle. The PBFT chain shim no longer passes `db_->rustStorage()` from `findPbftBlockInChain` or
-`getPbftBlockInChain`; its remaining storage handle extraction is constructor-time runtime ownership. The VoteManager
-sub-slice is also complete: the shim captures a Rust storage handle during construction and uses it for vote-progress
-persistence, own-vote save/clear, and finalization reward-vote reset instead of extracting `db_->rustStorage()` inside
-operation methods.
+Status: complete. `BridgePbftChain` can now be constructed with an owned Rust storage handle, and PBFT block
+existence/load operations are runtime methods over that handle. The PBFT chain shim no longer passes
+`db_->rustStorage()` from `findPbftBlockInChain` or `getPbftBlockInChain`; its remaining storage handle extraction is
+constructor-time runtime ownership. VoteManager captures a Rust storage handle during construction and uses it for
+vote-progress persistence, own-vote save/clear, and finalization reward-vote reset instead of extracting
+`db_->rustStorage()` inside operation methods. TransactionManager also captures a Rust storage handle during
+construction and uses that handle for DAG transaction persistence, bounded transaction views, finalized filtering,
+not-finalized verification, non-finalized recovery, and finalized-status persistence.
 
 Move/remove:
 
-- finish the TransactionManager operation handle cleanup already identified by Slice 18
+- completed: TransactionManager operation methods use a constructor-owned Rust storage handle instead of operation-site
+  `db_->rustStorage()`
 - completed: VoteManager vote progress, own-vote cleanup, and finalization reward-vote reset use a
   constructor-owned Rust storage handle instead of operation-site `db_->rustStorage()`
 - completed: PBFT chain block existence and PBFT block materialization now use runtime-owned storage
   methods instead of operation-site `db_->rustStorage()`
-- audit PBFT chain, gas-pricer, sortition, proposed-block, pillar-chain, DAG, and FinalChain shims for constructor-only
+- completed: PBFT chain, gas-pricer, sortition, proposed-block, pillar-chain, DAG, and FinalChain shims were audited for
   storage handle ownership versus operation-site extraction
 
 Done when:
@@ -1641,6 +1643,21 @@ Validation note: the VoteManager operation-handle sub-slice passes `cargo fmt --
 --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
 `scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff
 --check`.
+
+Validation note: the TransactionManager operation-handle sub-slice passes `cargo fmt --manifest-path rust/Cargo.toml
+--all --check`, `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`, `cmake --build /build --target
+transaction_manager_shim_test --parallel 12`, `/build/bin/transaction_manager_shim_test`, `cmake --build /build
+--target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
+`scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff
+--check`.
+
+Residual categories after Slice 26:
+
+- storage-shim `DbStorage::rustStorage()` accessors remain the compatibility shell internals that own the shared
+  `BridgeStorage`.
+- PBFT manager, PBFT chain, DAG manager, gas pricer, sortition, proposed blocks, pillar chain, rewards stats, FinalChain,
+  VoteManager, and TransactionManager only extract Rust storage handles during constructor/runtime setup or documented
+  startup restore; deterministic operation methods use runtime-owned or shim-owned Rust storage handles.
 
 ## Stop Conditions
 
