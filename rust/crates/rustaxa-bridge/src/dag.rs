@@ -7,14 +7,14 @@ use crate::ffi::rustaxa_ffi::{
     DagManagerRuntimeSyncSnapshot, DagManagerSnapshot, DagOrder, DagPersistenceCounters,
     DagPivotTipsValidation, DagProposerBlockConstructionInput, DagProposerBlockConstructionPlan,
     DagProposerEligibilityDecision, DagProposerEligibilityInput, DagProposerFrontierFacts,
-    DagProposerTipCandidate, DagReferenceMetadata, DagSyncBlockRlp, DagTransactionHash,
-    DagTransactionQueryPlan, DagTransactionRlpLookup, DagVerifyAuthorizationInput,
-    DagVerifyAuthorizationResult, DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock,
-    DagVerifyPrecheckResult, DagVerifyTransactionAvailabilityInput,
-    DagVerifyTransactionAvailabilityResult, DagVerifyVdfDposDecision, DagVerifyVdfDposFacts,
-    DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput,
-    DagVerifyVdfSortitionInput, DagVerifyVdfSortitionResult, HashLookup, PeriodLookup,
-    SortitionRuntimeParams,
+    DagProposerStorageBlockConstructionInput, DagProposerTipCandidate, DagReferenceMetadata,
+    DagSyncBlockRlp, DagTransactionHash, DagTransactionQueryPlan, DagTransactionRlpLookup,
+    DagVerifyAuthorizationInput, DagVerifyAuthorizationResult, DagVerifyGasInput,
+    DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
+    DagVerifyTransactionAvailabilityInput, DagVerifyTransactionAvailabilityResult,
+    DagVerifyVdfDposDecision, DagVerifyVdfDposFacts, DagVerifyVdfPrepareInput,
+    DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
+    DagVerifyVdfSortitionResult, HashLookup, PeriodLookup, SortitionRuntimeParams,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
 use anyhow::{ensure, Context, Result};
@@ -27,8 +27,9 @@ use rustaxa_consensus::dag::{
     dag_block_exists_in_storage, dag_persistence_counters_from_storage,
     decide_dag_verify_vdf_dpos_authorization, derive_frontier, ensure_proposal_period_mapping,
     load_dag_block_from_storage, period_block_hash_from_storage,
-    plan_dag_proposer_block_construction, plan_dag_verify_transaction_query,
-    plan_expired_transaction_cleanup, plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
+    plan_dag_proposer_block_construction, plan_dag_proposer_block_construction_from_storage,
+    plan_dag_verify_transaction_query, plan_expired_transaction_cleanup,
+    plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
     proposal_period_for_level_from_storage, save_dag_block_to_storage,
     validate_dag_verify_authorization, validate_dag_verify_gas,
     validate_dag_verify_transaction_availability, validate_pivot_tips_metadata,
@@ -39,6 +40,8 @@ use rustaxa_consensus::dag::{
     DagManagerFinalizationPlan as DomainDagManagerFinalizationPlan,
     DagManagerSnapshot as DomainDagManagerSnapshot, DagManagerState,
     DagProposerBlockConstructionInput as DomainDagProposerBlockConstructionInput,
+    DagProposerBlockConstructionPlan as DomainDagProposerBlockConstructionPlan,
+    DagProposerStorageBlockConstructionInput as DomainDagProposerStorageBlockConstructionInput,
     DagProposerTipCandidate as DomainDagProposerTipCandidate,
     DagReferenceMetadata as ReferenceMetadata, DagTipGas,
     DagVdfSortitionBlockInput as DomainDagVdfSortitionBlockInput,
@@ -812,6 +815,32 @@ impl BridgeDagManagerRuntime {
         )
     }
 
+    /// Plans DAG proposal block construction with tip metadata loaded from Rust storage.
+    ///
+    /// C++ supplies frontier-tip hashes and transaction gas estimates only. Rust owns stored-tip lookup, DAG sender
+    /// recovery, gas summation, tip-pruning decisions, and selected-tip ordering. The final C++ `DagBlock` object
+    /// materialization remains temporary until the broader proposal runtime moves.
+    pub fn dag_manager_runtime_plan_proposal_block_construction(
+        &self,
+        input: DagProposerStorageBlockConstructionInput,
+    ) -> Result<DagProposerBlockConstructionPlan> {
+        let plan = plan_dag_proposer_block_construction_from_storage(
+            self.storage.as_ref(),
+            DomainDagProposerStorageBlockConstructionInput {
+                frontier_tips: input
+                    .frontier_tips
+                    .into_iter()
+                    .map(|hash| H256::from(hash.hash))
+                    .collect(),
+                transaction_gas_estimations: input.transaction_gas_estimations,
+                pbft_gas_limit: input.pbft_gas_limit,
+                dag_gas_limit: input.dag_gas_limit,
+                max_tips: input.max_tips,
+            },
+        )?;
+        Ok(to_bridge_dag_proposer_block_construction_plan(plan))
+    }
+
     /// Ensures the proposal-period mapping exists for `level`.
     ///
     /// Returns true when a mapping write was required and false when the
@@ -1232,14 +1261,7 @@ pub fn dag_proposer_plan_block_construction(
         max_tips: input.max_tips,
     });
 
-    DagProposerBlockConstructionPlan {
-        selected_tips: plan
-            .selected_tips
-            .into_iter()
-            .map(|hash| DagHash { hash: hash.0 })
-            .collect(),
-        block_gas_estimation: plan.block_gas_estimation,
-    }
+    to_bridge_dag_proposer_block_construction_plan(plan)
 }
 
 fn to_domain_dag_proposer_tip_candidate(
@@ -1251,6 +1273,19 @@ fn to_domain_dag_proposer_tip_candidate(
         sender: candidate.sender,
         level: candidate.level,
         gas_estimation: candidate.gas_estimation,
+    }
+}
+
+fn to_bridge_dag_proposer_block_construction_plan(
+    plan: DomainDagProposerBlockConstructionPlan,
+) -> DagProposerBlockConstructionPlan {
+    DagProposerBlockConstructionPlan {
+        selected_tips: plan
+            .selected_tips
+            .into_iter()
+            .map(|hash| DagHash { hash: hash.0 })
+            .collect(),
+        block_gas_estimation: plan.block_gas_estimation,
     }
 }
 
@@ -1441,6 +1476,7 @@ mod tests {
     use super::*;
     use crate::ffi::rustaxa_ffi::DagDposAuthorizationFacts;
     use crate::storage::create_storage;
+    use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
     use rustaxa_consensus::dag;
     use rustaxa_vdf::prover::CancellationToken;
@@ -1472,6 +1508,36 @@ mod tests {
         block.append(&&[0u8; 65][..]);
         block.append(&123u64);
         block.out().to_vec()
+    }
+
+    fn signed_dag_block_rlp(seed: u8, level: u64, gas_estimation: u64) -> Vec<u8> {
+        let signing_key = SigningKey::from_slice(&[seed; 32]).expect("signing key");
+        let mut block = rustaxa_types::dag::DagBlock {
+            pivot: H256::from([1u8; 32]),
+            level,
+            timestamp: 123,
+            vdf: vec![1, 2, 3],
+            tips: vec![],
+            transactions: vec![H256::from([9u8; 32])],
+            signature: [0; 65],
+            gas_estimation,
+        };
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(block.signing_hash().as_bytes())
+            .expect("sign dag block");
+        block.signature[..64].copy_from_slice(&signature.to_bytes());
+        block.signature[64] = recovery_id.to_byte();
+
+        let mut stream = RlpStream::new_list(8);
+        stream.append(&block.pivot);
+        stream.append(&block.level);
+        stream.append(&block.timestamp);
+        stream.append(&block.vdf);
+        stream.append_list(&block.tips);
+        stream.append_list(&block.transactions);
+        stream.append(&block.signature.as_ref());
+        stream.append(&block.gas_estimation);
+        stream.out().to_vec()
     }
 
     fn dag_block_with_vdf_payload_and_transaction_hashes(
@@ -1571,6 +1637,57 @@ mod tests {
                 .expect("counter lookup should succeed");
             assert_eq!(counters.dag_blocks, 1);
             assert_eq!(counters.dag_edges, 3);
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_plans_proposal_block_construction_from_storage_tips() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_proposal_tip_metadata");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("runtime should initialize");
+
+            runtime
+                .dag_manager_runtime_save_block(
+                    &[10u8; 32],
+                    3,
+                    0,
+                    signed_dag_block_rlp(0x61, 3, 100),
+                )
+                .expect("save lower tip");
+            runtime
+                .dag_manager_runtime_save_block(
+                    &[20u8; 32],
+                    5,
+                    0,
+                    signed_dag_block_rlp(0x62, 5, 100),
+                )
+                .expect("save higher tip");
+
+            let plan = runtime
+                .dag_manager_runtime_plan_proposal_block_construction(
+                    DagProposerStorageBlockConstructionInput {
+                        frontier_tips: vec![
+                            DagHash { hash: [10u8; 32] },
+                            DagHash { hash: [20u8; 32] },
+                            DagHash { hash: [30u8; 32] },
+                        ],
+                        transaction_gas_estimations: vec![9],
+                        pbft_gas_limit: 1_000,
+                        dag_gas_limit: 1,
+                        max_tips: 1,
+                    },
+                )
+                .expect("plan");
+
+            assert_eq!(plan.selected_tips.len(), 1);
+            assert_eq!(plan.selected_tips[0].hash, [20u8; 32]);
+            assert_eq!(plan.block_gas_estimation, 9);
         }
 
         let _ = fs::remove_dir_all(&temp_dir);

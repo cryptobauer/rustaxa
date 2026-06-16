@@ -90,6 +90,14 @@ class DagManager : public DagManagerOld {
    */
   rustaxa::DagProposerFrontierFacts getProposerFrontierFacts() const;
   /**
+   * Plans proposer block construction using tip metadata loaded from Rust storage.
+   *
+   * The Rust DAG runtime loads frontier-tip blocks, recovers tip senders, and owns gas/tip selection facts. C++ keeps
+   * temporary transaction/VDF materialization and final `DagBlock` construction.
+   */
+  rustaxa::DagProposerBlockConstructionPlan planProposerBlockConstruction(
+      rustaxa::DagProposerStorageBlockConstructionInput input) const;
+  /**
    * Resolves the proposal period for a DAG level through the Rust DAG runtime.
    *
    * Missing storage rows are returned as `std::nullopt`. Storage backend or

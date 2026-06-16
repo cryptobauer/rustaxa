@@ -1009,12 +1009,13 @@ mixes `DbStorage` proposal-period reads with C++ FinalChain height/DPoS/gas-limi
 Status: stopped at live-runtime boundary. Direct C++ FinalChain calls for DAG authorization and proposer finalized-height
 checks are removed from the Rust-mode DAG proposer/manager shims. The DAG proposer now takes frontier, proposal-level,
 anchor, and non-finalized pressure facts from the Rust DAG runtime instead of recomputing them through C++ `DagBlock`
-lookups. A fuller `DagProposalFacts` or attempt-plan envelope remains open because transaction selection, gas
-estimation, tip metadata lookup, and DAG block materialization still cross existing C++ live-runtime boundaries. VDF
-proof generation, pre-proof difficulty facts, and DAG proposal/verification sortition runtime params now route through
-Rust. Moving only one remaining fact now would add another partial DTO without removing the remaining C++ proposal
-owner, so the next DAG proposal step should be a coherent pre-transaction attempt planner or storage-backed tip metadata
-planner, not another isolated fact port.
+lookups. Rust also owns proposer block-construction tip metadata lookup by loading frontier-tip DAG block RLP from
+`rustaxa-storage` and recovering tip senders in `rustaxa-types`, so C++ no longer calls `DagManager::getDagBlock` to
+feed the proposer tip-selection planner. A fuller `DagProposalFacts` or attempt-plan envelope remains open because
+transaction selection, gas estimation, and DAG block materialization still cross existing C++ live-runtime boundaries.
+VDF proof generation, pre-proof difficulty facts, and DAG proposal/verification sortition runtime params now route
+through Rust. The next DAG proposal step should be a coherent pre-transaction attempt planner, not another isolated fact
+port.
 
 Current boundary:
 
@@ -1033,6 +1034,10 @@ Current boundary:
 - `DagBlockProposer` no longer calls the C++ DAG block sidecar to compute propose level, anchor comparison, or
   non-finalized DAG pressure. `DagManager::getProposerFrontierFacts` exposes Rust runtime facts for the frontier,
   proposal level, current anchor, non-finalized block count, and non-finalized minimum difficulty.
+- `DagBlockProposer` now calls `DagManager::planProposerBlockConstruction`, which routes selected frontier-tip hashes to
+  the Rust DAG runtime. Rust loads tip RLP from `rustaxa-storage`, decodes level/gas facts, recovers the tip sender from
+  the DAG block signature, and applies the existing Rust tip-pruning planner. C++ still materializes the final signed
+  `DagBlock` after Rust returns selected tips and block gas.
 - Re-audit after Slice 18 confirms the remaining DAG proposal work is not blocked by TransactionManager account/finalized
   routing anymore; it is blocked by ownership of the DAG proposal runtime itself.
 
@@ -1063,6 +1068,8 @@ Move:
 - complete for proposer graph facts: `DagBlockProposer` now uses Rust-owned `DagManagerState` facts for frontier,
   propose level, anchor, non-finalized block count, and minimum difficulty, including the VDF cancellation/stale
   comparisons that previously recomputed levels through C++ block lookups
+- complete for proposer tip metadata: `DagBlockProposer` now sends frontier-tip hashes to the Rust DAG runtime, and
+  `rustaxa-consensus::dag` loads/stages tip metadata from Rust storage before running the block-construction planner
 - remaining: route `DagBlockProposer` and `DagManager` shim decisions through the DTO while keeping C++ block/transaction
   materialization temporary
 
@@ -1071,7 +1078,7 @@ Keep temporarily:
 - C++ DAG block object construction and network packet materialization
 - external EVM gas/state execution
 - public debug/query reads of DAG blocks
-- live transaction materialization, gas estimation, and tip metadata lookup until their own slices move them
+- live transaction materialization and gas estimation until their own slices move them
 
 Done when:
 

@@ -27,6 +27,8 @@ constexpr uint32_t kDagProposerReasonZeroDenominator = 6;
 
 std::array<uint8_t, 32> to_bridge_hash(const blk_hash_t& hash) { return hash.asArray(); }
 
+rustaxa::DagHash to_bridge_dag_hash(const blk_hash_t& hash) { return rustaxa::DagHash{to_bridge_hash(hash)}; }
+
 blk_hash_t from_bridge_hash(const std::array<uint8_t, 32>& hash) {
   return blk_hash_t(hash.data(), blk_hash_t::ConstructFromPointer);
 }
@@ -378,27 +380,13 @@ std::shared_ptr<DagBlock> DagBlockProposer::createDagBlock(DagFrontier&& frontie
     trx_hashes.push_back(trx->getHash());
   }
 
-  rustaxa::DagProposerBlockConstructionInput plan_input;
+  rustaxa::DagProposerStorageBlockConstructionInput plan_input;
   plan_input.pbft_gas_limit = kPbftGasLimit;
   plan_input.dag_gas_limit = kDagGasLimit;
   plan_input.max_tips = kDagBlockMaxTips;
   plan_input.frontier_tips.reserve(frontier.tips.size());
   for (const auto& t : frontier.tips) {
-    rustaxa::DagProposerTipCandidate candidate;
-    candidate.hash = to_bridge_hash(t);
-    candidate.sender = {};
-    candidate.level = 0;
-    candidate.gas_estimation = 0;
-    auto tip_block = dag_mgr_->getDagBlock(t);
-    if (tip_block == nullptr) {
-      candidate.found = false;
-    } else {
-      candidate.found = true;
-      candidate.sender = tip_block->getSender().asArray();
-      candidate.level = tip_block->getLevel();
-      candidate.gas_estimation = tip_block->getGasEstimation();
-    }
-    plan_input.frontier_tips.push_back(std::move(candidate));
+    plan_input.frontier_tips.push_back(to_bridge_dag_hash(t));
   }
 
   plan_input.transaction_gas_estimations.reserve(estimations.size());
@@ -406,7 +394,7 @@ std::shared_ptr<DagBlock> DagBlockProposer::createDagBlock(DagFrontier&& frontie
     plan_input.transaction_gas_estimations.push_back(estimation);
   }
 
-  const auto plan = rustaxa::dag_proposer_plan_block_construction(std::move(plan_input));
+  const auto plan = dag_mgr_->planProposerBlockConstruction(std::move(plan_input));
   frontier.tips.clear();
   frontier.tips.reserve(plan.selected_tips.size());
   for (const auto& hash : plan.selected_tips) {

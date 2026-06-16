@@ -244,6 +244,20 @@ pub struct DagProposerBlockConstructionInput {
     pub max_tips: u16,
 }
 
+/// Storage-backed inputs for Rust-owned DAG block construction planning.
+///
+/// C++ supplies only frontier-tip hashes, transaction gas estimates, gas limits, and the legacy max-tip limit. Rust
+/// loads tip metadata from `rustaxa-storage` and recovers proposer senders from canonical DAG block RLP before applying
+/// the deterministic block-construction planner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagProposerStorageBlockConstructionInput {
+    pub frontier_tips: Vec<H256>,
+    pub transaction_gas_estimations: Vec<u64>,
+    pub pbft_gas_limit: u64,
+    pub dag_gas_limit: u64,
+    pub max_tips: u16,
+}
+
 /// Rust DAG block construction plan consumed by the C++ proposer shim.
 ///
 /// `block_gas_estimation` preserves legacy unsigned accumulation behavior with
@@ -1523,6 +1537,55 @@ pub fn plan_dag_proposer_block_construction(
         pruned_tips: false,
         skipped_missing_tips: 0,
     }
+}
+
+/// Plans DAG proposer block construction using tip metadata loaded from Rust storage.
+///
+/// Missing tip rows are represented as missing candidates and skipped by the underlying proposer-tip planner, preserving
+/// the transitional C++ behavior where a null `DagBlock` tip is not selected during pruning. Malformed stored DAG RLP or
+/// an unrecoverable stored tip signature returns an error because those indicate corrupted consensus storage rather than
+/// a normal proposal decision.
+pub fn plan_dag_proposer_block_construction_from_storage(
+    storage: &Storage,
+    input: DagProposerStorageBlockConstructionInput,
+) -> Result<DagProposerBlockConstructionPlan> {
+    let mut frontier_tips = Vec::with_capacity(input.frontier_tips.len());
+    for hash in input.frontier_tips {
+        let lookup = load_dag_block_from_storage(storage, hash)?;
+        if !lookup.found {
+            frontier_tips.push(DagProposerTipCandidate {
+                hash,
+                found: false,
+                sender: [0; 20],
+                level: 0,
+                gas_estimation: 0,
+            });
+            continue;
+        }
+
+        let block = DagBlock::try_from(DagBlockRlp::new(&lookup.block_rlp))
+            .with_context(|| format!("DAG_PROPOSER_TIP_RLP_DECODE: {hash:?}"))?;
+        let sender = block
+            .recover_sender()
+            .with_context(|| format!("DAG_PROPOSER_TIP_SENDER_RECOVERY: {hash:?}"))?;
+        frontier_tips.push(DagProposerTipCandidate {
+            hash,
+            found: true,
+            sender: sender.0,
+            level: block.level,
+            gas_estimation: block.gas_estimation,
+        });
+    }
+
+    Ok(plan_dag_proposer_block_construction(
+        DagProposerBlockConstructionInput {
+            frontier_tips,
+            transaction_gas_estimations: input.transaction_gas_estimations,
+            pbft_gas_limit: input.pbft_gas_limit,
+            dag_gas_limit: input.dag_gas_limit,
+            max_tips: input.max_tips,
+        },
+    ))
 }
 
 /// Runs deterministic authorization checks for `DagManager::verifyBlock`.
@@ -2821,6 +2884,7 @@ fn hex_prefix(hash: &H256) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
     use rustaxa_storage::{Config, StatusField, Storage};
     use rustaxa_vdf::prover::{CancellationToken, WesolowskiProver};
@@ -2870,6 +2934,36 @@ mod tests {
                 .as_nanos()
         ));
         Storage::new(Config::new(dir)).unwrap()
+    }
+
+    fn signed_dag_block_rlp(seed: u8, level: u64, gas_estimation: u64) -> Vec<u8> {
+        let signing_key = SigningKey::from_slice(&[seed; 32]).expect("signing key");
+        let mut block = DagBlock {
+            pivot: h(1),
+            level,
+            timestamp: 123,
+            vdf: vec![1, 2, 3],
+            tips: vec![],
+            transactions: vec![h(99)],
+            signature: [0; 65],
+            gas_estimation,
+        };
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(block.signing_hash().as_bytes())
+            .expect("sign dag block");
+        block.signature[..64].copy_from_slice(&signature.to_bytes());
+        block.signature[64] = recovery_id.to_byte();
+
+        let mut stream = RlpStream::new_list(8);
+        stream.append(&block.pivot);
+        stream.append(&block.level);
+        stream.append(&block.timestamp);
+        stream.append(&block.vdf);
+        stream.append_list(&block.tips);
+        stream.append_list(&block.transactions);
+        stream.append(&block.signature.as_ref());
+        stream.append(&block.gas_estimation);
+        stream.out().to_vec()
     }
 
     fn vdf_payload_rlp(difficulty: u16, proof: Vec<u8>, output: Vec<u8>) -> Vec<u8> {
@@ -4217,6 +4311,39 @@ mod tests {
 
         assert_eq!(plan.selected_tips, vec![h(3)]);
         assert_eq!(plan.block_gas_estimation, 600);
+        assert!(plan.pruned_tips);
+        assert_eq!(plan.skipped_missing_tips, 1);
+    }
+
+    #[test]
+    fn dag_proposer_block_plan_loads_tip_metadata_from_storage() {
+        let storage = temp_storage("rustaxa_consensus_dag_proposer_tip_metadata");
+        let lower = h(10);
+        let higher = h(20);
+
+        storage
+            .dag()
+            .write(lower, 3, 0, &signed_dag_block_rlp(0x51, 3, 100))
+            .expect("write lower tip");
+        storage
+            .dag()
+            .write(higher, 5, 0, &signed_dag_block_rlp(0x52, 5, 100))
+            .expect("write higher tip");
+
+        let plan = plan_dag_proposer_block_construction_from_storage(
+            &storage,
+            DagProposerStorageBlockConstructionInput {
+                frontier_tips: vec![lower, higher, h(30)],
+                transaction_gas_estimations: vec![7],
+                pbft_gas_limit: 1_000,
+                dag_gas_limit: 1,
+                max_tips: 1,
+            },
+        )
+        .expect("plan");
+
+        assert_eq!(plan.selected_tips, vec![higher]);
+        assert_eq!(plan.block_gas_estimation, 7);
         assert!(plan.pruned_tips);
         assert_eq!(plan.skipped_missing_tips, 1);
     }

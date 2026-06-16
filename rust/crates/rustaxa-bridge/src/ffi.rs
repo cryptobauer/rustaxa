@@ -3399,6 +3399,15 @@ pub mod rustaxa_ffi {
         max_tips: u16,
     }
 
+    /// Rust-runtime DAG block construction facts for storage-backed tip metadata planning.
+    struct DagProposerStorageBlockConstructionInput {
+        frontier_tips: Vec<DagHash>,
+        transaction_gas_estimations: Vec<u64>,
+        pbft_gas_limit: u64,
+        dag_gas_limit: u64,
+        max_tips: u16,
+    }
+
     /// Rust producer-side DAG block construction plan.
     struct DagProposerBlockConstructionPlan {
         selected_tips: Vec<DagHash>,
@@ -3882,6 +3891,10 @@ pub mod rustaxa_ffi {
             tips_count: u64,
             block_rlp: Vec<u8>,
         ) -> Result<()>;
+        pub fn dag_manager_runtime_plan_proposal_block_construction(
+            self: &BridgeDagManagerRuntime,
+            input: DagProposerStorageBlockConstructionInput,
+        ) -> Result<DagProposerBlockConstructionPlan>;
         pub fn dag_manager_runtime_ensure_proposal_period_mapping(
             self: &BridgeDagManagerRuntime,
             level: u64,

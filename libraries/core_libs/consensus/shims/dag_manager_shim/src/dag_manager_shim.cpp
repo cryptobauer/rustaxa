@@ -823,6 +823,12 @@ rustaxa::DagProposerFrontierFacts DagManager::getProposerFrontierFacts() const {
   return rust_graphs_->runtime->dag_manager_runtime_proposer_frontier_facts();
 }
 
+rustaxa::DagProposerBlockConstructionPlan DagManager::planProposerBlockConstruction(
+    rustaxa::DagProposerStorageBlockConstructionInput input) const {
+  std::shared_lock lock(rust_graphs_mutex_);
+  return rust_graphs_->runtime->dag_manager_runtime_plan_proposal_block_construction(std::move(input));
+}
+
 std::optional<PbftPeriod> DagManager::getProposalPeriodForDagLevel(level_t level) const {
   std::shared_lock lock(rust_graphs_mutex_);
   const auto lookup = rust_graphs_->runtime->dag_manager_runtime_proposal_period_for_level(level);
