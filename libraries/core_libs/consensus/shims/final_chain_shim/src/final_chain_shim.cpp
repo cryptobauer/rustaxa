@@ -747,9 +747,6 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
       std::move(receipts),
   });
   block_finalized_emitter_.emit(result);
-  if (db_->createSnapshot(result->final_chain_blk->number)) {
-    state_api_.create_snapshot(result->final_chain_blk->number);
-  }
   return result;
 }
 

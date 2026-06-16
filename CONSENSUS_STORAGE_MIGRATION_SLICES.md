@@ -1287,7 +1287,8 @@ execution-counter, DPoS snapshot, rewards-stat, system-transaction hash, and pen
 `rustaxa-consensus::FinalChain` over `rustaxa-storage`. This sub-slice also moved the proposal-period DAG-level mapping
 row from the FinalChain C++ shim's post-publication `DbStorage` batch into the Rust publication plan and batch. The
 FinalChain shim also now hydrates its temporary executed DAG/transaction counter sidecars from a typed Rust FinalChain
-execution-status query instead of `DbStorage::getStatusField`. Remaining work is still needed for the broader
+execution-status query instead of `DbStorage::getStatusField`, and no longer calls the C++ `DbStorage::createSnapshot`
+checkpoint hook after a Rust-owned external-EVM publication. Remaining work is still needed for the broader
 `getNumTransactionExecuted()`/DPoS/account snapshot mismatch class without violating the external-EVM boundary.
 
 Current boundary:
@@ -1300,6 +1301,9 @@ Current boundary:
 - FinalChain shim constructor counter sidecars now read the persisted executed block/transaction counters through
   `BridgeFinalChain::get_execution_status`, leaving those atomics as public API/live compatibility mirrors rather than
   storage owners.
+- External-EVM publication no longer performs a post-commit `DbStorage::createSnapshot` check from the FinalChain shim;
+  snapshot/checkpoint lifecycle remains outside the current Rust storage-ownership slice and must not be used as a
+  consensus publication owner.
 - PBFT runtime failures currently reproduce execution-count mismatches (`111` vs `1111`) and missing DPoS snapshot
   publication; those are not storage-shim bugs but publication-boundary gaps.
 
@@ -1352,6 +1356,12 @@ rustaxa-consensus final_chain`, `cargo test --manifest-path rust/Cargo.toml -p r
 --build /build --target final_chain_test --parallel 12`, `cmake --build /build --target rust_storage_tests --parallel
 12`, `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
 `scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
+
+Validation note: the post-publication snapshot-check cleanup removes the no-op Rust-mode `DbStorage::createSnapshot`
+call from the FinalChain shim after external-EVM publication. It passes `cmake --build /build --target final_chain_test
+--parallel 12`, `cmake --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
+`scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and
+`git diff --check`.
 
 ## Slice 22: Network And Query Compatibility Shell Split
 
