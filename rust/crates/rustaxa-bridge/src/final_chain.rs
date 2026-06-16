@@ -3047,6 +3047,10 @@ mod tests {
             pending.status,
             rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED
         );
+        assert_eq!(
+            pending.account_snapshot_status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY
+        );
         assert_eq!(final_chain.get_last_block_number().unwrap(), 0);
 
         drop(session);
@@ -3063,6 +3067,10 @@ mod tests {
         assert_eq!(report.request_id, request_id);
         assert_eq!(report.plan_id, plan_id);
         assert_eq!(report.block_hash, block_hash);
+        assert_eq!(
+            report.account_snapshot_status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY
+        );
         assert!(report.error_code.is_empty());
         assert_eq!(reloaded.get_last_block_number().unwrap(), 1);
         assert_eq!(reloaded.get_block_hash(1).unwrap(), block_hash.to_vec());

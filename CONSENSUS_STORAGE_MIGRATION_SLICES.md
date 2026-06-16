@@ -32,8 +32,8 @@ Known current blockers / unrelated gaps:
 
 - `pbft_manager_test` now gets past the old `getBridgeRoot` abort and fails later on
   `Unsupported Rust PBFT second-finish primary intent 1`.
-- `final_chain_test` still has an unrelated `FinalChainTest.remove_jailed_validator_votes_from_total` failure with
-  `std::bad_alloc`.
+- `final_chain_test` still fails outside the Rust storage contract: `FinalChainTest.coin_transfers` observes legacy
+  account-balance mismatches through the compatibility query shell, and `FinalChainTest.nonce_test` then segfaults.
 
 ## Slice 1: PBFT Finalization Resume Inspector
 
@@ -2142,6 +2142,11 @@ rustaxa-consensus dag`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-b
 Goal: unblock Slice 21 by defining the durable contract for account snapshot publication around the accepted external-EVM
 boundary without pretending touched accounts are a complete snapshot.
 
+Status: complete. Rust now persists a crash-safe external-EVM pending-publication marker that carries the explicit
+`UNAVAILABLE_EXTERNAL_EVM_BOUNDARY` account-snapshot status. Restart recovery decodes that durable status, including
+backward-compatible six-field markers, and returns it on recovered or already-applied publications. Publication reports
+and audits continue to make the missing account snapshot an explicit unavailable fact rather than an implicit missing row.
+
 Move:
 
 - choose one explicit contract: either the external executor supplies a complete account snapshot payload/root before
@@ -2171,6 +2176,13 @@ Validation:
 - focused PBFT manager or network test that currently fails on account-snapshot availability, if it reaches the same
   boundary after this contract lands
 - `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+
+Validation note: Slice 30 passes `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus final_chain`,
+`cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge final_chain`,
+`cmake --build /build --target final_chain_test --parallel 12`, and
+`cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`. Running
+`/build/bin/final_chain_test` still fails in the out-of-scope compatibility query path: `FinalChainTest.coin_transfers`
+reports legacy account-balance mismatches and `FinalChainTest.nonce_test` segfaults.
 
 ## Slice 31: Slice 8/9 Final Closure Audit
 

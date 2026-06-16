@@ -346,6 +346,7 @@ pub(crate) struct ExternalEvmPendingPublicationMarker {
     pub(crate) state_commit_intent: FinalChainExternalEvmStateCommitIntent,
     pub(crate) post_execution_state_root: [u8; 32],
     pub(crate) post_rewards_state_root: [u8; 32],
+    pub(crate) account_snapshot_status: u8,
 }
 
 impl FinalChain {
@@ -1288,7 +1289,7 @@ impl FinalChain {
             period: marker.plan.period,
             block_hash: marker.plan.block_hash,
             dpos_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED,
-            account_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED,
+            account_snapshot_status: marker.account_snapshot_status,
             status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED,
             error_code: String::new(),
             ..Default::default()
@@ -1366,8 +1367,7 @@ impl FinalChain {
                     executed_dag_block_count: execution_status.executed_dag_block_count,
                     executed_transaction_count: execution_status.executed_transaction_count,
                     dpos_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_AVAILABLE,
-                    account_snapshot_status:
-                        FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY,
+                    account_snapshot_status: marker.account_snapshot_status,
                     status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED,
                     error_code: String::new(),
                 });
@@ -4625,6 +4625,33 @@ fn external_evm_pending_publication_marker_id(
     intent: &FinalChainExternalEvmStateCommitIntent,
     post_execution_state_root: [u8; 32],
     post_rewards_state_root: [u8; 32],
+    account_snapshot_status: u8,
+) -> [u8; 32] {
+    use tiny_keccak::{Hasher, Keccak};
+
+    let mut hasher = Keccak::v256();
+    hasher.update(b"rustaxa-final-chain-external-evm-pending-publication-v1");
+    hasher.update(&plan.request_id);
+    hasher.update(&plan.plan_id);
+    hasher.update(&plan.period.to_be_bytes());
+    hasher.update(&plan.block_hash);
+    hasher.update(&intent.request_id);
+    hasher.update(&intent.plan_id);
+    hasher.update(&intent.period.to_be_bytes());
+    hasher.update(&intent.publication_block_hash);
+    hasher.update(&post_execution_state_root);
+    hasher.update(&post_rewards_state_root);
+    hasher.update(&[account_snapshot_status]);
+    let mut marker_id = [0u8; 32];
+    hasher.finalize(&mut marker_id);
+    marker_id
+}
+
+fn legacy_external_evm_pending_publication_marker_id(
+    plan: &FinalChainExternalEvmPublicationPlan,
+    intent: &FinalChainExternalEvmStateCommitIntent,
+    post_execution_state_root: [u8; 32],
+    post_rewards_state_root: [u8; 32],
 ) -> [u8; 32] {
     use tiny_keccak::{Hasher, Keccak};
 
@@ -4651,24 +4678,28 @@ pub(crate) fn external_evm_pending_publication_marker(
     post_execution_state_root: [u8; 32],
     post_rewards_state_root: [u8; 32],
 ) -> ExternalEvmPendingPublicationMarker {
+    let account_snapshot_status =
+        FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY;
     ExternalEvmPendingPublicationMarker {
         marker_id: external_evm_pending_publication_marker_id(
             &plan,
             &intent,
             post_execution_state_root,
             post_rewards_state_root,
+            account_snapshot_status,
         ),
         plan,
         state_commit_intent: intent,
         post_execution_state_root,
         post_rewards_state_root,
+        account_snapshot_status,
     }
 }
 
 fn encode_external_evm_pending_publication_marker(
     marker: &ExternalEvmPendingPublicationMarker,
 ) -> Vec<u8> {
-    let mut stream = rlp::RlpStream::new_list(6);
+    let mut stream = rlp::RlpStream::new_list(7);
     stream.append(&EXTERNAL_EVM_PENDING_PUBLICATION_MARKER_VERSION);
     stream.append(&marker.marker_id.as_slice());
     stream.append_raw(&encode_external_evm_publication_plan(&marker.plan), 1);
@@ -4678,6 +4709,7 @@ fn encode_external_evm_pending_publication_marker(
     );
     stream.append(&marker.post_execution_state_root.as_slice());
     stream.append(&marker.post_rewards_state_root.as_slice());
+    stream.append(&marker.account_snapshot_status);
     stream.out().to_vec()
 }
 
@@ -4685,8 +4717,9 @@ fn decode_external_evm_pending_publication_marker(
     raw: &[u8],
 ) -> Result<ExternalEvmPendingPublicationMarker, anyhow::Error> {
     let rlp = Rlp::new(raw);
-    if rlp.item_count()? != 6 {
-        anyhow::bail!("external EVM pending publication marker must contain six fields");
+    let item_count = rlp.item_count()?;
+    if item_count != 6 && item_count != 7 {
+        anyhow::bail!("external EVM pending publication marker must contain six or seven fields");
     }
     let version: u64 = rlp.val_at(0)?;
     if version != EXTERNAL_EVM_PENDING_PUBLICATION_MARKER_VERSION {
@@ -4699,21 +4732,43 @@ fn decode_external_evm_pending_publication_marker(
         decode_fixed_hash(&rlp.at(4)?, "external EVM pending post-execution root")?;
     let post_rewards_state_root =
         decode_fixed_hash(&rlp.at(5)?, "external EVM pending post-rewards root")?;
-    let expected_marker_id = external_evm_pending_publication_marker_id(
-        &plan,
-        &intent,
-        post_execution_state_root,
-        post_rewards_state_root,
-    );
-    if marker_id != expected_marker_id {
-        anyhow::bail!("external EVM pending publication marker id mismatch");
-    }
+    let account_snapshot_status = if item_count == 7 {
+        let status = rlp.val_at(6)?;
+        if status != FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY {
+            anyhow::bail!(
+                "external EVM pending publication account snapshot status {status} is unsupported"
+            );
+        }
+        let expected_marker_id = external_evm_pending_publication_marker_id(
+            &plan,
+            &intent,
+            post_execution_state_root,
+            post_rewards_state_root,
+            status,
+        );
+        if marker_id != expected_marker_id {
+            anyhow::bail!("external EVM pending publication marker id mismatch");
+        }
+        status
+    } else {
+        let expected_marker_id = legacy_external_evm_pending_publication_marker_id(
+            &plan,
+            &intent,
+            post_execution_state_root,
+            post_rewards_state_root,
+        );
+        if marker_id != expected_marker_id {
+            anyhow::bail!("external EVM pending publication marker id mismatch");
+        }
+        FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY
+    };
     Ok(ExternalEvmPendingPublicationMarker {
         marker_id,
         plan,
         state_commit_intent: intent,
         post_execution_state_root,
         post_rewards_state_root,
+        account_snapshot_status,
     })
 }
 
@@ -7034,6 +7089,66 @@ mod tests {
             "rustaxa-consensus-final-chain-{test_name}-{}-{nanos}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn external_evm_pending_marker_carries_account_snapshot_status_and_decodes_legacy_marker() {
+        let plan = FinalChainExternalEvmPublicationPlan {
+            request_id: [0x11; 32],
+            plan_id: [0x22; 32],
+            period: 7,
+            block_hash: [0x33; 32],
+            indexed_log_bloom: vec![0; 256],
+            ..Default::default()
+        };
+        let intent = FinalChainExternalEvmStateCommitIntent {
+            request_id: plan.request_id,
+            plan_id: plan.plan_id,
+            period: plan.period,
+            publication_block_hash: plan.block_hash,
+            ..Default::default()
+        };
+        let post_execution_state_root = [0x44; 32];
+        let post_rewards_state_root = [0x55; 32];
+        let marker = external_evm_pending_publication_marker(
+            plan.clone(),
+            intent.clone(),
+            post_execution_state_root,
+            post_rewards_state_root,
+        );
+        assert_eq!(
+            marker.account_snapshot_status,
+            FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY
+        );
+
+        let encoded = encode_external_evm_pending_publication_marker(&marker);
+        let encoded_rlp = Rlp::new(&encoded);
+        assert_eq!(encoded_rlp.item_count().unwrap(), 7);
+        let decoded = decode_external_evm_pending_publication_marker(&encoded).unwrap();
+        assert_eq!(
+            decoded.account_snapshot_status,
+            FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY
+        );
+
+        let legacy_marker_id = legacy_external_evm_pending_publication_marker_id(
+            &plan,
+            &intent,
+            post_execution_state_root,
+            post_rewards_state_root,
+        );
+        let mut legacy_stream = RlpStream::new_list(6);
+        legacy_stream.append(&EXTERNAL_EVM_PENDING_PUBLICATION_MARKER_VERSION);
+        legacy_stream.append(&legacy_marker_id.as_slice());
+        legacy_stream.append_raw(&encode_external_evm_publication_plan(&plan), 1);
+        legacy_stream.append_raw(&encode_external_evm_state_commit_intent(&intent), 1);
+        legacy_stream.append(&post_execution_state_root.as_slice());
+        legacy_stream.append(&post_rewards_state_root.as_slice());
+        let legacy_decoded =
+            decode_external_evm_pending_publication_marker(&legacy_stream.out()).unwrap();
+        assert_eq!(
+            legacy_decoded.account_snapshot_status,
+            FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY
+        );
     }
 
     fn header_data_rlp(gas_used: u64, total_reward: U256) -> Vec<u8> {
