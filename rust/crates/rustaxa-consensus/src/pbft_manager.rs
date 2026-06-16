@@ -2118,6 +2118,33 @@ impl PbftManagerRuntime {
         self.snapshot.status = PbftManagerStartupRestoreStatus::Ready;
         self.snapshot.error_code.clear();
     }
+
+    /// Records a committed PBFT manager cursor field after Rust storage persistence.
+    ///
+    /// Inputs:
+    /// - `field`: stable PBFT manager field id for round or step.
+    /// - `value`: durable cursor value that was just written to storage.
+    ///
+    /// Outputs:
+    /// - Updates the matching runtime snapshot field and clears the restore
+    ///   error code.
+    ///
+    /// Invariants and edge behavior:
+    /// - Callers must persist the matching field row before invoking this
+    ///   method, so the long-lived runtime never advances ahead of durable
+    ///   storage.
+    /// - Unsupported fields are ignored here because
+    ///   `apply_pbft_manager_cursor_field_storage` rejects them before the
+    ///   bridge calls this method.
+    pub fn apply_committed_cursor_field(&mut self, field: u8, value: u32) {
+        match field {
+            PBFT_MGR_FIELD_ROUND => self.snapshot.round = u64::from(value),
+            PBFT_MGR_FIELD_STEP => self.snapshot.step = u64::from(value),
+            _ => return,
+        }
+        self.snapshot.status = PbftManagerStartupRestoreStatus::Ready;
+        self.snapshot.error_code.clear();
+    }
 }
 
 fn reject_startup_restore(error_code: &str) -> PbftManagerRuntimeSnapshot {
@@ -2291,6 +2318,37 @@ pub fn create_pbft_manager_runtime_from_storage(
     }
 
     Ok(PbftManagerRuntime::new(snapshot))
+}
+
+/// Persists one PBFT manager cursor field through Rust-owned storage.
+///
+/// Inputs:
+/// - `storage`: shared Rust storage handle owned by the PBFT manager runtime.
+/// - `field`: stable PBFT manager field id for round or step.
+/// - `value`: absolute cursor value to persist.
+///
+/// Outputs:
+/// - Writes the field to `pbft_mgr_round_step` and returns success after the
+///   durable write completes.
+///
+/// Invariants and edge behavior:
+/// - This is intentionally not a generic manager-field bridge. Dynamic lambda
+///   is written by the finalization/dynamic-lambda storage paths that own that
+///   state transition.
+/// - Unsupported fields return an error without writing storage.
+pub fn apply_pbft_manager_cursor_field_storage(
+    storage: &Storage,
+    field: u8,
+    value: u32,
+) -> Result<()> {
+    match field {
+        PBFT_MGR_FIELD_ROUND | PBFT_MGR_FIELD_STEP => {
+            storage.pbft().write_manager_field(field, value)
+        }
+        _ => Err(anyhow!(
+            "unsupported PBFT manager cursor field for runtime storage write: {field}"
+        )),
+    }
 }
 
 /// Loads one finalized period needed by the PBFT manager startup replay from
@@ -4252,6 +4310,63 @@ mod tests {
                     .manager_field(PBFT_MGR_FIELD_STEP)
                     .expect("normalized step should load"),
                 Some(4),
+            );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn runtime_cursor_field_storage_persists_round_and_step_only() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_manager_cursor_field");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            storage
+                .pbft()
+                .write_manager_field(PBFT_MGR_FIELD_ROUND, 1)
+                .expect("round seed should persist");
+            storage
+                .pbft()
+                .write_manager_field(PBFT_MGR_FIELD_STEP, 1)
+                .expect("step seed should persist");
+            storage
+                .pbft()
+                .write_manager_field(PBFT_MGR_FIELD_LAMBDA, 1_500)
+                .expect("lambda seed should persist");
+            let mut runtime =
+                create_pbft_manager_runtime_from_storage(&storage, storage_startup_fact())
+                    .expect("runtime should restore from Rust storage");
+
+            apply_pbft_manager_cursor_field_storage(&storage, PBFT_MGR_FIELD_ROUND, 7)
+                .expect("round cursor should persist");
+            runtime.apply_committed_cursor_field(PBFT_MGR_FIELD_ROUND, 7);
+            apply_pbft_manager_cursor_field_storage(&storage, PBFT_MGR_FIELD_STEP, 9)
+                .expect("step cursor should persist");
+            runtime.apply_committed_cursor_field(PBFT_MGR_FIELD_STEP, 9);
+            let err = apply_pbft_manager_cursor_field_storage(&storage, PBFT_MGR_FIELD_LAMBDA, 1)
+                .expect_err("dynamic lambda should not use cursor field API");
+
+            let snapshot = runtime.snapshot();
+            assert_eq!(snapshot.round, 7);
+            assert_eq!(snapshot.step, 9);
+            assert_eq!(
+                storage
+                    .pbft()
+                    .manager_field(PBFT_MGR_FIELD_ROUND)
+                    .expect("round should load"),
+                Some(7),
+            );
+            assert_eq!(
+                storage
+                    .pbft()
+                    .manager_field(PBFT_MGR_FIELD_STEP)
+                    .expect("step should load"),
+                Some(9),
+            );
+            assert!(
+                err.to_string()
+                    .contains("unsupported PBFT manager cursor field")
             );
         }
 

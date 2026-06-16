@@ -42,7 +42,7 @@ use rustaxa_consensus::pbft_finalize::{
 use rustaxa_consensus::pbft_manager::{
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
     apply_executed_block_reset_storage, apply_next_voted_status_storage,
-    apply_pbft_manager_transition_storage,
+    apply_pbft_manager_cursor_field_storage, apply_pbft_manager_transition_storage,
     create_pbft_manager_runtime_from_storage as create_domain_pbft_manager_runtime_from_storage,
     create_pbft_manager_runtime_session as create_domain_pbft_manager_runtime_session,
     load_pbft_manager_startup_replay_period as load_domain_pbft_manager_startup_replay_period,
@@ -398,6 +398,31 @@ pub fn pbft_manager_runtime_apply_next_voted_status(
     apply_next_voted_status_storage(runtime.storage.as_ref(), status)?;
     runtime.state.apply_committed_next_voted_status(status);
     Ok(())
+}
+
+/// Applies a PBFT manager cursor field through runtime-owned Rust storage.
+///
+/// Inputs:
+/// - `runtime`: long-lived Rust PBFT manager runtime with its storage handle.
+/// - `field`: stable PBFT manager field id for round or step.
+/// - `value`: absolute cursor value to persist.
+///
+/// Outputs:
+/// - Returns the updated Rust runtime snapshot after the durable storage write
+///   succeeds.
+///
+/// Invariants and edge behavior:
+/// - This is not a generic PBFT manager field write. Dynamic-lambda writes stay
+///   owned by the finalization/dynamic-lambda storage paths.
+/// - The runtime snapshot changes only after Rust storage accepts the write.
+pub fn pbft_manager_runtime_apply_cursor_field(
+    runtime: &mut BridgePbftManagerRuntime,
+    field: u8,
+    value: u32,
+) -> anyhow::Result<FfiPbftManagerRuntimeSnapshot> {
+    apply_pbft_manager_cursor_field_storage(runtime.storage.as_ref(), field, value)?;
+    runtime.state.apply_committed_cursor_field(field, value);
+    Ok(runtime.state.snapshot().into())
 }
 
 /// Loads the latest persisted dynamic lambda through PBFT-manager runtime storage.
@@ -1489,6 +1514,47 @@ mod tests {
                 err.to_string(),
                 "PBFT_MANAGER_NEXT_VOTED_STATUS_UNSUPPORTED"
             );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_runtime_persists_cursor_fields_through_consensus_storage() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_cursor_fields");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            storage
+                .save_pbft_mgr_field(0, 1)
+                .expect("round seed should persist");
+            storage
+                .save_pbft_mgr_field(1, 1)
+                .expect("step seed should persist");
+            storage
+                .save_pbft_mgr_field(2, 1_500)
+                .expect("lambda seed should persist");
+            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
+                .expect("runtime should restore");
+
+            let round_snapshot = pbft_manager_runtime_apply_cursor_field(&mut runtime, 0, 8)
+                .expect("round cursor should persist");
+            let step_snapshot = pbft_manager_runtime_apply_cursor_field(&mut runtime, 1, 6)
+                .expect("step cursor should persist");
+            let err = match pbft_manager_runtime_apply_cursor_field(&mut runtime, 2, 1) {
+                Ok(_) => panic!("dynamic lambda should not use cursor field API"),
+                Err(err) => err,
+            };
+
+            assert_eq!(round_snapshot.round, 8);
+            assert_eq!(step_snapshot.round, 8);
+            assert_eq!(step_snapshot.step, 6);
+            assert_eq!(storage.get_pbft_mgr_field(0).unwrap(), 8);
+            assert_eq!(storage.get_pbft_mgr_field(1).unwrap(), 6);
+            assert!(err
+                .to_string()
+                .contains("unsupported PBFT manager cursor field"));
         }
 
         let _ = fs::remove_dir_all(temp_dir);

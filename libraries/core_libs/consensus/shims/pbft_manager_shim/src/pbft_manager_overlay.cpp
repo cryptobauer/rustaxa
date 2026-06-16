@@ -1027,8 +1027,12 @@ std::pair<PbftRound, PbftPeriod> PbftManager::getPbftRoundAndPeriod() const {
 PbftStep PbftManager::getPbftStep() const { return step_; }
 
 void PbftManager::setPbftRound(PbftRound round) {
-  db_->savePbftMgrField(PbftMgrField::Round, round);
-  round_ = round;
+  if (!pbft_manager_runtime_.has_value()) {
+    throw std::runtime_error("PBFT manager Rust runtime must be initialized before persisting round");
+  }
+  const auto snapshot = rustaxa::pbft_manager_runtime_apply_cursor_field(
+      *pbft_manager_runtime_.value(), static_cast<uint8_t>(PbftMgrField::Round), static_cast<uint32_t>(round));
+  round_ = static_cast<PbftRound>(snapshot.round);
 }
 
 void PbftManager::waitForPeriodFinalization() {
@@ -1107,8 +1111,12 @@ std::optional<uint64_t> PbftManager::getCurrentNodeVotesCount() const {
 }
 
 void PbftManager::setPbftStep(PbftStep pbft_step) {
-  db_->savePbftMgrField(PbftMgrField::Step, pbft_step);
-  step_ = pbft_step;
+  if (!pbft_manager_runtime_.has_value()) {
+    throw std::runtime_error("PBFT manager Rust runtime must be initialized before persisting step");
+  }
+  const auto snapshot = rustaxa::pbft_manager_runtime_apply_cursor_field(
+      *pbft_manager_runtime_.value(), static_cast<uint8_t>(PbftMgrField::Step), static_cast<uint32_t>(pbft_step));
+  step_ = static_cast<PbftStep>(snapshot.step);
 
   // Increase lambda only for odd steps (second finish steps) after node reached kMaxSteps steps
   if (step_ >= kMaxSteps && step_ % 2) {

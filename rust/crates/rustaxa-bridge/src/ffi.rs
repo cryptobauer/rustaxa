@@ -4021,6 +4021,11 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgePbftManagerRuntime,
             status: u8,
         ) -> Result<()>;
+        pub fn pbft_manager_runtime_apply_cursor_field(
+            runtime: &mut BridgePbftManagerRuntime,
+            field: u8,
+            value: u32,
+        ) -> Result<PbftManagerRuntimeSnapshot>;
         pub fn pbft_manager_runtime_load_finalization_last_period_lambda(
             runtime: &BridgePbftManagerRuntime,
             period: u64,
