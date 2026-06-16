@@ -173,25 +173,15 @@ std::array<uint8_t, 32> to_bridge_vrf_public_key(const rust::Vec<uint8_t> &vrf_p
   return out;
 }
 
-rustaxa::SortitionRuntimeParams to_bridge_sortition_params(const SortitionParams &params) {
-  rustaxa::SortitionRuntimeParams out;
-  out.threshold_upper = params.vrf.threshold_upper;
-  out.difficulty_min = params.vdf.difficulty_min;
-  out.difficulty_max = params.vdf.difficulty_max;
-  out.difficulty_stale = params.vdf.difficulty_stale;
-  out.lambda_bound = params.vdf.lambda_bound;
-  return out;
-}
-
 rustaxa::DagVerifyVdfSortitionFromBlockInput to_bridge_vdf_sortition_input(
     const dev::bytes &block_rlp, uint64_t block_level, const blk_hash_t &proposal_period_hash,
-    SortitionParams const &sortition_params, const rust::Vec<uint8_t> &vrf_public_key,
+    const rustaxa::SortitionRuntimeParams &sortition_params, const rust::Vec<uint8_t> &vrf_public_key,
     uint64_t sender_eligible_vote_count, uint64_t vdf_sortition_max_vote_count) {
   rustaxa::DagVerifyVdfSortitionFromBlockInput out;
   out.block_rlp = to_rust_vec(block_rlp);
   out.block_level = block_level;
   out.proposal_period_hash = to_bridge_hash(proposal_period_hash);
-  out.sortition_params = to_bridge_sortition_params(sortition_params);
+  out.sortition_params = sortition_params;
   out.vrf_public_key = to_bridge_vrf_public_key(vrf_public_key);
   out.sender_eligible_vote_count = sender_eligible_vote_count;
   out.vdf_sortition_max_vote_count = vdf_sortition_max_vote_count;
@@ -493,7 +483,7 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
     try {
       const auto proposal_period_hash = getPeriodBlockHashForDagProposal(proposal_period);
       const auto block_rlp = blk->rlp(true);
-      const auto sortition_params = sortition_params_manager_.getSortitionParams(proposal_period);
+      const auto sortition_params = sortition_params_manager_.rustSortitionParamsForRust(proposal_period);
       const auto vdf_result = rustaxa::dag_verify_vdf_sortition_from_block(to_bridge_vdf_sortition_input(
           block_rlp, blk->getLevel(), proposal_period_hash, sortition_params, authorization_facts.vrf_key,
           sender_eligible_vote_count, vdf_sortition_max_vote_count));

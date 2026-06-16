@@ -991,9 +991,9 @@ mixes `DbStorage` proposal-period reads with C++ FinalChain height/DPoS/gas-limi
 Status: stopped at live-runtime boundary. Direct C++ FinalChain calls for DAG authorization and proposer finalized-height
 checks are removed from the Rust-mode DAG proposer/manager shims. A fuller `DagProposalFacts` envelope remains open
 because transaction selection, gas estimation, tip metadata lookup, and DAG block materialization still cross existing
-C++ live-runtime boundaries. VDF proof generation, pre-proof difficulty facts, and DAG proposer sortition runtime params
-now route through Rust. Moving only one remaining fact now would add another partial DTO without removing the remaining
-C++ proposal owner, so this slice needs a dedicated DAG proposal-runtime replan before more implementation.
+C++ live-runtime boundaries. VDF proof generation, pre-proof difficulty facts, and DAG proposal/verification sortition
+runtime params now route through Rust. Moving only one remaining fact now would add another partial DTO without removing
+the remaining C++ proposal owner, so this slice needs a dedicated DAG proposal-runtime replan before more implementation.
 
 Current boundary:
 
@@ -1005,10 +1005,10 @@ Current boundary:
   deterministic sender-shard filter runs inside the Rust-owned packing session before C++ materializes or estimates gas
   for candidates. Rust now also plans DAG block construction facts: legacy transaction-gas summation, tip-pruning
   decisions, and selected-tip ordering. Producer-side VDF proof generation now calls the Rust VDF sortition bridge
-  directly and materializes a legacy `VdfSortition` object only from the Rust-produced payload. The proposer now consumes
-  Rust-native `SortitionRuntimeParams` from the Rust-backed sortition manager instead of materializing the C++
-  `SortitionParams` compatibility DTO for VDF planning. It still computes genesis gas-limit constants in C++ and keeps
-  tip metadata lookup and `DagBlock` object creation in the compatibility shell.
+  directly and materializes a legacy `VdfSortition` object only from the Rust-produced payload. The proposer and verifier
+  now consume Rust-native `SortitionRuntimeParams` from the Rust-backed sortition manager instead of materializing the C++
+  `SortitionParams` compatibility DTO for VDF planning/verification. It still computes genesis gas-limit constants in
+  C++ and keeps tip metadata lookup and `DagBlock` object creation in the compatibility shell.
 - Re-audit after Slice 18 confirms the remaining DAG proposal work is not blocked by TransactionManager account/finalized
   routing anymore; it is blocked by ownership of the DAG proposal runtime itself.
 
@@ -1033,6 +1033,9 @@ Move:
 - complete for proposer sortition params: `DagBlockProposer` now calls the shim-owned
   `SortitionParamsManager::rustSortitionParamsForRust` accessor and feeds Rust-native sortition runtime params directly
   into the Rust VDF helpers, leaving `getSortitionParams` as public C++ compatibility only
+- complete for verifier sortition params: `DagManager::verifyBlock` now feeds the same Rust-native sortition runtime
+  params directly into `dag_verify_vdf_sortition_from_block`, so block verification no longer builds the C++
+  `SortitionParams` compatibility DTO for Rust VDF checks
 - remaining: route `DagBlockProposer` and `DagManager` shim decisions through the DTO while keeping C++ block/transaction
   materialization temporary
 
@@ -1115,6 +1118,15 @@ rustaxa-bridge dag_vdf`, `cmake --build /build --target dag_shim_test --parallel
 `cmake --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
 `scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff
 --check`.
+
+Validation note: the verifier-sortition-param cleanup removes the same temporary C++ `SortitionParams` materialization
+from `DagManager::verifyBlock`. DAG block VDF verification now receives `SortitionRuntimeParams` directly from the
+Rust-backed sortition manager and leaves `getSortitionParams` as public C++ compatibility only. It passes the focused
+validation: `cargo fmt --manifest-path rust/Cargo.toml --all --check`, `cargo test --manifest-path rust/Cargo.toml -p
+rustaxa-consensus dag`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge dag_vdf`, `cmake --build /build
+--target dag_test --parallel 12`, `/build/bin/dag_test`, `cmake --build /build --target rust_storage_tests --parallel
+12`, `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
+`scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
 
 ## Slice 18: Transaction Account And Finalized Fact Port
 
