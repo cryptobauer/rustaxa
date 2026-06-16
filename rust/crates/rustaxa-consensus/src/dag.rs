@@ -30,6 +30,28 @@ pub struct DagFrontier {
     pub tips: Vec<H256>,
 }
 
+/// Rust-owned DAG proposer graph facts for one proposal attempt.
+///
+/// Inputs:
+/// - `frontier`: cached pivot and tips derived from the current Rust DAG graph.
+/// - `propose_level`: next DAG level computed from Rust block-level metadata.
+/// - `anchor`: current finalized DAG anchor used for non-finalized pressure gating.
+/// - `non_finalized_block_count`: total live non-finalized DAG blocks.
+/// - `non_finalized_min_difficulty`: minimum VDF difficulty among live non-finalized blocks, or `u32::MAX` when empty.
+///
+/// Invariants:
+/// - `propose_level` is one greater than the highest available frontier reference level.
+/// - Missing frontier metadata contributes level `0`, preserving legacy proposer behavior while keeping the lookup in
+///   Rust-owned DAG state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagProposerFrontierFacts {
+    pub frontier: DagFrontier,
+    pub propose_level: u64,
+    pub anchor: H256,
+    pub non_finalized_block_count: usize,
+    pub non_finalized_min_difficulty: u32,
+}
+
 /// Per-reference metadata used for pivot/tip level validation.
 ///
 /// Inputs:
@@ -2576,6 +2598,27 @@ impl DagManagerState {
         &self.frontier
     }
 
+    /// Returns graph facts needed by the DAG proposer before live transaction selection.
+    ///
+    /// Output fields are derived from the Rust DAG mirror so the proposer does not perform C++ `DagBlock` lookups for
+    /// frontier level, anchor, or non-finalized pressure checks. Missing frontier metadata intentionally maps to level
+    /// `0`, matching the legacy proposer fallback and allowing callers to reject later through existing validation.
+    pub fn proposer_frontier_facts(&self) -> DagProposerFrontierFacts {
+        let mut max_frontier_level = self.reference_metadata(self.frontier.pivot).level;
+        for tip in &self.frontier.tips {
+            max_frontier_level = max_frontier_level.max(self.reference_metadata(*tip).level);
+        }
+        let (_, non_finalized_block_count) = self.non_finalized_blocks_size();
+
+        DagProposerFrontierFacts {
+            frontier: self.frontier.clone(),
+            propose_level: max_frontier_level.saturating_add(1),
+            anchor: self.anchor,
+            non_finalized_block_count,
+            non_finalized_min_difficulty: self.non_finalized_min_difficulty,
+        }
+    }
+
     /// Returns graphviz output for the total DAG when `pivot_tree == false`,
     /// otherwise for the pivot tree.
     pub fn graphviz_dot(&self, pivot_tree: bool) -> String {
@@ -4201,6 +4244,24 @@ mod tests {
         assert!(state.frontier().tips.is_empty());
         assert_eq!(state.block_levels().get(&h(2)), Some(&2));
         assert_eq!(state.block_levels().get(&h(3)), Some(&3));
+    }
+
+    #[test]
+    fn dag_manager_state_proposer_frontier_facts_use_rust_graph_metadata() {
+        let mut state = DagManagerState::new(h(1), 0).expect("state");
+
+        state.add_block(record(2, 1, &[], 2, 100)).expect("add");
+        state.add_block(record(3, 2, &[1], 3, 80)).expect("add");
+        state.add_block(record(4, 2, &[3], 4, 60)).expect("add");
+
+        let facts = state.proposer_frontier_facts();
+
+        assert_eq!(facts.frontier.pivot, h(3));
+        assert_eq!(facts.frontier.tips, vec![h(4)]);
+        assert_eq!(facts.propose_level, 5);
+        assert_eq!(facts.anchor, h(1));
+        assert_eq!(facts.non_finalized_block_count, 3);
+        assert_eq!(facts.non_finalized_min_difficulty, 60);
     }
 
     #[test]

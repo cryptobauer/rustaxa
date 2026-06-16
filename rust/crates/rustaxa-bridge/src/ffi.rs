@@ -3215,6 +3215,15 @@ pub mod rustaxa_ffi {
         tips: Vec<DagHash>,
     }
 
+    struct DagProposerFrontierFacts {
+        pivot: [u8; 32],
+        tips: Vec<DagHash>,
+        propose_level: u64,
+        anchor: [u8; 32],
+        non_finalized_block_count: u64,
+        non_finalized_min_difficulty: u32,
+    }
+
     struct DagReferenceMetadata {
         hash: [u8; 32],
         found: bool,
@@ -3828,6 +3837,9 @@ pub mod rustaxa_ffi {
             known_hashes: Vec<DagHash>,
         ) -> Vec<DagHash>;
         pub fn dag_manager_runtime_frontier(self: &BridgeDagManagerRuntime) -> DagFrontier;
+        pub fn dag_manager_runtime_proposer_frontier_facts(
+            self: &BridgeDagManagerRuntime,
+        ) -> DagProposerFrontierFacts;
         pub fn dag_manager_runtime_ghost_path(
             self: &BridgeDagManagerRuntime,
             source: &[u8; 32],

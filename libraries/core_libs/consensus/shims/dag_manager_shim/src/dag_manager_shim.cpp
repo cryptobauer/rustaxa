@@ -818,6 +818,11 @@ uint64_t DagManager::getDagExpiryLevel() const {
 
 uint64_t DagManager::getMaxLevelsPerPeriod() const { return max_levels_per_period_; }
 
+rustaxa::DagProposerFrontierFacts DagManager::getProposerFrontierFacts() const {
+  std::shared_lock lock(rust_graphs_mutex_);
+  return rust_graphs_->runtime->dag_manager_runtime_proposer_frontier_facts();
+}
+
 std::optional<PbftPeriod> DagManager::getProposalPeriodForDagLevel(level_t level) const {
   std::shared_lock lock(rust_graphs_mutex_);
   const auto lookup = rust_graphs_->runtime->dag_manager_runtime_proposal_period_for_level(level);

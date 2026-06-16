@@ -6,14 +6,15 @@ use crate::ffi::rustaxa_ffi::{
     DagManagerFinalizationPlan, DagManagerNonFinalizedSize, DagManagerNonFinalizedSyncPayload,
     DagManagerRuntimeSyncSnapshot, DagManagerSnapshot, DagOrder, DagPersistenceCounters,
     DagPivotTipsValidation, DagProposerBlockConstructionInput, DagProposerBlockConstructionPlan,
-    DagProposerEligibilityDecision, DagProposerEligibilityInput, DagProposerTipCandidate,
-    DagReferenceMetadata, DagSyncBlockRlp, DagTransactionHash, DagTransactionQueryPlan,
-    DagTransactionRlpLookup, DagVerifyAuthorizationInput, DagVerifyAuthorizationResult,
-    DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
-    DagVerifyTransactionAvailabilityInput, DagVerifyTransactionAvailabilityResult,
-    DagVerifyVdfDposDecision, DagVerifyVdfDposFacts, DagVerifyVdfPrepareInput,
-    DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
-    DagVerifyVdfSortitionResult, HashLookup, PeriodLookup, SortitionRuntimeParams,
+    DagProposerEligibilityDecision, DagProposerEligibilityInput, DagProposerFrontierFacts,
+    DagProposerTipCandidate, DagReferenceMetadata, DagSyncBlockRlp, DagTransactionHash,
+    DagTransactionQueryPlan, DagTransactionRlpLookup, DagVerifyAuthorizationInput,
+    DagVerifyAuthorizationResult, DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock,
+    DagVerifyPrecheckResult, DagVerifyTransactionAvailabilityInput,
+    DagVerifyTransactionAvailabilityResult, DagVerifyVdfDposDecision, DagVerifyVdfDposFacts,
+    DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput,
+    DagVerifyVdfSortitionInput, DagVerifyVdfSortitionResult, HashLookup, PeriodLookup,
+    SortitionRuntimeParams,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
 use anyhow::{ensure, Context, Result};
@@ -679,6 +680,23 @@ impl BridgeDagManagerRuntime {
     /// Returns the current Rust-owned DAG frontier.
     pub fn dag_manager_runtime_frontier(&self) -> DagFrontier {
         to_bridge_frontier(self.state.frontier())
+    }
+
+    /// Returns Rust-owned graph facts needed by one DAG proposer attempt.
+    ///
+    /// This keeps proposer frontier selection, next-level calculation, anchor comparison, and non-finalized pressure
+    /// facts inside the Rust DAG runtime. C++ still owns network throttling, transaction materialization, async VDF
+    /// execution, and final `DagBlock` construction while those boundaries remain open.
+    pub fn dag_manager_runtime_proposer_frontier_facts(&self) -> DagProposerFrontierFacts {
+        let facts = self.state.proposer_frontier_facts();
+        DagProposerFrontierFacts {
+            pivot: facts.frontier.pivot.into(),
+            tips: to_dag_hashes(facts.frontier.tips),
+            propose_level: facts.propose_level,
+            anchor: facts.anchor.into(),
+            non_finalized_block_count: facts.non_finalized_block_count as u64,
+            non_finalized_min_difficulty: facts.non_finalized_min_difficulty,
+        }
     }
 
     /// Returns the ghost path from a source block.
@@ -1782,6 +1800,48 @@ mod tests {
                 runtime.dag_manager_runtime_non_finalized_min_difficulty(),
                 u32::MAX
             );
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_proposer_frontier_facts_cross_cxx_boundary() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_proposer_frontier");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("runtime should initialize");
+
+            runtime
+                .dag_manager_runtime_add_block(DagManagerBlock {
+                    hash: [2u8; 32],
+                    pivot: [1u8; 32],
+                    tips: vec![],
+                    level: 2,
+                    difficulty: 100,
+                })
+                .expect("add block 2");
+            runtime
+                .dag_manager_runtime_add_block(DagManagerBlock {
+                    hash: [3u8; 32],
+                    pivot: [2u8; 32],
+                    tips: vec![DagHash { hash: [1u8; 32] }],
+                    level: 3,
+                    difficulty: 80,
+                })
+                .expect("add block 3");
+
+            let facts = runtime.dag_manager_runtime_proposer_frontier_facts();
+
+            assert_eq!(facts.pivot, [3u8; 32]);
+            assert!(facts.tips.is_empty());
+            assert_eq!(facts.propose_level, 4);
+            assert_eq!(facts.anchor, [1u8; 32]);
+            assert_eq!(facts.non_finalized_block_count, 2);
+            assert_eq!(facts.non_finalized_min_difficulty, 80);
         }
 
         let _ = fs::remove_dir_all(&temp_dir);

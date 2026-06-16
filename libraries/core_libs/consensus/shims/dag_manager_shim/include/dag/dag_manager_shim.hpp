@@ -83,6 +83,13 @@ class DagManager : public DagManagerOld {
   uint64_t getDagExpiryLevel() const;
   uint64_t getMaxLevelsPerPeriod() const;
   /**
+   * Returns Rust-owned DAG graph facts needed by one proposer attempt.
+   *
+   * The Rust DAG runtime supplies the frontier, next proposal level, current anchor, and non-finalized pressure facts.
+   * C++ uses this only for temporary transaction/VDF/block materialization boundaries.
+   */
+  rustaxa::DagProposerFrontierFacts getProposerFrontierFacts() const;
+  /**
    * Resolves the proposal period for a DAG level through the Rust DAG runtime.
    *
    * Missing storage rows are returned as `std::nullopt`. Storage backend or

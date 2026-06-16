@@ -31,6 +31,17 @@ blk_hash_t from_bridge_hash(const std::array<uint8_t, 32>& hash) {
   return blk_hash_t(hash.data(), blk_hash_t::ConstructFromPointer);
 }
 
+blk_hash_t from_bridge_dag_hash(const rustaxa::DagHash& hash) { return from_bridge_hash(hash.hash); }
+
+std::vector<blk_hash_t> from_bridge_dag_hashes(const rust::Vec<rustaxa::DagHash>& hashes) {
+  std::vector<blk_hash_t> out;
+  out.reserve(hashes.size());
+  for (const auto& hash : hashes) {
+    out.emplace_back(from_bridge_dag_hash(hash));
+  }
+  return out;
+}
+
 dev::bytes to_bytes(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
 
 dev::bytes dag_vrf_input(level_t level, const blk_hash_t& proposal_period_hash) {
@@ -123,10 +134,11 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
     return false;
   }
 
-  auto frontier = dag_mgr_->getDagFrontier();
+  const auto frontier_facts = dag_mgr_->getProposerFrontierFacts();
+  DagFrontier frontier(from_bridge_hash(frontier_facts.pivot), from_bridge_dag_hashes(frontier_facts.tips));
   LOG(log_dg_) << "Get frontier with pivot: " << frontier.pivot << " tips: " << frontier.tips;
   assert(!frontier.pivot.isZero());
-  const auto propose_level = getProposeLevel(frontier.pivot, frontier.tips) + 1;
+  const auto propose_level = frontier_facts.propose_level;
 
   const auto proposal_period = dag_mgr_->getProposalPeriodForDagLevel(propose_level);
   if (!proposal_period.has_value()) {
@@ -187,13 +199,13 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
                                                                vrf_probe.threshold);
   const bool vdf_stale = vdf_difficulty == sortition_params.difficulty_stale;
 
-  auto anchor = dag_mgr_->getAnchors().second;
+  const auto anchor = from_bridge_hash(frontier_facts.anchor);
   if (frontier.pivot != anchor) {
-    if (dag_mgr_->getNonFinalizedBlocksSize().second > kMaxNonFinalizedDagBlocks) {
+    if (frontier_facts.non_finalized_block_count > kMaxNonFinalizedDagBlocks) {
       return false;
     }
-    if (dag_mgr_->getNonFinalizedBlocksMinDifficulty() < vdf_difficulty &&
-        dag_mgr_->getNonFinalizedBlocksSize().second > kMaxNonFinalizedDagBlocksLowDifficulty) {
+    if (frontier_facts.non_finalized_min_difficulty < vdf_difficulty &&
+        frontier_facts.non_finalized_block_count > kMaxNonFinalizedDagBlocksLowDifficulty) {
       return false;
     }
   }
@@ -245,8 +257,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
 
   std::future<void> result = sync.get_future();
   while (result.wait_for(std::chrono::milliseconds(100)) != std::future_status::ready) {
-    auto latest_frontier = dag_mgr_->getDagFrontier();
-    const auto latest_level = getProposeLevel(latest_frontier.pivot, latest_frontier.tips) + 1;
+    const auto latest_level = dag_mgr_->getProposerFrontierFacts().propose_level;
     if (latest_level > propose_level + 1 && vdf_difficulty > sortition_params.difficulty_min) {
       cancellation_token = true;
       break;
@@ -262,8 +273,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
 
   if (vdf_stale) {
     thisThreadSleepForSeconds(1);
-    auto latest_frontier = dag_mgr_->getDagFrontier();
-    const auto latest_level = getProposeLevel(latest_frontier.pivot, latest_frontier.tips) + 1;
+    const auto latest_level = dag_mgr_->getProposerFrontierFacts().propose_level;
     if (latest_level > propose_level) {
       node_dag_proposer_data->last_propose_level = propose_level;
       node_dag_proposer_data->num_tries = 0;
@@ -357,26 +367,6 @@ std::pair<SharedTransactions, std::vector<uint64_t>> DagBlockProposer::getSharde
     return {};
   }
   return {transactions, estimations};
-}
-
-level_t DagBlockProposer::getProposeLevel(blk_hash_t const& pivot, vec_blk_t const& tips) const {
-  level_t max_level = 0;
-  auto pivot_blk = dag_mgr_->getDagBlock(pivot);
-  if (!pivot_blk) {
-    LOG(log_er_) << "Cannot find pivot dag block " << pivot;
-    return 0;
-  }
-  max_level = std::max(pivot_blk->getLevel(), max_level);
-
-  for (auto const& t : tips) {
-    auto tip_blk = dag_mgr_->getDagBlock(t);
-    if (!tip_blk) {
-      LOG(log_er_) << "Cannot find tip dag block " << t;
-      return 0;
-    }
-    max_level = std::max(tip_blk->getLevel(), max_level);
-  }
-  return max_level;
 }
 
 std::shared_ptr<DagBlock> DagBlockProposer::createDagBlock(DagFrontier&& frontier, level_t level,

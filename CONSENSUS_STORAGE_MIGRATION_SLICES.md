@@ -1007,11 +1007,14 @@ Goal: move DAG proposer and DAG manager proposal-validation facts behind Rust fa
 mixes `DbStorage` proposal-period reads with C++ FinalChain height/DPoS/gas-limit calls.
 
 Status: stopped at live-runtime boundary. Direct C++ FinalChain calls for DAG authorization and proposer finalized-height
-checks are removed from the Rust-mode DAG proposer/manager shims. A fuller `DagProposalFacts` envelope remains open
-because transaction selection, gas estimation, tip metadata lookup, and DAG block materialization still cross existing
-C++ live-runtime boundaries. VDF proof generation, pre-proof difficulty facts, and DAG proposal/verification sortition
-runtime params now route through Rust. Moving only one remaining fact now would add another partial DTO without removing
-the remaining C++ proposal owner, so this slice needs a dedicated DAG proposal-runtime replan before more implementation.
+checks are removed from the Rust-mode DAG proposer/manager shims. The DAG proposer now takes frontier, proposal-level,
+anchor, and non-finalized pressure facts from the Rust DAG runtime instead of recomputing them through C++ `DagBlock`
+lookups. A fuller `DagProposalFacts` or attempt-plan envelope remains open because transaction selection, gas
+estimation, tip metadata lookup, and DAG block materialization still cross existing C++ live-runtime boundaries. VDF
+proof generation, pre-proof difficulty facts, and DAG proposal/verification sortition runtime params now route through
+Rust. Moving only one remaining fact now would add another partial DTO without removing the remaining C++ proposal
+owner, so the next DAG proposal step should be a coherent pre-transaction attempt planner or storage-backed tip metadata
+planner, not another isolated fact port.
 
 Current boundary:
 
@@ -1027,6 +1030,9 @@ Current boundary:
   now consume Rust-native `SortitionRuntimeParams` from the Rust-backed sortition manager instead of materializing the C++
   `SortitionParams` compatibility DTO for VDF planning/verification. It still computes genesis gas-limit constants in
   C++ and keeps tip metadata lookup and `DagBlock` object creation in the compatibility shell.
+- `DagBlockProposer` no longer calls the C++ DAG block sidecar to compute propose level, anchor comparison, or
+  non-finalized DAG pressure. `DagManager::getProposerFrontierFacts` exposes Rust runtime facts for the frontier,
+  proposal level, current anchor, non-finalized block count, and non-finalized minimum difficulty.
 - Re-audit after Slice 18 confirms the remaining DAG proposal work is not blocked by TransactionManager account/finalized
   routing anymore; it is blocked by ownership of the DAG proposal runtime itself.
 
@@ -1054,6 +1060,9 @@ Move:
 - complete for verifier sortition params: `DagManager::verifyBlock` now feeds the same Rust-native sortition runtime
   params directly into `dag_verify_vdf_sortition_from_block`, so block verification no longer builds the C++
   `SortitionParams` compatibility DTO for Rust VDF checks
+- complete for proposer graph facts: `DagBlockProposer` now uses Rust-owned `DagManagerState` facts for frontier,
+  propose level, anchor, non-finalized block count, and minimum difficulty, including the VDF cancellation/stale
+  comparisons that previously recomputed levels through C++ block lookups
 - remaining: route `DagBlockProposer` and `DagManager` shim decisions through the DTO while keeping C++ block/transaction
   materialization temporary
 

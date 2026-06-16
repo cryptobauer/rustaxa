@@ -120,11 +120,6 @@ class DagBlockProposer {
                                                                       const uint16_t node_trx_shard) const;
 
   /**
-   * Returns the maximum level among the pivot and tips.
-   */
-  level_t getProposeLevel(blk_hash_t const& pivot, vec_blk_t const& tips) const;
-
-  /**
    * Checks only the finalized-period availability precondition.
    *
    * Full DPoS eligibility and VDF denominator facts are fetched from Rust FinalChain in `proposeDagBlock`.
