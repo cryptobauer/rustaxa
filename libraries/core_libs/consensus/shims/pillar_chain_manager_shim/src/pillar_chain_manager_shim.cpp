@@ -155,12 +155,30 @@ rustaxa::PillarValidatorVoteCount toBridgeVoteCount(const state_api::ValidatorVo
   return out;
 }
 
+state_api::ValidatorVoteCount fromBridgeDposVoteCount(const rustaxa::DposValidatorVoteCount& vote_count) {
+  state_api::ValidatorVoteCount out{};
+  out.addr = fromBridgeAddress(vote_count.address);
+  out.vote_count = vote_count.vote_count;
+  return out;
+}
+
 rust::Vec<rustaxa::PillarValidatorVoteCount> toBridgeVoteCounts(
     const std::vector<state_api::ValidatorVoteCount>& vote_counts) {
   rust::Vec<rustaxa::PillarValidatorVoteCount> out;
   out.reserve(vote_counts.size());
   for (const auto& vote_count : vote_counts) {
     out.push_back(toBridgeVoteCount(vote_count));
+  }
+  return out;
+}
+
+std::vector<state_api::ValidatorVoteCount> loadPillarValidatorVoteCounts(
+    const std::shared_ptr<final_chain::FinalChain>& final_chain, PbftPeriod period) {
+  auto rust_vote_counts = final_chain->rustFinalChainForRust().get_dpos_validators_eligible_vote_counts(period);
+  std::vector<state_api::ValidatorVoteCount> out;
+  out.reserve(rust_vote_counts.size());
+  for (const auto& vote_count : rust_vote_counts) {
+    out.push_back(fromBridgeDposVoteCount(vote_count));
   }
   return out;
 }
@@ -444,7 +462,7 @@ PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_confi
 std::shared_ptr<PillarBlock> PillarChainManager::createPillarBlock(
     PbftPeriod period, const std::shared_ptr<const final_chain::BlockHeader>& block_header, const h256& bridge_root,
     const h256& bridge_epoch) {
-  auto new_vote_counts = final_chain_->dposValidatorsEligibleVoteCounts(period);
+  auto new_vote_counts = loadPillarValidatorVoteCounts(final_chain_, period);
   std::vector<PillarBlock::ValidatorVoteCountChange> votes_count_changes;
   std::shared_ptr<PillarBlock> last_finalized_pillar_block;
 

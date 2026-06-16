@@ -787,13 +787,14 @@ and transaction cleanup no longer call C++ FinalChain or `DbStorage` for determi
 
 Status: partially complete. The VoteManager DPoS/PBFT vote fact sub-slice now consumes the existing Rust FinalChain
 grouped PBFT fact port instead of issuing direct C++ FinalChain DPoS count and last-block reads from the VoteManager
-shim. The remaining account, bridge, system-transaction, and arbitrary EVM facts stay open because they cross the
-accepted external-EVM/state boundary.
+shim. Pillar block creation now sources the full validator vote-count snapshot through the Rust FinalChain handle. The
+remaining account, bridge, system-transaction, and arbitrary EVM facts stay open because they cross the accepted
+external-EVM/state boundary.
 
 Current boundary:
 
-- External EVM execution, state commits, receipts, bridge root/epoch reads, DPoS vote counts, account snapshots, and
-  system transaction construction remain outside the consensus storage migration.
+- External EVM execution, state commits, receipts, bridge root/epoch reads, account snapshots, and system transaction
+  construction remain outside the consensus storage migration.
 - This is the accepted boundary that explains current PBFT manager runtime failures such as external-EVM state gaps,
   DPoS snapshot gaps, and transaction execution-count mismatches.
 - Finalized-account transaction queue purge was explicitly deferred from Slice 4 until FinalChain account snapshots move
@@ -822,8 +823,9 @@ Completed in the pillar-manager DPoS fact-port sub-slice:
   vote facts through `BridgeFinalChain::collect_pbft_final_chain_facts`.
 - `PillarChainManager` no longer directly calls `dposIsEligible`, `dposEligibleVoteCount`, or
   `dposEligibleTotalVoteCount` in the migrated consensus paths.
-- The full FinalChain DPoS snapshot used for pillar block creation remains an explicit external boundary for Slices 16
-  and 21.
+- Pillar block creation now requests the full validator vote-count snapshot through
+  `BridgeFinalChain::get_dpos_validators_eligible_vote_counts` instead of calling C++
+  `FinalChain::dposValidatorsEligibleVoteCounts`.
 
 Move:
 
@@ -933,15 +935,15 @@ pre-existing warning set documented in earlier slice validation notes.
 Goal: finish the remaining pillar-chain consensus fact reads so pillar validation and threshold decisions consume typed
 Rust FinalChain fact ports instead of direct C++ FinalChain calls.
 
-Status: complete for direct pillar DPoS eligibility/count fact reads. Pillar block creation still depends on the
-external FinalChain DPoS snapshot and bridge-root boundaries tracked by Slices 14 and 21.
+Status: complete for direct pillar DPoS eligibility/count fact reads and the full validator vote-count snapshot used by
+pillar block creation. Bridge-root/epoch and external-EVM facts remain tracked by Slices 14 and 21.
 
 Current boundary:
 
 - Pillar vote validation, insertion planning, and threshold calculation now consume
   `BridgeFinalChain::collect_pbft_final_chain_facts` for voter weight/eligibility and total vote count facts.
-- Pillar block creation still temporarily materializes C++ pillar objects and requests the full FinalChain DPoS snapshot,
-  but storage writes and deterministic planning already live in Rust.
+- Pillar block creation still temporarily materializes C++ pillar objects, but it requests the full validator vote-count
+  snapshot through the Rust FinalChain handle and keeps storage writes plus deterministic planning in Rust.
 
 Move:
 
@@ -949,6 +951,8 @@ Move:
   `BridgeFinalChain::collect_pbft_final_chain_facts`
 - completed: updated `PillarChainManager` shim callers to convert unavailable/zero fact results into the existing Rust
   pillar planner statuses instead of calling C++ `dposEligible*` helpers
+- completed: routed the full validator vote-count snapshot for pillar block creation through
+  `BridgeFinalChain::get_dpos_validators_eligible_vote_counts`
 - keep C++ object materialization only for the public/live sidecar API
 - completed by Slice 15: the storage-boundary guard rejects new consensus direct DPoS reads from unapproved files
 
@@ -959,10 +963,11 @@ Keep temporarily:
 
 Done when:
 
-- no `dposIsEligible`, `dposEligibleVoteCount`, or `dposEligibleTotalVoteCount` calls remain in pillar-manager
-  consensus paths
+- no `dposIsEligible`, `dposEligibleVoteCount`, `dposEligibleTotalVoteCount`, or
+  `dposValidatorsEligibleVoteCounts` calls remain in pillar-manager consensus paths
 - pillar validation/insertion paths preserve unavailable/zero fact behavior through Rust planner statuses
-- Slice 14 can mark direct pillar DPoS eligibility/count facts complete while keeping the full DPoS snapshot boundary open
+- Slice 14 can mark direct pillar DPoS eligibility/count and validator-snapshot facts complete while keeping bridge/EVM
+  boundaries open
 
 Validation:
 
@@ -973,15 +978,14 @@ Validation:
 - `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
 - `scripts/rewrite_storage_boundary_guard.sh --self-test && scripts/rewrite_storage_boundary_guard.sh`
 
-Validation note: the pillar FinalChain fact-completion sub-slice passes `cargo test --manifest-path rust/Cargo.toml -p
+Validation note: the pillar FinalChain fact-completion sub-slices pass `cargo test --manifest-path rust/Cargo.toml -p
 rustaxa-consensus pillar_chain`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pillar_chain`, `cargo
 test --manifest-path rust/Cargo.toml -p rustaxa-bridge final_chain`, `cmake --build /build --target pillar_chain_test
---parallel 12`, `cmake --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
-`scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff
---check`. The broad `/build/bin/pillar_chain_test --gtest_filter='PillarChainTest.*'` runtime was attempted and
-reproduced the known unimplemented FinalChain/EVM runtime boundaries: `votes_count_changes` hit the Rust FinalChain
-DPoS snapshot gap for block 16, and `finalize_root_in_pillar_block` aborted because bridge-root reads require committed
-external-EVM state for block 3.
+--parallel 12`, focused `/build/bin/pillar_chain_test` coverage for pillar block creation, serialization, compact
+signatures, and Rust-inspected pillar vote validation, `cmake --build /build --target rust_storage_tests --parallel 12`,
+`/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
+`scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`. Broad bridge-root/external-EVM runtime coverage
+remains under Slices 14 and 21.
 
 ## Slice 17: DAG Proposal Fact Port
 
