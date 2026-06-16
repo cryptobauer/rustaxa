@@ -1355,6 +1355,9 @@ Implemented sub-slice:
   the guard just like unmarked RPC/GraphQL query reads
 - marked the remaining legacy PBFT sync `DbStorage::getPeriodDataRaw` read with
   `RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY`; the Rust-mode branch continues to use the typed Rust sync payload
+- marked the remaining tarcap `DbStorage` constructor/member surfaces with `RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY` and the
+  GraphQL HTTP processor storage owner with `RUSTAXA_QUERY_COMPAT_READ`, so Slice 23 can audit network/query debt by
+  marker instead of treating it as unclassified consensus storage ownership
 
 Move:
 
@@ -1377,6 +1380,11 @@ Validation note: the network compatibility guard sub-slice passes `cmake --build
 --check`. Running `/build/bin/network_test` still aborts in `NetworkTest.node_pbft_sync` with
 `RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: TM_FINAL_CHAIN_ACCOUNT_LOOKUP_FAILED`, after earlier network sync cases pass;
 that is the existing FinalChain/account lookup boundary and is not counted as a Slice 22 tarcap compatibility regression.
+
+Validation note: the constructor/query classification sub-slice passes `cmake --build /build --target network_test
+--parallel 12`, `cmake --build /build --target rpc_plugin --parallel 12`,
+`scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff
+--check`.
 
 Done when:
 

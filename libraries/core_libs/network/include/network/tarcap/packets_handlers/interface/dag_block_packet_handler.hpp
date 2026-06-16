@@ -11,7 +11,7 @@ class IDagBlockPacketHandler : public ExtSyncingPacketHandler {
                          std::shared_ptr<PbftSyncingState> pbft_syncing_state, std::shared_ptr<PbftChain> pbft_chain,
                          std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<DagManager> dag_mgr,
 #ifndef RUSTAXA_ENABLE
-                         std::shared_ptr<DbStorage> db,
+                         std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy DAG handler.
 #endif
                          const addr_t &node_addr, const std::string &logs_prefix);
 

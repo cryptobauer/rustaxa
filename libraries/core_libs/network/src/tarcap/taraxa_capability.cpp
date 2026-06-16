@@ -40,7 +40,7 @@ TaraxaCapability::TaraxaCapability(
     std::shared_ptr<network::threadpool::PacketsThreadPool> threadpool,
     std::shared_ptr<TimePeriodPacketsStats> packets_stats, std::shared_ptr<PbftSyncingState> syncing_state,
 #ifndef RUSTAXA_ENABLE
-    std::shared_ptr<DbStorage> db,
+    std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy tarcap handler wiring.
 #endif
     std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
     std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
@@ -259,7 +259,7 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitLatestVersion
        const std::shared_ptr<PeersState> &peers_state, const std::shared_ptr<PbftSyncingState> &pbft_syncing_state,
        const std::shared_ptr<tarcap::TimePeriodPacketsStats> &packets_stats,
 #ifndef RUSTAXA_ENABLE
-       const std::shared_ptr<DbStorage> &db,
+       const std::shared_ptr<DbStorage> &db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy tarcap handler wiring.
 #endif
        const std::shared_ptr<PbftManager> &pbft_mgr, const std::shared_ptr<PbftChain> &pbft_chain,
        const std::shared_ptr<VoteManager> &vote_mgr, const std::shared_ptr<DagManager> &dag_mgr,
@@ -317,7 +317,7 @@ const TaraxaCapability::InitPacketsHandlers TaraxaCapability::kInitV5VersionHand
        const std::shared_ptr<PeersState> &peers_state, const std::shared_ptr<PbftSyncingState> &pbft_syncing_state,
        const std::shared_ptr<tarcap::TimePeriodPacketsStats> &packets_stats,
 #ifndef RUSTAXA_ENABLE
-       const std::shared_ptr<DbStorage> &db,
+       const std::shared_ptr<DbStorage> &db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy tarcap handler wiring.
 #endif
        const std::shared_ptr<PbftManager> &pbft_mgr, const std::shared_ptr<PbftChain> &pbft_chain,
        const std::shared_ptr<VoteManager> &vote_mgr, const std::shared_ptr<DagManager> &dag_mgr,

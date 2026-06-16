@@ -15,7 +15,8 @@ ExtSyncingPacketHandler::ExtSyncingPacketHandler(const FullNodeConfig &conf, std
                                                  std::shared_ptr<PbftManager> pbft_mgr,
                                                  std::shared_ptr<DagManager> dag_mgr,
 #ifndef RUSTAXA_ENABLE
-                                                 std::shared_ptr<DbStorage> db,
+                                                 std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY:
+                                                                                // legacy sync handler.
 #endif
                                                  const addr_t &node_addr, const std::string &log_channel_name)
     : PacketHandler(conf, std::move(peers_state), std::move(packets_stats), node_addr, log_channel_name),

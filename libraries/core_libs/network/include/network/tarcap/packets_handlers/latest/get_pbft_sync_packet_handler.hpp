@@ -23,7 +23,7 @@ class GetPbftSyncPacketHandler : public PacketHandler {
                            std::shared_ptr<PbftSyncingState> pbft_syncing_state, std::shared_ptr<PbftManager> pbft_mgr,
                            std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
 #ifndef RUSTAXA_ENABLE
-                           std::shared_ptr<DbStorage> db,
+                           std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy sync egress.
 #endif
                            const addr_t& node_addr, const std::string& logs_prefix = "");
 
@@ -42,7 +42,7 @@ class GetPbftSyncPacketHandler : public PacketHandler {
   std::shared_ptr<PbftChain> pbft_chain_;
   std::shared_ptr<VoteManager> vote_mgr_;
 #ifndef RUSTAXA_ENABLE
-  std::shared_ptr<DbStorage> db_;
+  std::shared_ptr<DbStorage> db_;  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy sync egress storage.
 #endif
 };
 

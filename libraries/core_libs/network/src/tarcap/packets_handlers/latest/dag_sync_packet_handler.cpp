@@ -15,7 +15,8 @@ DagSyncPacketHandler::DagSyncPacketHandler(const FullNodeConfig& conf, std::shar
                                            std::shared_ptr<DagManager> dag_mgr,
                                            std::shared_ptr<TransactionManager> trx_mgr,
 #ifndef RUSTAXA_ENABLE
-                                           std::shared_ptr<DbStorage> db,
+                                           std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY:
+                                                                          // legacy DAG sync handler.
 #endif
                                            const addr_t& node_addr, const std::string& logs_prefix)
     : ISyncPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_syncing_state),

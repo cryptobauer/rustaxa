@@ -22,7 +22,8 @@ GetPbftSyncPacketHandler::GetPbftSyncPacketHandler(const FullNodeConfig &conf, s
                                                    std::shared_ptr<PbftChain> pbft_chain,
                                                    std::shared_ptr<VoteManager> vote_mgr,
 #ifndef RUSTAXA_ENABLE
-                                                   std::shared_ptr<DbStorage> db,
+                                                   std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY:
+                                                                                  // legacy sync egress.
 #endif
                                                    const addr_t &node_addr, const std::string &logs_prefix)
     : PacketHandler(conf, std::move(peers_state), std::move(packets_stats), node_addr,

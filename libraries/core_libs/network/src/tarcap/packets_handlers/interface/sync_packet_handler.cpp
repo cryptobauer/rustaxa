@@ -12,7 +12,8 @@ ISyncPacketHandler::ISyncPacketHandler(const FullNodeConfig& conf, std::shared_p
                                        std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<PbftManager> pbft_mgr,
                                        std::shared_ptr<DagManager> dag_mgr,
 #ifndef RUSTAXA_ENABLE
-                                       std::shared_ptr<DbStorage> db,
+                                       std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY:
+                                                                      // legacy sync handler.
 #endif
                                        const addr_t& node_addr, const std::string& logs_prefix)
     : ExtSyncingPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_syncing_state),
@@ -53,7 +54,7 @@ void ISyncPacketHandler::startSyncingPbft() {
 #ifdef RUSTAXA_ENABLE
         pbft_mgr_->setPbftSyncSnapshotCreationEnabled(false);
 #else
-        db_->disableSnapshots();
+        db_->disableSnapshots();  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy snapshot lifecycle.
 #endif
       }
     } else {
@@ -66,7 +67,7 @@ void ISyncPacketHandler::startSyncingPbft() {
 #ifdef RUSTAXA_ENABLE
     pbft_mgr_->setPbftSyncSnapshotCreationEnabled(true);
 #else
-    db_->enableSnapshots();
+    db_->enableSnapshots();  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy snapshot lifecycle.
 #endif
   }
 }
