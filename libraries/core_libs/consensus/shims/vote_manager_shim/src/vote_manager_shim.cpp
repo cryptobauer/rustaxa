@@ -257,7 +257,8 @@ void requireApplied(const rustaxa::PbftVotePersistenceResult& result, const char
   throw std::runtime_error(err.str());
 }
 
-void persistVoteProgressToRustStorage(DbStorage& db, const std::shared_ptr<PbftVote>& extra_reward_vote,
+void persistVoteProgressToRustStorage(rustaxa::BridgeStorage& storage,
+                                      const std::shared_ptr<PbftVote>& extra_reward_vote,
                                       std::optional<TwoTPlusOneVotedBlockType> two_t_plus_one_type,
                                       const std::vector<std::shared_ptr<PbftVote>>& two_t_plus_one_votes) {
   rustaxa::PbftVoteProgressPersistenceWrite write{};
@@ -271,10 +272,10 @@ void persistVoteProgressToRustStorage(DbStorage& db, const std::shared_ptr<PbftV
     write.two_t_plus_one_bundle = makeTwoTPlusOneVoteBundle(*two_t_plus_one_type, two_t_plus_one_votes);
   }
 
-  requireApplied(db.rustStorage().persist_pbft_vote_progress(write), "vote progress");
+  requireApplied(storage.persist_pbft_vote_progress(write), "vote progress");
 }
 
-void persistVoteProgressPayloadsToRustStorage(DbStorage& db, bool has_extra_reward_vote,
+void persistVoteProgressPayloadsToRustStorage(rustaxa::BridgeStorage& storage, bool has_extra_reward_vote,
                                               const rustaxa::PbftVoteStorageRecord& extra_reward_vote,
                                               bool has_two_t_plus_one_bundle,
                                               const rustaxa::PbftTwoTPlusOneVoteBundle& two_t_plus_one_bundle) {
@@ -289,7 +290,7 @@ void persistVoteProgressPayloadsToRustStorage(DbStorage& db, bool has_extra_rewa
     write.two_t_plus_one_bundle = cloneTwoTPlusOneVoteBundle(two_t_plus_one_bundle);
   }
 
-  requireApplied(db.rustStorage().persist_pbft_vote_progress(write), "vote progress");
+  requireApplied(storage.persist_pbft_vote_progress(write), "vote progress");
 }
 
 rustaxa::PbftVoteEventFactFlags makeVoteEventFactFlags(bool valid_stale_reward_vote) {
@@ -463,7 +464,9 @@ VoteManager::VoteManager(const FullNodeConfig& config, std::shared_ptr<DbStorage
                          std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
                          std::shared_ptr<KeyManager> key_manager, std::shared_ptr<SlashingManager> slashing_manager)
     : VoteManagerOld(config, std::move(db), std::move(pbft_chain), std::move(final_chain), std::move(key_manager),
-                     std::move(slashing_manager)) {}
+                     std::move(slashing_manager)) {
+  rust_storage_ = &db_->rustStorage();
+}
 
 void VoteManager::setNetwork(std::weak_ptr<Network> network) {
   // TODO(rustaxa): move VoteManager network wiring to Rust/shim-owned state.
@@ -625,7 +628,7 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
 
   if (!two_t_plus_one.has_value()) [[unlikely]] {
     if (runtime_result.persist_extra_reward_vote) {
-      persistVoteProgressPayloadsToRustStorage(*db_, true, runtime_result.extra_reward_vote, false,
+      persistVoteProgressPayloadsToRustStorage(*rust_storage_, true, runtime_result.extra_reward_vote, false,
                                                runtime_result.two_t_plus_one_bundle);
       extra_reward_votes_.emplace_back(vote->getHash());
     }
@@ -641,7 +644,7 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
 
   if (!runtime_result.persist_two_t_plus_one_votes) {
     if (runtime_result.persist_extra_reward_vote) {
-      persistVoteProgressPayloadsToRustStorage(*db_, true, runtime_result.extra_reward_vote, false,
+      persistVoteProgressPayloadsToRustStorage(*rust_storage_, true, runtime_result.extra_reward_vote, false,
                                                runtime_result.two_t_plus_one_bundle);
       extra_reward_votes_.emplace_back(vote->getHash());
     }
@@ -649,7 +652,7 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
     return report;
   }
 
-  persistVoteProgressPayloadsToRustStorage(*db_, runtime_result.persist_extra_reward_vote,
+  persistVoteProgressPayloadsToRustStorage(*rust_storage_, runtime_result.persist_extra_reward_vote,
                                            runtime_result.extra_reward_vote, true,
                                            runtime_result.two_t_plus_one_bundle);
   if (runtime_result.persist_extra_reward_vote) {
@@ -846,7 +849,7 @@ void VoteManager::saveOwnVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
     throw std::runtime_error("VoteManager cannot persist a null own verified vote");
   }
   auto record = makeVoteStorageRecord(vote);
-  db_->rustStorage().save_own_verified_vote(record.hash, std::move(record.vote_rlp));
+  rust_storage_->save_own_verified_vote(record.hash, std::move(record.vote_rlp));
   own_verified_votes_.push_back(vote);
 }
 
@@ -863,7 +866,7 @@ void VoteManager::clearOwnVerifiedVotes(Batch& write_batch) {
     own_vote_hashes.emplace_back(vote->getHash());
   }
 
-  requireApplied(db_->rustStorage().clear_own_verified_votes(toBridgeRewardVoteHashes(own_vote_hashes)),
+  requireApplied(rust_storage_->clear_own_verified_votes(toBridgeRewardVoteHashes(own_vote_hashes)),
                  "own verified vote cleanup");
   own_verified_votes_.clear();
 }
@@ -1285,7 +1288,7 @@ void VoteManager::setCurrentPbftPeriodAndRound(PbftPeriod pbft_period, PbftRound
       votes.push_back(vote.second);
     }
 
-    persistVoteProgressToRustStorage(*db_, nullptr, two_t_plus_one_voted_block_type, votes);
+    persistVoteProgressToRustStorage(*rust_storage_, nullptr, two_t_plus_one_voted_block_type, votes);
   }
 }
 
@@ -1401,7 +1404,7 @@ rustaxa::PbftFinalizedPeriodApplyResult VoteManager::resetRewardVotesForFinaliza
   rust::Vec<rustaxa::PbftFinalizationStorageWriteStage> stages;
   stages.push_back(std::move(stage));
   auto result =
-      rustaxa::apply_pbft_finalization_storage_writes(db_->rustStorage(), write_intent, std::move(stages), false);
+      rustaxa::apply_pbft_finalization_storage_writes(*rust_storage_, write_intent, std::move(stages), false);
   if (result.status != kPbftFinalizedPeriodApplyStatusApplied &&
       result.status != kPbftFinalizedPeriodApplyStatusAlreadyApplied) {
     return result;

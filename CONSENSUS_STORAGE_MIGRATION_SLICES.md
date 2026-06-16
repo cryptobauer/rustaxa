@@ -1604,16 +1604,20 @@ rust_consensus_tests --parallel 12`, `/build/bin/rust_consensus_tests --gtest_fi
 Goal: collapse remaining operation-level `db_->rustStorage()` extraction in consensus shims into runtime construction or
 shim-owned Rust handles so C++ no longer passes storage handles through deterministic operation methods.
 
-Status: in progress. The PBFT chain sub-slice is complete pending validation/commit: `BridgePbftChain` can now be
+Status: in progress. The PBFT chain sub-slice is complete: `BridgePbftChain` can now be
 constructed with an owned Rust storage handle, and PBFT block existence/load operations are runtime methods over that
 handle. The PBFT chain shim no longer passes `db_->rustStorage()` from `findPbftBlockInChain` or
-`getPbftBlockInChain`; its remaining storage handle extraction is constructor-time runtime ownership.
+`getPbftBlockInChain`; its remaining storage handle extraction is constructor-time runtime ownership. The VoteManager
+sub-slice is also complete: the shim captures a Rust storage handle during construction and uses it for vote-progress
+persistence, own-vote save/clear, and finalization reward-vote reset instead of extracting `db_->rustStorage()` inside
+operation methods.
 
 Move/remove:
 
 - finish the TransactionManager operation handle cleanup already identified by Slice 18
-- finish VoteManager operation handle cleanup for vote progress, own-vote cleanup, and finalization storage writes
-- completed pending validation: PBFT chain block existence and PBFT block materialization now use runtime-owned storage
+- completed: VoteManager vote progress, own-vote cleanup, and finalization reward-vote reset use a
+  constructor-owned Rust storage handle instead of operation-site `db_->rustStorage()`
+- completed: PBFT chain block existence and PBFT block materialization now use runtime-owned storage
   methods instead of operation-site `db_->rustStorage()`
 - audit PBFT chain, gas-pricer, sortition, proposed-block, pillar-chain, DAG, and FinalChain shims for constructor-only
   storage handle ownership versus operation-site extraction
@@ -1630,6 +1634,13 @@ rust/Cargo.toml -p rustaxa-bridge pbft_chain`, `cmake --build /build --target ru
 `/build/bin/rust_consensus_tests --gtest_filter=RustPbftChainTest.*`, `cmake --build /build --target
 rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh
 --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
+
+Validation note: the VoteManager operation-handle sub-slice passes `cargo fmt --manifest-path rust/Cargo.toml --all
+--check`, `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`, `cmake --build /build --target vote_test
+--parallel 12`, `/build/bin/vote_test`, `cmake --build /build --target pbft_manager_test --parallel 12`, `cmake
+--build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
+`scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff
+--check`.
 
 ## Stop Conditions
 
