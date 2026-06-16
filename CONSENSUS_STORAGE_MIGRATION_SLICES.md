@@ -772,7 +772,10 @@ CMake config output; rerunning `rpc_test` alone with `--parallel 12` succeeded.
 Goal: make FinalChain/EVM-derived facts consumed by consensus explicit Rust ports so PBFT, DAG, votes, pillar, rewards,
 and transaction cleanup no longer call C++ FinalChain or `DbStorage` for deterministic consensus facts.
 
-Status: planned and intentionally larger than a storage cleanup slice.
+Status: partially complete. The VoteManager DPoS/PBFT vote fact sub-slice now consumes the existing Rust FinalChain
+grouped PBFT fact port instead of issuing direct C++ FinalChain DPoS count and last-block reads from the VoteManager
+shim. The remaining account, bridge, system-transaction, and arbitrary EVM facts stay open because they cross the
+accepted external-EVM/state boundary.
 
 Current boundary:
 
@@ -782,6 +785,16 @@ Current boundary:
   DPoS snapshot gaps, and transaction execution-count mismatches.
 - Finalized-account transaction queue purge was explicitly deferred from Slice 4 until FinalChain account snapshots move
   to Rust-accessible facts.
+
+Completed in the VoteManager DPoS fact-port sub-slice:
+
+- `VoteManager::addVerifiedVoteWithReport`, `generateVoteWithWeight`, `validateVote`, `getPbftTwoTPlusOne`, and
+  `genAndValidateVrfSortition` now request DPoS voter/total vote facts through
+  `BridgeFinalChain::collect_pbft_final_chain_facts`.
+- The shim converts unavailable FinalChain facts into the existing Rust vote-validation external-fact statuses instead
+  of catching individual C++ `dposEligible*`/`lastBlockNumber` calls.
+- VoteManager no longer directly calls `dposEligibleVoteCount`, `dposEligibleTotalVoteCount`, or `lastBlockNumber` for
+  the migrated DPoS fact paths.
 
 Move:
 
@@ -810,6 +823,16 @@ Validation:
 - focused PBFT manager, vote, DAG, pillar, and transaction-manager C++ tests for migrated facts
 - `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
 - FinalChain smoke/subsystem validation when a migrated fact changes runtime behavior
+
+Validation note: the VoteManager DPoS fact-port sub-slice passes `cargo test --manifest-path rust/Cargo.toml -p
+rustaxa-bridge final_chain`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_vote`, `cargo test
+--manifest-path rust/Cargo.toml -p rustaxa-consensus pbft_vote`, `cargo fmt --manifest-path rust/Cargo.toml --all
+--check`, `cmake --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`, `cmake
+--build /build --target vote_test --parallel 12`, `/build/bin/vote_test`, `cmake --build /build --target
+verified_votes_shim_test --parallel 12`, `/build/bin/verified_votes_shim_test`, `cmake --build /build --target
+pbft_manager_test --parallel 12`, `/build/bin/pbft_manager_test --gtest_filter=PbftManagerWithDagCreation.*`,
+`scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff
+--check`.
 
 ## Slice 15: Compatibility Shell Audit And Guard Hardening
 

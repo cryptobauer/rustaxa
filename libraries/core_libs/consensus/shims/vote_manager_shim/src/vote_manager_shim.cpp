@@ -41,6 +41,7 @@ constexpr uint8_t kPbftVoteGenerationStatusZeroWeight = 6;
 constexpr uint8_t kPbftVotePersistenceStatusApplied = 0;
 constexpr uint8_t kPbftTwoTPlusOneThresholdStatusAvailable = 0;
 constexpr uint8_t kPbftTwoTPlusOneThresholdStatusNeedsDposTotal = 1;
+constexpr uint8_t kPbftFinalChainFactStatusReady = 0;
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t& hash) { return hash.asArray(); }
 
@@ -90,6 +91,37 @@ rust::Vec<rustaxa::PbftFinalizationHash> toBridgeRewardVoteHashes(const std::vec
     out.push_back(rustaxa::PbftFinalizationHash{toBridgeHash(hash)});
   }
   return out;
+}
+
+rustaxa::PbftFinalChainFacts collectPbftDposFacts(const std::shared_ptr<final_chain::FinalChain>& final_chain,
+                                                  PbftPeriod dpos_period, bool collect_total_vote_count,
+                                                  const std::vector<addr_t>& addresses) {
+  rustaxa::PbftFinalChainFactRequest request{};
+  request.period = dpos_period;
+  request.collect_total_vote_count = collect_total_vote_count;
+  request.collect_address_vote_counts = !addresses.empty();
+  request.addresses.reserve(addresses.size());
+  for (const auto& address : addresses) {
+    request.addresses.push_back(rustaxa::PbftFinalChainFactAddress{toBridgeAddress(address)});
+  }
+  return final_chain->rustFinalChainForRust().collect_pbft_final_chain_facts(std::move(request));
+}
+
+bool finalChainFactReady(uint8_t status) { return status == kPbftFinalChainFactStatusReady; }
+
+std::string finalChainFactError(const rustaxa::PbftFinalChainFacts& facts) {
+  if (!facts.error_code.empty()) {
+    return static_cast<std::string>(facts.error_code);
+  }
+  return "PBFT_FINAL_CHAIN_FACTS_UNAVAILABLE";
+}
+
+std::string finalChainAddressFactError(const rustaxa::PbftFinalChainAddressFact& fact,
+                                       const rustaxa::PbftFinalChainFacts& facts) {
+  if (!fact.error_code.empty()) {
+    return static_cast<std::string>(fact.error_code);
+  }
+  return finalChainFactError(facts);
 }
 
 rustaxa::PbftFinalizedPeriodApplyResult rewardResetResult(uint8_t status, PbftPeriod period,
@@ -490,7 +522,19 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
   auto external_facts = makeVoteValidationExternalFacts(true, kPbftConfig);
   const auto recovered_voter = fromBridgeAddress(inspection.recovered_voter);
   try {
-    external_facts.voter_dpos_vote_count = final_chain_->dposEligibleVoteCount(vote->getPeriod() - 1, recovered_voter);
+    const auto dpos_facts = collectPbftDposFacts(final_chain_, vote->getPeriod() - 1, true, {recovered_voter});
+    if (dpos_facts.address_facts.empty() || !finalChainFactReady(dpos_facts.address_facts[0].status) ||
+        !finalChainFactReady(dpos_facts.total_vote_count_status) || !dpos_facts.has_total_vote_count) {
+      external_facts.future_dpos_state = true;
+      const auto error = dpos_facts.address_facts.empty()
+                             ? finalChainFactError(dpos_facts)
+                             : finalChainAddressFactError(dpos_facts.address_facts[0], dpos_facts);
+      LOG(log_er_) << "Unable to admit vote " << hash << " against dpos contract. Its period (" << vote->getPeriod()
+                   << ") is too far ahead of actual finalized pbft chain size (" << dpos_facts.last_block_number
+                   << "). Err msg: " << error;
+      return report;
+    }
+    external_facts.voter_dpos_vote_count = dpos_facts.address_facts[0].vote_count;
     external_facts.voter_dpos_ready = true;
 
     const auto pk = key_manager_->getVrfKey(vote->getPeriod() - 1, recovered_voter);
@@ -500,14 +544,8 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
       external_facts.vrf_public_key = pk->asArray();
     }
 
-    external_facts.total_dpos_vote_count = final_chain_->dposEligibleTotalVoteCount(vote->getPeriod() - 1);
+    external_facts.total_dpos_vote_count = dpos_facts.total_vote_count;
     external_facts.total_dpos_ready = true;
-  } catch (state_api::ErrFutureBlock& e) {
-    external_facts.future_dpos_state = true;
-    LOG(log_er_) << "Unable to admit vote " << hash << " against dpos contract. Its period (" << vote->getPeriod()
-                 << ") is too far ahead of actual finalized pbft chain size (" << final_chain_->lastBlockNumber()
-                 << "). Err msg: " << e.what();
-    return report;
   } catch (const std::exception& e) {
     external_facts.unknown_error = true;
     LOG(log_er_) << "Unable to admit vote " << hash << ". Err msg: " << e.what();
@@ -840,7 +878,17 @@ std::shared_ptr<PbftVote> VoteManager::generateVoteWithWeight(const blk_hash_t& 
   uint64_t total_dpos_votes_count = 0;
 
   try {
-    voter_dpos_votes_count = final_chain_->dposEligibleVoteCount(period - 1, wallet.node_addr);
+    const auto dpos_facts = collectPbftDposFacts(final_chain_, period - 1, true, {wallet.node_addr});
+    if (dpos_facts.address_facts.empty() || !finalChainFactReady(dpos_facts.address_facts[0].status) ||
+        !finalChainFactReady(dpos_facts.total_vote_count_status) || !dpos_facts.has_total_vote_count) {
+      LOG(log_er_) << "Unable to place vote for period: " << period << ", round: " << round << ", step: " << step
+                   << ", voted block hash: " << blockhash.abridged() << ". "
+                   << "Period is too far ahead of actual finalized pbft chain size (" << dpos_facts.last_block_number
+                   << "). Err msg: " << finalChainFactError(dpos_facts);
+      return nullptr;
+    }
+
+    voter_dpos_votes_count = dpos_facts.address_facts[0].vote_count;
     if (!voter_dpos_votes_count) {
       const auto generated = rustaxa::pbft_generate_signed_vote_with_weight(
           generation_input,
@@ -849,14 +897,10 @@ std::shared_ptr<PbftVote> VoteManager::generateVoteWithWeight(const blk_hash_t& 
       return nullptr;
     }
 
-    total_dpos_votes_count = final_chain_->dposEligibleTotalVoteCount(period - 1);
-
-  } catch (state_api::ErrFutureBlock& e) {
+    total_dpos_votes_count = dpos_facts.total_vote_count;
+  } catch (const std::exception& e) {
     LOG(log_er_) << "Unable to place vote for period: " << period << ", round: " << round << ", step: " << step
-                 << ", voted block hash: " << blockhash.abridged() << ". "
-                 << "Period is too far ahead of actual finalized pbft chain size (" << final_chain_->lastBlockNumber()
-                 << "). Err msg: " << e.what();
-
+                 << ", voted block hash: " << blockhash.abridged() << ". Err msg: " << e.what();
     return nullptr;
   }
 
@@ -927,17 +971,24 @@ std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<Pbf
   rustaxa::PbftCanonicalVoteValidation validation{};
 
   uint64_t voter_dpos_votes_count = 0;
+  uint64_t total_dpos_votes_count = 0;
+  rustaxa::PbftFinalChainFacts dpos_facts{};
   try {
-    voter_dpos_votes_count = final_chain_->dposEligibleVoteCount(vote_period - 1, recovered_voter);
+    dpos_facts = collectPbftDposFacts(final_chain_, vote_period - 1, true, {recovered_voter});
+    if (dpos_facts.address_facts.empty() || !finalChainFactReady(dpos_facts.address_facts[0].status)) {
+      external_facts.future_dpos_state = true;
+      (void)verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
+      err_msg << "Unable to validate vote " << vote->getHash() << " against dpos contract. It's period (" << vote_period
+              << ") is too far ahead of actual finalized pbft chain size (" << dpos_facts.last_block_number
+              << "). Err msg: "
+              << (dpos_facts.address_facts.empty()
+                      ? finalChainFactError(dpos_facts)
+                      : finalChainAddressFactError(dpos_facts.address_facts[0], dpos_facts));
+      return {false, err_msg.str()};
+    }
+    voter_dpos_votes_count = dpos_facts.address_facts[0].vote_count;
     external_facts.voter_dpos_ready = true;
     external_facts.voter_dpos_vote_count = voter_dpos_votes_count;
-  } catch (state_api::ErrFutureBlock& e) {
-    external_facts.future_dpos_state = true;
-    (void)verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
-    err_msg << "Unable to validate vote " << vote->getHash() << " against dpos contract. It's period (" << vote_period
-            << ") is too far ahead of actual finalized pbft chain size (" << final_chain_->lastBlockNumber()
-            << "). Err msg: " << e.what();
-    return {false, err_msg.str()};
   } catch (...) {
     external_facts.unknown_error = true;
     (void)verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
@@ -978,7 +1029,15 @@ std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<Pbf
       return {false, err_msg.str()};
     }
 
-    const uint64_t total_dpos_votes_count = final_chain_->dposEligibleTotalVoteCount(vote_period - 1);
+    if (!finalChainFactReady(dpos_facts.total_vote_count_status) || !dpos_facts.has_total_vote_count) {
+      external_facts.future_dpos_state = true;
+      (void)verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
+      err_msg << "Unable to validate vote " << vote->getHash() << " against dpos contract. It's period (" << vote_period
+              << ") is too far ahead of actual finalized pbft chain size (" << dpos_facts.last_block_number
+              << "). Err msg: " << finalChainFactError(dpos_facts);
+      return {false, err_msg.str()};
+    }
+    total_dpos_votes_count = dpos_facts.total_vote_count;
     external_facts.total_dpos_ready = true;
     external_facts.total_dpos_vote_count = total_dpos_votes_count;
     validation =
@@ -1005,7 +1064,7 @@ std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<Pbf
     external_facts.future_dpos_state = true;
     (void)verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
     err_msg << "Unable to validate vote " << vote->getHash() << " against dpos contract. It's period (" << vote_period
-            << ") is too far ahead of actual finalized pbft chain size (" << final_chain_->lastBlockNumber()
+            << ") is too far ahead of actual finalized pbft chain size (" << dpos_facts.last_block_number
             << "). Err msg: " << e.what();
     return {false, err_msg.str()};
   } catch (...) {
@@ -1045,14 +1104,16 @@ std::optional<uint64_t> VoteManager::getPbftTwoTPlusOne(PbftPeriod pbft_period, 
 
   uint64_t total_dpos_votes_count = 0;
   try {
-    total_dpos_votes_count = final_chain_->dposEligibleTotalVoteCount(pbft_period);
-  } catch (state_api::ErrFutureBlock& e) {
-    threshold_fact.future_dpos_state = true;
-    (void)verified_votes_.twoTPlusOneThreshold(threshold_fact);
-    LOG(log_er_) << "Unable to calculate 2t + 1 for period: " << pbft_period
-                 << ". Period is too far ahead of actual finalized pbft chain size (" << final_chain_->lastBlockNumber()
-                 << "). Err msg: " << e.what();
-    return {};
+    const auto dpos_facts = collectPbftDposFacts(final_chain_, pbft_period, true, {});
+    if (!finalChainFactReady(dpos_facts.total_vote_count_status) || !dpos_facts.has_total_vote_count) {
+      threshold_fact.future_dpos_state = true;
+      (void)verified_votes_.twoTPlusOneThreshold(threshold_fact);
+      LOG(log_er_) << "Unable to calculate 2t + 1 for period: " << pbft_period
+                   << ". Period is too far ahead of actual finalized pbft chain size (" << dpos_facts.last_block_number
+                   << "). Err msg: " << finalChainFactError(dpos_facts);
+      return {};
+    }
+    total_dpos_votes_count = dpos_facts.total_vote_count;
   } catch (const std::exception& e) {
     threshold_fact.unknown_error = true;
     threshold_plan = verified_votes_.twoTPlusOneThreshold(threshold_fact);
@@ -1091,9 +1152,22 @@ bool VoteManager::genAndValidateVrfSortition(PbftPeriod pbft_period, PbftRound p
                                              const WalletConfig& wallet) const {
   VrfPbftSortition vrf_sortition(wallet.vrf_secret, {PbftVoteTypes::propose_vote, pbft_period, pbft_round, 1});
   auto sortition_fact = makeProposerSortitionFact(kPbftConfig);
+  rustaxa::PbftFinalChainFacts dpos_facts{};
 
   try {
-    const uint64_t voter_dpos_votes_count = final_chain_->dposEligibleVoteCount(pbft_period - 1, wallet.node_addr);
+    dpos_facts = collectPbftDposFacts(final_chain_, pbft_period - 1, true, {wallet.node_addr});
+    if (dpos_facts.address_facts.empty() || !finalChainFactReady(dpos_facts.address_facts[0].status)) {
+      sortition_fact.future_dpos_state = true;
+      (void)rustaxa::pbft_proposer_sortition_plan(sortition_fact);
+      LOG(log_er_) << "Unable to generate vrf sortition for period " << pbft_period << ", round " << pbft_round
+                   << ". Period is too far ahead of actual finalized pbft chain size (" << dpos_facts.last_block_number
+                   << "). Err msg: "
+                   << (dpos_facts.address_facts.empty()
+                           ? finalChainFactError(dpos_facts)
+                           : finalChainAddressFactError(dpos_facts.address_facts[0], dpos_facts));
+      return false;
+    }
+    const uint64_t voter_dpos_votes_count = dpos_facts.address_facts[0].vote_count;
     sortition_fact.dpos_vote_count_ready = true;
     sortition_fact.dpos_vote_count = voter_dpos_votes_count;
     auto sortition_plan = rustaxa::pbft_proposer_sortition_plan(sortition_fact);
@@ -1103,7 +1177,15 @@ bool VoteManager::genAndValidateVrfSortition(PbftPeriod pbft_period, PbftRound p
       return false;
     }
 
-    const uint64_t total_dpos_votes_count = final_chain_->dposEligibleTotalVoteCount(pbft_period - 1);
+    if (!finalChainFactReady(dpos_facts.total_vote_count_status) || !dpos_facts.has_total_vote_count) {
+      sortition_fact.future_dpos_state = true;
+      (void)rustaxa::pbft_proposer_sortition_plan(sortition_fact);
+      LOG(log_er_) << "Unable to generate vrf sortition for period " << pbft_period << ", round " << pbft_round
+                   << ". Period is too far ahead of actual finalized pbft chain size (" << dpos_facts.last_block_number
+                   << "). Err msg: " << finalChainFactError(dpos_facts);
+      return false;
+    }
+    const uint64_t total_dpos_votes_count = dpos_facts.total_vote_count;
     sortition_fact.total_dpos_vote_count_ready = true;
     sortition_fact.total_dpos_vote_count = total_dpos_votes_count;
     sortition_plan = rustaxa::pbft_proposer_sortition_plan(sortition_fact);
@@ -1124,7 +1206,7 @@ bool VoteManager::genAndValidateVrfSortition(PbftPeriod pbft_period, PbftRound p
     sortition_fact.future_dpos_state = true;
     (void)rustaxa::pbft_proposer_sortition_plan(sortition_fact);
     LOG(log_er_) << "Unable to generate vrf sortition for period " << pbft_period << ", round " << pbft_round
-                 << ". Period is too far ahead of actual finalized pbft chain size (" << final_chain_->lastBlockNumber()
+                 << ". Period is too far ahead of actual finalized pbft chain size (" << dpos_facts.last_block_number
                  << "). Err msg: " << e.what();
     return false;
   } catch (...) {
@@ -1318,8 +1400,8 @@ rustaxa::PbftFinalizedPeriodApplyResult VoteManager::resetRewardVotesForFinaliza
 
   rust::Vec<rustaxa::PbftFinalizationStorageWriteStage> stages;
   stages.push_back(std::move(stage));
-  auto result = rustaxa::apply_pbft_finalization_storage_writes(db_->rustStorage(), write_intent, std::move(stages),
-                                                                false);
+  auto result =
+      rustaxa::apply_pbft_finalization_storage_writes(db_->rustStorage(), write_intent, std::move(stages), false);
   if (result.status != kPbftFinalizedPeriodApplyStatusApplied &&
       result.status != kPbftFinalizedPeriodApplyStatusAlreadyApplied) {
     return result;
