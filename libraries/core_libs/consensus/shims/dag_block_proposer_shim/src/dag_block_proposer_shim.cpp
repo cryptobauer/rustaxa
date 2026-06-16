@@ -48,6 +48,16 @@ rustaxa::LegacySortitionParams to_legacy_sortition_params(const SortitionParams&
   return out;
 }
 
+rustaxa::VdfSortitionVerifyConfig to_vdf_sortition_config(const SortitionParams& params) {
+  rustaxa::VdfSortitionVerifyConfig out;
+  out.threshold_upper = params.vrf.threshold_upper;
+  out.difficulty_min = params.vdf.difficulty_min;
+  out.difficulty_max = params.vdf.difficulty_max;
+  out.difficulty_stale = params.vdf.difficulty_stale;
+  out.lambda_bound = params.vdf.lambda_bound;
+  return out;
+}
+
 vdf_sortition::VdfSortition vdf_sortition_from_proof(const rustaxa::VdfSortitionProofResult& proof) {
   rustaxa::VdfSortitionPayload payload;
   payload.vrf_proof = proof.vrf_proof;
@@ -163,21 +173,32 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   const auto period_block_hash = dag_mgr_->getPeriodBlockHashForDagProposal(*proposal_period);
   const auto sortition_params = dag_mgr_->sortitionParamsManager().getSortitionParams(*proposal_period);
   const auto vrf_input = dag_vrf_input(propose_level, period_block_hash);
-  vdf_sortition::VdfSortition vdf_probe(sortition_params, node_dag_proposer_data->wallet.vrf_secret, vrf_input,
-                                        vote_count, max_vote_count);
+  rust::Slice<const uint8_t> vrf_input_slice{vrf_input.data(), vrf_input.size()};
+  const auto normalized_vote_count = rustaxa::vdf_sortition_normalize_vote_count(vote_count, max_vote_count);
+  const auto vrf_probe =
+      rustaxa::prove_legacy_vrf_sortition(node_dag_proposer_data->wallet.vrf_secret.asArray(), vrf_input_slice,
+                                          normalized_vote_count);
+  if (!vrf_probe.ok) {
+    throw vdf_sortition::VdfSortition::InvalidVdfSortition(
+        "Rust DAG proposer VRF probe failed. status " + std::to_string(vrf_probe.status) + ": " +
+        std::string(vrf_probe.error));
+  }
+  const auto vdf_difficulty = rustaxa::vdf_sortition_difficulty(to_vdf_sortition_config(sortition_params),
+                                                               vrf_probe.threshold);
+  const bool vdf_stale = vdf_difficulty == sortition_params.vdf.difficulty_stale;
 
   auto anchor = dag_mgr_->getAnchors().second;
   if (frontier.pivot != anchor) {
     if (dag_mgr_->getNonFinalizedBlocksSize().second > kMaxNonFinalizedDagBlocks) {
       return false;
     }
-    if (dag_mgr_->getNonFinalizedBlocksMinDifficulty() < vdf_probe.getDifficulty() &&
+    if (dag_mgr_->getNonFinalizedBlocksMinDifficulty() < vdf_difficulty &&
         dag_mgr_->getNonFinalizedBlocksSize().second > kMaxNonFinalizedDagBlocksLowDifficulty) {
       return false;
     }
   }
 
-  if (vdf_probe.isStale(sortition_params)) {
+  if (vdf_stale) {
     if (node_dag_proposer_data->last_propose_level == propose_level) {
       if (node_dag_proposer_data->num_tries < node_dag_proposer_data->max_num_tries) {
         LOG(log_dg_) << node_dag_proposer_data->wallet.node_addr
@@ -226,7 +247,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   while (result.wait_for(std::chrono::milliseconds(100)) != std::future_status::ready) {
     auto latest_frontier = dag_mgr_->getDagFrontier();
     const auto latest_level = getProposeLevel(latest_frontier.pivot, latest_frontier.tips) + 1;
-    if (latest_level > propose_level + 1 && vdf_probe.getDifficulty() > sortition_params.vdf.difficulty_min) {
+    if (latest_level > propose_level + 1 && vdf_difficulty > sortition_params.vdf.difficulty_min) {
       cancellation_token = true;
       break;
     }
@@ -239,7 +260,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
     return true;
   }
 
-  if (vdf_probe.isStale(sortition_params)) {
+  if (vdf_stale) {
     thisThreadSleepForSeconds(1);
     auto latest_frontier = dag_mgr_->getDagFrontier();
     const auto latest_level = getProposeLevel(latest_frontier.pivot, latest_frontier.tips) + 1;
