@@ -1004,8 +1004,10 @@ Current boundary:
 - `DagBlockProposer` now asks the Rust TransactionManager runtime for proposer-sharded transaction packing, so the
   deterministic sender-shard filter runs inside the Rust-owned packing session before C++ materializes or estimates gas
   for candidates. Rust now also plans DAG block construction facts: legacy transaction-gas summation, tip-pruning
-  decisions, and selected-tip ordering. It still computes genesis gas-limit constants in C++ and keeps live VDF proving,
-  sortition-params access, tip metadata lookup, and `DagBlock` object creation in the compatibility shell.
+  decisions, and selected-tip ordering. Producer-side VDF proof generation now calls the Rust VDF sortition bridge
+  directly and materializes a legacy `VdfSortition` object only from the Rust-produced payload. It still computes
+  genesis gas-limit constants in C++ and keeps sortition-params access, the pre-proof difficulty/staleness probe, tip
+  metadata lookup, and `DagBlock` object creation in the compatibility shell.
 - Re-audit after Slice 18 confirms the remaining DAG proposal work is not blocked by TransactionManager account/finalized
   routing anymore; it is blocked by ownership of the DAG proposal runtime itself.
 
@@ -1024,6 +1026,9 @@ Move:
 - partially complete for DAG block construction: `rustaxa-consensus::dag` owns proposer tip selection, block gas
   accumulation, and the prune/no-prune decision through `dag_proposer_plan_block_construction`; C++ still materializes
   live tip metadata, VDF objects, transactions, and the final `DagBlock`
+- partially complete for producer VDF: `DagBlockProposer` now calls `prove_legacy_vdf_sortition` directly for the async
+  proof and reconstructs the legacy `VdfSortition` payload from Rust output; C++ still uses a temporary `VdfSortition`
+  probe for difficulty/staleness before transactions are selected
 - remaining: route `DagBlockProposer` and `DagManager` shim decisions through the DTO while keeping C++ block/transaction
   materialization temporary
 
@@ -1032,8 +1037,8 @@ Keep temporarily:
 - C++ DAG block object construction and network packet materialization
 - external EVM gas/state execution
 - public debug/query reads of DAG blocks
-- live transaction materialization, gas estimation, VDF proving, sortition-params runtime, and tip metadata lookup until
-  their own slices move them
+- live transaction materialization, gas estimation, sortition-params runtime, pre-proof VDF difficulty/staleness probing,
+  and tip metadata lookup until their own slices move them
 
 Done when:
 
@@ -1081,6 +1086,14 @@ Validation note: the DAG block-construction planner sub-slice moves proposer tip
 --parallel 12`, `/build/bin/dag_shim_test`, `cmake --build /build --target rust_storage_tests --parallel 12`,
 `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
 `scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
+
+Validation note: the producer-VDF sub-slice routes `DagBlockProposer` async proof generation through
+`prove_legacy_vdf_sortition`, uses Rust cancellation tokens for the existing cancellation path, and reconstructs the
+legacy `VdfSortition` compatibility object from Rust payload bytes. It passes `cmake --build /build --target
+dag_shim_test --parallel 12`, `/build/bin/dag_shim_test`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-vdf
+sortition`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge dag_vdf`, `cmake --build /build --target
+rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh
+--self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
 
 ## Slice 18: Transaction Account And Finalized Fact Port
 

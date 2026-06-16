@@ -2,6 +2,7 @@
 #include <chrono>
 #include <future>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -35,6 +36,25 @@ dev::bytes to_bytes(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.b
 dev::bytes dag_vrf_input(level_t level, const blk_hash_t& proposal_period_hash) {
   auto bytes = rustaxa::dag_vrf_input(level, to_bridge_hash(proposal_period_hash));
   return to_bytes(bytes);
+}
+
+rustaxa::LegacySortitionParams to_legacy_sortition_params(const SortitionParams& params) {
+  rustaxa::LegacySortitionParams out;
+  out.vrf_threshold_upper = params.vrf.threshold_upper;
+  out.vdf_difficulty_min = params.vdf.difficulty_min;
+  out.vdf_difficulty_max = params.vdf.difficulty_max;
+  out.vdf_difficulty_stale = params.vdf.difficulty_stale;
+  out.vdf_lambda_bound = params.vdf.lambda_bound;
+  return out;
+}
+
+vdf_sortition::VdfSortition vdf_sortition_from_proof(const rustaxa::VdfSortitionProofResult& proof) {
+  rustaxa::VdfSortitionPayload payload;
+  payload.vrf_proof = proof.vrf_proof;
+  payload.vdf_solution_proof = proof.vdf_proof;
+  payload.vdf_solution_output = proof.vdf_output;
+  payload.difficulty = proof.difficulty;
+  return vdf_sortition::VdfSortition(to_bytes(rustaxa::vdf_sortition_payload_encode(payload)));
 }
 
 uint64_t rust_final_chain_last_block_number(const final_chain::FinalChain& final_chain) {
@@ -142,21 +162,22 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
 
   const auto period_block_hash = dag_mgr_->getPeriodBlockHashForDagProposal(*proposal_period);
   const auto sortition_params = dag_mgr_->sortitionParamsManager().getSortitionParams(*proposal_period);
-  vdf_sortition::VdfSortition vdf(sortition_params, node_dag_proposer_data->wallet.vrf_secret,
-                                  dag_vrf_input(propose_level, period_block_hash), vote_count, max_vote_count);
+  const auto vrf_input = dag_vrf_input(propose_level, period_block_hash);
+  vdf_sortition::VdfSortition vdf_probe(sortition_params, node_dag_proposer_data->wallet.vrf_secret, vrf_input,
+                                        vote_count, max_vote_count);
 
   auto anchor = dag_mgr_->getAnchors().second;
   if (frontier.pivot != anchor) {
     if (dag_mgr_->getNonFinalizedBlocksSize().second > kMaxNonFinalizedDagBlocks) {
       return false;
     }
-    if (dag_mgr_->getNonFinalizedBlocksMinDifficulty() < vdf.getDifficulty() &&
+    if (dag_mgr_->getNonFinalizedBlocksMinDifficulty() < vdf_probe.getDifficulty() &&
         dag_mgr_->getNonFinalizedBlocksSize().second > kMaxNonFinalizedDagBlocksLowDifficulty) {
       return false;
     }
   }
 
-  if (vdf.isStale(sortition_params)) {
+  if (vdf_probe.isStale(sortition_params)) {
     if (node_dag_proposer_data->last_propose_level == propose_level) {
       if (node_dag_proposer_data->num_tries < node_dag_proposer_data->max_num_tries) {
         LOG(log_dg_) << node_dag_proposer_data->wallet.node_addr
@@ -188,8 +209,16 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
 
   std::atomic_bool cancellation_token = false;
   std::promise<void> sync;
-  executor_.post([&vdf, &sortition_params, &vdf_msg, cancel = std::ref(cancellation_token), &sync]() mutable {
-    vdf.computeVdfSolution(sortition_params, vdf_msg, cancel);
+  auto rust_cancellation_token =
+      rustaxa::make_cancellation_token_with_atomic(reinterpret_cast<const bool*>(&cancellation_token));
+  std::optional<rustaxa::VdfSortitionProofResult> proof_result;
+  executor_.post([params = to_legacy_sortition_params(sortition_params),
+                  secret = node_dag_proposer_data->wallet.vrf_secret.asArray(), &vrf_input, &vdf_msg,
+                  &rust_cancellation_token, &proof_result, &sync, vote_count, max_vote_count]() mutable {
+    rust::Slice<const uint8_t> vrf_input_slice{vrf_input.data(), vrf_input.size()};
+    rust::Slice<const uint8_t> vdf_input_slice{vdf_msg.data(), vdf_msg.size()};
+    proof_result.emplace(rustaxa::prove_legacy_vdf_sortition(params, secret, vrf_input_slice, vdf_input_slice,
+                                                             vote_count, max_vote_count, *rust_cancellation_token));
     sync.set_value();
   });
 
@@ -197,7 +226,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   while (result.wait_for(std::chrono::milliseconds(100)) != std::future_status::ready) {
     auto latest_frontier = dag_mgr_->getDagFrontier();
     const auto latest_level = getProposeLevel(latest_frontier.pivot, latest_frontier.tips) + 1;
-    if (latest_level > propose_level + 1 && vdf.getDifficulty() > sortition_params.vdf.difficulty_min) {
+    if (latest_level > propose_level + 1 && vdf_probe.getDifficulty() > sortition_params.vdf.difficulty_min) {
       cancellation_token = true;
       break;
     }
@@ -210,7 +239,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
     return true;
   }
 
-  if (vdf.isStale(sortition_params)) {
+  if (vdf_probe.isStale(sortition_params)) {
     thisThreadSleepForSeconds(1);
     auto latest_frontier = dag_mgr_->getDagFrontier();
     const auto latest_level = getProposeLevel(latest_frontier.pivot, latest_frontier.tips) + 1;
@@ -221,8 +250,15 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
     }
   }
 
-  LOG(log_dg_) << node_dag_proposer_data->wallet.node_addr << " VDF computation time " << vdf.getComputationTime()
-               << " difficulty " << vdf.getDifficulty();
+  if (!proof_result.has_value() || !proof_result->ok) {
+    throw vdf_sortition::VdfSortition::InvalidVdfSortition(
+        "Rust DAG proposer VDF proof failed. status " +
+        std::to_string(proof_result.has_value() ? proof_result->status : 0) + ": " +
+        (proof_result.has_value() ? std::string(proof_result->error) : std::string("missing proof result")));
+  }
+
+  auto vdf = vdf_sortition_from_proof(*proof_result);
+  LOG(log_dg_) << node_dag_proposer_data->wallet.node_addr << " VDF difficulty " << vdf.getDifficulty();
 
   auto dag_block = createDagBlock(std::move(frontier), propose_level, transactions, std::move(estimations),
                                   std::move(vdf), node_dag_proposer_data->wallet.node_secret);
