@@ -390,13 +390,12 @@ query compatibility, PBFT-chain/proposed-block live sidecars, PBFT sync/network 
 are tracked below as Slices 10-23 so implementation can continue without broadening Slice 8 into unrelated subsystem
 ownership changes. Slices 16-23 are the additional closure plan added after the boundary-slice evaluation.
 
-Post-boundary-slice evaluation: Slice 8 cannot be marked fully complete yet. Slices 10-15 retired the PBFT-chain,
-proposed-block, PBFT sync egress, RPC/GraphQL query-marker, guard, VoteManager DPoS, and pillar-sync DPoS read
-surfaces that had clear Rust replacements. The remaining read-surface hits are still tied to gas-pricer runtime handle
-initialization, temporary C++ sidecar materialization, network/app compatibility constructors, DAG proposal-validation
-facts, transaction account/finalized facts, and the explicit FinalChain/EVM boundary. Completing those would change the
-larger subsystem direction rather than finish Slice 8 as originally scoped. Slices 16-23 break those blockers into
-implementation units that can close Slice 8/9 incrementally.
+Post-boundary-slice evaluation: Slice 8 cannot be marked fully complete yet. Slices 10-18, 19, and 22-26 retired the
+PBFT-chain, proposed-block, PBFT sync egress, RPC/GraphQL query-marker, guard, VoteManager DPoS, pillar-sync DPoS,
+gas-pricer runtime, and TransactionManager account/finalized read surfaces that had clear Rust replacements. The
+remaining read-surface blockers are now temporary C++ sidecar materialization, network/app compatibility constructors,
+DAG proposal-validation live-runtime facts, and the explicit FinalChain/EVM publication/account boundary. Completing
+those would change larger subsystem ownership rather than finish Slice 8 as originally scoped.
 
 Move:
 
@@ -486,10 +485,10 @@ C++ sidecar materialization. Removing those in this slice would require broad or
 execution ownership, so the slice stops here under the plan stop conditions.
 
 Post-boundary-slice evaluation: Slice 9 also cannot be marked fully complete yet. The public `rustBatchId` escape hatch
-and obsolete PBFT finalization appenders are gone, and the Slice 15 guard prevents new C++ storage/DPoS regressions, but
-the compatibility shell still legitimately owns public C++ API materialization and temporary Rust storage-handle
-extraction for subsystems whose runtimes are not fully native. The next closures are not cleanup-only work; they require
-dedicated FinalChain/EVM, DAG proposal-validation, gas-pricer runtime, and transaction-account fact slices.
+and obsolete PBFT finalization appenders are gone, operation-level Rust storage handle extraction has been collapsed into
+constructor/runtime ownership, and the Slice 15 guard prevents new C++ storage/DPoS regressions. The remaining closures
+are not cleanup-only work; they require dedicated FinalChain/EVM publication/account ownership and DAG proposal-validation
+runtime slices.
 
 Move/remove:
 
@@ -989,10 +988,12 @@ external-EVM state for block 3.
 Goal: move DAG proposer and DAG manager proposal-validation facts behind Rust fact ports so DAG consensus no longer
 mixes `DbStorage` proposal-period reads with C++ FinalChain height/DPoS/gas-limit calls.
 
-Status: partial. Direct C++ FinalChain calls for DAG authorization and proposer finalized-height checks are removed from
-the Rust-mode DAG proposer/manager shims. A fuller `DagProposalFacts` envelope remains open because transaction
-selection, gas estimation, sortition-params lookup, and DAG block materialization still cross existing C++ live-runtime
-boundaries.
+Status: stopped at live-runtime boundary. Direct C++ FinalChain calls for DAG authorization and proposer finalized-height
+checks are removed from the Rust-mode DAG proposer/manager shims. A fuller `DagProposalFacts` envelope remains open
+because transaction selection, gas estimation, sortition-params lookup, VDF proving/cancellation, and DAG block
+materialization still cross existing C++ live-runtime boundaries. Moving only one of those facts now would add another
+partial DTO without removing the remaining C++ proposal owner, so this slice needs a dedicated DAG proposal-runtime
+replan before more implementation.
 
 Current boundary:
 
@@ -1002,6 +1003,8 @@ Current boundary:
   storage-owned Rust DAG runtime, and DPoS/VRF authorization now uses the shim-owned `BridgeFinalChain` runtime.
 - `DagBlockProposer` still computes genesis gas-limit constants in C++ and keeps live transaction selection, VDF
   proving, sortition-params access, and `DagBlock` object creation in the compatibility shell.
+- Re-audit after Slice 18 confirms the remaining DAG proposal work is not blocked by TransactionManager account/finalized
+  routing anymore; it is blocked by ownership of the DAG proposal runtime itself.
 
 Move:
 
@@ -1031,6 +1034,8 @@ Done when:
 - remaining DAG `DbStorage` references are sidecar materialization or query/admin compatibility
 - Slice 8 can partially remove direct C++ FinalChain DAG proposal-validation reads but must keep the broader
   DAG proposal DTO/runtime boundary open
+- stop condition: do not add a narrower `DagProposalFacts` DTO until the slice also moves one coherent proposal-runtime
+  owner such as transaction selection + gas facts, sortition/VDF facts, or DAG block construction facts
 
 Validation:
 
@@ -1436,11 +1441,11 @@ Validation:
 Goal: after Slices 16-22 land, make Slice 8 and Slice 9 objectively closable with a guard-backed audit rather than a
 manual judgment call.
 
-Status: re-audited / partially unblocked. The original Slice 23 blocker list was reduced by Slices 24-26: PBFT manager
-residual storage routes, rewards-stats column access, and operation-level `db_->rustStorage()` extraction in PBFT chain,
-VoteManager, and TransactionManager are closed. Slice 8 and Slice 9 still stay open because DAG proposal facts,
-DAG proposal facts and FinalChain/EVM account-publication facts remain broader runtime boundaries rather than
-compatibility-shell cleanup.
+Status: re-audited / partially unblocked. The original Slice 23 blocker list was reduced by Slices 24-26 and the Slice
+18 follow-ups: PBFT manager residual storage routes, rewards-stats column access, operation-level `db_->rustStorage()`
+extraction in PBFT chain/VoteManager/TransactionManager, and TransactionManager account/finalized fact routing are
+closed. Slice 8 and Slice 9 still stay open because DAG proposal facts and FinalChain/EVM account-publication facts remain
+broader runtime boundaries rather than compatibility-shell cleanup.
 
 Move/remove:
 
