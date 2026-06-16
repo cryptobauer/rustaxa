@@ -39,7 +39,7 @@ PbftChain::PbftChain(addr_t node_addr, std::shared_ptr<DbStorage> db) : db_(std:
   LOG_OBJECTS_CREATE("PBFT_CHAIN");
 
   auto restored = rustaxa::restore_pbft_chain_storage(db_->rustStorage());
-  rust_chain_ = rustaxa::create_pbft_chain(restored.head);
+  rust_chain_ = rustaxa::create_pbft_chain_with_storage(db_->rustStorage(), restored.head);
   if (restored.initialized_default) {
     LOG(log_nf_) << "Initialize PBFT chain head " << getJsonStr();
     return;
@@ -75,11 +75,11 @@ blk_hash_t PbftChain::getLastNonNullPbftBlockAnchor() const {
 }
 
 bool PbftChain::findPbftBlockInChain(taraxa::blk_hash_t const& pbft_block_hash) {
-  return rustaxa::pbft_chain_block_exists(db_->rustStorage(), to_bridge_hash(pbft_block_hash));
+  return rust_chain_.value()->pbft_chain_block_exists(to_bridge_hash(pbft_block_hash));
 }
 
 PbftBlock PbftChain::getPbftBlockInChain(const taraxa::blk_hash_t& pbft_block_hash) {
-  auto pbft_block = rustaxa::pbft_chain_block_rlp(db_->rustStorage(), to_bridge_hash(pbft_block_hash));
+  auto pbft_block = rust_chain_.value()->pbft_chain_block_rlp(to_bridge_hash(pbft_block_hash));
   if (!pbft_block.found) {
     LOG(log_er_) << "Cannot find PBFT block hash " << pbft_block_hash << " in DB";
     throw std::runtime_error("Cannot find PBFT block hash " + pbft_block_hash.toString() + " in DB");

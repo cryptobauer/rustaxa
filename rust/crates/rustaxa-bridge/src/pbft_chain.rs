@@ -4,12 +4,14 @@ use crate::ffi::rustaxa_ffi::{
 };
 use crate::ffi::BridgePbftChain;
 use crate::ffi::BridgeStorage;
+use anyhow::anyhow;
 use ethereum_types::H256;
 use rustaxa_consensus::pbft_chain::{
     load_pbft_block_from_storage, pbft_block_exists_in_storage,
     restore_pbft_chain_from_storage as domain_restore_pbft_chain_from_storage,
     PbftBlockStorageLookup, PbftBlockValidation, PbftChain, PbftChainHead, PbftChainStorageRestore,
 };
+use rustaxa_storage::Storage;
 
 const PBFT_VALIDATION_VALID: u8 = 0;
 const PBFT_VALIDATION_PERIOD_MISMATCH: u8 = 1;
@@ -22,7 +24,22 @@ const PBFT_VALIDATION_PREVIOUS_HASH_MISMATCH: u8 = 2;
 pub fn create_pbft_chain(
     head: PbftChainHeadPayload,
 ) -> Result<Box<BridgePbftChain>, anyhow::Error> {
-    Ok(Box::new(BridgePbftChain(PbftChain::new(head.into())?)))
+    Ok(Box::new(BridgePbftChain {
+        state: PbftChain::new(head.into())?,
+        storage: None,
+    }))
+}
+
+/// Creates a Rust PBFT chain state model from a C++-parsed head payload and
+/// binds it to a shared Rust storage handle for block lookup/materialization.
+pub fn create_pbft_chain_with_storage(
+    storage: &BridgeStorage,
+    head: PbftChainHeadPayload,
+) -> Result<Box<BridgePbftChain>, anyhow::Error> {
+    Ok(Box::new(BridgePbftChain {
+        state: PbftChain::new(head.into())?,
+        storage: Some(storage.0.clone()),
+    }))
 }
 
 /// Creates a Rust PBFT chain state model directly from native Rust storage.
@@ -34,7 +51,7 @@ pub fn create_pbft_chain_from_storage(
     storage: &BridgeStorage,
 ) -> Result<Box<BridgePbftChain>, anyhow::Error> {
     let restored = domain_restore_pbft_chain_from_storage(storage.0.as_ref())?;
-    create_pbft_chain(restored.head.into())
+    create_pbft_chain_with_storage(storage, restored.head.into())
 }
 
 /// Restores PBFT-chain storage facts without constructing a bridge runtime.
@@ -63,7 +80,7 @@ pub fn pbft_chain_block_rlp(
 impl BridgePbftChain {
     /// Returns the current PBFT chain head payload for C++ JSON formatting and public accessors.
     pub fn pbft_chain_head(&self) -> PbftChainHeadPayload {
-        self.0.head().into()
+        self.state.head().into()
     }
 
     /// Returns a non-mutating preview of appending a PBFT block.
@@ -73,7 +90,7 @@ impl BridgePbftChain {
         anchor_hash: &[u8; 32],
     ) -> Result<PbftChainHeadPayload, anyhow::Error> {
         Ok(self
-            .0
+            .state
             .project_update(H256::from(*block_hash), H256::from(*anchor_hash))?
             .into())
     }
@@ -85,7 +102,7 @@ impl BridgePbftChain {
         increments_non_empty_size: bool,
     ) -> Result<PbftChainHeadPayload, anyhow::Error> {
         Ok(self
-            .0
+            .state
             .project_legacy_json_head(H256::from(*block_hash), increments_non_empty_size)?
             .into())
     }
@@ -97,9 +114,24 @@ impl BridgePbftChain {
         anchor_hash: &[u8; 32],
     ) -> Result<PbftChainHeadPayload, anyhow::Error> {
         Ok(self
-            .0
+            .state
             .update(H256::from(*block_hash), H256::from(*anchor_hash))?
             .into())
+    }
+
+    /// Returns whether this storage-backed PBFT chain runtime has a finalized
+    /// PBFT block hash in Rust storage.
+    pub fn pbft_chain_block_exists(&self, block_hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
+        pbft_block_exists_in_storage(self.storage_handle()?, H256::from(*block_hash))
+    }
+
+    /// Loads canonical signed PBFT block RLP from this runtime's owned Rust
+    /// storage handle.
+    pub fn pbft_chain_block_rlp(
+        &self,
+        block_hash: &[u8; 32],
+    ) -> Result<FfiPbftBlockStorageLookup, anyhow::Error> {
+        Ok(load_pbft_block_from_storage(self.storage_handle()?, H256::from(*block_hash))?.into())
     }
 
     /// Checks whether the supplied candidate block extends the current PBFT head.
@@ -108,7 +140,10 @@ impl BridgePbftChain {
         period: u64,
         prev_hash: &[u8; 32],
     ) -> PbftBlockValidationResult {
-        match self.0.validate_next_block(period, H256::from(*prev_hash)) {
+        match self
+            .state
+            .validate_next_block(period, H256::from(*prev_hash))
+        {
             PbftBlockValidation::Valid => PbftBlockValidationResult {
                 ok: true,
                 code: PBFT_VALIDATION_VALID,
@@ -136,6 +171,12 @@ impl BridgePbftChain {
                 }
             }
         }
+    }
+
+    fn storage_handle(&self) -> Result<&Storage, anyhow::Error> {
+        self.storage
+            .as_deref()
+            .ok_or_else(|| anyhow!("PBFT_CHAIN_STORAGE_HANDLE_MISSING"))
     }
 }
 
@@ -275,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn bridge_pbft_chain_block_lookup_uses_storage() {
+    fn bridge_pbft_chain_block_lookup_uses_runtime_owned_storage() {
         let storage = crate::storage::create_storage(&unique_storage_path(
             "rustaxa_bridge_pbft_chain_block_lookup",
         ))
@@ -291,9 +332,21 @@ mod tests {
             .unwrap();
         storage.0.period().write_pbft_period(block_hash, 1).unwrap();
 
-        let exists = pbft_chain_block_exists(&storage, &block_hash.into()).unwrap();
-        let loaded = pbft_chain_block_rlp(&storage, &block_hash.into()).unwrap();
-        let missing = pbft_chain_block_rlp(&storage, &hash(999).into()).unwrap();
+        let chain = create_pbft_chain_with_storage(
+            &storage,
+            PbftChainHead {
+                head_hash: H256::zero(),
+                size: 1,
+                non_empty_size: 1,
+                last_pbft_block_hash: block_hash,
+                last_non_null_pbft_dag_anchor_hash: hash(9),
+            }
+            .into(),
+        )
+        .unwrap();
+        let exists = chain.pbft_chain_block_exists(&block_hash.into()).unwrap();
+        let loaded = chain.pbft_chain_block_rlp(&block_hash.into()).unwrap();
+        let missing = chain.pbft_chain_block_rlp(&hash(999).into()).unwrap();
 
         assert!(exists);
         assert!(loaded.found);

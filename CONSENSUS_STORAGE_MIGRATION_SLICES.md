@@ -1604,12 +1604,17 @@ rust_consensus_tests --parallel 12`, `/build/bin/rust_consensus_tests --gtest_fi
 Goal: collapse remaining operation-level `db_->rustStorage()` extraction in consensus shims into runtime construction or
 shim-owned Rust handles so C++ no longer passes storage handles through deterministic operation methods.
 
-Status: planned blocker for Slice 23 after Slices 24 and 25.
+Status: in progress. The PBFT chain sub-slice is complete pending validation/commit: `BridgePbftChain` can now be
+constructed with an owned Rust storage handle, and PBFT block existence/load operations are runtime methods over that
+handle. The PBFT chain shim no longer passes `db_->rustStorage()` from `findPbftBlockInChain` or
+`getPbftBlockInChain`; its remaining storage handle extraction is constructor-time runtime ownership.
 
 Move/remove:
 
 - finish the TransactionManager operation handle cleanup already identified by Slice 18
 - finish VoteManager operation handle cleanup for vote progress, own-vote cleanup, and finalization storage writes
+- completed pending validation: PBFT chain block existence and PBFT block materialization now use runtime-owned storage
+  methods instead of operation-site `db_->rustStorage()`
 - audit PBFT chain, gas-pricer, sortition, proposed-block, pillar-chain, DAG, and FinalChain shims for constructor-only
   storage handle ownership versus operation-site extraction
 
@@ -1618,6 +1623,13 @@ Done when:
 - non-storage consensus shims no longer call `db_->rustStorage()` from operation methods
 - Slice 23 can rerun the closure audit and either mark Slices 8/9 complete or report only explicitly documented
   app/query/lifecycle compatibility
+
+Validation note: the PBFT chain operation-handle sub-slice passes `cargo fmt --manifest-path rust/Cargo.toml --all
+--check`, `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`, `cargo test --manifest-path
+rust/Cargo.toml -p rustaxa-bridge pbft_chain`, `cmake --build /build --target rust_consensus_tests --parallel 12`,
+`/build/bin/rust_consensus_tests --gtest_filter=RustPbftChainTest.*`, `cmake --build /build --target
+rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh
+--self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
 
 ## Stop Conditions
 

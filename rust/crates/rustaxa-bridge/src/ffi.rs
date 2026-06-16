@@ -78,7 +78,13 @@ pub struct BridgeDagManagerRuntime {
     pub storage: Arc<Storage>,
 }
 
-pub struct BridgePbftChain(pub PbftChain);
+/// PBFT chain runtime wrapper. Pure state-only instances are used by unit tests
+/// and deterministic head transitions; storage-backed instances own the shared
+/// Rust storage handle used for PBFT block lookup/materialization.
+pub struct BridgePbftChain {
+    pub state: PbftChain,
+    pub storage: Option<Arc<Storage>>,
+}
 
 pub struct BridgeProposedBlocks(pub ProposedBlocks);
 
@@ -3928,6 +3934,10 @@ pub mod rustaxa_ffi {
         type BridgePbftChain;
 
         pub fn create_pbft_chain(head: PbftChainHeadPayload) -> Result<Box<BridgePbftChain>>;
+        pub fn create_pbft_chain_with_storage(
+            storage: &BridgeStorage,
+            head: PbftChainHeadPayload,
+        ) -> Result<Box<BridgePbftChain>>;
         pub fn create_pbft_chain_from_storage(
             storage: &BridgeStorage,
         ) -> Result<Box<BridgePbftChain>>;
@@ -3958,6 +3968,14 @@ pub mod rustaxa_ffi {
             block_hash: &[u8; 32],
             anchor_hash: &[u8; 32],
         ) -> Result<PbftChainHeadPayload>;
+        pub fn pbft_chain_block_exists(
+            self: &BridgePbftChain,
+            block_hash: &[u8; 32],
+        ) -> Result<bool>;
+        pub fn pbft_chain_block_rlp(
+            self: &BridgePbftChain,
+            block_hash: &[u8; 32],
+        ) -> Result<PbftBlockStorageLookup>;
         pub fn pbft_chain_validate_block(
             self: &BridgePbftChain,
             period: u64,
