@@ -51,6 +51,33 @@ TEST_F(TransactionManagerShimFixture, rustPlannerPreservesPackTrxsSelectionAndEs
   EXPECT_EQ(estimations[1], packed[1]->getGas());
 }
 
+TEST_F(TransactionManagerShimFixture, rustPlannerReturnsCanonicalProposalPayloadFacts) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
+  const auto transactions =
+      samples::createSignedTrxSamples(1, 4,
+                                      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                                  dev::Secret::ConstructFromStringType::FromHex));
+
+  for (const auto& trx : transactions) {
+    ASSERT_TRUE(trx_mgr.insertTransaction(trx).first);
+  }
+
+  const auto payloads = trx_mgr.packShardedTransactionPayloads(1, 250000, 1, 0, 1);
+
+  ASSERT_EQ(payloads.transaction_hashes.size(), 2);
+  ASSERT_EQ(payloads.transaction_rlps.size(), payloads.transaction_hashes.size());
+  ASSERT_EQ(payloads.gas_estimations.size(), payloads.transaction_hashes.size());
+  for (size_t idx = 0; idx < payloads.transaction_hashes.size(); ++idx) {
+    const auto transaction = std::make_shared<Transaction>(payloads.transaction_rlps[idx]);
+    EXPECT_EQ(transaction->getHash(), payloads.transaction_hashes[idx]);
+    EXPECT_EQ(transaction->rlp(), payloads.transaction_rlps[idx]);
+    EXPECT_EQ(payloads.gas_estimations[idx], transaction->getGas());
+  }
+}
+
 TEST_F(TransactionManagerShimFixture, rustEstimateTransactionGasUsesRustRuntimeDecisions) {
   auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
@@ -204,9 +231,9 @@ TEST_F(TransactionManagerShimFixture, rustGetTransactionsBoundedViewPreservesInp
 
   trx_mgr.saveTransactionsFromDagBlock({transactions[1]});
 
-  const auto query_hashes = std::vector<trx_hash_t>{transactions[1]->getHash(), trx_hash_t::random(),
-                                                     transactions[0]->getHash(), transactions[2]->getHash(),
-                                                     transactions[1]->getHash(), transactions[0]->getHash()};
+  const auto query_hashes =
+      std::vector<trx_hash_t>{transactions[1]->getHash(), trx_hash_t::random(),       transactions[0]->getHash(),
+                              transactions[2]->getHash(), transactions[1]->getHash(), transactions[0]->getHash()};
 
   const auto materialized = trx_mgr.getTransactions(query_hashes, 0);
   ASSERT_EQ(materialized.size(), 4);
@@ -368,7 +395,7 @@ TEST_F(TransactionManagerShimFixture, rustBlockFinalizedPurgesNonProposableQueue
   auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
   TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
   auto oversized_tx = std::make_shared<Transaction>(1, 1, 10, cfg.propose_dag_gas_limit + 1, dev::bytes(),
-                                                   dev::KeyPair::create().secret(), addr_t::random());
+                                                    dev::KeyPair::create().secret(), addr_t::random());
   const auto oversized_tx_hash = oversized_tx->getHash();
 
   EXPECT_EQ(trx_mgr.insertValidatedTransaction(std::move(oversized_tx), true),
@@ -574,8 +601,8 @@ TEST_F(TransactionManagerShimFixture, rustPoolReadHelpersUseRustQueueViews) {
   }
   ASSERT_EQ(before_count, 2);
 
-  const auto pool_lookup = trx_mgr.getPoolTransactions(
-      {transactions[0]->getHash(), trx_hash_t::random(), transactions[1]->getHash()});
+  const auto pool_lookup =
+      trx_mgr.getPoolTransactions({transactions[0]->getHash(), trx_hash_t::random(), transactions[1]->getHash()});
   ASSERT_EQ(pool_lookup.first.size(), 2);
   ASSERT_EQ(pool_lookup.second.size(), 1);
 
@@ -797,13 +824,11 @@ TEST_F(TransactionManagerShimFixture, rustInsertValidatedTransactionKeepsDemoted
   auto cfg = node_cfgs.front();
   auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t());
   TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
-  const auto sender_secret =
-      dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
-                  dev::Secret::ConstructFromStringType::FromHex);
+  const auto sender_secret = dev::Secret("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd",
+                                         dev::Secret::ConstructFromStringType::FromHex);
 
   auto low_fee_tx = std::make_shared<Transaction>(0, 1, 1000, 10000, dev::bytes(), sender_secret, addr_t::random());
-  auto high_fee_tx =
-      std::make_shared<Transaction>(0, 1, 2000, 10000, dev::bytes(), sender_secret, addr_t::random());
+  auto high_fee_tx = std::make_shared<Transaction>(0, 1, 2000, 10000, dev::bytes(), sender_secret, addr_t::random());
   const auto low_fee_tx_hash = low_fee_tx->getHash();
   const auto high_fee_tx_hash = high_fee_tx->getHash();
 
@@ -831,11 +856,10 @@ TEST_F(TransactionManagerShimFixture, rustInsertValidatedTransactionStoresNonPro
   TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
 
   auto oversized_tx = std::make_shared<Transaction>(1, 1, 10, cfg.propose_dag_gas_limit + 1, dev::bytes(),
-                                                   dev::KeyPair::create().secret(), addr_t::random());
+                                                    dev::KeyPair::create().secret(), addr_t::random());
   const auto oversized_tx_hash = oversized_tx->getHash();
 
-  EXPECT_EQ(trx_mgr.insertValidatedTransaction(std::move(oversized_tx)),
-            TransactionStatus::InsertedNonProposable);
+  EXPECT_EQ(trx_mgr.insertValidatedTransaction(std::move(oversized_tx)), TransactionStatus::InsertedNonProposable);
 
   EXPECT_EQ(trx_mgr.getTransactionPoolSize(), 0);
   const auto live = trx_mgr.getTransaction(oversized_tx_hash);

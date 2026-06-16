@@ -49,6 +49,24 @@ std::vector<blk_hash_t> from_bridge_dag_hashes(const rust::Vec<rustaxa::DagHash>
 
 dev::bytes to_bytes(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
 
+SharedTransactions materialize_transactions(const vec_trx_t& transaction_hashes,
+                                            const std::vector<dev::bytes>& transaction_rlps) {
+  if (transaction_hashes.size() != transaction_rlps.size()) {
+    throw std::runtime_error("Rust DAG proposer transaction payload lengths do not match");
+  }
+
+  SharedTransactions transactions;
+  transactions.reserve(transaction_rlps.size());
+  for (size_t idx = 0; idx < transaction_rlps.size(); ++idx) {
+    auto transaction = std::make_shared<Transaction>(transaction_rlps[idx]);
+    if (transaction->getHash() != transaction_hashes[idx]) {
+      throw std::runtime_error("Rust DAG proposer transaction payload hash mismatch");
+    }
+    transactions.push_back(std::move(transaction));
+  }
+  return transactions;
+}
+
 rustaxa::LegacySortitionParams to_legacy_sortition_params(const rustaxa::SortitionRuntimeParams& params) {
   rustaxa::LegacySortitionParams out;
   out.vrf_threshold_upper = params.threshold_upper;
@@ -234,14 +252,13 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   const auto vdf_difficulty = attempt.vdf_difficulty;
   const bool vdf_stale = attempt.vdf_stale;
 
-  auto [transactions, estimations] = getShardedTrxs(attempt.transaction_request.proposal_period,
-                                                    attempt.transaction_request.weight_limit,
-                                                    attempt.transaction_request.total_transaction_shards,
-                                                    attempt.transaction_request.node_transaction_shard,
-                                                    attempt.transaction_request.shard_period_interval);
+  auto transaction_payloads = getShardedTrxs(
+      attempt.transaction_request.proposal_period, attempt.transaction_request.weight_limit,
+      attempt.transaction_request.total_transaction_shards, attempt.transaction_request.node_transaction_shard,
+      attempt.transaction_request.shard_period_interval);
   rustaxa::DagProposerPostPackInput post_pack_input;
   post_pack_input.proposal_level = propose_level;
-  post_pack_input.packed_transaction_count = transactions.size();
+  post_pack_input.packed_transaction_count = transaction_payloads.transaction_hashes.size();
   const auto post_pack = rustaxa::dag_proposer_plan_post_pack(std::move(post_pack_input));
   if (post_pack.action != kDagProposerActionContinue) {
     if (post_pack.update_retry_state) {
@@ -254,7 +271,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
     return false;
   }
 
-  dev::bytes vdf_msg = DagManager::getVdfMessage(frontier.pivot, transactions);
+  dev::bytes vdf_msg = DagManager::getVdfMessage(frontier.pivot, transaction_payloads.transaction_hashes);
 
   std::atomic_bool cancellation_token = false;
   std::promise<void> sync;
@@ -307,9 +324,12 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   auto vdf = vdf_sortition_from_proof(*proof_result);
   LOG(log_dg_) << node_dag_proposer_data->wallet.node_addr << " VDF difficulty " << vdf.getDifficulty();
 
-  auto dag_block = createDagBlock(std::move(frontier), propose_level, transactions, std::move(estimations),
-                                  std::move(vdf), node_dag_proposer_data->wallet.node_secret);
+  auto dag_block = createDagBlock(std::move(frontier), propose_level, transaction_payloads.transaction_hashes,
+                                  std::move(transaction_payloads.gas_estimations), std::move(vdf),
+                                  node_dag_proposer_data->wallet.node_secret);
 
+  auto transactions =
+      materialize_transactions(transaction_payloads.transaction_hashes, transaction_payloads.transaction_rlps);
   if (dag_mgr_->addDagBlock(dag_block, std::move(transactions), true).first) {
     LOG(log_nf_) << node_dag_proposer_data->wallet.node_addr << " proposed new DAG block " << dag_block->getHash()
                  << ", pivot " << dag_block->getPivot() << ", txs num " << dag_block->getTrxs().size();
@@ -364,9 +384,11 @@ void DagBlockProposer::stop() {
   LOG(log_nf_) << "DagBlockProposer stopped ...";
 }
 
-std::pair<SharedTransactions, std::vector<uint64_t>> DagBlockProposer::getShardedTrxs(
-    PbftPeriod proposal_period, uint64_t weight_limit, const uint16_t total_trx_shards,
-    const uint16_t node_trx_shard, uint64_t shard_period_interval) const {
+DagBlockProposer::ShardedProposalTransactions DagBlockProposer::getShardedTrxs(PbftPeriod proposal_period,
+                                                                               uint64_t weight_limit,
+                                                                               const uint16_t total_trx_shards,
+                                                                               const uint16_t node_trx_shard,
+                                                                               uint64_t shard_period_interval) const {
   auto syncing = false;
   if (auto net = network_.lock()) {
     syncing = net->pbft_syncing();
@@ -375,21 +397,16 @@ std::pair<SharedTransactions, std::vector<uint64_t>> DagBlockProposer::getSharde
     return {};
   }
 
-  auto [transactions, estimations] =
-      trx_mgr_->packShardedTrxs(proposal_period, weight_limit, total_trx_shards, node_trx_shard,
-                                shard_period_interval);
-  return {transactions, estimations};
+  auto payloads = trx_mgr_->packShardedTransactionPayloads(proposal_period, weight_limit, total_trx_shards,
+                                                           node_trx_shard, shard_period_interval);
+  return {std::move(payloads.transaction_hashes), std::move(payloads.transaction_rlps),
+          std::move(payloads.gas_estimations)};
 }
 
 std::shared_ptr<DagBlock> DagBlockProposer::createDagBlock(DagFrontier&& frontier, level_t level,
-                                                           const SharedTransactions& trxs,
+                                                           const vec_trx_t& trx_hashes,
                                                            std::vector<uint64_t>&& estimations, VdfSortition&& vdf,
                                                            const dev::Secret& node_secret) const {
-  vec_trx_t trx_hashes;
-  for (const auto& trx : trxs) {
-    trx_hashes.push_back(trx->getHash());
-  }
-
   rustaxa::DagProposerStorageBlockConstructionInput plan_input;
   plan_input.pbft_gas_limit = kPbftGasLimit;
   plan_input.dag_gas_limit = kDagGasLimit;
@@ -411,7 +428,7 @@ std::shared_ptr<DagBlock> DagBlockProposer::createDagBlock(DagFrontier&& frontie
     frontier.tips.emplace_back(from_bridge_hash(hash.hash));
   }
 
-  return std::make_shared<DagBlock>(frontier.pivot, std::move(level), std::move(frontier.tips), std::move(trx_hashes),
+  return std::make_shared<DagBlock>(frontier.pivot, std::move(level), std::move(frontier.tips), trx_hashes,
                                     plan.block_gas_estimation, std::move(vdf), node_secret);
 }
 

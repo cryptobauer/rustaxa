@@ -3,6 +3,7 @@
 #include <mutex>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include "common/constants.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
@@ -27,6 +28,19 @@ namespace taraxa {
 class TransactionManager : public TransactionManagerOld {
  public:
   /**
+   * Rust-selected proposal transaction payloads.
+   *
+   * Rust returns the authoritative accepted ordering as hashes, canonical transaction RLP payloads, and gas estimates
+   * from one runtime packing session. Consumers should use these facts for deterministic proposal planning and only
+   * materialize live `Transaction` instances at temporary compatibility sidecars.
+   */
+  struct PackedProposalTransactions {
+    std::vector<trx_hash_t> transaction_hashes;
+    std::vector<dev::bytes> transaction_rlps;
+    std::vector<uint64_t> gas_estimations;
+  };
+
+  /**
    * Rust-mode pending-transaction event surface.
    *
    * The legacy owner type keeps `emit` private to `TransactionManagerOld`, so the shim owns
@@ -39,8 +53,7 @@ class TransactionManager : public TransactionManagerOld {
                      std::shared_ptr<final_chain::FinalChain> final_chain, addr_t node_addr)
       : TransactionManagerOld(conf, db, std::move(final_chain), node_addr),
         runtime_(rustaxa::create_transaction_manager_runtime(
-            db->getStatusField(StatusDbField::TrxCount),
-            rustaxa::TransactionQueueConfig{conf.transactions_pool_size})),
+            db->getStatusField(StatusDbField::TrxCount), rustaxa::TransactionQueueConfig{conf.transactions_pool_size})),
         rust_storage_(&db->rustStorage()) {}
 
   TransactionManager(const TransactionManager &) = delete;
@@ -81,10 +94,20 @@ class TransactionManager : public TransactionManagerOld {
    * supplies live transaction materialization and FinalChain/EVM gas estimates.
    */
   std::pair<SharedTransactions, std::vector<uint64_t>> packShardedTrxs(PbftPeriod proposal_period,
-                                                                       uint64_t weight_limit,
-                                                                       uint16_t total_shards,
+                                                                       uint64_t weight_limit, uint16_t total_shards,
                                                                        uint16_t node_trx_shard,
                                                                        uint64_t shard_period_interval);
+
+  /**
+   * Select proposer transactions and preserve Rust-owned canonical payload facts.
+   *
+   * The returned hashes, RLP payloads, and gas estimates come directly from the Rust packing session. The live
+   * transaction objects are a temporary compatibility sidecar for DAG insertion paths that have not yet moved to block
+   * intents over canonical payloads.
+   */
+  PackedProposalTransactions packShardedTransactionPayloads(PbftPeriod proposal_period, uint64_t weight_limit,
+                                                            uint16_t total_shards, uint16_t node_trx_shard,
+                                                            uint64_t shard_period_interval);
 
   /**
    * Return live transaction-pool groups under the transaction mutex.

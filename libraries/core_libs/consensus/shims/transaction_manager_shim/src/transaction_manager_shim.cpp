@@ -321,7 +321,8 @@ class TransactionManagerRustShimAccess {
       throw std::runtime_error("RUST_TX_MANAGER_ADMISSION_ENVELOPE_FAILED: Rust transaction envelope hash mismatch");
     }
     if (!manager.final_chain_) {
-      throw std::runtime_error("RUST_TX_MANAGER_ADMISSION_EXECUTION_FAILED: FinalChain is required for admission facts");
+      throw std::runtime_error(
+          "RUST_TX_MANAGER_ADMISSION_EXECUTION_FAILED: FinalChain is required for admission facts");
     }
 
     std::unique_lock transactions_lock(manager.transactions_mutex_);
@@ -505,11 +506,9 @@ class TransactionManagerRustShimAccess {
    * candidate scan, accepted ordering, invalid-estimate demotion, and stop decisions; C++ owns transaction
    * materialization, estimation, and logging.
    */
-  static std::pair<SharedTransactions, std::vector<uint64_t>> packTrxs(TransactionManagerOld& manager,
-                                                                       PbftPeriod proposal_period,
-                                                                       uint64_t weight_limit, uint16_t total_shards = 1,
-                                                                       uint16_t node_trx_shard = 0,
-                                                                       uint64_t shard_period_interval = 1) {
+  static TransactionManager::PackedProposalTransactions packTransactionPayloads(
+      TransactionManagerOld& manager, PbftPeriod proposal_period, uint64_t weight_limit, uint16_t total_shards = 1,
+      uint16_t node_trx_shard = 0, uint64_t shard_period_interval = 1) {
     auto& rust_manager = static_cast<TransactionManager&>(manager);
     std::lock_guard pack_lock(rust_manager.pack_mutex_);
     bool session_active = false;
@@ -566,20 +565,16 @@ class TransactionManagerRustShimAccess {
         }
       }
 
-      SharedTransactions selected_transactions;
-      std::vector<uint64_t> estimations;
-      selected_transactions.reserve(step.selected_transactions.size());
-      estimations.reserve(step.selected_transactions.size());
+      TransactionManager::PackedProposalTransactions selected_payloads;
+      selected_payloads.transaction_hashes.reserve(step.selected_transactions.size());
+      selected_payloads.transaction_rlps.reserve(step.selected_transactions.size());
+      selected_payloads.gas_estimations.reserve(step.selected_transactions.size());
       for (const auto& selected : step.selected_transactions) {
-        const auto selected_hash = fromBridgeHash(selected.hash);
-        auto transaction = std::make_shared<Transaction>(fromBridgeBytes(selected.tx_rlp));
-        if (transaction->getHash() != selected_hash) {
-          throw std::runtime_error("Rust transaction manager runtime returned selected pack RLP with mismatched hash");
-        }
-        selected_transactions.push_back(std::move(transaction));
-        estimations.push_back(selected.gas_used);
+        selected_payloads.transaction_hashes.push_back(fromBridgeHash(selected.hash));
+        selected_payloads.transaction_rlps.push_back(fromBridgeBytes(selected.tx_rlp));
+        selected_payloads.gas_estimations.push_back(selected.gas_used);
       }
-      return {selected_transactions, estimations};
+      return selected_payloads;
     } catch (...) {
       if (session_active) {
         try {
@@ -590,6 +585,35 @@ class TransactionManagerRustShimAccess {
       }
       throw;
     }
+  }
+
+  static SharedTransactions materializePackedTransactions(
+      const TransactionManager::PackedProposalTransactions& payloads) {
+    if (payloads.transaction_hashes.size() != payloads.transaction_rlps.size()) {
+      throw std::runtime_error("Rust transaction manager runtime returned inconsistent selected pack payload lengths");
+    }
+
+    SharedTransactions selected_transactions;
+    selected_transactions.reserve(payloads.transaction_rlps.size());
+    for (size_t idx = 0; idx < payloads.transaction_rlps.size(); ++idx) {
+      auto transaction = std::make_shared<Transaction>(payloads.transaction_rlps[idx]);
+      if (transaction->getHash() != payloads.transaction_hashes[idx]) {
+        throw std::runtime_error("Rust transaction manager runtime returned selected pack RLP with mismatched hash");
+      }
+      selected_transactions.push_back(std::move(transaction));
+    }
+    return selected_transactions;
+  }
+
+  static std::pair<SharedTransactions, std::vector<uint64_t>> packTrxs(TransactionManagerOld& manager,
+                                                                       PbftPeriod proposal_period,
+                                                                       uint64_t weight_limit, uint16_t total_shards = 1,
+                                                                       uint16_t node_trx_shard = 0,
+                                                                       uint64_t shard_period_interval = 1) {
+    auto selected_payloads = packTransactionPayloads(manager, proposal_period, weight_limit, total_shards,
+                                                     node_trx_shard, shard_period_interval);
+    auto selected_transactions = materializePackedTransactions(selected_payloads);
+    return {std::move(selected_transactions), std::move(selected_payloads.gas_estimations)};
   }
 
   /**
@@ -635,8 +659,7 @@ class TransactionManagerRustShimAccess {
     const auto report = [&]() {
       try {
         return rustaxa::save_transactions_from_dag_block_command_report_with_runtime_and_final_chain(
-            *manager.runtime_, *manager.rust_storage_, manager.final_chain_->rustFinalChainForRust(),
-            std::move(facts));
+            *manager.runtime_, *manager.rust_storage_, manager.final_chain_->rustFinalChainForRust(), std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_DAG_TX_PERSIST_FAILED: ") + e.what());
       }
@@ -801,8 +824,8 @@ class TransactionManagerRustShimAccess {
                                                                      const std::vector<trx_hash_t>& hashes) {
     const auto plan = [&]() {
       try {
-        return rustaxa::transaction_manager_filter_non_finalized_with_runtime(
-            *manager.runtime_, *manager.rust_storage_, buildSidecarLookupRequests(hashes));
+        return rustaxa::transaction_manager_filter_non_finalized_with_runtime(*manager.runtime_, *manager.rust_storage_,
+                                                                              buildSidecarLookupRequests(hashes));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_TX_FILTER_FAILED: ") + e.what());
       }
@@ -847,8 +870,7 @@ class TransactionManagerRustShimAccess {
     const auto outcome = [&]() {
       try {
         return rustaxa::transaction_manager_verify_not_finalized_with_runtime_and_final_chain(
-            *manager.runtime_, *manager.rust_storage_, manager.final_chain_->rustFinalChainForRust(),
-            std::move(facts));
+            *manager.runtime_, *manager.rust_storage_, manager.final_chain_->rustFinalChainForRust(), std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: ") + e.what());
       }
@@ -1079,8 +1101,7 @@ class TransactionManagerRustShimAccess {
       try {
         return rustaxa::update_finalized_transactions_status_command_report_with_runtime_and_final_chain(
             *manager.runtime_, *manager.rust_storage_, manager.final_chain_->rustFinalChainForRust(),
-            period_data.pbft_blk->getPeriod(),
-            recently_finalized_transactions_periods, std::move(facts));
+            period_data.pbft_blk->getPeriod(), recently_finalized_transactions_periods, std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: ") + e.what());
       }
@@ -1115,6 +1136,13 @@ std::pair<SharedTransactions, std::vector<uint64_t>> TransactionManager::packSha
     uint64_t shard_period_interval) {
   return TransactionManagerRustShimAccess::packTrxs(*this, proposal_period, weight_limit, total_shards, node_trx_shard,
                                                     shard_period_interval);
+}
+
+TransactionManager::PackedProposalTransactions TransactionManager::packShardedTransactionPayloads(
+    PbftPeriod proposal_period, uint64_t weight_limit, uint16_t total_shards, uint16_t node_trx_shard,
+    uint64_t shard_period_interval) {
+  return TransactionManagerRustShimAccess::packTransactionPayloads(*this, proposal_period, weight_limit, total_shards,
+                                                                   node_trx_shard, shard_period_interval);
 }
 
 uint64_t TransactionManager::estimateTransactions(const SharedTransactions& trxs, PbftPeriod proposal_period) {

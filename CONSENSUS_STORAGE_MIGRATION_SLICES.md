@@ -2033,6 +2033,12 @@ Goal: move the DAG proposer transaction selection result from live C++ transacti
 payload facts so the proposer can build its VDF message and block-intent data without materializing every transaction in
 C++ first.
 
+Status: complete. The Rust transaction-manager runtime already returned selected transaction hashes, canonical RLP
+payloads, and gas estimates from the proposal-packing session; the C++ transaction manager shim now preserves those facts
+as `PackedProposalTransactions`. The DAG proposer consumes the Rust-selected hash vector for post-pack counting, VDF
+message construction, and DAG block transaction hashes, and delays live `Transaction` materialization until the temporary
+`DagManager::addDagBlock` sidecar boundary.
+
 Move:
 
 - extend the TransactionManager proposal-packing session to return ordered transaction hashes and canonical transaction
@@ -2059,6 +2065,15 @@ Validation:
 - `cmake --build /build --target transaction_manager_shim_test --parallel 12`
 - `cmake --build /build --target dag_shim_test --parallel 12`
 - `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+
+Validation note: the proposal-payload session slice adds a shim-owned `PackedProposalTransactions` result and the
+`rustPlannerReturnsCanonicalProposalPayloadFacts` C++ test. It passes
+`cmake --build /build --target transaction_manager_shim_test --parallel 12`,
+`/build/bin/transaction_manager_shim_test`, `cmake --build /build --target dag_shim_test --parallel 12`,
+`/build/bin/dag_shim_test`, and
+`cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`,
+`scripts/rewrite_storage_boundary_guard.sh --self-test && scripts/rewrite_storage_boundary_guard.sh`, `git diff
+--check`, and `.githooks/pre-commit`.
 
 ## Slice 29: DAG Block Intent And Add-Block Effects
 

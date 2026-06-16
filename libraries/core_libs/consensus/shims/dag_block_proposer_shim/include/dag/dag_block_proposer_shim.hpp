@@ -25,11 +25,11 @@ class FinalChain;
 /**
  * Rust-mode DAG block proposer facade.
  *
- * The class preserves the public `DagBlockProposer` API while moving deterministic proposal facts toward Rust. C++ still
- * owns worker-thread orchestration, live transaction selection, live tip metadata materialization, and final `DagBlock`
- * construction. Rust owns canonical proposal VRF/VDF message byte construction, proposer VDF proof generation,
- * proposer tip-pruning/block-construction planning, VDF wait/stale-proof decisions, post-boundary retry-state resets,
- * and DPoS/VDF authorization facts through the Rust-backed FinalChain shim.
+ * The class preserves the public `DagBlockProposer` API while moving deterministic proposal facts toward Rust. C++
+ * still owns worker-thread orchestration, live transaction selection, live tip metadata materialization, and final
+ * `DagBlock` construction. Rust owns canonical proposal VRF/VDF message byte construction, proposer VDF proof
+ * generation, proposer tip-pruning/block-construction planning, VDF wait/stale-proof decisions, post-boundary
+ * retry-state resets, and DPoS/VDF authorization facts through the Rust-backed FinalChain shim.
  *
  * Edge behavior:
  * - proposal returns `false` when the transaction pool, DPoS facts, VRF key, or vote denominator are unavailable
@@ -82,8 +82,8 @@ class DagBlockProposer {
   /**
    * Attempts to propose one DAG block for `node_dag_proposer_data`.
    *
-   * Returns `true` when the loop should immediately try another proposal, including the legacy cancellation case where a
-   * stale in-flight proof was cancelled. Returns `false` when no block was proposed and the caller should wait.
+   * Returns `true` when the loop should immediately try another proposal, including the legacy cancellation case where
+   * a stale in-flight proof was cancelled. Returns `false` when no block was proposed and the caller should wait.
    */
   bool proposeDagBlock(const std::shared_ptr<NodeDagProposerData>& node_dag_proposer_data);
 
@@ -99,27 +99,39 @@ class DagBlockProposer {
 
  private:
   /**
+   * Transactions selected for one proposer attempt.
+   *
+   * `transaction_hashes` and `gas_estimations` come from the Rust transaction-packing session and are the deterministic
+   * proposal facts. Live C++ transaction objects are materialized only after VDF/block planning for the temporary DAG
+   * add-block sidecar.
+   */
+  struct ShardedProposalTransactions {
+    vec_trx_t transaction_hashes;
+    std::vector<dev::bytes> transaction_rlps;
+    std::vector<uint64_t> gas_estimations;
+  };
+
+  /**
    * Creates a signed DAG block from already selected proposal data.
    *
-   * Inputs are the current frontier, computed level, chosen transactions and gas estimates, completed VDF sortition, and
-   * node signing secret. Rust plans the block gas estimate and selected tips, while the returned block still uses
-   * existing C++ `DagBlock` construction.
+   * Inputs are the current frontier, computed level, Rust-selected transaction hashes and gas estimates, completed VDF
+   * sortition, and node signing secret. Rust plans the block gas estimate and selected tips, while the returned block
+   * still uses existing C++ `DagBlock` construction.
    */
-  std::shared_ptr<DagBlock> createDagBlock(DagFrontier&& frontier, level_t level, const SharedTransactions& trxs,
+  std::shared_ptr<DagBlock> createDagBlock(DagFrontier&& frontier, level_t level, const vec_trx_t& trx_hashes,
                                            std::vector<uint64_t>&& estimations, vdf_sortition::VdfSortition&& vdf,
                                            const dev::Secret& node_secret) const;
 
   /**
-   * Returns transactions and gas estimates for the configured proposer shard.
+   * Returns transactions, hashes, and gas estimates for the configured proposer shard.
    *
-   * Rust owns the deterministic shard filter and transaction-packing planner;
-   * C++ keeps live transaction materialization and EVM gas estimation until
-   * those boundaries move.
+   * Rust owns the deterministic shard filter and transaction-packing planner. The selected hashes and gas estimates
+   * come directly from Rust; C++ keeps live transaction materialization and EVM gas estimation until those boundaries
+   * move.
    */
-  std::pair<SharedTransactions, std::vector<uint64_t>> getShardedTrxs(PbftPeriod proposal_period, uint64_t weight_limit,
-                                                                      const uint16_t total_trx_shards,
-                                                                      const uint16_t node_trx_shard,
-                                                                      uint64_t shard_period_interval) const;
+  ShardedProposalTransactions getShardedTrxs(PbftPeriod proposal_period, uint64_t weight_limit,
+                                             const uint16_t total_trx_shards, const uint16_t node_trx_shard,
+                                             uint64_t shard_period_interval) const;
 
  private:
   const uint16_t max_num_tries_{20};
