@@ -1331,9 +1331,9 @@ rustaxa-consensus final_chain`, `cargo test --manifest-path rust/Cargo.toml -p r
 Goal: separate network/app/query compatibility reads from consensus runtime storage ownership so Slice 8/9 can close
 without waiting for every public API to be rewritten.
 
-Status: in progress. The first sub-slice makes the Rust-mode tarcap constructor surface DB-free where PBFT sync egress is
-already routed through typed Rust runtime payloads, and extends the storage-boundary guard with an explicit
-network/tarcap compatibility marker.
+Status: complete. Rust-mode PBFT sync egress stays on the typed Rust runtime payload route, while remaining network,
+RPC, GraphQL, and debug storage references are classified as legacy-only tarcap compatibility or marked public query
+compatibility.
 
 Current boundary:
 
@@ -1358,6 +1358,9 @@ Implemented sub-slice:
 - marked the remaining tarcap `DbStorage` constructor/member surfaces with `RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY` and the
   GraphQL HTTP processor storage owner with `RUSTAXA_QUERY_COMPAT_READ`, so Slice 23 can audit network/query debt by
   marker instead of treating it as unclassified consensus storage ownership
+- audited existing Rust query helpers for the marked RPC/GraphQL reads. The easy pillar-block-data query already uses
+  Rust storage in Rust mode; the remaining reads materialize C++ `PbftBlock`, `DagBlock`, transaction, vote, or public
+  JSON objects and stay marked compatibility reads until the API/materialization rewrite lands.
 
 Move:
 
@@ -1385,6 +1388,12 @@ Validation note: the constructor/query classification sub-slice passes `cmake --
 --parallel 12`, `cmake --build /build --target rpc_plugin --parallel 12`,
 `scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff
 --check`.
+
+Validation note: the Slice 22 closure audit uses `rg` over `libraries/core_libs/network/{rpc,graphql,src/tarcap}` and
+`libraries/core_libs/network/include/network/tarcap` to verify remaining `getDB()`, `rustStorage()`, `DbStorage`, and
+`db_->` references are marked with either `RUSTAXA_QUERY_COMPAT_READ` or `RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY`, then checks
+the existing Rust query helpers to confirm no remaining marked read has an equivalent drop-in Rust query API that avoids
+C++ object materialization.
 
 Done when:
 
