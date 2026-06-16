@@ -370,7 +370,7 @@ pillar block object.
 
 Goal: separate consensus storage reads from query/API compatibility reads and prevent new `DbStorage` consensus ports.
 
-Status: replanned / partially complete. Gas-pricer finalized-history restoration now performs its FinalChain
+Status: complete after Slice 31 closure audit. Gas-pricer finalized-history restoration now performs its FinalChain
 `LAST_NUMBER` and period-data walk inside `rustaxa-consensus::gas_pricer` over native `rustaxa-storage`; the bridge
 adapter only passes the shared storage handle and oracle lock. This removes bridge-local raw storage reads and
 period-data gas-price decoding from the deterministic gas-pricer initialization path. The storage-boundary guard now also
@@ -390,18 +390,18 @@ query compatibility, PBFT-chain/proposed-block live sidecars, PBFT sync/network 
 are tracked below as Slices 10-23 so implementation can continue without broadening Slice 8 into unrelated subsystem
 ownership changes. Slices 16-23 are the additional closure plan added after the boundary-slice evaluation.
 
-Post-boundary-slice evaluation: Slice 8 cannot be marked fully complete yet. Slices 10-18, 19, and 22-26 retired the
-PBFT-chain, proposed-block, PBFT sync egress, RPC/GraphQL query-marker, guard, VoteManager DPoS, pillar-sync DPoS,
-gas-pricer runtime, and TransactionManager account/finalized read surfaces that had clear Rust replacements. The
-remaining read-surface blockers are now temporary C++ sidecar materialization, network/app compatibility constructors,
-DAG proposal-validation live-runtime facts, and the explicit FinalChain/EVM publication/account boundary. Completing
-those would change larger subsystem ownership rather than finish Slice 8 as originally scoped.
+Post-Slice 31 closure audit: Slices 10-30 retired the PBFT-chain, proposed-block, PBFT sync egress, RPC/GraphQL
+query-marker, guard, VoteManager DPoS, pillar-sync DPoS, gas-pricer runtime, TransactionManager account/finalized, DAG
+proposal, and FinalChain account-publication read surfaces that had clear Rust storage replacements. Remaining reads are
+classified as constructor/runtime handle ownership, storage-shim internals, query/network/admin compatibility,
+FinalChain external-EVM/query compatibility, or temporary C++ sidecar materialization. None are consensus runtime storage
+routes through `DbStorage` or the bridge.
 
 Move:
 
 - completed: network sync read paths that feed deterministic consensus decisions
-- in progress: RPC/GraphQL/debug reads that can use read-only Rust storage query APIs
-- in progress: app status/finalized-history reads that currently force bridge/storage compatibility methods into
+- completed: RPC/GraphQL/debug reads that can use read-only Rust storage query APIs or are marked compatibility reads
+- completed: app status/finalized-history reads that previously forced bridge/storage compatibility methods into
   Rust-mode consensus ownership
 
 Keep:
@@ -468,7 +468,7 @@ reach a clean gtest summary before termination. These failures do not point at t
 
 Goal: remove obsolete Rust-mode consensus storage hooks and make regressions visible.
 
-Status: replanned / stopped at boundary. The public `DbStorage::rustBatchId` shim method has been removed now that PBFT finalization,
+Status: complete after Slice 31 closure audit. The public `DbStorage::rustBatchId` shim method has been removed now that PBFT finalization,
 VoteManager, sortition, pillar, DAG/proposed-block, transaction, and PBFT manager transition production writes no longer
 route through bridge-owned batch ids. The storage shim still owns an internal Rust batch map for temporary
 legacy-compatible `insert/remove/commitWriteBatch` behavior, but consensus callers no longer have a public API for
@@ -484,11 +484,12 @@ shim-owned live boundaries that still depend on FinalChain/external-EVM state, D
 C++ sidecar materialization. Removing those in this slice would require broad original C++ edits or moving FinalChain/EVM
 execution ownership, so the slice stops here under the plan stop conditions.
 
-Post-boundary-slice evaluation: Slice 9 also cannot be marked fully complete yet. The public `rustBatchId` escape hatch
-and obsolete PBFT finalization appenders are gone, operation-level Rust storage handle extraction has been collapsed into
-constructor/runtime ownership, and the Slice 15 guard prevents new C++ storage/DPoS regressions. The remaining closures
-are not cleanup-only work; they require dedicated FinalChain/EVM publication/account ownership and DAG proposal-validation
-runtime slices.
+Post-Slice 31 closure audit: the public `rustBatchId` escape hatch and obsolete PBFT finalization appenders are gone,
+operation-level Rust storage handle extraction has been collapsed into constructor/runtime ownership, and the storage
+boundary guard prevents new C++ storage/DPoS regressions. Remaining `DbStorage` references are classified as
+storage-shim internals, constructor/runtime handle ownership, query/network/admin compatibility, FinalChain
+external-EVM/query compatibility, or temporary C++ sidecar materialization; they are not production consensus storage
+routes with already-available Rust replacements.
 
 Move/remove:
 
@@ -496,8 +497,9 @@ Move/remove:
 - completed: obsolete PBFT finalization bridge storage appender APIs
 - completed: public PBFT finalization staged appender APIs
 - audited: no remaining bridge-batch consensus `DbStorage` routes with already-available Rust storage replacements
-- deferred: remaining `DbStorage` routes tied to legacy/reference code, FinalChain/EVM, DAG/network, or sidecar boundaries
-- deferred: unguarded main-only dependency audit beyond shim-owned files; broad upstream-owned edits require re-planning
+- classified: remaining `DbStorage` routes tied to legacy/reference code, FinalChain/EVM, DAG/network, or sidecar
+  boundaries
+- classified: unguarded main-only dependency audit beyond shim-owned files; broad upstream-owned edits require re-planning
 
 Done when:
 
@@ -1722,11 +1724,11 @@ Validation:
 Goal: after Slices 16-22 land, make Slice 8 and Slice 9 objectively closable with a guard-backed audit rather than a
 manual judgment call.
 
-Status: re-audited / partially unblocked. The original Slice 23 blocker list was reduced by Slices 24-26 and the Slice
-18 follow-ups: PBFT manager residual storage routes, rewards-stats column access, operation-level `db_->rustStorage()`
-extraction in PBFT chain/VoteManager/TransactionManager, and TransactionManager account/finalized fact routing are
-closed. Slice 8 and Slice 9 still stay open because DAG proposal facts and FinalChain/EVM account-publication facts remain
-broader runtime boundaries rather than compatibility-shell cleanup.
+Status: superseded by the complete Slice 31 closure audit. The original Slice 23 blocker list was reduced by Slices 24-26
+and the Slice 18 follow-ups: PBFT manager residual storage routes, rewards-stats column access, operation-level
+`db_->rustStorage()` extraction in PBFT chain/VoteManager/TransactionManager, and TransactionManager account/finalized
+fact routing are closed. Slices 28-30 later closed the DAG proposal and FinalChain account-publication storage-contract
+blockers, allowing Slice 31 to mark Slice 8 and Slice 9 complete.
 
 Move/remove:
 
@@ -1753,16 +1755,12 @@ Audit result:
   - Rewards stats reload, clear, cache snapshot, and write apply routes formerly using `DbStorage::Columns` and
     operation-site `db_->rustStorage()`.
   - PBFT chain, VoteManager, and TransactionManager operation-level Rust storage handle extraction.
-- Remaining closure blockers:
-  - Slice 17: DAG proposer/verification still needs a full proposal-fact DTO/runtime for transaction selection,
-    gas-estimation, tip metadata, and DAG block materialization boundaries after direct authorization, finalized-height,
-    sortition-param, and standalone tip-selection bridge surfaces were moved or retired.
-  - Slice 18 is closed for TransactionManager-owned account/finalized routing; any remaining account snapshot mismatch is
-    now tracked under Slice 21's FinalChain publication boundary.
-  - Slice 21: FinalChain publication now owns execution-status publication reports and C++ sidecar counter mirroring, but
-    still lacks a complete crash-safe account snapshot publication source and the remaining DPoS/account runtime mismatch
-    class remains there.
-  - FinalChain snapshot creation remains C++ app lifecycle/storage-shell compatibility and should stay outside consensus
+- Closure blockers superseded by Slice 31:
+  - Slice 17 DAG proposal storage ownership is closed by Slices 28 and 29; remaining DAG work is effect execution,
+    network, and sidecar materialization compatibility.
+  - Slice 21 FinalChain publication/account storage ownership is closed by Slice 30; remaining FinalChain work is
+    external-EVM execution/query compatibility and complete account snapshot ownership outside this storage slice.
+  - FinalChain snapshot creation remains C++ app lifecycle/storage-shell compatibility and stays outside consensus
     closure unless snapshot ownership is explicitly rescoped.
 
 Keep:
@@ -1788,8 +1786,8 @@ Validation note: the Slice 23 re-audit after Slices 24-26 ran focused `rg` searc
 `rustStorage()`, `createWriteBatch`, `commitWriteBatch`, `rustBatchId`, `DbStorage::Columns`, direct FinalChain DPoS
 facts, and account/finalized fact calls across Rust-mode consensus shims, Rust bridge/runtime crates, and the
 network/query compatibility shell. The guard passes, and the stale PBFT manager/rewards/VoteManager/TransactionManager
-operation-handle blockers are closed. Slices 8 and 9 remain open only for the remaining Slice 17 and Slice 21 runtime
-fact boundaries listed above.
+operation-handle blockers are closed. Slice 31 supersedes the remaining Slice 17 and Slice 21 blocker text and closes
+Slices 8 and 9 by classification.
 
 ## Slice 24: PBFT Manager Residual Storage Route Closure
 
@@ -2189,6 +2187,17 @@ reports legacy account-balance mismatches and `FinalChainTest.nonce_test` segfau
 Goal: rerun the closure audit only after Slices 28-30 have landed, then mark Slice 8 and Slice 9 complete if no consensus
 runtime storage route remains outside documented compatibility shells.
 
+Status: complete. The post-Slices 28-30 audit found no remaining bridge-batch appender route, public `rustBatchId`
+escape hatch, direct consensus `getDB()` route, or production consensus storage write/read path that still depends on
+`DbStorage` instead of Rust storage runtimes. Residual C++ references are categorized as:
+
+- constructor/runtime handle ownership that passes the shim-owned Rust storage handle into Rust runtimes
+- storage-shim compatibility internals and legacy-compatible batch scaffolding
+- marked RPC/GraphQL/debug query compatibility reads and marked tarcap/network compatibility surfaces
+- FinalChain external-EVM, `StateAPI`, bridge-contract, account/code/storage query compatibility
+- temporary C++ sidecar materialization for `PbftBlock`, `DagBlock`, `Transaction`, vote, pillar, and API/network objects
+- app lifecycle/admin operations such as snapshot toggling
+
 Move/remove:
 
 - rerun the `DbStorage`, `db_->`, `rustStorage`, direct FinalChain fact, and C++ batch searches across consensus shims
@@ -2208,6 +2217,13 @@ Validation:
 - `scripts/rewrite_storage_boundary_guard.sh --self-test && scripts/rewrite_storage_boundary_guard.sh`
 - `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
 - targeted DAG/FinalChain/PBFT builds for any helper deletion or guard tightening
+
+Validation note: Slice 31 reran focused `rg` audits for `DbStorage`, `db_->`, `getDB()`, `rustStorage()`, bridge-batch
+helpers, direct FinalChain DPoS/account facts, and DAG proposer compatibility helpers across consensus shims and
+network/query compatibility surfaces. The closure audit is documentation/guard-backed and does not delete runtime code.
+It passes `make rewrite-validate-fast`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
+`scripts/rewrite_storage_boundary_guard.sh`, `git diff --check`, and
+`cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`.
 
 ## Stop Conditions
 
