@@ -82,7 +82,13 @@ pub struct BridgePbftChain(pub PbftChain);
 
 pub struct BridgeProposedBlocks(pub ProposedBlocks);
 
-pub struct BridgeRewardsStatsRuntime(pub RewardsStatsRuntime);
+/// Rewards-stat runtime wrapper coupling deterministic in-memory state with
+/// the shared Rust storage handle used for cache reload, write, and clear
+/// operations.
+pub struct BridgeRewardsStatsRuntime {
+    pub state: RewardsStatsRuntime,
+    pub storage: Arc<Storage>,
+}
 
 pub struct BridgePbftFinalizationRuntimeSession {
     pub state: rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeState,
@@ -4206,6 +4212,19 @@ pub mod rustaxa_ffi {
             self: &mut BridgeRewardsStatsRuntime,
             current_period: u64,
         );
+        pub fn rewards_stats_runtime_cached_stats(
+            self: &BridgeRewardsStatsRuntime,
+        ) -> Vec<PeriodRlp>;
+        pub fn rewards_stats_runtime_apply_storage_writes(
+            self: &BridgeRewardsStatsRuntime,
+            plan: &RewardsStatsProcessResult,
+            sync: bool,
+        ) -> Result<RewardsStatsApplyResult>;
+        pub fn rewards_stats_runtime_clear_storage_and_state(
+            self: &mut BridgeRewardsStatsRuntime,
+            current_period: u64,
+            sync: bool,
+        ) -> Result<RewardsStatsApplyResult>;
         pub fn apply_rewards_stats_storage_writes(
             storage: &BridgeStorage,
             plan: &RewardsStatsProcessResult,

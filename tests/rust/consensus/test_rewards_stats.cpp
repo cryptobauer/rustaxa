@@ -136,18 +136,19 @@ TEST(RustRewardsStatsBridgeTest, appendsCacheWritesAndBoundaryClearToStorageBatc
 
   auto cache_plan = runtime->process_finalized_period_rewards_stats(rewardsFact(1));
   ASSERT_TRUE(cache_plan.cache_current_period);
-  auto apply_result = apply_rewards_stats_storage_writes(*storage, cache_plan, false);
+  auto apply_result = runtime->rewards_stats_runtime_apply_storage_writes(cache_plan, false);
   ASSERT_EQ(apply_result.status, 0);
   EXPECT_TRUE(apply_result.wrote_current_period);
   ASSERT_EQ(storage->get_blocks_rewards_stats().size(), 1);
+  ASSERT_EQ(runtime->rewards_stats_runtime_cached_stats().size(), 1);
 
   auto boundary_plan = runtime->process_finalized_period_rewards_stats(rewardsFact(3));
   ASSERT_TRUE(boundary_plan.clear_cached_stats);
   ASSERT_EQ(boundary_plan.distribution_stats.size(), 2);
-  apply_result = apply_rewards_stats_storage_writes(*storage, boundary_plan, false);
+  apply_result = runtime->rewards_stats_runtime_clear_storage_and_state(3, false);
   ASSERT_EQ(apply_result.status, 0);
   EXPECT_TRUE(apply_result.cleared_cached_stats);
-  runtime->rewards_stats_runtime_clear_committed(3);
 
   EXPECT_TRUE(storage->get_blocks_rewards_stats().empty());
+  EXPECT_TRUE(runtime->rewards_stats_runtime_cached_stats().empty());
 }

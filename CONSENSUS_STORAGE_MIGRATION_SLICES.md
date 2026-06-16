@@ -1562,7 +1562,11 @@ pbft_manager_test --parallel 12`, `cmake --build /build --target rust_storage_te
 Goal: make rewards-stats reload, clear, and write ownership fully Rust-runtime/storage-owned instead of using C++
 `DbStorage` column APIs.
 
-Status: planned blocker for Slice 23.
+Status: complete. `rustaxa-consensus::rewards_stats` now owns startup reload, restart-boundary clearing, runtime cache
+snapshots, committed storage clears, and storage write apply over direct `rustaxa-storage` access. `rustaxa-bridge` wraps
+the rewards-stat state together with the shared Rust storage handle and exposes runtime-owned snapshot/apply/clear
+methods. The C++ rewards stats shim no longer calls `DbStorage::Columns`, `deleteColumnData`, `getBlocksRewardsStats`,
+or operation-site `db_->rustStorage()`; its remaining `db_` use is constructor-time Rust storage handle ownership.
 
 Move/remove:
 
@@ -1572,10 +1576,28 @@ Move/remove:
   with Rust runtime calls
 - remove operation-site `db_->rustStorage()` extraction from rewards stats once the runtime owns its storage handle
 
+Implementation notes:
+
+- `rewards_stats_runtime_from_storage` clears stale `block_rewards_stats` rows through `rustaxa-storage` when startup is
+  already at a distribution boundary, then returns an empty runtime cache.
+- `RewardsStatsRuntime::cached_stats_rlp` exposes an ordered compatibility snapshot so the shim can rebuild its temporary
+  `blocks_stats_` sidecar without C++ storage reads.
+- `BridgeRewardsStatsRuntime` owns the shared `Arc<Storage>` and applies cache writes / boundary clears through runtime
+  methods, leaving the free bridge apply helper as compatibility/test scaffolding only.
+
 Done when:
 
 - `rewards_stats_shim.cpp` has no direct `DbStorage::Columns` or `db_->` storage calls
 - rewards-stats Rust/bridge tests and focused C++ rewards stats builds cover restart/reload, clear, and write behavior
+
+Validation note: Slice 25 passes `cargo fmt --manifest-path rust/Cargo.toml --all --check`, `cargo check
+--manifest-path rust/Cargo.toml -p rustaxa-bridge`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus
+rewards_stats`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge rewards_stats`, `cmake --build /build
+--target rewards_stats_test --parallel 12`, `/build/bin/rewards_stats_test`, `cmake --build /build --target
+rust_consensus_tests --parallel 12`, `/build/bin/rust_consensus_tests --gtest_filter=RustRewardsStatsBridgeTest.*`,
+`cmake --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
+`scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff
+--check`.
 
 ## Slice 26: Operation-Level Rust Storage Handle Extraction Cleanup
 

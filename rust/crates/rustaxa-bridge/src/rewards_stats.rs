@@ -18,6 +18,7 @@ use ethereum_types::{H160, H256, U256};
 use rustaxa_consensus::RewardsStatsRuntime;
 use rustaxa_consensus::{
     apply_rewards_stats_storage_writes as domain_apply_rewards_stats_storage_writes,
+    clear_rewards_stats_storage as domain_clear_rewards_stats_storage,
     rewards_stats_runtime_from_storage, FinalizedRewardsPeriodFact, RewardCertVoteFact,
     RewardDagBlockFact, RewardTransactionFact, RewardsFrequencyRule, RewardsStatsApplyStatus,
     RewardsStatsConfig, RewardsStatsPeriodRlp, RewardsStatsProcessPlan, RewardsStatsStatus,
@@ -29,11 +30,9 @@ const REWARDS_STATS_APPLY_STATUS_REJECTED: u8 = 1;
 
 /// Creates a Rust rewards-stat runtime seeded from existing Rust storage rows.
 ///
-/// `last_block_number` mirrors the legacy constructor recovery behavior for
-/// in-memory state: when it falls on a distribution boundary, cached rows are
-/// not loaded into the runtime. The bridge does not delete storage rows during
-/// construction; callers should use the explicit append/clear path for
-/// finalization-atomic mutations.
+/// `last_block_number` mirrors the legacy constructor recovery behavior: when
+/// it falls on a distribution boundary, the consensus domain clears stale cache
+/// rows through `rustaxa-storage` before returning an empty runtime cache.
 pub fn create_rewards_stats_runtime(
     storage: &BridgeStorage,
     config: FfiRewardsStatsConfig,
@@ -45,9 +44,15 @@ pub fn create_rewards_stats_runtime(
         .into_iter()
         .map(RewardsFrequencyRule::from)
         .collect::<Vec<_>>();
-    Ok(Box::new(BridgeRewardsStatsRuntime(
-        rewards_stats_runtime_from_storage(&storage.0, config, frequency_rules, last_block_number)?,
-    )))
+    Ok(Box::new(BridgeRewardsStatsRuntime {
+        state: rewards_stats_runtime_from_storage(
+            &storage.0,
+            config,
+            frequency_rules,
+            last_block_number,
+        )?,
+        storage: storage.0.clone(),
+    }))
 }
 
 impl BridgeRewardsStatsRuntime {
@@ -64,6 +69,31 @@ impl BridgeRewardsStatsRuntime {
     pub fn rewards_stats_runtime_clear_committed(&mut self, current_period: u64) {
         rewards_stats_runtime_clear_committed(self, current_period);
     }
+
+    /// Returns this runtime's cached reward-stat rows as legacy RLP DTOs.
+    pub fn rewards_stats_runtime_cached_stats(&self) -> Vec<FfiPeriodRlp> {
+        rewards_stats_runtime_cached_stats(self)
+    }
+
+    /// Applies this runtime's reward-stat storage writes through its owned
+    /// Rust storage handle.
+    pub fn rewards_stats_runtime_apply_storage_writes(
+        &self,
+        plan: &RewardsStatsProcessResult,
+        sync: bool,
+    ) -> Result<RewardsStatsApplyResult> {
+        rewards_stats_runtime_apply_storage_writes(self, plan, sync)
+    }
+
+    /// Clears persisted reward-stat rows and in-memory state after a committed
+    /// distribution-boundary period.
+    pub fn rewards_stats_runtime_clear_storage_and_state(
+        &mut self,
+        current_period: u64,
+        sync: bool,
+    ) -> Result<RewardsStatsApplyResult> {
+        rewards_stats_runtime_clear_storage_and_state(self, current_period, sync)
+    }
 }
 
 /// Processes one finalized period through the Rust rewards-stat runtime.
@@ -76,7 +106,7 @@ pub fn process_finalized_period_rewards_stats(
 ) -> RewardsStatsProcessResult {
     let current_period = fact.period;
     match finalized_fact_from_ffi(fact) {
-        Ok(fact) => runtime.0.process_period(fact).into(),
+        Ok(fact) => runtime.state.process_period(fact).into(),
         Err(error) => RewardsStatsProcessResult {
             status: RewardsStatsStatus::Rejected.as_u8(),
             error_code: error.to_string(),
@@ -95,7 +125,43 @@ pub fn rewards_stats_runtime_clear_committed(
     runtime: &mut BridgeRewardsStatsRuntime,
     current_period: u64,
 ) {
-    runtime.0.clear_committed(current_period);
+    runtime.state.clear_committed(current_period);
+}
+
+/// Returns the runtime cache as CXX-safe RLP rows.
+pub fn rewards_stats_runtime_cached_stats(
+    runtime: &BridgeRewardsStatsRuntime,
+) -> Vec<FfiPeriodRlp> {
+    runtime
+        .state
+        .cached_stats_rlp()
+        .into_iter()
+        .map(FfiPeriodRlp::from)
+        .collect()
+}
+
+/// Applies reward-stat writes through the storage handle owned by the runtime.
+pub fn rewards_stats_runtime_apply_storage_writes(
+    runtime: &BridgeRewardsStatsRuntime,
+    plan: &RewardsStatsProcessResult,
+    sync: bool,
+) -> Result<RewardsStatsApplyResult> {
+    let plan = rewards_stats_process_plan_from_ffi(plan);
+    Ok(domain_apply_rewards_stats_storage_writes(&runtime.storage, &plan, sync)?.into())
+}
+
+/// Clears persisted reward-stat rows and updates the runtime cache after the
+/// storage commit succeeds.
+pub fn rewards_stats_runtime_clear_storage_and_state(
+    runtime: &mut BridgeRewardsStatsRuntime,
+    current_period: u64,
+    sync: bool,
+) -> Result<RewardsStatsApplyResult> {
+    let result = domain_clear_rewards_stats_storage(&runtime.storage, current_period, sync)?;
+    if result.status == RewardsStatsApplyStatus::Applied {
+        runtime.state.clear_committed(current_period);
+    }
+    Ok(result.into())
 }
 
 /// Applies reward-stat cache writes or clears through a Rust-owned storage batch.
@@ -266,6 +332,10 @@ impl From<RewardsStatsPeriodRlp> for FfiPeriodRlp {
 mod tests {
     use super::*;
     use rlp::Rlp;
+    use rustaxa_storage::{Config, Storage};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn hash(value: u8) -> [u8; 32] {
         [value; 32]
@@ -303,11 +373,29 @@ mod tests {
         }
     }
 
+    fn temp_storage(name: &str) -> Arc<Storage> {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = PathBuf::from(format!(
+            "/tmp/rustaxa_bridge_rewards_stats_{name}_{}_{}",
+            std::process::id(),
+            nonce
+        ));
+        Arc::new(Storage::new(Config::new(dir)).unwrap())
+    }
+
+    fn runtime_for_tests() -> BridgeRewardsStatsRuntime {
+        BridgeRewardsStatsRuntime {
+            state: RewardsStatsRuntime::new(config().into(), Vec::new(), Vec::new()).unwrap(),
+            storage: temp_storage("runtime"),
+        }
+    }
+
     #[test]
     fn bridge_processes_period_and_returns_rlp() {
-        let mut runtime = BridgeRewardsStatsRuntime(
-            RewardsStatsRuntime::new(config().into(), Vec::new(), Vec::new()).unwrap(),
-        );
+        let mut runtime = runtime_for_tests();
 
         let result = process_finalized_period_rewards_stats(&mut runtime, fact(1));
 
@@ -320,9 +408,7 @@ mod tests {
 
     #[test]
     fn bridge_rejects_oversized_gas_price() {
-        let mut runtime = BridgeRewardsStatsRuntime(
-            RewardsStatsRuntime::new(config().into(), Vec::new(), Vec::new()).unwrap(),
-        );
+        let mut runtime = runtime_for_tests();
         let mut bad = fact(1);
         bad.transactions[0].gas_price_be = vec![1; 33];
 
@@ -330,5 +416,44 @@ mod tests {
 
         assert_eq!(result.status, 1);
         assert_eq!(result.error_code, "REWARDS_STATS_GAS_PRICE_TOO_WIDE");
+    }
+
+    #[test]
+    fn runtime_apply_writes_and_clear_use_owned_storage() {
+        let storage = temp_storage("owned_apply");
+        let mut runtime = BridgeRewardsStatsRuntime {
+            state: RewardsStatsRuntime::new(
+                config().into(),
+                vec![RewardsFrequencyRule {
+                    from_period: 0,
+                    frequency: 3,
+                }],
+                Vec::new(),
+            )
+            .unwrap(),
+            storage: storage.clone(),
+        };
+
+        let cache_plan = process_finalized_period_rewards_stats(&mut runtime, fact(1));
+        assert!(cache_plan.cache_current_period);
+        let apply =
+            rewards_stats_runtime_apply_storage_writes(&runtime, &cache_plan, false).unwrap();
+        assert_eq!(apply.status, REWARDS_STATS_APPLY_STATUS_APPLIED);
+        assert!(apply.wrote_current_period);
+        assert_eq!(
+            storage.metadata().block_rewards_stats_rlp().unwrap().len(),
+            1
+        );
+        assert_eq!(rewards_stats_runtime_cached_stats(&runtime).len(), 1);
+
+        let clear = rewards_stats_runtime_clear_storage_and_state(&mut runtime, 3, false).unwrap();
+        assert_eq!(clear.status, REWARDS_STATS_APPLY_STATUS_APPLIED);
+        assert!(clear.cleared_cached_stats);
+        assert!(storage
+            .metadata()
+            .block_rewards_stats_rlp()
+            .unwrap()
+            .is_empty());
+        assert!(rewards_stats_runtime_cached_stats(&runtime).is_empty());
     }
 }

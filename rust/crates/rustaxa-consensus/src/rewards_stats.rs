@@ -289,6 +289,21 @@ impl RewardsStatsRuntime {
         }
     }
 
+    /// Returns the currently cached rewards-stat rows as legacy RLP payloads.
+    ///
+    /// The snapshot is sorted by PBFT period and cloned from the runtime state.
+    /// Callers use it to rebuild temporary compatibility sidecars without
+    /// reading `DbStorage` or decoding storage columns in C++.
+    pub fn cached_stats_rlp(&self) -> Vec<RewardsStatsPeriodRlp> {
+        self.cached_stats
+            .iter()
+            .map(|(period, data)| RewardsStatsPeriodRlp {
+                period: *period,
+                data: data.clone(),
+            })
+            .collect()
+    }
+
     fn process_period_result(
         &mut self,
         fact: FinalizedRewardsPeriodFact,
@@ -509,8 +524,9 @@ impl RewardsStatsRuntime {
 ///
 /// Edge behavior:
 /// - Storage rows are loaded directly from `rustaxa-storage`.
-/// - This function does not clear storage; cache deletion remains an explicit
-///   committed apply operation.
+/// - If `last_block_number` is already on a distribution boundary, stale
+///   interval rows are deleted through `rustaxa-storage` before the runtime is
+///   returned, matching legacy restart recovery with Rust-owned storage.
 pub fn rewards_stats_runtime_from_storage(
     storage: &Storage,
     config: RewardsStatsConfig,
@@ -522,6 +538,10 @@ pub fn rewards_stats_runtime_from_storage(
             |frequency| frequency > 1 && last_block_number.is_multiple_of(u64::from(frequency)),
         );
     let persisted_stats = if should_ignore_persisted {
+        storage
+            .metadata()
+            .clear_block_rewards_stats()
+            .context("REWARDS_STATS_STARTUP_CLEAR")?;
         Vec::new()
     } else {
         storage
@@ -534,6 +554,38 @@ pub fn rewards_stats_runtime_from_storage(
     };
 
     RewardsStatsRuntime::new(config, frequency_rules, persisted_stats)
+}
+
+/// Clears persisted rewards-stat cache rows through Rust storage.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+/// - `current_period`: committed PBFT period whose boundary triggered the clear.
+/// - `sync`: commit sync flag passed to `rustaxa-storage`.
+///
+/// Output:
+/// - Returns the same storage-apply report shape as normal process-plan writes.
+///
+/// Behavior:
+/// - The function always issues a clear plan; callers decide whether the period
+///   is a distribution boundary before invoking it.
+/// - Deletes are committed in one Rust-owned batch and no C++ batch id or
+///   `DbStorage` column API participates.
+pub fn clear_rewards_stats_storage(
+    storage: &Storage,
+    current_period: u64,
+    sync: bool,
+) -> Result<RewardsStatsStorageApplyResult> {
+    let plan = RewardsStatsProcessPlan {
+        status: RewardsStatsStatus::Applied,
+        error_code: String::new(),
+        current_period,
+        cache_current_period: false,
+        clear_cached_stats: true,
+        current_block_stats_rlp: Vec::new(),
+        distribution_stats: Vec::new(),
+    };
+    apply_rewards_stats_storage_writes(storage, &plan, sync)
 }
 
 /// Applies reward-stat cache writes or clears through one Rust-owned storage batch.
@@ -741,6 +793,9 @@ fn decode_rewards_block_distribution(period: u64, data: &[u8]) -> Result<Rewards
 mod tests {
     use super::*;
     use rlp::Rlp;
+    use rustaxa_storage::{Config, Storage};
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn addr(byte: u8) -> H160 {
         H160::from([byte; 20])
@@ -792,6 +847,19 @@ mod tests {
             Vec::new(),
         )
         .unwrap()
+    }
+
+    fn temp_storage(name: &str) -> Storage {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = PathBuf::from(format!(
+            "/tmp/rustaxa_rewards_stats_{name}_{}_{}",
+            std::process::id(),
+            nonce
+        ));
+        Storage::new(Config::new(dir)).unwrap()
     }
 
     fn fact(period: u64) -> FinalizedRewardsPeriodFact {
@@ -936,5 +1004,86 @@ mod tests {
         let plan = runtime.process_period(bad);
         assert_eq!(plan.status, RewardsStatsStatus::Rejected);
         assert_eq!(plan.error_code, "REWARDS_STATS_DUPLICATE_VOTER");
+    }
+
+    #[test]
+    fn cached_stats_snapshot_returns_ordered_rlp_rows() {
+        let mut runtime = runtime(3);
+
+        let second = runtime.process_period(fact(2));
+        let first = runtime.process_period(fact(1));
+
+        assert!(second.cache_current_period);
+        assert!(first.cache_current_period);
+        assert_eq!(
+            runtime
+                .cached_stats_rlp()
+                .into_iter()
+                .map(|entry| entry.period)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn runtime_from_storage_clears_stale_rows_at_restart_boundary() {
+        let storage = temp_storage("restart_clear");
+        let mut runtime = runtime(3);
+        let plan = runtime.process_period(fact(1));
+        assert!(plan.cache_current_period);
+        let apply = apply_rewards_stats_storage_writes(&storage, &plan, false).unwrap();
+        assert_eq!(apply.status, RewardsStatsApplyStatus::Applied);
+        assert_eq!(
+            storage.metadata().block_rewards_stats_rlp().unwrap().len(),
+            1
+        );
+
+        let restored = rewards_stats_runtime_from_storage(
+            &storage,
+            RewardsStatsConfig {
+                committee_size: 100,
+                magnolia_period: 5,
+                aspen_part_one_period: 20,
+            },
+            vec![RewardsFrequencyRule {
+                from_period: 0,
+                frequency: 3,
+            }],
+            3,
+        )
+        .unwrap();
+
+        assert!(restored.cached_stats_rlp().is_empty());
+        assert!(
+            storage
+                .metadata()
+                .block_rewards_stats_rlp()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn clear_rewards_stats_storage_deletes_cached_rows() {
+        let storage = temp_storage("clear");
+        let mut runtime = runtime(3);
+        let plan = runtime.process_period(fact(1));
+        apply_rewards_stats_storage_writes(&storage, &plan, false).unwrap();
+        assert_eq!(
+            storage.metadata().block_rewards_stats_rlp().unwrap().len(),
+            1
+        );
+
+        let result = clear_rewards_stats_storage(&storage, 3, false).unwrap();
+
+        assert_eq!(result.status, RewardsStatsApplyStatus::Applied);
+        assert!(result.cleared_cached_stats);
+        assert!(
+            storage
+                .metadata()
+                .block_rewards_stats_rlp()
+                .unwrap()
+                .is_empty()
+        );
     }
 }

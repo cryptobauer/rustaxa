@@ -72,13 +72,11 @@ Stats::Stats(uint32_t committee_size, const HardforksConfig& hardforks, std::sha
 Stats::~Stats() = default;
 
 void Stats::recoverFromDb(EthBlockNumber last_blk_num) {
-  if (last_blk_num) {
-    const auto frequency = kHardforksConfig.getRewardsDistributionFrequency(last_blk_num);
-    if (frequency > 1 && last_blk_num % frequency == 0) {
-      db_->deleteColumnData(DbStorage::Columns::block_rewards_stats);
-    }
+  (void)last_blk_num;
+  blocks_stats_.clear();
+  for (const auto& stat : rust_stats_->rewards_stats_runtime_cached_stats()) {
+    blocks_stats_[stat.period] = decodeBlockStats(stat.data);
   }
-  blocks_stats_ = db_->getBlocksRewardsStats();
 }
 
 std::vector<BlockStats> Stats::processStats(const PeriodData& current_blk, uint32_t blocks_per_year,
@@ -136,8 +134,13 @@ FinalChainPublicationRewardsStats Stats::processStatsForFinalChainPublication(
 void Stats::clear(uint64_t current_period) {
   const auto frequency = kHardforksConfig.getRewardsDistributionFrequency(current_period);
   if (frequency > 1 && current_period % frequency == 0) {
+    auto result = rust_stats_->rewards_stats_runtime_clear_storage_and_state(current_period, false);
+    if (result.status != kRewardsStatsApplied) {
+      throw rewardsStatsError("storage clear rejected period " + std::to_string(result.current_period) + ": " +
+                              std::string(result.error_code));
+    }
     blocks_stats_.clear();
-    db_->deleteColumnData(DbStorage::Columns::block_rewards_stats);
+    return;
   }
   rust_stats_->rewards_stats_runtime_clear_committed(current_period);
 }
@@ -224,7 +227,7 @@ BlockStats Stats::decodeBlockStats(const rust::Vec<uint8_t>& stats_rlp) const {
 
 void Stats::appendStorageWrites(const rustaxa::RewardsStatsProcessResult& plan, Batch& write_batch) const {
   (void)write_batch;
-  auto result = rustaxa::apply_rewards_stats_storage_writes(db_->rustStorage(), plan, false);
+  auto result = rust_stats_->rewards_stats_runtime_apply_storage_writes(plan, false);
   if (result.status != kRewardsStatsApplied) {
     throw rewardsStatsError("storage appender rejected period " + std::to_string(result.current_period) + ": " +
                             std::string(result.error_code));
