@@ -125,6 +125,10 @@ SortitionParams SortitionParamsManager::getSortitionParams(std::optional<PbftPer
   return from_rust_params(rust_sortition_params_manager_.value()->sortition_params_for_period_from_storage(*for_period));
 }
 
+rustaxa::SortitionRuntimeParams SortitionParamsManager::rustSortitionParamsForRust(PbftPeriod for_period) const {
+  return rust_sortition_params_manager_.value()->sortition_params_for_period_from_storage(for_period);
+}
+
 uint16_t SortitionParamsManager::calculateDagEfficiency(const PeriodData& block) const {
   const auto counts = period_efficiency_counts(block);
   const auto result = rust_sortition_params_manager_.value()->sortition_calculate_dag_efficiency(

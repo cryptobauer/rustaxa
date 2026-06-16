@@ -45,6 +45,24 @@ class SortitionParamsManager {
   SortitionParams getSortitionParams(std::optional<PbftPeriod> for_period = {}) const;
 
   /**
+   * Returns Rust-native sortition runtime parameters for a proposal period.
+   *
+   * Inputs:
+   * - for_period selects the historical sortition parameters active for DAG
+   *   proposal and VDF proof planning.
+   *
+   * Outputs:
+   * - The Rust bridge DTO containing VRF threshold and VDF difficulty bounds.
+   *
+   * Invariants and edge behavior:
+   * - Reads directly through the Rust sortition runtime's rustaxa-storage
+   *   handle.
+   * - Does not materialize or mutate the C++ SortitionParams compatibility DTO.
+   * - Propagates Rust runtime storage/decoding failures as bridge exceptions.
+   */
+  rustaxa::SortitionRuntimeParams rustSortitionParamsForRust(PbftPeriod for_period) const;
+
+  /**
    * Calculates DAG efficiency for finalized PeriodData using the Rust fixed-point policy.
    *
    * The input is reduced to unique transaction count and total DAG transaction references before crossing the bridge.

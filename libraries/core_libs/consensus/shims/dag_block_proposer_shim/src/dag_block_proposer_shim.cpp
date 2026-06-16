@@ -38,23 +38,23 @@ dev::bytes dag_vrf_input(level_t level, const blk_hash_t& proposal_period_hash) 
   return to_bytes(bytes);
 }
 
-rustaxa::LegacySortitionParams to_legacy_sortition_params(const SortitionParams& params) {
+rustaxa::LegacySortitionParams to_legacy_sortition_params(const rustaxa::SortitionRuntimeParams& params) {
   rustaxa::LegacySortitionParams out;
-  out.vrf_threshold_upper = params.vrf.threshold_upper;
-  out.vdf_difficulty_min = params.vdf.difficulty_min;
-  out.vdf_difficulty_max = params.vdf.difficulty_max;
-  out.vdf_difficulty_stale = params.vdf.difficulty_stale;
-  out.vdf_lambda_bound = params.vdf.lambda_bound;
+  out.vrf_threshold_upper = params.threshold_upper;
+  out.vdf_difficulty_min = params.difficulty_min;
+  out.vdf_difficulty_max = params.difficulty_max;
+  out.vdf_difficulty_stale = params.difficulty_stale;
+  out.vdf_lambda_bound = params.lambda_bound;
   return out;
 }
 
-rustaxa::VdfSortitionVerifyConfig to_vdf_sortition_config(const SortitionParams& params) {
+rustaxa::VdfSortitionVerifyConfig to_vdf_sortition_config(const rustaxa::SortitionRuntimeParams& params) {
   rustaxa::VdfSortitionVerifyConfig out;
-  out.threshold_upper = params.vrf.threshold_upper;
-  out.difficulty_min = params.vdf.difficulty_min;
-  out.difficulty_max = params.vdf.difficulty_max;
-  out.difficulty_stale = params.vdf.difficulty_stale;
-  out.lambda_bound = params.vdf.lambda_bound;
+  out.threshold_upper = params.threshold_upper;
+  out.difficulty_min = params.difficulty_min;
+  out.difficulty_max = params.difficulty_max;
+  out.difficulty_stale = params.difficulty_stale;
+  out.lambda_bound = params.lambda_bound;
   return out;
 }
 
@@ -171,7 +171,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   }
 
   const auto period_block_hash = dag_mgr_->getPeriodBlockHashForDagProposal(*proposal_period);
-  const auto sortition_params = dag_mgr_->sortitionParamsManager().getSortitionParams(*proposal_period);
+  const auto sortition_params = dag_mgr_->sortitionParamsManager().rustSortitionParamsForRust(*proposal_period);
   const auto vrf_input = dag_vrf_input(propose_level, period_block_hash);
   rust::Slice<const uint8_t> vrf_input_slice{vrf_input.data(), vrf_input.size()};
   const auto normalized_vote_count = rustaxa::vdf_sortition_normalize_vote_count(vote_count, max_vote_count);
@@ -185,7 +185,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   }
   const auto vdf_difficulty = rustaxa::vdf_sortition_difficulty(to_vdf_sortition_config(sortition_params),
                                                                vrf_probe.threshold);
-  const bool vdf_stale = vdf_difficulty == sortition_params.vdf.difficulty_stale;
+  const bool vdf_stale = vdf_difficulty == sortition_params.difficulty_stale;
 
   auto anchor = dag_mgr_->getAnchors().second;
   if (frontier.pivot != anchor) {
@@ -247,7 +247,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   while (result.wait_for(std::chrono::milliseconds(100)) != std::future_status::ready) {
     auto latest_frontier = dag_mgr_->getDagFrontier();
     const auto latest_level = getProposeLevel(latest_frontier.pivot, latest_frontier.tips) + 1;
-    if (latest_level > propose_level + 1 && vdf_difficulty > sortition_params.vdf.difficulty_min) {
+    if (latest_level > propose_level + 1 && vdf_difficulty > sortition_params.difficulty_min) {
       cancellation_token = true;
       break;
     }
