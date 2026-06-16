@@ -1021,6 +1021,9 @@ packing/materialization boundary.
 After live transaction packing returns, Rust now also owns the deterministic post-pack empty-selection decision and retry
 state reset. C++ still performs the actual transaction materialization and gas-estimation loop, but it no longer mutates
 proposer retry state for the empty packed result without a Rust plan.
+Rust now also owns the post-boundary retry cursor reset after VDF cancellation, stale-proof delay exit, and final local
+`addDagBlock` attempt completion. Those live proof, sleep, insertion, and network side effects remain in C++, but the
+sidecar retry values applied at those exits come from `rustaxa-consensus::dag`.
 
 Current boundary:
 
@@ -1051,6 +1054,8 @@ Current boundary:
 - `DagBlockProposer` now routes the post-pack packed-transaction-count decision through
   `dag_proposer_plan_post_pack`; Rust returns the empty-pack skip reason and authoritative retry-state reset before C++
   continues to VDF proof execution.
+- `DagBlockProposer` now routes VDF-cancelled, stale-after-sleep, and local add-attempt completion retry resets through
+  `dag_proposer_plan_retry_reset`; C++ applies the returned cursor values while retaining the live side effects.
 - Re-audit after Slice 18 confirms the remaining DAG proposal work is not blocked by TransactionManager account/finalized
   routing anymore; it is blocked by ownership of the DAG proposal runtime itself.
 
@@ -1088,6 +1093,8 @@ Move:
   through the Rust planner while keeping C++ block/transaction materialization temporary
 - complete for post-pack empty selection: `DagBlockProposer` now asks Rust to classify zero packed transactions and
   provide the retry-state reset, while C++ still owns live pack execution and transaction sidecars
+- complete for post-boundary retry reset: `DagBlockProposer` now asks Rust for the retry cursor reset after VDF
+  cancellation, stale-proof sleep exit, and final local DAG insertion attempt completion
 - remaining: move live transaction materialization, EVM gas estimation, async proof side effects, final `DagBlock`
   construction, and network/add-block effects when their owning runtime boundaries are ready
 
@@ -1232,6 +1239,16 @@ Focused Rust and bridge tests cover empty and non-empty packed results. It passe
 rust/Cargo.toml --all --check`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus
 dag_proposer_post_pack`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge
 dag_proposer_post_pack_bridge`, `cmake --build /build --target dag_shim_test --parallel 12`,
+`/build/bin/dag_shim_test`, `cmake --build /build --target rust_storage_tests --parallel 12`,
+`/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
+`scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
+
+Validation note: the post-boundary retry-reset sub-slice adds `dag_proposer_plan_retry_reset`, moving the retry cursor
+reset after VDF cancellation, stale-proof delay exit, and final local DAG insertion attempt completion into
+`rustaxa-consensus::dag`. C++ still owns the live proof, sleep, insertion, and network side effects. It passes `cargo fmt
+--manifest-path rust/Cargo.toml --all --check`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus
+dag_proposer_retry_reset`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge
+dag_proposer_retry_reset_bridge`, `cmake --build /build --target dag_shim_test --parallel 12`,
 `/build/bin/dag_shim_test`, `cmake --build /build --target rust_storage_tests --parallel 12`,
 `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
 `scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.

@@ -797,6 +797,30 @@ pub struct DagProposerPostPackPlan {
     pub next_retry_count: u64,
 }
 
+/// Input for a DAG proposer retry-state reset after C++ finishes a live boundary.
+///
+/// This planner is used after Rust has already allowed proposal work to cross a
+/// live compatibility boundary such as VDF proof execution, stale-proof sleep,
+/// or local DAG insertion. It does not decide those side effects; it only owns
+/// the deterministic retry cursor written when the proposer must stop retrying
+/// the current local attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagProposerRetryResetInput {
+    pub proposal_level: u64,
+}
+
+/// Retry-state update emitted by Rust for post-boundary DAG proposer outcomes.
+///
+/// Callers must apply `next_last_propose_level` and `next_retry_count` together.
+/// The current migration keeps those values in the C++ proposer sidecar, but the
+/// values themselves are owned by the Rust proposer planner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagProposerRetryResetPlan {
+    pub update_retry_state: bool,
+    pub next_last_propose_level: u64,
+    pub next_retry_count: u64,
+}
+
 /// Decision returned for the VDF and DPoS authorization stage.
 ///
 /// Output invariants:
@@ -1919,12 +1943,15 @@ pub fn plan_dag_proposer_attempt(input: DagProposerAttemptInput) -> Result<DagPr
 /// runtime.
 pub fn plan_dag_proposer_post_pack(input: DagProposerPostPackInput) -> DagProposerPostPackPlan {
     if input.packed_transaction_count == 0 {
+        let retry = plan_dag_proposer_retry_reset(DagProposerRetryResetInput {
+            proposal_level: input.proposal_level,
+        });
         return DagProposerPostPackPlan {
             action: DAG_PROPOSER_ACTION_SKIP,
             reason_code: DAG_PROPOSER_REASON_PACKED_TRANSACTIONS_EMPTY,
-            update_retry_state: true,
-            next_last_propose_level: input.proposal_level,
-            next_retry_count: 0,
+            update_retry_state: retry.update_retry_state,
+            next_last_propose_level: retry.next_last_propose_level,
+            next_retry_count: retry.next_retry_count,
         };
     }
 
@@ -1932,6 +1959,21 @@ pub fn plan_dag_proposer_post_pack(input: DagProposerPostPackInput) -> DagPropos
         action: DAG_PROPOSER_ACTION_CONTINUE,
         reason_code: DAG_PROPOSER_REASON_OK,
         update_retry_state: false,
+        next_last_propose_level: input.proposal_level,
+        next_retry_count: 0,
+    }
+}
+
+/// Plans a retry-state reset after a live DAG proposer boundary completes.
+///
+/// The live boundary may be VDF cancellation, a stale-proof delay, or the local
+/// `addDagBlock` attempt. Rust owns the resulting retry cursor so all proposer
+/// exit paths converge on the same state transition.
+pub fn plan_dag_proposer_retry_reset(
+    input: DagProposerRetryResetInput,
+) -> DagProposerRetryResetPlan {
+    DagProposerRetryResetPlan {
+        update_retry_state: true,
         next_last_propose_level: input.proposal_level,
         next_retry_count: 0,
     }
@@ -4978,6 +5020,15 @@ mod tests {
         assert_eq!(plan.action, DAG_PROPOSER_ACTION_CONTINUE);
         assert_eq!(plan.reason_code, DAG_PROPOSER_REASON_OK);
         assert!(!plan.update_retry_state);
+    }
+
+    #[test]
+    fn dag_proposer_retry_reset_sets_authoritative_cursor() {
+        let plan = plan_dag_proposer_retry_reset(DagProposerRetryResetInput { proposal_level: 64 });
+
+        assert!(plan.update_retry_state);
+        assert_eq!(plan.next_last_propose_level, 64);
+        assert_eq!(plan.next_retry_count, 0);
     }
 
     #[test]

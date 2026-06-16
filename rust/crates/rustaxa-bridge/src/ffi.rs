@@ -3459,6 +3459,18 @@ pub mod rustaxa_ffi {
         next_retry_count: u64,
     }
 
+    /// Proposal level for a Rust-owned retry reset after a live boundary.
+    struct DagProposerRetryResetInput {
+        proposal_level: u64,
+    }
+
+    /// Rust-owned retry cursor update for post-boundary proposer exits.
+    struct DagProposerRetryResetPlan {
+        update_retry_state: bool,
+        next_last_propose_level: u64,
+        next_retry_count: u64,
+    }
+
     /// C++-originated tip candidate facts for Rust proposer tip selection.
     struct DagProposerTipCandidate {
         hash: [u8; 32],
@@ -4041,6 +4053,9 @@ pub mod rustaxa_ffi {
         pub fn dag_proposer_plan_post_pack(
             input: DagProposerPostPackInput,
         ) -> DagProposerPostPackPlan;
+        pub fn dag_proposer_plan_retry_reset(
+            input: DagProposerRetryResetInput,
+        ) -> DagProposerRetryResetPlan;
         pub fn dag_verify_authorization(
             input: DagVerifyAuthorizationInput,
         ) -> DagVerifyAuthorizationResult;

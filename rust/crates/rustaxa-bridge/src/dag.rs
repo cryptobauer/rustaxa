@@ -8,15 +8,16 @@ use crate::ffi::rustaxa_ffi::{
     DagPivotTipsValidation, DagProposerAttemptInput, DagProposerAttemptPlan,
     DagProposerBlockConstructionInput, DagProposerBlockConstructionPlan,
     DagProposerEligibilityDecision, DagProposerEligibilityInput, DagProposerFrontierFacts,
-    DagProposerPostPackInput, DagProposerPostPackPlan, DagProposerStorageBlockConstructionInput,
-    DagProposerTipCandidate, DagProposerTransactionPackRequest, DagReferenceMetadata,
-    DagSyncBlockRlp, DagTransactionHash, DagTransactionQueryPlan, DagTransactionRlpLookup,
-    DagVerifyAuthorizationInput, DagVerifyAuthorizationResult, DagVerifyGasInput,
-    DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
-    DagVerifyTransactionAvailabilityInput, DagVerifyTransactionAvailabilityResult,
-    DagVerifyVdfDposDecision, DagVerifyVdfDposFacts, DagVerifyVdfPrepareInput,
-    DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
-    DagVerifyVdfSortitionResult, HashLookup, PeriodLookup, SortitionRuntimeParams,
+    DagProposerPostPackInput, DagProposerPostPackPlan, DagProposerRetryResetInput,
+    DagProposerRetryResetPlan, DagProposerStorageBlockConstructionInput, DagProposerTipCandidate,
+    DagProposerTransactionPackRequest, DagReferenceMetadata, DagSyncBlockRlp, DagTransactionHash,
+    DagTransactionQueryPlan, DagTransactionRlpLookup, DagVerifyAuthorizationInput,
+    DagVerifyAuthorizationResult, DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock,
+    DagVerifyPrecheckResult, DagVerifyTransactionAvailabilityInput,
+    DagVerifyTransactionAvailabilityResult, DagVerifyVdfDposDecision, DagVerifyVdfDposFacts,
+    DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput,
+    DagVerifyVdfSortitionInput, DagVerifyVdfSortitionResult, HashLookup, PeriodLookup,
+    SortitionRuntimeParams,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
 use anyhow::{ensure, Context, Result};
@@ -30,7 +31,7 @@ use rustaxa_consensus::dag::{
     decide_dag_verify_vdf_dpos_authorization, derive_frontier, ensure_proposal_period_mapping,
     load_dag_block_from_storage, period_block_hash_from_storage, plan_dag_proposer_attempt,
     plan_dag_proposer_block_construction, plan_dag_proposer_block_construction_from_storage,
-    plan_dag_proposer_post_pack, plan_dag_verify_transaction_query,
+    plan_dag_proposer_post_pack, plan_dag_proposer_retry_reset, plan_dag_verify_transaction_query,
     plan_expired_transaction_cleanup, plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
     proposal_period_for_level_from_storage, save_dag_block_to_storage,
     validate_dag_verify_authorization, validate_dag_verify_gas,
@@ -1306,6 +1307,24 @@ pub fn dag_proposer_plan_post_pack(input: DagProposerPostPackInput) -> DagPropos
     DagProposerPostPackPlan {
         action: plan.action,
         reason_code: plan.reason_code,
+        update_retry_state: plan.update_retry_state,
+        next_last_propose_level: plan.next_last_propose_level,
+        next_retry_count: plan.next_retry_count,
+    }
+}
+
+/// Plans the retry-state reset after a live DAG proposer boundary completes.
+///
+/// C++ still owns the live proof, sleep, insertion, and network side effects.
+/// This bridge only maps the proposal level into the Rust proposer planner and
+/// returns the retry cursor update that the shim must mirror.
+pub fn dag_proposer_plan_retry_reset(
+    input: DagProposerRetryResetInput,
+) -> DagProposerRetryResetPlan {
+    let plan = plan_dag_proposer_retry_reset(rustaxa_consensus::dag::DagProposerRetryResetInput {
+        proposal_level: input.proposal_level,
+    });
+    DagProposerRetryResetPlan {
         update_retry_state: plan.update_retry_state,
         next_last_propose_level: plan.next_last_propose_level,
         next_retry_count: plan.next_retry_count,
@@ -3391,6 +3410,15 @@ mod tests {
         assert_eq!(plan.action, DAG_PROPOSER_ACTION_CONTINUE);
         assert_eq!(plan.reason_code, DAG_PROPOSER_REASON_OK);
         assert!(!plan.update_retry_state);
+    }
+
+    #[test]
+    fn dag_proposer_retry_reset_bridge_sets_authoritative_cursor() {
+        let plan = dag_proposer_plan_retry_reset(DagProposerRetryResetInput { proposal_level: 23 });
+
+        assert!(plan.update_retry_state);
+        assert_eq!(plan.next_last_propose_level, 23);
+        assert_eq!(plan.next_retry_count, 0);
     }
 
     #[test]

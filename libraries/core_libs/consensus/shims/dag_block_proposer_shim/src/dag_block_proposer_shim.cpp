@@ -86,6 +86,21 @@ rustaxa::DagDposAuthorizationFacts rust_dag_authorization_facts(const final_chai
                                                                               proposer.asArray());
 }
 
+rustaxa::DagProposerRetryResetPlan plan_retry_reset(uint64_t propose_level) {
+  rustaxa::DagProposerRetryResetInput input;
+  input.proposal_level = propose_level;
+  return rustaxa::dag_proposer_plan_retry_reset(std::move(input));
+}
+
+void apply_retry_reset(const rustaxa::DagProposerRetryResetPlan& plan,
+                       const std::shared_ptr<DagBlockProposer::NodeDagProposerData>& node_dag_proposer_data) {
+  if (!plan.update_retry_state) {
+    return;
+  }
+  node_dag_proposer_data->last_propose_level = plan.next_last_propose_level;
+  node_dag_proposer_data->num_tries = static_cast<uint16_t>(plan.next_retry_count);
+}
+
 }  // namespace
 
 using namespace vdf_sortition;
@@ -240,8 +255,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   }
 
   if (cancellation_token) {
-    node_dag_proposer_data->last_propose_level = propose_level;
-    node_dag_proposer_data->num_tries = 0;
+    apply_retry_reset(plan_retry_reset(propose_level), node_dag_proposer_data);
     result.wait();
     return true;
   }
@@ -250,8 +264,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
     thisThreadSleepForSeconds(1);
     const auto latest_level = dag_mgr_->getProposerFrontierFacts().propose_level;
     if (latest_level > propose_level) {
-      node_dag_proposer_data->last_propose_level = propose_level;
-      node_dag_proposer_data->num_tries = 0;
+      apply_retry_reset(plan_retry_reset(propose_level), node_dag_proposer_data);
       return false;
     }
   }
@@ -278,8 +291,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
                  << node_dag_proposer_data->wallet.node_addr << " into dag";
   }
 
-  node_dag_proposer_data->last_propose_level = propose_level;
-  node_dag_proposer_data->num_tries = 0;
+  apply_retry_reset(plan_retry_reset(propose_level), node_dag_proposer_data);
 
   return true;
 }

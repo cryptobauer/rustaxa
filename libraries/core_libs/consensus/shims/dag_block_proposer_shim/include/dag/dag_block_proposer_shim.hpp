@@ -28,8 +28,8 @@ class FinalChain;
  * The class preserves the public `DagBlockProposer` API while moving deterministic proposal facts toward Rust. C++ still
  * owns worker-thread orchestration, live transaction selection, live tip metadata materialization, and final `DagBlock`
  * construction. Rust owns canonical proposal VRF/VDF message byte construction, proposer VDF proof generation,
- * proposer tip-pruning/block-construction planning, and DPoS/VDF authorization facts through the Rust-backed FinalChain
- * shim.
+ * proposer tip-pruning/block-construction planning, post-boundary retry-state resets, and DPoS/VDF authorization facts
+ * through the Rust-backed FinalChain shim.
  *
  * Edge behavior:
  * - proposal returns `false` when the transaction pool, DPoS facts, VRF key, or vote denominator are unavailable
