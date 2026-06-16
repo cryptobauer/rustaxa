@@ -1,5 +1,6 @@
 #include "slashing_manager/slashing_manager.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <stdexcept>
 #include <utility>
@@ -26,6 +27,15 @@ std::array<uint8_t, 32> to_bridge_u256(const u256& value) {
     throw std::overflow_error("u256 value cannot be represented in 32 bridge bytes");
   }
   std::copy(bytes.begin(), bytes.end(), out.begin() + (out.size() - bytes.size()));
+  return out;
+}
+
+std::array<uint8_t, 32> to_bridge_account_balance(const rust::Vec<uint8_t>& value) {
+  std::array<uint8_t, 32> out{};
+  if (value.size() > out.size()) {
+    throw std::overflow_error("Rust FinalChain account balance cannot be represented in 32 bridge bytes");
+  }
+  std::copy(value.begin(), value.end(), out.begin() + (out.size() - value.size()));
   return out;
 }
 
@@ -79,11 +89,13 @@ rust::Vec<rustaxa::SlashingSubmitterFact> submitter_facts(const FullNodeConfig& 
   facts.reserve(config.wallets.size());
   for (size_t index = 0; index < config.wallets.size(); ++index) {
     const auto& wallet = config.wallets[index];
-    const auto account = final_chain->getAccount(wallet.node_addr).value_or(taraxa::state_api::ZeroAccount);
-    rustaxa::SlashingSubmitterFact fact;
+    rustaxa::SlashingSubmitterFact fact{};
     fact.wallet_index = index;
-    fact.nonce = to_bridge_u256(account.nonce);
-    fact.balance = to_bridge_u256(account.balance);
+    const auto account = final_chain->rustFinalChainForRust().get_account(wallet.node_addr.asArray());
+    if (account.found) {
+      fact.nonce = to_bridge_u256(u256(account.nonce));
+      fact.balance = to_bridge_account_balance(account.balance);
+    }
     facts.push_back(std::move(fact));
   }
   return facts;

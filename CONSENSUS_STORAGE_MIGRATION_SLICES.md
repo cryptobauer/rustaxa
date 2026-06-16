@@ -1814,6 +1814,41 @@ Residual categories after Slice 26:
   VoteManager, and TransactionManager only extract Rust storage handles during constructor/runtime setup or documented
   startup restore; deterministic operation methods use runtime-owned or shim-owned Rust storage handles.
 
+## Slice 27: Slashing Submitter FinalChain Account Facts
+
+Goal: stop the slashing manager shim from collecting submitter nonce/balance facts through the C++ `FinalChain`
+compatibility API when the Rust FinalChain runtime already exposes the account lookup.
+
+Status: complete. `SlashingManager` now reads each configured wallet account through
+`FinalChain::rustFinalChainForRust().get_account(...)` and maps the returned Rust FinalChain account fact into the
+existing slashing planner DTO. Missing accounts still produce zero nonce and zero balance, preserving the old
+`ZeroAccount` fallback semantics without routing through `FinalChain::getAccount`.
+
+Move/remove:
+
+- completed: slashing submitter account fact collection no longer calls `FinalChain::getAccount`
+- completed: shim documentation now classifies submitter nonce/balance sourcing as Rust FinalChain runtime-owned
+
+Keep temporarily:
+
+- gas-price lookup
+- slashing transaction construction/signing
+- transaction-pool insertion
+- external EVM/state execution of the submitted slashing transaction
+
+Done when:
+
+- `slashing_manager_shim.cpp` has no `FinalChain::getAccount` compatibility call for submitter facts
+- the focused slashing shim build and Rust slashing planner tests pass
+- storage-boundary guard and `rust_storage_tests` stay green
+
+Validation note: Slice 27 passes `cargo fmt --manifest-path rust/Cargo.toml --all --check`, `cargo test
+--manifest-path rust/Cargo.toml -p rustaxa-consensus slashing`, `cargo test --manifest-path rust/Cargo.toml -p
+rustaxa-bridge slashing`, `cmake --build /build --target slashing_manager_shim_test --parallel 12`,
+`/build/bin/slashing_manager_shim_test`, `cmake --build /build --target rust_storage_tests --parallel 12`,
+`/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
+`scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
+
 ## Stop Conditions
 
 Stop and re-plan before continuing a slice if:

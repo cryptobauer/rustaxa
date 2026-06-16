@@ -18,10 +18,10 @@ class FinalChain;
  * Rust-mode SlashingManager facade.
  *
  * The public `SlashingManager` API is preserved while deterministic
- * double-voting proof planning is routed through Rust. C++ still owns live
- * FinalChain account reads, gas-price lookup, transaction construction,
- * signing, and transaction-pool insertion. No production path delegates to
- * `SlashingManagerOld`.
+ * double-voting proof planning is routed through Rust. Submitter nonce and
+ * balance facts are read through the Rust FinalChain runtime; C++ still owns
+ * gas-price lookup, transaction construction, signing, and transaction-pool
+ * insertion. No production path delegates to `SlashingManagerOld`.
  */
 class SlashingManager {
  public:
