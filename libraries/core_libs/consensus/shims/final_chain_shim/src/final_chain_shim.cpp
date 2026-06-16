@@ -730,8 +730,8 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
   }
   rewards_.clearCommittedAfterFinalChainPublication(period_data.pbft_blk->getPeriod());
 
-  num_executed_dag_blk_ += finalized_dag_blk_hashes.size();
-  num_executed_trx_ += all_transactions.size();
+  num_executed_dag_blk_ = publication_report.executed_dag_block_count;
+  num_executed_trx_ = publication_report.executed_transaction_count;
 
   auto block_header_data = into_string(rust_final_chain_.value()->get_block_header(publication_report.period));
   auto blk_header = BlockHeader::fromRLP(dev::RLP(block_header_data));

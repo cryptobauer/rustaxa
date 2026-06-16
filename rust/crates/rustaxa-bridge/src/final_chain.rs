@@ -588,6 +588,10 @@ fn external_evm_publication_report_to_ffi(
         plan_id: report.plan_id,
         period: report.period,
         block_hash: report.block_hash,
+        executed_dag_block_count: report.executed_dag_block_count,
+        executed_transaction_count: report.executed_transaction_count,
+        dpos_snapshot_status: report.dpos_snapshot_status,
+        account_snapshot_status: report.account_snapshot_status,
         status: report.status,
         error_code: report.error_code,
     }
@@ -2744,6 +2748,16 @@ mod tests {
             report.status,
             rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED
         );
+        assert_eq!(report.executed_dag_block_count, 0);
+        assert_eq!(report.executed_transaction_count, 3);
+        assert_eq!(
+            report.dpos_snapshot_status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_AVAILABLE
+        );
+        assert_eq!(
+            report.account_snapshot_status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY
+        );
         assert_external_evm_publication_audit_matches(&final_chain, &publication);
         assert_transaction_location(&final_chain, &system_transaction.hash, 1, 2, true);
         assert_eq!(
@@ -2801,6 +2815,22 @@ mod tests {
         let execution_status = final_chain.get_execution_status().unwrap();
         assert_eq!(execution_status.executed_dag_block_count, 0);
         assert_eq!(execution_status.executed_transaction_count, 2);
+        assert_eq!(
+            report.executed_dag_block_count,
+            execution_status.executed_dag_block_count
+        );
+        assert_eq!(
+            report.executed_transaction_count,
+            execution_status.executed_transaction_count
+        );
+        assert_eq!(
+            report.dpos_snapshot_status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_AVAILABLE
+        );
+        assert_eq!(
+            report.account_snapshot_status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY
+        );
         let complete_step = session
             .final_chain_execution_session_next()
             .expect("completed publication step should convert");
@@ -3212,6 +3242,16 @@ mod tests {
         assert_eq!(
             report.error_code,
             "FINAL_CHAIN_EVM_PUBLICATION_PLAN_ID_MISMATCH"
+        );
+        assert_eq!(report.executed_dag_block_count, 0);
+        assert_eq!(report.executed_transaction_count, 0);
+        assert_eq!(
+            report.dpos_snapshot_status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED
+        );
+        assert_eq!(
+            report.account_snapshot_status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED
         );
         assert_eq!(final_chain.get_last_block_number().unwrap(), 0);
 

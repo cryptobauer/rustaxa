@@ -7,6 +7,9 @@ use crate::final_chain_execution::{
     FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH,
     FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STATUS_MATCHED,
     FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STATUS_MISMATCH,
+    FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_AVAILABLE,
+    FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED,
+    FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY,
     FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED, FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED,
     FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED, FinalChainExternalEvmCommitDecision,
     FinalChainExternalEvmPublicationAuditReport, FinalChainExternalEvmPublicationPlan,
@@ -1284,8 +1287,11 @@ impl FinalChain {
             plan_id: marker.plan.plan_id,
             period: marker.plan.period,
             block_hash: marker.plan.block_hash,
+            dpos_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED,
+            account_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED,
             status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED,
             error_code: String::new(),
+            ..Default::default()
         })
     }
 
@@ -1356,8 +1362,12 @@ impl FinalChain {
                     plan_id: marker.plan.plan_id,
                     period: marker.plan.period,
                     block_hash: marker.plan.block_hash,
+                    dpos_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED,
+                    account_snapshot_status:
+                        FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED,
                     status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED,
                     error_code: String::new(),
+                    ..Default::default()
                 });
             }
             return Ok(rejected_external_evm_publication_report(
@@ -1374,8 +1384,11 @@ impl FinalChain {
                 plan_id: marker.plan.plan_id,
                 period: marker.plan.period,
                 block_hash: marker.plan.block_hash,
+                dpos_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED,
+                account_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED,
                 status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED,
                 error_code: String::new(),
+                ..Default::default()
             });
         }
         if committed_period != marker.plan.period {
@@ -1509,11 +1522,17 @@ impl FinalChain {
             let existing_hash =
                 h256_from_slice(&existing_hash, "external EVM existing block hash")?;
             if existing_hash == plan_hash && indexed_period_for_hash == Some(plan.period) {
+                let execution_status = self.execution_status()?;
                 return Ok(FinalChainExternalEvmPublicationReport {
                     request_id: plan.request_id,
                     plan_id: plan.plan_id,
                     period: plan.period,
                     block_hash: plan.block_hash,
+                    executed_dag_block_count: execution_status.executed_dag_block_count,
+                    executed_transaction_count: execution_status.executed_transaction_count,
+                    dpos_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_AVAILABLE,
+                    account_snapshot_status:
+                        FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY,
                     status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED,
                     error_code: String::new(),
                 });
@@ -1595,6 +1614,11 @@ impl FinalChain {
             plan_id: plan.plan_id,
             period: plan.period,
             block_hash: plan.block_hash,
+            executed_dag_block_count: execution_status.executed_dag_block_count,
+            executed_transaction_count: execution_status.executed_transaction_count,
+            dpos_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_AVAILABLE,
+            account_snapshot_status:
+                FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY,
             status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED,
             error_code: String::new(),
         })
@@ -4541,8 +4565,11 @@ fn rejected_external_evm_publication_report(
         plan_id: plan.plan_id,
         period: plan.period,
         block_hash: plan.block_hash,
+        dpos_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED,
+        account_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED,
         status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED,
         error_code: error_code.into(),
+        ..Default::default()
     }
 }
 

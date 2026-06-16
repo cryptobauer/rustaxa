@@ -2686,6 +2686,10 @@ pub mod rustaxa_ffi {
         plan_id: [u8; 32],
         period: u64,
         block_hash: [u8; 32],
+        executed_dag_block_count: u64,
+        executed_transaction_count: u64,
+        dpos_snapshot_status: u8,
+        account_snapshot_status: u8,
         status: u8,
         error_code: String,
     }

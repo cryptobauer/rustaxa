@@ -123,6 +123,13 @@ pub const FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED: u8 = 1;
 /// External EVM publication was already present with matching block indexes.
 pub const FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED: u8 = 2;
 
+/// A FinalChain snapshot was persisted or was already available for the publication period.
+pub const FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_AVAILABLE: u8 = 0;
+/// A FinalChain snapshot was not produced because the accepted external-EVM boundary cannot expose a full snapshot yet.
+pub const FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY: u8 = 1;
+/// A FinalChain snapshot was not evaluated because publication was rejected or no block was published.
+pub const FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED: u8 = 2;
+
 /// External EVM publication audit matched all persisted FinalChain rows.
 pub const FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STATUS_MATCHED: u8 = 0;
 /// External EVM publication audit found a missing or mismatched persisted row.
@@ -513,13 +520,21 @@ pub struct FinalChainExternalEvmCommitDecision {
 /// The report is returned only by the explicit publication API. It does not
 /// execute EVM or interact with `StateAPI`; it records whether the Rust-owned
 /// FinalChain batch applied, was already present, or was rejected before any
-/// storage mutation.
+/// storage mutation. Applied/already-applied reports carry the absolute
+/// execution counters persisted by Rust storage after the publication. Snapshot
+/// status fields intentionally distinguish persisted snapshots from facts that
+/// remain unavailable at the accepted external-EVM boundary; callers must not
+/// treat unavailable account snapshots as current account state.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainExternalEvmPublicationReport {
     pub request_id: [u8; 32],
     pub plan_id: [u8; 32],
     pub period: u64,
     pub block_hash: [u8; 32],
+    pub executed_dag_block_count: u64,
+    pub executed_transaction_count: u64,
+    pub dpos_snapshot_status: u8,
+    pub account_snapshot_status: u8,
     pub status: u8,
     pub error_code: String,
 }
@@ -1701,8 +1716,11 @@ fn rejected_session_external_evm_publication_report(
         plan_id,
         period: session.metadata.period,
         block_hash,
+        dpos_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED,
+        account_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED,
         status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED,
         error_code: error_code.into(),
+        ..Default::default()
     }
 }
 

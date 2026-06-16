@@ -1454,8 +1454,10 @@ execution-counter, DPoS snapshot, rewards-stat, system-transaction hash, and pen
 row from the FinalChain C++ shim's post-publication `DbStorage` batch into the Rust publication plan and batch. The
 FinalChain shim also now hydrates its temporary executed DAG/transaction counter sidecars from a typed Rust FinalChain
 execution-status query instead of `DbStorage::getStatusField`, and no longer calls the C++ `DbStorage::createSnapshot`
-checkpoint hook after a Rust-owned external-EVM publication. Remaining work is still needed for the broader
-`getNumTransactionExecuted()`/DPoS/account snapshot mismatch class without violating the external-EVM boundary.
+checkpoint hook after a Rust-owned external-EVM publication. External-EVM publication reports now return the absolute
+Rust-persisted executed DAG/transaction counters plus explicit DPoS/account snapshot statuses, and the FinalChain shim
+mirrors those persisted counters after publication instead of recomputing local deltas. Remaining work is still needed
+for the broader DPoS/account snapshot mismatch class without violating the external-EVM boundary.
 
 Current boundary:
 
@@ -1467,11 +1469,18 @@ Current boundary:
 - FinalChain shim constructor counter sidecars now read the persisted executed block/transaction counters through
   `BridgeFinalChain::get_execution_status`, leaving those atomics as public API/live compatibility mirrors rather than
   storage owners.
+- FinalChain shim post-publication counter sidecars now come from the typed Rust publication report, whose counters are
+  the absolute values written through `rustaxa-storage`; C++ no longer increments those mirrors from local DAG and
+  transaction vectors.
+- External-EVM publication reports classify DPoS snapshots as available and account snapshots as
+  unavailable-at-external-EVM-boundary for applied/already-applied publications, while rejected reports leave snapshot
+  status not evaluated. This keeps the account snapshot gap explicit instead of treating touched account facts as a full
+  snapshot.
 - External-EVM publication no longer performs a post-commit `DbStorage::createSnapshot` check from the FinalChain shim;
   snapshot/checkpoint lifecycle remains outside the current Rust storage-ownership slice and must not be used as a
   consensus publication owner.
-- PBFT runtime failures currently reproduce execution-count mismatches (`111` vs `1111`) and missing DPoS snapshot
-  publication; those are not storage-shim bugs but publication-boundary gaps.
+- PBFT runtime failures that still involve missing DPoS/account snapshots are not storage-shim bugs but
+  publication-boundary gaps; execution-counter sidecar drift now has a Rust publication owner.
 
 Move:
 
@@ -1480,8 +1489,12 @@ Move:
   system-transaction hashes, rewards stats, and pending-publication marker cleanup after C++ `StateAPI` reports success
 - completed for startup counter hydration: expose a Rust FinalChain execution-status query and use it to hydrate the C++
   compatibility counters without `DbStorage::getStatusField`
-- remaining: extend publication ownership for account snapshot sidecars and the DPoS/account facts that still explain
-  the broad PBFT runtime mismatches
+- completed for post-publication counter mirrors: return the Rust-persisted execution counters in the external-EVM
+  publication report and set the C++ public counter mirrors from that report after Rust applies or confirms the
+  publication
+- remaining: define and implement a complete account-publication fact source before external state commit, or another
+  crash-safe recovery contract, so Rust can update full account snapshots without treating partial touched-account facts
+  as complete snapshots; DPoS/account facts still explain the broad PBFT runtime mismatches
 - keep C++ as the executor that produces receipts/state roots, but make Rust validate and commit the durable publication
   facts in one storage session
 - expose restart/resume validation for partial publication windows
@@ -1494,7 +1507,7 @@ Keep temporarily:
 
 Done when:
 
-- the PBFT runtime execution-count mismatch has a Rust publication owner and focused regression coverage
+- the PBFT runtime execution-count sidecar has a Rust publication owner and focused regression coverage
 - FinalChain publication does not write consensus/final-chain `DbStorage` rows through C++ batches
 - Slice 14 can mark FinalChain status/publication facts complete while leaving arbitrary EVM execution out of scope
 
@@ -1528,6 +1541,17 @@ call from the FinalChain shim after external-EVM publication. It passes `cmake -
 --parallel 12`, `cmake --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
 `scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and
 `git diff --check`.
+
+Validation note: the external-EVM publication-status sub-slice extends `FinalChainExternalEvmPublicationReport` with
+Rust-persisted execution counters and explicit DPoS/account snapshot statuses. The FinalChain shim now sets its temporary
+executed-counter mirrors from the Rust publication report after an applied/already-applied publication, while rejected
+reports keep counters at zero and snapshots not evaluated. Focused bridge tests cover normal publication, system
+transaction counts, and rejection defaults. It passes `cargo fmt --manifest-path rust/Cargo.toml --all --check`,
+`cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`, `cargo test --manifest-path rust/Cargo.toml -p
+rustaxa-consensus final_chain`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge final_chain`,
+`cmake --build /build --target final_chain_test --parallel 12`, `cmake --build /build --target rust_storage_tests
+--parallel 12`, `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
+`scripts/rewrite_storage_boundary_guard.sh`, `git diff --check`, and `.githooks/pre-commit`.
 
 ## Slice 22: Network And Query Compatibility Shell Split
 
@@ -1654,8 +1678,9 @@ Audit result:
     sortition-param, and standalone tip-selection bridge surfaces were moved or retired.
   - Slice 18 is closed for TransactionManager-owned account/finalized routing; any remaining account snapshot mismatch is
     now tracked under Slice 21's FinalChain publication boundary.
-  - Slice 21: FinalChain publication still owns only part of the account/DPoS snapshot and execution-status surface; the
-    broad PBFT runtime mismatch class remains there.
+  - Slice 21: FinalChain publication now owns execution-status publication reports and C++ sidecar counter mirroring, but
+    still lacks a complete crash-safe account snapshot publication source and the remaining DPoS/account runtime mismatch
+    class remains there.
   - FinalChain snapshot creation remains C++ app lifecycle/storage-shell compatibility and should stay outside consensus
     closure unless snapshot ownership is explicitly rescoped.
 
