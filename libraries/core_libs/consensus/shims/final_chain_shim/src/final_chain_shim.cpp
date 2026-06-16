@@ -632,6 +632,20 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
     throw DbException("FinalChain::finalize Rust external EVM rewards-stats plan failed: " +
                       std::string(publication_plan.error_code));
   }
+  rustaxa::FinalChainProposalPeriodDagLevelUpdate proposal_period_update;
+  if (anchor) {
+    proposal_period_update.has_update = true;
+    proposal_period_update.level = anchor->getLevel() + max_levels_per_period_;
+  } else {
+    proposal_period_update.has_update = false;
+    proposal_period_update.level = 0;
+  }
+  publication_plan = session->final_chain_execution_session_attach_external_evm_proposal_period_dag_level(
+      std::move(proposal_period_update));
+  if (!publication_plan.error_code.empty()) {
+    throw DbException("FinalChain::finalize Rust external EVM proposal-period mapping plan failed: " +
+                      std::string(publication_plan.error_code));
+  }
   auto state_commit_step = session->final_chain_execution_session_next();
   if (state_commit_step.action != kFinalChainExecutionActionRequestExternalEvmStateCommit) {
     throw DbException("FinalChain::finalize expected external EVM state commit request action, got " +
@@ -717,12 +731,6 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
 
   num_executed_dag_blk_ += finalized_dag_blk_hashes.size();
   num_executed_trx_ += all_transactions.size();
-  if (anchor) {
-    auto batch = db_->createWriteBatch();
-    db_->addProposalPeriodDagLevelsMapToBatch(anchor->getLevel() + max_levels_per_period_,
-                                              period_data.pbft_blk->getPeriod(), batch);
-    db_->commitWriteBatch(batch, db_->sync_write_);
-  }
 
   auto block_header_data = into_string(rust_final_chain_.value()->get_block_header(publication_report.period));
   auto blk_header = BlockHeader::fromRLP(dev::RLP(block_header_data));

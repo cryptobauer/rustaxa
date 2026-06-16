@@ -376,6 +376,9 @@ fn external_evm_publication_plan_to_ffi(
             .collect(),
         executed_dag_blocks: plan.executed_dag_blocks,
         executed_transactions: plan.executed_transactions,
+        proposal_period_dag_level_update: proposal_period_dag_level_update_to_ffi(
+            plan.proposal_period_dag_level_update,
+        ),
         rewards_stats_update: external_evm_rewards_stats_update_to_ffi(plan.rewards_stats_update),
         error_code: plan.error_code,
     }
@@ -389,6 +392,24 @@ fn external_evm_rewards_stats_update_to_ffi(
         cache_current_period: update.cache_current_period,
         clear_cached_stats: update.clear_cached_stats,
         current_block_stats_rlp: update.current_block_stats_rlp,
+    }
+}
+
+fn proposal_period_dag_level_update_to_ffi(
+    update: rustaxa_consensus::FinalChainProposalPeriodDagLevelUpdate,
+) -> rustaxa_ffi::FinalChainProposalPeriodDagLevelUpdate {
+    rustaxa_ffi::FinalChainProposalPeriodDagLevelUpdate {
+        has_update: update.has_update,
+        level: update.level,
+    }
+}
+
+fn proposal_period_dag_level_update_from_ffi(
+    update: rustaxa_ffi::FinalChainProposalPeriodDagLevelUpdate,
+) -> rustaxa_consensus::FinalChainProposalPeriodDagLevelUpdate {
+    rustaxa_consensus::FinalChainProposalPeriodDagLevelUpdate {
+        has_update: update.has_update,
+        level: update.level,
     }
 }
 
@@ -430,6 +451,9 @@ fn external_evm_publication_plan_from_ffi(
             .collect(),
         executed_dag_blocks: plan.executed_dag_blocks,
         executed_transactions: plan.executed_transactions,
+        proposal_period_dag_level_update: proposal_period_dag_level_update_from_ffi(
+            plan.proposal_period_dag_level_update,
+        ),
         rewards_stats_update: external_evm_rewards_stats_update_from_ffi(plan.rewards_stats_update),
         error_code: plan.error_code,
     }
@@ -463,6 +487,11 @@ fn external_evm_publication_plan_from_ffi_ref(
             .collect(),
         executed_dag_blocks: plan.executed_dag_blocks,
         executed_transactions: plan.executed_transactions,
+        proposal_period_dag_level_update:
+            rustaxa_consensus::FinalChainProposalPeriodDagLevelUpdate {
+                has_update: plan.proposal_period_dag_level_update.has_update,
+                level: plan.proposal_period_dag_level_update.level,
+            },
         rewards_stats_update: rustaxa_consensus::FinalChainExternalEvmRewardsStatsUpdate {
             current_period: plan.rewards_stats_update.current_period,
             cache_current_period: plan.rewards_stats_update.cache_current_period,
@@ -826,6 +855,18 @@ impl BridgeFinalChainExecutionSession {
             rustaxa_consensus::final_chain_execution_session_attach_external_evm_rewards_stats(
                 &mut self.state,
                 external_evm_rewards_stats_update_from_ffi(rewards_stats_update),
+            ),
+        ))
+    }
+
+    pub fn final_chain_execution_session_attach_external_evm_proposal_period_dag_level(
+        &mut self,
+        update: rustaxa_ffi::FinalChainProposalPeriodDagLevelUpdate,
+    ) -> Result<rustaxa_ffi::FinalChainExternalEvmPublicationPlan, anyhow::Error> {
+        Ok(external_evm_publication_plan_to_ffi(
+            rustaxa_consensus::final_chain_execution_session_attach_external_evm_proposal_period_dag_level(
+                &mut self.state,
+                proposal_period_dag_level_update_from_ffi(update),
             ),
         ))
     }
@@ -1832,7 +1873,8 @@ mod tests {
         assert_eq!(audit.block_hash, publication.block_hash);
         assert_eq!(
             audit.checked_fields,
-            11 + publication.transaction_publications.len() as u64 * 2
+            11 + u64::from(publication.proposal_period_dag_level_update.has_update)
+                + publication.transaction_publications.len() as u64 * 2
         );
         assert!(audit.error_code.is_empty());
     }
@@ -2711,11 +2753,23 @@ mod tests {
             external_evm_publication_fixture("rustaxa_bridge_final_chain_external_evm_publish", 1);
         let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
         let request_id = publication.request_id;
-        let plan_id = publication.plan_id;
+        let old_plan_id = publication.plan_id;
         let block_hash = publication.block_hash;
         let first_hash = publication.transaction_publications[0].transaction_hash;
         let first_receipt = publication.transaction_publications[0].receipt_rlp.clone();
         let topic_bloom = bloom_for_value(&[0x55; 32]);
+        let publication = session
+            .final_chain_execution_session_attach_external_evm_proposal_period_dag_level(
+                rustaxa_ffi::FinalChainProposalPeriodDagLevelUpdate {
+                    has_update: true,
+                    level: 42,
+                },
+            )
+            .expect("proposal-period mapping should attach");
+        assert_ne!(publication.plan_id, old_plan_id);
+        assert!(publication.proposal_period_dag_level_update.has_update);
+        assert_eq!(publication.proposal_period_dag_level_update.level, 42);
+        let plan_id = publication.plan_id;
 
         let _decision =
             ready_external_evm_commit_decision(&final_chain, &mut session, &plan, &publication);
@@ -2777,6 +2831,11 @@ mod tests {
 
         drop(session);
         drop(final_chain);
+        let storage = create_storage(storage_path).expect("storage should reopen");
+        let proposal_period = storage.get_proposal_period_for_dag_level(42).unwrap();
+        assert!(proposal_period.found);
+        assert_eq!(proposal_period.period, 1);
+        drop(storage);
         let reloaded = make_final_chain(storage_path, vec![]);
         assert_eq!(reloaded.get_last_block_number().unwrap(), 1);
         assert_eq!(reloaded.get_block_hash(1).unwrap(), block_hash.to_vec());

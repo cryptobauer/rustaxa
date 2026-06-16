@@ -382,12 +382,26 @@ pub struct FinalChainExternalEvmRewardsStatsUpdate {
     pub current_block_stats_rlp: Vec<u8>,
 }
 
+/// Optional proposal-period DAG-level boundary to publish with an external-EVM block.
+///
+/// C++ still owns temporary DAG anchor object materialization, but the derived
+/// `(anchor level + max_levels_per_period) -> finalized period` storage row
+/// belongs with the Rust FinalChain publication batch. `has_update` preserves
+/// compatibility for publication plans and pending markers that do not carry an
+/// anchor-derived mapping.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FinalChainProposalPeriodDagLevelUpdate {
+    pub has_update: bool,
+    pub level: u64,
+}
+
 /// Non-mutating publication plan for an external-EVM FinalChain block.
 ///
 /// The plan materializes the stored-header RLP, legacy full header RLP, block
 /// hash, receipt payloads, transaction index facts, system-transaction hash
-/// list, and rewards-stat cache mutation that Rust publishes in one storage
-/// batch after a safe external EVM state lifecycle report. `plan_id` is a
+/// list, optional proposal-period DAG-level mapping, and rewards-stat cache
+/// mutation that Rust publishes in one storage batch after a safe external EVM
+/// state lifecycle report. `plan_id` is a
 /// deterministic hash of those publication facts and must be echoed by the
 /// lifecycle report so stale staged-state decisions cannot be replayed across
 /// blocks.
@@ -405,6 +419,7 @@ pub struct FinalChainExternalEvmPublicationPlan {
     pub transaction_publications: Vec<FinalChainExternalEvmTransactionPublication>,
     pub executed_dag_blocks: u64,
     pub executed_transactions: u64,
+    pub proposal_period_dag_level_update: FinalChainProposalPeriodDagLevelUpdate,
     pub rewards_stats_update: FinalChainExternalEvmRewardsStatsUpdate,
     pub error_code: String,
 }
@@ -1506,6 +1521,40 @@ pub fn final_chain_execution_session_attach_external_evm_rewards_stats(
     publication_plan
 }
 
+/// Attaches the optional proposal-period DAG-level mapping to the session plan.
+///
+/// The C++ boundary supplies this fact from its temporary DAG anchor sidecar,
+/// but Rust owns the publication plan identity and the eventual storage batch.
+/// This must run before the external EVM state-commit request is derived so
+/// lifecycle validation and storage publication cover the mapping row.
+pub fn final_chain_execution_session_attach_external_evm_proposal_period_dag_level(
+    session: &mut FinalChainExecutionSession,
+    update: FinalChainProposalPeriodDagLevelUpdate,
+) -> FinalChainExternalEvmPublicationPlan {
+    if session.status != FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_LIFECYCLE {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = "FINAL_CHAIN_EVM_PROPOSAL_PERIOD_MAPPING_UNEXPECTED".to_string();
+        return rejected_external_evm_publication_plan(
+            &session.metadata,
+            session.error_code.clone(),
+        );
+    }
+    let Some(mut publication_plan) = session.external_evm_publication_plan.take() else {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code =
+            "FINAL_CHAIN_EVM_PROPOSAL_PERIOD_MAPPING_WITHOUT_PUBLICATION_PLAN".to_string();
+        return rejected_external_evm_publication_plan(
+            &session.metadata,
+            session.error_code.clone(),
+        );
+    };
+
+    publication_plan.proposal_period_dag_level_update = update;
+    publication_plan.plan_id = final_chain_external_evm_publication_plan_id(&publication_plan);
+    session.external_evm_publication_plan = Some(publication_plan.clone());
+    publication_plan
+}
+
 /// Commits a completed native FinalChain execution session.
 ///
 /// Only sessions whose next step is `COMMIT_NATIVE` are allowed to publish
@@ -1864,6 +1913,7 @@ fn build_external_evm_publication_plan(
         transaction_publications,
         executed_dag_blocks: commit_plan.executed_dag_blocks,
         executed_transactions: commit_plan.executed_transactions,
+        proposal_period_dag_level_update: FinalChainProposalPeriodDagLevelUpdate::default(),
         rewards_stats_update: FinalChainExternalEvmRewardsStatsUpdate::default(),
         error_code: String::new(),
     };
@@ -2085,6 +2135,10 @@ pub(crate) fn final_chain_external_evm_publication_plan_id(
     }
     hasher.update(&plan.executed_dag_blocks.to_be_bytes());
     hasher.update(&plan.executed_transactions.to_be_bytes());
+    if plan.proposal_period_dag_level_update.has_update {
+        hasher.update(b"proposal-period-dag-level");
+        hasher.update(&plan.proposal_period_dag_level_update.level.to_be_bytes());
+    }
     hasher.update(&plan.rewards_stats_update.current_period.to_be_bytes());
     hasher.update(&[u8::from(plan.rewards_stats_update.cache_current_period)]);
     hasher.update(&[u8::from(plan.rewards_stats_update.clear_cached_stats)]);

@@ -82,6 +82,21 @@ pub struct FinalChainTransactionIndexUpdate<'a> {
     pub receipt_rlp: &'a [u8],
 }
 
+/// Proposal-period DAG-level boundary committed with finalized-block visibility.
+///
+/// The legacy DAG proposer reads this map with a seek-at-or-after lookup to
+/// resolve which PBFT period owns a DAG level. External-EVM publication passes
+/// the optional anchor-derived boundary here so Rust can publish the mapping
+/// in the same batch as FinalChain block visibility instead of relying on a
+/// separate C++ `DbStorage` write after publication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FinalChainProposalPeriodDagLevelUpdate {
+    /// Boundary DAG level stored as the column key.
+    pub level: u64,
+    /// Finalized PBFT period stored as the column value.
+    pub period: u64,
+}
+
 /// Period-level system transaction hash list committed with block visibility.
 ///
 /// The payload is the legacy RLP list stored in `period_system_transactions`.
@@ -396,6 +411,7 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
             None,
             &[],
             None,
+            None,
             false,
         )
     }
@@ -423,6 +439,7 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
         log_bloom_index_update: Option<FinalChainLogBloomIndexUpdate<'_>>,
         transaction_index_updates: &[FinalChainTransactionIndexUpdate<'_>],
         period_system_transactions_update: Option<FinalChainPeriodSystemTransactionsUpdate<'_>>,
+        proposal_period_dag_level_update: Option<FinalChainProposalPeriodDagLevelUpdate>,
         external_evm_pending_publication_clear: bool,
     ) -> Result<()> {
         const DB_META_LAST_NUMBER: u32 = 1;
@@ -522,6 +539,20 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
                 Column::PeriodSystemTransactions,
                 &update.period.to_le_bytes(),
                 update.hashes_rlp,
+            )?;
+        }
+        if let Some(update) = proposal_period_dag_level_update {
+            if update.period != number {
+                bail!(
+                    "final-chain proposal-period DAG-level update period {} does not match block number {number}",
+                    update.period
+                );
+            }
+            self.db.batch_put(
+                &mut batch,
+                Column::ProposalPeriodLevelsMap,
+                &update.level.to_le_bytes(),
+                &update.period.to_le_bytes(),
             )?;
         }
         if external_evm_pending_publication_clear {
@@ -984,6 +1015,7 @@ mod tests {
                 period: 17,
                 hashes_rlp: b"system-hashes",
             }),
+            None,
             true,
         )
         .unwrap();

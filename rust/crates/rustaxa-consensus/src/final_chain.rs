@@ -29,9 +29,9 @@ use rlp::Rlp;
 use rustaxa_storage::{
     FINAL_CHAIN_BLOOM_INDEX_LEVELS, FINAL_CHAIN_BLOOM_INDEX_SIZE, FinalChainExecutionStatus,
     FinalChainExternalEvmPendingPublication, FinalChainLogBloom, FinalChainLogBloomIndexUpdate,
-    FinalChainPeriodSystemTransactionsUpdate, FinalChainRewardsStatsUpdate,
-    FinalChainTransactionIndexUpdate, StatusField, Storage, decode_final_chain_log_bloom_chunk,
-    final_chain_log_bloom_chunk_id,
+    FinalChainPeriodSystemTransactionsUpdate, FinalChainProposalPeriodDagLevelUpdate,
+    FinalChainRewardsStatsUpdate, FinalChainTransactionIndexUpdate, StatusField, Storage,
+    decode_final_chain_log_bloom_chunk, final_chain_log_bloom_chunk_id,
 };
 use rustaxa_types::codec::rlp::final_chain::{
     LegacyBlockHeaderRlp, LegacyBlockHeaderRlpInput, StoredBlockHeaderRlp,
@@ -1547,6 +1547,13 @@ impl FinalChain {
             .collect::<Vec<_>>();
         let execution_status = self
             .finalization_execution_status(plan.executed_dag_blocks, plan.executed_transactions)?;
+        let proposal_period_dag_level_update = plan
+            .proposal_period_dag_level_update
+            .has_update
+            .then_some(FinalChainProposalPeriodDagLevelUpdate {
+                level: plan.proposal_period_dag_level_update.level,
+                period: plan.period,
+            });
 
         self.storage
             .final_chain()
@@ -1568,6 +1575,7 @@ impl FinalChain {
                     period: plan.period,
                     hashes_rlp: plan.system_transaction_hashes_rlp.as_slice(),
                 }),
+                proposal_period_dag_level_update,
                 true,
             )?;
         self.insert_dpos_snapshot(plan.period, dpos_snapshot)?;
@@ -1654,6 +1662,15 @@ impl FinalChain {
                 == plan.system_transaction_hashes_rlp,
             "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_SYSTEM_TRANSACTION_HASHES_MISMATCH",
         );
+        if plan.proposal_period_dag_level_update.has_update {
+            ensure_audit!(
+                self.storage
+                    .dag()
+                    .proposal_period_at_level(plan.proposal_period_dag_level_update.level)?
+                    == Some(plan.period),
+                "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_PROPOSAL_PERIOD_MAPPING_MISMATCH",
+            );
+        }
         ensure_audit!(
             self.storage
                 .final_chain()
@@ -1886,6 +1903,7 @@ impl FinalChain {
                     bloom: &indexed_log_bloom,
                 }),
                 &transaction_index_updates,
+                None,
                 None,
                 false,
             )?;
@@ -4643,7 +4661,7 @@ fn decode_external_evm_pending_publication_marker(
 }
 
 fn encode_external_evm_publication_plan(plan: &FinalChainExternalEvmPublicationPlan) -> Vec<u8> {
-    let mut stream = rlp::RlpStream::new_list(14);
+    let mut stream = rlp::RlpStream::new_list(15);
     stream.append(&plan.request_id.as_slice());
     stream.append(&plan.plan_id.as_slice());
     stream.append(&plan.period);
@@ -4663,6 +4681,9 @@ fn encode_external_evm_publication_plan(plan: &FinalChainExternalEvmPublicationP
     }
     stream.append(&plan.executed_dag_blocks);
     stream.append(&plan.executed_transactions);
+    stream.begin_list(2);
+    stream.append(&plan.proposal_period_dag_level_update.has_update);
+    stream.append(&plan.proposal_period_dag_level_update.level);
     stream.append_raw(
         &encode_external_evm_rewards_stats_update(&plan.rewards_stats_update),
         1,
@@ -4674,8 +4695,11 @@ fn encode_external_evm_publication_plan(plan: &FinalChainExternalEvmPublicationP
 fn decode_external_evm_publication_plan(
     rlp: &Rlp<'_>,
 ) -> Result<FinalChainExternalEvmPublicationPlan, anyhow::Error> {
-    if rlp.item_count()? != 14 {
-        anyhow::bail!("external EVM publication plan marker payload must contain fourteen fields");
+    let item_count = rlp.item_count()?;
+    if item_count != 14 && item_count != 15 {
+        anyhow::bail!(
+            "external EVM publication plan marker payload must contain fourteen or fifteen fields"
+        );
     }
     let publications = rlp.at(9)?;
     let mut transaction_publications = Vec::with_capacity(publications.item_count()?);
@@ -4698,6 +4722,28 @@ fn decode_external_evm_publication_plan(
             },
         );
     }
+    let (proposal_period_dag_level_update, rewards_index, error_index) = if item_count == 15 {
+        let update = rlp.at(12)?;
+        if update.item_count()? != 2 {
+            anyhow::bail!(
+                "external EVM proposal-period DAG-level marker payload must contain two fields"
+            );
+        }
+        (
+            crate::final_chain_execution::FinalChainProposalPeriodDagLevelUpdate {
+                has_update: update.val_at(0)?,
+                level: update.val_at(1)?,
+            },
+            13,
+            14,
+        )
+    } else {
+        (
+            crate::final_chain_execution::FinalChainProposalPeriodDagLevelUpdate::default(),
+            12,
+            13,
+        )
+    };
     Ok(FinalChainExternalEvmPublicationPlan {
         request_id: decode_fixed_hash(&rlp.at(0)?, "external EVM publication request id")?,
         plan_id: decode_fixed_hash(&rlp.at(1)?, "external EVM publication plan id")?,
@@ -4711,8 +4757,9 @@ fn decode_external_evm_publication_plan(
         transaction_publications,
         executed_dag_blocks: rlp.val_at(10)?,
         executed_transactions: rlp.val_at(11)?,
-        rewards_stats_update: decode_external_evm_rewards_stats_update(&rlp.at(12)?)?,
-        error_code: rlp.val_at(13)?,
+        proposal_period_dag_level_update,
+        rewards_stats_update: decode_external_evm_rewards_stats_update(&rlp.at(rewards_index)?)?,
+        error_code: rlp.val_at(error_index)?,
     })
 }
 

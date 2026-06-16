@@ -1255,20 +1255,30 @@ Validation notes:
 Goal: move FinalChain-adjacent consensus status writes out of C++ batch orchestration without moving arbitrary EVM
 execution or `state_db` ownership.
 
-Status: planned. This is the smallest slice that attacks the `getNumTransactionExecuted()`/publication mismatch class
-without violating the external-EVM boundary.
+Status: partial. External-EVM FinalChain publication already commits the main header, receipt, transaction index,
+execution-counter, DPoS snapshot, rewards-stat, system-transaction hash, and pending-marker cleanup rows through
+`rustaxa-consensus::FinalChain` over `rustaxa-storage`. This sub-slice also moved the proposal-period DAG-level mapping
+row from the FinalChain C++ shim's post-publication `DbStorage` batch into the Rust publication plan and batch. Remaining
+work is still needed for the broader `getNumTransactionExecuted()`/DPoS/account snapshot mismatch class without violating
+the external-EVM boundary.
 
 Current boundary:
 
-- FinalChain shim still updates executed block/transaction counters, proposal-period DAG level mapping, system
-  transaction indexes, and final-chain publication rows around the C++ `StateAPI` execution adapter.
+- FinalChain shim now supplies the optional anchor-derived proposal-period DAG-level fact to the Rust session before
+  external state commit; Rust includes that row in the publication plan id, pending-publication marker, publication
+  batch, and audit.
+- Rust publication owns executed block/transaction counters, system transaction indexes, and final-chain publication
+  rows around the C++ `StateAPI` execution adapter.
 - PBFT runtime failures currently reproduce execution-count mismatches (`111` vs `1111`) and missing DPoS snapshot
   publication; those are not storage-shim bugs but publication-boundary gaps.
 
 Move:
 
-- define a Rust publication report that atomically records final-chain indexes, executed counters, DPoS/account snapshot
-  sidecars, proposal-period mapping, and pending-publication marker cleanup after C++ `StateAPI` reports success
+- completed for proposal-period mapping: define a Rust publication report/plan field that records the anchor-derived
+  DAG-level mapping and commits it with final-chain indexes, executed counters, DPoS snapshot sidecars,
+  system-transaction hashes, rewards stats, and pending-publication marker cleanup after C++ `StateAPI` reports success
+- remaining: extend publication ownership for account snapshot sidecars and the DPoS/account facts that still explain
+  the broad PBFT runtime mismatches
 - keep C++ as the executor that produces receipts/state roots, but make Rust validate and commit the durable publication
   facts in one storage session
 - expose restart/resume validation for partial publication windows
@@ -1292,6 +1302,16 @@ Validation:
 - `cmake --build /build --target final_chain_test --parallel 12 && /build/bin/final_chain_test`
 - focused PBFT manager runtime test that previously reproduced the execution-count mismatch
 - `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+
+Validation note: the proposal-period publication sub-slice passes `cargo fmt --manifest-path rust/Cargo.toml --all
+--check`, `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`, `cargo test --manifest-path rust/Cargo.toml
+-p rustaxa-consensus final_chain`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge final_chain`,
+`cmake --build /build --target final_chain_test --parallel 12`, `cmake --build /build --target rust_storage_tests
+--parallel 12`, `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
+`scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`. Broad `/build/bin/final_chain_test` runtime was
+attempted and still fails before a clean summary: `FinalChainTest.coin_transfers` reports Rust-mode account balance
+mismatches and `FinalChainTest.nonce_test` segfaults. Treat those as the remaining FinalChain/EVM/account execution
+boundary tracked by this slice, not as a proposal-period publication storage regression.
 
 ## Slice 22: Network And Query Compatibility Shell Split
 
