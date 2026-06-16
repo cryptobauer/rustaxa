@@ -1,5 +1,3 @@
-#include "pbft/pbft_manager.hpp"
-
 #include <array>
 #include <exception>
 #include <optional>
@@ -7,6 +5,7 @@
 #include <utility>
 #include <vector>
 
+#include "pbft/pbft_manager.hpp"
 #include "pbft/period_data.hpp"
 #include "pillar_chain/pillar_chain_manager.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
@@ -15,7 +14,11 @@ namespace taraxa {
 
 namespace {
 
+constexpr uint8_t kPbftFinalChainFactStatusReady = 0;
+
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t& hash) { return hash.asArray(); }
+
+std::array<uint8_t, 20> toBridgeAddress(const addr_t& address) { return address.asArray(); }
 
 addr_t fromBridgeAddress(const std::array<uint8_t, 20>& address) {
   return addr_t(address.data(), addr_t::ConstructFromPointer);
@@ -55,13 +58,17 @@ uint8_t toPlanStatusCode(ValidateSyncPillarVotesBundlePlanStatus status) { retur
 std::optional<uint64_t> getPillarVoteWeight(const std::shared_ptr<final_chain::FinalChain>& final_chain,
                                             const addr_t& voter, PbftPeriod required_votes_period) {
   try {
-    const auto weight = final_chain->dposEligibleVoteCount(required_votes_period - 1, voter);
-    if (weight == 0) {
+    rustaxa::PbftFinalChainFactRequest request{};
+    request.period = required_votes_period - 1;
+    request.collect_address_vote_counts = true;
+    request.addresses.push_back(rustaxa::PbftFinalChainFactAddress{toBridgeAddress(voter)});
+
+    const auto facts = final_chain->rustFinalChainForRust().collect_pbft_final_chain_facts(std::move(request));
+    if (facts.address_facts.empty() || facts.address_facts[0].status != kPbftFinalChainFactStatusReady ||
+        facts.address_facts[0].vote_count == 0) {
       return std::nullopt;
     }
-    return weight;
-  } catch (const state_api::ErrFutureBlock&) {
-    return std::nullopt;
+    return facts.address_facts[0].vote_count;
   } catch (const std::exception&) {
     return std::nullopt;
   }

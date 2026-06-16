@@ -390,6 +390,13 @@ query compatibility, PBFT-chain/proposed-block live sidecars, PBFT sync/network 
 are tracked below as Slices 10-14 so implementation can continue without broadening Slice 8 into unrelated subsystem
 ownership changes.
 
+Post-boundary-slice evaluation: Slice 8 cannot be marked fully complete yet. Slices 10-15 retired the PBFT-chain,
+proposed-block, PBFT sync egress, RPC/GraphQL query-marker, guard, VoteManager DPoS, and pillar-sync DPoS read
+surfaces that had clear Rust replacements. The remaining read-surface hits are still tied to gas-pricer runtime handle
+initialization, temporary C++ sidecar materialization, network/app compatibility constructors, DAG proposal-validation
+facts, transaction account/finalized facts, and the explicit FinalChain/EVM boundary. Completing those would change the
+larger subsystem direction rather than finish Slice 8 as originally scoped.
+
 Move:
 
 - completed: network sync read paths that feed deterministic consensus decisions
@@ -476,6 +483,12 @@ legacy/reference implementations under original upstream paths, storage-shim int
 shim-owned live boundaries that still depend on FinalChain/external-EVM state, DAG/network synchronization, or temporary
 C++ sidecar materialization. Removing those in this slice would require broad original C++ edits or moving FinalChain/EVM
 execution ownership, so the slice stops here under the plan stop conditions.
+
+Post-boundary-slice evaluation: Slice 9 also cannot be marked fully complete yet. The public `rustBatchId` escape hatch
+and obsolete PBFT finalization appenders are gone, and the Slice 15 guard prevents new C++ storage/DPoS regressions, but
+the compatibility shell still legitimately owns public C++ API materialization and temporary Rust storage-handle
+extraction for subsystems whose runtimes are not fully native. The next closures are not cleanup-only work; they require
+dedicated FinalChain/EVM, DAG proposal-validation, gas-pricer runtime, and transaction-account fact slices.
 
 Move/remove:
 
@@ -796,6 +809,13 @@ Completed in the VoteManager DPoS fact-port sub-slice:
 - VoteManager no longer directly calls `dposEligibleVoteCount`, `dposEligibleTotalVoteCount`, or `lastBlockNumber` for
   the migrated DPoS fact paths.
 
+Completed in the pillar-sync DPoS fact-port sub-slice:
+
+- PBFT manager pillar-vote sync validation now resolves each pillar voter weight through
+  `BridgeFinalChain::collect_pbft_final_chain_facts` instead of calling C++ `FinalChain::dposEligibleVoteCount`.
+- The existing missing/future/zero-weight behavior is preserved: unavailable facts still reject the vote as zero weight
+  for the deterministic Rust pillar bundle planner.
+
 Move:
 
 - define narrow Rust consensus fact ports for DPoS vote counts/eligibility, VRF keys, bridge root/epoch, account nonce
@@ -833,6 +853,15 @@ verified_votes_shim_test --parallel 12`, `/build/bin/verified_votes_shim_test`, 
 pbft_manager_test --parallel 12`, `/build/bin/pbft_manager_test --gtest_filter=PbftManagerWithDagCreation.*`,
 `scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff
 --check`.
+
+Validation note: the pillar-sync DPoS fact-port sub-slice passes `cargo test --manifest-path rust/Cargo.toml -p
+rustaxa-bridge final_chain`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pillar_chain`, `cargo test
+--manifest-path rust/Cargo.toml -p rustaxa-consensus pillar_chain`, `cmake --build /build --target pbft_manager_test
+--parallel 12`, `cmake --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
+`scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff
+--check`. The focused `/build/bin/pbft_manager_test --gtest_filter=PbftManagerWithDagCreation.*` runtime was attempted
+and reproduced the existing non-storage FinalChain/EVM execution-count gap in `trx_generation`
+(`getNumTransactionExecuted()` stayed at `111` while the test expected `1111`), then stayed running until terminated.
 
 ## Slice 15: Compatibility Shell Audit And Guard Hardening
 
