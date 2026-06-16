@@ -1053,20 +1053,26 @@ Goal: complete the TransactionManager account/finalized fact boundary so transac
 finalized-status updates, and finalized-account purge run through Rust runtime facts rather than C++ storage/final-chain
 lookups.
 
-Status: planned. This is the largest remaining Slice 8/9 blocker inside transaction consensus, but much of the Rust
-runtime scaffolding already exists.
+Status: partial. DAG-block transaction persistence and `verifyTransactionsNotFinalized` now source sender account nonce
+facts through the Rust FinalChain-backed bridge helpers instead of C++ `FinalChain::getAccount`. Admission, finalized
+queue purge, proposal lookup storage-handle consolidation, and runtime-owned storage construction remain open.
 
 Current boundary:
 
 - TransactionManager shim still passes `db_->rustStorage()` into runtime calls at several operation sites.
-- Account nonce/balance and finalized-account purge facts are split between C++ `FinalChain` calls and Rust bridge
-  helpers.
+- DAG-save and verify-not-finalized account nonce facts now flow through `BridgeFinalChain`; public transaction admission
+  still builds account nonce/balance facts in C++.
+- Finalized-account purge facts are still split between explicit Rust bridge helpers and deferred external-EVM/account
+  snapshot boundary handling.
 - The bridge already has `*_with_runtime_and_final_chain` routes for account facts, proposal transaction filtering, and
   queue cleanup, but the C++ shim still owns too much storage-handle extraction and report orchestration.
 
 Move:
 
-- move account lookup, proposal-period finalized filtering, queue cleanup, and finalized-account purge into a
+- completed for DAG-save and verify-not-finalized: move account nonce lookup into existing
+  `*_with_runtime_and_final_chain` routes
+- remaining: move admission account lookup, proposal-period finalized filtering, queue cleanup, and finalized-account
+  purge into a
   TransactionManager runtime method that owns the needed Rust storage handle and `BridgeFinalChain` reference
 - collapse duplicated C++ command-report glue into typed Rust execution reports
 - remove direct `db_->rustStorage()` calls from TransactionManager operation methods except constructor/runtime creation
@@ -1080,7 +1086,9 @@ Keep temporarily:
 
 Done when:
 
-- TransactionManager consensus operations do not pass `DbStorage`/`BridgeStorage` per call
+- completed sub-slice: DAG-save and verify-not-finalized no longer call C++ `FinalChain::getAccount`
+- full completion still requires TransactionManager consensus operations to avoid passing `DbStorage`/`BridgeStorage` per
+  call
 - finalized-account queue purge no longer depends on C++ account snapshots
 - Slice 8 can remove transaction account/finalized facts from its open read-surface list
 - Slice 9 can categorize TransactionManager `DbStorage` ownership as constructor compatibility only
@@ -1093,6 +1101,14 @@ Validation:
 - focused PBFT/DAG tests that exercise transaction packing without broad FinalChain runtime assumptions
 - `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
 - `scripts/rewrite_storage_boundary_guard.sh --self-test && scripts/rewrite_storage_boundary_guard.sh`
+
+Validation note: the transaction account-fact sub-slice passes `cargo test --manifest-path rust/Cargo.toml -p
+rustaxa-consensus transaction_manager`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge
+transaction_manager`, `cmake --build /build --target transaction_manager_shim_test --parallel 12`,
+`/build/bin/transaction_manager_shim_test`, `cmake --build /build --target transaction_test --parallel 12`,
+`/build/bin/transaction_test`, `cmake --build /build --target rust_storage_tests --parallel 12`,
+`/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`, and
+`scripts/rewrite_storage_boundary_guard.sh`.
 
 ## Slice 19: Gas-Pricer Runtime Storage Ownership
 

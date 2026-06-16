@@ -635,28 +635,28 @@ class TransactionManagerRustShimAccess {
 
     std::unique_lock transactions_lock(manager.transactions_mutex_);
 
-    rust::Vec<rustaxa::DagTransactionSaveSidecarFact> facts;
+    rust::Vec<rustaxa::DagTransactionSaveRuntimeFact> facts;
     facts.reserve(trxs.size());
 
     uint64_t input_index = 0;
     for (const auto& transaction : trxs) {
       const auto envelope = inspectRegularTransaction(transaction, "RUST_STORAGE_DAG_TX_ENVELOPE_FAILED");
       const auto sender = requireEnvelopeSender(envelope, "RUST_STORAGE_DAG_TX_ENVELOPE_FAILED");
-      const auto account = manager.final_chain_->getAccount(fromBridgeAddress(sender));
 
-      rustaxa::DagTransactionSaveSidecarFact fact;
+      rustaxa::DagTransactionSaveRuntimeFact fact;
       fact.input_index = input_index++;
       fact.hash = envelope.hash;
       fact.trx_rlp = cloneBridgeBytes(envelope.tx_rlp);
       fact.transaction_nonce = envelope.nonce;
-      fact.sender_account_nonce = account ? toBridgeU256(account->nonce) : std::array<uint8_t, 32>{};
+      fact.sender = sender;
       facts.push_back(std::move(fact));
     }
 
     const auto report = [&]() {
       try {
-        return rustaxa::save_transactions_from_dag_block_command_report_with_runtime(
-            *manager.runtime_, manager.db_->rustStorage(), std::move(facts));
+        return rustaxa::save_transactions_from_dag_block_command_report_with_runtime_and_final_chain(
+            *manager.runtime_, manager.db_->rustStorage(), manager.final_chain_->rustFinalChainForRust(),
+            std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_DAG_TX_PERSIST_FAILED: ") + e.what());
       }
@@ -844,28 +844,31 @@ class TransactionManagerRustShimAccess {
   }
 
   static bool verifyTransactionsNotFinalized(const TransactionManager& manager, const SharedTransactions& trxs) {
-    rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedSidecarFact> facts;
+    if (!manager.final_chain_) {
+      throw DbException("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: FinalChain is required for transaction facts");
+    }
+
+    rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> facts;
     facts.reserve(trxs.size());
     uint64_t input_index = 0;
     for (const auto& transaction : trxs) {
       const auto envelope =
           inspectRegularTransaction(transaction, "RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_ENVELOPE_FAILED");
       const auto sender = requireEnvelopeSender(envelope, "RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_ENVELOPE_FAILED");
-      const auto account = manager.final_chain_->getAccount(fromBridgeAddress(sender));
 
-      rustaxa::TransactionManagerVerifyNotFinalizedSidecarFact fact;
+      rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact fact;
       fact.input_index = input_index++;
       fact.hash = envelope.hash;
       fact.transaction_nonce = envelope.nonce;
-      fact.sender_account_nonce = account ? toBridgeU256(account->nonce) : std::array<uint8_t, 32>{};
+      fact.sender = sender;
       facts.push_back(fact);
     }
 
     const auto outcome = [&]() {
       try {
-        return rustaxa::transaction_manager_verify_not_finalized_with_runtime(*manager.runtime_,
-                                                                              manager.db_->rustStorage(),
-                                                                              std::move(facts));
+        return rustaxa::transaction_manager_verify_not_finalized_with_runtime_and_final_chain(
+            *manager.runtime_, manager.db_->rustStorage(), manager.final_chain_->rustFinalChainForRust(),
+            std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: ") + e.what());
       }
