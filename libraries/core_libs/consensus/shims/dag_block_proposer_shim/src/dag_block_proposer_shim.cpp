@@ -379,37 +379,6 @@ level_t DagBlockProposer::getProposeLevel(blk_hash_t const& pivot, vec_blk_t con
   return max_level;
 }
 
-vec_blk_t DagBlockProposer::selectDagBlockTips(const vec_blk_t& frontier_tips, uint64_t gas_limit) const {
-  rust::Vec<rustaxa::DagProposerTipCandidate> candidates;
-  candidates.reserve(frontier_tips.size());
-  for (const auto& t : frontier_tips) {
-    rustaxa::DagProposerTipCandidate candidate;
-    candidate.hash = to_bridge_hash(t);
-    candidate.sender = {};
-    candidate.level = 0;
-    candidate.gas_estimation = 0;
-    auto tip_block = dag_mgr_->getDagBlock(t);
-    if (tip_block == nullptr) {
-      LOG(log_nf_) << "selectDagBlockTips, Cannot find tip dag block " << t;
-      candidate.found = false;
-    } else {
-      candidate.found = true;
-      candidate.sender = tip_block->getSender().asArray();
-      candidate.level = tip_block->getLevel();
-      candidate.gas_estimation = tip_block->getGasEstimation();
-    }
-    candidates.push_back(std::move(candidate));
-  }
-
-  const auto selection = rustaxa::dag_proposer_select_tips(std::move(candidates), gas_limit, kDagBlockMaxTips);
-  vec_blk_t tips;
-  tips.reserve(selection.selected.size());
-  for (const auto& hash : selection.selected) {
-    tips.emplace_back(from_bridge_hash(hash.hash));
-  }
-  return tips;
-}
-
 std::shared_ptr<DagBlock> DagBlockProposer::createDagBlock(DagFrontier&& frontier, level_t level,
                                                            const SharedTransactions& trxs,
                                                            std::vector<uint64_t>&& estimations, VdfSortition&& vdf,

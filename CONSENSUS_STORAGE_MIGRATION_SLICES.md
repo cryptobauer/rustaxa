@@ -1128,6 +1128,15 @@ rustaxa-consensus dag`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-b
 12`, `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
 `scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
 
+Validation note: the DAG proposer cleanup removes the now-unused shim-owned `selectDagBlockTips` helper because
+tip-selection policy is owned by `rustaxa-consensus::dag` through `dag_proposer_plan_block_construction`. The upstream
+legacy helper remains only in the original reference implementation. It passes the focused validation listed for this
+sub-slice: `rg -n "selectDagBlockTips\\(" libraries/core_libs/consensus/shims/dag_block_proposer_shim
+CONSENSUS_STORAGE_MIGRATION_SLICES.md`, `cmake --build /build --target dag_shim_test --parallel 12`,
+`/build/bin/dag_shim_test`, `cmake --build /build --target rust_storage_tests --parallel 12`,
+`/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
+`scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
+
 ## Slice 18: Transaction Account And Finalized Fact Port
 
 Goal: complete the TransactionManager account/finalized fact boundary so transaction queue admission, packing,

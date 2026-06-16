@@ -97,14 +97,6 @@ class DagBlockProposer {
    */
   uint64_t getProposedBlocksCount() const { return proposed_blocks_count_; }
 
-  /**
-   * Selects frontier tips for a proposed DAG block within gas and tip-count limits.
-   *
-   * The ordering preserves legacy proposer policy: higher levels first, with unique proposers preferred before duplicate
-   * proposer tips.
-   */
-  vec_blk_t selectDagBlockTips(const vec_blk_t& frontier_tips, uint64_t gas_limit) const;
-
  private:
   /**
    * Creates a signed DAG block from already selected proposal data.
