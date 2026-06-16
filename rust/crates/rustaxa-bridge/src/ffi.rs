@@ -3532,6 +3532,41 @@ pub mod rustaxa_ffi {
         block_gas_estimation: u64,
     }
 
+    /// Final unsigned DAG block fields selected by Rust before temporary C++ signing.
+    struct DagProposerBlockIntentInput {
+        pivot: [u8; 32],
+        level: u64,
+        timestamp: u64,
+        vdf_rlp: Vec<u8>,
+        selected_tips: Vec<DagHash>,
+        transaction_hashes: Vec<DagHash>,
+        block_gas_estimation: u64,
+    }
+
+    /// Unsigned DAG block intent with the legacy signing hash C++ must sign temporarily.
+    struct DagProposerUnsignedBlockIntent {
+        pivot: [u8; 32],
+        level: u64,
+        timestamp: u64,
+        vdf_rlp: Vec<u8>,
+        selected_tips: Vec<DagHash>,
+        transaction_hashes: Vec<DagHash>,
+        block_gas_estimation: u64,
+        signing_hash: [u8; 32],
+    }
+
+    /// Recoverable signature supplied for a Rust-planned unsigned DAG block intent.
+    struct DagProposerSignedBlockIntentInput {
+        intent: DagProposerUnsignedBlockIntent,
+        signature: Vec<u8>,
+    }
+
+    /// Canonical signed DAG block bytes and hash returned by Rust.
+    struct DagProposerSignedBlockIntent {
+        block_rlp: Vec<u8>,
+        block_hash: [u8; 32],
+    }
+
     /// Rust VDF and DPoS authorization decision.
     struct DagVerifyVdfDposDecision {
         continue_validation: bool,
@@ -4089,6 +4124,12 @@ pub mod rustaxa_ffi {
         pub fn dag_proposer_plan_stale_proof(
             input: DagProposerStaleProofInput,
         ) -> DagProposerStaleProofPlan;
+        pub fn dag_proposer_plan_block_intent(
+            input: DagProposerBlockIntentInput,
+        ) -> Result<DagProposerUnsignedBlockIntent>;
+        pub fn dag_proposer_finalize_signed_block_intent(
+            input: DagProposerSignedBlockIntentInput,
+        ) -> Result<DagProposerSignedBlockIntent>;
         pub fn dag_verify_authorization(
             input: DagVerifyAuthorizationInput,
         ) -> DagVerifyAuthorizationResult;

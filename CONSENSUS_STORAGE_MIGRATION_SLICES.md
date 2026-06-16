@@ -2080,6 +2080,11 @@ Validation note: the proposal-payload session slice adds a shim-owned `PackedPro
 Goal: replace final DAG proposer C++ block assembly with a Rust DAG block intent that carries canonical block bytes,
 side-effect intents, and compatibility materialization data.
 
+Status: in progress. The proposer no longer calls the C++ signing constructor for the final block. Rust now plans the
+unsigned DAG block intent, returns the canonical signing hash, validates the temporary C++ recoverable signature, and
+returns canonical signed DAG block RLP plus block hash. C++ still supplies the timestamp and signature, parses the
+Rust-produced RLP into a compatibility `DagBlock`, and executes `DagManager::addDagBlock` storage/graph/network effects.
+
 Move:
 
 - move final proposer block assembly inputs into `rustaxa-consensus::dag`: frontier, selected transaction hashes,
@@ -2107,6 +2112,17 @@ Validation:
 - `cmake --build /build --target dag_shim_test --parallel 12 && /build/bin/dag_shim_test`
 - `cmake --build /build --target dag_test --parallel 12`
 - `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+
+Validation note: the signed block-intent sub-slice adds `DagProposerBlockIntentInput`,
+`DagProposerUnsignedBlockIntent`, and `DagProposerSignedBlockIntent` in `rustaxa-consensus`, bridge functions
+`dag_proposer_plan_block_intent` and `dag_proposer_finalize_signed_block_intent`, and routes the proposer through
+Rust-produced signed block RLP before the temporary add-block executor. It passes `cargo fmt --manifest-path
+rust/Cargo.toml --all --check`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus dag`, `cargo test
+--manifest-path rust/Cargo.toml -p rustaxa-bridge dag`, `cmake --build /build --target dag_shim_test --parallel 12`,
+`/build/bin/dag_shim_test`, `cmake --build /build --target dag_test --parallel 12`, `/build/bin/dag_test`, and
+`cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`,
+`scripts/rewrite_storage_boundary_guard.sh --self-test && scripts/rewrite_storage_boundary_guard.sh`, `git diff
+--check`, and `.githooks/pre-commit`.
 
 ## Slice 30: FinalChain Account Publication Contract
 

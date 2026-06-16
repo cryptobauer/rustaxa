@@ -13,6 +13,8 @@
 #include "dag/dag_manager.hpp"
 #include "final_chain/final_chain.hpp"
 #include "key_manager/key_manager.hpp"
+#include "libdevcore/Common.h"
+#include "libdevcrypto/Common.h"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "transaction/transaction.hpp"
 #include "transaction/transaction_manager.hpp"
@@ -48,6 +50,15 @@ std::vector<blk_hash_t> from_bridge_dag_hashes(const rust::Vec<rustaxa::DagHash>
 }
 
 dev::bytes to_bytes(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
+
+rust::Vec<uint8_t> to_rust_vec(const dev::bytes& bytes) {
+  rust::Vec<uint8_t> out;
+  out.reserve(bytes.size());
+  for (const auto byte : bytes) {
+    out.push_back(static_cast<uint8_t>(byte));
+  }
+  return out;
+}
 
 SharedTransactions materialize_transactions(const vec_trx_t& transaction_hashes,
                                             const std::vector<dev::bytes>& transaction_rlps) {
@@ -422,14 +433,35 @@ std::shared_ptr<DagBlock> DagBlockProposer::createDagBlock(DagFrontier&& frontie
   }
 
   const auto plan = dag_mgr_->planProposerBlockConstruction(std::move(plan_input));
-  frontier.tips.clear();
-  frontier.tips.reserve(plan.selected_tips.size());
+
+  rustaxa::DagProposerBlockIntentInput intent_input;
+  intent_input.pivot = to_bridge_hash(frontier.pivot);
+  intent_input.level = level;
+  intent_input.timestamp = static_cast<uint64_t>(dev::utcTime());
+  intent_input.vdf_rlp = to_rust_vec(vdf.rlp());
+  intent_input.selected_tips.reserve(plan.selected_tips.size());
+  intent_input.transaction_hashes.reserve(trx_hashes.size());
   for (const auto& hash : plan.selected_tips) {
-    frontier.tips.emplace_back(from_bridge_hash(hash.hash));
+    intent_input.selected_tips.push_back(hash);
+  }
+  for (const auto& hash : trx_hashes) {
+    intent_input.transaction_hashes.push_back(to_bridge_dag_hash(hash));
+  }
+  intent_input.block_gas_estimation = plan.block_gas_estimation;
+
+  auto intent = rustaxa::dag_proposer_plan_block_intent(std::move(intent_input));
+  const auto signature = dev::sign(node_secret, from_bridge_hash(intent.signing_hash));
+  rustaxa::DagProposerSignedBlockIntentInput signed_input;
+  signed_input.intent = std::move(intent);
+  signed_input.signature = to_rust_vec(signature.asBytes());
+  const auto signed_block = rustaxa::dag_proposer_finalize_signed_block_intent(std::move(signed_input));
+
+  auto block = std::make_shared<DagBlock>(to_bytes(signed_block.block_rlp));
+  if (block->getHash() != from_bridge_hash(signed_block.block_hash)) {
+    throw std::runtime_error("Rust DAG proposer signed block RLP hash mismatch");
   }
 
-  return std::make_shared<DagBlock>(frontier.pivot, std::move(level), std::move(frontier.tips), trx_hashes,
-                                    plan.block_gas_estimation, std::move(vdf), node_secret);
+  return block;
 }
 
 void DagBlockProposer::setNetwork(std::weak_ptr<Network> network) { network_ = std::move(network); }

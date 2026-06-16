@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail, ensure};
 use ethereum_types::H256;
-use rlp::Rlp;
+use rlp::{Rlp, RlpStream};
 use rustaxa_storage::{StatusField, Storage};
 use rustaxa_types::codec::rlp::dag::DagBlockRlp;
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
@@ -13,6 +13,7 @@ use rustaxa_vdf::{vdf_sortition, vrf};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write;
+use tiny_keccak::{Hasher, Keccak};
 
 const PBFT_BLOCK_POS_IN_PERIOD_DATA: usize = 0;
 
@@ -308,6 +309,58 @@ pub struct DagProposerBlockConstructionPlan {
     pub block_gas_estimation: u64,
     pub pruned_tips: bool,
     pub skipped_missing_tips: u64,
+}
+
+/// Inputs for the Rust-owned DAG proposer block intent.
+///
+/// These are the final protocol fields selected before proposer signing. C++ still supplies the wall-clock timestamp,
+/// VDF payload bytes, and selected transaction hashes while the migration boundary is active, but Rust owns the canonical
+/// unsigned block shape and signing hash over those facts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagProposerBlockIntentInput {
+    pub pivot: H256,
+    pub level: u64,
+    pub timestamp: u64,
+    pub vdf_rlp: Vec<u8>,
+    pub selected_tips: Vec<H256>,
+    pub transaction_hashes: Vec<H256>,
+    pub block_gas_estimation: u64,
+}
+
+/// Unsigned DAG proposer block intent returned by Rust.
+///
+/// `signing_hash` is the legacy `DagBlock::sha3(false)` hash over the canonical unsigned block fields. C++ signs this
+/// hash temporarily, then returns the recoverable signature to Rust so Rust can produce canonical signed block RLP.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagProposerUnsignedBlockIntent {
+    pub pivot: H256,
+    pub level: u64,
+    pub timestamp: u64,
+    pub vdf_rlp: Vec<u8>,
+    pub selected_tips: Vec<H256>,
+    pub transaction_hashes: Vec<H256>,
+    pub block_gas_estimation: u64,
+    pub signing_hash: H256,
+}
+
+/// Inputs for finalizing a signed Rust DAG proposer block intent.
+///
+/// `signature` must be the 65-byte recoverable ECDSA signature over `intent.signing_hash`, using the legacy C++
+/// signature layout. Invalid signature length is reported as an error because it would produce non-canonical block RLP.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagProposerSignedBlockIntentInput {
+    pub intent: DagProposerUnsignedBlockIntent,
+    pub signature: Vec<u8>,
+}
+
+/// Canonical signed DAG block bytes and hash produced from a Rust block intent.
+///
+/// `block_rlp` is the eight-field canonical C++ DAG block RLP. `block_hash` is the legacy hash over that signed RLP and
+/// is returned so the C++ shim can verify materialization before executing temporary add-block effects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagProposerSignedBlockIntent {
+    pub block_rlp: Vec<u8>,
+    pub block_hash: H256,
 }
 
 /// Inputs for deterministic transaction availability checks in
@@ -1882,6 +1935,92 @@ pub fn plan_dag_proposer_block_construction_from_storage(
             max_tips: input.max_tips,
         },
     ))
+}
+
+/// Plans the final unsigned DAG proposer block intent.
+///
+/// Rust owns the canonical block-field ordering and signing hash. The signature itself remains a temporary C++ signer
+/// boundary because wallet/secret ownership has not moved to Rust in this slice.
+pub fn plan_dag_proposer_block_intent(
+    input: DagProposerBlockIntentInput,
+) -> DagProposerUnsignedBlockIntent {
+    let block = DagBlock {
+        pivot: input.pivot,
+        level: input.level,
+        timestamp: input.timestamp,
+        vdf: input.vdf_rlp.clone(),
+        tips: input.selected_tips.clone(),
+        transactions: input.transaction_hashes.clone(),
+        signature: [0; 65],
+        gas_estimation: input.block_gas_estimation,
+    };
+    DagProposerUnsignedBlockIntent {
+        pivot: input.pivot,
+        level: input.level,
+        timestamp: input.timestamp,
+        vdf_rlp: input.vdf_rlp,
+        selected_tips: input.selected_tips,
+        transaction_hashes: input.transaction_hashes,
+        block_gas_estimation: input.block_gas_estimation,
+        signing_hash: block.signing_hash(),
+    }
+}
+
+/// Finalizes a Rust DAG proposer block intent after the temporary C++ signer returns a recoverable signature.
+///
+/// The returned RLP is canonical signed DAG block RLP and is suitable for C++ compatibility materialization,
+/// rustaxa-storage persistence, and hash verification. This function does not mutate DAG storage or graph state; those
+/// effects remain explicit add-block execution work until the DAG manager runtime owns them.
+pub fn finalize_dag_proposer_signed_block_intent(
+    input: DagProposerSignedBlockIntentInput,
+) -> Result<DagProposerSignedBlockIntent> {
+    ensure!(
+        input.signature.len() == 65,
+        "DAG_PROPOSER_BLOCK_INTENT_SIGNATURE_LENGTH"
+    );
+    let mut signature = [0u8; 65];
+    signature.copy_from_slice(&input.signature);
+    let block = DagBlock {
+        pivot: input.intent.pivot,
+        level: input.intent.level,
+        timestamp: input.intent.timestamp,
+        vdf: input.intent.vdf_rlp,
+        tips: input.intent.selected_tips,
+        transactions: input.intent.transaction_hashes,
+        signature,
+        gas_estimation: input.intent.block_gas_estimation,
+    };
+    ensure!(
+        block.signing_hash() == input.intent.signing_hash,
+        "DAG_PROPOSER_BLOCK_INTENT_SIGNING_HASH_MISMATCH"
+    );
+    let block_rlp = encode_dag_block_rlp(&block);
+    let block_hash = keccak256(&block_rlp);
+    Ok(DagProposerSignedBlockIntent {
+        block_rlp,
+        block_hash,
+    })
+}
+
+fn encode_dag_block_rlp(block: &DagBlock) -> Vec<u8> {
+    let mut stream = RlpStream::new_list(8);
+    stream.append(&block.pivot);
+    stream.append(&block.level);
+    stream.append(&block.timestamp);
+    stream.append(&block.vdf);
+    stream.append_list(&block.tips);
+    stream.append_list(&block.transactions);
+    stream.append(&block.signature.as_ref());
+    stream.append(&block.gas_estimation);
+    stream.out().to_vec()
+}
+
+fn keccak256(data: &[u8]) -> H256 {
+    let mut out = [0u8; 32];
+    let mut hasher = Keccak::v256();
+    hasher.update(data);
+    hasher.finalize(&mut out);
+    H256(out)
 }
 
 /// Plans one DAG proposal attempt up to the live transaction-packing boundary.
@@ -5067,6 +5206,67 @@ mod tests {
         assert_eq!(plan.block_gas_estimation, 7);
         assert!(plan.pruned_tips);
         assert_eq!(plan.skipped_missing_tips, 1);
+    }
+
+    #[test]
+    fn dag_proposer_block_intent_returns_signing_hash_and_signed_rlp() {
+        let intent = plan_dag_proposer_block_intent(DagProposerBlockIntentInput {
+            pivot: h(1),
+            level: 9,
+            timestamp: 12345,
+            vdf_rlp: vdf_payload_rlp(7, vec![1, 2], vec![3, 4]),
+            selected_tips: vec![h(2), h(3)],
+            transaction_hashes: vec![h(10), h(11)],
+            block_gas_estimation: 42_000,
+        });
+        let signing_key = SigningKey::from_slice(&[0x44; 32]).expect("signing key");
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(intent.signing_hash.as_bytes())
+            .expect("sign intent");
+        let mut signature_bytes = signature.to_bytes().to_vec();
+        signature_bytes.push(recovery_id.to_byte());
+
+        let signed = finalize_dag_proposer_signed_block_intent(DagProposerSignedBlockIntentInput {
+            intent: intent.clone(),
+            signature: signature_bytes,
+        })
+        .expect("signed intent");
+        let block = DagBlock::try_from(DagBlockRlp::new(&signed.block_rlp)).expect("decode block");
+
+        assert_eq!(block.pivot, intent.pivot);
+        assert_eq!(block.level, intent.level);
+        assert_eq!(block.timestamp, intent.timestamp);
+        assert_eq!(block.vdf, intent.vdf_rlp);
+        assert_eq!(block.tips, intent.selected_tips);
+        assert_eq!(block.transactions, intent.transaction_hashes);
+        assert_eq!(block.gas_estimation, intent.block_gas_estimation);
+        assert_eq!(block.signing_hash(), intent.signing_hash);
+        assert_eq!(signed.block_hash, keccak256(&signed.block_rlp));
+        assert!(block.recover_sender().is_some());
+    }
+
+    #[test]
+    fn dag_proposer_block_intent_rejects_invalid_signature_length() {
+        let intent = plan_dag_proposer_block_intent(DagProposerBlockIntentInput {
+            pivot: h(1),
+            level: 9,
+            timestamp: 12345,
+            vdf_rlp: vdf_payload_rlp(7, vec![1, 2], vec![3, 4]),
+            selected_tips: vec![h(2)],
+            transaction_hashes: vec![h(10)],
+            block_gas_estimation: 42_000,
+        });
+
+        let err = finalize_dag_proposer_signed_block_intent(DagProposerSignedBlockIntentInput {
+            intent,
+            signature: vec![0; 64],
+        })
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("DAG_PROPOSER_BLOCK_INTENT_SIGNATURE_LENGTH")
+        );
     }
 
     #[test]

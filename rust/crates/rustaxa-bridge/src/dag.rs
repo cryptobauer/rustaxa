@@ -7,18 +7,20 @@ use crate::ffi::rustaxa_ffi::{
     DagManagerRuntimeSyncSnapshot, DagManagerSnapshot, DagOrder, DagPersistenceCounters,
     DagPivotTipsValidation, DagProposerAttemptInput, DagProposerAttemptPlan,
     DagProposerBlockConstructionInput, DagProposerBlockConstructionPlan,
-    DagProposerEligibilityDecision, DagProposerEligibilityInput, DagProposerFrontierFacts,
-    DagProposerPostPackInput, DagProposerPostPackPlan, DagProposerRetryResetInput,
-    DagProposerRetryResetPlan, DagProposerStaleProofInput, DagProposerStaleProofPlan,
+    DagProposerBlockIntentInput, DagProposerEligibilityDecision, DagProposerEligibilityInput,
+    DagProposerFrontierFacts, DagProposerPostPackInput, DagProposerPostPackPlan,
+    DagProposerRetryResetInput, DagProposerRetryResetPlan, DagProposerSignedBlockIntent,
+    DagProposerSignedBlockIntentInput, DagProposerStaleProofInput, DagProposerStaleProofPlan,
     DagProposerStorageBlockConstructionInput, DagProposerTipCandidate,
-    DagProposerTransactionPackRequest, DagProposerVdfWaitInput, DagProposerVdfWaitPlan,
-    DagReferenceMetadata, DagSyncBlockRlp, DagTransactionHash, DagTransactionQueryPlan,
-    DagTransactionRlpLookup, DagVerifyAuthorizationInput, DagVerifyAuthorizationResult,
-    DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
-    DagVerifyTransactionAvailabilityInput, DagVerifyTransactionAvailabilityResult,
-    DagVerifyVdfDposDecision, DagVerifyVdfDposFacts, DagVerifyVdfPrepareInput,
-    DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
-    DagVerifyVdfSortitionResult, HashLookup, PeriodLookup, SortitionRuntimeParams,
+    DagProposerTransactionPackRequest, DagProposerUnsignedBlockIntent, DagProposerVdfWaitInput,
+    DagProposerVdfWaitPlan, DagReferenceMetadata, DagSyncBlockRlp, DagTransactionHash,
+    DagTransactionQueryPlan, DagTransactionRlpLookup, DagVerifyAuthorizationInput,
+    DagVerifyAuthorizationResult, DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock,
+    DagVerifyPrecheckResult, DagVerifyTransactionAvailabilityInput,
+    DagVerifyTransactionAvailabilityResult, DagVerifyVdfDposDecision, DagVerifyVdfDposFacts,
+    DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput,
+    DagVerifyVdfSortitionInput, DagVerifyVdfSortitionResult, HashLookup, PeriodLookup,
+    SortitionRuntimeParams,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
 use anyhow::{ensure, Context, Result};
@@ -30,10 +32,11 @@ use rustaxa_consensus::dag::{
     collect_non_finalized_sync_payload_from_storage, construct_dag_vdf_message,
     dag_block_exists_in_storage, dag_persistence_counters_from_storage,
     decide_dag_verify_vdf_dpos_authorization, derive_frontier, ensure_proposal_period_mapping,
-    load_dag_block_from_storage, period_block_hash_from_storage, plan_dag_proposer_attempt,
+    finalize_dag_proposer_signed_block_intent, load_dag_block_from_storage,
+    period_block_hash_from_storage, plan_dag_proposer_attempt,
     plan_dag_proposer_block_construction, plan_dag_proposer_block_construction_from_storage,
-    plan_dag_proposer_post_pack, plan_dag_proposer_retry_reset, plan_dag_proposer_stale_proof,
-    plan_dag_proposer_vdf_wait, plan_dag_verify_transaction_query,
+    plan_dag_proposer_block_intent, plan_dag_proposer_post_pack, plan_dag_proposer_retry_reset,
+    plan_dag_proposer_stale_proof, plan_dag_proposer_vdf_wait, plan_dag_verify_transaction_query,
     plan_expired_transaction_cleanup, plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
     proposal_period_for_level_from_storage, save_dag_block_to_storage,
     validate_dag_verify_authorization, validate_dag_verify_gas,
@@ -47,8 +50,11 @@ use rustaxa_consensus::dag::{
     DagProposerAttemptInput as DomainDagProposerAttemptInput,
     DagProposerBlockConstructionInput as DomainDagProposerBlockConstructionInput,
     DagProposerBlockConstructionPlan as DomainDagProposerBlockConstructionPlan,
+    DagProposerBlockIntentInput as DomainDagProposerBlockIntentInput,
+    DagProposerSignedBlockIntentInput as DomainDagProposerSignedBlockIntentInput,
     DagProposerStorageBlockConstructionInput as DomainDagProposerStorageBlockConstructionInput,
     DagProposerTipCandidate as DomainDagProposerTipCandidate,
+    DagProposerUnsignedBlockIntent as DomainDagProposerUnsignedBlockIntent,
     DagReferenceMetadata as ReferenceMetadata, DagTipGas,
     DagVdfSortitionBlockInput as DomainDagVdfSortitionBlockInput,
     DagVdfSortitionInput as DomainDagVdfSortitionInput,
@@ -1393,6 +1399,90 @@ fn to_bridge_dag_proposer_block_construction_plan(
             .collect(),
         block_gas_estimation: plan.block_gas_estimation,
     }
+}
+
+fn to_bridge_unsigned_block_intent(
+    intent: DomainDagProposerUnsignedBlockIntent,
+) -> DagProposerUnsignedBlockIntent {
+    DagProposerUnsignedBlockIntent {
+        pivot: intent.pivot.0,
+        level: intent.level,
+        timestamp: intent.timestamp,
+        vdf_rlp: intent.vdf_rlp,
+        selected_tips: intent
+            .selected_tips
+            .into_iter()
+            .map(|hash| DagHash { hash: hash.0 })
+            .collect(),
+        transaction_hashes: intent
+            .transaction_hashes
+            .into_iter()
+            .map(|hash| DagHash { hash: hash.0 })
+            .collect(),
+        block_gas_estimation: intent.block_gas_estimation,
+        signing_hash: intent.signing_hash.0,
+    }
+}
+
+fn to_domain_unsigned_block_intent(
+    intent: DagProposerUnsignedBlockIntent,
+) -> DomainDagProposerUnsignedBlockIntent {
+    DomainDagProposerUnsignedBlockIntent {
+        pivot: H256::from(intent.pivot),
+        level: intent.level,
+        timestamp: intent.timestamp,
+        vdf_rlp: intent.vdf_rlp,
+        selected_tips: intent
+            .selected_tips
+            .into_iter()
+            .map(|hash| H256::from(hash.hash))
+            .collect(),
+        transaction_hashes: intent
+            .transaction_hashes
+            .into_iter()
+            .map(|hash| H256::from(hash.hash))
+            .collect(),
+        block_gas_estimation: intent.block_gas_estimation,
+        signing_hash: H256::from(intent.signing_hash),
+    }
+}
+
+pub fn dag_proposer_plan_block_intent(
+    input: DagProposerBlockIntentInput,
+) -> Result<DagProposerUnsignedBlockIntent> {
+    Ok(to_bridge_unsigned_block_intent(
+        plan_dag_proposer_block_intent(DomainDagProposerBlockIntentInput {
+            pivot: H256::from(input.pivot),
+            level: input.level,
+            timestamp: input.timestamp,
+            vdf_rlp: input.vdf_rlp,
+            selected_tips: input
+                .selected_tips
+                .into_iter()
+                .map(|hash| H256::from(hash.hash))
+                .collect(),
+            transaction_hashes: input
+                .transaction_hashes
+                .into_iter()
+                .map(|hash| H256::from(hash.hash))
+                .collect(),
+            block_gas_estimation: input.block_gas_estimation,
+        }),
+    ))
+}
+
+pub fn dag_proposer_finalize_signed_block_intent(
+    input: DagProposerSignedBlockIntentInput,
+) -> Result<DagProposerSignedBlockIntent> {
+    let signed =
+        finalize_dag_proposer_signed_block_intent(DomainDagProposerSignedBlockIntentInput {
+            intent: to_domain_unsigned_block_intent(input.intent),
+            signature: input.signature,
+        })?;
+    Ok(DagProposerSignedBlockIntent {
+        block_rlp: signed.block_rlp,
+        block_hash: signed.block_hash.0,
+    })
 }
 
 fn dag_proposer_decision(
@@ -3321,6 +3411,35 @@ mod tests {
             dag_vrf_input(block_level, &proposal_period_hash),
             expected.out().to_vec()
         );
+    }
+
+    #[test]
+    fn dag_proposer_block_intent_bridge_returns_signed_canonical_rlp() {
+        let unsigned = dag_proposer_plan_block_intent(DagProposerBlockIntentInput {
+            pivot: [0x11; 32],
+            level: 9,
+            timestamp: 12345,
+            vdf_rlp: vec![0xC0],
+            selected_tips: vec![DagHash { hash: [0x22; 32] }],
+            transaction_hashes: vec![DagHash { hash: [0x33; 32] }],
+            block_gas_estimation: 77,
+        })
+        .expect("intent");
+        let signing_key = SigningKey::from_slice(&[0x44; 32]).expect("signing key");
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(&unsigned.signing_hash)
+            .expect("sign intent");
+        let mut signature_bytes = signature.to_bytes().to_vec();
+        signature_bytes.push(recovery_id.to_byte());
+
+        let signed = dag_proposer_finalize_signed_block_intent(DagProposerSignedBlockIntentInput {
+            intent: unsigned,
+            signature: signature_bytes,
+        })
+        .expect("signed intent");
+
+        assert!(!signed.block_rlp.is_empty());
+        assert_ne!(signed.block_hash, [0; 32]);
     }
 
     #[test]
