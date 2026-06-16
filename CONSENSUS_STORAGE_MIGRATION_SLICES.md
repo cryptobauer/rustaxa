@@ -1553,6 +1553,17 @@ rustaxa-consensus final_chain`, `cargo test --manifest-path rust/Cargo.toml -p r
 --parallel 12`, `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
 `scripts/rewrite_storage_boundary_guard.sh`, `git diff --check`, and `.githooks/pre-commit`.
 
+Validation note: the publication-report idempotence sub-slice makes already-applied external-EVM publication reports
+return the same Rust-persisted execution counters and DPoS/account snapshot status classification as a freshly applied
+publication. Restart recovery also reports the persisted counters when it finds a matching block already published while
+a stale pending marker remains. The bridge test now covers the already-applied public publication report after reopening
+storage. It passes `cargo fmt --manifest-path rust/Cargo.toml --all`, `cargo test --manifest-path rust/Cargo.toml -p
+rustaxa-bridge bridge_publishes_external_evm_publication_and_reloads_indexes`, `cargo test --manifest-path
+rust/Cargo.toml -p rustaxa-consensus final_chain`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge
+final_chain`, `cmake --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
+`scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and
+`git diff --check`.
+
 ## Slice 22: Network And Query Compatibility Shell Split
 
 Goal: separate network/app/query compatibility reads from consensus runtime storage ownership so Slice 8/9 can close

@@ -2795,7 +2795,7 @@ mod tests {
         assert_eq!(publication.proposal_period_dag_level_update.level, 42);
         let plan_id = publication.plan_id;
 
-        let _decision =
+        let decision =
             ready_external_evm_commit_decision(&final_chain, &mut session, &plan, &publication);
         let report = final_chain_execution_session_publish_external_evm_publication(
             &final_chain,
@@ -2895,6 +2895,29 @@ mod tests {
             vec![1]
         );
         assert_external_evm_publication_audit_matches(&reloaded, &publication);
+        let already_applied_report = reloaded
+            .publish_external_evm_publication(publication, decision)
+            .expect("already-applied publication should convert");
+        assert_eq!(
+            already_applied_report.status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED
+        );
+        assert_eq!(
+            already_applied_report.executed_dag_block_count,
+            execution_status.executed_dag_block_count
+        );
+        assert_eq!(
+            already_applied_report.executed_transaction_count,
+            execution_status.executed_transaction_count
+        );
+        assert_eq!(
+            already_applied_report.dpos_snapshot_status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_AVAILABLE
+        );
+        assert_eq!(
+            already_applied_report.account_snapshot_status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY
+        );
 
         drop(reloaded);
         let _ = fs::remove_dir_all(temp_dir);

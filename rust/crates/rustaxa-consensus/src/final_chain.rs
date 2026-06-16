@@ -1354,6 +1354,7 @@ impl FinalChain {
             if existing_hash == H256::from(marker.plan.block_hash)
                 && self.block_number(marker.plan.block_hash)? == Some(marker.plan.period)
             {
+                let execution_status = self.execution_status()?;
                 self.storage
                     .final_chain()
                     .delete_external_evm_pending_publication()?;
@@ -1362,12 +1363,13 @@ impl FinalChain {
                     plan_id: marker.plan.plan_id,
                     period: marker.plan.period,
                     block_hash: marker.plan.block_hash,
-                    dpos_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED,
+                    executed_dag_block_count: execution_status.executed_dag_block_count,
+                    executed_transaction_count: execution_status.executed_transaction_count,
+                    dpos_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_AVAILABLE,
                     account_snapshot_status:
-                        FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED,
+                        FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY,
                     status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED,
                     error_code: String::new(),
-                    ..Default::default()
                 });
             }
             return Ok(rejected_external_evm_publication_report(
