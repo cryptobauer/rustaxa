@@ -199,6 +199,46 @@ pub fn load_pbft_manager_startup_replay_period_storage(
     })
 }
 
+/// Loads one finalized period for PBFT manager startup replay through runtime-owned storage.
+///
+/// Inputs:
+/// - `runtime`: long-lived Rust PBFT manager runtime with its storage handle.
+/// - `period`: finalized PBFT period to replay into temporary live C++ mirrors.
+/// - `load_period_lambda`: whether Cacti replay needs closest dynamic-lambda facts.
+///
+/// Outputs:
+/// - A CXX-safe payload containing the raw period data, finalized DAG hashes,
+///   and optional dynamic lambda.
+///
+/// Invariants and edge behavior:
+/// - This is the runtime-owned equivalent of
+///   `load_pbft_manager_startup_replay_period_storage`; storage reads and
+///   malformed-period handling remain owned by `rustaxa-consensus`.
+/// - `found = false` is an explicit missing-period result and does not trigger
+///   a legacy storage fallback.
+pub fn pbft_manager_runtime_load_startup_replay_period(
+    runtime: &BridgePbftManagerRuntime,
+    period: u64,
+    load_period_lambda: bool,
+) -> anyhow::Result<crate::ffi::rustaxa_ffi::PbftManagerStartupReplayPeriod> {
+    let replay = load_domain_pbft_manager_startup_replay_period(
+        runtime.storage.as_ref(),
+        period,
+        load_period_lambda,
+    )?;
+    Ok(crate::ffi::rustaxa_ffi::PbftManagerStartupReplayPeriod {
+        found: replay.found,
+        period_data_rlp: replay.period_data_rlp,
+        finalized_dag_hashes: replay
+            .finalized_dag_hashes
+            .into_iter()
+            .map(|hash| FfiPbftFinalizationHash { hash: hash.0 })
+            .collect(),
+        has_period_lambda: replay.period_lambda.is_some(),
+        period_lambda: replay.period_lambda.unwrap_or_default(),
+    })
+}
+
 /// Returns the current Rust-owned PBFT manager runtime snapshot.
 pub fn pbft_manager_runtime_snapshot(
     runtime: &BridgePbftManagerRuntime,
@@ -1546,6 +1586,45 @@ mod tests {
 
             let missing = load_pbft_manager_startup_replay_period_storage(&storage, 13, true)
                 .expect("missing startup replay read should succeed");
+            assert!(!missing.found);
+            assert!(missing.period_data_rlp.is_empty());
+            assert!(missing.finalized_dag_hashes.is_empty());
+            assert!(!missing.has_period_lambda);
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_runtime_loads_startup_replay_period_from_owned_storage() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_startup_replay_period");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            storage
+                .save_pbft_mgr_field(2, 1_500)
+                .expect("lambda seed should persist");
+            let period_data = empty_finalized_dag_period_data_rlp();
+            storage
+                .save_period_data(12, period_data.clone())
+                .expect("period data should persist");
+            storage
+                .save_period_lambda(11, 1_234)
+                .expect("period lambda should persist");
+            let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
+                .expect("runtime should restore");
+
+            let replay = pbft_manager_runtime_load_startup_replay_period(&runtime, 12, true)
+                .expect("runtime startup replay read should succeed");
+            let missing = pbft_manager_runtime_load_startup_replay_period(&runtime, 13, true)
+                .expect("runtime missing startup replay read should succeed");
+
+            assert!(replay.found);
+            assert_eq!(replay.period_data_rlp, period_data);
+            assert!(replay.finalized_dag_hashes.is_empty());
+            assert!(replay.has_period_lambda);
+            assert_eq!(replay.period_lambda, 1_234);
             assert!(!missing.found);
             assert!(missing.period_data_rlp.is_empty());
             assert!(missing.finalized_dag_hashes.is_empty());

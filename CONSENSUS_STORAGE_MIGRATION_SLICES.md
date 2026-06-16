@@ -1165,14 +1165,15 @@ gas_pricer_test --parallel 12`, `/build/bin/gas_pricer_test`, `cmake --build /bu
 Goal: stop PBFT manager overlay methods from repeatedly extracting `db_->rustStorage()` and move storage ownership into
 the long-lived Rust PBFT manager runtime.
 
-Status: in progress. The next-voted-status write now runs through the long-lived PBFT manager runtime's Rust storage
-handle instead of taking `db_->rustStorage()` at the shim call site. Startup replay and finalization staging still need
-runtime-owned wrappers before this slice is complete.
+Status: complete for PBFT manager operation-site storage extraction. Next-voted-status writes, startup replay reads, and
+finalization storage operations now run through the long-lived PBFT manager runtime's Rust storage handle. The only
+remaining `db_->rustStorage()` use in the PBFT manager overlay is runtime construction itself, which is constructor
+compatibility rather than an operation-site storage route.
 
 Current boundary:
 
-- PBFT manager startup, transition storage, finalization staging, cert-voted-block reads, proposed-block restore, and
-  pillar-vote startup still mix long-lived Rust runtime calls with per-call `db_->rustStorage()` extraction.
+- PBFT manager startup replay, transition storage, finalization staging, and cert-voted-block reads use long-lived Rust
+  runtime calls instead of per-call `db_->rustStorage()` extraction.
 - Several storage families already moved to `rustaxa-consensus`, but the shim still orchestrates the handles.
 
 Move:
@@ -1193,6 +1194,9 @@ Completed sub-slices:
   finalized-period storage writes now have PBFT-manager-runtime wrapper entry points. The PBFT manager overlay uses those
   wrappers for the finalization path, so finalization storage operations no longer take `db_->rustStorage()` at each
   operation site.
+- startup replay storage: the PBFT manager overlay now creates the long-lived Rust runtime before constructor replay and
+  calls `pbft_manager_runtime_load_startup_replay_period()` for both FinalChain catch-up replay and recently-finalized
+  transaction restoration. `initialState()` reuses the existing runtime instead of recreating it.
 
 Keep temporarily:
 
@@ -1202,9 +1206,10 @@ Keep temporarily:
 
 Done when:
 
-- PBFT manager overlay has no per-operation `db_->rustStorage()` calls for migrated storage families
-- remaining `db_` use in PBFT manager is constructor compatibility, snapshot toggling, or explicit sidecar materialization
-- Slice 9 can remove PBFT manager runtime storage extraction from its open compatibility-shell list
+- PBFT manager overlay has no per-operation `db_->rustStorage()` calls for migrated storage families: done
+- remaining `db_` use in PBFT manager is constructor compatibility, snapshot toggling, or explicit sidecar materialization:
+  done for `rustStorage()` extraction; broader `DbStorage` materialization remains categorized for Slice 22/23
+- Slice 9 can remove PBFT manager runtime storage extraction from its open compatibility-shell list: done
 
 Validation:
 
@@ -1233,6 +1238,13 @@ Validation notes:
   `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pbft_finalize`,
   `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_manager`,
   `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_finalize`,
+  `cmake --build /build --target pbft_manager_test --parallel 12`,
+  `cmake --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
+  `scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and
+  `git diff --check`.
+- Startup replay runtime-storage sub-slice passed `cargo fmt --manifest-path rust/Cargo.toml --all --check`,
+  `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pbft_manager`,
+  `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_manager`,
   `cmake --build /build --target pbft_manager_test --parallel 12`,
   `cmake --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
   `scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and

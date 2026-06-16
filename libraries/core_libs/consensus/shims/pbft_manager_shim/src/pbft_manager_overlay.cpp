@@ -189,6 +189,17 @@ rustaxa::PbftFinalChainFactRequest makePbftFinalChainFactRequest(
   return request;
 }
 
+rustaxa::PbftManagerStartupFact makePbftManagerStartupFact(const GenesisConfig &genesis_config,
+                                                           PbftPeriod current_pbft_period) {
+  rustaxa::PbftManagerStartupFact startup_fact{};
+  startup_fact.current_period = current_pbft_period;
+  startup_fact.cacti_active_at_chain_size = genesis_config.state.hardforks.isOnCactiHardfork(current_pbft_period - 1);
+  startup_fact.genesis_lambda_ms = genesis_config.pbft.lambda_ms;
+  startup_fact.cacti_lambda_max_ms = genesis_config.state.hardforks.cacti_hf.lambda_max;
+  startup_fact.cacti_lambda_default_ms = genesis_config.state.hardforks.cacti_hf.lambda_default;
+  return startup_fact;
+}
+
 uint8_t toPbftManagerRuntimeState(PbftStates state) {
   switch (state) {
     case value_proposal_state:
@@ -659,10 +670,13 @@ PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> 
   const auto &node_addr = dev::toAddress(conf.getFirstWallet().node_secret);
   LOG_OBJECTS_CREATE("PBFT_MGR");
 
+  pbft_manager_runtime_.emplace(rustaxa::create_pbft_manager_runtime_from_storage(
+      db_->rustStorage(), makePbftManagerStartupFact(kGenesisConfig, getPbftPeriod())));
+
   for (auto period = final_chain_->lastBlockNumber() + 1, curr_period = pbft_chain_->getPbftChainSize();
        period <= curr_period; ++period) {
-    const auto replay_period = rustaxa::load_pbft_manager_startup_replay_period_storage(
-        db_->rustStorage(), period, kGenesisConfig.state.hardforks.isOnCactiHardfork(period));
+    const auto replay_period = rustaxa::pbft_manager_runtime_load_startup_replay_period(
+        *pbft_manager_runtime_.value(), period, kGenesisConfig.state.hardforks.isOnCactiHardfork(period));
     if (!replay_period.found) {
       LOG(log_er_) << "DB corrupted - Cannot find PBFT block in period " << period << " in PBFT chain DB pbft_blocks.";
       assert(false);
@@ -716,7 +730,7 @@ PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> 
   }
   for (PbftPeriod period = start_period; period <= pbft_chain_->getPbftChainSize(); period++) {
     const auto replay_period =
-        rustaxa::load_pbft_manager_startup_replay_period_storage(db_->rustStorage(), period, false);
+        rustaxa::pbft_manager_runtime_load_startup_replay_period(*pbft_manager_runtime_.value(), period, false);
     if (!replay_period.found) {
       LOG(log_er_) << "DB corrupted - Cannot find PBFT block in period " << period << " in PBFT chain DB pbft_blocks.";
       assert(false);
@@ -1305,16 +1319,12 @@ void PbftManager::initialState() {
 
   // Time constants...
   const auto current_pbft_period = getPbftPeriod();
-  const auto chain_size = current_pbft_period - 1;
   const auto now = std::chrono::system_clock::now();
 
-  rustaxa::PbftManagerStartupFact startup_fact{};
-  startup_fact.current_period = current_pbft_period;
-  startup_fact.cacti_active_at_chain_size = kGenesisConfig.state.hardforks.isOnCactiHardfork(chain_size);
-  startup_fact.genesis_lambda_ms = kGenesisConfig.pbft.lambda_ms;
-  startup_fact.cacti_lambda_max_ms = kGenesisConfig.state.hardforks.cacti_hf.lambda_max;
-  startup_fact.cacti_lambda_default_ms = kGenesisConfig.state.hardforks.cacti_hf.lambda_default;
-  pbft_manager_runtime_.emplace(rustaxa::create_pbft_manager_runtime_from_storage(db_->rustStorage(), startup_fact));
+  if (!pbft_manager_runtime_.has_value()) {
+    pbft_manager_runtime_.emplace(rustaxa::create_pbft_manager_runtime_from_storage(
+        db_->rustStorage(), makePbftManagerStartupFact(kGenesisConfig, current_pbft_period)));
+  }
   const auto startup_snapshot = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value());
   applyPbftManagerRuntimeSnapshot(startup_snapshot, round_, step_, state_, current_round_lambda_, next_step_time_ms_,
                                   rounds_count_dynamic_lambda_, dynamic_lambda_, executed_pbft_block_,
