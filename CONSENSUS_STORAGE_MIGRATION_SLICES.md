@@ -1458,6 +1458,9 @@ checkpoint hook after a Rust-owned external-EVM publication. External-EVM public
 Rust-persisted executed DAG/transaction counters plus explicit DPoS/account snapshot statuses, and the FinalChain shim
 mirrors those persisted counters after publication instead of recomputing local deltas. Remaining work is still needed
 for the broader DPoS/account snapshot mismatch class without violating the external-EVM boundary.
+External-EVM publication audit now checks the Rust-owned DPoS/account snapshot publication state: the DPoS snapshot row
+for the published period must be present and decodable, while the account snapshot row must remain absent until a
+complete account-publication fact source exists.
 
 Current boundary:
 
@@ -1476,6 +1479,8 @@ Current boundary:
   unavailable-at-external-EVM-boundary for applied/already-applied publications, while rejected reports leave snapshot
   status not evaluated. This keeps the account snapshot gap explicit instead of treating touched account facts as a full
   snapshot.
+- External-EVM publication audit verifies that the DPoS snapshot row exists and decodes from `rustaxa-storage`, and that
+  no account snapshot row was published through the accepted external-EVM boundary.
 - External-EVM publication no longer performs a post-commit `DbStorage::createSnapshot` check from the FinalChain shim;
   snapshot/checkpoint lifecycle remains outside the current Rust storage-ownership slice and must not be used as a
   consensus publication owner.
@@ -1492,6 +1497,8 @@ Move:
 - completed for post-publication counter mirrors: return the Rust-persisted execution counters in the external-EVM
   publication report and set the C++ public counter mirrors from that report after Rust applies or confirms the
   publication
+- completed for publication audit snapshots: verify the DPoS snapshot row and explicit no-account-snapshot boundary in
+  the Rust-owned external-EVM publication audit
 - remaining: define and implement a complete account-publication fact source before external state commit, or another
   crash-safe recovery contract, so Rust can update full account snapshots without treating partial touched-account facts
   as complete snapshots; DPoS/account facts still explain the broad PBFT runtime mismatches
@@ -1561,6 +1568,17 @@ storage. It passes `cargo fmt --manifest-path rust/Cargo.toml --all`, `cargo tes
 rustaxa-bridge bridge_publishes_external_evm_publication_and_reloads_indexes`, `cargo test --manifest-path
 rust/Cargo.toml -p rustaxa-consensus final_chain`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge
 final_chain`, `cmake --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
+`scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and
+`git diff --check`.
+
+Validation note: the external-EVM publication snapshot-audit sub-slice extends
+`FinalChain::audit_external_evm_publication` to check persisted DPoS snapshot availability/decodability and the explicit
+absence of an account snapshot row for the accepted external-EVM boundary. Focused bridge audit coverage was updated to
+expect the additional checked fields. It passes `cargo fmt --manifest-path rust/Cargo.toml --all --check`, `cargo test
+--manifest-path rust/Cargo.toml -p rustaxa-consensus final_chain`, `cargo test --manifest-path rust/Cargo.toml -p
+rustaxa-bridge bridge_publishes_external_evm_publication_and_reloads_indexes`, `cargo test --manifest-path
+rust/Cargo.toml -p rustaxa-bridge final_chain`, `cmake --build /build --target rust_storage_tests --parallel 12`,
+`/build/bin/rust_storage_tests`, `cmake --build /build --target final_chain_test --parallel 12`,
 `scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and
 `git diff --check`.
 

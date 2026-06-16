@@ -1887,7 +1887,7 @@ mod tests {
         assert_eq!(audit.block_hash, publication.block_hash);
         assert_eq!(
             audit.checked_fields,
-            11 + u64::from(publication.proposal_period_dag_level_update.has_update)
+            14 + u64::from(publication.proposal_period_dag_level_update.has_update)
                 + publication.transaction_publications.len() as u64 * 2
         );
         assert!(audit.error_code.is_empty());

@@ -1633,9 +1633,9 @@ impl FinalChain {
     /// and verifies that the Rust-owned publication batch wrote exactly the
     /// storage rows described by the plan: stored header, hash indexes,
     /// receipt-by-period, transaction locations, receipt-by-transaction hash,
-    /// bloom index leaf, period system transaction hashes, and pending marker
-    /// clearance. It does not execute EVM, mutate storage, or rely on C++
-    /// FinalChain materialization.
+    /// bloom index leaf, period system transaction hashes, DPoS/account
+    /// snapshot publication state, and pending marker clearance. It does not
+    /// execute EVM, mutate storage, or rely on C++ FinalChain materialization.
     pub fn audit_external_evm_publication(
         &self,
         plan: FinalChainExternalEvmPublicationPlan,
@@ -1697,6 +1697,24 @@ impl FinalChain {
                 .period_system_hashes_rlp(plan.period)?
                 == plan.system_transaction_hashes_rlp,
             "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_SYSTEM_TRANSACTION_HASHES_MISMATCH",
+        );
+        let dpos_snapshot_raw = self.storage.final_chain().dpos_snapshot_raw(plan.period)?;
+        ensure_audit!(
+            dpos_snapshot_raw.is_some(),
+            "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_DPOS_SNAPSHOT_MISSING",
+        );
+        if let Some(snapshot_raw) = dpos_snapshot_raw.as_deref() {
+            ensure_audit!(
+                decode_dpos_snapshot_rlp(snapshot_raw).is_ok(),
+                "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_DPOS_SNAPSHOT_INVALID",
+            );
+        }
+        ensure_audit!(
+            self.storage
+                .final_chain()
+                .account_snapshot_raw(plan.period)?
+                .is_none(),
+            "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_ACCOUNT_SNAPSHOT_UNEXPECTED",
         );
         if plan.proposal_period_dag_level_update.has_update {
             ensure_audit!(
