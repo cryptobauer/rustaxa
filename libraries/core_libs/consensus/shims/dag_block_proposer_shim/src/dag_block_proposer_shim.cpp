@@ -2,7 +2,6 @@
 #include <chrono>
 #include <future>
 #include <memory>
-#include <numeric>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -363,14 +362,43 @@ std::shared_ptr<DagBlock> DagBlockProposer::createDagBlock(DagFrontier&& frontie
     trx_hashes.push_back(trx->getHash());
   }
 
-  const uint64_t block_estimation = std::accumulate(estimations.begin(), estimations.end(), uint64_t{0});
+  rustaxa::DagProposerBlockConstructionInput plan_input;
+  plan_input.pbft_gas_limit = kPbftGasLimit;
+  plan_input.dag_gas_limit = kDagGasLimit;
+  plan_input.max_tips = kDagBlockMaxTips;
+  plan_input.frontier_tips.reserve(frontier.tips.size());
+  for (const auto& t : frontier.tips) {
+    rustaxa::DagProposerTipCandidate candidate;
+    candidate.hash = to_bridge_hash(t);
+    candidate.sender = {};
+    candidate.level = 0;
+    candidate.gas_estimation = 0;
+    auto tip_block = dag_mgr_->getDagBlock(t);
+    if (tip_block == nullptr) {
+      candidate.found = false;
+    } else {
+      candidate.found = true;
+      candidate.sender = tip_block->getSender().asArray();
+      candidate.level = tip_block->getLevel();
+      candidate.gas_estimation = tip_block->getGasEstimation();
+    }
+    plan_input.frontier_tips.push_back(std::move(candidate));
+  }
 
-  if (frontier.tips.size() > kDagBlockMaxTips || (frontier.tips.size() + 1) > kPbftGasLimit / kDagGasLimit) {
-    frontier.tips = selectDagBlockTips(frontier.tips, kPbftGasLimit - block_estimation);
+  plan_input.transaction_gas_estimations.reserve(estimations.size());
+  for (const auto estimation : estimations) {
+    plan_input.transaction_gas_estimations.push_back(estimation);
+  }
+
+  const auto plan = rustaxa::dag_proposer_plan_block_construction(std::move(plan_input));
+  frontier.tips.clear();
+  frontier.tips.reserve(plan.selected_tips.size());
+  for (const auto& hash : plan.selected_tips) {
+    frontier.tips.emplace_back(from_bridge_hash(hash.hash));
   }
 
   return std::make_shared<DagBlock>(frontier.pivot, std::move(level), std::move(frontier.tips), std::move(trx_hashes),
-                                    block_estimation, std::move(vdf), node_secret);
+                                    plan.block_gas_estimation, std::move(vdf), node_secret);
 }
 
 bool DagBlockProposer::hasDposSnapshotForProposal(PbftPeriod propose_period) const {

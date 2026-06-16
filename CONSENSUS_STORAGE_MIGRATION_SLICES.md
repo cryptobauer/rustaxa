@@ -1003,8 +1003,9 @@ Current boundary:
   storage-owned Rust DAG runtime, and DPoS/VRF authorization now uses the shim-owned `BridgeFinalChain` runtime.
 - `DagBlockProposer` now asks the Rust TransactionManager runtime for proposer-sharded transaction packing, so the
   deterministic sender-shard filter runs inside the Rust-owned packing session before C++ materializes or estimates gas
-  for candidates. It still computes genesis gas-limit constants in C++ and keeps live VDF proving, sortition-params
-  access, and `DagBlock` object creation in the compatibility shell.
+  for candidates. Rust now also plans DAG block construction facts: legacy transaction-gas summation, tip-pruning
+  decisions, and selected-tip ordering. It still computes genesis gas-limit constants in C++ and keeps live VDF proving,
+  sortition-params access, tip metadata lookup, and `DagBlock` object creation in the compatibility shell.
 - Re-audit after Slice 18 confirms the remaining DAG proposal work is not blocked by TransactionManager account/finalized
   routing anymore; it is blocked by ownership of the DAG proposal runtime itself.
 
@@ -1020,6 +1021,9 @@ Move:
 - completed: collect DPoS/VRF facts through `BridgeFinalChain` instead of the C++ FinalChain compatibility method
 - partially complete for transaction selection: proposer shard filtering moved from the DAG proposer shim into the Rust
   TransactionManager packing session, while C++ still supplies live transaction materialization and EVM gas estimates
+- partially complete for DAG block construction: `rustaxa-consensus::dag` owns proposer tip selection, block gas
+  accumulation, and the prune/no-prune decision through `dag_proposer_plan_block_construction`; C++ still materializes
+  live tip metadata, VDF objects, transactions, and the final `DagBlock`
 - remaining: route `DagBlockProposer` and `DagManager` shim decisions through the DTO while keeping C++ block/transaction
   materialization temporary
 
@@ -1028,7 +1032,8 @@ Keep temporarily:
 - C++ DAG block object construction and network packet materialization
 - external EVM gas/state execution
 - public debug/query reads of DAG blocks
-- transaction packing, gas estimation, VDF proving, and sortition-params live runtime until their own slices move them
+- live transaction materialization, gas estimation, VDF proving, sortition-params runtime, and tip metadata lookup until
+  their own slices move them
 
 Done when:
 
@@ -1065,6 +1070,15 @@ transaction_manager_runtime_pack_session_filters_candidate_shards`, `cargo test 
 rustaxa-bridge transaction_manager`, `cmake --build /build --target dag_shim_test --parallel 12`,
 `/build/bin/dag_shim_test`, `cmake --build /build --target transaction_manager_shim_test --parallel 12`,
 `/build/bin/transaction_manager_shim_test`, `cmake --build /build --target rust_storage_tests --parallel 12`,
+`/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
+`scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
+
+Validation note: the DAG block-construction planner sub-slice moves proposer tip selection from bridge-local Rust into
+`rustaxa-consensus::dag`, adds `dag_proposer_plan_block_construction`, and routes
+`DagBlockProposer::createDagBlock` through that Rust plan for gas accumulation and tip pruning. It passes `cargo fmt
+--manifest-path rust/Cargo.toml --all --check`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus dag`,
+`cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge dag`, `cmake --build /build --target dag_shim_test
+--parallel 12`, `/build/bin/dag_shim_test`, `cmake --build /build --target rust_storage_tests --parallel 12`,
 `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
 `scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
 

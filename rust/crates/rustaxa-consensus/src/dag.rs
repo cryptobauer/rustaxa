@@ -9,6 +9,7 @@ use rustaxa_types::pbft::PbftBlockLink;
 use rustaxa_vdf::sortition::{self, LegacySortitionParams};
 use rustaxa_vdf::vdf::{Solution as VdfSolution, WesolowskiVdf};
 use rustaxa_vdf::verifier::WesolowskiVerifier;
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write;
 
@@ -174,6 +175,64 @@ pub struct DagVerifyPrecheck {
 pub struct DagTipGas {
     pub found: bool,
     pub gas_estimation: u64,
+}
+
+/// C++-materialized DAG tip metadata used by the Rust proposer planner.
+///
+/// Inputs:
+/// - `hash`: candidate tip hash in frontier order.
+/// - `found`: whether live DAG metadata was available for this candidate.
+/// - `sender`, `level`, and `gas_estimation`: live block facts used only when
+///   `found == true`.
+///
+/// Missing candidates are data, not errors, because legacy pruning skips them
+/// only when tip selection is required. When no pruning is required the block
+/// construction planner keeps frontier hashes in their original order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagProposerTipCandidate {
+    pub hash: H256,
+    pub found: bool,
+    pub sender: [u8; 20],
+    pub level: u64,
+    pub gas_estimation: u64,
+}
+
+/// Deterministic tip-selection result for DAG proposal construction.
+///
+/// `selected` contains the hashes chosen for the proposed block. `skipped_missing`
+/// counts missing candidates that were ignored during a pruning run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagProposerTipSelection {
+    pub selected: Vec<H256>,
+    pub skipped_missing: u64,
+}
+
+/// Inputs for Rust-owned DAG block construction planning.
+///
+/// The planner owns only deterministic policy: transaction gas summation,
+/// deciding whether frontier tips must be pruned, and selecting tips when
+/// pruning is required. C++ remains the temporary live object boundary for
+/// transaction objects, VDF proof objects, and final `DagBlock` construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagProposerBlockConstructionInput {
+    pub frontier_tips: Vec<DagProposerTipCandidate>,
+    pub transaction_gas_estimations: Vec<u64>,
+    pub pbft_gas_limit: u64,
+    pub dag_gas_limit: u64,
+    pub max_tips: u16,
+}
+
+/// Rust DAG block construction plan consumed by the C++ proposer shim.
+///
+/// `block_gas_estimation` preserves legacy unsigned accumulation behavior with
+/// wrapping addition. `pruned_tips` tells the shim whether the selected-tip list
+/// came from the pruning policy or from the original frontier order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagProposerBlockConstructionPlan {
+    pub selected_tips: Vec<H256>,
+    pub block_gas_estimation: u64,
+    pub pruned_tips: bool,
+    pub skipped_missing_tips: u64,
 }
 
 /// Inputs for deterministic transaction availability checks in
@@ -1329,6 +1388,118 @@ pub fn validate_dag_verify_gas(input: DagVerifyGasInput) -> DagVerifyGas {
     DagVerifyGas {
         continue_validation: reject_code.is_none(),
         reject_code: reject_code.unwrap_or(0),
+    }
+}
+
+/// Selects DAG proposer tips from caller-provided tip metadata.
+///
+/// The planner preserves legacy proposer policy:
+/// - missing candidates are skipped and counted
+/// - found candidates from unique proposers are considered before duplicate
+///   proposer candidates
+/// - each group is ordered by descending level with stable input-order ties
+/// - selection stops before exceeding `gas_limit` or `max_tips`
+pub fn plan_dag_proposer_tip_selection(
+    candidates: Vec<DagProposerTipCandidate>,
+    gas_limit: u64,
+    max_tips: u16,
+) -> DagProposerTipSelection {
+    let skipped_missing = candidates
+        .iter()
+        .filter(|candidate| !candidate.found)
+        .count() as u64;
+    let found = candidates
+        .into_iter()
+        .enumerate()
+        .filter(|(_, candidate)| candidate.found)
+        .collect::<Vec<_>>();
+
+    let mut proposer_counts = BTreeMap::<[u8; 20], usize>::new();
+    for (_, candidate) in &found {
+        *proposer_counts.entry(candidate.sender).or_default() += 1;
+    }
+
+    let mut unique = Vec::new();
+    let mut duplicate = Vec::new();
+    for candidate in found {
+        if proposer_counts
+            .get(&candidate.1.sender)
+            .copied()
+            .unwrap_or_default()
+            > 1
+        {
+            duplicate.push(candidate);
+        } else {
+            unique.push(candidate);
+        }
+    }
+
+    unique.sort_by_key(|(position, candidate)| (Reverse(candidate.level), *position));
+    duplicate.sort_by_key(|(position, candidate)| (Reverse(candidate.level), *position));
+
+    let mut selected = Vec::new();
+    let mut gas_used = 0_u64;
+    for (_, candidate) in unique.into_iter().chain(duplicate) {
+        gas_used = gas_used.saturating_add(candidate.gas_estimation);
+        if gas_used > gas_limit || selected.len() == usize::from(max_tips) {
+            break;
+        }
+        selected.push(candidate.hash);
+    }
+
+    DagProposerTipSelection {
+        selected,
+        skipped_missing,
+    }
+}
+
+/// Plans deterministic DAG block construction facts for the proposer runtime.
+///
+/// C++ supplies live frontier-tip metadata and transaction gas estimates. Rust
+/// owns the legacy gas summation and tip-pruning decision so the proposer shim
+/// no longer decides these consensus facts around C++ storage/runtime objects.
+/// `dag_gas_limit == 0` is treated as requiring tip pruning instead of
+/// panicking on division by zero; valid chain configs never use zero here.
+pub fn plan_dag_proposer_block_construction(
+    input: DagProposerBlockConstructionInput,
+) -> DagProposerBlockConstructionPlan {
+    let block_gas_estimation = input
+        .transaction_gas_estimations
+        .iter()
+        .fold(0_u64, |sum, gas| sum.wrapping_add(*gas));
+
+    let frontier_tip_count = input.frontier_tips.len();
+    let max_tips = usize::from(input.max_tips);
+    let pbft_dag_tip_capacity = input
+        .pbft_gas_limit
+        .checked_div(input.dag_gas_limit)
+        .unwrap_or(0);
+    let pruned_tips = frontier_tip_count > max_tips
+        || (frontier_tip_count as u64).saturating_add(1) > pbft_dag_tip_capacity;
+
+    if pruned_tips {
+        let selection = plan_dag_proposer_tip_selection(
+            input.frontier_tips,
+            input.pbft_gas_limit.wrapping_sub(block_gas_estimation),
+            input.max_tips,
+        );
+        return DagProposerBlockConstructionPlan {
+            selected_tips: selection.selected,
+            block_gas_estimation,
+            pruned_tips: true,
+            skipped_missing_tips: selection.skipped_missing,
+        };
+    }
+
+    DagProposerBlockConstructionPlan {
+        selected_tips: input
+            .frontier_tips
+            .into_iter()
+            .map(|candidate| candidate.hash)
+            .collect(),
+        block_gas_estimation,
+        pruned_tips: false,
+        skipped_missing_tips: 0,
     }
 }
 
@@ -3883,6 +4054,128 @@ mod tests {
 
         assert!(result.continue_validation);
         assert_eq!(result.reject_code, 0);
+    }
+
+    #[test]
+    fn dag_proposer_tip_selection_skips_missing_and_prefers_unique_higher_levels() {
+        let candidates = vec![
+            DagProposerTipCandidate {
+                hash: h(1),
+                found: true,
+                sender: [0xA1; 20],
+                level: 1,
+                gas_estimation: 100,
+            },
+            DagProposerTipCandidate {
+                hash: h(2),
+                found: false,
+                sender: [0; 20],
+                level: 0,
+                gas_estimation: 0,
+            },
+            DagProposerTipCandidate {
+                hash: h(3),
+                found: true,
+                sender: [0xB1; 20],
+                level: 2,
+                gas_estimation: 100,
+            },
+            DagProposerTipCandidate {
+                hash: h(4),
+                found: true,
+                sender: [0xB1; 20],
+                level: 3,
+                gas_estimation: 100,
+            },
+            DagProposerTipCandidate {
+                hash: h(5),
+                found: true,
+                sender: [0xC1; 20],
+                level: 1,
+                gas_estimation: 100,
+            },
+        ];
+
+        let selection = plan_dag_proposer_tip_selection(candidates, 250, 10);
+
+        assert_eq!(selection.skipped_missing, 1);
+        assert_eq!(selection.selected, vec![h(1), h(5)]);
+    }
+
+    #[test]
+    fn dag_proposer_block_plan_keeps_unpruned_frontier_and_wraps_transaction_gas() {
+        let plan = plan_dag_proposer_block_construction(DagProposerBlockConstructionInput {
+            frontier_tips: vec![
+                DagProposerTipCandidate {
+                    hash: h(1),
+                    found: false,
+                    sender: [0; 20],
+                    level: 0,
+                    gas_estimation: 0,
+                },
+                DagProposerTipCandidate {
+                    hash: h(2),
+                    found: true,
+                    sender: [0xA1; 20],
+                    level: 4,
+                    gas_estimation: 99,
+                },
+            ],
+            transaction_gas_estimations: vec![u64::MAX, 3],
+            pbft_gas_limit: 1_000,
+            dag_gas_limit: 100,
+            max_tips: 16,
+        });
+
+        assert_eq!(plan.selected_tips, vec![h(1), h(2)]);
+        assert_eq!(plan.block_gas_estimation, 2);
+        assert!(!plan.pruned_tips);
+        assert_eq!(plan.skipped_missing_tips, 0);
+    }
+
+    #[test]
+    fn dag_proposer_block_plan_prunes_with_remaining_pbft_gas() {
+        let plan = plan_dag_proposer_block_construction(DagProposerBlockConstructionInput {
+            frontier_tips: vec![
+                DagProposerTipCandidate {
+                    hash: h(1),
+                    found: true,
+                    sender: [0xA1; 20],
+                    level: 1,
+                    gas_estimation: 100,
+                },
+                DagProposerTipCandidate {
+                    hash: h(2),
+                    found: false,
+                    sender: [0; 20],
+                    level: 0,
+                    gas_estimation: 0,
+                },
+                DagProposerTipCandidate {
+                    hash: h(3),
+                    found: true,
+                    sender: [0xB1; 20],
+                    level: 5,
+                    gas_estimation: 400,
+                },
+                DagProposerTipCandidate {
+                    hash: h(4),
+                    found: true,
+                    sender: [0xC1; 20],
+                    level: 4,
+                    gas_estimation: 200,
+                },
+            ],
+            transaction_gas_estimations: vec![600],
+            pbft_gas_limit: 1_000,
+            dag_gas_limit: 250,
+            max_tips: 16,
+        });
+
+        assert_eq!(plan.selected_tips, vec![h(3)]);
+        assert_eq!(plan.block_gas_estimation, 600);
+        assert!(plan.pruned_tips);
+        assert_eq!(plan.skipped_missing_tips, 1);
     }
 
     fn record(hash: u64, pivot: u64, tips: &[u64], level: u64, difficulty: u64) -> DagManagerBlock {

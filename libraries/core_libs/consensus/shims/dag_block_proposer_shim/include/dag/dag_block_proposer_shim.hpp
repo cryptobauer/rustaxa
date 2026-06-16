@@ -26,9 +26,9 @@ class FinalChain;
  * Rust-mode DAG block proposer facade.
  *
  * The class preserves the public `DagBlockProposer` API while moving deterministic proposal facts toward Rust. C++ still
- * owns worker-thread orchestration, live transaction selection, tip filtering, and final `DagBlock` construction. Rust
- * owns canonical proposal VRF/VDF message byte construction through the bridge and supplies DPoS/VDF authorization facts
- * through the Rust-backed FinalChain shim.
+ * owns worker-thread orchestration, live transaction selection, live tip metadata materialization, and final `DagBlock`
+ * construction. Rust owns canonical proposal VRF/VDF message byte construction, proposer tip-pruning/block-construction
+ * planning, and DPoS/VDF authorization facts through the Rust-backed FinalChain shim.
  *
  * Edge behavior:
  * - proposal returns `false` when the transaction pool, DPoS facts, VRF key, or vote denominator are unavailable
@@ -109,8 +109,8 @@ class DagBlockProposer {
    * Creates a signed DAG block from already selected proposal data.
    *
    * Inputs are the current frontier, computed level, chosen transactions and gas estimates, completed VDF sortition, and
-   * node signing secret. The returned block uses existing C++ `DagBlock` construction while deterministic byte inputs
-   * feeding the VDF are supplied by Rust.
+   * node signing secret. Rust plans the block gas estimate and selected tips, while the returned block still uses
+   * existing C++ `DagBlock` construction.
    */
   std::shared_ptr<DagBlock> createDagBlock(DagFrontier&& frontier, level_t level, const SharedTransactions& trxs,
                                            std::vector<uint64_t>&& estimations, vdf_sortition::VdfSortition&& vdf,

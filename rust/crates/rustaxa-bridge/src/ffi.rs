@@ -3387,6 +3387,23 @@ pub mod rustaxa_ffi {
         skipped_missing: u64,
     }
 
+    /// C++-originated DAG block construction facts for Rust proposer planning.
+    struct DagProposerBlockConstructionInput {
+        frontier_tips: Vec<DagProposerTipCandidate>,
+        transaction_gas_estimations: Vec<u64>,
+        pbft_gas_limit: u64,
+        dag_gas_limit: u64,
+        max_tips: u16,
+    }
+
+    /// Rust producer-side DAG block construction plan.
+    struct DagProposerBlockConstructionPlan {
+        selected_tips: Vec<DagHash>,
+        block_gas_estimation: u64,
+        pruned_tips: bool,
+        skipped_missing_tips: u64,
+    }
+
     /// Rust VDF and DPoS authorization decision.
     struct DagVerifyVdfDposDecision {
         continue_validation: bool,
@@ -3924,6 +3941,9 @@ pub mod rustaxa_ffi {
             gas_limit: u64,
             max_tips: u16,
         ) -> DagProposerTipSelection;
+        pub fn dag_proposer_plan_block_construction(
+            input: DagProposerBlockConstructionInput,
+        ) -> DagProposerBlockConstructionPlan;
         pub fn dag_verify_authorization(
             input: DagVerifyAuthorizationInput,
         ) -> DagVerifyAuthorizationResult;
