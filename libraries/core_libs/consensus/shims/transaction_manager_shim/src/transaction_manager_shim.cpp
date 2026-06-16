@@ -314,44 +314,23 @@ class TransactionManagerRustShimAccess {
     return fact;
   }
 
-  static rustaxa::TransactionManagerFinalChainAdmissionFact buildFinalChainAdmissionFact(
-      const TransactionManager& manager, const std::array<uint8_t, 20>& sender, const trx_hash_t& tx_hash) {
-    rustaxa::TransactionManagerFinalChainAdmissionFact fact;
-    fact.account_found = false;
-    fact.account_nonce = {};
-    fact.account_balance = {};
-    fact.finalized_period_known = false;
-    fact.finalized_period = 0;
-
-    const auto account = manager.final_chain_->getAccount(fromBridgeAddress(sender));
-    if (account) {
-      fact.account_found = true;
-      fact.account_nonce = toBridgeU256(account->nonce);
-      fact.account_balance = toBridgeU256(account->balance);
-    }
-    const auto location = manager.final_chain_->transactionLocation(tx_hash);
-    if (location) {
-      fact.finalized_period_known = true;
-      fact.finalized_period = location->period;
-    }
-    return fact;
-  }
-
   static rustaxa::TransactionManagerAdmissionCommandReport executeValidatedAdmissionReport(
       TransactionManager& manager, const rustaxa::LegacyTransactionInspection& envelope,
       const std::shared_ptr<Transaction>& tx, bool insert_non_proposable) {
     if (envelope.hash != toBridgeHash(tx->getHash())) {
       throw std::runtime_error("RUST_TX_MANAGER_ADMISSION_ENVELOPE_FAILED: Rust transaction envelope hash mismatch");
     }
+    if (!manager.final_chain_) {
+      throw std::runtime_error("RUST_TX_MANAGER_ADMISSION_EXECUTION_FAILED: FinalChain is required for admission facts");
+    }
 
     std::unique_lock transactions_lock(manager.transactions_mutex_);
     const auto fact = buildValidatedInsertRuntimeFact(manager, envelope, insert_non_proposable);
-    const auto final_chain_fact = buildFinalChainAdmissionFact(manager, fact.sender, tx->getHash());
     return [&]() {
       try {
         return manager.runtime_
-            ->transaction_manager_runtime_execute_transaction_admission_with_final_chain_facts_command_report(
-                fact, final_chain_fact,
+            ->transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report(
+                manager.final_chain_->rustFinalChainForRust(), fact,
                 toRuntimeQueueInsertInput(envelope, false, manager.final_chain_->lastBlockNumber()));
       } catch (const std::exception& e) {
         throw std::runtime_error(std::string("RUST_TX_MANAGER_ADMISSION_EXECUTION_FAILED: ") + e.what());
@@ -374,13 +353,12 @@ class TransactionManagerRustShimAccess {
 
     const auto verify_fact = buildVerifyTransactionFact(manager, envelope);
     const auto admission_fact = buildValidatedInsertRuntimeFact(manager, envelope, false);
-    const auto final_chain_fact = buildFinalChainAdmissionFact(manager, admission_fact.sender, tx->getHash());
     std::unique_lock transactions_lock(manager.transactions_mutex_);
     return [&]() {
       try {
         return manager.runtime_
-            ->transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_facts_command_report(
-                verify_fact, admission_fact, final_chain_fact,
+            ->transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_command_report(
+                manager.final_chain_->rustFinalChainForRust(), verify_fact, admission_fact,
                 toRuntimeQueueInsertInput(envelope, false, manager.final_chain_->lastBlockNumber()));
       } catch (const std::exception& e) {
         throw std::runtime_error(std::string("RUST_TX_MANAGER_ADMISSION_EXECUTION_FAILED: ") + e.what());
