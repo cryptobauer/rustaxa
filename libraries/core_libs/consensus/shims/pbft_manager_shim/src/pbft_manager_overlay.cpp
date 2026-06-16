@@ -1347,6 +1347,7 @@ void PbftManager::initialState() {
 #ifdef RUSTAXA_ENABLE_PROPOSED_BLOCKS
   proposed_blocks_.restoreFromStorage();
 #else
+  // RUSTAXA_PBFT_LEGACY_ONLY: Rust mode restores proposed blocks through ProposedBlocks::restoreFromStorage().
   for (const auto &block : db_->getProposedPbftBlocks()) {
     proposed_blocks_.pushProposedPbftBlock(block, false);
   }
@@ -3620,6 +3621,8 @@ PbftManager::PbftSyncEgressPayload PbftManager::getPbftSyncEgressPayload(PbftPer
 }
 
 void PbftManager::setPbftSyncSnapshotCreationEnabled(bool enabled) {
+  // RUSTAXA_PBFT_LIFECYCLE_COMPAT: snapshot toggling is an app/storage-shell lifecycle control, not a consensus
+  // storage read/write route.
   if (enabled) {
     db_->enableSnapshots();
     return;

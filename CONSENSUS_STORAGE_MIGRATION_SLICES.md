@@ -1477,7 +1477,7 @@ the audit evidence above contradicts closure, so Slices 8 and 9 remain open.
 Goal: remove the remaining direct `DbStorage` API calls from the PBFT manager overlay or reclassify snapshot toggles as
 non-consensus lifecycle compatibility.
 
-Status: in progress. Round/Step cursor persistence no longer calls `DbStorage::savePbftMgrField` from the PBFT manager
+Status: complete for Rust-mode consensus storage routes. Round/Step cursor persistence no longer calls `DbStorage::savePbftMgrField` from the PBFT manager
 overlay. `rustaxa-consensus::pbft_manager` now owns a cursor-field storage API that only accepts the Round and Step
 fields, `rustaxa-bridge` exposes it as a runtime method over the PBFT manager's owned Rust storage handle, and the C++
 overlay updates `round_` / `step_` only after the Rust storage write succeeds. Dynamic-lambda field writes are
@@ -1488,6 +1488,9 @@ by `rustaxa-consensus::dag` and `rustaxa-consensus::pbft_chain`, so the overlay 
 helper backed by `rustaxa-consensus::pbft_manager`; the overlay updates the live `cert_voted_block_for_round_` sidecar
 only after the Rust storage write succeeds. Own pillar vote rebroadcast now reads through the PBFT-manager runtime's
 Rust storage handle and materializes a temporary C++ `PillarVote` only for the existing network gossip boundary.
+The remaining `db_` references are classified: runtime construction extracts the shim-owned Rust storage handle,
+proposed-block restore is legacy-only in the `RUSTAXA_ENABLE_PROPOSED_BLOCKS=0` branch, and snapshot enable/disable is
+documented app/storage-shell lifecycle compatibility.
 
 Move/remove:
 
@@ -1501,18 +1504,18 @@ Move/remove:
   direct `db_->saveCertVotedBlockInRound`
 - completed: own pillar vote rebroadcast reads through the PBFT manager runtime's Rust storage handle instead of direct
   `db_->getOwnPillarBlockVote`
-- keep the non-Rust proposed-block startup restore branch as legacy-only while Rust mode uses
+- completed: keep the non-Rust proposed-block startup restore branch as legacy-only while Rust mode uses
   `proposed_blocks_.restoreFromStorage()`
-- keep snapshot enable/disable as app lifecycle compatibility only if documented with an explicit marker and excluded
-  from consensus storage closure
+- completed: keep snapshot enable/disable as app lifecycle compatibility with an explicit marker and exclude it from
+  consensus storage closure
 
-Remaining PBFT manager overlay storage routes after the own pillar vote rebroadcast sub-slice:
+Residual PBFT manager overlay `db_` categories after Slice 24:
 
-- runtime construction still extracts `db_->rustStorage()` as the Rust storage-handle owner
+- runtime construction extracts `db_->rustStorage()` as the Rust storage-handle owner
 - non-Rust proposed-block restoration still calls `db_->getProposedPbftBlocks` in the `RUSTAXA_ENABLE_PROPOSED_BLOCKS`
-  fallback branch
-- snapshot enable/disable still calls `db_->enableSnapshots` / `db_->disableSnapshots` and needs lifecycle
-  compatibility classification
+  fallback branch and is marked `RUSTAXA_PBFT_LEGACY_ONLY`
+- snapshot enable/disable still calls `db_->enableSnapshots` / `db_->disableSnapshots` and is marked
+  `RUSTAXA_PBFT_LIFECYCLE_COMPAT`
 
 Done when:
 
@@ -1547,6 +1550,12 @@ Validation note: the own pillar vote rebroadcast sub-slice passes `cargo fmt --m
 /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
 `scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff
 --check`.
+
+Validation note: the Slice 24 closure classification sub-slice passes `cargo fmt --manifest-path rust/Cargo.toml --all
+--check`, `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`, `cmake --build /build --target
+pbft_manager_test --parallel 12`, `cmake --build /build --target rust_storage_tests --parallel 12`,
+`/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
+`scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
 
 ## Slice 25: Rewards Stats Storage Runtime Closure
 
