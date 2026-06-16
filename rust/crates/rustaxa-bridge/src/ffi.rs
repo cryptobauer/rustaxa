@@ -63,7 +63,7 @@ pub struct BridgeFinalChainExecutionSession {
     pub state: rustaxa_consensus::FinalChainExecutionSession,
 }
 
-pub struct BridgeGasPricer(pub Mutex<GasPriceOracle>);
+pub struct BridgeGasPricer(pub Mutex<GasPriceOracle>, pub Option<Arc<Storage>>);
 
 pub struct BridgeDagGraph(pub DagGraph);
 
@@ -4259,6 +4259,10 @@ pub mod rustaxa_ffi {
         type BridgeGasPricer;
 
         pub fn create_gas_pricer(config: GasPricerConfig) -> Result<Box<BridgeGasPricer>>;
+        pub fn create_gas_pricer_from_storage(
+            config: GasPricerConfig,
+            storage: &BridgeStorage,
+        ) -> Result<Box<BridgeGasPricer>>;
         pub fn gas_pricer_bid(self: &BridgeGasPricer) -> Result<[u8; 32]>;
         pub fn gas_pricer_bid_from_pool(
             self: &BridgeGasPricer,

@@ -1,11 +1,9 @@
 #pragma once
 
 #include <array>
-#include <exception>
-#include <optional>
 #include <memory>
+#include <optional>
 #include <shared_mutex>
-#include <thread>
 #include <vector>
 
 #include "config/genesis.hpp"
@@ -57,17 +55,12 @@ class GasPricer {
   void update(const SharedTransactions& trxs);
 
  private:
-  void init(const std::shared_ptr<DbStorage>& db);
-  void rethrowInitError() const;
-
   const bool kIsLightNode;
   const bool kBlocksGasPricer;
   std::shared_ptr<TransactionManager> trx_mgr_;
 
   mutable std::shared_mutex mutex_;
-  std::unique_ptr<std::thread> init_daemon_;
   std::optional<::rust::Box<rustaxa::BridgeGasPricer>> gas_pricer_;
-  std::exception_ptr init_error_;
 };
 
 }  // namespace taraxa

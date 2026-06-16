@@ -54,34 +54,18 @@ GasPricer::GasPricer(const GenesisConfig& config, bool is_light_node, bool is_bl
                      std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<DbStorage> db)
     : kIsLightNode(is_light_node), kBlocksGasPricer(is_blocks_gas_pricer), trx_mgr_(std::move(trx_mgr)) {
   assert(config.gas_price.percentile <= 100);
-  gas_pricer_ = rustaxa::create_gas_pricer(to_bridge_config(config, kIsLightNode, kBlocksGasPricer));
-
   if (kBlocksGasPricer && db) {
-    init_daemon_ = std::make_unique<std::thread>([this, db_ = std::move(db)]() { init(db_); });
+    gas_pricer_ = rustaxa::create_gas_pricer_from_storage(to_bridge_config(config, kIsLightNode, kBlocksGasPricer),
+                                                          db->rustStorage());
+  } else {
+    gas_pricer_ = rustaxa::create_gas_pricer(to_bridge_config(config, kIsLightNode, kBlocksGasPricer));
   }
 }
 
-GasPricer::~GasPricer() {
-  if (init_daemon_ && init_daemon_->joinable()) {
-    init_daemon_->join();
-  }
-}
-
-void GasPricer::init(const std::shared_ptr<DbStorage>& db) {
-  if (!db || !kBlocksGasPricer) {
-    return;
-  }
-  try {
-    gas_pricer_.value()->gas_pricer_init_from_storage(db->rustStorage());
-  } catch (...) {
-    std::unique_lock lock(mutex_);
-    init_error_ = std::current_exception();
-  }
-}
+GasPricer::~GasPricer() = default;
 
 u256 GasPricer::bid() const {
   std::shared_lock lock(mutex_);
-  rethrowInitError();
   if (!gas_pricer_) {
     return 0;
   }
@@ -102,14 +86,7 @@ void GasPricer::update(const SharedTransactions& trxs) {
     return;
   }
   std::unique_lock lock(mutex_);
-  rethrowInitError();
   gas_pricer_.value()->gas_pricer_update(extract_tx_gas_prices(trxs));
-}
-
-void GasPricer::rethrowInitError() const {
-  if (init_error_) {
-    std::rethrow_exception(init_error_);
-  }
 }
 
 }  // namespace taraxa

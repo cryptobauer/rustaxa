@@ -1115,31 +1115,35 @@ transaction_manager`, `cmake --build /build --target transaction_manager_shim_te
 Goal: remove the remaining gas-pricer `DbStorage` constructor/init dependency by making the Rust gas-pricer runtime own
 or receive native Rust storage at construction time.
 
-Status: planned. The deterministic finalized-history restoration already lives in Rust; this slice removes the remaining
-C++ handle plumbing.
+Status: complete. The deterministic finalized-history restoration already lived in Rust; this slice removed the
+remaining C++ init-time handle plumbing by constructing a storage-owned Rust gas-pricer runtime.
 
 Current boundary:
 
-- `GasPricer::init` still receives `std::shared_ptr<DbStorage>` and calls `db->rustStorage()`.
-- The Rust gas-pricer already loads finalized history through `rustaxa-consensus::gas_pricer` over Rust storage.
+- `BridgeGasPricer` can now retain a cloned Rust `Storage` handle and restore finalized gas-price history during
+  construction.
+- `GasPricer` no longer has an async `init(std::shared_ptr<DbStorage>)` path and no longer calls `db->rustStorage()` from
+  a separate init method.
+- The Rust gas-pricer loads finalized history through `rustaxa-consensus::gas_pricer` over Rust storage.
 
 Move:
 
-- introduce a gas-pricer bridge/runtime constructor that captures the Rust storage owner once
-- change the shim thread/init path to call a storage-owned Rust runtime method instead of passing `DbStorage`
-- remove `GasPricer::init(const std::shared_ptr<DbStorage>&)` or reduce it to a constructor-only compatibility wrapper
-- tighten the storage-boundary guard once no new gas-pricer `DbStorage` additions are needed
+- completed: introduced `create_gas_pricer_from_storage`, which restores history and keeps the Rust storage owner alive
+- completed: changed the shim constructor to select the storage-owned Rust constructor when block-history pricing is
+  enabled and storage is provided
+- completed: removed `GasPricer::init(const std::shared_ptr<DbStorage>&)` and the init thread/error replay path
+- not needed yet: storage-boundary guard tightening; the remaining `DbStorage` mention is constructor compatibility
 
 Keep temporarily:
 
 - C++ gas-price oracle lock and transaction-pool gas-price calculation
-- public C++ constructor shape if callers still pass `DbStorage`
+- public C++ constructor shape still accepts `DbStorage`, but only to expose the Rust storage handle at construction
 
 Done when:
 
-- gas-pricer Rust-mode init no longer calls `db->rustStorage()`
+- gas-pricer Rust-mode init no longer calls `db->rustStorage()` outside constructor-time bridge creation
 - Slice 8 can remove gas-pricer runtime handle initialization from its open read-surface list
-- Slice 9 can classify remaining gas-pricer `DbStorage` mention, if any, as constructor compatibility only
+- Slice 9 can classify the remaining gas-pricer `DbStorage` mention as constructor compatibility only
 
 Validation:
 
@@ -1148,6 +1152,13 @@ Validation:
 - `cmake --build /build --target gas_pricer_shim_test --parallel 12 && /build/bin/gas_pricer_shim_test`
 - `cmake --build /build --target gas_pricer_test --parallel 12 && /build/bin/gas_pricer_test`
 - `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+
+Validation note: Slice 19 passes `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus gas_pricer`, `cargo
+test --manifest-path rust/Cargo.toml -p rustaxa-bridge gas_pricer`, `cmake --build /build --target
+gas_pricer_shim_test --parallel 12`, `/build/bin/gas_pricer_shim_test`, `cmake --build /build --target
+gas_pricer_test --parallel 12`, `/build/bin/gas_pricer_test`, `cmake --build /build --target rust_storage_tests
+--parallel 12`, `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`, and
+`scripts/rewrite_storage_boundary_guard.sh`.
 
 ## Slice 20: PBFT Manager Runtime Storage Handle Consolidation
 

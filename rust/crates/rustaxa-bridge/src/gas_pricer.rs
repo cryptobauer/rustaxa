@@ -21,9 +21,30 @@ pub fn create_gas_pricer(config: GasPricerConfig) -> Result<Box<BridgeGasPricer>
         is_light_node: config.is_light_node,
         blocks_gas_pricer: config.blocks_gas_pricer,
     };
-    Ok(Box::new(BridgeGasPricer(Mutex::new(GasPriceOracle::new(
-        domain_config,
-    )?))))
+    Ok(Box::new(BridgeGasPricer(
+        Mutex::new(GasPriceOracle::new(domain_config)?),
+        None,
+    )))
+}
+
+/// Creates a Rust gas-price oracle that owns the Rust storage handle used for
+/// finalized-history restoration.
+///
+/// The bridge clones the `Arc<Storage>` from `BridgeStorage`, restores history
+/// before returning the opaque handle, and keeps that storage alive with the
+/// gas-pricer runtime. C++ can then construct the Rust-mode `GasPricer` without
+/// retaining or passing `DbStorage` into a separate init step.
+pub fn create_gas_pricer_from_storage(
+    config: GasPricerConfig,
+    storage: &BridgeStorage,
+) -> Result<Box<BridgeGasPricer>> {
+    let pricer = create_gas_pricer(config)?;
+    {
+        let mut oracle = pricer.lock()?;
+        oracle.restore_from_storage(storage.0.as_ref())?;
+    }
+    let BridgeGasPricer(oracle, _) = *pricer;
+    Ok(Box::new(BridgeGasPricer(oracle, Some(storage.0.clone()))))
 }
 
 impl BridgeGasPricer {
@@ -61,6 +82,7 @@ impl BridgeGasPricer {
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, GasPriceOracle>> {
+        let _storage_owner = &self.1;
         self.0
             .lock()
             .map_err(|_| anyhow!("gas pricer mutex poisoned"))
