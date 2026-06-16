@@ -1780,7 +1780,11 @@ bool PbftManager::placeStateActionVote(PbftVoteTypes vote_type, PbftPeriod perio
   }
 
   if (next_vote_status.has_value()) {
-    rustaxa::apply_pbft_manager_next_voted_status(db_->rustStorage(), static_cast<uint8_t>(*next_vote_status));
+    if (!pbft_manager_runtime_.has_value()) {
+      throw std::runtime_error("PBFT manager runtime is required for next-voted status persistence");
+    }
+    rustaxa::pbft_manager_runtime_apply_next_voted_status(*pbft_manager_runtime_.value(),
+                                                          static_cast<uint8_t>(*next_vote_status));
     if (*next_vote_status == PbftMgrStatus::NextVotedSoftValue) {
       already_next_voted_value_ = true;
     } else if (*next_vote_status == PbftMgrStatus::NextVotedNullBlockHash) {

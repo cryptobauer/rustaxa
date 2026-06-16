@@ -324,6 +324,31 @@ pub fn pbft_manager_runtime_apply_executed_block_reset(
     ))
 }
 
+/// Applies a successful next-vote PBFT manager status through runtime-owned storage.
+///
+/// Inputs:
+/// - `runtime`: long-lived Rust PBFT manager runtime with its storage handle.
+/// - `status`: stable PBFT manager status id for next-voted soft value or
+///   next-voted null-block hash.
+///
+/// Outputs:
+/// - Returns success after the status row is durably set to `true` and the
+///   runtime snapshot is updated.
+///
+/// Invariants and edge behavior:
+/// - Vote generation, gossip, and temporary C++ live mirrors remain shim
+///   executor side effects until the state-action executor moves fully to Rust.
+/// - Unsupported status ids are rejected by `rustaxa-consensus`; this is not a
+///   generic PBFT manager status write bridge.
+pub fn pbft_manager_runtime_apply_next_voted_status(
+    runtime: &mut BridgePbftManagerRuntime,
+    status: u8,
+) -> anyhow::Result<()> {
+    apply_next_voted_status_storage(runtime.storage.as_ref(), status)?;
+    runtime.state.apply_committed_next_voted_status(status);
+    Ok(())
+}
+
 /// Creates an owned PBFT manager runtime session from one daemon-tick fact bundle.
 pub fn create_pbft_manager_runtime_session(
     fact: FfiPbftManagerRuntimeTickFact,
@@ -391,28 +416,6 @@ pub fn plan_pbft_manager_transition(
     fact: FfiPbftManagerTransitionFact,
 ) -> FfiPbftManagerTransitionPlan {
     plan_domain_pbft_manager_transition(fact.into()).into()
-}
-
-/// Persists a successful next-vote PBFT manager status through consensus-owned storage.
-///
-/// Inputs:
-/// - `storage`: shared Rust storage bridge handle.
-/// - `status`: stable PBFT manager status id for next-voted soft value or
-///   next-voted null-block hash.
-///
-/// Outputs:
-/// - Returns success after the status row is durably set to `true`.
-///
-/// Invariants and edge behavior:
-/// - Vote generation, gossip, and live C++ flags remain shim executor
-///   side-effects.
-/// - Unsupported status ids are rejected by `rustaxa-consensus`; this is not a
-///   generic PBFT manager status write bridge.
-pub fn apply_pbft_manager_next_voted_status(
-    storage: &BridgeStorage,
-    status: u8,
-) -> anyhow::Result<()> {
-    apply_next_voted_status_storage(storage.0.as_ref(), status)
 }
 
 /// Applies Rust-owned PBFT manager transition persistence in one committed batch.
@@ -1316,21 +1319,31 @@ mod tests {
     }
 
     #[test]
-    fn bridge_persists_next_voted_status_through_consensus_storage() {
+    fn bridge_runtime_persists_next_voted_status_through_consensus_storage() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_next_voted_status");
         {
             let storage =
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
+            storage
+                .save_pbft_mgr_field(2, 1_500)
+                .expect("lambda seed should persist");
+            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
+                .expect("runtime should restore");
 
-            apply_pbft_manager_next_voted_status(&storage, 2)
+            pbft_manager_runtime_apply_next_voted_status(&mut runtime, 2)
                 .expect("soft next-voted status should persist");
-            apply_pbft_manager_next_voted_status(&storage, 3)
+            pbft_manager_runtime_apply_next_voted_status(&mut runtime, 3)
                 .expect("null next-voted status should persist");
-            let err =
-                apply_pbft_manager_next_voted_status(&storage, PBFT_MGR_STATUS_EXECUTED_BLOCK)
-                    .expect_err("generic manager status should reject");
+            let err = pbft_manager_runtime_apply_next_voted_status(
+                &mut runtime,
+                PBFT_MGR_STATUS_EXECUTED_BLOCK,
+            )
+            .expect_err("generic manager status should reject");
 
+            let snapshot = pbft_manager_runtime_snapshot(&runtime);
+            assert!(snapshot.already_next_voted_value);
+            assert!(snapshot.already_next_voted_null);
             assert!(storage.get_pbft_mgr_status(2).unwrap());
             assert!(storage.get_pbft_mgr_status(3).unwrap());
             assert_eq!(

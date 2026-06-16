@@ -2087,6 +2087,37 @@ impl PbftManagerRuntime {
         self.snapshot.executed_pbft_block = false;
         self.snapshot.error_code.clear();
     }
+
+    /// Records a committed next-vote status after Rust storage persistence.
+    ///
+    /// Inputs:
+    /// - `status`: stable PBFT manager status id for the next-voted soft value
+    ///   or next-voted null-block-hash flag.
+    ///
+    /// Outputs:
+    /// - Updates the matching runtime snapshot flag and clears the restore
+    ///   error code.
+    ///
+    /// Invariants and edge behavior:
+    /// - Callers must persist the matching status row before invoking this
+    ///   method, so the long-lived runtime never advances ahead of durable
+    ///   storage.
+    /// - Unsupported status ids are ignored here because
+    ///   `apply_next_voted_status_storage` rejects them before the bridge calls
+    ///   this method.
+    pub fn apply_committed_next_voted_status(&mut self, status: u8) {
+        match status {
+            PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE => {
+                self.snapshot.already_next_voted_value = true;
+            }
+            PBFT_MGR_STATUS_NEXT_VOTED_NULL_BLOCK_HASH => {
+                self.snapshot.already_next_voted_null = true;
+            }
+            _ => return,
+        }
+        self.snapshot.status = PbftManagerStartupRestoreStatus::Ready;
+        self.snapshot.error_code.clear();
+    }
 }
 
 fn reject_startup_restore(error_code: &str) -> PbftManagerRuntimeSnapshot {

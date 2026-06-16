@@ -4001,6 +4001,10 @@ pub mod rustaxa_ffi {
         pub fn pbft_manager_runtime_apply_executed_block_reset(
             runtime: &mut BridgePbftManagerRuntime,
         ) -> Result<PbftManagerTransitionRuntimeApplyResult>;
+        pub fn pbft_manager_runtime_apply_next_voted_status(
+            runtime: &mut BridgePbftManagerRuntime,
+            status: u8,
+        ) -> Result<()>;
         type BridgePbftManagerRuntimeSession;
         pub fn create_pbft_manager_runtime_session(
             fact: PbftManagerRuntimeTickFact,
@@ -4020,10 +4024,6 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_manager_transition(
             fact: PbftManagerTransitionFact,
         ) -> PbftManagerTransitionPlan;
-        pub fn apply_pbft_manager_next_voted_status(
-            storage: &BridgeStorage,
-            status: u8,
-        ) -> Result<()>;
         pub fn apply_pbft_manager_transition_storage_write(
             storage: &BridgeStorage,
             plan: PbftManagerTransitionPlan,

@@ -1165,7 +1165,9 @@ gas_pricer_test --parallel 12`, `/build/bin/gas_pricer_test`, `cmake --build /bu
 Goal: stop PBFT manager overlay methods from repeatedly extracting `db_->rustStorage()` and move storage ownership into
 the long-lived Rust PBFT manager runtime.
 
-Status: planned. This is a compatibility-shell shrink slice for Slice 9, not a protocol rewrite.
+Status: in progress. The next-voted-status write now runs through the long-lived PBFT manager runtime's Rust storage
+handle instead of taking `db_->rustStorage()` at the shim call site. Startup replay and finalization staging still need
+runtime-owned wrappers before this slice is complete.
 
 Current boundary:
 
@@ -1180,6 +1182,13 @@ Move:
 - replace per-call `db_->rustStorage()` arguments in PBFT manager overlay methods with runtime methods
 - keep C++ calls only where they materialize temporary `PbftBlock`, `PeriodData`, pillar vote, or network sidecar objects
 - delete bridge helpers made redundant by runtime-owned storage
+
+Completed sub-slices:
+
+- next-voted-status persistence: `placeStateActionVote()` now calls
+  `pbft_manager_runtime_apply_next_voted_status()`, which persists through the runtime-owned Rust storage handle and
+  advances the Rust runtime snapshot after the storage write commits. The redundant standalone
+  `apply_pbft_manager_next_voted_status(storage, ...)` bridge entry point was removed.
 
 Keep temporarily:
 
@@ -1200,6 +1209,21 @@ Validation:
 - `cmake --build /build --target pbft_manager_test --parallel 12`
 - focused `PbftManagerWithDagCreation.*` only after checking whether the known FinalChain/EVM runtime gap is still active
 - `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+
+Validation notes:
+
+- Next-voted-status runtime-storage sub-slice passed `cargo fmt --manifest-path rust/Cargo.toml --all --check`,
+  `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pbft_manager`,
+  `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_manager`,
+  `cmake --build /build --target pbft_manager_test --parallel 12`,
+  `cmake --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
+  `scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and
+  `git diff --check`.
+- `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.*'` was attempted as a broad smoke, but the run reached
+  the existing FinalChain/EVM runtime gap: balance assertions failed after transactions were not fully executed, vote
+  admission reported missing Rust FinalChain DPoS snapshots for later blocks, and the process entered a repeated PBFT sync
+  loop at synced period 84 before being terminated. This is the same integration boundary tracked for the later
+  FinalChain/EVM slices, not a new next-voted-status storage issue.
 
 ## Slice 21: FinalChain Publication And Status Write Boundary
 
