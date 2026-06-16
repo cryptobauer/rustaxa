@@ -20,6 +20,7 @@
 namespace taraxa::pillar_chain {
 namespace {
 static constexpr uint16_t PILLAR_VOTES_POS_IN_PERIOD_DATA = 4;
+static constexpr uint8_t kPbftFinalChainFactStatusReady = 0;
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t& hash) { return hash.asArray(); }
 std::array<uint8_t, 20> toBridgeAddress(const addr_t& address) { return address.asArray(); }
@@ -51,6 +52,26 @@ rust::Vec<uint8_t> toRustBytes(const bytes& input) {
 }
 
 bytes fromRustBytes(const rust::Vec<uint8_t>& input) { return bytes(input.begin(), input.end()); }
+
+rustaxa::PbftFinalChainFacts collectPillarDposFacts(const std::shared_ptr<final_chain::FinalChain>& final_chain,
+                                                    PbftPeriod dpos_period, bool collect_total_vote_count,
+                                                    const std::vector<addr_t>& voters) {
+  rustaxa::PbftFinalChainFactRequest request{};
+  request.period = dpos_period;
+  request.collect_total_vote_count = collect_total_vote_count;
+  request.collect_address_vote_counts = !voters.empty();
+  request.addresses.reserve(voters.size());
+  for (const auto& voter : voters) {
+    request.addresses.push_back(rustaxa::PbftFinalChainFactAddress{toBridgeAddress(voter)});
+  }
+  return final_chain->rustFinalChainForRust().collect_pbft_final_chain_facts(std::move(request));
+}
+
+bool finalChainFactReady(uint8_t status) { return status == kPbftFinalChainFactStatusReady; }
+
+bool firstAddressFactReady(const rustaxa::PbftFinalChainFacts& facts) {
+  return !facts.address_facts.empty() && finalChainFactReady(facts.address_facts[0].status);
+}
 
 std::shared_ptr<PillarBlock> decodePillarBlockFromRustBytes(const rust::Vec<uint8_t>& data) {
   if (data.empty()) {
@@ -294,13 +315,15 @@ PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& f
   }
 
   try {
-    if (!final_chain->dposIsEligible(inspection.period - 1, recovered_voter)) {
+    const auto dpos_facts = collectPillarDposFacts(final_chain, inspection.period - 1, false, {recovered_voter});
+    if (!firstAddressFactReady(dpos_facts)) {
+      return {PillarVoteValidationPlanStatus::kFuturePeriod, false, inspection.period, inspection.vote_hash,
+              recovered_voter};
+    }
+    if (!dpos_facts.address_facts[0].eligible) {
       return {PillarVoteValidationPlanStatus::kNotEligible, false, inspection.period, inspection.vote_hash,
               recovered_voter};
     }
-  } catch (state_api::ErrFutureBlock&) {
-    return {PillarVoteValidationPlanStatus::kFuturePeriod, false, inspection.period, inspection.vote_hash,
-            recovered_voter};
   } catch (...) {
     return {PillarVoteValidationPlanStatus::kUnknown, false, inspection.period, inspection.vote_hash, recovered_voter};
   }
@@ -320,8 +343,18 @@ AddVerifiedPillarVoteWithRustPlan planAddVerifiedPillarVoteWithRust(
   }
 
   try {
-    const auto validator_vote_count =
-        final_chain->dposEligibleVoteCount(inspection.period - 1, inspection.recovered_voter);
+    const auto dpos_facts =
+        collectPillarDposFacts(final_chain, inspection.period - 1, false, {inspection.recovered_voter});
+    if (!firstAddressFactReady(dpos_facts)) {
+      return {PillarVoteValidationPlanStatus::kFuturePeriod,
+              false,
+              inspection.period,
+              inspection.vote_hash,
+              inspection.recovered_voter,
+              0};
+    }
+
+    const auto validator_vote_count = dpos_facts.address_facts[0].vote_count;
     if (validator_vote_count == 0) {
       return {PillarVoteValidationPlanStatus::kNotEligible,
               false,
@@ -337,13 +370,6 @@ AddVerifiedPillarVoteWithRustPlan planAddVerifiedPillarVoteWithRust(
             inspection.vote_hash,
             inspection.recovered_voter,
             validator_vote_count};
-  } catch (state_api::ErrFutureBlock&) {
-    return {PillarVoteValidationPlanStatus::kFuturePeriod,
-            false,
-            inspection.period,
-            inspection.vote_hash,
-            inspection.recovered_voter,
-            0};
   } catch (...) {
     return {PillarVoteValidationPlanStatus::kUnknown,
             false,
@@ -802,9 +828,16 @@ std::optional<uint64_t> PillarChainManager::getPillarConsensusThreshold(PbftPeri
   std::optional<uint64_t> threshold;
 
   try {
+    const auto dpos_facts = collectPillarDposFacts(final_chain_, period, true, {});
+    if (!finalChainFactReady(dpos_facts.total_vote_count_status) || !dpos_facts.has_total_vote_count) {
+      LOG(log_er_) << "Unable to get dpos total votes count for period " << period
+                   << " to calculate pillar consensus threshold: " << static_cast<std::string>(dpos_facts.error_code);
+      return threshold;
+    }
+
     // Pillar chain consensus threshold = total votes count / 2 + 1
-    threshold = final_chain_->dposEligibleTotalVoteCount(period) / 2 + 1;
-  } catch (state_api::ErrFutureBlock& e) {
+    threshold = dpos_facts.total_vote_count / 2 + 1;
+  } catch (const std::exception& e) {
     LOG(log_er_) << "Unable to get dpos total votes count for period " << period
                  << " to calculate pillar consensus threshold: " << e.what();
   }

@@ -387,15 +387,16 @@ PBFT finalization dynamic-lambda planning now also loads the prior saved period 
 
 Boundary replan: this slice is no longer a single implementation unit. The remaining read-surface work splits across
 query compatibility, PBFT-chain/proposed-block live sidecars, PBFT sync/network egress, and FinalChain/EVM facts. Those
-are tracked below as Slices 10-14 so implementation can continue without broadening Slice 8 into unrelated subsystem
-ownership changes.
+are tracked below as Slices 10-23 so implementation can continue without broadening Slice 8 into unrelated subsystem
+ownership changes. Slices 16-23 are the additional closure plan added after the boundary-slice evaluation.
 
 Post-boundary-slice evaluation: Slice 8 cannot be marked fully complete yet. Slices 10-15 retired the PBFT-chain,
 proposed-block, PBFT sync egress, RPC/GraphQL query-marker, guard, VoteManager DPoS, and pillar-sync DPoS read
 surfaces that had clear Rust replacements. The remaining read-surface hits are still tied to gas-pricer runtime handle
 initialization, temporary C++ sidecar materialization, network/app compatibility constructors, DAG proposal-validation
 facts, transaction account/finalized facts, and the explicit FinalChain/EVM boundary. Completing those would change the
-larger subsystem direction rather than finish Slice 8 as originally scoped.
+larger subsystem direction rather than finish Slice 8 as originally scoped. Slices 16-23 break those blockers into
+implementation units that can close Slice 8/9 incrementally.
 
 Move:
 
@@ -816,6 +817,15 @@ Completed in the pillar-sync DPoS fact-port sub-slice:
 - The existing missing/future/zero-weight behavior is preserved: unavailable facts still reject the vote as zero weight
   for the deterministic Rust pillar bundle planner.
 
+Completed in the pillar-manager DPoS fact-port sub-slice:
+
+- Pillar vote validation, insertion planning, and threshold calculation now request voter eligibility/weight and total
+  vote facts through `BridgeFinalChain::collect_pbft_final_chain_facts`.
+- `PillarChainManager` no longer directly calls `dposIsEligible`, `dposEligibleVoteCount`, or
+  `dposEligibleTotalVoteCount` in the migrated consensus paths.
+- The full FinalChain DPoS snapshot used for pillar block creation remains an explicit external boundary for Slices 16
+  and 21.
+
 Move:
 
 - define narrow Rust consensus fact ports for DPoS vote counts/eligibility, VRF keys, bridge root/epoch, account nonce
@@ -862,6 +872,14 @@ rustaxa-bridge final_chain`, `cargo test --manifest-path rust/Cargo.toml -p rust
 --check`. The focused `/build/bin/pbft_manager_test --gtest_filter=PbftManagerWithDagCreation.*` runtime was attempted
 and reproduced the existing non-storage FinalChain/EVM execution-count gap in `trx_generation`
 (`getNumTransactionExecuted()` stayed at `111` while the test expected `1111`), then stayed running until terminated.
+
+Validation note: the pillar-manager DPoS fact-port sub-slice passes `cargo test --manifest-path rust/Cargo.toml -p
+rustaxa-consensus pillar_chain`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pillar_chain`, `cargo
+test --manifest-path rust/Cargo.toml -p rustaxa-bridge final_chain`, `cmake --build /build --target pillar_chain_test
+--parallel 12`, `cmake --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
+`scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff
+--check`. The broad `PillarChainTest.*` runtime still reaches the known unimplemented FinalChain/EVM boundaries
+documented under Slice 16.
 
 ## Slice 15: Compatibility Shell Audit And Guard Hardening
 
@@ -910,6 +928,356 @@ Validation note: the Slice 15 guard-hardening sub-slice passes `scripts/rewrite_
 `scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`. The pre-commit hook also ran
 `make rewrite-validate-fast` for the preceding Slice 14 commit successfully; remaining clippy output is the known
 pre-existing warning set documented in earlier slice validation notes.
+
+## Slice 16: Pillar FinalChain Fact Completion
+
+Goal: finish the remaining pillar-chain consensus fact reads so pillar validation and threshold decisions consume typed
+Rust FinalChain fact ports instead of direct C++ FinalChain calls.
+
+Status: complete for direct pillar DPoS eligibility/count fact reads. Pillar block creation still depends on the
+external FinalChain DPoS snapshot and bridge-root boundaries tracked by Slices 14 and 21.
+
+Current boundary:
+
+- Pillar vote validation, insertion planning, and threshold calculation now consume
+  `BridgeFinalChain::collect_pbft_final_chain_facts` for voter weight/eligibility and total vote count facts.
+- Pillar block creation still temporarily materializes C++ pillar objects and requests the full FinalChain DPoS snapshot,
+  but storage writes and deterministic planning already live in Rust.
+
+Move:
+
+- completed: reused the Rust bridge helper that collects the needed pillar voter and threshold facts through
+  `BridgeFinalChain::collect_pbft_final_chain_facts`
+- completed: updated `PillarChainManager` shim callers to convert unavailable/zero fact results into the existing Rust
+  pillar planner statuses instead of calling C++ `dposEligible*` helpers
+- keep C++ object materialization only for the public/live sidecar API
+- completed by Slice 15: the storage-boundary guard rejects new consensus direct DPoS reads from unapproved files
+
+Keep temporarily:
+
+- public C++ pillar block/vote materialization
+- bridge root/epoch and other external-EVM facts already tracked under Slice 14
+
+Done when:
+
+- no `dposIsEligible`, `dposEligibleVoteCount`, or `dposEligibleTotalVoteCount` calls remain in pillar-manager
+  consensus paths
+- pillar validation/insertion paths preserve unavailable/zero fact behavior through Rust planner statuses
+- Slice 14 can mark direct pillar DPoS eligibility/count facts complete while keeping the full DPoS snapshot boundary open
+
+Validation:
+
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pillar_chain`
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pillar_chain`
+- `cmake --build /build --target pillar_chain_test --parallel 12`
+- focused `pillar_chain_test` filters that avoid the known broad PBFT/FinalChain runtime gap
+- `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+- `scripts/rewrite_storage_boundary_guard.sh --self-test && scripts/rewrite_storage_boundary_guard.sh`
+
+Validation note: the pillar FinalChain fact-completion sub-slice passes `cargo test --manifest-path rust/Cargo.toml -p
+rustaxa-consensus pillar_chain`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pillar_chain`, `cargo
+test --manifest-path rust/Cargo.toml -p rustaxa-bridge final_chain`, `cmake --build /build --target pillar_chain_test
+--parallel 12`, `cmake --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
+`scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff
+--check`. The broad `/build/bin/pillar_chain_test --gtest_filter='PillarChainTest.*'` runtime was attempted and
+reproduced the known unimplemented FinalChain/EVM runtime boundaries: `votes_count_changes` hit the Rust FinalChain
+DPoS snapshot gap for block 16, and `finalize_root_in_pillar_block` aborted because bridge-root reads require committed
+external-EVM state for block 3.
+
+## Slice 17: DAG Proposal Fact Port
+
+Goal: move DAG proposer and DAG manager proposal-validation facts behind Rust fact ports so DAG consensus no longer
+mixes `DbStorage` proposal-period reads with C++ FinalChain height/DPoS/gas-limit calls.
+
+Status: planned. This is the main remaining consensus read-surface blocker for Slice 8.
+
+Current boundary:
+
+- `DagBlockProposer` still reads FinalChain height and gas limits through C++ and reads proposal periods/block hashes
+  through `DbStorage` compatibility APIs.
+- `DagManager` still verifies proposal period, expiry, period block hash, and DPoS authorization with a mix of
+  `DbStorage` and C++ FinalChain calls.
+- `FinalChain::dagDposAuthorizationFacts` already exposes part of the desired Rust-facing fact model.
+
+Move:
+
+- define a `DagProposalFacts` Rust/bridge DTO containing proposal period, period block hash, last finalized period,
+  sender vote count, total vote count, VRF key status, and gas-limit facts needed by proposer/verification logic
+- load proposal-period and period-block-hash facts from `rustaxa-storage` in `rustaxa-consensus::dag`
+- collect DPoS/VRF facts through `BridgeFinalChain` or the existing Rust DPoS snapshot sidecar when available
+- route `DagBlockProposer` and `DagManager` shim decisions through the DTO while keeping C++ block/transaction
+  materialization temporary
+
+Keep temporarily:
+
+- C++ DAG block object construction and network packet materialization
+- external EVM gas/state execution
+- public debug/query reads of DAG blocks
+
+Done when:
+
+- DAG proposer/verification consensus decisions do not call `DbStorage` or C++ FinalChain directly for proposal facts
+- remaining DAG `DbStorage` references are sidecar materialization or query/admin compatibility
+- Slice 8 can remove DAG proposal-validation from its open read-surface list
+
+Validation:
+
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus dag`
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge dag`
+- `cmake --build /build --target dag_test --parallel 12` or the narrow DAG shim target available in `/build`
+- `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+- `scripts/rewrite_storage_boundary_guard.sh --self-test && scripts/rewrite_storage_boundary_guard.sh`
+
+## Slice 18: Transaction Account And Finalized Fact Port
+
+Goal: complete the TransactionManager account/finalized fact boundary so transaction queue admission, packing,
+finalized-status updates, and finalized-account purge run through Rust runtime facts rather than C++ storage/final-chain
+lookups.
+
+Status: planned. This is the largest remaining Slice 8/9 blocker inside transaction consensus, but much of the Rust
+runtime scaffolding already exists.
+
+Current boundary:
+
+- TransactionManager shim still passes `db_->rustStorage()` into runtime calls at several operation sites.
+- Account nonce/balance and finalized-account purge facts are split between C++ `FinalChain` calls and Rust bridge
+  helpers.
+- The bridge already has `*_with_runtime_and_final_chain` routes for account facts, proposal transaction filtering, and
+  queue cleanup, but the C++ shim still owns too much storage-handle extraction and report orchestration.
+
+Move:
+
+- move account lookup, proposal-period finalized filtering, queue cleanup, and finalized-account purge into a
+  TransactionManager runtime method that owns the needed Rust storage handle and `BridgeFinalChain` reference
+- collapse duplicated C++ command-report glue into typed Rust execution reports
+- remove direct `db_->rustStorage()` calls from TransactionManager operation methods except constructor/runtime creation
+- document any remaining C++ transaction object materialization as sidecar/API compatibility
+
+Keep temporarily:
+
+- C++ transaction object materialization for network/API surfaces
+- external EVM gas estimation execution and receipt production
+- `StateAPI` / `state_db` execution boundary
+
+Done when:
+
+- TransactionManager consensus operations do not pass `DbStorage`/`BridgeStorage` per call
+- finalized-account queue purge no longer depends on C++ account snapshots
+- Slice 8 can remove transaction account/finalized facts from its open read-surface list
+- Slice 9 can categorize TransactionManager `DbStorage` ownership as constructor compatibility only
+
+Validation:
+
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus transaction`
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge transaction_manager`
+- `cmake --build /build --target transaction_test --parallel 12` if configured
+- focused PBFT/DAG tests that exercise transaction packing without broad FinalChain runtime assumptions
+- `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+- `scripts/rewrite_storage_boundary_guard.sh --self-test && scripts/rewrite_storage_boundary_guard.sh`
+
+## Slice 19: Gas-Pricer Runtime Storage Ownership
+
+Goal: remove the remaining gas-pricer `DbStorage` constructor/init dependency by making the Rust gas-pricer runtime own
+or receive native Rust storage at construction time.
+
+Status: planned. The deterministic finalized-history restoration already lives in Rust; this slice removes the remaining
+C++ handle plumbing.
+
+Current boundary:
+
+- `GasPricer::init` still receives `std::shared_ptr<DbStorage>` and calls `db->rustStorage()`.
+- The Rust gas-pricer already loads finalized history through `rustaxa-consensus::gas_pricer` over Rust storage.
+
+Move:
+
+- introduce a gas-pricer bridge/runtime constructor that captures the Rust storage owner once
+- change the shim thread/init path to call a storage-owned Rust runtime method instead of passing `DbStorage`
+- remove `GasPricer::init(const std::shared_ptr<DbStorage>&)` or reduce it to a constructor-only compatibility wrapper
+- tighten the storage-boundary guard once no new gas-pricer `DbStorage` additions are needed
+
+Keep temporarily:
+
+- C++ gas-price oracle lock and transaction-pool gas-price calculation
+- public C++ constructor shape if callers still pass `DbStorage`
+
+Done when:
+
+- gas-pricer Rust-mode init no longer calls `db->rustStorage()`
+- Slice 8 can remove gas-pricer runtime handle initialization from its open read-surface list
+- Slice 9 can classify remaining gas-pricer `DbStorage` mention, if any, as constructor compatibility only
+
+Validation:
+
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus gas_pricer`
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge gas_pricer`
+- `cmake --build /build --target gas_pricer_shim_test --parallel 12 && /build/bin/gas_pricer_shim_test`
+- `cmake --build /build --target gas_pricer_test --parallel 12 && /build/bin/gas_pricer_test`
+- `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+
+## Slice 20: PBFT Manager Runtime Storage Handle Consolidation
+
+Goal: stop PBFT manager overlay methods from repeatedly extracting `db_->rustStorage()` and move storage ownership into
+the long-lived Rust PBFT manager runtime.
+
+Status: planned. This is a compatibility-shell shrink slice for Slice 9, not a protocol rewrite.
+
+Current boundary:
+
+- PBFT manager startup, transition storage, finalization staging, cert-voted-block reads, proposed-block restore, and
+  pillar-vote startup still mix long-lived Rust runtime calls with per-call `db_->rustStorage()` extraction.
+- Several storage families already moved to `rustaxa-consensus`, but the shim still orchestrates the handles.
+
+Move:
+
+- extend the PBFT manager Rust runtime to own the storage handle needed by startup replay, status/cursor persistence,
+  finalization storage stages, and proposed-block/pillar sidecar reload
+- replace per-call `db_->rustStorage()` arguments in PBFT manager overlay methods with runtime methods
+- keep C++ calls only where they materialize temporary `PbftBlock`, `PeriodData`, pillar vote, or network sidecar objects
+- delete bridge helpers made redundant by runtime-owned storage
+
+Keep temporarily:
+
+- external EVM execution and FinalChain publication reports
+- C++ timers, logging, signing, and network effects
+- public storage shim methods used by RPC/query/admin compatibility
+
+Done when:
+
+- PBFT manager overlay has no per-operation `db_->rustStorage()` calls for migrated storage families
+- remaining `db_` use in PBFT manager is constructor compatibility, snapshot toggling, or explicit sidecar materialization
+- Slice 9 can remove PBFT manager runtime storage extraction from its open compatibility-shell list
+
+Validation:
+
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pbft_manager pbft_finalize pbft_sync`
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_manager pbft_finalize pbft_sync`
+- `cmake --build /build --target pbft_manager_test --parallel 12`
+- focused `PbftManagerWithDagCreation.*` only after checking whether the known FinalChain/EVM runtime gap is still active
+- `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+
+## Slice 21: FinalChain Publication And Status Write Boundary
+
+Goal: move FinalChain-adjacent consensus status writes out of C++ batch orchestration without moving arbitrary EVM
+execution or `state_db` ownership.
+
+Status: planned. This is the smallest slice that attacks the `getNumTransactionExecuted()`/publication mismatch class
+without violating the external-EVM boundary.
+
+Current boundary:
+
+- FinalChain shim still updates executed block/transaction counters, proposal-period DAG level mapping, system
+  transaction indexes, and final-chain publication rows around the C++ `StateAPI` execution adapter.
+- PBFT runtime failures currently reproduce execution-count mismatches (`111` vs `1111`) and missing DPoS snapshot
+  publication; those are not storage-shim bugs but publication-boundary gaps.
+
+Move:
+
+- define a Rust publication report that atomically records final-chain indexes, executed counters, DPoS/account snapshot
+  sidecars, proposal-period mapping, and pending-publication marker cleanup after C++ `StateAPI` reports success
+- keep C++ as the executor that produces receipts/state roots, but make Rust validate and commit the durable publication
+  facts in one storage session
+- expose restart/resume validation for partial publication windows
+- update PBFT manager finalization to consume typed publication status instead of checking scattered C++ counters
+
+Keep temporarily:
+
+- C++ `StateAPI` transaction execution, receipts, contract execution, bridge-contract calls, and `state_db` commit
+- public FinalChain API materialization for RPC/GraphQL
+
+Done when:
+
+- the PBFT runtime execution-count mismatch has a Rust publication owner and focused regression coverage
+- FinalChain publication does not write consensus/final-chain `DbStorage` rows through C++ batches
+- Slice 14 can mark FinalChain status/publication facts complete while leaving arbitrary EVM execution out of scope
+
+Validation:
+
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus final_chain`
+- `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge final_chain`
+- `cmake --build /build --target final_chain_test --parallel 12 && /build/bin/final_chain_test`
+- focused PBFT manager runtime test that previously reproduced the execution-count mismatch
+- `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+
+## Slice 22: Network And Query Compatibility Shell Split
+
+Goal: separate network/app/query compatibility reads from consensus runtime storage ownership so Slice 8/9 can close
+without waiting for every public API to be rewritten.
+
+Status: planned. This is a classification and routing slice after the consensus-runtime blockers above.
+
+Current boundary:
+
+- tarcap constructors and sync handlers still carry `std::shared_ptr<DbStorage>` for legacy/reference and materialization
+  reasons.
+- RPC/GraphQL/debug reads are now marked where they remain compatibility reads, but some can move to read-only Rust query
+  APIs.
+- `get_pbft_sync_packet_handler` still has a legacy-mode `db_->getPeriodDataRaw` branch while Rust mode uses the typed
+  PBFT sync egress payload.
+
+Move:
+
+- split Rust-mode tarcap handler constructors from legacy `DbStorage` constructors where the handler no longer needs DB
+  for deterministic decisions
+- move easy RPC/GraphQL read-only storage lookups to Rust query APIs when an equivalent Rust storage helper already
+  exists
+- leave marked `RUSTAXA_QUERY_COMPAT_READ` comments for public API reads that still require C++ materialization
+- update the guard allowlist to distinguish network/query compatibility from consensus runtime paths
+
+Keep temporarily:
+
+- public JSON/GraphQL object materialization
+- legacy/reference network handler routes
+- snapshot toggling and app lifecycle/admin storage ownership
+
+Done when:
+
+- Slice 8 can treat network/query reads as explicit compatibility debt, not consensus blockers
+- Slice 9 can close with a compatibility-shell contract that excludes consensus runtime storage
+- guard failures catch any new unmarked query/network storage use
+
+Validation:
+
+- `scripts/rewrite_storage_boundary_guard.sh --self-test && scripts/rewrite_storage_boundary_guard.sh`
+- `cmake --build /build --target rpc_plugin --parallel 12`
+- `cmake --build /build --target rpc_test --parallel 12 && /build/bin/rpc_test`
+- focused tarcap/network build targets affected by constructor splits
+- `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+
+## Slice 23: Slice 8/9 Closure Gate
+
+Goal: after Slices 16-22 land, make Slice 8 and Slice 9 objectively closable with a guard-backed audit rather than a
+manual judgment call.
+
+Status: planned final closure.
+
+Move/remove:
+
+- run a code-search audit for `DbStorage`, `db_->`, `rustStorage`, `createWriteBatch`, `commitWriteBatch`, direct
+  FinalChain DPoS/account facts, and C++ batch APIs across Rust-mode consensus shims
+- update `scripts/rewrite_storage_boundary_guard.sh` allowlists so remaining consensus shim additions fail unless they
+  are storage shim internals, tests, or explicitly marked query/admin compatibility
+- delete obsolete bridge DTOs/runtime wrappers made unused by Slices 16-22
+- update Slice 8 and Slice 9 statuses from replanned/stopped to complete only if the audit proves no consensus runtime
+  storage route remains
+
+Keep:
+
+- storage shim public C++ compatibility API
+- legacy/reference implementation files
+- app lifecycle/admin/snapshot/migration/query compatibility routes that are documented outside consensus runtime
+
+Done when:
+
+- `rg` shows no unclassified Rust-mode consensus `DbStorage`/`rustStorage`/direct FinalChain fact route
+- storage-boundary guard self-tests cover the final allowlist contract
+- Slice 8 and Slice 9 are marked complete with exact residual compatibility categories
+
+Validation:
+
+- `make rewrite-validate-fast`
+- `scripts/rewrite_storage_boundary_guard.sh --self-test && scripts/rewrite_storage_boundary_guard.sh`
+- `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
+- targeted C++ builds/tests for any deleted shim/bridge helpers
 
 ## Stop Conditions
 
