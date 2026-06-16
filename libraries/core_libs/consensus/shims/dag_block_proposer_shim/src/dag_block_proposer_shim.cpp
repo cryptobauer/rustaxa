@@ -293,29 +293,14 @@ std::pair<SharedTransactions, std::vector<uint64_t>> DagBlockProposer::getSharde
     return {};
   }
 
-  if (total_trx_shards_ == 1) return trx_mgr_->packTrxs(proposal_period, weight_limit);
-
-  auto [transactions, estimations] = trx_mgr_->packTrxs(proposal_period, weight_limit);
-
+  auto [transactions, estimations] =
+      trx_mgr_->packShardedTrxs(proposal_period, weight_limit, total_trx_shards_, node_trx_shard,
+                                kShardProposePeriodInterval);
   if (transactions.empty()) {
-    LOG(log_tr_) << "Skip block proposer, zero unpacked transactions ..." << std::endl;
-    return {};
-  }
-  SharedTransactions sharded_trxs;
-  std::vector<uint64_t> sharded_estimations;
-  for (uint32_t i = 0; i < transactions.size(); i++) {
-    auto shard = std::stoull(transactions[i]->getSender().toString().substr(0, 10), NULL, 16) +
-                 proposal_period / kShardProposePeriodInterval;
-    if (shard % total_trx_shards_ == node_trx_shard) {
-      sharded_trxs.emplace_back(transactions[i]);
-      sharded_estimations.emplace_back(estimations[i]);
-    }
-  }
-  if (sharded_trxs.empty()) {
     LOG(log_tr_) << "Skip block proposer, zero sharded transactions ..." << std::endl;
     return {};
   }
-  return {sharded_trxs, sharded_estimations};
+  return {transactions, estimations};
 }
 
 level_t DagBlockProposer::getProposeLevel(blk_hash_t const& pivot, vec_blk_t const& tips) const {

@@ -119,7 +119,9 @@ class DagBlockProposer {
   /**
    * Returns transactions and gas estimates for the configured proposer shard.
    *
-   * C++ keeps this live transaction-manager boundary until transaction queue/proposal selection are migrated.
+   * Rust owns the deterministic shard filter and transaction-packing planner;
+   * C++ keeps live transaction materialization and EVM gas estimation until
+   * those boundaries move.
    */
   std::pair<SharedTransactions, std::vector<uint64_t>> getShardedTrxs(PbftPeriod proposal_period, uint64_t weight_limit,
                                                                       const uint16_t node_trx_shard) const;

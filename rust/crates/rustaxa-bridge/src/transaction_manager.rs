@@ -436,6 +436,9 @@ fn runtime_pack_next_estimable_entry(
     while session.next_index < session.candidates.len() {
         let candidate = session.candidates[session.next_index].clone();
         session.next_index += 1;
+        if !runtime_pack_candidate_matches_shard(&candidate, session)? {
+            continue;
+        }
         let decision = session
             .planner
             .consider_candidate(TransactionPackCandidate {
@@ -449,6 +452,33 @@ fn runtime_pack_next_estimable_entry(
     }
 
     Ok(None)
+}
+
+fn runtime_pack_candidate_matches_shard(
+    candidate: &TransactionQueueEntry,
+    session: &TransactionManagerRuntimePackSession,
+) -> Result<bool> {
+    if session.total_shards <= 1 {
+        return Ok(true);
+    }
+    ensure!(
+        session.node_shard < session.total_shards,
+        "TM_RUNTIME_PACK_SHARD_OUT_OF_RANGE"
+    );
+    ensure!(
+        session.shard_period_interval != 0,
+        "TM_RUNTIME_PACK_SHARD_INTERVAL_ZERO"
+    );
+
+    let sender_prefix = u32::from_be_bytes([
+        candidate.sender.0[0],
+        candidate.sender.0[1],
+        candidate.sender.0[2],
+        candidate.sender.0[3],
+    ]) as u64;
+    let shard = sender_prefix.wrapping_add(session.proposal_period / session.shard_period_interval)
+        % u64::from(session.total_shards);
+    Ok(shard == u64::from(session.node_shard))
 }
 
 fn runtime_pack_session_final_step(
@@ -1647,9 +1677,47 @@ impl BridgeTransactionManagerRuntime {
         estimate_gas_limit: u64,
         last_block_number: u64,
     ) -> Result<()> {
+        self.transaction_manager_runtime_pack_begin_sharded(
+            weight_limit,
+            min_transaction_gas,
+            proposal_period,
+            estimate_gas_limit,
+            last_block_number,
+            1,
+            0,
+            1,
+        )
+    }
+
+    /// Begins one runtime-owned transaction packing session for a DAG proposer shard.
+    ///
+    /// Sharding is applied before gas estimation using the legacy sender-prefix
+    /// rule, so C++ only materializes and estimates candidates that Rust may
+    /// actually select for the configured proposer shard.
+    #[allow(clippy::too_many_arguments)]
+    pub fn transaction_manager_runtime_pack_begin_sharded(
+        &mut self,
+        weight_limit: u64,
+        min_transaction_gas: u64,
+        proposal_period: u64,
+        estimate_gas_limit: u64,
+        last_block_number: u64,
+        total_shards: u16,
+        node_shard: u16,
+        shard_period_interval: u64,
+    ) -> Result<()> {
         ensure!(
             self.transaction_pack_session.is_none(),
             "TM_RUNTIME_PACK_SESSION_ALREADY_ACTIVE"
+        );
+        ensure!(total_shards != 0, "TM_RUNTIME_PACK_TOTAL_SHARDS_ZERO");
+        ensure!(
+            node_shard < total_shards,
+            "TM_RUNTIME_PACK_NODE_SHARD_OUT_OF_RANGE"
+        );
+        ensure!(
+            total_shards <= 1 || shard_period_interval != 0,
+            "TM_RUNTIME_PACK_SHARD_INTERVAL_ZERO"
         );
         let planner = TransactionPackingPlanner::new(weight_limit, min_transaction_gas)?;
         let candidates = self
@@ -1660,6 +1728,9 @@ impl BridgeTransactionManagerRuntime {
             proposal_period,
             estimate_gas_limit,
             last_block_number,
+            total_shards,
+            node_shard,
+            shard_period_interval,
             candidates,
             next_index: 0,
             current: None,
@@ -5065,6 +5136,98 @@ mod tests {
         runtime
             .transaction_manager_runtime_pack_begin(21_000, 21_000, 7, 0, 10)
             .expect("completed step session should be cleared");
+    }
+
+    #[test]
+    fn bridge_transaction_manager_runtime_pack_session_filters_candidate_shards() {
+        fn legacy_sender_shard(sender: H160, proposal_period: u64, total_shards: u16) -> u16 {
+            let prefix =
+                u32::from_be_bytes([sender.0[0], sender.0[1], sender.0[2], sender.0[3]]) as u64;
+            ((prefix + proposal_period / 10) % u64::from(total_shards)) as u16
+        }
+
+        let proposal_period = 27;
+        let total_shards = 2;
+        let first_key = SigningKey::from_slice(&[0x45u8; 32]).unwrap();
+        let first_sender = address_from_signing_key(&first_key);
+        let first_shard = legacy_sender_shard(first_sender, proposal_period, total_shards);
+        let (second_key, second_sender) = (0x46u8..=0x7f)
+            .map(|seed| {
+                let key = SigningKey::from_slice(&[seed; 32]).unwrap();
+                let sender = address_from_signing_key(&key);
+                (key, sender)
+            })
+            .find(|(_, sender)| {
+                legacy_sender_shard(*sender, proposal_period, total_shards) != first_shard
+            })
+            .expect("test fixture should find a sender in a different shard");
+
+        let mut runtime =
+            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
+        let first_rlp = signed_legacy_transaction_rlp(&first_key, 1, 2999);
+        let first_envelope = LegacyTransactionEnvelope::decode(&first_rlp).unwrap();
+        let second_rlp = signed_legacy_transaction_rlp(&second_key, 1, 2999);
+        let second_envelope = LegacyTransactionEnvelope::decode(&second_rlp).unwrap();
+
+        for (sender, envelope, tx_rlp) in [
+            (first_sender, first_envelope.clone(), first_rlp),
+            (second_sender, second_envelope.clone(), second_rlp),
+        ] {
+            runtime
+                .transaction_manager_runtime_queue_insert(TransactionQueueInsertInput {
+                    hash: envelope.hash.0,
+                    sender: sender.0,
+                    nonce: envelope.nonce.to_big_endian(),
+                    gas_price: envelope.gas_price.to_big_endian(),
+                    gas: envelope.gas,
+                    data_size: envelope.data.len(),
+                    tx_rlp,
+                    proposable: true,
+                    last_block_number: 0,
+                })
+                .expect("proposable insert should succeed");
+        }
+
+        runtime
+            .transaction_manager_runtime_pack_begin_sharded(
+                63_000,
+                21_000,
+                proposal_period,
+                0,
+                10,
+                total_shards,
+                first_shard,
+                10,
+            )
+            .expect("sharded pack session should begin");
+
+        let first_step = runtime
+            .transaction_manager_runtime_pack_request_next()
+            .expect("matching-shard candidate should be requested");
+        assert!(first_step.request_estimate);
+        assert_eq!(first_step.candidate.hash, first_envelope.hash.0);
+
+        let final_step = runtime
+            .transaction_manager_runtime_pack_record_estimate_step(
+                TransactionPackSessionEstimateInput {
+                    hash: first_step.candidate.hash,
+                    gas_used: 30_000,
+                    last_block_number: 10,
+                    result_rlp: vec![0xc0],
+                },
+            )
+            .expect("estimate should finish sharded pack session");
+        assert!(!final_step.request_estimate);
+        assert_eq!(final_step.selected_transactions.len(), 1);
+        assert_eq!(
+            final_step.selected_transactions[0].hash,
+            first_envelope.hash.0
+        );
+        assert_ne!(
+            final_step.selected_transactions[0].hash,
+            second_envelope.hash.0
+        );
+        assert!(!runtime.transaction_manager_runtime_pack_abort());
     }
 
     #[test]

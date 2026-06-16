@@ -1001,8 +1001,10 @@ Current boundary:
   DPoS/VRF authorization through the shim-owned `BridgeFinalChain` runtime, not the C++ FinalChain compatibility API.
 - `DagManager` verification precheck, proposal-period lookup, and period-block-hash lookup already use the
   storage-owned Rust DAG runtime, and DPoS/VRF authorization now uses the shim-owned `BridgeFinalChain` runtime.
-- `DagBlockProposer` still computes genesis gas-limit constants in C++ and keeps live transaction selection, VDF
-  proving, sortition-params access, and `DagBlock` object creation in the compatibility shell.
+- `DagBlockProposer` now asks the Rust TransactionManager runtime for proposer-sharded transaction packing, so the
+  deterministic sender-shard filter runs inside the Rust-owned packing session before C++ materializes or estimates gas
+  for candidates. It still computes genesis gas-limit constants in C++ and keeps live VDF proving, sortition-params
+  access, and `DagBlock` object creation in the compatibility shell.
 - Re-audit after Slice 18 confirms the remaining DAG proposal work is not blocked by TransactionManager account/finalized
   routing anymore; it is blocked by ownership of the DAG proposal runtime itself.
 
@@ -1016,6 +1018,8 @@ Move:
   sender vote count, total vote count, VRF key status, and gas-limit facts needed by proposer/verification logic
 - completed earlier: load proposal-period and period-block-hash facts from `rustaxa-storage` in `rustaxa-consensus::dag`
 - completed: collect DPoS/VRF facts through `BridgeFinalChain` instead of the C++ FinalChain compatibility method
+- partially complete for transaction selection: proposer shard filtering moved from the DAG proposer shim into the Rust
+  TransactionManager packing session, while C++ still supplies live transaction materialization and EVM gas estimates
 - remaining: route `DagBlockProposer` and `DagManager` shim decisions through the DTO while keeping C++ block/transaction
   materialization temporary
 
@@ -1051,6 +1055,18 @@ rust/Cargo.toml -p rustaxa-consensus dag`, `cargo test --manifest-path rust/Carg
 --target dag_test --parallel 12`, `/build/bin/dag_test`, `cmake --build /build --target rust_storage_tests --parallel
 12`, `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`, and
 `scripts/rewrite_storage_boundary_guard.sh`.
+
+Validation note: the transaction-packing shard sub-slice adds
+`transaction_manager_runtime_pack_begin_sharded`, moves the legacy sender-prefix shard filter from
+`DagBlockProposer::getShardedTrxs` into the Rust TransactionManager runtime, and keeps C++ only as the live
+transaction/EVM estimator boundary. It passes `cargo fmt --manifest-path rust/Cargo.toml --all --check`,
+`cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge
+transaction_manager_runtime_pack_session_filters_candidate_shards`, `cargo test --manifest-path rust/Cargo.toml -p
+rustaxa-bridge transaction_manager`, `cmake --build /build --target dag_shim_test --parallel 12`,
+`/build/bin/dag_shim_test`, `cmake --build /build --target transaction_manager_shim_test --parallel 12`,
+`/build/bin/transaction_manager_shim_test`, `cmake --build /build --target rust_storage_tests --parallel 12`,
+`/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
+`scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`.
 
 ## Slice 18: Transaction Account And Finalized Fact Port
 

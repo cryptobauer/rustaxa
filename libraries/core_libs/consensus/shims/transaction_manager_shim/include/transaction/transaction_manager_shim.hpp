@@ -74,6 +74,19 @@ class TransactionManager : public TransactionManagerOld {
   std::pair<SharedTransactions, std::vector<uint64_t>> packTrxs(PbftPeriod proposal_period, uint64_t weight_limit);
 
   /**
+   * Select transactions for one DAG proposer shard.
+   *
+   * Rust owns the deterministic shard filter, candidate scan, gas-fit planning,
+   * invalid-estimate demotion, accepted ordering, and stop conditions. C++ still
+   * supplies live transaction materialization and FinalChain/EVM gas estimates.
+   */
+  std::pair<SharedTransactions, std::vector<uint64_t>> packShardedTrxs(PbftPeriod proposal_period,
+                                                                       uint64_t weight_limit,
+                                                                       uint16_t total_shards,
+                                                                       uint16_t node_trx_shard,
+                                                                       uint64_t shard_period_interval);
+
+  /**
    * Return live transaction-pool groups under the transaction mutex.
    *
    * The Rust-mode shim keeps `SharedTransaction` ownership in C++ for this read-only helper.

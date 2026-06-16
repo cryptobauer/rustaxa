@@ -208,6 +208,9 @@ pub struct TransactionManagerRuntimePackSession {
     pub proposal_period: u64,
     pub estimate_gas_limit: u64,
     pub last_block_number: u64,
+    pub total_shards: u16,
+    pub node_shard: u16,
+    pub shard_period_interval: u64,
     pub candidates: Vec<TransactionQueueEntry>,
     pub next_index: usize,
     pub current: Option<TransactionQueueEntry>,
@@ -4402,6 +4405,17 @@ pub mod rustaxa_ffi {
             proposal_period: u64,
             estimate_gas_limit: u64,
             last_block_number: u64,
+        ) -> Result<()>;
+        pub fn transaction_manager_runtime_pack_begin_sharded(
+            self: &mut BridgeTransactionManagerRuntime,
+            weight_limit: u64,
+            min_transaction_gas: u64,
+            proposal_period: u64,
+            estimate_gas_limit: u64,
+            last_block_number: u64,
+            total_shards: u16,
+            node_shard: u16,
+            shard_period_interval: u64,
         ) -> Result<()>;
         pub fn transaction_manager_runtime_pack_request_next(
             self: &mut BridgeTransactionManagerRuntime,

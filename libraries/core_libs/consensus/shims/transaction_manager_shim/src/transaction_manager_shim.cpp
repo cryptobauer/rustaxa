@@ -507,16 +507,18 @@ class TransactionManagerRustShimAccess {
    */
   static std::pair<SharedTransactions, std::vector<uint64_t>> packTrxs(TransactionManagerOld& manager,
                                                                        PbftPeriod proposal_period,
-                                                                       uint64_t weight_limit) {
+                                                                       uint64_t weight_limit, uint16_t total_shards = 1,
+                                                                       uint16_t node_trx_shard = 0,
+                                                                       uint64_t shard_period_interval = 1) {
     auto& rust_manager = static_cast<TransactionManager&>(manager);
     std::lock_guard pack_lock(rust_manager.pack_mutex_);
     bool session_active = false;
     try {
       {
         std::unique_lock transactions_lock(manager.transactions_mutex_);
-        rust_manager.runtime_->transaction_manager_runtime_pack_begin(weight_limit, kMinTxGas, proposal_period,
-                                                                      rust_manager.kEstimateGasLimit,
-                                                                      manager.final_chain_->lastBlockNumber());
+        rust_manager.runtime_->transaction_manager_runtime_pack_begin_sharded(
+            weight_limit, kMinTxGas, proposal_period, rust_manager.kEstimateGasLimit,
+            manager.final_chain_->lastBlockNumber(), total_shards, node_trx_shard, shard_period_interval);
         session_active = true;
       }
 
@@ -1106,6 +1108,13 @@ class TransactionManagerRustShimAccess {
 std::pair<SharedTransactions, std::vector<uint64_t>> TransactionManager::packTrxs(PbftPeriod proposal_period,
                                                                                   uint64_t weight_limit) {
   return TransactionManagerRustShimAccess::packTrxs(*this, proposal_period, weight_limit);
+}
+
+std::pair<SharedTransactions, std::vector<uint64_t>> TransactionManager::packShardedTrxs(
+    PbftPeriod proposal_period, uint64_t weight_limit, uint16_t total_shards, uint16_t node_trx_shard,
+    uint64_t shard_period_interval) {
+  return TransactionManagerRustShimAccess::packTrxs(*this, proposal_period, weight_limit, total_shards, node_trx_shard,
+                                                    shard_period_interval);
 }
 
 uint64_t TransactionManager::estimateTransactions(const SharedTransactions& trxs, PbftPeriod proposal_period) {
