@@ -281,6 +281,12 @@ rustaxa::DagVerifyGasInput to_bridge_gas_input(uint64_t block_gas_estimation, ui
   return out;
 }
 
+rustaxa::DagDposAuthorizationFacts rust_dag_authorization_facts(const final_chain::FinalChain &final_chain,
+                                                                PbftPeriod proposal_period, const addr_t &proposer) {
+  return final_chain.rustFinalChainForRust().get_dag_dpos_authorization_facts(static_cast<uint64_t>(proposal_period),
+                                                                              proposer.asArray());
+}
+
 }  // namespace
 
 struct DagManager::RustDagManagerGraphs {
@@ -468,7 +474,7 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
     return {*reject, {}};
   }
 
-  const auto authorization_facts = final_chain_->dagDposAuthorizationFacts(proposal_period, blk->getSender());
+  const auto authorization_facts = rust_dag_authorization_facts(*final_chain_, proposal_period, blk->getSender());
   const bool vrf_key_found = authorization_facts.vrf_key_found;
   const uint64_t sender_eligible_vote_count = authorization_facts.sender_eligible_vote_count;
   const uint64_t vdf_sortition_max_vote_count = authorization_facts.vdf_sortition_max_vote_count;

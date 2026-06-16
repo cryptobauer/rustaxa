@@ -989,23 +989,31 @@ external-EVM state for block 3.
 Goal: move DAG proposer and DAG manager proposal-validation facts behind Rust fact ports so DAG consensus no longer
 mixes `DbStorage` proposal-period reads with C++ FinalChain height/DPoS/gas-limit calls.
 
-Status: planned. This is the main remaining consensus read-surface blocker for Slice 8.
+Status: partial. Direct C++ FinalChain calls for DAG authorization and proposer finalized-height checks are removed from
+the Rust-mode DAG proposer/manager shims. A fuller `DagProposalFacts` envelope remains open because transaction
+selection, gas estimation, sortition-params lookup, and DAG block materialization still cross existing C++ live-runtime
+boundaries.
 
 Current boundary:
 
-- `DagBlockProposer` still reads FinalChain height and gas limits through C++ and reads proposal periods/block hashes
-  through `DbStorage` compatibility APIs.
-- `DagManager` still verifies proposal period, expiry, period block hash, and DPoS authorization with a mix of
-  `DbStorage` and C++ FinalChain calls.
-- `FinalChain::dagDposAuthorizationFacts` already exposes part of the desired Rust-facing fact model.
+- `DagBlockProposer` now reads finalized height through `BridgeFinalChain::collect_pbft_final_chain_facts` and DAG
+  DPoS/VRF authorization through the shim-owned `BridgeFinalChain` runtime, not the C++ FinalChain compatibility API.
+- `DagManager` verification precheck, proposal-period lookup, and period-block-hash lookup already use the
+  storage-owned Rust DAG runtime, and DPoS/VRF authorization now uses the shim-owned `BridgeFinalChain` runtime.
+- `DagBlockProposer` still computes genesis gas-limit constants in C++ and keeps live transaction selection, VDF
+  proving, sortition-params access, and `DagBlock` object creation in the compatibility shell.
 
 Move:
 
-- define a `DagProposalFacts` Rust/bridge DTO containing proposal period, period block hash, last finalized period,
+- partially complete: direct DAG FinalChain authorization calls now route through `FinalChain::rustFinalChainForRust()`
+  and `BridgeFinalChain::get_dag_dpos_authorization_facts`
+- partially complete: proposer finalized-height checks now read the Rust FinalChain fact port instead of calling
+  `FinalChain::lastBlockNumber`
+- remaining: define a `DagProposalFacts` Rust/bridge DTO containing proposal period, period block hash, last finalized period,
   sender vote count, total vote count, VRF key status, and gas-limit facts needed by proposer/verification logic
-- load proposal-period and period-block-hash facts from `rustaxa-storage` in `rustaxa-consensus::dag`
-- collect DPoS/VRF facts through `BridgeFinalChain` or the existing Rust DPoS snapshot sidecar when available
-- route `DagBlockProposer` and `DagManager` shim decisions through the DTO while keeping C++ block/transaction
+- completed earlier: load proposal-period and period-block-hash facts from `rustaxa-storage` in `rustaxa-consensus::dag`
+- completed: collect DPoS/VRF facts through `BridgeFinalChain` instead of the C++ FinalChain compatibility method
+- remaining: route `DagBlockProposer` and `DagManager` shim decisions through the DTO while keeping C++ block/transaction
   materialization temporary
 
 Keep temporarily:
@@ -1013,12 +1021,16 @@ Keep temporarily:
 - C++ DAG block object construction and network packet materialization
 - external EVM gas/state execution
 - public debug/query reads of DAG blocks
+- transaction packing, gas estimation, VDF proving, and sortition-params live runtime until their own slices move them
 
 Done when:
 
-- DAG proposer/verification consensus decisions do not call `DbStorage` or C++ FinalChain directly for proposal facts
+- direct C++ FinalChain proposal-fact calls are removed from DAG proposer/verification
+- full completion still requires DAG proposer/verification decisions to avoid per-call `DbStorage`/C++ compatibility
+  routing for proposal facts by using the planned DTO
 - remaining DAG `DbStorage` references are sidecar materialization or query/admin compatibility
-- Slice 8 can remove DAG proposal-validation from its open read-surface list
+- Slice 8 can partially remove direct C++ FinalChain DAG proposal-validation reads but must keep the broader
+  DAG proposal DTO/runtime boundary open
 
 Validation:
 
@@ -1027,6 +1039,13 @@ Validation:
 - `cmake --build /build --target dag_test --parallel 12` or the narrow DAG shim target available in `/build`
 - `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`
 - `scripts/rewrite_storage_boundary_guard.sh --self-test && scripts/rewrite_storage_boundary_guard.sh`
+
+Validation note: the direct DAG authorization/finalized-height sub-slice passes `cargo test --manifest-path
+rust/Cargo.toml -p rustaxa-consensus dag`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge dag`,
+`cmake --build /build --target dag_shim_test --parallel 12`, `/build/bin/dag_shim_test`, `cmake --build /build
+--target dag_test --parallel 12`, `/build/bin/dag_test`, `cmake --build /build --target rust_storage_tests --parallel
+12`, `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`, and
+`scripts/rewrite_storage_boundary_guard.sh`.
 
 ## Slice 18: Transaction Account And Finalized Fact Port
 

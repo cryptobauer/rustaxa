@@ -1,5 +1,3 @@
-#include "dag/dag_block_proposer.hpp"
-
 #include <algorithm>
 #include <chrono>
 #include <future>
@@ -11,6 +9,7 @@
 
 #include "common/util.hpp"
 #include "config/config.hpp"
+#include "dag/dag_block_proposer.hpp"
 #include "dag/dag_manager.hpp"
 #include "final_chain/final_chain.hpp"
 #include "key_manager/key_manager.hpp"
@@ -39,6 +38,24 @@ dev::bytes dag_vrf_input(level_t level, const blk_hash_t& proposal_period_hash) 
   return to_bytes(bytes);
 }
 
+uint64_t rust_final_chain_last_block_number(const final_chain::FinalChain& final_chain) {
+  rustaxa::PbftFinalChainFactRequest request;
+  request.period = 0;
+  request.candidate_final_chain_hash = {};
+  request.collect_final_chain_hash = false;
+  request.validate_candidate_final_chain_hash = false;
+  request.collect_total_vote_count = false;
+  request.collect_address_vote_counts = false;
+  const auto facts = final_chain.rustFinalChainForRust().collect_pbft_final_chain_facts(std::move(request));
+  return facts.last_block_number;
+}
+
+rustaxa::DagDposAuthorizationFacts rust_dag_authorization_facts(const final_chain::FinalChain& final_chain,
+                                                                PbftPeriod proposal_period, const addr_t& proposer) {
+  return final_chain.rustFinalChainForRust().get_dag_dpos_authorization_facts(static_cast<uint64_t>(proposal_period),
+                                                                              proposer.asArray());
+}
+
 }  // namespace
 
 using namespace vdf_sortition;
@@ -54,9 +71,10 @@ DagBlockProposer::DagBlockProposer(const FullNodeConfig& config, std::shared_ptr
       final_chain_(std::move(final_chain)),
       nodes_dag_proposers_data_(),
       kDagProposeGasLimit(
-          std::min(config.propose_dag_gas_limit, config.genesis.getGasLimits(final_chain_->lastBlockNumber()).first)),
-      kPbftGasLimit(config.genesis.getGasLimits(final_chain_->lastBlockNumber()).second),
-      kDagGasLimit(config.genesis.getGasLimits(final_chain_->lastBlockNumber()).first) {
+          std::min(config.propose_dag_gas_limit,
+                   config.genesis.getGasLimits(rust_final_chain_last_block_number(*final_chain_)).first)),
+      kPbftGasLimit(config.genesis.getGasLimits(rust_final_chain_last_block_number(*final_chain_)).second),
+      kDagGasLimit(config.genesis.getGasLimits(rust_final_chain_last_block_number(*final_chain_)).first) {
   (void)key_manager;
   const auto& node_addr = dev::toAddress(config.getFirstWallet().node_secret);
   LOG_OBJECTS_CREATE("DAG_PROPOSER");
@@ -87,7 +105,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
     return false;
   }
 
-  if (*proposal_period + kDagExpiryLevelLimit < final_chain_->lastBlockNumber()) {
+  if (*proposal_period + kDagExpiryLevelLimit < rust_final_chain_last_block_number(*final_chain_)) {
     LOG(log_wr_) << "Trying to propose old block " << propose_level;
   }
 
@@ -96,7 +114,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   }
 
   const auto authorization_facts =
-      final_chain_->dagDposAuthorizationFacts(*proposal_period, node_dag_proposer_data->wallet.node_addr);
+      rust_dag_authorization_facts(*final_chain_, *proposal_period, node_dag_proposer_data->wallet.node_addr);
   rustaxa::DagProposerEligibilityInput eligibility_input;
   eligibility_input.proposal_period_found = true;
   eligibility_input.wallet_vrf_public_key = node_dag_proposer_data->wallet.vrf_pk.asArray();
@@ -371,9 +389,9 @@ std::shared_ptr<DagBlock> DagBlockProposer::createDagBlock(DagFrontier&& frontie
 }
 
 bool DagBlockProposer::hasDposSnapshotForProposal(PbftPeriod propose_period) const {
-  if (final_chain_->lastBlockNumber() < propose_period) {
-    LOG(log_wr_) << "Last finalized block period " << final_chain_->lastBlockNumber() << " < propose_period "
-                 << propose_period;
+  const auto last_block_number = rust_final_chain_last_block_number(*final_chain_);
+  if (last_block_number < propose_period) {
+    LOG(log_wr_) << "Last finalized block period " << last_block_number << " < propose_period " << propose_period;
     return false;
   }
   return true;
