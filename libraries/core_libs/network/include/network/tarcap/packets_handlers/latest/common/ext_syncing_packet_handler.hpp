@@ -7,6 +7,9 @@
 #include "pbft/pbft_manager.hpp"
 
 namespace taraxa {
+#ifndef RUSTAXA_ENABLE
+class DbStorage;
+#endif
 class PbftManager;
 }  // namespace taraxa
 

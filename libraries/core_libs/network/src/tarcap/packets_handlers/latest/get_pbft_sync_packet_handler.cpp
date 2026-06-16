@@ -6,7 +6,9 @@
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
 #include "pbft/pbft_chain.hpp"
 #include "pbft/pbft_manager.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "storage/storage.hpp"
+#endif
 #include "vote/pbft_vote.hpp"
 #include "vote/votes_bundle_rlp.hpp"
 #include "vote_manager/vote_manager.hpp"
@@ -107,7 +109,8 @@ void GetPbftSyncPacketHandler::sendPbftBlocks(const std::shared_ptr<TaraxaPeer> 
   for (auto block_period = from_period; block_period < from_period + blocks_to_transfer; block_period++) {
     bool last_block = (block_period == from_period + blocks_to_transfer - 1);
 #ifndef RUSTAXA_ENABLE
-    auto period_data = db_->getPeriodDataRaw(block_period);
+    auto period_data = db_->getPeriodDataRaw(block_period);  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy tarcap sync
+                                                             // reads remain outside Rust-enabled production routing.
 #else
     std::vector<std::shared_ptr<PbftVote>> reward_votes;
     if (pbft_chain_synced && last_block) {

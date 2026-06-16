@@ -4,9 +4,11 @@
 #include "network/tarcap/packets/latest/get_pbft_sync_packet.hpp"
 
 namespace taraxa {
+#ifndef RUSTAXA_ENABLE
+class DbStorage;
+#endif
 class PbftChain;
 class PbftManager;
-class DbStorage;
 class VoteManager;
 }  // namespace taraxa
 

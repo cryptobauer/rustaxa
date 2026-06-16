@@ -1331,16 +1331,30 @@ rustaxa-consensus final_chain`, `cargo test --manifest-path rust/Cargo.toml -p r
 Goal: separate network/app/query compatibility reads from consensus runtime storage ownership so Slice 8/9 can close
 without waiting for every public API to be rewritten.
 
-Status: planned. This is a classification and routing slice after the consensus-runtime blockers above.
+Status: in progress. The first sub-slice makes the Rust-mode tarcap constructor surface DB-free where PBFT sync egress is
+already routed through typed Rust runtime payloads, and extends the storage-boundary guard with an explicit
+network/tarcap compatibility marker.
 
 Current boundary:
 
 - tarcap constructors and sync handlers still carry `std::shared_ptr<DbStorage>` for legacy/reference and materialization
-  reasons.
+  reasons, but the latest PBFT sync handler's Rust-mode egress path uses `PbftManager::getPbftSyncEgressPayload` instead
+  of `DbStorage::getPeriodDataRaw`.
 - RPC/GraphQL/debug reads are now marked where they remain compatibility reads, but some can move to read-only Rust query
   APIs.
 - `get_pbft_sync_packet_handler` still has a legacy-mode `db_->getPeriodDataRaw` branch while Rust mode uses the typed
   PBFT sync egress payload.
+
+Implemented sub-slice:
+
+- guarded tarcap `DbStorage` forward declarations and the latest PBFT sync storage include so Rust-enabled packet handler
+  headers/sources no longer expose storage declarations for handlers that do not need them in Rust mode
+- removed an unused v4 PBFT sync storage include from the network compatibility path
+- added `RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY` to the storage-boundary guard and self-tests so future tarcap storage
+  additions must be explicitly marked and remain legacy/compatibility-only; unmarked network storage additions now fail
+  the guard just like unmarked RPC/GraphQL query reads
+- marked the remaining legacy PBFT sync `DbStorage::getPeriodDataRaw` read with
+  `RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY`; the Rust-mode branch continues to use the typed Rust sync payload
 
 Move:
 
@@ -1356,6 +1370,13 @@ Keep temporarily:
 - public JSON/GraphQL object materialization
 - legacy/reference network handler routes
 - snapshot toggling and app lifecycle/admin storage ownership
+
+Validation note: the network compatibility guard sub-slice passes `cmake --build /build --target network_test --parallel
+12`, `cmake --build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
+`scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff
+--check`. Running `/build/bin/network_test` still aborts in `NetworkTest.node_pbft_sync` with
+`RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: TM_FINAL_CHAIN_ACCOUNT_LOOKUP_FAILED`, after earlier network sync cases pass;
+that is the existing FinalChain/account lookup boundary and is not counted as a Slice 22 tarcap compatibility regression.
 
 Done when:
 

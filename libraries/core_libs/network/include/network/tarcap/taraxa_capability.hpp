@@ -17,7 +17,9 @@
 #include "slashing_manager/slashing_manager.hpp"
 
 namespace taraxa {
+#ifndef RUSTAXA_ENABLE
 class DbStorage;
+#endif
 class PbftManager;
 class PbftChain;
 class VoteManager;

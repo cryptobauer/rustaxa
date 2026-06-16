@@ -7,6 +7,10 @@ Usage: scripts/rewrite_storage_boundary_guard.sh [--base REV] [--self-test]
 
 Checks newly added C++ lines for storage-boundary violations in Rust rewrite
 code, including direct C++ FinalChain DPoS fact reads from consensus consumers.
+Read-only RPC/GraphQL compatibility must be marked RUSTAXA_QUERY_COMPAT_READ.
+Network/tarcap storage compatibility must be marked
+RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY and kept out of Rust-enabled production
+routing.
 By default the guard checks staged and unstaged changes. With --base it checks
 additions introduced since the merge base with REV.
 EOF
@@ -60,6 +64,11 @@ scan_diff() {
              line ~ /RUSTAXA_QUERY_COMPAT_READ/
     }
 
+    function is_network_compat_route(path, line) {
+      return (path ~ /^libraries\/core_libs\/network\/(include\/network\/tarcap|src\/tarcap)\//) &&
+             line ~ /RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY/
+    }
+
     function has_call(line, name) {
       return line ~ "(^|[^[:alnum:]_])" name "[[:space:]]*\\("
     }
@@ -89,6 +98,7 @@ scan_diff() {
     function report(line) {
       if (path != "" && is_cpp_file(path) && !is_allowlisted(path) &&
           !is_query_compat_read(path, line) &&
+          !is_network_compat_route(path, line) &&
           (is_forbidden_storage_route(line) || is_forbidden_final_chain_fact_route(path, line))) {
         printf "%s:%d: %s\n", path, new_line, line
         found = 1
@@ -201,6 +211,33 @@ EOF
 
   : >"$violations_file"
   cat <<'EOF' | scan_diff >"$violations_file" || true
+diff --git a/libraries/core_libs/network/src/tarcap/packets_handlers/latest/get_pbft_sync_packet_handler.cpp b/libraries/core_libs/network/src/tarcap/packets_handlers/latest/get_pbft_sync_packet_handler.cpp
+--- a/libraries/core_libs/network/src/tarcap/packets_handlers/latest/get_pbft_sync_packet_handler.cpp
++++ b/libraries/core_libs/network/src/tarcap/packets_handlers/latest/get_pbft_sync_packet_handler.cpp
+@@ -1,0 +1,1 @@
++auto period_data = db_->getPeriodDataRaw(block_period);
+EOF
+  if [ ! -s "$violations_file" ]; then
+    echo "storage-boundary guard self-test failed: unmarked network storage route was not rejected" >&2
+    exit 1
+  fi
+
+  : >"$violations_file"
+  cat <<'EOF' | scan_diff >"$violations_file" || true
+diff --git a/libraries/core_libs/network/src/tarcap/packets_handlers/latest/get_pbft_sync_packet_handler.cpp b/libraries/core_libs/network/src/tarcap/packets_handlers/latest/get_pbft_sync_packet_handler.cpp
+--- a/libraries/core_libs/network/src/tarcap/packets_handlers/latest/get_pbft_sync_packet_handler.cpp
++++ b/libraries/core_libs/network/src/tarcap/packets_handlers/latest/get_pbft_sync_packet_handler.cpp
+@@ -1,0 +1,1 @@
++auto period_data = db_->getPeriodDataRaw(block_period);  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy tarcap sync path.
+EOF
+  if [ -s "$violations_file" ]; then
+    echo "storage-boundary guard self-test failed: documented network compatibility route was rejected" >&2
+    cat "$violations_file" >&2
+    exit 1
+  fi
+
+  : >"$violations_file"
+  cat <<'EOF' | scan_diff >"$violations_file" || true
 diff --git a/libraries/core_libs/consensus/shims/vote_manager_shim/src/vote_manager_shim.cpp b/libraries/core_libs/consensus/shims/vote_manager_shim/src/vote_manager_shim.cpp
 --- a/libraries/core_libs/consensus/shims/vote_manager_shim/src/vote_manager_shim.cpp
 +++ b/libraries/core_libs/consensus/shims/vote_manager_shim/src/vote_manager_shim.cpp
@@ -269,6 +306,9 @@ Move storage reads/writes into rustaxa-storage-backed Rust runtime APIs and keep
 C++ limited to transport, external EVM execution, signing, timers, logging, and
 legacy view translation. Consensus consumers must also use typed Rust fact ports
 for FinalChain DPoS facts instead of adding new direct C++ FinalChain calls.
+RPC/GraphQL query additions require RUSTAXA_QUERY_COMPAT_READ, and network/tarcap
+compatibility additions require RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY plus legacy
+guarding so they cannot become Rust-mode consensus storage routes.
 
 Violations:
 EOF
