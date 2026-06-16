@@ -162,6 +162,33 @@ EOF
 
   : >"$violations_file"
   cat <<'EOF' | scan_diff >"$violations_file" || true
+diff --git a/libraries/core_libs/network/graphql/src/query.cpp b/libraries/core_libs/network/graphql/src/query.cpp
+--- a/libraries/core_libs/network/graphql/src/query.cpp
++++ b/libraries/core_libs/network/graphql/src/query.cpp
+@@ -1,0 +1,1 @@
++auto blocks = db_->getDagBlocksAtLevel(level, 1);
+EOF
+  if [ ! -s "$violations_file" ]; then
+    echo "storage-boundary guard self-test failed: unmarked GraphQL storage read was not rejected" >&2
+    exit 1
+  fi
+
+  : >"$violations_file"
+  cat <<'EOF' | scan_diff >"$violations_file" || true
+diff --git a/libraries/core_libs/network/graphql/src/query.cpp b/libraries/core_libs/network/graphql/src/query.cpp
+--- a/libraries/core_libs/network/graphql/src/query.cpp
++++ b/libraries/core_libs/network/graphql/src/query.cpp
+@@ -1,0 +1,1 @@
++auto blocks = db_->getDagBlocksAtLevel(level, 1);  // RUSTAXA_QUERY_COMPAT_READ: legacy GraphQL compatibility read.
+EOF
+  if [ -s "$violations_file" ]; then
+    echo "storage-boundary guard self-test failed: documented GraphQL compatibility read was rejected" >&2
+    cat "$violations_file" >&2
+    exit 1
+  fi
+
+  : >"$violations_file"
+  cat <<'EOF' | scan_diff >"$violations_file" || true
 diff --git a/libraries/core_libs/consensus/shims/storage_shim/src/storage_shim.cpp b/libraries/core_libs/consensus/shims/storage_shim/src/storage_shim.cpp
 --- a/libraries/core_libs/consensus/shims/storage_shim/src/storage_shim.cpp
 +++ b/libraries/core_libs/consensus/shims/storage_shim/src/storage_shim.cpp

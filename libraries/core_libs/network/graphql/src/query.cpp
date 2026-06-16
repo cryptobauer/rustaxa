@@ -16,14 +16,15 @@ namespace graphql::taraxa {
 
 Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
              std::shared_ptr<::taraxa::DagManager> dag_manager, std::shared_ptr<::taraxa::PbftManager> pbft_manager,
-             std::shared_ptr<::taraxa::TransactionManager> transaction_manager, std::shared_ptr<::taraxa::DbStorage> db,
+             std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
+             std::shared_ptr<::taraxa::DbStorage> db,  // RUSTAXA_QUERY_COMPAT_READ: GraphQL query storage owner.
              std::shared_ptr<::taraxa::GasPricer> gas_pricer, std::weak_ptr<::taraxa::Network> network,
              uint64_t chain_id) noexcept
     : final_chain_(std::move(final_chain)),
       dag_manager_(std::move(dag_manager)),
       pbft_manager_(std::move(pbft_manager)),
       transaction_manager_(std::move(transaction_manager)),
-      db_(std::move(db)),
+      db_(std::move(db)),  // RUSTAXA_QUERY_COMPAT_READ: GraphQL query compatibility storage owner.
       gas_pricer_(std::move(gas_pricer)),
       network_(std::move(network)),
       kChainId(chain_id) {
@@ -58,7 +59,7 @@ std::shared_ptr<object::Block> Query::getBlock(std::optional<response::Value>&& 
         final_chain_, transaction_manager_, get_block_by_num_, ::taraxa::blk_hash_t(), block_header));
   }
 
-  auto pbft_block = db_->getPbftBlock(block_header->number);
+  auto pbft_block = db_->getPbftBlock(block_header->number);  // RUSTAXA_QUERY_COMPAT_READ
   if (!pbft_block) {
     // shouldn't be possible
     return nullptr;
@@ -136,7 +137,7 @@ std::shared_ptr<object::DagBlock> Query::getDagBlock(std::optional<response::Val
       taraxa_dag_block = dag_manager_->getDagBlock(hash);
     }
   } else {
-    auto dag_blocks = db_->getDagBlocksAtLevel(dag_manager_->getMaxLevel(), 1);
+    auto dag_blocks = db_->getDagBlocksAtLevel(dag_manager_->getMaxLevel(), 1);  // RUSTAXA_QUERY_COMPAT_READ
 
     if (dag_blocks.size() > 0) {
       taraxa_dag_block = dag_blocks.front();
@@ -158,7 +159,7 @@ std::vector<std::shared_ptr<object::DagBlock>> Query::getPeriodDagBlocks(
   } else {
     period = final_chain_->lastBlockNumber();
   }
-  auto dag_blocks = db_->getFinalizedDagBlockByPeriod(period);
+  auto dag_blocks = db_->getFinalizedDagBlockByPeriod(period);  // RUSTAXA_QUERY_COMPAT_READ
   if (dag_blocks.size()) {
     blocks.reserve(dag_blocks.size());
     for (auto block : dag_blocks) {
@@ -193,7 +194,8 @@ std::vector<std::shared_ptr<object::DagBlock>> Query::getDagBlocks(std::optional
     return taraxa_dag_blocks.size();
   };
 
-  auto act_count = addDagBlocks(db_->getDagBlocksAtLevel(act_dag_level, 1), dag_blocks_result);
+  auto act_count =
+      addDagBlocks(db_->getDagBlocksAtLevel(act_dag_level, 1), dag_blocks_result);  // RUSTAXA_QUERY_COMPAT_READ
 
   if (!countArg) {
     return dag_blocks_result;
@@ -211,7 +213,8 @@ std::vector<std::shared_ptr<object::DagBlock>> Query::getDagBlocks(std::optional
       return dag_blocks_result;
     }
 
-    act_count += addDagBlocks(db_->getDagBlocksAtLevel(act_dag_level, 1), dag_blocks_result);
+    act_count +=
+        addDagBlocks(db_->getDagBlocksAtLevel(act_dag_level, 1), dag_blocks_result);  // RUSTAXA_QUERY_COMPAT_READ
   }
 
   return dag_blocks_result;

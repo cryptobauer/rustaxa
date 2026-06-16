@@ -15,8 +15,9 @@ class Query {
   explicit Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
                  std::shared_ptr<::taraxa::DagManager> dag_manager, std::shared_ptr<::taraxa::PbftManager> pbft_manager,
                  std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
-                 std::shared_ptr<::taraxa::DbStorage> db, std::shared_ptr<::taraxa::GasPricer> gas_pricer,
-                 std::weak_ptr<::taraxa::Network> network, uint64_t chain_id) noexcept;
+                 std::shared_ptr<::taraxa::DbStorage> db,  // RUSTAXA_QUERY_COMPAT_READ: GraphQL query storage owner.
+                 std::shared_ptr<::taraxa::GasPricer> gas_pricer, std::weak_ptr<::taraxa::Network> network,
+                 uint64_t chain_id) noexcept;
 
   std::shared_ptr<object::Block> getBlock(std::optional<response::Value>&& numberArg,
                                           std::optional<response::Value>&& hashArg) const;
@@ -43,7 +44,7 @@ class Query {
   std::shared_ptr<::taraxa::DagManager> dag_manager_;
   std::shared_ptr<::taraxa::PbftManager> pbft_manager_;
   std::shared_ptr<::taraxa::TransactionManager> transaction_manager_;
-  std::shared_ptr<::taraxa::DbStorage> db_;
+  std::shared_ptr<::taraxa::DbStorage> db_;  // RUSTAXA_QUERY_COMPAT_READ
   std::shared_ptr<::taraxa::GasPricer> gas_pricer_;
   std::weak_ptr<::taraxa::Network> network_;
   const uint64_t kChainId;

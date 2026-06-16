@@ -719,14 +719,18 @@ rust/Cargo.toml -p rustaxa-bridge pbft_manager`, `cmake --build /build --target 
 Goal: separate RPC/GraphQL/debug compatibility reads from consensus storage ownership and prevent unmarked query debt
 from looking like unfinished consensus migration.
 
-Status: planned.
+Status: complete. Existing GraphQL `DbStorage` reads are now marked with `RUSTAXA_QUERY_COMPAT_READ`, matching the
+already-marked RPC/Debug query reads. The storage-boundary guard self-test now explicitly rejects unmarked GraphQL storage
+reads and accepts documented GraphQL compatibility reads, so query debt remains visible without being counted as
+unfinished consensus storage ownership.
 
 Current boundary:
 
-- RPC and Debug `getDB()` reads are marked with `RUSTAXA_QUERY_COMPAT_READ`.
-- GraphQL query code still has `DbStorage` constructor/state and calls `getPbftBlock`, `getDagBlocksAtLevel`, and
-  `getFinalizedDagBlockByPeriod` without compatibility markers.
-- These reads serve API responses and should not block consensus storage ownership, but they should be visible debt.
+- completed: RPC and Debug `getDB()` reads are marked with `RUSTAXA_QUERY_COMPAT_READ`.
+- completed: GraphQL query storage owner plus `getPbftBlock`, `getDagBlocksAtLevel`, and
+  `getFinalizedDagBlockByPeriod` reads are marked with `RUSTAXA_QUERY_COMPAT_READ`.
+- These reads serve API responses and do not block consensus storage ownership, but they remain visible query
+  compatibility debt.
 
 Move:
 
@@ -743,10 +747,10 @@ Keep temporarily:
 
 Done when:
 
-- Every Rust-mode RPC/GraphQL/debug `DbStorage` read is either replaced by a read-only Rust query API or marked as
+- completed: every Rust-mode RPC/GraphQL/debug `DbStorage` read is either replaced by a read-only Rust query API or marked as
   `RUSTAXA_QUERY_COMPAT_READ`.
-- The storage-boundary guard rejects new unmarked GraphQL storage reads.
-- Query compatibility debt is not counted as consensus storage migration work.
+- completed: the storage-boundary guard rejects new unmarked GraphQL storage reads.
+- completed: query compatibility debt is not counted as consensus storage migration work.
 
 Validation:
 
@@ -756,6 +760,12 @@ Validation:
 - `cmake --build /build --target rpc_plugin --parallel 12`
 - `cmake --build /build --target rpc_test --parallel 12 && /build/bin/rpc_test`
 - GraphQL build/test target if configured
+
+Validation note: the GraphQL query compatibility split passes `scripts/rewrite_storage_boundary_guard.sh --self-test`,
+`scripts/rewrite_storage_boundary_guard.sh`, `git diff --check`, `cmake --build /build --target rpc_plugin --parallel
+12`, `cmake --build /build --target rpc_test --parallel 12`, and `/build/bin/rpc_test`. The first parallel `rpc_test`
+build attempt overlapped with `rpc_plugin` in the shared `jsonrpccpp` external configure step and failed in generated
+CMake config output; rerunning `rpc_test` alone with `--parallel 12` succeeded.
 
 ## Slice 14: FinalChain/EVM Fact Port For Consensus
 
