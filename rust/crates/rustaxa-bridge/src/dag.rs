@@ -1,12 +1,12 @@
 use crate::ffi::rustaxa_ffi::{
-    DagBlockLookup, DagBlockTransactionRefs, DagExpiredTransactionCleanupPayload,
-    DagExpiredTransactionCleanupPlan, DagExpiredTransactionFact, DagFinalizedCounterUpdate,
-    DagFrontier, DagHash, DagLevelHashes, DagManagerAnchors, DagManagerBlock,
-    DagManagerFinalizationApplyPayload, DagManagerFinalizationCleanupPayload,
-    DagManagerFinalizationPlan, DagManagerNonFinalizedSize, DagManagerNonFinalizedSyncPayload,
-    DagManagerRuntimeSyncSnapshot, DagManagerSnapshot, DagOrder, DagPersistenceCounters,
-    DagPivotTipsValidation, DagProposerAttemptInput, DagProposerAttemptPlan,
-    DagProposerBlockConstructionInput, DagProposerBlockConstructionPlan,
+    DagAddBlockEffectInput, DagAddBlockEffectPlan, DagBlockLookup, DagBlockTransactionRefs,
+    DagExpiredTransactionCleanupPayload, DagExpiredTransactionCleanupPlan,
+    DagExpiredTransactionFact, DagFinalizedCounterUpdate, DagFrontier, DagHash, DagLevelHashes,
+    DagManagerAnchors, DagManagerBlock, DagManagerFinalizationApplyPayload,
+    DagManagerFinalizationCleanupPayload, DagManagerFinalizationPlan, DagManagerNonFinalizedSize,
+    DagManagerNonFinalizedSyncPayload, DagManagerRuntimeSyncSnapshot, DagManagerSnapshot, DagOrder,
+    DagPersistenceCounters, DagPivotTipsValidation, DagProposerAttemptInput,
+    DagProposerAttemptPlan, DagProposerBlockConstructionInput, DagProposerBlockConstructionPlan,
     DagProposerBlockIntentInput, DagProposerEligibilityDecision, DagProposerEligibilityInput,
     DagProposerFrontierFacts, DagProposerPostPackInput, DagProposerPostPackPlan,
     DagProposerRetryResetInput, DagProposerRetryResetPlan, DagProposerSignedBlockIntent,
@@ -33,7 +33,7 @@ use rustaxa_consensus::dag::{
     dag_block_exists_in_storage, dag_persistence_counters_from_storage,
     decide_dag_verify_vdf_dpos_authorization, derive_frontier, ensure_proposal_period_mapping,
     finalize_dag_proposer_signed_block_intent, load_dag_block_from_storage,
-    period_block_hash_from_storage, plan_dag_proposer_attempt,
+    period_block_hash_from_storage, plan_dag_add_block_effects, plan_dag_proposer_attempt,
     plan_dag_proposer_block_construction, plan_dag_proposer_block_construction_from_storage,
     plan_dag_proposer_block_intent, plan_dag_proposer_post_pack, plan_dag_proposer_retry_reset,
     plan_dag_proposer_stale_proof, plan_dag_proposer_vdf_wait, plan_dag_verify_transaction_query,
@@ -1483,6 +1483,39 @@ pub fn dag_proposer_finalize_signed_block_intent(
         block_rlp: signed.block_rlp,
         block_hash: signed.block_hash.0,
     })
+}
+
+pub fn dag_plan_add_block_effects(input: DagAddBlockEffectInput) -> DagAddBlockEffectPlan {
+    let plan = plan_dag_add_block_effects(rustaxa_consensus::dag::DagAddBlockEffectInput {
+        save: input.save,
+        proposed: input.proposed,
+        block_exists: input.block_exists,
+        block_level: input.block_level,
+        dag_expiry_level: input.dag_expiry_level,
+        references_available: input.references_available,
+        missing_references: input
+            .missing_references
+            .into_iter()
+            .map(|hash| H256::from(hash.hash))
+            .collect(),
+    });
+    DagAddBlockEffectPlan {
+        accepted: plan.accepted,
+        duplicate: plan.duplicate,
+        expired: plan.expired,
+        persist_transactions: plan.persist_transactions,
+        persist_block: plan.persist_block,
+        add_to_graph: plan.add_to_graph,
+        mirror_legacy_graph: plan.mirror_legacy_graph,
+        emit_verified: plan.emit_verified,
+        gossip: plan.gossip,
+        proposed: plan.proposed,
+        missing_references: plan
+            .missing_references
+            .into_iter()
+            .map(|hash| DagHash { hash: hash.0 })
+            .collect(),
+    }
 }
 
 fn dag_proposer_decision(
@@ -3440,6 +3473,35 @@ mod tests {
 
         assert!(!signed.block_rlp.is_empty());
         assert_ne!(signed.block_hash, [0; 32]);
+    }
+
+    #[test]
+    fn dag_add_block_effect_bridge_maps_duplicate_and_missing_refs() {
+        let duplicate = dag_plan_add_block_effects(DagAddBlockEffectInput {
+            save: true,
+            proposed: true,
+            block_exists: true,
+            block_level: 7,
+            dag_expiry_level: 3,
+            references_available: true,
+            missing_references: vec![],
+        });
+        assert!(duplicate.accepted);
+        assert!(duplicate.duplicate);
+        assert!(!duplicate.persist_block);
+        assert!(!duplicate.add_to_graph);
+
+        let missing = dag_plan_add_block_effects(DagAddBlockEffectInput {
+            save: true,
+            proposed: false,
+            block_exists: false,
+            block_level: 7,
+            dag_expiry_level: 3,
+            references_available: false,
+            missing_references: vec![DagHash { hash: [0x77; 32] }],
+        });
+        assert!(!missing.accepted);
+        assert_eq!(missing.missing_references[0].hash, [0x77; 32]);
     }
 
     #[test]

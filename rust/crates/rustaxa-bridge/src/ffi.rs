@@ -3567,6 +3567,32 @@ pub mod rustaxa_ffi {
         block_hash: [u8; 32],
     }
 
+    /// Facts used by Rust to plan one DAG add-block execution.
+    struct DagAddBlockEffectInput {
+        save: bool,
+        proposed: bool,
+        block_exists: bool,
+        block_level: u64,
+        dag_expiry_level: u64,
+        references_available: bool,
+        missing_references: Vec<DagHash>,
+    }
+
+    /// Typed side effects C++ executes for a Rust-planned DAG add-block attempt.
+    struct DagAddBlockEffectPlan {
+        accepted: bool,
+        duplicate: bool,
+        expired: bool,
+        persist_transactions: bool,
+        persist_block: bool,
+        add_to_graph: bool,
+        mirror_legacy_graph: bool,
+        emit_verified: bool,
+        gossip: bool,
+        proposed: bool,
+        missing_references: Vec<DagHash>,
+    }
+
     /// Rust VDF and DPoS authorization decision.
     struct DagVerifyVdfDposDecision {
         continue_validation: bool,
@@ -4130,6 +4156,7 @@ pub mod rustaxa_ffi {
         pub fn dag_proposer_finalize_signed_block_intent(
             input: DagProposerSignedBlockIntentInput,
         ) -> Result<DagProposerSignedBlockIntent>;
+        pub fn dag_plan_add_block_effects(input: DagAddBlockEffectInput) -> DagAddBlockEffectPlan;
         pub fn dag_verify_authorization(
             input: DagVerifyAuthorizationInput,
         ) -> DagVerifyAuthorizationResult;

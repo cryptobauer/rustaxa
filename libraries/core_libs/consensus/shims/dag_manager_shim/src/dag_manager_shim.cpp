@@ -574,39 +574,60 @@ std::pair<bool, std::vector<blk_hash_t>> DagManager::addDagBlock(const std::shar
   const auto blk_hash = blk->getHash();
   std::scoped_lock order_lock(rust_order_dag_blocks_mutex_);
 
+  rustaxa::DagAddBlockEffectInput add_input;
+  add_input.save = save;
+  add_input.proposed = proposed;
+  add_input.block_exists = false;
+  add_input.block_level = blk->getLevel();
+  add_input.dag_expiry_level = getDagExpiryLevel();
+  add_input.references_available = true;
   if (save) {
     {
       std::shared_lock lock(rust_graphs_mutex_);
-      if (rust_graphs_->runtime->dag_manager_runtime_block_exists(to_bridge_hash(blk_hash))) {
-        return {true, {}};
+      add_input.block_exists = rust_graphs_->runtime->dag_manager_runtime_block_exists(to_bridge_hash(blk_hash));
+    }
+    if (!add_input.block_exists && blk->getLevel() >= add_input.dag_expiry_level) {
+      auto res = pivotAndTipsAvailable(blk);
+      add_input.references_available = res.first;
+      add_input.missing_references.reserve(res.second.size());
+      for (const auto &missing : res.second) {
+        add_input.missing_references.push_back(to_bridge_dag_hash(missing));
       }
     }
+  }
 
-    if (blk->getLevel() < getDagExpiryLevel()) {
-      std::cerr << "DagManager: dropping old block " << blk_hash << ". Expiry level: " << getDagExpiryLevel()
-                << ". Block level: " << blk->getLevel() << std::endl;
-      return {false, {}};
-    }
+  const auto add_plan = rustaxa::dag_plan_add_block_effects(std::move(add_input));
+  if (add_plan.duplicate) {
+    return {true, {}};
+  }
+  if (add_plan.expired) {
+    std::cerr << "DagManager: dropping old block " << blk_hash << ". Expiry level: " << getDagExpiryLevel()
+              << ". Block level: " << blk->getLevel() << std::endl;
+    return {false, {}};
+  }
+  if (!add_plan.accepted) {
+    return {false, from_bridge_dag_hashes(add_plan.missing_references)};
+  }
 
-    auto res = pivotAndTipsAvailable(blk);
-    if (!res.first) {
-      return res;
-    }
-
+  if (add_plan.persist_transactions) {
     trx_mgr_->saveTransactionsFromDagBlock(trxs);
+  }
+  if (add_plan.persist_block) {
     auto block_rlp = to_rust_vec(blk->rlp(true));
     std::shared_lock lock(rust_graphs_mutex_);
     rust_graphs_->runtime->dag_manager_runtime_save_block(to_bridge_hash(blk_hash), blk->getLevel(),
                                                           blk->getTips().size(), std::move(block_rlp));
   }
 
-  bool added_to_rust_graph = false;
-  {
-    std::unique_lock lock(rust_graphs_mutex_);
-    added_to_rust_graph = addBlockToRustGraphs(blk);
-  }
-  if (!added_to_rust_graph) {
-    throw std::runtime_error("DagManager: failed to add persisted DAG block to Rust graph");
+  if (add_plan.add_to_graph) {
+    bool added_to_rust_graph = false;
+    {
+      std::unique_lock lock(rust_graphs_mutex_);
+      added_to_rust_graph = addBlockToRustGraphs(blk);
+    }
+    if (!added_to_rust_graph) {
+      throw std::runtime_error("DagManager: failed to add persisted DAG block to Rust graph");
+    }
   }
 
   seen_blocks_.insert(blk_hash, blk);
@@ -614,12 +635,16 @@ std::pair<bool, std::vector<blk_hash_t>> DagManager::addDagBlock(const std::shar
   // TODO(rust-rewrite): remove this compatibility mirror once out-of-scope
   // verify/sync accessors no longer depend on DagManagerOld in-memory DAG state.
   // This call does not persist, validate, emit, or gossip.
-  DagManagerOld::addDagBlock(blk, {}, false, false);
+  if (add_plan.mirror_legacy_graph) {
+    DagManagerOld::addDagBlock(blk, {}, false, false);
+  }
 
-  if (save) {
+  if (add_plan.emit_verified) {
     block_verified_.emit(blk);
+  }
+  if (add_plan.gossip) {
     if (std::shared_ptr<Network> net = network_.lock()) {
-      net->gossipDagBlock(blk, proposed, trxs);
+      net->gossipDagBlock(blk, add_plan.proposed, trxs);
     }
   }
 

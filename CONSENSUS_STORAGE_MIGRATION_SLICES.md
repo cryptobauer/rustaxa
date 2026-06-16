@@ -2080,10 +2080,12 @@ Validation note: the proposal-payload session slice adds a shim-owned `PackedPro
 Goal: replace final DAG proposer C++ block assembly with a Rust DAG block intent that carries canonical block bytes,
 side-effect intents, and compatibility materialization data.
 
-Status: in progress. The proposer no longer calls the C++ signing constructor for the final block. Rust now plans the
+Status: complete. The proposer no longer calls the C++ signing constructor for the final block. Rust now plans the
 unsigned DAG block intent, returns the canonical signing hash, validates the temporary C++ recoverable signature, and
-returns canonical signed DAG block RLP plus block hash. C++ still supplies the timestamp and signature, parses the
-Rust-produced RLP into a compatibility `DagBlock`, and executes `DagManager::addDagBlock` storage/graph/network effects.
+returns canonical signed DAG block RLP plus block hash. Rust also plans the add-block effect from storage/runtime facts:
+duplicate, expiry, missing references, transaction/block persistence, graph insertion, verification emission, gossip,
+and proposed-block status. C++ still supplies the timestamp and signature, parses the Rust-produced RLP into a
+compatibility `DagBlock`, and temporarily executes the typed graph/event/network effects.
 
 Move:
 
@@ -2123,6 +2125,17 @@ rust/Cargo.toml --all --check`, `cargo test --manifest-path rust/Cargo.toml -p r
 `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`,
 `scripts/rewrite_storage_boundary_guard.sh --self-test && scripts/rewrite_storage_boundary_guard.sh`, `git diff
 --check`, and `.githooks/pre-commit`.
+
+Validation note: the add-block effect sub-slice adds `DagAddBlockEffectInput` and `DagAddBlockEffectPlan` in
+`rustaxa-consensus`, exposes `dag_plan_add_block_effects` through the bridge, and routes the Rust-mode
+`DagManager::addDagBlock` shim through the typed plan before executing storage, graph, verification, and gossip effects.
+It passes `cargo fmt --manifest-path rust/Cargo.toml --all --check`, `cargo test --manifest-path rust/Cargo.toml -p
+rustaxa-consensus dag`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge dag`,
+`cmake --build /build --target dag_shim_test --parallel 12`, `/build/bin/dag_shim_test`,
+`cmake --build /build --target dag_test --parallel 12`, `/build/bin/dag_test`,
+`cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`,
+`scripts/rewrite_storage_boundary_guard.sh --self-test && scripts/rewrite_storage_boundary_guard.sh`, and `git diff
+--check`.
 
 ## Slice 30: FinalChain Account Publication Contract
 

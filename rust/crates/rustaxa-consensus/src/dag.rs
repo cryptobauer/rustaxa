@@ -363,6 +363,41 @@ pub struct DagProposerSignedBlockIntent {
     pub block_hash: H256,
 }
 
+/// Facts required to plan one `DagManager::addDagBlock` execution.
+///
+/// C++ still sources live graph/reference facts while the add-block executor is migrating. Rust owns the protocol
+/// decision over those facts and returns explicit side-effect flags so the shim executes storage, graph, legacy mirror,
+/// event, and gossip effects in a typed order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagAddBlockEffectInput {
+    pub save: bool,
+    pub proposed: bool,
+    pub block_exists: bool,
+    pub block_level: u64,
+    pub dag_expiry_level: u64,
+    pub references_available: bool,
+    pub missing_references: Vec<H256>,
+}
+
+/// Typed side-effect plan for `DagManager::addDagBlock`.
+///
+/// `accepted` mirrors the public C++ return status. When `accepted` is true, C++ executes only the effect flags set by
+/// Rust. Duplicate blocks are accepted with no effects, matching the legacy idempotent save path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagAddBlockEffectPlan {
+    pub accepted: bool,
+    pub duplicate: bool,
+    pub expired: bool,
+    pub persist_transactions: bool,
+    pub persist_block: bool,
+    pub add_to_graph: bool,
+    pub mirror_legacy_graph: bool,
+    pub emit_verified: bool,
+    pub gossip: bool,
+    pub proposed: bool,
+    pub missing_references: Vec<H256>,
+}
+
 /// Inputs for deterministic transaction availability checks in
 /// `DagManager::verifyBlock`.
 ///
@@ -2021,6 +2056,75 @@ fn keccak256(data: &[u8]) -> H256 {
     hasher.update(data);
     hasher.finalize(&mut out);
     H256(out)
+}
+
+/// Plans add-block side effects from explicit graph/storage facts.
+///
+/// This function performs no storage writes, graph mutation, logging, event emission, or network gossip. It centralizes
+/// the add-block branch decisions so the C++ shim becomes an executor for Rust-returned effects while live graph and
+/// network ownership are still outside the current migration boundary.
+pub fn plan_dag_add_block_effects(input: DagAddBlockEffectInput) -> DagAddBlockEffectPlan {
+    if input.save && input.block_exists {
+        return DagAddBlockEffectPlan {
+            accepted: true,
+            duplicate: true,
+            expired: false,
+            persist_transactions: false,
+            persist_block: false,
+            add_to_graph: false,
+            mirror_legacy_graph: false,
+            emit_verified: false,
+            gossip: false,
+            proposed: input.proposed,
+            missing_references: Vec::new(),
+        };
+    }
+
+    if input.save && input.block_level < input.dag_expiry_level {
+        return DagAddBlockEffectPlan {
+            accepted: false,
+            duplicate: false,
+            expired: true,
+            persist_transactions: false,
+            persist_block: false,
+            add_to_graph: false,
+            mirror_legacy_graph: false,
+            emit_verified: false,
+            gossip: false,
+            proposed: input.proposed,
+            missing_references: Vec::new(),
+        };
+    }
+
+    if input.save && !input.references_available {
+        return DagAddBlockEffectPlan {
+            accepted: false,
+            duplicate: false,
+            expired: false,
+            persist_transactions: false,
+            persist_block: false,
+            add_to_graph: false,
+            mirror_legacy_graph: false,
+            emit_verified: false,
+            gossip: false,
+            proposed: input.proposed,
+            missing_references: input.missing_references,
+        };
+    }
+
+    DagAddBlockEffectPlan {
+        accepted: true,
+        duplicate: false,
+        expired: false,
+        persist_transactions: input.save,
+        persist_block: input.save,
+        add_to_graph: true,
+        mirror_legacy_graph: true,
+        emit_verified: input.save,
+        gossip: input.save,
+        proposed: input.proposed,
+        missing_references: Vec::new(),
+    }
 }
 
 /// Plans one DAG proposal attempt up to the live transaction-packing boundary.
@@ -5267,6 +5371,89 @@ mod tests {
             err.to_string()
                 .contains("DAG_PROPOSER_BLOCK_INTENT_SIGNATURE_LENGTH")
         );
+    }
+
+    #[test]
+    fn dag_add_block_effects_accept_duplicate_without_side_effects() {
+        let plan = plan_dag_add_block_effects(DagAddBlockEffectInput {
+            save: true,
+            proposed: true,
+            block_exists: true,
+            block_level: 7,
+            dag_expiry_level: 3,
+            references_available: true,
+            missing_references: vec![],
+        });
+
+        assert!(plan.accepted);
+        assert!(plan.duplicate);
+        assert!(!plan.persist_block);
+        assert!(!plan.add_to_graph);
+        assert!(!plan.gossip);
+    }
+
+    #[test]
+    fn dag_add_block_effects_reject_expired_and_missing_references() {
+        let expired = plan_dag_add_block_effects(DagAddBlockEffectInput {
+            save: true,
+            proposed: false,
+            block_exists: false,
+            block_level: 2,
+            dag_expiry_level: 3,
+            references_available: true,
+            missing_references: vec![],
+        });
+        assert!(!expired.accepted);
+        assert!(expired.expired);
+
+        let missing = plan_dag_add_block_effects(DagAddBlockEffectInput {
+            save: true,
+            proposed: false,
+            block_exists: false,
+            block_level: 4,
+            dag_expiry_level: 3,
+            references_available: false,
+            missing_references: vec![h(10), h(11)],
+        });
+        assert!(!missing.accepted);
+        assert_eq!(missing.missing_references, vec![h(10), h(11)]);
+        assert!(!missing.persist_transactions);
+    }
+
+    #[test]
+    fn dag_add_block_effects_plans_save_and_no_save_paths() {
+        let save = plan_dag_add_block_effects(DagAddBlockEffectInput {
+            save: true,
+            proposed: true,
+            block_exists: false,
+            block_level: 4,
+            dag_expiry_level: 3,
+            references_available: true,
+            missing_references: vec![],
+        });
+        assert!(save.persist_transactions);
+        assert!(save.persist_block);
+        assert!(save.add_to_graph);
+        assert!(save.emit_verified);
+        assert!(save.gossip);
+        assert!(save.proposed);
+
+        let no_save = plan_dag_add_block_effects(DagAddBlockEffectInput {
+            save: false,
+            proposed: false,
+            block_exists: false,
+            block_level: 1,
+            dag_expiry_level: 3,
+            references_available: false,
+            missing_references: vec![h(99)],
+        });
+        assert!(no_save.accepted);
+        assert!(!no_save.persist_transactions);
+        assert!(!no_save.persist_block);
+        assert!(no_save.add_to_graph);
+        assert!(no_save.mirror_legacy_graph);
+        assert!(!no_save.emit_verified);
+        assert!(!no_save.gossip);
     }
 
     #[test]
