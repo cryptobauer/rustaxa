@@ -827,6 +827,20 @@ Completed in the pillar-manager DPoS fact-port sub-slice:
   `BridgeFinalChain::get_dpos_validators_eligible_vote_counts` instead of calling C++
   `FinalChain::dposValidatorsEligibleVoteCounts`.
 
+Completed in the KeyManager VRF fact-port sub-slice:
+
+- `KeyManager::getVrfKey` now reads block-scoped validator VRF public keys through
+  `FinalChain::rustFinalChainForRust().get_vrf_key_at_block` instead of calling the C++ compatibility method
+  `FinalChain::dposGetVrfKey`.
+- The legacy cache and neighbor-block retry order are preserved, while missing Rust FinalChain facts still return
+  `nullptr` instead of falling back to `KeyManagerOld`.
+
+Validation note: the KeyManager VRF fact-port sub-slice passes `cargo test --manifest-path rust/Cargo.toml -p
+rustaxa-bridge final_chain`, `cmake --build /build --target vote_test --parallel 12`, `/build/bin/vote_test`, `cmake
+--build /build --target rust_storage_tests --parallel 12`, `/build/bin/rust_storage_tests`,
+`scripts/rewrite_storage_boundary_guard.sh --self-test`, `scripts/rewrite_storage_boundary_guard.sh`, and `git diff
+--check`.
+
 Move:
 
 - define narrow Rust consensus fact ports for DPoS vote counts/eligibility, VRF keys, bridge root/epoch, account nonce
