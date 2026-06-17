@@ -206,25 +206,35 @@ storage-handle, and column-family usage outside the storage shim, legacy storage
 rejects new direct C++ FinalChain DPoS fact reads from consensus consumers now that those paths have a typed Rust
 FinalChain fact port.
 
-Current state: storage is not fully direct-Rust yet. In Rust mode, the durable backend for migrated rows is
-`rustaxa-storage`, but storage ownership still crosses temporary compatibility layers. `BridgeStorage` remains the
-CXX-facing handle for many bridge calls, especially PBFT finalization, transaction-manager storage queries, DAG/proposed
-blocks, rewards, gas-pricer, and selected PBFT-manager glue. `DbStorage` also remains the C++ lifecycle and compatibility
-shell for app startup, migrations/admin maintenance, storage shim public APIs, and network/RPC/GraphQL/debug query
-surfaces. These remaining routes are migration debt, not the target architecture.
+Current state: Rust-mode consensus storage ownership is closed for the migrated production routes audited during the
+storage migration. `rustaxa-consensus` and the relevant Rust runtimes own storage fact collection, write ordering,
+idempotency checks, restart normalization, and batch commit/drop for PBFT finalization, VoteManager persistence,
+TransactionManager consensus storage, DAG/proposed-block storage, rewards stats, pillar storage, PBFT-manager scalar and
+residual storage, gas-pricer storage, FinalChain fact ports used by consensus, and the FinalChain publication/account
+status rows that were moved with the consensus storage work. The post-migration audit found no remaining unclassified
+production consensus route that depends on `DbStorage`, direct `getDB()`, public `rustBatchId`, or a bridge-batch
+appender as the storage authority.
 
-The current direct-Rust consensus ownership is narrower and explicit:
+`BridgeStorage` and `DbStorage` still exist, but their Rust-mode role is compatibility rather than migrated consensus
+storage ownership. `BridgeStorage` may temporarily provide a CXX-safe constructor or handle adapter to the shared
+`Arc<rustaxa_storage::Storage>` and compatibility batch registry. `DbStorage` remains the C++ lifecycle, public API,
+legacy/reference, storage-shim, query, network, test, and admin shell. Those shells must not become new production
+consensus storage ports.
 
-- PBFT manager startup scalar restore and startup-step normalization read/write through
-  `rustaxa-consensus` over `Arc<rustaxa_storage::Storage>`.
-- Sortition startup replay, period lookup, and live threshold-change persistence use the Rust sortition manager over
-  `Arc<rustaxa_storage::Storage>` and no longer map the finalization batch through `DbStorage::rustBatchId`.
-- `taraxa_getPillarBlockData` uses a Rust storage read in Rust mode and only materializes C++ pillar data at the RPC JSON
-  boundary.
-- VoteManager DPoS vote-count and total-vote-count facts are collected through the Rust FinalChain PBFT fact port rather
-  than direct C++ `FinalChain::dposEligible*` calls.
-- The storage-boundary guard prevents new unreviewed C++ storage routes, but it does not imply the existing compatibility
-  routes have been retired.
+Remaining accepted compatibility categories are:
+
+- storage-shim internals, C++ test setup, and storage conformance fixtures
+- marked RPC, GraphQL, debug, and network/tarcap compatibility reads such as `RUSTAXA_QUERY_COMPAT_READ` and
+  `RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY`
+- app lifecycle and admin operations, including snapshot create/delete/recover/load paths that now throw explicit
+  unsupported errors in Rust mode where the migration does not own them
+- FinalChain external-EVM, `StateAPI`, bridge-contract, account/code/storage, and publication-query boundaries that
+  still sit outside PBFT manager ownership
+- temporary materialization of legacy C++ sidecars such as `PbftBlock`, `DagBlock`, `Transaction`, votes, pillar objects,
+  API return objects, and network payloads
+
+The storage-boundary guard prevents newly added unclassified C++ storage routes. Existing compatibility references should
+be removed only when the caller is replaced by a Rust-owned runtime, query API, fixture, or executor boundary.
 
 ### Current Rust Storage Coverage
 
@@ -238,11 +248,13 @@ Current Rust-backed coverage includes:
 - PBFT block-hash presence checks and PBFT manager/vote reads.
 - pillar reads.
 - transaction presence, location, count, retrieval, and finalized-state reads.
-- write primitives for DAG, period data, transactions, PBFT manager/votes, pillar, and metadata/config/statistics APIs marked complete in the historical tracker.
+- write primitives for DAG, period data, transactions, PBFT manager/votes, pillar, and metadata/config/statistics APIs
+  moved during the storage migration.
 - Rust-mode `createWriteBatch` and `commitWriteBatch` through a bridge-side batch registry.
 
-This coverage means the compatibility API can often reach Rust-backed storage. It does not mean Rust consensus managers
-all own `rustaxa-storage` directly yet.
+This coverage means the compatibility API can often reach Rust-backed storage. Migrated production consensus managers
+should now use Rust runtimes or storage sessions directly; compatibility API coverage is retained for callers that have
+not moved across the rewrite boundary.
 
 Current Rust repositories include:
 
@@ -255,72 +267,55 @@ Current Rust repositories include:
 
 ### Storage Gaps and Risks
 
-- Batch-heavy write paths need parity and performance hardening, especially around consensus/final-chain hot paths.
-- `BridgeStorage` and bridge-side batch ids remain on several production Rust-mode routes. They should be replaced with
-  Rust-owned storage sessions inside `rustaxa-consensus` or subsystem runtimes before those routes can count as direct
-  Rust consensus ownership.
-- `DbStorage::rustStorage()` remains a temporary extractor used by some shims to seed Rust runtimes. New code should
-  prefer long-lived Rust runtime handles that own or receive `Arc<rustaxa_storage::Storage>` directly.
+- Compatibility shells are still large because public C++ APIs, network/query materialization, storage conformance tests,
+  and admin/lifecycle code still call through `DbStorage` or storage-shim entrypoints.
+- `BridgeStorage` and bridge-side batch helpers remain compatibility debt even when they no longer own migrated
+  production consensus writes. Delete them only after their test, query, construction, or public-materialization callers
+  have Rust-owned replacements.
+- `DbStorage::rustStorage()` remains a temporary extractor used by some shims to seed long-lived Rust runtimes. New code
+  should prefer explicit Rust runtime handles that own or receive `Arc<rustaxa_storage::Storage>` directly.
 - Network sync, RPC, GraphQL, debug, app startup, migration, and admin paths still expose C++ storage views. Query paths
   should move to explicit read-only Rust query APIs where they remain needed in Rust mode; lifecycle/admin paths can stay
   compatibility-only until their subsystem is rewritten.
-- `saveDagBlock(..., Batch*)` explicit C++ batch accumulation remains intentionally unsupported in Rust mode because no external workspace callers were found.
-- Snapshot, migration, admin, compaction, iterator, and `plugin/light` paths remain C++-owned and non-blocking for the current wave.
+- FinalChain external-EVM state, code visibility, account snapshots, execution, and contract-boundary behavior remain
+  broader non-storage PBFT/runtime gaps. Do not hide those gaps by falling back to legacy C++ storage behavior.
+- Snapshot, migration, admin, compaction, iterator, and `plugin/light` paths remain C++-owned and non-blocking for the
+  current wave unless explicitly re-scoped.
 - `migrations` lookup interception is a known scope gap if shim lookup is used on migration paths.
 
 ### Storage Sequencing
 
-1. Maintain parity for existing shimmed APIs.
-2. Expand direct Rust coverage for externally used public APIs that are still in scope.
-3. Harden batch behavior for write-heavy paths with tests and conformance fixtures.
+1. Preserve parity for existing shimmed APIs until their callers move or are explicitly unsupported in Rust mode.
+2. Replace externally used public query/network APIs with Rust read APIs where those surfaces remain in scope.
+3. Delete compatibility batch and storage-shim helpers after tests, conformance fixtures, and public materialization
+   callers no longer require them.
 4. Keep admin/snapshot/migration/light maintenance in C++ unless the scope changes.
 
-### DbStorage Retirement Plan
+### DbStorage Compatibility Shell Status
 
-Goal: Rust-mode consensus should depend directly on `rustaxa-storage`.
-`DbStorage` may remain as a compatibility shell for legacy/reference builds and external C++ APIs, but it must stop being
-the storage API used by Rust consensus managers, planners, and runtimes.
+Goal: Rust-mode consensus should depend directly on `rustaxa-storage` or subsystem runtimes that own
+`Arc<rustaxa_storage::Storage>`. `DbStorage` may remain as a compatibility shell for legacy/reference builds, external
+C++ APIs, tests, and lifecycle/query surfaces, but it must not be the storage API used by migrated Rust consensus
+managers, planners, and runtimes.
 
-Status: this retirement is in progress, not complete. The backend storage implementation is mostly Rust for migrated
-rows, but many callers still enter through `BridgeStorage` or the `DbStorage` shim. The next retirement work should be
-measured by removed bridge/storage call sites and removed C++ batch orchestration, not only by adding more Rust-backed
-shim methods.
+Status: migrated production consensus storage ownership is complete for the audited storage families. The next cleanup
+phase is compatibility deletion, not storage migration. Measure it by removing classified compatibility call sites and
+sidecar materialization boundaries after their callers move, while preserving the storage-boundary guard so new
+production consensus routes cannot re-enter `DbStorage` or bridge batch ownership.
 
-Planned large slices:
+Future cleanup should:
 
-1. Define the native Rust consensus storage ownership rule. Rust consensus runtimes should use
-   `Arc<rustaxa_storage::Storage>` and repository APIs directly, not a new CXX-facing bridge storage abstraction.
-   Temporary bridge constructors may clone the shared `Arc<Storage>` out of `BridgeStorage`, but storage fact
-   collection, write ordering, and restart normalization should move into `rustaxa-consensus` functions that accept
-   `&rustaxa_storage::Storage` or `Arc<rustaxa_storage::Storage>`. Current progress: the rule is documented and enforced
-   for new C++ routes by the storage-boundary guard; existing callers are being retired incrementally.
-2. Move consensus managers to direct `rustaxa-storage` ownership. Update Rust-mode PBFT manager, DAG manager, vote
-   manager, transaction manager, sortition, pillar chain, rewards, and gas-pricing shims so their long-lived Rust
-   runtimes own or receive `Arc<rustaxa_storage::Storage>` directly. C++ may still materialize legacy objects at
-   network/EVM/API boundaries. Current progress: PBFT manager startup restore and sortition startup replay/period
-   lookup now live in `rustaxa-consensus` over native Rust storage handles; VoteManager persistence, PBFT chain/proposed
-   block storage, rewards, pillar storage, PBFT sync egress, and TransactionManager storage paths have Rust-owned storage
-   families. Remaining work: FinalChain/EVM/account facts, DAG proposal-validation facts, gas-pricer initialization, and
-   selected PBFT/transaction runtime boundaries still have `BridgeStorage`, `DbStorage`, or C++ FinalChain entry points.
-3. Remove C++ batch/storage orchestration from consensus. Replace `createWriteBatch`, `rustBatchId`,
-   `commitWriteBatch`, and C++ batch-driven append helpers in consensus shims with Rust-owned storage sessions and
-   commits. Atomic write ordering should be expressed in Rust storage transactions, not in C++. Current progress:
-   sortition `pbftBlockPushed` no longer maps its C++ `Batch&` through `DbStorage::rustBatchId`; emitted threshold
-   changes are persisted by the Rust sortition manager before live state is updated, and PBFT finalization resume
-   inspection now classifies durable duplicate/restart state in `rustaxa-consensus` from direct `rustaxa-storage` reads.
-   Remaining work: vote persistence, FinalChain-adjacent status writes, and several bridge append helpers still use
-   bridge storage handles, bridge batches, or shim-owned C++ batch orchestration.
-4. Move read/query surfaces off `DbStorage` or isolate them. Network sync, RPC, GraphQL, and debug/query paths should
-   use Rust storage query APIs or an explicit read-only query shim. These paths must not become consensus storage ports.
-   Current progress: `taraxa_getPillarBlockData` uses a read-only Rust storage query in Rust mode and only materializes
-   C++ pillar objects at the RPC JSON boundary. Remaining work: many network sync, RPC, GraphQL, debug, and app status
-   reads still call `getDB()` or `DbStorage` compatibility methods.
-5. Collapse `DbStorage` to compatibility-only. Delete or guard Rust-mode consensus accessors, remove obsolete C++
-   forwarding methods, and add boundary tests/guards that fail when Rust-mode consensus introduces new `DbStorage`
-   storage calls. Current progress: the storage-boundary guard has a required self-test and portable token matching for
-   `rustStorage`, `rustBatchId`, C++ batch APIs, direct `db_` routes outside explicit compatibility allowlists, and new
-   direct DPoS fact calls from consensus consumers. Remaining work: remove the existing allowlisted compatibility routes
-   and explicit FinalChain/EVM/DAG boundaries as their Rust runtimes become authoritative.
+1. Keep the native Rust ownership rule: Rust consensus runtimes use `Arc<rustaxa_storage::Storage>` and repository APIs
+   directly. Temporary bridge constructors may clone the shared `Arc<Storage>` out of `BridgeStorage`, but storage fact
+   collection, write ordering, idempotency, restart normalization, and durable commits belong in Rust.
+2. Replace public query/network compatibility reads with explicit Rust read APIs where those surfaces stay active in
+   Rust mode. Keep compatibility markers on any remaining `DbStorage` reads so they are auditable.
+3. Delete bridge batch helpers and storage-shim methods only after C++ tests, storage conformance fixtures, network/API
+   materialization, and lifecycle callers have moved or been explicitly declared unsupported in Rust mode.
+4. Continue moving FinalChain/EVM/account facts and executor reports into typed Rust ports. These are no longer blockers
+   for consensus storage ownership, but they still prevent deleting many surrounding C++ sidecars and query paths.
+5. Re-run the storage-boundary guard and targeted searches whenever storage compatibility is removed, and treat any
+   unclassified production consensus fallback to legacy C++ as a rewrite blocker.
 
 Validation:
 
@@ -1090,8 +1085,10 @@ strategy and repeatable Makefile targets live in `doc/rewrite_validation_strateg
 
 ## Near-Term Priorities
 
-1. Keep storage shim parity green while hardening Rust batch semantics.
-2. Add or update conformance coverage for any storage behavior that changes.
+1. Preserve the storage-boundary guard and current closure categories: no new production consensus `DbStorage`,
+   `getDB()`, `rustBatchId`, C++ batch, or bridge-batch authority in Rust mode.
+2. Retire remaining storage-shim batch/query compatibility only when callers move to Rust-owned runtimes, query APIs,
+   fixtures, or explicit unsupported Rust-mode behavior; keep conformance coverage for any behavior that changes.
 3. Continue FinalChain execution-runtime migration: native-supported finalization already routes through Rust, and
    external-EVM orchestration now has Rust-owned request, plan, lifecycle-result, recovery, and publication decisions.
    Publication-row audit coverage now verifies live, recovered, and representative transcript Rust publication against

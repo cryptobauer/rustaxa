@@ -129,6 +129,13 @@ storage routes. A passing guard means the current diff did not introduce unrevie
 `BridgeStorage` or `DbStorage` routes have been eliminated; those removals must be tracked in `PLAN.md` and verified by
 targeted call-site searches.
 
+For post-migration consensus storage cleanup, use the guard plus targeted audits for `DbStorage`, `db_->`, `getDB()`,
+`rustStorage`, `createWriteBatch`, `commitWriteBatch`, `rustBatchId`, bridge-batch appenders, and direct FinalChain
+DPoS/account fact reads from consensus consumers. Remaining Rust-mode C++ storage references must be classified as one
+of: storage-shim internals and tests, marked query compatibility, marked network/tarcap compatibility, FinalChain/EVM
+boundary work, temporary sidecar/API materialization, or app/admin lifecycle behavior. Unclassified production consensus
+references are rewrite blockers and should move to Rust-owned storage runtimes before closeout.
+
 ## Choosing The Narrowest Tier
 
 Before closing rewrite work, choose the narrowest validation tier that covers the behavior changed:
