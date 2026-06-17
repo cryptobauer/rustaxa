@@ -868,7 +868,7 @@ std::optional<state_api::Account> FinalChain::getAccount(addr_t const& addr,
     std::lock_guard lock(state_api_mutex_);
     state_descriptor = state_api_.get_last_committed_state_descriptor();
   }
-  const auto requested_block = blk_n.value_or(state_descriptor.blk_num);
+  const auto requested_block = blk_n.value_or(lastBlockNumber());
   if (requested_block <= state_descriptor.blk_num) {
     try {
       std::lock_guard lock(state_api_mutex_);
@@ -940,7 +940,37 @@ state_api::ExecutionResult FinalChain::call(state_api::EVMTransaction const& trx
     std::lock_guard lock(state_api_mutex_);
     state_descriptor = state_api_.get_last_committed_state_descriptor();
   }
-  const auto requested_block = blk_n.value_or(state_descriptor.blk_num);
+  const auto requested_block = blk_n.value_or(lastBlockNumber());
+  auto call_rust_final_chain = [&]() {
+    rustaxa::FinalChainCall request;
+    request.block_number = requested_block;
+    request.sender = into_address_array(trx.from);
+    if (trx.to) {
+      request.receiver_found = true;
+      request.receiver = into_address_array(*trx.to);
+    } else {
+      request.receiver_found = false;
+      request.receiver = {};
+    }
+    request.value = into_big_endian_vec(trx.value);
+    request.gas_price = into_big_endian_vec(trx.gas_price);
+    request.gas_limit = trx.gas;
+    request.input = into_rust_vec(trx.input);
+    auto outcome = rust_final_chain_.value()->call(std::move(request));
+
+    state_api::ExecutionResult result;
+    result.code_retval = into_bytes(outcome.code_retval);
+    result.gas_used = outcome.gas_used;
+    result.code_err = std::string(outcome.code_err);
+    result.consensus_err = std::string(outcome.consensus_err);
+    return result;
+  };
+
+  const auto dpos_contract_address = addr_t("0x00000000000000000000000000000000000000FE");
+  if (trx.to && *trx.to == dpos_contract_address) {
+    return call_rust_final_chain();
+  }
+
   if (requested_block <= state_descriptor.blk_num || state_descriptor.blk_num < lastBlockNumber()) {
     const auto evm_block = std::min(requested_block, state_descriptor.blk_num);
     const auto blk_header = blockHeader(evm_block);
@@ -967,28 +997,7 @@ state_api::ExecutionResult FinalChain::call(state_api::EVMTransaction const& trx
     }
   }
 
-  rustaxa::FinalChainCall request;
-  request.block_number = requested_block;
-  request.sender = into_address_array(trx.from);
-  if (trx.to) {
-    request.receiver_found = true;
-    request.receiver = into_address_array(*trx.to);
-  } else {
-    request.receiver_found = false;
-    request.receiver = {};
-  }
-  request.value = into_big_endian_vec(trx.value);
-  request.gas_price = into_big_endian_vec(trx.gas_price);
-  request.gas_limit = trx.gas;
-  request.input = into_rust_vec(trx.input);
-  auto outcome = rust_final_chain_.value()->call(std::move(request));
-
-  state_api::ExecutionResult result;
-  result.code_retval = into_bytes(outcome.code_retval);
-  result.gas_used = outcome.gas_used;
-  result.code_err = std::string(outcome.code_err);
-  result.consensus_err = std::string(outcome.consensus_err);
-  return result;
+  return call_rust_final_chain();
 }
 
 std::string FinalChain::trace(std::vector<state_api::EVMTransaction> state_trxs,

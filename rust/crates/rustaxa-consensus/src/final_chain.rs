@@ -2739,6 +2739,11 @@ impl FinalChain {
                         }
                         update_dpos_claim_gas_snapshot(&mut dpos_gas_snapshot, dpos_tx)?;
                     }
+                    if matches!(contract_tx, NativeContractTransaction::Slashing(_)) {
+                        accounts
+                            .entry(SLASHING_CONTRACT_ADDRESS)
+                            .or_insert_with(empty_account);
+                    }
                     contract_transactions.push((position, contract_tx));
                 } else {
                     let receiver_address = transaction.receiver.ok_or_else(|| {

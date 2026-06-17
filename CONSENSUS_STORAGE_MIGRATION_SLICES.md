@@ -30,10 +30,11 @@ Completed before this plan file:
 
 Known current blockers / unrelated gaps:
 
-- `pbft_manager_test` now gets past the old `getBridgeRoot` abort and fails later on
-  `Unsupported Rust PBFT second-finish primary intent 1`.
-- `final_chain_test` still fails outside the Rust storage contract: `FinalChainTest.coin_transfers` observes legacy
-  account-balance mismatches through the compatibility query shell, and `FinalChainTest.nonce_test` then segfaults.
+- The stale `Unsupported Rust PBFT second-finish primary intent 1` abort no longer reproduces after rebuilding the
+  Rust/C++ bridge artifacts; `pbft_manager_test` still has broader Rust-mode runtime gaps tracked later in this file.
+- `final_chain_test` no longer fails the legacy account-balance query shell cases. The FinalChain shim now defaults
+  account compatibility reads to the latest finalized block, routes DPoS contract calls through the Rust FinalChain
+  snapshot, and Rust native slashing materializes the slashing precompile zero account for legacy `getAccount` parity.
 
 ## Slice 1: PBFT Finalization Resume Inspector
 
@@ -1585,10 +1586,10 @@ Validation note: the proposal-period publication sub-slice passes `cargo fmt --m
 -p rustaxa-consensus final_chain`, `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge final_chain`,
 `cmake --build /build --target final_chain_test --parallel 12`, `cmake --build /build --target rust_storage_tests
 --parallel 12`, `/build/bin/rust_storage_tests`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
-`scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`. Broad `/build/bin/final_chain_test` runtime was
-attempted and still fails before a clean summary: `FinalChainTest.coin_transfers` reports Rust-mode account balance
-mismatches and `FinalChainTest.nonce_test` segfaults. Treat those as the remaining FinalChain/EVM/account execution
-boundary tracked by this slice, not as a proposal-period publication storage regression.
+`scripts/rewrite_storage_boundary_guard.sh`, and `git diff --check`. The later FinalChain compatibility cleanup now makes
+broad `/build/bin/final_chain_test` pass: the previous `FinalChainTest.coin_transfers` account-balance mismatches and
+`FinalChainTest.nonce_test` segfault are closed by latest-block account compatibility reads, Rust DPoS precompile call
+routing, and slashing precompile zero-account materialization.
 
 Validation note: the execution-status startup sub-slice passes `cargo fmt --manifest-path rust/Cargo.toml --all --check`,
 `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`, `cargo test --manifest-path rust/Cargo.toml -p
@@ -2178,9 +2179,9 @@ Validation:
 Validation note: Slice 30 passes `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus final_chain`,
 `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge final_chain`,
 `cmake --build /build --target final_chain_test --parallel 12`, and
-`cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`. Running
-`/build/bin/final_chain_test` still fails in the out-of-scope compatibility query path: `FinalChainTest.coin_transfers`
-reports legacy account-balance mismatches and `FinalChainTest.nonce_test` segfaults.
+`cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`. The later FinalChain
+compatibility cleanup closes the previously out-of-scope query failures: broad `/build/bin/final_chain_test` now passes
+after fixing legacy account-balance compatibility reads and the native slashing precompile account snapshot.
 
 ## Slice 31: Slice 8/9 Final Closure Audit
 
