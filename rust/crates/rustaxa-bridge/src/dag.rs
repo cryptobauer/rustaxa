@@ -6,21 +6,19 @@ use crate::ffi::rustaxa_ffi::{
     DagManagerFinalizationCleanupPayload, DagManagerFinalizationPlan, DagManagerNonFinalizedSize,
     DagManagerNonFinalizedSyncPayload, DagManagerRuntimeSyncSnapshot, DagManagerSnapshot, DagOrder,
     DagPersistenceCounters, DagPivotTipsValidation, DagProposerAttemptInput,
-    DagProposerAttemptPlan, DagProposerBlockConstructionInput, DagProposerBlockConstructionPlan,
-    DagProposerBlockIntentInput, DagProposerEligibilityDecision, DagProposerEligibilityInput,
+    DagProposerAttemptPlan, DagProposerBlockConstructionPlan, DagProposerBlockIntentInput,
     DagProposerFrontierFacts, DagProposerPostPackInput, DagProposerPostPackPlan,
     DagProposerRetryResetInput, DagProposerRetryResetPlan, DagProposerSignedBlockIntent,
     DagProposerSignedBlockIntentInput, DagProposerStaleProofInput, DagProposerStaleProofPlan,
-    DagProposerStorageBlockConstructionInput, DagProposerTipCandidate,
-    DagProposerTransactionPackRequest, DagProposerUnsignedBlockIntent, DagProposerVdfWaitInput,
-    DagProposerVdfWaitPlan, DagReferenceMetadata, DagSyncBlockRlp, DagTransactionHash,
-    DagTransactionQueryPlan, DagTransactionRlpLookup, DagVerifyAuthorizationInput,
-    DagVerifyAuthorizationResult, DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock,
-    DagVerifyPrecheckResult, DagVerifyTransactionAvailabilityInput,
-    DagVerifyTransactionAvailabilityResult, DagVerifyVdfDposDecision, DagVerifyVdfDposFacts,
-    DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput,
-    DagVerifyVdfSortitionInput, DagVerifyVdfSortitionResult, HashLookup, PeriodLookup,
-    SortitionRuntimeParams,
+    DagProposerStorageBlockConstructionInput, DagProposerTransactionPackRequest,
+    DagProposerUnsignedBlockIntent, DagProposerVdfWaitInput, DagProposerVdfWaitPlan,
+    DagReferenceMetadata, DagSyncBlockRlp, DagTransactionHash, DagTransactionQueryPlan,
+    DagTransactionRlpLookup, DagVerifyAuthorizationInput, DagVerifyAuthorizationResult,
+    DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
+    DagVerifyTransactionAvailabilityInput, DagVerifyTransactionAvailabilityResult,
+    DagVerifyVdfDposDecision, DagVerifyVdfDposFacts, DagVerifyVdfPrepareInput,
+    DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
+    DagVerifyVdfSortitionResult, HashLookup, PeriodLookup, SortitionRuntimeParams,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
 use anyhow::{ensure, Context, Result};
@@ -34,9 +32,9 @@ use rustaxa_consensus::dag::{
     decide_dag_verify_vdf_dpos_authorization, derive_frontier, ensure_proposal_period_mapping,
     finalize_dag_proposer_signed_block_intent, load_dag_block_from_storage,
     period_block_hash_from_storage, plan_dag_add_block_effects, plan_dag_proposer_attempt,
-    plan_dag_proposer_block_construction, plan_dag_proposer_block_construction_from_storage,
-    plan_dag_proposer_block_intent, plan_dag_proposer_post_pack, plan_dag_proposer_retry_reset,
-    plan_dag_proposer_stale_proof, plan_dag_proposer_vdf_wait, plan_dag_verify_transaction_query,
+    plan_dag_proposer_block_construction_from_storage, plan_dag_proposer_block_intent,
+    plan_dag_proposer_post_pack, plan_dag_proposer_retry_reset, plan_dag_proposer_stale_proof,
+    plan_dag_proposer_vdf_wait, plan_dag_verify_transaction_query,
     plan_expired_transaction_cleanup, plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
     proposal_period_for_level_from_storage, save_dag_block_to_storage,
     validate_dag_verify_authorization, validate_dag_verify_gas,
@@ -48,12 +46,10 @@ use rustaxa_consensus::dag::{
     DagManagerFinalizationPlan as DomainDagManagerFinalizationPlan,
     DagManagerSnapshot as DomainDagManagerSnapshot, DagManagerState,
     DagProposerAttemptInput as DomainDagProposerAttemptInput,
-    DagProposerBlockConstructionInput as DomainDagProposerBlockConstructionInput,
     DagProposerBlockConstructionPlan as DomainDagProposerBlockConstructionPlan,
     DagProposerBlockIntentInput as DomainDagProposerBlockIntentInput,
     DagProposerSignedBlockIntentInput as DomainDagProposerSignedBlockIntentInput,
     DagProposerStorageBlockConstructionInput as DomainDagProposerStorageBlockConstructionInput,
-    DagProposerTipCandidate as DomainDagProposerTipCandidate,
     DagProposerUnsignedBlockIntent as DomainDagProposerUnsignedBlockIntent,
     DagReferenceMetadata as ReferenceMetadata, DagTipGas,
     DagVdfSortitionBlockInput as DomainDagVdfSortitionBlockInput,
@@ -72,17 +68,13 @@ use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::pbft::PbftBlockLink;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(test)]
 const DAG_PROPOSER_ACTION_CONTINUE: u8 = 1;
+#[cfg(test)]
 const DAG_PROPOSER_ACTION_SKIP: u8 = 2;
-const DAG_PROPOSER_ACTION_RETRY_LATER: u8 = 3;
 
+#[cfg(test)]
 const DAG_PROPOSER_REASON_OK: u32 = 0;
-const DAG_PROPOSER_REASON_MISSING_PROPOSAL_PERIOD: u32 = 1;
-const DAG_PROPOSER_REASON_MISSING_VRF_KEY: u32 = 2;
-const DAG_PROPOSER_REASON_VRF_KEY_MISMATCH: u32 = 3;
-const DAG_PROPOSER_REASON_DPOS_UNAVAILABLE: u32 = 4;
-const DAG_PROPOSER_REASON_NOT_ELIGIBLE: u32 = 5;
-const DAG_PROPOSER_REASON_ZERO_DENOMINATOR: u32 = 6;
 
 pub fn create_dag_graph(genesis: &[u8; 32]) -> Box<BridgeDagGraph> {
     Box::new(BridgeDagGraph(DagGraph::new(to_h256(genesis))))
@@ -1207,100 +1199,6 @@ pub fn dag_vdf_message(pivot: &[u8; 32], transaction_hashes: Vec<DagHash>) -> Ve
     construct_dag_vdf_message(H256::from(*pivot), &hashes)
 }
 
-/// Checks DAG block proposer eligibility from Rust-owned DPoS/VRF facts.
-///
-/// Inputs are plain bridge values collected by the C++ proposer shim: whether
-/// the level has a proposal period, the local wallet VRF public key, and the
-/// Rust FinalChain authorization facts for `(proposal_period, proposer)`.
-/// Expected proposal skips are returned as status data; bridge contract
-/// violations are not represented here because all fields have fixed shapes.
-pub fn dag_proposer_check_eligibility(
-    input: DagProposerEligibilityInput,
-) -> DagProposerEligibilityDecision {
-    if !input.proposal_period_found {
-        return dag_proposer_decision(
-            DAG_PROPOSER_ACTION_SKIP,
-            DAG_PROPOSER_REASON_MISSING_PROPOSAL_PERIOD,
-            0,
-            0,
-        );
-    }
-    if !input.authorization_facts.vrf_key_found {
-        return dag_proposer_decision(
-            DAG_PROPOSER_ACTION_SKIP,
-            DAG_PROPOSER_REASON_MISSING_VRF_KEY,
-            0,
-            0,
-        );
-    }
-    if input.authorization_facts.vrf_key != input.wallet_vrf_public_key {
-        return dag_proposer_decision(
-            DAG_PROPOSER_ACTION_SKIP,
-            DAG_PROPOSER_REASON_VRF_KEY_MISMATCH,
-            0,
-            0,
-        );
-    }
-    if input.authorization_facts.eligibility_status
-        == rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE
-    {
-        return dag_proposer_decision(
-            DAG_PROPOSER_ACTION_RETRY_LATER,
-            DAG_PROPOSER_REASON_DPOS_UNAVAILABLE,
-            0,
-            0,
-        );
-    }
-    if input.authorization_facts.eligibility_status
-        != rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE
-    {
-        return dag_proposer_decision(
-            DAG_PROPOSER_ACTION_SKIP,
-            DAG_PROPOSER_REASON_NOT_ELIGIBLE,
-            0,
-            0,
-        );
-    }
-    if input.authorization_facts.vdf_sortition_max_vote_count == 0 {
-        return dag_proposer_decision(
-            DAG_PROPOSER_ACTION_SKIP,
-            DAG_PROPOSER_REASON_ZERO_DENOMINATOR,
-            input.authorization_facts.sender_eligible_vote_count,
-            0,
-        );
-    }
-
-    dag_proposer_decision(
-        DAG_PROPOSER_ACTION_CONTINUE,
-        DAG_PROPOSER_REASON_OK,
-        input.authorization_facts.sender_eligible_vote_count,
-        input.authorization_facts.vdf_sortition_max_vote_count,
-    )
-}
-
-/// Plans DAG block construction through the Rust consensus domain.
-///
-/// The bridge adapts flat CXX records into domain values. Rust owns transaction
-/// gas summation, tip-pruning decisions, and selected-tip ordering while C++
-/// temporarily keeps live block/transaction/VDF object materialization.
-pub fn dag_proposer_plan_block_construction(
-    input: DagProposerBlockConstructionInput,
-) -> DagProposerBlockConstructionPlan {
-    let plan = plan_dag_proposer_block_construction(DomainDagProposerBlockConstructionInput {
-        frontier_tips: input
-            .frontier_tips
-            .into_iter()
-            .map(to_domain_dag_proposer_tip_candidate)
-            .collect(),
-        transaction_gas_estimations: input.transaction_gas_estimations,
-        pbft_gas_limit: input.pbft_gas_limit,
-        dag_gas_limit: input.dag_gas_limit,
-        max_tips: input.max_tips,
-    });
-
-    to_bridge_dag_proposer_block_construction_plan(plan)
-}
-
 /// Plans the deterministic DAG proposer action after live transaction packing.
 ///
 /// The bridge intentionally carries only the packed transaction count and
@@ -1373,18 +1271,6 @@ pub fn dag_proposer_plan_stale_proof(
         update_retry_state: plan.update_retry_state,
         next_last_propose_level: plan.next_last_propose_level,
         next_retry_count: plan.next_retry_count,
-    }
-}
-
-fn to_domain_dag_proposer_tip_candidate(
-    candidate: DagProposerTipCandidate,
-) -> DomainDagProposerTipCandidate {
-    DomainDagProposerTipCandidate {
-        hash: H256::from(candidate.hash),
-        found: candidate.found,
-        sender: candidate.sender,
-        level: candidate.level,
-        gas_estimation: candidate.gas_estimation,
     }
 }
 
@@ -1515,20 +1401,6 @@ pub fn dag_plan_add_block_effects(input: DagAddBlockEffectInput) -> DagAddBlockE
             .into_iter()
             .map(|hash| DagHash { hash: hash.0 })
             .collect(),
-    }
-}
-
-fn dag_proposer_decision(
-    action: u8,
-    reason_code: u32,
-    vote_count: u64,
-    max_vote_count: u64,
-) -> DagProposerEligibilityDecision {
-    DagProposerEligibilityDecision {
-        action,
-        reason_code,
-        vote_count,
-        max_vote_count,
     }
 }
 
@@ -3502,105 +3374,6 @@ mod tests {
         });
         assert!(!missing.accepted);
         assert_eq!(missing.missing_references[0].hash, [0x77; 32]);
-    }
-
-    #[test]
-    fn dag_proposer_eligibility_returns_status_decisions() {
-        let wallet_vrf_public_key = [0x55_u8; 32];
-        let continues = dag_proposer_check_eligibility(DagProposerEligibilityInput {
-            proposal_period_found: true,
-            wallet_vrf_public_key,
-            authorization_facts: DagDposAuthorizationFacts {
-                vrf_key_found: true,
-                vrf_key: wallet_vrf_public_key.to_vec(),
-                sender_eligible_vote_count: 12,
-                vdf_sortition_max_vote_count: 30,
-                eligibility_status: dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
-            },
-        });
-        assert_eq!(continues.action, DAG_PROPOSER_ACTION_CONTINUE);
-        assert_eq!(continues.reason_code, DAG_PROPOSER_REASON_OK);
-        assert_eq!(continues.vote_count, 12);
-        assert_eq!(continues.max_vote_count, 30);
-
-        let mismatch = dag_proposer_check_eligibility(DagProposerEligibilityInput {
-            proposal_period_found: true,
-            wallet_vrf_public_key,
-            authorization_facts: DagDposAuthorizationFacts {
-                vrf_key_found: true,
-                vrf_key: vec![0x66; 32],
-                sender_eligible_vote_count: 12,
-                vdf_sortition_max_vote_count: 30,
-                eligibility_status: dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
-            },
-        });
-        assert_eq!(mismatch.action, DAG_PROPOSER_ACTION_SKIP);
-        assert_eq!(mismatch.reason_code, DAG_PROPOSER_REASON_VRF_KEY_MISMATCH);
-
-        let unavailable = dag_proposer_check_eligibility(DagProposerEligibilityInput {
-            proposal_period_found: true,
-            wallet_vrf_public_key,
-            authorization_facts: DagDposAuthorizationFacts {
-                vrf_key_found: true,
-                vrf_key: wallet_vrf_public_key.to_vec(),
-                sender_eligible_vote_count: 0,
-                vdf_sortition_max_vote_count: 0,
-                eligibility_status: dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE,
-            },
-        });
-        assert_eq!(unavailable.action, DAG_PROPOSER_ACTION_RETRY_LATER);
-        assert_eq!(
-            unavailable.reason_code,
-            DAG_PROPOSER_REASON_DPOS_UNAVAILABLE
-        );
-    }
-
-    #[test]
-    fn dag_proposer_block_construction_plan_prunes_tips_and_sums_gas() {
-        let plan = dag_proposer_plan_block_construction(DagProposerBlockConstructionInput {
-            frontier_tips: vec![
-                DagProposerTipCandidate {
-                    hash: [0x01; 32],
-                    found: true,
-                    sender: [0xA1; 20],
-                    level: 1,
-                    gas_estimation: 100,
-                },
-                DagProposerTipCandidate {
-                    hash: [0x02; 32],
-                    found: false,
-                    sender: [0; 20],
-                    level: 0,
-                    gas_estimation: 0,
-                },
-                DagProposerTipCandidate {
-                    hash: [0x03; 32],
-                    found: true,
-                    sender: [0xB1; 20],
-                    level: 5,
-                    gas_estimation: 400,
-                },
-                DagProposerTipCandidate {
-                    hash: [0x04; 32],
-                    found: true,
-                    sender: [0xC1; 20],
-                    level: 4,
-                    gas_estimation: 200,
-                },
-            ],
-            transaction_gas_estimations: vec![600],
-            pbft_gas_limit: 1_000,
-            dag_gas_limit: 250,
-            max_tips: 16,
-        });
-
-        assert_eq!(plan.block_gas_estimation, 600);
-        let selected = plan
-            .selected_tips
-            .into_iter()
-            .map(|hash| hash.hash)
-            .collect::<Vec<_>>();
-        assert_eq!(selected, vec![[0x03; 32]]);
     }
 
     #[test]

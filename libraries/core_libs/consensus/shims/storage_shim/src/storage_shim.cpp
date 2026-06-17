@@ -145,15 +145,20 @@ void DbStorage::rebuildColumns(const rocksdb::Options& options) {
 
 bool DbStorage::createSnapshot(PbftPeriod period) {
   (void)period;
-  // Snapshot lifecycle is not wired in Rust storage shim mode yet.
-  return false;
+  throw_unimplemented_shim_api("createSnapshot");
 }
 
-void DbStorage::deleteSnapshot(PbftPeriod period) { (void)period; }
+void DbStorage::deleteSnapshot(PbftPeriod period) {
+  (void)period;
+  throw_unimplemented_shim_api("deleteSnapshot");
+}
 
-void DbStorage::recoverToPeriod(PbftPeriod period) { (void)period; }
+void DbStorage::recoverToPeriod(PbftPeriod period) {
+  (void)period;
+  throw_unimplemented_shim_api("recoverToPeriod");
+}
 
-void DbStorage::loadSnapshots() { return; }
+void DbStorage::loadSnapshots() { throw_unimplemented_shim_api("loadSnapshots"); }
 
 void DbStorage::disableSnapshots() { snapshots_enabled_ = false; }
 

@@ -3370,21 +3370,6 @@ pub mod rustaxa_ffi {
         eligibility_status: u8,
     }
 
-    /// C++-originated proposer eligibility facts.
-    struct DagProposerEligibilityInput {
-        proposal_period_found: bool,
-        wallet_vrf_public_key: [u8; 32],
-        authorization_facts: DagDposAuthorizationFacts,
-    }
-
-    /// Rust producer-side proposer eligibility decision.
-    struct DagProposerEligibilityDecision {
-        action: u8,
-        reason_code: u32,
-        vote_count: u64,
-        max_vote_count: u64,
-    }
-
     /// C++-originated facts for Rust DAG proposal-attempt planning.
     struct DagProposerAttemptInput {
         transaction_pool_size: u64,
@@ -3497,24 +3482,6 @@ pub mod rustaxa_ffi {
         update_retry_state: bool,
         next_last_propose_level: u64,
         next_retry_count: u64,
-    }
-
-    /// C++-originated tip candidate facts for Rust proposer tip selection.
-    struct DagProposerTipCandidate {
-        hash: [u8; 32],
-        found: bool,
-        sender: [u8; 20],
-        level: u64,
-        gas_estimation: u64,
-    }
-
-    /// C++-originated DAG block construction facts for Rust proposer planning.
-    struct DagProposerBlockConstructionInput {
-        frontier_tips: Vec<DagProposerTipCandidate>,
-        transaction_gas_estimations: Vec<u64>,
-        pbft_gas_limit: u64,
-        dag_gas_limit: u64,
-        max_tips: u16,
     }
 
     /// Rust-runtime DAG block construction facts for storage-backed tip metadata planning.
@@ -4133,12 +4100,6 @@ pub mod rustaxa_ffi {
         ) -> Result<DagVerifyVdfSortitionResult>;
         pub fn dag_vrf_input(block_level: u64, proposal_period_hash: &[u8; 32]) -> Vec<u8>;
         pub fn dag_vdf_message(pivot: &[u8; 32], transaction_hashes: Vec<DagHash>) -> Vec<u8>;
-        pub fn dag_proposer_check_eligibility(
-            input: DagProposerEligibilityInput,
-        ) -> DagProposerEligibilityDecision;
-        pub fn dag_proposer_plan_block_construction(
-            input: DagProposerBlockConstructionInput,
-        ) -> DagProposerBlockConstructionPlan;
         pub fn dag_proposer_plan_post_pack(
             input: DagProposerPostPackInput,
         ) -> DagProposerPostPackPlan;

@@ -2221,8 +2221,12 @@ Validation:
 
 Validation note: Slice 31 reran focused `rg` audits for `DbStorage`, `db_->`, `getDB()`, `rustStorage()`, bridge-batch
 helpers, direct FinalChain DPoS/account facts, and DAG proposer compatibility helpers across consensus shims and
-network/query compatibility surfaces. The closure audit is documentation/guard-backed and does not delete runtime code.
-It passes `make rewrite-validate-fast`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
+network/query compatibility surfaces. The follow-up cleanup deletes the obsolete stateless DAG proposer eligibility and
+block-construction CXX bridge DTOs/functions made unused by the runtime-backed DAG proposal route, and changes Rust-mode
+storage snapshot create/delete/recover/load APIs from silent no-ops into explicit shim-local unsupported calls. Remaining
+storage-shim batch helpers are still compatibility debt because C++ test setup, storage conformance coverage, and
+public query/network materialization still hit those APIs until their callers are replaced with Rust-owned fixtures or
+runtime calls. It passes `make rewrite-validate-fast`, `scripts/rewrite_storage_boundary_guard.sh --self-test`,
 `scripts/rewrite_storage_boundary_guard.sh`, `git diff --check`, and
 `cmake --build /build --target rust_storage_tests --parallel 12 && /build/bin/rust_storage_tests`.
 
