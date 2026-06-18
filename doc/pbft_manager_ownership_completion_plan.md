@@ -447,6 +447,10 @@ and accepts one executor report per effect before completing the script.
 Sync-admission transcript cut landed: `rust_consensus_tests` now records the staged `processPeriodData()` runtime
 checks through final-chain validation, reward votes, cert votes, transaction queries, pillar data, and pillar votes
 before Rust returns the accept action.
+Finalization-session transcript coverage is present in `rust_consensus_tests`: the finalization runtime session records
+the mixed-executor action order from primary storage through advance-period and requires matching executor reports before
+completion. Period-advance transcript cut landed: `rust_consensus_tests` now records the Rust-planned period-advance
+effect order from reset-consensus application through vote/proposed-block cleanup.
 
 Acceptance:
 

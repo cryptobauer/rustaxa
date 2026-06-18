@@ -116,6 +116,18 @@ constexpr uint8_t kPbftManagerStateActionNextVoteCurrentSoftValue = 10;
 constexpr uint8_t kPbftManagerStateActionSessionActive = 0;
 constexpr uint8_t kPbftManagerStateActionSessionComplete = 1;
 constexpr uint8_t kPbftManagerStateActionEffectApplied = 0;
+constexpr uint8_t kPbftManagerTransitionStatusReady = 0;
+constexpr uint8_t kPbftManagerTransitionKindResetConsensus = 0;
+constexpr uint8_t kPbftManagerRuntimeStateValueProposalCode = 0;
+constexpr uint8_t kPbftManagerAdvanceActionResetConsensus = 0;
+constexpr uint8_t kPbftManagerAdvanceActionExecutedBlockReset = 1;
+constexpr uint8_t kPbftManagerAdvanceActionSetVoteManagerPeriodRound = 2;
+constexpr uint8_t kPbftManagerAdvanceActionResetCurrentRoundTimer = 3;
+constexpr uint8_t kPbftManagerAdvanceActionResetRewardVoteCounters = 4;
+constexpr uint8_t kPbftManagerAdvanceActionResetPeriodTimer = 5;
+constexpr uint8_t kPbftManagerAdvanceActionUpdateWalletEligibility = 6;
+constexpr uint8_t kPbftManagerAdvanceActionCleanupVotes = 7;
+constexpr uint8_t kPbftManagerAdvanceActionCleanupProposedBlocks = 8;
 
 PbftFinalizationStorageWriteStage finalizationStorageStage(uint8_t stage) {
   PbftFinalizationStorageWriteStage write_stage{};
@@ -306,6 +318,31 @@ PbftManagerStateActionEffectReport stateActionReport(uint32_t cursor, uint8_t in
   report.intent = intent;
   report.result = kPbftManagerStateActionEffectApplied;
   return report;
+}
+
+PbftManagerTransitionPlan resetTransitionPlanForAdvancePeriod() {
+  PbftManagerTransitionPlan plan;
+  plan.status = kPbftManagerTransitionStatusReady;
+  plan.kind = kPbftManagerTransitionKindResetConsensus;
+  plan.new_state = kPbftManagerRuntimeStateValueProposalCode;
+  plan.new_round = 1;
+  plan.new_step = 1;
+  plan.current_round_lambda_ms = 100;
+  plan.next_step_time_ms = 1'000;
+  plan.persist_round = true;
+  plan.persist_step = true;
+  plan.reset_next_voted_statuses = true;
+  plan.remove_cert_voted_block = true;
+  plan.clear_own_votes = true;
+  plan.clear_broadcasted_votes = true;
+  plan.reset_broadcast_counters = true;
+  plan.reset_executed_block_status = true;
+  plan.set_vote_manager_period_round = true;
+  plan.reset_current_round_start = true;
+  plan.reset_second_finish_start = false;
+  plan.print_cert_step_info = false;
+  plan.print_second_finish_step_info = false;
+  return plan;
 }
 
 std::filesystem::path uniqueTempDir(const std::string& name) {
@@ -696,6 +733,28 @@ TEST(RustPbftSyncTest, ManagerStateActionEffectSessionRecordsFinishPollingTransc
 
   EXPECT_EQ(intents, (std::vector<uint8_t>{kPbftManagerStateActionNextVoteCurrentSoftValue,
                                            kPbftManagerStateActionNextVoteNullBlock}));
+}
+
+TEST(RustPbftSyncTest, ManagerAdvancePeriodRecordsEffectTranscript) {
+  const auto transition = resetTransitionPlanForAdvancePeriod();
+  const auto plan = plan_pbft_manager_advance_period(12, transition);
+
+  std::vector<uint8_t> actions;
+  actions.reserve(plan.actions.size());
+  for (const auto action : plan.actions) {
+    actions.push_back(action);
+  }
+
+  EXPECT_TRUE(plan.accepted);
+  EXPECT_EQ(plan.finalized_chain_size, 12);
+  EXPECT_EQ(plan.new_period, 13);
+  EXPECT_EQ(actions,
+            (std::vector<uint8_t>{
+                kPbftManagerAdvanceActionResetConsensus, kPbftManagerAdvanceActionExecutedBlockReset,
+                kPbftManagerAdvanceActionSetVoteManagerPeriodRound, kPbftManagerAdvanceActionResetCurrentRoundTimer,
+                kPbftManagerAdvanceActionResetRewardVoteCounters, kPbftManagerAdvanceActionResetPeriodTimer,
+                kPbftManagerAdvanceActionUpdateWalletEligibility, kPbftManagerAdvanceActionCleanupVotes,
+                kPbftManagerAdvanceActionCleanupProposedBlocks}));
 }
 
 TEST(RustPbftSyncTest, FinalizationIntentAcceptsAnchoredBlockAndMapsCleanup) {
