@@ -338,6 +338,41 @@ pub fn pbft_manager_runtime_apply_period_advance(
         .into()
 }
 
+/// Records live broadcast counters in the long-lived PBFT manager runtime.
+///
+/// Inputs:
+/// - `runtime`: Rust-owned scalar PBFT manager runtime.
+/// - The four counters are the post-executor values selected by the Rust
+///   broadcast planner/report contract, or compatibility reset values for
+///   force-broadcast and reward-vote reset effects.
+///
+/// Outputs:
+/// - Returns a runtime snapshot that C++ may use to hydrate temporary
+///   compatibility mirrors.
+///
+/// Invariants and edge behavior:
+/// - This does not write durable storage; broadcast counters are live runtime
+///   state only.
+/// - Zero counters are rejected by the runtime and returned as an invalid
+///   snapshot without mutating the previous counter state.
+pub fn pbft_manager_runtime_apply_broadcast_counters(
+    runtime: &mut BridgePbftManagerRuntime,
+    broadcast_votes_counter: u32,
+    rebroadcast_votes_counter: u32,
+    broadcast_reward_votes_counter: u32,
+    rebroadcast_reward_votes_counter: u32,
+) -> FfiPbftManagerRuntimeSnapshot {
+    runtime
+        .state
+        .apply_committed_broadcast_counters(
+            broadcast_votes_counter,
+            rebroadcast_votes_counter,
+            broadcast_reward_votes_counter,
+            rebroadcast_reward_votes_counter,
+        )
+        .into()
+}
+
 /// Loads the persisted cert-voted PBFT block payload through the runtime-owned
 /// Rust storage handle.
 ///
@@ -1353,6 +1388,10 @@ impl From<PbftManagerRuntimeSnapshot> for FfiPbftManagerRuntimeSnapshot {
             executed_pbft_block: value.executed_pbft_block,
             already_next_voted_value: value.already_next_voted_value,
             already_next_voted_null: value.already_next_voted_null,
+            broadcast_votes_counter: value.broadcast_votes_counter,
+            rebroadcast_votes_counter: value.rebroadcast_votes_counter,
+            broadcast_reward_votes_counter: value.broadcast_reward_votes_counter,
+            rebroadcast_reward_votes_counter: value.rebroadcast_reward_votes_counter,
             persist_normalized_step: value.persist_normalized_step,
             reset_second_finish_start: value.reset_second_finish_start,
             error_code: value.error_code,
@@ -2438,6 +2477,44 @@ mod tests {
             assert_eq!(
                 pbft_manager_runtime_snapshot(&runtime).dynamic_lambda_ms,
                 1_250
+            );
+            assert_eq!(storage.get_pbft_mgr_field(2).unwrap(), 1_500);
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_runtime_records_broadcast_counters() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_broadcast_counters");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            storage
+                .save_pbft_mgr_field(2, 1_500)
+                .expect("lambda seed should persist");
+            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
+                .expect("runtime should restore");
+
+            let snapshot = pbft_manager_runtime_apply_broadcast_counters(&mut runtime, 2, 3, 4, 5);
+
+            assert_eq!(snapshot.status, STARTUP_STATUS_READY);
+            assert_eq!(snapshot.broadcast_votes_counter, 2);
+            assert_eq!(snapshot.rebroadcast_votes_counter, 3);
+            assert_eq!(snapshot.broadcast_reward_votes_counter, 4);
+            assert_eq!(snapshot.rebroadcast_reward_votes_counter, 5);
+            assert_eq!(
+                pbft_manager_runtime_snapshot(&runtime).rebroadcast_reward_votes_counter,
+                5
+            );
+
+            let rejected = pbft_manager_runtime_apply_broadcast_counters(&mut runtime, 0, 1, 1, 1);
+            assert_ne!(rejected.status, STARTUP_STATUS_READY);
+            assert_eq!(rejected.error_code, "PBFT_MANAGER_BROADCAST_COUNTER_ZERO");
+            assert_eq!(
+                pbft_manager_runtime_snapshot(&runtime).broadcast_votes_counter,
+                2
             );
             assert_eq!(storage.get_pbft_mgr_field(2).unwrap(), 1_500);
         }

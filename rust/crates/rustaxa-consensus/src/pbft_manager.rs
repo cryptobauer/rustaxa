@@ -3347,6 +3347,14 @@ pub struct PbftManagerRuntimeSnapshot {
     pub already_next_voted_value: bool,
     /// Live next-voted-null flag.
     pub already_next_voted_null: bool,
+    /// Live round-vote broadcast counter.
+    pub broadcast_votes_counter: u32,
+    /// Live round-vote rebroadcast counter.
+    pub rebroadcast_votes_counter: u32,
+    /// Live reward-vote broadcast counter.
+    pub broadcast_reward_votes_counter: u32,
+    /// Live reward-vote rebroadcast counter.
+    pub rebroadcast_reward_votes_counter: u32,
     /// Whether startup normalized persisted step and must persist the new step
     /// before C++ mirrors are updated.
     pub persist_normalized_step: bool,
@@ -3560,6 +3568,10 @@ impl PbftManagerRuntime {
             self.snapshot.already_next_voted_value = false;
             self.snapshot.already_next_voted_null = false;
         }
+        if plan.reset_broadcast_counters {
+            self.snapshot.broadcast_votes_counter = 1;
+            self.snapshot.rebroadcast_votes_counter = 1;
+        }
     }
 
     /// Records the delayed executed-block status reset after persistence.
@@ -3671,6 +3683,49 @@ impl PbftManagerRuntime {
         self.snapshot.clone()
     }
 
+    /// Records committed broadcast counter state in the runtime snapshot.
+    ///
+    /// Inputs:
+    /// - The four counters are the next values produced by the Rust broadcast
+    ///   planner/report contract or by Rust-planned compatibility reset effects
+    ///   such as force-broadcast and reward-vote counter reset.
+    ///
+    /// Outputs:
+    /// - Updates the runtime snapshot and returns it for C++ compatibility
+    ///   mirror hydration.
+    ///
+    /// Invariants and edge behavior:
+    /// - Counters are live runtime state, not durable PBFT manager storage.
+    /// - Zero counters are rejected because broadcast planning treats zero as
+    ///   malformed input and legacy counters are one-based.
+    /// - Rejected updates leave the previous runtime snapshot unchanged and
+    ///   return an invalid snapshot with a stable error code.
+    pub fn apply_committed_broadcast_counters(
+        &mut self,
+        broadcast_votes_counter: u32,
+        rebroadcast_votes_counter: u32,
+        broadcast_reward_votes_counter: u32,
+        rebroadcast_reward_votes_counter: u32,
+    ) -> PbftManagerRuntimeSnapshot {
+        if broadcast_votes_counter == 0
+            || rebroadcast_votes_counter == 0
+            || broadcast_reward_votes_counter == 0
+            || rebroadcast_reward_votes_counter == 0
+        {
+            let mut rejected = self.snapshot.clone();
+            rejected.status = PbftManagerStartupRestoreStatus::InvalidFact;
+            rejected.error_code = "PBFT_MANAGER_BROADCAST_COUNTER_ZERO".to_string();
+            return rejected;
+        }
+        self.snapshot.status = PbftManagerStartupRestoreStatus::Ready;
+        self.snapshot.broadcast_votes_counter = broadcast_votes_counter;
+        self.snapshot.rebroadcast_votes_counter = rebroadcast_votes_counter;
+        self.snapshot.broadcast_reward_votes_counter = broadcast_reward_votes_counter;
+        self.snapshot.rebroadcast_reward_votes_counter = rebroadcast_reward_votes_counter;
+        self.snapshot.error_code.clear();
+        self.snapshot.clone()
+    }
+
     /// Records a completed Rust-planned period advance.
     ///
     /// Inputs:
@@ -3716,6 +3771,10 @@ fn reject_startup_restore(error_code: &str) -> PbftManagerRuntimeSnapshot {
         executed_pbft_block: false,
         already_next_voted_value: false,
         already_next_voted_null: false,
+        broadcast_votes_counter: 0,
+        rebroadcast_votes_counter: 0,
+        broadcast_reward_votes_counter: 0,
+        rebroadcast_reward_votes_counter: 0,
         persist_normalized_step: false,
         reset_second_finish_start: false,
         error_code: error_code.to_string(),
@@ -3805,6 +3864,10 @@ pub fn restore_pbft_manager_runtime(
         executed_pbft_block: fact.executed_pbft_block,
         already_next_voted_value: fact.already_next_voted_value,
         already_next_voted_null: fact.already_next_voted_null,
+        broadcast_votes_counter: 1,
+        rebroadcast_votes_counter: 1,
+        broadcast_reward_votes_counter: 1,
+        rebroadcast_reward_votes_counter: 1,
         persist_normalized_step,
         reset_second_finish_start,
         error_code: String::new(),
@@ -6724,6 +6787,10 @@ mod tests {
         assert!(snapshot.already_next_voted_value);
         assert!(!snapshot.already_next_voted_null);
         assert!(snapshot.persist_normalized_step);
+        assert_eq!(snapshot.broadcast_votes_counter, 1);
+        assert_eq!(snapshot.rebroadcast_votes_counter, 1);
+        assert_eq!(snapshot.broadcast_reward_votes_counter, 1);
+        assert_eq!(snapshot.rebroadcast_reward_votes_counter, 1);
     }
 
     #[test]
@@ -7268,6 +7335,38 @@ mod tests {
         assert_eq!(after.step, 4);
         assert_eq!(after.current_round_lambda_ms, 100);
         assert_eq!(after.next_step_time_ms, 200);
+    }
+
+    #[test]
+    fn runtime_records_committed_broadcast_counters() {
+        let mut runtime = PbftManagerRuntime::new(restore_pbft_manager_runtime(startup_fact(1, 1)));
+
+        let snapshot = runtime.apply_committed_broadcast_counters(2, 3, 4, 5);
+
+        assert_eq!(snapshot.status, PbftManagerStartupRestoreStatus::Ready);
+        assert_eq!(snapshot.broadcast_votes_counter, 2);
+        assert_eq!(snapshot.rebroadcast_votes_counter, 3);
+        assert_eq!(snapshot.broadcast_reward_votes_counter, 4);
+        assert_eq!(snapshot.rebroadcast_reward_votes_counter, 5);
+
+        let rejected = runtime.apply_committed_broadcast_counters(0, 1, 1, 1);
+        assert_eq!(
+            rejected.status,
+            PbftManagerStartupRestoreStatus::InvalidFact
+        );
+        assert_eq!(rejected.error_code, "PBFT_MANAGER_BROADCAST_COUNTER_ZERO");
+        assert_eq!(runtime.snapshot().broadcast_votes_counter, 2);
+
+        let mut reset_fact = transition_fact(PbftManagerTransitionKind::ResetConsensus);
+        reset_fact.target_round = 1;
+        let reset_plan = plan_pbft_manager_transition(reset_fact);
+        assert!(reset_plan.reset_broadcast_counters);
+        runtime.apply_committed_transition(&reset_plan);
+        let reset_snapshot = runtime.snapshot();
+        assert_eq!(reset_snapshot.broadcast_votes_counter, 1);
+        assert_eq!(reset_snapshot.rebroadcast_votes_counter, 1);
+        assert_eq!(reset_snapshot.broadcast_reward_votes_counter, 4);
+        assert_eq!(reset_snapshot.rebroadcast_reward_votes_counter, 5);
     }
 
     #[test]

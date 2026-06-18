@@ -1121,6 +1121,10 @@ pub mod rustaxa_ffi {
         executed_pbft_block: bool,
         already_next_voted_value: bool,
         already_next_voted_null: bool,
+        broadcast_votes_counter: u32,
+        rebroadcast_votes_counter: u32,
+        broadcast_reward_votes_counter: u32,
+        rebroadcast_reward_votes_counter: u32,
         persist_normalized_step: bool,
         reset_second_finish_start: bool,
         error_code: String,
@@ -4491,6 +4495,13 @@ pub mod rustaxa_ffi {
         pub fn pbft_manager_runtime_apply_period_advance(
             runtime: &mut BridgePbftManagerRuntime,
             new_period: u64,
+        ) -> PbftManagerRuntimeSnapshot;
+        pub fn pbft_manager_runtime_apply_broadcast_counters(
+            runtime: &mut BridgePbftManagerRuntime,
+            broadcast_votes_counter: u32,
+            rebroadcast_votes_counter: u32,
+            broadcast_reward_votes_counter: u32,
+            rebroadcast_reward_votes_counter: u32,
         ) -> PbftManagerRuntimeSnapshot;
         pub fn pbft_manager_runtime_cert_voted_block_in_round(
             runtime: &BridgePbftManagerRuntime,

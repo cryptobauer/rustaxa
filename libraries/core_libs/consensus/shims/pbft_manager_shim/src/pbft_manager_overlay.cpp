@@ -309,7 +309,10 @@ void applyPbftManagerRuntimeSnapshot(const rustaxa::PbftManagerRuntimeSnapshot &
                                      PbftStep &step, PbftStates &state, std::chrono::milliseconds &current_round_lambda,
                                      std::chrono::milliseconds &next_step_time, uint32_t &rounds_count_dynamic_lambda,
                                      uint32_t &dynamic_lambda, bool &executed_pbft_block,
-                                     bool &already_next_voted_value, bool &already_next_voted_null_block_hash) {
+                                     bool &already_next_voted_value, bool &already_next_voted_null_block_hash,
+                                     uint32_t &broadcast_votes_counter, uint32_t &rebroadcast_votes_counter,
+                                     uint32_t &broadcast_reward_votes_counter,
+                                     uint32_t &rebroadcast_reward_votes_counter) {
   if (snapshot.status != kPbftManagerRuntimeSnapshotStatusReady) {
     throw std::runtime_error("Rust PBFT manager snapshot rejected: " + static_cast<std::string>(snapshot.error_code));
   }
@@ -324,6 +327,10 @@ void applyPbftManagerRuntimeSnapshot(const rustaxa::PbftManagerRuntimeSnapshot &
   executed_pbft_block = snapshot.executed_pbft_block;
   already_next_voted_value = snapshot.already_next_voted_value;
   already_next_voted_null_block_hash = snapshot.already_next_voted_null;
+  broadcast_votes_counter = snapshot.broadcast_votes_counter;
+  rebroadcast_votes_counter = snapshot.rebroadcast_votes_counter;
+  broadcast_reward_votes_counter = snapshot.broadcast_reward_votes_counter;
+  rebroadcast_reward_votes_counter = snapshot.rebroadcast_reward_votes_counter;
 }
 
 rustaxa::PbftManagerTransitionFact makePbftManagerTransitionFact(
@@ -476,6 +483,8 @@ void applyPbftManagerTransitionPlan(const rustaxa::PbftManagerTransitionPlan &pl
                                     std::optional<std::shared_ptr<PbftBlock>> &cert_voted_block_for_round,
                                     std::map<blk_hash_t, std::vector<PbftStep>> &current_round_broadcasted_votes,
                                     uint32_t &broadcast_votes_counter, uint32_t &rebroadcast_votes_counter,
+                                    uint32_t &broadcast_reward_votes_counter,
+                                    uint32_t &rebroadcast_reward_votes_counter,
                                     bool &already_next_voted_value, bool &already_next_voted_null_block_hash,
                                     bool &print_cert_step_info, bool &print_second_finish_step_info,
                                     std::chrono::system_clock::time_point &second_finish_step_start_datetime) {
@@ -502,7 +511,9 @@ void applyPbftManagerTransitionPlan(const rustaxa::PbftManagerTransitionPlan &pl
 
   applyPbftManagerRuntimeSnapshot(storage_result.snapshot, round, step, state, current_round_lambda, next_step_time,
                                   rounds_count_dynamic_lambda, dynamic_lambda, executed_pbft_block,
-                                  already_next_voted_value, already_next_voted_null_block_hash);
+                                  already_next_voted_value, already_next_voted_null_block_hash,
+                                  broadcast_votes_counter, rebroadcast_votes_counter, broadcast_reward_votes_counter,
+                                  rebroadcast_reward_votes_counter);
 
   if (plan.remove_cert_voted_block) {
     cert_voted_block_for_round.reset();
@@ -512,10 +523,6 @@ void applyPbftManagerTransitionPlan(const rustaxa::PbftManagerTransitionPlan &pl
   }
   if (plan.clear_broadcasted_votes) {
     current_round_broadcasted_votes.clear();
-  }
-  if (plan.reset_broadcast_counters) {
-    broadcast_votes_counter = 1;
-    rebroadcast_votes_counter = 1;
   }
   if (plan.reset_second_finish_start) {
     second_finish_step_start_datetime = std::chrono::system_clock::now();
@@ -948,8 +955,9 @@ void PbftManager::run() {
           plan, *pbft_manager_runtime_.value(), vote_mgr_, round_, step_, state_, current_round_lambda_,
           next_step_time_ms_, rounds_count_dynamic_lambda_, dynamic_lambda_, executed_pbft_block_,
           cert_voted_block_for_round_, current_round_broadcasted_votes_, broadcast_votes_counter_,
-          rebroadcast_votes_counter_, already_next_voted_value_, already_next_voted_null_block_hash_,
-          printCertStepInfo_, printSecondFinishStepInfo_, second_finish_step_start_datetime_);
+          rebroadcast_votes_counter_, broadcast_reward_votes_counter_, rebroadcast_reward_votes_counter_,
+          already_next_voted_value_, already_next_voted_null_block_hash_, printCertStepInfo_, printSecondFinishStepInfo_,
+          second_finish_step_start_datetime_);
       return true;
     };
 
@@ -1340,7 +1348,8 @@ bool PbftManager::advancePeriod() {
                                        current_round_lambda_, next_step_time_ms_, rounds_count_dynamic_lambda_,
                                        dynamic_lambda_, executed_pbft_block_, cert_voted_block_for_round_,
                                        current_round_broadcasted_votes_, broadcast_votes_counter_,
-                                       rebroadcast_votes_counter_, already_next_voted_value_,
+                                       rebroadcast_votes_counter_, broadcast_reward_votes_counter_,
+                                       rebroadcast_reward_votes_counter_, already_next_voted_value_,
                                        already_next_voted_null_block_hash_, printCertStepInfo_,
                                        printSecondFinishStepInfo_, second_finish_step_start_datetime_);
         break;
@@ -1355,7 +1364,9 @@ bool PbftManager::advancePeriod() {
         applyPbftManagerRuntimeSnapshot(reset_result.snapshot, round_, step_, state_, current_round_lambda_,
                                         next_step_time_ms_, rounds_count_dynamic_lambda_, dynamic_lambda_,
                                         executed_pbft_block_, already_next_voted_value_,
-                                        already_next_voted_null_block_hash_);
+                                        already_next_voted_null_block_hash_, broadcast_votes_counter_,
+                                        rebroadcast_votes_counter_, broadcast_reward_votes_counter_,
+                                        rebroadcast_reward_votes_counter_);
         break;
       }
       case kPbftManagerAdvancePeriodActionSetVoteManagerPeriodRound:
@@ -1365,9 +1376,19 @@ bool PbftManager::advancePeriod() {
         current_round_start_datetime_ = std::chrono::system_clock::now();
         break;
       case kPbftManagerAdvancePeriodActionResetRewardVoteCounters:
-        broadcast_reward_votes_counter_ = 1;
-        rebroadcast_reward_votes_counter_ = 1;
+      {
+        const auto broadcast_snapshot = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value());
+        const auto reset_snapshot = rustaxa::pbft_manager_runtime_apply_broadcast_counters(
+            *pbft_manager_runtime_.value(), broadcast_snapshot.broadcast_votes_counter,
+            broadcast_snapshot.rebroadcast_votes_counter, 1, 1);
+        applyPbftManagerRuntimeSnapshot(reset_snapshot, round_, step_, state_, current_round_lambda_,
+                                        next_step_time_ms_, rounds_count_dynamic_lambda_, dynamic_lambda_,
+                                        executed_pbft_block_, already_next_voted_value_,
+                                        already_next_voted_null_block_hash_, broadcast_votes_counter_,
+                                        rebroadcast_votes_counter_, broadcast_reward_votes_counter_,
+                                        rebroadcast_reward_votes_counter_);
         break;
+      }
       case kPbftManagerAdvancePeriodActionResetPeriodTimer:
         current_period_start_datetime_ = std::chrono::system_clock::now();
         break;
@@ -1397,7 +1418,9 @@ bool PbftManager::advancePeriod() {
   }
   applyPbftManagerRuntimeSnapshot(period_snapshot, round_, step_, state_, current_round_lambda_, next_step_time_ms_,
                                   rounds_count_dynamic_lambda_, dynamic_lambda_, executed_pbft_block_,
-                                  already_next_voted_value_, already_next_voted_null_block_hash_);
+                                  already_next_voted_value_, already_next_voted_null_block_hash_,
+                                  broadcast_votes_counter_, rebroadcast_votes_counter_, broadcast_reward_votes_counter_,
+                                  rebroadcast_reward_votes_counter_);
 
   LOG(log_nf_) << "Period advanced to: " << advance_plan.new_period << ", round and step reset to 1";
 
@@ -1429,6 +1452,7 @@ void PbftManager::resetPbftConsensus(PbftRound round) {
                                  current_round_lambda_, next_step_time_ms_, rounds_count_dynamic_lambda_,
                                  dynamic_lambda_, executed_pbft_block_, cert_voted_block_for_round_,
                                  current_round_broadcasted_votes_, broadcast_votes_counter_, rebroadcast_votes_counter_,
+                                 broadcast_reward_votes_counter_, rebroadcast_reward_votes_counter_,
                                  already_next_voted_value_, already_next_voted_null_block_hash_, printCertStepInfo_,
                                  printSecondFinishStepInfo_, second_finish_step_start_datetime_);
 
@@ -1442,7 +1466,9 @@ void PbftManager::resetPbftConsensus(PbftRound round) {
     applyPbftManagerRuntimeSnapshot(reset_result.snapshot, round_, step_, state_, current_round_lambda_,
                                     next_step_time_ms_, rounds_count_dynamic_lambda_, dynamic_lambda_,
                                     executed_pbft_block_, already_next_voted_value_,
-                                    already_next_voted_null_block_hash_);
+                                    already_next_voted_null_block_hash_, broadcast_votes_counter_,
+                                    rebroadcast_votes_counter_, broadcast_reward_votes_counter_,
+                                    rebroadcast_reward_votes_counter_);
   }
   if (plan.set_vote_manager_period_round) {
     vote_mgr_->setCurrentPbftPeriodAndRound(period, plan.new_round);
@@ -1507,7 +1533,9 @@ void PbftManager::initialState() {
   const auto startup_snapshot = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value());
   applyPbftManagerRuntimeSnapshot(startup_snapshot, round_, step_, state_, current_round_lambda_, next_step_time_ms_,
                                   rounds_count_dynamic_lambda_, dynamic_lambda_, executed_pbft_block_,
-                                  already_next_voted_value_, already_next_voted_null_block_hash_);
+                                  already_next_voted_value_, already_next_voted_null_block_hash_,
+                                  broadcast_votes_counter_, rebroadcast_votes_counter_, broadcast_reward_votes_counter_,
+                                  rebroadcast_reward_votes_counter_);
   if (startup_snapshot.reset_second_finish_start) {
     second_finish_step_start_datetime_ = now;
   }
@@ -1593,6 +1621,7 @@ void PbftManager::setFilterState_() {
                                  current_round_lambda_, next_step_time_ms_, rounds_count_dynamic_lambda_,
                                  dynamic_lambda_, executed_pbft_block_, cert_voted_block_for_round_,
                                  current_round_broadcasted_votes_, broadcast_votes_counter_, rebroadcast_votes_counter_,
+                                 broadcast_reward_votes_counter_, rebroadcast_reward_votes_counter_,
                                  already_next_voted_value_, already_next_voted_null_block_hash_, printCertStepInfo_,
                                  printSecondFinishStepInfo_, second_finish_step_start_datetime_);
 }
@@ -1617,6 +1646,7 @@ void PbftManager::setCertifyState_() {
                                  current_round_lambda_, next_step_time_ms_, rounds_count_dynamic_lambda_,
                                  dynamic_lambda_, executed_pbft_block_, cert_voted_block_for_round_,
                                  current_round_broadcasted_votes_, broadcast_votes_counter_, rebroadcast_votes_counter_,
+                                 broadcast_reward_votes_counter_, rebroadcast_reward_votes_counter_,
                                  already_next_voted_value_, already_next_voted_null_block_hash_, printCertStepInfo_,
                                  printSecondFinishStepInfo_, second_finish_step_start_datetime_);
 }
@@ -1642,6 +1672,7 @@ void PbftManager::setFinishState_() {
                                  current_round_lambda_, next_step_time_ms_, rounds_count_dynamic_lambda_,
                                  dynamic_lambda_, executed_pbft_block_, cert_voted_block_for_round_,
                                  current_round_broadcasted_votes_, broadcast_votes_counter_, rebroadcast_votes_counter_,
+                                 broadcast_reward_votes_counter_, rebroadcast_reward_votes_counter_,
                                  already_next_voted_value_, already_next_voted_null_block_hash_, printCertStepInfo_,
                                  printSecondFinishStepInfo_, second_finish_step_start_datetime_);
 }
@@ -1666,6 +1697,7 @@ void PbftManager::setFinishPollingState_() {
                                  current_round_lambda_, next_step_time_ms_, rounds_count_dynamic_lambda_,
                                  dynamic_lambda_, executed_pbft_block_, cert_voted_block_for_round_,
                                  current_round_broadcasted_votes_, broadcast_votes_counter_, rebroadcast_votes_counter_,
+                                 broadcast_reward_votes_counter_, rebroadcast_reward_votes_counter_,
                                  already_next_voted_value_, already_next_voted_null_block_hash_, printCertStepInfo_,
                                  printSecondFinishStepInfo_, second_finish_step_start_datetime_);
 }
@@ -1690,6 +1722,7 @@ void PbftManager::loopBackFinishState_() {
                                  current_round_lambda_, next_step_time_ms_, rounds_count_dynamic_lambda_,
                                  dynamic_lambda_, executed_pbft_block_, cert_voted_block_for_round_,
                                  current_round_broadcasted_votes_, broadcast_votes_counter_, rebroadcast_votes_counter_,
+                                 broadcast_reward_votes_counter_, rebroadcast_reward_votes_counter_,
                                  already_next_voted_value_, already_next_voted_null_block_hash_, printCertStepInfo_,
                                  printSecondFinishStepInfo_, second_finish_step_start_datetime_);
 }
@@ -1759,6 +1792,13 @@ void PbftManager::broadcastVotes() {
 
   const auto round_elapsed_time = elapsedTimeInMs(current_round_start_datetime_);
   const auto period_elapsed_time = elapsedTimeInMs(current_period_start_datetime_);
+  const auto broadcast_snapshot = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value());
+  if (broadcast_snapshot.status != kPbftManagerRuntimeSnapshotStatusReady) {
+    LOG(log_er_) << "Rust PBFT broadcast snapshot rejected, error "
+                 << static_cast<std::string>(broadcast_snapshot.error_code);
+    assert(false);
+    return;
+  }
 
   rustaxa::PbftManagerBroadcastFact fact;
   fact.round_elapsed_ms = toBroadcastElapsedMs(round_elapsed_time);
@@ -1766,10 +1806,10 @@ void PbftManager::broadcastVotes() {
   fact.current_round_lambda_ms = toBroadcastElapsedMs(current_round_lambda_);
   fact.broadcast_lambda_threshold = kBroadcastVotesLambdaTime;
   fact.rebroadcast_lambda_threshold = kRebroadcastVotesLambdaTime;
-  fact.broadcast_votes_counter = broadcast_votes_counter_;
-  fact.rebroadcast_votes_counter = rebroadcast_votes_counter_;
-  fact.broadcast_reward_votes_counter = broadcast_reward_votes_counter_;
-  fact.rebroadcast_reward_votes_counter = rebroadcast_reward_votes_counter_;
+  fact.broadcast_votes_counter = broadcast_snapshot.broadcast_votes_counter;
+  fact.rebroadcast_votes_counter = broadcast_snapshot.rebroadcast_votes_counter;
+  fact.broadcast_reward_votes_counter = broadcast_snapshot.broadcast_reward_votes_counter;
+  fact.rebroadcast_reward_votes_counter = broadcast_snapshot.rebroadcast_reward_votes_counter;
 
   auto plan = rustaxa::plan_pbft_manager_broadcast(fact);
   if (plan.status != kPbftManagerBroadcastStatusReady) {
@@ -1812,10 +1852,14 @@ void PbftManager::broadcastVotes() {
   }
 
   if (result.apply_counters) {
-    broadcast_votes_counter_ = result.broadcast_votes_counter;
-    rebroadcast_votes_counter_ = result.rebroadcast_votes_counter;
-    broadcast_reward_votes_counter_ = result.broadcast_reward_votes_counter;
-    rebroadcast_reward_votes_counter_ = result.rebroadcast_reward_votes_counter;
+    const auto counter_snapshot = rustaxa::pbft_manager_runtime_apply_broadcast_counters(
+        *pbft_manager_runtime_.value(), result.broadcast_votes_counter, result.rebroadcast_votes_counter,
+        result.broadcast_reward_votes_counter, result.rebroadcast_reward_votes_counter);
+    applyPbftManagerRuntimeSnapshot(counter_snapshot, round_, step_, state_, current_round_lambda_, next_step_time_ms_,
+                                    rounds_count_dynamic_lambda_, dynamic_lambda_, executed_pbft_block_,
+                                    already_next_voted_value_, already_next_voted_null_block_hash_,
+                                    broadcast_votes_counter_, rebroadcast_votes_counter_,
+                                    broadcast_reward_votes_counter_, rebroadcast_reward_votes_counter_);
   }
 }
 
@@ -1823,6 +1867,14 @@ void PbftManager::testBroadcastVotesFunctionality() {
   // Set these variables to force broadcastVotes() send votes
   current_round_start_datetime_ = time_point{};
   current_period_start_datetime_ = time_point{};
+  const auto counter_snapshot = rustaxa::pbft_manager_runtime_apply_broadcast_counters(
+      *pbft_manager_runtime_.value(), kBroadcastVotesLambdaTime, kRebroadcastVotesLambdaTime, kBroadcastVotesLambdaTime,
+      kRebroadcastVotesLambdaTime);
+  applyPbftManagerRuntimeSnapshot(counter_snapshot, round_, step_, state_, current_round_lambda_, next_step_time_ms_,
+                                  rounds_count_dynamic_lambda_, dynamic_lambda_, executed_pbft_block_,
+                                  already_next_voted_value_, already_next_voted_null_block_hash_,
+                                  broadcast_votes_counter_, rebroadcast_votes_counter_, broadcast_reward_votes_counter_,
+                                  rebroadcast_reward_votes_counter_);
 
   broadcastVotes();
 }
@@ -2039,7 +2091,9 @@ bool PbftManager::placeStateActionVote(PbftVoteTypes vote_type, PbftPeriod perio
     applyPbftManagerRuntimeSnapshot(next_voted_snapshot, round_, step_, state_, current_round_lambda_,
                                     next_step_time_ms_, rounds_count_dynamic_lambda_, dynamic_lambda_,
                                     executed_pbft_block_, already_next_voted_value_,
-                                    already_next_voted_null_block_hash_);
+                                    already_next_voted_null_block_hash_, broadcast_votes_counter_,
+                                    rebroadcast_votes_counter_, broadcast_reward_votes_counter_,
+                                    rebroadcast_reward_votes_counter_);
   }
 
   return true;
@@ -3855,7 +3909,9 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     applyPbftManagerRuntimeSnapshot(dynamic_lambda_snapshot, round_, step_, state_, current_round_lambda_,
                                     next_step_time_ms_, rounds_count_dynamic_lambda_, dynamic_lambda_,
                                     executed_pbft_block_, already_next_voted_value_,
-                                    already_next_voted_null_block_hash_);
+                                    already_next_voted_null_block_hash_, broadcast_votes_counter_,
+                                    rebroadcast_votes_counter_, broadcast_reward_votes_counter_,
+                                    rebroadcast_reward_votes_counter_);
     if (dynamic_lambda_plan.decreased_dynamic_lambda) {
       LOG(log_nf_) << "Decrease dynamic_lambda by " << kGenesisConfig.state.hardforks.cacti_hf.lambda_change << " to "
                    << dynamic_lambda_ << ", period " << block_pbft_period << ", round " << block_pbft_round;

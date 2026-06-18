@@ -384,8 +384,13 @@ dynamic-lambda read cut adds a Rust runtime commit point for accepted dynamic-la
 round-one lambda from `PbftManagerRuntimeSnapshot`, and feeds finalization dynamic-lambda planner inputs from the same
 snapshot instead of `rounds_count_dynamic_lambda_` / `dynamic_lambda_`. The next-voted flag cut makes successful
 next-vote status persistence return an authoritative Rust runtime snapshot, applies that snapshot to compatibility
-mirrors, removes the direct C++ bool writes, and feeds state-action planner facts from snapshot flags. Remaining Slice 9
-work: reduce broadcast counters, then `cert_voted_block_for_round_`, proposed-block sidecars, and queue/cache mirrors.
+mirrors, removes the direct C++ bool writes, and feeds state-action planner facts from snapshot flags. The
+broadcast-counter cut makes `PbftManagerRuntimeSnapshot` own the four live broadcast/rebroadcast counters,
+seeds accepted startup snapshots with one-based counters, resets round counters from committed reset-consensus
+transitions, routes reward-counter reset and force-broadcast through a Rust runtime counter update, builds
+`broadcastVotes()` facts from a fresh runtime snapshot, and applies accepted broadcast reports by hydrating C++
+compatibility mirrors from Rust. Remaining Slice 9 work: `cert_voted_block_for_round_`, proposed-block sidecars, and
+queue/cache mirrors.
 
 ### Slice 10: Rust-Mode PBFT Manager Parity Gate
 
