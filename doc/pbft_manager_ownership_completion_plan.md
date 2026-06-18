@@ -438,9 +438,10 @@ Scope:
   upstream-owned PBFT manager implementation paths for production decisions.
 
 First guard cut landed: `pbft_manager_test` now includes a Rust-mode compile-time assertion that the shim-owned
-`PbftManager` does not inherit from `PbftManagerOld` when the PBFT manager overlay is active. Remaining Slice 10 work is
-the runtime/transcript coverage for daemon ticks, state-action scripts, sync admission, finalization sessions, period
-advancement, and restart/replay snapshots.
+`PbftManager` does not inherit from `PbftManagerOld` when the PBFT manager overlay is active. Daemon tick transcript
+coverage is present in `rust_consensus_tests`: the PBFT manager runtime session records the value-proposal action order,
+restart-on-cert-progress behavior, advance-round reset effect, certify-to-finish transition, and cursor mismatch
+rejection.
 State-action transcript cut landed: `rust_consensus_tests` now records the CXX bridge transcript for a finish-polling
 state-action effect session, proving Rust emits the ordered current-soft-value next vote before the null-block next vote
 and accepts one executor report per effect before completing the script.
@@ -449,11 +450,14 @@ checks through final-chain validation, reward votes, cert votes, transaction que
 before Rust returns the accept action.
 Finalization-session transcript coverage is present in `rust_consensus_tests`: the finalization runtime session records
 the mixed-executor action order from primary storage through advance-period and requires matching executor reports before
-completion. Period-advance transcript cut landed: `rust_consensus_tests` now records the Rust-planned period-advance
-effect order from reset-consensus application through vote/proposed-block cleanup. Startup snapshot coverage landed:
+completion; the finalization resume runtime records bounded duplicate/restart tail-replay actions, and the storage-backed
+resume inspector classifies not-persisted, dynamic-lambda-needed, FinalChain-replay-needed, and complete crash windows.
+Period-advance transcript cut landed: `rust_consensus_tests` now records the Rust-planned period-advance effect order
+from reset-consensus application through vote/proposed-block cleanup. Startup snapshot coverage landed:
 `rust_consensus_tests` now seeds Rust storage manager fields/statuses, restores the PBFT manager runtime through the CXX
 bridge, verifies the Rust-owned runtime snapshot, and requires the normalized startup step to be persisted back to Rust
-storage.
+storage. Slice 10 is complete for the current Rust-owned PBFT manager boundary; remaining PBFT manager ownership work is
+tracked under Slice 9 compatibility payload/materialization.
 
 Acceptance:
 
