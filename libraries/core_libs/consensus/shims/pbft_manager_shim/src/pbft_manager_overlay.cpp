@@ -333,6 +333,14 @@ void applyPbftManagerRuntimeSnapshot(const rustaxa::PbftManagerRuntimeSnapshot &
   rebroadcast_reward_votes_counter = snapshot.rebroadcast_reward_votes_counter;
 }
 
+void ensurePbftManagerRuntimeSnapshotReady(const rustaxa::PbftManagerRuntimeSnapshot &snapshot,
+                                           const char *operation) {
+  if (snapshot.status != kPbftManagerRuntimeSnapshotStatusReady) {
+    throw std::runtime_error(std::string(operation) + " rejected by Rust PBFT manager runtime: " +
+                             static_cast<std::string>(snapshot.error_code));
+  }
+}
+
 rustaxa::PbftManagerTransitionFact makePbftManagerTransitionFact(
     uint8_t kind, PbftPeriod period, PbftRound round, PbftStep step, PbftRound target_round,
     std::chrono::milliseconds current_round_lambda, std::chrono::milliseconds target_round_lambda,
@@ -2975,7 +2983,8 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
   fact.period = block_period;
   fact.pivot_hash = toBridgeHash(anchor_hash);
   fact.pivot_is_null = anchor_hash == kNullBlockHash;
-  fact.dag_order_cached = anchor_dag_block_order_cache_.find(anchor_hash) != anchor_dag_block_order_cache_.end();
+  fact.dag_order_cached = rustaxa::pbft_manager_runtime_has_cached_anchor_dag_order(
+      *pbft_manager_runtime_.value(), toBridgeHash(anchor_hash));
   fact.dag_order_required = true;
   fact.pillar_block_required = kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(block_period);
   fact.dag_weight_check_required = false;
@@ -3104,6 +3113,9 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
         assert(dag_block);
         anchor_dag_block_order_cache_[anchor_hash].emplace_back(std::move(dag_block));
       }
+      const auto record_cache_snapshot = rustaxa::pbft_manager_runtime_record_cached_anchor_dag_order(
+          *pbft_manager_runtime_.value(), toBridgeHash(anchor_hash));
+      ensurePbftManagerRuntimeSnapshotReady(record_cache_snapshot, "Record cached PBFT DAG order anchor");
 
       auto last_pbft_block_hash = pbft_chain_->getLastPbftBlockHash();
       bool dag_weight_check_required = false;
@@ -3121,6 +3133,9 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
       if (!checkBlockWeight(anchor_dag_block_order_cache_[anchor_hash], block_period)) {
         LOG(log_er_) << "PBFT block " << pbft_block_hash << " weight exceeded max limit";
         anchor_dag_block_order_cache_.erase(anchor_hash);
+        const auto remove_cache_snapshot = rustaxa::pbft_manager_runtime_remove_cached_anchor_dag_order(
+            *pbft_manager_runtime_.value(), toBridgeHash(anchor_hash));
+        ensurePbftManagerRuntimeSnapshotReady(remove_cache_snapshot, "Remove cached PBFT DAG order anchor");
         plan = validation_session->pbft_manager_block_validation_session_report(kPbftManagerBlockValidationFactInvalid,
                                                                                 false);
       } else {
@@ -3886,6 +3901,9 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       return false;
     }
     anchor_dag_block_order_cache_.clear();
+    const auto clear_cache_snapshot =
+        rustaxa::pbft_manager_runtime_clear_cached_anchor_dag_order(*pbft_manager_runtime_.value());
+    ensurePbftManagerRuntimeSnapshotReady(clear_cache_snapshot, "Clear cached PBFT DAG order anchors");
     if (!report_runtime_action(runtime_step, true, 0)) {
       return false;
     }
@@ -4163,8 +4181,8 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   block_validation_fact.period = block_period;
   block_validation_fact.pivot_hash = toBridgeHash(anchor_hash);
   block_validation_fact.pivot_is_null = anchor_hash == kNullBlockHash;
-  block_validation_fact.dag_order_cached =
-      anchor_dag_block_order_cache_.find(anchor_hash) != anchor_dag_block_order_cache_.end();
+  block_validation_fact.dag_order_cached = rustaxa::pbft_manager_runtime_has_cached_anchor_dag_order(
+      *pbft_manager_runtime_.value(), toBridgeHash(anchor_hash));
   block_validation_fact.dag_order_required = false;
   block_validation_fact.pillar_block_required = false;
   block_validation_fact.dag_weight_check_required = false;

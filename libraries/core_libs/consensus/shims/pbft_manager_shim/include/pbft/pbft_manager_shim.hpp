@@ -861,7 +861,7 @@ class PbftManager {
   // Rust-owned scalar PBFT manager cursor. C++ fields above are transitional
   // mirrors updated from Rust snapshots after startup and transition storage
   // commits.
-  std::optional<rust::Box<rustaxa::BridgePbftManagerRuntime>> pbft_manager_runtime_;
+  mutable std::optional<rust::Box<rustaxa::BridgePbftManagerRuntime>> pbft_manager_runtime_;
 
   // Wallets with flag if they are/are not dpos eligible for specified period
   EligibleWallets eligible_wallets_;

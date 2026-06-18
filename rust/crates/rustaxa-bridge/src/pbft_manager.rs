@@ -462,6 +462,97 @@ pub fn pbft_manager_runtime_apply_cert_voted_block_metadata(
         .into()
 }
 
+/// Checks Rust-owned DAG-order cache membership metadata.
+///
+/// Inputs:
+/// - `runtime`: long-lived PBFT manager runtime.
+/// - `anchor_hash`: PBFT pivot DAG block hash whose materialized sidecar
+///   availability is being queried.
+///
+/// Outputs:
+/// - Returns whether the C++ compatibility shell has reported a materialized
+///   DAG-order sidecar for the anchor.
+///
+/// Invariants and edge behavior:
+/// - Rust owns compact membership metadata only. C++ still owns the temporary
+///   `DagBlock` vector sidecar used by FinalChain/finalization executors.
+/// - The result is live runtime state and is not persisted.
+pub fn pbft_manager_runtime_has_cached_anchor_dag_order(
+    runtime: &BridgePbftManagerRuntime,
+    anchor_hash: &[u8; 32],
+) -> bool {
+    runtime
+        .state
+        .has_cached_anchor_dag_order(ethereum_types::H256::from(*anchor_hash))
+}
+
+/// Records Rust-owned DAG-order cache membership metadata.
+///
+/// Inputs:
+/// - `runtime`: long-lived PBFT manager runtime.
+/// - `anchor_hash`: PBFT pivot DAG block hash whose materialized sidecar has
+///   been accepted by the compatibility executor.
+///
+/// Outputs:
+/// - Returns the runtime snapshot for bridge consistency; scalar fields are
+///   unchanged.
+///
+/// Invariants and edge behavior:
+/// - This must be called only after C++ has materialized the matching DAG-order
+///   sidecar or refreshed an existing one.
+/// - Re-recording an anchor is idempotent.
+pub fn pbft_manager_runtime_record_cached_anchor_dag_order(
+    runtime: &mut BridgePbftManagerRuntime,
+    anchor_hash: [u8; 32],
+) -> FfiPbftManagerRuntimeSnapshot {
+    runtime
+        .state
+        .record_cached_anchor_dag_order(ethereum_types::H256::from(anchor_hash))
+        .into()
+}
+
+/// Removes Rust-owned DAG-order cache membership metadata for one anchor.
+///
+/// Inputs:
+/// - `runtime`: long-lived PBFT manager runtime.
+/// - `anchor_hash`: PBFT pivot DAG block hash whose materialized sidecar has
+///   been erased or rejected.
+///
+/// Outputs:
+/// - Returns the runtime snapshot for bridge consistency; scalar fields are
+///   unchanged.
+///
+/// Invariants and edge behavior:
+/// - Removing a missing anchor is idempotent and leaves scalar runtime state
+///   untouched.
+pub fn pbft_manager_runtime_remove_cached_anchor_dag_order(
+    runtime: &mut BridgePbftManagerRuntime,
+    anchor_hash: [u8; 32],
+) -> FfiPbftManagerRuntimeSnapshot {
+    runtime
+        .state
+        .remove_cached_anchor_dag_order(ethereum_types::H256::from(anchor_hash))
+        .into()
+}
+
+/// Clears all Rust-owned DAG-order cache membership metadata.
+///
+/// Inputs:
+/// - `runtime`: long-lived PBFT manager runtime.
+///
+/// Outputs:
+/// - Returns the runtime snapshot for bridge consistency; scalar fields are
+///   unchanged.
+///
+/// Invariants and edge behavior:
+/// - C++ calls this after clearing the period-scoped materialized DAG-order
+///   sidecar map during finalization cleanup.
+pub fn pbft_manager_runtime_clear_cached_anchor_dag_order(
+    runtime: &mut BridgePbftManagerRuntime,
+) -> FfiPbftManagerRuntimeSnapshot {
+    runtime.state.clear_cached_anchor_dag_order().into()
+}
+
 /// Loads the local node's own pillar-block vote through PBFT-manager runtime storage.
 ///
 /// Inputs:
@@ -2709,6 +2800,79 @@ mod tests {
                 err.to_string(),
                 "PBFT_MANAGER_CERT_VOTED_BLOCK_EMPTY_PAYLOAD"
             );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_runtime_records_cached_anchor_dag_order_metadata() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_cached_anchor_dag_order");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            storage
+                .save_pbft_mgr_field(0, 1)
+                .expect("round seed should persist");
+            storage
+                .save_pbft_mgr_field(1, 1)
+                .expect("step seed should persist");
+            storage
+                .save_pbft_mgr_field(2, 1_500)
+                .expect("lambda seed should persist");
+            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
+                .expect("runtime should restore");
+            let first_anchor = [0xDA; 32];
+            let second_anchor = [0xDB; 32];
+
+            assert!(!pbft_manager_runtime_has_cached_anchor_dag_order(
+                &runtime,
+                &first_anchor
+            ));
+
+            let record_snapshot =
+                pbft_manager_runtime_record_cached_anchor_dag_order(&mut runtime, first_anchor);
+            assert_eq!(record_snapshot.status, STARTUP_STATUS_READY);
+            assert!(pbft_manager_runtime_has_cached_anchor_dag_order(
+                &runtime,
+                &first_anchor
+            ));
+            assert!(!pbft_manager_runtime_has_cached_anchor_dag_order(
+                &runtime,
+                &second_anchor
+            ));
+
+            let remove_snapshot =
+                pbft_manager_runtime_remove_cached_anchor_dag_order(&mut runtime, first_anchor);
+            assert_eq!(remove_snapshot.status, STARTUP_STATUS_READY);
+            assert!(!pbft_manager_runtime_has_cached_anchor_dag_order(
+                &runtime,
+                &first_anchor
+            ));
+
+            pbft_manager_runtime_record_cached_anchor_dag_order(&mut runtime, first_anchor);
+            pbft_manager_runtime_record_cached_anchor_dag_order(&mut runtime, second_anchor);
+            assert!(pbft_manager_runtime_has_cached_anchor_dag_order(
+                &runtime,
+                &first_anchor
+            ));
+            assert!(pbft_manager_runtime_has_cached_anchor_dag_order(
+                &runtime,
+                &second_anchor
+            ));
+
+            let clear_snapshot = pbft_manager_runtime_clear_cached_anchor_dag_order(&mut runtime);
+            assert_eq!(clear_snapshot.status, STARTUP_STATUS_READY);
+            assert!(!pbft_manager_runtime_has_cached_anchor_dag_order(
+                &runtime,
+                &first_anchor
+            ));
+            assert!(!pbft_manager_runtime_has_cached_anchor_dag_order(
+                &runtime,
+                &second_anchor
+            ));
+            assert_eq!(storage.get_pbft_mgr_field(2).unwrap(), 1_500);
         }
 
         let _ = fs::remove_dir_all(temp_dir);

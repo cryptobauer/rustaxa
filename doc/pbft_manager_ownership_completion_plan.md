@@ -394,7 +394,10 @@ cert-voted block exists plus its period, round, and hash; startup restore record
 recovery row, successful cert-vote storage writes update runtime metadata before the C++ sidecar changes, transition
 reset clears metadata in Rust, and transition/state-action planner facts read the runtime metadata instead of the C++
 optional. The C++ `cert_voted_block_for_round_` object remains a temporary materialization sidecar for vote placement
-and proposed-block APIs. Remaining Slice 9 work: proposed-block sidecars and queue/cache mirrors.
+and proposed-block APIs. The DAG-order cache-membership cut makes the Rust runtime own the compact set of anchor hashes
+with materialized DAG-order data; proposal and sync validation facts now read `dag_order_cached` from that runtime
+metadata while C++ keeps the temporary `DagBlock` vector cache only as a FinalChain/finalization materialization sidecar.
+Remaining Slice 9 work: proposed-block sidecars and remaining sync queue/materialization mirrors.
 
 ### Slice 10: Rust-Mode PBFT Manager Parity Gate
 

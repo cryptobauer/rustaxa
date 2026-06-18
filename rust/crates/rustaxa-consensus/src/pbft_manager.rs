@@ -33,7 +33,7 @@ use ethereum_types::H256;
 use rlp::RlpStream;
 use rustaxa_storage::{Storage, StorageWriteBatch};
 use rustaxa_types::codec::rlp::dag::FinalizedDagBlockBundleRlp;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use tiny_keccak::{Hasher, Keccak};
 
 const PBFT_MGR_FIELD_ROUND: u8 = 0;
@@ -3381,6 +3381,7 @@ pub struct PbftManagerRuntimeSnapshot {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftManagerRuntime {
     snapshot: PbftManagerRuntimeSnapshot,
+    cached_anchor_dag_order_hashes: BTreeSet<H256>,
 }
 
 /// Storage-backed facts for replaying one finalized period during PBFT manager startup.
@@ -3545,11 +3546,93 @@ pub struct PbftManagerAdvancePeriodPlan {
 impl PbftManagerRuntime {
     /// Creates a runtime from an already accepted startup snapshot.
     pub fn new(snapshot: PbftManagerRuntimeSnapshot) -> Self {
-        Self { snapshot }
+        Self {
+            snapshot,
+            cached_anchor_dag_order_hashes: BTreeSet::new(),
+        }
     }
 
     /// Returns the current Rust-owned scalar snapshot.
     pub fn snapshot(&self) -> PbftManagerRuntimeSnapshot {
+        self.snapshot.clone()
+    }
+
+    /// Returns whether Rust currently tracks materialized DAG-order sidecar data for an anchor.
+    ///
+    /// Inputs:
+    /// - `anchor_hash`: PBFT pivot DAG block hash used as the materialized DAG-order cache key.
+    ///
+    /// Outputs:
+    /// - `true` when the C++ compatibility shell has reported a materialized DAG-order sidecar
+    ///   for the anchor and has not reported its removal or period-scoped cleanup.
+    ///
+    /// Invariants and edge behavior:
+    /// - Rust owns compact cache-membership metadata only. C++ remains the temporary owner of
+    ///   the live `DagBlock` vector sidecar until FinalChain/finalization object materialization
+    ///   moves behind Rust-owned effect payloads.
+    /// - The zero hash is treated like any other hash so this helper mirrors reported executor
+    ///   state exactly; callers should avoid reporting null-anchor DAG-order caches.
+    pub fn has_cached_anchor_dag_order(&self, anchor_hash: H256) -> bool {
+        self.cached_anchor_dag_order_hashes.contains(&anchor_hash)
+    }
+
+    /// Records that the compatibility shell materialized DAG-order data for an anchor.
+    ///
+    /// Inputs:
+    /// - `anchor_hash`: anchor whose DAG-order `DagBlock` vector is now available to the C++
+    ///   FinalChain/finalization executor.
+    ///
+    /// Outputs:
+    /// - Returns the current runtime snapshot for bridge consistency. Scalar PBFT manager fields
+    ///   are unchanged.
+    ///
+    /// Invariants and edge behavior:
+    /// - This is live runtime metadata, not durable storage.
+    /// - Re-recording the same anchor is idempotent.
+    pub fn record_cached_anchor_dag_order(
+        &mut self,
+        anchor_hash: H256,
+    ) -> PbftManagerRuntimeSnapshot {
+        self.cached_anchor_dag_order_hashes.insert(anchor_hash);
+        self.snapshot.status = PbftManagerStartupRestoreStatus::Ready;
+        self.snapshot.error_code.clear();
+        self.snapshot.clone()
+    }
+
+    /// Removes Rust-owned DAG-order cache metadata for one anchor.
+    ///
+    /// Inputs:
+    /// - `anchor_hash`: anchor whose materialized C++ DAG-order sidecar was erased or rejected.
+    ///
+    /// Outputs:
+    /// - Returns the current runtime snapshot for bridge consistency. Scalar PBFT manager fields
+    ///   are unchanged.
+    ///
+    /// Invariants and edge behavior:
+    /// - Removing a missing anchor is idempotent.
+    pub fn remove_cached_anchor_dag_order(
+        &mut self,
+        anchor_hash: H256,
+    ) -> PbftManagerRuntimeSnapshot {
+        self.cached_anchor_dag_order_hashes.remove(&anchor_hash);
+        self.snapshot.status = PbftManagerStartupRestoreStatus::Ready;
+        self.snapshot.error_code.clear();
+        self.snapshot.clone()
+    }
+
+    /// Clears all Rust-owned DAG-order cache metadata.
+    ///
+    /// Outputs:
+    /// - Returns the current runtime snapshot for bridge consistency. Scalar PBFT manager fields
+    ///   are unchanged.
+    ///
+    /// Invariants and edge behavior:
+    /// - C++ calls this when the period-scoped materialized DAG-order sidecar cache is cleared
+    ///   after finalization cleanup.
+    pub fn clear_cached_anchor_dag_order(&mut self) -> PbftManagerRuntimeSnapshot {
+        self.cached_anchor_dag_order_hashes.clear();
+        self.snapshot.status = PbftManagerStartupRestoreStatus::Ready;
+        self.snapshot.error_code.clear();
         self.snapshot.clone()
     }
 
@@ -7469,6 +7552,43 @@ mod tests {
         assert_eq!(reset_snapshot.cert_voted_block_period, 0);
         assert_eq!(reset_snapshot.cert_voted_block_round, 0);
         assert_eq!(reset_snapshot.cert_voted_block_hash, H256::zero());
+    }
+
+    #[test]
+    fn runtime_records_cached_anchor_dag_order_metadata() {
+        let mut runtime = PbftManagerRuntime::new(restore_pbft_manager_runtime(startup_fact(1, 1)));
+        let first_anchor = H256::from_low_u64_be(0xDA60);
+        let second_anchor = H256::from_low_u64_be(0xDA61);
+
+        assert!(!runtime.has_cached_anchor_dag_order(first_anchor));
+
+        let record_snapshot = runtime.record_cached_anchor_dag_order(first_anchor);
+        assert_eq!(
+            record_snapshot.status,
+            PbftManagerStartupRestoreStatus::Ready
+        );
+        assert!(runtime.has_cached_anchor_dag_order(first_anchor));
+        assert!(!runtime.has_cached_anchor_dag_order(second_anchor));
+
+        let remove_snapshot = runtime.remove_cached_anchor_dag_order(first_anchor);
+        assert_eq!(
+            remove_snapshot.status,
+            PbftManagerStartupRestoreStatus::Ready
+        );
+        assert!(!runtime.has_cached_anchor_dag_order(first_anchor));
+
+        runtime.record_cached_anchor_dag_order(first_anchor);
+        runtime.record_cached_anchor_dag_order(second_anchor);
+        assert!(runtime.has_cached_anchor_dag_order(first_anchor));
+        assert!(runtime.has_cached_anchor_dag_order(second_anchor));
+
+        let clear_snapshot = runtime.clear_cached_anchor_dag_order();
+        assert_eq!(
+            clear_snapshot.status,
+            PbftManagerStartupRestoreStatus::Ready
+        );
+        assert!(!runtime.has_cached_anchor_dag_order(first_anchor));
+        assert!(!runtime.has_cached_anchor_dag_order(second_anchor));
     }
 
     #[test]
