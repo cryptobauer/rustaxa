@@ -94,6 +94,20 @@ impl PeriodDataQueue {
         self.period
     }
 
+    /// Returns the PBFT syncing period visible to network status.
+    ///
+    /// Inputs:
+    /// - `pbft_chain_size`: local PBFT chain size supplied by the PBFT chain
+    ///   compatibility executor.
+    ///
+    /// Outputs:
+    /// - The maximum of the Rust-owned queue period and the supplied PBFT chain
+    ///   size, preserving the legacy status-period calculation without making
+    ///   the PBFT manager read queue metadata as an authoritative mirror.
+    pub fn syncing_period(&self, pbft_chain_size: u64) -> u64 {
+        self.period.max(pbft_chain_size)
+    }
+
     /// Returns processable queue size under legacy cert-vote visibility rules.
     ///
     /// The tail entry is hidden when no side-car cert votes are available,
@@ -282,6 +296,7 @@ mod tests {
         assert!(outcome.accepted);
         assert!(outcome.clear_existing);
         assert_eq!(queue.period(), 4);
+        assert_eq!(queue.syncing_period(3), 4);
         assert_eq!(queue.last_entry().unwrap().entry_id, 4);
         assert_eq!(
             queue.last_entry().unwrap().block_hash,
@@ -339,6 +354,7 @@ mod tests {
             }]
         );
         assert_eq!(queue.period(), 6);
+        assert_eq!(queue.syncing_period(8), 8);
         assert_eq!(queue.last_entry().unwrap().entry_id, 6);
     }
 
@@ -350,6 +366,7 @@ mod tests {
         queue.clear();
 
         assert_eq!(queue.period(), 0);
+        assert_eq!(queue.syncing_period(7), 7);
         assert!(queue.is_empty());
         assert_eq!(queue.size(), 0);
         let err = queue.pop().unwrap_err().to_string();

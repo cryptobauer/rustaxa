@@ -46,8 +46,11 @@ TEST(PeriodDataQueueShimTest, popReturnsQueueFrontAndMatchingCertVotesContract) 
 
   EXPECT_TRUE(queue.push(std::move(period1), node1, 0, {}));
   EXPECT_EQ(queue.size(), 0);
+  EXPECT_EQ(queue.syncingPeriod(0), 1);
+  EXPECT_EQ(queue.syncingPeriod(5), 5);
   EXPECT_TRUE(queue.push(std::move(period2), node2, 0, {vote_for_last_block}));
   EXPECT_EQ(queue.size(), 2);
+  EXPECT_EQ(queue.syncingPeriod(1), 2);
   ASSERT_NE(queue.lastPbftBlock(), nullptr);
   EXPECT_EQ(queue.lastPbftBlock()->getPeriod(), 2);
   ASSERT_TRUE(queue.lastPbftBlockHash().has_value());
@@ -88,6 +91,7 @@ TEST(PeriodDataQueueShimTest, periodAdmissionAndCleanupBehaviorMatchesLegacyCont
 
   queue.clear();
   EXPECT_EQ(queue.getPeriod(), 0);
+  EXPECT_EQ(queue.syncingPeriod(7), 7);
   EXPECT_TRUE(queue.push(makePeriodData(1, 101), node, 0, {}));
 }
 

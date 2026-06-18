@@ -25,6 +25,8 @@ TEST(RustPeriodDataQueueTest, PushPopAndLastEntryFollowLegacyRules) {
   ASSERT_TRUE(first.accepted);
   EXPECT_FALSE(first.clear_existing);
   EXPECT_EQ(queue->period_data_queue_period(), 1u);
+  EXPECT_EQ(queue->period_data_queue_syncing_period(0), 1u);
+  EXPECT_EQ(queue->period_data_queue_syncing_period(5), 5u);
   EXPECT_EQ(queue->period_data_queue_size(), 1u);
 
   auto second = queue->period_data_queue_push(22, 2, hashFor(0x22), 0, 1);
@@ -82,6 +84,7 @@ TEST(RustPeriodDataQueueTest, PushRejectsInvalidPeriodSequenceAndAllowsQueueEmpt
   auto rejected_gap = queue->period_data_queue_push(44, 5, hashFor(0x44), 3, 1);
   EXPECT_FALSE(rejected_gap.accepted);
   EXPECT_EQ(queue->period_data_queue_period(), 3u);
+  EXPECT_EQ(queue->period_data_queue_syncing_period(1), 3u);
 }
 
 TEST(RustPeriodDataQueueTest, CleanOldDataAndClear) {
@@ -97,6 +100,7 @@ TEST(RustPeriodDataQueueTest, CleanOldDataAndClear) {
   EXPECT_EQ(removed[0].block_hash, hashFor(0x51));
 
   EXPECT_EQ(queue->period_data_queue_period(), 6u);
+  EXPECT_EQ(queue->period_data_queue_syncing_period(8), 8u);
   EXPECT_EQ(queue->period_data_queue_size(), 1u);
 
   auto remaining = queue->period_data_queue_pop();
@@ -108,6 +112,7 @@ TEST(RustPeriodDataQueueTest, CleanOldDataAndClear) {
   ASSERT_TRUE(queue->period_data_queue_push(53, 1, hashFor(0x53), 0, 1).accepted);
   queue->period_data_queue_clear();
   EXPECT_EQ(queue->period_data_queue_period(), 0u);
+  EXPECT_EQ(queue->period_data_queue_syncing_period(9), 9u);
   EXPECT_TRUE(queue->period_data_queue_empty());
   EXPECT_EQ(queue->period_data_queue_size(), 0u);
 }

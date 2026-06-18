@@ -25,6 +25,11 @@ uint64_t PeriodDataQueue::getPeriod() const {
   return rust_queue_->period_data_queue_period();
 }
 
+uint64_t PeriodDataQueue::syncingPeriod(uint64_t pbft_chain_size) const {
+  std::shared_lock lock(queue_access_);
+  return rust_queue_->period_data_queue_syncing_period(pbft_chain_size);
+}
+
 size_t PeriodDataQueue::size() const {
   std::shared_lock lock(queue_access_);
   return rust_queue_->period_data_queue_size();

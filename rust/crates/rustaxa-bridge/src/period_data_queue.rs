@@ -16,6 +16,11 @@ impl BridgePeriodDataQueue {
         self.0.period()
     }
 
+    /// Returns the queue-aware PBFT syncing period for network status.
+    pub fn period_data_queue_syncing_period(&self, pbft_chain_size: u64) -> u64 {
+        self.0.syncing_period(pbft_chain_size)
+    }
+
     /// Returns processable queue size under legacy cert-vote visibility rules.
     pub fn period_data_queue_size(&self) -> usize {
         self.0.size()

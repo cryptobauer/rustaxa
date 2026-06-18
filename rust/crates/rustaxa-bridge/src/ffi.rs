@@ -4840,6 +4840,10 @@ pub mod rustaxa_ffi {
 
         pub fn create_period_data_queue() -> Box<BridgePeriodDataQueue>;
         pub fn period_data_queue_period(self: &BridgePeriodDataQueue) -> u64;
+        pub fn period_data_queue_syncing_period(
+            self: &BridgePeriodDataQueue,
+            pbft_chain_size: u64,
+        ) -> u64;
         pub fn period_data_queue_size(self: &BridgePeriodDataQueue) -> usize;
         pub fn period_data_queue_empty(self: &BridgePeriodDataQueue) -> bool;
         pub fn period_data_queue_clear(self: &mut BridgePeriodDataQueue);

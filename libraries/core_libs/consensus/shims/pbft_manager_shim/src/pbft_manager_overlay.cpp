@@ -4089,7 +4089,7 @@ void PbftManager::processPillarBlock(PbftPeriod current_pbft_chain_size) {
 }
 
 PbftPeriod PbftManager::pbftSyncingPeriod() const {
-  return std::max(sync_queue_.getPeriod(), pbft_chain_->getPbftChainSize());
+  return sync_queue_.syncingPeriod(pbft_chain_->getPbftChainSize());
 }
 
 PbftManager::PbftSyncEgressPayload PbftManager::getPbftSyncEgressPayload(PbftPeriod period, bool last_block,

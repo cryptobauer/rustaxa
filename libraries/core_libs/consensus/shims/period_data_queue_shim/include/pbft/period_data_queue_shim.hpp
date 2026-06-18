@@ -86,6 +86,13 @@ class PeriodDataQueue {
   uint64_t getPeriod() const;
 
   /**
+   * Returns the Rust-owned queue-aware PBFT syncing period for network status.
+   *
+   * `pbft_chain_size` remains a PBFT-chain executor fact; the max calculation lives with Rust queue metadata.
+   */
+  uint64_t syncingPeriod(uint64_t pbft_chain_size) const;
+
+  /**
    * Returns last queued PBFT block, or nullptr when queue is empty.
    */
   std::shared_ptr<PbftBlock> lastPbftBlock() const;

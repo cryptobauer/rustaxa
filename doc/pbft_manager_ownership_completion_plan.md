@@ -400,8 +400,10 @@ metadata while C++ keeps the temporary `DagBlock` vector cache only as a FinalCh
 The sync queue tail-metadata cut makes the Rust-backed `PeriodDataQueue` own the queued PBFT block hash alongside entry
 id, period, processable size, pop planning, and cleanup metadata. `lastPbftBlockHashFromQueueOrChain()` now reads that
 compact Rust queue fact instead of materializing the last queued `PeriodData.pbft_blk` only to read its hash. C++ still
-owns queued `PeriodData`, `PbftVote`, and peer `NodeID` payloads for processing and public compatibility. Remaining
-Slice 9 work: proposed-block sidecars and remaining sync payload materialization mirrors.
+owns queued `PeriodData`, `PbftVote`, and peer `NodeID` payloads for processing and public compatibility. The derived
+syncing-period cut moves the queue-aware network status period calculation into the Rust-backed `PeriodDataQueue`; C++
+now supplies only the PBFT-chain size executor fact. Remaining Slice 9 work: proposed-block sidecars and remaining sync
+payload materialization mirrors.
 
 ### Slice 10: Rust-Mode PBFT Manager Parity Gate
 
