@@ -32,6 +32,18 @@ class Vote;
 class ProposedBlocks {
  public:
   /**
+   * Compact Rust-owned metadata for one proposed block.
+   *
+   * `pivot_hash` and `is_valid` can be read without reconstructing a temporary C++ `PbftBlock` object from retained
+   * block RLP. Callers that need validation or public return values must still materialize through
+   * `getPbftProposedBlock()`.
+   */
+  struct ProposedBlockMetadata {
+    blk_hash_t pivot_hash;
+    bool is_valid = false;
+  };
+
+  /**
    * Creates an empty Rust-backed proposed-block index.
    *
    * `db` may be null for temporary/local leader selection caches that do not request persistence.
@@ -81,6 +93,12 @@ class ProposedBlocks {
    */
   std::optional<std::pair<std::shared_ptr<PbftBlock>, bool>> getPbftProposedBlock(PbftPeriod period,
                                                                                   const blk_hash_t& block_hash) const;
+
+  /**
+   * Returns compact proposed-block metadata for `period`/`block_hash`.
+   */
+  std::optional<ProposedBlockMetadata> getPbftProposedBlockMetadata(PbftPeriod period,
+                                                                    const blk_hash_t& block_hash) const;
 
   /**
    * Returns true if `period` contains `block_hash`.

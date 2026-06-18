@@ -405,7 +405,11 @@ syncing-period cut moves the queue-aware network status period calculation into 
 now supplies only the PBFT-chain size executor fact. The queue hash fallback cut also moves the
 queued-block-hash-versus-chain-hash decision into Rust queue metadata: C++ supplies the chain-derived PBFT period and
 chain last-hash executor facts, and Rust returns the hash to use without the PBFT manager reading queue period metadata
-directly. Remaining Slice 9 work: proposed-block sidecars and remaining sync payload materialization mirrors.
+directly. The proposed-block metadata cut makes the Rust-backed `ProposedBlocks` index retain compact pivot-hash and
+cached-validity facts. PBFT leader-candidate ranking now reads those facts without reconstructing `PbftBlock` sidecars
+for already-valid candidates, materializing the selected block only when an executor or public API still needs the C++
+object. Remaining Slice 9 work: proposed-block sidecars that still require validation/API materialization and remaining
+sync payload materialization mirrors.
 
 ### Slice 10: Rust-Mode PBFT Manager Parity Gate
 

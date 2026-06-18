@@ -50,6 +50,7 @@ bool ProposedBlocks::pushProposedPbftBlock(const std::shared_ptr<PbftBlock>& pro
     }
     try {
       return rust_blocks_->proposed_blocks_push_with_storage(*rust_storage_, period, toBridgeHash(block_hash),
+                                                             toBridgeHash(proposed_block->getPivotDagBlockHash()),
                                                              toBridgeBytes(block_rlp));
     } catch (const std::exception& e) {
       throw std::runtime_error(e.what());
@@ -58,7 +59,9 @@ bool ProposedBlocks::pushProposedPbftBlock(const std::shared_ptr<PbftBlock>& pro
     }
   }
 
-  return rust_blocks_->proposed_blocks_push(period, toBridgeHash(block_hash), toBridgeBytes(block_rlp));
+  return rust_blocks_->proposed_blocks_push(period, toBridgeHash(block_hash),
+                                            toBridgeHash(proposed_block->getPivotDagBlockHash()),
+                                            toBridgeBytes(block_rlp));
 }
 
 void ProposedBlocks::markBlockAsValid(const std::shared_ptr<PbftBlock>& proposed_block) {
@@ -100,6 +103,17 @@ std::optional<std::pair<std::shared_ptr<PbftBlock>, bool>> ProposedBlocks::getPb
   }
 
   return std::make_pair(makeBlock(lookup.block_rlp), lookup.is_valid);
+}
+
+std::optional<ProposedBlocks::ProposedBlockMetadata> ProposedBlocks::getPbftProposedBlockMetadata(
+    PbftPeriod period, const blk_hash_t& block_hash) const {
+  std::shared_lock lock(proposed_blocks_mutex_);
+  const auto lookup = rust_blocks_->proposed_blocks_metadata(period, toBridgeHash(block_hash));
+  if (!lookup.found) {
+    return {};
+  }
+
+  return ProposedBlockMetadata{fromBridgeHash(lookup.pivot_hash), lookup.is_valid};
 }
 
 bool ProposedBlocks::isInProposedBlocks(PbftPeriod period, const blk_hash_t& block_hash) const {

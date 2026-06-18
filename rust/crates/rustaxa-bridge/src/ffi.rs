@@ -1569,7 +1569,14 @@ pub mod rustaxa_ffi {
     struct ProposedBlockLookup {
         found: bool,
         is_valid: bool,
+        pivot_hash: [u8; 32],
         block_rlp: Vec<u8>,
+    }
+
+    struct ProposedBlockMetadataLookup {
+        found: bool,
+        is_valid: bool,
+        pivot_hash: [u8; 32],
     }
 
     struct ProposedBlockPeriodHashes {
@@ -1580,6 +1587,7 @@ pub mod rustaxa_ffi {
     struct ProposedBlockSnapshotEntry {
         period: u64,
         block_hash: [u8; 32],
+        pivot_hash: [u8; 32],
         block_rlp: Vec<u8>,
         is_valid: bool,
     }
@@ -4748,6 +4756,7 @@ pub mod rustaxa_ffi {
             self: &mut BridgeProposedBlocks,
             period: u64,
             block_hash: &[u8; 32],
+            pivot_hash: &[u8; 32],
             block_rlp: Vec<u8>,
         ) -> bool;
         pub fn proposed_blocks_push_with_storage(
@@ -4755,6 +4764,7 @@ pub mod rustaxa_ffi {
             storage: &BridgeStorage,
             period: u64,
             block_hash: &[u8; 32],
+            pivot_hash: &[u8; 32],
             block_rlp: Vec<u8>,
         ) -> Result<bool>;
         pub fn proposed_blocks_mark_valid(
@@ -4767,6 +4777,11 @@ pub mod rustaxa_ffi {
             period: u64,
             block_hash: &[u8; 32],
         ) -> ProposedBlockLookup;
+        pub fn proposed_blocks_metadata(
+            self: &BridgeProposedBlocks,
+            period: u64,
+            block_hash: &[u8; 32],
+        ) -> ProposedBlockMetadataLookup;
         pub fn proposed_blocks_contains(
             self: &BridgeProposedBlocks,
             period: u64,

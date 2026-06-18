@@ -37,6 +37,10 @@ TEST_F(ProposedBlocksShimDataTest, nullDbWorksWhenPersistenceIsDisabled) {
   EXPECT_TRUE(proposed_blocks.pushProposedPbftBlock(block, false));
   EXPECT_FALSE(proposed_blocks.pushProposedPbftBlock(block, false));
   EXPECT_TRUE(proposed_blocks.isInProposedBlocks(block->getPeriod(), block->getBlockHash()));
+  auto metadata = proposed_blocks.getPbftProposedBlockMetadata(block->getPeriod(), block->getBlockHash());
+  ASSERT_TRUE(metadata.has_value());
+  EXPECT_EQ(metadata->pivot_hash, block->getPivotDagBlockHash());
+  EXPECT_FALSE(metadata->is_valid);
 
   auto found = proposed_blocks.getPbftProposedBlock(block->getPeriod(), block->getBlockHash());
   ASSERT_TRUE(found.has_value());
@@ -44,6 +48,9 @@ TEST_F(ProposedBlocksShimDataTest, nullDbWorksWhenPersistenceIsDisabled) {
   EXPECT_FALSE(found->second);
 
   proposed_blocks.markBlockAsValid(block);
+  metadata = proposed_blocks.getPbftProposedBlockMetadata(block->getPeriod(), block->getBlockHash());
+  ASSERT_TRUE(metadata.has_value());
+  EXPECT_TRUE(metadata->is_valid);
   found = proposed_blocks.getPbftProposedBlock(block->getPeriod(), block->getBlockHash());
   ASSERT_TRUE(found.has_value());
   EXPECT_TRUE(found->second);
@@ -67,6 +74,10 @@ TEST_F(ProposedBlocksShimDataTest, restoreFromStorageHydratesRustIndex) {
   EXPECT_EQ(proposed_blocks.restoreFromStorage(), 2);
   EXPECT_TRUE(proposed_blocks.isInProposedBlocks(period_one_block->getPeriod(), period_one_block->getBlockHash()));
   EXPECT_TRUE(proposed_blocks.isInProposedBlocks(period_two_block->getPeriod(), period_two_block->getBlockHash()));
+  auto metadata = proposed_blocks.getPbftProposedBlockMetadata(period_two_block->getPeriod(),
+                                                               period_two_block->getBlockHash());
+  ASSERT_TRUE(metadata.has_value());
+  EXPECT_EQ(metadata->pivot_hash, period_two_block->getPivotDagBlockHash());
 }
 
 TEST_F(ProposedBlocksShimDataTest, restoreFromStorageRequiresDb) {

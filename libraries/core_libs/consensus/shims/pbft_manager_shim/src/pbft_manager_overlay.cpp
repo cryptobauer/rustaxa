@@ -2834,21 +2834,32 @@ std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> 
       continue;
     }
 
+    const auto block_metadata = propose_blocks.getPbftProposedBlockMetadata(vote->getPeriod(), proposed_block_hash);
+    if (!block_metadata.has_value()) {
+      LOG(log_er_) << "Unable to get proposed block " << proposed_block_hash;
+      candidate_facts.push_back(fact);
+      continue;
+    }
+
+    fact.proposed_block_found = true;
+    fact.pivot_hash = toBridgeHash(block_metadata->pivot_hash);
+    if (block_metadata->is_valid) {
+      fact.block_validation_status = kPbftManagerLeaderBlockAlreadyValid;
+      candidate_facts.push_back(fact);
+      continue;
+    }
+
     const auto block_data = propose_blocks.getPbftProposedBlock(vote->getPeriod(), proposed_block_hash);
     if (!block_data.has_value()) {
-      LOG(log_er_) << "Unable to get proposed block " << proposed_block_hash;
+      LOG(log_er_) << "Unable to materialize proposed block " << proposed_block_hash;
+      fact.block_validation_status = kPbftManagerLeaderBlockRejected;
       candidate_facts.push_back(fact);
       continue;
     }
 
     const auto leader_block = block_data->first;
     assert(leader_block != nullptr);
-    fact.proposed_block_found = true;
-    fact.pivot_hash = toBridgeHash(leader_block->getPivotDagBlockHash());
-    if (block_data->second) {
-      fact.block_validation_status = kPbftManagerLeaderBlockAlreadyValid;
-      materialized_candidates.emplace_back(leader_block, vote);
-    } else if (validatePbftBlock(leader_block)) {
+    if (validatePbftBlock(leader_block)) {
       fact.block_validation_status = kPbftManagerLeaderBlockValidated;
       materialized_candidates.emplace_back(leader_block, vote);
     } else {
@@ -2885,6 +2896,19 @@ std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> 
   for (auto &candidate : materialized_candidates) {
     if (candidate.second->getHash() == selected_vote_hash && candidate.first->getBlockHash() == selected_block_hash) {
       return std::make_pair(candidate.first, candidate.second);
+    }
+  }
+
+  const auto selected_block_data = propose_blocks.getPbftProposedBlock(plan.selected_period, selected_block_hash);
+  if (!selected_block_data.has_value()) {
+    LOG(log_er_) << "Rust PBFT leader selection returned missing live candidate block " << selected_block_hash
+                 << ", period " << plan.selected_period;
+    return {};
+  }
+
+  for (auto &vote : propose_votes) {
+    if (vote->getHash() == selected_vote_hash && vote->getBlockHash() == selected_block_hash) {
+      return std::make_pair(selected_block_data->first, vote);
     }
   }
 

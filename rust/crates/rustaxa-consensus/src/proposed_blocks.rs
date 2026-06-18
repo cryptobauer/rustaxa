@@ -18,6 +18,7 @@ use std::convert::TryFrom;
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProposedBlockState {
     block_rlp: Vec<u8>,
+    pivot_hash: H256,
     is_valid: bool,
 }
 
@@ -37,6 +38,26 @@ pub struct ProposedBlockEntry {
     pub period: u64,
     pub block_hash: H256,
     pub block_rlp: Vec<u8>,
+    pub pivot_hash: H256,
+    pub is_valid: bool,
+}
+
+/// Compact metadata for one proposed PBFT block.
+///
+/// Inputs/outputs:
+/// - `period` and `block_hash` identify the proposed block.
+/// - `pivot_hash` is decoded from canonical RLP during storage restore or
+///   supplied by the temporary C++ sidecar during live insertion.
+/// - `is_valid` is the Rust-owned validation cache bit.
+///
+/// Invariants:
+/// - The metadata is available without returning block RLP to C++ callers that
+///   only need compact facts for ranking or cached-valid decisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProposedBlockMetadata {
+    pub period: u64,
+    pub block_hash: H256,
+    pub pivot_hash: H256,
     pub is_valid: bool,
 }
 
@@ -69,6 +90,8 @@ pub struct ProposedBlockStorageEntry {
     pub period: u64,
     /// Canonical PBFT block hash decoded from the stored proposed block.
     pub block_hash: H256,
+    /// Pivot DAG block hash decoded from the stored proposed block.
+    pub pivot_hash: H256,
     /// Stored signed PBFT block RLP bytes.
     pub block_rlp: Vec<u8>,
 }
@@ -94,11 +117,18 @@ impl ProposedBlocks {
     ///
     /// Returns `true` when the block was newly inserted and `false` when the
     /// same period/hash already existed. Existing entries are not overwritten.
-    pub fn push(&mut self, period: u64, block_hash: H256, block_rlp: Vec<u8>) -> bool {
+    pub fn push(
+        &mut self,
+        period: u64,
+        block_hash: H256,
+        pivot_hash: H256,
+        block_rlp: Vec<u8>,
+    ) -> bool {
         match self.blocks.entry(period).or_default().entry(block_hash) {
             Entry::Vacant(entry) => {
                 entry.insert(ProposedBlockState {
                     block_rlp,
+                    pivot_hash,
                     is_valid: false,
                 });
                 true
@@ -135,6 +165,20 @@ impl ProposedBlocks {
                 period,
                 block_hash,
                 block_rlp: state.block_rlp.clone(),
+                pivot_hash: state.pivot_hash,
+                is_valid: state.is_valid,
+            })
+    }
+
+    /// Returns compact metadata for `period` and `block_hash` without block RLP.
+    pub fn metadata(&self, period: u64, block_hash: H256) -> Option<ProposedBlockMetadata> {
+        self.blocks
+            .get(&period)
+            .and_then(|period_blocks| period_blocks.get(&block_hash))
+            .map(|state| ProposedBlockMetadata {
+                period,
+                block_hash,
+                pivot_hash: state.pivot_hash,
                 is_valid: state.is_valid,
             })
     }
@@ -213,6 +257,7 @@ impl ProposedBlocks {
                         period: *period,
                         block_hash: *block_hash,
                         block_rlp: state.block_rlp.clone(),
+                        pivot_hash: state.pivot_hash,
                         is_valid: state.is_valid,
                     })
                     .collect(),
@@ -263,6 +308,7 @@ pub fn restore_proposed_blocks_from_storage(
         restored.push(ProposedBlockStorageEntry {
             period: link.period,
             block_hash: link.block_hash,
+            pivot_hash: link.pivot_dag_block_hash,
             block_rlp,
         });
     }
@@ -319,6 +365,7 @@ pub fn save_proposed_block_storage(
     Ok(ProposedBlockStorageEntry {
         period: link.period,
         block_hash: link.block_hash,
+        pivot_hash: link.pivot_dag_block_hash,
         block_rlp: block_rlp.to_vec(),
     })
 }
@@ -371,6 +418,10 @@ mod tests {
         bytes.to_vec()
     }
 
+    fn push(blocks: &mut ProposedBlocks, period: u64, block_hash: H256, payload: Vec<u8>) -> bool {
+        blocks.push(period, block_hash, hash(period + 100), payload)
+    }
+
     fn temp_storage(name: &str) -> Storage {
         let dir = std::env::temp_dir().join(format!(
             "{name}_{}_{}",
@@ -407,25 +458,33 @@ mod tests {
     fn push_tracks_membership_and_payload_without_overwriting_existing_entry() {
         let mut blocks = ProposedBlocks::new();
 
-        assert!(blocks.push(2, hash(10), rlp(&[0xAA])));
-        assert!(!blocks.push(2, hash(10), rlp(&[0xBB])));
+        assert!(push(&mut blocks, 2, hash(10), rlp(&[0xAA])));
+        assert!(!push(&mut blocks, 2, hash(10), rlp(&[0xBB])));
         assert!(blocks.contains(2, hash(10)));
         assert!(!blocks.contains(2, hash(11)));
 
         let entry = blocks.get(2, hash(10)).unwrap();
         assert_eq!(entry.period, 2);
         assert_eq!(entry.block_hash, hash(10));
+        assert_eq!(entry.pivot_hash, hash(102));
         assert_eq!(entry.block_rlp, rlp(&[0xAA]));
         assert!(!entry.is_valid);
+
+        let metadata = blocks.metadata(2, hash(10)).unwrap();
+        assert_eq!(metadata.period, 2);
+        assert_eq!(metadata.block_hash, hash(10));
+        assert_eq!(metadata.pivot_hash, hash(102));
+        assert!(!metadata.is_valid);
     }
 
     #[test]
     fn mark_valid_updates_existing_entry_and_rejects_missing_entry() {
         let mut blocks = ProposedBlocks::new();
 
-        assert!(blocks.push(3, hash(30), rlp(&[0xC0])));
+        assert!(push(&mut blocks, 3, hash(30), rlp(&[0xC0])));
         blocks.mark_valid(3, hash(30)).unwrap();
         assert!(blocks.get(3, hash(30)).unwrap().is_valid);
+        assert!(blocks.metadata(3, hash(30)).unwrap().is_valid);
 
         let err = blocks.mark_valid(3, hash(31)).unwrap_err().to_string();
         assert!(err.contains("missing proposed PBFT block"));
@@ -434,9 +493,9 @@ mod tests {
     #[test]
     fn cleanup_removes_only_periods_lower_than_current_period() {
         let mut blocks = ProposedBlocks::new();
-        blocks.push(1, hash(11), rlp(&[0x11]));
-        blocks.push(2, hash(22), rlp(&[0x22]));
-        blocks.push(3, hash(33), rlp(&[0x33]));
+        push(&mut blocks, 1, hash(11), rlp(&[0x11]));
+        push(&mut blocks, 2, hash(22), rlp(&[0x22]));
+        push(&mut blocks, 3, hash(33), rlp(&[0x33]));
 
         let removed = blocks.cleanup_before(3);
         assert_eq!(removed.len(), 2);
@@ -451,10 +510,10 @@ mod tests {
     #[test]
     fn old_blocks_message_matches_legacy_format() {
         let mut blocks = ProposedBlocks::new();
-        blocks.push(1, hash(10), rlp(&[0x10]));
-        blocks.push(1, hash(11), rlp(&[0x11]));
-        blocks.push(2, hash(20), rlp(&[0x20]));
-        blocks.push(3, hash(30), rlp(&[0x30]));
+        push(&mut blocks, 1, hash(10), rlp(&[0x10]));
+        push(&mut blocks, 1, hash(11), rlp(&[0x11]));
+        push(&mut blocks, 2, hash(20), rlp(&[0x20]));
+        push(&mut blocks, 3, hash(30), rlp(&[0x30]));
 
         assert_eq!(
             blocks.old_blocks_message(3),
@@ -466,9 +525,9 @@ mod tests {
     #[test]
     fn snapshot_and_entries_preserve_payload_and_validation_state() {
         let mut blocks = ProposedBlocks::new();
-        blocks.push(1, hash(1), rlp(&[0xA1]));
-        blocks.push(1, hash(2), rlp(&[0xA2]));
-        blocks.push(2, hash(3), rlp(&[0xB3]));
+        push(&mut blocks, 1, hash(1), rlp(&[0xA1]));
+        push(&mut blocks, 1, hash(2), rlp(&[0xA2]));
+        push(&mut blocks, 2, hash(3), rlp(&[0xB3]));
         blocks.mark_valid(1, hash(2)).unwrap();
 
         let periods = blocks.snapshot();
@@ -485,6 +544,7 @@ mod tests {
         assert_eq!(entries[1].block_hash, hash(2));
         assert!(entries[1].is_valid);
         assert_eq!(entries[2].block_hash, hash(3));
+        assert_eq!(entries[2].pivot_hash, hash(102));
         assert_eq!(entries[2].block_rlp, rlp(&[0xB3]));
     }
 
@@ -521,11 +581,13 @@ mod tests {
                 ProposedBlockStorageEntry {
                     period: link_0.period,
                     block_hash: link_0.block_hash,
+                    pivot_hash: link_0.pivot_dag_block_hash,
                     block_rlp: rlp_0,
                 },
                 ProposedBlockStorageEntry {
                     period: link_1.period,
                     block_hash: link_1.block_hash,
+                    pivot_hash: link_1.pivot_dag_block_hash,
                     block_rlp: rlp_1,
                 },
             ]
@@ -574,6 +636,7 @@ mod tests {
 
         assert_eq!(saved.period, link.period);
         assert_eq!(saved.block_hash, link.block_hash);
+        assert_eq!(saved.pivot_hash, link.pivot_dag_block_hash);
         assert_eq!(saved.block_rlp, rlp);
         assert_eq!(
             storage

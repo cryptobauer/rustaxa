@@ -1,5 +1,6 @@
 use crate::ffi::rustaxa_ffi::{
-    DagHash, ProposedBlockLookup, ProposedBlockPeriodHashes, ProposedBlockSnapshotEntry,
+    DagHash, ProposedBlockLookup, ProposedBlockMetadataLookup, ProposedBlockPeriodHashes,
+    ProposedBlockSnapshotEntry,
 };
 use crate::ffi::BridgeProposedBlocks;
 use crate::ffi::BridgeStorage;
@@ -21,9 +22,15 @@ impl BridgeProposedBlocks {
         &mut self,
         period: u64,
         block_hash: &[u8; 32],
+        pivot_hash: &[u8; 32],
         block_rlp: Vec<u8>,
     ) -> bool {
-        self.0.push(period, H256::from(*block_hash), block_rlp)
+        self.0.push(
+            period,
+            H256::from(*block_hash),
+            H256::from(*pivot_hash),
+            block_rlp,
+        )
     }
 
     /// Persists a proposed PBFT block through Rust storage, then inserts it into
@@ -38,6 +45,7 @@ impl BridgeProposedBlocks {
         storage: &BridgeStorage,
         period: u64,
         block_hash: &[u8; 32],
+        pivot_hash: &[u8; 32],
         block_rlp: Vec<u8>,
     ) -> Result<bool, anyhow::Error> {
         let entry = save_proposed_block_storage(
@@ -46,7 +54,19 @@ impl BridgeProposedBlocks {
             H256::from(*block_hash),
             block_rlp.as_slice(),
         )?;
-        Ok(self.0.push(entry.period, entry.block_hash, entry.block_rlp))
+        if entry.pivot_hash != H256::from(*pivot_hash) {
+            anyhow::bail!(
+                "PROPOSED_BLOCKS_SAVE_PIVOT_MISMATCH: expected {:?}, decoded {:?}",
+                H256::from(*pivot_hash),
+                entry.pivot_hash
+            );
+        }
+        Ok(self.0.push(
+            entry.period,
+            entry.block_hash,
+            entry.pivot_hash,
+            entry.block_rlp,
+        ))
     }
 
     /// Marks an existing proposed PBFT block as valid.
@@ -65,12 +85,34 @@ impl BridgeProposedBlocks {
             .map(|entry| ProposedBlockLookup {
                 found: true,
                 is_valid: entry.is_valid,
+                pivot_hash: entry.pivot_hash.into(),
                 block_rlp: entry.block_rlp,
             })
             .unwrap_or(ProposedBlockLookup {
                 found: false,
                 is_valid: false,
+                pivot_hash: [0; 32],
                 block_rlp: Vec::new(),
+            })
+    }
+
+    /// Looks up compact proposed-block metadata without returning block RLP.
+    pub fn proposed_blocks_metadata(
+        &self,
+        period: u64,
+        block_hash: &[u8; 32],
+    ) -> ProposedBlockMetadataLookup {
+        self.0
+            .metadata(period, H256::from(*block_hash))
+            .map(|entry| ProposedBlockMetadataLookup {
+                found: true,
+                is_valid: entry.is_valid,
+                pivot_hash: entry.pivot_hash.into(),
+            })
+            .unwrap_or(ProposedBlockMetadataLookup {
+                found: false,
+                is_valid: false,
+                pivot_hash: [0; 32],
             })
     }
 
@@ -120,7 +162,12 @@ impl BridgeProposedBlocks {
         let mut restored = 0;
 
         for entry in proposed_entries {
-            let inserted = self.0.push(entry.period, entry.block_hash, entry.block_rlp);
+            let inserted = self.0.push(
+                entry.period,
+                entry.block_hash,
+                entry.pivot_hash,
+                entry.block_rlp,
+            );
             if inserted {
                 restored += 1;
             }
@@ -194,6 +241,7 @@ impl BridgeProposedBlocks {
             .map(|entry| ProposedBlockSnapshotEntry {
                 period: entry.period,
                 block_hash: entry.block_hash.into(),
+                pivot_hash: entry.pivot_hash.into(),
                 block_rlp: entry.block_rlp,
                 is_valid: entry.is_valid,
             })
@@ -311,6 +359,7 @@ mod tests {
                     &storage,
                     link.period,
                     &link.block_hash.0,
+                    &link.pivot_dag_block_hash.0,
                     rlp.clone(),
                 )
                 .expect("push with storage should succeed");
@@ -319,6 +368,7 @@ mod tests {
                     &storage,
                     link.period,
                     &link.block_hash.0,
+                    &link.pivot_dag_block_hash.0,
                     rlp.clone(),
                 )
                 .expect("duplicate storage put should still succeed");
@@ -332,6 +382,9 @@ mod tests {
             assert!(!duplicate);
             assert_eq!(stored, vec![rlp]);
             assert!(index.proposed_blocks_contains(link.period, &link.block_hash.0));
+            let metadata = index.proposed_blocks_metadata(link.period, &link.block_hash.0);
+            assert!(metadata.found);
+            assert_eq!(metadata.pivot_hash, link.pivot_dag_block_hash.0);
         }
 
         let _ = fs::remove_dir_all(temp_dir);
