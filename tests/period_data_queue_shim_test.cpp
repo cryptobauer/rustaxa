@@ -42,6 +42,7 @@ TEST(PeriodDataQueueShimTest, popReturnsQueueFrontAndMatchingCertVotesContract) 
 
   auto period1 = makePeriodData(1, 101);
   auto period2 = makePeriodData(2, 202, {vote_from_next_block});
+  const auto period2_hash = period2.pbft_blk->getBlockHash();
 
   EXPECT_TRUE(queue.push(std::move(period1), node1, 0, {}));
   EXPECT_EQ(queue.size(), 0);
@@ -49,6 +50,8 @@ TEST(PeriodDataQueueShimTest, popReturnsQueueFrontAndMatchingCertVotesContract) 
   EXPECT_EQ(queue.size(), 2);
   ASSERT_NE(queue.lastPbftBlock(), nullptr);
   EXPECT_EQ(queue.lastPbftBlock()->getPeriod(), 2);
+  ASSERT_TRUE(queue.lastPbftBlockHash().has_value());
+  EXPECT_EQ(*queue.lastPbftBlockHash(), period2_hash);
 
   auto [popped1, cert_votes1, popped_node1] = queue.pop();
   EXPECT_EQ(popped1.pbft_blk->getPeriod(), 1);
@@ -64,6 +67,7 @@ TEST(PeriodDataQueueShimTest, popReturnsQueueFrontAndMatchingCertVotesContract) 
   ASSERT_EQ(cert_votes2.size(), 1);
   EXPECT_EQ(cert_votes2[0].get(), vote_for_last_block.get());
   EXPECT_TRUE(queue.empty());
+  EXPECT_FALSE(queue.lastPbftBlockHash().has_value());
   EXPECT_EQ(queue.size(), 0);
   EXPECT_EQ(queue.getPeriod(), 0);
 }

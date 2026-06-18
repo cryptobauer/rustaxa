@@ -4,6 +4,7 @@
 
 #include <deque>
 #include <memory>
+#include <optional>
 #include <shared_mutex>
 #include <tuple>
 #include <vector>
@@ -88,6 +89,13 @@ class PeriodDataQueue {
    * Returns last queued PBFT block, or nullptr when queue is empty.
    */
   std::shared_ptr<PbftBlock> lastPbftBlock() const;
+
+  /**
+   * Returns last queued PBFT block hash from Rust-owned queue metadata, or nullopt when queue is empty.
+   *
+   * This avoids materializing the live `PeriodData` payload when PBFT manager only needs the compact chain-link fact.
+   */
+  std::optional<blk_hash_t> lastPbftBlockHash() const;
 
   /**
    * Removes queued entries with period lower than `period`.

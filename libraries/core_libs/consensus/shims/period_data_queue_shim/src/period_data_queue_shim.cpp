@@ -55,7 +55,8 @@ bool PeriodDataQueue::push(PeriodData&& period_data, const dev::p2p::NodeID& nod
 
   rustaxa::PeriodDataQueuePushOutcome outcome;
   try {
-    outcome = rust_queue_->period_data_queue_push(entry_id, period, max_pbft_size, cert_votes.size());
+    outcome = rust_queue_->period_data_queue_push(entry_id, period, period_data.pbft_blk->getBlockHash().asArray(),
+                                                  max_pbft_size, cert_votes.size());
   } catch (const std::exception& e) {
     throw queueError(e.what());
   } catch (...) {
@@ -139,6 +140,15 @@ std::shared_ptr<PbftBlock> PeriodDataQueue::lastPbftBlock() const {
     return nullptr;
   }
   return backPayload(lookup.entry_id).period_data.pbft_blk;
+}
+
+std::optional<blk_hash_t> PeriodDataQueue::lastPbftBlockHash() const {
+  std::shared_lock lock(queue_access_);
+  const auto lookup = rust_queue_->period_data_queue_last_entry();
+  if (!lookup.found) {
+    return std::nullopt;
+  }
+  return blk_hash_t(lookup.block_hash.data(), blk_hash_t::ConstructFromPointer);
 }
 
 void PeriodDataQueue::cleanOldData(uint64_t period) {

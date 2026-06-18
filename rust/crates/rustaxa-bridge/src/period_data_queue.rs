@@ -36,6 +36,7 @@ impl BridgePeriodDataQueue {
         &mut self,
         entry_id: u64,
         period: u64,
+        block_hash: [u8; 32],
         max_pbft_size: u64,
         current_block_cert_votes_count: usize,
     ) -> Result<PeriodDataQueuePushOutcome, anyhow::Error> {
@@ -44,6 +45,7 @@ impl BridgePeriodDataQueue {
             .push(
                 entry_id,
                 period,
+                ethereum_types::H256::from(block_hash),
                 max_pbft_size,
                 current_block_cert_votes_count,
             )?
@@ -63,11 +65,13 @@ impl BridgePeriodDataQueue {
                 found: true,
                 entry_id: entry.entry_id,
                 period: entry.period,
+                block_hash: entry.block_hash.into(),
             })
             .unwrap_or(PeriodDataQueueLastEntryLookup {
                 found: false,
                 entry_id: 0,
                 period: 0,
+                block_hash: [0; 32],
             })
     }
 
@@ -91,6 +95,7 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueueEntryRef>
         Self {
             entry_id: value.entry_id,
             period: value.period,
+            block_hash: value.block_hash.into(),
         }
     }
 }

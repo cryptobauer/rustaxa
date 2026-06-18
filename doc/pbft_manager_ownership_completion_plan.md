@@ -397,7 +397,11 @@ optional. The C++ `cert_voted_block_for_round_` object remains a temporary mater
 and proposed-block APIs. The DAG-order cache-membership cut makes the Rust runtime own the compact set of anchor hashes
 with materialized DAG-order data; proposal and sync validation facts now read `dag_order_cached` from that runtime
 metadata while C++ keeps the temporary `DagBlock` vector cache only as a FinalChain/finalization materialization sidecar.
-Remaining Slice 9 work: proposed-block sidecars and remaining sync queue/materialization mirrors.
+The sync queue tail-metadata cut makes the Rust-backed `PeriodDataQueue` own the queued PBFT block hash alongside entry
+id, period, processable size, pop planning, and cleanup metadata. `lastPbftBlockHashFromQueueOrChain()` now reads that
+compact Rust queue fact instead of materializing the last queued `PeriodData.pbft_blk` only to read its hash. C++ still
+owns queued `PeriodData`, `PbftVote`, and peer `NodeID` payloads for processing and public compatibility. Remaining
+Slice 9 work: proposed-block sidecars and remaining sync payload materialization mirrors.
 
 ### Slice 10: Rust-Mode PBFT Manager Parity Gate
 

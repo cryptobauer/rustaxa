@@ -2,11 +2,12 @@
 //!
 //! This module models the deterministic queue contract used while syncing PBFT
 //! period data from peers. It deliberately owns only queue metadata: entry ids,
-//! periods, effective processable size, and pop/cleanup decisions. The C++ shim
-//! keeps ownership of live `PeriodData`, `PbftVote`, and peer `NodeID` objects
-//! until those model types are ported.
+//! periods, block hashes, effective processable size, and pop/cleanup decisions.
+//! The C++ shim keeps ownership of live `PeriodData`, `PbftVote`, and peer
+//! `NodeID` objects until those model types are ported.
 
 use anyhow::{Result, anyhow};
+use ethereum_types::H256;
 use std::collections::VecDeque;
 
 /// Metadata for one queued period-data payload.
@@ -14,6 +15,7 @@ use std::collections::VecDeque;
 /// Inputs/outputs:
 /// - `entry_id`: bridge-local id for the C++ payload object.
 /// - `period`: PBFT period carried by that payload.
+/// - `block_hash`: PBFT block hash carried by that payload.
 ///
 /// Invariants:
 /// - `entry_id` is unique within one queue lifetime.
@@ -23,6 +25,7 @@ use std::collections::VecDeque;
 pub struct PeriodDataQueueEntryRef {
     pub entry_id: u64,
     pub period: u64,
+    pub block_hash: H256,
 }
 
 /// Result of attempting to enqueue one period-data payload.
@@ -120,6 +123,7 @@ impl PeriodDataQueue {
     /// Inputs:
     /// - `entry_id`: C++ payload id for the live `PeriodData` object.
     /// - `entry_period`: PBFT period of the payload block.
+    /// - `block_hash`: PBFT block hash of the payload block.
     /// - `max_pbft_size`: current local PBFT chain size.
     /// - `current_block_cert_votes_count`: number of cert votes passed for the
     ///   pushed block; only the count is needed for size eligibility.
@@ -130,6 +134,7 @@ impl PeriodDataQueue {
         &mut self,
         entry_id: u64,
         entry_period: u64,
+        block_hash: H256,
         max_pbft_size: u64,
         current_block_cert_votes_count: usize,
     ) -> Result<PeriodDataQueuePushOutcome> {
@@ -160,6 +165,7 @@ impl PeriodDataQueue {
         self.entries.push_back(PeriodDataQueueEntryRef {
             entry_id,
             period: entry_period,
+            block_hash,
         });
         self.last_block_cert_votes_available = current_block_cert_votes_count > 0;
 
@@ -241,7 +247,7 @@ mod tests {
         cert_votes: usize,
     ) -> bool {
         queue
-            .push(id, period, max_size, cert_votes)
+            .push(id, period, H256::from_low_u64_be(id), max_size, cert_votes)
             .unwrap()
             .accepted
     }
@@ -271,12 +277,16 @@ mod tests {
         let mut queue = PeriodDataQueue::new();
 
         assert!(push(&mut queue, 2, 2, 0, 1));
-        let outcome = queue.push(4, 4, 3, 1).unwrap();
+        let outcome = queue.push(4, 4, H256::from_low_u64_be(4), 3, 1).unwrap();
 
         assert!(outcome.accepted);
         assert!(outcome.clear_existing);
         assert_eq!(queue.period(), 4);
         assert_eq!(queue.last_entry().unwrap().entry_id, 4);
+        assert_eq!(
+            queue.last_entry().unwrap().block_hash,
+            H256::from_low_u64_be(4)
+        );
         assert_eq!(queue.size(), 1);
     }
 
@@ -324,7 +334,8 @@ mod tests {
             removed,
             vec![PeriodDataQueueEntryRef {
                 entry_id: 5,
-                period: 5
+                period: 5,
+                block_hash: H256::from_low_u64_be(5)
             }]
         );
         assert_eq!(queue.period(), 6);
