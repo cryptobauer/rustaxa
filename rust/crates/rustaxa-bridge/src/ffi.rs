@@ -4514,7 +4514,7 @@ pub mod rustaxa_ffi {
         pub fn pbft_manager_runtime_apply_next_voted_status(
             runtime: &mut BridgePbftManagerRuntime,
             status: u8,
-        ) -> Result<()>;
+        ) -> Result<PbftManagerRuntimeSnapshot>;
         pub fn pbft_manager_runtime_apply_cursor_field(
             runtime: &mut BridgePbftManagerRuntime,
             field: u8,

@@ -504,10 +504,6 @@ void applyPbftManagerTransitionPlan(const rustaxa::PbftManagerTransitionPlan &pl
                                   rounds_count_dynamic_lambda, dynamic_lambda, executed_pbft_block,
                                   already_next_voted_value, already_next_voted_null_block_hash);
 
-  if (plan.reset_next_voted_statuses) {
-    already_next_voted_value = false;
-    already_next_voted_null_block_hash = false;
-  }
   if (plan.remove_cert_voted_block) {
     cert_voted_block_for_round.reset();
   }
@@ -2038,13 +2034,12 @@ bool PbftManager::placeStateActionVote(PbftVoteTypes vote_type, PbftPeriod perio
     if (!pbft_manager_runtime_.has_value()) {
       throw std::runtime_error("PBFT manager runtime is required for next-voted status persistence");
     }
-    rustaxa::pbft_manager_runtime_apply_next_voted_status(*pbft_manager_runtime_.value(),
-                                                          static_cast<uint8_t>(*next_vote_status));
-    if (*next_vote_status == PbftMgrStatus::NextVotedSoftValue) {
-      already_next_voted_value_ = true;
-    } else if (*next_vote_status == PbftMgrStatus::NextVotedNullBlockHash) {
-      already_next_voted_null_block_hash_ = true;
-    }
+    const auto next_voted_snapshot = rustaxa::pbft_manager_runtime_apply_next_voted_status(
+        *pbft_manager_runtime_.value(), static_cast<uint8_t>(*next_vote_status));
+    applyPbftManagerRuntimeSnapshot(next_voted_snapshot, round_, step_, state_, current_round_lambda_,
+                                    next_step_time_ms_, rounds_count_dynamic_lambda_, dynamic_lambda_,
+                                    executed_pbft_block_, already_next_voted_value_,
+                                    already_next_voted_null_block_hash_);
   }
 
   return true;
@@ -2138,7 +2133,8 @@ void PbftManager::proposeBlock_() {
 
   const auto fact = makePbftManagerStateActionFact(state, period, round, step, 0ms, getPbftDeadline(),
                                                    current_round_lambda, *vote_mgr_, cert_voted_block_for_round_,
-                                                   already_next_voted_value_, already_next_voted_null_block_hash_);
+                                                   action_snapshot.already_next_voted_value,
+                                                   action_snapshot.already_next_voted_null);
   executeStateActionEffectSession(fact, [&](const auto &effect) {
     if (effect.intent == kPbftManagerStateActionIntentProposeNewBlock) {
       LOG(log_nf_) << " 2t+1 next voted kNullBlockHash in previous round " << round - 1;
@@ -2204,7 +2200,8 @@ void PbftManager::identifyBlock_() {
 
   const auto fact = makePbftManagerStateActionFact(state, period, round, step, 0ms, getPbftDeadline(),
                                                    current_round_lambda, *vote_mgr_, cert_voted_block_for_round_,
-                                                   already_next_voted_value_, already_next_voted_null_block_hash_);
+                                                   action_snapshot.already_next_voted_value,
+                                                   action_snapshot.already_next_voted_null);
   executeStateActionEffectSession(fact, [&](const auto &effect) {
     if (effect.intent == kPbftManagerStateActionIntentIdentifyLeaderAndSoftVote) {
       const auto leader_block_data = identifyLeaderBlock(proposed_blocks_, vote_mgr_->getProposalVotes(period, round));
@@ -2261,7 +2258,7 @@ void PbftManager::certifyBlock_() {
   const auto elapsed_time_in_round = elapsedTimeInMs(current_round_start_datetime_);
   const auto fact = makePbftManagerStateActionFact(
       state, period, round, step, elapsed_time_in_round, getPbftDeadline(), current_round_lambda, *vote_mgr_,
-      cert_voted_block_for_round_, already_next_voted_value_, already_next_voted_null_block_hash_);
+      cert_voted_block_for_round_, action_snapshot.already_next_voted_value, action_snapshot.already_next_voted_null);
   const auto session_step = executeStateActionEffectSession(fact, [&](const auto &effect) {
     if (effect.intent == kPbftManagerStateActionIntentGoFinish) {
       LOG(log_dg_) << "Step 3 expired, will go to step 4 in period " << period << ", round " << round;
@@ -2329,7 +2326,8 @@ void PbftManager::firstFinish_() {
 
   const auto fact = makePbftManagerStateActionFact(state, period, round, step, 0ms, getPbftDeadline(),
                                                    current_round_lambda, *vote_mgr_, cert_voted_block_for_round_,
-                                                   already_next_voted_value_, already_next_voted_null_block_hash_);
+                                                   action_snapshot.already_next_voted_value,
+                                                   action_snapshot.already_next_voted_null);
   executeStateActionEffectSession(fact, [&](const auto &effect) {
     if (effect.intent == kPbftManagerStateActionIntentNextVoteCertVotedBlock) {
       const auto &cert_voted_block = *cert_voted_block_for_round_;
@@ -2391,7 +2389,7 @@ void PbftManager::secondFinish_() {
   const auto fact =
       makePbftManagerStateActionFact(state, period, round, step, elapsedTimeInMs(second_finish_step_start_datetime_),
                                      getPbftDeadline(), current_round_lambda, *vote_mgr_, cert_voted_block_for_round_,
-                                     already_next_voted_value_, already_next_voted_null_block_hash_);
+                                     action_snapshot.already_next_voted_value, action_snapshot.already_next_voted_null);
   const auto session_step = executeStateActionEffectSession(fact, [&](const auto &effect) {
     if (effect.intent == kPbftManagerStateActionIntentNextVoteCurrentSoftValue) {
       const auto soft_voted_block_hash = fromBridgeHash(effect.hash);

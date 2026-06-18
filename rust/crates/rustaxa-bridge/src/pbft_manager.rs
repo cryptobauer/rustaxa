@@ -518,8 +518,8 @@ pub fn pbft_manager_runtime_apply_executed_block_reset(
 ///   next-voted null-block hash.
 ///
 /// Outputs:
-/// - Returns success after the status row is durably set to `true` and the
-///   runtime snapshot is updated.
+/// - Returns the updated runtime snapshot after the status row is durably set
+///   to `true` and the runtime snapshot is updated.
 ///
 /// Invariants and edge behavior:
 /// - Vote generation, gossip, and temporary C++ live mirrors remain shim
@@ -529,10 +529,10 @@ pub fn pbft_manager_runtime_apply_executed_block_reset(
 pub fn pbft_manager_runtime_apply_next_voted_status(
     runtime: &mut BridgePbftManagerRuntime,
     status: u8,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<FfiPbftManagerRuntimeSnapshot> {
     apply_next_voted_status_storage(runtime.storage.as_ref(), status)?;
     runtime.state.apply_committed_next_voted_status(status);
-    Ok(())
+    Ok(runtime.state.snapshot().into())
 }
 
 /// Applies a PBFT manager cursor field through runtime-owned Rust storage.
@@ -2346,16 +2346,22 @@ mod tests {
             let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
                 .expect("runtime should restore");
 
-            pbft_manager_runtime_apply_next_voted_status(&mut runtime, 2)
+            let soft_snapshot = pbft_manager_runtime_apply_next_voted_status(&mut runtime, 2)
                 .expect("soft next-voted status should persist");
-            pbft_manager_runtime_apply_next_voted_status(&mut runtime, 3)
+            let null_snapshot = pbft_manager_runtime_apply_next_voted_status(&mut runtime, 3)
                 .expect("null next-voted status should persist");
-            let err = pbft_manager_runtime_apply_next_voted_status(
+            let err = match pbft_manager_runtime_apply_next_voted_status(
                 &mut runtime,
                 PBFT_MGR_STATUS_EXECUTED_BLOCK,
-            )
-            .expect_err("generic manager status should reject");
+            ) {
+                Ok(_) => panic!("generic manager status should reject"),
+                Err(err) => err,
+            };
 
+            assert!(soft_snapshot.already_next_voted_value);
+            assert!(!soft_snapshot.already_next_voted_null);
+            assert!(null_snapshot.already_next_voted_value);
+            assert!(null_snapshot.already_next_voted_null);
             let snapshot = pbft_manager_runtime_snapshot(&runtime);
             assert!(snapshot.already_next_voted_value);
             assert!(snapshot.already_next_voted_null);
