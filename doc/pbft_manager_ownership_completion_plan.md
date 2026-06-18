@@ -437,6 +437,11 @@ Scope:
 - Add a guard or test assertion that Rust-mode PBFT manager routing does not call `PbftManagerOld` or original
   upstream-owned PBFT manager implementation paths for production decisions.
 
+First guard cut landed: `pbft_manager_test` now includes a Rust-mode compile-time assertion that the shim-owned
+`PbftManager` does not inherit from `PbftManagerOld` when the PBFT manager overlay is active. Remaining Slice 10 work is
+the runtime/transcript coverage for daemon ticks, state-action scripts, sync admission, finalization sessions, period
+advancement, and restart/replay snapshots.
+
 Acceptance:
 
 - PBFT manager deterministic decisions have transcript coverage across proposal, certify, finish, sync, finalization,

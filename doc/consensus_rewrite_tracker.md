@@ -418,7 +418,7 @@ Open questions:
 | Slashing proof planning | Rust validation plus `slashing_manager_shim_test`; Rust byte-level proof-hash and calldata fixtures are required, with richer C++ legacy vote/submission transcripts still useful when available |
 | Pillar vote aggregation and sync bundle validation | Rust validation plus `rust_consensus_tests` and `pillar_votes_shim_test`; broaden to `pbft_manager_test` and `pillar_chain_test` when manager behavior is touched |
 | Pillar/reward behavior | Rust validation plus `pillar_chain_test`, `rewards_stats_test`, and affected full-node tests |
-| PBFT manager state machine | Targeted PBFT/vote/DAG tests plus full-node smoke and Python integration coverage as needed |
+| PBFT manager state machine | Targeted PBFT/vote/DAG tests plus full-node smoke and Python integration coverage as needed; `pbft_manager_test` now guards that the Rust-mode overlay does not inherit from `PbftManagerOld` |
 
 ## Current Open Items
 
