@@ -107,6 +107,12 @@ constexpr uint8_t kPbftManagerRuntimeResultProgressRestart = 1;
 constexpr uint8_t kPbftManagerRuntimeResultStateDone = 2;
 constexpr uint8_t kPbftManagerRuntimeResultTransition = 3;
 constexpr uint8_t kPbftManagerRuntimeResultSleepApplied = 4;
+constexpr uint8_t kPbftManagerStateActionStatusReady = 0;
+constexpr uint8_t kPbftManagerStateActionNextVoteNullBlock = 8;
+constexpr uint8_t kPbftManagerStateActionNextVoteCurrentSoftValue = 10;
+constexpr uint8_t kPbftManagerStateActionSessionActive = 0;
+constexpr uint8_t kPbftManagerStateActionSessionComplete = 1;
+constexpr uint8_t kPbftManagerStateActionEffectApplied = 0;
 
 PbftFinalizationStorageWriteStage finalizationStorageStage(uint8_t stage) {
   PbftFinalizationStorageWriteStage write_stage{};
@@ -266,6 +272,36 @@ PbftManagerRuntimeActionReport managerRuntimeReport(uint32_t cursor, uint8_t act
   report.has_eligible_wallet = true;
   report.has_new_round = false;
   report.new_round = 0;
+  return report;
+}
+
+PbftManagerStateActionFact makePbftManagerStateActionFact(uint8_t state) {
+  PbftManagerStateActionFact fact;
+  fact.state = state;
+  fact.period = 10;
+  fact.round = 2;
+  fact.step = 3;
+  fact.elapsed_round_ms = 250;
+  fact.deadline_ms = 1'000;
+  fact.current_round_lambda_ms = 1'000;
+  fact.polling_interval_ms = 100;
+  fact.has_previous_round_next_null = false;
+  fact.has_previous_round_next_value = false;
+  fact.previous_round_next_value_hash = h256(0x44);
+  fact.has_current_round_soft_value = false;
+  fact.current_round_soft_value_hash = h256(0x55);
+  fact.has_cert_voted_block = false;
+  fact.cert_voted_block_hash = h256(0x66);
+  fact.already_next_voted_value = false;
+  fact.already_next_voted_null = false;
+  return fact;
+}
+
+PbftManagerStateActionEffectReport stateActionReport(uint32_t cursor, uint8_t intent) {
+  PbftManagerStateActionEffectReport report;
+  report.cursor = cursor;
+  report.intent = intent;
+  report.result = kPbftManagerStateActionEffectApplied;
   return report;
 }
 
@@ -577,6 +613,40 @@ TEST(RustPbftSyncTest, ManagerRuntimeRejectsCursorMismatch) {
   EXPECT_EQ(step.status, kPbftManagerRuntimeStatusActionMismatch);
   EXPECT_FALSE(step.can_continue);
   EXPECT_FALSE(step.complete);
+}
+
+TEST(RustPbftSyncTest, ManagerStateActionEffectSessionRecordsFinishPollingTranscript) {
+  auto fact = makePbftManagerStateActionFact(4);
+  fact.has_current_round_soft_value = true;
+  fact.has_previous_round_next_null = true;
+
+  const auto plan = plan_pbft_manager_state_action_effects(fact);
+  ASSERT_EQ(plan.status, kPbftManagerStateActionStatusReady);
+  ASSERT_EQ(plan.effects.size(), 2);
+
+  auto session = create_pbft_manager_state_action_effect_session(fact);
+  std::vector<uint8_t> intents;
+
+  auto step = session->pbft_manager_state_action_effect_session_next();
+  ASSERT_EQ(step.status, kPbftManagerStateActionSessionActive);
+  ASSERT_TRUE(step.has_effect);
+  intents.push_back(step.effect.intent);
+  EXPECT_EQ(step.effect.hash, h256(0x55));
+
+  step = session->pbft_manager_state_action_effect_session_report(stateActionReport(step.cursor, step.effect.intent));
+  ASSERT_EQ(step.status, kPbftManagerStateActionSessionActive);
+  ASSERT_TRUE(step.has_effect);
+  intents.push_back(step.effect.intent);
+  EXPECT_EQ(step.effect.hash, h256(0));
+
+  step = session->pbft_manager_state_action_effect_session_report(stateActionReport(step.cursor, step.effect.intent));
+  EXPECT_EQ(step.status, kPbftManagerStateActionSessionComplete);
+  EXPECT_TRUE(step.complete);
+  EXPECT_TRUE(step.can_continue);
+  EXPECT_FALSE(step.has_effect);
+
+  EXPECT_EQ(intents, (std::vector<uint8_t>{kPbftManagerStateActionNextVoteCurrentSoftValue,
+                                           kPbftManagerStateActionNextVoteNullBlock}));
 }
 
 TEST(RustPbftSyncTest, FinalizationIntentAcceptsAnchoredBlockAndMapsCleanup) {

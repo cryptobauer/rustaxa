@@ -441,6 +441,9 @@ First guard cut landed: `pbft_manager_test` now includes a Rust-mode compile-tim
 `PbftManager` does not inherit from `PbftManagerOld` when the PBFT manager overlay is active. Remaining Slice 10 work is
 the runtime/transcript coverage for daemon ticks, state-action scripts, sync admission, finalization sessions, period
 advancement, and restart/replay snapshots.
+State-action transcript cut landed: `rust_consensus_tests` now records the CXX bridge transcript for a finish-polling
+state-action effect session, proving Rust emits the ordered current-soft-value next vote before the null-block next vote
+and accepts one executor report per effect before completing the script.
 
 Acceptance:
 
