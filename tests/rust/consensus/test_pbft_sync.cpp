@@ -43,7 +43,10 @@ constexpr uint8_t kPbftSyncRuntimeActionWaitForFinalization = 3;
 constexpr uint8_t kPbftSyncNextCheckNone = 0;
 constexpr uint8_t kPbftSyncNextCheckValidateFinalChainHash = 1;
 constexpr uint8_t kPbftSyncNextCheckCheckRewardVotes = 2;
+constexpr uint8_t kPbftSyncNextCheckValidateCertVotes = 3;
 constexpr uint8_t kPbftSyncNextCheckCheckTransactions = 4;
+constexpr uint8_t kPbftSyncNextCheckValidatePillarData = 5;
+constexpr uint8_t kPbftSyncNextCheckValidatePillarVotes = 6;
 constexpr uint8_t kPbftSyncTransactionWarningMissing = 1;
 constexpr uint8_t kPbftSyncTransactionWarningFinalized = 2;
 constexpr uint8_t kPbftFinalizationAnchorNull = 0;
@@ -436,6 +439,52 @@ TEST(RustPbftSyncTest, ProcessPeriodRuntimeRequestsChecksInOrder) {
   EXPECT_EQ(plan.runtime_action, kPbftSyncRuntimeActionRunCheck);
   EXPECT_EQ(plan.next_check, kPbftSyncNextCheckCheckTransactions);
   EXPECT_EQ(hashes(plan.transaction_query_plan.finalized_lookup_hashes), (std::vector{h256(1)}));
+}
+
+TEST(RustPbftSyncTest, ProcessPeriodRuntimeRecordsAcceptTranscript) {
+  auto fact = makeRuntimeFact();
+  std::vector<uint8_t> checks;
+
+  auto plan = plan_pbft_sync_process_period_data_runtime(fact);
+  ASSERT_EQ(plan.runtime_action, kPbftSyncRuntimeActionRunCheck);
+  checks.push_back(plan.next_check);
+
+  fact.final_chain_hash_status = kPbftSyncFinalChainHashValid;
+  plan = plan_pbft_sync_process_period_data_runtime(fact);
+  ASSERT_EQ(plan.runtime_action, kPbftSyncRuntimeActionRunCheck);
+  checks.push_back(plan.next_check);
+
+  fact.reward_votes_status = kPbftSyncFactValid;
+  plan = plan_pbft_sync_process_period_data_runtime(fact);
+  ASSERT_EQ(plan.runtime_action, kPbftSyncRuntimeActionRunCheck);
+  checks.push_back(plan.next_check);
+
+  fact.cert_votes_status = kPbftSyncFactValid;
+  plan = plan_pbft_sync_process_period_data_runtime(fact);
+  ASSERT_EQ(plan.runtime_action, kPbftSyncRuntimeActionRunCheck);
+  checks.push_back(plan.next_check);
+  EXPECT_EQ(hashes(plan.transaction_query_plan.finalized_lookup_hashes), (std::vector{h256(1)}));
+
+  fact.transactions_status = kPbftSyncFactValid;
+  plan = plan_pbft_sync_process_period_data_runtime(fact);
+  ASSERT_EQ(plan.runtime_action, kPbftSyncRuntimeActionRunCheck);
+  checks.push_back(plan.next_check);
+
+  fact.pillar_data_status = kPbftSyncFactValid;
+  plan = plan_pbft_sync_process_period_data_runtime(fact);
+  ASSERT_EQ(plan.runtime_action, kPbftSyncRuntimeActionRunCheck);
+  checks.push_back(plan.next_check);
+
+  fact.pillar_votes_status = kPbftSyncFactValid;
+  plan = plan_pbft_sync_process_period_data_runtime(fact);
+
+  EXPECT_EQ(checks,
+            (std::vector<uint8_t>{kPbftSyncNextCheckValidateFinalChainHash, kPbftSyncNextCheckCheckRewardVotes,
+                                  kPbftSyncNextCheckValidateCertVotes, kPbftSyncNextCheckCheckTransactions,
+                                  kPbftSyncNextCheckValidatePillarData, kPbftSyncNextCheckValidatePillarVotes}));
+  EXPECT_EQ(plan.runtime_action, kPbftSyncRuntimeActionAccept);
+  EXPECT_EQ(plan.next_check, kPbftSyncNextCheckNone);
+  EXPECT_TRUE(plan.accept_period_data);
 }
 
 TEST(RustPbftSyncTest, ProcessPeriodRuntimeWaitsAndAccepts) {

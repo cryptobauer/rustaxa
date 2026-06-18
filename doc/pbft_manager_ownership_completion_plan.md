@@ -444,6 +444,9 @@ advancement, and restart/replay snapshots.
 State-action transcript cut landed: `rust_consensus_tests` now records the CXX bridge transcript for a finish-polling
 state-action effect session, proving Rust emits the ordered current-soft-value next vote before the null-block next vote
 and accepts one executor report per effect before completing the script.
+Sync-admission transcript cut landed: `rust_consensus_tests` now records the staged `processPeriodData()` runtime
+checks through final-chain validation, reward votes, cert votes, transaction queries, pillar data, and pillar votes
+before Rust returns the accept action.
 
 Acceptance:
 
