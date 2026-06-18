@@ -450,7 +450,10 @@ before Rust returns the accept action.
 Finalization-session transcript coverage is present in `rust_consensus_tests`: the finalization runtime session records
 the mixed-executor action order from primary storage through advance-period and requires matching executor reports before
 completion. Period-advance transcript cut landed: `rust_consensus_tests` now records the Rust-planned period-advance
-effect order from reset-consensus application through vote/proposed-block cleanup.
+effect order from reset-consensus application through vote/proposed-block cleanup. Startup snapshot coverage landed:
+`rust_consensus_tests` now seeds Rust storage manager fields/statuses, restores the PBFT manager runtime through the CXX
+bridge, verifies the Rust-owned runtime snapshot, and requires the normalized startup step to be persisted back to Rust
+storage.
 
 Acceptance:
 

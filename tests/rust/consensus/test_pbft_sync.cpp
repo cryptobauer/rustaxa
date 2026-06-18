@@ -82,14 +82,19 @@ constexpr uint8_t kPbftFinalizedPeriodApplyStatusApplied = 0;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusAlreadyApplied = 1;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusRejected = 2;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusMissingPayload = 3;
+constexpr uint8_t kPbftMgrFieldRound = 0;
+constexpr uint8_t kPbftMgrFieldStep = 1;
 constexpr uint8_t kPbftMgrFieldLambda = 2;
 constexpr uint8_t kPbftMgrStatusExecutedBlock = 0;
+constexpr uint8_t kPbftMgrStatusNextVotedValue = 2;
 constexpr uint8_t kPbftFinalizationStorageStagePrimary = 0;
 constexpr uint8_t kPbftFinalizationStorageStageDynamicLambda = 1;
 constexpr uint8_t kPbftFinalizationStorageStageExecutedStatus = 2;
 constexpr uint8_t kPbftFinalizationStorageStageSortition = 3;
 constexpr uint8_t kPbftFinalizationStorageStageRewardReset = 4;
+constexpr uint8_t kPbftManagerStartupStatusReady = 0;
 constexpr uint8_t kPbftManagerRuntimeStateValueProposal = 0;
+constexpr uint8_t kPbftManagerRuntimeStateFinish = 3;
 constexpr uint8_t kPbftManagerRuntimeStateCertify = 2;
 constexpr uint8_t kPbftManagerRuntimeActionProcessSyncedBlocks = 0;
 constexpr uint8_t kPbftManagerRuntimeActionMaybeBroadcastVotes = 1;
@@ -273,6 +278,16 @@ PbftManagerRuntimeTickFact makePbftManagerRuntimeTick(uint8_t state) {
   fact.network_available = true;
   fact.network_pbft_syncing = false;
   fact.has_eligible_wallet = true;
+  return fact;
+}
+
+PbftManagerStartupFact makePbftManagerStartupFact() {
+  PbftManagerStartupFact fact;
+  fact.current_period = 10;
+  fact.cacti_active_at_chain_size = true;
+  fact.genesis_lambda_ms = 100;
+  fact.cacti_lambda_max_ms = 1'500;
+  fact.cacti_lambda_default_ms = 500;
   return fact;
 }
 
@@ -699,6 +714,33 @@ TEST(RustPbftSyncTest, ManagerRuntimeRejectsCursorMismatch) {
   EXPECT_EQ(step.status, kPbftManagerRuntimeStatusActionMismatch);
   EXPECT_FALSE(step.can_continue);
   EXPECT_FALSE(step.complete);
+}
+
+TEST(RustPbftSyncTest, ManagerStartupRestoreRecordsRuntimeSnapshotFromStorage) {
+  const auto test_dir = uniqueTempDir("rustaxa_pbft_manager_startup_snapshot");
+  auto storage = create_storage(test_dir.string());
+  storage->save_pbft_mgr_field(kPbftMgrFieldRound, 2);
+  storage->save_pbft_mgr_field(kPbftMgrFieldStep, 2);
+  storage->save_pbft_mgr_field(kPbftMgrFieldLambda, 1'500);
+  storage->save_pbft_mgr_status(kPbftMgrStatusExecutedBlock, true);
+  storage->save_pbft_mgr_status(kPbftMgrStatusNextVotedValue, true);
+
+  const auto runtime = create_pbft_manager_runtime_from_storage(*storage, makePbftManagerStartupFact());
+  const auto snapshot = pbft_manager_runtime_snapshot(*runtime);
+
+  EXPECT_EQ(snapshot.status, kPbftManagerStartupStatusReady);
+  EXPECT_EQ(snapshot.state, kPbftManagerRuntimeStateFinish);
+  EXPECT_EQ(snapshot.period, 10);
+  EXPECT_EQ(snapshot.round, 2);
+  EXPECT_EQ(snapshot.step, 4);
+  EXPECT_EQ(snapshot.current_round_lambda_ms, 500);
+  EXPECT_EQ(snapshot.dynamic_lambda_ms, 1'500);
+  EXPECT_TRUE(snapshot.executed_pbft_block);
+  EXPECT_TRUE(snapshot.already_next_voted_value);
+  EXPECT_FALSE(snapshot.already_next_voted_null);
+  EXPECT_EQ(storage->get_pbft_mgr_field(kPbftMgrFieldStep), 4);
+
+  std::filesystem::remove_all(test_dir);
 }
 
 TEST(RustPbftSyncTest, ManagerStateActionEffectSessionRecordsFinishPollingTranscript) {
