@@ -8,10 +8,21 @@
 namespace taraxa {
 namespace {
 
+constexpr uint8_t kLegacyTransactionSourceRegular = 0;
+
 std::runtime_error queueError(const std::string& message) { return std::runtime_error("PeriodDataQueue: " + message); }
 
 std::runtime_error queueMismatch(const std::string& message, uint64_t expected, uint64_t actual) {
   return queueError(message + " expected entry " + std::to_string(expected) + ", got " + std::to_string(actual));
+}
+
+rust::Vec<uint8_t> toBridgeBytes(const bytes& input) {
+  rust::Vec<uint8_t> out;
+  out.reserve(input.size());
+  for (const auto byte : input) {
+    out.push_back(byte);
+  }
+  return out;
 }
 
 rust::Vec<rustaxa::PbftSyncTransactionHash> toBridgeTransactionHashes(const std::vector<trx_hash_t>& hashes) {
@@ -49,6 +60,54 @@ std::vector<trx_hash_t> periodDataTransactionHashes(const PeriodData& period_dat
     hashes.emplace_back(transaction->getHash());
   }
   return hashes;
+}
+
+rust::Vec<rustaxa::PeriodDataQueueTransactionIdentity> periodDataTransactionIdentities(const PeriodData& period_data) {
+  rust::Vec<rustaxa::PeriodDataQueueTransactionIdentity> identities;
+  identities.reserve(period_data.transactions.size());
+
+  uint64_t input_index = 0;
+  for (const auto& transaction : period_data.transactions) {
+    if (!transaction) {
+      throw queueError("cannot push period data with a null transaction");
+    }
+    rustaxa::LegacyTransactionInspection inspection;
+    try {
+      inspection = rustaxa::inspect_legacy_transaction_rlp(toBridgeBytes(transaction->rlp()),
+                                                           kLegacyTransactionSourceRegular);
+    } catch (const std::exception& e) {
+      throw queueError(std::string("transaction identity inspection failed: ") + e.what());
+    }
+    if (trx_hash_t(inspection.hash.data(), trx_hash_t::ConstructFromPointer) != transaction->getHash()) {
+      throw queueError("transaction identity inspection returned mismatched hash");
+    }
+    if (!inspection.sender_found) {
+      throw queueError("transaction identity inspection returned no recovered sender");
+    }
+
+    rustaxa::PeriodDataQueueTransactionIdentity identity;
+    identity.input_index = input_index++;
+    identity.hash = inspection.hash;
+    identity.transaction_nonce = inspection.nonce;
+    identity.sender = inspection.sender;
+    identities.push_back(identity);
+  }
+  return identities;
+}
+
+rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> toVerifyNotFinalizedFacts(
+    const rust::Vec<rustaxa::PeriodDataQueueTransactionIdentity>& identities) {
+  rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> facts;
+  facts.reserve(identities.size());
+  for (const auto& identity : identities) {
+    rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact fact;
+    fact.input_index = identity.input_index;
+    fact.hash = identity.hash;
+    fact.transaction_nonce = identity.transaction_nonce;
+    fact.sender = identity.sender;
+    facts.push_back(fact);
+  }
+  return facts;
 }
 
 bool previousCertFirstVoteHasWeight(const PeriodData& period_data) {
@@ -110,6 +169,7 @@ bool PeriodDataQueue::push(PeriodData&& period_data, const dev::p2p::NodeID& nod
   const auto period = period_data.pbft_blk->getPeriod();
   const auto dag_transaction_hashes = dagTransactionHashes(period_data);
   const auto period_data_transaction_hashes = periodDataTransactionHashes(period_data);
+  auto period_data_transaction_identities = periodDataTransactionIdentities(period_data);
   const auto previous_cert_votes_present = !period_data.previous_block_cert_votes.empty();
   const auto previous_cert_first_vote_has_weight = previousCertFirstVoteHasWeight(period_data);
   const auto pillar_votes_present = period_data.pillar_votes_.has_value();
@@ -124,8 +184,8 @@ bool PeriodDataQueue::push(PeriodData&& period_data, const dev::p2p::NodeID& nod
         entry_id, period, period_data.pbft_blk->getBlockHash().asArray(),
         period_data.pbft_blk->getPrevBlockHash().asArray(), period_data.pbft_blk->getPivotDagBlockHash().asArray(),
         period_data.pbft_blk->getFinalChainHash().asArray(), toBridgeTransactionHashes(dag_transaction_hashes),
-        toBridgeTransactionHashes(period_data_transaction_hashes), previous_cert_votes_present,
-        previous_cert_first_vote_has_weight, pillar_votes_present, extra_data_present,
+        toBridgeTransactionHashes(period_data_transaction_hashes), std::move(period_data_transaction_identities),
+        previous_cert_votes_present, previous_cert_first_vote_has_weight, pillar_votes_present, extra_data_present,
         extra_data_pillar_block_hash_present, max_pbft_size, cert_votes.size());
   } catch (const std::exception& e) {
     throw queueError(e.what());
@@ -203,6 +263,7 @@ PeriodDataQueue::PoppedPeriodData PeriodDataQueue::popWithMetadata() {
                                  blk_hash_t(plan.final_chain_hash.data(), blk_hash_t::ConstructFromPointer),
                                  fromBridgeTransactionHashes(plan.dag_transaction_hashes),
                                  fromBridgeTransactionHashes(plan.period_data_transaction_hashes),
+                                 toVerifyNotFinalizedFacts(plan.period_data_transaction_identities),
                                  plan.previous_cert_votes_present,
                                  plan.previous_cert_first_vote_has_weight,
                                  plan.pillar_votes_present,

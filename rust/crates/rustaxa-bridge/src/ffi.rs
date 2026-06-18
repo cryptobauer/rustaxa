@@ -1592,6 +1592,15 @@ pub mod rustaxa_ffi {
         is_valid: bool,
     }
 
+    /// Compact transaction identity retained by the Rust period-data queue for
+    /// sync finalized-status checks.
+    struct PeriodDataQueueTransactionIdentity {
+        input_index: u64,
+        hash: [u8; 32],
+        transaction_nonce: [u8; 32],
+        sender: [u8; 20],
+    }
+
     struct PeriodDataQueueEntryRef {
         entry_id: u64,
         period: u64,
@@ -1601,6 +1610,7 @@ pub mod rustaxa_ffi {
         final_chain_hash: [u8; 32],
         dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
+        period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
         previous_cert_votes_present: bool,
         previous_cert_first_vote_has_weight: bool,
         pillar_votes_present: bool,
@@ -1626,6 +1636,7 @@ pub mod rustaxa_ffi {
         final_chain_hash: [u8; 32],
         dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
+        period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
         previous_cert_votes_present: bool,
         previous_cert_first_vote_has_weight: bool,
         pillar_votes_present: bool,
@@ -1647,6 +1658,7 @@ pub mod rustaxa_ffi {
         final_chain_hash: [u8; 32],
         dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
+        period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
         previous_cert_votes_present: bool,
         previous_cert_first_vote_has_weight: bool,
         pillar_votes_present: bool,
@@ -4909,6 +4921,7 @@ pub mod rustaxa_ffi {
             final_chain_hash: [u8; 32],
             dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
             period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
+            period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
             previous_cert_votes_present: bool,
             previous_cert_first_vote_has_weight: bool,
             pillar_votes_present: bool,

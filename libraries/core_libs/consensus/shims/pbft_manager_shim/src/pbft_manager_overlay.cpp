@@ -4125,6 +4125,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   const auto final_chain_hash = popped_period_data.final_chain_hash;
   const auto dag_transaction_hashes = std::move(popped_period_data.dag_transaction_hashes);
   const auto period_data_transaction_hashes = std::move(popped_period_data.period_data_transaction_hashes);
+  auto period_data_transaction_identities = std::move(popped_period_data.period_data_transaction_identities);
   const auto previous_cert_votes_present = popped_period_data.previous_cert_votes_present;
   const auto previous_cert_first_vote_has_weight = popped_period_data.previous_cert_first_vote_has_weight;
   const auto pillar_votes_present = popped_period_data.pillar_votes_present;
@@ -4388,7 +4389,8 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   }
 
   // Verify period data does not contain any finalized transactions
-  const auto contains_finalized_transactions = !trx_mgr_->verifyTransactionsNotFinalized(period_data.transactions);
+  const auto contains_finalized_transactions =
+      !trx_mgr_->verifyTransactionsNotFinalized(std::move(period_data_transaction_identities));
   if (contains_finalized_transactions) {
     LOG(log_er_) << "Synced PBFT block " << pbft_block_hash << " has finalized transactions";
   }

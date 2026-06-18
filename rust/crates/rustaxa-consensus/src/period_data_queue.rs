@@ -44,11 +44,33 @@ pub struct PeriodDataQueueEntryRef {
     pub final_chain_hash: H256,
     pub dag_transaction_hashes: Vec<H256>,
     pub period_data_transaction_hashes: Vec<H256>,
+    pub period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
     pub previous_cert_votes_present: bool,
     pub previous_cert_first_vote_has_weight: bool,
     pub pillar_votes_present: bool,
     pub extra_data_present: bool,
     pub extra_data_pillar_block_hash_present: bool,
+}
+
+/// Compact transaction identity retained for synced period-data transactions.
+///
+/// Inputs/outputs:
+/// - `input_index`: original transaction-list index in the period data payload.
+/// - `hash`: canonical transaction hash.
+/// - `transaction_nonce`: declared transaction nonce as a 32-byte big-endian
+///   U256 for CXX compatibility.
+/// - `sender`: recovered transaction sender.
+///
+/// Invariants:
+/// - Identities are ordered exactly like the period-data transaction list.
+/// - Sender recovery and hash validation happen before this fact enters the
+///   queue; malformed payloads must be rejected by the bridge/shim caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeriodDataQueueTransactionIdentity {
+    pub input_index: u64,
+    pub hash: H256,
+    pub transaction_nonce: [u8; 32],
+    pub sender: [u8; 20],
 }
 
 /// Result of attempting to enqueue one period-data payload.
@@ -85,6 +107,8 @@ pub struct PeriodDataQueuePushOutcome {
 ///   payload.
 /// - transaction hash lists are compact sync validation facts for the popped
 ///   payload.
+/// - transaction identities are compact finalized-status facts for the popped
+///   payload's transaction list.
 /// - previous-cert-vote flags are compact vote sidecar facts for the popped
 ///   payload.
 /// - `pillar_votes_present` is the compact pillar sidecar presence fact for
@@ -101,6 +125,7 @@ pub struct PeriodDataQueuePopPlan {
     pub final_chain_hash: H256,
     pub dag_transaction_hashes: Vec<H256>,
     pub period_data_transaction_hashes: Vec<H256>,
+    pub period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
     pub previous_cert_votes_present: bool,
     pub previous_cert_first_vote_has_weight: bool,
     pub pillar_votes_present: bool,
@@ -212,6 +237,8 @@ impl PeriodDataQueue {
     ///   DAG blocks in the payload.
     /// - `period_data_transaction_hashes`: transaction hashes supplied in the
     ///   payload transaction list.
+    /// - `period_data_transaction_identities`: transaction hashes, nonces, and
+    ///   senders supplied in payload transaction-list order.
     /// - `previous_cert_votes_present`: whether the payload carried previous
     ///   block cert-vote sidecars.
     /// - `previous_cert_first_vote_has_weight`: whether the first previous
@@ -237,6 +264,7 @@ impl PeriodDataQueue {
         final_chain_hash: H256,
         dag_transaction_hashes: Vec<H256>,
         period_data_transaction_hashes: Vec<H256>,
+        period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
         previous_cert_votes_present: bool,
         previous_cert_first_vote_has_weight: bool,
         pillar_votes_present: bool,
@@ -278,6 +306,7 @@ impl PeriodDataQueue {
             final_chain_hash,
             dag_transaction_hashes,
             period_data_transaction_hashes,
+            period_data_transaction_identities,
             previous_cert_votes_present,
             previous_cert_first_vote_has_weight,
             pillar_votes_present,
@@ -315,6 +344,7 @@ impl PeriodDataQueue {
                 final_chain_hash: entry.final_chain_hash,
                 dag_transaction_hashes: entry.dag_transaction_hashes,
                 period_data_transaction_hashes: entry.period_data_transaction_hashes,
+                period_data_transaction_identities: entry.period_data_transaction_identities,
                 previous_cert_votes_present: entry.previous_cert_votes_present,
                 previous_cert_first_vote_has_weight: entry.previous_cert_first_vote_has_weight,
                 pillar_votes_present: entry.pillar_votes_present,
@@ -338,6 +368,7 @@ impl PeriodDataQueue {
             final_chain_hash: entry.final_chain_hash,
             dag_transaction_hashes: entry.dag_transaction_hashes,
             period_data_transaction_hashes: entry.period_data_transaction_hashes,
+            period_data_transaction_identities: entry.period_data_transaction_identities,
             previous_cert_votes_present: entry.previous_cert_votes_present,
             previous_cert_first_vote_has_weight: entry.previous_cert_first_vote_has_weight,
             pillar_votes_present: entry.pillar_votes_present,
@@ -397,6 +428,12 @@ mod tests {
                 H256::from_low_u64_be(id + 2500),
                 vec![H256::from_low_u64_be(id + 3000)],
                 vec![H256::from_low_u64_be(id + 4000)],
+                vec![PeriodDataQueueTransactionIdentity {
+                    input_index: 0,
+                    hash: H256::from_low_u64_be(id + 4000),
+                    transaction_nonce: [id as u8; 32],
+                    sender: [id as u8; 20],
+                }],
                 id % 2 == 0,
                 id % 3 == 0,
                 id % 5 == 0,
@@ -444,6 +481,12 @@ mod tests {
                 H256::from_low_u64_be(2504),
                 vec![H256::from_low_u64_be(3004)],
                 vec![H256::from_low_u64_be(4004)],
+                vec![PeriodDataQueueTransactionIdentity {
+                    input_index: 0,
+                    hash: H256::from_low_u64_be(4004),
+                    transaction_nonce: [4; 32],
+                    sender: [4; 20],
+                }],
                 true,
                 false,
                 true,
@@ -486,6 +529,18 @@ mod tests {
         assert_eq!(
             queue.last_entry().unwrap().period_data_transaction_hashes,
             vec![H256::from_low_u64_be(4004)]
+        );
+        assert_eq!(
+            queue
+                .last_entry()
+                .unwrap()
+                .period_data_transaction_identities,
+            vec![PeriodDataQueueTransactionIdentity {
+                input_index: 0,
+                hash: H256::from_low_u64_be(4004),
+                transaction_nonce: [4; 32],
+                sender: [4; 20]
+            }]
         );
         assert!(queue.last_entry().unwrap().previous_cert_votes_present);
         assert!(
@@ -538,6 +593,11 @@ mod tests {
             first.period_data_transaction_hashes,
             vec![H256::from_low_u64_be(4011)]
         );
+        assert_eq!(first.period_data_transaction_identities.len(), 1);
+        assert_eq!(
+            first.period_data_transaction_identities[0].hash,
+            H256::from_low_u64_be(4011)
+        );
         assert!(!first.previous_cert_votes_present);
         assert!(!first.previous_cert_first_vote_has_weight);
         assert!(!first.pillar_votes_present);
@@ -579,6 +639,12 @@ mod tests {
                 final_chain_hash: H256::from_low_u64_be(2505),
                 dag_transaction_hashes: vec![H256::from_low_u64_be(3005)],
                 period_data_transaction_hashes: vec![H256::from_low_u64_be(4005)],
+                period_data_transaction_identities: vec![PeriodDataQueueTransactionIdentity {
+                    input_index: 0,
+                    hash: H256::from_low_u64_be(4005),
+                    transaction_nonce: [5; 32],
+                    sender: [5; 20]
+                }],
                 previous_cert_votes_present: false,
                 previous_cert_first_vote_has_weight: false,
                 pillar_votes_present: true,

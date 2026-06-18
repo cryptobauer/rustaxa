@@ -897,6 +897,49 @@ class TransactionManagerRustShimAccess {
     return false;
   }
 
+  static bool verifyTransactionsNotFinalized(
+      const TransactionManager& manager,
+      rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact>&& facts) {
+    if (!manager.final_chain_) {
+      throw DbException("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: FinalChain is required for transaction facts");
+    }
+
+    std::vector<trx_hash_t> expected_hashes;
+    expected_hashes.reserve(facts.size());
+    for (const auto& fact : facts) {
+      expected_hashes.emplace_back(fact.hash.data(), trx_hash_t::ConstructFromPointer);
+    }
+
+    const auto outcome = [&]() {
+      try {
+        return rustaxa::transaction_manager_verify_not_finalized_with_runtime_and_final_chain(
+            *manager.runtime_, *manager.rust_storage_, manager.final_chain_->rustFinalChainForRust(), std::move(facts));
+      } catch (const std::exception& e) {
+        throw DbException(std::string("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: ") + e.what());
+      }
+    }();
+
+    if (!outcome.is_finalized) {
+      return true;
+    }
+
+    if (outcome.input_index >= expected_hashes.size()) {
+      throw DbException("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: Rust returned an out-of-range transaction index");
+    }
+
+    const auto trx_hash = fromBridgeHash(outcome.hash);
+    if (trx_hash != expected_hashes[static_cast<size_t>(outcome.input_index)]) {
+      throw DbException("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: Rust returned a transaction hash/index mismatch");
+    }
+
+    if (outcome.source == kVerifyNotFinalizedRecentSidecar) {
+      LOG(manager.log_er_) << "Transaction " << trx_hash << " already finalized";
+    } else {
+      LOG(manager.log_er_) << "Transaction " << trx_hash << " already finalized in db";
+    }
+    return false;
+  }
+
   static std::vector<SharedTransactions> getAllPoolTrxs(const TransactionManagerOld& manager) {
     std::shared_lock transactions_lock(manager.transactions_mutex_);
     const auto groups = static_cast<const TransactionManager&>(manager)
@@ -1189,6 +1232,11 @@ std::unordered_set<trx_hash_t> TransactionManager::excludeFinalizedTransactions(
 
 bool TransactionManager::verifyTransactionsNotFinalized(const SharedTransactions& trxs) {
   return TransactionManagerRustShimAccess::verifyTransactionsNotFinalized(*this, trxs);
+}
+
+bool TransactionManager::verifyTransactionsNotFinalized(
+    rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact>&& facts) {
+  return TransactionManagerRustShimAccess::verifyTransactionsNotFinalized(*this, std::move(facts));
 }
 
 std::vector<SharedTransactions> TransactionManager::getAllPoolTrxs() {

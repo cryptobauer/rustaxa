@@ -189,6 +189,17 @@ class TransactionManager : public TransactionManagerOld {
   bool verifyTransactionsNotFinalized(const SharedTransactions &trxs);
 
   /**
+   * Verify transaction identity facts retained by Rust sync queue metadata.
+   *
+   * This is the same Rust runtime decision as `verifyTransactionsNotFinalized`,
+   * but the caller supplies pre-inspected hash/sender/nonce facts so PBFT sync
+   * admission does not reopen live `Transaction` objects only to build those
+   * facts.
+   */
+  bool verifyTransactionsNotFinalized(
+      ::rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> &&facts);
+
+  /**
    * Materialize DAG block transactions from live C++ views and Rust-backed storage.
    *
    * C++ preserves live pool identity and materializes non-finalized/recently-finalized

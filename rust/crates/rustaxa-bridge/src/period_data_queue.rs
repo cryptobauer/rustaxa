@@ -1,6 +1,6 @@
 use crate::ffi::rustaxa_ffi::{
     PbftSyncTransactionHash, PeriodDataQueueEntryRef, PeriodDataQueueLastEntryLookup,
-    PeriodDataQueuePopPlan, PeriodDataQueuePushOutcome,
+    PeriodDataQueuePopPlan, PeriodDataQueuePushOutcome, PeriodDataQueueTransactionIdentity,
 };
 use crate::ffi::BridgePeriodDataQueue;
 use rustaxa_consensus::period_data_queue::PeriodDataQueue;
@@ -58,6 +58,7 @@ impl BridgePeriodDataQueue {
         final_chain_hash: [u8; 32],
         dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
+        period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
         previous_cert_votes_present: bool,
         previous_cert_first_vote_has_weight: bool,
         pillar_votes_present: bool,
@@ -82,6 +83,17 @@ impl BridgePeriodDataQueue {
                 period_data_transaction_hashes
                     .into_iter()
                     .map(|hash| ethereum_types::H256::from(hash.hash))
+                    .collect(),
+                period_data_transaction_identities
+                    .into_iter()
+                    .map(|identity| {
+                        rustaxa_consensus::period_data_queue::PeriodDataQueueTransactionIdentity {
+                            input_index: identity.input_index,
+                            hash: ethereum_types::H256::from(identity.hash),
+                            transaction_nonce: identity.transaction_nonce,
+                            sender: identity.sender,
+                        }
+                    })
                     .collect(),
                 previous_cert_votes_present,
                 previous_cert_first_vote_has_weight,
@@ -115,6 +127,9 @@ impl BridgePeriodDataQueue {
                 period_data_transaction_hashes: transaction_hashes_to_bridge(
                     entry.period_data_transaction_hashes,
                 ),
+                period_data_transaction_identities: transaction_identities_to_bridge(
+                    entry.period_data_transaction_identities,
+                ),
                 previous_cert_votes_present: entry.previous_cert_votes_present,
                 previous_cert_first_vote_has_weight: entry.previous_cert_first_vote_has_weight,
                 pillar_votes_present: entry.pillar_votes_present,
@@ -131,6 +146,7 @@ impl BridgePeriodDataQueue {
                 final_chain_hash: [0; 32],
                 dag_transaction_hashes: Vec::new(),
                 period_data_transaction_hashes: Vec::new(),
+                period_data_transaction_identities: Vec::new(),
                 previous_cert_votes_present: false,
                 previous_cert_first_vote_has_weight: false,
                 pillar_votes_present: false,
@@ -166,6 +182,9 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueueEntryRef>
             dag_transaction_hashes: transaction_hashes_to_bridge(value.dag_transaction_hashes),
             period_data_transaction_hashes: transaction_hashes_to_bridge(
                 value.period_data_transaction_hashes,
+            ),
+            period_data_transaction_identities: transaction_identities_to_bridge(
+                value.period_data_transaction_identities,
             ),
             previous_cert_votes_present: value.previous_cert_votes_present,
             previous_cert_first_vote_has_weight: value.previous_cert_first_vote_has_weight,
@@ -204,6 +223,9 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueuePopPlan> for Peri
             period_data_transaction_hashes: transaction_hashes_to_bridge(
                 value.period_data_transaction_hashes,
             ),
+            period_data_transaction_identities: transaction_identities_to_bridge(
+                value.period_data_transaction_identities,
+            ),
             previous_cert_votes_present: value.previous_cert_votes_present,
             previous_cert_first_vote_has_weight: value.previous_cert_first_vote_has_weight,
             pillar_votes_present: value.pillar_votes_present,
@@ -221,5 +243,19 @@ fn transaction_hashes_to_bridge(hashes: Vec<ethereum_types::H256>) -> Vec<PbftSy
     hashes
         .into_iter()
         .map(|hash| PbftSyncTransactionHash { hash: hash.into() })
+        .collect()
+}
+
+fn transaction_identities_to_bridge(
+    identities: Vec<rustaxa_consensus::period_data_queue::PeriodDataQueueTransactionIdentity>,
+) -> Vec<PeriodDataQueueTransactionIdentity> {
+    identities
+        .into_iter()
+        .map(|identity| PeriodDataQueueTransactionIdentity {
+            input_index: identity.input_index,
+            hash: identity.hash.into(),
+            transaction_nonce: identity.transaction_nonce,
+            sender: identity.sender,
+        })
         .collect()
 }
