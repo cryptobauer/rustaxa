@@ -4365,7 +4365,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   }
 
   // Validate cert votes
-  const auto cert_votes_valid = validatePbftBlockCertVotes(period_data.pbft_blk, cert_votes);
+  const auto cert_votes_valid = validatePbftBlockCertVotes(block_period, pbft_block_hash, cert_votes);
   runtime_plan = make_runtime_plan(
       false, kPbftSyncFinalChainValid, kPbftSyncFactValid, cert_votes_valid ? kPbftSyncFactValid : kPbftSyncFactInvalid,
       kPbftSyncFactNotChecked, {}, false, kPbftSyncFactNotChecked, false, kPbftSyncFactNotChecked);
@@ -4441,7 +4441,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
       {std::move(period_data), std::move(cert_votes)});
 }
 
-bool PbftManager::validatePbftBlockCertVotes(const std::shared_ptr<PbftBlock> pbft_block,
+bool PbftManager::validatePbftBlockCertVotes(PbftPeriod block_period, const blk_hash_t &block_hash,
                                              const std::vector<std::shared_ptr<PbftVote>> &cert_votes) const {
   // To speed up syncing/rebuilding full strict vote verification is done for all votes on every
   // full_vote_validation_interval and for a random vote for each block
@@ -4452,14 +4452,14 @@ bool PbftManager::validatePbftBlockCertVotes(const std::shared_ptr<PbftBlock> pb
 
   const uint32_t full_vote_validation_interval = 100;
   const uint32_t vote_to_validate = std::rand() % cert_votes.size();
-  const bool strict_validation = (pbft_block->getPeriod() % full_vote_validation_interval == 0);
+  const bool strict_validation = (block_period % full_vote_validation_interval == 0);
 
   size_t votes_weight = 0;
   auto first_vote_round = cert_votes[0]->getRound();
   auto first_vote_period = cert_votes[0]->getPeriod();
 
-  if (pbft_block->getPeriod() != first_vote_period) {
-    LOG(log_er_) << "pbft block period " << pbft_block->getPeriod() << " != first_vote_period " << first_vote_period;
+  if (block_period != first_vote_period) {
+    LOG(log_er_) << "pbft block period " << block_period << " != first_vote_period " << first_vote_period;
     return false;
   }
 
@@ -4468,31 +4468,31 @@ bool PbftManager::validatePbftBlockCertVotes(const std::shared_ptr<PbftBlock> pb
     // Any info is wrong that can determine the synced PBFT block comes from a malicious player
     if (v->getPeriod() != first_vote_period) {
       LOG(log_er_) << "Invalid cert vote " << v->getHash() << " period " << v->getPeriod() << ", PBFT block "
-                   << pbft_block->getBlockHash() << ", first_vote_period " << first_vote_period;
+                   << block_hash << ", first_vote_period " << first_vote_period;
       return false;
     }
 
     if (v->getRound() != first_vote_round) {
       LOG(log_er_) << "Invalid cert vote " << v->getHash() << " round " << v->getRound() << ", PBFT block "
-                   << pbft_block->getBlockHash() << ", first_vote_round " << first_vote_round;
+                   << block_hash << ", first_vote_round " << first_vote_round;
       return false;
     }
 
     if (v->getType() != PbftVoteTypes::cert_vote) {
       LOG(log_er_) << "Invalid cert vote " << v->getHash() << " type " << static_cast<uint8_t>(v->getType())
-                   << ", PBFT block " << pbft_block->getBlockHash();
+                   << ", PBFT block " << block_hash;
       return false;
     }
 
     if (v->getStep() != PbftStates::certify_state) {
       LOG(log_er_) << "Invalid cert vote " << v->getHash() << " step " << v->getStep() << ", PBFT block "
-                   << pbft_block->getBlockHash();
+                   << block_hash;
       return false;
     }
 
-    if (v->getBlockHash() != pbft_block->getBlockHash()) {
-      LOG(log_er_) << "Invalid cert vote " << v->getHash() << " block hash " << v->getBlockHash() << ", PBFT block "
-                   << pbft_block->getBlockHash();
+    if (v->getBlockHash() != block_hash) {
+      LOG(log_er_) << "Invalid cert vote " << v->getHash() << " block hash " << v->getBlockHash()
+                   << ", PBFT block " << block_hash;
       return false;
     }
 
@@ -4500,7 +4500,7 @@ bool PbftManager::validatePbftBlockCertVotes(const std::shared_ptr<PbftBlock> pb
 
     if (const auto ret = vote_mgr_->validateVote(v, strict); !ret.first) {
       LOG(log_er_) << "Cert vote " << v->getHash() << " validation failed. Err: " << ret.second << ", pbft block "
-                   << pbft_block->getBlockHash();
+                   << block_hash;
       return false;
     }
 
@@ -4517,7 +4517,7 @@ bool PbftManager::validatePbftBlockCertVotes(const std::shared_ptr<PbftBlock> pb
 
   if (votes_weight < *two_t_plus_one) {
     LOG(log_wr_) << "Invalid votes weight " << votes_weight << " < two_t_plus_one " << *two_t_plus_one
-                 << ", pbft block " << pbft_block->getBlockHash();
+                 << ", pbft block " << block_hash;
     return false;
   }
 

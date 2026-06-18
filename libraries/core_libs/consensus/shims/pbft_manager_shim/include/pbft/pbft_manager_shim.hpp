@@ -752,13 +752,14 @@ class PbftManager {
   std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> processPeriodData();
 
   /**
-   * @brief Validates PBFT block cert votes
-   * @param pbft_block
+   * @brief Validates PBFT block cert votes against Rust-owned sync queue block metadata
+   * @param block_period PBFT block period carried by Rust queue metadata
+   * @param block_hash PBFT block hash carried by Rust queue metadata
    * @param cert_votes
    *
    * @return true if there is enough(2t+1) votes and all of them are valid, otherwise false
    */
-  bool validatePbftBlockCertVotes(const std::shared_ptr<PbftBlock> pbft_block,
+  bool validatePbftBlockCertVotes(PbftPeriod block_period, const blk_hash_t &block_hash,
                                   const std::vector<std::shared_ptr<PbftVote>> &cert_votes) const;
 
   /**

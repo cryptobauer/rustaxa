@@ -433,7 +433,11 @@ payloads for finalization execution. The proposed-block mark-valid command cut a
 surface to the Rust-backed `ProposedBlocks` shim and makes PBFT manager admission/leader-selection mark-valid commands
 use Rust-returned identities instead of reusing materialized C++ `PbftBlock` objects as the mutation authority. The
 sync invalid-state-root cleanup uses the popped Rust queue final-chain-hash fact for sync rejection logging instead of
-reopening the live PBFT block sidecar after Rust queue metadata already supplied that block fact.
+reopening the live PBFT block sidecar after Rust queue metadata already supplied that block fact. The sync cert-vote
+block-identity cut makes cert-vote validation consume the Rust queue's popped PBFT period/hash facts directly, so the
+helper no longer reopens the live PBFT block sidecar solely to compare vote period/hash, choose strict-validation
+intervals, or log the block identity; live `PbftVote` validation, weight accumulation, and verified-vote insertion
+remain compatibility payload work.
 Remaining Slice 9 work: proposed-block sidecars that still require validation/API materialization and sync payload
 materialization for actual transaction objects during finalization execution, votes, and pillar data.
 
