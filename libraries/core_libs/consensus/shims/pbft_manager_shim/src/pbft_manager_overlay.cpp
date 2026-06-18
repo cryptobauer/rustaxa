@@ -371,7 +371,7 @@ rustaxa::PbftManagerTransitionFact makePbftManagerTransitionFact(
 rustaxa::PbftManagerStateActionFact makePbftManagerStateActionFact(
     PbftStates state, PbftPeriod period, PbftRound round, PbftStep step, std::chrono::milliseconds elapsed,
     std::chrono::milliseconds deadline, std::chrono::milliseconds current_round_lambda, const VoteManager &vote_mgr,
-    const std::optional<std::shared_ptr<PbftBlock>> &cert_voted_block_for_round, bool already_next_voted_value,
+    bool has_cert_voted_block, const blk_hash_t &cert_voted_block_hash, bool already_next_voted_value,
     bool already_next_voted_null_block_hash) {
   rustaxa::PbftManagerStateActionFact fact{};
   fact.state = toPbftManagerRuntimeState(state);
@@ -416,9 +416,9 @@ rustaxa::PbftManagerStateActionFact makePbftManagerStateActionFact(
     }
   }
 
-  if (cert_voted_block_for_round.has_value()) {
+  if (has_cert_voted_block) {
     fact.has_cert_voted_block = true;
-    fact.cert_voted_block_hash = toBridgeHash((*cert_voted_block_for_round)->getBlockHash());
+    fact.cert_voted_block_hash = toBridgeHash(cert_voted_block_hash);
   }
   fact.already_next_voted_value = already_next_voted_value;
   fact.already_next_voted_null = already_next_voted_null_block_hash;
@@ -946,7 +946,7 @@ void PbftManager::run() {
           std::chrono::milliseconds(getRoundLambda(current_round)),
           std::chrono::milliseconds(kGenesisConfig.pbft.lambda_ms), kMaxExponentialLambda, getPbftDeadline(),
           std::chrono::milliseconds(transition_snapshot.next_step_time_ms), *vote_mgr_,
-          kGenesisConfig.state.hardforks.isOnCactiHardfork(current_period), cert_voted_block_for_round_.has_value(),
+          kGenesisConfig.state.hardforks.isOnCactiHardfork(current_period), transition_snapshot.has_cert_voted_block,
           transition_snapshot.executed_pbft_block));
       if (!ensureTransitionPlanReady(plan, log_er_)) {
         return false;
@@ -1328,7 +1328,7 @@ bool PbftManager::advancePeriod() {
       std::chrono::milliseconds(getRoundLambda(1 /* round */)),
       std::chrono::milliseconds(kGenesisConfig.pbft.lambda_ms), kMaxExponentialLambda, getPbftDeadline(),
       std::chrono::milliseconds(transition_snapshot.next_step_time_ms), *vote_mgr_,
-      kGenesisConfig.state.hardforks.isOnCactiHardfork(new_period), cert_voted_block_for_round_.has_value(),
+      kGenesisConfig.state.hardforks.isOnCactiHardfork(new_period), transition_snapshot.has_cert_voted_block,
       transition_snapshot.executed_pbft_block));
   if (!ensureTransitionPlanReady(transition_plan, log_er_)) {
     return false;
@@ -1442,7 +1442,7 @@ void PbftManager::resetPbftConsensus(PbftRound round) {
       std::chrono::milliseconds(getRoundLambda(round)), std::chrono::milliseconds(kGenesisConfig.pbft.lambda_ms),
       kMaxExponentialLambda, getPbftDeadline(), std::chrono::milliseconds(transition_snapshot.next_step_time_ms),
       *vote_mgr_,
-      kGenesisConfig.state.hardforks.isOnCactiHardfork(period), cert_voted_block_for_round_.has_value(),
+      kGenesisConfig.state.hardforks.isOnCactiHardfork(period), transition_snapshot.has_cert_voted_block,
       transition_snapshot.executed_pbft_block));
   if (!ensureTransitionPlanReady(plan, log_er_)) {
     return;
@@ -1575,6 +1575,13 @@ void PbftManager::initialState() {
     // Set cert_voted_block_for_round_ only if round and period match. Note: could differ in edge case when node
     // crashed, new period/round was already saved in db but cert voted block was not cleared yet
     if (current_pbft_period == cert_voted_block->getPeriod() && current_pbft_round == cert_voted_block_round) {
+      const auto cert_voted_snapshot = rustaxa::pbft_manager_runtime_apply_cert_voted_block_metadata(
+          *pbft_manager_runtime_.value(), cert_voted_block->getPeriod(), cert_voted_block_round,
+          toBridgeHash(cert_voted_block->getBlockHash()));
+      if (cert_voted_snapshot.status != kPbftManagerRuntimeSnapshotStatusReady) {
+        throw std::runtime_error("Rust PBFT manager cert-voted metadata restore rejected: " +
+                                 static_cast<std::string>(cert_voted_snapshot.error_code));
+      }
       cert_voted_block_for_round_ = cert_voted_block;
       LOG(log_nf_) << "Init last cert voted block in round to " << cert_voted_block->getBlockHash() << ", period "
                    << current_pbft_period << ", round " << current_pbft_round;
@@ -1612,7 +1619,7 @@ void PbftManager::setFilterState_() {
       std::chrono::milliseconds(getRoundLambda(round)), std::chrono::milliseconds(kGenesisConfig.pbft.lambda_ms),
       kMaxExponentialLambda, getPbftDeadline(), std::chrono::milliseconds(transition_snapshot.next_step_time_ms),
       *vote_mgr_,
-      kGenesisConfig.state.hardforks.isOnCactiHardfork(period), cert_voted_block_for_round_.has_value(),
+      kGenesisConfig.state.hardforks.isOnCactiHardfork(period), transition_snapshot.has_cert_voted_block,
       transition_snapshot.executed_pbft_block));
   if (!ensureTransitionPlanReady(plan, log_er_)) {
     return;
@@ -1637,7 +1644,7 @@ void PbftManager::setCertifyState_() {
       std::chrono::milliseconds(getRoundLambda(round)), std::chrono::milliseconds(kGenesisConfig.pbft.lambda_ms),
       kMaxExponentialLambda, getPbftDeadline(), std::chrono::milliseconds(transition_snapshot.next_step_time_ms),
       *vote_mgr_,
-      kGenesisConfig.state.hardforks.isOnCactiHardfork(period), cert_voted_block_for_round_.has_value(),
+      kGenesisConfig.state.hardforks.isOnCactiHardfork(period), transition_snapshot.has_cert_voted_block,
       transition_snapshot.executed_pbft_block));
   if (!ensureTransitionPlanReady(plan, log_er_)) {
     return;
@@ -1663,7 +1670,7 @@ void PbftManager::setFinishState_() {
       std::chrono::milliseconds(getRoundLambda(round)), std::chrono::milliseconds(kGenesisConfig.pbft.lambda_ms),
       kMaxExponentialLambda, getPbftDeadline(), std::chrono::milliseconds(transition_snapshot.next_step_time_ms),
       *vote_mgr_,
-      kGenesisConfig.state.hardforks.isOnCactiHardfork(period), cert_voted_block_for_round_.has_value(),
+      kGenesisConfig.state.hardforks.isOnCactiHardfork(period), transition_snapshot.has_cert_voted_block,
       transition_snapshot.executed_pbft_block));
   if (!ensureTransitionPlanReady(plan, log_er_)) {
     return;
@@ -1688,7 +1695,7 @@ void PbftManager::setFinishPollingState_() {
       std::chrono::milliseconds(getRoundLambda(round)), std::chrono::milliseconds(kGenesisConfig.pbft.lambda_ms),
       kMaxExponentialLambda, getPbftDeadline(), std::chrono::milliseconds(transition_snapshot.next_step_time_ms),
       *vote_mgr_,
-      kGenesisConfig.state.hardforks.isOnCactiHardfork(period), cert_voted_block_for_round_.has_value(),
+      kGenesisConfig.state.hardforks.isOnCactiHardfork(period), transition_snapshot.has_cert_voted_block,
       transition_snapshot.executed_pbft_block));
   if (!ensureTransitionPlanReady(plan, log_er_)) {
     return;
@@ -1713,7 +1720,7 @@ void PbftManager::loopBackFinishState_() {
       std::chrono::milliseconds(getRoundLambda(round)), std::chrono::milliseconds(kGenesisConfig.pbft.lambda_ms),
       kMaxExponentialLambda, getPbftDeadline(), std::chrono::milliseconds(transition_snapshot.next_step_time_ms),
       *vote_mgr_,
-      kGenesisConfig.state.hardforks.isOnCactiHardfork(period), cert_voted_block_for_round_.has_value(),
+      kGenesisConfig.state.hardforks.isOnCactiHardfork(period), transition_snapshot.has_cert_voted_block,
       transition_snapshot.executed_pbft_block));
   if (!ensureTransitionPlanReady(plan, log_er_)) {
     return;
@@ -2186,7 +2193,9 @@ void PbftManager::proposeBlock_() {
   LOG(log_dg_) << "PBFT value proposal state in period " << period << ", round " << round;
 
   const auto fact = makePbftManagerStateActionFact(state, period, round, step, 0ms, getPbftDeadline(),
-                                                   current_round_lambda, *vote_mgr_, cert_voted_block_for_round_,
+                                                   current_round_lambda, *vote_mgr_,
+                                                   action_snapshot.has_cert_voted_block,
+                                                   fromBridgeHash(action_snapshot.cert_voted_block_hash),
                                                    action_snapshot.already_next_voted_value,
                                                    action_snapshot.already_next_voted_null);
   executeStateActionEffectSession(fact, [&](const auto &effect) {
@@ -2253,7 +2262,9 @@ void PbftManager::identifyBlock_() {
   LOG(log_dg_) << "PBFT filtering state in period: " << period << ", round: " << round;
 
   const auto fact = makePbftManagerStateActionFact(state, period, round, step, 0ms, getPbftDeadline(),
-                                                   current_round_lambda, *vote_mgr_, cert_voted_block_for_round_,
+                                                   current_round_lambda, *vote_mgr_,
+                                                   action_snapshot.has_cert_voted_block,
+                                                   fromBridgeHash(action_snapshot.cert_voted_block_hash),
                                                    action_snapshot.already_next_voted_value,
                                                    action_snapshot.already_next_voted_null);
   executeStateActionEffectSession(fact, [&](const auto &effect) {
@@ -2312,7 +2323,8 @@ void PbftManager::certifyBlock_() {
   const auto elapsed_time_in_round = elapsedTimeInMs(current_round_start_datetime_);
   const auto fact = makePbftManagerStateActionFact(
       state, period, round, step, elapsed_time_in_round, getPbftDeadline(), current_round_lambda, *vote_mgr_,
-      cert_voted_block_for_round_, action_snapshot.already_next_voted_value, action_snapshot.already_next_voted_null);
+      action_snapshot.has_cert_voted_block, fromBridgeHash(action_snapshot.cert_voted_block_hash),
+      action_snapshot.already_next_voted_value, action_snapshot.already_next_voted_null);
   const auto session_step = executeStateActionEffectSession(fact, [&](const auto &effect) {
     if (effect.intent == kPbftManagerStateActionIntentGoFinish) {
       LOG(log_dg_) << "Step 3 expired, will go to step 4 in period " << period << ", round " << round;
@@ -2355,8 +2367,13 @@ void PbftManager::certifyBlock_() {
       if (!pbft_manager_runtime_.has_value()) {
         throw std::runtime_error("PBFT manager Rust runtime must be initialized before persisting cert-voted block");
       }
-      rustaxa::pbft_manager_runtime_save_cert_voted_block_in_round(*pbft_manager_runtime_.value(), round,
-                                                                   toBridgeBytes(soft_voted_block->rlp(true)));
+      const auto cert_voted_snapshot = rustaxa::pbft_manager_runtime_save_cert_voted_block_in_round(
+          *pbft_manager_runtime_.value(), soft_voted_block->getPeriod(), round,
+          toBridgeHash(soft_voted_block->getBlockHash()), toBridgeBytes(soft_voted_block->rlp(true)));
+      if (cert_voted_snapshot.status != kPbftManagerRuntimeSnapshotStatusReady) {
+        throw std::runtime_error("Rust PBFT manager cert-voted metadata update rejected: " +
+                                 static_cast<std::string>(cert_voted_snapshot.error_code));
+      }
       cert_voted_block_for_round_ = soft_voted_block;
       return kPbftManagerStateActionEffectResultApplied;
     }
@@ -2379,15 +2396,22 @@ void PbftManager::firstFinish_() {
   LOG(log_dg_) << "PBFT first finishing state in period " << period << ", round " << round << ", step " << step;
 
   const auto fact = makePbftManagerStateActionFact(state, period, round, step, 0ms, getPbftDeadline(),
-                                                   current_round_lambda, *vote_mgr_, cert_voted_block_for_round_,
+                                                   current_round_lambda, *vote_mgr_,
+                                                   action_snapshot.has_cert_voted_block,
+                                                   fromBridgeHash(action_snapshot.cert_voted_block_hash),
                                                    action_snapshot.already_next_voted_value,
                                                    action_snapshot.already_next_voted_null);
   executeStateActionEffectSession(fact, [&](const auto &effect) {
     if (effect.intent == kPbftManagerStateActionIntentNextVoteCertVotedBlock) {
+      if (!cert_voted_block_for_round_.has_value()) {
+        LOG(log_er_) << "Rust PBFT first-finish requested cert-voted next vote without live cert-voted sidecar";
+        return kPbftManagerStateActionEffectResultSkippedMissingLiveObject;
+      }
       const auto &cert_voted_block = *cert_voted_block_for_round_;
 
       // It should never happen that node moved to the next period without cert_voted_block_for_round_ reset
       assert(cert_voted_block->getPeriod() == period);
+      assert(cert_voted_block->getBlockHash() == fromBridgeHash(action_snapshot.cert_voted_block_hash));
 
       return placeStateActionVote(PbftVoteTypes::next_vote, cert_voted_block->getPeriod(), round, step,
                                   cert_voted_block->getBlockHash(), cert_voted_block,
@@ -2442,7 +2466,9 @@ void PbftManager::secondFinish_() {
 
   const auto fact =
       makePbftManagerStateActionFact(state, period, round, step, elapsedTimeInMs(second_finish_step_start_datetime_),
-                                     getPbftDeadline(), current_round_lambda, *vote_mgr_, cert_voted_block_for_round_,
+                                     getPbftDeadline(), current_round_lambda, *vote_mgr_,
+                                     action_snapshot.has_cert_voted_block,
+                                     fromBridgeHash(action_snapshot.cert_voted_block_hash),
                                      action_snapshot.already_next_voted_value, action_snapshot.already_next_voted_null);
   const auto session_step = executeStateActionEffectSession(fact, [&](const auto &effect) {
     if (effect.intent == kPbftManagerStateActionIntentNextVoteCurrentSoftValue) {
@@ -3324,15 +3350,16 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
   if (!pbft_manager_runtime_.has_value()) {
     throw std::runtime_error("PBFT manager Rust runtime must be initialized before reading PBFT block existence");
   }
+  const auto push_snapshot = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value());
   const auto block_in_chain =
       rustaxa::pbft_manager_runtime_pbft_block_in_db(*pbft_manager_runtime_.value(), toBridgeHash(pbft_block_hash));
   if (block_in_chain && cert_votes.empty()) {
     LOG(log_nf_) << "PBFT block: " << pbft_block_hash << " in DB already.";
     LOG(log_dg_) << "Rust PBFT finalization resume classifier cannot inspect duplicate block " << pbft_block_hash
                  << " because certified-vote facts are unavailable.";
-    if (cert_voted_block_for_round_.has_value() && (*cert_voted_block_for_round_)->getBlockHash() == pbft_block_hash) {
+    if (push_snapshot.has_cert_voted_block && fromBridgeHash(push_snapshot.cert_voted_block_hash) == pbft_block_hash) {
       LOG(log_er_) << "Last cert voted value should be kNullBlockHash. Block hash "
-                   << (*cert_voted_block_for_round_)->getBlockHash() << " has been pushed into chain already";
+                   << pbft_block_hash << " has been pushed into chain already";
       assert(false);
     }
     return false;
@@ -3603,9 +3630,9 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       LOG(log_er_) << "Rust PBFT finalization resume inspection failed for duplicate block " << pbft_block_hash
                    << ", period " << block_pbft_period << ": " << e.what();
     }
-    if (cert_voted_block_for_round_.has_value() && (*cert_voted_block_for_round_)->getBlockHash() == pbft_block_hash) {
+    if (push_snapshot.has_cert_voted_block && fromBridgeHash(push_snapshot.cert_voted_block_hash) == pbft_block_hash) {
       LOG(log_er_) << "Last cert voted value should be kNullBlockHash. Block hash "
-                   << (*cert_voted_block_for_round_)->getBlockHash() << " has been pushed into chain already";
+                   << pbft_block_hash << " has been pushed into chain already";
       assert(false);
     }
     return resume_executed;

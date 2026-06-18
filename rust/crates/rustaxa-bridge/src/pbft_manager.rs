@@ -400,27 +400,66 @@ pub fn pbft_manager_runtime_cert_voted_block_in_round(
         .unwrap_or_default())
 }
 
-/// Persists the latest cert-voted PBFT block through runtime-owned storage.
+/// Persists the latest cert-voted PBFT block and records its runtime metadata.
 ///
 /// Inputs:
 /// - `runtime`: long-lived PBFT manager runtime created from Rust storage.
+/// - `period`: PBFT period of the cert-voted block.
 /// - `round`: PBFT round that produced the cert vote.
+/// - `block_hash`: hash of the cert-voted PBFT block.
 /// - `block_rlp`: canonical signed PBFT block RLP payload.
 ///
 /// Outputs:
-/// - Returns success after the legacy cert-voted-block recovery row is written.
+/// - Returns the updated runtime snapshot after the legacy cert-voted-block
+///   recovery row is written.
 ///
 /// Invariants and edge behavior:
-/// - The bridge only adapts CXX-safe bytes and the scalar round; row encoding
-///   and validation live in `rustaxa-consensus`.
+/// - The bridge adapts CXX-safe bytes plus compact metadata; row encoding and
+///   validation live in `rustaxa-consensus`.
 /// - C++ must update its live `cert_voted_block_for_round_` sidecar only after
-///   this call succeeds.
+///   this call succeeds and the returned snapshot is ready.
 pub fn pbft_manager_runtime_save_cert_voted_block_in_round(
-    runtime: &BridgePbftManagerRuntime,
+    runtime: &mut BridgePbftManagerRuntime,
+    period: u64,
     round: u32,
+    block_hash: [u8; 32],
     block_rlp: Vec<u8>,
-) -> anyhow::Result<()> {
-    save_cert_voted_block_in_round_storage(runtime.storage.as_ref(), u64::from(round), &block_rlp)
+) -> anyhow::Result<FfiPbftManagerRuntimeSnapshot> {
+    save_cert_voted_block_in_round_storage(runtime.storage.as_ref(), u64::from(round), &block_rlp)?;
+    Ok(pbft_manager_runtime_apply_cert_voted_block_metadata(
+        runtime, period, round, block_hash,
+    ))
+}
+
+/// Records cert-voted block metadata after an existing recovery payload was materialized.
+///
+/// Inputs:
+/// - `runtime`: long-lived PBFT manager runtime created from Rust storage.
+/// - `period`, `round`, and `block_hash` identify the already persisted
+///   cert-voted block sidecar.
+///
+/// Outputs:
+/// - Returns the updated runtime snapshot for compatibility mirror checks.
+///
+/// Invariants and edge behavior:
+/// - This method does not write storage; use it only after loading an existing
+///   recovery row or after another path has already persisted the row.
+/// - C++ may still keep a temporary `PbftBlock` object for APIs and vote
+///   generation, but Rust owns the compact metadata used by protocol planners.
+pub fn pbft_manager_runtime_apply_cert_voted_block_metadata(
+    runtime: &mut BridgePbftManagerRuntime,
+    period: u64,
+    round: u32,
+    block_hash: [u8; 32],
+) -> FfiPbftManagerRuntimeSnapshot {
+    runtime
+        .state
+        .apply_committed_cert_voted_block(
+            period,
+            u64::from(round),
+            ethereum_types::H256::from(block_hash),
+        )
+        .into()
 }
 
 /// Loads the local node's own pillar-block vote through PBFT-manager runtime storage.
@@ -1392,6 +1431,10 @@ impl From<PbftManagerRuntimeSnapshot> for FfiPbftManagerRuntimeSnapshot {
             rebroadcast_votes_counter: value.rebroadcast_votes_counter,
             broadcast_reward_votes_counter: value.broadcast_reward_votes_counter,
             rebroadcast_reward_votes_counter: value.rebroadcast_reward_votes_counter,
+            has_cert_voted_block: value.has_cert_voted_block,
+            cert_voted_block_period: value.cert_voted_block_period,
+            cert_voted_block_round: value.cert_voted_block_round,
+            cert_voted_block_hash: value.cert_voted_block_hash.into(),
             persist_normalized_step: value.persist_normalized_step,
             reset_second_finish_start: value.reset_second_finish_start,
             error_code: value.error_code,
@@ -2619,7 +2662,7 @@ mod tests {
                 .save_cert_voted_block_in_round(3, vec![0xC0])
                 .expect("cert-voted block should persist");
 
-            let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
+            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
                 .expect("runtime should restore");
             let runtime_payload = pbft_manager_runtime_cert_voted_block_in_round(&runtime)
                 .expect("runtime-owned storage read should succeed");
@@ -2630,13 +2673,35 @@ mod tests {
                     .expect("compatibility storage view should load")
             );
 
-            pbft_manager_runtime_save_cert_voted_block_in_round(&runtime, 4, vec![0xC0])
-                .expect("runtime-owned storage write should succeed");
+            let snapshot = pbft_manager_runtime_save_cert_voted_block_in_round(
+                &mut runtime,
+                10,
+                4,
+                [0x44; 32],
+                vec![0xC0],
+            )
+            .expect("runtime-owned storage write should succeed");
             let rewritten_payload = pbft_manager_runtime_cert_voted_block_in_round(&runtime)
                 .expect("rewritten cert-voted block should load");
-            let err = pbft_manager_runtime_save_cert_voted_block_in_round(&runtime, 5, Vec::new())
-                .expect_err("empty cert-voted block payload should reject");
+            let err = match pbft_manager_runtime_save_cert_voted_block_in_round(
+                &mut runtime,
+                10,
+                5,
+                [0x55; 32],
+                Vec::new(),
+            ) {
+                Ok(_) => panic!("empty cert-voted block payload should reject"),
+                Err(err) => err,
+            };
 
+            assert!(snapshot.has_cert_voted_block);
+            assert_eq!(snapshot.cert_voted_block_period, 10);
+            assert_eq!(snapshot.cert_voted_block_round, 4);
+            assert_eq!(snapshot.cert_voted_block_hash, [0x44; 32]);
+            assert_eq!(
+                pbft_manager_runtime_snapshot(&runtime).cert_voted_block_hash,
+                [0x44; 32]
+            );
             let rewritten_rlp = rlp::Rlp::new(&rewritten_payload);
             assert_eq!(rewritten_rlp.at(0).unwrap().as_val::<u64>().unwrap(), 4);
             assert_eq!(rewritten_rlp.at(1).unwrap().as_raw(), &[0xC0]);

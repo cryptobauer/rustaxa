@@ -389,8 +389,12 @@ broadcast-counter cut makes `PbftManagerRuntimeSnapshot` own the four live broad
 seeds accepted startup snapshots with one-based counters, resets round counters from committed reset-consensus
 transitions, routes reward-counter reset and force-broadcast through a Rust runtime counter update, builds
 `broadcastVotes()` facts from a fresh runtime snapshot, and applies accepted broadcast reports by hydrating C++
-compatibility mirrors from Rust. Remaining Slice 9 work: `cert_voted_block_for_round_`, proposed-block sidecars, and
-queue/cache mirrors.
+compatibility mirrors from Rust. The cert-voted metadata cut makes `PbftManagerRuntimeSnapshot` own whether a
+cert-voted block exists plus its period, round, and hash; startup restore records metadata after loading the Rust-owned
+recovery row, successful cert-vote storage writes update runtime metadata before the C++ sidecar changes, transition
+reset clears metadata in Rust, and transition/state-action planner facts read the runtime metadata instead of the C++
+optional. The C++ `cert_voted_block_for_round_` object remains a temporary materialization sidecar for vote placement
+and proposed-block APIs. Remaining Slice 9 work: proposed-block sidecars and queue/cache mirrors.
 
 ### Slice 10: Rust-Mode PBFT Manager Parity Gate
 

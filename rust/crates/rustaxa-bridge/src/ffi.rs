@@ -1125,6 +1125,10 @@ pub mod rustaxa_ffi {
         rebroadcast_votes_counter: u32,
         broadcast_reward_votes_counter: u32,
         rebroadcast_reward_votes_counter: u32,
+        has_cert_voted_block: bool,
+        cert_voted_block_period: u64,
+        cert_voted_block_round: u64,
+        cert_voted_block_hash: [u8; 32],
         persist_normalized_step: bool,
         reset_second_finish_start: bool,
         error_code: String,
@@ -4507,10 +4511,18 @@ pub mod rustaxa_ffi {
             runtime: &BridgePbftManagerRuntime,
         ) -> Result<Vec<u8>>;
         pub fn pbft_manager_runtime_save_cert_voted_block_in_round(
-            runtime: &BridgePbftManagerRuntime,
+            runtime: &mut BridgePbftManagerRuntime,
+            period: u64,
             round: u32,
+            block_hash: [u8; 32],
             block_rlp: Vec<u8>,
-        ) -> Result<()>;
+        ) -> Result<PbftManagerRuntimeSnapshot>;
+        pub fn pbft_manager_runtime_apply_cert_voted_block_metadata(
+            runtime: &mut BridgePbftManagerRuntime,
+            period: u64,
+            round: u32,
+            block_hash: [u8; 32],
+        ) -> PbftManagerRuntimeSnapshot;
         pub fn pbft_manager_runtime_own_pillar_block_vote(
             runtime: &BridgePbftManagerRuntime,
         ) -> Result<Vec<u8>>;

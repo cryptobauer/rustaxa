@@ -3355,6 +3355,14 @@ pub struct PbftManagerRuntimeSnapshot {
     pub broadcast_reward_votes_counter: u32,
     /// Live reward-vote rebroadcast counter.
     pub rebroadcast_reward_votes_counter: u32,
+    /// Whether Rust has an active cert-voted PBFT block metadata record.
+    pub has_cert_voted_block: bool,
+    /// PBFT period of the active cert-voted block metadata.
+    pub cert_voted_block_period: u64,
+    /// PBFT round that produced the active cert-voted block metadata.
+    pub cert_voted_block_round: u64,
+    /// Hash of the active cert-voted PBFT block.
+    pub cert_voted_block_hash: H256,
     /// Whether startup normalized persisted step and must persist the new step
     /// before C++ mirrors are updated.
     pub persist_normalized_step: bool,
@@ -3572,6 +3580,12 @@ impl PbftManagerRuntime {
             self.snapshot.broadcast_votes_counter = 1;
             self.snapshot.rebroadcast_votes_counter = 1;
         }
+        if plan.remove_cert_voted_block {
+            self.snapshot.has_cert_voted_block = false;
+            self.snapshot.cert_voted_block_period = 0;
+            self.snapshot.cert_voted_block_round = 0;
+            self.snapshot.cert_voted_block_hash = H256::zero();
+        }
     }
 
     /// Records the delayed executed-block status reset after persistence.
@@ -3726,6 +3740,47 @@ impl PbftManagerRuntime {
         self.snapshot.clone()
     }
 
+    /// Records committed cert-voted block metadata in the runtime snapshot.
+    ///
+    /// Inputs:
+    /// - `period` and `round` identify the PBFT manager cursor that produced
+    ///   the cert vote.
+    /// - `block_hash` identifies the live compatibility block sidecar C++ may
+    ///   still materialize for vote placement and proposed-block APIs.
+    ///
+    /// Outputs:
+    /// - Updates the runtime snapshot and returns it for compatibility mirror
+    ///   hydration.
+    ///
+    /// Invariants and edge behavior:
+    /// - The durable cert-voted recovery payload must be written before this
+    ///   method is called for newly produced cert votes.
+    /// - The runtime owns only compact metadata; C++ remains the temporary
+    ///   owner of `PbftBlock` materialization until proposed-block sidecars
+    ///   move to Rust.
+    /// - Zero period or round values are rejected and leave the runtime
+    ///   unchanged.
+    pub fn apply_committed_cert_voted_block(
+        &mut self,
+        period: u64,
+        round: u64,
+        block_hash: H256,
+    ) -> PbftManagerRuntimeSnapshot {
+        if period == 0 || round == 0 {
+            let mut rejected = self.snapshot.clone();
+            rejected.status = PbftManagerStartupRestoreStatus::InvalidFact;
+            rejected.error_code = "PBFT_MANAGER_CERT_VOTED_METADATA_INVALID_CURSOR".to_string();
+            return rejected;
+        }
+        self.snapshot.status = PbftManagerStartupRestoreStatus::Ready;
+        self.snapshot.has_cert_voted_block = true;
+        self.snapshot.cert_voted_block_period = period;
+        self.snapshot.cert_voted_block_round = round;
+        self.snapshot.cert_voted_block_hash = block_hash;
+        self.snapshot.error_code.clear();
+        self.snapshot.clone()
+    }
+
     /// Records a completed Rust-planned period advance.
     ///
     /// Inputs:
@@ -3775,6 +3830,10 @@ fn reject_startup_restore(error_code: &str) -> PbftManagerRuntimeSnapshot {
         rebroadcast_votes_counter: 0,
         broadcast_reward_votes_counter: 0,
         rebroadcast_reward_votes_counter: 0,
+        has_cert_voted_block: false,
+        cert_voted_block_period: 0,
+        cert_voted_block_round: 0,
+        cert_voted_block_hash: H256::zero(),
         persist_normalized_step: false,
         reset_second_finish_start: false,
         error_code: error_code.to_string(),
@@ -3868,6 +3927,10 @@ pub fn restore_pbft_manager_runtime(
         rebroadcast_votes_counter: 1,
         broadcast_reward_votes_counter: 1,
         rebroadcast_reward_votes_counter: 1,
+        has_cert_voted_block: false,
+        cert_voted_block_period: 0,
+        cert_voted_block_round: 0,
+        cert_voted_block_hash: H256::zero(),
         persist_normalized_step,
         reset_second_finish_start,
         error_code: String::new(),
@@ -6791,6 +6854,8 @@ mod tests {
         assert_eq!(snapshot.rebroadcast_votes_counter, 1);
         assert_eq!(snapshot.broadcast_reward_votes_counter, 1);
         assert_eq!(snapshot.rebroadcast_reward_votes_counter, 1);
+        assert!(!snapshot.has_cert_voted_block);
+        assert_eq!(snapshot.cert_voted_block_hash, H256::zero());
     }
 
     #[test]
@@ -7367,6 +7432,43 @@ mod tests {
         assert_eq!(reset_snapshot.rebroadcast_votes_counter, 1);
         assert_eq!(reset_snapshot.broadcast_reward_votes_counter, 4);
         assert_eq!(reset_snapshot.rebroadcast_reward_votes_counter, 5);
+    }
+
+    #[test]
+    fn runtime_records_committed_cert_voted_block_metadata() {
+        let mut runtime = PbftManagerRuntime::new(restore_pbft_manager_runtime(startup_fact(1, 1)));
+        assert!(!runtime.snapshot().has_cert_voted_block);
+
+        let block_hash = H256::from_low_u64_be(0xC377);
+        let snapshot = runtime.apply_committed_cert_voted_block(10, 2, block_hash);
+
+        assert_eq!(snapshot.status, PbftManagerStartupRestoreStatus::Ready);
+        assert!(snapshot.has_cert_voted_block);
+        assert_eq!(snapshot.cert_voted_block_period, 10);
+        assert_eq!(snapshot.cert_voted_block_round, 2);
+        assert_eq!(snapshot.cert_voted_block_hash, block_hash);
+
+        let rejected = runtime.apply_committed_cert_voted_block(0, 2, H256::zero());
+        assert_eq!(
+            rejected.status,
+            PbftManagerStartupRestoreStatus::InvalidFact
+        );
+        assert_eq!(
+            rejected.error_code,
+            "PBFT_MANAGER_CERT_VOTED_METADATA_INVALID_CURSOR"
+        );
+        assert_eq!(runtime.snapshot().cert_voted_block_hash, block_hash);
+
+        let mut reset_fact = transition_fact(PbftManagerTransitionKind::ResetConsensus);
+        reset_fact.target_round = 1;
+        let reset_plan = plan_pbft_manager_transition(reset_fact);
+        assert!(reset_plan.remove_cert_voted_block);
+        runtime.apply_committed_transition(&reset_plan);
+        let reset_snapshot = runtime.snapshot();
+        assert!(!reset_snapshot.has_cert_voted_block);
+        assert_eq!(reset_snapshot.cert_voted_block_period, 0);
+        assert_eq!(reset_snapshot.cert_voted_block_round, 0);
+        assert_eq!(reset_snapshot.cert_voted_block_hash, H256::zero());
     }
 
     #[test]
