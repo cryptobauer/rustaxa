@@ -55,8 +55,16 @@ TEST_F(ProposedBlocksShimDataTest, nullDbWorksWhenPersistenceIsDisabled) {
   ASSERT_TRUE(found.has_value());
   EXPECT_TRUE(found->second);
 
+  auto identity_block = makeBlock(1, 11);
+  EXPECT_TRUE(proposed_blocks.pushProposedPbftBlock(identity_block, false));
+  proposed_blocks.markBlockAsValid(identity_block->getPeriod(), identity_block->getBlockHash());
+  metadata = proposed_blocks.getPbftProposedBlockMetadata(identity_block->getPeriod(), identity_block->getBlockHash());
+  ASSERT_TRUE(metadata.has_value());
+  EXPECT_TRUE(metadata->is_valid);
+
   proposed_blocks.cleanupProposedPbftBlocksByPeriod(2);
   EXPECT_FALSE(proposed_blocks.isInProposedBlocks(block->getPeriod(), block->getBlockHash()));
+  EXPECT_FALSE(proposed_blocks.isInProposedBlocks(identity_block->getPeriod(), identity_block->getBlockHash()));
 }
 
 TEST_F(ProposedBlocksShimDataTest, restoreFromStorageHydratesRustIndex) {
@@ -74,8 +82,8 @@ TEST_F(ProposedBlocksShimDataTest, restoreFromStorageHydratesRustIndex) {
   EXPECT_EQ(proposed_blocks.restoreFromStorage(), 2);
   EXPECT_TRUE(proposed_blocks.isInProposedBlocks(period_one_block->getPeriod(), period_one_block->getBlockHash()));
   EXPECT_TRUE(proposed_blocks.isInProposedBlocks(period_two_block->getPeriod(), period_two_block->getBlockHash()));
-  auto metadata = proposed_blocks.getPbftProposedBlockMetadata(period_two_block->getPeriod(),
-                                                               period_two_block->getBlockHash());
+  auto metadata =
+      proposed_blocks.getPbftProposedBlockMetadata(period_two_block->getPeriod(), period_two_block->getBlockHash());
   ASSERT_TRUE(metadata.has_value());
   EXPECT_EQ(metadata->pivot_hash, period_two_block->getPivotDagBlockHash());
 }
@@ -114,7 +122,9 @@ TEST_F(ProposedBlocksShimDataTest, persistenceAndCleanupUseRustIndexAndDb) {
 
 TEST_F(ProposedBlocksShimDataTest, missingMarkValidThrows) {
   ProposedBlocks proposed_blocks(nullptr);
-  EXPECT_THROW(proposed_blocks.markBlockAsValid(makeBlock(7, 707)), std::runtime_error);
+  const auto block = makeBlock(7, 707);
+  EXPECT_THROW(proposed_blocks.markBlockAsValid(block), std::runtime_error);
+  EXPECT_THROW(proposed_blocks.markBlockAsValid(block->getPeriod(), block->getBlockHash()), std::runtime_error);
 }
 
 }  // namespace taraxa::core_tests

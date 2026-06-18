@@ -27,7 +27,8 @@ class Vote;
  * Invariants:
  * - Rust owns the canonical `(period, block hash) -> validation flag` index
  * - C++ owns live `PbftBlock` objects until the PBFT block model is ported
- * - Rust storage owns proposed-block save, startup restore, and stale-proposal cleanup when a storage handle is available
+ * - Rust storage owns proposed-block save, startup restore, and stale-proposal cleanup when a storage handle is
+ * available
  */
 class ProposedBlocks {
  public:
@@ -59,8 +60,8 @@ class ProposedBlocks {
   /**
    * Inserts a proposed PBFT block.
    *
-   * When `save_to_db` is true, Rust persists the block before duplicate detection to match legacy behavior. Returns true
-   * only when the Rust in-memory proposal index did not already contain the period/hash.
+   * When `save_to_db` is true, Rust persists the block before duplicate detection to match legacy behavior. Returns
+   * true only when the Rust in-memory proposal index did not already contain the period/hash.
    */
   bool pushProposedPbftBlock(const std::shared_ptr<PbftBlock>& proposed_block, bool save_to_db = true);
 
@@ -70,6 +71,22 @@ class ProposedBlocks {
    * Throws `std::runtime_error` if the block is not present in the Rust index.
    */
   void markBlockAsValid(const std::shared_ptr<PbftBlock>& proposed_block);
+
+  /**
+   * Marks a proposed block as valid by compact Rust-owned identity.
+   *
+   * Purpose:
+   * - Lets Rust-planned PBFT manager mark-valid commands mutate the proposed-block
+   *   index without reusing a materialized C++ `PbftBlock` object as the identity carrier.
+   *
+   * Inputs/outputs:
+   * - `period` and `block_hash` identify an entry already retained by the Rust index.
+   * - The Rust validation flag is set for that entry.
+   *
+   * Edge behavior:
+   * - Throws `std::runtime_error` when the period/hash entry is missing or the bridge fails.
+   */
+  void markBlockAsValid(PbftPeriod period, const blk_hash_t& block_hash);
 
   /**
    * Restores the Rust index for proposed PBFT blocks from storage.

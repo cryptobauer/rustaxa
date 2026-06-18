@@ -421,7 +421,9 @@ Rust admission planner without reading `PeriodData.previous_block_cert_votes` on
 The sync pillar-presence metadata cut makes the Rust queue retain whether the popped payload carried pillar-vote
 sidecar data; `processPeriodData()` now uses that compact flag for required/not-required pillar-data admission status
 instead of reading `PeriodData.pillar_votes_` solely for presence. Full pillar-vote validation and materialization remain
-temporary C++ compatibility payload work.
+temporary C++ compatibility payload work. The proposed-block mark-valid command cut adds a compact period/hash mutation
+surface to the Rust-backed `ProposedBlocks` shim and makes PBFT manager admission/leader-selection mark-valid commands
+use Rust-returned identities instead of reusing materialized C++ `PbftBlock` objects as the mutation authority.
 Remaining Slice 9 work: proposed-block sidecars that still require validation/API materialization and sync payload
 materialization for actual transaction objects, votes, pillar data, and finalization execution.
 

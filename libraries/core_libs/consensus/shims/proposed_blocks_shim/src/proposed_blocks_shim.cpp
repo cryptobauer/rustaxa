@@ -59,9 +59,8 @@ bool ProposedBlocks::pushProposedPbftBlock(const std::shared_ptr<PbftBlock>& pro
     }
   }
 
-  return rust_blocks_->proposed_blocks_push(period, toBridgeHash(block_hash),
-                                            toBridgeHash(proposed_block->getPivotDagBlockHash()),
-                                            toBridgeBytes(block_rlp));
+  return rust_blocks_->proposed_blocks_push(
+      period, toBridgeHash(block_hash), toBridgeHash(proposed_block->getPivotDagBlockHash()), toBridgeBytes(block_rlp));
 }
 
 void ProposedBlocks::markBlockAsValid(const std::shared_ptr<PbftBlock>& proposed_block) {
@@ -69,9 +68,13 @@ void ProposedBlocks::markBlockAsValid(const std::shared_ptr<PbftBlock>& proposed
     throw std::runtime_error("Cannot mark null proposed PBFT block as valid");
   }
 
+  markBlockAsValid(proposed_block->getPeriod(), proposed_block->getBlockHash());
+}
+
+void ProposedBlocks::markBlockAsValid(PbftPeriod period, const blk_hash_t& block_hash) {
   std::unique_lock lock(proposed_blocks_mutex_);
   try {
-    rust_blocks_->proposed_blocks_mark_valid(proposed_block->getPeriod(), toBridgeHash(proposed_block->getBlockHash()));
+    rust_blocks_->proposed_blocks_mark_valid(period, toBridgeHash(block_hash));
   } catch (const std::exception& e) {
     throw std::runtime_error(e.what());
   } catch (...) {

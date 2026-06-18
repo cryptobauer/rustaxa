@@ -1913,7 +1913,7 @@ std::shared_ptr<PbftBlock> PbftManager::getValidPbftProposedBlock(ProposedBlocks
         throw std::runtime_error("Rust PBFT proposed-block admission accepted before C++ supplied the live block");
       }
       if (plan.mark_valid) {
-        proposed_blocks.markBlockAsValid(block);
+        proposed_blocks.markBlockAsValid(period, block_hash);
       }
       return block;
     }
@@ -2856,17 +2856,11 @@ std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> 
 
   for (const auto &command : plan.valid_blocks) {
     const auto command_block_hash = fromBridgeHash(command.block_hash);
-    bool applied = false;
-    for (auto &candidate : materialized_candidates) {
-      if (candidate.first->getPeriod() == command.period && candidate.first->getBlockHash() == command_block_hash) {
-        propose_blocks.markBlockAsValid(candidate.first);
-        applied = true;
-        break;
-      }
-    }
-    if (!applied) {
-      LOG(log_er_) << "Rust PBFT leader candidate plan returned missing valid-block command " << command_block_hash
-                   << ", period " << command.period;
+    try {
+      propose_blocks.markBlockAsValid(command.period, command_block_hash);
+    } catch (const std::exception &e) {
+      LOG(log_er_) << "Rust PBFT leader candidate plan failed to mark valid proposed block " << command_block_hash
+                   << ", period " << command.period << ": " << e.what();
       return {};
     }
   }
