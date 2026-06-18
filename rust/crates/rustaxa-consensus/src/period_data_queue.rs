@@ -1,10 +1,11 @@
 //! Period-data sync queue metadata for PBFT rewrite mode.
 //!
 //! This module models the deterministic queue contract used while syncing PBFT
-//! period data from peers. It deliberately owns only queue metadata: entry ids,
-//! periods, block hashes, effective processable size, and pop/cleanup decisions.
-//! The C++ shim keeps ownership of live `PeriodData`, `PbftVote`, and peer
-//! `NodeID` objects until those model types are ported.
+//! period data from peers. It deliberately owns only compact queue metadata:
+//! entry ids, periods, block hashes, validation facts, effective processable
+//! size, and pop/cleanup decisions. The C++ shim keeps ownership of live
+//! `PeriodData`, `PbftVote`, and peer `NodeID` objects until those model types
+//! are ported.
 
 use anyhow::{Result, anyhow};
 use ethereum_types::H256;
@@ -18,11 +19,15 @@ use std::collections::VecDeque;
 /// - `block_hash`: PBFT block hash carried by that payload.
 /// - `prev_block_hash`: previous PBFT block hash carried by that payload.
 /// - `pivot_hash`: pivot DAG block hash carried by that payload.
+/// - `final_chain_hash`: final-chain hash carried by that payload's PBFT
+///   block.
 /// - transaction hash lists: compact sync validation facts carried by the
 ///   payload.
 /// - previous-cert-vote flags: compact vote sidecar facts used by sync
 ///   admission planning.
 /// - `pillar_votes_present`: compact pillar sidecar presence used by sync
+///   admission planning.
+/// - extra-data flags: compact PBFT block extra-data facts used by sync
 ///   admission planning.
 ///
 /// Invariants:
@@ -36,11 +41,14 @@ pub struct PeriodDataQueueEntryRef {
     pub block_hash: H256,
     pub prev_block_hash: H256,
     pub pivot_hash: H256,
+    pub final_chain_hash: H256,
     pub dag_transaction_hashes: Vec<H256>,
     pub period_data_transaction_hashes: Vec<H256>,
     pub previous_cert_votes_present: bool,
     pub previous_cert_first_vote_has_weight: bool,
     pub pillar_votes_present: bool,
+    pub extra_data_present: bool,
+    pub extra_data_pillar_block_hash_present: bool,
 }
 
 /// Result of attempting to enqueue one period-data payload.
@@ -72,14 +80,17 @@ pub struct PeriodDataQueuePushOutcome {
 /// - `next_entry_id`: id of the next queued payload when
 ///   `use_last_block_cert_votes` is false.
 /// - `current_period` and `effective_size` describe queue state after pop.
-/// - `entry_period`, `block_hash`, `prev_block_hash`, and `pivot_hash` are the
-///   compact block-link facts for the popped payload.
+/// - `entry_period`, `block_hash`, `prev_block_hash`, `pivot_hash`, and
+///   `final_chain_hash` are the compact PBFT block facts for the popped
+///   payload.
 /// - transaction hash lists are compact sync validation facts for the popped
 ///   payload.
 /// - previous-cert-vote flags are compact vote sidecar facts for the popped
 ///   payload.
 /// - `pillar_votes_present` is the compact pillar sidecar presence fact for
 ///   the popped payload.
+/// - extra-data flags are compact PBFT block extra-data facts for the popped
+///   payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeriodDataQueuePopPlan {
     pub entry_id: u64,
@@ -87,11 +98,14 @@ pub struct PeriodDataQueuePopPlan {
     pub block_hash: H256,
     pub prev_block_hash: H256,
     pub pivot_hash: H256,
+    pub final_chain_hash: H256,
     pub dag_transaction_hashes: Vec<H256>,
     pub period_data_transaction_hashes: Vec<H256>,
     pub previous_cert_votes_present: bool,
     pub previous_cert_first_vote_has_weight: bool,
     pub pillar_votes_present: bool,
+    pub extra_data_present: bool,
+    pub extra_data_pillar_block_hash_present: bool,
     pub use_last_block_cert_votes: bool,
     pub next_entry_id: u64,
     pub current_period: u64,
@@ -193,6 +207,7 @@ impl PeriodDataQueue {
     /// - `block_hash`: PBFT block hash of the payload block.
     /// - `prev_block_hash`: previous PBFT block hash of the payload block.
     /// - `pivot_hash`: pivot DAG block hash of the payload block.
+    /// - `final_chain_hash`: final-chain hash of the payload block.
     /// - `dag_transaction_hashes`: transaction hashes referenced by finalized
     ///   DAG blocks in the payload.
     /// - `period_data_transaction_hashes`: transaction hashes supplied in the
@@ -203,6 +218,9 @@ impl PeriodDataQueue {
     ///   cert-vote sidecar already carried a calculated weight.
     /// - `pillar_votes_present`: whether the payload carried pillar-vote
     ///   sidecar data.
+    /// - `extra_data_present`: whether the PBFT block carried extra data.
+    /// - `extra_data_pillar_block_hash_present`: whether that extra data
+    ///   carried a pillar block hash.
     /// - `max_pbft_size`: current local PBFT chain size.
     /// - `current_block_cert_votes_count`: number of cert votes passed for the
     ///   pushed block; only the count is needed for size eligibility.
@@ -216,11 +234,14 @@ impl PeriodDataQueue {
         block_hash: H256,
         prev_block_hash: H256,
         pivot_hash: H256,
+        final_chain_hash: H256,
         dag_transaction_hashes: Vec<H256>,
         period_data_transaction_hashes: Vec<H256>,
         previous_cert_votes_present: bool,
         previous_cert_first_vote_has_weight: bool,
         pillar_votes_present: bool,
+        extra_data_present: bool,
+        extra_data_pillar_block_hash_present: bool,
         max_pbft_size: u64,
         current_block_cert_votes_count: usize,
     ) -> Result<PeriodDataQueuePushOutcome> {
@@ -254,11 +275,14 @@ impl PeriodDataQueue {
             block_hash,
             prev_block_hash,
             pivot_hash,
+            final_chain_hash,
             dag_transaction_hashes,
             period_data_transaction_hashes,
             previous_cert_votes_present,
             previous_cert_first_vote_has_weight,
             pillar_votes_present,
+            extra_data_present,
+            extra_data_pillar_block_hash_present,
         });
         self.last_block_cert_votes_available = current_block_cert_votes_count > 0;
 
@@ -288,11 +312,14 @@ impl PeriodDataQueue {
                 block_hash: entry.block_hash,
                 prev_block_hash: entry.prev_block_hash,
                 pivot_hash: entry.pivot_hash,
+                final_chain_hash: entry.final_chain_hash,
                 dag_transaction_hashes: entry.dag_transaction_hashes,
                 period_data_transaction_hashes: entry.period_data_transaction_hashes,
                 previous_cert_votes_present: entry.previous_cert_votes_present,
                 previous_cert_first_vote_has_weight: entry.previous_cert_first_vote_has_weight,
                 pillar_votes_present: entry.pillar_votes_present,
+                extra_data_present: entry.extra_data_present,
+                extra_data_pillar_block_hash_present: entry.extra_data_pillar_block_hash_present,
                 use_last_block_cert_votes: false,
                 next_entry_id: next.entry_id,
                 current_period: self.period,
@@ -308,11 +335,14 @@ impl PeriodDataQueue {
             block_hash: entry.block_hash,
             prev_block_hash: entry.prev_block_hash,
             pivot_hash: entry.pivot_hash,
+            final_chain_hash: entry.final_chain_hash,
             dag_transaction_hashes: entry.dag_transaction_hashes,
             period_data_transaction_hashes: entry.period_data_transaction_hashes,
             previous_cert_votes_present: entry.previous_cert_votes_present,
             previous_cert_first_vote_has_weight: entry.previous_cert_first_vote_has_weight,
             pillar_votes_present: entry.pillar_votes_present,
+            extra_data_present: entry.extra_data_present,
+            extra_data_pillar_block_hash_present: entry.extra_data_pillar_block_hash_present,
             use_last_block_cert_votes: true,
             next_entry_id: 0,
             current_period: self.period,
@@ -364,11 +394,14 @@ mod tests {
                 H256::from_low_u64_be(id),
                 H256::from_low_u64_be(id + 1000),
                 H256::from_low_u64_be(id + 2000),
+                H256::from_low_u64_be(id + 2500),
                 vec![H256::from_low_u64_be(id + 3000)],
                 vec![H256::from_low_u64_be(id + 4000)],
                 id % 2 == 0,
                 id % 3 == 0,
                 id % 5 == 0,
+                id % 7 == 0,
+                id % 7 == 0 && id % 11 == 0,
                 max_size,
                 cert_votes,
             )
@@ -408,11 +441,14 @@ mod tests {
                 H256::from_low_u64_be(4),
                 H256::from_low_u64_be(1004),
                 H256::from_low_u64_be(2004),
+                H256::from_low_u64_be(2504),
                 vec![H256::from_low_u64_be(3004)],
                 vec![H256::from_low_u64_be(4004)],
                 true,
                 false,
                 true,
+                true,
+                false,
                 3,
                 1,
             )
@@ -440,6 +476,10 @@ mod tests {
             H256::from_low_u64_be(2004)
         );
         assert_eq!(
+            queue.last_entry().unwrap().final_chain_hash,
+            H256::from_low_u64_be(2504)
+        );
+        assert_eq!(
             queue.last_entry().unwrap().dag_transaction_hashes,
             vec![H256::from_low_u64_be(3004)]
         );
@@ -455,6 +495,13 @@ mod tests {
                 .previous_cert_first_vote_has_weight
         );
         assert!(queue.last_entry().unwrap().pillar_votes_present);
+        assert!(queue.last_entry().unwrap().extra_data_present);
+        assert!(
+            !queue
+                .last_entry()
+                .unwrap()
+                .extra_data_pillar_block_hash_present
+        );
         assert_eq!(queue.size(), 1);
     }
 
@@ -482,6 +529,7 @@ mod tests {
         assert_eq!(first.block_hash, H256::from_low_u64_be(11));
         assert_eq!(first.prev_block_hash, H256::from_low_u64_be(1011));
         assert_eq!(first.pivot_hash, H256::from_low_u64_be(2011));
+        assert_eq!(first.final_chain_hash, H256::from_low_u64_be(2511));
         assert_eq!(
             first.dag_transaction_hashes,
             vec![H256::from_low_u64_be(3011)]
@@ -493,6 +541,8 @@ mod tests {
         assert!(!first.previous_cert_votes_present);
         assert!(!first.previous_cert_first_vote_has_weight);
         assert!(!first.pillar_votes_present);
+        assert!(!first.extra_data_present);
+        assert!(!first.extra_data_pillar_block_hash_present);
         assert!(!first.use_last_block_cert_votes);
         assert_eq!(first.next_entry_id, 22);
         assert_eq!(queue.period(), 2);
@@ -502,6 +552,8 @@ mod tests {
         assert!(second.previous_cert_votes_present);
         assert!(!second.previous_cert_first_vote_has_weight);
         assert!(!second.pillar_votes_present);
+        assert!(!second.extra_data_present);
+        assert!(!second.extra_data_pillar_block_hash_present);
         assert!(second.use_last_block_cert_votes);
         assert_eq!(second.next_entry_id, 0);
         assert_eq!(queue.period(), 0);
@@ -524,11 +576,14 @@ mod tests {
                 block_hash: H256::from_low_u64_be(5),
                 prev_block_hash: H256::from_low_u64_be(1005),
                 pivot_hash: H256::from_low_u64_be(2005),
+                final_chain_hash: H256::from_low_u64_be(2505),
                 dag_transaction_hashes: vec![H256::from_low_u64_be(3005)],
                 period_data_transaction_hashes: vec![H256::from_low_u64_be(4005)],
                 previous_cert_votes_present: false,
                 previous_cert_first_vote_has_weight: false,
-                pillar_votes_present: true
+                pillar_votes_present: true,
+                extra_data_present: false,
+                extra_data_pillar_block_hash_present: false
             }]
         );
         assert_eq!(queue.period(), 6);

@@ -55,11 +55,14 @@ impl BridgePeriodDataQueue {
         block_hash: [u8; 32],
         prev_block_hash: [u8; 32],
         pivot_hash: [u8; 32],
+        final_chain_hash: [u8; 32],
         dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
         previous_cert_votes_present: bool,
         previous_cert_first_vote_has_weight: bool,
         pillar_votes_present: bool,
+        extra_data_present: bool,
+        extra_data_pillar_block_hash_present: bool,
         max_pbft_size: u64,
         current_block_cert_votes_count: usize,
     ) -> Result<PeriodDataQueuePushOutcome, anyhow::Error> {
@@ -71,6 +74,7 @@ impl BridgePeriodDataQueue {
                 ethereum_types::H256::from(block_hash),
                 ethereum_types::H256::from(prev_block_hash),
                 ethereum_types::H256::from(pivot_hash),
+                ethereum_types::H256::from(final_chain_hash),
                 dag_transaction_hashes
                     .into_iter()
                     .map(|hash| ethereum_types::H256::from(hash.hash))
@@ -82,6 +86,8 @@ impl BridgePeriodDataQueue {
                 previous_cert_votes_present,
                 previous_cert_first_vote_has_weight,
                 pillar_votes_present,
+                extra_data_present,
+                extra_data_pillar_block_hash_present,
                 max_pbft_size,
                 current_block_cert_votes_count,
             )?
@@ -104,6 +110,7 @@ impl BridgePeriodDataQueue {
                 block_hash: entry.block_hash.into(),
                 prev_block_hash: entry.prev_block_hash.into(),
                 pivot_hash: entry.pivot_hash.into(),
+                final_chain_hash: entry.final_chain_hash.into(),
                 dag_transaction_hashes: transaction_hashes_to_bridge(entry.dag_transaction_hashes),
                 period_data_transaction_hashes: transaction_hashes_to_bridge(
                     entry.period_data_transaction_hashes,
@@ -111,6 +118,8 @@ impl BridgePeriodDataQueue {
                 previous_cert_votes_present: entry.previous_cert_votes_present,
                 previous_cert_first_vote_has_weight: entry.previous_cert_first_vote_has_weight,
                 pillar_votes_present: entry.pillar_votes_present,
+                extra_data_present: entry.extra_data_present,
+                extra_data_pillar_block_hash_present: entry.extra_data_pillar_block_hash_present,
             })
             .unwrap_or(PeriodDataQueueLastEntryLookup {
                 found: false,
@@ -119,11 +128,14 @@ impl BridgePeriodDataQueue {
                 block_hash: [0; 32],
                 prev_block_hash: [0; 32],
                 pivot_hash: [0; 32],
+                final_chain_hash: [0; 32],
                 dag_transaction_hashes: Vec::new(),
                 period_data_transaction_hashes: Vec::new(),
                 previous_cert_votes_present: false,
                 previous_cert_first_vote_has_weight: false,
                 pillar_votes_present: false,
+                extra_data_present: false,
+                extra_data_pillar_block_hash_present: false,
             })
     }
 
@@ -150,6 +162,7 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueueEntryRef>
             block_hash: value.block_hash.into(),
             prev_block_hash: value.prev_block_hash.into(),
             pivot_hash: value.pivot_hash.into(),
+            final_chain_hash: value.final_chain_hash.into(),
             dag_transaction_hashes: transaction_hashes_to_bridge(value.dag_transaction_hashes),
             period_data_transaction_hashes: transaction_hashes_to_bridge(
                 value.period_data_transaction_hashes,
@@ -157,6 +170,8 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueueEntryRef>
             previous_cert_votes_present: value.previous_cert_votes_present,
             previous_cert_first_vote_has_weight: value.previous_cert_first_vote_has_weight,
             pillar_votes_present: value.pillar_votes_present,
+            extra_data_present: value.extra_data_present,
+            extra_data_pillar_block_hash_present: value.extra_data_pillar_block_hash_present,
         }
     }
 }
@@ -184,6 +199,7 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueuePopPlan> for Peri
             block_hash: value.block_hash.into(),
             prev_block_hash: value.prev_block_hash.into(),
             pivot_hash: value.pivot_hash.into(),
+            final_chain_hash: value.final_chain_hash.into(),
             dag_transaction_hashes: transaction_hashes_to_bridge(value.dag_transaction_hashes),
             period_data_transaction_hashes: transaction_hashes_to_bridge(
                 value.period_data_transaction_hashes,
@@ -191,6 +207,8 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueuePopPlan> for Peri
             previous_cert_votes_present: value.previous_cert_votes_present,
             previous_cert_first_vote_has_weight: value.previous_cert_first_vote_has_weight,
             pillar_votes_present: value.pillar_votes_present,
+            extra_data_present: value.extra_data_present,
+            extra_data_pillar_block_hash_present: value.extra_data_pillar_block_hash_present,
             use_last_block_cert_votes: value.use_last_block_cert_votes,
             next_entry_id: value.next_entry_id,
             current_period: value.current_period,

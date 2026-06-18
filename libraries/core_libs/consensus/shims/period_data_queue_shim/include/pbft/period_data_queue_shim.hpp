@@ -43,8 +43,8 @@ class PeriodDataQueue {
    *
    * The payload fields remain compatibility sidecars. `period`, `block_hash`, `prev_block_hash`, and `pivot_hash` are
    * copied from Rust queue metadata so PBFT manager admission facts do not need to reopen the live `PeriodData` object
-   * just to recover chain-link facts. Compact transaction, previous-cert, and pillar sidecar facts are also copied from
-   * Rust metadata for admission planning while live payload objects remain temporary compatibility sidecars.
+   * just to recover chain-link, final-chain-hash, extra-data, transaction, previous-cert, and pillar sidecar facts.
+   * Live payload objects remain temporary compatibility sidecars.
    */
   struct PoppedPeriodData {
     PeriodData period_data;
@@ -54,11 +54,14 @@ class PeriodDataQueue {
     blk_hash_t block_hash;
     blk_hash_t prev_block_hash;
     blk_hash_t pivot_hash;
+    blk_hash_t final_chain_hash;
     std::vector<trx_hash_t> dag_transaction_hashes;
     std::vector<trx_hash_t> period_data_transaction_hashes;
     bool previous_cert_votes_present = false;
     bool previous_cert_first_vote_has_weight = false;
     bool pillar_votes_present = false;
+    bool extra_data_present = false;
+    bool extra_data_pillar_block_hash_present = false;
   };
 
   /**

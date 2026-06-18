@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <optional>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -10,15 +12,17 @@
 namespace taraxa::core_tests {
 namespace {
 
-std::shared_ptr<PbftBlock> makeBlock(PbftPeriod period, uint64_t seed) {
+std::shared_ptr<PbftBlock> makeBlock(PbftPeriod period, uint64_t seed,
+                                      const std::optional<PbftBlockExtraData>& extra_data = {}) {
   std::vector<vote_hash_t> reward_votes_hashes;
-  return std::make_shared<PbftBlock>(blk_hash_t(seed), kNullBlockHash, kNullBlockHash, kNullBlockHash, period, addr_t(),
-                                     dev::KeyPair::create().secret(), reward_votes_hashes);
+  return std::make_shared<PbftBlock>(blk_hash_t(seed), kNullBlockHash, kNullBlockHash, blk_hash_t(seed + 5000), period,
+                                     addr_t(), dev::KeyPair::create().secret(), reward_votes_hashes, extra_data);
 }
 
 PeriodData makePeriodData(PbftPeriod period, uint64_t seed,
-                          const std::vector<std::shared_ptr<PbftVote>>& previous_cert_votes = {}) {
-  return PeriodData(makeBlock(period, seed), previous_cert_votes);
+                          const std::vector<std::shared_ptr<PbftVote>>& previous_cert_votes = {},
+                          const std::optional<PbftBlockExtraData>& extra_data = {}) {
+  return PeriodData(makeBlock(period, seed, extra_data), previous_cert_votes);
 }
 
 }  // namespace
@@ -41,8 +45,10 @@ TEST(PeriodDataQueueShimTest, popReturnsQueueFrontAndMatchingCertVotesContract) 
   auto vote_for_last_block = std::make_shared<PbftVote>();
 
   auto period1 = makePeriodData(1, 101);
-  auto period2 = makePeriodData(2, 202, {vote_from_next_block});
+  const auto extra_data = PbftBlockExtraData(1, 2, 3, 4, "rustaxa-test", blk_hash_t(303));
+  auto period2 = makePeriodData(2, 202, {vote_from_next_block}, extra_data);
   const auto period2_hash = period2.pbft_blk->getBlockHash();
+  const auto period2_final_chain_hash = period2.pbft_blk->getFinalChainHash();
 
   EXPECT_TRUE(queue.push(std::move(period1), node1, 0, {}));
   EXPECT_EQ(queue.size(), 0);
@@ -65,19 +71,25 @@ TEST(PeriodDataQueueShimTest, popReturnsQueueFrontAndMatchingCertVotesContract) 
   EXPECT_EQ(popped1.block_hash, popped1.period_data.pbft_blk->getBlockHash());
   EXPECT_EQ(popped1.prev_block_hash, popped1.period_data.pbft_blk->getPrevBlockHash());
   EXPECT_EQ(popped1.pivot_hash, popped1.period_data.pbft_blk->getPivotDagBlockHash());
+  EXPECT_EQ(popped1.final_chain_hash, popped1.period_data.pbft_blk->getFinalChainHash());
   EXPECT_TRUE(popped1.dag_transaction_hashes.empty());
   EXPECT_TRUE(popped1.period_data_transaction_hashes.empty());
   EXPECT_FALSE(popped1.pillar_votes_present);
+  EXPECT_FALSE(popped1.extra_data_present);
+  EXPECT_FALSE(popped1.extra_data_pillar_block_hash_present);
   ASSERT_EQ(popped1.cert_votes.size(), 1);
   EXPECT_EQ(popped1.cert_votes[0].get(), vote_from_next_block.get());
   EXPECT_EQ(queue.size(), 1);
   EXPECT_EQ(queue.getPeriod(), 2);
 
-  auto [popped2, cert_votes2, popped_node2] = queue.pop();
-  EXPECT_EQ(popped2.pbft_blk->getPeriod(), 2);
-  EXPECT_EQ(popped_node2, node2);
-  ASSERT_EQ(cert_votes2.size(), 1);
-  EXPECT_EQ(cert_votes2[0].get(), vote_for_last_block.get());
+  auto popped2 = queue.popWithMetadata();
+  EXPECT_EQ(popped2.period_data.pbft_blk->getPeriod(), 2);
+  EXPECT_EQ(popped2.node_id, node2);
+  EXPECT_EQ(popped2.final_chain_hash, period2_final_chain_hash);
+  EXPECT_TRUE(popped2.extra_data_present);
+  EXPECT_TRUE(popped2.extra_data_pillar_block_hash_present);
+  ASSERT_EQ(popped2.cert_votes.size(), 1);
+  EXPECT_EQ(popped2.cert_votes[0].get(), vote_for_last_block.get());
   EXPECT_TRUE(queue.empty());
   EXPECT_FALSE(queue.lastPbftBlockHash().has_value());
   EXPECT_EQ(queue.lastBlockHashOrChain(1, blk_hash_t(999)), blk_hash_t(999));

@@ -4122,11 +4122,14 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   const auto block_period = popped_period_data.period;
   const auto block_prev_hash = popped_period_data.prev_block_hash;
   const auto anchor_hash = popped_period_data.pivot_hash;
+  const auto final_chain_hash = popped_period_data.final_chain_hash;
   const auto dag_transaction_hashes = std::move(popped_period_data.dag_transaction_hashes);
   const auto period_data_transaction_hashes = std::move(popped_period_data.period_data_transaction_hashes);
   const auto previous_cert_votes_present = popped_period_data.previous_cert_votes_present;
   const auto previous_cert_first_vote_has_weight = popped_period_data.previous_cert_first_vote_has_weight;
   const auto pillar_votes_present = popped_period_data.pillar_votes_present;
+  const auto extra_data_present = popped_period_data.extra_data_present;
+  const auto extra_data_pillar_block_hash_present = popped_period_data.extra_data_pillar_block_hash_present;
   const auto pillar_votes_required = kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(block_period);
   LOG(log_dg_) << "Pop pbft block " << pbft_block_hash << " with period " << block_period << " from synced queue";
 
@@ -4182,6 +4185,50 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
     apply_admission_side_effects();
     return std::nullopt;
   }
+
+  auto validate_final_chain_hash_from_queue_metadata = [&]() {
+    const auto facts = final_chain_->rustFinalChainForRust().collect_pbft_final_chain_facts(
+        makePbftFinalChainFactRequest(block_period, final_chain_hash, true, true, false, false));
+    if (facts.final_chain_hash.status == kPbftSyncFinalChainMissing) {
+      LOG(log_wr_) << "Block " << pbft_block_hash << " could not be validated as we are behind";
+      return PbftStateRootValidation::Missing;
+    }
+    if (facts.final_chain_hash.status == kPbftSyncFinalChainInvalid) {
+      LOG(log_er_) << "Block " << block_period << " hash " << pbft_block_hash << " state root " << final_chain_hash
+                   << " isn't matching actual " << fromBridgeHash(facts.final_chain_hash.expected_hash);
+      return PbftStateRootValidation::Invalid;
+    }
+
+    return PbftStateRootValidation::Valid;
+  };
+
+  auto validate_extra_data_from_queue_metadata = [&]() {
+    if (kGenesisConfig.state.hardforks.ficus_hf.isFicusHardfork(block_period)) {
+      if (!extra_data_present) {
+        LOG(log_er_) << "PBFT block " << pbft_block_hash << ", period " << block_period
+                     << " does not contain extra data";
+        return false;
+      }
+
+      if (pillar_votes_required) {
+        if (!extra_data_pillar_block_hash_present) {
+          LOG(log_er_) << "PBFT block " << pbft_block_hash << ", period " << block_period
+                       << " does not contain pillar block hash";
+          return false;
+        }
+      } else if (extra_data_pillar_block_hash_present) {
+        LOG(log_er_) << "PBFT block " << pbft_block_hash << ", period " << block_period
+                     << " contains pillar block hash even though it should not";
+        return false;
+      }
+    } else if (extra_data_present) {
+      LOG(log_er_) << "PBFT block " << pbft_block_hash << ", period " << block_period
+                   << " contains extra data even though it should not";
+      return false;
+    }
+
+    return true;
+  };
 
   std::optional<std::pair<bool, std::vector<std::shared_ptr<PbftVote>>>> reward_votes;
   auto block_validation_fact = rustaxa::PbftManagerBlockValidationFact{};
@@ -4271,7 +4318,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
     }
 
     if (validation_plan.next_check == kPbftManagerBlockValidationCheckFinalChainHash) {
-      const auto validation_result = validateFinalChainHash(period_data.pbft_blk);
+      const auto validation_result = validate_final_chain_hash_from_queue_metadata();
       if (validation_result == PbftStateRootValidation::Valid) {
         validation_plan = block_validation_session->pbft_manager_block_validation_session_report(
             kPbftManagerBlockValidationFactValid, false);
@@ -4294,8 +4341,8 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
 
     if (validation_plan.next_check == kPbftManagerBlockValidationCheckExtraData) {
       validation_plan = block_validation_session->pbft_manager_block_validation_session_report(
-          validatePbftBlockExtraData(period_data.pbft_blk) ? kPbftManagerBlockValidationFactValid
-                                                           : kPbftManagerBlockValidationFactInvalid,
+          validate_extra_data_from_queue_metadata() ? kPbftManagerBlockValidationFactValid
+                                                    : kPbftManagerBlockValidationFactInvalid,
           false);
       continue;
     }
