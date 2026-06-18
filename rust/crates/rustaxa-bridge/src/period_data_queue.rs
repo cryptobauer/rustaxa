@@ -57,6 +57,8 @@ impl BridgePeriodDataQueue {
         pivot_hash: [u8; 32],
         dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
+        previous_cert_votes_present: bool,
+        previous_cert_first_vote_has_weight: bool,
         max_pbft_size: u64,
         current_block_cert_votes_count: usize,
     ) -> Result<PeriodDataQueuePushOutcome, anyhow::Error> {
@@ -76,6 +78,8 @@ impl BridgePeriodDataQueue {
                     .into_iter()
                     .map(|hash| ethereum_types::H256::from(hash.hash))
                     .collect(),
+                previous_cert_votes_present,
+                previous_cert_first_vote_has_weight,
                 max_pbft_size,
                 current_block_cert_votes_count,
             )?
@@ -102,6 +106,8 @@ impl BridgePeriodDataQueue {
                 period_data_transaction_hashes: transaction_hashes_to_bridge(
                     entry.period_data_transaction_hashes,
                 ),
+                previous_cert_votes_present: entry.previous_cert_votes_present,
+                previous_cert_first_vote_has_weight: entry.previous_cert_first_vote_has_weight,
             })
             .unwrap_or(PeriodDataQueueLastEntryLookup {
                 found: false,
@@ -112,6 +118,8 @@ impl BridgePeriodDataQueue {
                 pivot_hash: [0; 32],
                 dag_transaction_hashes: Vec::new(),
                 period_data_transaction_hashes: Vec::new(),
+                previous_cert_votes_present: false,
+                previous_cert_first_vote_has_weight: false,
             })
     }
 
@@ -142,6 +150,8 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueueEntryRef>
             period_data_transaction_hashes: transaction_hashes_to_bridge(
                 value.period_data_transaction_hashes,
             ),
+            previous_cert_votes_present: value.previous_cert_votes_present,
+            previous_cert_first_vote_has_weight: value.previous_cert_first_vote_has_weight,
         }
     }
 }
@@ -173,6 +183,8 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueuePopPlan> for Peri
             period_data_transaction_hashes: transaction_hashes_to_bridge(
                 value.period_data_transaction_hashes,
             ),
+            previous_cert_votes_present: value.previous_cert_votes_present,
+            previous_cert_first_vote_has_weight: value.previous_cert_first_vote_has_weight,
             use_last_block_cert_votes: value.use_last_block_cert_votes,
             next_entry_id: value.next_entry_id,
             current_period: value.current_period,

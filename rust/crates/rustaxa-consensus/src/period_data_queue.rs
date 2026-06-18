@@ -20,6 +20,8 @@ use std::collections::VecDeque;
 /// - `pivot_hash`: pivot DAG block hash carried by that payload.
 /// - transaction hash lists: compact sync validation facts carried by the
 ///   payload.
+/// - previous-cert-vote flags: compact vote sidecar facts used by sync
+///   admission planning.
 ///
 /// Invariants:
 /// - `entry_id` is unique within one queue lifetime.
@@ -34,6 +36,8 @@ pub struct PeriodDataQueueEntryRef {
     pub pivot_hash: H256,
     pub dag_transaction_hashes: Vec<H256>,
     pub period_data_transaction_hashes: Vec<H256>,
+    pub previous_cert_votes_present: bool,
+    pub previous_cert_first_vote_has_weight: bool,
 }
 
 /// Result of attempting to enqueue one period-data payload.
@@ -69,6 +73,8 @@ pub struct PeriodDataQueuePushOutcome {
 ///   compact block-link facts for the popped payload.
 /// - transaction hash lists are compact sync validation facts for the popped
 ///   payload.
+/// - previous-cert-vote flags are compact vote sidecar facts for the popped
+///   payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeriodDataQueuePopPlan {
     pub entry_id: u64,
@@ -78,6 +84,8 @@ pub struct PeriodDataQueuePopPlan {
     pub pivot_hash: H256,
     pub dag_transaction_hashes: Vec<H256>,
     pub period_data_transaction_hashes: Vec<H256>,
+    pub previous_cert_votes_present: bool,
+    pub previous_cert_first_vote_has_weight: bool,
     pub use_last_block_cert_votes: bool,
     pub next_entry_id: u64,
     pub current_period: u64,
@@ -183,6 +191,10 @@ impl PeriodDataQueue {
     ///   DAG blocks in the payload.
     /// - `period_data_transaction_hashes`: transaction hashes supplied in the
     ///   payload transaction list.
+    /// - `previous_cert_votes_present`: whether the payload carried previous
+    ///   block cert-vote sidecars.
+    /// - `previous_cert_first_vote_has_weight`: whether the first previous
+    ///   cert-vote sidecar already carried a calculated weight.
     /// - `max_pbft_size`: current local PBFT chain size.
     /// - `current_block_cert_votes_count`: number of cert votes passed for the
     ///   pushed block; only the count is needed for size eligibility.
@@ -198,6 +210,8 @@ impl PeriodDataQueue {
         pivot_hash: H256,
         dag_transaction_hashes: Vec<H256>,
         period_data_transaction_hashes: Vec<H256>,
+        previous_cert_votes_present: bool,
+        previous_cert_first_vote_has_weight: bool,
         max_pbft_size: u64,
         current_block_cert_votes_count: usize,
     ) -> Result<PeriodDataQueuePushOutcome> {
@@ -233,6 +247,8 @@ impl PeriodDataQueue {
             pivot_hash,
             dag_transaction_hashes,
             period_data_transaction_hashes,
+            previous_cert_votes_present,
+            previous_cert_first_vote_has_weight,
         });
         self.last_block_cert_votes_available = current_block_cert_votes_count > 0;
 
@@ -264,6 +280,8 @@ impl PeriodDataQueue {
                 pivot_hash: entry.pivot_hash,
                 dag_transaction_hashes: entry.dag_transaction_hashes,
                 period_data_transaction_hashes: entry.period_data_transaction_hashes,
+                previous_cert_votes_present: entry.previous_cert_votes_present,
+                previous_cert_first_vote_has_weight: entry.previous_cert_first_vote_has_weight,
                 use_last_block_cert_votes: false,
                 next_entry_id: next.entry_id,
                 current_period: self.period,
@@ -281,6 +299,8 @@ impl PeriodDataQueue {
             pivot_hash: entry.pivot_hash,
             dag_transaction_hashes: entry.dag_transaction_hashes,
             period_data_transaction_hashes: entry.period_data_transaction_hashes,
+            previous_cert_votes_present: entry.previous_cert_votes_present,
+            previous_cert_first_vote_has_weight: entry.previous_cert_first_vote_has_weight,
             use_last_block_cert_votes: true,
             next_entry_id: 0,
             current_period: self.period,
@@ -334,6 +354,8 @@ mod tests {
                 H256::from_low_u64_be(id + 2000),
                 vec![H256::from_low_u64_be(id + 3000)],
                 vec![H256::from_low_u64_be(id + 4000)],
+                id % 2 == 0,
+                id % 3 == 0,
                 max_size,
                 cert_votes,
             )
@@ -375,6 +397,8 @@ mod tests {
                 H256::from_low_u64_be(2004),
                 vec![H256::from_low_u64_be(3004)],
                 vec![H256::from_low_u64_be(4004)],
+                true,
+                false,
                 3,
                 1,
             )
@@ -408,6 +432,13 @@ mod tests {
         assert_eq!(
             queue.last_entry().unwrap().period_data_transaction_hashes,
             vec![H256::from_low_u64_be(4004)]
+        );
+        assert!(queue.last_entry().unwrap().previous_cert_votes_present);
+        assert!(
+            !queue
+                .last_entry()
+                .unwrap()
+                .previous_cert_first_vote_has_weight
         );
         assert_eq!(queue.size(), 1);
     }
@@ -444,12 +475,16 @@ mod tests {
             first.period_data_transaction_hashes,
             vec![H256::from_low_u64_be(4011)]
         );
+        assert!(!first.previous_cert_votes_present);
+        assert!(!first.previous_cert_first_vote_has_weight);
         assert!(!first.use_last_block_cert_votes);
         assert_eq!(first.next_entry_id, 22);
         assert_eq!(queue.period(), 2);
 
         let second = queue.pop().unwrap();
         assert_eq!(second.entry_id, 22);
+        assert!(second.previous_cert_votes_present);
+        assert!(!second.previous_cert_first_vote_has_weight);
         assert!(second.use_last_block_cert_votes);
         assert_eq!(second.next_entry_id, 0);
         assert_eq!(queue.period(), 0);
@@ -473,7 +508,9 @@ mod tests {
                 prev_block_hash: H256::from_low_u64_be(1005),
                 pivot_hash: H256::from_low_u64_be(2005),
                 dag_transaction_hashes: vec![H256::from_low_u64_be(3005)],
-                period_data_transaction_hashes: vec![H256::from_low_u64_be(4005)]
+                period_data_transaction_hashes: vec![H256::from_low_u64_be(4005)],
+                previous_cert_votes_present: false,
+                previous_cert_first_vote_has_weight: false
             }]
         );
         assert_eq!(queue.period(), 6);

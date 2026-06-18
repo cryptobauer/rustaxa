@@ -415,6 +415,9 @@ chain-link facts. The sync transaction-hash metadata cut makes queued Rust metad
 by finalized DAG blocks and hashes supplied in the period-data transaction list; the pop metadata carries those compact
 lists into `processPeriodData()`, which now builds PBFT sync transaction-query facts from Rust-owned queue metadata
 instead of scanning the popped `PeriodData` DAG blocks and transaction sidecars for those hashes on every runtime plan.
+The sync previous-cert metadata cut also makes the Rust queue retain whether the popped payload carried previous-block
+cert votes and whether the first cert vote already had weight; `processPeriodData()` feeds those compact flags into the
+Rust admission planner without reading `PeriodData.previous_block_cert_votes` only to decide reward-vote replacement.
 Remaining Slice 9 work: proposed-block sidecars that still require validation/API materialization and sync payload
 materialization for actual transaction objects, votes, pillar data, and finalization execution.
 

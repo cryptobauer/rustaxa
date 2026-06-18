@@ -622,13 +622,14 @@ std::vector<trx_hash_t> fromBridgeTransactionHashes(const rust::Vec<rustaxa::Pbf
 }
 
 rustaxa::PbftSyncProcessPeriodDataRuntimeFact makePbftSyncProcessPeriodDataRuntimeFact(
-    const PeriodData &period_data, PbftPeriod block_period, const blk_hash_t &block_prev_hash,
+    PbftPeriod block_period, const blk_hash_t &block_prev_hash,
     const std::vector<trx_hash_t> &dag_transaction_hashes,
     const std::vector<trx_hash_t> &period_data_transaction_hashes, const blk_hash_t &last_pbft_block_hash,
     PbftPeriod last_pbft_block_period, bool block_in_chain, uint8_t final_chain_hash_status,
     uint8_t reward_votes_status, uint8_t cert_votes_status, uint8_t transactions_status,
     const std::unordered_set<trx_hash_t> &missing_transaction_hashes, bool contains_finalized_transactions,
-    uint8_t pillar_data_status, bool pillar_votes_required, uint8_t pillar_votes_status) {
+    uint8_t pillar_data_status, bool pillar_votes_required, uint8_t pillar_votes_status,
+    bool previous_cert_votes_present, bool previous_cert_first_vote_has_weight) {
   rustaxa::PbftSyncProcessPeriodDataRuntimeFact fact;
   fact.block_period = block_period;
   fact.block_prev_hash = toBridgeHash(block_prev_hash);
@@ -647,9 +648,8 @@ rustaxa::PbftSyncProcessPeriodDataRuntimeFact makePbftSyncProcessPeriodDataRunti
   fact.pillar_data_status = pillar_data_status;
   fact.pillar_votes_required = pillar_votes_required;
   fact.pillar_votes_status = pillar_votes_status;
-  fact.previous_cert_votes_present = !period_data.previous_block_cert_votes.empty();
-  fact.previous_cert_first_vote_has_weight =
-      fact.previous_cert_votes_present && period_data.previous_block_cert_votes.front()->getWeight().has_value();
+  fact.previous_cert_votes_present = previous_cert_votes_present;
+  fact.previous_cert_first_vote_has_weight = previous_cert_first_vote_has_weight;
   return fact;
 }
 
@@ -4130,6 +4130,8 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   const auto anchor_hash = popped_period_data.pivot_hash;
   const auto dag_transaction_hashes = std::move(popped_period_data.dag_transaction_hashes);
   const auto period_data_transaction_hashes = std::move(popped_period_data.period_data_transaction_hashes);
+  const auto previous_cert_votes_present = popped_period_data.previous_cert_votes_present;
+  const auto previous_cert_first_vote_has_weight = popped_period_data.previous_cert_first_vote_has_weight;
   const auto pillar_votes_required = kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(block_period);
   LOG(log_dg_) << "Pop pbft block " << pbft_block_hash << " with period " << block_period << " from synced queue";
 
@@ -4142,10 +4144,11 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
                                bool contains_finalized_transactions, uint8_t pillar_data_status,
                                bool pillar_votes_required, uint8_t pillar_votes_status) {
     return rustaxa::plan_pbft_sync_process_period_data_runtime(makePbftSyncProcessPeriodDataRuntimeFact(
-        period_data, block_period, block_prev_hash, dag_transaction_hashes, period_data_transaction_hashes,
+        block_period, block_prev_hash, dag_transaction_hashes, period_data_transaction_hashes,
         last_pbft_block_hash, last_pbft_block_period, candidate_block_in_chain, final_chain_status, reward_votes_status,
         cert_votes_status, transactions_status, non_finalized_transactions,
-        contains_finalized_transactions, pillar_data_status, pillar_votes_required, pillar_votes_status));
+        contains_finalized_transactions, pillar_data_status, pillar_votes_required, pillar_votes_status,
+        previous_cert_votes_present, previous_cert_first_vote_has_weight));
   };
 
   auto runtime_plan =

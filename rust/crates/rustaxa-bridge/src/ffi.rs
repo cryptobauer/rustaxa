@@ -1600,6 +1600,8 @@ pub mod rustaxa_ffi {
         pivot_hash: [u8; 32],
         dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
+        previous_cert_votes_present: bool,
+        previous_cert_first_vote_has_weight: bool,
     }
 
     struct PeriodDataQueuePushOutcome {
@@ -1619,6 +1621,8 @@ pub mod rustaxa_ffi {
         pivot_hash: [u8; 32],
         dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
+        previous_cert_votes_present: bool,
+        previous_cert_first_vote_has_weight: bool,
         use_last_block_cert_votes: bool,
         next_entry_id: u64,
         current_period: u64,
@@ -1634,6 +1638,8 @@ pub mod rustaxa_ffi {
         pivot_hash: [u8; 32],
         dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
+        previous_cert_votes_present: bool,
+        previous_cert_first_vote_has_weight: bool,
     }
 
     struct VerifiedVotePayload {
@@ -4890,6 +4896,8 @@ pub mod rustaxa_ffi {
             pivot_hash: [u8; 32],
             dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
             period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
+            previous_cert_votes_present: bool,
+            previous_cert_first_vote_has_weight: bool,
             max_pbft_size: u64,
             current_block_cert_votes_count: usize,
         ) -> Result<PeriodDataQueuePushOutcome>;
