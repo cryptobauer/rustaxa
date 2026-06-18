@@ -4276,9 +4276,8 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
                                          kPbftSyncFactNotChecked, false, kPbftSyncFactNotChecked);
         admission_plan = runtime_plan;
         throw_on_runtime_contract_error();
-        LOG(log_er_) << "Failed verifying block " << pbft_block_hash
-                     << " with invalid state root: " << period_data.pbft_blk->getFinalChainHash()
-                     << ". Disconnect malicious peer " << node_id.abridged();
+        LOG(log_er_) << "Failed verifying block " << pbft_block_hash << " with invalid state root: "
+                     << final_chain_hash << ". Disconnect malicious peer " << node_id.abridged();
         apply_admission_side_effects();
         return std::nullopt;
       }
