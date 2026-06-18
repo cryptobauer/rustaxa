@@ -104,6 +104,18 @@ pub struct BridgePbftManagerRuntimeSession {
     pub state: rustaxa_consensus::pbft_manager::PbftManagerRuntimeSession,
 }
 
+pub struct BridgePbftManagerStateActionEffectSession {
+    pub state: rustaxa_consensus::pbft_manager::PbftManagerStateActionEffectSession,
+}
+
+pub struct BridgePbftManagerBlockValidationSession {
+    pub state: rustaxa_consensus::pbft_manager::PbftManagerBlockValidationSession,
+}
+
+pub struct BridgePbftManagerProposalSession {
+    pub state: rustaxa_consensus::pbft_manager::PbftManagerProposalSession,
+}
+
 /// Long-lived Rust PBFT manager runtime used by the C++ compatibility shim.
 ///
 /// Purpose:
@@ -836,6 +848,29 @@ pub mod rustaxa_ffi {
         contains_finalized_transaction_warning: bool,
     }
 
+    /// Rust-owned outer drain step for C++ `pushSyncedPbftBlocksIntoChain`.
+    struct PbftSyncQueueDrainStep {
+        action: u8,
+        status: u8,
+        clean_before_period: u64,
+        can_continue: bool,
+        error_code: String,
+    }
+
+    /// C++ executor report for one PBFT sync queue-drain step.
+    struct PbftSyncQueueDrainReport {
+        action: u8,
+        success: bool,
+        accepted_period_data: bool,
+    }
+
+    /// Rust validation result for one queue-drain executor report.
+    struct PbftSyncQueueDrainReportResult {
+        status: u8,
+        can_continue: bool,
+        error_code: String,
+    }
+
     /// C++-originated fact bundle for deterministic PBFT finalization intent planning.
     struct PbftFinalizationHash {
         hash: [u8; 32],
@@ -874,6 +909,42 @@ pub mod rustaxa_ffi {
         period_data_rlp: Vec<u8>,
         ordered_dag_block_hashes: Vec<PbftFinalizationHash>,
         ordered_transaction_hashes: Vec<PbftFinalizationHash>,
+        process_pillar_block_after_advance: bool,
+    }
+
+    /// Rust preflight fact for pillar finalization before PBFT finalization intent bytes are built.
+    struct PbftFinalizationPillarPreflightFact {
+        pbft_block_hash: [u8; 32],
+        block_period: u64,
+        block_in_chain: bool,
+        pillar_finalization_required: bool,
+        has_pillar_block_hash: bool,
+        pillar_block_hash: [u8; 32],
+        pillar_block_finalized: bool,
+    }
+
+    /// Rust-owned pillar preflight plan for the C++ executor.
+    struct PbftFinalizationPillarPreflightPlan {
+        pbft_block_hash: [u8; 32],
+        block_period: u64,
+        pillar_block_hash: [u8; 32],
+        action: u8,
+        finalize_pillar_block: bool,
+        accepted: bool,
+        status: u8,
+        error_code: String,
+    }
+
+    /// C++ report for one Rust-planned pillar preflight action.
+    struct PbftFinalizationPillarPreflightReport {
+        action: u8,
+        success: bool,
+        status: u8,
+        error_code: String,
+        block_period: u64,
+        pbft_block_hash: [u8; 32],
+        pillar_block_hash: [u8; 32],
+        pillar_vote_count: u64,
     }
 
     /// Rust-planned cleanup flags for the PBFT finalization side-effect sequence.
@@ -888,6 +959,7 @@ pub mod rustaxa_ffi {
         finalize_final_chain: bool,
         maybe_update_dynamic_lambda: bool,
         advance_period: bool,
+        process_pillar_block: bool,
     }
 
     /// Rust-planned storage-write flags for PBFT finalization persistence planning.
@@ -899,6 +971,7 @@ pub mod rustaxa_ffi {
         apply_dynamic_lambda_update: bool,
         persist_period_lambda: bool,
         persist_executed_pbft_status: bool,
+        process_pillar_block: bool,
         pbft_block_hash: [u8; 32],
         pbft_head_hash: [u8; 32],
         block_period: u64,
@@ -1005,6 +1078,34 @@ pub mod rustaxa_ffi {
         period_lambda: u32,
     }
 
+    /// Live facts for Rust-owned PBFT manager startup replay range planning.
+    struct PbftManagerStartupReplayRangeFact {
+        final_chain_last_block: u64,
+        pbft_chain_size: u64,
+        delegation_delay: u64,
+        recently_finalized_factor: u64,
+    }
+
+    /// Rust-owned startup replay range plan for C++ executor loops.
+    struct PbftManagerStartupReplayRangePlan {
+        accepted: bool,
+        has_finalization_range: bool,
+        finalization_from_period: u64,
+        finalization_to_period: u64,
+        recent_from_period: u64,
+        recent_to_period: u64,
+        error_code: String,
+    }
+
+    /// Rust-owned PBFT manager period-advance effect plan.
+    struct PbftManagerAdvancePeriodPlan {
+        accepted: bool,
+        finalized_chain_size: u64,
+        new_period: u64,
+        actions: Vec<u8>,
+        error_code: String,
+    }
+
     /// Rust-owned PBFT manager cursor snapshot used by the transitional C++
     /// shim to mirror state after startup or transition commits.
     struct PbftManagerRuntimeSnapshot {
@@ -1084,6 +1185,141 @@ pub mod rustaxa_ffi {
         secondary_hash: [u8; 32],
         go_finish_state: bool,
         loop_back_finish_state: bool,
+        error_code: String,
+    }
+
+    /// One ordered PBFT manager state-action effect for C++ execution.
+    struct PbftManagerStateActionEffect {
+        intent: u8,
+        hash: [u8; 32],
+    }
+
+    /// Ordered PBFT manager state-action effects planned by Rust.
+    struct PbftManagerStateActionEffectPlan {
+        status: u8,
+        effects: Vec<PbftManagerStateActionEffect>,
+        go_finish_state: bool,
+        loop_back_finish_state: bool,
+        error_code: String,
+    }
+
+    /// Report for one C++-executed PBFT manager state-action effect.
+    struct PbftManagerStateActionEffectReport {
+        cursor: u32,
+        intent: u8,
+        result: u8,
+        error_code: String,
+    }
+
+    /// One cursor step from a Rust-owned state-action effect session.
+    struct PbftManagerStateActionSessionStep {
+        status: u8,
+        cursor: u32,
+        has_effect: bool,
+        effect: PbftManagerStateActionEffect,
+        go_finish_state: bool,
+        loop_back_finish_state: bool,
+        complete: bool,
+        can_continue: bool,
+        error_code: String,
+    }
+
+    /// One local proposer-wallet fact for Rust-owned proposal construction.
+    struct PbftManagerProposalWalletFact {
+        wallet_index: u64,
+        dpos_eligible: bool,
+        sortition_valid: bool,
+    }
+
+    /// One ordered DAG block gas fact for a Rust-requested proposal anchor.
+    struct PbftManagerProposalDagBlockFact {
+        hash: [u8; 32],
+        gas_estimation: u64,
+    }
+
+    /// Initial fact bundle for Rust-owned PBFT proposal construction.
+    struct PbftManagerProposalInitialFact {
+        period: u64,
+        round: u64,
+        previous_pbft_block_hash: [u8; 32],
+        last_period_dag_anchor_hash: [u8; 32],
+        dag_genesis_hash: [u8; 32],
+        dag_blocks_size: u64,
+        ghost_path_move_back: u64,
+        pbft_gas_limit: u64,
+        extra_data_required: bool,
+        extra_data_available: bool,
+        final_chain_hash_valid: bool,
+        final_chain_hash: [u8; 32],
+        wallets: Vec<PbftManagerProposalWalletFact>,
+        ghost_path: Vec<PbftFinalizationHash>,
+        has_non_finalized_fallback: bool,
+        non_finalized_fallback_hash: [u8; 32],
+    }
+
+    /// C++ report for one Rust-requested DAG order.
+    struct PbftManagerProposalDagOrderReport {
+        anchor_hash: [u8; 32],
+        dag_blocks: Vec<PbftManagerProposalDagBlockFact>,
+        order_available: bool,
+    }
+
+    /// One action or terminal command from a Rust-owned proposal session.
+    struct PbftManagerProposalSessionStep {
+        action: u8,
+        status: u8,
+        requested_anchor_hash: [u8; 32],
+        previous_pbft_block_hash: [u8; 32],
+        anchor_hash: [u8; 32],
+        order_hash: [u8; 32],
+        final_chain_hash: [u8; 32],
+        eligible_wallet_indices: Vec<u64>,
+        dag_blocks_included: u64,
+        selected_null_anchor: bool,
+        error_code: String,
+    }
+
+    /// Compact timing and counter facts for Rust-owned broadcast planning.
+    struct PbftManagerBroadcastFact {
+        round_elapsed_ms: u64,
+        period_elapsed_ms: u64,
+        current_round_lambda_ms: u64,
+        broadcast_lambda_threshold: u32,
+        rebroadcast_lambda_threshold: u32,
+        broadcast_votes_counter: u32,
+        rebroadcast_votes_counter: u32,
+        broadcast_reward_votes_counter: u32,
+        rebroadcast_reward_votes_counter: u32,
+    }
+
+    /// Rust-owned broadcast plan for C++ network execution.
+    struct PbftManagerBroadcastPlan {
+        status: u8,
+        action: u8,
+        rebroadcast: bool,
+        next_broadcast_votes_counter: u32,
+        next_rebroadcast_votes_counter: u32,
+        next_broadcast_reward_votes_counter: u32,
+        next_rebroadcast_reward_votes_counter: u32,
+        error_code: String,
+    }
+
+    /// C++ report for one Rust-planned broadcast action.
+    struct PbftManagerBroadcastReport {
+        action: u8,
+        rebroadcast: bool,
+        success: bool,
+        error_code: String,
+    }
+
+    /// Rust validation result for one broadcast report.
+    struct PbftManagerBroadcastReportResult {
+        status: u8,
+        apply_counters: bool,
+        broadcast_votes_counter: u32,
+        rebroadcast_votes_counter: u32,
+        broadcast_reward_votes_counter: u32,
+        rebroadcast_reward_votes_counter: u32,
         error_code: String,
     }
 
@@ -4199,9 +4435,27 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_sync_process_period_data_runtime(
             fact: PbftSyncProcessPeriodDataRuntimeFact,
         ) -> PbftSyncProcessPeriodDataRuntimePlan;
+        type BridgePbftSyncQueueDrainSession;
+        pub fn create_pbft_sync_queue_drain_session() -> Box<BridgePbftSyncQueueDrainSession>;
+        pub fn pbft_sync_queue_drain_session_next(
+            session: &mut BridgePbftSyncQueueDrainSession,
+            queue_size: usize,
+            current_period: u64,
+        ) -> PbftSyncQueueDrainStep;
+        pub fn pbft_sync_queue_drain_session_report(
+            session: &mut BridgePbftSyncQueueDrainSession,
+            report: PbftSyncQueueDrainReport,
+        ) -> PbftSyncQueueDrainReportResult;
         pub fn plan_pbft_finalization_intent(
             fact: PbftFinalizationIntentFact,
         ) -> PbftFinalizationIntentPlan;
+        pub fn plan_pbft_finalization_pillar_preflight(
+            fact: PbftFinalizationPillarPreflightFact,
+        ) -> PbftFinalizationPillarPreflightPlan;
+        pub fn report_pbft_finalization_pillar_preflight(
+            plan: &PbftFinalizationPillarPreflightPlan,
+            report: PbftFinalizationPillarPreflightReport,
+        ) -> PbftFinalizationPillarPreflightPlan;
         pub fn plan_pbft_finalization_runtime(
             plan: &PbftFinalizationIntentPlan,
         ) -> PbftFinalizationRuntimePlan;
@@ -4226,6 +4480,17 @@ pub mod rustaxa_ffi {
         ) -> Result<PbftManagerStartupReplayPeriod>;
         pub fn pbft_manager_runtime_snapshot(
             runtime: &BridgePbftManagerRuntime,
+        ) -> PbftManagerRuntimeSnapshot;
+        pub fn plan_pbft_manager_startup_replay_ranges(
+            fact: PbftManagerStartupReplayRangeFact,
+        ) -> PbftManagerStartupReplayRangePlan;
+        pub fn plan_pbft_manager_advance_period(
+            pbft_chain_size: u64,
+            transition_plan: &PbftManagerTransitionPlan,
+        ) -> PbftManagerAdvancePeriodPlan;
+        pub fn pbft_manager_runtime_apply_period_advance(
+            runtime: &mut BridgePbftManagerRuntime,
+            new_period: u64,
         ) -> PbftManagerRuntimeSnapshot;
         pub fn pbft_manager_runtime_cert_voted_block_in_round(
             runtime: &BridgePbftManagerRuntime,
@@ -4285,8 +4550,58 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_manager_state_action(
             fact: PbftManagerStateActionFact,
         ) -> PbftManagerStateActionPlan;
+        pub fn plan_pbft_manager_state_action_effects(
+            fact: PbftManagerStateActionFact,
+        ) -> PbftManagerStateActionEffectPlan;
+        type BridgePbftManagerStateActionEffectSession;
+        pub fn create_pbft_manager_state_action_effect_session(
+            fact: PbftManagerStateActionFact,
+        ) -> Box<BridgePbftManagerStateActionEffectSession>;
+        pub fn pbft_manager_state_action_effect_session_next(
+            session: &mut BridgePbftManagerStateActionEffectSession,
+        ) -> PbftManagerStateActionSessionStep;
+        pub fn pbft_manager_state_action_effect_session_report(
+            session: &mut BridgePbftManagerStateActionEffectSession,
+            report: PbftManagerStateActionEffectReport,
+        ) -> PbftManagerStateActionSessionStep;
+        pub fn abort_pbft_manager_state_action_effect_session(
+            session: &mut BridgePbftManagerStateActionEffectSession,
+        );
+        type BridgePbftManagerProposalSession;
+        pub fn create_pbft_manager_proposal_session(
+            fact: PbftManagerProposalInitialFact,
+        ) -> Box<BridgePbftManagerProposalSession>;
+        pub fn pbft_manager_proposal_session_next(
+            session: &mut BridgePbftManagerProposalSession,
+        ) -> PbftManagerProposalSessionStep;
+        pub fn pbft_manager_proposal_session_report_dag_order(
+            session: &mut BridgePbftManagerProposalSession,
+            report: PbftManagerProposalDagOrderReport,
+        ) -> PbftManagerProposalSessionStep;
+        pub fn abort_pbft_manager_proposal_session(
+            session: &mut BridgePbftManagerProposalSession,
+        ) -> PbftManagerProposalSessionStep;
+        pub fn plan_pbft_manager_broadcast(
+            fact: PbftManagerBroadcastFact,
+        ) -> PbftManagerBroadcastPlan;
+        pub fn report_pbft_manager_broadcast(
+            plan: PbftManagerBroadcastPlan,
+            report: PbftManagerBroadcastReport,
+        ) -> PbftManagerBroadcastReportResult;
         pub fn plan_pbft_manager_block_validation(
             fact: PbftManagerBlockValidationFact,
+        ) -> PbftManagerBlockValidationPlan;
+        type BridgePbftManagerBlockValidationSession;
+        pub fn create_pbft_manager_block_validation_session(
+            fact: PbftManagerBlockValidationFact,
+        ) -> Box<BridgePbftManagerBlockValidationSession>;
+        pub fn pbft_manager_block_validation_session_next(
+            session: &mut BridgePbftManagerBlockValidationSession,
+        ) -> PbftManagerBlockValidationPlan;
+        pub fn pbft_manager_block_validation_session_report(
+            session: &mut BridgePbftManagerBlockValidationSession,
+            status: u8,
+            dag_weight_check_required: bool,
         ) -> PbftManagerBlockValidationPlan;
         pub fn plan_pbft_manager_candidate_admission(
             fact: PbftManagerCandidateAdmissionFact,
@@ -4330,6 +4645,34 @@ pub mod rustaxa_ffi {
             self: &mut BridgePbftFinalizationRuntimeSession,
         );
         pub fn abort_pbft_manager_runtime_session(self: &mut BridgePbftManagerRuntimeSession);
+        pub fn pbft_manager_state_action_effect_session_next(
+            self: &mut BridgePbftManagerStateActionEffectSession,
+        ) -> PbftManagerStateActionSessionStep;
+        pub fn pbft_manager_state_action_effect_session_report(
+            self: &mut BridgePbftManagerStateActionEffectSession,
+            report: PbftManagerStateActionEffectReport,
+        ) -> PbftManagerStateActionSessionStep;
+        pub fn abort_pbft_manager_state_action_effect_session(
+            self: &mut BridgePbftManagerStateActionEffectSession,
+        );
+        pub fn pbft_manager_proposal_session_next(
+            self: &mut BridgePbftManagerProposalSession,
+        ) -> PbftManagerProposalSessionStep;
+        pub fn pbft_manager_proposal_session_report_dag_order(
+            self: &mut BridgePbftManagerProposalSession,
+            report: PbftManagerProposalDagOrderReport,
+        ) -> PbftManagerProposalSessionStep;
+        pub fn abort_pbft_manager_proposal_session(
+            self: &mut BridgePbftManagerProposalSession,
+        ) -> PbftManagerProposalSessionStep;
+        pub fn pbft_manager_block_validation_session_next(
+            self: &mut BridgePbftManagerBlockValidationSession,
+        ) -> PbftManagerBlockValidationPlan;
+        pub fn pbft_manager_block_validation_session_report(
+            self: &mut BridgePbftManagerBlockValidationSession,
+            status: u8,
+            dag_weight_check_required: bool,
+        ) -> PbftManagerBlockValidationPlan;
         pub fn validate_pbft_finalization_live_mutation_report(
             plan: &PbftFinalizationIntentPlan,
             report: PbftFinalizationLiveMutationReport,

@@ -681,6 +681,372 @@ pub struct PbftManagerBlockValidationPlan {
     pub error_code: &'static str,
 }
 
+/// Stateful PBFT block-validation session owned by Rust.
+///
+/// Purpose:
+/// - Wraps `plan_pbft_manager_block_validation` so proposal and sync callers
+///   share one Rust-owned validation cursor instead of mutating bridge facts in
+///   separate C++ loops.
+///
+/// Inputs/outputs:
+/// - Constructed from the initial compact validation fact bundle.
+/// - `next_pbft_manager_block_validation_session` returns the next requested
+///   check or terminal plan.
+/// - `report_pbft_manager_block_validation_session_check` applies the result
+///   of the requested live check and immediately returns the next plan.
+///
+/// Invariants and edge behavior:
+/// - C++ may only report a status for the check Rust most recently requested.
+/// - DAG-order reports may update `dag_weight_check_required` because that
+///   fact is discovered while executing the live DAG order check.
+/// - Reporting `NotChecked` is only accepted as a retry reset for the pending
+///   FinalChain hash check after a wait-for-finalization outcome.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerBlockValidationSession {
+    /// Current accumulated validation facts.
+    pub fact: PbftManagerBlockValidationFact,
+    pending_check: Option<PbftManagerBlockValidationNextCheck>,
+}
+
+/// Stable proposal-construction session status selected by Rust.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerProposalStatus {
+    /// More executor facts are required before Rust can produce a command.
+    Active,
+    /// Rust returned a build command for the C++ compatibility executor.
+    BuildReady,
+    /// No local wallet can propose for this period/round.
+    NoEligibleWallet,
+    /// FinalChain hash was not available, so proposal must be skipped.
+    MissingFinalChainHash,
+    /// Hardfork rules require extra data that C++ could not materialize.
+    MissingExtraData,
+    /// C++ reported that the requested DAG order could not be loaded.
+    MissingDagOrder,
+    /// Supplied facts or reports violate the bridge contract.
+    InvalidBridgeFacts,
+}
+
+impl PbftManagerProposalStatus {
+    /// Stable bridge code for proposal-construction status.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Active => 0,
+            Self::BuildReady => 1,
+            Self::NoEligibleWallet => 2,
+            Self::MissingFinalChainHash => 3,
+            Self::MissingExtraData => 4,
+            Self::MissingDagOrder => 5,
+            Self::InvalidBridgeFacts => 255,
+        }
+    }
+}
+
+/// Stable proposal-construction session action for the C++ executor.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerProposalAction {
+    /// C++ must load DAG order and gas facts for `requested_anchor_hash`.
+    RequestDagOrder,
+    /// C++ can materialize the PBFT block from the returned command fields.
+    BuildProposal,
+    /// No proposal should be produced.
+    SkipProposal,
+    /// Supplied facts or reports violate the bridge contract.
+    ContractError,
+}
+
+impl PbftManagerProposalAction {
+    /// Stable bridge code for proposal-construction action.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::RequestDagOrder => 0,
+            Self::BuildProposal => 1,
+            Self::SkipProposal => 2,
+            Self::ContractError => 255,
+        }
+    }
+}
+
+/// Wallet eligibility fact supplied to Rust proposal construction.
+///
+/// C++ still executes DPoS and VRF/sortition checks against live subsystems, but
+/// Rust owns final filtering from those facts. `wallet_index` is an index into
+/// the local wallet vector retained by the C++ compatibility executor.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerProposalWalletFact {
+    /// Stable index of the candidate wallet in the C++ local wallet vector.
+    pub wallet_index: u64,
+    /// Whether DPoS eligibility accepted this wallet for the proposal period.
+    pub dpos_eligible: bool,
+    /// Whether VRF sortition accepted this wallet for the proposal round.
+    pub sortition_valid: bool,
+}
+
+/// One ordered DAG block fact supplied for a requested anchor.
+///
+/// Inputs:
+/// - `hash` preserves canonical DAG order.
+/// - `gas_estimation` is the block gas estimate projected to the configured
+///   PBFT gas-limit domain for proposal clipping.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerProposalDagBlockFact {
+    /// DAG block hash.
+    pub hash: H256,
+    /// Gas estimate used for PBFT block clipping.
+    pub gas_estimation: u64,
+}
+
+/// Initial fact bundle for Rust-owned PBFT proposal construction.
+///
+/// Purpose:
+/// - Move deterministic proposer eligibility, null-anchor fallback, DAG anchor
+///   selection, FinalChain/extra-data skip status, gas clipping, and order-hash
+///   calculation into Rust.
+///
+/// Invariants and edge behavior:
+/// - C++ supplies live facts and materializes the returned build command.
+/// - FinalChain/EVM, DAG storage, key-manager signing, vote sidecars, and
+///   network effects remain executor boundaries.
+/// - DAG order is requested through the session so Rust can ask for a recompute
+///   when gas clipping selects a closer anchor.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerProposalInitialFact {
+    /// Current PBFT period.
+    pub period: u64,
+    /// Current PBFT round.
+    pub round: u64,
+    /// Hash of the previous PBFT block.
+    pub previous_pbft_block_hash: H256,
+    /// Last non-null DAG anchor from the PBFT chain, normalized by C++ when the
+    /// previous anchor is null.
+    pub last_period_dag_anchor_hash: H256,
+    /// DAG genesis hash used by the null-anchor rule.
+    pub dag_genesis_hash: H256,
+    /// Configured maximum DAG block window used by legacy anchor selection.
+    pub dag_blocks_size: u64,
+    /// Configured GHOST move-back distance.
+    pub ghost_path_move_back: u64,
+    /// PBFT gas limit for the current proposal period.
+    pub pbft_gas_limit: u64,
+    /// Whether hardfork rules require PBFT block extra data.
+    pub extra_data_required: bool,
+    /// Whether C++ successfully materialized required extra data.
+    pub extra_data_available: bool,
+    /// Whether the FinalChain hash fact is valid for this period.
+    pub final_chain_hash_valid: bool,
+    /// FinalChain hash to embed in the PBFT block when valid.
+    pub final_chain_hash: H256,
+    /// Local wallet eligibility facts.
+    pub wallets: Vec<PbftManagerProposalWalletFact>,
+    /// GHOST path from the last period DAG anchor.
+    pub ghost_path: Vec<H256>,
+    /// Whether a non-finalized fallback anchor is available.
+    pub has_non_finalized_fallback: bool,
+    /// Fallback anchor selected from non-finalized DAG blocks when GHOST has no
+    /// new anchor after the previous period anchor.
+    pub non_finalized_fallback_hash: H256,
+}
+
+/// C++ report for one DAG-order request from the proposal session.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerProposalDagOrderReport {
+    /// Anchor hash Rust requested.
+    pub anchor_hash: H256,
+    /// Ordered DAG block facts for the requested anchor.
+    pub dag_blocks: Vec<PbftManagerProposalDagBlockFact>,
+    /// True when C++ successfully loaded the order.
+    pub order_available: bool,
+}
+
+/// One Rust-owned proposal-construction session step.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerProposalSessionStep {
+    /// Action requested from C++.
+    pub action: PbftManagerProposalAction,
+    /// Current proposal status.
+    pub status: PbftManagerProposalStatus,
+    /// Anchor requested when `action == RequestDagOrder`.
+    pub requested_anchor_hash: H256,
+    /// Previous PBFT block hash for the build command.
+    pub previous_pbft_block_hash: H256,
+    /// DAG anchor hash for the build command.
+    pub anchor_hash: H256,
+    /// Canonical order hash for the build command.
+    pub order_hash: H256,
+    /// FinalChain hash for the build command.
+    pub final_chain_hash: H256,
+    /// Wallet indices selected by Rust for proposal materialization.
+    pub eligible_wallet_indices: Vec<u64>,
+    /// Number of DAG blocks included before gas clipping for telemetry.
+    pub dag_blocks_included: u64,
+    /// True when Rust selected the null-anchor proposal rule.
+    pub selected_null_anchor: bool,
+    /// Stable diagnostic code for bridge/log consumers.
+    pub error_code: String,
+}
+
+/// Rust-owned PBFT proposal-construction cursor.
+///
+/// The session chooses proposer candidates and initial anchor immediately from
+/// supplied facts. For non-null anchors it asks C++ for ordered DAG block gas
+/// facts. If gas clipping selects a closer anchor, Rust requests that order and
+/// only returns a build command after it can compute the final order hash.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerProposalSession {
+    /// Initial proposal facts.
+    pub fact: PbftManagerProposalInitialFact,
+    eligible_wallet_indices: Vec<u64>,
+    current_anchor: H256,
+    requested_anchor: Option<H256>,
+    build_step: Option<PbftManagerProposalSessionStep>,
+    terminal_status: Option<PbftManagerProposalStatus>,
+    error_code: String,
+}
+
+/// Broadcast action family selected by Rust for one `broadcastVotes()` tick.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerBroadcastAction {
+    /// No broadcast threshold has been reached.
+    Noop,
+    /// Broadcast reward, own PBFT, and own pillar votes.
+    PeriodVotes,
+    /// Broadcast period votes plus current/previous round 2t+1 bundles.
+    RoundVotes,
+    /// Unknown bridge action.
+    Unknown,
+}
+
+impl PbftManagerBroadcastAction {
+    /// Stable bridge code for the broadcast action.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Noop => 0,
+            Self::PeriodVotes => 1,
+            Self::RoundVotes => 2,
+            Self::Unknown => 254,
+        }
+    }
+
+    /// Decodes a stable bridge action code.
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Noop,
+            1 => Self::PeriodVotes,
+            2 => Self::RoundVotes,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Broadcast plan status selected by Rust.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerBroadcastStatus {
+    /// The plan is valid and ready for optional C++ execution.
+    Ready,
+    /// Supplied facts violate the broadcast planner contract.
+    InvalidFact,
+    /// C++ reported an executor failure.
+    ExecutorFailed,
+    /// C++ reported an unknown or mismatched action.
+    InvalidReport,
+}
+
+impl PbftManagerBroadcastStatus {
+    /// Stable bridge code for the broadcast status.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Ready => 0,
+            Self::InvalidFact => 1,
+            Self::ExecutorFailed => 2,
+            Self::InvalidReport => 3,
+        }
+    }
+}
+
+/// Compact timing/counter facts for Rust-owned PBFT vote broadcast planning.
+///
+/// Inputs:
+/// - elapsed times and lambda are supplied as milliseconds.
+/// - counters are the current C++ compatibility mirrors.
+/// - thresholds are passed from the manager constants so tests and future
+///   configuration can validate the same planner without hardcoding globals.
+///
+/// Outputs are produced by `plan_pbft_manager_broadcast`.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerBroadcastFact {
+    /// Elapsed time since the current round started.
+    pub round_elapsed_ms: u64,
+    /// Elapsed time since the current period started.
+    pub period_elapsed_ms: u64,
+    /// Current round lambda in milliseconds.
+    pub current_round_lambda_ms: u64,
+    /// Broadcast threshold multiplier.
+    pub broadcast_lambda_threshold: u32,
+    /// Rebroadcast threshold multiplier.
+    pub rebroadcast_lambda_threshold: u32,
+    /// Counter for normal round broadcasts.
+    pub broadcast_votes_counter: u32,
+    /// Counter for round rebroadcasts.
+    pub rebroadcast_votes_counter: u32,
+    /// Counter for normal period/reward broadcasts.
+    pub broadcast_reward_votes_counter: u32,
+    /// Counter for period/reward rebroadcasts.
+    pub rebroadcast_reward_votes_counter: u32,
+}
+
+/// Rust-owned broadcast plan for one `broadcastVotes()` call.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerBroadcastPlan {
+    /// Plan status.
+    pub status: PbftManagerBroadcastStatus,
+    /// Vote family C++ should broadcast.
+    pub action: PbftManagerBroadcastAction,
+    /// Whether C++ should use rebroadcast network send semantics.
+    pub rebroadcast: bool,
+    /// Counter value to apply after Rust accepts a successful executor report.
+    pub next_broadcast_votes_counter: u32,
+    /// Counter value to apply after Rust accepts a successful executor report.
+    pub next_rebroadcast_votes_counter: u32,
+    /// Counter value to apply after Rust accepts a successful executor report.
+    pub next_broadcast_reward_votes_counter: u32,
+    /// Counter value to apply after Rust accepts a successful executor report.
+    pub next_rebroadcast_reward_votes_counter: u32,
+    /// Stable diagnostic code for bridge/log consumers.
+    pub error_code: String,
+}
+
+/// C++ executor report for one Rust-planned vote broadcast.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerBroadcastReport {
+    /// Action C++ attempted to execute.
+    pub action: PbftManagerBroadcastAction,
+    /// Whether C++ used rebroadcast network send semantics.
+    pub rebroadcast: bool,
+    /// Whether the network executor completed the requested action.
+    pub success: bool,
+    /// Optional executor diagnostic.
+    pub error_code: String,
+}
+
+/// Result of a Rust-accepted or rejected broadcast executor report.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerBroadcastReportResult {
+    /// Report validation status.
+    pub status: PbftManagerBroadcastStatus,
+    /// True when C++ may apply the returned counter mirrors.
+    pub apply_counters: bool,
+    /// Counter value to apply when `apply_counters` is true.
+    pub broadcast_votes_counter: u32,
+    /// Counter value to apply when `apply_counters` is true.
+    pub rebroadcast_votes_counter: u32,
+    /// Counter value to apply when `apply_counters` is true.
+    pub broadcast_reward_votes_counter: u32,
+    /// Counter value to apply when `apply_counters` is true.
+    pub rebroadcast_reward_votes_counter: u32,
+    /// Stable diagnostic code for bridge/log consumers.
+    pub error_code: String,
+}
+
 /// Computes the legacy PBFT proposer ranking hash for one vote index.
 ///
 /// Inputs are the proposal vote VRF output, recovered voter public key, and
@@ -1166,6 +1532,666 @@ pub fn plan_pbft_manager_block_validation(
     }
 }
 
+/// Creates a Rust-owned PBFT block-validation session from initial facts.
+#[must_use]
+pub fn create_pbft_manager_block_validation_session(
+    fact: PbftManagerBlockValidationFact,
+) -> PbftManagerBlockValidationSession {
+    PbftManagerBlockValidationSession {
+        fact,
+        pending_check: None,
+    }
+}
+
+/// Returns the next plan for a Rust-owned PBFT block-validation session.
+#[must_use]
+pub fn next_pbft_manager_block_validation_session(
+    session: &mut PbftManagerBlockValidationSession,
+) -> PbftManagerBlockValidationPlan {
+    let plan = plan_pbft_manager_block_validation(session.fact.clone());
+    session.pending_check = match plan.action {
+        PbftManagerBlockValidationAction::RunCheck
+        | PbftManagerBlockValidationAction::WaitForFinalization => Some(plan.next_check),
+        _ => None,
+    };
+    plan
+}
+
+/// Applies one live-check report and returns the next PBFT block-validation plan.
+#[must_use]
+pub fn report_pbft_manager_block_validation_session_check(
+    session: &mut PbftManagerBlockValidationSession,
+    status: PbftManagerBlockValidationFactStatus,
+    dag_weight_check_required: bool,
+) -> PbftManagerBlockValidationPlan {
+    let Some(pending_check) = session.pending_check else {
+        return pbft_manager_block_validation_contract_error(
+            "PBFT_MANAGER_BLOCK_VALIDATION_SESSION_NO_PENDING_CHECK",
+        );
+    };
+
+    if status == PbftManagerBlockValidationFactStatus::Unknown {
+        return pbft_manager_block_validation_contract_error(
+            "PBFT_MANAGER_BLOCK_VALIDATION_SESSION_UNKNOWN_STATUS",
+        );
+    }
+    if status == PbftManagerBlockValidationFactStatus::NotRequired {
+        return pbft_manager_block_validation_contract_error(
+            "PBFT_MANAGER_BLOCK_VALIDATION_SESSION_NOT_REQUIRED_REPORT",
+        );
+    }
+    if status == PbftManagerBlockValidationFactStatus::NotChecked
+        && pending_check != PbftManagerBlockValidationNextCheck::ValidateFinalChainHash
+    {
+        return pbft_manager_block_validation_contract_error(
+            "PBFT_MANAGER_BLOCK_VALIDATION_SESSION_INVALID_RETRY_RESET",
+        );
+    }
+
+    match pending_check {
+        PbftManagerBlockValidationNextCheck::CheckPbftChain => {
+            session.fact.pbft_chain_status = status;
+        }
+        PbftManagerBlockValidationNextCheck::ValidateFinalChainHash => {
+            session.fact.final_chain_hash_status = status;
+        }
+        PbftManagerBlockValidationNextCheck::CheckRewardVotes => {
+            session.fact.reward_votes_status = status;
+        }
+        PbftManagerBlockValidationNextCheck::ValidateExtraData => {
+            session.fact.extra_data_status = status;
+        }
+        PbftManagerBlockValidationNextCheck::ValidatePillarBlock => {
+            session.fact.pillar_block_status = status;
+        }
+        PbftManagerBlockValidationNextCheck::CheckDagOrder => {
+            session.fact.dag_order_status = status;
+            if status == PbftManagerBlockValidationFactStatus::Valid {
+                session.fact.dag_weight_check_required = dag_weight_check_required;
+            }
+        }
+        PbftManagerBlockValidationNextCheck::CheckDagWeight => {
+            session.fact.dag_weight_status = status;
+        }
+        PbftManagerBlockValidationNextCheck::None
+        | PbftManagerBlockValidationNextCheck::Unknown => {
+            return pbft_manager_block_validation_contract_error(
+                "PBFT_MANAGER_BLOCK_VALIDATION_SESSION_INVALID_PENDING_CHECK",
+            );
+        }
+    }
+
+    session.pending_check = None;
+    next_pbft_manager_block_validation_session(session)
+}
+
+fn pbft_manager_order_hash(dag_blocks: &[PbftManagerProposalDagBlockFact]) -> H256 {
+    if dag_blocks.is_empty() {
+        return H256::zero();
+    }
+
+    let mut stream = RlpStream::new_list(1);
+    stream.begin_list(dag_blocks.len());
+    for block in dag_blocks {
+        let hash_bytes: &[u8] = block.hash.as_bytes();
+        stream.append(&hash_bytes);
+    }
+    keccak256(&stream.out())
+}
+
+fn pbft_manager_proposal_contract_error(
+    error_code: impl Into<String>,
+) -> PbftManagerProposalSessionStep {
+    PbftManagerProposalSessionStep {
+        action: PbftManagerProposalAction::ContractError,
+        status: PbftManagerProposalStatus::InvalidBridgeFacts,
+        requested_anchor_hash: H256::zero(),
+        previous_pbft_block_hash: H256::zero(),
+        anchor_hash: H256::zero(),
+        order_hash: H256::zero(),
+        final_chain_hash: H256::zero(),
+        eligible_wallet_indices: Vec::new(),
+        dag_blocks_included: 0,
+        selected_null_anchor: false,
+        error_code: error_code.into(),
+    }
+}
+
+fn pbft_manager_proposal_skip(
+    fact: &PbftManagerProposalInitialFact,
+    status: PbftManagerProposalStatus,
+    error_code: impl Into<String>,
+) -> PbftManagerProposalSessionStep {
+    PbftManagerProposalSessionStep {
+        action: PbftManagerProposalAction::SkipProposal,
+        status,
+        requested_anchor_hash: H256::zero(),
+        previous_pbft_block_hash: fact.previous_pbft_block_hash,
+        anchor_hash: H256::zero(),
+        order_hash: H256::zero(),
+        final_chain_hash: fact.final_chain_hash,
+        eligible_wallet_indices: Vec::new(),
+        dag_blocks_included: 0,
+        selected_null_anchor: false,
+        error_code: error_code.into(),
+    }
+}
+
+fn pbft_manager_proposal_build(
+    fact: &PbftManagerProposalInitialFact,
+    anchor_hash: H256,
+    order_hash: H256,
+    eligible_wallet_indices: Vec<u64>,
+    dag_blocks_included: u64,
+    error_code: impl Into<String>,
+) -> PbftManagerProposalSessionStep {
+    PbftManagerProposalSessionStep {
+        action: PbftManagerProposalAction::BuildProposal,
+        status: PbftManagerProposalStatus::BuildReady,
+        requested_anchor_hash: H256::zero(),
+        previous_pbft_block_hash: fact.previous_pbft_block_hash,
+        anchor_hash,
+        order_hash,
+        final_chain_hash: fact.final_chain_hash,
+        eligible_wallet_indices,
+        dag_blocks_included,
+        selected_null_anchor: anchor_hash == H256::zero(),
+        error_code: error_code.into(),
+    }
+}
+
+fn pbft_manager_proposal_request_order(anchor_hash: H256) -> PbftManagerProposalSessionStep {
+    PbftManagerProposalSessionStep {
+        action: PbftManagerProposalAction::RequestDagOrder,
+        status: PbftManagerProposalStatus::Active,
+        requested_anchor_hash: anchor_hash,
+        previous_pbft_block_hash: H256::zero(),
+        anchor_hash: H256::zero(),
+        order_hash: H256::zero(),
+        final_chain_hash: H256::zero(),
+        eligible_wallet_indices: Vec::new(),
+        dag_blocks_included: 0,
+        selected_null_anchor: false,
+        error_code: String::new(),
+    }
+}
+
+fn pbft_manager_proposal_initial_anchor(fact: &PbftManagerProposalInitialFact) -> H256 {
+    if fact.ghost_path.is_empty() {
+        return H256::zero();
+    }
+
+    let mut dag_block_hash = if fact.ghost_path.len() as u64 <= fact.dag_blocks_size {
+        let move_back = fact.ghost_path_move_back.saturating_add(1);
+        let mut ghost_index = if fact.ghost_path.len() as u64 >= move_back {
+            fact.ghost_path.len() - move_back as usize
+        } else {
+            0
+        };
+        while ghost_index < fact.ghost_path.len() - 1
+            && fact.ghost_path[ghost_index] == fact.last_period_dag_anchor_hash
+        {
+            ghost_index += 1;
+        }
+        fact.ghost_path[ghost_index]
+    } else {
+        fact.ghost_path[(fact.dag_blocks_size - 1) as usize]
+    };
+
+    if dag_block_hash == fact.dag_genesis_hash {
+        return H256::zero();
+    }
+
+    if dag_block_hash == fact.last_period_dag_anchor_hash {
+        if fact.has_non_finalized_fallback {
+            dag_block_hash = fact.non_finalized_fallback_hash;
+        } else {
+            return H256::zero();
+        }
+    }
+
+    dag_block_hash
+}
+
+fn pbft_manager_proposal_closest_anchor(
+    ghost_path: &[H256],
+    dag_blocks: &[PbftManagerProposalDagBlockFact],
+    included: usize,
+) -> Option<H256> {
+    for block in dag_blocks.iter().take(included).rev() {
+        if ghost_path.contains(&block.hash) {
+            return Some(block.hash);
+        }
+    }
+    ghost_path.get(1).copied()
+}
+
+fn pbft_manager_proposal_clip(
+    dag_blocks: &[PbftManagerProposalDagBlockFact],
+    pbft_gas_limit: u64,
+) -> usize {
+    let mut total_weight = 0_u64;
+    let mut included = 0_usize;
+    for block in dag_blocks {
+        let Some(next_weight) = total_weight.checked_add(block.gas_estimation) else {
+            break;
+        };
+        if next_weight > pbft_gas_limit {
+            break;
+        }
+        total_weight = next_weight;
+        included += 1;
+    }
+    included
+}
+
+/// Creates a Rust-owned PBFT proposal-construction session.
+#[must_use]
+pub fn create_pbft_manager_proposal_session(
+    fact: PbftManagerProposalInitialFact,
+) -> PbftManagerProposalSession {
+    let eligible_wallet_indices = fact
+        .wallets
+        .iter()
+        .filter(|wallet| wallet.dpos_eligible && wallet.sortition_valid)
+        .map(|wallet| wallet.wallet_index)
+        .collect::<Vec<_>>();
+    let current_anchor = pbft_manager_proposal_initial_anchor(&fact);
+
+    PbftManagerProposalSession {
+        fact,
+        eligible_wallet_indices,
+        current_anchor,
+        requested_anchor: None,
+        build_step: None,
+        terminal_status: None,
+        error_code: String::new(),
+    }
+}
+
+/// Returns the next action for a Rust-owned proposal-construction session.
+#[must_use]
+pub fn next_pbft_manager_proposal_session(
+    session: &mut PbftManagerProposalSession,
+) -> PbftManagerProposalSessionStep {
+    if let Some(step) = &session.build_step {
+        return step.clone();
+    }
+
+    if let Some(status) = session.terminal_status {
+        return match status {
+            PbftManagerProposalStatus::NoEligibleWallet
+            | PbftManagerProposalStatus::MissingFinalChainHash
+            | PbftManagerProposalStatus::MissingExtraData
+            | PbftManagerProposalStatus::MissingDagOrder => {
+                pbft_manager_proposal_skip(&session.fact, status, session.error_code.clone())
+            }
+            PbftManagerProposalStatus::InvalidBridgeFacts => {
+                pbft_manager_proposal_contract_error(session.error_code.clone())
+            }
+            PbftManagerProposalStatus::Active | PbftManagerProposalStatus::BuildReady => {
+                pbft_manager_proposal_contract_error(
+                    "PBFT_MANAGER_PROPOSAL_INVALID_TERMINAL_STATUS",
+                )
+            }
+        };
+    }
+
+    if session.fact.period == 0 || session.fact.round == 0 {
+        session.terminal_status = Some(PbftManagerProposalStatus::InvalidBridgeFacts);
+        session.error_code = "PBFT_MANAGER_PROPOSAL_INVALID_PERIOD_OR_ROUND".to_string();
+        return pbft_manager_proposal_contract_error(session.error_code.clone());
+    }
+    if session.fact.dag_blocks_size == 0 {
+        session.terminal_status = Some(PbftManagerProposalStatus::InvalidBridgeFacts);
+        session.error_code = "PBFT_MANAGER_PROPOSAL_ZERO_DAG_BLOCKS_SIZE".to_string();
+        return pbft_manager_proposal_contract_error(session.error_code.clone());
+    }
+    if session.eligible_wallet_indices.is_empty() {
+        session.terminal_status = Some(PbftManagerProposalStatus::NoEligibleWallet);
+        session.error_code = "PBFT_MANAGER_PROPOSAL_NO_ELIGIBLE_WALLET".to_string();
+        return pbft_manager_proposal_skip(
+            &session.fact,
+            PbftManagerProposalStatus::NoEligibleWallet,
+            session.error_code.clone(),
+        );
+    }
+    if session.fact.extra_data_required && !session.fact.extra_data_available {
+        session.terminal_status = Some(PbftManagerProposalStatus::MissingExtraData);
+        session.error_code = "PBFT_MANAGER_PROPOSAL_MISSING_EXTRA_DATA".to_string();
+        return pbft_manager_proposal_skip(
+            &session.fact,
+            PbftManagerProposalStatus::MissingExtraData,
+            session.error_code.clone(),
+        );
+    }
+    if !session.fact.final_chain_hash_valid {
+        session.terminal_status = Some(PbftManagerProposalStatus::MissingFinalChainHash);
+        session.error_code = "PBFT_MANAGER_PROPOSAL_MISSING_FINAL_CHAIN_HASH".to_string();
+        return pbft_manager_proposal_skip(
+            &session.fact,
+            PbftManagerProposalStatus::MissingFinalChainHash,
+            session.error_code.clone(),
+        );
+    }
+
+    if session.current_anchor == H256::zero() {
+        let step = pbft_manager_proposal_build(
+            &session.fact,
+            H256::zero(),
+            H256::zero(),
+            session.eligible_wallet_indices.clone(),
+            0,
+            "PBFT_MANAGER_PROPOSAL_NULL_ANCHOR",
+        );
+        session.build_step = Some(step.clone());
+        return step;
+    }
+
+    session.requested_anchor = Some(session.current_anchor);
+    pbft_manager_proposal_request_order(session.current_anchor)
+}
+
+/// Reports one DAG-order response and returns the next proposal step.
+#[must_use]
+pub fn report_pbft_manager_proposal_dag_order(
+    session: &mut PbftManagerProposalSession,
+    report: PbftManagerProposalDagOrderReport,
+) -> PbftManagerProposalSessionStep {
+    let Some(requested_anchor) = session.requested_anchor else {
+        session.terminal_status = Some(PbftManagerProposalStatus::InvalidBridgeFacts);
+        session.error_code = "PBFT_MANAGER_PROPOSAL_NO_PENDING_DAG_ORDER".to_string();
+        return pbft_manager_proposal_contract_error(session.error_code.clone());
+    };
+    if report.anchor_hash != requested_anchor {
+        session.terminal_status = Some(PbftManagerProposalStatus::InvalidBridgeFacts);
+        session.error_code = "PBFT_MANAGER_PROPOSAL_DAG_ORDER_ANCHOR_MISMATCH".to_string();
+        return pbft_manager_proposal_contract_error(session.error_code.clone());
+    }
+    if !report.order_available || report.dag_blocks.is_empty() {
+        session.terminal_status = Some(PbftManagerProposalStatus::MissingDagOrder);
+        session.error_code = "PBFT_MANAGER_PROPOSAL_MISSING_DAG_ORDER".to_string();
+        return pbft_manager_proposal_skip(
+            &session.fact,
+            PbftManagerProposalStatus::MissingDagOrder,
+            session.error_code.clone(),
+        );
+    }
+
+    let included = pbft_manager_proposal_clip(&report.dag_blocks, session.fact.pbft_gas_limit);
+    if included != report.dag_blocks.len() {
+        let Some(closest_anchor) = pbft_manager_proposal_closest_anchor(
+            &session.fact.ghost_path,
+            &report.dag_blocks,
+            included,
+        ) else {
+            session.terminal_status = Some(PbftManagerProposalStatus::InvalidBridgeFacts);
+            session.error_code = "PBFT_MANAGER_PROPOSAL_CLOSEST_ANCHOR_MISSING".to_string();
+            return pbft_manager_proposal_contract_error(session.error_code.clone());
+        };
+        if closest_anchor != requested_anchor {
+            session.current_anchor = closest_anchor;
+            session.requested_anchor = Some(closest_anchor);
+            return pbft_manager_proposal_request_order(closest_anchor);
+        }
+    }
+
+    session.requested_anchor = None;
+    let step = pbft_manager_proposal_build(
+        &session.fact,
+        requested_anchor,
+        pbft_manager_order_hash(&report.dag_blocks),
+        session.eligible_wallet_indices.clone(),
+        included as u64,
+        "PBFT_MANAGER_PROPOSAL_READY",
+    );
+    session.build_step = Some(step.clone());
+    step
+}
+
+/// Aborts a proposal session with a stable contract-error status.
+#[must_use]
+pub fn abort_pbft_manager_proposal_session(
+    session: &mut PbftManagerProposalSession,
+) -> PbftManagerProposalSessionStep {
+    session.terminal_status = Some(PbftManagerProposalStatus::InvalidBridgeFacts);
+    session.error_code = "PBFT_MANAGER_PROPOSAL_SESSION_ABORTED".to_string();
+    pbft_manager_proposal_contract_error(session.error_code.clone())
+}
+
+fn pbft_manager_broadcast_invalid(
+    fact: PbftManagerBroadcastFact,
+    error_code: impl Into<String>,
+) -> PbftManagerBroadcastPlan {
+    PbftManagerBroadcastPlan {
+        status: PbftManagerBroadcastStatus::InvalidFact,
+        action: PbftManagerBroadcastAction::Noop,
+        rebroadcast: false,
+        next_broadcast_votes_counter: fact.broadcast_votes_counter,
+        next_rebroadcast_votes_counter: fact.rebroadcast_votes_counter,
+        next_broadcast_reward_votes_counter: fact.broadcast_reward_votes_counter,
+        next_rebroadcast_reward_votes_counter: fact.rebroadcast_reward_votes_counter,
+        error_code: error_code.into(),
+    }
+}
+
+fn pbft_manager_broadcast_ready(
+    action: PbftManagerBroadcastAction,
+    rebroadcast: bool,
+    next_broadcast_votes_counter: u32,
+    next_rebroadcast_votes_counter: u32,
+    next_broadcast_reward_votes_counter: u32,
+    next_rebroadcast_reward_votes_counter: u32,
+) -> PbftManagerBroadcastPlan {
+    PbftManagerBroadcastPlan {
+        status: PbftManagerBroadcastStatus::Ready,
+        action,
+        rebroadcast,
+        next_broadcast_votes_counter,
+        next_rebroadcast_votes_counter,
+        next_broadcast_reward_votes_counter,
+        next_rebroadcast_reward_votes_counter,
+        error_code: if action == PbftManagerBroadcastAction::Noop {
+            "PBFT_MANAGER_BROADCAST_NOOP".to_string()
+        } else {
+            String::new()
+        },
+    }
+}
+
+fn ratio_threshold_exceeded(elapsed_ms: u64, lambda_ms: u64, threshold: u32, counter: u32) -> bool {
+    elapsed_ms / lambda_ms > u64::from(threshold).saturating_mul(u64::from(counter))
+}
+
+fn pbft_manager_counter_increment(value: u32) -> Option<u32> {
+    value.checked_add(1)
+}
+
+/// Plans one Rust-owned PBFT vote broadcast decision.
+///
+/// Rust owns the threshold comparisons, branch priority, rebroadcast flag, and
+/// post-success counter values. C++ remains the executor for resolving retained
+/// vote payloads/sidecars and calling network gossip APIs.
+#[must_use]
+pub fn plan_pbft_manager_broadcast(fact: PbftManagerBroadcastFact) -> PbftManagerBroadcastPlan {
+    if fact.current_round_lambda_ms == 0 {
+        return pbft_manager_broadcast_invalid(fact, "PBFT_MANAGER_BROADCAST_ZERO_LAMBDA");
+    }
+    if fact.broadcast_lambda_threshold == 0 || fact.rebroadcast_lambda_threshold == 0 {
+        return pbft_manager_broadcast_invalid(fact, "PBFT_MANAGER_BROADCAST_ZERO_THRESHOLD");
+    }
+    if fact.broadcast_votes_counter == 0
+        || fact.rebroadcast_votes_counter == 0
+        || fact.broadcast_reward_votes_counter == 0
+        || fact.rebroadcast_reward_votes_counter == 0
+    {
+        return pbft_manager_broadcast_invalid(fact, "PBFT_MANAGER_BROADCAST_ZERO_COUNTER");
+    }
+
+    if ratio_threshold_exceeded(
+        fact.round_elapsed_ms,
+        fact.current_round_lambda_ms,
+        fact.rebroadcast_lambda_threshold,
+        fact.rebroadcast_votes_counter,
+    ) {
+        let Some(next_broadcast_votes_counter) =
+            pbft_manager_counter_increment(fact.broadcast_votes_counter)
+        else {
+            return pbft_manager_broadcast_invalid(fact, "PBFT_MANAGER_BROADCAST_COUNTER_OVERFLOW");
+        };
+        let Some(next_rebroadcast_votes_counter) =
+            pbft_manager_counter_increment(fact.rebroadcast_votes_counter)
+        else {
+            return pbft_manager_broadcast_invalid(fact, "PBFT_MANAGER_BROADCAST_COUNTER_OVERFLOW");
+        };
+        return pbft_manager_broadcast_ready(
+            PbftManagerBroadcastAction::RoundVotes,
+            true,
+            next_broadcast_votes_counter,
+            next_rebroadcast_votes_counter,
+            fact.broadcast_reward_votes_counter,
+            fact.rebroadcast_reward_votes_counter,
+        );
+    }
+
+    if ratio_threshold_exceeded(
+        fact.round_elapsed_ms,
+        fact.current_round_lambda_ms,
+        fact.broadcast_lambda_threshold,
+        fact.broadcast_votes_counter,
+    ) {
+        let Some(next_broadcast_votes_counter) =
+            pbft_manager_counter_increment(fact.broadcast_votes_counter)
+        else {
+            return pbft_manager_broadcast_invalid(fact, "PBFT_MANAGER_BROADCAST_COUNTER_OVERFLOW");
+        };
+        return pbft_manager_broadcast_ready(
+            PbftManagerBroadcastAction::RoundVotes,
+            false,
+            next_broadcast_votes_counter,
+            fact.rebroadcast_votes_counter,
+            fact.broadcast_reward_votes_counter,
+            fact.rebroadcast_reward_votes_counter,
+        );
+    }
+
+    if ratio_threshold_exceeded(
+        fact.period_elapsed_ms,
+        fact.current_round_lambda_ms,
+        fact.rebroadcast_lambda_threshold,
+        fact.rebroadcast_reward_votes_counter,
+    ) {
+        let Some(next_broadcast_reward_votes_counter) =
+            pbft_manager_counter_increment(fact.broadcast_reward_votes_counter)
+        else {
+            return pbft_manager_broadcast_invalid(fact, "PBFT_MANAGER_BROADCAST_COUNTER_OVERFLOW");
+        };
+        let Some(next_rebroadcast_reward_votes_counter) =
+            pbft_manager_counter_increment(fact.rebroadcast_reward_votes_counter)
+        else {
+            return pbft_manager_broadcast_invalid(fact, "PBFT_MANAGER_BROADCAST_COUNTER_OVERFLOW");
+        };
+        return pbft_manager_broadcast_ready(
+            PbftManagerBroadcastAction::PeriodVotes,
+            true,
+            fact.broadcast_votes_counter,
+            fact.rebroadcast_votes_counter,
+            next_broadcast_reward_votes_counter,
+            next_rebroadcast_reward_votes_counter,
+        );
+    }
+
+    if ratio_threshold_exceeded(
+        fact.period_elapsed_ms,
+        fact.current_round_lambda_ms,
+        fact.broadcast_lambda_threshold,
+        fact.broadcast_reward_votes_counter,
+    ) {
+        let Some(next_broadcast_reward_votes_counter) =
+            pbft_manager_counter_increment(fact.broadcast_reward_votes_counter)
+        else {
+            return pbft_manager_broadcast_invalid(fact, "PBFT_MANAGER_BROADCAST_COUNTER_OVERFLOW");
+        };
+        return pbft_manager_broadcast_ready(
+            PbftManagerBroadcastAction::PeriodVotes,
+            false,
+            fact.broadcast_votes_counter,
+            fact.rebroadcast_votes_counter,
+            next_broadcast_reward_votes_counter,
+            fact.rebroadcast_reward_votes_counter,
+        );
+    }
+
+    pbft_manager_broadcast_ready(
+        PbftManagerBroadcastAction::Noop,
+        false,
+        fact.broadcast_votes_counter,
+        fact.rebroadcast_votes_counter,
+        fact.broadcast_reward_votes_counter,
+        fact.rebroadcast_reward_votes_counter,
+    )
+}
+
+/// Validates a C++ executor report before counter mirrors are updated.
+#[must_use]
+pub fn report_pbft_manager_broadcast(
+    plan: PbftManagerBroadcastPlan,
+    report: PbftManagerBroadcastReport,
+) -> PbftManagerBroadcastReportResult {
+    if plan.status != PbftManagerBroadcastStatus::Ready {
+        return PbftManagerBroadcastReportResult {
+            status: plan.status,
+            apply_counters: false,
+            broadcast_votes_counter: plan.next_broadcast_votes_counter,
+            rebroadcast_votes_counter: plan.next_rebroadcast_votes_counter,
+            broadcast_reward_votes_counter: plan.next_broadcast_reward_votes_counter,
+            rebroadcast_reward_votes_counter: plan.next_rebroadcast_reward_votes_counter,
+            error_code: plan.error_code,
+        };
+    }
+
+    if report.action == PbftManagerBroadcastAction::Unknown
+        || report.action != plan.action
+        || report.rebroadcast != plan.rebroadcast
+    {
+        return PbftManagerBroadcastReportResult {
+            status: PbftManagerBroadcastStatus::InvalidReport,
+            apply_counters: false,
+            broadcast_votes_counter: plan.next_broadcast_votes_counter,
+            rebroadcast_votes_counter: plan.next_rebroadcast_votes_counter,
+            broadcast_reward_votes_counter: plan.next_broadcast_reward_votes_counter,
+            rebroadcast_reward_votes_counter: plan.next_rebroadcast_reward_votes_counter,
+            error_code: "PBFT_MANAGER_BROADCAST_REPORT_ACTION_MISMATCH".to_string(),
+        };
+    }
+
+    if !report.success {
+        return PbftManagerBroadcastReportResult {
+            status: PbftManagerBroadcastStatus::ExecutorFailed,
+            apply_counters: false,
+            broadcast_votes_counter: plan.next_broadcast_votes_counter,
+            rebroadcast_votes_counter: plan.next_rebroadcast_votes_counter,
+            broadcast_reward_votes_counter: plan.next_broadcast_reward_votes_counter,
+            rebroadcast_reward_votes_counter: plan.next_rebroadcast_reward_votes_counter,
+            error_code: if report.error_code.is_empty() {
+                "PBFT_MANAGER_BROADCAST_EXECUTOR_FAILED".to_string()
+            } else {
+                report.error_code
+            },
+        };
+    }
+
+    PbftManagerBroadcastReportResult {
+        status: PbftManagerBroadcastStatus::Ready,
+        apply_counters: plan.action != PbftManagerBroadcastAction::Noop,
+        broadcast_votes_counter: plan.next_broadcast_votes_counter,
+        rebroadcast_votes_counter: plan.next_rebroadcast_votes_counter,
+        broadcast_reward_votes_counter: plan.next_broadcast_reward_votes_counter,
+        rebroadcast_reward_votes_counter: plan.next_rebroadcast_reward_votes_counter,
+        error_code: String::new(),
+    }
+}
+
 fn pbft_manager_block_validation_run_check(
     next_check: PbftManagerBlockValidationNextCheck,
 ) -> PbftManagerBlockValidationPlan {
@@ -1436,6 +2462,158 @@ impl PbftManagerRuntimeAction {
     }
 }
 
+/// Stable PBFT manager effect catalog for the Rust-mode C++ executor.
+///
+/// Purpose:
+/// - Names every larger live action boundary that remains around the
+///   Rust-owned PBFT manager runtime.
+/// - Gives follow-up slices a single vocabulary for replacing branch-local
+///   C++ helper calls with Rust-planned ordered effects.
+///
+/// Inputs/outputs:
+/// - Values are emitted or referenced by PBFT manager planners and sessions.
+/// - C++ executors resolve compatibility sidecars, execute the requested live
+///   action, and report the result back before Rust advances.
+///
+/// Invariants and edge behavior:
+/// - Numeric codes are stable for bridge and transcript-test use.
+/// - The enum catalogs executor boundaries only; it does not perform I/O,
+///   mutate storage, send network messages, or materialize C++ objects.
+/// - `Unknown` is reserved for rejected bridge values and must never be emitted
+///   by Rust planners as an executable effect.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerEffectKind {
+    /// Drain synced period data from the PBFT sync queue.
+    ProcessSyncedPbftBlocks,
+    /// Decide and execute PBFT vote/reward/pillar rebroadcasts.
+    BroadcastVotes,
+    /// Try to push the current cert-voted PBFT block into the chain.
+    TryPushCertVotesBlock,
+    /// Query VoteManager for a higher round candidate.
+    DetermineNewRound,
+    /// Apply a Rust-planned manager cursor transition.
+    ApplyManagerTransition,
+    /// Sleep because the local node has no eligible wallet for the active phase.
+    SleepIneligiblePollingInterval,
+    /// Sleep until the next planned PBFT step.
+    SleepUntilNextStep,
+    /// Construct a new PBFT proposal candidate.
+    ConstructProposal,
+    /// Resolve and validate a proposed PBFT block sidecar.
+    ValidateProposedBlock,
+    /// Rank proposal votes and resolve the selected leader block.
+    ResolveLeaderBlock,
+    /// Generate a local PBFT vote from Rust-owned vote bytes.
+    GenerateVote,
+    /// Insert a Rust-accepted vote into live compatibility sidecars.
+    PlaceVote,
+    /// Gossip a single vote or vote bundle through the network executor.
+    GossipVote,
+    /// Query FinalChain facts or wait for FinalChain progress.
+    FinalChainFactOrWait,
+    /// Query DAG ordering, block, weight, or cleanup facts.
+    DagFactOrMutation,
+    /// Query or mutate transaction manager finalization state.
+    TransactionFactOrMutation,
+    /// Validate, finalize, or post-process pillar chain data.
+    PillarFactOrMutation,
+    /// Apply PBFT finalization storage writes through Rust storage.
+    ApplyFinalizationStorage,
+    /// Dispatch FinalChain finalization outside the PBFT manager runtime.
+    FinalizeFinalChain,
+    /// Apply dynamic-lambda live state selected by Rust.
+    ApplyDynamicLambda,
+    /// Update live PBFT-chain compatibility state.
+    UpdatePbftChain,
+    /// Advance the PBFT period and related compatibility mirrors.
+    AdvancePeriod,
+    /// Report a malicious or invalid sync peer through the network executor.
+    ReportPeer,
+    /// Clear sync/proposed-block/anchor caches or other compatibility sidecars.
+    ClearCompatibilityCache,
+    /// Unknown bridge effect code.
+    Unknown,
+}
+
+impl PbftManagerEffectKind {
+    /// Stable bridge and transcript code for the PBFT manager effect.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::ProcessSyncedPbftBlocks => 0,
+            Self::BroadcastVotes => 1,
+            Self::TryPushCertVotesBlock => 2,
+            Self::DetermineNewRound => 3,
+            Self::ApplyManagerTransition => 4,
+            Self::SleepIneligiblePollingInterval => 5,
+            Self::SleepUntilNextStep => 6,
+            Self::ConstructProposal => 7,
+            Self::ValidateProposedBlock => 8,
+            Self::ResolveLeaderBlock => 9,
+            Self::GenerateVote => 10,
+            Self::PlaceVote => 11,
+            Self::GossipVote => 12,
+            Self::FinalChainFactOrWait => 13,
+            Self::DagFactOrMutation => 14,
+            Self::TransactionFactOrMutation => 15,
+            Self::PillarFactOrMutation => 16,
+            Self::ApplyFinalizationStorage => 17,
+            Self::FinalizeFinalChain => 18,
+            Self::ApplyDynamicLambda => 19,
+            Self::UpdatePbftChain => 20,
+            Self::AdvancePeriod => 21,
+            Self::ReportPeer => 22,
+            Self::ClearCompatibilityCache => 23,
+            Self::Unknown => 254,
+        }
+    }
+
+    /// Decodes a stable bridge or transcript effect code.
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::ProcessSyncedPbftBlocks,
+            1 => Self::BroadcastVotes,
+            2 => Self::TryPushCertVotesBlock,
+            3 => Self::DetermineNewRound,
+            4 => Self::ApplyManagerTransition,
+            5 => Self::SleepIneligiblePollingInterval,
+            6 => Self::SleepUntilNextStep,
+            7 => Self::ConstructProposal,
+            8 => Self::ValidateProposedBlock,
+            9 => Self::ResolveLeaderBlock,
+            10 => Self::GenerateVote,
+            11 => Self::PlaceVote,
+            12 => Self::GossipVote,
+            13 => Self::FinalChainFactOrWait,
+            14 => Self::DagFactOrMutation,
+            15 => Self::TransactionFactOrMutation,
+            16 => Self::PillarFactOrMutation,
+            17 => Self::ApplyFinalizationStorage,
+            18 => Self::FinalizeFinalChain,
+            19 => Self::ApplyDynamicLambda,
+            20 => Self::UpdatePbftChain,
+            21 => Self::AdvancePeriod,
+            22 => Self::ReportPeer,
+            23 => Self::ClearCompatibilityCache,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// Returns true when the effect is intentionally outside the PBFT manager
+    /// breakthrough boundary and must remain a C++ executor action for now.
+    pub const fn is_external_boundary(self) -> bool {
+        matches!(
+            self,
+            Self::BroadcastVotes
+                | Self::GossipVote
+                | Self::FinalChainFactOrWait
+                | Self::FinalizeFinalChain
+                | Self::ReportPeer
+                | Self::SleepIneligiblePollingInterval
+                | Self::SleepUntilNextStep
+        )
+    }
+}
+
 /// Stable result code for one C++-executed manager action.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum PbftManagerRuntimeActionResultCode {
@@ -1653,6 +2831,185 @@ pub struct PbftManagerStateActionPlan {
     pub loop_back_finish_state: bool,
     /// Stable error detail for rejected facts.
     pub error_code: String,
+}
+
+/// One ordered PBFT manager state-action effect for the C++ executor.
+///
+/// Inputs:
+/// - `intent` names the live action C++ must execute.
+/// - `hash` carries the block hash argument for intents that need one.
+///
+/// Invariants:
+/// - Effects are emitted in the order Rust expects them to run.
+/// - C++ must not reorder effects or infer extra branch work outside this list.
+/// - Live object resolution, vote generation, storage mutation, and gossip
+///   remain executor responsibilities until those dependencies move to Rust.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerStateActionEffect {
+    /// Effect intent for the C++ executor.
+    pub intent: PbftManagerStateActionIntent,
+    /// Hash argument for the effect, if applicable.
+    pub hash: [u8; 32],
+}
+
+/// Ordered PBFT manager state-action effect plan.
+///
+/// This is the effect-oriented successor surface for
+/// `plan_pbft_manager_state_action`. It keeps the same deterministic branch
+/// decisions but returns an ordered effect vector so the C++ shim can use one
+/// executor loop for value proposal, filter, certify, first finish, and finish
+/// polling. Empty `effects` is a valid no-op plan.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerStateActionEffectPlan {
+    /// Planning status.
+    pub status: PbftManagerStateActionStatus,
+    /// Ordered live effects to execute.
+    pub effects: Vec<PbftManagerStateActionEffect>,
+    /// Planned value for `go_finish_state_`.
+    pub go_finish_state: bool,
+    /// Planned value for `loop_back_finish_state_`.
+    pub loop_back_finish_state: bool,
+    /// Stable error detail for rejected facts.
+    pub error_code: String,
+}
+
+/// Status for a Rust-owned PBFT manager state-action effect session.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerStateActionSessionStatus {
+    /// The session is active and may yield more effects.
+    Active,
+    /// All planned effects completed successfully.
+    Complete,
+    /// The original fact bundle was rejected by the planner.
+    RejectedFact,
+    /// C++ reported an effect that did not match the pending cursor/intent.
+    EffectMismatch,
+    /// The report used an unknown result code.
+    InvalidReport,
+    /// C++ reported a live check or sidecar failure for the pending effect.
+    EffectFailed,
+    /// C++ reported an executor or bridge contract error.
+    ContractError,
+}
+
+impl PbftManagerStateActionSessionStatus {
+    /// Stable bridge code for the session status.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Active => 0,
+            Self::Complete => 1,
+            Self::RejectedFact => 2,
+            Self::EffectMismatch => 3,
+            Self::InvalidReport => 4,
+            Self::EffectFailed => 5,
+            Self::ContractError => 6,
+        }
+    }
+}
+
+/// Result code reported by C++ after executing one state-action effect.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerStateActionEffectResultCode {
+    /// The executor applied the effect or completed its no-progress live check.
+    Applied,
+    /// The effect was valid but produced no mutation.
+    SkippedNoWork,
+    /// A required live block, vote, or sidecar was unavailable.
+    SkippedMissingLiveObject,
+    /// A live compatibility check rejected the effect.
+    RejectedLiveCheck,
+    /// Unknown bridge result code.
+    Unknown,
+    /// The executor hit an unsupported effect, exception, or contract error.
+    ExecutorError,
+}
+
+impl PbftManagerStateActionEffectResultCode {
+    /// Stable bridge code for effect reports.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Applied => 0,
+            Self::SkippedNoWork => 1,
+            Self::SkippedMissingLiveObject => 2,
+            Self::RejectedLiveCheck => 3,
+            Self::Unknown => 254,
+            Self::ExecutorError => 255,
+        }
+    }
+
+    /// Decodes a stable bridge code.
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Applied,
+            1 => Self::SkippedNoWork,
+            2 => Self::SkippedMissingLiveObject,
+            3 => Self::RejectedLiveCheck,
+            254 => Self::Unknown,
+            255 => Self::ExecutorError,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Report supplied by C++ after executing a Rust-planned state-action effect.
+///
+/// Inputs:
+/// - `cursor` and `intent` must match the pending effect returned by Rust.
+/// - `result` reports whether the live executor accepted the effect.
+/// - `error_code` carries executor diagnostics for rejected effects.
+///
+/// Invariants:
+/// - Rust validates report ordering before advancing the effect cursor.
+/// - Reports do not carry live objects; C++ remains the temporary owner of
+///   sidecar materialization and mutation.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerStateActionEffectReport {
+    /// Cursor returned with the pending effect.
+    pub cursor: u32,
+    /// Effect intent C++ attempted to execute.
+    pub intent: PbftManagerStateActionIntent,
+    /// Executor result.
+    pub result: PbftManagerStateActionEffectResultCode,
+    /// Optional executor diagnostic for rejected effects.
+    pub error_code: String,
+}
+
+/// One step from a Rust-owned PBFT manager state-action effect session.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerStateActionSessionStep {
+    /// Session status after the last report.
+    pub status: PbftManagerStateActionSessionStatus,
+    /// Monotonic effect cursor.
+    pub cursor: u32,
+    /// True when `effect` contains work for the C++ executor.
+    pub has_effect: bool,
+    /// Pending effect for C++ execution.
+    pub effect: PbftManagerStateActionEffect,
+    /// Planned value for `go_finish_state_`.
+    pub go_finish_state: bool,
+    /// Planned value for `loop_back_finish_state_`.
+    pub loop_back_finish_state: bool,
+    /// True when the session reached a terminal status.
+    pub complete: bool,
+    /// True when the C++ caller may continue with follow-up manager routing.
+    pub can_continue: bool,
+    /// Stable diagnostic code for bridge/log consumers.
+    pub error_code: String,
+}
+
+/// Rust-owned cursor for ordered PBFT manager state-action effects.
+///
+/// The session wraps `PbftManagerStateActionEffectPlan` and exposes one effect
+/// at a time. C++ must report each effect before Rust advances. This keeps
+/// state-action ordering in Rust while leaving live side effects outside the
+/// PBFT manager migration boundary.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerStateActionEffectSession {
+    /// Planned effects and state flags.
+    pub plan: PbftManagerStateActionEffectPlan,
+    cursor: usize,
+    status: PbftManagerStateActionSessionStatus,
+    pending: Option<PbftManagerStateActionEffect>,
 }
 
 /// Stable transition-kind codes for PBFT manager cursor mutation planning.
@@ -2039,6 +3396,136 @@ pub struct PbftManagerStartupReplayPeriod {
     pub period_lambda: Option<u32>,
 }
 
+/// Startup replay range facts supplied by the compatibility shell.
+///
+/// Purpose:
+/// - Moves startup range selection out of the PBFT manager overlay while
+///   keeping FinalChain height, PBFT-chain size, and delegation-delay sourcing
+///   at their current executor boundaries.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PbftManagerStartupReplayRangeFact {
+    /// Last block finalized by FinalChain at PBFT manager startup.
+    pub final_chain_last_block: u64,
+    /// Current PBFT chain size at startup.
+    pub pbft_chain_size: u64,
+    /// FinalChain delegation delay used for recently-finalized transaction hydration.
+    pub delegation_delay: u64,
+    /// Legacy multiplier for recently-finalized transaction replay coverage.
+    pub recently_finalized_factor: u64,
+}
+
+/// Rust-owned startup replay range plan.
+///
+/// Outputs:
+/// - `finalization_*` covers finalized PBFT periods that FinalChain must replay.
+/// - `recent_*` covers periods used to hydrate recently-finalized transaction
+///   compatibility sidecars.
+///
+/// Invariants and edge behavior:
+/// - Empty finalization ranges are represented by
+///   `has_finalization_range = false`.
+/// - Recent replay always has a bounded inclusive range when PBFT chain size is
+///   nonzero, preserving legacy period `1` as the minimum.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerStartupReplayRangePlan {
+    /// Whether the plan is usable.
+    pub accepted: bool,
+    /// Whether FinalChain replay has at least one period.
+    pub has_finalization_range: bool,
+    /// Inclusive first period for FinalChain replay.
+    pub finalization_from_period: u64,
+    /// Inclusive last period for FinalChain replay.
+    pub finalization_to_period: u64,
+    /// Inclusive first period for recently-finalized transaction hydration.
+    pub recent_from_period: u64,
+    /// Inclusive last period for recently-finalized transaction hydration.
+    pub recent_to_period: u64,
+    /// Stable error code, empty on success.
+    pub error_code: String,
+}
+
+/// Ordered effects for `PbftManager::advancePeriod`.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerAdvancePeriodAction {
+    /// Apply the embedded reset-consensus transition plan.
+    ApplyResetConsensusTransition,
+    /// Apply the delayed executed-block reset after waiting for finalization.
+    ApplyExecutedBlockReset,
+    /// Update VoteManager period/round after the reset transition.
+    SetVoteManagerPeriodRound,
+    /// Reset current-round timer in the compatibility shell.
+    ResetCurrentRoundTimer,
+    /// Reset reward-vote broadcast counters.
+    ResetRewardVoteCounters,
+    /// Reset current-period timer in the compatibility shell.
+    ResetPeriodTimer,
+    /// Update wallet eligibility after reset/wait-for-finalization.
+    UpdateWalletEligibility,
+    /// Clean up votes for the finalized chain size.
+    CleanupVotes,
+    /// Clean up stale proposed PBFT blocks for the new period.
+    CleanupProposedBlocks,
+}
+
+impl PbftManagerAdvancePeriodAction {
+    /// Stable bridge code for C++.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::ApplyResetConsensusTransition => 0,
+            Self::ApplyExecutedBlockReset => 1,
+            Self::SetVoteManagerPeriodRound => 2,
+            Self::ResetCurrentRoundTimer => 3,
+            Self::ResetRewardVoteCounters => 4,
+            Self::ResetPeriodTimer => 5,
+            Self::UpdateWalletEligibility => 6,
+            Self::CleanupVotes => 7,
+            Self::CleanupProposedBlocks => 8,
+        }
+    }
+
+    /// Decodes a stable bridge code from C++.
+    pub const fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::ApplyResetConsensusTransition),
+            1 => Some(Self::ApplyExecutedBlockReset),
+            2 => Some(Self::SetVoteManagerPeriodRound),
+            3 => Some(Self::ResetCurrentRoundTimer),
+            4 => Some(Self::ResetRewardVoteCounters),
+            5 => Some(Self::ResetPeriodTimer),
+            6 => Some(Self::UpdateWalletEligibility),
+            7 => Some(Self::CleanupVotes),
+            8 => Some(Self::CleanupProposedBlocks),
+            _ => None,
+        }
+    }
+}
+
+/// Facts for planning one PBFT manager period advance command.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerAdvancePeriodFact {
+    /// PBFT chain size after the just-finalized block was pushed.
+    pub pbft_chain_size: u64,
+    /// Existing reset-consensus transition fact for target round one.
+    pub transition_fact: PbftManagerTransitionFact,
+}
+
+/// Rust-owned advance-period effect plan for the transitional C++ executor.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerAdvancePeriodPlan {
+    /// Whether C++ may execute the ordered effects.
+    pub accepted: bool,
+    /// PBFT chain size that was just finalized and should be used for cleanup.
+    pub finalized_chain_size: u64,
+    /// PBFT period after advancement.
+    pub new_period: u64,
+    /// Embedded reset transition that must be persisted before live cleanup.
+    pub transition_plan: PbftManagerTransitionPlan,
+    /// Ordered effect script for the C++ executor.
+    pub actions: Vec<PbftManagerAdvancePeriodAction>,
+    /// Stable error code, empty on success.
+    pub error_code: String,
+}
+
 impl PbftManagerRuntime {
     /// Creates a runtime from an already accepted startup snapshot.
     pub fn new(snapshot: PbftManagerRuntimeSnapshot) -> Self {
@@ -2144,6 +3631,36 @@ impl PbftManagerRuntime {
         }
         self.snapshot.status = PbftManagerStartupRestoreStatus::Ready;
         self.snapshot.error_code.clear();
+    }
+
+    /// Records a completed Rust-planned period advance.
+    ///
+    /// Inputs:
+    /// - `new_period`: PBFT period produced by
+    ///   `plan_pbft_manager_advance_period`.
+    ///
+    /// Outputs:
+    /// - Updates the Rust-owned runtime period after the C++ executor has
+    ///   completed the ordered advance-period effects.
+    ///
+    /// Invariants and edge behavior:
+    /// - `new_period` must be strictly greater than the current runtime period;
+    ///   invalid reports leave the snapshot unchanged and return an invalid
+    ///   snapshot with a stable error code.
+    pub fn apply_committed_period_advance(
+        &mut self,
+        new_period: u64,
+    ) -> PbftManagerRuntimeSnapshot {
+        if new_period <= self.snapshot.period {
+            let mut rejected = self.snapshot.clone();
+            rejected.status = PbftManagerStartupRestoreStatus::InvalidFact;
+            rejected.error_code = "PBFT_MANAGER_ADVANCE_PERIOD_NON_INCREASING_PERIOD".to_string();
+            return rejected;
+        }
+        self.snapshot.status = PbftManagerStartupRestoreStatus::Ready;
+        self.snapshot.period = new_period;
+        self.snapshot.error_code.clear();
+        self.snapshot.clone()
     }
 }
 
@@ -2429,6 +3946,137 @@ pub fn load_pbft_manager_startup_replay_period(
         finalized_dag_hashes,
         period_lambda,
     })
+}
+
+/// Plans the PBFT manager startup replay ranges from explicit live facts.
+///
+/// The C++ overlay still executes FinalChain replay and transaction-manager
+/// hydration, but Rust now owns the range arithmetic and corrupted-fact
+/// rejection. This keeps startup replay decisions with the long-lived PBFT
+/// manager runtime rather than duplicating them in the compatibility shell.
+pub fn plan_pbft_manager_startup_replay_ranges(
+    fact: PbftManagerStartupReplayRangeFact,
+) -> PbftManagerStartupReplayRangePlan {
+    if fact.final_chain_last_block > fact.pbft_chain_size {
+        return PbftManagerStartupReplayRangePlan {
+            accepted: false,
+            has_finalization_range: false,
+            finalization_from_period: 0,
+            finalization_to_period: 0,
+            recent_from_period: 0,
+            recent_to_period: 0,
+            error_code: "PBFT_MANAGER_STARTUP_REPLAY_FINAL_CHAIN_AHEAD".to_string(),
+        };
+    }
+
+    if fact.pbft_chain_size == 0 {
+        return PbftManagerStartupReplayRangePlan {
+            accepted: true,
+            has_finalization_range: false,
+            finalization_from_period: 0,
+            finalization_to_period: 0,
+            recent_from_period: 1,
+            recent_to_period: 0,
+            error_code: String::new(),
+        };
+    }
+
+    let finalization_from_period = fact.final_chain_last_block.saturating_add(1);
+    let has_finalization_range = finalization_from_period <= fact.pbft_chain_size;
+    let coverage = fact
+        .recently_finalized_factor
+        .saturating_mul(fact.delegation_delay);
+    let recent_from_period = if fact.pbft_chain_size > coverage {
+        fact.pbft_chain_size - coverage
+    } else {
+        1
+    };
+
+    PbftManagerStartupReplayRangePlan {
+        accepted: true,
+        has_finalization_range,
+        finalization_from_period: if has_finalization_range {
+            finalization_from_period
+        } else {
+            0
+        },
+        finalization_to_period: if has_finalization_range {
+            fact.pbft_chain_size
+        } else {
+            0
+        },
+        recent_from_period,
+        recent_to_period: fact.pbft_chain_size,
+        error_code: String::new(),
+    }
+}
+
+/// Plans the ordered effects for advancing the PBFT manager period.
+///
+/// C++ remains the executor for timers, wallet eligibility, vote/proposed-block
+/// sidecars, and logging. Rust owns the action order and period arithmetic so
+/// callers cannot advance period cleanup in a different order from the runtime
+/// contract.
+pub fn plan_pbft_manager_advance_period(
+    fact: PbftManagerAdvancePeriodFact,
+) -> PbftManagerAdvancePeriodPlan {
+    let transition_plan = plan_pbft_manager_transition(fact.transition_fact);
+    plan_pbft_manager_advance_period_from_transition(fact.pbft_chain_size, transition_plan)
+}
+
+/// Plans period advancement around an already Rust-created reset transition.
+pub fn plan_pbft_manager_advance_period_from_transition(
+    pbft_chain_size: u64,
+    transition_plan: PbftManagerTransitionPlan,
+) -> PbftManagerAdvancePeriodPlan {
+    if pbft_chain_size == 0 {
+        return PbftManagerAdvancePeriodPlan {
+            accepted: false,
+            finalized_chain_size: 0,
+            new_period: 0,
+            transition_plan,
+            actions: Vec::new(),
+            error_code: "PBFT_MANAGER_ADVANCE_PERIOD_EMPTY_CHAIN".to_string(),
+        };
+    }
+    if transition_plan.status != PbftManagerTransitionStatus::Ready
+        || transition_plan.kind != PbftManagerTransitionKind::ResetConsensus
+        || transition_plan.new_round != 1
+    {
+        return PbftManagerAdvancePeriodPlan {
+            accepted: false,
+            finalized_chain_size: 0,
+            new_period: 0,
+            transition_plan,
+            actions: Vec::new(),
+            error_code: "PBFT_MANAGER_ADVANCE_PERIOD_INVALID_RESET_TRANSITION".to_string(),
+        };
+    }
+
+    let mut actions = vec![PbftManagerAdvancePeriodAction::ApplyResetConsensusTransition];
+    if transition_plan.reset_executed_block_status {
+        actions.push(PbftManagerAdvancePeriodAction::ApplyExecutedBlockReset);
+    }
+    if transition_plan.set_vote_manager_period_round {
+        actions.push(PbftManagerAdvancePeriodAction::SetVoteManagerPeriodRound);
+    }
+    if transition_plan.reset_current_round_start {
+        actions.push(PbftManagerAdvancePeriodAction::ResetCurrentRoundTimer);
+    }
+    actions.push(PbftManagerAdvancePeriodAction::ResetRewardVoteCounters);
+    actions.push(PbftManagerAdvancePeriodAction::ResetPeriodTimer);
+    actions.push(PbftManagerAdvancePeriodAction::UpdateWalletEligibility);
+    actions.push(PbftManagerAdvancePeriodAction::CleanupVotes);
+    actions.push(PbftManagerAdvancePeriodAction::CleanupProposedBlocks);
+
+    PbftManagerAdvancePeriodPlan {
+        accepted: true,
+        finalized_chain_size: pbft_chain_size,
+        new_period: pbft_chain_size.saturating_add(1),
+        transition_plan,
+        actions,
+        error_code: String::new(),
+    }
 }
 
 fn finalized_dag_hashes_from_period_data(period_data_rlp: &[u8]) -> Result<Vec<H256>> {
@@ -3042,6 +4690,224 @@ pub fn plan_pbft_manager_state_action(
         PbftManagerRuntimeStateCode::FinishPolling => plan_second_finish_state_action(&fact),
         PbftManagerRuntimeStateCode::Unknown => unreachable!("unknown state rejected above"),
     }
+}
+
+/// Plans one PBFT manager state action as ordered effects.
+///
+/// This function is side-effect-free. It preserves the same deterministic
+/// decision table as `plan_pbft_manager_state_action`, then converts non-noop
+/// primary and secondary intents into ordered effects for a shared C++ executor
+/// loop. C++ remains responsible for resolving live block/vote sidecars,
+/// generating and placing votes, persisting compatibility state, and gossiping
+/// generated votes.
+pub fn plan_pbft_manager_state_action_effects(
+    fact: PbftManagerStateActionFact,
+) -> PbftManagerStateActionEffectPlan {
+    let plan = plan_pbft_manager_state_action(fact);
+    let mut effects = Vec::with_capacity(2);
+    if plan.primary_intent != PbftManagerStateActionIntent::Noop {
+        effects.push(PbftManagerStateActionEffect {
+            intent: plan.primary_intent,
+            hash: plan.primary_hash,
+        });
+    }
+    if plan.secondary_intent != PbftManagerStateActionIntent::Noop {
+        effects.push(PbftManagerStateActionEffect {
+            intent: plan.secondary_intent,
+            hash: plan.secondary_hash,
+        });
+    }
+
+    PbftManagerStateActionEffectPlan {
+        status: plan.status,
+        effects,
+        go_finish_state: plan.go_finish_state,
+        loop_back_finish_state: plan.loop_back_finish_state,
+        error_code: plan.error_code,
+    }
+}
+
+fn state_action_session_step(
+    status: PbftManagerStateActionSessionStatus,
+    cursor: usize,
+    effect: Option<PbftManagerStateActionEffect>,
+    plan: &PbftManagerStateActionEffectPlan,
+    error_code: String,
+) -> PbftManagerStateActionSessionStep {
+    PbftManagerStateActionSessionStep {
+        status,
+        cursor: u32::try_from(cursor).unwrap_or(u32::MAX),
+        has_effect: effect.is_some(),
+        effect: effect.unwrap_or(PbftManagerStateActionEffect {
+            intent: PbftManagerStateActionIntent::Noop,
+            hash: [0; 32],
+        }),
+        go_finish_state: plan.go_finish_state,
+        loop_back_finish_state: plan.loop_back_finish_state,
+        complete: status != PbftManagerStateActionSessionStatus::Active,
+        can_continue: matches!(
+            status,
+            PbftManagerStateActionSessionStatus::Active
+                | PbftManagerStateActionSessionStatus::Complete
+        ),
+        error_code,
+    }
+}
+
+/// Creates a Rust-owned state-action effect session from compact C++ facts.
+///
+/// The session owns the ordered effect cursor. Rejected fact bundles produce a
+/// terminal session whose first `next` call returns `RejectedFact`.
+pub fn create_pbft_manager_state_action_effect_session(
+    fact: PbftManagerStateActionFact,
+) -> PbftManagerStateActionEffectSession {
+    let plan = plan_pbft_manager_state_action_effects(fact);
+    let status = if plan.status == PbftManagerStateActionStatus::Ready {
+        PbftManagerStateActionSessionStatus::Active
+    } else {
+        PbftManagerStateActionSessionStatus::RejectedFact
+    };
+    PbftManagerStateActionEffectSession {
+        plan,
+        cursor: 0,
+        status,
+        pending: None,
+    }
+}
+
+/// Returns the next state-action effect requested by Rust.
+///
+/// Edge behavior:
+/// - A no-op plan completes immediately.
+/// - Calling `next` while an effect is pending returns the same pending effect
+///   until C++ reports it.
+/// - Rejected or executor-failed sessions return terminal steps.
+pub fn next_pbft_manager_state_action_effect_session(
+    session: &mut PbftManagerStateActionEffectSession,
+) -> PbftManagerStateActionSessionStep {
+    if session.status != PbftManagerStateActionSessionStatus::Active {
+        return state_action_session_step(
+            session.status,
+            session.cursor,
+            None,
+            &session.plan,
+            session.plan.error_code.clone(),
+        );
+    }
+    if let Some(effect) = session.pending.clone() {
+        return state_action_session_step(
+            PbftManagerStateActionSessionStatus::Active,
+            session.cursor,
+            Some(effect),
+            &session.plan,
+            String::new(),
+        );
+    }
+    if session.cursor >= session.plan.effects.len() {
+        session.status = PbftManagerStateActionSessionStatus::Complete;
+        return state_action_session_step(
+            session.status,
+            session.cursor,
+            None,
+            &session.plan,
+            String::new(),
+        );
+    }
+
+    let effect = session.plan.effects[session.cursor].clone();
+    session.pending = Some(effect.clone());
+    state_action_session_step(
+        PbftManagerStateActionSessionStatus::Active,
+        session.cursor,
+        Some(effect),
+        &session.plan,
+        String::new(),
+    )
+}
+
+/// Reports one C++-executed state-action effect and advances the Rust cursor.
+///
+/// Rust validates that the report matches the pending cursor and intent before
+/// accepting it. Executor rejection is terminal; successful reports advance to
+/// the next effect or complete the session.
+pub fn report_pbft_manager_state_action_effect_session(
+    session: &mut PbftManagerStateActionEffectSession,
+    report: PbftManagerStateActionEffectReport,
+) -> PbftManagerStateActionSessionStep {
+    if session.status != PbftManagerStateActionSessionStatus::Active {
+        return state_action_session_step(
+            session.status,
+            session.cursor,
+            None,
+            &session.plan,
+            session.plan.error_code.clone(),
+        );
+    }
+    let Some(pending) = session.pending.clone() else {
+        session.status = PbftManagerStateActionSessionStatus::EffectMismatch;
+        return state_action_session_step(
+            session.status,
+            session.cursor,
+            None,
+            &session.plan,
+            "PBFT_MANAGER_STATE_ACTION_EFFECT_REPORT_WITHOUT_PENDING_EFFECT".to_string(),
+        );
+    };
+    if report.cursor as usize != session.cursor || report.intent != pending.intent {
+        session.status = PbftManagerStateActionSessionStatus::EffectMismatch;
+        return state_action_session_step(
+            session.status,
+            session.cursor,
+            None,
+            &session.plan,
+            "PBFT_MANAGER_STATE_ACTION_EFFECT_REPORT_MISMATCH".to_string(),
+        );
+    }
+    if report.result == PbftManagerStateActionEffectResultCode::Unknown {
+        session.status = PbftManagerStateActionSessionStatus::InvalidReport;
+        return state_action_session_step(
+            session.status,
+            session.cursor,
+            None,
+            &session.plan,
+            "PBFT_MANAGER_STATE_ACTION_EFFECT_UNKNOWN_RESULT".to_string(),
+        );
+    }
+    session.pending = None;
+    if report.result == PbftManagerStateActionEffectResultCode::ExecutorError {
+        session.status = PbftManagerStateActionSessionStatus::ContractError;
+        return state_action_session_step(
+            session.status,
+            session.cursor,
+            None,
+            &session.plan,
+            if report.error_code.is_empty() {
+                "PBFT_MANAGER_STATE_ACTION_EFFECT_EXECUTOR_ERROR".to_string()
+            } else {
+                report.error_code
+            },
+        );
+    }
+    if matches!(
+        report.result,
+        PbftManagerStateActionEffectResultCode::SkippedMissingLiveObject
+            | PbftManagerStateActionEffectResultCode::RejectedLiveCheck
+    ) {
+        session.status = PbftManagerStateActionSessionStatus::EffectFailed;
+        return state_action_session_step(
+            session.status,
+            session.cursor,
+            None,
+            &session.plan,
+            if report.error_code.is_empty() {
+                "PBFT_MANAGER_STATE_ACTION_EFFECT_FAILED".to_string()
+            } else {
+                report.error_code
+            },
+        );
+    }
+    session.cursor += 1;
+    next_pbft_manager_state_action_effect_session(session)
 }
 
 fn previous_round_starts_from_null(fact: &PbftManagerStateActionFact) -> bool {
@@ -3784,6 +5650,371 @@ mod tests {
         }
     }
 
+    fn proposal_fact() -> PbftManagerProposalInitialFact {
+        PbftManagerProposalInitialFact {
+            period: 10,
+            round: 2,
+            previous_pbft_block_hash: H256::from_low_u64_be(100),
+            last_period_dag_anchor_hash: H256::from_low_u64_be(1),
+            dag_genesis_hash: H256::from_low_u64_be(1),
+            dag_blocks_size: 10,
+            ghost_path_move_back: 0,
+            pbft_gas_limit: 100,
+            extra_data_required: false,
+            extra_data_available: false,
+            final_chain_hash_valid: true,
+            final_chain_hash: H256::from_low_u64_be(200),
+            wallets: vec![
+                PbftManagerProposalWalletFact {
+                    wallet_index: 0,
+                    dpos_eligible: false,
+                    sortition_valid: true,
+                },
+                PbftManagerProposalWalletFact {
+                    wallet_index: 1,
+                    dpos_eligible: true,
+                    sortition_valid: false,
+                },
+                PbftManagerProposalWalletFact {
+                    wallet_index: 2,
+                    dpos_eligible: true,
+                    sortition_valid: true,
+                },
+            ],
+            ghost_path: vec![
+                H256::from_low_u64_be(1),
+                H256::from_low_u64_be(2),
+                H256::from_low_u64_be(3),
+            ],
+            has_non_finalized_fallback: false,
+            non_finalized_fallback_hash: H256::zero(),
+        }
+    }
+
+    fn dag_block(hash: u64, gas_estimation: u64) -> PbftManagerProposalDagBlockFact {
+        PbftManagerProposalDagBlockFact {
+            hash: H256::from_low_u64_be(hash),
+            gas_estimation,
+        }
+    }
+
+    fn proposal_report(
+        anchor: u64,
+        blocks: Vec<PbftManagerProposalDagBlockFact>,
+    ) -> PbftManagerProposalDagOrderReport {
+        PbftManagerProposalDagOrderReport {
+            anchor_hash: H256::from_low_u64_be(anchor),
+            dag_blocks: blocks,
+            order_available: true,
+        }
+    }
+
+    fn broadcast_fact(round_elapsed_ms: u64, period_elapsed_ms: u64) -> PbftManagerBroadcastFact {
+        PbftManagerBroadcastFact {
+            round_elapsed_ms,
+            period_elapsed_ms,
+            current_round_lambda_ms: 100,
+            broadcast_lambda_threshold: 20,
+            rebroadcast_lambda_threshold: 60,
+            broadcast_votes_counter: 1,
+            rebroadcast_votes_counter: 1,
+            broadcast_reward_votes_counter: 1,
+            rebroadcast_reward_votes_counter: 1,
+        }
+    }
+
+    #[test]
+    fn pbft_manager_effect_catalog_has_stable_codes() {
+        let effects = [
+            PbftManagerEffectKind::ProcessSyncedPbftBlocks,
+            PbftManagerEffectKind::BroadcastVotes,
+            PbftManagerEffectKind::TryPushCertVotesBlock,
+            PbftManagerEffectKind::DetermineNewRound,
+            PbftManagerEffectKind::ApplyManagerTransition,
+            PbftManagerEffectKind::SleepIneligiblePollingInterval,
+            PbftManagerEffectKind::SleepUntilNextStep,
+            PbftManagerEffectKind::ConstructProposal,
+            PbftManagerEffectKind::ValidateProposedBlock,
+            PbftManagerEffectKind::ResolveLeaderBlock,
+            PbftManagerEffectKind::GenerateVote,
+            PbftManagerEffectKind::PlaceVote,
+            PbftManagerEffectKind::GossipVote,
+            PbftManagerEffectKind::FinalChainFactOrWait,
+            PbftManagerEffectKind::DagFactOrMutation,
+            PbftManagerEffectKind::TransactionFactOrMutation,
+            PbftManagerEffectKind::PillarFactOrMutation,
+            PbftManagerEffectKind::ApplyFinalizationStorage,
+            PbftManagerEffectKind::FinalizeFinalChain,
+            PbftManagerEffectKind::ApplyDynamicLambda,
+            PbftManagerEffectKind::UpdatePbftChain,
+            PbftManagerEffectKind::AdvancePeriod,
+            PbftManagerEffectKind::ReportPeer,
+            PbftManagerEffectKind::ClearCompatibilityCache,
+        ];
+
+        for (expected_code, effect) in effects.into_iter().enumerate() {
+            assert_eq!(effect.as_u8(), expected_code as u8);
+            assert_eq!(PbftManagerEffectKind::from_u8(expected_code as u8), effect);
+        }
+        assert_eq!(PbftManagerEffectKind::Unknown.as_u8(), 254);
+        assert_eq!(
+            PbftManagerEffectKind::from_u8(200),
+            PbftManagerEffectKind::Unknown
+        );
+    }
+
+    #[test]
+    fn pbft_manager_effect_catalog_marks_external_boundaries() {
+        for effect in [
+            PbftManagerEffectKind::BroadcastVotes,
+            PbftManagerEffectKind::GossipVote,
+            PbftManagerEffectKind::FinalChainFactOrWait,
+            PbftManagerEffectKind::FinalizeFinalChain,
+            PbftManagerEffectKind::ReportPeer,
+            PbftManagerEffectKind::SleepIneligiblePollingInterval,
+            PbftManagerEffectKind::SleepUntilNextStep,
+        ] {
+            assert!(
+                effect.is_external_boundary(),
+                "{effect:?} should stay external"
+            );
+        }
+
+        for effect in [
+            PbftManagerEffectKind::ConstructProposal,
+            PbftManagerEffectKind::ValidateProposedBlock,
+            PbftManagerEffectKind::ApplyFinalizationStorage,
+            PbftManagerEffectKind::ApplyDynamicLambda,
+            PbftManagerEffectKind::AdvancePeriod,
+        ] {
+            assert!(
+                !effect.is_external_boundary(),
+                "{effect:?} should remain in PBFT ownership scope"
+            );
+        }
+    }
+
+    #[test]
+    fn proposal_session_builds_null_anchor_when_ghost_is_empty() {
+        let mut fact = proposal_fact();
+        fact.ghost_path.clear();
+        let mut session = create_pbft_manager_proposal_session(fact);
+
+        let step = next_pbft_manager_proposal_session(&mut session);
+
+        assert_eq!(step.action, PbftManagerProposalAction::BuildProposal);
+        assert_eq!(step.status, PbftManagerProposalStatus::BuildReady);
+        assert!(step.selected_null_anchor);
+        assert_eq!(step.anchor_hash, H256::zero());
+        assert_eq!(step.order_hash, H256::zero());
+        assert_eq!(step.eligible_wallet_indices, vec![2]);
+    }
+
+    #[test]
+    fn proposal_session_skips_when_no_wallet_is_eligible() {
+        let mut fact = proposal_fact();
+        for wallet in &mut fact.wallets {
+            wallet.sortition_valid = false;
+        }
+        let mut session = create_pbft_manager_proposal_session(fact);
+
+        let step = next_pbft_manager_proposal_session(&mut session);
+
+        assert_eq!(step.action, PbftManagerProposalAction::SkipProposal);
+        assert_eq!(step.status, PbftManagerProposalStatus::NoEligibleWallet);
+    }
+
+    #[test]
+    fn proposal_session_skips_missing_required_facts() {
+        let mut final_chain_fact = proposal_fact();
+        final_chain_fact.final_chain_hash_valid = false;
+        let mut final_chain_session = create_pbft_manager_proposal_session(final_chain_fact);
+        assert_eq!(
+            next_pbft_manager_proposal_session(&mut final_chain_session).status,
+            PbftManagerProposalStatus::MissingFinalChainHash
+        );
+
+        let mut extra_data_fact = proposal_fact();
+        extra_data_fact.extra_data_required = true;
+        extra_data_fact.extra_data_available = false;
+        let mut extra_data_session = create_pbft_manager_proposal_session(extra_data_fact);
+        assert_eq!(
+            next_pbft_manager_proposal_session(&mut extra_data_session).status,
+            PbftManagerProposalStatus::MissingExtraData
+        );
+    }
+
+    #[test]
+    fn proposal_session_requests_dag_order_and_computes_order_hash() {
+        let mut session = create_pbft_manager_proposal_session(proposal_fact());
+
+        let request = next_pbft_manager_proposal_session(&mut session);
+        assert_eq!(request.action, PbftManagerProposalAction::RequestDagOrder);
+        assert_eq!(request.requested_anchor_hash, H256::from_low_u64_be(3));
+
+        let build = report_pbft_manager_proposal_dag_order(
+            &mut session,
+            proposal_report(3, vec![dag_block(2, 10), dag_block(3, 10)]),
+        );
+
+        assert_eq!(build.action, PbftManagerProposalAction::BuildProposal);
+        assert_eq!(build.anchor_hash, H256::from_low_u64_be(3));
+        assert_eq!(build.dag_blocks_included, 2);
+        assert_ne!(build.order_hash, H256::zero());
+        assert_eq!(build.final_chain_hash, H256::from_low_u64_be(200));
+    }
+
+    #[test]
+    fn proposal_session_recomputes_order_when_gas_clipping_changes_anchor() {
+        let mut fact = proposal_fact();
+        fact.pbft_gas_limit = 50;
+        let mut session = create_pbft_manager_proposal_session(fact);
+
+        let request = next_pbft_manager_proposal_session(&mut session);
+        assert_eq!(request.requested_anchor_hash, H256::from_low_u64_be(3));
+
+        let recompute = report_pbft_manager_proposal_dag_order(
+            &mut session,
+            proposal_report(3, vec![dag_block(2, 40), dag_block(3, 40)]),
+        );
+        assert_eq!(recompute.action, PbftManagerProposalAction::RequestDagOrder);
+        assert_eq!(recompute.requested_anchor_hash, H256::from_low_u64_be(2));
+
+        let build = report_pbft_manager_proposal_dag_order(
+            &mut session,
+            proposal_report(2, vec![dag_block(2, 40)]),
+        );
+        assert_eq!(build.action, PbftManagerProposalAction::BuildProposal);
+        assert_eq!(build.anchor_hash, H256::from_low_u64_be(2));
+        assert_eq!(build.dag_blocks_included, 1);
+    }
+
+    #[test]
+    fn proposal_session_rejects_missing_or_mismatched_dag_order() {
+        let mut missing_session = create_pbft_manager_proposal_session(proposal_fact());
+        let request = next_pbft_manager_proposal_session(&mut missing_session);
+        let missing = report_pbft_manager_proposal_dag_order(
+            &mut missing_session,
+            PbftManagerProposalDagOrderReport {
+                anchor_hash: request.requested_anchor_hash,
+                dag_blocks: Vec::new(),
+                order_available: false,
+            },
+        );
+        assert_eq!(missing.status, PbftManagerProposalStatus::MissingDagOrder);
+
+        let mut mismatch_session = create_pbft_manager_proposal_session(proposal_fact());
+        let _ = next_pbft_manager_proposal_session(&mut mismatch_session);
+        let mismatch = report_pbft_manager_proposal_dag_order(
+            &mut mismatch_session,
+            proposal_report(9, vec![dag_block(9, 1)]),
+        );
+        assert_eq!(
+            mismatch.status,
+            PbftManagerProposalStatus::InvalidBridgeFacts
+        );
+    }
+
+    #[test]
+    fn broadcast_planner_selects_round_broadcast() {
+        let plan = plan_pbft_manager_broadcast(broadcast_fact(2_100, 0));
+
+        assert_eq!(plan.status, PbftManagerBroadcastStatus::Ready);
+        assert_eq!(plan.action, PbftManagerBroadcastAction::RoundVotes);
+        assert!(!plan.rebroadcast);
+        assert_eq!(plan.next_broadcast_votes_counter, 2);
+        assert_eq!(plan.next_rebroadcast_votes_counter, 1);
+    }
+
+    #[test]
+    fn broadcast_planner_prioritizes_round_rebroadcast() {
+        let plan = plan_pbft_manager_broadcast(broadcast_fact(6_100, 10_000));
+
+        assert_eq!(plan.status, PbftManagerBroadcastStatus::Ready);
+        assert_eq!(plan.action, PbftManagerBroadcastAction::RoundVotes);
+        assert!(plan.rebroadcast);
+        assert_eq!(plan.next_broadcast_votes_counter, 2);
+        assert_eq!(plan.next_rebroadcast_votes_counter, 2);
+        assert_eq!(plan.next_broadcast_reward_votes_counter, 1);
+    }
+
+    #[test]
+    fn broadcast_planner_selects_period_vote_branches() {
+        let rebroadcast = plan_pbft_manager_broadcast(broadcast_fact(0, 6_100));
+        assert_eq!(rebroadcast.action, PbftManagerBroadcastAction::PeriodVotes);
+        assert!(rebroadcast.rebroadcast);
+        assert_eq!(rebroadcast.next_broadcast_reward_votes_counter, 2);
+        assert_eq!(rebroadcast.next_rebroadcast_reward_votes_counter, 2);
+
+        let broadcast = plan_pbft_manager_broadcast(broadcast_fact(0, 2_100));
+        assert_eq!(broadcast.action, PbftManagerBroadcastAction::PeriodVotes);
+        assert!(!broadcast.rebroadcast);
+        assert_eq!(broadcast.next_broadcast_reward_votes_counter, 2);
+        assert_eq!(broadcast.next_rebroadcast_reward_votes_counter, 1);
+    }
+
+    #[test]
+    fn broadcast_planner_noops_and_rejects_invalid_facts() {
+        let noop = plan_pbft_manager_broadcast(broadcast_fact(2_000, 2_000));
+        assert_eq!(noop.status, PbftManagerBroadcastStatus::Ready);
+        assert_eq!(noop.action, PbftManagerBroadcastAction::Noop);
+
+        let mut invalid = broadcast_fact(10_000, 10_000);
+        invalid.current_round_lambda_ms = 0;
+        let rejected = plan_pbft_manager_broadcast(invalid);
+        assert_eq!(rejected.status, PbftManagerBroadcastStatus::InvalidFact);
+
+        let mut overflow = broadcast_fact(10_000, 0);
+        overflow.broadcast_votes_counter = u32::MAX;
+        let rejected = plan_pbft_manager_broadcast(overflow);
+        assert_eq!(rejected.status, PbftManagerBroadcastStatus::InvalidFact);
+        assert_eq!(
+            rejected.error_code,
+            "PBFT_MANAGER_BROADCAST_COUNTER_OVERFLOW"
+        );
+    }
+
+    #[test]
+    fn broadcast_report_gates_counter_updates() {
+        let plan = plan_pbft_manager_broadcast(broadcast_fact(2_100, 0));
+        let accepted = report_pbft_manager_broadcast(
+            plan.clone(),
+            PbftManagerBroadcastReport {
+                action: PbftManagerBroadcastAction::RoundVotes,
+                rebroadcast: false,
+                success: true,
+                error_code: String::new(),
+            },
+        );
+        assert_eq!(accepted.status, PbftManagerBroadcastStatus::Ready);
+        assert!(accepted.apply_counters);
+        assert_eq!(accepted.broadcast_votes_counter, 2);
+
+        let failed = report_pbft_manager_broadcast(
+            plan.clone(),
+            PbftManagerBroadcastReport {
+                action: PbftManagerBroadcastAction::RoundVotes,
+                rebroadcast: false,
+                success: false,
+                error_code: "NETWORK_DOWN".to_string(),
+            },
+        );
+        assert_eq!(failed.status, PbftManagerBroadcastStatus::ExecutorFailed);
+        assert!(!failed.apply_counters);
+
+        let mismatch = report_pbft_manager_broadcast(
+            plan,
+            PbftManagerBroadcastReport {
+                action: PbftManagerBroadcastAction::PeriodVotes,
+                rebroadcast: false,
+                success: true,
+                error_code: String::new(),
+            },
+        );
+        assert_eq!(mismatch.status, PbftManagerBroadcastStatus::InvalidReport);
+        assert!(!mismatch.apply_counters);
+    }
+
     fn finalized_dag_bundle_rlp() -> (Vec<u8>, Vec<H256>) {
         let mut compact_block = RlpStream::new_list(7);
         compact_block.append(&H256::from_low_u64_be(1));
@@ -4250,6 +6481,197 @@ mod tests {
     }
 
     #[test]
+    fn state_action_effect_plan_preserves_single_effect_ordering() {
+        let mut fact = state_fact(PbftManagerRuntimeStateCode::Filter);
+        fact.round = 2;
+        fact.has_previous_round_next_value = true;
+
+        let plan = plan_pbft_manager_state_action_effects(fact);
+
+        assert_eq!(plan.status, PbftManagerStateActionStatus::Ready);
+        assert_eq!(plan.effects.len(), 1);
+        assert_eq!(
+            plan.effects[0].intent,
+            PbftManagerStateActionIntent::SoftVotePreviousRoundNextValue
+        );
+        assert_eq!(plan.effects[0].hash, [0x11; 32]);
+    }
+
+    #[test]
+    fn state_action_effect_plan_preserves_primary_then_secondary_order() {
+        let mut fact = state_fact(PbftManagerRuntimeStateCode::FinishPolling);
+        fact.current_round_lambda_ms = 1_000;
+        fact.has_current_round_soft_value = true;
+        fact.has_previous_round_next_null = true;
+
+        let plan = plan_pbft_manager_state_action_effects(fact);
+
+        assert_eq!(plan.status, PbftManagerStateActionStatus::Ready);
+        assert_eq!(plan.effects.len(), 2);
+        assert_eq!(
+            plan.effects[0].intent,
+            PbftManagerStateActionIntent::NextVoteCurrentSoftValue
+        );
+        assert_eq!(
+            plan.effects[1].intent,
+            PbftManagerStateActionIntent::NextVoteNullBlock
+        );
+    }
+
+    #[test]
+    fn state_action_effect_plan_allows_noop_with_flags() {
+        let mut fact = state_fact(PbftManagerRuntimeStateCode::FinishPolling);
+        fact.current_round_lambda_ms = 1_000;
+        fact.already_next_voted_value = true;
+        fact.already_next_voted_null = true;
+        fact.elapsed_round_ms = 2_000;
+
+        let plan = plan_pbft_manager_state_action_effects(fact);
+
+        assert_eq!(plan.status, PbftManagerStateActionStatus::Ready);
+        assert!(plan.effects.is_empty());
+        assert!(plan.loop_back_finish_state);
+    }
+
+    #[test]
+    fn state_action_effect_session_advances_only_after_reports() {
+        let mut fact = state_fact(PbftManagerRuntimeStateCode::FinishPolling);
+        fact.current_round_lambda_ms = 1_000;
+        fact.has_current_round_soft_value = true;
+        fact.has_previous_round_next_null = true;
+        let mut session = create_pbft_manager_state_action_effect_session(fact);
+
+        let first = next_pbft_manager_state_action_effect_session(&mut session);
+        assert_eq!(first.status, PbftManagerStateActionSessionStatus::Active);
+        assert_eq!(
+            first.effect.intent,
+            PbftManagerStateActionIntent::NextVoteCurrentSoftValue
+        );
+
+        let repeated = next_pbft_manager_state_action_effect_session(&mut session);
+        assert_eq!(repeated.cursor, first.cursor);
+        assert_eq!(repeated.effect, first.effect);
+
+        let second = report_pbft_manager_state_action_effect_session(
+            &mut session,
+            PbftManagerStateActionEffectReport {
+                cursor: first.cursor,
+                intent: first.effect.intent,
+                result: PbftManagerStateActionEffectResultCode::Applied,
+                error_code: String::new(),
+            },
+        );
+        assert_eq!(second.status, PbftManagerStateActionSessionStatus::Active);
+        assert_eq!(
+            second.effect.intent,
+            PbftManagerStateActionIntent::NextVoteNullBlock
+        );
+
+        let done = report_pbft_manager_state_action_effect_session(
+            &mut session,
+            PbftManagerStateActionEffectReport {
+                cursor: second.cursor,
+                intent: second.effect.intent,
+                result: PbftManagerStateActionEffectResultCode::Applied,
+                error_code: String::new(),
+            },
+        );
+        assert_eq!(done.status, PbftManagerStateActionSessionStatus::Complete);
+        assert!(done.complete);
+        assert!(!done.has_effect);
+    }
+
+    #[test]
+    fn state_action_effect_session_completes_noop_plan() {
+        let mut fact = state_fact(PbftManagerRuntimeStateCode::FinishPolling);
+        fact.current_round_lambda_ms = 1_000;
+        fact.already_next_voted_value = true;
+        fact.already_next_voted_null = true;
+        fact.elapsed_round_ms = 2_000;
+        let mut session = create_pbft_manager_state_action_effect_session(fact);
+
+        let step = next_pbft_manager_state_action_effect_session(&mut session);
+
+        assert_eq!(step.status, PbftManagerStateActionSessionStatus::Complete);
+        assert!(!step.has_effect);
+        assert!(step.loop_back_finish_state);
+    }
+
+    #[test]
+    fn state_action_effect_session_rejects_mismatched_report() {
+        let mut fact = state_fact(PbftManagerRuntimeStateCode::Filter);
+        fact.round = 2;
+        fact.has_previous_round_next_value = true;
+        let mut session = create_pbft_manager_state_action_effect_session(fact);
+        let step = next_pbft_manager_state_action_effect_session(&mut session);
+
+        let failed = report_pbft_manager_state_action_effect_session(
+            &mut session,
+            PbftManagerStateActionEffectReport {
+                cursor: step.cursor + 1,
+                intent: step.effect.intent,
+                result: PbftManagerStateActionEffectResultCode::Applied,
+                error_code: String::new(),
+            },
+        );
+
+        assert_eq!(
+            failed.status,
+            PbftManagerStateActionSessionStatus::EffectMismatch
+        );
+        assert_eq!(
+            failed.error_code,
+            "PBFT_MANAGER_STATE_ACTION_EFFECT_REPORT_MISMATCH"
+        );
+    }
+
+    #[test]
+    fn state_action_effect_session_stops_on_live_rejection() {
+        let mut fact = state_fact(PbftManagerRuntimeStateCode::Filter);
+        fact.round = 2;
+        fact.has_previous_round_next_value = true;
+        let mut session = create_pbft_manager_state_action_effect_session(fact);
+        let step = next_pbft_manager_state_action_effect_session(&mut session);
+
+        let failed = report_pbft_manager_state_action_effect_session(
+            &mut session,
+            PbftManagerStateActionEffectReport {
+                cursor: step.cursor,
+                intent: step.effect.intent,
+                result: PbftManagerStateActionEffectResultCode::RejectedLiveCheck,
+                error_code: "EXECUTOR_NO_BLOCK".to_string(),
+            },
+        );
+
+        assert_eq!(
+            failed.status,
+            PbftManagerStateActionSessionStatus::EffectFailed
+        );
+        assert_eq!(failed.error_code, "EXECUTOR_NO_BLOCK");
+    }
+
+    #[test]
+    fn state_action_effect_session_treats_no_work_skip_as_success() {
+        let mut fact = state_fact(PbftManagerRuntimeStateCode::ValueProposal);
+        fact.has_previous_round_next_null = true;
+        let mut session = create_pbft_manager_state_action_effect_session(fact);
+        let step = next_pbft_manager_state_action_effect_session(&mut session);
+
+        let done = report_pbft_manager_state_action_effect_session(
+            &mut session,
+            PbftManagerStateActionEffectReport {
+                cursor: step.cursor,
+                intent: step.effect.intent,
+                result: PbftManagerStateActionEffectResultCode::SkippedNoWork,
+                error_code: String::new(),
+            },
+        );
+
+        assert_eq!(done.status, PbftManagerStateActionSessionStatus::Complete);
+        assert!(done.can_continue);
+    }
+
+    #[test]
     fn startup_restore_normalizes_cursor_and_restores_status_flags() {
         let snapshot = restore_pbft_manager_runtime(startup_fact(2, 2));
 
@@ -4278,6 +6700,110 @@ mod tests {
         assert_eq!(polling.state, PbftManagerRuntimeStateCode::FinishPolling);
         assert_eq!(polling.step, 5);
         assert!(polling.reset_second_finish_start);
+    }
+
+    #[test]
+    fn startup_replay_range_planner_selects_final_chain_and_recent_ranges() {
+        let plan = plan_pbft_manager_startup_replay_ranges(PbftManagerStartupReplayRangeFact {
+            final_chain_last_block: 8,
+            pbft_chain_size: 12,
+            delegation_delay: 3,
+            recently_finalized_factor: 2,
+        });
+
+        assert!(plan.accepted);
+        assert!(plan.has_finalization_range);
+        assert_eq!(plan.finalization_from_period, 9);
+        assert_eq!(plan.finalization_to_period, 12);
+        assert_eq!(plan.recent_from_period, 6);
+        assert_eq!(plan.recent_to_period, 12);
+
+        let caught_up =
+            plan_pbft_manager_startup_replay_ranges(PbftManagerStartupReplayRangeFact {
+                final_chain_last_block: 12,
+                pbft_chain_size: 12,
+                delegation_delay: 100,
+                recently_finalized_factor: 2,
+            });
+        assert!(caught_up.accepted);
+        assert!(!caught_up.has_finalization_range);
+        assert_eq!(caught_up.recent_from_period, 1);
+        assert_eq!(caught_up.recent_to_period, 12);
+    }
+
+    #[test]
+    fn startup_replay_range_planner_rejects_corrupted_heights() {
+        let empty = plan_pbft_manager_startup_replay_ranges(PbftManagerStartupReplayRangeFact {
+            final_chain_last_block: 0,
+            pbft_chain_size: 0,
+            delegation_delay: 1,
+            recently_finalized_factor: 1,
+        });
+        assert!(empty.accepted);
+        assert!(!empty.has_finalization_range);
+        assert_eq!(empty.recent_from_period, 1);
+        assert_eq!(empty.recent_to_period, 0);
+        assert!(empty.error_code.is_empty());
+
+        let ahead = plan_pbft_manager_startup_replay_ranges(PbftManagerStartupReplayRangeFact {
+            final_chain_last_block: 13,
+            pbft_chain_size: 12,
+            delegation_delay: 1,
+            recently_finalized_factor: 1,
+        });
+        assert!(!ahead.accepted);
+        assert_eq!(
+            ahead.error_code,
+            "PBFT_MANAGER_STARTUP_REPLAY_FINAL_CHAIN_AHEAD"
+        );
+    }
+
+    #[test]
+    fn advance_period_planner_orders_executor_effects_and_runtime_period_commit() {
+        let mut transition = transition_fact(PbftManagerTransitionKind::ResetConsensus);
+        transition.target_round = 1;
+        let plan = plan_pbft_manager_advance_period(PbftManagerAdvancePeriodFact {
+            pbft_chain_size: 12,
+            transition_fact: transition,
+        });
+
+        assert!(plan.accepted);
+        assert_eq!(plan.finalized_chain_size, 12);
+        assert_eq!(plan.new_period, 13);
+        assert_eq!(
+            plan.transition_plan.status,
+            PbftManagerTransitionStatus::Ready
+        );
+        assert_eq!(
+            plan.actions,
+            vec![
+                PbftManagerAdvancePeriodAction::ApplyResetConsensusTransition,
+                PbftManagerAdvancePeriodAction::ApplyExecutedBlockReset,
+                PbftManagerAdvancePeriodAction::SetVoteManagerPeriodRound,
+                PbftManagerAdvancePeriodAction::ResetCurrentRoundTimer,
+                PbftManagerAdvancePeriodAction::ResetRewardVoteCounters,
+                PbftManagerAdvancePeriodAction::ResetPeriodTimer,
+                PbftManagerAdvancePeriodAction::UpdateWalletEligibility,
+                PbftManagerAdvancePeriodAction::CleanupVotes,
+                PbftManagerAdvancePeriodAction::CleanupProposedBlocks,
+            ]
+        );
+
+        let mut runtime = PbftManagerRuntime::new(restore_pbft_manager_runtime(startup_fact(1, 1)));
+        let snapshot = runtime.apply_committed_period_advance(plan.new_period);
+        assert_eq!(snapshot.status, PbftManagerStartupRestoreStatus::Ready);
+        assert_eq!(snapshot.period, 13);
+
+        let rejected = runtime.apply_committed_period_advance(13);
+        assert_eq!(
+            rejected.status,
+            PbftManagerStartupRestoreStatus::InvalidFact
+        );
+        assert_eq!(
+            rejected.error_code,
+            "PBFT_MANAGER_ADVANCE_PERIOD_NON_INCREASING_PERIOD"
+        );
+        assert_eq!(runtime.snapshot().period, 13);
     }
 
     #[test]
@@ -5125,6 +7651,111 @@ mod tests {
         let plan = plan_pbft_manager_block_validation(fact);
         assert_eq!(plan.action, PbftManagerBlockValidationAction::Accept);
         assert_eq!(plan.status, PbftManagerBlockValidationStatus::Accepted);
+    }
+
+    #[test]
+    fn block_validation_session_drives_live_checks_in_legacy_order() {
+        let mut session = create_pbft_manager_block_validation_session(block_validation_fact());
+
+        let plan = next_pbft_manager_block_validation_session(&mut session);
+        assert_eq!(
+            plan.next_check,
+            PbftManagerBlockValidationNextCheck::CheckPbftChain
+        );
+
+        let plan = report_pbft_manager_block_validation_session_check(
+            &mut session,
+            PbftManagerBlockValidationFactStatus::Valid,
+            false,
+        );
+        assert_eq!(
+            plan.next_check,
+            PbftManagerBlockValidationNextCheck::ValidateFinalChainHash
+        );
+
+        let plan = report_pbft_manager_block_validation_session_check(
+            &mut session,
+            PbftManagerBlockValidationFactStatus::Valid,
+            false,
+        );
+        assert_eq!(
+            plan.next_check,
+            PbftManagerBlockValidationNextCheck::CheckRewardVotes
+        );
+
+        let plan = report_pbft_manager_block_validation_session_check(
+            &mut session,
+            PbftManagerBlockValidationFactStatus::Valid,
+            false,
+        );
+        assert_eq!(
+            plan.next_check,
+            PbftManagerBlockValidationNextCheck::ValidateExtraData
+        );
+
+        let plan = report_pbft_manager_block_validation_session_check(
+            &mut session,
+            PbftManagerBlockValidationFactStatus::Valid,
+            false,
+        );
+        assert_eq!(
+            plan.next_check,
+            PbftManagerBlockValidationNextCheck::CheckDagOrder
+        );
+
+        let plan = report_pbft_manager_block_validation_session_check(
+            &mut session,
+            PbftManagerBlockValidationFactStatus::Valid,
+            true,
+        );
+        assert_eq!(
+            plan.next_check,
+            PbftManagerBlockValidationNextCheck::CheckDagWeight
+        );
+
+        let plan = report_pbft_manager_block_validation_session_check(
+            &mut session,
+            PbftManagerBlockValidationFactStatus::Valid,
+            false,
+        );
+        assert_eq!(plan.action, PbftManagerBlockValidationAction::Accept);
+        assert_eq!(plan.status, PbftManagerBlockValidationStatus::Accepted);
+    }
+
+    #[test]
+    fn block_validation_session_supports_final_chain_wait_retry() {
+        let mut session = create_pbft_manager_block_validation_session(block_validation_fact());
+        let _ = next_pbft_manager_block_validation_session(&mut session);
+        let plan = report_pbft_manager_block_validation_session_check(
+            &mut session,
+            PbftManagerBlockValidationFactStatus::Valid,
+            false,
+        );
+        assert_eq!(
+            plan.next_check,
+            PbftManagerBlockValidationNextCheck::ValidateFinalChainHash
+        );
+
+        let plan = report_pbft_manager_block_validation_session_check(
+            &mut session,
+            PbftManagerBlockValidationFactStatus::Missing,
+            false,
+        );
+        assert_eq!(
+            plan.action,
+            PbftManagerBlockValidationAction::WaitForFinalization
+        );
+
+        let plan = report_pbft_manager_block_validation_session_check(
+            &mut session,
+            PbftManagerBlockValidationFactStatus::NotChecked,
+            false,
+        );
+        assert_eq!(plan.action, PbftManagerBlockValidationAction::RunCheck);
+        assert_eq!(
+            plan.next_check,
+            PbftManagerBlockValidationNextCheck::ValidateFinalChainHash
+        );
     }
 
     #[test]

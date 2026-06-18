@@ -11,27 +11,47 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
     PbftFinalizationStorageWriteStage as FfiPbftFinalizationStorageWriteStage,
     PbftFinalizedPeriodApplyResult as FfiPbftFinalizedPeriodApplyResult,
+    PbftManagerAdvancePeriodPlan as FfiPbftManagerAdvancePeriodPlan,
     PbftManagerBlockValidationFact as FfiPbftManagerBlockValidationFact,
     PbftManagerBlockValidationPlan as FfiPbftManagerBlockValidationPlan,
+    PbftManagerBroadcastFact as FfiPbftManagerBroadcastFact,
+    PbftManagerBroadcastPlan as FfiPbftManagerBroadcastPlan,
+    PbftManagerBroadcastReport as FfiPbftManagerBroadcastReport,
+    PbftManagerBroadcastReportResult as FfiPbftManagerBroadcastReportResult,
     PbftManagerCandidateAdmissionFact as FfiPbftManagerCandidateAdmissionFact,
     PbftManagerCandidateAdmissionPlan as FfiPbftManagerCandidateAdmissionPlan,
     PbftManagerLeaderCandidateInputFact as FfiPbftManagerLeaderCandidateInputFact,
     PbftManagerLeaderCandidatePlan as FfiPbftManagerLeaderCandidatePlan,
     PbftManagerLeaderValidBlockCommand as FfiPbftManagerLeaderValidBlockCommand,
+    PbftManagerProposalDagBlockFact as FfiPbftManagerProposalDagBlockFact,
+    PbftManagerProposalDagOrderReport as FfiPbftManagerProposalDagOrderReport,
+    PbftManagerProposalInitialFact as FfiPbftManagerProposalInitialFact,
+    PbftManagerProposalSessionStep as FfiPbftManagerProposalSessionStep,
+    PbftManagerProposalWalletFact as FfiPbftManagerProposalWalletFact,
     PbftManagerRuntimeActionReport as FfiPbftManagerRuntimeActionReport,
     PbftManagerRuntimeSessionStep as FfiPbftManagerRuntimeSessionStep,
     PbftManagerRuntimeSnapshot as FfiPbftManagerRuntimeSnapshot,
     PbftManagerRuntimeTickFact as FfiPbftManagerRuntimeTickFact,
     PbftManagerStartupFact as FfiPbftManagerStartupFact,
+    PbftManagerStartupReplayRangeFact as FfiPbftManagerStartupReplayRangeFact,
+    PbftManagerStartupReplayRangePlan as FfiPbftManagerStartupReplayRangePlan,
+    PbftManagerStateActionEffect as FfiPbftManagerStateActionEffect,
+    PbftManagerStateActionEffectPlan as FfiPbftManagerStateActionEffectPlan,
+    PbftManagerStateActionEffectReport as FfiPbftManagerStateActionEffectReport,
     PbftManagerStateActionFact as FfiPbftManagerStateActionFact,
     PbftManagerStateActionPlan as FfiPbftManagerStateActionPlan,
+    PbftManagerStateActionSessionStep as FfiPbftManagerStateActionSessionStep,
     PbftManagerTransitionFact as FfiPbftManagerTransitionFact,
     PbftManagerTransitionPlan as FfiPbftManagerTransitionPlan,
     PbftManagerTransitionRuntimeApplyResult as FfiPbftManagerTransitionRuntimeApplyResult,
     PbftManagerTransitionStorageResult as FfiPbftManagerTransitionStorageResult,
     PeriodLambda as FfiPeriodLambda,
 };
-use crate::ffi::{BridgePbftManagerRuntime, BridgePbftManagerRuntimeSession, BridgeStorage};
+use crate::ffi::{
+    BridgePbftManagerBlockValidationSession, BridgePbftManagerProposalSession,
+    BridgePbftManagerRuntime, BridgePbftManagerRuntimeSession,
+    BridgePbftManagerStateActionEffectSession, BridgeStorage,
+};
 use anyhow::anyhow;
 use rustaxa_consensus::dag::dag_block_period_from_storage;
 use rustaxa_consensus::pbft_chain::pbft_block_exists_in_storage;
@@ -42,27 +62,51 @@ use rustaxa_consensus::pbft_finalize::{
     PbftFinalizationStorageWriteIntent,
 };
 use rustaxa_consensus::pbft_manager::{
+    abort_pbft_manager_proposal_session as abort_domain_pbft_manager_proposal_session,
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
     apply_executed_block_reset_storage, apply_next_voted_status_storage,
     apply_pbft_manager_cursor_field_storage, apply_pbft_manager_transition_storage,
+    create_pbft_manager_block_validation_session as create_domain_pbft_manager_block_validation_session,
+    create_pbft_manager_proposal_session as create_domain_pbft_manager_proposal_session,
     create_pbft_manager_runtime_from_storage as create_domain_pbft_manager_runtime_from_storage,
     create_pbft_manager_runtime_session as create_domain_pbft_manager_runtime_session,
+    create_pbft_manager_state_action_effect_session as create_domain_pbft_manager_state_action_effect_session,
     load_pbft_manager_startup_replay_period as load_domain_pbft_manager_startup_replay_period,
+    next_pbft_manager_block_validation_session as next_domain_pbft_manager_block_validation_session,
+    next_pbft_manager_proposal_session as next_domain_pbft_manager_proposal_session,
     next_pbft_manager_runtime_action,
+    next_pbft_manager_state_action_effect_session as next_domain_pbft_manager_state_action_effect_session,
+    plan_pbft_manager_advance_period_from_transition as plan_domain_pbft_manager_advance_period_from_transition,
     plan_pbft_manager_block_validation as plan_domain_pbft_manager_block_validation,
+    plan_pbft_manager_broadcast as plan_domain_pbft_manager_broadcast,
     plan_pbft_manager_candidate_admission as plan_domain_pbft_manager_candidate_admission,
     plan_pbft_manager_leader_candidates as plan_domain_pbft_manager_leader_candidates,
+    plan_pbft_manager_startup_replay_ranges as plan_domain_pbft_manager_startup_replay_ranges,
     plan_pbft_manager_state_action as plan_domain_pbft_manager_state_action,
+    plan_pbft_manager_state_action_effects as plan_domain_pbft_manager_state_action_effects,
     plan_pbft_manager_transition as plan_domain_pbft_manager_transition,
-    report_pbft_manager_runtime_action, save_cert_voted_block_in_round_storage,
+    report_pbft_manager_block_validation_session_check as report_domain_pbft_manager_block_validation_session_check,
+    report_pbft_manager_broadcast as report_domain_pbft_manager_broadcast,
+    report_pbft_manager_proposal_dag_order as report_domain_pbft_manager_proposal_dag_order,
+    report_pbft_manager_runtime_action,
+    report_pbft_manager_state_action_effect_session as report_domain_pbft_manager_state_action_effect_session,
+    save_cert_voted_block_in_round_storage, PbftManagerAdvancePeriodPlan,
     PbftManagerBlockValidationFact, PbftManagerBlockValidationFactStatus,
-    PbftManagerBlockValidationPlan, PbftManagerCandidateAdmissionFact,
+    PbftManagerBlockValidationPlan, PbftManagerBroadcastAction, PbftManagerBroadcastFact,
+    PbftManagerBroadcastPlan, PbftManagerBroadcastReport, PbftManagerBroadcastReportResult,
+    PbftManagerBroadcastStatus, PbftManagerCandidateAdmissionFact,
     PbftManagerCandidateAdmissionPlan, PbftManagerCandidateAdmissionValidationStatus,
     PbftManagerLeaderBlockValidationStatus, PbftManagerLeaderCandidateInputFact,
-    PbftManagerLeaderCandidatePlan, PbftManagerLeaderValidBlockCommand, PbftManagerRuntimeAction,
-    PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
+    PbftManagerLeaderCandidatePlan, PbftManagerLeaderValidBlockCommand,
+    PbftManagerProposalDagBlockFact, PbftManagerProposalDagOrderReport,
+    PbftManagerProposalInitialFact, PbftManagerProposalSessionStep, PbftManagerProposalWalletFact,
+    PbftManagerRuntimeAction, PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
     PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot, PbftManagerRuntimeStateCode,
-    PbftManagerRuntimeTickFact, PbftManagerStateActionFact, PbftManagerStateActionPlan,
+    PbftManagerRuntimeTickFact, PbftManagerStartupReplayRangeFact,
+    PbftManagerStartupReplayRangePlan, PbftManagerStateActionEffect,
+    PbftManagerStateActionEffectPlan, PbftManagerStateActionEffectReport,
+    PbftManagerStateActionEffectResultCode, PbftManagerStateActionFact,
+    PbftManagerStateActionIntent, PbftManagerStateActionPlan, PbftManagerStateActionSessionStep,
     PbftManagerStorageStartupFact, PbftManagerTransitionFact, PbftManagerTransitionKind,
     PbftManagerTransitionPlan, PbftManagerTransitionStatus, PbftManagerTransitionStorageResult,
     PbftManagerTransitionStorageStatus,
@@ -97,6 +141,16 @@ fn transition_status_from_u8(value: u8) -> PbftManagerTransitionStatus {
         1 => PbftManagerTransitionStatus::InvalidKind,
         2 => PbftManagerTransitionStatus::InvalidFact,
         _ => PbftManagerTransitionStatus::InvalidFact,
+    }
+}
+
+fn broadcast_status_from_u8(value: u8) -> PbftManagerBroadcastStatus {
+    match value {
+        0 => PbftManagerBroadcastStatus::Ready,
+        1 => PbftManagerBroadcastStatus::InvalidFact,
+        2 => PbftManagerBroadcastStatus::ExecutorFailed,
+        3 => PbftManagerBroadcastStatus::InvalidReport,
+        _ => PbftManagerBroadcastStatus::InvalidReport,
     }
 }
 
@@ -248,6 +302,40 @@ pub fn pbft_manager_runtime_snapshot(
     runtime: &BridgePbftManagerRuntime,
 ) -> FfiPbftManagerRuntimeSnapshot {
     runtime.state.snapshot().into()
+}
+
+/// Plans PBFT manager startup replay ranges from C++ live height facts.
+pub fn plan_pbft_manager_startup_replay_ranges(
+    fact: FfiPbftManagerStartupReplayRangeFact,
+) -> FfiPbftManagerStartupReplayRangePlan {
+    plan_domain_pbft_manager_startup_replay_ranges(fact.into()).into()
+}
+
+/// Plans the ordered PBFT manager period-advance effects.
+///
+/// The caller supplies the accepted Rust transition plan that will reset the
+/// PBFT cursor to round one. The returned effect list owns the surrounding
+/// advance-period order while C++ remains the temporary executor.
+pub fn plan_pbft_manager_advance_period(
+    pbft_chain_size: u64,
+    transition_plan: &FfiPbftManagerTransitionPlan,
+) -> FfiPbftManagerAdvancePeriodPlan {
+    plan_domain_pbft_manager_advance_period_from_transition(
+        pbft_chain_size,
+        domain_transition_plan_from_ffi(transition_plan),
+    )
+    .into()
+}
+
+/// Records a completed Rust-planned period advance in the long-lived runtime.
+pub fn pbft_manager_runtime_apply_period_advance(
+    runtime: &mut BridgePbftManagerRuntime,
+    new_period: u64,
+) -> FfiPbftManagerRuntimeSnapshot {
+    runtime
+        .state
+        .apply_committed_period_advance(new_period)
+        .into()
 }
 
 /// Loads the persisted cert-voted PBFT block payload through the runtime-owned
@@ -643,11 +731,169 @@ pub fn plan_pbft_manager_state_action(
     plan_domain_pbft_manager_state_action(fact.into()).into()
 }
 
+/// Plans one deterministic PBFT manager state action as ordered effects.
+///
+/// Inputs:
+/// - `fact`: compact manager state, timing, and vote-status facts sourced by C++.
+///
+/// Outputs:
+/// - An ordered effect list plus follow-up state flags for the C++ executor.
+///
+/// Invariants and edge behavior:
+/// - Rust owns the branch ordering and no-op decisions.
+/// - C++ executes only the returned effects in order and keeps live
+///   materialization, storage mutation, and network gossip outside the bridge.
+pub fn plan_pbft_manager_state_action_effects(
+    fact: FfiPbftManagerStateActionFact,
+) -> FfiPbftManagerStateActionEffectPlan {
+    plan_domain_pbft_manager_state_action_effects(fact.into()).into()
+}
+
+/// Creates a Rust-owned state-action effect session from compact C++ facts.
+pub fn create_pbft_manager_state_action_effect_session(
+    fact: FfiPbftManagerStateActionFact,
+) -> Box<BridgePbftManagerStateActionEffectSession> {
+    Box::new(BridgePbftManagerStateActionEffectSession {
+        state: create_domain_pbft_manager_state_action_effect_session(fact.into()),
+    })
+}
+
+/// Returns the next effect requested by a Rust-owned state-action session.
+pub fn pbft_manager_state_action_effect_session_next(
+    session: &mut BridgePbftManagerStateActionEffectSession,
+) -> FfiPbftManagerStateActionSessionStep {
+    next_domain_pbft_manager_state_action_effect_session(&mut session.state).into()
+}
+
+/// Reports one C++-executed state-action effect to Rust and returns the next step.
+pub fn pbft_manager_state_action_effect_session_report(
+    session: &mut BridgePbftManagerStateActionEffectSession,
+    report: FfiPbftManagerStateActionEffectReport,
+) -> FfiPbftManagerStateActionSessionStep {
+    report_domain_pbft_manager_state_action_effect_session(&mut session.state, report.into()).into()
+}
+
+/// Aborts this state-action effect session by exhausting it with a contract error.
+pub fn abort_pbft_manager_state_action_effect_session(
+    session: &mut BridgePbftManagerStateActionEffectSession,
+) {
+    let mut report_step = next_domain_pbft_manager_state_action_effect_session(&mut session.state);
+    while report_step.has_effect {
+        report_step = report_domain_pbft_manager_state_action_effect_session(
+            &mut session.state,
+            PbftManagerStateActionEffectReport {
+                cursor: report_step.cursor,
+                intent: report_step.effect.intent,
+                result: PbftManagerStateActionEffectResultCode::ExecutorError,
+                error_code: "PBFT_MANAGER_STATE_ACTION_EFFECT_SESSION_ABORTED".to_string(),
+            },
+        );
+    }
+}
+
+/// Creates a Rust-owned PBFT proposal-construction session from compact C++ facts.
+pub fn create_pbft_manager_proposal_session(
+    fact: FfiPbftManagerProposalInitialFact,
+) -> Box<BridgePbftManagerProposalSession> {
+    Box::new(BridgePbftManagerProposalSession {
+        state: create_domain_pbft_manager_proposal_session(fact.into()),
+    })
+}
+
+/// Returns the next Rust-owned proposal-construction action or build command.
+pub fn pbft_manager_proposal_session_next(
+    session: &mut BridgePbftManagerProposalSession,
+) -> FfiPbftManagerProposalSessionStep {
+    next_domain_pbft_manager_proposal_session(&mut session.state).into()
+}
+
+/// Reports one C++-loaded DAG order to the Rust-owned proposal session.
+pub fn pbft_manager_proposal_session_report_dag_order(
+    session: &mut BridgePbftManagerProposalSession,
+    report: FfiPbftManagerProposalDagOrderReport,
+) -> FfiPbftManagerProposalSessionStep {
+    report_domain_pbft_manager_proposal_dag_order(&mut session.state, report.into()).into()
+}
+
+/// Aborts a proposal-construction session with a stable contract-error status.
+pub fn abort_pbft_manager_proposal_session(
+    session: &mut BridgePbftManagerProposalSession,
+) -> FfiPbftManagerProposalSessionStep {
+    abort_domain_pbft_manager_proposal_session(&mut session.state).into()
+}
+
+/// Plans one Rust-owned PBFT vote broadcast action from timing/counter facts.
+pub fn plan_pbft_manager_broadcast(
+    fact: FfiPbftManagerBroadcastFact,
+) -> FfiPbftManagerBroadcastPlan {
+    plan_domain_pbft_manager_broadcast(fact.into()).into()
+}
+
+/// Validates a C++ broadcast executor report before counters are applied.
+pub fn report_pbft_manager_broadcast(
+    plan: FfiPbftManagerBroadcastPlan,
+    report: FfiPbftManagerBroadcastReport,
+) -> FfiPbftManagerBroadcastReportResult {
+    report_domain_pbft_manager_broadcast(plan.into(), report.into()).into()
+}
+
 /// Plans the next Rust-owned PBFT block validation check from live C++ facts.
 pub fn plan_pbft_manager_block_validation(
     fact: FfiPbftManagerBlockValidationFact,
 ) -> FfiPbftManagerBlockValidationPlan {
     plan_domain_pbft_manager_block_validation(fact.into()).into()
+}
+
+/// Creates a Rust-owned PBFT block-validation session from initial live facts.
+///
+/// Inputs:
+/// - `fact`: initial block identity and check status bundle supplied by C++.
+///
+/// Outputs:
+/// - A session handle that owns the evolving validation facts and pending
+///   requested check.
+///
+/// Invariants and edge behavior:
+/// - C++ must call `pbft_manager_block_validation_session_next` before
+///   reporting a check.
+/// - The session is a compatibility executor boundary; it does not perform
+///   live checks or materialize C++ sidecars.
+pub fn create_pbft_manager_block_validation_session(
+    fact: FfiPbftManagerBlockValidationFact,
+) -> Box<BridgePbftManagerBlockValidationSession> {
+    Box::new(BridgePbftManagerBlockValidationSession {
+        state: create_domain_pbft_manager_block_validation_session(fact.into()),
+    })
+}
+
+/// Returns the next validation plan for a Rust-owned PBFT block-validation session.
+pub fn pbft_manager_block_validation_session_next(
+    session: &mut BridgePbftManagerBlockValidationSession,
+) -> FfiPbftManagerBlockValidationPlan {
+    next_domain_pbft_manager_block_validation_session(&mut session.state).into()
+}
+
+/// Reports one requested live check to a Rust-owned PBFT block-validation session.
+///
+/// Inputs:
+/// - `status`: stable fact status for the most recently requested check.
+/// - `dag_weight_check_required`: meaningful only for successful DAG-order
+///   reports, where the executor discovers whether a DAG-weight check must
+///   follow.
+///
+/// Outputs:
+/// - The next validation plan after Rust applies the reported status.
+pub fn pbft_manager_block_validation_session_report(
+    session: &mut BridgePbftManagerBlockValidationSession,
+    status: u8,
+    dag_weight_check_required: bool,
+) -> FfiPbftManagerBlockValidationPlan {
+    report_domain_pbft_manager_block_validation_session_check(
+        &mut session.state,
+        PbftManagerBlockValidationFactStatus::from_u8(status),
+        dag_weight_check_required,
+    )
+    .into()
 }
 
 /// Plans one Rust-owned proposed PBFT block admission attempt from live C++ facts.
@@ -730,6 +976,66 @@ impl BridgePbftManagerRuntimeSession {
     /// Aborts this runtime session.
     pub fn abort_pbft_manager_runtime_session(&mut self) {
         abort_pbft_manager_runtime_session(self)
+    }
+}
+
+impl BridgePbftManagerStateActionEffectSession {
+    /// Returns the next requested state-action effect.
+    pub fn pbft_manager_state_action_effect_session_next(
+        &mut self,
+    ) -> FfiPbftManagerStateActionSessionStep {
+        pbft_manager_state_action_effect_session_next(self)
+    }
+
+    /// Reports one executed state-action effect.
+    pub fn pbft_manager_state_action_effect_session_report(
+        &mut self,
+        report: FfiPbftManagerStateActionEffectReport,
+    ) -> FfiPbftManagerStateActionSessionStep {
+        pbft_manager_state_action_effect_session_report(self, report)
+    }
+
+    /// Aborts this state-action effect session.
+    pub fn abort_pbft_manager_state_action_effect_session(&mut self) {
+        abort_pbft_manager_state_action_effect_session(self)
+    }
+}
+
+impl BridgePbftManagerProposalSession {
+    /// Returns the next proposal-construction action or build command.
+    pub fn pbft_manager_proposal_session_next(&mut self) -> FfiPbftManagerProposalSessionStep {
+        pbft_manager_proposal_session_next(self)
+    }
+
+    /// Reports one DAG-order fact response and returns the next proposal step.
+    pub fn pbft_manager_proposal_session_report_dag_order(
+        &mut self,
+        report: FfiPbftManagerProposalDagOrderReport,
+    ) -> FfiPbftManagerProposalSessionStep {
+        pbft_manager_proposal_session_report_dag_order(self, report)
+    }
+
+    /// Aborts this proposal session.
+    pub fn abort_pbft_manager_proposal_session(&mut self) -> FfiPbftManagerProposalSessionStep {
+        abort_pbft_manager_proposal_session(self)
+    }
+}
+
+impl BridgePbftManagerBlockValidationSession {
+    /// Returns the next validation plan for this PBFT block-validation session.
+    pub fn pbft_manager_block_validation_session_next(
+        &mut self,
+    ) -> FfiPbftManagerBlockValidationPlan {
+        pbft_manager_block_validation_session_next(self)
+    }
+
+    /// Reports one requested live check and returns the next validation plan.
+    pub fn pbft_manager_block_validation_session_report(
+        &mut self,
+        status: u8,
+        dag_weight_check_required: bool,
+    ) -> FfiPbftManagerBlockValidationPlan {
+        pbft_manager_block_validation_session_report(self, status, dag_weight_check_required)
     }
 }
 
@@ -820,6 +1126,104 @@ impl From<FfiPbftManagerBlockValidationFact> for PbftManagerBlockValidationFact 
             dag_weight_status: PbftManagerBlockValidationFactStatus::from_u8(
                 value.dag_weight_status,
             ),
+        }
+    }
+}
+
+impl From<FfiPbftManagerProposalWalletFact> for PbftManagerProposalWalletFact {
+    fn from(value: FfiPbftManagerProposalWalletFact) -> Self {
+        Self {
+            wallet_index: value.wallet_index,
+            dpos_eligible: value.dpos_eligible,
+            sortition_valid: value.sortition_valid,
+        }
+    }
+}
+
+impl From<FfiPbftManagerProposalDagBlockFact> for PbftManagerProposalDagBlockFact {
+    fn from(value: FfiPbftManagerProposalDagBlockFact) -> Self {
+        Self {
+            hash: value.hash.into(),
+            gas_estimation: value.gas_estimation,
+        }
+    }
+}
+
+impl From<FfiPbftManagerProposalInitialFact> for PbftManagerProposalInitialFact {
+    fn from(value: FfiPbftManagerProposalInitialFact) -> Self {
+        Self {
+            period: value.period,
+            round: value.round,
+            previous_pbft_block_hash: value.previous_pbft_block_hash.into(),
+            last_period_dag_anchor_hash: value.last_period_dag_anchor_hash.into(),
+            dag_genesis_hash: value.dag_genesis_hash.into(),
+            dag_blocks_size: value.dag_blocks_size,
+            ghost_path_move_back: value.ghost_path_move_back,
+            pbft_gas_limit: value.pbft_gas_limit,
+            extra_data_required: value.extra_data_required,
+            extra_data_available: value.extra_data_available,
+            final_chain_hash_valid: value.final_chain_hash_valid,
+            final_chain_hash: value.final_chain_hash.into(),
+            wallets: value.wallets.into_iter().map(Into::into).collect(),
+            ghost_path: value
+                .ghost_path
+                .into_iter()
+                .map(|hash| ethereum_types::H256::from(hash.hash))
+                .collect(),
+            has_non_finalized_fallback: value.has_non_finalized_fallback,
+            non_finalized_fallback_hash: value.non_finalized_fallback_hash.into(),
+        }
+    }
+}
+
+impl From<FfiPbftManagerProposalDagOrderReport> for PbftManagerProposalDagOrderReport {
+    fn from(value: FfiPbftManagerProposalDagOrderReport) -> Self {
+        Self {
+            anchor_hash: value.anchor_hash.into(),
+            dag_blocks: value.dag_blocks.into_iter().map(Into::into).collect(),
+            order_available: value.order_available,
+        }
+    }
+}
+
+impl From<FfiPbftManagerBroadcastFact> for PbftManagerBroadcastFact {
+    fn from(value: FfiPbftManagerBroadcastFact) -> Self {
+        Self {
+            round_elapsed_ms: value.round_elapsed_ms,
+            period_elapsed_ms: value.period_elapsed_ms,
+            current_round_lambda_ms: value.current_round_lambda_ms,
+            broadcast_lambda_threshold: value.broadcast_lambda_threshold,
+            rebroadcast_lambda_threshold: value.rebroadcast_lambda_threshold,
+            broadcast_votes_counter: value.broadcast_votes_counter,
+            rebroadcast_votes_counter: value.rebroadcast_votes_counter,
+            broadcast_reward_votes_counter: value.broadcast_reward_votes_counter,
+            rebroadcast_reward_votes_counter: value.rebroadcast_reward_votes_counter,
+        }
+    }
+}
+
+impl From<FfiPbftManagerBroadcastPlan> for PbftManagerBroadcastPlan {
+    fn from(value: FfiPbftManagerBroadcastPlan) -> Self {
+        Self {
+            status: broadcast_status_from_u8(value.status),
+            action: PbftManagerBroadcastAction::from_u8(value.action),
+            rebroadcast: value.rebroadcast,
+            next_broadcast_votes_counter: value.next_broadcast_votes_counter,
+            next_rebroadcast_votes_counter: value.next_rebroadcast_votes_counter,
+            next_broadcast_reward_votes_counter: value.next_broadcast_reward_votes_counter,
+            next_rebroadcast_reward_votes_counter: value.next_rebroadcast_reward_votes_counter,
+            error_code: value.error_code,
+        }
+    }
+}
+
+impl From<FfiPbftManagerBroadcastReport> for PbftManagerBroadcastReport {
+    fn from(value: FfiPbftManagerBroadcastReport) -> Self {
+        Self {
+            action: PbftManagerBroadcastAction::from_u8(value.action),
+            rebroadcast: value.rebroadcast,
+            success: value.success,
+            error_code: value.error_code,
         }
     }
 }
@@ -942,6 +1346,54 @@ impl From<PbftManagerStateActionPlan> for FfiPbftManagerStateActionPlan {
     }
 }
 
+impl From<PbftManagerStateActionEffect> for FfiPbftManagerStateActionEffect {
+    fn from(value: PbftManagerStateActionEffect) -> Self {
+        Self {
+            intent: value.intent.as_u8(),
+            hash: value.hash,
+        }
+    }
+}
+
+impl From<PbftManagerStateActionEffectPlan> for FfiPbftManagerStateActionEffectPlan {
+    fn from(value: PbftManagerStateActionEffectPlan) -> Self {
+        Self {
+            status: value.status.as_u8(),
+            effects: value.effects.into_iter().map(Into::into).collect(),
+            go_finish_state: value.go_finish_state,
+            loop_back_finish_state: value.loop_back_finish_state,
+            error_code: value.error_code,
+        }
+    }
+}
+
+impl From<FfiPbftManagerStateActionEffectReport> for PbftManagerStateActionEffectReport {
+    fn from(value: FfiPbftManagerStateActionEffectReport) -> Self {
+        Self {
+            cursor: value.cursor,
+            intent: PbftManagerStateActionIntent::from_u8(value.intent),
+            result: PbftManagerStateActionEffectResultCode::from_u8(value.result),
+            error_code: value.error_code,
+        }
+    }
+}
+
+impl From<PbftManagerStateActionSessionStep> for FfiPbftManagerStateActionSessionStep {
+    fn from(value: PbftManagerStateActionSessionStep) -> Self {
+        Self {
+            status: value.status.as_u8(),
+            cursor: value.cursor,
+            has_effect: value.has_effect,
+            effect: value.effect.into(),
+            go_finish_state: value.go_finish_state,
+            loop_back_finish_state: value.loop_back_finish_state,
+            complete: value.complete,
+            can_continue: value.can_continue,
+            error_code: value.error_code,
+        }
+    }
+}
+
 impl From<PbftManagerBlockValidationPlan> for FfiPbftManagerBlockValidationPlan {
     fn from(value: PbftManagerBlockValidationPlan) -> Self {
         Self {
@@ -949,6 +1401,53 @@ impl From<PbftManagerBlockValidationPlan> for FfiPbftManagerBlockValidationPlan 
             status: value.status.as_u8(),
             next_check: value.next_check.as_u8(),
             error_code: value.error_code.to_string(),
+        }
+    }
+}
+
+impl From<PbftManagerProposalSessionStep> for FfiPbftManagerProposalSessionStep {
+    fn from(value: PbftManagerProposalSessionStep) -> Self {
+        Self {
+            action: value.action.as_u8(),
+            status: value.status.as_u8(),
+            requested_anchor_hash: value.requested_anchor_hash.into(),
+            previous_pbft_block_hash: value.previous_pbft_block_hash.into(),
+            anchor_hash: value.anchor_hash.into(),
+            order_hash: value.order_hash.into(),
+            final_chain_hash: value.final_chain_hash.into(),
+            eligible_wallet_indices: value.eligible_wallet_indices,
+            dag_blocks_included: value.dag_blocks_included,
+            selected_null_anchor: value.selected_null_anchor,
+            error_code: value.error_code,
+        }
+    }
+}
+
+impl From<PbftManagerBroadcastPlan> for FfiPbftManagerBroadcastPlan {
+    fn from(value: PbftManagerBroadcastPlan) -> Self {
+        Self {
+            status: value.status.as_u8(),
+            action: value.action.as_u8(),
+            rebroadcast: value.rebroadcast,
+            next_broadcast_votes_counter: value.next_broadcast_votes_counter,
+            next_rebroadcast_votes_counter: value.next_rebroadcast_votes_counter,
+            next_broadcast_reward_votes_counter: value.next_broadcast_reward_votes_counter,
+            next_rebroadcast_reward_votes_counter: value.next_rebroadcast_reward_votes_counter,
+            error_code: value.error_code,
+        }
+    }
+}
+
+impl From<PbftManagerBroadcastReportResult> for FfiPbftManagerBroadcastReportResult {
+    fn from(value: PbftManagerBroadcastReportResult) -> Self {
+        Self {
+            status: value.status.as_u8(),
+            apply_counters: value.apply_counters,
+            broadcast_votes_counter: value.broadcast_votes_counter,
+            rebroadcast_votes_counter: value.rebroadcast_votes_counter,
+            broadcast_reward_votes_counter: value.broadcast_reward_votes_counter,
+            rebroadcast_reward_votes_counter: value.rebroadcast_reward_votes_counter,
+            error_code: value.error_code,
         }
     }
 }
@@ -1016,6 +1515,47 @@ impl From<PbftManagerTransitionPlan> for FfiPbftManagerTransitionPlan {
     }
 }
 
+impl From<FfiPbftManagerStartupReplayRangeFact> for PbftManagerStartupReplayRangeFact {
+    fn from(value: FfiPbftManagerStartupReplayRangeFact) -> Self {
+        Self {
+            final_chain_last_block: value.final_chain_last_block,
+            pbft_chain_size: value.pbft_chain_size,
+            delegation_delay: value.delegation_delay,
+            recently_finalized_factor: value.recently_finalized_factor,
+        }
+    }
+}
+
+impl From<PbftManagerStartupReplayRangePlan> for FfiPbftManagerStartupReplayRangePlan {
+    fn from(value: PbftManagerStartupReplayRangePlan) -> Self {
+        Self {
+            accepted: value.accepted,
+            has_finalization_range: value.has_finalization_range,
+            finalization_from_period: value.finalization_from_period,
+            finalization_to_period: value.finalization_to_period,
+            recent_from_period: value.recent_from_period,
+            recent_to_period: value.recent_to_period,
+            error_code: value.error_code,
+        }
+    }
+}
+
+impl From<PbftManagerAdvancePeriodPlan> for FfiPbftManagerAdvancePeriodPlan {
+    fn from(value: PbftManagerAdvancePeriodPlan) -> Self {
+        Self {
+            accepted: value.accepted,
+            finalized_chain_size: value.finalized_chain_size,
+            new_period: value.new_period,
+            actions: value
+                .actions
+                .into_iter()
+                .map(|action| action.as_u8())
+                .collect(),
+            error_code: value.error_code,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1054,6 +1594,7 @@ mod tests {
     const BLOCK_VALIDATION_STATUS_FINAL_CHAIN_MISSING: u8 = 3;
     const BLOCK_VALIDATION_CHECK_PBFT_CHAIN: u8 = 0;
     const BLOCK_VALIDATION_CHECK_FINAL_CHAIN_HASH: u8 = 1;
+    const BLOCK_VALIDATION_CHECK_REWARD_VOTES: u8 = 2;
     const CANDIDATE_ADMISSION_VALIDATION_NOT_CHECKED: u8 = 0;
     const CANDIDATE_ADMISSION_VALIDATION_VALID: u8 = 1;
     const CANDIDATE_ADMISSION_ACTION_REQUEST_LOOKUP: u8 = 0;
@@ -1070,6 +1611,17 @@ mod tests {
     const STATE_ACTION_CERT_VOTE_CURRENT_SOFT_VALUE: u8 = 5;
     const STATE_ACTION_SOFT_VOTE_PREVIOUS_VALUE: u8 = 4;
     const STATE_ACTION_NEXT_VOTE_CERT_BLOCK: u8 = 7;
+    const STATE_ACTION_NEXT_VOTE_NULL_BLOCK: u8 = 8;
+    const STATE_ACTION_NEXT_VOTE_CURRENT_SOFT_VALUE: u8 = 10;
+    const STATE_ACTION_SESSION_ACTIVE: u8 = 0;
+    const STATE_ACTION_SESSION_COMPLETE: u8 = 1;
+    const STATE_ACTION_EFFECT_APPLIED: u8 = 0;
+    const PROPOSAL_ACTION_REQUEST_DAG_ORDER: u8 = 0;
+    const PROPOSAL_ACTION_BUILD: u8 = 1;
+    const PROPOSAL_STATUS_ACTIVE: u8 = 0;
+    const PROPOSAL_STATUS_BUILD_READY: u8 = 1;
+    const BROADCAST_ACTION_ROUND_VOTES: u8 = 2;
+    const BROADCAST_STATUS_READY: u8 = 0;
     const STARTUP_STATUS_READY: u8 = 0;
     const TRANSITION_STATUS_READY: u8 = 0;
     const TRANSITION_STATUS_INVALID_FACT: u8 = 2;
@@ -1078,6 +1630,15 @@ mod tests {
     const TRANSITION_LOOP_BACK_FINISH: u8 = 5;
     const TRANSITION_STORAGE_STATUS_APPLIED: u8 = 0;
     const TRANSITION_STORAGE_STATUS_REJECTED: u8 = 1;
+    const ADVANCE_ACTION_RESET_CONSENSUS: u8 = 0;
+    const ADVANCE_ACTION_EXECUTED_BLOCK_RESET: u8 = 1;
+    const ADVANCE_ACTION_SET_VOTE_MANAGER_PERIOD_ROUND: u8 = 2;
+    const ADVANCE_ACTION_RESET_CURRENT_ROUND_TIMER: u8 = 3;
+    const ADVANCE_ACTION_RESET_REWARD_VOTE_COUNTERS: u8 = 4;
+    const ADVANCE_ACTION_RESET_PERIOD_TIMER: u8 = 5;
+    const ADVANCE_ACTION_UPDATE_WALLET_ELIGIBILITY: u8 = 6;
+    const ADVANCE_ACTION_CLEANUP_VOTES: u8 = 7;
+    const ADVANCE_ACTION_CLEANUP_PROPOSED_BLOCKS: u8 = 8;
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -1275,6 +1836,42 @@ mod tests {
         }
     }
 
+    fn proposal_fact() -> FfiPbftManagerProposalInitialFact {
+        FfiPbftManagerProposalInitialFact {
+            period: 10,
+            round: 2,
+            previous_pbft_block_hash: [0x11; 32],
+            last_period_dag_anchor_hash: [0x01; 32],
+            dag_genesis_hash: [0x01; 32],
+            dag_blocks_size: 10,
+            ghost_path_move_back: 0,
+            pbft_gas_limit: 100,
+            extra_data_required: false,
+            extra_data_available: false,
+            final_chain_hash_valid: true,
+            final_chain_hash: [0x22; 32],
+            wallets: vec![
+                FfiPbftManagerProposalWalletFact {
+                    wallet_index: 0,
+                    dpos_eligible: false,
+                    sortition_valid: true,
+                },
+                FfiPbftManagerProposalWalletFact {
+                    wallet_index: 1,
+                    dpos_eligible: true,
+                    sortition_valid: true,
+                },
+            ],
+            ghost_path: vec![
+                FfiPbftFinalizationHash { hash: [0x01; 32] },
+                FfiPbftFinalizationHash { hash: [0x02; 32] },
+                FfiPbftFinalizationHash { hash: [0x03; 32] },
+            ],
+            has_non_finalized_fallback: false,
+            non_finalized_fallback_hash: [0; 32],
+        }
+    }
+
     fn transition_fact(kind: u8) -> FfiPbftManagerTransitionFact {
         FfiPbftManagerTransitionFact {
             kind,
@@ -1361,6 +1958,138 @@ mod tests {
             STATE_ACTION_NEXT_VOTE_CERT_BLOCK
         );
         assert_eq!(finish_plan.primary_hash, [0x66; 32]);
+    }
+
+    #[test]
+    fn bridge_plans_state_action_effects_in_order() {
+        let mut finish_polling_fact = state_fact(4);
+        finish_polling_fact.current_round_lambda_ms = 1_000;
+        finish_polling_fact.has_current_round_soft_value = true;
+        finish_polling_fact.has_previous_round_next_null = true;
+
+        let plan = plan_pbft_manager_state_action_effects(finish_polling_fact);
+
+        assert_eq!(plan.status, STATE_ACTION_STATUS_READY);
+        assert_eq!(plan.effects.len(), 2);
+        assert_eq!(
+            plan.effects[0].intent,
+            STATE_ACTION_NEXT_VOTE_CURRENT_SOFT_VALUE
+        );
+        assert_eq!(plan.effects[0].hash, [0x55; 32]);
+        assert_eq!(plan.effects[1].intent, STATE_ACTION_NEXT_VOTE_NULL_BLOCK);
+    }
+
+    #[test]
+    fn bridge_state_action_effect_session_reports_each_effect() {
+        let mut finish_polling_fact = state_fact(4);
+        finish_polling_fact.current_round_lambda_ms = 1_000;
+        finish_polling_fact.has_current_round_soft_value = true;
+        finish_polling_fact.has_previous_round_next_null = true;
+        let mut session = create_pbft_manager_state_action_effect_session(finish_polling_fact);
+
+        let first = pbft_manager_state_action_effect_session_next(&mut session);
+        assert_eq!(first.status, STATE_ACTION_SESSION_ACTIVE);
+        assert!(first.has_effect);
+        assert_eq!(
+            first.effect.intent,
+            STATE_ACTION_NEXT_VOTE_CURRENT_SOFT_VALUE
+        );
+
+        let second = pbft_manager_state_action_effect_session_report(
+            &mut session,
+            FfiPbftManagerStateActionEffectReport {
+                cursor: first.cursor,
+                intent: first.effect.intent,
+                result: STATE_ACTION_EFFECT_APPLIED,
+                error_code: String::new(),
+            },
+        );
+        assert_eq!(second.status, STATE_ACTION_SESSION_ACTIVE);
+        assert_eq!(second.effect.intent, STATE_ACTION_NEXT_VOTE_NULL_BLOCK);
+
+        let done = pbft_manager_state_action_effect_session_report(
+            &mut session,
+            FfiPbftManagerStateActionEffectReport {
+                cursor: second.cursor,
+                intent: second.effect.intent,
+                result: STATE_ACTION_EFFECT_APPLIED,
+                error_code: String::new(),
+            },
+        );
+        assert_eq!(done.status, STATE_ACTION_SESSION_COMPLETE);
+        assert!(done.complete);
+        assert!(done.can_continue);
+    }
+
+    #[test]
+    fn bridge_proposal_session_requests_order_and_builds_command() {
+        let mut session = create_pbft_manager_proposal_session(proposal_fact());
+
+        let request = pbft_manager_proposal_session_next(&mut session);
+        assert_eq!(request.action, PROPOSAL_ACTION_REQUEST_DAG_ORDER);
+        assert_eq!(request.status, PROPOSAL_STATUS_ACTIVE);
+        assert_eq!(request.requested_anchor_hash, [0x03; 32]);
+
+        let build = pbft_manager_proposal_session_report_dag_order(
+            &mut session,
+            FfiPbftManagerProposalDagOrderReport {
+                anchor_hash: request.requested_anchor_hash,
+                dag_blocks: vec![
+                    FfiPbftManagerProposalDagBlockFact {
+                        hash: [0x02; 32],
+                        gas_estimation: 10,
+                    },
+                    FfiPbftManagerProposalDagBlockFact {
+                        hash: [0x03; 32],
+                        gas_estimation: 10,
+                    },
+                ],
+                order_available: true,
+            },
+        );
+
+        assert_eq!(build.action, PROPOSAL_ACTION_BUILD);
+        assert_eq!(build.status, PROPOSAL_STATUS_BUILD_READY);
+        assert_eq!(build.anchor_hash, [0x03; 32]);
+        assert_eq!(build.final_chain_hash, [0x22; 32]);
+        assert_eq!(build.eligible_wallet_indices, vec![1]);
+        assert_eq!(build.dag_blocks_included, 2);
+        assert_ne!(build.order_hash, [0; 32]);
+    }
+
+    #[test]
+    fn bridge_broadcast_plan_reports_before_counter_apply() {
+        let plan = plan_pbft_manager_broadcast(FfiPbftManagerBroadcastFact {
+            round_elapsed_ms: 2_100,
+            period_elapsed_ms: 0,
+            current_round_lambda_ms: 100,
+            broadcast_lambda_threshold: 20,
+            rebroadcast_lambda_threshold: 60,
+            broadcast_votes_counter: 1,
+            rebroadcast_votes_counter: 1,
+            broadcast_reward_votes_counter: 1,
+            rebroadcast_reward_votes_counter: 1,
+        });
+
+        assert_eq!(plan.status, BROADCAST_STATUS_READY);
+        assert_eq!(plan.action, BROADCAST_ACTION_ROUND_VOTES);
+        assert!(!plan.rebroadcast);
+        assert_eq!(plan.next_broadcast_votes_counter, 2);
+
+        let result = report_pbft_manager_broadcast(
+            plan,
+            FfiPbftManagerBroadcastReport {
+                action: BROADCAST_ACTION_ROUND_VOTES,
+                rebroadcast: false,
+                success: true,
+                error_code: String::new(),
+            },
+        );
+
+        assert_eq!(result.status, BROADCAST_STATUS_READY);
+        assert!(result.apply_counters);
+        assert_eq!(result.broadcast_votes_counter, 2);
+        assert_eq!(result.rebroadcast_votes_counter, 1);
     }
 
     #[test]
@@ -1886,6 +2615,96 @@ mod tests {
     }
 
     #[test]
+    fn bridge_plans_startup_replay_ranges_and_advance_period_commit() {
+        let replay =
+            plan_pbft_manager_startup_replay_ranges(FfiPbftManagerStartupReplayRangeFact {
+                final_chain_last_block: 8,
+                pbft_chain_size: 12,
+                delegation_delay: 3,
+                recently_finalized_factor: 2,
+            });
+
+        assert!(replay.accepted);
+        assert!(replay.has_finalization_range);
+        assert_eq!(replay.finalization_from_period, 9);
+        assert_eq!(replay.finalization_to_period, 12);
+        assert_eq!(replay.recent_from_period, 6);
+        assert_eq!(replay.recent_to_period, 12);
+
+        let rejected =
+            plan_pbft_manager_startup_replay_ranges(FfiPbftManagerStartupReplayRangeFact {
+                final_chain_last_block: 13,
+                pbft_chain_size: 12,
+                delegation_delay: 1,
+                recently_finalized_factor: 1,
+            });
+        assert!(!rejected.accepted);
+        assert_eq!(
+            rejected.error_code,
+            "PBFT_MANAGER_STARTUP_REPLAY_FINAL_CHAIN_AHEAD"
+        );
+
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_advance_period");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            storage
+                .save_pbft_mgr_field(0, 1)
+                .expect("round seed should persist");
+            storage
+                .save_pbft_mgr_field(1, 1)
+                .expect("step seed should persist");
+            storage
+                .save_pbft_mgr_field(2, 1_500)
+                .expect("lambda seed should persist");
+            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
+                .expect("runtime should restore");
+
+            let mut transition_fact = transition_fact(TRANSITION_RESET);
+            transition_fact.target_round = 1;
+            transition_fact.target_round_lambda_ms = 100;
+            let transition = plan_pbft_manager_transition(transition_fact);
+            assert_eq!(transition.status, TRANSITION_STATUS_READY);
+
+            let advance = plan_pbft_manager_advance_period(12, &transition);
+            assert!(advance.accepted);
+            assert_eq!(advance.finalized_chain_size, 12);
+            assert_eq!(advance.new_period, 13);
+            assert_eq!(
+                advance.actions,
+                vec![
+                    ADVANCE_ACTION_RESET_CONSENSUS,
+                    ADVANCE_ACTION_EXECUTED_BLOCK_RESET,
+                    ADVANCE_ACTION_SET_VOTE_MANAGER_PERIOD_ROUND,
+                    ADVANCE_ACTION_RESET_CURRENT_ROUND_TIMER,
+                    ADVANCE_ACTION_RESET_REWARD_VOTE_COUNTERS,
+                    ADVANCE_ACTION_RESET_PERIOD_TIMER,
+                    ADVANCE_ACTION_UPDATE_WALLET_ELIGIBILITY,
+                    ADVANCE_ACTION_CLEANUP_VOTES,
+                    ADVANCE_ACTION_CLEANUP_PROPOSED_BLOCKS,
+                ]
+            );
+
+            let snapshot =
+                pbft_manager_runtime_apply_period_advance(&mut runtime, advance.new_period);
+            assert_eq!(snapshot.status, STARTUP_STATUS_READY);
+            assert_eq!(snapshot.period, 13);
+
+            let rejected_snapshot =
+                pbft_manager_runtime_apply_period_advance(&mut runtime, advance.new_period);
+            assert_ne!(rejected_snapshot.status, STARTUP_STATUS_READY);
+            assert_eq!(rejected_snapshot.period, 13);
+            assert_eq!(
+                rejected_snapshot.error_code,
+                "PBFT_MANAGER_ADVANCE_PERIOD_NON_INCREASING_PERIOD"
+            );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn bridge_runtime_rejected_transition_preserves_snapshot() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_transition_reject");
         {
@@ -2003,6 +2822,34 @@ mod tests {
         assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_WAIT_FOR_FINALIZATION);
         assert_eq!(plan.status, BLOCK_VALIDATION_STATUS_FINAL_CHAIN_MISSING);
         assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_FINAL_CHAIN_HASH);
+    }
+
+    #[test]
+    fn bridge_pbft_block_validation_session_reports_checks_and_retry() {
+        let mut session = create_pbft_manager_block_validation_session(block_validation_fact());
+        let plan = session.pbft_manager_block_validation_session_next();
+        assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_RUN_CHECK);
+        assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_PBFT_CHAIN);
+
+        let plan = session
+            .pbft_manager_block_validation_session_report(BLOCK_VALIDATION_FACT_VALID, false);
+        assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_RUN_CHECK);
+        assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_FINAL_CHAIN_HASH);
+
+        let plan = session
+            .pbft_manager_block_validation_session_report(BLOCK_VALIDATION_FACT_MISSING, false);
+        assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_WAIT_FOR_FINALIZATION);
+        assert_eq!(plan.status, BLOCK_VALIDATION_STATUS_FINAL_CHAIN_MISSING);
+
+        let plan = session
+            .pbft_manager_block_validation_session_report(BLOCK_VALIDATION_FACT_NOT_CHECKED, false);
+        assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_RUN_CHECK);
+        assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_FINAL_CHAIN_HASH);
+
+        let plan = session
+            .pbft_manager_block_validation_session_report(BLOCK_VALIDATION_FACT_VALID, false);
+        assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_RUN_CHECK);
+        assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_REWARD_VOTES);
     }
 
     #[test]

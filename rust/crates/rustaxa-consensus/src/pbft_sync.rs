@@ -556,6 +556,369 @@ pub struct PbftSyncProcessPeriodDataRuntimePlan {
     pub contains_finalized_transaction_warning: bool,
 }
 
+/// Rust-owned action for draining the PBFT sync queue.
+///
+/// The session is side-effect-free. It decides the order of queue cleanup,
+/// candidate processing, accepted-period push, sync-state update, and stop
+/// conditions while C++ executes the live queue, `PeriodData`, network, and
+/// PBFT-chain operations.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftSyncQueueDrainAction {
+    /// Remove stale queue entries before the drain loop starts.
+    CleanOldData,
+    /// Pop and validate one queued candidate through the existing period-data runtime.
+    PopAndProcess,
+    /// Push the accepted period data into the PBFT chain/finalization path.
+    PushAccepted,
+    /// Publish the post-push PBFT sync state through the network executor.
+    UpdateSyncState,
+    /// No more drain work should run.
+    Stop,
+    /// C++ called the session API out of order or supplied an invalid report.
+    ContractError,
+}
+
+impl PbftSyncQueueDrainAction {
+    /// Stable bridge code for queue-drain actions.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::CleanOldData => 0,
+            Self::PopAndProcess => 1,
+            Self::PushAccepted => 2,
+            Self::UpdateSyncState => 3,
+            Self::Stop => 4,
+            Self::ContractError => 255,
+        }
+    }
+
+    /// Decodes a stable bridge action code.
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::CleanOldData,
+            1 => Self::PopAndProcess,
+            2 => Self::PushAccepted,
+            3 => Self::UpdateSyncState,
+            4 => Self::Stop,
+            _ => Self::ContractError,
+        }
+    }
+}
+
+/// Stable status for the PBFT sync queue-drain session.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftSyncQueueDrainStatus {
+    /// The session can continue.
+    Active,
+    /// The queue is empty or the session intentionally stopped.
+    Complete,
+    /// The accepted-period push failed and the drain loop must stop.
+    PushFailed,
+    /// A C++ executor operation failed unexpectedly.
+    ExecutorFailed,
+    /// C++ called the session API out of order or supplied an invalid report.
+    InvalidReport,
+}
+
+impl PbftSyncQueueDrainStatus {
+    /// Stable bridge code for queue-drain status.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Active => 0,
+            Self::Complete => 1,
+            Self::PushFailed => 2,
+            Self::ExecutorFailed => 3,
+            Self::InvalidReport => 255,
+        }
+    }
+}
+
+/// One Rust-planned queue-drain step for the C++ executor.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftSyncQueueDrainStep {
+    /// Action C++ should execute.
+    pub action: PbftSyncQueueDrainAction,
+    /// Session status associated with this step.
+    pub status: PbftSyncQueueDrainStatus,
+    /// Current PBFT period to use when `action == CleanOldData`.
+    pub clean_before_period: u64,
+    /// Whether C++ should continue the drain loop after this step is handled.
+    pub can_continue: bool,
+    /// Stable diagnostic code for bridge/log consumers.
+    pub error_code: &'static str,
+}
+
+/// C++ executor report for one queue-drain action.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftSyncQueueDrainReport {
+    /// Action C++ attempted to execute.
+    pub action: PbftSyncQueueDrainAction,
+    /// Whether the requested executor operation completed.
+    pub success: bool,
+    /// Whether `PopAndProcess` produced accepted period data for the push step.
+    pub accepted_period_data: bool,
+}
+
+/// Rust validation result for one queue-drain executor report.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftSyncQueueDrainReportResult {
+    /// Report status selected by Rust.
+    pub status: PbftSyncQueueDrainStatus,
+    /// Whether C++ may ask Rust for the next queue-drain step.
+    pub can_continue: bool,
+    /// Stable diagnostic code for bridge/log consumers.
+    pub error_code: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum PbftSyncQueueDrainState {
+    Start,
+    NeedPop,
+    NeedPush,
+    NeedSyncStateUpdate,
+    Awaiting(PbftSyncQueueDrainAction),
+    Complete,
+}
+
+/// Rust-owned PBFT sync queue-drain session.
+///
+/// Purpose:
+/// - Owns the outer `pushSyncedPbftBlocksIntoChain` loop decisions: cleanup,
+///   pop/process, accepted-period push, sync-state update, retry/continue, and
+///   stop.
+///
+/// Inputs/outputs:
+/// - `next` receives the current compatibility queue size and PBFT period from
+///   C++ and returns one executor action.
+/// - `report` accepts the result of exactly the action Rust last requested.
+///
+/// Invariants and edge behavior:
+/// - C++ may not request a second action before reporting the previous one.
+/// - `PushAccepted` is only planned after a `PopAndProcess` report accepted a
+///   candidate.
+/// - Push failure is a deliberate stop, matching the legacy break behavior.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftSyncQueueDrainSession {
+    state: PbftSyncQueueDrainState,
+}
+
+impl Default for PbftSyncQueueDrainSession {
+    fn default() -> Self {
+        Self {
+            state: PbftSyncQueueDrainState::Start,
+        }
+    }
+}
+
+fn queue_drain_step(
+    action: PbftSyncQueueDrainAction,
+    status: PbftSyncQueueDrainStatus,
+    clean_before_period: u64,
+    can_continue: bool,
+    error_code: &'static str,
+) -> PbftSyncQueueDrainStep {
+    PbftSyncQueueDrainStep {
+        action,
+        status,
+        clean_before_period,
+        can_continue,
+        error_code,
+    }
+}
+
+fn queue_drain_report_result(
+    status: PbftSyncQueueDrainStatus,
+    can_continue: bool,
+    error_code: &'static str,
+) -> PbftSyncQueueDrainReportResult {
+    PbftSyncQueueDrainReportResult {
+        status,
+        can_continue,
+        error_code,
+    }
+}
+
+/// Creates a Rust-owned PBFT sync queue-drain session.
+#[must_use]
+pub fn create_pbft_sync_queue_drain_session() -> PbftSyncQueueDrainSession {
+    PbftSyncQueueDrainSession::default()
+}
+
+/// Returns the next Rust-owned PBFT sync queue-drain step.
+///
+/// C++ supplies current queue size because the live `PeriodData` payload mirror
+/// remains outside Rust. Rust uses that fact to decide whether another pop is
+/// required or the drain is complete.
+#[must_use]
+pub fn next_pbft_sync_queue_drain_step(
+    session: &mut PbftSyncQueueDrainSession,
+    queue_size: usize,
+    current_period: u64,
+) -> PbftSyncQueueDrainStep {
+    match session.state {
+        PbftSyncQueueDrainState::Start => {
+            session.state =
+                PbftSyncQueueDrainState::Awaiting(PbftSyncQueueDrainAction::CleanOldData);
+            queue_drain_step(
+                PbftSyncQueueDrainAction::CleanOldData,
+                PbftSyncQueueDrainStatus::Active,
+                current_period,
+                true,
+                "",
+            )
+        }
+        PbftSyncQueueDrainState::NeedPop => {
+            if queue_size == 0 {
+                session.state = PbftSyncQueueDrainState::Complete;
+                queue_drain_step(
+                    PbftSyncQueueDrainAction::Stop,
+                    PbftSyncQueueDrainStatus::Complete,
+                    current_period,
+                    false,
+                    "PBFT_SYNC_QUEUE_DRAIN_EMPTY",
+                )
+            } else {
+                session.state =
+                    PbftSyncQueueDrainState::Awaiting(PbftSyncQueueDrainAction::PopAndProcess);
+                queue_drain_step(
+                    PbftSyncQueueDrainAction::PopAndProcess,
+                    PbftSyncQueueDrainStatus::Active,
+                    current_period,
+                    true,
+                    "",
+                )
+            }
+        }
+        PbftSyncQueueDrainState::NeedPush => {
+            session.state =
+                PbftSyncQueueDrainState::Awaiting(PbftSyncQueueDrainAction::PushAccepted);
+            queue_drain_step(
+                PbftSyncQueueDrainAction::PushAccepted,
+                PbftSyncQueueDrainStatus::Active,
+                current_period,
+                true,
+                "",
+            )
+        }
+        PbftSyncQueueDrainState::NeedSyncStateUpdate => {
+            session.state =
+                PbftSyncQueueDrainState::Awaiting(PbftSyncQueueDrainAction::UpdateSyncState);
+            queue_drain_step(
+                PbftSyncQueueDrainAction::UpdateSyncState,
+                PbftSyncQueueDrainStatus::Active,
+                current_period,
+                true,
+                "",
+            )
+        }
+        PbftSyncQueueDrainState::Complete => queue_drain_step(
+            PbftSyncQueueDrainAction::Stop,
+            PbftSyncQueueDrainStatus::Complete,
+            current_period,
+            false,
+            "PBFT_SYNC_QUEUE_DRAIN_COMPLETE",
+        ),
+        PbftSyncQueueDrainState::Awaiting(_) => queue_drain_step(
+            PbftSyncQueueDrainAction::ContractError,
+            PbftSyncQueueDrainStatus::InvalidReport,
+            current_period,
+            false,
+            "PBFT_SYNC_QUEUE_DRAIN_NEXT_BEFORE_REPORT",
+        ),
+    }
+}
+
+/// Reports one C++ executor result back to the Rust queue-drain session.
+#[must_use]
+pub fn report_pbft_sync_queue_drain_step(
+    session: &mut PbftSyncQueueDrainSession,
+    report: PbftSyncQueueDrainReport,
+) -> PbftSyncQueueDrainReportResult {
+    let PbftSyncQueueDrainState::Awaiting(expected_action) = session.state else {
+        session.state = PbftSyncQueueDrainState::Complete;
+        return queue_drain_report_result(
+            PbftSyncQueueDrainStatus::InvalidReport,
+            false,
+            "PBFT_SYNC_QUEUE_DRAIN_REPORT_WITHOUT_ACTION",
+        );
+    };
+
+    if report.action != expected_action || report.action == PbftSyncQueueDrainAction::ContractError
+    {
+        session.state = PbftSyncQueueDrainState::Complete;
+        return queue_drain_report_result(
+            PbftSyncQueueDrainStatus::InvalidReport,
+            false,
+            "PBFT_SYNC_QUEUE_DRAIN_ACTION_MISMATCH",
+        );
+    }
+
+    match expected_action {
+        PbftSyncQueueDrainAction::CleanOldData => {
+            if report.success {
+                session.state = PbftSyncQueueDrainState::NeedPop;
+                queue_drain_report_result(PbftSyncQueueDrainStatus::Active, true, "")
+            } else {
+                session.state = PbftSyncQueueDrainState::Complete;
+                queue_drain_report_result(
+                    PbftSyncQueueDrainStatus::ExecutorFailed,
+                    false,
+                    "PBFT_SYNC_QUEUE_DRAIN_CLEAN_FAILED",
+                )
+            }
+        }
+        PbftSyncQueueDrainAction::PopAndProcess => {
+            if !report.success {
+                session.state = PbftSyncQueueDrainState::Complete;
+                return queue_drain_report_result(
+                    PbftSyncQueueDrainStatus::ExecutorFailed,
+                    false,
+                    "PBFT_SYNC_QUEUE_DRAIN_PROCESS_FAILED",
+                );
+            }
+            session.state = if report.accepted_period_data {
+                PbftSyncQueueDrainState::NeedPush
+            } else {
+                PbftSyncQueueDrainState::NeedPop
+            };
+            queue_drain_report_result(PbftSyncQueueDrainStatus::Active, true, "")
+        }
+        PbftSyncQueueDrainAction::PushAccepted => {
+            if report.success {
+                session.state = PbftSyncQueueDrainState::NeedSyncStateUpdate;
+                queue_drain_report_result(PbftSyncQueueDrainStatus::Active, true, "")
+            } else {
+                session.state = PbftSyncQueueDrainState::Complete;
+                queue_drain_report_result(
+                    PbftSyncQueueDrainStatus::PushFailed,
+                    false,
+                    "PBFT_SYNC_QUEUE_DRAIN_PUSH_FAILED",
+                )
+            }
+        }
+        PbftSyncQueueDrainAction::UpdateSyncState => {
+            if report.success {
+                session.state = PbftSyncQueueDrainState::NeedPop;
+                queue_drain_report_result(PbftSyncQueueDrainStatus::Active, true, "")
+            } else {
+                session.state = PbftSyncQueueDrainState::Complete;
+                queue_drain_report_result(
+                    PbftSyncQueueDrainStatus::ExecutorFailed,
+                    false,
+                    "PBFT_SYNC_QUEUE_DRAIN_SYNC_STATE_UPDATE_FAILED",
+                )
+            }
+        }
+        PbftSyncQueueDrainAction::Stop | PbftSyncQueueDrainAction::ContractError => {
+            session.state = PbftSyncQueueDrainState::Complete;
+            queue_drain_report_result(
+                PbftSyncQueueDrainStatus::InvalidReport,
+                false,
+                "PBFT_SYNC_QUEUE_DRAIN_TERMINAL_ACTION_REPORTED",
+            )
+        }
+    }
+}
+
 /// Input fact for one PBFT sync-period admission request.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftSyncPeriodAdmissionFact {
@@ -1299,6 +1662,148 @@ mod tests {
             plan.finalized_lookup_hashes,
             vec![H256::from_low_u64_be(1), H256::from_low_u64_be(3)]
         );
+    }
+
+    #[test]
+    fn queue_drain_session_orders_clean_pop_push_update_and_stop() {
+        let mut session = create_pbft_sync_queue_drain_session();
+
+        let clean = next_pbft_sync_queue_drain_step(&mut session, 2, 10);
+        assert_eq!(clean.action, PbftSyncQueueDrainAction::CleanOldData);
+        assert_eq!(clean.clean_before_period, 10);
+        assert!(
+            report_pbft_sync_queue_drain_step(
+                &mut session,
+                PbftSyncQueueDrainReport {
+                    action: PbftSyncQueueDrainAction::CleanOldData,
+                    success: true,
+                    accepted_period_data: false,
+                }
+            )
+            .can_continue
+        );
+
+        let pop = next_pbft_sync_queue_drain_step(&mut session, 1, 10);
+        assert_eq!(pop.action, PbftSyncQueueDrainAction::PopAndProcess);
+        assert!(
+            report_pbft_sync_queue_drain_step(
+                &mut session,
+                PbftSyncQueueDrainReport {
+                    action: PbftSyncQueueDrainAction::PopAndProcess,
+                    success: true,
+                    accepted_period_data: true,
+                }
+            )
+            .can_continue
+        );
+
+        let push = next_pbft_sync_queue_drain_step(&mut session, 1, 10);
+        assert_eq!(push.action, PbftSyncQueueDrainAction::PushAccepted);
+        assert!(
+            report_pbft_sync_queue_drain_step(
+                &mut session,
+                PbftSyncQueueDrainReport {
+                    action: PbftSyncQueueDrainAction::PushAccepted,
+                    success: true,
+                    accepted_period_data: false,
+                }
+            )
+            .can_continue
+        );
+
+        let update = next_pbft_sync_queue_drain_step(&mut session, 1, 11);
+        assert_eq!(update.action, PbftSyncQueueDrainAction::UpdateSyncState);
+        assert!(
+            report_pbft_sync_queue_drain_step(
+                &mut session,
+                PbftSyncQueueDrainReport {
+                    action: PbftSyncQueueDrainAction::UpdateSyncState,
+                    success: true,
+                    accepted_period_data: false,
+                }
+            )
+            .can_continue
+        );
+
+        let stop = next_pbft_sync_queue_drain_step(&mut session, 0, 11);
+        assert_eq!(stop.action, PbftSyncQueueDrainAction::Stop);
+        assert_eq!(stop.status, PbftSyncQueueDrainStatus::Complete);
+        assert!(!stop.can_continue);
+    }
+
+    #[test]
+    fn queue_drain_session_continues_after_dropped_candidate() {
+        let mut session = create_pbft_sync_queue_drain_session();
+        let _ = next_pbft_sync_queue_drain_step(&mut session, 2, 10);
+        let _ = report_pbft_sync_queue_drain_step(
+            &mut session,
+            PbftSyncQueueDrainReport {
+                action: PbftSyncQueueDrainAction::CleanOldData,
+                success: true,
+                accepted_period_data: false,
+            },
+        );
+
+        let pop = next_pbft_sync_queue_drain_step(&mut session, 2, 10);
+        assert_eq!(pop.action, PbftSyncQueueDrainAction::PopAndProcess);
+        let result = report_pbft_sync_queue_drain_step(
+            &mut session,
+            PbftSyncQueueDrainReport {
+                action: PbftSyncQueueDrainAction::PopAndProcess,
+                success: true,
+                accepted_period_data: false,
+            },
+        );
+        assert_eq!(result.status, PbftSyncQueueDrainStatus::Active);
+
+        let next_pop = next_pbft_sync_queue_drain_step(&mut session, 1, 10);
+        assert_eq!(next_pop.action, PbftSyncQueueDrainAction::PopAndProcess);
+    }
+
+    #[test]
+    fn queue_drain_session_stops_on_push_failure_and_invalid_reports() {
+        let mut session = create_pbft_sync_queue_drain_session();
+        let _ = next_pbft_sync_queue_drain_step(&mut session, 1, 10);
+        let _ = report_pbft_sync_queue_drain_step(
+            &mut session,
+            PbftSyncQueueDrainReport {
+                action: PbftSyncQueueDrainAction::CleanOldData,
+                success: true,
+                accepted_period_data: false,
+            },
+        );
+        let _ = next_pbft_sync_queue_drain_step(&mut session, 1, 10);
+        let _ = report_pbft_sync_queue_drain_step(
+            &mut session,
+            PbftSyncQueueDrainReport {
+                action: PbftSyncQueueDrainAction::PopAndProcess,
+                success: true,
+                accepted_period_data: true,
+            },
+        );
+        let _ = next_pbft_sync_queue_drain_step(&mut session, 1, 10);
+        let failed = report_pbft_sync_queue_drain_step(
+            &mut session,
+            PbftSyncQueueDrainReport {
+                action: PbftSyncQueueDrainAction::PushAccepted,
+                success: false,
+                accepted_period_data: false,
+            },
+        );
+        assert_eq!(failed.status, PbftSyncQueueDrainStatus::PushFailed);
+        assert!(!failed.can_continue);
+
+        let mut invalid = create_pbft_sync_queue_drain_session();
+        let _ = next_pbft_sync_queue_drain_step(&mut invalid, 1, 10);
+        let mismatch = report_pbft_sync_queue_drain_step(
+            &mut invalid,
+            PbftSyncQueueDrainReport {
+                action: PbftSyncQueueDrainAction::PopAndProcess,
+                success: true,
+                accepted_period_data: false,
+            },
+        );
+        assert_eq!(mismatch.status, PbftSyncQueueDrainStatus::InvalidReport);
     }
 
     #[test]

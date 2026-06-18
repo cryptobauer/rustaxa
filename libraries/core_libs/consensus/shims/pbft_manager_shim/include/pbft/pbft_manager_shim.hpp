@@ -310,12 +310,14 @@ class PbftManager {
    * @param prev_blk_hash previous PBFT block hash
    * @param anchor_hash proposed DAG pivot block hash for finalization
    * @param order_hash the hash of all DAG blocks include in the PBFT block
+   * @param final_chain_hash FinalChain hash selected by Rust proposal construction
    * @param extra_data optional extra_data
    * @param eligible_wallets list of eligible wallets to generate pbft lock for propose_period
    * @return optional<ProposedBlockData>
    */
   std::optional<ProposedBlockData> generatePbftBlock(PbftPeriod propose_period, const blk_hash_t &prev_blk_hash,
                                                      const blk_hash_t &anchor_hash, const blk_hash_t &order_hash,
+                                                     const blk_hash_t &final_chain_hash,
                                                      const std::optional<PbftBlockExtraData> &extra_data,
                                                      const std::vector<WalletConfig> &eligible_wallets);
 
@@ -778,15 +780,6 @@ class PbftManager {
    * @param period
    */
   void processPillarBlock(PbftPeriod period);
-
-  /**
-   * @brief Adjust dynamic lambda live state after a finalized PBFT block.
-   *
-   * @param finalized_period period, in which block was finalized
-   * @param finalized_round round, in which block was finalized
-   * @param write_batch retained for API compatibility; Rust appends the resulting durable fields
-   */
-  void adjustDynamicLambda(PbftPeriod finalized_period, PbftRound finalized_round, Batch &write_batch);
 
   /**
    * @param round

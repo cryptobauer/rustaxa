@@ -180,6 +180,8 @@ pub enum PbftFinalizationRuntimeAction {
     Complete,
     /// Commit the live sortition runtime after primary storage has succeeded.
     CommitSortitionRuntime,
+    /// Run pillar post-processing after the PBFT period has advanced.
+    ProcessPillarBlock,
 }
 
 impl PbftFinalizationRuntimeAction {
@@ -201,6 +203,7 @@ impl PbftFinalizationRuntimeAction {
             Self::AdvancePeriod => 12,
             Self::Complete => 13,
             Self::CommitSortitionRuntime => 14,
+            Self::ProcessPillarBlock => 15,
         }
     }
 
@@ -222,9 +225,147 @@ impl PbftFinalizationRuntimeAction {
             12 => Some(Self::AdvancePeriod),
             13 => Some(Self::Complete),
             14 => Some(Self::CommitSortitionRuntime),
+            15 => Some(Self::ProcessPillarBlock),
             _ => None,
         }
     }
+}
+
+/// Pre-intent action requested by Rust before finalization storage bytes are built.
+///
+/// Pillar finalization mutates `PeriodData` by attaching the above-threshold
+/// pillar votes that must be included in the canonical period-data RLP. That
+/// makes it a preflight contract: Rust decides whether the C++ pillar executor
+/// must run before the normal finalization intent is created.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftFinalizationPillarPreflightAction {
+    /// No pillar finalization side effect is required before intent planning.
+    None,
+    /// Finalize the pillar block referenced by PBFT extra data.
+    FinalizePillarBlock,
+}
+
+impl PbftFinalizationPillarPreflightAction {
+    /// Stable bridge code for C++.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::FinalizePillarBlock => 1,
+        }
+    }
+
+    /// Decodes a stable bridge action code from C++.
+    pub const fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::None),
+            1 => Some(Self::FinalizePillarBlock),
+            _ => None,
+        }
+    }
+}
+
+/// Status for the Rust-owned pillar preflight contract.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftFinalizationPillarPreflightStatus {
+    /// Preflight completed or no preflight side effect is required.
+    Accepted,
+    /// No preflight side effect is required for this block.
+    NotRequired,
+    /// The PBFT block is already in chain, so preflight must not run.
+    BlockAlreadyInChain,
+    /// A required pillar block hash was not supplied.
+    MissingPillarBlockHash,
+    /// A caller reported an action that Rust did not request.
+    ActionMismatch,
+    /// The requested pillar finalization executor failed.
+    ActionFailed,
+    /// The report's PBFT block identity did not match the preflight plan.
+    BlockMismatch,
+    /// The report's pillar block identity did not match the preflight plan.
+    PillarBlockMismatch,
+    /// Pillar finalization reported success without any accepted pillar votes.
+    EmptyPillarVotes,
+    /// Unknown bridge action or otherwise invalid report.
+    ContractError,
+}
+
+impl PbftFinalizationPillarPreflightStatus {
+    /// Stable bridge code for C++.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Accepted => 0,
+            Self::NotRequired => 1,
+            Self::BlockAlreadyInChain => 2,
+            Self::MissingPillarBlockHash => 3,
+            Self::ActionMismatch => 4,
+            Self::ActionFailed => 5,
+            Self::BlockMismatch => 6,
+            Self::PillarBlockMismatch => 7,
+            Self::EmptyPillarVotes => 8,
+            Self::ContractError => 255,
+        }
+    }
+}
+
+/// Facts Rust needs to decide whether pillar finalization must run before intent planning.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PbftFinalizationPillarPreflightFact {
+    /// PBFT candidate block hash.
+    pub pbft_block_hash: H256,
+    /// PBFT candidate period.
+    pub block_period: u64,
+    /// True when the PBFT block is already persisted and only duplicate resume may run.
+    pub block_in_chain: bool,
+    /// True when the current hardfork period requires finalizing the included pillar block.
+    pub pillar_finalization_required: bool,
+    /// True when PBFT extra data carries a pillar block hash for the executor.
+    pub has_pillar_block_hash: bool,
+    /// Included pillar block hash, or zero when absent.
+    pub pillar_block_hash: H256,
+    /// True when the caller has already finalized the pillar dependency.
+    pub pillar_block_finalized: bool,
+}
+
+/// Rust preflight plan for pillar finalization before normal finalization intent construction.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftFinalizationPillarPreflightPlan {
+    /// PBFT candidate block hash.
+    pub pbft_block_hash: H256,
+    /// PBFT candidate period.
+    pub block_period: u64,
+    /// Included pillar block hash expected from the executor report.
+    pub pillar_block_hash: H256,
+    /// Side effect requested from the C++ pillar executor.
+    pub action: PbftFinalizationPillarPreflightAction,
+    /// Whether the executor must finalize the pillar block and attach pillar votes to period data.
+    pub finalize_pillar_block: bool,
+    /// Whether the preflight contract is valid and may continue.
+    pub accepted: bool,
+    /// Stable status for bridge callers.
+    pub status: PbftFinalizationPillarPreflightStatus,
+    /// Stable error code, empty on success.
+    pub error_code: String,
+}
+
+/// C++ report for the Rust-owned pillar preflight action.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftFinalizationPillarPreflightReport {
+    /// Action the executor believes it ran.
+    pub action: PbftFinalizationPillarPreflightAction,
+    /// Whether the action completed successfully.
+    pub success: bool,
+    /// Optional executor status code. Zero means success for current callers.
+    pub status: u8,
+    /// Optional executor error code.
+    pub error_code: String,
+    /// PBFT candidate period observed by the executor.
+    pub block_period: u64,
+    /// PBFT candidate block hash observed by the executor.
+    pub pbft_block_hash: H256,
+    /// Pillar block hash finalized by the executor.
+    pub pillar_block_hash: H256,
+    /// Number of above-threshold pillar votes attached to period data.
+    pub pillar_vote_count: u64,
 }
 
 /// Ordered runtime plan derived from an already accepted finalization intent.
@@ -380,6 +521,8 @@ pub enum PbftFinalizationResumeStatus {
     ConflictingPrimaryFacts,
     /// Dynamic-lambda persistence is required before final-chain replay is safe.
     NeedsDynamicLambdaPersistence,
+    /// Pillar post-processing may be missing, but no durable proof exists for replay.
+    NeedsPillarPostProcessingReplay,
     /// Internal contract error or impossible status in transport facts.
     ContractError,
     /// Unknown status code produced from bridge inputs.
@@ -397,6 +540,7 @@ impl PbftFinalizationResumeStatus {
             Self::MissingPrimaryFacts => 4,
             Self::ConflictingPrimaryFacts => 5,
             Self::NeedsDynamicLambdaPersistence => 6,
+            Self::NeedsPillarPostProcessingReplay => 7,
             Self::ContractError => 255,
             Self::Unknown => 254,
         }
@@ -435,6 +579,8 @@ pub struct PbftFinalizationResumeFact {
     pub dynamic_lambda_persisted: bool,
     /// Whether executed PBFT status already matches the expected value.
     pub executed_status_persisted: bool,
+    /// Whether pillar post-processing is required after period advance.
+    pub pillar_post_processing_required: bool,
 }
 
 /// Rust classification for an already-persisted PBFT finalization candidate.
@@ -643,6 +789,8 @@ pub struct PbftFinalizationCleanupIntent {
     pub maybe_update_dynamic_lambda: bool,
     /// Advance PBFT manager consensus period.
     pub advance_period: bool,
+    /// Run pillar post-processing after the period has advanced.
+    pub process_pillar_block: bool,
 }
 
 impl PbftFinalizationCleanupIntent {
@@ -658,6 +806,7 @@ impl PbftFinalizationCleanupIntent {
             finalize_final_chain: false,
             maybe_update_dynamic_lambda: false,
             advance_period: false,
+            process_pillar_block: false,
         }
     }
 }
@@ -695,6 +844,8 @@ pub struct PbftFinalizationStorageWriteIntent {
     pub persist_period_lambda: bool,
     /// Persist `PbftMgrStatus::ExecutedBlock`.
     pub persist_executed_pbft_status: bool,
+    /// Whether finalization requires pillar post-processing after period advance.
+    pub process_pillar_block: bool,
     /// Accepted PBFT block hash.
     pub pbft_block_hash: H256,
     /// PBFT head storage key that should receive the projected head payload.
@@ -743,6 +894,7 @@ impl PbftFinalizationStorageWriteIntent {
             apply_dynamic_lambda_update: false,
             persist_period_lambda: false,
             persist_executed_pbft_status: false,
+            process_pillar_block: false,
             pbft_block_hash: H256::zero(),
             pbft_head_hash: H256::zero(),
             block_period: 0,
@@ -1645,6 +1797,8 @@ pub struct PbftFinalizationIntentFact {
     pub ordered_dag_block_hashes: Vec<H256>,
     /// Ordered finalized transaction hashes after legacy nonce reordering.
     pub ordered_transaction_hashes: Vec<H256>,
+    /// Whether this finalized period should create/process the next pillar block after advancing.
+    pub process_pillar_block_after_advance: bool,
 }
 
 /// Deterministic finalization runtime intent returned to C++ for one certified PBFT
@@ -1691,6 +1845,7 @@ impl PbftFinalizationPlan {
                 finalize_final_chain: true,
                 maybe_update_dynamic_lambda: fact.request_dynamic_lambda_update,
                 advance_period: true,
+                process_pillar_block: fact.process_pillar_block_after_advance,
             },
             storage_write_intent: PbftFinalizationStorageWriteIntent {
                 persist_pbft_head: true,
@@ -1700,6 +1855,7 @@ impl PbftFinalizationPlan {
                 apply_dynamic_lambda_update: fact.request_dynamic_lambda_update,
                 persist_period_lambda,
                 persist_executed_pbft_status: true,
+                process_pillar_block: fact.process_pillar_block_after_advance,
                 pbft_block_hash: fact.block_hash,
                 pbft_head_hash: fact.pbft_head_hash,
                 block_period: fact.block_period,
@@ -1731,6 +1887,139 @@ impl PbftFinalizationPlan {
             status,
         }
     }
+}
+
+/// Plans the pillar preflight side effect that must run before finalization intent construction.
+///
+/// The normal finalization intent stores canonical period-data bytes. For PBFT
+/// periods that include a pillar block dependency, those bytes are only final
+/// after the pillar executor returns the above-threshold votes and C++ attaches
+/// them to `PeriodData`. Rust owns that ordering through this preflight plan
+/// while C++ remains the temporary pillar side-effect executor.
+pub fn plan_pbft_finalization_pillar_preflight(
+    fact: PbftFinalizationPillarPreflightFact,
+) -> PbftFinalizationPillarPreflightPlan {
+    if fact.block_in_chain {
+        return PbftFinalizationPillarPreflightPlan {
+            pbft_block_hash: fact.pbft_block_hash,
+            block_period: fact.block_period,
+            pillar_block_hash: fact.pillar_block_hash,
+            action: PbftFinalizationPillarPreflightAction::None,
+            finalize_pillar_block: false,
+            accepted: true,
+            status: PbftFinalizationPillarPreflightStatus::BlockAlreadyInChain,
+            error_code: String::new(),
+        };
+    }
+
+    if !fact.pillar_finalization_required || fact.pillar_block_finalized {
+        return PbftFinalizationPillarPreflightPlan {
+            pbft_block_hash: fact.pbft_block_hash,
+            block_period: fact.block_period,
+            pillar_block_hash: fact.pillar_block_hash,
+            action: PbftFinalizationPillarPreflightAction::None,
+            finalize_pillar_block: false,
+            accepted: true,
+            status: PbftFinalizationPillarPreflightStatus::NotRequired,
+            error_code: String::new(),
+        };
+    }
+
+    if !fact.has_pillar_block_hash || fact.pillar_block_hash.is_zero() {
+        return PbftFinalizationPillarPreflightPlan {
+            pbft_block_hash: fact.pbft_block_hash,
+            block_period: fact.block_period,
+            pillar_block_hash: fact.pillar_block_hash,
+            action: PbftFinalizationPillarPreflightAction::FinalizePillarBlock,
+            finalize_pillar_block: true,
+            accepted: false,
+            status: PbftFinalizationPillarPreflightStatus::MissingPillarBlockHash,
+            error_code: "PBFT_FINALIZE_PILLAR_PREFLIGHT_MISSING_HASH".to_string(),
+        };
+    }
+
+    PbftFinalizationPillarPreflightPlan {
+        pbft_block_hash: fact.pbft_block_hash,
+        block_period: fact.block_period,
+        pillar_block_hash: fact.pillar_block_hash,
+        action: PbftFinalizationPillarPreflightAction::FinalizePillarBlock,
+        finalize_pillar_block: true,
+        accepted: true,
+        status: PbftFinalizationPillarPreflightStatus::Accepted,
+        error_code: String::new(),
+    }
+}
+
+/// Validates the executor report for a Rust-planned pillar preflight action.
+///
+/// A successful report is required before the caller may construct the
+/// finalization intent from the now-mutated period data. Failed or mismatched
+/// reports keep the finalization cursor from advancing into storage planning.
+pub fn report_pbft_finalization_pillar_preflight(
+    plan: &PbftFinalizationPillarPreflightPlan,
+    report: PbftFinalizationPillarPreflightReport,
+) -> PbftFinalizationPillarPreflightPlan {
+    if !plan.accepted {
+        let mut rejected = plan.clone();
+        rejected.accepted = false;
+        rejected.status = PbftFinalizationPillarPreflightStatus::ContractError;
+        if rejected.error_code.is_empty() {
+            rejected.error_code = "PBFT_FINALIZE_PILLAR_PREFLIGHT_PLAN_NOT_ACCEPTED".to_string();
+        }
+        return rejected;
+    }
+
+    if report.action != plan.action {
+        let mut rejected = plan.clone();
+        rejected.accepted = false;
+        rejected.status = PbftFinalizationPillarPreflightStatus::ActionMismatch;
+        rejected.error_code = "PBFT_FINALIZE_PILLAR_PREFLIGHT_ACTION_MISMATCH".to_string();
+        return rejected;
+    }
+
+    if !report.success {
+        let mut rejected = plan.clone();
+        rejected.accepted = false;
+        rejected.status = PbftFinalizationPillarPreflightStatus::ActionFailed;
+        rejected.error_code = if !report.error_code.is_empty() {
+            report.error_code
+        } else if plan.finalize_pillar_block {
+            "PBFT_FINALIZE_PILLAR_PREFLIGHT_ACTION_FAILED".to_string()
+        } else {
+            "PBFT_FINALIZE_PILLAR_PREFLIGHT_NOOP_FAILED".to_string()
+        };
+        return rejected;
+    }
+
+    if report.block_period != plan.block_period || report.pbft_block_hash != plan.pbft_block_hash {
+        let mut rejected = plan.clone();
+        rejected.accepted = false;
+        rejected.status = PbftFinalizationPillarPreflightStatus::BlockMismatch;
+        rejected.error_code = "PBFT_FINALIZE_PILLAR_PREFLIGHT_BLOCK_MISMATCH".to_string();
+        return rejected;
+    }
+
+    if plan.finalize_pillar_block && report.pillar_block_hash != plan.pillar_block_hash {
+        let mut rejected = plan.clone();
+        rejected.accepted = false;
+        rejected.status = PbftFinalizationPillarPreflightStatus::PillarBlockMismatch;
+        rejected.error_code = "PBFT_FINALIZE_PILLAR_PREFLIGHT_PILLAR_MISMATCH".to_string();
+        return rejected;
+    }
+
+    if plan.finalize_pillar_block && report.pillar_vote_count == 0 {
+        let mut rejected = plan.clone();
+        rejected.accepted = false;
+        rejected.status = PbftFinalizationPillarPreflightStatus::EmptyPillarVotes;
+        rejected.error_code = "PBFT_FINALIZE_PILLAR_PREFLIGHT_EMPTY_VOTES".to_string();
+        return rejected;
+    }
+
+    let mut accepted = plan.clone();
+    accepted.accepted = true;
+    accepted.status = PbftFinalizationPillarPreflightStatus::Accepted;
+    accepted.error_code.clear();
+    accepted
 }
 
 /// Builds a deterministic finalization plan from plain facts.
@@ -1835,6 +2124,9 @@ pub fn plan_pbft_finalization_runtime(plan: &PbftFinalizationPlan) -> PbftFinali
     }
     if plan.cleanup.advance_period {
         actions.push(PbftFinalizationRuntimeAction::AdvancePeriod);
+    }
+    if plan.cleanup.process_pillar_block {
+        actions.push(PbftFinalizationRuntimeAction::ProcessPillarBlock);
     }
 
     PbftFinalizationRuntimePlan {
@@ -2274,6 +2566,9 @@ pub fn plan_pbft_finalization_resume(
         }
         replay_actions.push(PbftFinalizationRuntimeAction::SetExecutedFlag);
         replay_actions.push(PbftFinalizationRuntimeAction::AdvancePeriod);
+        if fact.pillar_post_processing_required {
+            replay_actions.push(PbftFinalizationRuntimeAction::ProcessPillarBlock);
+        }
         return PbftFinalizationResumePlan {
             status: PbftFinalizationResumeStatus::NeedsFinalChainReplay,
             duplicate_classified: true,
@@ -2284,12 +2579,32 @@ pub fn plan_pbft_finalization_resume(
     }
 
     if !fact.executed_status_persisted {
+        if fact.pillar_post_processing_required {
+            return PbftFinalizationResumePlan {
+                status: PbftFinalizationResumeStatus::NeedsPillarPostProcessingReplay,
+                duplicate_classified: true,
+                complete: false,
+                replay_actions: Vec::new(),
+                error_code: "PBFT_FINALIZE_RESUME_PILLAR_POST_PROCESSING_NO_DURABLE_PROOF"
+                    .to_string(),
+            };
+        }
         return PbftFinalizationResumePlan {
             status: PbftFinalizationResumeStatus::NeedsExecutedStatusPersistence,
             duplicate_classified: true,
             complete: false,
             replay_actions: vec![PbftFinalizationRuntimeAction::PersistExecutedStatus],
             error_code: "PBFT_FINALIZE_RESUME_NEEDS_EXECUTED_STATUS".to_string(),
+        };
+    }
+
+    if fact.pillar_post_processing_required {
+        return PbftFinalizationResumePlan {
+            status: PbftFinalizationResumeStatus::NeedsPillarPostProcessingReplay,
+            duplicate_classified: true,
+            complete: false,
+            replay_actions: Vec::new(),
+            error_code: "PBFT_FINALIZE_RESUME_PILLAR_POST_PROCESSING_NO_DURABLE_PROOF".to_string(),
         };
     }
 
@@ -2426,6 +2741,7 @@ pub fn inspect_pbft_finalization_resume_fact(
         dynamic_lambda_required: write_set.apply_dynamic_lambda_update,
         dynamic_lambda_persisted,
         executed_status_persisted,
+        pillar_post_processing_required: write_set.process_pillar_block,
     })
 }
 
@@ -2621,6 +2937,7 @@ mod tests {
             apply_dynamic_lambda_update: false,
             persist_period_lambda: false,
             persist_executed_pbft_status: false,
+            process_pillar_block: false,
             pbft_block_hash: hash(99),
             pbft_head_hash: hash(88),
             block_period: 10,
@@ -2679,7 +2996,94 @@ mod tests {
             period_data_rlp: vec![0xc0],
             ordered_dag_block_hashes: vec![hash(1), hash(2)],
             ordered_transaction_hashes: vec![hash(3), hash(4)],
+            process_pillar_block_after_advance: false,
         }
+    }
+
+    #[test]
+    fn pillar_preflight_requests_finalize_before_intent_bytes_are_built() {
+        let plan = plan_pbft_finalization_pillar_preflight(PbftFinalizationPillarPreflightFact {
+            pbft_block_hash: hash(99),
+            block_period: 10,
+            block_in_chain: false,
+            pillar_finalization_required: true,
+            has_pillar_block_hash: true,
+            pillar_block_hash: hash(55),
+            pillar_block_finalized: false,
+        });
+
+        assert!(plan.accepted);
+        assert!(plan.finalize_pillar_block);
+        assert_eq!(
+            plan.action,
+            PbftFinalizationPillarPreflightAction::FinalizePillarBlock
+        );
+
+        let accepted = report_pbft_finalization_pillar_preflight(
+            &plan,
+            PbftFinalizationPillarPreflightReport {
+                action: PbftFinalizationPillarPreflightAction::FinalizePillarBlock,
+                success: true,
+                status: 0,
+                error_code: String::new(),
+                block_period: 10,
+                pbft_block_hash: hash(99),
+                pillar_block_hash: hash(55),
+                pillar_vote_count: 2,
+            },
+        );
+        assert!(accepted.accepted);
+        assert_eq!(
+            accepted.status,
+            PbftFinalizationPillarPreflightStatus::Accepted
+        );
+    }
+
+    #[test]
+    fn pillar_preflight_rejects_missing_hash_and_failed_report() {
+        let missing =
+            plan_pbft_finalization_pillar_preflight(PbftFinalizationPillarPreflightFact {
+                pbft_block_hash: hash(99),
+                block_period: 10,
+                block_in_chain: false,
+                pillar_finalization_required: true,
+                has_pillar_block_hash: false,
+                pillar_block_hash: H256::zero(),
+                pillar_block_finalized: false,
+            });
+        assert!(!missing.accepted);
+        assert_eq!(
+            missing.status,
+            PbftFinalizationPillarPreflightStatus::MissingPillarBlockHash
+        );
+
+        let plan = plan_pbft_finalization_pillar_preflight(PbftFinalizationPillarPreflightFact {
+            pbft_block_hash: hash(99),
+            block_period: 10,
+            block_in_chain: false,
+            pillar_finalization_required: true,
+            has_pillar_block_hash: true,
+            pillar_block_hash: hash(55),
+            pillar_block_finalized: false,
+        });
+        let failed = report_pbft_finalization_pillar_preflight(
+            &plan,
+            PbftFinalizationPillarPreflightReport {
+                action: PbftFinalizationPillarPreflightAction::FinalizePillarBlock,
+                success: false,
+                status: 255,
+                error_code: "PILLAR_FAILED".to_string(),
+                block_period: 10,
+                pbft_block_hash: hash(99),
+                pillar_block_hash: hash(55),
+                pillar_vote_count: 0,
+            },
+        );
+        assert!(!failed.accepted);
+        assert_eq!(
+            failed.status,
+            PbftFinalizationPillarPreflightStatus::ActionFailed
+        );
     }
 
     #[test]
@@ -3126,6 +3530,7 @@ mod tests {
             dynamic_lambda_required: true,
             dynamic_lambda_persisted: true,
             executed_status_persisted: true,
+            pillar_post_processing_required: false,
         };
         let plan = plan_pbft_finalization_resume(complete);
         assert_eq!(plan.status, PbftFinalizationResumeStatus::Complete);
@@ -3149,6 +3554,29 @@ mod tests {
                 PbftFinalizationRuntimeAction::AdvancePeriod,
             ]
         );
+
+        let mut needs_final_chain_and_pillar = needs_final_chain;
+        needs_final_chain_and_pillar.pillar_post_processing_required = true;
+        let plan = plan_pbft_finalization_resume(needs_final_chain_and_pillar);
+        assert_eq!(
+            plan.replay_actions,
+            vec![
+                PbftFinalizationRuntimeAction::FinalizeFinalChain,
+                PbftFinalizationRuntimeAction::PersistExecutedStatus,
+                PbftFinalizationRuntimeAction::SetExecutedFlag,
+                PbftFinalizationRuntimeAction::AdvancePeriod,
+                PbftFinalizationRuntimeAction::ProcessPillarBlock,
+            ]
+        );
+
+        let mut pillar_no_proof = complete;
+        pillar_no_proof.pillar_post_processing_required = true;
+        let plan = plan_pbft_finalization_resume(pillar_no_proof);
+        assert_eq!(
+            plan.status,
+            PbftFinalizationResumeStatus::NeedsPillarPostProcessingReplay
+        );
+        assert!(plan.replay_actions.is_empty());
 
         let mut missing = complete;
         missing.period_data_matches = false;
@@ -3185,6 +3613,7 @@ mod tests {
             dynamic_lambda_required: true,
             dynamic_lambda_persisted: false,
             executed_status_persisted: false,
+            pillar_post_processing_required: false,
         });
 
         assert_eq!(
@@ -3473,7 +3902,9 @@ mod tests {
 
     #[test]
     fn finalization_runtime_orders_accepted_side_effects() {
-        let plan = plan_pbft_finalization_intent(accepted_fact());
+        let mut fact = accepted_fact();
+        fact.process_pillar_block_after_advance = true;
+        let plan = plan_pbft_finalization_intent(fact);
 
         let runtime = plan_pbft_finalization_runtime(&plan);
 
@@ -3494,6 +3925,7 @@ mod tests {
                 PbftFinalizationRuntimeAction::PersistExecutedStatus,
                 PbftFinalizationRuntimeAction::SetExecutedFlag,
                 PbftFinalizationRuntimeAction::AdvancePeriod,
+                PbftFinalizationRuntimeAction::ProcessPillarBlock,
             ]
         );
     }

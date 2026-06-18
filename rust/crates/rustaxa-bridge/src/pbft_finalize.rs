@@ -21,6 +21,9 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
     PbftFinalizationLiveMutationReport as FfiPbftFinalizationLiveMutationReport,
     PbftFinalizationLiveMutationValidation as FfiPbftFinalizationLiveMutationValidation,
+    PbftFinalizationPillarPreflightFact as FfiPbftFinalizationPillarPreflightFact,
+    PbftFinalizationPillarPreflightPlan as FfiPbftFinalizationPillarPreflightPlan,
+    PbftFinalizationPillarPreflightReport as FfiPbftFinalizationPillarPreflightReport,
     PbftFinalizationPositionedHash as FfiPbftFinalizationPositionedHash,
     PbftFinalizationResumePlan as FfiPbftFinalizationResumePlan,
     PbftFinalizationRuntimeActionReport as FfiPbftFinalizationRuntimeActionReport,
@@ -40,14 +43,19 @@ use rustaxa_consensus::pbft_finalize::{
     next_pbft_finalization_runtime_action,
     plan_pbft_dynamic_lambda as plan_domain_pbft_dynamic_lambda,
     plan_pbft_finalization_intent as plan_domain_pbft_finalization_intent,
+    plan_pbft_finalization_pillar_preflight as plan_domain_pbft_finalization_pillar_preflight,
     plan_pbft_finalization_runtime as plan_domain_pbft_finalization_runtime,
+    report_pbft_finalization_pillar_preflight as report_domain_pbft_finalization_pillar_preflight,
     report_pbft_finalization_runtime_action, start_pbft_finalization_resume_runtime,
     start_pbft_finalization_runtime,
     validate_pbft_finalization_live_mutation_report as validate_domain_pbft_finalization_live_mutation_report,
     PbftDynamicLambdaConfig, PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationAnchor,
     PbftFinalizationCleanupIntent, PbftFinalizationIntentFact, PbftFinalizationLiveMutationReport,
-    PbftFinalizationLiveMutationValidation, PbftFinalizationPlan, PbftFinalizationPositionedHash,
-    PbftFinalizationResumePlan, PbftFinalizationRuntimeAction, PbftFinalizationRuntimeActionResult,
+    PbftFinalizationLiveMutationValidation, PbftFinalizationPillarPreflightAction,
+    PbftFinalizationPillarPreflightFact, PbftFinalizationPillarPreflightPlan,
+    PbftFinalizationPillarPreflightReport, PbftFinalizationPillarPreflightStatus,
+    PbftFinalizationPlan, PbftFinalizationPositionedHash, PbftFinalizationResumePlan,
+    PbftFinalizationRuntimeAction, PbftFinalizationRuntimeActionResult,
     PbftFinalizationRuntimeStatus, PbftFinalizationStatus, PbftFinalizationStorageWriteIntent,
     PbftFinalizationStorageWriteStage, PbftFinalizedPeriodApplyResult,
 };
@@ -178,6 +186,29 @@ pub fn plan_pbft_finalization_intent(
     fact: FfiPbftFinalizationIntentFact,
 ) -> FfiPbftFinalizationIntentPlan {
     plan_domain_pbft_finalization_intent(fact.into()).into()
+}
+
+/// C++/Rust bridge entry for pillar finalization preflight.
+///
+/// Inputs:
+/// - `fact`: compact hardfork/extra-data facts from the PBFT manager.
+///
+/// Outputs:
+/// - A stable preflight action. When Rust requests pillar finalization, C++ must
+///   execute it and attach the returned pillar votes to period data before
+///   creating the normal finalization intent.
+pub fn plan_pbft_finalization_pillar_preflight(
+    fact: FfiPbftFinalizationPillarPreflightFact,
+) -> FfiPbftFinalizationPillarPreflightPlan {
+    plan_domain_pbft_finalization_pillar_preflight(fact.into()).into()
+}
+
+/// Validates a C++ executor report for the Rust-planned pillar preflight action.
+pub fn report_pbft_finalization_pillar_preflight(
+    plan: &FfiPbftFinalizationPillarPreflightPlan,
+    report: FfiPbftFinalizationPillarPreflightReport,
+) -> FfiPbftFinalizationPillarPreflightPlan {
+    report_domain_pbft_finalization_pillar_preflight(&plan.into(), report.into()).into()
 }
 
 /// C++/Rust bridge entry for the ordered PBFT finalization runtime script.
@@ -495,6 +526,79 @@ impl From<FfiPbftFinalizationIntentFact> for PbftFinalizationIntentFact {
                 .into_iter()
                 .map(|hash| H256::from(hash.hash))
                 .collect(),
+            process_pillar_block_after_advance: value.process_pillar_block_after_advance,
+        }
+    }
+}
+
+impl From<FfiPbftFinalizationPillarPreflightFact> for PbftFinalizationPillarPreflightFact {
+    fn from(value: FfiPbftFinalizationPillarPreflightFact) -> Self {
+        Self {
+            pbft_block_hash: H256::from(value.pbft_block_hash),
+            block_period: value.block_period,
+            block_in_chain: value.block_in_chain,
+            pillar_finalization_required: value.pillar_finalization_required,
+            has_pillar_block_hash: value.has_pillar_block_hash,
+            pillar_block_hash: H256::from(value.pillar_block_hash),
+            pillar_block_finalized: value.pillar_block_finalized,
+        }
+    }
+}
+
+impl From<&FfiPbftFinalizationPillarPreflightPlan> for PbftFinalizationPillarPreflightPlan {
+    fn from(value: &FfiPbftFinalizationPillarPreflightPlan) -> Self {
+        Self {
+            pbft_block_hash: H256::from(value.pbft_block_hash),
+            block_period: value.block_period,
+            pillar_block_hash: H256::from(value.pillar_block_hash),
+            action: PbftFinalizationPillarPreflightAction::from_u8(value.action)
+                .unwrap_or(PbftFinalizationPillarPreflightAction::None),
+            finalize_pillar_block: value.finalize_pillar_block,
+            accepted: value.accepted,
+            status: match value.status {
+                0 => PbftFinalizationPillarPreflightStatus::Accepted,
+                1 => PbftFinalizationPillarPreflightStatus::NotRequired,
+                2 => PbftFinalizationPillarPreflightStatus::BlockAlreadyInChain,
+                3 => PbftFinalizationPillarPreflightStatus::MissingPillarBlockHash,
+                4 => PbftFinalizationPillarPreflightStatus::ActionMismatch,
+                5 => PbftFinalizationPillarPreflightStatus::ActionFailed,
+                6 => PbftFinalizationPillarPreflightStatus::BlockMismatch,
+                7 => PbftFinalizationPillarPreflightStatus::PillarBlockMismatch,
+                8 => PbftFinalizationPillarPreflightStatus::EmptyPillarVotes,
+                _ => PbftFinalizationPillarPreflightStatus::ContractError,
+            },
+            error_code: value.error_code.to_string(),
+        }
+    }
+}
+
+impl From<PbftFinalizationPillarPreflightPlan> for FfiPbftFinalizationPillarPreflightPlan {
+    fn from(value: PbftFinalizationPillarPreflightPlan) -> Self {
+        Self {
+            pbft_block_hash: value.pbft_block_hash.0,
+            block_period: value.block_period,
+            pillar_block_hash: value.pillar_block_hash.0,
+            action: value.action.as_u8(),
+            finalize_pillar_block: value.finalize_pillar_block,
+            accepted: value.accepted,
+            status: value.status.as_u8(),
+            error_code: value.error_code,
+        }
+    }
+}
+
+impl From<FfiPbftFinalizationPillarPreflightReport> for PbftFinalizationPillarPreflightReport {
+    fn from(value: FfiPbftFinalizationPillarPreflightReport) -> Self {
+        Self {
+            action: PbftFinalizationPillarPreflightAction::from_u8(value.action)
+                .unwrap_or(PbftFinalizationPillarPreflightAction::None),
+            success: value.success,
+            status: value.status,
+            error_code: value.error_code,
+            block_period: value.block_period,
+            pbft_block_hash: H256::from(value.pbft_block_hash),
+            pillar_block_hash: H256::from(value.pillar_block_hash),
+            pillar_vote_count: value.pillar_vote_count,
         }
     }
 }
@@ -540,6 +644,7 @@ impl From<PbftFinalizationCleanupIntent> for FfiPbftFinalizationCleanupPlan {
             finalize_final_chain: value.finalize_final_chain,
             maybe_update_dynamic_lambda: value.maybe_update_dynamic_lambda,
             advance_period: value.advance_period,
+            process_pillar_block: value.process_pillar_block,
         }
     }
 }
@@ -564,6 +669,9 @@ impl From<&FfiPbftFinalizationResumePlan> for PbftFinalizationResumePlan {
                 }
                 6 => {
                     rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::NeedsDynamicLambdaPersistence
+                }
+                7 => {
+                    rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::NeedsPillarPostProcessingReplay
                 }
                 255 => rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::ContractError,
                 _ => rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::Unknown,
@@ -609,6 +717,7 @@ impl From<&FfiPbftFinalizationCleanupPlan> for PbftFinalizationCleanupIntent {
             finalize_final_chain: value.finalize_final_chain,
             maybe_update_dynamic_lambda: value.maybe_update_dynamic_lambda,
             advance_period: value.advance_period,
+            process_pillar_block: value.process_pillar_block,
         }
     }
 }
@@ -623,6 +732,7 @@ impl From<PbftFinalizationStorageWriteIntent> for FfiPbftFinalizationStorageWrit
             apply_dynamic_lambda_update: value.apply_dynamic_lambda_update,
             persist_period_lambda: value.persist_period_lambda,
             persist_executed_pbft_status: value.persist_executed_pbft_status,
+            process_pillar_block: value.process_pillar_block,
             pbft_block_hash: value.pbft_block_hash.0,
             pbft_head_hash: value.pbft_head_hash.0,
             block_period: value.block_period,
@@ -661,6 +771,7 @@ impl From<&FfiPbftFinalizationStorageWritePlan> for PbftFinalizationStorageWrite
             apply_dynamic_lambda_update: value.apply_dynamic_lambda_update,
             persist_period_lambda: value.persist_period_lambda,
             persist_executed_pbft_status: value.persist_executed_pbft_status,
+            process_pillar_block: value.process_pillar_block,
             pbft_block_hash: H256::from(value.pbft_block_hash),
             pbft_head_hash: H256::from(value.pbft_head_hash),
             block_period: value.block_period,
@@ -894,6 +1005,7 @@ mod tests {
                 FfiPbftFinalizationHash { hash: [2; 32] },
             ],
             ordered_transaction_hashes: vec![FfiPbftFinalizationHash { hash: [3; 32] }],
+            process_pillar_block_after_advance: false,
         }
     }
 
@@ -1027,8 +1139,46 @@ mod tests {
     }
 
     #[test]
+    fn bridge_maps_pillar_preflight_plan_and_report() {
+        let plan =
+            plan_pbft_finalization_pillar_preflight(FfiPbftFinalizationPillarPreflightFact {
+                pbft_block_hash: [7; 32],
+                block_period: 10,
+                block_in_chain: false,
+                pillar_finalization_required: true,
+                has_pillar_block_hash: true,
+                pillar_block_hash: [9; 32],
+                pillar_block_finalized: false,
+            });
+
+        assert!(plan.accepted);
+        assert!(plan.finalize_pillar_block);
+        assert_eq!(plan.action, 1);
+
+        let accepted = report_pbft_finalization_pillar_preflight(
+            &plan,
+            FfiPbftFinalizationPillarPreflightReport {
+                action: 1,
+                success: true,
+                status: 0,
+                error_code: String::new(),
+                block_period: 10,
+                pbft_block_hash: [7; 32],
+                pillar_block_hash: [9; 32],
+                pillar_vote_count: 2,
+            },
+        );
+
+        assert!(accepted.accepted);
+        assert_eq!(accepted.status, 0);
+        assert!(accepted.error_code.is_empty());
+    }
+
+    #[test]
     fn runtime_planner_maps_ordered_finalization_actions() {
-        let plan = plan_pbft_finalization_intent(fact());
+        let mut fact = fact();
+        fact.process_pillar_block_after_advance = true;
+        let plan = plan_pbft_finalization_intent(fact);
 
         let runtime = plan_pbft_finalization_runtime(&plan);
 
@@ -1036,7 +1186,7 @@ mod tests {
         assert_eq!(runtime.status, PbftFinalizationStatus::Accepted.as_u8());
         assert_eq!(
             runtime.actions,
-            vec![0, 14, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![0, 14, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15]
         );
         assert!(runtime.error_code.is_empty());
     }
