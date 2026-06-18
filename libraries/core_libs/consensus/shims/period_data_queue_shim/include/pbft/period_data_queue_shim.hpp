@@ -39,6 +39,23 @@ class PeriodData;
 class PeriodDataQueue {
  public:
   /**
+   * C++ live payload plus Rust-owned compact block-link metadata returned by a pop.
+   *
+   * The payload fields remain compatibility sidecars. `period`, `block_hash`, `prev_block_hash`, and `pivot_hash` are
+   * copied from Rust queue metadata so PBFT manager admission facts do not need to reopen the live `PeriodData` object
+   * just to recover chain-link facts.
+   */
+  struct PoppedPeriodData {
+    PeriodData period_data;
+    std::vector<std::shared_ptr<PbftVote>> cert_votes;
+    dev::p2p::NodeID node_id;
+    uint64_t period = 0;
+    blk_hash_t block_hash;
+    blk_hash_t prev_block_hash;
+    blk_hash_t pivot_hash;
+  };
+
+  /**
    * Creates an empty Rust-backed period-data queue.
    */
   PeriodDataQueue();
@@ -64,6 +81,11 @@ class PeriodDataQueue {
    * Throws `std::runtime_error` if called while no raw queue entry is available.
    */
   std::tuple<PeriodData, std::vector<std::shared_ptr<PbftVote>>, dev::p2p::NodeID> pop();
+
+  /**
+   * Pops and returns front period data together with Rust-owned compact block-link metadata.
+   */
+  PoppedPeriodData popWithMetadata();
 
   /**
    * Clears all queue state and resets tracked period.

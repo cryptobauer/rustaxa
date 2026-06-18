@@ -16,6 +16,8 @@ use std::collections::VecDeque;
 /// - `entry_id`: bridge-local id for the C++ payload object.
 /// - `period`: PBFT period carried by that payload.
 /// - `block_hash`: PBFT block hash carried by that payload.
+/// - `prev_block_hash`: previous PBFT block hash carried by that payload.
+/// - `pivot_hash`: pivot DAG block hash carried by that payload.
 ///
 /// Invariants:
 /// - `entry_id` is unique within one queue lifetime.
@@ -26,6 +28,8 @@ pub struct PeriodDataQueueEntryRef {
     pub entry_id: u64,
     pub period: u64,
     pub block_hash: H256,
+    pub prev_block_hash: H256,
+    pub pivot_hash: H256,
 }
 
 /// Result of attempting to enqueue one period-data payload.
@@ -57,9 +61,15 @@ pub struct PeriodDataQueuePushOutcome {
 /// - `next_entry_id`: id of the next queued payload when
 ///   `use_last_block_cert_votes` is false.
 /// - `current_period` and `effective_size` describe queue state after pop.
+/// - `entry_period`, `block_hash`, `prev_block_hash`, and `pivot_hash` are the
+///   compact block-link facts for the popped payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeriodDataQueuePopPlan {
     pub entry_id: u64,
+    pub entry_period: u64,
+    pub block_hash: H256,
+    pub prev_block_hash: H256,
+    pub pivot_hash: H256,
     pub use_last_block_cert_votes: bool,
     pub next_entry_id: u64,
     pub current_period: u64,
@@ -159,6 +169,8 @@ impl PeriodDataQueue {
     /// - `entry_id`: C++ payload id for the live `PeriodData` object.
     /// - `entry_period`: PBFT period of the payload block.
     /// - `block_hash`: PBFT block hash of the payload block.
+    /// - `prev_block_hash`: previous PBFT block hash of the payload block.
+    /// - `pivot_hash`: pivot DAG block hash of the payload block.
     /// - `max_pbft_size`: current local PBFT chain size.
     /// - `current_block_cert_votes_count`: number of cert votes passed for the
     ///   pushed block; only the count is needed for size eligibility.
@@ -170,6 +182,8 @@ impl PeriodDataQueue {
         entry_id: u64,
         entry_period: u64,
         block_hash: H256,
+        prev_block_hash: H256,
+        pivot_hash: H256,
         max_pbft_size: u64,
         current_block_cert_votes_count: usize,
     ) -> Result<PeriodDataQueuePushOutcome> {
@@ -201,6 +215,8 @@ impl PeriodDataQueue {
             entry_id,
             period: entry_period,
             block_hash,
+            prev_block_hash,
+            pivot_hash,
         });
         self.last_block_cert_votes_available = current_block_cert_votes_count > 0;
 
@@ -226,6 +242,10 @@ impl PeriodDataQueue {
         if let Some(next) = self.entries.front() {
             return Ok(PeriodDataQueuePopPlan {
                 entry_id: entry.entry_id,
+                entry_period: entry.period,
+                block_hash: entry.block_hash,
+                prev_block_hash: entry.prev_block_hash,
+                pivot_hash: entry.pivot_hash,
                 use_last_block_cert_votes: false,
                 next_entry_id: next.entry_id,
                 current_period: self.period,
@@ -237,6 +257,10 @@ impl PeriodDataQueue {
         self.last_block_cert_votes_available = false;
         Ok(PeriodDataQueuePopPlan {
             entry_id: entry.entry_id,
+            entry_period: entry.period,
+            block_hash: entry.block_hash,
+            prev_block_hash: entry.prev_block_hash,
+            pivot_hash: entry.pivot_hash,
             use_last_block_cert_votes: true,
             next_entry_id: 0,
             current_period: self.period,
@@ -282,7 +306,15 @@ mod tests {
         cert_votes: usize,
     ) -> bool {
         queue
-            .push(id, period, H256::from_low_u64_be(id), max_size, cert_votes)
+            .push(
+                id,
+                period,
+                H256::from_low_u64_be(id),
+                H256::from_low_u64_be(id + 1000),
+                H256::from_low_u64_be(id + 2000),
+                max_size,
+                cert_votes,
+            )
             .unwrap()
             .accepted
     }
@@ -312,7 +344,17 @@ mod tests {
         let mut queue = PeriodDataQueue::new();
 
         assert!(push(&mut queue, 2, 2, 0, 1));
-        let outcome = queue.push(4, 4, H256::from_low_u64_be(4), 3, 1).unwrap();
+        let outcome = queue
+            .push(
+                4,
+                4,
+                H256::from_low_u64_be(4),
+                H256::from_low_u64_be(1004),
+                H256::from_low_u64_be(2004),
+                3,
+                1,
+            )
+            .unwrap();
 
         assert!(outcome.accepted);
         assert!(outcome.clear_existing);
@@ -326,6 +368,14 @@ mod tests {
         assert_eq!(
             queue.last_entry().unwrap().block_hash,
             H256::from_low_u64_be(4)
+        );
+        assert_eq!(
+            queue.last_entry().unwrap().prev_block_hash,
+            H256::from_low_u64_be(1004)
+        );
+        assert_eq!(
+            queue.last_entry().unwrap().pivot_hash,
+            H256::from_low_u64_be(2004)
         );
         assert_eq!(queue.size(), 1);
     }
@@ -350,6 +400,10 @@ mod tests {
 
         let first = queue.pop().unwrap();
         assert_eq!(first.entry_id, 11);
+        assert_eq!(first.entry_period, 1);
+        assert_eq!(first.block_hash, H256::from_low_u64_be(11));
+        assert_eq!(first.prev_block_hash, H256::from_low_u64_be(1011));
+        assert_eq!(first.pivot_hash, H256::from_low_u64_be(2011));
         assert!(!first.use_last_block_cert_votes);
         assert_eq!(first.next_entry_id, 22);
         assert_eq!(queue.period(), 2);
@@ -375,7 +429,9 @@ mod tests {
             vec![PeriodDataQueueEntryRef {
                 entry_id: 5,
                 period: 5,
-                block_hash: H256::from_low_u64_be(5)
+                block_hash: H256::from_low_u64_be(5),
+                prev_block_hash: H256::from_low_u64_be(1005),
+                pivot_hash: H256::from_low_u64_be(2005)
             }]
         );
         assert_eq!(queue.period(), 6);

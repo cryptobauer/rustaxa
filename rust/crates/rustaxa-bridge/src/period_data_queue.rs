@@ -53,6 +53,8 @@ impl BridgePeriodDataQueue {
         entry_id: u64,
         period: u64,
         block_hash: [u8; 32],
+        prev_block_hash: [u8; 32],
+        pivot_hash: [u8; 32],
         max_pbft_size: u64,
         current_block_cert_votes_count: usize,
     ) -> Result<PeriodDataQueuePushOutcome, anyhow::Error> {
@@ -62,6 +64,8 @@ impl BridgePeriodDataQueue {
                 entry_id,
                 period,
                 ethereum_types::H256::from(block_hash),
+                ethereum_types::H256::from(prev_block_hash),
+                ethereum_types::H256::from(pivot_hash),
                 max_pbft_size,
                 current_block_cert_votes_count,
             )?
@@ -82,12 +86,16 @@ impl BridgePeriodDataQueue {
                 entry_id: entry.entry_id,
                 period: entry.period,
                 block_hash: entry.block_hash.into(),
+                prev_block_hash: entry.prev_block_hash.into(),
+                pivot_hash: entry.pivot_hash.into(),
             })
             .unwrap_or(PeriodDataQueueLastEntryLookup {
                 found: false,
                 entry_id: 0,
                 period: 0,
                 block_hash: [0; 32],
+                prev_block_hash: [0; 32],
+                pivot_hash: [0; 32],
             })
     }
 
@@ -112,6 +120,8 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueueEntryRef>
             entry_id: value.entry_id,
             period: value.period,
             block_hash: value.block_hash.into(),
+            prev_block_hash: value.prev_block_hash.into(),
+            pivot_hash: value.pivot_hash.into(),
         }
     }
 }
@@ -135,6 +145,10 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueuePopPlan> for Peri
     fn from(value: rustaxa_consensus::period_data_queue::PeriodDataQueuePopPlan) -> Self {
         Self {
             entry_id: value.entry_id,
+            entry_period: value.entry_period,
+            block_hash: value.block_hash.into(),
+            prev_block_hash: value.prev_block_hash.into(),
+            pivot_hash: value.pivot_hash.into(),
             use_last_block_cert_votes: value.use_last_block_cert_votes,
             next_entry_id: value.next_entry_id,
             current_period: value.current_period,

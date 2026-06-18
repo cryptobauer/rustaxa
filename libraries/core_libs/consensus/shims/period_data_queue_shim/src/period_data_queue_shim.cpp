@@ -68,6 +68,8 @@ bool PeriodDataQueue::push(PeriodData&& period_data, const dev::p2p::NodeID& nod
   rustaxa::PeriodDataQueuePushOutcome outcome;
   try {
     outcome = rust_queue_->period_data_queue_push(entry_id, period, period_data.pbft_blk->getBlockHash().asArray(),
+                                                  period_data.pbft_blk->getPrevBlockHash().asArray(),
+                                                  period_data.pbft_blk->getPivotDagBlockHash().asArray(),
                                                   max_pbft_size, cert_votes.size());
   } catch (const std::exception& e) {
     throw queueError(e.what());
@@ -122,7 +124,7 @@ const PeriodDataQueue::QueuedPayload& PeriodDataQueue::backPayload(uint64_t expe
   return queued_payloads_.back();
 }
 
-std::tuple<PeriodData, std::vector<std::shared_ptr<PbftVote>>, dev::p2p::NodeID> PeriodDataQueue::pop() {
+PeriodDataQueue::PoppedPeriodData PeriodDataQueue::popWithMetadata() {
   std::unique_lock lock(queue_access_);
 
   rustaxa::PeriodDataQueuePopPlan plan;
@@ -135,14 +137,26 @@ std::tuple<PeriodData, std::vector<std::shared_ptr<PbftVote>>, dev::p2p::NodeID>
   }
 
   auto payload = popFrontPayload(plan.entry_id);
+  auto result = PoppedPeriodData{std::move(payload.period_data),
+                                 {},
+                                 payload.node_id,
+                                 plan.entry_period,
+                                 blk_hash_t(plan.block_hash.data(), blk_hash_t::ConstructFromPointer),
+                                 blk_hash_t(plan.prev_block_hash.data(), blk_hash_t::ConstructFromPointer),
+                                 blk_hash_t(plan.pivot_hash.data(), blk_hash_t::ConstructFromPointer)};
   if (!plan.use_last_block_cert_votes) {
-    auto cert_votes = frontPayload(plan.next_entry_id).period_data.previous_block_cert_votes;
-    return {std::move(payload.period_data), std::move(cert_votes), payload.node_id};
+    result.cert_votes = frontPayload(plan.next_entry_id).period_data.previous_block_cert_votes;
+    return result;
   }
 
-  auto cert_votes = std::move(last_block_cert_votes_);
+  result.cert_votes = std::move(last_block_cert_votes_);
   last_block_cert_votes_.clear();
-  return {std::move(payload.period_data), std::move(cert_votes), payload.node_id};
+  return result;
+}
+
+std::tuple<PeriodData, std::vector<std::shared_ptr<PbftVote>>, dev::p2p::NodeID> PeriodDataQueue::pop() {
+  auto popped = popWithMetadata();
+  return {std::move(popped.period_data), std::move(popped.cert_votes), popped.node_id};
 }
 
 std::shared_ptr<PbftBlock> PeriodDataQueue::lastPbftBlock() const {

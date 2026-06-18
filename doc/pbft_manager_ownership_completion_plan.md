@@ -408,8 +408,11 @@ chain last-hash executor facts, and Rust returns the hash to use without the PBF
 directly. The proposed-block metadata cut makes the Rust-backed `ProposedBlocks` index retain compact pivot-hash and
 cached-validity facts. PBFT leader-candidate ranking now reads those facts without reconstructing `PbftBlock` sidecars
 for already-valid candidates, materializing the selected block only when an executor or public API still needs the C++
-object. Remaining Slice 9 work: proposed-block sidecars that still require validation/API materialization and remaining
-sync payload materialization mirrors.
+object. The sync pop metadata cut makes the Rust-backed `PeriodDataQueue` return popped block period/hash/previous-hash
+and pivot-hash metadata with the live compatibility payload. `processPeriodData()` now builds PBFT sync admission and
+block-validation facts from that Rust pop metadata instead of reopening the popped `PeriodData.pbft_blk` sidecar for
+chain-link facts. Remaining Slice 9 work: proposed-block sidecars that still require validation/API materialization and
+sync payload materialization for transactions, votes, pillar data, and finalization execution.
 
 ### Slice 10: Rust-Mode PBFT Manager Parity Gate
 

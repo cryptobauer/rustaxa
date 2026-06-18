@@ -21,7 +21,7 @@ std::array<uint8_t, 32> hashFor(uint8_t seed) {
 TEST(RustPeriodDataQueueTest, PushPopAndLastEntryFollowLegacyRules) {
   auto queue = create_period_data_queue();
 
-  auto first = queue->period_data_queue_push(11, 1, hashFor(0x11), 0, 1);
+  auto first = queue->period_data_queue_push(11, 1, hashFor(0x11), hashFor(0xa1), hashFor(0xb1), 0, 1);
   ASSERT_TRUE(first.accepted);
   EXPECT_FALSE(first.clear_existing);
   EXPECT_EQ(queue->period_data_queue_period(), 1u);
@@ -29,7 +29,7 @@ TEST(RustPeriodDataQueueTest, PushPopAndLastEntryFollowLegacyRules) {
   EXPECT_EQ(queue->period_data_queue_syncing_period(5), 5u);
   EXPECT_EQ(queue->period_data_queue_size(), 1u);
 
-  auto second = queue->period_data_queue_push(22, 2, hashFor(0x22), 0, 1);
+  auto second = queue->period_data_queue_push(22, 2, hashFor(0x22), hashFor(0xa2), hashFor(0xb2), 0, 1);
   ASSERT_TRUE(second.accepted);
   EXPECT_EQ(queue->period_data_queue_size(), 2u);
 
@@ -43,6 +43,10 @@ TEST(RustPeriodDataQueueTest, PushPopAndLastEntryFollowLegacyRules) {
 
   auto pop_first = queue->period_data_queue_pop();
   EXPECT_EQ(pop_first.entry_id, 11u);
+  EXPECT_EQ(pop_first.entry_period, 1u);
+  EXPECT_EQ(pop_first.block_hash, hashFor(0x11));
+  EXPECT_EQ(pop_first.prev_block_hash, hashFor(0xa1));
+  EXPECT_EQ(pop_first.pivot_hash, hashFor(0xb1));
   EXPECT_FALSE(pop_first.use_last_block_cert_votes);
   EXPECT_EQ(pop_first.next_entry_id, 22u);
   EXPECT_EQ(pop_first.current_period, 2u);
@@ -50,6 +54,10 @@ TEST(RustPeriodDataQueueTest, PushPopAndLastEntryFollowLegacyRules) {
 
   auto pop_second = queue->period_data_queue_pop();
   EXPECT_EQ(pop_second.entry_id, 22u);
+  EXPECT_EQ(pop_second.entry_period, 2u);
+  EXPECT_EQ(pop_second.block_hash, hashFor(0x22));
+  EXPECT_EQ(pop_second.prev_block_hash, hashFor(0xa2));
+  EXPECT_EQ(pop_second.pivot_hash, hashFor(0xb2));
   EXPECT_TRUE(pop_second.use_last_block_cert_votes);
   EXPECT_EQ(pop_second.next_entry_id, 0u);
   EXPECT_EQ(pop_second.current_period, 0u);
@@ -64,7 +72,7 @@ TEST(RustPeriodDataQueueTest, PushPopAndLastEntryFollowLegacyRules) {
 TEST(RustPeriodDataQueueTest, SizeHidesTailWhenLastCertVotesMissing) {
   auto queue = create_period_data_queue();
 
-  auto outcome = queue->period_data_queue_push(31, 1, hashFor(0x31), 0, 0);
+  auto outcome = queue->period_data_queue_push(31, 1, hashFor(0x31), hashFor(0xa3), hashFor(0xb3), 0, 0);
   ASSERT_TRUE(outcome.accepted);
   EXPECT_FALSE(queue->period_data_queue_empty());
   EXPECT_EQ(queue->period_data_queue_size(), 0u);
@@ -73,18 +81,18 @@ TEST(RustPeriodDataQueueTest, SizeHidesTailWhenLastCertVotesMissing) {
 TEST(RustPeriodDataQueueTest, PushRejectsInvalidPeriodSequenceAndAllowsQueueEmptyBackfill) {
   auto queue = create_period_data_queue();
 
-  auto rejected = queue->period_data_queue_push(41, 3, hashFor(0x41), 0, 1);
+  auto rejected = queue->period_data_queue_push(41, 3, hashFor(0x41), hashFor(0xa4), hashFor(0xb4), 0, 1);
   EXPECT_FALSE(rejected.accepted);
   EXPECT_EQ(rejected.expected_next_period, 1u);
   EXPECT_EQ(rejected.actual_period, 3u);
 
-  auto backfill = queue->period_data_queue_push(42, 2, hashFor(0x42), 0, 1);
+  auto backfill = queue->period_data_queue_push(42, 2, hashFor(0x42), hashFor(0xa5), hashFor(0xb5), 0, 1);
   EXPECT_TRUE(backfill.accepted);
 
-  auto sequential = queue->period_data_queue_push(43, 3, hashFor(0x43), 1, 1);
+  auto sequential = queue->period_data_queue_push(43, 3, hashFor(0x43), hashFor(0xa6), hashFor(0xb6), 1, 1);
   EXPECT_TRUE(sequential.accepted);
 
-  auto rejected_gap = queue->period_data_queue_push(44, 5, hashFor(0x44), 3, 1);
+  auto rejected_gap = queue->period_data_queue_push(44, 5, hashFor(0x44), hashFor(0xa7), hashFor(0xb7), 3, 1);
   EXPECT_FALSE(rejected_gap.accepted);
   EXPECT_EQ(queue->period_data_queue_period(), 3u);
   EXPECT_EQ(queue->period_data_queue_syncing_period(1), 3u);
@@ -93,14 +101,16 @@ TEST(RustPeriodDataQueueTest, PushRejectsInvalidPeriodSequenceAndAllowsQueueEmpt
 TEST(RustPeriodDataQueueTest, CleanOldDataAndClear) {
   auto queue = create_period_data_queue();
 
-  ASSERT_TRUE(queue->period_data_queue_push(51, 5, hashFor(0x51), 4, 1).accepted);
-  ASSERT_TRUE(queue->period_data_queue_push(52, 6, hashFor(0x52), 4, 1).accepted);
+  ASSERT_TRUE(queue->period_data_queue_push(51, 5, hashFor(0x51), hashFor(0xa8), hashFor(0xb8), 4, 1).accepted);
+  ASSERT_TRUE(queue->period_data_queue_push(52, 6, hashFor(0x52), hashFor(0xa9), hashFor(0xb9), 4, 1).accepted);
 
   auto removed = queue->period_data_queue_clean_old_data(6);
   ASSERT_EQ(removed.size(), 1u);
   EXPECT_EQ(removed[0].entry_id, 51u);
   EXPECT_EQ(removed[0].period, 5u);
   EXPECT_EQ(removed[0].block_hash, hashFor(0x51));
+  EXPECT_EQ(removed[0].prev_block_hash, hashFor(0xa8));
+  EXPECT_EQ(removed[0].pivot_hash, hashFor(0xb8));
 
   EXPECT_EQ(queue->period_data_queue_period(), 6u);
   EXPECT_EQ(queue->period_data_queue_syncing_period(8), 8u);
@@ -108,11 +118,13 @@ TEST(RustPeriodDataQueueTest, CleanOldDataAndClear) {
 
   auto remaining = queue->period_data_queue_pop();
   EXPECT_EQ(remaining.entry_id, 52u);
+  EXPECT_EQ(remaining.prev_block_hash, hashFor(0xa9));
+  EXPECT_EQ(remaining.pivot_hash, hashFor(0xb9));
   EXPECT_TRUE(remaining.use_last_block_cert_votes);
 
   EXPECT_THROW((void)queue->period_data_queue_pop(), std::exception);
 
-  ASSERT_TRUE(queue->period_data_queue_push(53, 1, hashFor(0x53), 0, 1).accepted);
+  ASSERT_TRUE(queue->period_data_queue_push(53, 1, hashFor(0x53), hashFor(0xaa), hashFor(0xba), 0, 1).accepted);
   queue->period_data_queue_clear();
   EXPECT_EQ(queue->period_data_queue_period(), 0u);
   EXPECT_EQ(queue->period_data_queue_syncing_period(9), 9u);
@@ -124,9 +136,9 @@ TEST(RustPeriodDataQueueTest, CleanOldDataAndClear) {
 TEST(RustPeriodDataQueueTest, PushCanSignalQueueResetAfterChainProgress) {
   auto queue = create_period_data_queue();
 
-  ASSERT_TRUE(queue->period_data_queue_push(61, 2, hashFor(0x61), 0, 1).accepted);
+  ASSERT_TRUE(queue->period_data_queue_push(61, 2, hashFor(0x61), hashFor(0xab), hashFor(0xbb), 0, 1).accepted);
 
-  auto outcome = queue->period_data_queue_push(64, 4, hashFor(0x64), 3, 1);
+  auto outcome = queue->period_data_queue_push(64, 4, hashFor(0x64), hashFor(0xac), hashFor(0xbc), 3, 1);
   ASSERT_TRUE(outcome.accepted);
   EXPECT_TRUE(outcome.clear_existing);
 
@@ -135,4 +147,6 @@ TEST(RustPeriodDataQueueTest, PushCanSignalQueueResetAfterChainProgress) {
   EXPECT_EQ(last.entry_id, 64u);
   EXPECT_EQ(last.period, 4u);
   EXPECT_EQ(last.block_hash, hashFor(0x64));
+  EXPECT_EQ(last.prev_block_hash, hashFor(0xac));
+  EXPECT_EQ(last.pivot_hash, hashFor(0xbc));
 }

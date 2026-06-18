@@ -1596,6 +1596,8 @@ pub mod rustaxa_ffi {
         entry_id: u64,
         period: u64,
         block_hash: [u8; 32],
+        prev_block_hash: [u8; 32],
+        pivot_hash: [u8; 32],
     }
 
     struct PeriodDataQueuePushOutcome {
@@ -1609,6 +1611,10 @@ pub mod rustaxa_ffi {
 
     struct PeriodDataQueuePopPlan {
         entry_id: u64,
+        entry_period: u64,
+        block_hash: [u8; 32],
+        prev_block_hash: [u8; 32],
+        pivot_hash: [u8; 32],
         use_last_block_cert_votes: bool,
         next_entry_id: u64,
         current_period: u64,
@@ -1620,6 +1626,8 @@ pub mod rustaxa_ffi {
         entry_id: u64,
         period: u64,
         block_hash: [u8; 32],
+        prev_block_hash: [u8; 32],
+        pivot_hash: [u8; 32],
     }
 
     struct VerifiedVotePayload {
@@ -4872,6 +4880,8 @@ pub mod rustaxa_ffi {
             entry_id: u64,
             period: u64,
             block_hash: [u8; 32],
+            prev_block_hash: [u8; 32],
+            pivot_hash: [u8; 32],
             max_pbft_size: u64,
             current_block_cert_votes_count: usize,
         ) -> Result<PeriodDataQueuePushOutcome>;

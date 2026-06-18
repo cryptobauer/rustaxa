@@ -642,16 +642,17 @@ rustaxa::PbftSyncTransactionQueryFact makePbftSyncTransactionQueryFact(const Per
 }
 
 rustaxa::PbftSyncProcessPeriodDataRuntimeFact makePbftSyncProcessPeriodDataRuntimeFact(
-    const PeriodData &period_data, const blk_hash_t &last_pbft_block_hash, PbftPeriod last_pbft_block_period,
-    bool block_in_chain, uint8_t final_chain_hash_status, uint8_t reward_votes_status, uint8_t cert_votes_status,
+    const PeriodData &period_data, PbftPeriod block_period, const blk_hash_t &block_prev_hash,
+    const blk_hash_t &last_pbft_block_hash, PbftPeriod last_pbft_block_period, bool block_in_chain,
+    uint8_t final_chain_hash_status, uint8_t reward_votes_status, uint8_t cert_votes_status,
     uint8_t transactions_status, const std::unordered_set<trx_hash_t> &missing_transaction_hashes,
     bool contains_finalized_transactions, uint8_t pillar_data_status, bool pillar_votes_required,
     uint8_t pillar_votes_status) {
   auto transaction_query_fact = makePbftSyncTransactionQueryFact(period_data);
 
   rustaxa::PbftSyncProcessPeriodDataRuntimeFact fact;
-  fact.block_period = period_data.pbft_blk->getPeriod();
-  fact.block_prev_hash = toBridgeHash(period_data.pbft_blk->getPrevBlockHash());
+  fact.block_period = block_period;
+  fact.block_prev_hash = toBridgeHash(block_prev_hash);
   fact.chain_last_hash = toBridgeHash(last_pbft_block_hash);
   fact.chain_last_period = last_pbft_block_period;
   fact.block_in_chain = block_in_chain;
@@ -4140,12 +4141,16 @@ void PbftManager::setPbftSyncSnapshotCreationEnabled(bool enabled) {
 }
 
 std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> PbftManager::processPeriodData() {
-  auto [period_data, cert_votes, node_id] = sync_queue_.pop();
-  auto pbft_block_hash = period_data.pbft_blk->getBlockHash();
-  const auto block_period = period_data.pbft_blk->getPeriod();
+  auto popped_period_data = sync_queue_.popWithMetadata();
+  auto period_data = std::move(popped_period_data.period_data);
+  auto cert_votes = std::move(popped_period_data.cert_votes);
+  const auto node_id = popped_period_data.node_id;
+  const auto pbft_block_hash = popped_period_data.block_hash;
+  const auto block_period = popped_period_data.period;
+  const auto block_prev_hash = popped_period_data.prev_block_hash;
+  const auto anchor_hash = popped_period_data.pivot_hash;
   const auto pillar_votes_required = kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(block_period);
-  LOG(log_dg_) << "Pop pbft block " << pbft_block_hash << " with period " << period_data.pbft_blk->getPeriod()
-               << " from synced queue";
+  LOG(log_dg_) << "Pop pbft block " << pbft_block_hash << " with period " << block_period << " from synced queue";
 
   const auto last_pbft_block_hash = pbft_chain_->getLastPbftBlockHash();
   const auto last_pbft_block_period = pbft_chain_->getPbftChainSize();
@@ -4156,8 +4161,9 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
                                bool contains_finalized_transactions, uint8_t pillar_data_status,
                                bool pillar_votes_required, uint8_t pillar_votes_status) {
     return rustaxa::plan_pbft_sync_process_period_data_runtime(makePbftSyncProcessPeriodDataRuntimeFact(
-        period_data, last_pbft_block_hash, last_pbft_block_period, candidate_block_in_chain, final_chain_status,
-        reward_votes_status, cert_votes_status, transactions_status, non_finalized_transactions,
+        period_data, block_period, block_prev_hash, last_pbft_block_hash, last_pbft_block_period,
+        candidate_block_in_chain, final_chain_status, reward_votes_status, cert_votes_status, transactions_status,
+        non_finalized_transactions,
         contains_finalized_transactions, pillar_data_status, pillar_votes_required, pillar_votes_status));
   };
 
@@ -4191,8 +4197,8 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
     return std::nullopt;
   }
   if (admission_plan.status == kPbftSyncStatusPreviousHashMismatch) {
-    LOG(log_er_) << "Invalid PBFT block " << pbft_block_hash
-                 << "; prevHash: " << period_data.pbft_blk->getPrevBlockHash() << " from peer " << node_id.abridged()
+    LOG(log_er_) << "Invalid PBFT block " << pbft_block_hash << "; prevHash: " << block_prev_hash << " from peer "
+                 << node_id.abridged()
                  << " received, stop syncing.";
     apply_admission_side_effects();
     return std::nullopt;
@@ -4200,7 +4206,6 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
 
   std::optional<std::pair<bool, std::vector<std::shared_ptr<PbftVote>>>> reward_votes;
   auto block_validation_fact = rustaxa::PbftManagerBlockValidationFact{};
-  const auto &anchor_hash = period_data.pbft_blk->getPivotDagBlockHash();
   block_validation_fact.block_hash = toBridgeHash(pbft_block_hash);
   block_validation_fact.period = block_period;
   block_validation_fact.pivot_hash = toBridgeHash(anchor_hash);
