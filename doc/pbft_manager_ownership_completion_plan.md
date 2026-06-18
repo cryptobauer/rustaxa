@@ -379,10 +379,11 @@ now a compatibility mirror updated by Rust transition/snapshot application helpe
 source. PBFT period remains PBFT-chain-derived for now because normal finalization advances the PBFT chain before Rust
 commits the new runtime period. Dynamic-lambda compatibility mutation has been narrowed: the obsolete shim-local
 `adjustDynamicLambda()` helper was removed, and the Rust-mode finalization path now builds the dynamic-lambda storage
-stage from the Rust planner output before updating C++ lambda mirrors only after Rust storage accepts the stage.
-Remaining Slice 9 work: reduce dynamic-lambda mirror reads such as `getRoundLambda()` and finalization planner inputs,
-then next-voted flags, broadcast counters, `cert_voted_block_for_round_`, proposed-block sidecars, and queue/cache
-mirrors.
+stage from the Rust planner output before updating C++ lambda mirrors only after Rust storage accepts the stage. The
+dynamic-lambda read cut adds a Rust runtime commit point for accepted dynamic-lambda stages, makes `getRoundLambda()` read
+round-one lambda from `PbftManagerRuntimeSnapshot`, and feeds finalization dynamic-lambda planner inputs from the same
+snapshot instead of `rounds_count_dynamic_lambda_` / `dynamic_lambda_`. Remaining Slice 9 work: reduce next-voted flags
+and broadcast counters, then `cert_voted_block_for_round_`, proposed-block sidecars, and queue/cache mirrors.
 
 ### Slice 10: Rust-Mode PBFT Manager Parity Gate
 

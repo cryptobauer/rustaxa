@@ -3633,6 +3633,44 @@ impl PbftManagerRuntime {
         self.snapshot.error_code.clear();
     }
 
+    /// Records a committed dynamic-lambda storage stage in the runtime snapshot.
+    ///
+    /// Inputs:
+    /// - `rounds_count_dynamic_lambda` is the durable post-adjust accumulator
+    ///   written by the Rust finalization storage stage.
+    /// - `dynamic_lambda_ms` is the durable post-adjust PBFT manager lambda
+    ///   written by the same stage.
+    ///
+    /// Outputs:
+    /// - Updates the runtime snapshot so later transition facts and public
+    ///   compatibility mirrors source dynamic-lambda state from Rust runtime
+    ///   state rather than C++ mirror fields.
+    ///
+    /// Invariants and edge behavior:
+    /// - Callers must invoke this only after the Rust-owned finalization
+    ///   storage stage has been accepted, so the runtime snapshot never
+    ///   advances ahead of durable dynamic-lambda state.
+    /// - Zero dynamic lambda values are ignored because startup restore rejects
+    ///   missing Cacti dynamic-lambda state and transition lambda calculations
+    ///   require a nonzero round-one lambda.
+    pub fn apply_committed_dynamic_lambda(
+        &mut self,
+        rounds_count_dynamic_lambda: u32,
+        dynamic_lambda_ms: u32,
+    ) -> PbftManagerRuntimeSnapshot {
+        if dynamic_lambda_ms == 0 {
+            let mut rejected = self.snapshot.clone();
+            rejected.status = PbftManagerStartupRestoreStatus::InvalidFact;
+            rejected.error_code = "PBFT_MANAGER_DYNAMIC_LAMBDA_ZERO".to_string();
+            return rejected;
+        }
+        self.snapshot.status = PbftManagerStartupRestoreStatus::Ready;
+        self.snapshot.rounds_count_dynamic_lambda = rounds_count_dynamic_lambda;
+        self.snapshot.dynamic_lambda_ms = dynamic_lambda_ms;
+        self.snapshot.error_code.clear();
+        self.snapshot.clone()
+    }
+
     /// Records a completed Rust-planned period advance.
     ///
     /// Inputs:
@@ -6804,6 +6842,26 @@ mod tests {
             "PBFT_MANAGER_ADVANCE_PERIOD_NON_INCREASING_PERIOD"
         );
         assert_eq!(runtime.snapshot().period, 13);
+    }
+
+    #[test]
+    fn runtime_records_committed_dynamic_lambda_after_storage_acceptance() {
+        let mut runtime = PbftManagerRuntime::new(restore_pbft_manager_runtime(startup_fact(1, 1)));
+
+        let snapshot = runtime.apply_committed_dynamic_lambda(12, 1_250);
+        assert_eq!(snapshot.status, PbftManagerStartupRestoreStatus::Ready);
+        assert_eq!(snapshot.rounds_count_dynamic_lambda, 12);
+        assert_eq!(snapshot.dynamic_lambda_ms, 1_250);
+        assert_eq!(runtime.snapshot().dynamic_lambda_ms, 1_250);
+
+        let rejected = runtime.apply_committed_dynamic_lambda(99, 0);
+        assert_eq!(
+            rejected.status,
+            PbftManagerStartupRestoreStatus::InvalidFact
+        );
+        assert_eq!(rejected.error_code, "PBFT_MANAGER_DYNAMIC_LAMBDA_ZERO");
+        assert_eq!(runtime.snapshot().rounds_count_dynamic_lambda, 12);
+        assert_eq!(runtime.snapshot().dynamic_lambda_ms, 1_250);
     }
 
     #[test]

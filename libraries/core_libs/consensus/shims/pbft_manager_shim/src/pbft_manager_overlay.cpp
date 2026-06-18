@@ -1461,7 +1461,15 @@ void PbftManager::resetPbftConsensus(PbftRound round) {
 
 uint32_t PbftManager::getRoundLambda(PbftRound round) const {
   if (round == 1) {
-    return dynamic_lambda_;
+    if (!pbft_manager_runtime_.has_value()) {
+      throw std::runtime_error("PBFT manager Rust runtime must be initialized before reading round lambda");
+    }
+    const auto runtime_snapshot = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value());
+    if (runtime_snapshot.status != kPbftManagerRuntimeSnapshotStatusReady) {
+      throw std::runtime_error("Rust PBFT manager snapshot rejected while reading round lambda: " +
+                               static_cast<std::string>(runtime_snapshot.error_code));
+    }
+    return runtime_snapshot.dynamic_lambda_ms;
   }
 
   // otherwise use default lambda
@@ -3285,9 +3293,11 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
   const auto block_pbft_period = period_data.pbft_blk->getPeriod();
   const auto block_pbft_round = sample_cert_vote->getRound();
   const auto dynamic_lambda_enabled = kGenesisConfig.state.hardforks.isOnCactiHardfork(block_pbft_period);
+  const auto dynamic_lambda_runtime_snapshot = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value());
   const auto dynamic_lambda_plan = rustaxa::plan_pbft_dynamic_lambda(makePbftDynamicLambdaFact(
       kGenesisConfig.state.hardforks, kGenesisConfig.state.dpos.blocks_per_year, dynamic_lambda_enabled,
-      block_pbft_period, block_pbft_round, rounds_count_dynamic_lambda_, dynamic_lambda_));
+      block_pbft_period, block_pbft_round, dynamic_lambda_runtime_snapshot.rounds_count_dynamic_lambda,
+      dynamic_lambda_runtime_snapshot.dynamic_lambda_ms));
   if (dynamic_lambda_plan.status != kPbftFinalizationStatusAccepted) {
     LOG(log_er_) << "Rust PBFT dynamic-lambda planner rejected block " << pbft_block_hash << ", period "
                  << block_pbft_period << ", round " << block_pbft_round << ", error "
@@ -3841,8 +3851,13 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     if (!report_runtime_action(runtime_step, true, dynamic_lambda_result.status)) {
       return false;
     }
-    rounds_count_dynamic_lambda_ = dynamic_lambda_plan.rounds_count_dynamic_lambda;
-    dynamic_lambda_ = dynamic_lambda_plan.dynamic_lambda;
+    const auto dynamic_lambda_snapshot = rustaxa::pbft_manager_runtime_apply_dynamic_lambda(
+        *pbft_manager_runtime_.value(), dynamic_lambda_plan.rounds_count_dynamic_lambda,
+        dynamic_lambda_plan.dynamic_lambda);
+    applyPbftManagerRuntimeSnapshot(dynamic_lambda_snapshot, round_, step_, state_, current_round_lambda_,
+                                    next_step_time_ms_, rounds_count_dynamic_lambda_, dynamic_lambda_,
+                                    executed_pbft_block_, already_next_voted_value_,
+                                    already_next_voted_null_block_hash_);
     if (dynamic_lambda_plan.decreased_dynamic_lambda) {
       LOG(log_nf_) << "Decrease dynamic_lambda by " << kGenesisConfig.state.hardforks.cacti_hf.lambda_change << " to "
                    << dynamic_lambda_ << ", period " << block_pbft_period << ", round " << block_pbft_round;

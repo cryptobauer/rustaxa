@@ -4520,6 +4520,11 @@ pub mod rustaxa_ffi {
             field: u8,
             value: u32,
         ) -> Result<PbftManagerRuntimeSnapshot>;
+        pub fn pbft_manager_runtime_apply_dynamic_lambda(
+            runtime: &mut BridgePbftManagerRuntime,
+            rounds_count_dynamic_lambda: u32,
+            dynamic_lambda_ms: u32,
+        ) -> PbftManagerRuntimeSnapshot;
         pub fn pbft_manager_runtime_dag_block_period(
             runtime: &BridgePbftManagerRuntime,
             hash: &[u8; 32],

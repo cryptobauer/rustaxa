@@ -560,6 +560,35 @@ pub fn pbft_manager_runtime_apply_cursor_field(
     Ok(runtime.state.snapshot().into())
 }
 
+/// Records an accepted dynamic-lambda finalization stage in the Rust runtime.
+///
+/// Inputs:
+/// - `runtime`: long-lived Rust PBFT manager runtime with its storage handle.
+/// - `rounds_count_dynamic_lambda`: post-adjust accumulator from the accepted
+///   Rust dynamic-lambda planner/storage stage.
+/// - `dynamic_lambda_ms`: post-adjust dynamic lambda from the accepted Rust
+///   dynamic-lambda planner/storage stage.
+///
+/// Outputs:
+/// - Returns the updated Rust runtime snapshot for C++ compatibility mirror
+///   hydration.
+///
+/// Invariants and edge behavior:
+/// - This bridge function does not write storage. The caller must invoke it
+///   only after `pbft_manager_runtime_apply_finalization_storage_writes`
+///   accepts the dynamic-lambda stage, keeping storage authority with the
+///   finalization storage runtime.
+pub fn pbft_manager_runtime_apply_dynamic_lambda(
+    runtime: &mut BridgePbftManagerRuntime,
+    rounds_count_dynamic_lambda: u32,
+    dynamic_lambda_ms: u32,
+) -> FfiPbftManagerRuntimeSnapshot {
+    runtime
+        .state
+        .apply_committed_dynamic_lambda(rounds_count_dynamic_lambda, dynamic_lambda_ms)
+        .into()
+}
+
 /// Resolves a finalized DAG block period through PBFT-manager runtime storage.
 ///
 /// Inputs:
@@ -2377,6 +2406,34 @@ mod tests {
             assert!(err
                 .to_string()
                 .contains("unsupported PBFT manager cursor field"));
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_runtime_records_committed_dynamic_lambda_snapshot() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_dynamic_lambda_snapshot");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            storage
+                .save_pbft_mgr_field(2, 1_500)
+                .expect("lambda seed should persist");
+            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
+                .expect("runtime should restore");
+
+            let snapshot = pbft_manager_runtime_apply_dynamic_lambda(&mut runtime, 12, 1_250);
+
+            assert_eq!(snapshot.status, STARTUP_STATUS_READY);
+            assert_eq!(snapshot.rounds_count_dynamic_lambda, 12);
+            assert_eq!(snapshot.dynamic_lambda_ms, 1_250);
+            assert_eq!(
+                pbft_manager_runtime_snapshot(&runtime).dynamic_lambda_ms,
+                1_250
+            );
+            assert_eq!(storage.get_pbft_mgr_field(2).unwrap(), 1_500);
         }
 
         let _ = fs::remove_dir_all(temp_dir);
