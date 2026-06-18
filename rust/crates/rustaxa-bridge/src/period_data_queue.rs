@@ -59,6 +59,7 @@ impl BridgePeriodDataQueue {
         period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
         previous_cert_votes_present: bool,
         previous_cert_first_vote_has_weight: bool,
+        pillar_votes_present: bool,
         max_pbft_size: u64,
         current_block_cert_votes_count: usize,
     ) -> Result<PeriodDataQueuePushOutcome, anyhow::Error> {
@@ -80,6 +81,7 @@ impl BridgePeriodDataQueue {
                     .collect(),
                 previous_cert_votes_present,
                 previous_cert_first_vote_has_weight,
+                pillar_votes_present,
                 max_pbft_size,
                 current_block_cert_votes_count,
             )?
@@ -108,6 +110,7 @@ impl BridgePeriodDataQueue {
                 ),
                 previous_cert_votes_present: entry.previous_cert_votes_present,
                 previous_cert_first_vote_has_weight: entry.previous_cert_first_vote_has_weight,
+                pillar_votes_present: entry.pillar_votes_present,
             })
             .unwrap_or(PeriodDataQueueLastEntryLookup {
                 found: false,
@@ -120,6 +123,7 @@ impl BridgePeriodDataQueue {
                 period_data_transaction_hashes: Vec::new(),
                 previous_cert_votes_present: false,
                 previous_cert_first_vote_has_weight: false,
+                pillar_votes_present: false,
             })
     }
 
@@ -152,6 +156,7 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueueEntryRef>
             ),
             previous_cert_votes_present: value.previous_cert_votes_present,
             previous_cert_first_vote_has_weight: value.previous_cert_first_vote_has_weight,
+            pillar_votes_present: value.pillar_votes_present,
         }
     }
 }
@@ -185,6 +190,7 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueuePopPlan> for Peri
             ),
             previous_cert_votes_present: value.previous_cert_votes_present,
             previous_cert_first_vote_has_weight: value.previous_cert_first_vote_has_weight,
+            pillar_votes_present: value.pillar_votes_present,
             use_last_block_cert_votes: value.use_last_block_cert_votes,
             next_entry_id: value.next_entry_id,
             current_period: value.current_period,

@@ -4132,6 +4132,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   const auto period_data_transaction_hashes = std::move(popped_period_data.period_data_transaction_hashes);
   const auto previous_cert_votes_present = popped_period_data.previous_cert_votes_present;
   const auto previous_cert_first_vote_has_weight = popped_period_data.previous_cert_first_vote_has_weight;
+  const auto pillar_votes_present = popped_period_data.pillar_votes_present;
   const auto pillar_votes_required = kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(block_period);
   LOG(log_dg_) << "Pop pbft block " << pbft_block_hash << " with period " << block_period << " from synced queue";
 
@@ -4352,11 +4353,11 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   }
 
   bool pillar_data_valid = true;
-  if (pillar_votes_required && !period_data.pillar_votes_.has_value()) {
+  if (pillar_votes_required && !pillar_votes_present) {
     LOG(log_er_) << "Sync PBFT block " << pbft_block_hash << ", period " << block_period
                  << " does not contain pillar votes";
     pillar_data_valid = false;
-  } else if (!pillar_votes_required && period_data.pillar_votes_.has_value()) {
+  } else if (!pillar_votes_required && pillar_votes_present) {
     LOG(log_er_) << "Sync PBFT block " << pbft_block_hash << ", period " << block_period
                  << " contains pillar votes even though it should not";
     pillar_data_valid = false;

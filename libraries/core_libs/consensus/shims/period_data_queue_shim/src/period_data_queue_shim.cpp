@@ -107,6 +107,7 @@ bool PeriodDataQueue::push(PeriodData&& period_data, const dev::p2p::NodeID& nod
   const auto period_data_transaction_hashes = periodDataTransactionHashes(period_data);
   const auto previous_cert_votes_present = !period_data.previous_block_cert_votes.empty();
   const auto previous_cert_first_vote_has_weight = previousCertFirstVoteHasWeight(period_data);
+  const auto pillar_votes_present = period_data.pillar_votes_.has_value();
   std::unique_lock lock(queue_access_);
   const auto entry_id = next_entry_id_;
 
@@ -116,7 +117,8 @@ bool PeriodDataQueue::push(PeriodData&& period_data, const dev::p2p::NodeID& nod
         entry_id, period, period_data.pbft_blk->getBlockHash().asArray(),
         period_data.pbft_blk->getPrevBlockHash().asArray(), period_data.pbft_blk->getPivotDagBlockHash().asArray(),
         toBridgeTransactionHashes(dag_transaction_hashes), toBridgeTransactionHashes(period_data_transaction_hashes),
-        previous_cert_votes_present, previous_cert_first_vote_has_weight, max_pbft_size, cert_votes.size());
+        previous_cert_votes_present, previous_cert_first_vote_has_weight, pillar_votes_present, max_pbft_size,
+        cert_votes.size());
   } catch (const std::exception& e) {
     throw queueError(e.what());
   } catch (...) {
@@ -193,7 +195,8 @@ PeriodDataQueue::PoppedPeriodData PeriodDataQueue::popWithMetadata() {
                                  fromBridgeTransactionHashes(plan.dag_transaction_hashes),
                                  fromBridgeTransactionHashes(plan.period_data_transaction_hashes),
                                  plan.previous_cert_votes_present,
-                                 plan.previous_cert_first_vote_has_weight};
+                                 plan.previous_cert_first_vote_has_weight,
+                                 plan.pillar_votes_present};
   if (!plan.use_last_block_cert_votes) {
     result.cert_votes = frontPayload(plan.next_entry_id).period_data.previous_block_cert_votes;
     return result;

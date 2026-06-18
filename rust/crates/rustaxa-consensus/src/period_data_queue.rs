@@ -22,6 +22,8 @@ use std::collections::VecDeque;
 ///   payload.
 /// - previous-cert-vote flags: compact vote sidecar facts used by sync
 ///   admission planning.
+/// - `pillar_votes_present`: compact pillar sidecar presence used by sync
+///   admission planning.
 ///
 /// Invariants:
 /// - `entry_id` is unique within one queue lifetime.
@@ -38,6 +40,7 @@ pub struct PeriodDataQueueEntryRef {
     pub period_data_transaction_hashes: Vec<H256>,
     pub previous_cert_votes_present: bool,
     pub previous_cert_first_vote_has_weight: bool,
+    pub pillar_votes_present: bool,
 }
 
 /// Result of attempting to enqueue one period-data payload.
@@ -75,6 +78,8 @@ pub struct PeriodDataQueuePushOutcome {
 ///   payload.
 /// - previous-cert-vote flags are compact vote sidecar facts for the popped
 ///   payload.
+/// - `pillar_votes_present` is the compact pillar sidecar presence fact for
+///   the popped payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeriodDataQueuePopPlan {
     pub entry_id: u64,
@@ -86,6 +91,7 @@ pub struct PeriodDataQueuePopPlan {
     pub period_data_transaction_hashes: Vec<H256>,
     pub previous_cert_votes_present: bool,
     pub previous_cert_first_vote_has_weight: bool,
+    pub pillar_votes_present: bool,
     pub use_last_block_cert_votes: bool,
     pub next_entry_id: u64,
     pub current_period: u64,
@@ -195,6 +201,8 @@ impl PeriodDataQueue {
     ///   block cert-vote sidecars.
     /// - `previous_cert_first_vote_has_weight`: whether the first previous
     ///   cert-vote sidecar already carried a calculated weight.
+    /// - `pillar_votes_present`: whether the payload carried pillar-vote
+    ///   sidecar data.
     /// - `max_pbft_size`: current local PBFT chain size.
     /// - `current_block_cert_votes_count`: number of cert votes passed for the
     ///   pushed block; only the count is needed for size eligibility.
@@ -212,6 +220,7 @@ impl PeriodDataQueue {
         period_data_transaction_hashes: Vec<H256>,
         previous_cert_votes_present: bool,
         previous_cert_first_vote_has_weight: bool,
+        pillar_votes_present: bool,
         max_pbft_size: u64,
         current_block_cert_votes_count: usize,
     ) -> Result<PeriodDataQueuePushOutcome> {
@@ -249,6 +258,7 @@ impl PeriodDataQueue {
             period_data_transaction_hashes,
             previous_cert_votes_present,
             previous_cert_first_vote_has_weight,
+            pillar_votes_present,
         });
         self.last_block_cert_votes_available = current_block_cert_votes_count > 0;
 
@@ -282,6 +292,7 @@ impl PeriodDataQueue {
                 period_data_transaction_hashes: entry.period_data_transaction_hashes,
                 previous_cert_votes_present: entry.previous_cert_votes_present,
                 previous_cert_first_vote_has_weight: entry.previous_cert_first_vote_has_weight,
+                pillar_votes_present: entry.pillar_votes_present,
                 use_last_block_cert_votes: false,
                 next_entry_id: next.entry_id,
                 current_period: self.period,
@@ -301,6 +312,7 @@ impl PeriodDataQueue {
             period_data_transaction_hashes: entry.period_data_transaction_hashes,
             previous_cert_votes_present: entry.previous_cert_votes_present,
             previous_cert_first_vote_has_weight: entry.previous_cert_first_vote_has_weight,
+            pillar_votes_present: entry.pillar_votes_present,
             use_last_block_cert_votes: true,
             next_entry_id: 0,
             current_period: self.period,
@@ -356,6 +368,7 @@ mod tests {
                 vec![H256::from_low_u64_be(id + 4000)],
                 id % 2 == 0,
                 id % 3 == 0,
+                id % 5 == 0,
                 max_size,
                 cert_votes,
             )
@@ -399,6 +412,7 @@ mod tests {
                 vec![H256::from_low_u64_be(4004)],
                 true,
                 false,
+                true,
                 3,
                 1,
             )
@@ -440,6 +454,7 @@ mod tests {
                 .unwrap()
                 .previous_cert_first_vote_has_weight
         );
+        assert!(queue.last_entry().unwrap().pillar_votes_present);
         assert_eq!(queue.size(), 1);
     }
 
@@ -477,6 +492,7 @@ mod tests {
         );
         assert!(!first.previous_cert_votes_present);
         assert!(!first.previous_cert_first_vote_has_weight);
+        assert!(!first.pillar_votes_present);
         assert!(!first.use_last_block_cert_votes);
         assert_eq!(first.next_entry_id, 22);
         assert_eq!(queue.period(), 2);
@@ -485,6 +501,7 @@ mod tests {
         assert_eq!(second.entry_id, 22);
         assert!(second.previous_cert_votes_present);
         assert!(!second.previous_cert_first_vote_has_weight);
+        assert!(!second.pillar_votes_present);
         assert!(second.use_last_block_cert_votes);
         assert_eq!(second.next_entry_id, 0);
         assert_eq!(queue.period(), 0);
@@ -510,7 +527,8 @@ mod tests {
                 dag_transaction_hashes: vec![H256::from_low_u64_be(3005)],
                 period_data_transaction_hashes: vec![H256::from_low_u64_be(4005)],
                 previous_cert_votes_present: false,
-                previous_cert_first_vote_has_weight: false
+                previous_cert_first_vote_has_weight: false,
+                pillar_votes_present: true
             }]
         );
         assert_eq!(queue.period(), 6);
