@@ -108,6 +108,27 @@ impl PeriodDataQueue {
         self.period.max(pbft_chain_size)
     }
 
+    /// Returns the PBFT block hash to use as the next chain-link fact.
+    ///
+    /// Inputs:
+    /// - `current_period`: current PBFT period supplied by the PBFT chain
+    ///   compatibility executor. PBFT-chain period remains authoritative at
+    ///   this boundary.
+    /// - `chain_last_hash`: last PBFT-chain block hash supplied by the PBFT
+    ///   chain compatibility executor.
+    ///
+    /// Outputs:
+    /// - The last queued PBFT block hash when Rust queue metadata proves the
+    ///   queued period is not stale for `current_period`.
+    /// - Otherwise `chain_last_hash`.
+    pub fn last_block_hash_or_chain(&self, current_period: u64, chain_last_hash: H256) -> H256 {
+        self.entries
+            .back()
+            .filter(|entry| entry.period >= current_period)
+            .map(|entry| entry.block_hash)
+            .unwrap_or(chain_last_hash)
+    }
+
     /// Returns processable queue size under legacy cert-vote visibility rules.
     ///
     /// The tail entry is hidden when no side-car cert votes are available,
@@ -297,6 +318,10 @@ mod tests {
         assert!(outcome.clear_existing);
         assert_eq!(queue.period(), 4);
         assert_eq!(queue.syncing_period(3), 4);
+        assert_eq!(
+            queue.last_block_hash_or_chain(4, H256::from_low_u64_be(99)),
+            H256::from_low_u64_be(4)
+        );
         assert_eq!(queue.last_entry().unwrap().entry_id, 4);
         assert_eq!(
             queue.last_entry().unwrap().block_hash,
@@ -355,6 +380,14 @@ mod tests {
         );
         assert_eq!(queue.period(), 6);
         assert_eq!(queue.syncing_period(8), 8);
+        assert_eq!(
+            queue.last_block_hash_or_chain(6, H256::from_low_u64_be(99)),
+            H256::from_low_u64_be(6)
+        );
+        assert_eq!(
+            queue.last_block_hash_or_chain(7, H256::from_low_u64_be(99)),
+            H256::from_low_u64_be(99)
+        );
         assert_eq!(queue.last_entry().unwrap().entry_id, 6);
     }
 
@@ -367,6 +400,10 @@ mod tests {
 
         assert_eq!(queue.period(), 0);
         assert_eq!(queue.syncing_period(7), 7);
+        assert_eq!(
+            queue.last_block_hash_or_chain(1, H256::from_low_u64_be(99)),
+            H256::from_low_u64_be(99)
+        );
         assert!(queue.is_empty());
         assert_eq!(queue.size(), 0);
         let err = queue.pop().unwrap_err().to_string();

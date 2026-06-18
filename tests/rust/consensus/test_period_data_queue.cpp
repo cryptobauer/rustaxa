@@ -38,6 +38,8 @@ TEST(RustPeriodDataQueueTest, PushPopAndLastEntryFollowLegacyRules) {
   EXPECT_EQ(last.entry_id, 22u);
   EXPECT_EQ(last.period, 2u);
   EXPECT_EQ(last.block_hash, hashFor(0x22));
+  EXPECT_EQ(queue->period_data_queue_last_block_hash_or_chain(1, hashFor(0xee)), hashFor(0x22));
+  EXPECT_EQ(queue->period_data_queue_last_block_hash_or_chain(3, hashFor(0xee)), hashFor(0xee));
 
   auto pop_first = queue->period_data_queue_pop();
   EXPECT_EQ(pop_first.entry_id, 11u);
@@ -56,6 +58,7 @@ TEST(RustPeriodDataQueueTest, PushPopAndLastEntryFollowLegacyRules) {
   EXPECT_TRUE(queue->period_data_queue_empty());
   auto no_last = queue->period_data_queue_last_entry();
   EXPECT_FALSE(no_last.found);
+  EXPECT_EQ(queue->period_data_queue_last_block_hash_or_chain(1, hashFor(0xee)), hashFor(0xee));
 }
 
 TEST(RustPeriodDataQueueTest, SizeHidesTailWhenLastCertVotesMissing) {
@@ -113,6 +116,7 @@ TEST(RustPeriodDataQueueTest, CleanOldDataAndClear) {
   queue->period_data_queue_clear();
   EXPECT_EQ(queue->period_data_queue_period(), 0u);
   EXPECT_EQ(queue->period_data_queue_syncing_period(9), 9u);
+  EXPECT_EQ(queue->period_data_queue_last_block_hash_or_chain(1, hashFor(0xee)), hashFor(0xee));
   EXPECT_TRUE(queue->period_data_queue_empty());
   EXPECT_EQ(queue->period_data_queue_size(), 0u);
 }

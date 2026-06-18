@@ -21,6 +21,17 @@ impl BridgePeriodDataQueue {
         self.0.syncing_period(pbft_chain_size)
     }
 
+    /// Returns the Rust-owned queue hash decision or the supplied PBFT-chain hash.
+    pub fn period_data_queue_last_block_hash_or_chain(
+        &self,
+        current_period: u64,
+        chain_last_hash: [u8; 32],
+    ) -> [u8; 32] {
+        self.0
+            .last_block_hash_or_chain(current_period, ethereum_types::H256::from(chain_last_hash))
+            .into()
+    }
+
     /// Returns processable queue size under legacy cert-vote visibility rules.
     pub fn period_data_queue_size(&self) -> usize {
         self.0.size()

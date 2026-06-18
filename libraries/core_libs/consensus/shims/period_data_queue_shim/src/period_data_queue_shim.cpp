@@ -30,6 +30,13 @@ uint64_t PeriodDataQueue::syncingPeriod(uint64_t pbft_chain_size) const {
   return rust_queue_->period_data_queue_syncing_period(pbft_chain_size);
 }
 
+blk_hash_t PeriodDataQueue::lastBlockHashOrChain(uint64_t current_period, const blk_hash_t& chain_last_hash) const {
+  std::shared_lock lock(queue_access_);
+  const auto hash =
+      rust_queue_->period_data_queue_last_block_hash_or_chain(current_period, chain_last_hash.asArray());
+  return blk_hash_t(hash.data(), blk_hash_t::ConstructFromPointer);
+}
+
 size_t PeriodDataQueue::size() const {
   std::shared_lock lock(queue_access_);
   return rust_queue_->period_data_queue_size();

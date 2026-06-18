@@ -93,6 +93,14 @@ class PeriodDataQueue {
   uint64_t syncingPeriod(uint64_t pbft_chain_size) const;
 
   /**
+   * Returns the PBFT block hash to use as the next chain-link fact.
+   *
+   * The PBFT period and chain hash remain PBFT-chain executor facts. Rust queue metadata decides whether the newest
+   * queued block hash is fresh enough for that period; otherwise the supplied chain hash is returned.
+   */
+  blk_hash_t lastBlockHashOrChain(uint64_t current_period, const blk_hash_t& chain_last_hash) const;
+
+  /**
    * Returns last queued PBFT block, or nullptr when queue is empty.
    */
   std::shared_ptr<PbftBlock> lastPbftBlock() const;

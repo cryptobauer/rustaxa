@@ -4571,11 +4571,7 @@ std::map<PbftPeriod, std::vector<std::shared_ptr<PbftBlock>>> PbftManager::getPr
 }
 
 blk_hash_t PbftManager::lastPbftBlockHashFromQueueOrChain() {
-  const auto queued_block_hash = sync_queue_.lastPbftBlockHash();
-  if (queued_block_hash.has_value() && sync_queue_.getPeriod() >= getPbftPeriod()) {
-    return *queued_block_hash;
-  }
-  return pbft_chain_->getLastPbftBlockHash();
+  return sync_queue_.lastBlockHashOrChain(getPbftPeriod(), pbft_chain_->getLastPbftBlockHash());
 }
 
 bool PbftManager::periodDataQueueEmpty() const { return sync_queue_.empty(); }

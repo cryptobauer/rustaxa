@@ -55,6 +55,8 @@ TEST(PeriodDataQueueShimTest, popReturnsQueueFrontAndMatchingCertVotesContract) 
   EXPECT_EQ(queue.lastPbftBlock()->getPeriod(), 2);
   ASSERT_TRUE(queue.lastPbftBlockHash().has_value());
   EXPECT_EQ(*queue.lastPbftBlockHash(), period2_hash);
+  EXPECT_EQ(queue.lastBlockHashOrChain(1, blk_hash_t(999)), period2_hash);
+  EXPECT_EQ(queue.lastBlockHashOrChain(3, blk_hash_t(999)), blk_hash_t(999));
 
   auto [popped1, cert_votes1, popped_node1] = queue.pop();
   EXPECT_EQ(popped1.pbft_blk->getPeriod(), 1);
@@ -71,6 +73,7 @@ TEST(PeriodDataQueueShimTest, popReturnsQueueFrontAndMatchingCertVotesContract) 
   EXPECT_EQ(cert_votes2[0].get(), vote_for_last_block.get());
   EXPECT_TRUE(queue.empty());
   EXPECT_FALSE(queue.lastPbftBlockHash().has_value());
+  EXPECT_EQ(queue.lastBlockHashOrChain(1, blk_hash_t(999)), blk_hash_t(999));
   EXPECT_EQ(queue.size(), 0);
   EXPECT_EQ(queue.getPeriod(), 0);
 }

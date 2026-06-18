@@ -4844,6 +4844,11 @@ pub mod rustaxa_ffi {
             self: &BridgePeriodDataQueue,
             pbft_chain_size: u64,
         ) -> u64;
+        pub fn period_data_queue_last_block_hash_or_chain(
+            self: &BridgePeriodDataQueue,
+            current_period: u64,
+            chain_last_hash: [u8; 32],
+        ) -> [u8; 32];
         pub fn period_data_queue_size(self: &BridgePeriodDataQueue) -> usize;
         pub fn period_data_queue_empty(self: &BridgePeriodDataQueue) -> bool;
         pub fn period_data_queue_clear(self: &mut BridgePeriodDataQueue);

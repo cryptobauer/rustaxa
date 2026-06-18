@@ -402,8 +402,10 @@ id, period, processable size, pop planning, and cleanup metadata. `lastPbftBlock
 compact Rust queue fact instead of materializing the last queued `PeriodData.pbft_blk` only to read its hash. C++ still
 owns queued `PeriodData`, `PbftVote`, and peer `NodeID` payloads for processing and public compatibility. The derived
 syncing-period cut moves the queue-aware network status period calculation into the Rust-backed `PeriodDataQueue`; C++
-now supplies only the PBFT-chain size executor fact. Remaining Slice 9 work: proposed-block sidecars and remaining sync
-payload materialization mirrors.
+now supplies only the PBFT-chain size executor fact. The queue hash fallback cut also moves the
+queued-block-hash-versus-chain-hash decision into Rust queue metadata: C++ supplies the chain-derived PBFT period and
+chain last-hash executor facts, and Rust returns the hash to use without the PBFT manager reading queue period metadata
+directly. Remaining Slice 9 work: proposed-block sidecars and remaining sync payload materialization mirrors.
 
 ### Slice 10: Rust-Mode PBFT Manager Parity Gate
 
