@@ -53,6 +53,8 @@ class PeriodDataQueue {
     blk_hash_t block_hash;
     blk_hash_t prev_block_hash;
     blk_hash_t pivot_hash;
+    std::vector<trx_hash_t> dag_transaction_hashes;
+    std::vector<trx_hash_t> period_data_transaction_hashes;
   };
 
   /**

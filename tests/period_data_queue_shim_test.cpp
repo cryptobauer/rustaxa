@@ -65,6 +65,8 @@ TEST(PeriodDataQueueShimTest, popReturnsQueueFrontAndMatchingCertVotesContract) 
   EXPECT_EQ(popped1.block_hash, popped1.period_data.pbft_blk->getBlockHash());
   EXPECT_EQ(popped1.prev_block_hash, popped1.period_data.pbft_blk->getPrevBlockHash());
   EXPECT_EQ(popped1.pivot_hash, popped1.period_data.pbft_blk->getPivotDagBlockHash());
+  EXPECT_TRUE(popped1.dag_transaction_hashes.empty());
+  EXPECT_TRUE(popped1.period_data_transaction_hashes.empty());
   ASSERT_EQ(popped1.cert_votes.size(), 1);
   EXPECT_EQ(popped1.cert_votes[0].get(), vote_from_next_block.get());
   EXPECT_EQ(queue.size(), 1);

@@ -411,8 +411,12 @@ for already-valid candidates, materializing the selected block only when an exec
 object. The sync pop metadata cut makes the Rust-backed `PeriodDataQueue` return popped block period/hash/previous-hash
 and pivot-hash metadata with the live compatibility payload. `processPeriodData()` now builds PBFT sync admission and
 block-validation facts from that Rust pop metadata instead of reopening the popped `PeriodData.pbft_blk` sidecar for
-chain-link facts. Remaining Slice 9 work: proposed-block sidecars that still require validation/API materialization and
-sync payload materialization for transactions, votes, pillar data, and finalization execution.
+chain-link facts. The sync transaction-hash metadata cut makes queued Rust metadata retain transaction hashes referenced
+by finalized DAG blocks and hashes supplied in the period-data transaction list; the pop metadata carries those compact
+lists into `processPeriodData()`, which now builds PBFT sync transaction-query facts from Rust-owned queue metadata
+instead of scanning the popped `PeriodData` DAG blocks and transaction sidecars for those hashes on every runtime plan.
+Remaining Slice 9 work: proposed-block sidecars that still require validation/API materialization and sync payload
+materialization for actual transaction objects, votes, pillar data, and finalization execution.
 
 ### Slice 10: Rust-Mode PBFT Manager Parity Gate
 

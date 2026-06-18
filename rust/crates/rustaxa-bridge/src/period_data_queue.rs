@@ -1,6 +1,6 @@
 use crate::ffi::rustaxa_ffi::{
-    PeriodDataQueueEntryRef, PeriodDataQueueLastEntryLookup, PeriodDataQueuePopPlan,
-    PeriodDataQueuePushOutcome,
+    PbftSyncTransactionHash, PeriodDataQueueEntryRef, PeriodDataQueueLastEntryLookup,
+    PeriodDataQueuePopPlan, PeriodDataQueuePushOutcome,
 };
 use crate::ffi::BridgePeriodDataQueue;
 use rustaxa_consensus::period_data_queue::PeriodDataQueue;
@@ -55,6 +55,8 @@ impl BridgePeriodDataQueue {
         block_hash: [u8; 32],
         prev_block_hash: [u8; 32],
         pivot_hash: [u8; 32],
+        dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
+        period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
         max_pbft_size: u64,
         current_block_cert_votes_count: usize,
     ) -> Result<PeriodDataQueuePushOutcome, anyhow::Error> {
@@ -66,6 +68,14 @@ impl BridgePeriodDataQueue {
                 ethereum_types::H256::from(block_hash),
                 ethereum_types::H256::from(prev_block_hash),
                 ethereum_types::H256::from(pivot_hash),
+                dag_transaction_hashes
+                    .into_iter()
+                    .map(|hash| ethereum_types::H256::from(hash.hash))
+                    .collect(),
+                period_data_transaction_hashes
+                    .into_iter()
+                    .map(|hash| ethereum_types::H256::from(hash.hash))
+                    .collect(),
                 max_pbft_size,
                 current_block_cert_votes_count,
             )?
@@ -88,6 +98,10 @@ impl BridgePeriodDataQueue {
                 block_hash: entry.block_hash.into(),
                 prev_block_hash: entry.prev_block_hash.into(),
                 pivot_hash: entry.pivot_hash.into(),
+                dag_transaction_hashes: transaction_hashes_to_bridge(entry.dag_transaction_hashes),
+                period_data_transaction_hashes: transaction_hashes_to_bridge(
+                    entry.period_data_transaction_hashes,
+                ),
             })
             .unwrap_or(PeriodDataQueueLastEntryLookup {
                 found: false,
@@ -96,6 +110,8 @@ impl BridgePeriodDataQueue {
                 block_hash: [0; 32],
                 prev_block_hash: [0; 32],
                 pivot_hash: [0; 32],
+                dag_transaction_hashes: Vec::new(),
+                period_data_transaction_hashes: Vec::new(),
             })
     }
 
@@ -122,6 +138,10 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueueEntryRef>
             block_hash: value.block_hash.into(),
             prev_block_hash: value.prev_block_hash.into(),
             pivot_hash: value.pivot_hash.into(),
+            dag_transaction_hashes: transaction_hashes_to_bridge(value.dag_transaction_hashes),
+            period_data_transaction_hashes: transaction_hashes_to_bridge(
+                value.period_data_transaction_hashes,
+            ),
         }
     }
 }
@@ -149,10 +169,21 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueuePopPlan> for Peri
             block_hash: value.block_hash.into(),
             prev_block_hash: value.prev_block_hash.into(),
             pivot_hash: value.pivot_hash.into(),
+            dag_transaction_hashes: transaction_hashes_to_bridge(value.dag_transaction_hashes),
+            period_data_transaction_hashes: transaction_hashes_to_bridge(
+                value.period_data_transaction_hashes,
+            ),
             use_last_block_cert_votes: value.use_last_block_cert_votes,
             next_entry_id: value.next_entry_id,
             current_period: value.current_period,
             effective_size: value.effective_size,
         }
     }
+}
+
+fn transaction_hashes_to_bridge(hashes: Vec<ethereum_types::H256>) -> Vec<PbftSyncTransactionHash> {
+    hashes
+        .into_iter()
+        .map(|hash| PbftSyncTransactionHash { hash: hash.into() })
+        .collect()
 }

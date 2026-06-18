@@ -1,9 +1,8 @@
-#include "pbft/period_data_queue.hpp"
-
 #include <stdexcept>
 #include <utility>
 
 #include "pbft/pbft_block.hpp"
+#include "pbft/period_data_queue.hpp"
 
 namespace taraxa {
 namespace {
@@ -12,6 +11,43 @@ std::runtime_error queueError(const std::string& message) { return std::runtime_
 
 std::runtime_error queueMismatch(const std::string& message, uint64_t expected, uint64_t actual) {
   return queueError(message + " expected entry " + std::to_string(expected) + ", got " + std::to_string(actual));
+}
+
+rust::Vec<rustaxa::PbftSyncTransactionHash> toBridgeTransactionHashes(const std::vector<trx_hash_t>& hashes) {
+  rust::Vec<rustaxa::PbftSyncTransactionHash> out;
+  out.reserve(hashes.size());
+  for (const auto& hash : hashes) {
+    out.push_back(rustaxa::PbftSyncTransactionHash{hash.asArray()});
+  }
+  return out;
+}
+
+std::vector<trx_hash_t> fromBridgeTransactionHashes(const rust::Vec<rustaxa::PbftSyncTransactionHash>& hashes) {
+  std::vector<trx_hash_t> out;
+  out.reserve(hashes.size());
+  for (const auto& hash : hashes) {
+    out.emplace_back(hash.hash.data(), trx_hash_t::ConstructFromPointer);
+  }
+  return out;
+}
+
+std::vector<trx_hash_t> dagTransactionHashes(const PeriodData& period_data) {
+  std::vector<trx_hash_t> hashes;
+  for (const auto& dag_block : period_data.dag_blocks) {
+    for (const auto& trx_hash : dag_block->getTrxs()) {
+      hashes.emplace_back(trx_hash);
+    }
+  }
+  return hashes;
+}
+
+std::vector<trx_hash_t> periodDataTransactionHashes(const PeriodData& period_data) {
+  std::vector<trx_hash_t> hashes;
+  hashes.reserve(period_data.transactions.size());
+  for (const auto& transaction : period_data.transactions) {
+    hashes.emplace_back(transaction->getHash());
+  }
+  return hashes;
 }
 
 }  // namespace
@@ -32,8 +68,7 @@ uint64_t PeriodDataQueue::syncingPeriod(uint64_t pbft_chain_size) const {
 
 blk_hash_t PeriodDataQueue::lastBlockHashOrChain(uint64_t current_period, const blk_hash_t& chain_last_hash) const {
   std::shared_lock lock(queue_access_);
-  const auto hash =
-      rust_queue_->period_data_queue_last_block_hash_or_chain(current_period, chain_last_hash.asArray());
+  const auto hash = rust_queue_->period_data_queue_last_block_hash_or_chain(current_period, chain_last_hash.asArray());
   return blk_hash_t(hash.data(), blk_hash_t::ConstructFromPointer);
 }
 
@@ -62,15 +97,18 @@ bool PeriodDataQueue::push(PeriodData&& period_data, const dev::p2p::NodeID& nod
   }
 
   const auto period = period_data.pbft_blk->getPeriod();
+  const auto dag_transaction_hashes = dagTransactionHashes(period_data);
+  const auto period_data_transaction_hashes = periodDataTransactionHashes(period_data);
   std::unique_lock lock(queue_access_);
   const auto entry_id = next_entry_id_;
 
   rustaxa::PeriodDataQueuePushOutcome outcome;
   try {
-    outcome = rust_queue_->period_data_queue_push(entry_id, period, period_data.pbft_blk->getBlockHash().asArray(),
-                                                  period_data.pbft_blk->getPrevBlockHash().asArray(),
-                                                  period_data.pbft_blk->getPivotDagBlockHash().asArray(),
-                                                  max_pbft_size, cert_votes.size());
+    outcome = rust_queue_->period_data_queue_push(
+        entry_id, period, period_data.pbft_blk->getBlockHash().asArray(),
+        period_data.pbft_blk->getPrevBlockHash().asArray(), period_data.pbft_blk->getPivotDagBlockHash().asArray(),
+        toBridgeTransactionHashes(dag_transaction_hashes), toBridgeTransactionHashes(period_data_transaction_hashes),
+        max_pbft_size, cert_votes.size());
   } catch (const std::exception& e) {
     throw queueError(e.what());
   } catch (...) {
@@ -143,7 +181,9 @@ PeriodDataQueue::PoppedPeriodData PeriodDataQueue::popWithMetadata() {
                                  plan.entry_period,
                                  blk_hash_t(plan.block_hash.data(), blk_hash_t::ConstructFromPointer),
                                  blk_hash_t(plan.prev_block_hash.data(), blk_hash_t::ConstructFromPointer),
-                                 blk_hash_t(plan.pivot_hash.data(), blk_hash_t::ConstructFromPointer)};
+                                 blk_hash_t(plan.pivot_hash.data(), blk_hash_t::ConstructFromPointer),
+                                 fromBridgeTransactionHashes(plan.dag_transaction_hashes),
+                                 fromBridgeTransactionHashes(plan.period_data_transaction_hashes)};
   if (!plan.use_last_block_cert_votes) {
     result.cert_votes = frontPayload(plan.next_entry_id).period_data.previous_block_cert_votes;
     return result;

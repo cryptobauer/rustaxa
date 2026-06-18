@@ -18,18 +18,22 @@ use std::collections::VecDeque;
 /// - `block_hash`: PBFT block hash carried by that payload.
 /// - `prev_block_hash`: previous PBFT block hash carried by that payload.
 /// - `pivot_hash`: pivot DAG block hash carried by that payload.
+/// - transaction hash lists: compact sync validation facts carried by the
+///   payload.
 ///
 /// Invariants:
 /// - `entry_id` is unique within one queue lifetime.
 /// - entries are stored in insertion order and accepted only by PBFT sync
 ///   period rules.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeriodDataQueueEntryRef {
     pub entry_id: u64,
     pub period: u64,
     pub block_hash: H256,
     pub prev_block_hash: H256,
     pub pivot_hash: H256,
+    pub dag_transaction_hashes: Vec<H256>,
+    pub period_data_transaction_hashes: Vec<H256>,
 }
 
 /// Result of attempting to enqueue one period-data payload.
@@ -63,13 +67,17 @@ pub struct PeriodDataQueuePushOutcome {
 /// - `current_period` and `effective_size` describe queue state after pop.
 /// - `entry_period`, `block_hash`, `prev_block_hash`, and `pivot_hash` are the
 ///   compact block-link facts for the popped payload.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// - transaction hash lists are compact sync validation facts for the popped
+///   payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeriodDataQueuePopPlan {
     pub entry_id: u64,
     pub entry_period: u64,
     pub block_hash: H256,
     pub prev_block_hash: H256,
     pub pivot_hash: H256,
+    pub dag_transaction_hashes: Vec<H256>,
+    pub period_data_transaction_hashes: Vec<H256>,
     pub use_last_block_cert_votes: bool,
     pub next_entry_id: u64,
     pub current_period: u64,
@@ -171,6 +179,10 @@ impl PeriodDataQueue {
     /// - `block_hash`: PBFT block hash of the payload block.
     /// - `prev_block_hash`: previous PBFT block hash of the payload block.
     /// - `pivot_hash`: pivot DAG block hash of the payload block.
+    /// - `dag_transaction_hashes`: transaction hashes referenced by finalized
+    ///   DAG blocks in the payload.
+    /// - `period_data_transaction_hashes`: transaction hashes supplied in the
+    ///   payload transaction list.
     /// - `max_pbft_size`: current local PBFT chain size.
     /// - `current_block_cert_votes_count`: number of cert votes passed for the
     ///   pushed block; only the count is needed for size eligibility.
@@ -184,6 +196,8 @@ impl PeriodDataQueue {
         block_hash: H256,
         prev_block_hash: H256,
         pivot_hash: H256,
+        dag_transaction_hashes: Vec<H256>,
+        period_data_transaction_hashes: Vec<H256>,
         max_pbft_size: u64,
         current_block_cert_votes_count: usize,
     ) -> Result<PeriodDataQueuePushOutcome> {
@@ -217,6 +231,8 @@ impl PeriodDataQueue {
             block_hash,
             prev_block_hash,
             pivot_hash,
+            dag_transaction_hashes,
+            period_data_transaction_hashes,
         });
         self.last_block_cert_votes_available = current_block_cert_votes_count > 0;
 
@@ -246,6 +262,8 @@ impl PeriodDataQueue {
                 block_hash: entry.block_hash,
                 prev_block_hash: entry.prev_block_hash,
                 pivot_hash: entry.pivot_hash,
+                dag_transaction_hashes: entry.dag_transaction_hashes,
+                period_data_transaction_hashes: entry.period_data_transaction_hashes,
                 use_last_block_cert_votes: false,
                 next_entry_id: next.entry_id,
                 current_period: self.period,
@@ -261,6 +279,8 @@ impl PeriodDataQueue {
             block_hash: entry.block_hash,
             prev_block_hash: entry.prev_block_hash,
             pivot_hash: entry.pivot_hash,
+            dag_transaction_hashes: entry.dag_transaction_hashes,
+            period_data_transaction_hashes: entry.period_data_transaction_hashes,
             use_last_block_cert_votes: true,
             next_entry_id: 0,
             current_period: self.period,
@@ -270,7 +290,7 @@ impl PeriodDataQueue {
 
     /// Returns the last queued entry metadata, if any.
     pub fn last_entry(&self) -> Option<PeriodDataQueueEntryRef> {
-        self.entries.back().copied()
+        self.entries.back().cloned()
     }
 
     /// Removes queued entries with period lower than `period`.
@@ -312,6 +332,8 @@ mod tests {
                 H256::from_low_u64_be(id),
                 H256::from_low_u64_be(id + 1000),
                 H256::from_low_u64_be(id + 2000),
+                vec![H256::from_low_u64_be(id + 3000)],
+                vec![H256::from_low_u64_be(id + 4000)],
                 max_size,
                 cert_votes,
             )
@@ -351,6 +373,8 @@ mod tests {
                 H256::from_low_u64_be(4),
                 H256::from_low_u64_be(1004),
                 H256::from_low_u64_be(2004),
+                vec![H256::from_low_u64_be(3004)],
+                vec![H256::from_low_u64_be(4004)],
                 3,
                 1,
             )
@@ -376,6 +400,14 @@ mod tests {
         assert_eq!(
             queue.last_entry().unwrap().pivot_hash,
             H256::from_low_u64_be(2004)
+        );
+        assert_eq!(
+            queue.last_entry().unwrap().dag_transaction_hashes,
+            vec![H256::from_low_u64_be(3004)]
+        );
+        assert_eq!(
+            queue.last_entry().unwrap().period_data_transaction_hashes,
+            vec![H256::from_low_u64_be(4004)]
         );
         assert_eq!(queue.size(), 1);
     }
@@ -404,6 +436,14 @@ mod tests {
         assert_eq!(first.block_hash, H256::from_low_u64_be(11));
         assert_eq!(first.prev_block_hash, H256::from_low_u64_be(1011));
         assert_eq!(first.pivot_hash, H256::from_low_u64_be(2011));
+        assert_eq!(
+            first.dag_transaction_hashes,
+            vec![H256::from_low_u64_be(3011)]
+        );
+        assert_eq!(
+            first.period_data_transaction_hashes,
+            vec![H256::from_low_u64_be(4011)]
+        );
         assert!(!first.use_last_block_cert_votes);
         assert_eq!(first.next_entry_id, 22);
         assert_eq!(queue.period(), 2);
@@ -431,7 +471,9 @@ mod tests {
                 period: 5,
                 block_hash: H256::from_low_u64_be(5),
                 prev_block_hash: H256::from_low_u64_be(1005),
-                pivot_hash: H256::from_low_u64_be(2005)
+                pivot_hash: H256::from_low_u64_be(2005),
+                dag_transaction_hashes: vec![H256::from_low_u64_be(3005)],
+                period_data_transaction_hashes: vec![H256::from_low_u64_be(4005)]
             }]
         );
         assert_eq!(queue.period(), 6);
