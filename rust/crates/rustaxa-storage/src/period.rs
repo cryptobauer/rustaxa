@@ -68,6 +68,36 @@ impl<D: DbReader + DbWriter> PeriodRepository<D> {
             .put(Column::PeriodData, &period.to_le_bytes(), period_data_rlp)
     }
 
+    /// Appends serialized period payload bytes to a caller-owned storage batch.
+    ///
+    /// Inputs:
+    /// - `batch`: Rust storage write batch that owns the eventual atomic commit.
+    /// - `period`: finalized PBFT period used as the period-data key.
+    /// - `period_data_rlp`: legacy-compatible serialized `PeriodData` payload.
+    ///
+    /// Outputs:
+    /// - Appends a put in `period_data`.
+    ///
+    /// Invariants and edge behavior:
+    /// - Existing period payloads for the same period are overwritten, matching
+    ///   legacy RocksDB put semantics.
+    /// - The payload is intentionally opaque here; consensus period-data
+    ///   compatibility owns the encoded object shape until it is fully
+    ///   Rust-owned.
+    pub fn write_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        period: u64,
+        period_data_rlp: &[u8],
+    ) -> Result<()> {
+        self.db.batch_put(
+            batch,
+            Column::PeriodData,
+            &period.to_le_bytes(),
+            period_data_rlp,
+        )
+    }
+
     /// Stores finalized PBFT hash-to-period index entry.
     /// C++ mapping: `DbStorage::addPbftBlockPeriodToBatch(PbftPeriod, taraxa::blk_hash_t const&, Batch&)`.
     pub fn write_pbft_period(&self, pbft_block_hash: H256, period: u64) -> Result<()> {
@@ -290,6 +320,23 @@ mod tests {
 
         let result = repo.data_raw(11).unwrap();
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_period_data_batch_write_waits_for_commit() {
+        let db = Arc::new(MockPeriodStore::new());
+        let repo = PeriodRepository::new(db.clone());
+        let period = 78u64;
+
+        let mut batch = DbWriter::create_batch(db.as_ref());
+        repo.write_in_batch(&mut batch, period, &[0xC1, 0xCC])
+            .unwrap();
+
+        assert!(repo.data_raw(period).unwrap().is_empty());
+
+        DbWriter::commit_batch(db.as_ref(), batch).unwrap();
+
+        assert_eq!(repo.data_raw(period).unwrap(), vec![0xC1, 0xCC]);
     }
 
     #[test]

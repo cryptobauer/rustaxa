@@ -422,6 +422,23 @@ impl<D: DbReader + DbWriter> PbftRepository<D> {
             .delete(Column::ProposedPbftBlocks, block_hash.as_bytes())
     }
 
+    /// Appends removal of one proposed PBFT block to a caller-owned storage batch.
+    ///
+    /// Inputs:
+    /// - `batch`: Rust storage write batch that owns the eventual atomic commit.
+    /// - `block_hash`: canonical proposed PBFT block hash used as the cache key.
+    ///
+    /// Outputs:
+    /// - Appends a delete in `proposed_pbft_blocks`.
+    ///
+    /// Invariants and edge behavior:
+    /// - Missing keys are RocksDB delete no-ops, matching legacy storage
+    ///   behavior.
+    pub fn remove_proposed_in_batch(&self, batch: &mut D::Batch, block_hash: H256) -> Result<()> {
+        self.db
+            .batch_delete(batch, Column::ProposedPbftBlocks, block_hash.as_bytes())
+    }
+
     /// Removes one cached own verified vote by vote hash.
     /// C++ mapping: `DbStorage::clearOwnVerifiedVotes(Batch&, const std::vector<std::shared_ptr<PbftVote>>&)`.
     pub fn remove_own_verified_vote(&self, vote_hash: H256) -> Result<()> {
@@ -722,6 +739,24 @@ mod tests {
         let mut res = repo.proposed_rlp().unwrap();
         res.sort();
         assert_eq!(res, vec![vec![0xAA], vec![0xBB]]);
+    }
+
+    #[test]
+    fn test_proposed_pbft_block_batch_delete_waits_for_commit() {
+        let db = Arc::new(MockPbftStore::new());
+        let repo = PbftRepository::new(db.clone());
+        let hash = H256::from_low_u64_be(3);
+
+        db.put(Column::ProposedPbftBlocks, hash.as_bytes(), &[0xCC]);
+
+        let mut batch = DbWriter::create_batch(db.as_ref());
+        repo.remove_proposed_in_batch(&mut batch, hash).unwrap();
+
+        assert_eq!(repo.proposed_rlp().unwrap(), vec![vec![0xCC]]);
+
+        DbWriter::commit_batch(db.as_ref(), batch).unwrap();
+
+        assert!(repo.proposed_rlp().unwrap().is_empty());
     }
 
     #[test]

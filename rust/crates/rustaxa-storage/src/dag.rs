@@ -420,6 +420,34 @@ impl<D: DbReader + DbWriter> DagRepository<D> {
         )
     }
 
+    /// Appends a proposal-period mapping entry to a caller-owned storage batch.
+    ///
+    /// Inputs:
+    /// - `batch`: Rust storage write batch that owns the eventual atomic commit.
+    /// - `level`: DAG anchor level used as the sparse lookup key.
+    /// - `period`: PBFT period active from that level boundary.
+    ///
+    /// Outputs:
+    /// - Appends a put in `proposal_period_levels_map`.
+    ///
+    /// Invariants and edge behavior:
+    /// - Key and value are little-endian `uint64_t`, matching the existing
+    ///   compatibility layout used by sparse `get_at_or_after` lookups.
+    /// - Existing entries for the same level are overwritten.
+    pub fn write_proposal_period_at_level_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        level: u64,
+        period: u64,
+    ) -> Result<()> {
+        self.db.batch_put(
+            batch,
+            Column::ProposalPeriodLevelsMap,
+            &level.to_le_bytes(),
+            &period.to_le_bytes(),
+        )
+    }
+
     // Helper
 
     fn encode_level_hashes(&self, level: u64, new_hash: H256) -> Result<Vec<u8>> {
@@ -981,6 +1009,24 @@ mod tests {
         assert_eq!(repo.proposal_period_at_level(105).unwrap(), Some(3));
         assert_eq!(repo.proposal_period_at_level(106).unwrap(), Some(3));
         assert!(repo.proposal_period_at_level(107).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_proposal_period_batch_write_waits_for_commit() {
+        let db = Arc::new(MockDagStore::new());
+        let repo = DagRepository::new(db.clone());
+
+        let mut batch = DbWriter::create_batch(db.as_ref());
+        repo.write_proposal_period_at_level_in_batch(&mut batch, 200, 9)
+            .unwrap();
+
+        assert!(repo.proposal_period_at_level(200).unwrap().is_none());
+
+        DbWriter::commit_batch(db.as_ref(), batch).unwrap();
+
+        assert_eq!(repo.proposal_period_at_level(199).unwrap(), Some(9));
+        assert_eq!(repo.proposal_period_at_level(200).unwrap(), Some(9));
+        assert!(repo.proposal_period_at_level(201).unwrap().is_none());
     }
 
     #[test]

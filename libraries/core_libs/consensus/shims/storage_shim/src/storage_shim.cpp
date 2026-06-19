@@ -463,7 +463,8 @@ void DbStorage::savePeriodData(const PeriodData& period_data, Batch& write_batch
     trx_pos++;
   }
 
-  insert(write_batch, Columns::period_data, toSlice(period), toSlice(period_data.rlp()));
+  auto period_data_rlp = into_rust_vec(period_data.rlp());
+  rustaxa::storage_shim_save_period_data(getOrCreateRustBatch(write_batch), period, std::move(period_data_rlp));
 }
 
 dev::bytes DbStorage::getPeriodDataRaw(PbftPeriod period) const {
@@ -674,7 +675,8 @@ void DbStorage::saveProposedPbftBlock(const std::shared_ptr<PbftBlock>& block) {
 }
 
 void DbStorage::removeProposedPbftBlock(const blk_hash_t& block_hash, Batch& write_batch) {
-  remove(write_batch, Columns::proposed_pbft_blocks, toSlice(block_hash.asBytes()));
+  auto h_arr = into_bytes_array(block_hash);
+  rustaxa::storage_shim_remove_proposed_pbft_block(getOrCreateRustBatch(write_batch), h_arr);
 }
 
 std::vector<std::shared_ptr<PbftBlock>> DbStorage::getProposedPbftBlocks() {
@@ -1070,7 +1072,7 @@ void DbStorage::saveProposalPeriodDagLevelsMap(uint64_t level, PbftPeriod period
 }
 
 void DbStorage::addProposalPeriodDagLevelsMapToBatch(uint64_t level, PbftPeriod period, Batch& write_batch) {
-  insert(write_batch, Columns::proposal_period_levels_map, toSlice(level), toSlice(period));
+  rustaxa::storage_shim_save_proposal_period_dag_level(getOrCreateRustBatch(write_batch), level, period);
 }
 
 void DbStorage::savePeriodLambda(PbftPeriod period, uint32_t period_lambda, Batch& write_batch) {

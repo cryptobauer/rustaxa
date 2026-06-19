@@ -217,12 +217,15 @@ Landed sub-slices:
 - Period-index shim batch appends: routed finalized PBFT block hash-to-period and DAG block hash-to-period/position
   writes through typed `rustaxa-storage` period/DAG batch methods. Rust now owns the `pbft_block_period` little-endian
   value encoding and `dag_block_period` legacy RLP payload while preserving the caller's legacy `Batch&` commit boundary.
+- Single-row period/proposal shim batch appends: routed finalized period-data writes, proposed PBFT block cleanup, and
+  proposal-period DAG level map writes through typed `rustaxa-storage` period, PBFT, and DAG batch methods. C++ still
+  materializes legacy `PeriodData` RLP, but Rust owns the column/key encoding and delete/put append operations.
 
 Next target:
 
-- Reduce the remaining storage-shim raw append surface in the DAG block/counter, transaction, proposed-block cleanup, and
-  proposal-level mapping families by replacing broad `insert(Batch&, Column, ...)` and `remove(Batch&, Column, ...)`
-  callers with typed Rust storage helpers where active tests or public compatibility paths still need them.
+- Reduce the remaining storage-shim raw append surface in the DAG block/counter and transaction families by replacing
+  broad `insert(Batch&, Column, ...)` and `remove(Batch&, Column, ...)` callers with typed Rust storage helpers where
+  active tests or public compatibility paths still need them.
 
 Scope:
 

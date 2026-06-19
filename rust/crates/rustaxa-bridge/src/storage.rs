@@ -337,6 +337,46 @@ pub fn storage_shim_save_dag_block_period(
     )
 }
 
+/// Appends typed finalized period data bytes to a Rust-owned storage shim batch.
+///
+/// The C++ shim still supplies the legacy `PeriodData` RLP payload, while Rust
+/// owns the `period_data` column and period-key encoding.
+pub fn storage_shim_save_period_data(
+    batch: &mut BridgeStorageBatch,
+    period: u64,
+    period_data_rlp: Vec<u8>,
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage
+        .period()
+        .write_in_batch(storage_shim_batch_mut(batch)?, period, &period_data_rlp)
+}
+
+/// Appends typed proposed PBFT block cleanup to a Rust-owned storage shim batch.
+pub fn storage_shim_remove_proposed_pbft_block(
+    batch: &mut BridgeStorageBatch,
+    hash: &[u8; 32],
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage
+        .pbft()
+        .remove_proposed_in_batch(storage_shim_batch_mut(batch)?, H256::from(*hash))
+}
+
+/// Appends a typed proposal-period DAG level map write to a Rust-owned storage shim batch.
+pub fn storage_shim_save_proposal_period_dag_level(
+    batch: &mut BridgeStorageBatch,
+    level: u64,
+    period: u64,
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage.dag().write_proposal_period_at_level_in_batch(
+        storage_shim_batch_mut(batch)?,
+        level,
+        period,
+    )
+}
+
 /// Commits a Rust-owned storage shim batch and consumes it.
 ///
 /// Dropping a `BridgeStorageBatch` without calling this method discards staged
