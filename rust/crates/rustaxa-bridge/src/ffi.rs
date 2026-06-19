@@ -1608,6 +1608,13 @@ pub mod rustaxa_ffi {
         vote_rlp: Vec<u8>,
     }
 
+    /// Canonical transaction payload retained by the Rust period-data queue
+    /// for finalization materialization without reopening the live C++
+    /// `PeriodData` transaction list.
+    struct PeriodDataQueueTransactionPayload {
+        transaction_rlp: Vec<u8>,
+    }
+
     struct PeriodDataQueueEntryRef {
         entry_id: u64,
         period: u64,
@@ -1617,6 +1624,7 @@ pub mod rustaxa_ffi {
         final_chain_hash: [u8; 32],
         reward_vote_hashes: Vec<PbftSyncTransactionHash>,
         pillar_vote_rlps: Vec<PeriodDataQueuePillarVotePayload>,
+        transaction_rlps: Vec<PeriodDataQueueTransactionPayload>,
         dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
@@ -1645,6 +1653,7 @@ pub mod rustaxa_ffi {
         final_chain_hash: [u8; 32],
         reward_vote_hashes: Vec<PbftSyncTransactionHash>,
         pillar_vote_rlps: Vec<PeriodDataQueuePillarVotePayload>,
+        transaction_rlps: Vec<PeriodDataQueueTransactionPayload>,
         dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
@@ -1669,6 +1678,7 @@ pub mod rustaxa_ffi {
         final_chain_hash: [u8; 32],
         reward_vote_hashes: Vec<PbftSyncTransactionHash>,
         pillar_vote_rlps: Vec<PeriodDataQueuePillarVotePayload>,
+        transaction_rlps: Vec<PeriodDataQueueTransactionPayload>,
         dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
@@ -4934,6 +4944,7 @@ pub mod rustaxa_ffi {
             final_chain_hash: [u8; 32],
             reward_vote_hashes: Vec<PbftSyncTransactionHash>,
             pillar_vote_rlps: Vec<PeriodDataQueuePillarVotePayload>,
+            transaction_rlps: Vec<PeriodDataQueueTransactionPayload>,
             dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
             period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
             period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,

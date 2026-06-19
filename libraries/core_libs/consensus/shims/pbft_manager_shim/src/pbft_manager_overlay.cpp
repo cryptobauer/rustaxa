@@ -20,6 +20,7 @@
 #include "pbft/period_data.hpp"
 #include "pillar_chain/pillar_chain_manager.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
+#include "transaction/transaction.hpp"
 #include "vote_manager/vote_manager.hpp"
 
 namespace taraxa {
@@ -619,6 +620,24 @@ std::vector<trx_hash_t> fromBridgeTransactionHashes(const rust::Vec<rustaxa::Pbf
     out.emplace_back(hash.hash.data(), trx_hash_t::ConstructFromPointer);
   }
   return out;
+}
+
+SharedTransactions materializeTransactionsFromQueuedRlps(const std::vector<bytes> &transaction_rlps,
+                                                         const std::vector<trx_hash_t> &expected_hashes) {
+  if (transaction_rlps.size() != expected_hashes.size()) {
+    throw std::runtime_error("queued transaction RLP count does not match queued transaction hash count");
+  }
+
+  SharedTransactions transactions;
+  transactions.reserve(transaction_rlps.size());
+  for (size_t i = 0; i < transaction_rlps.size(); ++i) {
+    auto transaction = std::make_shared<Transaction>(transaction_rlps[i]);
+    if (transaction->getHash() != expected_hashes[i]) {
+      throw std::runtime_error("queued transaction RLP hash does not match queued transaction hash fact");
+    }
+    transactions.emplace_back(std::move(transaction));
+  }
+  return transactions;
 }
 
 rustaxa::PbftSyncProcessPeriodDataRuntimeFact makePbftSyncProcessPeriodDataRuntimeFact(
@@ -4125,6 +4144,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   const auto final_chain_hash = popped_period_data.final_chain_hash;
   auto reward_vote_hashes = std::move(popped_period_data.reward_vote_hashes);
   auto pillar_vote_rlps = std::move(popped_period_data.pillar_vote_rlps);
+  auto transaction_rlps = std::move(popped_period_data.transaction_rlps);
   const auto dag_transaction_hashes = std::move(popped_period_data.dag_transaction_hashes);
   const auto period_data_transaction_hashes = std::move(popped_period_data.period_data_transaction_hashes);
   auto period_data_transaction_identities = std::move(popped_period_data.period_data_transaction_identities);
@@ -4452,6 +4472,15 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   }
 
   if (admission_plan.status != kPbftSyncStatusAccepted) {
+    apply_admission_side_effects();
+    return std::nullopt;
+  }
+
+  try {
+    period_data.transactions = materializeTransactionsFromQueuedRlps(transaction_rlps, period_data_transaction_hashes);
+  } catch (const std::exception &e) {
+    LOG(log_er_) << "Synced PBFT block " << pbft_block_hash
+                 << " has invalid queued transaction payload metadata: " << e.what();
     apply_admission_side_effects();
     return std::nullopt;
   }

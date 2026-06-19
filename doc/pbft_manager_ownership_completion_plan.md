@@ -444,9 +444,14 @@ requested hashes; copied selected `PbftVote` objects remain temporary compatibil
 replacement. The sync pillar-vote RLP cut makes the Rust queue retain canonical pillar-vote payload bytes from the
 queued period data. `processPeriodData()` now validates required pillar-vote bundles by inspecting those queued bytes in
 Rust and using live `PillarVote` sidecars only to execute accepted insertion side effects.
-Remaining Slice 9 work: proposed-block sidecars that still require validation/API materialization and sync payload
-materialization for actual transaction objects during finalization execution, accepted vote insertion, and pillar data
-finalization.
+The sync transaction RLP cut makes the Rust queue retain canonical period-data transaction bytes. After Rust-planned
+admission accepts a popped candidate, `processPeriodData()` rematerializes finalization `Transaction` sidecars from
+those queued bytes and verifies each materialized hash against the Rust-owned queued transaction-hash metadata before
+dispatching finalization. Those C++ transaction objects are now executor materialization for the EVM/FinalChain boundary,
+not the authoritative sync payload source.
+Remaining Slice 9 work should finish in two more cuts: first reduce accepted vote insertion and pillar-data
+finalization payload sidecars, then reduce proposed-block validation/API sidecars that still require C++ block
+materialization.
 
 ### Slice 10: Rust-Mode PBFT Manager Parity Gate
 

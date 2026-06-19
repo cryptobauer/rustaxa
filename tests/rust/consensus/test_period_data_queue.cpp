@@ -36,6 +36,17 @@ rust::Vec<PeriodDataQueuePillarVotePayload> pillarVoteRlps(std::initializer_list
   return payloads;
 }
 
+rust::Vec<PeriodDataQueueTransactionPayload> transactionRlps(std::initializer_list<uint8_t> seeds) {
+  rust::Vec<PeriodDataQueueTransactionPayload> payloads;
+  for (auto seed : seeds) {
+    PeriodDataQueueTransactionPayload payload;
+    payload.transaction_rlp.push_back(seed);
+    payload.transaction_rlp.push_back(static_cast<uint8_t>(seed + 1));
+    payloads.push_back(std::move(payload));
+  }
+  return payloads;
+}
+
 rust::Vec<PeriodDataQueueTransactionIdentity> txIdentities(std::initializer_list<uint8_t> seeds) {
   rust::Vec<PeriodDataQueueTransactionIdentity> identities;
   uint64_t input_index = 0;
@@ -56,8 +67,9 @@ TEST(RustPeriodDataQueueTest, PushPopAndLastEntryFollowLegacyRules) {
   auto queue = create_period_data_queue();
 
   auto first = queue->period_data_queue_push(11, 1, hashFor(0x11), hashFor(0xa1), hashFor(0xb1), hashFor(0xe1),
-                                             txHashes({0xf1}), pillarVoteRlps({0xa1}), txHashes({0xc1}), txHashes({0xd1}),
-                                             txIdentities({0xd1}), false, false, false, false, false, 0, 1);
+                                             txHashes({0xf1}), pillarVoteRlps({0xa1}), transactionRlps({0xb1}),
+                                             txHashes({0xc1}), txHashes({0xd1}), txIdentities({0xd1}), false, false,
+                                             false, false, false, 0, 1);
   ASSERT_TRUE(first.accepted);
   EXPECT_FALSE(first.clear_existing);
   EXPECT_EQ(queue->period_data_queue_period(), 1u);
@@ -66,8 +78,9 @@ TEST(RustPeriodDataQueueTest, PushPopAndLastEntryFollowLegacyRules) {
   EXPECT_EQ(queue->period_data_queue_size(), 1u);
 
   auto second = queue->period_data_queue_push(22, 2, hashFor(0x22), hashFor(0xa2), hashFor(0xb2), hashFor(0xe2),
-                                              txHashes({0xf2}), pillarVoteRlps({0xa2}), txHashes({0xc2}), txHashes({0xd2}),
-                                              txIdentities({0xd2}), true, false, true, true, false, 0, 1);
+                                              txHashes({0xf2}), pillarVoteRlps({0xa2}), transactionRlps({0xb2}),
+                                              txHashes({0xc2}), txHashes({0xd2}), txIdentities({0xd2}), true, false,
+                                              true, true, false, 0, 1);
   ASSERT_TRUE(second.accepted);
   EXPECT_EQ(queue->period_data_queue_size(), 2u);
 
@@ -83,6 +96,10 @@ TEST(RustPeriodDataQueueTest, PushPopAndLastEntryFollowLegacyRules) {
   ASSERT_EQ(last.pillar_vote_rlps[0].vote_rlp.size(), 2u);
   EXPECT_EQ(last.pillar_vote_rlps[0].vote_rlp[0], 0xa2);
   EXPECT_EQ(last.pillar_vote_rlps[0].vote_rlp[1], 0xa3);
+  ASSERT_EQ(last.transaction_rlps.size(), 1u);
+  ASSERT_EQ(last.transaction_rlps[0].transaction_rlp.size(), 2u);
+  EXPECT_EQ(last.transaction_rlps[0].transaction_rlp[0], 0xb2);
+  EXPECT_EQ(last.transaction_rlps[0].transaction_rlp[1], 0xb3);
   ASSERT_EQ(last.dag_transaction_hashes.size(), 1u);
   EXPECT_EQ(last.dag_transaction_hashes[0].hash, hashFor(0xc2));
   ASSERT_EQ(last.period_data_transaction_hashes.size(), 1u);
@@ -111,6 +128,10 @@ TEST(RustPeriodDataQueueTest, PushPopAndLastEntryFollowLegacyRules) {
   ASSERT_EQ(pop_first.pillar_vote_rlps[0].vote_rlp.size(), 2u);
   EXPECT_EQ(pop_first.pillar_vote_rlps[0].vote_rlp[0], 0xa1);
   EXPECT_EQ(pop_first.pillar_vote_rlps[0].vote_rlp[1], 0xa2);
+  ASSERT_EQ(pop_first.transaction_rlps.size(), 1u);
+  ASSERT_EQ(pop_first.transaction_rlps[0].transaction_rlp.size(), 2u);
+  EXPECT_EQ(pop_first.transaction_rlps[0].transaction_rlp[0], 0xb1);
+  EXPECT_EQ(pop_first.transaction_rlps[0].transaction_rlp[1], 0xb2);
   ASSERT_EQ(pop_first.dag_transaction_hashes.size(), 1u);
   EXPECT_EQ(pop_first.dag_transaction_hashes[0].hash, hashFor(0xc1));
   ASSERT_EQ(pop_first.period_data_transaction_hashes.size(), 1u);
@@ -138,6 +159,8 @@ TEST(RustPeriodDataQueueTest, PushPopAndLastEntryFollowLegacyRules) {
   EXPECT_EQ(pop_second.reward_vote_hashes[0].hash, hashFor(0xf2));
   ASSERT_EQ(pop_second.pillar_vote_rlps.size(), 1u);
   ASSERT_EQ(pop_second.pillar_vote_rlps[0].vote_rlp[0], 0xa2);
+  ASSERT_EQ(pop_second.transaction_rlps.size(), 1u);
+  ASSERT_EQ(pop_second.transaction_rlps[0].transaction_rlp[0], 0xb2);
   ASSERT_EQ(pop_second.dag_transaction_hashes.size(), 1u);
   EXPECT_EQ(pop_second.dag_transaction_hashes[0].hash, hashFor(0xc2));
   ASSERT_EQ(pop_second.period_data_transaction_hashes.size(), 1u);
@@ -164,8 +187,8 @@ TEST(RustPeriodDataQueueTest, SizeHidesTailWhenLastCertVotesMissing) {
   auto queue = create_period_data_queue();
 
   auto outcome = queue->period_data_queue_push(31, 1, hashFor(0x31), hashFor(0xa3), hashFor(0xb3), hashFor(0xe3),
-                                               txHashes({}), pillarVoteRlps({}), txHashes({}), txHashes({}), txIdentities({}), false,
-                                               false, false, false, false, 0, 0);
+                                               txHashes({}), pillarVoteRlps({}), transactionRlps({}), txHashes({}),
+                                               txHashes({}), txIdentities({}), false, false, false, false, false, 0, 0);
   ASSERT_TRUE(outcome.accepted);
   EXPECT_FALSE(queue->period_data_queue_empty());
   EXPECT_EQ(queue->period_data_queue_size(), 0u);
@@ -175,25 +198,25 @@ TEST(RustPeriodDataQueueTest, PushRejectsInvalidPeriodSequenceAndAllowsQueueEmpt
   auto queue = create_period_data_queue();
 
   auto rejected = queue->period_data_queue_push(41, 3, hashFor(0x41), hashFor(0xa4), hashFor(0xb4), hashFor(0xe4),
-                                                txHashes({}), pillarVoteRlps({}), txHashes({}), txHashes({}), txIdentities({}), false,
-                                                false, false, false, false, 0, 1);
+                                                txHashes({}), pillarVoteRlps({}), transactionRlps({}), txHashes({}),
+                                                txHashes({}), txIdentities({}), false, false, false, false, false, 0, 1);
   EXPECT_FALSE(rejected.accepted);
   EXPECT_EQ(rejected.expected_next_period, 1u);
   EXPECT_EQ(rejected.actual_period, 3u);
 
   auto backfill = queue->period_data_queue_push(42, 2, hashFor(0x42), hashFor(0xa5), hashFor(0xb5), hashFor(0xe5),
-                                                txHashes({}), pillarVoteRlps({}), txHashes({}), txHashes({}), txIdentities({}), false,
-                                                false, false, false, false, 0, 1);
+                                                txHashes({}), pillarVoteRlps({}), transactionRlps({}), txHashes({}),
+                                                txHashes({}), txIdentities({}), false, false, false, false, false, 0, 1);
   EXPECT_TRUE(backfill.accepted);
 
   auto sequential = queue->period_data_queue_push(43, 3, hashFor(0x43), hashFor(0xa6), hashFor(0xb6), hashFor(0xe6),
-                                                  txHashes({}), pillarVoteRlps({}), txHashes({}), txHashes({}), txIdentities({}), false,
-                                                  false, false, false, false, 1, 1);
+                                                  txHashes({}), pillarVoteRlps({}), transactionRlps({}), txHashes({}),
+                                                  txHashes({}), txIdentities({}), false, false, false, false, false, 1, 1);
   EXPECT_TRUE(sequential.accepted);
 
   auto rejected_gap = queue->period_data_queue_push(44, 5, hashFor(0x44), hashFor(0xa7), hashFor(0xb7), hashFor(0xe7),
-                                                    txHashes({}), pillarVoteRlps({}), txHashes({}), txHashes({}), txIdentities({}), false,
-                                                    false, false, false, false, 3, 1);
+                                                    txHashes({}), pillarVoteRlps({}), transactionRlps({}), txHashes({}),
+                                                    txHashes({}), txIdentities({}), false, false, false, false, false, 3, 1);
   EXPECT_FALSE(rejected_gap.accepted);
   EXPECT_EQ(queue->period_data_queue_period(), 3u);
   EXPECT_EQ(queue->period_data_queue_syncing_period(1), 3u);
@@ -204,13 +227,14 @@ TEST(RustPeriodDataQueueTest, CleanOldDataAndClear) {
 
   ASSERT_TRUE(queue
                   ->period_data_queue_push(51, 5, hashFor(0x51), hashFor(0xa8), hashFor(0xb8), hashFor(0xe8),
-                                           txHashes({0xf8}), pillarVoteRlps({0xa8}), txHashes({0xc8}), txHashes({0xd8}),
-                                           txIdentities({0xd8}), true, true, true, true, true, 4, 1)
+                                           txHashes({0xf8}), pillarVoteRlps({0xa8}), transactionRlps({0xb8}),
+                                           txHashes({0xc8}), txHashes({0xd8}), txIdentities({0xd8}), true, true,
+                                           true, true, true, 4, 1)
                   .accepted);
   ASSERT_TRUE(queue
                   ->period_data_queue_push(52, 6, hashFor(0x52), hashFor(0xa9), hashFor(0xb9), hashFor(0xe9),
-                                           txHashes({}), pillarVoteRlps({}), txHashes({0xc9}), txHashes({0xd9}),
-                                           txIdentities({0xd9}), false, false, false, false, false, 4, 1)
+                                           txHashes({}), pillarVoteRlps({}), transactionRlps({}), txHashes({0xc9}),
+                                           txHashes({0xd9}), txIdentities({0xd9}), false, false, false, false, false, 4, 1)
                   .accepted);
 
   auto removed = queue->period_data_queue_clean_old_data(6);
@@ -225,6 +249,8 @@ TEST(RustPeriodDataQueueTest, CleanOldDataAndClear) {
   EXPECT_EQ(removed[0].reward_vote_hashes[0].hash, hashFor(0xf8));
   ASSERT_EQ(removed[0].pillar_vote_rlps.size(), 1u);
   EXPECT_EQ(removed[0].pillar_vote_rlps[0].vote_rlp[0], 0xa8);
+  ASSERT_EQ(removed[0].transaction_rlps.size(), 1u);
+  EXPECT_EQ(removed[0].transaction_rlps[0].transaction_rlp[0], 0xb8);
   ASSERT_EQ(removed[0].dag_transaction_hashes.size(), 1u);
   EXPECT_EQ(removed[0].dag_transaction_hashes[0].hash, hashFor(0xc8));
   ASSERT_EQ(removed[0].period_data_transaction_hashes.size(), 1u);
@@ -263,8 +289,8 @@ TEST(RustPeriodDataQueueTest, CleanOldDataAndClear) {
 
   ASSERT_TRUE(queue
                   ->period_data_queue_push(53, 1, hashFor(0x53), hashFor(0xaa), hashFor(0xba), hashFor(0xea),
-                                           txHashes({}), pillarVoteRlps({}), txHashes({}), txHashes({}),
-                                           txIdentities({}), false, false, false, false, false, 0, 1)
+                                           txHashes({}), pillarVoteRlps({}), transactionRlps({}), txHashes({}),
+                                           txHashes({}), txIdentities({}), false, false, false, false, false, 0, 1)
                   .accepted);
   queue->period_data_queue_clear();
   EXPECT_EQ(queue->period_data_queue_period(), 0u);
@@ -279,13 +305,14 @@ TEST(RustPeriodDataQueueTest, PushCanSignalQueueResetAfterChainProgress) {
 
   ASSERT_TRUE(queue
                   ->period_data_queue_push(61, 2, hashFor(0x61), hashFor(0xab), hashFor(0xbb), hashFor(0xeb),
-                                           txHashes({}), pillarVoteRlps({}), txHashes({0xcb}), txHashes({0xdb}),
-                                           txIdentities({0xdb}), false, false, false, false, false, 0, 1)
+                                           txHashes({}), pillarVoteRlps({}), transactionRlps({}), txHashes({0xcb}),
+                                           txHashes({0xdb}), txIdentities({0xdb}), false, false, false, false, false, 0, 1)
                   .accepted);
 
   auto outcome = queue->period_data_queue_push(64, 4, hashFor(0x64), hashFor(0xac), hashFor(0xbc), hashFor(0xec),
-                                               txHashes({0xfc}), pillarVoteRlps({0xac}), txHashes({0xcc}), txHashes({0xdc}),
-                                               txIdentities({0xdc}), true, true, true, true, true, 3, 1);
+                                               txHashes({0xfc}), pillarVoteRlps({0xac}), transactionRlps({0xbc}),
+                                               txHashes({0xcc}), txHashes({0xdc}), txIdentities({0xdc}), true, true,
+                                               true, true, true, 3, 1);
   ASSERT_TRUE(outcome.accepted);
   EXPECT_TRUE(outcome.clear_existing);
 
