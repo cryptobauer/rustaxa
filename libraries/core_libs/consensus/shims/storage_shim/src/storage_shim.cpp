@@ -67,6 +67,7 @@ DbStorage::DbStorage(fs::path const& path, uint32_t db_snapshot_each_n_pbft_bloc
     proposed_blocks_storage_ = rustaxa::create_proposed_blocks_index_from_storage(*rust_storage_.value());
     pbft_queries_ = rustaxa::create_pbft_storage_queries(*rust_storage_.value());
     pbft_vote_queries_ = rustaxa::create_pbft_vote_storage_queries(*rust_storage_.value());
+    transaction_queries_ = rustaxa::create_transaction_storage_queries(*rust_storage_.value());
     kMajorVersion_ = static_cast<uint32_t>(getStatusField(StatusDbField::DbMajorVersion));
     auto const minor_version = static_cast<uint32_t>(getStatusField(StatusDbField::DbMinorVersion));
     if (kMajorVersion_ != 0 && kMajorVersion_ != TARAXA_DB_MAJOR_VERSION) {
@@ -349,7 +350,7 @@ std::map<level_t, std::vector<std::shared_ptr<DagBlock>>> DbStorage::getNonfinal
 
 SharedTransactions DbStorage::getAllNonfinalizedTransactions() {
   SharedTransactions res;
-  auto trxs = rust_storage_.value()->get_all_nonfinalized_transactions();
+  auto trxs = transaction_queries_.value()->get_all_nonfinalized_transactions();
   res.reserve(trxs.size());
   for (auto const& trx_rlp : trxs) {
     res.emplace_back(std::make_shared<Transaction>(dev::bytes(trx_rlp.data.begin(), trx_rlp.data.end())));
@@ -613,7 +614,7 @@ void DbStorage::addTransactionLocationToBatch(Batch& write_batch, trx_hash_t con
 
 std::optional<TransactionLocation> DbStorage::getTransactionLocation(trx_hash_t const& hash) const {
   auto h_arr = into_bytes_array(hash);
-  auto location_bytes = rust_storage_.value()->get_transaction_location(h_arr);
+  auto location_bytes = transaction_queries_.value()->get_transaction_location(h_arr);
   if (!location_bytes.empty()) {
     auto location_data = dev::bytes(location_bytes.begin(), location_bytes.end());
     // Don't use std::move - RLP stores a reference and needs data to stay alive
@@ -631,14 +632,14 @@ std::vector<bool> DbStorage::transactionsFinalized(std::vector<trx_hash_t> const
   std::vector<bool> result(trx_hashes.size(), false);
   for (size_t i = 0; i < trx_hashes.size(); ++i) {
     auto h_arr = into_bytes_array(trx_hashes[i]);
-    result[i] = rust_storage_.value()->transaction_finalized(h_arr);
+    result[i] = transaction_queries_.value()->transaction_finalized(h_arr);
   }
   return result;
 }
 
 std::unordered_map<trx_hash_t, PbftPeriod> DbStorage::getAllTransactionPeriod() {
   std::unordered_map<trx_hash_t, PbftPeriod> res;
-  auto data = rust_storage_.value()->get_all_transaction_period();
+  auto data = transaction_queries_.value()->get_all_transaction_period();
   res.reserve(data.size());
   for (auto const& item : data) {
     auto hash_bytes = dev::bytes(item.hash.begin(), item.hash.end());
@@ -673,7 +674,7 @@ std::vector<std::shared_ptr<PbftBlock>> DbStorage::getProposedPbftBlocks() {
 
 std::shared_ptr<Transaction> DbStorage::getTransaction(trx_hash_t const& hash) const {
   auto h_arr = into_bytes_array(hash);
-  auto rust_data = rust_storage_.value()->get_transaction(h_arr);
+  auto rust_data = transaction_queries_.value()->get_transaction(h_arr);
   if (!rust_data.empty()) {
     return std::make_shared<Transaction>(dev::bytes(rust_data.begin(), rust_data.end()));
   }
@@ -686,7 +687,7 @@ std::shared_ptr<Transaction> DbStorage::getTransaction(trx_hash_t const& hash) c
 }
 
 std::shared_ptr<Transaction> DbStorage::getTransaction(PbftPeriod period, uint32_t position) const {
-  auto data = rust_storage_.value()->get_transaction_by_period_position(period, position);
+  auto data = transaction_queries_.value()->get_transaction_by_period_position(period, position);
   if (!data.empty()) {
     return std::make_shared<Transaction>(dev::bytes(data.begin(), data.end()));
   }
@@ -694,7 +695,7 @@ std::shared_ptr<Transaction> DbStorage::getTransaction(PbftPeriod period, uint32
 }
 
 uint64_t DbStorage::getTransactionCount(PbftPeriod period) const {
-  return rust_storage_.value()->get_transaction_count(period);
+  return transaction_queries_.value()->get_transaction_count(period);
 }
 
 std::optional<TransactionReceipt> DbStorage::getTransactionReceipt(EthBlockNumber blk_n, uint64_t position) const {
@@ -736,7 +737,7 @@ void DbStorage::addSystemTransactionToBatch(Batch& write_batch, SharedTransactio
 
 std::shared_ptr<Transaction> DbStorage::getSystemTransaction(const trx_hash_t& hash) const {
   auto h_arr = into_bytes_array(hash);
-  auto rust_data = rust_storage_.value()->get_system_transaction(h_arr);
+  auto rust_data = transaction_queries_.value()->get_system_transaction(h_arr);
   if (!rust_data.empty()) {
     // construct as system transaction to have proper sender
     return std::make_shared<SystemTransaction>(dev::bytes(rust_data.begin(), rust_data.end()));
@@ -792,12 +793,12 @@ void DbStorage::removeTransactionToBatch(trx_hash_t const& trx, Batch& write_bat
 
 bool DbStorage::transactionInDb(trx_hash_t const& hash) {
   auto h_arr = into_bytes_array(hash);
-  return rust_storage_.value()->transaction_in_db(h_arr);
+  return transaction_queries_.value()->transaction_in_db(h_arr);
 }
 
 bool DbStorage::transactionFinalized(trx_hash_t const& hash) {
   auto h_arr = into_bytes_array(hash);
-  return rust_storage_.value()->transaction_finalized(h_arr);
+  return transaction_queries_.value()->transaction_finalized(h_arr);
 }
 
 uint64_t DbStorage::getStatusField(StatusDbField const& field) {

@@ -31,6 +31,10 @@ rust::Box<BridgePbftStorageQueries> pbftQueries(const rust::Box<BridgeStorage>& 
   return create_pbft_storage_queries(*storage);
 }
 
+rust::Box<BridgeTransactionStorageQueries> transactionQueries(const rust::Box<BridgeStorage>& storage) {
+  return create_transaction_storage_queries(*storage);
+}
+
 std::vector<std::array<uint8_t, 32>> hashes(const rust::Vec<PbftSyncTransactionHash>& input) {
   std::vector<std::array<uint8_t, 32>> out;
   out.reserve(input.size());
@@ -1111,13 +1115,14 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyWritesPrimaryBatch) {
             (std::vector<uint8_t>{'{', '"', 'h', 'e', 'a', 'd', '"', ':', 't', 'r', 'u', 'e', '}'}));
   const auto period_data = storage->get_period_data_raw(101);
   EXPECT_EQ(std::vector<uint8_t>(period_data.begin(), period_data.end()), (std::vector<uint8_t>{0xc0}));
-  EXPECT_TRUE(storage->get_transaction(h256(4)).empty());
+  auto transaction_queries = transactionQueries(storage);
+  EXPECT_TRUE(transaction_queries->get_transaction(h256(4)).empty());
 
   const auto dag_lookup = storage->get_dag_block_period_lookup(h256(2));
   EXPECT_TRUE(dag_lookup.found);
   EXPECT_EQ(dag_lookup.period, 101);
   EXPECT_EQ(dag_lookup.position, 0);
-  EXPECT_FALSE(storage->get_transaction_location(h256(4)).empty());
+  EXPECT_FALSE(transaction_queries->get_transaction_location(h256(4)).empty());
   const auto period_lambda = storage->get_period_lambda(101, false);
   EXPECT_FALSE(period_lambda.found);
   EXPECT_FALSE(pbft_queries->get_pbft_mgr_status(kPbftMgrStatusExecutedBlock));
@@ -1204,7 +1209,7 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyCommitsOwnedBatch) {
   EXPECT_EQ(result.transaction_location_writes, 1);
   const auto period_data = storage->get_period_data_raw(101);
   EXPECT_EQ(std::vector<uint8_t>(period_data.begin(), period_data.end()), (std::vector<uint8_t>{0xc0}));
-  EXPECT_TRUE(storage->get_transaction(h256(4)).empty());
+  EXPECT_TRUE(transactionQueries(storage)->get_transaction(h256(4)).empty());
   const auto reward_votes = voteQueries(storage)->get_all_two_t_plus_one_votes();
   ASSERT_EQ(reward_votes.size(), 2);
   EXPECT_EQ(std::vector<uint8_t>(reward_votes[0].data.begin(), reward_votes[0].data.end()),

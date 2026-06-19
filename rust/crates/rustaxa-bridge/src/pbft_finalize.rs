@@ -958,8 +958,10 @@ impl From<PbftFinalizationLiveMutationValidation> for FfiPbftFinalizationLiveMut
 mod tests {
     use super::*;
     use crate::ffi::rustaxa_ffi::PbftFinalizationHash as FfiPbftFinalizationHash;
-    use crate::ffi::{BridgePbftStorageQueries, BridgeStorage};
-    use crate::storage::{create_pbft_storage_queries, create_storage};
+    use crate::ffi::{BridgePbftStorageQueries, BridgeStorage, BridgeTransactionStorageQueries};
+    use crate::storage::{
+        create_pbft_storage_queries, create_storage, create_transaction_storage_queries,
+    };
     use rustaxa_consensus::pbft_finalize::PbftFinalizationAnchor::{Anchored, Null};
     use rustaxa_consensus::pbft_finalize::PbftFinalizationStatus;
     use rustaxa_consensus::sortition::SortitionParamsChange;
@@ -1040,6 +1042,10 @@ mod tests {
 
     fn pbft_queries(storage: &BridgeStorage) -> Box<BridgePbftStorageQueries> {
         create_pbft_storage_queries(storage)
+    }
+
+    fn transaction_queries(storage: &BridgeStorage) -> Box<BridgeTransactionStorageQueries> {
+        create_transaction_storage_queries(storage)
     }
 
     fn reward_vote_bundle_rlp(raw_votes: Vec<Vec<u8>>) -> Vec<u8> {
@@ -1499,7 +1505,7 @@ mod tests {
                 .get_raw(Column::DagBlocks, &[2; 32])
                 .expect("pending DAG row lookup should succeed")
                 .is_none());
-            assert!(storage
+            assert!(transaction_queries(&storage)
                 .get_transaction(&[3; 32])
                 .expect("pending transaction row should be deleted")
                 .is_empty());
@@ -1510,7 +1516,7 @@ mod tests {
                     .position,
                 1
             );
-            assert!(!storage
+            assert!(!transaction_queries(&storage)
                 .get_transaction_location(&[3; 32])
                 .expect("transaction location should load")
                 .is_empty());

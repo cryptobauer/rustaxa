@@ -175,6 +175,7 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
 
   auto storage = rustaxa::create_storage(db_path.string());
   auto pbft_queries = rustaxa::create_pbft_storage_queries(*storage);
+  auto transaction_queries = rustaxa::create_transaction_storage_queries(*storage);
 
   // Baseline API coverage
   transcript.add("status_default_executed_blk", toString(storage->get_status_field(kStatusFieldExecutedBlkCount)));
@@ -265,25 +266,26 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   storage->save_transaction(tx_hash_1, toRustVec(tx_rlp));
   storage->save_transaction(tx_hash_2, toRustVec(tx_rlp));
 
-  transcript.add("tx_hash_1_in_db", toString(storage->transaction_in_db(tx_hash_1)));
-  transcript.add("tx_hash_1_finalized_before", toString(storage->transaction_finalized(tx_hash_1)));
+  transcript.add("tx_hash_1_in_db", toString(transaction_queries->transaction_in_db(tx_hash_1)));
+  transcript.add("tx_hash_1_finalized_before", toString(transaction_queries->transaction_finalized(tx_hash_1)));
 
   storage->save_transaction_location(tx_hash_1, 12, 0, false);
-  transcript.add("tx_hash_1_finalized_after", toString(storage->transaction_finalized(tx_hash_1)));
-  transcript.add("tx_hash_1_location_present", toString(!storage->get_transaction_location(tx_hash_1).empty()));
-  transcript.add("tx_hash_1_lookup_nonempty", toString(!storage->get_transaction(tx_hash_1).empty()));
-  transcript.add("tx_period_map_size", toString(storage->get_all_transaction_period().size()));
+  transcript.add("tx_hash_1_finalized_after", toString(transaction_queries->transaction_finalized(tx_hash_1)));
+  transcript.add("tx_hash_1_location_present",
+                 toString(!transaction_queries->get_transaction_location(tx_hash_1).empty()));
+  transcript.add("tx_hash_1_lookup_nonempty", toString(!transaction_queries->get_transaction(tx_hash_1).empty()));
+  transcript.add("tx_period_map_size", toString(transaction_queries->get_all_transaction_period().size()));
 
   storage->remove_transaction(tx_hash_2);
-  transcript.add("tx_hash_2_removed", toString(!storage->transaction_in_db(tx_hash_2)));
-  transcript.add("tx_nonfinalized_count", toString(storage->get_all_nonfinalized_transactions().size()));
+  transcript.add("tx_hash_2_removed", toString(!transaction_queries->transaction_in_db(tx_hash_2)));
+  transcript.add("tx_nonfinalized_count", toString(transaction_queries->get_all_nonfinalized_transactions().size()));
   std::string tx_finalized_vector;
-  tx_finalized_vector.push_back(storage->transaction_finalized(tx_hash_1) ? '1' : '0');
-  tx_finalized_vector.push_back(storage->transaction_finalized(tx_hash_2) ? '1' : '0');
+  tx_finalized_vector.push_back(transaction_queries->transaction_finalized(tx_hash_1) ? '1' : '0');
+  tx_finalized_vector.push_back(transaction_queries->transaction_finalized(tx_hash_2) ? '1' : '0');
   transcript.add("tx_finalized_vector", tx_finalized_vector);
 
   storage->save_system_transaction(sys_hash, toRustVec(tx_rlp));
-  transcript.add("system_tx_lookup_nonempty", toString(!storage->get_system_transaction(sys_hash).empty()));
+  transcript.add("system_tx_lookup_nonempty", toString(!transaction_queries->get_system_transaction(sys_hash).empty()));
 
   storage->save_period_system_transactions_hashes(12, toRustVec(encodeSingleHashListRlp(sys_hash)));
   auto period_sys_hashes = storage->get_period_system_transactions_hashes(12);

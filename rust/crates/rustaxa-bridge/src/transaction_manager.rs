@@ -3000,6 +3000,8 @@ fn consensus_finalized_status_fact_from_ffi_fact(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ffi::{BridgeStorage, BridgeTransactionStorageQueries};
+    use crate::storage::create_transaction_storage_queries;
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
     use rustaxa_storage::StatusField;
@@ -3012,6 +3014,10 @@ mod tests {
             .expect("time should be available")
             .as_nanos();
         std::env::temp_dir().join(format!("{name}_{nonce}"))
+    }
+
+    fn transaction_queries(storage: &BridgeStorage) -> Box<BridgeTransactionStorageQueries> {
+        create_transaction_storage_queries(storage)
     }
 
     fn address_from_signing_key(signing_key: &SigningKey) -> H160 {
@@ -3809,19 +3815,19 @@ mod tests {
             9,
         );
         assert_eq!(
-            storage
+            transaction_queries(&storage)
                 .get_transaction(&[1u8; 32])
                 .expect("transaction should persist"),
             vec![11]
         );
         assert_eq!(
-            storage
+            transaction_queries(&storage)
                 .get_transaction(&[5u8; 32])
                 .expect("transaction should persist"),
             vec![51]
         );
         assert_eq!(
-            storage
+            transaction_queries(&storage)
                 .get_transaction(&[2u8; 32])
                 .expect("non-accepted transaction should be missing"),
             Vec::<u8>::new()
@@ -3893,7 +3899,7 @@ mod tests {
         assert!(runtime.transaction_manager_runtime_queue_contains(&[1; 32]));
         assert!(!runtime.transaction_manager_runtime_contains_non_finalized(&[1; 32]));
         assert_eq!(
-            storage
+            transaction_queries(&storage)
                 .get_transaction(&[1; 32])
                 .expect("storage read should succeed"),
             Vec::<u8>::new()
@@ -3906,7 +3912,7 @@ mod tests {
         assert!(!runtime.transaction_manager_runtime_queue_contains(&[1; 32]));
         assert!(runtime.transaction_manager_runtime_contains_non_finalized(&[1; 32]));
         assert_eq!(
-            storage
+            transaction_queries(&storage)
                 .get_transaction(&[1; 32])
                 .expect("storage write should persist"),
             vec![0x11]
@@ -3995,7 +4001,7 @@ mod tests {
         assert_eq!(out.accepted.len(), 1);
         assert_eq!(out.target_transaction_count, 8);
         assert_eq!(
-            storage
+            transaction_queries(&storage)
                 .get_transaction(&[1; 32])
                 .expect("accepted transaction should persist"),
             vec![0x33]
@@ -4059,7 +4065,7 @@ mod tests {
             8
         );
         assert_eq!(
-            storage
+            transaction_queries(&storage)
                 .get_transaction(&[1; 32])
                 .expect("accepted transaction should persist"),
             vec![0x33]
@@ -4419,13 +4425,13 @@ mod tests {
         by_hash.sort_unstable();
         assert_eq!(by_hash, vec![(1u8, false), (2u8, true)]);
         assert_eq!(
-            storage
+            transaction_queries(&storage)
                 .get_transaction(&[2u8; 32])
                 .expect("stale finalized entry should be removed"),
             Vec::<u8>::new()
         );
         assert_eq!(
-            storage
+            transaction_queries(&storage)
                 .get_transaction(&[1u8; 32])
                 .expect("live non-finalized entry should remain"),
             vec![0x11]
@@ -4497,7 +4503,7 @@ mod tests {
         assert_eq!(runtime.transaction_manager_runtime_transaction_count(), 4);
         assert!(runtime.transaction_manager_runtime_contains_non_finalized(&live_hash));
         assert_eq!(
-            storage
+            transaction_queries(&storage)
                 .get_transaction(&[2u8; 32])
                 .expect("stale tx should be removed"),
             Vec::<u8>::new()

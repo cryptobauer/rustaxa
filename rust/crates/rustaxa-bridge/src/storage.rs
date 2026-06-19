@@ -3,6 +3,7 @@ use crate::ffi::BridgePbftStorageQueries;
 use crate::ffi::BridgePbftVoteStorageQueries;
 use crate::ffi::BridgeStorage;
 use crate::ffi::BridgeStorageBatch;
+use crate::ffi::BridgeTransactionStorageQueries;
 use anyhow::Context;
 use ethereum_types::H256;
 use rustaxa_consensus::{
@@ -122,6 +123,27 @@ pub fn create_pbft_storage_queries(storage: &BridgeStorage) -> Box<BridgePbftSto
     })
 }
 
+/// Creates a typed transaction query handle from the shared Rust storage owner.
+///
+/// Inputs:
+/// - `storage`: generic bridge storage owner used only as a construction-time
+///   lifetime seed.
+///
+/// Outputs:
+/// - a read-only transaction query handle that owns a cloned Rust storage handle.
+///
+/// Invariants and edge behavior:
+/// - C++ callers can keep materializing legacy transaction objects at public
+///   API boundaries without retaining broad `BridgeStorage` transaction reads
+/// - the handle does not mutate storage or decode transaction payloads.
+pub fn create_transaction_storage_queries(
+    storage: &BridgeStorage,
+) -> Box<BridgeTransactionStorageQueries> {
+    Box::new(BridgeTransactionStorageQueries {
+        storage: storage.0.clone(),
+    })
+}
+
 /// Creates a Rust-owned storage batch for the C++ `DbStorage` shim.
 ///
 /// The returned object owns a native `rustaxa-storage` write batch and the shared
@@ -220,6 +242,113 @@ impl BridgePbftStorageQueries {
             .pbft()
             .head(H256::from(*hash))?
             .unwrap_or_default())
+    }
+}
+
+impl BridgeTransactionStorageQueries {
+    /// Returns whether a transaction hash exists in pending or finalized storage.
+    ///
+    /// Inputs: canonical transaction hash bytes. Output follows
+    /// `rustaxa-storage` transaction existence semantics and propagates storage
+    /// errors to the caller.
+    pub fn transaction_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
+        self.storage.transaction().exists(H256::from(*hash))
+    }
+
+    /// Returns whether a transaction hash has a finalized location index.
+    ///
+    /// Inputs: canonical transaction hash bytes. Output is `true` only when the
+    /// finalized transaction-location row exists and is marked finalized.
+    pub fn transaction_finalized(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
+        self.storage.transaction().finalized(H256::from(*hash))
+    }
+
+    /// Returns the serialized transaction-location payload for a hash.
+    ///
+    /// Inputs: canonical transaction hash bytes. Output is an empty vector when
+    /// the row is absent, matching the legacy C++ storage API.
+    pub fn get_transaction_location(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .storage
+            .transaction()
+            .location_rlp(H256::from(*hash))?
+            .unwrap_or_default())
+    }
+
+    /// Returns a pending transaction RLP payload by hash.
+    ///
+    /// Inputs: canonical transaction hash bytes. Output is an empty vector when
+    /// no pending transaction payload exists.
+    pub fn get_transaction(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .storage
+            .transaction()
+            .rlp(H256::from(*hash))?
+            .unwrap_or_default())
+    }
+
+    /// Returns a finalized transaction RLP payload by period and position.
+    ///
+    /// Inputs: finalized PBFT period and transaction position within period
+    /// data. Output is an empty vector when the period/position is absent.
+    pub fn get_transaction_by_period_position(
+        &self,
+        period: u64,
+        position: u32,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .storage
+            .transaction()
+            .by_period_position_rlp(period, position)?
+            .unwrap_or_default())
+    }
+
+    /// Returns the persisted transaction count for a finalized period.
+    pub fn get_transaction_count(&self, period: u64) -> Result<u64, anyhow::Error> {
+        self.storage.transaction().count(period)
+    }
+
+    /// Returns a system transaction RLP payload by hash.
+    ///
+    /// Inputs: canonical system transaction hash bytes. Output is an empty
+    /// vector when the payload is absent.
+    pub fn get_system_transaction(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .storage
+            .transaction()
+            .system_rlp(H256::from(*hash))?
+            .unwrap_or_default())
+    }
+
+    /// Returns all nonfinalized transaction RLP payloads.
+    ///
+    /// Outputs are canonical RLP bytes for C++ compatibility materialization.
+    pub fn get_all_nonfinalized_transactions(
+        &self,
+    ) -> Result<Vec<rustaxa_ffi::TxRlp>, anyhow::Error> {
+        let trxs = self.storage.transaction().all_nonfinalized_rlp()?;
+        Ok(trxs
+            .into_iter()
+            .map(|data| rustaxa_ffi::TxRlp { data })
+            .collect())
+    }
+
+    /// Returns transaction hash-to-period mappings from Rust storage.
+    ///
+    /// Outputs preserve the compatibility payload shape expected by C++ tests
+    /// and public materializers.
+    pub fn get_all_transaction_period(
+        &self,
+    ) -> Result<Vec<rustaxa_ffi::HashPeriod>, anyhow::Error> {
+        let values = self.storage.transaction().all_with_period()?;
+        Ok(values
+            .into_iter()
+            .map(|(hash, period)| {
+                let mut h = [0u8; 32];
+                h.copy_from_slice(hash.as_bytes());
+                rustaxa_ffi::HashPeriod { hash: h, period }
+            })
+            .collect())
     }
 }
 
@@ -1244,64 +1373,6 @@ impl BridgeStorage {
         ))
     }
 
-    pub fn transaction_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
-        self.0.transaction().exists(H256::from(*hash))
-    }
-
-    pub fn transaction_finalized(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
-        self.0.transaction().finalized(H256::from(*hash))
-    }
-
-    pub fn get_transaction_location(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self
-            .0
-            .transaction()
-            .location_rlp(H256::from(*hash))?
-            .unwrap_or_default())
-    }
-
-    pub fn get_transaction(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self
-            .0
-            .transaction()
-            .rlp(H256::from(*hash))?
-            .unwrap_or_default())
-    }
-
-    pub fn get_transaction_by_period_position(
-        &self,
-        period: u64,
-        position: u32,
-    ) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self
-            .0
-            .transaction()
-            .by_period_position_rlp(period, position)?
-            .unwrap_or_default())
-    }
-
-    pub fn get_transaction_count(&self, period: u64) -> Result<u64, anyhow::Error> {
-        self.0.transaction().count(period)
-    }
-
-    pub fn get_system_transaction(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self
-            .0
-            .transaction()
-            .system_rlp(H256::from(*hash))?
-            .unwrap_or_default())
-    }
-
-    pub fn get_all_nonfinalized_transactions(
-        &self,
-    ) -> Result<Vec<rustaxa_ffi::TxRlp>, anyhow::Error> {
-        let trxs = self.0.transaction().all_nonfinalized_rlp()?;
-        Ok(trxs
-            .into_iter()
-            .map(|data| rustaxa_ffi::TxRlp { data })
-            .collect())
-    }
-
     /// Batch-loads canonical transaction RLP payloads by hash through Rust
     /// storage.
     ///
@@ -1322,20 +1393,6 @@ impl BridgeStorage {
                 .map(|hash| H256::from(hash.hash))
                 .collect(),
         )
-    }
-
-    pub fn get_all_transaction_period(
-        &self,
-    ) -> Result<Vec<rustaxa_ffi::HashPeriod>, anyhow::Error> {
-        let periods = self.0.transaction().all_with_period()?;
-        Ok(periods
-            .into_iter()
-            .map(|(hash, period)| {
-                let mut h = [0u8; 32];
-                h.copy_from_slice(hash.as_bytes());
-                rustaxa_ffi::HashPeriod { hash: h, period }
-            })
-            .collect())
     }
 
     pub fn get_period_system_transactions_hashes(
@@ -1428,6 +1485,10 @@ mod tests {
 
     fn tx_hash(byte: u8) -> rustaxa_ffi::DagTransactionHash {
         rustaxa_ffi::DagTransactionHash { hash: [byte; 32] }
+    }
+
+    fn transaction_queries(storage: &BridgeStorage) -> Box<BridgeTransactionStorageQueries> {
+        create_transaction_storage_queries(storage)
     }
 
     fn non_finalized_tx_payload(hash: u8, data: u8) -> rustaxa_ffi::NonFinalizedTransactionPayload {
@@ -1543,7 +1604,7 @@ mod tests {
                 existing_tx_count + 2,
             );
             assert_eq!(
-                storage
+                transaction_queries(&storage)
                     .get_transaction(&[10u8; 32])
                     .expect("tx 10 should be retrievable"),
                 vec![1],
@@ -1563,7 +1624,7 @@ mod tests {
                 existing_tx_count + 3,
             );
             assert_eq!(
-                storage
+                transaction_queries(&storage)
                     .get_transaction(&[13u8; 32])
                     .expect("tx 13 should be persisted"),
                 vec![5],

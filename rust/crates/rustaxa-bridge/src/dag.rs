@@ -2406,7 +2406,8 @@ mod tests {
     use crate::ffi::rustaxa_ffi::{
         DagDposAuthorizationFacts, DagProposerAttemptInput, SortitionRuntimeParams,
     };
-    use crate::storage::create_storage;
+    use crate::ffi::{BridgeStorage, BridgeTransactionStorageQueries};
+    use crate::storage::{create_storage, create_transaction_storage_queries};
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
     use rustaxa_consensus::dag;
@@ -2426,6 +2427,10 @@ mod tests {
             .as_nanos();
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!("{}_{}_{}", prefix, now_ns, id))
+    }
+
+    fn transaction_queries(storage: &BridgeStorage) -> Box<BridgeTransactionStorageQueries> {
+        create_transaction_storage_queries(storage)
     }
 
     fn dag_block_with_vdf_payload(vdf_payload: Vec<u8>) -> Vec<u8> {
@@ -3882,19 +3887,19 @@ mod tests {
             assert_eq!(payload.remove_transaction_hashes.len(), 1);
             assert_eq!(payload.remove_transaction_hashes[0].hash, [1u8; 32]);
             assert_eq!(
-                storage
+                transaction_queries(&storage)
                     .get_transaction(&[1u8; 32])
                     .expect("load removed pending tx1"),
                 Vec::<u8>::new()
             );
             assert_eq!(
-                storage
+                transaction_queries(&storage)
                     .get_transaction(&[2u8; 32])
                     .expect("load finalized pending tx2"),
                 vec![0xA2]
             );
             assert_eq!(
-                storage
+                transaction_queries(&storage)
                     .get_transaction(&[3u8; 32])
                     .expect("load retained pending tx3"),
                 vec![0xA3]

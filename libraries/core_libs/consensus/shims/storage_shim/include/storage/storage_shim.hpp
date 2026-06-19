@@ -246,6 +246,7 @@ class DbStorage : public DbStorageOld {
   std::optional<::rust::Box<rustaxa::BridgeProposedBlocks>> proposed_blocks_storage_;
   std::optional<::rust::Box<rustaxa::BridgePbftStorageQueries>> pbft_queries_;
   std::optional<::rust::Box<rustaxa::BridgePbftVoteStorageQueries>> pbft_vote_queries_;
+  std::optional<::rust::Box<rustaxa::BridgeTransactionStorageQueries>> transaction_queries_;
   std::unordered_map<Batch*, ::rust::Box<rustaxa::BridgeStorageBatch>> rust_batches_;
   std::mutex rust_batches_mutex_;
 };

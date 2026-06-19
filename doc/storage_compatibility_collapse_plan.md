@@ -284,12 +284,17 @@ Landed sub-slices:
   PBFT block existence, and PBFT head payloads onto a typed `BridgePbftStorageQueries` handle that owns a cloned Rust
   storage handle. Deleted the matching generic `BridgeStorage` scalar/head read methods from the CXX FFI; cert-voted
   block materialization remains out of scope for the broader object/cache cleanup.
+- Transaction public-read split: moved storage-shim and validation-test reads for transaction existence/finalized
+  status, transaction locations, pending/finalized/system transaction payloads, transaction counts, nonfinalized
+  transaction snapshots, and transaction-period mappings onto a typed `BridgeTransactionStorageQueries` handle that owns
+  a cloned Rust storage handle. Deleted the matching generic `BridgeStorage` transaction read methods from the CXX FFI;
+  transaction writes and batch lookup helpers remain on their existing Rust-owned paths.
 
 Next target:
 
-- Continue with the transaction public-read compatibility family: transaction location, finalized status, transaction
-  payload, transaction count, and all-transaction-period reads. Keep RPC/network materialization at the C++ boundary and
-  avoid broader transaction object ownership changes in this cleanup slice.
+- Continue with another self-contained compatibility query family, likely metadata/rewards reads or remaining DAG public
+  reads. Keep RPC/network materialization at the C++ boundary and avoid broader object ownership changes in this cleanup
+  slice.
 
 Split the broad `BridgeStorage` query surface into typed read-only Rust query APIs for active Rust-mode callers, and
 delete unused broad storage-shim methods.

@@ -68,6 +68,15 @@ pub struct BridgePbftStorageQueries {
     pub storage: Arc<Storage>,
 }
 
+/// Typed transaction query handle for C++ compatibility materializers.
+///
+/// This wrapper keeps transaction public-read compatibility grouped under the
+/// transaction storage boundary instead of exposing those reads as generic
+/// `BridgeStorage` methods.
+pub struct BridgeTransactionStorageQueries {
+    pub storage: Arc<Storage>,
+}
+
 /// Rust-owned storage shim batch used to preserve the legacy C++ `Batch&` API
 /// while keeping the live write batch inside `rustaxa-storage`.
 ///
@@ -6118,6 +6127,7 @@ pub mod rustaxa_ffi {
         type BridgeStorage;
         type BridgePbftStorageQueries;
         type BridgePbftVoteStorageQueries;
+        type BridgeTransactionStorageQueries;
         type BridgeStorageBatch;
 
         pub fn create_storage(path: &str) -> Result<Box<BridgeStorage>>;
@@ -6127,6 +6137,9 @@ pub mod rustaxa_ffi {
         pub fn create_pbft_vote_storage_queries(
             storage: &BridgeStorage,
         ) -> Box<BridgePbftVoteStorageQueries>;
+        pub fn create_transaction_storage_queries(
+            storage: &BridgeStorage,
+        ) -> Box<BridgeTransactionStorageQueries>;
         pub fn create_storage_shim_batch(storage: &BridgeStorage) -> Box<BridgeStorageBatch>;
         pub fn storage_shim_save_status_field(
             batch: &mut BridgeStorageBatch,
@@ -6430,24 +6443,46 @@ pub mod rustaxa_ffi {
             vote_hashes: Vec<PbftFinalizationHash>,
         ) -> Result<PbftVotePersistenceResult>;
 
-        pub fn transaction_in_db(self: &BridgeStorage, hash: &[u8; 32]) -> Result<bool>;
-        pub fn transaction_finalized(self: &BridgeStorage, hash: &[u8; 32]) -> Result<bool>;
-        pub fn get_transaction_location(self: &BridgeStorage, hash: &[u8; 32]) -> Result<Vec<u8>>;
-        pub fn get_transaction(self: &BridgeStorage, hash: &[u8; 32]) -> Result<Vec<u8>>;
+        pub fn transaction_in_db(
+            self: &BridgeTransactionStorageQueries,
+            hash: &[u8; 32],
+        ) -> Result<bool>;
+        pub fn transaction_finalized(
+            self: &BridgeTransactionStorageQueries,
+            hash: &[u8; 32],
+        ) -> Result<bool>;
+        pub fn get_transaction_location(
+            self: &BridgeTransactionStorageQueries,
+            hash: &[u8; 32],
+        ) -> Result<Vec<u8>>;
+        pub fn get_transaction(
+            self: &BridgeTransactionStorageQueries,
+            hash: &[u8; 32],
+        ) -> Result<Vec<u8>>;
         pub fn get_transaction_by_period_position(
-            self: &BridgeStorage,
+            self: &BridgeTransactionStorageQueries,
             period: u64,
             position: u32,
         ) -> Result<Vec<u8>>;
-        pub fn get_transaction_count(self: &BridgeStorage, period: u64) -> Result<u64>;
-        pub fn get_system_transaction(self: &BridgeStorage, hash: &[u8; 32]) -> Result<Vec<u8>>;
-        pub fn get_all_nonfinalized_transactions(self: &BridgeStorage) -> Result<Vec<TxRlp>>;
+        pub fn get_transaction_count(
+            self: &BridgeTransactionStorageQueries,
+            period: u64,
+        ) -> Result<u64>;
+        pub fn get_system_transaction(
+            self: &BridgeTransactionStorageQueries,
+            hash: &[u8; 32],
+        ) -> Result<Vec<u8>>;
+        pub fn get_all_nonfinalized_transactions(
+            self: &BridgeTransactionStorageQueries,
+        ) -> Result<Vec<TxRlp>>;
         /// Batch-fetches transaction RLP payloads by hash from Rust storage.
         pub fn get_transaction_rlps_by_hashes(
             self: &BridgeStorage,
             hashes: Vec<DagTransactionHash>,
         ) -> Result<Vec<DagTransactionRlpLookup>>;
-        pub fn get_all_transaction_period(self: &BridgeStorage) -> Result<Vec<HashPeriod>>;
+        pub fn get_all_transaction_period(
+            self: &BridgeTransactionStorageQueries,
+        ) -> Result<Vec<HashPeriod>>;
         pub fn get_period_system_transactions_hashes(
             self: &BridgeStorage,
             period: u64,
