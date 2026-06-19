@@ -1489,17 +1489,6 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    /// Result for appending PBFT manager transition persistence to a Rust batch.
-    ///
-    /// `status` values are local to the bridge contract: 0 = applied,
-    /// 1 = rejected. `applied_writes` counts logical manager-storage writes
-    /// accepted into the caller-owned Rust batch.
-    struct PbftManagerTransitionStorageResult {
-        status: u8,
-        applied_writes: u64,
-        error_code: String,
-    }
-
     /// Result from applying PBFT manager transition storage through the
     /// long-lived Rust runtime handle.
     struct PbftManagerTransitionRuntimeApplyResult {
@@ -4914,11 +4903,6 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_manager_transition(
             fact: PbftManagerTransitionFact,
         ) -> PbftManagerTransitionPlan;
-        pub fn apply_pbft_manager_transition_storage_write(
-            storage: &BridgeStorage,
-            plan: PbftManagerTransitionPlan,
-            own_vote_hashes: Vec<PbftFinalizationHash>,
-        ) -> Result<PbftManagerTransitionStorageResult>;
         pub fn create_pbft_finalization_resume_runtime_session(
             plan: &PbftFinalizationResumePlan,
         ) -> Box<BridgePbftFinalizationRuntimeSession>;

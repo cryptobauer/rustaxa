@@ -44,7 +44,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerTransitionFact as FfiPbftManagerTransitionFact,
     PbftManagerTransitionPlan as FfiPbftManagerTransitionPlan,
     PbftManagerTransitionRuntimeApplyResult as FfiPbftManagerTransitionRuntimeApplyResult,
-    PbftManagerTransitionStorageResult as FfiPbftManagerTransitionStorageResult,
     PeriodLambda as FfiPeriodLambda,
 };
 use crate::ffi::{
@@ -108,8 +107,7 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerStateActionEffectResultCode, PbftManagerStateActionFact,
     PbftManagerStateActionIntent, PbftManagerStateActionPlan, PbftManagerStateActionSessionStep,
     PbftManagerStorageStartupFact, PbftManagerTransitionFact, PbftManagerTransitionKind,
-    PbftManagerTransitionPlan, PbftManagerTransitionStatus, PbftManagerTransitionStorageResult,
-    PbftManagerTransitionStorageStatus,
+    PbftManagerTransitionPlan, PbftManagerTransitionStatus, PbftManagerTransitionStorageStatus,
 };
 use rustaxa_consensus::pillar_chain::load_own_pillar_block_vote_storage;
 
@@ -120,16 +118,6 @@ const TRANSITION_STORAGE_STATUS_APPLIED: u8 = 0;
 const TRANSITION_STORAGE_STATUS_REJECTED: u8 = 1;
 #[cfg(test)]
 const PBFT_MGR_STATUS_EXECUTED_BLOCK: u8 = 0;
-
-fn transition_storage_result_from_domain(
-    result: PbftManagerTransitionStorageResult,
-) -> FfiPbftManagerTransitionStorageResult {
-    FfiPbftManagerTransitionStorageResult {
-        status: result.status.as_u8(),
-        applied_writes: result.applied_writes,
-        error_code: result.error_code,
-    }
-}
 
 fn to_startup_u32(value: u64, field: &str) -> anyhow::Result<u32> {
     u32::try_from(value).map_err(|_| anyhow!("PBFT_MANAGER_STARTUP_{field}_OVERFLOW"))
@@ -1113,44 +1101,6 @@ pub fn plan_pbft_manager_transition(
     fact: FfiPbftManagerTransitionFact,
 ) -> FfiPbftManagerTransitionPlan {
     plan_domain_pbft_manager_transition(fact.into()).into()
-}
-
-/// Applies Rust-owned PBFT manager transition persistence in one committed batch.
-///
-/// Inputs:
-/// - `storage`: shared Rust storage bridge handle.
-/// - `plan`: accepted transition plan from the PBFT manager planner/runtime.
-/// - `own_vote_hashes`: exact latest-round own-vote keys to delete when
-///   `plan.clear_own_votes` is set.
-///
-/// Outputs:
-/// - `status = 0` after the Rust batch commits.
-/// - `status = 1` with a stable error code if validation, appending, or commit
-///   fails. Rejected writes are dropped with the uncommitted Rust batch.
-///
-/// Invariants and edge behavior:
-/// - This owns the storage commit for manager cursor/status transitions.
-/// - Live C++ mirrors and VoteManager sidecars must be updated only after an
-///   applied result.
-/// - Executed-block reset remains outside this batch to preserve the
-///   post-`waitForPeriodFinalization()` legacy ordering.
-pub fn apply_pbft_manager_transition_storage_write(
-    storage: &BridgeStorage,
-    plan: FfiPbftManagerTransitionPlan,
-    own_vote_hashes: Vec<FfiPbftFinalizationHash>,
-) -> Result<FfiPbftManagerTransitionStorageResult, anyhow::Error> {
-    let domain_plan = domain_transition_plan_from_ffi(&plan);
-    let own_vote_hashes: Vec<_> = own_vote_hashes
-        .into_iter()
-        .map(|hash| ethereum_types::H256::from(hash.hash))
-        .collect();
-    let result = apply_pbft_manager_transition_storage(
-        storage.0.as_ref(),
-        &domain_plan,
-        &own_vote_hashes,
-        false,
-    )?;
-    Ok(transition_storage_result_from_domain(result))
 }
 
 impl BridgePbftManagerRuntimeSession {
@@ -3108,50 +3058,6 @@ mod tests {
             assert_eq!(current.step, before.step);
             assert_eq!(current.state, before.state);
             assert_eq!(storage.get_pbft_mgr_field(0).unwrap(), 1);
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_applies_transition_storage_and_own_vote_cleanup_atomically() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_transition_storage_apply");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            let own_hash = [0xAB; 32];
-            storage
-                .save_pbft_mgr_field(0, 1)
-                .expect("round seed should persist");
-            storage
-                .save_pbft_mgr_field(1, 1)
-                .expect("step seed should persist");
-            storage
-                .save_pbft_mgr_status(2, true)
-                .expect("soft next status should persist");
-            storage
-                .save_pbft_mgr_status(3, true)
-                .expect("null next status should persist");
-            storage
-                .save_own_verified_vote(&own_hash, vec![0xC0])
-                .expect("own vote should persist");
-
-            let plan = plan_pbft_manager_transition(transition_fact(TRANSITION_RESET));
-            let result = apply_pbft_manager_transition_storage_write(
-                &storage,
-                plan,
-                vec![FfiPbftFinalizationHash { hash: own_hash }],
-            )
-            .expect("apply should not throw");
-
-            assert_eq!(result.status, TRANSITION_STORAGE_STATUS_APPLIED);
-            assert_eq!(result.applied_writes, 6);
-            assert_eq!(storage.get_pbft_mgr_field(0).unwrap(), 4);
-            assert_eq!(storage.get_pbft_mgr_field(1).unwrap(), 1);
-            assert!(!storage.get_pbft_mgr_status(2).unwrap());
-            assert!(!storage.get_pbft_mgr_status(3).unwrap());
-            assert!(storage.get_own_verified_votes().unwrap().is_empty());
         }
 
         let _ = fs::remove_dir_all(temp_dir);

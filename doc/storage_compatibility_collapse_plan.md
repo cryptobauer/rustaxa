@@ -179,8 +179,24 @@ Validation:
 
 ## Slice 3: Bridge Batch Registry Deletion
 
+Status: in progress.
+
 Remove compatibility batch helpers from `BridgeStorage` after production and required compatibility callers no longer
 need C++ `Batch` objects backed by Rust bridge batch ids.
+
+Landed sub-slices:
+
+- PBFT manager transition storage: deleted the standalone CXX bridge helper that accepted generic `BridgeStorage` and
+  applied transition writes outside the long-lived runtime handle. The remaining C++ storage coverage now constructs
+  `BridgePbftManagerRuntime` from storage and applies the transition through
+  `pbft_manager_runtime_apply_transition_storage_write(...)`, so production and validation both exercise the
+  runtime-owned storage handle.
+
+Next target:
+
+- Move the remaining `rust_storage_tests` and storage-conformance fixture setup off generic bridge batch ids, or
+  quarantine those helpers under explicit test/conformance-only names before deleting the production-looking
+  `BridgeStorage` batch API.
 
 Scope:
 

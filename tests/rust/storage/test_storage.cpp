@@ -63,6 +63,16 @@ constexpr uint8_t kPbftVotePersistenceApplied = 0;
 constexpr uint8_t kPbftVotePersistenceRejected = 1;
 constexpr uint8_t kPbftManagerTransitionStorageApplied = 0;
 
+PbftManagerStartupFact makePbftManagerStartupFact() {
+  PbftManagerStartupFact fact{};
+  fact.current_period = 10;
+  fact.cacti_active_at_chain_size = false;
+  fact.genesis_lambda_ms = 100;
+  fact.cacti_lambda_max_ms = 1500;
+  fact.cacti_lambda_default_ms = 500;
+  return fact;
+}
+
 TEST_F(StorageTest, CreateStorage) {
   auto storage = create_storage(test_dir.string());
   // rust::Box cannot be null, so this is effectively a constructor smoke test
@@ -248,11 +258,14 @@ TEST_F(StorageTest, ApplyPbftManagerTransitionStorageCommitsCursorStatusesAndOwn
 
   rust::Vec<PbftFinalizationHash> own_vote_hashes;
   own_vote_hashes.push_back(PbftFinalizationHash{own_vote_hash});
-  auto result = apply_pbft_manager_transition_storage_write(*storage, plan, std::move(own_vote_hashes));
+  auto runtime = create_pbft_manager_runtime_from_storage(*storage, makePbftManagerStartupFact());
+  auto result = pbft_manager_runtime_apply_transition_storage_write(*runtime, plan, std::move(own_vote_hashes));
 
   EXPECT_EQ(result.status, kPbftManagerTransitionStorageApplied);
   EXPECT_EQ(result.applied_writes, 6u);
   EXPECT_TRUE(result.error_code.empty());
+  EXPECT_EQ(result.snapshot.round, 7u);
+  EXPECT_EQ(result.snapshot.step, 4u);
   EXPECT_EQ(storage->get_pbft_mgr_field(0), 7u);
   EXPECT_EQ(storage->get_pbft_mgr_field(1), 4u);
   EXPECT_FALSE(storage->get_pbft_mgr_status(2));
