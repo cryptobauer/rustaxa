@@ -1,6 +1,10 @@
+//! Events passed between network ingress pipeline stages.
+
 use rustaxa_arena::arena::SlotId;
 
+/// Event notifying the ingress worker that a packet slot is ready.
 pub struct NetworkEvent {
+    /// Slot id for a packet stored in the shared packet arena.
     pub slot: SlotId,
 }
 

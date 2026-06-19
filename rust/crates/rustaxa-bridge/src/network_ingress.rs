@@ -17,17 +17,45 @@ pub fn create_network(
 }
 
 impl BridgeNetwork {
+    pub fn start_network(self: &mut BridgeNetwork) -> Result<(), anyhow::Error> {
+        self.0.start();
+        Ok(())
+    }
+
+    pub fn connect_peer(self: &mut BridgeNetwork, node: [u8; 64]) -> Result<bool, anyhow::Error> {
+        match self.0.connect(NodeId::new(node)) {
+            Err(_) => Ok(false),
+            Ok(_) => Ok(true),
+        }
+    }
+
+    pub fn disconnect_peer(self: &mut BridgeNetwork, node: [u8; 64]) -> Result<(), anyhow::Error> {
+        self.0.disconnect(NodeId::new(node))?;
+        Ok(())
+    }
+
+    pub fn queue_is_full(self: &BridgeNetwork) -> bool {
+        self.0.full()
+    }
+
     pub fn ingest_network_packet(
         self: &mut BridgeNetwork,
         packet_type: u8,
         from_node: [u8; 64],
         data: Vec<u8>,
-    ) -> Result<bool, anyhow::Error> {
-        let packet = Packet::new(
-            PacketType::try_from_primitive(packet_type)?,
-            NodeId::new(from_node),
-            Bytes::from(data),
-        );
-        Ok(self.0.ingest(packet)?)
+    ) -> Result<(), anyhow::Error> {
+        let node = NodeId::new(from_node);
+
+        if let Some(peer) = self.0.connected(node)? {
+            let packet = Packet::new(
+                PacketType::try_from_primitive(packet_type)?,
+                peer,
+                Bytes::from(data),
+            );
+
+            self.0.ingest(packet)?
+        }
+
+        Ok(())
     }
 }

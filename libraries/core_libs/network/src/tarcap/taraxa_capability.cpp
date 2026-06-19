@@ -189,6 +189,20 @@ void TaraxaCapability::onConnect(std::weak_ptr<dev::p2p::Session> session, u256 
 
   const auto node_id = session_p->id();
 
+#ifdef RUSTAXA_ENABLE_NETWORK
+  const bool connected = rust_network_shim_.connectPeer(node_id);
+
+  if (!connected) {
+    session_p->disconnect(dev::p2p::UserReason);
+    return;
+  }
+
+  auto status_packet_handler = getSpecificHandler<ISyncPacketHandler>(network::SubprotocolPacketType::kStatusPacket);
+  status_packet_handler->sendStatus(node_id, true);
+
+  return;
+#endif
+
   if (peers_state_->is_peer_malicious(node_id)) {
     session_p->disconnect(dev::p2p::UserReason);
     LOG(log_wr_) << "Node " << node_id << " connection dropped - malicious node";
@@ -209,6 +223,12 @@ void TaraxaCapability::onConnect(std::weak_ptr<dev::p2p::Session> session, u256 
 }
 
 void TaraxaCapability::onDisconnect(dev::p2p::NodeID const &_nodeID) {
+#ifdef RUSTAXA_ENABLE_NETWORK
+  rust_network_shim_.disconnectPeer(node_id);
+
+  return;
+#endif
+
   LOG(log_nf_) << "Node " << _nodeID << " disconnected";
   peers_state_->erasePeer(_nodeID);
 
@@ -327,12 +347,15 @@ void TaraxaCapability::interpretCapabilityPacket(std::weak_ptr<dev::p2p::Session
   auto packet_bytes = _r.data().toBytes();
   thread_pool_->push({version(), threadpool::PacketData(packet_type, node_id, std::move(packet_bytes))});
 #else
-  const bool enqueued = rust_network_shim_.ingestPacket(packet_type, node_id, _r);
-  if (!enqueued) {
+  if (rust_network_shim_.queueIsFull()) {
+    // Queue size is over the limit
     handlePacketQueueOverLimit(host, node_id, kConf.network.ddos_protection.max_packets_queue_size);
   } else {
+    // Reset in case we marked full.
     queue_over_limit_ = false;
     last_disconnect_number_of_peers_ = 0;
+
+    rust_network_shim_.ingestPacket(packet_type, node_id, _r);
   }
 #endif
 }

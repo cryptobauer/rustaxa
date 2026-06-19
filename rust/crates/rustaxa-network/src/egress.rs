@@ -1,8 +1,8 @@
-//! Ingress worker for queued network packet events.
+//! Egress worker for queued network packet events.
 //!
-//! The ingress stage owns the consumer side of the bounded network event queue.
+//! The egress stage owns the consumer side of the bounded network event queue.
 //! Producers publish [`NetworkEvent`] values that point at packets stored in the
-//! shared arena; the ingress processor borrows each packet by slot id and is the
+//! shared arena; the egress processor borrows each packet by slot id and is the
 //! place where early filtering and dispatch into consensus-facing events will
 //! be wired. The current implementation keeps that processing minimal while the
 //! pipeline boundaries are being established.
@@ -20,22 +20,22 @@ use rustaxa_arena::arena::Arena;
 
 use crate::{events::NetworkEvent, filter::PacketFilter, packet::Packet, peers::PeerRegistry};
 
-/// Lifecycle wrapper for ingress worker threads.
+/// Lifecycle wrapper for egress worker threads.
 ///
-/// `Ingress` owns a single [`Processor`] until [`Ingress::listen`] is called.
+/// `Egress` owns a single [`Processor`] until [`Egress::listen`] is called.
 /// Starting the worker moves the processor into a background thread and stores
-/// the thread handle so [`Ingress::shutdown`] can request termination and join
+/// the thread handle so [`Egress::shutdown`] can request termination and join
 /// it.
-pub struct Ingress {
+pub struct Egress {
     processor: Option<Processor>,
     workers: Vec<JoinHandle<()>>,
     shutdown: Arc<AtomicBool>,
 }
 
-impl Ingress {
-    /// Creates an ingress worker over the supplied packet arena and event queue.
+impl Egress {
+    /// Creates an egress worker over the supplied packet arena and event queue.
     ///
-    /// The worker starts in a shut down state. Call [`Ingress::listen`] to spawn
+    /// The worker starts in a shut down state. Call [`Egress::listen`] to spawn
     /// the background processing thread.
     pub fn new(
         arena: Arc<Arena<Packet>>,
@@ -43,14 +43,14 @@ impl Ingress {
         registry: Arc<PeerRegistry>,
     ) -> Self {
         let shutdown = Arc::new(AtomicBool::new(true));
-        Ingress {
+        Egress {
             processor: Some(Processor::new(arena, events, registry, shutdown.clone())),
             workers: vec![],
             shutdown,
         }
     }
 
-    /// Starts the background ingress loop.
+    /// Starts the background egress loop.
     ///
     /// This consumes the internally stored processor and spawns one worker
     /// thread. The current type is single-start: calling `listen` more than once
@@ -62,9 +62,9 @@ impl Ingress {
         self.workers.push(handle);
     }
 
-    /// Requests shutdown and waits for all started ingress workers to exit.
+    /// Requests shutdown and waits for all started egress workers to exit.
     ///
-    /// Calling this before [`Ingress::listen`] is valid and simply consumes the
+    /// Calling this before [`Egress::listen`] is valid and simply consumes the
     /// idle worker wrapper.
     pub fn shutdown(self) {
         self.shutdown.store(true, Ordering::Release);
@@ -76,11 +76,11 @@ impl Ingress {
     }
 }
 
-/// Single-threaded event consumer for network ingress.
+/// Single-threaded event consumer for network egress.
 ///
 /// The processor polls a bounded event queue, borrows packets from the shared
 /// arena, and runs packet processing for each event. It does not own a thread by
-/// itself; [`Ingress`] is responsible for spawning and joining workers.
+/// itself; [`Egress`] is responsible for spawning and joining workers.
 pub struct Processor {
     arena: Arc<Arena<Packet>>,
     events: Consumer<NetworkEvent>,
@@ -172,31 +172,31 @@ mod tests {
     }
 
     #[test]
-    fn test_ingress_creation() {
+    fn test_egress_creation() {
         let arena = Arc::new(Arena::<Packet>::new(1024).unwrap());
         let ringbuffer = RingBuffer::<NetworkEvent>::new(100);
         let registry = Arc::new(PeerRegistry::new());
-        let _ = Ingress::new(arena, ringbuffer.1, registry);
+        let _ = Egress::new(arena, ringbuffer.1, registry);
     }
 
     #[test]
-    fn test_ingress_shutdown_before_listen_is_valid() {
+    fn test_egress_shutdown_before_listen_is_valid() {
         let arena = Arc::new(Arena::<Packet>::new(1024).unwrap());
         let ringbuffer = RingBuffer::<NetworkEvent>::new(100);
         let registry = Arc::new(PeerRegistry::new());
 
-        Ingress::new(arena, ringbuffer.1, registry).shutdown();
+        Egress::new(arena, ringbuffer.1, registry).shutdown();
     }
 
     #[test]
-    fn test_ingress_listen_then_shutdown() {
+    fn test_egress_listen_then_shutdown() {
         let arena = Arc::new(Arena::<Packet>::new(1024).unwrap());
         let ringbuffer = RingBuffer::<NetworkEvent>::new(100);
         let registry = Arc::new(PeerRegistry::new());
-        let mut ingress = Ingress::new(arena, ringbuffer.1, registry);
+        let mut egress = Egress::new(arena, ringbuffer.1, registry);
 
-        ingress.start();
-        ingress.shutdown();
+        egress.start();
+        egress.shutdown();
     }
 
     #[test]
