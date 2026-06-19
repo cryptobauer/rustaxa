@@ -441,9 +441,12 @@ remain compatibility payload work. The sync reward-vote hash cut makes the Rust-
 popped PBFT block's requested reward-vote hashes. `processPeriodData()` now validates reward votes through those compact
 queue facts plus VoteManager's Rust verified-vote runtime instead of reopening `PeriodData.pbft_blk` solely to read the
 requested hashes; copied selected `PbftVote` objects remain temporary compatibility payloads for previous-cert
-replacement.
+replacement. The sync pillar-vote RLP cut makes the Rust queue retain canonical pillar-vote payload bytes from the
+queued period data. `processPeriodData()` now validates required pillar-vote bundles by inspecting those queued bytes in
+Rust and using live `PillarVote` sidecars only to execute accepted insertion side effects.
 Remaining Slice 9 work: proposed-block sidecars that still require validation/API materialization and sync payload
-materialization for actual transaction objects during finalization execution, votes, and pillar data.
+materialization for actual transaction objects during finalization execution, accepted vote insertion, and pillar data
+finalization.
 
 ### Slice 10: Rust-Mode PBFT Manager Parity Gate
 

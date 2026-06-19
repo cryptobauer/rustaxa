@@ -4124,6 +4124,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   const auto anchor_hash = popped_period_data.pivot_hash;
   const auto final_chain_hash = popped_period_data.final_chain_hash;
   auto reward_vote_hashes = std::move(popped_period_data.reward_vote_hashes);
+  auto pillar_vote_rlps = std::move(popped_period_data.pillar_vote_rlps);
   const auto dag_transaction_hashes = std::move(popped_period_data.dag_transaction_hashes);
   const auto period_data_transaction_hashes = std::move(popped_period_data.period_data_transaction_hashes);
   auto period_data_transaction_identities = std::move(popped_period_data.period_data_transaction_identities);
@@ -4419,7 +4420,23 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   }
 
   // Validate pillar votes
-  const auto pillar_votes_valid = !pillar_votes_required || validatePbftBlockPillarVotes(period_data);
+  bool pillar_votes_valid = true;
+  if (pillar_votes_required) {
+#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
+    const auto rust_validation_result =
+        validatePbftBlockPillarVotesWithRust(block_period, pillar_vote_rlps, period_data.pillar_votes_,
+                                             pillar_chain_mgr_, final_chain_);
+    if (!rust_validation_result.valid()) {
+      LOG(log_er_) << "Rust sync pillar-vote validation failed, pbft block period " << block_period << ", status "
+                   << validatePbftBlockPillarVotesWithRustStatusString(rust_validation_result.status)
+                   << ", plan status " << static_cast<uint32_t>(rust_validation_result.plan_status)
+                   << ", first bad vote " << rust_validation_result.first_bad_vote_hash;
+    }
+    pillar_votes_valid = rust_validation_result.valid();
+#else
+    pillar_votes_valid = validatePbftBlockPillarVotes(period_data);
+#endif
+  }
   runtime_plan = make_runtime_plan(
       false, kPbftSyncFinalChainValid, kPbftSyncFactValid, kPbftSyncFactValid, kPbftSyncFactValid,
       non_finalized_transactions, contains_finalized_transactions, kPbftSyncFactValid, pillar_votes_required,

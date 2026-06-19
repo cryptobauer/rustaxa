@@ -133,34 +133,29 @@ const char* validatePbftBlockPillarVotesWithRustStatusString(ValidatePbftBlockPi
 }
 
 ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBundleDeterministically(
-    const std::vector<std::shared_ptr<PillarVote>>& pillar_votes, PbftPeriod required_votes_period,
+    const std::vector<bytes>& pillar_vote_rlps, PbftPeriod required_votes_period,
     const blk_hash_t& required_pillar_block_hash, uint64_t required_threshold,
     const std::shared_ptr<final_chain::FinalChain>& final_chain) {
   if (!final_chain || required_votes_period == 0) {
     return {ValidateSyncPillarVotesBundlePlanStatus::kUnknown, {}, 0, 0, {}, false};
   }
 
-  if (pillar_votes.empty()) {
+  if (pillar_vote_rlps.empty()) {
     return {ValidateSyncPillarVotesBundlePlanStatus::kBundleEmpty, {}, 0, 0, {}, false};
   }
 
   rust::Vec<rustaxa::PillarVoteBundleFact> facts;
-  facts.reserve(pillar_votes.size());
+  facts.reserve(pillar_vote_rlps.size());
 
   std::unordered_map<vote_hash_t, uint64_t> vote_weights;
-  vote_weights.reserve(pillar_votes.size());
+  vote_weights.reserve(pillar_vote_rlps.size());
   std::unordered_map<vote_hash_t, addr_t> vote_recovered_voters;
-  vote_recovered_voters.reserve(pillar_votes.size());
+  vote_recovered_voters.reserve(pillar_vote_rlps.size());
 
-  for (const auto& vote : pillar_votes) {
-    if (!vote) {
-      return {ValidateSyncPillarVotesBundlePlanStatus::kUnknown, {}, 0, 0, {}, false};
-    }
-
+  for (const auto& vote_rlp : pillar_vote_rlps) {
     rustaxa::PillarVoteInspection inspection;
     try {
-      const auto rlp = vote->rlp();
-      inspection = rustaxa::pillar_vote_inspect(rust::Slice<const uint8_t>(rlp.data(), rlp.size()));
+      inspection = rustaxa::pillar_vote_inspect(rust::Slice<const uint8_t>(vote_rlp.data(), vote_rlp.size()));
     } catch (const std::exception&) {
       return {ValidateSyncPillarVotesBundlePlanStatus::kPrevalidationFailed, {}, 0, 0, {}, false};
     }
@@ -226,17 +221,37 @@ ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBund
 ValidatePbftBlockPillarVotesWithRustResult validatePbftBlockPillarVotesWithRust(
     const PeriodData& period_data, const std::shared_ptr<pillar_chain::PillarChainManager>& pillar_chain_mgr,
     const std::shared_ptr<final_chain::FinalChain>& final_chain) {
-  if (!pillar_chain_mgr) {
-    return {ValidatePbftBlockPillarVotesWithRustStatus::kMissingPillarChainManager, 0, {}, 0, 0};
-  }
   if (!period_data.pbft_blk) {
     return {ValidatePbftBlockPillarVotesWithRustStatus::kMissingPbftBlock, 0, {}, 0, 0};
   }
-  if (!period_data.pillar_votes_.has_value() || period_data.pillar_votes_->empty()) {
+
+  std::vector<bytes> pillar_vote_rlps;
+  if (period_data.pillar_votes_.has_value()) {
+    pillar_vote_rlps.reserve(period_data.pillar_votes_->size());
+    for (const auto& vote : *period_data.pillar_votes_) {
+      if (!vote) {
+        return {ValidatePbftBlockPillarVotesWithRustStatus::kMissingPillarVotes, 0, {}, 0, 0};
+      }
+      pillar_vote_rlps.push_back(vote->rlp());
+    }
+  }
+
+  return validatePbftBlockPillarVotesWithRust(period_data.pbft_blk->getPeriod(), pillar_vote_rlps,
+                                              period_data.pillar_votes_, pillar_chain_mgr, final_chain);
+}
+
+ValidatePbftBlockPillarVotesWithRustResult validatePbftBlockPillarVotesWithRust(
+    PbftPeriod required_votes_period, const std::vector<bytes>& pillar_vote_rlps,
+    const std::optional<std::vector<std::shared_ptr<PillarVote>>>& live_pillar_votes,
+    const std::shared_ptr<pillar_chain::PillarChainManager>& pillar_chain_mgr,
+    const std::shared_ptr<final_chain::FinalChain>& final_chain) {
+  if (!pillar_chain_mgr) {
+    return {ValidatePbftBlockPillarVotesWithRustStatus::kMissingPillarChainManager, 0, {}, 0, 0};
+  }
+  if (pillar_vote_rlps.empty()) {
     return {ValidatePbftBlockPillarVotesWithRustStatus::kMissingPillarVotes, 0, {}, 0, 0};
   }
 
-  const auto required_votes_period = period_data.pbft_blk->getPeriod();
   const auto current_pillar_block = pillar_chain_mgr->getCurrentPillarBlock();
   if (!current_pillar_block) {
     return {ValidatePbftBlockPillarVotesWithRustStatus::kMissingCurrentPillarBlock, 0, {}, 0, 0};
@@ -250,9 +265,9 @@ ValidatePbftBlockPillarVotesWithRustResult validatePbftBlockPillarVotesWithRust(
     return {ValidatePbftBlockPillarVotesWithRustStatus::kMissingThreshold, 0, {}, 0, 0};
   }
 
-  const auto sync_plan = validateSyncPillarVotesBundleDeterministically(
-      *period_data.pillar_votes_, required_votes_period, current_pillar_block->getHash(), *pillar_consensus_threshold,
-      final_chain);
+  const auto sync_plan = validateSyncPillarVotesBundleDeterministically(pillar_vote_rlps, required_votes_period,
+                                                                        current_pillar_block->getHash(),
+                                                                        *pillar_consensus_threshold, final_chain);
   if (!sync_plan.valid) {
     ValidatePbftBlockPillarVotesWithRustStatus status = ValidatePbftBlockPillarVotesWithRustStatus::kPlanRejected;
     if (sync_plan.plan_status == ValidateSyncPillarVotesBundlePlanStatus::kUnknown) {
@@ -263,8 +278,12 @@ ValidatePbftBlockPillarVotesWithRustResult validatePbftBlockPillarVotesWithRust(
   }
 
   std::unordered_map<vote_hash_t, std::shared_ptr<PillarVote>> vote_by_hash;
-  vote_by_hash.reserve(period_data.pillar_votes_->size());
-  for (const auto& vote : *period_data.pillar_votes_) {
+  if (!live_pillar_votes.has_value() || live_pillar_votes->empty()) {
+    return {ValidatePbftBlockPillarVotesWithRustStatus::kAcceptedVoteMissing, toPlanStatusCode(sync_plan.plan_status),
+            sync_plan.first_bad_vote_hash, sync_plan.block_weight, sync_plan.selected_weight};
+  }
+  vote_by_hash.reserve(live_pillar_votes->size());
+  for (const auto& vote : *live_pillar_votes) {
     if (!vote) {
       return {ValidatePbftBlockPillarVotesWithRustStatus::kMissingPillarVotes, 0, {}, 0, 0};
     }

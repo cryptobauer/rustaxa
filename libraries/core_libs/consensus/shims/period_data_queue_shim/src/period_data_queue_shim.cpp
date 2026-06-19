@@ -4,6 +4,7 @@
 #include "pbft/pbft_block.hpp"
 #include "pbft/period_data_queue.hpp"
 #include "vote/pbft_vote.hpp"
+#include "vote/pillar_vote.hpp"
 
 namespace taraxa {
 namespace {
@@ -64,6 +65,33 @@ std::vector<trx_hash_t> periodDataTransactionHashes(const PeriodData& period_dat
 
 std::vector<vote_hash_t> rewardVoteHashes(const PeriodData& period_data) {
   return period_data.pbft_blk->getRewardVotes();
+}
+
+rust::Vec<rustaxa::PeriodDataQueuePillarVotePayload> pillarVoteRlps(const PeriodData& period_data) {
+  rust::Vec<rustaxa::PeriodDataQueuePillarVotePayload> payloads;
+  if (!period_data.pillar_votes_.has_value()) {
+    return payloads;
+  }
+
+  payloads.reserve(period_data.pillar_votes_->size());
+  for (const auto& vote : *period_data.pillar_votes_) {
+    if (!vote) {
+      throw queueError("cannot push period data with a null pillar vote");
+    }
+    rustaxa::PeriodDataQueuePillarVotePayload payload;
+    payload.vote_rlp = toBridgeBytes(vote->rlp());
+    payloads.push_back(std::move(payload));
+  }
+  return payloads;
+}
+
+std::vector<bytes> fromBridgePillarVoteRlps(const rust::Vec<rustaxa::PeriodDataQueuePillarVotePayload>& payloads) {
+  std::vector<bytes> out;
+  out.reserve(payloads.size());
+  for (const auto& payload : payloads) {
+    out.emplace_back(payload.vote_rlp.begin(), payload.vote_rlp.end());
+  }
+  return out;
 }
 
 rust::Vec<rustaxa::PeriodDataQueueTransactionIdentity> periodDataTransactionIdentities(const PeriodData& period_data) {
@@ -172,6 +200,7 @@ bool PeriodDataQueue::push(PeriodData&& period_data, const dev::p2p::NodeID& nod
 
   const auto period = period_data.pbft_blk->getPeriod();
   const auto reward_vote_hashes = rewardVoteHashes(period_data);
+  auto pillar_vote_rlps = pillarVoteRlps(period_data);
   const auto dag_transaction_hashes = dagTransactionHashes(period_data);
   const auto period_data_transaction_hashes = periodDataTransactionHashes(period_data);
   auto period_data_transaction_identities = periodDataTransactionIdentities(period_data);
@@ -189,7 +218,7 @@ bool PeriodDataQueue::push(PeriodData&& period_data, const dev::p2p::NodeID& nod
         entry_id, period, period_data.pbft_blk->getBlockHash().asArray(),
         period_data.pbft_blk->getPrevBlockHash().asArray(), period_data.pbft_blk->getPivotDagBlockHash().asArray(),
         period_data.pbft_blk->getFinalChainHash().asArray(), toBridgeTransactionHashes(reward_vote_hashes),
-        toBridgeTransactionHashes(dag_transaction_hashes),
+        std::move(pillar_vote_rlps), toBridgeTransactionHashes(dag_transaction_hashes),
         toBridgeTransactionHashes(period_data_transaction_hashes), std::move(period_data_transaction_identities),
         previous_cert_votes_present, previous_cert_first_vote_has_weight, pillar_votes_present, extra_data_present,
         extra_data_pillar_block_hash_present, max_pbft_size, cert_votes.size());
@@ -268,6 +297,7 @@ PeriodDataQueue::PoppedPeriodData PeriodDataQueue::popWithMetadata() {
                                  blk_hash_t(plan.pivot_hash.data(), blk_hash_t::ConstructFromPointer),
                                  blk_hash_t(plan.final_chain_hash.data(), blk_hash_t::ConstructFromPointer),
                                  fromBridgeTransactionHashes(plan.reward_vote_hashes),
+                                 fromBridgePillarVoteRlps(plan.pillar_vote_rlps),
                                  fromBridgeTransactionHashes(plan.dag_transaction_hashes),
                                  fromBridgeTransactionHashes(plan.period_data_transaction_hashes),
                                  toVerifyNotFinalizedFacts(plan.period_data_transaction_identities),

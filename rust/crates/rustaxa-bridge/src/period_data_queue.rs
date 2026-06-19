@@ -1,6 +1,7 @@
 use crate::ffi::rustaxa_ffi::{
     PbftSyncTransactionHash, PeriodDataQueueEntryRef, PeriodDataQueueLastEntryLookup,
-    PeriodDataQueuePopPlan, PeriodDataQueuePushOutcome, PeriodDataQueueTransactionIdentity,
+    PeriodDataQueuePillarVotePayload, PeriodDataQueuePopPlan, PeriodDataQueuePushOutcome,
+    PeriodDataQueueTransactionIdentity,
 };
 use crate::ffi::BridgePeriodDataQueue;
 use rustaxa_consensus::period_data_queue::PeriodDataQueue;
@@ -57,6 +58,7 @@ impl BridgePeriodDataQueue {
         pivot_hash: [u8; 32],
         final_chain_hash: [u8; 32],
         reward_vote_hashes: Vec<PbftSyncTransactionHash>,
+        pillar_vote_rlps: Vec<PeriodDataQueuePillarVotePayload>,
         dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
@@ -78,6 +80,10 @@ impl BridgePeriodDataQueue {
                 ethereum_types::H256::from(pivot_hash),
                 ethereum_types::H256::from(final_chain_hash),
                 bridge_hashes_to_h256(reward_vote_hashes),
+                pillar_vote_rlps
+                    .into_iter()
+                    .map(|payload| payload.vote_rlp)
+                    .collect(),
                 dag_transaction_hashes
                     .into_iter()
                     .map(|hash| ethereum_types::H256::from(hash.hash))
@@ -126,6 +132,7 @@ impl BridgePeriodDataQueue {
                 pivot_hash: entry.pivot_hash.into(),
                 final_chain_hash: entry.final_chain_hash.into(),
                 reward_vote_hashes: transaction_hashes_to_bridge(entry.reward_vote_hashes),
+                pillar_vote_rlps: pillar_vote_rlps_to_bridge(entry.pillar_vote_rlps),
                 dag_transaction_hashes: transaction_hashes_to_bridge(entry.dag_transaction_hashes),
                 period_data_transaction_hashes: transaction_hashes_to_bridge(
                     entry.period_data_transaction_hashes,
@@ -148,6 +155,7 @@ impl BridgePeriodDataQueue {
                 pivot_hash: [0; 32],
                 final_chain_hash: [0; 32],
                 reward_vote_hashes: Vec::new(),
+                pillar_vote_rlps: Vec::new(),
                 dag_transaction_hashes: Vec::new(),
                 period_data_transaction_hashes: Vec::new(),
                 period_data_transaction_identities: Vec::new(),
@@ -184,6 +192,7 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueueEntryRef>
             pivot_hash: value.pivot_hash.into(),
             final_chain_hash: value.final_chain_hash.into(),
             reward_vote_hashes: transaction_hashes_to_bridge(value.reward_vote_hashes),
+            pillar_vote_rlps: pillar_vote_rlps_to_bridge(value.pillar_vote_rlps),
             dag_transaction_hashes: transaction_hashes_to_bridge(value.dag_transaction_hashes),
             period_data_transaction_hashes: transaction_hashes_to_bridge(
                 value.period_data_transaction_hashes,
@@ -225,6 +234,7 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueuePopPlan> for Peri
             pivot_hash: value.pivot_hash.into(),
             final_chain_hash: value.final_chain_hash.into(),
             reward_vote_hashes: transaction_hashes_to_bridge(value.reward_vote_hashes),
+            pillar_vote_rlps: pillar_vote_rlps_to_bridge(value.pillar_vote_rlps),
             dag_transaction_hashes: transaction_hashes_to_bridge(value.dag_transaction_hashes),
             period_data_transaction_hashes: transaction_hashes_to_bridge(
                 value.period_data_transaction_hashes,
@@ -256,6 +266,12 @@ fn bridge_hashes_to_h256(hashes: Vec<PbftSyncTransactionHash>) -> Vec<ethereum_t
     hashes
         .into_iter()
         .map(|hash| ethereum_types::H256::from(hash.hash))
+        .collect()
+}
+
+fn pillar_vote_rlps_to_bridge(rlps: Vec<Vec<u8>>) -> Vec<PeriodDataQueuePillarVotePayload> {
+    rlps.into_iter()
+        .map(|vote_rlp| PeriodDataQueuePillarVotePayload { vote_rlp })
         .collect()
 }
 

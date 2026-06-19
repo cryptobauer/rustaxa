@@ -56,6 +56,7 @@ class PeriodDataQueue {
     blk_hash_t pivot_hash;
     blk_hash_t final_chain_hash;
     std::vector<vote_hash_t> reward_vote_hashes;
+    std::vector<bytes> pillar_vote_rlps;
     std::vector<trx_hash_t> dag_transaction_hashes;
     std::vector<trx_hash_t> period_data_transaction_hashes;
     ::rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> period_data_transaction_identities;

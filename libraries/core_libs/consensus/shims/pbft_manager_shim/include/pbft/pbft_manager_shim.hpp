@@ -153,7 +153,7 @@ const char *validatePbftBlockPillarVotesWithRustStatusString(ValidatePbftBlockPi
  * in Rust-enabled pillar-votes shim mode.
  */
 ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBundleDeterministically(
-    const std::vector<std::shared_ptr<PillarVote>> &pillar_votes, PbftPeriod required_votes_period,
+    const std::vector<bytes> &pillar_vote_rlps, PbftPeriod required_votes_period,
     const blk_hash_t &required_pillar_block_hash, uint64_t required_threshold,
     const std::shared_ptr<final_chain::FinalChain> &final_chain);
 
@@ -165,6 +165,18 @@ ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBund
  */
 ValidatePbftBlockPillarVotesWithRustResult validatePbftBlockPillarVotesWithRust(
     const PeriodData &period_data, const std::shared_ptr<pillar_chain::PillarChainManager> &pillar_chain_mgr,
+    const std::shared_ptr<final_chain::FinalChain> &final_chain);
+
+/**
+ * @brief Rust-enabled PBFT pillar-vote validation path fed by queued RLP metadata.
+ *
+ * Deterministic validation inspects `pillar_vote_rlps`; `live_pillar_votes`
+ * are used only to execute accepted insertion side effects.
+ */
+ValidatePbftBlockPillarVotesWithRustResult validatePbftBlockPillarVotesWithRust(
+    PbftPeriod required_votes_period, const std::vector<bytes> &pillar_vote_rlps,
+    const std::optional<std::vector<std::shared_ptr<PillarVote>>> &live_pillar_votes,
+    const std::shared_ptr<pillar_chain::PillarChainManager> &pillar_chain_mgr,
     const std::shared_ptr<final_chain::FinalChain> &final_chain);
 
 /**
