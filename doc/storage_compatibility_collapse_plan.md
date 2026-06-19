@@ -289,12 +289,17 @@ Landed sub-slices:
   transaction snapshots, and transaction-period mappings onto a typed `BridgeTransactionStorageQueries` handle that owns
   a cloned Rust storage handle. Deleted the matching generic `BridgeStorage` transaction read methods from the CXX FFI;
   transaction writes and batch lookup helpers remain on their existing Rust-owned paths.
+- Metadata/rewards query split: moved storage-shim, Rust bridge tests, and validation-test reads for genesis hash,
+  sortition parameter changes, status fields, period lambda, dynamic-lambda rounds count, and block-rewards stats onto a
+  typed `BridgeMetadataStorageQueries` handle that owns a cloned Rust storage handle. Deleted the matching generic
+  `BridgeStorage` metadata/rewards read methods from the CXX FFI; metadata writes, genesis initialization, and
+  block-rewards cleanup remain on their existing Rust-owned write paths.
 
 Next target:
 
-- Continue with another self-contained compatibility query family, likely metadata/rewards reads or remaining DAG public
-  reads. Keep RPC/network materialization at the C++ boundary and avoid broader object ownership changes in this cleanup
-  slice.
+- Continue with another self-contained compatibility query family, likely remaining DAG public reads or period/final-chain
+  lookup reads. Keep RPC/network materialization at the C++ boundary and avoid broader object ownership changes in this
+  cleanup slice.
 
 Split the broad `BridgeStorage` query surface into typed read-only Rust query APIs for active Rust-mode callers, and
 delete unused broad storage-shim methods.

@@ -42,6 +42,10 @@ rust::Vec<uint8_t> bytes(std::initializer_list<uint8_t> values) {
   return out;
 }
 
+rust::Box<BridgeMetadataStorageQueries> metadataQueries(const rust::Box<BridgeStorage>& storage) {
+  return create_metadata_storage_queries(*storage);
+}
+
 RewardsStatsConfig rewardsConfig() {
   RewardsStatsConfig config{};
   config.committee_size = 100;
@@ -139,7 +143,8 @@ TEST(RustRewardsStatsBridgeTest, appendsCacheWritesAndBoundaryClearToStorageBatc
   auto apply_result = runtime->rewards_stats_runtime_apply_storage_writes(cache_plan, false);
   ASSERT_EQ(apply_result.status, 0);
   EXPECT_TRUE(apply_result.wrote_current_period);
-  ASSERT_EQ(storage->get_blocks_rewards_stats().size(), 1);
+  auto metadata_queries = metadataQueries(storage);
+  ASSERT_EQ(metadata_queries->get_blocks_rewards_stats().size(), 1);
   ASSERT_EQ(runtime->rewards_stats_runtime_cached_stats().size(), 1);
 
   auto boundary_plan = runtime->process_finalized_period_rewards_stats(rewardsFact(3));
@@ -149,6 +154,6 @@ TEST(RustRewardsStatsBridgeTest, appendsCacheWritesAndBoundaryClearToStorageBatc
   ASSERT_EQ(apply_result.status, 0);
   EXPECT_TRUE(apply_result.cleared_cached_stats);
 
-  EXPECT_TRUE(storage->get_blocks_rewards_stats().empty());
+  EXPECT_TRUE(metadata_queries->get_blocks_rewards_stats().empty());
   EXPECT_TRUE(runtime->rewards_stats_runtime_cached_stats().empty());
 }

@@ -3000,8 +3000,10 @@ fn consensus_finalized_status_fact_from_ffi_fact(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::{BridgeStorage, BridgeTransactionStorageQueries};
-    use crate::storage::create_transaction_storage_queries;
+    use crate::ffi::{
+        BridgeMetadataStorageQueries, BridgeStorage, BridgeTransactionStorageQueries,
+    };
+    use crate::storage::{create_metadata_storage_queries, create_transaction_storage_queries};
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
     use rustaxa_storage::StatusField;
@@ -3018,6 +3020,10 @@ mod tests {
 
     fn transaction_queries(storage: &BridgeStorage) -> Box<BridgeTransactionStorageQueries> {
         create_transaction_storage_queries(storage)
+    }
+
+    fn metadata_queries(storage: &BridgeStorage) -> Box<BridgeMetadataStorageQueries> {
+        create_metadata_storage_queries(storage)
     }
 
     fn address_from_signing_key(signing_key: &SigningKey) -> H160 {
@@ -3809,7 +3815,7 @@ mod tests {
         assert_eq!(out.target_transaction_count, 9);
 
         assert_eq!(
-            storage
+            metadata_queries(&storage)
                 .get_status_field(StatusField::TrxCount as u8)
                 .expect("status field should persist"),
             9,
@@ -3865,7 +3871,7 @@ mod tests {
         assert!(out.accepted.is_empty());
         assert_eq!(out.target_transaction_count, 7);
         assert_eq!(
-            storage
+            metadata_queries(&storage)
                 .get_status_field(StatusField::TrxCount as u8)
                 .expect("status field should remain"),
             7
@@ -3949,7 +3955,7 @@ mod tests {
         assert!(!runtime.transaction_manager_runtime_queue_contains(&[1; 32]));
         assert!(runtime.transaction_manager_runtime_contains_non_finalized(&[1; 32]));
         assert_eq!(
-            storage
+            metadata_queries(&storage)
                 .get_status_field(StatusField::TrxCount as u8)
                 .expect("status field should persist"),
             8
@@ -4059,7 +4065,7 @@ mod tests {
         assert_eq!(report.queue_erased[0].hash, [1; 32]);
         assert_eq!(runtime.transaction_manager_runtime_transaction_count(), 8);
         assert_eq!(
-            storage
+            metadata_queries(&storage)
                 .get_status_field(StatusField::TrxCount as u8)
                 .expect("status field should persist"),
             8
@@ -4111,7 +4117,7 @@ mod tests {
         assert!(out.has_stale_period);
         assert!(out.purge_transaction_queue);
         assert_eq!(
-            storage
+            metadata_queries(&storage)
                 .get_status_field(StatusField::TrxCount as u8)
                 .expect("status field should persist"),
             9,
@@ -4171,7 +4177,7 @@ mod tests {
         assert!(report.finalized_account_purged.is_empty());
         assert_eq!(runtime.transaction_manager_runtime_transaction_count(), 7);
         assert_eq!(
-            storage
+            metadata_queries(&storage)
                 .get_status_field(StatusField::TrxCount as u8)
                 .expect("status field should persist"),
             7
@@ -4261,7 +4267,7 @@ mod tests {
         assert!(out.accepted.is_empty());
         assert_eq!(out.target_transaction_count, 11);
         assert_eq!(
-            storage
+            metadata_queries(&storage)
                 .get_status_field(StatusField::TrxCount as u8)
                 .expect("status field should remain unchanged"),
             11,

@@ -1,4 +1,5 @@
 use crate::ffi::rustaxa_ffi;
+use crate::ffi::BridgeMetadataStorageQueries;
 use crate::ffi::BridgePbftStorageQueries;
 use crate::ffi::BridgePbftVoteStorageQueries;
 use crate::ffi::BridgeStorage;
@@ -123,6 +124,28 @@ pub fn create_pbft_storage_queries(storage: &BridgeStorage) -> Box<BridgePbftSto
     })
 }
 
+/// Creates a typed metadata/rewards query handle from the shared Rust storage owner.
+///
+/// Inputs:
+/// - `storage`: generic bridge storage owner used only as a construction-time
+///   lifetime seed.
+///
+/// Outputs:
+/// - a read-only metadata query handle that owns a cloned Rust storage handle.
+///
+/// Invariants and edge behavior:
+/// - callers can inspect metadata, status, lambda, sortition, genesis, and
+///   block-rewards compatibility rows without retaining broad `BridgeStorage`
+///   read methods
+/// - the handle does not mutate storage or decode legacy C++ objects.
+pub fn create_metadata_storage_queries(
+    storage: &BridgeStorage,
+) -> Box<BridgeMetadataStorageQueries> {
+    Box::new(BridgeMetadataStorageQueries {
+        storage: storage.0.clone(),
+    })
+}
+
 /// Creates a typed transaction query handle from the shared Rust storage owner.
 ///
 /// Inputs:
@@ -242,6 +265,71 @@ impl BridgePbftStorageQueries {
             .pbft()
             .head(H256::from(*hash))?
             .unwrap_or_default())
+    }
+}
+
+impl BridgeMetadataStorageQueries {
+    pub fn get_genesis_hash(&self) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self.storage.metadata().genesis_hash()?.unwrap_or_default())
+    }
+
+    pub fn get_last_sortition_params(
+        &self,
+        count: u64,
+    ) -> Result<Vec<rustaxa_ffi::BlockRlp>, anyhow::Error> {
+        // C++ passes size_t across the bridge; on the same architecture, size_t and usize are equal.
+        // This conversion should never fail on 32-bit or 64-bit systems.
+        let count = usize::try_from(count).unwrap_or(usize::MAX);
+        let changes = self
+            .storage
+            .metadata()
+            .last_sortition_params_changes_rlp(count)?;
+        Ok(changes
+            .into_iter()
+            .map(|data| rustaxa_ffi::BlockRlp { data })
+            .collect())
+    }
+
+    pub fn get_params_change_for_period(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .storage
+            .metadata()
+            .params_change_for_period_rlp(period)?
+            .unwrap_or_default())
+    }
+
+    pub fn get_status_field(&self, field: u8) -> Result<u64, anyhow::Error> {
+        self.storage.metadata().status_field(field)
+    }
+
+    pub fn get_period_lambda(
+        &self,
+        period: u64,
+        find_closest: bool,
+    ) -> Result<rustaxa_ffi::PeriodLambda, anyhow::Error> {
+        let value = self
+            .storage
+            .metadata()
+            .period_lambda(period, find_closest)?;
+        Ok(match value {
+            Some(value) => rustaxa_ffi::PeriodLambda { found: true, value },
+            None => rustaxa_ffi::PeriodLambda {
+                found: false,
+                value: 0,
+            },
+        })
+    }
+
+    pub fn get_rounds_count_dynamic_lambda(&self) -> Result<u32, anyhow::Error> {
+        self.storage.metadata().rounds_count_dynamic_lambda()
+    }
+
+    pub fn get_blocks_rewards_stats(&self) -> Result<Vec<rustaxa_ffi::PeriodRlp>, anyhow::Error> {
+        let stats = self.storage.metadata().block_rewards_stats_rlp()?;
+        Ok(stats
+            .into_iter()
+            .map(|(period, data)| rustaxa_ffi::PeriodRlp { period, data })
+            .collect())
     }
 }
 
@@ -1125,38 +1213,8 @@ impl BridgeStorage {
         self.0.period().write_pbft_period(H256::from(*hash), period)
     }
 
-    pub fn get_genesis_hash(&self) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self.0.metadata().genesis_hash()?.unwrap_or_default())
-    }
-
     pub fn set_genesis_hash(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
         self.0.metadata().set_genesis_hash_if_empty(hash)
-    }
-
-    pub fn get_last_sortition_params(
-        &self,
-        count: u64,
-    ) -> Result<Vec<rustaxa_ffi::BlockRlp>, anyhow::Error> {
-        // C++ passes size_t across the bridge; on the same architecture, size_t and usize are equal.
-        // This conversion should never fail on 32-bit or 64-bit systems.
-        let count = usize::try_from(count).unwrap_or(usize::MAX);
-        let changes = self.0.metadata().last_sortition_params_changes_rlp(count)?;
-        Ok(changes
-            .into_iter()
-            .map(|data| rustaxa_ffi::BlockRlp { data })
-            .collect())
-    }
-
-    pub fn get_params_change_for_period(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self
-            .0
-            .metadata()
-            .params_change_for_period_rlp(period)?
-            .unwrap_or_default())
-    }
-
-    pub fn get_status_field(&self, field: u8) -> Result<u64, anyhow::Error> {
-        self.0.metadata().status_field(field)
     }
 
     pub fn save_status_field(&self, field: u8, value: u64) -> Result<(), anyhow::Error> {
@@ -1173,25 +1231,6 @@ impl BridgeStorage {
             .write_sortition_params_change(period, &params_rlp)
     }
 
-    pub fn get_period_lambda(
-        &self,
-        period: u64,
-        find_closest: bool,
-    ) -> Result<rustaxa_ffi::PeriodLambda, anyhow::Error> {
-        let value = self.0.metadata().period_lambda(period, find_closest)?;
-        Ok(match value {
-            Some(value) => rustaxa_ffi::PeriodLambda { found: true, value },
-            None => rustaxa_ffi::PeriodLambda {
-                found: false,
-                value: 0,
-            },
-        })
-    }
-
-    pub fn get_rounds_count_dynamic_lambda(&self) -> Result<u32, anyhow::Error> {
-        self.0.metadata().rounds_count_dynamic_lambda()
-    }
-
     pub fn save_period_lambda(&self, period: u64, period_lambda: u32) -> Result<(), anyhow::Error> {
         self.0.metadata().write_period_lambda(period, period_lambda)
     }
@@ -1200,14 +1239,6 @@ impl BridgeStorage {
         self.0
             .metadata()
             .write_rounds_count_dynamic_lambda(rounds_count)
-    }
-
-    pub fn get_blocks_rewards_stats(&self) -> Result<Vec<rustaxa_ffi::PeriodRlp>, anyhow::Error> {
-        let stats = self.0.metadata().block_rewards_stats_rlp()?;
-        Ok(stats
-            .into_iter()
-            .map(|(period, data)| rustaxa_ffi::PeriodRlp { period, data })
-            .collect())
     }
 
     pub fn save_block_rewards_stats(
@@ -1491,6 +1522,10 @@ mod tests {
         create_transaction_storage_queries(storage)
     }
 
+    fn metadata_queries(storage: &BridgeStorage) -> Box<BridgeMetadataStorageQueries> {
+        create_metadata_storage_queries(storage)
+    }
+
     fn non_finalized_tx_payload(hash: u8, data: u8) -> rustaxa_ffi::NonFinalizedTransactionPayload {
         rustaxa_ffi::NonFinalizedTransactionPayload {
             hash: [hash; 32],
@@ -1598,7 +1633,7 @@ mod tests {
                 .expect("batch write should persist accepted transactions");
 
             assert_eq!(
-                storage
+                metadata_queries(&storage)
                     .get_status_field(rustaxa_storage::StatusField::TrxCount as u8)
                     .expect("trx count status should load"),
                 existing_tx_count + 2,
@@ -1618,7 +1653,7 @@ mod tests {
                 .expect("second batch write should persist accepted tx");
 
             assert_eq!(
-                storage
+                metadata_queries(&storage)
                     .get_status_field(rustaxa_storage::StatusField::TrxCount as u8)
                     .expect("trx count status should load"),
                 existing_tx_count + 3,

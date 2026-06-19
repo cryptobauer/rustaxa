@@ -958,9 +958,13 @@ impl From<PbftFinalizationLiveMutationValidation> for FfiPbftFinalizationLiveMut
 mod tests {
     use super::*;
     use crate::ffi::rustaxa_ffi::PbftFinalizationHash as FfiPbftFinalizationHash;
-    use crate::ffi::{BridgePbftStorageQueries, BridgeStorage, BridgeTransactionStorageQueries};
+    use crate::ffi::{
+        BridgeMetadataStorageQueries, BridgePbftStorageQueries, BridgeStorage,
+        BridgeTransactionStorageQueries,
+    };
     use crate::storage::{
-        create_pbft_storage_queries, create_storage, create_transaction_storage_queries,
+        create_metadata_storage_queries, create_pbft_storage_queries, create_storage,
+        create_transaction_storage_queries,
     };
     use rustaxa_consensus::pbft_finalize::PbftFinalizationAnchor::{Anchored, Null};
     use rustaxa_consensus::pbft_finalize::PbftFinalizationStatus;
@@ -1042,6 +1046,10 @@ mod tests {
 
     fn pbft_queries(storage: &BridgeStorage) -> Box<BridgePbftStorageQueries> {
         create_pbft_storage_queries(storage)
+    }
+
+    fn metadata_queries(storage: &BridgeStorage) -> Box<BridgeMetadataStorageQueries> {
+        create_metadata_storage_queries(storage)
     }
 
     fn transaction_queries(storage: &BridgeStorage) -> Box<BridgeTransactionStorageQueries> {
@@ -1521,7 +1529,7 @@ mod tests {
                 .expect("transaction location should load")
                 .is_empty());
             assert!(
-                !storage
+                !metadata_queries(&storage)
                     .get_period_lambda(10, false)
                     .expect("period lambda should remain sidecar-owned")
                     .found
@@ -1849,13 +1857,13 @@ mod tests {
             assert!(!result.wrote_pbft_head);
             assert!(!result.wrote_period_data);
 
-            let period_lambda = storage
+            let period_lambda = metadata_queries(&storage)
                 .get_period_lambda(10, false)
                 .expect("period lambda should load");
             assert!(period_lambda.found);
             assert_eq!(period_lambda.value, 1_500);
             assert_eq!(
-                storage
+                metadata_queries(&storage)
                     .get_rounds_count_dynamic_lambda()
                     .expect("rounds count should load"),
                 7

@@ -68,6 +68,15 @@ pub struct BridgePbftStorageQueries {
     pub storage: Arc<Storage>,
 }
 
+/// Typed metadata/rewards query handle for C++ compatibility materializers.
+///
+/// This wrapper keeps metadata, status, lambda, sortition, genesis, and block
+/// rewards reads grouped under the metadata storage boundary instead of exposing
+/// them as generic `BridgeStorage` methods.
+pub struct BridgeMetadataStorageQueries {
+    pub storage: Arc<Storage>,
+}
+
 /// Typed transaction query handle for C++ compatibility materializers.
 ///
 /// This wrapper keeps transaction public-read compatibility grouped under the
@@ -6125,6 +6134,7 @@ pub mod rustaxa_ffi {
         // Storage
 
         type BridgeStorage;
+        type BridgeMetadataStorageQueries;
         type BridgePbftStorageQueries;
         type BridgePbftVoteStorageQueries;
         type BridgeTransactionStorageQueries;
@@ -6134,6 +6144,9 @@ pub mod rustaxa_ffi {
         pub fn create_pbft_storage_queries(
             storage: &BridgeStorage,
         ) -> Box<BridgePbftStorageQueries>;
+        pub fn create_metadata_storage_queries(
+            storage: &BridgeStorage,
+        ) -> Box<BridgeMetadataStorageQueries>;
         pub fn create_pbft_vote_storage_queries(
             storage: &BridgeStorage,
         ) -> Box<BridgePbftVoteStorageQueries>;
@@ -6363,34 +6376,22 @@ pub mod rustaxa_ffi {
             hash: &[u8; 32],
             period: u64,
         ) -> Result<()>;
-        pub fn get_genesis_hash(self: &BridgeStorage) -> Result<Vec<u8>>;
         pub fn set_genesis_hash(self: &BridgeStorage, hash: &[u8; 32]) -> Result<()>;
-        pub fn get_last_sortition_params(self: &BridgeStorage, count: u64)
-            -> Result<Vec<BlockRlp>>;
-        pub fn get_params_change_for_period(self: &BridgeStorage, period: u64) -> Result<Vec<u8>>;
-        pub fn get_status_field(self: &BridgeStorage, field: u8) -> Result<u64>;
         pub fn save_status_field(self: &BridgeStorage, field: u8, value: u64) -> Result<()>;
         pub fn save_sortition_params_change(
             self: &BridgeStorage,
             period: u64,
             params_rlp: Vec<u8>,
         ) -> Result<()>;
-        pub fn get_period_lambda(
-            self: &BridgeStorage,
-            period: u64,
-            find_closest: bool,
-        ) -> Result<PeriodLambda>;
         pub fn save_period_lambda(
             self: &BridgeStorage,
             period: u64,
             period_lambda: u32,
         ) -> Result<()>;
-        pub fn get_rounds_count_dynamic_lambda(self: &BridgeStorage) -> Result<u32>;
         pub fn save_rounds_count_dynamic_lambda(
             self: &BridgeStorage,
             rounds_count: u32,
         ) -> Result<()>;
-        pub fn get_blocks_rewards_stats(self: &BridgeStorage) -> Result<Vec<PeriodRlp>>;
         pub fn save_block_rewards_stats(
             self: &BridgeStorage,
             period: u64,
@@ -6399,6 +6400,25 @@ pub mod rustaxa_ffi {
         pub fn clear_block_rewards_stats(self: &BridgeStorage) -> Result<()>;
 
         pub fn get_cert_voted_block_in_round(self: &BridgeStorage) -> Result<Vec<u8>>;
+        pub fn get_genesis_hash(self: &BridgeMetadataStorageQueries) -> Result<Vec<u8>>;
+        pub fn get_last_sortition_params(
+            self: &BridgeMetadataStorageQueries,
+            count: u64,
+        ) -> Result<Vec<BlockRlp>>;
+        pub fn get_params_change_for_period(
+            self: &BridgeMetadataStorageQueries,
+            period: u64,
+        ) -> Result<Vec<u8>>;
+        pub fn get_status_field(self: &BridgeMetadataStorageQueries, field: u8) -> Result<u64>;
+        pub fn get_period_lambda(
+            self: &BridgeMetadataStorageQueries,
+            period: u64,
+            find_closest: bool,
+        ) -> Result<PeriodLambda>;
+        pub fn get_rounds_count_dynamic_lambda(self: &BridgeMetadataStorageQueries) -> Result<u32>;
+        pub fn get_blocks_rewards_stats(
+            self: &BridgeMetadataStorageQueries,
+        ) -> Result<Vec<PeriodRlp>>;
         pub fn pbft_block_in_db(self: &BridgePbftStorageQueries, hash: &[u8; 32]) -> Result<bool>;
         pub fn get_pbft_mgr_field(self: &BridgePbftStorageQueries, field: u8) -> Result<u32>;
         pub fn get_pbft_mgr_status(self: &BridgePbftStorageQueries, field: u8) -> Result<bool>;

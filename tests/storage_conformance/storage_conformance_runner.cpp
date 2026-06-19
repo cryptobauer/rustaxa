@@ -174,23 +174,26 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   static constexpr uint8_t kPbftMgrStatusNextVotedSoftValue = 2;
 
   auto storage = rustaxa::create_storage(db_path.string());
+  auto metadata_queries = rustaxa::create_metadata_storage_queries(*storage);
   auto pbft_queries = rustaxa::create_pbft_storage_queries(*storage);
   auto transaction_queries = rustaxa::create_transaction_storage_queries(*storage);
 
   // Baseline API coverage
-  transcript.add("status_default_executed_blk", toString(storage->get_status_field(kStatusFieldExecutedBlkCount)));
+  transcript.add("status_default_executed_blk",
+                 toString(metadata_queries->get_status_field(kStatusFieldExecutedBlkCount)));
   transcript.add("pbft_mgr_field_default_round", toString(pbft_queries->get_pbft_mgr_field(kPbftMgrFieldRound)));
   transcript.add("pbft_mgr_status_default_executed_block",
                  toString(pbft_queries->get_pbft_mgr_status(kPbftMgrStatusExecutedBlock)));
   transcript.add("proposal_period_missing",
                  optionalToString(toOptional(storage->get_proposal_period_for_dag_level(100))));
-  transcript.add("period_lambda_missing", optionalToString(toOptional(storage->get_period_lambda(7, false))));
-  transcript.add("rounds_count_dynamic_lambda_default", toString(storage->get_rounds_count_dynamic_lambda()));
-  transcript.add("genesis_missing_before", toString(storage->get_genesis_hash().empty()));
+  transcript.add("period_lambda_missing", optionalToString(toOptional(metadata_queries->get_period_lambda(7, false))));
+  transcript.add("rounds_count_dynamic_lambda_default",
+                 toString(metadata_queries->get_rounds_count_dynamic_lambda()));
+  transcript.add("genesis_missing_before", toString(metadata_queries->get_genesis_hash().empty()));
 
   auto genesis_hash = h256Array(0xAB);
   storage->set_genesis_hash(genesis_hash);
-  transcript.add("genesis_after_set_len", toString(storage->get_genesis_hash().size()));
+  transcript.add("genesis_after_set_len", toString(metadata_queries->get_genesis_hash().size()));
 
   storage->save_status_field(kStatusFieldTrxCount, 11);
   storage->save_pbft_mgr_field(kPbftMgrFieldRound, 17);
@@ -199,15 +202,18 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   storage->save_period_lambda(7, 42);
   storage->save_rounds_count_dynamic_lambda(23);
 
-  transcript.add("status_trx_count_after_save", toString(storage->get_status_field(kStatusFieldTrxCount)));
+  transcript.add("status_trx_count_after_save", toString(metadata_queries->get_status_field(kStatusFieldTrxCount)));
   transcript.add("pbft_mgr_field_round_after_save", toString(pbft_queries->get_pbft_mgr_field(kPbftMgrFieldRound)));
   transcript.add("pbft_mgr_status_next_voted_soft_after_save",
                  toString(pbft_queries->get_pbft_mgr_status(kPbftMgrStatusNextVotedSoftValue)));
   transcript.add("proposal_period_level_100_after_save",
                  optionalToString(toOptional(storage->get_proposal_period_for_dag_level(100))));
-  transcript.add("period_lambda_exact_after_save", optionalToString(toOptional(storage->get_period_lambda(7, false))));
-  transcript.add("period_lambda_closest_after_save", optionalToString(toOptional(storage->get_period_lambda(8, true))));
-  transcript.add("rounds_count_dynamic_lambda_after_save", toString(storage->get_rounds_count_dynamic_lambda()));
+  transcript.add("period_lambda_exact_after_save",
+                 optionalToString(toOptional(metadata_queries->get_period_lambda(7, false))));
+  transcript.add("period_lambda_closest_after_save",
+                 optionalToString(toOptional(metadata_queries->get_period_lambda(8, true))));
+  transcript.add("rounds_count_dynamic_lambda_after_save",
+                 toString(metadata_queries->get_rounds_count_dynamic_lambda()));
 
   // DAG missing + save/update/remove paths
   auto dag_hash_1 = h256Array(0x11);
@@ -232,8 +238,9 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   transcript.add("dag_period_lookup_position", toString(dag_period.position));
 
   storage->update_dag_block_counter(dag_hash_3, 2, 2);
-  transcript.add("dag_counters_nonzero", toString(storage->get_status_field(kStatusFieldDagBlkCount) > 0 &&
-                                                  storage->get_status_field(kStatusFieldDagEdgeCount) > 0));
+  transcript.add("dag_counters_nonzero",
+                 toString(metadata_queries->get_status_field(kStatusFieldDagBlkCount) > 0 &&
+                          metadata_queries->get_status_field(kStatusFieldDagEdgeCount) > 0));
 
   storage->remove_dag_block(dag_hash_2);
   transcript.add("dag_removed_batch_hash", toString(!storage->dag_block_in_db(dag_hash_2)));
