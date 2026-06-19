@@ -6119,6 +6119,30 @@ pub mod rustaxa_ffi {
             column: u8,
             key: Vec<u8>,
         ) -> Result<()>;
+        pub fn storage_shim_save_status_field(
+            batch: &mut BridgeStorageBatch,
+            field: u8,
+            value: u64,
+        ) -> Result<()>;
+        pub fn storage_shim_save_sortition_params_change(
+            batch: &mut BridgeStorageBatch,
+            period: u64,
+            params_rlp: Vec<u8>,
+        ) -> Result<()>;
+        pub fn storage_shim_save_period_lambda(
+            batch: &mut BridgeStorageBatch,
+            period: u64,
+            period_lambda: u32,
+        ) -> Result<()>;
+        pub fn storage_shim_save_rounds_count_dynamic_lambda(
+            batch: &mut BridgeStorageBatch,
+            rounds_count: u32,
+        ) -> Result<()>;
+        pub fn storage_shim_save_block_rewards_stats(
+            batch: &mut BridgeStorageBatch,
+            period: u64,
+            stats_rlp: Vec<u8>,
+        ) -> Result<()>;
         pub fn storage_shim_commit_batch(batch: Box<BridgeStorageBatch>, sync: bool) -> Result<()>;
 
         pub fn dag_block_in_db(self: &BridgeStorage, hash: &[u8; 32]) -> Result<bool>;

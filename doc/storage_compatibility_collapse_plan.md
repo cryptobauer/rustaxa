@@ -206,12 +206,16 @@ Landed sub-slices:
   The C++ storage shim now maps legacy `Batch*` values to opaque `BridgeStorageBatch` boxes whose live
   `StorageWriteBatch` is owned by `rustaxa-storage`; commit consumes the Rust batch object, while dropped C++ batches
   discard their Rust-owned writes without a bridge-side registry.
+- Metadata/rewards shim batch appends: routed storage-shim status fields, sortition parameter changes, period lambda,
+  dynamic-lambda rounds count, and block-rewards stats writes through typed `rustaxa-storage` metadata batch methods
+  instead of broad `insert(Batch&, Column, ...)` appends. These methods still preserve the legacy C++ `Batch&` commit
+  boundary by appending to the same opaque `BridgeStorageBatch`.
 
 Next target:
 
-- Reduce the remaining storage-shim raw append surface by replacing broad `insert(Batch&, Column, ...)` and
-  `remove(Batch&, Column, ...)` callers with typed Rust storage helpers where active tests or public compatibility paths
-  still need them.
+- Reduce the remaining storage-shim raw append surface in the DAG/transaction/PBFT vote families by replacing broad
+  `insert(Batch&, Column, ...)` and `remove(Batch&, Column, ...)` callers with typed Rust storage helpers where active
+  tests or public compatibility paths still need them.
 
 Scope:
 

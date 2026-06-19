@@ -183,10 +183,45 @@ impl<D: DbReader + DbWriter> MetadataRepository<D> {
         self.db.put(Column::Status, &[field], &value.to_le_bytes())
     }
 
+    /// Appends a status counter write to an existing native storage batch.
+    ///
+    /// Inputs are the C++-compatible status-field discriminant and value.
+    /// Output is only mutation of the supplied batch; callers own commit/drop
+    /// ordering. This is the typed Rust replacement for storage-shim raw
+    /// `status` column appends.
+    pub fn write_status_field_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        field: u8,
+        value: u64,
+    ) -> Result<()> {
+        self.db
+            .batch_put(batch, Column::Status, &[field], &value.to_le_bytes())
+    }
+
     /// Stores sortition parameter change payload for a period.
     /// C++ mapping: `DbStorage::saveSortitionParamsChange(PbftPeriod, const SortitionParamsChange&, Batch&)`.
     pub fn write_sortition_params_change(&self, period: u64, params_rlp: &[u8]) -> Result<()> {
         self.db.put(
+            Column::SortitionParamsChange,
+            &period.to_le_bytes(),
+            params_rlp,
+        )
+    }
+
+    /// Appends a sortition-parameter change payload to an existing native batch.
+    ///
+    /// Inputs are the legacy period key and already-encoded params RLP. The
+    /// method chooses the compatibility column and key encoding so C++ shims no
+    /// longer materialize this raw storage row.
+    pub fn write_sortition_params_change_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        period: u64,
+        params_rlp: &[u8],
+    ) -> Result<()> {
+        self.db.batch_put(
+            batch,
             Column::SortitionParamsChange,
             &period.to_le_bytes(),
             params_rlp,
@@ -203,10 +238,46 @@ impl<D: DbReader + DbWriter> MetadataRepository<D> {
         )
     }
 
+    /// Appends a dynamic-lambda write to an existing native storage batch.
+    ///
+    /// Inputs are the period and lambda value. The method preserves legacy
+    /// little-endian key/value encoding while keeping the column choice in
+    /// `rustaxa-storage`.
+    pub fn write_period_lambda_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        period: u64,
+        period_lambda: u32,
+    ) -> Result<()> {
+        self.db.batch_put(
+            batch,
+            Column::PeriodLambda,
+            &period.to_le_bytes(),
+            &period_lambda.to_le_bytes(),
+        )
+    }
+
     /// Persists the rounds-count parameter that controls dynamic lambda updates.
     /// C++ mapping: `DbStorage::saveRoundsCountDynamicLambda(uint32_t, Batch&)`.
     pub fn write_rounds_count_dynamic_lambda(&self, rounds_count: u32) -> Result<()> {
         self.db.put(
+            Column::RoundsCountDynamicLambda,
+            &SINGLE_VALUE_KEY,
+            &rounds_count.to_le_bytes(),
+        )
+    }
+
+    /// Appends a rounds-count dynamic-lambda write to an existing native batch.
+    ///
+    /// The key is the single-value metadata key used by the legacy schema.
+    /// Callers own commit/drop ordering through the supplied batch.
+    pub fn write_rounds_count_dynamic_lambda_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        rounds_count: u32,
+    ) -> Result<()> {
+        self.db.batch_put(
+            batch,
             Column::RoundsCountDynamicLambda,
             &SINGLE_VALUE_KEY,
             &rounds_count.to_le_bytes(),
@@ -218,6 +289,24 @@ impl<D: DbReader + DbWriter> MetadataRepository<D> {
     pub fn write_block_rewards_stats(&self, period: u64, stats_rlp: &[u8]) -> Result<()> {
         self.db
             .put(Column::BlockRewardsStats, &period.to_le_bytes(), stats_rlp)
+    }
+
+    /// Appends serialized block reward statistics to an existing native batch.
+    ///
+    /// Inputs are the target period and legacy-compatible encoded stats RLP.
+    /// Output is only mutation of the caller-owned batch.
+    pub fn write_block_rewards_stats_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        period: u64,
+        stats_rlp: &[u8],
+    ) -> Result<()> {
+        self.db.batch_put(
+            batch,
+            Column::BlockRewardsStats,
+            &period.to_le_bytes(),
+            stats_rlp,
+        )
     }
 
     /// Removes every stored block reward stats entry.
@@ -243,6 +332,11 @@ mod tests {
         data: RwLock<HashMap<String, BTreeMap<Vec<u8>, Vec<u8>>>>,
     }
 
+    enum BatchOp {
+        Put(Column, Vec<u8>, Vec<u8>),
+        Delete(Column, Vec<u8>),
+    }
+
     impl MockMetadataStore {
         fn new() -> Self {
             MockMetadataStore {
@@ -256,6 +350,13 @@ mod tests {
                 .entry(col.name().to_string())
                 .or_insert_with(BTreeMap::new);
             cf.insert(key.to_vec(), value.to_vec());
+        }
+
+        fn delete(&self, col: Column, key: &[u8]) {
+            let mut data = self.data.write().unwrap();
+            if let Some(cf) = data.get_mut(col.name()) {
+                cf.remove(key);
+            }
         }
     }
 
@@ -337,6 +438,52 @@ mod tests {
             } else {
                 Box::new(std::iter::empty())
             }
+        }
+    }
+
+    impl DbWriter for MockMetadataStore {
+        type Batch = Vec<BatchOp>;
+
+        fn create_batch(&self) -> Self::Batch {
+            Vec::new()
+        }
+
+        fn batch_put(
+            &self,
+            batch: &mut Self::Batch,
+            col: Column,
+            key: &[u8],
+            value: &[u8],
+        ) -> Result<()> {
+            batch.push(BatchOp::Put(col, key.to_vec(), value.to_vec()));
+            Ok(())
+        }
+
+        fn batch_delete(&self, batch: &mut Self::Batch, col: Column, key: &[u8]) -> Result<()> {
+            batch.push(BatchOp::Delete(col, key.to_vec()));
+            Ok(())
+        }
+
+        fn commit_batch(&self, batch: Self::Batch) -> Result<()> {
+            for op in batch {
+                match op {
+                    BatchOp::Put(col, key, value) => {
+                        MockMetadataStore::put(self, col, &key, &value)
+                    }
+                    BatchOp::Delete(col, key) => MockMetadataStore::delete(self, col, &key),
+                }
+            }
+            Ok(())
+        }
+
+        fn put(&self, col: Column, key: &[u8], value: &[u8]) -> Result<()> {
+            MockMetadataStore::put(self, col, key, value);
+            Ok(())
+        }
+
+        fn delete(&self, col: Column, key: &[u8]) -> Result<()> {
+            MockMetadataStore::delete(self, col, key);
+            Ok(())
         }
     }
 
@@ -459,6 +606,37 @@ mod tests {
         assert_eq!(
             repo.block_rewards_stats_rlp().unwrap(),
             vec![(3u64, vec![0xC3]), (7u64, vec![0xC7])]
+        );
+    }
+
+    #[test]
+    fn test_metadata_batch_writers_commit_legacy_rows() {
+        let db = Arc::new(MockMetadataStore::new());
+        let repo = MetadataRepository::new(db.clone());
+        let mut batch = db.create_batch();
+
+        repo.write_status_field_in_batch(&mut batch, 2, 11).unwrap();
+        repo.write_sortition_params_change_in_batch(&mut batch, 3, &[0xA3])
+            .unwrap();
+        repo.write_period_lambda_in_batch(&mut batch, 5, 42)
+            .unwrap();
+        repo.write_rounds_count_dynamic_lambda_in_batch(&mut batch, 9)
+            .unwrap();
+        repo.write_block_rewards_stats_in_batch(&mut batch, 7, &[0xC7])
+            .unwrap();
+
+        db.commit_batch(batch).unwrap();
+
+        assert_eq!(repo.status_field(2).unwrap(), 11);
+        assert_eq!(
+            repo.params_change_for_period_rlp(3).unwrap(),
+            Some(vec![0xA3])
+        );
+        assert_eq!(repo.period_lambda(5, false).unwrap(), Some(42));
+        assert_eq!(repo.rounds_count_dynamic_lambda().unwrap(), 9);
+        assert_eq!(
+            repo.block_rewards_stats_rlp().unwrap(),
+            vec![(7u64, vec![0xC7])]
         );
     }
 }

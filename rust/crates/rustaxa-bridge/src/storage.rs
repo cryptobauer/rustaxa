@@ -136,6 +136,80 @@ pub fn storage_shim_batch_delete(
     storage.batch_delete_raw(storage_shim_batch_mut(batch)?, column, &key)
 }
 
+/// Appends a typed status-field write to a Rust-owned storage shim batch.
+///
+/// This keeps the legacy C++ batch commit/drop boundary while moving the
+/// status-column key/value encoding into `rustaxa-storage`.
+pub fn storage_shim_save_status_field(
+    batch: &mut BridgeStorageBatch,
+    field: u8,
+    value: u64,
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage
+        .metadata()
+        .write_status_field_in_batch(storage_shim_batch_mut(batch)?, field, value)
+}
+
+/// Appends a typed sortition-params change write to a Rust-owned storage shim batch.
+///
+/// The payload must already be the legacy RLP bytes. The Rust metadata
+/// repository owns the target column and period-key encoding.
+pub fn storage_shim_save_sortition_params_change(
+    batch: &mut BridgeStorageBatch,
+    period: u64,
+    params_rlp: Vec<u8>,
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage.metadata().write_sortition_params_change_in_batch(
+        storage_shim_batch_mut(batch)?,
+        period,
+        &params_rlp,
+    )
+}
+
+/// Appends a typed period-lambda write to a Rust-owned storage shim batch.
+pub fn storage_shim_save_period_lambda(
+    batch: &mut BridgeStorageBatch,
+    period: u64,
+    period_lambda: u32,
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage.metadata().write_period_lambda_in_batch(
+        storage_shim_batch_mut(batch)?,
+        period,
+        period_lambda,
+    )
+}
+
+/// Appends a typed dynamic-lambda rounds-count write to a Rust-owned storage shim batch.
+pub fn storage_shim_save_rounds_count_dynamic_lambda(
+    batch: &mut BridgeStorageBatch,
+    rounds_count: u32,
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage
+        .metadata()
+        .write_rounds_count_dynamic_lambda_in_batch(storage_shim_batch_mut(batch)?, rounds_count)
+}
+
+/// Appends typed block reward statistics bytes to a Rust-owned storage shim batch.
+///
+/// The caller supplies legacy-compatible encoded block-stats RLP; Rust owns the
+/// period-key encoding and `block_rewards_stats` column selection.
+pub fn storage_shim_save_block_rewards_stats(
+    batch: &mut BridgeStorageBatch,
+    period: u64,
+    stats_rlp: Vec<u8>,
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage.metadata().write_block_rewards_stats_in_batch(
+        storage_shim_batch_mut(batch)?,
+        period,
+        &stats_rlp,
+    )
+}
+
 /// Commits a Rust-owned storage shim batch and consumes it.
 ///
 /// Dropping a `BridgeStorageBatch` without calling this method discards staged

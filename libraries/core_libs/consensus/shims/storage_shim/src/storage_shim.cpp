@@ -422,7 +422,7 @@ void DbStorage::saveDagBlock(const std::shared_ptr<DagBlock>& blk, Batch* write_
 }
 
 void DbStorage::saveSortitionParamsChange(PbftPeriod period, const SortitionParamsChange& params, Batch& batch) {
-  insert(batch, Columns::sortition_params_change, toSlice(period), toSlice(params.rlp()));
+  rustaxa::storage_shim_save_sortition_params_change(getOrCreateRustBatch(batch), period, into_rust_vec(params.rlp()));
 }
 
 std::deque<SortitionParamsChange> DbStorage::getLastSortitionParams(size_t count) {
@@ -824,7 +824,7 @@ void DbStorage::saveStatusField(StatusDbField const& field, uint64_t value) {
 }
 
 void DbStorage::addStatusFieldToBatch(StatusDbField const& field, uint64_t value, Batch& write_batch) {
-  insert(write_batch, Columns::status, toSlice(static_cast<uint8_t>(field)), toSlice(value));
+  rustaxa::storage_shim_save_status_field(getOrCreateRustBatch(write_batch), static_cast<uint8_t>(field), value);
 }
 
 uint32_t DbStorage::getPbftMgrField(PbftMgrField field) {
@@ -1071,7 +1071,7 @@ void DbStorage::addProposalPeriodDagLevelsMapToBatch(uint64_t level, PbftPeriod 
 }
 
 void DbStorage::savePeriodLambda(PbftPeriod period, uint32_t period_lambda, Batch& write_batch) {
-  insert(write_batch, Columns::period_lambda, period, period_lambda);
+  rustaxa::storage_shim_save_period_lambda(getOrCreateRustBatch(write_batch), period, period_lambda);
 }
 
 std::optional<uint32_t> DbStorage::getPeriodLambda(PbftPeriod period, bool find_closest) {
@@ -1083,7 +1083,7 @@ std::optional<uint32_t> DbStorage::getPeriodLambda(PbftPeriod period, bool find_
 }
 
 void DbStorage::saveRoundsCountDynamicLambda(uint32_t rounds_count, Batch& write_batch) {
-  insert(write_batch, Columns::rounds_count_dynamic_lambda, 0, toSlice(rounds_count));
+  rustaxa::storage_shim_save_rounds_count_dynamic_lambda(getOrCreateRustBatch(write_batch), rounds_count);
 }
 
 uint32_t DbStorage::getRoundsCountDynamicLambda() { return rust_storage_.value()->get_rounds_count_dynamic_lambda(); }
@@ -1103,7 +1103,8 @@ std::unordered_map<PbftPeriod, rewards::BlockStats> DbStorage::getBlocksRewardsS
 void DbStorage::saveBlockRewardsStats(uint64_t period, const rewards::BlockStats& stats, Batch& write_batch) {
   dev::RLPStream encoding;
   stats.rlp(encoding);
-  insert(write_batch, Columns::block_rewards_stats, period, encoding.out());
+  rustaxa::storage_shim_save_block_rewards_stats(getOrCreateRustBatch(write_batch), period,
+                                                 into_rust_vec(encoding.out()));
 }
 
 bool DbStorage::hasMinorVersionChanged() { return minor_version_changed_; }
