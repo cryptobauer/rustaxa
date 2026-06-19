@@ -369,9 +369,10 @@ Validation:
 - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge`
 - `cmake --build /build --target pbft_manager_test --parallel 12`
 
-Implementation status: in progress. The first compatibility mirror reduction cut makes the long-lived Rust manager
-runtime authoritative for round, step, state, current-lambda, next-step-time, and executed-block scalar inputs after
-startup. `getPbftRound()` and `getPbftStep()` now read `PbftManagerRuntimeSnapshot` whenever the runtime handle exists,
+Implementation status: complete for the current ownership boundary. The compatibility mirror reduction cuts make the
+long-lived Rust manager runtime authoritative for round, step, state, current-lambda, next-step-time, and executed-block
+scalar inputs after startup. `getPbftRound()` and `getPbftStep()` now read `PbftManagerRuntimeSnapshot` whenever the
+runtime handle exists,
 the daemon tick fact is seeded from a fresh Rust runtime snapshot instead of C++ scalar mirrors, and transition-planner
 facts for delay/reset/filter/certify/finish/finish-polling/loopback use snapshot scalar values. State-action facts and
 the runtime action mismatch guard also read `state_` only through a fresh Rust runtime snapshot; the C++ `state_` field is
@@ -453,9 +454,10 @@ The sync cert-vote RLP cut makes the Rust queue retain canonical PBFT cert-vote 
 entry's previous-cert sidecar and the final queued block's cert-vote payloads. `processPeriodData()` now receives the
 Rust-selected cert-vote bytes and materializes temporary `PbftVote` objects only for VoteManager validation/insertion
 and finalization dispatch.
-Remaining Slice 9 work should finish in one more cut if it stays narrow: reduce or explicitly classify the remaining
-VoteManager insertion, pillar-data finalization, and proposed-block validation/API sidecars that still require C++
-materialization.
+The remaining `PbftVote`, `PillarVote`, pillar-data, `PbftBlock`, `DagBlock`, `PeriodData`, and `Transaction`
+materializations are classified as executor or public API compatibility caches under this document's target boundary.
+They are not authoritative PBFT manager decision state. Future deletion belongs to the VoteManager/PillarChainManager,
+FinalChain/EVM execution, proposed-block public API, network/tarcap, and model-port tracks.
 
 ### Slice 10: Rust-Mode PBFT Manager Parity Gate
 
