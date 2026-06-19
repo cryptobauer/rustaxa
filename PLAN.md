@@ -303,6 +303,8 @@ phase is compatibility deletion, not storage migration. Measure it by removing c
 sidecar materialization boundaries after their callers move, while preserving the storage-boundary guard so new
 production consensus routes cannot re-enter `DbStorage` or bridge batch ownership.
 
+Detailed slice tracking for this cleanup lives in `doc/storage_compatibility_collapse_plan.md`.
+
 Future cleanup should:
 
 1. Keep the native Rust ownership rule: Rust consensus runtimes use `Arc<rustaxa_storage::Storage>` and repository APIs
