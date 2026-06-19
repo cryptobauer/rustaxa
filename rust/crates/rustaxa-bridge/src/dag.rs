@@ -8,19 +8,16 @@ use crate::ffi::rustaxa_ffi::{
     DagPersistenceCounters, DagPivotTipsValidation, DagProposerAddBlockReport,
     DagProposerAttemptInput, DagProposerAttemptPlan, DagProposerBlockConstructionPlan,
     DagProposerBlockIntentInput, DagProposerBlockIntentNowInput, DagProposerFrontierFacts,
-    DagProposerPostPackInput, DagProposerPostPackPlan, DagProposerRetryResetInput,
-    DagProposerRetryResetPlan, DagProposerSessionStep, DagProposerSignedBlockIntent,
-    DagProposerSignedBlockIntentInput, DagProposerStaleProofInput, DagProposerStaleProofPlan,
+    DagProposerSessionStep, DagProposerSignedBlockIntent, DagProposerSignedBlockIntentInput,
     DagProposerStaleProofReport, DagProposerStorageBlockConstructionInput,
     DagProposerStorageTipSelectionInput, DagProposerTipSelectionPlan,
     DagProposerTransactionPackReport, DagProposerTransactionPackRequest,
-    DagProposerUnsignedBlockIntent, DagProposerVdfProofReport, DagProposerVdfWaitInput,
-    DagProposerVdfWaitPlan, DagProposerVdfWaitReport, DagReferenceMetadata, DagSyncBlockRlp,
-    DagTransactionHash, DagTransactionQueryPlan, DagTransactionRlpLookup,
-    DagVerifyAuthorizationInput, DagVerifyAuthorizationResult, DagVerifyBlockAuthorizationReport,
-    DagVerifyBlockGasReport, DagVerifyBlockSessionInput, DagVerifyBlockSessionStep,
-    DagVerifyBlockTransactionReport, DagVerifyBlockVdfReport, DagVerifyGasInput,
-    DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
+    DagProposerUnsignedBlockIntent, DagProposerVdfProofReport, DagProposerVdfWaitReport,
+    DagReferenceMetadata, DagSyncBlockRlp, DagTransactionHash, DagTransactionQueryPlan,
+    DagTransactionRlpLookup, DagVerifyAuthorizationInput, DagVerifyAuthorizationResult,
+    DagVerifyBlockAuthorizationReport, DagVerifyBlockGasReport, DagVerifyBlockSessionInput,
+    DagVerifyBlockSessionStep, DagVerifyBlockTransactionReport, DagVerifyBlockVdfReport,
+    DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
     DagVerifyTransactionAvailabilityInput, DagVerifyTransactionAvailabilityResult,
     DagVerifyVdfDposDecision, DagVerifyVdfDposFacts, DagVerifyVdfPrepareInput,
     DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
@@ -1795,82 +1792,6 @@ pub fn dag_vdf_message(pivot: &[u8; 32], transaction_hashes: Vec<DagHash>) -> Ve
         .map(|hash| H256::from(hash.hash))
         .collect::<Vec<_>>();
     construct_dag_vdf_message(H256::from(*pivot), &hashes)
-}
-
-/// Plans the deterministic DAG proposer action after live transaction packing.
-///
-/// The bridge intentionally carries only the packed transaction count, network
-/// throttle fact, and proposal level. Transaction bodies, EVM gas estimates,
-/// VDF proof execution, and final DAG block materialization remain outside Rust
-/// until those runtime boundaries move.
-pub fn dag_proposer_plan_post_pack(input: DagProposerPostPackInput) -> DagProposerPostPackPlan {
-    let plan = plan_dag_proposer_post_pack(rustaxa_consensus::dag::DagProposerPostPackInput {
-        proposal_level: input.proposal_level,
-        network_throttled: input.network_throttled,
-        packed_transaction_count: input.packed_transaction_count,
-    });
-    DagProposerPostPackPlan {
-        action: plan.action,
-        reason_code: plan.reason_code,
-        update_retry_state: plan.update_retry_state,
-        next_last_propose_level: plan.next_last_propose_level,
-        next_retry_count: plan.next_retry_count,
-    }
-}
-
-/// Plans the retry-state reset after a live DAG proposer boundary completes.
-///
-/// C++ still owns the live proof, sleep, insertion, and network side effects.
-/// This bridge only maps the proposal level into the Rust proposer planner and
-/// returns the retry cursor update that the shim must mirror.
-pub fn dag_proposer_plan_retry_reset(
-    input: DagProposerRetryResetInput,
-) -> DagProposerRetryResetPlan {
-    let plan = plan_dag_proposer_retry_reset(rustaxa_consensus::dag::DagProposerRetryResetInput {
-        proposal_level: input.proposal_level,
-    });
-    DagProposerRetryResetPlan {
-        update_retry_state: plan.update_retry_state,
-        next_last_propose_level: plan.next_last_propose_level,
-        next_retry_count: plan.next_retry_count,
-    }
-}
-
-/// Plans whether the in-flight DAG proposer VDF proof should be cancelled.
-///
-/// The bridge carries only the latest proposal level and difficulty facts. C++
-/// retains the polling loop and cancellation token while Rust owns the
-/// deterministic cancellation predicate.
-pub fn dag_proposer_plan_vdf_wait(input: DagProposerVdfWaitInput) -> DagProposerVdfWaitPlan {
-    let plan = plan_dag_proposer_vdf_wait(rustaxa_consensus::dag::DagProposerVdfWaitInput {
-        proposal_level: input.proposal_level,
-        latest_proposal_level: input.latest_proposal_level,
-        vdf_difficulty: input.vdf_difficulty,
-        minimum_vdf_difficulty: input.minimum_vdf_difficulty,
-    });
-    DagProposerVdfWaitPlan {
-        cancel_in_flight_proof: plan.cancel_in_flight_proof,
-    }
-}
-
-/// Plans whether a stale DAG proposer VDF proof remains usable after sleeping.
-///
-/// C++ owns the sleep and latest-frontier read. Rust owns the resulting
-/// continue/skip action and the retry cursor for the skip case.
-pub fn dag_proposer_plan_stale_proof(
-    input: DagProposerStaleProofInput,
-) -> DagProposerStaleProofPlan {
-    let plan = plan_dag_proposer_stale_proof(rustaxa_consensus::dag::DagProposerStaleProofInput {
-        proposal_level: input.proposal_level,
-        latest_proposal_level: input.latest_proposal_level,
-    });
-    DagProposerStaleProofPlan {
-        action: plan.action,
-        reason_code: plan.reason_code,
-        update_retry_state: plan.update_retry_state,
-        next_last_propose_level: plan.next_last_propose_level,
-        next_retry_count: plan.next_retry_count,
-    }
 }
 
 fn to_bridge_dag_proposer_block_construction_plan(
@@ -4567,88 +4488,6 @@ mod tests {
         });
         assert!(!missing.accepted);
         assert_eq!(missing.missing_references[0].hash, [0x77; 32]);
-    }
-
-    #[test]
-    fn dag_proposer_post_pack_bridge_resets_retry_state_for_empty_pack() {
-        let plan = dag_proposer_plan_post_pack(DagProposerPostPackInput {
-            proposal_level: 17,
-            network_throttled: false,
-            packed_transaction_count: 0,
-        });
-
-        assert_eq!(plan.action, DAG_PROPOSER_ACTION_SKIP);
-        assert_eq!(
-            plan.reason_code,
-            dag::DAG_PROPOSER_REASON_PACKED_TRANSACTIONS_EMPTY
-        );
-        assert!(plan.update_retry_state);
-        assert_eq!(plan.next_last_propose_level, 17);
-        assert_eq!(plan.next_retry_count, 0);
-    }
-
-    #[test]
-    fn dag_proposer_post_pack_bridge_continues_for_non_empty_pack() {
-        let plan = dag_proposer_plan_post_pack(DagProposerPostPackInput {
-            proposal_level: 17,
-            network_throttled: false,
-            packed_transaction_count: 3,
-        });
-
-        assert_eq!(plan.action, DAG_PROPOSER_ACTION_CONTINUE);
-        assert_eq!(plan.reason_code, DAG_PROPOSER_REASON_OK);
-        assert!(!plan.update_retry_state);
-    }
-
-    #[test]
-    fn dag_proposer_post_pack_bridge_retries_later_when_network_throttled() {
-        let plan = dag_proposer_plan_post_pack(DagProposerPostPackInput {
-            proposal_level: 17,
-            network_throttled: true,
-            packed_transaction_count: 0,
-        });
-
-        assert_eq!(plan.action, dag::DAG_PROPOSER_ACTION_RETRY_LATER);
-        assert_eq!(
-            plan.reason_code,
-            dag::DAG_PROPOSER_REASON_TRANSACTION_PACK_THROTTLED
-        );
-        assert!(!plan.update_retry_state);
-    }
-
-    #[test]
-    fn dag_proposer_retry_reset_bridge_sets_authoritative_cursor() {
-        let plan = dag_proposer_plan_retry_reset(DagProposerRetryResetInput { proposal_level: 23 });
-
-        assert!(plan.update_retry_state);
-        assert_eq!(plan.next_last_propose_level, 23);
-        assert_eq!(plan.next_retry_count, 0);
-    }
-
-    #[test]
-    fn dag_proposer_vdf_wait_bridge_cancels_advanced_non_minimum_work() {
-        let plan = dag_proposer_plan_vdf_wait(DagProposerVdfWaitInput {
-            proposal_level: 7,
-            latest_proposal_level: 9,
-            vdf_difficulty: 4,
-            minimum_vdf_difficulty: 1,
-        });
-
-        assert!(plan.cancel_in_flight_proof);
-    }
-
-    #[test]
-    fn dag_proposer_stale_proof_bridge_skips_with_retry_reset() {
-        let plan = dag_proposer_plan_stale_proof(DagProposerStaleProofInput {
-            proposal_level: 7,
-            latest_proposal_level: 8,
-        });
-
-        assert_eq!(plan.action, DAG_PROPOSER_ACTION_SKIP);
-        assert_eq!(plan.reason_code, dag::DAG_PROPOSER_REASON_STALE_VDF_RETRY);
-        assert!(plan.update_retry_state);
-        assert_eq!(plan.next_last_propose_level, 7);
-        assert_eq!(plan.next_retry_count, 0);
     }
 
     #[test]

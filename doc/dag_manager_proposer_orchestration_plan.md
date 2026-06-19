@@ -181,6 +181,12 @@ Validation:
 
 Delete or quarantine obsolete shim helpers after DAG manager/proposer sessions become authoritative.
 
+Landed:
+
+- Removed obsolete standalone DAG proposer bridge DTOs and functions for post-pack, retry-reset, VDF-wait, and
+  stale-proof planning. The ordered proposer session is now the bridge surface for those executor reports; the underlying
+  Rust consensus planners remain crate-local implementation details used by that session.
+
 Scope:
 
 - Remove duplicated C++ helper logic for DAG verification, sync selection, cleanup, proposer policy, and now-obsolete

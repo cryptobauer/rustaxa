@@ -3873,62 +3873,6 @@ pub mod rustaxa_ffi {
         accepted: bool,
     }
 
-    /// Facts observed after the live transaction-packing boundary.
-    struct DagProposerPostPackInput {
-        proposal_level: u64,
-        network_throttled: bool,
-        packed_transaction_count: u64,
-    }
-
-    /// Rust-owned post-pack DAG proposer decision.
-    struct DagProposerPostPackPlan {
-        action: u8,
-        reason_code: u32,
-        update_retry_state: bool,
-        next_last_propose_level: u64,
-        next_retry_count: u64,
-    }
-
-    /// Proposal level for a Rust-owned retry reset after a live boundary.
-    struct DagProposerRetryResetInput {
-        proposal_level: u64,
-    }
-
-    /// Rust-owned retry cursor update for post-boundary proposer exits.
-    struct DagProposerRetryResetPlan {
-        update_retry_state: bool,
-        next_last_propose_level: u64,
-        next_retry_count: u64,
-    }
-
-    /// Facts observed while waiting for an in-flight proposer VDF proof.
-    struct DagProposerVdfWaitInput {
-        proposal_level: u64,
-        latest_proposal_level: u64,
-        vdf_difficulty: u16,
-        minimum_vdf_difficulty: u16,
-    }
-
-    /// Rust-owned VDF wait decision.
-    struct DagProposerVdfWaitPlan {
-        cancel_in_flight_proof: bool,
-    }
-
-    /// Facts observed after the stale proposer VDF sleep.
-    struct DagProposerStaleProofInput {
-        proposal_level: u64,
-        latest_proposal_level: u64,
-    }
-
-    /// Rust-owned stale-proof continuation or skip decision.
-    struct DagProposerStaleProofPlan {
-        action: u8,
-        reason_code: u32,
-        update_retry_state: bool,
-        next_last_propose_level: u64,
-        next_retry_count: u64,
-    }
-
     /// Rust-runtime DAG block construction facts for storage-backed tip metadata planning.
     struct DagProposerStorageBlockConstructionInput {
         frontier_tips: Vec<DagHash>,
@@ -4639,17 +4583,6 @@ pub mod rustaxa_ffi {
         ) -> Result<DagVerifyVdfSortitionResult>;
         pub fn dag_vrf_input(block_level: u64, proposal_period_hash: &[u8; 32]) -> Vec<u8>;
         pub fn dag_vdf_message(pivot: &[u8; 32], transaction_hashes: Vec<DagHash>) -> Vec<u8>;
-        pub fn dag_proposer_plan_post_pack(
-            input: DagProposerPostPackInput,
-        ) -> DagProposerPostPackPlan;
-        pub fn dag_proposer_plan_retry_reset(
-            input: DagProposerRetryResetInput,
-        ) -> DagProposerRetryResetPlan;
-        pub fn dag_proposer_plan_vdf_wait(input: DagProposerVdfWaitInput)
-            -> DagProposerVdfWaitPlan;
-        pub fn dag_proposer_plan_stale_proof(
-            input: DagProposerStaleProofInput,
-        ) -> DagProposerStaleProofPlan;
         pub fn dag_proposer_plan_block_intent(
             input: DagProposerBlockIntentInput,
         ) -> Result<DagProposerUnsignedBlockIntent>;
