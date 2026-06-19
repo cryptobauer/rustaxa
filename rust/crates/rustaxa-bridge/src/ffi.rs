@@ -4724,11 +4724,6 @@ pub mod rustaxa_ffi {
             storage: &BridgeStorage,
             fact: PbftManagerStartupFact,
         ) -> Result<Box<BridgePbftManagerRuntime>>;
-        pub fn load_pbft_manager_startup_replay_period_storage(
-            storage: &BridgeStorage,
-            period: u64,
-            load_period_lambda: bool,
-        ) -> Result<PbftManagerStartupReplayPeriod>;
         pub fn pbft_manager_runtime_load_startup_replay_period(
             runtime: &BridgePbftManagerRuntime,
             period: u64,

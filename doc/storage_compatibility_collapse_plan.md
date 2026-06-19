@@ -186,11 +186,10 @@ need C++ `Batch` objects backed by Rust bridge batch ids.
 
 Landed sub-slices:
 
-- PBFT manager transition storage: deleted the standalone CXX bridge helper that accepted generic `BridgeStorage` and
-  applied transition writes outside the long-lived runtime handle. The remaining C++ storage coverage now constructs
-  `BridgePbftManagerRuntime` from storage and applies the transition through
-  `pbft_manager_runtime_apply_transition_storage_write(...)`, so production and validation both exercise the
-  runtime-owned storage handle.
+- PBFT manager storage bypasses: deleted standalone CXX bridge helpers that accepted generic `BridgeStorage` for
+  transition writes and startup replay reads outside the long-lived runtime handle. The remaining C++ storage coverage
+  now constructs `BridgePbftManagerRuntime` from storage and uses runtime-owned transition/replay methods, so production
+  and validation both exercise the typed runtime storage handle after construction.
 
 Next target:
 

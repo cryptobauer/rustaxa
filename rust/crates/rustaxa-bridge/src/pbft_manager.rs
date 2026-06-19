@@ -208,43 +208,6 @@ pub fn create_pbft_manager_runtime_from_storage(
     }))
 }
 
-/// Loads one finalized period for PBFT manager startup replay from native Rust
-/// storage.
-///
-/// Inputs:
-/// - `storage`: shared Rust storage bridge handle.
-/// - `period`: finalized PBFT period to replay into temporary live C++ mirrors.
-/// - `load_period_lambda`: whether Cacti replay needs closest dynamic-lambda facts.
-///
-/// Outputs:
-/// - A CXX-safe payload containing the raw period data, finalized DAG hashes,
-///   and optional dynamic lambda.
-///
-/// Invariants and edge behavior:
-/// - The bridge only maps DTOs; storage reads and malformed-period handling are
-///   owned by `rustaxa-consensus`.
-/// - `found = false` is an explicit missing-period result and does not trigger
-///   a legacy storage fallback.
-pub fn load_pbft_manager_startup_replay_period_storage(
-    storage: &BridgeStorage,
-    period: u64,
-    load_period_lambda: bool,
-) -> anyhow::Result<crate::ffi::rustaxa_ffi::PbftManagerStartupReplayPeriod> {
-    let replay =
-        load_domain_pbft_manager_startup_replay_period(&storage.0, period, load_period_lambda)?;
-    Ok(crate::ffi::rustaxa_ffi::PbftManagerStartupReplayPeriod {
-        found: replay.found,
-        period_data_rlp: replay.period_data_rlp,
-        finalized_dag_hashes: replay
-            .finalized_dag_hashes
-            .into_iter()
-            .map(|hash| FfiPbftFinalizationHash { hash: hash.0 })
-            .collect(),
-        has_period_lambda: replay.period_lambda.is_some(),
-        period_lambda: replay.period_lambda.unwrap_or_default(),
-    })
-}
-
 /// Loads one finalized period for PBFT manager startup replay through runtime-owned storage.
 ///
 /// Inputs:
@@ -257,9 +220,9 @@ pub fn load_pbft_manager_startup_replay_period_storage(
 ///   and optional dynamic lambda.
 ///
 /// Invariants and edge behavior:
-/// - This is the runtime-owned equivalent of
-///   `load_pbft_manager_startup_replay_period_storage`; storage reads and
-///   malformed-period handling remain owned by `rustaxa-consensus`.
+/// - Storage reads and malformed-period handling remain owned by
+///   `rustaxa-consensus`; C++ does not pass a generic storage facade after the
+///   runtime is constructed.
 /// - `found = false` is an explicit missing-period result and does not trigger
 ///   a legacy storage fallback.
 pub fn pbft_manager_runtime_load_startup_replay_period(
@@ -2854,41 +2817,6 @@ mod tests {
                 .expect("runtime-owned pillar vote should load");
 
             assert_eq!(vote_rlp, vec![0xC0]);
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_loads_startup_replay_period_from_owned_storage() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_startup_replay_period");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            let period_data = empty_finalized_dag_period_data_rlp();
-            storage
-                .save_period_data(12, period_data.clone())
-                .expect("period data should persist");
-            storage
-                .save_period_lambda(11, 1_234)
-                .expect("period lambda should persist");
-
-            let replay = load_pbft_manager_startup_replay_period_storage(&storage, 12, true)
-                .expect("startup replay read should succeed");
-
-            assert!(replay.found);
-            assert_eq!(replay.period_data_rlp, period_data);
-            assert!(replay.finalized_dag_hashes.is_empty());
-            assert!(replay.has_period_lambda);
-            assert_eq!(replay.period_lambda, 1_234);
-
-            let missing = load_pbft_manager_startup_replay_period_storage(&storage, 13, true)
-                .expect("missing startup replay read should succeed");
-            assert!(!missing.found);
-            assert!(missing.period_data_rlp.is_empty());
-            assert!(missing.finalized_dag_hashes.is_empty());
-            assert!(!missing.has_period_lambda);
         }
 
         let _ = fs::remove_dir_all(temp_dir);
