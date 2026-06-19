@@ -1431,8 +1431,10 @@ impl BridgeFinalChain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::{BridgeMetadataStorageQueries, BridgeStorage};
-    use crate::storage::{create_metadata_storage_queries, create_storage};
+    use crate::ffi::{BridgeDagStorageQueries, BridgeMetadataStorageQueries, BridgeStorage};
+    use crate::storage::{
+        create_dag_storage_queries, create_metadata_storage_queries, create_storage,
+    };
     use ethereum_types::{H256, U256};
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
@@ -1461,6 +1463,10 @@ mod tests {
 
     fn metadata_queries(storage: &BridgeStorage) -> Box<BridgeMetadataStorageQueries> {
         create_metadata_storage_queries(storage)
+    }
+
+    fn dag_queries(storage: &BridgeStorage) -> Box<BridgeDagStorageQueries> {
+        create_dag_storage_queries(storage)
     }
 
     fn genesis_validator(address: [u8; 20], stake: u64) -> rustaxa_ffi::GenesisValidator {
@@ -2880,7 +2886,9 @@ mod tests {
         drop(session);
         drop(final_chain);
         let storage = create_storage(storage_path).expect("storage should reopen");
-        let proposal_period = storage.get_proposal_period_for_dag_level(42).unwrap();
+        let proposal_period = dag_queries(&storage)
+            .get_proposal_period_for_dag_level(42)
+            .unwrap();
         assert!(proposal_period.found);
         assert_eq!(proposal_period.period, 1);
         drop(storage);

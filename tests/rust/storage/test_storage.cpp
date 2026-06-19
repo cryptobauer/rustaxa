@@ -49,6 +49,10 @@ class StorageTest : public ::testing::Test {
     return create_pbft_storage_queries(*storage);
   }
 
+  static rust::Box<BridgeDagStorageQueries> dagQueries(const rust::Box<BridgeStorage>& storage) {
+    return create_dag_storage_queries(*storage);
+  }
+
   std::filesystem::path test_dir;
 };
 
@@ -75,19 +79,19 @@ TEST_F(StorageTest, CreateStorage) {
 TEST_F(StorageTest, MissingDagBlockReturnsEmptyPayload) {
   auto storage = create_storage(test_dir.string());
   const auto hash = h256(0x11);
-  auto value = storage->get_dag_block(hash);
+  auto value = dagQueries(storage)->get_dag_block(hash);
   EXPECT_TRUE(value.empty());
 }
 
 TEST_F(StorageTest, DagBlockPeriodLookupReflectsFoundState) {
   auto storage = create_storage(test_dir.string());
   const auto missing = h256(0x22);
-  auto lookup = storage->get_dag_block_period_lookup(missing);
+  auto lookup = dagQueries(storage)->get_dag_block_period_lookup(missing);
   EXPECT_FALSE(lookup.found);
 
   const auto existing = h256(0x33);
   storage->save_dag_block_period(existing, 7, 4);
-  auto found = storage->get_dag_block_period_lookup(existing);
+  auto found = dagQueries(storage)->get_dag_block_period_lookup(existing);
   EXPECT_TRUE(found.found);
   EXPECT_EQ(found.period, 7u);
   EXPECT_EQ(found.position, 4u);

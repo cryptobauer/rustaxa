@@ -1,4 +1,5 @@
 use crate::ffi::rustaxa_ffi;
+use crate::ffi::BridgeDagStorageQueries;
 use crate::ffi::BridgeMetadataStorageQueries;
 use crate::ffi::BridgePbftStorageQueries;
 use crate::ffi::BridgePbftVoteStorageQueries;
@@ -142,6 +143,25 @@ pub fn create_metadata_storage_queries(
     storage: &BridgeStorage,
 ) -> Box<BridgeMetadataStorageQueries> {
     Box::new(BridgeMetadataStorageQueries {
+        storage: storage.0.clone(),
+    })
+}
+
+/// Creates a typed DAG query handle from the shared Rust storage owner.
+///
+/// Inputs:
+/// - `storage`: generic bridge storage owner used only as a construction-time
+///   lifetime seed.
+///
+/// Outputs:
+/// - a read-only DAG query handle that owns a cloned Rust storage handle.
+///
+/// Invariants and edge behavior:
+/// - callers can materialize legacy DAG objects and indexes at public/query
+///   boundaries without retaining broad `BridgeStorage` DAG reads
+/// - the handle does not mutate storage or decode DAG block payloads.
+pub fn create_dag_storage_queries(storage: &BridgeStorage) -> Box<BridgeDagStorageQueries> {
+    Box::new(BridgeDagStorageQueries {
         storage: storage.0.clone(),
     })
 }
@@ -330,6 +350,136 @@ impl BridgeMetadataStorageQueries {
             .into_iter()
             .map(|(period, data)| rustaxa_ffi::PeriodRlp { period, data })
             .collect())
+    }
+}
+
+impl BridgeDagStorageQueries {
+    pub fn dag_block_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
+        self.storage
+            .dag()
+            .exists(H256::from(*hash))
+            .map_err(|e| anyhow::anyhow!(e))
+    }
+
+    pub fn get_dag_block(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .storage
+            .dag()
+            .by_hash_rlp_optional(H256::from(*hash))
+            .map_err(|e| anyhow::anyhow!(e))?
+            .unwrap_or_default())
+    }
+
+    pub fn get_dag_block_period(
+        &self,
+        hash: &[u8; 32],
+    ) -> Result<rustaxa_ffi::BlockPeriod, anyhow::Error> {
+        let (period, position) = self
+            .storage
+            .dag()
+            .period(H256::from(*hash))
+            .map_err(|e| anyhow::anyhow!(e))?;
+        Ok(rustaxa_ffi::BlockPeriod { period, position })
+    }
+
+    pub fn get_dag_block_period_lookup(
+        &self,
+        hash: &[u8; 32],
+    ) -> Result<rustaxa_ffi::BlockPeriodLookup, anyhow::Error> {
+        let lookup = self
+            .storage
+            .dag()
+            .period_optional(H256::from(*hash))
+            .map_err(|e| anyhow::anyhow!(e))?;
+        Ok(match lookup {
+            Some((period, position)) => rustaxa_ffi::BlockPeriodLookup {
+                found: true,
+                period,
+                position,
+            },
+            None => rustaxa_ffi::BlockPeriodLookup {
+                found: false,
+                period: 0,
+                position: 0,
+            },
+        })
+    }
+
+    pub fn get_last_blocks_level(&self) -> Result<u64, anyhow::Error> {
+        self.storage
+            .dag()
+            .last_level()
+            .map_err(|e| anyhow::anyhow!(e))
+    }
+
+    pub fn get_blocks_by_level(&self, level: u64) -> Result<Vec<u8>, anyhow::Error> {
+        let hashes = self
+            .storage
+            .dag()
+            .hashes_at_level(level)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let mut bytes = Vec::with_capacity(hashes.len() * 32);
+        for h in hashes {
+            bytes.extend_from_slice(h.as_bytes());
+        }
+        Ok(bytes)
+    }
+
+    pub fn get_dag_blocks_at_level(
+        &self,
+        level: u64,
+        number_of_levels: u32,
+    ) -> Result<Vec<rustaxa_ffi::BlockRlp>, anyhow::Error> {
+        let rlps = self
+            .storage
+            .dag()
+            .at_level_range(level, number_of_levels)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        Ok(rlps
+            .into_iter()
+            .map(|data| rustaxa_ffi::BlockRlp { data })
+            .collect())
+    }
+
+    pub fn get_nonfinalized_dag_blocks(
+        &self,
+    ) -> Result<Vec<rustaxa_ffi::LevelBlocks>, anyhow::Error> {
+        let map = self
+            .storage
+            .dag()
+            .non_finalized()
+            .map_err(|e| anyhow::anyhow!(e))?;
+        Ok(map
+            .into_iter()
+            .map(|(level, blocks)| rustaxa_ffi::LevelBlocks {
+                level,
+                blocks: blocks
+                    .into_iter()
+                    .map(|data| rustaxa_ffi::BlockRlp { data })
+                    .collect(),
+            })
+            .collect())
+    }
+
+    pub fn get_proposal_period_for_dag_level(
+        &self,
+        level: u64,
+    ) -> Result<rustaxa_ffi::PeriodLookup, anyhow::Error> {
+        let period = self
+            .storage
+            .dag()
+            .proposal_period_at_level(level)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        Ok(match period {
+            Some(period) => rustaxa_ffi::PeriodLookup {
+                found: true,
+                period,
+            },
+            None => rustaxa_ffi::PeriodLookup {
+                found: false,
+                period: 0,
+            },
+        })
     }
 }
 
@@ -895,131 +1045,6 @@ pub(crate) fn transaction_rlp_lookups(
 }
 
 impl BridgeStorage {
-    pub fn dag_block_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
-        self.0
-            .dag()
-            .exists(H256::from(*hash))
-            .map_err(|e| anyhow::anyhow!(e))
-    }
-
-    pub fn get_dag_block(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self
-            .0
-            .dag()
-            .by_hash_rlp_optional(H256::from(*hash))
-            .map_err(|e| anyhow::anyhow!(e))?
-            .unwrap_or_default())
-    }
-
-    pub fn get_dag_block_period(
-        &self,
-        hash: &[u8; 32],
-    ) -> Result<rustaxa_ffi::BlockPeriod, anyhow::Error> {
-        let (period, position) = self
-            .0
-            .dag()
-            .period(H256::from(*hash))
-            .map_err(|e| anyhow::anyhow!(e))?;
-        Ok(rustaxa_ffi::BlockPeriod { period, position })
-    }
-
-    pub fn get_dag_block_period_lookup(
-        &self,
-        hash: &[u8; 32],
-    ) -> Result<rustaxa_ffi::BlockPeriodLookup, anyhow::Error> {
-        let lookup = self
-            .0
-            .dag()
-            .period_optional(H256::from(*hash))
-            .map_err(|e| anyhow::anyhow!(e))?;
-        Ok(match lookup {
-            Some((period, position)) => rustaxa_ffi::BlockPeriodLookup {
-                found: true,
-                period,
-                position,
-            },
-            None => rustaxa_ffi::BlockPeriodLookup {
-                found: false,
-                period: 0,
-                position: 0,
-            },
-        })
-    }
-
-    pub fn get_last_blocks_level(&self) -> Result<u64, anyhow::Error> {
-        self.0.dag().last_level().map_err(|e| anyhow::anyhow!(e))
-    }
-
-    pub fn get_blocks_by_level(&self, level: u64) -> Result<Vec<u8>, anyhow::Error> {
-        let hashes = self
-            .0
-            .dag()
-            .hashes_at_level(level)
-            .map_err(|e| anyhow::anyhow!(e))?;
-        let mut bytes = Vec::with_capacity(hashes.len() * 32);
-        for h in hashes {
-            bytes.extend_from_slice(h.as_bytes());
-        }
-        Ok(bytes)
-    }
-
-    pub fn get_dag_blocks_at_level(
-        &self,
-        level: u64,
-        number_of_levels: u32,
-    ) -> Result<Vec<rustaxa_ffi::BlockRlp>, anyhow::Error> {
-        let rlps = self
-            .0
-            .dag()
-            .at_level_range(level, number_of_levels)
-            .map_err(|e| anyhow::anyhow!(e))?;
-        Ok(rlps
-            .into_iter()
-            .map(|data| rustaxa_ffi::BlockRlp { data })
-            .collect())
-    }
-
-    pub fn get_nonfinalized_dag_blocks(
-        &self,
-    ) -> Result<Vec<rustaxa_ffi::LevelBlocks>, anyhow::Error> {
-        let map = self
-            .0
-            .dag()
-            .non_finalized()
-            .map_err(|e| anyhow::anyhow!(e))?;
-        Ok(map
-            .into_iter()
-            .map(|(level, blocks)| rustaxa_ffi::LevelBlocks {
-                level,
-                blocks: blocks
-                    .into_iter()
-                    .map(|data| rustaxa_ffi::BlockRlp { data })
-                    .collect(),
-            })
-            .collect())
-    }
-
-    pub fn get_proposal_period_for_dag_level(
-        &self,
-        level: u64,
-    ) -> Result<rustaxa_ffi::PeriodLookup, anyhow::Error> {
-        let period = self
-            .0
-            .dag()
-            .proposal_period_at_level(level)
-            .map_err(|e| anyhow::anyhow!(e))?;
-        Ok(match period {
-            Some(period) => rustaxa_ffi::PeriodLookup {
-                found: true,
-                period,
-            },
-            None => rustaxa_ffi::PeriodLookup {
-                found: false,
-                period: 0,
-            },
-        })
-    }
-
     pub fn save_dag_block(
         &self,
         hash: &[u8; 32],

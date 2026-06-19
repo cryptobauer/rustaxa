@@ -77,6 +77,15 @@ pub struct BridgeMetadataStorageQueries {
     pub storage: Arc<Storage>,
 }
 
+/// Typed DAG query handle for C++ compatibility materializers.
+///
+/// This wrapper keeps DAG block, index, period, and proposal-period reads
+/// grouped under the DAG storage boundary instead of exposing them as generic
+/// `BridgeStorage` methods.
+pub struct BridgeDagStorageQueries {
+    pub storage: Arc<Storage>,
+}
+
 /// Typed transaction query handle for C++ compatibility materializers.
 ///
 /// This wrapper keeps transaction public-read compatibility grouped under the
@@ -6134,6 +6143,7 @@ pub mod rustaxa_ffi {
         // Storage
 
         type BridgeStorage;
+        type BridgeDagStorageQueries;
         type BridgeMetadataStorageQueries;
         type BridgePbftStorageQueries;
         type BridgePbftVoteStorageQueries;
@@ -6147,6 +6157,7 @@ pub mod rustaxa_ffi {
         pub fn create_metadata_storage_queries(
             storage: &BridgeStorage,
         ) -> Box<BridgeMetadataStorageQueries>;
+        pub fn create_dag_storage_queries(storage: &BridgeStorage) -> Box<BridgeDagStorageQueries>;
         pub fn create_pbft_vote_storage_queries(
             storage: &BridgeStorage,
         ) -> Box<BridgePbftVoteStorageQueries>;
@@ -6280,25 +6291,6 @@ pub mod rustaxa_ffi {
         ) -> Result<()>;
         pub fn storage_shim_commit_batch(batch: Box<BridgeStorageBatch>, sync: bool) -> Result<()>;
 
-        pub fn dag_block_in_db(self: &BridgeStorage, hash: &[u8; 32]) -> Result<bool>;
-        pub fn get_dag_block(self: &BridgeStorage, hash: &[u8; 32]) -> Result<Vec<u8>>;
-        pub fn get_dag_block_period(self: &BridgeStorage, hash: &[u8; 32]) -> Result<BlockPeriod>;
-        pub fn get_dag_block_period_lookup(
-            self: &BridgeStorage,
-            hash: &[u8; 32],
-        ) -> Result<BlockPeriodLookup>;
-        pub fn get_last_blocks_level(self: &BridgeStorage) -> Result<u64>;
-        pub fn get_blocks_by_level(self: &BridgeStorage, level: u64) -> Result<Vec<u8>>;
-        pub fn get_dag_blocks_at_level(
-            self: &BridgeStorage,
-            level: u64,
-            number_of_levels: u32,
-        ) -> Result<Vec<BlockRlp>>;
-        pub fn get_nonfinalized_dag_blocks(self: &BridgeStorage) -> Result<Vec<LevelBlocks>>;
-        pub fn get_proposal_period_for_dag_level(
-            self: &BridgeStorage,
-            level: u64,
-        ) -> Result<PeriodLookup>;
         pub fn save_dag_block(
             self: &BridgeStorage,
             hash: &[u8; 32],
@@ -6324,6 +6316,30 @@ pub mod rustaxa_ffi {
             period: u64,
             position: u32,
         ) -> Result<()>;
+        pub fn dag_block_in_db(self: &BridgeDagStorageQueries, hash: &[u8; 32]) -> Result<bool>;
+        pub fn get_dag_block(self: &BridgeDagStorageQueries, hash: &[u8; 32]) -> Result<Vec<u8>>;
+        pub fn get_dag_block_period(
+            self: &BridgeDagStorageQueries,
+            hash: &[u8; 32],
+        ) -> Result<BlockPeriod>;
+        pub fn get_dag_block_period_lookup(
+            self: &BridgeDagStorageQueries,
+            hash: &[u8; 32],
+        ) -> Result<BlockPeriodLookup>;
+        pub fn get_last_blocks_level(self: &BridgeDagStorageQueries) -> Result<u64>;
+        pub fn get_blocks_by_level(self: &BridgeDagStorageQueries, level: u64) -> Result<Vec<u8>>;
+        pub fn get_dag_blocks_at_level(
+            self: &BridgeDagStorageQueries,
+            level: u64,
+            number_of_levels: u32,
+        ) -> Result<Vec<BlockRlp>>;
+        pub fn get_nonfinalized_dag_blocks(
+            self: &BridgeDagStorageQueries,
+        ) -> Result<Vec<LevelBlocks>>;
+        pub fn get_proposal_period_for_dag_level(
+            self: &BridgeDagStorageQueries,
+            level: u64,
+        ) -> Result<PeriodLookup>;
 
         pub fn get_period_data_raw(self: &BridgeStorage, period: u64) -> Result<Vec<u8>>;
         pub fn get_period_from_pbft_hash(

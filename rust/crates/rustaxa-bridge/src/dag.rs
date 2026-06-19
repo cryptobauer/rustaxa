@@ -2406,8 +2406,10 @@ mod tests {
     use crate::ffi::rustaxa_ffi::{
         DagDposAuthorizationFacts, DagProposerAttemptInput, SortitionRuntimeParams,
     };
-    use crate::ffi::{BridgeStorage, BridgeTransactionStorageQueries};
-    use crate::storage::{create_storage, create_transaction_storage_queries};
+    use crate::ffi::{BridgeDagStorageQueries, BridgeStorage, BridgeTransactionStorageQueries};
+    use crate::storage::{
+        create_dag_storage_queries, create_storage, create_transaction_storage_queries,
+    };
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
     use rustaxa_consensus::dag;
@@ -2431,6 +2433,10 @@ mod tests {
 
     fn transaction_queries(storage: &BridgeStorage) -> Box<BridgeTransactionStorageQueries> {
         create_transaction_storage_queries(storage)
+    }
+
+    fn dag_queries(storage: &BridgeStorage) -> Box<BridgeDagStorageQueries> {
+        create_dag_storage_queries(storage)
     }
 
     fn dag_block_with_vdf_payload(vdf_payload: Vec<u8>) -> Vec<u8> {
@@ -2769,7 +2775,7 @@ mod tests {
                 .expect("initial mapping write should succeed"));
 
             // Level 100 resolves to period 5 via the later (200 -> 5) mapping.
-            let before = storage
+            let before = dag_queries(&storage)
                 .get_proposal_period_for_dag_level(100)
                 .expect("lookup should succeed");
             assert!(before.found);
@@ -2781,7 +2787,7 @@ mod tests {
                 .dag_manager_runtime_ensure_proposal_period_mapping(100, 0)
                 .expect("mismatch correction should succeed"));
 
-            let after = storage
+            let after = dag_queries(&storage)
                 .get_proposal_period_for_dag_level(100)
                 .expect("lookup should succeed");
             assert!(after.found);

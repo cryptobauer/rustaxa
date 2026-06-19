@@ -65,6 +65,7 @@ DbStorage::DbStorage(fs::path const& path, uint32_t db_snapshot_each_n_pbft_bloc
     rust_storage_ = rustaxa::create_storage(path.string());
     pillar_storage_ = rustaxa::create_pillar_chain_storage(*rust_storage_.value());
     proposed_blocks_storage_ = rustaxa::create_proposed_blocks_index_from_storage(*rust_storage_.value());
+    dag_queries_ = rustaxa::create_dag_storage_queries(*rust_storage_.value());
     metadata_queries_ = rustaxa::create_metadata_storage_queries(*rust_storage_.value());
     pbft_queries_ = rustaxa::create_pbft_storage_queries(*rust_storage_.value());
     pbft_vote_queries_ = rustaxa::create_pbft_vote_storage_queries(*rust_storage_.value());
@@ -298,7 +299,7 @@ std::optional<h256> DbStorage::getGenesisHash() {
 
 std::shared_ptr<DagBlock> DbStorage::getDagBlock(blk_hash_t const& hash) {
   auto h_arr = into_bytes_array(hash);
-  auto rlp_bytes = rust_storage_.value()->get_dag_block(h_arr);
+  auto rlp_bytes = dag_queries_.value()->get_dag_block(h_arr);
   if (rlp_bytes.empty()) {
     return nullptr;
   }
@@ -308,12 +309,12 @@ std::shared_ptr<DagBlock> DbStorage::getDagBlock(blk_hash_t const& hash) {
 
 bool DbStorage::dagBlockInDb(blk_hash_t const& hash) {
   auto h_arr = into_bytes_array(hash);
-  if (rust_storage_.value()->dag_block_in_db(h_arr)) return true;
+  if (dag_queries_.value()->dag_block_in_db(h_arr)) return true;
   return false;
 }
 
 std::set<blk_hash_t> DbStorage::getBlocksByLevel(level_t level) {
-  auto bytes = rust_storage_.value()->get_blocks_by_level(level);
+  auto bytes = dag_queries_.value()->get_blocks_by_level(level);
   std::set<blk_hash_t> res;
   for (size_t i = 0; i < bytes.size(); i += 32) {
     blk_hash_t h;
@@ -323,11 +324,11 @@ std::set<blk_hash_t> DbStorage::getBlocksByLevel(level_t level) {
   return res;
 }
 
-level_t DbStorage::getLastBlocksLevel() const { return rust_storage_.value()->get_last_blocks_level(); }
+level_t DbStorage::getLastBlocksLevel() const { return dag_queries_.value()->get_last_blocks_level(); }
 
 std::vector<std::shared_ptr<DagBlock>> DbStorage::getDagBlocksAtLevel(level_t level, int number_of_levels) {
   std::vector<std::shared_ptr<DagBlock>> res;
-  auto blocks_rlp = rust_storage_.value()->get_dag_blocks_at_level(level, (uint32_t)number_of_levels);
+  auto blocks_rlp = dag_queries_.value()->get_dag_blocks_at_level(level, (uint32_t)number_of_levels);
   for (auto const& item : blocks_rlp) {
     dev::RLP rlp(dev::bytesConstRef(item.data.data(), item.data.size()));
     res.push_back(std::make_shared<DagBlock>(rlp));
@@ -337,7 +338,7 @@ std::vector<std::shared_ptr<DagBlock>> DbStorage::getDagBlocksAtLevel(level_t le
 
 std::map<level_t, std::vector<std::shared_ptr<DagBlock>>> DbStorage::getNonfinalizedDagBlocks() {
   std::map<level_t, std::vector<std::shared_ptr<DagBlock>>> res;
-  auto levels = rust_storage_.value()->get_nonfinalized_dag_blocks();
+  auto levels = dag_queries_.value()->get_nonfinalized_dag_blocks();
   for (auto const& item : levels) {
     std::vector<std::shared_ptr<DagBlock>> blocks;
     for (auto const& block_rlp : item.blocks) {
@@ -1008,7 +1009,7 @@ std::pair<bool, PbftPeriod> DbStorage::getPeriodFromPbftHash(taraxa::blk_hash_t 
 
 std::shared_ptr<std::pair<PbftPeriod, uint32_t>> DbStorage::getDagBlockPeriod(blk_hash_t const& hash) {
   auto h_arr = into_bytes_array(hash);
-  auto res = rust_storage_.value()->get_dag_block_period_lookup(h_arr);
+  auto res = dag_queries_.value()->get_dag_block_period_lookup(h_arr);
   if (!res.found) {
     return nullptr;
   }
@@ -1051,7 +1052,7 @@ DbStorage::getLastPbftBlockHashAndFinalizedDagBlockByPeriod(PbftPeriod period) {
 }
 
 std::optional<PbftPeriod> DbStorage::getProposalPeriodForDagLevel(uint64_t level) {
-  auto res = rust_storage_.value()->get_proposal_period_for_dag_level(level);
+  auto res = dag_queries_.value()->get_proposal_period_for_dag_level(level);
   if (res.found) {
     return std::optional<PbftPeriod>(res.period);
   }

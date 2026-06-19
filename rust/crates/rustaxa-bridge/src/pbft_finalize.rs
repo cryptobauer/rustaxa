@@ -959,12 +959,12 @@ mod tests {
     use super::*;
     use crate::ffi::rustaxa_ffi::PbftFinalizationHash as FfiPbftFinalizationHash;
     use crate::ffi::{
-        BridgeMetadataStorageQueries, BridgePbftStorageQueries, BridgeStorage,
-        BridgeTransactionStorageQueries,
+        BridgeDagStorageQueries, BridgeMetadataStorageQueries, BridgePbftStorageQueries,
+        BridgeStorage, BridgeTransactionStorageQueries,
     };
     use crate::storage::{
-        create_metadata_storage_queries, create_pbft_storage_queries, create_storage,
-        create_transaction_storage_queries,
+        create_dag_storage_queries, create_metadata_storage_queries, create_pbft_storage_queries,
+        create_storage, create_transaction_storage_queries,
     };
     use rustaxa_consensus::pbft_finalize::PbftFinalizationAnchor::{Anchored, Null};
     use rustaxa_consensus::pbft_finalize::PbftFinalizationStatus;
@@ -1050,6 +1050,10 @@ mod tests {
 
     fn metadata_queries(storage: &BridgeStorage) -> Box<BridgeMetadataStorageQueries> {
         create_metadata_storage_queries(storage)
+    }
+
+    fn dag_queries(storage: &BridgeStorage) -> Box<BridgeDagStorageQueries> {
+        create_dag_storage_queries(storage)
     }
 
     fn transaction_queries(storage: &BridgeStorage) -> Box<BridgeTransactionStorageQueries> {
@@ -1518,7 +1522,7 @@ mod tests {
                 .expect("pending transaction row should be deleted")
                 .is_empty());
             assert_eq!(
-                storage
+                dag_queries(&storage)
                     .get_dag_block_period_lookup(&[2; 32])
                     .expect("DAG period lookup should load")
                     .position,

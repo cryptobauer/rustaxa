@@ -174,6 +174,7 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   static constexpr uint8_t kPbftMgrStatusNextVotedSoftValue = 2;
 
   auto storage = rustaxa::create_storage(db_path.string());
+  auto dag_queries = rustaxa::create_dag_storage_queries(*storage);
   auto metadata_queries = rustaxa::create_metadata_storage_queries(*storage);
   auto pbft_queries = rustaxa::create_pbft_storage_queries(*storage);
   auto transaction_queries = rustaxa::create_transaction_storage_queries(*storage);
@@ -185,7 +186,7 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   transcript.add("pbft_mgr_status_default_executed_block",
                  toString(pbft_queries->get_pbft_mgr_status(kPbftMgrStatusExecutedBlock)));
   transcript.add("proposal_period_missing",
-                 optionalToString(toOptional(storage->get_proposal_period_for_dag_level(100))));
+                 optionalToString(toOptional(dag_queries->get_proposal_period_for_dag_level(100))));
   transcript.add("period_lambda_missing", optionalToString(toOptional(metadata_queries->get_period_lambda(7, false))));
   transcript.add("rounds_count_dynamic_lambda_default",
                  toString(metadata_queries->get_rounds_count_dynamic_lambda()));
@@ -207,7 +208,7 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   transcript.add("pbft_mgr_status_next_voted_soft_after_save",
                  toString(pbft_queries->get_pbft_mgr_status(kPbftMgrStatusNextVotedSoftValue)));
   transcript.add("proposal_period_level_100_after_save",
-                 optionalToString(toOptional(storage->get_proposal_period_for_dag_level(100))));
+                 optionalToString(toOptional(dag_queries->get_proposal_period_for_dag_level(100))));
   transcript.add("period_lambda_exact_after_save",
                  optionalToString(toOptional(metadata_queries->get_period_lambda(7, false))));
   transcript.add("period_lambda_closest_after_save",
@@ -222,17 +223,17 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   auto dag_missing = h256Array(0xEE);
   auto dag_rlp = std::vector<uint8_t>{0xC0};
 
-  transcript.add("dag_missing_block", toString(storage->get_dag_block(dag_missing).empty()));
-  transcript.add("dag_missing_period", toString(!storage->get_dag_block_period_lookup(dag_missing).found));
+  transcript.add("dag_missing_block", toString(dag_queries->get_dag_block(dag_missing).empty()));
+  transcript.add("dag_missing_period", toString(!dag_queries->get_dag_block_period_lookup(dag_missing).found));
 
   storage->save_dag_block(dag_hash_1, 1, 0, toRustVec(dag_rlp));
   storage->save_dag_block(dag_hash_2, 1, 1, toRustVec(dag_rlp));
-  transcript.add("dag_saved_primary", toString(storage->dag_block_in_db(dag_hash_1)));
-  transcript.add("dag_saved_batch", toString(storage->dag_block_in_db(dag_hash_2)));
-  transcript.add("dag_level_1_count", toString(storage->get_blocks_by_level(1).size() / 32));
+  transcript.add("dag_saved_primary", toString(dag_queries->dag_block_in_db(dag_hash_1)));
+  transcript.add("dag_saved_batch", toString(dag_queries->dag_block_in_db(dag_hash_2)));
+  transcript.add("dag_level_1_count", toString(dag_queries->get_blocks_by_level(1).size() / 32));
 
   storage->save_dag_block_period(dag_hash_1, 7, 2);
-  auto dag_period = storage->get_dag_block_period_lookup(dag_hash_1);
+  auto dag_period = dag_queries->get_dag_block_period_lookup(dag_hash_1);
   transcript.add("dag_period_lookup_found", toString(dag_period.found));
   transcript.add("dag_period_lookup_period", toString(dag_period.period));
   transcript.add("dag_period_lookup_position", toString(dag_period.position));
@@ -243,9 +244,9 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
                           metadata_queries->get_status_field(kStatusFieldDagEdgeCount) > 0));
 
   storage->remove_dag_block(dag_hash_2);
-  transcript.add("dag_removed_batch_hash", toString(!storage->dag_block_in_db(dag_hash_2)));
-  transcript.add("dag_last_level", toString(storage->get_last_blocks_level()));
-  transcript.add("dag_blocks_at_level_span_count", toString(storage->get_dag_blocks_at_level(1, 2).size()));
+  transcript.add("dag_removed_batch_hash", toString(!dag_queries->dag_block_in_db(dag_hash_2)));
+  transcript.add("dag_last_level", toString(dag_queries->get_last_blocks_level()));
+  transcript.add("dag_blocks_at_level_span_count", toString(dag_queries->get_dag_blocks_at_level(1, 2).size()));
 
   // Period by PBFT hash mapping
   auto pbft_hash = h256Array(0x44);

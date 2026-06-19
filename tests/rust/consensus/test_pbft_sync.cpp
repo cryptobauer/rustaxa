@@ -35,6 +35,10 @@ rust::Box<BridgeMetadataStorageQueries> metadataQueries(const rust::Box<BridgeSt
   return create_metadata_storage_queries(*storage);
 }
 
+rust::Box<BridgeDagStorageQueries> dagQueries(const rust::Box<BridgeStorage>& storage) {
+  return create_dag_storage_queries(*storage);
+}
+
 rust::Box<BridgeTransactionStorageQueries> transactionQueries(const rust::Box<BridgeStorage>& storage) {
   return create_transaction_storage_queries(*storage);
 }
@@ -1122,7 +1126,7 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyWritesPrimaryBatch) {
   auto transaction_queries = transactionQueries(storage);
   EXPECT_TRUE(transaction_queries->get_transaction(h256(4)).empty());
 
-  const auto dag_lookup = storage->get_dag_block_period_lookup(h256(2));
+  const auto dag_lookup = dagQueries(storage)->get_dag_block_period_lookup(h256(2));
   EXPECT_TRUE(dag_lookup.found);
   EXPECT_EQ(dag_lookup.period, 101);
   EXPECT_EQ(dag_lookup.position, 0);
