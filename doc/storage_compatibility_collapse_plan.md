@@ -135,11 +135,14 @@ Landed sub-slices:
 - PBFT chain startup: the C++ shim now uses the typed `create_pbft_chain_from_storage(...)` constructor instead of
   separate generic restore-plus-create storage calls. The Rust runtime carries the default-initialization flag needed for
   the legacy startup log branch.
+- Pillar chain manager: production pillar-chain storage reads and writes now use a typed `BridgePillarChainStorage`
+  handle that owns a cloned Rust storage handle. The C++ manager no longer retains or passes a generic `BridgeStorage*`
+  for own-vote, current-block, finalized-block, latest-block, or period-data pillar storage calls.
 
 Next target:
 
 - Collapse one of the remaining constructor-time `BridgeStorage` seeds with retained generic storage fields, likely DAG
-  manager, TransactionManager, VoteManager, or pillar chain manager.
+  manager, TransactionManager, VoteManager, or PBFT manager startup/runtime handles.
 
 Scope:
 

@@ -421,7 +421,7 @@ PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_confi
                                        std::shared_ptr<KeyManager> key_manager, addr_t node_addr)
     : kFicusHfConfig(ficus_hf_config),
       storage_owner_(std::move(db)),
-      rust_storage_(&storage_owner_->rustStorage()),
+      rust_storage_(rustaxa::create_pillar_chain_storage(storage_owner_->rustStorage())),
       network_{},
       final_chain_{std::move(final_chain)},
       key_manager_(std::move(key_manager)),
@@ -433,24 +433,24 @@ PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_confi
       mutex_{} {
   LOG_OBJECTS_CREATE("PILLAR_CHAIN");
 
-  if (const auto vote = decodePillarVoteFromRustBytes(rustaxa::load_pillar_own_vote_storage(*rust_storage_)); vote) {
+  if (const auto vote = decodePillarVoteFromRustBytes(rust_storage_->pillar_chain_storage_load_own_vote()); vote) {
     addVerifiedPillarVote(vote);
   }
 
   if (auto&& current_pillar_block_data =
-          decodeCurrentPillarBlockDataFromRustBytes(rustaxa::load_pillar_current_block_data_storage(*rust_storage_));
+          decodeCurrentPillarBlockDataFromRustBytes(rust_storage_->pillar_chain_storage_load_current_block_data());
       current_pillar_block_data.has_value()) {
     current_pillar_block_ = std::move(current_pillar_block_data->pillar_block);
     current_pillar_block_vote_counts_ = std::move(current_pillar_block_data->vote_counts);
   }
 
   if (auto&& latest_pillar_block =
-          decodePillarBlockFromRustBytes(rustaxa::load_latest_pillar_block_storage(*rust_storage_));
+          decodePillarBlockFromRustBytes(rust_storage_->pillar_chain_storage_load_latest_block());
       latest_pillar_block) {
     last_finalized_pillar_block_ = std::move(latest_pillar_block);
 
     const auto last_finalized_pillar_block_votes = decodePeriodPillarVotesFromRustBytes(
-        rustaxa::load_pillar_period_data_storage(*rust_storage_, last_finalized_pillar_block_->getPeriod() + 1));
+        rust_storage_->pillar_chain_storage_load_period_data(last_finalized_pillar_block_->getPeriod() + 1));
     // There should always be pillar votes stored in period data for finalized pillar block
     assert(!last_finalized_pillar_block_votes.empty());
     for (const auto& pillar_vote : last_finalized_pillar_block_votes) {
@@ -543,8 +543,8 @@ std::shared_ptr<PillarBlock> PillarChainManager::createPillarBlock(
 void PillarChainManager::saveNewPillarBlock(const std::shared_ptr<PillarBlock>& pillar_block,
                                             std::vector<state_api::ValidatorVoteCount>&& new_vote_counts) {
   std::scoped_lock<std::shared_mutex> lock(mutex_);
-  rustaxa::apply_pillar_current_block_data_storage(
-      *rust_storage_, toRustBytes(util::rlp_enc(CurrentPillarBlockDataDb{pillar_block, new_vote_counts})));
+  rust_storage_->pillar_chain_storage_apply_current_block_data(
+      toRustBytes(util::rlp_enc(CurrentPillarBlockDataDb{pillar_block, new_vote_counts})));
   current_pillar_block_ = pillar_block;
   current_pillar_block_vote_counts_ = std::move(new_vote_counts);
 }
@@ -561,7 +561,7 @@ std::shared_ptr<PillarVote> PillarChainManager::genAndPlacePillarVote(PbftPeriod
                  << vote->getHash();
     return nullptr;
   }
-  rustaxa::apply_pillar_own_vote_storage(*rust_storage_, toRustBytes(util::rlp_enc(vote)));
+  rust_storage_->pillar_chain_storage_apply_own_vote(toRustBytes(util::rlp_enc(vote)));
 
   if (auto net = network_.lock(); net && broadcast_vote) {
     net->gossipPillarBlockVote(vote);
@@ -609,8 +609,8 @@ std::vector<std::shared_ptr<PillarVote>> PillarChainManager::finalizePillarBlock
     return pillar_votes;
   }
 
-  rustaxa::apply_finalized_pillar_block_storage(*rust_storage_, current_pillar_block->getPeriod(),
-                                                toRustBytes(current_pillar_block->getRlp()));
+  rust_storage_->pillar_chain_storage_apply_finalized_block(current_pillar_block->getPeriod(),
+                                                            toRustBytes(current_pillar_block->getRlp()));
   LOG(log_nf_) << "Pillar block " << pillar_block_hash << " with period " << current_pillar_block->getPeriod()
                << " finalized";
 
@@ -802,8 +802,7 @@ std::vector<std::shared_ptr<PillarVote>> PillarChainManager::getVerifiedPillarVo
 
   // No votes returned from memory, try db
   if (pillar_votes.empty()) {
-    pillar_votes =
-        decodePeriodPillarVotesFromRustBytes(rustaxa::load_pillar_period_data_storage(*rust_storage_, period));
+    pillar_votes = decodePeriodPillarVotesFromRustBytes(rust_storage_->pillar_chain_storage_load_period_data(period));
   }
 
   return pillar_votes;

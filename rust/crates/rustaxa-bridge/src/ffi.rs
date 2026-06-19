@@ -120,6 +120,15 @@ pub struct BridgePbftManagerStateActionEffectSession {
     pub state: rustaxa_consensus::pbft_manager::PbftManagerStateActionEffectSession,
 }
 
+/// Pillar-chain storage wrapper used by the C++ manager shim.
+///
+/// The wrapper owns a cloned Rust storage handle so production pillar-chain
+/// reads and writes do not retain or pass the generic `BridgeStorage` facade
+/// after construction.
+pub struct BridgePillarChainStorage {
+    pub storage: Arc<Storage>,
+}
+
 pub struct BridgePbftManagerBlockValidationSession {
     pub state: rustaxa_consensus::pbft_manager::PbftManagerBlockValidationSession,
 }
@@ -5952,6 +5961,39 @@ pub mod rustaxa_ffi {
         pub fn plan_pillar_block_creation(
             fact: PillarBlockCreationFact,
         ) -> Result<PillarBlockCreationPlan>;
+
+        type BridgePillarChainStorage;
+
+        pub fn create_pillar_chain_storage(
+            storage: &BridgeStorage,
+        ) -> Box<BridgePillarChainStorage>;
+        pub fn pillar_chain_storage_apply_current_block_data(
+            self: &BridgePillarChainStorage,
+            data_rlp: Vec<u8>,
+        ) -> Result<()>;
+        pub fn pillar_chain_storage_apply_own_vote(
+            self: &BridgePillarChainStorage,
+            vote_rlp: Vec<u8>,
+        ) -> Result<()>;
+        pub fn pillar_chain_storage_apply_finalized_block(
+            self: &BridgePillarChainStorage,
+            period: u64,
+            pillar_block_rlp: Vec<u8>,
+        ) -> Result<()>;
+        pub fn pillar_chain_storage_load_own_vote(
+            self: &BridgePillarChainStorage,
+        ) -> Result<Vec<u8>>;
+        pub fn pillar_chain_storage_load_current_block_data(
+            self: &BridgePillarChainStorage,
+        ) -> Result<Vec<u8>>;
+        pub fn pillar_chain_storage_load_latest_block(
+            self: &BridgePillarChainStorage,
+        ) -> Result<Vec<u8>>;
+        pub fn pillar_chain_storage_load_period_data(
+            self: &BridgePillarChainStorage,
+            period: u64,
+        ) -> Result<Vec<u8>>;
+
         pub fn apply_pillar_current_block_data_storage(
             storage: &BridgeStorage,
             data_rlp: Vec<u8>,

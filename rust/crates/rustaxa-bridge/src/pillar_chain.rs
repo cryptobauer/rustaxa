@@ -15,7 +15,7 @@ use crate::ffi::rustaxa_ffi::{
     PillarValidatorVoteCount as FfiPillarValidatorVoteCount,
     PillarValidatorVoteCountChange as FfiPillarValidatorVoteCountChange,
 };
-use crate::ffi::BridgeStorage;
+use crate::ffi::{BridgePillarChainStorage, BridgeStorage};
 use anyhow::Result;
 use ethereum_types::{H160, H256};
 use rustaxa_consensus::{
@@ -35,6 +35,65 @@ use rustaxa_consensus::{
     PillarValidatorVoteCount as ConsensusPillarValidatorVoteCount,
     PillarValidatorVoteCountChange as ConsensusPillarValidatorVoteCountChange,
 };
+
+/// Creates a typed pillar-chain storage handle from the generic CXX storage
+/// facade.
+///
+/// The returned handle clones the underlying `Arc<rustaxa_storage::Storage>`.
+/// Production C++ pillar-chain code should keep this typed handle and use its
+/// methods instead of retaining or passing `BridgeStorage` after construction.
+pub fn create_pillar_chain_storage(storage: &BridgeStorage) -> Box<BridgePillarChainStorage> {
+    Box::new(BridgePillarChainStorage {
+        storage: storage.0.clone(),
+    })
+}
+
+impl BridgePillarChainStorage {
+    /// Persists current pillar-block sidecar data through consensus-owned
+    /// storage.
+    pub fn pillar_chain_storage_apply_current_block_data(&self, data_rlp: Vec<u8>) -> Result<()> {
+        save_current_pillar_block_data_storage(self.storage.as_ref(), &data_rlp)
+    }
+
+    /// Persists this node's own pillar-block vote through consensus-owned
+    /// storage.
+    pub fn pillar_chain_storage_apply_own_vote(&self, vote_rlp: Vec<u8>) -> Result<()> {
+        save_own_pillar_block_vote_storage(self.storage.as_ref(), &vote_rlp)
+    }
+
+    /// Persists a finalized pillar block through consensus-owned storage.
+    pub fn pillar_chain_storage_apply_finalized_block(
+        &self,
+        period: u64,
+        pillar_block_rlp: Vec<u8>,
+    ) -> Result<()> {
+        save_finalized_pillar_block_storage(self.storage.as_ref(), period, &pillar_block_rlp)
+    }
+
+    /// Loads this node's own pillar-block vote bytes, returning empty bytes when
+    /// no vote is stored.
+    pub fn pillar_chain_storage_load_own_vote(&self) -> Result<Vec<u8>> {
+        consensus_load_own_pillar_block_vote_storage(self.storage.as_ref())
+    }
+
+    /// Loads current pillar-block sidecar bytes, returning empty bytes when
+    /// missing.
+    pub fn pillar_chain_storage_load_current_block_data(&self) -> Result<Vec<u8>> {
+        consensus_load_current_pillar_block_data_storage(self.storage.as_ref())
+    }
+
+    /// Loads the latest finalized pillar block bytes, returning empty bytes when
+    /// no finalized pillar block is stored.
+    pub fn pillar_chain_storage_load_latest_block(&self) -> Result<Vec<u8>> {
+        consensus_load_latest_pillar_block_storage(self.storage.as_ref())
+    }
+
+    /// Loads raw period data bytes used by temporary C++ pillar-vote
+    /// materialization.
+    pub fn pillar_chain_storage_load_period_data(&self, period: u64) -> Result<Vec<u8>> {
+        consensus_load_pillar_period_data_storage(self.storage.as_ref(), period)
+    }
+}
 
 /// Computes ordered validator vote-count changes for a pillar block.
 ///
@@ -419,12 +478,16 @@ mod tests {
             let storage =
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
+            let pillar_storage = create_pillar_chain_storage(&storage);
 
-            apply_pillar_current_block_data_storage(&storage, vec![0xC1, 0x01])
+            pillar_storage
+                .pillar_chain_storage_apply_current_block_data(vec![0xC1, 0x01])
                 .expect("current pillar data should persist");
-            apply_pillar_own_vote_storage(&storage, vec![0xC1, 0x02])
+            pillar_storage
+                .pillar_chain_storage_apply_own_vote(vec![0xC1, 0x02])
                 .expect("own pillar vote should persist");
-            apply_finalized_pillar_block_storage(&storage, 42, vec![0xC1, 0x03])
+            pillar_storage
+                .pillar_chain_storage_apply_finalized_block(42, vec![0xC1, 0x03])
                 .expect("finalized pillar block should persist");
 
             assert_eq!(
@@ -446,16 +509,20 @@ mod tests {
                 vec![0xC1, 0x03],
             );
             assert_eq!(
-                load_pillar_current_block_data_storage(&storage)
+                pillar_storage
+                    .pillar_chain_storage_load_current_block_data()
                     .expect("current pillar data should read"),
                 vec![0xC1, 0x01],
             );
             assert_eq!(
-                load_pillar_own_vote_storage(&storage).expect("own pillar vote should read"),
+                pillar_storage
+                    .pillar_chain_storage_load_own_vote()
+                    .expect("own pillar vote should read"),
                 vec![0xC1, 0x02],
             );
             assert_eq!(
-                load_latest_pillar_block_storage(&storage)
+                pillar_storage
+                    .pillar_chain_storage_load_latest_block()
                     .expect("latest pillar block should read"),
                 vec![0xC1, 0x03],
             );
@@ -471,17 +538,22 @@ mod tests {
             let storage =
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
+            let pillar_storage = create_pillar_chain_storage(&storage);
 
-            assert!(load_pillar_current_block_data_storage(&storage)
+            assert!(pillar_storage
+                .pillar_chain_storage_load_current_block_data()
                 .expect("current pillar data should read")
                 .is_empty());
-            assert!(load_pillar_own_vote_storage(&storage)
+            assert!(pillar_storage
+                .pillar_chain_storage_load_own_vote()
                 .expect("own pillar vote should read")
                 .is_empty());
-            assert!(load_latest_pillar_block_storage(&storage)
+            assert!(pillar_storage
+                .pillar_chain_storage_load_latest_block()
                 .expect("latest pillar block should read")
                 .is_empty());
-            assert!(load_pillar_period_data_storage(&storage, 42)
+            assert!(pillar_storage
+                .pillar_chain_storage_load_period_data(42)
                 .expect("period data should read")
                 .is_empty());
         }
@@ -496,23 +568,23 @@ mod tests {
             let storage =
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
+            let pillar_storage = create_pillar_chain_storage(&storage);
 
-            assert!(
-                apply_pillar_current_block_data_storage(&storage, Vec::new())
-                    .expect_err("empty current data should reject")
-                    .to_string()
-                    .contains("PILLAR_CURRENT_BLOCK_DATA_EMPTY_PAYLOAD")
-            );
-            assert!(apply_pillar_own_vote_storage(&storage, Vec::new())
+            assert!(pillar_storage
+                .pillar_chain_storage_apply_current_block_data(Vec::new())
+                .expect_err("empty current data should reject")
+                .to_string()
+                .contains("PILLAR_CURRENT_BLOCK_DATA_EMPTY_PAYLOAD"));
+            assert!(pillar_storage
+                .pillar_chain_storage_apply_own_vote(Vec::new())
                 .expect_err("empty own vote should reject")
                 .to_string()
                 .contains("PILLAR_OWN_VOTE_EMPTY_PAYLOAD"));
-            assert!(
-                apply_finalized_pillar_block_storage(&storage, 42, Vec::new())
-                    .expect_err("empty pillar block should reject")
-                    .to_string()
-                    .contains("PILLAR_FINALIZED_BLOCK_EMPTY_PAYLOAD")
-            );
+            assert!(pillar_storage
+                .pillar_chain_storage_apply_finalized_block(42, Vec::new())
+                .expect_err("empty pillar block should reject")
+                .to_string()
+                .contains("PILLAR_FINALIZED_BLOCK_EMPTY_PAYLOAD"));
         }
 
         let _ = fs::remove_dir_all(temp_dir);
