@@ -6143,6 +6143,37 @@ pub mod rustaxa_ffi {
             period: u64,
             stats_rlp: Vec<u8>,
         ) -> Result<()>;
+        pub fn storage_shim_save_pbft_mgr_field(
+            batch: &mut BridgeStorageBatch,
+            field: u8,
+            value: u32,
+        ) -> Result<()>;
+        pub fn storage_shim_save_pbft_mgr_status(
+            batch: &mut BridgeStorageBatch,
+            field: u8,
+            value: bool,
+        ) -> Result<()>;
+        pub fn storage_shim_remove_cert_voted_block_in_round(
+            batch: &mut BridgeStorageBatch,
+        ) -> Result<()>;
+        pub fn storage_shim_save_pbft_head(
+            batch: &mut BridgeStorageBatch,
+            hash: &[u8; 32],
+            head: Vec<u8>,
+        ) -> Result<()>;
+        pub fn storage_shim_remove_own_verified_vote(
+            batch: &mut BridgeStorageBatch,
+            hash: &[u8; 32],
+        ) -> Result<()>;
+        pub fn storage_shim_replace_two_t_plus_one_votes(
+            batch: &mut BridgeStorageBatch,
+            vote_type: u8,
+            votes_bundle_rlp: Vec<u8>,
+        ) -> Result<()>;
+        pub fn storage_shim_remove_extra_reward_vote(
+            batch: &mut BridgeStorageBatch,
+            hash: &[u8; 32],
+        ) -> Result<()>;
         pub fn storage_shim_commit_batch(batch: Box<BridgeStorageBatch>, sync: bool) -> Result<()>;
 
         pub fn dag_block_in_db(self: &BridgeStorage, hash: &[u8; 32]) -> Result<bool>;

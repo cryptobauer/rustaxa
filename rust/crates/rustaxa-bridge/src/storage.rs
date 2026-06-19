@@ -210,6 +210,100 @@ pub fn storage_shim_save_block_rewards_stats(
     )
 }
 
+/// Appends a typed PBFT manager numeric-field write to a Rust-owned storage shim batch.
+///
+/// The C++ shim supplies legacy enum discriminants and values; `rustaxa-storage`
+/// owns the PBFT manager column and little-endian value encoding.
+pub fn storage_shim_save_pbft_mgr_field(
+    batch: &mut BridgeStorageBatch,
+    field: u8,
+    value: u32,
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage
+        .pbft()
+        .write_manager_field_in_batch(storage_shim_batch_mut(batch)?, field, value)
+}
+
+/// Appends a typed PBFT manager status write to a Rust-owned storage shim batch.
+///
+/// The C++ shim supplies the legacy status discriminant while Rust owns the
+/// status-column key and bool encoding.
+pub fn storage_shim_save_pbft_mgr_status(
+    batch: &mut BridgeStorageBatch,
+    field: u8,
+    value: bool,
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage
+        .pbft()
+        .write_manager_status_in_batch(storage_shim_batch_mut(batch)?, field, value)
+}
+
+/// Appends a typed cert-voted block cleanup to a Rust-owned storage shim batch.
+pub fn storage_shim_remove_cert_voted_block_in_round(
+    batch: &mut BridgeStorageBatch,
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage
+        .pbft()
+        .remove_cert_voted_block_in_round_in_batch(storage_shim_batch_mut(batch)?)
+}
+
+/// Appends a typed PBFT head write to a Rust-owned storage shim batch.
+///
+/// The head payload remains opaque legacy bytes while Rust owns the PBFT head
+/// column and hash-key layout.
+pub fn storage_shim_save_pbft_head(
+    batch: &mut BridgeStorageBatch,
+    hash: &[u8; 32],
+    head: Vec<u8>,
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage
+        .pbft()
+        .write_head_in_batch(storage_shim_batch_mut(batch)?, H256::from(*hash), &head)
+}
+
+/// Appends a typed own verified vote cleanup to a Rust-owned storage shim batch.
+pub fn storage_shim_remove_own_verified_vote(
+    batch: &mut BridgeStorageBatch,
+    hash: &[u8; 32],
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage
+        .pbft()
+        .remove_own_verified_vote_in_batch(storage_shim_batch_mut(batch)?, H256::from(*hash))
+}
+
+/// Appends a typed 2t+1 vote bundle replacement to a Rust-owned storage shim batch.
+///
+/// Rust validates the legacy vote-type discriminant and owns the delete-then-put
+/// ordering inside the caller-owned batch.
+pub fn storage_shim_replace_two_t_plus_one_votes(
+    batch: &mut BridgeStorageBatch,
+    vote_type: u8,
+    votes_bundle_rlp: Vec<u8>,
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage.pbft().replace_two_t_plus_one_votes_in_batch(
+        storage_shim_batch_mut(batch)?,
+        vote_type,
+        &votes_bundle_rlp,
+    )
+}
+
+/// Appends a typed extra reward vote cleanup to a Rust-owned storage shim batch.
+pub fn storage_shim_remove_extra_reward_vote(
+    batch: &mut BridgeStorageBatch,
+    hash: &[u8; 32],
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage
+        .pbft()
+        .remove_extra_reward_vote_in_batch(storage_shim_batch_mut(batch)?, H256::from(*hash))
+}
+
 /// Commits a Rust-owned storage shim batch and consumes it.
 ///
 /// Dropping a `BridgeStorageBatch` without calling this method discards staged

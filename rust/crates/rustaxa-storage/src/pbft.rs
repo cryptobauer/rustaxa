@@ -230,6 +230,31 @@ impl<D: DbReader + DbWriter> PbftRepository<D> {
             .put(Column::PbftHead, pbft_hash.as_bytes(), head_bytes)
     }
 
+    /// Appends serialized PBFT head bytes to a caller-owned storage batch.
+    ///
+    /// Inputs:
+    /// - `batch`: Rust storage write batch that owns the eventual atomic commit.
+    /// - `pbft_hash`: canonical PBFT block hash used as the head key.
+    /// - `head_bytes`: legacy PBFT chain head bytes stored without decoding.
+    ///
+    /// Outputs:
+    /// - Appends a put in `pbft_head`.
+    ///
+    /// Invariants and edge behavior:
+    /// - Existing head bytes for the same hash are overwritten, matching legacy
+    ///   RocksDB put semantics.
+    /// - The payload is intentionally opaque here; PBFT chain compatibility
+    ///   owns the encoded head shape until that object is fully Rust-owned.
+    pub fn write_head_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        pbft_hash: H256,
+        head_bytes: &[u8],
+    ) -> Result<()> {
+        self.db
+            .batch_put(batch, Column::PbftHead, pbft_hash.as_bytes(), head_bytes)
+    }
+
     /// Stores one locally produced verified vote payload.
     /// C++ mapping: `DbStorage::saveOwnVerifiedVote(const std::shared_ptr<PbftVote>&)`.
     pub fn write_own_verified_vote(&self, vote_hash: H256, vote_rlp: &[u8]) -> Result<()> {
@@ -823,12 +848,15 @@ mod tests {
         repo.write_manager_field_in_batch(&mut batch, 1, 4).unwrap();
         repo.write_manager_status_in_batch(&mut batch, 2, false)
             .unwrap();
+        repo.write_head_in_batch(&mut batch, H256::from_low_u64_be(51), &[0xA5])
+            .unwrap();
         repo.remove_cert_voted_block_in_round_in_batch(&mut batch)
             .unwrap();
 
         assert_eq!(repo.manager_field(0).unwrap(), Some(1));
         assert_eq!(repo.manager_field(1).unwrap(), Some(1));
         assert_eq!(repo.manager_status(2).unwrap(), Some(true));
+        assert_eq!(repo.head(H256::from_low_u64_be(51)).unwrap(), None);
         assert!(repo.cert_voted_block_in_round_rlp().unwrap().is_some());
 
         DbWriter::commit_batch(db.as_ref(), batch).unwrap();
@@ -836,6 +864,10 @@ mod tests {
         assert_eq!(repo.manager_field(0).unwrap(), Some(7));
         assert_eq!(repo.manager_field(1).unwrap(), Some(4));
         assert_eq!(repo.manager_status(2).unwrap(), Some(false));
+        assert_eq!(
+            repo.head(H256::from_low_u64_be(51)).unwrap(),
+            Some(vec![0xA5])
+        );
         assert!(repo.cert_voted_block_in_round_rlp().unwrap().is_none());
     }
 

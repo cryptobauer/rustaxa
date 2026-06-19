@@ -836,7 +836,7 @@ void DbStorage::savePbftMgrField(PbftMgrField field, uint32_t value) {
 }
 
 void DbStorage::addPbftMgrFieldToBatch(PbftMgrField field, uint32_t value, Batch& write_batch) {
-  insert(write_batch, Columns::pbft_mgr_round_step, toSlice(static_cast<uint8_t>(field)), toSlice(value));
+  rustaxa::storage_shim_save_pbft_mgr_field(getOrCreateRustBatch(write_batch), static_cast<uint8_t>(field), value);
 }
 
 bool DbStorage::getPbftMgrStatus(PbftMgrStatus field) {
@@ -848,7 +848,7 @@ void DbStorage::savePbftMgrStatus(PbftMgrStatus field, bool const& value) {
 }
 
 void DbStorage::addPbftMgrStatusToBatch(PbftMgrStatus field, bool const& value, Batch& write_batch) {
-  insert(write_batch, Columns::pbft_mgr_status, toSlice(field), toSlice(value));
+  rustaxa::storage_shim_save_pbft_mgr_status(getOrCreateRustBatch(write_batch), static_cast<uint8_t>(field), value);
 }
 
 void DbStorage::saveCertVotedBlockInRound(PbftRound round, const std::shared_ptr<PbftBlock>& block) {
@@ -876,7 +876,7 @@ std::optional<std::pair<PbftRound, std::shared_ptr<PbftBlock>>> DbStorage::getCe
 }
 
 void DbStorage::removeCertVotedBlockInRound(Batch& write_batch) {
-  remove(write_batch, Columns::cert_voted_block_in_round, 0);
+  rustaxa::storage_shim_remove_cert_voted_block_in_round(getOrCreateRustBatch(write_batch));
 }
 
 std::optional<PbftBlock> DbStorage::getPbftBlock(blk_hash_t const& hash) {
@@ -907,7 +907,9 @@ void DbStorage::savePbftHead(blk_hash_t const& hash, std::string const& pbft_cha
 
 void DbStorage::addPbftHeadToBatch(taraxa::blk_hash_t const& head_hash, std::string const& head_str,
                                    Batch& write_batch) {
-  insert(write_batch, Columns::pbft_head, toSlice(head_hash.asBytes()), head_str);
+  auto h_arr = into_bytes_array(head_hash);
+  auto head_bytes = into_rust_vec(head_str);
+  rustaxa::storage_shim_save_pbft_head(getOrCreateRustBatch(write_batch), h_arr, std::move(head_bytes));
 }
 
 void DbStorage::saveOwnVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
@@ -933,7 +935,8 @@ std::vector<std::shared_ptr<PbftVote>> DbStorage::getOwnVerifiedVotes() {
 void DbStorage::clearOwnVerifiedVotes(Batch& write_batch,
                                       const std::vector<std::shared_ptr<PbftVote>>& own_verified_votes) {
   for (const auto& own_vote : own_verified_votes) {
-    remove(write_batch, Columns::latest_round_own_votes, own_vote->getHash().asBytes());
+    auto h_arr = into_bytes_array(own_vote->getHash());
+    rustaxa::storage_shim_remove_own_verified_vote(getOrCreateRustBatch(write_batch), h_arr);
   }
 }
 
@@ -951,13 +954,14 @@ void DbStorage::replaceTwoTPlusOneVotes(TwoTPlusOneVotedBlockType type,
 void DbStorage::replaceTwoTPlusOneVotesToBatch(TwoTPlusOneVotedBlockType type,
                                                const std::vector<std::shared_ptr<PbftVote>>& votes,
                                                Batch& write_batch) {
-  remove(write_batch, Columns::latest_round_two_t_plus_one_votes, static_cast<uint8_t>(type));
-
   dev::RLPStream rust_votes_stream(votes.size());
   for (const auto& vote : votes) {
     rust_votes_stream.appendRaw(vote->rlp(true, true));
   }
-  insert(write_batch, Columns::latest_round_two_t_plus_one_votes, static_cast<uint8_t>(type), rust_votes_stream.out());
+  auto votes_bundle = rust_votes_stream.out();
+  auto votes_bundle_rlp = into_rust_vec(votes_bundle);
+  rustaxa::storage_shim_replace_two_t_plus_one_votes(getOrCreateRustBatch(write_batch), static_cast<uint8_t>(type),
+                                                     std::move(votes_bundle_rlp));
 }
 
 std::vector<std::shared_ptr<PbftVote>> DbStorage::getAllTwoTPlusOneVotes() {
@@ -973,7 +977,8 @@ std::vector<std::shared_ptr<PbftVote>> DbStorage::getAllTwoTPlusOneVotes() {
 
 void DbStorage::removeExtraRewardVotes(const std::vector<vote_hash_t>& votes, Batch& write_batch) {
   for (const auto& v : votes) {
-    remove(write_batch, Columns::extra_reward_votes, v.asBytes());
+    auto h_arr = into_bytes_array(v);
+    rustaxa::storage_shim_remove_extra_reward_vote(getOrCreateRustBatch(write_batch), h_arr);
   }
 }
 

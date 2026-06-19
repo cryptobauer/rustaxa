@@ -210,12 +210,16 @@ Landed sub-slices:
   dynamic-lambda rounds count, and block-rewards stats writes through typed `rustaxa-storage` metadata batch methods
   instead of broad `insert(Batch&, Column, ...)` appends. These methods still preserve the legacy C++ `Batch&` commit
   boundary by appending to the same opaque `BridgeStorageBatch`.
+- PBFT manager/vote shim batch appends: routed PBFT manager field/status writes, cert-voted block cleanup, PBFT head
+  writes, own verified vote cleanup, latest-round 2t+1 vote replacement, and extra reward vote cleanup through typed
+  `rustaxa-storage` PBFT batch methods. The C++ shim still builds legacy PBFT object RLP where required, but column
+  selection, key encoding, delete/put ordering, and commit/drop ownership are now Rust-owned.
 
 Next target:
 
-- Reduce the remaining storage-shim raw append surface in the DAG/transaction/PBFT vote families by replacing broad
-  `insert(Batch&, Column, ...)` and `remove(Batch&, Column, ...)` callers with typed Rust storage helpers where active
-  tests or public compatibility paths still need them.
+- Reduce the remaining storage-shim raw append surface in the DAG, transaction, period-index, proposed-block cleanup, and
+  proposal-level mapping families by replacing broad `insert(Batch&, Column, ...)` and `remove(Batch&, Column, ...)`
+  callers with typed Rust storage helpers where active tests or public compatibility paths still need them.
 
 Scope:
 
