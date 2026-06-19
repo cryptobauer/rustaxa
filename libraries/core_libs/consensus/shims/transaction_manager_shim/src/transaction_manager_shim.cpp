@@ -195,6 +195,22 @@ rustaxa::LegacyTransactionInspection inspectRegularTransaction(const std::shared
   return envelope;
 }
 
+rustaxa::LegacyTransactionInspection inspectRegularTransactionPayload(const trx_hash_t& expected_hash,
+                                                                      const dev::bytes& transaction_rlp,
+                                                                      const char* error_prefix) {
+  auto envelope = [&]() {
+    try {
+      return rustaxa::inspect_legacy_transaction_rlp(toBridgeBytes(transaction_rlp), kLegacyTransactionSourceRegular);
+    } catch (const std::exception& e) {
+      throw std::runtime_error(std::string(error_prefix) + ": " + e.what());
+    }
+  }();
+  if (fromBridgeHash(envelope.hash) != expected_hash) {
+    throw std::runtime_error(std::string(error_prefix) + ": transaction payload hash mismatch");
+  }
+  return envelope;
+}
+
 std::array<uint8_t, 20> requireEnvelopeSender(const rustaxa::LegacyTransactionInspection& envelope,
                                               const char* error_prefix) {
   if (!envelope.sender_found) {
@@ -649,6 +665,62 @@ class TransactionManagerRustShimAccess {
 
       rustaxa::DagTransactionSaveRuntimeFact fact;
       fact.input_index = input_index++;
+      fact.hash = envelope.hash;
+      fact.trx_rlp = cloneBridgeBytes(envelope.tx_rlp);
+      fact.transaction_nonce = envelope.nonce;
+      fact.sender = sender;
+      facts.push_back(std::move(fact));
+    }
+
+    const auto report = [&]() {
+      try {
+        return rustaxa::save_transactions_from_dag_block_command_report_with_runtime_and_final_chain(
+            *manager.runtime_, *manager.rust_storage_, manager.final_chain_->rustFinalChainForRust(), std::move(facts));
+      } catch (const std::exception& e) {
+        throw DbException(std::string("RUST_STORAGE_DAG_TX_PERSIST_FAILED: ") + e.what());
+      }
+    }();
+
+    for (const auto& erased : report.queue_erased) {
+      LOG(manager.log_dg_) << "Transaction " << fromBridgeHash(erased.hash) << " removed from trx pool ";
+    }
+  }
+
+  /**
+   * Persists DAG-accepted transaction payloads without first materializing
+   * compatibility `Transaction` objects.
+   *
+   * The proposed-DAG path already carries canonical RLP bytes from the Rust
+   * proposer packing session. Rust re-inspects those bytes, verifies the
+   * supplied hashes, sources FinalChain nonce facts, and owns the accepted
+   * storage/sidecar mutation. C++ keeps only the transaction mutex and logging
+   * mechanics around the Rust-owned runtime/storage operation.
+   */
+  static void saveTransactionPayloadsFromDagBlock(TransactionManager& manager, const vec_trx_t& transaction_hashes,
+                                                  const std::vector<dev::bytes>& transaction_rlps) {
+    if (transaction_hashes.size() != transaction_rlps.size()) {
+      throw DbException("RUST_STORAGE_DAG_TX_PERSIST_FAILED: DAG transaction payload lengths do not match");
+    }
+    if (transaction_hashes.empty()) {
+      return;
+    }
+    if (!manager.final_chain_) {
+      throw DbException(
+          "RUST_STORAGE_DAG_TX_PERSIST_FAILED: FinalChain is required for non-empty DAG transaction save");
+    }
+
+    std::unique_lock transactions_lock(manager.transactions_mutex_);
+
+    rust::Vec<rustaxa::DagTransactionSaveRuntimeFact> facts;
+    facts.reserve(transaction_hashes.size());
+
+    for (size_t idx = 0; idx < transaction_hashes.size(); ++idx) {
+      const auto envelope = inspectRegularTransactionPayload(transaction_hashes[idx], transaction_rlps[idx],
+                                                             "RUST_STORAGE_DAG_TX_ENVELOPE_FAILED");
+      const auto sender = requireEnvelopeSender(envelope, "RUST_STORAGE_DAG_TX_ENVELOPE_FAILED");
+
+      rustaxa::DagTransactionSaveRuntimeFact fact;
+      fact.input_index = static_cast<uint64_t>(idx);
       fact.hash = envelope.hash;
       fact.trx_rlp = cloneBridgeBytes(envelope.tx_rlp);
       fact.transaction_nonce = envelope.nonce;
@@ -1266,6 +1338,11 @@ unsigned long TransactionManager::getTransactionCount() const {
 
 void TransactionManager::saveTransactionsFromDagBlock(const SharedTransactions& trxs) {
   TransactionManagerRustShimAccess::saveTransactionsFromDagBlock(*this, trxs);
+}
+
+void TransactionManager::saveTransactionPayloadsFromDagBlock(const vec_trx_t& transaction_hashes,
+                                                             const std::vector<dev::bytes>& transaction_rlps) {
+  TransactionManagerRustShimAccess::saveTransactionPayloadsFromDagBlock(*this, transaction_hashes, transaction_rlps);
 }
 
 void TransactionManager::removeNonFinalizedTransactions(std::unordered_set<trx_hash_t>&& transactions) {

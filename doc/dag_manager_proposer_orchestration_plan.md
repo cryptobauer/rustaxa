@@ -99,8 +99,11 @@ Landed:
 
 - Proposed DAG blocks can now cross the proposer-to-manager boundary as Rust-produced canonical signed block RLP plus
   transaction hash/RLP payloads. Rust decodes compact manager facts from the signed RLP for add-block planning and graph
-  mutation; C++ materializes `DagBlock` and `Transaction` objects only inside the manager after acceptance for the
-  remaining cache, legacy mirror, event, and network compatibility surfaces.
+  mutation; C++ materializes the accepted `DagBlock` only inside the manager for the remaining cache, legacy mirror,
+  event, and network compatibility surfaces.
+- Proposed DAG transaction payloads now persist through a payload-based `TransactionManager` shim entry point. Rust
+  inspects canonical transaction RLPs, verifies the supplied hashes, and owns DAG transaction storage/sidecar mutation
+  before C++ materializes transactions only for the remaining network-gossip compatibility path.
 
 Scope:
 
@@ -148,8 +151,8 @@ Landed:
 Remaining:
 
 - The proposer path still uses temporary C++ signing before Rust finalizes the signed block RLP.
-- `DagManager` still materializes accepted proposed blocks and transactions for compatibility cache, legacy mirror,
-  event emission, and network gossip.
+- `DagManager` still materializes accepted proposed blocks for compatibility cache, legacy mirror, event emission, and
+  network gossip; accepted proposed transactions are materialized only for network gossip.
 - The live network throttle check itself still runs in the temporary C++ executor shell until proposer worker/network
   lifecycle ownership moves.
 

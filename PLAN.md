@@ -818,8 +818,11 @@ The current Rust consensus footprint is broad but still incomplete:
    account nonces from the Rust FinalChain runtime and owns sidecar membership checks, duplicate filtering,
    nonce-gated finalized-storage
    lookup, accepted ordering, count planning, the storage batch, accepted non-finalized sidecar insertion, and accepted
-   queue erasure before returning a typed DAG-save command report that C++ consumes only for logging. Finalized transaction status
-   updates now send finalized hashes and RLP payloads to Rust; Rust plans count increments, retention eviction, periodic
+   queue erasure before returning a typed DAG-save command report that C++ consumes only for logging.
+   Proposed DAG blocks that already carry canonical transaction RLP payloads now use a payload-based
+   TransactionManager shim entry point, so C++ does not materialize `Transaction` objects before Rust-owned DAG
+   transaction persistence; materialization remains only for network/public compatibility paths.
+   Finalized transaction status updates now send finalized hashes and RLP payloads to Rust; Rust plans count increments, retention eviction, periodic
    queue cleanup, recently-finalized sidecar insertion, non-finalized sidecar removal, known-cache marking, and queue
    erasure while persisting `TrxCount` before returning typed finalized-status command buckets that C++ logs. Periodic
    finalized-account purge now executes inside the Rust finalized-status command report by sourcing account facts from

@@ -669,10 +669,8 @@ std::pair<bool, std::vector<blk_hash_t>> DagManager::addDagBlockRlp(rustaxa::Dag
     return {false, from_bridge_dag_hashes(add_plan.missing_references)};
   }
 
-  auto trxs = materialize_transactions(transaction_hashes, transaction_rlps);
-
   if (add_plan.persist_transactions) {
-    trx_mgr_->saveTransactionsFromDagBlock(trxs);
+    trx_mgr_->saveTransactionPayloadsFromDagBlock(transaction_hashes, transaction_rlps);
   }
   if (add_plan.persist_block) {
     std::shared_lock lock(rust_graphs_mutex_);
@@ -708,6 +706,7 @@ std::pair<bool, std::vector<blk_hash_t>> DagManager::addDagBlockRlp(rustaxa::Dag
     block_verified_.emit(blk);
   }
   if (add_plan.gossip) {
+    auto trxs = materialize_transactions(transaction_hashes, transaction_rlps);
     if (std::shared_ptr<Network> net = network_.lock()) {
       net->gossipDagBlock(blk, add_plan.proposed, trxs);
     }
