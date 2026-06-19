@@ -4,8 +4,7 @@
 //! period data from peers. It deliberately owns only compact queue metadata:
 //! entry ids, periods, block hashes, validation facts, effective processable
 //! size, and pop/cleanup decisions. The C++ shim keeps ownership of live
-//! `PeriodData`, `PbftVote`, and peer `NodeID` objects until those model types
-//! are ported.
+//! `PeriodData` and peer `NodeID` objects until those model types are ported.
 
 use anyhow::{Result, anyhow};
 use ethereum_types::H256;
@@ -27,6 +26,8 @@ use std::collections::VecDeque;
 ///   synced period-data payload for Rust sync validation.
 /// - `transaction_rlps`: canonical transaction payloads carried by the synced
 ///   period-data payload for finalization materialization.
+/// - `previous_cert_vote_rlps`: canonical PBFT cert-vote payloads carried by
+///   the synced period-data payload for the previous block.
 /// - transaction hash lists: compact sync validation facts carried by the
 ///   payload.
 /// - previous-cert-vote flags: compact vote sidecar facts used by sync
@@ -51,6 +52,7 @@ pub struct PeriodDataQueueEntryRef {
     pub reward_vote_hashes: Vec<H256>,
     pub pillar_vote_rlps: Vec<Vec<u8>>,
     pub transaction_rlps: Vec<Vec<u8>>,
+    pub previous_cert_vote_rlps: Vec<Vec<u8>>,
     pub dag_transaction_hashes: Vec<H256>,
     pub period_data_transaction_hashes: Vec<H256>,
     pub period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
@@ -105,9 +107,12 @@ pub struct PeriodDataQueuePushOutcome {
 ///
 /// Inputs/outputs:
 /// - `entry_id`: C++ payload id to move out of the live payload deque.
-/// - `use_last_block_cert_votes`: true when C++ must return the side-car cert
-///   votes passed with the last queued block; false means cert votes come from
-///   the next queued `PeriodData.previous_block_cert_votes`.
+/// - `cert_vote_rlps`: canonical PBFT cert-vote payloads selected by Rust for
+///   the popped block. They are either the next queued entry's previous-cert
+///   payloads or the current last-block cert-vote payloads.
+/// - `use_last_block_cert_votes`: true when Rust selected the cert votes passed
+///   with the last queued block; false means cert votes came from the next
+///   queued entry.
 /// - `next_entry_id`: id of the next queued payload when
 ///   `use_last_block_cert_votes` is false.
 /// - `current_period` and `effective_size` describe queue state after pop.
@@ -120,6 +125,8 @@ pub struct PeriodDataQueuePushOutcome {
 ///   popped period-data payload.
 /// - `transaction_rlps` are canonical transaction payload bytes from the
 ///   popped period-data payload.
+/// - `previous_cert_vote_rlps` are canonical cert-vote payload bytes from the
+///   popped period-data payload's previous-cert sidecar.
 /// - transaction hash lists are compact sync validation facts for the popped
 ///   payload.
 /// - transaction identities are compact finalized-status facts for the popped
@@ -141,6 +148,8 @@ pub struct PeriodDataQueuePopPlan {
     pub reward_vote_hashes: Vec<H256>,
     pub pillar_vote_rlps: Vec<Vec<u8>>,
     pub transaction_rlps: Vec<Vec<u8>>,
+    pub cert_vote_rlps: Vec<Vec<u8>>,
+    pub previous_cert_vote_rlps: Vec<Vec<u8>>,
     pub dag_transaction_hashes: Vec<H256>,
     pub period_data_transaction_hashes: Vec<H256>,
     pub period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
@@ -169,7 +178,7 @@ pub struct PeriodDataQueuePopPlan {
 pub struct PeriodDataQueue {
     entries: VecDeque<PeriodDataQueueEntryRef>,
     period: u64,
-    last_block_cert_votes_available: bool,
+    last_block_cert_vote_rlps: Vec<Vec<u8>>,
 }
 
 impl PeriodDataQueue {
@@ -223,7 +232,7 @@ impl PeriodDataQueue {
     /// The tail entry is hidden when no side-car cert votes are available,
     /// because its cert votes may arrive only in a subsequent queued block.
     pub fn size(&self) -> usize {
-        if self.last_block_cert_votes_available || self.entries.is_empty() {
+        if !self.last_block_cert_vote_rlps.is_empty() || self.entries.is_empty() {
             self.entries.len()
         } else {
             self.entries.len().saturating_sub(1)
@@ -239,7 +248,7 @@ impl PeriodDataQueue {
     pub fn clear(&mut self) {
         self.period = 0;
         self.entries.clear();
-        self.last_block_cert_votes_available = false;
+        self.last_block_cert_vote_rlps.clear();
     }
 
     /// Attempts to enqueue one period-data metadata entry.
@@ -257,6 +266,8 @@ impl PeriodDataQueue {
     ///   the payload.
     /// - `transaction_rlps`: canonical transaction payload bytes carried by
     ///   the payload.
+    /// - `previous_cert_vote_rlps`: canonical PBFT cert-vote payload bytes
+    ///   carried by the payload's previous-cert sidecar.
     /// - `dag_transaction_hashes`: transaction hashes referenced by finalized
     ///   DAG blocks in the payload.
     /// - `period_data_transaction_hashes`: transaction hashes supplied in the
@@ -273,8 +284,9 @@ impl PeriodDataQueue {
     /// - `extra_data_pillar_block_hash_present`: whether that extra data
     ///   carried a pillar block hash.
     /// - `max_pbft_size`: current local PBFT chain size.
-    /// - `current_block_cert_votes_count`: number of cert votes passed for the
-    ///   pushed block; only the count is needed for size eligibility.
+    /// - `current_block_cert_vote_rlps`: canonical PBFT cert-vote payload bytes
+    ///   passed for the pushed block; they become the last-block cert-vote
+    ///   source when Rust pops the final queued entry.
     ///
     /// Returns a push outcome. Overflow in legacy period arithmetic is reported
     /// as an error rather than wrapping.
@@ -289,6 +301,7 @@ impl PeriodDataQueue {
         reward_vote_hashes: Vec<H256>,
         pillar_vote_rlps: Vec<Vec<u8>>,
         transaction_rlps: Vec<Vec<u8>>,
+        previous_cert_vote_rlps: Vec<Vec<u8>>,
         dag_transaction_hashes: Vec<H256>,
         period_data_transaction_hashes: Vec<H256>,
         period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
@@ -298,7 +311,7 @@ impl PeriodDataQueue {
         extra_data_present: bool,
         extra_data_pillar_block_hash_present: bool,
         max_pbft_size: u64,
-        current_block_cert_votes_count: usize,
+        current_block_cert_vote_rlps: Vec<Vec<u8>>,
     ) -> Result<PeriodDataQueuePushOutcome> {
         let expected_next_period = std::cmp::max(self.period, max_pbft_size)
             .checked_add(1)
@@ -334,6 +347,7 @@ impl PeriodDataQueue {
             reward_vote_hashes,
             pillar_vote_rlps,
             transaction_rlps,
+            previous_cert_vote_rlps,
             dag_transaction_hashes,
             period_data_transaction_hashes,
             period_data_transaction_identities,
@@ -343,7 +357,7 @@ impl PeriodDataQueue {
             extra_data_present,
             extra_data_pillar_block_hash_present,
         });
-        self.last_block_cert_votes_available = current_block_cert_votes_count > 0;
+        self.last_block_cert_vote_rlps = current_block_cert_vote_rlps;
 
         Ok(PeriodDataQueuePushOutcome {
             accepted: true,
@@ -375,6 +389,8 @@ impl PeriodDataQueue {
                 reward_vote_hashes: entry.reward_vote_hashes,
                 pillar_vote_rlps: entry.pillar_vote_rlps,
                 transaction_rlps: entry.transaction_rlps,
+                cert_vote_rlps: next.previous_cert_vote_rlps.clone(),
+                previous_cert_vote_rlps: entry.previous_cert_vote_rlps,
                 dag_transaction_hashes: entry.dag_transaction_hashes,
                 period_data_transaction_hashes: entry.period_data_transaction_hashes,
                 period_data_transaction_identities: entry.period_data_transaction_identities,
@@ -391,7 +407,7 @@ impl PeriodDataQueue {
         }
 
         self.period = 0;
-        self.last_block_cert_votes_available = false;
+        let cert_vote_rlps = std::mem::take(&mut self.last_block_cert_vote_rlps);
         Ok(PeriodDataQueuePopPlan {
             entry_id: entry.entry_id,
             entry_period: entry.period,
@@ -402,6 +418,8 @@ impl PeriodDataQueue {
             reward_vote_hashes: entry.reward_vote_hashes,
             pillar_vote_rlps: entry.pillar_vote_rlps,
             transaction_rlps: entry.transaction_rlps,
+            cert_vote_rlps,
+            previous_cert_vote_rlps: entry.previous_cert_vote_rlps,
             dag_transaction_hashes: entry.dag_transaction_hashes,
             period_data_transaction_hashes: entry.period_data_transaction_hashes,
             period_data_transaction_identities: entry.period_data_transaction_identities,
@@ -425,7 +443,7 @@ impl PeriodDataQueue {
     /// Removes queued entries with period lower than `period`.
     ///
     /// This intentionally preserves legacy behavior: only front entries are
-    /// removed, while `period` and last-cert-vote availability are left intact.
+    /// removed, while `period` and last-cert-vote payload availability are left intact.
     /// Removed entry ids are returned so C++ can drop matching live payloads.
     pub fn clean_old_data(&mut self, period: u64) -> Vec<PeriodDataQueueEntryRef> {
         let mut removed = Vec::new();
@@ -454,6 +472,14 @@ mod tests {
         max_size: u64,
         cert_votes: usize,
     ) -> bool {
+        let previous_cert_vote_rlps = if id % 2 == 0 {
+            vec![vec![id as u8, 0xc0]]
+        } else {
+            Vec::new()
+        };
+        let current_block_cert_vote_rlps = (0..cert_votes)
+            .map(|idx| vec![id as u8, 0xd0 + idx as u8])
+            .collect();
         queue
             .push(
                 id,
@@ -465,6 +491,7 @@ mod tests {
                 vec![H256::from_low_u64_be(id + 2600)],
                 vec![vec![id as u8, 0xa0]],
                 vec![vec![id as u8, 0xb0]],
+                previous_cert_vote_rlps,
                 vec![H256::from_low_u64_be(id + 3000)],
                 vec![H256::from_low_u64_be(id + 4000)],
                 vec![PeriodDataQueueTransactionIdentity {
@@ -479,7 +506,7 @@ mod tests {
                 id % 7 == 0,
                 id % 7 == 0 && id % 11 == 0,
                 max_size,
-                cert_votes,
+                current_block_cert_vote_rlps,
             )
             .unwrap()
             .accepted
@@ -521,6 +548,7 @@ mod tests {
                 vec![H256::from_low_u64_be(2604)],
                 vec![vec![4, 0xa0]],
                 vec![vec![4, 0xb0]],
+                vec![vec![4, 0xc0]],
                 vec![H256::from_low_u64_be(3004)],
                 vec![H256::from_low_u64_be(4004)],
                 vec![PeriodDataQueueTransactionIdentity {
@@ -535,7 +563,7 @@ mod tests {
                 true,
                 false,
                 3,
-                1,
+                vec![vec![4, 0xd0]],
             )
             .unwrap();
 
@@ -575,6 +603,10 @@ mod tests {
         assert_eq!(
             queue.last_entry().unwrap().transaction_rlps,
             vec![vec![4, 0xb0]]
+        );
+        assert_eq!(
+            queue.last_entry().unwrap().previous_cert_vote_rlps,
+            vec![vec![4, 0xc0]]
         );
         assert_eq!(
             queue.last_entry().unwrap().period_data_transaction_hashes,
@@ -637,6 +669,8 @@ mod tests {
         assert_eq!(first.final_chain_hash, H256::from_low_u64_be(2511));
         assert_eq!(first.pillar_vote_rlps, vec![vec![11, 0xa0]]);
         assert_eq!(first.transaction_rlps, vec![vec![11, 0xb0]]);
+        assert_eq!(first.cert_vote_rlps, vec![vec![22, 0xc0]]);
+        assert!(first.previous_cert_vote_rlps.is_empty());
         assert_eq!(
             first.dag_transaction_hashes,
             vec![H256::from_low_u64_be(3011)]
@@ -662,6 +696,8 @@ mod tests {
         let second = queue.pop().unwrap();
         assert_eq!(second.entry_id, 22);
         assert!(second.previous_cert_votes_present);
+        assert_eq!(second.cert_vote_rlps, vec![vec![22, 0xd0]]);
+        assert_eq!(second.previous_cert_vote_rlps, vec![vec![22, 0xc0]]);
         assert!(!second.previous_cert_first_vote_has_weight);
         assert!(!second.pillar_votes_present);
         assert!(!second.extra_data_present);
@@ -692,6 +728,7 @@ mod tests {
                 reward_vote_hashes: vec![H256::from_low_u64_be(2605)],
                 pillar_vote_rlps: vec![vec![5, 0xa0]],
                 transaction_rlps: vec![vec![5, 0xb0]],
+                previous_cert_vote_rlps: Vec::new(),
                 dag_transaction_hashes: vec![H256::from_low_u64_be(3005)],
                 period_data_transaction_hashes: vec![H256::from_low_u64_be(4005)],
                 period_data_transaction_identities: vec![PeriodDataQueueTransactionIdentity {

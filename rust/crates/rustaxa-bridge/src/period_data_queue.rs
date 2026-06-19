@@ -1,7 +1,8 @@
 use crate::ffi::rustaxa_ffi::{
     PbftSyncTransactionHash, PeriodDataQueueEntryRef, PeriodDataQueueLastEntryLookup,
-    PeriodDataQueuePillarVotePayload, PeriodDataQueuePopPlan, PeriodDataQueuePushOutcome,
-    PeriodDataQueueTransactionIdentity, PeriodDataQueueTransactionPayload,
+    PeriodDataQueuePbftVotePayload, PeriodDataQueuePillarVotePayload, PeriodDataQueuePopPlan,
+    PeriodDataQueuePushOutcome, PeriodDataQueueTransactionIdentity,
+    PeriodDataQueueTransactionPayload,
 };
 use crate::ffi::BridgePeriodDataQueue;
 use rustaxa_consensus::period_data_queue::PeriodDataQueue;
@@ -60,6 +61,7 @@ impl BridgePeriodDataQueue {
         reward_vote_hashes: Vec<PbftSyncTransactionHash>,
         pillar_vote_rlps: Vec<PeriodDataQueuePillarVotePayload>,
         transaction_rlps: Vec<PeriodDataQueueTransactionPayload>,
+        previous_cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
         dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
@@ -69,7 +71,7 @@ impl BridgePeriodDataQueue {
         extra_data_present: bool,
         extra_data_pillar_block_hash_present: bool,
         max_pbft_size: u64,
-        current_block_cert_votes_count: usize,
+        current_block_cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
     ) -> Result<PeriodDataQueuePushOutcome, anyhow::Error> {
         Ok(self
             .0
@@ -89,6 +91,7 @@ impl BridgePeriodDataQueue {
                     .into_iter()
                     .map(|payload| payload.transaction_rlp)
                     .collect(),
+                pbft_vote_rlps_to_vec(previous_cert_vote_rlps),
                 dag_transaction_hashes
                     .into_iter()
                     .map(|hash| ethereum_types::H256::from(hash.hash))
@@ -114,7 +117,7 @@ impl BridgePeriodDataQueue {
                 extra_data_present,
                 extra_data_pillar_block_hash_present,
                 max_pbft_size,
-                current_block_cert_votes_count,
+                pbft_vote_rlps_to_vec(current_block_cert_vote_rlps),
             )?
             .into())
     }
@@ -139,6 +142,7 @@ impl BridgePeriodDataQueue {
                 reward_vote_hashes: transaction_hashes_to_bridge(entry.reward_vote_hashes),
                 pillar_vote_rlps: pillar_vote_rlps_to_bridge(entry.pillar_vote_rlps),
                 transaction_rlps: transaction_rlps_to_bridge(entry.transaction_rlps),
+                previous_cert_vote_rlps: pbft_vote_rlps_to_bridge(entry.previous_cert_vote_rlps),
                 dag_transaction_hashes: transaction_hashes_to_bridge(entry.dag_transaction_hashes),
                 period_data_transaction_hashes: transaction_hashes_to_bridge(
                     entry.period_data_transaction_hashes,
@@ -163,6 +167,7 @@ impl BridgePeriodDataQueue {
                 reward_vote_hashes: Vec::new(),
                 pillar_vote_rlps: Vec::new(),
                 transaction_rlps: Vec::new(),
+                previous_cert_vote_rlps: Vec::new(),
                 dag_transaction_hashes: Vec::new(),
                 period_data_transaction_hashes: Vec::new(),
                 period_data_transaction_identities: Vec::new(),
@@ -201,6 +206,7 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueueEntryRef>
             reward_vote_hashes: transaction_hashes_to_bridge(value.reward_vote_hashes),
             pillar_vote_rlps: pillar_vote_rlps_to_bridge(value.pillar_vote_rlps),
             transaction_rlps: transaction_rlps_to_bridge(value.transaction_rlps),
+            previous_cert_vote_rlps: pbft_vote_rlps_to_bridge(value.previous_cert_vote_rlps),
             dag_transaction_hashes: transaction_hashes_to_bridge(value.dag_transaction_hashes),
             period_data_transaction_hashes: transaction_hashes_to_bridge(
                 value.period_data_transaction_hashes,
@@ -244,6 +250,8 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueuePopPlan> for Peri
             reward_vote_hashes: transaction_hashes_to_bridge(value.reward_vote_hashes),
             pillar_vote_rlps: pillar_vote_rlps_to_bridge(value.pillar_vote_rlps),
             transaction_rlps: transaction_rlps_to_bridge(value.transaction_rlps),
+            cert_vote_rlps: pbft_vote_rlps_to_bridge(value.cert_vote_rlps),
+            previous_cert_vote_rlps: pbft_vote_rlps_to_bridge(value.previous_cert_vote_rlps),
             dag_transaction_hashes: transaction_hashes_to_bridge(value.dag_transaction_hashes),
             period_data_transaction_hashes: transaction_hashes_to_bridge(
                 value.period_data_transaction_hashes,
@@ -287,6 +295,19 @@ fn pillar_vote_rlps_to_bridge(rlps: Vec<Vec<u8>>) -> Vec<PeriodDataQueuePillarVo
 fn transaction_rlps_to_bridge(rlps: Vec<Vec<u8>>) -> Vec<PeriodDataQueueTransactionPayload> {
     rlps.into_iter()
         .map(|transaction_rlp| PeriodDataQueueTransactionPayload { transaction_rlp })
+        .collect()
+}
+
+fn pbft_vote_rlps_to_vec(payloads: Vec<PeriodDataQueuePbftVotePayload>) -> Vec<Vec<u8>> {
+    payloads
+        .into_iter()
+        .map(|payload| payload.vote_rlp)
+        .collect()
+}
+
+fn pbft_vote_rlps_to_bridge(rlps: Vec<Vec<u8>>) -> Vec<PeriodDataQueuePbftVotePayload> {
+    rlps.into_iter()
+        .map(|vote_rlp| PeriodDataQueuePbftVotePayload { vote_rlp })
         .collect()
 }
 

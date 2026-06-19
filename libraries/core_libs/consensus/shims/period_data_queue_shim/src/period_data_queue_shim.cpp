@@ -77,6 +77,21 @@ rust::Vec<rustaxa::PeriodDataQueueTransactionPayload> periodDataTransactionRlps(
   return payloads;
 }
 
+rust::Vec<rustaxa::PeriodDataQueuePbftVotePayload> pbftVoteRlps(
+    const std::vector<std::shared_ptr<PbftVote>>& votes) {
+  rust::Vec<rustaxa::PeriodDataQueuePbftVotePayload> payloads;
+  payloads.reserve(votes.size());
+  for (const auto& vote : votes) {
+    if (!vote) {
+      throw queueError("cannot push period data with a null PBFT cert vote");
+    }
+    rustaxa::PeriodDataQueuePbftVotePayload payload;
+    payload.vote_rlp = toBridgeBytes(vote->rlp(true, vote->getWeight().has_value()));
+    payloads.push_back(std::move(payload));
+  }
+  return payloads;
+}
+
 std::vector<vote_hash_t> rewardVoteHashes(const PeriodData& period_data) {
   return period_data.pbft_blk->getRewardVotes();
 }
@@ -115,6 +130,27 @@ std::vector<bytes> fromBridgeTransactionRlps(const rust::Vec<rustaxa::PeriodData
     out.emplace_back(payload.transaction_rlp.begin(), payload.transaction_rlp.end());
   }
   return out;
+}
+
+std::vector<bytes> fromBridgePbftVoteRlps(const rust::Vec<rustaxa::PeriodDataQueuePbftVotePayload>& payloads) {
+  std::vector<bytes> out;
+  out.reserve(payloads.size());
+  for (const auto& payload : payloads) {
+    out.emplace_back(payload.vote_rlp.begin(), payload.vote_rlp.end());
+  }
+  return out;
+}
+
+std::vector<std::shared_ptr<PbftVote>> materializePbftVotesFromQueuedRlps(const std::vector<bytes>& vote_rlps) {
+  std::vector<std::shared_ptr<PbftVote>> votes;
+  votes.reserve(vote_rlps.size());
+  for (const auto& vote_rlp : vote_rlps) {
+    if (vote_rlp.empty()) {
+      throw queueError("cannot materialize an empty PBFT cert-vote payload");
+    }
+    votes.emplace_back(std::make_shared<PbftVote>(vote_rlp));
+  }
+  return votes;
 }
 
 rust::Vec<rustaxa::PeriodDataQueueTransactionIdentity> periodDataTransactionIdentities(const PeriodData& period_data) {
@@ -211,7 +247,6 @@ void PeriodDataQueue::clear() {
   std::unique_lock lock(queue_access_);
   rust_queue_->period_data_queue_clear();
   queued_payloads_.clear();
-  last_block_cert_votes_.clear();
   next_entry_id_ = 1;
 }
 
@@ -225,6 +260,8 @@ bool PeriodDataQueue::push(PeriodData&& period_data, const dev::p2p::NodeID& nod
   const auto reward_vote_hashes = rewardVoteHashes(period_data);
   auto pillar_vote_rlps = pillarVoteRlps(period_data);
   auto transaction_rlps = periodDataTransactionRlps(period_data);
+  auto previous_cert_vote_rlps = pbftVoteRlps(period_data.previous_block_cert_votes);
+  auto current_block_cert_vote_rlps = pbftVoteRlps(cert_votes);
   const auto dag_transaction_hashes = dagTransactionHashes(period_data);
   const auto period_data_transaction_hashes = periodDataTransactionHashes(period_data);
   auto period_data_transaction_identities = periodDataTransactionIdentities(period_data);
@@ -242,10 +279,11 @@ bool PeriodDataQueue::push(PeriodData&& period_data, const dev::p2p::NodeID& nod
         entry_id, period, period_data.pbft_blk->getBlockHash().asArray(),
         period_data.pbft_blk->getPrevBlockHash().asArray(), period_data.pbft_blk->getPivotDagBlockHash().asArray(),
         period_data.pbft_blk->getFinalChainHash().asArray(), toBridgeTransactionHashes(reward_vote_hashes),
-        std::move(pillar_vote_rlps), std::move(transaction_rlps), toBridgeTransactionHashes(dag_transaction_hashes),
-        toBridgeTransactionHashes(period_data_transaction_hashes), std::move(period_data_transaction_identities),
-        previous_cert_votes_present, previous_cert_first_vote_has_weight, pillar_votes_present, extra_data_present,
-        extra_data_pillar_block_hash_present, max_pbft_size, cert_votes.size());
+        std::move(pillar_vote_rlps), std::move(transaction_rlps), std::move(previous_cert_vote_rlps),
+        toBridgeTransactionHashes(dag_transaction_hashes), toBridgeTransactionHashes(period_data_transaction_hashes),
+        std::move(period_data_transaction_identities), previous_cert_votes_present,
+        previous_cert_first_vote_has_weight, pillar_votes_present, extra_data_present,
+        extra_data_pillar_block_hash_present, max_pbft_size, std::move(current_block_cert_vote_rlps));
   } catch (const std::exception& e) {
     throw queueError(e.what());
   } catch (...) {
@@ -261,7 +299,6 @@ bool PeriodDataQueue::push(PeriodData&& period_data, const dev::p2p::NodeID& nod
   }
 
   queued_payloads_.push_back(QueuedPayload{entry_id, std::move(period_data), node_id});
-  last_block_cert_votes_ = std::move(cert_votes);
   ++next_entry_id_;
   return true;
 }
@@ -277,16 +314,6 @@ PeriodDataQueue::QueuedPayload PeriodDataQueue::popFrontPayload(uint64_t expecte
   auto payload = std::move(queued_payloads_.front());
   queued_payloads_.pop_front();
   return payload;
-}
-
-const PeriodDataQueue::QueuedPayload& PeriodDataQueue::frontPayload(uint64_t expected_entry_id) const {
-  if (queued_payloads_.empty()) {
-    throw queueError("Rust pop selected next-entry cert votes while C++ payload queue is empty");
-  }
-  if (queued_payloads_.front().entry_id != expected_entry_id) {
-    throw queueMismatch("next payload mismatch", expected_entry_id, queued_payloads_.front().entry_id);
-  }
-  return queued_payloads_.front();
 }
 
 const PeriodDataQueue::QueuedPayload& PeriodDataQueue::backPayload(uint64_t expected_entry_id) const {
@@ -323,6 +350,7 @@ PeriodDataQueue::PoppedPeriodData PeriodDataQueue::popWithMetadata() {
                                  fromBridgeTransactionHashes(plan.reward_vote_hashes),
                                  fromBridgePillarVoteRlps(plan.pillar_vote_rlps),
                                  fromBridgeTransactionRlps(plan.transaction_rlps),
+                                 fromBridgePbftVoteRlps(plan.cert_vote_rlps),
                                  fromBridgeTransactionHashes(plan.dag_transaction_hashes),
                                  fromBridgeTransactionHashes(plan.period_data_transaction_hashes),
                                  toVerifyNotFinalizedFacts(plan.period_data_transaction_identities),
@@ -331,13 +359,7 @@ PeriodDataQueue::PoppedPeriodData PeriodDataQueue::popWithMetadata() {
                                  plan.pillar_votes_present,
                                  plan.extra_data_present,
                                  plan.extra_data_pillar_block_hash_present};
-  if (!plan.use_last_block_cert_votes) {
-    result.cert_votes = frontPayload(plan.next_entry_id).period_data.previous_block_cert_votes;
-    return result;
-  }
-
-  result.cert_votes = std::move(last_block_cert_votes_);
-  last_block_cert_votes_.clear();
+  result.cert_votes = materializePbftVotesFromQueuedRlps(result.cert_vote_rlps);
   return result;
 }
 

@@ -449,8 +449,12 @@ admission accepts a popped candidate, `processPeriodData()` rematerializes final
 those queued bytes and verifies each materialized hash against the Rust-owned queued transaction-hash metadata before
 dispatching finalization. Those C++ transaction objects are now executor materialization for the EVM/FinalChain boundary,
 not the authoritative sync payload source.
-Remaining Slice 9 work should finish in two more cuts: first reduce accepted vote insertion and pillar-data
-finalization payload sidecars, then reduce proposed-block validation/API sidecars that still require C++ block
+The sync cert-vote RLP cut makes the Rust queue retain canonical PBFT cert-vote payload bytes for both the next queued
+entry's previous-cert sidecar and the final queued block's cert-vote payloads. `processPeriodData()` now receives the
+Rust-selected cert-vote bytes and materializes temporary `PbftVote` objects only for VoteManager validation/insertion
+and finalization dispatch.
+Remaining Slice 9 work should finish in one more cut if it stays narrow: reduce or explicitly classify the remaining
+VoteManager insertion, pillar-data finalization, and proposed-block validation/API sidecars that still require C++
 materialization.
 
 ### Slice 10: Rust-Mode PBFT Manager Parity Gate

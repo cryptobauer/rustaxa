@@ -1608,6 +1608,13 @@ pub mod rustaxa_ffi {
         vote_rlp: Vec<u8>,
     }
 
+    /// Canonical PBFT cert-vote payload retained by the Rust period-data queue
+    /// for sync validation and finalization without reopening live C++
+    /// `PeriodData` vote sidecars as the payload source.
+    struct PeriodDataQueuePbftVotePayload {
+        vote_rlp: Vec<u8>,
+    }
+
     /// Canonical transaction payload retained by the Rust period-data queue
     /// for finalization materialization without reopening the live C++
     /// `PeriodData` transaction list.
@@ -1625,6 +1632,7 @@ pub mod rustaxa_ffi {
         reward_vote_hashes: Vec<PbftSyncTransactionHash>,
         pillar_vote_rlps: Vec<PeriodDataQueuePillarVotePayload>,
         transaction_rlps: Vec<PeriodDataQueueTransactionPayload>,
+        previous_cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
         dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
@@ -1654,6 +1662,8 @@ pub mod rustaxa_ffi {
         reward_vote_hashes: Vec<PbftSyncTransactionHash>,
         pillar_vote_rlps: Vec<PeriodDataQueuePillarVotePayload>,
         transaction_rlps: Vec<PeriodDataQueueTransactionPayload>,
+        cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
+        previous_cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
         dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
@@ -1679,6 +1689,7 @@ pub mod rustaxa_ffi {
         reward_vote_hashes: Vec<PbftSyncTransactionHash>,
         pillar_vote_rlps: Vec<PeriodDataQueuePillarVotePayload>,
         transaction_rlps: Vec<PeriodDataQueueTransactionPayload>,
+        previous_cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
         dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
@@ -4945,6 +4956,7 @@ pub mod rustaxa_ffi {
             reward_vote_hashes: Vec<PbftSyncTransactionHash>,
             pillar_vote_rlps: Vec<PeriodDataQueuePillarVotePayload>,
             transaction_rlps: Vec<PeriodDataQueueTransactionPayload>,
+            previous_cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
             dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
             period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
             period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
@@ -4954,7 +4966,7 @@ pub mod rustaxa_ffi {
             extra_data_present: bool,
             extra_data_pillar_block_hash_present: bool,
             max_pbft_size: u64,
-            current_block_cert_votes_count: usize,
+            current_block_cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
         ) -> Result<PeriodDataQueuePushOutcome>;
         pub fn period_data_queue_pop(
             self: &mut BridgePeriodDataQueue,

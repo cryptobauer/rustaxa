@@ -25,6 +25,16 @@ PeriodData makePeriodData(PbftPeriod period, uint64_t seed,
   return PeriodData(makeBlock(period, seed, extra_data), previous_cert_votes);
 }
 
+void expectMaterializedVotePayload(const std::shared_ptr<PbftVote>& materialized,
+                                   const std::shared_ptr<PbftVote>& original) {
+  ASSERT_NE(materialized, nullptr);
+  ASSERT_NE(original, nullptr);
+  EXPECT_NE(materialized.get(), original.get());
+  EXPECT_EQ(materialized->getHash(), original->getHash());
+  EXPECT_EQ(materialized->rlp(true, original->getWeight().has_value()),
+            original->rlp(true, original->getWeight().has_value()));
+}
+
 }  // namespace
 
 TEST(PeriodDataQueueShimTest, rustModePeriodDataQueueDoesNotInheritLegacyImplementation) {
@@ -81,7 +91,9 @@ TEST(PeriodDataQueueShimTest, popReturnsQueueFrontAndMatchingCertVotesContract) 
   EXPECT_FALSE(popped1.extra_data_present);
   EXPECT_FALSE(popped1.extra_data_pillar_block_hash_present);
   ASSERT_EQ(popped1.cert_votes.size(), 1);
-  EXPECT_EQ(popped1.cert_votes[0].get(), vote_from_next_block.get());
+  ASSERT_EQ(popped1.cert_vote_rlps.size(), 1);
+  EXPECT_EQ(popped1.cert_vote_rlps[0], vote_from_next_block->rlp(true, vote_from_next_block->getWeight().has_value()));
+  expectMaterializedVotePayload(popped1.cert_votes[0], vote_from_next_block);
   EXPECT_EQ(queue.size(), 1);
   EXPECT_EQ(queue.getPeriod(), 2);
 
@@ -93,7 +105,9 @@ TEST(PeriodDataQueueShimTest, popReturnsQueueFrontAndMatchingCertVotesContract) 
   EXPECT_TRUE(popped2.extra_data_present);
   EXPECT_TRUE(popped2.extra_data_pillar_block_hash_present);
   ASSERT_EQ(popped2.cert_votes.size(), 1);
-  EXPECT_EQ(popped2.cert_votes[0].get(), vote_for_last_block.get());
+  ASSERT_EQ(popped2.cert_vote_rlps.size(), 1);
+  EXPECT_EQ(popped2.cert_vote_rlps[0], vote_for_last_block->rlp(true, vote_for_last_block->getWeight().has_value()));
+  expectMaterializedVotePayload(popped2.cert_votes[0], vote_for_last_block);
   EXPECT_TRUE(queue.empty());
   EXPECT_FALSE(queue.lastPbftBlockHash().has_value());
   EXPECT_EQ(queue.lastBlockHashOrChain(1, blk_hash_t(999)), blk_hash_t(999));
