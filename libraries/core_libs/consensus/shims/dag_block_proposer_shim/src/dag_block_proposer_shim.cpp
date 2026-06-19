@@ -414,6 +414,19 @@ DagBlockProposer::ShardedProposalTransactions DagBlockProposer::getShardedTrxs(P
           std::move(payloads.gas_estimations)};
 }
 
+vec_blk_t DagBlockProposer::selectDagBlockTips(const vec_blk_t& frontier_tips, uint64_t gas_limit) const {
+  rustaxa::DagProposerStorageTipSelectionInput input;
+  input.frontier_tips.reserve(frontier_tips.size());
+  for (const auto& tip : frontier_tips) {
+    input.frontier_tips.push_back(to_bridge_dag_hash(tip));
+  }
+  input.gas_limit = gas_limit;
+  input.max_tips = kDagBlockMaxTips;
+
+  const auto plan = dag_mgr_->planProposerTipSelection(std::move(input));
+  return from_bridge_dag_hashes(plan.selected_tips);
+}
+
 std::shared_ptr<DagBlock> DagBlockProposer::createDagBlock(DagFrontier&& frontier, level_t level,
                                                            const vec_trx_t& trx_hashes,
                                                            std::vector<uint64_t>&& estimations, VdfSortition&& vdf,

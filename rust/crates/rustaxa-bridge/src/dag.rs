@@ -10,13 +10,14 @@ use crate::ffi::rustaxa_ffi::{
     DagProposerFrontierFacts, DagProposerPostPackInput, DagProposerPostPackPlan,
     DagProposerRetryResetInput, DagProposerRetryResetPlan, DagProposerSignedBlockIntent,
     DagProposerSignedBlockIntentInput, DagProposerStaleProofInput, DagProposerStaleProofPlan,
-    DagProposerStorageBlockConstructionInput, DagProposerTransactionPackRequest,
-    DagProposerUnsignedBlockIntent, DagProposerVdfWaitInput, DagProposerVdfWaitPlan,
-    DagReferenceMetadata, DagSyncBlockRlp, DagTransactionHash, DagTransactionQueryPlan,
-    DagTransactionRlpLookup, DagVerifyAuthorizationInput, DagVerifyAuthorizationResult,
-    DagVerifyBlockAuthorizationReport, DagVerifyBlockGasReport, DagVerifyBlockSessionInput,
-    DagVerifyBlockSessionStep, DagVerifyBlockTransactionReport, DagVerifyBlockVdfReport,
-    DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
+    DagProposerStorageBlockConstructionInput, DagProposerStorageTipSelectionInput,
+    DagProposerTipSelectionPlan, DagProposerTransactionPackRequest, DagProposerUnsignedBlockIntent,
+    DagProposerVdfWaitInput, DagProposerVdfWaitPlan, DagReferenceMetadata, DagSyncBlockRlp,
+    DagTransactionHash, DagTransactionQueryPlan, DagTransactionRlpLookup,
+    DagVerifyAuthorizationInput, DagVerifyAuthorizationResult, DagVerifyBlockAuthorizationReport,
+    DagVerifyBlockGasReport, DagVerifyBlockSessionInput, DagVerifyBlockSessionStep,
+    DagVerifyBlockTransactionReport, DagVerifyBlockVdfReport, DagVerifyGasInput,
+    DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
     DagVerifyTransactionAvailabilityInput, DagVerifyTransactionAvailabilityResult,
     DagVerifyVdfDposDecision, DagVerifyVdfDposFacts, DagVerifyVdfPrepareInput,
     DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
@@ -39,8 +40,9 @@ use rustaxa_consensus::dag::{
     period_block_hash_from_storage, plan_dag_add_block_effects, plan_dag_proposer_attempt,
     plan_dag_proposer_block_construction_from_storage, plan_dag_proposer_block_intent,
     plan_dag_proposer_post_pack, plan_dag_proposer_retry_reset, plan_dag_proposer_stale_proof,
-    plan_dag_proposer_vdf_wait, plan_dag_verify_transaction_query,
-    plan_expired_transaction_cleanup, plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
+    plan_dag_proposer_tip_selection_from_storage, plan_dag_proposer_vdf_wait,
+    plan_dag_verify_transaction_query, plan_expired_transaction_cleanup,
+    plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
     proposal_period_for_level_from_storage, save_dag_block_to_storage,
     validate_dag_verify_authorization, validate_dag_verify_gas,
     validate_dag_verify_transaction_availability, validate_pivot_tips_metadata,
@@ -55,6 +57,7 @@ use rustaxa_consensus::dag::{
     DagProposerBlockIntentInput as DomainDagProposerBlockIntentInput,
     DagProposerSignedBlockIntentInput as DomainDagProposerSignedBlockIntentInput,
     DagProposerStorageBlockConstructionInput as DomainDagProposerStorageBlockConstructionInput,
+    DagProposerStorageTipSelectionInput as DomainDagProposerStorageTipSelectionInput,
     DagProposerUnsignedBlockIntent as DomainDagProposerUnsignedBlockIntent,
     DagReferenceMetadata as ReferenceMetadata, DagTipGas,
     DagVdfSortitionBlockInput as DomainDagVdfSortitionBlockInput,
@@ -970,6 +973,37 @@ impl BridgeDagManagerRuntime {
             },
         )?;
         Ok(to_bridge_dag_proposer_block_construction_plan(plan))
+    }
+
+    /// Selects proposer tips with tip metadata loaded from Rust storage.
+    ///
+    /// This backs the legacy `DagBlockProposer::selectDagBlockTips` compatibility API. Rust owns storage metadata
+    /// loading, sender recovery, missing-tip skipping, proposer grouping, level ordering, gas-limit enforcement, and
+    /// max-tip enforcement. C++ only supplies candidate hashes and materializes the returned hash list.
+    pub fn dag_manager_runtime_plan_proposal_tip_selection(
+        &self,
+        input: DagProposerStorageTipSelectionInput,
+    ) -> Result<DagProposerTipSelectionPlan> {
+        let plan = plan_dag_proposer_tip_selection_from_storage(
+            self.storage.as_ref(),
+            DomainDagProposerStorageTipSelectionInput {
+                frontier_tips: input
+                    .frontier_tips
+                    .into_iter()
+                    .map(|hash| H256::from(hash.hash))
+                    .collect(),
+                gas_limit: input.gas_limit,
+                max_tips: input.max_tips,
+            },
+        )?;
+        Ok(DagProposerTipSelectionPlan {
+            selected_tips: plan
+                .selected
+                .into_iter()
+                .map(|hash| DagHash { hash: hash.0 })
+                .collect(),
+            skipped_missing_tips: plan.skipped_missing,
+        })
     }
 
     /// Ensures the proposal-period mapping exists for `level`.
@@ -2387,6 +2421,55 @@ mod tests {
             assert_eq!(plan.selected_tips.len(), 1);
             assert_eq!(plan.selected_tips[0].hash, [20u8; 32]);
             assert_eq!(plan.block_gas_estimation, 9);
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_plans_proposal_tip_selection_from_storage_tips() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_proposal_tip_selection");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("runtime should initialize");
+
+            runtime
+                .dag_manager_runtime_save_block(
+                    &[10u8; 32],
+                    3,
+                    0,
+                    signed_dag_block_rlp(0x61, 3, 100),
+                )
+                .expect("save lower tip");
+            runtime
+                .dag_manager_runtime_save_block(
+                    &[20u8; 32],
+                    5,
+                    0,
+                    signed_dag_block_rlp(0x62, 5, 100),
+                )
+                .expect("save higher tip");
+
+            let plan = runtime
+                .dag_manager_runtime_plan_proposal_tip_selection(
+                    DagProposerStorageTipSelectionInput {
+                        frontier_tips: vec![
+                            DagHash { hash: [10u8; 32] },
+                            DagHash { hash: [20u8; 32] },
+                            DagHash { hash: [30u8; 32] },
+                        ],
+                        gas_limit: 150,
+                        max_tips: 16,
+                    },
+                )
+                .expect("plan");
+
+            assert_eq!(plan.selected_tips.len(), 1);
+            assert_eq!(plan.selected_tips[0].hash, [20u8; 32]);
+            assert_eq!(plan.skipped_missing_tips, 1);
         }
 
         let _ = fs::remove_dir_all(&temp_dir);

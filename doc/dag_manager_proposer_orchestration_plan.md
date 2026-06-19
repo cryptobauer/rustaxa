@@ -121,11 +121,17 @@ Validation:
 
 Move proposer orchestration decisions into Rust while leaving signing, thread lifecycle, and network submission in C++.
 
-Starting gap:
+Landed:
 
-- Rust-mode `dag_block_test` currently expects the legacy `DagBlockProposer::selectDagBlockTips` compatibility method,
-  but the proposer overlay does not expose that route. Close this through the Rust proposer policy boundary rather than
-  reintroducing C++ tip-selection decision ownership.
+- The Rust-mode `DagBlockProposer::selectDagBlockTips` compatibility method now routes through a storage-backed Rust
+  DAG manager runtime tip-selection plan. Rust loads tip metadata from canonical stored DAG block RLP, skips missing
+  tips, applies unique-proposer priority, descending-level ordering, gas-limit enforcement, and max-tip enforcement; C++
+  only translates hashes for the legacy API.
+
+Remaining:
+
+- The main proposer loop still needs a Rust proposer runtime/session for skip reasons, VDF payload planning, transaction
+  packing command selection, block-construction command sequencing, executor reports, and final proposal outcomes.
 
 Scope:
 

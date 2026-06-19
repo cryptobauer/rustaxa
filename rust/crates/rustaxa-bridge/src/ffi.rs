@@ -3879,10 +3879,23 @@ pub mod rustaxa_ffi {
         max_tips: u16,
     }
 
+    /// Rust-runtime DAG proposer tip-selection facts for the legacy compatibility API.
+    struct DagProposerStorageTipSelectionInput {
+        frontier_tips: Vec<DagHash>,
+        gas_limit: u64,
+        max_tips: u16,
+    }
+
     /// Rust producer-side DAG block construction plan.
     struct DagProposerBlockConstructionPlan {
         selected_tips: Vec<DagHash>,
         block_gas_estimation: u64,
+    }
+
+    /// Rust producer-side DAG tip-selection plan.
+    struct DagProposerTipSelectionPlan {
+        selected_tips: Vec<DagHash>,
+        skipped_missing_tips: u64,
     }
 
     /// Final unsigned DAG block fields selected by Rust before temporary C++ signing.
@@ -4443,6 +4456,10 @@ pub mod rustaxa_ffi {
             self: &BridgeDagManagerRuntime,
             input: DagProposerStorageBlockConstructionInput,
         ) -> Result<DagProposerBlockConstructionPlan>;
+        pub fn dag_manager_runtime_plan_proposal_tip_selection(
+            self: &BridgeDagManagerRuntime,
+            input: DagProposerStorageTipSelectionInput,
+        ) -> Result<DagProposerTipSelectionPlan>;
         pub fn dag_manager_runtime_plan_proposal_attempt(
             self: &BridgeDagManagerRuntime,
             input: DagProposerAttemptInput,

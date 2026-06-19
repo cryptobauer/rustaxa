@@ -97,6 +97,15 @@ class DagBlockProposer {
    */
   uint64_t getProposedBlocksCount() const { return proposed_blocks_count_; }
 
+  /**
+   * Selects proposal tips through the Rust DAG proposer policy.
+   *
+   * This compatibility method preserves the legacy public API for tests and callers. Rust owns storage-backed tip
+   * metadata loading, missing-tip handling, proposer grouping, level ordering, gas-limit enforcement, and max-tip
+   * enforcement; C++ materializes only the returned hash list.
+   */
+  vec_blk_t selectDagBlockTips(const vec_blk_t& frontier_tips, uint64_t gas_limit) const;
+
  private:
   /**
    * Transactions selected for one proposer attempt.

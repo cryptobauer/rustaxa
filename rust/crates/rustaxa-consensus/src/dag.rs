@@ -298,6 +298,18 @@ pub struct DagProposerStorageBlockConstructionInput {
     pub max_tips: u16,
 }
 
+/// Storage-backed inputs for the legacy DAG proposer tip-selection API.
+///
+/// C++ supplies only candidate tip hashes and the caller's gas/max-tip bounds.
+/// Rust loads stored tip metadata, recovers proposer senders from canonical DAG
+/// block RLP, and applies the deterministic tip-selection policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagProposerStorageTipSelectionInput {
+    pub frontier_tips: Vec<H256>,
+    pub gas_limit: u64,
+    pub max_tips: u16,
+}
+
 /// Rust DAG block construction plan consumed by the C++ proposer shim.
 ///
 /// `block_gas_estimation` preserves legacy unsigned accumulation behavior with
@@ -1933,11 +1945,47 @@ pub fn plan_dag_proposer_block_construction_from_storage(
     storage: &Storage,
     input: DagProposerStorageBlockConstructionInput,
 ) -> Result<DagProposerBlockConstructionPlan> {
-    let mut frontier_tips = Vec::with_capacity(input.frontier_tips.len());
-    for hash in input.frontier_tips {
+    let frontier_tips = dag_proposer_tip_candidates_from_storage(storage, input.frontier_tips)?;
+
+    Ok(plan_dag_proposer_block_construction(
+        DagProposerBlockConstructionInput {
+            frontier_tips,
+            transaction_gas_estimations: input.transaction_gas_estimations,
+            pbft_gas_limit: input.pbft_gas_limit,
+            dag_gas_limit: input.dag_gas_limit,
+            max_tips: input.max_tips,
+        },
+    ))
+}
+
+/// Selects DAG proposer tips using metadata loaded from Rust storage.
+///
+/// This is the Rust-owned implementation of the legacy
+/// `DagBlockProposer::selectDagBlockTips` compatibility surface. Missing tip
+/// rows are skipped, matching the transitional C++ behavior. Malformed stored
+/// DAG RLP or unrecoverable stored tip signatures return errors because they
+/// indicate corrupted consensus storage.
+pub fn plan_dag_proposer_tip_selection_from_storage(
+    storage: &Storage,
+    input: DagProposerStorageTipSelectionInput,
+) -> Result<DagProposerTipSelection> {
+    let candidates = dag_proposer_tip_candidates_from_storage(storage, input.frontier_tips)?;
+    Ok(plan_dag_proposer_tip_selection(
+        candidates,
+        input.gas_limit,
+        input.max_tips,
+    ))
+}
+
+fn dag_proposer_tip_candidates_from_storage(
+    storage: &Storage,
+    frontier_tips: Vec<H256>,
+) -> Result<Vec<DagProposerTipCandidate>> {
+    let mut candidates = Vec::with_capacity(frontier_tips.len());
+    for hash in frontier_tips {
         let lookup = load_dag_block_from_storage(storage, hash)?;
         if !lookup.found {
-            frontier_tips.push(DagProposerTipCandidate {
+            candidates.push(DagProposerTipCandidate {
                 hash,
                 found: false,
                 sender: [0; 20],
@@ -1952,7 +2000,7 @@ pub fn plan_dag_proposer_block_construction_from_storage(
         let sender = block
             .recover_sender()
             .with_context(|| format!("DAG_PROPOSER_TIP_SENDER_RECOVERY: {hash:?}"))?;
-        frontier_tips.push(DagProposerTipCandidate {
+        candidates.push(DagProposerTipCandidate {
             hash,
             found: true,
             sender: sender.0,
@@ -1960,16 +2008,7 @@ pub fn plan_dag_proposer_block_construction_from_storage(
             gas_estimation: block.gas_estimation,
         });
     }
-
-    Ok(plan_dag_proposer_block_construction(
-        DagProposerBlockConstructionInput {
-            frontier_tips,
-            transaction_gas_estimations: input.transaction_gas_estimations,
-            pbft_gas_limit: input.pbft_gas_limit,
-            dag_gas_limit: input.dag_gas_limit,
-            max_tips: input.max_tips,
-        },
-    ))
+    Ok(candidates)
 }
 
 /// Plans the final unsigned DAG proposer block intent.
@@ -5310,6 +5349,35 @@ mod tests {
         assert_eq!(plan.block_gas_estimation, 7);
         assert!(plan.pruned_tips);
         assert_eq!(plan.skipped_missing_tips, 1);
+    }
+
+    #[test]
+    fn dag_proposer_tip_selection_loads_tip_metadata_from_storage() {
+        let storage = temp_storage("rustaxa_consensus_dag_proposer_tip_selection_storage");
+        let lower = h(10);
+        let higher = h(20);
+
+        storage
+            .dag()
+            .write(lower, 3, 0, &signed_dag_block_rlp(0x51, 3, 100))
+            .expect("write lower tip");
+        storage
+            .dag()
+            .write(higher, 5, 0, &signed_dag_block_rlp(0x52, 5, 100))
+            .expect("write higher tip");
+
+        let plan = plan_dag_proposer_tip_selection_from_storage(
+            &storage,
+            DagProposerStorageTipSelectionInput {
+                frontier_tips: vec![lower, higher, h(30)],
+                gas_limit: 150,
+                max_tips: 16,
+            },
+        )
+        .expect("plan");
+
+        assert_eq!(plan.selected, vec![higher]);
+        assert_eq!(plan.skipped_missing, 1);
     }
 
     #[test]

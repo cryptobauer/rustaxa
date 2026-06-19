@@ -98,6 +98,14 @@ class DagManager : public DagManagerOld {
   rustaxa::DagProposerBlockConstructionPlan planProposerBlockConstruction(
       rustaxa::DagProposerStorageBlockConstructionInput input) const;
   /**
+   * Selects proposer tips using metadata loaded from Rust storage.
+   *
+   * This backs the legacy `DagBlockProposer::selectDagBlockTips` compatibility API while keeping missing-tip handling,
+   * proposer grouping, level ordering, gas-limit enforcement, and max-tip enforcement in Rust.
+   */
+  rustaxa::DagProposerTipSelectionPlan planProposerTipSelection(
+      rustaxa::DagProposerStorageTipSelectionInput input) const;
+  /**
    * Plans a DAG proposal attempt up to the live transaction-packing boundary.
    *
    * Rust collects DAG runtime/storage facts and owns the pre-transaction proposal decision. C++ supplies live outer facts
