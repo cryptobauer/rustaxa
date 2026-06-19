@@ -1403,6 +1403,7 @@ impl BridgeDagProposerSession {
         let post_pack =
             plan_dag_proposer_post_pack(rustaxa_consensus::dag::DagProposerPostPackInput {
                 proposal_level: self.state.attempt.proposal_level,
+                network_throttled: report.network_throttled,
                 packed_transaction_count: report.transaction_hashes.len() as u64,
             });
         self.state.reason_code = post_pack.reason_code;
@@ -1796,13 +1797,14 @@ pub fn dag_vdf_message(pivot: &[u8; 32], transaction_hashes: Vec<DagHash>) -> Ve
 
 /// Plans the deterministic DAG proposer action after live transaction packing.
 ///
-/// The bridge intentionally carries only the packed transaction count and
-/// proposal level. Transaction bodies, EVM gas estimates, VDF proof execution,
-/// and final DAG block materialization remain outside Rust until those runtime
-/// boundaries move.
+/// The bridge intentionally carries only the packed transaction count, network
+/// throttle fact, and proposal level. Transaction bodies, EVM gas estimates,
+/// VDF proof execution, and final DAG block materialization remain outside Rust
+/// until those runtime boundaries move.
 pub fn dag_proposer_plan_post_pack(input: DagProposerPostPackInput) -> DagProposerPostPackPlan {
     let plan = plan_dag_proposer_post_pack(rustaxa_consensus::dag::DagProposerPostPackInput {
         proposal_level: input.proposal_level,
+        network_throttled: input.network_throttled,
         packed_transaction_count: input.packed_transaction_count,
     });
     DagProposerPostPackPlan {
@@ -3031,6 +3033,7 @@ mod tests {
 
             let start_vdf = session.dag_proposer_session_report_transactions(
                 DagProposerTransactionPackReport {
+                    network_throttled: false,
                     transaction_hashes: vec![DagHash { hash: [2u8; 32] }],
                     transaction_gas_estimations: vec![100],
                 },
@@ -4481,6 +4484,7 @@ mod tests {
     fn dag_proposer_post_pack_bridge_resets_retry_state_for_empty_pack() {
         let plan = dag_proposer_plan_post_pack(DagProposerPostPackInput {
             proposal_level: 17,
+            network_throttled: false,
             packed_transaction_count: 0,
         });
 
@@ -4498,11 +4502,28 @@ mod tests {
     fn dag_proposer_post_pack_bridge_continues_for_non_empty_pack() {
         let plan = dag_proposer_plan_post_pack(DagProposerPostPackInput {
             proposal_level: 17,
+            network_throttled: false,
             packed_transaction_count: 3,
         });
 
         assert_eq!(plan.action, DAG_PROPOSER_ACTION_CONTINUE);
         assert_eq!(plan.reason_code, DAG_PROPOSER_REASON_OK);
+        assert!(!plan.update_retry_state);
+    }
+
+    #[test]
+    fn dag_proposer_post_pack_bridge_retries_later_when_network_throttled() {
+        let plan = dag_proposer_plan_post_pack(DagProposerPostPackInput {
+            proposal_level: 17,
+            network_throttled: true,
+            packed_transaction_count: 0,
+        });
+
+        assert_eq!(plan.action, dag::DAG_PROPOSER_ACTION_RETRY_LATER);
+        assert_eq!(
+            plan.reason_code,
+            dag::DAG_PROPOSER_REASON_TRANSACTION_PACK_THROTTLED
+        );
         assert!(!plan.update_retry_state);
     }
 

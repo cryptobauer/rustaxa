@@ -3848,6 +3848,7 @@ pub mod rustaxa_ffi {
 
     /// Report from the live transaction-packing executor boundary.
     struct DagProposerTransactionPackReport {
+        network_throttled: bool,
         transaction_hashes: Vec<DagHash>,
         transaction_gas_estimations: Vec<u64>,
     }
@@ -3875,6 +3876,7 @@ pub mod rustaxa_ffi {
     /// Facts observed after the live transaction-packing boundary.
     struct DagProposerPostPackInput {
         proposal_level: u64,
+        network_throttled: bool,
         packed_transaction_count: u64,
     }
 

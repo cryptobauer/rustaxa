@@ -34,6 +34,7 @@ constexpr uint32_t kDagProposerReasonVrfKeyMismatch = 3;
 constexpr uint32_t kDagProposerReasonZeroDenominator = 6;
 constexpr uint32_t kDagProposerReasonFinalizedPeriodNotReady = 9;
 constexpr uint32_t kDagProposerReasonPackedTransactionsEmpty = 14;
+constexpr uint32_t kDagProposerReasonTransactionPackThrottled = 16;
 
 std::array<uint8_t, 32> to_bridge_hash(const blk_hash_t& hash) { return hash.asArray(); }
 
@@ -210,6 +211,8 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
                    << " total vote count 0 at proposal period: " << plan.proposal_period;
     } else if (plan.reason_code == kDagProposerReasonPackedTransactionsEmpty) {
       LOG(log_tr_) << "Skip block proposer, zero sharded transactions ..." << std::endl;
+    } else if (plan.reason_code == kDagProposerReasonTransactionPackThrottled) {
+      LOG(log_tr_) << "Skip block proposer, transaction packing throttled by network state ..." << std::endl;
     }
   };
   auto finish_if_complete = [&](const rustaxa::DagProposerSessionStep& plan) -> std::optional<bool> {
@@ -241,6 +244,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
       step.transaction_request.total_transaction_shards, step.transaction_request.node_transaction_shard,
       step.transaction_request.shard_period_interval);
   rustaxa::DagProposerTransactionPackReport transaction_report;
+  transaction_report.network_throttled = transaction_payloads.network_throttled;
   transaction_report.transaction_hashes.reserve(transaction_payloads.transaction_hashes.size());
   transaction_report.transaction_gas_estimations.reserve(transaction_payloads.gas_estimations.size());
   for (const auto& hash : transaction_payloads.transaction_hashes) {
@@ -404,13 +408,18 @@ DagBlockProposer::ShardedProposalTransactions DagBlockProposer::getShardedTrxs(P
     syncing = net->pbft_syncing();
   }
   if (syncing) {
-    return {};
+    ShardedProposalTransactions throttled;
+    throttled.network_throttled = true;
+    return throttled;
   }
 
   auto payloads = trx_mgr_->packShardedTransactionPayloads(proposal_period, weight_limit, total_trx_shards,
                                                            node_trx_shard, shard_period_interval);
-  return {std::move(payloads.transaction_hashes), std::move(payloads.transaction_rlps),
-          std::move(payloads.gas_estimations)};
+  ShardedProposalTransactions transactions;
+  transactions.transaction_hashes = std::move(payloads.transaction_hashes);
+  transactions.transaction_rlps = std::move(payloads.transaction_rlps);
+  transactions.gas_estimations = std::move(payloads.gas_estimations);
+  return transactions;
 }
 
 vec_blk_t DagBlockProposer::selectDagBlockTips(const vec_blk_t& frontier_tips, uint64_t gas_limit) const {

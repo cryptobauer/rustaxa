@@ -131,13 +131,15 @@ Landed:
   transaction-pack command selection, VDF input/message bytes, VDF wait/cancel decisions, stale-proof decisions,
   add-block completion outcome, missing VDF input status, and retry-cursor updates while C++ reports live transaction
   packing, async VDF executor, compatibility sleep, signing/materialization, and add-block facts.
+- Transaction-pack throttling is now an explicit Rust proposer-session report and reason instead of being collapsed into
+  an empty eligible transaction pack.
 
 Remaining:
 
 - The proposer path still uses temporary C++ block-construction/signing materialization and a C++ timestamp fact before
   Rust finalizes the signed block RLP.
-- Network throttle during transaction packing is still a C++ executor shortcut and should become an explicit session
-  report instead of looking like an empty transaction pack.
+- The live network throttle check itself still runs in the temporary C++ executor shell until proposer worker/network
+  lifecycle ownership moves.
 
 Scope:
 

@@ -112,9 +112,10 @@ class DagBlockProposer {
    *
    * `transaction_hashes` and `gas_estimations` come from the Rust transaction-packing session and are the deterministic
    * proposal facts. Live C++ transaction objects are materialized only after VDF/block planning for the temporary DAG
-   * add-block sidecar.
+   * add-block sidecar. `network_throttled` reports a live executor throttle distinctly from an empty eligible pack.
    */
   struct ShardedProposalTransactions {
+    bool network_throttled{false};
     vec_trx_t transaction_hashes;
     std::vector<dev::bytes> transaction_rlps;
     std::vector<uint64_t> gas_estimations;

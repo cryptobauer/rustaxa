@@ -198,6 +198,8 @@ pub const DAG_PROPOSER_REASON_STALE_VDF_RESET: u32 = 13;
 pub const DAG_PROPOSER_REASON_PACKED_TRANSACTIONS_EMPTY: u32 = 14;
 /// DAG proposer reason: the proposal period exists but its PBFT block hash is unavailable for VDF input.
 pub const DAG_PROPOSER_REASON_MISSING_VDF_INPUT: u32 = 15;
+/// DAG proposer reason: the transaction-pack executor was throttled by live network state.
+pub const DAG_PROPOSER_REASON_TRANSACTION_PACK_THROTTLED: u32 = 16;
 
 /// Inputs for deterministic `DagManager::verifyBlock` prechecks.
 ///
@@ -881,6 +883,7 @@ pub struct DagProposerAttemptPlan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DagProposerPostPackInput {
     pub proposal_level: u64,
+    pub network_throttled: bool,
     pub packed_transaction_count: u64,
 }
 
@@ -2276,9 +2279,19 @@ pub fn plan_dag_proposer_attempt(input: DagProposerAttemptInput) -> Result<DagPr
 ///
 /// C++ still owns the live transaction-pool read, materialization, and EVM gas
 /// estimation boundary. Rust owns only the protocol decision for the observed
-/// packed count so retry state cannot silently diverge from the Rust proposer
-/// runtime.
+/// pack result and network throttle fact so retry state cannot silently diverge
+/// from the Rust proposer runtime.
 pub fn plan_dag_proposer_post_pack(input: DagProposerPostPackInput) -> DagProposerPostPackPlan {
+    if input.network_throttled {
+        return DagProposerPostPackPlan {
+            action: DAG_PROPOSER_ACTION_RETRY_LATER,
+            reason_code: DAG_PROPOSER_REASON_TRANSACTION_PACK_THROTTLED,
+            update_retry_state: false,
+            next_last_propose_level: input.proposal_level,
+            next_retry_count: 0,
+        };
+    }
+
     if input.packed_transaction_count == 0 {
         let retry = plan_dag_proposer_retry_reset(DagProposerRetryResetInput {
             proposal_level: input.proposal_level,
@@ -5561,6 +5574,7 @@ mod tests {
     fn dag_proposer_post_pack_resets_retry_state_for_empty_pack() {
         let plan = plan_dag_proposer_post_pack(DagProposerPostPackInput {
             proposal_level: 42,
+            network_throttled: false,
             packed_transaction_count: 0,
         });
 
@@ -5578,12 +5592,31 @@ mod tests {
     fn dag_proposer_post_pack_continues_for_non_empty_pack() {
         let plan = plan_dag_proposer_post_pack(DagProposerPostPackInput {
             proposal_level: 42,
+            network_throttled: false,
             packed_transaction_count: 2,
         });
 
         assert_eq!(plan.action, DAG_PROPOSER_ACTION_CONTINUE);
         assert_eq!(plan.reason_code, DAG_PROPOSER_REASON_OK);
         assert!(!plan.update_retry_state);
+    }
+
+    #[test]
+    fn dag_proposer_post_pack_retries_later_when_network_throttled() {
+        let plan = plan_dag_proposer_post_pack(DagProposerPostPackInput {
+            proposal_level: 42,
+            network_throttled: true,
+            packed_transaction_count: 0,
+        });
+
+        assert_eq!(plan.action, DAG_PROPOSER_ACTION_RETRY_LATER);
+        assert_eq!(
+            plan.reason_code,
+            DAG_PROPOSER_REASON_TRANSACTION_PACK_THROTTLED
+        );
+        assert!(!plan.update_retry_state);
+        assert_eq!(plan.next_last_propose_level, 42);
+        assert_eq!(plan.next_retry_count, 0);
     }
 
     #[test]
