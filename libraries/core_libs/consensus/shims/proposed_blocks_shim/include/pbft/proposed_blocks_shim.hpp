@@ -131,7 +131,7 @@ class ProposedBlocks {
    *
    * Inputs/outputs:
    * - `period` is the first retained PBFT period.
-   * - When `rust_storage_` is present, Rust deletes stale storage keys in one batch before
+   * - When the Rust runtime owns a storage handle, Rust deletes stale storage keys in one batch before
    *   mutating the Rust index.
    * - When `db_` is null, only the in-memory Rust index is cleaned.
    *
@@ -158,7 +158,6 @@ class ProposedBlocks {
 
   mutable std::shared_mutex proposed_blocks_mutex_;
   std::shared_ptr<DbStorage> storage_owner_;
-  const rustaxa::BridgeStorage* rust_storage_ = nullptr;
   ::rust::Box<rustaxa::BridgeProposedBlocks> rust_blocks_;
 };
 

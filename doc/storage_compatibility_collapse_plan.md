@@ -121,8 +121,23 @@ Validation:
 
 ## Slice 2: Runtime Handle Collapse
 
+Status: in progress.
+
 Replace production shim constructor uses of `DbStorage::rustStorage()` / `BridgeStorage&` with typed Rust runtime
 constructors or typed bridge handles that clone/own `Arc<rustaxa_storage::Storage>` on the Rust side.
+
+Landed sub-slices:
+
+- Proposed blocks: `BridgeProposedBlocks` now owns an optional cloned Rust storage handle, the C++ proposed-block shim no
+  longer retains a `BridgeStorage*` sidecar, and proposed-block restore/persist/cleanup methods no longer take generic
+  storage as a per-call argument. Rust still owns the storage write batch for proposed-block save and cleanup. The C++
+  shim keeps `DbStorage` only as the lifetime owner and constructor seed until a broader lifecycle cleanup can remove it.
+
+Next target:
+
+- PBFT chain startup: use the existing typed `create_pbft_chain_from_storage(...)` constructor so C++ no longer performs
+  separate generic restore-plus-create storage calls just to seed the runtime. Preserve or intentionally drop only the
+  non-product-observable startup log distinction between default initialization and DB restore.
 
 Scope:
 

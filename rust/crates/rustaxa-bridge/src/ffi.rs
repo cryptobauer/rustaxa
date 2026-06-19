@@ -94,7 +94,10 @@ pub struct BridgePbftChain {
     pub storage: Option<Arc<Storage>>,
 }
 
-pub struct BridgeProposedBlocks(pub ProposedBlocks);
+pub struct BridgeProposedBlocks {
+    pub index: ProposedBlocks,
+    pub storage: Option<Arc<Storage>>,
+}
 
 /// Rewards-stat runtime wrapper coupling deterministic in-memory state with
 /// the shared Rust storage handle used for cache reload, write, and clear
@@ -4974,6 +4977,9 @@ pub mod rustaxa_ffi {
         type BridgeProposedBlocks;
 
         pub fn create_proposed_blocks_index() -> Box<BridgeProposedBlocks>;
+        pub fn create_proposed_blocks_index_from_storage(
+            storage: &BridgeStorage,
+        ) -> Box<BridgeProposedBlocks>;
         pub fn proposed_blocks_push(
             self: &mut BridgeProposedBlocks,
             period: u64,
@@ -4983,7 +4989,6 @@ pub mod rustaxa_ffi {
         ) -> bool;
         pub fn proposed_blocks_push_with_storage(
             self: &mut BridgeProposedBlocks,
-            storage: &BridgeStorage,
             period: u64,
             block_hash: &[u8; 32],
             pivot_hash: &[u8; 32],
@@ -5015,11 +5020,9 @@ pub mod rustaxa_ffi {
         ) -> Vec<ProposedBlockPeriodHashes>;
         pub fn proposed_blocks_restore_from_storage(
             self: &mut BridgeProposedBlocks,
-            storage: &BridgeStorage,
         ) -> Result<usize>;
         pub fn proposed_blocks_cleanup_with_storage(
             self: &mut BridgeProposedBlocks,
-            storage: &BridgeStorage,
             period: u64,
         ) -> Result<Vec<ProposedBlockPeriodHashes>>;
         pub fn proposed_blocks_remove_period(self: &mut BridgeProposedBlocks, period: u64);

@@ -4,16 +4,36 @@ use crate::ffi::rustaxa_ffi::{
 };
 use crate::ffi::BridgeProposedBlocks;
 use crate::ffi::BridgeStorage;
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use ethereum_types::H256;
 use rustaxa_consensus::proposed_blocks::{
     cleanup_proposed_blocks_storage, restore_proposed_blocks_from_storage,
     save_proposed_block_storage, ProposedBlockPeriod, ProposedBlocks,
 };
+use rustaxa_storage::Storage;
+use std::sync::Arc;
 
 /// Creates an empty Rust proposed-block index for the C++ PBFT shim.
 pub fn create_proposed_blocks_index() -> Box<BridgeProposedBlocks> {
-    Box::new(BridgeProposedBlocks(ProposedBlocks::new()))
+    Box::new(BridgeProposedBlocks {
+        index: ProposedBlocks::new(),
+        storage: None,
+    })
+}
+
+/// Creates a Rust proposed-block index bound to a shared Rust storage handle.
+///
+/// The runtime clones the storage owner from `BridgeStorage` during
+/// construction, so C++ can preserve `DbStorage` lifetime ownership without
+/// retaining or passing a generic bridge storage pointer for each proposed-block
+/// persistence operation.
+pub fn create_proposed_blocks_index_from_storage(
+    storage: &BridgeStorage,
+) -> Box<BridgeProposedBlocks> {
+    Box::new(BridgeProposedBlocks {
+        index: ProposedBlocks::new(),
+        storage: Some(storage.0.clone()),
+    })
 }
 
 impl BridgeProposedBlocks {
@@ -25,7 +45,7 @@ impl BridgeProposedBlocks {
         pivot_hash: &[u8; 32],
         block_rlp: Vec<u8>,
     ) -> bool {
-        self.0.push(
+        self.index.push(
             period,
             H256::from(*block_hash),
             H256::from(*pivot_hash),
@@ -42,14 +62,14 @@ impl BridgeProposedBlocks {
     /// matching the legacy `DbStorage::saveProposedPbftBlock` ordering.
     pub fn proposed_blocks_push_with_storage(
         &mut self,
-        storage: &BridgeStorage,
         period: u64,
         block_hash: &[u8; 32],
         pivot_hash: &[u8; 32],
         block_rlp: Vec<u8>,
     ) -> Result<bool, anyhow::Error> {
+        let storage = self.required_storage()?;
         let entry = save_proposed_block_storage(
-            &storage.0,
+            storage.as_ref(),
             period,
             H256::from(*block_hash),
             block_rlp.as_slice(),
@@ -61,7 +81,7 @@ impl BridgeProposedBlocks {
                 entry.pivot_hash
             );
         }
-        Ok(self.0.push(
+        Ok(self.index.push(
             entry.period,
             entry.block_hash,
             entry.pivot_hash,
@@ -75,12 +95,12 @@ impl BridgeProposedBlocks {
         period: u64,
         block_hash: &[u8; 32],
     ) -> Result<(), anyhow::Error> {
-        self.0.mark_valid(period, H256::from(*block_hash))
+        self.index.mark_valid(period, H256::from(*block_hash))
     }
 
     /// Looks up a proposed PBFT block and its cached validation flag.
     pub fn proposed_blocks_get(&self, period: u64, block_hash: &[u8; 32]) -> ProposedBlockLookup {
-        self.0
+        self.index
             .get(period, H256::from(*block_hash))
             .map(|entry| ProposedBlockLookup {
                 found: true,
@@ -102,7 +122,7 @@ impl BridgeProposedBlocks {
         period: u64,
         block_hash: &[u8; 32],
     ) -> ProposedBlockMetadataLookup {
-        self.0
+        self.index
             .metadata(period, H256::from(*block_hash))
             .map(|entry| ProposedBlockMetadataLookup {
                 found: true,
@@ -118,7 +138,7 @@ impl BridgeProposedBlocks {
 
     /// Returns whether a proposed PBFT block is present.
     pub fn proposed_blocks_contains(&self, period: u64, block_hash: &[u8; 32]) -> bool {
-        self.0.contains(period, H256::from(*block_hash))
+        self.index.contains(period, H256::from(*block_hash))
     }
 
     /// Returns cleanup candidates for all periods lower than `period`.
@@ -126,7 +146,7 @@ impl BridgeProposedBlocks {
         &self,
         period: u64,
     ) -> Vec<ProposedBlockPeriodHashes> {
-        self.0
+        self.index
             .cleanup_candidates(period)
             .into_iter()
             .map(|period| ProposedBlockPeriodHashes {
@@ -154,15 +174,13 @@ impl BridgeProposedBlocks {
     /// - validates that the stored DB key matches the decoded canonical block hash
     /// - preserves the stored RLP bytes in the Rust `ProposedBlocks` index
     /// - returns an error for corrupt RLP, iterator failure, or hash mismatch.
-    pub fn proposed_blocks_restore_from_storage(
-        &mut self,
-        storage: &BridgeStorage,
-    ) -> Result<usize, anyhow::Error> {
-        let proposed_entries = restore_proposed_blocks_from_storage(&storage.0)?;
+    pub fn proposed_blocks_restore_from_storage(&mut self) -> Result<usize, anyhow::Error> {
+        let storage = self.required_storage()?;
+        let proposed_entries = restore_proposed_blocks_from_storage(storage.as_ref())?;
         let mut restored = 0;
 
         for entry in proposed_entries {
-            let inserted = self.0.push(
+            let inserted = self.index.push(
                 entry.period,
                 entry.block_hash,
                 entry.pivot_hash,
@@ -193,19 +211,19 @@ impl BridgeProposedBlocks {
     ///   periods exist.
     pub fn proposed_blocks_cleanup_with_storage(
         &mut self,
-        storage: &BridgeStorage,
         period: u64,
     ) -> Result<Vec<ProposedBlockPeriodHashes>, anyhow::Error> {
-        let removed = self.0.cleanup_candidates(period);
+        let removed = self.index.cleanup_candidates(period);
         if removed.is_empty() {
             return Ok(Vec::new());
         }
 
-        cleanup_proposed_blocks_storage(&storage.0, &removed)
+        let storage = self.required_storage()?;
+        cleanup_proposed_blocks_storage(storage.as_ref(), &removed)
             .context("PROPOSED_BLOCKS_CLEANUP_STORAGE")?;
 
         for period_hashes in &removed {
-            self.0.remove_period(period_hashes.period);
+            self.index.remove_period(period_hashes.period);
         }
 
         Ok(removed
@@ -223,19 +241,19 @@ impl BridgeProposedBlocks {
 
     /// Removes one period from the in-memory proposed-block index.
     pub fn proposed_blocks_remove_period(&mut self, period: u64) {
-        self.0.remove_period(period);
+        self.index.remove_period(period);
     }
 
     /// Returns the legacy old-blocks diagnostic string.
     pub fn proposed_blocks_old_blocks_message(&self, current_period: u64) -> String {
-        self.0
+        self.index
             .old_blocks_message(current_period)
             .unwrap_or_default()
     }
 
     /// Returns all proposed PBFT block entries with validation flags.
     pub fn proposed_blocks_snapshot_entries(&self) -> Vec<ProposedBlockSnapshotEntry> {
-        self.0
+        self.index
             .snapshot_entries()
             .into_iter()
             .map(|entry| ProposedBlockSnapshotEntry {
@@ -250,7 +268,13 @@ impl BridgeProposedBlocks {
 
     /// Returns all proposed PBFT block hashes grouped by period.
     pub fn proposed_blocks_snapshot(&self) -> Vec<ProposedBlockPeriodHashes> {
-        self.0.snapshot().into_iter().map(Into::into).collect()
+        self.index.snapshot().into_iter().map(Into::into).collect()
+    }
+
+    fn required_storage(&self) -> Result<Arc<Storage>, anyhow::Error> {
+        self.storage
+            .clone()
+            .ok_or_else(|| anyhow!("ProposedBlocks runtime has no Rust storage handle"))
     }
 }
 
@@ -325,9 +349,9 @@ mod tests {
                 .save_proposed_pbft_block(&link_1.block_hash.0, rlp_1)
                 .expect("proposed block 1 should save");
 
-            let mut index = create_proposed_blocks_index();
+            let mut index = create_proposed_blocks_index_from_storage(&storage);
             let restored = index
-                .proposed_blocks_restore_from_storage(&storage)
+                .proposed_blocks_restore_from_storage()
                 .expect("restore should decode and restore");
             let snapshot = index.proposed_blocks_snapshot();
 
@@ -352,11 +376,10 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             let (rlp, link) = proposed_link_and_hash(9, 12_345);
-            let mut index = create_proposed_blocks_index();
+            let mut index = create_proposed_blocks_index_from_storage(&storage);
 
             let inserted = index
                 .proposed_blocks_push_with_storage(
-                    &storage,
                     link.period,
                     &link.block_hash.0,
                     &link.pivot_dag_block_hash.0,
@@ -365,7 +388,6 @@ mod tests {
                 .expect("push with storage should succeed");
             let duplicate = index
                 .proposed_blocks_push_with_storage(
-                    &storage,
                     link.period,
                     &link.block_hash.0,
                     &link.pivot_dag_block_hash.0,
@@ -408,12 +430,12 @@ mod tests {
                 .save_proposed_pbft_block(&new_link.block_hash.0, rlp_new)
                 .expect("new proposal should save");
 
-            let mut index = create_proposed_blocks_index();
+            let mut index = create_proposed_blocks_index_from_storage(&storage);
             index
-                .proposed_blocks_restore_from_storage(&storage)
+                .proposed_blocks_restore_from_storage()
                 .expect("restore for baseline");
             let removed = index
-                .proposed_blocks_cleanup_with_storage(&storage, 2)
+                .proposed_blocks_cleanup_with_storage(2)
                 .expect("cleanup should succeed");
 
             assert_eq!(removed.len(), 1);
@@ -428,7 +450,7 @@ mod tests {
             assert_eq!(remaining[0].block_hashes[0].hash, new_link.block_hash.0);
 
             let no_removed = index
-                .proposed_blocks_cleanup_with_storage(&storage, 3)
+                .proposed_blocks_cleanup_with_storage(3)
                 .expect("cleanup no-op should succeed");
             assert!(no_removed.is_empty());
         }
@@ -450,9 +472,9 @@ mod tests {
                 .save_proposed_pbft_block(&wrong_hash.0, rlp)
                 .expect("mismatched proposed block key should save");
 
-            let mut index = create_proposed_blocks_index();
+            let mut index = create_proposed_blocks_index_from_storage(&storage);
             let err = index
-                .proposed_blocks_restore_from_storage(&storage)
+                .proposed_blocks_restore_from_storage()
                 .expect_err("restore should reject key/hash mismatch");
 
             assert!(err
