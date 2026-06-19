@@ -558,6 +558,42 @@ impl BridgeStorage {
             .unwrap_or_default())
     }
 
+    /// Seeds the exact FinalChain lookup rows required by storage conformance.
+    ///
+    /// Inputs are legacy-compatible raw bytes supplied by the conformance runner;
+    /// output is only durable storage mutation. The native storage repository
+    /// owns one atomic write batch for all rows so the CXX bridge does not expose
+    /// generic batch staging for this fixture.
+    #[allow(clippy::too_many_arguments)]
+    pub fn seed_final_chain_conformance_lookup_rows(
+        &self,
+        meta_key: u32,
+        meta_value: Vec<u8>,
+        block_number: u64,
+        block_hash: &[u8; 32],
+        block_header_rlp: Vec<u8>,
+        receipt_hash: &[u8; 32],
+        receipt_rlp: Vec<u8>,
+        blooms_chunk: &[u8; 32],
+        blooms_rlp: Vec<u8>,
+        receipt_period: u64,
+        receipts_rlp: Vec<u8>,
+    ) -> Result<(), anyhow::Error> {
+        self.0.final_chain().write_conformance_lookup_rows(
+            meta_key,
+            &meta_value,
+            block_number,
+            H256::from(*block_hash),
+            &block_header_rlp,
+            H256::from(*receipt_hash),
+            &receipt_rlp,
+            H256::from(*blooms_chunk),
+            &blooms_rlp,
+            receipt_period,
+            &receipts_rlp,
+        )
+    }
+
     pub fn save_period_data(
         &self,
         period: u64,

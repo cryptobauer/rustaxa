@@ -114,22 +114,6 @@ std::string optionalToString(const std::optional<T>& value) {
 }
 
 #if defined(RUSTAXA_ENABLE_STORAGE)
-std::vector<uint8_t> u32ToLe(uint32_t v) {
-  std::vector<uint8_t> out(4);
-  for (size_t i = 0; i < out.size(); ++i) {
-    out[i] = static_cast<uint8_t>((v >> (8 * i)) & 0xFFu);
-  }
-  return out;
-}
-
-std::vector<uint8_t> u64ToLe(uint64_t v) {
-  std::vector<uint8_t> out(8);
-  for (size_t i = 0; i < out.size(); ++i) {
-    out[i] = static_cast<uint8_t>((v >> (8 * i)) & 0xFFu);
-  }
-  return out;
-}
-
 std::optional<uint64_t> leToU64(const std::vector<uint8_t>& bytes) {
   if (bytes.size() != 8) {
     return std::nullopt;
@@ -156,8 +140,6 @@ std::array<uint8_t, 32> h256Array(uint8_t last_byte) {
   return out;
 }
 
-std::vector<uint8_t> toVec(const std::array<uint8_t, 32>& arr) { return std::vector<uint8_t>(arr.begin(), arr.end()); }
-
 std::vector<uint8_t> encodeSingleHashListRlp(const std::array<uint8_t, 32>& hash) {
   // RLP([hash32]) = 0xE1 0xA0 <32-bytes>
   std::vector<uint8_t> out;
@@ -183,7 +165,6 @@ std::optional<uint32_t> toOptional(const rustaxa::PeriodLambda& value) {
 }
 
 void runConformance(const fs::path& db_path, Transcript& transcript) {
-  static constexpr uint8_t kStatusColumnOrdinal = 8;
   static constexpr uint8_t kStatusFieldExecutedBlkCount = 0;
   static constexpr uint8_t kStatusFieldTrxCount = 2;
   static constexpr uint8_t kStatusFieldDagBlkCount = 3;
@@ -191,15 +172,6 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   static constexpr uint8_t kPbftMgrFieldRound = 0;
   static constexpr uint8_t kPbftMgrStatusExecutedBlock = 0;
   static constexpr uint8_t kPbftMgrStatusNextVotedSoftValue = 2;
-
-  // Columns ordinals from DbStorage::Columns
-  static constexpr uint8_t kColFinalChainMeta = 20;
-  static constexpr uint8_t kColFinalChainBlockByNumber = 21;
-  static constexpr uint8_t kColFinalChainBlockHashByNumber = 22;
-  static constexpr uint8_t kColFinalChainBlockNumberByHash = 23;
-  static constexpr uint8_t kColFinalChainReceiptByTrxHash = 24;
-  static constexpr uint8_t kColFinalChainLogBlooms = 25;
-  static constexpr uint8_t kColFinalChainReceiptByPeriod = 33;
 
   auto storage = rustaxa::create_storage(db_path.string());
 
@@ -234,30 +206,6 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   transcript.add("period_lambda_exact_after_save", optionalToString(toOptional(storage->get_period_lambda(7, false))));
   transcript.add("period_lambda_closest_after_save", optionalToString(toOptional(storage->get_period_lambda(8, true))));
   transcript.add("rounds_count_dynamic_lambda_after_save", toString(storage->get_rounds_count_dynamic_lambda()));
-
-  auto field_key = std::vector<uint8_t>{kStatusFieldExecutedBlkCount};
-  auto put_value = u64ToLe(777);
-
-  {
-    auto batch_id = storage->compat_create_write_batch();
-    storage->compat_batch_put(batch_id, kStatusColumnOrdinal, toRustVec(field_key), toRustVec(put_value));
-    storage->compat_drop_write_batch(batch_id);
-  }
-  transcript.add("batch_drop_status_executed_blk", toString(storage->get_status_field(kStatusFieldExecutedBlkCount)));
-
-  {
-    auto batch_id = storage->compat_create_write_batch();
-    storage->compat_batch_put(batch_id, kStatusColumnOrdinal, toRustVec(field_key), toRustVec(put_value));
-    storage->compat_commit_write_batch(batch_id, false);
-  }
-  transcript.add("batch_commit_status_executed_blk", toString(storage->get_status_field(kStatusFieldExecutedBlkCount)));
-
-  {
-    auto batch_id = storage->compat_create_write_batch();
-    storage->compat_batch_delete(batch_id, kStatusColumnOrdinal, toRustVec(field_key));
-    storage->compat_commit_write_batch(batch_id, false);
-  }
-  transcript.add("batch_delete_status_executed_blk", toString(storage->get_status_field(kStatusFieldExecutedBlkCount)));
 
   // DAG missing + save/update/remove paths
   auto dag_hash_1 = h256Array(0x11);
@@ -341,15 +289,11 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   transcript.add("period_system_hashes_count", toString(period_sys_hashes.size() / 32));
 
   auto period_data_raw = std::vector<uint8_t>{0xC6, 0xC0, 0xC0, 0xC0, 0xE1, 0xC0, 0xC0};
-  {
-    auto batch_id = storage->compat_create_write_batch();
-    storage->compat_batch_put(batch_id, 2, toRustVec(u64ToLe(33)), toRustVec(period_data_raw));
-    storage->compat_commit_write_batch(batch_id, false);
-  }
+  storage->save_period_data(33, toRustVec(period_data_raw));
   transcript.add("period_data_raw_len", toString(storage->get_period_data_raw(33).size()));
 
   // Final-chain lookup/intercepted columns
-  uint32_t const meta_key = 1;  // DBMetaKeys::LAST_NUMBER
+  uint32_t const meta_key = 99;
   uint64_t const block_number = 42;
   auto block_hash = h256Array(0x61);
   auto receipt_hash = h256Array(0x62);
@@ -360,23 +304,9 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   auto receipt_value = std::vector<uint8_t>{'r', 'c', 'p'};
   auto blooms_value = std::vector<uint8_t>{'b', 'l', 'm'};
 
-  {
-    auto batch_id = storage->compat_create_write_batch();
-    storage->compat_batch_put(batch_id, kColFinalChainMeta, toRustVec(u32ToLe(meta_key)), toRustVec(meta_value));
-    storage->compat_batch_put(batch_id, kColFinalChainBlockByNumber, toRustVec(u64ToLe(block_number)),
-                              toRustVec(block_value));
-    storage->compat_batch_put(batch_id, kColFinalChainBlockHashByNumber, toRustVec(u64ToLe(block_number)),
-                       toRustVec(toVec(block_hash)));
-    storage->compat_batch_put(batch_id, kColFinalChainBlockNumberByHash, toRustVec(toVec(block_hash)),
-                       toRustVec(u64ToLe(block_number)));
-    storage->compat_batch_put(batch_id, kColFinalChainReceiptByTrxHash, toRustVec(toVec(receipt_hash)),
-                       toRustVec(receipt_value));
-    storage->compat_batch_put(batch_id, kColFinalChainLogBlooms, toRustVec(toVec(blooms_chunk)),
-                              toRustVec(blooms_value));
-    storage->compat_batch_put(batch_id, kColFinalChainReceiptByPeriod, toRustVec(u64ToLe(15)),
-                       toRustVec(std::vector<uint8_t>{0xC0}));
-    storage->compat_commit_write_batch(batch_id, false);
-  }
+  storage->seed_final_chain_conformance_lookup_rows(
+      meta_key, toRustVec(meta_value), block_number, block_hash, toRustVec(block_value), receipt_hash,
+      toRustVec(receipt_value), blooms_chunk, toRustVec(blooms_value), 15, toRustVec(std::vector<uint8_t>{0xC0}));
 
   auto meta_lookup = storage->get_final_chain_meta_value(meta_key);
   auto block_lookup = storage->get_final_chain_block_header(block_number);
@@ -431,26 +361,6 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   transcript.add("period_lambda_exact_after_save", optionalToString(storage.getPeriodLambda(7, false)));
   transcript.add("period_lambda_closest_after_save", optionalToString(storage.getPeriodLambda(8, true)));
   transcript.add("rounds_count_dynamic_lambda_after_save", toString(storage.getRoundsCountDynamicLambda()));
-
-  {
-    auto batch = DbStorage::createWriteBatch();
-    storage.addStatusFieldToBatch(StatusDbField::ExecutedBlkCount, 777, batch);
-  }
-  transcript.add("batch_drop_status_executed_blk", toString(storage.getStatusField(StatusDbField::ExecutedBlkCount)));
-
-  {
-    auto batch = DbStorage::createWriteBatch();
-    storage.addStatusFieldToBatch(StatusDbField::ExecutedBlkCount, 777, batch);
-    storage.commitWriteBatch(batch);
-  }
-  transcript.add("batch_commit_status_executed_blk", toString(storage.getStatusField(StatusDbField::ExecutedBlkCount)));
-
-  {
-    auto batch = DbStorage::createWriteBatch();
-    storage.remove(batch, DbStorage::Columns::status, static_cast<uint8_t>(StatusDbField::ExecutedBlkCount));
-    storage.commitWriteBatch(batch);
-  }
-  transcript.add("batch_delete_status_executed_blk", toString(storage.getStatusField(StatusDbField::ExecutedBlkCount)));
 
   // DAG missing + save/update/remove paths
   auto dag_1 = std::make_shared<DagBlock>(blk_hash_t(0x11), 1, vec_blk_t{}, vec_trx_t{}, sig_t(11), blk_hash_t(0xA1),
@@ -570,7 +480,7 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   transcript.add("period_data_raw_len", toString(storage.getPeriodDataRaw(33).size()));
 
   // Final-chain lookup/intercepted columns
-  uint32_t const meta_key = static_cast<uint32_t>(DBMetaKeys::LAST_NUMBER);
+  uint32_t const meta_key = 99;
   uint64_t const block_number = 42;
   blk_hash_t const block_hash(0x61);
   trx_hash_t const receipt_hash(0x62);

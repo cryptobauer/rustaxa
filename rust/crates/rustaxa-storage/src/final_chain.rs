@@ -657,6 +657,75 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
             receipt_rlp,
         )
     }
+
+    /// Persists the raw FinalChain lookup rows used by storage conformance fixtures.
+    ///
+    /// Inputs are already legacy-compatible encoded bytes for the metadata value,
+    /// stored block header, transaction receipt, log-bloom chunk, and
+    /// receipt-by-period row. The method commits every row in one native Rust
+    /// storage batch so conformance setup no longer needs a CXX-visible generic
+    /// batch registry. It is intentionally narrow: production FinalChain
+    /// publication should continue using typed block-publication writers.
+    #[allow(clippy::too_many_arguments)]
+    pub fn write_conformance_lookup_rows(
+        &self,
+        meta_key: u32,
+        meta_value: &[u8],
+        block_number: u64,
+        block_hash: H256,
+        block_header_rlp: &[u8],
+        receipt_hash: H256,
+        receipt_rlp: &[u8],
+        blooms_chunk: H256,
+        blooms_rlp: &[u8],
+        receipt_period: u64,
+        receipts_rlp: &[u8],
+    ) -> Result<()> {
+        let mut batch = self.db.create_batch();
+        self.db.batch_put(
+            &mut batch,
+            Column::FinalChainMeta,
+            &meta_key.to_le_bytes(),
+            meta_value,
+        )?;
+        self.db.batch_put(
+            &mut batch,
+            Column::FinalChainBlkByNumber,
+            &block_number.to_le_bytes(),
+            block_header_rlp,
+        )?;
+        self.db.batch_put(
+            &mut batch,
+            Column::FinalChainBlkHashByNumber,
+            &block_number.to_le_bytes(),
+            block_hash.as_bytes(),
+        )?;
+        self.db.batch_put(
+            &mut batch,
+            Column::FinalChainBlkNumberByHash,
+            block_hash.as_bytes(),
+            &block_number.to_le_bytes(),
+        )?;
+        self.db.batch_put(
+            &mut batch,
+            Column::FinalChainReceiptByTrxHash,
+            receipt_hash.as_bytes(),
+            receipt_rlp,
+        )?;
+        self.db.batch_put(
+            &mut batch,
+            Column::FinalChainLogBloomsIndex,
+            blooms_chunk.as_bytes(),
+            blooms_rlp,
+        )?;
+        self.db.batch_put(
+            &mut batch,
+            Column::FinalChainReceiptByPeriod,
+            &receipt_period.to_le_bytes(),
+            receipts_rlp,
+        )?;
+        self.db.commit_batch(batch)
+    }
 }
 
 #[cfg(test)]
@@ -978,6 +1047,55 @@ mod tests {
             malformed.append(&vec![0u8; len]);
         }
         assert!(decode_final_chain_log_bloom_chunk(Some(&malformed.out())).is_err());
+    }
+
+    #[test]
+    fn test_write_conformance_lookup_rows_commits_expected_raw_indexes() {
+        let db = Arc::new(MockFinalChainStore::new());
+        let repo = FinalChainRepository::new(db.clone());
+        let block_hash = H256::from_low_u64_be(0x6161);
+        let receipt_hash = H256::from_low_u64_be(0x6262);
+        let blooms_chunk = H256::from_low_u64_be(0x6363);
+
+        repo.write_conformance_lookup_rows(
+            99,
+            b"meta",
+            42,
+            block_hash,
+            b"blk",
+            receipt_hash,
+            b"rcp",
+            blooms_chunk,
+            b"blm",
+            15,
+            &[0xc0],
+        )
+        .unwrap();
+
+        assert_eq!(repo.meta_value(99).unwrap(), Some(b"meta".to_vec()));
+        assert_eq!(repo.block_header_raw(42).unwrap(), Some(b"blk".to_vec()));
+        assert_eq!(
+            repo.block_hash_by_number(42).unwrap(),
+            Some(block_hash.as_bytes().to_vec())
+        );
+        assert_eq!(
+            repo.block_number_by_hash(block_hash).unwrap(),
+            Some(42u64.to_le_bytes().to_vec())
+        );
+        assert_eq!(
+            repo.receipt_by_trx_hash(receipt_hash).unwrap(),
+            Some(b"rcp".to_vec())
+        );
+        assert_eq!(
+            repo.log_blooms_chunk_raw(blooms_chunk).unwrap(),
+            Some(b"blm".to_vec())
+        );
+        assert_eq!(
+            db.get(Column::FinalChainReceiptByPeriod, &15u64.to_le_bytes())
+                .unwrap()
+                .map(|value| value.to_vec()),
+            Some(vec![0xc0])
+        );
     }
 
     #[test]

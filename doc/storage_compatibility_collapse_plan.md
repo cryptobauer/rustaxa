@@ -199,11 +199,15 @@ Landed sub-slices:
   and transaction rows.
 - Native storage batch coverage: moved raw batch commit/drop/delete semantics into `rustaxa-storage` unit tests and
   removed the dedicated CXX bridge-registry batch tests from `rust_storage_tests`.
+- Storage conformance setup: removed `compat_*` bridge-batch use from the Rust-mode conformance runner. Period-data
+  setup now uses the typed `save_period_data` helper, final-chain lookup fixture rows are committed by a narrow native
+  `rustaxa-storage` final-chain conformance writer, and generic bridge-batch lifecycle transcript entries were removed
+  because raw batch semantics are covered directly in `rustaxa-storage` unit tests.
 
 Next target:
 
-- Move the remaining storage-shim and storage-conformance compatibility setup off `compat_*` bridge batch ids, then
-  delete the registry from `BridgeStorage`.
+- Move the remaining storage-shim compatibility setup off `compat_*` bridge batch ids, then delete the registry from
+  `BridgeStorage`.
 
 Scope:
 
