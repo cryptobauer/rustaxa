@@ -323,8 +323,8 @@ emission.
 | Class | Public API groups | Dependencies | Tests | Target |
 | --- | --- | --- | --- | --- |
 | `Dag` / `PivotTree` | vertex/edge counts, `hasVertex`, `addVEEs`, leaves, ghost path, deterministic order, graph clearing | hashes, Boost graph today | `dag_test`, `full_node_test` ordering cases | Rust domain graph with byte/hash-compatible ordering |
-| `DagManager` | block known/get/verify/add, pivot/tip availability, ordering, frontier, non-finalized blocks, anchors, expiry, VDF message | `DbStorage`, `TransactionManager`, `PbftChain`, `FinalChain`, `Network`, `KeyManager`, config | `dag_test`, `dag_block_test`, `pbft_manager_test`, `full_node_test` | Rust-mode overlay owns deterministic graph/order, verification, finalized-order application, non-finalized sync selection, and Rust-storage cleanup planning; C++ still materializes live block/transaction objects and executes side effects |
-| `DagBlockProposer` | proposer lifecycle, propose block, select tips, proposer eligibility | `DagManager`, `TransactionManager`, `FinalChain`, `DbStorage`, `Network`, VDF | `dag_block_test`, `pbft_manager_test`, `sortition_test`, full-node tests | Rust-mode overlay keeps C++ thread/network shell; proposer eligibility status decisions, VRF input bytes, and deterministic tip selection are Rust-backed |
+| `DagManager` | block known/get/verify/add, pivot/tip availability, ordering, frontier, non-finalized blocks, anchors, expiry, VDF message | `DbStorage`, `TransactionManager`, `PbftChain`, `FinalChain`, `Network`, `KeyManager`, config | `dag_test`, `dag_block_test`, `pbft_manager_test`, `full_node_test` | Rust manager runtime owns deterministic graph/order, verification sessions, finalized-order application, non-finalized sync selection, add-block planning, proposed-block signed-RLP fact decoding, Rust-storage cleanup, and proposer frontier/proposal-attempt planning; C++ remains an executor/compatibility shell for live fact sourcing, EVM gas execution, event/network/public object materialization, local cache cleanup, temporary legacy graph mirrors, and live transaction-manager sidecar cleanup |
+| `DagBlockProposer` | proposer lifecycle, propose block, select tips, proposer eligibility | `DagManager`, `TransactionManager`, `FinalChain`, `DbStorage`, `Network`, VDF | `dag_block_test`, `pbft_manager_test`, `sortition_test`, full-node tests | Rust proposer session owns eligibility, VRF input bytes, deterministic tip selection, transaction-pack command flow, proposal timestamps, VDF input/message bytes, wait/cancel/stale-proof decisions, retry-cursor updates, block construction planning, final signed-RLP construction after temporary C++ signing, and signed-RLP manager submission; C++ remains an executor shell for lifecycle, live network throttle checks, async VDF compute, temporary key-manager signing, logging, and network egress |
 | `SortitionParamsManager` | params lookup, DAG efficiency, interval recalculation, cleanup | `DbStorage`, config, `PeriodData`, VDF params | `sortition_test`, `rust_consensus_tests`, `sortition_params_manager_shim_test`, full-node lambda tests | Rust deterministic calculations and runtime state; C++ storage/batch shell |
 
 ### PBFT
@@ -364,15 +364,18 @@ emission.
 
 ## First Slice: Rust DAG Graph
 
-Status: `rust-backed` landed for C++ `Dag`/`PivotTree` graph operations under `RUSTAXA_ENABLE`. `DagManager`
-orchestration remains C++, but Rust-enabled builds now keep a Rust-owned `DagManagerState` for deterministic in-memory
-state. Frontier, ghost path, ordering, graphviz output, counters, anchors, period, expiry level, non-finalized indexes,
-minimum difficulty, pivot/tip availability metadata, storage-backed persistence, and the first deterministic
-`verifyBlock` reject decisions route through that state/runtime. The Rust-mode `DagManager` shim now owns the
-`verifyBlock` flow directly for prechecks, Rust-planned transaction lookup, Rust-storage-backed missing transaction RLP
-lookup for hashes not present in the live pool, DAG VDF payload/difficulty/proof verification, legacy DAG VRF/VDF
-message construction, VDF/DPoS authorization decision ordering, and Rust-backed gas policy decisions instead of
-forwarding the method wholesale to `DagManagerOld`.
+Status: `rust-backed` landed for C++ `Dag`/`PivotTree` graph operations under `RUSTAXA_ENABLE`, and complete for the
+current DAG manager/proposer orchestration boundary. Rust-enabled builds now keep a Rust-owned `DagManagerRuntime` for
+deterministic in-memory state and storage-backed manager decisions. Frontier, ghost path, ordering, graphviz output,
+counters, anchors, period, expiry level, non-finalized indexes, minimum difficulty, pivot/tip availability metadata,
+storage-backed persistence, finalized-order application, non-finalized sync selection, add-block planning,
+proposed-block signed-RLP fact decoding, proposed DAG transaction payload persistence, proposer frontier facts,
+proposal-attempt planning, block construction planning, and deterministic `verifyBlock` reject decisions route through
+that runtime. The Rust-mode `DagManager` shim now owns the `verifyBlock` flow directly for prechecks,
+Rust-planned transaction lookup, Rust-storage-backed missing transaction RLP lookup for hashes not present in the live
+pool, DAG VDF payload/difficulty/proof verification, legacy DAG VRF/VDF message construction, VDF/DPoS authorization
+decision ordering, and Rust-backed gas policy decisions instead of forwarding the method wholesale to
+`DagManagerOld`.
 Finalized DAG order application also now advances the
 Rust `DagManagerState` directly, including empty-period advancement, and Rust-mode finalization cleanup asks Rust
 storage for finalized-block counter facts, expired block hashes, and transaction cleanup hashes before Rust applies the
@@ -383,8 +386,10 @@ the remaining shim-side cache/sidecar cleanup facts. Rust-mode non-finalized DAG
 Rust-owned period/index state rather than querying the old manager. Ordered non-finalized sync block selection now
 returns a Rust-storage-backed payload with period, selected DAG block RLPs, and de-duplicated transaction RLP lookups;
 C++ only reconstructs legacy `DagBlock` and `Transaction` objects for the public API. Non-finalized transaction query
-planning and expired-block transaction cleanup selection also route through Rust hash plans while C++ still owns local
-cache cleanup and live transaction-manager sidecar effects.
+planning and expired-block transaction cleanup selection also route through Rust hash plans. Remaining DAG manager C++
+is classified as executor/compatibility work: live transaction-pool reads, FinalChain/DPoS fact sourcing, EVM gas
+execution, event/network/public object materialization, local cache cleanup, temporary legacy graph mirroring, and live
+transaction-manager sidecar cleanup.
 
 Target behavior:
 
@@ -400,9 +405,8 @@ Rust design sketch:
 - `rustaxa-consensus` has a `dag` module with explicit hash-keyed graph state instead of mirrored Boost graph types.
 - Ordering is deterministic and covered by Rust unit tests and CXX bridge fixture tests.
 - The bridge uses fixed hash bytes and explicit conversion at the boundary.
-- `DagManager` remains in C++ during this slice; command-side DB writes, transaction handling, events, and networking
-  still stay with the C++ side while deterministic in-memory state and storage-backed prechecks move through
-  `DagManagerState`/`BridgeDagManagerRuntime` under `RUSTAXA_ENABLE`.
+- `DagManager` now uses a Rust manager runtime for deterministic graph/order/verification/add/sync/proposer planning.
+  C++ still executes external effects and compatibility materialization under `RUSTAXA_ENABLE`.
 
 Required tests:
 
@@ -419,10 +423,13 @@ Required tests:
   `level + proposal-period-hash` VRF input, `pivot + transaction-hashes` VDF message bytes, and the verify-side VDF
   sortition denominator from Rust FinalChain config. The path no longer requires a `DagManagerOld::verifyBlock` method
   forward, and it no longer derives VRF output, VRF input, DAG VDF messages, or per-block verify-side VDF denominator
-  policy through C++ consensus helpers. Producer-side `DagBlockProposer` now uses a full Rust-mode overlay shim for
-  proposer eligibility status decisions, legacy VRF input construction, and deterministic tip selection, while C++ keeps
-  the live thread/network shell, transaction packing, VDF compute wrapper, `DagBlock` construction/signing, and
-  `DagManager::addDagBlock` wiring.
+  policy through C++ consensus helpers. Producer-side `DagBlockProposer` now uses a full Rust-mode overlay shim and
+  Rust proposer session for proposer eligibility status decisions, legacy VRF input construction, deterministic tip
+  selection, transaction-pack command flow through the Rust-owned `TransactionManager` pack session, VDF input/message
+  bytes, wait/cancel/stale-proof decisions, retry-cursor updates, proposal timestamps, block construction planning,
+  final signed-RLP construction after temporary C++ signing, and manager submission through signed RLP plus transaction
+  payloads. C++ keeps the live thread/network shell, live network throttle checks, async VDF compute execution,
+  temporary key-manager signing, logging, and network egress.
 
 Open questions:
 
