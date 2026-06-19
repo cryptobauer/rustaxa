@@ -5036,6 +5036,9 @@ pub mod rustaxa_ffi {
         pub fn proposed_blocks_restore_from_storage(
             self: &mut BridgeProposedBlocks,
         ) -> Result<usize>;
+        pub fn proposed_blocks_storage_snapshot_entries(
+            self: &BridgeProposedBlocks,
+        ) -> Result<Vec<ProposedBlockSnapshotEntry>>;
         pub fn proposed_blocks_cleanup_with_storage(
             self: &mut BridgeProposedBlocks,
             period: u64,
@@ -6361,7 +6364,6 @@ pub mod rustaxa_ffi {
         pub fn get_pbft_mgr_field(self: &BridgeStorage, field: u8) -> Result<u32>;
         pub fn get_pbft_mgr_status(self: &BridgeStorage, field: u8) -> Result<bool>;
         pub fn get_cert_voted_block_in_round(self: &BridgeStorage) -> Result<Vec<u8>>;
-        pub fn get_proposed_pbft_blocks(self: &BridgeStorage) -> Result<Vec<BlockRlp>>;
         pub fn get_pbft_head(self: &BridgeStorage, hash: &[u8; 32]) -> Result<Vec<u8>>;
         pub fn get_own_verified_votes(self: &BridgeStorage) -> Result<Vec<VoteRlp>>;
         pub fn get_all_two_t_plus_one_votes(self: &BridgeStorage) -> Result<Vec<VoteRlp>>;
@@ -6369,11 +6371,6 @@ pub mod rustaxa_ffi {
         pub fn save_cert_voted_block_in_round(
             self: &BridgeStorage,
             round: u64,
-            block_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn save_proposed_pbft_block(
-            self: &BridgeStorage,
-            hash: &[u8; 32],
             block_rlp: Vec<u8>,
         ) -> Result<()>;
         pub fn save_pbft_mgr_field(self: &BridgeStorage, field: u8, value: u32) -> Result<()>;
@@ -6385,7 +6382,6 @@ pub mod rustaxa_ffi {
             vote_rlp: Vec<u8>,
         ) -> Result<()>;
         pub fn remove_cert_voted_block_in_round(self: &BridgeStorage) -> Result<()>;
-        pub fn remove_proposed_pbft_block(self: &BridgeStorage, hash: &[u8; 32]) -> Result<()>;
         pub fn remove_own_verified_vote(self: &BridgeStorage, hash: &[u8; 32]) -> Result<()>;
         pub fn remove_extra_reward_vote(self: &BridgeStorage, hash: &[u8; 32]) -> Result<()>;
         pub fn replace_two_t_plus_one_votes(

@@ -994,14 +994,6 @@ impl BridgeStorage {
             .unwrap_or_default())
     }
 
-    pub fn get_proposed_pbft_blocks(&self) -> Result<Vec<rustaxa_ffi::BlockRlp>, anyhow::Error> {
-        let blocks = self.0.pbft().proposed_rlp()?;
-        Ok(blocks
-            .into_iter()
-            .map(|data| rustaxa_ffi::BlockRlp { data })
-            .collect())
-    }
-
     pub fn get_pbft_head(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
         Ok(self.0.pbft().head(H256::from(*hash))?.unwrap_or_default())
     }
@@ -1040,14 +1032,6 @@ impl BridgeStorage {
             .write_cert_voted_block_in_round(round, &block_rlp)
     }
 
-    pub fn save_proposed_pbft_block(
-        &self,
-        hash: &[u8; 32],
-        block_rlp: Vec<u8>,
-    ) -> Result<(), anyhow::Error> {
-        self.0.pbft().write_proposed(H256::from(*hash), &block_rlp)
-    }
-
     pub fn save_pbft_mgr_field(&self, field: u8, value: u32) -> Result<(), anyhow::Error> {
         self.0.pbft().write_manager_field(field, value)
     }
@@ -1076,10 +1060,6 @@ impl BridgeStorage {
 
     pub fn remove_cert_voted_block_in_round(&self) -> Result<(), anyhow::Error> {
         self.0.pbft().remove_cert_voted_block_in_round()
-    }
-
-    pub fn remove_proposed_pbft_block(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
-        self.0.pbft().remove_proposed(H256::from(*hash))
     }
 
     pub fn remove_own_verified_vote(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {

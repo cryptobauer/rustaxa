@@ -194,6 +194,28 @@ impl BridgeProposedBlocks {
         Ok(restored)
     }
 
+    /// Returns proposed PBFT block entries decoded directly from Rust storage.
+    ///
+    /// This is the storage-backed compatibility read used by the C++ `DbStorage`
+    /// shim. It does not mutate the live proposed-block index, so callers that
+    /// only materialize persisted public PBFT blocks cannot accidentally change
+    /// Rust-owned runtime state.
+    pub fn proposed_blocks_storage_snapshot_entries(
+        &self,
+    ) -> Result<Vec<ProposedBlockSnapshotEntry>, anyhow::Error> {
+        let storage = self.required_storage()?;
+        Ok(restore_proposed_blocks_from_storage(storage.as_ref())?
+            .into_iter()
+            .map(|entry| ProposedBlockSnapshotEntry {
+                period: entry.period,
+                block_hash: entry.block_hash.into(),
+                pivot_hash: entry.pivot_hash.into(),
+                block_rlp: entry.block_rlp,
+                is_valid: false,
+            })
+            .collect())
+    }
+
     /// Cleans stale proposed PBFT blocks from Rust storage and memory.
     ///
     /// Inputs:
@@ -331,6 +353,18 @@ mod tests {
         (rlp, link)
     }
 
+    fn persist_proposed_block(storage: &BridgeStorage, rlp: Vec<u8>, link: &PbftBlockLink) {
+        let mut index = create_proposed_blocks_index_from_storage(storage);
+        index
+            .proposed_blocks_push_with_storage(
+                link.period,
+                &link.block_hash.0,
+                &link.pivot_dag_block_hash.0,
+                rlp,
+            )
+            .expect("proposed block should save");
+    }
+
     #[test]
     fn restore_from_storage_decodes_pbft_links_and_inserts_candidates() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_proposed_blocks_restore");
@@ -342,12 +376,8 @@ mod tests {
             let (rlp_0, link_0) = proposed_link_and_hash(9, 12_345);
             let (rlp_1, link_1) = proposed_link_and_hash(10, 12_346);
 
-            storage
-                .save_proposed_pbft_block(&link_0.block_hash.0, rlp_0)
-                .expect("proposed block 0 should save");
-            storage
-                .save_proposed_pbft_block(&link_1.block_hash.0, rlp_1)
-                .expect("proposed block 1 should save");
+            persist_proposed_block(&storage, rlp_0, &link_0);
+            persist_proposed_block(&storage, rlp_1, &link_1);
 
             let mut index = create_proposed_blocks_index_from_storage(&storage);
             let restored = index
@@ -413,6 +443,34 @@ mod tests {
     }
 
     #[test]
+    fn storage_snapshot_entries_reads_without_mutating_live_index() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_proposed_blocks_storage_snapshot");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let (rlp, link) = proposed_link_and_hash(13, 12_347);
+
+            persist_proposed_block(&storage, rlp.clone(), &link);
+
+            let index = create_proposed_blocks_index_from_storage(&storage);
+            let snapshot = index
+                .proposed_blocks_storage_snapshot_entries()
+                .expect("storage snapshot should read persisted proposals");
+
+            assert_eq!(snapshot.len(), 1);
+            assert_eq!(snapshot[0].period, link.period);
+            assert_eq!(snapshot[0].block_hash, link.block_hash.0);
+            assert_eq!(snapshot[0].pivot_hash, link.pivot_dag_block_hash.0);
+            assert_eq!(snapshot[0].block_rlp, rlp);
+            assert!(!snapshot[0].is_valid);
+            assert!(index.proposed_blocks_snapshot().is_empty());
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn cleanup_with_storage_deletes_only_stale_periods_with_single_batch_semantics() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_proposed_blocks_cleanup_storage");
         {
@@ -423,12 +481,8 @@ mod tests {
             let (rlp_old, old_link) = proposed_link_and_hash(1, 42_001);
             let (rlp_new, new_link) = proposed_link_and_hash(3, 42_002);
 
-            storage
-                .save_proposed_pbft_block(&old_link.block_hash.0, rlp_old)
-                .expect("old proposal should save");
-            storage
-                .save_proposed_pbft_block(&new_link.block_hash.0, rlp_new)
-                .expect("new proposal should save");
+            persist_proposed_block(&storage, rlp_old, &old_link);
+            persist_proposed_block(&storage, rlp_new, &new_link);
 
             let mut index = create_proposed_blocks_index_from_storage(&storage);
             index
@@ -469,7 +523,9 @@ mod tests {
             let wrong_hash = H256::from_low_u64_be(999);
             assert_ne!(wrong_hash, link.block_hash);
             storage
-                .save_proposed_pbft_block(&wrong_hash.0, rlp)
+                .0
+                .pbft()
+                .write_proposed(wrong_hash, &rlp)
                 .expect("mismatched proposed block key should save");
 
             let mut index = create_proposed_blocks_index_from_storage(&storage);

@@ -272,12 +272,17 @@ Landed sub-slices:
   `PillarBlockData` materialization reads/writes onto the typed `BridgePillarChainStorage` handle. Deleted the matching
   generic `BridgeStorage` pillar read/write/query methods and the unused generic pillar `BridgeStorage` helper
   functions from the CXX FFI. Public C++ object construction still happens only in the storage shim and RPC boundary.
+- Proposed-block storage/query split: moved storage-shim proposed PBFT block save/query onto the typed
+  `BridgeProposedBlocks` storage handle and added a storage-backed typed snapshot read that does not mutate the live
+  proposed-block index. Deleted the generic `BridgeStorage` proposed PBFT block save/get/remove CXX methods; the
+  storage-shim batch cleanup helper remains because it already routes through typed Rust PBFT storage batch deletion.
 
 Next target:
 
-- Continue with another self-contained query family that already has a typed storage/runtime handle, likely PBFT/vote
-  query reads or transaction public reads. Avoid moving RPC/network object ownership in this cleanup; prefer typed
-  storage/query handles returning canonical bytes or compact facts.
+- Continue with the PBFT vote-list query family: split `getOwnVerifiedVotes`, `getAllTwoTPlusOneVotes`, and
+  `getRewardVotes` behind a typed Rust query handle, then delete the matching generic `BridgeStorage` read methods.
+  Avoid proposed-block sidecars and cert-voted block/object-cache work in this slice; those are broader compatibility
+  object/cache cleanup.
 
 Split the broad `BridgeStorage` query surface into typed read-only Rust query APIs for active Rust-mode callers, and
 delete unused broad storage-shim methods.
