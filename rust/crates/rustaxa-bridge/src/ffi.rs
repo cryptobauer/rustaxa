@@ -1321,12 +1321,16 @@ pub mod rustaxa_ffi {
             arena: &BridgePacketArena,
             queue_size: usize,
         ) -> Result<Box<BridgeNetwork>>;
+        pub fn start_network(self: &mut BridgeNetwork) -> Result<()>;
+        pub fn connect_peer(self: &mut BridgeNetwork, node: [u8; 64]) -> Result<bool>;
+        pub fn disconnect_peer(self: &mut BridgeNetwork, node: [u8; 64]) -> Result<()>;
+        pub fn queue_is_full(self: &BridgeNetwork) -> bool;
         pub fn ingest_network_packet(
             self: &mut BridgeNetwork,
             packet_type: u8,
             from_node: [u8; 64],
             data: Vec<u8>,
-        ) -> Result<bool>;
+        ) -> Result<()>;
 
         // Arena
 
