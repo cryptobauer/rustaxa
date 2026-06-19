@@ -190,12 +190,15 @@ Landed sub-slices:
   transition writes and startup replay reads outside the long-lived runtime handle. The remaining C++ storage coverage
   now constructs `BridgePbftManagerRuntime` from storage and uses runtime-owned transition/replay methods, so production
   and validation both exercise the typed runtime storage handle after construction.
+- Generic bridge batch registry: renamed the CXX-exposed `BridgeStorage` batch methods to
+  `compat_create_write_batch`, `compat_batch_put`, `compat_batch_delete`, `compat_commit_write_batch`, and
+  `compat_drop_write_batch`. The registry still exists for storage-shim, conformance, and fixture compatibility, but it
+  is no longer exposed as a production-looking storage API.
 
 Next target:
 
-- Move the remaining `rust_storage_tests` and storage-conformance fixture setup off generic bridge batch ids, or
-  quarantine those helpers under explicit test/conformance-only names before deleting the production-looking
-  `BridgeStorage` batch API.
+- Move the remaining `rust_storage_tests`, `rust_consensus_tests`, storage-shim, and storage-conformance compatibility
+  setup off `compat_*` bridge batch ids, then delete the registry from `BridgeStorage`.
 
 Scope:
 
@@ -203,8 +206,8 @@ Scope:
   runtime reports.
 - Move test/conformance fixture batch setup to direct Rust storage test APIs where possible.
 - Keep legacy C++ `DbStorageOld` batch behavior for pure C++ reference builds.
-- Delete or quarantine `BridgeStorage::create_write_batch`, `batch_put`, `batch_delete`, `commit_write_batch`, and
-  `drop_write_batch` from the CXX bridge only when no required Rust-mode C++ caller remains.
+- Delete the remaining `BridgeStorage::compat_create_write_batch`, `compat_batch_put`, `compat_batch_delete`,
+  `compat_commit_write_batch`, and `compat_drop_write_batch` CXX methods once no required compatibility caller remains.
 
 Acceptance:
 

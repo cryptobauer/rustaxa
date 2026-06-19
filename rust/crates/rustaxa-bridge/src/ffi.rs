@@ -6100,22 +6100,26 @@ pub mod rustaxa_ffi {
 
         pub fn create_storage(path: &str) -> Result<Box<BridgeStorage>>;
         pub fn get_pillar_block_data_rlp(self: &BridgeStorage, period: u64) -> Result<Vec<u8>>;
-        pub fn create_write_batch(self: &BridgeStorage) -> Result<u64>;
-        pub fn batch_put(
+        pub fn compat_create_write_batch(self: &BridgeStorage) -> Result<u64>;
+        pub fn compat_batch_put(
             self: &BridgeStorage,
             batch_id: u64,
             column: u8,
             key: Vec<u8>,
             value: Vec<u8>,
         ) -> Result<()>;
-        pub fn batch_delete(
+        pub fn compat_batch_delete(
             self: &BridgeStorage,
             batch_id: u64,
             column: u8,
             key: Vec<u8>,
         ) -> Result<()>;
-        pub fn commit_write_batch(self: &BridgeStorage, batch_id: u64, sync: bool) -> Result<()>;
-        pub fn drop_write_batch(self: &BridgeStorage, batch_id: u64) -> Result<()>;
+        pub fn compat_commit_write_batch(
+            self: &BridgeStorage,
+            batch_id: u64,
+            sync: bool,
+        ) -> Result<()>;
+        pub fn compat_drop_write_batch(self: &BridgeStorage, batch_id: u64) -> Result<()>;
 
         pub fn dag_block_in_db(self: &BridgeStorage, hash: &[u8; 32]) -> Result<bool>;
         pub fn get_dag_block(self: &BridgeStorage, hash: &[u8; 32]) -> Result<Vec<u8>>;

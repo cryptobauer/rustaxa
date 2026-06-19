@@ -83,9 +83,9 @@ TEST_F(StorageTest, BatchPutCommitAndReadBackStatusField) {
   constexpr uint8_t kStatusColumn = 8;
   auto storage = create_storage(test_dir.string());
 
-  auto batch_id = storage->create_write_batch();
-  storage->batch_put(batch_id, kStatusColumn, one_byte_key(0), u64_le(123));
-  storage->commit_write_batch(batch_id, false);
+  auto batch_id = storage->compat_create_write_batch();
+  storage->compat_batch_put(batch_id, kStatusColumn, one_byte_key(0), u64_le(123));
+  storage->compat_commit_write_batch(batch_id, false);
 
   EXPECT_EQ(storage->get_status_field(0), 123u);
 }
@@ -94,9 +94,9 @@ TEST_F(StorageTest, DroppedBatchDoesNotPersistWrites) {
   constexpr uint8_t kStatusColumn = 8;
   auto storage = create_storage(test_dir.string());
 
-  auto batch_id = storage->create_write_batch();
-  storage->batch_put(batch_id, kStatusColumn, one_byte_key(1), u64_le(77));
-  storage->drop_write_batch(batch_id);
+  auto batch_id = storage->compat_create_write_batch();
+  storage->compat_batch_put(batch_id, kStatusColumn, one_byte_key(1), u64_le(77));
+  storage->compat_drop_write_batch(batch_id);
 
   EXPECT_EQ(storage->get_status_field(1), 0u);
 }
@@ -108,9 +108,9 @@ TEST_F(StorageTest, BatchDeleteRemovesStatusFieldValue) {
   storage->save_status_field(2, 55);
   EXPECT_EQ(storage->get_status_field(2), 55u);
 
-  auto batch_id = storage->create_write_batch();
-  storage->batch_delete(batch_id, kStatusColumn, one_byte_key(2));
-  storage->commit_write_batch(batch_id, false);
+  auto batch_id = storage->compat_create_write_batch();
+  storage->compat_batch_delete(batch_id, kStatusColumn, one_byte_key(2));
+  storage->compat_commit_write_batch(batch_id, false);
 
   EXPECT_EQ(storage->get_status_field(2), 0u);
 }
@@ -119,16 +119,16 @@ TEST_F(StorageTest, UnknownBatchIdThrows) {
   constexpr uint8_t kStatusColumn = 8;
   auto storage = create_storage(test_dir.string());
 
-  EXPECT_THROW(storage->batch_put(999999, kStatusColumn, one_byte_key(0), u64_le(1)), std::exception);
-  EXPECT_THROW(storage->commit_write_batch(999999, false), std::exception);
+  EXPECT_THROW(storage->compat_batch_put(999999, kStatusColumn, one_byte_key(0), u64_le(1)), std::exception);
+  EXPECT_THROW(storage->compat_commit_write_batch(999999, false), std::exception);
 }
 
 TEST_F(StorageTest, DropBatchIsIdempotent) {
   auto storage = create_storage(test_dir.string());
-  auto batch_id = storage->create_write_batch();
+  auto batch_id = storage->compat_create_write_batch();
 
-  EXPECT_NO_THROW(storage->drop_write_batch(batch_id));
-  EXPECT_NO_THROW(storage->drop_write_batch(batch_id));
+  EXPECT_NO_THROW(storage->compat_drop_write_batch(batch_id));
+  EXPECT_NO_THROW(storage->compat_drop_write_batch(batch_id));
 }
 
 TEST_F(StorageTest, MissingDagBlockReturnsEmptyPayload) {

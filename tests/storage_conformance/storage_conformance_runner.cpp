@@ -239,23 +239,23 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   auto put_value = u64ToLe(777);
 
   {
-    auto batch_id = storage->create_write_batch();
-    storage->batch_put(batch_id, kStatusColumnOrdinal, toRustVec(field_key), toRustVec(put_value));
-    storage->drop_write_batch(batch_id);
+    auto batch_id = storage->compat_create_write_batch();
+    storage->compat_batch_put(batch_id, kStatusColumnOrdinal, toRustVec(field_key), toRustVec(put_value));
+    storage->compat_drop_write_batch(batch_id);
   }
   transcript.add("batch_drop_status_executed_blk", toString(storage->get_status_field(kStatusFieldExecutedBlkCount)));
 
   {
-    auto batch_id = storage->create_write_batch();
-    storage->batch_put(batch_id, kStatusColumnOrdinal, toRustVec(field_key), toRustVec(put_value));
-    storage->commit_write_batch(batch_id, false);
+    auto batch_id = storage->compat_create_write_batch();
+    storage->compat_batch_put(batch_id, kStatusColumnOrdinal, toRustVec(field_key), toRustVec(put_value));
+    storage->compat_commit_write_batch(batch_id, false);
   }
   transcript.add("batch_commit_status_executed_blk", toString(storage->get_status_field(kStatusFieldExecutedBlkCount)));
 
   {
-    auto batch_id = storage->create_write_batch();
-    storage->batch_delete(batch_id, kStatusColumnOrdinal, toRustVec(field_key));
-    storage->commit_write_batch(batch_id, false);
+    auto batch_id = storage->compat_create_write_batch();
+    storage->compat_batch_delete(batch_id, kStatusColumnOrdinal, toRustVec(field_key));
+    storage->compat_commit_write_batch(batch_id, false);
   }
   transcript.add("batch_delete_status_executed_blk", toString(storage->get_status_field(kStatusFieldExecutedBlkCount)));
 
@@ -342,9 +342,9 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
 
   auto period_data_raw = std::vector<uint8_t>{0xC6, 0xC0, 0xC0, 0xC0, 0xE1, 0xC0, 0xC0};
   {
-    auto batch_id = storage->create_write_batch();
-    storage->batch_put(batch_id, 2, toRustVec(u64ToLe(33)), toRustVec(period_data_raw));
-    storage->commit_write_batch(batch_id, false);
+    auto batch_id = storage->compat_create_write_batch();
+    storage->compat_batch_put(batch_id, 2, toRustVec(u64ToLe(33)), toRustVec(period_data_raw));
+    storage->compat_commit_write_batch(batch_id, false);
   }
   transcript.add("period_data_raw_len", toString(storage->get_period_data_raw(33).size()));
 
@@ -361,19 +361,21 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   auto blooms_value = std::vector<uint8_t>{'b', 'l', 'm'};
 
   {
-    auto batch_id = storage->create_write_batch();
-    storage->batch_put(batch_id, kColFinalChainMeta, toRustVec(u32ToLe(meta_key)), toRustVec(meta_value));
-    storage->batch_put(batch_id, kColFinalChainBlockByNumber, toRustVec(u64ToLe(block_number)), toRustVec(block_value));
-    storage->batch_put(batch_id, kColFinalChainBlockHashByNumber, toRustVec(u64ToLe(block_number)),
+    auto batch_id = storage->compat_create_write_batch();
+    storage->compat_batch_put(batch_id, kColFinalChainMeta, toRustVec(u32ToLe(meta_key)), toRustVec(meta_value));
+    storage->compat_batch_put(batch_id, kColFinalChainBlockByNumber, toRustVec(u64ToLe(block_number)),
+                              toRustVec(block_value));
+    storage->compat_batch_put(batch_id, kColFinalChainBlockHashByNumber, toRustVec(u64ToLe(block_number)),
                        toRustVec(toVec(block_hash)));
-    storage->batch_put(batch_id, kColFinalChainBlockNumberByHash, toRustVec(toVec(block_hash)),
+    storage->compat_batch_put(batch_id, kColFinalChainBlockNumberByHash, toRustVec(toVec(block_hash)),
                        toRustVec(u64ToLe(block_number)));
-    storage->batch_put(batch_id, kColFinalChainReceiptByTrxHash, toRustVec(toVec(receipt_hash)),
+    storage->compat_batch_put(batch_id, kColFinalChainReceiptByTrxHash, toRustVec(toVec(receipt_hash)),
                        toRustVec(receipt_value));
-    storage->batch_put(batch_id, kColFinalChainLogBlooms, toRustVec(toVec(blooms_chunk)), toRustVec(blooms_value));
-    storage->batch_put(batch_id, kColFinalChainReceiptByPeriod, toRustVec(u64ToLe(15)),
+    storage->compat_batch_put(batch_id, kColFinalChainLogBlooms, toRustVec(toVec(blooms_chunk)),
+                              toRustVec(blooms_value));
+    storage->compat_batch_put(batch_id, kColFinalChainReceiptByPeriod, toRustVec(u64ToLe(15)),
                        toRustVec(std::vector<uint8_t>{0xC0}));
-    storage->commit_write_batch(batch_id, false);
+    storage->compat_commit_write_batch(batch_id, false);
   }
 
   auto meta_lookup = storage->get_final_chain_meta_value(meta_key);

@@ -76,7 +76,7 @@ DbStorage::~DbStorage() {
   }
 
   for (const auto& [_, batch_id] : batches_to_drop) {
-    rust_storage_.value()->drop_write_batch(batch_id);
+    rust_storage_.value()->compat_drop_write_batch(batch_id);
   }
 }
 
@@ -97,7 +97,7 @@ uint64_t DbStorage::getOrCreateRustBatch(Batch& batch) {
     return it->second;
   }
 
-  auto batch_id = rust_storage_.value()->create_write_batch();
+  auto batch_id = rust_storage_.value()->compat_create_write_batch();
   rust_batches_[&batch] = batch_id;
   return batch_id;
 }
@@ -114,7 +114,7 @@ void DbStorage::commitWriteBatch(Batch& write_batch, const rocksdb::WriteOptions
   }
 
   if (batch_id.has_value()) {
-    rust_storage_.value()->commit_write_batch(*batch_id, opts.sync);
+    rust_storage_.value()->compat_commit_write_batch(*batch_id, opts.sync);
   } else if (write_batch.Count() != 0) {
     throw DbException("commitWriteBatch called with unsupported non-rust batch content");
   }

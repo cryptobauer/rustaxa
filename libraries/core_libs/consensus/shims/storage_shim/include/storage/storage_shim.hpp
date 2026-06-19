@@ -50,15 +50,15 @@ class DbStorage : public DbStorageOld {
     auto const key = toSlice(k);
     auto const value = toSlice(v);
     auto const batch_id = getOrCreateRustBatch(batch);
-    rust_storage_.value()->batch_put(batch_id, static_cast<uint8_t>(col.ordinal_), sliceToRustVec(key),
-                                     sliceToRustVec(value));
+    rust_storage_.value()->compat_batch_put(batch_id, static_cast<uint8_t>(col.ordinal_), sliceToRustVec(key),
+                                            sliceToRustVec(value));
   }
 
   template <typename K>
   void remove(Batch& batch, Column const& col, K const& k) {
     auto const key = toSlice(k);
     auto const batch_id = getOrCreateRustBatch(batch);
-    rust_storage_.value()->batch_delete(batch_id, static_cast<uint8_t>(col.ordinal_), sliceToRustVec(key));
+    rust_storage_.value()->compat_batch_delete(batch_id, static_cast<uint8_t>(col.ordinal_), sliceToRustVec(key));
   }
 
   template <typename K>

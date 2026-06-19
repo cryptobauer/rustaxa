@@ -202,7 +202,12 @@ impl BridgeStorage {
         .encode_rlp()
     }
 
-    pub fn create_write_batch(&self) -> Result<u64, anyhow::Error> {
+    /// Creates a compatibility write batch for legacy C++ storage-shim and conformance callers.
+    ///
+    /// This is not a production consensus storage API. Migrated consensus
+    /// writers should use typed Rust storage runtimes or operation-specific
+    /// apply functions that own their full atomic write group.
+    pub fn compat_create_write_batch(&self) -> Result<u64, anyhow::Error> {
         let batch_id = self.2.fetch_add(1, Ordering::Relaxed);
         let mut batches = self
             .1
@@ -212,7 +217,12 @@ impl BridgeStorage {
         Ok(batch_id)
     }
 
-    pub fn batch_put(
+    /// Appends one raw put to a compatibility write batch.
+    ///
+    /// The caller must be an explicit storage-shim, test, or conformance
+    /// compatibility route. New Rust-mode production storage writes should not
+    /// depend on raw column appenders.
+    pub fn compat_batch_put(
         &self,
         batch_id: u64,
         column: u8,
@@ -230,7 +240,11 @@ impl BridgeStorage {
         self.0.batch_put_raw(batch, column, &key, &value)
     }
 
-    pub fn batch_delete(
+    /// Appends one raw delete to a compatibility write batch.
+    ///
+    /// This exists only for the legacy C++ storage-shim/conformance bridge
+    /// while typed Rust storage apply functions replace generic batch staging.
+    pub fn compat_batch_delete(
         &self,
         batch_id: u64,
         column: u8,
@@ -247,7 +261,15 @@ impl BridgeStorage {
         self.0.batch_delete_raw(batch, column, &key)
     }
 
-    pub fn commit_write_batch(&self, batch_id: u64, sync: bool) -> Result<(), anyhow::Error> {
+    /// Commits a compatibility write batch.
+    ///
+    /// This preserves temporary C++ storage-shim and validation behavior until
+    /// those fixtures move to direct Rust storage helpers.
+    pub fn compat_commit_write_batch(
+        &self,
+        batch_id: u64,
+        sync: bool,
+    ) -> Result<(), anyhow::Error> {
         let batch = {
             let mut batches = self
                 .1
@@ -260,7 +282,8 @@ impl BridgeStorage {
         self.0.commit_write_batch_with_sync(batch, sync)
     }
 
-    pub fn drop_write_batch(&self, batch_id: u64) -> Result<(), anyhow::Error> {
+    /// Drops a compatibility write batch without committing it.
+    pub fn compat_drop_write_batch(&self, batch_id: u64) -> Result<(), anyhow::Error> {
         let mut batches = self
             .1
             .lock()

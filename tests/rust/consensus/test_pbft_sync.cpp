@@ -1094,10 +1094,10 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyWritesPrimaryBatch) {
   const auto test_dir = uniqueTempDir("rustaxa_pbft_finalized_period_apply");
 
   auto storage = create_storage(test_dir.string());
-  auto seed_batch = storage->create_write_batch();
-  storage->batch_put(seed_batch, kDagBlocksColumn, hashBytes(h256(2)), bytes({0xda}));
-  storage->batch_put(seed_batch, kTransactionsColumn, hashBytes(h256(4)), bytes({0xd0}));
-  storage->commit_write_batch(seed_batch, false);
+  auto seed_batch = storage->compat_create_write_batch();
+  storage->compat_batch_put(seed_batch, kDagBlocksColumn, hashBytes(h256(2)), bytes({0xda}));
+  storage->compat_batch_put(seed_batch, kTransactionsColumn, hashBytes(h256(4)), bytes({0xd0}));
+  storage->compat_commit_write_batch(seed_batch, false);
 
   const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
   const auto result = apply_pbft_finalization_storage_writes(
@@ -1189,10 +1189,10 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyCommitsOwnedBatch) {
   const auto test_dir = uniqueTempDir("rustaxa_pbft_finalized_period_owned_apply");
 
   auto storage = create_storage(test_dir.string());
-  auto seed_batch = storage->create_write_batch();
-  storage->batch_put(seed_batch, kDagBlocksColumn, hashBytes(h256(2)), bytes({0xda}));
-  storage->batch_put(seed_batch, kTransactionsColumn, hashBytes(h256(4)), bytes({0xd0}));
-  storage->commit_write_batch(seed_batch, false);
+  auto seed_batch = storage->compat_create_write_batch();
+  storage->compat_batch_put(seed_batch, kDagBlocksColumn, hashBytes(h256(2)), bytes({0xda}));
+  storage->compat_batch_put(seed_batch, kTransactionsColumn, hashBytes(h256(4)), bytes({0xd0}));
+  storage->compat_commit_write_batch(seed_batch, false);
   storage->save_extra_reward_vote(h256(12), bytes({0xee}));
 
   const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
