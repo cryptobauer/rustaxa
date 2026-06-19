@@ -38,9 +38,8 @@ PbftChain::PbftChain(addr_t node_addr, std::shared_ptr<DbStorage> db) : db_(std:
   (void)node_addr;
   LOG_OBJECTS_CREATE("PBFT_CHAIN");
 
-  auto restored = rustaxa::restore_pbft_chain_storage(db_->rustStorage());
-  rust_chain_ = rustaxa::create_pbft_chain_with_storage(db_->rustStorage(), restored.head);
-  if (restored.initialized_default) {
+  rust_chain_ = rustaxa::create_pbft_chain_from_storage(db_->rustStorage());
+  if (rust_chain_.value()->pbft_chain_initialized_default()) {
     LOG(log_nf_) << "Initialize PBFT chain head " << getJsonStr();
     return;
   }

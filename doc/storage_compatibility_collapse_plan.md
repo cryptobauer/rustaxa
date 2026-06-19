@@ -132,12 +132,14 @@ Landed sub-slices:
   longer retains a `BridgeStorage*` sidecar, and proposed-block restore/persist/cleanup methods no longer take generic
   storage as a per-call argument. Rust still owns the storage write batch for proposed-block save and cleanup. The C++
   shim keeps `DbStorage` only as the lifetime owner and constructor seed until a broader lifecycle cleanup can remove it.
+- PBFT chain startup: the C++ shim now uses the typed `create_pbft_chain_from_storage(...)` constructor instead of
+  separate generic restore-plus-create storage calls. The Rust runtime carries the default-initialization flag needed for
+  the legacy startup log branch.
 
 Next target:
 
-- PBFT chain startup: use the existing typed `create_pbft_chain_from_storage(...)` constructor so C++ no longer performs
-  separate generic restore-plus-create storage calls just to seed the runtime. Preserve or intentionally drop only the
-  non-product-observable startup log distinction between default initialization and DB restore.
+- Collapse one of the remaining constructor-time `BridgeStorage` seeds with retained generic storage fields, likely DAG
+  manager, TransactionManager, VoteManager, or pillar chain manager.
 
 Scope:
 

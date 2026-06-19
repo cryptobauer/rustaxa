@@ -27,6 +27,7 @@ pub fn create_pbft_chain(
     Ok(Box::new(BridgePbftChain {
         state: PbftChain::new(head.into())?,
         storage: None,
+        initialized_default: false,
     }))
 }
 
@@ -39,6 +40,7 @@ pub fn create_pbft_chain_with_storage(
     Ok(Box::new(BridgePbftChain {
         state: PbftChain::new(head.into())?,
         storage: Some(storage.0.clone()),
+        initialized_default: false,
     }))
 }
 
@@ -51,7 +53,11 @@ pub fn create_pbft_chain_from_storage(
     storage: &BridgeStorage,
 ) -> Result<Box<BridgePbftChain>, anyhow::Error> {
     let restored = domain_restore_pbft_chain_from_storage(storage.0.as_ref())?;
-    create_pbft_chain_with_storage(storage, restored.head.into())
+    Ok(Box::new(BridgePbftChain {
+        state: PbftChain::new(restored.head.into())?,
+        storage: Some(storage.0.clone()),
+        initialized_default: restored.initialized_default,
+    }))
 }
 
 /// Restores PBFT-chain storage facts without constructing a bridge runtime.
@@ -78,6 +84,11 @@ pub fn pbft_chain_block_rlp(
 }
 
 impl BridgePbftChain {
+    /// Returns whether storage recovery initialized the default PBFT chain head.
+    pub fn pbft_chain_initialized_default(&self) -> bool {
+        self.initialized_default
+    }
+
     /// Returns the current PBFT chain head payload for C++ JSON formatting and public accessors.
     pub fn pbft_chain_head(&self) -> PbftChainHeadPayload {
         self.state.head().into()
@@ -309,10 +320,24 @@ mod tests {
         let chain = create_pbft_chain_from_storage(&storage).unwrap();
         let head = chain.pbft_chain_head();
 
+        assert!(!chain.pbft_chain_initialized_default());
         assert_eq!(head.size, 2);
         assert_eq!(head.non_empty_size, 1);
         assert_eq!(H256::from(head.last_pbft_block_hash), second_hash);
         assert_eq!(H256::from(head.last_non_null_anchor_hash), hash(100));
+    }
+
+    #[test]
+    fn bridge_create_pbft_chain_from_storage_reports_default_initialization() {
+        let storage = crate::storage::create_storage(&unique_storage_path(
+            "rustaxa_bridge_pbft_chain_default_init",
+        ))
+        .unwrap();
+
+        let chain = create_pbft_chain_from_storage(&storage).unwrap();
+
+        assert!(chain.pbft_chain_initialized_default());
+        assert_eq!(chain.pbft_chain_head().size, 0);
     }
 
     #[test]

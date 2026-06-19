@@ -92,6 +92,7 @@ pub struct BridgeDagProposerSession {
 pub struct BridgePbftChain {
     pub state: PbftChain,
     pub storage: Option<Arc<Storage>>,
+    pub initialized_default: bool,
 }
 
 pub struct BridgeProposedBlocks {
@@ -4628,6 +4629,7 @@ pub mod rustaxa_ffi {
             storage: &BridgeStorage,
             block_hash: &[u8; 32],
         ) -> Result<PbftBlockStorageLookup>;
+        pub fn pbft_chain_initialized_default(self: &BridgePbftChain) -> bool;
         pub fn pbft_chain_head(self: &BridgePbftChain) -> PbftChainHeadPayload;
         pub fn pbft_chain_project_update(
             self: &BridgePbftChain,
