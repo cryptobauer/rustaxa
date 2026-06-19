@@ -106,36 +106,6 @@ fn storage_shim_batch_mut(
         .ok_or_else(|| anyhow::anyhow!("storage shim batch already committed"))
 }
 
-/// Appends one raw legacy column put to a Rust-owned storage shim batch.
-///
-/// This is a storage-shim compatibility API, not a production consensus storage
-/// API. Migrated Rust runtimes should use typed storage repositories or
-/// operation-specific apply functions that own their full atomic write group.
-pub fn storage_shim_batch_put(
-    batch: &mut BridgeStorageBatch,
-    column: u8,
-    key: Vec<u8>,
-    value: Vec<u8>,
-) -> Result<(), anyhow::Error> {
-    let column = rustaxa_storage::Column::from_index(column)?;
-    let storage = batch.storage.clone();
-    storage.batch_put_raw(storage_shim_batch_mut(batch)?, column, &key, &value)
-}
-
-/// Appends one raw legacy column delete to a Rust-owned storage shim batch.
-///
-/// This exists only for the C++ `DbStorage` compatibility shim while remaining
-/// public callers are moved to typed Rust storage paths.
-pub fn storage_shim_batch_delete(
-    batch: &mut BridgeStorageBatch,
-    column: u8,
-    key: Vec<u8>,
-) -> Result<(), anyhow::Error> {
-    let column = rustaxa_storage::Column::from_index(column)?;
-    let storage = batch.storage.clone();
-    storage.batch_delete_raw(storage_shim_batch_mut(batch)?, column, &key)
-}
-
 /// Appends a typed status-field write to a Rust-owned storage shim batch.
 ///
 /// This keeps the legacy C++ batch commit/drop boundary while moving the
@@ -335,6 +305,66 @@ pub fn storage_shim_save_dag_block_period(
         period,
         position,
     )
+}
+
+/// Appends a typed non-finalized DAG block write to a Rust-owned storage shim batch.
+///
+/// Rust owns the `dag_blocks`, `dag_blocks_level`, and DAG status field
+/// column/key/value encodings. The C++ shim still supplies canonical DAG block
+/// RLP and final status sidecar values while those sidecars remain C++
+/// materialized.
+pub fn storage_shim_save_dag_block(
+    batch: &mut BridgeStorageBatch,
+    hash: &[u8; 32],
+    level: u64,
+    block_rlp: Vec<u8>,
+    dag_blocks_count: u64,
+    dag_edge_count: u64,
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage.dag().write_in_batch(
+        storage_shim_batch_mut(batch)?,
+        H256::from(*hash),
+        level,
+        &block_rlp,
+        dag_blocks_count,
+        dag_edge_count,
+    )
+}
+
+/// Appends typed DAG level-index and counter writes to a Rust-owned storage shim batch.
+///
+/// Updates are grouped by level in `rustaxa-storage`, so one caller-owned batch
+/// can stage multiple blocks at the same DAG level without overwriting staged
+/// level-index membership.
+pub fn storage_shim_update_dag_block_counters(
+    batch: &mut BridgeStorageBatch,
+    updates: Vec<rustaxa_ffi::DagCounterUpdate>,
+    dag_blocks_count: u64,
+    dag_edge_count: u64,
+) -> Result<(), anyhow::Error> {
+    let updates: Vec<(H256, u64, u64)> = updates
+        .into_iter()
+        .map(|update| (H256::from(update.hash), update.level, update.tips_count))
+        .collect();
+    let storage = batch.storage.clone();
+    storage.dag().update_counters_in_batch(
+        storage_shim_batch_mut(batch)?,
+        &updates,
+        dag_blocks_count,
+        dag_edge_count,
+    )
+}
+
+/// Appends a typed non-finalized DAG block delete to a Rust-owned storage shim batch.
+pub fn storage_shim_remove_dag_block(
+    batch: &mut BridgeStorageBatch,
+    hash: &[u8; 32],
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage
+        .dag()
+        .remove_in_batch(storage_shim_batch_mut(batch)?, H256::from(*hash))
 }
 
 /// Appends typed finalized period data bytes to a Rust-owned storage shim batch.

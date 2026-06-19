@@ -3081,6 +3081,12 @@ pub mod rustaxa_ffi {
         hash: [u8; 32],
     }
 
+    struct DagCounterUpdate {
+        hash: [u8; 32],
+        level: u64,
+        tips_count: u64,
+    }
+
     /// Hash wrapper for transaction lists used by DAG planning payloads.
     struct DagTransactionHash {
         hash: [u8; 32],
@@ -6108,17 +6114,6 @@ pub mod rustaxa_ffi {
         pub fn create_storage(path: &str) -> Result<Box<BridgeStorage>>;
         pub fn get_pillar_block_data_rlp(self: &BridgeStorage, period: u64) -> Result<Vec<u8>>;
         pub fn create_storage_shim_batch(storage: &BridgeStorage) -> Box<BridgeStorageBatch>;
-        pub fn storage_shim_batch_put(
-            batch: &mut BridgeStorageBatch,
-            column: u8,
-            key: Vec<u8>,
-            value: Vec<u8>,
-        ) -> Result<()>;
-        pub fn storage_shim_batch_delete(
-            batch: &mut BridgeStorageBatch,
-            column: u8,
-            key: Vec<u8>,
-        ) -> Result<()>;
         pub fn storage_shim_save_status_field(
             batch: &mut BridgeStorageBatch,
             field: u8,
@@ -6184,6 +6179,24 @@ pub mod rustaxa_ffi {
             hash: &[u8; 32],
             period: u64,
             position: u32,
+        ) -> Result<()>;
+        pub fn storage_shim_save_dag_block(
+            batch: &mut BridgeStorageBatch,
+            hash: &[u8; 32],
+            level: u64,
+            block_rlp: Vec<u8>,
+            dag_blocks_count: u64,
+            dag_edge_count: u64,
+        ) -> Result<()>;
+        pub fn storage_shim_update_dag_block_counters(
+            batch: &mut BridgeStorageBatch,
+            updates: Vec<DagCounterUpdate>,
+            dag_blocks_count: u64,
+            dag_edge_count: u64,
+        ) -> Result<()>;
+        pub fn storage_shim_remove_dag_block(
+            batch: &mut BridgeStorageBatch,
+            hash: &[u8; 32],
         ) -> Result<()>;
         pub fn storage_shim_save_period_data(
             batch: &mut BridgeStorageBatch,

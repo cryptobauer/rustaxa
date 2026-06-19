@@ -30,6 +30,16 @@ rust::Vec<uint8_t> into_rust_vec(T const& val) {
   return vec;
 }
 
+rust::Vec<rustaxa::DagCounterUpdate> into_dag_counter_updates(std::vector<std::shared_ptr<DagBlock>> const& blks) {
+  rust::Vec<rustaxa::DagCounterUpdate> updates;
+  updates.reserve(blks.size());
+  for (auto const& blk : blks) {
+    updates.push_back(
+        rustaxa::DagCounterUpdate{into_bytes_array(blk->getHash()), blk->getLevel(), blk->getTips().size()});
+  }
+  return updates;
+}
+
 template <typename T>
 T save_as(const Slice& key) {
   T value{};
@@ -69,16 +79,6 @@ DbStorage::DbStorage(fs::path const& path, uint32_t db_snapshot_each_n_pbft_bloc
 Batch DbStorage::createWriteBatch() { return Batch(); }
 
 DbStorage::~DbStorage() = default;
-
-rust::Vec<uint8_t> DbStorage::sliceToRustVec(const Slice& slice) {
-  rust::Vec<uint8_t> vec;
-  vec.reserve(slice.size());
-  auto data = reinterpret_cast<const uint8_t*>(slice.data());
-  for (size_t i = 0; i < slice.size(); ++i) {
-    vec.push_back(data[i]);
-  }
-  return vec;
-}
 
 rustaxa::BridgeStorageBatch& DbStorage::getOrCreateRustBatch(Batch& batch) {
   std::lock_guard<std::mutex> lock(rust_batches_mutex_);
@@ -359,28 +359,19 @@ void DbStorage::removeDagBlock(blk_hash_t const& hash) {
 }
 
 void DbStorage::removeDagBlockBatch(Batch& write_batch, blk_hash_t const& hash) {
-  (void)write_batch;
-  (void)hash;
-  throw_unimplemented_shim_api("removeDagBlockBatch");
+  auto h_arr = into_bytes_array(hash);
+  rustaxa::storage_shim_remove_dag_block(getOrCreateRustBatch(write_batch), h_arr);
 }
 
 void DbStorage::updateDagBlockCounters(std::vector<std::shared_ptr<DagBlock>> blks) {
   std::lock_guard<std::mutex> u_lock(dag_blocks_mutex_);
   auto write_batch = createWriteBatch();
   for (auto const& blk : blks) {
-    auto level = blk->getLevel();
-    auto block_hashes = getBlocksByLevel(level);
-    block_hashes.emplace(blk->getHash());
-    dev::RLPStream blocks_stream(block_hashes.size());
-    for (auto const& hash : block_hashes) {
-      blocks_stream << hash;
-    }
-    insert(write_batch, Columns::dag_blocks_level, toSlice(level), toSlice(blocks_stream.out()));
     dag_blocks_count_.fetch_add(1);
     dag_edge_count_.fetch_add(blk->getTips().size() + 1);
   }
-  insert(write_batch, Columns::status, toSlice((uint8_t)StatusDbField::DagBlkCount), toSlice(dag_blocks_count_.load()));
-  insert(write_batch, Columns::status, toSlice((uint8_t)StatusDbField::DagEdgeCount), toSlice(dag_edge_count_.load()));
+  rustaxa::storage_shim_update_dag_block_counters(getOrCreateRustBatch(write_batch), into_dag_counter_updates(blks),
+                                                  dag_blocks_count_.load(), dag_edge_count_.load());
   commitWriteBatch(write_batch);
 }
 
@@ -404,21 +395,12 @@ void DbStorage::saveDagBlock(const std::shared_ptr<DagBlock>& blk, Batch* write_
   auto& write_batch = *write_batch_p;
   auto block_bytes = blk->rlp(true);
   auto block_hash = blk->getHash();
-  insert(write_batch, Columns::dag_blocks, toSlice(block_hash.asBytes()), toSlice(block_bytes));
-
-  auto level = blk->getLevel();
-  auto block_hashes = getBlocksByLevel(level);
-  block_hashes.emplace(blk->getHash());
-  dev::RLPStream blocks_stream(block_hashes.size());
-  for (auto const& hash : block_hashes) {
-    blocks_stream << hash;
-  }
-  insert(write_batch, Columns::dag_blocks_level, toSlice(level), toSlice(blocks_stream.out()));
 
   dag_blocks_count_.fetch_add(1);
   dag_edge_count_.fetch_add(blk->getTips().size() + 1);
-  insert(write_batch, Columns::status, toSlice((uint8_t)StatusDbField::DagBlkCount), toSlice(dag_blocks_count_.load()));
-  insert(write_batch, Columns::status, toSlice((uint8_t)StatusDbField::DagEdgeCount), toSlice(dag_edge_count_.load()));
+  auto h_arr = into_bytes_array(block_hash);
+  rustaxa::storage_shim_save_dag_block(getOrCreateRustBatch(write_batch), h_arr, blk->getLevel(),
+                                       into_rust_vec(block_bytes), dag_blocks_count_.load(), dag_edge_count_.load());
 }
 
 void DbStorage::saveSortitionParamsChange(PbftPeriod period, const SortitionParamsChange& params, Batch& batch) {
@@ -451,7 +433,7 @@ void DbStorage::savePeriodData(const PeriodData& period_data, Batch& write_batch
 
   uint32_t block_pos = 0;
   for (auto const& block : period_data.dag_blocks) {
-    remove(write_batch, Columns::dag_blocks, toSlice(block->getHash().asBytes()));
+    removeDagBlockBatch(write_batch, block->getHash());
     addDagBlockPeriodToBatch(block->getHash(), period, block_pos, write_batch);
     block_pos++;
   }
@@ -621,7 +603,8 @@ std::optional<pillar_chain::CurrentPillarBlockDataDb> DbStorage::getCurrentPilla
 void DbStorage::addTransactionLocationToBatch(Batch& write_batch, trx_hash_t const& trx_hash, PbftPeriod period,
                                               uint32_t position, bool is_system) {
   auto h_arr = into_bytes_array(trx_hash);
-  rustaxa::storage_shim_save_transaction_location(getOrCreateRustBatch(write_batch), h_arr, period, position, is_system);
+  rustaxa::storage_shim_save_transaction_location(getOrCreateRustBatch(write_batch), h_arr, period, position,
+                                                  is_system);
 }
 
 std::optional<TransactionLocation> DbStorage::getTransactionLocation(trx_hash_t const& hash) const {
@@ -764,7 +747,7 @@ void DbStorage::addPeriodSystemTransactions(Batch& write_batch, SharedTransactio
   auto hashes_rlp = util::rlp_enc(trx_hashes);
   auto hashes_rlp_vec = into_rust_vec(hashes_rlp);
   rustaxa::storage_shim_save_period_system_transactions_hashes(getOrCreateRustBatch(write_batch), period,
-                                                              std::move(hashes_rlp_vec));
+                                                               std::move(hashes_rlp_vec));
 }
 
 std::vector<trx_hash_t> DbStorage::getPeriodSystemTransactionsHashes(PbftPeriod period) const {

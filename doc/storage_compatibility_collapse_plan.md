@@ -224,12 +224,21 @@ Landed sub-slices:
   system transaction writes, and period system-transaction hash-list writes through typed `rustaxa-storage` transaction
   batch methods. C++ still materializes transaction and system-transaction RLP, but Rust owns the transaction column
   selection, key encoding, location RLP, and commit/drop boundary.
+- DAG block/counter shim batch appends: routed non-finalized DAG block payload writes, level-index updates, DAG counter
+  sidecar writes, and DAG block removals through typed `rustaxa-storage` DAG batch methods. Rust now owns the
+  `dag_blocks`, `dag_blocks_level`, and DAG status field column/key/value encodings inside the caller's opaque
+  `BridgeStorageBatch`, and same-level counter updates are grouped before encoding so staged updates cannot overwrite
+  each other.
+- Raw storage-shim appender deletion: removed the last CXX-exposed `storage_shim_batch_put` /
+  `storage_shim_batch_delete` functions plus the C++ `DbStorage::insert/remove` template wrappers and slice-copy helper.
+  Remaining raw batch primitives live only inside `rustaxa-storage` and its unit tests as native storage internals, not
+  as a CXX bridge compatibility API.
 
 Next target:
 
-- Reduce the remaining storage-shim raw append surface in the DAG block/counter family by replacing broad
-  `insert(Batch&, Column, ...)` and `remove(Batch&, Column, ...)` callers with typed Rust storage helpers where active
-  tests or public compatibility paths still need them.
+- Start Slice 4 by splitting the broad read/query materialization surface. Prioritize active Rust-mode callers that still
+  reach through generic `BridgeStorage` for DAG, PBFT, vote, transaction, pillar, rewards, or FinalChain compatibility
+  reads; leave RPC/network/admin materialization explicitly classified until those owning tracks move.
 
 Scope:
 

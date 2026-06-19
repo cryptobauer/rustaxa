@@ -45,22 +45,6 @@ class DbStorage : public DbStorageOld {
   std::unique_ptr<rocksdb::Iterator> getColumnIterator(const Column& c);
   std::unique_ptr<rocksdb::Iterator> getColumnIterator(rocksdb::ColumnFamilyHandle* c);
 
-  template <typename K, typename V>
-  void insert(Batch& batch, Column const& col, K const& k, V const& v) {
-    auto const key = toSlice(k);
-    auto const value = toSlice(v);
-    auto& rust_batch = getOrCreateRustBatch(batch);
-    rustaxa::storage_shim_batch_put(rust_batch, static_cast<uint8_t>(col.ordinal_), sliceToRustVec(key),
-                                    sliceToRustVec(value));
-  }
-
-  template <typename K>
-  void remove(Batch& batch, Column const& col, K const& k) {
-    auto const key = toSlice(k);
-    auto& rust_batch = getOrCreateRustBatch(batch);
-    rustaxa::storage_shim_batch_delete(rust_batch, static_cast<uint8_t>(col.ordinal_), sliceToRustVec(key));
-  }
-
   template <typename K>
   std::string lookup(K const& key, Column const& column) const {
     auto const key_slice = toSlice(key);
@@ -250,7 +234,6 @@ class DbStorage : public DbStorageOld {
 
  private:
   rustaxa::BridgeStorageBatch& getOrCreateRustBatch(Batch& batch);
-  static rust::Vec<uint8_t> sliceToRustVec(const Slice& slice);
   std::string lookupFinalChainMeta(const Slice& key) const;
   std::string lookupFinalChainBlockByNumber(const Slice& key) const;
   std::string lookupFinalChainBlockHashByNumber(const Slice& key) const;

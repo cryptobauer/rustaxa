@@ -276,6 +276,120 @@ impl<D: DbReader + DbWriter> DagRepository<D> {
         )
     }
 
+    /// Appends a non-finalized DAG block write to a caller-owned storage batch.
+    ///
+    /// Inputs:
+    /// - `batch`: Rust storage write batch that owns the eventual atomic commit.
+    /// - `hash`: canonical DAG block hash used as the block payload key.
+    /// - `level`: DAG level used to update the level-to-hashes index.
+    /// - `block_rlp`: canonical legacy DAG block RLP payload.
+    /// - `dag_blocks_count`: final DAG block-count sidecar value to persist.
+    /// - `dag_edge_count`: final DAG edge-count sidecar value to persist.
+    ///
+    /// Outputs:
+    /// - Appends a block payload put, a level-index put, and status sidecar
+    ///   puts to the same batch without committing it.
+    ///
+    /// Invariants and edge behavior:
+    /// - Level indexes are merged with currently persisted hashes and the new
+    ///   hash. Callers that stage multiple same-level block writes in one batch
+    ///   should use `update_counters_in_batch` for aggregate index updates.
+    /// - Status fields use explicit final values supplied by the compatibility
+    ///   shim because those in-memory sidecars remain C++ materialized for now.
+    pub fn write_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        hash: H256,
+        level: u64,
+        block_rlp: &[u8],
+        dag_blocks_count: u64,
+        dag_edge_count: u64,
+    ) -> Result<()> {
+        self.db
+            .batch_put(batch, Column::DagBlocks, hash.as_bytes(), block_rlp)?;
+
+        let level_bytes = self.encode_level_hashes(level, hash)?;
+        self.db.batch_put(
+            batch,
+            Column::DagBlocksLevel,
+            &level.to_le_bytes(),
+            &level_bytes,
+        )?;
+
+        self.write_status_counts_in_batch(batch, dag_blocks_count, dag_edge_count)
+    }
+
+    /// Appends DAG level-index and status sidecar updates to a caller-owned
+    /// storage batch.
+    ///
+    /// Inputs:
+    /// - `updates`: block hash, level, and tips-count facts for all blocks that
+    ///   need counter/index updates in this batch.
+    /// - `dag_blocks_count` and `dag_edge_count`: final sidecar values to store.
+    ///
+    /// Outputs:
+    /// - Appends one level-index put per affected level and one put for each DAG
+    ///   status sidecar field.
+    ///
+    /// Invariants and edge behavior:
+    /// - Updates are grouped by level before encoding so multiple same-level
+    ///   blocks staged in the same batch cannot overwrite each other.
+    /// - Empty update sets append no operations.
+    pub fn update_counters_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        updates: &[(H256, u64, u64)],
+        dag_blocks_count: u64,
+        dag_edge_count: u64,
+    ) -> Result<()> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+
+        let mut level_hashes = BTreeMap::<u64, BTreeSet<H256>>::new();
+        for (hash, level, _) in updates {
+            if !level_hashes.contains_key(level) {
+                level_hashes.insert(*level, self.hashes_at_level(*level)?.into_iter().collect());
+            }
+            if let Some(hashes) = level_hashes.get_mut(level) {
+                hashes.insert(*hash);
+            }
+        }
+
+        for (level, hashes) in level_hashes {
+            let mut stream = rlp::RlpStream::new_list(hashes.len());
+            for hash in hashes {
+                stream.append(&hash);
+            }
+            self.db.batch_put(
+                batch,
+                Column::DagBlocksLevel,
+                &level.to_le_bytes(),
+                stream.out().as_ref(),
+            )?;
+        }
+
+        self.write_status_counts_in_batch(batch, dag_blocks_count, dag_edge_count)
+    }
+
+    /// Appends a non-finalized DAG block payload delete to a caller-owned
+    /// storage batch.
+    ///
+    /// Inputs:
+    /// - `batch`: Rust storage write batch that owns the eventual atomic commit.
+    /// - `hash`: canonical DAG block hash key to remove from `dag_blocks`.
+    ///
+    /// Outputs:
+    /// - Appends a delete for the non-finalized DAG block payload.
+    ///
+    /// Invariants and edge behavior:
+    /// - Missing rows are ignored by the underlying storage engine, matching
+    ///   legacy RocksDB delete semantics.
+    pub fn remove_in_batch(&self, batch: &mut D::Batch, hash: H256) -> Result<()> {
+        self.db
+            .batch_delete(batch, Column::DagBlocks, hash.as_bytes())
+    }
+
     /// Updates level index and DAG counters for an already-saved block.
     /// C++ mapping: `DbStorage::updateDagBlockCounters(std::vector<std::shared_ptr<DagBlock>>)`.
     pub fn update_counter(&self, hash: H256, level: u64, tips_count: u64) -> Result<()> {
@@ -482,6 +596,26 @@ impl<D: DbReader + DbWriter> DagRepository<D> {
         let mut bytes = [0u8; 8];
         bytes.copy_from_slice(value);
         Ok(u64::from_le_bytes(bytes))
+    }
+
+    fn write_status_counts_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        dag_blocks_count: u64,
+        dag_edge_count: u64,
+    ) -> Result<()> {
+        self.db.batch_put(
+            batch,
+            Column::Status,
+            &[StatusField::DagBlkCount as u8],
+            &dag_blocks_count.to_le_bytes(),
+        )?;
+        self.db.batch_put(
+            batch,
+            Column::Status,
+            &[StatusField::DagEdgeCount as u8],
+            &dag_edge_count.to_le_bytes(),
+        )
     }
 }
 
@@ -716,6 +850,16 @@ mod tests {
         stream.out().to_vec()
     }
 
+    fn status_u64(db: &MockDagStore, field: StatusField) -> u64 {
+        let bytes = db
+            .get(Column::Status, &[field as u8])
+            .unwrap()
+            .expect("status field");
+        let mut value = [0u8; 8];
+        value.copy_from_slice(&bytes);
+        u64::from_le_bytes(value)
+    }
+
     #[test]
     fn test_dag_block_found() {
         let db = Arc::new(MockDagStore::new());
@@ -860,6 +1004,72 @@ mod tests {
             repo.period_optional(block_hash).unwrap(),
             Some((period, position))
         );
+    }
+
+    #[test]
+    fn test_dag_block_batch_write_waits_for_commit_and_removes() {
+        let db = Arc::new(MockDagStore::new());
+        let repo = DagRepository::new(db.clone());
+
+        let block_hash = H256::random();
+        let block_rlp = create_dummy_dag_block_rlp();
+        let level = 10u64;
+
+        let mut batch = DbWriter::create_batch(db.as_ref());
+        repo.write_in_batch(&mut batch, block_hash, level, &block_rlp, 3, 7)
+            .unwrap();
+
+        assert!(!repo.exists(block_hash).unwrap());
+        assert!(repo.hashes_at_level(level).unwrap().is_empty());
+
+        DbWriter::commit_batch(db.as_ref(), batch).unwrap();
+
+        assert!(repo.exists(block_hash).unwrap());
+        assert_eq!(repo.hashes_at_level(level).unwrap(), vec![block_hash]);
+        assert_eq!(status_u64(&db, StatusField::DagBlkCount), 3);
+        assert_eq!(status_u64(&db, StatusField::DagEdgeCount), 7);
+
+        let mut remove_batch = DbWriter::create_batch(db.as_ref());
+        repo.remove_in_batch(&mut remove_batch, block_hash).unwrap();
+        assert!(repo.exists(block_hash).unwrap());
+
+        DbWriter::commit_batch(db.as_ref(), remove_batch).unwrap();
+        assert!(!repo.exists(block_hash).unwrap());
+    }
+
+    #[test]
+    fn test_dag_counter_batch_merges_same_level_updates() {
+        let db = Arc::new(MockDagStore::new());
+        let repo = DagRepository::new(db.clone());
+
+        let level = 11u64;
+        let existing_hash = H256::from_low_u64_be(1);
+        let new_hash_a = H256::from_low_u64_be(2);
+        let new_hash_b = H256::from_low_u64_be(3);
+
+        let mut existing_stream = RlpStream::new_list(1);
+        existing_stream.append(&existing_hash);
+        db.put(
+            Column::DagBlocksLevel,
+            &level.to_le_bytes(),
+            existing_stream.out().as_ref(),
+        );
+
+        let updates = vec![(new_hash_a, level, 2), (new_hash_b, level, 4)];
+        let mut batch = DbWriter::create_batch(db.as_ref());
+        repo.update_counters_in_batch(&mut batch, &updates, 12, 21)
+            .unwrap();
+
+        assert_eq!(repo.hashes_at_level(level).unwrap(), vec![existing_hash]);
+
+        DbWriter::commit_batch(db.as_ref(), batch).unwrap();
+
+        assert_eq!(
+            repo.hashes_at_level(level).unwrap(),
+            vec![existing_hash, new_hash_a, new_hash_b]
+        );
+        assert_eq!(status_u64(&db, StatusField::DagBlkCount), 12);
+        assert_eq!(status_u64(&db, StatusField::DagEdgeCount), 21);
     }
 
     #[test]
