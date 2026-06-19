@@ -143,6 +143,22 @@ class VoteManager : public VoteManagerOld {
    */
   std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> checkRewardVotes(const std::shared_ptr<PbftBlock>& pbft_block,
                                                                            bool copy_votes);
+
+  /**
+   * Validates and optionally materializes reward votes referenced by compact PBFT block facts.
+   *
+   * Inputs:
+   * - `block_period`, `block_hash`, and `prev_block_hash`: PBFT block facts supplied by the caller, typically from
+   *   Rust-owned sync queue metadata.
+   * - `reward_vote_hashes`: reward-vote hashes referenced by the PBFT block in block order.
+   * - `copy_votes`: when true, return selected live `PbftVote` sidecars in the same order as `reward_vote_hashes`.
+   *
+   * Outputs and invariants match `checkRewardVotes(pbft_block, copy_votes)`, but callers that already have compact
+   * block facts do not need to materialize or reopen a live `PbftBlock` sidecar.
+   */
+  std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> checkRewardVotes(
+      PbftPeriod block_period, const blk_hash_t& block_hash, const blk_hash_t& prev_block_hash,
+      const std::vector<vote_hash_t>& reward_vote_hashes, bool copy_votes);
   /**
    * Returns reward votes selected from the shim's live verified-vote sidecar.
    *

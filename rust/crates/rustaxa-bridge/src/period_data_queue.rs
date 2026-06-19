@@ -56,6 +56,7 @@ impl BridgePeriodDataQueue {
         prev_block_hash: [u8; 32],
         pivot_hash: [u8; 32],
         final_chain_hash: [u8; 32],
+        reward_vote_hashes: Vec<PbftSyncTransactionHash>,
         dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
         period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
@@ -76,6 +77,7 @@ impl BridgePeriodDataQueue {
                 ethereum_types::H256::from(prev_block_hash),
                 ethereum_types::H256::from(pivot_hash),
                 ethereum_types::H256::from(final_chain_hash),
+                bridge_hashes_to_h256(reward_vote_hashes),
                 dag_transaction_hashes
                     .into_iter()
                     .map(|hash| ethereum_types::H256::from(hash.hash))
@@ -123,6 +125,7 @@ impl BridgePeriodDataQueue {
                 prev_block_hash: entry.prev_block_hash.into(),
                 pivot_hash: entry.pivot_hash.into(),
                 final_chain_hash: entry.final_chain_hash.into(),
+                reward_vote_hashes: transaction_hashes_to_bridge(entry.reward_vote_hashes),
                 dag_transaction_hashes: transaction_hashes_to_bridge(entry.dag_transaction_hashes),
                 period_data_transaction_hashes: transaction_hashes_to_bridge(
                     entry.period_data_transaction_hashes,
@@ -144,6 +147,7 @@ impl BridgePeriodDataQueue {
                 prev_block_hash: [0; 32],
                 pivot_hash: [0; 32],
                 final_chain_hash: [0; 32],
+                reward_vote_hashes: Vec::new(),
                 dag_transaction_hashes: Vec::new(),
                 period_data_transaction_hashes: Vec::new(),
                 period_data_transaction_identities: Vec::new(),
@@ -179,6 +183,7 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueueEntryRef>
             prev_block_hash: value.prev_block_hash.into(),
             pivot_hash: value.pivot_hash.into(),
             final_chain_hash: value.final_chain_hash.into(),
+            reward_vote_hashes: transaction_hashes_to_bridge(value.reward_vote_hashes),
             dag_transaction_hashes: transaction_hashes_to_bridge(value.dag_transaction_hashes),
             period_data_transaction_hashes: transaction_hashes_to_bridge(
                 value.period_data_transaction_hashes,
@@ -219,6 +224,7 @@ impl From<rustaxa_consensus::period_data_queue::PeriodDataQueuePopPlan> for Peri
             prev_block_hash: value.prev_block_hash.into(),
             pivot_hash: value.pivot_hash.into(),
             final_chain_hash: value.final_chain_hash.into(),
+            reward_vote_hashes: transaction_hashes_to_bridge(value.reward_vote_hashes),
             dag_transaction_hashes: transaction_hashes_to_bridge(value.dag_transaction_hashes),
             period_data_transaction_hashes: transaction_hashes_to_bridge(
                 value.period_data_transaction_hashes,
@@ -243,6 +249,13 @@ fn transaction_hashes_to_bridge(hashes: Vec<ethereum_types::H256>) -> Vec<PbftSy
     hashes
         .into_iter()
         .map(|hash| PbftSyncTransactionHash { hash: hash.into() })
+        .collect()
+}
+
+fn bridge_hashes_to_h256(hashes: Vec<PbftSyncTransactionHash>) -> Vec<ethereum_types::H256> {
+    hashes
+        .into_iter()
+        .map(|hash| ethereum_types::H256::from(hash.hash))
         .collect()
 }
 

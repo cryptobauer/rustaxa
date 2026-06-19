@@ -21,6 +21,8 @@ use std::collections::VecDeque;
 /// - `pivot_hash`: pivot DAG block hash carried by that payload.
 /// - `final_chain_hash`: final-chain hash carried by that payload's PBFT
 ///   block.
+/// - `reward_vote_hashes`: reward-vote hashes referenced by that payload's
+///   PBFT block.
 /// - transaction hash lists: compact sync validation facts carried by the
 ///   payload.
 /// - previous-cert-vote flags: compact vote sidecar facts used by sync
@@ -42,6 +44,7 @@ pub struct PeriodDataQueueEntryRef {
     pub prev_block_hash: H256,
     pub pivot_hash: H256,
     pub final_chain_hash: H256,
+    pub reward_vote_hashes: Vec<H256>,
     pub dag_transaction_hashes: Vec<H256>,
     pub period_data_transaction_hashes: Vec<H256>,
     pub period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
@@ -105,6 +108,8 @@ pub struct PeriodDataQueuePushOutcome {
 /// - `entry_period`, `block_hash`, `prev_block_hash`, `pivot_hash`, and
 ///   `final_chain_hash` are the compact PBFT block facts for the popped
 ///   payload.
+/// - `reward_vote_hashes` are compact reward-vote references from the popped
+///   PBFT block.
 /// - transaction hash lists are compact sync validation facts for the popped
 ///   payload.
 /// - transaction identities are compact finalized-status facts for the popped
@@ -123,6 +128,7 @@ pub struct PeriodDataQueuePopPlan {
     pub prev_block_hash: H256,
     pub pivot_hash: H256,
     pub final_chain_hash: H256,
+    pub reward_vote_hashes: Vec<H256>,
     pub dag_transaction_hashes: Vec<H256>,
     pub period_data_transaction_hashes: Vec<H256>,
     pub period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
@@ -233,6 +239,8 @@ impl PeriodDataQueue {
     /// - `prev_block_hash`: previous PBFT block hash of the payload block.
     /// - `pivot_hash`: pivot DAG block hash of the payload block.
     /// - `final_chain_hash`: final-chain hash of the payload block.
+    /// - `reward_vote_hashes`: reward-vote hashes referenced by the payload
+    ///   PBFT block.
     /// - `dag_transaction_hashes`: transaction hashes referenced by finalized
     ///   DAG blocks in the payload.
     /// - `period_data_transaction_hashes`: transaction hashes supplied in the
@@ -262,6 +270,7 @@ impl PeriodDataQueue {
         prev_block_hash: H256,
         pivot_hash: H256,
         final_chain_hash: H256,
+        reward_vote_hashes: Vec<H256>,
         dag_transaction_hashes: Vec<H256>,
         period_data_transaction_hashes: Vec<H256>,
         period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
@@ -304,6 +313,7 @@ impl PeriodDataQueue {
             prev_block_hash,
             pivot_hash,
             final_chain_hash,
+            reward_vote_hashes,
             dag_transaction_hashes,
             period_data_transaction_hashes,
             period_data_transaction_identities,
@@ -342,6 +352,7 @@ impl PeriodDataQueue {
                 prev_block_hash: entry.prev_block_hash,
                 pivot_hash: entry.pivot_hash,
                 final_chain_hash: entry.final_chain_hash,
+                reward_vote_hashes: entry.reward_vote_hashes,
                 dag_transaction_hashes: entry.dag_transaction_hashes,
                 period_data_transaction_hashes: entry.period_data_transaction_hashes,
                 period_data_transaction_identities: entry.period_data_transaction_identities,
@@ -366,6 +377,7 @@ impl PeriodDataQueue {
             prev_block_hash: entry.prev_block_hash,
             pivot_hash: entry.pivot_hash,
             final_chain_hash: entry.final_chain_hash,
+            reward_vote_hashes: entry.reward_vote_hashes,
             dag_transaction_hashes: entry.dag_transaction_hashes,
             period_data_transaction_hashes: entry.period_data_transaction_hashes,
             period_data_transaction_identities: entry.period_data_transaction_identities,
@@ -426,6 +438,7 @@ mod tests {
                 H256::from_low_u64_be(id + 1000),
                 H256::from_low_u64_be(id + 2000),
                 H256::from_low_u64_be(id + 2500),
+                vec![H256::from_low_u64_be(id + 2600)],
                 vec![H256::from_low_u64_be(id + 3000)],
                 vec![H256::from_low_u64_be(id + 4000)],
                 vec![PeriodDataQueueTransactionIdentity {
@@ -479,6 +492,7 @@ mod tests {
                 H256::from_low_u64_be(1004),
                 H256::from_low_u64_be(2004),
                 H256::from_low_u64_be(2504),
+                vec![H256::from_low_u64_be(2604)],
                 vec![H256::from_low_u64_be(3004)],
                 vec![H256::from_low_u64_be(4004)],
                 vec![PeriodDataQueueTransactionIdentity {
@@ -637,6 +651,7 @@ mod tests {
                 prev_block_hash: H256::from_low_u64_be(1005),
                 pivot_hash: H256::from_low_u64_be(2005),
                 final_chain_hash: H256::from_low_u64_be(2505),
+                reward_vote_hashes: vec![H256::from_low_u64_be(2605)],
                 dag_transaction_hashes: vec![H256::from_low_u64_be(3005)],
                 period_data_transaction_hashes: vec![H256::from_low_u64_be(4005)],
                 period_data_transaction_identities: vec![PeriodDataQueueTransactionIdentity {

@@ -47,6 +47,8 @@ TEST(PeriodDataQueueShimTest, popReturnsQueueFrontAndMatchingCertVotesContract) 
   auto period1 = makePeriodData(1, 101);
   const auto extra_data = PbftBlockExtraData(1, 2, 3, 4, "rustaxa-test", blk_hash_t(303));
   auto period2 = makePeriodData(2, 202, {vote_from_next_block}, extra_data);
+  const auto period1_reward_votes = period1.pbft_blk->getRewardVotes();
+  const auto period2_reward_votes = period2.pbft_blk->getRewardVotes();
   const auto period2_hash = period2.pbft_blk->getBlockHash();
   const auto period2_final_chain_hash = period2.pbft_blk->getFinalChainHash();
 
@@ -72,6 +74,7 @@ TEST(PeriodDataQueueShimTest, popReturnsQueueFrontAndMatchingCertVotesContract) 
   EXPECT_EQ(popped1.prev_block_hash, popped1.period_data.pbft_blk->getPrevBlockHash());
   EXPECT_EQ(popped1.pivot_hash, popped1.period_data.pbft_blk->getPivotDagBlockHash());
   EXPECT_EQ(popped1.final_chain_hash, popped1.period_data.pbft_blk->getFinalChainHash());
+  EXPECT_EQ(popped1.reward_vote_hashes, period1_reward_votes);
   EXPECT_TRUE(popped1.dag_transaction_hashes.empty());
   EXPECT_TRUE(popped1.period_data_transaction_hashes.empty());
   EXPECT_FALSE(popped1.pillar_votes_present);
@@ -86,6 +89,7 @@ TEST(PeriodDataQueueShimTest, popReturnsQueueFrontAndMatchingCertVotesContract) 
   EXPECT_EQ(popped2.period_data.pbft_blk->getPeriod(), 2);
   EXPECT_EQ(popped2.node_id, node2);
   EXPECT_EQ(popped2.final_chain_hash, period2_final_chain_hash);
+  EXPECT_EQ(popped2.reward_vote_hashes, period2_reward_votes);
   EXPECT_TRUE(popped2.extra_data_present);
   EXPECT_TRUE(popped2.extra_data_pillar_block_hash_present);
   ASSERT_EQ(popped2.cert_votes.size(), 1);

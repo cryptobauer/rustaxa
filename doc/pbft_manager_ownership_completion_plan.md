@@ -437,7 +437,11 @@ reopening the live PBFT block sidecar after Rust queue metadata already supplied
 block-identity cut makes cert-vote validation consume the Rust queue's popped PBFT period/hash facts directly, so the
 helper no longer reopens the live PBFT block sidecar solely to compare vote period/hash, choose strict-validation
 intervals, or log the block identity; live `PbftVote` validation, weight accumulation, and verified-vote insertion
-remain compatibility payload work.
+remain compatibility payload work. The sync reward-vote hash cut makes the Rust-backed `PeriodDataQueue` retain the
+popped PBFT block's requested reward-vote hashes. `processPeriodData()` now validates reward votes through those compact
+queue facts plus VoteManager's Rust verified-vote runtime instead of reopening `PeriodData.pbft_blk` solely to read the
+requested hashes; copied selected `PbftVote` objects remain temporary compatibility payloads for previous-cert
+replacement.
 Remaining Slice 9 work: proposed-block sidecars that still require validation/API materialization and sync payload
 materialization for actual transaction objects during finalization execution, votes, and pillar data.
 

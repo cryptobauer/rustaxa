@@ -62,6 +62,10 @@ std::vector<trx_hash_t> periodDataTransactionHashes(const PeriodData& period_dat
   return hashes;
 }
 
+std::vector<vote_hash_t> rewardVoteHashes(const PeriodData& period_data) {
+  return period_data.pbft_blk->getRewardVotes();
+}
+
 rust::Vec<rustaxa::PeriodDataQueueTransactionIdentity> periodDataTransactionIdentities(const PeriodData& period_data) {
   rust::Vec<rustaxa::PeriodDataQueueTransactionIdentity> identities;
   identities.reserve(period_data.transactions.size());
@@ -167,6 +171,7 @@ bool PeriodDataQueue::push(PeriodData&& period_data, const dev::p2p::NodeID& nod
   }
 
   const auto period = period_data.pbft_blk->getPeriod();
+  const auto reward_vote_hashes = rewardVoteHashes(period_data);
   const auto dag_transaction_hashes = dagTransactionHashes(period_data);
   const auto period_data_transaction_hashes = periodDataTransactionHashes(period_data);
   auto period_data_transaction_identities = periodDataTransactionIdentities(period_data);
@@ -183,7 +188,8 @@ bool PeriodDataQueue::push(PeriodData&& period_data, const dev::p2p::NodeID& nod
     outcome = rust_queue_->period_data_queue_push(
         entry_id, period, period_data.pbft_blk->getBlockHash().asArray(),
         period_data.pbft_blk->getPrevBlockHash().asArray(), period_data.pbft_blk->getPivotDagBlockHash().asArray(),
-        period_data.pbft_blk->getFinalChainHash().asArray(), toBridgeTransactionHashes(dag_transaction_hashes),
+        period_data.pbft_blk->getFinalChainHash().asArray(), toBridgeTransactionHashes(reward_vote_hashes),
+        toBridgeTransactionHashes(dag_transaction_hashes),
         toBridgeTransactionHashes(period_data_transaction_hashes), std::move(period_data_transaction_identities),
         previous_cert_votes_present, previous_cert_first_vote_has_weight, pillar_votes_present, extra_data_present,
         extra_data_pillar_block_hash_present, max_pbft_size, cert_votes.size());
@@ -261,6 +267,7 @@ PeriodDataQueue::PoppedPeriodData PeriodDataQueue::popWithMetadata() {
                                  blk_hash_t(plan.prev_block_hash.data(), blk_hash_t::ConstructFromPointer),
                                  blk_hash_t(plan.pivot_hash.data(), blk_hash_t::ConstructFromPointer),
                                  blk_hash_t(plan.final_chain_hash.data(), blk_hash_t::ConstructFromPointer),
+                                 fromBridgeTransactionHashes(plan.reward_vote_hashes),
                                  fromBridgeTransactionHashes(plan.dag_transaction_hashes),
                                  fromBridgeTransactionHashes(plan.period_data_transaction_hashes),
                                  toVerifyNotFinalizedFacts(plan.period_data_transaction_identities),

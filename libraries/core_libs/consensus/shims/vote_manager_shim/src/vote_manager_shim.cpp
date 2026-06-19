@@ -772,6 +772,13 @@ void VoteManager::resetRewardVotes(PbftPeriod period, PbftRound round, PbftStep 
 
 std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> VoteManager::checkRewardVotes(
     const std::shared_ptr<PbftBlock>& pbft_block, bool copy_votes) {
+  return checkRewardVotes(pbft_block->getPeriod(), pbft_block->getBlockHash(), pbft_block->getPrevBlockHash(),
+                          pbft_block->getRewardVotes(), copy_votes);
+}
+
+std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> VoteManager::checkRewardVotes(
+    PbftPeriod block_period, const blk_hash_t& block_hash, const blk_hash_t& prev_block_hash,
+    const std::vector<vote_hash_t>& reward_vote_hashes, bool copy_votes) {
   blk_hash_t reward_votes_block_hash;
   PbftPeriod reward_votes_period;
   PbftRound reward_votes_round;
@@ -784,12 +791,11 @@ std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> VoteManager::checkReward
 
   VerifiedVotes::RewardVotePayloadSelection selection{};
   try {
-    selection =
-        verified_votes_.selectRewardVotePayloads(pbft_block->getPeriod(), reward_votes_period, reward_votes_round,
-                                                 reward_votes_block_hash, pbft_block->getRewardVotes(), copy_votes);
+    selection = verified_votes_.selectRewardVotePayloads(block_period, reward_votes_period, reward_votes_round,
+                                                         reward_votes_block_hash, reward_vote_hashes, copy_votes);
   } catch (const std::exception& e) {
-    LOG(log_er_) << "Rust reward-vote payload selection failed for block " << pbft_block->getBlockHash()
-                 << ", period: " << pbft_block->getPeriod() << ", reward_votes_period: " << reward_votes_period
+    LOG(log_er_) << "Rust reward-vote payload selection failed for block " << block_hash
+                 << ", period: " << block_period << ", reward_votes_period: " << reward_votes_period
                  << ", reward_votes_round_: " << reward_votes_round
                  << ", reward_votes_block_hash: " << reward_votes_block_hash << ", error: " << e.what();
     assert(false);
@@ -798,8 +804,8 @@ std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> VoteManager::checkReward
 
   const auto& plan = selection.report;
   if (!plan.accepted) {
-    LOG(log_er_) << "No (or not enough) reward votes found for block " << pbft_block->getBlockHash()
-                 << ", period: " << pbft_block->getPeriod() << ", prev. block hash: " << pbft_block->getPrevBlockHash()
+    LOG(log_er_) << "No (or not enough) reward votes found for block " << block_hash << ", period: " << block_period
+                 << ", prev. block hash: " << prev_block_hash
                  << ", reward_votes_period: " << reward_votes_period << ", reward_votes_round_: " << reward_votes_round
                  << ", selected_round: " << plan.selected_round
                  << ", reward_votes_block_hash: " << reward_votes_block_hash

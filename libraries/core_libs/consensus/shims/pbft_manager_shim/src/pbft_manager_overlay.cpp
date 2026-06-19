@@ -4123,6 +4123,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   const auto block_prev_hash = popped_period_data.prev_block_hash;
   const auto anchor_hash = popped_period_data.pivot_hash;
   const auto final_chain_hash = popped_period_data.final_chain_hash;
+  auto reward_vote_hashes = std::move(popped_period_data.reward_vote_hashes);
   const auto dag_transaction_hashes = std::move(popped_period_data.dag_transaction_hashes);
   const auto period_data_transaction_hashes = std::move(popped_period_data.period_data_transaction_hashes);
   auto period_data_transaction_identities = std::move(popped_period_data.period_data_transaction_identities);
@@ -4333,7 +4334,8 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
     }
 
     if (validation_plan.next_check == kPbftManagerBlockValidationCheckRewardVotes) {
-      reward_votes = vote_mgr_->checkRewardVotes(period_data.pbft_blk, true);
+      reward_votes =
+          vote_mgr_->checkRewardVotes(block_period, pbft_block_hash, block_prev_hash, reward_vote_hashes, true);
       validation_plan = block_validation_session->pbft_manager_block_validation_session_report(
           reward_votes->first ? kPbftManagerBlockValidationFactValid : kPbftManagerBlockValidationFactInvalid, false);
       continue;
