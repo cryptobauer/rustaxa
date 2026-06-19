@@ -643,6 +643,14 @@ planning, PBFT-chain head advancement plans, storage/write intents, cross-pipeli
 contracts. Logging is explicitly not a boundary; it can stay temporarily in the C++ executor as reporting derived from
 Rust statuses and telemetry.
 
+Current status: PBFT manager ownership is complete for this protocol-runtime boundary. Rust owns the manager scalar
+runtime, daemon-tick and state-action cursors, transition persistence, broadcast planning, sync-period admission,
+queue-backed compact facts and canonical transaction/cert-vote payload sources, proposal ranking, finalization planning,
+dynamic-lambda decisions, and bounded restart/duplicate classification. Remaining `PbftBlock`, `PbftVote`,
+`PeriodData`, `DagBlock`, `Transaction`, pillar sidecar, network, timer, FinalChain/EVM, and public API materialization
+is executor or compatibility work under the boundaries above, not authoritative PBFT manager decision state. Detailed
+status is tracked in `doc/consensus_rewrite_tracker.md`.
+
 ### Current Consensus Shape
 
 The C++ consensus area includes:
