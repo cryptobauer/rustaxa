@@ -164,10 +164,50 @@ impl<D: DbReader + DbWriter> TransactionRepository<D> {
             .put(Column::Transactions, trx_hash.as_bytes(), trx_rlp)
     }
 
+    /// Appends a pending transaction payload write to a caller-owned storage batch.
+    ///
+    /// Inputs:
+    /// - `batch`: Rust storage write batch that owns the eventual atomic commit.
+    /// - `trx_hash`: canonical transaction hash used as the pending transaction key.
+    /// - `trx_rlp`: canonical transaction RLP payload stored without decoding.
+    ///
+    /// Outputs:
+    /// - Appends a put in `transactions`.
+    ///
+    /// Invariants and edge behavior:
+    /// - Existing pending payloads for the same hash are overwritten, matching
+    ///   legacy RocksDB put semantics.
+    pub fn write_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        trx_hash: H256,
+        trx_rlp: &[u8],
+    ) -> Result<()> {
+        self.db
+            .batch_put(batch, Column::Transactions, trx_hash.as_bytes(), trx_rlp)
+    }
+
     /// Removes a pending transaction payload by hash.
     /// C++ mapping: `DbStorage::removeTransactionToBatch(trx_hash_t const&, Batch&)`.
     pub fn remove(&self, trx_hash: H256) -> Result<()> {
         self.db.delete(Column::Transactions, trx_hash.as_bytes())
+    }
+
+    /// Appends pending transaction payload removal to a caller-owned storage batch.
+    ///
+    /// Inputs:
+    /// - `batch`: Rust storage write batch that owns the eventual atomic commit.
+    /// - `trx_hash`: canonical transaction hash used as the pending transaction key.
+    ///
+    /// Outputs:
+    /// - Appends a delete in `transactions`.
+    ///
+    /// Invariants and edge behavior:
+    /// - Missing keys are RocksDB delete no-ops, matching legacy storage
+    ///   behavior.
+    pub fn remove_in_batch(&self, batch: &mut D::Batch, trx_hash: H256) -> Result<()> {
+        self.db
+            .batch_delete(batch, Column::Transactions, trx_hash.as_bytes())
     }
 
     /// Stores finalized transaction location metadata (period, position, optional
@@ -194,11 +234,73 @@ impl<D: DbReader + DbWriter> TransactionRepository<D> {
         )
     }
 
+    /// Appends finalized transaction location metadata to a caller-owned batch.
+    ///
+    /// Inputs:
+    /// - `batch`: Rust storage write batch that owns the eventual atomic commit.
+    /// - `trx_hash`: canonical transaction hash used as the location key.
+    /// - `period`: finalized PBFT period containing the transaction.
+    /// - `position`: transaction position inside the finalized period payload.
+    /// - `is_system`: when true, appends the legacy third RLP item that marks a
+    ///   system transaction.
+    ///
+    /// Outputs:
+    /// - Appends a put in `trx_period`.
+    ///
+    /// Invariants and edge behavior:
+    /// - The value is encoded as legacy RLP `[period, position]` or
+    ///   `[period, position, true]`, matching C++ `TransactionLocation`.
+    pub fn write_location_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        trx_hash: H256,
+        period: u64,
+        position: u32,
+        is_system: bool,
+    ) -> Result<()> {
+        let mut stream = rlp::RlpStream::new_list(2 + usize::from(is_system));
+        stream.append(&period);
+        stream.append(&position);
+        if is_system {
+            stream.append(&is_system);
+        }
+
+        self.db.batch_put(
+            batch,
+            Column::TrxPeriod,
+            trx_hash.as_bytes(),
+            stream.out().as_ref(),
+        )
+    }
+
     /// Stores a system transaction payload by hash.
     /// C++ mapping: `DbStorage::addSystemTransactionToBatch(Batch&, SharedTransaction)`.
     pub fn write_system(&self, trx_hash: H256, trx_rlp: &[u8]) -> Result<()> {
         self.db
             .put(Column::SystemTransaction, trx_hash.as_bytes(), trx_rlp)
+    }
+
+    /// Appends a system transaction payload write to a caller-owned storage batch.
+    ///
+    /// Inputs:
+    /// - `batch`: Rust storage write batch that owns the eventual atomic commit.
+    /// - `trx_hash`: canonical system transaction hash.
+    /// - `trx_rlp`: canonical system transaction RLP payload stored without decoding.
+    ///
+    /// Outputs:
+    /// - Appends a put in `system_transaction`.
+    pub fn write_system_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        trx_hash: H256,
+        trx_rlp: &[u8],
+    ) -> Result<()> {
+        self.db.batch_put(
+            batch,
+            Column::SystemTransaction,
+            trx_hash.as_bytes(),
+            trx_rlp,
+        )
     }
 
     /// Stores serialized system transaction hash list for a finalized period.
@@ -210,17 +312,49 @@ impl<D: DbReader + DbWriter> TransactionRepository<D> {
             hashes_rlp,
         )
     }
+
+    /// Appends serialized system transaction hash list to a caller-owned batch.
+    ///
+    /// Inputs:
+    /// - `batch`: Rust storage write batch that owns the eventual atomic commit.
+    /// - `period`: finalized PBFT period used as the hash-list key.
+    /// - `hashes_rlp`: legacy RLP list of system transaction hashes.
+    ///
+    /// Outputs:
+    /// - Appends a put in `period_system_transactions`.
+    ///
+    /// Invariants and edge behavior:
+    /// - The hash list remains opaque bytes at this boundary because C++ still
+    ///   materializes the system transaction objects.
+    pub fn write_period_system_hashes_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        period: u64,
+        hashes_rlp: &[u8],
+    ) -> Result<()> {
+        self.db.batch_put(
+            batch,
+            Column::PeriodSystemTransactions,
+            &period.to_le_bytes(),
+            hashes_rlp,
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::DbIterator;
+    use crate::db::{DbIterator, DbWriter};
     use std::collections::{BTreeMap, HashMap};
     use std::sync::RwLock;
 
     struct MockTransactionStore {
         data: RwLock<HashMap<String, BTreeMap<Vec<u8>, Vec<u8>>>>,
+    }
+
+    enum MockBatchOp {
+        Put(Column, Vec<u8>, Vec<u8>),
+        Delete(Column, Vec<u8>),
     }
 
     impl MockTransactionStore {
@@ -236,6 +370,13 @@ mod tests {
                 .entry(col.name().to_string())
                 .or_insert_with(BTreeMap::new);
             cf.insert(key.to_vec(), value.to_vec());
+        }
+
+        fn delete(&self, col: Column, key: &[u8]) {
+            let mut data = self.data.write().unwrap();
+            if let Some(cf) = data.get_mut(col.name()) {
+                cf.remove(key);
+            }
         }
     }
 
@@ -317,6 +458,50 @@ mod tests {
             } else {
                 Box::new(std::iter::empty())
             }
+        }
+    }
+
+    impl DbWriter for MockTransactionStore {
+        type Batch = Vec<MockBatchOp>;
+
+        fn create_batch(&self) -> Self::Batch {
+            Vec::new()
+        }
+
+        fn batch_put(
+            &self,
+            batch: &mut Self::Batch,
+            col: Column,
+            key: &[u8],
+            value: &[u8],
+        ) -> Result<()> {
+            batch.push(MockBatchOp::Put(col, key.to_vec(), value.to_vec()));
+            Ok(())
+        }
+
+        fn batch_delete(&self, batch: &mut Self::Batch, col: Column, key: &[u8]) -> Result<()> {
+            batch.push(MockBatchOp::Delete(col, key.to_vec()));
+            Ok(())
+        }
+
+        fn commit_batch(&self, batch: Self::Batch) -> Result<()> {
+            for op in batch {
+                match op {
+                    MockBatchOp::Put(col, key, value) => self.put(col, &key, &value),
+                    MockBatchOp::Delete(col, key) => self.delete(col, &key),
+                }
+            }
+            Ok(())
+        }
+
+        fn put(&self, col: Column, key: &[u8], value: &[u8]) -> Result<()> {
+            MockTransactionStore::put(self, col, key, value);
+            Ok(())
+        }
+
+        fn delete(&self, col: Column, key: &[u8]) -> Result<()> {
+            MockTransactionStore::delete(self, col, key);
+            Ok(())
         }
     }
 
@@ -497,5 +682,50 @@ mod tests {
             &hashes_rlp,
         );
         assert_eq!(repo.period_system_hashes_rlp(period).unwrap(), hashes_rlp);
+    }
+
+    #[test]
+    fn test_transaction_batch_writes_wait_for_commit() {
+        let db = Arc::new(MockTransactionStore::new());
+        let repo = TransactionRepository::new(db.clone());
+        let pending_hash = H256::from_low_u64_be(21);
+        let removed_hash = H256::from_low_u64_be(22);
+        let location_hash = H256::from_low_u64_be(23);
+        let system_hash = H256::from_low_u64_be(24);
+        let period = 43u64;
+        let system_hashes_rlp = vec![0xE1, 0x80];
+
+        db.put(Column::Transactions, removed_hash.as_bytes(), &[0xC1, 0xDD]);
+
+        let mut batch = DbWriter::create_batch(db.as_ref());
+        repo.write_in_batch(&mut batch, pending_hash, &[0xC1, 0xAA])
+            .unwrap();
+        repo.remove_in_batch(&mut batch, removed_hash).unwrap();
+        repo.write_location_in_batch(&mut batch, location_hash, period, 7, true)
+            .unwrap();
+        repo.write_system_in_batch(&mut batch, system_hash, &[0xC1, 0xBB])
+            .unwrap();
+        repo.write_period_system_hashes_in_batch(&mut batch, period, &system_hashes_rlp)
+            .unwrap();
+
+        assert_eq!(repo.rlp(pending_hash).unwrap(), None);
+        assert_eq!(repo.rlp(removed_hash).unwrap(), Some(vec![0xC1, 0xDD]));
+        assert_eq!(repo.location_rlp(location_hash).unwrap(), None);
+        assert_eq!(repo.system_rlp(system_hash).unwrap(), None);
+        assert!(repo.period_system_hashes_rlp(period).unwrap().is_empty());
+
+        DbWriter::commit_batch(db.as_ref(), batch).unwrap();
+
+        assert_eq!(repo.rlp(pending_hash).unwrap(), Some(vec![0xC1, 0xAA]));
+        assert_eq!(repo.rlp(removed_hash).unwrap(), None);
+        assert!(repo.finalized(location_hash).unwrap());
+        assert_eq!(
+            repo.system_rlp(system_hash).unwrap(),
+            Some(vec![0xC1, 0xBB])
+        );
+        assert_eq!(
+            repo.period_system_hashes_rlp(period).unwrap(),
+            system_hashes_rlp
+        );
     }
 }

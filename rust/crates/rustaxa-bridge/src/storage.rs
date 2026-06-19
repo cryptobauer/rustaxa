@@ -377,6 +377,77 @@ pub fn storage_shim_save_proposal_period_dag_level(
     )
 }
 
+/// Appends a typed finalized transaction-location write to a Rust-owned storage shim batch.
+pub fn storage_shim_save_transaction_location(
+    batch: &mut BridgeStorageBatch,
+    hash: &[u8; 32],
+    period: u64,
+    position: u32,
+    is_system: bool,
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage.transaction().write_location_in_batch(
+        storage_shim_batch_mut(batch)?,
+        H256::from(*hash),
+        period,
+        position,
+        is_system,
+    )
+}
+
+/// Appends a typed pending transaction payload write to a Rust-owned storage shim batch.
+pub fn storage_shim_save_transaction(
+    batch: &mut BridgeStorageBatch,
+    hash: &[u8; 32],
+    trx_rlp: Vec<u8>,
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage.transaction().write_in_batch(
+        storage_shim_batch_mut(batch)?,
+        H256::from(*hash),
+        &trx_rlp,
+    )
+}
+
+/// Appends a typed pending transaction payload removal to a Rust-owned storage shim batch.
+pub fn storage_shim_remove_transaction(
+    batch: &mut BridgeStorageBatch,
+    hash: &[u8; 32],
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage
+        .transaction()
+        .remove_in_batch(storage_shim_batch_mut(batch)?, H256::from(*hash))
+}
+
+/// Appends a typed system transaction payload write to a Rust-owned storage shim batch.
+pub fn storage_shim_save_system_transaction(
+    batch: &mut BridgeStorageBatch,
+    hash: &[u8; 32],
+    trx_rlp: Vec<u8>,
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage.transaction().write_system_in_batch(
+        storage_shim_batch_mut(batch)?,
+        H256::from(*hash),
+        &trx_rlp,
+    )
+}
+
+/// Appends typed period system-transaction hash-list bytes to a Rust-owned storage shim batch.
+pub fn storage_shim_save_period_system_transactions_hashes(
+    batch: &mut BridgeStorageBatch,
+    period: u64,
+    hashes_rlp: Vec<u8>,
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage.transaction().write_period_system_hashes_in_batch(
+        storage_shim_batch_mut(batch)?,
+        period,
+        &hashes_rlp,
+    )
+}
+
 /// Commits a Rust-owned storage shim batch and consumes it.
 ///
 /// Dropping a `BridgeStorageBatch` without calling this method discards staged

@@ -620,14 +620,8 @@ std::optional<pillar_chain::CurrentPillarBlockDataDb> DbStorage::getCurrentPilla
 
 void DbStorage::addTransactionLocationToBatch(Batch& write_batch, trx_hash_t const& trx_hash, PbftPeriod period,
                                               uint32_t position, bool is_system) {
-  dev::RLPStream s;
-  s.appendList(2 + is_system);
-  s << period;
-  s << position;
-  if (is_system) {
-    s << is_system;
-  }
-  insert(write_batch, Columns::trx_period, toSlice(trx_hash.asBytes()), toSlice(s.invalidate()));
+  auto h_arr = into_bytes_array(trx_hash);
+  rustaxa::storage_shim_save_transaction_location(getOrCreateRustBatch(write_batch), h_arr, period, position, is_system);
 }
 
 std::optional<TransactionLocation> DbStorage::getTransactionLocation(trx_hash_t const& hash) const {
@@ -747,7 +741,9 @@ SharedTransactions DbStorage::getFinalizedTransactions(std::vector<trx_hash_t> c
 }
 
 void DbStorage::addSystemTransactionToBatch(Batch& write_batch, SharedTransaction trx) {
-  insert(write_batch, Columns::system_transaction, toSlice(trx->getHash().asBytes()), toSlice(trx->rlp()));
+  auto h_arr = into_bytes_array(trx->getHash());
+  auto trx_rlp = into_rust_vec(trx->rlp());
+  rustaxa::storage_shim_save_system_transaction(getOrCreateRustBatch(write_batch), h_arr, std::move(trx_rlp));
 }
 
 std::shared_ptr<Transaction> DbStorage::getSystemTransaction(const trx_hash_t& hash) const {
@@ -766,7 +762,9 @@ void DbStorage::addPeriodSystemTransactions(Batch& write_batch, SharedTransactio
   std::transform(trxs.begin(), trxs.end(), std::back_inserter(trx_hashes),
                  [](const auto& trx) { return trx->getHash(); });
   auto hashes_rlp = util::rlp_enc(trx_hashes);
-  insert(write_batch, Columns::period_system_transactions, toSlice(period), toSlice(hashes_rlp));
+  auto hashes_rlp_vec = into_rust_vec(hashes_rlp);
+  rustaxa::storage_shim_save_period_system_transactions_hashes(getOrCreateRustBatch(write_batch), period,
+                                                              std::move(hashes_rlp_vec));
 }
 
 std::vector<trx_hash_t> DbStorage::getPeriodSystemTransactionsHashes(PbftPeriod period) const {
@@ -794,11 +792,14 @@ SharedTransactionReceipts DbStorage::getBlockReceipts(PbftPeriod period) const {
 }
 
 void DbStorage::addTransactionToBatch(Transaction const& trx, Batch& write_batch) {
-  insert(write_batch, Columns::transactions, toSlice(trx.getHash().asBytes()), toSlice(trx.rlp()));
+  auto h_arr = into_bytes_array(trx.getHash());
+  auto trx_rlp = into_rust_vec(trx.rlp());
+  rustaxa::storage_shim_save_transaction(getOrCreateRustBatch(write_batch), h_arr, std::move(trx_rlp));
 }
 
 void DbStorage::removeTransactionToBatch(trx_hash_t const& trx, Batch& write_batch) {
-  remove(write_batch, Columns::transactions, toSlice(trx));
+  auto h_arr = into_bytes_array(trx);
+  rustaxa::storage_shim_remove_transaction(getOrCreateRustBatch(write_batch), h_arr);
 }
 
 bool DbStorage::transactionInDb(trx_hash_t const& hash) {
