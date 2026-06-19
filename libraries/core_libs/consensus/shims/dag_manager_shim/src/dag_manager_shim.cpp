@@ -57,6 +57,15 @@ rust::Vec<rustaxa::DagHash> to_bridge_dag_hashes(const std::unordered_set<blk_ha
   return out;
 }
 
+rust::Vec<rustaxa::DagHash> clone_bridge_dag_hashes(const rust::Vec<rustaxa::DagHash> &hashes) {
+  rust::Vec<rustaxa::DagHash> out;
+  out.reserve(hashes.size());
+  for (const auto &hash : hashes) {
+    out.push_back(rustaxa::DagHash{hash.hash});
+  }
+  return out;
+}
+
 rust::Vec<rustaxa::DagTransactionHash> to_bridge_dag_transaction_hashes(const std::vector<trx_hash_t> &hashes) {
   rust::Vec<rustaxa::DagTransactionHash> out;
   out.reserve(hashes.size());
@@ -127,6 +136,28 @@ rustaxa::DagAddBlockRuntimeInput to_bridge_add_block_runtime_input(const std::sh
   return out;
 }
 
+rustaxa::DagAddBlockRuntimeInput to_bridge_add_block_runtime_input(const rustaxa::DagManagerBlock &block, bool save,
+                                                                   bool proposed) {
+  rustaxa::DagAddBlockRuntimeInput out;
+  out.save = save;
+  out.proposed = proposed;
+  out.block_hash = block.hash;
+  out.pivot = block.pivot;
+  out.tips = clone_bridge_dag_hashes(block.tips);
+  out.block_level = block.level;
+  return out;
+}
+
+rustaxa::DagManagerBlock clone_bridge_manager_block(const rustaxa::DagManagerBlock &block) {
+  rustaxa::DagManagerBlock out;
+  out.hash = block.hash;
+  out.pivot = block.pivot;
+  out.tips = clone_bridge_dag_hashes(block.tips);
+  out.level = block.level;
+  out.difficulty = block.difficulty;
+  return out;
+}
+
 rust::Vec<uint8_t> to_rust_vec(const dev::bytes &bytes) {
   rust::Vec<uint8_t> out;
   out.reserve(bytes.size());
@@ -160,6 +191,24 @@ std::vector<std::shared_ptr<Transaction>> from_bridge_dag_transaction_rlps(
     out.emplace_back(std::move(transaction));
   }
   return out;
+}
+
+SharedTransactions materialize_transactions(const vec_trx_t &transaction_hashes,
+                                            const std::vector<dev::bytes> &transaction_rlps) {
+  if (transaction_hashes.size() != transaction_rlps.size()) {
+    throw std::runtime_error("DagManager: DAG transaction payload lengths do not match");
+  }
+
+  SharedTransactions transactions;
+  transactions.reserve(transaction_rlps.size());
+  for (size_t idx = 0; idx < transaction_rlps.size(); ++idx) {
+    auto transaction = std::make_shared<Transaction>(transaction_rlps[idx]);
+    if (transaction->getHash() != transaction_hashes[idx]) {
+      throw std::runtime_error("DagManager: DAG transaction payload hash mismatch");
+    }
+    transactions.push_back(std::move(transaction));
+  }
+  return transactions;
 }
 
 std::vector<std::shared_ptr<DagBlock>> from_bridge_dag_sync_blocks(const rust::Vec<rustaxa::DagSyncBlockRlp> &blocks) {
@@ -356,6 +405,16 @@ bool DagManager::addBlockToRustGraphs(const std::shared_ptr<DagBlock> &blk) {
     return true;
   } catch (const std::exception &e) {
     std::cerr << "DagManager: failed to add block to Rust state mirror: " << e.what() << std::endl;
+    return false;
+  }
+}
+
+bool DagManager::addBlockToRustGraphs(const rustaxa::DagManagerBlock &blk) {
+  try {
+    rust_graphs_->runtime->dag_manager_runtime_add_block(clone_bridge_manager_block(blk));
+    return true;
+  } catch (const std::exception &e) {
+    std::cerr << "DagManager: failed to add block facts to Rust state mirror: " << e.what() << std::endl;
     return false;
   }
 }
@@ -575,6 +634,83 @@ std::pair<bool, std::vector<blk_hash_t>> DagManager::pivotAndTipsAvailable(const
 
   if (expected_level != blk->getLevel()) {
     return {false, missing_tips_or_pivot};
+  }
+
+  return {true, {}};
+}
+
+std::pair<bool, std::vector<blk_hash_t>> DagManager::addDagBlockRlp(rustaxa::DagProposerSignedBlockIntent signed_block,
+                                                                    const vec_trx_t &transaction_hashes,
+                                                                    std::vector<dev::bytes> &&transaction_rlps,
+                                                                    bool proposed, bool save) {
+  const auto block_rlp = from_rust_bytes(signed_block.block_rlp);
+  const auto block_facts = rustaxa::dag_manager_block_from_rlp(to_rust_vec(block_rlp));
+  if (signed_block.block_hash != block_facts.hash) {
+    throw std::runtime_error("DagManager: signed DAG block hash does not match Rust-decoded RLP facts");
+  }
+  const auto blk_hash = from_bridge_hash(block_facts.hash);
+  std::scoped_lock order_lock(rust_order_dag_blocks_mutex_);
+
+  rustaxa::DagAddBlockEffectPlan add_plan;
+  {
+    std::shared_lock lock(rust_graphs_mutex_);
+    add_plan = rust_graphs_->runtime->dag_manager_runtime_plan_add_block(
+        to_bridge_add_block_runtime_input(block_facts, save, proposed));
+  }
+  if (add_plan.duplicate) {
+    return {true, {}};
+  }
+  if (add_plan.expired) {
+    std::cerr << "DagManager: dropping old block " << blk_hash << ". Expiry level: " << getDagExpiryLevel()
+              << ". Block level: " << block_facts.level << std::endl;
+    return {false, {}};
+  }
+  if (!add_plan.accepted) {
+    return {false, from_bridge_dag_hashes(add_plan.missing_references)};
+  }
+
+  auto trxs = materialize_transactions(transaction_hashes, transaction_rlps);
+
+  if (add_plan.persist_transactions) {
+    trx_mgr_->saveTransactionsFromDagBlock(trxs);
+  }
+  if (add_plan.persist_block) {
+    std::shared_lock lock(rust_graphs_mutex_);
+    rust_graphs_->runtime->dag_manager_runtime_save_block(block_facts.hash, block_facts.level, block_facts.tips.size(),
+                                                          to_rust_vec(block_rlp));
+  }
+
+  if (add_plan.add_to_graph) {
+    bool added_to_rust_graph = false;
+    {
+      std::unique_lock lock(rust_graphs_mutex_);
+      added_to_rust_graph = addBlockToRustGraphs(block_facts);
+    }
+    if (!added_to_rust_graph) {
+      throw std::runtime_error("DagManager: failed to add persisted DAG block facts to Rust graph");
+    }
+  }
+
+  auto blk = std::make_shared<DagBlock>(block_rlp);
+  if (blk->getHash() != blk_hash) {
+    throw std::runtime_error("DagManager: Rust-decoded DAG block hash does not match materialized block");
+  }
+  seen_blocks_.insert(blk_hash, blk);
+
+  // TODO(rust-rewrite): remove this compatibility mirror once out-of-scope
+  // verify/sync accessors no longer depend on DagManagerOld in-memory DAG state.
+  // This call does not persist, validate, emit, or gossip.
+  if (add_plan.mirror_legacy_graph) {
+    DagManagerOld::addDagBlock(blk, {}, false, false);
+  }
+
+  if (add_plan.emit_verified) {
+    block_verified_.emit(blk);
+  }
+  if (add_plan.gossip) {
+    if (std::shared_ptr<Network> net = network_.lock()) {
+      net->gossipDagBlock(blk, add_plan.proposed, trxs);
+    }
   }
 
   return {true, {}};

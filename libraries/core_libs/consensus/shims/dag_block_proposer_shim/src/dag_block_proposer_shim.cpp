@@ -66,24 +66,6 @@ rust::Vec<uint8_t> to_rust_vec(const dev::bytes& bytes) {
   return out;
 }
 
-SharedTransactions materialize_transactions(const vec_trx_t& transaction_hashes,
-                                            const std::vector<dev::bytes>& transaction_rlps) {
-  if (transaction_hashes.size() != transaction_rlps.size()) {
-    throw std::runtime_error("Rust DAG proposer transaction payload lengths do not match");
-  }
-
-  SharedTransactions transactions;
-  transactions.reserve(transaction_rlps.size());
-  for (size_t idx = 0; idx < transaction_rlps.size(); ++idx) {
-    auto transaction = std::make_shared<Transaction>(transaction_rlps[idx]);
-    if (transaction->getHash() != transaction_hashes[idx]) {
-      throw std::runtime_error("Rust DAG proposer transaction payload hash mismatch");
-    }
-    transactions.push_back(std::move(transaction));
-  }
-  return transactions;
-}
-
 rustaxa::LegacySortitionParams to_legacy_sortition_params(const rustaxa::SortitionRuntimeParams& params) {
   rustaxa::LegacySortitionParams out;
   out.vrf_threshold_upper = params.threshold_upper;
@@ -334,18 +316,22 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   auto selected_transaction_hashes = from_bridge_dag_hashes(step.selected_transaction_hashes);
   std::vector<uint64_t> selected_gas_estimations(step.transaction_gas_estimations.begin(),
                                                  step.transaction_gas_estimations.end());
-  auto dag_block = createDagBlock(std::move(frontier), step.proposal_level, selected_transaction_hashes,
-                                  std::move(selected_gas_estimations), std::move(vdf),
-                                  node_dag_proposer_data->wallet.node_secret);
+  auto signed_block = createSignedDagBlockIntent(std::move(frontier), step.proposal_level, selected_transaction_hashes,
+                                                 std::move(selected_gas_estimations), std::move(vdf),
+                                                 node_dag_proposer_data->wallet.node_secret);
 
-  auto transactions = materialize_transactions(selected_transaction_hashes, transaction_payloads.transaction_rlps);
-  const auto add_result = dag_mgr_->addDagBlock(dag_block, std::move(transactions), true).first;
+  const auto proposed_block_hash = from_bridge_hash(signed_block.block_hash);
+  const auto proposed_transaction_count = selected_transaction_hashes.size();
+  const auto add_result =
+      dag_mgr_->addDagBlockRlp(std::move(signed_block), selected_transaction_hashes,
+                               std::move(transaction_payloads.transaction_rlps), true)
+          .first;
   if (add_result) {
-    LOG(log_nf_) << node_dag_proposer_data->wallet.node_addr << " proposed new DAG block " << dag_block->getHash()
-                 << ", pivot " << dag_block->getPivot() << ", txs num " << dag_block->getTrxs().size();
+    LOG(log_nf_) << node_dag_proposer_data->wallet.node_addr << " proposed new DAG block " << proposed_block_hash
+                 << ", pivot " << from_bridge_hash(step.frontier_pivot) << ", txs num " << proposed_transaction_count;
     proposed_blocks_count_ += 1;
   } else {
-    LOG(log_er_) << "Failed to add newly proposed dag block " << dag_block->getHash() << ", proposed by "
+    LOG(log_er_) << "Failed to add newly proposed dag block " << proposed_block_hash << ", proposed by "
                  << node_dag_proposer_data->wallet.node_addr << " into dag";
   }
 
@@ -435,10 +421,9 @@ vec_blk_t DagBlockProposer::selectDagBlockTips(const vec_blk_t& frontier_tips, u
   return from_bridge_dag_hashes(plan.selected_tips);
 }
 
-std::shared_ptr<DagBlock> DagBlockProposer::createDagBlock(DagFrontier&& frontier, level_t level,
-                                                           const vec_trx_t& trx_hashes,
-                                                           std::vector<uint64_t>&& estimations, VdfSortition&& vdf,
-                                                           const dev::Secret& node_secret) const {
+rustaxa::DagProposerSignedBlockIntent DagBlockProposer::createSignedDagBlockIntent(
+    DagFrontier&& frontier, level_t level, const vec_trx_t& trx_hashes, std::vector<uint64_t>&& estimations,
+    VdfSortition&& vdf, const dev::Secret& node_secret) const {
   rustaxa::DagProposerStorageBlockConstructionInput plan_input;
   plan_input.pbft_gas_limit = kPbftGasLimit;
   plan_input.dag_gas_limit = kDagGasLimit;
@@ -474,14 +459,7 @@ std::shared_ptr<DagBlock> DagBlockProposer::createDagBlock(DagFrontier&& frontie
   rustaxa::DagProposerSignedBlockIntentInput signed_input;
   signed_input.intent = std::move(intent);
   signed_input.signature = to_rust_vec(signature.asBytes());
-  const auto signed_block = rustaxa::dag_proposer_finalize_signed_block_intent(std::move(signed_input));
-
-  auto block = std::make_shared<DagBlock>(to_bytes(signed_block.block_rlp));
-  if (block->getHash() != from_bridge_hash(signed_block.block_hash)) {
-    throw std::runtime_error("Rust DAG proposer signed block RLP hash mismatch");
-  }
-
-  return block;
+  return rustaxa::dag_proposer_finalize_signed_block_intent(std::move(signed_input));
 }
 
 void DagBlockProposer::setNetwork(std::weak_ptr<Network> network) { network_ = std::move(network); }

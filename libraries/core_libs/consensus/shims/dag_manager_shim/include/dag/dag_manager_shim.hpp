@@ -43,6 +43,17 @@ class DagManager : public DagManagerOld {
   std::pair<bool, std::vector<blk_hash_t>> addDagBlock(const std::shared_ptr<DagBlock> &blk,
                                                        SharedTransactions &&trxs = {}, bool proposed = false,
                                                        bool save = true);
+  /**
+   * Adds a DAG block from Rust-produced canonical signed block RLP.
+   *
+   * Rust decodes compact manager facts from the canonical RLP and owns the add-block planning boundary. C++ only
+   * materializes temporary `DagBlock` and `Transaction` objects after acceptance when existing side-effect APIs still
+   * require them.
+   */
+  std::pair<bool, std::vector<blk_hash_t>> addDagBlockRlp(rustaxa::DagProposerSignedBlockIntent signed_block,
+                                                          const vec_trx_t &transaction_hashes,
+                                                          std::vector<dev::bytes> &&transaction_rlps,
+                                                          bool proposed = false, bool save = true);
   vec_blk_t getDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period);
   uint setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, vec_blk_t const &dag_order);
   /**
@@ -140,6 +151,7 @@ class DagManager : public DagManagerOld {
  private:
   void rebuildRustGraphsFromOld();
   bool addBlockToRustGraphs(const std::shared_ptr<DagBlock> &blk);
+  bool addBlockToRustGraphs(const rustaxa::DagManagerBlock &blk);
   std::pair<blk_hash_t, std::vector<blk_hash_t>> getRustFrontier() const;
 
   std::shared_ptr<TransactionManager> trx_mgr_;

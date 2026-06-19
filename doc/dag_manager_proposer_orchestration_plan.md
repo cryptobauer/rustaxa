@@ -95,6 +95,13 @@ Validation:
 Reduce C++ object materialization in DAG manager paths by routing decisions through canonical DAG block RLP, transaction
 hashes/RLPs, and compact facts.
 
+Landed:
+
+- Proposed DAG blocks can now cross the proposer-to-manager boundary as Rust-produced canonical signed block RLP plus
+  transaction hash/RLP payloads. Rust decodes compact manager facts from the signed RLP for add-block planning and graph
+  mutation; C++ materializes `DagBlock` and `Transaction` objects only inside the manager after acceptance for the
+  remaining cache, legacy mirror, event, and network compatibility surfaces.
+
 Scope:
 
 - Route DAG block verification/addition from canonical RLP plus Rust-inspected block and transaction facts.
@@ -135,11 +142,14 @@ Landed:
   an empty eligible transaction pack.
 - Production proposal block-intent planning now selects the wall-clock timestamp inside the Rust bridge before temporary
   C++ signing.
+- Proposed blocks now enter `DagManager` as signed block RLP plus transaction payloads; proposer-side `DagBlock` and
+  `Transaction` materialization was removed.
 
 Remaining:
 
-- The proposer path still uses temporary C++ signing and `DagBlock` materialization before Rust finalizes the signed
-  block RLP.
+- The proposer path still uses temporary C++ signing before Rust finalizes the signed block RLP.
+- `DagManager` still materializes accepted proposed blocks and transactions for compatibility cache, legacy mirror,
+  event emission, and network gossip.
 - The live network throttle check itself still runs in the temporary C++ executor shell until proposer worker/network
   lifecycle ownership moves.
 

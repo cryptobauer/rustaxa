@@ -122,15 +122,17 @@ class DagBlockProposer {
   };
 
   /**
-   * Creates a signed DAG block from already selected proposal data.
+   * Creates a signed DAG block intent from already selected proposal data.
    *
    * Inputs are the current frontier, computed level, Rust-selected transaction hashes and gas estimates, completed VDF
-   * sortition, and node signing secret. Rust plans the block gas estimate and selected tips, while the returned block
-   * still uses existing C++ `DagBlock` construction.
+   * sortition, and node signing secret. Rust plans the block gas estimate, selected tips, timestamp, canonical signing
+   * hash, and signed block RLP; C++ only supplies the temporary key-manager signature.
    */
-  std::shared_ptr<DagBlock> createDagBlock(DagFrontier&& frontier, level_t level, const vec_trx_t& trx_hashes,
-                                           std::vector<uint64_t>&& estimations, vdf_sortition::VdfSortition&& vdf,
-                                           const dev::Secret& node_secret) const;
+  rustaxa::DagProposerSignedBlockIntent createSignedDagBlockIntent(DagFrontier&& frontier, level_t level,
+                                                                   const vec_trx_t& trx_hashes,
+                                                                   std::vector<uint64_t>&& estimations,
+                                                                   vdf_sortition::VdfSortition&& vdf,
+                                                                   const dev::Secret& node_secret) const;
 
   /**
    * Returns transactions, hashes, and gas estimates for the configured proposer shard.

@@ -2094,6 +2094,35 @@ fn encode_dag_block_rlp(block: &DagBlock) -> Vec<u8> {
     stream.out().to_vec()
 }
 
+/// Decodes canonical signed DAG block RLP into compact manager graph facts.
+///
+/// Input:
+/// - `block_rlp`: canonical eight-field signed DAG block RLP.
+///
+/// Output:
+/// - `DagManagerBlock` containing the legacy signed block hash, pivot, tips,
+///   level, and embedded VDF difficulty used by the DAG manager runtime.
+///
+/// Behavior:
+/// - hashes the exact signed RLP bytes with legacy Keccak-256 semantics
+/// - decodes pivot/tips/level through the shared typed DAG RLP codec
+/// - decodes the VDF sortition payload only far enough to recover difficulty
+/// - returns an error for malformed block or VDF payload bytes instead of
+///   falling back to C++ parsing
+pub fn dag_manager_block_from_rlp(block_rlp: &[u8]) -> Result<DagManagerBlock> {
+    let block = DagBlock::try_from(DagBlockRlp::new(block_rlp))
+        .context("decode canonical DAG block RLP for manager facts")?;
+    let vdf_payload = decode_vdf_sortition_payload(&block.vdf)
+        .context("decode DAG VDF payload for manager facts")?;
+    Ok(DagManagerBlock {
+        hash: keccak256(block_rlp),
+        pivot: block.pivot,
+        tips: block.tips,
+        level: block.level,
+        difficulty: u32::from(vdf_payload.difficulty),
+    })
+}
+
 fn keccak256(data: &[u8]) -> H256 {
     let mut out = [0u8; 32];
     let mut hasher = Keccak::v256();
@@ -5435,6 +5464,20 @@ mod tests {
         assert_eq!(block.signing_hash(), intent.signing_hash);
         assert_eq!(signed.block_hash, keccak256(&signed.block_rlp));
         assert!(block.recover_sender().is_some());
+    }
+
+    #[test]
+    fn dag_manager_block_from_rlp_decodes_compact_graph_facts() {
+        let block_rlp =
+            dag_block_rlp_with_vdf(vdf_payload_rlp(3, vec![1, 2], vec![3, 4]), &[h(99)]);
+
+        let facts = dag_manager_block_from_rlp(&block_rlp).expect("manager facts");
+
+        assert_eq!(facts.hash, keccak256(&block_rlp));
+        assert_eq!(facts.pivot, h(1));
+        assert_eq!(facts.level, 7);
+        assert_eq!(facts.tips.len(), 0);
+        assert_eq!(facts.difficulty, 3);
     }
 
     #[test]

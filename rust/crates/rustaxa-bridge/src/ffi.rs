@@ -4659,6 +4659,7 @@ pub mod rustaxa_ffi {
         pub fn dag_proposer_finalize_signed_block_intent(
             input: DagProposerSignedBlockIntentInput,
         ) -> Result<DagProposerSignedBlockIntent>;
+        pub fn dag_manager_block_from_rlp(block_rlp: Vec<u8>) -> Result<DagManagerBlock>;
         pub fn dag_plan_add_block_effects(input: DagAddBlockEffectInput) -> DagAddBlockEffectPlan;
         pub fn dag_verify_authorization(
             input: DagVerifyAuthorizationInput,

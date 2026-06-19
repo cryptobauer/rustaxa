@@ -37,15 +37,15 @@ use rustaxa_consensus::dag::collect_finalization_cleanup_from_storage;
 use rustaxa_consensus::dag::{
     apply_finalization_cleanup_from_storage, collect_expired_transaction_cleanup_from_storage,
     collect_non_finalized_sync_payload_from_storage, construct_dag_vdf_message,
-    dag_block_exists_in_storage, dag_persistence_counters_from_storage,
-    decide_dag_verify_vdf_dpos_authorization, derive_frontier, ensure_proposal_period_mapping,
-    finalize_dag_proposer_signed_block_intent, load_dag_block_from_storage,
-    period_block_hash_from_storage, plan_dag_add_block_effects, plan_dag_proposer_attempt,
-    plan_dag_proposer_block_construction_from_storage, plan_dag_proposer_block_intent,
-    plan_dag_proposer_post_pack, plan_dag_proposer_retry_reset, plan_dag_proposer_stale_proof,
-    plan_dag_proposer_tip_selection_from_storage, plan_dag_proposer_vdf_wait,
-    plan_dag_verify_transaction_query, plan_expired_transaction_cleanup,
-    plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
+    dag_block_exists_in_storage, dag_manager_block_from_rlp as domain_dag_manager_block_from_rlp,
+    dag_persistence_counters_from_storage, decide_dag_verify_vdf_dpos_authorization,
+    derive_frontier, ensure_proposal_period_mapping, finalize_dag_proposer_signed_block_intent,
+    load_dag_block_from_storage, period_block_hash_from_storage, plan_dag_add_block_effects,
+    plan_dag_proposer_attempt, plan_dag_proposer_block_construction_from_storage,
+    plan_dag_proposer_block_intent, plan_dag_proposer_post_pack, plan_dag_proposer_retry_reset,
+    plan_dag_proposer_stale_proof, plan_dag_proposer_tip_selection_from_storage,
+    plan_dag_proposer_vdf_wait, plan_dag_verify_transaction_query,
+    plan_expired_transaction_cleanup, plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
     proposal_period_for_level_from_storage, save_dag_block_to_storage,
     validate_dag_verify_authorization, validate_dag_verify_gas,
     validate_dag_verify_transaction_availability, validate_pivot_tips_metadata,
@@ -1995,6 +1995,17 @@ pub fn dag_proposer_finalize_signed_block_intent(
     Ok(DagProposerSignedBlockIntent {
         block_rlp: signed.block_rlp,
         block_hash: signed.block_hash.0,
+    })
+}
+
+pub fn dag_manager_block_from_rlp(block_rlp: Vec<u8>) -> Result<DagManagerBlock> {
+    let block = domain_dag_manager_block_from_rlp(&block_rlp)?;
+    Ok(DagManagerBlock {
+        hash: block.hash.into(),
+        pivot: block.pivot.into(),
+        tips: to_dag_hashes(block.tips),
+        level: block.level,
+        difficulty: block.difficulty,
     })
 }
 
@@ -4505,6 +4516,28 @@ mod tests {
         assert!(unsigned.timestamp >= before);
         assert!(unsigned.timestamp <= after);
         assert_ne!(unsigned.signing_hash, [0; 32]);
+    }
+
+    #[test]
+    fn dag_manager_block_from_rlp_bridge_decodes_hash_level_tips_and_difficulty() {
+        let mut vdf_payload = RlpStream::new_list(4);
+        vdf_payload.append(&vec![0x11u8; 80]);
+        vdf_payload.append(&vec![0x22u8]);
+        vdf_payload.append(&vec![0x33u8]);
+        vdf_payload.append(&7u16);
+        let block_rlp = dag_block_with_level_and_transaction_hashes(
+            9,
+            vdf_payload.out().to_vec(),
+            &[DagTransactionHash { hash: [0x44; 32] }],
+        );
+
+        let facts = dag_manager_block_from_rlp(block_rlp).expect("manager facts");
+
+        assert_ne!(facts.hash, [0; 32]);
+        assert_eq!(facts.pivot, [0u8; 32]);
+        assert_eq!(facts.level, 9);
+        assert_eq!(facts.tips.len(), 0);
+        assert_eq!(facts.difficulty, 7);
     }
 
     #[test]
