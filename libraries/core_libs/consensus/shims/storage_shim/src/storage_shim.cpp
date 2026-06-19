@@ -68,17 +68,7 @@ DbStorage::DbStorage(fs::path const& path, uint32_t db_snapshot_each_n_pbft_bloc
 
 Batch DbStorage::createWriteBatch() { return Batch(); }
 
-DbStorage::~DbStorage() {
-  std::unordered_map<Batch*, uint64_t> batches_to_drop;
-  {
-    std::lock_guard<std::mutex> lock(rust_batches_mutex_);
-    batches_to_drop.swap(rust_batches_);
-  }
-
-  for (const auto& [_, batch_id] : batches_to_drop) {
-    rust_storage_.value()->compat_drop_write_batch(batch_id);
-  }
-}
+DbStorage::~DbStorage() = default;
 
 rust::Vec<uint8_t> DbStorage::sliceToRustVec(const Slice& slice) {
   rust::Vec<uint8_t> vec;
@@ -90,31 +80,31 @@ rust::Vec<uint8_t> DbStorage::sliceToRustVec(const Slice& slice) {
   return vec;
 }
 
-uint64_t DbStorage::getOrCreateRustBatch(Batch& batch) {
+rustaxa::BridgeStorageBatch& DbStorage::getOrCreateRustBatch(Batch& batch) {
   std::lock_guard<std::mutex> lock(rust_batches_mutex_);
   auto it = rust_batches_.find(&batch);
   if (it != rust_batches_.end()) {
-    return it->second;
+    return *it->second;
   }
 
-  auto batch_id = rust_storage_.value()->compat_create_write_batch();
-  rust_batches_[&batch] = batch_id;
-  return batch_id;
+  auto rust_batch = rustaxa::create_storage_shim_batch(*rust_storage_.value());
+  auto [inserted_it, _] = rust_batches_.emplace(&batch, std::move(rust_batch));
+  return *inserted_it->second;
 }
 
 void DbStorage::commitWriteBatch(Batch& write_batch, const rocksdb::WriteOptions& opts) {
-  std::optional<uint64_t> batch_id;
+  std::optional<::rust::Box<rustaxa::BridgeStorageBatch>> rust_batch;
   {
     std::lock_guard<std::mutex> lock(rust_batches_mutex_);
     auto it = rust_batches_.find(&write_batch);
     if (it != rust_batches_.end()) {
-      batch_id = it->second;
+      rust_batch = std::move(it->second);
       rust_batches_.erase(it);
     }
   }
 
-  if (batch_id.has_value()) {
-    rust_storage_.value()->compat_commit_write_batch(*batch_id, opts.sync);
+  if (rust_batch.has_value()) {
+    rustaxa::storage_shim_commit_batch(std::move(*rust_batch), opts.sync);
   } else if (write_batch.Count() != 0) {
     throw DbException("commitWriteBatch called with unsupported non-rust batch content");
   }

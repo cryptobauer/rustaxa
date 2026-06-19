@@ -1,5 +1,6 @@
 use crate::ffi::rustaxa_ffi;
 use crate::ffi::BridgeStorage;
+use crate::ffi::BridgeStorageBatch;
 use anyhow::Context;
 use ethereum_types::H256;
 use rlp::Rlp;
@@ -17,11 +18,8 @@ use rustaxa_consensus::{
 use rustaxa_storage::Config;
 use rustaxa_storage::Storage;
 use rustaxa_types::pillar::RawPillarBlockData;
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::sync::Mutex;
 
 const PILLAR_VOTES_POS_IN_PERIOD_DATA: usize = 4;
 
@@ -83,11 +81,77 @@ pub fn create_storage(path: &str) -> Result<Box<BridgeStorage>, anyhow::Error> {
     let path_buf = PathBuf::from(path);
     let config = Config::new(path_buf);
     let storage = Arc::new(Storage::new(config)?);
-    Ok(Box::new(BridgeStorage(
-        storage,
-        Mutex::new(HashMap::new()),
-        AtomicU64::new(1),
-    )))
+    Ok(Box::new(BridgeStorage(storage)))
+}
+
+/// Creates a Rust-owned storage batch for the C++ `DbStorage` shim.
+///
+/// The returned object owns a native `rustaxa-storage` write batch and the shared
+/// storage handle needed to append and commit it. This replaces the previous
+/// bridge-global integer batch registry while the public C++ `Batch&` surface is
+/// still being retired.
+pub fn create_storage_shim_batch(storage: &BridgeStorage) -> Box<BridgeStorageBatch> {
+    Box::new(BridgeStorageBatch {
+        storage: storage.0.clone(),
+        batch: Some(storage.0.create_write_batch()),
+    })
+}
+
+fn storage_shim_batch_mut(
+    batch: &mut BridgeStorageBatch,
+) -> Result<&mut rustaxa_storage::StorageWriteBatch, anyhow::Error> {
+    batch
+        .batch
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("storage shim batch already committed"))
+}
+
+/// Appends one raw legacy column put to a Rust-owned storage shim batch.
+///
+/// This is a storage-shim compatibility API, not a production consensus storage
+/// API. Migrated Rust runtimes should use typed storage repositories or
+/// operation-specific apply functions that own their full atomic write group.
+pub fn storage_shim_batch_put(
+    batch: &mut BridgeStorageBatch,
+    column: u8,
+    key: Vec<u8>,
+    value: Vec<u8>,
+) -> Result<(), anyhow::Error> {
+    let column = rustaxa_storage::Column::from_index(column)?;
+    let storage = batch.storage.clone();
+    storage.batch_put_raw(storage_shim_batch_mut(batch)?, column, &key, &value)
+}
+
+/// Appends one raw legacy column delete to a Rust-owned storage shim batch.
+///
+/// This exists only for the C++ `DbStorage` compatibility shim while remaining
+/// public callers are moved to typed Rust storage paths.
+pub fn storage_shim_batch_delete(
+    batch: &mut BridgeStorageBatch,
+    column: u8,
+    key: Vec<u8>,
+) -> Result<(), anyhow::Error> {
+    let column = rustaxa_storage::Column::from_index(column)?;
+    let storage = batch.storage.clone();
+    storage.batch_delete_raw(storage_shim_batch_mut(batch)?, column, &key)
+}
+
+/// Commits a Rust-owned storage shim batch and consumes it.
+///
+/// Dropping a `BridgeStorageBatch` without calling this method discards staged
+/// writes, matching legacy dropped-batch behavior without a bridge-side batch
+/// registry.
+pub fn storage_shim_commit_batch(
+    mut batch: Box<BridgeStorageBatch>,
+    sync: bool,
+) -> Result<(), anyhow::Error> {
+    let storage_batch = batch
+        .batch
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("storage shim batch already committed"))?;
+    batch
+        .storage
+        .commit_write_batch_with_sync(storage_batch, sync)
 }
 
 /// Batch-loads transaction RLP payloads by hash using Rust storage semantics shared by consensus bridges.
@@ -200,96 +264,6 @@ impl BridgeStorage {
             pillar_votes_bundle_rlp: votes.as_raw().to_vec(),
         }
         .encode_rlp()
-    }
-
-    /// Creates a compatibility write batch for legacy C++ storage-shim and conformance callers.
-    ///
-    /// This is not a production consensus storage API. Migrated consensus
-    /// writers should use typed Rust storage runtimes or operation-specific
-    /// apply functions that own their full atomic write group.
-    pub fn compat_create_write_batch(&self) -> Result<u64, anyhow::Error> {
-        let batch_id = self.2.fetch_add(1, Ordering::Relaxed);
-        let mut batches = self
-            .1
-            .lock()
-            .map_err(|_| anyhow::anyhow!("batch registry lock poisoned"))?;
-        batches.insert(batch_id, self.0.create_write_batch());
-        Ok(batch_id)
-    }
-
-    /// Appends one raw put to a compatibility write batch.
-    ///
-    /// The caller must be an explicit storage-shim, test, or conformance
-    /// compatibility route. New Rust-mode production storage writes should not
-    /// depend on raw column appenders.
-    pub fn compat_batch_put(
-        &self,
-        batch_id: u64,
-        column: u8,
-        key: Vec<u8>,
-        value: Vec<u8>,
-    ) -> Result<(), anyhow::Error> {
-        let column = rustaxa_storage::Column::from_index(column)?;
-        let mut batches = self
-            .1
-            .lock()
-            .map_err(|_| anyhow::anyhow!("batch registry lock poisoned"))?;
-        let batch = batches
-            .get_mut(&batch_id)
-            .ok_or_else(|| anyhow::anyhow!("unknown batch id: {}", batch_id))?;
-        self.0.batch_put_raw(batch, column, &key, &value)
-    }
-
-    /// Appends one raw delete to a compatibility write batch.
-    ///
-    /// This exists only for the legacy C++ storage-shim/conformance bridge
-    /// while typed Rust storage apply functions replace generic batch staging.
-    pub fn compat_batch_delete(
-        &self,
-        batch_id: u64,
-        column: u8,
-        key: Vec<u8>,
-    ) -> Result<(), anyhow::Error> {
-        let column = rustaxa_storage::Column::from_index(column)?;
-        let mut batches = self
-            .1
-            .lock()
-            .map_err(|_| anyhow::anyhow!("batch registry lock poisoned"))?;
-        let batch = batches
-            .get_mut(&batch_id)
-            .ok_or_else(|| anyhow::anyhow!("unknown batch id: {}", batch_id))?;
-        self.0.batch_delete_raw(batch, column, &key)
-    }
-
-    /// Commits a compatibility write batch.
-    ///
-    /// This preserves temporary C++ storage-shim and validation behavior until
-    /// those fixtures move to direct Rust storage helpers.
-    pub fn compat_commit_write_batch(
-        &self,
-        batch_id: u64,
-        sync: bool,
-    ) -> Result<(), anyhow::Error> {
-        let batch = {
-            let mut batches = self
-                .1
-                .lock()
-                .map_err(|_| anyhow::anyhow!("batch registry lock poisoned"))?;
-            batches
-                .remove(&batch_id)
-                .ok_or_else(|| anyhow::anyhow!("unknown batch id: {}", batch_id))?
-        };
-        self.0.commit_write_batch_with_sync(batch, sync)
-    }
-
-    /// Drops a compatibility write batch without committing it.
-    pub fn compat_drop_write_batch(&self, batch_id: u64) -> Result<(), anyhow::Error> {
-        let mut batches = self
-            .1
-            .lock()
-            .map_err(|_| anyhow::anyhow!("batch registry lock poisoned"))?;
-        batches.remove(&batch_id);
-        Ok(())
     }
 
     pub fn dag_block_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {

@@ -45,17 +45,23 @@ use rustaxa_consensus::PillarVotes;
 use rustaxa_consensus::RewardsStatsRuntime;
 use rustaxa_storage::Storage;
 use rustaxa_storage::StorageWriteBatch;
-use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
 
-pub struct BridgeStorage(
-    pub Arc<Storage>,
-    pub Mutex<HashMap<u64, StorageWriteBatch>>,
-    pub AtomicU64,
-);
+pub struct BridgeStorage(pub Arc<Storage>);
+
+/// Rust-owned storage shim batch used to preserve the legacy C++ `Batch&` API
+/// while keeping the live write batch inside `rustaxa-storage`.
+///
+/// C++ shims may stage raw legacy column writes through this object only while
+/// public `DbStorage` compatibility methods are being retired. The batch is
+/// consumed on commit and silently dropped when the C++ compatibility batch is
+/// abandoned.
+pub struct BridgeStorageBatch {
+    pub storage: Arc<Storage>,
+    pub batch: Option<StorageWriteBatch>,
+}
 
 pub struct BridgeFinalChain(pub FinalChain);
 
@@ -6097,29 +6103,23 @@ pub mod rustaxa_ffi {
         // Storage
 
         type BridgeStorage;
+        type BridgeStorageBatch;
 
         pub fn create_storage(path: &str) -> Result<Box<BridgeStorage>>;
         pub fn get_pillar_block_data_rlp(self: &BridgeStorage, period: u64) -> Result<Vec<u8>>;
-        pub fn compat_create_write_batch(self: &BridgeStorage) -> Result<u64>;
-        pub fn compat_batch_put(
-            self: &BridgeStorage,
-            batch_id: u64,
+        pub fn create_storage_shim_batch(storage: &BridgeStorage) -> Box<BridgeStorageBatch>;
+        pub fn storage_shim_batch_put(
+            batch: &mut BridgeStorageBatch,
             column: u8,
             key: Vec<u8>,
             value: Vec<u8>,
         ) -> Result<()>;
-        pub fn compat_batch_delete(
-            self: &BridgeStorage,
-            batch_id: u64,
+        pub fn storage_shim_batch_delete(
+            batch: &mut BridgeStorageBatch,
             column: u8,
             key: Vec<u8>,
         ) -> Result<()>;
-        pub fn compat_commit_write_batch(
-            self: &BridgeStorage,
-            batch_id: u64,
-            sync: bool,
-        ) -> Result<()>;
-        pub fn compat_drop_write_batch(self: &BridgeStorage, batch_id: u64) -> Result<()>;
+        pub fn storage_shim_commit_batch(batch: Box<BridgeStorageBatch>, sync: bool) -> Result<()>;
 
         pub fn dag_block_in_db(self: &BridgeStorage, hash: &[u8; 32]) -> Result<bool>;
         pub fn get_dag_block(self: &BridgeStorage, hash: &[u8; 32]) -> Result<Vec<u8>>;

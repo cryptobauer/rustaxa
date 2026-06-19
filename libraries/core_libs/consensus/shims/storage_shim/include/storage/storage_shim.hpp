@@ -49,16 +49,16 @@ class DbStorage : public DbStorageOld {
   void insert(Batch& batch, Column const& col, K const& k, V const& v) {
     auto const key = toSlice(k);
     auto const value = toSlice(v);
-    auto const batch_id = getOrCreateRustBatch(batch);
-    rust_storage_.value()->compat_batch_put(batch_id, static_cast<uint8_t>(col.ordinal_), sliceToRustVec(key),
-                                            sliceToRustVec(value));
+    auto& rust_batch = getOrCreateRustBatch(batch);
+    rustaxa::storage_shim_batch_put(rust_batch, static_cast<uint8_t>(col.ordinal_), sliceToRustVec(key),
+                                    sliceToRustVec(value));
   }
 
   template <typename K>
   void remove(Batch& batch, Column const& col, K const& k) {
     auto const key = toSlice(k);
-    auto const batch_id = getOrCreateRustBatch(batch);
-    rust_storage_.value()->compat_batch_delete(batch_id, static_cast<uint8_t>(col.ordinal_), sliceToRustVec(key));
+    auto& rust_batch = getOrCreateRustBatch(batch);
+    rustaxa::storage_shim_batch_delete(rust_batch, static_cast<uint8_t>(col.ordinal_), sliceToRustVec(key));
   }
 
   template <typename K>
@@ -249,7 +249,7 @@ class DbStorage : public DbStorageOld {
   }
 
  private:
-  uint64_t getOrCreateRustBatch(Batch& batch);
+  rustaxa::BridgeStorageBatch& getOrCreateRustBatch(Batch& batch);
   static rust::Vec<uint8_t> sliceToRustVec(const Slice& slice);
   std::string lookupFinalChainMeta(const Slice& key) const;
   std::string lookupFinalChainBlockByNumber(const Slice& key) const;
@@ -259,7 +259,7 @@ class DbStorage : public DbStorageOld {
   std::string lookupFinalChainReceiptByTrxHash(const Slice& key) const;
 
   std::optional<::rust::Box<rustaxa::BridgeStorage>> rust_storage_;
-  std::unordered_map<Batch*, uint64_t> rust_batches_;
+  std::unordered_map<Batch*, ::rust::Box<rustaxa::BridgeStorageBatch>> rust_batches_;
   std::mutex rust_batches_mutex_;
 };
 
