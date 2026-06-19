@@ -11,28 +11,35 @@ Move DAG manager and DAG proposer orchestration from C++ shim glue into Rust-own
 APIs. Network transport, EVM gas estimation, key signing, daemon/thread lifecycle, and public C++ object materialization
 remain explicit executor or compatibility boundaries until their owning rewrite tracks move.
 
-## Current Starting Point
+## Current State
 
-Already Rust-backed:
+Status: complete for this DAG manager/proposer orchestration boundary. Remaining C++ is limited to the executor and
+compatibility surfaces that this plan intentionally excluded.
 
 - `Dag` / `PivotTree` graph operations route through the Rust DAG domain.
 - `DagManager` has Rust-backed verification/finalization decisions for tip uniqueness, proposal-period availability,
   expiry, transaction availability planning, VDF/VRF facts, gas-policy decisions, finalized-order application,
   non-finalized sync selection, selected DAG block RLP loading, sync transaction RLP lookup, finalized counter writes,
   expired DAG block deletes, and expired non-finalized transaction deletes.
-- `DagBlockProposer` has a full Rust-mode overlay, Rust proposer-eligibility status decisions, legacy VRF input
-  construction, deterministic tip selection, and Rust `TransactionManager` pack-session integration.
+- `DagManager::addDagBlock` and `addDagBlockRlp` enter the Rust runtime for duplicate/expiry/reference planning,
+  persistence, graph mutation, event/gossip, and compatibility mirror effect selection.
+- Proposed DAG blocks cross from proposer to manager as Rust-produced signed block RLP plus transaction payload facts;
+  transaction persistence uses Rust-inspected canonical RLP payloads before any compatibility transaction
+  materialization.
+- `DagBlockProposer` has a full Rust-mode overlay, Rust proposer-eligibility status decisions, legacy VRF input bytes,
+  deterministic tip selection, Rust `TransactionManager` pack-session integration, Rust-owned proposer-session skip and
+  retry decisions, Rust-selected proposal timestamps, Rust block-intent/final signed-RLP construction, and signed-RLP
+  manager submission.
 
-Still C++ owned:
+Remaining C++ executor/compatibility boundaries:
 
-- broad `DagManager` orchestration and side-effect sequencing
-- live `DagBlock` / `Transaction` object materialization
-- live transaction-pool reads and gas-estimation execution
-- local cache cleanup and live transaction-manager sidecar effects
-- proposer thread/lifecycle behavior
-- VDF compute payload assembly
-- DAG block construction/signing
-- `DagManager::addDagBlock` wiring
+- live `DagBlock` / `Transaction` object materialization for public API, event, and network compatibility
+- live transaction-pool reads and EVM gas-estimation execution
+- FinalChain/DPoS fact collection for DAG verification
+- local cache cleanup, temporary legacy graph mirror updates, and live transaction-manager sidecar cleanup
+- proposer thread/lifecycle behavior and live network throttle checks
+- async VDF compute execution
+- temporary key-manager signing
 - network gossip/egress
 
 ## Target Boundary
@@ -54,7 +61,7 @@ Do not move these in this track unless explicitly rescheduled:
 Create a long-lived Rust `DagManagerRuntime` that owns compact DAG manager operation state and exposes ordered sessions
 for manager operations.
 
-Status: `in-progress`.
+Status: `complete` for this plan's target boundary.
 
 Landed:
 
@@ -64,6 +71,8 @@ Landed:
 - `DagManager::verifyBlock` now opens an ordered Rust runtime session. Rust owns precheck, transaction-query planning,
   transaction availability, VDF/DPoS reject ordering, gas reject ordering, and terminal status selection while C++
   reports live transaction, FinalChain authorization, VDF verifier, and EVM gas-estimation facts.
+- Finalized-order application, non-finalized sync selection, expiry cleanup, proposer frontier facts, proposal-attempt
+  planning, and block construction planning route through the same Rust runtime/storage boundary.
 
 Scope:
 
@@ -94,6 +103,8 @@ Validation:
 
 Reduce C++ object materialization in DAG manager paths by routing decisions through canonical DAG block RLP, transaction
 hashes/RLPs, and compact facts.
+
+Status: `complete` for this plan's target boundary.
 
 Landed:
 
@@ -130,6 +141,8 @@ Validation:
 ## Slice 3: DAG Proposer Policy Runtime
 
 Move proposer orchestration decisions into Rust while leaving signing, thread lifecycle, and network submission in C++.
+
+Status: `complete` for this plan's target boundary.
 
 Landed:
 
@@ -184,11 +197,15 @@ Validation:
 
 Delete or quarantine obsolete shim helpers after DAG manager/proposer sessions become authoritative.
 
+Status: `complete` for this plan's target boundary.
+
 Landed:
 
 - Removed obsolete standalone DAG proposer bridge DTOs and functions for post-pack, retry-reset, VDF-wait, and
   stale-proof planning. The ordered proposer session is now the bridge surface for those executor reports; the underlying
   Rust consensus planners remain crate-local implementation details used by that session.
+- Classified remaining DAG manager/proposer C++ surfaces as explicit executor or compatibility boundaries in this file,
+  `doc/consensus_rewrite_tracker.md`, and `PLAN.md`.
 
 Scope:
 
@@ -199,10 +216,10 @@ Scope:
 
 Acceptance:
 
-- DAG manager/proposer tracker rows no longer list broad orchestration as C++ owned.
-- Remaining gaps are concrete external boundaries: network, signing, EVM gas execution, daemon lifecycle, and public API
-  objects.
-- No stale bridge structs/functions, shim helpers, or roadmap text remain for replaced routes.
+- DAG manager/proposer tracker rows classify every remaining C++ surface as executor or compatibility work.
+- Remaining gaps are concrete external boundaries: network, signing, EVM gas execution, daemon lifecycle, temporary
+  mirror/cache cleanup, and public API/event/network objects.
+- No stale bridge structs/functions or roadmap text remain for replaced routes.
 
 Validation:
 
