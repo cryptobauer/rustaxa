@@ -376,15 +376,6 @@ rust::Vec<uint8_t> bytes(std::initializer_list<uint8_t> values) {
   return out;
 }
 
-rust::Vec<uint8_t> hashBytes(const std::array<uint8_t, 32>& hash) {
-  rust::Vec<uint8_t> out;
-  out.reserve(hash.size());
-  for (auto value : hash) {
-    out.push_back(value);
-  }
-  return out;
-}
-
 void expectNoFinalizationCleanup(const PbftFinalizationCleanupPlan& cleanup) {
   EXPECT_FALSE(cleanup.persist_pbft_block_metadata);
   EXPECT_FALSE(cleanup.reset_reward_votes);
@@ -1089,15 +1080,11 @@ TEST(RustPbftSyncTest, DynamicLambdaPlannerMatchesCactiAdjustmentPolicy) {
 }
 
 TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyWritesPrimaryBatch) {
-  constexpr uint8_t kDagBlocksColumn = 4;
-  constexpr uint8_t kTransactionsColumn = 6;
   const auto test_dir = uniqueTempDir("rustaxa_pbft_finalized_period_apply");
 
   auto storage = create_storage(test_dir.string());
-  auto seed_batch = storage->compat_create_write_batch();
-  storage->compat_batch_put(seed_batch, kDagBlocksColumn, hashBytes(h256(2)), bytes({0xda}));
-  storage->compat_batch_put(seed_batch, kTransactionsColumn, hashBytes(h256(4)), bytes({0xd0}));
-  storage->compat_commit_write_batch(seed_batch, false);
+  storage->save_dag_block(h256(2), 1, 0, bytes({0xda}));
+  storage->save_transaction(h256(4), bytes({0xd0}));
 
   const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
   const auto result = apply_pbft_finalization_storage_writes(
@@ -1184,15 +1171,11 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyWritesPrimaryBatch) {
 }
 
 TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyCommitsOwnedBatch) {
-  constexpr uint8_t kDagBlocksColumn = 4;
-  constexpr uint8_t kTransactionsColumn = 6;
   const auto test_dir = uniqueTempDir("rustaxa_pbft_finalized_period_owned_apply");
 
   auto storage = create_storage(test_dir.string());
-  auto seed_batch = storage->compat_create_write_batch();
-  storage->compat_batch_put(seed_batch, kDagBlocksColumn, hashBytes(h256(2)), bytes({0xda}));
-  storage->compat_batch_put(seed_batch, kTransactionsColumn, hashBytes(h256(4)), bytes({0xd0}));
-  storage->compat_commit_write_batch(seed_batch, false);
+  storage->save_dag_block(h256(2), 1, 0, bytes({0xda}));
+  storage->save_transaction(h256(4), bytes({0xd0}));
   storage->save_extra_reward_vote(h256(12), bytes({0xee}));
 
   const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());

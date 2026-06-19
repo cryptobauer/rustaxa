@@ -194,11 +194,14 @@ Landed sub-slices:
   `compat_create_write_batch`, `compat_batch_put`, `compat_batch_delete`, `compat_commit_write_batch`, and
   `compat_drop_write_batch`. The registry still exists for storage-shim, conformance, and fixture compatibility, but it
   is no longer exposed as a production-looking storage API.
+- PBFT finalization fixture seeding: `rust_consensus_tests` no longer seeds DAG/transaction rows through compatibility
+  bridge batches. The PBFT finalization storage apply tests now use typed storage helpers for the prerequisite DAG block
+  and transaction rows.
 
 Next target:
 
-- Move the remaining `rust_storage_tests`, `rust_consensus_tests`, storage-shim, and storage-conformance compatibility
-  setup off `compat_*` bridge batch ids, then delete the registry from `BridgeStorage`.
+- Move the remaining `rust_storage_tests`, storage-shim, and storage-conformance compatibility setup off `compat_*`
+  bridge batch ids, then delete the registry from `BridgeStorage`.
 
 Scope:
 
