@@ -1,6 +1,6 @@
 use crate::ffi::rustaxa_ffi::{
-    DagAddBlockEffectInput, DagAddBlockEffectPlan, DagBlockLookup, DagBlockTransactionRefs,
-    DagExpiredTransactionCleanupPayload, DagExpiredTransactionCleanupPlan,
+    DagAddBlockEffectInput, DagAddBlockEffectPlan, DagAddBlockRuntimeInput, DagBlockLookup,
+    DagBlockTransactionRefs, DagExpiredTransactionCleanupPayload, DagExpiredTransactionCleanupPlan,
     DagExpiredTransactionFact, DagFinalizedCounterUpdate, DagFrontier, DagHash, DagLevelHashes,
     DagManagerAnchors, DagManagerBlock, DagManagerFinalizationApplyPayload,
     DagManagerFinalizationCleanupPayload, DagManagerFinalizationPlan, DagManagerNonFinalizedSize,
@@ -62,6 +62,7 @@ use rustaxa_consensus::dag::{
     DagVerifyVdfPrepareInput as DomainDagVerifyVdfPrepareInput,
 };
 use rustaxa_consensus::sortition::{SortitionParams, VdfParams, VrfParams};
+use rustaxa_storage::Storage;
 #[cfg(test)]
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 #[cfg(test)]
@@ -361,6 +362,64 @@ impl BridgeDagManagerRuntime {
     /// Adds one accepted DAG block to the in-memory Rust state.
     pub fn dag_manager_runtime_add_block(&mut self, block: DagManagerBlock) -> Result<()> {
         self.state.add_block(to_domain_block(block))
+    }
+
+    /// Plans one add-block execution from Rust-owned runtime graph state.
+    ///
+    /// Inputs are compact block facts plus public add-block flags. The runtime
+    /// derives duplicate, expiry, and pivot/tip availability facts from its
+    /// in-memory DAG state before delegating to the pure add-block planner. C++
+    /// remains the executor for storage writes, transaction sidecars, events,
+    /// gossip, and temporary compatibility-object materialization.
+    pub fn dag_manager_runtime_plan_add_block(
+        &self,
+        input: DagAddBlockRuntimeInput,
+    ) -> Result<DagAddBlockEffectPlan> {
+        let block_exists = self.state.has_vertex(H256::from(input.block_hash))
+            || dag_block_exists_in_storage(self.storage.as_ref(), H256::from(input.block_hash))
+                .context("DAG_RUNTIME_ADD_BLOCK_EXISTS")?;
+
+        let tips = input
+            .tips
+            .into_iter()
+            .map(|tip| H256::from(tip.hash))
+            .collect::<Vec<_>>();
+        let pivot_tips =
+            if input.save && !block_exists && input.block_level >= self.state.dag_expiry_level() {
+                let pivot = dag_reference_metadata_from_runtime_or_storage(
+                    &self.state,
+                    self.storage.as_ref(),
+                    H256::from(input.pivot),
+                )?;
+                let tips = tips
+                    .iter()
+                    .map(|tip| {
+                        dag_reference_metadata_from_runtime_or_storage(
+                            &self.state,
+                            self.storage.as_ref(),
+                            *tip,
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                validate_pivot_tips_metadata(input.block_level, pivot, &tips)
+            } else {
+                rustaxa_consensus::dag::DagPivotTipsValidation {
+                    ok: true,
+                    expected_level: input.block_level,
+                    level_matches: true,
+                    missing_references: Vec::new(),
+                }
+            };
+
+        Ok(dag_plan_add_block_effects(DagAddBlockEffectInput {
+            save: input.save,
+            proposed: input.proposed,
+            block_exists,
+            block_level: input.block_level,
+            dag_expiry_level: self.state.dag_expiry_level(),
+            references_available: pivot_tips.ok,
+            missing_references: to_dag_hashes(pivot_tips.missing_references),
+        }))
     }
 
     /// Applies one finalized DAG order directly to Rust state and advances period/anchor.
@@ -1646,6 +1705,36 @@ fn to_domain_block(block: DagManagerBlock) -> DomainDagManagerBlock {
     }
 }
 
+fn dag_reference_metadata_from_runtime_or_storage(
+    state: &DagManagerState,
+    storage: &Storage,
+    hash: H256,
+) -> Result<ReferenceMetadata> {
+    let metadata = state.reference_metadata(hash);
+    if metadata.found {
+        return Ok(metadata);
+    }
+
+    if storage
+        .dag()
+        .by_hash_rlp_optional(hash)
+        .context("DAG_RUNTIME_REFERENCE_STORAGE_LOOKUP")?
+        .is_none()
+    {
+        return Ok(metadata);
+    }
+
+    let block = storage
+        .dag()
+        .by_hash(hash)
+        .context("DAG_RUNTIME_REFERENCE_STORAGE_DECODE")?;
+    Ok(ReferenceMetadata {
+        hash,
+        found: true,
+        level: block.level,
+    })
+}
+
 fn to_domain_snapshot(snapshot: DagManagerSnapshot) -> DomainDagManagerSnapshot {
     DomainDagManagerSnapshot {
         old_anchor: H256::from(snapshot.old_anchor),
@@ -1831,6 +1920,82 @@ mod tests {
                 .expect("counter lookup should succeed");
             assert_eq!(counters.dag_blocks, 1);
             assert_eq!(counters.dag_edges, 3);
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_plans_add_block_from_runtime_state() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_add_block_plan");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("runtime should initialize");
+
+            runtime
+                .dag_manager_runtime_add_block(DagManagerBlock {
+                    hash: [2u8; 32],
+                    pivot: [1u8; 32],
+                    tips: vec![],
+                    level: 2,
+                    difficulty: 100,
+                })
+                .expect("add block");
+
+            let duplicate = runtime
+                .dag_manager_runtime_plan_add_block(DagAddBlockRuntimeInput {
+                    save: true,
+                    proposed: true,
+                    block_hash: [2u8; 32],
+                    pivot: [1u8; 32],
+                    tips: vec![],
+                    block_level: 2,
+                })
+                .expect("duplicate plan");
+            assert!(duplicate.accepted);
+            assert!(duplicate.duplicate);
+            assert!(!duplicate.persist_block);
+            assert!(!duplicate.add_to_graph);
+
+            let missing = runtime
+                .dag_manager_runtime_plan_add_block(DagAddBlockRuntimeInput {
+                    save: true,
+                    proposed: false,
+                    block_hash: [3u8; 32],
+                    pivot: [9u8; 32],
+                    tips: vec![DagHash { hash: [8u8; 32] }],
+                    block_level: 3,
+                })
+                .expect("missing-reference plan");
+            assert!(!missing.accepted);
+            assert_eq!(
+                missing
+                    .missing_references
+                    .iter()
+                    .map(|hash| hash.hash)
+                    .collect::<Vec<_>>(),
+                vec![[9u8; 32], [8u8; 32]]
+            );
+
+            let accepted = runtime
+                .dag_manager_runtime_plan_add_block(DagAddBlockRuntimeInput {
+                    save: true,
+                    proposed: false,
+                    block_hash: [3u8; 32],
+                    pivot: [2u8; 32],
+                    tips: vec![],
+                    block_level: 3,
+                })
+                .expect("accepted plan");
+            assert!(accepted.accepted);
+            assert!(accepted.persist_transactions);
+            assert!(accepted.persist_block);
+            assert!(accepted.add_to_graph);
+            assert!(accepted.emit_verified);
+            assert!(accepted.gossip);
         }
 
         let _ = fs::remove_dir_all(&temp_dir);

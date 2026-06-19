@@ -113,6 +113,18 @@ rustaxa::DagManagerBlock to_bridge_manager_block(const std::shared_ptr<DagBlock>
   return out;
 }
 
+rustaxa::DagAddBlockRuntimeInput to_bridge_add_block_runtime_input(const std::shared_ptr<DagBlock> &block, bool save,
+                                                                   bool proposed) {
+  rustaxa::DagAddBlockRuntimeInput out;
+  out.save = save;
+  out.proposed = proposed;
+  out.block_hash = to_bridge_hash(block->getHash());
+  out.pivot = to_bridge_hash(block->getPivot());
+  out.tips = to_bridge_dag_hashes(block->getTips());
+  out.block_level = block->getLevel();
+  return out;
+}
+
 rust::Vec<uint8_t> to_rust_vec(const dev::bytes &bytes) {
   rust::Vec<uint8_t> out;
   out.reserve(bytes.size());
@@ -574,29 +586,12 @@ std::pair<bool, std::vector<blk_hash_t>> DagManager::addDagBlock(const std::shar
   const auto blk_hash = blk->getHash();
   std::scoped_lock order_lock(rust_order_dag_blocks_mutex_);
 
-  rustaxa::DagAddBlockEffectInput add_input;
-  add_input.save = save;
-  add_input.proposed = proposed;
-  add_input.block_exists = false;
-  add_input.block_level = blk->getLevel();
-  add_input.dag_expiry_level = getDagExpiryLevel();
-  add_input.references_available = true;
-  if (save) {
-    {
-      std::shared_lock lock(rust_graphs_mutex_);
-      add_input.block_exists = rust_graphs_->runtime->dag_manager_runtime_block_exists(to_bridge_hash(blk_hash));
-    }
-    if (!add_input.block_exists && blk->getLevel() >= add_input.dag_expiry_level) {
-      auto res = pivotAndTipsAvailable(blk);
-      add_input.references_available = res.first;
-      add_input.missing_references.reserve(res.second.size());
-      for (const auto &missing : res.second) {
-        add_input.missing_references.push_back(to_bridge_dag_hash(missing));
-      }
-    }
+  rustaxa::DagAddBlockEffectPlan add_plan;
+  {
+    std::shared_lock lock(rust_graphs_mutex_);
+    add_plan = rust_graphs_->runtime->dag_manager_runtime_plan_add_block(
+        to_bridge_add_block_runtime_input(blk, save, proposed));
   }
-
-  const auto add_plan = rustaxa::dag_plan_add_block_effects(std::move(add_input));
   if (add_plan.duplicate) {
     return {true, {}};
   }

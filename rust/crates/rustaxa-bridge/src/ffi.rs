@@ -3877,6 +3877,17 @@ pub mod rustaxa_ffi {
         missing_references: Vec<DagHash>,
     }
 
+    /// Compact block facts used by the Rust DAG manager runtime to plan one
+    /// add-block execution from runtime-owned graph state.
+    struct DagAddBlockRuntimeInput {
+        save: bool,
+        proposed: bool,
+        block_hash: [u8; 32],
+        pivot: [u8; 32],
+        tips: Vec<DagHash>,
+        block_level: u64,
+    }
+
     /// Typed side effects C++ executes for a Rust-planned DAG add-block attempt.
     struct DagAddBlockEffectPlan {
         accepted: bool,
@@ -4297,6 +4308,11 @@ pub mod rustaxa_ffi {
             self: &mut BridgeDagManagerRuntime,
             block: DagManagerBlock,
         ) -> Result<()>;
+        /// Plans one add-block execution from Rust-owned runtime graph state.
+        pub fn dag_manager_runtime_plan_add_block(
+            self: &BridgeDagManagerRuntime,
+            input: DagAddBlockRuntimeInput,
+        ) -> Result<DagAddBlockEffectPlan>;
         /// Applies finalized DAG order using Rust state and Rust storage.
         pub fn dag_manager_runtime_apply_finalized_order(
             self: &mut BridgeDagManagerRuntime,
