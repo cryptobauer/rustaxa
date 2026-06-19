@@ -16,8 +16,9 @@ use crate::ffi::rustaxa_ffi::{
     PillarValidatorVoteCountChange as FfiPillarValidatorVoteCountChange,
 };
 use crate::ffi::{BridgePillarChainStorage, BridgeStorage};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ethereum_types::{H160, H256};
+use rlp::Rlp;
 use rustaxa_consensus::{
     load_current_pillar_block_data_storage as consensus_load_current_pillar_block_data_storage,
     load_latest_pillar_block_storage as consensus_load_latest_pillar_block_storage,
@@ -35,6 +36,9 @@ use rustaxa_consensus::{
     PillarValidatorVoteCount as ConsensusPillarValidatorVoteCount,
     PillarValidatorVoteCountChange as ConsensusPillarValidatorVoteCountChange,
 };
+use rustaxa_types::pillar::RawPillarBlockData;
+
+const PILLAR_VOTES_POS_IN_PERIOD_DATA: usize = 4;
 
 /// Creates a typed pillar-chain storage handle from the generic CXX storage
 /// facade.
@@ -93,6 +97,59 @@ impl BridgePillarChainStorage {
     pub fn pillar_chain_storage_load_period_data(&self, period: u64) -> Result<Vec<u8>> {
         consensus_load_pillar_period_data_storage(self.storage.as_ref(), period)
     }
+
+    /// Loads a finalized pillar block by period, returning empty bytes when no
+    /// block is stored for that period.
+    pub fn pillar_chain_storage_load_block(&self, period: u64) -> Result<Vec<u8>> {
+        Ok(self.storage.pillar().rlp(period)?.unwrap_or_default())
+    }
+
+    /// Returns canonical `PillarBlockData` RLP for RPC/query materialization.
+    ///
+    /// Inputs:
+    /// - `period`: pillar block period requested by the caller.
+    ///
+    /// Outputs:
+    /// - Empty bytes when either the pillar block or the following period's
+    ///   finalized pillar-vote bundle is absent.
+    /// - Otherwise `[pillar_block_rlp, optimized_pillar_votes_bundle_rlp]`
+    ///   encoded with the compatibility shape used by C++ `PillarBlockData`.
+    ///
+    /// Invariants and edge behavior:
+    /// - Reads go directly through the typed pillar storage handle; no broad
+    ///   `BridgeStorage` query method participates after handle construction.
+    /// - Vote payloads are preserved as canonical bytes and decoded only by the
+    ///   RPC materialization boundary.
+    pub fn pillar_chain_storage_block_data_rlp(&self, period: u64) -> Result<Vec<u8>> {
+        let Some(pillar_block_rlp) = self.storage.pillar().rlp(period)? else {
+            return Ok(Vec::new());
+        };
+        let period_data = self
+            .storage
+            .period()
+            .data_raw(period + 1)
+            .context("PILLAR_BLOCK_DATA_PERIOD_DATA")?;
+        if period_data.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let period_rlp = Rlp::new(&period_data);
+        if period_rlp.item_count()? <= PILLAR_VOTES_POS_IN_PERIOD_DATA {
+            return Ok(Vec::new());
+        }
+        let votes = period_rlp
+            .at(PILLAR_VOTES_POS_IN_PERIOD_DATA)
+            .context("PILLAR_BLOCK_DATA_VOTES")?;
+        if votes.item_count()? == 0 {
+            return Ok(Vec::new());
+        }
+
+        RawPillarBlockData {
+            pillar_block_rlp,
+            pillar_votes_bundle_rlp: votes.as_raw().to_vec(),
+        }
+        .encode_rlp()
+    }
 }
 
 /// Computes ordered validator vote-count changes for a pillar block.
@@ -149,128 +206,6 @@ pub fn plan_pillar_block_creation(
     Ok(FfiPillarBlockCreationPlan::from(
         consensus_plan_pillar_block_creation(creation_fact_to_consensus(fact))?,
     ))
-}
-
-/// Persists current pillar-block sidecar data through consensus-owned storage.
-///
-/// Inputs:
-/// - `storage`: shared Rust storage bridge handle.
-/// - `data_rlp`: C++-encoded `CurrentPillarBlockDataDb` bytes.
-///
-/// Outputs:
-/// - Returns success after the current-pillar singleton row is written.
-///
-/// Invariants and edge behavior:
-/// - The bridge performs no storage writes itself; it only forwards DTO bytes
-///   to the consensus storage helper.
-/// - C++ still owns live manager mirrors and `PillarBlock` materialization for
-///   this slice.
-pub fn apply_pillar_current_block_data_storage(
-    storage: &BridgeStorage,
-    data_rlp: Vec<u8>,
-) -> Result<()> {
-    save_current_pillar_block_data_storage(storage.0.as_ref(), &data_rlp)
-}
-
-/// Persists the local node's own pillar-block vote through consensus storage.
-///
-/// Inputs:
-/// - `storage`: shared Rust storage bridge handle.
-/// - `vote_rlp`: C++-encoded `PillarVote` bytes for the local node's current
-///   pillar-block vote.
-///
-/// Outputs:
-/// - Returns success after the own-vote singleton row is written.
-///
-/// Invariants and edge behavior:
-/// - Vote signing, validation, aggregation, and gossip stay in the C++ shim.
-/// - Empty or otherwise invalid payloads are rejected by the consensus helper.
-pub fn apply_pillar_own_vote_storage(storage: &BridgeStorage, vote_rlp: Vec<u8>) -> Result<()> {
-    save_own_pillar_block_vote_storage(storage.0.as_ref(), &vote_rlp)
-}
-
-/// Persists a finalized pillar block through consensus storage.
-///
-/// Inputs:
-/// - `storage`: shared Rust storage bridge handle.
-/// - `period`: pillar block period used as the storage key.
-/// - `pillar_block_rlp`: C++-encoded finalized `PillarBlock` bytes.
-///
-/// Outputs:
-/// - Returns success after the finalized pillar-block row is written.
-///
-/// Invariants and edge behavior:
-/// - Above-threshold vote lookup, event emission, and live finalized/current
-///   mirrors remain in the C++ shim for now.
-/// - Empty payloads are rejected by the consensus helper.
-pub fn apply_finalized_pillar_block_storage(
-    storage: &BridgeStorage,
-    period: u64,
-    pillar_block_rlp: Vec<u8>,
-) -> Result<()> {
-    save_finalized_pillar_block_storage(storage.0.as_ref(), period, &pillar_block_rlp)
-}
-
-/// Loads the local node's own pillar-block vote through consensus storage.
-///
-/// Inputs:
-/// - `storage`: shared Rust storage bridge handle.
-///
-/// Outputs:
-/// - Returns C++-decodable `PillarVote` RLP bytes, or empty bytes when missing.
-///
-/// Invariants and edge behavior:
-/// - The bridge performs no storage lookup itself; it forwards the read to the
-///   consensus storage helper.
-pub fn load_pillar_own_vote_storage(storage: &BridgeStorage) -> Result<Vec<u8>> {
-    consensus_load_own_pillar_block_vote_storage(storage.0.as_ref())
-}
-
-/// Loads current pillar-block sidecar data through consensus storage.
-///
-/// Inputs:
-/// - `storage`: shared Rust storage bridge handle.
-///
-/// Outputs:
-/// - Returns C++-decodable `CurrentPillarBlockDataDb` RLP bytes, or empty bytes
-///   when missing.
-///
-/// Invariants and edge behavior:
-/// - C++ remains responsible for decoding and live mirror hydration in this
-///   slice.
-pub fn load_pillar_current_block_data_storage(storage: &BridgeStorage) -> Result<Vec<u8>> {
-    consensus_load_current_pillar_block_data_storage(storage.0.as_ref())
-}
-
-/// Loads the latest finalized pillar block through consensus storage.
-///
-/// Inputs:
-/// - `storage`: shared Rust storage bridge handle.
-///
-/// Outputs:
-/// - Returns C++-decodable `PillarBlock` RLP bytes, or empty bytes when missing.
-///
-/// Invariants and edge behavior:
-/// - Latest-row ordering is delegated to `rustaxa-storage` via the consensus
-///   helper.
-pub fn load_latest_pillar_block_storage(storage: &BridgeStorage) -> Result<Vec<u8>> {
-    consensus_load_latest_pillar_block_storage(storage.0.as_ref())
-}
-
-/// Loads raw period data for pillar-vote recovery through consensus storage.
-///
-/// Inputs:
-/// - `storage`: shared Rust storage bridge handle.
-/// - `period`: finalized PBFT period to load.
-///
-/// Outputs:
-/// - Returns raw period-data RLP bytes, or empty bytes when missing.
-///
-/// Invariants and edge behavior:
-/// - Period-data decoding remains in C++ until the surrounding consensus read
-///   surface moves to Rust.
-pub fn load_pillar_period_data_storage(storage: &BridgeStorage, period: u64) -> Result<Vec<u8>> {
-    consensus_load_pillar_period_data_storage(storage.0.as_ref(), period)
 }
 
 fn vote_count_to_consensus(
@@ -371,6 +306,16 @@ mod tests {
 
     fn hash(value: u64) -> [u8; 32] {
         H256::from_low_u64_be(value).into()
+    }
+
+    fn period_data_with_pillar_votes_rlp(votes_bundle_rlp: &[u8]) -> Vec<u8> {
+        let mut period_data = rlp::RlpStream::new_list(5);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(votes_bundle_rlp, 1);
+        period_data.out().to_vec()
     }
 
     fn vote_count(address: u8, vote_count: u64) -> FfiPillarValidatorVoteCount {
@@ -491,20 +436,20 @@ mod tests {
                 .expect("finalized pillar block should persist");
 
             assert_eq!(
-                storage
-                    .get_current_pillar_block_data()
+                pillar_storage
+                    .pillar_chain_storage_load_current_block_data()
                     .expect("current pillar data should load"),
                 vec![0xC1, 0x01],
             );
             assert_eq!(
-                storage
-                    .get_own_pillar_block_vote()
+                pillar_storage
+                    .pillar_chain_storage_load_own_vote()
                     .expect("own pillar vote should load"),
                 vec![0xC1, 0x02],
             );
             assert_eq!(
-                storage
-                    .get_pillar_block(42)
+                pillar_storage
+                    .pillar_chain_storage_load_block(42)
                     .expect("pillar block should load"),
                 vec![0xC1, 0x03],
             );
@@ -532,6 +477,43 @@ mod tests {
     }
 
     #[test]
+    fn bridge_pillar_block_data_query_reads_raw_components_from_typed_storage() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_block_data");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let pillar_storage = create_pillar_chain_storage(&storage);
+
+            assert!(pillar_storage
+                .pillar_chain_storage_block_data_rlp(10)
+                .expect("missing query should succeed")
+                .is_empty());
+
+            let pillar_block_rlp = vec![0xC1, 0xA1];
+            let mut votes_bundle = rlp::RlpStream::new_list(1);
+            votes_bundle.append(&vec![0xB0]);
+            let votes_bundle_rlp = votes_bundle.out().to_vec();
+
+            pillar_storage
+                .pillar_chain_storage_apply_finalized_block(10, pillar_block_rlp.clone())
+                .expect("pillar block should persist");
+            storage
+                .save_period_data(11, period_data_with_pillar_votes_rlp(&votes_bundle_rlp))
+                .expect("period data should persist");
+
+            let encoded = pillar_storage
+                .pillar_chain_storage_block_data_rlp(10)
+                .expect("query should succeed");
+            let decoded = RawPillarBlockData::decode_rlp(&encoded).expect("wrapper should decode");
+            assert_eq!(decoded.pillar_block_rlp, pillar_block_rlp);
+            assert_eq!(decoded.pillar_votes_bundle_rlp, votes_bundle_rlp);
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn bridge_pillar_storage_reads_return_empty_when_missing() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_storage_missing_reads");
         {
@@ -551,6 +533,10 @@ mod tests {
             assert!(pillar_storage
                 .pillar_chain_storage_load_latest_block()
                 .expect("latest pillar block should read")
+                .is_empty());
+            assert!(pillar_storage
+                .pillar_chain_storage_load_block(42)
+                .expect("pillar block should read")
                 .is_empty());
             assert!(pillar_storage
                 .pillar_chain_storage_load_period_data(42)

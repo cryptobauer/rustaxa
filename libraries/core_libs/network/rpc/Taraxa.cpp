@@ -252,8 +252,9 @@ Json::Value Taraxa::taraxa_getPillarBlockData(const std::string& pillar_block_pe
     }
 
 #ifdef RUSTAXA_ENABLE
-    const auto pillar_block_data_rlp =
-        app->getDB()->rustStorage().get_pillar_block_data_rlp(pbft_period);  // RUSTAXA_QUERY_COMPAT_READ
+    const auto pillar_storage =
+        rustaxa::create_pillar_chain_storage(app->getDB()->rustStorage());  // RUSTAXA_QUERY_COMPAT_READ
+    const auto pillar_block_data_rlp = pillar_storage->pillar_chain_storage_block_data_rlp(pbft_period);
     if (pillar_block_data_rlp.empty()) {
       return {};
     }

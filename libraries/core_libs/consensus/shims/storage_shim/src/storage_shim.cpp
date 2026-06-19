@@ -63,6 +63,7 @@ DbStorage::DbStorage(fs::path const& path, uint32_t db_snapshot_each_n_pbft_bloc
                    node_addr, rebuild) {
   try {
     rust_storage_ = rustaxa::create_storage(path.string());
+    pillar_storage_ = rustaxa::create_pillar_chain_storage(*rust_storage_.value());
     kMajorVersion_ = static_cast<uint32_t>(getStatusField(StatusDbField::DbMajorVersion));
     auto const minor_version = static_cast<uint32_t>(getStatusField(StatusDbField::DbMinorVersion));
     if (kMajorVersion_ != 0 && kMajorVersion_ != TARAXA_DB_MAJOR_VERSION) {
@@ -545,11 +546,11 @@ std::vector<std::shared_ptr<PillarVote>> DbStorage::getPeriodPillarVotes(PbftPer
 void DbStorage::savePillarBlock(const std::shared_ptr<pillar_chain::PillarBlock>& pillar_block) {
   auto pillar_rlp_bytes = pillar_block->getRlp();
   auto pillar_rlp = into_rust_vec(pillar_rlp_bytes);
-  rust_storage_.value()->save_pillar_block(pillar_block->getPeriod(), std::move(pillar_rlp));
+  pillar_storage_.value()->pillar_chain_storage_apply_finalized_block(pillar_block->getPeriod(), std::move(pillar_rlp));
 }
 
 std::shared_ptr<pillar_chain::PillarBlock> DbStorage::getPillarBlock(PbftPeriod period) const {
-  auto data = rust_storage_.value()->get_pillar_block(period);
+  auto data = pillar_storage_.value()->pillar_chain_storage_load_block(period);
   if (data.empty()) {
     return {};
   }
@@ -559,7 +560,7 @@ std::shared_ptr<pillar_chain::PillarBlock> DbStorage::getPillarBlock(PbftPeriod 
 }
 
 std::shared_ptr<pillar_chain::PillarBlock> DbStorage::getLatestPillarBlock() const {
-  auto data = rust_storage_.value()->get_latest_pillar_block();
+  auto data = pillar_storage_.value()->pillar_chain_storage_load_latest_block();
   if (data.empty()) {
     return {};
   }
@@ -571,11 +572,11 @@ std::shared_ptr<pillar_chain::PillarBlock> DbStorage::getLatestPillarBlock() con
 void DbStorage::saveOwnPillarBlockVote(const std::shared_ptr<PillarVote>& vote) {
   auto vote_bytes = util::rlp_enc(vote);
   auto vote_rlp = into_rust_vec(vote_bytes);
-  rust_storage_.value()->save_own_pillar_block_vote(std::move(vote_rlp));
+  pillar_storage_.value()->pillar_chain_storage_apply_own_vote(std::move(vote_rlp));
 }
 
 std::shared_ptr<PillarVote> DbStorage::getOwnPillarBlockVote() const {
-  auto data = rust_storage_.value()->get_own_pillar_block_vote();
+  auto data = pillar_storage_.value()->pillar_chain_storage_load_own_vote();
   if (data.empty()) {
     return nullptr;
   }
@@ -587,11 +588,11 @@ std::shared_ptr<PillarVote> DbStorage::getOwnPillarBlockVote() const {
 void DbStorage::saveCurrentPillarBlockData(const pillar_chain::CurrentPillarBlockDataDb& current_pillar_block_data) {
   auto data_bytes = util::rlp_enc(current_pillar_block_data);
   auto data_rlp = into_rust_vec(data_bytes);
-  rust_storage_.value()->save_current_pillar_block_data(std::move(data_rlp));
+  pillar_storage_.value()->pillar_chain_storage_apply_current_block_data(std::move(data_rlp));
 }
 
 std::optional<pillar_chain::CurrentPillarBlockDataDb> DbStorage::getCurrentPillarBlockData() const {
-  auto data = rust_storage_.value()->get_current_pillar_block_data();
+  auto data = pillar_storage_.value()->pillar_chain_storage_load_current_block_data();
   if (data.empty()) {
     return {};
   }

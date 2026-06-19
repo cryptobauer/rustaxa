@@ -264,6 +264,21 @@ Validation:
 
 ## Slice 4: Query and Materialization API Split
 
+Status: in progress.
+
+Landed sub-slices:
+
+- Pillar query/storage split: moved storage-shim pillar block, latest block, own-vote, current-data, and RPC
+  `PillarBlockData` materialization reads/writes onto the typed `BridgePillarChainStorage` handle. Deleted the matching
+  generic `BridgeStorage` pillar read/write/query methods and the unused generic pillar `BridgeStorage` helper
+  functions from the CXX FFI. Public C++ object construction still happens only in the storage shim and RPC boundary.
+
+Next target:
+
+- Continue with another self-contained query family that already has a typed storage/runtime handle, likely PBFT/vote
+  query reads or transaction public reads. Avoid moving RPC/network object ownership in this cleanup; prefer typed
+  storage/query handles returning canonical bytes or compact facts.
+
 Split the broad `BridgeStorage` query surface into typed read-only Rust query APIs for active Rust-mode callers, and
 delete unused broad storage-shim methods.
 

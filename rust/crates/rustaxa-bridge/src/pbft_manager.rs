@@ -1674,6 +1674,7 @@ impl From<PbftManagerAdvancePeriodPlan> for FfiPbftManagerAdvancePeriodPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pillar_chain::create_pillar_chain_storage;
     use crate::storage::create_storage;
     use std::fs;
     use std::path::PathBuf;
@@ -2807,8 +2808,8 @@ mod tests {
             storage
                 .save_pbft_mgr_field(2, 1_500)
                 .expect("lambda seed should persist");
-            storage
-                .save_own_pillar_block_vote(vec![0xC0])
+            create_pillar_chain_storage(&storage)
+                .pillar_chain_storage_apply_own_vote(vec![0xC0])
                 .expect("own pillar vote should persist");
             let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
                 .expect("runtime should restore");

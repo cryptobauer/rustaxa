@@ -6009,25 +6009,12 @@ pub mod rustaxa_ffi {
             self: &BridgePillarChainStorage,
             period: u64,
         ) -> Result<Vec<u8>>;
-
-        pub fn apply_pillar_current_block_data_storage(
-            storage: &BridgeStorage,
-            data_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn apply_pillar_own_vote_storage(
-            storage: &BridgeStorage,
-            vote_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn apply_finalized_pillar_block_storage(
-            storage: &BridgeStorage,
+        pub fn pillar_chain_storage_load_block(
+            self: &BridgePillarChainStorage,
             period: u64,
-            pillar_block_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn load_pillar_own_vote_storage(storage: &BridgeStorage) -> Result<Vec<u8>>;
-        pub fn load_pillar_current_block_data_storage(storage: &BridgeStorage) -> Result<Vec<u8>>;
-        pub fn load_latest_pillar_block_storage(storage: &BridgeStorage) -> Result<Vec<u8>>;
-        pub fn load_pillar_period_data_storage(
-            storage: &BridgeStorage,
+        ) -> Result<Vec<u8>>;
+        pub fn pillar_chain_storage_block_data_rlp(
+            self: &BridgePillarChainStorage,
             period: u64,
         ) -> Result<Vec<u8>>;
 
@@ -6112,7 +6099,6 @@ pub mod rustaxa_ffi {
         type BridgeStorageBatch;
 
         pub fn create_storage(path: &str) -> Result<Box<BridgeStorage>>;
-        pub fn get_pillar_block_data_rlp(self: &BridgeStorage, period: u64) -> Result<Vec<u8>>;
         pub fn create_storage_shim_batch(storage: &BridgeStorage) -> Box<BridgeStorageBatch>;
         pub fn storage_shim_save_status_field(
             batch: &mut BridgeStorageBatch,
@@ -6335,20 +6321,6 @@ pub mod rustaxa_ffi {
             self: &BridgeStorage,
             hash: &[u8; 32],
             period: u64,
-        ) -> Result<()>;
-        pub fn get_pillar_block(self: &BridgeStorage, period: u64) -> Result<Vec<u8>>;
-        pub fn get_latest_pillar_block(self: &BridgeStorage) -> Result<Vec<u8>>;
-        pub fn get_own_pillar_block_vote(self: &BridgeStorage) -> Result<Vec<u8>>;
-        pub fn get_current_pillar_block_data(self: &BridgeStorage) -> Result<Vec<u8>>;
-        pub fn save_pillar_block(
-            self: &BridgeStorage,
-            period: u64,
-            pillar_block_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn save_own_pillar_block_vote(self: &BridgeStorage, vote_rlp: Vec<u8>) -> Result<()>;
-        pub fn save_current_pillar_block_data(
-            self: &BridgeStorage,
-            data_rlp: Vec<u8>,
         ) -> Result<()>;
         pub fn get_genesis_hash(self: &BridgeStorage) -> Result<Vec<u8>>;
         pub fn set_genesis_hash(self: &BridgeStorage, hash: &[u8; 32]) -> Result<()>;

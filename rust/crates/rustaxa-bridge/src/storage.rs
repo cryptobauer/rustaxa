@@ -3,7 +3,6 @@ use crate::ffi::BridgeStorage;
 use crate::ffi::BridgeStorageBatch;
 use anyhow::Context;
 use ethereum_types::H256;
-use rlp::Rlp;
 use rustaxa_consensus::{
     clear_own_verified_votes as domain_clear_own_verified_votes,
     persist_pbft_vote_progress as domain_persist_pbft_vote_progress,
@@ -17,11 +16,8 @@ use rustaxa_consensus::{
 };
 use rustaxa_storage::Config;
 use rustaxa_storage::Storage;
-use rustaxa_types::pillar::RawPillarBlockData;
 use std::path::PathBuf;
 use std::sync::Arc;
-
-const PILLAR_VOTES_POS_IN_PERIOD_DATA: usize = 4;
 
 fn pbft_vote_persistence_from_domain(
     value: DomainPbftVotePersistenceResult,
@@ -561,53 +557,6 @@ pub(crate) fn transaction_rlp_lookups(
 }
 
 impl BridgeStorage {
-    /// Returns canonical `PillarBlockData` RLP for RPC/query materialization.
-    ///
-    /// Inputs:
-    /// - `period`: pillar block period requested by the caller.
-    ///
-    /// Outputs:
-    /// - Empty bytes when either the pillar block or the following period's
-    ///   finalized pillar-vote bundle is absent.
-    /// - Otherwise `[pillar_block_rlp, optimized_pillar_votes_bundle_rlp]`
-    ///   encoded with the compatibility shape used by C++ `PillarBlockData`.
-    ///
-    /// Invariants and edge behavior:
-    /// - Reads go directly through `rustaxa-storage`; no `DbStorage` query API
-    ///   participates in Rust mode.
-    /// - Vote payloads are preserved as canonical bytes and decoded only by the
-    ///   RPC materialization boundary.
-    pub fn get_pillar_block_data_rlp(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
-        let Some(pillar_block_rlp) = self.0.pillar().rlp(period)? else {
-            return Ok(Vec::new());
-        };
-        let period_data = self
-            .0
-            .period()
-            .data_raw(period + 1)
-            .context("PILLAR_BLOCK_DATA_PERIOD_DATA")?;
-        if period_data.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let period_rlp = Rlp::new(&period_data);
-        if period_rlp.item_count()? <= PILLAR_VOTES_POS_IN_PERIOD_DATA {
-            return Ok(Vec::new());
-        }
-        let votes = period_rlp
-            .at(PILLAR_VOTES_POS_IN_PERIOD_DATA)
-            .context("PILLAR_BLOCK_DATA_VOTES")?;
-        if votes.item_count()? == 0 {
-            return Ok(Vec::new());
-        }
-
-        RawPillarBlockData {
-            pillar_block_rlp,
-            pillar_votes_bundle_rlp: votes.as_raw().to_vec(),
-        }
-        .encode_rlp()
-    }
-
     pub fn dag_block_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
         self.0
             .dag()
@@ -924,38 +873,6 @@ impl BridgeStorage {
         period: u64,
     ) -> Result<(), anyhow::Error> {
         self.0.period().write_pbft_period(H256::from(*hash), period)
-    }
-
-    pub fn get_pillar_block(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self.0.pillar().rlp(period)?.unwrap_or_default())
-    }
-
-    pub fn get_latest_pillar_block(&self) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self.0.pillar().latest_rlp()?.unwrap_or_default())
-    }
-
-    pub fn get_own_pillar_block_vote(&self) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self.0.pillar().own_vote_rlp()?.unwrap_or_default())
-    }
-
-    pub fn get_current_pillar_block_data(&self) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self.0.pillar().current_data_rlp()?.unwrap_or_default())
-    }
-
-    pub fn save_pillar_block(
-        &self,
-        period: u64,
-        pillar_block_rlp: Vec<u8>,
-    ) -> Result<(), anyhow::Error> {
-        self.0.pillar().write(period, &pillar_block_rlp)
-    }
-
-    pub fn save_own_pillar_block_vote(&self, vote_rlp: Vec<u8>) -> Result<(), anyhow::Error> {
-        self.0.pillar().write_own_vote(&vote_rlp)
-    }
-
-    pub fn save_current_pillar_block_data(&self, data_rlp: Vec<u8>) -> Result<(), anyhow::Error> {
-        self.0.pillar().write_current_data(&data_rlp)
     }
 
     pub fn get_genesis_hash(&self) -> Result<Vec<u8>, anyhow::Error> {
@@ -1472,52 +1389,6 @@ mod tests {
         period_data.append_raw(&transactions.out(), 1);
         period_data.append_raw(&[0xC0], 1);
         period_data.out().to_vec()
-    }
-
-    fn period_data_with_pillar_votes_rlp(votes_bundle_rlp: &[u8]) -> Vec<u8> {
-        let mut period_data = rlp::RlpStream::new_list(5);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(votes_bundle_rlp, 1);
-        period_data.out().to_vec()
-    }
-
-    #[test]
-    fn pillar_block_data_query_reads_raw_components_from_rust_storage() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_storage_pillar_block_data");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-
-            assert!(storage
-                .get_pillar_block_data_rlp(10)
-                .expect("missing query should succeed")
-                .is_empty());
-
-            let pillar_block_rlp = vec![0xC1, 0xA1];
-            let mut votes_bundle = rlp::RlpStream::new_list(1);
-            votes_bundle.append(&vec![0xB0]);
-            let votes_bundle_rlp = votes_bundle.out().to_vec();
-
-            storage
-                .save_pillar_block(10, pillar_block_rlp.clone())
-                .expect("pillar block should persist");
-            storage
-                .save_period_data(11, period_data_with_pillar_votes_rlp(&votes_bundle_rlp))
-                .expect("period data should persist");
-
-            let encoded = storage
-                .get_pillar_block_data_rlp(10)
-                .expect("query should succeed");
-            let decoded = RawPillarBlockData::decode_rlp(&encoded).expect("wrapper should decode");
-            assert_eq!(decoded.pillar_block_rlp, pillar_block_rlp);
-            assert_eq!(decoded.pillar_votes_bundle_rlp, votes_bundle_rlp);
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]

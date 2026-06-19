@@ -242,6 +242,7 @@ class DbStorage : public DbStorageOld {
   std::string lookupFinalChainReceiptByTrxHash(const Slice& key) const;
 
   std::optional<::rust::Box<rustaxa::BridgeStorage>> rust_storage_;
+  std::optional<::rust::Box<rustaxa::BridgePillarChainStorage>> pillar_storage_;
   std::unordered_map<Batch*, ::rust::Box<rustaxa::BridgeStorageBatch>> rust_batches_;
   std::mutex rust_batches_mutex_;
 };
