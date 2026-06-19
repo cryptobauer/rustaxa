@@ -41,6 +41,10 @@ class StorageTest : public ::testing::Test {
     return std::vector<uint8_t>(values.begin(), values.end());
   }
 
+  static rust::Box<BridgePbftVoteStorageQueries> voteQueries(const rust::Box<BridgeStorage>& storage) {
+    return create_pbft_vote_storage_queries(*storage);
+  }
+
   std::filesystem::path test_dir;
 };
 
@@ -105,11 +109,12 @@ TEST_F(StorageTest, PersistPbftVoteProgressGroupsRewardAndTwoTPlusOneWrites) {
   EXPECT_EQ(result.applied_writes, 2u);
   EXPECT_TRUE(result.error_code.empty());
 
-  auto reward_votes = storage->get_reward_votes();
+  auto vote_queries = voteQueries(storage);
+  auto reward_votes = vote_queries->get_reward_votes();
   ASSERT_EQ(reward_votes.size(), 1u);
   EXPECT_EQ(to_std_vec(reward_votes[0].data), std::vector<uint8_t>({0x71}));
 
-  auto two_t_plus_one_votes = storage->get_all_two_t_plus_one_votes();
+  auto two_t_plus_one_votes = vote_queries->get_all_two_t_plus_one_votes();
   ASSERT_EQ(two_t_plus_one_votes.size(), 2u);
   EXPECT_EQ(to_std_vec(two_t_plus_one_votes[0].data), std::vector<uint8_t>({0x01}));
   EXPECT_EQ(to_std_vec(two_t_plus_one_votes[1].data), std::vector<uint8_t>({0x02}));
@@ -126,7 +131,8 @@ TEST_F(StorageTest, PersistPbftVoteProgressRejectsInvalidTwoTPlusOneKind) {
   auto result = storage->persist_pbft_vote_progress(write);
   EXPECT_EQ(result.status, kPbftVotePersistenceRejected);
   EXPECT_FALSE(result.error_code.empty());
-  EXPECT_TRUE(storage->get_all_two_t_plus_one_votes().empty());
+  auto vote_queries = voteQueries(storage);
+  EXPECT_TRUE(vote_queries->get_all_two_t_plus_one_votes().empty());
 }
 
 TEST_F(StorageTest, PersistPbftVoteProgressRejectsMalformedTwoTPlusOneBundle) {
@@ -140,21 +146,23 @@ TEST_F(StorageTest, PersistPbftVoteProgressRejectsMalformedTwoTPlusOneBundle) {
   auto result = storage->persist_pbft_vote_progress(write);
   EXPECT_EQ(result.status, kPbftVotePersistenceRejected);
   EXPECT_FALSE(result.error_code.empty());
-  EXPECT_TRUE(storage->get_all_two_t_plus_one_votes().empty());
+  auto vote_queries = voteQueries(storage);
+  EXPECT_TRUE(vote_queries->get_all_two_t_plus_one_votes().empty());
 }
 
 TEST_F(StorageTest, ClearOwnVerifiedVotesCommitsRustOwnedBatch) {
   auto storage = create_storage(test_dir.string());
   auto own_vote_hash = h256(0x66);
   storage->save_own_verified_vote(own_vote_hash, bytes({0x72}));
-  ASSERT_EQ(storage->get_own_verified_votes().size(), 1u);
+  auto vote_queries = voteQueries(storage);
+  ASSERT_EQ(vote_queries->get_own_verified_votes().size(), 1u);
 
   rust::Vec<PbftFinalizationHash> vote_hashes;
   vote_hashes.push_back(PbftFinalizationHash{own_vote_hash});
   auto result = storage->clear_own_verified_votes(std::move(vote_hashes));
   EXPECT_EQ(result.status, kPbftVotePersistenceApplied);
   EXPECT_EQ(result.applied_writes, 1u);
-  EXPECT_TRUE(storage->get_own_verified_votes().empty());
+  EXPECT_TRUE(vote_queries->get_own_verified_votes().empty());
 }
 
 TEST_F(StorageTest, ClearOwnVerifiedVotesTreatsMissingVotesAsNoOpDeletes) {
@@ -165,7 +173,8 @@ TEST_F(StorageTest, ClearOwnVerifiedVotesTreatsMissingVotesAsNoOpDeletes) {
   auto result = storage->clear_own_verified_votes(std::move(vote_hashes));
   EXPECT_EQ(result.status, kPbftVotePersistenceApplied);
   EXPECT_EQ(result.applied_writes, 1u);
-  EXPECT_TRUE(storage->get_own_verified_votes().empty());
+  auto vote_queries = voteQueries(storage);
+  EXPECT_TRUE(vote_queries->get_own_verified_votes().empty());
 }
 
 TEST_F(StorageTest, ApplyPbftManagerTransitionStorageCommitsCursorStatusesAndOwnVoteCleanup) {
@@ -204,5 +213,6 @@ TEST_F(StorageTest, ApplyPbftManagerTransitionStorageCommitsCursorStatusesAndOwn
   EXPECT_FALSE(storage->get_pbft_mgr_status(2));
   EXPECT_FALSE(storage->get_pbft_mgr_status(3));
   EXPECT_TRUE(storage->get_cert_voted_block_in_round().empty());
-  EXPECT_TRUE(storage->get_own_verified_votes().empty());
+  auto vote_queries = voteQueries(storage);
+  EXPECT_TRUE(vote_queries->get_own_verified_votes().empty());
 }

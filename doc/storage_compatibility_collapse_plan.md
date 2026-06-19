@@ -276,13 +276,15 @@ Landed sub-slices:
   `BridgeProposedBlocks` storage handle and added a storage-backed typed snapshot read that does not mutate the live
   proposed-block index. Deleted the generic `BridgeStorage` proposed PBFT block save/get/remove CXX methods; the
   storage-shim batch cleanup helper remains because it already routes through typed Rust PBFT storage batch deletion.
+- PBFT vote-list query split: moved storage-shim and validation-test reads for own verified votes, 2t+1 votes, and
+  reward votes onto a typed `BridgePbftVoteStorageQueries` handle that owns a cloned Rust storage handle. Deleted the
+  matching generic `BridgeStorage` vote-list read methods from the CXX FFI while keeping vote writes and batch deletes
+  on their existing Rust-owned write paths.
 
 Next target:
 
-- Continue with the PBFT vote-list query family: split `getOwnVerifiedVotes`, `getAllTwoTPlusOneVotes`, and
-  `getRewardVotes` behind a typed Rust query handle, then delete the matching generic `BridgeStorage` read methods.
-  Avoid proposed-block sidecars and cert-voted block/object-cache work in this slice; those are broader compatibility
-  object/cache cleanup.
+- Continue with another self-contained compatibility query family, likely transaction public reads or PBFT scalar/head
+  reads. Avoid cert-voted block and object-cache sidecars until the broader compatibility object/cache cleanup is ready.
 
 Split the broad `BridgeStorage` query surface into typed read-only Rust query APIs for active Rust-mode callers, and
 delete unused broad storage-shim methods.

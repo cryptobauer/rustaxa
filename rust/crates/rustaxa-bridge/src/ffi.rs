@@ -51,6 +51,14 @@ use std::time::Instant;
 
 pub struct BridgeStorage(pub Arc<Storage>);
 
+/// Typed PBFT vote-list query handle for C++ compatibility materializers.
+///
+/// This wrapper keeps durable vote-list reads grouped under the PBFT storage
+/// boundary instead of exposing them as generic `BridgeStorage` methods.
+pub struct BridgePbftVoteStorageQueries {
+    pub storage: Arc<Storage>,
+}
+
 /// Rust-owned storage shim batch used to preserve the legacy C++ `Batch&` API
 /// while keeping the live write batch inside `rustaxa-storage`.
 ///
@@ -6099,9 +6107,13 @@ pub mod rustaxa_ffi {
         // Storage
 
         type BridgeStorage;
+        type BridgePbftVoteStorageQueries;
         type BridgeStorageBatch;
 
         pub fn create_storage(path: &str) -> Result<Box<BridgeStorage>>;
+        pub fn create_pbft_vote_storage_queries(
+            storage: &BridgeStorage,
+        ) -> Box<BridgePbftVoteStorageQueries>;
         pub fn create_storage_shim_batch(storage: &BridgeStorage) -> Box<BridgeStorageBatch>;
         pub fn storage_shim_save_status_field(
             batch: &mut BridgeStorageBatch,
@@ -6365,9 +6377,11 @@ pub mod rustaxa_ffi {
         pub fn get_pbft_mgr_status(self: &BridgeStorage, field: u8) -> Result<bool>;
         pub fn get_cert_voted_block_in_round(self: &BridgeStorage) -> Result<Vec<u8>>;
         pub fn get_pbft_head(self: &BridgeStorage, hash: &[u8; 32]) -> Result<Vec<u8>>;
-        pub fn get_own_verified_votes(self: &BridgeStorage) -> Result<Vec<VoteRlp>>;
-        pub fn get_all_two_t_plus_one_votes(self: &BridgeStorage) -> Result<Vec<VoteRlp>>;
-        pub fn get_reward_votes(self: &BridgeStorage) -> Result<Vec<VoteRlp>>;
+        pub fn get_own_verified_votes(self: &BridgePbftVoteStorageQueries) -> Result<Vec<VoteRlp>>;
+        pub fn get_all_two_t_plus_one_votes(
+            self: &BridgePbftVoteStorageQueries,
+        ) -> Result<Vec<VoteRlp>>;
+        pub fn get_reward_votes(self: &BridgePbftVoteStorageQueries) -> Result<Vec<VoteRlp>>;
         pub fn save_cert_voted_block_in_round(
             self: &BridgeStorage,
             round: u64,

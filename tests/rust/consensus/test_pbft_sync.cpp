@@ -23,6 +23,10 @@ std::array<uint8_t, 32> h256(uint8_t last_byte) {
 
 PbftSyncTransactionHash tx(uint8_t last_byte) { return PbftSyncTransactionHash{h256(last_byte)}; }
 
+rust::Box<BridgePbftVoteStorageQueries> voteQueries(const rust::Box<BridgeStorage>& storage) {
+  return create_pbft_vote_storage_queries(*storage);
+}
+
 std::vector<std::array<uint8_t, 32>> hashes(const rust::Vec<PbftSyncTransactionHash>& input) {
   std::vector<std::array<uint8_t, 32>> out;
   out.reserve(input.size());
@@ -1130,7 +1134,7 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyWritesPrimaryBatch) {
   EXPECT_FALSE(reward_reset_result.wrote_pbft_head);
   EXPECT_FALSE(reward_reset_result.wrote_period_data);
 
-  const auto reward_votes = storage->get_all_two_t_plus_one_votes();
+  const auto reward_votes = voteQueries(storage)->get_all_two_t_plus_one_votes();
   ASSERT_EQ(reward_votes.size(), 2);
   EXPECT_EQ(std::vector<uint8_t>(reward_votes[0].data.begin(), reward_votes[0].data.end()),
             (std::vector<uint8_t>{0x01}));
@@ -1195,7 +1199,7 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyCommitsOwnedBatch) {
   const auto period_data = storage->get_period_data_raw(101);
   EXPECT_EQ(std::vector<uint8_t>(period_data.begin(), period_data.end()), (std::vector<uint8_t>{0xc0}));
   EXPECT_TRUE(storage->get_transaction(h256(4)).empty());
-  const auto reward_votes = storage->get_all_two_t_plus_one_votes();
+  const auto reward_votes = voteQueries(storage)->get_all_two_t_plus_one_votes();
   ASSERT_EQ(reward_votes.size(), 2);
   EXPECT_EQ(std::vector<uint8_t>(reward_votes[0].data.begin(), reward_votes[0].data.end()),
             (std::vector<uint8_t>{0x01}));

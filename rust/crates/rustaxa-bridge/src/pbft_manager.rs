@@ -1675,7 +1675,7 @@ impl From<PbftManagerAdvancePeriodPlan> for FfiPbftManagerAdvancePeriodPlan {
 mod tests {
     use super::*;
     use crate::pillar_chain::create_pillar_chain_storage;
-    use crate::storage::create_storage;
+    use crate::storage::{create_pbft_vote_storage_queries, create_storage};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2372,7 +2372,8 @@ mod tests {
             assert_eq!(storage.get_pbft_mgr_field(1).unwrap(), 1);
             assert!(!storage.get_pbft_mgr_status(2).unwrap());
             assert!(!storage.get_pbft_mgr_status(3).unwrap());
-            assert!(storage.get_own_verified_votes().unwrap().is_empty());
+            let vote_queries = create_pbft_vote_storage_queries(&storage);
+            assert!(vote_queries.get_own_verified_votes().unwrap().is_empty());
         }
 
         let _ = fs::remove_dir_all(temp_dir);

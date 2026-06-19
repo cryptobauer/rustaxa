@@ -6,6 +6,7 @@
 #include "network/network.hpp"
 #include "network/tarcap/packets_handlers/latest/vote_packet_handler.hpp"
 #include "pbft/pbft_manager.hpp"
+#include "rustaxa-bridge/ffi.rs.h"
 #include "test_util/test_util.hpp"
 
 namespace taraxa::core_tests {
@@ -122,7 +123,8 @@ TEST_F(VoteTest, rust_generated_own_vote_materializes_persists_and_reloads) {
   EXPECT_EQ(own_votes[0]->rlp(true, true), weighted_vote_rlp);
 
 #ifdef RUSTAXA_ENABLE
-  const auto raw_stored_votes = node->getDB()->rustStorage().get_own_verified_votes();
+  auto vote_queries = rustaxa::create_pbft_vote_storage_queries(node->getDB()->rustStorage());
+  const auto raw_stored_votes = vote_queries->get_own_verified_votes();
   ASSERT_EQ(raw_stored_votes.size(), 1);
   EXPECT_EQ(dev::bytes(raw_stored_votes[0].data.begin(), raw_stored_votes[0].data.end()), weighted_vote_rlp);
 #endif
@@ -145,14 +147,12 @@ TEST_F(VoteTest, rust_reward_vote_check_accepts_reverse_round_fallback) {
   const auto cert_step = static_cast<PbftStep>(PbftVoteTypes::cert_vote);
   const blk_hash_t reward_block_hash(10);
   auto vote_mgr = node->getVoteManager();
-  const auto& wallet = node->getConfig().getFirstWallet();
+  const auto &wallet = node->getConfig().getFirstWallet();
 
-  auto preferred_vote =
-      genDummyVote(PbftVoteTypes::cert_vote, reward_period, preferred_round, cert_step, reward_block_hash, vote_mgr,
-                   wallet);
-  auto fallback_vote =
-      genDummyVote(PbftVoteTypes::cert_vote, reward_period, fallback_round, cert_step, reward_block_hash, vote_mgr,
-                   wallet);
+  auto preferred_vote = genDummyVote(PbftVoteTypes::cert_vote, reward_period, preferred_round, cert_step,
+                                     reward_block_hash, vote_mgr, wallet);
+  auto fallback_vote = genDummyVote(PbftVoteTypes::cert_vote, reward_period, fallback_round, cert_step,
+                                    reward_block_hash, vote_mgr, wallet);
   ASSERT_TRUE(vote_mgr->addVerifiedVote(preferred_vote));
   ASSERT_TRUE(vote_mgr->addVerifiedVote(fallback_vote));
 

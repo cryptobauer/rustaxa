@@ -1,4 +1,5 @@
 use crate::ffi::rustaxa_ffi;
+use crate::ffi::BridgePbftVoteStorageQueries;
 use crate::ffi::BridgeStorage;
 use crate::ffi::BridgeStorageBatch;
 use anyhow::Context;
@@ -80,6 +81,27 @@ pub fn create_storage(path: &str) -> Result<Box<BridgeStorage>, anyhow::Error> {
     Ok(Box::new(BridgeStorage(storage)))
 }
 
+/// Creates a typed PBFT vote-list query handle from the shared Rust storage owner.
+///
+/// Inputs:
+/// - `storage`: generic bridge storage owner used only as a construction-time
+///   lifetime seed.
+///
+/// Outputs:
+/// - a read-only PBFT vote query handle that owns a cloned Rust storage handle.
+///
+/// Invariants and edge behavior:
+/// - callers can materialize legacy C++ `PbftVote` objects without retaining a
+///   broad `BridgeStorage` query surface for vote-list reads
+/// - the handle does not mutate storage or decode votes.
+pub fn create_pbft_vote_storage_queries(
+    storage: &BridgeStorage,
+) -> Box<BridgePbftVoteStorageQueries> {
+    Box::new(BridgePbftVoteStorageQueries {
+        storage: storage.0.clone(),
+    })
+}
+
 /// Creates a Rust-owned storage batch for the C++ `DbStorage` shim.
 ///
 /// The returned object owns a native `rustaxa-storage` write batch and the shared
@@ -100,6 +122,46 @@ fn storage_shim_batch_mut(
         .batch
         .as_mut()
         .ok_or_else(|| anyhow::anyhow!("storage shim batch already committed"))
+}
+
+fn vote_rlps_to_bridge(votes: Vec<Vec<u8>>) -> Vec<rustaxa_ffi::VoteRlp> {
+    votes
+        .into_iter()
+        .map(|data| rustaxa_ffi::VoteRlp { data })
+        .collect()
+}
+
+impl BridgePbftVoteStorageQueries {
+    /// Returns locally stored verified vote RLPs from Rust PBFT storage.
+    ///
+    /// Inputs: none beyond the storage handle cloned into this typed query object.
+    /// Outputs: canonical vote RLP bytes for C++ compatibility materialization.
+    /// Edge behavior: missing storage rows return an empty vector.
+    pub fn get_own_verified_votes(&self) -> Result<Vec<rustaxa_ffi::VoteRlp>, anyhow::Error> {
+        Ok(vote_rlps_to_bridge(
+            self.storage.pbft().own_verified_votes_rlp()?,
+        ))
+    }
+
+    /// Returns flattened 2t+1 vote bundle RLPs in repository-defined order.
+    ///
+    /// Inputs: none beyond the cloned storage handle. Outputs are flattened
+    /// vote RLPs, preserving the Rust repository's deterministic vote-type
+    /// iteration order. Malformed stored bundle RLP returns an error.
+    pub fn get_all_two_t_plus_one_votes(&self) -> Result<Vec<rustaxa_ffi::VoteRlp>, anyhow::Error> {
+        Ok(vote_rlps_to_bridge(
+            self.storage.pbft().all_two_t_plus_one_votes_rlp()?,
+        ))
+    }
+
+    /// Returns extra reward vote RLPs from Rust PBFT storage.
+    ///
+    /// Inputs: none beyond the cloned storage handle. Outputs are canonical
+    /// vote RLP bytes for C++ compatibility materialization. Missing rows
+    /// return an empty vector.
+    pub fn get_reward_votes(&self) -> Result<Vec<rustaxa_ffi::VoteRlp>, anyhow::Error> {
+        Ok(vote_rlps_to_bridge(self.storage.pbft().reward_votes_rlp()?))
+    }
 }
 
 /// Appends a typed status-field write to a Rust-owned storage shim batch.
@@ -996,30 +1058,6 @@ impl BridgeStorage {
 
     pub fn get_pbft_head(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
         Ok(self.0.pbft().head(H256::from(*hash))?.unwrap_or_default())
-    }
-
-    pub fn get_own_verified_votes(&self) -> Result<Vec<rustaxa_ffi::VoteRlp>, anyhow::Error> {
-        let votes = self.0.pbft().own_verified_votes_rlp()?;
-        Ok(votes
-            .into_iter()
-            .map(|data| rustaxa_ffi::VoteRlp { data })
-            .collect())
-    }
-
-    pub fn get_all_two_t_plus_one_votes(&self) -> Result<Vec<rustaxa_ffi::VoteRlp>, anyhow::Error> {
-        let votes = self.0.pbft().all_two_t_plus_one_votes_rlp()?;
-        Ok(votes
-            .into_iter()
-            .map(|data| rustaxa_ffi::VoteRlp { data })
-            .collect())
-    }
-
-    pub fn get_reward_votes(&self) -> Result<Vec<rustaxa_ffi::VoteRlp>, anyhow::Error> {
-        let votes = self.0.pbft().reward_votes_rlp()?;
-        Ok(votes
-            .into_iter()
-            .map(|data| rustaxa_ffi::VoteRlp { data })
-            .collect())
     }
 
     pub fn save_cert_voted_block_in_round(

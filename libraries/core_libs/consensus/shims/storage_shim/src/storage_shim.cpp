@@ -65,6 +65,7 @@ DbStorage::DbStorage(fs::path const& path, uint32_t db_snapshot_each_n_pbft_bloc
     rust_storage_ = rustaxa::create_storage(path.string());
     pillar_storage_ = rustaxa::create_pillar_chain_storage(*rust_storage_.value());
     proposed_blocks_storage_ = rustaxa::create_proposed_blocks_index_from_storage(*rust_storage_.value());
+    pbft_vote_queries_ = rustaxa::create_pbft_vote_storage_queries(*rust_storage_.value());
     kMajorVersion_ = static_cast<uint32_t>(getStatusField(StatusDbField::DbMajorVersion));
     auto const minor_version = static_cast<uint32_t>(getStatusField(StatusDbField::DbMinorVersion));
     if (kMajorVersion_ != 0 && kMajorVersion_ != TARAXA_DB_MAJOR_VERSION) {
@@ -912,7 +913,7 @@ void DbStorage::saveOwnVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
 
 std::vector<std::shared_ptr<PbftVote>> DbStorage::getOwnVerifiedVotes() {
   std::vector<std::shared_ptr<PbftVote>> votes;
-  auto rust_votes = rust_storage_.value()->get_own_verified_votes();
+  auto rust_votes = pbft_vote_queries_.value()->get_own_verified_votes();
   votes.reserve(rust_votes.size());
   for (auto const& vote_rlp : rust_votes) {
     votes.emplace_back(std::make_shared<PbftVote>(dev::bytes(vote_rlp.data.begin(), vote_rlp.data.end())));
@@ -955,7 +956,7 @@ void DbStorage::replaceTwoTPlusOneVotesToBatch(TwoTPlusOneVotedBlockType type,
 
 std::vector<std::shared_ptr<PbftVote>> DbStorage::getAllTwoTPlusOneVotes() {
   std::vector<std::shared_ptr<PbftVote>> votes;
-  auto rust_votes = rust_storage_.value()->get_all_two_t_plus_one_votes();
+  auto rust_votes = pbft_vote_queries_.value()->get_all_two_t_plus_one_votes();
   votes.reserve(rust_votes.size());
   for (auto const& vote_rlp : rust_votes) {
     votes.emplace_back(std::make_shared<PbftVote>(dev::bytes(vote_rlp.data.begin(), vote_rlp.data.end())));
@@ -981,7 +982,7 @@ void DbStorage::saveExtraRewardVote(const std::shared_ptr<PbftVote>& vote) {
 
 std::vector<std::shared_ptr<PbftVote>> DbStorage::getRewardVotes() {
   std::vector<std::shared_ptr<PbftVote>> votes;
-  auto rust_votes = rust_storage_.value()->get_reward_votes();
+  auto rust_votes = pbft_vote_queries_.value()->get_reward_votes();
   votes.reserve(rust_votes.size());
   for (auto const& vote_rlp : rust_votes) {
     votes.emplace_back(std::make_shared<PbftVote>(dev::bytes(vote_rlp.data.begin(), vote_rlp.data.end())));
