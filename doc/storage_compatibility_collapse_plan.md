@@ -138,11 +138,16 @@ Landed sub-slices:
 - Pillar chain manager: production pillar-chain storage reads and writes now use a typed `BridgePillarChainStorage`
   handle that owns a cloned Rust storage handle. The C++ manager no longer retains or passes a generic `BridgeStorage*`
   for own-vote, current-block, finalized-block, latest-block, or period-data pillar storage calls.
+- TransactionManager: the Rust runtime now owns an optional cloned Rust storage handle, and the production C++ shim uses
+  `create_transaction_manager_runtime_from_storage(...)` instead of retaining a `BridgeStorage*`. DAG transaction
+  persistence, transaction-view lookup, finalized-status updates, finalized filtering, finalized verification, and
+  recovery now use runtime-owned storage in production calls; older byte-oriented bridge helpers remain for tests and
+  compatibility materialization.
 
 Next target:
 
 - Collapse one of the remaining constructor-time `BridgeStorage` seeds with retained generic storage fields, likely DAG
-  manager, TransactionManager, VoteManager, or PBFT manager startup/runtime handles.
+  manager, VoteManager, or PBFT manager startup/runtime handles.
 
 Scope:
 

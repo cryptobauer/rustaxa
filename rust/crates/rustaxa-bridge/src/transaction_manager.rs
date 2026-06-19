@@ -70,11 +70,13 @@ use rustaxa_consensus::transaction_queue::{
     TransactionQueueEntry, TransactionQueueInsertStatus, TransactionQueuePurgeOutcome,
 };
 use rustaxa_consensus::transaction_storage::{
-    load_non_finalized_recovery_entries, load_stored_transactions, save_transaction_count,
-    transaction_finalized, StoredTransactionLookupRequest,
-    STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR, STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM,
-    STORED_TRANSACTION_SOURCE_MISSING, STORED_TRANSACTION_SOURCE_PENDING,
+    load_non_finalized_recovery_entries, load_stored_transactions, save_non_finalized_transactions,
+    save_transaction_count, transaction_finalized, NonFinalizedTransactionStoragePayload,
+    StoredTransactionLookupRequest, STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR,
+    STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM, STORED_TRANSACTION_SOURCE_MISSING,
+    STORED_TRANSACTION_SOURCE_PENDING,
 };
+use rustaxa_storage::Storage;
 use rustaxa_types::LegacyTransactionEnvelope;
 use std::time::{Duration, Instant};
 
@@ -569,6 +571,15 @@ fn final_chain_transaction_period_lookup(
     Ok(Some(period))
 }
 
+fn transaction_manager_runtime_storage(
+    runtime: &BridgeTransactionManagerRuntime,
+) -> Result<&Storage> {
+    runtime
+        .storage
+        .as_deref()
+        .context("TM_RUNTIME_STORAGE_UNAVAILABLE")
+}
+
 /// Plans and persists accepted transactions for one incoming DAG block.
 ///
 /// This call is storage-complete: accepted payloads are written with one atomic
@@ -694,9 +705,9 @@ pub fn save_transactions_from_dag_block_with_sidecar(
 /// Executes one runtime admission pass and returns explicit storage and live-state effects.
 pub fn transaction_manager_runtime_execute_admission(
     runtime: &BridgeTransactionManagerRuntime,
-    storage: &BridgeStorage,
     facts: Vec<DagTransactionSaveSidecarFact>,
 ) -> Result<Box<BridgeTransactionManagerAdmissionExecution>> {
+    let storage = transaction_manager_runtime_storage(runtime)?;
     let plan = plan_transactions_from_dag_block(
         facts
             .into_iter()
@@ -714,7 +725,7 @@ pub fn transaction_manager_runtime_execute_admission(
             })
             .collect(),
         runtime.sidecar.transaction_count(),
-        |hash| transaction_finalized(&storage.0, hash).context("TM_DAG_TX_FINALIZED_LOOKUP_FAILED"),
+        |hash| transaction_finalized(storage, hash).context("TM_DAG_TX_FINALIZED_LOOKUP_FAILED"),
     )?;
 
     let mut accepted: Vec<DagTransactionSaveAccepted> =
@@ -745,7 +756,6 @@ pub fn transaction_manager_runtime_execute_admission(
 #[allow(clippy::boxed_local)]
 pub fn transaction_manager_runtime_commit_admission(
     runtime: &mut BridgeTransactionManagerRuntime,
-    storage: &BridgeStorage,
     execution: Box<BridgeTransactionManagerAdmissionExecution>,
 ) -> Result<DagTransactionSaveOutcome> {
     let BridgeTransactionManagerAdmissionExecution {
@@ -755,14 +765,19 @@ pub fn transaction_manager_runtime_commit_admission(
     } = *execution;
 
     if !accepted_payloads.is_empty() {
-        let storage_payloads: Vec<NonFinalizedTransactionPayload> = accepted_payloads
+        let storage = transaction_manager_runtime_storage(runtime)?;
+        let storage_payloads: Vec<NonFinalizedTransactionStoragePayload> = accepted_payloads
             .iter()
             .map(|payload| NonFinalizedTransactionPayload {
                 hash: payload.hash,
                 trx_rlp: payload.trx_rlp.clone(),
             })
+            .map(|payload| NonFinalizedTransactionStoragePayload {
+                hash: H256::from(payload.hash),
+                trx_rlp: payload.trx_rlp,
+            })
             .collect();
-        storage.save_non_finalized_transactions(storage_payloads, target_transaction_count)?;
+        save_non_finalized_transactions(storage, storage_payloads, target_transaction_count)?;
     }
 
     let mut accepted = accepted;
@@ -789,20 +804,18 @@ pub fn transaction_manager_runtime_commit_admission(
 /// Plans and persists accepted DAG-block transactions through the Rust manager runtime.
 pub fn save_transactions_from_dag_block_with_runtime(
     runtime: &mut BridgeTransactionManagerRuntime,
-    storage: &BridgeStorage,
     facts: Vec<DagTransactionSaveSidecarFact>,
 ) -> Result<DagTransactionSaveOutcome> {
-    let execution = transaction_manager_runtime_execute_admission(runtime, storage, facts)?;
-    transaction_manager_runtime_commit_admission(runtime, storage, execution)
+    let execution = transaction_manager_runtime_execute_admission(runtime, facts)?;
+    transaction_manager_runtime_commit_admission(runtime, execution)
 }
 
 /// Applies DAG transaction persistence and returns a typed command report.
 pub fn save_transactions_from_dag_block_command_report_with_runtime(
     runtime: &mut BridgeTransactionManagerRuntime,
-    storage: &BridgeStorage,
     facts: Vec<DagTransactionSaveSidecarFact>,
 ) -> Result<TransactionManagerDagSaveCommandReport> {
-    let outcome = save_transactions_from_dag_block_with_runtime(runtime, storage, facts)?;
+    let outcome = save_transactions_from_dag_block_with_runtime(runtime, facts)?;
     Ok(dag_save_command_report(&outcome))
 }
 
@@ -810,7 +823,6 @@ pub fn save_transactions_from_dag_block_command_report_with_runtime(
 /// with sender account nonces sourced from latest FinalChain state.
 pub fn save_transactions_from_dag_block_with_runtime_and_final_chain(
     runtime: &mut BridgeTransactionManagerRuntime,
-    storage: &BridgeStorage,
     final_chain: &BridgeFinalChain,
     facts: Vec<DagTransactionSaveRuntimeFact>,
 ) -> Result<DagTransactionSaveOutcome> {
@@ -827,22 +839,17 @@ pub fn save_transactions_from_dag_block_with_runtime_and_final_chain(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    save_transactions_from_dag_block_with_runtime(runtime, storage, sidecar_facts)
+    save_transactions_from_dag_block_with_runtime(runtime, sidecar_facts)
 }
 
 /// Returns transaction-manager DAG persistence as typed command actions.
 pub fn save_transactions_from_dag_block_command_report_with_runtime_and_final_chain(
     runtime: &mut BridgeTransactionManagerRuntime,
-    storage: &BridgeStorage,
     final_chain: &BridgeFinalChain,
     facts: Vec<DagTransactionSaveRuntimeFact>,
 ) -> Result<TransactionManagerDagSaveCommandReport> {
-    let outcome = save_transactions_from_dag_block_with_runtime_and_final_chain(
-        runtime,
-        storage,
-        final_chain,
-        facts,
-    )?;
+    let outcome =
+        save_transactions_from_dag_block_with_runtime_and_final_chain(runtime, final_chain, facts)?;
     Ok(dag_save_command_report(&outcome))
 }
 
@@ -981,7 +988,6 @@ pub fn update_finalized_transactions_status_with_sidecar(
 /// payloads, and advances the authoritative transaction count.
 pub fn update_finalized_transactions_status_with_runtime(
     runtime: &mut BridgeTransactionManagerRuntime,
-    storage: &BridgeStorage,
     period: u64,
     retention_window: u64,
     facts: Vec<FinalizedTransactionStatusSidecarFact>,
@@ -1006,8 +1012,11 @@ pub fn update_finalized_transactions_status_with_runtime(
     )?;
 
     if !plan.accepted_transactions.is_empty() {
-        save_transaction_count(&storage.0, plan.target_transaction_count)
-            .context("TM_FINALIZED_STATUS_TRXCOUNT_WRITE")?;
+        save_transaction_count(
+            transaction_manager_runtime_storage(runtime)?,
+            plan.target_transaction_count,
+        )
+        .context("TM_FINALIZED_STATUS_TRXCOUNT_WRITE")?;
     }
 
     if let Some(stale_period) = plan.stale_period {
@@ -1057,14 +1066,12 @@ pub fn update_finalized_transactions_status_with_runtime(
 /// Applies finalized-transaction status changes and returns typed command actions.
 pub fn update_finalized_transactions_status_command_report_with_runtime(
     runtime: &mut BridgeTransactionManagerRuntime,
-    storage: &BridgeStorage,
     period: u64,
     retention_window: u64,
     facts: Vec<FinalizedTransactionStatusSidecarFact>,
 ) -> Result<TransactionManagerFinalizedStatusCommandReport> {
     let outcome = update_finalized_transactions_status_with_runtime(
         runtime,
-        storage,
         period,
         retention_window,
         facts,
@@ -1075,7 +1082,6 @@ pub fn update_finalized_transactions_status_command_report_with_runtime(
 /// Applies finalized status changes plus queue purge and returns typed command actions.
 pub fn update_finalized_transactions_status_command_report_with_runtime_and_final_chain(
     runtime: &mut BridgeTransactionManagerRuntime,
-    storage: &BridgeStorage,
     final_chain: &BridgeFinalChain,
     period: u64,
     retention_window: u64,
@@ -1083,7 +1089,6 @@ pub fn update_finalized_transactions_status_command_report_with_runtime_and_fina
 ) -> Result<TransactionManagerFinalizedStatusCommandReport> {
     let outcome = update_finalized_transactions_status_with_runtime(
         runtime,
-        storage,
         period,
         retention_window,
         facts,
@@ -1174,7 +1179,6 @@ fn transaction_manager_insert_transaction(
 /// Filters finalized transactions using Rust runtime sidecars plus storage.
 pub fn transaction_manager_filter_non_finalized_with_runtime(
     runtime: &BridgeTransactionManagerRuntime,
-    storage: &BridgeStorage,
     requests: Vec<TransactionManagerSidecarLookupRequest>,
 ) -> Result<FinalizedTransactionFilterPlan> {
     let facts = requests
@@ -1191,7 +1195,8 @@ pub fn transaction_manager_filter_non_finalized_with_runtime(
 
     let plan: ConsensusFinalizedTransactionFilterPlan =
         plan_exclude_finalized_transactions_from_storage(facts, |hash| {
-            transaction_finalized(&storage.0, hash).context("TM_FILTER_FINALIZED_LOOKUP")
+            transaction_finalized(transaction_manager_runtime_storage(runtime)?, hash)
+                .context("TM_FILTER_FINALIZED_LOOKUP")
         })?;
 
     Ok(FinalizedTransactionFilterPlan {
@@ -1268,6 +1273,13 @@ pub fn transaction_manager_load_stored_transactions(
     storage: &BridgeStorage,
     requests: Vec<TransactionManagerStoredTransactionRequest>,
 ) -> Result<Vec<TransactionManagerStoredTransactionLookup>> {
+    transaction_manager_load_stored_transactions_from_storage(&storage.0, requests)
+}
+
+fn transaction_manager_load_stored_transactions_from_storage(
+    storage: &Storage,
+    requests: Vec<TransactionManagerStoredTransactionRequest>,
+) -> Result<Vec<TransactionManagerStoredTransactionLookup>> {
     let requests = requests
         .into_iter()
         .map(|request| StoredTransactionLookupRequest {
@@ -1276,7 +1288,7 @@ pub fn transaction_manager_load_stored_transactions(
         })
         .collect();
 
-    load_stored_transactions(&storage.0, requests)
+    load_stored_transactions(storage, requests)
         .context("TM_TRANSACTION_RLP_STORAGE_LOOKUP")?
         .into_iter()
         .map(|lookup| {
@@ -1306,7 +1318,21 @@ pub fn transaction_manager_load_proposal_transactions_with_final_chain(
     proposal_period: u64,
     requests: Vec<TransactionManagerStoredTransactionRequest>,
 ) -> Result<Vec<TransactionManagerStoredTransactionLookup>> {
-    let lookups = transaction_manager_load_stored_transactions(storage, requests)?;
+    transaction_manager_load_proposal_transactions_with_final_chain_from_storage(
+        &storage.0,
+        final_chain,
+        proposal_period,
+        requests,
+    )
+}
+
+fn transaction_manager_load_proposal_transactions_with_final_chain_from_storage(
+    storage: &Storage,
+    final_chain: &BridgeFinalChain,
+    proposal_period: u64,
+    requests: Vec<TransactionManagerStoredTransactionRequest>,
+) -> Result<Vec<TransactionManagerStoredTransactionLookup>> {
+    let lookups = transaction_manager_load_stored_transactions_from_storage(storage, requests)?;
     lookups
         .into_iter()
         .map(|mut lookup| {
@@ -1478,10 +1504,10 @@ fn keccak256(data: &[u8]) -> H256 {
 /// sourced from latest FinalChain state when storage lookup is safe.
 pub fn transaction_manager_verify_not_finalized_with_runtime_and_final_chain(
     runtime: &BridgeTransactionManagerRuntime,
-    storage: &BridgeStorage,
     final_chain: &BridgeFinalChain,
     facts: Vec<TransactionManagerVerifyNotFinalizedRuntimeFact>,
 ) -> Result<TransactionManagerVerifyNotFinalizedOutcome> {
+    let storage = transaction_manager_runtime_storage(runtime)?;
     for fact in facts {
         let hash = H256::from(fact.hash);
         ensure!(
@@ -1498,7 +1524,7 @@ pub fn transaction_manager_verify_not_finalized_with_runtime_and_final_chain(
         }
         let (_, sender_nonce, _) = final_chain_account_lookup(final_chain, &fact.sender)?;
         if sender_nonce >= U256::from_big_endian(&fact.transaction_nonce)
-            && transaction_finalized(&storage.0, hash).context("TM_VERIFY_FINALIZED_LOOKUP")?
+            && transaction_finalized(storage, hash).context("TM_VERIFY_FINALIZED_LOOKUP")?
         {
             return Ok(TransactionManagerVerifyNotFinalizedOutcome {
                 is_finalized: true,
@@ -1520,9 +1546,9 @@ pub fn transaction_manager_verify_not_finalized_with_runtime_and_final_chain(
 /// facts supplied by the external-EVM compatibility boundary.
 pub fn transaction_manager_verify_not_finalized_with_runtime(
     runtime: &BridgeTransactionManagerRuntime,
-    storage: &BridgeStorage,
     facts: Vec<TransactionManagerVerifyNotFinalizedSidecarFact>,
 ) -> Result<TransactionManagerVerifyNotFinalizedOutcome> {
+    let storage = transaction_manager_runtime_storage(runtime)?;
     for fact in facts {
         let hash = H256::from(fact.hash);
         ensure!(
@@ -1539,7 +1565,7 @@ pub fn transaction_manager_verify_not_finalized_with_runtime(
         }
         if U256::from_big_endian(&fact.sender_account_nonce)
             >= U256::from_big_endian(&fact.transaction_nonce)
-            && transaction_finalized(&storage.0, hash).context("TM_VERIFY_FINALIZED_LOOKUP")?
+            && transaction_finalized(storage, hash).context("TM_VERIFY_FINALIZED_LOOKUP")?
         {
             return Ok(TransactionManagerVerifyNotFinalizedOutcome {
                 is_finalized: true,
@@ -1566,7 +1592,13 @@ pub fn transaction_manager_verify_not_finalized_with_runtime(
 pub fn transaction_manager_load_nonfinalized_recovery(
     storage: &BridgeStorage,
 ) -> Result<Vec<TransactionManagerRecoveryEntry>> {
-    load_non_finalized_recovery_entries(&storage.0)
+    transaction_manager_load_nonfinalized_recovery_from_storage(&storage.0)
+}
+
+fn transaction_manager_load_nonfinalized_recovery_from_storage(
+    storage: &Storage,
+) -> Result<Vec<TransactionManagerRecoveryEntry>> {
+    load_non_finalized_recovery_entries(storage)
         .context("TM_NONFINALIZED_RECOVERY_STORAGE")?
         .into_iter()
         .map(|entry| {
@@ -1588,7 +1620,13 @@ pub fn transaction_manager_load_nonfinalized_recovery(
 pub fn transaction_manager_load_nonfinalized_recovery_inputs(
     storage: &BridgeStorage,
 ) -> Result<Vec<TransactionManagerSidecarRecoveryInsertInput>> {
-    let entries = transaction_manager_load_nonfinalized_recovery(storage)?;
+    transaction_manager_load_nonfinalized_recovery_inputs_from_storage(&storage.0)
+}
+
+fn transaction_manager_load_nonfinalized_recovery_inputs_from_storage(
+    storage: &Storage,
+) -> Result<Vec<TransactionManagerSidecarRecoveryInsertInput>> {
+    let entries = transaction_manager_load_nonfinalized_recovery_from_storage(storage)?;
     let mut recovered = Vec::with_capacity(entries.len());
 
     for entry in entries {
@@ -1620,9 +1658,10 @@ pub fn transaction_manager_load_nonfinalized_recovery_inputs(
 /// Rebuilds runtime recovery sidecars from Rust-backed storage without exposing count mirrors.
 pub fn transaction_manager_recover_nonfinalized_with_runtime(
     runtime: &mut BridgeTransactionManagerRuntime,
-    storage: &BridgeStorage,
 ) -> Result<()> {
-    let entries = transaction_manager_load_nonfinalized_recovery_inputs(storage)?;
+    let entries = transaction_manager_load_nonfinalized_recovery_inputs_from_storage(
+        transaction_manager_runtime_storage(runtime)?,
+    )?;
     runtime
         .transaction_manager_runtime_insert_recovery_entries(entries)
         .map(|_| ())
@@ -1649,6 +1688,32 @@ pub fn create_transaction_manager_runtime(
     initial_transaction_count: u64,
     config: TransactionQueueConfig,
 ) -> Box<BridgeTransactionManagerRuntime> {
+    create_transaction_manager_runtime_inner(initial_transaction_count, config, None)
+}
+
+/// Creates the production Rust-owned TransactionManager runtime with durable storage attached.
+///
+/// The runtime clones the underlying `Arc<rustaxa_storage::Storage>` from the
+/// generic constructor facade and becomes the storage authority for migrated
+/// transaction-manager persistence, recovery, lookup, and finalized-status
+/// routes. C++ should keep only this runtime handle after construction.
+pub fn create_transaction_manager_runtime_from_storage(
+    storage: &BridgeStorage,
+    initial_transaction_count: u64,
+    config: TransactionQueueConfig,
+) -> Box<BridgeTransactionManagerRuntime> {
+    create_transaction_manager_runtime_inner(
+        initial_transaction_count,
+        config,
+        Some(storage.0.clone()),
+    )
+}
+
+fn create_transaction_manager_runtime_inner(
+    initial_transaction_count: u64,
+    config: TransactionQueueConfig,
+    storage: Option<std::sync::Arc<Storage>>,
+) -> Box<BridgeTransactionManagerRuntime> {
     let gas_estimation_cache_size = config.max_size / 10;
     let gas_estimation_cache_delete_step = config.max_size / 100;
     Box::new(BridgeTransactionManagerRuntime {
@@ -1658,6 +1723,7 @@ pub fn create_transaction_manager_runtime(
             gas_estimation_cache_delete_step,
         ),
         queue: TransactionQueue::new(config.max_size as u64),
+        storage,
         last_drop_observed: None,
         transaction_pack_session: None,
     })
@@ -2010,16 +2076,16 @@ impl BridgeTransactionManagerRuntime {
     /// Returns bounded, source-ordered runtime payload views from queue, sidecars, and storage.
     pub fn transaction_manager_runtime_lookup_transaction_views(
         &self,
-        storage: &BridgeStorage,
         requests: Vec<TransactionManagerTransactionViewRequest>,
         max_count: u64,
     ) -> Result<TransactionManagerTransactionViewPlan> {
+        let storage = transaction_manager_runtime_storage(self)?;
         transaction_manager_runtime_lookup_transaction_views_inner(
             self,
             requests,
             max_count,
             |stored_requests| {
-                transaction_manager_load_stored_transactions(storage, stored_requests)
+                transaction_manager_load_stored_transactions_from_storage(storage, stored_requests)
             },
         )
     }
@@ -2027,18 +2093,18 @@ impl BridgeTransactionManagerRuntime {
     /// Returns bounded, source-ordered runtime payload views including proposal-period filtering.
     pub fn transaction_manager_runtime_lookup_proposal_transaction_views(
         &self,
-        storage: &BridgeStorage,
         final_chain: &BridgeFinalChain,
         proposal_period: u64,
         requests: Vec<TransactionManagerTransactionViewRequest>,
         max_count: u64,
     ) -> Result<TransactionManagerTransactionViewPlan> {
+        let storage = transaction_manager_runtime_storage(self)?;
         transaction_manager_runtime_lookup_transaction_views_inner(
             self,
             requests,
             max_count,
             |stored_requests| {
-                transaction_manager_load_proposal_transactions_with_final_chain(
+                transaction_manager_load_proposal_transactions_with_final_chain_from_storage(
                     storage,
                     final_chain,
                     proposal_period,
@@ -3193,8 +3259,11 @@ mod tests {
         )
         .expect("storage should initialize");
 
-        let mut runtime =
-            create_transaction_manager_runtime(11, TransactionQueueConfig { max_size: 32 });
+        let mut runtime = create_transaction_manager_runtime_from_storage(
+            &storage,
+            11,
+            TransactionQueueConfig { max_size: 32 },
+        );
         runtime
             .transaction_manager_runtime_queue_insert(runtime_queue_input_for_sender(
                 1, [9u8; 20], 7, true,
@@ -3249,7 +3318,6 @@ mod tests {
 
         let plan = runtime
             .transaction_manager_runtime_lookup_transaction_views(
-                &storage,
                 vec![
                     transaction_manager_view_request(1, 1),
                     transaction_manager_view_request(2, 2),
@@ -3357,11 +3425,13 @@ mod tests {
             )
             .expect("finalization should create block-scoped account snapshot");
 
-        let runtime =
-            create_transaction_manager_runtime(11, TransactionQueueConfig { max_size: 32 });
+        let runtime = create_transaction_manager_runtime_from_storage(
+            &storage,
+            11,
+            TransactionQueueConfig { max_size: 32 },
+        );
         let plan = runtime
             .transaction_manager_runtime_lookup_proposal_transaction_views(
-                &storage,
                 &final_chain,
                 1,
                 vec![TransactionManagerTransactionViewRequest {
@@ -3640,8 +3710,11 @@ mod tests {
             temp_dir.to_str().expect("temp path should be valid UTF-8"),
         )
         .expect("storage should initialize");
-        let mut runtime =
-            create_transaction_manager_runtime(3, TransactionQueueConfig { max_size: 16 });
+        let mut runtime = create_transaction_manager_runtime_from_storage(
+            &storage,
+            3,
+            TransactionQueueConfig { max_size: 16 },
+        );
 
         storage
             .save_transaction_location(&[2u8; 32], 7, 0, false)
@@ -3667,7 +3740,6 @@ mod tests {
 
         let out = transaction_manager_filter_non_finalized_with_runtime(
             &runtime,
-            &storage,
             vec![
                 TransactionManagerSidecarLookupRequest {
                     input_index: 0,
@@ -3803,15 +3875,17 @@ mod tests {
             temp_dir.to_str().expect("temp path should be valid UTF-8"),
         )
         .expect("storage should initialize");
-        let mut runtime =
-            create_transaction_manager_runtime(7, TransactionQueueConfig { max_size: 16 });
+        let mut runtime = create_transaction_manager_runtime_from_storage(
+            &storage,
+            7,
+            TransactionQueueConfig { max_size: 16 },
+        );
         runtime
             .transaction_manager_runtime_queue_insert(runtime_queue_input(1, true))
             .expect("queue seed should succeed");
 
         let execution = transaction_manager_runtime_execute_admission(
             &runtime,
-            &storage,
             vec![dag_tx_sidecar_fact(0, 1, 5, 4, 0x11)],
         )
         .expect("runtime admission execute should succeed");
@@ -3825,7 +3899,7 @@ mod tests {
             Vec::<u8>::new()
         );
 
-        let out = transaction_manager_runtime_commit_admission(&mut runtime, &storage, execution)
+        let out = transaction_manager_runtime_commit_admission(&mut runtime, execution)
             .expect("runtime admission commit should succeed");
         assert_eq!(out.accepted.len(), 1);
         assert!(out.accepted[0].erased_from_queue);
@@ -3848,15 +3922,17 @@ mod tests {
             temp_dir.to_str().expect("temp path should be valid UTF-8"),
         )
         .expect("storage should initialize");
-        let mut runtime =
-            create_transaction_manager_runtime(7, TransactionQueueConfig { max_size: 16 });
+        let mut runtime = create_transaction_manager_runtime_from_storage(
+            &storage,
+            7,
+            TransactionQueueConfig { max_size: 16 },
+        );
         runtime
             .transaction_manager_runtime_queue_insert(runtime_queue_input(1, true))
             .expect("queue seed should succeed");
 
         let out = save_transactions_from_dag_block_with_runtime(
             &mut runtime,
-            &storage,
             vec![dag_tx_sidecar_fact(0, 1, 5, 4, 0x33)],
         )
         .expect("runtime wrapper should succeed");
@@ -3905,11 +3981,13 @@ mod tests {
             },
         )
         .expect("final chain should initialize");
-        let mut runtime =
-            create_transaction_manager_runtime(7, TransactionQueueConfig { max_size: 16 });
+        let mut runtime = create_transaction_manager_runtime_from_storage(
+            &storage,
+            7,
+            TransactionQueueConfig { max_size: 16 },
+        );
         let out = save_transactions_from_dag_block_with_runtime_and_final_chain(
             &mut runtime,
-            &storage,
             &final_chain,
             vec![dag_tx_runtime_fact(0, 1, 1, sender, 0x33)],
         )
@@ -3955,15 +4033,17 @@ mod tests {
             },
         )
         .expect("final chain should initialize");
-        let mut runtime =
-            create_transaction_manager_runtime(7, TransactionQueueConfig { max_size: 16 });
+        let mut runtime = create_transaction_manager_runtime_from_storage(
+            &storage,
+            7,
+            TransactionQueueConfig { max_size: 16 },
+        );
         runtime
             .transaction_manager_runtime_queue_insert(runtime_queue_input(1, true))
             .expect("queue seed should succeed");
 
         let report = save_transactions_from_dag_block_command_report_with_runtime_and_final_chain(
             &mut runtime,
-            &storage,
             &final_chain,
             vec![dag_tx_runtime_fact(0, 1, 1, sender, 0x33)],
         )
@@ -4048,8 +4128,11 @@ mod tests {
             .save_status_field(StatusField::TrxCount as u8, 7)
             .expect("status field seed should persist");
 
-        let mut runtime =
-            create_transaction_manager_runtime(7, TransactionQueueConfig { max_size: 16 });
+        let mut runtime = create_transaction_manager_runtime_from_storage(
+            &storage,
+            7,
+            TransactionQueueConfig { max_size: 16 },
+        );
         runtime
             .transaction_manager_runtime_insert_non_finalized(
                 TransactionManagerSidecarInsertInput {
@@ -4064,7 +4147,6 @@ mod tests {
 
         let report = update_finalized_transactions_status_command_report_with_runtime(
             &mut runtime,
-            &storage,
             11,
             10,
             vec![FinalizedTransactionStatusSidecarFact {
@@ -4124,8 +4206,11 @@ mod tests {
         )
         .expect("final chain should initialize");
 
-        let mut runtime =
-            create_transaction_manager_runtime(7, TransactionQueueConfig { max_size: 16 });
+        let mut runtime = create_transaction_manager_runtime_from_storage(
+            &storage,
+            7,
+            TransactionQueueConfig { max_size: 16 },
+        );
         runtime
             .transaction_manager_runtime_queue_insert(runtime_queue_input_for_sender(
                 1, sender, 1, true,
@@ -4135,7 +4220,6 @@ mod tests {
         let report =
             update_finalized_transactions_status_command_report_with_runtime_and_final_chain(
                 &mut runtime,
-                &storage,
                 &final_chain,
                 100,
                 10,
@@ -4401,10 +4485,13 @@ mod tests {
             .save_transaction_location(&[2u8; 32], 11, 0, false)
             .expect("stale finalized location should persist");
 
-        let mut runtime =
-            create_transaction_manager_runtime(4, TransactionQueueConfig { max_size: 16 });
+        let mut runtime = create_transaction_manager_runtime_from_storage(
+            &storage,
+            4,
+            TransactionQueueConfig { max_size: 16 },
+        );
 
-        transaction_manager_recover_nonfinalized_with_runtime(&mut runtime, &storage)
+        transaction_manager_recover_nonfinalized_with_runtime(&mut runtime)
             .expect("runtime recovery should execute");
 
         assert_eq!(runtime.transaction_manager_runtime_transaction_count(), 4);
@@ -4975,10 +5062,13 @@ mod tests {
         storage
             .save_transaction_location(&[2u8; 32], 7, 0, false)
             .expect("finalized hash should be persisted");
-        let runtime = create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
+        let runtime = create_transaction_manager_runtime_from_storage(
+            &storage,
+            0,
+            TransactionQueueConfig { max_size: 8 },
+        );
         let out = transaction_manager_verify_not_finalized_with_runtime_and_final_chain(
             &runtime,
-            &storage,
             &final_chain,
             vec![
                 verify_not_finalized_runtime_fact(0, 1, 10, sender),

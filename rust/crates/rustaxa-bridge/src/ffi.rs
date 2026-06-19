@@ -212,10 +212,13 @@ pub struct BridgeTransactionQueue {
 /// The runtime combines the manager sidecar state with Rust queue state so the
 /// C++ TransactionManager shim can route live admission, lookup, and finalization
 /// queue effects through one Rust-owned authority while still materializing
-/// legacy `Transaction` objects at the C++ API boundary.
+/// legacy `Transaction` objects at the C++ API boundary. Production instances
+/// also own a cloned Rust storage handle so C++ does not retain or pass the
+/// generic `BridgeStorage` facade for transaction-manager storage operations.
 pub struct BridgeTransactionManagerRuntime {
     pub sidecar: TransactionManagerSidecar,
     pub queue: TransactionQueue,
+    pub storage: Option<Arc<Storage>>,
     pub last_drop_observed: Option<Instant>,
     pub transaction_pack_session: Option<TransactionManagerRuntimePackSession>,
 }
@@ -5256,6 +5259,11 @@ pub mod rustaxa_ffi {
             initial_transaction_count: u64,
             config: TransactionQueueConfig,
         ) -> Box<BridgeTransactionManagerRuntime>;
+        pub fn create_transaction_manager_runtime_from_storage(
+            storage: &BridgeStorage,
+            initial_transaction_count: u64,
+            config: TransactionQueueConfig,
+        ) -> Box<BridgeTransactionManagerRuntime>;
         pub fn transaction_manager_runtime_pack_begin(
             self: &mut BridgeTransactionManagerRuntime,
             weight_limit: u64,
@@ -5439,14 +5447,12 @@ pub mod rustaxa_ffi {
         /// Resolves requested hashes through queue, sidecars, then Rust storage.
         pub fn transaction_manager_runtime_lookup_transaction_views(
             self: &BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
             requests: Vec<TransactionManagerTransactionViewRequest>,
             max_count: u64,
         ) -> Result<TransactionManagerTransactionViewPlan>;
         /// Resolves requested hashes through queue, sidecars, then proposal-filtered Rust storage.
         pub fn transaction_manager_runtime_lookup_proposal_transaction_views(
             self: &BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
             final_chain: &BridgeFinalChain,
             proposal_period: u64,
             requests: Vec<TransactionManagerTransactionViewRequest>,
@@ -5501,38 +5507,32 @@ pub mod rustaxa_ffi {
         ) -> Result<DagTransactionSaveOutcome>;
         pub fn save_transactions_from_dag_block_with_runtime(
             runtime: &mut BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
             facts: Vec<DagTransactionSaveSidecarFact>,
         ) -> Result<DagTransactionSaveOutcome>;
         /// Applies DAG transaction persistence and returns a typed command report.
         pub fn save_transactions_from_dag_block_command_report_with_runtime(
             runtime: &mut BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
             facts: Vec<DagTransactionSaveSidecarFact>,
         ) -> Result<TransactionManagerDagSaveCommandReport>;
         pub fn save_transactions_from_dag_block_with_runtime_and_final_chain(
             runtime: &mut BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
             final_chain: &BridgeFinalChain,
             facts: Vec<DagTransactionSaveRuntimeFact>,
         ) -> Result<DagTransactionSaveOutcome>;
         /// Applies DAG transaction persistence and returns a typed command report.
         pub fn save_transactions_from_dag_block_command_report_with_runtime_and_final_chain(
             runtime: &mut BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
             final_chain: &BridgeFinalChain,
             facts: Vec<DagTransactionSaveRuntimeFact>,
         ) -> Result<TransactionManagerDagSaveCommandReport>;
         /// Executes runtime admission planning and returns an explicit commit script.
         pub fn transaction_manager_runtime_execute_admission(
             runtime: &BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
             facts: Vec<DagTransactionSaveSidecarFact>,
         ) -> Result<Box<BridgeTransactionManagerAdmissionExecution>>;
         /// Commits one runtime admission script with storage-first ordering.
         pub fn transaction_manager_runtime_commit_admission(
             runtime: &mut BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
             execution: Box<BridgeTransactionManagerAdmissionExecution>,
         ) -> Result<DagTransactionSaveOutcome>;
         pub fn save_transactions_from_dag_block(
@@ -5549,7 +5549,6 @@ pub mod rustaxa_ffi {
         ) -> Result<FinalizedTransactionStatusPlan>;
         pub fn update_finalized_transactions_status_with_runtime(
             runtime: &mut BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
             period: u64,
             retention_window: u64,
             facts: Vec<FinalizedTransactionStatusSidecarFact>,
@@ -5557,7 +5556,6 @@ pub mod rustaxa_ffi {
         /// Applies finalized status updates and returns a typed command report.
         pub fn update_finalized_transactions_status_command_report_with_runtime(
             runtime: &mut BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
             period: u64,
             retention_window: u64,
             facts: Vec<FinalizedTransactionStatusSidecarFact>,
@@ -5565,7 +5563,6 @@ pub mod rustaxa_ffi {
         /// Applies finalized status updates plus periodic purge and returns a typed command report.
         pub fn update_finalized_transactions_status_command_report_with_runtime_and_final_chain(
             runtime: &mut BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
             final_chain: &BridgeFinalChain,
             period: u64,
             retention_window: u64,
@@ -5584,18 +5581,15 @@ pub mod rustaxa_ffi {
         ) -> Result<TransactionManagerVerifyTransactionOutcome>;
         pub fn transaction_manager_filter_non_finalized_with_runtime(
             runtime: &BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
             requests: Vec<TransactionManagerSidecarLookupRequest>,
         ) -> Result<FinalizedTransactionFilterPlan>;
         pub fn transaction_manager_verify_not_finalized_with_runtime_and_final_chain(
             runtime: &BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
             final_chain: &BridgeFinalChain,
             facts: Vec<TransactionManagerVerifyNotFinalizedRuntimeFact>,
         ) -> Result<TransactionManagerVerifyNotFinalizedOutcome>;
         pub fn transaction_manager_verify_not_finalized_with_runtime(
             runtime: &BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
             facts: Vec<TransactionManagerVerifyNotFinalizedSidecarFact>,
         ) -> Result<TransactionManagerVerifyNotFinalizedOutcome>;
         /// Resolves transaction hashes through TransactionManager storage rules.
@@ -5621,7 +5615,6 @@ pub mod rustaxa_ffi {
         /// Rebuilds runtime recovery sidecars from Rust-backed storage.
         pub fn transaction_manager_recover_nonfinalized_with_runtime(
             runtime: &mut BridgeTransactionManagerRuntime,
-            storage: &BridgeStorage,
         ) -> Result<()>;
 
         // Consensus verified votes

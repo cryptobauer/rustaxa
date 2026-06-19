@@ -675,7 +675,7 @@ class TransactionManagerRustShimAccess {
     const auto report = [&]() {
       try {
         return rustaxa::save_transactions_from_dag_block_command_report_with_runtime_and_final_chain(
-            *manager.runtime_, *manager.rust_storage_, manager.final_chain_->rustFinalChainForRust(), std::move(facts));
+            *manager.runtime_, manager.final_chain_->rustFinalChainForRust(), std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_DAG_TX_PERSIST_FAILED: ") + e.what());
       }
@@ -731,7 +731,7 @@ class TransactionManagerRustShimAccess {
     const auto report = [&]() {
       try {
         return rustaxa::save_transactions_from_dag_block_command_report_with_runtime_and_final_chain(
-            *manager.runtime_, *manager.rust_storage_, manager.final_chain_->rustFinalChainForRust(), std::move(facts));
+            *manager.runtime_, manager.final_chain_->rustFinalChainForRust(), std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_DAG_TX_PERSIST_FAILED: ") + e.what());
       }
@@ -847,11 +847,9 @@ class TransactionManagerRustShimAccess {
         try {
           if (proposal_period.has_value() && manager.final_chain_) {
             return manager.runtime_->transaction_manager_runtime_lookup_proposal_transaction_views(
-                *manager.rust_storage_, manager.final_chain_->rustFinalChainForRust(), proposal_period.value(),
-                std::move(requests), 0);
+                manager.final_chain_->rustFinalChainForRust(), proposal_period.value(), std::move(requests), 0);
           }
-          return manager.runtime_->transaction_manager_runtime_lookup_transaction_views(*manager.rust_storage_,
-                                                                                        std::move(requests), 0);
+          return manager.runtime_->transaction_manager_runtime_lookup_transaction_views(std::move(requests), 0);
         } catch (const std::exception& e) {
           if (proposal_period.has_value()) {
             throw DbException(std::string("RUST_TX_MANAGER_PROPOSAL_VIEW_LOOKUP_FAILED: ") + e.what());
@@ -896,7 +894,7 @@ class TransactionManagerRustShimAccess {
                                                                      const std::vector<trx_hash_t>& hashes) {
     const auto plan = [&]() {
       try {
-        return rustaxa::transaction_manager_filter_non_finalized_with_runtime(*manager.runtime_, *manager.rust_storage_,
+        return rustaxa::transaction_manager_filter_non_finalized_with_runtime(*manager.runtime_,
                                                                               buildSidecarLookupRequests(hashes));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_TX_FILTER_FAILED: ") + e.what());
@@ -942,7 +940,7 @@ class TransactionManagerRustShimAccess {
     const auto outcome = [&]() {
       try {
         return rustaxa::transaction_manager_verify_not_finalized_with_runtime_and_final_chain(
-            *manager.runtime_, *manager.rust_storage_, manager.final_chain_->rustFinalChainForRust(), std::move(facts));
+            *manager.runtime_, manager.final_chain_->rustFinalChainForRust(), std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: ") + e.what());
       }
@@ -985,7 +983,7 @@ class TransactionManagerRustShimAccess {
     const auto outcome = [&]() {
       try {
         return rustaxa::transaction_manager_verify_not_finalized_with_runtime_and_final_chain(
-            *manager.runtime_, *manager.rust_storage_, manager.final_chain_->rustFinalChainForRust(), std::move(facts));
+            *manager.runtime_, manager.final_chain_->rustFinalChainForRust(), std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: ") + e.what());
       }
@@ -1171,7 +1169,7 @@ class TransactionManagerRustShimAccess {
     std::unique_lock transactions_lock(manager.transactions_mutex_);
     [&]() {
       try {
-        rustaxa::transaction_manager_recover_nonfinalized_with_runtime(*manager.runtime_, *manager.rust_storage_);
+        rustaxa::transaction_manager_recover_nonfinalized_with_runtime(*manager.runtime_);
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_TX_RECOVERY_FAILED: ") + e.what());
       }
@@ -1215,8 +1213,8 @@ class TransactionManagerRustShimAccess {
     const auto report = [&]() {
       try {
         return rustaxa::update_finalized_transactions_status_command_report_with_runtime_and_final_chain(
-            *manager.runtime_, *manager.rust_storage_, manager.final_chain_->rustFinalChainForRust(),
-            period_data.pbft_blk->getPeriod(), recently_finalized_transactions_periods, std::move(facts));
+            *manager.runtime_, manager.final_chain_->rustFinalChainForRust(), period_data.pbft_blk->getPeriod(),
+            recently_finalized_transactions_periods, std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: ") + e.what());
       }

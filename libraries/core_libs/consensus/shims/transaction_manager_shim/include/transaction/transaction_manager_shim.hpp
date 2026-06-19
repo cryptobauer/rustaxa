@@ -52,9 +52,9 @@ class TransactionManager : public TransactionManagerOld {
   TransactionManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db,
                      std::shared_ptr<final_chain::FinalChain> final_chain, addr_t node_addr)
       : TransactionManagerOld(conf, db, std::move(final_chain), node_addr),
-        runtime_(rustaxa::create_transaction_manager_runtime(
-            db->getStatusField(StatusDbField::TrxCount), rustaxa::TransactionQueueConfig{conf.transactions_pool_size})),
-        rust_storage_(&db->rustStorage()) {}
+        runtime_(rustaxa::create_transaction_manager_runtime_from_storage(
+            db->rustStorage(), db->getStatusField(StatusDbField::TrxCount),
+            rustaxa::TransactionQueueConfig{conf.transactions_pool_size})) {}
 
   TransactionManager(const TransactionManager &) = delete;
   TransactionManager(TransactionManager &&) = delete;
@@ -337,7 +337,6 @@ class TransactionManager : public TransactionManagerOld {
    * account reads, and lifecycle orchestration.
    */
   ::rust::Box<rustaxa::BridgeTransactionManagerRuntime> runtime_;
-  rustaxa::BridgeStorage *rust_storage_ = nullptr;
   mutable std::mutex pack_mutex_;
 };
 
