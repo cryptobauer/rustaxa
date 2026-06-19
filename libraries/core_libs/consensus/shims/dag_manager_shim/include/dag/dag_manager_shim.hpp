@@ -113,6 +113,12 @@ class DagManager : public DagManagerOld {
    */
   rustaxa::DagProposerAttemptPlan planProposerAttempt(rustaxa::DagProposerAttemptInput input) const;
   /**
+   * Opens an ordered Rust-owned proposer session for one `DagBlockProposer::proposeDagBlock` attempt.
+   *
+   * C++ executes only requested live effects and reports their results before the Rust session advances.
+   */
+  rust::Box<rustaxa::BridgeDagProposerSession> createProposerSession(rustaxa::DagProposerAttemptInput input) const;
+  /**
    * Resolves the proposal period for a DAG level through the Rust DAG runtime.
    *
    * Missing storage rows are returned as `std::nullopt`. Storage backend or

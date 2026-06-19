@@ -82,6 +82,10 @@ pub struct BridgeDagVerifyBlockSession {
     pub state: crate::dag::DagVerifyBlockSession,
 }
 
+pub struct BridgeDagProposerSession {
+    pub state: crate::dag::DagProposerSession,
+}
+
 /// PBFT chain runtime wrapper. Pure state-only instances are used by unit tests
 /// and deterministic head transitions; storage-backed instances own the shared
 /// Rust storage handle used for PBFT block lookup/materialization.
@@ -3815,6 +3819,59 @@ pub mod rustaxa_ffi {
         transaction_request: DagProposerTransactionPackRequest,
     }
 
+    /// Step returned by the Rust-owned DAG proposer session cursor.
+    struct DagProposerSessionStep {
+        status: u8,
+        action: u8,
+        reason_code: u32,
+        return_value: bool,
+        update_retry_state: bool,
+        next_last_propose_level: u64,
+        next_retry_count: u64,
+        frontier_pivot: [u8; 32],
+        frontier_tips: Vec<DagHash>,
+        proposal_level: u64,
+        proposal_period: u64,
+        last_finalized_period: u64,
+        vrf_input: Vec<u8>,
+        vote_count: u64,
+        max_vote_count: u64,
+        vdf_difficulty: u16,
+        vdf_stale: bool,
+        old_proposal: bool,
+        vdf_message: Vec<u8>,
+        selected_transaction_hashes: Vec<DagHash>,
+        transaction_gas_estimations: Vec<u64>,
+        transaction_request: DagProposerTransactionPackRequest,
+        error_code: String,
+    }
+
+    /// Report from the live transaction-packing executor boundary.
+    struct DagProposerTransactionPackReport {
+        transaction_hashes: Vec<DagHash>,
+        transaction_gas_estimations: Vec<u64>,
+    }
+
+    /// Report from a live in-flight VDF wait observation.
+    struct DagProposerVdfWaitReport {
+        latest_proposal_level: u64,
+    }
+
+    /// Report that a live VDF proof executor boundary has completed.
+    struct DagProposerVdfProofReport {
+        proof_ok: bool,
+    }
+
+    /// Report after the compatibility stale-proof sleep observes latest level.
+    struct DagProposerStaleProofReport {
+        latest_proposal_level: u64,
+    }
+
+    /// Report after C++ materializes/signs/adds the proposed DAG block.
+    struct DagProposerAddBlockReport {
+        accepted: bool,
+    }
+
     /// Facts observed after the live transaction-packing boundary.
     struct DagProposerPostPackInput {
         proposal_level: u64,
@@ -4464,6 +4521,10 @@ pub mod rustaxa_ffi {
             self: &BridgeDagManagerRuntime,
             input: DagProposerAttemptInput,
         ) -> Result<DagProposerAttemptPlan>;
+        pub fn dag_manager_runtime_create_proposer_session(
+            self: &BridgeDagManagerRuntime,
+            input: DagProposerAttemptInput,
+        ) -> Result<Box<BridgeDagProposerSession>>;
         pub fn dag_manager_runtime_ensure_proposal_period_mapping(
             self: &BridgeDagManagerRuntime,
             level: u64,
@@ -4508,6 +4569,29 @@ pub mod rustaxa_ffi {
             self: &mut BridgeDagVerifyBlockSession,
             report: DagVerifyBlockGasReport,
         ) -> DagVerifyBlockSessionStep;
+        type BridgeDagProposerSession;
+        pub fn dag_proposer_session_next(self: &BridgeDagProposerSession)
+            -> DagProposerSessionStep;
+        pub fn dag_proposer_session_report_transactions(
+            self: &mut BridgeDagProposerSession,
+            report: DagProposerTransactionPackReport,
+        ) -> DagProposerSessionStep;
+        pub fn dag_proposer_session_report_vdf_wait(
+            self: &BridgeDagProposerSession,
+            report: DagProposerVdfWaitReport,
+        ) -> DagProposerSessionStep;
+        pub fn dag_proposer_session_report_vdf_proof(
+            self: &mut BridgeDagProposerSession,
+            report: DagProposerVdfProofReport,
+        ) -> DagProposerSessionStep;
+        pub fn dag_proposer_session_report_stale_proof(
+            self: &mut BridgeDagProposerSession,
+            report: DagProposerStaleProofReport,
+        ) -> DagProposerSessionStep;
+        pub fn dag_proposer_session_report_add_block(
+            self: &mut BridgeDagProposerSession,
+            report: DagProposerAddBlockReport,
+        ) -> DagProposerSessionStep;
         pub fn dag_verify_transaction_availability(
             input: DagVerifyTransactionAvailabilityInput,
         ) -> DagVerifyTransactionAvailabilityResult;

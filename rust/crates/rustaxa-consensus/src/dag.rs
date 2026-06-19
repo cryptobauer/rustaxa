@@ -196,6 +196,8 @@ pub const DAG_PROPOSER_REASON_STALE_VDF_RETRY: u32 = 12;
 pub const DAG_PROPOSER_REASON_STALE_VDF_RESET: u32 = 13;
 /// DAG proposer reason: live transaction packing selected no transactions.
 pub const DAG_PROPOSER_REASON_PACKED_TRANSACTIONS_EMPTY: u32 = 14;
+/// DAG proposer reason: the proposal period exists but its PBFT block hash is unavailable for VDF input.
+pub const DAG_PROPOSER_REASON_MISSING_VDF_INPUT: u32 = 15;
 
 /// Inputs for deterministic `DagManager::verifyBlock` prechecks.
 ///
@@ -2214,6 +2216,11 @@ pub fn plan_dag_proposer_attempt(input: DagProposerAttemptInput) -> Result<DagPr
         },
     };
     if pre_plan.action != DAG_PROPOSER_ACTION_CONTINUE {
+        return Ok(plan);
+    }
+    if !input.period_block_hash_found {
+        plan.action = DAG_PROPOSER_ACTION_RETRY_LATER;
+        plan.reason_code = DAG_PROPOSER_REASON_MISSING_VDF_INPUT;
         return Ok(plan);
     }
 
@@ -5535,6 +5542,18 @@ mod tests {
 
         assert_eq!(plan.action, DAG_PROPOSER_ACTION_SKIP);
         assert_eq!(plan.reason_code, DAG_PROPOSER_REASON_TRANSACTION_POOL_EMPTY);
+        assert!(plan.vrf_input.is_empty());
+    }
+
+    #[test]
+    fn dag_proposer_attempt_retries_when_vdf_period_hash_is_missing() {
+        let mut input = proposer_attempt_input();
+        input.period_block_hash_found = false;
+
+        let plan = plan_dag_proposer_attempt(input).expect("plan");
+
+        assert_eq!(plan.action, DAG_PROPOSER_ACTION_RETRY_LATER);
+        assert_eq!(plan.reason_code, DAG_PROPOSER_REASON_MISSING_VDF_INPUT);
         assert!(plan.vrf_input.is_empty());
     }
 

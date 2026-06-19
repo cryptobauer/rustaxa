@@ -127,11 +127,17 @@ Landed:
   DAG manager runtime tip-selection plan. Rust loads tip metadata from canonical stored DAG block RLP, skips missing
   tips, applies unique-proposer priority, descending-level ordering, gas-limit enforcement, and max-tip enforcement; C++
   only translates hashes for the legacy API.
+- `DagBlockProposer::proposeDagBlock` now opens a Rust-owned proposer session. Rust owns attempt skip reasons,
+  transaction-pack command selection, VDF input/message bytes, VDF wait/cancel decisions, stale-proof decisions,
+  add-block completion outcome, missing VDF input status, and retry-cursor updates while C++ reports live transaction
+  packing, async VDF executor, compatibility sleep, signing/materialization, and add-block facts.
 
 Remaining:
 
-- The main proposer loop still needs a Rust proposer runtime/session for skip reasons, VDF payload planning, transaction
-  packing command selection, block-construction command sequencing, executor reports, and final proposal outcomes.
+- The proposer path still uses temporary C++ block-construction/signing materialization and a C++ timestamp fact before
+  Rust finalizes the signed block RLP.
+- Network throttle during transaction packing is still a C++ executor shortcut and should become an explicit session
+  report instead of looking like an empty transaction pack.
 
 Scope:
 
