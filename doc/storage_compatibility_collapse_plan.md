@@ -143,11 +143,14 @@ Landed sub-slices:
   persistence, transaction-view lookup, finalized-status updates, finalized filtering, finalized verification, and
   recovery now use runtime-owned storage in production calls; older byte-oriented bridge helpers remain for tests and
   compatibility materialization.
+- VoteManager: production PBFT vote persistence now uses the storage-attached `VerifiedVotes` / `BridgeVerifiedVotes`
+  runtime. The C++ manager no longer retains a generic `BridgeStorage*`; own-vote save/clear, vote-progress
+  persistence, and reward-vote finalization reset route through the typed verified-votes runtime.
 
 Next target:
 
 - Collapse one of the remaining constructor-time `BridgeStorage` seeds with retained generic storage fields, likely DAG
-  manager, VoteManager, or PBFT manager startup/runtime handles.
+  manager or PBFT manager startup/runtime handles.
 
 Scope:
 

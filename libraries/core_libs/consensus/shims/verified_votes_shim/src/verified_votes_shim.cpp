@@ -214,6 +214,36 @@ VerifiedVotes::VerifiedVotes(addr_t node_addr) : rust_verified_votes_(rustaxa::c
   LOG_OBJECTS_CREATE("VERIFIED_VOTES");
 }
 
+void VerifiedVotes::attachRustStorage(rustaxa::BridgeStorage& storage) {
+  std::scoped_lock lock(verified_votes_access_);
+  rust_verified_votes_->verified_votes_attach_storage(storage);
+}
+
+rustaxa::PbftVotePersistenceResult VerifiedVotes::saveOwnVerifiedVote(rustaxa::PbftVoteStorageRecord record) const {
+  std::shared_lock lock(verified_votes_access_);
+  return rust_verified_votes_->verified_votes_save_own_verified_vote(std::move(record));
+}
+
+rustaxa::PbftVotePersistenceResult VerifiedVotes::clearOwnVerifiedVotes(
+    rust::Vec<rustaxa::PbftFinalizationHash> hashes) const {
+  std::shared_lock lock(verified_votes_access_);
+  return rust_verified_votes_->verified_votes_clear_own_verified_votes(std::move(hashes));
+}
+
+rustaxa::PbftVotePersistenceResult VerifiedVotes::persistPbftVoteProgress(
+    rustaxa::PbftVoteProgressPersistenceWrite write) const {
+  std::shared_lock lock(verified_votes_access_);
+  return rust_verified_votes_->verified_votes_persist_pbft_vote_progress(std::move(write));
+}
+
+rustaxa::PbftFinalizedPeriodApplyResult VerifiedVotes::applyPbftFinalizationStorageWrites(
+    const rustaxa::PbftFinalizationStorageWritePlan& write_intent,
+    rust::Vec<rustaxa::PbftFinalizationStorageWriteStage> stages, bool sync) const {
+  std::shared_lock lock(verified_votes_access_);
+  return rust_verified_votes_->verified_votes_apply_pbft_finalization_storage_writes(write_intent, std::move(stages),
+                                                                                     sync);
+}
+
 uint64_t VerifiedVotes::size() const {
   std::shared_lock lock(verified_votes_access_);
   return rust_verified_votes_->verified_votes_size();

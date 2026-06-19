@@ -173,7 +173,17 @@ pub struct BridgeSlashingProofPlanner(pub Mutex<SlashingProofPlanner>);
 
 pub struct BridgePeriodDataQueue(pub PeriodDataQueue);
 
-pub struct BridgeVerifiedVotes(pub PbftVoteAdmissionRuntime);
+/// Rust-owned verified-votes runtime used by the C++ VoteManager shim.
+///
+/// Production instances attach a cloned Rust storage handle so VoteManager
+/// persistence for own votes, vote-progress bundles, and reward-vote reset
+/// finalization stages does not retain or pass the generic `BridgeStorage`
+/// facade after construction. Storage-free instances remain for compatibility
+/// tests that exercise only in-memory vote admission behavior.
+pub struct BridgeVerifiedVotes {
+    pub runtime: PbftVoteAdmissionRuntime,
+    pub storage: Option<Arc<Storage>>,
+}
 
 /// Compatibility runtime for older PBFT vote validation bridge tests.
 ///
@@ -5622,6 +5632,10 @@ pub mod rustaxa_ffi {
         type BridgeVerifiedVotes;
 
         pub fn create_verified_votes_index() -> Box<BridgeVerifiedVotes>;
+        pub fn verified_votes_attach_storage(
+            self: &mut BridgeVerifiedVotes,
+            storage: &BridgeStorage,
+        );
         pub fn verified_votes_size(self: &BridgeVerifiedVotes) -> u64;
         pub fn verified_votes_replay_contains(
             self: &BridgeVerifiedVotes,
@@ -5768,6 +5782,24 @@ pub mod rustaxa_ffi {
         pub fn verified_votes_snapshot_round_markers(
             self: &BridgeVerifiedVotes,
         ) -> Vec<RoundMarkerSnapshot>;
+        pub fn verified_votes_save_own_verified_vote(
+            self: &BridgeVerifiedVotes,
+            record: PbftVoteStorageRecord,
+        ) -> Result<PbftVotePersistenceResult>;
+        pub fn verified_votes_clear_own_verified_votes(
+            self: &BridgeVerifiedVotes,
+            hashes: Vec<PbftFinalizationHash>,
+        ) -> Result<PbftVotePersistenceResult>;
+        pub fn verified_votes_persist_pbft_vote_progress(
+            self: &BridgeVerifiedVotes,
+            write: PbftVoteProgressPersistenceWrite,
+        ) -> Result<PbftVotePersistenceResult>;
+        pub fn verified_votes_apply_pbft_finalization_storage_writes(
+            self: &BridgeVerifiedVotes,
+            write_intent: &PbftFinalizationStorageWritePlan,
+            stages: Vec<PbftFinalizationStorageWriteStage>,
+            sync: bool,
+        ) -> Result<PbftFinalizedPeriodApplyResult>;
 
         // PBFT vote-progress protocol planner
 

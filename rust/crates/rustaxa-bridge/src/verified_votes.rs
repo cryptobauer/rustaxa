@@ -14,16 +14,24 @@ use crate::ffi::rustaxa_ffi::{
     VerifiedStepVotesLookup, VerifiedVoteAddOutcome as FfiVerifiedVoteAddOutcome,
     VerifiedVotePayload, VotedValueInsertOutcome,
 };
-use crate::ffi::BridgeVerifiedVotes;
+use crate::ffi::{BridgeStorage, BridgeVerifiedVotes};
+use crate::pbft_finalize::apply_result_from_domain;
 use crate::pbft_vote_progress::{context_to_domain, execution_plan_to_ffi};
 use crate::pbft_vote_validation::threshold_plan_to_ffi;
 use ethereum_types::{H160, H256};
+use rustaxa_consensus::pbft_finalize::{
+    apply_pbft_finalization_storage_writes, PbftFinalizationStorageWriteIntent,
+    PbftFinalizationStorageWriteStage as DomainPbftFinalizationStorageWriteStage,
+};
 use rustaxa_consensus::pbft_reward_votes::PbftRewardVotesStatus;
 use rustaxa_consensus::pbft_thresholds::{
     PbftTwoTPlusOneThresholdFact, PbftTwoTPlusOneThresholdPlan, PbftTwoTPlusOneThresholdStatus,
 };
 use rustaxa_consensus::pbft_vote_event::PbftVoteEventFactFlags as DomainPbftVoteEventFactFlags;
 use rustaxa_consensus::pbft_vote_payload::build_optimized_pbft_vote_bundle;
+use rustaxa_consensus::pbft_vote_storage::{
+    clear_own_verified_votes, persist_pbft_vote_progress, save_own_verified_vote,
+};
 use rustaxa_consensus::pbft_vote_validation::{
     validate_canonical_pbft_vote, PbftCanonicalVoteValidation,
     PbftVoteValidationExternalFacts as DomainPbftVoteValidationExternalFacts,
@@ -35,7 +43,13 @@ use rustaxa_consensus::verified_votes::{
     TwoTPlusOneInsertOutcome as ConsensusTwoTPlusOneInsertOutcome, TwoTPlusOneVotedBlockType,
     VerifiedVote,
 };
-use rustaxa_consensus::{PbftVoteAdmissionRuntime, PbftVoteRuntimeAdmissionOutcome};
+use rustaxa_consensus::{
+    PbftTwoTPlusOneVoteBundle as DomainPbftTwoTPlusOneVoteBundle, PbftVoteAdmissionRuntime,
+    PbftVotePersistenceResult as DomainPbftVotePersistenceResult,
+    PbftVoteProgressPersistenceWrite as DomainPbftVoteProgressPersistenceWrite,
+    PbftVoteRuntimeAdmissionOutcome, PbftVoteStorageRecord as DomainPbftVoteStorageRecord,
+};
+use rustaxa_storage::Storage;
 
 const PBFT_OPTIMIZED_BUNDLE_READY: u8 = 0;
 const PBFT_OPTIMIZED_BUNDLE_NOT_FOUND: u8 = 1;
@@ -50,23 +64,85 @@ const PBFT_OPTIMIZED_BUNDLE_PAYLOAD_METADATA_MISMATCH: u8 = 9;
 
 /// Creates an empty Rust verified-votes index for the C++ vote-manager shim.
 pub fn create_verified_votes_index() -> Box<BridgeVerifiedVotes> {
-    Box::new(BridgeVerifiedVotes(PbftVoteAdmissionRuntime::new()))
+    Box::new(BridgeVerifiedVotes {
+        runtime: PbftVoteAdmissionRuntime::new(),
+        storage: None,
+    })
+}
+
+fn verified_votes_storage(runtime: &BridgeVerifiedVotes) -> Result<&Storage, anyhow::Error> {
+    runtime
+        .storage
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("VERIFIED_VOTES_STORAGE_UNAVAILABLE"))
+}
+
+fn pbft_vote_persistence_to_ffi(
+    value: DomainPbftVotePersistenceResult,
+) -> crate::ffi::rustaxa_ffi::PbftVotePersistenceResult {
+    crate::ffi::rustaxa_ffi::PbftVotePersistenceResult {
+        status: value.status.as_u8(),
+        applied_writes: value.applied_writes,
+        error_code: value.error_code,
+    }
+}
+
+fn vote_storage_record_to_domain(value: PbftVoteStorageRecord) -> DomainPbftVoteStorageRecord {
+    DomainPbftVoteStorageRecord {
+        hash: H256::from(value.hash),
+        vote_rlp: value.vote_rlp,
+    }
+}
+
+fn two_t_plus_one_bundle_to_domain(
+    value: PbftTwoTPlusOneVoteBundle,
+) -> DomainPbftTwoTPlusOneVoteBundle {
+    DomainPbftTwoTPlusOneVoteBundle {
+        kind: value.kind,
+        period: value.period,
+        round: value.round,
+        step: value.step,
+        block_hash: H256::from(value.block_hash),
+        votes_bundle_rlp: value.votes_bundle_rlp,
+    }
+}
+
+fn vote_progress_write_to_domain(
+    value: crate::ffi::rustaxa_ffi::PbftVoteProgressPersistenceWrite,
+) -> DomainPbftVoteProgressPersistenceWrite {
+    DomainPbftVoteProgressPersistenceWrite {
+        extra_reward_vote: value
+            .has_extra_reward_vote
+            .then(|| vote_storage_record_to_domain(value.extra_reward_vote)),
+        two_t_plus_one_bundle: value
+            .has_two_t_plus_one_bundle
+            .then(|| two_t_plus_one_bundle_to_domain(value.two_t_plus_one_bundle)),
+    }
 }
 
 impl BridgeVerifiedVotes {
+    /// Attaches a cloned Rust storage handle to an existing verified-votes runtime.
+    ///
+    /// This supports the C++ shim layout where `VerifiedVotes` is constructed
+    /// by `VoteManagerOld` before the Rust-mode `VoteManager` constructor body
+    /// can access `DbStorage`.
+    pub fn verified_votes_attach_storage(&mut self, storage: &BridgeStorage) {
+        self.storage = Some(storage.0.clone());
+    }
+
     /// Returns count of stored verified vote hashes.
     pub fn verified_votes_size(&self) -> u64 {
-        self.0.verified_votes().size()
+        self.runtime.verified_votes().size()
     }
 
     /// Returns whether `vote_hash` is in runtime-owned validation replay protection.
     pub fn verified_votes_replay_contains(&self, vote_hash: &[u8; 32]) -> bool {
-        self.0.replay_contains(H256::from(*vote_hash))
+        self.runtime.replay_contains(H256::from(*vote_hash))
     }
 
     /// Inserts `vote_hash` into runtime-owned validation replay protection.
     pub fn verified_votes_replay_insert(&mut self, vote_hash: &[u8; 32]) -> bool {
-        self.0.replay_insert(H256::from(*vote_hash))
+        self.runtime.replay_insert(H256::from(*vote_hash))
     }
 
     /// Returns a Rust-owned PBFT `2t+1` threshold plan.
@@ -90,20 +166,19 @@ impl BridgeVerifiedVotes {
             }
         };
 
-        threshold_plan_to_ffi(
-            self.0
-                .plan_two_t_plus_one_threshold(PbftTwoTPlusOneThresholdFact {
-                    pbft_period: fact.pbft_period,
-                    vote_type,
-                    current_pbft_chain_size: fact.current_pbft_chain_size,
-                    committee_size: fact.committee_size,
-                    number_of_proposers: fact.number_of_proposers,
-                    has_total_dpos_votes_count: fact.has_total_dpos_votes_count,
-                    total_dpos_votes_count: fact.total_dpos_votes_count,
-                    future_dpos_state: fact.future_dpos_state,
-                    unknown_error: fact.unknown_error,
-                }),
-        )
+        threshold_plan_to_ffi(self.runtime.plan_two_t_plus_one_threshold(
+            PbftTwoTPlusOneThresholdFact {
+                pbft_period: fact.pbft_period,
+                vote_type,
+                current_pbft_chain_size: fact.current_pbft_chain_size,
+                committee_size: fact.committee_size,
+                number_of_proposers: fact.number_of_proposers,
+                has_total_dpos_votes_count: fact.has_total_dpos_votes_count,
+                total_dpos_votes_count: fact.total_dpos_votes_count,
+                future_dpos_state: fact.future_dpos_state,
+                unknown_error: fact.unknown_error,
+            },
+        ))
     }
 
     /// Validates canonical PBFT vote bytes and mutates runtime replay state
@@ -117,7 +192,7 @@ impl BridgeVerifiedVotes {
             canonical_vote_rlp,
             validation_facts_to_domain(validation_facts),
         )?;
-        let replay = self.0.record_validation_replay(&validation);
+        let replay = self.runtime.record_validation_replay(&validation);
         Ok(PbftVoteRuntimeValidationResult {
             status: validation.status.as_u8(),
             error_code: validation.error_code.to_owned(),
@@ -141,7 +216,7 @@ impl BridgeVerifiedVotes {
         vote: VerifiedVotePayload,
     ) -> Result<UniqueVoterCheckOutcome, anyhow::Error> {
         let vote = payload_to_vote(vote)?;
-        let outcome = self.0.verified_votes().check_unique_voter(&vote);
+        let outcome = self.runtime.verified_votes().check_unique_voter(&vote);
         Ok(UniqueVoterCheckOutcome {
             is_unique: outcome.is_unique,
             conflict_found: outcome.conflicting_vote_hash.is_some(),
@@ -158,7 +233,7 @@ impl BridgeVerifiedVotes {
         vote: VerifiedVotePayload,
     ) -> Result<UniqueVoterInsertOutcome, anyhow::Error> {
         let vote = payload_to_vote(vote)?;
-        let outcome = self.0.verified_votes_mut().insert_unique_voter(&vote);
+        let outcome = self.runtime.verified_votes_mut().insert_unique_voter(&vote);
         Ok(UniqueVoterInsertOutcome {
             accepted: outcome.accepted,
             conflict_found: outcome.conflicting_vote_hash.is_some(),
@@ -177,7 +252,11 @@ impl BridgeVerifiedVotes {
         vote: VerifiedVotePayload,
     ) -> Result<VotedValueInsertOutcome, anyhow::Error> {
         let vote = payload_to_vote(vote)?;
-        Ok(self.0.verified_votes_mut().insert_voted_value(vote)?.into())
+        Ok(self
+            .runtime
+            .verified_votes_mut()
+            .insert_voted_value(vote)?
+            .into())
     }
 
     /// Atomically inserts `vote` into unique-voter and voted-value state.
@@ -192,7 +271,7 @@ impl BridgeVerifiedVotes {
         vote: VerifiedVotePayload,
     ) -> Result<AtomicVoteInsertOutcome, anyhow::Error> {
         let vote = payload_to_vote(vote)?;
-        let outcome = self.0.verified_votes_mut().insert_vote_atomic(vote)?;
+        let outcome = self.runtime.verified_votes_mut().insert_vote_atomic(vote)?;
         Ok(AtomicVoteInsertOutcome {
             inserted: outcome.inserted,
             total_weight: outcome.total_weight,
@@ -218,7 +297,7 @@ impl BridgeVerifiedVotes {
         two_t_plus_one_threshold: u64,
     ) -> Result<ThresholdDecisionOutcome, anyhow::Error> {
         let vote = payload_to_vote(vote)?;
-        let outcome = self.0.verified_votes_mut().apply_threshold_decision(
+        let outcome = self.runtime.verified_votes_mut().apply_threshold_decision(
             &vote,
             total_weight,
             two_t_plus_one_threshold,
@@ -235,7 +314,7 @@ impl BridgeVerifiedVotes {
         block_hash: &[u8; 32],
         vote_hash: &[u8; 32],
     ) -> bool {
-        self.0.verified_votes().vote_in_verified_map(
+        self.runtime.verified_votes().vote_in_verified_map(
             period,
             round,
             step,
@@ -251,7 +330,7 @@ impl BridgeVerifiedVotes {
         round: u64,
         step: u64,
     ) -> bool {
-        self.0
+        self.runtime
             .verified_votes_mut()
             .set_network_t_plus_one_step(period, round, step)
     }
@@ -262,7 +341,7 @@ impl BridgeVerifiedVotes {
         period: u64,
         round: u64,
     ) -> NetworkTPlusOneStepLookup {
-        self.0
+        self.runtime
             .verified_votes()
             .network_t_plus_one_step(period, round)
             .map(|step| NetworkTPlusOneStepLookup { found: true, step })
@@ -278,7 +357,7 @@ impl BridgeVerifiedVotes {
         period: u64,
         current_round: u64,
     ) -> DetermineNewRoundOutcome {
-        self.0
+        self.runtime
             .verified_votes()
             .determine_new_round(period, current_round)
             .map(Into::into)
@@ -303,7 +382,7 @@ impl BridgeVerifiedVotes {
     ) -> Result<TwoTPlusOneInsertOutcome, anyhow::Error> {
         let kind = TwoTPlusOneVotedBlockType::try_from(kind)?;
         Ok(self
-            .0
+            .runtime
             .verified_votes_mut()
             .insert_two_t_plus_one_voted_block(period, round, kind, H256::from(*block_hash), step)
             .into())
@@ -318,7 +397,7 @@ impl BridgeVerifiedVotes {
     ) -> Result<TwoTPlusOneVotedBlockLookup, anyhow::Error> {
         let kind = TwoTPlusOneVotedBlockType::try_from(kind)?;
         Ok(self
-            .0
+            .runtime
             .verified_votes()
             .get_two_t_plus_one_voted_block(period, round, kind)
             .map(|value| TwoTPlusOneVotedBlockLookup {
@@ -342,7 +421,7 @@ impl BridgeVerifiedVotes {
     ) -> Result<TwoTPlusOneVotesLookup, anyhow::Error> {
         let kind = TwoTPlusOneVotedBlockType::try_from(kind)?;
         let voted = self
-            .0
+            .runtime
             .verified_votes()
             .get_two_t_plus_one_voted_block(period, round, kind);
         let Some(voted) = voted else {
@@ -355,7 +434,7 @@ impl BridgeVerifiedVotes {
         };
 
         let vote_hashes = self
-            .0
+            .runtime
             .verified_votes()
             .get_two_t_plus_one_voted_block_vote_hashes(period, round, kind)
             .into_iter()
@@ -384,7 +463,7 @@ impl BridgeVerifiedVotes {
     ) -> Result<TwoTPlusOneVotePayloadsLookup, anyhow::Error> {
         let kind = TwoTPlusOneVotedBlockType::try_from(kind)?;
         let voted = self
-            .0
+            .runtime
             .verified_votes()
             .get_two_t_plus_one_voted_block(period, round, kind);
         let Some(voted) = voted else {
@@ -397,7 +476,7 @@ impl BridgeVerifiedVotes {
         };
 
         let votes = self
-            .0
+            .runtime
             .two_t_plus_one_weighted_payloads(period, round, kind)?
             .ok_or_else(|| {
                 anyhow::anyhow!(
@@ -481,11 +560,11 @@ impl BridgeVerifiedVotes {
             );
         }
 
-        let Some(voted) = self.0.verified_votes().get_two_t_plus_one_voted_block(
-            request.period,
-            request.round,
-            kind,
-        ) else {
+        let Some(voted) = self
+            .runtime
+            .verified_votes()
+            .get_two_t_plus_one_voted_block(request.period, request.round, kind)
+        else {
             return optimized_bundle_build_result(
                 PBFT_OPTIMIZED_BUNDLE_NOT_FOUND,
                 "PBFT_OPTIMIZED_VOTE_BUNDLE_NOT_FOUND",
@@ -504,7 +583,7 @@ impl BridgeVerifiedVotes {
         }
 
         let planned_hashes = self
-            .0
+            .runtime
             .verified_votes()
             .get_two_t_plus_one_voted_block_vote_hashes(request.period, request.round, kind);
         if let Err(status) = ensure_ordered_subsequence(&planned_hashes, &requested_hashes) {
@@ -518,7 +597,7 @@ impl BridgeVerifiedVotes {
 
         let mut records = Vec::with_capacity(requested_hashes.len());
         for vote_hash in &requested_hashes {
-            let Some(record) = self.0.weighted_payload(*vote_hash).cloned() else {
+            let Some(record) = self.runtime.weighted_payload(*vote_hash).cloned() else {
                 return optimized_bundle_build_result(
                     PBFT_OPTIMIZED_BUNDLE_MISSING_PAYLOAD,
                     "PBFT_OPTIMIZED_VOTE_BUNDLE_MISSING_RETAINED_PAYLOAD",
@@ -566,7 +645,11 @@ impl BridgeVerifiedVotes {
         round: u64,
         step: u64,
     ) -> VerifiedStepVotesLookup {
-        let Some(step_votes) = self.0.verified_votes().get_step_votes(period, round, step) else {
+        let Some(step_votes) = self
+            .runtime
+            .verified_votes()
+            .get_step_votes(period, round, step)
+        else {
             return VerifiedStepVotesLookup {
                 found: false,
                 entries: Vec::new(),
@@ -608,7 +691,7 @@ impl BridgeVerifiedVotes {
         };
 
         let outcome = self
-            .0
+            .runtime
             .verified_votes_mut()
             .add_verified_vote(vote, threshold)?;
         Ok(outcome_to_ffi_add_vote_outcome(report_vote, outcome))
@@ -631,7 +714,7 @@ impl BridgeVerifiedVotes {
             canonical_vote_rlp,
             validation_facts_to_domain(validation_facts),
         )?;
-        let outcome = self.0.admit_validated_vote(
+        let outcome = self.runtime.admit_validated_vote(
             canonical_vote_rlp,
             &validation,
             flags_to_domain(flags),
@@ -642,12 +725,12 @@ impl BridgeVerifiedVotes {
 
     /// Removes periods lower than `pbft_period`.
     pub fn verified_votes_cleanup_votes_by_period(&mut self, pbft_period: u64) {
-        self.0.cleanup_votes_by_period(pbft_period);
+        self.runtime.cleanup_votes_by_period(pbft_period);
     }
 
     /// Returns deterministic flat vote snapshot.
     pub fn verified_votes_snapshot_votes(&self) -> Vec<VerifiedVotePayload> {
-        self.0
+        self.runtime
             .verified_votes()
             .snapshot_votes()
             .into_iter()
@@ -661,7 +744,7 @@ impl BridgeVerifiedVotes {
     /// still return `PbftVote` objects. The Rust admission runtime remains the
     /// authoritative owner of these bytes.
     pub fn verified_votes_snapshot_weighted_payloads(&self) -> Vec<PbftVoteStorageRecord> {
-        self.0
+        self.runtime
             .weighted_payloads()
             .into_iter()
             .map(Into::into)
@@ -670,7 +753,11 @@ impl BridgeVerifiedVotes {
 
     /// Returns one retained weighted PBFT vote payload by canonical vote hash.
     pub fn verified_votes_weighted_payload(&self, vote_hash: &[u8; 32]) -> PbftVotePayloadLookup {
-        let Some(vote) = self.0.weighted_payload(H256::from(*vote_hash)).cloned() else {
+        let Some(vote) = self
+            .runtime
+            .weighted_payload(H256::from(*vote_hash))
+            .cloned()
+        else {
             return PbftVotePayloadLookup {
                 found: false,
                 vote: empty_storage_record(),
@@ -697,7 +784,7 @@ impl BridgeVerifiedVotes {
         reward_block_hash: &[u8; 32],
         requested_vote_hashes: Vec<PbftFinalizationHash>,
     ) -> Result<FfiPbftRewardVotePayloadSelection, anyhow::Error> {
-        let selection = self.0.select_reward_vote_payloads(
+        let selection = self.runtime.select_reward_vote_payloads(
             block_period,
             reward_period,
             preferred_reward_round,
@@ -730,7 +817,7 @@ impl BridgeVerifiedVotes {
 
     /// Returns deterministic 2t+1 mapping snapshot.
     pub fn verified_votes_snapshot_two_t_plus_one(&self) -> Vec<TwoTPlusOneSnapshotEntry> {
-        self.0
+        self.runtime
             .verified_votes()
             .snapshot_two_t_plus_one()
             .into_iter()
@@ -746,7 +833,7 @@ impl BridgeVerifiedVotes {
 
     /// Returns deterministic round marker snapshot.
     pub fn verified_votes_snapshot_round_markers(&self) -> Vec<RoundMarkerSnapshot> {
-        self.0
+        self.runtime
             .verified_votes()
             .snapshot_round_markers()
             .into_iter()
@@ -758,6 +845,65 @@ impl BridgeVerifiedVotes {
             .collect()
     }
 
+    /// Persists one own verified vote through this runtime's attached Rust storage.
+    pub fn verified_votes_save_own_verified_vote(
+        &self,
+        record: PbftVoteStorageRecord,
+    ) -> Result<crate::ffi::rustaxa_ffi::PbftVotePersistenceResult, anyhow::Error> {
+        save_own_verified_vote(
+            verified_votes_storage(self)?,
+            vote_storage_record_to_domain(record),
+        )
+        .map(pbft_vote_persistence_to_ffi)
+    }
+
+    /// Clears own verified votes through this runtime's attached Rust storage.
+    pub fn verified_votes_clear_own_verified_votes(
+        &self,
+        hashes: Vec<PbftFinalizationHash>,
+    ) -> Result<crate::ffi::rustaxa_ffi::PbftVotePersistenceResult, anyhow::Error> {
+        clear_own_verified_votes(
+            verified_votes_storage(self)?,
+            hashes
+                .into_iter()
+                .map(|hash| H256::from(hash.hash))
+                .collect(),
+        )
+        .map(pbft_vote_persistence_to_ffi)
+    }
+
+    /// Persists accepted PBFT vote-progress effects through attached Rust storage.
+    pub fn verified_votes_persist_pbft_vote_progress(
+        &self,
+        write: crate::ffi::rustaxa_ffi::PbftVoteProgressPersistenceWrite,
+    ) -> Result<crate::ffi::rustaxa_ffi::PbftVotePersistenceResult, anyhow::Error> {
+        persist_pbft_vote_progress(
+            verified_votes_storage(self)?,
+            vote_progress_write_to_domain(write),
+        )
+        .map(pbft_vote_persistence_to_ffi)
+    }
+
+    /// Applies PBFT finalization storage stages through attached Rust storage.
+    pub fn verified_votes_apply_pbft_finalization_storage_writes(
+        &self,
+        write_intent: &crate::ffi::rustaxa_ffi::PbftFinalizationStorageWritePlan,
+        stages: Vec<crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage>,
+        sync: bool,
+    ) -> Result<crate::ffi::rustaxa_ffi::PbftFinalizedPeriodApplyResult, anyhow::Error> {
+        let domain_intent = PbftFinalizationStorageWriteIntent::from(write_intent);
+        apply_pbft_finalization_storage_writes(
+            verified_votes_storage(self)?,
+            &domain_intent,
+            stages
+                .into_iter()
+                .map(DomainPbftFinalizationStorageWriteStage::from)
+                .collect(),
+            sync,
+        )
+        .map(apply_result_from_domain)
+    }
+
     fn optimized_vote_bundle_plan(
         &self,
         period: u64,
@@ -765,7 +911,7 @@ impl BridgeVerifiedVotes {
         kind: TwoTPlusOneVotedBlockType,
     ) -> PbftOptimizedVoteBundlePlan {
         let Some(voted) = self
-            .0
+            .runtime
             .verified_votes()
             .get_two_t_plus_one_voted_block(period, round, kind)
         else {
@@ -791,7 +937,7 @@ impl BridgeVerifiedVotes {
             period,
             round,
             voted.step,
-            self.0
+            self.runtime
                 .verified_votes()
                 .get_two_t_plus_one_voted_block_vote_hashes(period, round, kind),
         )

@@ -257,7 +257,7 @@ void requireApplied(const rustaxa::PbftVotePersistenceResult& result, const char
   throw std::runtime_error(err.str());
 }
 
-void persistVoteProgressToRustStorage(rustaxa::BridgeStorage& storage,
+void persistVoteProgressToRustStorage(const VerifiedVotes& verified_votes,
                                       const std::shared_ptr<PbftVote>& extra_reward_vote,
                                       std::optional<TwoTPlusOneVotedBlockType> two_t_plus_one_type,
                                       const std::vector<std::shared_ptr<PbftVote>>& two_t_plus_one_votes) {
@@ -272,10 +272,10 @@ void persistVoteProgressToRustStorage(rustaxa::BridgeStorage& storage,
     write.two_t_plus_one_bundle = makeTwoTPlusOneVoteBundle(*two_t_plus_one_type, two_t_plus_one_votes);
   }
 
-  requireApplied(storage.persist_pbft_vote_progress(write), "vote progress");
+  requireApplied(verified_votes.persistPbftVoteProgress(std::move(write)), "vote progress");
 }
 
-void persistVoteProgressPayloadsToRustStorage(rustaxa::BridgeStorage& storage, bool has_extra_reward_vote,
+void persistVoteProgressPayloadsToRustStorage(const VerifiedVotes& verified_votes, bool has_extra_reward_vote,
                                               const rustaxa::PbftVoteStorageRecord& extra_reward_vote,
                                               bool has_two_t_plus_one_bundle,
                                               const rustaxa::PbftTwoTPlusOneVoteBundle& two_t_plus_one_bundle) {
@@ -290,7 +290,7 @@ void persistVoteProgressPayloadsToRustStorage(rustaxa::BridgeStorage& storage, b
     write.two_t_plus_one_bundle = cloneTwoTPlusOneVoteBundle(two_t_plus_one_bundle);
   }
 
-  requireApplied(storage.persist_pbft_vote_progress(write), "vote progress");
+  requireApplied(verified_votes.persistPbftVoteProgress(std::move(write)), "vote progress");
 }
 
 rustaxa::PbftVoteEventFactFlags makeVoteEventFactFlags(bool valid_stale_reward_vote) {
@@ -465,7 +465,7 @@ VoteManager::VoteManager(const FullNodeConfig& config, std::shared_ptr<DbStorage
                          std::shared_ptr<KeyManager> key_manager, std::shared_ptr<SlashingManager> slashing_manager)
     : VoteManagerOld(config, std::move(db), std::move(pbft_chain), std::move(final_chain), std::move(key_manager),
                      std::move(slashing_manager)) {
-  rust_storage_ = &db_->rustStorage();
+  verified_votes_.attachRustStorage(db_->rustStorage());
 }
 
 void VoteManager::setNetwork(std::weak_ptr<Network> network) {
@@ -628,7 +628,7 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
 
   if (!two_t_plus_one.has_value()) [[unlikely]] {
     if (runtime_result.persist_extra_reward_vote) {
-      persistVoteProgressPayloadsToRustStorage(*rust_storage_, true, runtime_result.extra_reward_vote, false,
+      persistVoteProgressPayloadsToRustStorage(verified_votes_, true, runtime_result.extra_reward_vote, false,
                                                runtime_result.two_t_plus_one_bundle);
       extra_reward_votes_.emplace_back(vote->getHash());
     }
@@ -644,7 +644,7 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
 
   if (!runtime_result.persist_two_t_plus_one_votes) {
     if (runtime_result.persist_extra_reward_vote) {
-      persistVoteProgressPayloadsToRustStorage(*rust_storage_, true, runtime_result.extra_reward_vote, false,
+      persistVoteProgressPayloadsToRustStorage(verified_votes_, true, runtime_result.extra_reward_vote, false,
                                                runtime_result.two_t_plus_one_bundle);
       extra_reward_votes_.emplace_back(vote->getHash());
     }
@@ -652,7 +652,7 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
     return report;
   }
 
-  persistVoteProgressPayloadsToRustStorage(*rust_storage_, runtime_result.persist_extra_reward_vote,
+  persistVoteProgressPayloadsToRustStorage(verified_votes_, runtime_result.persist_extra_reward_vote,
                                            runtime_result.extra_reward_vote, true,
                                            runtime_result.two_t_plus_one_bundle);
   if (runtime_result.persist_extra_reward_vote) {
@@ -855,7 +855,7 @@ void VoteManager::saveOwnVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
     throw std::runtime_error("VoteManager cannot persist a null own verified vote");
   }
   auto record = makeVoteStorageRecord(vote);
-  rust_storage_->save_own_verified_vote(record.hash, std::move(record.vote_rlp));
+  requireApplied(verified_votes_.saveOwnVerifiedVote(std::move(record)), "own verified vote");
   own_verified_votes_.push_back(vote);
 }
 
@@ -872,7 +872,7 @@ void VoteManager::clearOwnVerifiedVotes(Batch& write_batch) {
     own_vote_hashes.emplace_back(vote->getHash());
   }
 
-  requireApplied(rust_storage_->clear_own_verified_votes(toBridgeRewardVoteHashes(own_vote_hashes)),
+  requireApplied(verified_votes_.clearOwnVerifiedVotes(toBridgeRewardVoteHashes(own_vote_hashes)),
                  "own verified vote cleanup");
   own_verified_votes_.clear();
 }
@@ -1294,7 +1294,7 @@ void VoteManager::setCurrentPbftPeriodAndRound(PbftPeriod pbft_period, PbftRound
       votes.push_back(vote.second);
     }
 
-    persistVoteProgressToRustStorage(*rust_storage_, nullptr, two_t_plus_one_voted_block_type, votes);
+    persistVoteProgressToRustStorage(verified_votes_, nullptr, two_t_plus_one_voted_block_type, votes);
   }
 }
 
@@ -1410,7 +1410,7 @@ rustaxa::PbftFinalizedPeriodApplyResult VoteManager::resetRewardVotesForFinaliza
   rust::Vec<rustaxa::PbftFinalizationStorageWriteStage> stages;
   stages.push_back(std::move(stage));
   auto result =
-      rustaxa::apply_pbft_finalization_storage_writes(*rust_storage_, write_intent, std::move(stages), false);
+      verified_votes_.applyPbftFinalizationStorageWrites(write_intent, std::move(stages), false);
   if (result.status != kPbftFinalizedPeriodApplyStatusApplied &&
       result.status != kPbftFinalizedPeriodApplyStatusAlreadyApplied) {
     return result;

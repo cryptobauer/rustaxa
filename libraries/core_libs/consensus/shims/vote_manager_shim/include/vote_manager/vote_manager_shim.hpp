@@ -371,7 +371,6 @@ class VoteManager : public VoteManagerOld {
 
  private:
   bool isValidRewardVoteForRust(const std::shared_ptr<PbftVote>& vote) const;
-  rustaxa::BridgeStorage* rust_storage_ = nullptr;
 };
 
 }  // namespace taraxa
