@@ -133,11 +133,13 @@ Landed:
   packing, async VDF executor, compatibility sleep, signing/materialization, and add-block facts.
 - Transaction-pack throttling is now an explicit Rust proposer-session report and reason instead of being collapsed into
   an empty eligible transaction pack.
+- Production proposal block-intent planning now selects the wall-clock timestamp inside the Rust bridge before temporary
+  C++ signing.
 
 Remaining:
 
-- The proposer path still uses temporary C++ block-construction/signing materialization and a C++ timestamp fact before
-  Rust finalizes the signed block RLP.
+- The proposer path still uses temporary C++ signing and `DagBlock` materialization before Rust finalizes the signed
+  block RLP.
 - The live network throttle check itself still runs in the temporary C++ executor shell until proposer worker/network
   lifecycle ownership moves.
 

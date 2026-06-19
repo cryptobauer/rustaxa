@@ -7,19 +7,20 @@ use crate::ffi::rustaxa_ffi::{
     DagManagerNonFinalizedSyncPayload, DagManagerRuntimeSyncSnapshot, DagManagerSnapshot, DagOrder,
     DagPersistenceCounters, DagPivotTipsValidation, DagProposerAddBlockReport,
     DagProposerAttemptInput, DagProposerAttemptPlan, DagProposerBlockConstructionPlan,
-    DagProposerBlockIntentInput, DagProposerFrontierFacts, DagProposerPostPackInput,
-    DagProposerPostPackPlan, DagProposerRetryResetInput, DagProposerRetryResetPlan,
-    DagProposerSessionStep, DagProposerSignedBlockIntent, DagProposerSignedBlockIntentInput,
-    DagProposerStaleProofInput, DagProposerStaleProofPlan, DagProposerStaleProofReport,
-    DagProposerStorageBlockConstructionInput, DagProposerStorageTipSelectionInput,
-    DagProposerTipSelectionPlan, DagProposerTransactionPackReport,
-    DagProposerTransactionPackRequest, DagProposerUnsignedBlockIntent, DagProposerVdfProofReport,
-    DagProposerVdfWaitInput, DagProposerVdfWaitPlan, DagProposerVdfWaitReport,
-    DagReferenceMetadata, DagSyncBlockRlp, DagTransactionHash, DagTransactionQueryPlan,
-    DagTransactionRlpLookup, DagVerifyAuthorizationInput, DagVerifyAuthorizationResult,
-    DagVerifyBlockAuthorizationReport, DagVerifyBlockGasReport, DagVerifyBlockSessionInput,
-    DagVerifyBlockSessionStep, DagVerifyBlockTransactionReport, DagVerifyBlockVdfReport,
-    DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
+    DagProposerBlockIntentInput, DagProposerBlockIntentNowInput, DagProposerFrontierFacts,
+    DagProposerPostPackInput, DagProposerPostPackPlan, DagProposerRetryResetInput,
+    DagProposerRetryResetPlan, DagProposerSessionStep, DagProposerSignedBlockIntent,
+    DagProposerSignedBlockIntentInput, DagProposerStaleProofInput, DagProposerStaleProofPlan,
+    DagProposerStaleProofReport, DagProposerStorageBlockConstructionInput,
+    DagProposerStorageTipSelectionInput, DagProposerTipSelectionPlan,
+    DagProposerTransactionPackReport, DagProposerTransactionPackRequest,
+    DagProposerUnsignedBlockIntent, DagProposerVdfProofReport, DagProposerVdfWaitInput,
+    DagProposerVdfWaitPlan, DagProposerVdfWaitReport, DagReferenceMetadata, DagSyncBlockRlp,
+    DagTransactionHash, DagTransactionQueryPlan, DagTransactionRlpLookup,
+    DagVerifyAuthorizationInput, DagVerifyAuthorizationResult, DagVerifyBlockAuthorizationReport,
+    DagVerifyBlockGasReport, DagVerifyBlockSessionInput, DagVerifyBlockSessionStep,
+    DagVerifyBlockTransactionReport, DagVerifyBlockVdfReport, DagVerifyGasInput,
+    DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
     DagVerifyTransactionAvailabilityInput, DagVerifyTransactionAvailabilityResult,
     DagVerifyVdfDposDecision, DagVerifyVdfDposFacts, DagVerifyVdfPrepareInput,
     DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
@@ -78,6 +79,7 @@ use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 #[cfg(test)]
 use rustaxa_types::pbft::PbftBlockLink;
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
 const DAG_PROPOSER_ACTION_CONTINUE: u8 = 1;
@@ -1938,6 +1940,34 @@ pub fn dag_proposer_plan_block_intent(
             pivot: H256::from(input.pivot),
             level: input.level,
             timestamp: input.timestamp,
+            vdf_rlp: input.vdf_rlp,
+            selected_tips: input
+                .selected_tips
+                .into_iter()
+                .map(|hash| H256::from(hash.hash))
+                .collect(),
+            transaction_hashes: input
+                .transaction_hashes
+                .into_iter()
+                .map(|hash| H256::from(hash.hash))
+                .collect(),
+            block_gas_estimation: input.block_gas_estimation,
+        }),
+    ))
+}
+
+pub fn dag_proposer_plan_block_intent_with_current_timestamp(
+    input: DagProposerBlockIntentNowInput,
+) -> Result<DagProposerUnsignedBlockIntent> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("DAG_PROPOSER_CURRENT_TIMESTAMP")?
+        .as_secs();
+    Ok(to_bridge_unsigned_block_intent(
+        plan_dag_proposer_block_intent(DomainDagProposerBlockIntentInput {
+            pivot: H256::from(input.pivot),
+            level: input.level,
+            timestamp,
             vdf_rlp: input.vdf_rlp,
             selected_tips: input
                 .selected_tips
@@ -4449,6 +4479,32 @@ mod tests {
 
         assert!(!signed.block_rlp.is_empty());
         assert_ne!(signed.block_hash, [0; 32]);
+    }
+
+    #[test]
+    fn dag_proposer_block_intent_bridge_can_select_current_timestamp() {
+        let before = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_secs();
+        let unsigned =
+            dag_proposer_plan_block_intent_with_current_timestamp(DagProposerBlockIntentNowInput {
+                pivot: [0x11; 32],
+                level: 9,
+                vdf_rlp: vec![0xC0],
+                selected_tips: vec![DagHash { hash: [0x22; 32] }],
+                transaction_hashes: vec![DagHash { hash: [0x33; 32] }],
+                block_gas_estimation: 77,
+            })
+            .expect("intent");
+        let after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_secs();
+
+        assert!(unsigned.timestamp >= before);
+        assert!(unsigned.timestamp <= after);
+        assert_ne!(unsigned.signing_hash, [0; 32]);
     }
 
     #[test]

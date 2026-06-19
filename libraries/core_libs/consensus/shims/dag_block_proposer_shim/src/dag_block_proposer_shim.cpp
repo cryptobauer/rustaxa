@@ -455,10 +455,9 @@ std::shared_ptr<DagBlock> DagBlockProposer::createDagBlock(DagFrontier&& frontie
 
   const auto plan = dag_mgr_->planProposerBlockConstruction(std::move(plan_input));
 
-  rustaxa::DagProposerBlockIntentInput intent_input;
+  rustaxa::DagProposerBlockIntentNowInput intent_input;
   intent_input.pivot = to_bridge_hash(frontier.pivot);
   intent_input.level = level;
-  intent_input.timestamp = static_cast<uint64_t>(dev::utcTime());
   intent_input.vdf_rlp = to_rust_vec(vdf.rlp());
   intent_input.selected_tips.reserve(plan.selected_tips.size());
   intent_input.transaction_hashes.reserve(trx_hashes.size());
@@ -470,7 +469,7 @@ std::shared_ptr<DagBlock> DagBlockProposer::createDagBlock(DagFrontier&& frontie
   }
   intent_input.block_gas_estimation = plan.block_gas_estimation;
 
-  auto intent = rustaxa::dag_proposer_plan_block_intent(std::move(intent_input));
+  auto intent = rustaxa::dag_proposer_plan_block_intent_with_current_timestamp(std::move(intent_input));
   const auto signature = dev::sign(node_secret, from_bridge_hash(intent.signing_hash));
   rustaxa::DagProposerSignedBlockIntentInput signed_input;
   signed_input.intent = std::move(intent);

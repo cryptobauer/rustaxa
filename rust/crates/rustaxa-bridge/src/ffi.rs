@@ -3968,6 +3968,16 @@ pub mod rustaxa_ffi {
         block_gas_estimation: u64,
     }
 
+    /// Final unsigned DAG block fields whose timestamp is selected by Rust.
+    struct DagProposerBlockIntentNowInput {
+        pivot: [u8; 32],
+        level: u64,
+        vdf_rlp: Vec<u8>,
+        selected_tips: Vec<DagHash>,
+        transaction_hashes: Vec<DagHash>,
+        block_gas_estimation: u64,
+    }
+
     /// Unsigned DAG block intent with the legacy signing hash C++ must sign temporarily.
     struct DagProposerUnsignedBlockIntent {
         pivot: [u8; 32],
@@ -4642,6 +4652,9 @@ pub mod rustaxa_ffi {
         ) -> DagProposerStaleProofPlan;
         pub fn dag_proposer_plan_block_intent(
             input: DagProposerBlockIntentInput,
+        ) -> Result<DagProposerUnsignedBlockIntent>;
+        pub fn dag_proposer_plan_block_intent_with_current_timestamp(
+            input: DagProposerBlockIntentNowInput,
         ) -> Result<DagProposerUnsignedBlockIntent>;
         pub fn dag_proposer_finalize_signed_block_intent(
             input: DagProposerSignedBlockIntentInput,

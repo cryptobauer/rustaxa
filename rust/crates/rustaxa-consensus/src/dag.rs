@@ -329,9 +329,9 @@ pub struct DagProposerBlockConstructionPlan {
 
 /// Inputs for the Rust-owned DAG proposer block intent.
 ///
-/// These are the final protocol fields selected before proposer signing. C++ still supplies the wall-clock timestamp,
-/// VDF payload bytes, and selected transaction hashes while the migration boundary is active, but Rust owns the canonical
-/// unsigned block shape and signing hash over those facts.
+/// These are the final protocol fields selected before proposer signing. The bridge may supply the wall-clock timestamp
+/// for production callers, while deterministic tests can pass one explicitly. Rust owns the canonical unsigned block
+/// shape and signing hash over those facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DagProposerBlockIntentInput {
     pub pivot: H256,
