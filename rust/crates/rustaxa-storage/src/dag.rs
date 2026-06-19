@@ -242,6 +242,40 @@ impl<D: DbReader + DbWriter> DagRepository<D> {
         )
     }
 
+    /// Appends finalized DAG block location bytes to a caller-owned storage batch.
+    ///
+    /// Inputs:
+    /// - `batch`: Rust storage write batch that owns the eventual atomic commit.
+    /// - `hash`: canonical DAG block hash used as the index key.
+    /// - `period`: finalized PBFT period for the DAG block.
+    /// - `position`: DAG block position inside that finalized period.
+    ///
+    /// Outputs:
+    /// - Appends a put in `dag_block_period` with the legacy RLP `[period,
+    ///   position]` payload.
+    ///
+    /// Invariants and edge behavior:
+    /// - Existing entries for the same hash are overwritten, matching legacy
+    ///   RocksDB put semantics.
+    pub fn write_period_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        hash: H256,
+        period: u64,
+        position: u32,
+    ) -> Result<()> {
+        let mut stream = rlp::RlpStream::new_list(2);
+        stream.append(&period);
+        stream.append(&position);
+
+        self.db.batch_put(
+            batch,
+            Column::DagBlockPeriod,
+            hash.as_bytes(),
+            stream.out().as_ref(),
+        )
+    }
+
     /// Updates level index and DAG counters for an already-saved block.
     /// C++ mapping: `DbStorage::updateDagBlockCounters(std::vector<std::shared_ptr<DagBlock>>)`.
     pub fn update_counter(&self, hash: H256, level: u64, tips_count: u64) -> Result<()> {
@@ -426,7 +460,7 @@ impl<D: DbReader + DbWriter> DagRepository<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::DbIterator;
+    use crate::db::{DbIterator, DbWriter};
     use rlp::RlpStream;
     use std::collections::{BTreeMap, HashMap};
     use std::sync::RwLock;
@@ -434,6 +468,11 @@ mod tests {
     // In-memory mock implementation
     struct MockDagStore {
         data: RwLock<HashMap<String, BTreeMap<Vec<u8>, Vec<u8>>>>,
+    }
+
+    enum MockBatchOp {
+        Put(Column, Vec<u8>, Vec<u8>),
+        Delete(Column, Vec<u8>),
     }
 
     impl MockDagStore {
@@ -449,6 +488,13 @@ mod tests {
                 .entry(col.name().to_string())
                 .or_insert_with(BTreeMap::new);
             cf.insert(key.to_vec(), value.to_vec());
+        }
+
+        fn delete(&self, col: Column, key: &[u8]) {
+            let mut data = self.data.write().unwrap();
+            if let Some(cf) = data.get_mut(col.name()) {
+                cf.remove(key);
+            }
         }
     }
 
@@ -532,6 +578,50 @@ mod tests {
             } else {
                 Box::new(std::iter::empty())
             }
+        }
+    }
+
+    impl DbWriter for MockDagStore {
+        type Batch = Vec<MockBatchOp>;
+
+        fn create_batch(&self) -> Self::Batch {
+            Vec::new()
+        }
+
+        fn batch_put(
+            &self,
+            batch: &mut Self::Batch,
+            col: Column,
+            key: &[u8],
+            value: &[u8],
+        ) -> Result<()> {
+            batch.push(MockBatchOp::Put(col, key.to_vec(), value.to_vec()));
+            Ok(())
+        }
+
+        fn batch_delete(&self, batch: &mut Self::Batch, col: Column, key: &[u8]) -> Result<()> {
+            batch.push(MockBatchOp::Delete(col, key.to_vec()));
+            Ok(())
+        }
+
+        fn commit_batch(&self, batch: Self::Batch) -> Result<()> {
+            for op in batch {
+                match op {
+                    MockBatchOp::Put(col, key, value) => self.put(col, &key, &value),
+                    MockBatchOp::Delete(col, key) => self.delete(col, &key),
+                }
+            }
+            Ok(())
+        }
+
+        fn put(&self, col: Column, key: &[u8], value: &[u8]) -> Result<()> {
+            MockDagStore::put(self, col, key, value);
+            Ok(())
+        }
+
+        fn delete(&self, col: Column, key: &[u8]) -> Result<()> {
+            MockDagStore::delete(self, col, key);
+            Ok(())
         }
     }
 
@@ -719,6 +809,29 @@ mod tests {
 
         let optional = repo.period_optional(block_hash).unwrap();
         assert_eq!(optional, Some((period, position)));
+    }
+
+    #[test]
+    fn test_dag_block_period_batch_write_waits_for_commit() {
+        let db = Arc::new(MockDagStore::new());
+        let repo = DagRepository::new(db.clone());
+
+        let block_hash = H256::random();
+        let period = 6u64;
+        let position = 3u32;
+
+        let mut batch = DbWriter::create_batch(db.as_ref());
+        repo.write_period_in_batch(&mut batch, block_hash, period, position)
+            .unwrap();
+
+        assert_eq!(repo.period_optional(block_hash).unwrap(), None);
+
+        DbWriter::commit_batch(db.as_ref(), batch).unwrap();
+
+        assert_eq!(
+            repo.period_optional(block_hash).unwrap(),
+            Some((period, position))
+        );
     }
 
     #[test]

@@ -77,17 +77,49 @@ impl<D: DbReader + DbWriter> PeriodRepository<D> {
             &period.to_le_bytes(),
         )
     }
+
+    /// Appends a finalized PBFT hash-to-period index entry to a caller-owned batch.
+    ///
+    /// Inputs:
+    /// - `batch`: Rust storage write batch that owns the eventual atomic commit.
+    /// - `pbft_block_hash`: canonical PBFT block hash used as the index key.
+    /// - `period`: finalized PBFT period encoded as little-endian `uint64_t`.
+    ///
+    /// Outputs:
+    /// - Appends a put in `pbft_block_period`.
+    ///
+    /// Invariants and edge behavior:
+    /// - Existing entries for the same hash are overwritten, matching legacy
+    ///   RocksDB put semantics.
+    pub fn write_pbft_period_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        pbft_block_hash: H256,
+        period: u64,
+    ) -> Result<()> {
+        self.db.batch_put(
+            batch,
+            Column::PbftBlockPeriod,
+            pbft_block_hash.as_bytes(),
+            &period.to_le_bytes(),
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::DbIterator;
+    use crate::db::{DbIterator, DbWriter};
     use std::collections::{BTreeMap, HashMap};
     use std::sync::RwLock;
 
     struct MockPeriodStore {
         data: RwLock<HashMap<String, BTreeMap<Vec<u8>, Vec<u8>>>>,
+    }
+
+    enum MockBatchOp {
+        Put(Column, Vec<u8>, Vec<u8>),
+        Delete(Column, Vec<u8>),
     }
 
     impl MockPeriodStore {
@@ -103,6 +135,13 @@ mod tests {
                 .entry(col.name().to_string())
                 .or_insert_with(BTreeMap::new);
             cf.insert(key.to_vec(), value.to_vec());
+        }
+
+        fn delete(&self, col: Column, key: &[u8]) {
+            let mut data = self.data.write().unwrap();
+            if let Some(cf) = data.get_mut(col.name()) {
+                cf.remove(key);
+            }
         }
     }
 
@@ -184,6 +223,50 @@ mod tests {
             } else {
                 Box::new(std::iter::empty())
             }
+        }
+    }
+
+    impl DbWriter for MockPeriodStore {
+        type Batch = Vec<MockBatchOp>;
+
+        fn create_batch(&self) -> Self::Batch {
+            Vec::new()
+        }
+
+        fn batch_put(
+            &self,
+            batch: &mut Self::Batch,
+            col: Column,
+            key: &[u8],
+            value: &[u8],
+        ) -> Result<()> {
+            batch.push(MockBatchOp::Put(col, key.to_vec(), value.to_vec()));
+            Ok(())
+        }
+
+        fn batch_delete(&self, batch: &mut Self::Batch, col: Column, key: &[u8]) -> Result<()> {
+            batch.push(MockBatchOp::Delete(col, key.to_vec()));
+            Ok(())
+        }
+
+        fn commit_batch(&self, batch: Self::Batch) -> Result<()> {
+            for op in batch {
+                match op {
+                    MockBatchOp::Put(col, key, value) => self.put(col, &key, &value),
+                    MockBatchOp::Delete(col, key) => self.delete(col, &key),
+                }
+            }
+            Ok(())
+        }
+
+        fn put(&self, col: Column, key: &[u8], value: &[u8]) -> Result<()> {
+            MockPeriodStore::put(self, col, key, value);
+            Ok(())
+        }
+
+        fn delete(&self, col: Column, key: &[u8]) -> Result<()> {
+            MockPeriodStore::delete(self, col, key);
+            Ok(())
         }
     }
 
@@ -272,6 +355,23 @@ mod tests {
 
         let result = repo.by_pbft_hash(H256::from_low_u64_be(1)).unwrap();
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_pbft_period_batch_write_waits_for_commit() {
+        let db = Arc::new(MockPeriodStore::new());
+        let repo = PeriodRepository::new(db.clone());
+        let hash = H256::from_low_u64_be(43);
+
+        let mut batch = DbWriter::create_batch(db.as_ref());
+        repo.write_pbft_period_in_batch(&mut batch, hash, 1235)
+            .unwrap();
+
+        assert_eq!(repo.by_pbft_hash(hash).unwrap(), None);
+
+        DbWriter::commit_batch(db.as_ref(), batch).unwrap();
+
+        assert_eq!(repo.by_pbft_hash(hash).unwrap(), Some(1235));
     }
 
     #[test]

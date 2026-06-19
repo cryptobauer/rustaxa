@@ -1003,7 +1003,8 @@ std::vector<std::shared_ptr<PbftVote>> DbStorage::getRewardVotes() {
 
 void DbStorage::addPbftBlockPeriodToBatch(PbftPeriod period, taraxa::blk_hash_t const& pbft_block_hash,
                                           Batch& write_batch) {
-  insert(write_batch, Columns::pbft_block_period, toSlice(pbft_block_hash.asBytes()), toSlice(period));
+  auto h_arr = into_bytes_array(pbft_block_hash);
+  rustaxa::storage_shim_save_pbft_block_period(getOrCreateRustBatch(write_batch), h_arr, period);
 }
 
 std::pair<bool, PbftPeriod> DbStorage::getPeriodFromPbftHash(taraxa::blk_hash_t const& pbft_block_hash) {
@@ -1023,11 +1024,8 @@ std::shared_ptr<std::pair<PbftPeriod, uint32_t>> DbStorage::getDagBlockPeriod(bl
 
 void DbStorage::addDagBlockPeriodToBatch(blk_hash_t const& hash, PbftPeriod period, uint32_t position,
                                          Batch& write_batch) {
-  dev::RLPStream s;
-  s.appendList(2);
-  s << period;
-  s << position;
-  insert(write_batch, Columns::dag_block_period, toSlice(hash.asBytes()), toSlice(s.invalidate()));
+  auto h_arr = into_bytes_array(hash);
+  rustaxa::storage_shim_save_dag_block_period(getOrCreateRustBatch(write_batch), h_arr, period, position);
 }
 
 std::vector<blk_hash_t> DbStorage::getFinalizedDagBlockHashesByPeriod(PbftPeriod period) {

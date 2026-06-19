@@ -6174,6 +6174,17 @@ pub mod rustaxa_ffi {
             batch: &mut BridgeStorageBatch,
             hash: &[u8; 32],
         ) -> Result<()>;
+        pub fn storage_shim_save_pbft_block_period(
+            batch: &mut BridgeStorageBatch,
+            hash: &[u8; 32],
+            period: u64,
+        ) -> Result<()>;
+        pub fn storage_shim_save_dag_block_period(
+            batch: &mut BridgeStorageBatch,
+            hash: &[u8; 32],
+            period: u64,
+            position: u32,
+        ) -> Result<()>;
         pub fn storage_shim_commit_batch(batch: Box<BridgeStorageBatch>, sync: bool) -> Result<()>;
 
         pub fn dag_block_in_db(self: &BridgeStorage, hash: &[u8; 32]) -> Result<bool>;

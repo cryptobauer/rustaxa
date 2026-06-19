@@ -214,10 +214,13 @@ Landed sub-slices:
   writes, own verified vote cleanup, latest-round 2t+1 vote replacement, and extra reward vote cleanup through typed
   `rustaxa-storage` PBFT batch methods. The C++ shim still builds legacy PBFT object RLP where required, but column
   selection, key encoding, delete/put ordering, and commit/drop ownership are now Rust-owned.
+- Period-index shim batch appends: routed finalized PBFT block hash-to-period and DAG block hash-to-period/position
+  writes through typed `rustaxa-storage` period/DAG batch methods. Rust now owns the `pbft_block_period` little-endian
+  value encoding and `dag_block_period` legacy RLP payload while preserving the caller's legacy `Batch&` commit boundary.
 
 Next target:
 
-- Reduce the remaining storage-shim raw append surface in the DAG, transaction, period-index, proposed-block cleanup, and
+- Reduce the remaining storage-shim raw append surface in the DAG block/counter, transaction, proposed-block cleanup, and
   proposal-level mapping families by replacing broad `insert(Batch&, Column, ...)` and `remove(Batch&, Column, ...)`
   callers with typed Rust storage helpers where active tests or public compatibility paths still need them.
 

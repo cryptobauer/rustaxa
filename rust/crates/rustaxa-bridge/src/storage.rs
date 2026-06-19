@@ -304,6 +304,39 @@ pub fn storage_shim_remove_extra_reward_vote(
         .remove_extra_reward_vote_in_batch(storage_shim_batch_mut(batch)?, H256::from(*hash))
 }
 
+/// Appends a typed PBFT block hash-to-period index write to a Rust-owned storage shim batch.
+pub fn storage_shim_save_pbft_block_period(
+    batch: &mut BridgeStorageBatch,
+    hash: &[u8; 32],
+    period: u64,
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage.period().write_pbft_period_in_batch(
+        storage_shim_batch_mut(batch)?,
+        H256::from(*hash),
+        period,
+    )
+}
+
+/// Appends a typed DAG block hash-to-period/position index write to a Rust-owned storage shim batch.
+///
+/// Rust owns the legacy `dag_block_period` RLP payload shape while the C++ shim
+/// supplies the finalized period and position facts.
+pub fn storage_shim_save_dag_block_period(
+    batch: &mut BridgeStorageBatch,
+    hash: &[u8; 32],
+    period: u64,
+    position: u32,
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage.dag().write_period_in_batch(
+        storage_shim_batch_mut(batch)?,
+        H256::from(*hash),
+        period,
+        position,
+    )
+}
+
 /// Commits a Rust-owned storage shim batch and consumes it.
 ///
 /// Dropping a `BridgeStorageBatch` without calling this method discards staged
