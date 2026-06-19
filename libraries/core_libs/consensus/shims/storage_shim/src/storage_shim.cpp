@@ -65,6 +65,7 @@ DbStorage::DbStorage(fs::path const& path, uint32_t db_snapshot_each_n_pbft_bloc
     rust_storage_ = rustaxa::create_storage(path.string());
     pillar_storage_ = rustaxa::create_pillar_chain_storage(*rust_storage_.value());
     proposed_blocks_storage_ = rustaxa::create_proposed_blocks_index_from_storage(*rust_storage_.value());
+    pbft_queries_ = rustaxa::create_pbft_storage_queries(*rust_storage_.value());
     pbft_vote_queries_ = rustaxa::create_pbft_vote_storage_queries(*rust_storage_.value());
     kMajorVersion_ = static_cast<uint32_t>(getStatusField(StatusDbField::DbMajorVersion));
     auto const minor_version = static_cast<uint32_t>(getStatusField(StatusDbField::DbMinorVersion));
@@ -818,7 +819,7 @@ void DbStorage::addStatusFieldToBatch(StatusDbField const& field, uint64_t value
 }
 
 uint32_t DbStorage::getPbftMgrField(PbftMgrField field) {
-  return rust_storage_.value()->get_pbft_mgr_field(static_cast<uint8_t>(field));
+  return pbft_queries_.value()->get_pbft_mgr_field(static_cast<uint8_t>(field));
 }
 
 void DbStorage::savePbftMgrField(PbftMgrField field, uint32_t value) {
@@ -830,7 +831,7 @@ void DbStorage::addPbftMgrFieldToBatch(PbftMgrField field, uint32_t value, Batch
 }
 
 bool DbStorage::getPbftMgrStatus(PbftMgrStatus field) {
-  return rust_storage_.value()->get_pbft_mgr_status(static_cast<uint8_t>(field));
+  return pbft_queries_.value()->get_pbft_mgr_status(static_cast<uint8_t>(field));
 }
 
 void DbStorage::savePbftMgrStatus(PbftMgrStatus field, bool const& value) {
@@ -879,13 +880,13 @@ std::optional<PbftBlock> DbStorage::getPbftBlock(blk_hash_t const& hash) {
 
 bool DbStorage::pbftBlockInDb(blk_hash_t const& hash) {
   auto h_arr = into_bytes_array(hash);
-  auto res = rust_storage_.value()->pbft_block_in_db(h_arr);
+  auto res = pbft_queries_.value()->pbft_block_in_db(h_arr);
   return res;
 }
 
 std::string DbStorage::getPbftHead(blk_hash_t const& hash) {
   auto h_arr = into_bytes_array(hash);
-  auto data = rust_storage_.value()->get_pbft_head(h_arr);
+  auto data = pbft_queries_.value()->get_pbft_head(h_arr);
   return std::string(data.begin(), data.end());
 }
 

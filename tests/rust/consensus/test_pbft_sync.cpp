@@ -27,6 +27,10 @@ rust::Box<BridgePbftVoteStorageQueries> voteQueries(const rust::Box<BridgeStorag
   return create_pbft_vote_storage_queries(*storage);
 }
 
+rust::Box<BridgePbftStorageQueries> pbftQueries(const rust::Box<BridgeStorage>& storage) {
+  return create_pbft_storage_queries(*storage);
+}
+
 std::vector<std::array<uint8_t, 32>> hashes(const rust::Vec<PbftSyncTransactionHash>& input) {
   std::vector<std::array<uint8_t, 32>> out;
   out.reserve(input.size());
@@ -733,7 +737,7 @@ TEST(RustPbftSyncTest, ManagerStartupRestoreRecordsRuntimeSnapshotFromStorage) {
   EXPECT_TRUE(snapshot.executed_pbft_block);
   EXPECT_TRUE(snapshot.already_next_voted_value);
   EXPECT_FALSE(snapshot.already_next_voted_null);
-  EXPECT_EQ(storage->get_pbft_mgr_field(kPbftMgrFieldStep), 4);
+  EXPECT_EQ(pbftQueries(storage)->get_pbft_mgr_field(kPbftMgrFieldStep), 4);
 
   std::filesystem::remove_all(test_dir);
 }
@@ -1101,7 +1105,8 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyWritesPrimaryBatch) {
   EXPECT_EQ(result.dag_index_writes, 2);
   EXPECT_EQ(result.transaction_location_writes, 1);
 
-  const auto pbft_head = storage->get_pbft_head(h256(8));
+  auto pbft_queries = pbftQueries(storage);
+  const auto pbft_head = pbft_queries->get_pbft_head(h256(8));
   EXPECT_EQ(std::vector<uint8_t>(pbft_head.begin(), pbft_head.end()),
             (std::vector<uint8_t>{'{', '"', 'h', 'e', 'a', 'd', '"', ':', 't', 'r', 'u', 'e', '}'}));
   const auto period_data = storage->get_period_data_raw(101);
@@ -1115,7 +1120,7 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyWritesPrimaryBatch) {
   EXPECT_FALSE(storage->get_transaction_location(h256(4)).empty());
   const auto period_lambda = storage->get_period_lambda(101, false);
   EXPECT_FALSE(period_lambda.found);
-  EXPECT_FALSE(storage->get_pbft_mgr_status(kPbftMgrStatusExecutedBlock));
+  EXPECT_FALSE(pbft_queries->get_pbft_mgr_status(kPbftMgrStatusExecutedBlock));
 
   const auto sortition_result = apply_pbft_finalization_storage_writes(
       *storage, plan.storage_write_intent, storageStages({sortitionFinalizationStorageStage(101, 2500, 1300)}), false);
@@ -1161,7 +1166,7 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyWritesPrimaryBatch) {
   EXPECT_TRUE(persisted_period_lambda.found);
   EXPECT_EQ(persisted_period_lambda.value, 1500);
   EXPECT_EQ(storage->get_rounds_count_dynamic_lambda(), 7);
-  EXPECT_EQ(storage->get_pbft_mgr_field(kPbftMgrFieldLambda), 1450);
+  EXPECT_EQ(pbftQueries(storage)->get_pbft_mgr_field(kPbftMgrFieldLambda), 1450);
 
   const auto executed_status_result = apply_pbft_finalization_storage_writes(
       *storage, plan.storage_write_intent,
@@ -1169,7 +1174,8 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyWritesPrimaryBatch) {
 
   EXPECT_EQ(executed_status_result.status, kPbftFinalizedPeriodApplyStatusApplied);
 
-  EXPECT_EQ(storage->get_pbft_mgr_status(kPbftMgrStatusExecutedBlock), plan.storage_write_intent.executed_pbft_status);
+  EXPECT_EQ(pbftQueries(storage)->get_pbft_mgr_status(kPbftMgrStatusExecutedBlock),
+            plan.storage_write_intent.executed_pbft_status);
 
   std::filesystem::remove_all(test_dir);
 }

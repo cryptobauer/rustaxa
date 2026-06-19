@@ -174,12 +174,13 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   static constexpr uint8_t kPbftMgrStatusNextVotedSoftValue = 2;
 
   auto storage = rustaxa::create_storage(db_path.string());
+  auto pbft_queries = rustaxa::create_pbft_storage_queries(*storage);
 
   // Baseline API coverage
   transcript.add("status_default_executed_blk", toString(storage->get_status_field(kStatusFieldExecutedBlkCount)));
-  transcript.add("pbft_mgr_field_default_round", toString(storage->get_pbft_mgr_field(kPbftMgrFieldRound)));
+  transcript.add("pbft_mgr_field_default_round", toString(pbft_queries->get_pbft_mgr_field(kPbftMgrFieldRound)));
   transcript.add("pbft_mgr_status_default_executed_block",
-                 toString(storage->get_pbft_mgr_status(kPbftMgrStatusExecutedBlock)));
+                 toString(pbft_queries->get_pbft_mgr_status(kPbftMgrStatusExecutedBlock)));
   transcript.add("proposal_period_missing",
                  optionalToString(toOptional(storage->get_proposal_period_for_dag_level(100))));
   transcript.add("period_lambda_missing", optionalToString(toOptional(storage->get_period_lambda(7, false))));
@@ -198,9 +199,9 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   storage->save_rounds_count_dynamic_lambda(23);
 
   transcript.add("status_trx_count_after_save", toString(storage->get_status_field(kStatusFieldTrxCount)));
-  transcript.add("pbft_mgr_field_round_after_save", toString(storage->get_pbft_mgr_field(kPbftMgrFieldRound)));
+  transcript.add("pbft_mgr_field_round_after_save", toString(pbft_queries->get_pbft_mgr_field(kPbftMgrFieldRound)));
   transcript.add("pbft_mgr_status_next_voted_soft_after_save",
-                 toString(storage->get_pbft_mgr_status(kPbftMgrStatusNextVotedSoftValue)));
+                 toString(pbft_queries->get_pbft_mgr_status(kPbftMgrStatusNextVotedSoftValue)));
   transcript.add("proposal_period_level_100_after_save",
                  optionalToString(toOptional(storage->get_proposal_period_for_dag_level(100))));
   transcript.add("period_lambda_exact_after_save", optionalToString(toOptional(storage->get_period_lambda(7, false))));
@@ -247,13 +248,13 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   transcript.add("pbft_period_lookup_found", toString(pbft_lookup.found));
   transcript.add("pbft_period_lookup_value", toString(pbft_lookup.period));
   transcript.add("pbft_period_lookup_missing", toString(!pbft_missing_lookup.found));
-  transcript.add("pbft_block_in_db_found", toString(storage->pbft_block_in_db(pbft_hash)));
-  transcript.add("pbft_block_in_db_missing", toString(storage->pbft_block_in_db(pbft_missing)));
+  transcript.add("pbft_block_in_db_found", toString(pbft_queries->pbft_block_in_db(pbft_hash)));
+  transcript.add("pbft_block_in_db_missing", toString(pbft_queries->pbft_block_in_db(pbft_missing)));
 
   auto pbft_head_hash = h256Array(0x71);
-  transcript.add("pbft_head_missing_len", toString(storage->get_pbft_head(pbft_head_hash).size()));
+  transcript.add("pbft_head_missing_len", toString(pbft_queries->get_pbft_head(pbft_head_hash).size()));
   storage->save_pbft_head(pbft_head_hash, toRustVec(std::vector<uint8_t>{'h', 'e', 'a', 'd'}));
-  transcript.add("pbft_head_after_save_len", toString(storage->get_pbft_head(pbft_head_hash).size()));
+  transcript.add("pbft_head_after_save_len", toString(pbft_queries->get_pbft_head(pbft_head_hash).size()));
 
   // Transaction paths + system transaction + period system hashes
   auto tx_hash_1 = h256Array(0x51);

@@ -1674,8 +1674,11 @@ impl From<PbftManagerAdvancePeriodPlan> for FfiPbftManagerAdvancePeriodPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ffi::{BridgePbftStorageQueries, BridgeStorage};
     use crate::pillar_chain::create_pillar_chain_storage;
-    use crate::storage::{create_pbft_vote_storage_queries, create_storage};
+    use crate::storage::{
+        create_pbft_storage_queries, create_pbft_vote_storage_queries, create_storage,
+    };
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1762,6 +1765,10 @@ mod tests {
             .expect("system clock should be after epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("{prefix}_{}_{}", std::process::id(), nanos))
+    }
+
+    fn pbft_queries(storage: &BridgeStorage) -> Box<BridgePbftStorageQueries> {
+        create_pbft_storage_queries(storage)
     }
 
     fn fact(state: u8) -> FfiPbftManagerRuntimeTickFact {
@@ -2286,7 +2293,7 @@ mod tests {
             assert_eq!(snapshot.dynamic_lambda_ms, 1_500);
             assert!(snapshot.executed_pbft_block);
             assert!(snapshot.already_next_voted_value);
-            assert_eq!(storage.get_pbft_mgr_field(1).unwrap(), 4);
+            assert_eq!(pbft_queries(&storage).get_pbft_mgr_field(1).unwrap(), 4);
         }
 
         let _ = fs::remove_dir_all(temp_dir);
@@ -2313,7 +2320,7 @@ mod tests {
             assert!(error
                 .to_string()
                 .contains("PBFT_MANAGER_STARTUP_MISSING_DYNAMIC_LAMBDA"));
-            assert_eq!(storage.get_pbft_mgr_field(1).unwrap(), 1);
+            assert_eq!(pbft_queries(&storage).get_pbft_mgr_field(1).unwrap(), 1);
         }
 
         let _ = fs::remove_dir_all(temp_dir);
@@ -2368,10 +2375,10 @@ mod tests {
             assert_eq!(current.round, result.snapshot.round);
             assert_eq!(current.step, result.snapshot.step);
             assert_eq!(current.state, result.snapshot.state);
-            assert_eq!(storage.get_pbft_mgr_field(0).unwrap(), 4);
-            assert_eq!(storage.get_pbft_mgr_field(1).unwrap(), 1);
-            assert!(!storage.get_pbft_mgr_status(2).unwrap());
-            assert!(!storage.get_pbft_mgr_status(3).unwrap());
+            assert_eq!(pbft_queries(&storage).get_pbft_mgr_field(0).unwrap(), 4);
+            assert_eq!(pbft_queries(&storage).get_pbft_mgr_field(1).unwrap(), 1);
+            assert!(!pbft_queries(&storage).get_pbft_mgr_status(2).unwrap());
+            assert!(!pbft_queries(&storage).get_pbft_mgr_status(3).unwrap());
             let vote_queries = create_pbft_vote_storage_queries(&storage);
             assert!(vote_queries.get_own_verified_votes().unwrap().is_empty());
         }
@@ -2402,7 +2409,7 @@ mod tests {
             let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
                 .expect("runtime should restore");
             assert!(pbft_manager_runtime_snapshot(&runtime).executed_pbft_block);
-            assert!(storage
+            assert!(pbft_queries(&storage)
                 .get_pbft_mgr_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)
                 .expect("status should load"));
 
@@ -2413,7 +2420,7 @@ mod tests {
             assert_eq!(result.applied_writes, 1);
             assert!(!result.snapshot.executed_pbft_block);
             assert!(!pbft_manager_runtime_snapshot(&runtime).executed_pbft_block);
-            assert!(!storage
+            assert!(!pbft_queries(&storage)
                 .get_pbft_mgr_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)
                 .expect("status should load"));
         }
@@ -2453,8 +2460,8 @@ mod tests {
             let snapshot = pbft_manager_runtime_snapshot(&runtime);
             assert!(snapshot.already_next_voted_value);
             assert!(snapshot.already_next_voted_null);
-            assert!(storage.get_pbft_mgr_status(2).unwrap());
-            assert!(storage.get_pbft_mgr_status(3).unwrap());
+            assert!(pbft_queries(&storage).get_pbft_mgr_status(2).unwrap());
+            assert!(pbft_queries(&storage).get_pbft_mgr_status(3).unwrap());
             assert_eq!(
                 err.to_string(),
                 "PBFT_MANAGER_NEXT_VOTED_STATUS_UNSUPPORTED"
@@ -2495,8 +2502,8 @@ mod tests {
             assert_eq!(round_snapshot.round, 8);
             assert_eq!(step_snapshot.round, 8);
             assert_eq!(step_snapshot.step, 6);
-            assert_eq!(storage.get_pbft_mgr_field(0).unwrap(), 8);
-            assert_eq!(storage.get_pbft_mgr_field(1).unwrap(), 6);
+            assert_eq!(pbft_queries(&storage).get_pbft_mgr_field(0).unwrap(), 8);
+            assert_eq!(pbft_queries(&storage).get_pbft_mgr_field(1).unwrap(), 6);
             assert!(err
                 .to_string()
                 .contains("unsupported PBFT manager cursor field"));
@@ -2527,7 +2534,7 @@ mod tests {
                 pbft_manager_runtime_snapshot(&runtime).dynamic_lambda_ms,
                 1_250
             );
-            assert_eq!(storage.get_pbft_mgr_field(2).unwrap(), 1_500);
+            assert_eq!(pbft_queries(&storage).get_pbft_mgr_field(2).unwrap(), 1_500);
         }
 
         let _ = fs::remove_dir_all(temp_dir);
@@ -2565,7 +2572,7 @@ mod tests {
                 pbft_manager_runtime_snapshot(&runtime).broadcast_votes_counter,
                 2
             );
-            assert_eq!(storage.get_pbft_mgr_field(2).unwrap(), 1_500);
+            assert_eq!(pbft_queries(&storage).get_pbft_mgr_field(2).unwrap(), 1_500);
         }
 
         let _ = fs::remove_dir_all(temp_dir);
@@ -2787,7 +2794,7 @@ mod tests {
                 &runtime,
                 &second_anchor
             ));
-            assert_eq!(storage.get_pbft_mgr_field(2).unwrap(), 1_500);
+            assert_eq!(pbft_queries(&storage).get_pbft_mgr_field(2).unwrap(), 1_500);
         }
 
         let _ = fs::remove_dir_all(temp_dir);
@@ -2987,7 +2994,7 @@ mod tests {
             assert_eq!(current.round, before.round);
             assert_eq!(current.step, before.step);
             assert_eq!(current.state, before.state);
-            assert_eq!(storage.get_pbft_mgr_field(0).unwrap(), 1);
+            assert_eq!(pbft_queries(&storage).get_pbft_mgr_field(0).unwrap(), 1);
         }
 
         let _ = fs::remove_dir_all(temp_dir);

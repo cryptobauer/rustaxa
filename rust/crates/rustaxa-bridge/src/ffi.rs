@@ -59,6 +59,15 @@ pub struct BridgePbftVoteStorageQueries {
     pub storage: Arc<Storage>,
 }
 
+/// Typed PBFT scalar/head query handle for C++ compatibility materializers.
+///
+/// This wrapper keeps PBFT manager scalar reads, PBFT block existence checks,
+/// and PBFT head payload reads grouped under the PBFT storage boundary instead
+/// of exposing them as generic `BridgeStorage` methods.
+pub struct BridgePbftStorageQueries {
+    pub storage: Arc<Storage>,
+}
+
 /// Rust-owned storage shim batch used to preserve the legacy C++ `Batch&` API
 /// while keeping the live write batch inside `rustaxa-storage`.
 ///
@@ -6107,10 +6116,14 @@ pub mod rustaxa_ffi {
         // Storage
 
         type BridgeStorage;
+        type BridgePbftStorageQueries;
         type BridgePbftVoteStorageQueries;
         type BridgeStorageBatch;
 
         pub fn create_storage(path: &str) -> Result<Box<BridgeStorage>>;
+        pub fn create_pbft_storage_queries(
+            storage: &BridgeStorage,
+        ) -> Box<BridgePbftStorageQueries>;
         pub fn create_pbft_vote_storage_queries(
             storage: &BridgeStorage,
         ) -> Box<BridgePbftVoteStorageQueries>;
@@ -6372,11 +6385,11 @@ pub mod rustaxa_ffi {
         ) -> Result<()>;
         pub fn clear_block_rewards_stats(self: &BridgeStorage) -> Result<()>;
 
-        pub fn pbft_block_in_db(self: &BridgeStorage, hash: &[u8; 32]) -> Result<bool>;
-        pub fn get_pbft_mgr_field(self: &BridgeStorage, field: u8) -> Result<u32>;
-        pub fn get_pbft_mgr_status(self: &BridgeStorage, field: u8) -> Result<bool>;
         pub fn get_cert_voted_block_in_round(self: &BridgeStorage) -> Result<Vec<u8>>;
-        pub fn get_pbft_head(self: &BridgeStorage, hash: &[u8; 32]) -> Result<Vec<u8>>;
+        pub fn pbft_block_in_db(self: &BridgePbftStorageQueries, hash: &[u8; 32]) -> Result<bool>;
+        pub fn get_pbft_mgr_field(self: &BridgePbftStorageQueries, field: u8) -> Result<u32>;
+        pub fn get_pbft_mgr_status(self: &BridgePbftStorageQueries, field: u8) -> Result<bool>;
+        pub fn get_pbft_head(self: &BridgePbftStorageQueries, hash: &[u8; 32]) -> Result<Vec<u8>>;
         pub fn get_own_verified_votes(self: &BridgePbftVoteStorageQueries) -> Result<Vec<VoteRlp>>;
         pub fn get_all_two_t_plus_one_votes(
             self: &BridgePbftVoteStorageQueries,

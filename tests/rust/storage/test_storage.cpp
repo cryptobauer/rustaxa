@@ -45,6 +45,10 @@ class StorageTest : public ::testing::Test {
     return create_pbft_vote_storage_queries(*storage);
   }
 
+  static rust::Box<BridgePbftStorageQueries> pbftQueries(const rust::Box<BridgeStorage>& storage) {
+    return create_pbft_storage_queries(*storage);
+  }
+
   std::filesystem::path test_dir;
 };
 
@@ -203,15 +207,16 @@ TEST_F(StorageTest, ApplyPbftManagerTransitionStorageCommitsCursorStatusesAndOwn
   auto runtime = create_pbft_manager_runtime_from_storage(*storage, makePbftManagerStartupFact());
   auto result = pbft_manager_runtime_apply_transition_storage_write(*runtime, plan, std::move(own_vote_hashes));
 
+  auto pbft_queries = pbftQueries(storage);
   EXPECT_EQ(result.status, kPbftManagerTransitionStorageApplied);
   EXPECT_EQ(result.applied_writes, 6u);
   EXPECT_TRUE(result.error_code.empty());
   EXPECT_EQ(result.snapshot.round, 7u);
   EXPECT_EQ(result.snapshot.step, 4u);
-  EXPECT_EQ(storage->get_pbft_mgr_field(0), 7u);
-  EXPECT_EQ(storage->get_pbft_mgr_field(1), 4u);
-  EXPECT_FALSE(storage->get_pbft_mgr_status(2));
-  EXPECT_FALSE(storage->get_pbft_mgr_status(3));
+  EXPECT_EQ(pbft_queries->get_pbft_mgr_field(0), 7u);
+  EXPECT_EQ(pbft_queries->get_pbft_mgr_field(1), 4u);
+  EXPECT_FALSE(pbft_queries->get_pbft_mgr_status(2));
+  EXPECT_FALSE(pbft_queries->get_pbft_mgr_status(3));
   EXPECT_TRUE(storage->get_cert_voted_block_in_round().empty());
   auto vote_queries = voteQueries(storage);
   EXPECT_TRUE(vote_queries->get_own_verified_votes().empty());

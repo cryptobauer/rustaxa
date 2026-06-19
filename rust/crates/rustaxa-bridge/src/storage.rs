@@ -1,4 +1,5 @@
 use crate::ffi::rustaxa_ffi;
+use crate::ffi::BridgePbftStorageQueries;
 use crate::ffi::BridgePbftVoteStorageQueries;
 use crate::ffi::BridgeStorage;
 use crate::ffi::BridgeStorageBatch;
@@ -102,6 +103,25 @@ pub fn create_pbft_vote_storage_queries(
     })
 }
 
+/// Creates a typed PBFT scalar/head query handle from the shared Rust storage owner.
+///
+/// Inputs:
+/// - `storage`: generic bridge storage owner used only as a construction-time
+///   lifetime seed.
+///
+/// Outputs:
+/// - a read-only PBFT query handle that owns a cloned Rust storage handle.
+///
+/// Invariants and edge behavior:
+/// - callers can inspect PBFT scalar/head compatibility rows without retaining
+///   broad `BridgeStorage` read methods
+/// - the handle does not mutate storage or decode PBFT block objects.
+pub fn create_pbft_storage_queries(storage: &BridgeStorage) -> Box<BridgePbftStorageQueries> {
+    Box::new(BridgePbftStorageQueries {
+        storage: storage.0.clone(),
+    })
+}
+
 /// Creates a Rust-owned storage batch for the C++ `DbStorage` shim.
 ///
 /// The returned object owns a native `rustaxa-storage` write batch and the shared
@@ -161,6 +181,45 @@ impl BridgePbftVoteStorageQueries {
     /// return an empty vector.
     pub fn get_reward_votes(&self) -> Result<Vec<rustaxa_ffi::VoteRlp>, anyhow::Error> {
         Ok(vote_rlps_to_bridge(self.storage.pbft().reward_votes_rlp()?))
+    }
+}
+
+impl BridgePbftStorageQueries {
+    /// Returns whether a PBFT block hash resolves to a persisted finalized period.
+    ///
+    /// Inputs: canonical PBFT block hash bytes. Output is `true` only when the
+    /// Rust PBFT repository can resolve the hash through the PBFT period index.
+    /// Storage errors are returned to the caller.
+    pub fn pbft_block_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
+        self.storage.pbft().exists(H256::from(*hash))
+    }
+
+    /// Returns a PBFT manager numeric field or the legacy default.
+    ///
+    /// Inputs: legacy `PbftMgrField` numeric discriminant. Output preserves the
+    /// legacy default of `1` when the row is absent.
+    pub fn get_pbft_mgr_field(&self, field: u8) -> Result<u32, anyhow::Error> {
+        Ok(self.storage.pbft().manager_field(field)?.unwrap_or(1))
+    }
+
+    /// Returns a PBFT manager boolean status or the legacy default.
+    ///
+    /// Inputs: legacy `PbftMgrStatus` numeric discriminant. Output preserves the
+    /// legacy default of `false` when the row is absent.
+    pub fn get_pbft_mgr_status(&self, field: u8) -> Result<bool, anyhow::Error> {
+        Ok(self.storage.pbft().manager_status(field)?.unwrap_or(false))
+    }
+
+    /// Returns the persisted PBFT head payload for a hash.
+    ///
+    /// Inputs: canonical PBFT head hash bytes. Output is an empty vector when no
+    /// row exists, matching the legacy C++ storage API.
+    pub fn get_pbft_head(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .storage
+            .pbft()
+            .head(H256::from(*hash))?
+            .unwrap_or_default())
     }
 }
 
@@ -1036,28 +1095,12 @@ impl BridgeStorage {
         self.0.metadata().clear_block_rewards_stats()
     }
 
-    pub fn pbft_block_in_db(&self, hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
-        self.0.pbft().exists(H256::from(*hash))
-    }
-
-    pub fn get_pbft_mgr_field(&self, field: u8) -> Result<u32, anyhow::Error> {
-        Ok(self.0.pbft().manager_field(field)?.unwrap_or(1))
-    }
-
-    pub fn get_pbft_mgr_status(&self, field: u8) -> Result<bool, anyhow::Error> {
-        Ok(self.0.pbft().manager_status(field)?.unwrap_or(false))
-    }
-
     pub fn get_cert_voted_block_in_round(&self) -> Result<Vec<u8>, anyhow::Error> {
         Ok(self
             .0
             .pbft()
             .cert_voted_block_in_round_rlp()?
             .unwrap_or_default())
-    }
-
-    pub fn get_pbft_head(&self, hash: &[u8; 32]) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self.0.pbft().head(H256::from(*hash))?.unwrap_or_default())
     }
 
     pub fn save_cert_voted_block_in_round(

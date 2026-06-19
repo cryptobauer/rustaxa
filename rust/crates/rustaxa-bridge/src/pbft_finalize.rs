@@ -958,7 +958,8 @@ impl From<PbftFinalizationLiveMutationValidation> for FfiPbftFinalizationLiveMut
 mod tests {
     use super::*;
     use crate::ffi::rustaxa_ffi::PbftFinalizationHash as FfiPbftFinalizationHash;
-    use crate::storage::create_storage;
+    use crate::ffi::{BridgePbftStorageQueries, BridgeStorage};
+    use crate::storage::{create_pbft_storage_queries, create_storage};
     use rustaxa_consensus::pbft_finalize::PbftFinalizationAnchor::{Anchored, Null};
     use rustaxa_consensus::pbft_finalize::PbftFinalizationStatus;
     use rustaxa_consensus::sortition::SortitionParamsChange;
@@ -1035,6 +1036,10 @@ mod tests {
             .expect("time should be available")
             .as_nanos();
         std::env::temp_dir().join(format!("{name}_{nonce}"))
+    }
+
+    fn pbft_queries(storage: &BridgeStorage) -> Box<BridgePbftStorageQueries> {
+        create_pbft_storage_queries(storage)
     }
 
     fn reward_vote_bundle_rlp(raw_votes: Vec<Vec<u8>>) -> Vec<u8> {
@@ -1478,7 +1483,7 @@ mod tests {
             assert_eq!(result.transaction_location_writes, 1);
 
             assert_eq!(
-                storage
+                pbft_queries(&storage)
                     .get_pbft_head(&[8; 32])
                     .expect("pbft head should load"),
                 br#"{"last":true}"#.to_vec()
@@ -1515,7 +1520,7 @@ mod tests {
                     .expect("period lambda should remain sidecar-owned")
                     .found
             );
-            assert!(!storage
+            assert!(!pbft_queries(&storage)
                 .get_pbft_mgr_status(EXECUTED_BLOCK_STATUS_FIELD)
                 .expect("executed status should remain sidecar-owned"));
 
@@ -1850,7 +1855,7 @@ mod tests {
                 7
             );
             assert_eq!(
-                storage
+                pbft_queries(&storage)
                     .get_pbft_mgr_field(PBFT_MGR_FIELD_LAMBDA)
                     .expect("lambda field should load"),
                 1_450
@@ -1924,7 +1929,7 @@ mod tests {
             )
             .expect("status overwrite should apply");
             assert_eq!(status_result.status, APPLY_STATUS_APPLIED_TEST);
-            assert!(storage
+            assert!(pbft_queries(&storage)
                 .get_pbft_mgr_status(EXECUTED_BLOCK_STATUS_FIELD)
                 .expect("executed status should load"));
         }
