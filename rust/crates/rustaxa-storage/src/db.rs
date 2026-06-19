@@ -405,3 +405,99 @@ impl DbWriter for Storage {
         DbWriter::delete(&*self.db, col, key)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(name: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after UNIX_EPOCH")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "rustaxa_storage_db_{name}_{}_{}",
+            std::process::id(),
+            unique
+        ))
+    }
+
+    fn storage_at(name: &str) -> (std::path::PathBuf, Storage) {
+        let path = unique_temp_dir(name);
+        let _ = fs::remove_dir_all(&path);
+        let storage = Storage::new(Config::new(path.clone())).expect("storage should initialize");
+        (path, storage)
+    }
+
+    fn u64_le(value: u64) -> [u8; 8] {
+        value.to_le_bytes()
+    }
+
+    #[test]
+    fn raw_batch_commit_persists_status_value() {
+        let (path, storage) = storage_at("raw_batch_commit");
+        let mut batch = storage.create_write_batch();
+        storage
+            .batch_put_raw(&mut batch, Column::Status, &[0], &u64_le(123))
+            .expect("batch put should append");
+        storage
+            .commit_write_batch_with_sync(batch, false)
+            .expect("batch should commit");
+
+        assert_eq!(
+            storage
+                .get_raw(Column::Status, &[0])
+                .expect("status lookup should succeed"),
+            Some(u64_le(123).to_vec())
+        );
+        drop(storage);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn dropped_raw_batch_does_not_persist_status_value() {
+        let (path, storage) = storage_at("raw_batch_drop");
+        let mut batch = storage.create_write_batch();
+        storage
+            .batch_put_raw(&mut batch, Column::Status, &[1], &u64_le(77))
+            .expect("batch put should append");
+        drop(batch);
+
+        assert_eq!(
+            storage
+                .get_raw(Column::Status, &[1])
+                .expect("status lookup should succeed"),
+            None
+        );
+        drop(storage);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn raw_batch_delete_removes_status_value() {
+        let (path, storage) = storage_at("raw_batch_delete");
+        storage
+            .metadata()
+            .write_status_field(2, 55)
+            .expect("status seed should persist");
+
+        let mut batch = storage.create_write_batch();
+        storage
+            .batch_delete_raw(&mut batch, Column::Status, &[2])
+            .expect("batch delete should append");
+        storage
+            .commit_write_batch_with_sync(batch, false)
+            .expect("delete batch should commit");
+
+        assert_eq!(
+            storage
+                .get_raw(Column::Status, &[2])
+                .expect("status lookup should succeed"),
+            None
+        );
+        drop(storage);
+        let _ = fs::remove_dir_all(path);
+    }
+}

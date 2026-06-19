@@ -197,11 +197,13 @@ Landed sub-slices:
 - PBFT finalization fixture seeding: `rust_consensus_tests` no longer seeds DAG/transaction rows through compatibility
   bridge batches. The PBFT finalization storage apply tests now use typed storage helpers for the prerequisite DAG block
   and transaction rows.
+- Native storage batch coverage: moved raw batch commit/drop/delete semantics into `rustaxa-storage` unit tests and
+  removed the dedicated CXX bridge-registry batch tests from `rust_storage_tests`.
 
 Next target:
 
-- Move the remaining `rust_storage_tests`, storage-shim, and storage-conformance compatibility setup off `compat_*`
-  bridge batch ids, then delete the registry from `BridgeStorage`.
+- Move the remaining storage-shim and storage-conformance compatibility setup off `compat_*` bridge batch ids, then
+  delete the registry from `BridgeStorage`.
 
 Scope:
 

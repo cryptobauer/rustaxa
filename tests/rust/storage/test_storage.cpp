@@ -22,21 +22,6 @@ class StorageTest : public ::testing::Test {
     }
   }
 
-  static rust::Vec<uint8_t> one_byte_key(uint8_t v) {
-    rust::Vec<uint8_t> out;
-    out.push_back(v);
-    return out;
-  }
-
-  static rust::Vec<uint8_t> u64_le(uint64_t value) {
-    rust::Vec<uint8_t> out;
-    out.reserve(8);
-    for (size_t i = 0; i < 8; ++i) {
-      out.push_back(static_cast<uint8_t>((value >> (8 * i)) & 0xFF));
-    }
-    return out;
-  }
-
   static std::array<uint8_t, 32> h256(uint8_t last_byte) {
     std::array<uint8_t, 32> hash{};
     hash[31] = last_byte;
@@ -77,58 +62,6 @@ TEST_F(StorageTest, CreateStorage) {
   auto storage = create_storage(test_dir.string());
   // rust::Box cannot be null, so this is effectively a constructor smoke test
   SUCCEED();
-}
-
-TEST_F(StorageTest, BatchPutCommitAndReadBackStatusField) {
-  constexpr uint8_t kStatusColumn = 8;
-  auto storage = create_storage(test_dir.string());
-
-  auto batch_id = storage->compat_create_write_batch();
-  storage->compat_batch_put(batch_id, kStatusColumn, one_byte_key(0), u64_le(123));
-  storage->compat_commit_write_batch(batch_id, false);
-
-  EXPECT_EQ(storage->get_status_field(0), 123u);
-}
-
-TEST_F(StorageTest, DroppedBatchDoesNotPersistWrites) {
-  constexpr uint8_t kStatusColumn = 8;
-  auto storage = create_storage(test_dir.string());
-
-  auto batch_id = storage->compat_create_write_batch();
-  storage->compat_batch_put(batch_id, kStatusColumn, one_byte_key(1), u64_le(77));
-  storage->compat_drop_write_batch(batch_id);
-
-  EXPECT_EQ(storage->get_status_field(1), 0u);
-}
-
-TEST_F(StorageTest, BatchDeleteRemovesStatusFieldValue) {
-  constexpr uint8_t kStatusColumn = 8;
-  auto storage = create_storage(test_dir.string());
-
-  storage->save_status_field(2, 55);
-  EXPECT_EQ(storage->get_status_field(2), 55u);
-
-  auto batch_id = storage->compat_create_write_batch();
-  storage->compat_batch_delete(batch_id, kStatusColumn, one_byte_key(2));
-  storage->compat_commit_write_batch(batch_id, false);
-
-  EXPECT_EQ(storage->get_status_field(2), 0u);
-}
-
-TEST_F(StorageTest, UnknownBatchIdThrows) {
-  constexpr uint8_t kStatusColumn = 8;
-  auto storage = create_storage(test_dir.string());
-
-  EXPECT_THROW(storage->compat_batch_put(999999, kStatusColumn, one_byte_key(0), u64_le(1)), std::exception);
-  EXPECT_THROW(storage->compat_commit_write_batch(999999, false), std::exception);
-}
-
-TEST_F(StorageTest, DropBatchIsIdempotent) {
-  auto storage = create_storage(test_dir.string());
-  auto batch_id = storage->compat_create_write_batch();
-
-  EXPECT_NO_THROW(storage->compat_drop_write_batch(batch_id));
-  EXPECT_NO_THROW(storage->compat_drop_write_batch(batch_id));
 }
 
 TEST_F(StorageTest, MissingDagBlockReturnsEmptyPayload) {
