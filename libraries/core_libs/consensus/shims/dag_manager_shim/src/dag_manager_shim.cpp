@@ -22,11 +22,13 @@
 namespace taraxa {
 namespace {
 
-constexpr uint8_t kDagVerifyVdfStatusNotChecked = 0;
 constexpr uint8_t kDagVerifyVdfStatusValid = 1;
 constexpr uint8_t kDagVerifyVdfStatusInvalid = 2;
-constexpr uint8_t kDagVerifyDposStatusNotChecked = 0;
-constexpr uint8_t kDagVerifyDposStatusSnapshotUnavailable = 1;
+constexpr uint8_t kDagVerifySessionStatusInvalidReport = 2;
+constexpr uint8_t kDagVerifySessionActionTransactionQuery = 1;
+constexpr uint8_t kDagVerifySessionActionAuthorizationFacts = 2;
+constexpr uint8_t kDagVerifySessionActionVdfSortition = 3;
+constexpr uint8_t kDagVerifySessionActionGas = 4;
 constexpr uint8_t kPbftFinalizationRuntimeActionSetDagBlockOrder = 4;
 
 std::array<uint8_t, 32> to_bridge_hash(const blk_hash_t &hash) { return hash.asArray(); }
@@ -205,11 +207,21 @@ dev::bytes rust_vdf_message(const blk_hash_t &pivot, const std::vector<trx_hash_
   return from_rust_bytes(rustaxa::dag_vdf_message(bridge_pivot, to_bridge_dag_hashes(trx_hashes)));
 }
 
-rustaxa::DagVerifyPrecheckBlock to_bridge_verify_precheck_block(const std::shared_ptr<DagBlock> &block) {
-  rustaxa::DagVerifyPrecheckBlock out;
-  out.level = block->getLevel();
+rustaxa::DagVerifyBlockSessionInput to_bridge_verify_block_session_input(
+    const std::shared_ptr<DagBlock> &block,
+    const std::unordered_map<trx_hash_t, std::shared_ptr<Transaction>> &trxs) {
+  rustaxa::DagVerifyBlockSessionInput out;
+  out.block_level = block->getLevel();
   out.pivot = to_bridge_hash(block->getPivot());
   out.tips = to_bridge_dag_hashes(block->getTips());
+  out.block_transaction_hashes = to_bridge_dag_transaction_hashes(block->getTrxs());
+
+  vec_trx_t supplied_trx_hashes;
+  supplied_trx_hashes.reserve(trxs.size());
+  for (const auto &entry : trxs) {
+    supplied_trx_hashes.push_back(entry.first);
+  }
+  out.supplied_transaction_hashes = to_bridge_dag_transaction_hashes(supplied_trx_hashes);
   return out;
 }
 
@@ -245,36 +257,21 @@ std::optional<DagManager::VerifyBlockReturnType> to_verify_block_reject(uint32_t
   }
 }
 
-rustaxa::DagVerifyVdfDposFacts to_bridge_vdf_dpos_facts(bool vrf_key_found, uint64_t sender_eligible_vote_count,
-                                                        uint64_t vdf_sortition_max_vote_count, uint8_t vdf_status,
-                                                        uint8_t dpos_status) {
-  rustaxa::DagVerifyVdfDposFacts out;
-  out.vrf_key_found = vrf_key_found;
-  out.sender_eligible_vote_count = sender_eligible_vote_count;
-  out.vdf_sortition_max_vote_count = vdf_sortition_max_vote_count;
-  out.vdf_status = vdf_status;
-  out.dpos_status = dpos_status;
+rustaxa::DagVerifyBlockAuthorizationReport to_bridge_verify_block_authorization_report(
+    const rustaxa::DagDposAuthorizationFacts &facts) {
+  rustaxa::DagVerifyBlockAuthorizationReport out;
+  out.vrf_key_found = facts.vrf_key_found;
+  out.sender_eligible_vote_count = facts.sender_eligible_vote_count;
+  out.vdf_sortition_max_vote_count = facts.vdf_sortition_max_vote_count;
+  out.eligibility_status = facts.eligibility_status;
   return out;
 }
 
-std::optional<DagManager::VerifyBlockReturnType> decide_vdf_dpos_authorization(
-    const rustaxa::DagVerifyVdfDposFacts &facts) {
-  const auto decision = rustaxa::dag_decide_vdf_dpos_authorization(facts);
-  return to_verify_block_reject(decision.reject_code);
-}
-
-rustaxa::DagVerifyTransactionAvailabilityInput to_bridge_transaction_availability_input(
-    uint64_t expected_transactions, uint64_t resolved_transactions) {
-  rustaxa::DagVerifyTransactionAvailabilityInput out;
-  out.expected_transactions = expected_transactions;
-  out.resolved_transactions = resolved_transactions;
-  return out;
-}
-
-rustaxa::DagVerifyGasInput to_bridge_gas_input(uint64_t block_gas_estimation, uint64_t estimated_transactions_weight,
-                                               uint64_t dag_gas_limit, uint64_t pbft_gas_limit,
-                                               rust::Vec<rustaxa::DagTipGas> tip_gas_estimations) {
-  rustaxa::DagVerifyGasInput out;
+rustaxa::DagVerifyBlockGasReport to_bridge_verify_block_gas_report(uint64_t block_gas_estimation,
+                                                                   uint64_t estimated_transactions_weight,
+                                                                   uint64_t dag_gas_limit, uint64_t pbft_gas_limit,
+                                                                   rust::Vec<rustaxa::DagTipGas> tip_gas_estimations) {
+  rustaxa::DagVerifyBlockGasReport out;
   out.block_gas_estimation = block_gas_estimation;
   out.estimated_transactions_weight = estimated_transactions_weight;
   out.dag_gas_limit = dag_gas_limit;
@@ -412,39 +409,52 @@ std::shared_ptr<DagBlock> DagManager::getDagBlock(const blk_hash_t &hash) const 
 std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::verifyBlock(
     const std::shared_ptr<DagBlock> &blk, const std::unordered_map<trx_hash_t, std::shared_ptr<Transaction>> &trxs) {
   const auto &block_hash = blk->getHash();
-  uint64_t proposal_period = 0;
-  {
+  SharedTransactions all_block_trxs;
+  all_block_trxs.reserve(blk->getTrxs().size());
+
+  auto finish_if_complete =
+      [&](const rustaxa::DagVerifyBlockSessionStep &step)
+      -> std::optional<std::pair<DagManager::VerifyBlockReturnType, SharedTransactions>> {
+    if (step.status == kDagVerifySessionStatusInvalidReport) {
+      throw std::runtime_error("DagManager: Rust verifyBlock session rejected executor report: " +
+                               std::string(step.error_code));
+    }
+    if (!step.complete) {
+      return std::nullopt;
+    }
+    if (const auto reject = to_verify_block_reject(step.reject_code); reject.has_value()) {
+      if (*reject == VerifyBlockReturnType::AheadBlock || *reject == VerifyBlockReturnType::MissingTransaction) {
+        seen_blocks_.erase(block_hash);
+      }
+      return std::make_pair(*reject, SharedTransactions{});
+    }
+    return std::make_pair(VerifyBlockReturnType::Verified, std::move(all_block_trxs));
+  };
+
+  auto verify_session = [&]() {
     std::shared_lock lock(rust_graphs_mutex_);
     // Rust bridge/storage failures intentionally propagate as exceptions: they
     // are infrastructure errors, while consensus-invalid blocks are returned as
     // explicit reject codes.
-    const auto precheck =
-        rust_graphs_->runtime->dag_manager_runtime_verify_precheck(to_bridge_verify_precheck_block(blk));
-    proposal_period = precheck.proposal_period;
-    if (const auto reject = to_verify_block_reject(precheck.reject_code); reject.has_value()) {
-      if (*reject == VerifyBlockReturnType::AheadBlock) {
-        seen_blocks_.erase(block_hash);
-      }
-      return {*reject, {}};
-    }
+    return rust_graphs_->runtime->dag_manager_runtime_create_verify_block_session(
+        to_bridge_verify_block_session_input(blk, trxs));
+  }();
+
+  auto step = verify_session->dag_verify_block_session_next();
+  if (auto complete = finish_if_complete(step); complete.has_value()) {
+    return std::move(*complete);
+  }
+  if (step.action != kDagVerifySessionActionTransactionQuery) {
+    throw std::runtime_error("DagManager: Rust verifyBlock session did not request transaction query");
   }
 
+  const uint64_t proposal_period = step.proposal_period;
   const auto &all_block_trx_hashes = blk->getTrxs();
-  vec_trx_t supplied_trx_hashes;
-  supplied_trx_hashes.reserve(trxs.size());
-  for (const auto &entry : trxs) {
-    supplied_trx_hashes.push_back(entry.first);
-  }
-  auto query_plan = rustaxa::dag_plan_verify_transaction_query(to_bridge_dag_transaction_hashes(all_block_trx_hashes),
-                                                               to_bridge_dag_transaction_hashes(supplied_trx_hashes));
   std::vector<trx_hash_t> planned_query_hashes;
-  planned_query_hashes.reserve(query_plan.query_hashes.size());
-  for (const auto &hash : query_plan.query_hashes) {
+  planned_query_hashes.reserve(step.query_hashes.size());
+  for (const auto &hash : step.query_hashes) {
     planned_query_hashes.emplace_back(from_bridge_dag_transaction_hash(hash));
   }
-
-  SharedTransactions all_block_trxs;
-  all_block_trxs.reserve(all_block_trx_hashes.size());
 
   std::unordered_map<trx_hash_t, std::shared_ptr<Transaction>> queried_transactions;
   queried_transactions.reserve(planned_query_hashes.size());
@@ -461,62 +471,51 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
 
     const auto it = queried_transactions.find(tx_hash);
     if (it == queried_transactions.end()) {
-      seen_blocks_.erase(block_hash);
-      return {VerifyBlockReturnType::MissingTransaction, {}};
+      break;
     }
     all_block_trxs.emplace_back(it->second);
   }
 
-  const auto transaction_availability = rustaxa::dag_verify_transaction_availability(
-      to_bridge_transaction_availability_input(all_block_trx_hashes.size(), all_block_trxs.size()));
-  if (const auto reject = to_verify_block_reject(transaction_availability.reject_code); reject.has_value()) {
-    if (*reject == VerifyBlockReturnType::MissingTransaction) {
-      seen_blocks_.erase(block_hash);
-    }
-    return {*reject, {}};
+  rustaxa::DagVerifyBlockTransactionReport transaction_report;
+  transaction_report.resolved_transactions = all_block_trxs.size();
+  step = verify_session->dag_verify_block_session_report_transactions(std::move(transaction_report));
+  if (auto complete = finish_if_complete(step); complete.has_value()) {
+    return std::move(*complete);
+  }
+  if (step.action != kDagVerifySessionActionAuthorizationFacts) {
+    throw std::runtime_error("DagManager: Rust verifyBlock session did not request authorization facts");
   }
 
   const auto authorization_facts = rust_dag_authorization_facts(*final_chain_, proposal_period, blk->getSender());
-  const bool vrf_key_found = authorization_facts.vrf_key_found;
-  const uint64_t sender_eligible_vote_count = authorization_facts.sender_eligible_vote_count;
-  const uint64_t vdf_sortition_max_vote_count = authorization_facts.vdf_sortition_max_vote_count;
-  const uint8_t eligibility_status = authorization_facts.eligibility_status;
-
-  if (const auto reject = decide_vdf_dpos_authorization(to_bridge_vdf_dpos_facts(
-          vrf_key_found, sender_eligible_vote_count, vdf_sortition_max_vote_count, kDagVerifyVdfStatusNotChecked,
-          eligibility_status == kDagVerifyDposStatusSnapshotUnavailable ? kDagVerifyDposStatusSnapshotUnavailable
-                                                                        : kDagVerifyDposStatusNotChecked));
-      reject.has_value()) {
-    return {*reject, {}};
+  step = verify_session->dag_verify_block_session_report_authorization(
+      to_bridge_verify_block_authorization_report(authorization_facts));
+  if (auto complete = finish_if_complete(step); complete.has_value()) {
+    return std::move(*complete);
+  }
+  if (step.action != kDagVerifySessionActionVdfSortition) {
+    throw std::runtime_error("DagManager: Rust verifyBlock session did not request VDF sortition");
   }
 
   uint8_t vdf_status = kDagVerifyVdfStatusValid;
-  if (vrf_key_found) {
-    try {
-      const auto proposal_period_hash = getPeriodBlockHashForDagProposal(proposal_period);
-      const auto block_rlp = blk->rlp(true);
-      const auto sortition_params = sortition_params_manager_.rustSortitionParamsForRust(proposal_period);
-      const auto vdf_result = rustaxa::dag_verify_vdf_sortition_from_block(to_bridge_vdf_sortition_input(
-          block_rlp, blk->getLevel(), proposal_period_hash, sortition_params, authorization_facts.vrf_key,
-          sender_eligible_vote_count, vdf_sortition_max_vote_count));
-      vdf_status = vdf_result.vdf_status;
-    } catch (std::exception const &) {
-      vdf_status = kDagVerifyVdfStatusInvalid;
-    }
+  try {
+    const auto proposal_period_hash = getPeriodBlockHashForDagProposal(proposal_period);
+    const auto block_rlp = blk->rlp(true);
+    const auto sortition_params = sortition_params_manager_.rustSortitionParamsForRust(proposal_period);
+    const auto vdf_result = rustaxa::dag_verify_vdf_sortition_from_block(
+        to_bridge_vdf_sortition_input(block_rlp, blk->getLevel(), proposal_period_hash, sortition_params,
+                                      authorization_facts.vrf_key, step.vote_count, step.max_vote_count));
+    vdf_status = vdf_result.vdf_status;
+  } catch (std::exception const &) {
+    vdf_status = kDagVerifyVdfStatusInvalid;
   }
-  if (const auto reject = decide_vdf_dpos_authorization(to_bridge_vdf_dpos_facts(
-          true, sender_eligible_vote_count, vdf_sortition_max_vote_count, vdf_status,
-          eligibility_status == kDagVerifyDposStatusSnapshotUnavailable ? kDagVerifyDposStatusSnapshotUnavailable
-                                                                        : kDagVerifyDposStatusNotChecked));
-      reject.has_value()) {
-    return {*reject, {}};
+  rustaxa::DagVerifyBlockVdfReport vdf_report;
+  vdf_report.vdf_status = vdf_status;
+  step = verify_session->dag_verify_block_session_report_vdf(std::move(vdf_report));
+  if (auto complete = finish_if_complete(step); complete.has_value()) {
+    return std::move(*complete);
   }
-
-  if (const auto reject = decide_vdf_dpos_authorization(
-          to_bridge_vdf_dpos_facts(true, sender_eligible_vote_count, vdf_sortition_max_vote_count,
-                                   kDagVerifyVdfStatusValid, eligibility_status));
-      reject.has_value()) {
-    return {*reject, {}};
+  if (step.action != kDagVerifySessionActionGas) {
+    throw std::runtime_error("DagManager: Rust verifyBlock session did not request gas facts");
   }
 
   const auto [dag_gas_limit, pbft_gas_limit] = genesis_config_.getGasLimits(proposal_period);
@@ -540,14 +539,14 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
     }
   }
 
-  const auto gas =
-      rustaxa::dag_verify_gas(to_bridge_gas_input(blk->getGasEstimation(), estimated_transactions_weight, dag_gas_limit,
-                                                  pbft_gas_limit, std::move(tip_gas_estimations)));
-  if (const auto reject = to_verify_block_reject(gas.reject_code); reject.has_value()) {
-    return {*reject, {}};
+  step = verify_session->dag_verify_block_session_report_gas(to_bridge_verify_block_gas_report(
+      blk->getGasEstimation(), estimated_transactions_weight, dag_gas_limit, pbft_gas_limit,
+      std::move(tip_gas_estimations)));
+  if (auto complete = finish_if_complete(step); complete.has_value()) {
+    return std::move(*complete);
   }
 
-  return {VerifyBlockReturnType::Verified, std::move(all_block_trxs)};
+  throw std::runtime_error("DagManager: Rust verifyBlock session did not complete after gas report");
 }
 
 std::pair<bool, std::vector<blk_hash_t>> DagManager::pivotAndTipsAvailable(const std::shared_ptr<DagBlock> &blk) {

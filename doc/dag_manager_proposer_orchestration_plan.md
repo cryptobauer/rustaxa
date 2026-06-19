@@ -61,6 +61,9 @@ Landed:
 - `DagManager::addDagBlock` duplicate, expiry, and pivot/tip availability planning now enters the long-lived Rust
   `DagManagerRuntime` through compact block facts. The C++ shim executes the returned persistence, graph mutation,
   event, gossip, and compatibility mirror effects.
+- `DagManager::verifyBlock` now opens an ordered Rust runtime session. Rust owns precheck, transaction-query planning,
+  transaction availability, VDF/DPoS reject ordering, gas reject ordering, and terminal status selection while C++
+  reports live transaction, FinalChain authorization, VDF verifier, and EVM gas-estimation facts.
 
 Scope:
 
@@ -117,6 +120,12 @@ Validation:
 ## Slice 3: DAG Proposer Policy Runtime
 
 Move proposer orchestration decisions into Rust while leaving signing, thread lifecycle, and network submission in C++.
+
+Starting gap:
+
+- Rust-mode `dag_block_test` currently expects the legacy `DagBlockProposer::selectDagBlockTips` compatibility method,
+  but the proposer overlay does not expose that route. Close this through the Rust proposer policy boundary rather than
+  reintroducing C++ tip-selection decision ownership.
 
 Scope:
 

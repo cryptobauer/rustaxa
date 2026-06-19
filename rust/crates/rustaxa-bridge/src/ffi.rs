@@ -78,6 +78,10 @@ pub struct BridgeDagManagerRuntime {
     pub storage: Arc<Storage>,
 }
 
+pub struct BridgeDagVerifyBlockSession {
+    pub state: crate::dag::DagVerifyBlockSession,
+}
+
 /// PBFT chain runtime wrapper. Pure state-only instances are used by unit tests
 /// and deterministic head transitions; storage-backed instances own the shared
 /// Rust storage handle used for PBFT block lookup/materialization.
@@ -3588,6 +3592,56 @@ pub mod rustaxa_ffi {
         proposal_period: u64,
     }
 
+    /// Compact block and caller-supplied transaction facts used to open one
+    /// Rust-owned `DagManager::verifyBlock` runtime session.
+    struct DagVerifyBlockSessionInput {
+        block_level: u64,
+        pivot: [u8; 32],
+        tips: Vec<DagHash>,
+        block_transaction_hashes: Vec<DagTransactionHash>,
+        supplied_transaction_hashes: Vec<DagTransactionHash>,
+    }
+
+    /// One requested Rust-owned `verifyBlock` session step.
+    struct DagVerifyBlockSessionStep {
+        status: u8,
+        action: u8,
+        complete: bool,
+        reject_code: u32,
+        proposal_period: u64,
+        query_hashes: Vec<DagTransactionHash>,
+        vote_count: u64,
+        max_vote_count: u64,
+        error_code: String,
+    }
+
+    /// Live transaction-materialization report for one `verifyBlock` session.
+    struct DagVerifyBlockTransactionReport {
+        resolved_transactions: u64,
+    }
+
+    /// Live DPoS/VRF authorization report for one `verifyBlock` session.
+    struct DagVerifyBlockAuthorizationReport {
+        vrf_key_found: bool,
+        sender_eligible_vote_count: u64,
+        vdf_sortition_max_vote_count: u64,
+        eligibility_status: u8,
+    }
+
+    /// Live VDF verifier report for one `verifyBlock` session.
+    struct DagVerifyBlockVdfReport {
+        vdf_status: u8,
+    }
+
+    /// Live gas-estimation report for one `verifyBlock` session.
+    struct DagVerifyBlockGasReport {
+        block_gas_estimation: u64,
+        estimated_transactions_weight: u64,
+        dag_gas_limit: u64,
+        pbft_gas_limit: u64,
+        tip_gas_estimations: Vec<DagTipGas>,
+    }
+
     /// Per-tip gas metadata for Rust DAG verification gas decisions.
     struct DagTipGas {
         found: bool,
@@ -4413,6 +4467,30 @@ pub mod rustaxa_ffi {
             self: &BridgeDagManagerRuntime,
             block: DagVerifyPrecheckBlock,
         ) -> Result<DagVerifyPrecheckResult>;
+        pub fn dag_manager_runtime_create_verify_block_session(
+            self: &BridgeDagManagerRuntime,
+            input: DagVerifyBlockSessionInput,
+        ) -> Result<Box<BridgeDagVerifyBlockSession>>;
+        type BridgeDagVerifyBlockSession;
+        pub fn dag_verify_block_session_next(
+            self: &BridgeDagVerifyBlockSession,
+        ) -> DagVerifyBlockSessionStep;
+        pub fn dag_verify_block_session_report_transactions(
+            self: &mut BridgeDagVerifyBlockSession,
+            report: DagVerifyBlockTransactionReport,
+        ) -> DagVerifyBlockSessionStep;
+        pub fn dag_verify_block_session_report_authorization(
+            self: &mut BridgeDagVerifyBlockSession,
+            report: DagVerifyBlockAuthorizationReport,
+        ) -> DagVerifyBlockSessionStep;
+        pub fn dag_verify_block_session_report_vdf(
+            self: &mut BridgeDagVerifyBlockSession,
+            report: DagVerifyBlockVdfReport,
+        ) -> DagVerifyBlockSessionStep;
+        pub fn dag_verify_block_session_report_gas(
+            self: &mut BridgeDagVerifyBlockSession,
+            report: DagVerifyBlockGasReport,
+        ) -> DagVerifyBlockSessionStep;
         pub fn dag_verify_transaction_availability(
             input: DagVerifyTransactionAvailabilityInput,
         ) -> DagVerifyTransactionAvailabilityResult;
