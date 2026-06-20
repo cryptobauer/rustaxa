@@ -68,6 +68,10 @@ class RustDagGraphTest : public ::testing::Test {
   static std::vector<uint8_t> byte_vector(const rust::Vec<uint8_t>& bytes) {
     return std::vector<uint8_t>(bytes.begin(), bytes.end());
   }
+
+  static rust::Box<BridgeTransactionStorageQueries> transaction_queries(const rust::Box<BridgeStorage>& storage) {
+    return create_transaction_storage_queries(*storage);
+  }
 };
 
 TEST_F(RustDagGraphTest, BasicGraphOperationsMatchDagTestFixtures) {
@@ -168,7 +172,7 @@ TEST_F(RustDagGraphTest, RuntimeNonFinalizedSyncSnapshotAndTransactionRlpLookup)
   EXPECT_EQ(sync_snapshot.period, 0u);
   EXPECT_EQ(last_bytes(sync_snapshot.selected_hashes), (std::vector<uint8_t>{2, 6}));
 
-  const auto trxs = storage->get_transaction_rlps_by_hashes({
+  const auto trxs = transaction_queries(storage)->get_transaction_rlps_by_hashes({
       rustaxa::DagTransactionHash{tx_hash_a},
       rustaxa::DagTransactionHash{tx_hash_b},
       rustaxa::DagTransactionHash{tx_hash_missing},

@@ -69,7 +69,6 @@ constexpr uint8_t kPbftSyncNextCheckValidateFinalChainHash = 1;
 constexpr uint8_t kPbftSyncNextCheckCheckRewardVotes = 2;
 constexpr uint8_t kPbftSyncNextCheckValidateCertVotes = 3;
 constexpr uint8_t kPbftSyncNextCheckCheckTransactions = 4;
-constexpr uint8_t kPbftSyncNextCheckValidatePillarData = 5;
 constexpr uint8_t kPbftSyncNextCheckValidatePillarVotes = 6;
 constexpr uint8_t kPbftSyncTransactionWarningMissing = 1;
 constexpr uint8_t kPbftSyncTransactionWarningFinalized = 2;
@@ -234,7 +233,11 @@ PbftSyncProcessPeriodDataRuntimeFact makeRuntimeFact() {
   fact.period_data_transaction_hashes = {tx(2)};
   fact.contains_finalized_transactions = false;
   fact.pillar_data_status = kPbftSyncFactNotChecked;
+  fact.extra_data_required = true;
+  fact.extra_data_present = true;
+  fact.extra_data_pillar_block_hash_present = true;
   fact.pillar_votes_required = true;
+  fact.pillar_votes_present = true;
   fact.pillar_votes_status = kPbftSyncFactNotChecked;
   fact.previous_cert_votes_present = true;
   fact.previous_cert_first_vote_has_weight = false;
@@ -537,18 +540,13 @@ TEST(RustPbftSyncTest, ProcessPeriodRuntimeRecordsAcceptTranscript) {
   ASSERT_EQ(plan.runtime_action, kPbftSyncRuntimeActionRunCheck);
   checks.push_back(plan.next_check);
 
-  fact.pillar_data_status = kPbftSyncFactValid;
-  plan = plan_pbft_sync_process_period_data_runtime(fact);
-  ASSERT_EQ(plan.runtime_action, kPbftSyncRuntimeActionRunCheck);
-  checks.push_back(plan.next_check);
-
   fact.pillar_votes_status = kPbftSyncFactValid;
   plan = plan_pbft_sync_process_period_data_runtime(fact);
 
   EXPECT_EQ(checks,
             (std::vector<uint8_t>{kPbftSyncNextCheckValidateFinalChainHash, kPbftSyncNextCheckCheckRewardVotes,
                                   kPbftSyncNextCheckValidateCertVotes, kPbftSyncNextCheckCheckTransactions,
-                                  kPbftSyncNextCheckValidatePillarData, kPbftSyncNextCheckValidatePillarVotes}));
+                                  kPbftSyncNextCheckValidatePillarVotes}));
   EXPECT_EQ(plan.runtime_action, kPbftSyncRuntimeActionAccept);
   EXPECT_EQ(plan.next_check, kPbftSyncNextCheckNone);
   EXPECT_TRUE(plan.accept_period_data);
