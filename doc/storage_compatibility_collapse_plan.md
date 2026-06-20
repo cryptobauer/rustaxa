@@ -61,7 +61,7 @@ Not allowed to remain as production Rust-mode consensus authority:
 
 ## Slice 1: Compatibility Surface Inventory and Guard Tightening
 
-Status: ready to implement deletion slices from the initial inventory.
+Status: complete.
 
 Classify every remaining `DbStorage::rustStorage()`, `BridgeStorage`, `createWriteBatch()`, `commitWriteBatch()`, and
 bridge-batch call site.
@@ -112,6 +112,16 @@ Acceptance:
 - Every remaining storage compatibility call site is classified.
 - New unclassified production consensus storage routes are still rejected by the guard.
 - The inventory identifies concrete deletion candidates for Slices 2 and 3.
+
+Completed:
+
+- Ran a targeted inventory sweep over remaining `DbStorage::rustStorage()`, `BridgeStorage`, `createWriteBatch()`,
+  `commitWriteBatch()`, `getOrCreateRustBatch()`, and `storage_shim_*` callsites in consensus/runtime, storage shims,
+  and conformance/test suites.
+- Confirmed these callsites are classified by owner: production shim constructor/runtime seeding, test/conformance fixtures,
+  public/query compatibility boundaries, and legacy/reference/lifecycle paths.
+- No additional guard tightenings were required in this slice; the existing allowlist continues to reject unclassified
+  Rust-mode consensus authority usage.
 
 Validation:
 
