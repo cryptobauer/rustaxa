@@ -458,8 +458,6 @@ pub enum PbftSyncProcessRuntimeNextCheck {
     ValidateCertVotes,
     /// Run transaction finalized/missing checks.
     CheckTransactions,
-    /// Run pillar-data validation.
-    ValidatePillarData,
     /// Run pillar-vote validation.
     ValidatePillarVotes,
 }
@@ -473,7 +471,6 @@ impl PbftSyncProcessRuntimeNextCheck {
             Self::CheckRewardVotes => 2,
             Self::ValidateCertVotes => 3,
             Self::CheckTransactions => 4,
-            Self::ValidatePillarData => 5,
             Self::ValidatePillarVotes => 6,
         }
     }
@@ -1427,13 +1424,20 @@ pub fn plan_pbft_sync_process_period_data_runtime(
     ) {
         return plan;
     }
-    if let Some(plan) = staged_fact_status(
-        pillar_data_status,
-        PbftSyncProcessRuntimeNextCheck::ValidatePillarData,
-        PbftSyncPeriodAdmissionStatus::PillarDataInvalid,
-        transaction_query.clone(),
-    ) {
-        return plan;
+    match pillar_data_status {
+        PbftSyncFactStatus::Invalid => {
+            return runtime_plan(
+                PbftSyncProcessRuntimeAction::ClearAndReportPeer,
+                PbftSyncPeriodAdmissionStatus::PillarDataInvalid,
+                PbftSyncProcessRuntimeNextCheck::None,
+                transaction_query.clone(),
+                replace_previous_block_cert_votes,
+            );
+        }
+        PbftSyncFactStatus::Unknown => return runtime_contract_error(transaction_query),
+        PbftSyncFactStatus::Valid
+        | PbftSyncFactStatus::NotRequired
+        | PbftSyncFactStatus::NotChecked => {}
     }
 
     let pillar_votes_status = if fact.pillar_votes_required {
