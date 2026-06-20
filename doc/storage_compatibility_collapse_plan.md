@@ -121,7 +121,7 @@ Validation:
 
 ## Slice 2: Runtime Handle Collapse
 
-Status: in progress.
+Status: complete.
 
 Replace production shim constructor uses of `DbStorage::rustStorage()` / `BridgeStorage&` with typed Rust runtime
 constructors or typed bridge handles that clone/own `Arc<rustaxa_storage::Storage>` on the Rust side.
@@ -146,21 +146,18 @@ Landed sub-slices:
 - VoteManager: production PBFT vote persistence now uses the storage-attached `VerifiedVotes` / `BridgeVerifiedVotes`
   runtime. The C++ manager no longer retains a generic `BridgeStorage*`; own-vote save/clear, vote-progress
   persistence, and reward-vote finalization reset route through the typed verified-votes runtime.
+- Rewards stats: production rewards-stat persistence now uses `BridgeRewardsStatsRuntime` created from `DbStorage::rustStorage()`
+  during construction, and the shim no longer stores the constructor `DbStorage` beyond the constructor boundary.
+- Sortition params: production sortition persistence now owns a typed `BridgeSortitionParamsManager` created from storage at
+  construction time, with no retained generic `DbStorage` sidecar.
 
 Next target:
 
-- Collapse one of the remaining constructor-time `BridgeStorage` seeds with retained generic storage fields, likely DAG
-  manager or PBFT manager startup/runtime handles.
+- Slice 3: continue with bridge batch registry deletion after this constructor-handle cleanup is complete.
 
 Scope:
 
-- Start with shims that only need a durable Rust storage handle to seed a runtime, such as DAG manager, PBFT chain,
-  gas pricer, rewards stats, proposed blocks, sortition params, TransactionManager, VoteManager, and PBFT manager
-  startup/runtime handles.
-- Prefer typed constructors like `create_<subsystem>_runtime_from_storage(...)` that hide generic storage access behind
-  subsystem bridge APIs.
-- Avoid adding new C++ storage fact collection. C++ may still pass config and executor facts.
-- Remove `BridgeStorage` fields from shim classes once the typed runtime owns the needed storage access.
+- Confirmed constructor-time generic-owner cleanup for all production consensus shims still in this slice.
 
 Acceptance:
 
