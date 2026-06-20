@@ -100,7 +100,6 @@ class Stats {
 
   const uint32_t kCommitteeSize;
   const HardforksConfig kHardforksConfig;
-  std::shared_ptr<DbStorage> db_;
   const std::function<uint64_t(EthBlockNumber)> dpos_eligible_total_vote_count_;
   std::unordered_map<PbftPeriod, BlockStats> blocks_stats_;
 

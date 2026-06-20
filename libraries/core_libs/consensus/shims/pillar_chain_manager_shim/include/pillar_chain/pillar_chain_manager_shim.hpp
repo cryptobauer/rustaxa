@@ -383,7 +383,6 @@ class PillarChainManager {
  private:
   const FicusHardforkConfig& kFicusHfConfig;
 
-  std::shared_ptr<DbStorage> storage_owner_;
   ::rust::Box<rustaxa::BridgePillarChainStorage> rust_storage_;
   std::weak_ptr<Network> network_;
   std::shared_ptr<final_chain::FinalChain> final_chain_;

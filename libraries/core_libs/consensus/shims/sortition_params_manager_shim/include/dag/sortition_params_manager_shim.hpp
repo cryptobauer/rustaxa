@@ -143,7 +143,6 @@ class SortitionParamsManager {
  protected:
   const FullNodeConfig kConfig;
   SortitionConfig sortition_config_;
-  std::shared_ptr<DbStorage> batch_owner_;
   std::deque<SortitionParamsChange> params_changes_;
   std::optional<::rust::Box<rustaxa::BridgeSortitionParamsManager>> rust_sortition_params_manager_;
 

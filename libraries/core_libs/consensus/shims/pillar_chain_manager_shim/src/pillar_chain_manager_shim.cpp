@@ -420,8 +420,7 @@ PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_confi
                                        std::shared_ptr<final_chain::FinalChain> final_chain,
                                        std::shared_ptr<KeyManager> key_manager, addr_t node_addr)
     : kFicusHfConfig(ficus_hf_config),
-      storage_owner_(std::move(db)),
-      rust_storage_(rustaxa::create_pillar_chain_storage(storage_owner_->rustStorage())),
+      rust_storage_(rustaxa::create_pillar_chain_storage(db->rustStorage())),
       network_{},
       final_chain_{std::move(final_chain)},
       key_manager_(std::move(key_manager)),
