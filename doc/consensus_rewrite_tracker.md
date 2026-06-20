@@ -172,6 +172,22 @@ The next shrink phase is compatibility deletion rather than storage migration. R
 before moving network/tarcap transport, packet wrapping, gossip fanout, arbitrary EVM execution, receipt/contract
 execution, or public API materialization into the consensus storage cleanup.
 
+### Compatibility Surface Cleanup Slices
+
+- Slice 1 — Inventory and classification is complete: all migrated and remaining compatibility storage call sites and
+  shells were inventoried and classified.
+- Slice 2 — Runtime handle collapse is complete: C++ consensus shims now receive typed Rust runtime/query handles where
+  storage ownership remains active; `DbStorage` and bridge batch registries are not used as production storage authority.
+- Slice 3 — Batch registry cleanup is complete: generic bridge batch appender and compatibility batch lookup/deletion routes
+  were removed or reduced to typed storage operations where production code still needs compatibility staging.
+- Slice 4 — Query and materialization split is complete: read paths for DAG, PBFT, Pillar, Transaction, rewards, and
+  final-chain/period lookups moved onto typed query handles; remaining reads are explicitly classified as compatibility
+  boundaries.
+- Slice 5 — Header and FFI pruning is complete: stale `BridgeStorage`/`storage_shim` header and CXX FFI declarations
+  were removed after their callers moved to typed Rust storage/session APIs.
+
+No separate file now tracks this cleanup; `doc/consensus_rewrite_tracker.md` is the active tracking location.
+
 ## Module Inventory
 
 Note: inventory rows may mention C++ logging where the current shim emits legacy diagnostics. That is not a retained

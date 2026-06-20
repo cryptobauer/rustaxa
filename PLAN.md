@@ -303,7 +303,19 @@ phase is compatibility deletion, not storage migration. Measure it by removing c
 sidecar materialization boundaries after their callers move, while preserving the storage-boundary guard so new
 production consensus routes cannot re-enter `DbStorage` or bridge batch ownership.
 
-Detailed slice tracking for this cleanup lives in `doc/storage_compatibility_collapse_plan.md`.
+Compatibility cleanup tracking is now folded into `doc/consensus_rewrite_tracker.md` (Storage Boundary Status). The five
+completion slices are:
+
+- Slice 1 (Inventory and classification): completed. Remaining `DbStorage`, `storage_shim`, and `BridgeStorage`
+  compatibility call sites have been classified.
+- Slice 2 (Runtime handle collapse): completed. Rust storage handles and compatibility adapters now preserve
+  `Arc<rustaxa_storage::Storage>` ownership without routing production consensus writes through legacy batch ownership.
+- Slice 3 (Batch registry cleanup): completed. Generic batch appender and bridge-batch registration paths no longer act as
+  storage authority.
+- Slice 4 (Query/materialization split): completed. Broad compatibility reads were moved to typed read/query handles by
+  storage family (`Dag`, `Transaction`, `PBFT`, `Pillar`, final-chain/period lookup, metadata/rewards).
+- Slice 5 (Header and FFI pruning): completed. Obsolete `BridgeStorage`, `storage_shim`, and CXX compatibility
+  declarations were removed where no longer required by active callers.
 
 Future cleanup should:
 
