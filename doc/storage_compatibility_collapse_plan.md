@@ -301,7 +301,8 @@ Landed sub-slices:
   proposal-period writes remain on their existing Rust-owned write paths.
 - Final-chain/period lookup split: moved final-chain lookups (`get_final_chain_*`) and period lookup/read routes (`get_block_receipt`,
   `get_period_data_raw`, `get_period_from_pbft_hash`) onto `BridgeFinalChainStorageQueries` and
-  `BridgePeriodStorageQueries`; active Rust-mode paths and conformance now use typed query handles.
+  `BridgePeriodStorageQueries`; active Rust-mode paths and conformance now use typed query handles. Slice 5 completed this family by
+  removing the matching generic `BridgeStorage` declarations and methods.
 
 Next target:
 
@@ -345,6 +346,9 @@ Scope:
 - Remove unused `BridgeStorage` methods from `rust/crates/rustaxa-bridge/src/storage.rs`.
 - Remove unused CXX declarations from `rust/crates/rustaxa-bridge/src/ffi.rs`.
 - Remove obsolete tests that only exercised deleted compatibility routes, or convert them to typed Rust API tests.
+
+Progress status for this slice:
+- Completed period/final-chain query cleanup; the remaining target is non-final-chain generic query families.
 
 Acceptance:
 
