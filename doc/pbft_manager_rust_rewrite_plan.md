@@ -258,6 +258,14 @@ Landed in cert-voted payload authority:
 - The overlay rehydrates the C++ `PbftBlock` only as a vote-generation executor object, validates period, round, and hash
   against the Rust runtime snapshot, and reports missing or corrupt Rust payload as an invariant executor failure.
 
+Landed in period-data queue metadata authority:
+
+- Sync period-data processing now derives pillar/extra-data admissibility from Rust-retained queue metadata in the Rust
+  sync planner instead of running the equivalent C++ live-object sidecar checks in the PBFT manager overlay.
+- C++ still performs reward, cert, transaction, pillar-vote, and finalization executor checks, but the queue metadata
+  facts decide whether the candidate has the required PBFT extra data, pillar block hash, and pillar-vote sidecar
+  presence.
+
 3. Move cert-voted sidecar authority.
 
 - Keep the Rust runtime as the source of cert-voted period, round, hash, and persistence state.

@@ -637,7 +637,8 @@ rustaxa::PbftSyncProcessPeriodDataRuntimeFact makePbftSyncProcessPeriodDataRunti
     uint8_t reward_votes_status, uint8_t cert_votes_status, uint8_t transactions_status,
     const std::unordered_set<trx_hash_t> &missing_transaction_hashes, bool contains_finalized_transactions,
     uint8_t pillar_data_status, bool pillar_votes_required, uint8_t pillar_votes_status,
-    bool previous_cert_votes_present, bool previous_cert_first_vote_has_weight) {
+    bool previous_cert_votes_present, bool previous_cert_first_vote_has_weight, bool extra_data_required,
+    bool extra_data_present, bool extra_data_pillar_block_hash_present, bool pillar_votes_present) {
   rustaxa::PbftSyncProcessPeriodDataRuntimeFact fact;
   fact.block_period = block_period;
   fact.block_prev_hash = toBridgeHash(block_prev_hash);
@@ -654,7 +655,11 @@ rustaxa::PbftSyncProcessPeriodDataRuntimeFact makePbftSyncProcessPeriodDataRunti
   fact.finalized_transaction_hashes = rust::Vec<rustaxa::PbftSyncTransactionHash>();
   fact.contains_finalized_transactions = contains_finalized_transactions;
   fact.pillar_data_status = pillar_data_status;
+  fact.extra_data_required = extra_data_required;
+  fact.extra_data_present = extra_data_present;
+  fact.extra_data_pillar_block_hash_present = extra_data_pillar_block_hash_present;
   fact.pillar_votes_required = pillar_votes_required;
+  fact.pillar_votes_present = pillar_votes_present;
   fact.pillar_votes_status = pillar_votes_status;
   fact.previous_cert_votes_present = previous_cert_votes_present;
   fact.previous_cert_first_vote_has_weight = previous_cert_first_vote_has_weight;
@@ -4152,6 +4157,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   const auto pillar_votes_present = popped_period_data.pillar_votes_present;
   const auto extra_data_present = popped_period_data.extra_data_present;
   const auto extra_data_pillar_block_hash_present = popped_period_data.extra_data_pillar_block_hash_present;
+  const auto extra_data_required = kGenesisConfig.state.hardforks.ficus_hf.isFicusHardfork(block_period);
   const auto pillar_votes_required = kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(block_period);
   LOG(log_dg_) << "Pop pbft block " << pbft_block_hash << " with period " << block_period << " from synced queue";
 
@@ -4168,7 +4174,8 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
         last_pbft_block_hash, last_pbft_block_period, candidate_block_in_chain, final_chain_status, reward_votes_status,
         cert_votes_status, transactions_status, non_finalized_transactions,
         contains_finalized_transactions, pillar_data_status, pillar_votes_required, pillar_votes_status,
-        previous_cert_votes_present, previous_cert_first_vote_has_weight));
+        previous_cert_votes_present, previous_cert_first_vote_has_weight, extra_data_required, extra_data_present,
+        extra_data_pillar_block_hash_present, pillar_votes_present));
   };
 
   auto runtime_plan =
@@ -4224,33 +4231,10 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
     return PbftStateRootValidation::Valid;
   };
 
-  auto validate_extra_data_from_queue_metadata = [&]() {
-    if (kGenesisConfig.state.hardforks.ficus_hf.isFicusHardfork(block_period)) {
-      if (!extra_data_present) {
-        LOG(log_er_) << "PBFT block " << pbft_block_hash << ", period " << block_period
-                     << " does not contain extra data";
-        return false;
-      }
-
-      if (pillar_votes_required) {
-        if (!extra_data_pillar_block_hash_present) {
-          LOG(log_er_) << "PBFT block " << pbft_block_hash << ", period " << block_period
-                       << " does not contain pillar block hash";
-          return false;
-        }
-      } else if (extra_data_pillar_block_hash_present) {
-        LOG(log_er_) << "PBFT block " << pbft_block_hash << ", period " << block_period
-                     << " contains pillar block hash even though it should not";
-        return false;
-      }
-    } else if (extra_data_present) {
-      LOG(log_er_) << "PBFT block " << pbft_block_hash << ", period " << block_period
-                   << " contains extra data even though it should not";
-      return false;
-    }
-
-    return true;
-  };
+  const auto rust_pillar_data_plan =
+      make_runtime_plan(false, kPbftSyncFinalChainValid, kPbftSyncFactValid, kPbftSyncFactValid, kPbftSyncFactValid,
+                        {}, false, kPbftSyncFactNotChecked, pillar_votes_required, kPbftSyncFactNotRequired);
+  const auto rust_pillar_data_valid = rust_pillar_data_plan.status != kPbftSyncStatusPillarDataInvalid;
 
   std::optional<std::pair<bool, std::vector<std::shared_ptr<PbftVote>>>> reward_votes;
   auto block_validation_fact = rustaxa::PbftManagerBlockValidationFact{};
@@ -4266,7 +4250,8 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   block_validation_fact.pbft_chain_status = kPbftManagerBlockValidationFactValid;
   block_validation_fact.final_chain_hash_status = kPbftManagerBlockValidationFactNotChecked;
   block_validation_fact.reward_votes_status = kPbftManagerBlockValidationFactNotChecked;
-  block_validation_fact.extra_data_status = kPbftManagerBlockValidationFactNotChecked;
+  block_validation_fact.extra_data_status =
+      rust_pillar_data_valid ? kPbftManagerBlockValidationFactValid : kPbftManagerBlockValidationFactInvalid;
   block_validation_fact.pillar_block_status = kPbftManagerBlockValidationFactNotRequired;
   block_validation_fact.dag_order_status = kPbftManagerBlockValidationFactNotRequired;
   block_validation_fact.dag_weight_status = kPbftManagerBlockValidationFactNotRequired;
@@ -4363,8 +4348,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
 
     if (validation_plan.next_check == kPbftManagerBlockValidationCheckExtraData) {
       validation_plan = block_validation_session->pbft_manager_block_validation_session_report(
-          validate_extra_data_from_queue_metadata() ? kPbftManagerBlockValidationFactValid
-                                                    : kPbftManagerBlockValidationFactInvalid,
+          rust_pillar_data_valid ? kPbftManagerBlockValidationFactValid : kPbftManagerBlockValidationFactInvalid,
           false);
       continue;
     }
@@ -4416,20 +4400,9 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
     LOG(log_er_) << "Synced PBFT block " << pbft_block_hash << " has finalized transactions";
   }
 
-  bool pillar_data_valid = true;
-  if (pillar_votes_required && !pillar_votes_present) {
-    LOG(log_er_) << "Sync PBFT block " << pbft_block_hash << ", period " << block_period
-                 << " does not contain pillar votes";
-    pillar_data_valid = false;
-  } else if (!pillar_votes_required && pillar_votes_present) {
-    LOG(log_er_) << "Sync PBFT block " << pbft_block_hash << ", period " << block_period
-                 << " contains pillar votes even though it should not";
-    pillar_data_valid = false;
-  }
   runtime_plan = make_runtime_plan(false, kPbftSyncFinalChainValid, kPbftSyncFactValid, kPbftSyncFactValid,
                                    kPbftSyncFactValid, non_finalized_transactions, contains_finalized_transactions,
-                                   pillar_data_valid ? kPbftSyncFactValid : kPbftSyncFactInvalid, pillar_votes_required,
-                                   kPbftSyncFactNotChecked);
+                                   kPbftSyncFactNotChecked, pillar_votes_required, kPbftSyncFactNotChecked);
   admission_plan = runtime_plan;
   throw_on_runtime_contract_error();
   if (admission_plan.status == kPbftSyncStatusPillarDataInvalid) {

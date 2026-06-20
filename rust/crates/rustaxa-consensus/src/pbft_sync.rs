@@ -517,8 +517,16 @@ pub struct PbftSyncProcessPeriodDataRuntimeFact {
     pub contains_finalized_transactions: bool,
     /// Pillar-data validation status for the candidate.
     pub pillar_data_status: PbftSyncFactStatus,
+    /// Whether the current hardfork requires PBFT block extra data.
+    pub extra_data_required: bool,
+    /// Whether the synced PBFT block carried extra data.
+    pub extra_data_present: bool,
+    /// Whether synced PBFT block extra data carried a pillar block hash.
+    pub extra_data_pillar_block_hash_present: bool,
     /// Whether this period requires pillar-vote validation.
     pub pillar_votes_required: bool,
+    /// Whether synced period data carried pillar-vote sidecars.
+    pub pillar_votes_present: bool,
     /// Pillar-vote validation status for the candidate.
     pub pillar_votes_status: PbftSyncFactStatus,
     /// Whether synced period data carried previous-block cert votes.
@@ -1270,6 +1278,30 @@ fn runtime_contract_error(
     )
 }
 
+fn derive_pillar_data_status(fact: &PbftSyncProcessPeriodDataRuntimeFact) -> PbftSyncFactStatus {
+    if fact.pillar_data_status != PbftSyncFactStatus::NotChecked {
+        return fact.pillar_data_status;
+    }
+
+    let extra_data_valid = if fact.extra_data_required {
+        fact.extra_data_present
+            && if fact.pillar_votes_required {
+                fact.extra_data_pillar_block_hash_present
+            } else {
+                !fact.extra_data_pillar_block_hash_present
+            }
+    } else {
+        !fact.extra_data_present
+    };
+    let pillar_votes_presence_valid = fact.pillar_votes_present == fact.pillar_votes_required;
+
+    if extra_data_valid && pillar_votes_presence_valid {
+        PbftSyncFactStatus::Valid
+    } else {
+        PbftSyncFactStatus::Invalid
+    }
+}
+
 /// Plans the next side-effect-free PBFT sync runtime action for `processPeriodData`.
 ///
 /// C++ calls this planner after collecting the facts it already has. When the
@@ -1280,6 +1312,7 @@ fn runtime_contract_error(
 pub fn plan_pbft_sync_process_period_data_runtime(
     fact: PbftSyncProcessPeriodDataRuntimeFact,
 ) -> PbftSyncProcessPeriodDataRuntimePlan {
+    let pillar_data_status = derive_pillar_data_status(&fact);
     let transaction_query = plan_pbft_sync_transaction_query(PbftSyncTransactionQueryFact {
         dag_transaction_hashes: fact.dag_transaction_hashes,
         period_data_transaction_hashes: fact.period_data_transaction_hashes,
@@ -1395,7 +1428,7 @@ pub fn plan_pbft_sync_process_period_data_runtime(
         return plan;
     }
     if let Some(plan) = staged_fact_status(
-        fact.pillar_data_status,
+        pillar_data_status,
         PbftSyncProcessRuntimeNextCheck::ValidatePillarData,
         PbftSyncPeriodAdmissionStatus::PillarDataInvalid,
         transaction_query.clone(),
@@ -1492,7 +1525,11 @@ mod tests {
             finalized_transaction_hashes: vec![],
             contains_finalized_transactions: false,
             pillar_data_status: PbftSyncFactStatus::NotChecked,
+            extra_data_required: true,
+            extra_data_present: true,
+            extra_data_pillar_block_hash_present: true,
             pillar_votes_required: true,
+            pillar_votes_present: true,
             pillar_votes_status: PbftSyncFactStatus::NotChecked,
             previous_cert_votes_present: true,
             previous_cert_first_vote_has_weight: false,
@@ -1640,6 +1677,42 @@ mod tests {
         assert!(plan.accept_period_data);
         assert_eq!(plan.warnings.len(), 1);
         assert!(plan.contains_finalized_transaction_warning);
+    }
+
+    #[test]
+    fn process_period_runtime_derives_pillar_data_from_queue_metadata() {
+        let mut f = runtime_fact();
+        f.final_chain_hash_status = PbftSyncRuntimeFinalChainHashStatus::Valid;
+        f.reward_votes_status = PbftSyncFactStatus::Valid;
+        f.cert_votes_status = PbftSyncFactStatus::Valid;
+        f.transactions_status = PbftSyncFactStatus::Valid;
+        f.pillar_votes_status = PbftSyncFactStatus::NotRequired;
+        f.extra_data_pillar_block_hash_present = false;
+        let plan = plan_pbft_sync_process_period_data_runtime(f);
+        assert_eq!(
+            plan.status,
+            PbftSyncPeriodAdmissionStatus::PillarDataInvalid
+        );
+        assert_eq!(
+            plan.runtime_action,
+            PbftSyncProcessRuntimeAction::ClearAndReportPeer
+        );
+
+        let mut f = runtime_fact();
+        f.final_chain_hash_status = PbftSyncRuntimeFinalChainHashStatus::Valid;
+        f.reward_votes_status = PbftSyncFactStatus::Valid;
+        f.cert_votes_status = PbftSyncFactStatus::Valid;
+        f.transactions_status = PbftSyncFactStatus::Valid;
+        f.extra_data_required = false;
+        f.extra_data_present = true;
+        f.pillar_votes_required = false;
+        f.pillar_votes_present = false;
+        f.pillar_votes_status = PbftSyncFactStatus::NotRequired;
+        let plan = plan_pbft_sync_process_period_data_runtime(f);
+        assert_eq!(
+            plan.status,
+            PbftSyncPeriodAdmissionStatus::PillarDataInvalid
+        );
     }
 
     #[test]
