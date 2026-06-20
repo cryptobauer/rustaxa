@@ -236,9 +236,11 @@ class PbftManager {
   using time_point = std::chrono::system_clock::time_point;
 
  public:
-  PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db, std::shared_ptr<PbftChain> pbft_chain,
-              std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
-              std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<final_chain::FinalChain> final_chain,
+  PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db,
+              rust::Box<rustaxa::BridgePbftManagerRuntime> pbft_manager_runtime,
+              std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
+              std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
+              std::shared_ptr<final_chain::FinalChain> final_chain,
               std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr);
   ~PbftManager();
   PbftManager(const PbftManager &) = delete;
@@ -807,7 +809,13 @@ class PbftManager {
   mutable std::unordered_map<blk_hash_t, std::vector<std::shared_ptr<DagBlock>>> anchor_dag_block_order_cache_;
 
   std::unique_ptr<std::thread> daemon_;
+  // TODO[pbft-runtime-root]: keep only for network/EVM/public materialization and lifecycle compatibility while the
+  // remaining PBFT manager sidecars move behind Rust runtime/query handles.
   std::shared_ptr<DbStorage> db_;
+  // Rust-owned scalar PBFT manager cursor. C++ fields below are transitional
+  // mirrors updated from Rust snapshots after startup and transition storage
+  // commits.
+  mutable std::optional<rust::Box<rustaxa::BridgePbftManagerRuntime>> pbft_manager_runtime_;
   std::shared_ptr<PbftChain> pbft_chain_;
   std::shared_ptr<VoteManager> vote_mgr_;
   std::shared_ptr<DagManager> dag_mgr_;
@@ -870,11 +878,6 @@ class PbftManager {
 
   // Proposed blocks based on received propose votes
   ProposedBlocks proposed_blocks_;
-
-  // Rust-owned scalar PBFT manager cursor. C++ fields above are transitional
-  // mirrors updated from Rust snapshots after startup and transition storage
-  // commits.
-  mutable std::optional<rust::Box<rustaxa::BridgePbftManagerRuntime>> pbft_manager_runtime_;
 
   // Wallets with flag if they are/are not dpos eligible for specified period
   EligibleWallets eligible_wallets_;

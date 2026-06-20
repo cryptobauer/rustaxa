@@ -61,6 +61,18 @@ The remaining PBFT manager work is broader than storage:
 
 Goal: stop using `DbStorage` and `BridgeStorage` as the PBFT manager construction surface.
 
+Status: complete.
+
+Landed:
+
+- `App::init` now creates the long-lived `BridgePbftManagerRuntime` before constructing `PbftManager`.
+- The Rust-mode PBFT manager constructor receives that typed runtime handle directly and no longer calls
+  `db_->rustStorage()` or accepts `BridgeStorage` for its core runtime.
+- The PBFT manager overlay keeps `DbStorage` only as documented temporary compatibility for network/EVM/public
+  materialization and lifecycle edges.
+- Lazy runtime creation in `initialState()` is replaced with an explicit invariant failure because Rust-mode startup must
+  supply the runtime root before the manager is used.
+
 Scope:
 
 - Introduce a Rust-owned PBFT runtime root or typed PBFT manager runtime handle that is created from the application

@@ -28,6 +28,10 @@
 #include "transaction/transaction_manager.hpp"
 #include "vote_manager/vote_manager.hpp"
 
+#ifdef RUSTAXA_ENABLE
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
+
 namespace taraxa {
 
 App::App() {}
@@ -158,8 +162,23 @@ void App::init(const cli::Config &cli_conf) {
   vote_mgr_ = std::make_shared<VoteManager>(conf_, db_, pbft_chain_, final_chain_, key_manager_, slashing_manager);
   pillar_chain_mgr_ = std::make_shared<pillar_chain::PillarChainManager>(conf_.genesis.state.hardforks.ficus_hf, db_,
                                                                          final_chain_, key_manager_, node_addr);
+#ifdef RUSTAXA_ENABLE
+  rustaxa::PbftManagerStartupFact pbft_manager_startup_fact{};
+  const auto current_pbft_period = pbft_chain_->getPbftChainSize() + 1;
+  pbft_manager_startup_fact.current_period = current_pbft_period;
+  pbft_manager_startup_fact.cacti_active_at_chain_size =
+      conf_.genesis.state.hardforks.isOnCactiHardfork(current_pbft_period - 1);
+  pbft_manager_startup_fact.genesis_lambda_ms = conf_.genesis.pbft.lambda_ms;
+  pbft_manager_startup_fact.cacti_lambda_max_ms = conf_.genesis.state.hardforks.cacti_hf.lambda_max;
+  pbft_manager_startup_fact.cacti_lambda_default_ms = conf_.genesis.state.hardforks.cacti_hf.lambda_default;
+  auto pbft_manager_runtime =
+      rustaxa::create_pbft_manager_runtime_from_storage(db_->rustStorage(), pbft_manager_startup_fact);
+  pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, std::move(pbft_manager_runtime), pbft_chain_, vote_mgr_,
+                                            dag_mgr_, trx_mgr_, final_chain_, pillar_chain_mgr_);
+#else
   pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, pbft_chain_, vote_mgr_, dag_mgr_, trx_mgr_, final_chain_,
                                             pillar_chain_mgr_);
+#endif
 #ifdef RUSTAXA_ENABLE
   dag_block_proposer_ = std::make_shared<DagBlockProposer>(conf_, dag_mgr_, trx_mgr_, final_chain_, key_manager_);
 #else

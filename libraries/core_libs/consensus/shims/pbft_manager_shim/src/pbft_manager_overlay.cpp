@@ -245,17 +245,6 @@ rustaxa::PbftFinalChainFactRequest makePbftFinalChainFactRequest(
   return request;
 }
 
-rustaxa::PbftManagerStartupFact makePbftManagerStartupFact(const GenesisConfig &genesis_config,
-                                                           PbftPeriod current_pbft_period) {
-  rustaxa::PbftManagerStartupFact startup_fact{};
-  startup_fact.current_period = current_pbft_period;
-  startup_fact.cacti_active_at_chain_size = genesis_config.state.hardforks.isOnCactiHardfork(current_pbft_period - 1);
-  startup_fact.genesis_lambda_ms = genesis_config.pbft.lambda_ms;
-  startup_fact.cacti_lambda_max_ms = genesis_config.state.hardforks.cacti_hf.lambda_max;
-  startup_fact.cacti_lambda_default_ms = genesis_config.state.hardforks.cacti_hf.lambda_default;
-  return startup_fact;
-}
-
 uint8_t toPbftManagerRuntimeState(PbftStates state) {
   switch (state) {
     case value_proposal_state:
@@ -741,11 +730,13 @@ rustaxa::PbftDynamicLambdaFact makePbftDynamicLambdaFact(const HardforksConfig &
 }  // namespace
 
 PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db,
+                         rust::Box<rustaxa::BridgePbftManagerRuntime> pbft_manager_runtime,
                          std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
                          std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
                          std::shared_ptr<final_chain::FinalChain> final_chain,
                          std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr)
     : db_(std::move(db)),
+      pbft_manager_runtime_(std::move(pbft_manager_runtime)),
       pbft_chain_(std::move(pbft_chain)),
       vote_mgr_(std::move(vote_mgr)),
       dag_mgr_(std::move(dag_mgr)),
@@ -763,9 +754,6 @@ PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> 
   // Use first wallet as default node_addr
   const auto &node_addr = dev::toAddress(conf.getFirstWallet().node_secret);
   LOG_OBJECTS_CREATE("PBFT_MGR");
-
-  pbft_manager_runtime_.emplace(rustaxa::create_pbft_manager_runtime_from_storage(
-      db_->rustStorage(), makePbftManagerStartupFact(kGenesisConfig, getPbftPeriod())));
 
   rustaxa::PbftManagerStartupReplayRangeFact startup_replay_fact;
   startup_replay_fact.final_chain_last_block = final_chain_->lastBlockNumber();
@@ -1534,8 +1522,8 @@ void PbftManager::initialState() {
   const auto now = std::chrono::system_clock::now();
 
   if (!pbft_manager_runtime_.has_value()) {
-    pbft_manager_runtime_.emplace(rustaxa::create_pbft_manager_runtime_from_storage(
-        db_->rustStorage(), makePbftManagerStartupFact(kGenesisConfig, current_pbft_period)));
+    LOG(log_er_) << "Rust PBFT manager runtime was not provided before initialState";
+    assert(false);
   }
   const auto startup_snapshot = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value());
   applyPbftManagerRuntimeSnapshot(startup_snapshot, round_, step_, state_, current_round_lambda_, next_step_time_ms_,
