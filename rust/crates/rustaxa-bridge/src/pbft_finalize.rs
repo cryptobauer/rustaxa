@@ -33,7 +33,9 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationStorageWriteStage as FfiPbftFinalizationStorageWriteStage,
     PbftFinalizedPeriodApplyResult as FfiPbftFinalizedPeriodApplyResult,
 };
-use crate::ffi::{BridgePbftFinalizationRuntimeSession, BridgeStorage};
+use crate::ffi::{
+    create_period_storage_queries, BridgePbftFinalizationRuntimeSession, BridgeStorage,
+};
 use anyhow::Result;
 use ethereum_types::H256;
 use rustaxa_consensus::pbft_finalize::{
@@ -1507,7 +1509,7 @@ mod tests {
                 br#"{"last":true}"#.to_vec()
             );
             assert_eq!(
-                storage
+                create_period_storage_queries(&storage)
                     .get_period_data_raw(10)
                     .expect("period data should load"),
                 vec![0xc0]
@@ -1600,7 +1602,7 @@ mod tests {
             assert_eq!(result.dag_index_writes, 2);
             assert_eq!(result.transaction_location_writes, 1);
             assert_eq!(
-                storage
+                create_period_storage_queries(&storage)
                     .get_period_data_raw(10)
                     .expect("period data should load"),
                 vec![0xc0]

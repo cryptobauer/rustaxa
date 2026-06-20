@@ -6365,12 +6365,6 @@ pub mod rustaxa_ffi {
             level: u64,
         ) -> Result<PeriodLookup>;
 
-        pub fn get_period_data_raw(self: &BridgeStorage, period: u64) -> Result<Vec<u8>>;
-        pub fn get_period_from_pbft_hash(
-            self: &BridgeStorage,
-            hash: &[u8; 32],
-        ) -> Result<PeriodLookup>;
-        pub fn get_block_receipt(self: &BridgeStorage, period: u64) -> Result<Vec<u8>>;
         /// Typed period reads (preferred for typed query surfaces).
         pub fn get_period_data_raw(
             self: &BridgePeriodStorageQueries,
@@ -6383,27 +6377,6 @@ pub mod rustaxa_ffi {
         ) -> Result<PeriodLookup>;
         /// Typed by-period receipts lookup.
         pub fn get_block_receipt(self: &BridgePeriodStorageQueries, period: u64) -> Result<Vec<u8>>;
-        pub fn get_final_chain_meta_value(self: &BridgeStorage, key: u32) -> Result<Vec<u8>>;
-        pub fn get_final_chain_block_header(
-            self: &BridgeStorage,
-            block_number: u64,
-        ) -> Result<Vec<u8>>;
-        pub fn get_final_chain_block_hash_by_number(
-            self: &BridgeStorage,
-            block_number: u64,
-        ) -> Result<Vec<u8>>;
-        pub fn get_final_chain_block_number_by_hash(
-            self: &BridgeStorage,
-            hash: &[u8; 32],
-        ) -> Result<Vec<u8>>;
-        pub fn get_final_chain_log_blooms_chunk(
-            self: &BridgeStorage,
-            chunk_id: &[u8; 32],
-        ) -> Result<Vec<u8>>;
-        pub fn get_final_chain_receipt_by_trx_hash(
-            self: &BridgeStorage,
-            trx_hash: &[u8; 32],
-        ) -> Result<Vec<u8>>;
         pub fn seed_final_chain_conformance_lookup_rows(
             self: &BridgeStorage,
             meta_key: u32,
