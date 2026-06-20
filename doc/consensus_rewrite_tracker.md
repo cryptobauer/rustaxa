@@ -27,6 +27,10 @@ Required test coverage and parity gates for the Rust consensus model are defined
   temporary C++ executor, be replaced by Rust-returned status/telemetry facts, or be cleaned up later. Ownership
   decisions should be based on state, protocol decisions, persistence, network effects, object materialization, and
   external execution dependencies instead.
+- C++ tests may be disabled, removed, or retargeted only when they block an intentional move away from legacy C++ behavior,
+  old object materialization, or shim scaffolding. The Rust module taking ownership must already have equivalent or
+  stronger coverage, and CXX boundary parity must be covered by bridge-level Rust tests or focused Rust-enabled shim tests
+  before the C++ test signal is dropped.
 - New consensus rewrite APIs must be shaped for the upcoming application-owned arena/data pipeline even before the
   concrete pipeline API lands. Prefer canonical bytes, compact facts, ingress-payload-addressable enrichment, and typed
   protocol plans/effects over eager C++ object materialization.
@@ -187,6 +191,10 @@ execution, or public API materialization into the consensus storage cleanup.
   were removed after their callers moved to typed Rust storage/session APIs.
 
 No separate file now tracks this cleanup; `doc/consensus_rewrite_tracker.md` is the active tracking location.
+
+PBFT manager compatibility removal is tracked separately in `doc/pbft_manager_rust_rewrite_plan.md`. That plan treats
+network/tarcap and EVM/state execution as the only long-lived C++ executor boundaries; all other PBFT manager shim and
+bridge compatibility should move into Rust-owned runtimes, typed ports, or explicit public API materialization edges.
 
 ## Module Inventory
 

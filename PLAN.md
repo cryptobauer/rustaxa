@@ -97,7 +97,12 @@ Core rules:
   buffers, and effect executors may schedule and apply plans at the boundary; they should not hide consensus rules inside
   mailbox-local state.
 - Hard rule for Rust-enabled paths: never forward, delegate, or rely on inherited behavior from legacy C++ implementations. Any not-yet-ported API must stay explicit in the shim as a documented stub/no-op/throw until Rust parity lands. If fallback is proposed, require explicit task-owner approval first.
-- Hard rule: preserve existing test intent. Do not loosen or rewrite tests to accommodate Rust rewrite regressions; fix implementation parity first. Only change tests when product behavior is intentionally changed and documented.
+- Hard rule: preserve existing test intent while it still represents target behavior. Do not loosen or rewrite tests to
+  accommodate Rust rewrite regressions; fix implementation parity first. C++ tests may be disabled, removed, or retargeted
+  when they block retiring legacy C++ behavior, old object materialization, or shim scaffolding, but only after equivalent
+  or stronger Rust module coverage exists for the moved behavior. If parity depends on the CXX bridge, add bridge-level
+  Rust coverage or a focused Rust-enabled shim test before dropping the C++ test signal, and document why the old C++ test
+  no longer represents target Rust-mode behavior.
 - Documentation rule: whenever adding or changing rewrite code, document modules, types, and functions as complete units (purpose, inputs, outputs, invariants, and error or edge behavior), not just isolated lines.
 - Rust domain modules define narrow ports for required capabilities.
 - Infrastructure modules implement those ports over RocksDB, CXX bridges, or test fakes.

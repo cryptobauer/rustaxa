@@ -120,6 +120,12 @@ New Rust production routing requires:
 - a Rust-enabled smoke or subsystem validation when the code runs during node startup, sync, consensus, finalization, or
   RPC handling
 
+C++ tests may be disabled, removed, or retargeted when they block retiring legacy C++ behavior, old object
+materialization, or shim scaffolding. That is acceptable only after equivalent or stronger Rust module coverage exists for
+the behavior that moved. If parity depends on the CXX bridge, bridge-level Rust tests or focused Rust-enabled shim tests
+must replace the lost C++ signal. Closeout notes or tracker updates must state why the old C++ test no longer describes
+target Rust-mode behavior.
+
 Temporary Rust shim defaults must be tracked and tested as explicit temporary behavior. They should not be hidden by
 delegation to legacy C++ implementation paths.
 

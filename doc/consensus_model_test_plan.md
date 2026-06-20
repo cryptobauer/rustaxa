@@ -42,6 +42,20 @@ Required missing infrastructure:
 Do not route production consensus behavior to Rust until the relevant parity fixture exists and the corresponding
 Rust-enabled subsystem or smoke test passes.
 
+## Retiring C++ Test Coverage
+
+C++ tests are no longer automatically sacred when they preserve legacy behavior that the Rust rewrite is intentionally
+removing. A slice may disable, remove, or retarget a C++ test when that test is holding back Rust ownership by requiring
+legacy C++ behavior, old object materialization, or shim scaffolding.
+
+That is allowed only when the Rust side has parity coverage first:
+
+- The Rust module taking ownership must have equivalent or stronger unit coverage for the moved behavior.
+- If the behavior crosses the CXX bridge, add bridge-level Rust tests or focused Rust-enabled shim tests before dropping
+  the C++ signal.
+- The commit or tracker entry must explain why the old C++ test no longer represents target Rust-mode behavior.
+- Disabling a C++ test must not hide missing Rust behavior; it must follow an intentional ownership transfer.
+
 ## Required Tests By Rewrite Slice
 
 ### 1. DAG Graph Model
