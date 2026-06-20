@@ -140,7 +140,8 @@ Validation:
 
 Goal: remove C++ scalar and timer mirrors as PBFT manager authority.
 
-Status: in progress.
+Status: complete for the bounded runtime-snapshot authority pass. Remaining direct writes to executor compatibility
+fields are tracked by the later finalization and sidecar slices unless they affect planner input authority.
 
 Landed:
 
@@ -175,6 +176,26 @@ Validation:
 ## Slice 4: State-Action and Daemon Control Flow Ownership
 
 Goal: move the remaining branch-local PBFT manager control logic from the overlay into Rust planners.
+
+Status: complete for the bounded daemon/session ownership pass. The overlay now acts as an executor for Rust-issued
+runtime-session actions and state-action effects. The remaining stricter follow-up, if selected, is a separate
+non-trivial contract for deriving advance-round candidates from Rust-owned VoteManager facts instead of C++ live vote
+manager state.
+
+Landed:
+
+- PBFT daemon ticks are driven by a Rust runtime session with cursor-checked action reports.
+- State-action branch selection is planned by Rust through effect sessions; C++ executes proposal, vote, transition,
+  network, wait, and live-object side effects and reports typed outcomes.
+- Certify and second-finish follow-up decisions use Rust session flags returned after executor reports.
+- Transition eligibility and timing are selected through Rust transition plans before C++ mutates compatibility caches.
+- Network transport remains an executor boundary; Rust returns action/effect intent rather than owning packet transport.
+
+Residual:
+
+- Advance-round candidate derivation still depends on C++ `VoteManager` live state before Rust validates the candidate.
+  Moving that requires a new Rust VoteManager fact/query contract and is intentionally not folded into this bounded
+  Slice 4 closeout.
 
 Scope:
 
