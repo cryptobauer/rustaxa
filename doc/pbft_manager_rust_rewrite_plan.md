@@ -221,6 +221,93 @@ Validation:
 
 Goal: replace C++ PBFT sidecar authority with Rust-owned canonical payloads and compact facts.
 
+Status: planned.
+
+Implementation plan:
+
+1. Inventory sidecar authority.
+
+- Audit PBFT manager overlay reads of `PbftBlock`, `PbftVote`, `PeriodData`, DAG block, transaction, and pillar sidecars.
+- Classify each read as one of: protocol decision input, executor input, network/public materialization, EVM/FinalChain
+  boundary materialization, or temporary compatibility cache.
+- Treat protocol decision reads as Slice 5 candidates. Leave network/public/EVM materialization as allowed boundaries and
+  mark them at the call site when they remain.
+
+2. Move proposed-block decision facts first.
+
+- Extend the Rust proposed-block/runtime APIs so PBFT manager decision paths can use compact proposed-block facts:
+  period, block hash, pivot hash, validation flag, canonical block RLP availability, proposer identity facts when needed,
+  and missing/corrupt status.
+- Keep C++ `PbftBlock` reconstruction only when executing network/public/EVM-facing work or when a live validator check
+  still needs the legacy object.
+- Replace decision-side calls that fetch `getPbftProposedBlock()` just to read period, hash, pivot, or validation state
+  with metadata/runtime queries.
+- Preserve `getPbftProposedBlock()` as an explicit materialization edge and document why each remaining caller still
+  needs a C++ object.
+
+Landed in proposed-block metadata authority:
+
+- Proposed-block admission lookup in the PBFT manager overlay reads Rust-owned compact metadata first and no longer
+  materializes a C++ `PbftBlock` merely to decide whether the block exists or is already valid.
+- C++ `PbftBlock` materialization remains only for the validation executor path and accepted vote-generation return.
+
+3. Move cert-voted sidecar authority.
+
+- Keep the Rust runtime as the source of cert-voted period, round, hash, and persistence state.
+- Add a Rust-retained canonical payload path for the cert-voted block so first-finish/next-vote planning can validate
+  the compact metadata without relying on `cert_voted_block_for_round_`.
+- Leave C++ `cert_voted_block_for_round_` only as a vote-generation/materialization cache until Rust vote generation can
+  accept canonical payload references directly.
+- Missing Rust-retained cert-voted payload for a Rust-planned cert-voted next vote must be an invariant error, not a
+  silent skip.
+
+4. Move period-data queue metadata before full payload ownership.
+
+- Extend the Rust period-data queue/runtime contract so PBFT sync decisions use canonical period-data RLP and compact
+  metadata: PBFT block period/hash/prev hash, pivot, cert-vote counts, previous-cert presence, transaction hashes, pillar
+  facts, and finalized transaction warning facts.
+- Keep C++ `PeriodData` construction only where the current finalization executor or public/network boundary still
+  requires legacy objects.
+- Replace queue decision code that reopens `PeriodData` only to compute status with Rust-inspected metadata and typed
+  status reports.
+
+5. Move vote sidecar decision facts opportunistically.
+
+- Route PBFT manager reads of proposal, soft, cert, next, reward, and pillar vote metadata through existing Rust vote,
+  reward-vote, and pillar-vote runtimes where available.
+- Do not broaden the slice into a VoteManager rewrite. Use narrow query/fact APIs that return canonical vote bytes,
+  voter, period, round, step, type, block hash, weight, and validation status.
+- Leave local signing, network gossip, and public object returns as executor/materialization boundaries.
+
+6. Delete obsolete compatibility helpers as each family moves.
+
+- After each family is routed through Rust facts, search for shim helpers, bridge structs, and tests that only existed to
+  materialize C++ objects for that decision path.
+- Delete obsolete rewrite-owned helpers in the same commit when they are no longer needed for restart/reload, parity, or
+  public API compatibility.
+- If a helper must remain, add a TODO at the call site naming the allowed boundary and the later slice that removes it.
+
+Proposed commit slicing:
+
+- Commit 1: proposed-block metadata authority. Replace PBFT manager decision reads with Rust proposed-block metadata and
+  document remaining `PbftBlock` materialization edges.
+- Commit 2: cert-voted payload authority. Make Rust-retained cert-voted metadata/payload the planner source and leave the
+  C++ sidecar only as a vote-generation cache.
+- Commit 3: period-data queue metadata authority. Move queue decision facts to Rust-inspected canonical RLP and keep
+  `PeriodData` construction only at finalization/public boundaries.
+- Commit 4, only if still bounded: vote/pillar/reward sidecar fact cleanup plus deletion of obsolete helpers discovered
+  by the first three commits.
+
+Stop conditions:
+
+- Stop before changing network/tarcap transport, peer gossip, packet wrapping, or disconnect/report execution.
+- Stop before moving arbitrary EVM/FinalChain execution or state DB mutation into Rust.
+- Stop if proposed-block metadata replacement requires a broad `PbftBlock` Rust model rewrite rather than compact facts.
+- Stop if period-data queue work expands into the full sync/finalization executor collapse; that belongs to Slices 6 and
+  7.
+- Stop if vote sidecar cleanup requires reworking `VoteManager` ownership rather than adding narrow Rust fact/query
+  ports.
+
 Scope:
 
 - Move remaining `PbftBlock`, `PbftVote`, `PeriodData`, DAG block, transaction, and pillar sidecar state that is used for

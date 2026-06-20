@@ -1885,7 +1885,13 @@ std::shared_ptr<PbftBlock> PbftManager::getValidPbftProposedBlock(ProposedBlocks
     const auto plan = rustaxa::plan_pbft_manager_candidate_admission(fact);
     if (plan.action == kPbftManagerCandidateAdmissionActionAccept) {
       if (!block) {
-        throw std::runtime_error("Rust PBFT proposed-block admission accepted before C++ supplied the live block");
+        // Rust admission decisions use compact proposed-block metadata. C++ materializes the accepted block only at this
+        // vote-generation/executor boundary.
+        const auto block_data = proposed_blocks.getPbftProposedBlock(period, block_hash);
+        if (!block_data.has_value()) {
+          throw std::runtime_error("Rust PBFT proposed-block admission accepted missing materialized block");
+        }
+        block = block_data->first;
       }
       if (plan.mark_valid) {
         proposed_blocks.markBlockAsValid(period, block_hash);
@@ -1903,24 +1909,28 @@ std::shared_ptr<PbftBlock> PbftManager::getValidPbftProposedBlock(ProposedBlocks
     }
 
     if (plan.action == kPbftManagerCandidateAdmissionActionRequestLookup) {
-      const auto block_data = proposed_blocks.getPbftProposedBlock(period, block_hash);
+      const auto block_metadata = proposed_blocks.getPbftProposedBlockMetadata(period, block_hash);
       fact.lookup_performed = true;
-      if (!block_data.has_value()) {
+      if (!block_metadata.has_value()) {
         LOG(log_er_) << "Unable to find proposed block " << block_hash << ", period " << period;
         fact.proposed_block_found = false;
         continue;
       }
 
-      block = block_data->first;
-      assert(block != nullptr);
       fact.proposed_block_found = true;
-      fact.proposed_block_already_valid = block_data->second;
+      fact.proposed_block_already_valid = block_metadata->is_valid;
       continue;
     }
 
     if (plan.action == kPbftManagerCandidateAdmissionActionRequestValidation) {
       if (!block) {
-        throw std::runtime_error("Rust PBFT proposed-block admission requested validation before lookup");
+        const auto block_data = proposed_blocks.getPbftProposedBlock(period, block_hash);
+        if (!block_data.has_value()) {
+          LOG(log_er_) << "Unable to materialize proposed block " << block_hash << " for validation, period " << period;
+          fact.validation_status = kPbftManagerCandidateAdmissionValidationInvalid;
+          continue;
+        }
+        block = block_data->first;
       }
       if (!validatePbftBlock(block)) {
         LOG(log_er_) << "Proposed block " << block_hash << " failed validation, period " << period;
