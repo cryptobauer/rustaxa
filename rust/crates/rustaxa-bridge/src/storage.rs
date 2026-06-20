@@ -1506,26 +1506,6 @@ impl BridgeStorage {
     /// bytes. Lookup mirrors the storage shim's hash lookup:
     /// pending/non-finalized transactions first, then finalized transaction
     /// location metadata, including system transactions.
-    pub fn get_transaction_rlps_by_hashes(
-        &self,
-        hashes: Vec<rustaxa_ffi::DagTransactionHash>,
-    ) -> Result<Vec<rustaxa_ffi::DagTransactionRlpLookup>, anyhow::Error> {
-        BridgeTransactionStorageQueries {
-            storage: self.0.clone(),
-        }
-        .get_transaction_rlps_by_hashes(hashes)
-    }
-
-    pub fn get_period_system_transactions_hashes(
-        &self,
-        period: u64,
-    ) -> Result<Vec<u8>, anyhow::Error> {
-        BridgeTransactionStorageQueries {
-            storage: self.0.clone(),
-        }
-        .get_period_system_transactions_hashes(period)
-    }
-
     pub fn save_transaction(&self, hash: &[u8; 32], trx_rlp: Vec<u8>) -> Result<(), anyhow::Error> {
         self.0.transaction().write(H256::from(*hash), &trx_rlp)
     }
@@ -1668,7 +1648,7 @@ mod tests {
                 .save_transaction_location(&[3u8; 32], 8, 0, true)
                 .expect("system finalized location should save");
 
-            let lookup = storage
+            let lookup = transaction_queries(&storage)
                 .get_transaction_rlps_by_hashes(vec![
                     tx_hash(1),
                     tx_hash(2),
