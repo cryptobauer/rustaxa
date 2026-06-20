@@ -306,9 +306,9 @@ Landed sub-slices:
 
 Next target:
 
-- Continue with another self-contained compatibility query family. Keep RPC/network materialization at the C++ boundary and
-  avoid broader object ownership changes in this cleanup slice. Remaining generic `BridgeStorage` query methods should be
-  removed only after callers are reclassified or deleted.
+- Confirm Slice 5 scope closure by pruning obsolete `storage_shim.hpp/cpp` entries. Keep RPC/network materialization at
+  the C++ boundary and avoid broader object ownership changes in this cleanup slice. Remove only declarations/methods that
+  are no longer called after the typed-query migration and explicitly document any temporary compatibility debt.
 
 Split the broad `BridgeStorage` query surface into typed read-only Rust query APIs for active Rust-mode callers, and
 delete unused broad storage-shim methods.
@@ -348,7 +348,8 @@ Scope:
 - Remove obsolete tests that only exercised deleted compatibility routes, or convert them to typed Rust API tests.
 
 Progress status for this slice:
-- Completed period/final-chain query cleanup; the remaining target is non-final-chain generic query families.
+- Completed period/final-chain and remaining non-final-chain query cleanup; remaining target is surface pruning of obsolete
+  shim declarations and methods.
 
 Acceptance:
 
