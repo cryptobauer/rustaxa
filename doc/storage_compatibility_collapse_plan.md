@@ -348,8 +348,8 @@ Scope:
 - Remove obsolete tests that only exercised deleted compatibility routes, or convert them to typed Rust API tests.
 
 Progress status for this slice:
-- Completed period/final-chain and remaining non-final-chain query cleanup; remaining target is surface pruning of obsolete
-  shim declarations and methods.
+- Completed period/final-chain and remaining non-final-chain query cleanup.
+- Completed storage shim header and FFI surface pruning for this slice's stale Rust-mode compatibility paths.
 
 Acceptance:
 

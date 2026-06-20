@@ -27,20 +27,10 @@ class DbStorage : public DbStorageOld {
   void updateDbVersions();
   void DeleteRange(const Column& col, uint64_t begin, uint64_t end);
   void CompactRange(const Column& col, uint64_t begin, uint64_t end);
-  void rebuildColumns(const rocksdb::Options& options);
+  void deleteColumnData(const Column& c);
   bool createSnapshot(PbftPeriod period);
-  void deleteSnapshot(PbftPeriod period);
-  void recoverToPeriod(PbftPeriod period);
-  void loadSnapshots();
   void disableSnapshots();
   void enableSnapshots();
-  void deleteColumnData(const Column& c);
-  void replaceColumn(const Column& to_be_replaced_col, std::unique_ptr<rocksdb::ColumnFamilyHandle>&& replacing_col);
-  std::unique_ptr<rocksdb::ColumnFamilyHandle> copyColumn(rocksdb::ColumnFamilyHandle* orig_column,
-                                                          const std::string& new_col_name, bool move_data = false);
-  void removeTempFiles() const;
-  void removeFilesWithPattern(const std::string& directory, const std::regex& pattern) const;
-  void deleteTmpDirectories(const std::string& path) const;
   uint32_t getMajorVersion() const;
   std::unique_ptr<rocksdb::Iterator> getColumnIterator(const Column& c);
   std::unique_ptr<rocksdb::Iterator> getColumnIterator(rocksdb::ColumnFamilyHandle* c);
@@ -130,7 +120,6 @@ class DbStorage : public DbStorageOld {
   void addTransactionLocationToBatch(Batch& write_batch, trx_hash_t const& trx_hash, PbftPeriod period,
                                      uint32_t position, bool is_system = false);
   std::optional<TransactionLocation> getTransactionLocation(trx_hash_t const& hash) const;
-  std::vector<bool> transactionsInDb(std::vector<trx_hash_t> const& trx_hashes);
   std::vector<bool> transactionsFinalized(std::vector<trx_hash_t> const& trx_hashes);
   std::unordered_map<trx_hash_t, PbftPeriod> getAllTransactionPeriod();
 
@@ -141,14 +130,12 @@ class DbStorage : public DbStorageOld {
   std::shared_ptr<Transaction> getTransaction(trx_hash_t const& hash) const;
   std::shared_ptr<Transaction> getTransaction(PbftPeriod period, uint32_t position) const;
   uint64_t getTransactionCount(PbftPeriod period) const;
-  std::optional<TransactionReceipt> getTransactionReceipt(EthBlockNumber blk_n, uint64_t position) const;
   SharedTransactions getFinalizedTransactions(std::vector<trx_hash_t> const& trx_hashes) const;
 
   void addSystemTransactionToBatch(Batch& write_batch, SharedTransaction trx);
   std::shared_ptr<Transaction> getSystemTransaction(const trx_hash_t& hash) const;
   void addPeriodSystemTransactions(Batch& write_batch, SharedTransactions trxs, PbftPeriod period);
   std::vector<trx_hash_t> getPeriodSystemTransactionsHashes(PbftPeriod period) const;
-  SharedTransactions getPeriodSystemTransactions(PbftPeriod period) const;
 
   SharedTransactionReceipts getBlockReceipts(PbftPeriod period) const;
 
@@ -200,11 +187,8 @@ class DbStorage : public DbStorageOld {
   std::pair<bool, PbftPeriod> getPeriodFromPbftHash(taraxa::blk_hash_t const& pbft_block_hash);
   std::shared_ptr<std::pair<PbftPeriod, uint32_t>> getDagBlockPeriod(blk_hash_t const& hash);
   void addDagBlockPeriodToBatch(blk_hash_t const& hash, PbftPeriod period, uint32_t position, Batch& write_batch);
-  void removeDagBlockBatch(Batch& write_batch, blk_hash_t const& hash);
   std::vector<blk_hash_t> getFinalizedDagBlockHashesByPeriod(PbftPeriod period);
   std::vector<std::shared_ptr<DagBlock>> getFinalizedDagBlockByPeriod(PbftPeriod period);
-  std::pair<blk_hash_t, std::vector<std::shared_ptr<DagBlock>>> getLastPbftBlockHashAndFinalizedDagBlockByPeriod(
-      PbftPeriod period);
 
   std::optional<uint64_t> getProposalPeriodForDagLevel(uint64_t level);
   void saveProposalPeriodDagLevelsMap(uint64_t level, PbftPeriod period);
@@ -218,10 +202,8 @@ class DbStorage : public DbStorageOld {
 
   std::unordered_map<PbftPeriod, rewards::BlockStats> getBlocksRewardsStats() const;
   void saveBlockRewardsStats(uint64_t period, const rewards::BlockStats& stats, Batch& write_batch);
-  bool hasMinorVersionChanged();
   bool hasMajorVersionChanged();
   void compactColumn(Column const& column);
-  void forEach(Column const& col, OnEntry const& f);
   rustaxa::BridgeStorage& rustStorage();
   const rustaxa::BridgeStorage& rustStorage() const;
 

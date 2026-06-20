@@ -6322,12 +6322,6 @@ pub mod rustaxa_ffi {
             tips_count: u64,
             block_rlp: Vec<u8>,
         ) -> Result<()>;
-        pub fn update_dag_block_counter(
-            self: &BridgeStorage,
-            hash: &[u8; 32],
-            level: u64,
-            tips_count: u64,
-        ) -> Result<()>;
         pub fn remove_dag_block(self: &BridgeStorage, hash: &[u8; 32]) -> Result<()>;
         pub fn save_proposal_period_dag_levels_map(
             self: &BridgeStorage,
@@ -6376,7 +6370,8 @@ pub mod rustaxa_ffi {
             hash: &[u8; 32],
         ) -> Result<PeriodLookup>;
         /// Typed by-period receipts lookup.
-        pub fn get_block_receipt(self: &BridgePeriodStorageQueries, period: u64) -> Result<Vec<u8>>;
+        pub fn get_block_receipt(self: &BridgePeriodStorageQueries, period: u64)
+            -> Result<Vec<u8>>;
         pub fn seed_final_chain_conformance_lookup_rows(
             self: &BridgeStorage,
             meta_key: u32,
@@ -6532,8 +6527,10 @@ pub mod rustaxa_ffi {
             self: &BridgeTransactionStorageQueries,
             period: u64,
         ) -> Result<Vec<u8>>;
-        pub fn get_final_chain_meta_value(self: &BridgeFinalChainStorageQueries, key: u32)
-            -> Result<Vec<u8>>;
+        pub fn get_final_chain_meta_value(
+            self: &BridgeFinalChainStorageQueries,
+            key: u32,
+        ) -> Result<Vec<u8>>;
         pub fn get_final_chain_block_header(
             self: &BridgeFinalChainStorageQueries,
             block_number: u64,

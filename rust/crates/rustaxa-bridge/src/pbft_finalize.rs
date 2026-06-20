@@ -33,9 +33,9 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationStorageWriteStage as FfiPbftFinalizationStorageWriteStage,
     PbftFinalizedPeriodApplyResult as FfiPbftFinalizedPeriodApplyResult,
 };
-use crate::ffi::{
-    create_period_storage_queries, BridgePbftFinalizationRuntimeSession, BridgeStorage,
-};
+use crate::ffi::{BridgePbftFinalizationRuntimeSession, BridgeStorage};
+#[cfg(test)]
+use crate::storage::create_period_storage_queries;
 use anyhow::Result;
 use ethereum_types::H256;
 use rustaxa_consensus::pbft_finalize::{

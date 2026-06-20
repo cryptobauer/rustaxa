@@ -137,27 +137,10 @@ void DbStorage::CompactRange(const Column& col, uint64_t begin, uint64_t end) {
   throw_unimplemented_shim_api("CompactRange");
 }
 
-void DbStorage::rebuildColumns(const rocksdb::Options& options) {
-  (void)options;
-  throw_unimplemented_shim_api("rebuildColumns");
-}
-
 bool DbStorage::createSnapshot(PbftPeriod period) {
   (void)period;
   throw_unimplemented_shim_api("createSnapshot");
 }
-
-void DbStorage::deleteSnapshot(PbftPeriod period) {
-  (void)period;
-  throw_unimplemented_shim_api("deleteSnapshot");
-}
-
-void DbStorage::recoverToPeriod(PbftPeriod period) {
-  (void)period;
-  throw_unimplemented_shim_api("recoverToPeriod");
-}
-
-void DbStorage::loadSnapshots() { throw_unimplemented_shim_api("loadSnapshots"); }
 
 void DbStorage::disableSnapshots() { snapshots_enabled_ = false; }
 
@@ -170,34 +153,6 @@ void DbStorage::deleteColumnData(const Column& c) {
   }
 
   throw DbException("DbStorage::deleteColumnData is not implemented for column " + c.name() + " in Rust shim mode");
-}
-
-void DbStorage::replaceColumn(const Column& to_be_replaced_col,
-                              std::unique_ptr<rocksdb::ColumnFamilyHandle>&& replacing_col) {
-  (void)to_be_replaced_col;
-  (void)replacing_col;
-  throw_unimplemented_shim_api("replaceColumn");
-}
-
-std::unique_ptr<rocksdb::ColumnFamilyHandle> DbStorage::copyColumn(rocksdb::ColumnFamilyHandle* orig_column,
-                                                                   const std::string& new_col_name, bool move_data) {
-  (void)orig_column;
-  (void)new_col_name;
-  (void)move_data;
-  throw_unimplemented_shim_api("copyColumn");
-}
-
-void DbStorage::removeTempFiles() const { throw_unimplemented_shim_api("removeTempFiles"); }
-
-void DbStorage::removeFilesWithPattern(const std::string& directory, const std::regex& pattern) const {
-  (void)directory;
-  (void)pattern;
-  throw_unimplemented_shim_api("removeFilesWithPattern");
-}
-
-void DbStorage::deleteTmpDirectories(const std::string& path) const {
-  (void)path;
-  throw_unimplemented_shim_api("deleteTmpDirectories");
 }
 
 uint32_t DbStorage::getMajorVersion() const { return kMajorVersion_; }
@@ -367,11 +322,6 @@ void DbStorage::removeDagBlock(blk_hash_t const& hash) {
   rust_storage_.value()->remove_dag_block(h_arr);
 }
 
-void DbStorage::removeDagBlockBatch(Batch& write_batch, blk_hash_t const& hash) {
-  auto h_arr = into_bytes_array(hash);
-  rustaxa::storage_shim_remove_dag_block(getOrCreateRustBatch(write_batch), h_arr);
-}
-
 void DbStorage::updateDagBlockCounters(std::vector<std::shared_ptr<DagBlock>> blks) {
   std::lock_guard<std::mutex> u_lock(dag_blocks_mutex_);
   auto write_batch = createWriteBatch();
@@ -442,7 +392,8 @@ void DbStorage::savePeriodData(const PeriodData& period_data, Batch& write_batch
 
   uint32_t block_pos = 0;
   for (auto const& block : period_data.dag_blocks) {
-    removeDagBlockBatch(write_batch, block->getHash());
+    auto h_arr = into_bytes_array(block->getHash());
+    rustaxa::storage_shim_remove_dag_block(getOrCreateRustBatch(write_batch), h_arr);
     addDagBlockPeriodToBatch(block->getHash(), period, block_pos, write_batch);
     block_pos++;
   }
@@ -500,8 +451,11 @@ SharedTransactions DbStorage::transactionsFromPeriodDataRlp(PbftPeriod period, c
   for (auto&& transaction_data : period_data_rlp[TRANSACTIONS_POS_IN_PERIOD_DATA]) {
     ret.emplace_back(std::make_shared<Transaction>(std::move(transaction_data)));
   }
-  auto period_system_transactions = getPeriodSystemTransactions(period);
-  ret.insert(ret.end(), period_system_transactions.begin(), period_system_transactions.end());
+  auto period_system_transaction_hashes = getPeriodSystemTransactionsHashes(period);
+  ret.reserve(ret.size() + period_system_transaction_hashes.size());
+  for (const auto& trx_hash : period_system_transaction_hashes) {
+    ret.emplace_back(getSystemTransaction(trx_hash));
+  }
   return ret;
 }
 
@@ -632,16 +586,6 @@ std::optional<TransactionLocation> DbStorage::getTransactionLocation(trx_hash_t 
   return std::nullopt;
 }
 
-std::vector<bool> DbStorage::transactionsInDb(std::vector<trx_hash_t> const& trx_hashes) {
-  std::vector<bool> result(trx_hashes.size(), false);
-  for (size_t i = 0; i < trx_hashes.size(); ++i) {
-    auto h_arr = into_bytes_array(trx_hashes[i]);
-    result[i] = transaction_queries_.value()->transaction_in_db(h_arr) ||
-                transaction_queries_.value()->transaction_finalized(h_arr);
-  }
-  return result;
-}
-
 std::vector<bool> DbStorage::transactionsFinalized(std::vector<trx_hash_t> const& trx_hashes) {
   std::vector<bool> result(trx_hashes.size(), false);
   for (size_t i = 0; i < trx_hashes.size(); ++i) {
@@ -712,15 +656,6 @@ uint64_t DbStorage::getTransactionCount(PbftPeriod period) const {
   return transaction_queries_.value()->get_transaction_count(period);
 }
 
-std::optional<TransactionReceipt> DbStorage::getTransactionReceipt(EthBlockNumber blk_n, uint64_t position) const {
-  const auto block_receipts = getBlockReceipts(blk_n);
-  if (!block_receipts || block_receipts->size() <= position) {
-    return {};
-  }
-
-  return (*block_receipts)[position];
-}
-
 SharedTransactions DbStorage::getFinalizedTransactions(std::vector<trx_hash_t> const& trx_hashes) const {
   SharedTransactions trxs;
   std::map<PbftPeriod, std::set<uint32_t>> period_map;
@@ -782,19 +717,6 @@ std::vector<trx_hash_t> DbStorage::getPeriodSystemTransactionsHashes(PbftPeriod 
   return util::rlp_dec<std::vector<trx_hash_t>>(dev::RLP(hashes_data));
 }
 
-SharedTransactions DbStorage::getPeriodSystemTransactions(PbftPeriod period) const {
-  auto trx_hashes = getPeriodSystemTransactionsHashes(period);
-  if (trx_hashes.empty()) {
-    return {};
-  }
-
-  SharedTransactions trxs;
-  trxs.reserve(trx_hashes.size());
-  std::transform(trx_hashes.begin(), trx_hashes.end(), std::back_inserter(trxs),
-                 [this](const auto& trx_hash) { return getSystemTransaction(trx_hash); });
-  return trxs;
-}
-
 SharedTransactionReceipts DbStorage::getBlockReceipts(PbftPeriod period) const {
   auto rust_value = period_queries_.value()->get_block_receipt(period);
   if (rust_value.empty()) {
@@ -814,11 +736,6 @@ void DbStorage::addTransactionToBatch(Transaction const& trx, Batch& write_batch
 void DbStorage::removeTransactionToBatch(trx_hash_t const& trx, Batch& write_batch) {
   auto h_arr = into_bytes_array(trx);
   rustaxa::storage_shim_remove_transaction(getOrCreateRustBatch(write_batch), h_arr);
-}
-
-bool DbStorage::transactionInDb(trx_hash_t const& hash) {
-  auto h_arr = into_bytes_array(hash);
-  return transaction_queries_.value()->transaction_in_db(h_arr);
 }
 
 bool DbStorage::transactionFinalized(trx_hash_t const& hash) {
@@ -1068,20 +985,6 @@ std::vector<std::shared_ptr<DagBlock>> DbStorage::getFinalizedDagBlockByPeriod(P
   return decodeDAGBlocksBundleRlp(dag_blocks_data);
 }
 
-std::pair<blk_hash_t, std::vector<std::shared_ptr<DagBlock>>>
-DbStorage::getLastPbftBlockHashAndFinalizedDagBlockByPeriod(PbftPeriod period) {
-  auto period_data = getPeriodDataRaw(period);
-  if (period_data.empty()) {
-    return {};
-  }
-
-  auto period_data_rlp = dev::RLP(period_data);
-  auto dag_blocks_data = period_data_rlp[DAG_BLOCKS_POS_IN_PERIOD_DATA];
-  auto blocks = decodeDAGBlocksBundleRlp(dag_blocks_data);
-  const auto last_pbft_block_hash = PbftBlock(period_data_rlp[PBFT_BLOCK_POS_IN_PERIOD_DATA]).getPrevBlockHash();
-  return {last_pbft_block_hash, std::move(blocks)};
-}
-
 std::optional<PbftPeriod> DbStorage::getProposalPeriodForDagLevel(uint64_t level) {
   auto res = dag_queries_.value()->get_proposal_period_for_dag_level(level);
   if (res.found) {
@@ -1137,19 +1040,11 @@ void DbStorage::saveBlockRewardsStats(uint64_t period, const rewards::BlockStats
                                                  into_rust_vec(encoding.out()));
 }
 
-bool DbStorage::hasMinorVersionChanged() { return minor_version_changed_; }
-
 bool DbStorage::hasMajorVersionChanged() { return major_version_changed_; }
 
 void DbStorage::compactColumn(Column const& column) {
   (void)column;
   throw_unimplemented_shim_api("compactColumn");
-}
-
-void DbStorage::forEach(Column const& col, OnEntry const& f) {
-  (void)col;
-  (void)f;
-  throw_unimplemented_shim_api("forEach");
 }
 
 }  // namespace taraxa

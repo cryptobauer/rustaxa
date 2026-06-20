@@ -240,7 +240,6 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   transcript.add("dag_period_lookup_period", toString(dag_period.period));
   transcript.add("dag_period_lookup_position", toString(dag_period.position));
 
-  storage->update_dag_block_counter(dag_hash_3, 2, 2);
   transcript.add("dag_counters_nonzero",
                  toString(metadata_queries->get_status_field(kStatusFieldDagBlkCount) > 0 &&
                           metadata_queries->get_status_field(kStatusFieldDagEdgeCount) > 0));

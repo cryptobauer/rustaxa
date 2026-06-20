@@ -1,9 +1,9 @@
 use crate::ffi::rustaxa_ffi;
 use crate::ffi::BridgeDagStorageQueries;
+use crate::ffi::BridgeFinalChainStorageQueries;
 use crate::ffi::BridgeMetadataStorageQueries;
 use crate::ffi::BridgePbftStorageQueries;
 use crate::ffi::BridgePbftVoteStorageQueries;
-use crate::ffi::BridgeFinalChainStorageQueries;
 use crate::ffi::BridgePeriodStorageQueries;
 use crate::ffi::BridgeStorage;
 use crate::ffi::BridgeStorageBatch;
@@ -226,9 +226,7 @@ pub fn create_final_chain_storage_queries(
 /// - callers can resolve period rows for compatibility materialization without
 ///   retaining broad `BridgeStorage` period read methods.
 /// - the handle does not mutate storage.
-pub fn create_period_storage_queries(
-    storage: &BridgeStorage,
-) -> Box<BridgePeriodStorageQueries> {
+pub fn create_period_storage_queries(storage: &BridgeStorage) -> Box<BridgePeriodStorageQueries> {
     Box::new(BridgePeriodStorageQueries {
         storage: storage.0.clone(),
     })
@@ -631,6 +629,20 @@ impl BridgeTransactionStorageQueries {
             .collect())
     }
 
+    /// Returns serialized system transaction hashes for a finalized period.
+    ///
+    /// Inputs: PBFT period number.
+    /// Outputs: legacy-RLP encoded system transaction hash list bytes.
+    pub fn get_period_system_transactions_hashes(
+        &self,
+        period: u64,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        self.storage
+            .transaction()
+            .period_system_hashes_rlp(period)
+            .map_err(|e| anyhow::anyhow!(e))
+    }
+
     /// Returns transaction hash-to-period mappings from Rust storage.
     ///
     /// Outputs preserve the compatibility payload shape expected by C++ tests
@@ -659,7 +671,10 @@ impl BridgeTransactionStorageQueries {
     ) -> Result<Vec<rustaxa_ffi::DagTransactionRlpLookup>, anyhow::Error> {
         transaction_rlp_lookups(
             &self.storage,
-            hashes.into_iter().map(|hash| H256::from(hash.hash)).collect(),
+            hashes
+                .into_iter()
+                .map(|hash| H256::from(hash.hash))
+                .collect(),
         )
     }
 }
@@ -707,7 +722,11 @@ impl BridgePeriodStorageQueries {
 
 impl BridgeFinalChainStorageQueries {
     pub fn get_final_chain_meta_value(&self, key: u32) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self.storage.final_chain().meta_value(key)?.unwrap_or_default())
+        Ok(self
+            .storage
+            .final_chain()
+            .meta_value(key)?
+            .unwrap_or_default())
     }
 
     pub fn get_final_chain_block_header(
@@ -1231,17 +1250,6 @@ impl BridgeStorage {
         self.0
             .dag()
             .write(H256::from(*hash), level, tips_count, &block_rlp)
-    }
-
-    pub fn update_dag_block_counter(
-        &self,
-        hash: &[u8; 32],
-        level: u64,
-        tips_count: u64,
-    ) -> Result<(), anyhow::Error> {
-        self.0
-            .dag()
-            .update_counter(H256::from(*hash), level, tips_count)
     }
 
     pub fn remove_dag_block(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
