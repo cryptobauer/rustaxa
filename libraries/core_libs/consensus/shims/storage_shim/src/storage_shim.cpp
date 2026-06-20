@@ -876,7 +876,7 @@ void DbStorage::saveCertVotedBlockInRound(PbftRound round, const std::shared_ptr
 }
 
 std::optional<std::pair<PbftRound, std::shared_ptr<PbftBlock>>> DbStorage::getCertVotedBlockInRound() const {
-  auto rust_value = rust_storage_.value()->get_cert_voted_block_in_round();
+  auto rust_value = pbft_queries_.value()->get_cert_voted_block_in_round();
   if (rust_value.empty()) {
     return {};
   }

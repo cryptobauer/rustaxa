@@ -281,9 +281,9 @@ Landed sub-slices:
   matching generic `BridgeStorage` vote-list read methods from the CXX FFI while keeping vote writes and batch deletes
   on their existing Rust-owned write paths.
 - PBFT scalar/head query split: moved storage-shim and validation-test reads for PBFT manager scalar fields/statuses,
-  PBFT block existence, and PBFT head payloads onto a typed `BridgePbftStorageQueries` handle that owns a cloned Rust
-  storage handle. Deleted the matching generic `BridgeStorage` scalar/head read methods from the CXX FFI; cert-voted
-  block materialization remains out of scope for the broader object/cache cleanup.
+  PBFT block existence, PBFT head payloads, and cert-voted block materialization onto a typed
+  `BridgePbftStorageQueries` handle that owns a cloned Rust storage handle. Deleted the matching generic
+  `BridgeStorage` read methods from the CXX FFI.
 - Transaction public-read split: moved storage-shim and validation-test reads for transaction existence/finalized
   status, transaction locations, pending/finalized/system transaction payloads, transaction counts, nonfinalized
   transaction snapshots, and transaction-period mappings onto a typed `BridgeTransactionStorageQueries` handle that owns

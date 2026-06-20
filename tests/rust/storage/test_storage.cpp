@@ -221,7 +221,7 @@ TEST_F(StorageTest, ApplyPbftManagerTransitionStorageCommitsCursorStatusesAndOwn
   EXPECT_EQ(pbft_queries->get_pbft_mgr_field(1), 4u);
   EXPECT_FALSE(pbft_queries->get_pbft_mgr_status(2));
   EXPECT_FALSE(pbft_queries->get_pbft_mgr_status(3));
-  EXPECT_TRUE(storage->get_cert_voted_block_in_round().empty());
+  EXPECT_TRUE(pbft_queries->get_cert_voted_block_in_round().empty());
   auto vote_queries = voteQueries(storage);
   EXPECT_TRUE(vote_queries->get_own_verified_votes().empty());
 }

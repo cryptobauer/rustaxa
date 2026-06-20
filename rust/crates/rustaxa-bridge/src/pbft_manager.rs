@@ -2677,11 +2677,12 @@ mod tests {
 
             let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
                 .expect("runtime should restore");
+            let pbft_queries = create_pbft_storage_queries(&storage);
             let runtime_payload = pbft_manager_runtime_cert_voted_block_in_round(&runtime)
                 .expect("runtime-owned storage read should succeed");
             assert_eq!(
                 runtime_payload,
-                storage
+                pbft_queries
                     .get_cert_voted_block_in_round()
                     .expect("compatibility storage view should load")
             );

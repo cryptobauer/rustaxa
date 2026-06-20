@@ -333,6 +333,19 @@ impl BridgePbftStorageQueries {
             .head(H256::from(*hash))?
             .unwrap_or_default())
     }
+
+    /// Returns the persisted cert-voted PBFT block payload in the legacy compact
+    /// `[round, rlp]` encoding.
+    ///
+    /// Input is implicit via `self`; output is an empty vector when no payload is
+    /// present, matching the previous `BridgeStorage` compatibility behavior.
+    pub fn get_cert_voted_block_in_round(&self) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .storage
+            .pbft()
+            .cert_voted_block_in_round_rlp()?
+            .unwrap_or_default())
+    }
 }
 
 impl BridgeMetadataStorageQueries {
@@ -1346,14 +1359,6 @@ impl BridgeStorage {
 
     pub fn clear_block_rewards_stats(&self) -> Result<(), anyhow::Error> {
         self.0.metadata().clear_block_rewards_stats()
-    }
-
-    pub fn get_cert_voted_block_in_round(&self) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self
-            .0
-            .pbft()
-            .cert_voted_block_in_round_rlp()?
-            .unwrap_or_default())
     }
 
     pub fn save_cert_voted_block_in_round(

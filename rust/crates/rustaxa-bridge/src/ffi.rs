@@ -6424,7 +6424,6 @@ pub mod rustaxa_ffi {
         ) -> Result<()>;
         pub fn clear_block_rewards_stats(self: &BridgeStorage) -> Result<()>;
 
-        pub fn get_cert_voted_block_in_round(self: &BridgeStorage) -> Result<Vec<u8>>;
         pub fn get_genesis_hash(self: &BridgeMetadataStorageQueries) -> Result<Vec<u8>>;
         pub fn get_last_sortition_params(
             self: &BridgeMetadataStorageQueries,
@@ -6448,6 +6447,7 @@ pub mod rustaxa_ffi {
         pub fn get_pbft_mgr_field(self: &BridgePbftStorageQueries, field: u8) -> Result<u32>;
         pub fn get_pbft_mgr_status(self: &BridgePbftStorageQueries, field: u8) -> Result<bool>;
         pub fn get_pbft_head(self: &BridgePbftStorageQueries, hash: &[u8; 32]) -> Result<Vec<u8>>;
+        pub fn get_cert_voted_block_in_round(self: &BridgePbftStorageQueries) -> Result<Vec<u8>>;
         pub fn get_own_verified_votes(self: &BridgePbftVoteStorageQueries) -> Result<Vec<VoteRlp>>;
         pub fn get_all_two_t_plus_one_votes(
             self: &BridgePbftVoteStorageQueries,
