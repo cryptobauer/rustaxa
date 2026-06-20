@@ -219,28 +219,6 @@ ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBund
 }
 
 ValidatePbftBlockPillarVotesWithRustResult validatePbftBlockPillarVotesWithRust(
-    const PeriodData& period_data, const std::shared_ptr<pillar_chain::PillarChainManager>& pillar_chain_mgr,
-    const std::shared_ptr<final_chain::FinalChain>& final_chain) {
-  if (!period_data.pbft_blk) {
-    return {ValidatePbftBlockPillarVotesWithRustStatus::kMissingPbftBlock, 0, {}, 0, 0};
-  }
-
-  std::vector<bytes> pillar_vote_rlps;
-  if (period_data.pillar_votes_.has_value()) {
-    pillar_vote_rlps.reserve(period_data.pillar_votes_->size());
-    for (const auto& vote : *period_data.pillar_votes_) {
-      if (!vote) {
-        return {ValidatePbftBlockPillarVotesWithRustStatus::kMissingPillarVotes, 0, {}, 0, 0};
-      }
-      pillar_vote_rlps.push_back(vote->rlp());
-    }
-  }
-
-  return validatePbftBlockPillarVotesWithRust(period_data.pbft_blk->getPeriod(), pillar_vote_rlps,
-                                              period_data.pillar_votes_, pillar_chain_mgr, final_chain);
-}
-
-ValidatePbftBlockPillarVotesWithRustResult validatePbftBlockPillarVotesWithRust(
     PbftPeriod required_votes_period, const std::vector<bytes>& pillar_vote_rlps,
     const std::optional<std::vector<std::shared_ptr<PillarVote>>>& live_pillar_votes,
     const std::shared_ptr<pillar_chain::PillarChainManager>& pillar_chain_mgr,

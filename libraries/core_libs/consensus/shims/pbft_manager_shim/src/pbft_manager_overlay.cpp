@@ -4546,8 +4546,29 @@ bool PbftManager::validatePbftBlockCertVotes(PbftPeriod block_period, const blk_
 
 bool PbftManager::validatePbftBlockPillarVotes(const PeriodData &period_data) const {
 #ifdef RUSTAXA_ENABLE_PILLAR_VOTES
+  if (!period_data.pbft_blk) {
+    LOG(log_er_) << "Rust sync pillar-vote validation failed, missing pbft block";
+    return false;
+  }
+
+  std::vector<bytes> pillar_vote_rlps;
+  if (period_data.pillar_votes_.has_value()) {
+    pillar_vote_rlps.reserve(period_data.pillar_votes_->size());
+    for (const auto &pillar_vote : *period_data.pillar_votes_) {
+      if (!pillar_vote) {
+        LOG(log_er_) << "Rust sync pillar-vote validation failed, pbft block period "
+                     << period_data.pbft_blk->getPeriod() << ", status "
+                     << validatePbftBlockPillarVotesWithRustStatusString(
+                            ValidatePbftBlockPillarVotesWithRustStatus::kMissingPillarVotes);
+        return false;
+      }
+      pillar_vote_rlps.push_back(pillar_vote->rlp());
+    }
+  }
+
   const auto rust_validation_result =
-      validatePbftBlockPillarVotesWithRust(period_data, pillar_chain_mgr_, final_chain_);
+      validatePbftBlockPillarVotesWithRust(period_data.pbft_blk->getPeriod(), pillar_vote_rlps,
+                                           period_data.pillar_votes_, pillar_chain_mgr_, final_chain_);
   if (!rust_validation_result.valid()) {
     LOG(log_er_) << "Rust sync pillar-vote validation failed, pbft block period "
                  << (period_data.pbft_blk ? period_data.pbft_blk->getPeriod() : 0) << ", status "

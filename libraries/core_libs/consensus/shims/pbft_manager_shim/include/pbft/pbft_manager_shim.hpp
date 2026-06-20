@@ -158,16 +158,6 @@ ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBund
     const std::shared_ptr<final_chain::FinalChain> &final_chain);
 
 /**
- * @brief Rust-enabled PBFT pillar-vote validation path owned by the shim layer.
- *
- * This helper mirrors the legacy sync validation side effects while routing
- * deterministic bundle acceptance through Rust.
- */
-ValidatePbftBlockPillarVotesWithRustResult validatePbftBlockPillarVotesWithRust(
-    const PeriodData &period_data, const std::shared_ptr<pillar_chain::PillarChainManager> &pillar_chain_mgr,
-    const std::shared_ptr<final_chain::FinalChain> &final_chain);
-
-/**
  * @brief Rust-enabled PBFT pillar-vote validation path fed by queued RLP metadata.
  *
  * Deterministic validation inspects `pillar_vote_rlps`; `live_pillar_votes`
