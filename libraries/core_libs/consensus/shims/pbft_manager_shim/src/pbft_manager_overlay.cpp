@@ -2377,8 +2377,39 @@ void PbftManager::firstFinish_() {
   executeStateActionEffectSession(fact, [&](const auto &effect) {
     if (effect.intent == kPbftManagerStateActionIntentNextVoteCertVotedBlock) {
       if (!cert_voted_block_for_round_.has_value()) {
-        LOG(log_er_) << "Rust PBFT first-finish requested cert-voted next vote without live cert-voted sidecar";
-        return kPbftManagerStateActionEffectResultSkippedMissingLiveObject;
+        if (!action_snapshot.has_cert_voted_block) {
+          throw std::runtime_error("Rust PBFT first-finish requested cert-voted next vote without runtime metadata");
+        }
+
+        // Rust owns the cert-voted sidecar metadata and persisted payload. The C++ pointer is only a temporary
+        // materialization cache for the legacy vote-generation executor boundary.
+        const auto cert_voted_payload =
+            rustaxa::pbft_manager_runtime_cert_voted_block_in_round(*pbft_manager_runtime_.value());
+        if (cert_voted_payload.empty()) {
+          throw std::runtime_error("Rust PBFT first-finish requested cert-voted next vote without runtime payload");
+        }
+
+        const auto payload_bytes = dev::bytes(cert_voted_payload.begin(), cert_voted_payload.end());
+        const auto payload_rlp = dev::RLP(payload_bytes);
+        if (payload_rlp.itemCount() != 2) {
+          throw std::runtime_error("Rust PBFT cert-voted payload has invalid shape");
+        }
+        const auto cert_voted_round = payload_rlp[0].toInt<PbftRound>();
+        if (cert_voted_round != round) {
+          throw std::runtime_error("Rust PBFT cert-voted payload round does not match first-finish round");
+        }
+        const auto cert_voted_block = std::make_shared<PbftBlock>(payload_rlp[1]);
+        if (cert_voted_block->getPeriod() != period) {
+          throw std::runtime_error("Rust PBFT cert-voted payload period does not match first-finish period");
+        }
+        if (cert_voted_block->getBlockHash() != fromBridgeHash(action_snapshot.cert_voted_block_hash)) {
+          throw std::runtime_error("Rust PBFT cert-voted payload hash does not match runtime metadata");
+        }
+        if (proposed_blocks_.pushProposedPbftBlock(cert_voted_block)) {
+          LOG(log_nf_) << "Materialized Rust cert-voted block " << cert_voted_block->getBlockHash()
+                       << " for first-finish next vote in period " << period << ", round " << round;
+        }
+        cert_voted_block_for_round_ = cert_voted_block;
       }
       const auto &cert_voted_block = *cert_voted_block_for_round_;
 

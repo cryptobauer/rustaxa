@@ -251,6 +251,13 @@ Landed in proposed-block metadata authority:
   materializes a C++ `PbftBlock` merely to decide whether the block exists or is already valid.
 - C++ `PbftBlock` materialization remains only for the validation executor path and accepted vote-generation return.
 
+Landed in cert-voted payload authority:
+
+- First-finish cert-voted next-vote execution now treats the Rust runtime metadata and persisted cert-voted payload as
+  authoritative when the temporary C++ `cert_voted_block_for_round_` cache is empty.
+- The overlay rehydrates the C++ `PbftBlock` only as a vote-generation executor object, validates period, round, and hash
+  against the Rust runtime snapshot, and reports missing or corrupt Rust payload as an invariant executor failure.
+
 3. Move cert-voted sidecar authority.
 
 - Keep the Rust runtime as the source of cert-voted period, round, hash, and persistence state.
