@@ -1075,7 +1075,9 @@ void PbftManager::run() {
           break;
         }
         case kPbftManagerRuntimeActionSleepUntilNextStep:
-          LOG(log_tr_) << "next step time(ms): " << next_step_time_ms_.count() << ", step " << step_;
+          LOG(log_tr_) << "next step time(ms): "
+                       << rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value()).next_step_time_ms
+                       << ", step " << getPbftStep();
           sleep_();
           step = report_action(step, kPbftManagerRuntimeResultSleepApplied);
           break;
@@ -1500,15 +1502,27 @@ std::chrono::milliseconds PbftManager::elapsedTimeInMs(const time_point &start_t
 void PbftManager::sleep_() {
   // Run "wait_for" sleep in loop due to potential spurious wakeup on lock
   while (!stopped_) {
+    auto next_step_time_ms = next_step_time_ms_;
+    auto step = step_;
+    if (pbft_manager_runtime_.has_value()) {
+      const auto snapshot = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value());
+      if (snapshot.status != kPbftManagerRuntimeSnapshotStatusReady) {
+        throw std::runtime_error("PBFT manager Rust runtime snapshot is not ready: " +
+                                 static_cast<std::string>(snapshot.error_code));
+      }
+      next_step_time_ms = std::chrono::milliseconds(snapshot.next_step_time_ms);
+      step = static_cast<PbftStep>(snapshot.step);
+    }
+
     const auto round_elapsed_time = elapsedTimeInMs(current_round_start_datetime_);
-    if (next_step_time_ms_ <= round_elapsed_time) {
+    if (next_step_time_ms <= round_elapsed_time) {
       return;
     }
 
-    const auto time_to_sleep_for_ms = next_step_time_ms_ - round_elapsed_time;
+    const auto time_to_sleep_for_ms = next_step_time_ms - round_elapsed_time;
     const auto [round, period] = getPbftRoundAndPeriod();
     LOG(log_tr_) << "Sleep " << time_to_sleep_for_ms.count() << " [ms] before going into the next step. Period "
-                 << period << ", round " << round << ", step " << step_;
+                 << period << ", round " << round << ", step " << step;
     std::unique_lock<std::mutex> lock(stop_mtx_);
     stop_cv_.wait_for(lock, time_to_sleep_for_ms);
   }
@@ -1801,7 +1815,7 @@ void PbftManager::broadcastVotes() {
   rustaxa::PbftManagerBroadcastFact fact;
   fact.round_elapsed_ms = toBroadcastElapsedMs(round_elapsed_time);
   fact.period_elapsed_ms = toBroadcastElapsedMs(period_elapsed_time);
-  fact.current_round_lambda_ms = toBroadcastElapsedMs(current_round_lambda_);
+  fact.current_round_lambda_ms = broadcast_snapshot.current_round_lambda_ms;
   fact.broadcast_lambda_threshold = kBroadcastVotesLambdaTime;
   fact.rebroadcast_lambda_threshold = kRebroadcastVotesLambdaTime;
   fact.broadcast_votes_counter = broadcast_snapshot.broadcast_votes_counter;
@@ -2520,11 +2534,13 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::generatePbftBlock(
       auto block = std::make_shared<PbftBlock>(prev_blk_hash, anchor_hash, order_hash, final_chain_hash, propose_period,
                                                wallet.node_addr, wallet.node_secret, reward_votes_hashes, extra_data);
 
+      const auto propose_round = getPbftRound();
+      const auto propose_step = getPbftStep();
       auto propose_vote = vote_mgr_->generateVoteWithWeight(block->getBlockHash(), PbftVoteTypes::propose_vote,
-                                                            propose_period, round_, step_, wallet);
+                                                            propose_period, propose_round, propose_step, wallet);
       if (!propose_vote) {
         LOG(log_er_) << "Failed to generate propose vote for block " << block->getBlockHash() << ", period "
-                     << propose_period << ", round " << round_ << ", step " << step_ << ", validator "
+                     << propose_period << ", round " << propose_round << ", step " << propose_step << ", validator "
                      << wallet.node_addr << " when generating pbft block";
         continue;
       }
@@ -4759,16 +4775,26 @@ const std::vector<std::pair<bool, WalletConfig>> &PbftManager::EligibleWallets::
 PbftPeriod PbftManager::EligibleWallets::getWalletsEligiblePeriod() const { return period_; }
 
 std::chrono::milliseconds PbftManager::getPbftDeadline() const {
+  auto current_round_lambda = current_round_lambda_;
+  if (pbft_manager_runtime_.has_value()) {
+    const auto snapshot = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value());
+    if (snapshot.status != kPbftManagerRuntimeSnapshotStatusReady) {
+      throw std::runtime_error("PBFT manager Rust runtime snapshot is not ready: " +
+                               static_cast<std::string>(snapshot.error_code));
+    }
+    current_round_lambda = std::chrono::milliseconds(snapshot.current_round_lambda_ms);
+  }
+
   if (kGenesisConfig.state.hardforks.isOnCactiHardfork(getPbftPeriod())) {
     auto block_propagation = std::chrono::milliseconds(kGenesisConfig.state.hardforks.cacti_hf.block_propagation_min);
     if (getPbftRound() > 1) {
       block_propagation = std::chrono::milliseconds(kGenesisConfig.state.hardforks.cacti_hf.block_propagation_max);
     }
 
-    return std::max(4 * current_round_lambda_, block_propagation);
+    return std::max(4 * current_round_lambda, block_propagation);
   }
 
-  return 4 * current_round_lambda_;
+  return 4 * current_round_lambda;
 }
 
 }  // namespace taraxa

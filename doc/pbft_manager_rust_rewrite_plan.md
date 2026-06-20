@@ -140,6 +140,16 @@ Validation:
 
 Goal: remove C++ scalar and timer mirrors as PBFT manager authority.
 
+Status: in progress.
+
+Landed:
+
+- Public round and step getters read the Rust runtime snapshot when the runtime is present.
+- Broadcast planning reads lambda and broadcast counters from the Rust runtime snapshot instead of using the C++ lambda
+  mirror as planner authority.
+- Deadline calculation reads the Rust runtime snapshot lambda when available; the C++ lambda field remains a temporary
+  executor/public compatibility cache.
+
 Scope:
 
 - Move remaining round, step, state, lambda, next-step-time, broadcast counters, next-vote flags, cert-voted metadata,
