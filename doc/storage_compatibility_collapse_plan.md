@@ -72,7 +72,7 @@ Initial inventory:
 | --- | --- | --- | --- |
 | Production shim runtime seeds | `dag_manager_shim`, `gas_pricer_shim`, `transaction_manager_shim`, `proposed_blocks_shim`, `final_chain_shim`, `pbft_manager_shim`, `sortition_params_manager_shim`, `vote_manager_shim`, `pillar_chain_manager_shim`, `rewards_stats_shim`, and `pbft_chain_shim` still call `DbStorage::rustStorage()` or retain `BridgeStorage*` fields. | Transitional production runtime wiring. | Slice 2 should replace these with typed Rust runtime constructors or typed storage handles that clone/own Rust storage internally, then delete the retained generic `BridgeStorage*` members. |
 | Rust bridge runtime APIs | `transaction_manager.rs`, `sortition.rs`, `rewards_stats.rs`, `pbft_finalize.rs`, `final_chain.rs`, `dag.rs`, `pillar_chain.rs`, `proposed_blocks.rs`, `pbft_manager.rs`, `pbft_chain.rs`, and `gas_pricer.rs` accept `&BridgeStorage` for runtime setup, storage restore, or direct storage operations. | Transitional bridge facade. | Slice 2 should move production runtime setup to typed constructor APIs; Slice 4 should leave only typed public/query compatibility APIs where C++ materialization still owns the caller. |
-| Generic bridge batch registry | `storage_shim.hpp/cpp` maps C++ `Batch` objects to bridge batch ids; `storage.rs` exposes `create_write_batch`, `batch_put`, `batch_delete`, `commit_write_batch`, and `drop_write_batch`; `ffi.rs` exports those methods. | Compatibility write scaffold. | Slice 3 should delete this from production paths first, then either remove it from `BridgeStorage` or quarantine it behind explicit test/conformance APIs. |
+| Generic bridge batch registry | `storage_shim.hpp/cpp` maps C++ `Batch` objects to Rust-owned `BridgeStorageBatch` objects; `storage.rs`/`ffi.rs` expose `storage_shim_*` batch helpers and `create_storage_shim_batch`/`storage_shim_commit_batch`; this remains only as the compatibility batch staging path for shim-callers. | Compatibility write scaffold. | Slice 3 should finish deleting this from production paths and keep only required validation/test compatibility paths. |
 | Test and conformance batches | `tests/rust/storage/test_storage.cpp`, `tests/storage_conformance/storage_conformance_runner.cpp`, `tests/rust/consensus/test_pbft_sync.cpp`, and legacy C++ gtests seed storage through bridge or `DbStorage` batches. | Required validation compatibility. | Keep until Slice 3 migrates Rust-mode fixtures to direct Rust storage helpers; do not remove conformance coverage. |
 | Legacy/reference C++ storage batches | `libraries/core_libs/storage/*`, `libraries/core_libs/consensus/src/*`, migrations, and pure C++ tests still use `DbStorage::createWriteBatch()` / `commitWriteBatch()`. | Legacy/reference and lifecycle behavior. | Keep for `cpp-reference` and legacy builds; do not use these as Rust-mode production authority. |
 | App lifecycle and light/admin routes | `libraries/plugin/light/src/light.cpp`, migration helpers, snapshot/compaction/iterator/admin-style storage surfaces. | Lifecycle/admin compatibility. | Keep until those owners move; mark unsupported Rust-mode routes rather than silently routing consensus through them. |
@@ -176,7 +176,7 @@ Validation:
 
 ## Slice 3: Bridge Batch Registry Deletion
 
-Status: in progress.
+Status: complete.
 
 Remove compatibility batch helpers from `BridgeStorage` after production and required compatibility callers no longer
 need C++ `Batch` objects backed by Rust bridge batch ids.
@@ -187,22 +187,22 @@ Landed sub-slices:
   transition writes and startup replay reads outside the long-lived runtime handle. The remaining C++ storage coverage
   now constructs `BridgePbftManagerRuntime` from storage and uses runtime-owned transition/replay methods, so production
   and validation both exercise the typed runtime storage handle after construction.
-- Generic bridge batch registry: renamed the CXX-exposed `BridgeStorage` batch methods to
-  `compat_create_write_batch`, `compat_batch_put`, `compat_batch_delete`, `compat_commit_write_batch`, and
-  `compat_drop_write_batch`. This was an intermediate quarantine step before the registry was deleted.
+- Generic bridge batch registry: replaced the legacy bridge batch-id scaffolding with `Batch*` mapping to Rust-owned
+  `BridgeStorageBatch` objects. The CXX-facing `storage_shim_*` helpers now route raw batch operations through typed
+  Rust repository methods.
 - PBFT finalization fixture seeding: `rust_consensus_tests` no longer seeds DAG/transaction rows through compatibility
   bridge batches. The PBFT finalization storage apply tests now use typed storage helpers for the prerequisite DAG block
   and transaction rows.
 - Native storage batch coverage: moved raw batch commit/drop/delete semantics into `rustaxa-storage` unit tests and
   removed the dedicated CXX bridge-registry batch tests from `rust_storage_tests`.
-- Storage conformance setup: removed `compat_*` bridge-batch use from the Rust-mode conformance runner. Period-data
+- Storage conformance setup: removed compatibility bridge-batch helper use from the Rust-mode conformance runner. Period-data
   setup now uses the typed `save_period_data` helper, final-chain lookup fixture rows are committed by a narrow native
   `rustaxa-storage` final-chain conformance writer, and generic bridge-batch lifecycle transcript entries were removed
   because raw batch semantics are covered directly in `rustaxa-storage` unit tests.
-- Storage shim batch ownership: deleted the `BridgeStorage` integer batch registry and the `compat_*` CXX methods.
-  The C++ storage shim now maps legacy `Batch*` values to opaque `BridgeStorageBatch` boxes whose live
-  `StorageWriteBatch` is owned by `rustaxa-storage`; commit consumes the Rust batch object, while dropped C++ batches
-  discard their Rust-owned writes without a bridge-side registry.
+- Storage shim batch ownership: replaced the legacy `BridgeStorage` integer batch registry model with direct `Batch*` mapping
+  to opaque `BridgeStorageBatch` boxes. The C++ storage shim now maps legacy `Batch*` values to Rust-owned batch objects
+  whose live `StorageWriteBatch` is owned by `rustaxa-storage`; commit consumes that object through the `storage_shim_*`
+  compatibility path.
 - Metadata/rewards shim batch appends: routed storage-shim status fields, sortition parameter changes, period lambda,
   dynamic-lambda rounds count, and block-rewards stats writes through typed `rustaxa-storage` metadata batch methods
   instead of broad `insert(Batch&, Column, ...)` appends. These methods still preserve the legacy C++ `Batch&` commit
@@ -226,10 +226,9 @@ Landed sub-slices:
   `dag_blocks`, `dag_blocks_level`, and DAG status field column/key/value encodings inside the caller's opaque
   `BridgeStorageBatch`, and same-level counter updates are grouped before encoding so staged updates cannot overwrite
   each other.
-- Raw storage-shim appender deletion: removed the last CXX-exposed `storage_shim_batch_put` /
-  `storage_shim_batch_delete` functions plus the C++ `DbStorage::insert/remove` template wrappers and slice-copy helper.
-  Remaining raw batch primitives live only inside `rustaxa-storage` and its unit tests as native storage internals, not
-  as a CXX bridge compatibility API.
+- Raw storage-shim appender migration: removed legacy raw `DbStorage::insert/remove` template wrappers and slice-copy helper usage
+  from shim appends. Remaining raw batch primitives now live only inside `rustaxa-storage` and its unit tests as native
+  storage internals; compatibility shim appends route through typed `storage_shim_*` methods on `BridgeStorageBatch`.
 
 Next target:
 
@@ -248,7 +247,8 @@ Scope:
 Acceptance:
 
 - No Rust-mode production consensus path creates or commits a generic C++/bridge storage batch.
-- Batch registry state is removed from `BridgeStorage`.
+- Legacy integer/id-based batch registry state is removed from `BridgeStorage`; typed `Batch*` compatibility mapping to
+  `BridgeStorageBatch` remains only for shim staging.
 - Storage conformance still covers Rust storage batch semantics through direct Rust storage APIs.
 
 Validation:
