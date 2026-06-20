@@ -299,12 +299,15 @@ Landed sub-slices:
   level mappings onto a typed `BridgeDagStorageQueries` handle that owns a cloned Rust storage handle. Deleted the
   matching generic `BridgeStorage` DAG read methods from the CXX FFI; DAG writes, removals, counters, and
   proposal-period writes remain on their existing Rust-owned write paths.
+- Final-chain/period lookup split: moved final-chain lookups (`get_final_chain_*`) and period lookup/read routes (`get_block_receipt`,
+  `get_period_data_raw`, `get_period_from_pbft_hash`) onto `BridgeFinalChainStorageQueries` and
+  `BridgePeriodStorageQueries`; active Rust-mode paths and conformance now use typed query handles.
 
 Next target:
 
-- Continue with another self-contained compatibility query family, likely period/final-chain lookup reads or remaining
-  transaction/system write-side compatibility helpers. Keep RPC/network materialization at the C++ boundary and avoid
-  broader object ownership changes in this cleanup slice.
+- Continue with another self-contained compatibility query family. Keep RPC/network materialization at the C++ boundary and
+  avoid broader object ownership changes in this cleanup slice. Remaining generic `BridgeStorage` query methods should be
+  removed only after callers are reclassified or deleted.
 
 Split the broad `BridgeStorage` query surface into typed read-only Rust query APIs for active Rust-mode callers, and
 delete unused broad storage-shim methods.
