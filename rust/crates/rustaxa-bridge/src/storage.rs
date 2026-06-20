@@ -636,17 +636,6 @@ impl BridgeTransactionStorageQueries {
             .collect())
     }
 
-    /// Returns the system transaction hash list for a finalized period.
-    ///
-    /// Inputs: finalized period. Output is the compatibility payload bytes, or
-    /// an empty vector when the lookup row is absent.
-    pub fn get_period_system_transactions_hashes(
-        &self,
-        period: u64,
-    ) -> Result<Vec<u8>, anyhow::Error> {
-        self.storage.transaction().period_system_hashes_rlp(period)
-    }
-
     /// Batch-fetches transaction RLP payloads by hash from Rust storage.
     ///
     /// Inputs are canonical transaction hashes in caller-requested order. Outputs

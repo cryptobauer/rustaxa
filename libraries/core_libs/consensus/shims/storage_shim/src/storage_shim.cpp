@@ -774,7 +774,7 @@ void DbStorage::addPeriodSystemTransactions(Batch& write_batch, SharedTransactio
 }
 
 std::vector<trx_hash_t> DbStorage::getPeriodSystemTransactionsHashes(PbftPeriod period) const {
-  auto rust_data = rust_storage_.value()->get_period_system_transactions_hashes(period);
+  auto rust_data = transaction_queries_.value()->get_period_system_transactions_hashes(period);
   if (rust_data.empty()) {
     return {};
   }

@@ -6532,19 +6532,6 @@ pub mod rustaxa_ffi {
             self: &BridgeTransactionStorageQueries,
             period: u64,
         ) -> Result<Vec<u8>>;
-        /// Backward-compatible alias; prefer `BridgeTransactionStorageQueries` for
-        /// future migration away from generic `BridgeStorage` storage APIs.
-        pub fn get_transaction_rlps_by_hashes(
-            self: &BridgeStorage,
-            hashes: Vec<DagTransactionHash>,
-        ) -> Result<Vec<DagTransactionRlpLookup>>;
-        /// Backward-compatible alias; prefer `BridgeTransactionStorageQueries` for
-        /// future migration away from generic `BridgeStorage` storage APIs.
-        pub fn get_period_system_transactions_hashes(
-            self: &BridgeStorage,
-            period: u64,
-        ) -> Result<Vec<u8>>;
-
         pub fn get_final_chain_meta_value(self: &BridgeFinalChainStorageQueries, key: u32)
             -> Result<Vec<u8>>;
         pub fn get_final_chain_block_header(
