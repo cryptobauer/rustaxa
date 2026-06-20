@@ -34,8 +34,7 @@ std::string head_json_string(rustaxa::PbftChainHeadPayload const& head) { return
 
 }  // namespace
 
-PbftChain::PbftChain(addr_t node_addr, std::shared_ptr<DbStorage> db) : db_(std::move(db)) {
-  (void)node_addr;
+PbftChain::PbftChain([[maybe_unused]] addr_t node_addr, std::shared_ptr<DbStorage> db) : db_(std::move(db)) {
   LOG_OBJECTS_CREATE("PBFT_CHAIN");
 
   rust_chain_ = rustaxa::create_pbft_chain_from_storage(db_->rustStorage());

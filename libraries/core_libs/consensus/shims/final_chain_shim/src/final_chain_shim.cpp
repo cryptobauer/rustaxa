@@ -365,7 +365,7 @@ rustaxa::FinalChainEvmExecutionReport make_evm_execution_report(
 }  // namespace
 
 FinalChain::FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullNodeConfig& config,
-                       const addr_t& node_addr)
+                       [[maybe_unused]] const addr_t& node_addr)
     : db_(db),
       rust_final_chain_(rustaxa::create_final_chain_with_rewards_config(
           db->rustStorage(), config.genesis.pbft.gas_limit, config.genesis.dag_genesis_block.getTimestamp(),
@@ -379,7 +379,6 @@ FinalChain::FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullN
           [this](EthBlockNumber n) { return dposEligibleTotalVoteCount(n); },
           recoverExternalEvmPendingPublication()),
       config_(config) {
-  (void)node_addr;
   delegation_delay_ = config.genesis.state.dpos.delegation_delay;
   block_gas_limit_ = config.genesis.pbft.gas_limit;
   max_levels_per_period_ = config.max_levels_per_period;

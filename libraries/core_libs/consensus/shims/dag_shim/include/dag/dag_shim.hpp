@@ -65,7 +65,7 @@ class Dag {
    * `node_addr` is accepted for C++ API compatibility but is not used by the Rust graph. Throws `std::invalid_argument`
    * when the genesis hash is zero and may throw if the bridge cannot allocate the Rust graph.
    */
-  explicit Dag(blk_hash_t const& dag_genesis_block_hash, addr_t node_addr);
+  explicit Dag(blk_hash_t const& dag_genesis_block_hash, [[maybe_unused]] addr_t node_addr);
   virtual ~Dag();
 
   /**
@@ -170,7 +170,7 @@ class PivotTree : public Dag {
   /**
    * Creates a Rust-backed pivot tree with the supplied DAG genesis hash.
    */
-  explicit PivotTree(blk_hash_t const& dag_genesis_block_hash, addr_t node_addr)
+  explicit PivotTree(blk_hash_t const& dag_genesis_block_hash, [[maybe_unused]] addr_t node_addr)
       : Dag(dag_genesis_block_hash, node_addr) {}
   virtual ~PivotTree() = default;
 

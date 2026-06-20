@@ -209,8 +209,7 @@ void VerifiedVotes::pruneLiveVotesToSnapshotLocked() {
   }
 }
 
-VerifiedVotes::VerifiedVotes(addr_t node_addr) : rust_verified_votes_(rustaxa::create_verified_votes_index()) {
-  (void)node_addr;
+VerifiedVotes::VerifiedVotes([[maybe_unused]] addr_t node_addr) : rust_verified_votes_(rustaxa::create_verified_votes_index()) {
   LOG_OBJECTS_CREATE("VERIFIED_VOTES");
 }
 

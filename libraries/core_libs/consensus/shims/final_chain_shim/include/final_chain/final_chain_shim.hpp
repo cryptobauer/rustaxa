@@ -22,7 +22,8 @@ class FinalChain {
   decltype(block_applying_emitter_)::Subscriber const& block_applying_ = block_applying_emitter_;
 
   ~FinalChain() = default;
-  FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullNodeConfig& config, const addr_t& node_addr);
+  FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullNodeConfig& config,
+             [[maybe_unused]] const addr_t& node_addr);
   FinalChain(const FinalChain&) = delete;
   FinalChain(FinalChain&&) = delete;
   FinalChain& operator=(const FinalChain&) = delete;

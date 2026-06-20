@@ -36,7 +36,7 @@ namespace taraxa {
  */
 class SortitionParamsManager {
  public:
-  SortitionParamsManager(const addr_t& node_addr, const FullNodeConfig& config, std::shared_ptr<DbStorage> db);
+  SortitionParamsManager([[maybe_unused]] const addr_t& node_addr, const FullNodeConfig& config, std::shared_ptr<DbStorage> db);
 
   /**
    * Returns current sortition parameters, or parameters adjusted with the last

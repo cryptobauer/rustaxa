@@ -104,13 +104,11 @@ rustaxa::PbftFinalizationLiveMutationReport makeSortitionFinalizationLiveReport(
 
 }  // namespace
 
-SortitionParamsManager::SortitionParamsManager(const addr_t& node_addr, const FullNodeConfig& config,
+SortitionParamsManager::SortitionParamsManager([[maybe_unused]] const addr_t& node_addr, const FullNodeConfig& config,
                                                std::shared_ptr<DbStorage> db)
     : kConfig(config),
       sortition_config_(config.genesis.sortition),
       batch_owner_(std::move(db)) {
-  (void)node_addr;
-
   rust_sortition_params_manager_ = rustaxa::create_sortition_params_manager_from_storage(
       to_rust_config(sortition_config_), batch_owner_->rustStorage());
   params_changes_ = from_rust_changes(rust_sortition_params_manager_.value()->sortition_params_changes());

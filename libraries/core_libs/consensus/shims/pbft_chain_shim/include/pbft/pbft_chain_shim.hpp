@@ -41,7 +41,7 @@ class PbftChain {
    *
    * If no persisted head exists, Rust initializes the legacy zero-head record through the native storage module.
    */
-  explicit PbftChain(addr_t node_addr, std::shared_ptr<DbStorage> db);
+  explicit PbftChain([[maybe_unused]] addr_t node_addr, std::shared_ptr<DbStorage> db);
   ~PbftChain();
 
   PbftChain(const PbftChain&) = delete;

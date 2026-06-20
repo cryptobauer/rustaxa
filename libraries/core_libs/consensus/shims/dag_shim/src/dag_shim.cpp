@@ -62,8 +62,7 @@ struct Dag::RustDagGraphHolder {
   rust::Box<rustaxa::BridgeDagGraph> graph;
 };
 
-Dag::Dag(blk_hash_t const& dag_genesis_block_hash, addr_t node_addr) {
-  (void)node_addr;
+Dag::Dag(blk_hash_t const& dag_genesis_block_hash, [[maybe_unused]] addr_t node_addr) {
   if (dag_genesis_block_hash.isZero()) {
     throw std::invalid_argument("Dag requires a nonzero genesis hash");
   }
