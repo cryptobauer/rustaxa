@@ -177,7 +177,9 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   auto dag_queries = rustaxa::create_dag_storage_queries(*storage);
   auto metadata_queries = rustaxa::create_metadata_storage_queries(*storage);
   auto pbft_queries = rustaxa::create_pbft_storage_queries(*storage);
+  auto final_chain_queries = rustaxa::create_final_chain_storage_queries(*storage);
   auto transaction_queries = rustaxa::create_transaction_storage_queries(*storage);
+  auto period_queries = rustaxa::create_period_storage_queries(*storage);
 
   // Baseline API coverage
   transcript.add("status_default_executed_blk",
@@ -252,8 +254,8 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   auto pbft_hash = h256Array(0x44);
   auto pbft_missing = h256Array(0x45);
   storage->save_pbft_block_period(pbft_hash, 99);
-  auto pbft_lookup = storage->get_period_from_pbft_hash(pbft_hash);
-  auto pbft_missing_lookup = storage->get_period_from_pbft_hash(pbft_missing);
+  auto pbft_lookup = period_queries->get_period_from_pbft_hash(pbft_hash);
+  auto pbft_missing_lookup = period_queries->get_period_from_pbft_hash(pbft_missing);
   transcript.add("pbft_period_lookup_found", toString(pbft_lookup.found));
   transcript.add("pbft_period_lookup_value", toString(pbft_lookup.period));
   transcript.add("pbft_period_lookup_missing", toString(!pbft_missing_lookup.found));
@@ -301,7 +303,7 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
 
   auto period_data_raw = std::vector<uint8_t>{0xC6, 0xC0, 0xC0, 0xC0, 0xE1, 0xC0, 0xC0};
   storage->save_period_data(33, toRustVec(period_data_raw));
-  transcript.add("period_data_raw_len", toString(storage->get_period_data_raw(33).size()));
+  transcript.add("period_data_raw_len", toString(period_queries->get_period_data_raw(33).size()));
 
   // Final-chain lookup/intercepted columns
   uint32_t const meta_key = 99;
@@ -319,13 +321,13 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
       meta_key, toRustVec(meta_value), block_number, block_hash, toRustVec(block_value), receipt_hash,
       toRustVec(receipt_value), blooms_chunk, toRustVec(blooms_value), 15, toRustVec(std::vector<uint8_t>{0xC0}));
 
-  auto meta_lookup = storage->get_final_chain_meta_value(meta_key);
-  auto block_lookup = storage->get_final_chain_block_header(block_number);
-  auto hash_lookup = storage->get_final_chain_block_hash_by_number(block_number);
-  auto number_lookup_raw = storage->get_final_chain_block_number_by_hash(block_hash);
-  auto receipt_lookup = storage->get_final_chain_receipt_by_trx_hash(receipt_hash);
-  auto blooms_lookup = storage->get_final_chain_log_blooms_chunk(blooms_chunk);
-  auto receipt_by_period_raw = storage->get_block_receipt(15);
+  auto meta_lookup = final_chain_queries->get_final_chain_meta_value(meta_key);
+  auto block_lookup = final_chain_queries->get_final_chain_block_header(block_number);
+  auto hash_lookup = final_chain_queries->get_final_chain_block_hash_by_number(block_number);
+  auto number_lookup_raw = final_chain_queries->get_final_chain_block_number_by_hash(block_hash);
+  auto receipt_lookup = final_chain_queries->get_final_chain_receipt_by_trx_hash(receipt_hash);
+  auto blooms_lookup = final_chain_queries->get_final_chain_log_blooms_chunk(blooms_chunk);
+  auto receipt_by_period_raw = period_queries->get_block_receipt(15);
 
   transcript.add("final_chain_meta_len", toString(meta_lookup.size()));
   transcript.add("final_chain_block_len", toString(block_lookup.size()));

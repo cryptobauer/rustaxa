@@ -70,6 +70,8 @@ DbStorage::DbStorage(fs::path const& path, uint32_t db_snapshot_each_n_pbft_bloc
     pbft_queries_ = rustaxa::create_pbft_storage_queries(*rust_storage_.value());
     pbft_vote_queries_ = rustaxa::create_pbft_vote_storage_queries(*rust_storage_.value());
     transaction_queries_ = rustaxa::create_transaction_storage_queries(*rust_storage_.value());
+    final_chain_queries_ = rustaxa::create_final_chain_storage_queries(*rust_storage_.value());
+    period_queries_ = rustaxa::create_period_storage_queries(*rust_storage_.value());
     kMajorVersion_ = static_cast<uint32_t>(getStatusField(StatusDbField::DbMajorVersion));
     auto const minor_version = static_cast<uint32_t>(getStatusField(StatusDbField::DbMinorVersion));
     if (kMajorVersion_ != 0 && kMajorVersion_ != TARAXA_DB_MAJOR_VERSION) {
@@ -216,7 +218,7 @@ std::string DbStorage::lookupFinalChainMeta(const Slice& key) const {
   }
 
   auto const meta_key = save_as<uint32_t>(key);
-  auto rust_value = rust_storage_.value()->get_final_chain_meta_value(meta_key);
+  auto rust_value = final_chain_queries_.value()->get_final_chain_meta_value(meta_key);
   return std::string(reinterpret_cast<const char*>(rust_value.data()), rust_value.size());
 }
 
@@ -226,7 +228,7 @@ std::string DbStorage::lookupFinalChainBlockByNumber(const Slice& key) const {
   }
 
   auto const block_number = save_as<uint64_t>(key);
-  auto rust_value = rust_storage_.value()->get_final_chain_block_header(block_number);
+  auto rust_value = final_chain_queries_.value()->get_final_chain_block_header(block_number);
   return std::string(reinterpret_cast<const char*>(rust_value.data()), rust_value.size());
 }
 
@@ -237,7 +239,7 @@ std::string DbStorage::lookupFinalChainBlockHashByNumber(const Slice& key) const
   }
 
   auto const block_number = save_as<uint64_t>(key);
-  auto rust_value = rust_storage_.value()->get_final_chain_block_hash_by_number(block_number);
+  auto rust_value = final_chain_queries_.value()->get_final_chain_block_hash_by_number(block_number);
   return std::string(reinterpret_cast<const char*>(rust_value.data()), rust_value.size());
 }
 
@@ -248,7 +250,7 @@ std::string DbStorage::lookupFinalChainBlockNumberByHash(const Slice& key) const
 
   std::array<uint8_t, 32> hash{};
   std::memcpy(hash.data(), key.data(), hash.size());
-  auto rust_value = rust_storage_.value()->get_final_chain_block_number_by_hash(hash);
+  auto rust_value = final_chain_queries_.value()->get_final_chain_block_number_by_hash(hash);
   return std::string(reinterpret_cast<const char*>(rust_value.data()), rust_value.size());
 }
 
@@ -259,7 +261,7 @@ std::string DbStorage::lookupFinalChainLogBloomsChunk(const Slice& key) const {
 
   std::array<uint8_t, 32> chunk_id{};
   std::memcpy(chunk_id.data(), key.data(), chunk_id.size());
-  auto rust_value = rust_storage_.value()->get_final_chain_log_blooms_chunk(chunk_id);
+  auto rust_value = final_chain_queries_.value()->get_final_chain_log_blooms_chunk(chunk_id);
   return std::string(reinterpret_cast<const char*>(rust_value.data()), rust_value.size());
 }
 
@@ -270,7 +272,7 @@ std::string DbStorage::lookupFinalChainReceiptByTrxHash(const Slice& key) const 
 
   std::array<uint8_t, 32> trx_hash{};
   std::memcpy(trx_hash.data(), key.data(), trx_hash.size());
-  auto rust_value = rust_storage_.value()->get_final_chain_receipt_by_trx_hash(trx_hash);
+  auto rust_value = final_chain_queries_.value()->get_final_chain_receipt_by_trx_hash(trx_hash);
   return std::string(reinterpret_cast<const char*>(rust_value.data()), rust_value.size());
 }
 
@@ -457,7 +459,7 @@ void DbStorage::savePeriodData(const PeriodData& period_data, Batch& write_batch
 }
 
 dev::bytes DbStorage::getPeriodDataRaw(PbftPeriod period) const {
-  auto period_data = rust_storage_.value()->get_period_data_raw(period);
+  auto period_data = period_queries_.value()->get_period_data_raw(period);
   return dev::bytes(period_data.begin(), period_data.end());
 }
 
@@ -493,9 +495,14 @@ blk_hash_t DbStorage::getPeriodBlockHash(PbftPeriod period) const {
 }
 
 SharedTransactions DbStorage::transactionsFromPeriodDataRlp(PbftPeriod period, const dev::RLP& period_data_rlp) const {
-  (void)period;
-  (void)period_data_rlp;
-  throw_unimplemented_shim_api("transactionsFromPeriodDataRlp");
+  SharedTransactions ret;
+  ret.reserve(period_data_rlp[TRANSACTIONS_POS_IN_PERIOD_DATA].size());
+  for (auto&& transaction_data : period_data_rlp[TRANSACTIONS_POS_IN_PERIOD_DATA]) {
+    ret.emplace_back(std::make_shared<Transaction>(std::move(transaction_data)));
+  }
+  auto period_system_transactions = getPeriodSystemTransactions(period);
+  ret.insert(ret.end(), period_system_transactions.begin(), period_system_transactions.end());
+  return ret;
 }
 
 std::vector<std::shared_ptr<PbftVote>> DbStorage::getPeriodCertVotes(PbftPeriod period) const {
@@ -626,8 +633,13 @@ std::optional<TransactionLocation> DbStorage::getTransactionLocation(trx_hash_t 
 }
 
 std::vector<bool> DbStorage::transactionsInDb(std::vector<trx_hash_t> const& trx_hashes) {
-  (void)trx_hashes;
-  throw_unimplemented_shim_api("transactionsInDb");
+  std::vector<bool> result(trx_hashes.size(), false);
+  for (size_t i = 0; i < trx_hashes.size(); ++i) {
+    auto h_arr = into_bytes_array(trx_hashes[i]);
+    result[i] = transaction_queries_.value()->transaction_in_db(h_arr) ||
+                transaction_queries_.value()->transaction_finalized(h_arr);
+  }
+  return result;
 }
 
 std::vector<bool> DbStorage::transactionsFinalized(std::vector<trx_hash_t> const& trx_hashes) {
@@ -701,9 +713,12 @@ uint64_t DbStorage::getTransactionCount(PbftPeriod period) const {
 }
 
 std::optional<TransactionReceipt> DbStorage::getTransactionReceipt(EthBlockNumber blk_n, uint64_t position) const {
-  (void)blk_n;
-  (void)position;
-  throw_unimplemented_shim_api("getTransactionReceipt");
+  const auto block_receipts = getBlockReceipts(blk_n);
+  if (!block_receipts || block_receipts->size() <= position) {
+    return {};
+  }
+
+  return (*block_receipts)[position];
 }
 
 SharedTransactions DbStorage::getFinalizedTransactions(std::vector<trx_hash_t> const& trx_hashes) const {
@@ -768,12 +783,20 @@ std::vector<trx_hash_t> DbStorage::getPeriodSystemTransactionsHashes(PbftPeriod 
 }
 
 SharedTransactions DbStorage::getPeriodSystemTransactions(PbftPeriod period) const {
-  (void)period;
-  throw_unimplemented_shim_api("getPeriodSystemTransactions");
+  auto trx_hashes = getPeriodSystemTransactionsHashes(period);
+  if (trx_hashes.empty()) {
+    return {};
+  }
+
+  SharedTransactions trxs;
+  trxs.reserve(trx_hashes.size());
+  std::transform(trx_hashes.begin(), trx_hashes.end(), std::back_inserter(trxs),
+                 [this](const auto& trx_hash) { return getSystemTransaction(trx_hash); });
+  return trxs;
 }
 
 SharedTransactionReceipts DbStorage::getBlockReceipts(PbftPeriod period) const {
-  auto rust_value = rust_storage_.value()->get_block_receipt(period);
+  auto rust_value = period_queries_.value()->get_block_receipt(period);
   if (rust_value.empty()) {
     return {};
   }
@@ -1003,7 +1026,7 @@ void DbStorage::addPbftBlockPeriodToBatch(PbftPeriod period, taraxa::blk_hash_t 
 
 std::pair<bool, PbftPeriod> DbStorage::getPeriodFromPbftHash(taraxa::blk_hash_t const& pbft_block_hash) {
   auto h_arr = into_bytes_array(pbft_block_hash);
-  auto res = rust_storage_.value()->get_period_from_pbft_hash(h_arr);
+  auto res = period_queries_.value()->get_period_from_pbft_hash(h_arr);
   return {res.found, static_cast<PbftPeriod>(res.period)};
 }
 
@@ -1047,8 +1070,16 @@ std::vector<std::shared_ptr<DagBlock>> DbStorage::getFinalizedDagBlockByPeriod(P
 
 std::pair<blk_hash_t, std::vector<std::shared_ptr<DagBlock>>>
 DbStorage::getLastPbftBlockHashAndFinalizedDagBlockByPeriod(PbftPeriod period) {
-  (void)period;
-  throw_unimplemented_shim_api("getLastPbftBlockHashAndFinalizedDagBlockByPeriod");
+  auto period_data = getPeriodDataRaw(period);
+  if (period_data.empty()) {
+    return {};
+  }
+
+  auto period_data_rlp = dev::RLP(period_data);
+  auto dag_blocks_data = period_data_rlp[DAG_BLOCKS_POS_IN_PERIOD_DATA];
+  auto blocks = decodeDAGBlocksBundleRlp(dag_blocks_data);
+  const auto last_pbft_block_hash = PbftBlock(period_data_rlp[PBFT_BLOCK_POS_IN_PERIOD_DATA]).getPrevBlockHash();
+  return {last_pbft_block_hash, std::move(blocks)};
 }
 
 std::optional<PbftPeriod> DbStorage::getProposalPeriodForDagLevel(uint64_t level) {
