@@ -3,6 +3,8 @@ use crate::ffi::BridgeDagStorageQueries;
 use crate::ffi::BridgeMetadataStorageQueries;
 use crate::ffi::BridgePbftStorageQueries;
 use crate::ffi::BridgePbftVoteStorageQueries;
+use crate::ffi::BridgeFinalChainStorageQueries;
+use crate::ffi::BridgePeriodStorageQueries;
 use crate::ffi::BridgeStorage;
 use crate::ffi::BridgeStorageBatch;
 use crate::ffi::BridgeTransactionStorageQueries;
@@ -183,6 +185,51 @@ pub fn create_transaction_storage_queries(
     storage: &BridgeStorage,
 ) -> Box<BridgeTransactionStorageQueries> {
     Box::new(BridgeTransactionStorageQueries {
+        storage: storage.0.clone(),
+    })
+}
+
+/// Creates a typed FinalChain lookup query handle from the shared Rust storage
+/// owner.
+///
+/// Inputs:
+/// - `storage`: generic bridge storage owner used only as a construction-time
+///   lifetime seed.
+///
+/// Outputs:
+/// - a read-only FinalChain lookup handle that owns a cloned Rust storage
+///   handle.
+///
+/// Invariants and edge behavior:
+/// - callers can resolve FinalChain compatibility rows without retaining broad
+///   `BridgeStorage` lookup methods.
+/// - the handle does not mutate storage.
+pub fn create_final_chain_storage_queries(
+    storage: &BridgeStorage,
+) -> Box<BridgeFinalChainStorageQueries> {
+    Box::new(BridgeFinalChainStorageQueries {
+        storage: storage.0.clone(),
+    })
+}
+
+/// Creates a typed period lookup query handle from the shared Rust storage owner.
+///
+/// Inputs:
+/// - `storage`: generic bridge storage owner used only as a construction-time
+///   lifetime seed.
+///
+/// Outputs:
+/// - a read-only period lookup query handle that owns a cloned Rust storage
+///   handle.
+///
+/// Invariants and edge behavior:
+/// - callers can resolve period rows for compatibility materialization without
+///   retaining broad `BridgeStorage` period read methods.
+/// - the handle does not mutate storage.
+pub fn create_period_storage_queries(
+    storage: &BridgeStorage,
+) -> Box<BridgePeriodStorageQueries> {
+    Box::new(BridgePeriodStorageQueries {
         storage: storage.0.clone(),
     })
 }
@@ -587,6 +634,133 @@ impl BridgeTransactionStorageQueries {
                 rustaxa_ffi::HashPeriod { hash: h, period }
             })
             .collect())
+    }
+
+    /// Returns the system transaction hash list for a finalized period.
+    ///
+    /// Inputs: finalized period. Output is the compatibility payload bytes, or
+    /// an empty vector when the lookup row is absent.
+    pub fn get_period_system_transactions_hashes(
+        &self,
+        period: u64,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        self.storage.transaction().period_system_hashes_rlp(period)
+    }
+
+    /// Batch-fetches transaction RLP payloads by hash from Rust storage.
+    ///
+    /// Inputs are canonical transaction hashes in caller-requested order. Outputs
+    /// preserve that order and mark whether a payload was found.
+    pub fn get_transaction_rlps_by_hashes(
+        &self,
+        hashes: Vec<rustaxa_ffi::DagTransactionHash>,
+    ) -> Result<Vec<rustaxa_ffi::DagTransactionRlpLookup>, anyhow::Error> {
+        transaction_rlp_lookups(
+            &self.storage,
+            hashes.into_iter().map(|hash| H256::from(hash.hash)).collect(),
+        )
+    }
+}
+
+impl BridgePeriodStorageQueries {
+    /// Returns raw `PeriodData` bytes for a finalized period.
+    pub fn get_period_data_raw(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
+        self.storage
+            .period()
+            .data_raw(period)
+            .map_err(|e| anyhow::anyhow!(e))
+    }
+
+    /// Maps a PBFT block hash to its period index.
+    pub fn get_period_from_pbft_hash(
+        &self,
+        hash: &[u8; 32],
+    ) -> Result<rustaxa_ffi::PeriodLookup, anyhow::Error> {
+        let lookup = self
+            .storage
+            .period()
+            .by_pbft_hash(H256::from(*hash))
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        match lookup {
+            Some(period) => Ok(rustaxa_ffi::PeriodLookup {
+                found: true,
+                period,
+            }),
+            None => Ok(rustaxa_ffi::PeriodLookup {
+                found: false,
+                period: 0,
+            }),
+        }
+    }
+
+    /// Returns raw finalized period receipts bytes.
+    pub fn get_block_receipt(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
+        self.storage
+            .period()
+            .receipt(period)
+            .map_err(|e| anyhow::anyhow!(e))
+    }
+}
+
+impl BridgeFinalChainStorageQueries {
+    pub fn get_final_chain_meta_value(&self, key: u32) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self.storage.final_chain().meta_value(key)?.unwrap_or_default())
+    }
+
+    pub fn get_final_chain_block_header(
+        &self,
+        block_number: u64,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .storage
+            .final_chain()
+            .block_header_raw(block_number)?
+            .unwrap_or_default())
+    }
+
+    pub fn get_final_chain_block_hash_by_number(
+        &self,
+        block_number: u64,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .storage
+            .final_chain()
+            .block_hash_by_number(block_number)?
+            .unwrap_or_default())
+    }
+
+    pub fn get_final_chain_block_number_by_hash(
+        &self,
+        hash: &[u8; 32],
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .storage
+            .final_chain()
+            .block_number_by_hash(H256::from(*hash))?
+            .unwrap_or_default())
+    }
+
+    pub fn get_final_chain_log_blooms_chunk(
+        &self,
+        chunk_id: &[u8; 32],
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .storage
+            .final_chain()
+            .log_blooms_chunk_raw(H256::from(*chunk_id))?
+            .unwrap_or_default())
+    }
+
+    pub fn get_final_chain_receipt_by_trx_hash(
+        &self,
+        trx_hash: &[u8; 32],
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        Ok(self
+            .storage
+            .final_chain()
+            .receipt_by_trx_hash(H256::from(*trx_hash))?
+            .unwrap_or_default())
     }
 }
 
@@ -1092,98 +1266,84 @@ impl BridgeStorage {
     }
 
     pub fn get_period_data_raw(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
-        self.0
-            .period()
-            .data_raw(period)
-            .map_err(|e| anyhow::anyhow!(e))
+        BridgePeriodStorageQueries {
+            storage: self.0.clone(),
+        }
+        .get_period_data_raw(period)
     }
 
     pub fn get_period_from_pbft_hash(
         &self,
         hash: &[u8; 32],
     ) -> Result<rustaxa_ffi::PeriodLookup, anyhow::Error> {
-        let lookup = self
-            .0
-            .period()
-            .by_pbft_hash(H256::from(*hash))
-            .map_err(|e| anyhow::anyhow!(e))?;
-
-        match lookup {
-            Some(period) => Ok(rustaxa_ffi::PeriodLookup {
-                found: true,
-                period,
-            }),
-            None => Ok(rustaxa_ffi::PeriodLookup {
-                found: false,
-                period: 0,
-            }),
+        BridgePeriodStorageQueries {
+            storage: self.0.clone(),
         }
+        .get_period_from_pbft_hash(hash)
     }
 
     pub fn get_block_receipt(&self, period: u64) -> Result<Vec<u8>, anyhow::Error> {
-        self.0
-            .period()
-            .receipt(period)
-            .map_err(|e| anyhow::anyhow!(e))
+        BridgePeriodStorageQueries {
+            storage: self.0.clone(),
+        }
+        .get_block_receipt(period)
     }
 
     pub fn get_final_chain_meta_value(&self, key: u32) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self.0.final_chain().meta_value(key)?.unwrap_or_default())
+        BridgeFinalChainStorageQueries {
+            storage: self.0.clone(),
+        }
+        .get_final_chain_meta_value(key)
     }
 
     pub fn get_final_chain_block_header(
         &self,
         block_number: u64,
     ) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self
-            .0
-            .final_chain()
-            .block_header_raw(block_number)?
-            .unwrap_or_default())
+        BridgeFinalChainStorageQueries {
+            storage: self.0.clone(),
+        }
+        .get_final_chain_block_header(block_number)
     }
 
     pub fn get_final_chain_block_hash_by_number(
         &self,
         block_number: u64,
     ) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self
-            .0
-            .final_chain()
-            .block_hash_by_number(block_number)?
-            .unwrap_or_default())
+        BridgeFinalChainStorageQueries {
+            storage: self.0.clone(),
+        }
+        .get_final_chain_block_hash_by_number(block_number)
     }
 
     pub fn get_final_chain_block_number_by_hash(
         &self,
         hash: &[u8; 32],
     ) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self
-            .0
-            .final_chain()
-            .block_number_by_hash(H256::from(*hash))?
-            .unwrap_or_default())
+        BridgeFinalChainStorageQueries {
+            storage: self.0.clone(),
+        }
+        .get_final_chain_block_number_by_hash(hash)
     }
 
     pub fn get_final_chain_log_blooms_chunk(
         &self,
         chunk_id: &[u8; 32],
     ) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self
-            .0
-            .final_chain()
-            .log_blooms_chunk_raw(H256::from(*chunk_id))?
-            .unwrap_or_default())
+        BridgeFinalChainStorageQueries {
+            storage: self.0.clone(),
+        }
+        .get_final_chain_log_blooms_chunk(chunk_id)
     }
 
     pub fn get_final_chain_receipt_by_trx_hash(
         &self,
         trx_hash: &[u8; 32],
     ) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self
-            .0
-            .final_chain()
-            .receipt_by_trx_hash(H256::from(*trx_hash))?
-            .unwrap_or_default())
+        BridgeFinalChainStorageQueries {
+            storage: self.0.clone(),
+        }
+        .get_final_chain_receipt_by_trx_hash(trx_hash)
     }
 
     /// Seeds the exact FinalChain lookup rows required by storage conformance.
@@ -1442,20 +1602,20 @@ impl BridgeStorage {
         &self,
         hashes: Vec<rustaxa_ffi::DagTransactionHash>,
     ) -> Result<Vec<rustaxa_ffi::DagTransactionRlpLookup>, anyhow::Error> {
-        transaction_rlp_lookups(
-            &self.0,
-            hashes
-                .into_iter()
-                .map(|hash| H256::from(hash.hash))
-                .collect(),
-        )
+        BridgeTransactionStorageQueries {
+            storage: self.0.clone(),
+        }
+        .get_transaction_rlps_by_hashes(hashes)
     }
 
     pub fn get_period_system_transactions_hashes(
         &self,
         period: u64,
     ) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.transaction().period_system_hashes_rlp(period)
+        BridgeTransactionStorageQueries {
+            storage: self.0.clone(),
+        }
+        .get_period_system_transactions_hashes(period)
     }
 
     pub fn save_transaction(&self, hash: &[u8; 32], trx_rlp: Vec<u8>) -> Result<(), anyhow::Error> {

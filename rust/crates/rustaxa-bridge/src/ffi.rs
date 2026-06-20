@@ -95,6 +95,22 @@ pub struct BridgeTransactionStorageQueries {
     pub storage: Arc<Storage>,
 }
 
+/// Typed FinalChain lookup query handle for C++ compatibility materializers.
+///
+/// This wrapper keeps FinalChain read queries grouped under the FinalChain storage
+/// boundary instead of exposing those reads as generic `BridgeStorage` methods.
+pub struct BridgeFinalChainStorageQueries {
+    pub storage: Arc<Storage>,
+}
+
+/// Typed period query handle for C++ compatibility materializers.
+///
+/// This wrapper keeps period rows grouped under period storage instead of
+/// exposing those reads as generic `BridgeStorage` methods.
+pub struct BridgePeriodStorageQueries {
+    pub storage: Arc<Storage>,
+}
+
 /// Rust-owned storage shim batch used to preserve the legacy C++ `Batch&` API
 /// while keeping the live write batch inside `rustaxa-storage`.
 ///
@@ -6148,6 +6164,8 @@ pub mod rustaxa_ffi {
         type BridgePbftStorageQueries;
         type BridgePbftVoteStorageQueries;
         type BridgeTransactionStorageQueries;
+        type BridgeFinalChainStorageQueries;
+        type BridgePeriodStorageQueries;
         type BridgeStorageBatch;
 
         pub fn create_storage(path: &str) -> Result<Box<BridgeStorage>>;
@@ -6164,6 +6182,12 @@ pub mod rustaxa_ffi {
         pub fn create_transaction_storage_queries(
             storage: &BridgeStorage,
         ) -> Box<BridgeTransactionStorageQueries>;
+        pub fn create_final_chain_storage_queries(
+            storage: &BridgeStorage,
+        ) -> Box<BridgeFinalChainStorageQueries>;
+        pub fn create_period_storage_queries(
+            storage: &BridgeStorage,
+        ) -> Box<BridgePeriodStorageQueries>;
         pub fn create_storage_shim_batch(storage: &BridgeStorage) -> Box<BridgeStorageBatch>;
         pub fn storage_shim_save_status_field(
             batch: &mut BridgeStorageBatch,
@@ -6347,6 +6371,18 @@ pub mod rustaxa_ffi {
             hash: &[u8; 32],
         ) -> Result<PeriodLookup>;
         pub fn get_block_receipt(self: &BridgeStorage, period: u64) -> Result<Vec<u8>>;
+        /// Typed period reads (preferred for typed query surfaces).
+        pub fn get_period_data_raw(
+            self: &BridgePeriodStorageQueries,
+            period: u64,
+        ) -> Result<Vec<u8>>;
+        /// Typed period-by-PBFT-block hash lookup.
+        pub fn get_period_from_pbft_hash(
+            self: &BridgePeriodStorageQueries,
+            hash: &[u8; 32],
+        ) -> Result<PeriodLookup>;
+        /// Typed by-period receipts lookup.
+        pub fn get_block_receipt(self: &BridgePeriodStorageQueries, period: u64) -> Result<Vec<u8>>;
         pub fn get_final_chain_meta_value(self: &BridgeStorage, key: u32) -> Result<Vec<u8>>;
         pub fn get_final_chain_block_header(
             self: &BridgeStorage,
@@ -6513,15 +6549,50 @@ pub mod rustaxa_ffi {
         ) -> Result<Vec<TxRlp>>;
         /// Batch-fetches transaction RLP payloads by hash from Rust storage.
         pub fn get_transaction_rlps_by_hashes(
-            self: &BridgeStorage,
+            self: &BridgeTransactionStorageQueries,
             hashes: Vec<DagTransactionHash>,
         ) -> Result<Vec<DagTransactionRlpLookup>>;
         pub fn get_all_transaction_period(
             self: &BridgeTransactionStorageQueries,
         ) -> Result<Vec<HashPeriod>>;
         pub fn get_period_system_transactions_hashes(
+            self: &BridgeTransactionStorageQueries,
+            period: u64,
+        ) -> Result<Vec<u8>>;
+        /// Backward-compatible alias; prefer `BridgeTransactionStorageQueries` for
+        /// future migration away from generic `BridgeStorage` storage APIs.
+        pub fn get_transaction_rlps_by_hashes(
+            self: &BridgeStorage,
+            hashes: Vec<DagTransactionHash>,
+        ) -> Result<Vec<DagTransactionRlpLookup>>;
+        /// Backward-compatible alias; prefer `BridgeTransactionStorageQueries` for
+        /// future migration away from generic `BridgeStorage` storage APIs.
+        pub fn get_period_system_transactions_hashes(
             self: &BridgeStorage,
             period: u64,
+        ) -> Result<Vec<u8>>;
+
+        pub fn get_final_chain_meta_value(self: &BridgeFinalChainStorageQueries, key: u32)
+            -> Result<Vec<u8>>;
+        pub fn get_final_chain_block_header(
+            self: &BridgeFinalChainStorageQueries,
+            block_number: u64,
+        ) -> Result<Vec<u8>>;
+        pub fn get_final_chain_block_hash_by_number(
+            self: &BridgeFinalChainStorageQueries,
+            block_number: u64,
+        ) -> Result<Vec<u8>>;
+        pub fn get_final_chain_block_number_by_hash(
+            self: &BridgeFinalChainStorageQueries,
+            hash: &[u8; 32],
+        ) -> Result<Vec<u8>>;
+        pub fn get_final_chain_log_blooms_chunk(
+            self: &BridgeFinalChainStorageQueries,
+            chunk_id: &[u8; 32],
+        ) -> Result<Vec<u8>>;
+        pub fn get_final_chain_receipt_by_trx_hash(
+            self: &BridgeFinalChainStorageQueries,
+            trx_hash: &[u8; 32],
         ) -> Result<Vec<u8>>;
 
         // Transaction envelope

@@ -43,6 +43,10 @@ rust::Box<BridgeTransactionStorageQueries> transactionQueries(const rust::Box<Br
   return create_transaction_storage_queries(*storage);
 }
 
+rust::Box<BridgePeriodStorageQueries> periodQueries(const rust::Box<BridgeStorage>& storage) {
+  return create_period_storage_queries(*storage);
+}
+
 std::vector<std::array<uint8_t, 32>> hashes(const rust::Vec<PbftSyncTransactionHash>& input) {
   std::vector<std::array<uint8_t, 32>> out;
   out.reserve(input.size());
@@ -1105,6 +1109,7 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyWritesPrimaryBatch) {
   auto storage = create_storage(test_dir.string());
   storage->save_dag_block(h256(2), 1, 0, bytes({0xda}));
   storage->save_transaction(h256(4), bytes({0xd0}));
+  auto period_queries = periodQueries(storage);
 
   const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
   const auto result = apply_pbft_finalization_storage_writes(
@@ -1121,7 +1126,7 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyWritesPrimaryBatch) {
   const auto pbft_head = pbft_queries->get_pbft_head(h256(8));
   EXPECT_EQ(std::vector<uint8_t>(pbft_head.begin(), pbft_head.end()),
             (std::vector<uint8_t>{'{', '"', 'h', 'e', 'a', 'd', '"', ':', 't', 'r', 'u', 'e', '}'}));
-  const auto period_data = storage->get_period_data_raw(101);
+  const auto period_data = period_queries->get_period_data_raw(101);
   EXPECT_EQ(std::vector<uint8_t>(period_data.begin(), period_data.end()), (std::vector<uint8_t>{0xc0}));
   auto transaction_queries = transactionQueries(storage);
   EXPECT_TRUE(transaction_queries->get_transaction(h256(4)).empty());
@@ -1201,6 +1206,7 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyCommitsOwnedBatch) {
   storage->save_dag_block(h256(2), 1, 0, bytes({0xda}));
   storage->save_transaction(h256(4), bytes({0xd0}));
   storage->save_extra_reward_vote(h256(12), bytes({0xee}));
+  auto period_queries = periodQueries(storage);
 
   const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
   rust::Vec<PbftFinalizationStorageWriteStage> stages;
@@ -1216,7 +1222,7 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyCommitsOwnedBatch) {
   EXPECT_TRUE(result.wrote_period_data);
   EXPECT_EQ(result.dag_index_writes, 2);
   EXPECT_EQ(result.transaction_location_writes, 1);
-  const auto period_data = storage->get_period_data_raw(101);
+  const auto period_data = period_queries->get_period_data_raw(101);
   EXPECT_EQ(std::vector<uint8_t>(period_data.begin(), period_data.end()), (std::vector<uint8_t>{0xc0}));
   EXPECT_TRUE(transactionQueries(storage)->get_transaction(h256(4)).empty());
   const auto reward_votes = voteQueries(storage)->get_all_two_t_plus_one_votes();
