@@ -261,7 +261,7 @@ Validation:
 
 ## Slice 4: Query and Materialization API Split
 
-Status: in progress.
+Status: complete.
 
 Landed sub-slices:
 
@@ -301,14 +301,19 @@ Landed sub-slices:
   `BridgePeriodStorageQueries`; active Rust-mode paths and conformance now use typed query handles. Slice 5 completed this family by
   removing the matching generic `BridgeStorage` declarations and methods.
 
-Next target:
+Completed:
 
-- Confirm Slice 5 scope closure by pruning obsolete `storage_shim.hpp/cpp` entries. Keep RPC/network materialization at
-  the C++ boundary and avoid broader object ownership changes in this cleanup slice. Remove only declarations/methods that
-  are no longer called after the typed-query migration and explicitly document any temporary compatibility debt.
+- Broad Rust-mode query reads are now routed through typed query handles for `BridgeDagStorageQueries`,
+  `BridgeMetadataStorageQueries`, `BridgePbftStorageQueries`, `BridgePbftVoteStorageQueries`,
+  `BridgeTransactionStorageQueries`, `BridgeFinalChainStorageQueries`, and `BridgePeriodStorageQueries`.
+- Remaining storage-shim methods are retained only where needed for app lifecycle/query/network compatibility and are not
+  broad `BridgeStorage` reads.
 
-Split the broad `BridgeStorage` query surface into typed read-only Rust query APIs for active Rust-mode callers, and
-delete unused broad storage-shim methods.
+Scope (ongoing maintenance):
+
+- Keep RPC/network/materialization compatibility at the C++ boundary.
+- Remove only obsolete declarations/methods in follow-on cleanup when they are no longer called after typed-query migration.
+- Explicitly document temporary compatibility debt at remaining call sites.
 
 Scope:
 
@@ -335,6 +340,8 @@ Validation:
 ## Slice 5: Storage Shim Header and FFI Surface Pruning
 
 After runtime, batch, and query callers have moved, delete unused declarations and CXX FFI entries.
+
+Status: complete.
 
 Scope:
 
