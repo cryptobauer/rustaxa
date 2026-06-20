@@ -149,6 +149,8 @@ Landed:
   mirror as planner authority.
 - Deadline calculation reads the Rust runtime snapshot lambda when available; the C++ lambda field remains a temporary
   executor/public compatibility cache.
+- Step persistence no longer applies local C++ exponential lambda backoff; lambda timing remains selected by Rust
+  transition/runtime snapshots and mirrored back to C++ only for executor compatibility.
 
 Scope:
 

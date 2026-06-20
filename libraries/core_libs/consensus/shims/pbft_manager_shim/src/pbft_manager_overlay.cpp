@@ -1243,48 +1243,6 @@ void PbftManager::setPbftStep(PbftStep pbft_step) {
   const auto snapshot = rustaxa::pbft_manager_runtime_apply_cursor_field(
       *pbft_manager_runtime_.value(), static_cast<uint8_t>(PbftMgrField::Step), static_cast<uint32_t>(pbft_step));
   step_ = static_cast<PbftStep>(snapshot.step);
-
-  // Increase lambda only for odd steps (second finish steps) after node reached kMaxSteps steps
-  if (step_ >= kMaxSteps && step_ % 2) {
-    const auto kExponentialDefaultLambda = std::chrono::milliseconds(kGenesisConfig.pbft.lambda_ms);
-    const auto [round, period] = getPbftRoundAndPeriod();
-    const auto network_next_voting_step = vote_mgr_->getNetworkTplusOneNextVotingStep(period, round);
-
-    // Once node starts exponentially backing off lambda, use kExponentialDefaultLambda as base number
-    if (step_ == kMaxSteps) {
-      current_round_lambda_ = kExponentialDefaultLambda;
-    }
-
-    // Node is still >= kMaxSteps steps behind the rest (at least 1/3) of the network - keep lambda at the standard
-    // value so node can catch up with the rest of the nodes
-
-    // To get withing 1 round with the rest of the network - node cannot start exponentially backing off its lambda
-    // exactly when it is kMaxSteps behind the network as it would reach kMaxExponentialLambda lambda time before
-    // catching up. If we delay triggering exponential backoff by 4 steps, node should get within 1 round with the
-    // network.
-    // !!! Important: This is true only for values kExponentialDefaultLambda = 1500ms and kMaxExponentialLambda = 60000
-    // ms
-    if (network_next_voting_step > step_ && network_next_voting_step - step_ >= kMaxSteps - 4 /* hardcoded delay */) {
-      // Reset it only if it was already increased compared to default value
-      if (current_round_lambda_ != kExponentialDefaultLambda) {
-        current_round_lambda_ = kExponentialDefaultLambda;
-        LOG(log_nf_) << "Node is " << network_next_voting_step - step_
-                     << " steps behind the rest of the network. Reset lambda to the default value "
-                     << current_round_lambda_.count() << " [ms]";
-      }
-    } else if (current_round_lambda_ < kMaxExponentialLambda) {
-      // Node is < kMaxSteps steps behind the rest (at least 1/3) of the network - start exponentially backing off
-      // lambda until it reaches kMaxExponentialLambda
-      // Note: We calculate the lambda for a step independently of prior steps in case missed earlier steps.
-      current_round_lambda_ *= 2;
-      if (current_round_lambda_ > kMaxExponentialLambda) {
-        current_round_lambda_ = kMaxExponentialLambda;
-      }
-
-      LOG(log_nf_) << "No round progress - exponentially backing off lambda to " << current_round_lambda_.count()
-                   << " [ms] in step " << step_;
-    }
-  }
 }
 
 bool PbftManager::tryPushCertVotesBlock() {
