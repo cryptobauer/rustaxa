@@ -100,6 +100,21 @@ Validation:
 
 Goal: make Rust own PBFT manager restart state and replay classification without C++ compatibility reads.
 
+Status: complete for the bounded startup/restore ownership pass. Remaining C++ `PeriodData` materialization is execution
+compatibility for FinalChain replay and recent-transaction hydration and is tracked by later finalization, sidecar, and
+sync slices rather than startup decision ownership.
+
+Landed:
+
+- Startup replay range selection is planned by Rust from compact height facts.
+- Startup finalized-period replay loads canonical period data, finalized DAG hashes, and dynamic-lambda facts through the
+  long-lived PBFT manager runtime storage handle.
+- PBFT scalar, status, and cert-voted metadata restore is seeded from the Rust runtime snapshot.
+- Proposed-block startup restore no longer falls back to `DbStorage::getProposedPbftBlocks()` or startup-time C++
+  `PbftBlock` materialization; it hydrates the Rust-owned proposed-block index from Rust storage.
+- Remaining C++ materialization during startup is limited to executor/public compatibility boundaries: FinalChain replay,
+  vote validation side effects, transaction-manager recent-finalized hydration, and cert-voted block sidecar recovery.
+
 Scope:
 
 - Move proposed-block startup restore, cert-voted metadata restore, period-data queue metadata restore, and bounded

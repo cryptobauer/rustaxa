@@ -1537,15 +1537,11 @@ void PbftManager::initialState() {
   const auto current_pbft_round = round_.load();
   const auto current_pbft_step = step_;
 
-  // Load all proposed block from db to memory
-#ifdef RUSTAXA_ENABLE_PROPOSED_BLOCKS
+  // Load proposed-block startup metadata through the Rust-owned proposed-block
+  // index. This preserves canonical block bytes for later network/public
+  // materialization without scanning `DbStorage` into live C++ `PbftBlock`
+  // objects during PBFT manager startup.
   proposed_blocks_.restoreFromStorage();
-#else
-  // RUSTAXA_PBFT_LEGACY_ONLY: Rust mode restores proposed blocks through ProposedBlocks::restoreFromStorage().
-  for (const auto &block : db_->getProposedPbftBlocks()) {
-    proposed_blocks_.pushProposedPbftBlock(block, false);
-  }
-#endif
 
   // TODO[2840]: remove this check if case nodes do not log the err messages after restart
   //  if (const auto &err_msg = proposed_blocks_.checkOldBlocksPresence(current_pbft_period); err_msg.has_value()) {
