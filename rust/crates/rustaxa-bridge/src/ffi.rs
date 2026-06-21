@@ -5486,6 +5486,12 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionManagerRuntime,
             input: TransactionManagerSidecarInsertInput,
         ) -> Result<()>;
+        /// Inserts payloads and moves them into recently-finalized sidecar state in one Rust command.
+        pub fn transaction_manager_runtime_initialize_recently_finalized_payloads(
+            self: &mut BridgeTransactionManagerRuntime,
+            period: u64,
+            payloads: Vec<TransactionManagerSidecarInsertInput>,
+        ) -> Result<()>;
         pub fn transaction_manager_runtime_contains_non_finalized(
             self: &BridgeTransactionManagerRuntime,
             hash: &[u8; 32],

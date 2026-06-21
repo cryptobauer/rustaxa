@@ -2207,6 +2207,30 @@ impl BridgeTransactionManagerRuntime {
             .context("TM_RUNTIME_INSERT_NON_FINALIZED")
     }
 
+    /// Inserts finalized payloads and transitions them to recently-finalized sidecar state.
+    ///
+    /// C++ supplies only canonical hash/RLP payload facts extracted at the
+    /// compatibility edge. Rust performs the full sidecar mutation sequence so
+    /// finalized-sidecar initialization is not orchestrated by repeated C++
+    /// calls.
+    pub fn transaction_manager_runtime_initialize_recently_finalized_payloads(
+        &mut self,
+        period: u64,
+        payloads: Vec<TransactionManagerSidecarInsertInput>,
+    ) -> Result<()> {
+        let mut hashes = Vec::with_capacity(payloads.len());
+        for input in payloads {
+            let hash = H256::from(input.hash);
+            self.sidecar
+                .insert_non_finalized(hash, input.trx_rlp)
+                .context("TM_RUNTIME_RECENT_FINALIZED_INIT_INSERT")?;
+            hashes.push(hash);
+        }
+        self.sidecar
+            .apply_finalized_transition(period, hashes)
+            .context("TM_RUNTIME_RECENT_FINALIZED_INIT_TRANSITION")
+    }
+
     /// True when hash exists in non-finalized sidecar state.
     pub fn transaction_manager_runtime_contains_non_finalized(&self, hash: &[u8; 32]) -> bool {
         self.sidecar.contains_non_finalized(H256::from(*hash))
@@ -3338,23 +3362,14 @@ mod tests {
             )
             .expect("non-finalized sidecar insert should seed");
         runtime
-            .transaction_manager_runtime_insert_non_finalized(
-                TransactionManagerSidecarInsertInput {
+            .transaction_manager_runtime_initialize_recently_finalized_payloads(
+                10,
+                vec![TransactionManagerSidecarInsertInput {
                     hash: [3u8; 32],
                     trx_rlp: vec![0x33],
-                },
+                }],
             )
-            .expect("recently-finalized sidecar seed should insert");
-        runtime
-            .transaction_manager_runtime_apply_finalized_transition(
-                TransactionManagerSidecarTransitionInput {
-                    period: 10,
-                    hashes: vec![crate::ffi::rustaxa_ffi::TransactionManagerSidecarHash {
-                        hash: [3u8; 32],
-                    }],
-                },
-            )
-            .expect("sidecar finalized transition should move source");
+            .expect("recently-finalized payload initialization should move source");
 
         storage
             .save_transaction(&[4u8; 32], vec![0x44])

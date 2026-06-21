@@ -1193,20 +1193,17 @@ class TransactionManagerRustShimAccess {
           "RUST_TX_MANAGER_RECENT_SIDECAR_INIT_FAILED: finalized transaction payload lengths do not match");
     }
     std::unique_lock transactions_lock(manager.transactions_mutex_);
+    rust::Vec<rustaxa::TransactionManagerSidecarInsertInput> payloads;
+    payloads.reserve(transaction_hashes.size());
     for (size_t idx = 0; idx < transaction_hashes.size(); ++idx) {
       const auto envelope = inspectRegularTransactionPayload(transaction_hashes[idx], transaction_rlps[idx],
                                                              "RUST_TX_MANAGER_RECENT_SIDECAR_INIT_ENVELOPE_FAILED");
-      try {
-        manager.runtime_->transaction_manager_runtime_insert_non_finalized(toSidecarPayload(envelope));
-        rustaxa::TransactionManagerSidecarTransitionInput transition;
-        transition.period = period;
-        rustaxa::TransactionManagerSidecarHash hash;
-        hash.hash = envelope.hash;
-        transition.hashes.push_back(std::move(hash));
-        manager.runtime_->transaction_manager_runtime_apply_finalized_transition(std::move(transition));
-      } catch (const std::exception& e) {
-        throw DbException(std::string("RUST_TX_MANAGER_RECENT_SIDECAR_INIT_FAILED: ") + e.what());
-      }
+      payloads.push_back(toSidecarPayload(envelope));
+    }
+    try {
+      manager.runtime_->transaction_manager_runtime_initialize_recently_finalized_payloads(period, std::move(payloads));
+    } catch (const std::exception& e) {
+      throw DbException(std::string("RUST_TX_MANAGER_RECENT_SIDECAR_INIT_FAILED: ") + e.what());
     }
   }
 
