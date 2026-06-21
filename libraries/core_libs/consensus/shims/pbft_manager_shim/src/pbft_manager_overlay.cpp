@@ -2535,20 +2535,13 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::generatePbftBlock(
     const std::optional<PbftBlockExtraData> &extra_data, const std::vector<WalletConfig> &eligible_wallets) {
   // Reward votes should only include those reward votes with the same round as the round last pbft block was pushed
   // into chain
-  auto reward_votes = vote_mgr_->getRewardVotes();
-  if (propose_period > 1) [[likely]] {
-    assert(!reward_votes.empty());
-    if (reward_votes[0]->getPeriod() != propose_period - 1) {
-      LOG(log_er_) << "Reward vote period(" << reward_votes[0]->getPeriod() << ") != propose_period - 1("
-                   << propose_period - 1 << ")";
-      assert(false);
-      return {};
-    }
+  auto reward_vote_payload = vote_mgr_->proposalRewardVotesForPeriod(propose_period);
+  if (!reward_vote_payload.valid) {
+    LOG(log_er_) << "Unable to collect proposal reward votes for period " << propose_period << ": "
+                 << reward_vote_payload.validation_error;
+    assert(false);
+    return {};
   }
-
-  std::vector<vote_hash_t> reward_votes_hashes;
-  std::transform(reward_votes.begin(), reward_votes.end(), std::back_inserter(reward_votes_hashes),
-                 [](const auto &v) { return v->getHash(); });
 
   try {
     ProposedBlocks propose_blocks{nullptr};
@@ -2556,7 +2549,8 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::generatePbftBlock(
 
     for (const auto &wallet : eligible_wallets) {
       auto block = std::make_shared<PbftBlock>(prev_blk_hash, anchor_hash, order_hash, final_chain_hash, propose_period,
-                                               wallet.node_addr, wallet.node_secret, reward_votes_hashes, extra_data);
+                                               wallet.node_addr, wallet.node_secret,
+                                               reward_vote_payload.reward_vote_hashes, extra_data);
 
       const auto propose_round = getPbftRound();
       const auto propose_step = getPbftStep();
@@ -2599,7 +2593,8 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::generatePbftBlock(
 
     proposed_blocks_.pushProposedPbftBlock(leader_block_data->first);
 
-    return PbftManager::ProposedBlockData{std::move(leader_block_data->first), std::move(reward_votes),
+    return PbftManager::ProposedBlockData{std::move(leader_block_data->first),
+                                          std::move(reward_vote_payload.reward_votes),
                                           std::move(leader_block_data->second)};
   } catch (const std::exception &e) {
     LOG(log_er_) << "Block for period " << propose_period << " could not be proposed " << e.what();

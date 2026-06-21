@@ -526,6 +526,9 @@ Landed:
 - Reward-vote validation in PBFT manager proposal, block-validation, cert-voted-block push, and sync paths now uses
   semantic VoteManager validate/collect helpers. The Rust-backed reward-vote selector remains authoritative, while
   detailed status/error inspection is confined to VoteManager instead of each PBFT manager branch.
+- Local PBFT block proposal now asks VoteManager for a validated reward-vote payload and compact reward-vote hashes.
+  PBFT manager no longer inspects the reward-vote sidecar period or derives reward-vote hashes before constructing a
+  candidate PBFT block.
 - PBFT manager state-action fact construction no longer queries individual VoteManager `2t+1` next/soft-voted block
   sidecar families directly. It asks VoteManager for compact Rust-backed state-action vote facts and forwards only
   booleans and hashes into the Rust state-action planner.

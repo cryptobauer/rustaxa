@@ -409,6 +409,33 @@ class VoteManager : public VoteManagerOld {
       PbftPeriod block_period, const blk_hash_t& block_hash, const blk_hash_t& prev_block_hash,
       const std::vector<vote_hash_t>& reward_vote_hashes);
   /**
+   * Validated reward-vote payloads for local PBFT block proposal.
+   *
+   * Purpose:
+   * - Keeps PBFT manager from inspecting reward-vote sidecars only to decide
+   *   whether a proposal can include them and which hashes should enter the
+   *   PBFT block constructor.
+   *
+   * Outputs:
+   * - `valid == true` when the payload is acceptable for `propose_period`.
+   * - `reward_votes` are temporary executor/public payloads preserved for the
+   *   proposed-block return value and network egress.
+   * - `reward_vote_hashes` are compact facts PBFT manager passes into
+   *   `PbftBlock` construction.
+   *
+   * Edge behavior:
+   * - Period 1 accepts an empty reward-vote payload.
+   * - Later periods require at least one reward vote whose period is
+   *   `propose_period - 1`, matching the legacy proposal precondition.
+   */
+  struct ProposalRewardVotes {
+    bool valid = false;
+    std::string validation_error;
+    std::vector<std::shared_ptr<PbftVote>> reward_votes;
+    std::vector<vote_hash_t> reward_vote_hashes;
+  };
+  ProposalRewardVotes proposalRewardVotesForPeriod(PbftPeriod propose_period);
+  /**
    * Returns reward votes selected from the shim's live verified-vote sidecar.
    *
    * Inputs:

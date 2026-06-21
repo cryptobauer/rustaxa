@@ -1123,6 +1123,40 @@ std::vector<std::shared_ptr<PbftVote>> VoteManager::getRewardVotes() {
   return reward_votes;
 }
 
+VoteManager::ProposalRewardVotes VoteManager::proposalRewardVotesForPeriod(PbftPeriod propose_period) {
+  ProposalRewardVotes result;
+  result.reward_votes = getRewardVotes();
+  result.reward_vote_hashes.reserve(result.reward_votes.size());
+  for (const auto& vote : result.reward_votes) {
+    if (!vote) {
+      result.validation_error = "reward-vote payload contains a null vote";
+      return result;
+    }
+    result.reward_vote_hashes.push_back(vote->getHash());
+  }
+
+  if (propose_period <= 1) {
+    result.valid = true;
+    return result;
+  }
+
+  if (result.reward_votes.empty()) {
+    result.validation_error = "missing reward votes for non-genesis proposal";
+    return result;
+  }
+
+  const auto reward_vote_period = result.reward_votes.front()->getPeriod();
+  if (reward_vote_period != propose_period - 1) {
+    std::stringstream err;
+    err << "reward vote period(" << reward_vote_period << ") != propose_period - 1(" << propose_period - 1 << ")";
+    result.validation_error = err.str();
+    return result;
+  }
+
+  result.valid = true;
+  return result;
+}
+
 PbftPeriod VoteManager::getRewardVotesPbftBlockPeriod() {
   std::shared_lock lock(reward_votes_info_mutex_);
   return reward_votes_period_;
