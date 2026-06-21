@@ -967,7 +967,7 @@ class TransactionManagerRustShimAccess {
     return false;
   }
 
-  static bool verifyTransactionsNotFinalized(
+  static rustaxa::TransactionManagerVerifyNotFinalizedOutcome verifyTransactionsNotFinalizedDetailed(
       const TransactionManager& manager,
       rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact>&& facts) {
     if (!manager.final_chain_) {
@@ -989,25 +989,29 @@ class TransactionManagerRustShimAccess {
       }
     }();
 
-    if (!outcome.is_finalized) {
-      return true;
-    }
+    if (outcome.is_finalized) {
+      if (outcome.input_index >= expected_hashes.size()) {
+        throw DbException("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: Rust returned an out-of-range transaction index");
+      }
 
-    if (outcome.input_index >= expected_hashes.size()) {
-      throw DbException("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: Rust returned an out-of-range transaction index");
-    }
+      const auto trx_hash = fromBridgeHash(outcome.hash);
+      if (trx_hash != expected_hashes[static_cast<size_t>(outcome.input_index)]) {
+        throw DbException("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: Rust returned a transaction hash/index mismatch");
+      }
 
-    const auto trx_hash = fromBridgeHash(outcome.hash);
-    if (trx_hash != expected_hashes[static_cast<size_t>(outcome.input_index)]) {
-      throw DbException("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: Rust returned a transaction hash/index mismatch");
+      if (outcome.source == kVerifyNotFinalizedRecentSidecar) {
+        LOG(manager.log_er_) << "Transaction " << trx_hash << " already finalized";
+      } else {
+        LOG(manager.log_er_) << "Transaction " << trx_hash << " already finalized in db";
+      }
     }
+    return outcome;
+  }
 
-    if (outcome.source == kVerifyNotFinalizedRecentSidecar) {
-      LOG(manager.log_er_) << "Transaction " << trx_hash << " already finalized";
-    } else {
-      LOG(manager.log_er_) << "Transaction " << trx_hash << " already finalized in db";
-    }
-    return false;
+  static bool verifyTransactionsNotFinalized(
+      const TransactionManager& manager,
+      rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact>&& facts) {
+    return !verifyTransactionsNotFinalizedDetailed(manager, std::move(facts)).is_finalized;
   }
 
   static std::vector<SharedTransactions> getAllPoolTrxs(const TransactionManagerOld& manager) {
@@ -1307,6 +1311,11 @@ bool TransactionManager::verifyTransactionsNotFinalized(const SharedTransactions
 bool TransactionManager::verifyTransactionsNotFinalized(
     rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact>&& facts) {
   return TransactionManagerRustShimAccess::verifyTransactionsNotFinalized(*this, std::move(facts));
+}
+
+rustaxa::TransactionManagerVerifyNotFinalizedOutcome TransactionManager::verifyTransactionsNotFinalizedDetailed(
+    rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact>&& facts) {
+  return TransactionManagerRustShimAccess::verifyTransactionsNotFinalizedDetailed(*this, std::move(facts));
 }
 
 std::vector<SharedTransactions> TransactionManager::getAllPoolTrxs() {

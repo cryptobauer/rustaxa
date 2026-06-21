@@ -624,6 +624,7 @@ rustaxa::PbftSyncProcessPeriodDataRuntimeFact makePbftSyncProcessPeriodDataRunti
     PbftPeriod last_pbft_block_period, bool block_in_chain, uint8_t final_chain_hash_status,
     uint8_t reward_votes_status, uint8_t cert_votes_status, uint8_t transactions_status,
     const std::unordered_set<trx_hash_t> &missing_transaction_hashes, bool contains_finalized_transactions,
+    const std::vector<trx_hash_t> &finalized_transaction_hashes,
     uint8_t pillar_data_status, bool pillar_votes_required, uint8_t pillar_votes_status,
     bool previous_cert_votes_present, bool previous_cert_first_vote_has_weight, bool extra_data_required,
     bool extra_data_present, bool extra_data_pillar_block_hash_present, bool pillar_votes_present) {
@@ -640,9 +641,7 @@ rustaxa::PbftSyncProcessPeriodDataRuntimeFact makePbftSyncProcessPeriodDataRunti
   fact.dag_transaction_hashes = toBridgeTransactionHashes(dag_transaction_hashes);
   fact.period_data_transaction_hashes = toBridgeTransactionHashes(period_data_transaction_hashes);
   fact.missing_transaction_hashes = toBridgeTransactionHashes(missing_transaction_hashes);
-  // TODO(RUSTAXA): populate hash-specific finalized transaction warnings when the transaction-manager executor returns
-  // finalized hashes instead of only the legacy boolean `verifyTransactionsNotFinalized` result.
-  fact.finalized_transaction_hashes = rust::Vec<rustaxa::PbftSyncTransactionHash>();
+  fact.finalized_transaction_hashes = toBridgeTransactionHashes(finalized_transaction_hashes);
   fact.contains_finalized_transactions = contains_finalized_transactions;
   fact.pillar_data_status = pillar_data_status;
   fact.extra_data_required = extra_data_required;
@@ -4328,20 +4327,22 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   auto make_runtime_plan = [&](bool candidate_block_in_chain, uint8_t final_chain_status, uint8_t reward_votes_status,
                                uint8_t cert_votes_status, uint8_t transactions_status,
                                const std::unordered_set<trx_hash_t> &non_finalized_transactions,
-                               bool contains_finalized_transactions, uint8_t pillar_data_status,
+                               bool contains_finalized_transactions,
+                               const std::vector<trx_hash_t> &finalized_transaction_hashes, uint8_t pillar_data_status,
                                bool pillar_votes_required, uint8_t pillar_votes_status) {
     return rustaxa::plan_pbft_sync_process_period_data_runtime(makePbftSyncProcessPeriodDataRuntimeFact(
         block_period, block_prev_hash, dag_transaction_hashes, period_data_transaction_hashes,
         last_pbft_block_hash, last_pbft_block_period, candidate_block_in_chain, final_chain_status, reward_votes_status,
         cert_votes_status, transactions_status, non_finalized_transactions,
-        contains_finalized_transactions, pillar_data_status, pillar_votes_required, pillar_votes_status,
+        contains_finalized_transactions, finalized_transaction_hashes, pillar_data_status, pillar_votes_required, pillar_votes_status,
         previous_cert_votes_present, previous_cert_first_vote_has_weight, extra_data_required, extra_data_present,
         extra_data_pillar_block_hash_present, pillar_votes_present));
   };
 
   auto runtime_plan =
       make_runtime_plan(block_in_chain, kPbftSyncFinalChainNotChecked, kPbftSyncFactNotChecked, kPbftSyncFactNotChecked,
-                        kPbftSyncFactNotChecked, {}, false, kPbftSyncFactNotChecked, false, kPbftSyncFactNotChecked);
+                        kPbftSyncFactNotChecked, {}, false, {}, kPbftSyncFactNotChecked, false,
+                        kPbftSyncFactNotChecked);
   auto admission_plan = runtime_plan;
   auto throw_on_runtime_contract_error = [&]() {
     if (admission_plan.runtime_action == kPbftSyncRuntimeActionContractError) {
@@ -4404,7 +4405,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
 
   const auto rust_pillar_data_plan =
       make_runtime_plan(false, kPbftSyncFinalChainValid, kPbftSyncFactValid, kPbftSyncFactValid, kPbftSyncFactValid,
-                        {}, false, kPbftSyncFactNotChecked, pillar_votes_required, kPbftSyncFactNotRequired);
+                        {}, false, {}, kPbftSyncFactNotChecked, pillar_votes_required, kPbftSyncFactNotRequired);
   const auto rust_pillar_data_valid = rust_pillar_data_plan.status != kPbftSyncStatusPillarDataInvalid;
 
   std::optional<std::vector<std::shared_ptr<PbftVote>>> reward_votes;
@@ -4449,7 +4450,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
     if (validation_plan.action == kPbftManagerBlockValidationActionReject) {
       if (validation_plan.status == kPbftManagerBlockValidationStatusFinalChainHashInvalid) {
         runtime_plan = make_runtime_plan(false, kPbftSyncFinalChainInvalid, kPbftSyncFactNotChecked,
-                                         kPbftSyncFactNotChecked, kPbftSyncFactNotChecked, {}, false,
+                                         kPbftSyncFactNotChecked, kPbftSyncFactNotChecked, {}, false, {},
                                          kPbftSyncFactNotChecked, false, kPbftSyncFactNotChecked);
         admission_plan = runtime_plan;
         throw_on_runtime_contract_error();
@@ -4459,7 +4460,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
       }
       if (validation_plan.status == kPbftManagerBlockValidationStatusRewardVotesInvalid) {
         runtime_plan = make_runtime_plan(false, kPbftSyncFinalChainValid, kPbftSyncFactInvalid, kPbftSyncFactNotChecked,
-                                         kPbftSyncFactNotChecked, {}, false, kPbftSyncFactNotChecked, false,
+                                         kPbftSyncFactNotChecked, {}, false, {}, kPbftSyncFactNotChecked, false,
                                          kPbftSyncFactNotChecked);
         admission_plan = runtime_plan;
         throw_on_runtime_contract_error();
@@ -4469,7 +4470,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
       }
       if (validation_plan.status == kPbftManagerBlockValidationStatusExtraDataInvalid) {
         runtime_plan = make_runtime_plan(false, kPbftSyncFinalChainValid, kPbftSyncFactValid, kPbftSyncFactValid,
-                                         kPbftSyncFactValid, {}, false, kPbftSyncFactInvalid, pillar_votes_required,
+                                         kPbftSyncFactValid, {}, false, {}, kPbftSyncFactInvalid, pillar_votes_required,
                                          kPbftSyncFactNotChecked);
         admission_plan = runtime_plan;
         throw_on_runtime_contract_error();
@@ -4525,7 +4526,8 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   assert(reward_votes.has_value());
   runtime_plan =
       make_runtime_plan(false, kPbftSyncFinalChainValid, kPbftSyncFactValid, kPbftSyncFactNotChecked,
-                        kPbftSyncFactNotChecked, {}, false, kPbftSyncFactNotChecked, false, kPbftSyncFactNotChecked);
+                        kPbftSyncFactNotChecked, {}, false, {}, kPbftSyncFactNotChecked, false,
+                        kPbftSyncFactNotChecked);
   admission_plan = runtime_plan;
   throw_on_runtime_contract_error();
 
@@ -4540,7 +4542,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   const auto cert_votes_valid = validatePbftBlockCertVotes(block_period, pbft_block_hash, cert_votes);
   runtime_plan = make_runtime_plan(
       false, kPbftSyncFinalChainValid, kPbftSyncFactValid, cert_votes_valid ? kPbftSyncFactValid : kPbftSyncFactInvalid,
-      kPbftSyncFactNotChecked, {}, false, kPbftSyncFactNotChecked, false, kPbftSyncFactNotChecked);
+      kPbftSyncFactNotChecked, {}, false, {}, kPbftSyncFactNotChecked, false, kPbftSyncFactNotChecked);
   admission_plan = runtime_plan;
   throw_on_runtime_contract_error();
   if (admission_plan.status == kPbftSyncStatusCertVotesInvalid) {
@@ -4553,12 +4555,18 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   // non-fatal transaction warnings is returned by the Rust admission plan after this executor reports compact facts.
   auto non_finalized_transactions = trx_mgr_->excludeFinalizedTransactions(
       fromBridgeTransactionHashes(runtime_plan.transaction_query_plan.finalized_lookup_hashes));
-  const auto contains_finalized_transactions =
-      !trx_mgr_->verifyTransactionsNotFinalized(std::move(period_data_transaction_identities));
+  const auto finalized_transactions_outcome =
+      trx_mgr_->verifyTransactionsNotFinalizedDetailed(std::move(period_data_transaction_identities));
+  std::vector<trx_hash_t> finalized_transaction_hashes;
+  if (finalized_transactions_outcome.is_finalized) {
+    finalized_transaction_hashes.emplace_back(fromBridgeTransactionHash(finalized_transactions_outcome.hash));
+  }
+  const auto contains_finalized_transactions = finalized_transactions_outcome.is_finalized;
 
   runtime_plan = make_runtime_plan(false, kPbftSyncFinalChainValid, kPbftSyncFactValid, kPbftSyncFactValid,
                                    kPbftSyncFactValid, non_finalized_transactions, contains_finalized_transactions,
-                                   kPbftSyncFactNotChecked, pillar_votes_required, kPbftSyncFactNotChecked);
+                                   finalized_transaction_hashes, kPbftSyncFactNotChecked, pillar_votes_required,
+                                   kPbftSyncFactNotChecked);
   admission_plan = runtime_plan;
   throw_on_runtime_contract_error();
   if (admission_plan.status == kPbftSyncStatusPillarDataInvalid) {
@@ -4582,7 +4590,8 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   }
   runtime_plan = make_runtime_plan(
       false, kPbftSyncFinalChainValid, kPbftSyncFactValid, kPbftSyncFactValid, kPbftSyncFactValid,
-      non_finalized_transactions, contains_finalized_transactions, kPbftSyncFactValid, pillar_votes_required,
+      non_finalized_transactions, contains_finalized_transactions, finalized_transaction_hashes, kPbftSyncFactValid,
+      pillar_votes_required,
       pillar_votes_required ? (pillar_votes_valid ? kPbftSyncFactValid : kPbftSyncFactInvalid)
                             : kPbftSyncFactNotRequired);
   admission_plan = runtime_plan;

@@ -419,6 +419,9 @@ Landed bounded PBFT-chain update/report collapse:
   position after period advance; the duplicate opportunistic post-FinalChain pillar branch was removed.
 - Duplicate-block resume action reports now use the structured Rust runtime report path, so live-mutation validation
   failures preserve Rust's typed error codes instead of collapsing into generic resume-action failures.
+- Sync period-data admission now reports Rust-selected finalized transaction warning hashes back into the PBFT sync
+  runtime instead of collapsing `verifyTransactionsNotFinalized` to a legacy boolean. This removes the remaining
+  hash-specific finalized-transaction warning TODO from the PBFT manager overlay.
 
 Scope:
 

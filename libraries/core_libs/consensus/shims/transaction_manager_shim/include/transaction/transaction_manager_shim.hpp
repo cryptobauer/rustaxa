@@ -210,6 +210,25 @@ class TransactionManager : public TransactionManagerOld {
    */
   bool verifyTransactionsNotFinalized(
       ::rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> &&facts);
+  /**
+   * Verify transaction identity facts and return Rust's typed finalized outcome.
+   *
+   * Purpose:
+   * - Lets PBFT sync admission forward hash-specific finalized transaction
+   *   warnings into the Rust PBFT sync planner instead of collapsing the result
+   *   to a legacy boolean.
+   *
+   * Outputs:
+   * - `is_finalized == false` when all input facts are accepted.
+   * - Otherwise `hash`, `input_index`, and `source` identify the first
+   *   finalized transaction selected by Rust.
+   *
+   * Edge behavior:
+   * - Throws `DbException` if Rust returns an out-of-range index or mismatched
+   *   hash for the supplied facts.
+   */
+  rustaxa::TransactionManagerVerifyNotFinalizedOutcome verifyTransactionsNotFinalizedDetailed(
+      ::rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> &&facts);
 
   /**
    * Materialize DAG block transactions from live C++ views and Rust-backed storage.
