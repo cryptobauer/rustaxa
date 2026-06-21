@@ -696,6 +696,19 @@ pub mod rustaxa_ffi {
         nonce: [u8; 32],
     }
 
+    /// Executor report after C++ attempts to insert a planned slashing transaction.
+    struct DoubleVotingProofSubmissionReport {
+        proof_hash: [u8; 32],
+        transaction_inserted: bool,
+    }
+
+    /// Rust-owned classification of a slashing transaction executor report.
+    struct DoubleVotingProofSubmissionPlan {
+        status: u8,
+        submitted: bool,
+        mark_inserted: bool,
+    }
+
     /// Rust decision after consuming a C++ gas estimate.
     struct TransactionPackEstimateOutcome {
         hash: [u8; 32],
@@ -5495,6 +5508,10 @@ pub mod rustaxa_ffi {
             self: &BridgeSlashingProofPlanner,
             proof_hash: &[u8; 32],
         ) -> Result<bool>;
+        pub fn slashing_report_double_voting_proof_submission(
+            self: &BridgeSlashingProofPlanner,
+            report: DoubleVotingProofSubmissionReport,
+        ) -> Result<DoubleVotingProofSubmissionPlan>;
 
         // Consensus transaction manager planning
 

@@ -5,13 +5,14 @@
 //! construct a slashing transaction, the target contract+gas limit, and ABI call
 //! payload.
 use crate::ffi::rustaxa_ffi::{
-    DoubleVotingProofInput, DoubleVotingProofPlan, SlashingSubmitterFact,
+    DoubleVotingProofInput, DoubleVotingProofPlan, DoubleVotingProofSubmissionPlan,
+    DoubleVotingProofSubmissionReport, SlashingSubmitterFact,
 };
 use crate::ffi::BridgeSlashingProofPlanner;
 use anyhow::{anyhow, Result};
 use ethereum_types::{H256, U256};
 use rustaxa_consensus::slashing::{
-    DoubleVotingProofPlanStatus, SlashingProofPlanner,
+    DoubleVotingProofPlanStatus, DoubleVotingProofSubmissionStatus, SlashingProofPlanner,
     SlashingSubmitterFact as ConsensusSubmitterFact,
 };
 
@@ -51,6 +52,20 @@ impl BridgeSlashingProofPlanner {
         Ok(self
             .lock()?
             .mark_double_voting_proof_submission(H256::from(*proof_hash)))
+    }
+
+    /// Applies a typed transaction executor report to Rust duplicate protection.
+    pub fn slashing_report_double_voting_proof_submission(
+        &self,
+        report: DoubleVotingProofSubmissionReport,
+    ) -> Result<DoubleVotingProofSubmissionPlan> {
+        Ok(self
+            .lock()?
+            .report_double_voting_proof_submission(
+                H256::from(report.proof_hash),
+                report.transaction_inserted,
+            )
+            .into())
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, SlashingProofPlanner>> {
@@ -104,6 +119,18 @@ impl From<rustaxa_consensus::DoubleVotingProofPlan> for DoubleVotingProofPlan {
     }
 }
 
+impl From<rustaxa_consensus::slashing::DoubleVotingProofSubmissionPlan>
+    for DoubleVotingProofSubmissionPlan
+{
+    fn from(plan: rustaxa_consensus::slashing::DoubleVotingProofSubmissionPlan) -> Self {
+        Self {
+            status: double_voting_proof_submission_status_code(plan.status),
+            submitted: plan.submitted,
+            mark_inserted: plan.mark_inserted,
+        }
+    }
+}
+
 fn double_voting_proof_plan_status_code(status: DoubleVotingProofPlanStatus) -> u8 {
     match status {
         DoubleVotingProofPlanStatus::Planned => 0,
@@ -111,6 +138,14 @@ fn double_voting_proof_plan_status_code(status: DoubleVotingProofPlanStatus) -> 
         DoubleVotingProofPlanStatus::MismatchedVoteCoordinates => 2,
         DoubleVotingProofPlanStatus::DuplicateProof => 3,
         DoubleVotingProofPlanStatus::NoFundedSubmitter => 4,
+    }
+}
+
+fn double_voting_proof_submission_status_code(status: DoubleVotingProofSubmissionStatus) -> u8 {
+    match status {
+        DoubleVotingProofSubmissionStatus::Accepted => 0,
+        DoubleVotingProofSubmissionStatus::RejectedByExecutor => 1,
+        DoubleVotingProofSubmissionStatus::DuplicateProof => 2,
     }
 }
 
@@ -259,5 +294,55 @@ mod tests {
         assert!(!planner
             .slashing_mark_double_voting_proof_submission(&plan.proof_hash)
             .unwrap());
+    }
+
+    #[test]
+    fn bridge_reports_submission_executor_outcome() {
+        let planner = create_slashing_proof_planner(true).unwrap();
+        let plan = planner
+            .slashing_plan_double_voting_proof(proof_input(1, 2, vec![submitter(0, true, 1)]))
+            .unwrap();
+
+        let rejected = planner
+            .slashing_report_double_voting_proof_submission(DoubleVotingProofSubmissionReport {
+                proof_hash: plan.proof_hash,
+                transaction_inserted: false,
+            })
+            .unwrap();
+        assert_eq!(
+            rejected.status,
+            double_voting_proof_submission_status_code(
+                DoubleVotingProofSubmissionStatus::RejectedByExecutor
+            )
+        );
+        assert!(!rejected.submitted);
+        assert!(!rejected.mark_inserted);
+        assert_eq!(
+            planner
+                .slashing_plan_double_voting_proof(proof_input(1, 2, vec![submitter(0, true, 1)]))
+                .unwrap()
+                .status,
+            double_voting_proof_plan_status_code(DoubleVotingProofPlanStatus::Planned),
+        );
+
+        let accepted = planner
+            .slashing_report_double_voting_proof_submission(DoubleVotingProofSubmissionReport {
+                proof_hash: plan.proof_hash,
+                transaction_inserted: true,
+            })
+            .unwrap();
+        assert_eq!(
+            accepted.status,
+            double_voting_proof_submission_status_code(DoubleVotingProofSubmissionStatus::Accepted)
+        );
+        assert!(accepted.submitted);
+        assert!(accepted.mark_inserted);
+        assert_eq!(
+            planner
+                .slashing_plan_double_voting_proof(proof_input(1, 2, vec![submitter(0, true, 1)]))
+                .unwrap()
+                .status,
+            double_voting_proof_plan_status_code(DoubleVotingProofPlanStatus::DuplicateProof),
+        );
     }
 }

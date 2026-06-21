@@ -326,6 +326,22 @@ pub enum DoubleVotingProofPlanStatus {
     NoFundedSubmitter,
 }
 
+/// Result code after the transaction executor reports a planned slashing proof
+/// insertion attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DoubleVotingProofSubmissionStatus {
+    /// The transaction executor accepted the planned transaction and Rust
+    /// inserted the proof hash into duplicate protection.
+    Accepted,
+    /// The transaction executor rejected the planned transaction; Rust leaves
+    /// duplicate protection unchanged so a later attempt may retry.
+    RejectedByExecutor,
+    /// The executor reported acceptance for a proof already present in duplicate
+    /// protection. This is treated as not submitted because no new transaction
+    /// should be counted.
+    DuplicateProof,
+}
+
 /// Rust decision returned for one double-vote proof attempt.
 ///
 /// `should_submit` is false when reporting is disabled, the votes are for
@@ -344,6 +360,14 @@ pub struct DoubleVotingProofPlan {
     pub call_data: Vec<u8>,
     pub wallet_index: usize,
     pub nonce: U256,
+}
+
+/// Typed Rust-owned classification for a slashing transaction executor report.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DoubleVotingProofSubmissionPlan {
+    pub status: DoubleVotingProofSubmissionStatus,
+    pub submitted: bool,
+    pub mark_inserted: bool,
 }
 
 /// Double-voting proof planner with a bounded submitted-proof cache.
@@ -446,6 +470,36 @@ impl SlashingProofPlanner {
     /// Returns false when the proof hash already exists in the duplicate cache.
     pub fn mark_double_voting_proof_submission(&mut self, proof_hash: H256) -> bool {
         self.mark_submitted(proof_hash)
+    }
+
+    /// Classifies a transaction executor report for a planned double-voting proof.
+    ///
+    /// Rust owns the submitted-proof duplicate cache. C++ reports only whether
+    /// the transaction executor accepted insertion for the planned transaction.
+    /// Rejected executor results do not mark the proof submitted, preserving the
+    /// ability to retry.
+    pub fn report_double_voting_proof_submission(
+        &mut self,
+        proof_hash: H256,
+        transaction_inserted: bool,
+    ) -> DoubleVotingProofSubmissionPlan {
+        if !transaction_inserted {
+            return DoubleVotingProofSubmissionPlan {
+                status: DoubleVotingProofSubmissionStatus::RejectedByExecutor,
+                submitted: false,
+                mark_inserted: false,
+            };
+        }
+        let mark_inserted = self.mark_submitted(proof_hash);
+        DoubleVotingProofSubmissionPlan {
+            status: if mark_inserted {
+                DoubleVotingProofSubmissionStatus::Accepted
+            } else {
+                DoubleVotingProofSubmissionStatus::DuplicateProof
+            },
+            submitted: mark_inserted,
+            mark_inserted,
+        }
     }
 
     /// Marks a proof hash as submitted and updates the bounded duplicate cache.

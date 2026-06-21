@@ -202,6 +202,13 @@ Stop conditions:
 
 Goal: remove remaining vote, slashing, and pillar manager compatibility surfaces that exist only for PBFT manager or consensus-side decisions.
 
+Status as of 2026-06-21: in progress.
+
+- Rust already owns PBFT vote-progress planning, verified-vote runtime mutation, pillar vote indexing/planning, and
+  double-voting proof transaction planning.
+- Slashing transaction insertion is still a C++ executor effect, but the executor now reports typed insertion outcome
+  back to Rust before Rust mutates duplicate-proof state or classifies the submission result.
+
 Scope:
 
 - Replace live `PbftVote`, `PillarVote`, and `PillarBlock` decision reads with Rust-retained payloads and compact facts.

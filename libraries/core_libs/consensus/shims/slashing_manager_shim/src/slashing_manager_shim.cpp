@@ -184,11 +184,11 @@ bool SlashingManager::submitDoubleVotingProofInput(rustaxa::DoubleVotingProofInp
                                            gas_pricer_->bid(), plan.gas_limit, std::move(call_data), wallet.node_secret,
                                            from_bridge_address(plan.contract_address), kConfig.genesis.chain_id);
 
-  if (trx_manager_->insertTransaction(trx).first) {
-    planner_->slashing_mark_double_voting_proof_submission(plan.proof_hash);
-    return true;
-  }
-  return false;
+  rustaxa::DoubleVotingProofSubmissionReport report;
+  report.proof_hash = plan.proof_hash;
+  report.transaction_inserted = trx_manager_->insertTransaction(trx).first;
+  const auto submission_plan = planner_->slashing_report_double_voting_proof_submission(std::move(report));
+  return submission_plan.submitted;
 }
 
 }  // namespace taraxa
