@@ -619,6 +619,26 @@ Validation:
 
 Goal: delete PBFT manager dependency on generic storage compatibility APIs.
 
+Status: complete for the PBFT-manager storage/bridge surface deletion pass. Targeted searches show the Rust-mode PBFT
+manager overlay no longer uses `BridgeStorage`, storage-shim batches, `rustBatchId`, `db_->rustStorage()`, direct
+`getDB()`, or generic `DbStorage` consensus reads/writes. The remaining `DbStorage` member is the documented
+application/storage-shell lifecycle adapter for snapshot toggling plus constructor compatibility; it is not a production
+consensus storage authority.
+
+Landed:
+
+- PBFT manager runtime construction is already rooted in typed Rust runtime handles from Slice 1, not `BridgeStorage` or
+  `db_->rustStorage()`.
+- Startup, replay, proposed-block restore, scalar restore, vote cleanup, finalization storage writes, and sync egress now
+  route through typed Rust runtime/query APIs rather than generic storage-shim batches.
+- Targeted PBFT manager searches found no remaining Rust-mode production callers of `BridgeStorage`,
+  `BridgeStorageBatch`, `storage_shim_*`, `rustBatchId`, `db_->rustStorage()`, or `getDB()`.
+- Generic storage-shim APIs that still exist are retained for legacy/reference builds, storage conformance tests,
+  public/test compatibility, or upstream-owned C++ reference paths. They are no longer PBFT manager production
+  dependencies and therefore are not deleted in this slice.
+- The remaining PBFT manager `DbStorage` calls are only `enableSnapshots()`/`disableSnapshots()` in
+  `setPbftSyncSnapshotCreationEnabled`, explicitly classified as application/storage-shell lifecycle compatibility.
+
 Scope:
 
 - Remove `DbStorage` methods that only remain for PBFT manager compatibility after slices 1-8 move their callers.
