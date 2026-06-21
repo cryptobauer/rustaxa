@@ -712,6 +712,11 @@ Status: pending. Slices 1-10 moved PBFT manager authority into Rust planners/run
 auditable, but the closeout definition still requires a final pass over C++ scalar compatibility mirrors and protocol
 sidecar fields before the plan can be declared complete.
 
+Landed bounded cleanup:
+
+- Removed direct step-mirror use from the reset-consensus runtime log and made PBFT deadline calculation use the Rust
+  runtime snapshot for both round and lambda when the runtime is present.
+
 Scope:
 
 - Replace remaining C++ scalar mirror reads/writes with Rust runtime snapshot/query calls or classify the call site as an

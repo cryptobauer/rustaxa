@@ -985,7 +985,7 @@ void PbftManager::run() {
           }
           resetPbftConsensus(step.target_round);
           LOG(log_nf_) << "Round advanced to: " << step.target_round << ", period " << getPbftPeriod() << ", step "
-                       << step_;
+                       << getPbftStep();
           step = report_action(step, kPbftManagerRuntimeResultTransitionApplied);
           break;
         case kPbftManagerRuntimeActionSleepIneligiblePollingInterval:
@@ -4722,6 +4722,7 @@ PbftPeriod PbftManager::EligibleWallets::getWalletsEligiblePeriod() const { retu
 
 std::chrono::milliseconds PbftManager::getPbftDeadline() const {
   auto current_round_lambda = current_round_lambda_;
+  auto current_round = round_.load();
   if (pbft_manager_runtime_.has_value()) {
     const auto snapshot = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value());
     if (snapshot.status != kPbftManagerRuntimeSnapshotStatusReady) {
@@ -4729,11 +4730,12 @@ std::chrono::milliseconds PbftManager::getPbftDeadline() const {
                                static_cast<std::string>(snapshot.error_code));
     }
     current_round_lambda = std::chrono::milliseconds(snapshot.current_round_lambda_ms);
+    current_round = static_cast<PbftRound>(snapshot.round);
   }
 
   if (kGenesisConfig.state.hardforks.isOnCactiHardfork(getPbftPeriod())) {
     auto block_propagation = std::chrono::milliseconds(kGenesisConfig.state.hardforks.cacti_hf.block_propagation_min);
-    if (getPbftRound() > 1) {
+    if (current_round > 1) {
       block_propagation = std::chrono::milliseconds(kGenesisConfig.state.hardforks.cacti_hf.block_propagation_max);
     }
 
