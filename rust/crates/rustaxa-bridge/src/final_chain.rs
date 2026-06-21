@@ -1379,12 +1379,18 @@ impl BridgeFinalChain {
 
         let (total_vote_count_status, has_total_vote_count, total_vote_count, total_error) =
             if request.collect_total_vote_count {
-                match self.0.dpos_eligible_total_vote_count(request.period) {
-                    Ok(value) => (
+                match self.0.pbft_dpos_eligible_total_vote_count(request.period) {
+                    Ok(Some(value)) => (
                         PBFT_FINAL_CHAIN_FACT_STATUS_READY,
                         true,
                         value,
                         String::new(),
+                    ),
+                    Ok(None) => (
+                        PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE,
+                        false,
+                        0,
+                        "PBFT_FINAL_CHAIN_TOTAL_VOTES_FUTURE_PERIOD".to_string(),
                     ),
                     Err(err) => (
                         PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE,
@@ -1403,15 +1409,24 @@ impl BridgeFinalChain {
             for address in request.addresses {
                 match self
                     .0
-                    .dpos_eligible_vote_count(request.period, address.address)
+                    .pbft_dpos_eligible_vote_count(request.period, address.address)
                 {
-                    Ok(vote_count) => {
+                    Ok(Some(vote_count)) => {
                         address_facts.push(rustaxa_ffi::PbftFinalChainAddressFact {
                             address: address.address,
                             status: PBFT_FINAL_CHAIN_FACT_STATUS_READY,
                             eligible: vote_count > 0,
                             vote_count,
                             error_code: String::new(),
+                        });
+                    }
+                    Ok(None) => {
+                        address_facts.push(rustaxa_ffi::PbftFinalChainAddressFact {
+                            address: address.address,
+                            status: PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE,
+                            eligible: false,
+                            vote_count: 0,
+                            error_code: "PBFT_FINAL_CHAIN_ADDRESS_FACT_FUTURE_PERIOD".to_string(),
                         });
                     }
                     Err(err) => {
@@ -1524,6 +1539,14 @@ mod tests {
         storage_path: &str,
         genesis_validators: Vec<rustaxa_ffi::GenesisValidator>,
     ) -> Box<BridgeFinalChain> {
+        make_final_chain_with_delegation_delay(storage_path, genesis_validators, 0)
+    }
+
+    fn make_final_chain_with_delegation_delay(
+        storage_path: &str,
+        genesis_validators: Vec<rustaxa_ffi::GenesisValidator>,
+        delegation_delay: u64,
+    ) -> Box<BridgeFinalChain> {
         let storage = create_storage(storage_path).expect("storage should initialize");
         create_final_chain(
             &storage,
@@ -1538,7 +1561,7 @@ mod tests {
                 minimum_deposit: vec![],
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
-                delegation_delay: 0,
+                delegation_delay,
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
         )
@@ -2115,6 +2138,67 @@ mod tests {
         assert_eq!(
             unavailable.address_facts[0].status,
             PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE
+        );
+
+        drop(final_chain);
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_collects_pbft_dpos_facts_with_delegation_delay_boundary() {
+        let validator = [0xB2u8; 20];
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_final_chain_delegation_delay");
+        let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
+        let final_chain = make_final_chain_with_delegation_delay(
+            storage_path,
+            vec![genesis_validator(validator, 10_000)],
+            5,
+        );
+
+        let ready = final_chain
+            .collect_pbft_final_chain_facts(rustaxa_ffi::PbftFinalChainFactRequest {
+                period: 5,
+                candidate_final_chain_hash: [0; 32],
+                collect_final_chain_hash: false,
+                validate_candidate_final_chain_hash: false,
+                collect_total_vote_count: true,
+                collect_address_vote_counts: true,
+                addresses: vec![rustaxa_ffi::PbftFinalChainFactAddress { address: validator }],
+            })
+            .expect("delegation-delay covered period should use genesis snapshot");
+        assert_eq!(ready.status, PBFT_FINAL_CHAIN_FACT_STATUS_READY);
+        assert!(ready.has_total_vote_count);
+        assert_eq!(ready.total_vote_count, 10);
+        assert_eq!(
+            ready.address_facts[0].status,
+            PBFT_FINAL_CHAIN_FACT_STATUS_READY
+        );
+        assert_eq!(ready.address_facts[0].vote_count, 10);
+
+        let future = final_chain
+            .collect_pbft_final_chain_facts(rustaxa_ffi::PbftFinalChainFactRequest {
+                period: 6,
+                candidate_final_chain_hash: [0; 32],
+                collect_final_chain_hash: false,
+                validate_candidate_final_chain_hash: false,
+                collect_total_vote_count: true,
+                collect_address_vote_counts: true,
+                addresses: vec![rustaxa_ffi::PbftFinalChainFactAddress { address: validator }],
+            })
+            .expect("future PBFT facts should be returned as unavailable data");
+        assert_eq!(future.status, PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE);
+        assert!(!future.has_total_vote_count);
+        assert_eq!(
+            future.error_code,
+            "PBFT_FINAL_CHAIN_TOTAL_VOTES_FUTURE_PERIOD"
+        );
+        assert_eq!(
+            future.address_facts[0].status,
+            PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE
+        );
+        assert_eq!(
+            future.address_facts[0].error_code,
+            "PBFT_FINAL_CHAIN_ADDRESS_FACT_FUTURE_PERIOD"
         );
 
         drop(final_chain);

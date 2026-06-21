@@ -44,7 +44,14 @@ Goal: remove consensus dependence on ad hoc C++ FinalChain/DPoS fact sourcing ex
 
 Status: in progress. The first bounded route moved DAG proposer FinalChain-height and DPoS authorization collection into
 a typed Rust `BridgeFinalChain::get_dag_proposer_final_chain_facts` port, replacing the C++ proposer shim's ad hoc PBFT
-fact request used only to discover the latest finalized period.
+fact request used only to discover the latest finalized period. PBFT vote-weight collection now uses explicit Rust
+PBFT-period DPoS fact methods that preserve the `last_finalized + delegation_delay` readiness boundary instead of
+letting bridge callers interpret raw snapshot errors.
+
+Open blocker found during validation: focused `pbft_manager_test` runtime coverage still does not execute non-empty PBFT
+blocks, so delegated DPoS transactions never publish the FinalChain snapshots needed for later vote totals. The remaining
+work is no longer a fact-port gap; it is PBFT non-empty block production/finalization and external-EVM publication
+liveness before DPoS mutations can be observed by the Rust snapshot port.
 
 Scope:
 

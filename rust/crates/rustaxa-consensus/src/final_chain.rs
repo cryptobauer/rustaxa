@@ -848,6 +848,41 @@ impl FinalChain {
         self.dpos_effective_total_vote_count(&snapshot, block_number)
     }
 
+    /// Returns the DPoS eligible vote count for PBFT consensus-period facts.
+    ///
+    /// PBFT asks eligibility for a consensus period while FinalChain may lag by
+    /// the configured DPoS delegation delay. The result is `Ok(None)` when the
+    /// requested period is ahead of the latest finalized block plus that delay,
+    /// matching the legacy manager's wait/guard boundary. Ready periods still
+    /// use the normal DPoS snapshot selector so missing finalized snapshots stay
+    /// explicit errors instead of silently falling back to stale state.
+    pub fn pbft_dpos_eligible_vote_count(
+        &self,
+        period: u64,
+        address: [u8; 20],
+    ) -> Result<Option<u64>, anyhow::Error> {
+        if !self.pbft_dpos_facts_available(period)? {
+            return Ok(None);
+        }
+        self.dpos_eligible_vote_count(period, address).map(Some)
+    }
+
+    /// Returns the total DPoS eligible vote count for PBFT consensus-period facts.
+    ///
+    /// The output is `Ok(None)` only for periods that are still too far ahead of
+    /// Rust FinalChain publication. Snapshot corruption or missing snapshots for
+    /// an otherwise ready period remain hard errors so consensus does not use
+    /// stale validator weights.
+    pub fn pbft_dpos_eligible_total_vote_count(
+        &self,
+        period: u64,
+    ) -> Result<Option<u64>, anyhow::Error> {
+        if !self.pbft_dpos_facts_available(period)? {
+            return Ok(None);
+        }
+        self.dpos_eligible_total_vote_count(period).map(Some)
+    }
+
     /// Returns whether the validator has nonzero DPoS eligible votes at a block.
     pub fn dpos_is_eligible(
         &self,
@@ -855,6 +890,13 @@ impl FinalChain {
         address: [u8; 20],
     ) -> Result<bool, anyhow::Error> {
         Ok(self.dpos_eligible_vote_count(block_number, address)? > 0)
+    }
+
+    fn pbft_dpos_facts_available(&self, period: u64) -> Result<bool, anyhow::Error> {
+        Ok(period
+            <= self
+                .last_block_number()?
+                .saturating_add(self.dpos_delegation_delay))
     }
 
     /// Collects DagManager authorization facts for the given block and sender.
