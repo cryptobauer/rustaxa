@@ -28,10 +28,11 @@ Test policy remains the repository-wide rewrite policy:
 
 PBFT manager protocol ownership is closed. The remaining blockers to deleting consensus shims and broad bridge code are outside the PBFT manager protocol brain:
 
-- incomplete Rust-native FinalChain/DPoS fact and mutation coverage outside the EVM boundary
-- DAG manager compatibility mirrors, live transaction-pool edges, and public object materialization
-- DAG block proposer lifecycle, async VDF execution shell, signing shell, and add-block executor boundary
-- TransactionManager public construction, event/log mechanics, gas-estimation executor edge, and broader orchestration shell
+- FinalChain/DPoS liveness and mutation observation that depends on non-empty PBFT finalization or external EVM/state execution
+- remaining DAG public object materialization at API/network/test edges after DAG manager decision authority moved to Rust
+- DAG block proposer executor mechanics that are intentionally outside the accepted Slice 4 boundary: worker threads/timers,
+  async VDF execution, stale-proof sleep execution, key-manager signing execution, and compatibility add-block side effects
+- TransactionManager EVM gas-estimation executor edge and public/test/network materialization adapters
 - vote, slashing, and pillar manager executor/materialization surfaces
 - rewards stats legacy carrier ownership
 - typed consensus storage ports that are still too narrow for some cross-subsystem side effects
@@ -141,6 +142,11 @@ Stop conditions:
 ## Slice 3: DAG Manager Mirror and Materialization Collapse
 
 Goal: remove remaining DAG decision authority from C++ graph mirrors, local cache cleanup, and live object materialization.
+
+Status: complete. DAG manager consensus decisions now use Rust graph/runtime state, Rust storage, typed
+TransactionManager payload/availability ports, and Rust-owned finalization/add/sync side-effect plans. Remaining C++
+`DagBlock` and transaction materialization is executor/public compatibility at API, network, and test edges rather than
+protocol authority.
 
 Scope:
 
@@ -303,12 +309,16 @@ Stop conditions:
 
 1. Slice 1 first, because FinalChain/DPoS fact ownership unblocks DAG, transaction, vote, pillar, and rewards cleanup.
 2. Slice 2 is complete: TransactionManager payload/public/event ownership now removes a major source of C++ sidecars.
-3. Slice 3, then Slice 4, to close DAG decision state before shrinking proposer lifecycle shells.
-4. Slice 5, because vote/pillar/slashing executor collapse benefits from the stronger FinalChain and transaction ports.
-5. Slice 6, once rewards inputs and FinalChain facts are Rust-owned enough to remove the legacy carrier.
-6. Slice 7 after the major subsystem routes are known, so storage ports are task-specific instead of speculative.
-7. Slice 8 after decision paths no longer require C++ objects.
-8. Slice 9 last, because lifecycle and executor-shell deletion is easiest after subsystem sessions are uniform.
+3. Slice 3 is complete: DAG manager decision authority moved to Rust-backed graph, storage, transaction, and
+   finalization/add/sync planning.
+4. Slice 4 is complete for the accepted proposer shell boundary: Rust owns proposer lifecycle state and command
+   ordering while C++ executes scheduler/timer, async VDF, signing, and add-block effects.
+5. Slice 5 is next, because vote/pillar/slashing executor collapse benefits from the stronger FinalChain, transaction,
+   DAG, and proposer ports.
+6. Slice 6 follows once rewards inputs and FinalChain facts are Rust-owned enough to remove the legacy carrier.
+7. Slice 7 should run after the major subsystem routes are known, so storage ports are task-specific instead of speculative.
+8. Slice 8 follows after decision paths no longer require C++ objects.
+9. Slice 9 remains last, because lifecycle and executor-shell deletion is easiest after subsystem sessions are uniform.
 
 ## Closeout Definition
 
