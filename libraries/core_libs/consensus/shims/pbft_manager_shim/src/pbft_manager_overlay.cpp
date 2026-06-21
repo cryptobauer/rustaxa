@@ -1311,6 +1311,7 @@ bool PbftManager::applyRustPlannedAdvancePeriod_(PbftPeriod finalized_chain_size
     return false;
   }
 
+  uint64_t action_index = 0;
   for (const auto action : advance_plan.actions) {
     switch (action) {
       case kPbftManagerAdvancePeriodActionApplyResetConsensusTransition:
@@ -1352,6 +1353,11 @@ bool PbftManager::applyRustPlannedAdvancePeriod_(PbftPeriod finalized_chain_size
         const auto reset_snapshot = rustaxa::pbft_manager_runtime_apply_broadcast_counters(
             *pbft_manager_runtime_.value(), broadcast_snapshot.broadcast_votes_counter,
             broadcast_snapshot.rebroadcast_votes_counter, 1, 1);
+        if (reset_snapshot.status != kPbftManagerStartupRestoreStatusReady) {
+          LOG(log_er_) << "Rust PBFT manager reward-vote counter reset rejected, error "
+                       << static_cast<std::string>(reset_snapshot.error_code);
+          return false;
+        }
         applyPbftManagerRuntimeSnapshot(reset_snapshot, round_, step_, state_, current_round_lambda_,
                                         next_step_time_ms_, rounds_count_dynamic_lambda_, dynamic_lambda_,
                                         executed_pbft_block_, already_next_voted_value_,
@@ -1378,6 +1384,20 @@ bool PbftManager::applyRustPlannedAdvancePeriod_(PbftPeriod finalized_chain_size
                      << static_cast<uint32_t>(action);
         return false;
     }
+    rustaxa::PbftManagerAdvancePeriodActionReport action_report{};
+    action_report.action_index = action_index;
+    action_report.action = action;
+    action_report.succeeded = true;
+    const auto action_validation =
+        rustaxa::validate_pbft_manager_advance_period_action_report(advance_plan, action_report);
+    if (!action_validation.accepted) {
+      LOG(log_er_) << "Rust PBFT manager advance-period action report rejected at index " << action_index
+                   << ", action " << static_cast<uint32_t>(action) << ", status "
+                   << static_cast<uint32_t>(action_validation.status) << ", error "
+                   << static_cast<std::string>(action_validation.error_code);
+      return false;
+    }
+    ++action_index;
   }
 
   const auto period_snapshot =

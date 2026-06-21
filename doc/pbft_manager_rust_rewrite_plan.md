@@ -391,6 +391,8 @@ Landed bounded PBFT-chain update/report collapse:
   mutation validation before the finalization runtime cursor advances.
 - The finalization `AdvancePeriod` action now calls a shim-local Rust-planned advance-period executor directly instead
   of entering the monolithic `advancePeriod()` wrapper; the wrapper remains for non-finalization callers.
+- Every Rust-planned `AdvancePeriod` sub-action now reports its zero-based executor position and action code back to Rust;
+  mismatched, skipped, out-of-range, or failed reports are rejected before the final manager period cursor is committed.
 
 Scope:
 

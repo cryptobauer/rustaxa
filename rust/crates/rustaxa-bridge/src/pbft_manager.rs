@@ -11,6 +11,8 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
     PbftFinalizationStorageWriteStage as FfiPbftFinalizationStorageWriteStage,
     PbftFinalizedPeriodApplyResult as FfiPbftFinalizedPeriodApplyResult,
+    PbftManagerAdvancePeriodActionReport as FfiPbftManagerAdvancePeriodActionReport,
+    PbftManagerAdvancePeriodActionReportResult as FfiPbftManagerAdvancePeriodActionReportResult,
     PbftManagerAdvancePeriodPlan as FfiPbftManagerAdvancePeriodPlan,
     PbftManagerBlockValidationFact as FfiPbftManagerBlockValidationFact,
     PbftManagerBlockValidationPlan as FfiPbftManagerBlockValidationPlan,
@@ -89,17 +91,20 @@ use rustaxa_consensus::pbft_manager::{
     report_pbft_manager_proposal_dag_order as report_domain_pbft_manager_proposal_dag_order,
     report_pbft_manager_runtime_action,
     report_pbft_manager_state_action_effect_session as report_domain_pbft_manager_state_action_effect_session,
-    save_cert_voted_block_in_round_storage, PbftManagerAdvancePeriodPlan,
-    PbftManagerBlockValidationFact, PbftManagerBlockValidationFactStatus,
-    PbftManagerBlockValidationPlan, PbftManagerBroadcastAction, PbftManagerBroadcastFact,
-    PbftManagerBroadcastPlan, PbftManagerBroadcastReport, PbftManagerBroadcastReportResult,
-    PbftManagerBroadcastStatus, PbftManagerCandidateAdmissionFact,
-    PbftManagerCandidateAdmissionPlan, PbftManagerCandidateAdmissionValidationStatus,
-    PbftManagerLeaderBlockValidationStatus, PbftManagerLeaderCandidateInputFact,
-    PbftManagerLeaderCandidatePlan, PbftManagerLeaderValidBlockCommand,
-    PbftManagerProposalDagBlockFact, PbftManagerProposalDagOrderReport,
-    PbftManagerProposalInitialFact, PbftManagerProposalSessionStep, PbftManagerProposalWalletFact,
-    PbftManagerRuntimeAction, PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
+    save_cert_voted_block_in_round_storage,
+    validate_pbft_manager_advance_period_action_report as validate_domain_pbft_manager_advance_period_action_report,
+    PbftManagerAdvancePeriodActionReport, PbftManagerAdvancePeriodActionReportResult,
+    PbftManagerAdvancePeriodPlan, PbftManagerBlockValidationFact,
+    PbftManagerBlockValidationFactStatus, PbftManagerBlockValidationPlan,
+    PbftManagerBroadcastAction, PbftManagerBroadcastFact, PbftManagerBroadcastPlan,
+    PbftManagerBroadcastReport, PbftManagerBroadcastReportResult, PbftManagerBroadcastStatus,
+    PbftManagerCandidateAdmissionFact, PbftManagerCandidateAdmissionPlan,
+    PbftManagerCandidateAdmissionValidationStatus, PbftManagerLeaderBlockValidationStatus,
+    PbftManagerLeaderCandidateInputFact, PbftManagerLeaderCandidatePlan,
+    PbftManagerLeaderValidBlockCommand, PbftManagerProposalDagBlockFact,
+    PbftManagerProposalDagOrderReport, PbftManagerProposalInitialFact,
+    PbftManagerProposalSessionStep, PbftManagerProposalWalletFact, PbftManagerRuntimeAction,
+    PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
     PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot, PbftManagerRuntimeStateCode,
     PbftManagerRuntimeTickFact, PbftManagerStartupReplayRangeFact,
     PbftManagerStartupReplayRangePlan, PbftManagerStateActionEffect,
@@ -274,6 +279,31 @@ pub fn plan_pbft_manager_advance_period(
     plan_domain_pbft_manager_advance_period_from_transition(
         pbft_chain_size,
         domain_transition_plan_from_ffi(transition_plan),
+    )
+    .into()
+}
+
+/// Validates one C++ executor report for a Rust-planned PBFT manager period-advance action.
+///
+/// Inputs:
+/// - `plan`: Rust-owned action script returned by `plan_pbft_manager_advance_period`.
+/// - `report`: zero-based executor report for one action.
+///
+/// Outputs:
+/// - Accepted only when the report matches the action at the same script index
+///   and the executor marks it successful.
+///
+/// Invariants and edge behavior:
+/// - The validation is side-effect free and does not commit the final runtime
+///   period. C++ must report every action before calling
+///   `pbft_manager_runtime_apply_period_advance`.
+pub fn validate_pbft_manager_advance_period_action_report(
+    plan: &FfiPbftManagerAdvancePeriodPlan,
+    report: FfiPbftManagerAdvancePeriodActionReport,
+) -> FfiPbftManagerAdvancePeriodActionReportResult {
+    validate_domain_pbft_manager_advance_period_action_report(
+        &domain_advance_period_plan_from_ffi(plan),
+        report.into(),
     )
     .into()
 }
@@ -1699,6 +1729,69 @@ impl From<PbftManagerAdvancePeriodPlan> for FfiPbftManagerAdvancePeriodPlan {
     }
 }
 
+fn domain_advance_period_plan_from_ffi(
+    value: &FfiPbftManagerAdvancePeriodPlan,
+) -> PbftManagerAdvancePeriodPlan {
+    PbftManagerAdvancePeriodPlan {
+        accepted: value.accepted,
+        finalized_chain_size: value.finalized_chain_size,
+        new_period: value.new_period,
+        transition_plan: PbftManagerTransitionPlan {
+            status: PbftManagerTransitionStatus::InvalidFact,
+            kind: PbftManagerTransitionKind::Unknown,
+            new_state: PbftManagerRuntimeStateCode::ValueProposal,
+            new_round: 0,
+            new_step: 0,
+            current_round_lambda_ms: 0,
+            next_step_time_ms: 0,
+            persist_round: false,
+            persist_step: false,
+            reset_next_voted_statuses: false,
+            remove_cert_voted_block: false,
+            clear_own_votes: false,
+            clear_broadcasted_votes: false,
+            reset_broadcast_counters: false,
+            reset_executed_block_status: false,
+            set_vote_manager_period_round: false,
+            reset_current_round_start: false,
+            reset_second_finish_start: false,
+            print_cert_step_info: false,
+            print_second_finish_step_info: false,
+            error_code: String::new(),
+        },
+        actions: value
+            .actions
+            .iter()
+            .filter_map(|action| {
+                rustaxa_consensus::pbft_manager::PbftManagerAdvancePeriodAction::from_u8(*action)
+            })
+            .collect(),
+        error_code: value.error_code.to_string(),
+    }
+}
+
+impl From<FfiPbftManagerAdvancePeriodActionReport> for PbftManagerAdvancePeriodActionReport {
+    fn from(value: FfiPbftManagerAdvancePeriodActionReport) -> Self {
+        Self {
+            action_index: value.action_index,
+            action: value.action,
+            succeeded: value.succeeded,
+        }
+    }
+}
+
+impl From<PbftManagerAdvancePeriodActionReportResult>
+    for FfiPbftManagerAdvancePeriodActionReportResult
+{
+    fn from(value: PbftManagerAdvancePeriodActionReportResult) -> Self {
+        Self {
+            accepted: value.accepted,
+            status: value.status.as_u8(),
+            error_code: value.error_code,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3022,6 +3115,33 @@ mod tests {
                     ADVANCE_ACTION_CLEANUP_VOTES,
                     ADVANCE_ACTION_CLEANUP_PROPOSED_BLOCKS,
                 ]
+            );
+
+            let report = validate_pbft_manager_advance_period_action_report(
+                &advance,
+                FfiPbftManagerAdvancePeriodActionReport {
+                    action_index: 0,
+                    action: ADVANCE_ACTION_RESET_CONSENSUS,
+                    succeeded: true,
+                },
+            );
+            assert!(report.accepted);
+            assert_eq!(report.status, 0);
+            assert!(report.error_code.is_empty());
+
+            let mismatch = validate_pbft_manager_advance_period_action_report(
+                &advance,
+                FfiPbftManagerAdvancePeriodActionReport {
+                    action_index: 1,
+                    action: ADVANCE_ACTION_SET_VOTE_MANAGER_PERIOD_ROUND,
+                    succeeded: true,
+                },
+            );
+            assert!(!mismatch.accepted);
+            assert_eq!(mismatch.status, 4);
+            assert_eq!(
+                mismatch.error_code,
+                "PBFT_MANAGER_ADVANCE_PERIOD_REPORT_ACTION_MISMATCH"
             );
 
             let snapshot =

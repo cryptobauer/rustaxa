@@ -518,7 +518,8 @@ class PbftManager {
    *
    * Inputs are the just-finalized PBFT-chain size and the accepted Rust reset-consensus transition plan. The method
    * executes only the temporary compatibility effects still owned by the shim: timers, wallet eligibility, vote cleanup,
-   * and proposed-block cleanup. Rust remains the source of ordering and runtime snapshot updates.
+   * and proposed-block cleanup. Rust remains the source of ordering and runtime snapshot updates, and every completed
+   * action is reported back to Rust before the final period cursor is committed.
    *
    * Returns false when Rust rejects the plan or resulting runtime period snapshot.
    */

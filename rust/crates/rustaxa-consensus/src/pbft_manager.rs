@@ -3557,6 +3557,59 @@ pub struct PbftManagerAdvancePeriodPlan {
     pub error_code: String,
 }
 
+/// Executor report for one Rust-planned PBFT period-advance action.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerAdvancePeriodActionReport {
+    /// Zero-based action position reported by the compatibility executor.
+    pub action_index: u64,
+    /// Stable action code that C++ claims to have executed.
+    pub action: u8,
+    /// Whether the compatibility executor completed the action successfully.
+    pub succeeded: bool,
+}
+
+/// Stable validation status for one PBFT period-advance executor report.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerAdvancePeriodActionReportStatus {
+    /// The report matches the accepted Rust plan and may advance the executor cursor.
+    Accepted,
+    /// The report references a plan Rust already rejected.
+    PlanRejected,
+    /// The reported action code is not part of the Rust action enum.
+    UnknownAction,
+    /// The reported action index is outside the planned script.
+    ActionIndexOutOfRange,
+    /// The reported action does not match the planned action at that index.
+    ActionMismatch,
+    /// The compatibility executor reported action failure.
+    ExecutorRejected,
+}
+
+impl PbftManagerAdvancePeriodActionReportStatus {
+    /// Stable bridge code for C++.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Accepted => 0,
+            Self::PlanRejected => 1,
+            Self::UnknownAction => 2,
+            Self::ActionIndexOutOfRange => 3,
+            Self::ActionMismatch => 4,
+            Self::ExecutorRejected => 5,
+        }
+    }
+}
+
+/// Result of validating one PBFT period-advance executor report.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerAdvancePeriodActionReportResult {
+    /// Whether the action report is accepted by the Rust-owned script cursor.
+    pub accepted: bool,
+    /// Stable validation status for C++ logging and tests.
+    pub status: PbftManagerAdvancePeriodActionReportStatus,
+    /// Stable error code, empty on success.
+    pub error_code: String,
+}
+
 impl PbftManagerRuntime {
     /// Creates a runtime from an already accepted startup snapshot.
     pub fn new(snapshot: PbftManagerRuntimeSnapshot) -> Self {
@@ -4361,6 +4414,77 @@ pub fn plan_pbft_manager_advance_period_from_transition(
         new_period: pbft_chain_size.saturating_add(1),
         transition_plan,
         actions,
+        error_code: String::new(),
+    }
+}
+
+/// Validates one compatibility-executor report against a Rust period-advance plan.
+///
+/// Inputs:
+/// - `plan`: accepted Rust-owned period-advance script.
+/// - `report`: one C++ executor action result with zero-based script position.
+///
+/// Outputs:
+/// - Accepted only when the plan is accepted, the action index is in range, the
+///   reported action matches the Rust script at that index, and the executor
+///   reports success.
+///
+/// Invariants and edge behavior:
+/// - This helper is side-effect free. It intentionally does not mutate the
+///   manager runtime period; callers must apply the final period commit only
+///   after every planned action report has been accepted.
+/// - Unknown action codes and out-of-order reports are rejected with stable
+///   labels so the C++ shell cannot silently skip or reorder non-EVM
+///   finalization cleanup effects.
+pub fn validate_pbft_manager_advance_period_action_report(
+    plan: &PbftManagerAdvancePeriodPlan,
+    report: PbftManagerAdvancePeriodActionReport,
+) -> PbftManagerAdvancePeriodActionReportResult {
+    if !plan.accepted {
+        return PbftManagerAdvancePeriodActionReportResult {
+            accepted: false,
+            status: PbftManagerAdvancePeriodActionReportStatus::PlanRejected,
+            error_code: "PBFT_MANAGER_ADVANCE_PERIOD_REPORT_PLAN_REJECTED".to_string(),
+        };
+    }
+    let Some(reported_action) = PbftManagerAdvancePeriodAction::from_u8(report.action) else {
+        return PbftManagerAdvancePeriodActionReportResult {
+            accepted: false,
+            status: PbftManagerAdvancePeriodActionReportStatus::UnknownAction,
+            error_code: "PBFT_MANAGER_ADVANCE_PERIOD_REPORT_UNKNOWN_ACTION".to_string(),
+        };
+    };
+    let Ok(action_index) = usize::try_from(report.action_index) else {
+        return PbftManagerAdvancePeriodActionReportResult {
+            accepted: false,
+            status: PbftManagerAdvancePeriodActionReportStatus::ActionIndexOutOfRange,
+            error_code: "PBFT_MANAGER_ADVANCE_PERIOD_REPORT_INDEX_OVERFLOW".to_string(),
+        };
+    };
+    let Some(expected_action) = plan.actions.get(action_index) else {
+        return PbftManagerAdvancePeriodActionReportResult {
+            accepted: false,
+            status: PbftManagerAdvancePeriodActionReportStatus::ActionIndexOutOfRange,
+            error_code: "PBFT_MANAGER_ADVANCE_PERIOD_REPORT_INDEX_OUT_OF_RANGE".to_string(),
+        };
+    };
+    if *expected_action != reported_action {
+        return PbftManagerAdvancePeriodActionReportResult {
+            accepted: false,
+            status: PbftManagerAdvancePeriodActionReportStatus::ActionMismatch,
+            error_code: "PBFT_MANAGER_ADVANCE_PERIOD_REPORT_ACTION_MISMATCH".to_string(),
+        };
+    }
+    if !report.succeeded {
+        return PbftManagerAdvancePeriodActionReportResult {
+            accepted: false,
+            status: PbftManagerAdvancePeriodActionReportStatus::ExecutorRejected,
+            error_code: "PBFT_MANAGER_ADVANCE_PERIOD_REPORT_EXECUTOR_REJECTED".to_string(),
+        };
+    }
+    PbftManagerAdvancePeriodActionReportResult {
+        accepted: true,
+        status: PbftManagerAdvancePeriodActionReportStatus::Accepted,
         error_code: String::new(),
     }
 }
@@ -7148,6 +7272,76 @@ mod tests {
             "PBFT_MANAGER_ADVANCE_PERIOD_NON_INCREASING_PERIOD"
         );
         assert_eq!(runtime.snapshot().period, 13);
+    }
+
+    #[test]
+    fn advance_period_action_reports_validate_against_rust_script() {
+        let mut transition = transition_fact(PbftManagerTransitionKind::ResetConsensus);
+        transition.target_round = 1;
+        let plan = plan_pbft_manager_advance_period(PbftManagerAdvancePeriodFact {
+            pbft_chain_size: 12,
+            transition_fact: transition,
+        });
+
+        for (action_index, action) in plan.actions.iter().enumerate() {
+            let result = validate_pbft_manager_advance_period_action_report(
+                &plan,
+                PbftManagerAdvancePeriodActionReport {
+                    action_index: action_index as u64,
+                    action: action.as_u8(),
+                    succeeded: true,
+                },
+            );
+            assert_eq!(
+                result.status,
+                PbftManagerAdvancePeriodActionReportStatus::Accepted
+            );
+            assert!(result.accepted);
+            assert!(result.error_code.is_empty());
+        }
+
+        let skipped = validate_pbft_manager_advance_period_action_report(
+            &plan,
+            PbftManagerAdvancePeriodActionReport {
+                action_index: 1,
+                action: PbftManagerAdvancePeriodAction::SetVoteManagerPeriodRound.as_u8(),
+                succeeded: true,
+            },
+        );
+        assert_eq!(
+            skipped.status,
+            PbftManagerAdvancePeriodActionReportStatus::ActionMismatch
+        );
+        assert_eq!(
+            skipped.error_code,
+            "PBFT_MANAGER_ADVANCE_PERIOD_REPORT_ACTION_MISMATCH"
+        );
+
+        let failed = validate_pbft_manager_advance_period_action_report(
+            &plan,
+            PbftManagerAdvancePeriodActionReport {
+                action_index: 0,
+                action: PbftManagerAdvancePeriodAction::ApplyResetConsensusTransition.as_u8(),
+                succeeded: false,
+            },
+        );
+        assert_eq!(
+            failed.status,
+            PbftManagerAdvancePeriodActionReportStatus::ExecutorRejected
+        );
+
+        let out_of_range = validate_pbft_manager_advance_period_action_report(
+            &plan,
+            PbftManagerAdvancePeriodActionReport {
+                action_index: plan.actions.len() as u64,
+                action: PbftManagerAdvancePeriodAction::CleanupProposedBlocks.as_u8(),
+                succeeded: true,
+            },
+        );
+        assert_eq!(
+            out_of_range.status,
+            PbftManagerAdvancePeriodActionReportStatus::ActionIndexOutOfRange
+        );
     }
 
     #[test]

@@ -1210,6 +1210,20 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
+    /// C++ executor report for one Rust-planned PBFT manager period-advance action.
+    struct PbftManagerAdvancePeriodActionReport {
+        action_index: u64,
+        action: u8,
+        succeeded: bool,
+    }
+
+    /// Validation result for one PBFT manager period-advance action report.
+    struct PbftManagerAdvancePeriodActionReportResult {
+        accepted: bool,
+        status: u8,
+        error_code: String,
+    }
+
     /// Rust-owned PBFT manager cursor snapshot used by the transitional C++
     /// shim to mirror state after startup or transition commits.
     struct PbftManagerRuntimeSnapshot {
@@ -4824,6 +4838,10 @@ pub mod rustaxa_ffi {
             pbft_chain_size: u64,
             transition_plan: &PbftManagerTransitionPlan,
         ) -> PbftManagerAdvancePeriodPlan;
+        pub fn validate_pbft_manager_advance_period_action_report(
+            plan: &PbftManagerAdvancePeriodPlan,
+            report: PbftManagerAdvancePeriodActionReport,
+        ) -> PbftManagerAdvancePeriodActionReportResult;
         pub fn pbft_manager_runtime_apply_period_advance(
             runtime: &mut BridgePbftManagerRuntime,
             new_period: u64,
