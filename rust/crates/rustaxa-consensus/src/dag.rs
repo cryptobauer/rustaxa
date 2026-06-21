@@ -407,7 +407,6 @@ pub struct DagAddBlockEffectPlan {
     pub persist_transactions: bool,
     pub persist_block: bool,
     pub add_to_graph: bool,
-    pub mirror_legacy_graph: bool,
     pub emit_verified: bool,
     pub gossip: bool,
     pub proposed: bool,
@@ -2145,7 +2144,6 @@ pub fn plan_dag_add_block_effects(input: DagAddBlockEffectInput) -> DagAddBlockE
             persist_transactions: false,
             persist_block: false,
             add_to_graph: false,
-            mirror_legacy_graph: false,
             emit_verified: false,
             gossip: false,
             proposed: input.proposed,
@@ -2161,7 +2159,6 @@ pub fn plan_dag_add_block_effects(input: DagAddBlockEffectInput) -> DagAddBlockE
             persist_transactions: false,
             persist_block: false,
             add_to_graph: false,
-            mirror_legacy_graph: false,
             emit_verified: false,
             gossip: false,
             proposed: input.proposed,
@@ -2177,7 +2174,6 @@ pub fn plan_dag_add_block_effects(input: DagAddBlockEffectInput) -> DagAddBlockE
             persist_transactions: false,
             persist_block: false,
             add_to_graph: false,
-            mirror_legacy_graph: false,
             emit_verified: false,
             gossip: false,
             proposed: input.proposed,
@@ -2192,7 +2188,6 @@ pub fn plan_dag_add_block_effects(input: DagAddBlockEffectInput) -> DagAddBlockE
         persist_transactions: input.save,
         persist_block: input.save,
         add_to_graph: true,
-        mirror_legacy_graph: true,
         emit_verified: input.save,
         gossip: input.save,
         proposed: input.proposed,
@@ -5575,7 +5570,6 @@ mod tests {
         assert!(!no_save.persist_transactions);
         assert!(!no_save.persist_block);
         assert!(no_save.add_to_graph);
-        assert!(no_save.mirror_legacy_graph);
         assert!(!no_save.emit_verified);
         assert!(!no_save.gossip);
     }

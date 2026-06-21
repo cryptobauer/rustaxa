@@ -659,13 +659,6 @@ std::pair<bool, std::vector<blk_hash_t>> DagManager::addDagBlockRlp(rustaxa::Dag
   }
   seen_blocks_.insert(blk_hash, blk);
 
-  // TODO(rust-rewrite): remove this compatibility mirror once out-of-scope
-  // verify/sync accessors no longer depend on DagManagerOld in-memory DAG state.
-  // This call does not persist, validate, emit, or gossip.
-  if (add_plan.mirror_legacy_graph) {
-    DagManagerOld::addDagBlock(blk, {}, false, false);
-  }
-
   if (add_plan.emit_verified) {
     block_verified_.emit(blk);
   }
@@ -724,13 +717,6 @@ std::pair<bool, std::vector<blk_hash_t>> DagManager::addDagBlock(const std::shar
   }
 
   seen_blocks_.insert(blk_hash, blk);
-
-  // TODO(rust-rewrite): remove this compatibility mirror once out-of-scope
-  // verify/sync accessors no longer depend on DagManagerOld in-memory DAG state.
-  // This call does not persist, validate, emit, or gossip.
-  if (add_plan.mirror_legacy_graph) {
-    DagManagerOld::addDagBlock(blk, {}, false, false);
-  }
 
   if (add_plan.emit_verified) {
     block_verified_.emit(blk);

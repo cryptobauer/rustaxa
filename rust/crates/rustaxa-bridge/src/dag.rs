@@ -2069,7 +2069,6 @@ pub fn dag_plan_add_block_effects(input: DagAddBlockEffectInput) -> DagAddBlockE
         persist_transactions: plan.persist_transactions,
         persist_block: plan.persist_block,
         add_to_graph: plan.add_to_graph,
-        mirror_legacy_graph: plan.mirror_legacy_graph,
         emit_verified: plan.emit_verified,
         gossip: plan.gossip,
         proposed: plan.proposed,

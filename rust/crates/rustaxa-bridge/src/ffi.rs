@@ -4147,7 +4147,6 @@ pub mod rustaxa_ffi {
         persist_transactions: bool,
         persist_block: bool,
         add_to_graph: bool,
-        mirror_legacy_graph: bool,
         emit_verified: bool,
         gossip: bool,
         proposed: bool,
