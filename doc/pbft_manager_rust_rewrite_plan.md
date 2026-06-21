@@ -417,6 +417,8 @@ Landed bounded PBFT-chain update/report collapse:
   commits remain as separate executor actions.
 - Duplicate-block resume now executes pillar post-processing only at the Rust replay cursor's `ProcessPillarBlock`
   position after period advance; the duplicate opportunistic post-FinalChain pillar branch was removed.
+- Duplicate-block resume action reports now use the structured Rust runtime report path, so live-mutation validation
+  failures preserve Rust's typed error codes instead of collapsing into generic resume-action failures.
 
 Scope:
 

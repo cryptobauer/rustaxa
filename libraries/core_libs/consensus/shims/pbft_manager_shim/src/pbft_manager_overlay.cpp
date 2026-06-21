@@ -3594,10 +3594,15 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           }
           return true;
         };
-        auto report_resume_action = [&](const rustaxa::PbftFinalizationRuntimeSessionStep &step, bool success,
-                                        uint8_t action_status) {
-          const auto next_step = resume_runtime_session->pbft_finalization_runtime_session_report(
-              step.cursor, step.action, success, action_status);
+        auto report_resume_action_detail = [&](const rustaxa::PbftFinalizationRuntimeSessionStep &step, bool success,
+                                               uint8_t action_status, std::string error_code) {
+          rustaxa::PbftFinalizationRuntimeActionReport report;
+          report.cursor = step.cursor;
+          report.action = step.action;
+          report.success = success;
+          report.status = action_status;
+          report.error_code = std::move(error_code);
+          const auto next_step = resume_runtime_session->pbft_finalization_runtime_session_report_action(report);
           if (!success || (next_step.status != kPbftFinalizationRuntimeStatusActive &&
                            next_step.status != kPbftFinalizationRuntimeStatusComplete)) {
             LOG(log_er_) << "Rust PBFT finalization resume action " << static_cast<uint32_t>(step.action)
@@ -3607,6 +3612,11 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
             return false;
           }
           return true;
+        };
+        auto report_resume_action = [&](const rustaxa::PbftFinalizationRuntimeSessionStep &step, bool success,
+                                        uint8_t action_status) {
+          return report_resume_action_detail(step, success, action_status,
+                                             success ? std::string{} : "PBFT_FINALIZE_RESUME_ACTION_FAILED");
         };
 
         rustaxa::PbftFinalizationRuntimeSessionStep resume_step{};
@@ -3673,7 +3683,11 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           }
           const auto action_status =
               dynamic_lambda_validation.accepted ? dynamic_lambda_result.status : dynamic_lambda_validation.status;
-          if (!report_resume_action(resume_step, dynamic_lambda_validation.accepted, action_status)) {
+          const auto action_error = dynamic_lambda_validation.accepted
+                                        ? std::string{}
+                                        : static_cast<std::string>(dynamic_lambda_validation.error_code);
+          if (!report_resume_action_detail(resume_step, dynamic_lambda_validation.accepted, action_status,
+                                           action_error)) {
             return false;
           }
         }
@@ -3712,7 +3726,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                          << static_cast<uint32_t>(final_chain_validation.status) << ", error "
                          << static_cast<std::string>(final_chain_validation.error_code);
           }
-          if (!report_resume_action(resume_step, final_chain_validation.accepted, final_chain_validation.status)) {
+          if (!report_resume_action_detail(resume_step, final_chain_validation.accepted, final_chain_validation.status,
+                                           static_cast<std::string>(final_chain_validation.error_code))) {
             return false;
           }
         }
@@ -3776,7 +3791,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                          << static_cast<uint32_t>(executed_validation.status) << ", error "
                          << static_cast<std::string>(executed_validation.error_code);
           }
-          if (!report_resume_action(resume_step, executed_validation.accepted, executed_validation.status)) {
+          if (!report_resume_action_detail(resume_step, executed_validation.accepted, executed_validation.status,
+                                           static_cast<std::string>(executed_validation.error_code))) {
             return false;
           }
           if (!begin_resume_action(kPbftFinalizationRuntimeActionAdvancePeriod, resume_step)) {
@@ -3801,7 +3817,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                          << static_cast<uint32_t>(advance_validation.status) << ", error "
                          << static_cast<std::string>(advance_validation.error_code);
           }
-          if (!report_resume_action(resume_step, advance_validation.accepted, advance_validation.status)) {
+          if (!report_resume_action_detail(resume_step, advance_validation.accepted, advance_validation.status,
+                                           static_cast<std::string>(advance_validation.error_code))) {
             return false;
           }
         }
@@ -3830,7 +3847,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                          << static_cast<uint32_t>(pillar_validation.status) << ", error "
                          << static_cast<std::string>(pillar_validation.error_code);
           }
-          if (!report_resume_action(resume_step, pillar_validation.accepted, pillar_validation.status)) {
+          if (!report_resume_action_detail(resume_step, pillar_validation.accepted, pillar_validation.status,
+                                           static_cast<std::string>(pillar_validation.error_code))) {
             return false;
           }
         }
