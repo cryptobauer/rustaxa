@@ -2528,6 +2528,13 @@ pub mod rustaxa_ffi {
         weight: u64,
     }
 
+    /// Rust-retained pillar vote payload selected for C++ edge materialization.
+    struct PillarVoteRecord {
+        vote_hash: [u8; 32],
+        weight: u64,
+        vote_rlp: Vec<u8>,
+    }
+
     /// Lightweight reference to a bundle-planned pillar vote.
     /// Includes the vote hash and weight carried from planner input.
     struct PillarVoteBundleAcceptedVote {
@@ -2541,6 +2548,14 @@ pub mod rustaxa_ffi {
         block_weight: u64,
         selected_weight: u64,
         votes: Vec<PillarVoteRef>,
+    }
+
+    /// Lookup result with Rust-retained vote payloads for edge materialization.
+    struct PillarVotesPayloadLookup {
+        threshold_met: bool,
+        block_weight: u64,
+        selected_weight: u64,
+        votes: Vec<PillarVoteRecord>,
     }
 
     /// Result of a bundle planning pass.
@@ -6226,6 +6241,12 @@ pub mod rustaxa_ffi {
             block_hash: &[u8; 32],
             above_threshold: bool,
         ) -> PillarVotesLookup;
+        pub fn pillar_votes_get_verified_vote_payloads(
+            self: &BridgePillarVotes,
+            period: u64,
+            block_hash: &[u8; 32],
+            above_threshold: bool,
+        ) -> PillarVotesPayloadLookup;
         pub fn pillar_votes_cleanup_votes_by_period(self: &mut BridgePillarVotes, min_period: u64);
         pub fn pillar_votes_snapshot_refs(self: &BridgePillarVotes) -> Vec<PillarVoteRef>;
 

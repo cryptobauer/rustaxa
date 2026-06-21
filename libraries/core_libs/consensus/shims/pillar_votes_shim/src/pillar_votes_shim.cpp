@@ -60,6 +60,20 @@ const std::shared_ptr<PillarVote>& PillarVotes::requireLiveVote(const vote_hash_
   return found->second;
 }
 
+std::shared_ptr<PillarVote> PillarVotes::materializeVoteRecord(const rustaxa::PillarVoteRecord& record) const {
+  bytes vote_rlp;
+  vote_rlp.reserve(record.vote_rlp.size());
+  for (const auto byte : record.vote_rlp) {
+    vote_rlp.push_back(byte);
+  }
+  auto vote = std::make_shared<PillarVote>(dev::RLP(vote_rlp));
+  const auto expected_hash = fromBridgeHash(record.vote_hash);
+  if (vote->getHash() != expected_hash) {
+    throw pillarVotesError("Rust retained pillar vote payload hash mismatches materialized vote");
+  }
+  return vote;
+}
+
 void PillarVotes::trackVote(const std::shared_ptr<PillarVote>& vote) { live_votes_[vote->getHash()] = vote; }
 
 void PillarVotes::pruneLiveVotesToSnapshotLocked() {
@@ -166,15 +180,15 @@ std::vector<std::shared_ptr<PillarVote>> PillarVotes::getVerifiedVotes(PbftPerio
   std::vector<std::shared_ptr<PillarVote>> votes;
   const auto bridge_block_hash = toBridgeHash(pillar_block_hash);
   const auto vote_data =
-      rust_pillar_votes_->pillar_votes_get_verified_votes(period, bridge_block_hash, above_threshold);
+      rust_pillar_votes_->pillar_votes_get_verified_vote_payloads(period, bridge_block_hash, above_threshold);
 
   if (vote_data.votes.empty()) {
     return votes;
   }
 
   votes.reserve(vote_data.votes.size());
-  for (const auto& vote_ref : vote_data.votes) {
-    votes.push_back(requireLiveVote(fromBridgeHash(vote_ref.vote_hash)));
+  for (const auto& vote_record : vote_data.votes) {
+    votes.push_back(materializeVoteRecord(vote_record));
   }
 
   return votes;

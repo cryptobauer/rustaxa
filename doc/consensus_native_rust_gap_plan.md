@@ -208,6 +208,8 @@ Status as of 2026-06-21: in progress.
   double-voting proof transaction planning.
 - Slashing transaction insertion is still a C++ executor effect, but the executor now reports typed insertion outcome
   back to Rust before Rust mutates duplicate-proof state or classifies the submission result.
+- Pillar vote lookup now has a Rust-retained payload path so C++ materializes returned `PillarVote` objects from Rust
+  records at public edges instead of requiring live vote sidecars for selected votes.
 
 Scope:
 

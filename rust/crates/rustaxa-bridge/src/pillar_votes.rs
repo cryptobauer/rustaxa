@@ -13,10 +13,10 @@
 use crate::ffi::rustaxa_ffi::{
     PillarVoteBundleAcceptedVote, PillarVoteBundleFact as FfiPillarVoteBundleFact,
     PillarVoteBundlePlan as PillarVoteBundlePlanOutput, PillarVoteIdentityPayload,
-    PillarVoteInsertOutcome, PillarVoteInspection, PillarVotePayload, PillarVoteRef,
-    PillarVoteRelevanceFact as FfiPillarVoteRelevanceFact,
+    PillarVoteInsertOutcome, PillarVoteInspection, PillarVotePayload, PillarVoteRecord,
+    PillarVoteRef, PillarVoteRelevanceFact as FfiPillarVoteRelevanceFact,
     PillarVoteRelevancePlan as FfiPillarVoteRelevancePlan, PillarVoteUniqueOutcome,
-    PillarVotesLookup,
+    PillarVotesLookup, PillarVotesPayloadLookup,
 };
 use crate::ffi::BridgePillarVotes;
 use anyhow::{ensure, Result};
@@ -88,6 +88,21 @@ impl BridgePillarVotes {
         block_hash: &[u8; 32],
         above_threshold: bool,
     ) -> PillarVotesLookup {
+        self.0
+            .get_verified_votes(period, H256::from(*block_hash), above_threshold)
+            .into()
+    }
+
+    /// Looks up Rust-retained pillar vote payloads for C++ edge materialization.
+    ///
+    /// This keeps deterministic selection in Rust while avoiding dependency on
+    /// live C++ `PillarVote` sidecars for returned vote objects.
+    pub fn pillar_votes_get_verified_vote_payloads(
+        &self,
+        period: u64,
+        block_hash: &[u8; 32],
+        above_threshold: bool,
+    ) -> PillarVotesPayloadLookup {
         self.0
             .get_verified_votes(period, H256::from(*block_hash), above_threshold)
             .into()
@@ -250,6 +265,16 @@ impl From<rustaxa_consensus::VerifiedPillarVote> for PillarVoteRef {
     }
 }
 
+impl From<rustaxa_consensus::VerifiedPillarVote> for PillarVoteRecord {
+    fn from(value: rustaxa_consensus::VerifiedPillarVote) -> Self {
+        Self {
+            vote_hash: value.vote_hash.into(),
+            weight: value.weight,
+            vote_rlp: value.vote.encode_rlp(),
+        }
+    }
+}
+
 impl From<rustaxa_consensus::PillarVotesLookup> for PillarVotesLookup {
     fn from(value: rustaxa_consensus::PillarVotesLookup) -> Self {
         Self {
@@ -257,6 +282,21 @@ impl From<rustaxa_consensus::PillarVotesLookup> for PillarVotesLookup {
             block_weight: value.block_weight,
             selected_weight: value.selected_weight,
             votes: value.votes.into_iter().map(PillarVoteRef::from).collect(),
+        }
+    }
+}
+
+impl From<rustaxa_consensus::PillarVotesLookup> for PillarVotesPayloadLookup {
+    fn from(value: rustaxa_consensus::PillarVotesLookup) -> Self {
+        Self {
+            threshold_met: value.threshold_met,
+            block_weight: value.block_weight,
+            selected_weight: value.selected_weight,
+            votes: value
+                .votes
+                .into_iter()
+                .map(PillarVoteRecord::from)
+                .collect(),
         }
     }
 }
@@ -523,6 +563,19 @@ mod tests {
         assert_eq!(lookup.votes.len(), 2);
         assert_eq!(lookup.votes[0].vote_hash, high.vote_hash);
         assert_eq!(lookup.votes[1].vote_hash, mid.vote_hash);
+
+        let payload_lookup =
+            votes.pillar_votes_get_verified_vote_payloads(13, &high.block_hash, true);
+        assert!(payload_lookup.threshold_met);
+        assert_eq!(payload_lookup.block_weight, 8);
+        assert_eq!(payload_lookup.selected_weight, 7);
+        assert_eq!(payload_lookup.votes.len(), 2);
+        assert_eq!(payload_lookup.votes[0].vote_hash, high.vote_hash);
+        assert_eq!(payload_lookup.votes[0].weight, 4);
+        assert_eq!(payload_lookup.votes[0].vote_rlp, high.vote_rlp);
+        assert_eq!(payload_lookup.votes[1].vote_hash, mid.vote_hash);
+        assert_eq!(payload_lookup.votes[1].weight, 3);
+        assert_eq!(payload_lookup.votes[1].vote_rlp, mid.vote_rlp);
     }
 
     #[test]
