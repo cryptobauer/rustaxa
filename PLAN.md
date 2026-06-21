@@ -673,6 +673,44 @@ dynamic-lambda decisions, and bounded restart/duplicate classification. Remainin
 is executor or compatibility work under the boundaries above, not authoritative PBFT manager decision state. Detailed
 status is tracked in `doc/consensus_rewrite_tracker.md`.
 
+The completed PBFT manager closeout folded the dedicated slice tracker into this plan. The landed sequence was:
+
+1. Runtime root and constructor collapse: `App::init` creates the long-lived Rust PBFT manager runtime, and Rust-mode
+   `PbftManager` construction no longer creates its core runtime through `DbStorage`, `BridgeStorage`, or
+   `db_->rustStorage()`.
+2. Startup, replay, and restore ownership: restart replay range selection, scalar/status restore, proposed-block restore,
+   and bounded replay classification are Rust-owned from typed runtime snapshots and storage queries.
+3. State mirrors, timers, and runtime snapshot authority: Rust snapshots are the authority for round, step, lambda,
+   broadcast planning, transition persistence, and compatibility mirror hydration.
+4. State-action and daemon control flow ownership: daemon ticks, state-action branch selection, transition eligibility,
+   follow-up decisions, and cursor advancement are driven by Rust runtime sessions with typed executor reports.
+5. Object sidecar and materialization reduction: PBFT decisions use Rust-owned canonical payloads and compact facts for
+   proposed blocks, cert-voted payloads, period-data queue metadata, and selected vote/pillar/reward facts; old C++
+   objects remain only at classified executor and public/network edges.
+6. Finalization executor collapse except EVM: Rust owns finalization action ordering, storage-write application,
+   dynamic-lambda decisions, duplicate/restart resume classification, and non-EVM live-mutation report validation while
+   FinalChain/EVM execution stays an explicit executor boundary.
+7. Sync and period-data intake without C++ decision state: Rust owns queue admission, queue-drain ordering, staged
+   `processPeriodData` check ordering, transaction warning classification, and terminal sync actions from queued compact
+   facts.
+8. Vote, pillar, and slashing boundary tightening: PBFT manager no longer consumes live `VoteManager` or
+   `PillarChainManager` sidecar collections for protocol decisions; it uses typed manager ports and receives only
+   executor payloads for signing, network, finalization, or public compatibility.
+9. Storage shim and bridge surface deletion: targeted searches found no PBFT manager production dependency on
+   `BridgeStorage`, storage-shim batches, `rustBatchId`, `db_->rustStorage()`, direct `getDB()`, or generic `DbStorage`
+   consensus reads/writes.
+10. Overlay shrink and upstream-sync cleanup: `PbftManagerOld` production forwarding and stale overlay TODOs were
+    removed or replaced with explicit public API, lifecycle, network, EVM, and executor-boundary classifications.
+11. Runtime mirror and protocol sidecar closeout: remaining direct scalar-mirror reads were removed from Rust-mode
+    production helpers or classified as compatibility caches, satisfying the PBFT manager closeout definition.
+
+Closeout definition: Rust-mode PBFT manager production behavior must not depend on `DbStorage`, `BridgeStorage`, generic
+storage-shim batches, C++ scalar mirrors, or C++ protocol sidecars except where a call site is explicitly part of
+network/tarcap execution, EVM/state execution, lifecycle wiring, or public API materialization. Any future PBFT manager
+rewrite work should continue to use `$implement-rustaxa-consensus-slice`, reuse existing Rust runtime/query APIs before
+adding C++ orchestration, and preserve at least Rust module or bridge parity before disabling C++ tests that only covered
+retired legacy behavior.
+
 ### Current Consensus Shape
 
 The C++ consensus area includes:
