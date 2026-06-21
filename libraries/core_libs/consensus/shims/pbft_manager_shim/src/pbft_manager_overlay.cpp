@@ -3951,11 +3951,13 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                                     rebroadcast_reward_votes_counter_);
     if (dynamic_lambda_plan.decreased_dynamic_lambda) {
       LOG(log_nf_) << "Decrease dynamic_lambda by " << kGenesisConfig.state.hardforks.cacti_hf.lambda_change << " to "
-                   << dynamic_lambda_ << ", period " << block_pbft_period << ", round " << block_pbft_round;
+                   << dynamic_lambda_snapshot.dynamic_lambda_ms << ", period " << block_pbft_period << ", round "
+                   << block_pbft_round;
     }
     if (dynamic_lambda_plan.increased_dynamic_lambda) {
       LOG(log_nf_) << "Increase dynamic_lambda by " << kGenesisConfig.state.hardforks.cacti_hf.lambda_change << " to "
-                   << dynamic_lambda_ << ", period " << block_pbft_period << ", round " << block_pbft_round;
+                   << dynamic_lambda_snapshot.dynamic_lambda_ms << ", period " << block_pbft_period << ", round "
+                   << block_pbft_round;
     }
     rustaxa::PbftFinalizationLiveMutationReport dynamic_lambda_report{};
     dynamic_lambda_report.action = kPbftFinalizationRuntimeActionApplyDynamicLambda;

@@ -716,6 +716,8 @@ Landed bounded cleanup:
 
 - Removed direct step-mirror use from the reset-consensus runtime log and made PBFT deadline calculation use the Rust
   runtime snapshot for both round and lambda when the runtime is present.
+- Removed finalization dynamic-lambda log reads from the C++ lambda mirror; the log now uses the Rust runtime snapshot
+  returned by the applied dynamic-lambda action.
 
 Scope:
 
