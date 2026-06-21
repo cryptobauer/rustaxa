@@ -115,6 +115,11 @@ Stop conditions:
 
 Goal: make TransactionManager native Rust ownership complete enough that C++ only materializes public views or executes EVM gas estimation.
 
+Status: complete. TransactionManager production shim paths now use Rust-owned runtime/query APIs for queue and sidecar
+authority, canonical payload inspection, DAG persistence, finalized-status mutation, public admission command reports,
+and event/log intent selection. Remaining `Transaction`/`PeriodData` objects are edge adapters for public/test/network
+materialization or EVM gas-estimation execution.
+
 Scope:
 
 - Move public transaction construction and compatibility object creation behind Rust-owned payload/query APIs.
@@ -286,7 +291,7 @@ Stop conditions:
 ## Suggested Order
 
 1. Slice 1 first, because FinalChain/DPoS fact ownership unblocks DAG, transaction, vote, pillar, and rewards cleanup.
-2. Slice 2 next, because TransactionManager payload/public/event ownership removes a major source of C++ sidecars.
+2. Slice 2 is complete: TransactionManager payload/public/event ownership now removes a major source of C++ sidecars.
 3. Slice 3, then Slice 4, to close DAG decision state before shrinking proposer lifecycle shells.
 4. Slice 5, because vote/pillar/slashing executor collapse benefits from the stronger FinalChain and transaction ports.
 5. Slice 6, once rewards inputs and FinalChain facts are Rust-owned enough to remove the legacy carrier.

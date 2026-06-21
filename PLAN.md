@@ -926,9 +926,9 @@ The current Rust consensus footprint is broad but still incomplete:
    finalized system storage sources. The Rust runtime state exposes the authoritative Rust-mode transaction count and
    drives count reads after persistence/finalization commits. Rust FinalChain now exposes block-scoped account snapshots,
    and proposal transaction views verify stored transaction RLP hashes, inspect legacy sender/nonce identity in Rust, and
-   apply proposal-period finalized-account nonce filtering before C++ materializes returned payloads. Remaining live-shell
-   gaps are EVM estimation execution, event/log dispatch infrastructure, public transaction object construction, final materialization,
-   and broader lifecycle orchestration. With transaction account-fact sourcing owned by Rust, the first PBFT
+   apply proposal-period finalized-account nonce filtering before C++ materializes returned payloads. The remaining
+   TransactionManager C++ surfaces are now classified shell edges: EVM estimation execution, event/log dispatch
+   infrastructure, public transaction object construction, final materialization, and lifecycle wiring. With transaction account-fact sourcing owned by Rust, the first PBFT
    orchestration storage slice now restores proposed-block metadata directly from Rust storage and removes stale
    proposed-block storage keys through Rust-batched cleanup while C++ keeps daemon threads, networking, timers,
    finalization side effects, and live object dispatch. A full Rust-mode `PbftManager` overlay now owns PBFT startup and
