@@ -64,8 +64,8 @@ Stats::Stats(uint32_t committee_size, const HardforksConfig& hardforks, std::sha
              std::function<uint64_t(EthBlockNumber)>&& dpos_eligible_total_vote_count, EthBlockNumber last_blk_num)
     : kCommitteeSize(committee_size),
       kHardforksConfig(hardforks),
-      dpos_eligible_total_vote_count_(std::move(dpos_eligible_total_vote_count)),
       db_(std::move(db)),
+      dpos_eligible_total_vote_count_(std::move(dpos_eligible_total_vote_count)),
       rust_stats_(rustaxa::create_rewards_stats_runtime(db_->rustStorage(), makeRewardsConfig(kCommitteeSize, hardforks),
                                                         makeFrequencyRules(hardforks), last_blk_num)) {
   recoverFromDb(last_blk_num);

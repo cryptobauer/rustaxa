@@ -244,7 +244,7 @@ Stop conditions:
 
 Goal: move legacy rewards stats carrier ownership fully into Rust.
 
-Status as of 2026-06-21: in progress.
+Status as of 2026-06-21: complete.
 
 - Rust already owns rewards-stat planning, legacy-compatible `BlockStats` RLP encoding, interval cache write/clear plans,
   and Rust storage reload/clear for persisted block-reward stats rows.
@@ -254,6 +254,9 @@ Status as of 2026-06-21: in progress.
   to the caller's Rust storage batch instead of committing through a separate rewards runtime storage handle.
 - External-EVM FinalChain publication now previews rewards stats on cloned Rust runtime state and commits the rewards
   runtime/cache mirror only after Rust publication storage succeeds.
+- Rust and Rust-enabled bridge coverage now covers legacy-compatible RLP shape, interval cache boundaries, storage
+  reload/clear, fee attribution, Aspen DAG reward counting, duplicate cert-vote rejection, and external-EVM publication
+  batch integration.
 
 Scope:
 
