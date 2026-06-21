@@ -242,10 +242,11 @@ class TransactionManager : public TransactionManagerOld {
   /**
    * Apply finalized-status transitions using Rust planner and sidecar state.
    *
-   * Rust owns status planning, recently-finalized sidecar retention,
-   * non-finalized sidecar removal, known-cache marking, and live queue cleanup.
-   * Rust also sources finalized-account purge facts from the Rust FinalChain
-   * runtime; C++ logs returned side effects.
+   * Compatibility adapter for callers that still hold `PeriodData`.
+   * C++ extracts only finalized transaction hashes/RLP payloads and the period,
+   * then routes through Rust-owned payload inspection, status planning,
+   * recently-finalized sidecar retention, non-finalized sidecar removal,
+   * known-cache marking, and live queue cleanup.
    */
   void updateFinalizedTransactionsStatus(const PeriodData &period_data);
 
@@ -270,6 +271,9 @@ class TransactionManager : public TransactionManagerOld {
 
   /**
    * Warm Rust-owned recently-finalized sidecars from canonical period-data RLP payloads.
+   *
+   * `PeriodData` is only an edge adapter: C++ extracts hashes/RLP bytes, Rust
+   * re-inspects payloads and mutates sidecar state from canonical facts.
    */
   void initializeRecentlyFinalizedTransactions(const PeriodData &period_data);
 

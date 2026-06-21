@@ -156,10 +156,10 @@ rust::Vec<rustaxa::TransactionManagerSidecarLookupRequest> buildSidecarLookupReq
   return requests;
 }
 
-rustaxa::TransactionManagerSidecarInsertInput toSidecarPayload(const std::shared_ptr<Transaction>& transaction) {
+rustaxa::TransactionManagerSidecarInsertInput toSidecarPayload(const rustaxa::LegacyTransactionInspection& envelope) {
   rustaxa::TransactionManagerSidecarInsertInput input;
-  input.hash = toBridgeHash(transaction->getHash());
-  input.trx_rlp = toBridgeBytes(transaction->rlp());
+  input.hash = envelope.hash;
+  input.trx_rlp = cloneBridgeBytes(envelope.tx_rlp);
   return input;
 }
 
@@ -872,6 +872,38 @@ class TransactionManagerRustShimAccess {
     return ordered_transactions;
   }
 
+  static rust::Vec<rustaxa::FinalizedTransactionStatusSidecarFact> buildFinalizedStatusPayloadFacts(
+      const vec_trx_t& transaction_hashes, const std::vector<dev::bytes>& transaction_rlps) {
+    if (transaction_hashes.size() != transaction_rlps.size()) {
+      throw DbException("RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: finalized transaction payload lengths do not match");
+    }
+
+    rust::Vec<rustaxa::FinalizedTransactionStatusSidecarFact> facts;
+    facts.reserve(transaction_hashes.size());
+    for (size_t idx = 0; idx < transaction_hashes.size(); ++idx) {
+      const auto envelope = inspectRegularTransactionPayload(transaction_hashes[idx], transaction_rlps[idx],
+                                                             "RUST_STORAGE_FINALIZED_TX_STATUS_ENVELOPE_FAILED");
+      rustaxa::FinalizedTransactionStatusSidecarFact fact;
+      fact.input_index = static_cast<uint64_t>(idx);
+      fact.hash = envelope.hash;
+      fact.trx_rlp = cloneBridgeBytes(envelope.tx_rlp);
+      facts.push_back(std::move(fact));
+    }
+    return facts;
+  }
+
+  static std::pair<vec_trx_t, std::vector<dev::bytes>> periodTransactionPayloads(const PeriodData& period_data) {
+    vec_trx_t transaction_hashes;
+    std::vector<dev::bytes> transaction_rlps;
+    transaction_hashes.reserve(period_data.transactions.size());
+    transaction_rlps.reserve(period_data.transactions.size());
+    for (const auto& transaction : period_data.transactions) {
+      transaction_hashes.emplace_back(transaction->getHash());
+      transaction_rlps.emplace_back(transaction->rlp());
+    }
+    return {std::move(transaction_hashes), std::move(transaction_rlps)};
+  }
+
   static std::unordered_set<trx_hash_t> excludeFinalizedTransactions(const TransactionManager& manager,
                                                                      const std::vector<trx_hash_t>& hashes) {
     const auto plan = [&]() {
@@ -1153,16 +1185,23 @@ class TransactionManagerRustShimAccess {
     }();
   }
 
-  static void initializeRecentlyFinalizedTransactions(TransactionManager& manager, const PeriodData& period_data) {
-    const auto period = period_data.pbft_blk->getPeriod();
+  static void initializeRecentlyFinalizedTransactionPayloads(TransactionManager& manager, PbftPeriod period,
+                                                            const vec_trx_t& transaction_hashes,
+                                                            const std::vector<dev::bytes>& transaction_rlps) {
+    if (transaction_hashes.size() != transaction_rlps.size()) {
+      throw DbException(
+          "RUST_TX_MANAGER_RECENT_SIDECAR_INIT_FAILED: finalized transaction payload lengths do not match");
+    }
     std::unique_lock transactions_lock(manager.transactions_mutex_);
-    for (const auto& transaction : period_data.transactions) {
+    for (size_t idx = 0; idx < transaction_hashes.size(); ++idx) {
+      const auto envelope = inspectRegularTransactionPayload(transaction_hashes[idx], transaction_rlps[idx],
+                                                             "RUST_TX_MANAGER_RECENT_SIDECAR_INIT_ENVELOPE_FAILED");
       try {
-        manager.runtime_->transaction_manager_runtime_insert_non_finalized(toSidecarPayload(transaction));
+        manager.runtime_->transaction_manager_runtime_insert_non_finalized(toSidecarPayload(envelope));
         rustaxa::TransactionManagerSidecarTransitionInput transition;
         transition.period = period;
         rustaxa::TransactionManagerSidecarHash hash;
-        hash.hash = toBridgeHash(transaction->getHash());
+        hash.hash = envelope.hash;
         transition.hashes.push_back(std::move(hash));
         manager.runtime_->transaction_manager_runtime_apply_finalized_transition(std::move(transition));
       } catch (const std::exception& e) {
@@ -1171,26 +1210,21 @@ class TransactionManagerRustShimAccess {
     }
   }
 
+  static void initializeRecentlyFinalizedTransactions(TransactionManager& manager, const PeriodData& period_data) {
+    const auto payloads = periodTransactionPayloads(period_data);
+    initializeRecentlyFinalizedTransactionPayloads(manager, period_data.pbft_blk->getPeriod(), payloads.first,
+                                                   payloads.second);
+  }
+
   static rustaxa::TransactionManagerFinalizedStatusCommandReport updateFinalizedTransactionsStatusReport(
-      TransactionManager& manager, const PeriodData& period_data) {
+      TransactionManager& manager, PbftPeriod period, rust::Vec<rustaxa::FinalizedTransactionStatusSidecarFact>&& facts) {
     const auto recently_finalized_transactions_periods =
         kRecentlyFinalizedTransactionsFactor * manager.final_chain_->delegationDelay();
-
-    rust::Vec<rustaxa::FinalizedTransactionStatusSidecarFact> facts;
-    facts.reserve(period_data.transactions.size());
-    uint64_t input_index = 0;
-    for (const auto& transaction : period_data.transactions) {
-      rustaxa::FinalizedTransactionStatusSidecarFact fact;
-      fact.input_index = input_index++;
-      fact.hash = toBridgeHash(transaction->getHash());
-      fact.trx_rlp = toBridgeBytes(transaction->rlp());
-      facts.push_back(std::move(fact));
-    }
 
     const auto report = [&]() {
       try {
         return rustaxa::update_finalized_transactions_status_command_report_with_runtime_and_final_chain(
-            *manager.runtime_, manager.final_chain_->rustFinalChainForRust(), period_data.pbft_blk->getPeriod(),
+            *manager.runtime_, manager.final_chain_->rustFinalChainForRust(), period,
             recently_finalized_transactions_periods, std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: ") + e.what());
@@ -1209,6 +1243,14 @@ class TransactionManagerRustShimAccess {
                            << " removed from transactions_pool_ by finalized account nonce";
     }
     return report;
+  }
+
+  static rustaxa::TransactionManagerFinalizedStatusCommandReport updateFinalizedTransactionsStatusReport(
+      TransactionManager& manager, const PeriodData& period_data) {
+    const auto payloads = periodTransactionPayloads(period_data);
+    return updateFinalizedTransactionsStatusReport(
+        manager, period_data.pbft_blk->getPeriod(),
+        buildFinalizedStatusPayloadFacts(payloads.first, payloads.second));
   }
 
   static void updateFinalizedTransactionsStatus(TransactionManager& manager, const PeriodData& period_data) {
