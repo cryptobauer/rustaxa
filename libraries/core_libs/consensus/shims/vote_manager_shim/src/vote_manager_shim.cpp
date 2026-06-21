@@ -487,6 +487,14 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
   return addVerifiedVoteWithReport(vote).accepted;
 }
 
+bool VoteManager::addLocallyGeneratedVote(const std::shared_ptr<PbftVote>& vote) {
+  if (!addVerifiedVoteWithReport(vote).accepted) {
+    return false;
+  }
+  saveOwnVerifiedVote(vote);
+  return true;
+}
+
 VoteManager::SyncedCertVoteValidationResult VoteManager::validateSyncedCertVoteBundle(
     PbftPeriod block_period, const blk_hash_t& block_hash, const std::vector<std::shared_ptr<PbftVote>>& cert_votes) {
   auto make_cert_vote_bundle_fact = [&](bool check_weight_threshold, bool two_t_plus_one_found,

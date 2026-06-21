@@ -558,6 +558,9 @@ Landed:
 - Locally generated proposal leader selection now uses the same VoteManager/Rust leader planner route. PBFT manager no
   longer owns a duplicate leader-candidate fact builder for self-generated proposal votes; it only supplies local
   proposal votes and executor callbacks.
+- Locally generated PBFT vote admission and own-vote persistence now enter VoteManager through one Rust-backed local
+  vote port. PBFT manager no longer sequences generic verified-vote insertion and own-vote storage separately before
+  handling network gossip.
 - Double-vote slashing submission is now isolated behind a named VoteManager executor helper that receives
   Rust-normalized slashing evidence from verified-vote admission. The remaining `SlashingManager` call is explicit
   temporary executor debt rather than mixed into the vote admission state machine.

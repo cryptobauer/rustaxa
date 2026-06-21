@@ -2041,7 +2041,7 @@ bool PbftManager::genAndPlaceVote(PbftVoteTypes vote_type, PbftPeriod period, Pb
       continue;
     }
 
-    if (!vote_mgr_->addVerifiedVote(vote)) {
+    if (!vote_mgr_->addLocallyGeneratedVote(vote)) {
       LOG(log_er_) << "Unable to place vote " << vote->getHash() << " for block " << block_hash << ", period " << period
                    << ", round " << round << ", step " << step << ", validator " << wallet.second.node_addr;
       continue;
@@ -2062,9 +2062,6 @@ bool PbftManager::genAndPlaceVote(PbftVoteTypes vote_type, PbftPeriod period, Pb
                    << *vote->getWeight() << ", period " << period << ", round " << round << ", step " << step
                    << ", validator " << wallet.second.node_addr;
     }
-
-    // Save own verified vote
-    vote_mgr_->saveOwnVerifiedVote(vote);
 
     if (place_pillar_vote_for_block.has_value()) {
       const auto pillar_vote = pillar_chain_mgr_->genAndPlacePillarVote(period, *place_pillar_vote_for_block,
@@ -2592,7 +2589,7 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::generatePbftBlock(
       return {};
     }
 
-    if (!vote_mgr_->addVerifiedVote(leader_block_data->second)) {
+    if (!vote_mgr_->addLocallyGeneratedVote(leader_block_data->second)) {
       LOG(log_er_) << "Unable to save propose vote " << leader_block_data->second->getHash() << " for block "
                    << leader_block_data->second->getBlockHash() << ", period " << propose_period << ", round "
                    << leader_block_data->second->getRound() << ", step " << leader_block_data->second->getStep()
@@ -2600,9 +2597,7 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::generatePbftBlock(
       return {};
     }
 
-    // Save own verified vote
     proposed_blocks_.pushProposedPbftBlock(leader_block_data->first);
-    vote_mgr_->saveOwnVerifiedVote(leader_block_data->second);
 
     return PbftManager::ProposedBlockData{std::move(leader_block_data->first), std::move(reward_votes),
                                           std::move(leader_block_data->second)};
