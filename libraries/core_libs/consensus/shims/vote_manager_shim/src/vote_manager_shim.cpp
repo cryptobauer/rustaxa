@@ -1670,6 +1670,12 @@ VoteManager::PreviousRoundNextVoteLogFacts VoteManager::previousRoundNextVoteLog
   return facts;
 }
 
+VoteManager::PreviousRoundNextVoteLogFacts VoteManager::applyStartupPeriodRoundAndLogFacts(PbftPeriod period,
+                                                                                           PbftRound round) {
+  setCurrentPbftPeriodAndRound(period, round);
+  return previousRoundNextVoteLogFacts(period, round - 1);
+}
+
 VoteManager::CertVotedBlockSelection VoteManager::certVotedBlockSelection(PbftPeriod period, PbftRound round) const {
   CertVotedBlockSelection selection;
   const auto cert_voted_block = getTwoTPlusOneVotedBlock(period, round, TwoTPlusOneVotedBlockType::CertVotedBlock);

@@ -537,6 +537,8 @@ Landed:
   `PbftVote` sidecar.
 - Period/round initialization logging now receives previous-round next-vote facts from VoteManager instead of issuing
   direct PBFT manager `2t+1` verified-vote queries.
+- Startup period/round synchronization and previous-round initialization log facts now enter VoteManager through one
+  named startup lifecycle port instead of separate PBFT manager mutation and fact-query calls.
 - Stuck-round network rebroadcast now receives named VoteManager egress payload groups for soft, previous-round next, and
   previous-round next-null votes instead of selecting verified-vote sidecar families in PBFT manager.
 - Stuck-round network rebroadcast now receives reward and own PBFT vote egress payloads from the same VoteManager port

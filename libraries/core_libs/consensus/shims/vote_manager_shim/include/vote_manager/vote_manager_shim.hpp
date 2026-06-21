@@ -682,6 +682,28 @@ class VoteManager : public VoteManagerOld {
   PreviousRoundNextVoteLogFacts previousRoundNextVoteLogFacts(PbftPeriod period, PbftRound previous_round) const;
 
   /**
+   * Applies PBFT manager startup period/round synchronization and returns the
+   * previous-round facts used for legacy-compatible initialization logging.
+   *
+   * Purpose:
+   * - Keeps PBFT manager from sequencing VoteManager startup state mutation and
+   *   verified-vote fact lookup as two separate sidecar-facing operations.
+   *
+   * Inputs:
+   * - `period` and `round` are restored from the Rust PBFT manager runtime
+   *   snapshot during startup.
+   *
+   * Outputs:
+   * - Previous-round next-vote facts for logging only.
+   *
+   * Invariants:
+   * - Updates VoteManager's current PBFT period/round before reading
+   *   previous-round facts.
+   * - Does not persist votes or perform network/slashing effects.
+   */
+  PreviousRoundNextVoteLogFacts applyStartupPeriodRoundAndLogFacts(PbftPeriod period, PbftRound round);
+
+  /**
    * Current-round cert-voted block selection for PBFT manager execution.
    *
    * Purpose:

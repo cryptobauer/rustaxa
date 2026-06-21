@@ -1581,13 +1581,10 @@ void PbftManager::initialState() {
   current_round_start_datetime_ = now;
   current_period_start_datetime_ = now;
 
-  // Set current period & round in vote manager
-  vote_mgr_->setCurrentPbftPeriodAndRound(current_pbft_period, current_pbft_round);
-
   waitForPeriodFinalization();
 
   const auto previous_round_next_vote_facts =
-      vote_mgr_->previousRoundNextVoteLogFacts(current_pbft_period, current_pbft_round - 1);
+      vote_mgr_->applyStartupPeriodRoundAndLogFacts(current_pbft_period, current_pbft_round);
 
   LOG(log_nf_) << "Node initialize at period " << current_pbft_period << ", round " << current_pbft_round << ", step "
                << current_pbft_step << ". Previous round 2t+1 next voted null block: " << std::boolalpha
