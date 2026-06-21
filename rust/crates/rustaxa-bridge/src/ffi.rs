@@ -3914,6 +3914,12 @@ pub mod rustaxa_ffi {
         eligibility_status: u8,
     }
 
+    /// Rust-collected FinalChain facts needed to start one DAG proposer attempt.
+    struct DagProposerFinalChainFacts {
+        last_finalized_period: u64,
+        authorization_facts: DagDposAuthorizationFacts,
+    }
+
     /// C++-originated facts for Rust DAG proposal-attempt planning.
     struct DagProposerAttemptInput {
         transaction_pool_size: u64,
@@ -6742,6 +6748,12 @@ pub mod rustaxa_ffi {
             block_number: u64,
             sender: &[u8; 20],
         ) -> Result<DagDposAuthorizationFacts>;
+        pub fn get_dag_proposer_final_chain_facts(
+            self: &BridgeFinalChain,
+            proposal_period_found: bool,
+            proposal_period: u64,
+            sender: &[u8; 20],
+        ) -> Result<DagProposerFinalChainFacts>;
         pub fn get_dpos_validators_total_stakes(
             self: &BridgeFinalChain,
             block_number: u64,

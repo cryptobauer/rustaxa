@@ -85,24 +85,6 @@ vdf_sortition::VdfSortition vdf_sortition_from_proof(const rustaxa::VdfSortition
   return vdf_sortition::VdfSortition(to_bytes(rustaxa::vdf_sortition_payload_encode(payload)));
 }
 
-uint64_t rust_final_chain_last_block_number(const final_chain::FinalChain& final_chain) {
-  rustaxa::PbftFinalChainFactRequest request;
-  request.period = 0;
-  request.candidate_final_chain_hash = {};
-  request.collect_final_chain_hash = false;
-  request.validate_candidate_final_chain_hash = false;
-  request.collect_total_vote_count = false;
-  request.collect_address_vote_counts = false;
-  const auto facts = final_chain.rustFinalChainForRust().collect_pbft_final_chain_facts(std::move(request));
-  return facts.last_block_number;
-}
-
-rustaxa::DagDposAuthorizationFacts rust_dag_authorization_facts(const final_chain::FinalChain& final_chain,
-                                                                PbftPeriod proposal_period, const addr_t& proposer) {
-  return final_chain.rustFinalChainForRust().get_dag_dpos_authorization_facts(static_cast<uint64_t>(proposal_period),
-                                                                              proposer.asArray());
-}
-
 }  // namespace
 
 using namespace vdf_sortition;
@@ -119,9 +101,9 @@ DagBlockProposer::DagBlockProposer(const FullNodeConfig& config, std::shared_ptr
       nodes_dag_proposers_data_(),
       kDagProposeGasLimit(
           std::min(config.propose_dag_gas_limit,
-                   config.genesis.getGasLimits(rust_final_chain_last_block_number(*final_chain_)).first)),
-      kPbftGasLimit(config.genesis.getGasLimits(rust_final_chain_last_block_number(*final_chain_)).second),
-      kDagGasLimit(config.genesis.getGasLimits(rust_final_chain_last_block_number(*final_chain_)).first) {
+                   config.genesis.getGasLimits(final_chain_->rustFinalChainForRust().get_last_block_number()).first)),
+      kPbftGasLimit(config.genesis.getGasLimits(final_chain_->rustFinalChainForRust().get_last_block_number()).second),
+      kDagGasLimit(config.genesis.getGasLimits(final_chain_->rustFinalChainForRust().get_last_block_number()).first) {
   (void)key_manager;
   const auto& node_addr = dev::toAddress(config.getFirstWallet().node_secret);
   LOG_OBJECTS_CREATE("DAG_PROPOSER");
@@ -135,12 +117,10 @@ DagBlockProposer::DagBlockProposer(const FullNodeConfig& config, std::shared_ptr
 bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData>& node_dag_proposer_data) {
   const auto frontier_facts = dag_mgr_->getProposerFrontierFacts();
   const auto proposal_period = dag_mgr_->getProposalPeriodForDagLevel(frontier_facts.propose_level);
-  const auto last_finalized_period = rust_final_chain_last_block_number(*final_chain_);
-  rustaxa::DagDposAuthorizationFacts authorization_facts{};
+  const auto final_chain_facts = final_chain_->rustFinalChainForRust().get_dag_proposer_final_chain_facts(
+      proposal_period.has_value(), proposal_period.value_or(0), node_dag_proposer_data->wallet.node_addr.asArray());
   rustaxa::SortitionRuntimeParams sortition_params{};
-  if (proposal_period.has_value() && last_finalized_period >= *proposal_period) {
-    authorization_facts =
-        rust_dag_authorization_facts(*final_chain_, *proposal_period, node_dag_proposer_data->wallet.node_addr);
+  if (proposal_period.has_value() && final_chain_facts.last_finalized_period >= *proposal_period) {
     sortition_params = dag_mgr_->sortitionParamsManager().rustSortitionParamsForRust(*proposal_period);
   }
 
@@ -151,11 +131,11 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   attempt_input.frontier_facts = frontier_facts;
   attempt_input.proposal_period_found = proposal_period.has_value();
   attempt_input.proposal_period = proposal_period.value_or(0);
-  attempt_input.last_finalized_period = last_finalized_period;
+  attempt_input.last_finalized_period = final_chain_facts.last_finalized_period;
   attempt_input.dag_expiry_level_limit = kDagExpiryLevelLimit;
   attempt_input.wallet_vrf_public_key = node_dag_proposer_data->wallet.vrf_pk.asArray();
   attempt_input.wallet_vrf_secret = node_dag_proposer_data->wallet.vrf_secret.asArray();
-  attempt_input.authorization_facts = authorization_facts;
+  attempt_input.authorization_facts = final_chain_facts.authorization_facts;
   attempt_input.sortition_params = sortition_params;
   attempt_input.max_non_finalized_dag_blocks = kMaxNonFinalizedDagBlocks;
   attempt_input.max_non_finalized_dag_blocks_low_difficulty = kMaxNonFinalizedDagBlocksLowDifficulty;
