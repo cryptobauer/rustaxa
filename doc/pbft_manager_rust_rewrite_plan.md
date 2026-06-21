@@ -666,6 +666,11 @@ Validation:
 
 Goal: reduce the PBFT manager overlay from copied orchestration to a thin executor surface.
 
+Status: pending finalization follow-up. The first audit found no `PbftManagerOld` production forwarding and removed a
+stale commented proposed-block startup TODO from the overlay, but broad overlay shrink is intentionally deferred until
+Slice 6 closes the remaining non-EVM finalization executor work. Starting broad deletion before that would either keep
+finalization behavior in C++ or hide active executor boundaries behind cosmetic cleanup.
+
 Scope:
 
 - Delete copied PBFT manager branches whose behavior is now Rust-planned.

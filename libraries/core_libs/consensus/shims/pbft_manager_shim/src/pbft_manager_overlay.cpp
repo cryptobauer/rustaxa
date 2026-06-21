@@ -1533,11 +1533,6 @@ void PbftManager::initialState() {
   // objects during PBFT manager startup.
   proposed_blocks_.restoreFromStorage();
 
-  // TODO[2840]: remove this check if case nodes do not log the err messages after restart
-  //  if (const auto &err_msg = proposed_blocks_.checkOldBlocksPresence(current_pbft_period); err_msg.has_value()) {
-  //    LOG(log_er_) << "Old proposed blocks saved in db <period> -> <blocks count>: " << *err_msg;
-  //  }
-
   // Process saved cert voted block from Rust storage through the PBFT runtime.
   const auto cert_voted_block_payload =
       rustaxa::pbft_manager_runtime_cert_voted_block_in_round(*pbft_manager_runtime_.value());
