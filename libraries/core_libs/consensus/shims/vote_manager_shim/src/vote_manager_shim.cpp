@@ -853,7 +853,13 @@ std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> 
     ProposedBlocks& propose_blocks, PbftPeriod period, PbftRound round,
     const std::function<bool(const blk_hash_t&)>& block_in_chain,
     const std::function<bool(const std::shared_ptr<PbftBlock>&)>& validate_block) const {
-  auto propose_votes = getProposalVotes(period, round);
+  return identifyLeaderBlock(propose_blocks, getProposalVotes(period, round), block_in_chain, validate_block);
+}
+
+std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> VoteManager::identifyLeaderBlock(
+    ProposedBlocks& propose_blocks, std::vector<std::shared_ptr<PbftVote>>&& propose_votes,
+    const std::function<bool(const blk_hash_t&)>& block_in_chain,
+    const std::function<bool(const std::shared_ptr<PbftBlock>&)>& validate_block) const {
   if (propose_votes.empty()) {
     return {};
   }

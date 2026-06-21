@@ -550,6 +550,9 @@ Landed:
 - Filtering-step leader selection now asks VoteManager to collect live proposal-vote facts for the Rust leader planner.
   PBFT manager still executes proposed-block validation and PBFT-chain lookup as temporary callbacks, but no longer pulls
   proposal-vote sidecars from VoteManager for the filtering state.
+- Locally generated proposal leader selection now uses the same VoteManager/Rust leader planner route. PBFT manager no
+  longer owns a duplicate leader-candidate fact builder for self-generated proposal votes; it only supplies local
+  proposal votes and executor callbacks.
 
 Scope:
 

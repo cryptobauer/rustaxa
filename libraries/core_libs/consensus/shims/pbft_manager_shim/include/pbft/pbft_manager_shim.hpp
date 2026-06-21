@@ -676,16 +676,6 @@ class PbftManager {
   std::optional<PbftBlockExtraData> createPbftBlockExtraData(PbftPeriod pbft_period) const;
 
   /**
-   * @brief Identify a leader block from all received proposed PBFT blocks for the current round by using minimum
-   * Verifiable Random Function (VRF) output. In filter state, don’t need check vote value correction.
-   * @param propose_blocks
-   * @param propose_votes
-   * @return shared_ptr to leader identified leader block + propose vote
-   */
-  std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> identifyLeaderBlock(
-      ProposedBlocks &propose_blocks, std::vector<std::shared_ptr<PbftVote>> &&propose_votes);
-
-  /**
    * @brief Validates pbft block. It checks if:
    *        - pbft_block's previous pbft block hash == node's latest finalized pbft block
    *        - node has all DAG blocks with correct ordering,

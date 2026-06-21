@@ -230,6 +230,27 @@ class VoteManager : public VoteManagerOld {
       const std::function<bool(const blk_hash_t&)>& block_in_chain,
       const std::function<bool(const std::shared_ptr<PbftBlock>&)>& validate_block) const;
   /**
+   * Selects a leader from caller-supplied proposal votes.
+   *
+   * Purpose:
+   * - Reuses the same Rust leader-candidate planner for locally generated
+   *   proposal votes, so PBFT manager no longer owns a duplicate leader
+   *   candidate fact builder.
+   *
+   * Inputs and outputs match the period/round overload, except proposal votes
+   * are supplied by the caller instead of read from verified-vote state.
+   *
+   * Invariants:
+   * - The caller remains responsible for local proposal vote generation and
+   *   uniqueness checks.
+   * - Rust still owns candidate status derivation, mark-valid commands, and
+   *   deterministic leader ranking.
+   */
+  std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> identifyLeaderBlock(
+      ProposedBlocks& propose_blocks, std::vector<std::shared_ptr<PbftVote>>&& propose_votes,
+      const std::function<bool(const blk_hash_t&)>& block_in_chain,
+      const std::function<bool(const std::shared_ptr<PbftBlock>&)>& validate_block) const;
+  /**
    * Rust-backed round-advance decision for PBFT manager runtime reports.
    *
    * Purpose:
