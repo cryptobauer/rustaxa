@@ -201,6 +201,121 @@ PillarVoteValidationPlan inspectPillarVoteWithRust(const std::shared_ptr<PillarV
  */
 const char* pillarVoteValidationPlanStatusString(PillarVoteValidationPlanStatus status);
 
+/**
+ * Rust-mode deterministic status for one synced pillar-vote bundle.
+ *
+ * Purpose:
+ * - Mirrors stable Rust planner status codes at the pillar-chain shim boundary.
+ *
+ * Invariants:
+ * - Values `0..8` intentionally match Rust bridge status codes.
+ * - `kUnknown` is reserved for shim/bridge failures before Rust returns a
+ *   deterministic status.
+ */
+enum class ValidateSyncPillarVotesBundlePlanStatus : uint8_t {
+  kBundleValid = 0,
+  kBundleEmpty = 1,
+  kVotePeriodMismatch = 2,
+  kVoteBlockHashMismatch = 3,
+  kPrevalidationFailed = 4,
+  kZeroWeight = 5,
+  kVoterConflict = 6,
+  kThresholdNotReached = 7,
+  kWeightOverflow = 8,
+  kUnknown = 255,
+};
+
+/**
+ * One Rust-planned synced pillar-vote insertion fact.
+ *
+ * Purpose:
+ * - Carries the exact vote hash, DPoS weight, and Rust-recovered voter
+ *   selected by Rust so the pillar manager can resolve a live `PillarVote`
+ *   executor payload and insert it without re-querying identity in C++.
+ */
+struct ValidateSyncPillarVotesBundleAcceptedVote {
+  vote_hash_t vote_hash{};
+  uint64_t weight{0};
+  addr_t recovered_voter{};
+};
+
+/**
+ * Deterministic Rust bundle-planning result for synced pillar votes.
+ *
+ * Purpose:
+ * - Carries Rust's validation status, aggregate weights, and accepted vote
+ *   insertion facts for the pillar-chain manager side effect.
+ *
+ * Edge behavior:
+ * - `valid` is true only when Rust returned `kBundleValid` and every accepted
+ *   vote could be represented as a C++ insertion fact.
+ */
+struct ValidateSyncPillarVotesBundleDeterministicallyResult {
+  ValidateSyncPillarVotesBundlePlanStatus plan_status{ValidateSyncPillarVotesBundlePlanStatus::kUnknown};
+  vote_hash_t first_bad_vote_hash{};
+  uint64_t block_weight{0};
+  uint64_t selected_weight{0};
+  std::vector<ValidateSyncPillarVotesBundleAcceptedVote> accepted_votes;
+  bool valid{false};
+};
+
+/**
+ * PBFT sync pillar-vote validation result status.
+ *
+ * Purpose:
+ * - Makes Rust-mode synced pillar-vote failures observable while keeping PBFT
+ *   manager on a typed pillar-chain port instead of PBFT-local helper logic.
+ *
+ * Invariants:
+ * - `kValid` is the only accepting status.
+ * - `kPlanRejected` means Rust returned a deterministic rejection status.
+ * - `kBridgeError` means the shim could not obtain a deterministic Rust plan.
+ */
+enum class ValidatePbftBlockPillarVotesWithRustStatus : uint8_t {
+  kUnknown = 0,
+  kValid,
+  kMissingPillarChainManager,
+  kMissingPbftBlock,
+  kMissingPillarVotes,
+  kMissingCurrentPillarBlock,
+  kPillarBlockPeriodMismatch,
+  kMissingThreshold,
+  kBridgeError,
+  kPlanRejected,
+  kAcceptedVoteMissing,
+  kInsertFailed,
+};
+
+/**
+ * Explicit result for the Rust-mode PBFT synced pillar-vote path.
+ *
+ * Inputs/outputs:
+ * - `status` describes the pillar-chain shim-level decision.
+ * - `plan_status` preserves Rust's stable planner code for deterministic
+ *   bundle rejections.
+ * - `block_weight` and `selected_weight` are Rust-planned aggregate weights
+ *   populated for accepted plans.
+ */
+struct ValidatePbftBlockPillarVotesWithRustResult {
+  ValidatePbftBlockPillarVotesWithRustStatus status{ValidatePbftBlockPillarVotesWithRustStatus::kUnknown};
+  uint8_t plan_status{0};
+  vote_hash_t first_bad_vote_hash{};
+  uint64_t block_weight{0};
+  uint64_t selected_weight{0};
+
+  [[nodiscard]] bool valid() const { return status == ValidatePbftBlockPillarVotesWithRustStatus::kValid; }
+};
+
+/**
+ * Returns a stable string for a Rust bundle-planning status.
+ */
+const char* validateSyncPillarVotesBundlePlanStatusString(ValidateSyncPillarVotesBundlePlanStatus status);
+
+/**
+ * Returns a stable string for the pillar-chain shim-level synced validation status.
+ */
+const char* validatePbftBlockPillarVotesWithRustStatusString(ValidatePbftBlockPillarVotesWithRustStatus status);
+
 /** @addtogroup PILLAR_CHAIN
  * @{
  */
@@ -324,6 +439,30 @@ class PillarChainManager {
    */
   bool addPlannedVerifiedPillarVoteForRust(const std::shared_ptr<PillarVote>& vote, uint64_t period_threshold,
                                            uint64_t validator_vote_count, const addr_t& recovered_voter);
+
+  /**
+   * Validates synced PBFT pillar-vote payloads through the Rust planner.
+   *
+   * Purpose:
+   * - Owns the Rust-mode pillar-vote bundle validation boundary for PBFT sync
+   *   so PBFT manager does not inspect live `PillarVote` sidecars for protocol
+   *   decisions.
+   *
+   * Inputs/outputs:
+   * - `required_votes_period` is the PBFT block period whose pillar votes are
+   *   being admitted.
+   * - `pillar_vote_rlps` are canonical vote payloads inspected by Rust.
+   * - `live_pillar_votes` are temporary executor payloads used only after Rust
+   *   selects accepted vote hashes.
+   *
+   * Invariants:
+   * - Current pillar-block anchor, threshold lookup, Rust bundle planning, and
+   *   verified-vote insertion are all owned by PillarChainManager.
+   * - The method must not recover voters through legacy C++ vote APIs.
+   */
+  ValidatePbftBlockPillarVotesWithRustResult validatePbftBlockPillarVotesWithRust(
+      PbftPeriod required_votes_period, const std::vector<bytes>& pillar_vote_rlps,
+      const std::optional<std::vector<std::shared_ptr<PillarVote>>>& live_pillar_votes);
 
   /**
    * Finalizes the current pillar block when enough verified votes are present.

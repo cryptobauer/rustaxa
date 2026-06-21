@@ -547,6 +547,9 @@ Landed:
   of reading the current `PillarBlock` sidecar in PBFT manager.
 - Finalization pillar preflight now receives a typed PillarChainManager result with success, vote count, and executor
   payloads instead of treating the returned pillar-vote vector as the protocol decision in PBFT manager.
+- Synced pillar-vote bundle validation now lives behind a PillarChainManager Rust port. PBFT manager passes canonical
+  vote RLPs and temporary live executor payloads, but no longer hosts the Rust bundle planner or threshold/anchor checks
+  in its own shim helper.
 - Certify-step soft-vote diagnostics now come from VoteManager-owned vote facts. PBFT manager no longer iterates
   `StepVotes` sidecar buckets or reads the soft-vote threshold just to format the go-finish debug log.
 - Filtering-step leader selection now asks VoteManager to collect live proposal-vote facts for the Rust leader planner.

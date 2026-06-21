@@ -4577,12 +4577,17 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   // Validate pillar votes
   bool pillar_votes_valid = true;
   if (pillar_votes_required) {
-    const auto rust_validation_result =
-        validatePbftBlockPillarVotesWithRust(block_period, pillar_vote_rlps, period_data.pillar_votes_,
-                                             pillar_chain_mgr_, final_chain_);
+    pillar_chain::ValidatePbftBlockPillarVotesWithRustResult rust_validation_result;
+    if (!pillar_chain_mgr_) {
+      rust_validation_result.status = pillar_chain::ValidatePbftBlockPillarVotesWithRustStatus::kMissingPillarChainManager;
+    } else {
+      rust_validation_result =
+          pillar_chain_mgr_->validatePbftBlockPillarVotesWithRust(block_period, pillar_vote_rlps,
+                                                                  period_data.pillar_votes_);
+    }
     if (!rust_validation_result.valid()) {
       LOG(log_er_) << "Rust sync pillar-vote validation failed, pbft block period " << block_period << ", status "
-                   << validatePbftBlockPillarVotesWithRustStatusString(rust_validation_result.status)
+                   << pillar_chain::validatePbftBlockPillarVotesWithRustStatusString(rust_validation_result.status)
                    << ", plan status " << static_cast<uint32_t>(rust_validation_result.plan_status)
                    << ", first bad vote " << rust_validation_result.first_bad_vote_hash;
     }
@@ -4668,23 +4673,27 @@ bool PbftManager::validatePbftBlockPillarVotes(const PeriodData &period_data) co
       if (!pillar_vote) {
         LOG(log_er_) << "Rust sync pillar-vote validation failed, pbft block period "
                      << period_data.pbft_blk->getPeriod() << ", status "
-                     << validatePbftBlockPillarVotesWithRustStatusString(
-                            ValidatePbftBlockPillarVotesWithRustStatus::kMissingPillarVotes);
+                     << pillar_chain::validatePbftBlockPillarVotesWithRustStatusString(
+                            pillar_chain::ValidatePbftBlockPillarVotesWithRustStatus::kMissingPillarVotes);
         return false;
       }
       pillar_vote_rlps.push_back(pillar_vote->rlp());
     }
   }
 
-  const auto rust_validation_result =
-      validatePbftBlockPillarVotesWithRust(period_data.pbft_blk->getPeriod(), pillar_vote_rlps,
-                                           period_data.pillar_votes_, pillar_chain_mgr_, final_chain_);
+  pillar_chain::ValidatePbftBlockPillarVotesWithRustResult rust_validation_result;
+  if (!pillar_chain_mgr_) {
+    rust_validation_result.status = pillar_chain::ValidatePbftBlockPillarVotesWithRustStatus::kMissingPillarChainManager;
+  } else {
+    rust_validation_result = pillar_chain_mgr_->validatePbftBlockPillarVotesWithRust(
+        period_data.pbft_blk->getPeriod(), pillar_vote_rlps, period_data.pillar_votes_);
+  }
   if (!rust_validation_result.valid()) {
     LOG(log_er_) << "Rust sync pillar-vote validation failed, pbft block period "
                  << (period_data.pbft_blk ? period_data.pbft_blk->getPeriod() : 0) << ", status "
-                 << validatePbftBlockPillarVotesWithRustStatusString(rust_validation_result.status) << ", plan status "
-                 << static_cast<uint32_t>(rust_validation_result.plan_status) << ", first bad vote "
-                 << rust_validation_result.first_bad_vote_hash;
+                 << pillar_chain::validatePbftBlockPillarVotesWithRustStatusString(rust_validation_result.status)
+                 << ", plan status " << static_cast<uint32_t>(rust_validation_result.plan_status)
+                 << ", first bad vote " << rust_validation_result.first_bad_vote_hash;
   }
   return rust_validation_result.valid();
 }
