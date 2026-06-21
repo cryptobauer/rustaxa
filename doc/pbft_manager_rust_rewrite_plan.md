@@ -708,9 +708,9 @@ Validation:
 Goal: satisfy the plan-level closeout definition by deleting remaining C++ scalar mirrors and PBFT protocol sidecar
 ownership that are not network/tarcap, EVM/state execution, lifecycle wiring, or public API materialization boundaries.
 
-Status: pending. Slices 1-10 moved PBFT manager authority into Rust planners/runtimes and made remaining shim code
-auditable, but the closeout definition still requires a final pass over C++ scalar compatibility mirrors and protocol
-sidecar fields before the plan can be declared complete.
+Status: complete. Slices 1-10 moved PBFT manager authority into Rust planners/runtimes, and Slice 11 removed the
+remaining direct scalar-mirror reads found in Rust-mode production helpers or classified the remaining C++ state as
+executor/public/network/EVM compatibility instead of protocol authority.
 
 Landed bounded cleanup:
 
@@ -727,6 +727,9 @@ Landed bounded cleanup:
 - Classified the remaining PBFT manager C++ scalar mirrors, broadcast counters, cert-voted object cache, local timers,
   boolean mirrors, and pillar-vote guard in the shim header as executor/public/network compatibility state rather than
   Rust-mode protocol authority.
+- Targeted closeout searches found no remaining PBFT manager overlay/header TODO markers, `PbftManagerOld` production
+  forwarding, PBFT-manager `BridgeStorage`/storage-shim/rust-batch calls, or direct round/step/lambda mirror reads in
+  Rust-mode production code outside Rust snapshot values and classified mirror hydration.
 
 Scope:
 
@@ -769,7 +772,9 @@ Validation:
 
 ## Closeout Definition
 
-This plan is complete when Rust-mode PBFT manager production behavior no longer depends on `DbStorage`, `BridgeStorage`,
-generic storage-shim batches, C++ scalar mirrors, or C++ protocol sidecars, except where a call site is explicitly part of
-network/tarcap execution, EVM/state execution, or public API materialization. At that point the C++ PBFT manager overlay
-should be an executor and compatibility adapter around a Rust-owned PBFT runtime.
+Status: satisfied by Slices 1-11.
+
+Rust-mode PBFT manager production behavior no longer depends on `DbStorage`, `BridgeStorage`, generic storage-shim
+batches, C++ scalar mirrors, or C++ protocol sidecars, except where a call site is explicitly part of network/tarcap
+execution, EVM/state execution, lifecycle wiring, or public API materialization. The remaining C++ PBFT manager overlay
+is an executor and compatibility adapter around a Rust-owned PBFT runtime.
