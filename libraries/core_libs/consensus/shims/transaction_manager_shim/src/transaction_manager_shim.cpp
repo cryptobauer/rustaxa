@@ -273,6 +273,13 @@ TransactionStatus transactionStatusFromBridge(uint8_t status) {
 
 class TransactionManagerRustShimAccess {
  public:
+  static uint64_t rustFinalChainLastBlockNumber(const TransactionManagerOld& manager) {
+    if (!manager.final_chain_) {
+      throw std::runtime_error("TransactionManager requires FinalChain for Rust FinalChain height facts");
+    }
+    return manager.final_chain_->rustFinalChainForRust().get_last_block_number();
+  }
+
   static std::pair<bool, std::string> verifyTransaction(const TransactionManagerOld& manager,
                                                         const rustaxa::LegacyTransactionInspection& envelope) {
     if (!manager.final_chain_) {
@@ -300,7 +307,7 @@ class TransactionManagerRustShimAccess {
 
   static rustaxa::TransactionManagerVerifyTransactionFact buildVerifyTransactionFact(
       const TransactionManagerOld& manager, const rustaxa::LegacyTransactionInspection& envelope) {
-    const auto block_num = manager.final_chain_->lastBlockNumber();
+    const auto block_num = rustFinalChainLastBlockNumber(manager);
     rustaxa::TransactionManagerVerifyTransactionFact fact;
     fact.tx_hash = envelope.hash;
     fact.chain_id = envelope.chain_id;
@@ -348,7 +355,7 @@ class TransactionManagerRustShimAccess {
         return manager.runtime_
             ->transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report(
                 manager.final_chain_->rustFinalChainForRust(), fact,
-                toRuntimeQueueInsertInput(envelope, false, manager.final_chain_->lastBlockNumber()));
+                toRuntimeQueueInsertInput(envelope, false, rustFinalChainLastBlockNumber(manager)));
       } catch (const std::exception& e) {
         throw std::runtime_error(std::string("RUST_TX_MANAGER_ADMISSION_EXECUTION_FAILED: ") + e.what());
       }
@@ -376,7 +383,7 @@ class TransactionManagerRustShimAccess {
         return manager.runtime_
             ->transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_command_report(
                 manager.final_chain_->rustFinalChainForRust(), verify_fact, admission_fact,
-                toRuntimeQueueInsertInput(envelope, false, manager.final_chain_->lastBlockNumber()));
+                toRuntimeQueueInsertInput(envelope, false, rustFinalChainLastBlockNumber(manager)));
       } catch (const std::exception& e) {
         throw std::runtime_error(std::string("RUST_TX_MANAGER_ADMISSION_EXECUTION_FAILED: ") + e.what());
       }
@@ -533,7 +540,7 @@ class TransactionManagerRustShimAccess {
         std::unique_lock transactions_lock(manager.transactions_mutex_);
         rust_manager.runtime_->transaction_manager_runtime_pack_begin_sharded(
             weight_limit, kMinTxGas, proposal_period, rust_manager.kEstimateGasLimit,
-            manager.final_chain_->lastBlockNumber(), total_shards, node_trx_shard, shard_period_interval);
+            rustFinalChainLastBlockNumber(manager), total_shards, node_trx_shard, shard_period_interval);
         session_active = true;
       }
 
@@ -565,7 +572,7 @@ class TransactionManagerRustShimAccess {
         rustaxa::TransactionPackSessionEstimateInput estimate_input;
         estimate_input.hash = candidate.hash;
         estimate_input.gas_used = estimate.gas_used;
-        estimate_input.last_block_number = manager.final_chain_->lastBlockNumber();
+        estimate_input.last_block_number = rustFinalChainLastBlockNumber(manager);
         estimate_input.result_rlp = executionResultToBridgeBytes(estimate);
 
         step = [&]() {
