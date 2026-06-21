@@ -69,6 +69,13 @@ legacy five-byte sender prefix for multi-shard DAG transaction selection. This r
 `sender.toString().substr(0, 10)` rule, but it does not explain the single-node runtime failure because that test uses
 the default one-shard proposer configuration.
 
+The single-node runtime blocker was then traced to DAG proposer VDF input sourcing. Bootstrap proposals map DAG level 1
+to proposal period 0; legacy `DbStorage::getPeriodBlockHash(0)` returns the zero hash when no PeriodData exists, and the
+proposer uses that zero hash in the VRF input. The Rust runtime had treated the missing period-0 PeriodData as
+`DAG_PROPOSER_REASON_MISSING_VDF_INPUT`, so it retried forever and PBFT only proposed null anchors. The bridge proposer
+runtime now preserves the legacy period-0 zero-hash contract while keeping nonzero missing PeriodData as a retry-only
+missing VDF input.
+
 Scope:
 
 - Inventory remaining consensus consumers that call C++ FinalChain, DPoS, slashing, validator, delegation, stake, or rewards fact APIs.

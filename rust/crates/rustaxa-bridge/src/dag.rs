@@ -863,7 +863,16 @@ impl BridgeDagManagerRuntime {
         input: DagProposerAttemptInput,
     ) -> Result<DagProposerAttemptPlan> {
         let period_block_hash = if input.proposal_period_found {
-            period_block_hash_from_storage(self.storage.as_ref(), input.proposal_period)?
+            let lookup =
+                period_block_hash_from_storage(self.storage.as_ref(), input.proposal_period)?;
+            if !lookup.found && input.proposal_period == 0 {
+                rustaxa_consensus::dag::DagHashStorageLookup {
+                    found: true,
+                    hash: H256::zero(),
+                }
+            } else {
+                lookup
+            }
         } else {
             rustaxa_consensus::dag::DagHashStorageLookup {
                 found: false,
@@ -2927,6 +2936,76 @@ mod tests {
             assert_eq!(plan.transaction_request.total_transaction_shards, 4);
             assert_eq!(plan.transaction_request.node_transaction_shard, 2);
             assert_eq!(plan.transaction_request.shard_period_interval, 10);
+            assert!(!plan.vrf_input.is_empty());
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_plan_proposal_attempt_uses_zero_hash_for_bootstrap_period() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_bootstrap_proposal_attempt");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("runtime should initialize");
+
+            runtime
+                .dag_manager_runtime_ensure_proposal_period_mapping(1, 0)
+                .expect("proposal-period mapping should save");
+
+            let vrf_key =
+                public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
+            let plan = runtime
+                .dag_manager_runtime_plan_proposal_attempt(DagProposerAttemptInput {
+                    transaction_pool_size: 1,
+                    non_finalized_transaction_count: 0,
+                    max_non_finalized_transactions: 100,
+                    frontier_facts: DagProposerFrontierFacts {
+                        pivot: [1u8; 32],
+                        tips: Vec::new(),
+                        propose_level: 1,
+                        anchor: [1u8; 32],
+                        non_finalized_block_count: 0,
+                        non_finalized_min_difficulty: u32::MAX,
+                    },
+                    proposal_period_found: true,
+                    proposal_period: 0,
+                    last_finalized_period: 0,
+                    dag_expiry_level_limit: 100,
+                    wallet_vrf_public_key: vrf_key,
+                    wallet_vrf_secret: SECRET_KEY,
+                    authorization_facts: DagDposAuthorizationFacts {
+                        vrf_key_found: true,
+                        vrf_key: vrf_key.to_vec(),
+                        sender_eligible_vote_count: 10,
+                        vdf_sortition_max_vote_count: 20,
+                        eligibility_status: dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
+                    },
+                    sortition_params: SortitionRuntimeParams {
+                        threshold_upper: u16::MAX,
+                        difficulty_min: 3,
+                        difficulty_max: 3,
+                        difficulty_stale: 9,
+                        lambda_bound: 128,
+                    },
+                    max_non_finalized_dag_blocks: 100,
+                    max_non_finalized_dag_blocks_low_difficulty: 50,
+                    last_propose_level: 0,
+                    retry_count: 0,
+                    max_retry_count: 20,
+                    proposal_weight_limit: 1_000,
+                    total_transaction_shards: 1,
+                    node_transaction_shard: 0,
+                    shard_period_interval: 10,
+                })
+                .expect("bootstrap proposal attempt should plan");
+
+            assert_eq!(plan.action, DAG_PROPOSER_ACTION_CONTINUE);
+            assert!(plan.period_block_hash_found);
+            assert_eq!(plan.period_block_hash, [0; 32]);
             assert!(!plan.vrf_input.is_empty());
         }
 
