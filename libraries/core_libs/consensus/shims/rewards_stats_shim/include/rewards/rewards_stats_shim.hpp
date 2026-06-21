@@ -22,9 +22,10 @@ struct FinalChainPublicationRewardsStats {
  *
  * The facade preserves the public `rewards::Stats` API while routing
  * deterministic per-period rewards-stat calculation, interval caching, and
- * block-reward stats cache persistence planning through Rust. C++ still owns
- * `BlockStats` as the legacy RLP/data carrier and still passes the resulting
- * vector to `StateAPI::distribute_rewards` for account mutation.
+ * block-reward stats cache persistence planning through Rust. C++ keeps
+ * `BlockStats` only as the legacy edge adapter passed to
+ * `StateAPI::distribute_rewards` while Rust-produced RLP bytes remain the
+ * authoritative interval carrier.
  *
  * Inputs:
  * - constructor receives committee size, hardfork frequency rules, storage, and
@@ -101,6 +102,8 @@ class Stats {
   const uint32_t kCommitteeSize;
   const HardforksConfig kHardforksConfig;
   const std::function<uint64_t(EthBlockNumber)> dpos_eligible_total_vote_count_;
+  // Legacy decoded view retained for public/test adapters that still inspect
+  // `BlockStats`. It is not the authoritative rewards-stat cache in Rust mode.
   std::unordered_map<PbftPeriod, BlockStats> blocks_stats_;
 
  private:
@@ -108,9 +111,12 @@ class Stats {
                                                    const std::vector<gas_t>& trxs_gas_used) const;
   std::vector<BlockStats> decodeDistributionStats(const rust::Vec<rustaxa::PeriodRlp>& stats) const;
   BlockStats decodeBlockStats(const rust::Vec<uint8_t>& stats_rlp) const;
+  void cacheStatsRlp(PbftPeriod period, const rust::Vec<uint8_t>& stats_rlp);
+  void replaceCacheRlp(const rust::Vec<rustaxa::PeriodRlp>& stats);
   void appendStorageWrites(const rustaxa::RewardsStatsProcessResult& plan, Batch& write_batch) const;
 
   rust::Box<rustaxa::BridgeRewardsStatsRuntime> rust_stats_;
+  std::unordered_map<PbftPeriod, std::vector<uint8_t>> blocks_stats_rlp_;
 };
 
 }  // namespace taraxa::rewards

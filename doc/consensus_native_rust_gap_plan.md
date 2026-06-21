@@ -244,6 +244,13 @@ Stop conditions:
 
 Goal: move legacy rewards stats carrier ownership fully into Rust.
 
+Status as of 2026-06-21: in progress.
+
+- Rust already owns rewards-stat planning, legacy-compatible `BlockStats` RLP encoding, interval cache write/clear plans,
+  and Rust storage reload/clear for persisted block-reward stats rows.
+- The C++ rewards-stats shim now treats Rust-produced RLP rows as the authoritative interval carrier and keeps decoded
+  `BlockStats` only as a public/test compatibility view for `StateAPI::distribute_rewards` and legacy callers.
+
 Scope:
 
 - Replace legacy `BlockStats` carrier authority with Rust-owned types and canonical compatibility encoding.
