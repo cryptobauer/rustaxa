@@ -514,8 +514,9 @@ Landed:
 - Sync cert-vote validation now reports compact vote identity, type, step, block hash, live-validation, weight, and
   `2t+1` threshold facts to Rust. Rust owns non-empty bundle validation, per-vote shape checks, shared-round checks,
   weight presence, threshold availability, and summed-weight acceptance.
-- C++ still executes `VoteManager::validateVote`, `VoteManager::addVerifiedVote`, and threshold lookup as temporary
-  VoteManager executor/query effects, then reports their facts to Rust for the final bundle decision.
+- VoteManager now owns the synced cert-vote executor loop. PBFT manager receives a typed cert-vote validation result
+  instead of constructing Rust bundle facts, calling `validateVote`, inserting verified votes, or reading the threshold
+  directly.
 - Reward-vote validation in PBFT manager proposal, block-validation, cert-voted-block push, and sync paths now uses a
   detailed VoteManager result that preserves Rust reward-vote planner status, selected period/round/block, missing vote
   hash, and error code. The legacy pair-returning API remains as compatibility, but PBFT manager call sites no longer

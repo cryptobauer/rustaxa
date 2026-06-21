@@ -1,6 +1,7 @@
 #include <libdevcore/RLP.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -479,6 +480,80 @@ void VoteManager::setNetwork(std::weak_ptr<Network> network) {
 
 bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
   return addVerifiedVoteWithReport(vote).accepted;
+}
+
+VoteManager::SyncedCertVoteValidationResult VoteManager::validateSyncedCertVoteBundle(
+    PbftPeriod block_period, const blk_hash_t& block_hash, const std::vector<std::shared_ptr<PbftVote>>& cert_votes) {
+  auto make_cert_vote_bundle_fact = [&](bool check_weight_threshold, bool two_t_plus_one_found,
+                                        uint64_t two_t_plus_one) {
+    rustaxa::PbftSyncCertVoteBundleFact fact;
+    fact.block_period = block_period;
+    fact.block_hash = toBridgeHash(block_hash);
+    fact.check_weight_threshold = check_weight_threshold;
+    fact.two_t_plus_one_found = two_t_plus_one_found;
+    fact.two_t_plus_one = two_t_plus_one;
+    fact.votes.reserve(cert_votes.size());
+    for (const auto& vote : cert_votes) {
+      if (!vote) {
+        throw std::runtime_error("VoteManager cannot validate a null synced cert vote");
+      }
+      rustaxa::PbftSyncCertVoteFact vote_fact;
+      vote_fact.vote_hash = toBridgeHash(vote->getHash());
+      vote_fact.block_hash = toBridgeHash(vote->getBlockHash());
+      vote_fact.period = vote->getPeriod();
+      vote_fact.round = vote->getRound();
+      vote_fact.step = vote->getStep();
+      vote_fact.vote_type = static_cast<uint8_t>(vote->getType());
+      vote_fact.live_vote_valid = true;
+      vote_fact.weight_present = vote->getWeight().has_value();
+      vote_fact.weight = vote->getWeight().value_or(0);
+      fact.votes.push_back(vote_fact);
+    }
+    return fact;
+  };
+
+  SyncedCertVoteValidationResult result;
+  rustaxa::PbftSyncCertVoteBundleValidation shape_validation{};
+  try {
+    shape_validation = rustaxa::validate_pbft_sync_cert_vote_bundle(make_cert_vote_bundle_fact(false, false, 0));
+  } catch (const std::exception& e) {
+    result.validation_error = e.what();
+    return result;
+  }
+  result.status = shape_validation.status;
+  result.first_bad_vote_hash = fromBridgeVoteHash(shape_validation.first_bad_vote_hash);
+  result.total_weight = shape_validation.total_weight;
+  result.two_t_plus_one = shape_validation.two_t_plus_one;
+  if (!shape_validation.valid) {
+    return result;
+  }
+
+  const uint32_t full_vote_validation_interval = 100;
+  const uint32_t vote_to_validate = std::rand() % cert_votes.size();
+  const bool strict_validation = (block_period % full_vote_validation_interval == 0);
+  for (uint32_t vote_counter = 0; vote_counter < cert_votes.size(); vote_counter++) {
+    const auto& vote = cert_votes[vote_counter];
+    const bool strict = strict_validation || (vote_counter == vote_to_validate);
+    const auto validation = validateVote(vote, strict);
+    if (!validation.first) {
+      result.first_bad_vote_hash = vote ? vote->getHash() : vote_hash_t();
+      result.validation_error = validation.second;
+      return result;
+    }
+
+    assert(vote->getWeight());
+    addVerifiedVote(vote);
+  }
+
+  const auto two_t_plus_one = getPbftTwoTPlusOne(block_period - 1, PbftVoteTypes::cert_vote);
+  const auto threshold_validation = rustaxa::validate_pbft_sync_cert_vote_bundle(
+      make_cert_vote_bundle_fact(true, two_t_plus_one.has_value(), two_t_plus_one.value_or(0)));
+  result.status = threshold_validation.status;
+  result.first_bad_vote_hash = fromBridgeVoteHash(threshold_validation.first_bad_vote_hash);
+  result.total_weight = threshold_validation.total_weight;
+  result.two_t_plus_one = threshold_validation.two_t_plus_one;
+  result.accepted = threshold_validation.valid;
+  return result;
 }
 
 VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(const std::shared_ptr<PbftVote>& vote) {

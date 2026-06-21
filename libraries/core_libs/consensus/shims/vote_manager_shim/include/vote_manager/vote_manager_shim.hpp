@@ -94,6 +94,35 @@ class VoteManager : public VoteManagerOld {
   };
 
   /**
+   * Synced cert-vote bundle validation result for PBFT sync admission.
+   *
+   * Purpose:
+   * - Keeps PBFT manager from owning live cert-vote sidecar validation,
+   *   verified-vote insertion, and Rust threshold fact construction.
+   *
+   * Outputs:
+   * - `accepted` is Rust's terminal bundle decision after VoteManager executor
+   *   validation and insertion effects have run.
+   * - `status`, `first_bad_vote_hash`, `total_weight`, and `two_t_plus_one`
+   *   mirror the Rust cert-vote bundle validator diagnostics.
+   * - `validation_error` carries the temporary VoteManager executor rejection
+   *   string when live vote validation fails before threshold planning.
+   *
+   * Invariants:
+   * - VoteManager remains the only C++ owner of verified-vote mutation.
+   * - PBFT manager receives diagnostics only and does not inspect accepted vote
+   *   payloads for protocol decisions.
+   */
+  struct SyncedCertVoteValidationResult {
+    bool accepted = false;
+    uint8_t status = 0;
+    vote_hash_t first_bad_vote_hash;
+    uint64_t total_weight = 0;
+    uint64_t two_t_plus_one = 0;
+    std::string validation_error;
+  };
+
+  /**
    * Constructs the Rust-mode VoteManager overlay.
    *
    * Inputs mirror the legacy `VoteManager` constructor. The overlay initializes
@@ -127,6 +156,9 @@ class VoteManager : public VoteManagerOld {
    */
   PbftVoteAdmissionReport addVerifiedVoteWithReport(const std::shared_ptr<PbftVote>& vote);
   bool addVerifiedVote(const std::shared_ptr<PbftVote>& vote);
+  SyncedCertVoteValidationResult validateSyncedCertVoteBundle(
+      PbftPeriod block_period, const blk_hash_t& block_hash,
+      const std::vector<std::shared_ptr<PbftVote>>& cert_votes);
   bool voteInVerifiedMap(std::shared_ptr<PbftVote> const& vote) const;
   std::pair<bool, std::shared_ptr<PbftVote>> isUniqueVote(const std::shared_ptr<PbftVote>& vote) const;
   std::vector<std::shared_ptr<PbftVote>> getVerifiedVotes() const;

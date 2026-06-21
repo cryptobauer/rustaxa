@@ -4764,69 +4764,17 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
 
 bool PbftManager::validatePbftBlockCertVotes(PbftPeriod block_period, const blk_hash_t &block_hash,
                                              const std::vector<std::shared_ptr<PbftVote>> &cert_votes) const {
-  // To speed up syncing/rebuilding full strict vote verification is done for all votes on every
-  // full_vote_validation_interval and for a random vote for each block
-  auto make_cert_vote_bundle_fact = [&](bool check_weight_threshold, bool two_t_plus_one_found,
-                                        uint64_t two_t_plus_one) {
-    rustaxa::PbftSyncCertVoteBundleFact fact;
-    fact.block_period = block_period;
-    fact.block_hash = toBridgeHash(block_hash);
-    fact.check_weight_threshold = check_weight_threshold;
-    fact.two_t_plus_one_found = two_t_plus_one_found;
-    fact.two_t_plus_one = two_t_plus_one;
-    fact.votes.reserve(cert_votes.size());
-    for (const auto &vote : cert_votes) {
-      rustaxa::PbftSyncCertVoteFact vote_fact;
-      vote_fact.vote_hash = toBridgeHash(vote->getHash());
-      vote_fact.block_hash = toBridgeHash(vote->getBlockHash());
-      vote_fact.period = vote->getPeriod();
-      vote_fact.round = vote->getRound();
-      vote_fact.step = vote->getStep();
-      vote_fact.vote_type = static_cast<uint8_t>(vote->getType());
-      vote_fact.live_vote_valid = true;
-      vote_fact.weight_present = vote->getWeight().has_value();
-      vote_fact.weight = vote->getWeight().value_or(0);
-      fact.votes.push_back(vote_fact);
-    }
-    return fact;
-  };
-
-  const auto shape_validation =
-      rustaxa::validate_pbft_sync_cert_vote_bundle(make_cert_vote_bundle_fact(false, false, 0));
-  if (!shape_validation.valid) {
-    LOG(log_er_) << "Rust sync cert-vote bundle validation failed for PBFT block " << block_hash << ", period "
-                 << block_period << ", status " << static_cast<uint32_t>(shape_validation.status)
-                 << ", first bad vote " << fromBridgeHash(shape_validation.first_bad_vote_hash);
-    return false;
-  }
-
-  const uint32_t full_vote_validation_interval = 100;
-  const uint32_t vote_to_validate = std::rand() % cert_votes.size();
-  const bool strict_validation = (block_period % full_vote_validation_interval == 0);
-
-  for (uint32_t vote_counter = 0; vote_counter < cert_votes.size(); vote_counter++) {
-    const auto &v = cert_votes[vote_counter];
-    bool strict = strict_validation || (vote_counter == vote_to_validate);
-
-    if (const auto ret = vote_mgr_->validateVote(v, strict); !ret.first) {
-      LOG(log_er_) << "Cert vote " << v->getHash() << " validation failed. Err: " << ret.second << ", pbft block "
-                   << block_hash;
+  const auto validation = vote_mgr_->validateSyncedCertVoteBundle(block_period, block_hash, cert_votes);
+  if (!validation.accepted) {
+    if (!validation.validation_error.empty()) {
+      LOG(log_er_) << "Cert vote " << validation.first_bad_vote_hash << " validation failed. Err: "
+                   << validation.validation_error << ", pbft block " << block_hash;
       return false;
     }
-
-    assert(v->getWeight());
-    vote_mgr_->addVerifiedVote(v);
-  }
-
-  const auto two_t_plus_one = vote_mgr_->getPbftTwoTPlusOne(block_period - 1, PbftVoteTypes::cert_vote);
-  const auto threshold_validation = rustaxa::validate_pbft_sync_cert_vote_bundle(
-      make_cert_vote_bundle_fact(true, two_t_plus_one.has_value(), two_t_plus_one.value_or(0)));
-  if (!threshold_validation.valid) {
     LOG(log_wr_) << "Rust sync cert-vote bundle threshold validation failed for PBFT block " << block_hash
-                 << ", period " << block_period << ", status " << static_cast<uint32_t>(threshold_validation.status)
-                 << ", votes weight " << threshold_validation.total_weight << ", two_t_plus_one "
-                 << threshold_validation.two_t_plus_one << ", first bad vote "
-                 << fromBridgeHash(threshold_validation.first_bad_vote_hash);
+                 << ", period " << block_period << ", status " << static_cast<uint32_t>(validation.status)
+                 << ", votes weight " << validation.total_weight << ", two_t_plus_one " << validation.two_t_plus_one
+                 << ", first bad vote " << validation.first_bad_vote_hash;
     return false;
   }
 
