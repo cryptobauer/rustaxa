@@ -4053,6 +4053,11 @@ pub mod rustaxa_ffi {
         latest_proposal_level: u64,
     }
 
+    /// Report after C++ executes the signing boundary for a proposed DAG block.
+    struct DagProposerSigningReport {
+        signature_ready: bool,
+    }
+
     /// Typed report after C++ materializes/signs/adds the proposed DAG block.
     ///
     /// C++ remains the executor for compatibility side effects, but Rust consumes
@@ -4775,6 +4780,10 @@ pub mod rustaxa_ffi {
         pub fn dag_proposer_session_report_stale_proof(
             self: &mut BridgeDagProposerSession,
             report: DagProposerStaleProofReport,
+        ) -> DagProposerSessionStep;
+        pub fn dag_proposer_session_report_signing(
+            self: &mut BridgeDagProposerSession,
+            report: DagProposerSigningReport,
         ) -> DagProposerSessionStep;
         pub fn dag_proposer_session_report_add_block(
             self: &mut BridgeDagProposerSession,

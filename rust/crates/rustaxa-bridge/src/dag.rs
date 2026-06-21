@@ -9,7 +9,7 @@ use crate::ffi::rustaxa_ffi::{
     DagProposerAttemptInput, DagProposerAttemptPlan, DagProposerBlockConstructionPlan,
     DagProposerBlockIntentInput, DagProposerBlockIntentNowInput, DagProposerFrontierFacts,
     DagProposerRetryStateSnapshot, DagProposerSessionStep, DagProposerSignedBlockIntent,
-    DagProposerSignedBlockIntentInput, DagProposerStaleProofReport,
+    DagProposerSignedBlockIntentInput, DagProposerSigningReport, DagProposerStaleProofReport,
     DagProposerStorageBlockConstructionInput, DagProposerStorageTipSelectionInput,
     DagProposerTipSelectionPlan, DagProposerTransactionPackReport,
     DagProposerTransactionPackRequest, DagProposerUnsignedBlockIntent, DagProposerVdfProofReport,
@@ -104,6 +104,7 @@ const DAG_PROPOSER_SESSION_ACTION_START_VDF: u8 = 2;
 const DAG_PROPOSER_SESSION_ACTION_CANCEL_VDF: u8 = 3;
 const DAG_PROPOSER_SESSION_ACTION_STALE_PROOF_SLEEP: u8 = 4;
 const DAG_PROPOSER_SESSION_ACTION_BUILD_BLOCK: u8 = 5;
+const DAG_PROPOSER_SESSION_ACTION_ADD_BLOCK: u8 = 6;
 
 #[derive(Clone)]
 enum DagVerifyBlockSessionAction {
@@ -139,6 +140,7 @@ enum DagProposerSessionAction {
     StartVdf,
     StaleProofSleep,
     BuildBlock,
+    AddBlock,
     Complete,
 }
 
@@ -1732,11 +1734,39 @@ impl BridgeDagProposerSession {
         dag_proposer_session_step(&self.state)
     }
 
+    pub fn dag_proposer_session_report_signing(
+        &mut self,
+        report: DagProposerSigningReport,
+    ) -> DagProposerSessionStep {
+        if !matches!(self.state.action, DagProposerSessionAction::BuildBlock) {
+            return invalid_dag_proposer_report(
+                &mut self.state,
+                "DAG_PROPOSER_SESSION_UNEXPECTED_SIGNING_REPORT",
+            );
+        }
+        if !report.signature_ready {
+            let retry =
+                plan_dag_proposer_retry_reset(rustaxa_consensus::dag::DagProposerRetryResetInput {
+                    proposal_level: self.state.attempt.proposal_level,
+                });
+            self.state.action = DagProposerSessionAction::Complete;
+            self.state.status = DAG_PROPOSER_SESSION_STATUS_COMPLETE;
+            self.state.reason_code = rustaxa_consensus::dag::DAG_PROPOSER_REASON_SIGNING_FAILED;
+            self.state.return_value = false;
+            self.state.update_retry_state = retry.update_retry_state;
+            self.state.next_last_propose_level = retry.next_last_propose_level;
+            self.state.next_retry_count = retry.next_retry_count;
+            return dag_proposer_session_step(&self.state);
+        }
+        self.state.action = DagProposerSessionAction::AddBlock;
+        dag_proposer_session_step(&self.state)
+    }
+
     pub fn dag_proposer_session_report_add_block(
         &mut self,
         report: DagProposerAddBlockReport,
     ) -> DagProposerSessionStep {
-        if !matches!(self.state.action, DagProposerSessionAction::BuildBlock) {
+        if !matches!(self.state.action, DagProposerSessionAction::AddBlock) {
             return invalid_dag_proposer_report(
                 &mut self.state,
                 "DAG_PROPOSER_SESSION_UNEXPECTED_ADD_BLOCK_REPORT",
@@ -2405,6 +2435,7 @@ fn dag_proposer_session_step(session: &DagProposerSession) -> DagProposerSession
         DagProposerSessionAction::StartVdf => DAG_PROPOSER_SESSION_ACTION_START_VDF,
         DagProposerSessionAction::StaleProofSleep => DAG_PROPOSER_SESSION_ACTION_STALE_PROOF_SLEEP,
         DagProposerSessionAction::BuildBlock => DAG_PROPOSER_SESSION_ACTION_BUILD_BLOCK,
+        DagProposerSessionAction::AddBlock => DAG_PROPOSER_SESSION_ACTION_ADD_BLOCK,
         DagProposerSessionAction::Complete => DAG_PROPOSER_SESSION_ACTION_NONE,
     };
     DagProposerSessionStep {
@@ -3506,6 +3537,11 @@ mod tests {
                 proof_ok: true,
             });
             assert_eq!(build.action, DAG_PROPOSER_SESSION_ACTION_BUILD_BLOCK);
+
+            let add = session.dag_proposer_session_report_signing(DagProposerSigningReport {
+                signature_ready: true,
+            });
+            assert_eq!(add.action, DAG_PROPOSER_SESSION_ACTION_ADD_BLOCK);
 
             let complete =
                 session.dag_proposer_session_report_add_block(DagProposerAddBlockReport {

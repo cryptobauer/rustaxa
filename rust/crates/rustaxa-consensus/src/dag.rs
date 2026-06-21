@@ -212,6 +212,8 @@ pub const DAG_PROPOSER_REASON_WORKER_PBFT_SYNCING: u32 = 20;
 pub const DAG_PROPOSER_REASON_WORKER_PACKET_QUEUE_OVER_LIMIT: u32 = 21;
 /// DAG proposer worker is backing off after an attempt that did not propose a block.
 pub const DAG_PROPOSER_REASON_WORKER_NO_BLOCK_PROPOSED: u32 = 22;
+/// DAG proposer signing executor failed before add-block submission.
+pub const DAG_PROPOSER_REASON_SIGNING_FAILED: u32 = 23;
 /// Rust-owned proposer VDF poll cadence executed by the compatibility shell.
 pub const DAG_PROPOSER_VDF_POLL_INTERVAL_MS: u64 = 100;
 /// Rust-owned stale-proof delay executed by the compatibility shell.

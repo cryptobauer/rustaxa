@@ -29,6 +29,7 @@ constexpr uint8_t kDagProposerSessionActionStartVdf = 2;
 constexpr uint8_t kDagProposerSessionActionCancelVdf = 3;
 constexpr uint8_t kDagProposerSessionActionStaleProofSleep = 4;
 constexpr uint8_t kDagProposerSessionActionBuildBlock = 5;
+constexpr uint8_t kDagProposerSessionActionAddBlock = 6;
 constexpr uint32_t kDagProposerReasonMissingProposalPeriod = 1;
 constexpr uint32_t kDagProposerReasonVrfKeyMismatch = 3;
 constexpr uint32_t kDagProposerReasonZeroDenominator = 6;
@@ -297,6 +298,16 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   auto signed_block = createSignedDagBlockIntent(std::move(frontier), step.proposal_level, selected_transaction_hashes,
                                                  std::move(selected_gas_estimations), std::move(vdf),
                                                  node_dag_proposer_data->wallet.node_secret);
+  rustaxa::DagProposerSigningReport signing_report;
+  signing_report.signature_ready = true;
+  step = session->dag_proposer_session_report_signing(std::move(signing_report));
+  fail_on_invalid_report(step);
+  if (auto done = finish_if_complete(step)) {
+    return *done;
+  }
+  if (step.action != kDagProposerSessionActionAddBlock) {
+    throw std::runtime_error("Rust DAG proposer session did not request add-block execution");
+  }
 
   const auto proposed_block_hash = from_bridge_hash(signed_block.block_hash);
   const auto proposed_transaction_count = selected_transaction_hashes.size();
