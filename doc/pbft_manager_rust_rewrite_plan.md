@@ -720,6 +720,8 @@ Landed bounded cleanup:
   returned by the applied dynamic-lambda action.
 - Removed public round, step, and deadline getter fallbacks to C++ scalar mirrors; Rust-mode callers now require the Rust
   PBFT manager runtime snapshot instead of silently reading mirrored state.
+- Removed reset-consensus transition log reads from the C++ current-round-lambda mirror; the log now reads the Rust
+  runtime snapshot after transition effects complete.
 
 Scope:
 

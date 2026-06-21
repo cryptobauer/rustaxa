@@ -1434,8 +1434,10 @@ void PbftManager::resetPbftConsensus(PbftRound round) {
     current_round_start_datetime_ = std::chrono::system_clock::now();
   }
 
+  const auto reset_snapshot = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value());
+  ensurePbftManagerRuntimeSnapshotReady(reset_snapshot, "PBFT consensus reset log");
   LOG(log_nf_) << "Reset PBFT consensus to: period " << period << ", round " << plan.new_round << ", step "
-               << plan.new_step << ", lambda " << current_round_lambda_ << " [ms]";
+               << plan.new_step << ", lambda " << reset_snapshot.current_round_lambda_ms << " [ms]";
 }
 
 uint32_t PbftManager::getRoundLambda(PbftRound round) const {
