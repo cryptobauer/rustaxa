@@ -1292,6 +1292,16 @@ VoteManager::StateActionVoteFacts VoteManager::stateActionVoteFacts(PbftPeriod p
   return facts;
 }
 
+VoteManager::PreviousRoundNextVoteLogFacts VoteManager::previousRoundNextVoteLogFacts(
+    PbftPeriod period, PbftRound previous_round) const {
+  PreviousRoundNextVoteLogFacts facts;
+  facts.next_voted_block =
+      getTwoTPlusOneVotedBlock(period, previous_round, TwoTPlusOneVotedBlockType::NextVotedBlock);
+  facts.next_voted_null_block =
+      getTwoTPlusOneVotedBlock(period, previous_round, TwoTPlusOneVotedBlockType::NextVotedNullBlock).has_value();
+  return facts;
+}
+
 VoteManager::CertVotedBlockSelection VoteManager::certVotedBlockSelection(PbftPeriod period, PbftRound round) const {
   CertVotedBlockSelection selection;
   const auto cert_voted_block = getTwoTPlusOneVotedBlock(period, round, TwoTPlusOneVotedBlockType::CertVotedBlock);

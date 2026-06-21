@@ -1589,16 +1589,15 @@ void PbftManager::initialState() {
 
   waitForPeriodFinalization();
 
-  const auto previous_round_next_voted_block = vote_mgr_->getTwoTPlusOneVotedBlock(
-      current_pbft_period, current_pbft_round - 1, TwoTPlusOneVotedBlockType::NextVotedBlock);
-  const auto previous_round_next_voted_null_block = vote_mgr_->getTwoTPlusOneVotedBlock(
-      current_pbft_period, current_pbft_round - 1, TwoTPlusOneVotedBlockType::NextVotedNullBlock);
+  const auto previous_round_next_vote_facts =
+      vote_mgr_->previousRoundNextVoteLogFacts(current_pbft_period, current_pbft_round - 1);
 
   LOG(log_nf_) << "Node initialize at period " << current_pbft_period << ", round " << current_pbft_round << ", step "
                << current_pbft_step << ". Previous round 2t+1 next voted null block: " << std::boolalpha
-               << previous_round_next_voted_null_block.has_value() << ", previous round 2t+1 next voted block "
-               << (previous_round_next_voted_block.has_value() ? previous_round_next_voted_block->abridged()
-                                                               : "no value");
+               << previous_round_next_vote_facts.next_voted_null_block << ", previous round 2t+1 next voted block "
+               << (previous_round_next_vote_facts.next_voted_block.has_value()
+                       ? previous_round_next_vote_facts.next_voted_block->abridged()
+                       : "no value");
 }
 
 void PbftManager::setFilterState_() {

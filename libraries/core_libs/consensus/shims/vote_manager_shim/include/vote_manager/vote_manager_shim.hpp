@@ -338,6 +338,27 @@ class VoteManager : public VoteManagerOld {
                                             bool needs_current_round_soft) const;
 
   /**
+   * Previous-round next-vote facts for PBFT manager transition logging.
+   *
+   * Purpose:
+   * - Keeps PBFT manager from querying individual verified-vote sidecar families
+   *   when it only needs compact facts for legacy-compatible logging.
+   *
+   * Outputs:
+   * - Optional previous-round next-voted block hash.
+   * - Boolean previous-round next-voted null status.
+   *
+   * Invariants:
+   * - Does not materialize vote payloads or perform network/slashing side effects.
+   * - Absent facts are represented as empty optional/false.
+   */
+  struct PreviousRoundNextVoteLogFacts {
+    std::optional<blk_hash_t> next_voted_block;
+    bool next_voted_null_block = false;
+  };
+  PreviousRoundNextVoteLogFacts previousRoundNextVoteLogFacts(PbftPeriod period, PbftRound previous_round) const;
+
+  /**
    * Current-round cert-voted block selection for PBFT manager execution.
    *
    * Purpose:

@@ -526,6 +526,8 @@ Landed:
 - Cert-voted block push now asks VoteManager for a typed Rust-backed cert-voted block selection. PBFT manager receives the
   selected block hash and cert-vote executor payloads instead of deriving certified block identity from the first
   `PbftVote` sidecar.
+- Period/round initialization logging now receives previous-round next-vote facts from VoteManager instead of issuing
+  direct PBFT manager `2t+1` verified-vote queries.
 
 Scope:
 
