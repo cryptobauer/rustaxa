@@ -789,8 +789,12 @@ PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> 
       }
 
       // We need this section because votes need to be verified for reward distribution
-      for (const auto &v : period_data.previous_block_cert_votes) {
-        vote_mgr_->validateVote(v);
+      const auto replay_vote_validation = vote_mgr_->validateStartupReplayVotes(period_data.previous_block_cert_votes);
+      if (!replay_vote_validation.accepted) {
+        LOG(log_er_) << "DB corrupted - Cannot validate startup replay cert vote "
+                     << replay_vote_validation.first_bad_vote_hash << " in period " << period << ". Err: "
+                     << replay_vote_validation.validation_error;
+        assert(false);
       }
 
       uint32_t blocks_per_year{0};

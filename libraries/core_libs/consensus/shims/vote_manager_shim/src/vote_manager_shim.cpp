@@ -556,6 +556,26 @@ VoteManager::SyncedCertVoteValidationResult VoteManager::validateSyncedCertVoteB
   return result;
 }
 
+VoteManager::StartupReplayVoteValidationResult VoteManager::validateStartupReplayVotes(
+    const std::vector<std::shared_ptr<PbftVote>>& replay_votes) const {
+  StartupReplayVoteValidationResult result;
+  for (const auto& vote : replay_votes) {
+    if (!vote) {
+      result.validation_error = "missing startup replay vote";
+      return result;
+    }
+    const auto validation = validateVote(vote);
+    if (!validation.first) {
+      result.first_bad_vote_hash = vote->getHash();
+      result.validation_error = validation.second;
+      return result;
+    }
+  }
+
+  result.accepted = true;
+  return result;
+}
+
 VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(const std::shared_ptr<PbftVote>& vote) {
   PbftVoteAdmissionReport report{};
   if (!vote) {

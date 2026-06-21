@@ -123,6 +123,31 @@ class VoteManager : public VoteManagerOld {
   };
 
   /**
+   * Startup replay vote-validation result for PBFT finalization recovery.
+   *
+   * Purpose:
+   * - Keeps PBFT manager from validating replayed reward-distribution votes one
+   *   by one while replaying recently finalized period data.
+   *
+   * Outputs:
+   * - `accepted == true` when all replayed votes were accepted by the
+   *   VoteManager validation boundary.
+   * - `first_bad_vote_hash` and `validation_error` identify the first rejected
+   *   replay vote.
+   *
+   * Invariants:
+   * - VoteManager owns the legacy validation compatibility call until replayed
+   *   vote hydration is fully Rust-owned.
+   * - The method does not mutate verified-vote collections; it only hydrates
+   *   validation/weight facts required by reward distribution.
+   */
+  struct StartupReplayVoteValidationResult {
+    bool accepted = false;
+    vote_hash_t first_bad_vote_hash;
+    std::string validation_error;
+  };
+
+  /**
    * Constructs the Rust-mode VoteManager overlay.
    *
    * Inputs mirror the legacy `VoteManager` constructor. The overlay initializes
@@ -159,6 +184,8 @@ class VoteManager : public VoteManagerOld {
   SyncedCertVoteValidationResult validateSyncedCertVoteBundle(
       PbftPeriod block_period, const blk_hash_t& block_hash,
       const std::vector<std::shared_ptr<PbftVote>>& cert_votes);
+  StartupReplayVoteValidationResult validateStartupReplayVotes(
+      const std::vector<std::shared_ptr<PbftVote>>& replay_votes) const;
   bool voteInVerifiedMap(std::shared_ptr<PbftVote> const& vote) const;
   std::pair<bool, std::shared_ptr<PbftVote>> isUniqueVote(const std::shared_ptr<PbftVote>& vote) const;
   std::vector<std::shared_ptr<PbftVote>> getVerifiedVotes() const;
