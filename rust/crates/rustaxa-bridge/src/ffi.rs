@@ -4015,6 +4015,8 @@ pub mod rustaxa_ffi {
         transaction_gas_estimations: Vec<u64>,
         transaction_request: DagProposerTransactionPackRequest,
         record_proposed_block: bool,
+        vdf_poll_interval_ms: u64,
+        stale_proof_sleep_ms: u64,
         error_code: String,
     }
 

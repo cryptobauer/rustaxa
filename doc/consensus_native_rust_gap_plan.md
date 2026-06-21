@@ -167,9 +167,9 @@ Goal: make proposer behavior native Rust except for explicit scheduler, async VD
 Status as of 2026-06-21: partially implemented.
 
 - Rust already owns proposal attempt planning, worker-loop command selection, post-pack command selection, VDF wait
-  cancellation decisions, stale-proof retry/reset decisions, block construction planning, and add-block terminal
-  classification.
-- C++ still owns the worker thread/timer executor, durable per-wallet retry cursor storage, VDF polling interval mechanics,
+  cancellation decisions and poll cadence, stale-proof retry/reset decisions and delay cadence, block construction
+  planning, and add-block terminal classification.
+- C++ still owns the worker thread/timer executor, durable per-wallet retry cursor storage, VDF async execution mechanics,
   stale-proof sleep execution, signing execution, and compatibility `addDagBlock` side effects.
 - The add-block executor now reports a typed outcome back to the Rust proposer session before the proposer shell records
   proposed-block telemetry or returns to the worker loop.

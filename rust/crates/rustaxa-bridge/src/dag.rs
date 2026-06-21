@@ -2404,6 +2404,8 @@ fn dag_proposer_session_step(session: &DagProposerSession) -> DagProposerSession
             shard_period_interval: session.attempt.transaction_request.shard_period_interval,
         },
         record_proposed_block: session.record_proposed_block,
+        vdf_poll_interval_ms: rustaxa_consensus::dag::DAG_PROPOSER_VDF_POLL_INTERVAL_MS,
+        stale_proof_sleep_ms: rustaxa_consensus::dag::DAG_PROPOSER_STALE_PROOF_SLEEP_MS,
         error_code: session.error_code.clone(),
     }
 }
@@ -3380,6 +3382,8 @@ mod tests {
             assert_eq!(first.status, DAG_PROPOSER_SESSION_STATUS_ACTIVE);
             assert_eq!(first.action, DAG_PROPOSER_SESSION_ACTION_PACK_TRANSACTIONS);
             assert_eq!(first.transaction_request.proposal_period, 7);
+            assert_eq!(first.vdf_poll_interval_ms, 100);
+            assert_eq!(first.stale_proof_sleep_ms, 1_000);
             assert!(!first.vrf_input.is_empty());
 
             let start_vdf = session.dag_proposer_session_report_transactions(

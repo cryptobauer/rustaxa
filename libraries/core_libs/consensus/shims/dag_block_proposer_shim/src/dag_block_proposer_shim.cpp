@@ -244,7 +244,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   });
 
   std::future<void> result = sync.get_future();
-  while (result.wait_for(std::chrono::milliseconds(100)) != std::future_status::ready) {
+  while (result.wait_for(std::chrono::milliseconds(step.vdf_poll_interval_ms)) != std::future_status::ready) {
     const auto latest_level = dag_mgr_->getProposerFrontierFacts().propose_level;
     rustaxa::DagProposerVdfWaitReport wait_report;
     wait_report.latest_proposal_level = latest_level;
@@ -281,7 +281,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   fail_on_invalid_report(step);
 
   if (step.action == kDagProposerSessionActionStaleProofSleep) {
-    thisThreadSleepForSeconds(1);
+    thisThreadSleepForMilliSeconds(step.stale_proof_sleep_ms);
     rustaxa::DagProposerStaleProofReport stale_report;
     stale_report.latest_proposal_level = dag_mgr_->getProposerFrontierFacts().propose_level;
     step = session->dag_proposer_session_report_stale_proof(std::move(stale_report));
