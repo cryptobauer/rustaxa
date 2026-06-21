@@ -4554,6 +4554,11 @@ pub mod rustaxa_ffi {
             self: &mut BridgeDagManagerRuntime,
             snapshot: DagManagerSnapshot,
         ) -> Result<()>;
+        /// Rebuilds the DAG runtime snapshot from Rust PBFT/DAG storage without
+        /// using the legacy C++ graph mirror.
+        pub fn dag_manager_runtime_restore_from_storage(
+            self: &mut BridgeDagManagerRuntime,
+        ) -> Result<()>;
         pub fn dag_manager_runtime_add_block(
             self: &mut BridgeDagManagerRuntime,
             block: DagManagerBlock,

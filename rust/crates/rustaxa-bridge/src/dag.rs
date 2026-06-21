@@ -69,12 +69,9 @@ use rustaxa_consensus::dag::{
     DagVerifyVdfDposFacts as DomainDagVerifyVdfDposFacts,
     DagVerifyVdfPrepareInput as DomainDagVerifyVdfPrepareInput,
 };
+use rustaxa_consensus::pbft_chain::restore_pbft_chain_from_storage;
 use rustaxa_consensus::sortition::{SortitionParams, VdfParams, VrfParams};
 use rustaxa_storage::Storage;
-#[cfg(test)]
-use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
-#[cfg(test)]
-use rustaxa_types::pbft::PbftBlockLink;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -444,6 +441,81 @@ impl BridgeDagManagerRuntime {
     pub fn dag_manager_runtime_rebuild(&mut self, snapshot: DagManagerSnapshot) -> Result<()> {
         self.state
             .rebuild_from_snapshot(to_domain_snapshot(snapshot))
+    }
+
+    /// Rebuilds the in-memory DAG runtime from canonical Rust storage.
+    ///
+    /// Inputs:
+    /// - the runtime's existing Rust storage handle, which owns PBFT-chain head
+    ///   recovery and non-finalized DAG block payload rows.
+    ///
+    /// Outputs:
+    /// - replaces the runtime state with a snapshot derived from Rust storage.
+    ///
+    /// Invariants and edge behavior:
+    /// - PBFT period and current anchor come from Rust PBFT-chain storage
+    ///   restore, including default-head initialization when the head row is
+    ///   absent.
+    /// - Non-finalized DAG block facts are decoded from canonical signed DAG
+    ///   block RLP bytes in Rust storage; malformed rows are returned as
+    ///   bridge errors.
+    /// - The previous anchor is not persisted separately in Rust storage today,
+    ///   so it is restored to the current anchor. Finalization transitions
+    ///   update both anchors through the Rust runtime after startup.
+    pub fn dag_manager_runtime_restore_from_storage(&mut self) -> Result<()> {
+        let pbft_restore = restore_pbft_chain_from_storage(self.storage.as_ref())
+            .context("DAG_RUNTIME_RESTORE_PBFT_HEAD")?;
+        let anchor = pbft_restore.head.last_non_null_pbft_dag_anchor_hash;
+        let anchor_level = if anchor == H256::zero() {
+            0
+        } else {
+            self.storage
+                .dag()
+                .by_hash(anchor)
+                .with_context(|| format!("DAG_RUNTIME_RESTORE_ANCHOR_BLOCK: {anchor:?}"))?
+                .level
+        };
+
+        let mut non_finalized_blocks = Vec::new();
+        for (_level, blocks) in self
+            .storage
+            .dag()
+            .non_finalized()
+            .context("DAG_RUNTIME_RESTORE_NON_FINALIZED_BLOCKS")?
+        {
+            for block_rlp in blocks {
+                non_finalized_blocks.push(
+                    domain_dag_manager_block_from_rlp(&block_rlp)
+                        .context("DAG_RUNTIME_RESTORE_NON_FINALIZED_BLOCK_DECODE")?,
+                );
+            }
+        }
+
+        let max_level = non_finalized_blocks
+            .iter()
+            .map(|block| block.level)
+            .chain((anchor != H256::zero()).then_some(anchor_level))
+            .max()
+            .unwrap_or(0);
+        let non_finalized_min_difficulty = non_finalized_blocks
+            .iter()
+            .map(|block| block.difficulty)
+            .min()
+            .unwrap_or(u32::MAX);
+        let dag_expiry_level = max_level.saturating_sub(u64::from(self.state.dag_expiry_limit()));
+
+        self.state
+            .rebuild_from_snapshot(DomainDagManagerSnapshot {
+                old_anchor: anchor,
+                anchor,
+                anchor_level,
+                period: pbft_restore.head.size,
+                max_level,
+                dag_expiry_level,
+                non_finalized_min_difficulty,
+                non_finalized_blocks,
+            })
+            .context("DAG_RUNTIME_RESTORE_REBUILD")
     }
 
     /// Adds one accepted DAG block to the in-memory Rust state.
@@ -2530,6 +2602,8 @@ mod tests {
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
     use rustaxa_consensus::dag;
+    use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
+    use rustaxa_types::pbft::PbftBlockLink;
     use rustaxa_vdf::prover::CancellationToken;
     use rustaxa_vdf::sortition::{self, LegacySortitionParams};
     use rustaxa_vdf::vrf::public_key_from_secret;
@@ -2631,9 +2705,13 @@ mod tests {
     }
 
     fn signed_pbft_block(period: u64, timestamp: u64) -> Vec<u8> {
+        signed_pbft_block_with_pivot(period, timestamp, H256::from_low_u64_be(11))
+    }
+
+    fn signed_pbft_block_with_pivot(period: u64, timestamp: u64, pivot: H256) -> Vec<u8> {
         let mut block = RlpStream::new_list(8);
         block.append(&H256::from_low_u64_be(10));
-        block.append(&H256::from_low_u64_be(11));
+        block.append(&pivot);
         block.append(&H256::from_low_u64_be(12));
         block.append(&H256::from_low_u64_be(13));
         block.append(&period);
@@ -2650,6 +2728,29 @@ mod tests {
         period_data.append_empty_data();
         period_data.begin_list(0);
         period_data.out().to_vec()
+    }
+
+    fn dag_block_with_pivot_level_and_difficulty(
+        pivot: H256,
+        level: u64,
+        difficulty: u16,
+    ) -> Vec<u8> {
+        let mut vdf_payload = RlpStream::new_list(4);
+        vdf_payload.append(&vec![0x11u8; 80]);
+        vdf_payload.append(&vec![0x22u8]);
+        vdf_payload.append(&vec![0x33u8]);
+        vdf_payload.append(&difficulty);
+
+        let mut block = RlpStream::new_list(8);
+        block.append(&pivot);
+        block.append(&level);
+        block.append(&0u64);
+        block.append(&vdf_payload.out().to_vec());
+        block.begin_list(0);
+        block.begin_list(0);
+        block.append(&&[0u8; 65][..]);
+        block.append(&123u64);
+        block.out().to_vec()
     }
 
     const SECRET_KEY: [u8; 64] = [
@@ -3972,6 +4073,97 @@ mod tests {
 
             assert_eq!(payload.remove_transaction_hashes.len(), 1);
             assert_eq!(payload.remove_transaction_hashes[0].hash, [1u8; 32]);
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_restore_from_storage_rebuilds_graph_without_legacy_snapshot() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_restore_from_storage");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let seed_runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("seed runtime should initialize");
+
+            let anchor_rlp = dag_block_with_pivot_level_and_difficulty(H256::from([1u8; 32]), 3, 3);
+            let anchor_facts =
+                dag_manager_block_from_rlp(anchor_rlp.clone()).expect("anchor block facts");
+            let anchor_hash = H256::from(anchor_facts.hash);
+            let live_rlp = dag_block_with_pivot_level_and_difficulty(anchor_hash, 4, 4);
+            let live_facts =
+                dag_manager_block_from_rlp(live_rlp.clone()).expect("live block facts");
+
+            let pbft_block = signed_pbft_block_with_pivot(1, 123, anchor_hash);
+            let pbft_link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(&pbft_block))
+                .expect("pbft block link");
+            storage
+                .0
+                .period()
+                .write(1, &period_data_with_pbft_block(&pbft_block))
+                .expect("persist period data");
+            storage
+                .0
+                .period()
+                .write_pbft_period(pbft_link.block_hash, 1)
+                .expect("persist pbft period index");
+            storage
+                .0
+                .pbft()
+                .write_head(
+                    H256::zero(),
+                    format!(
+                        r#"{{"head_hash":"0x{:064x}","size":1,"non_empty_size":1,"last_pbft_block_hash":"0x{:064x}"}}"#,
+                        0, pbft_link.block_hash
+                    )
+                    .as_bytes(),
+                )
+                .expect("persist pbft head");
+
+            seed_runtime
+                .dag_manager_runtime_save_block(
+                    &anchor_facts.hash,
+                    anchor_facts.level,
+                    anchor_facts.tips.len() as u64,
+                    anchor_rlp,
+                )
+                .expect("persist anchor block");
+            seed_runtime
+                .dag_manager_runtime_save_block(
+                    &live_facts.hash,
+                    live_facts.level,
+                    live_facts.tips.len() as u64,
+                    live_rlp,
+                )
+                .expect("persist non-finalized block");
+
+            let mut restored = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("restored runtime should initialize");
+            restored
+                .dag_manager_runtime_restore_from_storage()
+                .expect("restore from storage should succeed");
+
+            assert_eq!(restored.dag_manager_runtime_latest_period(), 1);
+            assert_eq!(
+                restored.dag_manager_runtime_anchors().anchor,
+                anchor_facts.hash
+            );
+            assert!(restored
+                .dag_manager_runtime_is_block_known(&live_facts.hash)
+                .expect("knownness should query Rust storage"));
+            assert_eq!(restored.dag_manager_runtime_max_level(), 4);
+            assert_eq!(
+                restored.dag_manager_runtime_non_finalized_min_difficulty(),
+                3
+            );
+            assert_eq!(
+                restored
+                    .dag_manager_runtime_non_finalized_blocks_size()
+                    .blocks,
+                2
+            );
         }
 
         let _ = fs::remove_dir_all(&temp_dir);

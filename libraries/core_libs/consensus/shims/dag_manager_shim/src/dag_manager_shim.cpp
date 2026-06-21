@@ -361,41 +361,17 @@ DagManager::DagManager(const FullNodeConfig &config, addr_t node_addr, std::shar
       rust_graphs_(std::make_unique<RustDagManagerGraphs>(config.genesis.dag_genesis_block.getHash(),
                                                           config.dag_expiry_limit, db_->rustStorage())) {
   rust_graphs_->runtime->dag_manager_runtime_ensure_proposal_period_mapping(max_levels_per_period_, 0);
-  rebuildRustGraphsFromOld();
+  rebuildRustGraphsFromStorage();
 }
 
 DagManager::~DagManager() = default;
 
-void DagManager::rebuildRustGraphsFromOld() {
-  const auto anchors = DagManagerOld::getAnchors();
-  const auto [period, non_finalized_blks] = DagManagerOld::getNonFinalizedBlocks();
-  const auto next_anchor = anchors.second;
-  const auto anchor_block = getDagBlock(next_anchor);
-
-  rustaxa::DagManagerSnapshot snapshot;
-  snapshot.old_anchor = to_bridge_hash(anchors.first);
-  snapshot.anchor = to_bridge_hash(next_anchor);
-  snapshot.anchor_level = anchor_block ? anchor_block->getLevel() : 0;
-  snapshot.period = period;
-  snapshot.max_level = DagManagerOld::getMaxLevel();
-  snapshot.dag_expiry_level = DagManagerOld::getDagExpiryLevel();
-  snapshot.non_finalized_min_difficulty = DagManagerOld::getNonFinalizedBlocksMinDifficulty();
-  snapshot.non_finalized_blocks.reserve(non_finalized_blks.size());
-
-  for (const auto &[level, hashes] : non_finalized_blks) {
-    (void)level;
-    for (const auto &hash : hashes) {
-      if (auto blk = getDagBlock(hash); blk) {
-        snapshot.non_finalized_blocks.push_back(to_bridge_manager_block(blk));
-      }
-    }
-  }
-
+void DagManager::rebuildRustGraphsFromStorage() {
   try {
     std::unique_lock lock(rust_graphs_mutex_);
-    rust_graphs_->runtime->dag_manager_runtime_rebuild(std::move(snapshot));
+    rust_graphs_->runtime->dag_manager_runtime_restore_from_storage();
   } catch (const std::exception &e) {
-    std::cerr << "DagManager: failed to rebuild Rust state mirror: " << e.what() << std::endl;
+    std::cerr << "DagManager: failed to rebuild Rust state from storage: " << e.what() << std::endl;
   }
 }
 

@@ -149,7 +149,7 @@ class DagManager : public DagManagerOld {
   static dev::bytes getVdfMessage(blk_hash_t const &hash, std::vector<trx_hash_t> const &trx_hashes);
 
  private:
-  void rebuildRustGraphsFromOld();
+  void rebuildRustGraphsFromStorage();
   bool addBlockToRustGraphs(const std::shared_ptr<DagBlock> &blk);
   bool addBlockToRustGraphs(const rustaxa::DagManagerBlock &blk);
   std::pair<blk_hash_t, std::vector<blk_hash_t>> getRustFrontier() const;
