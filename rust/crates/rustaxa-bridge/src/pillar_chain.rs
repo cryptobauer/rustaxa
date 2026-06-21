@@ -10,6 +10,8 @@
 use crate::ffi::rustaxa_ffi::{
     PillarBlockCreationFact as FfiPillarBlockCreationFact,
     PillarBlockCreationPlan as FfiPillarBlockCreationPlan,
+    PillarBlockFinalizationFact as FfiPillarBlockFinalizationFact,
+    PillarBlockFinalizationPlan as FfiPillarBlockFinalizationPlan,
     PillarBlockLinkageFact as FfiPillarBlockLinkageFact,
     PillarBlockLinkagePlan as FfiPillarBlockLinkagePlan,
     PillarValidatorVoteCount as FfiPillarValidatorVoteCount,
@@ -25,12 +27,15 @@ use rustaxa_consensus::{
     load_own_pillar_block_vote_storage as consensus_load_own_pillar_block_vote_storage,
     load_pillar_period_data_storage as consensus_load_pillar_period_data_storage,
     plan_pillar_block_creation as consensus_plan_pillar_block_creation,
+    plan_pillar_block_finalization as consensus_plan_pillar_block_finalization,
     plan_pillar_block_linkage as consensus_plan_pillar_block_linkage,
     plan_pillar_vote_count_changes as consensus_plan_vote_count_changes,
     save_current_pillar_block_data_storage, save_finalized_pillar_block_storage,
     save_own_pillar_block_vote_storage,
     PillarBlockCreationFact as ConsensusPillarBlockCreationFact,
     PillarBlockCreationPlan as ConsensusPillarBlockCreationPlan,
+    PillarBlockFinalizationFact as ConsensusPillarBlockFinalizationFact,
+    PillarBlockFinalizationPlan as ConsensusPillarBlockFinalizationPlan,
     PillarBlockLinkageFact as ConsensusPillarBlockLinkageFact,
     PillarBlockLinkagePlan as ConsensusPillarBlockLinkagePlan,
     PillarValidatorVoteCount as ConsensusPillarValidatorVoteCount,
@@ -208,6 +213,23 @@ pub fn plan_pillar_block_creation(
     ))
 }
 
+/// Plans one pillar-block finalization attempt from compact manager facts.
+///
+/// Inputs:
+/// - `fact`: current-block hash/period, selected vote count, requested hash,
+///   and latest-finalized hash facts supplied by the C++ executor.
+///
+/// Outputs:
+/// - Stable status and effect booleans. C++ performs network request, storage
+///   persistence, cleanup, and event emission only when Rust requests them.
+pub fn plan_pillar_block_finalization(
+    fact: FfiPillarBlockFinalizationFact,
+) -> Result<FfiPillarBlockFinalizationPlan> {
+    Ok(FfiPillarBlockFinalizationPlan::from(
+        consensus_plan_pillar_block_finalization(finalization_fact_to_consensus(fact)),
+    ))
+}
+
 fn vote_count_to_consensus(
     value: FfiPillarValidatorVoteCount,
 ) -> ConsensusPillarValidatorVoteCount {
@@ -251,6 +273,20 @@ fn creation_fact_to_consensus(
     }
 }
 
+fn finalization_fact_to_consensus(
+    value: FfiPillarBlockFinalizationFact,
+) -> ConsensusPillarBlockFinalizationFact {
+    ConsensusPillarBlockFinalizationFact {
+        requested_pillar_block_hash: H256::from(value.requested_pillar_block_hash),
+        has_current_pillar_block: value.has_current_pillar_block,
+        current_period: value.current_period,
+        current_hash: H256::from(value.current_hash),
+        verified_vote_count: value.verified_vote_count,
+        has_last_finalized_pillar_block: value.has_last_finalized_pillar_block,
+        last_finalized_hash: H256::from(value.last_finalized_hash),
+    }
+}
+
 impl From<ConsensusPillarValidatorVoteCountChange> for FfiPillarValidatorVoteCountChange {
     fn from(value: ConsensusPillarValidatorVoteCountChange) -> Self {
         Self {
@@ -280,6 +316,19 @@ impl From<ConsensusPillarBlockCreationPlan> for FfiPillarBlockCreationPlan {
             state_root: value.state_root.0,
             bridge_root: value.bridge_root.0,
             bridge_epoch: value.bridge_epoch.0,
+        }
+    }
+}
+
+impl From<ConsensusPillarBlockFinalizationPlan> for FfiPillarBlockFinalizationPlan {
+    fn from(value: ConsensusPillarBlockFinalizationPlan) -> Self {
+        Self {
+            status: value.status.as_u8(),
+            return_votes: value.return_votes,
+            should_request_votes: value.should_request_votes,
+            should_persist: value.should_persist,
+            should_emit: value.should_emit,
+            current_period: value.current_period,
         }
     }
 }
@@ -414,6 +463,40 @@ mod tests {
         assert!(plan.valid);
         assert_eq!(plan.status, 1);
         assert_eq!(plan.previous_pillar_block_hash, [0; 32]);
+    }
+
+    #[test]
+    fn bridge_plans_pillar_block_finalization_effects() {
+        let requested = hash(0xAA);
+        let ready = plan_pillar_block_finalization(FfiPillarBlockFinalizationFact {
+            requested_pillar_block_hash: requested,
+            has_current_pillar_block: true,
+            current_period: 24,
+            current_hash: requested,
+            verified_vote_count: 5,
+            has_last_finalized_pillar_block: false,
+            last_finalized_hash: [0; 32],
+        })
+        .expect("finalization plan should be built");
+        assert_eq!(ready.status, 0);
+        assert!(ready.return_votes);
+        assert!(ready.should_persist);
+        assert!(ready.should_emit);
+
+        let already_finalized = plan_pillar_block_finalization(FfiPillarBlockFinalizationFact {
+            requested_pillar_block_hash: requested,
+            has_current_pillar_block: true,
+            current_period: 24,
+            current_hash: requested,
+            verified_vote_count: 5,
+            has_last_finalized_pillar_block: true,
+            last_finalized_hash: requested,
+        })
+        .expect("already-finalized plan should be built");
+        assert_eq!(already_finalized.status, 4);
+        assert!(already_finalized.return_votes);
+        assert!(!already_finalized.should_persist);
+        assert!(!already_finalized.should_emit);
     }
 
     #[test]

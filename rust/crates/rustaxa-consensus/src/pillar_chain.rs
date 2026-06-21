@@ -176,6 +176,73 @@ pub struct PillarBlockCreationPlan {
     pub bridge_epoch: H256,
 }
 
+/// Pillar-block finalization preflight status.
+///
+/// These statuses are exposed as stable bridge codes so the C++ executor can
+/// log and apply effects without re-owning the finalization decision.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PillarBlockFinalizationStatus {
+    Ready,
+    MissingCurrentBlock,
+    CurrentBlockHashMismatch,
+    MissingVotes,
+    AlreadyFinalized,
+}
+
+impl PillarBlockFinalizationStatus {
+    /// Returns the stable CXX bridge status code.
+    pub fn as_u8(self) -> u8 {
+        match self {
+            Self::Ready => 0,
+            Self::MissingCurrentBlock => 1,
+            Self::CurrentBlockHashMismatch => 2,
+            Self::MissingVotes => 3,
+            Self::AlreadyFinalized => 4,
+        }
+    }
+}
+
+/// Compact facts for planning a pillar-block finalization attempt.
+///
+/// Inputs:
+/// - `requested_pillar_block_hash` is the hash requested by the PBFT/finalizer
+///   boundary.
+/// - `has_current_pillar_block`, `current_period`, and `current_hash` describe
+///   the current local pillar block without transferring a live C++ object.
+/// - `verified_vote_count` is the executor-fetched count of threshold-selected
+///   votes for `current_period + 1` and the requested hash.
+/// - `has_last_finalized_pillar_block` and `last_finalized_hash` describe the
+///   compact latest-finalized sidecar.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PillarBlockFinalizationFact {
+    pub requested_pillar_block_hash: H256,
+    pub has_current_pillar_block: bool,
+    pub current_period: u64,
+    pub current_hash: H256,
+    pub verified_vote_count: u64,
+    pub has_last_finalized_pillar_block: bool,
+    pub last_finalized_hash: H256,
+}
+
+/// Deterministic plan for the C++ pillar-finalization executor.
+///
+/// Outputs:
+/// - `return_votes` tells C++ whether the already-fetched vote payloads should
+///   be returned to the caller.
+/// - `should_request_votes`, `should_persist`, and `should_emit` are executor
+///   effects. Rust chooses them; C++ performs the network/storage/event work.
+/// - `current_period` echoes the compact current-block period used for storage
+///   and cleanup in the ready path.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PillarBlockFinalizationPlan {
+    pub status: PillarBlockFinalizationStatus,
+    pub return_votes: bool,
+    pub should_request_votes: bool,
+    pub should_persist: bool,
+    pub should_emit: bool,
+    pub current_period: u64,
+}
+
 /// Validates pillar-block period and parent-hash linkage.
 ///
 /// Behavior mirrors the legacy manager:
@@ -244,6 +311,73 @@ pub fn plan_pillar_block_linkage(fact: PillarBlockLinkageFact) -> Result<PillarB
         valid: true,
         expected_previous_period: expected_period,
     })
+}
+
+/// Plans one pillar-block finalization attempt from compact manager facts.
+///
+/// Behavior mirrors the legacy manager while keeping the deterministic branch
+/// ordering in Rust:
+/// - Missing current block and current-hash mismatch reject without effects.
+/// - Missing threshold votes requests the vote bundle and rejects.
+/// - Already-finalized blocks return the selected votes without re-persisting.
+/// - Ready blocks return votes and request storage, cleanup, and event effects.
+pub fn plan_pillar_block_finalization(
+    fact: PillarBlockFinalizationFact,
+) -> PillarBlockFinalizationPlan {
+    if !fact.has_current_pillar_block {
+        return PillarBlockFinalizationPlan {
+            status: PillarBlockFinalizationStatus::MissingCurrentBlock,
+            return_votes: false,
+            should_request_votes: false,
+            should_persist: false,
+            should_emit: false,
+            current_period: fact.current_period,
+        };
+    }
+
+    if fact.current_hash != fact.requested_pillar_block_hash {
+        return PillarBlockFinalizationPlan {
+            status: PillarBlockFinalizationStatus::CurrentBlockHashMismatch,
+            return_votes: false,
+            should_request_votes: false,
+            should_persist: false,
+            should_emit: false,
+            current_period: fact.current_period,
+        };
+    }
+
+    if fact.verified_vote_count == 0 {
+        return PillarBlockFinalizationPlan {
+            status: PillarBlockFinalizationStatus::MissingVotes,
+            return_votes: false,
+            should_request_votes: true,
+            should_persist: false,
+            should_emit: false,
+            current_period: fact.current_period,
+        };
+    }
+
+    if fact.has_last_finalized_pillar_block
+        && fact.last_finalized_hash == fact.requested_pillar_block_hash
+    {
+        return PillarBlockFinalizationPlan {
+            status: PillarBlockFinalizationStatus::AlreadyFinalized,
+            return_votes: true,
+            should_request_votes: false,
+            should_persist: false,
+            should_emit: false,
+            current_period: fact.current_period,
+        };
+    }
+
+    PillarBlockFinalizationPlan {
+        status: PillarBlockFinalizationStatus::Ready,
+        return_votes: true,
+        should_request_votes: false,
+        should_persist: true,
+        should_emit: true,
+        current_period: fact.current_period,
+    }
 }
 
 /// Plans the deterministic shell fields for a new pillar block.
@@ -794,5 +928,90 @@ mod tests {
         assert!(plan.valid);
         assert_eq!(plan.status, PillarBlockLinkageStatus::FirstPillarBlock);
         assert_eq!(plan.previous_pillar_block_hash, H256::zero());
+    }
+
+    #[test]
+    fn pillar_block_finalization_plans_executor_effects() {
+        let requested = hash(10);
+        let ready = plan_pillar_block_finalization(PillarBlockFinalizationFact {
+            requested_pillar_block_hash: requested,
+            has_current_pillar_block: true,
+            current_period: 20,
+            current_hash: requested,
+            verified_vote_count: 3,
+            has_last_finalized_pillar_block: false,
+            last_finalized_hash: H256::zero(),
+        });
+        assert_eq!(ready.status, PillarBlockFinalizationStatus::Ready);
+        assert!(ready.return_votes);
+        assert!(ready.should_persist);
+        assert!(ready.should_emit);
+
+        let missing_votes = plan_pillar_block_finalization(PillarBlockFinalizationFact {
+            requested_pillar_block_hash: requested,
+            has_current_pillar_block: true,
+            current_period: 20,
+            current_hash: requested,
+            verified_vote_count: 0,
+            has_last_finalized_pillar_block: false,
+            last_finalized_hash: H256::zero(),
+        });
+        assert_eq!(
+            missing_votes.status,
+            PillarBlockFinalizationStatus::MissingVotes
+        );
+        assert!(missing_votes.should_request_votes);
+        assert!(!missing_votes.return_votes);
+    }
+
+    #[test]
+    fn pillar_block_finalization_preserves_reject_and_already_finalized_paths() {
+        let requested = hash(10);
+        let missing_current = plan_pillar_block_finalization(PillarBlockFinalizationFact {
+            requested_pillar_block_hash: requested,
+            has_current_pillar_block: false,
+            current_period: 0,
+            current_hash: H256::zero(),
+            verified_vote_count: 0,
+            has_last_finalized_pillar_block: false,
+            last_finalized_hash: H256::zero(),
+        });
+        assert_eq!(
+            missing_current.status,
+            PillarBlockFinalizationStatus::MissingCurrentBlock
+        );
+        assert!(!missing_current.return_votes);
+
+        let mismatch = plan_pillar_block_finalization(PillarBlockFinalizationFact {
+            requested_pillar_block_hash: requested,
+            has_current_pillar_block: true,
+            current_period: 20,
+            current_hash: hash(11),
+            verified_vote_count: 2,
+            has_last_finalized_pillar_block: false,
+            last_finalized_hash: H256::zero(),
+        });
+        assert_eq!(
+            mismatch.status,
+            PillarBlockFinalizationStatus::CurrentBlockHashMismatch
+        );
+        assert!(!mismatch.return_votes);
+
+        let already_finalized = plan_pillar_block_finalization(PillarBlockFinalizationFact {
+            requested_pillar_block_hash: requested,
+            has_current_pillar_block: true,
+            current_period: 20,
+            current_hash: requested,
+            verified_vote_count: 2,
+            has_last_finalized_pillar_block: true,
+            last_finalized_hash: requested,
+        });
+        assert_eq!(
+            already_finalized.status,
+            PillarBlockFinalizationStatus::AlreadyFinalized
+        );
+        assert!(already_finalized.return_votes);
+        assert!(!already_finalized.should_persist);
+        assert!(!already_finalized.should_emit);
     }
 }

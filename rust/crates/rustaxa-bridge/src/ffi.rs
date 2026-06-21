@@ -2671,6 +2671,34 @@ pub mod rustaxa_ffi {
         bridge_epoch: [u8; 32],
     }
 
+    /// Compact facts for Rust-side pillar-block finalization planning.
+    struct PillarBlockFinalizationFact {
+        requested_pillar_block_hash: [u8; 32],
+        has_current_pillar_block: bool,
+        current_period: u64,
+        current_hash: [u8; 32],
+        verified_vote_count: u64,
+        has_last_finalized_pillar_block: bool,
+        last_finalized_hash: [u8; 32],
+    }
+
+    /// Rust-planned finalization status and executor effects.
+    ///
+    /// Status values:
+    /// - `0` - ready to persist and emit
+    /// - `1` - missing current pillar block
+    /// - `2` - current block hash mismatch
+    /// - `3` - missing selected votes
+    /// - `4` - already finalized; return selected votes only
+    struct PillarBlockFinalizationPlan {
+        status: u8,
+        return_votes: bool,
+        should_request_votes: bool,
+        should_persist: bool,
+        should_emit: bool,
+        current_period: u64,
+    }
+
     struct UniqueVoterCheckOutcome {
         is_unique: bool,
         conflict_found: bool,
@@ -6275,6 +6303,9 @@ pub mod rustaxa_ffi {
         pub fn plan_pillar_block_creation(
             fact: PillarBlockCreationFact,
         ) -> Result<PillarBlockCreationPlan>;
+        pub fn plan_pillar_block_finalization(
+            fact: PillarBlockFinalizationFact,
+        ) -> Result<PillarBlockFinalizationPlan>;
 
         type BridgePillarChainStorage;
 
