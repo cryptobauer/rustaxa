@@ -125,15 +125,20 @@ VotesWithWeight VerifiedVotes::requireInsertedVotesWithWeightLocked(const std::s
     }
     value.weight = entry.total_weight;
 
-    // TODO(rustaxa): delete this live-sidecar reconstruction once PBFT vote progress no longer returns
-    // `VotesWithWeight` for compatibility callers. Rust owns threshold and persistence payloads on the production path.
     for (const auto& vote_hash : entry.vote_hashes) {
       const auto hash = fromBridgeHash(vote_hash.hash);
-      const auto live_vote = live_votes_.find(hash);
-      if (live_vote != live_votes_.end()) {
+      const auto payload_lookup = rust_verified_votes_->verified_votes_weighted_payload(vote_hash.hash);
+      if (payload_lookup.found) {
+        value.votes.insert({hash, materializeWeightedPayload(payload_lookup.vote)});
+        continue;
+      }
+
+      // TODO(rustaxa): remove this compatibility fallback once low-level bridge test helpers stop inserting
+      // verified-vote metadata without retaining weighted payload bytes through the admission runtime.
+      if (const auto live_vote = live_votes_.find(hash); live_vote != live_votes_.end()) {
         value.votes.insert({hash, live_vote->second});
       } else if (hash == vote->getHash()) {
-        throw verifiedVotesError("Rust inserted current vote but C++ live sidecar is missing");
+        throw verifiedVotesError("Rust inserted current vote without retained weighted payload");
       }
     }
     break;

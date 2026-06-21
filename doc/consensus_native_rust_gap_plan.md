@@ -213,6 +213,9 @@ Status as of 2026-06-21: in progress.
 - Pillar block finalization preflight is now a Rust-owned effect plan: C++ supplies compact current/latest facts plus
   Rust pillar-vote threshold and selected-weight facts, then only executes Rust-requested vote-bundle request, storage
   persistence, cleanup, event emission, and vote return effects.
+- PBFT `VotesWithWeight` compatibility reconstruction now prefers Rust-retained weighted payloads; live PBFT vote
+  sidecars are retained only as documented compatibility fallback for low-level helper paths that bypass runtime payload
+  retention.
 
 Scope:
 
