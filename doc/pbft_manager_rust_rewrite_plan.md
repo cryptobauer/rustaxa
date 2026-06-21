@@ -461,6 +461,8 @@ Landed:
 - Terminal `processPeriodData` side effects now execute from Rust admission flags: clear queue, report malicious peer,
   wait for finalization, or accept period data. The shim fails closed if a C++ rejection path receives a Rust accepted
   admission plan.
+- Unsupported Rust block-validation rejection statuses in the sync intake path now fail closed as bridge-contract errors
+  instead of letting the shim independently clear the queue and report the peer.
 
 Scope:
 

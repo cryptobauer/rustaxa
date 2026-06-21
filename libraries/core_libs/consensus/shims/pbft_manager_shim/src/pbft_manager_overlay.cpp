@@ -4620,11 +4620,8 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
         return finish_non_accepting_rust_admission();
       }
 
-      LOG(log_er_) << "Rust PBFT block validation rejected synced block " << pbft_block_hash << ", period "
-                   << block_period << ", error " << static_cast<std::string>(validation_plan.error_code);
-      sync_queue_.clear();
-      net->handleMaliciousSyncPeer(node_id);
-      return std::nullopt;
+      throw std::runtime_error("Rust PBFT block validation planner returned unsupported sync rejection: " +
+                               std::string(validation_plan.error_code));
     }
     if (validation_plan.action == kPbftManagerBlockValidationActionContractError) {
       throw std::runtime_error("Rust PBFT block validation planner rejected sync bridge facts: " +
