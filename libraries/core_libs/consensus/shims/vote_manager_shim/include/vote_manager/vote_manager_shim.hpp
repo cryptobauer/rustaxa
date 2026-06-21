@@ -703,6 +703,30 @@ class VoteManager : public VoteManagerOld {
       const rustaxa::PbftFinalizationStorageWritePlan& write_intent);
 
  private:
+  /**
+   * Executes a Rust-planned double-vote slashing proof submission.
+   *
+   * Purpose:
+   * - Isolates the remaining C++ `SlashingManager` executor boundary from the
+   *   Rust-owned PBFT vote admission state machine.
+   *
+   * Inputs:
+   * - `incoming_vote` and `conflicting_vote` are Rust-normalized canonical vote
+   *   records selected by verified-vote admission.
+   * - `period`, `round`, and `step` are the admitted vote coordinates attached
+   *   to the double-vote proof.
+   *
+   * Outputs:
+   * - Returns the SlashingManager submission result.
+   *
+   * Invariants:
+   * - Does not mutate verified-vote state.
+   * - This is a temporary executor boundary until slashing proof submission has
+   *   a Rust-owned port.
+   */
+  bool submitRustPlannedSlashingProof(const rustaxa::PbftVoteStorageRecord& incoming_vote,
+                                      const rustaxa::PbftVoteStorageRecord& conflicting_vote, PbftPeriod period,
+                                      PbftRound round, PbftStep step);
   bool isValidRewardVoteForRust(const std::shared_ptr<PbftVote>& vote) const;
 };
 

@@ -704,9 +704,8 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
 
   if (runtime_result.report_slashing) {
     LOG(log_wr_) << "Non unique vote " << vote->getHash().abridged() << " (race condition)";
-    slashing_manager_->submitDoubleVotingProof(runtime_result.slashing_incoming_vote,
-                                               runtime_result.slashing_conflicting_vote, vote->getPeriod(),
-                                               vote->getRound(), vote->getStep());
+    submitRustPlannedSlashingProof(runtime_result.slashing_incoming_vote, runtime_result.slashing_conflicting_vote,
+                                   vote->getPeriod(), vote->getRound(), vote->getStep());
     return report;
   }
 
@@ -1616,6 +1615,12 @@ std::string VoteManager::softVoteDebugMessage(PbftPeriod period, PbftRound round
 
 StepVotes VoteManager::getStepVotes(PbftPeriod period, PbftRound round, PbftStep step) const {
   return verified_votes_.getStepVotes(period, round, step).value_or(StepVotes{});
+}
+
+bool VoteManager::submitRustPlannedSlashingProof(const rustaxa::PbftVoteStorageRecord& incoming_vote,
+                                                 const rustaxa::PbftVoteStorageRecord& conflicting_vote,
+                                                 PbftPeriod period, PbftRound round, PbftStep step) {
+  return slashing_manager_->submitDoubleVotingProof(incoming_vote, conflicting_vote, period, round, step);
 }
 
 void VoteManager::setCurrentPbftPeriodAndRound(PbftPeriod pbft_period, PbftRound pbft_round) {
