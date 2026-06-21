@@ -1280,6 +1280,11 @@ bool PbftManager::tryPushCertVotesBlock() {
 
 bool PbftManager::advancePeriod() {
   const auto chain_size = pbft_chain_->getPbftChainSize();
+  return applyRustPlannedAdvancePeriod_(chain_size);
+}
+
+bool PbftManager::applyRustPlannedAdvancePeriod_(PbftPeriod finalized_chain_size) {
+  const auto chain_size = finalized_chain_size;
   const auto new_period = chain_size + 1;
   const auto transition_snapshot = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value());
   const auto transition_plan = rustaxa::plan_pbft_manager_transition(makePbftManagerTransitionFact(
@@ -1294,10 +1299,15 @@ bool PbftManager::advancePeriod() {
   if (!ensureTransitionPlanReady(transition_plan, log_er_)) {
     return false;
   }
-  const auto advance_plan = rustaxa::plan_pbft_manager_advance_period(chain_size, transition_plan);
+  return applyRustPlannedAdvancePeriod_(chain_size, transition_plan);
+}
+
+bool PbftManager::applyRustPlannedAdvancePeriod_(PbftPeriod finalized_chain_size,
+                                                 const rustaxa::PbftManagerTransitionPlan& transition_plan) {
+  const auto advance_plan = rustaxa::plan_pbft_manager_advance_period(finalized_chain_size, transition_plan);
   if (!advance_plan.accepted) {
-    LOG(log_er_) << "Rust PBFT manager advance-period planner rejected facts, chain size " << chain_size << ", error "
-                 << static_cast<std::string>(advance_plan.error_code);
+    LOG(log_er_) << "Rust PBFT manager advance-period planner rejected facts, chain size " << finalized_chain_size
+                 << ", error " << static_cast<std::string>(advance_plan.error_code);
     return false;
   }
 
@@ -3681,7 +3691,10 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           if (!begin_resume_action(kPbftFinalizationRuntimeActionAdvancePeriod, resume_step)) {
             return false;
           }
-          advancePeriod();
+          if (!applyRustPlannedAdvancePeriod_(finalization_plan.storage_write_intent.block_period)) {
+            report_resume_action(resume_step, false, 255);
+            return false;
+          }
           rustaxa::PbftFinalizationLiveMutationReport advance_report{};
           advance_report.action = kPbftFinalizationRuntimeActionAdvancePeriod;
           advance_report.block_period = finalization_plan.storage_write_intent.block_period;
@@ -4115,7 +4128,10 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     if (!begin_runtime_action(kPbftFinalizationRuntimeActionAdvancePeriod, runtime_step)) {
       return false;
     }
-    advancePeriod();
+    if (!applyRustPlannedAdvancePeriod_(finalization_plan.storage_write_intent.block_period)) {
+      report_runtime_action(runtime_step, false, 255);
+      return false;
+    }
     rustaxa::PbftFinalizationLiveMutationReport advance_report{};
     advance_report.action = kPbftFinalizationRuntimeActionAdvancePeriod;
     advance_report.block_period = finalization_plan.storage_write_intent.block_period;

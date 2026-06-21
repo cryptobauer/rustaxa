@@ -514,6 +514,19 @@ class PbftManager {
   bool advancePeriod();
 
   /**
+   * Applies the Rust-planned PBFT manager period-advance effect script.
+   *
+   * Inputs are the just-finalized PBFT-chain size and the accepted Rust reset-consensus transition plan. The method
+   * executes only the temporary compatibility effects still owned by the shim: timers, wallet eligibility, vote cleanup,
+   * and proposed-block cleanup. Rust remains the source of ordering and runtime snapshot updates.
+   *
+   * Returns false when Rust rejects the plan or resulting runtime period snapshot.
+   */
+  bool applyRustPlannedAdvancePeriod_(PbftPeriod finalized_chain_size);
+  bool applyRustPlannedAdvancePeriod_(PbftPeriod finalized_chain_size,
+                                      const rustaxa::PbftManagerTransitionPlan& transition_plan);
+
+  /**
    * @brief Check if there is 2t+1 cert votes for some valid block, if yes - push it into the chain
    * @return true if new cert voted block was pushed into the chain, otherwise false
    */

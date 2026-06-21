@@ -389,6 +389,8 @@ Landed bounded PBFT-chain update/report collapse:
   intent; C++ hydrates the temporary mirror from the returned snapshot instead of assigning the flag directly.
 - `SetExecutedFlag` and `AdvancePeriod` now submit typed PBFT manager post-state reports to Rust finalization live
   mutation validation before the finalization runtime cursor advances.
+- The finalization `AdvancePeriod` action now calls a shim-local Rust-planned advance-period executor directly instead
+  of entering the monolithic `advancePeriod()` wrapper; the wrapper remains for non-finalization callers.
 
 Scope:
 
