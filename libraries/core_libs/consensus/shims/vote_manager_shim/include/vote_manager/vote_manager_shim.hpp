@@ -795,9 +795,43 @@ class VoteManager : public VoteManagerOld {
    * - Does not mutate verified-vote state.
    * - The returned string is for logging only and must not be used as a
    *   protocol decision input.
-   */
+  */
   std::string softVoteDebugMessage(PbftPeriod period, PbftRound round) const;
   StepVotes getStepVotes(PbftPeriod period, PbftRound round, PbftStep step) const;
+  /**
+   * Applies a Rust-planned PBFT manager period/round lifecycle update.
+   *
+   * Purpose:
+   * - Keeps PBFT manager transition executors from calling the generic
+   *   VoteManager period/round mutator directly.
+   *
+   * Inputs:
+   * - `pbft_period` and `pbft_round` are selected by the Rust PBFT manager
+   *   transition or advance-period plan.
+   *
+   * Invariants:
+   * - Performs the same live verified-vote threshold hydration as the legacy
+   *   period/round setter.
+   * - Does not persist votes or perform network/slashing effects.
+   */
+  void applyRustPlannedPeriodRound(PbftPeriod pbft_period, PbftRound pbft_round);
+
+  /**
+   * Applies Rust-planned VoteManager cleanup after PBFT period advancement.
+   *
+   * Purpose:
+   * - Names the remaining live verified-vote cleanup as a VoteManager executor
+   *   action rather than PBFT-manager-owned sidecar mutation.
+   *
+   * Inputs:
+   * - `finalized_chain_size` is the finalized PBFT period selected by the Rust
+   *   advance-period plan.
+   *
+   * Invariants:
+   * - Keeps previous-period votes available until Rust requests this cleanup,
+   *   preserving reward-vote collection semantics.
+   */
+  void cleanupVotesAfterRustPlannedPeriodAdvance(PbftPeriod finalized_chain_size);
   void setCurrentPbftPeriodAndRound(PbftPeriod pbft_period, PbftRound pbft_round);
   PbftStep getNetworkTplusOneNextVotingStep(PbftPeriod period, PbftRound round) const;
 

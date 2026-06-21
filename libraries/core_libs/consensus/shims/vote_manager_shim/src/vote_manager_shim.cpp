@@ -1676,6 +1676,14 @@ VoteManager::PreviousRoundNextVoteLogFacts VoteManager::applyStartupPeriodRoundA
   return previousRoundNextVoteLogFacts(period, round - 1);
 }
 
+void VoteManager::applyRustPlannedPeriodRound(PbftPeriod pbft_period, PbftRound pbft_round) {
+  setCurrentPbftPeriodAndRound(pbft_period, pbft_round);
+}
+
+void VoteManager::cleanupVotesAfterRustPlannedPeriodAdvance(PbftPeriod finalized_chain_size) {
+  cleanupVotesByPeriod(finalized_chain_size);
+}
+
 VoteManager::CertVotedBlockSelection VoteManager::certVotedBlockSelection(PbftPeriod period, PbftRound round) const {
   CertVotedBlockSelection selection;
   const auto cert_voted_block = getTwoTPlusOneVotedBlock(period, round, TwoTPlusOneVotedBlockType::CertVotedBlock);

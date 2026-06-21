@@ -1333,7 +1333,7 @@ bool PbftManager::applyRustPlannedAdvancePeriod_(PbftPeriod finalized_chain_size
         break;
       }
       case kPbftManagerAdvancePeriodActionSetVoteManagerPeriodRound:
-        vote_mgr_->setCurrentPbftPeriodAndRound(advance_plan.new_period, transition_plan.new_round);
+        vote_mgr_->applyRustPlannedPeriodRound(advance_plan.new_period, transition_plan.new_round);
         break;
       case kPbftManagerAdvancePeriodActionResetCurrentRoundTimer:
         current_round_start_datetime_ = std::chrono::system_clock::now();
@@ -1365,7 +1365,7 @@ bool PbftManager::applyRustPlannedAdvancePeriod_(PbftPeriod finalized_chain_size
         break;
       case kPbftManagerAdvancePeriodActionCleanupVotes:
         // !!!Important: we need previous period votes to get reward votes for current period block
-        vote_mgr_->cleanupVotesByPeriod(advance_plan.finalized_chain_size);
+        vote_mgr_->cleanupVotesAfterRustPlannedPeriodAdvance(advance_plan.finalized_chain_size);
         break;
       case kPbftManagerAdvancePeriodActionCleanupProposedBlocks:
         proposed_blocks_.cleanupProposedPbftBlocksByPeriod(advance_plan.new_period);
@@ -1453,7 +1453,7 @@ void PbftManager::resetPbftConsensus(PbftRound round) {
                                     rebroadcast_reward_votes_counter_);
   }
   if (plan.set_vote_manager_period_round) {
-    vote_mgr_->setCurrentPbftPeriodAndRound(period, plan.new_round);
+    vote_mgr_->applyRustPlannedPeriodRound(period, plan.new_round);
   }
   if (plan.reset_current_round_start) {
     current_round_start_datetime_ = std::chrono::system_clock::now();
