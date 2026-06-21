@@ -910,13 +910,16 @@ The current Rust consensus footprint is broad but still incomplete:
    FinalChain-backed account/finalized lookup, queue mutation, and an explicit event/log shell-intent list before C++ maps legacy public error
    strings. Direct standalone validated-insert planner CXX entry points have been removed, so public and validated
    insertion paths must go through the Rust runtime command-report APIs. Known-hash insert decisions now route through the Rust runtime precheck instead of a shim-local early return,
-   and `isTransactionKnown` now includes Rust sidecar membership checks alongside queue-known state. Rust now returns
+   and `isTransactionKnown` now uses a hash-only Rust runtime query that derives queue-known and sidecar membership from
+   Rust state. Rust now returns
    typed DAG-save, finalized-status, and admission command reports instead of generic lifecycle/action reports. These
    reports now carry direct hash receipts for the remaining C++ log/event sinks without redundant transaction-count
    fields, and admission reports carry Rust-authored shell intents, so shim code no longer rebuilds input hash vectors,
    revalidates Rust command bucket indexes, or infers admission log/event selection before realizing shell side effects.
    The Rust-mode facade now owns the public `transaction_added_`
-   event surface and emits it from shim-owned code after Rust accepts a proposable queue mutation. Transaction read helpers no longer infer source
+   event surface and emits it from shim-owned code after Rust accepts a proposable queue mutation. `saveTransactionsFromDagBlock`
+   is now only a public-object adapter into the canonical payload save command, so Rust re-inspects transaction bytes
+   before DAG persistence decisions. Transaction read helpers no longer infer source
    order in C++: `getTransaction`, `getTransactions`, `getBlockTransactions`, `getNonfinalizedTrx`, and
    `getPoolTransactions` now consume Rust-owned transaction views that preserve request order and duplicates while
    resolving queue, non-finalized sidecar, recently-finalized sidecar, pending storage, finalized regular storage, and

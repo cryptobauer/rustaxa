@@ -119,9 +119,10 @@ class TransactionManager : public TransactionManagerOld {
   /**
    * Persist transactions accepted by a DAG block.
    *
-   * C++ applies live duplicate/finalized filtering and owns pool/cache mutation. Accepted
-   * transaction RLP payloads and the target transaction count are committed through Rust
-   * storage first; if that write fails, the live C++ transaction state is left unchanged.
+   * Compatibility adapter for callers that still hold public transaction objects.
+   * C++ extracts only hash/RLP edge facts, then routes through the Rust-owned
+   * canonical payload command path for inspection, filtering, persistence, and
+   * live queue/sidecar mutation.
    */
   void saveTransactionsFromDagBlock(const SharedTransactions &trxs);
 

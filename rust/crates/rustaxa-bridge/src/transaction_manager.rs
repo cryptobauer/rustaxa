@@ -2099,10 +2099,23 @@ impl BridgeTransactionManagerRuntime {
         &self,
         fact: TransactionManagerSidecarKnownFact,
     ) -> Result<bool> {
+        self.transaction_manager_runtime_is_transaction_known_hash(&fact.hash)
+    }
+
+    /// Returns Rust's known-transaction decision for a canonical hash.
+    ///
+    /// Production C++ shims call this hash-only API so queue membership and
+    /// sidecar membership are derived exclusively from the Rust runtime. The
+    /// older fact-shaped helper remains only as a compatibility wrapper for
+    /// lower-level sidecar tests and non-production callers.
+    pub fn transaction_manager_runtime_is_transaction_known_hash(
+        &self,
+        hash: &[u8; 32],
+    ) -> Result<bool> {
         self.sidecar
             .is_transaction_known(TransactionManagerKnownFact {
-                hash: H256::from(fact.hash),
-                queue_known: self.queue.is_transaction_known(H256::from(fact.hash)),
+                hash: H256::from(*hash),
+                queue_known: self.queue.is_transaction_known(H256::from(*hash)),
             })
             .context("TM_RUNTIME_IS_TRANSACTION_KNOWN")
     }
@@ -4876,6 +4889,12 @@ mod tests {
                 18, sender, 1, true,
             ))
             .expect("queue insert should succeed");
+        assert!(
+            runtime
+                .transaction_manager_runtime_is_transaction_known_hash(&[18; 32])
+                .expect("hash-only runtime knownness should compute"),
+            "runtime knownness must derive queue membership without caller-supplied facts"
+        );
 
         let report = runtime
             .transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_command_report(

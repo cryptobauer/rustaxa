@@ -650,55 +650,22 @@ class TransactionManagerRustShimAccess {
   /**
    * Persists transactions accepted by a DAG block.
    *
-   * C++ owns only the live transaction pointers, cache fact snapshot, and
-   * sidecar mutation. Rust owns duplicate filtering, nonce-gated finalized
-   * storage checks, accepted ordering, count planning, and the atomic storage
-   * write. Empty DAG blocks do not need FinalChain facts and are treated as a
-   * no-op. Non-empty batches source sender nonce facts from the external-EVM
-   * FinalChain boundary while Rust owns sidecar checks, storage writes, and
-   * runtime count updates. If the bridge write fails, no C++ transaction state
-   * is mutated.
+   * This compatibility overload is an edge adapter: it extracts only hashes and
+   * canonical RLP payload bytes from public `Transaction` objects, then delegates
+   * to the payload-oriented Rust command path. Rust re-inspects those bytes and
+   * remains the authority for duplicate filtering, nonce-gated finalized storage
+   * checks, accepted ordering, count planning, and queue/sidecar mutation.
    */
   static void saveTransactionsFromDagBlock(TransactionManager& manager, SharedTransactions const& trxs) {
-    if (trxs.empty()) {
-      return;
-    }
-    if (!manager.final_chain_) {
-      throw DbException(
-          "RUST_STORAGE_DAG_TX_PERSIST_FAILED: FinalChain is required for non-empty DAG transaction save");
-    }
-
-    std::unique_lock transactions_lock(manager.transactions_mutex_);
-
-    rust::Vec<rustaxa::DagTransactionSaveRuntimeFact> facts;
-    facts.reserve(trxs.size());
-
-    uint64_t input_index = 0;
+    vec_trx_t transaction_hashes;
+    std::vector<dev::bytes> transaction_rlps;
+    transaction_hashes.reserve(trxs.size());
+    transaction_rlps.reserve(trxs.size());
     for (const auto& transaction : trxs) {
-      const auto envelope = inspectRegularTransaction(transaction, "RUST_STORAGE_DAG_TX_ENVELOPE_FAILED");
-      const auto sender = requireEnvelopeSender(envelope, "RUST_STORAGE_DAG_TX_ENVELOPE_FAILED");
-
-      rustaxa::DagTransactionSaveRuntimeFact fact;
-      fact.input_index = input_index++;
-      fact.hash = envelope.hash;
-      fact.trx_rlp = cloneBridgeBytes(envelope.tx_rlp);
-      fact.transaction_nonce = envelope.nonce;
-      fact.sender = sender;
-      facts.push_back(std::move(fact));
+      transaction_hashes.emplace_back(transaction->getHash());
+      transaction_rlps.emplace_back(transaction->rlp());
     }
-
-    const auto report = [&]() {
-      try {
-        return rustaxa::save_transactions_from_dag_block_command_report_with_runtime_and_final_chain(
-            *manager.runtime_, manager.final_chain_->rustFinalChainForRust(), std::move(facts));
-      } catch (const std::exception& e) {
-        throw DbException(std::string("RUST_STORAGE_DAG_TX_PERSIST_FAILED: ") + e.what());
-      }
-    }();
-
-    for (const auto& erased : report.queue_erased) {
-      LOG(manager.log_dg_) << "Transaction " << fromBridgeHash(erased.hash) << " removed from trx pool ";
-    }
+    saveTransactionPayloadsFromDagBlock(manager, transaction_hashes, transaction_rlps);
   }
 
   /**
@@ -1105,11 +1072,8 @@ class TransactionManagerRustShimAccess {
 
   static bool isTransactionKnown(TransactionManager& manager, const trx_hash_t& trx_hash) {
     std::shared_lock transactions_lock(manager.transactions_mutex_);
-    rustaxa::TransactionManagerSidecarKnownFact fact;
-    fact.hash = toBridgeHash(trx_hash);
-    fact.queue_known = false;
     try {
-      return manager.runtime_->transaction_manager_runtime_is_transaction_known(fact);
+      return manager.runtime_->transaction_manager_runtime_is_transaction_known_hash(toBridgeHash(trx_hash));
     } catch (const std::exception& e) {
       throw DbException(std::string("RUST_TX_MANAGER_KNOWN_LOOKUP_FAILED: ") + e.what());
     }

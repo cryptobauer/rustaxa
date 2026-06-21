@@ -5477,6 +5477,11 @@ pub mod rustaxa_ffi {
             self: &BridgeTransactionManagerRuntime,
             fact: TransactionManagerSidecarKnownFact,
         ) -> Result<bool>;
+        /// Returns Rust's known-transaction decision from runtime-owned queue and sidecar state.
+        pub fn transaction_manager_runtime_is_transaction_known_hash(
+            self: &BridgeTransactionManagerRuntime,
+            hash: &[u8; 32],
+        ) -> Result<bool>;
         pub fn transaction_manager_runtime_insert_non_finalized(
             self: &mut BridgeTransactionManagerRuntime,
             input: TransactionManagerSidecarInsertInput,
