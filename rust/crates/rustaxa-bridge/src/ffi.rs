@@ -4736,6 +4736,10 @@ pub mod rustaxa_ffi {
             block_hash: &[u8; 32],
             anchor_hash: &[u8; 32],
         ) -> Result<PbftChainHeadPayload>;
+        pub fn pbft_chain_update_for_finalization(
+            self: &mut BridgePbftChain,
+            write_intent: &PbftFinalizationStorageWritePlan,
+        ) -> Result<PbftFinalizationLiveMutationReport>;
         pub fn pbft_chain_block_exists(
             self: &BridgePbftChain,
             block_hash: &[u8; 32],

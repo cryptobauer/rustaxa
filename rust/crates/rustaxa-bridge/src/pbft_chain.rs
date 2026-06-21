@@ -1,6 +1,8 @@
 use crate::ffi::rustaxa_ffi::{
     PbftBlockStorageLookup as FfiPbftBlockStorageLookup, PbftBlockValidationResult,
     PbftChainHeadPayload, PbftChainStorageRestore as FfiPbftChainStorageRestore,
+    PbftFinalizationLiveMutationReport as FfiPbftFinalizationLiveMutationReport,
+    PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
 };
 use crate::ffi::BridgePbftChain;
 use crate::ffi::BridgeStorage;
@@ -16,6 +18,7 @@ use rustaxa_storage::Storage;
 const PBFT_VALIDATION_VALID: u8 = 0;
 const PBFT_VALIDATION_PERIOD_MISMATCH: u8 = 1;
 const PBFT_VALIDATION_PREVIOUS_HASH_MISMATCH: u8 = 2;
+const PBFT_FINALIZATION_RUNTIME_ACTION_UPDATE_PBFT_CHAIN: u8 = 6;
 
 /// Creates a Rust PBFT chain state model from a C++-parsed head payload.
 ///
@@ -128,6 +131,54 @@ impl BridgePbftChain {
             .state
             .update(H256::from(*block_hash), H256::from(*anchor_hash))?
             .into())
+    }
+
+    /// Applies the PBFT-chain finalization mutation described by a Rust-planned
+    /// storage intent and returns the Rust-verifiable live-mutation report.
+    ///
+    /// Inputs:
+    /// - `write_intent`: accepted finalization write plan from the Rust planner.
+    ///
+    /// Outputs:
+    /// - Post-mutation PBFT-chain head facts for Rust finalization runtime
+    ///   validation.
+    ///
+    /// Invariants and edge behavior:
+    /// - Block hash, anchor hash, and period are derived from the accepted Rust
+    ///   finalization intent, not from C++ sidecar state.
+    /// - Persistence remains outside this method; the caller must have already
+    ///   applied the Rust-owned finalized-period storage write stages.
+    /// - Errors from the underlying PBFT-chain update are returned before any
+    ///   report is emitted.
+    pub fn pbft_chain_update_for_finalization(
+        &mut self,
+        write_intent: &FfiPbftFinalizationStorageWritePlan,
+    ) -> Result<FfiPbftFinalizationLiveMutationReport, anyhow::Error> {
+        let head = self.state.update(
+            H256::from(write_intent.pbft_block_hash),
+            H256::from(write_intent.anchor_hash),
+        )?;
+        Ok(FfiPbftFinalizationLiveMutationReport {
+            action: PBFT_FINALIZATION_RUNTIME_ACTION_UPDATE_PBFT_CHAIN,
+            block_period: write_intent.block_period,
+            pbft_block_hash: write_intent.pbft_block_hash,
+            anchor_hash: write_intent.anchor_hash,
+            dag_finalized_count: 0,
+            finalized_transaction_count: 0,
+            pbft_chain_size: head.size,
+            pbft_chain_head_hash: head.last_pbft_block_hash.into(),
+            pbft_chain_last_anchor_hash: head.last_non_null_pbft_dag_anchor_hash.into(),
+            reward_votes_period: 0,
+            reward_votes_round: 0,
+            reward_votes_block_hash: [0; 32],
+            reward_votes_extra_count: 0,
+            sortition_changed: false,
+            sortition_change_period: 0,
+            sortition_change_interval_efficiency: 0,
+            sortition_change_threshold_upper: 0,
+            sortition_current_threshold_upper: 0,
+            sortition_params_changes_count: 0,
+        })
     }
 
     /// Returns whether this storage-backed PBFT chain runtime has a finalized
@@ -377,5 +428,78 @@ mod tests {
         assert!(loaded.found);
         assert_eq!(loaded.block_rlp, block);
         assert!(!missing.found);
+    }
+
+    #[test]
+    fn bridge_pbft_chain_finalization_update_derives_report_from_write_intent() {
+        let mut chain = create_pbft_chain(
+            PbftChainHead {
+                head_hash: H256::zero(),
+                size: 9,
+                non_empty_size: 4,
+                last_pbft_block_hash: hash(8),
+                last_non_null_pbft_dag_anchor_hash: hash(77),
+            }
+            .into(),
+        )
+        .unwrap();
+        let mut write_intent = FfiPbftFinalizationStorageWritePlan {
+            persist_pbft_head: true,
+            persist_period_data: true,
+            reset_reward_votes: false,
+            update_sortition_params: false,
+            apply_dynamic_lambda_update: false,
+            persist_period_lambda: false,
+            persist_executed_pbft_status: false,
+            process_pillar_block: false,
+            pbft_block_hash: hash(99).into(),
+            pbft_head_hash: H256::zero().into(),
+            block_period: 10,
+            null_anchor: false,
+            anchor_hash: hash(123).into(),
+            reward_vote_period: 0,
+            reward_vote_round: 0,
+            reward_vote_step: 0,
+            reward_vote_block_hash: H256::zero().into(),
+            period_lambda: 0,
+            blocks_per_year: 0,
+            executed_pbft_status: false,
+            pbft_head_payload: Vec::new(),
+            period_data_rlp: Vec::new(),
+            dag_block_period_writes: Vec::new(),
+            transaction_location_writes: Vec::new(),
+        };
+
+        let report = chain
+            .pbft_chain_update_for_finalization(&write_intent)
+            .unwrap();
+
+        assert_eq!(
+            report.action,
+            PBFT_FINALIZATION_RUNTIME_ACTION_UPDATE_PBFT_CHAIN
+        );
+        assert_eq!(report.block_period, 10);
+        assert_eq!(H256::from(report.pbft_block_hash), hash(99));
+        assert_eq!(H256::from(report.anchor_hash), hash(123));
+        assert_eq!(report.pbft_chain_size, 10);
+        assert_eq!(H256::from(report.pbft_chain_head_hash), hash(99));
+        assert_eq!(H256::from(report.pbft_chain_last_anchor_hash), hash(123));
+
+        write_intent.pbft_block_hash = hash(100).into();
+        write_intent.anchor_hash = H256::zero().into();
+        write_intent.block_period = 11;
+        let null_anchor_report = chain
+            .pbft_chain_update_for_finalization(&write_intent)
+            .unwrap();
+
+        assert_eq!(null_anchor_report.pbft_chain_size, 11);
+        assert_eq!(
+            H256::from(null_anchor_report.pbft_chain_head_hash),
+            hash(100)
+        );
+        assert_eq!(
+            H256::from(null_anchor_report.pbft_chain_last_anchor_hash),
+            hash(123)
+        );
     }
 }

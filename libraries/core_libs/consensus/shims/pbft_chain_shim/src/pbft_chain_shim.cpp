@@ -13,8 +13,6 @@ namespace {
 constexpr uint8_t kPbftValidationValid = 0;
 constexpr uint8_t kPbftValidationPeriodMismatch = 1;
 constexpr uint8_t kPbftValidationPreviousHashMismatch = 2;
-constexpr uint8_t kPbftFinalizationRuntimeActionUpdatePbftChain = 6;
-
 std::array<uint8_t, 32> to_bridge_hash(blk_hash_t const& hash) { return hash.asArray(); }
 
 blk_hash_t from_bridge_hash(std::array<uint8_t, 32> const& hash) {
@@ -91,19 +89,9 @@ void PbftChain::updatePbftChain(blk_hash_t const& pbft_block_hash, blk_hash_t co
 }
 
 rustaxa::PbftFinalizationLiveMutationReport PbftChain::updatePbftChainForPbftFinalization(
-    blk_hash_t const& pbft_block_hash, blk_hash_t const& anchor_hash,
     const rustaxa::PbftFinalizationStorageWritePlan& write_intent) {
-  updatePbftChain(pbft_block_hash, anchor_hash);
-
-  rustaxa::PbftFinalizationLiveMutationReport report{};
-  report.action = kPbftFinalizationRuntimeActionUpdatePbftChain;
-  report.block_period = write_intent.block_period;
-  report.pbft_block_hash = write_intent.pbft_block_hash;
-  report.anchor_hash = write_intent.anchor_hash;
-  report.pbft_chain_size = getPbftChainSize();
-  report.pbft_chain_head_hash = to_bridge_hash(getLastPbftBlockHash());
-  report.pbft_chain_last_anchor_hash = to_bridge_hash(getLastNonNullPbftBlockAnchor());
-  return report;
+  std::scoped_lock lock(chain_head_access_);
+  return rust_chain_.value()->pbft_chain_update_for_finalization(write_intent);
 }
 
 bool PbftChain::checkPbftBlockValidation(const std::shared_ptr<PbftBlock>& pbft_block) const {

@@ -380,6 +380,12 @@ invalid action-status payloads before advancing the cursor. This closes the firs
 Rust-owned storage actions and generic non-storage executor reports while keeping FinalChain/EVM execution as an explicit
 temporary executor boundary.
 
+Landed bounded PBFT-chain update/report collapse:
+
+- `UpdatePbftChain` no longer receives C++-computed finalized block or anchor hashes for its finalization report.
+- The PBFT-chain Rust bridge derives the head mutation and live-mutation report from the accepted Rust finalization
+  storage-write intent, while the C++ shim keeps only the temporary PBFT-chain lock boundary.
+
 Scope:
 
 - Move finalization post-commit ordering, PBFT-chain head advancement, DAG finalized-order commit reports, transaction

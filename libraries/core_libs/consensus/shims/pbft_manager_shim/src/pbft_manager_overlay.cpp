@@ -3917,8 +3917,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       if (!begin_runtime_action(kPbftFinalizationRuntimeActionUpdatePbftChain, runtime_step)) {
         return false;
       }
-      const auto pbft_chain_report = pbft_chain_->updatePbftChainForPbftFinalization(
-          pbft_block_hash, anchor_hash, finalization_plan.storage_write_intent);
+      const auto pbft_chain_report =
+          pbft_chain_->updatePbftChainForPbftFinalization(finalization_plan.storage_write_intent);
       const auto live_validation = validate_live_mutation(pbft_chain_report);
       if (!live_validation.accepted) {
         LOG(log_er_) << "Rust PBFT finalization PBFT-chain live mutation rejected for block " << pbft_block_hash
