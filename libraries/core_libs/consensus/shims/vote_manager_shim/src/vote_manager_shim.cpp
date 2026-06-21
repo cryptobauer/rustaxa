@@ -1455,6 +1455,26 @@ rustaxa::PbftOptimizedVoteBundleBuildResult VoteManager::buildOptimizedVotesBund
   return verified_votes_.buildOptimizedVotesBundleEgress(std::move(request));
 }
 
+std::string VoteManager::softVoteDebugMessage(PbftPeriod period, PbftRound round) const {
+  uint64_t votes_weight = 0;
+  std::string debug_msg;
+  auto soft_votes = getStepVotes(period, round, 2 /* soft voting step */);
+  for (const auto& block_soft_votes : soft_votes.votes) {
+    votes_weight += block_soft_votes.second.weight;
+    debug_msg += "Block " + block_soft_votes.first.abridged() + "(votes weight " +
+                 std::to_string(block_soft_votes.second.weight) + ") -> [";
+
+    for (const auto& vote : block_soft_votes.second.votes) {
+      debug_msg += vote.first.abridged() + "(voter " + vote.second->getVoterAddr().abridged() + "), ";
+    }
+
+    debug_msg += "]\n";
+  }
+  debug_msg += "all votes weight " + std::to_string(votes_weight) + ", 2t+1 threshold " +
+               std::to_string(getPbftTwoTPlusOne(period - 1, PbftVoteTypes::soft_vote).value());
+  return debug_msg;
+}
+
 StepVotes VoteManager::getStepVotes(PbftPeriod period, PbftRound round, PbftStep step) const {
   return verified_votes_.getStepVotes(period, round, step).value_or(StepVotes{});
 }

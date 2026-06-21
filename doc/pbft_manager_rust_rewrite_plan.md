@@ -546,6 +546,8 @@ Landed:
   of reading the current `PillarBlock` sidecar in PBFT manager.
 - Finalization pillar preflight now receives a typed PillarChainManager result with success, vote count, and executor
   payloads instead of treating the returned pillar-vote vector as the protocol decision in PBFT manager.
+- Certify-step soft-vote diagnostics now come from VoteManager-owned vote facts. PBFT manager no longer iterates
+  `StepVotes` sidecar buckets or reads the soft-vote threshold just to format the go-finish debug log.
 
 Scope:
 

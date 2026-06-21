@@ -513,6 +513,23 @@ class VoteManager : public VoteManagerOld {
    */
   rustaxa::PbftOptimizedVoteBundleBuildResult buildOptimizedVotesBundleEgress(
       rustaxa::PbftOptimizedVoteBundleBuildRequest request) const;
+  /**
+   * Builds certify-step soft-vote debug output from VoteManager-owned vote facts.
+   *
+   * Purpose:
+   * - Keeps PBFT manager from iterating live soft-vote sidecar buckets and
+   *   reading thresholds only to produce diagnostic output.
+   *
+   * Outputs:
+   * - Legacy-compatible debug text describing per-block soft-vote weights,
+   *   voters, total weight, and the soft-vote `2t+1` threshold.
+   *
+   * Invariants:
+   * - Does not mutate verified-vote state.
+   * - The returned string is for logging only and must not be used as a
+   *   protocol decision input.
+   */
+  std::string softVoteDebugMessage(PbftPeriod period, PbftRound round) const;
   StepVotes getStepVotes(PbftPeriod period, PbftRound round, PbftStep step) const;
   void setCurrentPbftPeriodAndRound(PbftPeriod pbft_period, PbftRound pbft_round);
   PbftStep getNetworkTplusOneNextVotingStep(PbftPeriod period, PbftRound round) const;
