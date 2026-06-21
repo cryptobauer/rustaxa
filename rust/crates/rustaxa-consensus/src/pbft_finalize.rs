@@ -422,6 +422,8 @@ pub enum PbftFinalizationLiveMutationStatus {
     FinalChainDispatchMissing,
     /// FinalChain dispatch used a blocks-per-year value different from the Rust intent.
     FinalChainBlocksPerYearMismatch,
+    /// FinalChain height observed after dispatch did not reach the finalized period.
+    FinalChainLastBlockMismatch,
     /// Dynamic-lambda live round counter did not match the Rust intent.
     DynamicLambdaRoundsCountMismatch,
     /// Dynamic-lambda live value did not match the Rust intent.
@@ -456,6 +458,7 @@ impl PbftFinalizationLiveMutationStatus {
             Self::AnchorDagCacheNotCleared => 19,
             Self::FinalChainDispatchMissing => 20,
             Self::FinalChainBlocksPerYearMismatch => 21,
+            Self::FinalChainLastBlockMismatch => 24,
             Self::DynamicLambdaRoundsCountMismatch => 22,
             Self::DynamicLambdaValueMismatch => 23,
             Self::UnknownAction => 255,
@@ -2628,6 +2631,12 @@ pub fn validate_pbft_finalization_live_mutation_report(
                     "PBFT_FINALIZE_LIVE_MUTATION_FINAL_CHAIN_BLOCKS_PER_YEAR_MISMATCH",
                 );
             }
+            if report.final_chain_last_block < plan.storage_write_intent.block_period {
+                return reject(
+                    PbftFinalizationLiveMutationStatus::FinalChainLastBlockMismatch,
+                    "PBFT_FINALIZE_LIVE_MUTATION_FINAL_CHAIN_LAST_BLOCK_MISMATCH",
+                );
+            }
         }
         PbftFinalizationRuntimeAction::SetExecutedFlag => {
             if report.executed_pbft_block != plan.storage_write_intent.executed_pbft_status {
@@ -3629,7 +3638,7 @@ mod tests {
             anchor_dag_cache_count: 0,
             final_chain_dispatched: true,
             final_chain_blocks_per_year: 1_000,
-            final_chain_last_block: 9,
+            final_chain_last_block: 10,
         }
     }
 
@@ -4555,6 +4564,18 @@ mod tests {
         assert_eq!(
             final_chain_blocks_per_year.status,
             PbftFinalizationLiveMutationStatus::FinalChainBlocksPerYearMismatch
+        );
+
+        let final_chain_last_block = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            PbftFinalizationLiveMutationReport {
+                final_chain_last_block: 9,
+                ..live_report(PbftFinalizationRuntimeAction::FinalizeFinalChain)
+            },
+        );
+        assert_eq!(
+            final_chain_last_block.status,
+            PbftFinalizationLiveMutationStatus::FinalChainLastBlockMismatch
         );
 
         let executed = validate_pbft_finalization_live_mutation_report(
