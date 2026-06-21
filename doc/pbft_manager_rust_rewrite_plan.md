@@ -674,6 +674,11 @@ commented proposed-block startup TODO from the overlay. With Slice 6 closed for 
 collapse, the next cleanup pass can remove obsolete scaffolding and helpers without hiding active finalization ownership
 gaps behind cosmetic deletion.
 
+Landed bounded cleanup:
+
+- Consolidated duplicate PBFT sync transaction-hash bridge helpers in the overlay into one templated helper while keeping
+  the same edge-only materialization behavior.
+
 Scope:
 
 - Delete copied PBFT manager branches whose behavior is now Rust-planned.

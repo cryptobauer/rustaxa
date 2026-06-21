@@ -536,16 +536,8 @@ rust::Vec<rustaxa::PbftFinalizationHash> toBridgeFinalizationHashes(const std::v
   return out;
 }
 
-rust::Vec<rustaxa::PbftSyncTransactionHash> toBridgeTransactionHashes(const std::unordered_set<trx_hash_t> &hashes) {
-  rust::Vec<rustaxa::PbftSyncTransactionHash> out;
-  out.reserve(hashes.size());
-  for (const auto &hash : hashes) {
-    out.push_back(rustaxa::PbftSyncTransactionHash{toBridgeHash(hash)});
-  }
-  return out;
-}
-
-rust::Vec<rustaxa::PbftSyncTransactionHash> toBridgeTransactionHashes(const std::vector<trx_hash_t> &hashes) {
+template <typename Hashes>
+rust::Vec<rustaxa::PbftSyncTransactionHash> toBridgeTransactionHashes(const Hashes &hashes) {
   rust::Vec<rustaxa::PbftSyncTransactionHash> out;
   out.reserve(hashes.size());
   for (const auto &hash : hashes) {
