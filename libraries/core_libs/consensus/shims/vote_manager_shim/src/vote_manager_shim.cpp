@@ -1245,6 +1245,32 @@ std::shared_ptr<PbftVote> VoteManager::generateVoteWithWeight(const blk_hash_t& 
   return materializeRustGeneratedVote(generated, wallet, true);
 }
 
+VoteManager::LocallyGeneratedVotePlacement VoteManager::generateAndPlaceLocalVote(
+    const blk_hash_t& block_hash, PbftVoteTypes vote_type, PbftPeriod period, PbftRound round, PbftStep step,
+    const WalletConfig& wallet) {
+  LocallyGeneratedVotePlacement result;
+  result.vote = generateVoteWithWeight(block_hash, vote_type, period, round, step, wallet);
+  if (!result.vote) {
+    std::stringstream err;
+    err << "Failed to generate vote for " << block_hash << ", period " << period << ", round " << round << ", step "
+        << step << ", validator " << wallet.node_addr;
+    result.error = err.str();
+    return result;
+  }
+
+  if (!addLocallyGeneratedVote(result.vote)) {
+    std::stringstream err;
+    err << "Unable to place vote " << result.vote->getHash() << " for block " << block_hash << ", period " << period
+        << ", round " << round << ", step " << step << ", validator " << wallet.node_addr;
+    result.error = err.str();
+    result.vote.reset();
+    return result;
+  }
+
+  result.placed = true;
+  return result;
+}
+
 VoteManager::LocalProposalVoteGeneration VoteManager::generateUniqueProposalVoteForBlock(
     const blk_hash_t& block_hash, PbftPeriod period, PbftRound round, PbftStep step, const WalletConfig& wallet) {
   LocalProposalVoteGeneration result;

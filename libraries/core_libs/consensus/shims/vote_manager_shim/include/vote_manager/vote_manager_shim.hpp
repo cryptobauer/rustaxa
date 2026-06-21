@@ -524,6 +524,33 @@ class VoteManager : public VoteManagerOld {
                                                    PbftPeriod period, PbftRound round, PbftStep step,
                                                    const WalletConfig& wallet);
   /**
+   * Generates, admits, and persists one locally weighted PBFT vote.
+   *
+   * Purpose:
+   * - Keeps PBFT manager from sequencing Rust vote generation, Rust-backed
+   *   verified-vote admission, and own-vote persistence for normal local
+   *   consensus voting.
+   *
+   * Outputs:
+   * - `placed == true` with `vote` after the weighted vote is generated,
+   *   admitted, and persisted as an own verified vote.
+   * - `placed == false` with `error` when generation or admission rejects the
+   *   local vote.
+   *
+   * Invariants:
+   * - Network gossip and pillar-vote placement remain PBFT manager executor
+   *   responsibilities.
+   * - Storage failures from own-vote persistence propagate as exceptions.
+   */
+  struct LocallyGeneratedVotePlacement {
+    bool placed = false;
+    std::shared_ptr<PbftVote> vote;
+    std::string error;
+  };
+  LocallyGeneratedVotePlacement generateAndPlaceLocalVote(const blk_hash_t& block_hash, PbftVoteTypes vote_type,
+                                                          PbftPeriod period, PbftRound round, PbftStep step,
+                                                          const WalletConfig& wallet);
+  /**
    * Generates a locally signed proposal vote and verifies uniqueness.
    *
    * Purpose:

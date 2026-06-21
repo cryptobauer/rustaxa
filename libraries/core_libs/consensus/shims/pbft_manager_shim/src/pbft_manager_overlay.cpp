@@ -2034,18 +2034,13 @@ bool PbftManager::genAndPlaceVote(PbftVoteTypes vote_type, PbftPeriod period, Pb
       continue;
     }
 
-    const auto vote = vote_mgr_->generateVoteWithWeight(block_hash, vote_type, period, round, step, wallet.second);
-    if (!vote) {
-      LOG(log_dg_) << "Failed to generate vote for " << block_hash << ", period " << period << ", round " << round
-                   << ", step " << step << ", validator " << wallet.second.node_addr;
+    auto local_vote_placement =
+        vote_mgr_->generateAndPlaceLocalVote(block_hash, vote_type, period, round, step, wallet.second);
+    if (!local_vote_placement.placed) {
+      LOG(log_er_) << local_vote_placement.error;
       continue;
     }
-
-    if (!vote_mgr_->addLocallyGeneratedVote(vote)) {
-      LOG(log_er_) << "Unable to place vote " << vote->getHash() << " for block " << block_hash << ", period " << period
-                   << ", round " << round << ", step " << step << ", validator " << wallet.second.node_addr;
-      continue;
-    }
+    auto vote = std::move(local_vote_placement.vote);
 
     // Propose votes are sent as single packets so it is gossiped together with pbft block
     if (vote_type == PbftVoteTypes::propose_vote) {
