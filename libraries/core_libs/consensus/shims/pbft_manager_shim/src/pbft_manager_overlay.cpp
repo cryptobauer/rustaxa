@@ -4704,7 +4704,6 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   // Validate pillar votes
   bool pillar_votes_valid = true;
   if (pillar_votes_required) {
-#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
     const auto rust_validation_result =
         validatePbftBlockPillarVotesWithRust(block_period, pillar_vote_rlps, period_data.pillar_votes_,
                                              pillar_chain_mgr_, final_chain_);
@@ -4715,9 +4714,6 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
                    << ", first bad vote " << rust_validation_result.first_bad_vote_hash;
     }
     pillar_votes_valid = rust_validation_result.valid();
-#else
-    pillar_votes_valid = validatePbftBlockPillarVotes(period_data);
-#endif
   }
   runtime_plan = make_runtime_plan(
       false, kPbftSyncFinalChainValid, kPbftSyncFactValid, kPbftSyncFactValid, kPbftSyncFactValid,
@@ -4838,7 +4834,6 @@ bool PbftManager::validatePbftBlockCertVotes(PbftPeriod block_period, const blk_
 }
 
 bool PbftManager::validatePbftBlockPillarVotes(const PeriodData &period_data) const {
-#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
   if (!period_data.pbft_blk) {
     LOG(log_er_) << "Rust sync pillar-vote validation failed, missing pbft block";
     return false;
@@ -4870,68 +4865,6 @@ bool PbftManager::validatePbftBlockPillarVotes(const PeriodData &period_data) co
                  << rust_validation_result.first_bad_vote_hash;
   }
   return rust_validation_result.valid();
-#endif
-
-  if (!period_data.pillar_votes_.has_value() || period_data.pillar_votes_->empty()) {
-    LOG(log_er_) << "No pillar votes provided, pbft block period " << period_data.pbft_blk->getPeriod()
-                 << ". The synced PBFT block comes from a malicious player";
-    return false;
-  }
-
-  const auto &pbft_block_hash = period_data.pbft_blk->getBlockHash();
-  const auto required_votes_period = period_data.pbft_blk->getPeriod();
-
-  const auto current_pillar_block = pillar_chain_mgr_->getCurrentPillarBlock();
-  if (current_pillar_block->getPeriod() + 1 != required_votes_period) {
-    LOG(log_er_) << "Sync pillar votes required period " << required_votes_period
-                 << " != " << " current pillar block period " << current_pillar_block->getPeriod() << " + 1";
-    return false;
-  }
-
-  uint64_t votes_weight = 0;
-  for (auto &vote : *period_data.pillar_votes_) {
-    // Any info is wrong that can determine the synced PBFT block comes from a malicious player
-    if (vote->getPeriod() != required_votes_period) {
-      LOG(log_er_) << "Invalid sync pillar vote " << vote->getHash() << " period " << vote->getPeriod()
-                   << ", PBFT block " << pbft_block_hash << ", kRequiredVotesPeriod " << required_votes_period;
-      return false;
-    }
-
-    if (vote->getBlockHash() != current_pillar_block->getHash()) {
-      LOG(log_er_) << "Invalid sync pillar vote " << vote->getHash() << ", vote period " << vote->getPeriod()
-                   << ", vote pillar block hash " << vote->getBlockHash()
-                   << ", current pillar block hash: " << current_pillar_block->getHash()
-                   << ", current pillar block period " << current_pillar_block->getPeriod()
-                   << ", full data: " << current_pillar_block->getJson();
-      return false;
-    }
-
-    if (!pillar_chain_mgr_->validatePillarVote(vote)) {
-      LOG(log_er_) << "Invalid sync pillar vote " << vote->getHash();
-      return false;
-    }
-
-    if (const auto vote_weight = pillar_chain_mgr_->addVerifiedPillarVote(vote); vote_weight) {
-      votes_weight += vote_weight;
-    } else {
-      LOG(log_er_) << "Unable to add sync pillar vote " << vote->getHash();
-      return false;
-    }
-  }
-
-  const auto pillar_consensus_threshold = pillar_chain_mgr_->getPillarConsensusThreshold(required_votes_period - 1);
-  if (!pillar_consensus_threshold.has_value()) {
-    LOG(log_er_) << "Unable to obtain pillar consensus threshold for period " << required_votes_period - 1;
-    return false;
-  }
-
-  if (votes_weight < *pillar_consensus_threshold) {
-    LOG(log_wr_) << "Invalid sync pillar votes weight " << votes_weight << " < threshold "
-                 << *pillar_consensus_threshold << ", period " << required_votes_period - 1;
-    return false;
-  }
-
-  return true;
 }
 
 bool PbftManager::canParticipateInConsensus(PbftPeriod period, const addr_t &node_addr) const {
