@@ -520,6 +520,9 @@ Landed:
   detailed VoteManager result that preserves Rust reward-vote planner status, selected period/round/block, missing vote
   hash, and error code. The legacy pair-returning API remains as compatibility, but PBFT manager call sites no longer
   collapse reward-vote planner rejection into a local boolean before logging/reporting.
+- PBFT manager state-action fact construction no longer queries individual VoteManager `2t+1` next/soft-voted block
+  sidecar families directly. It asks VoteManager for compact Rust-backed state-action vote facts and forwards only
+  booleans and hashes into the Rust state-action planner.
 
 Scope:
 

@@ -311,6 +311,31 @@ class VoteManager : public VoteManagerOld {
   std::optional<uint64_t> getPbftTwoTPlusOne(PbftPeriod pbft_period, PbftVoteTypes vote_type) const;
   bool voteAlreadyValidated(const vote_hash_t& vote_hash) const;
   bool genAndValidateVrfSortition(PbftPeriod pbft_period, PbftRound pbft_round, const WalletConfig& wallet) const;
+  /**
+   * Compact verified-vote facts consumed by PBFT manager state-action planning.
+   *
+   * Purpose:
+   * - Keeps PBFT manager from directly querying `2t+1` voted-block sidecar
+   *   families while preserving the existing Rust state-action fact shape.
+   *
+   * Outputs:
+   * - Previous-round next-null and next-value status.
+   * - Current-round soft-value status.
+   *
+   * Invariants:
+   * - VoteManager/VerifiedVotes owns the Rust-backed `2t+1` lookup details.
+   * - PBFT manager receives only compact booleans and hashes for planner input.
+   */
+  struct StateActionVoteFacts {
+    bool has_previous_round_next_null = false;
+    bool has_previous_round_next_value = false;
+    blk_hash_t previous_round_next_value_hash;
+    bool has_current_round_soft_value = false;
+    blk_hash_t current_round_soft_value_hash;
+  };
+  StateActionVoteFacts stateActionVoteFacts(PbftPeriod period, PbftRound round, bool needs_previous_round_next_null,
+                                            bool needs_previous_round_next_value,
+                                            bool needs_current_round_soft) const;
   std::optional<blk_hash_t> getTwoTPlusOneVotedBlock(PbftPeriod period, PbftRound round,
                                                      TwoTPlusOneVotedBlockType type) const;
   std::vector<std::shared_ptr<PbftVote>> getTwoTPlusOneVotedBlockVotes(PbftPeriod period, PbftRound round,

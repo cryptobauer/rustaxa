@@ -1261,6 +1261,37 @@ std::optional<blk_hash_t> VoteManager::getTwoTPlusOneVotedBlock(PbftPeriod perio
   return voted_block->hash;
 }
 
+VoteManager::StateActionVoteFacts VoteManager::stateActionVoteFacts(PbftPeriod period, PbftRound round,
+                                                                     bool needs_previous_round_next_null,
+                                                                     bool needs_previous_round_next_value,
+                                                                     bool needs_current_round_soft) const {
+  StateActionVoteFacts facts;
+  if (round >= 2 && needs_previous_round_next_null) {
+    facts.has_previous_round_next_null =
+        getTwoTPlusOneVotedBlock(period, round - 1, TwoTPlusOneVotedBlockType::NextVotedNullBlock).has_value();
+  }
+
+  if (round >= 2 && needs_previous_round_next_value) {
+    if (const auto previous_round_next_value =
+            getTwoTPlusOneVotedBlock(period, round - 1, TwoTPlusOneVotedBlockType::NextVotedBlock);
+        previous_round_next_value.has_value()) {
+      facts.has_previous_round_next_value = true;
+      facts.previous_round_next_value_hash = *previous_round_next_value;
+    }
+  }
+
+  if (needs_current_round_soft) {
+    if (const auto current_round_soft_value =
+            getTwoTPlusOneVotedBlock(period, round, TwoTPlusOneVotedBlockType::SoftVotedBlock);
+        current_round_soft_value.has_value()) {
+      facts.has_current_round_soft_value = true;
+      facts.current_round_soft_value_hash = *current_round_soft_value;
+    }
+  }
+
+  return facts;
+}
+
 std::vector<std::shared_ptr<PbftVote>> VoteManager::getTwoTPlusOneVotedBlockVotes(
     PbftPeriod period, PbftRound round, TwoTPlusOneVotedBlockType type) const {
   return verified_votes_.getTwoTPlusOneVotedBlockVotes(period, round, type);

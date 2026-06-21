@@ -393,28 +393,13 @@ rustaxa::PbftManagerStateActionFact makePbftManagerStateActionFact(
   const auto needs_current_round_soft =
       state == finish_polling_state || (state == certify_state && certify_vote_window_started && !certify_will_finish);
 
-  if (round >= 2 && needs_previous_round_next_null) {
-    fact.has_previous_round_next_null =
-        vote_mgr.getTwoTPlusOneVotedBlock(period, round - 1, TwoTPlusOneVotedBlockType::NextVotedNullBlock).has_value();
-  }
-
-  if (round >= 2 && needs_previous_round_next_value) {
-    if (const auto previous_round_next_value =
-            vote_mgr.getTwoTPlusOneVotedBlock(period, round - 1, TwoTPlusOneVotedBlockType::NextVotedBlock);
-        previous_round_next_value.has_value()) {
-      fact.has_previous_round_next_value = true;
-      fact.previous_round_next_value_hash = toBridgeHash(*previous_round_next_value);
-    }
-  }
-
-  if (needs_current_round_soft) {
-    if (const auto current_round_soft_value =
-            vote_mgr.getTwoTPlusOneVotedBlock(period, round, TwoTPlusOneVotedBlockType::SoftVotedBlock);
-        current_round_soft_value.has_value()) {
-      fact.has_current_round_soft_value = true;
-      fact.current_round_soft_value_hash = toBridgeHash(*current_round_soft_value);
-    }
-  }
+  const auto vote_facts = vote_mgr.stateActionVoteFacts(period, round, needs_previous_round_next_null,
+                                                        needs_previous_round_next_value, needs_current_round_soft);
+  fact.has_previous_round_next_null = vote_facts.has_previous_round_next_null;
+  fact.has_previous_round_next_value = vote_facts.has_previous_round_next_value;
+  fact.previous_round_next_value_hash = toBridgeHash(vote_facts.previous_round_next_value_hash);
+  fact.has_current_round_soft_value = vote_facts.has_current_round_soft_value;
+  fact.current_round_soft_value_hash = toBridgeHash(vote_facts.current_round_soft_value_hash);
 
   if (has_cert_voted_block) {
     fact.has_cert_voted_block = true;
