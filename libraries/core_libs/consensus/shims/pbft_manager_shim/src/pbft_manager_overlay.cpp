@@ -135,6 +135,8 @@ constexpr uint8_t kPbftSyncQueueDrainActionUpdateSyncState = 3;
 constexpr uint8_t kPbftSyncQueueDrainActionStop = 4;
 constexpr uint8_t kPbftSyncQueueDrainStatusActive = 0;
 constexpr uint8_t kPbftSyncQueueDrainStatusComplete = 1;
+constexpr uint8_t kPbftSyncTransactionWarningMissingTransaction = 1;
+constexpr uint8_t kPbftSyncTransactionWarningFinalizedTransaction = 2;
 constexpr uint8_t kPbftManagerStartupRestoreStatusReady = 0;
 constexpr uint8_t kPbftManagerTransitionStatusReady = 0;
 constexpr uint8_t kPbftManagerTransitionStorageStatusApplied = 0;
@@ -611,6 +613,10 @@ std::vector<trx_hash_t> fromBridgeTransactionHashes(const rust::Vec<rustaxa::Pbf
   return out;
 }
 
+trx_hash_t fromBridgeTransactionHash(const std::array<uint8_t, 32> &hash) {
+  return trx_hash_t(hash.data(), trx_hash_t::ConstructFromPointer);
+}
+
 SharedTransactions materializeTransactionsFromQueuedRlps(const std::vector<bytes> &transaction_rlps,
                                                          const std::vector<trx_hash_t> &expected_hashes) {
   if (transaction_rlps.size() != expected_hashes.size()) {
@@ -652,6 +658,8 @@ rustaxa::PbftSyncProcessPeriodDataRuntimeFact makePbftSyncProcessPeriodDataRunti
   fact.dag_transaction_hashes = toBridgeTransactionHashes(dag_transaction_hashes);
   fact.period_data_transaction_hashes = toBridgeTransactionHashes(period_data_transaction_hashes);
   fact.missing_transaction_hashes = toBridgeTransactionHashes(missing_transaction_hashes);
+  // TODO(RUSTAXA): populate hash-specific finalized transaction warnings when the transaction-manager executor returns
+  // finalized hashes instead of only the legacy boolean `verifyTransactionsNotFinalized` result.
   fact.finalized_transaction_hashes = rust::Vec<rustaxa::PbftSyncTransactionHash>();
   fact.contains_finalized_transactions = contains_finalized_transactions;
   fact.pillar_data_status = pillar_data_status;
@@ -4691,21 +4699,12 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
     return finish_non_accepting_rust_admission();
   }
 
-  // Verify period data is not missing any transaction
+  // Execute the Rust-planned finalized-transaction lookup against the live transaction manager. The classification of
+  // non-fatal transaction warnings is returned by the Rust admission plan after this executor reports compact facts.
   auto non_finalized_transactions = trx_mgr_->excludeFinalizedTransactions(
       fromBridgeTransactionHashes(runtime_plan.transaction_query_plan.finalized_lookup_hashes));
-  if (non_finalized_transactions.size() > 0) {
-    for (auto const &t : non_finalized_transactions) {
-      LOG(log_er_) << "Synced PBFT block " << pbft_block_hash << " has missing transaction " << t;
-    }
-  }
-
-  // Verify period data does not contain any finalized transactions
   const auto contains_finalized_transactions =
       !trx_mgr_->verifyTransactionsNotFinalized(std::move(period_data_transaction_identities));
-  if (contains_finalized_transactions) {
-    LOG(log_er_) << "Synced PBFT block " << pbft_block_hash << " has finalized transactions";
-  }
 
   runtime_plan = make_runtime_plan(false, kPbftSyncFinalChainValid, kPbftSyncFactValid, kPbftSyncFactValid,
                                    kPbftSyncFactValid, non_finalized_transactions, contains_finalized_transactions,
@@ -4750,6 +4749,23 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
 
   if (!admission_plan.accept_period_data) {
     return finish_non_accepting_rust_admission();
+  }
+
+  for (const auto &warning : admission_plan.warnings) {
+    if (warning.kind == kPbftSyncTransactionWarningMissingTransaction) {
+      LOG(log_er_) << "Synced PBFT block " << pbft_block_hash << " has missing transaction "
+                   << fromBridgeTransactionHash(warning.hash);
+      continue;
+    }
+    if (warning.kind == kPbftSyncTransactionWarningFinalizedTransaction) {
+      LOG(log_er_) << "Synced PBFT block " << pbft_block_hash << " has finalized transaction "
+                   << fromBridgeTransactionHash(warning.hash);
+      continue;
+    }
+    throw std::runtime_error("Rust PBFT sync runtime returned unknown transaction warning");
+  }
+  if (admission_plan.contains_finalized_transaction_warning) {
+    LOG(log_er_) << "Synced PBFT block " << pbft_block_hash << " has finalized transactions";
   }
 
   try {

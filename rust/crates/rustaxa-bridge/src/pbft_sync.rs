@@ -549,6 +549,7 @@ mod tests {
         fact.cert_votes_status = PbftSyncFactStatus::Valid.as_u8();
         fact.transactions_status = PbftSyncFactStatus::Valid.as_u8();
         fact.missing_transaction_hashes = vec![FfiPbftSyncTransactionHash { hash: [4; 32] }];
+        fact.finalized_transaction_hashes = vec![FfiPbftSyncTransactionHash { hash: [6; 32] }];
         fact.contains_finalized_transactions = true;
         fact.pillar_data_status = PbftSyncFactStatus::Valid.as_u8();
         fact.pillar_votes_status = PbftSyncFactStatus::Valid.as_u8();
@@ -558,7 +559,17 @@ mod tests {
         assert_eq!(plan.runtime_action, 1);
         assert_eq!(plan.next_check, 0);
         assert!(plan.accept_period_data);
-        assert_eq!(plan.warnings.len(), 1);
+        assert_eq!(plan.warnings.len(), 2);
+        assert_eq!(
+            plan.warnings[0].kind,
+            PbftSyncTransactionWarningKind::MissingTransaction.as_u8()
+        );
+        assert_eq!(plan.warnings[0].hash, [4; 32]);
+        assert_eq!(
+            plan.warnings[1].kind,
+            PbftSyncTransactionWarningKind::FinalizedTransaction.as_u8()
+        );
+        assert_eq!(plan.warnings[1].hash, [6; 32]);
         assert!(plan.contains_finalized_transaction_warning);
         assert_eq!(
             plan.transaction_query_plan

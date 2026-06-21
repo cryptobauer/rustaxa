@@ -446,10 +446,12 @@ Validation:
 
 Goal: make Rust own PBFT sync admission and period-data queue processing from canonical bytes and compact facts.
 
-Status: in progress. Rust owns queue admission, sync-drain ordering, staged period-data validation order, and now the
-terminal `processPeriodData` admission action flags. C++ still executes live FinalChain, VoteManager, transaction-manager,
-pillar-manager, network-report, and legacy `PeriodData` materialization effects until those managers expose Rust-owned
-ports.
+Status: complete for the bounded sync-admission and period-data queue intake pass. Rust owns queue admission,
+sync-drain ordering, staged `processPeriodData` check ordering, terminal clear/report/wait/accept action selection, and
+transaction lookup planning from queued compact facts. C++ still executes live FinalChain, VoteManager,
+transaction-manager, PillarChainManager, network-report, and legacy `PeriodData` materialization effects as explicit
+executor/manager boundaries. VoteManager and PillarChain ownership moves to Slice 8; transaction, FinalChain, and legacy
+materialization collapse remains later boundary work.
 
 Landed:
 
@@ -463,6 +465,20 @@ Landed:
   admission plan.
 - Unsupported Rust block-validation rejection statuses in the sync intake path now fail closed as bridge-contract errors
   instead of letting the shim independently clear the queue and report the peer.
+- Non-fatal sync transaction warnings are classified by the Rust runtime admission plan. C++ still executes live
+  transaction-manager lookups, but it now logs missing-transaction warning entries and the finalized-transaction warning
+  flag from Rust instead of classifying those warnings locally. Hash-level finalized warnings remain blocked on a
+  transaction-manager executor API that returns finalized hashes rather than only the legacy boolean result.
+
+Residual carried forward:
+
+- Reward-vote and cert-vote validation still execute through `VoteManager` live sidecars. Their sync admission results are
+  reported back to Rust, but ownership of vote manager query and validation ports belongs to Slice 8.
+- Pillar-vote validation still depends on live `PillarChainManager` and FinalChain inputs. Its result is reported back to
+  Rust sync admission, while pillar manager ownership belongs to Slice 8.
+- FinalChain hash collection, transaction-manager finalized-status queries, network peer-report execution, and legacy
+  `PeriodData` materialization remain explicit executor/boundary effects and are not independent C++ sync-admission
+  policy.
 
 Scope:
 
@@ -475,7 +491,7 @@ Acceptance:
 
 - PBFT sync decisions are made from Rust-inspected period-data payloads and Rust-owned queue metadata.
 - C++ does not mutate the PBFT sync queue outside Rust commands.
-- Peer reporting remains an executor effect with typed Rust reasons.
+- Peer reporting remains an executor effect selected by Rust admission actions.
 
 Validation:
 
