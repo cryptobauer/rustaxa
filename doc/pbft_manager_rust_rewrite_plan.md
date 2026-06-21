@@ -669,10 +669,10 @@ Validation:
 
 Goal: reduce the PBFT manager overlay from copied orchestration to a thin executor surface.
 
-Status: pending overlay shrink. The first audit found no `PbftManagerOld` production forwarding and removed a stale
-commented proposed-block startup TODO from the overlay. With Slice 6 closed for the bounded finalization executor
-collapse, the next cleanup pass can remove obsolete scaffolding and helpers without hiding active finalization ownership
-gaps behind cosmetic deletion.
+Status: complete for the bounded overlay cleanup pass. Targeted searches found no `PbftManagerOld` production forwarding,
+the stale commented proposed-block startup TODO was removed, duplicate bridge helpers were consolidated, and the
+remaining PBFT manager overlay/header TODO markers were replaced with explicit public API, lifecycle, and
+executor-boundary classifications.
 
 Landed bounded cleanup:
 
@@ -703,6 +703,39 @@ Validation:
 - `make cpp-intersection-list`
 - focused diff against `upstream-main` for touched upstream-owned paths
 
+## Slice 11: Runtime Mirror and Protocol Sidecar Closeout
+
+Goal: satisfy the plan-level closeout definition by deleting remaining C++ scalar mirrors and PBFT protocol sidecar
+ownership that are not network/tarcap, EVM/state execution, lifecycle wiring, or public API materialization boundaries.
+
+Status: pending. Slices 1-10 moved PBFT manager authority into Rust planners/runtimes and made remaining shim code
+auditable, but the closeout definition still requires a final pass over C++ scalar compatibility mirrors and protocol
+sidecar fields before the plan can be declared complete.
+
+Scope:
+
+- Replace remaining C++ scalar mirror reads/writes with Rust runtime snapshot/query calls or classify the call site as an
+  allowed executor/public API edge.
+- Delete mirror drift checks and mirror update helpers once the mirrored fields no longer drive Rust-mode production
+  behavior.
+- Remove or Rust-own remaining PBFT protocol sidecar fields that are not required for network packets, EVM/final-chain
+  execution, lifecycle wiring, or public API object materialization.
+- Keep network/tarcap and EVM shims explicit; do not move packet wrapping, gossip fanout, or EVM execution in this slice.
+
+Acceptance:
+
+- Rust-mode PBFT manager production behavior no longer depends on C++ scalar mirrors.
+- Remaining C++ PBFT sidecar/object state is classified at each call site as network/tarcap, EVM/final-chain, lifecycle,
+  or public API materialization.
+- The closeout definition below can be verified by targeted searches plus PBFT manager validation.
+
+Validation:
+
+- targeted PBFT manager tests
+- Rust PBFT manager/runtime tests
+- rewrite storage boundary guard
+- `make cpp-intersection-list` or documented branch-name fallback when the helper cannot resolve `upstream-main..main`
+
 ## Sequencing Notes
 
 - Slices 1 and 2 should happen before broad deletion work because they expose the real PBFT runtime root and restart
@@ -715,6 +748,8 @@ Validation:
 - Slice 9 should not start until targeted searches show the deleted storage shim methods have no PBFT manager production
   callers.
 - Slice 10 is cleanup after behavior has moved; it should not carry new PBFT semantics.
+- Slice 11 is the final closeout pass and should only delete or reclassify mirrors/sidecars after Rust runtime/query
+  ownership is already available.
 
 ## Closeout Definition
 
