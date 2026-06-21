@@ -1320,6 +1320,19 @@ VoteManager::CertVotedBlockSelection VoteManager::certVotedBlockSelection(PbftPe
   return selection;
 }
 
+VoteManager::StuckRoundVoteBroadcastPayloads VoteManager::stuckRoundVoteBroadcastPayloads(PbftPeriod period,
+                                                                                          PbftRound round) const {
+  StuckRoundVoteBroadcastPayloads payloads;
+  payloads.soft_votes = getTwoTPlusOneVotedBlockVotes(period, round, TwoTPlusOneVotedBlockType::SoftVotedBlock);
+  if (round > 1) {
+    payloads.previous_round_next_votes =
+        getTwoTPlusOneVotedBlockVotes(period, round - 1, TwoTPlusOneVotedBlockType::NextVotedBlock);
+    payloads.previous_round_next_null_votes =
+        getTwoTPlusOneVotedBlockVotes(period, round - 1, TwoTPlusOneVotedBlockType::NextVotedNullBlock);
+  }
+  return payloads;
+}
+
 std::vector<std::shared_ptr<PbftVote>> VoteManager::getTwoTPlusOneVotedBlockVotes(
     PbftPeriod period, PbftRound round, TwoTPlusOneVotedBlockType type) const {
   return verified_votes_.getTwoTPlusOneVotedBlockVotes(period, round, type);

@@ -1774,18 +1774,14 @@ void PbftManager::broadcastVotes() {
 
     stuckPeriodBroadcastVotes(rebroadcast);
 
-    // Broadcast 2t+1 soft votes
-    gossipVotes(vote_mgr_->getTwoTPlusOneVotedBlockVotes(period, round, TwoTPlusOneVotedBlockType::SoftVotedBlock),
-                "2t+1 soft votes", rebroadcast);
+    auto vote_payloads = vote_mgr_->stuckRoundVoteBroadcastPayloads(period, round);
 
+    // Broadcast 2t+1 soft votes
+    gossipVotes(std::move(vote_payloads.soft_votes), "2t+1 soft votes", rebroadcast);
     // Broadcast previous round 2t+1 next votes
     if (round > 1) {
-      gossipVotes(
-          vote_mgr_->getTwoTPlusOneVotedBlockVotes(period, round - 1, TwoTPlusOneVotedBlockType::NextVotedBlock),
-          "2t+1 next votes", rebroadcast);
-      gossipVotes(
-          vote_mgr_->getTwoTPlusOneVotedBlockVotes(period, round - 1, TwoTPlusOneVotedBlockType::NextVotedNullBlock),
-          "2t+1 next null votes", rebroadcast);
+      gossipVotes(std::move(vote_payloads.previous_round_next_votes), "2t+1 next votes", rebroadcast);
+      gossipVotes(std::move(vote_payloads.previous_round_next_null_votes), "2t+1 next null votes", rebroadcast);
     }
   };
 

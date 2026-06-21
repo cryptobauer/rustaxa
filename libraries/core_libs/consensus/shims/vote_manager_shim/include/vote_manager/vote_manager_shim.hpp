@@ -381,6 +381,28 @@ class VoteManager : public VoteManagerOld {
     std::vector<std::shared_ptr<PbftVote>> votes;
   };
   CertVotedBlockSelection certVotedBlockSelection(PbftPeriod period, PbftRound round) const;
+  /**
+   * Stuck-round vote payload groups for PBFT manager network rebroadcast.
+   *
+   * Purpose:
+   * - Keeps PBFT manager from selecting individual verified-vote sidecar families
+   *   while preserving network egress as a temporary C++ boundary.
+   *
+   * Outputs:
+   * - Current-round soft-vote payloads.
+   * - Previous-round next-vote and next-null-vote payloads when `round > 1`.
+   *
+   * Invariants:
+   * - Returned `PbftVote` objects are executor payloads for gossip only, not
+   *   protocol-decision inputs.
+   * - Empty vectors represent absent egress payloads.
+   */
+  struct StuckRoundVoteBroadcastPayloads {
+    std::vector<std::shared_ptr<PbftVote>> soft_votes;
+    std::vector<std::shared_ptr<PbftVote>> previous_round_next_votes;
+    std::vector<std::shared_ptr<PbftVote>> previous_round_next_null_votes;
+  };
+  StuckRoundVoteBroadcastPayloads stuckRoundVoteBroadcastPayloads(PbftPeriod period, PbftRound round) const;
   std::optional<blk_hash_t> getTwoTPlusOneVotedBlock(PbftPeriod period, PbftRound round,
                                                      TwoTPlusOneVotedBlockType type) const;
   std::vector<std::shared_ptr<PbftVote>> getTwoTPlusOneVotedBlockVotes(PbftPeriod period, PbftRound round,
