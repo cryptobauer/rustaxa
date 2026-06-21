@@ -1098,15 +1098,15 @@ std::pair<bool, PbftPeriod> PbftManager::getDagBlockPeriod(const blk_hash_t &has
 PbftPeriod PbftManager::getPbftPeriod() const { return pbft_chain_->getPbftChainSize() + 1; }
 
 PbftRound PbftManager::getPbftRound() const {
-  if (pbft_manager_runtime_.has_value()) {
-    const auto snapshot = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value());
-    if (snapshot.status != kPbftManagerStartupRestoreStatusReady) {
-      throw std::runtime_error("PBFT manager Rust runtime snapshot is not ready: " +
-                               static_cast<std::string>(snapshot.error_code));
-    }
-    return static_cast<PbftRound>(snapshot.round);
+  if (!pbft_manager_runtime_.has_value()) {
+    throw std::runtime_error("PBFT manager Rust runtime must be initialized before reading PBFT round");
   }
-  return round_;
+  const auto snapshot = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value());
+  if (snapshot.status != kPbftManagerStartupRestoreStatusReady) {
+    throw std::runtime_error("PBFT manager Rust runtime snapshot is not ready: " +
+                             static_cast<std::string>(snapshot.error_code));
+  }
+  return static_cast<PbftRound>(snapshot.round);
 }
 
 std::pair<PbftRound, PbftPeriod> PbftManager::getPbftRoundAndPeriod() const {
@@ -1114,15 +1114,15 @@ std::pair<PbftRound, PbftPeriod> PbftManager::getPbftRoundAndPeriod() const {
 }
 
 PbftStep PbftManager::getPbftStep() const {
-  if (pbft_manager_runtime_.has_value()) {
-    const auto snapshot = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value());
-    if (snapshot.status != kPbftManagerStartupRestoreStatusReady) {
-      throw std::runtime_error("PBFT manager Rust runtime snapshot is not ready: " +
-                               static_cast<std::string>(snapshot.error_code));
-    }
-    return static_cast<PbftStep>(snapshot.step);
+  if (!pbft_manager_runtime_.has_value()) {
+    throw std::runtime_error("PBFT manager Rust runtime must be initialized before reading PBFT step");
   }
-  return step_;
+  const auto snapshot = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value());
+  if (snapshot.status != kPbftManagerStartupRestoreStatusReady) {
+    throw std::runtime_error("PBFT manager Rust runtime snapshot is not ready: " +
+                             static_cast<std::string>(snapshot.error_code));
+  }
+  return static_cast<PbftStep>(snapshot.step);
 }
 
 void PbftManager::setPbftRound(PbftRound round) {
@@ -4723,17 +4723,16 @@ const std::vector<std::pair<bool, WalletConfig>> &PbftManager::EligibleWallets::
 PbftPeriod PbftManager::EligibleWallets::getWalletsEligiblePeriod() const { return period_; }
 
 std::chrono::milliseconds PbftManager::getPbftDeadline() const {
-  auto current_round_lambda = current_round_lambda_;
-  auto current_round = round_.load();
-  if (pbft_manager_runtime_.has_value()) {
-    const auto snapshot = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value());
-    if (snapshot.status != kPbftManagerRuntimeSnapshotStatusReady) {
-      throw std::runtime_error("PBFT manager Rust runtime snapshot is not ready: " +
-                               static_cast<std::string>(snapshot.error_code));
-    }
-    current_round_lambda = std::chrono::milliseconds(snapshot.current_round_lambda_ms);
-    current_round = static_cast<PbftRound>(snapshot.round);
+  if (!pbft_manager_runtime_.has_value()) {
+    throw std::runtime_error("PBFT manager Rust runtime must be initialized before reading PBFT deadline");
   }
+  const auto snapshot = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value());
+  if (snapshot.status != kPbftManagerRuntimeSnapshotStatusReady) {
+    throw std::runtime_error("PBFT manager Rust runtime snapshot is not ready: " +
+                             static_cast<std::string>(snapshot.error_code));
+  }
+  const auto current_round_lambda = std::chrono::milliseconds(snapshot.current_round_lambda_ms);
+  const auto current_round = static_cast<PbftRound>(snapshot.round);
 
   if (kGenesisConfig.state.hardforks.isOnCactiHardfork(getPbftPeriod())) {
     auto block_propagation = std::chrono::milliseconds(kGenesisConfig.state.hardforks.cacti_hf.block_propagation_min);

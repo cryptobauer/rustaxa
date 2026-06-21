@@ -718,6 +718,8 @@ Landed bounded cleanup:
   runtime snapshot for both round and lambda when the runtime is present.
 - Removed finalization dynamic-lambda log reads from the C++ lambda mirror; the log now uses the Rust runtime snapshot
   returned by the applied dynamic-lambda action.
+- Removed public round, step, and deadline getter fallbacks to C++ scalar mirrors; Rust-mode callers now require the Rust
+  PBFT manager runtime snapshot instead of silently reading mirrored state.
 
 Scope:
 
