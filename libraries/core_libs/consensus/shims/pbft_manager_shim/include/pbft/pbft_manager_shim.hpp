@@ -746,7 +746,7 @@ class PbftManager {
    * @param action_context stable log context for the manager phase consuming the block
    * @return admitted proposed block or nullptr when Rust admission rejects or lookup/validation fails
    */
-  std::shared_ptr<PbftBlock> admitStateActionPbftBlock(PbftPeriod period, const blk_hash_t &block_hash,
+  std::shared_ptr<PbftBlock> admitStateActionPbftBlock(const rustaxa::PbftManagerStateActionEffect &effect,
                                                        std::string_view action_context);
 
   /**

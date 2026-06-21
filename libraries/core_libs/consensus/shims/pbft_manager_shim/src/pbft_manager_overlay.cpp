@@ -166,6 +166,7 @@ constexpr uint8_t kPbftManagerCandidateAdmissionActionRequestLookup = 0;
 constexpr uint8_t kPbftManagerCandidateAdmissionActionRequestValidation = 1;
 constexpr uint8_t kPbftManagerCandidateAdmissionActionAccept = 2;
 constexpr uint8_t kPbftManagerCandidateAdmissionActionReject = 3;
+constexpr uint8_t kPbftManagerCandidateAdmissionActionDeferMissingBlock = 4;
 constexpr uint8_t kPbftManagerCandidateAdmissionActionContractError = 255;
 constexpr uint8_t kPbftManagerBlockValidationFactNotChecked = 0;
 constexpr uint8_t kPbftManagerBlockValidationFactValid = 1;
@@ -1908,6 +1909,11 @@ std::shared_ptr<PbftBlock> PbftManager::getValidPbftProposedBlock(ProposedBlocks
                    << ", status " << static_cast<uint64_t>(plan.status) << ", code " << std::string(plan.error_code);
       return nullptr;
     }
+    if (plan.action == kPbftManagerCandidateAdmissionActionDeferMissingBlock) {
+      LOG(log_dg_) << "Proposed block " << block_hash << " deferred by Rust admission planner, period " << period
+                   << ", status " << static_cast<uint64_t>(plan.status) << ", code " << std::string(plan.error_code);
+      return nullptr;
+    }
     if (plan.action == kPbftManagerCandidateAdmissionActionContractError) {
       throw std::runtime_error("Rust PBFT proposed-block admission planner rejected bridge facts: " +
                                std::string(plan.error_code));
@@ -1950,8 +1956,19 @@ std::shared_ptr<PbftBlock> PbftManager::getValidPbftProposedBlock(ProposedBlocks
   }
 }
 
-std::shared_ptr<PbftBlock> PbftManager::admitStateActionPbftBlock(PbftPeriod period, const blk_hash_t &block_hash,
-                                                                  std::string_view action_context) {
+std::shared_ptr<PbftBlock> PbftManager::admitStateActionPbftBlock(
+    const rustaxa::PbftManagerStateActionEffect &effect, std::string_view action_context) {
+  if (!effect.request_proposed_block_sidecar) {
+    throw std::runtime_error(std::string(action_context) +
+                             ": Rust PBFT state-action effect did not request proposed-block sidecar");
+  }
+  const auto period = static_cast<PbftPeriod>(effect.proposed_block_sidecar_period);
+  const auto block_hash = fromBridgeHash(effect.proposed_block_sidecar_hash);
+  if (block_hash != fromBridgeHash(effect.hash)) {
+    throw std::runtime_error(std::string(action_context) +
+                             ": Rust PBFT state-action effect sidecar hash does not match effect hash");
+  }
+
   auto block = getValidPbftProposedBlock(proposed_blocks_, period, block_hash);
   if (!block) {
     LOG(log_er_) << action_context << ": Rust proposed-block admission rejected " << block_hash << ". Period " << period
@@ -2206,7 +2223,7 @@ void PbftManager::proposeBlock_() {
       const auto next_voted_block_hash = fromBridgeHash(effect.hash);
 
       const auto next_voted_block =
-          admitStateActionPbftBlock(period, next_voted_block_hash, "Value proposal re-propose");
+          admitStateActionPbftBlock(effect, "Value proposal re-propose");
       if (!next_voted_block) {
         return kPbftManagerStateActionEffectResultSkippedMissingLiveObject;
       }
@@ -2267,7 +2284,7 @@ void PbftManager::identifyBlock_() {
     if (effect.intent == kPbftManagerStateActionIntentSoftVotePreviousRoundNextValue) {
       const auto next_voted_block_hash = fromBridgeHash(effect.hash);
       const auto next_voted_block =
-          admitStateActionPbftBlock(period, next_voted_block_hash, "Filter soft-vote previous round next value");
+          admitStateActionPbftBlock(effect, "Filter soft-vote previous round next value");
       if (!next_voted_block) {
         return kPbftManagerStateActionEffectResultSkippedMissingLiveObject;
       }
@@ -2329,9 +2346,8 @@ void PbftManager::certifyBlock_() {
     }
 
     if (effect.intent == kPbftManagerStateActionIntentCertVoteCurrentSoftValue) {
-      const auto soft_voted_block_hash = fromBridgeHash(effect.hash);
       const auto soft_voted_block =
-          admitStateActionPbftBlock(period, soft_voted_block_hash, "Certify cert-vote current soft value");
+          admitStateActionPbftBlock(effect, "Certify cert-vote current soft value");
       if (soft_voted_block == nullptr) {
         return kPbftManagerStateActionEffectResultSkippedMissingLiveObject;
       }
@@ -2442,7 +2458,7 @@ void PbftManager::firstFinish_() {
       // TODO: We should vote for any value that we first saw 2t+1 next votes for in previous round -> in current design
       // we dont know for which value we saw 2t+1 next votes as first so we prefer specific block if possible
       const auto starting_value_hash = fromBridgeHash(effect.hash);
-      auto block = admitStateActionPbftBlock(period, starting_value_hash, "First finish next-vote previous round value");
+      auto block = admitStateActionPbftBlock(effect, "First finish next-vote previous round value");
       if (!block) {
         return kPbftManagerStateActionEffectResultSkippedMissingLiveObject;
       }
@@ -2483,7 +2499,7 @@ void PbftManager::secondFinish_() {
     if (effect.intent == kPbftManagerStateActionIntentNextVoteCurrentSoftValue) {
       const auto soft_voted_block_hash = fromBridgeHash(effect.hash);
       const auto soft_voted_block =
-          admitStateActionPbftBlock(period, soft_voted_block_hash, "Second finish next-vote current soft value");
+          admitStateActionPbftBlock(effect, "Second finish next-vote current soft value");
       if (soft_voted_block != nullptr) {
         return placeStateActionVote(PbftVoteTypes::next_vote, period, round, step, soft_voted_block_hash,
                                     soft_voted_block, "Second finish soft-value next vote",

@@ -136,6 +136,9 @@ pub enum PbftManagerCandidateAdmissionAction {
     Accept,
     /// The block is rejected by supplied facts.
     Reject,
+    /// The local proposed-block sidecar is missing and execution should retry
+    /// when the block arrives through existing network/sync boundaries.
+    DeferMissingBlock,
     /// Supplied bridge facts violate the admission contract.
     ContractError,
 }
@@ -148,6 +151,7 @@ impl PbftManagerCandidateAdmissionAction {
             Self::RequestValidation => 1,
             Self::Accept => 2,
             Self::Reject => 3,
+            Self::DeferMissingBlock => 4,
             Self::ContractError => 255,
         }
     }
@@ -1131,7 +1135,7 @@ pub fn plan_pbft_manager_candidate_admission(
             );
         }
         return PbftManagerCandidateAdmissionPlan {
-            action: PbftManagerCandidateAdmissionAction::Reject,
+            action: PbftManagerCandidateAdmissionAction::DeferMissingBlock,
             status: PbftManagerCandidateAdmissionStatus::BlockMissing,
             mark_valid: false,
             error_code: "PBFT_MANAGER_CANDIDATE_ADMISSION_BLOCK_MISSING",
@@ -2838,18 +2842,28 @@ pub struct PbftManagerStateActionPlan {
 /// Inputs:
 /// - `intent` names the live action C++ must execute.
 /// - `hash` carries the block hash argument for intents that need one.
+/// - `request_proposed_block_sidecar` and the sidecar identity fields are set
+///   for effects whose executor must resolve a proposed PBFT block before it
+///   can generate a vote or re-proposal.
 ///
 /// Invariants:
 /// - Effects are emitted in the order Rust expects them to run.
 /// - C++ must not reorder effects or infer extra branch work outside this list.
-/// - Live object resolution, vote generation, storage mutation, and gossip
-///   remain executor responsibilities until those dependencies move to Rust.
+/// - Rust owns which effects require proposed-block sidecar materialization.
+///   C++ remains the executor for materialization, vote generation, storage
+///   mutation, and gossip until those dependencies move to Rust.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftManagerStateActionEffect {
     /// Effect intent for the C++ executor.
     pub intent: PbftManagerStateActionIntent,
     /// Hash argument for the effect, if applicable.
     pub hash: [u8; 32],
+    /// True when C++ must materialize/admit the proposed-block sidecar.
+    pub request_proposed_block_sidecar: bool,
+    /// Proposed-block sidecar hash requested by Rust.
+    pub proposed_block_sidecar_hash: [u8; 32],
+    /// Proposed-block sidecar period requested by Rust.
+    pub proposed_block_sidecar_period: u64,
 }
 
 /// Ordered PBFT manager state-action effect plan.
@@ -4950,19 +4964,21 @@ pub fn plan_pbft_manager_state_action(
 pub fn plan_pbft_manager_state_action_effects(
     fact: PbftManagerStateActionFact,
 ) -> PbftManagerStateActionEffectPlan {
-    let plan = plan_pbft_manager_state_action(fact);
+    let plan = plan_pbft_manager_state_action(fact.clone());
     let mut effects = Vec::with_capacity(2);
     if plan.primary_intent != PbftManagerStateActionIntent::Noop {
-        effects.push(PbftManagerStateActionEffect {
-            intent: plan.primary_intent,
-            hash: plan.primary_hash,
-        });
+        effects.push(pbft_manager_state_action_effect(
+            &fact,
+            plan.primary_intent,
+            plan.primary_hash,
+        ));
     }
     if plan.secondary_intent != PbftManagerStateActionIntent::Noop {
-        effects.push(PbftManagerStateActionEffect {
-            intent: plan.secondary_intent,
-            hash: plan.secondary_hash,
-        });
+        effects.push(pbft_manager_state_action_effect(
+            &fact,
+            plan.secondary_intent,
+            plan.secondary_hash,
+        ));
     }
 
     PbftManagerStateActionEffectPlan {
@@ -4972,6 +4988,44 @@ pub fn plan_pbft_manager_state_action_effects(
         loop_back_finish_state: plan.loop_back_finish_state,
         error_code: plan.error_code,
     }
+}
+
+fn pbft_manager_state_action_effect(
+    fact: &PbftManagerStateActionFact,
+    intent: PbftManagerStateActionIntent,
+    hash: [u8; 32],
+) -> PbftManagerStateActionEffect {
+    let request_proposed_block_sidecar =
+        pbft_manager_state_action_intent_requires_proposed_block_sidecar(intent);
+    PbftManagerStateActionEffect {
+        intent,
+        hash,
+        request_proposed_block_sidecar,
+        proposed_block_sidecar_hash: if request_proposed_block_sidecar {
+            hash
+        } else {
+            [0; 32]
+        },
+        proposed_block_sidecar_period: if request_proposed_block_sidecar {
+            fact.period
+        } else {
+            0
+        },
+    }
+}
+
+fn pbft_manager_state_action_intent_requires_proposed_block_sidecar(
+    intent: PbftManagerStateActionIntent,
+) -> bool {
+    matches!(
+        intent,
+        PbftManagerStateActionIntent::ReproposePreviousRoundNextValue
+            | PbftManagerStateActionIntent::SoftVotePreviousRoundNextValue
+            | PbftManagerStateActionIntent::CertVoteCurrentSoftValue
+            | PbftManagerStateActionIntent::NextVoteCertVotedBlock
+            | PbftManagerStateActionIntent::NextVotePreviousRoundValue
+            | PbftManagerStateActionIntent::NextVoteCurrentSoftValue
+    )
 }
 
 fn state_action_session_step(
@@ -4988,6 +5042,9 @@ fn state_action_session_step(
         effect: effect.unwrap_or(PbftManagerStateActionEffect {
             intent: PbftManagerStateActionIntent::Noop,
             hash: [0; 32],
+            request_proposed_block_sidecar: false,
+            proposed_block_sidecar_hash: [0; 32],
+            proposed_block_sidecar_period: 0,
         }),
         go_finish_state: plan.go_finish_state,
         loop_back_finish_state: plan.loop_back_finish_state,
@@ -6742,6 +6799,9 @@ mod tests {
             PbftManagerStateActionIntent::SoftVotePreviousRoundNextValue
         );
         assert_eq!(plan.effects[0].hash, [0x11; 32]);
+        assert!(plan.effects[0].request_proposed_block_sidecar);
+        assert_eq!(plan.effects[0].proposed_block_sidecar_hash, [0x11; 32]);
+        assert_eq!(plan.effects[0].proposed_block_sidecar_period, 10);
     }
 
     #[test]
@@ -6759,10 +6819,16 @@ mod tests {
             plan.effects[0].intent,
             PbftManagerStateActionIntent::NextVoteCurrentSoftValue
         );
+        assert!(plan.effects[0].request_proposed_block_sidecar);
+        assert_eq!(plan.effects[0].proposed_block_sidecar_hash, [0x22; 32]);
+        assert_eq!(plan.effects[0].proposed_block_sidecar_period, 10);
         assert_eq!(
             plan.effects[1].intent,
             PbftManagerStateActionIntent::NextVoteNullBlock
         );
+        assert!(!plan.effects[1].request_proposed_block_sidecar);
+        assert_eq!(plan.effects[1].proposed_block_sidecar_hash, [0; 32]);
+        assert_eq!(plan.effects[1].proposed_block_sidecar_period, 0);
     }
 
     #[test]
@@ -7954,7 +8020,10 @@ mod tests {
             ..candidate_admission_fact()
         };
         let plan = plan_pbft_manager_candidate_admission(missing);
-        assert_eq!(plan.action, PbftManagerCandidateAdmissionAction::Reject);
+        assert_eq!(
+            plan.action,
+            PbftManagerCandidateAdmissionAction::DeferMissingBlock
+        );
         assert_eq!(
             plan.status,
             PbftManagerCandidateAdmissionStatus::BlockMissing

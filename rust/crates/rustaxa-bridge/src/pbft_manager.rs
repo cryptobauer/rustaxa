@@ -1466,6 +1466,9 @@ impl From<PbftManagerStateActionEffect> for FfiPbftManagerStateActionEffect {
         Self {
             intent: value.intent.as_u8(),
             hash: value.hash,
+            request_proposed_block_sidecar: value.request_proposed_block_sidecar,
+            proposed_block_sidecar_hash: value.proposed_block_sidecar_hash,
+            proposed_block_sidecar_period: value.proposed_block_sidecar_period,
         }
     }
 }
@@ -1719,9 +1722,11 @@ mod tests {
     const CANDIDATE_ADMISSION_ACTION_REQUEST_LOOKUP: u8 = 0;
     const CANDIDATE_ADMISSION_ACTION_REQUEST_VALIDATION: u8 = 1;
     const CANDIDATE_ADMISSION_ACTION_ACCEPT: u8 = 2;
+    const CANDIDATE_ADMISSION_ACTION_DEFER_MISSING_BLOCK: u8 = 4;
     const CANDIDATE_ADMISSION_STATUS_LOOKUP_REQUIRED: u8 = 0;
     const CANDIDATE_ADMISSION_STATUS_VALIDATION_REQUIRED: u8 = 1;
     const CANDIDATE_ADMISSION_STATUS_ACCEPTED_NEWLY_VALIDATED: u8 = 3;
+    const CANDIDATE_ADMISSION_STATUS_BLOCK_MISSING: u8 = 4;
     const RESULT_STATE_DONE: u8 = 2;
     const RESULT_TRANSITION: u8 = 3;
     const RESULT_SLEEP: u8 = 4;
@@ -2117,6 +2122,9 @@ mod tests {
             first.effect.intent,
             STATE_ACTION_NEXT_VOTE_CURRENT_SOFT_VALUE
         );
+        assert!(first.effect.request_proposed_block_sidecar);
+        assert_eq!(first.effect.proposed_block_sidecar_hash, [0x55; 32]);
+        assert_eq!(first.effect.proposed_block_sidecar_period, 10);
 
         let second = pbft_manager_state_action_effect_session_report(
             &mut session,
@@ -2129,6 +2137,9 @@ mod tests {
         );
         assert_eq!(second.status, STATE_ACTION_SESSION_ACTIVE);
         assert_eq!(second.effect.intent, STATE_ACTION_NEXT_VOTE_NULL_BLOCK);
+        assert!(!second.effect.request_proposed_block_sidecar);
+        assert_eq!(second.effect.proposed_block_sidecar_hash, [0; 32]);
+        assert_eq!(second.effect.proposed_block_sidecar_period, 0);
 
         let done = pbft_manager_state_action_effect_session_report(
             &mut session,
@@ -3092,6 +3103,15 @@ mod tests {
             CANDIDATE_ADMISSION_STATUS_ACCEPTED_NEWLY_VALIDATED
         );
         assert!(plan.mark_valid);
+
+        let plan = plan_pbft_manager_candidate_admission(FfiPbftManagerCandidateAdmissionFact {
+            lookup_performed: true,
+            proposed_block_found: false,
+            ..candidate_admission_fact()
+        });
+        assert_eq!(plan.action, CANDIDATE_ADMISSION_ACTION_DEFER_MISSING_BLOCK);
+        assert_eq!(plan.status, CANDIDATE_ADMISSION_STATUS_BLOCK_MISSING);
+        assert!(!plan.mark_valid);
     }
 
     #[test]

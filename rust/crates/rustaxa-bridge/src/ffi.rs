@@ -1304,6 +1304,9 @@ pub mod rustaxa_ffi {
     struct PbftManagerStateActionEffect {
         intent: u8,
         hash: [u8; 32],
+        request_proposed_block_sidecar: bool,
+        proposed_block_sidecar_hash: [u8; 32],
+        proposed_block_sidecar_period: u64,
     }
 
     /// Ordered PBFT manager state-action effects planned by Rust.
