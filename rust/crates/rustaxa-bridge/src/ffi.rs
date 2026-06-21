@@ -4625,6 +4625,12 @@ pub mod rustaxa_ffi {
             self: &BridgeDagManagerRuntime,
             hash: &[u8; 32],
         ) -> Result<bool>;
+        /// Loads per-tip gas facts from canonical Rust DAG storage for
+        /// verification gas checks without C++ `DagBlock` materialization.
+        pub fn dag_manager_runtime_tip_gas_estimations(
+            self: &BridgeDagManagerRuntime,
+            tips: Vec<DagHash>,
+        ) -> Result<Vec<DagTipGas>>;
         pub fn dag_manager_runtime_load_block(
             self: &BridgeDagManagerRuntime,
             hash: &[u8; 32],

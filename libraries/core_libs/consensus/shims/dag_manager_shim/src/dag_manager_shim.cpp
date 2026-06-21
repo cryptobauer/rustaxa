@@ -584,18 +584,9 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
   const auto needs_tip_gas =
       dag_gas_limit == 0 || static_cast<uint64_t>(blk->getTips().size() + 1) > pbft_gas_limit / dag_gas_limit;
   if (needs_tip_gas) {
-    tip_gas_estimations.reserve(blk->getTips().size());
-    for (const auto &tip_hash : blk->getTips()) {
-      rustaxa::DagTipGas tip_gas;
-      if (const auto tip_block = getDagBlock(tip_hash); tip_block) {
-        tip_gas.found = true;
-        tip_gas.gas_estimation = tip_block->getGasEstimation();
-      } else {
-        tip_gas.found = false;
-        tip_gas.gas_estimation = 0;
-      }
-      tip_gas_estimations.push_back(tip_gas);
-    }
+    std::shared_lock lock(rust_graphs_mutex_);
+    tip_gas_estimations =
+        rust_graphs_->runtime->dag_manager_runtime_tip_gas_estimations(to_bridge_dag_hashes(blk->getTips()));
   }
 
   step = verify_session->dag_verify_block_session_report_gas(to_bridge_verify_block_gas_report(

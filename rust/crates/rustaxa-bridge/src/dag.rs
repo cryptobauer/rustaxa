@@ -1012,6 +1012,54 @@ impl BridgeDagManagerRuntime {
         dag_block_exists_in_storage(self.storage.as_ref(), to_h256(hash))
     }
 
+    /// Loads per-tip gas facts directly from Rust storage for DAG block verification.
+    ///
+    /// Inputs:
+    /// - `tips`: candidate tip hashes in the original block order.
+    ///
+    /// Outputs:
+    /// - one `DagTipGas` per input hash. Missing tips are returned as
+    ///   `found = false` so the Rust verification session can select the
+    ///   legacy `MissingTip` status without C++ materializing `DagBlock`
+    ///   objects or deriving gas facts from compatibility caches.
+    ///
+    /// Edge behavior:
+    /// - storage backend and decode failures are bridge errors because they
+    ///   indicate corrupt or unavailable canonical DAG payloads rather than a
+    ///   consensus-invalid missing tip.
+    pub fn dag_manager_runtime_tip_gas_estimations(
+        &self,
+        tips: Vec<DagHash>,
+    ) -> Result<Vec<crate::ffi::rustaxa_ffi::DagTipGas>> {
+        tips.into_iter()
+            .map(|tip| {
+                let hash = H256::from(tip.hash);
+                if self
+                    .storage
+                    .dag()
+                    .by_hash_rlp_optional(hash)
+                    .context("DAG_RUNTIME_TIP_GAS_LOOKUP")?
+                    .is_none()
+                {
+                    return Ok(crate::ffi::rustaxa_ffi::DagTipGas {
+                        found: false,
+                        gas_estimation: 0,
+                    });
+                }
+
+                let block = self
+                    .storage
+                    .dag()
+                    .by_hash(hash)
+                    .context("DAG_RUNTIME_TIP_GAS_DECODE")?;
+                Ok(crate::ffi::rustaxa_ffi::DagTipGas {
+                    found: true,
+                    gas_estimation: block.gas_estimation,
+                })
+            })
+            .collect()
+    }
+
     /// Loads canonical DAG block RLP from Rust storage.
     pub fn dag_manager_runtime_load_block(&self, hash: &[u8; 32]) -> Result<DagBlockLookup> {
         let lookup = load_dag_block_from_storage(self.storage.as_ref(), to_h256(hash))?;
