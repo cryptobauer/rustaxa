@@ -678,6 +678,12 @@ pub struct PbftFinalizationRuntimeActionResult {
     pub action: PbftFinalizationRuntimeAction,
     /// Whether the action completed successfully.
     pub success: bool,
+    /// Stable action-specific status reported by the executor.
+    ///
+    /// Storage actions must report a successful finalized-period apply status.
+    /// Non-storage actions must report zero on success. Failed actions may use
+    /// any non-zero status as diagnostic payload through `error_code`.
+    pub status: u8,
     /// Optional stable error code supplied by the C++ executor.
     pub error_code: String,
 }
@@ -2339,12 +2345,46 @@ pub fn report_pbft_finalization_runtime_action(
         return state;
     }
 
+    if !successful_runtime_action_status_is_valid(result.action, result.status) {
+        state.runtime_status = PbftFinalizationRuntimeStatus::ActionFailed;
+        state.failed_action = Some(result.action);
+        state.error_code = if result.error_code.is_empty() {
+            format!("PBFT_FINALIZE_RUNTIME_ACTION_STATUS_{}", result.status)
+        } else {
+            result.error_code
+        };
+        return state;
+    }
+
     state.last_action = Some(result.action);
     state.next_action_index += 1;
     if state.next_action_index as usize == state.actions.len() {
         state.runtime_status = PbftFinalizationRuntimeStatus::Complete;
     }
     state
+}
+
+/// Returns whether a successful executor report status is acceptable for the
+/// Rust-owned finalization runtime action.
+///
+/// Storage actions report finalized-period apply statuses because Rust owns the
+/// storage batch result contract. Non-storage executor effects report `0` on
+/// success; any non-zero value is treated as a failed action even if the
+/// temporary C++ executor incorrectly marks the report successful.
+pub fn successful_runtime_action_status_is_valid(
+    action: PbftFinalizationRuntimeAction,
+    status: u8,
+) -> bool {
+    match action {
+        PbftFinalizationRuntimeAction::ApplyPrimaryStorage
+        | PbftFinalizationRuntimeAction::ApplyRewardVotesResetStorage
+        | PbftFinalizationRuntimeAction::ApplySortitionStorage
+        | PbftFinalizationRuntimeAction::ApplyDynamicLambda
+        | PbftFinalizationRuntimeAction::PersistExecutedStatus => {
+            PbftFinalizedPeriodApplyStatus::from_u8(status).is_success()
+        }
+        _ => status == 0,
+    }
 }
 
 /// Validates a Rust-backed live-mutation report before the PBFT runtime cursor advances.
@@ -3750,6 +3790,18 @@ mod tests {
                 PbftFinalizationRuntimeActionResult {
                     action,
                     success: true,
+                    status: if matches!(
+                        action,
+                        PbftFinalizationRuntimeAction::ApplyPrimaryStorage
+                            | PbftFinalizationRuntimeAction::ApplyRewardVotesResetStorage
+                            | PbftFinalizationRuntimeAction::ApplySortitionStorage
+                            | PbftFinalizationRuntimeAction::ApplyDynamicLambda
+                            | PbftFinalizationRuntimeAction::PersistExecutedStatus
+                    ) {
+                        PbftFinalizedPeriodApplyStatus::Applied.as_u8()
+                    } else {
+                        0
+                    },
                     error_code: String::new(),
                 },
             );
@@ -3950,6 +4002,7 @@ mod tests {
             PbftFinalizationRuntimeActionResult {
                 action: PbftFinalizationRuntimeAction::ApplyPrimaryStorage,
                 success: true,
+                status: PbftFinalizedPeriodApplyStatus::Applied.as_u8(),
                 error_code: String::new(),
             },
         );
@@ -3974,6 +4027,7 @@ mod tests {
             PbftFinalizationRuntimeActionResult {
                 action: PbftFinalizationRuntimeAction::FinalizeFinalChain,
                 success: true,
+                status: 0,
                 error_code: String::new(),
             },
         );
@@ -3988,6 +4042,7 @@ mod tests {
             PbftFinalizationRuntimeActionResult {
                 action: PbftFinalizationRuntimeAction::ApplyPrimaryStorage,
                 success: false,
+                status: 77,
                 error_code: "PRIMARY_FAILED".to_string(),
             },
         );
@@ -3997,6 +4052,60 @@ mod tests {
         );
         assert_eq!(failed.next_action_index, 0);
         assert_eq!(failed.error_code, "PRIMARY_FAILED");
+    }
+
+    #[test]
+    fn finalization_runtime_rejects_invalid_success_statuses() {
+        let plan = plan_pbft_finalization_intent(accepted_fact());
+        let runtime = plan_pbft_finalization_runtime(&plan);
+        let state = start_pbft_finalization_runtime(&runtime);
+
+        let storage_rejected = report_pbft_finalization_runtime_action(
+            state.clone(),
+            PbftFinalizationRuntimeActionResult {
+                action: PbftFinalizationRuntimeAction::ApplyPrimaryStorage,
+                success: true,
+                status: PbftFinalizedPeriodApplyStatus::RejectedWriteSet.as_u8(),
+                error_code: String::new(),
+            },
+        );
+        assert_eq!(
+            storage_rejected.runtime_status,
+            PbftFinalizationRuntimeStatus::ActionFailed
+        );
+        assert_eq!(
+            storage_rejected.error_code,
+            "PBFT_FINALIZE_RUNTIME_ACTION_STATUS_2"
+        );
+        assert_eq!(storage_rejected.next_action_index, 0);
+
+        let non_storage_rejected = report_pbft_finalization_runtime_action(
+            state,
+            PbftFinalizationRuntimeActionResult {
+                action: PbftFinalizationRuntimeAction::ApplyPrimaryStorage,
+                success: true,
+                status: PbftFinalizedPeriodApplyStatus::Applied.as_u8(),
+                error_code: String::new(),
+            },
+        );
+        let non_storage_rejected = report_pbft_finalization_runtime_action(
+            non_storage_rejected,
+            PbftFinalizationRuntimeActionResult {
+                action: PbftFinalizationRuntimeAction::CommitSortitionRuntime,
+                success: true,
+                status: 13,
+                error_code: String::new(),
+            },
+        );
+        assert_eq!(
+            non_storage_rejected.runtime_status,
+            PbftFinalizationRuntimeStatus::ActionFailed
+        );
+        assert_eq!(
+            non_storage_rejected.error_code,
+            "PBFT_FINALIZE_RUNTIME_ACTION_STATUS_13"
+        );
+        assert_eq!(non_storage_rejected.next_action_index, 1);
     }
 
     #[test]
@@ -4011,6 +4120,18 @@ mod tests {
                 PbftFinalizationRuntimeActionResult {
                     action,
                     success: true,
+                    status: if matches!(
+                        action,
+                        PbftFinalizationRuntimeAction::ApplyPrimaryStorage
+                            | PbftFinalizationRuntimeAction::ApplyRewardVotesResetStorage
+                            | PbftFinalizationRuntimeAction::ApplySortitionStorage
+                            | PbftFinalizationRuntimeAction::ApplyDynamicLambda
+                            | PbftFinalizationRuntimeAction::PersistExecutedStatus
+                    ) {
+                        PbftFinalizedPeriodApplyStatus::Applied.as_u8()
+                    } else {
+                        0
+                    },
                     error_code: String::new(),
                 },
             );

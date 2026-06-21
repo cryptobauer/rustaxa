@@ -308,6 +308,7 @@ pub fn pbft_finalization_runtime_session_report(
         PbftFinalizationRuntimeActionResult {
             action,
             success,
+            status: action_status,
             error_code,
         },
     );
@@ -350,6 +351,7 @@ pub fn pbft_finalization_runtime_session_report_action(
         PbftFinalizationRuntimeActionResult {
             action,
             success: report.success,
+            status: report.status,
             error_code,
         },
     );

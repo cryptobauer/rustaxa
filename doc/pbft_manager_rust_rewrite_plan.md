@@ -375,6 +375,11 @@ Validation:
 
 Goal: make Rust own the finalization plan and all non-EVM post-commit state updates.
 
+Status: in progress. The Rust finalization runtime owns action ordering and now rejects successful executor reports with
+invalid action-status payloads before advancing the cursor. This closes the first bounded Slice 6 authority gap for
+Rust-owned storage actions and generic non-storage executor reports while keeping FinalChain/EVM execution as an explicit
+temporary executor boundary.
+
 Scope:
 
 - Move finalization post-commit ordering, PBFT-chain head advancement, DAG finalized-order commit reports, transaction
