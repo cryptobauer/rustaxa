@@ -945,6 +945,8 @@ impl From<FfiPbftFinalizationLiveMutationReport> for PbftFinalizationLiveMutatio
             sortition_params_changes_count: value.sortition_params_changes_count,
             executed_pbft_block: value.executed_pbft_block,
             manager_period: value.manager_period,
+            pillar_processed_period: value.pillar_processed_period,
+            pillar_request_period: value.pillar_request_period,
         }
     }
 }
@@ -1318,6 +1320,8 @@ mod tests {
                 sortition_params_changes_count: 0,
                 executed_pbft_block: true,
                 manager_period: 11,
+                pillar_processed_period: 10,
+                pillar_request_period: 5,
             },
         );
         assert!(accepted.accepted);
@@ -1347,6 +1351,8 @@ mod tests {
                 sortition_params_changes_count: 0,
                 executed_pbft_block: true,
                 manager_period: 11,
+                pillar_processed_period: 10,
+                pillar_request_period: 5,
             },
         );
         assert!(!rejected.accepted);
@@ -1376,6 +1382,8 @@ mod tests {
                 sortition_params_changes_count: 0,
                 executed_pbft_block: true,
                 manager_period: 11,
+                pillar_processed_period: 10,
+                pillar_request_period: 5,
             },
         );
         assert!(!reward_rejected.accepted);

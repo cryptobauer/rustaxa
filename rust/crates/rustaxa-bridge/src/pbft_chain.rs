@@ -180,6 +180,8 @@ impl BridgePbftChain {
             sortition_params_changes_count: 0,
             executed_pbft_block: false,
             manager_period: 0,
+            pillar_processed_period: 0,
+            pillar_request_period: 0,
         })
     }
 

@@ -3636,8 +3636,25 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
               return false;
             }
             assert(block_pbft_period == pbft_chain_->getPbftChainSize());
+            const auto pillar_request_period = block_pbft_period - final_chain_->delegationDelay();
             processPillarBlock(block_pbft_period);
-            if (!report_resume_action(resume_step, true, 0)) {
+            rustaxa::PbftFinalizationLiveMutationReport pillar_report{};
+            pillar_report.action = kPbftFinalizationRuntimeActionProcessPillarBlock;
+            pillar_report.block_period = finalization_plan.storage_write_intent.block_period;
+            pillar_report.pbft_block_hash = finalization_plan.storage_write_intent.pbft_block_hash;
+            pillar_report.anchor_hash = finalization_plan.storage_write_intent.anchor_hash;
+            pillar_report.manager_period = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value()).period;
+            pillar_report.pillar_processed_period = block_pbft_period;
+            pillar_report.pillar_request_period = pillar_request_period;
+            const auto pillar_validation =
+                rustaxa::validate_pbft_finalization_live_mutation_report(finalization_plan, pillar_report);
+            if (!pillar_validation.accepted) {
+              LOG(log_er_) << "Rust PBFT finalization resume pillar live mutation rejected for block "
+                           << pbft_block_hash << ", period " << block_pbft_period << ", status "
+                           << static_cast<uint32_t>(pillar_validation.status) << ", error "
+                           << static_cast<std::string>(pillar_validation.error_code);
+            }
+            if (!report_resume_action(resume_step, pillar_validation.accepted, pillar_validation.status)) {
               return false;
             }
           }
@@ -4175,8 +4192,24 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       return false;
     }
     assert(block_pbft_period == pbft_chain_->getPbftChainSize());
+    const auto pillar_request_period = block_pbft_period - final_chain_->delegationDelay();
     processPillarBlock(block_pbft_period);
-    if (!report_runtime_action(runtime_step, true, 0)) {
+    rustaxa::PbftFinalizationLiveMutationReport pillar_report{};
+    pillar_report.action = kPbftFinalizationRuntimeActionProcessPillarBlock;
+    pillar_report.block_period = finalization_plan.storage_write_intent.block_period;
+    pillar_report.pbft_block_hash = finalization_plan.storage_write_intent.pbft_block_hash;
+    pillar_report.anchor_hash = finalization_plan.storage_write_intent.anchor_hash;
+    pillar_report.manager_period = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value()).period;
+    pillar_report.pillar_processed_period = block_pbft_period;
+    pillar_report.pillar_request_period = pillar_request_period;
+    const auto live_validation = validate_live_mutation(pillar_report);
+    if (!live_validation.accepted) {
+      LOG(log_er_) << "Rust PBFT finalization pillar live mutation rejected for block " << pbft_block_hash
+                   << ", period " << block_pbft_period << ", status " << static_cast<uint32_t>(live_validation.status)
+                   << ", error " << static_cast<std::string>(live_validation.error_code);
+    }
+    if (!report_runtime_action_detail(runtime_step, live_validation.accepted, live_validation.status,
+                                      static_cast<std::string>(live_validation.error_code))) {
       return false;
     }
   }

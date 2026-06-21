@@ -420,6 +420,10 @@ pub enum PbftFinalizationLiveMutationStatus {
     ExecutedFlagMismatch,
     /// PBFT manager period did not advance to the expected post-finalization period.
     ManagerPeriodMismatch,
+    /// Pillar post-processing ran for a period other than the finalized PBFT period.
+    PillarProcessedPeriodMismatch,
+    /// Pillar post-processing used an invalid FinalChain request period.
+    PillarRequestPeriodInvalid,
     /// The report carried an unknown action code.
     UnknownAction,
 }
@@ -445,6 +449,8 @@ impl PbftFinalizationLiveMutationStatus {
             Self::SortitionLiveStateMismatch => 14,
             Self::ExecutedFlagMismatch => 15,
             Self::ManagerPeriodMismatch => 16,
+            Self::PillarProcessedPeriodMismatch => 17,
+            Self::PillarRequestPeriodInvalid => 18,
             Self::UnknownAction => 255,
         }
     }
@@ -499,6 +505,10 @@ pub struct PbftFinalizationLiveMutationReport {
     pub executed_pbft_block: bool,
     /// PBFT manager period after the finalization period-advance action.
     pub manager_period: u64,
+    /// PBFT period passed to the pillar post-processing executor.
+    pub pillar_processed_period: u64,
+    /// FinalChain request period used as pillar block input.
+    pub pillar_request_period: u64,
 }
 
 /// Result of validating one PBFT finalization live-mutation report.
@@ -2440,6 +2450,7 @@ pub fn validate_pbft_finalization_live_mutation_report(
             | PbftFinalizationRuntimeAction::UpdatePbftChain
             | PbftFinalizationRuntimeAction::SetExecutedFlag
             | PbftFinalizationRuntimeAction::AdvancePeriod
+            | PbftFinalizationRuntimeAction::ProcessPillarBlock
     ) {
         return reject(
             PbftFinalizationLiveMutationStatus::ActionNotLiveMutation,
@@ -2563,6 +2574,35 @@ pub fn validate_pbft_finalization_live_mutation_report(
                 return reject(
                     PbftFinalizationLiveMutationStatus::ManagerPeriodMismatch,
                     "PBFT_FINALIZE_LIVE_MUTATION_MANAGER_PERIOD_MISMATCH",
+                );
+            }
+        }
+        PbftFinalizationRuntimeAction::ProcessPillarBlock => {
+            let Some(expected_period) = plan.storage_write_intent.block_period.checked_add(1)
+            else {
+                return reject(
+                    PbftFinalizationLiveMutationStatus::ManagerPeriodMismatch,
+                    "PBFT_FINALIZE_LIVE_MUTATION_MANAGER_PERIOD_OVERFLOW",
+                );
+            };
+            if report.manager_period != expected_period {
+                return reject(
+                    PbftFinalizationLiveMutationStatus::ManagerPeriodMismatch,
+                    "PBFT_FINALIZE_LIVE_MUTATION_MANAGER_PERIOD_MISMATCH",
+                );
+            }
+            if report.pillar_processed_period != plan.storage_write_intent.block_period {
+                return reject(
+                    PbftFinalizationLiveMutationStatus::PillarProcessedPeriodMismatch,
+                    "PBFT_FINALIZE_LIVE_MUTATION_PILLAR_PROCESSED_PERIOD_MISMATCH",
+                );
+            }
+            if report.pillar_request_period == 0
+                || report.pillar_request_period >= report.pillar_processed_period
+            {
+                return reject(
+                    PbftFinalizationLiveMutationStatus::PillarRequestPeriodInvalid,
+                    "PBFT_FINALIZE_LIVE_MUTATION_PILLAR_REQUEST_PERIOD_INVALID",
                 );
             }
         }
@@ -3489,6 +3529,8 @@ mod tests {
             sortition_params_changes_count: 0,
             executed_pbft_block: true,
             manager_period: 11,
+            pillar_processed_period: 10,
+            pillar_request_period: 5,
         }
     }
 
@@ -4249,6 +4291,15 @@ mod tests {
             live_report(PbftFinalizationRuntimeAction::AdvancePeriod),
         );
         assert!(advance.accepted);
+
+        let mut pillar_fact = accepted_fact();
+        pillar_fact.process_pillar_block_after_advance = true;
+        let pillar_plan = plan_pbft_finalization_intent(pillar_fact);
+        let pillar = validate_pbft_finalization_live_mutation_report(
+            &pillar_plan,
+            live_report(PbftFinalizationRuntimeAction::ProcessPillarBlock),
+        );
+        assert!(pillar.accepted);
     }
 
     #[test]
@@ -4342,6 +4393,33 @@ mod tests {
         assert_eq!(
             advance.status,
             PbftFinalizationLiveMutationStatus::ManagerPeriodMismatch
+        );
+
+        let mut pillar_fact = accepted_fact();
+        pillar_fact.process_pillar_block_after_advance = true;
+        let pillar_plan = plan_pbft_finalization_intent(pillar_fact);
+        let pillar = validate_pbft_finalization_live_mutation_report(
+            &pillar_plan,
+            PbftFinalizationLiveMutationReport {
+                pillar_processed_period: 9,
+                ..live_report(PbftFinalizationRuntimeAction::ProcessPillarBlock)
+            },
+        );
+        assert_eq!(
+            pillar.status,
+            PbftFinalizationLiveMutationStatus::PillarProcessedPeriodMismatch
+        );
+
+        let pillar_request = validate_pbft_finalization_live_mutation_report(
+            &pillar_plan,
+            PbftFinalizationLiveMutationReport {
+                pillar_request_period: 10,
+                ..live_report(PbftFinalizationRuntimeAction::ProcessPillarBlock)
+            },
+        );
+        assert_eq!(
+            pillar_request.status,
+            PbftFinalizationLiveMutationStatus::PillarRequestPeriodInvalid
         );
     }
 

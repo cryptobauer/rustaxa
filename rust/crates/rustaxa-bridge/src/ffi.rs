@@ -1628,6 +1628,8 @@ pub mod rustaxa_ffi {
         sortition_params_changes_count: u64,
         executed_pbft_block: bool,
         manager_period: u64,
+        pillar_processed_period: u64,
+        pillar_request_period: u64,
     }
 
     /// Result of validating a live PBFT finalization mutation report in Rust.

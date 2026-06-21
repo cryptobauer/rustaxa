@@ -393,6 +393,9 @@ Landed bounded PBFT-chain update/report collapse:
   of entering the monolithic `advancePeriod()` wrapper; the wrapper remains for non-finalization callers.
 - Every Rust-planned `AdvancePeriod` sub-action now reports its zero-based executor position and action code back to Rust;
   mismatched, skipped, out-of-range, or failed reports are rejected before the final manager period cursor is committed.
+- `ProcessPillarBlock` now submits a typed post-processing report with finalized period, derived FinalChain request
+  period, and post-advance manager period; Rust rejects mismatched or invalid pillar post-processing reports before the
+  finalization runtime cursor completes.
 
 Scope:
 
