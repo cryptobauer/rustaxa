@@ -7,6 +7,7 @@
 #include "dag/dag_block.hpp"
 #include "logger/logger.hpp"
 #include "network/network.hpp"
+#include "rustaxa-bridge/ffi.rs.h"
 
 namespace taraxa {
 
@@ -49,14 +50,13 @@ class DagBlockProposer {
     NodeDagProposerData(const WalletConfig& wallet, const uint16_t max_tries, const uint16_t shard)
         : wallet(wallet),
           max_num_tries(max_tries + (wallet.node_addr[0] % (10 * max_tries))),
+          retry_state(rustaxa::create_dag_proposer_retry_state(max_num_tries)),
           trx_shard(std::stoull(wallet.node_addr.toString().substr(0, 6).c_str(), NULL, 16) % shard) {}
 
     const WalletConfig wallet;
     const uint16_t max_num_tries;
+    ::rust::Box<rustaxa::BridgeDagProposerRetryState> retry_state;
     const uint16_t trx_shard;
-
-    uint16_t num_tries{0};
-    uint64_t last_propose_level{0};
   };
 
  public:

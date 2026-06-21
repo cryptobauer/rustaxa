@@ -8,25 +8,25 @@ use crate::ffi::rustaxa_ffi::{
     DagPersistenceCounters, DagPivotTipsValidation, DagProposerAddBlockReport,
     DagProposerAttemptInput, DagProposerAttemptPlan, DagProposerBlockConstructionPlan,
     DagProposerBlockIntentInput, DagProposerBlockIntentNowInput, DagProposerFrontierFacts,
-    DagProposerSessionStep, DagProposerSignedBlockIntent, DagProposerSignedBlockIntentInput,
-    DagProposerStaleProofReport, DagProposerStorageBlockConstructionInput,
-    DagProposerStorageTipSelectionInput, DagProposerTipSelectionPlan,
-    DagProposerTransactionPackReport, DagProposerTransactionPackRequest,
-    DagProposerUnsignedBlockIntent, DagProposerVdfProofReport, DagProposerVdfWaitReport,
-    DagProposerWorkerCommand, DagProposerWorkerCommandInput, DagReferenceMetadata, DagSyncBlockRlp,
-    DagTransactionHash, DagTransactionQueryPlan, DagTransactionRlpLookup,
-    DagVerifyAuthorizationInput, DagVerifyAuthorizationResult, DagVerifyBlockAuthorizationReport,
-    DagVerifyBlockGasReport, DagVerifyBlockSessionInput, DagVerifyBlockSessionStep,
-    DagVerifyBlockTransactionReport, DagVerifyBlockVdfReport, DagVerifyGasInput,
-    DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
+    DagProposerRetryStateSnapshot, DagProposerSessionStep, DagProposerSignedBlockIntent,
+    DagProposerSignedBlockIntentInput, DagProposerStaleProofReport,
+    DagProposerStorageBlockConstructionInput, DagProposerStorageTipSelectionInput,
+    DagProposerTipSelectionPlan, DagProposerTransactionPackReport,
+    DagProposerTransactionPackRequest, DagProposerUnsignedBlockIntent, DagProposerVdfProofReport,
+    DagProposerVdfWaitReport, DagProposerWorkerCommand, DagProposerWorkerCommandInput,
+    DagReferenceMetadata, DagSyncBlockRlp, DagTransactionHash, DagTransactionQueryPlan,
+    DagTransactionRlpLookup, DagVerifyAuthorizationInput, DagVerifyAuthorizationResult,
+    DagVerifyBlockAuthorizationReport, DagVerifyBlockGasReport, DagVerifyBlockSessionInput,
+    DagVerifyBlockSessionStep, DagVerifyBlockTransactionReport, DagVerifyBlockVdfReport,
+    DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
     DagVerifyTransactionAvailabilityInput, DagVerifyTransactionAvailabilityResult,
     DagVerifyVdfDposDecision, DagVerifyVdfDposFacts, DagVerifyVdfPrepareInput,
     DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
     DagVerifyVdfSortitionResult, HashLookup, PeriodLookup, SortitionRuntimeParams,
 };
 use crate::ffi::{
-    BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeDagProposerSession,
-    BridgeDagVerifyBlockSession, BridgeStorage,
+    BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeDagProposerRetryState,
+    BridgeDagProposerSession, BridgeDagVerifyBlockSession, BridgeStorage,
 };
 use anyhow::{ensure, Context, Result};
 use ethereum_types::H256;
@@ -163,6 +163,17 @@ pub struct DagProposerSession {
     selected_transaction_hashes: Vec<H256>,
     transaction_gas_estimations: Vec<u64>,
     error_code: String,
+}
+
+/// Rust-owned durable retry cursor for one configured DAG proposer wallet.
+///
+/// C++ holds this as an opaque handle and may only snapshot it before creating
+/// a proposal session or apply a session step after Rust asks for a retry-state
+/// update. This keeps stale-VDF retry accounting out of the proposer shell.
+pub struct DagProposerRetryState {
+    last_propose_level: u64,
+    retry_count: u64,
+    max_retry_count: u64,
 }
 
 pub fn create_dag_graph(genesis: &[u8; 32]) -> Box<BridgeDagGraph> {
@@ -1764,6 +1775,33 @@ impl BridgeDagProposerSession {
     }
 }
 
+pub fn create_dag_proposer_retry_state(max_retry_count: u64) -> Box<BridgeDagProposerRetryState> {
+    Box::new(BridgeDagProposerRetryState {
+        state: DagProposerRetryState {
+            last_propose_level: 0,
+            retry_count: 0,
+            max_retry_count,
+        },
+    })
+}
+
+impl BridgeDagProposerRetryState {
+    pub fn dag_proposer_retry_state_snapshot(&self) -> DagProposerRetryStateSnapshot {
+        DagProposerRetryStateSnapshot {
+            last_propose_level: self.state.last_propose_level,
+            retry_count: self.state.retry_count,
+            max_retry_count: self.state.max_retry_count,
+        }
+    }
+
+    pub fn dag_proposer_retry_state_apply(&mut self, step: &DagProposerSessionStep) {
+        if step.update_retry_state {
+            self.state.last_propose_level = step.next_last_propose_level;
+            self.state.retry_count = step.next_retry_count;
+        }
+    }
+}
+
 /// Runs deterministic transaction availability decisions for DAG block
 /// verification.
 ///
@@ -3311,6 +3349,63 @@ mod tests {
         });
         assert!(!proposed.attempt_proposal);
         assert!(!proposed.sleep_after_tick);
+    }
+
+    #[test]
+    fn dag_proposer_retry_state_applies_session_steps() {
+        let mut state = create_dag_proposer_retry_state(20);
+        let initial = state.dag_proposer_retry_state_snapshot();
+        assert_eq!(initial.last_propose_level, 0);
+        assert_eq!(initial.retry_count, 0);
+        assert_eq!(initial.max_retry_count, 20);
+
+        let mut step = DagProposerSessionStep {
+            status: DAG_PROPOSER_SESSION_STATUS_COMPLETE,
+            action: DAG_PROPOSER_SESSION_ACTION_NONE,
+            reason_code: DAG_PROPOSER_REASON_OK,
+            return_value: false,
+            update_retry_state: true,
+            next_last_propose_level: 7,
+            next_retry_count: 3,
+            frontier_pivot: [0; 32],
+            frontier_tips: Vec::new(),
+            proposal_level: 7,
+            proposal_period: 0,
+            last_finalized_period: 0,
+            vrf_input: Vec::new(),
+            vote_count: 0,
+            max_vote_count: 0,
+            vdf_difficulty: 0,
+            vdf_stale: false,
+            old_proposal: false,
+            vdf_message: Vec::new(),
+            selected_transaction_hashes: Vec::new(),
+            transaction_gas_estimations: Vec::new(),
+            transaction_request: DagProposerTransactionPackRequest {
+                proposal_period: 0,
+                weight_limit: 0,
+                total_transaction_shards: 1,
+                node_transaction_shard: 0,
+                shard_period_interval: 0,
+            },
+            record_proposed_block: false,
+            vdf_poll_interval_ms: 100,
+            stale_proof_sleep_ms: 1_000,
+            error_code: String::new(),
+        };
+        state.dag_proposer_retry_state_apply(&step);
+        let updated = state.dag_proposer_retry_state_snapshot();
+        assert_eq!(updated.last_propose_level, 7);
+        assert_eq!(updated.retry_count, 3);
+        assert_eq!(updated.max_retry_count, 20);
+
+        step.update_retry_state = false;
+        step.next_last_propose_level = 9;
+        step.next_retry_count = 5;
+        state.dag_proposer_retry_state_apply(&step);
+        let unchanged = state.dag_proposer_retry_state_snapshot();
+        assert_eq!(unchanged.last_propose_level, 7);
+        assert_eq!(unchanged.retry_count, 3);
     }
 
     #[test]
