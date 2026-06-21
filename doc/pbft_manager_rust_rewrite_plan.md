@@ -722,6 +722,8 @@ Landed bounded cleanup:
   PBFT manager runtime snapshot instead of silently reading mirrored state.
 - Removed reset-consensus transition log reads from the C++ current-round-lambda mirror; the log now reads the Rust
   runtime snapshot after transition effects complete.
+- Removed startup replay locals that read C++ round/step mirrors immediately after Rust runtime snapshot hydration; the
+  startup path now uses the Rust startup snapshot directly.
 
 Scope:
 

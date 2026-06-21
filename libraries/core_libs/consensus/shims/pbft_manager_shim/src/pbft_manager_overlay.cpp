@@ -1510,8 +1510,8 @@ void PbftManager::initialState() {
   if (startup_snapshot.reset_second_finish_start) {
     second_finish_step_start_datetime_ = now;
   }
-  const auto current_pbft_round = round_.load();
-  const auto current_pbft_step = step_;
+  const auto current_pbft_round = static_cast<PbftRound>(startup_snapshot.round);
+  const auto current_pbft_step = static_cast<PbftStep>(startup_snapshot.step);
 
   // Load proposed-block startup metadata through the Rust-owned proposed-block
   // index. This preserves canonical block bytes for later network/public
