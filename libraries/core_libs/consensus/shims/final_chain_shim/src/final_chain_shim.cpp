@@ -1,8 +1,10 @@
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 #include "common/constants.hpp"
 #include "common/encoding_rlp.hpp"
@@ -1053,7 +1055,9 @@ vrf_wrapper::vrf_pk_t FinalChain::dposGetVrfKey(EthBlockNumber blk_n, const addr
 
 void FinalChain::prune(EthBlockNumber) { throw_unimplemented_final_chain_api("prune"); }
 
-void FinalChain::waitForFinalized() {}
+void FinalChain::waitForFinalized() {
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+}
 
 std::vector<state_api::ValidatorStake> FinalChain::dposValidatorsTotalStakes(EthBlockNumber blk_num) const {
   auto rust_stakes = rust_final_chain_.value()->get_dpos_validators_total_stakes(blk_num);

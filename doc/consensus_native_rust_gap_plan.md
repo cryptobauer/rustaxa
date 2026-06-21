@@ -42,7 +42,7 @@ PBFT manager protocol ownership is closed. The remaining blockers to deleting co
 
 Goal: remove consensus dependence on ad hoc C++ FinalChain/DPoS fact sourcing except for the explicit EVM execution boundary.
 
-Status: in progress. The first bounded route moved DAG proposer FinalChain-height and DPoS authorization collection into
+Status: complete. The first bounded route moved DAG proposer FinalChain-height and DPoS authorization collection into
 a typed Rust `BridgeFinalChain::get_dag_proposer_final_chain_facts` port, replacing the C++ proposer shim's ad hoc PBFT
 fact request used only to discover the latest finalized period. PBFT vote-weight collection now uses explicit Rust
 PBFT-period DPoS fact methods that preserve the `last_finalized + delegation_delay` readiness boundary instead of
@@ -60,9 +60,9 @@ The DAG proposer FinalChain fact port also no longer gates proposal-period DPoS 
 FinalChain delegation-delay/snapshot API decide whether the fact is available; preserving that contract avoids a circular
 dependency where DAG blocks wait for a PBFT period that needs DAG blocks to become non-empty.
 
-Validation after removing that gate still leaves `PbftManagerTest.pbft_manager_run_single_node` failing with zero
-non-empty PBFT blocks and zero executed transactions, so the remaining blocker is deeper than FinalChain/DPoS fact
-readiness and must be traced through DAG block creation, PBFT proposal/certification, or finalization admission.
+Validation after removing that gate exposed a separate non-empty block liveness issue: `PbftManagerTest.pbft_manager_run_single_node`
+initially failed with zero non-empty PBFT blocks and zero executed transactions, so the trace moved through DAG block
+creation, PBFT proposal/certification, and finalization admission rather than widening the FinalChain fact-port scope.
 
 One adjacent DAG proposer compatibility issue has been closed during that trace: Rust transaction packing now uses the
 legacy five-byte sender prefix for multi-shard DAG transaction selection. This restores compatibility with the C++
@@ -82,6 +82,16 @@ application, but dry-run `call` only returned data for DPoS query selectors. Val
 transactions therefore returned gas `0`, were demoted by the Rust transaction pack planner, and never reached
 finalization. Rust FinalChain now treats supported DPoS mutating selectors as read-only gas-estimation calls: it decodes
 the ABI input, returns the selector's legacy gas cost with empty return data, and does not mutate the snapshot.
+
+Closeout audit: remaining direct C++ `FinalChain` calls from Rust-mode consensus shims are classified. Transaction
+packing still calls `FinalChain::call` only as the explicit EVM/gas-estimation executor boundary. PBFT finalization still
+dispatches `FinalChain::finalize`, the legacy-compatible bounded `waitForFinalized` yield, and
+last-height/delegation-delay lifecycle facts as live execution/lifecycle boundaries around Rust-owned planning. Pillar
+block creation still reads bridge root/epoch through
+the FinalChain shim because those are external bridge-contract/state execution facts. DAG proposer, DAG verification,
+PBFT vote validation/generation, key-manager VRF lookup, transaction admission/cleanup, reward stats, and PBFT state-root
+validation now source their consensus FinalChain/DPoS facts through typed Rust `BridgeFinalChain` ports or Rust-backed
+FinalChain shim methods.
 
 Scope:
 

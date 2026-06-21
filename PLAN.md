@@ -787,7 +787,7 @@ The current Rust consensus footprint is broad but still incomplete:
   `PillarChainManager::validatePillarVote` now inspects pillar-vote RLP in Rust, uses the Rust-recovered
   `(period, vote_hash, voter)` identity for uniqueness, uses the recovered voter for DPoS eligibility, and avoids C++
   signature or voter recovery in Rust mode. `PillarChainManager::addVerifiedPillarVote` now also runs through Rust
-  inspection, uses the Rust-recovered voter for C++ `FinalChain::dposEligibleVoteCount`, and inserts with
+  inspection, uses the Rust-recovered voter with Rust-backed FinalChain DPoS vote-count facts, and inserts with
   `addVerifiedVoteWithRecoveredVoter` to avoid re-querying C++-side voter identity. Pillar signing and the full
   `PillarChainManager` overlay remain later slices.
 - `rustaxa-storage` contains storage repositories that consensus should use through narrow ports.
@@ -1054,8 +1054,9 @@ The current Rust consensus footprint is broad but still incomplete:
    weighted records in the PBFT block's requested hash order; C++ only materializes those records into temporary
    sidecars when callers request copied votes. Rust-retained weighted payloads now back verified-vote snapshots,
    reward-vote materialization, and 2t+1 bundle reads, so missing C++ live sidecars no longer produce partial generic
-   snapshot, reward, or 2t+1 results. C++ still owns the temporary live sidecar type,
-   FinalChain fact sourcing, reward-vote sidecar mapping, and broader PBFT manager/network orchestration; logging may
+  snapshot, reward, or 2t+1 results. C++ still owns the temporary live sidecar type,
+  reward-vote sidecar mapping, and broader PBFT manager/network orchestration; FinalChain DPoS and VRF facts are
+  sourced through Rust-backed ports. Logging may
    remain temporarily at this boundary but should be ignored when choosing what logic moves to Rust. Rust owns PBFT
    finalization sortition-change persistence: the sortition shim now previews the live Rust runtime transition, returns
    the emitted threshold change for storage staging, and commits the same transition only after the PBFT staged storage
