@@ -723,6 +723,7 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
     throw DbException("FinalChain::finalize Rust external EVM publication rejected: " +
                       std::string(publication_report.error_code));
   }
+  rewards_.commitStatsAfterFinalChainPublication(rewards_stats.process_plan);
   auto publication_complete_step = session->final_chain_execution_session_next();
   if (publication_complete_step.action != kFinalChainExecutionActionComplete) {
     throw DbException("FinalChain::finalize expected completed external EVM publication session, got " +

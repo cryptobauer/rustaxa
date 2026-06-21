@@ -5377,6 +5377,14 @@ pub mod rustaxa_ffi {
             self: &mut BridgeRewardsStatsRuntime,
             fact: RewardsStatsProcessFact,
         ) -> RewardsStatsProcessResult;
+        pub fn preview_finalized_period_rewards_stats(
+            self: &BridgeRewardsStatsRuntime,
+            fact: RewardsStatsProcessFact,
+        ) -> RewardsStatsProcessResult;
+        pub fn rewards_stats_runtime_commit_process_result(
+            self: &mut BridgeRewardsStatsRuntime,
+            plan: &RewardsStatsProcessResult,
+        ) -> Result<RewardsStatsApplyResult>;
         pub fn rewards_stats_runtime_clear_committed(
             self: &mut BridgeRewardsStatsRuntime,
             current_period: u64,

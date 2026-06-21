@@ -15,6 +15,7 @@ namespace taraxa::rewards {
 struct FinalChainPublicationRewardsStats {
   std::vector<BlockStats> distribution_stats;
   rustaxa::FinalChainExternalEvmRewardsStatsUpdate storage_update;
+  rustaxa::RewardsStatsProcessResult process_plan;
 };
 
 /**
@@ -80,6 +81,12 @@ class Stats {
   FinalChainPublicationRewardsStats processStatsForFinalChainPublication(const PeriodData& current_blk,
                                                                          uint32_t blocks_per_year,
                                                                          const std::vector<gas_t>& trxs_gas_used);
+
+  /**
+   * Commits a previously previewed publication rewards-stat plan after the
+   * surrounding FinalChain storage publication succeeds.
+   */
+  void commitStatsAfterFinalChainPublication(const rustaxa::RewardsStatsProcessResult& plan);
 
   /**
    * Clears the runtime cache after the surrounding finalization commit has

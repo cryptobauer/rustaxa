@@ -64,6 +64,22 @@ impl BridgeRewardsStatsRuntime {
         process_finalized_period_rewards_stats(self, fact)
     }
 
+    /// Previews rewards-stat processing on a cloned runtime state.
+    pub fn preview_finalized_period_rewards_stats(
+        &self,
+        fact: RewardsStatsProcessFact,
+    ) -> RewardsStatsProcessResult {
+        preview_finalized_period_rewards_stats(self, fact)
+    }
+
+    /// Commits a previously previewed rewards-stat process result to this runtime.
+    pub fn rewards_stats_runtime_commit_process_result(
+        &mut self,
+        plan: &RewardsStatsProcessResult,
+    ) -> Result<RewardsStatsApplyResult> {
+        rewards_stats_runtime_commit_process_result(self, plan)
+    }
+
     /// Clears this runtime's cache after the caller commits a distribution
     /// boundary period.
     pub fn rewards_stats_runtime_clear_committed(&mut self, current_period: u64) {
@@ -117,6 +133,55 @@ pub fn process_finalized_period_rewards_stats(
             distribution_stats: Vec::new(),
         },
     }
+}
+
+/// Processes one finalized period on a cloned runtime without mutating live state.
+///
+/// This is used by FinalChain publication paths that must first distribute
+/// rewards and commit storage before advancing the in-memory rewards cache.
+pub fn preview_finalized_period_rewards_stats(
+    runtime: &BridgeRewardsStatsRuntime,
+    fact: RewardsStatsProcessFact,
+) -> RewardsStatsProcessResult {
+    let current_period = fact.period;
+    match finalized_fact_from_ffi(fact) {
+        Ok(fact) => runtime.state.clone().process_period(fact).into(),
+        Err(error) => RewardsStatsProcessResult {
+            status: RewardsStatsStatus::Rejected.as_u8(),
+            error_code: error.to_string(),
+            current_period,
+            cache_current_period: false,
+            clear_cached_stats: false,
+            current_block_stats_rlp: Vec::new(),
+            distribution_stats: Vec::new(),
+        },
+    }
+}
+
+/// Applies a previously previewed rewards-stat process result to live state.
+pub fn rewards_stats_runtime_commit_process_result(
+    runtime: &mut BridgeRewardsStatsRuntime,
+    plan: &RewardsStatsProcessResult,
+) -> Result<RewardsStatsApplyResult> {
+    let plan = rewards_stats_process_plan_from_ffi(plan);
+    if let Err(error) = runtime.state.apply_process_plan(&plan) {
+        return Ok(RewardsStatsStorageApplyResult {
+            status: RewardsStatsApplyStatus::Rejected,
+            current_period: plan.current_period,
+            wrote_current_period: false,
+            cleared_cached_stats: false,
+            error_code: error.to_string(),
+        }
+        .into());
+    }
+    Ok(RewardsStatsStorageApplyResult {
+        status: RewardsStatsApplyStatus::Applied,
+        current_period: plan.current_period,
+        wrote_current_period: plan.cache_current_period,
+        cleared_cached_stats: plan.clear_cached_stats,
+        error_code: String::new(),
+    }
+    .into())
 }
 
 /// Clears the runtime cache after the caller has committed a distribution
@@ -455,5 +520,32 @@ mod tests {
             .unwrap()
             .is_empty());
         assert!(rewards_stats_runtime_cached_stats(&runtime).is_empty());
+    }
+
+    #[test]
+    fn preview_does_not_advance_runtime_until_commit() {
+        let mut runtime = BridgeRewardsStatsRuntime {
+            state: RewardsStatsRuntime::new(
+                config().into(),
+                vec![RewardsFrequencyRule {
+                    from_period: 0,
+                    frequency: 3,
+                }],
+                Vec::new(),
+            )
+            .unwrap(),
+            storage: temp_storage("preview_commit"),
+        };
+
+        let preview = preview_finalized_period_rewards_stats(&runtime, fact(1));
+        assert_eq!(preview.status, 0);
+        assert!(preview.cache_current_period);
+        assert!(rewards_stats_runtime_cached_stats(&runtime).is_empty());
+
+        let commit = rewards_stats_runtime_commit_process_result(&mut runtime, &preview)
+            .expect("preview commit should succeed");
+        assert_eq!(commit.status, REWARDS_STATS_APPLY_STATUS_APPLIED);
+        assert!(commit.wrote_current_period);
+        assert_eq!(rewards_stats_runtime_cached_stats(&runtime).len(), 1);
     }
 }

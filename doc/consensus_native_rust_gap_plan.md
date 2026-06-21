@@ -252,6 +252,8 @@ Status as of 2026-06-21: in progress.
   `BlockStats` only as a public/test compatibility view for `StateAPI::distribute_rewards` and legacy callers.
 - Non-boundary rewards-stat cache writes in the C++ finalization path now append Rust-produced `BlockStats` RLP directly
   to the caller's Rust storage batch instead of committing through a separate rewards runtime storage handle.
+- External-EVM FinalChain publication now previews rewards stats on cloned Rust runtime state and commits the rewards
+  runtime/cache mirror only after Rust publication storage succeeds.
 
 Scope:
 
