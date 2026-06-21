@@ -1173,6 +1173,20 @@ void VoteManager::saveOwnVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
 
 std::vector<std::shared_ptr<PbftVote>> VoteManager::getOwnVerifiedVotes() { return own_verified_votes_; }
 
+rust::Vec<rustaxa::PbftFinalizationHash> VoteManager::ownVerifiedVoteHashesForRustTransition() const {
+  rust::Vec<rustaxa::PbftFinalizationHash> own_vote_hashes;
+  own_vote_hashes.reserve(own_verified_votes_.size());
+  for (const auto& vote : own_verified_votes_) {
+    if (!vote) {
+      throw std::runtime_error("VoteManager cannot expose a null own verified vote hash");
+    }
+    rustaxa::PbftFinalizationHash hash{};
+    hash.hash = toBridgeHash(vote->getHash());
+    own_vote_hashes.push_back(hash);
+  }
+  return own_vote_hashes;
+}
+
 void VoteManager::clearOwnVerifiedVotes(Batch& write_batch) {
   (void)write_batch;
   std::vector<vote_hash_t> own_vote_hashes;

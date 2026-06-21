@@ -490,6 +490,24 @@ class VoteManager : public VoteManagerOld {
    */
   std::vector<std::shared_ptr<PbftVote>> getOwnVerifiedVotes();
   /**
+   * Returns own verified vote hashes for a Rust-planned PBFT manager
+   * transition cleanup.
+   *
+   * Purpose:
+   * - Keeps PBFT manager from materializing or iterating own `PbftVote`
+   *   sidecars when it only needs exact durable cleanup keys for the Rust
+   *   transition storage write.
+   *
+   * Outputs:
+   * - Ordered vote hashes matching the current live own-vote sidecar set.
+   *
+   * Invariants and edge behavior:
+   * - Does not clear live sidecars or mutate durable storage.
+   * - Throws if a null own-vote sidecar is present, preserving the existing
+   *   transition invariant failure.
+   */
+  rust::Vec<rustaxa::PbftFinalizationHash> ownVerifiedVoteHashesForRustTransition() const;
+  /**
    * Appends own verified vote cleanup to the caller-owned Rust storage batch.
    *
    * Inputs:

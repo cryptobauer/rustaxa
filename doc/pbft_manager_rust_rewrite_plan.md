@@ -541,6 +541,8 @@ Landed:
   named startup lifecycle port instead of separate PBFT manager mutation and fact-query calls.
 - Rust-planned transition and advance-period VoteManager lifecycle updates now use named VoteManager executor ports for
   period/round sync and post-advance vote cleanup instead of generic PBFT manager sidecar mutation calls.
+- Rust-planned transition own-vote cleanup now asks VoteManager for exact own-vote hashes instead of iterating live
+  `PbftVote` sidecars in PBFT manager before applying the Rust transition storage write.
 - Stuck-round network rebroadcast now receives named VoteManager egress payload groups for soft, previous-round next, and
   previous-round next-null votes instead of selecting verified-vote sidecar families in PBFT manager.
 - Stuck-round network rebroadcast now receives reward and own PBFT vote egress payloads from the same VoteManager port

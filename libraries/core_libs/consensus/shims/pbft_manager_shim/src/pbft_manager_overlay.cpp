@@ -472,16 +472,7 @@ void applyPbftManagerTransitionPlan(const rustaxa::PbftManagerTransitionPlan &pl
                                     std::chrono::system_clock::time_point &second_finish_step_start_datetime) {
   rust::Vec<rustaxa::PbftFinalizationHash> own_vote_hashes;
   if (plan.clear_own_votes) {
-    const auto own_verified_votes = vote_mgr->getOwnVerifiedVotes();
-    own_vote_hashes.reserve(own_verified_votes.size());
-    for (const auto &vote : own_verified_votes) {
-      if (!vote) {
-        throw std::runtime_error("PBFT manager transition cannot clear a null own verified vote");
-      }
-      rustaxa::PbftFinalizationHash hash{};
-      hash.hash = toBridgeHash(vote->getHash());
-      own_vote_hashes.push_back(hash);
-    }
+    own_vote_hashes = vote_mgr->ownVerifiedVoteHashesForRustTransition();
   }
 
   const auto storage_result =
