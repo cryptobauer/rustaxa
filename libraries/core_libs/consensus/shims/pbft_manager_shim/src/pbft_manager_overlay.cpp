@@ -673,7 +673,8 @@ rustaxa::PbftFinalizationIntentFact makePbftFinalizationIntentFact(
     bool request_dynamic_lambda_update, uint64_t cert_vote_count, const blk_hash_t &sample_cert_vote_block_hash,
     PbftPeriod sample_cert_vote_period, PbftRound sample_cert_vote_round, PbftStep sample_cert_vote_step,
     uint32_t block_lambda, bool last_saved_period_lambda_found, uint32_t last_saved_period_lambda,
-    uint32_t dynamic_blocks_per_year, uint32_t dpos_blocks_per_year, const std::vector<blk_hash_t> &dag_blocks_order,
+    uint32_t dynamic_blocks_per_year, uint32_t rounds_count_dynamic_lambda, uint32_t dynamic_lambda,
+    uint32_t dpos_blocks_per_year, const std::vector<blk_hash_t> &dag_blocks_order,
     const std::vector<trx_hash_t> &transaction_order, const std::string &pbft_head_payload,
     bool process_pillar_block_after_advance) {
   rustaxa::PbftFinalizationIntentFact fact;
@@ -698,6 +699,8 @@ rustaxa::PbftFinalizationIntentFact makePbftFinalizationIntentFact(
   fact.last_saved_period_lambda_found = last_saved_period_lambda_found;
   fact.last_saved_period_lambda = last_saved_period_lambda;
   fact.dynamic_blocks_per_year = dynamic_blocks_per_year;
+  fact.rounds_count_dynamic_lambda = rounds_count_dynamic_lambda;
+  fact.dynamic_lambda = dynamic_lambda;
   fact.dpos_blocks_per_year = dpos_blocks_per_year;
   fact.pbft_head_payload = block_in_chain ? rust::Vec<uint8_t>() : toBridgeBytes(pbft_head_payload);
   fact.period_data_rlp = block_in_chain ? rust::Vec<uint8_t>() : toBridgeBytes(period_data.rlp());
@@ -3549,6 +3552,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       planner_pillar_block_finalized, dynamic_lambda_enabled, cert_votes.size(), sample_cert_vote->getBlockHash(),
       sample_cert_vote->getPeriod(), sample_cert_vote->getRound(), sample_cert_vote->getStep(), block_lambda,
       last_saved_period_lambda.found, last_saved_period_lambda.value, dynamic_blocks_per_year,
+      dynamic_lambda_plan.rounds_count_dynamic_lambda, dynamic_lambda_plan.dynamic_lambda,
       kGenesisConfig.state.dpos.blocks_per_year, dag_blocks_order, transaction_order,
       pbft_chain_->getJsonStrForBlock(pbft_block_hash, null_anchor),
       kGenesisConfig.state.hardforks.ficus_hf.isPillarBlockPeriod(block_pbft_period)));
@@ -4098,12 +4102,15 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       report_runtime_action(runtime_step, false, dynamic_lambda_result.status);
       return false;
     }
-    if (!report_runtime_action(runtime_step, true, dynamic_lambda_result.status)) {
-      return false;
-    }
     const auto dynamic_lambda_snapshot = rustaxa::pbft_manager_runtime_apply_dynamic_lambda(
         *pbft_manager_runtime_.value(), dynamic_lambda_plan.rounds_count_dynamic_lambda,
         dynamic_lambda_plan.dynamic_lambda);
+    if (dynamic_lambda_snapshot.status != kPbftManagerStartupRestoreStatusReady) {
+      LOG(log_er_) << "Rust PBFT dynamic-lambda live-state update failed for block " << pbft_block_hash << ", period "
+                   << block_pbft_period << ", status " << static_cast<uint32_t>(dynamic_lambda_snapshot.status);
+      report_runtime_action(runtime_step, false, 255);
+      return false;
+    }
     applyPbftManagerRuntimeSnapshot(dynamic_lambda_snapshot, round_, step_, state_, current_round_lambda_,
                                     next_step_time_ms_, rounds_count_dynamic_lambda_, dynamic_lambda_,
                                     executed_pbft_block_, already_next_voted_value_,
@@ -4117,6 +4124,25 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     if (dynamic_lambda_plan.increased_dynamic_lambda) {
       LOG(log_nf_) << "Increase dynamic_lambda by " << kGenesisConfig.state.hardforks.cacti_hf.lambda_change << " to "
                    << dynamic_lambda_ << ", period " << block_pbft_period << ", round " << block_pbft_round;
+    }
+    rustaxa::PbftFinalizationLiveMutationReport dynamic_lambda_report{};
+    dynamic_lambda_report.action = kPbftFinalizationRuntimeActionApplyDynamicLambda;
+    dynamic_lambda_report.block_period = finalization_plan.storage_write_intent.block_period;
+    dynamic_lambda_report.pbft_block_hash = finalization_plan.storage_write_intent.pbft_block_hash;
+    dynamic_lambda_report.anchor_hash = finalization_plan.storage_write_intent.anchor_hash;
+    dynamic_lambda_report.rounds_count_dynamic_lambda = dynamic_lambda_snapshot.rounds_count_dynamic_lambda;
+    dynamic_lambda_report.dynamic_lambda = dynamic_lambda_snapshot.dynamic_lambda_ms;
+    const auto live_validation = validate_live_mutation(dynamic_lambda_report);
+    if (!live_validation.accepted) {
+      LOG(log_er_) << "Rust PBFT finalization dynamic-lambda live mutation rejected for block " << pbft_block_hash
+                   << ", period " << block_pbft_period << ", status " << static_cast<uint32_t>(live_validation.status)
+                   << ", error " << static_cast<std::string>(live_validation.error_code);
+    }
+    const auto action_status = live_validation.accepted ? dynamic_lambda_result.status : live_validation.status;
+    const auto action_error =
+        live_validation.accepted ? std::string{} : static_cast<std::string>(live_validation.error_code);
+    if (!report_runtime_action_detail(runtime_step, live_validation.accepted, action_status, action_error)) {
+      return false;
     }
   } else {
     blocks_per_year = finalization_plan.storage_write_intent.blocks_per_year;

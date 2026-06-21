@@ -430,6 +430,10 @@ pub enum PbftFinalizationLiveMutationStatus {
     FinalChainDispatchMissing,
     /// FinalChain dispatch used a blocks-per-year value different from the Rust intent.
     FinalChainBlocksPerYearMismatch,
+    /// Dynamic-lambda live round counter did not match the Rust intent.
+    DynamicLambdaRoundsCountMismatch,
+    /// Dynamic-lambda live value did not match the Rust intent.
+    DynamicLambdaValueMismatch,
     /// The report carried an unknown action code.
     UnknownAction,
 }
@@ -460,6 +464,8 @@ impl PbftFinalizationLiveMutationStatus {
             Self::AnchorDagCacheNotCleared => 19,
             Self::FinalChainDispatchMissing => 20,
             Self::FinalChainBlocksPerYearMismatch => 21,
+            Self::DynamicLambdaRoundsCountMismatch => 22,
+            Self::DynamicLambdaValueMismatch => 23,
             Self::UnknownAction => 255,
         }
     }
@@ -510,6 +516,10 @@ pub struct PbftFinalizationLiveMutationReport {
     pub sortition_current_threshold_upper: u16,
     /// Number of cached live sortition parameter changes after the commit.
     pub sortition_params_changes_count: u64,
+    /// Dynamic-lambda live round counter after applying the finalized period.
+    pub rounds_count_dynamic_lambda: u32,
+    /// Dynamic-lambda live value after applying the finalized period.
+    pub dynamic_lambda: u32,
     /// Executed-PBFT flag after the manager runtime applies the finalization intent.
     pub executed_pbft_block: bool,
     /// PBFT manager period after the finalization period-advance action.
@@ -912,6 +922,10 @@ pub struct PbftFinalizationStorageWriteIntent {
     pub period_lambda: u32,
     /// Blocks-per-year value that must be passed to FinalChain finalization.
     pub blocks_per_year: u32,
+    /// Post-finalization rounds-count value selected by the dynamic-lambda planner.
+    pub rounds_count_dynamic_lambda: u32,
+    /// Post-finalization dynamic-lambda value selected by the dynamic-lambda planner.
+    pub dynamic_lambda: u32,
     /// Executed status value to persist.
     pub executed_pbft_status: bool,
     /// Opaque PBFT head payload using the legacy-compatible JSON encoding.
@@ -950,6 +964,8 @@ impl PbftFinalizationStorageWriteIntent {
             reward_vote_block_hash: H256::zero(),
             period_lambda: 0,
             blocks_per_year: 0,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 0,
             executed_pbft_status: false,
             pbft_head_payload: Vec::new(),
             period_data_rlp: Vec::new(),
@@ -1831,6 +1847,10 @@ pub struct PbftFinalizationIntentFact {
     pub last_saved_period_lambda: u32,
     /// C++-computed Cacti-era blocks-per-year value for `block_lambda`.
     pub dynamic_blocks_per_year: u32,
+    /// Rust dynamic-lambda planner post-adjust round counter.
+    pub rounds_count_dynamic_lambda: u32,
+    /// Rust dynamic-lambda planner post-adjust lambda.
+    pub dynamic_lambda: u32,
     /// Genesis-configured pre-Cacti blocks-per-year value.
     pub dpos_blocks_per_year: u32,
     /// Legacy-compatible PBFT head payload for native Rust storage writes.
@@ -1911,6 +1931,8 @@ impl PbftFinalizationPlan {
                 reward_vote_block_hash: fact.sample_cert_vote_block_hash,
                 period_lambda: fact.block_lambda,
                 blocks_per_year,
+                rounds_count_dynamic_lambda: fact.rounds_count_dynamic_lambda,
+                dynamic_lambda: fact.dynamic_lambda,
                 executed_pbft_status: true,
                 pbft_head_payload: fact.pbft_head_payload,
                 period_data_rlp: fact.period_data_rlp,
@@ -2467,6 +2489,7 @@ pub fn validate_pbft_finalization_live_mutation_report(
             | PbftFinalizationRuntimeAction::UpdateFinalizedTransactions
             | PbftFinalizationRuntimeAction::UpdatePbftChain
             | PbftFinalizationRuntimeAction::ClearAnchorDagCache
+            | PbftFinalizationRuntimeAction::ApplyDynamicLambda
             | PbftFinalizationRuntimeAction::FinalizeFinalChain
             | PbftFinalizationRuntimeAction::SetExecutedFlag
             | PbftFinalizationRuntimeAction::AdvancePeriod
@@ -2579,6 +2602,22 @@ pub fn validate_pbft_finalization_live_mutation_report(
                 return reject(
                     PbftFinalizationLiveMutationStatus::AnchorDagCacheNotCleared,
                     "PBFT_FINALIZE_LIVE_MUTATION_ANCHOR_DAG_CACHE_NOT_CLEARED",
+                );
+            }
+        }
+        PbftFinalizationRuntimeAction::ApplyDynamicLambda => {
+            if report.rounds_count_dynamic_lambda
+                != plan.storage_write_intent.rounds_count_dynamic_lambda
+            {
+                return reject(
+                    PbftFinalizationLiveMutationStatus::DynamicLambdaRoundsCountMismatch,
+                    "PBFT_FINALIZE_LIVE_MUTATION_DYNAMIC_LAMBDA_ROUNDS_COUNT_MISMATCH",
+                );
+            }
+            if report.dynamic_lambda != plan.storage_write_intent.dynamic_lambda {
+                return reject(
+                    PbftFinalizationLiveMutationStatus::DynamicLambdaValueMismatch,
+                    "PBFT_FINALIZE_LIVE_MUTATION_DYNAMIC_LAMBDA_VALUE_MISMATCH",
                 );
             }
         }
@@ -3106,6 +3145,8 @@ mod tests {
             reward_vote_block_hash: hash(99),
             period_lambda: 1_500,
             blocks_per_year: 1_000,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 0,
             executed_pbft_status: true,
             pbft_head_payload: vec![0xde, 0xad, 0xbe, 0xef],
             period_data_rlp: vec![0x82, 0x01, 0x02],
@@ -3148,6 +3189,8 @@ mod tests {
             last_saved_period_lambda_found: false,
             last_saved_period_lambda: 0,
             dynamic_blocks_per_year: 1_000,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 1_490,
             dpos_blocks_per_year: 500,
             pbft_head_payload: br#"{"head":true}"#.to_vec(),
             period_data_rlp: vec![0xc0],
@@ -3569,6 +3612,8 @@ mod tests {
             sortition_change_threshold_upper: 0,
             sortition_current_threshold_upper: 0,
             sortition_params_changes_count: 0,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 1_490,
             executed_pbft_block: true,
             manager_period: 11,
             pillar_processed_period: 10,
@@ -4321,6 +4366,12 @@ mod tests {
         );
         assert!(anchor_cache.accepted);
 
+        let dynamic_lambda = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            live_report(PbftFinalizationRuntimeAction::ApplyDynamicLambda),
+        );
+        assert!(dynamic_lambda.accepted);
+
         let final_chain = validate_pbft_finalization_live_mutation_report(
             &plan,
             live_report(PbftFinalizationRuntimeAction::FinalizeFinalChain),
@@ -4430,6 +4481,30 @@ mod tests {
         assert_eq!(
             anchor_cache.status,
             PbftFinalizationLiveMutationStatus::AnchorDagCacheNotCleared
+        );
+
+        let dynamic_lambda_rounds = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            PbftFinalizationLiveMutationReport {
+                rounds_count_dynamic_lambda: 1,
+                ..live_report(PbftFinalizationRuntimeAction::ApplyDynamicLambda)
+            },
+        );
+        assert_eq!(
+            dynamic_lambda_rounds.status,
+            PbftFinalizationLiveMutationStatus::DynamicLambdaRoundsCountMismatch
+        );
+
+        let dynamic_lambda_value = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            PbftFinalizationLiveMutationReport {
+                dynamic_lambda: 1_491,
+                ..live_report(PbftFinalizationRuntimeAction::ApplyDynamicLambda)
+            },
+        );
+        assert_eq!(
+            dynamic_lambda_value.status,
+            PbftFinalizationLiveMutationStatus::DynamicLambdaValueMismatch
         );
 
         let final_chain_missing = validate_pbft_finalization_live_mutation_report(

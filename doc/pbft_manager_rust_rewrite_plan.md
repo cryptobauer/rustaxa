@@ -401,6 +401,9 @@ Landed bounded PBFT-chain update/report collapse:
 - `FinalizeFinalChain` remains an explicit FinalChain/EVM executor boundary, but it now reports the dispatched period,
   `blocks_per_year`, and observed FinalChain height to Rust; Rust validates the dispatch facts before advancing the
   finalization runtime cursor.
+- `ApplyDynamicLambda` now persists the Rust-planned dynamic-lambda storage stage, applies the PBFT manager runtime
+  snapshot, and reports the post-state round counter/lambda back to Rust. Rust rejects finalization cursor advancement
+  if the live state diverges from the accepted finalization intent.
 
 Scope:
 

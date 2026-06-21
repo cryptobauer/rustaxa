@@ -2107,6 +2107,8 @@ mod tests {
             reward_vote_block_hash: [0; 32],
             period_lambda: 0,
             blocks_per_year: 0,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 0,
             executed_pbft_status: true,
             pbft_head_payload: Vec::new(),
             period_data_rlp: Vec::new(),
