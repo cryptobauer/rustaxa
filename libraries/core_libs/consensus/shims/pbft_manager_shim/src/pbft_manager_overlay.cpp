@@ -508,16 +508,8 @@ void applyPbftManagerTransitionPlan(const rustaxa::PbftManagerTransitionPlan &pl
   }
 }
 
-rust::Vec<uint8_t> toBridgeBytes(const dev::bytes &bytes) {
-  rust::Vec<uint8_t> out;
-  out.reserve(bytes.size());
-  for (const auto byte : bytes) {
-    out.push_back(static_cast<uint8_t>(byte));
-  }
-  return out;
-}
-
-rust::Vec<uint8_t> toBridgeBytes(const std::string &bytes) {
+template <typename Bytes>
+rust::Vec<uint8_t> toBridgeBytes(const Bytes &bytes) {
   rust::Vec<uint8_t> out;
   out.reserve(bytes.size());
   for (const auto byte : bytes) {
