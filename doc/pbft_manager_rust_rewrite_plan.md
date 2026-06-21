@@ -404,6 +404,13 @@ Landed bounded PBFT-chain update/report collapse:
 - `ApplyDynamicLambda` now persists the Rust-planned dynamic-lambda storage stage, applies the PBFT manager runtime
   snapshot, and reports the post-state round counter/lambda back to Rust. Rust rejects finalization cursor advancement
   if the live state diverges from the accepted finalization intent.
+- Duplicate-block resume now executes the Rust-classified `NeedsDynamicLambdaPersistence` replay action instead of
+  failing closed. The replay path appends the dynamic-lambda storage stage through the PBFT manager runtime storage
+  handle, applies the Rust runtime snapshot, validates the post-state report, and then continues through any remaining
+  Rust-planned FinalChain, executed-status, period-advance, and pillar replay actions in the same resume session.
+- The obsolete split `ApplyRewardVotesResetStorage` and `ApplySortitionStorage` runtime action codes were retired. Reward
+  and sortition storage payloads are part of the Rust-owned primary finalization batch, while only their live runtime
+  commits remain as separate executor actions.
 
 Scope:
 

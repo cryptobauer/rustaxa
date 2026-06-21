@@ -152,10 +152,6 @@ impl PbftFinalizationStatus {
 pub enum PbftFinalizationRuntimeAction {
     /// Apply primary finalized-period storage writes.
     ApplyPrimaryStorage,
-    /// Apply reward-vote reset storage writes in the primary batch.
-    ApplyRewardVotesResetStorage,
-    /// Apply sortition parameter storage writes in the primary batch.
-    ApplySortitionStorage,
     /// Commit reward-vote reset metadata to the live vote manager.
     CommitRewardVotesResetRuntime,
     /// Update finalized DAG block ordering in the live DAG manager.
@@ -189,8 +185,6 @@ impl PbftFinalizationRuntimeAction {
     pub const fn as_u8(self) -> u8 {
         match self {
             Self::ApplyPrimaryStorage => 0,
-            Self::ApplyRewardVotesResetStorage => 1,
-            Self::ApplySortitionStorage => 2,
             Self::CommitRewardVotesResetRuntime => 3,
             Self::SetDagBlockOrder => 4,
             Self::UpdateFinalizedTransactions => 5,
@@ -211,8 +205,6 @@ impl PbftFinalizationRuntimeAction {
     pub const fn from_u8(value: u8) -> Option<Self> {
         match value {
             0 => Some(Self::ApplyPrimaryStorage),
-            1 => Some(Self::ApplyRewardVotesResetStorage),
-            2 => Some(Self::ApplySortitionStorage),
             3 => Some(Self::CommitRewardVotesResetRuntime),
             4 => Some(Self::SetDagBlockOrder),
             5 => Some(Self::UpdateFinalizedTransactions),
@@ -2252,7 +2244,10 @@ pub fn start_pbft_finalization_runtime(
 /// but its action list is restricted to replay actions derived from durable
 /// storage facts. Complete resume plans return a completed runtime with no
 /// action. Rejected or unsafe resume classifications return `RejectedPlan` so
-/// C++ cannot accidentally execute ambiguous live side effects.
+/// C++ cannot accidentally execute ambiguous live side effects. Dynamic-lambda,
+/// FinalChain, and executed-status gaps are replayable because their storage
+/// need is fully derived from durable finalized-period facts and each executor
+/// action still reports back through the cursor-checked runtime.
 pub fn start_pbft_finalization_resume_runtime(
     plan: &PbftFinalizationResumePlan,
 ) -> PbftFinalizationRuntimeState {
@@ -2271,7 +2266,8 @@ pub fn start_pbft_finalization_resume_runtime(
     if plan.replay_actions.is_empty()
         || !matches!(
             plan.status,
-            PbftFinalizationResumeStatus::NeedsFinalChainReplay
+            PbftFinalizationResumeStatus::NeedsDynamicLambdaPersistence
+                | PbftFinalizationResumeStatus::NeedsFinalChainReplay
                 | PbftFinalizationResumeStatus::NeedsExecutedStatusPersistence
         )
     {
@@ -2437,8 +2433,6 @@ pub fn successful_runtime_action_status_is_valid(
 ) -> bool {
     match action {
         PbftFinalizationRuntimeAction::ApplyPrimaryStorage
-        | PbftFinalizationRuntimeAction::ApplyRewardVotesResetStorage
-        | PbftFinalizationRuntimeAction::ApplySortitionStorage
         | PbftFinalizationRuntimeAction::ApplyDynamicLambda
         | PbftFinalizationRuntimeAction::PersistExecutedStatus => {
             PbftFinalizedPeriodApplyStatus::from_u8(status).is_success()
@@ -2745,11 +2739,25 @@ pub fn plan_pbft_finalization_resume(
     }
 
     if fact.dynamic_lambda_required && !fact.dynamic_lambda_persisted {
+        let mut replay_actions = vec![PbftFinalizationRuntimeAction::ApplyDynamicLambda];
+        if fact.final_chain_last_block < fact.block_period {
+            replay_actions.push(PbftFinalizationRuntimeAction::FinalizeFinalChain);
+            if !fact.executed_status_persisted {
+                replay_actions.push(PbftFinalizationRuntimeAction::PersistExecutedStatus);
+            }
+            replay_actions.push(PbftFinalizationRuntimeAction::SetExecutedFlag);
+            replay_actions.push(PbftFinalizationRuntimeAction::AdvancePeriod);
+            if fact.pillar_post_processing_required {
+                replay_actions.push(PbftFinalizationRuntimeAction::ProcessPillarBlock);
+            }
+        } else if !fact.executed_status_persisted && !fact.pillar_post_processing_required {
+            replay_actions.push(PbftFinalizationRuntimeAction::PersistExecutedStatus);
+        }
         return PbftFinalizationResumePlan {
             status: PbftFinalizationResumeStatus::NeedsDynamicLambdaPersistence,
             duplicate_classified: true,
             complete: false,
-            replay_actions: vec![PbftFinalizationRuntimeAction::ApplyDynamicLambda],
+            replay_actions,
             error_code: "PBFT_FINALIZE_RESUME_NEEDS_DYNAMIC_LAMBDA".to_string(),
         };
     }
@@ -3832,7 +3840,13 @@ mod tests {
         );
         assert_eq!(
             plan.replay_actions,
-            vec![PbftFinalizationRuntimeAction::ApplyDynamicLambda]
+            vec![
+                PbftFinalizationRuntimeAction::ApplyDynamicLambda,
+                PbftFinalizationRuntimeAction::FinalizeFinalChain,
+                PbftFinalizationRuntimeAction::PersistExecutedStatus,
+                PbftFinalizationRuntimeAction::SetExecutedFlag,
+                PbftFinalizationRuntimeAction::AdvancePeriod,
+            ]
         );
     }
 
@@ -3874,7 +3888,13 @@ mod tests {
             );
             assert_eq!(
                 needs_dynamic.replay_actions,
-                vec![PbftFinalizationRuntimeAction::ApplyDynamicLambda]
+                vec![
+                    PbftFinalizationRuntimeAction::ApplyDynamicLambda,
+                    PbftFinalizationRuntimeAction::FinalizeFinalChain,
+                    PbftFinalizationRuntimeAction::PersistExecutedStatus,
+                    PbftFinalizationRuntimeAction::SetExecutedFlag,
+                    PbftFinalizationRuntimeAction::AdvancePeriod,
+                ]
             );
 
             let mut dynamic_batch = storage.create_write_batch();
@@ -3963,8 +3983,6 @@ mod tests {
                     status: if matches!(
                         action,
                         PbftFinalizationRuntimeAction::ApplyPrimaryStorage
-                            | PbftFinalizationRuntimeAction::ApplyRewardVotesResetStorage
-                            | PbftFinalizationRuntimeAction::ApplySortitionStorage
                             | PbftFinalizationRuntimeAction::ApplyDynamicLambda
                             | PbftFinalizationRuntimeAction::PersistExecutedStatus
                     ) {
@@ -4019,14 +4037,24 @@ mod tests {
             replay_actions: vec![PbftFinalizationRuntimeAction::ApplyDynamicLambda],
             error_code: "PBFT_FINALIZE_RESUME_NEEDS_DYNAMIC_LAMBDA".to_string(),
         };
-        let state = start_pbft_finalization_resume_runtime(&dynamic_gap);
+        let mut state = start_pbft_finalization_resume_runtime(&dynamic_gap);
+        assert_eq!(state.runtime_status, PbftFinalizationRuntimeStatus::Active);
         assert_eq!(
-            state.runtime_status,
-            PbftFinalizationRuntimeStatus::RejectedPlan
+            next_pbft_finalization_runtime_action(&state).action,
+            Some(PbftFinalizationRuntimeAction::ApplyDynamicLambda)
+        );
+        state = report_pbft_finalization_runtime_action(
+            state,
+            PbftFinalizationRuntimeActionResult {
+                action: PbftFinalizationRuntimeAction::ApplyDynamicLambda,
+                success: true,
+                status: PbftFinalizedPeriodApplyStatus::Applied.as_u8(),
+                error_code: String::new(),
+            },
         );
         assert_eq!(
-            state.error_code,
-            "PBFT_FINALIZE_RESUME_NEEDS_DYNAMIC_LAMBDA"
+            next_pbft_finalization_runtime_action(&state).runtime_status,
+            PbftFinalizationRuntimeStatus::Complete
         );
     }
 
@@ -4293,8 +4321,6 @@ mod tests {
                     status: if matches!(
                         action,
                         PbftFinalizationRuntimeAction::ApplyPrimaryStorage
-                            | PbftFinalizationRuntimeAction::ApplyRewardVotesResetStorage
-                            | PbftFinalizationRuntimeAction::ApplySortitionStorage
                             | PbftFinalizationRuntimeAction::ApplyDynamicLambda
                             | PbftFinalizationRuntimeAction::PersistExecutedStatus
                     ) {
@@ -4593,11 +4619,8 @@ mod tests {
         let runtime = plan_pbft_finalization_runtime(&plan);
 
         assert!(runtime.finalize_block);
-        assert!(
-            !runtime
-                .actions
-                .contains(&PbftFinalizationRuntimeAction::ApplySortitionStorage)
-        );
+        assert_eq!(PbftFinalizationRuntimeAction::from_u8(1), None);
+        assert_eq!(PbftFinalizationRuntimeAction::from_u8(2), None);
         assert!(
             !runtime
                 .actions

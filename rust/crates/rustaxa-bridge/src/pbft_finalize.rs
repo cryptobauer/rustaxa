@@ -1710,7 +1710,7 @@ mod tests {
                 inspect_pbft_finalization_resume(&storage, &plan.storage_write_intent, 9)
                     .expect("resume inspection should run");
             assert_eq!(needs_dynamic.status, 6);
-            assert_eq!(needs_dynamic.replay_actions, vec![8]);
+            assert_eq!(needs_dynamic.replay_actions, vec![8, 9, 10, 11, 12]);
 
             let mut dynamic_stage = empty_stage(APPEND_STAGE_DYNAMIC_LAMBDA);
             dynamic_stage.rounds_count_dynamic_lambda = 7;
