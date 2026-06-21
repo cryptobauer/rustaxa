@@ -517,6 +517,8 @@ Landed:
 - VoteManager now owns the synced cert-vote executor loop. PBFT manager receives a typed cert-vote validation result
   instead of constructing Rust bundle facts, calling `validateVote`, inserting verified votes, or reading the threshold
   directly.
+- Runtime round-advance reporting now uses a typed VoteManager/Rust verified-vote decision. PBFT manager reports
+  `has_new_round/new_round` facts to the runtime session instead of calling the legacy optional-return round selector.
 - Reward-vote validation in PBFT manager proposal, block-validation, cert-voted-block push, and sync paths now uses a
   detailed VoteManager result that preserves Rust reward-vote planner status, selected period/round/block, missing vote
   hash, and error code. The legacy pair-returning API remains as compatibility, but PBFT manager call sites no longer

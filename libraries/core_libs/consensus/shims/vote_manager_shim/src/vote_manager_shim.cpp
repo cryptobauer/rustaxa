@@ -825,16 +825,28 @@ std::vector<std::shared_ptr<PbftVote>> VoteManager::getProposalVotes(PbftPeriod 
 }
 
 std::optional<PbftRound> VoteManager::determineNewRound(PbftPeriod current_pbft_period, PbftRound current_pbft_round) {
+  const auto decision = roundAdvanceDecision(current_pbft_period, current_pbft_round);
+  if (!decision.has_new_round) {
+    return {};
+  }
+  return decision.new_round;
+}
+
+VoteManager::RoundAdvanceDecision VoteManager::roundAdvanceDecision(PbftPeriod current_pbft_period,
+                                                                    PbftRound current_pbft_round) {
+  RoundAdvanceDecision result;
   const auto decision = verified_votes_.determineRoundAdvance(current_pbft_period, current_pbft_round);
   if (!decision) {
-    return {};
+    return result;
   }
 
   LOG(log_nf_) << "New round " << decision->new_round << " determined for period " << current_pbft_period
                << ". Found 2t+1 votes for block " << decision->voted_block.hash << " in round "
                << decision->supporting_round << ", step " << decision->voted_block.step;
 
-  return decision->new_round;
+  result.has_new_round = true;
+  result.new_round = decision->new_round;
+  return result;
 }
 
 void VoteManager::resetRewardVotes(PbftPeriod period, PbftRound round, PbftStep step, const blk_hash_t& block_hash,

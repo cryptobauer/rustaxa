@@ -165,6 +165,29 @@ class VoteManager : public VoteManagerOld {
   uint64_t getVerifiedVotesSize() const;
   void cleanupVotesByPeriod(PbftPeriod pbft_period);
   std::vector<std::shared_ptr<PbftVote>> getProposalVotes(PbftPeriod period, PbftRound round) const;
+  /**
+   * Rust-backed round-advance decision for PBFT manager runtime reports.
+   *
+   * Purpose:
+   * - Keeps PBFT manager from calling legacy optional-return round selection
+   *   APIs while the runtime session expects explicit `has_new_round` facts.
+   *
+   * Outputs:
+   * - `has_new_round == true` when Rust verified-vote state found a valid
+   *   next-round candidate.
+   * - `new_round` carries that candidate round and is zero otherwise.
+   *
+   * Invariants:
+   * - VoteManager/VerifiedVotes owns the `2t+1` next-vote lookup and
+   *   preference rules.
+   * - PBFT manager receives only runtime report facts and does not inspect
+   *   supporting vote sidecars for this decision.
+   */
+  struct RoundAdvanceDecision {
+    bool has_new_round = false;
+    PbftRound new_round = 0;
+  };
+  RoundAdvanceDecision roundAdvanceDecision(PbftPeriod current_pbft_period, PbftRound current_pbft_round);
   std::optional<PbftRound> determineNewRound(PbftPeriod current_pbft_period, PbftRound current_pbft_round);
 
   /**

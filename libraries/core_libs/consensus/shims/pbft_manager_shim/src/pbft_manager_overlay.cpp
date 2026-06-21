@@ -1000,9 +1000,9 @@ void PbftManager::run() {
           break;
         case kPbftManagerRuntimeActionTryAdvanceRound: {
           const auto [current_round, current_period] = getPbftRoundAndPeriod();
-          const auto new_round = vote_mgr_->determineNewRound(current_period, current_round);
-          step = report_action(step, kPbftManagerRuntimeResultNoProgressContinue, true, "", new_round.has_value(),
-                               new_round.value_or(0));
+          const auto round_advance = vote_mgr_->roundAdvanceDecision(current_period, current_round);
+          step = report_action(step, kPbftManagerRuntimeResultNoProgressContinue, true, "",
+                               round_advance.has_new_round, round_advance.new_round);
           break;
         }
         case kPbftManagerRuntimeActionResetConsensus:
