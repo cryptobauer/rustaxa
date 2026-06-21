@@ -4051,6 +4051,23 @@ pub mod rustaxa_ffi {
         missing_references: Vec<DagHash>,
     }
 
+    /// Live facts for one Rust-owned DAG proposer worker-loop command decision.
+    struct DagProposerWorkerCommandInput {
+        pbft_syncing: bool,
+        packet_queue_over_limit: bool,
+        has_attempt_result: bool,
+        attempt_returned_proposed: bool,
+        retry_delay_ms: u64,
+    }
+
+    /// Command C++ executes for one DAG proposer worker-loop tick.
+    struct DagProposerWorkerCommand {
+        attempt_proposal: bool,
+        sleep_after_tick: bool,
+        sleep_ms: u64,
+        reason_code: u32,
+    }
+
     /// Rust-runtime DAG block construction facts for storage-backed tip metadata planning.
     struct DagProposerStorageBlockConstructionInput {
         frontier_tips: Vec<DagHash>,
@@ -4753,6 +4770,9 @@ pub mod rustaxa_ffi {
         pub fn dag_verify_transaction_availability(
             input: DagVerifyTransactionAvailabilityInput,
         ) -> DagVerifyTransactionAvailabilityResult;
+        pub fn dag_plan_proposer_worker_command(
+            input: DagProposerWorkerCommandInput,
+        ) -> DagProposerWorkerCommand;
         /// Plans verifyBlock transaction queries from block hashes and already-supplied
         /// hashes.
         pub fn dag_plan_verify_transaction_query(

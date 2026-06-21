@@ -324,7 +324,7 @@ void DagBlockProposer::start() {
   if (bool b = true; !stopped_.compare_exchange_strong(b, !b)) {
     return;
   }
-  const uint16_t min_proposal_delay = 100;
+  const uint64_t min_proposal_delay = 100;
 
   LOG(log_nf_) << "DagBlockProposer started ...";
 
@@ -339,8 +339,20 @@ void DagBlockProposer::start() {
           syncing = net->pbft_syncing();
           packets_over_the_limit = net->packetQueueOverLimit();
         }
-        if (syncing || packets_over_the_limit || !proposeDagBlock(node_dag_proposer_data)) {
-          thisThreadSleepForMilliSeconds(min_proposal_delay);
+        rustaxa::DagProposerWorkerCommandInput command_input;
+        command_input.pbft_syncing = syncing;
+        command_input.packet_queue_over_limit = packets_over_the_limit;
+        command_input.has_attempt_result = false;
+        command_input.attempt_returned_proposed = false;
+        command_input.retry_delay_ms = min_proposal_delay;
+        auto command = rustaxa::dag_plan_proposer_worker_command(command_input);
+        if (command.attempt_proposal) {
+          command_input.has_attempt_result = true;
+          command_input.attempt_returned_proposed = proposeDagBlock(node_dag_proposer_data);
+          command = rustaxa::dag_plan_proposer_worker_command(command_input);
+        }
+        if (command.sleep_after_tick) {
+          thisThreadSleepForMilliSeconds(command.sleep_ms);
         }
       }
     }));

@@ -206,6 +206,40 @@ pub const DAG_PROPOSER_REASON_ADD_BLOCK_REJECTED: u32 = 17;
 pub const DAG_PROPOSER_REASON_ADD_BLOCK_EXPIRED: u32 = 18;
 /// Rust-planned proposed DAG block referenced DAG blocks that were still unavailable at submission time.
 pub const DAG_PROPOSER_REASON_ADD_BLOCK_MISSING_REFERENCES: u32 = 19;
+/// DAG proposer worker is waiting while PBFT sync is active.
+pub const DAG_PROPOSER_REASON_WORKER_PBFT_SYNCING: u32 = 20;
+/// DAG proposer worker is waiting while the network packet queue is over limit.
+pub const DAG_PROPOSER_REASON_WORKER_PACKET_QUEUE_OVER_LIMIT: u32 = 21;
+/// DAG proposer worker is backing off after an attempt that did not propose a block.
+pub const DAG_PROPOSER_REASON_WORKER_NO_BLOCK_PROPOSED: u32 = 22;
+
+/// Live facts for one DAG proposer worker-loop tick.
+///
+/// C++ supplies live network throttle facts and, after executing a proposal
+/// attempt, the attempt result. Rust owns the command ordering and sleep
+/// decision so the shim loop stays an executor for scheduling only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagProposerWorkerCommandInput {
+    pub pbft_syncing: bool,
+    pub packet_queue_over_limit: bool,
+    pub has_attempt_result: bool,
+    pub attempt_returned_proposed: bool,
+    pub retry_delay_ms: u64,
+}
+
+/// Rust-owned command for one DAG proposer worker-loop tick.
+///
+/// `attempt_proposal` asks the shell to execute one proposal attempt.
+/// `sleep_after_tick` asks the shell scheduler to wait for `sleep_ms` before
+/// the next tick. The reason code is telemetry only and does not affect command
+/// execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DagProposerWorkerCommand {
+    pub attempt_proposal: bool,
+    pub sleep_after_tick: bool,
+    pub sleep_ms: u64,
+    pub reason_code: u32,
+}
 
 /// Inputs for deterministic `DagManager::verifyBlock` prechecks.
 ///
@@ -2356,6 +2390,55 @@ pub fn plan_dag_proposer_retry_reset(
         update_retry_state: true,
         next_last_propose_level: input.proposal_level,
         next_retry_count: 0,
+    }
+}
+
+/// Plans one DAG proposer worker-loop command from live executor facts.
+///
+/// The worker thread, network object, and timer remain compatibility-shell
+/// executors. This function owns the deterministic command order: wait for
+/// network throttles, attempt once when allowed, then back off only when the
+/// attempt did not propose a block.
+pub fn plan_dag_proposer_worker_command(
+    input: DagProposerWorkerCommandInput,
+) -> DagProposerWorkerCommand {
+    if input.pbft_syncing {
+        return DagProposerWorkerCommand {
+            attempt_proposal: false,
+            sleep_after_tick: true,
+            sleep_ms: input.retry_delay_ms,
+            reason_code: DAG_PROPOSER_REASON_WORKER_PBFT_SYNCING,
+        };
+    }
+    if input.packet_queue_over_limit {
+        return DagProposerWorkerCommand {
+            attempt_proposal: false,
+            sleep_after_tick: true,
+            sleep_ms: input.retry_delay_ms,
+            reason_code: DAG_PROPOSER_REASON_WORKER_PACKET_QUEUE_OVER_LIMIT,
+        };
+    }
+    if input.has_attempt_result {
+        return DagProposerWorkerCommand {
+            attempt_proposal: false,
+            sleep_after_tick: !input.attempt_returned_proposed,
+            sleep_ms: if input.attempt_returned_proposed {
+                0
+            } else {
+                input.retry_delay_ms
+            },
+            reason_code: if input.attempt_returned_proposed {
+                DAG_PROPOSER_REASON_OK
+            } else {
+                DAG_PROPOSER_REASON_WORKER_NO_BLOCK_PROPOSED
+            },
+        };
+    }
+    DagProposerWorkerCommand {
+        attempt_proposal: true,
+        sleep_after_tick: false,
+        sleep_ms: 0,
+        reason_code: DAG_PROPOSER_REASON_OK,
     }
 }
 

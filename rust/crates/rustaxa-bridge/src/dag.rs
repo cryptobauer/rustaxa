@@ -13,11 +13,12 @@ use crate::ffi::rustaxa_ffi::{
     DagProposerStorageTipSelectionInput, DagProposerTipSelectionPlan,
     DagProposerTransactionPackReport, DagProposerTransactionPackRequest,
     DagProposerUnsignedBlockIntent, DagProposerVdfProofReport, DagProposerVdfWaitReport,
-    DagReferenceMetadata, DagSyncBlockRlp, DagTransactionHash, DagTransactionQueryPlan,
-    DagTransactionRlpLookup, DagVerifyAuthorizationInput, DagVerifyAuthorizationResult,
-    DagVerifyBlockAuthorizationReport, DagVerifyBlockGasReport, DagVerifyBlockSessionInput,
-    DagVerifyBlockSessionStep, DagVerifyBlockTransactionReport, DagVerifyBlockVdfReport,
-    DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
+    DagProposerWorkerCommand, DagProposerWorkerCommandInput, DagReferenceMetadata, DagSyncBlockRlp,
+    DagTransactionHash, DagTransactionQueryPlan, DagTransactionRlpLookup,
+    DagVerifyAuthorizationInput, DagVerifyAuthorizationResult, DagVerifyBlockAuthorizationReport,
+    DagVerifyBlockGasReport, DagVerifyBlockSessionInput, DagVerifyBlockSessionStep,
+    DagVerifyBlockTransactionReport, DagVerifyBlockVdfReport, DagVerifyGasInput,
+    DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
     DagVerifyTransactionAvailabilityInput, DagVerifyTransactionAvailabilityResult,
     DagVerifyVdfDposDecision, DagVerifyVdfDposFacts, DagVerifyVdfPrepareInput,
     DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
@@ -41,8 +42,9 @@ use rustaxa_consensus::dag::{
     plan_dag_proposer_attempt, plan_dag_proposer_block_construction_from_storage,
     plan_dag_proposer_block_intent, plan_dag_proposer_post_pack, plan_dag_proposer_retry_reset,
     plan_dag_proposer_stale_proof, plan_dag_proposer_tip_selection_from_storage,
-    plan_dag_proposer_vdf_wait, plan_dag_verify_transaction_query,
-    plan_expired_transaction_cleanup, plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
+    plan_dag_proposer_vdf_wait, plan_dag_proposer_worker_command,
+    plan_dag_verify_transaction_query, plan_expired_transaction_cleanup,
+    plan_non_finalized_transaction_query, prepare_dag_verify_vdf,
     proposal_period_for_level_from_storage, save_dag_block_to_storage,
     validate_dag_verify_authorization, validate_dag_verify_gas,
     validate_dag_verify_transaction_availability, validate_pivot_tips_metadata,
@@ -59,6 +61,7 @@ use rustaxa_consensus::dag::{
     DagProposerStorageBlockConstructionInput as DomainDagProposerStorageBlockConstructionInput,
     DagProposerStorageTipSelectionInput as DomainDagProposerStorageTipSelectionInput,
     DagProposerUnsignedBlockIntent as DomainDagProposerUnsignedBlockIntent,
+    DagProposerWorkerCommandInput as DomainDagProposerWorkerCommandInput,
     DagReferenceMetadata as ReferenceMetadata, DagTipGas,
     DagVdfSortitionBlockInput as DomainDagVdfSortitionBlockInput,
     DagVdfSortitionInput as DomainDagVdfSortitionInput,
@@ -1781,6 +1784,28 @@ pub fn dag_verify_transaction_availability(
     }
 }
 
+/// Plans one DAG proposer worker-loop command from live executor facts.
+///
+/// C++ still owns the worker thread, network object, and timer. Rust owns the
+/// command choice so scheduling policy does not live in the proposer shell.
+pub fn dag_plan_proposer_worker_command(
+    input: DagProposerWorkerCommandInput,
+) -> DagProposerWorkerCommand {
+    let command = plan_dag_proposer_worker_command(DomainDagProposerWorkerCommandInput {
+        pbft_syncing: input.pbft_syncing,
+        packet_queue_over_limit: input.packet_queue_over_limit,
+        has_attempt_result: input.has_attempt_result,
+        attempt_returned_proposed: input.attempt_returned_proposed,
+        retry_delay_ms: input.retry_delay_ms,
+    });
+    DagProposerWorkerCommand {
+        attempt_proposal: command.attempt_proposal,
+        sleep_after_tick: command.sleep_after_tick,
+        sleep_ms: command.sleep_ms,
+        reason_code: command.reason_code,
+    }
+}
+
 /// Builds a deterministic plan of additional transaction hashes required for
 /// `DagManager::verifyBlock`.
 ///
@@ -3239,6 +3264,51 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_proposer_worker_command_plans_attempts_and_backoff() {
+        let attempt = dag_plan_proposer_worker_command(DagProposerWorkerCommandInput {
+            pbft_syncing: false,
+            packet_queue_over_limit: false,
+            has_attempt_result: false,
+            attempt_returned_proposed: false,
+            retry_delay_ms: 100,
+        });
+        assert!(attempt.attempt_proposal);
+        assert!(!attempt.sleep_after_tick);
+
+        let throttle = dag_plan_proposer_worker_command(DagProposerWorkerCommandInput {
+            pbft_syncing: true,
+            packet_queue_over_limit: false,
+            has_attempt_result: false,
+            attempt_returned_proposed: false,
+            retry_delay_ms: 100,
+        });
+        assert!(!throttle.attempt_proposal);
+        assert!(throttle.sleep_after_tick);
+        assert_eq!(throttle.sleep_ms, 100);
+
+        let no_block = dag_plan_proposer_worker_command(DagProposerWorkerCommandInput {
+            pbft_syncing: false,
+            packet_queue_over_limit: false,
+            has_attempt_result: true,
+            attempt_returned_proposed: false,
+            retry_delay_ms: 100,
+        });
+        assert!(!no_block.attempt_proposal);
+        assert!(no_block.sleep_after_tick);
+        assert_eq!(no_block.sleep_ms, 100);
+
+        let proposed = dag_plan_proposer_worker_command(DagProposerWorkerCommandInput {
+            pbft_syncing: false,
+            packet_queue_over_limit: false,
+            has_attempt_result: true,
+            attempt_returned_proposed: true,
+            retry_delay_ms: 100,
+        });
+        assert!(!proposed.attempt_proposal);
+        assert!(!proposed.sleep_after_tick);
     }
 
     #[test]
