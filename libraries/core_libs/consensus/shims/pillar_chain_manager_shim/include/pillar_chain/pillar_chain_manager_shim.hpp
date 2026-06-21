@@ -340,6 +340,29 @@ class PillarChainManager {
   std::shared_ptr<PillarBlock> getCurrentPillarBlock() const;
 
   /**
+   * Current pillar-block anchor facts for PBFT block construction.
+   *
+   * Purpose:
+   * - Lets PBFT manager validate and embed the current pillar-block anchor
+   *   without consuming a live `PillarBlock` sidecar for protocol decisions.
+   *
+   * Outputs:
+   * - `found == true` when a current pillar block exists.
+   * - `period` and `hash` describe the current pillar block.
+   *
+   * Invariants:
+   * - Does not mutate pillar-chain state.
+   * - PBFT manager remains responsible for checking whether a pillar anchor is
+   *   required for the candidate PBFT period.
+   */
+  struct CurrentPillarBlockAnchor {
+    bool found = false;
+    PbftPeriod period = 0;
+    blk_hash_t hash;
+  };
+  CurrentPillarBlockAnchor currentPillarBlockAnchor() const;
+
+  /**
    * Retrieves verified votes for one pillar period and block hash.
    *
    * Inputs:

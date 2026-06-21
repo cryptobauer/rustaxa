@@ -538,6 +538,8 @@ Landed:
 - Sync pillar-vote validation no longer falls back to PBFT-manager-owned C++ iteration over live `PillarVote` sidecars.
   PBFT manager always routes the bundle through the Rust planner/helper and fails closed if the Rust pillar-vote insertion
   path is unavailable.
+- PBFT block extra-data construction now receives current pillar-block anchor facts from PillarChainManager instead of
+  consuming a live `PillarBlock` sidecar to decide the anchored period/hash.
 
 Scope:
 

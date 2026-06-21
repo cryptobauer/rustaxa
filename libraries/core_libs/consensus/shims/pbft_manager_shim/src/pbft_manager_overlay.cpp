@@ -2814,18 +2814,18 @@ std::optional<PbftBlockExtraData> PbftManager::createPbftBlockExtraData(PbftPeri
   std::optional<blk_hash_t> pillar_block_hash;
   if (kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(pbft_period)) {
     // Anchor pillar block hash into the pbft block
-    const auto pillar_block = pillar_chain_mgr_->getCurrentPillarBlock();
-    if (!pillar_block) {
+    const auto pillar_anchor = pillar_chain_mgr_->currentPillarBlockAnchor();
+    if (!pillar_anchor.found) {
       LOG(log_er_) << "Missing pillar block, pbft period " << pbft_period;
       return {};
     }
 
-    if (pillar_block->getPeriod() != pbft_period - 1) {
-      LOG(log_er_) << "Wrong pillar block period: " << pillar_block->getPeriod() << ", pbft period: " << pbft_period;
+    if (pillar_anchor.period != pbft_period - 1) {
+      LOG(log_er_) << "Wrong pillar block period: " << pillar_anchor.period << ", pbft period: " << pbft_period;
       return {};
     }
 
-    pillar_block_hash = pillar_block->getHash();
+    pillar_block_hash = pillar_anchor.hash;
   }
 
   return PbftBlockExtraData{TARAXA_MAJOR_VERSION, TARAXA_MINOR_VERSION, TARAXA_PATCH_VERSION, TARAXA_NET_VERSION, "T",

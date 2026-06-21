@@ -646,6 +646,18 @@ std::shared_ptr<PillarBlock> PillarChainManager::getCurrentPillarBlock() const {
   return current_pillar_block_;
 }
 
+PillarChainManager::CurrentPillarBlockAnchor PillarChainManager::currentPillarBlockAnchor() const {
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+  CurrentPillarBlockAnchor anchor;
+  if (!current_pillar_block_) {
+    return anchor;
+  }
+  anchor.found = true;
+  anchor.period = current_pillar_block_->getPeriod();
+  anchor.hash = current_pillar_block_->getHash();
+  return anchor;
+}
+
 bool PillarChainManager::isRelevantPillarVote(const std::shared_ptr<PillarVote> vote) const {
   const auto vote_exists = pillar_votes_.voteExists(vote);
   const auto current_pillar_block = getCurrentPillarBlock();
