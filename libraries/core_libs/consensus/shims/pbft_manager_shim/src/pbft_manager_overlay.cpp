@@ -2630,29 +2630,8 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::proposePbftBlock() {
   // generates propose vote with the same block
   const auto [current_pbft_round, current_pbft_period] = getPbftRoundAndPeriod();
 
-  std::vector<WalletConfig> local_wallets;
-  rust::Vec<rustaxa::PbftManagerProposalWalletFact> wallet_facts;
   const auto wallets = eligible_wallets_.getWallets(current_pbft_period);
-  local_wallets.reserve(wallets.size());
-  wallet_facts.reserve(wallets.size());
-  uint64_t wallet_index = 0;
-  for (const auto &wallet : wallets) {
-    local_wallets.push_back(wallet.second);
-    rustaxa::PbftManagerProposalWalletFact wallet_fact;
-    wallet_fact.wallet_index = wallet_index;
-    wallet_fact.dpos_eligible = wallet.first;
-    wallet_fact.sortition_valid = false;
-    if (wallet.first) {
-      wallet_fact.sortition_valid =
-          vote_mgr_->genAndValidateVrfSortition(current_pbft_period, current_pbft_round, wallet.second);
-      if (!wallet_fact.sortition_valid) {
-        LOG(log_dg_) << "Unable to propose block for period " << current_pbft_period << ", round "
-                     << current_pbft_round << ", validator " << wallet.second.node_addr << ". Invalid vrf sortition";
-      }
-    }
-    wallet_facts.push_back(wallet_fact);
-    wallet_index++;
-  }
+  auto proposal_wallets = vote_mgr_->proposalWalletFacts(current_pbft_period, current_pbft_round, wallets);
 
   auto last_pbft_block_hash = pbft_chain_->getLastPbftBlockHash();
   auto last_period_dag_anchor_block_hash = pbft_chain_->getLastNonNullPbftBlockAnchor();
@@ -2699,7 +2678,7 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::proposePbftBlock() {
   fact.extra_data_available = !fact.extra_data_required || extra_data.has_value();
   fact.final_chain_hash_valid = final_chain_facts.final_chain_hash.status == kPbftSyncFinalChainValid;
   fact.final_chain_hash = final_chain_facts.final_chain_hash.expected_hash;
-  fact.wallets = std::move(wallet_facts);
+  fact.wallets = std::move(proposal_wallets.wallet_facts);
   fact.ghost_path = toBridgeHashes(ghost);
   fact.has_non_finalized_fallback = non_finalized_fallback_hash.has_value();
   fact.non_finalized_fallback_hash = toBridgeHash(non_finalized_fallback_hash.value_or(kNullBlockHash));
@@ -2734,13 +2713,13 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::proposePbftBlock() {
     std::vector<WalletConfig> eligible_wallets;
     eligible_wallets.reserve(step.eligible_wallet_indices.size());
     for (const auto selected_wallet_index : step.eligible_wallet_indices) {
-      if (selected_wallet_index >= local_wallets.size()) {
+      if (selected_wallet_index >= proposal_wallets.local_wallets.size()) {
         LOG(log_er_) << "Rust PBFT proposal selected wallet index " << selected_wallet_index
-                     << " outside local wallet count " << local_wallets.size();
+                     << " outside local wallet count " << proposal_wallets.local_wallets.size();
         assert(false);
         return {};
       }
-      eligible_wallets.push_back(local_wallets[selected_wallet_index]);
+      eligible_wallets.push_back(proposal_wallets.local_wallets[selected_wallet_index]);
     }
 
     const auto dag_block_hash = fromBridgeHash(step.anchor_hash);

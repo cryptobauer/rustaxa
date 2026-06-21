@@ -570,6 +570,8 @@ Landed:
 - Normal local PBFT voting now enters VoteManager through a single weighted-vote placement port that owns Rust vote
   generation, Rust-backed admission, and own-vote persistence. PBFT manager receives only accepted vote payloads for
   network gossip and the separate pillar-vote executor boundary.
+- Local proposal wallet fact construction now lives behind a VoteManager port. PBFT manager no longer loops over wallet
+  sidecars to run proposer VRF sortition and build Rust proposal wallet facts.
 - Double-vote slashing submission is now isolated behind a named VoteManager executor helper that receives
   Rust-normalized slashing evidence from verified-vote admission. The remaining `SlashingManager` call is explicit
   temporary executor debt rather than mixed into the vote admission state machine.

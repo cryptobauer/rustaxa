@@ -609,6 +609,32 @@ class VoteManager : public VoteManagerOld {
   bool voteAlreadyValidated(const vote_hash_t& vote_hash) const;
   bool genAndValidateVrfSortition(PbftPeriod pbft_period, PbftRound pbft_round, const WalletConfig& wallet) const;
   /**
+   * Builds local proposal-wallet facts for the Rust PBFT proposal planner.
+   *
+   * Purpose:
+   * - Keeps PBFT manager from looping over wallet sidecars to run proposer
+   *   sortition and construct Rust proposal facts.
+   *
+   * Inputs:
+   * - `wallets` is the current period wallet eligibility snapshot.
+   *
+   * Outputs:
+   * - `local_wallets` preserves the wallet order used by Rust-selected wallet
+   *   indices.
+   * - `wallet_facts` carries DPoS eligibility and Rust-backed proposer
+   *   sortition acceptance for each wallet.
+   *
+   * Invariants:
+   * - Does not mutate vote state.
+   * - Wallet indices in `wallet_facts` match positions in `local_wallets`.
+   */
+  struct ProposalWalletFacts {
+    std::vector<WalletConfig> local_wallets;
+    rust::Vec<rustaxa::PbftManagerProposalWalletFact> wallet_facts;
+  };
+  ProposalWalletFacts proposalWalletFacts(PbftPeriod pbft_period, PbftRound pbft_round,
+                                          const std::vector<std::pair<bool, WalletConfig>>& wallets) const;
+  /**
    * Compact verified-vote facts consumed by PBFT manager state-action planning.
    *
    * Purpose:

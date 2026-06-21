@@ -1591,6 +1591,35 @@ bool VoteManager::genAndValidateVrfSortition(PbftPeriod pbft_period, PbftRound p
   return true;
 }
 
+VoteManager::ProposalWalletFacts VoteManager::proposalWalletFacts(
+    PbftPeriod pbft_period, PbftRound pbft_round,
+    const std::vector<std::pair<bool, WalletConfig>>& wallets) const {
+  ProposalWalletFacts result;
+  result.local_wallets.reserve(wallets.size());
+  result.wallet_facts.reserve(wallets.size());
+
+  uint64_t wallet_index = 0;
+  for (const auto& wallet : wallets) {
+    result.local_wallets.push_back(wallet.second);
+
+    rustaxa::PbftManagerProposalWalletFact wallet_fact;
+    wallet_fact.wallet_index = wallet_index;
+    wallet_fact.dpos_eligible = wallet.first;
+    wallet_fact.sortition_valid = false;
+    if (wallet.first) {
+      wallet_fact.sortition_valid = genAndValidateVrfSortition(pbft_period, pbft_round, wallet.second);
+      if (!wallet_fact.sortition_valid) {
+        LOG(log_dg_) << "Unable to propose block for period " << pbft_period << ", round " << pbft_round
+                     << ", validator " << wallet.second.node_addr << ". Invalid vrf sortition";
+      }
+    }
+    result.wallet_facts.push_back(wallet_fact);
+    wallet_index++;
+  }
+
+  return result;
+}
+
 std::optional<blk_hash_t> VoteManager::getTwoTPlusOneVotedBlock(PbftPeriod period, PbftRound round,
                                                                 TwoTPlusOneVotedBlockType type) const {
   const auto voted_block = verified_votes_.getTwoTPlusOneVotedBlock(period, round, type);
