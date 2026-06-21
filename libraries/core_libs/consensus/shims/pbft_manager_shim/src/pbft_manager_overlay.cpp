@@ -244,6 +244,13 @@ rustaxa::PbftFinalChainFactRequest makePbftFinalChainFactRequest(
   return request;
 }
 
+uint64_t rustFinalChainLastBlockNumber(const std::shared_ptr<final_chain::FinalChain> &final_chain) {
+  if (!final_chain) {
+    throw std::runtime_error("PBFT manager requires FinalChain for Rust FinalChain height facts");
+  }
+  return final_chain->rustFinalChainForRust().get_last_block_number();
+}
+
 uint8_t toPbftManagerRuntimeState(PbftStates state) {
   switch (state) {
     case value_proposal_state:
@@ -728,7 +735,7 @@ PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> 
   LOG_OBJECTS_CREATE("PBFT_MGR");
 
   rustaxa::PbftManagerStartupReplayRangeFact startup_replay_fact;
-  startup_replay_fact.final_chain_last_block = final_chain_->lastBlockNumber();
+  startup_replay_fact.final_chain_last_block = rustFinalChainLastBlockNumber(final_chain_);
   startup_replay_fact.pbft_chain_size = pbft_chain_->getPbftChainSize();
   startup_replay_fact.delegation_delay = final_chain_->delegationDelay();
   startup_replay_fact.recently_finalized_factor = kRecentlyFinalizedTransactionsFactor;
@@ -1137,7 +1144,8 @@ void PbftManager::setPbftRound(PbftRound round) {
 void PbftManager::waitForPeriodFinalization() {
   do {
     // we need to be sure we finalized at least block with num lower by delegation_delay
-    if (pbft_chain_->getPbftChainSize() <= final_chain_->lastBlockNumber() + final_chain_->delegationDelay()) {
+    if (pbft_chain_->getPbftChainSize() <=
+        rustFinalChainLastBlockNumber(final_chain_) + final_chain_->delegationDelay()) {
       break;
     }
     thisThreadSleepForMilliSeconds(kPollingIntervalMs.count());
@@ -3319,7 +3327,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     bool resume_executed = false;
     try {
       const auto resume_plan = rustaxa::pbft_manager_runtime_inspect_finalization_resume(
-          *pbft_manager_runtime_.value(), finalization_plan.storage_write_intent, final_chain_->lastBlockNumber());
+          *pbft_manager_runtime_.value(), finalization_plan.storage_write_intent,
+          rustFinalChainLastBlockNumber(final_chain_));
       LOG(log_nf_) << "PBFT block: " << pbft_block_hash << " in DB already.";
       LOG(log_dg_) << "Rust PBFT finalization resume classified duplicate block " << pbft_block_hash << ", period "
                    << block_pbft_period << ", status " << static_cast<uint32_t>(resume_plan.status) << ", complete "
@@ -3447,10 +3456,11 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
 
         if (resume_runtime_session->pbft_finalization_runtime_session_next().action ==
             kPbftFinalizationRuntimeActionFinalizeFinalChain) {
-          if (final_chain_->lastBlockNumber() + 1 != block_pbft_period) {
+          const auto final_chain_last_block = rustFinalChainLastBlockNumber(final_chain_);
+          if (final_chain_last_block + 1 != block_pbft_period) {
             LOG(log_er_) << "Rust PBFT finalization resume refused non-sequential FinalChain replay for block "
                          << pbft_block_hash << ", period " << block_pbft_period << ", FinalChain last block "
-                         << final_chain_->lastBlockNumber();
+                         << final_chain_last_block;
             resume_runtime_session->abort_pbft_finalization_runtime_session();
             return false;
           }
@@ -3459,7 +3469,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           }
           finalize_(std::move(period_data), std::move(dag_blocks_order),
                     finalization_plan.storage_write_intent.blocks_per_year);
-          if (final_chain_->lastBlockNumber() < block_pbft_period) {
+          if (rustFinalChainLastBlockNumber(final_chain_) < block_pbft_period) {
             report_resume_action(resume_step, false, 255);
             return false;
           }
@@ -3470,7 +3480,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           final_chain_report.anchor_hash = finalization_plan.storage_write_intent.anchor_hash;
           final_chain_report.final_chain_dispatched = true;
           final_chain_report.final_chain_blocks_per_year = finalization_plan.storage_write_intent.blocks_per_year;
-          final_chain_report.final_chain_last_block = final_chain_->lastBlockNumber();
+          final_chain_report.final_chain_last_block = rustFinalChainLastBlockNumber(final_chain_);
           const auto final_chain_validation =
               rustaxa::validate_pbft_finalization_live_mutation_report(finalization_plan, final_chain_report);
           if (!final_chain_validation.accepted) {
@@ -3996,7 +4006,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     final_chain_report.anchor_hash = finalization_plan.storage_write_intent.anchor_hash;
     final_chain_report.final_chain_dispatched = true;
     final_chain_report.final_chain_blocks_per_year = blocks_per_year;
-    final_chain_report.final_chain_last_block = final_chain_->lastBlockNumber();
+    final_chain_report.final_chain_last_block = rustFinalChainLastBlockNumber(final_chain_);
     const auto live_validation = validate_live_mutation(final_chain_report);
     if (!live_validation.accepted) {
       LOG(log_er_) << "Rust PBFT finalization FinalChain dispatch report rejected for block " << pbft_block_hash
@@ -4140,7 +4150,7 @@ void PbftManager::processPillarBlock(PbftPeriod current_pbft_chain_size) {
   PbftPeriod request_period = current_pbft_chain_size - final_chain_->delegationDelay();
   // advancePeriod() -> resetConsensus() -> waitForPeriodFinalization() makes sure block request_period was already
   // finalized
-  assert(final_chain_->lastBlockNumber() >= request_period);
+  assert(rustFinalChainLastBlockNumber(final_chain_) >= request_period);
 
   const auto block_header = final_chain_->blockHeader(request_period);
   const auto bridge_root = final_chain_->getBridgeRoot(request_period);
