@@ -600,34 +600,10 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
 }
 
 std::pair<bool, std::vector<blk_hash_t>> DagManager::pivotAndTipsAvailable(const std::shared_ptr<DagBlock> &blk) {
-  const auto pivot_hash = blk->getPivot();
-  const auto tips = blk->getTips();
-  std::vector<blk_hash_t> missing_tips_or_pivot;
-
-  level_t expected_level = 0;
-  if (auto pivot_block = getDagBlock(pivot_hash); pivot_block) {
-    expected_level = pivot_block->getLevel() + 1;
-  } else {
-    missing_tips_or_pivot.push_back(pivot_hash);
-  }
-
-  for (auto const &tip : tips) {
-    if (auto tip_block = getDagBlock(tip); tip_block) {
-      expected_level = std::max(expected_level, tip_block->getLevel() + 1);
-    } else {
-      missing_tips_or_pivot.push_back(tip);
-    }
-  }
-
-  if (!missing_tips_or_pivot.empty()) {
-    return {false, missing_tips_or_pivot};
-  }
-
-  if (expected_level != blk->getLevel()) {
-    return {false, missing_tips_or_pivot};
-  }
-
-  return {true, {}};
+  std::shared_lock lock(rust_graphs_mutex_);
+  const auto validation = rust_graphs_->runtime->dag_manager_runtime_validate_pivot_tips(
+      blk->getLevel(), to_bridge_hash(blk->getPivot()), to_bridge_dag_hashes(blk->getTips()));
+  return {validation.ok, from_bridge_dag_hashes(validation.missing_references)};
 }
 
 std::pair<bool, std::vector<blk_hash_t>> DagManager::addDagBlockRlp(rustaxa::DagProposerSignedBlockIntent signed_block,

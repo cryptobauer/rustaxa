@@ -509,6 +509,53 @@ impl BridgeDagManagerRuntime {
         }))
     }
 
+    /// Validates pivot/tip availability from Rust runtime state and storage.
+    ///
+    /// Inputs:
+    /// - `block_level`: level declared by the candidate DAG block.
+    /// - `pivot` and `tips`: candidate references in legacy block order.
+    ///
+    /// Output:
+    /// - compact reference availability and expected-level facts. Missing
+    ///   references are returned as data, not errors, so compatibility callers
+    ///   can preserve the public `(bool, missing_hashes)` API without
+    ///   materializing C++ `DagBlock` objects.
+    ///
+    /// Edge behavior:
+    /// - storage backend or payload decode failures are bridge errors because
+    ///   canonical DAG storage is the authoritative source for persisted block
+    ///   metadata in Rust mode.
+    pub fn dag_manager_runtime_validate_pivot_tips(
+        &self,
+        block_level: u64,
+        pivot: &[u8; 32],
+        tips: Vec<DagHash>,
+    ) -> Result<DagPivotTipsValidation> {
+        let pivot = dag_reference_metadata_from_runtime_or_storage(
+            &self.state,
+            self.storage.as_ref(),
+            to_h256(pivot),
+        )?;
+        let tips = tips
+            .into_iter()
+            .map(|tip| {
+                dag_reference_metadata_from_runtime_or_storage(
+                    &self.state,
+                    self.storage.as_ref(),
+                    H256::from(tip.hash),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let validation = validate_pivot_tips_metadata(block_level, pivot, &tips);
+
+        Ok(DagPivotTipsValidation {
+            ok: validation.ok,
+            expected_level: validation.expected_level,
+            level_matches: validation.level_matches,
+            missing_references: to_dag_hashes(validation.missing_references),
+        })
+    }
+
     /// Applies one finalized DAG order directly to Rust state and advances period/anchor.
     ///
     /// Inputs:

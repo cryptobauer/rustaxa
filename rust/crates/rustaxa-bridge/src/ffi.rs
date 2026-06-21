@@ -4564,6 +4564,14 @@ pub mod rustaxa_ffi {
             self: &BridgeDagManagerRuntime,
             input: DagAddBlockRuntimeInput,
         ) -> Result<DagAddBlockEffectPlan>;
+        /// Validates candidate pivot/tip references from Rust runtime state and
+        /// storage without C++ `DagBlock` materialization.
+        pub fn dag_manager_runtime_validate_pivot_tips(
+            self: &BridgeDagManagerRuntime,
+            block_level: u64,
+            pivot: &[u8; 32],
+            tips: Vec<DagHash>,
+        ) -> Result<DagPivotTipsValidation>;
         /// Applies finalized DAG order using Rust state and Rust storage.
         pub fn dag_manager_runtime_apply_finalized_order(
             self: &mut BridgeDagManagerRuntime,
