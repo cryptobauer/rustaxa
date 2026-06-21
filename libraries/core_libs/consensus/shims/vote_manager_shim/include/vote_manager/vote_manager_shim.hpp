@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 #include "rustaxa-bridge/ffi.rs.h"
 
 namespace taraxa {
@@ -59,6 +61,36 @@ class VoteManager : public VoteManagerOld {
     bool drive_pbft_progress = false;
     PbftPeriod progress_period = 0;
     PbftRound progress_round = 0;
+  };
+
+  /**
+   * Detailed Rust-planned reward-vote validation result.
+   *
+   * Purpose:
+   * - Preserves Rust's reward-vote selection status at PBFT manager call sites
+   *   instead of collapsing deterministic selection failures into an opaque
+   *   boolean.
+   *
+   * Inputs:
+   * - Produced by `checkRewardVotesDetailed` from compact PBFT block facts and
+   *   live verified-vote membership snapshots.
+   *
+   * Outputs and invariants:
+   * - `accepted` is Rust's terminal reward-vote selection decision.
+   * - `status` and `error_code` are stable Rust bridge diagnostics.
+   * - `votes` contains temporary C++ `PbftVote` sidecars only when requested
+   *   by `copy_votes` and Rust accepted the selected hashes.
+   * - C++ does not decide preferred-round or reverse-round fallback policy.
+   */
+  struct RewardVoteValidationResult {
+    bool accepted = false;
+    uint8_t status = 0;
+    std::string error_code;
+    PbftPeriod selected_period = 0;
+    PbftRound selected_round = 0;
+    blk_hash_t selected_block_hash;
+    vote_hash_t missing_vote_hash;
+    std::vector<std::shared_ptr<PbftVote>> votes;
   };
 
   /**
@@ -143,6 +175,7 @@ class VoteManager : public VoteManagerOld {
    */
   std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> checkRewardVotes(const std::shared_ptr<PbftBlock>& pbft_block,
                                                                            bool copy_votes);
+  RewardVoteValidationResult checkRewardVotesDetailed(const std::shared_ptr<PbftBlock>& pbft_block, bool copy_votes);
 
   /**
    * Validates and optionally materializes reward votes referenced by compact PBFT block facts.
@@ -159,6 +192,10 @@ class VoteManager : public VoteManagerOld {
   std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> checkRewardVotes(
       PbftPeriod block_period, const blk_hash_t& block_hash, const blk_hash_t& prev_block_hash,
       const std::vector<vote_hash_t>& reward_vote_hashes, bool copy_votes);
+  RewardVoteValidationResult checkRewardVotesDetailed(PbftPeriod block_period, const blk_hash_t& block_hash,
+                                                      const blk_hash_t& prev_block_hash,
+                                                      const std::vector<vote_hash_t>& reward_vote_hashes,
+                                                      bool copy_votes);
   /**
    * Returns reward votes selected from the shim's live verified-vote sidecar.
    *

@@ -45,6 +45,10 @@ constexpr uint8_t kPbftFinalChainFactStatusReady = 0;
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t& hash) { return hash.asArray(); }
 
+uint256_hash_t fromBridgeHash(const std::array<uint8_t, 32>& hash) {
+  return uint256_hash_t(hash.data(), uint256_hash_t::ConstructFromPointer);
+}
+
 std::array<uint8_t, 20> toBridgeAddress(const addr_t& address) { return address.asArray(); }
 
 template <size_t N, typename FixedHash>
@@ -772,11 +776,24 @@ void VoteManager::resetRewardVotes(PbftPeriod period, PbftRound round, PbftStep 
 
 std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> VoteManager::checkRewardVotes(
     const std::shared_ptr<PbftBlock>& pbft_block, bool copy_votes) {
-  return checkRewardVotes(pbft_block->getPeriod(), pbft_block->getBlockHash(), pbft_block->getPrevBlockHash(),
-                          pbft_block->getRewardVotes(), copy_votes);
+  auto result = checkRewardVotesDetailed(pbft_block, copy_votes);
+  return {result.accepted, std::move(result.votes)};
+}
+
+VoteManager::RewardVoteValidationResult VoteManager::checkRewardVotesDetailed(
+    const std::shared_ptr<PbftBlock>& pbft_block, bool copy_votes) {
+  return checkRewardVotesDetailed(pbft_block->getPeriod(), pbft_block->getBlockHash(), pbft_block->getPrevBlockHash(),
+                                  pbft_block->getRewardVotes(), copy_votes);
 }
 
 std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> VoteManager::checkRewardVotes(
+    PbftPeriod block_period, const blk_hash_t& block_hash, const blk_hash_t& prev_block_hash,
+    const std::vector<vote_hash_t>& reward_vote_hashes, bool copy_votes) {
+  auto result = checkRewardVotesDetailed(block_period, block_hash, prev_block_hash, reward_vote_hashes, copy_votes);
+  return {result.accepted, std::move(result.votes)};
+}
+
+VoteManager::RewardVoteValidationResult VoteManager::checkRewardVotesDetailed(
     PbftPeriod block_period, const blk_hash_t& block_hash, const blk_hash_t& prev_block_hash,
     const std::vector<vote_hash_t>& reward_vote_hashes, bool copy_votes) {
   blk_hash_t reward_votes_block_hash;
@@ -799,10 +816,22 @@ std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> VoteManager::checkReward
                  << ", reward_votes_round_: " << reward_votes_round
                  << ", reward_votes_block_hash: " << reward_votes_block_hash << ", error: " << e.what();
     assert(false);
-    return {false, {}};
+    RewardVoteValidationResult result;
+    result.error_code = e.what();
+    return result;
   }
 
   const auto& plan = selection.report;
+  RewardVoteValidationResult result;
+  result.accepted = plan.accepted;
+  result.status = plan.status;
+  result.error_code = static_cast<std::string>(plan.error_code);
+  result.selected_period = plan.selected_period;
+  result.selected_round = plan.selected_round;
+  result.selected_block_hash = fromBridgeHash(plan.selected_block_hash);
+  result.missing_vote_hash = fromBridgeHash(plan.missing_vote_hash);
+  result.votes = std::move(selection.votes);
+
   if (!plan.accepted) {
     LOG(log_er_) << "No (or not enough) reward votes found for block " << block_hash << ", period: " << block_period
                  << ", prev. block hash: " << prev_block_hash
@@ -811,14 +840,10 @@ std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> VoteManager::checkReward
                  << ", reward_votes_block_hash: " << reward_votes_block_hash
                  << ", status: " << static_cast<uint32_t>(plan.status)
                  << ", error: " << static_cast<std::string>(plan.error_code);
-    return {false, {}};
+    return result;
   }
 
-  if (!copy_votes || plan.selected_vote_hashes.empty()) {
-    return {true, {}};
-  }
-
-  return {true, std::move(selection.votes)};
+  return result;
 }
 
 std::vector<std::shared_ptr<PbftVote>> VoteManager::getRewardVotes() {

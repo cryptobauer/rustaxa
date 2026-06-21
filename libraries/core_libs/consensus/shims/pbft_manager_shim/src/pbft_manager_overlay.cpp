@@ -2268,14 +2268,15 @@ void PbftManager::proposeBlock_() {
         return kPbftManagerStateActionEffectResultSkippedMissingLiveObject;
       }
 
-      auto block_reward_votes = vote_mgr_->checkRewardVotes(next_voted_block, true);
-      if (!block_reward_votes.first) {
+      auto block_reward_votes = vote_mgr_->checkRewardVotesDetailed(next_voted_block, true);
+      if (!block_reward_votes.accepted) {
         LOG(log_er_) << "Unable to re-propose previous round next voted block " << next_voted_block_hash << ", period "
-                     << period << ", round " << round << ". Reward votes for this block were not found";
+                     << period << ", round " << round << ". Rust reward-vote validation rejected status "
+                     << static_cast<uint32_t>(block_reward_votes.status) << ", error " << block_reward_votes.error_code;
         return kPbftManagerStateActionEffectResultRejectedLiveCheck;
       }
 
-      return genAndPlaceProposeVote(next_voted_block, std::move(block_reward_votes.second))
+      return genAndPlaceProposeVote(next_voted_block, std::move(block_reward_votes.votes))
                  ? kPbftManagerStateActionEffectResultApplied
                  : kPbftManagerStateActionEffectResultRejectedLiveCheck;
     }
@@ -3116,8 +3117,11 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
     }
 
     if (plan.next_check == kPbftManagerBlockValidationCheckRewardVotes) {
-      if (!vote_mgr_->checkRewardVotes(pbft_block, false).first) {
-        LOG(log_er_) << "Failed verifying reward votes for proposed PBFT block " << pbft_block_hash;
+      const auto reward_votes = vote_mgr_->checkRewardVotesDetailed(pbft_block, false);
+      if (!reward_votes.accepted) {
+        LOG(log_er_) << "Failed verifying reward votes for proposed PBFT block " << pbft_block_hash
+                     << ", Rust status " << static_cast<uint32_t>(reward_votes.status) << ", error "
+                     << reward_votes.error_code;
         plan = validation_session->pbft_manager_block_validation_session_report(kPbftManagerBlockValidationFactInvalid,
                                                                                 false);
       } else {
@@ -3247,12 +3251,13 @@ bool PbftManager::pushCertVotedPbftBlockIntoChain_(const std::shared_ptr<PbftBlo
     period_data.transactions = trx_mgr_->getNonfinalizedTrx(transactions_to_query);
   }
 
-  auto reward_votes = vote_mgr_->checkRewardVotes(period_data.pbft_blk, true);
-  if (!reward_votes.first) {
-    LOG(log_er_) << "Missing reward votes in cert voted block " << pbft_block->getBlockHash();
+  auto reward_votes = vote_mgr_->checkRewardVotesDetailed(period_data.pbft_blk, true);
+  if (!reward_votes.accepted) {
+    LOG(log_er_) << "Missing reward votes in cert voted block " << pbft_block->getBlockHash() << ", Rust status "
+                 << static_cast<uint32_t>(reward_votes.status) << ", error " << reward_votes.error_code;
     return false;
   }
-  period_data.previous_block_cert_votes = std::move(reward_votes.second);
+  period_data.previous_block_cert_votes = std::move(reward_votes.votes);
 
   if (!pushPbftBlock_(std::move(period_data), std::move(current_round_cert_votes))) {
     LOG(log_er_) << "Failed push cert voted block " << pbft_block->getBlockHash() << " into PBFT chain";
@@ -4558,7 +4563,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
                         {}, false, kPbftSyncFactNotChecked, pillar_votes_required, kPbftSyncFactNotRequired);
   const auto rust_pillar_data_valid = rust_pillar_data_plan.status != kPbftSyncStatusPillarDataInvalid;
 
-  std::optional<std::pair<bool, std::vector<std::shared_ptr<PbftVote>>>> reward_votes;
+  std::optional<VoteManager::RewardVoteValidationResult> reward_votes;
   auto block_validation_fact = rustaxa::PbftManagerBlockValidationFact{};
   block_validation_fact.block_hash = toBridgeHash(pbft_block_hash);
   block_validation_fact.period = block_period;
@@ -4656,9 +4661,10 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
 
     if (validation_plan.next_check == kPbftManagerBlockValidationCheckRewardVotes) {
       reward_votes =
-          vote_mgr_->checkRewardVotes(block_period, pbft_block_hash, block_prev_hash, reward_vote_hashes, true);
+          vote_mgr_->checkRewardVotesDetailed(block_period, pbft_block_hash, block_prev_hash, reward_vote_hashes, true);
       validation_plan = block_validation_session->pbft_manager_block_validation_session_report(
-          reward_votes->first ? kPbftManagerBlockValidationFactValid : kPbftManagerBlockValidationFactInvalid, false);
+          reward_votes->accepted ? kPbftManagerBlockValidationFactValid : kPbftManagerBlockValidationFactInvalid,
+          false);
       continue;
     }
 
@@ -4683,7 +4689,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   // pbft_chain_->findPbftBlockInChain(pbft_block_hash) and it's cert votes were not verified here, they are part of
   // vote_manager so we need to replace them as they are not verified period_data structure
   if (admission_plan.replace_previous_block_cert_votes) {
-    period_data.previous_block_cert_votes = std::move(reward_votes->second);
+    period_data.previous_block_cert_votes = std::move(reward_votes->votes);
   }
 
   // Validate cert votes

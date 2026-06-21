@@ -505,7 +505,9 @@ Goal: remove PBFT manager reliance on vote and pillar C++ managers except for ex
 
 Status: in progress. The first bounded pass moves synced cert-vote bundle shape and threshold validation into Rust from
 compact vote facts while keeping VoteManager signature, VRF, weight materialization, and verified-vote insertion as
-temporary executor effects.
+temporary executor effects. PBFT manager reward-vote callers now consume typed Rust reward-vote selection status instead
+of an opaque VoteManager boolean, while VoteManager still snapshots verified-vote membership and materializes selected
+legacy vote sidecars.
 
 Landed:
 
@@ -514,6 +516,10 @@ Landed:
   weight presence, threshold availability, and summed-weight acceptance.
 - C++ still executes `VoteManager::validateVote`, `VoteManager::addVerifiedVote`, and threshold lookup as temporary
   VoteManager executor/query effects, then reports their facts to Rust for the final bundle decision.
+- Reward-vote validation in PBFT manager proposal, block-validation, cert-voted-block push, and sync paths now uses a
+  detailed VoteManager result that preserves Rust reward-vote planner status, selected period/round/block, missing vote
+  hash, and error code. The legacy pair-returning API remains as compatibility, but PBFT manager call sites no longer
+  collapse reward-vote planner rejection into a local boolean before logging/reporting.
 
 Scope:
 
