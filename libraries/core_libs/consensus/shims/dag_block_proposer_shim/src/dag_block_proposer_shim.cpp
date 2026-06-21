@@ -120,7 +120,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   const auto final_chain_facts = final_chain_->rustFinalChainForRust().get_dag_proposer_final_chain_facts(
       proposal_period.has_value(), proposal_period.value_or(0), node_dag_proposer_data->wallet.node_addr.asArray());
   rustaxa::SortitionRuntimeParams sortition_params{};
-  if (proposal_period.has_value() && final_chain_facts.last_finalized_period >= *proposal_period) {
+  if (proposal_period.has_value()) {
     sortition_params = dag_mgr_->sortitionParamsManager().rustSortitionParamsForRust(*proposal_period);
   }
 

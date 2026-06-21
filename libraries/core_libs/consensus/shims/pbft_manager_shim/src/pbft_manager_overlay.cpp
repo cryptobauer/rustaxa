@@ -3309,7 +3309,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
   const auto planner_chain_last_period = block_in_chain ? block_pbft_period - 1 : pbft_chain_->getPbftChainSize();
   const auto planner_pillar_block_finalized = block_in_chain ? true : pillar_block_finalized;
   const auto finalization_plan = rustaxa::plan_pbft_finalization_intent(makePbftFinalizationIntentFact(
-      period_data, planner_chain_last_hash, pbft_chain_->getLastPbftBlockHash(), planner_chain_last_period, false,
+      period_data, planner_chain_last_hash, pbft_chain_->getLastPbftBlockHash(), planner_chain_last_period,
+      block_in_chain,
       planner_pillar_block_finalized, dynamic_lambda_enabled, cert_votes.size(), sample_cert_vote->getBlockHash(),
       sample_cert_vote->getPeriod(), sample_cert_vote->getRound(), sample_cert_vote->getStep(), block_lambda,
       last_saved_period_lambda.found, last_saved_period_lambda.value, dynamic_blocks_per_year,

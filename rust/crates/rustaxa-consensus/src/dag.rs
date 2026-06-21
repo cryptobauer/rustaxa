@@ -2403,8 +2403,7 @@ pub fn plan_dag_proposer_stale_proof(
 /// Plans the DAG proposer attempt up to local VRF/VDF probing.
 ///
 /// Expected unavailable facts are returned as status decisions, not errors. This preserves the proposer loop behavior
-/// while moving proposal-period readiness, pool pressure, finalized-height readiness, and DPoS/VRF eligibility ordering
-/// into Rust.
+/// while moving proposal-period readiness, pool pressure, and DPoS/VRF eligibility ordering into Rust.
 pub fn plan_dag_proposer_pre_vdf_attempt(
     input: DagProposerPreVdfAttemptInput,
 ) -> DagProposerPreVdfAttemptPlan {
@@ -2435,12 +2434,6 @@ pub fn plan_dag_proposer_pre_vdf_attempt(
         plan.reason_code = DAG_PROPOSER_REASON_MISSING_PROPOSAL_PERIOD;
         return plan;
     }
-    if input.last_finalized_period < input.proposal_period {
-        plan.action = DAG_PROPOSER_ACTION_RETRY_LATER;
-        plan.reason_code = DAG_PROPOSER_REASON_FINALIZED_PERIOD_NOT_READY;
-        return plan;
-    }
-
     let eligibility =
         plan_dag_proposer_eligibility(input.wallet_vrf_public_key, input.authorization_facts);
     if eligibility.action != DAG_PROPOSER_ACTION_CONTINUE {

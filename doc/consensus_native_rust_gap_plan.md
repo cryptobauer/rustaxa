@@ -51,7 +51,18 @@ letting bridge callers interpret raw snapshot errors.
 Open blocker found during validation: focused `pbft_manager_test` runtime coverage still does not execute non-empty PBFT
 blocks, so delegated DPoS transactions never publish the FinalChain snapshots needed for later vote totals. The remaining
 work is no longer a fact-port gap; it is PBFT non-empty block production/finalization and external-EVM publication
-liveness before DPoS mutations can be observed by the Rust snapshot port.
+liveness before DPoS mutations can be observed by the Rust snapshot port. One bounded finalization-resume fact leak has
+been closed: the PBFT manager shim now passes the actual `block_in_chain` value into Rust finalization intent planning,
+so duplicate/resume handling cannot be misclassified as a first-time finalization.
+
+The DAG proposer FinalChain fact port also no longer gates proposal-period DPoS authorization on
+`last_finalized >= proposal_period`. Legacy DAG proposal asks DPoS for the proposal period directly and lets the
+FinalChain delegation-delay/snapshot API decide whether the fact is available; preserving that contract avoids a circular
+dependency where DAG blocks wait for a PBFT period that needs DAG blocks to become non-empty.
+
+Validation after removing that gate still leaves `PbftManagerTest.pbft_manager_run_single_node` failing with zero
+non-empty PBFT blocks and zero executed transactions, so the remaining blocker is deeper than FinalChain/DPoS fact
+readiness and must be traced through DAG block creation, PBFT proposal/certification, or finalization admission.
 
 Scope:
 
