@@ -182,6 +182,7 @@ impl BridgePbftChain {
             manager_period: 0,
             pillar_processed_period: 0,
             pillar_request_period: 0,
+            anchor_dag_cache_count: 0,
         })
     }
 

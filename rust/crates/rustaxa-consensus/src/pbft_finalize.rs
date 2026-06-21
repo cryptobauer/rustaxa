@@ -424,6 +424,8 @@ pub enum PbftFinalizationLiveMutationStatus {
     PillarProcessedPeriodMismatch,
     /// Pillar post-processing used an invalid FinalChain request period.
     PillarRequestPeriodInvalid,
+    /// Rust-owned anchor DAG-order cache metadata was not empty after cleanup.
+    AnchorDagCacheNotCleared,
     /// The report carried an unknown action code.
     UnknownAction,
 }
@@ -451,6 +453,7 @@ impl PbftFinalizationLiveMutationStatus {
             Self::ManagerPeriodMismatch => 16,
             Self::PillarProcessedPeriodMismatch => 17,
             Self::PillarRequestPeriodInvalid => 18,
+            Self::AnchorDagCacheNotCleared => 19,
             Self::UnknownAction => 255,
         }
     }
@@ -509,6 +512,8 @@ pub struct PbftFinalizationLiveMutationReport {
     pub pillar_processed_period: u64,
     /// FinalChain request period used as pillar block input.
     pub pillar_request_period: u64,
+    /// Number of Rust-tracked anchor DAG-order cache entries after cleanup.
+    pub anchor_dag_cache_count: u64,
 }
 
 /// Result of validating one PBFT finalization live-mutation report.
@@ -2448,6 +2453,7 @@ pub fn validate_pbft_finalization_live_mutation_report(
             | PbftFinalizationRuntimeAction::SetDagBlockOrder
             | PbftFinalizationRuntimeAction::UpdateFinalizedTransactions
             | PbftFinalizationRuntimeAction::UpdatePbftChain
+            | PbftFinalizationRuntimeAction::ClearAnchorDagCache
             | PbftFinalizationRuntimeAction::SetExecutedFlag
             | PbftFinalizationRuntimeAction::AdvancePeriod
             | PbftFinalizationRuntimeAction::ProcessPillarBlock
@@ -2551,6 +2557,14 @@ pub fn validate_pbft_finalization_live_mutation_report(
                 return reject(
                     PbftFinalizationLiveMutationStatus::PbftChainAnchorMismatch,
                     "PBFT_FINALIZE_LIVE_MUTATION_PBFT_CHAIN_ANCHOR_MISMATCH",
+                );
+            }
+        }
+        PbftFinalizationRuntimeAction::ClearAnchorDagCache => {
+            if report.anchor_dag_cache_count != 0 {
+                return reject(
+                    PbftFinalizationLiveMutationStatus::AnchorDagCacheNotCleared,
+                    "PBFT_FINALIZE_LIVE_MUTATION_ANCHOR_DAG_CACHE_NOT_CLEARED",
                 );
             }
         }
@@ -3531,6 +3545,7 @@ mod tests {
             manager_period: 11,
             pillar_processed_period: 10,
             pillar_request_period: 5,
+            anchor_dag_cache_count: 0,
         }
     }
 
@@ -4269,6 +4284,12 @@ mod tests {
         );
         assert!(transactions.accepted);
 
+        let anchor_cache = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            live_report(PbftFinalizationRuntimeAction::ClearAnchorDagCache),
+        );
+        assert!(anchor_cache.accepted);
+
         let chain = validate_pbft_finalization_live_mutation_report(
             &plan,
             PbftFinalizationLiveMutationReport {
@@ -4369,6 +4390,18 @@ mod tests {
         assert_eq!(
             sortition.status,
             PbftFinalizationLiveMutationStatus::SortitionChangeMismatch
+        );
+
+        let anchor_cache = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            PbftFinalizationLiveMutationReport {
+                anchor_dag_cache_count: 1,
+                ..live_report(PbftFinalizationRuntimeAction::ClearAnchorDagCache)
+            },
+        );
+        assert_eq!(
+            anchor_cache.status,
+            PbftFinalizationLiveMutationStatus::AnchorDagCacheNotCleared
         );
 
         let executed = validate_pbft_finalization_live_mutation_report(

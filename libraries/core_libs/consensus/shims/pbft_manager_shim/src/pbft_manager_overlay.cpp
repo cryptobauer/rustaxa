@@ -4027,7 +4027,21 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     const auto clear_cache_snapshot =
         rustaxa::pbft_manager_runtime_clear_cached_anchor_dag_order(*pbft_manager_runtime_.value());
     ensurePbftManagerRuntimeSnapshotReady(clear_cache_snapshot, "Clear cached PBFT DAG order anchors");
-    if (!report_runtime_action(runtime_step, true, 0)) {
+    rustaxa::PbftFinalizationLiveMutationReport clear_cache_report{};
+    clear_cache_report.action = kPbftFinalizationRuntimeActionClearAnchorDagCache;
+    clear_cache_report.block_period = finalization_plan.storage_write_intent.block_period;
+    clear_cache_report.pbft_block_hash = finalization_plan.storage_write_intent.pbft_block_hash;
+    clear_cache_report.anchor_hash = finalization_plan.storage_write_intent.anchor_hash;
+    clear_cache_report.anchor_dag_cache_count =
+        rustaxa::pbft_manager_runtime_cached_anchor_dag_order_count(*pbft_manager_runtime_.value());
+    const auto live_validation = validate_live_mutation(clear_cache_report);
+    if (!live_validation.accepted) {
+      LOG(log_er_) << "Rust PBFT finalization anchor-cache live mutation rejected for block " << pbft_block_hash
+                   << ", period " << block_pbft_period << ", status " << static_cast<uint32_t>(live_validation.status)
+                   << ", error " << static_cast<std::string>(live_validation.error_code);
+    }
+    if (!report_runtime_action_detail(runtime_step, live_validation.accepted, live_validation.status,
+                                      static_cast<std::string>(live_validation.error_code))) {
       return false;
     }
   }

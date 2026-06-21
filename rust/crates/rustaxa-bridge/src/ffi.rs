@@ -1630,6 +1630,7 @@ pub mod rustaxa_ffi {
         manager_period: u64,
         pillar_processed_period: u64,
         pillar_request_period: u64,
+        anchor_dag_cache_count: u64,
     }
 
     /// Result of validating a live PBFT finalization mutation report in Rust.
@@ -4875,6 +4876,9 @@ pub mod rustaxa_ffi {
             runtime: &BridgePbftManagerRuntime,
             anchor_hash: &[u8; 32],
         ) -> bool;
+        pub fn pbft_manager_runtime_cached_anchor_dag_order_count(
+            runtime: &BridgePbftManagerRuntime,
+        ) -> u64;
         pub fn pbft_manager_runtime_record_cached_anchor_dag_order(
             runtime: &mut BridgePbftManagerRuntime,
             anchor_hash: [u8; 32],

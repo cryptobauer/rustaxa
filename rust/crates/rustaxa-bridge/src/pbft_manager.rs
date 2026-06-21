@@ -467,6 +467,25 @@ pub fn pbft_manager_runtime_has_cached_anchor_dag_order(
         .has_cached_anchor_dag_order(ethereum_types::H256::from(*anchor_hash))
 }
 
+/// Returns the count of Rust-owned DAG-order cache membership entries.
+///
+/// Inputs:
+/// - `runtime`: long-lived PBFT manager runtime.
+///
+/// Outputs:
+/// - Number of materialized anchor DAG-order sidecars still tracked in Rust
+///   runtime metadata.
+///
+/// Invariants and edge behavior:
+/// - This is live metadata, not durable storage. Finalization cleanup reports
+///   use it to prove the Rust-side cache was cleared before the runtime cursor
+///   advances.
+pub fn pbft_manager_runtime_cached_anchor_dag_order_count(
+    runtime: &BridgePbftManagerRuntime,
+) -> u64 {
+    runtime.state.cached_anchor_dag_order_count()
+}
+
 /// Records Rust-owned DAG-order cache membership metadata.
 ///
 /// Inputs:
@@ -2958,9 +2977,17 @@ mod tests {
                 &runtime,
                 &second_anchor
             ));
+            assert_eq!(
+                pbft_manager_runtime_cached_anchor_dag_order_count(&runtime),
+                2
+            );
 
             let clear_snapshot = pbft_manager_runtime_clear_cached_anchor_dag_order(&mut runtime);
             assert_eq!(clear_snapshot.status, STARTUP_STATUS_READY);
+            assert_eq!(
+                pbft_manager_runtime_cached_anchor_dag_order_count(&runtime),
+                0
+            );
             assert!(!pbft_manager_runtime_has_cached_anchor_dag_order(
                 &runtime,
                 &first_anchor

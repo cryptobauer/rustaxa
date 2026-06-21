@@ -396,6 +396,8 @@ Landed bounded PBFT-chain update/report collapse:
 - `ProcessPillarBlock` now submits a typed post-processing report with finalized period, derived FinalChain request
   period, and post-advance manager period; Rust rejects mismatched or invalid pillar post-processing reports before the
   finalization runtime cursor completes.
+- `ClearAnchorDagCache` now reports the Rust-tracked anchor DAG-order cache count after cleanup; Rust rejects finalization
+  cursor advancement unless the period-scoped cache metadata is empty.
 
 Scope:
 

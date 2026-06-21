@@ -947,6 +947,7 @@ impl From<FfiPbftFinalizationLiveMutationReport> for PbftFinalizationLiveMutatio
             manager_period: value.manager_period,
             pillar_processed_period: value.pillar_processed_period,
             pillar_request_period: value.pillar_request_period,
+            anchor_dag_cache_count: value.anchor_dag_cache_count,
         }
     }
 }
@@ -1322,6 +1323,7 @@ mod tests {
                 manager_period: 11,
                 pillar_processed_period: 10,
                 pillar_request_period: 5,
+                anchor_dag_cache_count: 0,
             },
         );
         assert!(accepted.accepted);
@@ -1353,6 +1355,7 @@ mod tests {
                 manager_period: 11,
                 pillar_processed_period: 10,
                 pillar_request_period: 5,
+                anchor_dag_cache_count: 0,
             },
         );
         assert!(!rejected.accepted);
@@ -1384,6 +1387,7 @@ mod tests {
                 manager_period: 11,
                 pillar_processed_period: 10,
                 pillar_request_period: 5,
+                anchor_dag_cache_count: 0,
             },
         );
         assert!(!reward_rejected.accepted);

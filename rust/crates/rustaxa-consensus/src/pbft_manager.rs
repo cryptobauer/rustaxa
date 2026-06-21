@@ -3643,6 +3643,20 @@ impl PbftManagerRuntime {
         self.cached_anchor_dag_order_hashes.contains(&anchor_hash)
     }
 
+    /// Returns the number of Rust-tracked materialized DAG-order anchor sidecars.
+    ///
+    /// Outputs:
+    /// - Count of anchor hashes reported by the C++ compatibility shell and
+    ///   still retained in the Rust runtime metadata.
+    ///
+    /// Invariants and edge behavior:
+    /// - This is live metadata only. It is used by finalization report
+    ///   validation to prove period-scoped DAG-order cache cleanup completed on
+    ///   the Rust runtime as well as the temporary C++ sidecar map.
+    pub fn cached_anchor_dag_order_count(&self) -> u64 {
+        self.cached_anchor_dag_order_hashes.len() as u64
+    }
+
     /// Records that the compatibility shell materialized DAG-order data for an anchor.
     ///
     /// Inputs:
@@ -7866,12 +7880,14 @@ mod tests {
         runtime.record_cached_anchor_dag_order(second_anchor);
         assert!(runtime.has_cached_anchor_dag_order(first_anchor));
         assert!(runtime.has_cached_anchor_dag_order(second_anchor));
+        assert_eq!(runtime.cached_anchor_dag_order_count(), 2);
 
         let clear_snapshot = runtime.clear_cached_anchor_dag_order();
         assert_eq!(
             clear_snapshot.status,
             PbftManagerStartupRestoreStatus::Ready
         );
+        assert_eq!(runtime.cached_anchor_dag_order_count(), 0);
         assert!(!runtime.has_cached_anchor_dag_order(first_anchor));
         assert!(!runtime.has_cached_anchor_dag_order(second_anchor));
     }
