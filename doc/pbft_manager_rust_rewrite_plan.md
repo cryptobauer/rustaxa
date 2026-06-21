@@ -679,6 +679,8 @@ Landed bounded cleanup:
 - Consolidated duplicate PBFT sync transaction-hash bridge helpers in the overlay into one templated helper while keeping
   the same edge-only materialization behavior.
 - Consolidated duplicate byte-vector bridge helpers for Rust payload conversion into one templated overlay helper.
+- Replaced remaining PBFT manager overlay/header TODO markers with explicit public API, lifecycle, and executor-boundary
+  classifications.
 
 Scope:
 

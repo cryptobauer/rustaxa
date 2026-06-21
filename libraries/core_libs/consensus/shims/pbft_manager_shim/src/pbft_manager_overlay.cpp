@@ -2419,8 +2419,8 @@ void PbftManager::firstFinish_() {
     }
 
     if (effect.intent == kPbftManagerStateActionIntentNextVotePreviousRoundValue) {
-      // TODO: We should vote for any value that we first saw 2t+1 next votes for in previous round -> in current design
-      // we dont know for which value we saw 2t+1 next votes as first so we prefer specific block if possible
+      // Rust selects the previous-round next-vote value from compact vote facts. The shim only materializes the selected
+      // block for the temporary vote-generation executor boundary.
       const auto starting_value_hash = fromBridgeHash(effect.hash);
       auto block = admitStateActionPbftBlock(effect, "First finish next-vote previous round value");
       if (!block) {

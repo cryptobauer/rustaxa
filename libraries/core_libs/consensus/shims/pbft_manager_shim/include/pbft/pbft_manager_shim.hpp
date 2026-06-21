@@ -144,9 +144,8 @@ class PbftManager {
 
   /**
    * @brief Get PBFT round & period number
-   * @return <PBFT round, PBFT period>
+   * @return legacy public API order <PBFT round, PBFT period>
    */
-  // TODO: exchange round <-> period
   std::pair<PbftRound, PbftPeriod> getPbftRoundAndPeriod() const;
 
   /**
@@ -662,8 +661,8 @@ class PbftManager {
   mutable std::unordered_map<blk_hash_t, std::vector<std::shared_ptr<DagBlock>>> anchor_dag_block_order_cache_;
 
   std::unique_ptr<std::thread> daemon_;
-  // TODO[pbft-runtime-root]: keep only for network/EVM/public materialization and lifecycle compatibility while the
-  // remaining PBFT manager sidecars move behind Rust runtime/query handles.
+  // Compatibility edge kept only for network/EVM/public materialization and lifecycle wiring while the shim owns those
+  // boundaries.
   std::shared_ptr<DbStorage> db_;
   // Rust-owned scalar PBFT manager cursor. C++ fields below are transitional
   // mirrors updated from Rust snapshots after startup and transition storage
