@@ -722,10 +722,7 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
     throw std::runtime_error("VoteManager Rust PBFT vote admission accepted without a storage payload");
   }
 
-  const auto votes_with_weight = verified_votes_.attachRuntimeAcceptedVote(runtime_result);
-  if (!votes_with_weight) {
-    throw std::runtime_error("VoteManager Rust vote-progress planner accepted vote without inserted vote sidecars");
-  }
+  verified_votes_.verifyRuntimeAcceptedPayload(runtime_result);
 
   LOG(log_nf_) << "Added verified vote: " << hash;
   LOG(log_dg_) << "Added verified vote: " << *vote;

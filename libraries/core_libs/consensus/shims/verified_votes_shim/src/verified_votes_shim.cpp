@@ -507,17 +507,31 @@ rustaxa::PbftVoteAdmissionRuntimeResult VerifiedVotes::admitValidatedVote(
                                                                    context);
 }
 
-std::optional<VotesWithWeight> VerifiedVotes::attachRuntimeAcceptedVote(
-    const rustaxa::PbftVoteAdmissionRuntimeResult& result) {
+void VerifiedVotes::verifyRuntimeAcceptedPayload(const rustaxa::PbftVoteAdmissionRuntimeResult& result) const {
   if (!result.accepted || !result.has_verified_vote_add || !result.verified_vote_add.inserted) {
-    return std::nullopt;
+    return;
   }
   if (result.vote.vote_hash != result.verified_vote_add.vote.vote_hash) {
     throw verifiedVotesError("runtime admission accepted mismatched vote hashes");
   }
+  if (!result.has_storage_vote) {
+    throw verifiedVotesError("runtime admission accepted without a retained weighted payload");
+  }
+  if (result.storage_vote.hash != result.vote.vote_hash) {
+    throw verifiedVotesError("runtime admission retained weighted payload for a different vote hash");
+  }
+  if (result.verified_vote_add.vote.weight != result.vote.weight) {
+    throw verifiedVotesError("runtime admission verified-vote weight mismatches accepted vote");
+  }
 
   std::scoped_lock lock(verified_votes_access_);
-  return requireInsertedVotesWithWeightLocked(result.vote, result.verified_vote_add.total_weight, true, false);
+  const auto payload_lookup = rust_verified_votes_->verified_votes_weighted_payload(result.vote.vote_hash);
+  if (!payload_lookup.found) {
+    throw verifiedVotesError("runtime admission accepted without a retained weighted payload lookup");
+  }
+  if (payload_lookup.vote.hash != result.storage_vote.hash) {
+    throw verifiedVotesError("runtime admission retained payload lookup mismatches storage payload");
+  }
 }
 
 void VerifiedVotes::setNetworkTPlusOneStep(std::shared_ptr<PbftVote> vote) {

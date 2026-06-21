@@ -409,10 +409,10 @@ class VerifiedVotes {
    *
    * Invariants:
    * - This call mutates only Rust verified-vote state and retained payload
-   *   sidecars. It does not attach a live C++ `PbftVote` object or execute
-   *   network/storage/slashing side effects; callers must execute returned
-   *   intents and call `attachRuntimeAcceptedVote` to materialize any temporary
-   *   compatibility buckets from Rust-retained weighted payloads.
+   *   sidecars. It does not attach a live C++ `PbftVote` object, materialize
+   *   compatibility vote buckets, or execute network/storage/slashing side
+   *   effects; callers must execute returned intents and may verify the
+   *   retained weighted payload with `verifyRuntimeAcceptedPayload`.
    */
   rustaxa::PbftVoteAdmissionRuntimeResult admitValidatedVote(rust::Slice<const uint8_t> canonical_vote_rlp,
                                                              rustaxa::PbftVoteValidationExternalFacts validation_facts,
@@ -420,21 +420,17 @@ class VerifiedVotes {
                                                              rustaxa::PbftVoteProgressContext context);
 
   /**
-   * Materializes compatibility bucket data for a vote already accepted by Rust runtime.
+   * Verifies retained weighted-payload invariants for a vote accepted by Rust runtime.
    *
    * Inputs:
    * - `result`: runtime admission result returned by `admitValidatedVote`.
    *
-   * Outputs:
-   * - The inserted voted-value bucket materialized from Rust-retained payloads
-   *   when Rust inserted the vote.
-   * - Empty optional when the runtime report was not an accepted insertion.
-   *
    * Error behavior:
-   * - Missing retained payloads are hard invariant errors on the production
-   *   admission path because Rust has already mutated authoritative state.
+   * - Missing or mismatched retained payloads are hard invariant errors on the
+   *   production admission path because Rust has already mutated authoritative
+   *   verified-vote state.
    */
-  std::optional<VotesWithWeight> attachRuntimeAcceptedVote(const rustaxa::PbftVoteAdmissionRuntimeResult& result);
+  void verifyRuntimeAcceptedPayload(const rustaxa::PbftVoteAdmissionRuntimeResult& result) const;
 
   /**
    * Sets `network_t_plus_one_step` for vote's (`period`, `round`) entry when present.

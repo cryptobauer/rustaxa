@@ -216,9 +216,9 @@ Status as of 2026-06-21: in progress.
 - PBFT `VotesWithWeight` compatibility reconstruction now prefers Rust-retained weighted payloads; live PBFT vote
   sidecars are retained only as documented compatibility fallback for low-level helper paths that bypass runtime payload
   retention.
-- PBFT vote admission and validation no longer hydrate or mutate the incoming live C++ `PbftVote` sidecar for weight
-  ownership. Rust-retained weighted payload records feed compatibility bucket materialization; incoming live votes remain
-  only network/public/executor payloads.
+- PBFT vote admission and validation no longer hydrate, mutate, attach, or materialize the incoming live C++ `PbftVote`
+  sidecar for weight ownership. The production admission path verifies Rust-retained weighted payload records directly;
+  incoming live votes remain only network/public/executor payloads.
 
 Scope:
 
