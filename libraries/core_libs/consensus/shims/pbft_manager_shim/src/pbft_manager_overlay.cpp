@@ -3715,34 +3715,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           if (!report_resume_action(resume_step, final_chain_validation.accepted, final_chain_validation.status)) {
             return false;
           }
-          if (resume_runtime_session->pbft_finalization_runtime_session_next().action ==
-              kPbftFinalizationRuntimeActionProcessPillarBlock) {
-            if (!begin_resume_action(kPbftFinalizationRuntimeActionProcessPillarBlock, resume_step)) {
-              return false;
-            }
-            assert(block_pbft_period == pbft_chain_->getPbftChainSize());
-            const auto pillar_request_period = block_pbft_period - final_chain_->delegationDelay();
-            processPillarBlock(block_pbft_period);
-            rustaxa::PbftFinalizationLiveMutationReport pillar_report{};
-            pillar_report.action = kPbftFinalizationRuntimeActionProcessPillarBlock;
-            pillar_report.block_period = finalization_plan.storage_write_intent.block_period;
-            pillar_report.pbft_block_hash = finalization_plan.storage_write_intent.pbft_block_hash;
-            pillar_report.anchor_hash = finalization_plan.storage_write_intent.anchor_hash;
-            pillar_report.manager_period = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value()).period;
-            pillar_report.pillar_processed_period = block_pbft_period;
-            pillar_report.pillar_request_period = pillar_request_period;
-            const auto pillar_validation =
-                rustaxa::validate_pbft_finalization_live_mutation_report(finalization_plan, pillar_report);
-            if (!pillar_validation.accepted) {
-              LOG(log_er_) << "Rust PBFT finalization resume pillar live mutation rejected for block "
-                           << pbft_block_hash << ", period " << block_pbft_period << ", status "
-                           << static_cast<uint32_t>(pillar_validation.status) << ", error "
-                           << static_cast<std::string>(pillar_validation.error_code);
-            }
-            if (!report_resume_action(resume_step, pillar_validation.accepted, pillar_validation.status)) {
-              return false;
-            }
-          }
         }
 
         if (resume_runtime_session->pbft_finalization_runtime_session_next().action ==

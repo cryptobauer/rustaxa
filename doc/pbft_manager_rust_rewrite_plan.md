@@ -408,9 +408,15 @@ Landed bounded PBFT-chain update/report collapse:
   failing closed. The replay path appends the dynamic-lambda storage stage through the PBFT manager runtime storage
   handle, applies the Rust runtime snapshot, validates the post-state report, and then continues through any remaining
   Rust-planned FinalChain, executed-status, period-advance, and pillar replay actions in the same resume session.
+- Resume replay has a single cursor-driven `ProcessPillarBlock` executor when Rust includes pillar post-processing in a
+  replay tail. Standalone `NeedsPillarPostProcessingReplay` remains intentionally fail-closed until Rust has a durable
+  pillar post-processing proof or cursor, because replaying `processPillarBlock()` can create pillar blocks and local
+  votes and is not proven idempotent from finalized-period storage alone.
 - The obsolete split `ApplyRewardVotesResetStorage` and `ApplySortitionStorage` runtime action codes were retired. Reward
   and sortition storage payloads are part of the Rust-owned primary finalization batch, while only their live runtime
   commits remain as separate executor actions.
+- Duplicate-block resume now executes pillar post-processing only at the Rust replay cursor's `ProcessPillarBlock`
+  position after period advance; the duplicate opportunistic post-FinalChain pillar branch was removed.
 
 Scope:
 
