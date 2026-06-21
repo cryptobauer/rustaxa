@@ -375,10 +375,12 @@ Validation:
 
 Goal: make Rust own the finalization plan and all non-EVM post-commit state updates.
 
-Status: in progress. The Rust finalization runtime owns action ordering and now rejects successful executor reports with
-invalid action-status payloads before advancing the cursor. This closes the first bounded Slice 6 authority gap for
-Rust-owned storage actions and generic non-storage executor reports while keeping FinalChain/EVM execution as an explicit
-temporary executor boundary.
+Status: complete for the bounded finalization executor collapse. The Rust finalization runtime owns action ordering,
+rejects successful executor reports with invalid action-status payloads, validates every normal non-EVM live-mutation
+report before advancing the cursor, and keeps FinalChain/EVM execution as an explicit temporary executor boundary.
+Duplicate-block resume only replays actions whose need is derived from durable Rust-inspected facts; standalone pillar
+post-processing replay remains fail-closed until a future durable replay-proof slice exists, rather than falling back to
+C++-owned mutation.
 
 Landed bounded PBFT-chain update/report collapse:
 
@@ -667,10 +669,10 @@ Validation:
 
 Goal: reduce the PBFT manager overlay from copied orchestration to a thin executor surface.
 
-Status: pending finalization follow-up. The first audit found no `PbftManagerOld` production forwarding and removed a
-stale commented proposed-block startup TODO from the overlay, but broad overlay shrink is intentionally deferred until
-Slice 6 closes the remaining non-EVM finalization executor work. Starting broad deletion before that would either keep
-finalization behavior in C++ or hide active executor boundaries behind cosmetic cleanup.
+Status: pending overlay shrink. The first audit found no `PbftManagerOld` production forwarding and removed a stale
+commented proposed-block startup TODO from the overlay. With Slice 6 closed for the bounded finalization executor
+collapse, the next cleanup pass can remove obsolete scaffolding and helpers without hiding active finalization ownership
+gaps behind cosmetic deletion.
 
 Scope:
 
