@@ -664,9 +664,8 @@ class PbftManager {
   // Compatibility edge kept only for network/EVM/public materialization and lifecycle wiring while the shim owns those
   // boundaries.
   std::shared_ptr<DbStorage> db_;
-  // Rust-owned scalar PBFT manager cursor. C++ fields below are transitional
-  // mirrors updated from Rust snapshots after startup and transition storage
-  // commits.
+  // Rust-owned PBFT manager runtime. Remaining C++ fields below are compatibility mirrors or executor/public API
+  // materialization caches; they must not be used as Rust-mode protocol authority.
   mutable std::optional<rust::Box<rustaxa::BridgePbftManagerRuntime>> pbft_manager_runtime_;
   std::shared_ptr<PbftChain> pbft_chain_;
   std::shared_ptr<VoteManager> vote_mgr_;
@@ -682,37 +681,44 @@ class PbftManager {
 
   const std::chrono::milliseconds kMaxExponentialLambda{60000};  // [ms], max lambda is 1 minute
 
+  // Runtime scalar mirrors hydrated from Rust snapshots for temporary executor/public API compatibility.
   uint32_t rounds_count_dynamic_lambda_{0};  // rounds count per cacti_hf.lambda_change_interval blocks
   uint32_t dynamic_lambda_{0};               // [ms] - dynamic lambda that can be anywhere between <500ms, 1500ms>
   std::chrono::milliseconds current_round_lambda_{0};  // [ms] - current round lambda
 
   const uint32_t kBroadcastVotesLambdaTime = 20;
   const uint32_t kRebroadcastVotesLambdaTime = 60;
+  // Broadcast counter mirrors kept for vote gossip/rebroadcast executor compatibility.
   uint32_t broadcast_votes_counter_ = 1;
   uint32_t rebroadcast_votes_counter_ = 1;
   uint32_t broadcast_reward_votes_counter_ = 1;
   uint32_t rebroadcast_reward_votes_counter_ = 1;
 
+  // Cursor mirrors hydrated from Rust snapshots for temporary executor/public API compatibility.
   PbftStates state_ = value_proposal_state;
   std::atomic<PbftRound> round_ = 1;
   PbftStep step_ = 1;
 
-  // Block that node cert voted
+  // Temporary object materialization cache for vote-generation and network/public API boundaries. Rust owns the
+  // cert-voted metadata and canonical payload.
   std::optional<std::shared_ptr<PbftBlock>> cert_voted_block_for_round_{};
 
-  // All broadcasted votes created by a node in current round - just for summary logging purposes
+  // Summary logging cache for votes created by this node in the current round.
   std::map<blk_hash_t, std::vector<PbftStep>> current_round_broadcasted_votes_;
 
+  // Local wall-clock executor timers. Rust owns transition planning; C++ owns sleeping and scheduling effects.
   time_point current_round_start_datetime_;
   time_point current_period_start_datetime_;
   time_point second_finish_step_start_datetime_;
   std::chrono::milliseconds next_step_time_ms_{0};
 
+  // Runtime boolean mirrors hydrated from Rust snapshots for temporary executor/public API compatibility.
   bool executed_pbft_block_ = false;
   bool already_next_voted_value_ = false;
   bool already_next_voted_null_block_hash_ = false;
   bool go_finish_state_ = false;
   bool loop_back_finish_state_ = false;
+  // Pillar-vote placement guard kept at the temporary pillar/network executor boundary.
   PbftPeriod last_placed_pillar_vote_period_ = 0;
 
   // Used to avoid cyclic logging in voting steps that are called repeatedly

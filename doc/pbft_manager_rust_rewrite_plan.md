@@ -724,6 +724,9 @@ Landed bounded cleanup:
   runtime snapshot after transition effects complete.
 - Removed startup replay locals that read C++ round/step mirrors immediately after Rust runtime snapshot hydration; the
   startup path now uses the Rust startup snapshot directly.
+- Classified the remaining PBFT manager C++ scalar mirrors, broadcast counters, cert-voted object cache, local timers,
+  boolean mirrors, and pillar-vote guard in the shim header as executor/public/network compatibility state rather than
+  Rust-mode protocol authority.
 
 Scope:
 
