@@ -316,6 +316,53 @@ class VoteManager : public VoteManagerOld {
                                                       const std::vector<vote_hash_t>& reward_vote_hashes,
                                                       bool copy_votes);
   /**
+   * Validates reward votes for a live PBFT block without returning sidecars.
+   *
+   * Purpose:
+   * - Lets PBFT manager report a compact valid/invalid fact to Rust block
+   *   validation sessions without inspecting detailed reward-vote planner
+   *   status.
+   *
+   * Outputs:
+   * - Returns true when Rust accepts the reward-vote references.
+   * - Returns false after `checkRewardVotesDetailed` logs the stable Rust
+   *   rejection status and error code.
+   *
+   * Invariants:
+   * - Does not mutate verified-vote state.
+   * - Does not copy selected live vote sidecars.
+   */
+  bool validateRewardVotesForBlock(const std::shared_ptr<PbftBlock>& pbft_block);
+  /**
+   * Selects reward-vote payloads for a live PBFT block.
+   *
+   * Purpose:
+   * - Gives PBFT manager only the executor payloads needed by reproposal and
+   *   finalization compatibility after Rust reward-vote selection accepts.
+   *
+   * Outputs:
+   * - Returns selected reward-vote sidecars on acceptance.
+   * - Returns empty after `checkRewardVotesDetailed` logs the Rust rejection.
+   *
+   * Edge behavior:
+   * - Payload order matches the PBFT block reward-vote hash list.
+   */
+  std::optional<std::vector<std::shared_ptr<PbftVote>>> collectRewardVotesForBlock(
+      const std::shared_ptr<PbftBlock>& pbft_block);
+  /**
+   * Selects reward-vote payloads for compact queued PBFT block facts.
+   *
+   * Purpose:
+   * - Keeps sync admission from materializing a PBFT block or reading detailed
+   *   reward-vote reports in PBFT manager when queued metadata already supplies
+   *   the block identity and reward-vote hash list.
+   *
+   * Outputs and edge behavior match the live-block overload.
+   */
+  std::optional<std::vector<std::shared_ptr<PbftVote>>> collectRewardVotesForBlock(
+      PbftPeriod block_period, const blk_hash_t& block_hash, const blk_hash_t& prev_block_hash,
+      const std::vector<vote_hash_t>& reward_vote_hashes);
+  /**
    * Returns reward votes selected from the shim's live verified-vote sidecar.
    *
    * Inputs:

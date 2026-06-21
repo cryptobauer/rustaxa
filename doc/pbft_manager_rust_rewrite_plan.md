@@ -521,10 +521,9 @@ Landed:
   `has_new_round/new_round` facts to the runtime session instead of calling the legacy optional-return round selector.
 - Startup replay cert-vote hydration now goes through a typed VoteManager validation result. PBFT manager no longer loops
   over replayed `PbftVote` sidecars to call `validateVote` directly before reward-distribution finalization.
-- Reward-vote validation in PBFT manager proposal, block-validation, cert-voted-block push, and sync paths now uses a
-  detailed VoteManager result that preserves Rust reward-vote planner status, selected period/round/block, missing vote
-  hash, and error code. The legacy pair-returning API remains as compatibility, but PBFT manager call sites no longer
-  collapse reward-vote planner rejection into a local boolean before logging/reporting.
+- Reward-vote validation in PBFT manager proposal, block-validation, cert-voted-block push, and sync paths now uses
+  semantic VoteManager validate/collect helpers. The Rust-backed reward-vote selector remains authoritative, while
+  detailed status/error inspection is confined to VoteManager instead of each PBFT manager branch.
 - PBFT manager state-action fact construction no longer queries individual VoteManager `2t+1` next/soft-voted block
   sidecar families directly. It asks VoteManager for compact Rust-backed state-action vote facts and forwards only
   booleans and hashes into the Rust state-action planner.

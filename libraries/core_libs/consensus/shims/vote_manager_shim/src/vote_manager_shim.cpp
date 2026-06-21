@@ -1063,6 +1063,29 @@ VoteManager::RewardVoteValidationResult VoteManager::checkRewardVotesDetailed(
   return result;
 }
 
+bool VoteManager::validateRewardVotesForBlock(const std::shared_ptr<PbftBlock>& pbft_block) {
+  return checkRewardVotesDetailed(pbft_block, false).accepted;
+}
+
+std::optional<std::vector<std::shared_ptr<PbftVote>>> VoteManager::collectRewardVotesForBlock(
+    const std::shared_ptr<PbftBlock>& pbft_block) {
+  auto result = checkRewardVotesDetailed(pbft_block, true);
+  if (!result.accepted) {
+    return {};
+  }
+  return std::move(result.votes);
+}
+
+std::optional<std::vector<std::shared_ptr<PbftVote>>> VoteManager::collectRewardVotesForBlock(
+    PbftPeriod block_period, const blk_hash_t& block_hash, const blk_hash_t& prev_block_hash,
+    const std::vector<vote_hash_t>& reward_vote_hashes) {
+  auto result = checkRewardVotesDetailed(block_period, block_hash, prev_block_hash, reward_vote_hashes, true);
+  if (!result.accepted) {
+    return {};
+  }
+  return std::move(result.votes);
+}
+
 std::vector<std::shared_ptr<PbftVote>> VoteManager::getRewardVotes() {
   blk_hash_t reward_votes_block_hash;
   PbftRound reward_votes_period;
