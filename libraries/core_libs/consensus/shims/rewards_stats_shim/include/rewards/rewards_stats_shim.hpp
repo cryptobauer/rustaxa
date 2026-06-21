@@ -101,6 +101,7 @@ class Stats {
 
   const uint32_t kCommitteeSize;
   const HardforksConfig kHardforksConfig;
+  std::shared_ptr<DbStorage> db_;
   const std::function<uint64_t(EthBlockNumber)> dpos_eligible_total_vote_count_;
   // Legacy decoded view retained for public/test adapters that still inspect
   // `BlockStats`. It is not the authoritative rewards-stat cache in Rust mode.
@@ -113,7 +114,7 @@ class Stats {
   BlockStats decodeBlockStats(const rust::Vec<uint8_t>& stats_rlp) const;
   void cacheStatsRlp(PbftPeriod period, const rust::Vec<uint8_t>& stats_rlp);
   void replaceCacheRlp(const rust::Vec<rustaxa::PeriodRlp>& stats);
-  void appendStorageWrites(const rustaxa::RewardsStatsProcessResult& plan, Batch& write_batch) const;
+  void appendStorageWrites(const rustaxa::RewardsStatsProcessResult& plan, Batch& write_batch);
 
   rust::Box<rustaxa::BridgeRewardsStatsRuntime> rust_stats_;
   std::unordered_map<PbftPeriod, std::vector<uint8_t>> blocks_stats_rlp_;

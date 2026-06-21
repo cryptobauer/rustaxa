@@ -65,7 +65,8 @@ Stats::Stats(uint32_t committee_size, const HardforksConfig& hardforks, std::sha
     : kCommitteeSize(committee_size),
       kHardforksConfig(hardforks),
       dpos_eligible_total_vote_count_(std::move(dpos_eligible_total_vote_count)),
-      rust_stats_(rustaxa::create_rewards_stats_runtime(db->rustStorage(), makeRewardsConfig(kCommitteeSize, hardforks),
+      db_(std::move(db)),
+      rust_stats_(rustaxa::create_rewards_stats_runtime(db_->rustStorage(), makeRewardsConfig(kCommitteeSize, hardforks),
                                                         makeFrequencyRules(hardforks), last_blk_num)) {
   recoverFromDb(last_blk_num);
 }
@@ -231,12 +232,17 @@ void Stats::replaceCacheRlp(const rust::Vec<rustaxa::PeriodRlp>& stats) {
   }
 }
 
-void Stats::appendStorageWrites(const rustaxa::RewardsStatsProcessResult& plan, Batch& write_batch) const {
-  (void)write_batch;
-  auto result = rust_stats_->rewards_stats_runtime_apply_storage_writes(plan, false);
-  if (result.status != kRewardsStatsApplied) {
-    throw rewardsStatsError("storage appender rejected period " + std::to_string(result.current_period) + ": " +
-                            std::string(result.error_code));
+void Stats::appendStorageWrites(const rustaxa::RewardsStatsProcessResult& plan, Batch& write_batch) {
+  if (plan.status != kRewardsStatsApplied) {
+    throw rewardsStatsError("storage appender rejected plan for period " + std::to_string(plan.current_period) + ": " +
+                            std::string(plan.error_code));
+  }
+  if (plan.cache_current_period) {
+    db_->saveBlockRewardsStatsRlp(plan.current_period, plan.current_block_stats_rlp, write_batch);
+    return;
+  }
+  if (plan.clear_cached_stats) {
+    throw rewardsStatsError("storage appender cannot stage rewards cache clear before finalization commit");
   }
 }
 

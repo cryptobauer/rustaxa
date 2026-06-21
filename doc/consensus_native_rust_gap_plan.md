@@ -250,6 +250,8 @@ Status as of 2026-06-21: in progress.
   and Rust storage reload/clear for persisted block-reward stats rows.
 - The C++ rewards-stats shim now treats Rust-produced RLP rows as the authoritative interval carrier and keeps decoded
   `BlockStats` only as a public/test compatibility view for `StateAPI::distribute_rewards` and legacy callers.
+- Non-boundary rewards-stat cache writes in the C++ finalization path now append Rust-produced `BlockStats` RLP directly
+  to the caller's Rust storage batch instead of committing through a separate rewards runtime storage handle.
 
 Scope:
 
