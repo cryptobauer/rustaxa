@@ -411,8 +411,8 @@ class VerifiedVotes {
    * - This call mutates only Rust verified-vote state and retained payload
    *   sidecars. It does not attach a live C++ `PbftVote` object or execute
    *   network/storage/slashing side effects; callers must execute returned
-   *   intents and call `attachRuntimeAcceptedVote` after hydrating the accepted
-   *   sidecar.
+   *   intents and call `attachRuntimeAcceptedVote` to materialize any temporary
+   *   compatibility buckets from Rust-retained weighted payloads.
    */
   rustaxa::PbftVoteAdmissionRuntimeResult admitValidatedVote(rust::Slice<const uint8_t> canonical_vote_rlp,
                                                              rustaxa::PbftVoteValidationExternalFacts validation_facts,
@@ -420,22 +420,21 @@ class VerifiedVotes {
                                                              rustaxa::PbftVoteProgressContext context);
 
   /**
-   * Attaches the C++ live sidecar for a vote already accepted by Rust runtime.
+   * Materializes compatibility bucket data for a vote already accepted by Rust runtime.
    *
    * Inputs:
-   * - `vote`: live `PbftVote` object with calculated weight matching Rust.
    * - `result`: runtime admission result returned by `admitValidatedVote`.
    *
    * Outputs:
-   * - The inserted voted-value bucket when Rust inserted the vote.
+   * - The inserted voted-value bucket materialized from Rust-retained payloads
+   *   when Rust inserted the vote.
    * - Empty optional when the runtime report was not an accepted insertion.
    *
    * Error behavior:
-   * - Hash/weight/report mismatches are hard invariant errors because Rust has
-   *   already mutated the authoritative verified-vote state.
+   * - Missing retained payloads are hard invariant errors on the production
+   *   admission path because Rust has already mutated authoritative state.
    */
-  std::optional<VotesWithWeight> attachRuntimeAcceptedVote(const std::shared_ptr<PbftVote>& vote,
-                                                           const rustaxa::PbftVoteAdmissionRuntimeResult& result);
+  std::optional<VotesWithWeight> attachRuntimeAcceptedVote(const rustaxa::PbftVoteAdmissionRuntimeResult& result);
 
   /**
    * Sets `network_t_plus_one_step` for vote's (`period`, `round`) entry when present.
@@ -489,6 +488,9 @@ class VerifiedVotes {
   VotesWithWeight requireInsertedVotesWithWeightLocked(const std::shared_ptr<PbftVote>& vote,
                                                        uint64_t total_weight,
                                                        bool allow_later_bucket_growth = false) const;
+  VotesWithWeight requireInsertedVotesWithWeightLocked(const rustaxa::VerifiedVotePayload& vote_data,
+                                                       uint64_t total_weight, bool allow_later_bucket_growth,
+                                                       bool allow_live_sidecar_fallback) const;
   PeriodVerifiedVotesMap buildSnapshotState() const;
   void pruneLiveVotesToSnapshotLocked();
 

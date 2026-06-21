@@ -311,16 +311,16 @@ rustaxa::PbftVoteEventFactFlags makeVoteEventFactFlags(bool valid_stale_reward_v
   return flags;
 }
 
-void requireRuntimeAdmissionVoteMatches(const rustaxa::VerifiedVotePayload& fact,
-                                        const std::shared_ptr<PbftVote>& vote) {
-  if (!vote || !vote->getWeight().has_value()) {
-    throw std::runtime_error("VoteManager cannot attach PBFT vote admission result without a weighted vote sidecar");
+void requireRuntimeAdmissionVoteMatches(const rustaxa::VerifiedVotePayload& fact, const std::shared_ptr<PbftVote>& vote,
+                                        uint64_t rust_weight) {
+  if (!vote) {
+    throw std::runtime_error("VoteManager cannot compare PBFT vote admission result without a vote sidecar");
   }
 
   if (fact.vote_hash != toBridgeHash(vote->getHash()) || fact.block_hash != toBridgeHash(vote->getBlockHash()) ||
       fact.voter != toBridgeAddress(vote->getVoterAddr()) || fact.period != vote->getPeriod() ||
       fact.round != vote->getRound() || fact.step != vote->getStep() ||
-      fact.vote_type != static_cast<uint8_t>(vote->getType()) || fact.weight != *vote->getWeight()) {
+      fact.vote_type != static_cast<uint8_t>(vote->getType()) || fact.weight != rust_weight) {
     throw std::runtime_error("VoteManager Rust PBFT vote admission result mismatched live vote sidecar");
   }
 }
@@ -701,14 +701,7 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
   if (!runtime_result.validation.has_sortition_threshold || !runtime_result.validation.weight_calculated) {
     throw std::runtime_error("VoteManager Rust PBFT vote admission accepted validation without weight facts");
   }
-  // TODO(rustaxa): remove this legacy sidecar hydration once VoteManager no longer keeps live C++ PbftVote sidecars.
-  const auto cpp_weight =
-      vote->calculateWeight(external_facts.voter_dpos_vote_count, external_facts.total_dpos_vote_count,
-                            runtime_result.validation.sortition_threshold);
-  if (cpp_weight != runtime_result.validation.calculated_weight) {
-    throw std::runtime_error("VoteManager Rust PBFT vote admission weight mismatched legacy sidecar hydration");
-  }
-  requireRuntimeAdmissionVoteMatches(runtime_result.vote, vote);
+  requireRuntimeAdmissionVoteMatches(runtime_result.vote, vote, runtime_result.validation.calculated_weight);
 
   if (runtime_result.report_slashing) {
     LOG(log_wr_) << "Non unique vote " << vote->getHash().abridged() << " (race condition)";
@@ -729,7 +722,7 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
     throw std::runtime_error("VoteManager Rust PBFT vote admission accepted without a storage payload");
   }
 
-  const auto votes_with_weight = verified_votes_.attachRuntimeAcceptedVote(vote, runtime_result);
+  const auto votes_with_weight = verified_votes_.attachRuntimeAcceptedVote(runtime_result);
   if (!votes_with_weight) {
     throw std::runtime_error("VoteManager Rust vote-progress planner accepted vote without inserted vote sidecars");
   }
@@ -1440,12 +1433,8 @@ std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<Pbf
       throw std::runtime_error("Rust PBFT vote validation accepted validation facts without a calculated weight");
     }
 
-    // TODO(rustaxa): remove this legacy sidecar mutation once Rust owns the live PBFT vote object or the shim has a
-    // Rust-owned verified-vote payload path that no longer requires `PbftVote::weight_`.
-    const auto cpp_weight =
-        vote->calculateWeight(voter_dpos_votes_count, total_dpos_votes_count, validation.sortition_threshold);
-    if (cpp_weight != validation.calculated_weight) {
-      throw std::runtime_error("Rust PBFT vote weight does not match legacy C++ sidecar weight");
+    if (validation.calculated_weight == 0) {
+      throw std::runtime_error("Rust PBFT vote validation accepted a zero calculated weight");
     }
   } catch (state_api::ErrFutureBlock& e) {
     external_facts.future_dpos_state = true;

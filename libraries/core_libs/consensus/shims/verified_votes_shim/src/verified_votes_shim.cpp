@@ -107,16 +107,32 @@ const std::shared_ptr<PbftVote>& VerifiedVotes::requireLiveVote(const vote_hash_
 VotesWithWeight VerifiedVotes::requireInsertedVotesWithWeightLocked(const std::shared_ptr<PbftVote>& vote,
                                                                     uint64_t total_weight,
                                                                     bool allow_later_bucket_growth) const {
+  rustaxa::VerifiedVotePayload vote_data{};
+  vote_data.vote_hash = toBridgeHash(vote->getHash());
+  vote_data.block_hash = toBridgeHash(vote->getBlockHash());
+  vote_data.voter = toBridgeAddress(vote->getVoterAddr());
+  vote_data.period = vote->getPeriod();
+  vote_data.round = vote->getRound();
+  vote_data.step = vote->getStep();
+  vote_data.vote_type = static_cast<uint8_t>(vote->getType());
+  vote_data.weight = requireVoteWeight(vote);
+  return requireInsertedVotesWithWeightLocked(vote_data, total_weight, allow_later_bucket_growth, true);
+}
+
+VotesWithWeight VerifiedVotes::requireInsertedVotesWithWeightLocked(const rustaxa::VerifiedVotePayload& vote_data,
+                                                                    uint64_t total_weight,
+                                                                    bool allow_later_bucket_growth,
+                                                                    bool allow_live_sidecar_fallback) const {
   VotesWithWeight value{};
   const auto step_votes =
-      rust_verified_votes_->verified_votes_get_step_votes(vote->getPeriod(), vote->getRound(), vote->getStep());
+      rust_verified_votes_->verified_votes_get_step_votes(vote_data.period, vote_data.round, vote_data.step);
   if (!step_votes.found) {
     throw verifiedVotesError("Rust inserted voted value but Rust step lookup has no matching step");
   }
 
   bool found_block = false;
   for (const auto& entry : step_votes.entries) {
-    if (fromBridgeHash(entry.block_hash) != vote->getBlockHash()) {
+    if (entry.block_hash != vote_data.block_hash) {
       continue;
     }
     found_block = true;
@@ -135,9 +151,10 @@ VotesWithWeight VerifiedVotes::requireInsertedVotesWithWeightLocked(const std::s
 
       // TODO(rustaxa): remove this compatibility fallback once low-level bridge test helpers stop inserting
       // verified-vote metadata without retaining weighted payload bytes through the admission runtime.
-      if (const auto live_vote = live_votes_.find(hash); live_vote != live_votes_.end()) {
+      if (allow_live_sidecar_fallback && live_votes_.find(hash) != live_votes_.end()) {
+        const auto live_vote = live_votes_.find(hash);
         value.votes.insert({hash, live_vote->second});
-      } else if (hash == vote->getHash()) {
+      } else if (vote_hash.hash == vote_data.vote_hash) {
         throw verifiedVotesError("Rust inserted current vote without retained weighted payload");
       }
     }
@@ -491,24 +508,16 @@ rustaxa::PbftVoteAdmissionRuntimeResult VerifiedVotes::admitValidatedVote(
 }
 
 std::optional<VotesWithWeight> VerifiedVotes::attachRuntimeAcceptedVote(
-    const std::shared_ptr<PbftVote>& vote, const rustaxa::PbftVoteAdmissionRuntimeResult& result) {
-  if (!vote) {
-    throw verifiedVotesError("cannot attach null runtime-accepted vote");
-  }
+    const rustaxa::PbftVoteAdmissionRuntimeResult& result) {
   if (!result.accepted || !result.has_verified_vote_add || !result.verified_vote_add.inserted) {
     return std::nullopt;
   }
-  if (result.vote.vote_hash != toBridgeHash(vote->getHash()) ||
-      result.verified_vote_add.vote.vote_hash != toBridgeHash(vote->getHash())) {
-    throw verifiedVotesError("runtime admission accepted a different vote hash than the live sidecar");
-  }
-  if (!vote->getWeight().has_value() || *vote->getWeight() != result.verified_vote_add.vote.weight) {
-    throw verifiedVotesError("runtime admission weight mismatches the live sidecar");
+  if (result.vote.vote_hash != result.verified_vote_add.vote.vote_hash) {
+    throw verifiedVotesError("runtime admission accepted mismatched vote hashes");
   }
 
   std::scoped_lock lock(verified_votes_access_);
-  live_votes_[vote->getHash()] = vote;
-  return requireInsertedVotesWithWeightLocked(vote, result.verified_vote_add.total_weight, true);
+  return requireInsertedVotesWithWeightLocked(result.vote, result.verified_vote_add.total_weight, true, false);
 }
 
 void VerifiedVotes::setNetworkTPlusOneStep(std::shared_ptr<PbftVote> vote) {
