@@ -441,11 +441,8 @@ void DagManager::setNetwork(std::weak_ptr<Network> network) {
 }
 
 bool DagManager::isDagBlockKnown(const blk_hash_t &hash) const {
-  if (seen_blocks_.count(hash) != 0 || hash == genesis_block_->getHash()) {
-    return true;
-  }
   std::shared_lock lock(rust_graphs_mutex_);
-  return rust_graphs_->runtime->dag_manager_runtime_block_exists(to_bridge_hash(hash));
+  return rust_graphs_->runtime->dag_manager_runtime_is_block_known(to_bridge_hash(hash));
 }
 
 std::shared_ptr<DagBlock> DagManager::getDagBlock(const blk_hash_t &hash) const {

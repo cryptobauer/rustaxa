@@ -4633,6 +4633,12 @@ pub mod rustaxa_ffi {
             self: &BridgeDagManagerRuntime,
             hash: &[u8; 32],
         ) -> Result<bool>;
+        /// Returns DAG block membership from Rust graph state plus canonical
+        /// Rust storage without consulting C++ compatibility caches.
+        pub fn dag_manager_runtime_is_block_known(
+            self: &BridgeDagManagerRuntime,
+            hash: &[u8; 32],
+        ) -> Result<bool>;
         /// Loads per-tip gas facts from canonical Rust DAG storage for
         /// verification gas checks without C++ `DagBlock` materialization.
         pub fn dag_manager_runtime_tip_gas_estimations(

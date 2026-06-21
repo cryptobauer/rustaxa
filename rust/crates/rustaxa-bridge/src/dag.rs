@@ -1059,6 +1059,20 @@ impl BridgeDagManagerRuntime {
         dag_block_exists_in_storage(self.storage.as_ref(), to_h256(hash))
     }
 
+    /// Returns whether the Rust DAG runtime knows a block in live graph state
+    /// or canonical Rust storage.
+    ///
+    /// This is the Rust-mode authority for `DagManager::isDagBlockKnown`.
+    /// Compatibility caches may still retain materialized `DagBlock` sidecars
+    /// for public/test/event edges, but they do not decide membership.
+    pub fn dag_manager_runtime_is_block_known(&self, hash: &[u8; 32]) -> Result<bool> {
+        let hash = to_h256(hash);
+        Ok(
+            self.state.has_vertex(hash)
+                || dag_block_exists_in_storage(self.storage.as_ref(), hash)?,
+        )
+    }
+
     /// Loads per-tip gas facts directly from Rust storage for DAG block verification.
     ///
     /// Inputs:
