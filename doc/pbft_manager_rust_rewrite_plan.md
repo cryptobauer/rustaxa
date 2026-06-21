@@ -505,11 +505,10 @@ Validation:
 
 Goal: remove PBFT manager reliance on vote and pillar C++ managers except for explicit network/public execution.
 
-Status: in progress. The first bounded pass moves synced cert-vote bundle shape and threshold validation into Rust from
-compact vote facts while keeping VoteManager signature, VRF, weight materialization, and verified-vote insertion as
-temporary executor effects. PBFT manager reward-vote callers now consume typed Rust reward-vote selection status instead
-of an opaque VoteManager boolean, while VoteManager still snapshots verified-vote membership and materializes selected
-legacy vote sidecars.
+Status: complete for the bounded vote, pillar, and slashing boundary tightening pass. PBFT manager no longer consumes
+live VoteManager or PillarChainManager sidecar collections for protocol decisions; remaining vote and pillar object use
+is classified as network egress, local signing, finalization/sync executor payload materialization, or typed manager
+ports that own the decision before returning executor payloads.
 
 Landed:
 
@@ -587,6 +586,15 @@ Landed:
 - Double-vote slashing submission is now isolated behind a named VoteManager executor helper that receives
   Rust-normalized slashing evidence from verified-vote admission. The remaining `SlashingManager` call is explicit
   temporary executor debt rather than mixed into the vote admission state machine.
+
+Residual carried forward:
+
+- PBFT manager still materializes `PbftVote` payloads for local signing and network gossip until the network pipeline and
+  local signing executor move to Rust-native payload references.
+- `PillarVote` objects still appear at pillar local-signing, network gossip, and sync/finalization executor boundaries;
+  the deterministic validation and anchor selection decisions live behind PillarChainManager ports.
+- Finalization reward-vote reset and pillar post-processing still execute through VoteManager/PillarChainManager
+  executor ports. Collapsing the remaining non-EVM finalization executor work belongs to Slice 6 follow-up, not Slice 8.
 
 Scope:
 
