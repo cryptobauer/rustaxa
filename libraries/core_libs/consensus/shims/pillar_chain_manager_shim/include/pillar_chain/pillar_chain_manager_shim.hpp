@@ -335,6 +335,30 @@ class PillarChainManager {
   std::vector<std::shared_ptr<PillarVote>> finalizePillarBlock(const blk_hash_t& pillar_block_hash);
 
   /**
+   * Typed PBFT finalization preflight result for pillar-block finalization.
+   *
+   * Purpose:
+   * - Keeps PBFT manager from interpreting raw pillar-vote payload vectors as
+   *   pillar-finalization status while preserving those vectors as executor
+   *   payloads for PeriodData.
+   *
+   * Outputs:
+   * - `success == true` when pillar finalization produced above-threshold votes.
+   * - `pillar_vote_count` mirrors the payload count reported back to Rust.
+   * - `pillar_votes` are temporary C++ executor payloads for PeriodData only.
+   *
+   * Invariants:
+   * - PillarChainManager owns the current-block and threshold checks.
+   * - PBFT manager must not inspect `pillar_votes` for protocol decisions.
+   */
+  struct FinalizePillarBlockPreflightResult {
+    bool success = false;
+    uint64_t pillar_vote_count = 0;
+    std::vector<std::shared_ptr<PillarVote>> pillar_votes;
+  };
+  FinalizePillarBlockPreflightResult finalizePillarBlockForPbftPreflight(const blk_hash_t& pillar_block_hash);
+
+  /**
    * Returns the current local pillar block, or `nullptr` before one is created.
    */
   std::shared_ptr<PillarBlock> getCurrentPillarBlock() const;

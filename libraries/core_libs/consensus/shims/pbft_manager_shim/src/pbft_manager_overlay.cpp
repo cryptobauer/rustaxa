@@ -3496,10 +3496,10 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
   }
   if (pillar_preflight_plan.action == kPbftFinalizationPillarPreflightActionFinalizePillarBlock) {
     assert(pillar_block_hash.has_value());
-    auto above_threshold_pillar_votes = pillar_chain_mgr_->finalizePillarBlock(*pillar_block_hash);
+    auto pillar_finalization = pillar_chain_mgr_->finalizePillarBlockForPbftPreflight(*pillar_block_hash);
     rustaxa::PbftFinalizationPillarPreflightReport pillar_preflight_report;
     pillar_preflight_report.action = pillar_preflight_plan.action;
-    pillar_preflight_report.success = !above_threshold_pillar_votes.empty();
+    pillar_preflight_report.success = pillar_finalization.success;
     pillar_preflight_report.status =
         pillar_preflight_report.success ? kPbftFinalizationPillarPreflightStatusAccepted : 255;
     pillar_preflight_report.error_code =
@@ -3507,7 +3507,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     pillar_preflight_report.block_period = block_pbft_period;
     pillar_preflight_report.pbft_block_hash = toBridgeHash(pbft_block_hash);
     pillar_preflight_report.pillar_block_hash = toBridgeHash(*pillar_block_hash);
-    pillar_preflight_report.pillar_vote_count = above_threshold_pillar_votes.size();
+    pillar_preflight_report.pillar_vote_count = pillar_finalization.pillar_vote_count;
     const auto pillar_preflight_result =
         rustaxa::report_pbft_finalization_pillar_preflight(pillar_preflight_plan, pillar_preflight_report);
     if (!pillar_preflight_result.accepted) {
@@ -3517,7 +3517,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                    << static_cast<std::string>(pillar_preflight_result.error_code);
       return false;
     }
-    period_data.pillar_votes_ = std::move(above_threshold_pillar_votes);
+    period_data.pillar_votes_ = std::move(pillar_finalization.pillar_votes);
     pillar_block_finalized = true;
   }
 

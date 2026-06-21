@@ -625,6 +625,15 @@ std::vector<std::shared_ptr<PillarVote>> PillarChainManager::finalizePillarBlock
   return pillar_votes;
 }
 
+PillarChainManager::FinalizePillarBlockPreflightResult PillarChainManager::finalizePillarBlockForPbftPreflight(
+    const blk_hash_t& pillar_block_hash) {
+  FinalizePillarBlockPreflightResult result;
+  result.pillar_votes = finalizePillarBlock(pillar_block_hash);
+  result.pillar_vote_count = result.pillar_votes.size();
+  result.success = !result.pillar_votes.empty();
+  return result;
+}
+
 bool PillarChainManager::isPillarBlockLatestFinalized(const blk_hash_t& block_hash) const {
   std::shared_lock<std::shared_mutex> lock(mutex_);
 

@@ -544,6 +544,8 @@ Landed:
   dereferencing the current `PillarBlock` sidecar in PBFT manager.
 - Restart pillar post-processing checks and local pillar-vote fallback now use compact current pillar-anchor facts instead
   of reading the current `PillarBlock` sidecar in PBFT manager.
+- Finalization pillar preflight now receives a typed PillarChainManager result with success, vote count, and executor
+  payloads instead of treating the returned pillar-vote vector as the protocol decision in PBFT manager.
 
 Scope:
 
