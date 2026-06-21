@@ -1612,6 +1612,8 @@ pub mod rustaxa_ffi {
         sortition_change_threshold_upper: u16,
         sortition_current_threshold_upper: u16,
         sortition_params_changes_count: u64,
+        executed_pbft_block: bool,
+        manager_period: u64,
     }
 
     /// Result of validating a live PBFT finalization mutation report in Rust.

@@ -3661,14 +3661,43 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                                           already_next_voted_null_block_hash_, broadcast_votes_counter_,
                                           rebroadcast_votes_counter_, broadcast_reward_votes_counter_,
                                           rebroadcast_reward_votes_counter_);
-          if (!report_resume_action(resume_step, true, 0)) {
+          rustaxa::PbftFinalizationLiveMutationReport executed_report{};
+          executed_report.action = kPbftFinalizationRuntimeActionSetExecutedFlag;
+          executed_report.block_period = finalization_plan.storage_write_intent.block_period;
+          executed_report.pbft_block_hash = finalization_plan.storage_write_intent.pbft_block_hash;
+          executed_report.anchor_hash = finalization_plan.storage_write_intent.anchor_hash;
+          executed_report.executed_pbft_block = executed_status_snapshot.executed_pbft_block;
+          const auto executed_validation =
+              rustaxa::validate_pbft_finalization_live_mutation_report(finalization_plan, executed_report);
+          if (!executed_validation.accepted) {
+            LOG(log_er_) << "Rust PBFT finalization resume executed-flag live mutation rejected for block "
+                         << pbft_block_hash << ", period " << block_pbft_period << ", status "
+                         << static_cast<uint32_t>(executed_validation.status) << ", error "
+                         << static_cast<std::string>(executed_validation.error_code);
+          }
+          if (!report_resume_action(resume_step, executed_validation.accepted, executed_validation.status)) {
             return false;
           }
           if (!begin_resume_action(kPbftFinalizationRuntimeActionAdvancePeriod, resume_step)) {
             return false;
           }
           advancePeriod();
-          if (!report_resume_action(resume_step, true, 0)) {
+          rustaxa::PbftFinalizationLiveMutationReport advance_report{};
+          advance_report.action = kPbftFinalizationRuntimeActionAdvancePeriod;
+          advance_report.block_period = finalization_plan.storage_write_intent.block_period;
+          advance_report.pbft_block_hash = finalization_plan.storage_write_intent.pbft_block_hash;
+          advance_report.anchor_hash = finalization_plan.storage_write_intent.anchor_hash;
+          advance_report.manager_period =
+              rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value()).period;
+          const auto advance_validation =
+              rustaxa::validate_pbft_finalization_live_mutation_report(finalization_plan, advance_report);
+          if (!advance_validation.accepted) {
+            LOG(log_er_) << "Rust PBFT finalization resume advance-period live mutation rejected for block "
+                         << pbft_block_hash << ", period " << block_pbft_period << ", status "
+                         << static_cast<uint32_t>(advance_validation.status) << ", error "
+                         << static_cast<std::string>(advance_validation.error_code);
+          }
+          if (!report_resume_action(resume_step, advance_validation.accepted, advance_validation.status)) {
             return false;
           }
         }
@@ -4063,7 +4092,20 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                                     executed_pbft_block_, already_next_voted_value_, already_next_voted_null_block_hash_,
                                     broadcast_votes_counter_, rebroadcast_votes_counter_,
                                     broadcast_reward_votes_counter_, rebroadcast_reward_votes_counter_);
-    if (!report_runtime_action(runtime_step, true, 0)) {
+    rustaxa::PbftFinalizationLiveMutationReport executed_report{};
+    executed_report.action = kPbftFinalizationRuntimeActionSetExecutedFlag;
+    executed_report.block_period = finalization_plan.storage_write_intent.block_period;
+    executed_report.pbft_block_hash = finalization_plan.storage_write_intent.pbft_block_hash;
+    executed_report.anchor_hash = finalization_plan.storage_write_intent.anchor_hash;
+    executed_report.executed_pbft_block = executed_status_snapshot.executed_pbft_block;
+    const auto live_validation = validate_live_mutation(executed_report);
+    if (!live_validation.accepted) {
+      LOG(log_er_) << "Rust PBFT finalization executed-flag live mutation rejected for block " << pbft_block_hash
+                   << ", period " << block_pbft_period << ", status " << static_cast<uint32_t>(live_validation.status)
+                   << ", error " << static_cast<std::string>(live_validation.error_code);
+    }
+    if (!report_runtime_action_detail(runtime_step, live_validation.accepted, live_validation.status,
+                                      static_cast<std::string>(live_validation.error_code))) {
       return false;
     }
   }
@@ -4074,7 +4116,20 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       return false;
     }
     advancePeriod();
-    if (!report_runtime_action(runtime_step, true, 0)) {
+    rustaxa::PbftFinalizationLiveMutationReport advance_report{};
+    advance_report.action = kPbftFinalizationRuntimeActionAdvancePeriod;
+    advance_report.block_period = finalization_plan.storage_write_intent.block_period;
+    advance_report.pbft_block_hash = finalization_plan.storage_write_intent.pbft_block_hash;
+    advance_report.anchor_hash = finalization_plan.storage_write_intent.anchor_hash;
+    advance_report.manager_period = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value()).period;
+    const auto live_validation = validate_live_mutation(advance_report);
+    if (!live_validation.accepted) {
+      LOG(log_er_) << "Rust PBFT finalization advance-period live mutation rejected for block " << pbft_block_hash
+                   << ", period " << block_pbft_period << ", status " << static_cast<uint32_t>(live_validation.status)
+                   << ", error " << static_cast<std::string>(live_validation.error_code);
+    }
+    if (!report_runtime_action_detail(runtime_step, live_validation.accepted, live_validation.status,
+                                      static_cast<std::string>(live_validation.error_code))) {
       return false;
     }
   }

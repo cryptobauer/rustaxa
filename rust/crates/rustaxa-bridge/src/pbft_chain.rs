@@ -178,6 +178,8 @@ impl BridgePbftChain {
             sortition_change_threshold_upper: 0,
             sortition_current_threshold_upper: 0,
             sortition_params_changes_count: 0,
+            executed_pbft_block: false,
+            manager_period: 0,
         })
     }
 

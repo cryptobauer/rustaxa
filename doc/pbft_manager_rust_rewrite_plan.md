@@ -387,6 +387,8 @@ Landed bounded PBFT-chain update/report collapse:
   storage-write intent, while the C++ shim keeps only the temporary PBFT-chain lock boundary.
 - `SetExecutedFlag` is now applied through the Rust PBFT manager runtime from the accepted finalization storage-write
   intent; C++ hydrates the temporary mirror from the returned snapshot instead of assigning the flag directly.
+- `SetExecutedFlag` and `AdvancePeriod` now submit typed PBFT manager post-state reports to Rust finalization live
+  mutation validation before the finalization runtime cursor advances.
 
 Scope:
 

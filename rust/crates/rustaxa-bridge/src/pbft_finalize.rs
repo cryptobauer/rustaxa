@@ -943,6 +943,8 @@ impl From<FfiPbftFinalizationLiveMutationReport> for PbftFinalizationLiveMutatio
             sortition_change_threshold_upper: value.sortition_change_threshold_upper,
             sortition_current_threshold_upper: value.sortition_current_threshold_upper,
             sortition_params_changes_count: value.sortition_params_changes_count,
+            executed_pbft_block: value.executed_pbft_block,
+            manager_period: value.manager_period,
         }
     }
 }
@@ -1314,6 +1316,8 @@ mod tests {
                 sortition_change_threshold_upper: 0,
                 sortition_current_threshold_upper: 0,
                 sortition_params_changes_count: 0,
+                executed_pbft_block: true,
+                manager_period: 11,
             },
         );
         assert!(accepted.accepted);
@@ -1341,6 +1345,8 @@ mod tests {
                 sortition_change_threshold_upper: 0,
                 sortition_current_threshold_upper: 0,
                 sortition_params_changes_count: 0,
+                executed_pbft_block: true,
+                manager_period: 11,
             },
         );
         assert!(!rejected.accepted);
@@ -1368,6 +1374,8 @@ mod tests {
                 sortition_change_threshold_upper: 0,
                 sortition_current_threshold_upper: 0,
                 sortition_params_changes_count: 0,
+                executed_pbft_block: true,
+                manager_period: 11,
             },
         );
         assert!(!reward_rejected.accepted);

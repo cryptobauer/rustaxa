@@ -416,6 +416,10 @@ pub enum PbftFinalizationLiveMutationStatus {
     SortitionChangeMismatch,
     /// Sortition post-commit live state does not match the emitted change.
     SortitionLiveStateMismatch,
+    /// Executed PBFT flag did not match the accepted finalization intent.
+    ExecutedFlagMismatch,
+    /// PBFT manager period did not advance to the expected post-finalization period.
+    ManagerPeriodMismatch,
     /// The report carried an unknown action code.
     UnknownAction,
 }
@@ -439,6 +443,8 @@ impl PbftFinalizationLiveMutationStatus {
             Self::RewardVotesExtraVotesNotCleared => 12,
             Self::SortitionChangeMismatch => 13,
             Self::SortitionLiveStateMismatch => 14,
+            Self::ExecutedFlagMismatch => 15,
+            Self::ManagerPeriodMismatch => 16,
             Self::UnknownAction => 255,
         }
     }
@@ -489,6 +495,10 @@ pub struct PbftFinalizationLiveMutationReport {
     pub sortition_current_threshold_upper: u16,
     /// Number of cached live sortition parameter changes after the commit.
     pub sortition_params_changes_count: u64,
+    /// Executed-PBFT flag after the manager runtime applies the finalization intent.
+    pub executed_pbft_block: bool,
+    /// PBFT manager period after the finalization period-advance action.
+    pub manager_period: u64,
 }
 
 /// Result of validating one PBFT finalization live-mutation report.
@@ -2428,6 +2438,8 @@ pub fn validate_pbft_finalization_live_mutation_report(
             | PbftFinalizationRuntimeAction::SetDagBlockOrder
             | PbftFinalizationRuntimeAction::UpdateFinalizedTransactions
             | PbftFinalizationRuntimeAction::UpdatePbftChain
+            | PbftFinalizationRuntimeAction::SetExecutedFlag
+            | PbftFinalizationRuntimeAction::AdvancePeriod
     ) {
         return reject(
             PbftFinalizationLiveMutationStatus::ActionNotLiveMutation,
@@ -2528,6 +2540,29 @@ pub fn validate_pbft_finalization_live_mutation_report(
                 return reject(
                     PbftFinalizationLiveMutationStatus::PbftChainAnchorMismatch,
                     "PBFT_FINALIZE_LIVE_MUTATION_PBFT_CHAIN_ANCHOR_MISMATCH",
+                );
+            }
+        }
+        PbftFinalizationRuntimeAction::SetExecutedFlag => {
+            if report.executed_pbft_block != plan.storage_write_intent.executed_pbft_status {
+                return reject(
+                    PbftFinalizationLiveMutationStatus::ExecutedFlagMismatch,
+                    "PBFT_FINALIZE_LIVE_MUTATION_EXECUTED_FLAG_MISMATCH",
+                );
+            }
+        }
+        PbftFinalizationRuntimeAction::AdvancePeriod => {
+            let Some(expected_period) = plan.storage_write_intent.block_period.checked_add(1)
+            else {
+                return reject(
+                    PbftFinalizationLiveMutationStatus::ManagerPeriodMismatch,
+                    "PBFT_FINALIZE_LIVE_MUTATION_MANAGER_PERIOD_OVERFLOW",
+                );
+            };
+            if report.manager_period != expected_period {
+                return reject(
+                    PbftFinalizationLiveMutationStatus::ManagerPeriodMismatch,
+                    "PBFT_FINALIZE_LIVE_MUTATION_MANAGER_PERIOD_MISMATCH",
                 );
             }
         }
@@ -3452,6 +3487,8 @@ mod tests {
             sortition_change_threshold_upper: 0,
             sortition_current_threshold_upper: 0,
             sortition_params_changes_count: 0,
+            executed_pbft_block: true,
+            manager_period: 11,
         }
     }
 
@@ -4200,6 +4237,18 @@ mod tests {
             },
         );
         assert!(chain.accepted);
+
+        let executed = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            live_report(PbftFinalizationRuntimeAction::SetExecutedFlag),
+        );
+        assert!(executed.accepted);
+
+        let advance = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            live_report(PbftFinalizationRuntimeAction::AdvancePeriod),
+        );
+        assert!(advance.accepted);
     }
 
     #[test]
@@ -4269,6 +4318,30 @@ mod tests {
         assert_eq!(
             sortition.status,
             PbftFinalizationLiveMutationStatus::SortitionChangeMismatch
+        );
+
+        let executed = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            PbftFinalizationLiveMutationReport {
+                executed_pbft_block: false,
+                ..live_report(PbftFinalizationRuntimeAction::SetExecutedFlag)
+            },
+        );
+        assert_eq!(
+            executed.status,
+            PbftFinalizationLiveMutationStatus::ExecutedFlagMismatch
+        );
+
+        let advance = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            PbftFinalizationLiveMutationReport {
+                manager_period: 10,
+                ..live_report(PbftFinalizationRuntimeAction::AdvancePeriod)
+            },
+        );
+        assert_eq!(
+            advance.status,
+            PbftFinalizationLiveMutationStatus::ManagerPeriodMismatch
         );
     }
 
