@@ -526,6 +526,42 @@ class PillarChainManager {
   CurrentPillarBlockAnchor currentPillarBlockAnchor() const;
 
   /**
+   * Validates a PBFT block's pillar-anchor extra-data against the current
+   * PillarChainManager anchor.
+   *
+   * Purpose:
+   * - Keeps PBFT manager from owning pillar sidecar comparison rules while it
+   *   reports only a typed check result into the Rust PBFT block-validation
+   *   session.
+   *
+   * Inputs:
+   * - `pbft_block_hash` and `pbft_period` identify the PBFT block being
+   *   checked and are used for diagnostics.
+   * - `pillar_block_hash` is the optional pillar hash carried by the PBFT
+   *   block extra-data.
+   *
+   * Outputs:
+   * - `valid` is true only when a current pillar block exists and its hash
+   *   matches the PBFT block's pillar hash.
+   * - `missing_current_anchor` distinguishes missing local pillar state from a
+   *   hash mismatch.
+   *
+   * Invariants and edge behavior:
+   * - Does not mutate pillar state or materialize additional pillar sidecars.
+   * - Missing PBFT extra-data pillar hash is reported as invalid, not missing
+   *   current anchor.
+   */
+  struct PbftBlockPillarAnchorValidation {
+    bool valid = false;
+    bool missing_current_anchor = false;
+    PbftPeriod current_pillar_period = 0;
+    blk_hash_t current_pillar_hash;
+  };
+  PbftBlockPillarAnchorValidation validatePbftBlockPillarAnchor(
+      const blk_hash_t& pbft_block_hash, PbftPeriod pbft_period,
+      const std::optional<blk_hash_t>& pillar_block_hash) const;
+
+  /**
    * Retrieves verified votes for one pillar period and block hash.
    *
    * Inputs:

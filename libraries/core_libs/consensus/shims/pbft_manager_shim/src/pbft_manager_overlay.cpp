@@ -2939,32 +2939,14 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
     }
 
     if (plan.next_check == kPbftManagerBlockValidationCheckPillarBlock) {
-      const auto pillar_anchor = pillar_chain_mgr_->currentPillarBlockAnchor();
-      if (!pillar_anchor.found) {
-        // This should never happen
-        LOG(log_er_) << "Unable to validate PBFT block " << pbft_block_hash << ", period " << block_period
-                     << ". No current pillar block present in node";
-        plan = validation_session->pbft_manager_block_validation_session_report(kPbftManagerBlockValidationFactInvalid,
-                                                                                false);
-        continue;
-      }
-
-      if (!pbft_block->getExtraData().has_value() || !pbft_block->getExtraData()->getPillarBlockHash().has_value() ||
-          *pbft_block->getExtraData()->getPillarBlockHash() != pillar_anchor.hash) {
-        LOG(log_er_) << "PBFT block " << pbft_block_hash << " with period " << pbft_block->getPeriod()
-                     << " contains pillar block hash "
-                     << (pbft_block->getExtraData().has_value() &&
-                                 pbft_block->getExtraData()->getPillarBlockHash().has_value()
-                             ? *pbft_block->getExtraData()->getPillarBlockHash()
-                             : kNullBlockHash)
-                     << ", which is different than the local current pillar block" << pillar_anchor.hash
-                     << " with period " << pillar_anchor.period;
-        plan = validation_session->pbft_manager_block_validation_session_report(kPbftManagerBlockValidationFactInvalid,
-                                                                                false);
-      } else {
-        plan = validation_session->pbft_manager_block_validation_session_report(kPbftManagerBlockValidationFactValid,
-                                                                                false);
-      }
+      const auto pillar_hash =
+          pbft_block->getExtraData().has_value() ? pbft_block->getExtraData()->getPillarBlockHash() : std::nullopt;
+      const auto pillar_anchor_validation =
+          pillar_chain_mgr_->validatePbftBlockPillarAnchor(pbft_block_hash, block_period, pillar_hash);
+      plan = validation_session->pbft_manager_block_validation_session_report(
+          pillar_anchor_validation.valid ? kPbftManagerBlockValidationFactValid
+                                         : kPbftManagerBlockValidationFactInvalid,
+          false);
       continue;
     }
 

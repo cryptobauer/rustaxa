@@ -572,6 +572,8 @@ Landed:
   network gossip and the separate pillar-vote executor boundary.
 - Local proposal wallet fact construction now lives behind a VoteManager port. PBFT manager no longer loops over wallet
   sidecars to run proposer VRF sortition and build Rust proposal wallet facts.
+- PBFT block validation now asks PillarChainManager for a typed pillar-anchor validation result instead of reading the
+  current pillar block anchor and comparing extra-data hashes inside PBFT manager.
 - Double-vote slashing submission is now isolated behind a named VoteManager executor helper that receives
   Rust-normalized slashing evidence from verified-vote admission. The remaining `SlashingManager` call is explicit
   temporary executor debt rather than mixed into the vote admission state machine.

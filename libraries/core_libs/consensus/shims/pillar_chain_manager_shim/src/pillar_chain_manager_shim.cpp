@@ -857,6 +857,31 @@ PillarChainManager::CurrentPillarBlockAnchor PillarChainManager::currentPillarBl
   return anchor;
 }
 
+PillarChainManager::PbftBlockPillarAnchorValidation PillarChainManager::validatePbftBlockPillarAnchor(
+    const blk_hash_t& pbft_block_hash, PbftPeriod pbft_period,
+    const std::optional<blk_hash_t>& pillar_block_hash) const {
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+  PbftBlockPillarAnchorValidation result;
+  if (!current_pillar_block_) {
+    result.missing_current_anchor = true;
+    LOG(log_er_) << "Unable to validate PBFT block " << pbft_block_hash << ", period " << pbft_period
+                 << ". No current pillar block present in node";
+    return result;
+  }
+
+  result.current_pillar_period = current_pillar_block_->getPeriod();
+  result.current_pillar_hash = current_pillar_block_->getHash();
+  if (!pillar_block_hash.has_value() || *pillar_block_hash != result.current_pillar_hash) {
+    LOG(log_er_) << "PBFT block " << pbft_block_hash << " with period " << pbft_period << " contains pillar block hash "
+                 << pillar_block_hash.value_or(kNullBlockHash) << ", which is different than the local current pillar "
+                 << "block " << result.current_pillar_hash << " with period " << result.current_pillar_period;
+    return result;
+  }
+
+  result.valid = true;
+  return result;
+}
+
 bool PillarChainManager::isRelevantPillarVote(const std::shared_ptr<PillarVote> vote) const {
   const auto vote_exists = pillar_votes_.voteExists(vote);
   const auto current_pillar_block = getCurrentPillarBlock();
