@@ -712,6 +712,8 @@ class VoteManager : public VoteManagerOld {
    *   while preserving network egress as a temporary C++ boundary.
    *
    * Outputs:
+   * - Reward-vote payloads for period-level rebroadcast.
+   * - Own verified PBFT vote payloads for one-by-one gossip.
    * - Current-round soft-vote payloads.
    * - Previous-round next-vote and next-null-vote payloads when `round > 1`.
    *
@@ -721,11 +723,13 @@ class VoteManager : public VoteManagerOld {
    * - Empty vectors represent absent egress payloads.
    */
   struct StuckRoundVoteBroadcastPayloads {
+    std::vector<std::shared_ptr<PbftVote>> reward_votes;
+    std::vector<std::shared_ptr<PbftVote>> own_votes;
     std::vector<std::shared_ptr<PbftVote>> soft_votes;
     std::vector<std::shared_ptr<PbftVote>> previous_round_next_votes;
     std::vector<std::shared_ptr<PbftVote>> previous_round_next_null_votes;
   };
-  StuckRoundVoteBroadcastPayloads stuckRoundVoteBroadcastPayloads(PbftPeriod period, PbftRound round) const;
+  StuckRoundVoteBroadcastPayloads stuckRoundVoteBroadcastPayloads(PbftPeriod period, PbftRound round);
   std::optional<blk_hash_t> getTwoTPlusOneVotedBlock(PbftPeriod period, PbftRound round,
                                                      TwoTPlusOneVotedBlockType type) const;
   std::vector<std::shared_ptr<PbftVote>> getTwoTPlusOneVotedBlockVotes(PbftPeriod period, PbftRound round,

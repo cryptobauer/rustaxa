@@ -1689,8 +1689,10 @@ VoteManager::CertVotedBlockSelection VoteManager::certVotedBlockSelection(PbftPe
 }
 
 VoteManager::StuckRoundVoteBroadcastPayloads VoteManager::stuckRoundVoteBroadcastPayloads(PbftPeriod period,
-                                                                                          PbftRound round) const {
+                                                                                          PbftRound round) {
   StuckRoundVoteBroadcastPayloads payloads;
+  payloads.reward_votes = getRewardVotes();
+  payloads.own_votes = getOwnVerifiedVotes();
   payloads.soft_votes = getTwoTPlusOneVotedBlockVotes(period, round, TwoTPlusOneVotedBlockType::SoftVotedBlock);
   if (round > 1) {
     payloads.previous_round_next_votes =

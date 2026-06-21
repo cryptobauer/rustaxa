@@ -539,6 +539,8 @@ Landed:
   direct PBFT manager `2t+1` verified-vote queries.
 - Stuck-round network rebroadcast now receives named VoteManager egress payload groups for soft, previous-round next, and
   previous-round next-null votes instead of selecting verified-vote sidecar families in PBFT manager.
+- Stuck-round network rebroadcast now receives reward and own PBFT vote egress payloads from the same VoteManager port
+  instead of directly reading reward-vote and own-vote sidecar collections in PBFT manager.
 - Sync pillar-vote validation no longer falls back to PBFT-manager-owned C++ iteration over live `PillarVote` sidecars.
   PBFT manager always routes the bundle through the Rust planner/helper and fails closed if the Rust pillar-vote insertion
   path is unavailable.

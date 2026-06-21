@@ -1745,14 +1745,16 @@ void PbftManager::broadcastVotes() {
   };
 
   // (Re)broadcast reward votes + all own pbft and pillar votes
-  auto stuckPeriodBroadcastVotes = [this, &net, &gossipVotes](bool rebroadcast) {
+  auto stuckPeriodBroadcastVotes = [this, &net, &gossipVotes](
+                                       const VoteManager::StuckRoundVoteBroadcastPayloads &vote_payloads,
+                                       bool rebroadcast) {
     auto [round, period] = getPbftRoundAndPeriod();
 
-    gossipVotes(vote_mgr_->getRewardVotes(), "Reward votes", rebroadcast);
+    gossipVotes(vote_payloads.reward_votes, "Reward votes", rebroadcast);
 
     // Broadcast own pbft votes - send votes by one as they have different type, period, round, step
-    if (const auto &own_votes = vote_mgr_->getOwnVerifiedVotes(); !own_votes.empty()) {
-      for (const auto &vote : own_votes) {
+    if (!vote_payloads.own_votes.empty()) {
+      for (const auto &vote : vote_payloads.own_votes) {
         net->gossipVote(vote, getPbftProposedBlock(vote->getPeriod(), vote->getBlockHash()), rebroadcast);
       }
 
@@ -1773,9 +1775,8 @@ void PbftManager::broadcastVotes() {
   auto stuckRoundBroadcastVotes = [this, &gossipVotes, &stuckPeriodBroadcastVotes](bool rebroadcast) {
     auto [round, period] = getPbftRoundAndPeriod();
 
-    stuckPeriodBroadcastVotes(rebroadcast);
-
     auto vote_payloads = vote_mgr_->stuckRoundVoteBroadcastPayloads(period, round);
+    stuckPeriodBroadcastVotes(vote_payloads, rebroadcast);
 
     // Broadcast 2t+1 soft votes
     gossipVotes(std::move(vote_payloads.soft_votes), "2t+1 soft votes", rebroadcast);
@@ -1828,7 +1829,9 @@ void PbftManager::broadcastVotes() {
       stuckRoundBroadcastVotes(plan.rebroadcast);
       report.success = true;
     } else if (plan.action == kPbftManagerBroadcastActionPeriodVotes) {
-      stuckPeriodBroadcastVotes(plan.rebroadcast);
+      auto [round, period] = getPbftRoundAndPeriod();
+      auto vote_payloads = vote_mgr_->stuckRoundVoteBroadcastPayloads(period, round);
+      stuckPeriodBroadcastVotes(vote_payloads, plan.rebroadcast);
       report.success = true;
     } else {
       report.error_code = "PBFT_MANAGER_BROADCAST_UNSUPPORTED_ACTION";
