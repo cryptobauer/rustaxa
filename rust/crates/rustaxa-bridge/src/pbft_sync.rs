@@ -6,6 +6,9 @@
 //! intent flags for the PBFT manager overlay to apply.
 
 use crate::ffi::rustaxa_ffi::{
+    PbftSyncCertVoteBundleFact as FfiPbftSyncCertVoteBundleFact,
+    PbftSyncCertVoteBundleValidation as FfiPbftSyncCertVoteBundleValidation,
+    PbftSyncCertVoteFact as FfiPbftSyncCertVoteFact,
     PbftSyncEgressPayload as FfiPbftSyncEgressPayload,
     PbftSyncPeriodAdmissionFact as FfiPbftSyncPeriodAdmissionFact,
     PbftSyncPeriodAdmissionPlan as FfiPbftSyncPeriodAdmissionPlan,
@@ -31,6 +34,8 @@ use rustaxa_consensus::pbft_sync::{
     plan_pbft_sync_runtime as plan_domain_pbft_sync_runtime,
     plan_pbft_sync_transaction_query as plan_domain_pbft_sync_transaction_query,
     report_pbft_sync_queue_drain_step as report_domain_pbft_sync_queue_drain_step,
+    validate_pbft_sync_cert_vote_bundle as validate_domain_pbft_sync_cert_vote_bundle,
+    PbftSyncCertVoteBundleFact, PbftSyncCertVoteBundleValidation, PbftSyncCertVoteFact,
     PbftSyncFactStatus, PbftSyncFinalChainHashStatus, PbftSyncPeriodAdmissionFact,
     PbftSyncPeriodAdmissionPlan, PbftSyncProcessPeriodDataRuntimeFact,
     PbftSyncProcessPeriodDataRuntimePlan, PbftSyncQueueDrainAction, PbftSyncQueueDrainReport,
@@ -99,6 +104,16 @@ pub fn plan_pbft_sync_process_period_data_runtime(
     fact: FfiPbftSyncProcessPeriodDataRuntimeFact,
 ) -> FfiPbftSyncProcessPeriodDataRuntimePlan {
     plan_domain_pbft_sync_process_period_data_runtime(fact.into()).into()
+}
+
+/// Validates one synced PBFT cert-vote bundle from compact C++ facts.
+///
+/// C++ remains the temporary executor for VoteManager signature/weight checks,
+/// but Rust owns the deterministic bundle-shape and threshold decision.
+pub fn validate_pbft_sync_cert_vote_bundle(
+    fact: FfiPbftSyncCertVoteBundleFact,
+) -> FfiPbftSyncCertVoteBundleValidation {
+    validate_domain_pbft_sync_cert_vote_bundle(fact.into()).into()
 }
 
 /// Creates a Rust-owned PBFT sync queue-drain session for C++ execution.
@@ -175,6 +190,35 @@ impl From<FfiPbftSyncTransactionQueryFact> for PbftSyncTransactionQueryFact {
                 .into_iter()
                 .map(|hash| H256::from(hash.hash))
                 .collect(),
+        }
+    }
+}
+
+impl From<FfiPbftSyncCertVoteFact> for PbftSyncCertVoteFact {
+    fn from(value: FfiPbftSyncCertVoteFact) -> Self {
+        Self {
+            vote_hash: H256::from(value.vote_hash),
+            block_hash: H256::from(value.block_hash),
+            period: value.period,
+            round: value.round,
+            step: value.step,
+            vote_type: value.vote_type,
+            live_vote_valid: value.live_vote_valid,
+            weight_present: value.weight_present,
+            weight: value.weight,
+        }
+    }
+}
+
+impl From<FfiPbftSyncCertVoteBundleFact> for PbftSyncCertVoteBundleFact {
+    fn from(value: FfiPbftSyncCertVoteBundleFact) -> Self {
+        Self {
+            block_period: value.block_period,
+            block_hash: H256::from(value.block_hash),
+            votes: value.votes.into_iter().map(Into::into).collect(),
+            check_weight_threshold: value.check_weight_threshold,
+            two_t_plus_one_found: value.two_t_plus_one_found,
+            two_t_plus_one: value.two_t_plus_one,
         }
     }
 }
@@ -319,6 +363,18 @@ impl From<PbftSyncQueueDrainReportResult> for FfiPbftSyncQueueDrainReportResult 
             status: value.status.as_u8(),
             can_continue: value.can_continue,
             error_code: value.error_code.to_string(),
+        }
+    }
+}
+
+impl From<PbftSyncCertVoteBundleValidation> for FfiPbftSyncCertVoteBundleValidation {
+    fn from(value: PbftSyncCertVoteBundleValidation) -> Self {
+        Self {
+            valid: value.valid,
+            status: value.status.as_u8(),
+            total_weight: value.total_weight,
+            two_t_plus_one: value.two_t_plus_one,
+            first_bad_vote_hash: value.first_bad_vote_hash.into(),
         }
     }
 }
@@ -529,6 +585,50 @@ mod tests {
             previous_cert_votes_present: true,
             previous_cert_first_vote_has_weight: false,
         }
+    }
+
+    fn cert_vote(weight: u64) -> FfiPbftSyncCertVoteFact {
+        FfiPbftSyncCertVoteFact {
+            vote_hash: [weight as u8; 32],
+            block_hash: [9; 32],
+            period: 101,
+            round: 2,
+            step: 3,
+            vote_type: 3,
+            live_vote_valid: true,
+            weight_present: true,
+            weight,
+        }
+    }
+
+    #[test]
+    fn bridge_cert_vote_bundle_validation_projects_status() {
+        let result = validate_pbft_sync_cert_vote_bundle(FfiPbftSyncCertVoteBundleFact {
+            block_period: 101,
+            block_hash: [9; 32],
+            votes: vec![cert_vote(2), cert_vote(3)],
+            check_weight_threshold: true,
+            two_t_plus_one_found: true,
+            two_t_plus_one: 5,
+        });
+
+        assert!(result.valid);
+        assert_eq!(result.status, 0);
+        assert_eq!(result.total_weight, 5);
+        assert_eq!(result.two_t_plus_one, 5);
+
+        let result = validate_pbft_sync_cert_vote_bundle(FfiPbftSyncCertVoteBundleFact {
+            block_period: 101,
+            block_hash: [9; 32],
+            votes: vec![cert_vote(2)],
+            check_weight_threshold: true,
+            two_t_plus_one_found: true,
+            two_t_plus_one: 5,
+        });
+
+        assert!(!result.valid);
+        assert_eq!(result.status, 10);
+        assert_eq!(result.total_weight, 2);
     }
 
     #[test]

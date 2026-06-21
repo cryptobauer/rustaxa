@@ -4785,8 +4785,37 @@ bool PbftManager::validatePbftBlockCertVotes(PbftPeriod block_period, const blk_
                                              const std::vector<std::shared_ptr<PbftVote>> &cert_votes) const {
   // To speed up syncing/rebuilding full strict vote verification is done for all votes on every
   // full_vote_validation_interval and for a random vote for each block
-  if (cert_votes.empty()) {
-    LOG(log_er_) << "No cert votes provided! The synced PBFT block comes from a malicious player";
+  auto make_cert_vote_bundle_fact = [&](bool check_weight_threshold, bool two_t_plus_one_found,
+                                        uint64_t two_t_plus_one) {
+    rustaxa::PbftSyncCertVoteBundleFact fact;
+    fact.block_period = block_period;
+    fact.block_hash = toBridgeHash(block_hash);
+    fact.check_weight_threshold = check_weight_threshold;
+    fact.two_t_plus_one_found = two_t_plus_one_found;
+    fact.two_t_plus_one = two_t_plus_one;
+    fact.votes.reserve(cert_votes.size());
+    for (const auto &vote : cert_votes) {
+      rustaxa::PbftSyncCertVoteFact vote_fact;
+      vote_fact.vote_hash = toBridgeHash(vote->getHash());
+      vote_fact.block_hash = toBridgeHash(vote->getBlockHash());
+      vote_fact.period = vote->getPeriod();
+      vote_fact.round = vote->getRound();
+      vote_fact.step = vote->getStep();
+      vote_fact.vote_type = static_cast<uint8_t>(vote->getType());
+      vote_fact.live_vote_valid = true;
+      vote_fact.weight_present = vote->getWeight().has_value();
+      vote_fact.weight = vote->getWeight().value_or(0);
+      fact.votes.push_back(vote_fact);
+    }
+    return fact;
+  };
+
+  const auto shape_validation =
+      rustaxa::validate_pbft_sync_cert_vote_bundle(make_cert_vote_bundle_fact(false, false, 0));
+  if (!shape_validation.valid) {
+    LOG(log_er_) << "Rust sync cert-vote bundle validation failed for PBFT block " << block_hash << ", period "
+                 << block_period << ", status " << static_cast<uint32_t>(shape_validation.status)
+                 << ", first bad vote " << fromBridgeHash(shape_validation.first_bad_vote_hash);
     return false;
   }
 
@@ -4794,48 +4823,8 @@ bool PbftManager::validatePbftBlockCertVotes(PbftPeriod block_period, const blk_
   const uint32_t vote_to_validate = std::rand() % cert_votes.size();
   const bool strict_validation = (block_period % full_vote_validation_interval == 0);
 
-  size_t votes_weight = 0;
-  auto first_vote_round = cert_votes[0]->getRound();
-  auto first_vote_period = cert_votes[0]->getPeriod();
-
-  if (block_period != first_vote_period) {
-    LOG(log_er_) << "pbft block period " << block_period << " != first_vote_period " << first_vote_period;
-    return false;
-  }
-
   for (uint32_t vote_counter = 0; vote_counter < cert_votes.size(); vote_counter++) {
     const auto &v = cert_votes[vote_counter];
-    // Any info is wrong that can determine the synced PBFT block comes from a malicious player
-    if (v->getPeriod() != first_vote_period) {
-      LOG(log_er_) << "Invalid cert vote " << v->getHash() << " period " << v->getPeriod() << ", PBFT block "
-                   << block_hash << ", first_vote_period " << first_vote_period;
-      return false;
-    }
-
-    if (v->getRound() != first_vote_round) {
-      LOG(log_er_) << "Invalid cert vote " << v->getHash() << " round " << v->getRound() << ", PBFT block "
-                   << block_hash << ", first_vote_round " << first_vote_round;
-      return false;
-    }
-
-    if (v->getType() != PbftVoteTypes::cert_vote) {
-      LOG(log_er_) << "Invalid cert vote " << v->getHash() << " type " << static_cast<uint8_t>(v->getType())
-                   << ", PBFT block " << block_hash;
-      return false;
-    }
-
-    if (v->getStep() != PbftStates::certify_state) {
-      LOG(log_er_) << "Invalid cert vote " << v->getHash() << " step " << v->getStep() << ", PBFT block "
-                   << block_hash;
-      return false;
-    }
-
-    if (v->getBlockHash() != block_hash) {
-      LOG(log_er_) << "Invalid cert vote " << v->getHash() << " block hash " << v->getBlockHash()
-                   << ", PBFT block " << block_hash;
-      return false;
-    }
-
     bool strict = strict_validation || (vote_counter == vote_to_validate);
 
     if (const auto ret = vote_mgr_->validateVote(v, strict); !ret.first) {
@@ -4845,19 +4834,18 @@ bool PbftManager::validatePbftBlockCertVotes(PbftPeriod block_period, const blk_
     }
 
     assert(v->getWeight());
-    votes_weight += *v->getWeight();
-
     vote_mgr_->addVerifiedVote(v);
   }
 
-  const auto two_t_plus_one = vote_mgr_->getPbftTwoTPlusOne(first_vote_period - 1, PbftVoteTypes::cert_vote);
-  if (!two_t_plus_one.has_value()) {
-    return false;
-  }
-
-  if (votes_weight < *two_t_plus_one) {
-    LOG(log_wr_) << "Invalid votes weight " << votes_weight << " < two_t_plus_one " << *two_t_plus_one
-                 << ", pbft block " << block_hash;
+  const auto two_t_plus_one = vote_mgr_->getPbftTwoTPlusOne(block_period - 1, PbftVoteTypes::cert_vote);
+  const auto threshold_validation = rustaxa::validate_pbft_sync_cert_vote_bundle(
+      make_cert_vote_bundle_fact(true, two_t_plus_one.has_value(), two_t_plus_one.value_or(0)));
+  if (!threshold_validation.valid) {
+    LOG(log_wr_) << "Rust sync cert-vote bundle threshold validation failed for PBFT block " << block_hash
+                 << ", period " << block_period << ", status " << static_cast<uint32_t>(threshold_validation.status)
+                 << ", votes weight " << threshold_validation.total_weight << ", two_t_plus_one "
+                 << threshold_validation.two_t_plus_one << ", first bad vote "
+                 << fromBridgeHash(threshold_validation.first_bad_vote_hash);
     return false;
   }
 

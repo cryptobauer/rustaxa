@@ -503,6 +503,18 @@ Validation:
 
 Goal: remove PBFT manager reliance on vote and pillar C++ managers except for explicit network/public execution.
 
+Status: in progress. The first bounded pass moves synced cert-vote bundle shape and threshold validation into Rust from
+compact vote facts while keeping VoteManager signature, VRF, weight materialization, and verified-vote insertion as
+temporary executor effects.
+
+Landed:
+
+- Sync cert-vote validation now reports compact vote identity, type, step, block hash, live-validation, weight, and
+  `2t+1` threshold facts to Rust. Rust owns non-empty bundle validation, per-vote shape checks, shared-round checks,
+  weight presence, threshold availability, and summed-weight acceptance.
+- C++ still executes `VoteManager::validateVote`, `VoteManager::addVerifiedVote`, and threshold lookup as temporary
+  VoteManager executor/query effects, then reports their facts to Rust for the final bundle decision.
+
 Scope:
 
 - Route reward-vote selection, cert-vote lookup, next-vote facts, pillar-vote bundle checks, and slashing proof facts

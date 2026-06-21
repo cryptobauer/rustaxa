@@ -851,6 +851,38 @@ pub mod rustaxa_ffi {
         kind: u8,
     }
 
+    /// Compact fact for one synced PBFT cert vote.
+    struct PbftSyncCertVoteFact {
+        vote_hash: [u8; 32],
+        block_hash: [u8; 32],
+        period: u64,
+        round: u64,
+        step: u64,
+        vote_type: u8,
+        live_vote_valid: bool,
+        weight_present: bool,
+        weight: u64,
+    }
+
+    /// Compact fact bundle for synced PBFT cert-vote validation.
+    struct PbftSyncCertVoteBundleFact {
+        block_period: u64,
+        block_hash: [u8; 32],
+        votes: Vec<PbftSyncCertVoteFact>,
+        check_weight_threshold: bool,
+        two_t_plus_one_found: bool,
+        two_t_plus_one: u64,
+    }
+
+    /// Rust-owned synced PBFT cert-vote validation result.
+    struct PbftSyncCertVoteBundleValidation {
+        valid: bool,
+        status: u8,
+        total_weight: u64,
+        two_t_plus_one: u64,
+        first_bad_vote_hash: [u8; 32],
+    }
+
     /// Transaction hash wrapper for CXX bridge vectors.
     struct PbftSyncTransactionHash {
         hash: [u8; 32],
@@ -4802,6 +4834,9 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_sync_process_period_data_runtime(
             fact: PbftSyncProcessPeriodDataRuntimeFact,
         ) -> PbftSyncProcessPeriodDataRuntimePlan;
+        pub fn validate_pbft_sync_cert_vote_bundle(
+            fact: PbftSyncCertVoteBundleFact,
+        ) -> PbftSyncCertVoteBundleValidation;
         type BridgePbftSyncQueueDrainSession;
         pub fn create_pbft_sync_queue_drain_session() -> Box<BridgePbftSyncQueueDrainSession>;
         pub fn pbft_sync_queue_drain_session_next(

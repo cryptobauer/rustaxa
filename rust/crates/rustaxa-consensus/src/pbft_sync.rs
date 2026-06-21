@@ -297,6 +297,132 @@ pub struct PbftSyncTransactionWarning {
     pub kind: PbftSyncTransactionWarningKind,
 }
 
+/// Compact facts for one cert vote in a synced PBFT period-data bundle.
+///
+/// Purpose:
+/// - Lets Rust own deterministic cert-vote bundle shape and threshold checks
+///   without requiring C++ to pass live `PbftVote` objects across the boundary.
+///
+/// Inputs:
+/// - C++ supplies canonical identity fields from the decoded vote sidecar.
+/// - `weight_present`, `weight`, and `live_vote_valid` are executor reports
+///   from the temporary VoteManager validation path.
+///
+/// Invariants and edge behavior:
+/// - Rust treats missing weight, invalid live validation reports, mismatched
+///   period/round/type/step, and wrong block hashes as bundle rejection facts.
+/// - Signature, VRF, and DPoS weight calculation remain VoteManager executor
+///   effects until Slice 8 moves those ports fully into Rust.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftSyncCertVoteFact {
+    /// Canonical vote hash for diagnostics.
+    pub vote_hash: H256,
+    /// PBFT block hash carried by the vote.
+    pub block_hash: H256,
+    /// PBFT period carried by the vote.
+    pub period: u64,
+    /// PBFT round carried by the vote.
+    pub round: u64,
+    /// PBFT step carried by the vote.
+    pub step: u64,
+    /// Stable vote-type code carried by the vote.
+    pub vote_type: u8,
+    /// True when the VoteManager executor accepted the live vote check.
+    pub live_vote_valid: bool,
+    /// True when `weight` was materialized by the VoteManager executor.
+    pub weight_present: bool,
+    /// Vote weight reported by the VoteManager executor.
+    pub weight: u64,
+}
+
+/// Sync cert-vote bundle fact supplied by the PBFT manager shim.
+///
+/// Inputs:
+/// - `block_period` and `block_hash` identify the synced PBFT block.
+/// - `votes` carries compact per-vote facts gathered from queued cert-vote
+///   sidecars.
+/// - `check_weight_threshold` controls whether Rust should enforce
+///   `two_t_plus_one`; C++ uses a shape-only precheck before running live
+///   VoteManager validation, then a final threshold check after weights exist.
+///
+/// Outputs are produced by [`validate_pbft_sync_cert_vote_bundle`].
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftSyncCertVoteBundleFact {
+    /// Candidate PBFT block period.
+    pub block_period: u64,
+    /// Candidate PBFT block hash.
+    pub block_hash: H256,
+    /// Compact facts for the current-round cert-vote bundle.
+    pub votes: Vec<PbftSyncCertVoteFact>,
+    /// Whether Rust should validate `two_t_plus_one` and summed weights.
+    pub check_weight_threshold: bool,
+    /// Whether C++ could load a `2t+1` threshold for the previous period.
+    pub two_t_plus_one_found: bool,
+    /// Required summed cert-vote weight when `two_t_plus_one_found`.
+    pub two_t_plus_one: u64,
+}
+
+/// Stable rejection status for sync cert-vote bundle validation.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftSyncCertVoteBundleStatus {
+    /// Bundle accepted all requested checks.
+    Accepted,
+    /// The bundle is empty.
+    Empty,
+    /// A vote period did not match the synced block period.
+    PeriodMismatch,
+    /// Votes in the bundle do not all share the first vote round.
+    RoundMismatch,
+    /// A vote was not a cert vote.
+    VoteTypeMismatch,
+    /// A vote was not in certify step.
+    StepMismatch,
+    /// A vote targets a different block hash.
+    BlockHashMismatch,
+    /// The VoteManager executor rejected a live vote check.
+    LiveVoteInvalid,
+    /// The VoteManager executor did not materialize a vote weight.
+    MissingWeight,
+    /// C++ could not load the required `2t+1` threshold.
+    ThresholdMissing,
+    /// Summed cert-vote weight is below `2t+1`.
+    InsufficientWeight,
+}
+
+impl PbftSyncCertVoteBundleStatus {
+    /// Stable bridge code for CXX callers.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Accepted => 0,
+            Self::Empty => 1,
+            Self::PeriodMismatch => 2,
+            Self::RoundMismatch => 3,
+            Self::VoteTypeMismatch => 4,
+            Self::StepMismatch => 5,
+            Self::BlockHashMismatch => 6,
+            Self::LiveVoteInvalid => 7,
+            Self::MissingWeight => 8,
+            Self::ThresholdMissing => 9,
+            Self::InsufficientWeight => 10,
+        }
+    }
+}
+
+/// Result of Rust-owned synced cert-vote bundle validation.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftSyncCertVoteBundleValidation {
+    /// True when the bundle passed all requested checks.
+    pub valid: bool,
+    /// Detailed deterministic status.
+    pub status: PbftSyncCertVoteBundleStatus,
+    /// Summed weight of checked cert votes.
+    pub total_weight: u64,
+    /// Required threshold when it was checked.
+    pub two_t_plus_one: u64,
+    /// First vote hash that made the bundle invalid, if any.
+    pub first_bad_vote_hash: H256,
+}
+
 /// Transaction references extracted from synced PBFT period data.
 ///
 /// C++ still owns live `DagBlock` and `Transaction` objects while PBFT sync is
@@ -1097,6 +1223,145 @@ pub fn plan_pbft_sync_transaction_query(
     }
 }
 
+fn cert_vote_validation_result(
+    status: PbftSyncCertVoteBundleStatus,
+    total_weight: u64,
+    two_t_plus_one: u64,
+    first_bad_vote_hash: H256,
+) -> PbftSyncCertVoteBundleValidation {
+    PbftSyncCertVoteBundleValidation {
+        valid: status == PbftSyncCertVoteBundleStatus::Accepted,
+        status,
+        total_weight,
+        two_t_plus_one,
+        first_bad_vote_hash,
+    }
+}
+
+/// Validates deterministic facts for a synced PBFT cert-vote bundle.
+///
+/// Inputs:
+/// - `fact`: compact cert-vote facts gathered by C++ from queued vote sidecars
+///   and temporary VoteManager executor reports.
+///
+/// Outputs:
+/// - A side-effect-free validation result with stable status, total weight,
+///   checked threshold, and first bad vote hash.
+///
+/// Invariants and edge behavior:
+/// - Cert votes must be non-empty, match the candidate block period/hash, use
+///   the cert-vote type code (`3`), use the certify step (`3`), and share the
+///   first vote round.
+/// - When `check_weight_threshold` is true, Rust also requires every vote to
+///   have passed live VoteManager validation, every weight to be present, the
+///   threshold to be available, and summed weight to satisfy `2t+1`.
+#[must_use]
+pub fn validate_pbft_sync_cert_vote_bundle(
+    fact: PbftSyncCertVoteBundleFact,
+) -> PbftSyncCertVoteBundleValidation {
+    const CERT_VOTE_TYPE: u8 = 3;
+    const CERTIFY_STEP: u64 = 3;
+
+    if fact.votes.is_empty() {
+        return cert_vote_validation_result(
+            PbftSyncCertVoteBundleStatus::Empty,
+            0,
+            fact.two_t_plus_one,
+            H256::zero(),
+        );
+    }
+
+    let first_round = fact.votes[0].round;
+    let mut total_weight = 0_u64;
+    for vote in &fact.votes {
+        if vote.period != fact.block_period {
+            return cert_vote_validation_result(
+                PbftSyncCertVoteBundleStatus::PeriodMismatch,
+                total_weight,
+                fact.two_t_plus_one,
+                vote.vote_hash,
+            );
+        }
+        if vote.round != first_round {
+            return cert_vote_validation_result(
+                PbftSyncCertVoteBundleStatus::RoundMismatch,
+                total_weight,
+                fact.two_t_plus_one,
+                vote.vote_hash,
+            );
+        }
+        if vote.vote_type != CERT_VOTE_TYPE {
+            return cert_vote_validation_result(
+                PbftSyncCertVoteBundleStatus::VoteTypeMismatch,
+                total_weight,
+                fact.two_t_plus_one,
+                vote.vote_hash,
+            );
+        }
+        if vote.step != CERTIFY_STEP {
+            return cert_vote_validation_result(
+                PbftSyncCertVoteBundleStatus::StepMismatch,
+                total_weight,
+                fact.two_t_plus_one,
+                vote.vote_hash,
+            );
+        }
+        if vote.block_hash != fact.block_hash {
+            return cert_vote_validation_result(
+                PbftSyncCertVoteBundleStatus::BlockHashMismatch,
+                total_weight,
+                fact.two_t_plus_one,
+                vote.vote_hash,
+            );
+        }
+        if fact.check_weight_threshold {
+            if !vote.live_vote_valid {
+                return cert_vote_validation_result(
+                    PbftSyncCertVoteBundleStatus::LiveVoteInvalid,
+                    total_weight,
+                    fact.two_t_plus_one,
+                    vote.vote_hash,
+                );
+            }
+            if !vote.weight_present {
+                return cert_vote_validation_result(
+                    PbftSyncCertVoteBundleStatus::MissingWeight,
+                    total_weight,
+                    fact.two_t_plus_one,
+                    vote.vote_hash,
+                );
+            }
+            total_weight = total_weight.saturating_add(vote.weight);
+        }
+    }
+
+    if fact.check_weight_threshold {
+        if !fact.two_t_plus_one_found {
+            return cert_vote_validation_result(
+                PbftSyncCertVoteBundleStatus::ThresholdMissing,
+                total_weight,
+                fact.two_t_plus_one,
+                H256::zero(),
+            );
+        }
+        if total_weight < fact.two_t_plus_one {
+            return cert_vote_validation_result(
+                PbftSyncCertVoteBundleStatus::InsufficientWeight,
+                total_weight,
+                fact.two_t_plus_one,
+                H256::zero(),
+            );
+        }
+    }
+
+    cert_vote_validation_result(
+        PbftSyncCertVoteBundleStatus::Accepted,
+        total_weight,
+        fact.two_t_plus_one,
+        H256::zero(),
+    )
+}
+
 fn plan_fact_status_rejection(
     status: PbftSyncFactStatus,
     invalid_status: PbftSyncPeriodAdmissionStatus,
@@ -1538,6 +1803,62 @@ mod tests {
             previous_cert_votes_present: true,
             previous_cert_first_vote_has_weight: false,
         }
+    }
+
+    fn cert_vote(weight: u64) -> PbftSyncCertVoteFact {
+        PbftSyncCertVoteFact {
+            vote_hash: hash(weight),
+            block_hash: hash(9),
+            period: 101,
+            round: 2,
+            step: 3,
+            vote_type: 3,
+            live_vote_valid: true,
+            weight_present: true,
+            weight,
+        }
+    }
+
+    fn cert_vote_bundle(weights: Vec<u64>, threshold: u64) -> PbftSyncCertVoteBundleFact {
+        PbftSyncCertVoteBundleFact {
+            block_period: 101,
+            block_hash: hash(9),
+            votes: weights.into_iter().map(cert_vote).collect(),
+            check_weight_threshold: true,
+            two_t_plus_one_found: true,
+            two_t_plus_one: threshold,
+        }
+    }
+
+    #[test]
+    fn cert_vote_bundle_accepts_shape_and_threshold() {
+        let result = validate_pbft_sync_cert_vote_bundle(cert_vote_bundle(vec![2, 3], 5));
+
+        assert!(result.valid);
+        assert_eq!(result.status, PbftSyncCertVoteBundleStatus::Accepted);
+        assert_eq!(result.total_weight, 5);
+        assert_eq!(result.two_t_plus_one, 5);
+    }
+
+    #[test]
+    fn cert_vote_bundle_rejects_bad_shape_and_threshold() {
+        let mut fact = cert_vote_bundle(vec![2, 2], 5);
+        fact.votes[1].block_hash = hash(10);
+        let result = validate_pbft_sync_cert_vote_bundle(fact);
+        assert!(!result.valid);
+        assert_eq!(
+            result.status,
+            PbftSyncCertVoteBundleStatus::BlockHashMismatch
+        );
+        assert_eq!(result.first_bad_vote_hash, hash(2));
+
+        let result = validate_pbft_sync_cert_vote_bundle(cert_vote_bundle(vec![2, 2], 5));
+        assert!(!result.valid);
+        assert_eq!(
+            result.status,
+            PbftSyncCertVoteBundleStatus::InsufficientWeight
+        );
+        assert_eq!(result.total_weight, 4);
     }
 
     #[test]
