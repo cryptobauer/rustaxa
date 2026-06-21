@@ -385,6 +385,8 @@ Landed bounded PBFT-chain update/report collapse:
 - `UpdatePbftChain` no longer receives C++-computed finalized block or anchor hashes for its finalization report.
 - The PBFT-chain Rust bridge derives the head mutation and live-mutation report from the accepted Rust finalization
   storage-write intent, while the C++ shim keeps only the temporary PBFT-chain lock boundary.
+- `SetExecutedFlag` is now applied through the Rust PBFT manager runtime from the accepted finalization storage-write
+  intent; C++ hydrates the temporary mirror from the returned snapshot instead of assigning the flag directly.
 
 Scope:
 

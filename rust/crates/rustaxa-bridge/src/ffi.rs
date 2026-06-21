@@ -4889,6 +4889,10 @@ pub mod rustaxa_ffi {
             rounds_count_dynamic_lambda: u32,
             dynamic_lambda_ms: u32,
         ) -> PbftManagerRuntimeSnapshot;
+        pub fn pbft_manager_runtime_apply_finalization_executed_status(
+            runtime: &mut BridgePbftManagerRuntime,
+            write_intent: &PbftFinalizationStorageWritePlan,
+        ) -> PbftManagerRuntimeSnapshot;
         pub fn pbft_manager_runtime_dag_block_period(
             runtime: &BridgePbftManagerRuntime,
             hash: &[u8; 32],

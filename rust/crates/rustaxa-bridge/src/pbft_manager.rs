@@ -705,6 +705,31 @@ pub fn pbft_manager_runtime_apply_dynamic_lambda(
         .into()
 }
 
+/// Records the executed-PBFT flag selected by an accepted Rust finalization plan.
+///
+/// Inputs:
+/// - `runtime`: long-lived Rust PBFT manager runtime.
+/// - `write_intent`: accepted finalization storage-write intent whose
+///   `executed_pbft_status` is the source of truth.
+///
+/// Outputs:
+/// - Returns the updated runtime snapshot so C++ can hydrate temporary manager
+///   mirrors without independently deriving the executed flag.
+///
+/// Invariants and edge behavior:
+/// - This function does not write storage. The caller must run it only after
+///   the finalization runtime has accepted any required executed-status storage
+///   stage and is executing the `SetExecutedFlag` action.
+pub fn pbft_manager_runtime_apply_finalization_executed_status(
+    runtime: &mut BridgePbftManagerRuntime,
+    write_intent: &FfiPbftFinalizationStorageWritePlan,
+) -> FfiPbftManagerRuntimeSnapshot {
+    runtime
+        .state
+        .apply_committed_finalization_executed_status(write_intent.executed_pbft_status)
+        .into()
+}
+
 /// Resolves a finalized DAG block period through PBFT-manager runtime storage.
 ///
 /// Inputs:
@@ -1940,6 +1965,51 @@ mod tests {
 
         assert_eq!(failed.status, 3);
         assert!(!failed.can_continue);
+    }
+
+    #[test]
+    fn bridge_applies_finalization_executed_status_from_write_intent() {
+        let temp_path = unique_temp_dir("rustaxa_bridge_pbft_manager_finalized_executed_status");
+        let storage =
+            crate::storage::create_storage(temp_path.to_str().expect("utf-8 temp path")).unwrap();
+        let mut fact = startup_fact();
+        fact.cacti_active_at_chain_size = false;
+        let mut runtime = create_pbft_manager_runtime_from_storage(&storage, fact).unwrap();
+        let mut write_intent = FfiPbftFinalizationStorageWritePlan {
+            persist_pbft_head: false,
+            persist_period_data: false,
+            reset_reward_votes: false,
+            update_sortition_params: false,
+            apply_dynamic_lambda_update: false,
+            persist_period_lambda: false,
+            persist_executed_pbft_status: true,
+            process_pillar_block: false,
+            pbft_block_hash: [0; 32],
+            pbft_head_hash: [0; 32],
+            block_period: 10,
+            null_anchor: true,
+            anchor_hash: [0; 32],
+            reward_vote_period: 0,
+            reward_vote_round: 0,
+            reward_vote_step: 0,
+            reward_vote_block_hash: [0; 32],
+            period_lambda: 0,
+            blocks_per_year: 0,
+            executed_pbft_status: true,
+            pbft_head_payload: Vec::new(),
+            period_data_rlp: Vec::new(),
+            dag_block_period_writes: Vec::new(),
+            transaction_location_writes: Vec::new(),
+        };
+
+        let applied =
+            pbft_manager_runtime_apply_finalization_executed_status(&mut runtime, &write_intent);
+        assert!(applied.executed_pbft_block);
+
+        write_intent.executed_pbft_status = false;
+        let cleared =
+            pbft_manager_runtime_apply_finalization_executed_status(&mut runtime, &write_intent);
+        assert!(!cleared.executed_pbft_block);
     }
 
     fn state_fact(state: u8) -> FfiPbftManagerStateActionFact {

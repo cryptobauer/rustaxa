@@ -3653,7 +3653,14 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           if (!begin_resume_action(kPbftFinalizationRuntimeActionSetExecutedFlag, resume_step)) {
             return false;
           }
-          executed_pbft_block_ = finalization_plan.storage_write_intent.executed_pbft_status;
+          const auto executed_status_snapshot = rustaxa::pbft_manager_runtime_apply_finalization_executed_status(
+              *pbft_manager_runtime_.value(), finalization_plan.storage_write_intent);
+          applyPbftManagerRuntimeSnapshot(executed_status_snapshot, round_, step_, state_, current_round_lambda_,
+                                          next_step_time_ms_, rounds_count_dynamic_lambda_, dynamic_lambda_,
+                                          executed_pbft_block_, already_next_voted_value_,
+                                          already_next_voted_null_block_hash_, broadcast_votes_counter_,
+                                          rebroadcast_votes_counter_, broadcast_reward_votes_counter_,
+                                          rebroadcast_reward_votes_counter_);
           if (!report_resume_action(resume_step, true, 0)) {
             return false;
           }
@@ -4049,7 +4056,13 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     if (!begin_runtime_action(kPbftFinalizationRuntimeActionSetExecutedFlag, runtime_step)) {
       return false;
     }
-    executed_pbft_block_ = finalization_plan.storage_write_intent.executed_pbft_status;
+    const auto executed_status_snapshot = rustaxa::pbft_manager_runtime_apply_finalization_executed_status(
+        *pbft_manager_runtime_.value(), finalization_plan.storage_write_intent);
+    applyPbftManagerRuntimeSnapshot(executed_status_snapshot, round_, step_, state_, current_round_lambda_,
+                                    next_step_time_ms_, rounds_count_dynamic_lambda_, dynamic_lambda_,
+                                    executed_pbft_block_, already_next_voted_value_, already_next_voted_null_block_hash_,
+                                    broadcast_votes_counter_, rebroadcast_votes_counter_,
+                                    broadcast_reward_votes_counter_, rebroadcast_reward_votes_counter_);
     if (!report_runtime_action(runtime_step, true, 0)) {
       return false;
     }

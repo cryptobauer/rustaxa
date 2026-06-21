@@ -3698,6 +3698,31 @@ impl PbftManagerRuntime {
         self.snapshot.error_code.clear();
     }
 
+    /// Records the executed-PBFT status selected by an accepted finalization plan.
+    ///
+    /// Inputs:
+    /// - `executed_pbft_status`: final live manager flag from the Rust
+    ///   finalization storage-write intent.
+    ///
+    /// Outputs:
+    /// - Returns the updated Rust-owned runtime snapshot for compatibility
+    ///   mirror hydration.
+    ///
+    /// Invariants and edge behavior:
+    /// - This does not write storage. The finalization runtime must persist the
+    ///   executed-status stage before reporting the `SetExecutedFlag` action.
+    /// - C++ must not derive this flag from sidecar state; the accepted Rust
+    ///   finalization intent is the source of truth.
+    pub fn apply_committed_finalization_executed_status(
+        &mut self,
+        executed_pbft_status: bool,
+    ) -> PbftManagerRuntimeSnapshot {
+        self.snapshot.status = PbftManagerStartupRestoreStatus::Ready;
+        self.snapshot.executed_pbft_block = executed_pbft_status;
+        self.snapshot.error_code.clear();
+        self.snapshot.clone()
+    }
+
     /// Records a committed next-vote status after Rust storage persistence.
     ///
     /// Inputs:
@@ -7667,6 +7692,18 @@ mod tests {
 
         assert_eq!(after.status, PbftManagerStartupRestoreStatus::Ready);
         assert!(!after.executed_pbft_block);
+        assert!(after.error_code.is_empty());
+    }
+
+    #[test]
+    fn runtime_snapshot_records_finalization_executed_status_from_intent() {
+        let mut runtime = PbftManagerRuntime::new(restore_pbft_manager_runtime(startup_fact(2, 4)));
+        runtime.apply_committed_executed_block_reset();
+
+        let after = runtime.apply_committed_finalization_executed_status(true);
+
+        assert_eq!(after.status, PbftManagerStartupRestoreStatus::Ready);
+        assert!(after.executed_pbft_block);
         assert!(after.error_code.is_empty());
     }
 
