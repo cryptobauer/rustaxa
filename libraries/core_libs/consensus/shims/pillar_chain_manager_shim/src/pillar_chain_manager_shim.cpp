@@ -882,6 +882,44 @@ PillarChainManager::PbftBlockPillarAnchorValidation PillarChainManager::validate
   return result;
 }
 
+PillarChainManager::PbftExtraDataPillarAnchor PillarChainManager::pbftExtraDataPillarAnchor(
+    PbftPeriod pbft_period) const {
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+  PbftExtraDataPillarAnchor result;
+  if (!current_pillar_block_) {
+    LOG(log_er_) << "Missing pillar block, pbft period " << pbft_period;
+    return result;
+  }
+
+  result.current_pillar_period = current_pillar_block_->getPeriod();
+  if (result.current_pillar_period != pbft_period - 1) {
+    LOG(log_er_) << "Wrong pillar block period: " << result.current_pillar_period << ", pbft period: " << pbft_period;
+    return result;
+  }
+
+  result.available = true;
+  result.pillar_block_hash = current_pillar_block_->getHash();
+  return result;
+}
+
+PillarChainManager::LocalPillarVoteAnchor PillarChainManager::localPillarVoteAnchorForPbftPeriod(
+    PbftPeriod pbft_period) const {
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+  LocalPillarVoteAnchor result;
+  if (!current_pillar_block_) {
+    return result;
+  }
+
+  result.current_pillar_period = current_pillar_block_->getPeriod();
+  if (result.current_pillar_period != pbft_period - 1) {
+    return result;
+  }
+
+  result.should_vote = true;
+  result.pillar_block_hash = current_pillar_block_->getHash();
+  return result;
+}
+
 bool PillarChainManager::isRelevantPillarVote(const std::shared_ptr<PillarVote> vote) const {
   const auto vote_exists = pillar_votes_.voteExists(vote);
   const auto current_pillar_block = getCurrentPillarBlock();

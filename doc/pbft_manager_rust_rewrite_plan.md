@@ -546,6 +546,8 @@ Landed:
   path is unavailable.
 - PBFT block extra-data construction now receives current pillar-block anchor facts from PillarChainManager instead of
   consuming a live `PillarBlock` sidecar to decide the anchored period/hash.
+- PBFT proposal extra-data and local pillar-vote fallback now use named PillarChainManager anchor ports. PBFT manager no
+  longer inspects current pillar-block sidecar period/hash facts for those decisions.
 - PBFT block validation's pillar-anchor check now uses the same compact PillarChainManager anchor facts instead of
   dereferencing the current `PillarBlock` sidecar in PBFT manager.
 - Restart pillar post-processing checks and local pillar-vote fallback now use compact current pillar-anchor facts instead

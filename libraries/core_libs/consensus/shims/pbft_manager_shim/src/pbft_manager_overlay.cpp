@@ -2020,10 +2020,9 @@ bool PbftManager::genAndPlaceVote(PbftVoteTypes vote_type, PbftPeriod period, Pb
       // No need to check presence of extra data and pillar block hash - this was already validated in validatePbftBlock
       place_pillar_vote_for_block = pbft_block->getExtraData()->getPillarBlockHash();
     } else {
-      const auto current_pillar_anchor = pillar_chain_mgr_->currentPillarBlockAnchor();
-      // Check if the latest pillar block was created
-      if (current_pillar_anchor.found && current_pillar_anchor.period == period - 1) {
-        place_pillar_vote_for_block = current_pillar_anchor.hash;
+      const auto local_pillar_vote_anchor = pillar_chain_mgr_->localPillarVoteAnchorForPbftPeriod(period);
+      if (local_pillar_vote_anchor.should_vote) {
+        place_pillar_vote_for_block = local_pillar_vote_anchor.pillar_block_hash;
       }
     }
   }
@@ -2758,18 +2757,12 @@ std::optional<PbftBlockExtraData> PbftManager::createPbftBlockExtraData(PbftPeri
   std::optional<blk_hash_t> pillar_block_hash;
   if (kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(pbft_period)) {
     // Anchor pillar block hash into the pbft block
-    const auto pillar_anchor = pillar_chain_mgr_->currentPillarBlockAnchor();
-    if (!pillar_anchor.found) {
-      LOG(log_er_) << "Missing pillar block, pbft period " << pbft_period;
+    const auto pillar_anchor = pillar_chain_mgr_->pbftExtraDataPillarAnchor(pbft_period);
+    if (!pillar_anchor.available) {
       return {};
     }
 
-    if (pillar_anchor.period != pbft_period - 1) {
-      LOG(log_er_) << "Wrong pillar block period: " << pillar_anchor.period << ", pbft period: " << pbft_period;
-      return {};
-    }
-
-    pillar_block_hash = pillar_anchor.hash;
+    pillar_block_hash = pillar_anchor.pillar_block_hash;
   }
 
   return PbftBlockExtraData{TARAXA_MAJOR_VERSION, TARAXA_MINOR_VERSION, TARAXA_PATCH_VERSION, TARAXA_NET_VERSION, "T",

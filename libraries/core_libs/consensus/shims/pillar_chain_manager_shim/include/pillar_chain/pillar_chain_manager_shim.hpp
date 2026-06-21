@@ -562,6 +562,58 @@ class PillarChainManager {
       const std::optional<blk_hash_t>& pillar_block_hash) const;
 
   /**
+   * Selects the pillar anchor hash that must be embedded in locally proposed
+   * PBFT block extra-data.
+   *
+   * Purpose:
+   * - Keeps PBFT manager from reading the current pillar block sidecar to
+   *   decide proposal extra-data eligibility.
+   *
+   * Inputs:
+   * - `pbft_period` is the PBFT block period being proposed.
+   *
+   * Outputs:
+   * - `available` is true only when the current pillar block exists for
+   *   `pbft_period - 1`.
+   * - `pillar_block_hash` is the selected anchor hash when available.
+   *
+   * Invariants and edge behavior:
+   * - Does not mutate pillar state.
+   * - Missing or wrong-period current pillar anchors are logged and returned as
+   *   unavailable.
+   */
+  struct PbftExtraDataPillarAnchor {
+    bool available = false;
+    PbftPeriod current_pillar_period = 0;
+    blk_hash_t pillar_block_hash;
+  };
+  PbftExtraDataPillarAnchor pbftExtraDataPillarAnchor(PbftPeriod pbft_period) const;
+
+  /**
+   * Selects the current pillar block hash for local pillar-vote generation
+   * during PBFT voting.
+   *
+   * Purpose:
+   * - Keeps PBFT manager from inspecting current pillar sidecar facts while it
+   *   remains the executor for local vote signing and gossip.
+   *
+   * Outputs:
+   * - `should_vote` is true only when the current pillar block is for
+   *   `pbft_period - 1`.
+   * - `pillar_block_hash` is the block that should receive the local pillar
+   *   vote when `should_vote` is true.
+   *
+   * Invariants:
+   * - Does not generate, persist, or gossip a pillar vote.
+   */
+  struct LocalPillarVoteAnchor {
+    bool should_vote = false;
+    PbftPeriod current_pillar_period = 0;
+    blk_hash_t pillar_block_hash;
+  };
+  LocalPillarVoteAnchor localPillarVoteAnchorForPbftPeriod(PbftPeriod pbft_period) const;
+
+  /**
    * Retrieves verified votes for one pillar period and block hash.
    *
    * Inputs:
