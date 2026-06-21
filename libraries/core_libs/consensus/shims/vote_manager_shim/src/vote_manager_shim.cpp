@@ -1292,6 +1292,24 @@ VoteManager::StateActionVoteFacts VoteManager::stateActionVoteFacts(PbftPeriod p
   return facts;
 }
 
+VoteManager::CertVotedBlockSelection VoteManager::certVotedBlockSelection(PbftPeriod period, PbftRound round) const {
+  CertVotedBlockSelection selection;
+  const auto cert_voted_block = getTwoTPlusOneVotedBlock(period, round, TwoTPlusOneVotedBlockType::CertVotedBlock);
+  if (!cert_voted_block) {
+    return selection;
+  }
+
+  auto votes = getTwoTPlusOneVotedBlockVotes(period, round, TwoTPlusOneVotedBlockType::CertVotedBlock);
+  if (votes.empty()) {
+    return selection;
+  }
+
+  selection.found = true;
+  selection.block_hash = *cert_voted_block;
+  selection.votes = std::move(votes);
+  return selection;
+}
+
 std::vector<std::shared_ptr<PbftVote>> VoteManager::getTwoTPlusOneVotedBlockVotes(
     PbftPeriod period, PbftRound round, TwoTPlusOneVotedBlockType type) const {
   return verified_votes_.getTwoTPlusOneVotedBlockVotes(period, round, type);

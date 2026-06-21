@@ -1249,12 +1249,11 @@ void PbftManager::setPbftStep(PbftStep pbft_step) {
 bool PbftManager::tryPushCertVotesBlock() {
   const auto [current_pbft_round, current_pbft_period] = getPbftRoundAndPeriod();
 
-  auto cert_votes = vote_mgr_->getTwoTPlusOneVotedBlockVotes(current_pbft_period, current_pbft_round,
-                                                             TwoTPlusOneVotedBlockType::CertVotedBlock);
-  if (cert_votes.empty()) {
+  auto cert_voted_block = vote_mgr_->certVotedBlockSelection(current_pbft_period, current_pbft_round);
+  if (!cert_voted_block.found) {
     return false;
   }
-  const blk_hash_t &certified_block_hash = cert_votes[0]->getBlockHash();
+  const auto certified_block_hash = cert_voted_block.block_hash;
 
   LOG(log_nf_) << "Found enough cert votes for PBFT block " << certified_block_hash << ", period "
                << current_pbft_period << ", round " << current_pbft_round;
@@ -1266,7 +1265,7 @@ bool PbftManager::tryPushCertVotesBlock() {
   }
 
   // Push pbft block into chain
-  if (!pushCertVotedPbftBlockIntoChain_(pbft_block, std::move(cert_votes))) {
+  if (!pushCertVotedPbftBlockIntoChain_(pbft_block, std::move(cert_voted_block.votes))) {
     return false;
   }
 

@@ -523,6 +523,9 @@ Landed:
 - PBFT manager state-action fact construction no longer queries individual VoteManager `2t+1` next/soft-voted block
   sidecar families directly. It asks VoteManager for compact Rust-backed state-action vote facts and forwards only
   booleans and hashes into the Rust state-action planner.
+- Cert-voted block push now asks VoteManager for a typed Rust-backed cert-voted block selection. PBFT manager receives the
+  selected block hash and cert-vote executor payloads instead of deriving certified block identity from the first
+  `PbftVote` sidecar.
 
 Scope:
 

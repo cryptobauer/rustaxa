@@ -336,6 +336,30 @@ class VoteManager : public VoteManagerOld {
   StateActionVoteFacts stateActionVoteFacts(PbftPeriod period, PbftRound round, bool needs_previous_round_next_null,
                                             bool needs_previous_round_next_value,
                                             bool needs_current_round_soft) const;
+
+  /**
+   * Current-round cert-voted block selection for PBFT manager execution.
+   *
+   * Purpose:
+   * - Keeps PBFT manager from deriving the certified block hash by peeking into
+   *   the first materialized `PbftVote` sidecar.
+   *
+   * Outputs:
+   * - `found == true` when Rust-backed verified-vote state has both the
+   *   current-round cert-voted block hash and retained cert-vote payloads.
+   * - `block_hash` is the Rust-selected certified block identity.
+   * - `votes` are temporary C++ payloads for the PBFT-chain push executor.
+   *
+   * Invariants:
+   * - An empty payload vector with a found block is treated as missing
+   *   executor materialization and returns `found == false`.
+   */
+  struct CertVotedBlockSelection {
+    bool found = false;
+    blk_hash_t block_hash;
+    std::vector<std::shared_ptr<PbftVote>> votes;
+  };
+  CertVotedBlockSelection certVotedBlockSelection(PbftPeriod period, PbftRound round) const;
   std::optional<blk_hash_t> getTwoTPlusOneVotedBlock(PbftPeriod period, PbftRound round,
                                                      TwoTPlusOneVotedBlockType type) const;
   std::vector<std::shared_ptr<PbftVote>> getTwoTPlusOneVotedBlockVotes(PbftPeriod period, PbftRound round,
