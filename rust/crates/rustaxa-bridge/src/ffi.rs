@@ -3615,16 +3615,27 @@ pub mod rustaxa_ffi {
         requires_finalized_lookup: bool,
     }
 
+    /// One Rust-authored admission shell side effect.
+    ///
+    /// Rust selects these intents after queue mutation and public-status
+    /// planning. C++ only realizes the requested legacy shell effect while app
+    /// event/log infrastructure remains C++ hosted.
+    struct TransactionManagerAdmissionShellIntent {
+        kind: u8,
+        hash: [u8; 32],
+    }
+
     /// Typed command report for TransactionManager admission.
     ///
     /// Rust has already completed validated queue mutation and public status
-    /// mapping. C++ consumes this report only for legacy logging/event dispatch
-    /// mechanics and public status conversion.
+    /// mapping, then selected the shell logging/event intents. C++ consumes this
+    /// report only for legacy shell realization and public status conversion.
     struct TransactionManagerAdmissionCommandReport {
         inserted_hash_found: bool,
         inserted_hash: [u8; 32],
         transaction_added_hash_found: bool,
         transaction_added_hash: [u8; 32],
+        shell_intents: Vec<TransactionManagerAdmissionShellIntent>,
         admission: TransactionManagerAdmissionResult,
     }
 

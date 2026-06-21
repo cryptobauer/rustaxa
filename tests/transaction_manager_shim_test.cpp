@@ -635,7 +635,7 @@ TEST_F(TransactionManagerShimFixture, rustVerifyTransactionsNotFinalizedAcceptsP
   PeriodData period_data(std::move(block), {});
   period_data.transactions = {transactions[1]};
   trx_mgr.initializeRecentlyFinalizedTransactions(period_data);
-  EXPECT_FALSE(trx_mgr.verifyTransactionsNotFinalized(verifyFacts({transactions[1]})));
+  EXPECT_TRUE(trx_mgr.verifyTransactionsNotFinalizedDetailed(verifyFacts({transactions[1]})).is_finalized);
 
   {
     auto batch = db->createWriteBatch();
@@ -643,8 +643,8 @@ TEST_F(TransactionManagerShimFixture, rustVerifyTransactionsNotFinalizedAcceptsP
     db->commitWriteBatch(batch);
   }
 
-  EXPECT_FALSE(trx_mgr.verifyTransactionsNotFinalized(verifyFacts({transactions[0]})));
-  EXPECT_TRUE(trx_mgr.verifyTransactionsNotFinalized(verifyFacts(pending_transactions)));
+  EXPECT_TRUE(trx_mgr.verifyTransactionsNotFinalizedDetailed(verifyFacts({transactions[0]})).is_finalized);
+  EXPECT_FALSE(trx_mgr.verifyTransactionsNotFinalizedDetailed(verifyFacts(pending_transactions)).is_finalized);
 }
 
 TEST_F(TransactionManagerShimFixture, rustPoolReadHelpersUseRustQueueViews) {

@@ -79,6 +79,8 @@ constexpr uint8_t kTMQueueStatusInserted = 0;
 constexpr uint8_t kTMQueueStatusInsertedNonProposable = 1;
 constexpr uint8_t kTMQueueStatusKnown = 2;
 constexpr uint8_t kTMQueueStatusOverflow = 3;
+constexpr uint8_t kTMAdmissionShellIntentLogInserted = 1;
+constexpr uint8_t kTMAdmissionShellIntentEmitTransactionAdded = 2;
 
 constexpr uint8_t kTMTransactionViewSourceMissing = 0;
 constexpr uint8_t kTMTransactionViewSourceQueue = 1;
@@ -395,11 +397,17 @@ class TransactionManagerRustShimAccess {
     if (!report.admission.present) {
       return;
     }
-    if (report.inserted_hash_found) {
-      LOG(manager.log_dg_) << "Transaction " << fromBridgeHash(report.inserted_hash) << " inserted in trx pool";
-    }
-    if (report.transaction_added_hash_found) {
-      manager.emitTransactionAddedForRust(fromBridgeHash(report.transaction_added_hash));
+    for (const auto& intent : report.shell_intents) {
+      switch (intent.kind) {
+        case kTMAdmissionShellIntentLogInserted:
+          LOG(manager.log_dg_) << "Transaction " << fromBridgeHash(intent.hash) << " inserted in trx pool";
+          break;
+        case kTMAdmissionShellIntentEmitTransactionAdded:
+          manager.emitTransactionAddedForRust(fromBridgeHash(intent.hash));
+          break;
+        default:
+          throw std::runtime_error("RUST_TX_MANAGER_ADMISSION_EXECUTION_FAILED: unknown admission shell intent");
+      }
     }
   }
 

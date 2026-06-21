@@ -907,14 +907,15 @@ The current Rust consensus footprint is broad but still incomplete:
    latest FinalChain account sourcing, public insertion result mapping, staged known-fast-path prechecks, finalized-location mapping, Rust storage-completed admission
    support, and fused proposable/non-proposable admission with Rust-owned live queue mutation. Public
    `insertTransaction` now enters one Rust runtime operation that owns known precheck, verification decisioning,
-   FinalChain-backed account/finalized lookup, queue mutation, and event/log intent before C++ maps legacy public error
+   FinalChain-backed account/finalized lookup, queue mutation, and an explicit event/log shell-intent list before C++ maps legacy public error
    strings. Direct standalone validated-insert planner CXX entry points have been removed, so public and validated
    insertion paths must go through the Rust runtime command-report APIs. Known-hash insert decisions now route through the Rust runtime precheck instead of a shim-local early return,
    and `isTransactionKnown` now includes Rust sidecar membership checks alongside queue-known state. Rust now returns
    typed DAG-save, finalized-status, and admission command reports instead of generic lifecycle/action reports. These
    reports now carry direct hash receipts for the remaining C++ log/event sinks without redundant transaction-count
-   fields, so shim code no longer rebuilds input hash vectors or revalidates Rust command bucket indexes before logging
-   side effects. The Rust-mode facade now owns the public `transaction_added_`
+   fields, and admission reports carry Rust-authored shell intents, so shim code no longer rebuilds input hash vectors,
+   revalidates Rust command bucket indexes, or infers admission log/event selection before realizing shell side effects.
+   The Rust-mode facade now owns the public `transaction_added_`
    event surface and emits it from shim-owned code after Rust accepts a proposable queue mutation. Transaction read helpers no longer infer source
    order in C++: `getTransaction`, `getTransactions`, `getBlockTransactions`, `getNonfinalizedTrx`, and
    `getPoolTransactions` now consume Rust-owned transaction views that preserve request order and duplicates while
@@ -923,7 +924,7 @@ The current Rust consensus footprint is broad but still incomplete:
    drives count reads after persistence/finalization commits. Rust FinalChain now exposes block-scoped account snapshots,
    and proposal transaction views verify stored transaction RLP hashes, inspect legacy sender/nonce identity in Rust, and
    apply proposal-period finalized-account nonce filtering before C++ materializes returned payloads. Remaining live-shell
-   gaps are EVM estimation execution, event/log mechanics, public transaction object construction, final materialization,
+   gaps are EVM estimation execution, event/log dispatch infrastructure, public transaction object construction, final materialization,
    and broader lifecycle orchestration. With transaction account-fact sourcing owned by Rust, the first PBFT
    orchestration storage slice now restores proposed-block metadata directly from Rust storage and removes stale
    proposed-block storage keys through Rust-batched cleanup while C++ keeps daemon threads, networking, timers,

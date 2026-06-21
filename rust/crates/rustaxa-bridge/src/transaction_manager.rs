@@ -17,22 +17,22 @@ use crate::ffi::rustaxa_ffi::{
     FinalizedTransactionStatusAction, FinalizedTransactionStatusFact,
     FinalizedTransactionStatusPlan, FinalizedTransactionStatusSidecarFact,
     NonFinalizedTransactionPayload, TransactionManagerAdmissionCommandReport,
-    TransactionManagerAdmissionResult, TransactionManagerDagSaveCommandReport,
-    TransactionManagerFilterAction, TransactionManagerFinalChainAdmissionFact,
-    TransactionManagerFinalizedStatusCommandReport, TransactionManagerGasEstimationFact,
-    TransactionManagerGasEstimationPlan, TransactionManagerGasEstimationResult,
-    TransactionManagerHashCommand, TransactionManagerInsertTransactionFact,
-    TransactionManagerInsertTransactionOutcome, TransactionManagerPublicAdmissionCommandReport,
-    TransactionManagerPublicInsertResult, TransactionManagerRecoveryEntry,
-    TransactionManagerRuntimeAdmissionOutcome, TransactionManagerRuntimeQueueCleanupPlan,
-    TransactionManagerSidecarInsertInput, TransactionManagerSidecarKnownFact,
-    TransactionManagerSidecarLookup, TransactionManagerSidecarLookupPlan,
-    TransactionManagerSidecarLookupRequest, TransactionManagerSidecarRecoveryInsertInput,
-    TransactionManagerSidecarTransitionInput, TransactionManagerStoredTransactionLookup,
-    TransactionManagerStoredTransactionRequest, TransactionManagerTransactionView,
-    TransactionManagerTransactionViewPlan, TransactionManagerTransactionViewRequest,
-    TransactionManagerValidatedInsertRuntimeFact, TransactionManagerVerifyNotFinalizedOutcome,
-    TransactionManagerVerifyNotFinalizedRuntimeFact,
+    TransactionManagerAdmissionResult, TransactionManagerAdmissionShellIntent,
+    TransactionManagerDagSaveCommandReport, TransactionManagerFilterAction,
+    TransactionManagerFinalChainAdmissionFact, TransactionManagerFinalizedStatusCommandReport,
+    TransactionManagerGasEstimationFact, TransactionManagerGasEstimationPlan,
+    TransactionManagerGasEstimationResult, TransactionManagerHashCommand,
+    TransactionManagerInsertTransactionFact, TransactionManagerInsertTransactionOutcome,
+    TransactionManagerPublicAdmissionCommandReport, TransactionManagerPublicInsertResult,
+    TransactionManagerRecoveryEntry, TransactionManagerRuntimeAdmissionOutcome,
+    TransactionManagerRuntimeQueueCleanupPlan, TransactionManagerSidecarInsertInput,
+    TransactionManagerSidecarKnownFact, TransactionManagerSidecarLookup,
+    TransactionManagerSidecarLookupPlan, TransactionManagerSidecarLookupRequest,
+    TransactionManagerSidecarRecoveryInsertInput, TransactionManagerSidecarTransitionInput,
+    TransactionManagerStoredTransactionLookup, TransactionManagerStoredTransactionRequest,
+    TransactionManagerTransactionView, TransactionManagerTransactionViewPlan,
+    TransactionManagerTransactionViewRequest, TransactionManagerValidatedInsertRuntimeFact,
+    TransactionManagerVerifyNotFinalizedOutcome, TransactionManagerVerifyNotFinalizedRuntimeFact,
     TransactionManagerVerifyNotFinalizedSidecarFact, TransactionManagerVerifyTransactionFact,
     TransactionManagerVerifyTransactionOutcome, TransactionPackEstimateOutcome,
     TransactionPackSelectedTransaction, TransactionPackSessionCandidate,
@@ -108,6 +108,8 @@ const TM_INSERT_TRANSACTION_STATUS_ALREADY_FINALIZED: u8 =
     TransactionManagerInsertTransactionStatus::AlreadyFinalized as u8;
 const TM_INSERT_TRANSACTION_STATUS_CANNOT_INSERT: u8 =
     TransactionManagerInsertTransactionStatus::CouldNotInsert as u8;
+const TM_ADMISSION_SHELL_INTENT_LOG_INSERTED: u8 = 1;
+const TM_ADMISSION_SHELL_INTENT_EMIT_TRANSACTION_ADDED: u8 = 2;
 const TRANSACTION_QUEUE_DROP_WINDOW: Duration = Duration::from_secs(600);
 
 fn hash_command(hash: [u8; 32]) -> TransactionManagerHashCommand {
@@ -155,11 +157,26 @@ fn dag_save_command_report(
 fn admission_command_report(
     outcome: &TransactionManagerRuntimeAdmissionOutcome,
 ) -> TransactionManagerAdmissionCommandReport {
+    let mut shell_intents = Vec::new();
+    if outcome.inserted_hash_found {
+        shell_intents.push(TransactionManagerAdmissionShellIntent {
+            kind: TM_ADMISSION_SHELL_INTENT_LOG_INSERTED,
+            hash: outcome.inserted_hash,
+        });
+    }
+    if outcome.emit_transaction_added && outcome.inserted_hash_found {
+        shell_intents.push(TransactionManagerAdmissionShellIntent {
+            kind: TM_ADMISSION_SHELL_INTENT_EMIT_TRANSACTION_ADDED,
+            hash: outcome.inserted_hash,
+        });
+    }
+
     TransactionManagerAdmissionCommandReport {
         inserted_hash_found: outcome.inserted_hash_found,
         inserted_hash: outcome.inserted_hash,
         transaction_added_hash_found: outcome.emit_transaction_added && outcome.inserted_hash_found,
         transaction_added_hash: outcome.inserted_hash,
+        shell_intents,
         admission: command_admission_result(outcome),
     }
 }
@@ -243,6 +260,7 @@ fn public_precheck_rejected_command_report(
         inserted_hash: [0; 32],
         transaction_added_hash_found: false,
         transaction_added_hash: [0; 32],
+        shell_intents: Vec::new(),
         admission: command_admission_result_from_insert_outcome(&precheck),
     };
     let public_result = public_insert_admission_result(&admission.admission);
@@ -263,6 +281,7 @@ fn public_verification_rejected_command_report(
         inserted_hash: [0; 32],
         transaction_added_hash_found: false,
         transaction_added_hash: [0; 32],
+        shell_intents: Vec::new(),
         admission: TransactionManagerAdmissionResult {
             present: false,
             insert_status: TM_INSERT_TRANSACTION_STATUS_ACCEPTED,
@@ -4806,6 +4825,17 @@ mod tests {
         assert_eq!(report.admission.inserted_hash, [17; 32]);
         assert!(report.admission.transaction_added_hash_found);
         assert_eq!(report.admission.transaction_added_hash, [17; 32]);
+        assert_eq!(report.admission.shell_intents.len(), 2);
+        assert_eq!(
+            report.admission.shell_intents[0].kind,
+            TM_ADMISSION_SHELL_INTENT_LOG_INSERTED
+        );
+        assert_eq!(report.admission.shell_intents[0].hash, [17; 32]);
+        assert_eq!(
+            report.admission.shell_intents[1].kind,
+            TM_ADMISSION_SHELL_INTENT_EMIT_TRANSACTION_ADDED
+        );
+        assert_eq!(report.admission.shell_intents[1].hash, [17; 32]);
         assert!(runtime.transaction_manager_runtime_queue_contains(&[17; 32]));
         let _ = fs::remove_dir_all(temp_dir);
     }
@@ -4873,6 +4903,7 @@ mod tests {
         assert_eq!(report.admission.admission.transaction_status, 0);
         assert!(!report.admission.inserted_hash_found);
         assert!(!report.admission.transaction_added_hash_found);
+        assert!(report.admission.shell_intents.is_empty());
         assert!(runtime.transaction_manager_runtime_queue_contains(&[18; 32]));
         let _ = fs::remove_dir_all(temp_dir);
     }
