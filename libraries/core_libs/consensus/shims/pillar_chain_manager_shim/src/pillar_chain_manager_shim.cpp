@@ -920,6 +920,24 @@ PillarChainManager::LocalPillarVoteAnchor PillarChainManager::localPillarVoteAnc
   return result;
 }
 
+PillarChainManager::RestartPillarPostProcessingDecision PillarChainManager::restartPillarPostProcessingDecision(
+    PbftPeriod pbft_period) const {
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+  RestartPillarPostProcessingDecision decision;
+  if (!current_pillar_block_) {
+    return decision;
+  }
+
+  decision.current_pillar_period = current_pillar_block_->getPeriod();
+  decision.should_process =
+      pbft_period == decision.current_pillar_period + kFicusHfConfig.pillar_blocks_interval;
+  if (decision.should_process) {
+    LOG(log_er_) << "Pillar block was not processed before restart, current period: " << pbft_period
+                 << ", current pillar block period: " << decision.current_pillar_period;
+  }
+  return decision;
+}
+
 bool PillarChainManager::isRelevantPillarVote(const std::shared_ptr<PillarVote> vote) const {
   const auto vote_exists = pillar_votes_.voteExists(vote);
   const auto current_pillar_block = getCurrentPillarBlock();

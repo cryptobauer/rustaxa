@@ -550,8 +550,8 @@ Landed:
   longer inspects current pillar-block sidecar period/hash facts for those decisions.
 - PBFT block validation's pillar-anchor check now uses the same compact PillarChainManager anchor facts instead of
   dereferencing the current `PillarBlock` sidecar in PBFT manager.
-- Restart pillar post-processing checks and local pillar-vote fallback now use compact current pillar-anchor facts instead
-  of reading the current `PillarBlock` sidecar in PBFT manager.
+- Restart pillar post-processing checks and local pillar-vote fallback now use named PillarChainManager ports instead of
+  reading the current `PillarBlock` sidecar in PBFT manager.
 - Finalization pillar preflight now receives a typed PillarChainManager result with success, vote count, and executor
   payloads instead of treating the returned pillar-vote vector as the protocol decision in PBFT manager.
 - Synced pillar-vote bundle validation now lives behind a PillarChainManager Rust port. PBFT manager passes canonical

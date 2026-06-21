@@ -614,6 +614,32 @@ class PillarChainManager {
   LocalPillarVoteAnchor localPillarVoteAnchorForPbftPeriod(PbftPeriod pbft_period) const;
 
   /**
+   * Classifies whether PBFT startup should rerun pillar post-processing for
+   * the current PBFT period.
+   *
+   * Purpose:
+   * - Keeps PBFT manager from inspecting current pillar-block sidecar facts
+   *   during restart recovery.
+   *
+   * Inputs:
+   * - `pbft_period` is the restored PBFT chain size.
+   *
+   * Outputs:
+   * - `should_process` is true when a current pillar block exists and its
+   *   period indicates the node may have stopped after persisting the PBFT
+   *   block but before processing the pillar block.
+   *
+   * Invariants:
+   * - Does not mutate pillar state.
+   * - Logs the legacy restart diagnostic when the recovery condition is met.
+   */
+  struct RestartPillarPostProcessingDecision {
+    bool should_process = false;
+    PbftPeriod current_pillar_period = 0;
+  };
+  RestartPillarPostProcessingDecision restartPillarPostProcessingDecision(PbftPeriod pbft_period) const;
+
+  /**
    * Retrieves verified votes for one pillar period and block hash.
    *
    * Inputs:

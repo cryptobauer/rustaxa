@@ -842,14 +842,10 @@ PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> 
   // Note: processPillarBlock must be called after eligible_wallets_.updateWalletsEligibility
   auto current_pbft_period = pbft_chain_->getPbftChainSize();
   if (kGenesisConfig.state.hardforks.ficus_hf.isPillarBlockPeriod(current_pbft_period)) {
-    const auto current_pillar_anchor = pillar_chain_mgr_->currentPillarBlockAnchor();
-    // There is a race condition where pbt block could have been saved and node stopped before saving pillar block
-    if (current_pillar_anchor.found &&
-        current_pbft_period ==
-            current_pillar_anchor.period + kGenesisConfig.state.hardforks.ficus_hf.pillar_blocks_interval)
-      LOG(log_er_) << "Pillar block was not processed before restart, current period: " << current_pbft_period
-                   << ", current pillar block period: " << current_pillar_anchor.period;
-    processPillarBlock(current_pbft_period);
+    const auto pillar_restart = pillar_chain_mgr_->restartPillarPostProcessingDecision(current_pbft_period);
+    if (pillar_restart.should_process) {
+      processPillarBlock(current_pbft_period);
+    }
   }
 }
 
