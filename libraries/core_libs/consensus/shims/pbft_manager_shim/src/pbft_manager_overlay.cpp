@@ -3123,8 +3123,8 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
     }
 
     if (plan.next_check == kPbftManagerBlockValidationCheckPillarBlock) {
-      const auto current_pillar_block = pillar_chain_mgr_->getCurrentPillarBlock();
-      if (!current_pillar_block) {
+      const auto pillar_anchor = pillar_chain_mgr_->currentPillarBlockAnchor();
+      if (!pillar_anchor.found) {
         // This should never happen
         LOG(log_er_) << "Unable to validate PBFT block " << pbft_block_hash << ", period " << block_period
                      << ". No current pillar block present in node";
@@ -3134,15 +3134,15 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
       }
 
       if (!pbft_block->getExtraData().has_value() || !pbft_block->getExtraData()->getPillarBlockHash().has_value() ||
-          *pbft_block->getExtraData()->getPillarBlockHash() != current_pillar_block->getHash()) {
+          *pbft_block->getExtraData()->getPillarBlockHash() != pillar_anchor.hash) {
         LOG(log_er_) << "PBFT block " << pbft_block_hash << " with period " << pbft_block->getPeriod()
                      << " contains pillar block hash "
                      << (pbft_block->getExtraData().has_value() &&
                                  pbft_block->getExtraData()->getPillarBlockHash().has_value()
                              ? *pbft_block->getExtraData()->getPillarBlockHash()
                              : kNullBlockHash)
-                     << ", which is different than the local current pillar block" << current_pillar_block->getHash()
-                     << " with period " << current_pillar_block->getPeriod();
+                     << ", which is different than the local current pillar block" << pillar_anchor.hash
+                     << " with period " << pillar_anchor.period;
         plan = validation_session->pbft_manager_block_validation_session_report(kPbftManagerBlockValidationFactInvalid,
                                                                                 false);
       } else {

@@ -540,6 +540,8 @@ Landed:
   path is unavailable.
 - PBFT block extra-data construction now receives current pillar-block anchor facts from PillarChainManager instead of
   consuming a live `PillarBlock` sidecar to decide the anchored period/hash.
+- PBFT block validation's pillar-anchor check now uses the same compact PillarChainManager anchor facts instead of
+  dereferencing the current `PillarBlock` sidecar in PBFT manager.
 
 Scope:
 
