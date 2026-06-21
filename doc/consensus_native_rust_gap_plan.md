@@ -202,7 +202,7 @@ Stop conditions:
 
 Goal: remove remaining vote, slashing, and pillar manager compatibility surfaces that exist only for PBFT manager or consensus-side decisions.
 
-Status as of 2026-06-21: in progress.
+Status as of 2026-06-21: complete.
 
 - Rust already owns PBFT vote-progress planning, verified-vote runtime mutation, pillar vote indexing/planning, and
   double-voting proof transaction planning.
@@ -219,6 +219,8 @@ Status as of 2026-06-21: in progress.
 - PBFT vote admission and validation no longer hydrate, mutate, attach, or materialize the incoming live C++ `PbftVote`
   sidecar for weight ownership. The production admission path verifies Rust-retained weighted payload records directly;
   incoming live votes remain only network/public/executor payloads.
+- Remaining `live_votes_` maps in PBFT and pillar vote shims are compatibility/test/public API projections only; production
+  admission, finalization, slashing, and pillar threshold decisions route through Rust-retained payloads or compact facts.
 
 Scope:
 
