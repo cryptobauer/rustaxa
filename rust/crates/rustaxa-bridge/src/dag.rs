@@ -155,6 +155,7 @@ pub struct DagProposerSession {
     update_retry_state: bool,
     next_last_propose_level: u64,
     next_retry_count: u64,
+    record_proposed_block: bool,
     vdf_message: Vec<u8>,
     selected_transaction_hashes: Vec<H256>,
     transaction_gas_estimations: Vec<u64>,
@@ -1035,6 +1036,7 @@ impl BridgeDagManagerRuntime {
                 update_retry_state: attempt.update_retry_state,
                 next_last_propose_level: attempt.next_last_propose_level,
                 next_retry_count: attempt.next_retry_count,
+                record_proposed_block: false,
                 minimum_vdf_difficulty,
                 vdf_message: Vec::new(),
                 selected_transaction_hashes: Vec::new(),
@@ -1726,18 +1728,35 @@ impl BridgeDagProposerSession {
                 "DAG_PROPOSER_SESSION_UNEXPECTED_ADD_BLOCK_REPORT",
             );
         }
-        let _accepted = report.accepted;
+        if (report.duplicate && report.expired)
+            || (report.accepted && report.expired)
+            || (report.accepted && !report.missing_references.is_empty())
+        {
+            return invalid_dag_proposer_report(
+                &mut self.state,
+                "DAG_PROPOSER_SESSION_INVALID_ADD_BLOCK_REPORT",
+            );
+        }
         let retry =
             plan_dag_proposer_retry_reset(rustaxa_consensus::dag::DagProposerRetryResetInput {
                 proposal_level: self.state.attempt.proposal_level,
             });
         self.state.action = DagProposerSessionAction::Complete;
         self.state.status = DAG_PROPOSER_SESSION_STATUS_COMPLETE;
-        self.state.reason_code = rustaxa_consensus::dag::DAG_PROPOSER_REASON_OK;
-        self.state.return_value = true;
+        self.state.reason_code = if report.accepted {
+            rustaxa_consensus::dag::DAG_PROPOSER_REASON_OK
+        } else if report.expired {
+            rustaxa_consensus::dag::DAG_PROPOSER_REASON_ADD_BLOCK_EXPIRED
+        } else if !report.missing_references.is_empty() {
+            rustaxa_consensus::dag::DAG_PROPOSER_REASON_ADD_BLOCK_MISSING_REFERENCES
+        } else {
+            rustaxa_consensus::dag::DAG_PROPOSER_REASON_ADD_BLOCK_REJECTED
+        };
+        self.state.return_value = report.accepted;
         self.state.update_retry_state = retry.update_retry_state;
         self.state.next_last_propose_level = retry.next_last_propose_level;
         self.state.next_retry_count = retry.next_retry_count;
+        self.state.record_proposed_block = report.accepted;
         dag_proposer_session_step(&self.state)
     }
 }
@@ -2359,6 +2378,7 @@ fn dag_proposer_session_step(session: &DagProposerSession) -> DagProposerSession
             node_transaction_shard: session.attempt.transaction_request.node_transaction_shard,
             shard_period_interval: session.attempt.transaction_request.shard_period_interval,
         },
+        record_proposed_block: session.record_proposed_block,
         error_code: session.error_code.clone(),
     }
 }
@@ -3321,10 +3341,14 @@ mod tests {
             let complete =
                 session.dag_proposer_session_report_add_block(DagProposerAddBlockReport {
                     accepted: true,
+                    duplicate: false,
+                    expired: false,
+                    missing_references: Vec::new(),
                 });
             assert_eq!(complete.status, DAG_PROPOSER_SESSION_STATUS_COMPLETE);
             assert_eq!(complete.action, DAG_PROPOSER_SESSION_ACTION_NONE);
             assert!(complete.return_value);
+            assert!(complete.record_proposed_block);
             assert!(complete.update_retry_state);
             assert_eq!(complete.next_last_propose_level, 1);
             assert_eq!(complete.next_retry_count, 0);

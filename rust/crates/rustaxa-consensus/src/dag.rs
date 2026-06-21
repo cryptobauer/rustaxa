@@ -200,6 +200,12 @@ pub const DAG_PROPOSER_REASON_PACKED_TRANSACTIONS_EMPTY: u32 = 14;
 pub const DAG_PROPOSER_REASON_MISSING_VDF_INPUT: u32 = 15;
 /// DAG proposer reason: the transaction-pack executor was throttled by live network state.
 pub const DAG_PROPOSER_REASON_TRANSACTION_PACK_THROTTLED: u32 = 16;
+/// Rust-planned proposed DAG block was rejected by the add-block executor.
+pub const DAG_PROPOSER_REASON_ADD_BLOCK_REJECTED: u32 = 17;
+/// Rust-planned proposed DAG block was expired before the add-block executor accepted it.
+pub const DAG_PROPOSER_REASON_ADD_BLOCK_EXPIRED: u32 = 18;
+/// Rust-planned proposed DAG block referenced DAG blocks that were still unavailable at submission time.
+pub const DAG_PROPOSER_REASON_ADD_BLOCK_MISSING_REFERENCES: u32 = 19;
 
 /// Inputs for deterministic `DagManager::verifyBlock` prechecks.
 ///

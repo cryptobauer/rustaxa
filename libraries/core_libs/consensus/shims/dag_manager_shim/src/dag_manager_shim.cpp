@@ -579,10 +579,10 @@ std::pair<bool, std::vector<blk_hash_t>> DagManager::pivotAndTipsAvailable(const
   return {validation.ok, from_bridge_dag_hashes(validation.missing_references)};
 }
 
-std::pair<bool, std::vector<blk_hash_t>> DagManager::addDagBlockRlp(rustaxa::DagProposerSignedBlockIntent signed_block,
-                                                                    const vec_trx_t &transaction_hashes,
-                                                                    std::vector<dev::bytes> &&transaction_rlps,
-                                                                    bool proposed, bool save) {
+rustaxa::DagProposerAddBlockReport DagManager::addDagBlockRlp(rustaxa::DagProposerSignedBlockIntent signed_block,
+                                                              const vec_trx_t &transaction_hashes,
+                                                              std::vector<dev::bytes> &&transaction_rlps,
+                                                              bool proposed, bool save) {
   const auto block_rlp = from_rust_bytes(signed_block.block_rlp);
   const auto block_facts = rustaxa::dag_manager_block_from_rlp(to_rust_vec(block_rlp));
   if (signed_block.block_hash != block_facts.hash) {
@@ -590,6 +590,15 @@ std::pair<bool, std::vector<blk_hash_t>> DagManager::addDagBlockRlp(rustaxa::Dag
   }
   const auto blk_hash = from_bridge_hash(block_facts.hash);
   std::scoped_lock order_lock(rust_order_dag_blocks_mutex_);
+  auto make_add_report = [](bool accepted, bool duplicate, bool expired,
+                            std::vector<blk_hash_t> missing_references = {}) {
+    rustaxa::DagProposerAddBlockReport report;
+    report.accepted = accepted;
+    report.duplicate = duplicate;
+    report.expired = expired;
+    report.missing_references = to_bridge_dag_hashes(missing_references);
+    return report;
+  };
 
   rustaxa::DagAddBlockEffectPlan add_plan;
   {
@@ -598,15 +607,15 @@ std::pair<bool, std::vector<blk_hash_t>> DagManager::addDagBlockRlp(rustaxa::Dag
         to_bridge_add_block_runtime_input(block_facts, save, proposed));
   }
   if (add_plan.duplicate) {
-    return {true, {}};
+    return make_add_report(true, true, false);
   }
   if (add_plan.expired) {
     std::cerr << "DagManager: dropping old block " << blk_hash << ". Expiry level: " << getDagExpiryLevel()
               << ". Block level: " << block_facts.level << std::endl;
-    return {false, {}};
+    return make_add_report(false, false, true);
   }
   if (!add_plan.accepted) {
-    return {false, from_bridge_dag_hashes(add_plan.missing_references)};
+    return make_add_report(false, false, false, from_bridge_dag_hashes(add_plan.missing_references));
   }
 
   if (add_plan.persist_transactions) {
@@ -645,7 +654,7 @@ std::pair<bool, std::vector<blk_hash_t>> DagManager::addDagBlockRlp(rustaxa::Dag
     }
   }
 
-  return {true, {}};
+  return make_add_report(true, false, false);
 }
 
 std::pair<bool, std::vector<blk_hash_t>> DagManager::addDagBlock(const std::shared_ptr<DagBlock> &blk,

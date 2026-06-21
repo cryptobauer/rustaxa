@@ -4014,6 +4014,7 @@ pub mod rustaxa_ffi {
         selected_transaction_hashes: Vec<DagHash>,
         transaction_gas_estimations: Vec<u64>,
         transaction_request: DagProposerTransactionPackRequest,
+        record_proposed_block: bool,
         error_code: String,
     }
 
@@ -4039,9 +4040,15 @@ pub mod rustaxa_ffi {
         latest_proposal_level: u64,
     }
 
-    /// Report after C++ materializes/signs/adds the proposed DAG block.
+    /// Typed report after C++ materializes/signs/adds the proposed DAG block.
+    ///
+    /// C++ remains the executor for compatibility side effects, but Rust consumes
+    /// the complete executor outcome before advancing the proposer session.
     struct DagProposerAddBlockReport {
         accepted: bool,
+        duplicate: bool,
+        expired: bool,
+        missing_references: Vec<DagHash>,
     }
 
     /// Rust-runtime DAG block construction facts for storage-backed tip metadata planning.

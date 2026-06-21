@@ -50,10 +50,10 @@ class DagManager : public DagManagerOld {
    * materializes temporary `DagBlock` and `Transaction` objects after acceptance when existing side-effect APIs still
    * require them.
    */
-  std::pair<bool, std::vector<blk_hash_t>> addDagBlockRlp(rustaxa::DagProposerSignedBlockIntent signed_block,
-                                                          const vec_trx_t &transaction_hashes,
-                                                          std::vector<dev::bytes> &&transaction_rlps,
-                                                          bool proposed = false, bool save = true);
+  rustaxa::DagProposerAddBlockReport addDagBlockRlp(rustaxa::DagProposerSignedBlockIntent signed_block,
+                                                    const vec_trx_t &transaction_hashes,
+                                                    std::vector<dev::bytes> &&transaction_rlps, bool proposed = false,
+                                                    bool save = true);
   vec_blk_t getDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period);
   uint setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, vec_blk_t const &dag_order);
   /**

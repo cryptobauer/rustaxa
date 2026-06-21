@@ -164,6 +164,15 @@ Stop conditions:
 
 Goal: make proposer behavior native Rust except for explicit scheduler, async VDF execution, signing, and add-block execution edges.
 
+Status as of 2026-06-21: partially implemented.
+
+- Rust already owns proposal attempt planning, post-pack command selection, VDF wait cancellation decisions, stale-proof
+  retry/reset decisions, block construction planning, and add-block terminal classification.
+- C++ still owns the worker loop pacing check, durable per-wallet retry cursor storage, VDF polling interval mechanics,
+  stale-proof sleep execution, signing execution, and compatibility `addDagBlock` side effects.
+- The add-block executor now reports a typed outcome back to the Rust proposer session before the proposer shell records
+  proposed-block telemetry or returns to the worker loop.
+
 Scope:
 
 - Move proposer worker command selection, retry lifecycle state, VDF request state, stale-proof handling, and block-submission intent planning into Rust.

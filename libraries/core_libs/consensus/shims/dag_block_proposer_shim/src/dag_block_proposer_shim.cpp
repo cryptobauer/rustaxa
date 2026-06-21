@@ -302,11 +302,10 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
 
   const auto proposed_block_hash = from_bridge_hash(signed_block.block_hash);
   const auto proposed_transaction_count = selected_transaction_hashes.size();
-  const auto add_result =
-      dag_mgr_->addDagBlockRlp(std::move(signed_block), selected_transaction_hashes,
-                               std::move(transaction_payloads.transaction_rlps), true)
-          .first;
-  if (add_result) {
+  auto add_report = dag_mgr_->addDagBlockRlp(std::move(signed_block), selected_transaction_hashes,
+                                             std::move(transaction_payloads.transaction_rlps), true);
+  step = session->dag_proposer_session_report_add_block(std::move(add_report));
+  if (step.record_proposed_block) {
     LOG(log_nf_) << node_dag_proposer_data->wallet.node_addr << " proposed new DAG block " << proposed_block_hash
                  << ", pivot " << from_bridge_hash(step.frontier_pivot) << ", txs num " << proposed_transaction_count;
     proposed_blocks_count_ += 1;
@@ -315,9 +314,6 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
                  << node_dag_proposer_data->wallet.node_addr << " into dag";
   }
 
-  rustaxa::DagProposerAddBlockReport add_report;
-  add_report.accepted = add_result;
-  step = session->dag_proposer_session_report_add_block(std::move(add_report));
   if (auto done = finish_if_complete(step)) {
     return *done;
   }
