@@ -1194,6 +1194,19 @@ impl FinalChain {
                     }
                 }
             }
+            DPOS_REGISTER_VALIDATOR_SELECTOR
+            | DPOS_DELEGATE_SELECTOR
+            | DPOS_UNDELEGATE_SELECTOR
+            | DPOS_UNDELEGATE_V2_SELECTOR
+            | DPOS_CONFIRM_UNDELEGATE_V2_SELECTOR
+            | DPOS_CANCEL_UNDELEGATE_V2_SELECTOR
+            | DPOS_REDELEGATE_SELECTOR
+            | DPOS_CLAIM_REWARDS_SELECTOR
+            | DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR
+            | DPOS_SET_VALIDATOR_INFO_SELECTOR
+            | DPOS_SET_COMMISSION_SELECTOR
+            | DPOS_CLAIM_ALL_REWARDS_SELECTOR
+            | DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR => Vec::new(),
             _ => {
                 return Ok(FinalChainCallOutcome {
                     gas_used,
@@ -3113,6 +3126,101 @@ impl FinalChain {
                 } else {
                     Ok(0)
                 }
+            }
+            DPOS_REGISTER_VALIDATOR_SELECTOR => {
+                decode_dpos_register_validator(&request.input, request.sender)?;
+                Ok(DPOS_REGISTER_VALIDATOR_GAS)
+            }
+            DPOS_DELEGATE_SELECTOR => {
+                decode_abi_address_argument(&request.input, "delegate(address)")?;
+                Ok(DPOS_DELEGATE_GAS)
+            }
+            DPOS_UNDELEGATE_SELECTOR => {
+                if request.input.len() < 4 + 2 * 32 {
+                    anyhow::bail!("undelegate input is shorter than selector plus ABI head");
+                }
+                decode_abi_address_argument(&request.input, "undelegate(address,...)")?;
+                decode_abi_word_as_vec(&request.input, 4 + 32, "undelegate amount")?;
+                Ok(DPOS_UNDELEGATE_GAS)
+            }
+            DPOS_UNDELEGATE_V2_SELECTOR => {
+                if !self.is_on_cornus(request.block_number) {
+                    return Ok(0);
+                }
+                if request.input.len() < 4 + 2 * 32 {
+                    anyhow::bail!("undelegateV2 input is shorter than selector plus ABI head");
+                }
+                decode_abi_address_argument(&request.input, "undelegateV2(address,...)")?;
+                decode_abi_word_as_vec(&request.input, 4 + 32, "undelegateV2 amount")?;
+                Ok(DPOS_UNDELEGATE_GAS)
+            }
+            DPOS_CONFIRM_UNDELEGATE_V2_SELECTOR => {
+                if !self.is_on_cornus(request.block_number) {
+                    return Ok(0);
+                }
+                if request.input.len() < 4 + 2 * 32 {
+                    anyhow::bail!(
+                        "confirmUndelegateV2 input is shorter than selector plus ABI head"
+                    );
+                }
+                decode_abi_address_argument(&request.input, "confirmUndelegateV2(address,uint64)")?;
+                decode_abi_word_as_u64(&request.input, 4 + 32, "confirmUndelegateV2 id")?;
+                Ok(DPOS_DEFAULT_METHOD_GAS)
+            }
+            DPOS_CANCEL_UNDELEGATE_V2_SELECTOR => {
+                if !self.is_on_cornus(request.block_number) {
+                    return Ok(0);
+                }
+                if request.input.len() < 4 + 2 * 32 {
+                    anyhow::bail!(
+                        "cancelUndelegateV2 input is shorter than selector plus ABI head"
+                    );
+                }
+                decode_abi_address_argument(&request.input, "cancelUndelegateV2(address,uint64)")?;
+                decode_abi_word_as_u64(&request.input, 4 + 32, "cancelUndelegateV2 id")?;
+                Ok(DPOS_UNDELEGATE_GAS)
+            }
+            DPOS_REDELEGATE_SELECTOR => {
+                if request.input.len() < 4 + 3 * 32 {
+                    anyhow::bail!("reDelegate input is shorter than selector plus ABI head");
+                }
+                decode_abi_address_argument_with_offset(&request.input, 4, "reDelegate from")?;
+                decode_abi_address_argument_with_offset(&request.input, 4 + 32, "reDelegate to")?;
+                decode_abi_word_as_vec(&request.input, 4 + 2 * 32, "reDelegate amount")?;
+                Ok(DPOS_REDELEGATE_GAS)
+            }
+            DPOS_CLAIM_REWARDS_SELECTOR => {
+                decode_abi_address_argument(&request.input, "claimRewards(address)")?;
+                Ok(DPOS_DEFAULT_METHOD_GAS)
+            }
+            DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR => {
+                decode_abi_address_argument(&request.input, "claimCommissionRewards(address)")?;
+                Ok(DPOS_DEFAULT_METHOD_GAS)
+            }
+            DPOS_SET_VALIDATOR_INFO_SELECTOR => {
+                decode_dpos_set_validator_info(&request.input)?;
+                Ok(DPOS_DEFAULT_METHOD_GAS)
+            }
+            DPOS_SET_COMMISSION_SELECTOR => {
+                decode_abi_address_argument(&request.input, "setCommission(address,uint16)")?;
+                decode_abi_word_as_u16(&request.input, 4 + 32, "setCommission commission")?;
+                Ok(DPOS_DEFAULT_METHOD_GAS)
+            }
+            DPOS_CLAIM_ALL_REWARDS_SELECTOR => {
+                if request.input.len() != 4 {
+                    anyhow::bail!("claimAllRewards input is malformed");
+                }
+                Ok(DPOS_DEFAULT_METHOD_GAS)
+            }
+            DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR => {
+                if request.block_number >= self.rewards_config.fix_claim_all_block_num {
+                    return Ok(0);
+                }
+                if request.input.len() != 4 + 32 {
+                    anyhow::bail!("claimAllRewards(uint32) input is malformed");
+                }
+                decode_abi_word_as_u32(&request.input, 4, "claimAllRewards(uint32) batch")?;
+                Ok(DPOS_DEFAULT_METHOD_GAS)
             }
             _ => Ok(0),
         }
@@ -8342,6 +8450,62 @@ mod tests {
             description,
         );
         assert_abi_string_tail(&validator_info.code_retval, 32, endpoint_offset, endpoint);
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn call_estimates_dpos_mutation_selectors_without_mutating_snapshot() {
+        let path = temp_db_path("call-estimates-dpos-mutations");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x10; 20];
+        let new_validator = [0x22; 20];
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            U256::from(1_000u64),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+
+        let register = final_chain
+            .call(dpos_call_request(
+                0,
+                register_validator_input(
+                    new_validator,
+                    &[0x77; 65],
+                    [0x88; 32],
+                    10,
+                    "test",
+                    "test",
+                ),
+            ))
+            .unwrap();
+        assert_eq!(register.code_err, "");
+        assert_eq!(register.consensus_err, "");
+        assert_eq!(register.code_retval, Vec::<u8>::new());
+        assert_eq!(register.gas_used, DPOS_REGISTER_VALIDATOR_GAS);
+
+        let delegate = final_chain
+            .call(dpos_call_request(0, delegate_input(validator)))
+            .unwrap();
+        assert_eq!(delegate.code_err, "");
+        assert_eq!(delegate.consensus_err, "");
+        assert_eq!(delegate.code_retval, Vec::<u8>::new());
+        assert_eq!(delegate.gas_used, DPOS_DELEGATE_GAS);
+
+        assert_eq!(
+            final_chain
+                .dpos_eligible_vote_count(0, new_validator)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            U256::zero()
+        );
 
         drop(final_chain);
         drop(storage);

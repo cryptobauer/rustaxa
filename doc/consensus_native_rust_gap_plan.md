@@ -76,6 +76,13 @@ proposer uses that zero hash in the VRF input. The Rust runtime had treated the 
 runtime now preserves the legacy period-0 zero-hash contract while keeping nonzero missing PeriodData as a retry-only
 missing VDF input.
 
+The remaining DPoS eligibility runtime blocker was then traced to transaction packing gas estimation for DPoS mutating
+transactions. The Rust FinalChain call path already owned DPoS snapshot queries and finalization-time mutation
+application, but dry-run `call` only returned data for DPoS query selectors. Validator registration/delegation
+transactions therefore returned gas `0`, were demoted by the Rust transaction pack planner, and never reached
+finalization. Rust FinalChain now treats supported DPoS mutating selectors as read-only gas-estimation calls: it decodes
+the ABI input, returns the selector's legacy gas cost with empty return data, and does not mutate the snapshot.
+
 Scope:
 
 - Inventory remaining consensus consumers that call C++ FinalChain, DPoS, slashing, validator, delegation, stake, or rewards fact APIs.
