@@ -846,12 +846,13 @@ PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> 
   // Note: processPillarBlock must be called after eligible_wallets_.updateWalletsEligibility
   auto current_pbft_period = pbft_chain_->getPbftChainSize();
   if (kGenesisConfig.state.hardforks.ficus_hf.isPillarBlockPeriod(current_pbft_period)) {
-    const auto current_pillar_block = pillar_chain_mgr_->getCurrentPillarBlock();
+    const auto current_pillar_anchor = pillar_chain_mgr_->currentPillarBlockAnchor();
     // There is a race condition where pbt block could have been saved and node stopped before saving pillar block
-    if (current_pbft_period ==
-        current_pillar_block->getPeriod() + kGenesisConfig.state.hardforks.ficus_hf.pillar_blocks_interval)
+    if (current_pillar_anchor.found &&
+        current_pbft_period ==
+            current_pillar_anchor.period + kGenesisConfig.state.hardforks.ficus_hf.pillar_blocks_interval)
       LOG(log_er_) << "Pillar block was not processed before restart, current period: " << current_pbft_period
-                   << ", current pillar block period: " << current_pillar_block->getPeriod();
+                   << ", current pillar block period: " << current_pillar_anchor.period;
     processPillarBlock(current_pbft_period);
   }
 }
@@ -2020,10 +2021,10 @@ bool PbftManager::genAndPlaceVote(PbftVoteTypes vote_type, PbftPeriod period, Pb
       // No need to check presence of extra data and pillar block hash - this was already validated in validatePbftBlock
       place_pillar_vote_for_block = pbft_block->getExtraData()->getPillarBlockHash();
     } else {
-      const auto current_pillar_block = pillar_chain_mgr_->getCurrentPillarBlock();
+      const auto current_pillar_anchor = pillar_chain_mgr_->currentPillarBlockAnchor();
       // Check if the latest pillar block was created
-      if (current_pillar_block && current_pillar_block->getPeriod() == period - 1) {
-        place_pillar_vote_for_block = current_pillar_block->getHash();
+      if (current_pillar_anchor.found && current_pillar_anchor.period == period - 1) {
+        place_pillar_vote_for_block = current_pillar_anchor.hash;
       }
     }
   }

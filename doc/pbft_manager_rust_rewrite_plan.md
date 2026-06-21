@@ -542,6 +542,8 @@ Landed:
   consuming a live `PillarBlock` sidecar to decide the anchored period/hash.
 - PBFT block validation's pillar-anchor check now uses the same compact PillarChainManager anchor facts instead of
   dereferencing the current `PillarBlock` sidecar in PBFT manager.
+- Restart pillar post-processing checks and local pillar-vote fallback now use compact current pillar-anchor facts instead
+  of reading the current `PillarBlock` sidecar in PBFT manager.
 
 Scope:
 
