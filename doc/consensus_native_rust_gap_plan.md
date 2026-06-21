@@ -64,6 +64,11 @@ Validation after removing that gate still leaves `PbftManagerTest.pbft_manager_r
 non-empty PBFT blocks and zero executed transactions, so the remaining blocker is deeper than FinalChain/DPoS fact
 readiness and must be traced through DAG block creation, PBFT proposal/certification, or finalization admission.
 
+One adjacent DAG proposer compatibility issue has been closed during that trace: Rust transaction packing now uses the
+legacy five-byte sender prefix for multi-shard DAG transaction selection. This restores compatibility with the C++
+`sender.toString().substr(0, 10)` rule, but it does not explain the single-node runtime failure because that test uses
+the default one-shard proposer configuration.
+
 Scope:
 
 - Inventory remaining consensus consumers that call C++ FinalChain, DPoS, slashing, validator, delegation, stake, or rewards fact APIs.

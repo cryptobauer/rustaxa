@@ -472,15 +472,30 @@ fn runtime_pack_candidate_matches_shard(
         "TM_RUNTIME_PACK_SHARD_INTERVAL_ZERO"
     );
 
-    let sender_prefix = u32::from_be_bytes([
-        candidate.sender.0[0],
-        candidate.sender.0[1],
-        candidate.sender.0[2],
-        candidate.sender.0[3],
-    ]) as u64;
+    let sender_prefix = legacy_transaction_shard_sender_prefix(candidate.sender);
     let shard = sender_prefix.wrapping_add(session.proposal_period / session.shard_period_interval)
         % u64::from(session.total_shards);
     Ok(shard == u64::from(session.node_shard))
+}
+
+/// Returns the legacy DAG transaction-sharding sender prefix.
+///
+/// C++ `DagBlockProposer::getShardedTrxs` parses
+/// `sender.toString().substr(0, 10)` as hexadecimal, which is the first five
+/// address bytes. The Rust runtime keeps that exact 40-bit prefix so
+/// multi-shard DAG proposal selects the same transactions as the compatibility
+/// proposer.
+fn legacy_transaction_shard_sender_prefix(sender: H160) -> u64 {
+    u64::from_be_bytes([
+        0,
+        0,
+        0,
+        sender.0[0],
+        sender.0[1],
+        sender.0[2],
+        sender.0[3],
+        sender.0[4],
+    ])
 }
 
 fn runtime_pack_session_final_step(
@@ -5243,8 +5258,7 @@ mod tests {
     #[test]
     fn bridge_transaction_manager_runtime_pack_session_filters_candidate_shards() {
         fn legacy_sender_shard(sender: H160, proposal_period: u64, total_shards: u16) -> u16 {
-            let prefix =
-                u32::from_be_bytes([sender.0[0], sender.0[1], sender.0[2], sender.0[3]]) as u64;
+            let prefix = legacy_transaction_shard_sender_prefix(sender);
             ((prefix + proposal_period / 10) % u64::from(total_shards)) as u16
         }
 
@@ -5330,6 +5344,19 @@ mod tests {
             second_envelope.hash.0
         );
         assert!(!runtime.transaction_manager_runtime_pack_abort());
+    }
+
+    #[test]
+    fn bridge_transaction_manager_shard_prefix_matches_legacy_five_byte_parse() {
+        let sender = H160::from([
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x10, 0x20, 0x30,
+            0x40, 0x50, 0x60, 0x70, 0x80, 0x90,
+        ]);
+
+        assert_eq!(
+            legacy_transaction_shard_sender_prefix(sender),
+            0x01_23_45_67_89
+        );
     }
 
     #[test]
