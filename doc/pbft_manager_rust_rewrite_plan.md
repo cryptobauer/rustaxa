@@ -561,6 +561,9 @@ Landed:
 - Locally generated proposal leader selection now uses the same VoteManager/Rust leader planner route. PBFT manager no
   longer owns a duplicate leader-candidate fact builder for self-generated proposal votes; it only supplies local
   proposal votes and executor callbacks.
+- Local proposal-vote generation now uses a VoteManager helper that combines Rust vote generation with verified-vote
+  uniqueness prechecking. PBFT manager no longer calls generic vote generation and `isUniqueVote` directly while building
+  candidate proposal blocks.
 - Locally generated PBFT vote admission and own-vote persistence now enter VoteManager through one Rust-backed local
   vote port. PBFT manager no longer sequences generic verified-vote insertion and own-vote storage separately before
   handling network gossip.

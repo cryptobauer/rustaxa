@@ -523,6 +523,37 @@ class VoteManager : public VoteManagerOld {
   std::shared_ptr<PbftVote> generateVoteWithWeight(const blk_hash_t& blockhash, PbftVoteTypes vote_type,
                                                    PbftPeriod period, PbftRound round, PbftStep step,
                                                    const WalletConfig& wallet);
+  /**
+   * Generates a locally signed proposal vote and verifies uniqueness.
+   *
+   * Purpose:
+   * - Keeps PBFT manager from coordinating Rust vote generation with
+   *   verified-vote uniqueness sidecar checks while it builds local proposal
+   *   candidates.
+   *
+   * Inputs:
+   * - `block_hash`, `period`, `round`, and `step` identify the proposal vote.
+   * - `wallet` supplies the local signing and VRF material.
+   *
+   * Outputs:
+   * - `generated == true` with `vote` when Rust generation succeeds and the
+   *   vote is unique for its voter/period/round/step.
+   * - `generated == false` with `error` when generation returns no vote or the
+   *   generated vote conflicts with existing verified-vote state.
+   *
+   * Invariants:
+   * - Does not mutate verified-vote state.
+   * - The returned vote still needs local admission through
+   *   `addLocallyGeneratedVote` after PBFT manager selects a proposal leader.
+   */
+  struct LocalProposalVoteGeneration {
+    bool generated = false;
+    std::shared_ptr<PbftVote> vote;
+    std::string error;
+  };
+  LocalProposalVoteGeneration generateUniqueProposalVoteForBlock(const blk_hash_t& block_hash, PbftPeriod period,
+                                                                 PbftRound round, PbftStep step,
+                                                                 const WalletConfig& wallet);
   std::shared_ptr<PbftVote> generateVote(const blk_hash_t& blockhash, PbftVoteTypes type, PbftPeriod period,
                                          PbftRound round, PbftStep step, const WalletConfig& wallet);
   std::pair<bool, std::string> validateVote(const std::shared_ptr<PbftVote>& vote, bool strict = true) const;

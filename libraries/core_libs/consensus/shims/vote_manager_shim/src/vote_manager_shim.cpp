@@ -1245,6 +1245,32 @@ std::shared_ptr<PbftVote> VoteManager::generateVoteWithWeight(const blk_hash_t& 
   return materializeRustGeneratedVote(generated, wallet, true);
 }
 
+VoteManager::LocalProposalVoteGeneration VoteManager::generateUniqueProposalVoteForBlock(
+    const blk_hash_t& block_hash, PbftPeriod period, PbftRound round, PbftStep step, const WalletConfig& wallet) {
+  LocalProposalVoteGeneration result;
+  result.vote = generateVoteWithWeight(block_hash, PbftVoteTypes::propose_vote, period, round, step, wallet);
+  if (!result.vote) {
+    std::stringstream err;
+    err << "Failed to generate propose vote for block " << block_hash << ", period " << period << ", round " << round
+        << ", step " << step << ", validator " << wallet.node_addr;
+    result.error = err.str();
+    return result;
+  }
+
+  if (!isUniqueVote(result.vote).first) {
+    std::stringstream err;
+    err << "Non unique propose vote " << result.vote->getHash() << " for block " << block_hash << ", period "
+        << period << ", round " << result.vote->getRound() << ", step " << result.vote->getStep() << ", validator "
+        << wallet.node_addr;
+    result.error = err.str();
+    result.vote.reset();
+    return result;
+  }
+
+  result.generated = true;
+  return result;
+}
+
 std::shared_ptr<PbftVote> VoteManager::generateVote(const blk_hash_t& blockhash, PbftVoteTypes type, PbftPeriod period,
                                                     PbftRound round, PbftStep step, const WalletConfig& wallet) {
   const auto generated =

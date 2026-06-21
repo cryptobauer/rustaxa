@@ -2554,24 +2554,15 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::generatePbftBlock(
 
       const auto propose_round = getPbftRound();
       const auto propose_step = getPbftStep();
-      auto propose_vote = vote_mgr_->generateVoteWithWeight(block->getBlockHash(), PbftVoteTypes::propose_vote,
-                                                            propose_period, propose_round, propose_step, wallet);
-      if (!propose_vote) {
-        LOG(log_er_) << "Failed to generate propose vote for block " << block->getBlockHash() << ", period "
-                     << propose_period << ", round " << propose_round << ", step " << propose_step << ", validator "
-                     << wallet.node_addr << " when generating pbft block";
-        continue;
-      }
-
-      if (!vote_mgr_->isUniqueVote(propose_vote).first) {
-        LOG(log_er_) << "Non unique propose vote " << propose_vote->getHash() << " for block " << block->getBlockHash()
-                     << ", period " << propose_period << ", round " << propose_vote->getRound() << ", step "
-                     << propose_vote->getStep() << ", validator " << wallet.node_addr;
+      auto propose_vote_generation = vote_mgr_->generateUniqueProposalVoteForBlock(
+          block->getBlockHash(), propose_period, propose_round, propose_step, wallet);
+      if (!propose_vote_generation.generated) {
+        LOG(log_er_) << propose_vote_generation.error << " when generating pbft block";
         continue;
       }
 
       propose_blocks.pushProposedPbftBlock(block, false);
-      propose_votes.push_back(std::move(propose_vote));
+      propose_votes.push_back(std::move(propose_vote_generation.vote));
     }
 
     // Select leader block
