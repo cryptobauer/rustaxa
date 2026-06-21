@@ -221,7 +221,9 @@ Validation:
 
 Goal: replace C++ PBFT sidecar authority with Rust-owned canonical payloads and compact facts.
 
-Status: planned.
+Status: complete for the bounded object-sidecar and materialization-reduction pass. Remaining C++ object materialization
+is now classified as executor, network/public API, EVM/FinalChain boundary, or later VoteManager/PillarChain ownership
+work tracked by Slices 6 through 8.
 
 Implementation plan:
 
@@ -266,6 +268,22 @@ Landed in period-data queue metadata authority:
   facts decide whether the candidate has the required PBFT extra data, pillar block hash, and pillar-vote sidecar
   presence.
 
+Landed in vote/pillar/reward sidecar cleanup and materialization contracts:
+
+- PBFT manager tests now use typed Rust transaction lookup helpers instead of reaching through storage compatibility
+  surfaces.
+- The obsolete staged `ValidatePillarData` sync check was removed from the Rust sync planner; pillar data validity now
+  feeds the runtime plan directly.
+- The PBFT shim no longer exposes a `PeriodData` adapter overload for Rust pillar-vote validation. The overlay builds
+  the queued RLP/live-vote inputs at the executor boundary and calls the direct Rust validation contract.
+- PBFT manager state-action effects now declare when Rust requires proposed-block sidecar materialization, including the
+  requested period and hash. The overlay consumes that typed effect contract instead of independently choosing the
+  materialization identity.
+- Missing local proposed-block sidecars now return Rust admission action `DeferMissingBlock` with the stable
+  `BlockMissing` status and `PBFT_MANAGER_CANDIDATE_ADMISSION_BLOCK_MISSING` error code. This treats missing sidecars as
+  retryable live-object unavailability rather than hard protocol rejection while keeping network/tarcap sidecar arrival
+  outside Rust admission.
+
 3. Move cert-voted sidecar authority.
 
 - Keep the Rust runtime as the source of cert-voted period, round, hash, and persistence state.
@@ -304,14 +322,14 @@ Landed in period-data queue metadata authority:
 
 Proposed commit slicing:
 
-- Commit 1: proposed-block metadata authority. Replace PBFT manager decision reads with Rust proposed-block metadata and
+- Complete: proposed-block metadata authority. Replace PBFT manager decision reads with Rust proposed-block metadata and
   document remaining `PbftBlock` materialization edges.
-- Commit 2: cert-voted payload authority. Make Rust-retained cert-voted metadata/payload the planner source and leave the
+- Complete: cert-voted payload authority. Make Rust-retained cert-voted metadata/payload the planner source and leave the
   C++ sidecar only as a vote-generation cache.
-- Commit 3: period-data queue metadata authority. Move queue decision facts to Rust-inspected canonical RLP and keep
+- Complete: period-data queue metadata authority. Move queue decision facts to Rust-inspected canonical RLP and keep
   `PeriodData` construction only at finalization/public boundaries.
-- Commit 4, only if still bounded: vote/pillar/reward sidecar fact cleanup plus deletion of obsolete helpers discovered
-  by the first three commits.
+- Complete: vote/pillar/reward sidecar fact cleanup plus deletion of obsolete helpers discovered by the first three
+  commits.
 
 Stop conditions:
 
@@ -337,6 +355,15 @@ Acceptance:
   pillar metadata.
 - Temporary materialization call sites state which allowed boundary still needs the old C++ type.
 - Missing Rust-retained payloads are invariant errors, not silent partial results.
+
+Residual carried forward:
+
+- VoteManager and PillarChainManager still own live sidecar collections for vote insertion, signing, slashing, and
+  pillar-vote insertion effects. Moving those managers behind Rust ports belongs to Slice 8.
+- `PeriodData` and `PbftBlock` materialization remains at finalization, sync, network/public, and EVM executor edges.
+  Collapsing those executor paths belongs to Slices 6 and 7.
+- Deferred missing proposed-block sidecars currently wait for existing network/sync arrival. A future network pipeline
+  slice may decide whether Rust should request a specific sidecar fetch effect, but that is outside Slice 5.
 
 Validation:
 
