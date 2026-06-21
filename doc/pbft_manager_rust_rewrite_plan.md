@@ -548,6 +548,9 @@ Landed:
   payloads instead of treating the returned pillar-vote vector as the protocol decision in PBFT manager.
 - Certify-step soft-vote diagnostics now come from VoteManager-owned vote facts. PBFT manager no longer iterates
   `StepVotes` sidecar buckets or reads the soft-vote threshold just to format the go-finish debug log.
+- Filtering-step leader selection now asks VoteManager to collect live proposal-vote facts for the Rust leader planner.
+  PBFT manager still executes proposed-block validation and PBFT-chain lookup as temporary callbacks, but no longer pulls
+  proposal-vote sidecars from VoteManager for the filtering state.
 
 Scope:
 

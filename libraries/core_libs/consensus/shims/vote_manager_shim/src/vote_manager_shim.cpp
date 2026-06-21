@@ -11,6 +11,7 @@
 
 #include "common/constants.hpp"
 #include "pbft/pbft_manager.hpp"
+#include "pbft/proposed_blocks.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "slashing_manager/slashing_manager.hpp"
 #include "storage/storage.hpp"
@@ -38,6 +39,10 @@ constexpr uint8_t kPbftCanonicalVoteInspectionStatusInvalidSignature = 2;
 constexpr uint8_t kPbftVoteGenerationStatusGenerated = 0;
 constexpr uint8_t kPbftVoteGenerationStatusZeroStake = 4;
 constexpr uint8_t kPbftVoteGenerationStatusZeroTotalDpos = 5;
+constexpr uint8_t kPbftManagerLeaderBlockAlreadyValid = 0;
+constexpr uint8_t kPbftManagerLeaderBlockValidated = 1;
+constexpr uint8_t kPbftManagerLeaderBlockRejected = 2;
+constexpr uint8_t kPbftManagerLeaderSelectionInvalidFact = 3;
 constexpr uint8_t kPbftVoteGenerationStatusZeroWeight = 6;
 constexpr uint8_t kPbftVotePersistenceStatusApplied = 0;
 constexpr uint8_t kPbftTwoTPlusOneThresholdStatusAvailable = 0;
@@ -842,6 +847,111 @@ std::vector<std::shared_ptr<PbftVote>> VoteManager::getProposalVotes(PbftPeriod 
   }
 
   return proposal_votes;
+}
+
+std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> VoteManager::identifyLeaderBlock(
+    ProposedBlocks& propose_blocks, PbftPeriod period, PbftRound round,
+    const std::function<bool(const blk_hash_t&)>& block_in_chain,
+    const std::function<bool(const std::shared_ptr<PbftBlock>&)>& validate_block) const {
+  auto propose_votes = getProposalVotes(period, round);
+  if (propose_votes.empty()) {
+    return {};
+  }
+
+  rust::Vec<rustaxa::PbftManagerLeaderCandidateInputFact> candidate_facts;
+  candidate_facts.reserve(propose_votes.size());
+  std::vector<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> materialized_candidates;
+
+  for (auto&& vote : propose_votes) {
+    rustaxa::PbftManagerLeaderCandidateInputFact fact;
+    fact.vote_hash = toBridgeHash(vote->getHash());
+    fact.block_hash = toBridgeHash(vote->getBlockHash());
+    fact.period = vote->getPeriod();
+    fact.credential = toBridgeFixedBytes<64>(vote->getCredential());
+    fact.voter_public_key = toBridgeFixedBytes<64>(vote->getVoter());
+    fact.weight_found = false;
+    fact.weight = 0;
+    fact.block_in_chain = false;
+    fact.proposed_block_found = false;
+    fact.block_validation_status = kPbftManagerLeaderBlockAlreadyValid;
+    fact.pivot_hash = toBridgeHash(kNullBlockHash);
+
+    const auto weight = vote->getWeight();
+    if (!weight.has_value() || *weight == 0) {
+      candidate_facts.push_back(fact);
+      continue;
+    }
+    fact.weight_found = true;
+    fact.weight = *weight;
+
+    const auto proposed_block_hash = vote->getBlockHash();
+    if (proposed_block_hash == kNullBlockHash) {
+      LOG(log_er_) << "Propose block hash should not be NULL. Vote " << vote;
+      candidate_facts.push_back(fact);
+      continue;
+    }
+
+    if (block_in_chain(proposed_block_hash)) {
+      fact.block_in_chain = true;
+      candidate_facts.push_back(fact);
+      continue;
+    }
+
+    const auto block_metadata = propose_blocks.getPbftProposedBlockMetadata(vote->getPeriod(), proposed_block_hash);
+    if (!block_metadata.has_value()) {
+      LOG(log_er_) << "Unable to get proposed block " << proposed_block_hash;
+      candidate_facts.push_back(fact);
+      continue;
+    }
+    fact.proposed_block_found = true;
+    fact.pivot_hash = toBridgeHash(block_metadata->pivot_hash);
+
+    const auto proposed_block = propose_blocks.getPbftProposedBlock(vote->getPeriod(), proposed_block_hash);
+    if (!proposed_block.has_value()) {
+      LOG(log_er_) << "Unable to materialize proposed block " << proposed_block_hash;
+      fact.proposed_block_found = false;
+      candidate_facts.push_back(fact);
+      continue;
+    }
+
+    if (block_metadata->is_valid || proposed_block->second) {
+      fact.block_validation_status = kPbftManagerLeaderBlockAlreadyValid;
+    } else if (validate_block(proposed_block->first)) {
+      fact.block_validation_status = kPbftManagerLeaderBlockValidated;
+    } else {
+      fact.block_validation_status = kPbftManagerLeaderBlockRejected;
+    }
+
+    if (fact.block_validation_status != kPbftManagerLeaderBlockRejected) {
+      materialized_candidates.emplace_back(proposed_block->first, std::move(vote));
+    }
+    candidate_facts.push_back(fact);
+  }
+
+  const auto plan = rustaxa::plan_pbft_manager_leader_candidates(std::move(candidate_facts));
+  if (!plan.selected) {
+    if (plan.status == kPbftManagerLeaderSelectionInvalidFact) {
+      LOG(log_er_) << "Rust PBFT leader candidate planner rejected proposal facts: "
+                   << static_cast<std::string>(plan.error_code);
+    }
+    return {};
+  }
+
+  for (const auto& valid_block : plan.valid_blocks) {
+    propose_blocks.markBlockAsValid(valid_block.period, fromBridgeHash(valid_block.block_hash));
+  }
+
+  const auto selected_vote_hash = fromBridgeHash(plan.selected_vote_hash);
+  const auto selected_block_hash = fromBridgeHash(plan.selected_block_hash);
+  for (auto&& candidate : materialized_candidates) {
+    if (candidate.second->getHash() == selected_vote_hash && candidate.first->getBlockHash() == selected_block_hash) {
+      return std::move(candidate);
+    }
+  }
+
+  LOG(log_er_) << "Rust PBFT leader candidate planner selected missing live proposal vote " << selected_vote_hash
+               << " for block " << selected_block_hash;
+  return {};
 }
 
 std::optional<PbftRound> VoteManager::determineNewRound(PbftPeriod current_pbft_period, PbftRound current_pbft_round) {

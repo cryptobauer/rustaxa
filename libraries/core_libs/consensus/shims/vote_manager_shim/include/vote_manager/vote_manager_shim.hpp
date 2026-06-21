@@ -1,10 +1,17 @@
 #pragma once
 
+#include <functional>
+#include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 
 #include "rustaxa-bridge/ffi.rs.h"
 
 namespace taraxa {
+
+class PbftBlock;
+class ProposedBlocks;
 
 /**
  * Rust-mode VoteManager overlay.
@@ -192,6 +199,36 @@ class VoteManager : public VoteManagerOld {
   uint64_t getVerifiedVotesSize() const;
   void cleanupVotesByPeriod(PbftPeriod pbft_period);
   std::vector<std::shared_ptr<PbftVote>> getProposalVotes(PbftPeriod period, PbftRound round) const;
+  /**
+   * Selects the filtering-step leader from VoteManager-owned proposal votes.
+   *
+   * Purpose:
+   * - Keeps PBFT manager from pulling live proposal-vote sidecars only to build
+   *   Rust leader-candidate facts.
+   * - Reuses the Rust leader-candidate planner for status derivation,
+   *   mark-valid commands, and deterministic ranking.
+   *
+   * Inputs:
+   * - `propose_blocks` supplies temporary live proposed-block materialization
+   *   and Rust-owned validation flags until proposed-block objects move fully
+   *   to Rust.
+   * - `block_in_chain` and `validate_block` are executor callbacks for PBFT
+   *   chain lookup and live block validation, which remain outside VoteManager.
+   *
+   * Outputs:
+   * - Returns the selected live proposed block and proposal vote when Rust
+   *   selected an eligible leader.
+   * - Returns empty when no proposal vote can be selected.
+   *
+   * Invariants:
+   * - Proposal votes are read from the Rust-backed verified-vote facade.
+   * - Proposed-block mark-valid side effects are applied only from Rust planner
+   *   commands.
+   */
+  std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> identifyLeaderBlock(
+      ProposedBlocks& propose_blocks, PbftPeriod period, PbftRound round,
+      const std::function<bool(const blk_hash_t&)>& block_in_chain,
+      const std::function<bool(const std::shared_ptr<PbftBlock>&)>& validate_block) const;
   /**
    * Rust-backed round-advance decision for PBFT manager runtime reports.
    *
