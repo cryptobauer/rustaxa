@@ -1008,12 +1008,6 @@ class TransactionManagerRustShimAccess {
     return outcome;
   }
 
-  static bool verifyTransactionsNotFinalized(
-      const TransactionManager& manager,
-      rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact>&& facts) {
-    return !verifyTransactionsNotFinalizedDetailed(manager, std::move(facts)).is_finalized;
-  }
-
   static std::vector<SharedTransactions> getAllPoolTrxs(const TransactionManagerOld& manager) {
     std::shared_lock transactions_lock(manager.transactions_mutex_);
     const auto groups = static_cast<const TransactionManager&>(manager)
@@ -1306,11 +1300,6 @@ std::unordered_set<trx_hash_t> TransactionManager::excludeFinalizedTransactions(
 
 bool TransactionManager::verifyTransactionsNotFinalized(const SharedTransactions& trxs) {
   return TransactionManagerRustShimAccess::verifyTransactionsNotFinalized(*this, trxs);
-}
-
-bool TransactionManager::verifyTransactionsNotFinalized(
-    rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact>&& facts) {
-  return TransactionManagerRustShimAccess::verifyTransactionsNotFinalized(*this, std::move(facts));
 }
 
 rustaxa::TransactionManagerVerifyNotFinalizedOutcome TransactionManager::verifyTransactionsNotFinalizedDetailed(

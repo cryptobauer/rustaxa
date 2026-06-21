@@ -469,9 +469,8 @@ Landed:
 - Unsupported Rust block-validation rejection statuses in the sync intake path now fail closed as bridge-contract errors
   instead of letting the shim independently clear the queue and report the peer.
 - Non-fatal sync transaction warnings are classified by the Rust runtime admission plan. C++ still executes live
-  transaction-manager lookups, but it now logs missing-transaction warning entries and the finalized-transaction warning
-  flag from Rust instead of classifying those warnings locally. Hash-level finalized warnings remain blocked on a
-  transaction-manager executor API that returns finalized hashes rather than only the legacy boolean result.
+  transaction-manager lookups, but it now reports missing-transaction warnings and Rust-selected finalized-transaction
+  warning hashes back to the Rust sync runtime instead of classifying those warnings locally.
 
 Residual carried forward:
 
