@@ -284,7 +284,8 @@ rustaxa::PillarBlockCreationFact toBridgeCreationFact(
 
 rustaxa::PillarBlockFinalizationFact toBridgeFinalizationFact(
     const blk_hash_t& requested_pillar_block_hash, const std::shared_ptr<PillarBlock>& current_pillar_block,
-    size_t verified_vote_count, const std::shared_ptr<PillarBlock>& last_finalized_pillar_block) {
+    const PillarVotes::VerifiedPillarVoteLookup& vote_lookup,
+    const std::shared_ptr<PillarBlock>& last_finalized_pillar_block) {
   rustaxa::PillarBlockFinalizationFact fact{};
   fact.requested_pillar_block_hash = toBridgeHash(requested_pillar_block_hash);
   fact.has_current_pillar_block = static_cast<bool>(current_pillar_block);
@@ -292,7 +293,10 @@ rustaxa::PillarBlockFinalizationFact toBridgeFinalizationFact(
     fact.current_period = current_pillar_block->getPeriod();
     fact.current_hash = toBridgeHash(current_pillar_block->getHash());
   }
-  fact.verified_vote_count = verified_vote_count;
+  fact.threshold_met = vote_lookup.threshold_met;
+  fact.block_weight = vote_lookup.block_weight;
+  fact.selected_weight = vote_lookup.selected_weight;
+  fact.selected_vote_count = vote_lookup.votes.size();
   fact.has_last_finalized_pillar_block = static_cast<bool>(last_finalized_pillar_block);
   if (last_finalized_pillar_block) {
     fact.last_finalized_hash = toBridgeHash(last_finalized_pillar_block->getHash());
@@ -789,17 +793,18 @@ std::shared_ptr<PillarVote> PillarChainManager::genAndPlacePillarVote(PbftPeriod
 
 std::vector<std::shared_ptr<PillarVote>> PillarChainManager::finalizePillarBlock(const blk_hash_t& pillar_block_hash) {
   const auto current_pillar_block = getCurrentPillarBlock();
-  std::vector<std::shared_ptr<PillarVote>> pillar_votes;
+  PillarVotes::VerifiedPillarVoteLookup pillar_vote_lookup;
   if (current_pillar_block && current_pillar_block->getHash() == pillar_block_hash) {
-    pillar_votes =
-        getVerifiedPillarVotes(current_pillar_block->getPeriod() + 1, pillar_block_hash, true /* above_threshold */);
+    pillar_vote_lookup =
+        pillar_votes_.getVerifiedVoteLookup(current_pillar_block->getPeriod() + 1, pillar_block_hash,
+                                            true /* above_threshold */);
   }
   const auto last_finalized_pillar_block = getLastFinalizedPillarBlock();
 
   rustaxa::PillarBlockFinalizationPlan finalization_plan{};
   try {
     finalization_plan = rustaxa::plan_pillar_block_finalization(
-        toBridgeFinalizationFact(pillar_block_hash, current_pillar_block, pillar_votes.size(),
+        toBridgeFinalizationFact(pillar_block_hash, current_pillar_block, pillar_vote_lookup,
                                  last_finalized_pillar_block));
   } catch (const std::exception& e) {
     LOG(log_er_) << "Unable to plan pillar block finalization in Rust for " << pillar_block_hash << ": " << e.what();
@@ -827,7 +832,7 @@ std::vector<std::shared_ptr<PillarVote>> PillarChainManager::finalizePillarBlock
       return {};
     case kPillarFinalizationAlreadyFinalized:
       LOG(log_er_) << "Pillar block already " << pillar_block_hash << " already finalized";
-      return finalization_plan.return_votes ? pillar_votes : std::vector<std::shared_ptr<PillarVote>>{};
+      return finalization_plan.return_votes ? pillar_vote_lookup.votes : std::vector<std::shared_ptr<PillarVote>>{};
     default:
       LOG(log_er_) << "Unable to plan pillar block finalization for " << pillar_block_hash
                    << ". Unknown Rust status " << static_cast<uint64_t>(finalization_plan.status);
@@ -849,10 +854,10 @@ std::vector<std::shared_ptr<PillarVote>> PillarChainManager::finalizePillarBlock
     pillar_votes_.eraseVotes(last_finalized_pillar_block_->getPeriod() + 1);
   }
   if (finalization_plan.should_emit) {
-    pillar_block_finalized_emitter_.emit(PillarBlockData{current_pillar_block, pillar_votes});
+    pillar_block_finalized_emitter_.emit(PillarBlockData{current_pillar_block, pillar_vote_lookup.votes});
   }
 
-  return finalization_plan.return_votes ? pillar_votes : std::vector<std::shared_ptr<PillarVote>>{};
+  return finalization_plan.return_votes ? pillar_vote_lookup.votes : std::vector<std::shared_ptr<PillarVote>>{};
 }
 
 PillarChainManager::FinalizePillarBlockPreflightResult PillarChainManager::finalizePillarBlockForPbftPreflight(

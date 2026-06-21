@@ -209,8 +209,9 @@ impl PillarBlockFinalizationStatus {
 ///   boundary.
 /// - `has_current_pillar_block`, `current_period`, and `current_hash` describe
 ///   the current local pillar block without transferring a live C++ object.
-/// - `verified_vote_count` is the executor-fetched count of threshold-selected
-///   votes for `current_period + 1` and the requested hash.
+/// - `threshold_met`, `block_weight`, `selected_weight`, and
+///   `selected_vote_count` are Rust pillar-vote lookup facts for
+///   `current_period + 1` and the requested hash.
 /// - `has_last_finalized_pillar_block` and `last_finalized_hash` describe the
 ///   compact latest-finalized sidecar.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -219,7 +220,10 @@ pub struct PillarBlockFinalizationFact {
     pub has_current_pillar_block: bool,
     pub current_period: u64,
     pub current_hash: H256,
-    pub verified_vote_count: u64,
+    pub threshold_met: bool,
+    pub block_weight: u64,
+    pub selected_weight: u64,
+    pub selected_vote_count: u64,
     pub has_last_finalized_pillar_block: bool,
     pub last_finalized_hash: H256,
 }
@@ -241,6 +245,9 @@ pub struct PillarBlockFinalizationPlan {
     pub should_persist: bool,
     pub should_emit: bool,
     pub current_period: u64,
+    pub block_weight: u64,
+    pub selected_weight: u64,
+    pub selected_vote_count: u64,
 }
 
 /// Validates pillar-block period and parent-hash linkage.
@@ -332,6 +339,9 @@ pub fn plan_pillar_block_finalization(
             should_persist: false,
             should_emit: false,
             current_period: fact.current_period,
+            block_weight: fact.block_weight,
+            selected_weight: fact.selected_weight,
+            selected_vote_count: fact.selected_vote_count,
         };
     }
 
@@ -343,10 +353,13 @@ pub fn plan_pillar_block_finalization(
             should_persist: false,
             should_emit: false,
             current_period: fact.current_period,
+            block_weight: fact.block_weight,
+            selected_weight: fact.selected_weight,
+            selected_vote_count: fact.selected_vote_count,
         };
     }
 
-    if fact.verified_vote_count == 0 {
+    if !fact.threshold_met || fact.selected_vote_count == 0 {
         return PillarBlockFinalizationPlan {
             status: PillarBlockFinalizationStatus::MissingVotes,
             return_votes: false,
@@ -354,6 +367,9 @@ pub fn plan_pillar_block_finalization(
             should_persist: false,
             should_emit: false,
             current_period: fact.current_period,
+            block_weight: fact.block_weight,
+            selected_weight: fact.selected_weight,
+            selected_vote_count: fact.selected_vote_count,
         };
     }
 
@@ -367,6 +383,9 @@ pub fn plan_pillar_block_finalization(
             should_persist: false,
             should_emit: false,
             current_period: fact.current_period,
+            block_weight: fact.block_weight,
+            selected_weight: fact.selected_weight,
+            selected_vote_count: fact.selected_vote_count,
         };
     }
 
@@ -377,6 +396,9 @@ pub fn plan_pillar_block_finalization(
         should_persist: true,
         should_emit: true,
         current_period: fact.current_period,
+        block_weight: fact.block_weight,
+        selected_weight: fact.selected_weight,
+        selected_vote_count: fact.selected_vote_count,
     }
 }
 
@@ -938,7 +960,10 @@ mod tests {
             has_current_pillar_block: true,
             current_period: 20,
             current_hash: requested,
-            verified_vote_count: 3,
+            threshold_met: true,
+            block_weight: 7,
+            selected_weight: 5,
+            selected_vote_count: 3,
             has_last_finalized_pillar_block: false,
             last_finalized_hash: H256::zero(),
         });
@@ -952,7 +977,10 @@ mod tests {
             has_current_pillar_block: true,
             current_period: 20,
             current_hash: requested,
-            verified_vote_count: 0,
+            threshold_met: false,
+            block_weight: 2,
+            selected_weight: 0,
+            selected_vote_count: 0,
             has_last_finalized_pillar_block: false,
             last_finalized_hash: H256::zero(),
         });
@@ -972,7 +1000,10 @@ mod tests {
             has_current_pillar_block: false,
             current_period: 0,
             current_hash: H256::zero(),
-            verified_vote_count: 0,
+            threshold_met: false,
+            block_weight: 0,
+            selected_weight: 0,
+            selected_vote_count: 0,
             has_last_finalized_pillar_block: false,
             last_finalized_hash: H256::zero(),
         });
@@ -987,7 +1018,10 @@ mod tests {
             has_current_pillar_block: true,
             current_period: 20,
             current_hash: hash(11),
-            verified_vote_count: 2,
+            threshold_met: true,
+            block_weight: 5,
+            selected_weight: 5,
+            selected_vote_count: 2,
             has_last_finalized_pillar_block: false,
             last_finalized_hash: H256::zero(),
         });
@@ -1002,7 +1036,10 @@ mod tests {
             has_current_pillar_block: true,
             current_period: 20,
             current_hash: requested,
-            verified_vote_count: 2,
+            threshold_met: true,
+            block_weight: 5,
+            selected_weight: 5,
+            selected_vote_count: 2,
             has_last_finalized_pillar_block: true,
             last_finalized_hash: requested,
         });

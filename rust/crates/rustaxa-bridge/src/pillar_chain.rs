@@ -281,7 +281,10 @@ fn finalization_fact_to_consensus(
         has_current_pillar_block: value.has_current_pillar_block,
         current_period: value.current_period,
         current_hash: H256::from(value.current_hash),
-        verified_vote_count: value.verified_vote_count,
+        threshold_met: value.threshold_met,
+        block_weight: value.block_weight,
+        selected_weight: value.selected_weight,
+        selected_vote_count: value.selected_vote_count,
         has_last_finalized_pillar_block: value.has_last_finalized_pillar_block,
         last_finalized_hash: H256::from(value.last_finalized_hash),
     }
@@ -329,6 +332,9 @@ impl From<ConsensusPillarBlockFinalizationPlan> for FfiPillarBlockFinalizationPl
             should_persist: value.should_persist,
             should_emit: value.should_emit,
             current_period: value.current_period,
+            block_weight: value.block_weight,
+            selected_weight: value.selected_weight,
+            selected_vote_count: value.selected_vote_count,
         }
     }
 }
@@ -473,7 +479,10 @@ mod tests {
             has_current_pillar_block: true,
             current_period: 24,
             current_hash: requested,
-            verified_vote_count: 5,
+            threshold_met: true,
+            block_weight: 9,
+            selected_weight: 7,
+            selected_vote_count: 5,
             has_last_finalized_pillar_block: false,
             last_finalized_hash: [0; 32],
         })
@@ -488,7 +497,10 @@ mod tests {
             has_current_pillar_block: true,
             current_period: 24,
             current_hash: requested,
-            verified_vote_count: 5,
+            threshold_met: true,
+            block_weight: 9,
+            selected_weight: 7,
+            selected_vote_count: 5,
             has_last_finalized_pillar_block: true,
             last_finalized_hash: requested,
         })

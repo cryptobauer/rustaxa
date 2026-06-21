@@ -2677,7 +2677,10 @@ pub mod rustaxa_ffi {
         has_current_pillar_block: bool,
         current_period: u64,
         current_hash: [u8; 32],
-        verified_vote_count: u64,
+        threshold_met: bool,
+        block_weight: u64,
+        selected_weight: u64,
+        selected_vote_count: u64,
         has_last_finalized_pillar_block: bool,
         last_finalized_hash: [u8; 32],
     }
@@ -2697,6 +2700,9 @@ pub mod rustaxa_ffi {
         should_persist: bool,
         should_emit: bool,
         current_period: u64,
+        block_weight: u64,
+        selected_weight: u64,
+        selected_vote_count: u64,
     }
 
     struct UniqueVoterCheckOutcome {

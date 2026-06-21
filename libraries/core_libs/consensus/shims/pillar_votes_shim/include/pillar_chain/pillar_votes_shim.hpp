@@ -50,6 +50,24 @@ class PillarVotes {
   };
 
   /**
+   * Rust-planned lookup result for one pillar block's verified votes.
+   *
+   * Purpose:
+   * - Carries threshold and selected-weight facts from Rust so manager-level
+   *   decisions do not infer consensus state from materialized C++ vote vectors.
+   *
+   * Edge behavior:
+   * - `votes` contains temporary C++ `PillarVote` payloads materialized from
+   *   Rust-retained RLP records for public/event/executor edges.
+   */
+  struct VerifiedPillarVoteLookup {
+    bool threshold_met{false};
+    uint64_t block_weight{0};
+    uint64_t selected_weight{0};
+    std::vector<std::shared_ptr<PillarVote>> votes;
+  };
+
+  /**
    * Constructs an empty `PillarVotes` index.
    */
   PillarVotes();
@@ -107,6 +125,12 @@ class PillarVotes {
    */
   std::vector<std::shared_ptr<PillarVote>> getVerifiedVotes(PbftPeriod period, const blk_hash_t& pillar_block_hash,
                                                             bool above_threshold = false) const;
+
+  /**
+   * Returns the Rust vote lookup facts plus edge-materialized votes.
+   */
+  VerifiedPillarVoteLookup getVerifiedVoteLookup(PbftPeriod period, const blk_hash_t& pillar_block_hash,
+                                                 bool above_threshold = false) const;
 
   /**
    * Removes all vote data for periods lower than `min_period`.

@@ -210,9 +210,9 @@ Status as of 2026-06-21: in progress.
   back to Rust before Rust mutates duplicate-proof state or classifies the submission result.
 - Pillar vote lookup now has a Rust-retained payload path so C++ materializes returned `PillarVote` objects from Rust
   records at public edges instead of requiring live vote sidecars for selected votes.
-- Pillar block finalization preflight is now a Rust-owned effect plan: C++ supplies compact current/latest/vote-count
-  facts, then only executes Rust-requested vote-bundle request, storage persistence, cleanup, event emission, and vote
-  return effects.
+- Pillar block finalization preflight is now a Rust-owned effect plan: C++ supplies compact current/latest facts plus
+  Rust pillar-vote threshold and selected-weight facts, then only executes Rust-requested vote-bundle request, storage
+  persistence, cleanup, event emission, and vote return effects.
 
 Scope:
 

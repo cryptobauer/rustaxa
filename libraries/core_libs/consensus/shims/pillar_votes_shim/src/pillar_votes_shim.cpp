@@ -175,23 +175,32 @@ bool PillarVotes::addVerifiedVoteWithRecoveredVoter(const std::shared_ptr<Pillar
 std::vector<std::shared_ptr<PillarVote>> PillarVotes::getVerifiedVotes(PbftPeriod period,
                                                                        const blk_hash_t& pillar_block_hash,
                                                                        bool above_threshold) const {
+  return getVerifiedVoteLookup(period, pillar_block_hash, above_threshold).votes;
+}
+
+PillarVotes::VerifiedPillarVoteLookup PillarVotes::getVerifiedVoteLookup(PbftPeriod period,
+                                                                         const blk_hash_t& pillar_block_hash,
+                                                                         bool above_threshold) const {
   std::shared_lock lock(mutex_);
 
-  std::vector<std::shared_ptr<PillarVote>> votes;
+  VerifiedPillarVoteLookup lookup;
   const auto bridge_block_hash = toBridgeHash(pillar_block_hash);
   const auto vote_data =
       rust_pillar_votes_->pillar_votes_get_verified_vote_payloads(period, bridge_block_hash, above_threshold);
+  lookup.threshold_met = vote_data.threshold_met;
+  lookup.block_weight = vote_data.block_weight;
+  lookup.selected_weight = vote_data.selected_weight;
 
   if (vote_data.votes.empty()) {
-    return votes;
+    return lookup;
   }
 
-  votes.reserve(vote_data.votes.size());
+  lookup.votes.reserve(vote_data.votes.size());
   for (const auto& vote_record : vote_data.votes) {
-    votes.push_back(materializeVoteRecord(vote_record));
+    lookup.votes.push_back(materializeVoteRecord(vote_record));
   }
 
-  return votes;
+  return lookup;
 }
 
 void PillarVotes::eraseVotes(PbftPeriod min_period) {
