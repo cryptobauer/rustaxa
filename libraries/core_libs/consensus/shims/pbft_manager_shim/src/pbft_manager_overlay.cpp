@@ -41,7 +41,6 @@ constexpr uint8_t kPbftSyncFactNotRequired = 2;
 constexpr uint8_t kPbftSyncFactNotChecked = 3;
 
 constexpr uint8_t kPbftSyncStatusBlockAlreadyInChain = 1;
-constexpr uint8_t kPbftSyncStatusAccepted = 0;
 constexpr uint8_t kPbftSyncStatusStalePeriod = 2;
 constexpr uint8_t kPbftSyncStatusPreviousHashMismatch = 3;
 constexpr uint8_t kPbftSyncStatusCertVotesInvalid = 7;
@@ -4500,7 +4499,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
 
   auto net = network_.lock();
   assert(net);  // Should never happen
-  auto apply_admission_side_effects = [&]() {
+  auto apply_rust_admission_side_effects = [&]() {
     if (admission_plan.clear_sync_queue) {
       sync_queue_.clear();
     }
@@ -4508,16 +4507,26 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
       net->handleMaliciousSyncPeer(node_id);
     }
   };
+  auto finish_non_accepting_rust_admission =
+      [&]() -> std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> {
+    if (admission_plan.accept_period_data) {
+      throw std::runtime_error("Rust PBFT sync runtime accepted period data on a C++ rejection path");
+    }
+    if (admission_plan.wait_for_finalization) {
+      final_chain_->waitForFinalized();
+    }
+    apply_rust_admission_side_effects();
+    return std::nullopt;
+  };
 
   if (admission_plan.status == kPbftSyncStatusStalePeriod) {
-    return std::nullopt;
+    return finish_non_accepting_rust_admission();
   }
   if (admission_plan.status == kPbftSyncStatusPreviousHashMismatch) {
     LOG(log_er_) << "Invalid PBFT block " << pbft_block_hash << "; prevHash: " << block_prev_hash << " from peer "
                  << node_id.abridged()
                  << " received, stop syncing.";
-    apply_admission_side_effects();
-    return std::nullopt;
+    return finish_non_accepting_rust_admission();
   }
 
   auto validate_final_chain_hash_from_queue_metadata = [&]() {
@@ -4589,8 +4598,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
         throw_on_runtime_contract_error();
         LOG(log_er_) << "Failed verifying block " << pbft_block_hash << " with invalid state root: "
                      << final_chain_hash << ". Disconnect malicious peer " << node_id.abridged();
-        apply_admission_side_effects();
-        return std::nullopt;
+        return finish_non_accepting_rust_admission();
       }
       if (validation_plan.status == kPbftManagerBlockValidationStatusRewardVotesInvalid) {
         runtime_plan = make_runtime_plan(false, kPbftSyncFinalChainValid, kPbftSyncFactInvalid, kPbftSyncFactNotChecked,
@@ -4600,8 +4608,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
         throw_on_runtime_contract_error();
         LOG(log_er_) << "Failed verifying reward votes for block " << pbft_block_hash << ". Disconnect malicious peer "
                      << node_id.abridged();
-        apply_admission_side_effects();
-        return std::nullopt;
+        return finish_non_accepting_rust_admission();
       }
       if (validation_plan.status == kPbftManagerBlockValidationStatusExtraDataInvalid) {
         runtime_plan = make_runtime_plan(false, kPbftSyncFinalChainValid, kPbftSyncFactValid, kPbftSyncFactValid,
@@ -4610,8 +4617,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
         admission_plan = runtime_plan;
         throw_on_runtime_contract_error();
         LOG(log_er_) << "Synced PBFT block " << pbft_block_hash << " has invalid pillar data";
-        apply_admission_side_effects();
-        return std::nullopt;
+        return finish_non_accepting_rust_admission();
       }
 
       LOG(log_er_) << "Rust PBFT block validation rejected synced block " << pbft_block_hash << ", period "
@@ -4685,8 +4691,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   if (admission_plan.status == kPbftSyncStatusCertVotesInvalid) {
     LOG(log_er_) << "Synced PBFT block " << pbft_block_hash
                  << " doesn't have enough valid cert votes. Clear synced PBFT blocks!";
-    apply_admission_side_effects();
-    return std::nullopt;
+    return finish_non_accepting_rust_admission();
   }
 
   // Verify period data is not missing any transaction
@@ -4712,8 +4717,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   throw_on_runtime_contract_error();
   if (admission_plan.status == kPbftSyncStatusPillarDataInvalid) {
     LOG(log_er_) << "Synced PBFT block " << pbft_block_hash << " has invalid pillar data";
-    apply_admission_side_effects();
-    return std::nullopt;
+    return finish_non_accepting_rust_admission();
   }
 
   // Validate pillar votes
@@ -4744,13 +4748,11 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   if (admission_plan.status == kPbftSyncStatusPillarVotesInvalid) {
     LOG(log_er_) << "Synced PBFT block " << pbft_block_hash << ", period " << block_period
                  << " doesn't have enough valid pillar votes. Clear synced PBFT blocks!";
-    apply_admission_side_effects();
-    return std::nullopt;
+    return finish_non_accepting_rust_admission();
   }
 
-  if (admission_plan.status != kPbftSyncStatusAccepted) {
-    apply_admission_side_effects();
-    return std::nullopt;
+  if (!admission_plan.accept_period_data) {
+    return finish_non_accepting_rust_admission();
   }
 
   try {
@@ -4758,7 +4760,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   } catch (const std::exception &e) {
     LOG(log_er_) << "Synced PBFT block " << pbft_block_hash
                  << " has invalid queued transaction payload metadata: " << e.what();
-    apply_admission_side_effects();
+    apply_rust_admission_side_effects();
     return std::nullopt;
   }
 

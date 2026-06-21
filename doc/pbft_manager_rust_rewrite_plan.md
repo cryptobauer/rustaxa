@@ -446,6 +446,22 @@ Validation:
 
 Goal: make Rust own PBFT sync admission and period-data queue processing from canonical bytes and compact facts.
 
+Status: in progress. Rust owns queue admission, sync-drain ordering, staged period-data validation order, and now the
+terminal `processPeriodData` admission action flags. C++ still executes live FinalChain, VoteManager, transaction-manager,
+pillar-manager, network-report, and legacy `PeriodData` materialization effects until those managers expose Rust-owned
+ports.
+
+Landed:
+
+- Sync queue admission and pop metadata are planned from Rust-owned queue state and compact period-data facts.
+- The outer synced-block drain loop follows a Rust queue-drain session for clean, pop/process, push-accepted, sync-state
+  update, and stop actions.
+- `processPeriodData` validation order is selected by the Rust sync runtime planner from queue metadata and staged live
+  check results.
+- Terminal `processPeriodData` side effects now execute from Rust admission flags: clear queue, report malicious peer,
+  wait for finalization, or accept period data. The shim fails closed if a C++ rejection path receives a Rust accepted
+  admission plan.
+
 Scope:
 
 - Move remaining sync-period admission, period-data validation, reward/cert vote checks, transaction warning
