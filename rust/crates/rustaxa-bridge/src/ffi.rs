@@ -1631,6 +1631,9 @@ pub mod rustaxa_ffi {
         pillar_processed_period: u64,
         pillar_request_period: u64,
         anchor_dag_cache_count: u64,
+        final_chain_dispatched: bool,
+        final_chain_blocks_per_year: u32,
+        final_chain_last_block: u64,
     }
 
     /// Result of validating a live PBFT finalization mutation report in Rust.

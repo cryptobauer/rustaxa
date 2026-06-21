@@ -426,6 +426,10 @@ pub enum PbftFinalizationLiveMutationStatus {
     PillarRequestPeriodInvalid,
     /// Rust-owned anchor DAG-order cache metadata was not empty after cleanup.
     AnchorDagCacheNotCleared,
+    /// FinalChain dispatch report did not confirm the executor boundary was invoked.
+    FinalChainDispatchMissing,
+    /// FinalChain dispatch used a blocks-per-year value different from the Rust intent.
+    FinalChainBlocksPerYearMismatch,
     /// The report carried an unknown action code.
     UnknownAction,
 }
@@ -454,6 +458,8 @@ impl PbftFinalizationLiveMutationStatus {
             Self::PillarProcessedPeriodMismatch => 17,
             Self::PillarRequestPeriodInvalid => 18,
             Self::AnchorDagCacheNotCleared => 19,
+            Self::FinalChainDispatchMissing => 20,
+            Self::FinalChainBlocksPerYearMismatch => 21,
             Self::UnknownAction => 255,
         }
     }
@@ -514,6 +520,13 @@ pub struct PbftFinalizationLiveMutationReport {
     pub pillar_request_period: u64,
     /// Number of Rust-tracked anchor DAG-order cache entries after cleanup.
     pub anchor_dag_cache_count: u64,
+    /// Whether C++ dispatched the accepted period to FinalChain/EVM execution.
+    pub final_chain_dispatched: bool,
+    /// Blocks-per-year value passed across the FinalChain/EVM executor boundary.
+    pub final_chain_blocks_per_year: u32,
+    /// FinalChain last block observed after dispatch. This may lag the finalized
+    /// period when the executor runs asynchronously.
+    pub final_chain_last_block: u64,
 }
 
 /// Result of validating one PBFT finalization live-mutation report.
@@ -2454,6 +2467,7 @@ pub fn validate_pbft_finalization_live_mutation_report(
             | PbftFinalizationRuntimeAction::UpdateFinalizedTransactions
             | PbftFinalizationRuntimeAction::UpdatePbftChain
             | PbftFinalizationRuntimeAction::ClearAnchorDagCache
+            | PbftFinalizationRuntimeAction::FinalizeFinalChain
             | PbftFinalizationRuntimeAction::SetExecutedFlag
             | PbftFinalizationRuntimeAction::AdvancePeriod
             | PbftFinalizationRuntimeAction::ProcessPillarBlock
@@ -2565,6 +2579,20 @@ pub fn validate_pbft_finalization_live_mutation_report(
                 return reject(
                     PbftFinalizationLiveMutationStatus::AnchorDagCacheNotCleared,
                     "PBFT_FINALIZE_LIVE_MUTATION_ANCHOR_DAG_CACHE_NOT_CLEARED",
+                );
+            }
+        }
+        PbftFinalizationRuntimeAction::FinalizeFinalChain => {
+            if !report.final_chain_dispatched {
+                return reject(
+                    PbftFinalizationLiveMutationStatus::FinalChainDispatchMissing,
+                    "PBFT_FINALIZE_LIVE_MUTATION_FINAL_CHAIN_DISPATCH_MISSING",
+                );
+            }
+            if report.final_chain_blocks_per_year != plan.storage_write_intent.blocks_per_year {
+                return reject(
+                    PbftFinalizationLiveMutationStatus::FinalChainBlocksPerYearMismatch,
+                    "PBFT_FINALIZE_LIVE_MUTATION_FINAL_CHAIN_BLOCKS_PER_YEAR_MISMATCH",
                 );
             }
         }
@@ -3546,6 +3574,9 @@ mod tests {
             pillar_processed_period: 10,
             pillar_request_period: 5,
             anchor_dag_cache_count: 0,
+            final_chain_dispatched: true,
+            final_chain_blocks_per_year: 1_000,
+            final_chain_last_block: 9,
         }
     }
 
@@ -4290,6 +4321,12 @@ mod tests {
         );
         assert!(anchor_cache.accepted);
 
+        let final_chain = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            live_report(PbftFinalizationRuntimeAction::FinalizeFinalChain),
+        );
+        assert!(final_chain.accepted);
+
         let chain = validate_pbft_finalization_live_mutation_report(
             &plan,
             PbftFinalizationLiveMutationReport {
@@ -4356,15 +4393,6 @@ mod tests {
             PbftFinalizationLiveMutationStatus::PbftChainHeadMismatch
         );
 
-        let unsupported = validate_pbft_finalization_live_mutation_report(
-            &plan,
-            live_report(PbftFinalizationRuntimeAction::FinalizeFinalChain),
-        );
-        assert_eq!(
-            unsupported.status,
-            PbftFinalizationLiveMutationStatus::ActionNotLiveMutation
-        );
-
         let reward_votes = validate_pbft_finalization_live_mutation_report(
             &plan,
             PbftFinalizationLiveMutationReport {
@@ -4402,6 +4430,30 @@ mod tests {
         assert_eq!(
             anchor_cache.status,
             PbftFinalizationLiveMutationStatus::AnchorDagCacheNotCleared
+        );
+
+        let final_chain_missing = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            PbftFinalizationLiveMutationReport {
+                final_chain_dispatched: false,
+                ..live_report(PbftFinalizationRuntimeAction::FinalizeFinalChain)
+            },
+        );
+        assert_eq!(
+            final_chain_missing.status,
+            PbftFinalizationLiveMutationStatus::FinalChainDispatchMissing
+        );
+
+        let final_chain_blocks_per_year = validate_pbft_finalization_live_mutation_report(
+            &plan,
+            PbftFinalizationLiveMutationReport {
+                final_chain_blocks_per_year: 999,
+                ..live_report(PbftFinalizationRuntimeAction::FinalizeFinalChain)
+            },
+        );
+        assert_eq!(
+            final_chain_blocks_per_year.status,
+            PbftFinalizationLiveMutationStatus::FinalChainBlocksPerYearMismatch
         );
 
         let executed = validate_pbft_finalization_live_mutation_report(

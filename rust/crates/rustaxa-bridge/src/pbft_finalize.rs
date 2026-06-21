@@ -948,6 +948,9 @@ impl From<FfiPbftFinalizationLiveMutationReport> for PbftFinalizationLiveMutatio
             pillar_processed_period: value.pillar_processed_period,
             pillar_request_period: value.pillar_request_period,
             anchor_dag_cache_count: value.anchor_dag_cache_count,
+            final_chain_dispatched: value.final_chain_dispatched,
+            final_chain_blocks_per_year: value.final_chain_blocks_per_year,
+            final_chain_last_block: value.final_chain_last_block,
         }
     }
 }
@@ -1324,6 +1327,9 @@ mod tests {
                 pillar_processed_period: 10,
                 pillar_request_period: 5,
                 anchor_dag_cache_count: 0,
+                final_chain_dispatched: true,
+                final_chain_blocks_per_year: 500,
+                final_chain_last_block: 9,
             },
         );
         assert!(accepted.accepted);
@@ -1356,6 +1362,9 @@ mod tests {
                 pillar_processed_period: 10,
                 pillar_request_period: 5,
                 anchor_dag_cache_count: 0,
+                final_chain_dispatched: true,
+                final_chain_blocks_per_year: 500,
+                final_chain_last_block: 9,
             },
         );
         assert!(!rejected.accepted);
@@ -1388,6 +1397,9 @@ mod tests {
                 pillar_processed_period: 10,
                 pillar_request_period: 5,
                 anchor_dag_cache_count: 0,
+                final_chain_dispatched: true,
+                final_chain_blocks_per_year: 500,
+                final_chain_last_block: 9,
             },
         );
         assert!(!reward_rejected.accepted);

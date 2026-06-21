@@ -398,6 +398,9 @@ Landed bounded PBFT-chain update/report collapse:
   finalization runtime cursor completes.
 - `ClearAnchorDagCache` now reports the Rust-tracked anchor DAG-order cache count after cleanup; Rust rejects finalization
   cursor advancement unless the period-scoped cache metadata is empty.
+- `FinalizeFinalChain` remains an explicit FinalChain/EVM executor boundary, but it now reports the dispatched period,
+  `blocks_per_year`, and observed FinalChain height to Rust; Rust validates the dispatch facts before advancing the
+  finalization runtime cursor.
 
 Scope:
 

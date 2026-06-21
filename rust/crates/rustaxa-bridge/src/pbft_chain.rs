@@ -183,6 +183,9 @@ impl BridgePbftChain {
             pillar_processed_period: 0,
             pillar_request_period: 0,
             anchor_dag_cache_count: 0,
+            final_chain_dispatched: false,
+            final_chain_blocks_per_year: 0,
+            final_chain_last_block: 0,
         })
     }
 

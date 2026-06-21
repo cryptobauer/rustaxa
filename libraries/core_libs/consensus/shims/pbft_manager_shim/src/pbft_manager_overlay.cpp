@@ -3627,7 +3627,23 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
             report_resume_action(resume_step, false, 255);
             return false;
           }
-          if (!report_resume_action(resume_step, true, 0)) {
+          rustaxa::PbftFinalizationLiveMutationReport final_chain_report{};
+          final_chain_report.action = kPbftFinalizationRuntimeActionFinalizeFinalChain;
+          final_chain_report.block_period = finalization_plan.storage_write_intent.block_period;
+          final_chain_report.pbft_block_hash = finalization_plan.storage_write_intent.pbft_block_hash;
+          final_chain_report.anchor_hash = finalization_plan.storage_write_intent.anchor_hash;
+          final_chain_report.final_chain_dispatched = true;
+          final_chain_report.final_chain_blocks_per_year = finalization_plan.storage_write_intent.blocks_per_year;
+          final_chain_report.final_chain_last_block = final_chain_->lastBlockNumber();
+          const auto final_chain_validation =
+              rustaxa::validate_pbft_finalization_live_mutation_report(finalization_plan, final_chain_report);
+          if (!final_chain_validation.accepted) {
+            LOG(log_er_) << "Rust PBFT finalization resume FinalChain dispatch report rejected for block "
+                         << pbft_block_hash << ", period " << block_pbft_period << ", status "
+                         << static_cast<uint32_t>(final_chain_validation.status) << ", error "
+                         << static_cast<std::string>(final_chain_validation.error_code);
+          }
+          if (!report_resume_action(resume_step, final_chain_validation.accepted, final_chain_validation.status)) {
             return false;
           }
           if (resume_runtime_session->pbft_finalization_runtime_session_next().action ==
@@ -4111,7 +4127,22 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       return false;
     }
     finalize_(std::move(period_data), std::move(dag_blocks_order), blocks_per_year);
-    if (!report_runtime_action(runtime_step, true, 0)) {
+    rustaxa::PbftFinalizationLiveMutationReport final_chain_report{};
+    final_chain_report.action = kPbftFinalizationRuntimeActionFinalizeFinalChain;
+    final_chain_report.block_period = finalization_plan.storage_write_intent.block_period;
+    final_chain_report.pbft_block_hash = finalization_plan.storage_write_intent.pbft_block_hash;
+    final_chain_report.anchor_hash = finalization_plan.storage_write_intent.anchor_hash;
+    final_chain_report.final_chain_dispatched = true;
+    final_chain_report.final_chain_blocks_per_year = blocks_per_year;
+    final_chain_report.final_chain_last_block = final_chain_->lastBlockNumber();
+    const auto live_validation = validate_live_mutation(final_chain_report);
+    if (!live_validation.accepted) {
+      LOG(log_er_) << "Rust PBFT finalization FinalChain dispatch report rejected for block " << pbft_block_hash
+                   << ", period " << block_pbft_period << ", status " << static_cast<uint32_t>(live_validation.status)
+                   << ", error " << static_cast<std::string>(live_validation.error_code);
+    }
+    if (!report_runtime_action_detail(runtime_step, live_validation.accepted, live_validation.status,
+                                      static_cast<std::string>(live_validation.error_code))) {
       return false;
     }
   }
