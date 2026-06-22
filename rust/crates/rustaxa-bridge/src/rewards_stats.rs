@@ -11,12 +11,13 @@ use crate::ffi::rustaxa_ffi::{
     RewardsStatsApplyResult, RewardsStatsConfig as FfiRewardsStatsConfig, RewardsStatsProcessFact,
     RewardsStatsProcessResult, RewardsTransactionFact as FfiRewardsTransactionFact,
 };
-use crate::ffi::{BridgeRewardsStatsRuntime, BridgeStorage};
+use crate::ffi::{BridgeRewardsStatsRuntime, BridgeStorage, BridgeStorageBatch};
 use anyhow::{anyhow, Result};
 use ethereum_types::{H160, H256, U256};
 #[cfg(test)]
 use rustaxa_consensus::RewardsStatsRuntime;
 use rustaxa_consensus::{
+    append_rewards_stats_storage_writes_to_batch as domain_append_rewards_stats_storage_writes_to_batch,
     apply_rewards_stats_storage_writes as domain_apply_rewards_stats_storage_writes,
     clear_rewards_stats_storage as domain_clear_rewards_stats_storage,
     rewards_stats_runtime_from_storage, FinalizedRewardsPeriodFact, RewardCertVoteFact,
@@ -110,6 +111,15 @@ impl BridgeRewardsStatsRuntime {
     ) -> Result<RewardsStatsApplyResult> {
         rewards_stats_runtime_clear_storage_and_state(self, current_period, sync)
     }
+}
+
+fn rewards_stats_batch_mut(
+    batch: &mut BridgeStorageBatch,
+) -> Result<&mut rustaxa_storage::StorageWriteBatch> {
+    batch
+        .batch
+        .as_mut()
+        .ok_or_else(|| anyhow!("REWARDS_STATS_BATCH_ALREADY_COMMITTED"))
 }
 
 /// Processes one finalized period through the Rust rewards-stat runtime.
@@ -246,6 +256,26 @@ pub fn apply_rewards_stats_storage_writes(
 ) -> Result<RewardsStatsApplyResult> {
     let plan = rewards_stats_process_plan_from_ffi(plan);
     Ok(domain_apply_rewards_stats_storage_writes(&storage.0, &plan, sync)?.into())
+}
+
+/// Appends reward-stat cache writes to an existing Rust storage shim batch.
+///
+/// This is the task-specific replacement for routing rewards-stat production
+/// writes through generic `storage_shim_save_block_rewards_stats`. The legacy
+/// C++ `Batch&` remains only as an opaque carrier for the Rust-owned batch while
+/// rewards-stat validation and column/key selection stay in the rewards module.
+pub fn rewards_stats_append_storage_writes_to_batch(
+    batch: &mut BridgeStorageBatch,
+    plan: &RewardsStatsProcessResult,
+) -> Result<RewardsStatsApplyResult> {
+    let plan = rewards_stats_process_plan_from_ffi(plan);
+    let storage = batch.storage.clone();
+    Ok(domain_append_rewards_stats_storage_writes_to_batch(
+        &storage,
+        rewards_stats_batch_mut(batch)?,
+        &plan,
+    )?
+    .into())
 }
 
 fn finalized_fact_from_ffi(value: RewardsStatsProcessFact) -> Result<FinalizedRewardsPeriodFact> {
@@ -520,6 +550,46 @@ mod tests {
             .unwrap()
             .is_empty());
         assert!(rewards_stats_runtime_cached_stats(&runtime).is_empty());
+    }
+
+    #[test]
+    fn bridge_appends_rewards_stats_to_existing_storage_batch() {
+        let storage = temp_storage("batch_append");
+        let mut runtime = BridgeRewardsStatsRuntime {
+            state: RewardsStatsRuntime::new(
+                config().into(),
+                vec![RewardsFrequencyRule {
+                    from_period: 0,
+                    frequency: 3,
+                }],
+                Vec::new(),
+            )
+            .unwrap(),
+            storage: storage.clone(),
+        };
+
+        let cache_plan = process_finalized_period_rewards_stats(&mut runtime, fact(1));
+        let mut batch = BridgeStorageBatch {
+            storage: storage.clone(),
+            batch: Some(storage.create_write_batch()),
+        };
+
+        let apply = rewards_stats_append_storage_writes_to_batch(&mut batch, &cache_plan).unwrap();
+        assert_eq!(apply.status, REWARDS_STATS_APPLY_STATUS_APPLIED);
+        assert!(apply.wrote_current_period);
+        assert!(storage
+            .metadata()
+            .block_rewards_stats_rlp()
+            .unwrap()
+            .is_empty());
+
+        storage
+            .commit_write_batch_with_sync(batch.batch.take().unwrap(), false)
+            .unwrap();
+        assert_eq!(
+            storage.metadata().block_rewards_stats_rlp().unwrap().len(),
+            1
+        );
     }
 
     #[test]

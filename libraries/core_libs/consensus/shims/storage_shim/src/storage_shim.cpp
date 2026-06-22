@@ -1040,13 +1040,12 @@ void DbStorage::saveBlockRewardsStats(uint64_t period, const rewards::BlockStats
                                                  into_rust_vec(encoding.out()));
 }
 
-void DbStorage::saveBlockRewardsStatsRlp(uint64_t period, const rust::Vec<uint8_t>& stats_rlp, Batch& write_batch) {
-  rust::Vec<uint8_t> stats_copy;
-  stats_copy.reserve(stats_rlp.size());
-  for (const auto byte : stats_rlp) {
-    stats_copy.push_back(byte);
+void DbStorage::appendRewardsStatsStorageWrites(const rustaxa::RewardsStatsProcessResult& plan, Batch& write_batch) {
+  auto result = rustaxa::rewards_stats_append_storage_writes_to_batch(getOrCreateRustBatch(write_batch), plan);
+  if (result.status != 0) {
+    throw DbException("Rust rewards stats storage port rejected period " + std::to_string(result.current_period) +
+                      ": " + std::string(result.error_code));
   }
-  rustaxa::storage_shim_save_block_rewards_stats(getOrCreateRustBatch(write_batch), period, std::move(stats_copy));
 }
 
 bool DbStorage::hasMajorVersionChanged() { return major_version_changed_; }

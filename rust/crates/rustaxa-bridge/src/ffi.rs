@@ -5397,6 +5397,10 @@ pub mod rustaxa_ffi {
             plan: &RewardsStatsProcessResult,
             sync: bool,
         ) -> Result<RewardsStatsApplyResult>;
+        pub fn rewards_stats_append_storage_writes_to_batch(
+            batch: &mut BridgeStorageBatch,
+            plan: &RewardsStatsProcessResult,
+        ) -> Result<RewardsStatsApplyResult>;
         pub fn rewards_stats_runtime_clear_storage_and_state(
             self: &mut BridgeRewardsStatsRuntime,
             current_period: u64,

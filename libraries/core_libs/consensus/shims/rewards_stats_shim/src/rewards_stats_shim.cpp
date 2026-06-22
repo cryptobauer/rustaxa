@@ -246,7 +246,7 @@ void Stats::appendStorageWrites(const rustaxa::RewardsStatsProcessResult& plan, 
                             std::string(plan.error_code));
   }
   if (plan.cache_current_period) {
-    db_->saveBlockRewardsStatsRlp(plan.current_period, plan.current_block_stats_rlp, write_batch);
+    db_->appendRewardsStatsStorageWrites(plan, write_batch);
     return;
   }
   if (plan.clear_cached_stats) {

@@ -278,6 +278,13 @@ Stop conditions:
 
 Goal: replace remaining broad bridge/storage compatibility shapes with subsystem-specific Rust ports.
 
+Status as of 2026-06-21: in progress.
+
+- Rewards-stat finalization cache writes now use a task-specific Rust rewards storage port to append accepted
+  `RewardsStatsProcessResult` cache rows to the surrounding Rust-owned finalization batch. The production rewards path no
+  longer routes Rust-produced rewards-stat RLP through the generic storage-shim block-reward-stats appender; the legacy
+  `saveBlockRewardsStats` compatibility API remains for public/reference storage callers.
+
 Scope:
 
 - Define task-oriented storage traits or runtime APIs for DAG, transaction, vote, pillar, rewards, finalization, and manager operations that still use generic bridge DTOs.

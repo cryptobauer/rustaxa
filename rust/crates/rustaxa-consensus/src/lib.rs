@@ -234,8 +234,9 @@ pub use rewards_stats::{
     RewardsBlockDistribution, RewardsFrequencyRule, RewardsStatsApplyStatus, RewardsStatsConfig,
     RewardsStatsPeriodRlp, RewardsStatsProcessPlan, RewardsStatsRuntime, RewardsStatsStatus,
     RewardsStatsStorageApplyResult, RewardsValidatorDistribution,
-    apply_rewards_stats_storage_writes, clear_rewards_stats_storage,
-    decode_rewards_block_distributions, rewards_stats_runtime_from_storage,
+    append_rewards_stats_storage_writes_to_batch, apply_rewards_stats_storage_writes,
+    clear_rewards_stats_storage, decode_rewards_block_distributions,
+    rewards_stats_runtime_from_storage,
 };
 pub use rustaxa_types::{
     Account, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount,

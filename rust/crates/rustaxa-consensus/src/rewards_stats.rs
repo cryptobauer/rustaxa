@@ -15,7 +15,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use ethereum_types::{H160, H256, U256};
 use rlp::{Rlp, RlpStream};
-use rustaxa_storage::{Column, Storage};
+use rustaxa_storage::{Column, Storage, StorageWriteBatch};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Hardfork and committee configuration used by reward-stat planning.
@@ -714,6 +714,83 @@ pub fn apply_rewards_stats_storage_writes(
     ))
 }
 
+/// Appends reward-stat cache writes to an existing Rust-owned storage batch.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle used only for column/key encoding.
+/// - `batch`: caller-owned Rust write batch that represents the surrounding
+///   finalization atomic write group.
+/// - `plan`: successful result from `RewardsStatsRuntime::process_period`.
+///
+/// Behavior:
+/// - rejected plans are returned as rejected without mutating `batch`.
+/// - `cache_current_period` appends the current block-stat RLP under the plan
+///   period to `block_rewards_stats`.
+/// - boundary clears are rejected because they intentionally run after the
+///   surrounding finalization commit in the legacy-compatible final-chain path.
+/// - frequency-one plans that require no cache write return applied without
+///   mutating `batch`.
+pub fn append_rewards_stats_storage_writes_to_batch(
+    storage: &Storage,
+    batch: &mut StorageWriteBatch,
+    plan: &RewardsStatsProcessPlan,
+) -> Result<RewardsStatsStorageApplyResult> {
+    if plan.status != RewardsStatsStatus::Applied {
+        return Ok(rewards_stats_apply_result(
+            RewardsStatsApplyStatus::Rejected,
+            plan.current_period,
+            false,
+            false,
+            "REWARDS_STATS_REJECTED_PLAN",
+        ));
+    }
+
+    if plan.clear_cached_stats {
+        return Ok(rewards_stats_apply_result(
+            RewardsStatsApplyStatus::Rejected,
+            plan.current_period,
+            false,
+            false,
+            "REWARDS_STATS_CLEAR_REQUIRES_OWNED_BATCH",
+        ));
+    }
+
+    if plan.cache_current_period {
+        if plan.current_block_stats_rlp.is_empty() {
+            return Ok(rewards_stats_apply_result(
+                RewardsStatsApplyStatus::Rejected,
+                plan.current_period,
+                false,
+                false,
+                "REWARDS_STATS_MISSING_CURRENT_BLOCK_STATS",
+            ));
+        }
+        storage
+            .batch_put_raw(
+                batch,
+                Column::BlockRewardsStats,
+                &plan.current_period.to_le_bytes(),
+                &plan.current_block_stats_rlp,
+            )
+            .context("REWARDS_STATS_CACHE_BATCH_WRITE")?;
+        return Ok(rewards_stats_apply_result(
+            RewardsStatsApplyStatus::Applied,
+            plan.current_period,
+            true,
+            false,
+            "",
+        ));
+    }
+
+    Ok(rewards_stats_apply_result(
+        RewardsStatsApplyStatus::Applied,
+        plan.current_period,
+        false,
+        false,
+        "",
+    ))
+}
+
 fn rewards_stats_apply_result(
     status: RewardsStatsApplyStatus,
     current_period: u64,
@@ -1060,6 +1137,56 @@ mod tests {
                 .map(|entry| entry.period)
                 .collect::<Vec<_>>(),
             vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn append_storage_writes_to_existing_batch_keeps_commit_atomic() {
+        let storage = temp_storage("append_batch");
+        let mut runtime = runtime(3);
+        let plan = runtime.process_period(fact(1));
+        assert!(plan.cache_current_period);
+
+        let mut batch = storage.create_write_batch();
+        let apply =
+            append_rewards_stats_storage_writes_to_batch(&storage, &mut batch, &plan).unwrap();
+        assert_eq!(apply.status, RewardsStatsApplyStatus::Applied);
+        assert!(apply.wrote_current_period);
+        assert!(
+            storage
+                .metadata()
+                .block_rewards_stats_rlp()
+                .unwrap()
+                .is_empty()
+        );
+
+        storage.commit_write_batch_with_sync(batch, false).unwrap();
+        let rows = storage.metadata().block_rewards_stats_rlp().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, 1);
+    }
+
+    #[test]
+    fn append_storage_writes_rejects_boundary_clear_for_caller_batch() {
+        let storage = temp_storage("append_batch_clear");
+        let mut runtime = runtime(2);
+        assert!(runtime.process_period(fact(1)).cache_current_period);
+        let clear_plan = runtime.process_period(fact(2));
+        assert!(clear_plan.clear_cached_stats);
+
+        let mut batch = storage.create_write_batch();
+        let apply = append_rewards_stats_storage_writes_to_batch(&storage, &mut batch, &clear_plan)
+            .unwrap();
+
+        assert_eq!(apply.status, RewardsStatsApplyStatus::Rejected);
+        assert_eq!(apply.error_code, "REWARDS_STATS_CLEAR_REQUIRES_OWNED_BATCH");
+        storage.commit_write_batch_with_sync(batch, false).unwrap();
+        assert!(
+            storage
+                .metadata()
+                .block_rewards_stats_rlp()
+                .unwrap()
+                .is_empty()
         );
     }
 
