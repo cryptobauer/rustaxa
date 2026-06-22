@@ -3329,6 +3329,7 @@ pub mod rustaxa_ffi {
 
     /// Public/query JSON view for one finalized DAG block.
     struct DagBlockPublicView {
+        found: bool,
         pivot: [u8; 32],
         level: u64,
         tips: Vec<DagHash>,
@@ -6692,6 +6693,10 @@ pub mod rustaxa_ffi {
         ) -> Result<()>;
         pub fn dag_block_in_db(self: &BridgeDagStorageQueries, hash: &[u8; 32]) -> Result<bool>;
         pub fn get_dag_block(self: &BridgeDagStorageQueries, hash: &[u8; 32]) -> Result<Vec<u8>>;
+        pub fn get_dag_block_public_view(
+            self: &BridgeDagStorageQueries,
+            hash: &[u8; 32],
+        ) -> Result<DagBlockPublicView>;
         pub fn get_dag_block_period(
             self: &BridgeDagStorageQueries,
             hash: &[u8; 32],

@@ -358,6 +358,9 @@ Progress:
 - Added a Rust-backed DAG block level public view for `taraxa_getDagBlockByLevel`. The Rust-enabled RPC path now decodes
   stored DAG block RLP into a DTO and preserves optional transaction expansion from transaction hashes without
   materializing C++ `DagBlock` objects for the level query.
+- Added a Rust-backed DAG block hash public view for `taraxa_getDagBlockByHash`. The Rust-enabled RPC path now decodes
+  the stored DAG block into the same DTO, preserves missing-block null behavior, and keeps optional transaction expansion
+  at the public-query edge without materializing a C++ `DagBlock`.
 
 Classification:
 
@@ -375,9 +378,9 @@ Classification:
 - `DagBlock` and `Transaction`: not yet Slice 8-deletable. DAG add/proposal and transaction manager paths still
   materialize objects for active add-block, packing, public API, and external-EVM gas/execution boundaries. Network and
   EVM edges remain accepted shims; other active decision use belongs in the DAG/transaction subsystem slices. The
-  finalized-period DAG debug query and DAG-level RPC are now edge-only in Rust mode through Rust-backed DTOs, while DAG
-  hash public RPC and GraphQL surfaces still need a dedicated DAG public-view slice because they include live DAG lookup,
-  resolver wrappers, or optional transaction enrichment.
+  finalized-period DAG debug query plus DAG hash/level RPCs are now edge-only in Rust mode through Rust-backed DTOs,
+  while GraphQL DAG surfaces still need a dedicated DAG public-view slice because they use resolver wrappers around DAG
+  and transaction data.
 
 Stop conditions:
 

@@ -455,6 +455,35 @@ impl BridgeDagStorageQueries {
             .unwrap_or_default())
     }
 
+    /// Returns a public/query DAG block view loaded by block hash.
+    ///
+    /// Inputs:
+    /// - `hash`: canonical DAG block hash requested by RPC or GraphQL.
+    ///
+    /// Outputs:
+    /// - `found == false` when the block is absent from DAG storage.
+    /// - Otherwise the same base JSON facts as `DagBlock::getJson()`, with
+    ///   transaction hashes left available for endpoint-specific expansion.
+    ///
+    /// Edge behavior:
+    /// - Malformed stored DAG block RLP, signatures, or VDF payloads return
+    ///   errors so legacy public catch blocks keep mapping bad inputs to invalid
+    ///   params.
+    pub fn get_dag_block_public_view(
+        &self,
+        hash: &[u8; 32],
+    ) -> Result<rustaxa_ffi::DagBlockPublicView, anyhow::Error> {
+        let Some(block_rlp) = self
+            .storage
+            .dag()
+            .by_hash_rlp_optional(H256::from(*hash))
+            .map_err(|e| anyhow::anyhow!(e))?
+        else {
+            return Ok(empty_dag_block_public_view());
+        };
+        dag_block_public_view_from_canonical_rlp(&block_rlp)
+    }
+
     pub fn get_dag_block_period(
         &self,
         hash: &[u8; 32],
@@ -940,6 +969,26 @@ fn empty_pbft_extra_data_view() -> rustaxa_ffi::PbftBlockExtraDataView {
     }
 }
 
+fn empty_dag_block_public_view() -> rustaxa_ffi::DagBlockPublicView {
+    rustaxa_ffi::DagBlockPublicView {
+        found: false,
+        pivot: [0; 32],
+        level: 0,
+        tips: Vec::new(),
+        transactions: Vec::new(),
+        trx_estimations: 0,
+        signature: Vec::new(),
+        hash: [0; 32],
+        sender: [0; 20],
+        timestamp: 0,
+        has_vdf: false,
+        vdf_proof: Vec::new(),
+        vdf_sol1: Vec::new(),
+        vdf_sol2: Vec::new(),
+        vdf_difficulty: 0,
+    }
+}
+
 fn pbft_schedule_block_view_from_period_data(
     period_data: &[u8],
 ) -> Result<rustaxa_ffi::PbftScheduleBlockView, anyhow::Error> {
@@ -1100,6 +1149,7 @@ fn dag_block_public_view_from_canonical_rlp(
     };
 
     Ok(rustaxa_ffi::DagBlockPublicView {
+        found: true,
         pivot: block.pivot.into(),
         level: block.level,
         tips: block

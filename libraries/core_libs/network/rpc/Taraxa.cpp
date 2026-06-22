@@ -169,6 +169,28 @@ std::shared_ptr<AppBase> Taraxa::tryGetApp() {
 Json::Value Taraxa::taraxa_getDagBlockByHash(const string& _blockHash, bool _includeTransactions) {
   try {
     auto app = tryGetApp();
+#ifdef RUSTAXA_ENABLE
+    const auto dag_queries = rustaxa::create_dag_storage_queries(app->getDB()->rustStorage());
+    const auto rust_block = dag_queries->get_dag_block_public_view(blk_hash_t(_blockHash).asArray());
+    if (rust_block.found) {
+      auto block_json = dagBlockPublicViewToJson(rust_block);
+      auto period = app->getPbftManager()->getDagBlockPeriod(hashFromBridge(rust_block.hash));
+      if (period.first) {
+        block_json["period"] = toJS(period.second);
+      } else {
+        block_json["period"] = "-0x1";
+      }
+      if (_includeTransactions) {
+        block_json["transactions"] = Json::Value(Json::arrayValue);
+        for (auto const& t : rust_block.transactions) {
+          block_json["transactions"].append(
+              app->getTransactionManager()->getTransaction(hashFromBridge(t.hash))->toJSON());
+        }
+      }
+      return block_json;
+    }
+    return Json::Value();
+#endif
     auto block = app->getDagManager()->getDagBlock(blk_hash_t(_blockHash));
     if (block) {
       auto block_json = block->getJson();
