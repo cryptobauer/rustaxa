@@ -429,6 +429,8 @@ Progress:
   network fact collection, and sleep execution, but no longer hard-codes the retry delay in the shell loop.
 - PBFT manager startup finalization waiting now uses a Rust wait/no-wait planner over PBFT-chain size, FinalChain height,
   and delegation delay. C++ keeps the startup loop and sleep executor only.
+- PBFT eligible-wallet period polling now uses a Rust readiness planner; C++ only polls live shell facts and executes the
+  returned sleep duration for the temporary public-query race boundary.
 
 Acceptance:
 

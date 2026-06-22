@@ -1187,11 +1187,16 @@ std::optional<uint64_t> PbftManager::getCurrentNodeVotesCount() const {
   // getCurrentNodeVotesCount() is called externally from standalone thread and in some edge cases we need to wait until
   // period in eligible_wallets_ is updated according to the latest chain size
   while (true) {
-    if (eligible_wallets_.getWalletsEligiblePeriod() == pbft_chain_->getPbftChainSize()) {
+    rustaxa::PbftManagerEligibleWalletPeriodWaitFact fact{};
+    fact.eligible_wallet_period = eligible_wallets_.getWalletsEligiblePeriod();
+    fact.pbft_chain_size = pbft_chain_->getPbftChainSize();
+    fact.polling_interval_ms = 10;
+    const auto plan = rustaxa::plan_pbft_manager_eligible_wallet_period_wait(fact);
+    if (!plan.should_wait) {
       break;
     }
 
-    thisThreadSleepForMilliSeconds(10);
+    thisThreadSleepForMilliSeconds(plan.sleep_ms);
   }
 
   std::vector<addr_t> eligible_addresses;

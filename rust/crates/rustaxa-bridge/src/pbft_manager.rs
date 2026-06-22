@@ -22,6 +22,8 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerBroadcastReportResult as FfiPbftManagerBroadcastReportResult,
     PbftManagerCandidateAdmissionFact as FfiPbftManagerCandidateAdmissionFact,
     PbftManagerCandidateAdmissionPlan as FfiPbftManagerCandidateAdmissionPlan,
+    PbftManagerEligibleWalletPeriodWaitFact as FfiPbftManagerEligibleWalletPeriodWaitFact,
+    PbftManagerEligibleWalletPeriodWaitPlan as FfiPbftManagerEligibleWalletPeriodWaitPlan,
     PbftManagerFinalizationWaitFact as FfiPbftManagerFinalizationWaitFact,
     PbftManagerFinalizationWaitPlan as FfiPbftManagerFinalizationWaitPlan,
     PbftManagerLeaderCandidateInputFact as FfiPbftManagerLeaderCandidateInputFact,
@@ -85,6 +87,7 @@ use rustaxa_consensus::pbft_manager::{
     plan_pbft_manager_block_validation as plan_domain_pbft_manager_block_validation,
     plan_pbft_manager_broadcast as plan_domain_pbft_manager_broadcast,
     plan_pbft_manager_candidate_admission as plan_domain_pbft_manager_candidate_admission,
+    plan_pbft_manager_eligible_wallet_period_wait as plan_domain_pbft_manager_eligible_wallet_period_wait,
     plan_pbft_manager_finalization_wait as plan_domain_pbft_manager_finalization_wait,
     plan_pbft_manager_leader_candidates as plan_domain_pbft_manager_leader_candidates,
     plan_pbft_manager_runtime_sleep_until_next_step as plan_domain_pbft_manager_runtime_sleep_until_next_step,
@@ -106,7 +109,8 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerBroadcastAction, PbftManagerBroadcastFact, PbftManagerBroadcastPlan,
     PbftManagerBroadcastReport, PbftManagerBroadcastReportResult, PbftManagerBroadcastStatus,
     PbftManagerCandidateAdmissionFact, PbftManagerCandidateAdmissionPlan,
-    PbftManagerCandidateAdmissionValidationStatus, PbftManagerFinalizationWaitFact,
+    PbftManagerCandidateAdmissionValidationStatus, PbftManagerEligibleWalletPeriodWaitFact,
+    PbftManagerEligibleWalletPeriodWaitPlan, PbftManagerFinalizationWaitFact,
     PbftManagerFinalizationWaitPlan, PbftManagerLeaderBlockValidationStatus,
     PbftManagerLeaderCandidateInputFact, PbftManagerLeaderCandidatePlan,
     PbftManagerLeaderValidBlockCommand, PbftManagerProposalDagBlockFact,
@@ -1000,6 +1004,13 @@ pub fn plan_pbft_manager_finalization_wait(
     plan_domain_pbft_manager_finalization_wait(fact.into()).into()
 }
 
+/// Plans whether a PBFT manager vote-count query should wait for eligible-wallet period readiness.
+pub fn plan_pbft_manager_eligible_wallet_period_wait(
+    fact: FfiPbftManagerEligibleWalletPeriodWaitFact,
+) -> FfiPbftManagerEligibleWalletPeriodWaitPlan {
+    plan_domain_pbft_manager_eligible_wallet_period_wait(fact.into()).into()
+}
+
 /// Aborts this PBFT manager runtime session.
 pub fn abort_pbft_manager_runtime_session(session: &mut BridgePbftManagerRuntimeSession) {
     session.state = abort_domain_pbft_manager_runtime_session(session.state.clone());
@@ -1337,6 +1348,16 @@ impl From<FfiPbftManagerFinalizationWaitFact> for PbftManagerFinalizationWaitFac
     }
 }
 
+impl From<FfiPbftManagerEligibleWalletPeriodWaitFact> for PbftManagerEligibleWalletPeriodWaitFact {
+    fn from(value: FfiPbftManagerEligibleWalletPeriodWaitFact) -> Self {
+        Self {
+            eligible_wallet_period: value.eligible_wallet_period,
+            pbft_chain_size: value.pbft_chain_size,
+            polling_interval_ms: value.polling_interval_ms,
+        }
+    }
+}
+
 impl From<FfiPbftManagerStateActionFact> for PbftManagerStateActionFact {
     fn from(value: FfiPbftManagerStateActionFact) -> Self {
         Self {
@@ -1624,6 +1645,15 @@ impl From<PbftManagerFinalizationWaitPlan> for FfiPbftManagerFinalizationWaitPla
             should_wait: value.should_wait,
             sleep_ms: value.sleep_ms,
             error_code: value.error_code,
+        }
+    }
+}
+
+impl From<PbftManagerEligibleWalletPeriodWaitPlan> for FfiPbftManagerEligibleWalletPeriodWaitPlan {
+    fn from(value: PbftManagerEligibleWalletPeriodWaitPlan) -> Self {
+        Self {
+            should_wait: value.should_wait,
+            sleep_ms: value.sleep_ms,
         }
     }
 }
@@ -2596,6 +2626,29 @@ mod tests {
         assert!(!ready.should_wait);
         assert_eq!(ready.sleep_ms, 0);
         assert!(ready.error_code.is_empty());
+    }
+
+    #[test]
+    fn bridge_plans_eligible_wallet_period_wait_readiness() {
+        let wait = plan_pbft_manager_eligible_wallet_period_wait(
+            FfiPbftManagerEligibleWalletPeriodWaitFact {
+                eligible_wallet_period: 8,
+                pbft_chain_size: 10,
+                polling_interval_ms: 10,
+            },
+        );
+        assert!(wait.should_wait);
+        assert_eq!(wait.sleep_ms, 10);
+
+        let ready = plan_pbft_manager_eligible_wallet_period_wait(
+            FfiPbftManagerEligibleWalletPeriodWaitFact {
+                eligible_wallet_period: 10,
+                pbft_chain_size: 10,
+                polling_interval_ms: 10,
+            },
+        );
+        assert!(!ready.should_wait);
+        assert_eq!(ready.sleep_ms, 0);
     }
 
     #[test]

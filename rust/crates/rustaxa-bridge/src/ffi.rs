@@ -1419,6 +1419,19 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
+    /// C++-originated facts for eligible-wallet period readiness polling.
+    struct PbftManagerEligibleWalletPeriodWaitFact {
+        eligible_wallet_period: u64,
+        pbft_chain_size: u64,
+        polling_interval_ms: u64,
+    }
+
+    /// Rust-owned eligible-wallet period readiness wait plan.
+    struct PbftManagerEligibleWalletPeriodWaitPlan {
+        should_wait: bool,
+        sleep_ms: u64,
+    }
+
     /// C++-originated deterministic facts for one PBFT manager state action.
     struct PbftManagerStateActionFact {
         state: u8,
@@ -5269,6 +5282,9 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_manager_finalization_wait(
             fact: PbftManagerFinalizationWaitFact,
         ) -> PbftManagerFinalizationWaitPlan;
+        pub fn plan_pbft_manager_eligible_wallet_period_wait(
+            fact: PbftManagerEligibleWalletPeriodWaitFact,
+        ) -> PbftManagerEligibleWalletPeriodWaitPlan;
         pub fn plan_pbft_manager_state_action(
             fact: PbftManagerStateActionFact,
         ) -> PbftManagerStateActionPlan;
