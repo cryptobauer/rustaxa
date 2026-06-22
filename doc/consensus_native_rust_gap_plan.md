@@ -340,11 +340,15 @@ Progress:
 - Removed stale proposed-block old-blocks diagnostics and period-data queue last-entry/materialized-pop compatibility APIs
   from Rust-mode shims and bridges. PBFT manager uses `popWithMetadata()` and compact queue hash decisions instead of
   those legacy-style object snapshot helpers.
+- Added a Rust-backed pillar block data public view for `taraxa_getPillarBlockData`. The Rust-enabled RPC path now
+  formats JSON from a bridge DTO decoded from Rust-owned pillar storage instead of materializing C++ `PillarBlockData`,
+  `PillarBlock`, or `PillarVote` objects for that query.
 
 Classification:
 
 - `PillarVote`: edge-only after the Slice 8 sidecar deletion. Public/event return surfaces still materialize votes from
-  Rust-retained records, but pillar threshold and finalization decisions consume Rust lookup facts.
+  Rust-retained records, but pillar threshold and finalization decisions consume Rust lookup facts. The pillar block data
+  RPC query uses a Rust-backed DTO and no longer materializes C++ pillar objects in Rust mode.
 - Rewards carriers: edge-only for the current Rust-mode boundary. Rust owns canonical rewards-stat RLP and storage plans;
   decoded `BlockStats` remains only for public/test compatibility and the external-EVM `StateAPI::distribute_rewards`
   adapter.

@@ -2608,6 +2608,31 @@ pub mod rustaxa_ffi {
         vote_count_change: i32,
     }
 
+    /// Public/query JSON view for one pillar validator vote-count delta.
+    struct PillarBlockViewVoteCountChange {
+        address: [u8; 20],
+        vote_count_change: i32,
+    }
+
+    /// Public/query JSON view for one compact pillar-vote signature.
+    struct PillarBlockViewSignature {
+        r: [u8; 32],
+        vs: [u8; 32],
+    }
+
+    /// Public/query JSON view over stored pillar block data.
+    struct PillarBlockDataView {
+        found: bool,
+        pbft_period: u64,
+        state_root: [u8; 32],
+        previous_pillar_block_hash: [u8; 32],
+        bridge_root: [u8; 32],
+        epoch: u64,
+        validator_vote_count_changes: Vec<PillarBlockViewVoteCountChange>,
+        block_hash: [u8; 32],
+        signatures: Vec<PillarBlockViewSignature>,
+    }
+
     /// Parent-linkage facts for one candidate pillar block.
     struct PillarBlockLinkageFact {
         pillar_block_period: u64,
@@ -6350,6 +6375,10 @@ pub mod rustaxa_ffi {
             self: &BridgePillarChainStorage,
             period: u64,
         ) -> Result<Vec<u8>>;
+        pub fn pillar_chain_storage_block_data_view(
+            self: &BridgePillarChainStorage,
+            period: u64,
+        ) -> Result<PillarBlockDataView>;
 
         // Consensus sortition
 

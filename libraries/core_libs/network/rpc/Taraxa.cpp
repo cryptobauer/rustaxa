@@ -22,7 +22,44 @@ namespace taraxa::net {
 
 #ifdef RUSTAXA_ENABLE
 namespace {
-dev::bytes fromRustBytes(const rust::Vec<uint8_t>& input) { return dev::bytes(input.begin(), input.end()); }
+dev::h256 hashFromBridge(const std::array<uint8_t, 32>& hash) {
+  return dev::h256(hash.data(), dev::h256::ConstructFromPointer);
+}
+
+dev::Address addressFromBridge(const std::array<uint8_t, 20>& address) {
+  return dev::Address(address.data(), dev::Address::ConstructFromPointer);
+}
+
+Json::Value pillarBlockDataViewToJson(const rustaxa::PillarBlockDataView& view, bool include_signatures) {
+  Json::Value res;
+  Json::Value pillar_block;
+  pillar_block["pbft_period"] = dev::toJS(view.pbft_period);
+  pillar_block["state_root"] = dev::toJS(hashFromBridge(view.state_root));
+  pillar_block["previous_pillar_block_hash"] = dev::toJS(hashFromBridge(view.previous_pillar_block_hash));
+  pillar_block["bridge_root"] = dev::toJS(hashFromBridge(view.bridge_root));
+  pillar_block["epoch"] = dev::toJS(view.epoch);
+  pillar_block["validators_vote_counts_changes"] = Json::Value(Json::arrayValue);
+  for (const auto& change : view.validator_vote_count_changes) {
+    Json::Value vote_count_change_json;
+    vote_count_change_json["address"] = dev::toJS(addressFromBridge(change.address));
+    vote_count_change_json["value"] = static_cast<Json::Value::Int64>(change.vote_count_change);
+    pillar_block["validators_vote_counts_changes"].append(std::move(vote_count_change_json));
+  }
+  pillar_block["hash"] = dev::toJS(hashFromBridge(view.block_hash));
+  res["pillar_block"] = std::move(pillar_block);
+
+  if (include_signatures) {
+    res["signatures"] = Json::Value(Json::arrayValue);
+    for (const auto& compact : view.signatures) {
+      Json::Value signature;
+      signature["r"] = dev::toJS(dev::u256(hashFromBridge(compact.r)));
+      signature["vs"] = dev::toJS(dev::u256(hashFromBridge(compact.vs)));
+      res["signatures"].append(std::move(signature));
+    }
+  }
+
+  return res;
+}
 }  // namespace
 #endif
 
@@ -254,12 +291,11 @@ Json::Value Taraxa::taraxa_getPillarBlockData(const std::string& pillar_block_pe
 #ifdef RUSTAXA_ENABLE
     const auto pillar_storage =
         rustaxa::create_pillar_chain_storage(app->getDB()->rustStorage());  // RUSTAXA_QUERY_COMPAT_READ
-    const auto pillar_block_data_rlp = pillar_storage->pillar_chain_storage_block_data_rlp(pbft_period);
-    if (pillar_block_data_rlp.empty()) {
+    const auto pillar_block_data = pillar_storage->pillar_chain_storage_block_data_view(pbft_period);
+    if (!pillar_block_data.found) {
       return {};
     }
-    const auto pillar_block_data_bytes = fromRustBytes(pillar_block_data_rlp);
-    return pillar_chain::PillarBlockData{dev::RLP(pillar_block_data_bytes)}.getJson(include_signatures);
+    return pillarBlockDataViewToJson(pillar_block_data, include_signatures);
 #endif
 
     const auto pillar_block = app->getDB()->getPillarBlock(pbft_period);  // RUSTAXA_QUERY_COMPAT_READ

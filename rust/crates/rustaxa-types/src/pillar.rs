@@ -301,6 +301,21 @@ impl PillarVote {
         out
     }
 
+    /// Returns the EIP-2098 compact signature words used by legacy JSON.
+    ///
+    /// Outputs:
+    /// - `r`: the first 32 bytes of the recoverable signature.
+    /// - `vs`: the second 32 bytes with recovery parity encoded in the high
+    ///   bit, matching C++ `CompactSignatureStruct`.
+    ///
+    /// Edge behavior:
+    /// - This is a pure formatting helper and does not validate the signature.
+    ///   Public/query adapters use it to preserve existing JSON for stored
+    ///   pillar votes.
+    pub fn compact_signature_words(&self) -> ([u8; WORD_SIZE], [u8; WORD_SIZE]) {
+        compact_signature(&self.signature)
+    }
+
     /// Decodes the legacy Solidity-compatible pillar vote payload.
     ///
     /// Two-word payloads carry no signature and return a zeroed signature. Four
