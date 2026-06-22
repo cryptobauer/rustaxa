@@ -51,6 +51,7 @@ const DAG_VDF_PROOF_POS: usize = 0;
 const DAG_VDF_SOL1_POS: usize = 1;
 const DAG_VDF_SOL2_POS: usize = 2;
 const DAG_VDF_DIFFICULTY_POS: usize = 3;
+const DAG_VDF_PROOF_SIZE: usize = 80;
 
 fn pbft_vote_persistence_from_domain(
     value: DomainPbftVotePersistenceResult,
@@ -523,6 +524,35 @@ impl BridgeDagStorageQueries {
             .into_iter()
             .map(|data| rustaxa_ffi::BlockRlp { data })
             .collect())
+    }
+
+    /// Returns public/query DAG block views loaded from DAG storage by level range.
+    ///
+    /// Inputs:
+    /// - `level`: first DAG level to query.
+    /// - `number_of_levels`: number of consecutive levels to scan.
+    ///
+    /// Outputs preserve storage order from `at_level_range` and carry the same
+    /// base JSON facts as `DagBlock::getJson()`. Transaction hashes remain hashes;
+    /// C++ public RPC adapters may expand them to full transaction JSON when the
+    /// external API requests that compatibility mode.
+    ///
+    /// Edge behavior:
+    /// - Malformed DAG block RLP, signatures, or VDF payloads return errors so
+    ///   legacy RPC catch blocks keep mapping bad inputs to invalid params.
+    pub fn get_dag_block_views_at_level(
+        &self,
+        level: u64,
+        number_of_levels: u32,
+    ) -> Result<Vec<rustaxa_ffi::DagBlockPublicView>, anyhow::Error> {
+        let rlps = self
+            .storage
+            .dag()
+            .at_level_range(level, number_of_levels)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        rlps.into_iter()
+            .map(|block_rlp| dag_block_public_view_from_canonical_rlp(&block_rlp))
+            .collect()
     }
 
     pub fn get_nonfinalized_dag_blocks(
@@ -1016,6 +1046,9 @@ fn finalized_dag_hashes(
     dag_bundle_rlp: &[u8],
 ) -> Result<Vec<rustaxa_ffi::PbftFinalizationHash>, anyhow::Error> {
     let bundle = Rlp::new(dag_bundle_rlp);
+    if dag_bundle_is_empty(&bundle)? {
+        return Ok(Vec::new());
+    }
     anyhow::ensure!(
         bundle.item_count()? == 3,
         "invalid finalized DAG block bundle field count"
@@ -1036,6 +1069,9 @@ fn finalized_dag_block_views(
     dag_bundle_rlp: &[u8],
 ) -> Result<Vec<rustaxa_ffi::DagBlockPublicView>, anyhow::Error> {
     let bundle = Rlp::new(dag_bundle_rlp);
+    if dag_bundle_is_empty(&bundle)? {
+        return Ok(Vec::new());
+    }
     anyhow::ensure!(
         bundle.item_count()? == 3,
         "invalid finalized DAG block bundle field count"
@@ -1097,13 +1133,25 @@ fn decode_dag_vdf_view(
         rlp.item_count()? == DAG_VDF_SORTITION_FIELDS,
         "invalid DAG VDF sortition field count"
     );
+    let proof = rlp.at(DAG_VDF_PROOF_POS)?.data()?.to_vec();
+    anyhow::ensure!(
+        proof.len() == DAG_VDF_PROOF_SIZE,
+        "invalid DAG VDF proof length"
+    );
     Ok((
         true,
-        rlp.at(DAG_VDF_PROOF_POS)?.data()?.to_vec(),
+        proof,
         rlp.at(DAG_VDF_SOL1_POS)?.data()?.to_vec(),
         rlp.at(DAG_VDF_SOL2_POS)?.data()?.to_vec(),
         rlp.val_at(DAG_VDF_DIFFICULTY_POS)?,
     ))
+}
+
+fn dag_bundle_is_empty(bundle: &Rlp<'_>) -> Result<bool, anyhow::Error> {
+    if bundle.is_list() {
+        return Ok(false);
+    }
+    Ok(bundle.data()?.is_empty())
 }
 
 fn keccak256(data: &[u8]) -> H256 {

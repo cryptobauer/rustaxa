@@ -68,6 +68,34 @@ Json::Value pbftScheduleBlockViewToJson(const rustaxa::PbftScheduleBlockView& vi
   return json;
 }
 
+Json::Value dagBlockPublicViewToJson(const rustaxa::DagBlockPublicView& view) {
+  Json::Value json;
+  json["pivot"] = dev::toJS(hashFromBridge(view.pivot));
+  json["level"] = dev::toJS(view.level);
+  json["tips"] = Json::Value(Json::arrayValue);
+  for (const auto& tip : view.tips) {
+    json["tips"].append(dev::toJS(hashFromBridge(tip.hash)));
+  }
+  json["transactions"] = Json::Value(Json::arrayValue);
+  for (const auto& trx : view.transactions) {
+    json["transactions"].append(dev::toJS(hashFromBridge(trx.hash)));
+  }
+  json["trx_estimations"] = dev::toJS(view.trx_estimations);
+  json["sig"] = dev::toJS(bytesFromBridge(view.signature));
+  json["hash"] = dev::toJS(hashFromBridge(view.hash));
+  json["sender"] = dev::toJS(addressFromBridge(view.sender));
+  json["timestamp"] = dev::toJS(view.timestamp);
+  if (view.has_vdf) {
+    Json::Value vdf;
+    vdf["proof"] = dev::toJS(bytesFromBridge(view.vdf_proof));
+    vdf["sol1"] = dev::toJS(dev::toHex(bytesFromBridge(view.vdf_sol1)));
+    vdf["sol2"] = dev::toJS(dev::toHex(bytesFromBridge(view.vdf_sol2)));
+    vdf["difficulty"] = dev::toJS(view.vdf_difficulty);
+    json["vdf"] = vdf;
+  }
+  return json;
+}
+
 Json::Value pillarBlockDataViewToJson(const rustaxa::PillarBlockDataView& view, bool include_signatures) {
   Json::Value res;
   Json::Value pillar_block;
@@ -281,6 +309,29 @@ Json::Value Taraxa::taraxa_getNodeVersions() {
 Json::Value Taraxa::taraxa_getDagBlockByLevel(const string& _blockLevel, bool _includeTransactions) {
   try {
     auto app = tryGetApp();
+#ifdef RUSTAXA_ENABLE
+    const auto dag_queries = rustaxa::create_dag_storage_queries(app->getDB()->rustStorage());
+    const auto rust_blocks = dag_queries->get_dag_block_views_at_level(dev::jsToInt(_blockLevel), 1);
+    auto rust_res = Json::Value(Json::arrayValue);
+    for (auto const& block : rust_blocks) {
+      auto block_json = dagBlockPublicViewToJson(block);
+      auto period = app->getPbftManager()->getDagBlockPeriod(hashFromBridge(block.hash));
+      if (period.first) {
+        block_json["period"] = toJS(period.second);
+      } else {
+        block_json["period"] = "-0x1";
+      }
+      if (_includeTransactions) {
+        block_json["transactions"] = Json::Value(Json::arrayValue);
+        for (auto const& t : block.transactions) {
+          block_json["transactions"].append(
+              app->getTransactionManager()->getTransaction(hashFromBridge(t.hash))->toJSON());
+        }
+      }
+      rust_res.append(block_json);
+    }
+    return rust_res;
+#endif
     auto blocks = app->getDB()->getDagBlocksAtLevel(dev::jsToInt(_blockLevel), 1);  // RUSTAXA_QUERY_COMPAT_READ
     auto res = Json::Value(Json::arrayValue);
     for (auto const& b : blocks) {

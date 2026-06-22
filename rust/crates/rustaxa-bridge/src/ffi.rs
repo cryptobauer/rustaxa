@@ -6707,6 +6707,11 @@ pub mod rustaxa_ffi {
             level: u64,
             number_of_levels: u32,
         ) -> Result<Vec<BlockRlp>>;
+        pub fn get_dag_block_views_at_level(
+            self: &BridgeDagStorageQueries,
+            level: u64,
+            number_of_levels: u32,
+        ) -> Result<Vec<DagBlockPublicView>>;
         pub fn get_nonfinalized_dag_blocks(
             self: &BridgeDagStorageQueries,
         ) -> Result<Vec<LevelBlocks>>;
