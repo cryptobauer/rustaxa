@@ -425,6 +425,8 @@ Progress:
   elapsed wall-clock time and executes the returned wait/no-wait plan.
 - PBFT ineligible-wallet polling now carries a Rust session `sleep_ms` command. C++ supplies the configured interval as
   a fact and executes the returned sleep duration instead of hard-coding the scheduler policy in the action handler.
+- DAG proposer worker retry-delay policy now lives in the Rust worker-command planner. C++ still owns worker threads,
+  network fact collection, and sleep execution, but no longer hard-codes the retry delay in the shell loop.
 
 Acceptance:
 

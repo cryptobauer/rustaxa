@@ -4228,7 +4228,6 @@ pub mod rustaxa_ffi {
         packet_queue_over_limit: bool,
         has_attempt_result: bool,
         attempt_returned_proposed: bool,
-        retry_delay_ms: u64,
     }
 
     /// Command C++ executes for one DAG proposer worker-loop tick.

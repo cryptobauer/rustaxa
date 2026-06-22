@@ -1864,7 +1864,6 @@ pub fn dag_plan_proposer_worker_command(
         packet_queue_over_limit: input.packet_queue_over_limit,
         has_attempt_result: input.has_attempt_result,
         attempt_returned_proposed: input.attempt_returned_proposed,
-        retry_delay_ms: input.retry_delay_ms,
     });
     DagProposerWorkerCommand {
         attempt_proposal: command.attempt_proposal,
@@ -3344,7 +3343,6 @@ mod tests {
             packet_queue_over_limit: false,
             has_attempt_result: false,
             attempt_returned_proposed: false,
-            retry_delay_ms: 100,
         });
         assert!(attempt.attempt_proposal);
         assert!(!attempt.sleep_after_tick);
@@ -3354,7 +3352,6 @@ mod tests {
             packet_queue_over_limit: false,
             has_attempt_result: false,
             attempt_returned_proposed: false,
-            retry_delay_ms: 100,
         });
         assert!(!throttle.attempt_proposal);
         assert!(throttle.sleep_after_tick);
@@ -3365,7 +3362,6 @@ mod tests {
             packet_queue_over_limit: false,
             has_attempt_result: true,
             attempt_returned_proposed: false,
-            retry_delay_ms: 100,
         });
         assert!(!no_block.attempt_proposal);
         assert!(no_block.sleep_after_tick);
@@ -3376,7 +3372,6 @@ mod tests {
             packet_queue_over_limit: false,
             has_attempt_result: true,
             attempt_returned_proposed: true,
-            retry_delay_ms: 100,
         });
         assert!(!proposed.attempt_proposal);
         assert!(!proposed.sleep_after_tick);

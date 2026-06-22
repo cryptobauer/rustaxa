@@ -218,6 +218,11 @@ pub const DAG_PROPOSER_REASON_SIGNING_FAILED: u32 = 23;
 pub const DAG_PROPOSER_VDF_POLL_INTERVAL_MS: u64 = 100;
 /// Rust-owned stale-proof delay executed by the compatibility shell.
 pub const DAG_PROPOSER_STALE_PROOF_SLEEP_MS: u64 = 1_000;
+/// Rust-owned DAG proposer worker retry delay in milliseconds.
+///
+/// C++ worker threads execute the returned sleep mechanically, but retry-delay
+/// policy belongs to the Rust scheduler planner.
+pub const DAG_PROPOSER_WORKER_RETRY_DELAY_MS: u64 = 100;
 
 /// Live facts for one DAG proposer worker-loop tick.
 ///
@@ -230,7 +235,6 @@ pub struct DagProposerWorkerCommandInput {
     pub packet_queue_over_limit: bool,
     pub has_attempt_result: bool,
     pub attempt_returned_proposed: bool,
-    pub retry_delay_ms: u64,
 }
 
 /// Rust-owned command for one DAG proposer worker-loop tick.
@@ -2412,7 +2416,7 @@ pub fn plan_dag_proposer_worker_command(
         return DagProposerWorkerCommand {
             attempt_proposal: false,
             sleep_after_tick: true,
-            sleep_ms: input.retry_delay_ms,
+            sleep_ms: DAG_PROPOSER_WORKER_RETRY_DELAY_MS,
             reason_code: DAG_PROPOSER_REASON_WORKER_PBFT_SYNCING,
         };
     }
@@ -2420,7 +2424,7 @@ pub fn plan_dag_proposer_worker_command(
         return DagProposerWorkerCommand {
             attempt_proposal: false,
             sleep_after_tick: true,
-            sleep_ms: input.retry_delay_ms,
+            sleep_ms: DAG_PROPOSER_WORKER_RETRY_DELAY_MS,
             reason_code: DAG_PROPOSER_REASON_WORKER_PACKET_QUEUE_OVER_LIMIT,
         };
     }
@@ -2431,7 +2435,7 @@ pub fn plan_dag_proposer_worker_command(
             sleep_ms: if input.attempt_returned_proposed {
                 0
             } else {
-                input.retry_delay_ms
+                DAG_PROPOSER_WORKER_RETRY_DELAY_MS
             },
             reason_code: if input.attempt_returned_proposed {
                 DAG_PROPOSER_REASON_OK

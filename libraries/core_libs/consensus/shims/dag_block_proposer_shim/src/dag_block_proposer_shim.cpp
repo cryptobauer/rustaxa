@@ -333,8 +333,6 @@ void DagBlockProposer::start() {
   if (bool b = true; !stopped_.compare_exchange_strong(b, !b)) {
     return;
   }
-  const uint64_t min_proposal_delay = 100;
-
   LOG(log_nf_) << "DagBlockProposer started ...";
 
   proposed_blocks_count_ = 0;
@@ -353,7 +351,6 @@ void DagBlockProposer::start() {
         command_input.packet_queue_over_limit = packets_over_the_limit;
         command_input.has_attempt_result = false;
         command_input.attempt_returned_proposed = false;
-        command_input.retry_delay_ms = min_proposal_delay;
         auto command = rustaxa::dag_plan_proposer_worker_command(command_input);
         if (command.attempt_proposal) {
           command_input.has_attempt_result = true;
