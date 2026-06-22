@@ -285,8 +285,11 @@ Current Rust repositories include:
 - FinalChain external-EVM state, code visibility, account snapshots, execution, and contract-boundary behavior remain
   broader non-storage PBFT/runtime gaps. Do not hide those gaps by falling back to legacy C++ storage behavior.
 - Snapshot, migration, admin, compaction, iterator, and `plugin/light` paths remain C++-owned and non-blocking for the
-  current wave unless explicitly re-scoped.
-- `migrations` lookup interception is a known scope gap if shim lookup is used on migration paths.
+  current wave unless explicitly re-scoped. The Rust-mode storage shim now marks these as
+  `RUSTAXA_ADMIN_COMPAT_UNSUPPORTED`, `RUSTAXA_ADMIN_COMPAT_LEGACY_ONLY`, or `RUSTAXA_QUERY_COMPAT_READ` instead of
+  leaving them as generic unimplemented storage gaps.
+- `migrations` lookup interception is intentionally classified as `RUSTAXA_ADMIN_COMPAT_LEGACY_ONLY`; it exists only so
+  legacy migration machinery does not run through the Rust shim and must not be used as Rust consensus storage authority.
 
 ### Storage Sequencing
 
@@ -295,6 +298,8 @@ Current Rust repositories include:
 3. Delete compatibility batch and storage-shim helpers after tests, conformance fixtures, and public materialization
    callers no longer require them.
 4. Keep admin/snapshot/migration/light maintenance in C++ unless the scope changes.
+5. Delete the marked admin/query compatibility points only after the owning caller moves to a Rust-owned query API,
+   lifecycle runtime, fixture, or explicit out-of-consensus executor.
 
 ### DbStorage Compatibility Shell Status
 
@@ -598,6 +603,50 @@ Recommended introduction order:
 ### Scope
 
 Goal: rewrite consensus internals while keeping existing C++ public APIs and node wiring stable.
+
+Native Rust consensus gap closeout:
+
+- The former native Rust consensus gap plan is complete for its non-network and non-EVM scope. Its results now live in
+  this consolidated plan and `doc/consensus_rewrite_tracker.md`; do not recreate a separate gap-plan document for the
+  same scope.
+- Rust owns consensus rules, durable consensus state, restart normalization, storage/query selection, canonical payload
+  retention, validation decisions, lifecycle command selection where it affects consensus behavior, scheduler/timer
+  policy, ordered side-effect planning, and typed executor-result validation.
+- C++ may remain as an explicit executor or adapter only for public API compatibility, app-host lifecycle mechanics,
+  OS threads, condition variables, actual sleeps, key-manager signing execution, async VDF execution, network/tarcap
+  transport, packet wrapping, gossip fanout, peer marking, packet queues, EVM/StateAPI execution, state DB mutation,
+  receipt/log-bloom execution details, and arbitrary contract calls.
+- Legacy C++ object materialization is accepted only at public API, test, network, EVM/executor, or temporary
+  compatibility edges. It must not become consensus decision authority again.
+
+Completed closeout slices:
+
+1. FinalChain and DPoS fact ports: consensus-facing FinalChain/DPoS facts route through typed Rust ports, while arbitrary
+   EVM/state execution remains an explicit boundary.
+2. TransactionManager public and event shell collapse: Rust owns runtime/query authority, canonical payload inspection,
+   finalized-status mutation, public admission command reports, and event/log intent selection.
+3. DAG manager mirror/materialization collapse: Rust graph/runtime state, Rust storage, typed transaction ports, and
+   Rust finalization/add/sync plans own DAG consensus decisions.
+4. DAG block proposer lifecycle shell reduction: Rust owns proposer lifecycle state, worker commands, retry cursor, VDF
+   wait/cancel decisions, stale-proof policy, block construction planning, signing boundary progression, and add-block
+   terminal classification; C++ executes VDF, signing, and add-block effects.
+5. Vote, slashing, and pillar executor surface collapse: vote/pillar/slashing decisions consume Rust-retained payloads,
+   compact facts, and typed plans; C++ executes signing, network, transaction insertion, and public sidecar edges.
+6. Rewards stats carrier ownership: Rust owns rewards-stat decisions, compatibility encoding, interval cache
+   persistence/reload/clear, and native finalization integration; C++ decoded carriers are public/test/EVM adapters.
+7. Typed consensus storage port generalization: migrated production consensus routes use task-specific Rust storage
+   ports/runtimes and Rust-owned atomic write groups instead of broad storage shim batches or generic appenders.
+8. Public object surface and compatibility adapter deletion: obsolete sidecar maps, stale helper APIs, and public/debug
+   surfaces that only needed DTOs were replaced or deleted; remaining materialization is classified as public, network,
+   EVM/executor, or active subsystem edge work.
+9. Lifecycle, scheduler, signing, and event executor shell collapse: PBFT and DAG scheduler decisions found in the
+   closeout audit are Rust-planned, and subsystem sessions carry typed executor reports. Remaining C++ shell work is the
+   accepted host/executor boundary listed above.
+
+Closeout definition now in force: consensus production behavior outside network/tarcap and EVM/state execution must not
+require C++ shims or broad bridge compatibility code as decision authority. New work that needs consensus behavior should
+extend Rust runtimes, typed ports, or Rust-owned planners first. If a remaining C++ shim or bridge path is touched, either
+keep it as a clearly classified adapter/executor boundary or move the behavior into Rust in the same slice.
 
 Rules:
 

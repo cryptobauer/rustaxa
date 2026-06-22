@@ -114,6 +114,47 @@ small transformation. A single PBFT vote event can legitimately plan known-vote 
 sidecar admission, threshold updates, slashing proof emission, gossip, and PBFT progress triggers as one protocol plan
 when those are the deterministic consequences of the event and current state view.
 
+## Native Rust Consensus Gap Closeout
+
+The former native Rust consensus gap plan is complete and folded into this tracker plus `PLAN.md`. The closeout boundary
+is:
+
+- Rust owns consensus rules, durable consensus state, restart normalization, storage/query selection, canonical payload
+  retention, validation decisions, scheduler/timer policy, ordered side-effect planning, and typed executor-result
+  validation.
+- Remaining C++ is accepted only for public API adapters, app-host lifecycle mechanics, OS threads, condition variables,
+  actual sleeps, signing execution, async VDF execution, network/tarcap transport and gossip, EVM/StateAPI execution,
+  state DB mutation, receipts/log blooms, arbitrary contract calls, and explicitly classified temporary materialization
+  edges.
+- C++ objects such as `PbftBlock`, `PbftVote`, `PeriodData`, `DagBlock`, `Transaction`, pillar objects, and reward/stat
+  carriers may still be materialized at public/test/network/EVM/executor boundaries, but they are no longer accepted as
+  consensus decision authority.
+
+Completed closeout slices:
+
+- FinalChain/DPoS fact ports moved consensus-facing facts to typed Rust ports, with EVM/state execution left as the
+  explicit boundary.
+- TransactionManager production paths moved runtime/query authority, canonical payload inspection, finalized-status
+  mutation, public admission reports, and event/log intent selection to Rust.
+- DAG manager production decisions moved to Rust graph/runtime state, Rust storage, typed transaction ports, and
+  Rust-owned finalization/add/sync plans.
+- DAG proposer lifecycle and scheduler policy moved to Rust sessions and worker-command planners while C++ executes VDF,
+  signing, add-block, thread, timer, and network effects.
+- Vote, slashing, and pillar decisions consume Rust-retained payloads, compact facts, and typed plans; remaining C++
+  paths are signing, transaction insertion, network, public, or temporary sidecar executors.
+- Rewards stats carrier authority moved to Rust-owned encoding, interval cache state, storage/reload/clear behavior, and
+  finalization integration.
+- Typed consensus storage ports replaced broad production storage shim/batch authority with task-specific Rust storage
+  ports or runtimes.
+- Obsolete public object/materialization adapters were removed where Rust DTOs were sufficient; remaining materialization
+  is classified by boundary.
+- PBFT next-step sleeps, ineligible-wallet polling, startup finalization waits, eligible-wallet readiness waits, and DAG
+  proposer worker retry delay are Rust-planned. Remaining lifecycle shell code is accepted host/executor mechanics.
+
+Future consensus cleanup should be deletion-oriented: remove adapters, broad CXX bridge DTOs, sidecar maps, and shim
+helpers once their public, network, EVM, test, or app-host consumers move. New unclassified production consensus fallback
+to legacy C++ is a rewrite blocker.
+
 ## PBFT Manager Breakthrough Boundary
 
 The intended PBFT manager end state is a Rust-owned protocol runtime behind the existing C++ compatibility surface. The
@@ -189,6 +230,10 @@ execution, or public API materialization into the consensus storage cleanup.
   boundaries.
 - Slice 5 — Header and FFI pruning is complete: stale `BridgeStorage`/`storage_shim` header and CXX FFI declarations
   were removed after their callers moved to typed Rust storage/session APIs.
+- Slice 6 — Storage/admin/query compatibility classification is complete: remaining storage-shim admin, migration, and
+  generic iterator/existence boundaries are explicitly marked as `RUSTAXA_ADMIN_COMPAT_UNSUPPORTED`,
+  `RUSTAXA_ADMIN_COMPAT_LEGACY_ONLY`, or `RUSTAXA_QUERY_COMPAT_READ`. This keeps snapshot/range/compaction/migration and
+  broad iterator shells visible as compatibility debt without treating them as production consensus storage blockers.
 
 No separate file now tracks this cleanup; `doc/consensus_rewrite_tracker.md` is the active tracking location.
 

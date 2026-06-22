@@ -13,6 +13,15 @@ namespace fs = std::filesystem;
 // Public APIs with existing Rust shims are explicitly redeclared here so callers
 // go through this layer first. Redeclared APIs are implemented in storage_shim.cpp
 // and call Rust storage directly.
+//
+// Compatibility boundary markers used by the consensus rewrite:
+// - RUSTAXA_QUERY_COMPAT_READ marks public/debug/network query surfaces that
+//   temporarily materialize legacy C++ objects from Rust-backed storage.
+// - RUSTAXA_ADMIN_COMPAT_UNSUPPORTED marks app/admin/lifecycle maintenance APIs
+//   that are intentionally unsupported in Rust shim mode until that subsystem is
+//   rewritten.
+// - RUSTAXA_ADMIN_COMPAT_LEGACY_ONLY marks legacy/reference migration behavior
+//   that must not become production Rust consensus storage authority.
 class DbStorage : public DbStorageOld {
  public:
   explicit DbStorage(fs::path const& path, uint32_t db_snapshot_each_n_pbft_block = 0, uint32_t max_open_files = 0,
@@ -57,8 +66,9 @@ class DbStorage : public DbStorageOld {
       return lookupFinalChainReceiptByTrxHash(key_slice);
     }
     if (column.ordinal_ == Columns::migrations.ordinal_) {
-      // Migration execution stays C++-owned and out of Rust shim scope. Returning a truthy bool payload makes
-      // migration::Base::isApplied() skip migration work without adding Rust support for the migrations column.
+      // RUSTAXA_ADMIN_COMPAT_LEGACY_ONLY: migration execution stays C++-owned and out of Rust shim scope. Returning a
+      // truthy bool payload makes migration::Base::isApplied() skip migration work without adding Rust support for the
+      // migrations column.
       return std::string(1, '\1');
     }
     throw DbException("DbStorage::lookup unsupported column in Rust shim mode: " + column.name());
@@ -77,7 +87,8 @@ class DbStorage : public DbStorageOld {
   bool exist(K const& key, Column const& column) {
     (void)key;
     (void)column;
-    throw DbException("DbStorage::exist is not implemented in Rust shim mode");
+    throw DbException(
+        "DbStorage::exist is a RUSTAXA_QUERY_COMPAT_READ boundary without a generic Rust shim implementation");
   }
 
   void setGenesisHash(const h256& genesis_hash);
@@ -212,7 +223,8 @@ class DbStorage : public DbStorageOld {
   void clearColumnHistory(std::unordered_set<T>& to_keep, Column c) {
     (void)to_keep;
     (void)c;
-    throw DbException("DbStorage::clearColumnHistory is not implemented in Rust shim mode");
+    throw DbException(
+        "DbStorage::clearColumnHistory is a RUSTAXA_ADMIN_COMPAT_UNSUPPORTED boundary in Rust shim mode");
   }
 
  private:

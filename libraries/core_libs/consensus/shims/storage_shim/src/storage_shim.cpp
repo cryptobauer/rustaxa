@@ -52,8 +52,14 @@ T save_as(const Slice& key) {
                     std::to_string(got) + ", expected " + std::to_string(expected));
 }
 
-[[noreturn]] void throw_unimplemented_shim_api(const char* api_name) {
-  throw DbException("DbStorage::" + std::string(api_name) + " is not implemented in Rust shim mode");
+[[noreturn]] void throw_admin_compat_unsupported(const char* api_name) {
+  throw DbException("DbStorage::" + std::string(api_name) +
+                    " is a RUSTAXA_ADMIN_COMPAT_UNSUPPORTED boundary in Rust shim mode");
+}
+
+[[noreturn]] void throw_query_compat_read(const char* api_name) {
+  throw DbException("DbStorage::" + std::string(api_name) +
+                    " is a RUSTAXA_QUERY_COMPAT_READ boundary without a generic iterator shim");
 }
 }  // namespace
 
@@ -127,19 +133,19 @@ void DbStorage::DeleteRange(const Column& col, uint64_t begin, uint64_t end) {
   (void)col;
   (void)begin;
   (void)end;
-  throw_unimplemented_shim_api("DeleteRange");
+  throw_admin_compat_unsupported("DeleteRange");
 }
 
 void DbStorage::CompactRange(const Column& col, uint64_t begin, uint64_t end) {
   (void)col;
   (void)begin;
   (void)end;
-  throw_unimplemented_shim_api("CompactRange");
+  throw_admin_compat_unsupported("CompactRange");
 }
 
 bool DbStorage::createSnapshot(PbftPeriod period) {
   (void)period;
-  throw_unimplemented_shim_api("createSnapshot");
+  throw_admin_compat_unsupported("createSnapshot");
 }
 
 void DbStorage::disableSnapshots() { snapshots_enabled_ = false; }
@@ -152,19 +158,20 @@ void DbStorage::deleteColumnData(const Column& c) {
     return;
   }
 
-  throw DbException("DbStorage::deleteColumnData is not implemented for column " + c.name() + " in Rust shim mode");
+  throw DbException("DbStorage::deleteColumnData(" + c.name() +
+                    ") is a RUSTAXA_ADMIN_COMPAT_UNSUPPORTED boundary in Rust shim mode");
 }
 
 uint32_t DbStorage::getMajorVersion() const { return kMajorVersion_; }
 
 std::unique_ptr<rocksdb::Iterator> DbStorage::getColumnIterator(const Column& c) {
   (void)c;
-  throw_unimplemented_shim_api("getColumnIterator(Column)");
+  throw_query_compat_read("getColumnIterator(Column)");
 }
 
 std::unique_ptr<rocksdb::Iterator> DbStorage::getColumnIterator(rocksdb::ColumnFamilyHandle* c) {
   (void)c;
-  throw_unimplemented_shim_api("getColumnIterator(ColumnFamilyHandle*)");
+  throw_query_compat_read("getColumnIterator(ColumnFamilyHandle*)");
 }
 
 std::string DbStorage::lookupFinalChainMeta(const Slice& key) const {
@@ -1052,7 +1059,7 @@ bool DbStorage::hasMajorVersionChanged() { return major_version_changed_; }
 
 void DbStorage::compactColumn(Column const& column) {
   (void)column;
-  throw_unimplemented_shim_api("compactColumn");
+  throw_admin_compat_unsupported("compactColumn");
 }
 
 }  // namespace taraxa
