@@ -316,7 +316,8 @@ Stop conditions:
 
 Goal: remove old C++ consensus object surfaces after all decision paths consume Rust-native payloads and facts.
 
-Status as of 2026-06-22: in progress, with stop-condition deferrals for PBFT manager and executor-boundary families.
+Status as of 2026-06-22: complete for public/obsolete compatibility collapse, with stop-condition deferrals for active
+PBFT manager, vote-validation, DAG/transaction manager, network, and EVM/executor-boundary families.
 
 Scope:
 
@@ -377,13 +378,26 @@ Classification:
   vote-generation, and block-validation flows still consume materialized objects as active protocol/executor inputs. This
   must move through the PBFT manager/lifecycle slices before compatibility APIs can be deleted. The schedule-block RPC
   surface, public PBFT-hash-edge lookups, and node-version scan are now edge-only in Rust mode through Rust-backed
-  DTOs/lookups, but manager and executor-boundary consumers still keep the broader PBFT object family alive.
+  DTOs/lookups. `debug_getPreviousBlockCertVotes` remains a vote-validation stop-condition deferral rather than a stale
+  public adapter: preserving semantics requires replacing `VoteManager::validateVote` and its live DPoS/VRF/key-manager
+  fact path, not just decoding stored vote RLP into a JSON DTO. Manager, vote-validation, and executor-boundary consumers
+  still keep the broader PBFT object family alive until the PBFT manager/vote slices move those active decisions.
 - `DagBlock` and `Transaction`: not yet Slice 8-deletable. DAG add/proposal and transaction manager paths still
   materialize objects for active add-block, packing, public API, and external-EVM gas/execution boundaries. Network and
   EVM edges remain accepted shims; other active decision use belongs in the DAG/transaction subsystem slices. The
   finalized-period DAG debug query, DAG hash/level RPCs, and GraphQL DAG query wrappers are now edge-only in Rust mode
   through Rust-backed DTOs. Transaction objects still materialize at public transaction-resolution and external-EVM
   boundaries; active DAG add/proposal and transaction manager paths remain outside Slice 8 deletion scope.
+
+Completion audit:
+
+- Public PBFT and DAG query surfaces that only needed stable DTOs now use Rust-backed views in Rust mode instead of C++
+  consensus object materialization.
+- Obsolete sidecar maps, stale queue/pop diagnostics, and unused compatibility snapshots introduced by earlier rewrite
+  scaffolding were removed.
+- Remaining C++ object materialization sites are classified as active protocol/executor work, public transaction/receipt
+  edge compatibility, network compatibility, EVM/FinalChain execution boundaries, or vote-validation/PBFT manager
+  stop-condition deferrals. They are not Slice 8-deletable without expanding into those subsystem rewrites.
 
 Stop conditions:
 
