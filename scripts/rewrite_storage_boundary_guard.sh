@@ -86,7 +86,9 @@ scan_diff() {
              has_call(line, "rustBatchId") ||
              has_call(line, "rustStorage") ||
              has_call(line, "getDB") ||
-             line ~ /DbStorage::Columns/
+             line ~ /DbStorage::Columns/ ||
+             line ~ /BridgeStorageBatch/ ||
+             line ~ /storage_shim_[[:alnum:]_]+/
     }
 
     function is_forbidden_final_chain_fact_route(path, line) {
@@ -260,6 +262,32 @@ EOF
   if [ -s "$violations_file" ]; then
     echo "storage-boundary guard self-test failed: FinalChain fact-provider implementation was rejected" >&2
     cat "$violations_file" >&2
+    exit 1
+  fi
+
+  : >"$violations_file"
+  cat <<'EOF' | scan_diff >"$violations_file" || true
+diff --git a/libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp b/libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp
+--- a/libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp
++++ b/libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp
+@@ -1,0 +1,1 @@
++rustaxa::storage_shim_save_period_data(batch, period, bytes);
+EOF
+  if [ ! -s "$violations_file" ]; then
+    echo "storage-boundary guard self-test failed: direct storage_shim_* call was not rejected" >&2
+    exit 1
+  fi
+
+  : >"$violations_file"
+  cat <<'EOF' | scan_diff >"$violations_file" || true
+diff --git a/libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp b/libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp
+--- a/libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp
++++ b/libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp
+@@ -1,0 +1,1 @@
++rustaxa::BridgeStorageBatch* batch = nullptr;
+EOF
+  if [ ! -s "$violations_file" ]; then
+    echo "storage-boundary guard self-test failed: BridgeStorageBatch addition was not rejected" >&2
     exit 1
   fi
 

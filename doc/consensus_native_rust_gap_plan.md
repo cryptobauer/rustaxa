@@ -278,7 +278,7 @@ Stop conditions:
 
 Goal: replace remaining broad bridge/storage compatibility shapes with subsystem-specific Rust ports.
 
-Status as of 2026-06-21: in progress.
+Status as of 2026-06-21: complete.
 
 - Rewards-stat finalization cache writes now use a task-specific Rust rewards storage port to append accepted
   `RewardsStatsProcessResult` cache rows to the surrounding Rust-owned finalization batch. The production rewards path no
@@ -287,6 +287,11 @@ Status as of 2026-06-21: in progress.
 - Direct reward-vote reset compatibility calls now route through a task-specific verified-votes reset storage request
   instead of exposing generic PBFT finalization storage stages. The broader PBFT finalization path still uses ordered
   storage stages for its multi-stage atomic batch.
+- Remaining generic storage-shim appenders are classified as compatibility API surface for legacy/reference storage
+  callers, tests, and public/admin shells. Rust-mode production shims audited for this slice either use subsystem
+  runtime ports directly, ignore legacy `Batch&` compatibility arguments, or route through task-specific Rust ports.
+- The storage-boundary guard now rejects newly added direct `storage_shim_*` calls and `BridgeStorageBatch` references
+  outside the storage-shim/test compatibility allowlist.
 
 Scope:
 
