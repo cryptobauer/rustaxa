@@ -230,21 +230,6 @@ impl ProposedBlocks {
         self.blocks.remove(&period);
     }
 
-    /// Returns the legacy old-blocks diagnostic message when stale periods exist.
-    ///
-    /// The format is exactly `"period -> count. "` repeated in ascending period
-    /// order.
-    pub fn old_blocks_message(&self, current_period: u64) -> Option<String> {
-        let msg = self
-            .blocks
-            .iter()
-            .take_while(|(period, _)| **period < current_period)
-            .map(|(period, blocks)| format!("{period} -> {}. ", blocks.len()))
-            .collect::<String>();
-
-        (!msg.is_empty()).then_some(msg)
-    }
-
     /// Returns all proposed blocks grouped by ascending period.
     pub fn snapshot(&self) -> Vec<ProposedBlockPeriod> {
         self.blocks
@@ -505,21 +490,6 @@ mod tests {
         assert_eq!(removed[1].block_hashes, vec![hash(22)]);
         assert!(!blocks.contains(1, hash(11)));
         assert!(blocks.contains(3, hash(33)));
-    }
-
-    #[test]
-    fn old_blocks_message_matches_legacy_format() {
-        let mut blocks = ProposedBlocks::new();
-        push(&mut blocks, 1, hash(10), rlp(&[0x10]));
-        push(&mut blocks, 1, hash(11), rlp(&[0x11]));
-        push(&mut blocks, 2, hash(20), rlp(&[0x20]));
-        push(&mut blocks, 3, hash(30), rlp(&[0x30]));
-
-        assert_eq!(
-            blocks.old_blocks_message(3),
-            Some("1 -> 2. 2 -> 1. ".to_owned())
-        );
-        assert_eq!(blocks.old_blocks_message(1), None);
     }
 
     #[test]

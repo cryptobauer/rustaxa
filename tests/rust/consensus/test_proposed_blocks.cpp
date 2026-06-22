@@ -72,8 +72,6 @@ TEST_F(RustProposedBlocksTest, CleanupCandidatesAndRemovePeriodMatchLegacyBehavi
   proposed_blocks->proposed_blocks_push(2, h256(0x31), h256(0xa3), bytes({0x03}));
   proposed_blocks->proposed_blocks_push(3, h256(0x41), h256(0xa4), bytes({0x04}));
 
-  EXPECT_EQ(proposed_blocks->proposed_blocks_old_blocks_message(3), "1 -> 2. 2 -> 1. ");
-
   auto cleanup = proposed_blocks->proposed_blocks_cleanup_candidates(3);
   ASSERT_EQ(cleanup.size(), 2);
   EXPECT_EQ(cleanup[0].period, 1u);
@@ -88,7 +86,6 @@ TEST_F(RustProposedBlocksTest, CleanupCandidatesAndRemovePeriodMatchLegacyBehavi
   EXPECT_FALSE(proposed_blocks->proposed_blocks_contains(1, h256(0x21)));
   EXPECT_FALSE(proposed_blocks->proposed_blocks_contains(2, h256(0x31)));
   EXPECT_TRUE(proposed_blocks->proposed_blocks_contains(3, h256(0x41)));
-  EXPECT_TRUE(proposed_blocks->proposed_blocks_old_blocks_message(3).empty());
 
   auto grouped = proposed_blocks->proposed_blocks_snapshot();
   ASSERT_EQ(grouped.size(), 1);

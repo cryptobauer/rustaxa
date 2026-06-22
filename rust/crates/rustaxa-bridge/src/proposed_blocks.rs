@@ -266,13 +266,6 @@ impl BridgeProposedBlocks {
         self.index.remove_period(period);
     }
 
-    /// Returns the legacy old-blocks diagnostic string.
-    pub fn proposed_blocks_old_blocks_message(&self, current_period: u64) -> String {
-        self.index
-            .old_blocks_message(current_period)
-            .unwrap_or_default()
-    }
-
     /// Returns all proposed PBFT block entries with validation flags.
     pub fn proposed_blocks_snapshot_entries(&self) -> Vec<ProposedBlockSnapshotEntry> {
         self.index

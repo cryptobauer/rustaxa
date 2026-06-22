@@ -1,8 +1,7 @@
 use crate::ffi::rustaxa_ffi::{
-    PbftSyncTransactionHash, PeriodDataQueueEntryRef, PeriodDataQueueLastEntryLookup,
-    PeriodDataQueuePbftVotePayload, PeriodDataQueuePillarVotePayload, PeriodDataQueuePopPlan,
-    PeriodDataQueuePushOutcome, PeriodDataQueueTransactionIdentity,
-    PeriodDataQueueTransactionPayload,
+    PbftSyncTransactionHash, PeriodDataQueueEntryRef, PeriodDataQueuePbftVotePayload,
+    PeriodDataQueuePillarVotePayload, PeriodDataQueuePopPlan, PeriodDataQueuePushOutcome,
+    PeriodDataQueueTransactionIdentity, PeriodDataQueueTransactionPayload,
 };
 use crate::ffi::BridgePeriodDataQueue;
 use rustaxa_consensus::period_data_queue::PeriodDataQueue;
@@ -125,58 +124,6 @@ impl BridgePeriodDataQueue {
     /// Pops one queue metadata entry and returns the C++ payload handoff plan.
     pub fn period_data_queue_pop(&mut self) -> Result<PeriodDataQueuePopPlan, anyhow::Error> {
         Ok(self.0.pop()?.into())
-    }
-
-    /// Returns the last queued entry metadata.
-    pub fn period_data_queue_last_entry(&self) -> PeriodDataQueueLastEntryLookup {
-        self.0
-            .last_entry()
-            .map(|entry| PeriodDataQueueLastEntryLookup {
-                found: true,
-                entry_id: entry.entry_id,
-                period: entry.period,
-                block_hash: entry.block_hash.into(),
-                prev_block_hash: entry.prev_block_hash.into(),
-                pivot_hash: entry.pivot_hash.into(),
-                final_chain_hash: entry.final_chain_hash.into(),
-                reward_vote_hashes: transaction_hashes_to_bridge(entry.reward_vote_hashes),
-                pillar_vote_rlps: pillar_vote_rlps_to_bridge(entry.pillar_vote_rlps),
-                transaction_rlps: transaction_rlps_to_bridge(entry.transaction_rlps),
-                previous_cert_vote_rlps: pbft_vote_rlps_to_bridge(entry.previous_cert_vote_rlps),
-                dag_transaction_hashes: transaction_hashes_to_bridge(entry.dag_transaction_hashes),
-                period_data_transaction_hashes: transaction_hashes_to_bridge(
-                    entry.period_data_transaction_hashes,
-                ),
-                period_data_transaction_identities: transaction_identities_to_bridge(
-                    entry.period_data_transaction_identities,
-                ),
-                previous_cert_votes_present: entry.previous_cert_votes_present,
-                previous_cert_first_vote_has_weight: entry.previous_cert_first_vote_has_weight,
-                pillar_votes_present: entry.pillar_votes_present,
-                extra_data_present: entry.extra_data_present,
-                extra_data_pillar_block_hash_present: entry.extra_data_pillar_block_hash_present,
-            })
-            .unwrap_or(PeriodDataQueueLastEntryLookup {
-                found: false,
-                entry_id: 0,
-                period: 0,
-                block_hash: [0; 32],
-                prev_block_hash: [0; 32],
-                pivot_hash: [0; 32],
-                final_chain_hash: [0; 32],
-                reward_vote_hashes: Vec::new(),
-                pillar_vote_rlps: Vec::new(),
-                transaction_rlps: Vec::new(),
-                previous_cert_vote_rlps: Vec::new(),
-                dag_transaction_hashes: Vec::new(),
-                period_data_transaction_hashes: Vec::new(),
-                period_data_transaction_identities: Vec::new(),
-                previous_cert_votes_present: false,
-                previous_cert_first_vote_has_weight: false,
-                pillar_votes_present: false,
-                extra_data_present: false,
-                extra_data_pillar_block_hash_present: false,
-            })
     }
 
     /// Removes old queue metadata and returns removed C++ payload ids.

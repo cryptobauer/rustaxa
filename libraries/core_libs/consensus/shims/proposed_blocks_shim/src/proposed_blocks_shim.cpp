@@ -147,15 +147,6 @@ void ProposedBlocks::cleanupProposedPbftBlocksByPeriod(PbftPeriod period) {
   }
 }
 
-std::optional<std::string> ProposedBlocks::checkOldBlocksPresence(PbftPeriod current_period) const {
-  std::shared_lock lock(proposed_blocks_mutex_);
-  auto msg = rust_blocks_->proposed_blocks_old_blocks_message(current_period);
-  if (msg.empty()) {
-    return std::nullopt;
-  }
-  return std::optional<std::string>{msg};
-}
-
 std::map<PbftPeriod, std::vector<std::shared_ptr<PbftBlock>>> ProposedBlocks::getProposedBlocks() const {
   std::shared_lock lock(proposed_blocks_mutex_);
   std::map<PbftPeriod, std::vector<std::shared_ptr<PbftBlock>>> result;

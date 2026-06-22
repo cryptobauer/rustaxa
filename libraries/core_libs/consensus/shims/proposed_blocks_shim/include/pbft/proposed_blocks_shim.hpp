@@ -141,11 +141,6 @@ class ProposedBlocks {
   void cleanupProposedPbftBlocksByPeriod(PbftPeriod period);
 
   /**
-   * Returns the legacy old-blocks diagnostic message when stale proposals are present.
-   */
-  std::optional<std::string> checkOldBlocksPresence(PbftPeriod current_period) const;
-
-  /**
    * Returns proposed blocks grouped by PBFT period.
    */
   std::map<PbftPeriod, std::vector<std::shared_ptr<PbftBlock>>> getProposedBlocks() const;

@@ -219,8 +219,9 @@ Status as of 2026-06-21: complete.
 - PBFT vote admission and validation no longer hydrate, mutate, attach, or materialize the incoming live C++ `PbftVote`
   sidecar for weight ownership. The production admission path verifies Rust-retained weighted payload records directly;
   incoming live votes remain only network/public/executor payloads.
-- Remaining `live_votes_` maps in PBFT and pillar vote shims are compatibility/test/public API projections only; production
-  admission, finalization, slashing, and pillar threshold decisions route through Rust-retained payloads or compact facts.
+- The remaining PBFT `live_votes_` map is a documented compatibility/test/public API projection; production admission,
+  finalization, and slashing decisions route through Rust-retained payloads or compact facts. The pillar vote live sidecar
+  map was removed in Slice 8.
 
 Scope:
 
@@ -315,6 +316,8 @@ Stop conditions:
 
 Goal: remove old C++ consensus object surfaces after all decision paths consume Rust-native payloads and facts.
 
+Status as of 2026-06-22: in progress, with stop-condition deferrals for PBFT manager and executor-boundary families.
+
 Scope:
 
 - Inventory remaining materialization of `PbftBlock`, `PbftVote`, `PeriodData`, `DagBlock`, `Transaction`, pillar objects, and rewards carriers.
@@ -334,6 +337,23 @@ Progress:
   cleanup; C++ only materializes `PillarVote` objects from Rust-retained records for public/event compatibility.
 - Removed the obsolete rewards-stats RLP sidecar map from the C++ shim. Rust owns authoritative rewards-stat bytes and
   storage payloads; C++ keeps only the decoded `BlockStats` view required by public/test and `StateAPI` edges.
+- Removed stale proposed-block old-blocks diagnostics and period-data queue last-entry/materialized-pop compatibility APIs
+  from Rust-mode shims and bridges. PBFT manager uses `popWithMetadata()` and compact queue hash decisions instead of
+  those legacy-style object snapshot helpers.
+
+Classification:
+
+- `PillarVote`: edge-only after the Slice 8 sidecar deletion. Public/event return surfaces still materialize votes from
+  Rust-retained records, but pillar threshold and finalization decisions consume Rust lookup facts.
+- Rewards carriers: edge-only for the current Rust-mode boundary. Rust owns canonical rewards-stat RLP and storage plans;
+  decoded `BlockStats` remains only for public/test compatibility and the external-EVM `StateAPI::distribute_rewards`
+  adapter.
+- `PbftBlock`, `PbftVote`, and `PeriodData`: not yet Slice 8-deletable. PBFT manager sync, finalization, proposal,
+  vote-generation, and block-validation flows still consume materialized objects as active protocol/executor inputs. This
+  must move through the PBFT manager/lifecycle slices before compatibility APIs can be deleted.
+- `DagBlock` and `Transaction`: not yet Slice 8-deletable. DAG add/proposal and transaction manager paths still
+  materialize objects for active add-block, packing, public API, and external-EVM gas/execution boundaries. Network and
+  EVM edges remain accepted shims; other active decision use belongs in the DAG/transaction subsystem slices.
 
 Stop conditions:
 

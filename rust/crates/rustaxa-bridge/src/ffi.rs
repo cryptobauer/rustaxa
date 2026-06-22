@@ -1862,28 +1862,6 @@ pub mod rustaxa_ffi {
         effective_size: usize,
     }
 
-    struct PeriodDataQueueLastEntryLookup {
-        found: bool,
-        entry_id: u64,
-        period: u64,
-        block_hash: [u8; 32],
-        prev_block_hash: [u8; 32],
-        pivot_hash: [u8; 32],
-        final_chain_hash: [u8; 32],
-        reward_vote_hashes: Vec<PbftSyncTransactionHash>,
-        pillar_vote_rlps: Vec<PeriodDataQueuePillarVotePayload>,
-        transaction_rlps: Vec<PeriodDataQueueTransactionPayload>,
-        previous_cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
-        dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
-        period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
-        period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
-        previous_cert_votes_present: bool,
-        previous_cert_first_vote_has_weight: bool,
-        pillar_votes_present: bool,
-        extra_data_present: bool,
-        extra_data_pillar_block_hash_present: bool,
-    }
-
     struct VerifiedVotePayload {
         vote_hash: [u8; 32],
         block_hash: [u8; 32],
@@ -5363,10 +5341,6 @@ pub mod rustaxa_ffi {
             period: u64,
         ) -> Result<Vec<ProposedBlockPeriodHashes>>;
         pub fn proposed_blocks_remove_period(self: &mut BridgeProposedBlocks, period: u64);
-        pub fn proposed_blocks_old_blocks_message(
-            self: &BridgeProposedBlocks,
-            current_period: u64,
-        ) -> String;
         pub fn proposed_blocks_snapshot_entries(
             self: &BridgeProposedBlocks,
         ) -> Vec<ProposedBlockSnapshotEntry>;
@@ -5467,9 +5441,6 @@ pub mod rustaxa_ffi {
         pub fn period_data_queue_pop(
             self: &mut BridgePeriodDataQueue,
         ) -> Result<PeriodDataQueuePopPlan>;
-        pub fn period_data_queue_last_entry(
-            self: &BridgePeriodDataQueue,
-        ) -> PeriodDataQueueLastEntryLookup;
         pub fn period_data_queue_clean_old_data(
             self: &mut BridgePeriodDataQueue,
             period: u64,

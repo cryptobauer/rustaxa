@@ -90,13 +90,6 @@ class PeriodDataQueue {
             std::vector<std::shared_ptr<PbftVote>>&& cert_votes);
 
   /**
-   * Pops and returns front period data, cert votes for processing, and sender node id.
-   *
-   * Throws `std::runtime_error` if called while no raw queue entry is available.
-   */
-  std::tuple<PeriodData, std::vector<std::shared_ptr<PbftVote>>, dev::p2p::NodeID> pop();
-
-  /**
    * Pops and returns front period data together with Rust-owned compact block-link metadata.
    */
   PoppedPeriodData popWithMetadata();
@@ -135,18 +128,6 @@ class PeriodDataQueue {
    * queued block hash is fresh enough for that period; otherwise the supplied chain hash is returned.
    */
   blk_hash_t lastBlockHashOrChain(uint64_t current_period, const blk_hash_t& chain_last_hash) const;
-
-  /**
-   * Returns last queued PBFT block, or nullptr when queue is empty.
-   */
-  std::shared_ptr<PbftBlock> lastPbftBlock() const;
-
-  /**
-   * Returns last queued PBFT block hash from Rust-owned queue metadata, or nullopt when queue is empty.
-   *
-   * This avoids materializing the live `PeriodData` payload when PBFT manager only needs the compact chain-link fact.
-   */
-  std::optional<blk_hash_t> lastPbftBlockHash() const;
 
   /**
    * Removes queued entries with period lower than `period`.

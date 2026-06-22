@@ -69,10 +69,6 @@ TEST(PeriodDataQueueShimTest, popReturnsQueueFrontAndMatchingCertVotesContract) 
   EXPECT_TRUE(queue.push(std::move(period2), node2, 0, {vote_for_last_block}));
   EXPECT_EQ(queue.size(), 2);
   EXPECT_EQ(queue.syncingPeriod(1), 2);
-  ASSERT_NE(queue.lastPbftBlock(), nullptr);
-  EXPECT_EQ(queue.lastPbftBlock()->getPeriod(), 2);
-  ASSERT_TRUE(queue.lastPbftBlockHash().has_value());
-  EXPECT_EQ(*queue.lastPbftBlockHash(), period2_hash);
   EXPECT_EQ(queue.lastBlockHashOrChain(1, blk_hash_t(999)), period2_hash);
   EXPECT_EQ(queue.lastBlockHashOrChain(3, blk_hash_t(999)), blk_hash_t(999));
 
@@ -109,7 +105,6 @@ TEST(PeriodDataQueueShimTest, popReturnsQueueFrontAndMatchingCertVotesContract) 
   EXPECT_EQ(popped2.cert_vote_rlps[0], vote_for_last_block->rlp(true, vote_for_last_block->getWeight().has_value()));
   expectMaterializedVotePayload(popped2.cert_votes[0], vote_for_last_block);
   EXPECT_TRUE(queue.empty());
-  EXPECT_FALSE(queue.lastPbftBlockHash().has_value());
   EXPECT_EQ(queue.lastBlockHashOrChain(1, blk_hash_t(999)), blk_hash_t(999));
   EXPECT_EQ(queue.size(), 0);
   EXPECT_EQ(queue.getPeriod(), 0);

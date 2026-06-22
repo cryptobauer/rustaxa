@@ -363,29 +363,6 @@ PeriodDataQueue::PoppedPeriodData PeriodDataQueue::popWithMetadata() {
   return result;
 }
 
-std::tuple<PeriodData, std::vector<std::shared_ptr<PbftVote>>, dev::p2p::NodeID> PeriodDataQueue::pop() {
-  auto popped = popWithMetadata();
-  return {std::move(popped.period_data), std::move(popped.cert_votes), popped.node_id};
-}
-
-std::shared_ptr<PbftBlock> PeriodDataQueue::lastPbftBlock() const {
-  std::shared_lock lock(queue_access_);
-  const auto lookup = rust_queue_->period_data_queue_last_entry();
-  if (!lookup.found) {
-    return nullptr;
-  }
-  return backPayload(lookup.entry_id).period_data.pbft_blk;
-}
-
-std::optional<blk_hash_t> PeriodDataQueue::lastPbftBlockHash() const {
-  std::shared_lock lock(queue_access_);
-  const auto lookup = rust_queue_->period_data_queue_last_entry();
-  if (!lookup.found) {
-    return std::nullopt;
-  }
-  return blk_hash_t(lookup.block_hash.data(), blk_hash_t::ConstructFromPointer);
-}
-
 void PeriodDataQueue::cleanOldData(uint64_t period) {
   std::unique_lock lock(queue_access_);
   const auto removed_entries = rust_queue_->period_data_queue_clean_old_data(period);

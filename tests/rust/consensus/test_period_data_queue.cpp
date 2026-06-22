@@ -74,7 +74,7 @@ rust::Vec<PeriodDataQueueTransactionIdentity> txIdentities(std::initializer_list
 
 }  // namespace
 
-TEST(RustPeriodDataQueueTest, PushPopAndLastEntryFollowLegacyRules) {
+TEST(RustPeriodDataQueueTest, PushPopAndLastHashDecisionFollowLegacyRules) {
   auto queue = create_period_data_queue();
 
   auto first = queue->period_data_queue_push(11, 1, hashFor(0x11), hashFor(0xa1), hashFor(0xb1), hashFor(0xe1),
@@ -97,37 +97,6 @@ TEST(RustPeriodDataQueueTest, PushPopAndLastEntryFollowLegacyRules) {
   ASSERT_TRUE(second.accepted);
   EXPECT_EQ(queue->period_data_queue_size(), 2u);
 
-  auto last = queue->period_data_queue_last_entry();
-  ASSERT_TRUE(last.found);
-  EXPECT_EQ(last.entry_id, 22u);
-  EXPECT_EQ(last.period, 2u);
-  EXPECT_EQ(last.block_hash, hashFor(0x22));
-  EXPECT_EQ(last.final_chain_hash, hashFor(0xe2));
-  ASSERT_EQ(last.reward_vote_hashes.size(), 1u);
-  EXPECT_EQ(last.reward_vote_hashes[0].hash, hashFor(0xf2));
-  ASSERT_EQ(last.pillar_vote_rlps.size(), 1u);
-  ASSERT_EQ(last.pillar_vote_rlps[0].vote_rlp.size(), 2u);
-  EXPECT_EQ(last.pillar_vote_rlps[0].vote_rlp[0], 0xa2);
-  EXPECT_EQ(last.pillar_vote_rlps[0].vote_rlp[1], 0xa3);
-  ASSERT_EQ(last.transaction_rlps.size(), 1u);
-  ASSERT_EQ(last.transaction_rlps[0].transaction_rlp.size(), 2u);
-  EXPECT_EQ(last.transaction_rlps[0].transaction_rlp[0], 0xb2);
-  EXPECT_EQ(last.transaction_rlps[0].transaction_rlp[1], 0xb3);
-  ASSERT_EQ(last.previous_cert_vote_rlps.size(), 1u);
-  EXPECT_EQ(last.previous_cert_vote_rlps[0].vote_rlp[0], 0x92);
-  EXPECT_EQ(last.previous_cert_vote_rlps[0].vote_rlp[1], 0x93);
-  ASSERT_EQ(last.dag_transaction_hashes.size(), 1u);
-  EXPECT_EQ(last.dag_transaction_hashes[0].hash, hashFor(0xc2));
-  ASSERT_EQ(last.period_data_transaction_hashes.size(), 1u);
-  EXPECT_EQ(last.period_data_transaction_hashes[0].hash, hashFor(0xd2));
-  ASSERT_EQ(last.period_data_transaction_identities.size(), 1u);
-  EXPECT_EQ(last.period_data_transaction_identities[0].hash, hashFor(0xd2));
-  EXPECT_EQ(last.period_data_transaction_identities[0].input_index, 0u);
-  EXPECT_TRUE(last.previous_cert_votes_present);
-  EXPECT_FALSE(last.previous_cert_first_vote_has_weight);
-  EXPECT_TRUE(last.pillar_votes_present);
-  EXPECT_TRUE(last.extra_data_present);
-  EXPECT_FALSE(last.extra_data_pillar_block_hash_present);
   EXPECT_EQ(queue->period_data_queue_last_block_hash_or_chain(1, hashFor(0xee)), hashFor(0x22));
   EXPECT_EQ(queue->period_data_queue_last_block_hash_or_chain(3, hashFor(0xee)), hashFor(0xee));
 
@@ -202,8 +171,6 @@ TEST(RustPeriodDataQueueTest, PushPopAndLastEntryFollowLegacyRules) {
   EXPECT_EQ(pop_second.effective_size, 0u);
 
   EXPECT_TRUE(queue->period_data_queue_empty());
-  auto no_last = queue->period_data_queue_last_entry();
-  EXPECT_FALSE(no_last.found);
   EXPECT_EQ(queue->period_data_queue_last_block_hash_or_chain(1, hashFor(0xee)), hashFor(0xee));
 }
 
@@ -353,25 +320,6 @@ TEST(RustPeriodDataQueueTest, PushCanSignalQueueResetAfterChainProgress) {
   ASSERT_TRUE(outcome.accepted);
   EXPECT_TRUE(outcome.clear_existing);
 
-  auto last = queue->period_data_queue_last_entry();
-  ASSERT_TRUE(last.found);
-  EXPECT_EQ(last.entry_id, 64u);
-  EXPECT_EQ(last.period, 4u);
-  EXPECT_EQ(last.block_hash, hashFor(0x64));
-  EXPECT_EQ(last.prev_block_hash, hashFor(0xac));
-  EXPECT_EQ(last.pivot_hash, hashFor(0xbc));
-  EXPECT_EQ(last.final_chain_hash, hashFor(0xec));
-  ASSERT_EQ(last.reward_vote_hashes.size(), 1u);
-  EXPECT_EQ(last.reward_vote_hashes[0].hash, hashFor(0xfc));
-  ASSERT_EQ(last.dag_transaction_hashes.size(), 1u);
-  EXPECT_EQ(last.dag_transaction_hashes[0].hash, hashFor(0xcc));
-  ASSERT_EQ(last.period_data_transaction_hashes.size(), 1u);
-  EXPECT_EQ(last.period_data_transaction_hashes[0].hash, hashFor(0xdc));
-  ASSERT_EQ(last.period_data_transaction_identities.size(), 1u);
-  EXPECT_EQ(last.period_data_transaction_identities[0].hash, hashFor(0xdc));
-  EXPECT_TRUE(last.previous_cert_votes_present);
-  EXPECT_TRUE(last.previous_cert_first_vote_has_weight);
-  EXPECT_TRUE(last.pillar_votes_present);
-  EXPECT_TRUE(last.extra_data_present);
-  EXPECT_TRUE(last.extra_data_pillar_block_hash_present);
+  EXPECT_EQ(queue->period_data_queue_last_block_hash_or_chain(3, hashFor(0xee)), hashFor(0x64));
+  EXPECT_EQ(queue->period_data_queue_last_block_hash_or_chain(5, hashFor(0xee)), hashFor(0xee));
 }

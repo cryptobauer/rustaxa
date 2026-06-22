@@ -104,7 +104,6 @@ TEST_F(ProposedBlocksShimDataTest, persistenceAndCleanupUseRustIndexAndDb) {
   ProposedBlocks proposed_blocks(db);
   EXPECT_EQ(proposed_blocks.restoreFromStorage(), 2);
   ASSERT_EQ(db->getProposedPbftBlocks().size(), 2);
-  EXPECT_EQ(proposed_blocks.checkOldBlocksPresence(2), std::make_optional(std::string("1 -> 1. ")));
 
   const auto snapshot = proposed_blocks.getProposedBlocks();
   ASSERT_EQ(snapshot.size(), 2);
