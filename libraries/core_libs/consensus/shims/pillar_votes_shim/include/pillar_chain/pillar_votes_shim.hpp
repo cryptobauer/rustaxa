@@ -16,9 +16,9 @@ namespace taraxa::pillar_chain {
  * Rust-mode pillar-votes facade.
  *
  * This class preserves the public C++ `PillarVotes` API while delegating
- * deterministic vote validation and aggregation to Rust. C++ keeps a temporary
- * live `PillarVote` sidecar map only for insertion-time compatibility; returned
- * vote objects are materialized from Rust-retained payloads at public edges.
+ * deterministic vote validation, aggregation, payload retention, and cleanup to
+ * Rust. C++ materializes `PillarVote` objects only at public/event edges from
+ * Rust-retained payload records.
  *
  * No fallback to `PillarVotesOld` is used for production logic in this
  * Rust-enabled shim mode.
@@ -145,14 +145,10 @@ class PillarVotes {
                                                     uint64_t validator_vote_count);
   static rustaxa::PillarVotePayload toBridgeLookupPayload(const std::shared_ptr<PillarVote>& vote);
 
-  const std::shared_ptr<PillarVote>& requireLiveVote(const vote_hash_t& vote_hash) const;
   std::shared_ptr<PillarVote> materializeVoteRecord(const rustaxa::PillarVoteRecord& record) const;
-  void trackVote(const std::shared_ptr<PillarVote>& vote);
-  void pruneLiveVotesToSnapshotLocked();
 
   mutable std::shared_mutex mutex_;
   ::rust::Box<rustaxa::BridgePillarVotes> rust_pillar_votes_;
-  std::unordered_map<vote_hash_t, std::shared_ptr<PillarVote>> live_votes_;
 };
 
 }  // namespace taraxa::pillar_chain

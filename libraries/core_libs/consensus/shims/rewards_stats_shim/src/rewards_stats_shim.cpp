@@ -52,8 +52,6 @@ rustaxa::RewardsStatsConfig makeRewardsConfig(uint32_t committee_size, const Har
 
 dev::bytes toDevBytes(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
 
-std::vector<uint8_t> toStdBytes(const rust::Vec<uint8_t>& bytes) { return std::vector<uint8_t>(bytes.begin(), bytes.end()); }
-
 std::runtime_error rewardsStatsError(const std::string& message) {
   return std::runtime_error("rewards::Stats Rust shim: " + message);
 }
@@ -75,7 +73,7 @@ Stats::~Stats() = default;
 
 void Stats::recoverFromDb(EthBlockNumber last_blk_num) {
   (void)last_blk_num;
-  replaceCacheRlp(rust_stats_->rewards_stats_runtime_cached_stats());
+  replaceCacheView(rust_stats_->rewards_stats_runtime_cached_stats());
 }
 
 std::vector<BlockStats> Stats::processStats(const PeriodData& current_blk, uint32_t blocks_per_year,
@@ -88,10 +86,10 @@ std::vector<BlockStats> Stats::processStats(const PeriodData& current_blk, uint3
   }
 
   if (plan.cache_current_period) {
-    cacheStatsRlp(plan.current_period, plan.current_block_stats_rlp);
+    cacheStatsView(plan.current_period, plan.current_block_stats_rlp);
     appendStorageWrites(plan, write_batch);
   } else if (plan.clear_cached_stats) {
-    replaceCacheRlp(plan.distribution_stats);
+    replaceCacheView(plan.distribution_stats);
   }
 
   return decodeDistributionStats(plan.distribution_stats);
@@ -125,9 +123,9 @@ void Stats::commitStatsAfterFinalChainPublication(const rustaxa::RewardsStatsPro
                             std::string(result.error_code));
   }
   if (plan.cache_current_period) {
-    cacheStatsRlp(plan.current_period, plan.current_block_stats_rlp);
+    cacheStatsView(plan.current_period, plan.current_block_stats_rlp);
   } else if (plan.clear_cached_stats) {
-    replaceCacheRlp(plan.distribution_stats);
+    replaceCacheView(plan.distribution_stats);
   }
 }
 
@@ -139,7 +137,6 @@ void Stats::clear(uint64_t current_period) {
       throw rewardsStatsError("storage clear rejected period " + std::to_string(result.current_period) + ": " +
                               std::string(result.error_code));
     }
-    blocks_stats_rlp_.clear();
     blocks_stats_.clear();
     return;
   }
@@ -149,7 +146,6 @@ void Stats::clear(uint64_t current_period) {
 void Stats::clearCommittedAfterFinalChainPublication(uint64_t current_period) {
   const auto frequency = kHardforksConfig.getRewardsDistributionFrequency(current_period);
   if (frequency > 1 && current_period % frequency == 0) {
-    blocks_stats_rlp_.clear();
     blocks_stats_.clear();
   }
   rust_stats_->rewards_stats_runtime_clear_committed(current_period);
@@ -227,16 +223,14 @@ BlockStats Stats::decodeBlockStats(const rust::Vec<uint8_t>& stats_rlp) const {
   return util::rlp_dec<BlockStats>(dev::RLP(bytes));
 }
 
-void Stats::cacheStatsRlp(PbftPeriod period, const rust::Vec<uint8_t>& stats_rlp) {
-  blocks_stats_rlp_[period] = toStdBytes(stats_rlp);
+void Stats::cacheStatsView(PbftPeriod period, const rust::Vec<uint8_t>& stats_rlp) {
   blocks_stats_[period] = decodeBlockStats(stats_rlp);
 }
 
-void Stats::replaceCacheRlp(const rust::Vec<rustaxa::PeriodRlp>& stats) {
-  blocks_stats_rlp_.clear();
+void Stats::replaceCacheView(const rust::Vec<rustaxa::PeriodRlp>& stats) {
   blocks_stats_.clear();
   for (const auto& stat : stats) {
-    cacheStatsRlp(stat.period, stat.data);
+    cacheStatsView(stat.period, stat.data);
   }
 }
 

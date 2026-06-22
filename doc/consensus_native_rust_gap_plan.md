@@ -328,6 +328,13 @@ Acceptance:
 - Obsolete bridge and shim helpers are deleted instead of retained as unused scaffolding.
 - Public API compatibility remains stable through Rust-backed adapters.
 
+Progress:
+
+- Removed the obsolete `PillarVotes` live `PillarVote` sidecar map. Rust now owns pillar vote payload retention and
+  cleanup; C++ only materializes `PillarVote` objects from Rust-retained records for public/event compatibility.
+- Removed the obsolete rewards-stats RLP sidecar map from the C++ shim. Rust owns authoritative rewards-stat bytes and
+  storage payloads; C++ keeps only the decoded `BlockStats` view required by public/test and `StateAPI` edges.
+
 Stop conditions:
 
 - Stop if this requires changing external RPC/API semantics.
