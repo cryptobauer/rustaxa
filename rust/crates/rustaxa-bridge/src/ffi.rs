@@ -404,6 +404,15 @@ pub mod rustaxa_ffi {
         dag_blocks_order: Vec<PbftFinalizationHash>,
     }
 
+    /// PBFT block author/version facts for `taraxa_getNodeVersions`.
+    struct PbftNodeVersionView {
+        found: bool,
+        beneficiary: [u8; 20],
+        major_version: u16,
+        minor_version: u16,
+        patch_version: u16,
+    }
+
     /// Optional canonical hash lookup result.
     ///
     /// `found = false` means the backing storage row was absent. Decode and
@@ -6701,6 +6710,10 @@ pub mod rustaxa_ffi {
             self: &BridgePeriodStorageQueries,
             period: u64,
         ) -> Result<PbftScheduleBlockView>;
+        pub fn get_pbft_node_version_view(
+            self: &BridgePeriodStorageQueries,
+            period: u64,
+        ) -> Result<PbftNodeVersionView>;
         /// Typed period-by-PBFT-block hash lookup.
         pub fn get_period_from_pbft_hash(
             self: &BridgePeriodStorageQueries,

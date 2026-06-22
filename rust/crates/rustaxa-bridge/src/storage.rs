@@ -764,6 +764,55 @@ impl BridgePeriodStorageQueries {
         pbft_schedule_block_view_from_period_data(&period_data)
     }
 
+    /// Returns PBFT beneficiary and node semantic-version facts for a finalized period.
+    ///
+    /// Inputs:
+    /// - `period`: finalized PBFT period scanned by `taraxa_getNodeVersions`.
+    ///
+    /// Outputs:
+    /// - `found == false` when no period data is stored, preserving the legacy
+    ///   scan-stop behavior when `getPbftBlock(period)` returned empty.
+    /// - Otherwise the recovered PBFT beneficiary and major/minor/patch values
+    ///   decoded from PBFT block extra data.
+    ///
+    /// Edge behavior:
+    /// - Malformed period data, unrecoverable PBFT author, or missing/invalid
+    ///   extra data returns an error so the existing RPC catch block maps the
+    ///   public query to invalid params instead of silently omitting a node.
+    pub fn get_pbft_node_version_view(
+        &self,
+        period: u64,
+    ) -> Result<rustaxa_ffi::PbftNodeVersionView, anyhow::Error> {
+        let period_data = self.get_period_data_raw(period)?;
+        if period_data.is_empty() {
+            return Ok(rustaxa_ffi::PbftNodeVersionView {
+                found: false,
+                beneficiary: [0; 20],
+                major_version: 0,
+                minor_version: 0,
+                patch_version: 0,
+            });
+        }
+
+        let period_rlp = Rlp::new(&period_data);
+        let pbft_block = period_rlp.at(PBFT_BLOCK_POS_IN_PERIOD_DATA)?;
+        let metadata = PbftBlockMetadata::try_from(SignedPbftBlockRlp::new(pbft_block.as_raw()))?;
+        let extra_data = if pbft_block.item_count()? == 9 {
+            decode_pbft_extra_data(pbft_block.at(PBFT_EXTRA_DATA_POS)?.data()?)?
+        } else {
+            empty_pbft_extra_data_view()
+        };
+        anyhow::ensure!(extra_data.found, "PBFT block extra data missing or invalid");
+
+        Ok(rustaxa_ffi::PbftNodeVersionView {
+            found: true,
+            beneficiary: metadata.author.into(),
+            major_version: extra_data.major_version,
+            minor_version: extra_data.minor_version,
+            patch_version: extra_data.patch_version,
+        })
+    }
+
     /// Maps a PBFT block hash to its period index.
     pub fn get_period_from_pbft_hash(
         &self,

@@ -218,6 +218,22 @@ Json::Value Taraxa::taraxa_getNodeVersions() {
     std::map<addr_t, std::string> node_version_map;
     std::multimap<std::string, std::pair<addr_t, uint64_t>> version_node_map;
     std::map<std::string, std::pair<uint32_t, uint32_t>> version_count;
+#ifdef RUSTAXA_ENABLE
+    const auto period_queries = rustaxa::create_period_storage_queries(db->rustStorage());
+    for (uint64_t i = period; i > 0 && period - i < max_blocks_to_process; i--) {
+      const auto version_view = period_queries->get_pbft_node_version_view(i);
+      if (!version_view.found) {
+        break;
+      }
+      const auto beneficiary = addressFromBridge(version_view.beneficiary);
+      if (!node_version_map.contains(beneficiary)) {
+        node_version_map[beneficiary] = std::to_string(version_view.major_version) + "." +
+                                        std::to_string(version_view.minor_version) + "." +
+                                        std::to_string(version_view.patch_version);
+      }
+    }
+#endif
+#ifndef RUSTAXA_ENABLE
     for (uint64_t i = period; i > 0 && period - i < max_blocks_to_process; i--) {
       auto blk = db->getPbftBlock(i);
       if (!blk.has_value()) {
@@ -229,6 +245,7 @@ Json::Value Taraxa::taraxa_getNodeVersions() {
                                                   blk->getExtraData()->getJson()["patch_version"].asString();
       }
     }
+#endif
 
     auto total_vote_count = app->getFinalChain()->dposEligibleTotalVoteCount(period);
     for (auto nv : node_version_map) {
