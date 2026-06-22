@@ -346,9 +346,9 @@ Progress:
 - Added a Rust-backed PBFT schedule block public view for `taraxa_getScheduleBlockByPeriod`. The Rust-enabled RPC path
   now formats the legacy-compatible JSON from Rust-decoded period data, including PBFT block hashes, author, signature,
   reward votes, extra data, and finalized DAG block order, without materializing a C++ `PbftBlock` for that query.
-- Added a Rust-backed PBFT block hash public lookup for `taraxa_pbftBlockHashByPeriod`. The Rust-enabled RPC path now
-  hashes the canonical PBFT block RLP embedded in period data instead of materializing a C++ `PbftBlock` just to return
-  `getBlockHash()`.
+- Added a Rust-backed PBFT block hash public lookup for `taraxa_pbftBlockHashByPeriod` and GraphQL `Query::getBlock`.
+  Rust-enabled public hash-edge paths now hash the canonical PBFT block RLP embedded in period data instead of
+  materializing a C++ `PbftBlock` just to return `getBlockHash()`.
 
 Classification:
 
@@ -361,8 +361,8 @@ Classification:
 - `PbftBlock`, `PbftVote`, and `PeriodData`: not yet Slice 8-deletable. PBFT manager sync, finalization, proposal,
   vote-generation, and block-validation flows still consume materialized objects as active protocol/executor inputs. This
   must move through the PBFT manager/lifecycle slices before compatibility APIs can be deleted. The schedule-block RPC
-  surface and PBFT-block-hash-by-period lookup are now edge-only in Rust mode through Rust-backed DTOs/lookups, but
-  manager and executor-boundary consumers still keep the broader PBFT object family alive.
+  surface and public PBFT-hash-edge lookups are now edge-only in Rust mode through Rust-backed DTOs/lookups, but manager
+  and executor-boundary consumers still keep the broader PBFT object family alive.
 - `DagBlock` and `Transaction`: not yet Slice 8-deletable. DAG add/proposal and transaction manager paths still
   materialize objects for active add-block, packing, public API, and external-EVM gas/execution boundaries. Network and
   EVM edges remain accepted shims; other active decision use belongs in the DAG/transaction subsystem slices.

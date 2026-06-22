@@ -10,9 +10,21 @@
 #include "graphql/types/current_state.hpp"
 #include "graphql/types/dag_block.hpp"
 
+#ifdef RUSTAXA_ENABLE
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
+
 using namespace std::literals;
 
 namespace graphql::taraxa {
+
+#ifdef RUSTAXA_ENABLE
+namespace {
+dev::h256 hashFromBridge(const std::array<uint8_t, 32>& hash) {
+  return dev::h256(hash.data(), dev::h256::ConstructFromPointer);
+}
+}  // namespace
+#endif
 
 Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
              std::shared_ptr<::taraxa::DagManager> dag_manager, std::shared_ptr<::taraxa::PbftManager> pbft_manager,
@@ -58,6 +70,17 @@ std::shared_ptr<object::Block> Query::getBlock(std::optional<response::Value>&& 
     return std::make_shared<object::Block>(std::make_shared<Block>(
         final_chain_, transaction_manager_, get_block_by_num_, ::taraxa::blk_hash_t(), block_header));
   }
+
+#ifdef RUSTAXA_ENABLE
+  const auto period_queries = rustaxa::create_period_storage_queries(db_->rustStorage());
+  const auto pbft_block_hash = period_queries->get_pbft_block_hash_by_period(block_header->number);
+  if (!pbft_block_hash.found) {
+    // shouldn't be possible
+    return nullptr;
+  }
+  return std::make_shared<object::Block>(std::make_shared<Block>(
+      final_chain_, transaction_manager_, get_block_by_num_, hashFromBridge(pbft_block_hash.hash), block_header));
+#endif
 
   auto pbft_block = db_->getPbftBlock(block_header->number);  // RUSTAXA_QUERY_COMPAT_READ
   if (!pbft_block) {
