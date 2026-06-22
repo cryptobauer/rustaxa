@@ -3327,6 +3327,24 @@ pub mod rustaxa_ffi {
         hash: [u8; 32],
     }
 
+    /// Public/query JSON view for one finalized DAG block.
+    struct DagBlockPublicView {
+        pivot: [u8; 32],
+        level: u64,
+        tips: Vec<DagHash>,
+        transactions: Vec<DagHash>,
+        trx_estimations: u64,
+        signature: Vec<u8>,
+        hash: [u8; 32],
+        sender: [u8; 20],
+        timestamp: u64,
+        has_vdf: bool,
+        vdf_proof: Vec<u8>,
+        vdf_sol1: Vec<u8>,
+        vdf_sol2: Vec<u8>,
+        vdf_difficulty: u16,
+    }
+
     struct DagCounterUpdate {
         hash: [u8; 32],
         level: u64,
@@ -6714,6 +6732,10 @@ pub mod rustaxa_ffi {
             self: &BridgePeriodStorageQueries,
             period: u64,
         ) -> Result<PbftNodeVersionView>;
+        pub fn get_period_dag_block_views(
+            self: &BridgePeriodStorageQueries,
+            period: u64,
+        ) -> Result<Vec<DagBlockPublicView>>;
         /// Typed period-by-PBFT-block hash lookup.
         pub fn get_period_from_pbft_hash(
             self: &BridgePeriodStorageQueries,

@@ -352,6 +352,9 @@ Progress:
 - Added a Rust-backed PBFT beneficiary/version public view for `taraxa_getNodeVersions`. The Rust-enabled scan now reads
   beneficiary and semantic-version facts from canonical period data instead of materializing C++ `PbftBlock` objects to
   inspect extra data; the public aggregation still uses FinalChain DPoS vote-count reads at the query boundary.
+- Added a Rust-backed finalized DAG block public/debug view for `debug_getPeriodDagBlocks`. The Rust-enabled debug RPC
+  now reconstructs canonical DAG block RLP from period data and returns legacy-compatible JSON facts without
+  materializing C++ `DagBlock` objects for that period query.
 
 Classification:
 
@@ -368,7 +371,10 @@ Classification:
   DTOs/lookups, but manager and executor-boundary consumers still keep the broader PBFT object family alive.
 - `DagBlock` and `Transaction`: not yet Slice 8-deletable. DAG add/proposal and transaction manager paths still
   materialize objects for active add-block, packing, public API, and external-EVM gas/execution boundaries. Network and
-  EVM edges remain accepted shims; other active decision use belongs in the DAG/transaction subsystem slices.
+  EVM edges remain accepted shims; other active decision use belongs in the DAG/transaction subsystem slices. The
+  finalized-period DAG debug query is now edge-only in Rust mode through a Rust-backed DTO, while DAG hash/level public
+  RPC and GraphQL surfaces still need a dedicated DAG public-view slice because they include live DAG lookup and optional
+  transaction enrichment.
 
 Stop conditions:
 

@@ -24,8 +24,9 @@ use rustaxa_consensus::{
 };
 use rustaxa_storage::Config;
 use rustaxa_storage::Storage;
-use rustaxa_types::codec::rlp::dag::FinalizedDagBlockBundleRlp;
+use rustaxa_types::codec::rlp::dag::{DagBlockRlp, FinalizedDagBlockBundleRlp};
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
+use rustaxa_types::dag::DagBlock;
 use rustaxa_types::PbftBlockMetadata;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -45,6 +46,11 @@ const PBFT_SIGNATURE_WITH_EXTRA_POS: usize = 8;
 const PBFT_SIGNATURE_WITHOUT_EXTRA_POS: usize = 7;
 const PBFT_EXTRA_DATA_FIELDS: usize = 6;
 const PBFT_EXTRA_DATA_MAX_SIZE: usize = 1024;
+const DAG_VDF_SORTITION_FIELDS: usize = 4;
+const DAG_VDF_PROOF_POS: usize = 0;
+const DAG_VDF_SOL1_POS: usize = 1;
+const DAG_VDF_SOL2_POS: usize = 2;
+const DAG_VDF_DIFFICULTY_POS: usize = 3;
 
 fn pbft_vote_persistence_from_domain(
     value: DomainPbftVotePersistenceResult,
@@ -813,6 +819,33 @@ impl BridgePeriodStorageQueries {
         })
     }
 
+    /// Returns public/debug finalized DAG block views for one PBFT period.
+    ///
+    /// Inputs:
+    /// - `period`: finalized PBFT period requested by debug RPC.
+    ///
+    /// Outputs:
+    /// - Empty vector when no period data is stored, matching the legacy storage
+    ///   query's empty result behavior.
+    /// - Otherwise one view per finalized DAG block in stored bundle order,
+    ///   carrying the same fields emitted by `DagBlock::getJson()` plus the
+    ///   caller-added `period`.
+    ///
+    /// Edge behavior:
+    /// - Malformed period data, compact DAG bundle data, signatures, or VDF
+    ///   payloads return errors so RPC keeps mapping bad inputs to invalid params.
+    pub fn get_period_dag_block_views(
+        &self,
+        period: u64,
+    ) -> Result<Vec<rustaxa_ffi::DagBlockPublicView>, anyhow::Error> {
+        let period_data = self.get_period_data_raw(period)?;
+        if period_data.is_empty() {
+            return Ok(Vec::new());
+        }
+        let period_rlp = Rlp::new(&period_data);
+        finalized_dag_block_views(period_rlp.at(DAG_BLOCKS_POS_IN_PERIOD_DATA)?.as_raw())
+    }
+
     /// Maps a PBFT block hash to its period index.
     pub fn get_period_from_pbft_hash(
         &self,
@@ -997,6 +1030,80 @@ fn finalized_dag_hashes(
         });
     }
     Ok(out)
+}
+
+fn finalized_dag_block_views(
+    dag_bundle_rlp: &[u8],
+) -> Result<Vec<rustaxa_ffi::DagBlockPublicView>, anyhow::Error> {
+    let bundle = Rlp::new(dag_bundle_rlp);
+    anyhow::ensure!(
+        bundle.item_count()? == 3,
+        "invalid finalized DAG block bundle field count"
+    );
+    let compact_blocks = bundle.at(2)?;
+    let finalized_bundle = FinalizedDagBlockBundleRlp::new(dag_bundle_rlp);
+    let mut out = Vec::with_capacity(compact_blocks.item_count()?);
+    for position in 0..compact_blocks.item_count()? {
+        let canonical = finalized_bundle.canonical_block_rlp(position)?;
+        out.push(dag_block_public_view_from_canonical_rlp(&canonical)?);
+    }
+    Ok(out)
+}
+
+fn dag_block_public_view_from_canonical_rlp(
+    block_rlp: &[u8],
+) -> Result<rustaxa_ffi::DagBlockPublicView, anyhow::Error> {
+    let block = DagBlock::try_from(DagBlockRlp::new(block_rlp))?;
+    let sender = block
+        .recover_sender()
+        .ok_or_else(|| anyhow::anyhow!("could not recover DAG block sender"))?;
+    let (has_vdf, vdf_proof, vdf_sol1, vdf_sol2, vdf_difficulty) = if block.level > 0 {
+        decode_dag_vdf_view(&block.vdf)?
+    } else {
+        (false, Vec::new(), Vec::new(), Vec::new(), 0)
+    };
+
+    Ok(rustaxa_ffi::DagBlockPublicView {
+        pivot: block.pivot.into(),
+        level: block.level,
+        tips: block
+            .tips
+            .into_iter()
+            .map(|hash| rustaxa_ffi::DagHash { hash: hash.into() })
+            .collect(),
+        transactions: block
+            .transactions
+            .into_iter()
+            .map(|hash| rustaxa_ffi::DagHash { hash: hash.into() })
+            .collect(),
+        trx_estimations: block.gas_estimation,
+        signature: block.signature.to_vec(),
+        hash: keccak256(block_rlp).into(),
+        sender: sender.into(),
+        timestamp: block.timestamp,
+        has_vdf,
+        vdf_proof,
+        vdf_sol1,
+        vdf_sol2,
+        vdf_difficulty,
+    })
+}
+
+fn decode_dag_vdf_view(
+    vdf_rlp: &[u8],
+) -> Result<(bool, Vec<u8>, Vec<u8>, Vec<u8>, u16), anyhow::Error> {
+    let rlp = Rlp::new(vdf_rlp);
+    anyhow::ensure!(
+        rlp.item_count()? == DAG_VDF_SORTITION_FIELDS,
+        "invalid DAG VDF sortition field count"
+    );
+    Ok((
+        true,
+        rlp.at(DAG_VDF_PROOF_POS)?.data()?.to_vec(),
+        rlp.at(DAG_VDF_SOL1_POS)?.data()?.to_vec(),
+        rlp.at(DAG_VDF_SOL2_POS)?.data()?.to_vec(),
+        rlp.val_at(DAG_VDF_DIFFICULTY_POS)?,
+    ))
 }
 
 fn keccak256(data: &[u8]) -> H256 {

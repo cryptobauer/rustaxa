@@ -10,12 +10,59 @@
 #include "transaction/transaction.hpp"
 #include "vote_manager/vote_manager.hpp"
 
+#ifdef RUSTAXA_ENABLE
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
+
 using namespace std;
 using namespace dev;
 using namespace jsonrpc;
 using namespace taraxa;
 
 namespace taraxa::net {
+
+#ifdef RUSTAXA_ENABLE
+namespace {
+dev::h256 hashFromBridge(const std::array<uint8_t, 32>& hash) {
+  return dev::h256(hash.data(), dev::h256::ConstructFromPointer);
+}
+
+dev::Address addressFromBridge(const std::array<uint8_t, 20>& address) {
+  return dev::Address(address.data(), dev::Address::ConstructFromPointer);
+}
+
+dev::bytes bytesFromBridge(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
+
+Json::Value dagBlockPublicViewToJson(const rustaxa::DagBlockPublicView& view, uint64_t period) {
+  Json::Value json;
+  json["pivot"] = dev::toJS(hashFromBridge(view.pivot));
+  json["level"] = dev::toJS(view.level);
+  json["tips"] = Json::Value(Json::arrayValue);
+  for (const auto& tip : view.tips) {
+    json["tips"].append(dev::toJS(hashFromBridge(tip.hash)));
+  }
+  json["transactions"] = Json::Value(Json::arrayValue);
+  for (const auto& trx : view.transactions) {
+    json["transactions"].append(dev::toJS(hashFromBridge(trx.hash)));
+  }
+  json["trx_estimations"] = dev::toJS(view.trx_estimations);
+  json["sig"] = dev::toJS(bytesFromBridge(view.signature));
+  json["hash"] = dev::toJS(hashFromBridge(view.hash));
+  json["sender"] = dev::toJS(addressFromBridge(view.sender));
+  json["timestamp"] = dev::toJS(view.timestamp);
+  if (view.has_vdf) {
+    Json::Value vdf;
+    vdf["proof"] = dev::toJS(bytesFromBridge(view.vdf_proof));
+    vdf["sol1"] = dev::toJS(dev::toHex(bytesFromBridge(view.vdf_sol1)));
+    vdf["sol2"] = dev::toJS(dev::toHex(bytesFromBridge(view.vdf_sol2)));
+    vdf["difficulty"] = dev::toJS(view.vdf_difficulty);
+    json["vdf"] = std::move(vdf);
+  }
+  json["period"] = dev::toJS(period);
+  return json;
+}
+}  // namespace
+#endif
 
 Json::Value Debug::debug_traceCall(const Json::Value& call_params, const std::string& blk_num) {
   Json::Value res;
@@ -149,6 +196,15 @@ Json::Value Debug::debug_getPeriodDagBlocks(const std::string& _period) {
     }
 
     auto period = dev::jsToInt(_period);
+#ifdef RUSTAXA_ENABLE
+    const auto period_queries = rustaxa::create_period_storage_queries(node->getDB()->rustStorage());
+    const auto dag_views = period_queries->get_period_dag_block_views(period);
+    Json::Value res(Json::arrayValue);
+    for (const auto& dag_view : dag_views) {
+      res.append(dagBlockPublicViewToJson(dag_view, period));
+    }
+    return res;
+#endif
     auto dags = node->getDB()->getFinalizedDagBlockByPeriod(period);  // RUSTAXA_QUERY_COMPAT_READ
 
     return util::transformToJsonParallel(dags, [&period](const auto& dag, auto) {
