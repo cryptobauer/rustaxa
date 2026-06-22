@@ -897,6 +897,14 @@ class VoteManager : public VoteManagerOld {
       const rustaxa::PbftFinalizationStorageWritePlan& write_intent);
 
   /**
+   * Builds the task-specific Rust reward-vote reset storage request used by
+   * direct compatibility callers that are not part of a broader PBFT
+   * finalization storage stage batch.
+   */
+  rustaxa::PbftRewardVotesResetRequest rewardVotesResetRequestForFinalization(
+      const rustaxa::PbftFinalizationStorageWritePlan& write_intent);
+
+  /**
    * Applies live reward-vote metadata after a Rust-owned finalization batch has
    * committed the reward-vote reset stage.
    *

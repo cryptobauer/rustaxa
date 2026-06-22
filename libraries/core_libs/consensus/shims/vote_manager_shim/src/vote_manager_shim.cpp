@@ -215,6 +215,20 @@ rustaxa::PbftFinalizationStorageWriteStage makeRewardResetWriteStage(
   return write_stage;
 }
 
+rustaxa::PbftRewardVotesResetRequest makeRewardResetRequest(
+    PbftPeriod period, PbftRound round, PbftStep step, const blk_hash_t& block_hash,
+    rustaxa::PbftFinalizationStorageWriteStage&& stage, bool sync) {
+  rustaxa::PbftRewardVotesResetRequest request{};
+  request.period = period;
+  request.round = round;
+  request.step = step;
+  request.block_hash = toBridgeHash(block_hash);
+  request.reward_votes_bundle_rlp = std::move(stage.reward_votes_bundle_rlp);
+  request.extra_reward_vote_hashes = std::move(stage.extra_reward_vote_hashes);
+  request.sync = sync;
+  return request;
+}
+
 rustaxa::PbftTwoTPlusOneVoteBundle makeTwoTPlusOneVoteBundle(TwoTPlusOneVotedBlockType type,
                                                              const std::vector<std::shared_ptr<PbftVote>>& votes) {
   if (votes.empty() || !votes.front()) {
@@ -1882,6 +1896,16 @@ rustaxa::PbftFinalizationStorageWriteStage VoteManager::rewardVotesResetStageFor
   return makeRewardResetWriteStage(votes, extra_reward_votes_);
 }
 
+rustaxa::PbftRewardVotesResetRequest VoteManager::rewardVotesResetRequestForFinalization(
+    const rustaxa::PbftFinalizationStorageWritePlan& write_intent) {
+  const auto period = static_cast<PbftPeriod>(write_intent.reward_vote_period);
+  const auto round = static_cast<PbftRound>(write_intent.reward_vote_round);
+  const auto step = static_cast<PbftStep>(write_intent.reward_vote_step);
+  const auto block_hash = blk_hash_t(write_intent.reward_vote_block_hash.data(), blk_hash_t::ConstructFromPointer);
+  return makeRewardResetRequest(period, round, step, block_hash, rewardVotesResetStageForFinalization(write_intent),
+                                false);
+}
+
 rustaxa::PbftFinalizationLiveMutationReport VoteManager::commitRewardVotesResetForFinalization(
     const rustaxa::PbftFinalizationStorageWritePlan& write_intent) {
   const auto period = static_cast<PbftPeriod>(write_intent.reward_vote_period);
@@ -1907,17 +1931,14 @@ rustaxa::PbftFinalizedPeriodApplyResult VoteManager::resetRewardVotesForFinaliza
   const auto block_hash = blk_hash_t(write_intent.reward_vote_block_hash.data(), blk_hash_t::ConstructFromPointer);
   (void)batch;
 
-  rustaxa::PbftFinalizationStorageWriteStage stage{};
+  rustaxa::PbftRewardVotesResetRequest request{};
   try {
-    stage = rewardVotesResetStageForFinalization(write_intent);
+    request = rewardVotesResetRequestForFinalization(write_intent);
   } catch (const std::exception& e) {
     return rewardResetResult(kPbftFinalizedPeriodApplyStatusRejected, period, block_hash, e.what());
   }
 
-  rust::Vec<rustaxa::PbftFinalizationStorageWriteStage> stages;
-  stages.push_back(std::move(stage));
-  auto result =
-      verified_votes_.applyPbftFinalizationStorageWrites(write_intent, std::move(stages), false);
+  auto result = verified_votes_.applyRewardVotesReset(std::move(request));
   if (result.status != kPbftFinalizedPeriodApplyStatusApplied &&
       result.status != kPbftFinalizedPeriodApplyStatusAlreadyApplied) {
     return result;

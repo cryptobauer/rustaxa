@@ -1015,6 +1015,28 @@ impl Default for PbftFinalizationStorageWriteStage {
     }
 }
 
+/// Task-specific storage request for resetting persisted reward-vote state.
+///
+/// This request carries only the certified-vote identity and already canonical
+/// vote bundle needed by the reward-vote reset storage operation. It is the
+/// typed replacement for exposing a generic PBFT finalization storage stage to
+/// compatibility callers that only need reward-vote reset persistence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PbftRewardVotesResetStorageRequest {
+    /// Certified-vote period whose reward-vote bundle becomes authoritative.
+    pub period: u64,
+    /// Certified-vote round whose reward-vote bundle becomes authoritative.
+    pub round: u64,
+    /// Certified-vote step expected for the reset.
+    pub step: u64,
+    /// Certified block hash expected for the reset.
+    pub block_hash: H256,
+    /// Canonical RLP list of weighted cert-vote payloads.
+    pub reward_votes_bundle_rlp: Vec<u8>,
+    /// Stale extra reward-vote hashes to delete in the same atomic batch.
+    pub extra_reward_vote_hashes: Vec<H256>,
+}
+
 /// Result status for one PBFT finalization storage append stage.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum PbftFinalizedPeriodApplyStatus {
@@ -1147,6 +1169,45 @@ pub fn apply_pbft_finalization_storage_writes(
     }
 
     Ok(result)
+}
+
+/// Applies reward-vote reset persistence in one Rust-owned storage batch.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+/// - `request`: certified-vote identity, bundle RLP, and stale extra-reward
+///   vote hashes.
+/// - `sync`: commit sync flag passed to `rustaxa-storage`.
+///
+/// Behavior:
+/// - builds the narrow finalization write intent and reward-vote reset payload
+///   internally so compatibility callers do not expose generic stage DTOs.
+/// - validates the bundle shape and idempotency through the same Rust helper as
+///   PBFT finalization.
+/// - commits bundle replacement and extra-vote removals atomically.
+pub fn apply_pbft_reward_votes_reset_storage(
+    storage: &Storage,
+    request: PbftRewardVotesResetStorageRequest,
+    sync: bool,
+) -> Result<PbftFinalizedPeriodApplyResult> {
+    let write_set = PbftFinalizationStorageWriteIntent {
+        reset_reward_votes: true,
+        block_period: request.period,
+        pbft_block_hash: request.block_hash,
+        reward_vote_period: request.period,
+        reward_vote_round: request.round,
+        reward_vote_step: request.step,
+        reward_vote_block_hash: request.block_hash,
+        ..PbftFinalizationStorageWriteIntent::reject()
+    };
+    let stage = PbftFinalizationStorageWriteStage {
+        stage: APPEND_STAGE_REWARD_VOTES_RESET,
+        has_reward_votes_reset: true,
+        reward_votes_bundle_rlp: request.reward_votes_bundle_rlp,
+        extra_reward_vote_hashes: request.extra_reward_vote_hashes,
+        ..PbftFinalizationStorageWriteStage::default()
+    };
+    apply_pbft_finalization_storage_writes(storage, &write_set, vec![stage], sync)
 }
 
 /// Appends primary finalized-period writes to a Rust-owned batch.
@@ -3429,6 +3490,62 @@ mod tests {
             assert_eq!(
                 result.error_code,
                 "PBFT_FINALIZE_UNKNOWN_STORAGE_WRITE_STAGE"
+            );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn reward_votes_reset_storage_request_commits_bundle_and_extra_vote_deletes() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_reward_reset_request");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            let extra_hash = hash(44);
+            let mut seed_batch = storage.create_write_batch();
+            storage
+                .batch_put_raw(
+                    &mut seed_batch,
+                    Column::ExtraRewardVotes,
+                    extra_hash.as_bytes(),
+                    b"stale",
+                )
+                .expect("extra reward vote should seed");
+            storage
+                .commit_write_batch_with_sync(seed_batch, false)
+                .expect("extra reward vote seed should commit");
+            let mut bundle = RlpStream::new_list(2);
+            bundle.append(&vec![0x01_u8]);
+            bundle.append(&vec![0x02_u8]);
+            let bundle = bundle.out().to_vec();
+
+            let result = apply_pbft_reward_votes_reset_storage(
+                &storage,
+                PbftRewardVotesResetStorageRequest {
+                    period: 10,
+                    round: 2,
+                    step: 5,
+                    block_hash: hash(99),
+                    reward_votes_bundle_rlp: bundle.clone(),
+                    extra_reward_vote_hashes: vec![extra_hash],
+                },
+                false,
+            )
+            .expect("typed reward-vote reset should apply");
+
+            assert_eq!(result.status, PbftFinalizedPeriodApplyStatus::Applied);
+            assert_eq!(
+                storage
+                    .get_raw(Column::LatestRoundTwoTPlusOneVotes, &[1])
+                    .expect("cert vote bundle should load"),
+                Some(bundle)
+            );
+            assert_eq!(
+                storage
+                    .get_raw(Column::ExtraRewardVotes, extra_hash.as_bytes())
+                    .expect("extra reward vote should load"),
+                None
             );
         }
 

@@ -284,6 +284,9 @@ Status as of 2026-06-21: in progress.
   `RewardsStatsProcessResult` cache rows to the surrounding Rust-owned finalization batch. The production rewards path no
   longer routes Rust-produced rewards-stat RLP through the generic storage-shim block-reward-stats appender; the legacy
   `saveBlockRewardsStats` compatibility API remains for public/reference storage callers.
+- Direct reward-vote reset compatibility calls now route through a task-specific verified-votes reset storage request
+  instead of exposing generic PBFT finalization storage stages. The broader PBFT finalization path still uses ordered
+  storage stages for its multi-stage atomic batch.
 
 Scope:
 

@@ -186,6 +186,11 @@ class VerifiedVotes {
       rust::Vec<rustaxa::PbftFinalizationStorageWriteStage> stages, bool sync) const;
 
   /**
+   * Apply reward-vote reset persistence through the task-specific Rust port.
+   */
+  rustaxa::PbftFinalizedPeriodApplyResult applyRewardVotesReset(rustaxa::PbftRewardVotesResetRequest request) const;
+
+  /**
    * Returns total verified-vote count across all periods/rounds/steps.
    */
   uint64_t size() const;

@@ -3,6 +3,7 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationHash, PbftNextVotesBundleEgressPlan, PbftOptimizedVoteBundleBuildRequest,
     PbftOptimizedVoteBundleBuildResult, PbftOptimizedVoteBundlePlan,
     PbftRewardVotePayloadSelection as FfiPbftRewardVotePayloadSelection,
+    PbftRewardVotesResetRequest as FfiPbftRewardVotesResetRequest,
     PbftTwoTPlusOneThresholdFact as FfiPbftTwoTPlusOneThresholdFact,
     PbftTwoTPlusOneThresholdPlan as FfiPbftTwoTPlusOneThresholdPlan, PbftTwoTPlusOneVoteBundle,
     PbftVoteAdmissionRuntimeResult, PbftVoteEventFactFlags, PbftVotePayloadLookup,
@@ -20,8 +21,10 @@ use crate::pbft_vote_progress::{context_to_domain, execution_plan_to_ffi};
 use crate::pbft_vote_validation::threshold_plan_to_ffi;
 use ethereum_types::{H160, H256};
 use rustaxa_consensus::pbft_finalize::{
-    apply_pbft_finalization_storage_writes, PbftFinalizationStorageWriteIntent,
+    apply_pbft_finalization_storage_writes, apply_pbft_reward_votes_reset_storage,
+    PbftFinalizationStorageWriteIntent,
     PbftFinalizationStorageWriteStage as DomainPbftFinalizationStorageWriteStage,
+    PbftRewardVotesResetStorageRequest,
 };
 use rustaxa_consensus::pbft_reward_votes::PbftRewardVotesStatus;
 use rustaxa_consensus::pbft_thresholds::{
@@ -900,6 +903,30 @@ impl BridgeVerifiedVotes {
                 .map(DomainPbftFinalizationStorageWriteStage::from)
                 .collect(),
             sync,
+        )
+        .map(apply_result_from_domain)
+    }
+
+    /// Applies reward-vote reset persistence through a task-specific Rust port.
+    pub fn verified_votes_apply_reward_votes_reset(
+        &self,
+        request: FfiPbftRewardVotesResetRequest,
+    ) -> Result<crate::ffi::rustaxa_ffi::PbftFinalizedPeriodApplyResult, anyhow::Error> {
+        apply_pbft_reward_votes_reset_storage(
+            verified_votes_storage(self)?,
+            PbftRewardVotesResetStorageRequest {
+                period: request.period,
+                round: request.round,
+                step: request.step,
+                block_hash: H256::from(request.block_hash),
+                reward_votes_bundle_rlp: request.reward_votes_bundle_rlp,
+                extra_reward_vote_hashes: request
+                    .extra_reward_vote_hashes
+                    .into_iter()
+                    .map(|hash| H256::from(hash.hash))
+                    .collect(),
+            },
+            request.sync,
         )
         .map(apply_result_from_domain)
     }

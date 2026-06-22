@@ -265,6 +265,12 @@ rustaxa::PbftFinalizedPeriodApplyResult VerifiedVotes::applyPbftFinalizationStor
                                                                                      sync);
 }
 
+rustaxa::PbftFinalizedPeriodApplyResult VerifiedVotes::applyRewardVotesReset(
+    rustaxa::PbftRewardVotesResetRequest request) const {
+  std::shared_lock lock(verified_votes_access_);
+  return rust_verified_votes_->verified_votes_apply_reward_votes_reset(std::move(request));
+}
+
 uint64_t VerifiedVotes::size() const {
   std::shared_lock lock(verified_votes_access_);
   return rust_verified_votes_->verified_votes_size();

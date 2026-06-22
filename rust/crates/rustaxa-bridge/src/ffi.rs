@@ -1029,6 +1029,17 @@ pub mod rustaxa_ffi {
         hash: [u8; 32],
     }
 
+    /// Task-specific reward-vote reset storage request.
+    struct PbftRewardVotesResetRequest {
+        period: u64,
+        round: u64,
+        step: u64,
+        block_hash: [u8; 32],
+        reward_votes_bundle_rlp: Vec<u8>,
+        extra_reward_vote_hashes: Vec<PbftFinalizationHash>,
+        sync: bool,
+    }
+
     /// Hash plus finalized-position metadata for native-ready storage indexes.
     struct PbftFinalizationPositionedHash {
         hash: [u8; 32],
@@ -6128,6 +6139,10 @@ pub mod rustaxa_ffi {
             write_intent: &PbftFinalizationStorageWritePlan,
             stages: Vec<PbftFinalizationStorageWriteStage>,
             sync: bool,
+        ) -> Result<PbftFinalizedPeriodApplyResult>;
+        pub fn verified_votes_apply_reward_votes_reset(
+            self: &BridgeVerifiedVotes,
+            request: PbftRewardVotesResetRequest,
         ) -> Result<PbftFinalizedPeriodApplyResult>;
 
         // PBFT vote-progress protocol planner
