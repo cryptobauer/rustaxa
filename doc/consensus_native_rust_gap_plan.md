@@ -427,6 +427,8 @@ Progress:
   a fact and executes the returned sleep duration instead of hard-coding the scheduler policy in the action handler.
 - DAG proposer worker retry-delay policy now lives in the Rust worker-command planner. C++ still owns worker threads,
   network fact collection, and sleep execution, but no longer hard-codes the retry delay in the shell loop.
+- PBFT manager startup finalization waiting now uses a Rust wait/no-wait planner over PBFT-chain size, FinalChain height,
+  and delegation delay. C++ keeps the startup loop and sleep executor only.
 
 Acceptance:
 

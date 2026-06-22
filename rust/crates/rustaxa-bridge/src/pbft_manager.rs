@@ -22,6 +22,8 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerBroadcastReportResult as FfiPbftManagerBroadcastReportResult,
     PbftManagerCandidateAdmissionFact as FfiPbftManagerCandidateAdmissionFact,
     PbftManagerCandidateAdmissionPlan as FfiPbftManagerCandidateAdmissionPlan,
+    PbftManagerFinalizationWaitFact as FfiPbftManagerFinalizationWaitFact,
+    PbftManagerFinalizationWaitPlan as FfiPbftManagerFinalizationWaitPlan,
     PbftManagerLeaderCandidateInputFact as FfiPbftManagerLeaderCandidateInputFact,
     PbftManagerLeaderCandidatePlan as FfiPbftManagerLeaderCandidatePlan,
     PbftManagerLeaderValidBlockCommand as FfiPbftManagerLeaderValidBlockCommand,
@@ -83,6 +85,7 @@ use rustaxa_consensus::pbft_manager::{
     plan_pbft_manager_block_validation as plan_domain_pbft_manager_block_validation,
     plan_pbft_manager_broadcast as plan_domain_pbft_manager_broadcast,
     plan_pbft_manager_candidate_admission as plan_domain_pbft_manager_candidate_admission,
+    plan_pbft_manager_finalization_wait as plan_domain_pbft_manager_finalization_wait,
     plan_pbft_manager_leader_candidates as plan_domain_pbft_manager_leader_candidates,
     plan_pbft_manager_runtime_sleep_until_next_step as plan_domain_pbft_manager_runtime_sleep_until_next_step,
     plan_pbft_manager_sleep_until_next_step as plan_domain_pbft_manager_sleep_until_next_step,
@@ -103,7 +106,8 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerBroadcastAction, PbftManagerBroadcastFact, PbftManagerBroadcastPlan,
     PbftManagerBroadcastReport, PbftManagerBroadcastReportResult, PbftManagerBroadcastStatus,
     PbftManagerCandidateAdmissionFact, PbftManagerCandidateAdmissionPlan,
-    PbftManagerCandidateAdmissionValidationStatus, PbftManagerLeaderBlockValidationStatus,
+    PbftManagerCandidateAdmissionValidationStatus, PbftManagerFinalizationWaitFact,
+    PbftManagerFinalizationWaitPlan, PbftManagerLeaderBlockValidationStatus,
     PbftManagerLeaderCandidateInputFact, PbftManagerLeaderCandidatePlan,
     PbftManagerLeaderValidBlockCommand, PbftManagerProposalDagBlockFact,
     PbftManagerProposalDagOrderReport, PbftManagerProposalInitialFact,
@@ -981,6 +985,21 @@ pub fn plan_pbft_manager_runtime_sleep_until_next_step(
     .into()
 }
 
+/// Plans the PBFT manager startup wait for FinalChain readiness.
+///
+/// Inputs:
+/// - `fact`: PBFT-chain size, FinalChain finalized height, delegation delay,
+///   and polling interval facts supplied by the C++ shell.
+///
+/// Outputs:
+/// - A Rust-owned wait/no-wait command. C++ keeps the startup loop and sleep
+///   execution.
+pub fn plan_pbft_manager_finalization_wait(
+    fact: FfiPbftManagerFinalizationWaitFact,
+) -> FfiPbftManagerFinalizationWaitPlan {
+    plan_domain_pbft_manager_finalization_wait(fact.into()).into()
+}
+
 /// Aborts this PBFT manager runtime session.
 pub fn abort_pbft_manager_runtime_session(session: &mut BridgePbftManagerRuntimeSession) {
     session.state = abort_domain_pbft_manager_runtime_session(session.state.clone());
@@ -1307,6 +1326,17 @@ impl From<FfiPbftManagerSleepFact> for PbftManagerSleepFact {
     }
 }
 
+impl From<FfiPbftManagerFinalizationWaitFact> for PbftManagerFinalizationWaitFact {
+    fn from(value: FfiPbftManagerFinalizationWaitFact) -> Self {
+        Self {
+            pbft_chain_size: value.pbft_chain_size,
+            final_chain_last_block: value.final_chain_last_block,
+            delegation_delay: value.delegation_delay,
+            polling_interval_ms: value.polling_interval_ms,
+        }
+    }
+}
+
 impl From<FfiPbftManagerStateActionFact> for PbftManagerStateActionFact {
     fn from(value: FfiPbftManagerStateActionFact) -> Self {
         Self {
@@ -1582,6 +1612,17 @@ impl From<PbftManagerSleepPlan> for FfiPbftManagerSleepPlan {
             should_sleep: value.should_sleep,
             sleep_ms: value.sleep_ms,
             step: value.step,
+            error_code: value.error_code,
+        }
+    }
+}
+
+impl From<PbftManagerFinalizationWaitPlan> for FfiPbftManagerFinalizationWaitPlan {
+    fn from(value: PbftManagerFinalizationWaitPlan) -> Self {
+        Self {
+            accepted: value.accepted,
+            should_wait: value.should_wait,
+            sleep_ms: value.sleep_ms,
             error_code: value.error_code,
         }
     }
@@ -2530,6 +2571,31 @@ mod tests {
         assert_eq!(reached.sleep_ms, 0);
         assert_eq!(reached.step, 3);
         assert!(reached.error_code.is_empty());
+    }
+
+    #[test]
+    fn bridge_plans_finalization_wait_readiness() {
+        let wait = plan_pbft_manager_finalization_wait(FfiPbftManagerFinalizationWaitFact {
+            pbft_chain_size: 20,
+            final_chain_last_block: 14,
+            delegation_delay: 5,
+            polling_interval_ms: 100,
+        });
+        assert!(wait.accepted);
+        assert!(wait.should_wait);
+        assert_eq!(wait.sleep_ms, 100);
+        assert!(wait.error_code.is_empty());
+
+        let ready = plan_pbft_manager_finalization_wait(FfiPbftManagerFinalizationWaitFact {
+            pbft_chain_size: 19,
+            final_chain_last_block: 14,
+            delegation_delay: 5,
+            polling_interval_ms: 100,
+        });
+        assert!(ready.accepted);
+        assert!(!ready.should_wait);
+        assert_eq!(ready.sleep_ms, 0);
+        assert!(ready.error_code.is_empty());
     }
 
     #[test]

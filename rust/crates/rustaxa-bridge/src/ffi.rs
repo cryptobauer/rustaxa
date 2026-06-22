@@ -1403,6 +1403,22 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
+    /// C++-originated facts for PBFT manager startup finalization readiness.
+    struct PbftManagerFinalizationWaitFact {
+        pbft_chain_size: u64,
+        final_chain_last_block: u64,
+        delegation_delay: u64,
+        polling_interval_ms: u64,
+    }
+
+    /// Rust-owned PBFT manager startup finalization wait plan.
+    struct PbftManagerFinalizationWaitPlan {
+        accepted: bool,
+        should_wait: bool,
+        sleep_ms: u64,
+        error_code: String,
+    }
+
     /// C++-originated deterministic facts for one PBFT manager state action.
     struct PbftManagerStateActionFact {
         state: u8,
@@ -5250,6 +5266,9 @@ pub mod rustaxa_ffi {
             runtime: &BridgePbftManagerRuntime,
             round_elapsed_ms: i64,
         ) -> PbftManagerSleepPlan;
+        pub fn plan_pbft_manager_finalization_wait(
+            fact: PbftManagerFinalizationWaitFact,
+        ) -> PbftManagerFinalizationWaitPlan;
         pub fn plan_pbft_manager_state_action(
             fact: PbftManagerStateActionFact,
         ) -> PbftManagerStateActionPlan;
