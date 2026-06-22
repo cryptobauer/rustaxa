@@ -1485,14 +1485,23 @@ void PbftManager::sleep_() {
     }
 
     const auto round_elapsed_time = elapsedTimeInMs(current_round_start_datetime_);
-    if (next_step_time_ms <= round_elapsed_time) {
+    rustaxa::PbftManagerSleepFact sleep_fact{};
+    sleep_fact.next_step_time_ms = next_step_time_ms.count();
+    sleep_fact.round_elapsed_ms = round_elapsed_time.count();
+    sleep_fact.step = static_cast<uint64_t>(step);
+    const auto sleep_plan = rustaxa::plan_pbft_manager_sleep_until_next_step(sleep_fact);
+    if (!sleep_plan.accepted) {
+      throw std::runtime_error("PBFT manager Rust sleep plan rejected: " +
+                               static_cast<std::string>(sleep_plan.error_code));
+    }
+    if (!sleep_plan.should_sleep) {
       return;
     }
 
-    const auto time_to_sleep_for_ms = next_step_time_ms - round_elapsed_time;
+    const auto time_to_sleep_for_ms = std::chrono::milliseconds(sleep_plan.sleep_ms);
     const auto [round, period] = getPbftRoundAndPeriod();
     LOG(log_tr_) << "Sleep " << time_to_sleep_for_ms.count() << " [ms] before going into the next step. Period "
-                 << period << ", round " << round << ", step " << step;
+                 << period << ", round " << round << ", step " << static_cast<PbftStep>(sleep_plan.step);
     std::unique_lock<std::mutex> lock(stop_mtx_);
     stop_cv_.wait_for(lock, time_to_sleep_for_ms);
   }

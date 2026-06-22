@@ -3386,6 +3386,97 @@ pub struct PbftManagerRuntimeSnapshot {
     pub error_code: String,
 }
 
+/// Deterministic facts required to plan the PBFT manager sleep-before-next-step wait.
+///
+/// Inputs:
+/// - `next_step_time_ms`: Rust-owned next-step deadline measured from the
+///   current round start.
+/// - `round_elapsed_ms`: C++-observed elapsed wall-clock time for the current
+///   round. C++ still owns the clock and condition-variable wait while the app
+///   host remains in C++.
+/// - `step`: Current PBFT step, echoed into the plan so the compatibility shell
+///   can log the Rust-planned wait without choosing consensus behavior.
+///
+/// Invariants and edge behavior:
+/// - This planner is side-effect free and does not sleep.
+/// - If the deadline has already passed, the plan tells the executor not to
+///   sleep.
+/// - Negative elapsed time is preserved for legacy wall-clock behavior: it
+///   lengthens the computed wait instead of being clamped.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PbftManagerSleepFact {
+    /// Next-step deadline in milliseconds from the current round start.
+    pub next_step_time_ms: i64,
+    /// Elapsed milliseconds in the current PBFT round.
+    pub round_elapsed_ms: i64,
+    /// Current PBFT step.
+    pub step: u64,
+}
+
+/// Rust-owned PBFT manager sleep-before-next-step plan for the C++ executor.
+///
+/// Outputs:
+/// - `accepted` is false only when the supplied facts cannot be represented as
+///   a C++ wait duration.
+/// - `should_sleep` tells C++ whether to execute the condition-variable wait.
+/// - `sleep_ms` is the wait duration when `should_sleep` is true.
+/// - `step` echoes the input step for compatibility logging.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerSleepPlan {
+    /// Whether the fact bundle was accepted.
+    pub accepted: bool,
+    /// Whether C++ should wait before re-entering the PBFT manager loop.
+    pub should_sleep: bool,
+    /// Wait duration in milliseconds when `should_sleep` is true.
+    pub sleep_ms: u64,
+    /// Current PBFT step from the accepted fact bundle.
+    pub step: u64,
+    /// Stable error detail for rejected facts.
+    pub error_code: String,
+}
+
+/// Plans the PBFT manager wait before entering the next PBFT step.
+///
+/// Purpose:
+/// - Moves the deterministic timer decision out of the PBFT manager shim while
+///   leaving OS sleep and wakeup mechanics in C++ until the app host migrates.
+///
+/// Inputs:
+/// - `fact`: deadline and elapsed-time facts for the current PBFT round.
+///
+/// Outputs:
+/// - A side-effect-free sleep plan. C++ must execute the returned wait
+///   mechanically and must not recompute the deadline comparison.
+pub fn plan_pbft_manager_sleep_until_next_step(fact: PbftManagerSleepFact) -> PbftManagerSleepPlan {
+    let remaining_ms = fact.next_step_time_ms.saturating_sub(fact.round_elapsed_ms);
+    if remaining_ms <= 0 {
+        return PbftManagerSleepPlan {
+            accepted: true,
+            should_sleep: false,
+            sleep_ms: 0,
+            step: fact.step,
+            error_code: String::new(),
+        };
+    }
+
+    match u64::try_from(remaining_ms) {
+        Ok(sleep_ms) => PbftManagerSleepPlan {
+            accepted: true,
+            should_sleep: true,
+            sleep_ms,
+            step: fact.step,
+            error_code: String::new(),
+        },
+        Err(_) => PbftManagerSleepPlan {
+            accepted: false,
+            should_sleep: false,
+            sleep_ms: 0,
+            step: fact.step,
+            error_code: "PBFT_MANAGER_SLEEP_DURATION_OVERFLOW".to_string(),
+        },
+    }
+}
+
 /// Long-lived PBFT manager runtime cursor owned by Rust.
 ///
 /// This runtime owns the scalar PBFT manager cursor restored from storage and
@@ -6581,6 +6672,51 @@ mod tests {
                 PbftManagerRuntimeAction::SleepUntilNextStep,
             ]
         );
+    }
+
+    #[test]
+    fn sleep_until_next_step_returns_wait_before_deadline() {
+        let plan = plan_pbft_manager_sleep_until_next_step(PbftManagerSleepFact {
+            next_step_time_ms: 1_500,
+            round_elapsed_ms: 900,
+            step: 2,
+        });
+
+        assert!(plan.accepted);
+        assert!(plan.should_sleep);
+        assert_eq!(plan.sleep_ms, 600);
+        assert_eq!(plan.step, 2);
+        assert!(plan.error_code.is_empty());
+    }
+
+    #[test]
+    fn sleep_until_next_step_returns_no_wait_after_deadline() {
+        let plan = plan_pbft_manager_sleep_until_next_step(PbftManagerSleepFact {
+            next_step_time_ms: 1_500,
+            round_elapsed_ms: 1_500,
+            step: 3,
+        });
+
+        assert!(plan.accepted);
+        assert!(!plan.should_sleep);
+        assert_eq!(plan.sleep_ms, 0);
+        assert_eq!(plan.step, 3);
+        assert!(plan.error_code.is_empty());
+    }
+
+    #[test]
+    fn sleep_until_next_step_preserves_negative_elapsed_wait() {
+        let plan = plan_pbft_manager_sleep_until_next_step(PbftManagerSleepFact {
+            next_step_time_ms: 1_500,
+            round_elapsed_ms: -100,
+            step: 4,
+        });
+
+        assert!(plan.accepted);
+        assert!(plan.should_sleep);
+        assert_eq!(plan.sleep_ms, 1_600);
+        assert_eq!(plan.step, 4);
+        assert!(plan.error_code.is_empty());
     }
 
     #[test]

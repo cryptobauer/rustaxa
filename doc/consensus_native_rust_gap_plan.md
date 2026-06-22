@@ -408,11 +408,19 @@ Stop conditions:
 
 Goal: make the remaining C++ host shell a minimal executor around Rust sessions.
 
+Status: in progress.
+
 Scope:
 
 - Move lifecycle command selection, scheduler/timer state, executor-result validation, and event intent planning into Rust sessions where they still affect consensus behavior.
 - Keep actual OS threads, sleeps, app startup/shutdown wiring, key-manager signing, and event dispatch mechanics in C++ until the app host migrates.
 - Standardize typed executor reports across proposer, DAG, transaction, vote, pillar, rewards, and finalization shells.
+
+Progress:
+
+- PBFT manager next-step sleep decisions are moving behind a Rust planner: Rust now decides whether the shell should
+  wait and for how long from the runtime deadline and observed round-clock facts, while C++ still owns
+  `condition_variable` execution and stop wakeups.
 
 Acceptance:
 

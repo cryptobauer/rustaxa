@@ -34,6 +34,8 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerRuntimeSessionStep as FfiPbftManagerRuntimeSessionStep,
     PbftManagerRuntimeSnapshot as FfiPbftManagerRuntimeSnapshot,
     PbftManagerRuntimeTickFact as FfiPbftManagerRuntimeTickFact,
+    PbftManagerSleepFact as FfiPbftManagerSleepFact,
+    PbftManagerSleepPlan as FfiPbftManagerSleepPlan,
     PbftManagerStartupFact as FfiPbftManagerStartupFact,
     PbftManagerStartupReplayRangeFact as FfiPbftManagerStartupReplayRangeFact,
     PbftManagerStartupReplayRangePlan as FfiPbftManagerStartupReplayRangePlan,
@@ -82,6 +84,7 @@ use rustaxa_consensus::pbft_manager::{
     plan_pbft_manager_broadcast as plan_domain_pbft_manager_broadcast,
     plan_pbft_manager_candidate_admission as plan_domain_pbft_manager_candidate_admission,
     plan_pbft_manager_leader_candidates as plan_domain_pbft_manager_leader_candidates,
+    plan_pbft_manager_sleep_until_next_step as plan_domain_pbft_manager_sleep_until_next_step,
     plan_pbft_manager_startup_replay_ranges as plan_domain_pbft_manager_startup_replay_ranges,
     plan_pbft_manager_state_action as plan_domain_pbft_manager_state_action,
     plan_pbft_manager_state_action_effects as plan_domain_pbft_manager_state_action_effects,
@@ -106,13 +109,14 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerProposalSessionStep, PbftManagerProposalWalletFact, PbftManagerRuntimeAction,
     PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
     PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot, PbftManagerRuntimeStateCode,
-    PbftManagerRuntimeTickFact, PbftManagerStartupReplayRangeFact,
-    PbftManagerStartupReplayRangePlan, PbftManagerStateActionEffect,
-    PbftManagerStateActionEffectPlan, PbftManagerStateActionEffectReport,
-    PbftManagerStateActionEffectResultCode, PbftManagerStateActionFact,
-    PbftManagerStateActionIntent, PbftManagerStateActionPlan, PbftManagerStateActionSessionStep,
-    PbftManagerStorageStartupFact, PbftManagerTransitionFact, PbftManagerTransitionKind,
-    PbftManagerTransitionPlan, PbftManagerTransitionStatus, PbftManagerTransitionStorageStatus,
+    PbftManagerRuntimeTickFact, PbftManagerSleepFact, PbftManagerSleepPlan,
+    PbftManagerStartupReplayRangeFact, PbftManagerStartupReplayRangePlan,
+    PbftManagerStateActionEffect, PbftManagerStateActionEffectPlan,
+    PbftManagerStateActionEffectReport, PbftManagerStateActionEffectResultCode,
+    PbftManagerStateActionFact, PbftManagerStateActionIntent, PbftManagerStateActionPlan,
+    PbftManagerStateActionSessionStep, PbftManagerStorageStartupFact, PbftManagerTransitionFact,
+    PbftManagerTransitionKind, PbftManagerTransitionPlan, PbftManagerTransitionStatus,
+    PbftManagerTransitionStorageStatus,
 };
 use rustaxa_consensus::pillar_chain::load_own_pillar_block_vote_storage;
 
@@ -938,6 +942,21 @@ pub fn pbft_manager_runtime_session_report(
     pbft_manager_runtime_session_next(session)
 }
 
+/// Plans whether the C++ PBFT manager shell should wait before the next step.
+///
+/// Inputs:
+/// - `fact`: Rust snapshot deadline, observed round elapsed time, and current
+///   PBFT step.
+///
+/// Outputs:
+/// - A Rust-owned wait/no-wait decision. The C++ shell only executes the
+///   returned condition-variable wait and must not recompute the comparison.
+pub fn plan_pbft_manager_sleep_until_next_step(
+    fact: FfiPbftManagerSleepFact,
+) -> FfiPbftManagerSleepPlan {
+    plan_domain_pbft_manager_sleep_until_next_step(fact.into()).into()
+}
+
 /// Aborts this PBFT manager runtime session.
 pub fn abort_pbft_manager_runtime_session(session: &mut BridgePbftManagerRuntimeSession) {
     session.state = abort_domain_pbft_manager_runtime_session(session.state.clone());
@@ -1253,6 +1272,16 @@ impl From<FfiPbftManagerRuntimeActionReport> for PbftManagerRuntimeActionReport 
     }
 }
 
+impl From<FfiPbftManagerSleepFact> for PbftManagerSleepFact {
+    fn from(value: FfiPbftManagerSleepFact) -> Self {
+        Self {
+            next_step_time_ms: value.next_step_time_ms,
+            round_elapsed_ms: value.round_elapsed_ms,
+            step: value.step,
+        }
+    }
+}
+
 impl From<FfiPbftManagerStateActionFact> for PbftManagerStateActionFact {
     fn from(value: FfiPbftManagerStateActionFact) -> Self {
         Self {
@@ -1515,6 +1544,18 @@ impl From<PbftManagerRuntimeSnapshot> for FfiPbftManagerRuntimeSnapshot {
             cert_voted_block_hash: value.cert_voted_block_hash.into(),
             persist_normalized_step: value.persist_normalized_step,
             reset_second_finish_start: value.reset_second_finish_start,
+            error_code: value.error_code,
+        }
+    }
+}
+
+impl From<PbftManagerSleepPlan> for FfiPbftManagerSleepPlan {
+    fn from(value: PbftManagerSleepPlan) -> Self {
+        Self {
+            accepted: value.accepted,
+            should_sleep: value.should_sleep,
+            sleep_ms: value.sleep_ms,
+            step: value.step,
             error_code: value.error_code,
         }
     }
