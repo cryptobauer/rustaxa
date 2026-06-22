@@ -890,6 +890,7 @@ void PbftManager::run() {
     fact.network_available = static_cast<bool>(net);
     fact.network_pbft_syncing = net && net->pbft_syncing();
     fact.has_eligible_wallet = has_eligible_wallet;
+    fact.polling_interval_ms = static_cast<uint64_t>(kPollingIntervalMs.count());
 
     auto runtime_session = rustaxa::create_pbft_manager_runtime_session(fact);
     auto report_action = [&](const rustaxa::PbftManagerRuntimeSessionStep &step, uint8_t result, bool success = true,
@@ -996,7 +997,7 @@ void PbftManager::run() {
           step = report_action(step, kPbftManagerRuntimeResultTransitionApplied);
           break;
         case kPbftManagerRuntimeActionSleepIneligiblePollingInterval:
-          std::this_thread::sleep_for(std::chrono::milliseconds(kPollingIntervalMs));
+          std::this_thread::sleep_for(std::chrono::milliseconds(step.sleep_ms));
           step = report_action(step, kPbftManagerRuntimeResultSleepApplied);
           break;
         case kPbftManagerRuntimeActionRunValueProposal:

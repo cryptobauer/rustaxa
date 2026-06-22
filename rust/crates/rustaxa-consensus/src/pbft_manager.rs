@@ -2685,6 +2685,12 @@ pub struct PbftManagerRuntimeTickFact {
     /// Initial eligibility snapshot for telemetry. The runtime branch uses the
     /// post-prestate value reported by C++ after `TryAdvanceRound`.
     pub has_eligible_wallet: bool,
+    /// Polling sleep duration in milliseconds for ineligible-wallet ticks.
+    ///
+    /// C++ supplies the configured executor interval, but Rust carries it on
+    /// the selected sleep command so the shell does not own the scheduling
+    /// decision.
+    pub polling_interval_ms: u64,
 }
 
 /// Stable action-intent codes for deterministic PBFT state actions.
@@ -5760,6 +5766,8 @@ pub struct PbftManagerRuntimeSessionStep {
     pub has_target_round: bool,
     /// Target round for `ResetConsensus` when `has_target_round` is true.
     pub target_round: u64,
+    /// Rust-planned sleep duration for sleep actions.
+    pub sleep_ms: u64,
     /// Caller-local tick id.
     pub tick_id: u64,
     /// Stable error detail.
@@ -5872,6 +5880,7 @@ pub fn next_pbft_manager_runtime_action(
             restart_loop: session.restart_loop,
             has_target_round: false,
             target_round: 0,
+            sleep_ms: 0,
             tick_id: session.fact.tick_id,
             error_code: session.error_code.clone(),
         };
@@ -5893,6 +5902,11 @@ pub fn next_pbft_manager_runtime_action(
                 restart_loop: false,
                 has_target_round: action == PbftManagerRuntimeAction::ResetConsensus,
                 target_round,
+                sleep_ms: if action == PbftManagerRuntimeAction::SleepIneligiblePollingInterval {
+                    session.fact.polling_interval_ms
+                } else {
+                    0
+                },
                 tick_id: session.fact.tick_id,
                 error_code: String::new(),
             }
@@ -5906,6 +5920,7 @@ pub fn next_pbft_manager_runtime_action(
             restart_loop: session.restart_loop,
             has_target_round: false,
             target_round: 0,
+            sleep_ms: 0,
             tick_id: session.fact.tick_id,
             error_code: String::new(),
         },
@@ -6168,6 +6183,7 @@ mod tests {
             network_available: true,
             network_pbft_syncing: false,
             has_eligible_wallet: true,
+            polling_interval_ms: 100,
         }
     }
 
@@ -6895,6 +6911,7 @@ mod tests {
         loop {
             let step = next_pbft_manager_runtime_action(&session);
             if step.action == Some(PbftManagerRuntimeAction::SleepIneligiblePollingInterval) {
+                assert_eq!(step.sleep_ms, tick.polling_interval_ms);
                 let mut action_report = report(
                     step.cursor,
                     PbftManagerRuntimeAction::SleepIneligiblePollingInterval,

@@ -1263,6 +1263,7 @@ pub mod rustaxa_ffi {
         network_available: bool,
         network_pbft_syncing: bool,
         has_eligible_wallet: bool,
+        polling_interval_ms: u64,
     }
 
     /// Configuration and current-period facts needed for Rust-owned PBFT
@@ -1366,6 +1367,7 @@ pub mod rustaxa_ffi {
         can_continue: bool,
         has_target_round: bool,
         target_round: u64,
+        sleep_ms: u64,
         tick_id: u64,
         error_code: String,
     }

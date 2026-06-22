@@ -1274,6 +1274,7 @@ impl From<FfiPbftManagerRuntimeTickFact> for PbftManagerRuntimeTickFact {
             network_available: value.network_available,
             network_pbft_syncing: value.network_pbft_syncing,
             has_eligible_wallet: value.has_eligible_wallet,
+            polling_interval_ms: value.polling_interval_ms,
         }
     }
 }
@@ -1537,6 +1538,7 @@ impl From<PbftManagerRuntimeSessionStep> for FfiPbftManagerRuntimeSessionStep {
             can_continue: status == RUNTIME_STATUS_ACTIVE || status == RUNTIME_STATUS_COMPLETE,
             has_target_round: value.has_target_round,
             target_round: value.target_round,
+            sleep_ms: value.sleep_ms,
             tick_id: value.tick_id,
             error_code: value.error_code,
         }
@@ -1896,6 +1898,7 @@ mod tests {
     const ACTION_BROADCAST: u8 = 1;
     const ACTION_TRY_CERT: u8 = 2;
     const ACTION_TRY_ROUND: u8 = 3;
+    const ACTION_SLEEP_INELIGIBLE: u8 = 4;
     const ACTION_RESET_CONSENSUS: u8 = 18;
     const ACTION_RUN_CERTIFY: u8 = 9;
     const ACTION_TRANSITION_FINISH: u8 = 10;
@@ -1988,6 +1991,7 @@ mod tests {
             network_available: true,
             network_pbft_syncing: false,
             has_eligible_wallet: true,
+            polling_interval_ms: 100,
         }
     }
 
@@ -2129,6 +2133,34 @@ mod tests {
         );
         assert!(complete.complete);
         assert!(complete.restart_loop);
+    }
+
+    #[test]
+    fn bridge_session_returns_ineligible_polling_sleep_ms() {
+        let mut tick = fact(STATE_VALUE_PROPOSAL);
+        tick.polling_interval_ms = 250;
+        let mut session = create_pbft_manager_runtime_session(tick);
+        for expected in [ACTION_PROCESS_SYNCED, ACTION_BROADCAST, ACTION_TRY_CERT] {
+            let step = pbft_manager_runtime_session_next(&mut session);
+            let result = if expected == ACTION_TRY_CERT {
+                RESULT_CONTINUE
+            } else {
+                RESULT_STATE_DONE
+            };
+            let _ = pbft_manager_runtime_session_report(
+                &mut session,
+                report(step.cursor, expected, result),
+            );
+        }
+
+        let step = pbft_manager_runtime_session_next(&mut session);
+        assert_eq!(step.action, ACTION_TRY_ROUND);
+        let mut action_report = report(step.cursor, ACTION_TRY_ROUND, RESULT_CONTINUE);
+        action_report.has_eligible_wallet = false;
+        let sleep = pbft_manager_runtime_session_report(&mut session, action_report);
+
+        assert_eq!(sleep.action, ACTION_SLEEP_INELIGIBLE);
+        assert_eq!(sleep.sleep_ms, 250);
     }
 
     #[test]

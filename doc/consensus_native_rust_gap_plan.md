@@ -423,6 +423,8 @@ Progress:
   `condition_variable` execution and stop wakeups.
 - The Rust-enabled PBFT manager sleep path now plans from the Rust runtime snapshot directly. The C++ shell supplies only
   elapsed wall-clock time and executes the returned wait/no-wait plan.
+- PBFT ineligible-wallet polling now carries a Rust session `sleep_ms` command. C++ supplies the configured interval as
+  a fact and executes the returned sleep duration instead of hard-coding the scheduler policy in the action handler.
 
 Acceptance:
 
