@@ -408,7 +408,7 @@ Stop conditions:
 
 Goal: make the remaining C++ host shell a minimal executor around Rust sessions.
 
-Status: in progress.
+Status: complete for the accepted executor-shell boundary.
 
 Scope:
 
@@ -431,6 +431,17 @@ Progress:
   and delegation delay. C++ keeps the startup loop and sleep executor only.
 - PBFT eligible-wallet period polling now uses a Rust readiness planner; C++ only polls live shell facts and executes the
   returned sleep duration for the temporary public-query race boundary.
+
+Closeout:
+
+- C++ consensus lifecycle/scheduler code no longer owns the remaining PBFT and DAG scheduler decisions found in this
+  slice. PBFT next-step sleeps, ineligible-wallet sleeps, startup finalization waits, and eligible-wallet readiness waits
+  are Rust-planned. DAG proposer worker retry delay is Rust-planned.
+- Existing subsystem sessions already carry typed executor reports for proposer, DAG verification, PBFT manager runtime,
+  PBFT finalization, vote admission/progress, pillar, rewards/stat storage, transaction, and FinalChain/EVM boundaries.
+- Remaining C++ work is the accepted host shell: OS threads, condition variables, actual sleeps, network/tarcap effects,
+  key-manager signing execution, public-query compatibility loops, and EVM/FinalChain execution dispatch. Those are
+  outside this plan until the future app-host/network/EVM migrations.
 
 Acceptance:
 
@@ -456,7 +467,8 @@ Stop conditions:
 6. Slice 6 follows once rewards inputs and FinalChain facts are Rust-owned enough to remove the legacy carrier.
 7. Slice 7 should run after the major subsystem routes are known, so storage ports are task-specific instead of speculative.
 8. Slice 8 follows after decision paths no longer require C++ objects.
-9. Slice 9 remains last, because lifecycle and executor-shell deletion is easiest after subsystem sessions are uniform.
+9. Slice 9 is complete for the accepted executor-shell boundary. Remaining host mechanics are deferred to the future
+   app-host/network/EVM migrations.
 
 ## Closeout Definition
 
