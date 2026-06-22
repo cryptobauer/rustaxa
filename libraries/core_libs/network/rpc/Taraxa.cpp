@@ -167,6 +167,14 @@ Json::Value Taraxa::taraxa_getDagBlockByHash(const string& _blockHash, bool _inc
 std::string Taraxa::taraxa_pbftBlockHashByPeriod(const std::string& _period) {
   try {
     auto app = tryGetApp();
+#ifdef RUSTAXA_ENABLE
+    const auto period_queries = rustaxa::create_period_storage_queries(app->getDB()->rustStorage());
+    const auto lookup = period_queries->get_pbft_block_hash_by_period(dev::jsToInt(_period));
+    if (!lookup.found) {
+      return {};
+    }
+    return toJS(hashFromBridge(lookup.hash));
+#endif
     auto db = app->getDB();  // RUSTAXA_QUERY_COMPAT_READ
     auto blk = db->getPbftBlock(dev::jsToInt(_period));
     if (!blk.has_value()) {

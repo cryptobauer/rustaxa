@@ -708,6 +708,37 @@ impl BridgePeriodStorageQueries {
             .map_err(|e| anyhow::anyhow!(e))
     }
 
+    /// Returns the canonical PBFT block hash for a finalized period.
+    ///
+    /// Inputs:
+    /// - `period`: finalized PBFT period requested by RPC or compatibility code.
+    ///
+    /// Outputs:
+    /// - `found == false` when no period data is stored.
+    /// - Otherwise `hash` is the Keccak-256 hash of the canonical PBFT block RLP
+    ///   embedded at item 0 of stored `PeriodData`, matching `PbftBlock::getBlockHash()`.
+    ///
+    /// Edge behavior:
+    /// - Malformed period data returns an error so legacy RPC catch blocks keep
+    ///   returning invalid params instead of silently fabricating a hash.
+    pub fn get_pbft_block_hash_by_period(
+        &self,
+        period: u64,
+    ) -> Result<rustaxa_ffi::HashLookup, anyhow::Error> {
+        let period_data = self.get_period_data_raw(period)?;
+        if period_data.is_empty() {
+            return Ok(rustaxa_ffi::HashLookup {
+                found: false,
+                hash: [0; 32],
+            });
+        }
+        let period_rlp = Rlp::new(&period_data);
+        Ok(rustaxa_ffi::HashLookup {
+            found: true,
+            hash: keccak256(period_rlp.at(PBFT_BLOCK_POS_IN_PERIOD_DATA)?.as_raw()).into(),
+        })
+    }
+
     /// Returns a public/query PBFT schedule block view decoded from period data.
     ///
     /// Inputs:

@@ -6693,6 +6693,10 @@ pub mod rustaxa_ffi {
             self: &BridgePeriodStorageQueries,
             period: u64,
         ) -> Result<Vec<u8>>;
+        pub fn get_pbft_block_hash_by_period(
+            self: &BridgePeriodStorageQueries,
+            period: u64,
+        ) -> Result<HashLookup>;
         pub fn get_pbft_schedule_block_view(
             self: &BridgePeriodStorageQueries,
             period: u64,
