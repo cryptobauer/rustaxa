@@ -84,6 +84,7 @@ use rustaxa_consensus::pbft_manager::{
     plan_pbft_manager_broadcast as plan_domain_pbft_manager_broadcast,
     plan_pbft_manager_candidate_admission as plan_domain_pbft_manager_candidate_admission,
     plan_pbft_manager_leader_candidates as plan_domain_pbft_manager_leader_candidates,
+    plan_pbft_manager_runtime_sleep_until_next_step as plan_domain_pbft_manager_runtime_sleep_until_next_step,
     plan_pbft_manager_sleep_until_next_step as plan_domain_pbft_manager_sleep_until_next_step,
     plan_pbft_manager_startup_replay_ranges as plan_domain_pbft_manager_startup_replay_ranges,
     plan_pbft_manager_state_action as plan_domain_pbft_manager_state_action,
@@ -955,6 +956,29 @@ pub fn plan_pbft_manager_sleep_until_next_step(
     fact: FfiPbftManagerSleepFact,
 ) -> FfiPbftManagerSleepPlan {
     plan_domain_pbft_manager_sleep_until_next_step(fact.into()).into()
+}
+
+/// Plans whether the C++ PBFT manager shell should wait using the Rust runtime deadline.
+///
+/// Inputs:
+/// - `runtime`: Rust-owned PBFT manager runtime containing the current
+///   next-step deadline and step.
+/// - `round_elapsed_ms`: C++-observed elapsed milliseconds for the current
+///   round.
+///
+/// Outputs:
+/// - A Rust-owned wait/no-wait decision. C++ remains the condition-variable
+///   executor and no longer copies deadline fields out of the snapshot to make
+///   this decision.
+pub fn plan_pbft_manager_runtime_sleep_until_next_step(
+    runtime: &BridgePbftManagerRuntime,
+    round_elapsed_ms: i64,
+) -> FfiPbftManagerSleepPlan {
+    plan_domain_pbft_manager_runtime_sleep_until_next_step(
+        &runtime.state.snapshot(),
+        round_elapsed_ms,
+    )
+    .into()
 }
 
 /// Aborts this PBFT manager runtime session.
@@ -2449,6 +2473,31 @@ mod tests {
         assert!(result.apply_counters);
         assert_eq!(result.broadcast_votes_counter, 2);
         assert_eq!(result.rebroadcast_votes_counter, 1);
+    }
+
+    #[test]
+    fn bridge_plans_sleep_wait_and_deadline_reached() {
+        let wait = plan_pbft_manager_sleep_until_next_step(FfiPbftManagerSleepFact {
+            next_step_time_ms: 1_000,
+            round_elapsed_ms: 250,
+            step: 2,
+        });
+        assert!(wait.accepted);
+        assert!(wait.should_sleep);
+        assert_eq!(wait.sleep_ms, 750);
+        assert_eq!(wait.step, 2);
+        assert!(wait.error_code.is_empty());
+
+        let reached = plan_pbft_manager_sleep_until_next_step(FfiPbftManagerSleepFact {
+            next_step_time_ms: 1_000,
+            round_elapsed_ms: 1_000,
+            step: 3,
+        });
+        assert!(reached.accepted);
+        assert!(!reached.should_sleep);
+        assert_eq!(reached.sleep_ms, 0);
+        assert_eq!(reached.step, 3);
+        assert!(reached.error_code.is_empty());
     }
 
     #[test]

@@ -3477,6 +3477,55 @@ pub fn plan_pbft_manager_sleep_until_next_step(fact: PbftManagerSleepFact) -> Pb
     }
 }
 
+/// Plans the PBFT manager wait from a Rust-owned runtime snapshot.
+///
+/// Purpose:
+/// - Lets bridge callers keep timer authority with the Rust runtime: C++ only
+///   supplies the elapsed wall-clock fact and executes the returned wait.
+///
+/// Inputs:
+/// - `snapshot`: current Rust-owned PBFT manager runtime cursor and deadline.
+/// - `round_elapsed_ms`: C++-observed elapsed milliseconds for the current
+///   round.
+///
+/// Outputs:
+/// - A side-effect-free sleep plan. Rejected snapshots or unrepresentable
+///   deadlines return `accepted = false` with a stable error code.
+pub fn plan_pbft_manager_runtime_sleep_until_next_step(
+    snapshot: &PbftManagerRuntimeSnapshot,
+    round_elapsed_ms: i64,
+) -> PbftManagerSleepPlan {
+    if snapshot.status != PbftManagerStartupRestoreStatus::Ready {
+        return PbftManagerSleepPlan {
+            accepted: false,
+            should_sleep: false,
+            sleep_ms: 0,
+            step: snapshot.step,
+            error_code: if snapshot.error_code.is_empty() {
+                "PBFT_MANAGER_SLEEP_RUNTIME_SNAPSHOT_NOT_READY".to_string()
+            } else {
+                snapshot.error_code.clone()
+            },
+        };
+    }
+
+    let Ok(next_step_time_ms) = i64::try_from(snapshot.next_step_time_ms) else {
+        return PbftManagerSleepPlan {
+            accepted: false,
+            should_sleep: false,
+            sleep_ms: 0,
+            step: snapshot.step,
+            error_code: "PBFT_MANAGER_SLEEP_DEADLINE_OVERFLOW".to_string(),
+        };
+    };
+
+    plan_pbft_manager_sleep_until_next_step(PbftManagerSleepFact {
+        next_step_time_ms,
+        round_elapsed_ms,
+        step: snapshot.step,
+    })
+}
+
 /// Long-lived PBFT manager runtime cursor owned by Rust.
 ///
 /// This runtime owns the scalar PBFT manager cursor restored from storage and

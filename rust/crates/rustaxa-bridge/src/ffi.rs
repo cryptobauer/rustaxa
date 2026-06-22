@@ -5245,6 +5245,10 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_manager_sleep_until_next_step(
             fact: PbftManagerSleepFact,
         ) -> PbftManagerSleepPlan;
+        pub fn plan_pbft_manager_runtime_sleep_until_next_step(
+            runtime: &BridgePbftManagerRuntime,
+            round_elapsed_ms: i64,
+        ) -> PbftManagerSleepPlan;
         pub fn plan_pbft_manager_state_action(
             fact: PbftManagerStateActionFact,
         ) -> PbftManagerStateActionPlan;

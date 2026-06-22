@@ -421,6 +421,8 @@ Progress:
 - PBFT manager next-step sleep decisions are moving behind a Rust planner: Rust now decides whether the shell should
   wait and for how long from the runtime deadline and observed round-clock facts, while C++ still owns
   `condition_variable` execution and stop wakeups.
+- The Rust-enabled PBFT manager sleep path now plans from the Rust runtime snapshot directly. The C++ shell supplies only
+  elapsed wall-clock time and executes the returned wait/no-wait plan.
 
 Acceptance:
 
