@@ -343,6 +343,9 @@ Progress:
 - Added a Rust-backed pillar block data public view for `taraxa_getPillarBlockData`. The Rust-enabled RPC path now
   formats JSON from a bridge DTO decoded from Rust-owned pillar storage instead of materializing C++ `PillarBlockData`,
   `PillarBlock`, or `PillarVote` objects for that query.
+- Added a Rust-backed PBFT schedule block public view for `taraxa_getScheduleBlockByPeriod`. The Rust-enabled RPC path
+  now formats the legacy-compatible JSON from Rust-decoded period data, including PBFT block hashes, author, signature,
+  reward votes, extra data, and finalized DAG block order, without materializing a C++ `PbftBlock` for that query.
 
 Classification:
 
@@ -354,7 +357,9 @@ Classification:
   adapter.
 - `PbftBlock`, `PbftVote`, and `PeriodData`: not yet Slice 8-deletable. PBFT manager sync, finalization, proposal,
   vote-generation, and block-validation flows still consume materialized objects as active protocol/executor inputs. This
-  must move through the PBFT manager/lifecycle slices before compatibility APIs can be deleted.
+  must move through the PBFT manager/lifecycle slices before compatibility APIs can be deleted. The schedule-block RPC
+  surface is now edge-only in Rust mode through a Rust-backed DTO, but manager and executor-boundary consumers still keep
+  the broader PBFT object family alive.
 - `DagBlock` and `Transaction`: not yet Slice 8-deletable. DAG add/proposal and transaction manager paths still
   materialize objects for active add-block, packing, public API, and external-EVM gas/execution boundaries. Network and
   EVM edges remain accepted shims; other active decision use belongs in the DAG/transaction subsystem slices.

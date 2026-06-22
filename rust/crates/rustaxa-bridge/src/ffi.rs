@@ -374,6 +374,36 @@ pub mod rustaxa_ffi {
         period: u64,
     }
 
+    /// Public/query JSON view for PBFT block extra data.
+    struct PbftBlockExtraDataView {
+        found: bool,
+        major_version: u16,
+        minor_version: u16,
+        patch_version: u16,
+        net_version: u16,
+        node_implementation: String,
+        has_pillar_block_hash: bool,
+        pillar_block_hash: [u8; 32],
+    }
+
+    /// Public/query JSON view for `taraxa_getScheduleBlockByPeriod`.
+    struct PbftScheduleBlockView {
+        found: bool,
+        prev_block_hash: [u8; 32],
+        dag_block_hash_as_pivot: [u8; 32],
+        order_hash: [u8; 32],
+        final_chain_hash: [u8; 32],
+        period: u64,
+        timestamp: u64,
+        block_hash: [u8; 32],
+        signature: Vec<u8>,
+        beneficiary: [u8; 20],
+        reward_votes: Vec<PbftFinalizationHash>,
+        has_extra_data: bool,
+        extra_data: PbftBlockExtraDataView,
+        dag_blocks_order: Vec<PbftFinalizationHash>,
+    }
+
     /// Optional canonical hash lookup result.
     ///
     /// `found = false` means the backing storage row was absent. Decode and
@@ -6663,6 +6693,10 @@ pub mod rustaxa_ffi {
             self: &BridgePeriodStorageQueries,
             period: u64,
         ) -> Result<Vec<u8>>;
+        pub fn get_pbft_schedule_block_view(
+            self: &BridgePeriodStorageQueries,
+            period: u64,
+        ) -> Result<PbftScheduleBlockView>;
         /// Typed period-by-PBFT-block hash lookup.
         pub fn get_period_from_pbft_hash(
             self: &BridgePeriodStorageQueries,

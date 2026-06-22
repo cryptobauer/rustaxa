@@ -30,6 +30,44 @@ dev::Address addressFromBridge(const std::array<uint8_t, 20>& address) {
   return dev::Address(address.data(), dev::Address::ConstructFromPointer);
 }
 
+dev::bytes bytesFromBridge(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
+
+Json::Value pbftExtraDataViewToJson(const rustaxa::PbftBlockExtraDataView& view) {
+  Json::Value json;
+  json["major_version"] = view.major_version;
+  json["minor_version"] = view.minor_version;
+  json["patch_version"] = view.patch_version;
+  json["net_version"] = view.net_version;
+  json["node_implementation"] = std::string(view.node_implementation);
+  json["pillar_block_hash"] = view.has_pillar_block_hash ? hashFromBridge(view.pillar_block_hash).toString() : "";
+  return json;
+}
+
+Json::Value pbftScheduleBlockViewToJson(const rustaxa::PbftScheduleBlockView& view) {
+  Json::Value json;
+  json["prev_block_hash"] = dev::toJS(hashFromBridge(view.prev_block_hash));
+  json["dag_block_hash_as_pivot"] = dev::toJS(hashFromBridge(view.dag_block_hash_as_pivot));
+  json["order_hash"] = dev::toJS(hashFromBridge(view.order_hash));
+  json["final_chain_hash"] = dev::toJS(hashFromBridge(view.final_chain_hash));
+  json["period"] = dev::toJS(view.period);
+  json["timestamp"] = dev::toJS(view.timestamp);
+  json["block_hash"] = dev::toJS(hashFromBridge(view.block_hash));
+  json["signature"] = dev::toJS(bytesFromBridge(view.signature));
+  json["beneficiary"] = dev::toJS(addressFromBridge(view.beneficiary));
+  json["reward_votes"] = Json::Value(Json::arrayValue);
+  for (const auto& vote_hash : view.reward_votes) {
+    json["reward_votes"].append(dev::toJS(hashFromBridge(vote_hash.hash)));
+  }
+  json["extra_data"] = view.has_extra_data ? pbftExtraDataViewToJson(view.extra_data) : Json::Value("");
+
+  auto& schedule_json = json["schedule"] = Json::Value(Json::objectValue);
+  auto& dag_blks_json = schedule_json["dag_blocks_order"] = Json::Value(Json::arrayValue);
+  for (const auto& dag_hash : view.dag_blocks_order) {
+    dag_blks_json.append(dev::toJS(hashFromBridge(dag_hash.hash)));
+  }
+  return json;
+}
+
 Json::Value pillarBlockDataViewToJson(const rustaxa::PillarBlockDataView& view, bool include_signatures) {
   Json::Value res;
   Json::Value pillar_block;
@@ -144,6 +182,14 @@ Json::Value Taraxa::taraxa_getScheduleBlockByPeriod(const std::string& _period) 
   try {
     auto app = tryGetApp();
     auto period = dev::jsToInt(_period);
+#ifdef RUSTAXA_ENABLE
+    const auto period_queries = rustaxa::create_period_storage_queries(app->getDB()->rustStorage());
+    const auto view = period_queries->get_pbft_schedule_block_view(period);
+    if (!view.found) {
+      return Json::Value();
+    }
+    return pbftScheduleBlockViewToJson(view);
+#endif
     auto db = app->getDB();  // RUSTAXA_QUERY_COMPAT_READ
     auto blk = db->getPbftBlock(period);
     if (!blk.has_value()) {
