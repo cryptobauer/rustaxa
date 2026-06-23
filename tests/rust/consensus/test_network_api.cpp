@@ -63,6 +63,12 @@ rustaxa::NetworkPbftVoteIngressContext networkVoteContext() {
   return context;
 }
 
+std::array<uint8_t, 32> hash(uint8_t byte) {
+  std::array<uint8_t, 32> id{};
+  id.fill(byte);
+  return id;
+}
+
 rustaxa::NetworkIngressPacket packet(uint32_t packet_type, std::array<uint8_t, 64> peer, rust::Vec<uint8_t> payload) {
   rustaxa::NetworkIngressPacket packet{};
   packet.packet_type = packet_type;
@@ -194,4 +200,27 @@ TEST(ConsensusNetworkApiBridgeTest, pbftVoteBundleIngressQueuesReportAndDisconne
   EXPECT_EQ(batch.effects[0].reason_code, 0);
   EXPECT_EQ(batch.effects[1].kind, 5);
   EXPECT_EQ(batch.effects[1].reason_code, 0);
+}
+
+TEST(ConsensusNetworkApiBridgeTest, pbftVoteAdmissionEffectsQueueMarkKnownEffect) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+
+  rustaxa::NetworkPbftVoteAdmissionEffects effects{};
+  effects.peer_id = nodeId(0x55);
+  effects.vote_hash = hash(0xAB);
+  effects.source_payload_id = 101;
+  effects.mark_vote_known = true;
+
+  const auto decision = network_api->consensus_network_queue_pbft_vote_admission_effects(effects);
+  EXPECT_TRUE(decision.routed);
+  EXPECT_EQ(decision.status, 0);
+  EXPECT_EQ(decision.queued_effect_count, 1);
+
+  const auto batch = network_api->consensus_network_drain_work(10);
+  ASSERT_EQ(batch.effects.size(), 1);
+  EXPECT_EQ(batch.effects[0].kind, 2);
+  EXPECT_EQ(batch.effects[0].peer_id, nodeId(0x55));
+  EXPECT_EQ(batch.effects[0].object_kind, 0);
+  EXPECT_EQ(batch.effects[0].object_hash, hash(0xAB));
+  EXPECT_EQ(batch.effects[0].source_payload_id, 101);
 }

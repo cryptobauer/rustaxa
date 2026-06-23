@@ -80,6 +80,8 @@ class ExtVotesPacketHandler : public PacketHandler {
   rustaxa::NetworkIngressDecision ingestPbftVoteBundleMember(const rustaxa::PbftVoteIngressFact& reference,
                                                              const rustaxa::PbftVoteIngressFact& vote,
                                                              const rustaxa::NetworkPbftVoteIngressContext& context);
+  rustaxa::NetworkIngressDecision queuePbftVoteAdmissionEffects(
+      const rustaxa::NetworkPbftVoteAdmissionEffects& effects);
   void executeConsensusNetworkEffects(size_t budget);
 #endif
 

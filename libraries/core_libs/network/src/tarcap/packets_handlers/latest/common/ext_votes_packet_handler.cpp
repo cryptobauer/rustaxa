@@ -17,11 +17,13 @@ namespace {
 
 constexpr uint8_t kNetworkEffectResultStatusOk = 0;
 constexpr uint8_t kNetworkEffectResultStatusFailed = 1;
+constexpr uint8_t kNetworkEffectKindMarkPeerKnown = 2;
 constexpr uint8_t kNetworkEffectKindRequestSync = 3;
 constexpr uint8_t kNetworkEffectKindReportPeer = 4;
 constexpr uint8_t kNetworkEffectKindDisconnectPeer = 5;
 constexpr uint8_t kNetworkSyncKindPbftChain = 0;
 constexpr uint8_t kNetworkSyncKindPbftNextVotes = 1;
+constexpr uint8_t kNetworkObjectKindPbftVote = 0;
 
 rustaxa::NetworkApiConfig defaultNetworkApiConfig() {
   rustaxa::NetworkApiConfig config{};
@@ -126,6 +128,17 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
   if (!result.accepted) {
     LOG(this->log_dg_) << "Vote " << vote->getHash() << " was not admitted by Rust vote transition";
     return result;
+  }
+
+  if (admission_report.mark_vote_known) {
+    rustaxa::NetworkPbftVoteAdmissionEffects effects{};
+    effects.peer_id = peer->getId().asArray();
+    effects.vote_hash = vote->getHash().asArray();
+    effects.source_payload_id = 0;
+    effects.mark_vote_known = true;
+    (void)queuePbftVoteAdmissionEffects(effects);
+    executeConsensusNetworkEffects(16);
+    result.mark_vote_known = false;
   }
 
   if (pbft_block) {
@@ -324,6 +337,12 @@ rustaxa::NetworkIngressDecision ExtVotesPacketHandler::ingestPbftVoteBundleMembe
   return rust_consensus_network_api_->api->consensus_network_ingest_pbft_vote_bundle_member(reference, vote, context);
 }
 
+rustaxa::NetworkIngressDecision ExtVotesPacketHandler::queuePbftVoteAdmissionEffects(
+    const rustaxa::NetworkPbftVoteAdmissionEffects &effects) {
+  assert(rust_consensus_network_api_);
+  return rust_consensus_network_api_->api->consensus_network_queue_pbft_vote_admission_effects(effects);
+}
+
 void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget) {
   assert(rust_consensus_network_api_);
   const auto batch = rust_consensus_network_api_->api->consensus_network_drain_work(static_cast<uint32_t>(budget));
@@ -344,6 +363,11 @@ void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget) {
       } else if (effect.kind == kNetworkEffectKindRequestSync && effect.sync_kind == kNetworkSyncKindPbftNextVotes) {
         requestPbftNextVotesAtPeriodRound(peer_id, effect.period, effect.round);
         last_votes_sync_request_time_ = std::chrono::system_clock::now();
+      } else if (effect.kind == kNetworkEffectKindMarkPeerKnown && effect.object_kind == kNetworkObjectKindPbftVote) {
+        const auto peer = peers_state_->getPeer(peer_id);
+        if (peer) {
+          peer->markPbftVoteAsKnown(vote_hash_t(effect.object_hash));
+        }
       } else if (effect.kind == kNetworkEffectKindDisconnectPeer) {
         disconnect(peer_id, dev::p2p::UserReason);
       } else if (effect.kind == kNetworkEffectKindReportPeer) {

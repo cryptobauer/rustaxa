@@ -190,6 +190,20 @@ impl BridgeConsensusNetworkApi {
             ),
         ))
     }
+
+    /// Queues network effects derived from accepted PBFT vote admission.
+    pub fn consensus_network_queue_pbft_vote_admission_effects(
+        &self,
+        effects: rustaxa_ffi::NetworkPbftVoteAdmissionEffects,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
+        let mut api = self
+            .api
+            .lock()
+            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        Ok(to_bridge_network_ingress_decision(
+            api.queue_pbft_vote_admission_effects(to_domain_pbft_vote_admission_effects(effects)),
+        ))
+    }
 }
 
 fn to_domain_config(config: rustaxa_ffi::NetworkApiConfig) -> rustaxa_consensus::NetworkApiConfig {
@@ -247,6 +261,17 @@ fn to_bridge_network_ingress_decision(
         status: decision.status,
         error_code: decision.error_code,
         queued_effect_count: decision.queued_effect_count,
+    }
+}
+
+fn to_domain_pbft_vote_admission_effects(
+    value: rustaxa_ffi::NetworkPbftVoteAdmissionEffects,
+) -> rustaxa_consensus::NetworkPbftVoteAdmissionEffects {
+    rustaxa_consensus::NetworkPbftVoteAdmissionEffects {
+        peer_id: value.peer_id,
+        vote_hash: value.vote_hash,
+        source_payload_id: value.source_payload_id,
+        mark_vote_known: value.mark_vote_known,
     }
 }
 
