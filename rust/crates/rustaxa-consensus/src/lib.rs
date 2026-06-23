@@ -125,7 +125,8 @@ pub use network_api::{
     NetworkEffect, NetworkEffectAck, NetworkEffectBatch, NetworkEffectResult,
     NetworkIngressDecision, NetworkIngressPacket, NetworkIngressPayload, NetworkIngressReceipt,
     NetworkPayloadId, NetworkPbftBlockAdmissionEffects, NetworkPbftProposedBlockSidecarEffects,
-    NetworkPbftVoteAdmissionEffects, NetworkPbftVoteGossipEffects, NetworkPbftVoteIngressContext,
+    NetworkPbftVoteAdmissionEffects, NetworkPbftVoteAdmissionRequestEffects,
+    NetworkPbftVoteGossipEffects, NetworkPbftVoteIngressContext,
 };
 pub use pbft_chain::{
     PbftBlockStorageLookup, PbftChain, PbftChainStorageRestore, load_pbft_block_from_storage,

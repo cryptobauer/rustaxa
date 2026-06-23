@@ -297,6 +297,19 @@ pub struct NetworkPbftVoteAdmissionEffects {
     pub mark_vote_known: bool,
 }
 
+/// Accepted-ingress vote admission request for the external executor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftVoteAdmissionRequestEffects {
+    /// Peer that supplied the vote.
+    pub peer_id: [u8; 64],
+    /// Vote hash to admit through the temporary verified-vote executor.
+    pub vote_hash: [u8; 32],
+    /// Optional retained packet payload id.
+    pub source_payload_id: u64,
+    /// Whether the executor should run verified-vote admission for this vote.
+    pub admit_vote: bool,
+}
+
 /// Accepted-PBFT-block network effects derived after verified-vote admission.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NetworkPbftBlockAdmissionEffects {
@@ -621,6 +634,46 @@ impl ConsensusNetworkApi {
                 kind: NETWORK_EFFECT_KIND_MARK_PEER_KNOWN,
                 peer_id: effects.peer_id,
                 packet_kind: 0,
+                payload_bytes: Vec::new(),
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
+                object_hash: effects.vote_hash,
+                sync_kind: 0,
+                sync_start: 0,
+                reason_code: 0,
+                dependency_id: 0,
+                period: 0,
+                round: 0,
+            });
+        }
+
+        NetworkIngressDecision {
+            payload_id: effects.source_payload_id,
+            payload_accepted: effects.source_payload_id != 0,
+            routed: true,
+            status: NETWORK_INGRESS_STATUS_ACCEPTED,
+            error_code: ERROR_NONE.to_owned(),
+            queued_effect_count: self.pending_effects.len().saturating_sub(before_effects) as u32,
+        }
+    }
+
+    /// Queues the verified-vote admission request for an accepted PBFT vote.
+    ///
+    /// The network facade owns the admission request identity and result-report
+    /// contract. The current executor still calls the temporary VoteManager
+    /// boundary until verified-vote mutation is fully owned behind this facade.
+    pub fn queue_pbft_vote_admission_request_effects(
+        &mut self,
+        effects: NetworkPbftVoteAdmissionRequestEffects,
+    ) -> NetworkIngressDecision {
+        let before_effects = self.pending_effects.len();
+        if effects.admit_vote {
+            self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: effects.source_payload_id,
+                kind: NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT,
+                peer_id: effects.peer_id,
+                packet_kind: NETWORK_PACKET_KIND_PBFT_VOTE,
                 payload_bytes: Vec::new(),
                 exclude_peers: Vec::new(),
                 object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
@@ -1358,6 +1411,35 @@ mod tests {
         assert_eq!(batch.effects[0].object_kind, NETWORK_OBJECT_KIND_PBFT_VOTE);
         assert_eq!(batch.effects[0].object_hash, hash(0xAB));
         assert_eq!(batch.effects[0].source_payload_id, 77);
+    }
+
+    #[test]
+    fn queue_pbft_vote_admission_request_effects_records_vote() {
+        let mut api = ConsensusNetworkApi::new();
+
+        let decision =
+            api.queue_pbft_vote_admission_request_effects(NetworkPbftVoteAdmissionRequestEffects {
+                peer_id: peer(12),
+                vote_hash: hash(0xAC),
+                source_payload_id: 81,
+                admit_vote: true,
+            });
+
+        assert!(decision.routed);
+        assert_eq!(decision.status, NETWORK_INGRESS_STATUS_ACCEPTED);
+        assert_eq!(decision.queued_effect_count, 1);
+
+        let batch = api.drain_work(10);
+        assert_eq!(batch.effects.len(), 1);
+        assert_eq!(
+            batch.effects[0].kind,
+            NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT
+        );
+        assert_eq!(batch.effects[0].peer_id, peer(12));
+        assert_eq!(batch.effects[0].packet_kind, NETWORK_PACKET_KIND_PBFT_VOTE);
+        assert_eq!(batch.effects[0].object_kind, NETWORK_OBJECT_KIND_PBFT_VOTE);
+        assert_eq!(batch.effects[0].object_hash, hash(0xAC));
+        assert_eq!(batch.effects[0].source_payload_id, 81);
     }
 
     #[test]

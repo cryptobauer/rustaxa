@@ -731,6 +731,14 @@ pub mod rustaxa_ffi {
         mark_vote_known: bool,
     }
 
+    /// Accepted PBFT vote admission request supplied after ingress planning.
+    struct NetworkPbftVoteAdmissionRequestEffects {
+        peer_id: [u8; 64],
+        vote_hash: [u8; 32],
+        source_payload_id: u64,
+        admit_vote: bool,
+    }
+
     /// Accepted PBFT block sidecar network effects supplied after admission.
     struct NetworkPbftBlockAdmissionEffects {
         peer_id: [u8; 64],
@@ -4763,6 +4771,10 @@ pub mod rustaxa_ffi {
         pub fn consensus_network_queue_pbft_vote_admission_effects(
             self: &BridgeConsensusNetworkApi,
             effects: NetworkPbftVoteAdmissionEffects,
+        ) -> Result<NetworkIngressDecision>;
+        pub fn consensus_network_queue_pbft_vote_admission_request_effects(
+            self: &BridgeConsensusNetworkApi,
+            effects: NetworkPbftVoteAdmissionRequestEffects,
         ) -> Result<NetworkIngressDecision>;
         pub fn consensus_network_queue_pbft_block_admission_effects(
             self: &BridgeConsensusNetworkApi,
