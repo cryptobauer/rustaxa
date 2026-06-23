@@ -220,6 +220,9 @@ Rules:
     sync peer is installed.
   - Pending-DAG-block request execution still uses tarcap peer reservation plus the temporary DagManager snapshot and
     request-packet executor path after Rust returns the selected peer and requested period.
+  - `Network::requestPillarBlockVotesBundle` still selects the max-chain peer through `PeersState::getMaxChainPeer`.
+    Moving this behind the facade should be handled with the same network-level `BridgeConsensusNetworkApi` lifetime
+    used by the packet handlers instead of creating a second ad hoc bridge owner.
   - Proposed-block sidecar and PBFT blocks bundle recording still use the temporary PBFT manager executor boundary until
     the network API is injected with the same Rust proposed-block runtime/storage handle used by PBFT.
   - The facade methods themselves do not call consensus shims, C++ consensus managers, `DbStorage`, peer transport,
