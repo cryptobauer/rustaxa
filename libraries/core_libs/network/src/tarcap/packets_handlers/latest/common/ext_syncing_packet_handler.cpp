@@ -5,8 +5,31 @@
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
 #include "pbft/pbft_chain.hpp"
 #include "pbft/pbft_manager.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
 
 namespace taraxa::network::tarcap {
+
+#ifdef RUSTAXA_ENABLE
+namespace {
+
+rustaxa::NetworkApiConfig defaultNetworkApiConfig() {
+  rustaxa::NetworkApiConfig config{};
+  config.max_payload_bytes = 64 * 1024 * 1024;
+  config.max_retained_payloads = 4096;
+  config.max_effects_per_drain = 1024;
+  return config;
+}
+
+}  // namespace
+
+struct ExtSyncingPacketHandler::RustConsensusNetworkApiHolder {
+  RustConsensusNetworkApiHolder() : api(rustaxa::create_consensus_network_api(defaultNetworkApiConfig())) {}
+
+  rust::Box<rustaxa::BridgeConsensusNetworkApi> api;
+};
+#endif
 
 ExtSyncingPacketHandler::ExtSyncingPacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                                                  std::shared_ptr<TimePeriodPacketsStats> packets_stats,
@@ -16,7 +39,7 @@ ExtSyncingPacketHandler::ExtSyncingPacketHandler(const FullNodeConfig &conf, std
                                                  std::shared_ptr<DagManager> dag_mgr,
 #ifndef RUSTAXA_ENABLE
                                                  std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY:
-                                                                                // legacy sync handler.
+                                                                                 // legacy sync handler.
 #endif
                                                  const addr_t &node_addr, const std::string &log_channel_name)
     : PacketHandler(conf, std::move(peers_state), std::move(packets_stats), node_addr, log_channel_name),
@@ -29,6 +52,9 @@ ExtSyncingPacketHandler::ExtSyncingPacketHandler(const FullNodeConfig &conf, std
       db_(std::move(db))
 #endif
 {
+#ifdef RUSTAXA_ENABLE
+  rust_consensus_network_api_ = std::make_unique<RustConsensusNetworkApiHolder>();
+#endif
 }
 
 void ExtSyncingPacketHandler::requestPendingDagBlocks(std::shared_ptr<TaraxaPeer> peer) {

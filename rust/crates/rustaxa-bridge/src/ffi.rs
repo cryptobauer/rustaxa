@@ -723,6 +723,28 @@ pub mod rustaxa_ffi {
         queued_effect_count: u32,
     }
 
+    /// Compact facts for status-triggered network sync planning.
+    struct NetworkStatusSyncFacts {
+        local_pbft_syncing: bool,
+        local_pbft_synced_period: u64,
+        local_pbft_period: u64,
+        local_pbft_round: u64,
+        peer_pbft_chain_size: u64,
+        peer_pbft_period: u64,
+        peer_pbft_round: u64,
+        peer_dag_synced: bool,
+        peer_last_status_pbft_chain_size: u64,
+    }
+
+    /// Side-effect-free status sync plan for tarcap execution.
+    struct NetworkStatusSyncPlan {
+        request_pbft_sync: bool,
+        request_pending_dag_blocks: bool,
+        request_next_votes: bool,
+        next_votes_period: u64,
+        next_votes_round: u64,
+    }
+
     /// Accepted PBFT vote network effects supplied after admission.
     struct NetworkPbftVoteAdmissionEffects {
         peer_id: [u8; 64],
@@ -4859,6 +4881,10 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusNetworkApi,
             fact: PillarVoteRelevanceFact,
         ) -> Result<PillarVoteRelevancePlan>;
+        pub fn consensus_network_plan_status_sync(
+            self: &BridgeConsensusNetworkApi,
+            facts: NetworkStatusSyncFacts,
+        ) -> Result<NetworkStatusSyncPlan>;
         pub fn consensus_network_queue_pbft_vote_admission_effects(
             self: &BridgeConsensusNetworkApi,
             effects: NetworkPbftVoteAdmissionEffects,

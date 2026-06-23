@@ -302,6 +302,38 @@ TEST(ConsensusNetworkApiBridgeTest, pillarVoteRelevancePlanningRoutesThroughNetw
   EXPECT_FALSE(rejected.is_relevant);
 }
 
+TEST(ConsensusNetworkApiBridgeTest, statusSyncPlanningRoutesThroughNetworkApi) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+
+  rustaxa::NetworkStatusSyncFacts facts{};
+  facts.local_pbft_syncing = false;
+  facts.local_pbft_synced_period = 10;
+  facts.local_pbft_period = 11;
+  facts.local_pbft_round = 2;
+  facts.peer_pbft_chain_size = 13;
+  facts.peer_pbft_period = 14;
+  facts.peer_pbft_round = 2;
+  facts.peer_dag_synced = true;
+  facts.peer_last_status_pbft_chain_size = 10;
+
+  auto plan = network_api->consensus_network_plan_status_sync(facts);
+  EXPECT_TRUE(plan.request_pbft_sync);
+  EXPECT_FALSE(plan.request_pending_dag_blocks);
+  EXPECT_FALSE(plan.request_next_votes);
+
+  facts.peer_pbft_chain_size = 10;
+  facts.peer_pbft_period = 11;
+  facts.peer_pbft_round = 4;
+  facts.peer_dag_synced = false;
+
+  plan = network_api->consensus_network_plan_status_sync(facts);
+  EXPECT_FALSE(plan.request_pbft_sync);
+  EXPECT_TRUE(plan.request_pending_dag_blocks);
+  EXPECT_TRUE(plan.request_next_votes);
+  EXPECT_EQ(plan.next_votes_period, 11);
+  EXPECT_EQ(plan.next_votes_round, 2);
+}
+
 TEST(ConsensusNetworkApiBridgeTest, pbftVoteAdmissionEffectsQueueMarkKnownEffect) {
   auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
 

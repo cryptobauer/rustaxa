@@ -141,7 +141,7 @@ pub use network_api::{
     NetworkPbftVoteAdmissionRequestEffects, NetworkPbftVoteGossipEffects,
     NetworkPbftVoteIngressContext, NetworkPillarVoteAdmissionRequestEffects,
     NetworkPillarVoteValidationRequestEffects, NetworkPillarVotesBundleEgressRequestEffects,
-    NetworkTransactionAdmissionRequestEffects,
+    NetworkStatusSyncFacts, NetworkStatusSyncPlan, NetworkTransactionAdmissionRequestEffects,
 };
 pub use pbft_chain::{
     PbftBlockStorageLookup, PbftChain, PbftChainStorageRestore, load_pbft_block_from_storage,

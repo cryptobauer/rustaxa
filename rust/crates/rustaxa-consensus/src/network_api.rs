@@ -442,6 +442,44 @@ pub struct NetworkDagSyncEgressRequestEffects {
     pub request_blocks: bool,
 }
 
+/// Compact local and peer facts needed to plan status-triggered sync work.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkStatusSyncFacts {
+    /// Whether the local node is already running PBFT sync.
+    pub local_pbft_syncing: bool,
+    /// Local finalized/synced PBFT period.
+    pub local_pbft_synced_period: u64,
+    /// Local current PBFT period.
+    pub local_pbft_period: u64,
+    /// Local current PBFT round.
+    pub local_pbft_round: u64,
+    /// Peer PBFT chain size learned from the status packet.
+    pub peer_pbft_chain_size: u64,
+    /// Peer PBFT period derived by tarcap from peer chain size.
+    pub peer_pbft_period: u64,
+    /// Peer PBFT round learned from the status packet.
+    pub peer_pbft_round: u64,
+    /// Whether tarcap already considers the peer's DAG synchronized.
+    pub peer_dag_synced: bool,
+    /// Previous status-reported PBFT chain size retained for the one-block-behind debounce.
+    pub peer_last_status_pbft_chain_size: u64,
+}
+
+/// Side-effect-free status sync plan for the network/tarcap executor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkStatusSyncPlan {
+    /// Whether tarcap should start PBFT sync with the selected peer.
+    pub request_pbft_sync: bool,
+    /// Whether tarcap should request pending DAG blocks from the selected peer.
+    pub request_pending_dag_blocks: bool,
+    /// Whether tarcap should request next-vote bundles from the selected peer.
+    pub request_next_votes: bool,
+    /// Local PBFT period to put into the next-votes request.
+    pub next_votes_period: u64,
+    /// Local PBFT round to put into the next-votes request.
+    pub next_votes_round: u64,
+}
+
 /// Proposed-block sidecar effects derived from accepted PBFT vote packets.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NetworkPbftProposedBlockSidecarEffects {
@@ -788,6 +826,17 @@ impl ConsensusNetworkApi {
         fact: PillarVoteRelevanceFact,
     ) -> anyhow::Result<PillarVoteRelevancePlan> {
         plan_pillar_vote_relevance(fact)
+    }
+
+    /// Plans deterministic sync follow-up for an accepted status packet.
+    ///
+    /// Tarcap supplies compact local and peer status facts, while Rust owns the
+    /// decision to request PBFT sync, pending DAG blocks, or next-vote bundles.
+    /// The returned plan is side-effect free: peer state updates, packet
+    /// encoding, and sends remain network/tarcap executor work.
+    #[must_use]
+    pub fn plan_status_sync(&self, facts: NetworkStatusSyncFacts) -> NetworkStatusSyncPlan {
+        plan_status_sync(facts)
     }
 
     /// Routes one PBFT vote ingress decision and queues network effects.
@@ -1647,6 +1696,43 @@ impl ConsensusNetworkApi {
     }
 }
 
+fn plan_status_sync(facts: NetworkStatusSyncFacts) -> NetworkStatusSyncPlan {
+    if facts.local_pbft_syncing {
+        return NetworkStatusSyncPlan {
+            request_pbft_sync: false,
+            request_pending_dag_blocks: false,
+            request_next_votes: false,
+            next_votes_period: 0,
+            next_votes_round: 0,
+        };
+    }
+
+    let request_pbft_sync = facts.local_pbft_synced_period < facts.peer_pbft_chain_size
+        && (facts.local_pbft_synced_period + 1 < facts.peer_pbft_chain_size
+            || facts.peer_last_status_pbft_chain_size == facts.peer_pbft_chain_size);
+    let request_pending_dag_blocks = !request_pbft_sync
+        && facts.local_pbft_synced_period == facts.peer_pbft_chain_size
+        && !facts.peer_dag_synced;
+    let request_next_votes = facts.local_pbft_period == facts.peer_pbft_period
+        && facts.local_pbft_round < facts.peer_pbft_round;
+
+    NetworkStatusSyncPlan {
+        request_pbft_sync,
+        request_pending_dag_blocks,
+        request_next_votes,
+        next_votes_period: if request_next_votes {
+            facts.local_pbft_period
+        } else {
+            0
+        },
+        next_votes_round: if request_next_votes {
+            facts.local_pbft_round
+        } else {
+            0
+        },
+    }
+}
+
 fn is_supported_ingress_packet(packet_type: u32) -> bool {
     // Keep this first direct network facade slice intentionally narrow. The
     // current latest-tarcap packet ids come from `SubprotocolPacketType`:
@@ -1763,6 +1849,20 @@ mod tests {
             round,
             step,
             vote_type,
+        }
+    }
+
+    const fn status_sync_facts() -> NetworkStatusSyncFacts {
+        NetworkStatusSyncFacts {
+            local_pbft_syncing: false,
+            local_pbft_synced_period: 10,
+            local_pbft_period: 11,
+            local_pbft_round: 2,
+            peer_pbft_chain_size: 10,
+            peer_pbft_period: 11,
+            peer_pbft_round: 2,
+            peer_dag_synced: true,
+            peer_last_status_pbft_chain_size: 9,
         }
     }
 
@@ -2049,6 +2149,76 @@ mod tests {
         assert_eq!(ack.failed_results, 0);
         assert_eq!(ack.error_code, ERROR_MISMATCHED_EFFECT_RESULT);
         assert_eq!(api.effect_result_len(), 0);
+    }
+
+    #[test]
+    fn plan_status_sync_requests_pbft_sync_when_peer_is_far_ahead() {
+        let api = ConsensusNetworkApi::new();
+        let mut facts = status_sync_facts();
+        facts.peer_pbft_chain_size = 13;
+
+        let plan = api.plan_status_sync(facts);
+
+        assert!(plan.request_pbft_sync);
+        assert!(!plan.request_pending_dag_blocks);
+        assert!(!plan.request_next_votes);
+    }
+
+    #[test]
+    fn plan_status_sync_debounces_one_block_pbft_sync() {
+        let api = ConsensusNetworkApi::new();
+        let mut facts = status_sync_facts();
+        facts.peer_pbft_chain_size = 11;
+        facts.peer_last_status_pbft_chain_size = 10;
+
+        assert!(!api.plan_status_sync(facts.clone()).request_pbft_sync);
+
+        facts.peer_last_status_pbft_chain_size = 11;
+        assert!(api.plan_status_sync(facts).request_pbft_sync);
+    }
+
+    #[test]
+    fn plan_status_sync_requests_pending_dag_blocks_when_periods_match() {
+        let api = ConsensusNetworkApi::new();
+        let mut facts = status_sync_facts();
+        facts.peer_dag_synced = false;
+
+        let plan = api.plan_status_sync(facts);
+
+        assert!(!plan.request_pbft_sync);
+        assert!(plan.request_pending_dag_blocks);
+        assert!(!plan.request_next_votes);
+    }
+
+    #[test]
+    fn plan_status_sync_requests_next_votes_when_peer_round_is_ahead() {
+        let api = ConsensusNetworkApi::new();
+        let mut facts = status_sync_facts();
+        facts.peer_pbft_round = 4;
+
+        let plan = api.plan_status_sync(facts);
+
+        assert!(!plan.request_pbft_sync);
+        assert!(!plan.request_pending_dag_blocks);
+        assert!(plan.request_next_votes);
+        assert_eq!(plan.next_votes_period, 11);
+        assert_eq!(plan.next_votes_round, 2);
+    }
+
+    #[test]
+    fn plan_status_sync_returns_no_actions_while_local_pbft_syncing() {
+        let api = ConsensusNetworkApi::new();
+        let mut facts = status_sync_facts();
+        facts.local_pbft_syncing = true;
+        facts.peer_pbft_chain_size = 13;
+        facts.peer_pbft_round = 4;
+        facts.peer_dag_synced = false;
+
+        let plan = api.plan_status_sync(facts);
+
+        assert!(!plan.request_pbft_sync);
+        assert!(!plan.request_pending_dag_blocks);
+        assert!(!plan.request_next_votes);
     }
 
     #[test]

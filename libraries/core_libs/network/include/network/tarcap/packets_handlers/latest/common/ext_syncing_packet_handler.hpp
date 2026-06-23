@@ -5,6 +5,9 @@
 #include "packet_handler.hpp"
 #include "pbft/pbft_chain.hpp"
 #include "pbft/pbft_manager.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
 
 namespace taraxa {
 #ifndef RUSTAXA_ENABLE
@@ -45,6 +48,9 @@ class ExtSyncingPacketHandler : public PacketHandler {
   std::shared_ptr<DagManager> dag_mgr_{nullptr};
 #ifndef RUSTAXA_ENABLE
   std::shared_ptr<DbStorage> db_{nullptr};  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy sync handler storage.
+#else
+  struct RustConsensusNetworkApiHolder;
+  std::unique_ptr<RustConsensusNetworkApiHolder> rust_consensus_network_api_;
 #endif
 };
 

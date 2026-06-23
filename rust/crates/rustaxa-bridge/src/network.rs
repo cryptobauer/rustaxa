@@ -151,6 +151,20 @@ impl BridgeConsensusNetworkApi {
         )))
     }
 
+    /// Plans deterministic sync follow-up for an accepted status packet.
+    pub fn consensus_network_plan_status_sync(
+        &self,
+        facts: rustaxa_ffi::NetworkStatusSyncFacts,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkStatusSyncPlan> {
+        let api = self
+            .api
+            .lock()
+            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        Ok(to_bridge_network_status_sync_plan(api.plan_status_sync(
+            to_domain_network_status_sync_facts(facts),
+        )))
+    }
+
     /// Routes single-vote PBFT ingress and queues network effects.
     ///
     /// Unlike the side-effect-free planner method, this production-facing route
@@ -559,6 +573,34 @@ fn to_domain_pillar_vote_relevance_fact(
         pillar_blocks_interval: value.pillar_blocks_interval,
         vote_already_known: value.vote_already_known,
     })
+}
+
+fn to_domain_network_status_sync_facts(
+    value: rustaxa_ffi::NetworkStatusSyncFacts,
+) -> rustaxa_consensus::NetworkStatusSyncFacts {
+    rustaxa_consensus::NetworkStatusSyncFacts {
+        local_pbft_syncing: value.local_pbft_syncing,
+        local_pbft_synced_period: value.local_pbft_synced_period,
+        local_pbft_period: value.local_pbft_period,
+        local_pbft_round: value.local_pbft_round,
+        peer_pbft_chain_size: value.peer_pbft_chain_size,
+        peer_pbft_period: value.peer_pbft_period,
+        peer_pbft_round: value.peer_pbft_round,
+        peer_dag_synced: value.peer_dag_synced,
+        peer_last_status_pbft_chain_size: value.peer_last_status_pbft_chain_size,
+    }
+}
+
+fn to_bridge_network_status_sync_plan(
+    plan: rustaxa_consensus::NetworkStatusSyncPlan,
+) -> rustaxa_ffi::NetworkStatusSyncPlan {
+    rustaxa_ffi::NetworkStatusSyncPlan {
+        request_pbft_sync: plan.request_pbft_sync,
+        request_pending_dag_blocks: plan.request_pending_dag_blocks,
+        request_next_votes: plan.request_next_votes,
+        next_votes_period: plan.next_votes_period,
+        next_votes_round: plan.next_votes_round,
+    }
 }
 
 fn to_bridge_network_ingress_decision(

@@ -190,6 +190,9 @@ Rules:
     `consensus_network_queue_pillar_votes_bundle_egress_request_effects`; tarcap supplies the requested period and
     pillar block hash before the temporary pillar executor reads verified votes, chunks `PillarVotesBundlePacket`
     payloads, sends them, and marks sent votes known for the peer.
+  - Standard status follow-up planning now routes through `consensus_network_plan_status_sync`; tarcap supplies compact
+    local/peer PBFT and DAG facts before Rust decides whether to request PBFT sync, pending DAG blocks, or PBFT
+    next-votes bundles. Tarcap still mutates peer state, starts syncing, encodes packets, and sends transport messages.
   - Network effect result reports now echo typed effect identity fields, and Rust rejects mismatched reports before
     accepting acknowledgements. This keeps temporary executor work visible instead of treating an `effect_id` alone as
     proof that the intended action ran.
@@ -200,6 +203,9 @@ Rules:
     bundle egress still execute through the temporary PillarChainManager executor path, get-next-votes egress still uses
     the temporary VoteManager executor path, and transaction gossip admission still uses the temporary TransactionManager
     executor path.
+  - Status packet ingress still performs chain-id/genesis/light-node validation and peer-state materialization in tarcap,
+    and status egress still reads local PBFT/DAG snapshot facts directly until a fuller local status snapshot API is
+    injected.
   - Proposed-block sidecar and PBFT blocks bundle recording still use the temporary PBFT manager executor boundary until
     the network API is injected with the same Rust proposed-block runtime/storage handle used by PBFT.
   - The facade methods themselves do not call consensus shims, C++ consensus managers, `DbStorage`, peer transport,

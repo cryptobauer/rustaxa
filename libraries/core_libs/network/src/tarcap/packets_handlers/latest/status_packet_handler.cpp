@@ -6,6 +6,9 @@
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
 #include "pbft/pbft_chain.hpp"
 #include "pbft/pbft_manager.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
 #include "vote_manager/vote_manager.hpp"
 
 namespace taraxa::network::tarcap {
@@ -17,7 +20,7 @@ StatusPacketHandler::StatusPacketHandler(const FullNodeConfig& conf, std::shared
                                          std::shared_ptr<DagManager> dag_mgr,
 #ifndef RUSTAXA_ENABLE
                                          std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY:
-                                                                        // legacy status handler.
+                                                                         // legacy status handler.
 #endif
                                          h256 genesis_hash, const addr_t& node_addr, const std::string& logs_prefix)
     : ISyncPacketHandler(conf, peers_state, packets_stats, std::move(pbft_syncing_state), std::move(pbft_chain),
@@ -110,6 +113,34 @@ void StatusPacketHandler::process(const threadpool::PacketData& packet_data, con
     selected_peer->syncing_ = packet.peer_syncing;
     selected_peer->pbft_round_ = packet.peer_pbft_round;
 
+#ifdef RUSTAXA_ENABLE
+    rustaxa::NetworkStatusSyncFacts sync_facts{};
+    sync_facts.local_pbft_syncing = pbft_syncing_state_->isPbftSyncing();
+    sync_facts.local_pbft_synced_period = pbft_synced_period;
+    const auto [pbft_current_round, pbft_current_period] = pbft_mgr_->getPbftRoundAndPeriod();
+    sync_facts.local_pbft_period = pbft_current_period;
+    sync_facts.local_pbft_round = pbft_current_round;
+    sync_facts.peer_pbft_chain_size = selected_peer->pbft_chain_size_.load();
+    sync_facts.peer_pbft_period = selected_peer->pbft_period_;
+    sync_facts.peer_pbft_round = selected_peer->pbft_round_;
+    sync_facts.peer_dag_synced = selected_peer->peer_dag_synced_;
+    sync_facts.peer_last_status_pbft_chain_size = selected_peer->last_status_pbft_chain_size_.load();
+    const auto sync_plan = rust_consensus_network_api_->api->consensus_network_plan_status_sync(sync_facts);
+    if (sync_plan.request_pbft_sync) {
+      LOG(log_nf_) << "Restart PBFT chain syncing. Own synced PBFT at period " << pbft_synced_period
+                   << ", peer PBFT chain size " << selected_peer->pbft_chain_size_;
+      startSyncingPbft();
+    } else if (sync_plan.request_pending_dag_blocks) {
+      requestPendingDagBlocks(selected_peer);
+    }
+
+    if (sync_plan.request_next_votes) {
+      const auto get_next_votes_packet = GetNextVotesBundlePacket{.peer_pbft_period = sync_plan.next_votes_period,
+                                                                  .peer_pbft_round = sync_plan.next_votes_round};
+      sealAndSend(selected_peer->getId(), SubprotocolPacketType::kGetNextVotesSyncPacket,
+                  encodePacketRlp(get_next_votes_packet));
+    }
+#else
     // TODO: Address malicious status
     if (!pbft_syncing_state_->isPbftSyncing()) {
       if (pbft_synced_period < selected_peer->pbft_chain_size_) {
@@ -138,6 +169,7 @@ void StatusPacketHandler::process(const threadpool::PacketData& packet_data, con
                     encodePacketRlp(get_next_votes_packet));
       }
     }
+#endif
     selected_peer->last_status_pbft_chain_size_ = selected_peer->pbft_chain_size_.load();
 
     LOG(log_dg_) << "Received status message from " << peer->getId() << ", peer DAG max level "
