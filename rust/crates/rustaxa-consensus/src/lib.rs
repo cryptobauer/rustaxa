@@ -143,10 +143,11 @@ pub use network_api::{
     NetworkPbftSyncPeerCandidate, NetworkPbftSyncPeriodDataAdmissionRequestEffects,
     NetworkPbftSyncStartFacts, NetworkPbftSyncStartPlan, NetworkPbftVoteAdmissionEffects,
     NetworkPbftVoteAdmissionRequestEffects, NetworkPbftVoteGossipEffects,
-    NetworkPbftVoteIngressContext, NetworkPendingDagBlocksRequestFacts,
-    NetworkPendingDagBlocksRequestPlan, NetworkPillarVoteAdmissionRequestEffects,
-    NetworkPillarVoteValidationRequestEffects, NetworkPillarVotesBundleEgressRequestEffects,
-    NetworkStatusSyncFacts, NetworkStatusSyncPlan, NetworkTransactionAdmissionRequestEffects,
+    NetworkPbftVoteIngressContext, NetworkPeerSelectionFacts, NetworkPeerSelectionPlan,
+    NetworkPendingDagBlocksRequestFacts, NetworkPendingDagBlocksRequestPlan,
+    NetworkPillarVoteAdmissionRequestEffects, NetworkPillarVoteValidationRequestEffects,
+    NetworkPillarVotesBundleEgressRequestEffects, NetworkStatusSyncFacts, NetworkStatusSyncPlan,
+    NetworkTransactionAdmissionRequestEffects,
 };
 pub use pbft_chain::{
     PbftBlockStorageLookup, PbftChain, PbftChainStorageRestore, load_pbft_block_from_storage,

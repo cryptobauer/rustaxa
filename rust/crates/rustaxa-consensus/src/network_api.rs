@@ -549,6 +549,30 @@ pub struct NetworkPbftSyncStartPlan {
     pub enable_snapshot_creation: bool,
 }
 
+/// Compact facts needed to select the best live network peer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPeerSelectionFacts {
+    /// Local PBFT sync period used for light-node serviceability checks.
+    pub local_pbft_syncing_period: u64,
+    /// Candidate peers known by the network executor.
+    pub candidates: Vec<NetworkPbftSyncPeerCandidate>,
+}
+
+/// Side-effect-free peer-selection plan for the network/tarcap executor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPeerSelectionPlan {
+    /// Stable status for boundary logs and tests.
+    pub status: u8,
+    /// Stable textual status for boundary logs and tests.
+    pub error_code: String,
+    /// Whether the plan selected a usable peer.
+    pub has_peer: bool,
+    /// Selected peer id, or zeroes when no peer was selected.
+    pub peer_id: [u8; 64],
+    /// Selected peer PBFT chain size.
+    pub peer_pbft_chain_size: u64,
+}
+
 /// Compact facts needed to plan a pending-DAG-block request.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NetworkPendingDagBlocksRequestFacts {
@@ -950,6 +974,19 @@ impl ConsensusNetworkApi {
         facts: NetworkPbftSyncStartFacts,
     ) -> NetworkPbftSyncStartPlan {
         plan_pbft_sync_start(facts)
+    }
+
+    /// Selects the best max-chain peer from compact network-owned peer facts.
+    ///
+    /// Rust owns the deterministic PBFT chain size and DAG level ordering plus
+    /// light-node history eligibility. Network still owns peer maps, live peer
+    /// lookup, packet handler dispatch, and transport execution.
+    #[must_use]
+    pub fn plan_max_chain_peer_selection(
+        &self,
+        facts: NetworkPeerSelectionFacts,
+    ) -> NetworkPeerSelectionPlan {
+        plan_max_chain_peer_selection(facts)
     }
 
     /// Plans whether tarcap should request pending DAG blocks from a peer.
@@ -1875,20 +1912,9 @@ fn plan_pbft_sync_start(facts: NetworkPbftSyncStartFacts) -> NetworkPbftSyncStar
         };
     }
 
-    let selected = facts
-        .candidates
-        .into_iter()
-        .filter(|candidate| {
-            !candidate.is_light_node
-                || facts
-                    .local_pbft_synced_period
-                    .saturating_add(candidate.light_node_history)
-                    >= candidate.pbft_chain_size
-        })
-        .max_by(|left, right| {
-            left.pbft_chain_size
-                .cmp(&right.pbft_chain_size)
-                .then_with(|| left.dag_level.cmp(&right.dag_level))
+    let selected =
+        select_serviceable_max_chain_peer(facts.candidates, facts.local_pbft_synced_period, |_| {
+            true
         });
 
     let Some(peer) = selected else {
@@ -1929,29 +1955,43 @@ fn plan_pbft_sync_start(facts: NetworkPbftSyncStartFacts) -> NetworkPbftSyncStar
     }
 }
 
+fn plan_max_chain_peer_selection(facts: NetworkPeerSelectionFacts) -> NetworkPeerSelectionPlan {
+    let selected = select_serviceable_max_chain_peer(
+        facts.candidates,
+        facts.local_pbft_syncing_period,
+        |_| true,
+    );
+
+    let Some(peer) = selected else {
+        return NetworkPeerSelectionPlan {
+            status: NETWORK_STATUS_PLAN_STATUS_NO_ELIGIBLE_PEER,
+            error_code: "NETWORK_STATUS_NO_ELIGIBLE_PEER".to_owned(),
+            has_peer: false,
+            peer_id: [0; 64],
+            peer_pbft_chain_size: 0,
+        };
+    };
+
+    NetworkPeerSelectionPlan {
+        status: NETWORK_STATUS_PLAN_STATUS_OK,
+        error_code: ERROR_NONE.to_owned(),
+        has_peer: true,
+        peer_id: peer.peer_id,
+        peer_pbft_chain_size: peer.pbft_chain_size,
+    }
+}
+
 fn plan_pending_dag_blocks_request(
     facts: NetworkPendingDagBlocksRequestFacts,
 ) -> NetworkPendingDagBlocksRequestPlan {
     let selected = if facts.has_explicit_peer {
         Some(facts.explicit_peer)
     } else {
-        facts
-            .candidates
-            .into_iter()
-            .filter(|candidate| {
-                !candidate.peer_dag_synced
-                    && candidate.dag_sync_allowed
-                    && (!candidate.is_light_node
-                        || facts
-                            .local_pbft_syncing_period
-                            .saturating_add(candidate.light_node_history)
-                            >= candidate.pbft_chain_size)
-            })
-            .max_by(|left, right| {
-                left.pbft_chain_size
-                    .cmp(&right.pbft_chain_size)
-                    .then_with(|| left.dag_level.cmp(&right.dag_level))
-            })
+        select_serviceable_max_chain_peer(
+            facts.candidates,
+            facts.local_pbft_syncing_period,
+            |candidate| !candidate.peer_dag_synced && candidate.dag_sync_allowed,
+        )
     };
 
     let Some(peer) = selected else {
@@ -1995,6 +2035,26 @@ fn plan_pending_dag_blocks_request(
         peer_id: peer.peer_id,
         request_period: facts.local_pbft_syncing_period,
     }
+}
+
+fn select_serviceable_max_chain_peer(
+    candidates: Vec<NetworkPbftSyncPeerCandidate>,
+    local_pbft_syncing_period: u64,
+    filter: impl Fn(&NetworkPbftSyncPeerCandidate) -> bool,
+) -> Option<NetworkPbftSyncPeerCandidate> {
+    candidates
+        .into_iter()
+        .filter(|candidate| {
+            filter(candidate)
+                && (!candidate.is_light_node
+                    || local_pbft_syncing_period.saturating_add(candidate.light_node_history)
+                        >= candidate.pbft_chain_size)
+        })
+        .max_by(|left, right| {
+            left.pbft_chain_size
+                .cmp(&right.pbft_chain_size)
+                .then_with(|| left.dag_level.cmp(&right.dag_level))
+        })
 }
 
 fn is_supported_ingress_packet(packet_type: u32) -> bool {
@@ -2584,6 +2644,63 @@ mod tests {
 
         assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_ALREADY_SYNCING);
         assert!(!plan.start_sync);
+        assert!(!plan.has_peer);
+    }
+
+    #[test]
+    fn plan_max_chain_peer_selection_selects_highest_chain_peer() {
+        let api = ConsensusNetworkApi::new();
+
+        let plan = api.plan_max_chain_peer_selection(NetworkPeerSelectionFacts {
+            local_pbft_syncing_period: 10,
+            candidates: vec![sync_candidate(1, 12, 20), sync_candidate(2, 13, 1)],
+        });
+
+        assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_OK);
+        assert!(plan.has_peer);
+        assert_eq!(plan.peer_id, peer(2));
+        assert_eq!(plan.peer_pbft_chain_size, 13);
+    }
+
+    #[test]
+    fn plan_max_chain_peer_selection_breaks_ties_by_dag_level() {
+        let api = ConsensusNetworkApi::new();
+
+        let plan = api.plan_max_chain_peer_selection(NetworkPeerSelectionFacts {
+            local_pbft_syncing_period: 10,
+            candidates: vec![sync_candidate(1, 12, 20), sync_candidate(2, 12, 21)],
+        });
+
+        assert!(plan.has_peer);
+        assert_eq!(plan.peer_id, peer(2));
+    }
+
+    #[test]
+    fn plan_max_chain_peer_selection_skips_light_peer_that_cannot_serve_history() {
+        let api = ConsensusNetworkApi::new();
+        let mut light = sync_candidate(1, 20, 50);
+        light.is_light_node = true;
+        light.light_node_history = 4;
+
+        let plan = api.plan_max_chain_peer_selection(NetworkPeerSelectionFacts {
+            local_pbft_syncing_period: 10,
+            candidates: vec![light, sync_candidate(2, 13, 1)],
+        });
+
+        assert!(plan.has_peer);
+        assert_eq!(plan.peer_id, peer(2));
+    }
+
+    #[test]
+    fn plan_max_chain_peer_selection_returns_no_peer_without_candidates() {
+        let api = ConsensusNetworkApi::new();
+
+        let plan = api.plan_max_chain_peer_selection(NetworkPeerSelectionFacts {
+            local_pbft_syncing_period: 10,
+            candidates: vec![],
+        });
+
+        assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_NO_ELIGIBLE_PEER);
         assert!(!plan.has_peer);
     }
 

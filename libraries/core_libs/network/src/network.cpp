@@ -18,8 +18,45 @@
 #include "network/tarcap/stats/time_period_packets_stats.hpp"
 #include "network/tarcap/taraxa_capability.hpp"
 #include "pbft/pbft_manager.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
 
 namespace taraxa {
+
+#ifdef RUSTAXA_ENABLE
+namespace {
+
+rustaxa::NetworkApiConfig defaultNetworkApiConfig() {
+  rustaxa::NetworkApiConfig config{};
+  config.max_payload_bytes = 64 * 1024 * 1024;
+  config.max_retained_payloads = 4096;
+  config.max_effects_per_drain = 1024;
+  return config;
+}
+
+rustaxa::NetworkPbftSyncPeerCandidate toNetworkSyncPeerCandidate(
+    const std::shared_ptr<network::tarcap::TaraxaPeer> &peer) {
+  rustaxa::NetworkPbftSyncPeerCandidate candidate{};
+  candidate.peer_id = peer->getId().asArray();
+  candidate.pbft_chain_size = peer->pbft_chain_size_.load();
+  candidate.dag_level = peer->dag_level_.load();
+  candidate.is_light_node = peer->peer_light_node.load();
+  candidate.light_node_history = peer->peer_light_node_history.load();
+  candidate.peer_dag_synced = peer->peer_dag_synced_.load();
+  candidate.peer_dag_syncing = peer->peer_dag_syncing_.load();
+  candidate.dag_sync_allowed = peer->dagSyncingAllowed();
+  return candidate;
+}
+
+}  // namespace
+
+struct Network::RustConsensusNetworkApiHolder {
+  RustConsensusNetworkApiHolder() : api(rustaxa::create_consensus_network_api(defaultNetworkApiConfig())) {}
+
+  rust::Box<rustaxa::BridgeConsensusNetworkApi> api;
+};
+#endif
 
 Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const std::filesystem::path &network_file_path,
 #ifndef RUSTAXA_ENABLE
@@ -42,6 +79,10 @@ Network::Network(const FullNodeConfig &config, const h256 &genesis_hash, const s
   auto const &node_addr = kConf.getFirstWallet().node_addr;
   LOG_OBJECTS_CREATE("NETWORK");
   LOG(log_nf_) << "Read Network Config: " << std::endl << config.network << std::endl;
+
+#ifdef RUSTAXA_ENABLE
+  rust_consensus_network_api_ = std::make_unique<RustConsensusNetworkApiHolder>();
+#endif
 
   all_packets_stats_ = std::make_shared<network::tarcap::TimePeriodPacketsStats>(
       kConf.network.ddos_protection.packets_stats_time_period_ms, node_addr);
@@ -338,6 +379,30 @@ void Network::handleMaliciousSyncPeer(const dev::p2p::NodeID &node_id) {
 }
 
 std::shared_ptr<network::tarcap::TaraxaPeer> Network::getMaxChainPeer() const {
+#ifdef RUSTAXA_ENABLE
+  rustaxa::NetworkPeerSelectionFacts facts{};
+  facts.local_pbft_syncing_period = pbft_mgr_->pbftSyncingPeriod();
+  for (const auto &tarcap : tarcaps_) {
+    for (const auto &peer_entry : tarcap.second->getPeersState()->getAllPeers()) {
+      facts.candidates.push_back(toNetworkSyncPeerCandidate(peer_entry.second));
+    }
+  }
+
+  const auto peer_selection_plan =
+      rust_consensus_network_api_->api->consensus_network_plan_max_chain_peer_selection(facts);
+  if (!peer_selection_plan.has_peer) {
+    return nullptr;
+  }
+
+  const auto selected_peer_id = dev::p2p::NodeID(peer_selection_plan.peer_id);
+  for (const auto &tarcap : tarcaps_) {
+    if (auto peer = tarcap.second->getPeersState()->getPeer(selected_peer_id); peer) {
+      return peer;
+    }
+  }
+  return nullptr;
+#endif
+
   std::shared_ptr<network::tarcap::TaraxaPeer> max_chain_peer{nullptr};
 
   for (const auto &tarcap : tarcaps_) {
@@ -359,6 +424,25 @@ std::shared_ptr<network::tarcap::TaraxaPeer> Network::getMaxChainPeer() const {
 void Network::requestPillarBlockVotesBundle(taraxa::PbftPeriod period, const taraxa::blk_hash_t &pillar_block_hash) {
   // Max peer among all tarcaps
   const auto max_peer = getMaxChainPeer();
+#ifdef RUSTAXA_ENABLE
+  if (!max_peer) {
+    return;
+  }
+
+  for (const auto &tarcap : tarcaps_) {
+    const auto peer = tarcap.second->getPeersState()->getPeer(max_peer->getId());
+    if (!peer) {
+      continue;
+    }
+
+    auto get_pillar_votes_bundle_packet_handler =
+        tarcap.second->getSpecificHandler<network::tarcap::IGetPillarVotesBundlePacketHandler>(
+            network::SubprotocolPacketType::kGetPillarVotesBundlePacket);
+    get_pillar_votes_bundle_packet_handler->requestPillarVotesBundle(period, pillar_block_hash, peer);
+    return;
+  }
+  return;
+#endif
 
   for (const auto &tarcap : tarcaps_) {
     // Try to get most up-to-date peer

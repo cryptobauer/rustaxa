@@ -8,6 +8,7 @@
 #include <libp2p/Session.h>
 
 #include <boost/thread.hpp>
+#include <memory>
 
 #include "common/thread_pool.hpp"
 #include "config/config.hpp"
@@ -103,6 +104,10 @@ class Network {
   void addBootNodes(bool initial = false);
 
  private:
+#ifdef RUSTAXA_ENABLE
+  struct RustConsensusNetworkApiHolder;
+#endif
+
   // Node config
   const FullNodeConfig &kConf;
 
@@ -131,6 +136,10 @@ class Network {
 
   // Threadpool for periodic and delayed events
   util::ThreadPool periodic_events_tp_;
+
+#ifdef RUSTAXA_ENABLE
+  std::unique_ptr<RustConsensusNetworkApiHolder> rust_consensus_network_api_;
+#endif
 
   LOG_OBJECTS_DEFINE
 };

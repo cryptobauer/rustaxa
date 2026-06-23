@@ -368,6 +368,32 @@ TEST(ConsensusNetworkApiBridgeTest, pbftSyncStartPlanningRoutesThroughNetworkApi
   EXPECT_TRUE(plan.enable_snapshot_creation);
 }
 
+TEST(ConsensusNetworkApiBridgeTest, maxChainPeerSelectionRoutesThroughNetworkApi) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+
+  rustaxa::NetworkPeerSelectionFacts facts{};
+  facts.local_pbft_syncing_period = 10;
+  rustaxa::NetworkPbftSyncPeerCandidate light{};
+  light.peer_id = nodeId(0x49);
+  light.pbft_chain_size = 20;
+  light.dag_level = 50;
+  light.is_light_node = true;
+  light.light_node_history = 4;
+  rustaxa::NetworkPbftSyncPeerCandidate selected{};
+  selected.peer_id = nodeId(0x4A);
+  selected.pbft_chain_size = 12;
+  selected.dag_level = 21;
+  facts.candidates.push_back(light);
+  facts.candidates.push_back(selected);
+
+  const auto plan = network_api->consensus_network_plan_max_chain_peer_selection(facts);
+
+  EXPECT_EQ(plan.status, 0);
+  EXPECT_TRUE(plan.has_peer);
+  EXPECT_EQ(plan.peer_id, nodeId(0x4A));
+  EXPECT_EQ(plan.peer_pbft_chain_size, 12);
+}
+
 TEST(ConsensusNetworkApiBridgeTest, pendingDagBlocksRequestPlanningRoutesThroughNetworkApi) {
   auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
 

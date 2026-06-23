@@ -203,6 +203,10 @@ Rules:
     explicit peer snapshot or compact live peer candidates before Rust selects an eligible peer and gates the PBFT-period
     match required for `GetDagSyncPacket`. Tarcap still CAS-reserves the live peer, reads non-finalized DAG block hashes
     from `DagManager`, encodes the request packet, and sends the transport message.
+  - Network-level max-chain peer selection now routes through
+    `consensus_network_plan_max_chain_peer_selection`; `Network` supplies compact peer candidates from all active tarcap
+    versions before Rust applies PBFT chain size, DAG-level tie-breaking, and light-node history eligibility. `Network`
+    still performs live peer lookup and dispatches `GetPillarVotesBundlePacket` through the selected tarcap handler.
   - Network effect result reports now echo typed effect identity fields, and Rust rejects mismatched reports before
     accepting acknowledgements. This keeps temporary executor work visible instead of treating an `effect_id` alone as
     proof that the intended action ran.
@@ -220,9 +224,6 @@ Rules:
     sync peer is installed.
   - Pending-DAG-block request execution still uses tarcap peer reservation plus the temporary DagManager snapshot and
     request-packet executor path after Rust returns the selected peer and requested period.
-  - `Network::requestPillarBlockVotesBundle` still selects the max-chain peer through `PeersState::getMaxChainPeer`.
-    Moving this behind the facade should be handled with the same network-level `BridgeConsensusNetworkApi` lifetime
-    used by the packet handlers instead of creating a second ad hoc bridge owner.
   - Proposed-block sidecar and PBFT blocks bundle recording still use the temporary PBFT manager executor boundary until
     the network API is injected with the same Rust proposed-block runtime/storage handle used by PBFT.
   - The facade methods themselves do not call consensus shims, C++ consensus managers, `DbStorage`, peer transport,

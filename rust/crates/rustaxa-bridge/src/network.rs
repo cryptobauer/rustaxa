@@ -179,6 +179,20 @@ impl BridgeConsensusNetworkApi {
         ))
     }
 
+    /// Selects the best max-chain peer from compact network-owned peer facts.
+    pub fn consensus_network_plan_max_chain_peer_selection(
+        &self,
+        facts: rustaxa_ffi::NetworkPeerSelectionFacts,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkPeerSelectionPlan> {
+        let api = self
+            .api
+            .lock()
+            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        Ok(to_bridge_network_peer_selection_plan(
+            api.plan_max_chain_peer_selection(to_domain_network_peer_selection_facts(facts)),
+        ))
+    }
+
     /// Plans whether pending DAG blocks should be requested and from which peer.
     pub fn consensus_network_plan_pending_dag_blocks_request(
         &self,
@@ -675,6 +689,31 @@ fn to_bridge_network_pbft_sync_start_plan(
         peer_pbft_chain_size: plan.peer_pbft_chain_size,
         request_period: plan.request_period,
         enable_snapshot_creation: plan.enable_snapshot_creation,
+    }
+}
+
+fn to_domain_network_peer_selection_facts(
+    value: rustaxa_ffi::NetworkPeerSelectionFacts,
+) -> rustaxa_consensus::NetworkPeerSelectionFacts {
+    rustaxa_consensus::NetworkPeerSelectionFacts {
+        local_pbft_syncing_period: value.local_pbft_syncing_period,
+        candidates: value
+            .candidates
+            .into_iter()
+            .map(to_domain_network_pbft_sync_peer_candidate)
+            .collect(),
+    }
+}
+
+fn to_bridge_network_peer_selection_plan(
+    plan: rustaxa_consensus::NetworkPeerSelectionPlan,
+) -> rustaxa_ffi::NetworkPeerSelectionPlan {
+    rustaxa_ffi::NetworkPeerSelectionPlan {
+        status: plan.status,
+        error_code: plan.error_code,
+        has_peer: plan.has_peer,
+        peer_id: plan.peer_id,
+        peer_pbft_chain_size: plan.peer_pbft_chain_size,
     }
 }
 

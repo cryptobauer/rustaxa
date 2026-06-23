@@ -777,6 +777,21 @@ pub mod rustaxa_ffi {
         enable_snapshot_creation: bool,
     }
 
+    /// Compact facts needed to select the best live network peer.
+    struct NetworkPeerSelectionFacts {
+        local_pbft_syncing_period: u64,
+        candidates: Vec<NetworkPbftSyncPeerCandidate>,
+    }
+
+    /// Side-effect-free peer-selection plan for tarcap execution.
+    struct NetworkPeerSelectionPlan {
+        status: u8,
+        error_code: String,
+        has_peer: bool,
+        peer_id: [u8; 64],
+        peer_pbft_chain_size: u64,
+    }
+
     /// Compact facts needed to plan a pending-DAG-block request.
     struct NetworkPendingDagBlocksRequestFacts {
         local_pbft_syncing_period: u64,
@@ -4939,6 +4954,10 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusNetworkApi,
             facts: NetworkPbftSyncStartFacts,
         ) -> Result<NetworkPbftSyncStartPlan>;
+        pub fn consensus_network_plan_max_chain_peer_selection(
+            self: &BridgeConsensusNetworkApi,
+            facts: NetworkPeerSelectionFacts,
+        ) -> Result<NetworkPeerSelectionPlan>;
         pub fn consensus_network_plan_pending_dag_blocks_request(
             self: &BridgeConsensusNetworkApi,
             facts: NetworkPendingDagBlocksRequestFacts,
