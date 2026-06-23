@@ -123,8 +123,9 @@ Rules:
   - Accepted PBFT vote admission requests can now queue vote `RECORD_CONSENSUS_OBJECT` through
     `consensus_network_queue_pbft_vote_admission_request_effects`; tarcap executes the temporary verified-vote mutation
     through the effect executor and reports the matching effect identity back to Rust.
-  - Rust-enabled vote-bundle handling no longer performs its own direct `VoteManager::voteAlreadyValidated` pre-check;
-    duplicate/non-admitted votes flow through the common network API admission path.
+  - Rust-enabled single-vote and vote-bundle handling no longer perform direct
+    `VoteManager::voteAlreadyValidated` pre-checks outside the common admission executor path; duplicate/non-admitted
+    votes flow through the network API admission request route.
   - Accepted PBFT vote admission can now queue vote `MARK_PEER_KNOWN` through
     `consensus_network_queue_pbft_vote_admission_effects`; tarcap executes that peer-cache mutation via the same
     `drain_work` / `report_effect_results` path instead of mutating the peer directly.

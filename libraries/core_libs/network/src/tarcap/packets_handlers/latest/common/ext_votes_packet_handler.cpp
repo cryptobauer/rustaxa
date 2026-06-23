@@ -89,11 +89,6 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
   // tarcap/network pipeline overlay. Rust decides deterministic PBFT vote
   // ingress gates here; C++ still executes peer sync requests, live sidecar
   // admission, proposed-block handling, logging, and typed network effects.
-  if (vote_mgr_->voteAlreadyValidated(vote->getHash())) {
-    LOG(this->log_dg_) << "Received vote " << vote->getHash() << " has already been validated";
-    return {};
-  }
-
   const auto [current_pbft_round, current_pbft_period] = pbft_mgr_->getPbftRoundAndPeriod();
   rustaxa::PbftVoteIngressFact ingress_fact{};
   ingress_fact.period = vote->getPeriod();
