@@ -745,6 +745,26 @@ pub mod rustaxa_ffi {
         next_votes_round: u64,
     }
 
+    /// Compact facts needed to validate an initial status packet.
+    struct NetworkInitialStatusFacts {
+        local_chain_id: u64,
+        peer_chain_id: u64,
+        expected_genesis_hash: [u8; 32],
+        peer_genesis_hash: [u8; 32],
+        local_pbft_synced_period: u64,
+        peer_pbft_chain_size: u64,
+        peer_is_light_node: bool,
+        peer_light_node_history: u64,
+    }
+
+    /// Side-effect-free initial-status admission plan for tarcap execution.
+    struct NetworkInitialStatusPlan {
+        status: u8,
+        error_code: String,
+        accept_peer: bool,
+        disconnect_peer: bool,
+    }
+
     /// Compact peer candidate for PBFT sync-start planning.
     struct NetworkPbftSyncPeerCandidate {
         peer_id: [u8; 64],
@@ -4950,6 +4970,10 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusNetworkApi,
             facts: NetworkStatusSyncFacts,
         ) -> Result<NetworkStatusSyncPlan>;
+        pub fn consensus_network_plan_initial_status(
+            self: &BridgeConsensusNetworkApi,
+            facts: NetworkInitialStatusFacts,
+        ) -> Result<NetworkInitialStatusPlan>;
         pub fn consensus_network_plan_pbft_sync_start(
             self: &BridgeConsensusNetworkApi,
             facts: NetworkPbftSyncStartFacts,

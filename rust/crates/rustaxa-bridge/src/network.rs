@@ -165,6 +165,20 @@ impl BridgeConsensusNetworkApi {
         )))
     }
 
+    /// Plans whether an initial status packet should be accepted.
+    pub fn consensus_network_plan_initial_status(
+        &self,
+        facts: rustaxa_ffi::NetworkInitialStatusFacts,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkInitialStatusPlan> {
+        let api = self
+            .api
+            .lock()
+            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        Ok(to_bridge_network_initial_status_plan(
+            api.plan_initial_status(to_domain_network_initial_status_facts(facts)),
+        ))
+    }
+
     /// Plans whether PBFT sync should start and which peer should serve it.
     pub fn consensus_network_plan_pbft_sync_start(
         &self,
@@ -644,6 +658,32 @@ fn to_bridge_network_status_sync_plan(
         request_next_votes: plan.request_next_votes,
         next_votes_period: plan.next_votes_period,
         next_votes_round: plan.next_votes_round,
+    }
+}
+
+fn to_domain_network_initial_status_facts(
+    value: rustaxa_ffi::NetworkInitialStatusFacts,
+) -> rustaxa_consensus::NetworkInitialStatusFacts {
+    rustaxa_consensus::NetworkInitialStatusFacts {
+        local_chain_id: value.local_chain_id,
+        peer_chain_id: value.peer_chain_id,
+        expected_genesis_hash: value.expected_genesis_hash,
+        peer_genesis_hash: value.peer_genesis_hash,
+        local_pbft_synced_period: value.local_pbft_synced_period,
+        peer_pbft_chain_size: value.peer_pbft_chain_size,
+        peer_is_light_node: value.peer_is_light_node,
+        peer_light_node_history: value.peer_light_node_history,
+    }
+}
+
+fn to_bridge_network_initial_status_plan(
+    plan: rustaxa_consensus::NetworkInitialStatusPlan,
+) -> rustaxa_ffi::NetworkInitialStatusPlan {
+    rustaxa_ffi::NetworkInitialStatusPlan {
+        status: plan.status,
+        error_code: plan.error_code,
+        accept_peer: plan.accept_peer,
+        disconnect_peer: plan.disconnect_peer,
     }
 }
 

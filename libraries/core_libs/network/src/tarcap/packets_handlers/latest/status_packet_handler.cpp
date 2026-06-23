@@ -13,6 +13,16 @@
 
 namespace taraxa::network::tarcap {
 
+#ifdef RUSTAXA_ENABLE
+namespace {
+
+constexpr uint8_t kNetworkStatusPlanStatusChainIdMismatch = 6;
+constexpr uint8_t kNetworkStatusPlanStatusGenesisMismatch = 7;
+constexpr uint8_t kNetworkStatusPlanStatusLightNodeHistoryUnavailable = 8;
+
+}  // namespace
+#endif
+
 StatusPacketHandler::StatusPacketHandler(const FullNodeConfig& conf, std::shared_ptr<PeersState> peers_state,
                                          std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                                          std::shared_ptr<PbftSyncingState> pbft_syncing_state,
@@ -52,6 +62,50 @@ void StatusPacketHandler::process(const threadpool::PacketData& packet_data, con
       }
     }
 
+#ifdef RUSTAXA_ENABLE
+    rustaxa::NetworkInitialStatusFacts initial_status_facts{};
+    initial_status_facts.local_chain_id = kConf.genesis.chain_id;
+    initial_status_facts.peer_chain_id = packet.initial_data->peer_chain_id;
+    initial_status_facts.expected_genesis_hash = kGenesisHash.asArray();
+    initial_status_facts.peer_genesis_hash = packet.initial_data->genesis_hash.asArray();
+    initial_status_facts.local_pbft_synced_period = pbft_synced_period;
+    initial_status_facts.peer_pbft_chain_size = packet.peer_pbft_chain_size;
+    initial_status_facts.peer_is_light_node = packet.initial_data->is_light_node;
+    initial_status_facts.peer_light_node_history = packet.initial_data->node_history;
+    const auto initial_status_plan =
+        rust_consensus_network_api_->api->consensus_network_plan_initial_status(initial_status_facts);
+    if (!initial_status_plan.accept_peer) {
+      if (initial_status_plan.status == kNetworkStatusPlanStatusChainIdMismatch) {
+        LOG((peers_state_->getPeersCount()) ? log_nf_ : log_er_)
+            << "Incorrect network id " << packet.initial_data->peer_chain_id << ", host " << peer->getId().abridged()
+            << " will be disconnected";
+      } else if (initial_status_plan.status == kNetworkStatusPlanStatusGenesisMismatch) {
+        LOG((peers_state_->getPeersCount()) ? log_nf_ : log_wr_)
+            << "Incorrect genesis hash " << packet.initial_data->genesis_hash << ", host " << peer->getId().abridged()
+            << " will be disconnected";
+      } else if (initial_status_plan.status == kNetworkStatusPlanStatusLightNodeHistoryUnavailable) {
+        selected_peer->peer_light_node = true;
+        selected_peer->peer_light_node_history = packet.initial_data->node_history;
+        LOG((peers_state_->getPeersCount()) ? log_nf_ : log_er_)
+            << "Light node " << peer->getId().abridged() << " would not be able to serve our syncing request. "
+            << "Current synced period " << pbft_synced_period << ", peer synced period " << packet.peer_pbft_chain_size
+            << ", peer light node history " << packet.initial_data->node_history << ". Peer will be disconnected";
+      } else {
+        LOG(log_wr_) << "Initial status rejected with status " << static_cast<uint32_t>(initial_status_plan.status)
+                     << ", error " << static_cast<std::string>(initial_status_plan.error_code) << ". Host "
+                     << peer->getId().abridged() << " will be disconnected";
+      }
+      if (initial_status_plan.disconnect_peer) {
+        disconnect(peer->getId(), dev::p2p::UserReason);
+      }
+      return;
+    }
+
+    if (packet.initial_data->is_light_node) {
+      selected_peer->peer_light_node = true;
+      selected_peer->peer_light_node_history = packet.initial_data->node_history;
+    }
+#else
     if (packet.initial_data->peer_chain_id != kConf.genesis.chain_id) {
       LOG((peers_state_->getPeersCount()) ? log_nf_ : log_er_)
           << "Incorrect network id " << packet.initial_data->peer_chain_id << ", host " << peer->getId().abridged()
@@ -81,6 +135,7 @@ void StatusPacketHandler::process(const threadpool::PacketData& packet_data, con
         return;
       }
     }
+#endif
 
     selected_peer->dag_level_ = packet.peer_dag_level;
     selected_peer->pbft_chain_size_ = packet.peer_pbft_chain_size;

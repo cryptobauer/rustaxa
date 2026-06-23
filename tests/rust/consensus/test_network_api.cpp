@@ -334,6 +334,31 @@ TEST(ConsensusNetworkApiBridgeTest, statusSyncPlanningRoutesThroughNetworkApi) {
   EXPECT_EQ(plan.next_votes_round, 2);
 }
 
+TEST(ConsensusNetworkApiBridgeTest, initialStatusPlanningRoutesThroughNetworkApi) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+
+  rustaxa::NetworkInitialStatusFacts facts{};
+  facts.local_chain_id = 7;
+  facts.peer_chain_id = 7;
+  facts.expected_genesis_hash = hash(0xA1);
+  facts.peer_genesis_hash = hash(0xA1);
+  facts.local_pbft_synced_period = 10;
+  facts.peer_pbft_chain_size = 12;
+  facts.peer_is_light_node = true;
+  facts.peer_light_node_history = 3;
+
+  auto plan = network_api->consensus_network_plan_initial_status(facts);
+  EXPECT_EQ(plan.status, 0);
+  EXPECT_TRUE(plan.accept_peer);
+  EXPECT_FALSE(plan.disconnect_peer);
+
+  facts.peer_genesis_hash = hash(0xA2);
+  plan = network_api->consensus_network_plan_initial_status(facts);
+  EXPECT_EQ(plan.status, 7);
+  EXPECT_FALSE(plan.accept_peer);
+  EXPECT_TRUE(plan.disconnect_peer);
+}
+
 TEST(ConsensusNetworkApiBridgeTest, pbftSyncStartPlanningRoutesThroughNetworkApi) {
   auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
 

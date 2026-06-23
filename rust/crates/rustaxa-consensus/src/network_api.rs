@@ -45,6 +45,12 @@ pub const NETWORK_STATUS_PLAN_STATUS_SYNC_NOT_NEEDED: u8 = 3;
 pub const NETWORK_STATUS_PLAN_STATUS_DAG_ALREADY_SYNCED: u8 = 4;
 /// Network status/sync planner found the peer's PBFT period does not match local sync period.
 pub const NETWORK_STATUS_PLAN_STATUS_DAG_PERIOD_MISMATCH: u8 = 5;
+/// Network status/sync planner found a peer chain-id mismatch.
+pub const NETWORK_STATUS_PLAN_STATUS_CHAIN_ID_MISMATCH: u8 = 6;
+/// Network status/sync planner found a peer genesis hash mismatch.
+pub const NETWORK_STATUS_PLAN_STATUS_GENESIS_MISMATCH: u8 = 7;
+/// Network status/sync planner found a light node that cannot serve local history.
+pub const NETWORK_STATUS_PLAN_STATUS_LIGHT_NODE_HISTORY_UNAVAILABLE: u8 = 8;
 
 /// Network work drain completed successfully.
 pub const NETWORK_EFFECT_BATCH_STATUS_OK: u8 = 0;
@@ -491,6 +497,40 @@ pub struct NetworkStatusSyncPlan {
     pub next_votes_period: u64,
     /// Local PBFT round to put into the next-votes request.
     pub next_votes_round: u64,
+}
+
+/// Compact facts needed to validate an initial status packet.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkInitialStatusFacts {
+    /// Locally configured chain id.
+    pub local_chain_id: u64,
+    /// Chain id advertised by the peer.
+    pub peer_chain_id: u64,
+    /// Locally configured genesis hash.
+    pub expected_genesis_hash: [u8; 32],
+    /// Genesis hash advertised by the peer.
+    pub peer_genesis_hash: [u8; 32],
+    /// Local PBFT sync period used for light-node serviceability checks.
+    pub local_pbft_synced_period: u64,
+    /// PBFT chain size advertised by the peer.
+    pub peer_pbft_chain_size: u64,
+    /// Whether the peer advertises itself as a light node.
+    pub peer_is_light_node: bool,
+    /// Number of recent periods the peer can serve when it is a light node.
+    pub peer_light_node_history: u64,
+}
+
+/// Side-effect-free initial-status admission plan for tarcap execution.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkInitialStatusPlan {
+    /// Stable status for boundary logs and tests.
+    pub status: u8,
+    /// Stable textual status for boundary logs and tests.
+    pub error_code: String,
+    /// Whether tarcap should accept and materialize the peer.
+    pub accept_peer: bool,
+    /// Whether tarcap should disconnect the peer.
+    pub disconnect_peer: bool,
 }
 
 /// Compact peer candidate for PBFT sync-start planning.
@@ -960,6 +1000,19 @@ impl ConsensusNetworkApi {
     #[must_use]
     pub fn plan_status_sync(&self, facts: NetworkStatusSyncFacts) -> NetworkStatusSyncPlan {
         plan_status_sync(facts)
+    }
+
+    /// Plans initial status packet admission.
+    ///
+    /// Rust owns deterministic chain-id, genesis, and light-node history
+    /// admission decisions. Tarcap still owns pending-peer lookup, peer-state
+    /// materialization, logging, and disconnect execution.
+    #[must_use]
+    pub fn plan_initial_status(
+        &self,
+        facts: NetworkInitialStatusFacts,
+    ) -> NetworkInitialStatusPlan {
+        plan_initial_status(facts)
     }
 
     /// Plans whether PBFT sync should start and which peer should serve it.
@@ -1898,6 +1951,47 @@ fn plan_status_sync(facts: NetworkStatusSyncFacts) -> NetworkStatusSyncPlan {
     }
 }
 
+fn plan_initial_status(facts: NetworkInitialStatusFacts) -> NetworkInitialStatusPlan {
+    if facts.peer_chain_id != facts.local_chain_id {
+        return NetworkInitialStatusPlan {
+            status: NETWORK_STATUS_PLAN_STATUS_CHAIN_ID_MISMATCH,
+            error_code: "NETWORK_STATUS_CHAIN_ID_MISMATCH".to_owned(),
+            accept_peer: false,
+            disconnect_peer: true,
+        };
+    }
+
+    if facts.peer_genesis_hash != facts.expected_genesis_hash {
+        return NetworkInitialStatusPlan {
+            status: NETWORK_STATUS_PLAN_STATUS_GENESIS_MISMATCH,
+            error_code: "NETWORK_STATUS_GENESIS_MISMATCH".to_owned(),
+            accept_peer: false,
+            disconnect_peer: true,
+        };
+    }
+
+    if facts.peer_is_light_node
+        && facts
+            .local_pbft_synced_period
+            .saturating_add(facts.peer_light_node_history)
+            < facts.peer_pbft_chain_size
+    {
+        return NetworkInitialStatusPlan {
+            status: NETWORK_STATUS_PLAN_STATUS_LIGHT_NODE_HISTORY_UNAVAILABLE,
+            error_code: "NETWORK_STATUS_LIGHT_NODE_HISTORY_UNAVAILABLE".to_owned(),
+            accept_peer: false,
+            disconnect_peer: true,
+        };
+    }
+
+    NetworkInitialStatusPlan {
+        status: NETWORK_STATUS_PLAN_STATUS_OK,
+        error_code: ERROR_NONE.to_owned(),
+        accept_peer: true,
+        disconnect_peer: false,
+    }
+}
+
 fn plan_pbft_sync_start(facts: NetworkPbftSyncStartFacts) -> NetworkPbftSyncStartPlan {
     if facts.local_pbft_syncing {
         return NetworkPbftSyncStartPlan {
@@ -2187,6 +2281,19 @@ mod tests {
             peer_pbft_round: 2,
             peer_dag_synced: true,
             peer_last_status_pbft_chain_size: 9,
+        }
+    }
+
+    fn initial_status_facts() -> NetworkInitialStatusFacts {
+        NetworkInitialStatusFacts {
+            local_chain_id: 7,
+            peer_chain_id: 7,
+            expected_genesis_hash: hash(1),
+            peer_genesis_hash: hash(1),
+            local_pbft_synced_period: 10,
+            peer_pbft_chain_size: 12,
+            peer_is_light_node: false,
+            peer_light_node_history: 0,
         }
     }
 
@@ -2560,6 +2667,61 @@ mod tests {
         assert!(!plan.request_pbft_sync);
         assert!(!plan.request_pending_dag_blocks);
         assert!(!plan.request_next_votes);
+    }
+
+    #[test]
+    fn plan_initial_status_accepts_matching_status() {
+        let api = ConsensusNetworkApi::new();
+
+        let plan = api.plan_initial_status(initial_status_facts());
+
+        assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_OK);
+        assert!(plan.accept_peer);
+        assert!(!plan.disconnect_peer);
+    }
+
+    #[test]
+    fn plan_initial_status_rejects_chain_id_mismatch() {
+        let api = ConsensusNetworkApi::new();
+        let mut facts = initial_status_facts();
+        facts.peer_chain_id = 8;
+
+        let plan = api.plan_initial_status(facts);
+
+        assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_CHAIN_ID_MISMATCH);
+        assert!(!plan.accept_peer);
+        assert!(plan.disconnect_peer);
+    }
+
+    #[test]
+    fn plan_initial_status_rejects_genesis_mismatch() {
+        let api = ConsensusNetworkApi::new();
+        let mut facts = initial_status_facts();
+        facts.peer_genesis_hash = hash(2);
+
+        let plan = api.plan_initial_status(facts);
+
+        assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_GENESIS_MISMATCH);
+        assert!(!plan.accept_peer);
+        assert!(plan.disconnect_peer);
+    }
+
+    #[test]
+    fn plan_initial_status_rejects_light_node_without_history() {
+        let api = ConsensusNetworkApi::new();
+        let mut facts = initial_status_facts();
+        facts.peer_is_light_node = true;
+        facts.peer_light_node_history = 1;
+        facts.peer_pbft_chain_size = 20;
+
+        let plan = api.plan_initial_status(facts);
+
+        assert_eq!(
+            plan.status,
+            NETWORK_STATUS_PLAN_STATUS_LIGHT_NODE_HISTORY_UNAVAILABLE
+        );
+        assert!(!plan.accept_peer);
+        assert!(plan.disconnect_peer);
     }
 
     #[test]
