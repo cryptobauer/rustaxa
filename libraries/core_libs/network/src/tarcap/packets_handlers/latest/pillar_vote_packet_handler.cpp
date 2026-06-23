@@ -23,7 +23,7 @@ void PillarVotePacketHandler::process(const threadpool::PacketData &packet_data,
     throw MaliciousPeerException(err_msg.str());
   }
 
-  if (processPillarVote(packet.pillar_vote, peer)) {
+  if (processPillarVote(packet.pillar_vote, peer, kPacketType_)) {
     onNewPillarVote(packet.pillar_vote);
   }
 }

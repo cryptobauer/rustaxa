@@ -34,7 +34,7 @@ void PillarVotesBundlePacketHandler::process(const threadpool::PacketData &packe
       throw MaliciousPeerException(err_msg.str());
     }
 
-    processPillarVote(pillar_vote, peer);
+    processPillarVote(pillar_vote, peer, kPacketType_);
   }
 }
 

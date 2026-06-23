@@ -777,6 +777,16 @@ pub mod rustaxa_ffi {
         admit_period_data: bool,
     }
 
+    /// Pillar vote admission request supplied by network/tarcap.
+    struct NetworkPillarVoteAdmissionRequestEffects {
+        peer_id: [u8; 64],
+        vote_hash: [u8; 32],
+        period: u64,
+        vote_rlp: Vec<u8>,
+        source_payload_id: u64,
+        admit_vote: bool,
+    }
+
     /// Transaction admission request supplied by network/tarcap.
     struct NetworkTransactionAdmissionRequestEffects {
         peer_id: [u8; 64],
@@ -4825,6 +4835,14 @@ pub mod rustaxa_ffi {
         pub fn consensus_network_queue_pbft_sync_period_data_admission_request_effects(
             self: &BridgeConsensusNetworkApi,
             effects: NetworkPbftSyncPeriodDataAdmissionRequestEffects,
+        ) -> Result<NetworkIngressDecision>;
+        pub fn consensus_network_queue_pillar_vote_admission_request_effects(
+            self: &BridgeConsensusNetworkApi,
+            effects: NetworkPillarVoteAdmissionRequestEffects,
+        ) -> Result<NetworkIngressDecision>;
+        pub fn consensus_network_queue_pillar_vote_bundle_member_admission_request_effects(
+            self: &BridgeConsensusNetworkApi,
+            effects: NetworkPillarVoteAdmissionRequestEffects,
         ) -> Result<NetworkIngressDecision>;
         pub fn consensus_network_queue_transaction_admission_request_effects(
             self: &BridgeConsensusNetworkApi,

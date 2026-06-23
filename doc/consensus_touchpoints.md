@@ -105,10 +105,11 @@ Rules:
 - The first implemented direct bridge slice is intentionally narrow:
   - Rust domain facade: `rust/crates/rustaxa-consensus/src/network_api.rs`
   - CXX bridge facade: `BridgeConsensusNetworkApi` in `rust/crates/rustaxa-bridge/src/network.rs`
-  - It accepts latest vote, vote-bundle, DAG block, DAG sync, transaction, PBFT sync, and PBFT blocks bundle packet ids
+  - It accepts latest vote, vote-bundle, DAG block, DAG sync, transaction, PBFT sync, pillar vote, pillar votes bundle,
+    and PBFT blocks bundle packet ids
     (`kVotePacket = 1`, `kVotesBundlePacket = 3`, `kDagBlockPacket = 5`, `kDagSyncPacket = 6`,
-    `kTransactionPacket = 7`, `kPbftSyncPacket = 11`, `kPbftBlocksBundlePacket = 16`) into a bounded Rust-owned
-    ingress arena.
+    `kTransactionPacket = 7`, `kPbftSyncPacket = 11`, `kPillarVotePacket = 13`,
+    `kPillarVotesBundlePacket = 15`, `kPbftBlocksBundlePacket = 16`) into a bounded Rust-owned ingress arena.
   - It exposes effect-drain and effect-result-reporting contracts used by the Rust-enabled vote, DAG block, PBFT blocks
     bundle, and transaction packet handlers.
   - Rust-enabled `TaraxaCapability::interpretCapabilityPacket` now shadow-submits peer-gated canonical packet bytes
@@ -160,20 +161,26 @@ Rules:
     `consensus_network_queue_pbft_sync_period_data_admission_request_effects`; tarcap supplies canonical `PeriodData`
     RLP, PBFT block hash, PBFT period, and current-block cert-vote count to the facade before the temporary PBFT sync
     executor validates the effect identity and calls `PbftManager::periodDataQueuePush`.
+  - Pillar vote and pillar votes bundle member admission can now queue pillar vote `RECORD_CONSENSUS_OBJECT` through
+    `consensus_network_queue_pillar_vote_admission_request_effects` and
+    `consensus_network_queue_pillar_vote_bundle_member_admission_request_effects`; tarcap supplies canonical pillar
+    vote RLP, vote hash, and period to the facade before the temporary pillar executor inserts the verified vote and
+    marks it known for the peer.
   - Network effect result reports now echo typed effect identity fields, and Rust rejects mismatched reports before
     accepting acknowledgements. This keeps temporary executor work visible instead of treating an `effect_id` alone as
     proof that the intended action ran.
   - This is still not the final production route: tarcap executes the drained network effects, accepted votes still
     mutate verified-vote state through the temporary VoteManager executor path, DAG block and DAG sync intake still use
     the temporary DagManager executor path, PBFT sync period-data intake still uses the temporary PBFT manager executor
-    path, and transaction gossip admission still uses the temporary TransactionManager executor path.
+    path, pillar vote intake still uses the temporary PillarChainManager executor path, and transaction gossip admission
+    still uses the temporary TransactionManager executor path.
   - Proposed-block sidecar and PBFT blocks bundle recording still use the temporary PBFT manager executor boundary until
     the network API is injected with the same Rust proposed-block runtime/storage handle used by PBFT.
   - The facade methods themselves do not call consensus shims, C++ consensus managers, `DbStorage`, peer transport,
     packet wrapping, or gossip.
-  - Remaining work is to move vote validation, verified-vote mutation, packet interpretation, shared proposed-block
-    runtime injection, and other packet families behind the facade, then remove the corresponding consensus-manager
-    dependencies from tarcap handlers.
+  - Remaining work is to move vote validation, verified-vote mutation, pillar relevance/signature validation, packet
+    interpretation, shared proposed-block runtime injection, and other packet families behind the facade, then remove
+    the corresponding consensus-manager dependencies from tarcap handlers.
 
 First useful routes:
 
