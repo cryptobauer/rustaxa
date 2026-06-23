@@ -13,6 +13,7 @@ use crate::pbft_vote_ingress::{
     context_to_domain as vote_ingress_context_to_domain,
     fact_to_domain as vote_ingress_fact_to_domain, plan_to_ffi as vote_ingress_plan_to_ffi,
 };
+use ethereum_types::H256;
 use std::sync::Mutex;
 
 /// Creates an empty Rust-owned network/tarcap consensus API facade.
@@ -189,6 +190,22 @@ impl BridgeConsensusNetworkApi {
                 to_domain_pbft_vote_ingress_context(context),
             ),
         ))
+    }
+
+    /// Plans pillar-vote relevance through the external network/tarcap API.
+    pub fn consensus_network_plan_pillar_vote_relevance(
+        &self,
+        fact: rustaxa_ffi::PillarVoteRelevanceFact,
+    ) -> anyhow::Result<rustaxa_ffi::PillarVoteRelevancePlan> {
+        let api = self
+            .api
+            .lock()
+            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        let plan = api.plan_pillar_vote_relevance(to_domain_pillar_vote_relevance_fact(fact)?)?;
+        Ok(rustaxa_ffi::PillarVoteRelevancePlan {
+            status: plan.status_code(),
+            is_relevant: plan.is_relevant,
+        })
     }
 
     /// Queues network effects derived from accepted PBFT vote admission.
@@ -421,6 +438,31 @@ fn to_domain_pbft_vote_ingress_context(
         peer_pbft_chain_size: value.peer_pbft_chain_size,
         source_payload_id: value.source_payload_id,
     }
+}
+
+fn to_domain_pillar_vote_relevance_fact(
+    value: rustaxa_ffi::PillarVoteRelevanceFact,
+) -> anyhow::Result<rustaxa_consensus::PillarVoteRelevanceFact> {
+    let current_pillar_block_period = if value.has_current_pillar_block {
+        Some(value.current_pillar_block_period)
+    } else {
+        None
+    };
+    let current_pillar_block_hash = if value.has_current_pillar_block {
+        Some(H256::from(value.current_pillar_block_hash))
+    } else {
+        None
+    };
+
+    Ok(rustaxa_consensus::PillarVoteRelevanceFact {
+        vote_period: value.vote_period,
+        vote_block_hash: H256::from(value.vote_block_hash),
+        current_pillar_block_period,
+        current_pillar_block_hash,
+        first_pillar_block_period: value.first_pillar_block_period,
+        pillar_blocks_interval: value.pillar_blocks_interval,
+        vote_already_known: value.vote_already_known,
+    })
 }
 
 fn to_bridge_network_ingress_decision(

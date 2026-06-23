@@ -261,6 +261,29 @@ TEST(ConsensusNetworkApiBridgeTest, pbftVoteBundleIngressQueuesReportAndDisconne
   EXPECT_EQ(batch.effects[1].reason_code, 0);
 }
 
+TEST(ConsensusNetworkApiBridgeTest, pillarVoteRelevancePlanningRoutesThroughNetworkApi) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+
+  rustaxa::PillarVoteRelevanceFact fact{};
+  fact.vote_period = 21;
+  fact.vote_block_hash = hash(0x71);
+  fact.current_pillar_block_period = 20;
+  fact.current_pillar_block_hash = hash(0x71);
+  fact.has_current_pillar_block = true;
+  fact.first_pillar_block_period = 10;
+  fact.pillar_blocks_interval = 10;
+  fact.vote_already_known = false;
+
+  const auto accepted = network_api->consensus_network_plan_pillar_vote_relevance(fact);
+  EXPECT_EQ(accepted.status, 0);
+  EXPECT_TRUE(accepted.is_relevant);
+
+  fact.vote_block_hash = hash(0x72);
+  const auto rejected = network_api->consensus_network_plan_pillar_vote_relevance(fact);
+  EXPECT_EQ(rejected.status, 4);
+  EXPECT_FALSE(rejected.is_relevant);
+}
+
 TEST(ConsensusNetworkApiBridgeTest, pbftVoteAdmissionEffectsQueueMarkKnownEffect) {
   auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
 

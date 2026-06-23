@@ -20,6 +20,11 @@ constexpr uint8_t kNetworkEffectKindRecordConsensusObject = 8;
 constexpr uint8_t kNetworkObjectKindPillarVote = 5;
 constexpr uint32_t kNetworkPacketKindPillarVote = 13;
 constexpr uint32_t kNetworkPacketKindPillarVotesBundle = 15;
+constexpr uint8_t kPillarVoteRelevanceStatusRelevant = 0;
+constexpr uint8_t kPillarVoteRelevanceStatusVoteAlreadyKnown = 1;
+constexpr uint8_t kPillarVoteRelevanceStatusMissingCurrentPillarBlock = 2;
+constexpr uint8_t kPillarVoteRelevanceStatusVotePeriodMismatch = 3;
+constexpr uint8_t kPillarVoteRelevanceStatusVoteBlockHashMismatch = 4;
 
 rustaxa::NetworkApiConfig defaultNetworkApiConfig() {
   rustaxa::NetworkApiConfig config{};
@@ -73,11 +78,46 @@ ExtPillarVotePacketHandler::ExtPillarVotePacketHandler(
 bool ExtPillarVotePacketHandler::processPillarVote(const std::shared_ptr<PillarVote> &vote,
                                                    const std::shared_ptr<TaraxaPeer> &peer,
                                                    SubprotocolPacketType packet_type) {
+#ifdef RUSTAXA_ENABLE
+  const auto relevance_plan = planPillarVoteRelevance(vote);
+  if (!relevance_plan.is_relevant) {
+    const auto current_pillar_block = pillar_chain_manager_->getCurrentPillarBlock();
+    switch (relevance_plan.status) {
+      case kPillarVoteRelevanceStatusVoteAlreadyKnown:
+        LOG(this->log_dg_) << "Received vote " << vote->getHash() << " already saved";
+        return false;
+      case kPillarVoteRelevanceStatusMissingCurrentPillarBlock:
+        LOG(this->log_nf_) << "Received vote's period " << vote->getPeriod()
+                           << ", no pillar block created yet. Accepting votes with "
+                           << pillar_chain_manager_->kFicusHfConfig.firstPillarBlockPeriod() + 1 << " period";
+        return false;
+      case kPillarVoteRelevanceStatusVotePeriodMismatch:
+        if (!current_pillar_block) {
+          LOG(this->log_nf_) << "Received vote's period " << vote->getPeriod() << ", current pillar block missing";
+        } else {
+          LOG(this->log_nf_) << "Received vote's period " << vote->getPeriod() << ", current pillar block period "
+                             << current_pillar_block->getPeriod();
+        }
+        return false;
+      case kPillarVoteRelevanceStatusVoteBlockHashMismatch:
+        LOG(this->log_nf_) << "Received vote's block hash " << vote->getBlockHash() << " != current pillar block hash "
+                           << current_pillar_block->getHash();
+        return false;
+      case kPillarVoteRelevanceStatusRelevant:
+        break;
+      default:
+        LOG(this->log_wr_) << "Unable to evaluate pillar vote relevance for " << vote->getHash()
+                           << ": network api status " << static_cast<uint32_t>(relevance_plan.status);
+        return false;
+    }
+  }
+#else
   if (!pillar_chain_manager_->isRelevantPillarVote(vote)) {
     LOG(this->log_dg_) << "Drop irrelevant pillar vote " << vote->getHash() << ", period " << vote->getPeriod()
                        << " from peer " << peer->getId();
     return false;
   }
+#endif
 
   if (!pillar_chain_manager_->validatePillarVote(vote)) {
     // TODO: enable for mainnet
@@ -107,6 +147,27 @@ bool ExtPillarVotePacketHandler::processPillarVote(const std::shared_ptr<PillarV
 }
 
 #ifdef RUSTAXA_ENABLE
+rustaxa::PillarVoteRelevancePlan ExtPillarVotePacketHandler::planPillarVoteRelevance(
+    const std::shared_ptr<PillarVote> &vote) const {
+  assert(rust_consensus_network_api_);
+  rustaxa::PillarVoteRelevanceFact fact{};
+  fact.vote_period = vote->getPeriod();
+  fact.vote_block_hash = vote->getBlockHash().asArray();
+  fact.first_pillar_block_period = pillar_chain_manager_->kFicusHfConfig.firstPillarBlockPeriod();
+  fact.pillar_blocks_interval = pillar_chain_manager_->kFicusHfConfig.pillar_blocks_interval;
+  // Duplicate rejection remains covered by validatePillarVote during this slice
+  // because tarcap cannot inspect the Rust-backed pillar vote index directly.
+  fact.vote_already_known = false;
+
+  if (const auto current_pillar_block = pillar_chain_manager_->getCurrentPillarBlock(); current_pillar_block) {
+    fact.has_current_pillar_block = true;
+    fact.current_pillar_block_period = current_pillar_block->getPeriod();
+    fact.current_pillar_block_hash = current_pillar_block->getHash().asArray();
+  }
+
+  return rust_consensus_network_api_->api->consensus_network_plan_pillar_vote_relevance(fact);
+}
+
 rustaxa::NetworkIngressDecision ExtPillarVotePacketHandler::queuePillarVoteAdmissionRequestEffects(
     const rustaxa::NetworkPillarVoteAdmissionRequestEffects &effects, SubprotocolPacketType packet_type) {
   assert(rust_consensus_network_api_);

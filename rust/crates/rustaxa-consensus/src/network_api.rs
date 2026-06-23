@@ -16,7 +16,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::{
     PbftVoteIngressContext, PbftVoteIngressFact, PbftVoteIngressPlan, PbftVoteIngressStatus,
-    plan_pbft_vote_bundle_ingress, plan_pbft_vote_ingress,
+    PillarVoteRelevanceFact, PillarVoteRelevancePlan, plan_pbft_vote_bundle_ingress,
+    plan_pbft_vote_ingress, plan_pillar_vote_relevance,
 };
 
 /// Network/tarcap packet bytes were accepted into the ingress arena.
@@ -675,6 +676,20 @@ impl ConsensusNetworkApi {
         context: PbftVoteIngressContext,
     ) -> PbftVoteIngressPlan {
         plan_pbft_vote_bundle_ingress(reference, vote, context)
+    }
+
+    /// Plans deterministic pillar-vote relevance through the Network/Tarcap API.
+    ///
+    /// Tarcap supplies decoded vote facts plus compact local pillar-chain
+    /// context. Rust owns the relevance decision so network handlers do not
+    /// call pillar manager relevance helpers directly. Signature,
+    /// eligibility, and insertion remain separate executor/validation
+    /// boundaries until the pillar vote runtime is fully injected here.
+    pub fn plan_pillar_vote_relevance(
+        &self,
+        fact: PillarVoteRelevanceFact,
+    ) -> anyhow::Result<PillarVoteRelevancePlan> {
+        plan_pillar_vote_relevance(fact)
     }
 
     /// Routes one PBFT vote ingress decision and queues network effects.

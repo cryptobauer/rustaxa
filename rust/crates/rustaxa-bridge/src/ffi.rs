@@ -4808,6 +4808,10 @@ pub mod rustaxa_ffi {
             vote: PbftVoteIngressFact,
             context: NetworkPbftVoteIngressContext,
         ) -> Result<NetworkIngressDecision>;
+        pub fn consensus_network_plan_pillar_vote_relevance(
+            self: &BridgeConsensusNetworkApi,
+            fact: PillarVoteRelevanceFact,
+        ) -> Result<PillarVoteRelevancePlan>;
         pub fn consensus_network_queue_pbft_vote_admission_effects(
             self: &BridgeConsensusNetworkApi,
             effects: NetworkPbftVoteAdmissionEffects,
