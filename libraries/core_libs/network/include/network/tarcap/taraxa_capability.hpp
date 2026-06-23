@@ -91,7 +91,7 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
                    std::shared_ptr<final_chain::FinalChain> final_chain,
                    InitPacketsHandlers init_packets_handlers = kInitLatestVersionHandlers);
 
-  virtual ~TaraxaCapability() = default;
+  virtual ~TaraxaCapability();
   TaraxaCapability(const TaraxaCapability &ro) = delete;
   TaraxaCapability &operator=(const TaraxaCapability &ro) = delete;
   TaraxaCapability(TaraxaCapability &&ro) = delete;
@@ -121,6 +121,11 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
  private:
   bool filterSyncIrrelevantPackets(SubprotocolPacketType packet_type) const;
   void handlePacketQueueOverLimit(std::shared_ptr<dev::p2p::Host> host, dev::p2p::NodeID node_id, size_t tp_queue_size);
+#ifdef RUSTAXA_ENABLE
+  struct RustConsensusNetworkApiHolder;
+  void shadowIngestConsensusNetworkPacket(SubprotocolPacketType packet_type, const dev::p2p::NodeID &node_id,
+                                          const dev::bytes &payload_bytes) const;
+#endif
 
  private:
   // Capability version
@@ -149,6 +154,10 @@ class TaraxaCapability final : public dev::p2p::CapabilityFace {
   std::chrono::system_clock::time_point queue_over_limit_start_time_ = {};
   bool queue_over_limit_ = false;
   uint32_t last_disconnect_number_of_peers_ = 0;
+
+#ifdef RUSTAXA_ENABLE
+  std::unique_ptr<RustConsensusNetworkApiHolder> rust_consensus_network_api_;
+#endif
 
   LOG_OBJECTS_DEFINE
 };

@@ -107,7 +107,13 @@ Rules:
     bounded Rust-owned ingress arena.
   - It exposes empty effect-drain and effect-result-reporting contracts, but no production tarcap handler is rerouted
     yet.
+  - Rust-enabled `TaraxaCapability::interpretCapabilityPacket` now shadow-submits peer-gated canonical packet bytes
+    directly to `BridgeConsensusNetworkApi` before the legacy tarcap thread-pool enqueue.
+  - Shadow ingress is non-authoritative: unsupported packet types are rejected by the API, accepted packet bytes are
+    retained only by the bounded Rust ingress arena, and legacy tarcap handlers continue to execute exactly as before.
   - It does not call consensus shims, C++ consensus managers, `DbStorage`, peer transport, packet wrapping, or gossip.
+  - Remaining work is to move packet interpretation and network-effect execution behind `drain_work` /
+    `report_effect_results`, then remove the corresponding consensus-manager dependencies from tarcap handlers.
 
 First useful routes:
 
