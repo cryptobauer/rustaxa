@@ -137,11 +137,14 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
     peer->markPbftVoteAsKnown(vote->getHash());
 #endif
 
-    // Do not process vote that has already been validated
+#ifndef RUSTAXA_ENABLE
+    // Do not process vote that has already been validated. Rust-enabled builds
+    // route duplicate handling through the common network API admission path.
     if (vote_mgr_->voteAlreadyValidated(vote->getHash())) {
       LOG(log_dg_) << "Received vote " << vote->getHash() << " has already been validated";
       continue;
     }
+#endif
 
     LOG(log_dg_) << "Received vote " << vote->getHash().abridged() << ", period " << vote->getPeriod() << ", round "
                  << vote->getRound() << ", step " << vote->getStep() << ", voter " << vote->getVoterAddr()
