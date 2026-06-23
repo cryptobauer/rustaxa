@@ -93,6 +93,8 @@ pub const NETWORK_OBJECT_KIND_DAG_BLOCK: u8 = 3;
 pub const NETWORK_OBJECT_KIND_PBFT_PERIOD_DATA: u8 = 4;
 /// Network object effect identifies a pillar vote hash.
 pub const NETWORK_OBJECT_KIND_PILLAR_VOTE: u8 = 5;
+/// Network object effect identifies a pillar vote validation request.
+pub const NETWORK_OBJECT_KIND_PILLAR_VOTE_VALIDATION: u8 = 6;
 
 /// Network packet effect identifies the latest PBFT vote packet.
 pub const NETWORK_PACKET_KIND_PBFT_VOTE: u32 = 1;
@@ -416,6 +418,23 @@ pub struct NetworkPillarVoteAdmissionRequestEffects {
     pub source_payload_id: u64,
     /// Whether the executor should run verified pillar-vote admission.
     pub admit_vote: bool,
+}
+
+/// Pillar vote validation request supplied by network/tarcap.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPillarVoteValidationRequestEffects {
+    /// Peer that supplied the pillar vote.
+    pub peer_id: [u8; 64],
+    /// Pillar vote hash decoded by the network boundary.
+    pub vote_hash: [u8; 32],
+    /// Pillar period decoded from the vote.
+    pub period: u64,
+    /// Canonical pillar vote RLP.
+    pub vote_rlp: Vec<u8>,
+    /// Optional retained packet payload id.
+    pub source_payload_id: u64,
+    /// Whether the executor should run pillar-vote validation.
+    pub validate_vote: bool,
 }
 
 /// Transaction admission request supplied by network/tarcap.
@@ -1015,6 +1034,62 @@ impl ConsensusNetworkApi {
         effects: NetworkPillarVoteAdmissionRequestEffects,
     ) -> NetworkIngressDecision {
         self.queue_pillar_vote_record_effects(effects, NETWORK_PACKET_KIND_PILLAR_VOTES_BUNDLE)
+    }
+
+    /// Queues pillar-vote validation for a single pillar vote packet.
+    ///
+    /// Rust owns the validation request identity and effect result contract.
+    /// The live duplicate/signature/eligibility checks remain a temporary C++
+    /// executor boundary until pillar vote validation is fully injected here.
+    pub fn queue_pillar_vote_validation_request_effects(
+        &mut self,
+        effects: NetworkPillarVoteValidationRequestEffects,
+    ) -> NetworkIngressDecision {
+        self.queue_pillar_vote_validation_effects(effects, NETWORK_PACKET_KIND_PILLAR_VOTE)
+    }
+
+    /// Queues pillar-vote validation for a pillar votes bundle member.
+    pub fn queue_pillar_vote_bundle_member_validation_request_effects(
+        &mut self,
+        effects: NetworkPillarVoteValidationRequestEffects,
+    ) -> NetworkIngressDecision {
+        self.queue_pillar_vote_validation_effects(effects, NETWORK_PACKET_KIND_PILLAR_VOTES_BUNDLE)
+    }
+
+    fn queue_pillar_vote_validation_effects(
+        &mut self,
+        effects: NetworkPillarVoteValidationRequestEffects,
+        packet_kind: u32,
+    ) -> NetworkIngressDecision {
+        let before_effects = self.pending_effects.len();
+        if effects.validate_vote {
+            self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: effects.source_payload_id,
+                kind: NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT,
+                peer_id: effects.peer_id,
+                packet_kind,
+                payload_bytes: effects.vote_rlp,
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_PILLAR_VOTE_VALIDATION,
+                object_hash: effects.vote_hash,
+                sync_kind: 0,
+                sync_start: 0,
+                reason_code: 0,
+                dependency_id: 0,
+                period: effects.period,
+                round: 0,
+            });
+        }
+
+        NetworkIngressDecision {
+            payload_id: effects.source_payload_id,
+            payload_accepted: effects.source_payload_id != 0,
+            routed: true,
+            status: NETWORK_INGRESS_STATUS_ACCEPTED,
+            error_code: ERROR_NONE.to_owned(),
+            queued_effect_count: self.pending_effects.len().saturating_sub(before_effects) as u32,
+        }
     }
 
     fn queue_pillar_vote_record_effects(
@@ -1931,6 +2006,86 @@ mod tests {
         assert_eq!(batch.effects[0].object_hash, hash(0xB0));
         assert_eq!(batch.effects[0].period, 46);
         assert_eq!(batch.effects[0].source_payload_id, 84);
+    }
+
+    #[test]
+    fn queue_pillar_vote_validation_request_effects_records_validation() {
+        let mut api = ConsensusNetworkApi::new();
+
+        let decision = api.queue_pillar_vote_validation_request_effects(
+            NetworkPillarVoteValidationRequestEffects {
+                peer_id: peer(16),
+                vote_hash: hash(0xB1),
+                period: 47,
+                vote_rlp: vec![0xC0, 0x09],
+                source_payload_id: 85,
+                validate_vote: true,
+            },
+        );
+
+        assert!(decision.routed);
+        assert_eq!(decision.status, NETWORK_INGRESS_STATUS_ACCEPTED);
+        assert_eq!(decision.queued_effect_count, 1);
+
+        let batch = api.drain_work(10);
+        assert_eq!(batch.effects.len(), 1);
+        assert_eq!(
+            batch.effects[0].kind,
+            NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT
+        );
+        assert_eq!(batch.effects[0].peer_id, peer(16));
+        assert_eq!(
+            batch.effects[0].packet_kind,
+            NETWORK_PACKET_KIND_PILLAR_VOTE
+        );
+        assert_eq!(batch.effects[0].payload_bytes, vec![0xC0, 0x09]);
+        assert_eq!(
+            batch.effects[0].object_kind,
+            NETWORK_OBJECT_KIND_PILLAR_VOTE_VALIDATION
+        );
+        assert_eq!(batch.effects[0].object_hash, hash(0xB1));
+        assert_eq!(batch.effects[0].period, 47);
+        assert_eq!(batch.effects[0].source_payload_id, 85);
+    }
+
+    #[test]
+    fn queue_pillar_vote_bundle_member_validation_request_effects_records_validation() {
+        let mut api = ConsensusNetworkApi::new();
+
+        let decision = api.queue_pillar_vote_bundle_member_validation_request_effects(
+            NetworkPillarVoteValidationRequestEffects {
+                peer_id: peer(17),
+                vote_hash: hash(0xB2),
+                period: 48,
+                vote_rlp: vec![0xC0, 0x0A],
+                source_payload_id: 86,
+                validate_vote: true,
+            },
+        );
+
+        assert!(decision.routed);
+        assert_eq!(decision.status, NETWORK_INGRESS_STATUS_ACCEPTED);
+        assert_eq!(decision.queued_effect_count, 1);
+
+        let batch = api.drain_work(10);
+        assert_eq!(batch.effects.len(), 1);
+        assert_eq!(
+            batch.effects[0].kind,
+            NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT
+        );
+        assert_eq!(batch.effects[0].peer_id, peer(17));
+        assert_eq!(
+            batch.effects[0].packet_kind,
+            NETWORK_PACKET_KIND_PILLAR_VOTES_BUNDLE
+        );
+        assert_eq!(batch.effects[0].payload_bytes, vec![0xC0, 0x0A]);
+        assert_eq!(
+            batch.effects[0].object_kind,
+            NETWORK_OBJECT_KIND_PILLAR_VOTE_VALIDATION
+        );
+        assert_eq!(batch.effects[0].object_hash, hash(0xB2));
+        assert_eq!(batch.effects[0].period, 48);
+        assert_eq!(batch.effects[0].source_payload_id, 86);
     }
 
     #[test]

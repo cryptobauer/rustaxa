@@ -18,6 +18,7 @@ constexpr uint8_t kNetworkEffectResultStatusOk = 0;
 constexpr uint8_t kNetworkEffectResultStatusFailed = 1;
 constexpr uint8_t kNetworkEffectKindRecordConsensusObject = 8;
 constexpr uint8_t kNetworkObjectKindPillarVote = 5;
+constexpr uint8_t kNetworkObjectKindPillarVoteValidation = 6;
 constexpr uint32_t kNetworkPacketKindPillarVote = 13;
 constexpr uint32_t kNetworkPacketKindPillarVotesBundle = 15;
 constexpr uint8_t kPillarVoteRelevanceStatusRelevant = 0;
@@ -119,6 +120,19 @@ bool ExtPillarVotePacketHandler::processPillarVote(const std::shared_ptr<PillarV
   }
 #endif
 
+#ifdef RUSTAXA_ENABLE
+  rustaxa::NetworkPillarVoteValidationRequestEffects validation_effects{};
+  validation_effects.peer_id = peer->getId().asArray();
+  validation_effects.vote_hash = vote->getHash().asArray();
+  validation_effects.period = vote->getPeriod();
+  validation_effects.vote_rlp = toBridgeBytes(vote->rlp());
+  validation_effects.source_payload_id = 0;
+  validation_effects.validate_vote = true;
+  (void)queuePillarVoteValidationRequestEffects(validation_effects, packet_type);
+  if (!executePillarVoteValidationEffect(vote, peer, packet_type)) {
+    return false;
+  }
+#else
   if (!pillar_chain_manager_->validatePillarVote(vote)) {
     // TODO: enable for mainnet
     // std::ostringstream err_msg;
@@ -126,6 +140,7 @@ bool ExtPillarVotePacketHandler::processPillarVote(const std::shared_ptr<PillarV
     // throw MaliciousPeerException(err_msg.str());
     return false;
   }
+#endif
 
 #ifdef RUSTAXA_ENABLE
   rustaxa::NetworkPillarVoteAdmissionRequestEffects effects{};
@@ -166,6 +181,75 @@ rustaxa::PillarVoteRelevancePlan ExtPillarVotePacketHandler::planPillarVoteRelev
   }
 
   return rust_consensus_network_api_->api->consensus_network_plan_pillar_vote_relevance(fact);
+}
+
+rustaxa::NetworkIngressDecision ExtPillarVotePacketHandler::queuePillarVoteValidationRequestEffects(
+    const rustaxa::NetworkPillarVoteValidationRequestEffects &effects, SubprotocolPacketType packet_type) {
+  assert(rust_consensus_network_api_);
+  switch (packet_type) {
+    case SubprotocolPacketType::kPillarVotePacket:
+      return rust_consensus_network_api_->api->consensus_network_queue_pillar_vote_validation_request_effects(effects);
+    case SubprotocolPacketType::kPillarVotesBundlePacket:
+      return rust_consensus_network_api_->api
+          ->consensus_network_queue_pillar_vote_bundle_member_validation_request_effects(effects);
+    default:
+      throw std::runtime_error("Network API pillar vote validation received unsupported packet type");
+  }
+}
+
+bool ExtPillarVotePacketHandler::executePillarVoteValidationEffect(const std::shared_ptr<PillarVote> &vote,
+                                                                   const std::shared_ptr<TaraxaPeer> &peer,
+                                                                   SubprotocolPacketType packet_type) {
+  assert(rust_consensus_network_api_);
+  const auto batch = rust_consensus_network_api_->api->consensus_network_drain_work(1);
+  rust::Vec<rustaxa::NetworkEffectResult> results;
+  results.reserve(batch.effects.size());
+  std::exception_ptr pending_exception;
+  bool validated = false;
+
+  for (const auto &effect : batch.effects) {
+    rustaxa::NetworkEffectResult result{};
+    result.effect_id = effect.effect_id;
+    result.kind = effect.kind;
+    result.peer_id = effect.peer_id;
+    result.packet_kind = effect.packet_kind;
+    result.object_kind = effect.object_kind;
+    result.object_hash = effect.object_hash;
+    result.status = kNetworkEffectResultStatusOk;
+
+    try {
+      const auto expected_packet_kind = expectedPillarVotePacketKind(packet_type);
+      const auto effect_payload = bytes(effect.payload_bytes.begin(), effect.payload_bytes.end());
+      if (effect.kind != kNetworkEffectKindRecordConsensusObject ||
+          effect.object_kind != kNetworkObjectKindPillarVoteValidation || effect.packet_kind != expected_packet_kind ||
+          effect.peer_id != peer->getId().asArray() || !vote || vote->getHash().asArray() != effect.object_hash ||
+          vote->getPeriod() != effect.period || vote->rlp() != effect_payload) {
+        throw std::runtime_error("Network API pillar vote validation effect missing matching live vote");
+      }
+
+      validated = pillar_chain_manager_->validatePillarVote(vote);
+      if (!validated) {
+        result.status = kNetworkEffectResultStatusFailed;
+        result.diagnostic = "pillar vote validation rejected";
+      }
+    } catch (const std::exception &e) {
+      result.status = kNetworkEffectResultStatusFailed;
+      result.diagnostic = e.what();
+      pending_exception = std::current_exception();
+    }
+
+    results.push_back(std::move(result));
+  }
+
+  if (!results.empty()) {
+    (void)rust_consensus_network_api_->api->consensus_network_report_effect_results(std::move(results));
+  }
+
+  if (pending_exception) {
+    std::rethrow_exception(pending_exception);
+  }
+
+  return validated;
 }
 
 rustaxa::NetworkIngressDecision ExtPillarVotePacketHandler::queuePillarVoteAdmissionRequestEffects(

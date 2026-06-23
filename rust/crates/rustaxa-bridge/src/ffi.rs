@@ -787,6 +787,16 @@ pub mod rustaxa_ffi {
         admit_vote: bool,
     }
 
+    /// Pillar vote validation request supplied by network/tarcap.
+    struct NetworkPillarVoteValidationRequestEffects {
+        peer_id: [u8; 64],
+        vote_hash: [u8; 32],
+        period: u64,
+        vote_rlp: Vec<u8>,
+        source_payload_id: u64,
+        validate_vote: bool,
+    }
+
     /// Transaction admission request supplied by network/tarcap.
     struct NetworkTransactionAdmissionRequestEffects {
         peer_id: [u8; 64],
@@ -4847,6 +4857,14 @@ pub mod rustaxa_ffi {
         pub fn consensus_network_queue_pillar_vote_bundle_member_admission_request_effects(
             self: &BridgeConsensusNetworkApi,
             effects: NetworkPillarVoteAdmissionRequestEffects,
+        ) -> Result<NetworkIngressDecision>;
+        pub fn consensus_network_queue_pillar_vote_validation_request_effects(
+            self: &BridgeConsensusNetworkApi,
+            effects: NetworkPillarVoteValidationRequestEffects,
+        ) -> Result<NetworkIngressDecision>;
+        pub fn consensus_network_queue_pillar_vote_bundle_member_validation_request_effects(
+            self: &BridgeConsensusNetworkApi,
+            effects: NetworkPillarVoteValidationRequestEffects,
         ) -> Result<NetworkIngressDecision>;
         pub fn consensus_network_queue_transaction_admission_request_effects(
             self: &BridgeConsensusNetworkApi,

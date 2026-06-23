@@ -121,7 +121,8 @@ pub use network_api::{
     NETWORK_INGRESS_STATUS_UNSUPPORTED_PACKET_TYPE, NETWORK_OBJECT_KIND_DAG_BLOCK,
     NETWORK_OBJECT_KIND_PBFT_BLOCK, NETWORK_OBJECT_KIND_PBFT_PERIOD_DATA,
     NETWORK_OBJECT_KIND_PBFT_VOTE, NETWORK_OBJECT_KIND_PILLAR_VOTE,
-    NETWORK_OBJECT_KIND_TRANSACTION, NETWORK_PACKET_KIND_DAG_BLOCK, NETWORK_PACKET_KIND_DAG_SYNC,
+    NETWORK_OBJECT_KIND_PILLAR_VOTE_VALIDATION, NETWORK_OBJECT_KIND_TRANSACTION,
+    NETWORK_PACKET_KIND_DAG_BLOCK, NETWORK_PACKET_KIND_DAG_SYNC,
     NETWORK_PACKET_KIND_PBFT_BLOCKS_BUNDLE, NETWORK_PACKET_KIND_PBFT_SYNC,
     NETWORK_PACKET_KIND_PBFT_VOTE, NETWORK_PACKET_KIND_PILLAR_VOTE,
     NETWORK_PACKET_KIND_PILLAR_VOTES_BUNDLE, NETWORK_PACKET_KIND_TRANSACTION,
@@ -133,7 +134,8 @@ pub use network_api::{
     NetworkPbftProposedBlockSidecarEffects, NetworkPbftSyncPeriodDataAdmissionRequestEffects,
     NetworkPbftVoteAdmissionEffects, NetworkPbftVoteAdmissionRequestEffects,
     NetworkPbftVoteGossipEffects, NetworkPbftVoteIngressContext,
-    NetworkPillarVoteAdmissionRequestEffects, NetworkTransactionAdmissionRequestEffects,
+    NetworkPillarVoteAdmissionRequestEffects, NetworkPillarVoteValidationRequestEffects,
+    NetworkTransactionAdmissionRequestEffects,
 };
 pub use pbft_chain::{
     PbftBlockStorageLookup, PbftChain, PbftChainStorageRestore, load_pbft_block_from_storage,

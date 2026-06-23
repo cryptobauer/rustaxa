@@ -346,6 +346,38 @@ impl BridgeConsensusNetworkApi {
         ))
     }
 
+    /// Queues pillar-vote validation for a single pillar vote packet.
+    pub fn consensus_network_queue_pillar_vote_validation_request_effects(
+        &self,
+        effects: rustaxa_ffi::NetworkPillarVoteValidationRequestEffects,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
+        let mut api = self
+            .api
+            .lock()
+            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        Ok(to_bridge_network_ingress_decision(
+            api.queue_pillar_vote_validation_request_effects(
+                to_domain_pillar_vote_validation_request_effects(effects),
+            ),
+        ))
+    }
+
+    /// Queues pillar-vote validation for a pillar votes bundle member.
+    pub fn consensus_network_queue_pillar_vote_bundle_member_validation_request_effects(
+        &self,
+        effects: rustaxa_ffi::NetworkPillarVoteValidationRequestEffects,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
+        let mut api = self
+            .api
+            .lock()
+            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        Ok(to_bridge_network_ingress_decision(
+            api.queue_pillar_vote_bundle_member_validation_request_effects(
+                to_domain_pillar_vote_validation_request_effects(effects),
+            ),
+        ))
+    }
+
     /// Queues transaction-pool admission for a transaction packet member.
     pub fn consensus_network_queue_transaction_admission_request_effects(
         &self,
@@ -560,6 +592,19 @@ fn to_domain_pillar_vote_admission_request_effects(
         vote_rlp: value.vote_rlp,
         source_payload_id: value.source_payload_id,
         admit_vote: value.admit_vote,
+    }
+}
+
+fn to_domain_pillar_vote_validation_request_effects(
+    value: rustaxa_ffi::NetworkPillarVoteValidationRequestEffects,
+) -> rustaxa_consensus::NetworkPillarVoteValidationRequestEffects {
+    rustaxa_consensus::NetworkPillarVoteValidationRequestEffects {
+        peer_id: value.peer_id,
+        vote_hash: value.vote_hash,
+        period: value.period,
+        vote_rlp: value.vote_rlp,
+        source_payload_id: value.source_payload_id,
+        validate_vote: value.validate_vote,
     }
 }
 

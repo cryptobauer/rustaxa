@@ -535,6 +535,67 @@ TEST(ConsensusNetworkApiBridgeTest, pillarVoteBundleMemberAdmissionRequestQueues
   EXPECT_EQ(batch.effects[0].source_payload_id, 109);
 }
 
+TEST(ConsensusNetworkApiBridgeTest, pillarVoteValidationRequestQueuesRecordObjectEffect) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+
+  rustaxa::NetworkPillarVoteValidationRequestEffects effects{};
+  effects.peer_id = nodeId(0x9D);
+  effects.vote_hash = hash(0xC5);
+  effects.period = 47;
+  effects.vote_rlp = bytes({0xC0, 0x09});
+  effects.source_payload_id = 110;
+  effects.validate_vote = true;
+
+  const auto decision = network_api->consensus_network_queue_pillar_vote_validation_request_effects(effects);
+  EXPECT_TRUE(decision.routed);
+  EXPECT_EQ(decision.status, 0);
+  EXPECT_EQ(decision.queued_effect_count, 1);
+
+  const auto batch = network_api->consensus_network_drain_work(10);
+  ASSERT_EQ(batch.effects.size(), 1);
+  EXPECT_EQ(batch.effects[0].kind, 8);
+  EXPECT_EQ(batch.effects[0].peer_id, nodeId(0x9D));
+  EXPECT_EQ(batch.effects[0].packet_kind, 13);
+  ASSERT_EQ(batch.effects[0].payload_bytes.size(), 2);
+  EXPECT_EQ(batch.effects[0].payload_bytes[0], 0xC0);
+  EXPECT_EQ(batch.effects[0].payload_bytes[1], 0x09);
+  EXPECT_EQ(batch.effects[0].object_kind, 6);
+  EXPECT_EQ(batch.effects[0].object_hash, hash(0xC5));
+  EXPECT_EQ(batch.effects[0].period, 47);
+  EXPECT_EQ(batch.effects[0].source_payload_id, 110);
+}
+
+TEST(ConsensusNetworkApiBridgeTest, pillarVoteBundleMemberValidationRequestQueuesRecordObjectEffect) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+
+  rustaxa::NetworkPillarVoteValidationRequestEffects effects{};
+  effects.peer_id = nodeId(0x9E);
+  effects.vote_hash = hash(0xC6);
+  effects.period = 48;
+  effects.vote_rlp = bytes({0xC0, 0x0A});
+  effects.source_payload_id = 111;
+  effects.validate_vote = true;
+
+  const auto decision =
+      network_api->consensus_network_queue_pillar_vote_bundle_member_validation_request_effects(effects);
+  EXPECT_TRUE(decision.routed);
+  EXPECT_EQ(decision.status, 0);
+  EXPECT_EQ(decision.queued_effect_count, 1);
+
+  const auto batch = network_api->consensus_network_drain_work(10);
+  ASSERT_EQ(batch.effects.size(), 1);
+  EXPECT_EQ(batch.effects[0].kind, 8);
+  EXPECT_EQ(batch.effects[0].peer_id, nodeId(0x9E));
+  EXPECT_EQ(batch.effects[0].packet_kind, 15);
+  ASSERT_EQ(batch.effects[0].payload_bytes.size(), 2);
+  EXPECT_EQ(batch.effects[0].payload_bytes[0], 0xC0);
+  EXPECT_EQ(batch.effects[0].payload_bytes[1], 0x0A);
+  EXPECT_EQ(batch.effects[0].object_kind, 6);
+  EXPECT_EQ(batch.effects[0].object_hash, hash(0xC6));
+  EXPECT_EQ(batch.effects[0].period, 48);
+  EXPECT_EQ(batch.effects[0].source_payload_id, 111);
+}
+
 TEST(ConsensusNetworkApiBridgeTest, transactionAdmissionRequestQueuesRecordObjectEffect) {
   auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
 
