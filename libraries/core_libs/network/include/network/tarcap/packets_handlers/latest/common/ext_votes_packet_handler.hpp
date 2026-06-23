@@ -1,5 +1,7 @@
 #pragma once
 
+#include <memory>
+
 #include "network/tarcap/packets/latest/get_pbft_sync_packet.hpp"
 #include "network/tarcap/packets/latest/votes_bundle_packet.hpp"
 #include "network/tarcap/packets_handlers/latest/common/exceptions.hpp"
@@ -8,6 +10,9 @@
 #include "vote/pbft_vote.hpp"
 #include "vote/votes_bundle_rlp.hpp"
 #include "vote_manager/vote_manager.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
 
 namespace taraxa::network::tarcap {
 
@@ -37,7 +42,7 @@ class ExtVotesPacketHandler : public PacketHandler {
                         std::shared_ptr<SlashingManager> slashing_manager, const addr_t& node_addr,
                         const std::string& log_channel_name);
 
-  virtual ~ExtVotesPacketHandler() = default;
+  virtual ~ExtVotesPacketHandler();
   ExtVotesPacketHandler(const ExtVotesPacketHandler&) = delete;
   ExtVotesPacketHandler(ExtVotesPacketHandler&&) = delete;
   ExtVotesPacketHandler& operator=(const ExtVotesPacketHandler&) = delete;
@@ -63,6 +68,14 @@ class ExtVotesPacketHandler : public PacketHandler {
   bool isPbftRelevantVote(const std::shared_ptr<PbftVote>& vote) const;
 
   void requestPbftNextVotesAtPeriodRound(const dev::p2p::NodeID& peerID, PbftPeriod pbft_period, PbftRound pbft_round);
+
+#ifdef RUSTAXA_ENABLE
+  rustaxa::PbftVoteIngressPlan planPbftVoteIngress(const rustaxa::PbftVoteIngressFact& fact,
+                                                   const rustaxa::PbftVoteIngressContext& context) const;
+  rustaxa::PbftVoteIngressPlan planPbftVoteBundleIngress(const rustaxa::PbftVoteIngressFact& reference,
+                                                         const rustaxa::PbftVoteIngressFact& vote,
+                                                         const rustaxa::PbftVoteIngressContext& context) const;
+#endif
 
  private:
   /**
@@ -97,6 +110,11 @@ class ExtVotesPacketHandler : public PacketHandler {
   std::shared_ptr<PbftChain> pbft_chain_;
   std::shared_ptr<VoteManager> vote_mgr_;
   std::shared_ptr<SlashingManager> slashing_manager_;
+
+#ifdef RUSTAXA_ENABLE
+  struct RustConsensusNetworkApiHolder;
+  std::unique_ptr<RustConsensusNetworkApiHolder> rust_consensus_network_api_;
+#endif
 };
 
 }  // namespace taraxa::network::tarcap

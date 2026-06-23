@@ -42,7 +42,7 @@ pub fn pbft_vote_bundle_ingress_plan(
     )))
 }
 
-fn fact_to_domain(value: FfiPbftVoteIngressFact) -> Result<PbftVoteIngressFact> {
+pub(crate) fn fact_to_domain(value: FfiPbftVoteIngressFact) -> Result<PbftVoteIngressFact> {
     Ok(PbftVoteIngressFact {
         period: value.period,
         round: value.round,
@@ -51,7 +51,7 @@ fn fact_to_domain(value: FfiPbftVoteIngressFact) -> Result<PbftVoteIngressFact> 
     })
 }
 
-const fn context_to_domain(value: FfiPbftVoteIngressContext) -> PbftVoteIngressContext {
+pub(crate) const fn context_to_domain(value: FfiPbftVoteIngressContext) -> PbftVoteIngressContext {
     PbftVoteIngressContext {
         current_period: value.current_period,
         current_round: value.current_round,
@@ -66,7 +66,7 @@ const fn context_to_domain(value: FfiPbftVoteIngressContext) -> PbftVoteIngressC
     }
 }
 
-fn plan_to_ffi(plan: PbftVoteIngressPlan) -> FfiPbftVoteIngressPlan {
+pub(crate) fn plan_to_ffi(plan: PbftVoteIngressPlan) -> FfiPbftVoteIngressPlan {
     FfiPbftVoteIngressPlan {
         status: plan.status.as_u8(),
         error_code: error_code(plan.status).to_owned(),

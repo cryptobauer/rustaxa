@@ -1,10 +1,10 @@
-#include "rustaxa-bridge/ffi.rs.h"
-
 #include <gtest/gtest.h>
 
 #include <array>
 #include <cstdint>
 #include <utility>
+
+#include "rustaxa-bridge/ffi.rs.h"
 
 namespace {
 
@@ -30,8 +30,31 @@ rustaxa::NetworkApiConfig defaultConfig() {
   return config;
 }
 
-rustaxa::NetworkIngressPacket packet(uint32_t packet_type, std::array<uint8_t, 64> peer,
-                                     rust::Vec<uint8_t> payload) {
+rustaxa::PbftVoteIngressFact voteFact(uint64_t period, uint64_t round, uint64_t step, uint8_t vote_type) {
+  rustaxa::PbftVoteIngressFact fact{};
+  fact.period = period;
+  fact.round = round;
+  fact.step = step;
+  fact.vote_type = vote_type;
+  return fact;
+}
+
+rustaxa::PbftVoteIngressContext voteContext() {
+  rustaxa::PbftVoteIngressContext context{};
+  context.current_period = 10;
+  context.current_round = 3;
+  context.current_step = 2;
+  context.max_future_period_delta = 2;
+  context.max_future_round_delta = 2;
+  context.max_future_step_delta = 2;
+  context.validate_max_round_step = true;
+  context.source_peer_is_voter = true;
+  context.can_request_pbft_sync = true;
+  context.can_request_next_votes_sync = true;
+  return context;
+}
+
+rustaxa::NetworkIngressPacket packet(uint32_t packet_type, std::array<uint8_t, 64> peer, rust::Vec<uint8_t> payload) {
   rustaxa::NetworkIngressPacket packet{};
   packet.packet_type = packet_type;
   packet.peer_id = peer;
@@ -99,4 +122,30 @@ TEST(ConsensusNetworkApiBridgeTest, drainWorkAndReportResultsExposeExecutorContr
   EXPECT_EQ(ack.accepted_results, 0);
   EXPECT_EQ(ack.failed_results, 0);
   EXPECT_TRUE(ack.error_code.empty());
+}
+
+TEST(ConsensusNetworkApiBridgeTest, voteIngressPlanningRoutesThroughNetworkApi) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+
+  const auto accepted = network_api->consensus_network_plan_pbft_vote_ingress(voteFact(10, 3, 2, 2), voteContext());
+  EXPECT_TRUE(accepted.accepted);
+  EXPECT_EQ(accepted.status, 0);
+  EXPECT_TRUE(accepted.error_code.empty());
+
+  const auto rejected = network_api->consensus_network_plan_pbft_vote_ingress(voteFact(14, 3, 1, 2), voteContext());
+  EXPECT_FALSE(rejected.accepted);
+  EXPECT_EQ(rejected.status, 3);
+  EXPECT_TRUE(rejected.request_pbft_sync);
+  EXPECT_EQ(rejected.error_code, "PBFT_VOTE_INGRESS_INVALID_PERIOD_TOO_BIG");
+}
+
+TEST(ConsensusNetworkApiBridgeTest, voteBundleIngressPlanningRoutesThroughNetworkApi) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+
+  const auto plan = network_api->consensus_network_plan_pbft_vote_bundle_ingress(voteFact(10, 3, 2, 2),
+                                                                                 voteFact(10, 3, 3, 2), voteContext());
+
+  EXPECT_FALSE(plan.accepted);
+  EXPECT_EQ(plan.status, 8);
+  EXPECT_EQ(plan.error_code, "PBFT_VOTE_INGRESS_BUNDLE_VOTE_MISMATCH");
 }

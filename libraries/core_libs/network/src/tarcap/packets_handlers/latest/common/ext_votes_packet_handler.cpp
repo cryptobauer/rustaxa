@@ -12,6 +12,26 @@
 
 namespace taraxa::network::tarcap {
 
+#ifdef RUSTAXA_ENABLE
+namespace {
+
+rustaxa::NetworkApiConfig defaultNetworkApiConfig() {
+  rustaxa::NetworkApiConfig config{};
+  config.max_payload_bytes = 64 * 1024 * 1024;
+  config.max_retained_payloads = 4096;
+  config.max_effects_per_drain = 1024;
+  return config;
+}
+
+}  // namespace
+
+struct ExtVotesPacketHandler::RustConsensusNetworkApiHolder {
+  RustConsensusNetworkApiHolder() : api(rustaxa::create_consensus_network_api(defaultNetworkApiConfig())) {}
+
+  rust::Box<rustaxa::BridgeConsensusNetworkApi> api;
+};
+#endif
+
 ExtVotesPacketHandler::ExtVotesPacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                                              std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                                              std::shared_ptr<PbftManager> pbft_mgr,
@@ -25,7 +45,13 @@ ExtVotesPacketHandler::ExtVotesPacketHandler(const FullNodeConfig &conf, std::sh
       pbft_mgr_(std::move(pbft_mgr)),
       pbft_chain_(std::move(pbft_chain)),
       vote_mgr_(std::move(vote_mgr)),
-      slashing_manager_(std::move(slashing_manager)) {}
+      slashing_manager_(std::move(slashing_manager)) {
+#ifdef RUSTAXA_ENABLE
+  rust_consensus_network_api_ = std::make_unique<RustConsensusNetworkApiHolder>();
+#endif
+}
+
+ExtVotesPacketHandler::~ExtVotesPacketHandler() = default;
 
 ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
     const std::shared_ptr<PbftVote> &vote, const std::shared_ptr<PbftBlock> &pbft_block,
@@ -65,7 +91,7 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
   ingress_context.can_request_next_votes_sync =
       std::chrono::system_clock::now() - last_votes_sync_request_time_ > kSyncRequestInterval;
 
-  const auto ingress_plan = rustaxa::pbft_vote_ingress_plan(ingress_fact, ingress_context);
+  const auto ingress_plan = planPbftVoteIngress(ingress_fact, ingress_context);
   if (!ingress_plan.accepted) {
     if (ingress_plan.request_pbft_sync) {
       this->sealAndSend(
@@ -263,5 +289,20 @@ void ExtVotesPacketHandler::requestPbftNextVotesAtPeriodRound(const dev::p2p::No
   const auto packet = GetNextVotesBundlePacket{.peer_pbft_period = pbft_period, .peer_pbft_round = pbft_round};
   sealAndSend(peerID, SubprotocolPacketType::kGetNextVotesSyncPacket, encodePacketRlp(packet));
 }
+
+#ifdef RUSTAXA_ENABLE
+rustaxa::PbftVoteIngressPlan ExtVotesPacketHandler::planPbftVoteIngress(
+    const rustaxa::PbftVoteIngressFact &fact, const rustaxa::PbftVoteIngressContext &context) const {
+  assert(rust_consensus_network_api_);
+  return rust_consensus_network_api_->api->consensus_network_plan_pbft_vote_ingress(fact, context);
+}
+
+rustaxa::PbftVoteIngressPlan ExtVotesPacketHandler::planPbftVoteBundleIngress(
+    const rustaxa::PbftVoteIngressFact &reference, const rustaxa::PbftVoteIngressFact &vote,
+    const rustaxa::PbftVoteIngressContext &context) const {
+  assert(rust_consensus_network_api_);
+  return rust_consensus_network_api_->api->consensus_network_plan_pbft_vote_bundle_ingress(reference, vote, context);
+}
+#endif
 
 }  // namespace taraxa::network::tarcap

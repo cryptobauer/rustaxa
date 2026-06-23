@@ -9,6 +9,10 @@
 
 use crate::ffi::rustaxa_ffi;
 use crate::ffi::BridgeConsensusNetworkApi;
+use crate::pbft_vote_ingress::{
+    context_to_domain as vote_ingress_context_to_domain,
+    fact_to_domain as vote_ingress_fact_to_domain, plan_to_ffi as vote_ingress_plan_to_ffi,
+};
 use std::sync::Mutex;
 
 /// Creates an empty Rust-owned network/tarcap consensus API facade.
@@ -102,6 +106,48 @@ impl BridgeConsensusNetworkApi {
             failed_results: ack.failed_results,
             error_code: ack.error_code,
         })
+    }
+
+    /// Plans single-vote PBFT ingress through the external network/tarcap API.
+    ///
+    /// This keeps packet-adjacent vote relevance and sync-hint decisions behind
+    /// the same facade as canonical packet ingress. C++ still supplies compact
+    /// decoded facts and executes returned hints while vote materialization and
+    /// admission are being migrated.
+    pub fn consensus_network_plan_pbft_vote_ingress(
+        &self,
+        fact: rustaxa_ffi::PbftVoteIngressFact,
+        context: rustaxa_ffi::PbftVoteIngressContext,
+    ) -> anyhow::Result<rustaxa_ffi::PbftVoteIngressPlan> {
+        let api = self
+            .api
+            .lock()
+            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        Ok(vote_ingress_plan_to_ffi(api.plan_pbft_vote_ingress(
+            vote_ingress_fact_to_domain(fact)?,
+            vote_ingress_context_to_domain(context),
+        )))
+    }
+
+    /// Plans PBFT vote-bundle ingress through the external network/tarcap API.
+    ///
+    /// The method is side-effect free and intentionally limited to the scalar
+    /// facts needed by bundle-shape and network-window checks.
+    pub fn consensus_network_plan_pbft_vote_bundle_ingress(
+        &self,
+        reference: rustaxa_ffi::PbftVoteIngressFact,
+        vote: rustaxa_ffi::PbftVoteIngressFact,
+        context: rustaxa_ffi::PbftVoteIngressContext,
+    ) -> anyhow::Result<rustaxa_ffi::PbftVoteIngressPlan> {
+        let api = self
+            .api
+            .lock()
+            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        Ok(vote_ingress_plan_to_ffi(api.plan_pbft_vote_bundle_ingress(
+            vote_ingress_fact_to_domain(reference)?,
+            vote_ingress_fact_to_domain(vote)?,
+            vote_ingress_context_to_domain(context),
+        )))
     }
 }
 

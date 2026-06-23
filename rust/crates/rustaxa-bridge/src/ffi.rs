@@ -4680,6 +4680,17 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusNetworkApi,
             results: Vec<NetworkEffectResult>,
         ) -> Result<NetworkEffectAck>;
+        pub fn consensus_network_plan_pbft_vote_ingress(
+            self: &BridgeConsensusNetworkApi,
+            fact: PbftVoteIngressFact,
+            context: PbftVoteIngressContext,
+        ) -> Result<PbftVoteIngressPlan>;
+        pub fn consensus_network_plan_pbft_vote_bundle_ingress(
+            self: &BridgeConsensusNetworkApi,
+            reference: PbftVoteIngressFact,
+            vote: PbftVoteIngressFact,
+            context: PbftVoteIngressContext,
+        ) -> Result<PbftVoteIngressPlan>;
 
         type WesolowskiVdf;
         type CancellationToken;

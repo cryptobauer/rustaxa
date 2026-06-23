@@ -14,6 +14,11 @@
 
 use std::collections::{HashSet, VecDeque};
 
+use crate::{
+    PbftVoteIngressContext, PbftVoteIngressFact, PbftVoteIngressPlan,
+    plan_pbft_vote_bundle_ingress, plan_pbft_vote_ingress,
+};
+
 /// Network/tarcap packet bytes were accepted into the ingress arena.
 pub const NETWORK_INGRESS_STATUS_ACCEPTED: u8 = 0;
 /// Network/tarcap supplied an empty packet payload.
@@ -400,6 +405,40 @@ impl ConsensusNetworkApi {
             failed_results,
             error_code: error_code.to_owned(),
         }
+    }
+
+    /// Plans deterministic PBFT vote ingress for a single tarcap vote packet.
+    ///
+    /// The network facade owns this packet-adjacent decision so external
+    /// tarcap handlers do not call standalone consensus bridge helpers. The
+    /// caller still supplies compact vote facts and scalar local PBFT context;
+    /// live vote validation, verified-vote mutation, and peer transport
+    /// execution remain outside this API until later routing slices move them
+    /// behind explicit executor reports.
+    #[must_use]
+    pub fn plan_pbft_vote_ingress(
+        &self,
+        fact: PbftVoteIngressFact,
+        context: PbftVoteIngressContext,
+    ) -> PbftVoteIngressPlan {
+        plan_pbft_vote_ingress(fact, context)
+    }
+
+    /// Plans deterministic PBFT vote ingress for one vote inside a tarcap
+    /// vote-bundle packet.
+    ///
+    /// The reference vote describes the bundle identity that every bundled
+    /// vote must match. The returned plan is side-effect free; callers execute
+    /// sync hints, peer reports, and admission work through the boundary
+    /// appropriate to the current migration stage.
+    #[must_use]
+    pub fn plan_pbft_vote_bundle_ingress(
+        &self,
+        reference: PbftVoteIngressFact,
+        vote: PbftVoteIngressFact,
+        context: PbftVoteIngressContext,
+    ) -> PbftVoteIngressPlan {
+        plan_pbft_vote_bundle_ingress(reference, vote, context)
     }
 
     /// Returns the number of accepted ingress payloads retained by the facade.

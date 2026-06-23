@@ -70,8 +70,7 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
 
   const auto reference_fact = makeVoteIngressFact(reference_vote);
   for (const auto &vote : packet.votes_bundle.votes) {
-    const auto ingress_plan =
-        rustaxa::pbft_vote_bundle_ingress_plan(reference_fact, makeVoteIngressFact(vote), ingress_context);
+    const auto ingress_plan = planPbftVoteBundleIngress(reference_fact, makeVoteIngressFact(vote), ingress_context);
     if (ingress_plan.accepted) {
       continue;
     }
