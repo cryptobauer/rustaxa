@@ -334,6 +334,40 @@ TEST(ConsensusNetworkApiBridgeTest, statusSyncPlanningRoutesThroughNetworkApi) {
   EXPECT_EQ(plan.next_votes_round, 2);
 }
 
+TEST(ConsensusNetworkApiBridgeTest, pbftSyncStartPlanningRoutesThroughNetworkApi) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+
+  rustaxa::NetworkPbftSyncStartFacts facts{};
+  facts.local_pbft_syncing = false;
+  facts.local_pbft_synced_period = 10;
+  facts.local_pbft_chain_size = 10;
+  rustaxa::NetworkPbftSyncPeerCandidate first{};
+  first.peer_id = nodeId(0x41);
+  first.pbft_chain_size = 12;
+  first.dag_level = 20;
+  rustaxa::NetworkPbftSyncPeerCandidate second{};
+  second.peer_id = nodeId(0x42);
+  second.pbft_chain_size = 12;
+  second.dag_level = 21;
+  facts.candidates.push_back(first);
+  facts.candidates.push_back(second);
+
+  auto plan = network_api->consensus_network_plan_pbft_sync_start(facts);
+  EXPECT_EQ(plan.status, 0);
+  EXPECT_TRUE(plan.start_sync);
+  EXPECT_TRUE(plan.has_peer);
+  EXPECT_EQ(plan.peer_id, nodeId(0x42));
+  EXPECT_EQ(plan.request_period, 11);
+  EXPECT_FALSE(plan.enable_snapshot_creation);
+
+  facts.local_pbft_synced_period = 13;
+  facts.local_pbft_chain_size = 13;
+  plan = network_api->consensus_network_plan_pbft_sync_start(facts);
+  EXPECT_EQ(plan.status, 3);
+  EXPECT_FALSE(plan.start_sync);
+  EXPECT_TRUE(plan.enable_snapshot_creation);
+}
+
 TEST(ConsensusNetworkApiBridgeTest, pbftVoteAdmissionEffectsQueueMarkKnownEffect) {
   auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
 

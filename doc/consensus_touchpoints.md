@@ -193,6 +193,11 @@ Rules:
   - Standard status follow-up planning now routes through `consensus_network_plan_status_sync`; tarcap supplies compact
     local/peer PBFT and DAG facts before Rust decides whether to request PBFT sync, pending DAG blocks, or PBFT
     next-votes bundles. Tarcap still mutates peer state, starts syncing, encodes packets, and sends transport messages.
+  - PBFT sync-start planning now routes through `consensus_network_plan_pbft_sync_start`; tarcap supplies local PBFT
+    sync facts plus compact peer candidates before Rust chooses the max-chain sync peer, applies light-node history
+    eligibility, decides the first requested period, and reports whether snapshot creation should be re-enabled because
+    sync is not needed. Tarcap still installs the selected peer into `PbftSyncingState`, sends `GetPbftSyncPacket`, and
+    applies the deep-sync snapshot disable timing after the live sync state is set.
   - Network effect result reports now echo typed effect identity fields, and Rust rejects mismatched reports before
     accepting acknowledgements. This keeps temporary executor work visible instead of treating an `effect_id` alone as
     proof that the intended action ran.
@@ -206,6 +211,8 @@ Rules:
   - Status packet ingress still performs chain-id/genesis/light-node validation and peer-state materialization in tarcap,
     and status egress still reads local PBFT/DAG snapshot facts directly until a fuller local status snapshot API is
     injected.
+  - PBFT sync-start execution still mutates `PbftSyncingState` and toggles snapshot creation in tarcap after the selected
+    sync peer is installed.
   - Proposed-block sidecar and PBFT blocks bundle recording still use the temporary PBFT manager executor boundary until
     the network API is injected with the same Rust proposed-block runtime/storage handle used by PBFT.
   - The facade methods themselves do not call consensus shims, C++ consensus managers, `DbStorage`, peer transport,

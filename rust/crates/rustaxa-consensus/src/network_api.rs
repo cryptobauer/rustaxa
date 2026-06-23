@@ -33,6 +33,15 @@ pub const NETWORK_INGRESS_STATUS_QUEUE_FULL: u8 = 4;
 /// Network/tarcap supplied bytes after payload ids were exhausted.
 pub const NETWORK_INGRESS_STATUS_PAYLOAD_ID_EXHAUSTED: u8 = 5;
 
+/// Network status/sync planner accepted the facts.
+pub const NETWORK_STATUS_PLAN_STATUS_OK: u8 = 0;
+/// Network status/sync planner found PBFT sync already active.
+pub const NETWORK_STATUS_PLAN_STATUS_ALREADY_SYNCING: u8 = 1;
+/// Network status/sync planner found no usable peer candidate.
+pub const NETWORK_STATUS_PLAN_STATUS_NO_ELIGIBLE_PEER: u8 = 2;
+/// Network status/sync planner found no sync work needed.
+pub const NETWORK_STATUS_PLAN_STATUS_SYNC_NOT_NEEDED: u8 = 3;
+
 /// Network work drain completed successfully.
 pub const NETWORK_EFFECT_BATCH_STATUS_OK: u8 = 0;
 
@@ -480,6 +489,56 @@ pub struct NetworkStatusSyncPlan {
     pub next_votes_round: u64,
 }
 
+/// Compact peer candidate for PBFT sync-start planning.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftSyncPeerCandidate {
+    /// Candidate peer id.
+    pub peer_id: [u8; 64],
+    /// PBFT chain size reported by the peer.
+    pub pbft_chain_size: u64,
+    /// DAG level reported by the peer. Used as tie-breaker when PBFT chain
+    /// size is equal.
+    pub dag_level: u64,
+    /// Whether this peer is a light node.
+    pub is_light_node: bool,
+    /// Number of recent periods the light node can serve.
+    pub light_node_history: u64,
+}
+
+/// Compact facts needed to plan PBFT sync start from known peers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftSyncStartFacts {
+    /// Whether local PBFT sync is already active.
+    pub local_pbft_syncing: bool,
+    /// Local finalized/synced PBFT period.
+    pub local_pbft_synced_period: u64,
+    /// Local PBFT chain size used only for diagnostics and temporary logs.
+    pub local_pbft_chain_size: u64,
+    /// Candidate peers known by tarcap.
+    pub candidates: Vec<NetworkPbftSyncPeerCandidate>,
+}
+
+/// Side-effect-free PBFT sync-start plan for the network/tarcap executor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftSyncStartPlan {
+    /// Stable status for boundary logs and tests.
+    pub status: u8,
+    /// Stable textual status for boundary logs and tests.
+    pub error_code: String,
+    /// Whether tarcap should start PBFT sync with `peer_id`.
+    pub start_sync: bool,
+    /// Whether the plan selected a usable peer.
+    pub has_peer: bool,
+    /// Selected peer id, or zeroes when no peer was selected.
+    pub peer_id: [u8; 64],
+    /// Selected peer PBFT chain size.
+    pub peer_pbft_chain_size: u64,
+    /// Period to request in the first `GetPbftSyncPacket`.
+    pub request_period: u64,
+    /// Whether tarcap should enable snapshot creation because PBFT sync is not needed.
+    pub enable_snapshot_creation: bool,
+}
+
 /// Proposed-block sidecar effects derived from accepted PBFT vote packets.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NetworkPbftProposedBlockSidecarEffects {
@@ -837,6 +896,20 @@ impl ConsensusNetworkApi {
     #[must_use]
     pub fn plan_status_sync(&self, facts: NetworkStatusSyncFacts) -> NetworkStatusSyncPlan {
         plan_status_sync(facts)
+    }
+
+    /// Plans whether PBFT sync should start and which peer should serve it.
+    ///
+    /// Rust owns max-chain peer selection, light-node serviceability checks,
+    /// and the start/not-needed decision. Tarcap still enumerates live peers,
+    /// mutates `PbftSyncingState`, sends `GetPbftSyncPacket`, and applies the
+    /// snapshot lifecycle side effects returned by this plan.
+    #[must_use]
+    pub fn plan_pbft_sync_start(
+        &self,
+        facts: NetworkPbftSyncStartFacts,
+    ) -> NetworkPbftSyncStartPlan {
+        plan_pbft_sync_start(facts)
     }
 
     /// Routes one PBFT vote ingress decision and queues network effects.
@@ -1733,6 +1806,74 @@ fn plan_status_sync(facts: NetworkStatusSyncFacts) -> NetworkStatusSyncPlan {
     }
 }
 
+fn plan_pbft_sync_start(facts: NetworkPbftSyncStartFacts) -> NetworkPbftSyncStartPlan {
+    if facts.local_pbft_syncing {
+        return NetworkPbftSyncStartPlan {
+            status: NETWORK_STATUS_PLAN_STATUS_ALREADY_SYNCING,
+            error_code: "NETWORK_STATUS_ALREADY_SYNCING".to_owned(),
+            start_sync: false,
+            has_peer: false,
+            peer_id: [0; 64],
+            peer_pbft_chain_size: 0,
+            request_period: 0,
+            enable_snapshot_creation: false,
+        };
+    }
+
+    let selected = facts
+        .candidates
+        .into_iter()
+        .filter(|candidate| {
+            !candidate.is_light_node
+                || facts
+                    .local_pbft_synced_period
+                    .saturating_add(candidate.light_node_history)
+                    >= candidate.pbft_chain_size
+        })
+        .max_by(|left, right| {
+            left.pbft_chain_size
+                .cmp(&right.pbft_chain_size)
+                .then_with(|| left.dag_level.cmp(&right.dag_level))
+        });
+
+    let Some(peer) = selected else {
+        return NetworkPbftSyncStartPlan {
+            status: NETWORK_STATUS_PLAN_STATUS_NO_ELIGIBLE_PEER,
+            error_code: "NETWORK_STATUS_NO_ELIGIBLE_SYNC_PEER".to_owned(),
+            start_sync: false,
+            has_peer: false,
+            peer_id: [0; 64],
+            peer_pbft_chain_size: 0,
+            request_period: 0,
+            enable_snapshot_creation: false,
+        };
+    };
+
+    if peer.pbft_chain_size <= facts.local_pbft_synced_period {
+        return NetworkPbftSyncStartPlan {
+            status: NETWORK_STATUS_PLAN_STATUS_SYNC_NOT_NEEDED,
+            error_code: "NETWORK_STATUS_SYNC_NOT_NEEDED".to_owned(),
+            start_sync: false,
+            has_peer: true,
+            peer_id: peer.peer_id,
+            peer_pbft_chain_size: peer.pbft_chain_size,
+            request_period: 0,
+            enable_snapshot_creation: true,
+        };
+    }
+
+    NetworkPbftSyncStartPlan {
+        status: NETWORK_STATUS_PLAN_STATUS_OK,
+        error_code: ERROR_NONE.to_owned(),
+        start_sync: true,
+        has_peer: true,
+        peer_id: peer.peer_id,
+        peer_pbft_chain_size: peer.pbft_chain_size,
+        request_period: facts.local_pbft_synced_period + 1,
+        enable_snapshot_creation: false,
+    }
+}
+
 fn is_supported_ingress_packet(packet_type: u32) -> bool {
     // Keep this first direct network facade slice intentionally narrow. The
     // current latest-tarcap packet ids come from `SubprotocolPacketType`:
@@ -1863,6 +2004,20 @@ mod tests {
             peer_pbft_round: 2,
             peer_dag_synced: true,
             peer_last_status_pbft_chain_size: 9,
+        }
+    }
+
+    fn sync_candidate(
+        byte: u8,
+        pbft_chain_size: u64,
+        dag_level: u64,
+    ) -> NetworkPbftSyncPeerCandidate {
+        NetworkPbftSyncPeerCandidate {
+            peer_id: peer(byte),
+            pbft_chain_size,
+            dag_level,
+            is_light_node: false,
+            light_node_history: 0,
         }
     }
 
@@ -2219,6 +2374,91 @@ mod tests {
         assert!(!plan.request_pbft_sync);
         assert!(!plan.request_pending_dag_blocks);
         assert!(!plan.request_next_votes);
+    }
+
+    #[test]
+    fn plan_pbft_sync_start_selects_max_chain_peer() {
+        let api = ConsensusNetworkApi::new();
+
+        let plan = api.plan_pbft_sync_start(NetworkPbftSyncStartFacts {
+            local_pbft_syncing: false,
+            local_pbft_synced_period: 10,
+            local_pbft_chain_size: 10,
+            candidates: vec![sync_candidate(1, 12, 20), sync_candidate(2, 13, 1)],
+        });
+
+        assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_OK);
+        assert!(plan.start_sync);
+        assert_eq!(plan.peer_id, peer(2));
+        assert_eq!(plan.peer_pbft_chain_size, 13);
+        assert_eq!(plan.request_period, 11);
+        assert!(!plan.enable_snapshot_creation);
+    }
+
+    #[test]
+    fn plan_pbft_sync_start_breaks_chain_size_ties_by_dag_level() {
+        let api = ConsensusNetworkApi::new();
+
+        let plan = api.plan_pbft_sync_start(NetworkPbftSyncStartFacts {
+            local_pbft_syncing: false,
+            local_pbft_synced_period: 10,
+            local_pbft_chain_size: 10,
+            candidates: vec![sync_candidate(1, 12, 20), sync_candidate(2, 12, 21)],
+        });
+
+        assert!(plan.start_sync);
+        assert_eq!(plan.peer_id, peer(2));
+    }
+
+    #[test]
+    fn plan_pbft_sync_start_skips_light_peer_that_cannot_serve_history() {
+        let api = ConsensusNetworkApi::new();
+        let mut light = sync_candidate(1, 20, 50);
+        light.is_light_node = true;
+        light.light_node_history = 4;
+
+        let plan = api.plan_pbft_sync_start(NetworkPbftSyncStartFacts {
+            local_pbft_syncing: false,
+            local_pbft_synced_period: 10,
+            local_pbft_chain_size: 10,
+            candidates: vec![light, sync_candidate(2, 13, 1)],
+        });
+
+        assert!(plan.start_sync);
+        assert_eq!(plan.peer_id, peer(2));
+    }
+
+    #[test]
+    fn plan_pbft_sync_start_enables_snapshots_when_sync_not_needed() {
+        let api = ConsensusNetworkApi::new();
+
+        let plan = api.plan_pbft_sync_start(NetworkPbftSyncStartFacts {
+            local_pbft_syncing: false,
+            local_pbft_synced_period: 13,
+            local_pbft_chain_size: 13,
+            candidates: vec![sync_candidate(1, 12, 20)],
+        });
+
+        assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_SYNC_NOT_NEEDED);
+        assert!(!plan.start_sync);
+        assert!(plan.has_peer);
+        assert!(plan.enable_snapshot_creation);
+    }
+
+    #[test]
+    fn plan_pbft_sync_start_returns_no_action_while_already_syncing() {
+        let api = ConsensusNetworkApi::new();
+
+        let plan = api.plan_pbft_sync_start(NetworkPbftSyncStartFacts {
+            local_pbft_syncing: true,
+            local_pbft_synced_period: 10,
+            local_pbft_chain_size: 10,
+            candidates: vec![sync_candidate(1, 12, 20)],
+        });
+
+        assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_ALREADY_SYNCING);
+        assert!(!plan.start_sync);
+        assert!(!plan.has_peer);
     }
 
     #[test]

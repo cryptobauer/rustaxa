@@ -165,6 +165,20 @@ impl BridgeConsensusNetworkApi {
         )))
     }
 
+    /// Plans whether PBFT sync should start and which peer should serve it.
+    pub fn consensus_network_plan_pbft_sync_start(
+        &self,
+        facts: rustaxa_ffi::NetworkPbftSyncStartFacts,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkPbftSyncStartPlan> {
+        let api = self
+            .api
+            .lock()
+            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        Ok(to_bridge_network_pbft_sync_start_plan(
+            api.plan_pbft_sync_start(to_domain_network_pbft_sync_start_facts(facts)),
+        ))
+    }
+
     /// Routes single-vote PBFT ingress and queues network effects.
     ///
     /// Unlike the side-effect-free planner method, this production-facing route
@@ -600,6 +614,44 @@ fn to_bridge_network_status_sync_plan(
         request_next_votes: plan.request_next_votes,
         next_votes_period: plan.next_votes_period,
         next_votes_round: plan.next_votes_round,
+    }
+}
+
+fn to_domain_network_pbft_sync_start_facts(
+    value: rustaxa_ffi::NetworkPbftSyncStartFacts,
+) -> rustaxa_consensus::NetworkPbftSyncStartFacts {
+    rustaxa_consensus::NetworkPbftSyncStartFacts {
+        local_pbft_syncing: value.local_pbft_syncing,
+        local_pbft_synced_period: value.local_pbft_synced_period,
+        local_pbft_chain_size: value.local_pbft_chain_size,
+        candidates: value
+            .candidates
+            .into_iter()
+            .map(
+                |candidate| rustaxa_consensus::NetworkPbftSyncPeerCandidate {
+                    peer_id: candidate.peer_id,
+                    pbft_chain_size: candidate.pbft_chain_size,
+                    dag_level: candidate.dag_level,
+                    is_light_node: candidate.is_light_node,
+                    light_node_history: candidate.light_node_history,
+                },
+            )
+            .collect(),
+    }
+}
+
+fn to_bridge_network_pbft_sync_start_plan(
+    plan: rustaxa_consensus::NetworkPbftSyncStartPlan,
+) -> rustaxa_ffi::NetworkPbftSyncStartPlan {
+    rustaxa_ffi::NetworkPbftSyncStartPlan {
+        status: plan.status,
+        error_code: plan.error_code,
+        start_sync: plan.start_sync,
+        has_peer: plan.has_peer,
+        peer_id: plan.peer_id,
+        peer_pbft_chain_size: plan.peer_pbft_chain_size,
+        request_period: plan.request_period,
+        enable_snapshot_creation: plan.enable_snapshot_creation,
     }
 }
 

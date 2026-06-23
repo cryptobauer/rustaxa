@@ -745,6 +745,35 @@ pub mod rustaxa_ffi {
         next_votes_round: u64,
     }
 
+    /// Compact peer candidate for PBFT sync-start planning.
+    struct NetworkPbftSyncPeerCandidate {
+        peer_id: [u8; 64],
+        pbft_chain_size: u64,
+        dag_level: u64,
+        is_light_node: bool,
+        light_node_history: u64,
+    }
+
+    /// Compact facts needed to plan PBFT sync start from known peers.
+    struct NetworkPbftSyncStartFacts {
+        local_pbft_syncing: bool,
+        local_pbft_synced_period: u64,
+        local_pbft_chain_size: u64,
+        candidates: Vec<NetworkPbftSyncPeerCandidate>,
+    }
+
+    /// Side-effect-free PBFT sync-start plan for tarcap execution.
+    struct NetworkPbftSyncStartPlan {
+        status: u8,
+        error_code: String,
+        start_sync: bool,
+        has_peer: bool,
+        peer_id: [u8; 64],
+        peer_pbft_chain_size: u64,
+        request_period: u64,
+        enable_snapshot_creation: bool,
+    }
+
     /// Accepted PBFT vote network effects supplied after admission.
     struct NetworkPbftVoteAdmissionEffects {
         peer_id: [u8; 64],
@@ -4885,6 +4914,10 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusNetworkApi,
             facts: NetworkStatusSyncFacts,
         ) -> Result<NetworkStatusSyncPlan>;
+        pub fn consensus_network_plan_pbft_sync_start(
+            self: &BridgeConsensusNetworkApi,
+            facts: NetworkPbftSyncStartFacts,
+        ) -> Result<NetworkPbftSyncStartPlan>;
         pub fn consensus_network_queue_pbft_vote_admission_effects(
             self: &BridgeConsensusNetworkApi,
             effects: NetworkPbftVoteAdmissionEffects,
