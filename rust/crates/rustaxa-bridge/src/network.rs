@@ -149,6 +149,47 @@ impl BridgeConsensusNetworkApi {
             vote_ingress_context_to_domain(context),
         )))
     }
+
+    /// Routes single-vote PBFT ingress and queues network effects.
+    ///
+    /// Unlike the side-effect-free planner method, this production-facing route
+    /// updates the network facade's effect queue so C++ can execute sync,
+    /// report, and disconnect requests through `drain_work` /
+    /// `report_effect_results`.
+    pub fn consensus_network_ingest_pbft_vote(
+        &self,
+        fact: rustaxa_ffi::PbftVoteIngressFact,
+        context: rustaxa_ffi::NetworkPbftVoteIngressContext,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
+        let mut api = self
+            .api
+            .lock()
+            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        Ok(to_bridge_network_ingress_decision(api.ingest_pbft_vote(
+            vote_ingress_fact_to_domain(fact)?,
+            to_domain_pbft_vote_ingress_context(context),
+        )))
+    }
+
+    /// Routes one vote-bundle member through PBFT ingress and queues network effects.
+    pub fn consensus_network_ingest_pbft_vote_bundle_member(
+        &self,
+        reference: rustaxa_ffi::PbftVoteIngressFact,
+        vote: rustaxa_ffi::PbftVoteIngressFact,
+        context: rustaxa_ffi::NetworkPbftVoteIngressContext,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
+        let mut api = self
+            .api
+            .lock()
+            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        Ok(to_bridge_network_ingress_decision(
+            api.ingest_pbft_vote_bundle_member(
+                vote_ingress_fact_to_domain(reference)?,
+                vote_ingress_fact_to_domain(vote)?,
+                to_domain_pbft_vote_ingress_context(context),
+            ),
+        ))
+    }
 }
 
 fn to_domain_config(config: rustaxa_ffi::NetworkApiConfig) -> rustaxa_consensus::NetworkApiConfig {
@@ -182,6 +223,30 @@ fn to_bridge_network_effect(
         dependency_id: effect.dependency_id,
         period: effect.period,
         round: effect.round,
+    }
+}
+
+fn to_domain_pbft_vote_ingress_context(
+    value: rustaxa_ffi::NetworkPbftVoteIngressContext,
+) -> rustaxa_consensus::NetworkPbftVoteIngressContext {
+    rustaxa_consensus::NetworkPbftVoteIngressContext {
+        ingress: vote_ingress_context_to_domain(value.ingress),
+        peer_id: value.peer_id,
+        peer_pbft_chain_size: value.peer_pbft_chain_size,
+        source_payload_id: value.source_payload_id,
+    }
+}
+
+fn to_bridge_network_ingress_decision(
+    decision: rustaxa_consensus::NetworkIngressDecision,
+) -> rustaxa_ffi::NetworkIngressDecision {
+    rustaxa_ffi::NetworkIngressDecision {
+        payload_id: decision.payload_id,
+        payload_accepted: decision.payload_accepted,
+        routed: decision.routed,
+        status: decision.status,
+        error_code: decision.error_code,
+        queued_effect_count: decision.queued_effect_count,
     }
 }
 

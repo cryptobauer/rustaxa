@@ -700,6 +700,24 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
+    /// Scalar context for authoritative PBFT vote ingress through Network/Tarcap.
+    struct NetworkPbftVoteIngressContext {
+        ingress: PbftVoteIngressContext,
+        peer_id: [u8; 64],
+        peer_pbft_chain_size: u64,
+        source_payload_id: u64,
+    }
+
+    /// Packet-specific network ingress decision with queued-effect summary.
+    struct NetworkIngressDecision {
+        payload_id: u64,
+        payload_accepted: bool,
+        routed: bool,
+        status: u8,
+        error_code: String,
+        queued_effect_count: u32,
+    }
+
     /// Gas-estimation request supplied before C++ may call FinalChain/EVM.
     struct TransactionManagerGasEstimationFact {
         hash: [u8; 32],
@@ -4691,6 +4709,17 @@ pub mod rustaxa_ffi {
             vote: PbftVoteIngressFact,
             context: PbftVoteIngressContext,
         ) -> Result<PbftVoteIngressPlan>;
+        pub fn consensus_network_ingest_pbft_vote(
+            self: &BridgeConsensusNetworkApi,
+            fact: PbftVoteIngressFact,
+            context: NetworkPbftVoteIngressContext,
+        ) -> Result<NetworkIngressDecision>;
+        pub fn consensus_network_ingest_pbft_vote_bundle_member(
+            self: &BridgeConsensusNetworkApi,
+            reference: PbftVoteIngressFact,
+            vote: PbftVoteIngressFact,
+            context: NetworkPbftVoteIngressContext,
+        ) -> Result<NetworkIngressDecision>;
 
         type WesolowskiVdf;
         type CancellationToken;

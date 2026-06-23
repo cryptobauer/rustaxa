@@ -115,13 +115,16 @@ Rules:
     standalone vote-planner bridge helpers. Tarcap still supplies decoded scalar vote facts and local PBFT/network
     window context, but the packet-adjacent accept/reject and sync-hint decision is owned by the external
     Network/Tarcap facade.
-  - This is an API consolidation step, not the final production route: returned sync hints are still executed by the
-    tarcap handlers, and accepted votes still enter validation/admission through the temporary VoteManager/PBFT manager
-    path.
+  - PBFT vote and vote-bundle rejection decisions now have an authoritative network API route:
+    `consensus_network_ingest_pbft_vote` / `consensus_network_ingest_pbft_vote_bundle_member` return a
+    `NetworkIngressDecision` and queue `REQUEST_SYNC`, `REPORT_PEER`, and `DISCONNECT_PEER` effects for
+    `drain_work` / `report_effect_results`.
+  - This is still not the final production route: tarcap executes the drained network effects, and accepted votes still
+    enter validation/admission through the temporary VoteManager/PBFT manager path.
   - The facade methods themselves do not call consensus shims, C++ consensus managers, `DbStorage`, peer transport,
     packet wrapping, or gossip.
-  - Remaining work is to move vote validation/admission, verified-vote mutation, packet interpretation, and
-    network-effect execution behind `drain_work` / `report_effect_results`, then remove the corresponding
+  - Remaining work is to move vote validation/admission, verified-vote mutation, packet interpretation, accepted-vote
+    mark-known/gossip/proposed-block effects, and other packet families behind the facade, then remove the corresponding
     consensus-manager dependencies from tarcap handlers.
 
 First useful routes:

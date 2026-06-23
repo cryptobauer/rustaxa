@@ -116,9 +116,11 @@ pub use network_api::{
     NETWORK_EFFECT_RESULT_STATUS_OK, NETWORK_INGRESS_STATUS_ACCEPTED,
     NETWORK_INGRESS_STATUS_PAYLOAD_ID_EXHAUSTED, NETWORK_INGRESS_STATUS_PAYLOAD_TOO_LARGE,
     NETWORK_INGRESS_STATUS_QUEUE_FULL, NETWORK_INGRESS_STATUS_REJECTED_EMPTY_PAYLOAD,
-    NETWORK_INGRESS_STATUS_UNSUPPORTED_PACKET_TYPE, NetworkApiConfig, NetworkEffect,
-    NetworkEffectAck, NetworkEffectBatch, NetworkEffectResult, NetworkIngressPacket,
-    NetworkIngressPayload, NetworkIngressReceipt, NetworkPayloadId,
+    NETWORK_INGRESS_STATUS_UNSUPPORTED_PACKET_TYPE, NETWORK_REASON_BUNDLE_VOTE_MISMATCH,
+    NETWORK_REASON_UNSUPPORTED_BUNDLE_PROPOSE_VOTE, NETWORK_SYNC_KIND_PBFT_CHAIN,
+    NETWORK_SYNC_KIND_PBFT_NEXT_VOTES, NetworkApiConfig, NetworkEffect, NetworkEffectAck,
+    NetworkEffectBatch, NetworkEffectResult, NetworkIngressDecision, NetworkIngressPacket,
+    NetworkIngressPayload, NetworkIngressReceipt, NetworkPayloadId, NetworkPbftVoteIngressContext,
 };
 pub use pbft_chain::{
     PbftBlockStorageLookup, PbftChain, PbftChainStorageRestore, load_pbft_block_from_storage,

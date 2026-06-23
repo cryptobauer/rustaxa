@@ -15,6 +15,14 @@ namespace taraxa::network::tarcap {
 #ifdef RUSTAXA_ENABLE
 namespace {
 
+constexpr uint8_t kNetworkEffectResultStatusOk = 0;
+constexpr uint8_t kNetworkEffectResultStatusFailed = 1;
+constexpr uint8_t kNetworkEffectKindRequestSync = 3;
+constexpr uint8_t kNetworkEffectKindReportPeer = 4;
+constexpr uint8_t kNetworkEffectKindDisconnectPeer = 5;
+constexpr uint8_t kNetworkSyncKindPbftChain = 0;
+constexpr uint8_t kNetworkSyncKindPbftNextVotes = 1;
+
 rustaxa::NetworkApiConfig defaultNetworkApiConfig() {
   rustaxa::NetworkApiConfig config{};
   config.max_payload_bytes = 64 * 1024 * 1024;
@@ -91,22 +99,21 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
   ingress_context.can_request_next_votes_sync =
       std::chrono::system_clock::now() - last_votes_sync_request_time_ > kSyncRequestInterval;
 
-  const auto ingress_plan = planPbftVoteIngress(ingress_fact, ingress_context);
-  if (!ingress_plan.accepted) {
-    if (ingress_plan.request_pbft_sync) {
-      this->sealAndSend(
-          peer->getId(), SubprotocolPacketType::kGetPbftSyncPacket,
-          encodePacketRlp(GetPbftSyncPacket{std::max(vote->getPeriod() - 1, peer->pbft_chain_size_.load())}));
-      last_pbft_block_sync_request_time_ = std::chrono::system_clock::now();
-    }
-    if (ingress_plan.request_next_votes_sync) {
-      this->requestPbftNextVotesAtPeriodRound(peer->getId(), current_pbft_period, current_pbft_round);
-      last_votes_sync_request_time_ = std::chrono::system_clock::now();
-    }
+  rustaxa::NetworkPbftVoteIngressContext network_ingress_context{};
+  network_ingress_context.ingress = ingress_context;
+  network_ingress_context.peer_id = peer->getId().asArray();
+  network_ingress_context.peer_pbft_chain_size = peer->pbft_chain_size_.load();
+  network_ingress_context.source_payload_id = 0;
 
-    LOG(this->log_wr_) << "Vote ingress plan rejected vote " << vote->getHash()
-                       << ". Status: " << static_cast<uint32_t>(ingress_plan.status)
-                       << ", error: " << static_cast<std::string>(ingress_plan.error_code);
+  const auto ingress_decision = ingestPbftVote(ingress_fact, network_ingress_context);
+  if (ingress_decision.status != 0) {
+    executeConsensusNetworkEffects(16);
+  }
+  if (!ingress_decision.routed || ingress_decision.status != 0) {
+    LOG(this->log_wr_) << "Network API rejected vote " << vote->getHash()
+                       << ". Status: " << static_cast<uint32_t>(ingress_decision.status)
+                       << ", error: " << static_cast<std::string>(ingress_decision.error_code)
+                       << ", queued effects: " << ingress_decision.queued_effect_count;
     return {};
   }
 
@@ -302,6 +309,58 @@ rustaxa::PbftVoteIngressPlan ExtVotesPacketHandler::planPbftVoteBundleIngress(
     const rustaxa::PbftVoteIngressContext &context) const {
   assert(rust_consensus_network_api_);
   return rust_consensus_network_api_->api->consensus_network_plan_pbft_vote_bundle_ingress(reference, vote, context);
+}
+
+rustaxa::NetworkIngressDecision ExtVotesPacketHandler::ingestPbftVote(
+    const rustaxa::PbftVoteIngressFact &fact, const rustaxa::NetworkPbftVoteIngressContext &context) {
+  assert(rust_consensus_network_api_);
+  return rust_consensus_network_api_->api->consensus_network_ingest_pbft_vote(fact, context);
+}
+
+rustaxa::NetworkIngressDecision ExtVotesPacketHandler::ingestPbftVoteBundleMember(
+    const rustaxa::PbftVoteIngressFact &reference, const rustaxa::PbftVoteIngressFact &vote,
+    const rustaxa::NetworkPbftVoteIngressContext &context) {
+  assert(rust_consensus_network_api_);
+  return rust_consensus_network_api_->api->consensus_network_ingest_pbft_vote_bundle_member(reference, vote, context);
+}
+
+void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget) {
+  assert(rust_consensus_network_api_);
+  const auto batch = rust_consensus_network_api_->api->consensus_network_drain_work(static_cast<uint32_t>(budget));
+  rust::Vec<rustaxa::NetworkEffectResult> results;
+  results.reserve(batch.effects.size());
+
+  for (const auto &effect : batch.effects) {
+    rustaxa::NetworkEffectResult result{};
+    result.effect_id = effect.effect_id;
+    result.status = kNetworkEffectResultStatusOk;
+
+    try {
+      const dev::p2p::NodeID peer_id(effect.peer_id);
+      if (effect.kind == kNetworkEffectKindRequestSync && effect.sync_kind == kNetworkSyncKindPbftChain) {
+        sealAndSend(peer_id, SubprotocolPacketType::kGetPbftSyncPacket,
+                    encodePacketRlp(GetPbftSyncPacket{effect.sync_start}));
+        last_pbft_block_sync_request_time_ = std::chrono::system_clock::now();
+      } else if (effect.kind == kNetworkEffectKindRequestSync && effect.sync_kind == kNetworkSyncKindPbftNextVotes) {
+        requestPbftNextVotesAtPeriodRound(peer_id, effect.period, effect.round);
+        last_votes_sync_request_time_ = std::chrono::system_clock::now();
+      } else if (effect.kind == kNetworkEffectKindDisconnectPeer) {
+        disconnect(peer_id, dev::p2p::UserReason);
+      } else if (effect.kind == kNetworkEffectKindReportPeer) {
+        LOG(log_wr_) << "Network API reported peer " << peer_id
+                     << " with reason: " << static_cast<uint32_t>(effect.reason_code);
+      }
+    } catch (const std::exception &e) {
+      result.status = kNetworkEffectResultStatusFailed;
+      result.diagnostic = e.what();
+    }
+
+    results.push_back(std::move(result));
+  }
+
+  if (!results.empty()) {
+    (void)rust_consensus_network_api_->api->consensus_network_report_effect_results(std::move(results));
+  }
 }
 #endif
 

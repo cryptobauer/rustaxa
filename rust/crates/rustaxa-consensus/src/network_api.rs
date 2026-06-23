@@ -15,7 +15,7 @@
 use std::collections::{HashSet, VecDeque};
 
 use crate::{
-    PbftVoteIngressContext, PbftVoteIngressFact, PbftVoteIngressPlan,
+    PbftVoteIngressContext, PbftVoteIngressFact, PbftVoteIngressPlan, PbftVoteIngressStatus,
     plan_pbft_vote_bundle_ingress, plan_pbft_vote_ingress,
 };
 
@@ -65,6 +65,16 @@ pub const NETWORK_EFFECT_KIND_DISCONNECT_PEER: u8 = 5;
 pub const NETWORK_EFFECT_KIND_BLOCK_PEER_ORDER: u8 = 6;
 /// Network effect asks the executor to drive PBFT progress.
 pub const NETWORK_EFFECT_KIND_DRIVE_CONSENSUS_PROGRESS: u8 = 7;
+
+/// Network sync effect requests PBFT chain synchronization.
+pub const NETWORK_SYNC_KIND_PBFT_CHAIN: u8 = 0;
+/// Network sync effect requests current-round PBFT next votes.
+pub const NETWORK_SYNC_KIND_PBFT_NEXT_VOTES: u8 = 1;
+
+/// Network peer report/disconnect reason for unsupported propose votes in a bundle.
+pub const NETWORK_REASON_UNSUPPORTED_BUNDLE_PROPOSE_VOTE: u8 = 0;
+/// Network peer report reason for mixed vote identity in a bundle.
+pub const NETWORK_REASON_BUNDLE_VOTE_MISMATCH: u8 = 1;
 
 const ERROR_NONE: &str = "";
 const ERROR_REJECTED_EMPTY_PAYLOAD: &str = "NETWORK_INGRESS_REJECTED_EMPTY_PAYLOAD";
@@ -217,6 +227,38 @@ pub struct NetworkEffectAck {
     pub failed_results: u64,
     /// Stable textual status for boundary logs and tests.
     pub error_code: String,
+}
+
+/// Scalar context for authoritative PBFT vote ingress through the network API.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NetworkPbftVoteIngressContext {
+    /// Existing side-effect-free PBFT vote ingress context.
+    pub ingress: PbftVoteIngressContext,
+    /// Sending peer id. The network executor uses this for sync/report effects.
+    pub peer_id: [u8; 64],
+    /// Peer PBFT chain size known by tarcap at ingress time.
+    pub peer_pbft_chain_size: u64,
+    /// Optional retained packet payload id when this decision follows
+    /// [`ConsensusNetworkApi::ingest_packet`].
+    pub source_payload_id: u64,
+}
+
+/// Result of routing PBFT vote ingress through the network/tarcap API.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkIngressDecision {
+    /// Retained payload id associated with the decision, or zero when the
+    /// caller has not associated one yet.
+    pub payload_id: u64,
+    /// Whether canonical bytes were already accepted at the byte-ingress stage.
+    pub payload_accepted: bool,
+    /// Whether this API recognized and routed the packet-specific decision.
+    pub routed: bool,
+    /// Stable packet-specific status code.
+    pub status: u8,
+    /// Stable textual status for boundary logs and tests.
+    pub error_code: String,
+    /// Number of network effects queued by this decision.
+    pub queued_effect_count: u32,
 }
 
 /// Rust-owned external network/tarcap API facade.
@@ -441,6 +483,165 @@ impl ConsensusNetworkApi {
         plan_pbft_vote_bundle_ingress(reference, vote, context)
     }
 
+    /// Routes one PBFT vote ingress decision and queues network effects.
+    ///
+    /// This is the first authoritative production path behind the external
+    /// network/tarcap facade. It still accepts decoded scalar facts while Rust
+    /// packet decoding is pending, but sync hints are converted into typed
+    /// effects that the network executor drains and reports through this API.
+    pub fn ingest_pbft_vote(
+        &mut self,
+        fact: PbftVoteIngressFact,
+        context: NetworkPbftVoteIngressContext,
+    ) -> NetworkIngressDecision {
+        let plan = self.plan_pbft_vote_ingress(fact, context.ingress);
+        self.decision_from_vote_plan(plan, fact, context)
+    }
+
+    /// Routes one PBFT vote-bundle member decision and queues network effects.
+    ///
+    /// Bundle-shape rejections become report/disconnect effects instead of
+    /// direct tarcap side effects. Accepted votes still proceed to the existing
+    /// admission boundary until a later slice moves verified-vote mutation
+    /// behind this facade.
+    pub fn ingest_pbft_vote_bundle_member(
+        &mut self,
+        reference: PbftVoteIngressFact,
+        vote: PbftVoteIngressFact,
+        context: NetworkPbftVoteIngressContext,
+    ) -> NetworkIngressDecision {
+        let plan = self.plan_pbft_vote_bundle_ingress(reference, vote, context.ingress);
+        self.decision_from_vote_plan(plan, vote, context)
+    }
+
+    fn decision_from_vote_plan(
+        &mut self,
+        plan: PbftVoteIngressPlan,
+        fact: PbftVoteIngressFact,
+        context: NetworkPbftVoteIngressContext,
+    ) -> NetworkIngressDecision {
+        let before_effects = self.pending_effects.len();
+        self.enqueue_vote_plan_effects(plan, fact, context);
+        let queued_effect_count = self.pending_effects.len().saturating_sub(before_effects) as u32;
+
+        NetworkIngressDecision {
+            payload_id: context.source_payload_id,
+            payload_accepted: context.source_payload_id != 0,
+            routed: true,
+            status: plan.status.as_u8(),
+            error_code: pbft_vote_ingress_error_code(plan.status).to_owned(),
+            queued_effect_count,
+        }
+    }
+
+    fn enqueue_vote_plan_effects(
+        &mut self,
+        plan: PbftVoteIngressPlan,
+        fact: PbftVoteIngressFact,
+        context: NetworkPbftVoteIngressContext,
+    ) {
+        if plan.request_pbft_sync {
+            let sync_start = fact
+                .period
+                .saturating_sub(1)
+                .max(context.peer_pbft_chain_size);
+            self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: context.source_payload_id,
+                kind: NETWORK_EFFECT_KIND_REQUEST_SYNC,
+                peer_id: context.peer_id,
+                packet_kind: 0,
+                payload_bytes: Vec::new(),
+                exclude_peers: Vec::new(),
+                object_kind: 0,
+                object_hash: [0; 32],
+                sync_kind: NETWORK_SYNC_KIND_PBFT_CHAIN,
+                sync_start,
+                reason_code: 0,
+                dependency_id: 0,
+                period: 0,
+                round: 0,
+            });
+        }
+        if plan.request_next_votes_sync {
+            self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: context.source_payload_id,
+                kind: NETWORK_EFFECT_KIND_REQUEST_SYNC,
+                peer_id: context.peer_id,
+                packet_kind: 0,
+                payload_bytes: Vec::new(),
+                exclude_peers: Vec::new(),
+                object_kind: 0,
+                object_hash: [0; 32],
+                sync_kind: NETWORK_SYNC_KIND_PBFT_NEXT_VOTES,
+                sync_start: context.ingress.current_period,
+                reason_code: 0,
+                dependency_id: 0,
+                period: context.ingress.current_period,
+                round: context.ingress.current_round,
+            });
+        }
+        match plan.status {
+            PbftVoteIngressStatus::UnsupportedBundleProposeVote => {
+                self.enqueue_effect(NetworkEffect {
+                    effect_id: 0,
+                    source_payload_id: context.source_payload_id,
+                    kind: NETWORK_EFFECT_KIND_REPORT_PEER,
+                    peer_id: context.peer_id,
+                    packet_kind: 0,
+                    payload_bytes: Vec::new(),
+                    exclude_peers: Vec::new(),
+                    object_kind: 0,
+                    object_hash: [0; 32],
+                    sync_kind: 0,
+                    sync_start: 0,
+                    reason_code: NETWORK_REASON_UNSUPPORTED_BUNDLE_PROPOSE_VOTE,
+                    dependency_id: 0,
+                    period: 0,
+                    round: 0,
+                });
+                self.enqueue_effect(NetworkEffect {
+                    effect_id: 0,
+                    source_payload_id: context.source_payload_id,
+                    kind: NETWORK_EFFECT_KIND_DISCONNECT_PEER,
+                    peer_id: context.peer_id,
+                    packet_kind: 0,
+                    payload_bytes: Vec::new(),
+                    exclude_peers: Vec::new(),
+                    object_kind: 0,
+                    object_hash: [0; 32],
+                    sync_kind: 0,
+                    sync_start: 0,
+                    reason_code: NETWORK_REASON_UNSUPPORTED_BUNDLE_PROPOSE_VOTE,
+                    dependency_id: 0,
+                    period: 0,
+                    round: 0,
+                });
+            }
+            PbftVoteIngressStatus::BundleVoteMismatch => {
+                self.enqueue_effect(NetworkEffect {
+                    effect_id: 0,
+                    source_payload_id: context.source_payload_id,
+                    kind: NETWORK_EFFECT_KIND_REPORT_PEER,
+                    peer_id: context.peer_id,
+                    packet_kind: 0,
+                    payload_bytes: Vec::new(),
+                    exclude_peers: Vec::new(),
+                    object_kind: 0,
+                    object_hash: [0; 32],
+                    sync_kind: 0,
+                    sync_start: 0,
+                    reason_code: NETWORK_REASON_BUNDLE_VOTE_MISMATCH,
+                    dependency_id: 0,
+                    period: 0,
+                    round: 0,
+                });
+            }
+            _ => {}
+        }
+    }
+
     /// Returns the number of accepted ingress payloads retained by the facade.
     #[must_use]
     pub fn ingress_len(&self) -> usize {
@@ -477,9 +678,28 @@ fn is_supported_ingress_packet(packet_type: u32) -> bool {
     matches!(packet_type, 1 | 3)
 }
 
+const fn pbft_vote_ingress_error_code(status: PbftVoteIngressStatus) -> &'static str {
+    match status {
+        PbftVoteIngressStatus::Accepted => "",
+        PbftVoteIngressStatus::Irrelevant => "PBFT_VOTE_INGRESS_IRRELEVANT",
+        PbftVoteIngressStatus::InvalidPeriodTooSmall => {
+            "PBFT_VOTE_INGRESS_INVALID_PERIOD_TOO_SMALL"
+        }
+        PbftVoteIngressStatus::InvalidPeriodTooBig => "PBFT_VOTE_INGRESS_INVALID_PERIOD_TOO_BIG",
+        PbftVoteIngressStatus::InvalidRoundTooSmall => "PBFT_VOTE_INGRESS_INVALID_ROUND_TOO_SMALL",
+        PbftVoteIngressStatus::InvalidRoundTooBig => "PBFT_VOTE_INGRESS_INVALID_ROUND_TOO_BIG",
+        PbftVoteIngressStatus::InvalidStepTooBig => "PBFT_VOTE_INGRESS_INVALID_STEP_TOO_BIG",
+        PbftVoteIngressStatus::UnsupportedBundleProposeVote => {
+            "PBFT_VOTE_INGRESS_UNSUPPORTED_BUNDLE_PROPOSE_VOTE"
+        }
+        PbftVoteIngressStatus::BundleVoteMismatch => "PBFT_VOTE_INGRESS_BUNDLE_VOTE_MISMATCH",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::verified_votes::PbftVoteType;
 
     fn peer(byte: u8) -> [u8; 64] {
         [byte; 64]
@@ -492,6 +712,40 @@ mod tests {
             payload_bytes,
             received_at_mono_ms: 44,
             source_packet_id: 99,
+        }
+    }
+
+    const fn vote_fact(
+        period: u64,
+        round: u64,
+        step: u64,
+        vote_type: PbftVoteType,
+    ) -> PbftVoteIngressFact {
+        PbftVoteIngressFact {
+            period,
+            round,
+            step,
+            vote_type,
+        }
+    }
+
+    fn vote_context() -> NetworkPbftVoteIngressContext {
+        NetworkPbftVoteIngressContext {
+            ingress: PbftVoteIngressContext {
+                current_period: 10,
+                current_round: 3,
+                current_step: 2,
+                max_future_period_delta: 2,
+                max_future_round_delta: 2,
+                max_future_step_delta: 2,
+                validate_max_round_step: true,
+                source_peer_is_voter: true,
+                can_request_pbft_sync: true,
+                can_request_next_votes_sync: true,
+            },
+            peer_id: peer(7),
+            peer_pbft_chain_size: 11,
+            source_payload_id: 99,
         }
     }
 
@@ -696,5 +950,65 @@ mod tests {
         assert_eq!(ack.failed_results, 0);
         assert_eq!(ack.error_code, "");
         assert_eq!(api.effect_result_len(), 1);
+    }
+
+    #[test]
+    fn ingest_pbft_vote_queues_pbft_chain_sync_effect() {
+        let mut api = ConsensusNetworkApi::new();
+
+        let decision =
+            api.ingest_pbft_vote(vote_fact(14, 3, 1, PbftVoteType::Soft), vote_context());
+
+        assert!(decision.routed);
+        assert!(decision.payload_accepted);
+        assert_eq!(decision.payload_id, 99);
+        assert_eq!(
+            decision.status,
+            PbftVoteIngressStatus::InvalidPeriodTooBig.as_u8()
+        );
+        assert_eq!(
+            decision.error_code,
+            "PBFT_VOTE_INGRESS_INVALID_PERIOD_TOO_BIG"
+        );
+        assert_eq!(decision.queued_effect_count, 1);
+
+        let batch = api.drain_work(10);
+        assert_eq!(batch.effects.len(), 1);
+        let effect = &batch.effects[0];
+        assert_eq!(effect.kind, NETWORK_EFFECT_KIND_REQUEST_SYNC);
+        assert_eq!(effect.peer_id, peer(7));
+        assert_eq!(effect.sync_kind, NETWORK_SYNC_KIND_PBFT_CHAIN);
+        assert_eq!(effect.sync_start, 13);
+        assert_eq!(effect.source_payload_id, 99);
+    }
+
+    #[test]
+    fn ingest_pbft_vote_bundle_member_queues_report_and_disconnect_for_propose_votes() {
+        let mut api = ConsensusNetworkApi::new();
+
+        let decision = api.ingest_pbft_vote_bundle_member(
+            vote_fact(10, 3, 2, PbftVoteType::Propose),
+            vote_fact(10, 3, 2, PbftVoteType::Propose),
+            vote_context(),
+        );
+
+        assert_eq!(
+            decision.status,
+            PbftVoteIngressStatus::UnsupportedBundleProposeVote.as_u8()
+        );
+        assert_eq!(decision.queued_effect_count, 2);
+
+        let batch = api.drain_work(10);
+        assert_eq!(batch.effects.len(), 2);
+        assert_eq!(batch.effects[0].kind, NETWORK_EFFECT_KIND_REPORT_PEER);
+        assert_eq!(
+            batch.effects[0].reason_code,
+            NETWORK_REASON_UNSUPPORTED_BUNDLE_PROPOSE_VOTE
+        );
+        assert_eq!(batch.effects[1].kind, NETWORK_EFFECT_KIND_DISCONNECT_PEER);
+        assert_eq!(
+            batch.effects[1].reason_code,
+            NETWORK_REASON_UNSUPPORTED_BUNDLE_PROPOSE_VOTE
+        );
     }
 }

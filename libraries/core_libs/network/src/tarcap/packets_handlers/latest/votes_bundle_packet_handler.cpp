@@ -68,20 +68,27 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
   ingress_context.can_request_next_votes_sync =
       std::chrono::system_clock::now() - last_votes_sync_request_time_ > kSyncRequestInterval;
 
+  rustaxa::NetworkPbftVoteIngressContext network_ingress_context{};
+  network_ingress_context.ingress = ingress_context;
+  network_ingress_context.peer_id = peer->getId().asArray();
+  network_ingress_context.peer_pbft_chain_size = peer->pbft_chain_size_.load();
+  network_ingress_context.source_payload_id = 0;
+
   const auto reference_fact = makeVoteIngressFact(reference_vote);
   for (const auto &vote : packet.votes_bundle.votes) {
-    const auto ingress_plan = planPbftVoteBundleIngress(reference_fact, makeVoteIngressFact(vote), ingress_context);
-    if (ingress_plan.accepted) {
+    const auto ingress_decision =
+        ingestPbftVoteBundleMember(reference_fact, makeVoteIngressFact(vote), network_ingress_context);
+    if (ingress_decision.status == 0) {
       continue;
     }
 
-    if (ingress_plan.status == kPbftVoteIngressStatusUnsupportedBundleProposeVote) {
+    executeConsensusNetworkEffects(16);
+    if (ingress_decision.status == kPbftVoteIngressStatusUnsupportedBundleProposeVote) {
       LOG(log_er_) << "Dropping votes bundle packet due to received \"propose\" votes from " << peer->getId()
                    << ". The peer may be a malicious player, will be disconnected";
-      disconnect(peer->getId(), dev::p2p::UserReason);
       return;
     }
-    if (ingress_plan.status == kPbftVoteIngressStatusBundleVoteMismatch) {
+    if (ingress_decision.status == kPbftVoteIngressStatusBundleVoteMismatch) {
       throw MaliciousPeerException("Received PBFT votes bundle with mixed vote identity");
     }
 
@@ -89,8 +96,8 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
                  << reference_vote->getPeriod() << ", " << reference_vote->getRound() << ", "
                  << reference_vote->getStep() << "). Current PBFT (period, round, step) = (" << current_pbft_period
                  << ", " << current_pbft_round << ", " << pbft_mgr_->getPbftStep()
-                 << "), status: " << static_cast<uint32_t>(ingress_plan.status)
-                 << ", error: " << static_cast<std::string>(ingress_plan.error_code);
+                 << "), status: " << static_cast<uint32_t>(ingress_decision.status)
+                 << ", error: " << static_cast<std::string>(ingress_decision.error_code);
     return;
   }
 #else

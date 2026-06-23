@@ -54,6 +54,15 @@ rustaxa::PbftVoteIngressContext voteContext() {
   return context;
 }
 
+rustaxa::NetworkPbftVoteIngressContext networkVoteContext() {
+  rustaxa::NetworkPbftVoteIngressContext context{};
+  context.ingress = voteContext();
+  context.peer_id = nodeId(0x44);
+  context.peer_pbft_chain_size = 11;
+  context.source_payload_id = 99;
+  return context;
+}
+
 rustaxa::NetworkIngressPacket packet(uint32_t packet_type, std::array<uint8_t, 64> peer, rust::Vec<uint8_t> payload) {
   rustaxa::NetworkIngressPacket packet{};
   packet.packet_type = packet_type;
@@ -148,4 +157,41 @@ TEST(ConsensusNetworkApiBridgeTest, voteBundleIngressPlanningRoutesThroughNetwor
   EXPECT_FALSE(plan.accepted);
   EXPECT_EQ(plan.status, 8);
   EXPECT_EQ(plan.error_code, "PBFT_VOTE_INGRESS_BUNDLE_VOTE_MISMATCH");
+}
+
+TEST(ConsensusNetworkApiBridgeTest, pbftVoteIngressQueuesSyncEffectThroughNetworkApi) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+
+  const auto decision = network_api->consensus_network_ingest_pbft_vote(voteFact(14, 3, 1, 2), networkVoteContext());
+
+  EXPECT_TRUE(decision.routed);
+  EXPECT_TRUE(decision.payload_accepted);
+  EXPECT_EQ(decision.payload_id, 99);
+  EXPECT_EQ(decision.status, 3);
+  EXPECT_EQ(decision.queued_effect_count, 1);
+
+  const auto batch = network_api->consensus_network_drain_work(10);
+  ASSERT_EQ(batch.effects.size(), 1);
+  EXPECT_EQ(batch.effects[0].kind, 3);
+  EXPECT_EQ(batch.effects[0].peer_id, nodeId(0x44));
+  EXPECT_EQ(batch.effects[0].sync_kind, 0);
+  EXPECT_EQ(batch.effects[0].sync_start, 13);
+  EXPECT_EQ(batch.effects[0].source_payload_id, 99);
+}
+
+TEST(ConsensusNetworkApiBridgeTest, pbftVoteBundleIngressQueuesReportAndDisconnectEffects) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+
+  const auto decision = network_api->consensus_network_ingest_pbft_vote_bundle_member(
+      voteFact(10, 3, 2, 1), voteFact(10, 3, 2, 1), networkVoteContext());
+
+  EXPECT_EQ(decision.status, 7);
+  EXPECT_EQ(decision.queued_effect_count, 2);
+
+  const auto batch = network_api->consensus_network_drain_work(10);
+  ASSERT_EQ(batch.effects.size(), 2);
+  EXPECT_EQ(batch.effects[0].kind, 4);
+  EXPECT_EQ(batch.effects[0].reason_code, 0);
+  EXPECT_EQ(batch.effects[1].kind, 5);
+  EXPECT_EQ(batch.effects[1].reason_code, 0);
 }
