@@ -88,6 +88,8 @@ pub const NETWORK_OBJECT_KIND_PBFT_BLOCK: u8 = 1;
 pub const NETWORK_OBJECT_KIND_TRANSACTION: u8 = 2;
 /// Network object effect identifies a DAG block hash.
 pub const NETWORK_OBJECT_KIND_DAG_BLOCK: u8 = 3;
+/// Network object effect identifies PBFT period data keyed by PBFT block hash.
+pub const NETWORK_OBJECT_KIND_PBFT_PERIOD_DATA: u8 = 4;
 
 /// Network packet effect identifies the latest PBFT vote packet.
 pub const NETWORK_PACKET_KIND_PBFT_VOTE: u32 = 1;
@@ -97,6 +99,8 @@ pub const NETWORK_PACKET_KIND_DAG_BLOCK: u32 = 5;
 pub const NETWORK_PACKET_KIND_DAG_SYNC: u32 = 6;
 /// Network packet effect identifies the latest transaction packet.
 pub const NETWORK_PACKET_KIND_TRANSACTION: u32 = 7;
+/// Network packet effect identifies the latest PBFT sync packet.
+pub const NETWORK_PACKET_KIND_PBFT_SYNC: u32 = 11;
 /// Network packet effect identifies the latest PBFT blocks bundle packet.
 pub const NETWORK_PACKET_KIND_PBFT_BLOCKS_BUNDLE: u32 = 15;
 
@@ -367,6 +371,27 @@ pub struct NetworkPbftProposedBlockSidecarEffects {
     pub source_payload_id: u64,
     /// Whether the executor should record the sidecar in proposed-block state.
     pub record_block: bool,
+}
+
+/// PBFT sync period-data admission request supplied by network/tarcap.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftSyncPeriodDataAdmissionRequestEffects {
+    /// Peer that supplied the PBFT sync packet.
+    pub peer_id: [u8; 64],
+    /// PBFT block hash decoded from the period data.
+    pub block_hash: [u8; 32],
+    /// PBFT period decoded from the period data.
+    pub period: u64,
+    /// Canonical period-data RLP.
+    pub period_data_rlp: Vec<u8>,
+    /// Number of current-block certificate votes supplied beside the period
+    /// data. The executor validates this against the live vote vector before
+    /// enqueueing period data.
+    pub current_block_cert_vote_count: u64,
+    /// Optional retained packet payload id.
+    pub source_payload_id: u64,
+    /// Whether the executor should enqueue period data for PBFT processing.
+    pub admit_period_data: bool,
 }
 
 /// Transaction admission request supplied by network/tarcap.
@@ -890,6 +915,47 @@ impl ConsensusNetworkApi {
         }
     }
 
+    /// Queues PBFT sync period-data admission for external execution.
+    ///
+    /// Rust owns the period-data admission request identity and effect result
+    /// contract for PBFT sync packets. The live period-data queue mutation
+    /// remains a temporary C++ executor boundary until PBFT sync intake is
+    /// backed by the Rust PBFT manager runtime.
+    pub fn queue_pbft_sync_period_data_admission_request_effects(
+        &mut self,
+        effects: NetworkPbftSyncPeriodDataAdmissionRequestEffects,
+    ) -> NetworkIngressDecision {
+        let before_effects = self.pending_effects.len();
+        if effects.admit_period_data {
+            self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: effects.source_payload_id,
+                kind: NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT,
+                peer_id: effects.peer_id,
+                packet_kind: NETWORK_PACKET_KIND_PBFT_SYNC,
+                payload_bytes: effects.period_data_rlp,
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_PBFT_PERIOD_DATA,
+                object_hash: effects.block_hash,
+                sync_kind: 0,
+                sync_start: 0,
+                reason_code: 0,
+                dependency_id: effects.current_block_cert_vote_count,
+                period: effects.period,
+                round: 0,
+            });
+        }
+
+        NetworkIngressDecision {
+            payload_id: effects.source_payload_id,
+            payload_accepted: effects.source_payload_id != 0,
+            routed: true,
+            status: NETWORK_INGRESS_STATUS_ACCEPTED,
+            error_code: ERROR_NONE.to_owned(),
+            queued_effect_count: self.pending_effects.len().saturating_sub(before_effects) as u32,
+        }
+    }
+
     /// Queues transaction-pool admission for a transaction received from tarcap.
     ///
     /// Rust owns the transaction admission request identity and effect result
@@ -1154,14 +1220,15 @@ fn is_supported_ingress_packet(packet_type: u32) -> bool {
     // Keep this first direct network facade slice intentionally narrow. The
     // current latest-tarcap packet ids come from `SubprotocolPacketType`:
     // `kVotePacket = 1`, `kVotesBundlePacket = 3`, `kDagBlockPacket = 5`,
-    // `kDagSyncPacket = 6`, `kTransactionPacket = 7`, and
-    // `kPbftBlocksBundlePacket = 15`.
+    // `kDagSyncPacket = 6`, `kTransactionPacket = 7`,
+    // `kPbftSyncPacket = 11`, and `kPbftBlocksBundlePacket = 15`.
     matches!(
         packet_type,
         1 | 3
             | NETWORK_PACKET_KIND_DAG_BLOCK
             | NETWORK_PACKET_KIND_DAG_SYNC
             | NETWORK_PACKET_KIND_TRANSACTION
+            | NETWORK_PACKET_KIND_PBFT_SYNC
             | NETWORK_PACKET_KIND_PBFT_BLOCKS_BUNDLE
     )
 }
@@ -1645,6 +1712,45 @@ mod tests {
         assert_eq!(batch.effects[0].object_kind, NETWORK_OBJECT_KIND_PBFT_BLOCK);
         assert_eq!(batch.effects[0].object_hash, hash(0xCD));
         assert_eq!(batch.effects[0].source_payload_id, 78);
+    }
+
+    #[test]
+    fn queue_pbft_sync_period_data_admission_request_effects_records_period_data() {
+        let mut api = ConsensusNetworkApi::new();
+
+        let decision = api.queue_pbft_sync_period_data_admission_request_effects(
+            NetworkPbftSyncPeriodDataAdmissionRequestEffects {
+                peer_id: peer(13),
+                block_hash: hash(0xAE),
+                period: 44,
+                period_data_rlp: vec![0xC0, 0x06],
+                current_block_cert_vote_count: 5,
+                source_payload_id: 82,
+                admit_period_data: true,
+            },
+        );
+
+        assert!(decision.routed);
+        assert_eq!(decision.status, NETWORK_INGRESS_STATUS_ACCEPTED);
+        assert_eq!(decision.queued_effect_count, 1);
+
+        let batch = api.drain_work(10);
+        assert_eq!(batch.effects.len(), 1);
+        assert_eq!(
+            batch.effects[0].kind,
+            NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT
+        );
+        assert_eq!(batch.effects[0].peer_id, peer(13));
+        assert_eq!(batch.effects[0].packet_kind, NETWORK_PACKET_KIND_PBFT_SYNC);
+        assert_eq!(batch.effects[0].payload_bytes, vec![0xC0, 0x06]);
+        assert_eq!(
+            batch.effects[0].object_kind,
+            NETWORK_OBJECT_KIND_PBFT_PERIOD_DATA
+        );
+        assert_eq!(batch.effects[0].object_hash, hash(0xAE));
+        assert_eq!(batch.effects[0].period, 44);
+        assert_eq!(batch.effects[0].dependency_id, 5);
+        assert_eq!(batch.effects[0].source_payload_id, 82);
     }
 
     #[test]

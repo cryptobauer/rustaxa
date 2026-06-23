@@ -410,6 +410,38 @@ TEST(ConsensusNetworkApiBridgeTest, pbftProposedBlockBundleQueuesRecordObjectEff
   EXPECT_EQ(batch.effects[0].source_payload_id, 105);
 }
 
+TEST(ConsensusNetworkApiBridgeTest, pbftSyncPeriodDataAdmissionRequestQueuesRecordObjectEffect) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+
+  rustaxa::NetworkPbftSyncPeriodDataAdmissionRequestEffects effects{};
+  effects.peer_id = nodeId(0x9A);
+  effects.block_hash = hash(0xC2);
+  effects.period = 44;
+  effects.period_data_rlp = bytes({0xC0, 0x06});
+  effects.current_block_cert_vote_count = 4;
+  effects.source_payload_id = 106;
+  effects.admit_period_data = true;
+
+  const auto decision = network_api->consensus_network_queue_pbft_sync_period_data_admission_request_effects(effects);
+  EXPECT_TRUE(decision.routed);
+  EXPECT_EQ(decision.status, 0);
+  EXPECT_EQ(decision.queued_effect_count, 1);
+
+  const auto batch = network_api->consensus_network_drain_work(10);
+  ASSERT_EQ(batch.effects.size(), 1);
+  EXPECT_EQ(batch.effects[0].kind, 8);
+  EXPECT_EQ(batch.effects[0].peer_id, nodeId(0x9A));
+  EXPECT_EQ(batch.effects[0].packet_kind, 11);
+  ASSERT_EQ(batch.effects[0].payload_bytes.size(), 2);
+  EXPECT_EQ(batch.effects[0].payload_bytes[0], 0xC0);
+  EXPECT_EQ(batch.effects[0].payload_bytes[1], 0x06);
+  EXPECT_EQ(batch.effects[0].object_kind, 4);
+  EXPECT_EQ(batch.effects[0].object_hash, hash(0xC2));
+  EXPECT_EQ(batch.effects[0].period, 44);
+  EXPECT_EQ(batch.effects[0].dependency_id, 4);
+  EXPECT_EQ(batch.effects[0].source_payload_id, 106);
+}
+
 TEST(ConsensusNetworkApiBridgeTest, transactionAdmissionRequestQueuesRecordObjectEffect) {
   auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
 
@@ -417,7 +449,7 @@ TEST(ConsensusNetworkApiBridgeTest, transactionAdmissionRequestQueuesRecordObjec
   effects.peer_id = nodeId(0xAA);
   effects.transaction_hash = hash(0xE1);
   effects.transaction_rlp = bytes({0xC0, 0x03});
-  effects.source_payload_id = 106;
+  effects.source_payload_id = 107;
   effects.admit_transaction = true;
 
   const auto decision = network_api->consensus_network_queue_transaction_admission_request_effects(effects);
@@ -435,7 +467,7 @@ TEST(ConsensusNetworkApiBridgeTest, transactionAdmissionRequestQueuesRecordObjec
   EXPECT_EQ(batch.effects[0].payload_bytes[1], 0x03);
   EXPECT_EQ(batch.effects[0].object_kind, 2);
   EXPECT_EQ(batch.effects[0].object_hash, hash(0xE1));
-  EXPECT_EQ(batch.effects[0].source_payload_id, 106);
+  EXPECT_EQ(batch.effects[0].source_payload_id, 107);
 }
 
 TEST(ConsensusNetworkApiBridgeTest, dagBlockAdmissionRequestQueuesRecordObjectEffect) {

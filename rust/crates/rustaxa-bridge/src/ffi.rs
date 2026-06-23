@@ -766,6 +766,17 @@ pub mod rustaxa_ffi {
         record_block: bool,
     }
 
+    /// PBFT sync period-data admission request supplied by network/tarcap.
+    struct NetworkPbftSyncPeriodDataAdmissionRequestEffects {
+        peer_id: [u8; 64],
+        block_hash: [u8; 32],
+        period: u64,
+        period_data_rlp: Vec<u8>,
+        current_block_cert_vote_count: u64,
+        source_payload_id: u64,
+        admit_period_data: bool,
+    }
+
     /// Transaction admission request supplied by network/tarcap.
     struct NetworkTransactionAdmissionRequestEffects {
         peer_id: [u8; 64],
@@ -4810,6 +4821,10 @@ pub mod rustaxa_ffi {
         pub fn consensus_network_queue_pbft_proposed_block_bundle_effects(
             self: &BridgeConsensusNetworkApi,
             effects: NetworkPbftProposedBlockSidecarEffects,
+        ) -> Result<NetworkIngressDecision>;
+        pub fn consensus_network_queue_pbft_sync_period_data_admission_request_effects(
+            self: &BridgeConsensusNetworkApi,
+            effects: NetworkPbftSyncPeriodDataAdmissionRequestEffects,
         ) -> Result<NetworkIngressDecision>;
         pub fn consensus_network_queue_transaction_admission_request_effects(
             self: &BridgeConsensusNetworkApi,

@@ -1,13 +1,55 @@
 #include "network/tarcap/packets_handlers/latest/pbft_sync_packet_handler.hpp"
 
+#include <cassert>
+#include <exception>
+#include <stdexcept>
+
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
 #include "pbft/pbft_chain.hpp"
 #include "pbft/pbft_manager.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
 #include "transaction/transaction_manager.hpp"
 #include "vote/pbft_vote.hpp"
 #include "vote/votes_bundle_rlp.hpp"
 
 namespace taraxa::network::tarcap {
+
+#ifdef RUSTAXA_ENABLE
+namespace {
+
+constexpr uint8_t kNetworkEffectResultStatusOk = 0;
+constexpr uint8_t kNetworkEffectResultStatusFailed = 1;
+constexpr uint8_t kNetworkEffectKindRecordConsensusObject = 8;
+constexpr uint8_t kNetworkObjectKindPbftPeriodData = 4;
+constexpr uint32_t kNetworkPacketKindPbftSync = 11;
+
+rustaxa::NetworkApiConfig defaultNetworkApiConfig() {
+  rustaxa::NetworkApiConfig config{};
+  config.max_payload_bytes = 64 * 1024 * 1024;
+  config.max_retained_payloads = 4096;
+  config.max_effects_per_drain = 1024;
+  return config;
+}
+
+rust::Vec<uint8_t> toBridgeBytes(const bytes &input) {
+  rust::Vec<uint8_t> output;
+  output.reserve(input.size());
+  for (const auto byte : input) {
+    output.push_back(static_cast<uint8_t>(byte));
+  }
+  return output;
+}
+
+}  // namespace
+
+struct PbftSyncPacketHandler::RustConsensusNetworkApiHolder {
+  RustConsensusNetworkApiHolder() : api(rustaxa::create_consensus_network_api(defaultNetworkApiConfig())) {}
+
+  rust::Box<rustaxa::BridgeConsensusNetworkApi> api;
+};
+#endif
 
 PbftSyncPacketHandler::PbftSyncPacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                                              std::shared_ptr<TimePeriodPacketsStats> packets_stats,
@@ -17,7 +59,7 @@ PbftSyncPacketHandler::PbftSyncPacketHandler(const FullNodeConfig &conf, std::sh
                                              std::shared_ptr<VoteManager> vote_mgr,
 #ifndef RUSTAXA_ENABLE
                                              std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY:
-                                                                            // legacy PBFT sync handler.
+                                                                             // legacy PBFT sync handler.
 #endif
                                              const addr_t &node_addr, const std::string &logs_prefix)
     : ISyncPacketHandler(conf, std::move(peers_state), std::move(packets_stats), std::move(pbft_syncing_state),
@@ -28,7 +70,12 @@ PbftSyncPacketHandler::PbftSyncPacketHandler(const FullNodeConfig &conf, std::sh
                          node_addr, logs_prefix + "PBFT_SYNC_PH"),
       vote_mgr_(std::move(vote_mgr)),
       periodic_events_tp_(1, true) {
+#ifdef RUSTAXA_ENABLE
+  rust_consensus_network_api_ = std::make_unique<RustConsensusNetworkApiHolder>();
+#endif
 }
+
+PbftSyncPacketHandler::~PbftSyncPacketHandler() = default;
 
 void PbftSyncPacketHandler::process(const threadpool::PacketData &packet_data,
                                     const std::shared_ptr<TaraxaPeer> &peer) {
@@ -181,7 +228,21 @@ void PbftSyncPacketHandler::process(const threadpool::PacketData &packet_data,
     if (pbft_chain_synced) {
       current_block_cert_votes = std::move(packet.current_block_cert_votes_bundle->votes);
     }
+#ifdef RUSTAXA_ENABLE
+    const auto period_data_rlp = packet.period_data.rlp();
+    rustaxa::NetworkPbftSyncPeriodDataAdmissionRequestEffects effects{};
+    effects.peer_id = peer->getId().asArray();
+    effects.block_hash = pbft_blk_hash.asArray();
+    effects.period = pbft_block_period;
+    effects.period_data_rlp = toBridgeBytes(period_data_rlp);
+    effects.current_block_cert_vote_count = current_block_cert_votes.size();
+    effects.source_payload_id = 0;
+    effects.admit_period_data = true;
+    (void)queuePbftSyncPeriodDataAdmissionRequestEffects(effects);
+    executePbftSyncPeriodDataAdmissionEffect(packet.period_data, period_data_rlp, peer, current_block_cert_votes);
+#else
     pbft_mgr_->periodDataQueuePush(std::move(packet.period_data), peer->getId(), std::move(current_block_cert_votes));
+#endif
   }
 
   auto pbft_sync_period = pbft_mgr_->pbftSyncingPeriod();
@@ -223,6 +284,65 @@ std::vector<std::shared_ptr<PbftVote>> PbftSyncPacketHandler::decodeVotesBundle(
     const dev::RLP &votes_bundle_rlp) const {
   return decodePbftVotesBundleRlp(votes_bundle_rlp);
 }
+
+#ifdef RUSTAXA_ENABLE
+rustaxa::NetworkIngressDecision PbftSyncPacketHandler::queuePbftSyncPeriodDataAdmissionRequestEffects(
+    const rustaxa::NetworkPbftSyncPeriodDataAdmissionRequestEffects &effects) {
+  assert(rust_consensus_network_api_);
+  return rust_consensus_network_api_->api->consensus_network_queue_pbft_sync_period_data_admission_request_effects(
+      effects);
+}
+
+void PbftSyncPacketHandler::executePbftSyncPeriodDataAdmissionEffect(
+    PeriodData &period_data, const dev::bytes &period_data_rlp, const std::shared_ptr<TaraxaPeer> &peer,
+    std::vector<std::shared_ptr<PbftVote>> &current_block_cert_votes) {
+  assert(rust_consensus_network_api_);
+  const auto batch = rust_consensus_network_api_->api->consensus_network_drain_work(1);
+  rust::Vec<rustaxa::NetworkEffectResult> results;
+  results.reserve(batch.effects.size());
+  std::exception_ptr pending_exception;
+
+  for (const auto &effect : batch.effects) {
+    rustaxa::NetworkEffectResult result{};
+    result.effect_id = effect.effect_id;
+    result.kind = effect.kind;
+    result.peer_id = effect.peer_id;
+    result.packet_kind = effect.packet_kind;
+    result.object_kind = effect.object_kind;
+    result.object_hash = effect.object_hash;
+    result.status = kNetworkEffectResultStatusOk;
+
+    try {
+      const auto effect_payload = bytes(effect.payload_bytes.begin(), effect.payload_bytes.end());
+      if (effect.kind != kNetworkEffectKindRecordConsensusObject ||
+          effect.object_kind != kNetworkObjectKindPbftPeriodData || effect.packet_kind != kNetworkPacketKindPbftSync ||
+          effect.peer_id != peer->getId().asArray() ||
+          period_data.pbft_blk->getBlockHash().asArray() != effect.object_hash || period_data.rlp() != effect_payload ||
+          period_data_rlp != effect_payload || effect.period != period_data.pbft_blk->getPeriod() ||
+          effect.dependency_id != current_block_cert_votes.size()) {
+        throw std::runtime_error(
+            "Network API PBFT sync period-data admission effect missing matching live period data");
+      }
+
+      pbft_mgr_->periodDataQueuePush(std::move(period_data), peer->getId(), std::move(current_block_cert_votes));
+    } catch (const std::exception &e) {
+      result.status = kNetworkEffectResultStatusFailed;
+      result.diagnostic = e.what();
+      pending_exception = std::current_exception();
+    }
+
+    results.push_back(std::move(result));
+  }
+
+  if (!results.empty()) {
+    (void)rust_consensus_network_api_->api->consensus_network_report_effect_results(std::move(results));
+  }
+
+  if (pending_exception) {
+    std::rethrow_exception(pending_exception);
+  }
+}
+#endif
 
 void PbftSyncPacketHandler::pbftSyncComplete() {
   if (pbft_mgr_->periodDataQueueSize()) {

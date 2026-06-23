@@ -281,6 +281,22 @@ impl BridgeConsensusNetworkApi {
         ))
     }
 
+    /// Queues PBFT sync period-data admission for external execution.
+    pub fn consensus_network_queue_pbft_sync_period_data_admission_request_effects(
+        &self,
+        effects: rustaxa_ffi::NetworkPbftSyncPeriodDataAdmissionRequestEffects,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
+        let mut api = self
+            .api
+            .lock()
+            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        Ok(to_bridge_network_ingress_decision(
+            api.queue_pbft_sync_period_data_admission_request_effects(
+                to_domain_pbft_sync_period_data_admission_request_effects(effects),
+            ),
+        ))
+    }
+
     /// Queues transaction-pool admission for a transaction packet member.
     pub fn consensus_network_queue_transaction_admission_request_effects(
         &self,
@@ -443,6 +459,20 @@ fn to_domain_pbft_proposed_block_sidecar_effects(
         block_rlp: value.block_rlp,
         source_payload_id: value.source_payload_id,
         record_block: value.record_block,
+    }
+}
+
+fn to_domain_pbft_sync_period_data_admission_request_effects(
+    value: rustaxa_ffi::NetworkPbftSyncPeriodDataAdmissionRequestEffects,
+) -> rustaxa_consensus::NetworkPbftSyncPeriodDataAdmissionRequestEffects {
+    rustaxa_consensus::NetworkPbftSyncPeriodDataAdmissionRequestEffects {
+        peer_id: value.peer_id,
+        block_hash: value.block_hash,
+        period: value.period,
+        period_data_rlp: value.period_data_rlp,
+        current_block_cert_vote_count: value.current_block_cert_vote_count,
+        source_payload_id: value.source_payload_id,
+        admit_period_data: value.admit_period_data,
     }
 }
 
