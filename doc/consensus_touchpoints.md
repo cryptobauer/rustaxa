@@ -128,7 +128,8 @@ Rules:
     votes flow through the network API admission request route.
   - Accepted PBFT vote admission can now queue vote `MARK_PEER_KNOWN` through
     `consensus_network_queue_pbft_vote_admission_effects`; tarcap executes that peer-cache mutation via the same
-    `drain_work` / `report_effect_results` path instead of mutating the peer directly.
+    `drain_work` / `report_effect_results` path instead of mutating the peer directly. Rust-enabled single-vote and
+    vote-bundle handlers no longer keep a direct accepted-vote mark-known fallback.
   - Accepted PBFT vote packets with attached PBFT block sidecars can now queue block `MARK_PEER_KNOWN` through
     `consensus_network_queue_pbft_block_admission_effects`; tarcap executes that peer-cache mutation via the same
     `drain_work` / `report_effect_results` path instead of mutating the peer directly.

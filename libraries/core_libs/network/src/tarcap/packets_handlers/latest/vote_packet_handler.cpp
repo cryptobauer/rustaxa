@@ -92,9 +92,11 @@ void VotePacketHandler::process(const threadpool::PacketData &packet_data, const
 #endif
 
   // Do not mark it before, as peers have small caches of known votes. Only mark gossiping votes
+#ifndef RUSTAXA_ENABLE
   if (process_result.mark_vote_known) {
     peer->markPbftVoteAsKnown(vote_hash);
   }
+#endif
 
 #ifdef RUSTAXA_ENABLE
   if (process_result.gossip_vote) {

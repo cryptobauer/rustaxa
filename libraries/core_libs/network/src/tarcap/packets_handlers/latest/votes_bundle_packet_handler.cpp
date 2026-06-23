@@ -159,10 +159,6 @@ void VotesBundlePacketHandler::process(const threadpool::PacketData &packet_data
     }
 
 #ifdef RUSTAXA_ENABLE
-    if (process_result.mark_vote_known) {
-      peer->markPbftVoteAsKnown(vote->getHash());
-    }
-
     processed_votes.emplace_back(vote);
 #endif
     processed_votes_count++;
