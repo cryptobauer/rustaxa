@@ -266,6 +266,22 @@ impl BridgeConsensusNetworkApi {
         ))
     }
 
+    /// Queues PBFT next-votes bundle egress for external execution.
+    pub fn consensus_network_queue_pbft_next_votes_bundle_egress_request_effects(
+        &self,
+        effects: rustaxa_ffi::NetworkPbftNextVotesBundleEgressRequestEffects,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
+        let mut api = self
+            .api
+            .lock()
+            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        Ok(to_bridge_network_ingress_decision(
+            api.queue_pbft_next_votes_bundle_egress_request_effects(
+                to_domain_pbft_next_votes_bundle_egress_request_effects(effects),
+            ),
+        ))
+    }
+
     /// Queues network effects derived from proposed PBFT block sidecars.
     pub fn consensus_network_queue_pbft_proposed_block_sidecar_effects(
         &self,
@@ -551,6 +567,18 @@ fn to_domain_pbft_vote_gossip_effects(
         vote_hash: value.vote_hash,
         source_payload_id: value.source_payload_id,
         gossip_vote: value.gossip_vote,
+    }
+}
+
+fn to_domain_pbft_next_votes_bundle_egress_request_effects(
+    value: rustaxa_ffi::NetworkPbftNextVotesBundleEgressRequestEffects,
+) -> rustaxa_consensus::NetworkPbftNextVotesBundleEgressRequestEffects {
+    rustaxa_consensus::NetworkPbftNextVotesBundleEgressRequestEffects {
+        peer_id: value.peer_id,
+        period: value.period,
+        round: value.round,
+        source_payload_id: value.source_payload_id,
+        request_bundle: value.request_bundle,
     }
 }
 

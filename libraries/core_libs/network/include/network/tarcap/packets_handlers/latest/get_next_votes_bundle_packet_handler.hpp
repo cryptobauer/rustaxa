@@ -2,6 +2,9 @@
 
 #include "network/tarcap/packets/latest/get_next_votes_bundle_packet.hpp"
 #include "network/tarcap/packets_handlers/interface/vote_packet_handler.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
 
 namespace taraxa {
 class PbftManager;
@@ -18,12 +21,22 @@ class GetNextVotesBundlePacketHandler : public IVotePacketHandler {
                                   std::shared_ptr<VoteManager> vote_mgr,
                                   std::shared_ptr<SlashingManager> slashing_manager, const addr_t& node_addr,
                                   const std::string& logs_prefix = "");
+  ~GetNextVotesBundlePacketHandler() override;
 
   // Packet type that is processed by this handler
   static constexpr SubprotocolPacketType kPacketType_ = SubprotocolPacketType::kGetNextVotesSyncPacket;
 
  private:
   virtual void process(const threadpool::PacketData& packet_data, const std::shared_ptr<TaraxaPeer>& peer) override;
+
+#ifdef RUSTAXA_ENABLE
+  rustaxa::NetworkIngressDecision queuePbftNextVotesBundleEgressRequestEffects(
+      const rustaxa::NetworkPbftNextVotesBundleEgressRequestEffects& effects);
+  void executePbftNextVotesBundleEgressEffect(const std::shared_ptr<TaraxaPeer>& peer);
+
+  struct RustConsensusNetworkApiHolder;
+  std::unique_ptr<RustConsensusNetworkApiHolder> rust_consensus_network_api_;
+#endif
 };
 
 }  // namespace taraxa::network::tarcap
