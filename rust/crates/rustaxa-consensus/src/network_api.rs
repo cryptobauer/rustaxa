@@ -65,6 +65,8 @@ pub const NETWORK_EFFECT_KIND_DISCONNECT_PEER: u8 = 5;
 pub const NETWORK_EFFECT_KIND_BLOCK_PEER_ORDER: u8 = 6;
 /// Network effect asks the executor to drive PBFT progress.
 pub const NETWORK_EFFECT_KIND_DRIVE_CONSENSUS_PROGRESS: u8 = 7;
+/// Network effect asks the executor to record a consensus object.
+pub const NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT: u8 = 8;
 
 /// Network sync effect requests PBFT chain synchronization.
 pub const NETWORK_SYNC_KIND_PBFT_CHAIN: u8 = 0;
@@ -308,6 +310,25 @@ pub struct NetworkPbftVoteGossipEffects {
     pub source_payload_id: u64,
     /// Whether the network executor should gossip the accepted vote.
     pub gossip_vote: bool,
+}
+
+/// Proposed-block sidecar effects derived from accepted PBFT vote packets.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftProposedBlockSidecarEffects {
+    /// Peer that supplied the vote packet carrying the proposed block.
+    pub peer_id: [u8; 64],
+    /// PBFT period decoded from the proposed block.
+    pub period: u64,
+    /// Proposed PBFT block hash.
+    pub block_hash: [u8; 32],
+    /// Pivot DAG block hash decoded from the proposed block.
+    pub pivot_hash: [u8; 32],
+    /// Canonical signed PBFT block RLP.
+    pub block_rlp: Vec<u8>,
+    /// Optional retained packet payload id.
+    pub source_payload_id: u64,
+    /// Whether the executor should record the sidecar in proposed-block state.
+    pub record_block: bool,
 }
 
 /// Rust-owned external network/tarcap API facade.
@@ -672,6 +693,48 @@ impl ConsensusNetworkApi {
                 reason_code: 0,
                 dependency_id: 0,
                 period: 0,
+                round: 0,
+            });
+        }
+
+        NetworkIngressDecision {
+            payload_id: effects.source_payload_id,
+            payload_accepted: effects.source_payload_id != 0,
+            routed: true,
+            status: NETWORK_INGRESS_STATUS_ACCEPTED,
+            error_code: ERROR_NONE.to_owned(),
+            queued_effect_count: self.pending_effects.len().saturating_sub(before_effects) as u32,
+        }
+    }
+
+    /// Queues effects for a proposed PBFT block carried beside an accepted vote.
+    ///
+    /// The network/tarcap boundary supplies canonical block bytes and compact
+    /// decoded facts. Rust owns the sidecar routing decision and returns a
+    /// typed record-object effect; the temporary C++ executor still performs
+    /// live PBFT manager insertion until the network API is wired to the shared
+    /// Rust proposed-block runtime.
+    pub fn queue_pbft_proposed_block_sidecar_effects(
+        &mut self,
+        effects: NetworkPbftProposedBlockSidecarEffects,
+    ) -> NetworkIngressDecision {
+        let before_effects = self.pending_effects.len();
+        if effects.record_block {
+            self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: effects.source_payload_id,
+                kind: NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT,
+                peer_id: effects.peer_id,
+                packet_kind: NETWORK_PACKET_KIND_PBFT_VOTE,
+                payload_bytes: effects.block_rlp,
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_PBFT_BLOCK,
+                object_hash: effects.block_hash,
+                sync_kind: 0,
+                sync_start: 0,
+                reason_code: 0,
+                dependency_id: 0,
+                period: effects.period,
                 round: 0,
             });
         }
@@ -1260,5 +1323,39 @@ mod tests {
         assert_eq!(batch.effects[0].object_kind, NETWORK_OBJECT_KIND_PBFT_VOTE);
         assert_eq!(batch.effects[0].object_hash, hash(0xEF));
         assert_eq!(batch.effects[0].source_payload_id, 79);
+    }
+
+    #[test]
+    fn queue_pbft_proposed_block_sidecar_effects_records_block() {
+        let mut api = ConsensusNetworkApi::new();
+
+        let decision =
+            api.queue_pbft_proposed_block_sidecar_effects(NetworkPbftProposedBlockSidecarEffects {
+                peer_id: peer(11),
+                period: 42,
+                block_hash: hash(0xA1),
+                pivot_hash: hash(0xB2),
+                block_rlp: vec![0xC0, 0x01],
+                source_payload_id: 80,
+                record_block: true,
+            });
+
+        assert!(decision.routed);
+        assert_eq!(decision.status, NETWORK_INGRESS_STATUS_ACCEPTED);
+        assert_eq!(decision.queued_effect_count, 1);
+
+        let batch = api.drain_work(10);
+        assert_eq!(batch.effects.len(), 1);
+        assert_eq!(
+            batch.effects[0].kind,
+            NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT
+        );
+        assert_eq!(batch.effects[0].peer_id, peer(11));
+        assert_eq!(batch.effects[0].packet_kind, NETWORK_PACKET_KIND_PBFT_VOTE);
+        assert_eq!(batch.effects[0].payload_bytes, vec![0xC0, 0x01]);
+        assert_eq!(batch.effects[0].object_kind, NETWORK_OBJECT_KIND_PBFT_BLOCK);
+        assert_eq!(batch.effects[0].object_hash, hash(0xA1));
+        assert_eq!(batch.effects[0].period, 42);
+        assert_eq!(batch.effects[0].source_payload_id, 80);
     }
 }

@@ -129,12 +129,17 @@ Rules:
     `consensus_network_queue_pbft_vote_gossip_effects`; tarcap executes the effect with existing peer filtering,
     optional block-sidecar packet wrapping, send policy, and peer known-cache updates instead of calling
     `PbftManager::gossipVote` in Rust-enabled latest vote handling.
+  - Accepted PBFT vote proposed-block sidecars can now queue `RECORD_CONSENSUS_OBJECT` through
+    `consensus_network_queue_pbft_proposed_block_sidecar_effects`; tarcap supplies canonical PBFT block RLP and compact
+    period/hash facts to the facade before the executor records the sidecar.
   - This is still not the final production route: tarcap executes the drained network effects, and accepted votes still
     enter validation/admission through the temporary VoteManager/PBFT manager path.
+  - Proposed-block sidecar recording still uses the temporary PBFT manager executor boundary until the network API is
+    injected with the same Rust proposed-block runtime/storage handle used by PBFT.
   - The facade methods themselves do not call consensus shims, C++ consensus managers, `DbStorage`, peer transport,
     packet wrapping, or gossip.
   - Remaining work is to move vote validation/admission, verified-vote mutation, packet interpretation,
-    proposed-block processing, and other packet families behind the facade, then remove the corresponding
+    shared proposed-block runtime injection, and other packet families behind the facade, then remove the corresponding
     consensus-manager dependencies from tarcap handlers.
 
 First useful routes:

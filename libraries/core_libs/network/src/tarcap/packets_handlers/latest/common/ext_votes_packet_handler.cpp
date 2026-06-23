@@ -23,6 +23,7 @@ constexpr uint8_t kNetworkEffectKindMarkPeerKnown = 2;
 constexpr uint8_t kNetworkEffectKindRequestSync = 3;
 constexpr uint8_t kNetworkEffectKindReportPeer = 4;
 constexpr uint8_t kNetworkEffectKindDisconnectPeer = 5;
+constexpr uint8_t kNetworkEffectKindRecordConsensusObject = 8;
 constexpr uint8_t kNetworkSyncKindPbftChain = 0;
 constexpr uint8_t kNetworkSyncKindPbftNextVotes = 1;
 constexpr uint8_t kNetworkObjectKindPbftVote = 0;
@@ -35,6 +36,15 @@ rustaxa::NetworkApiConfig defaultNetworkApiConfig() {
   config.max_retained_payloads = 4096;
   config.max_effects_per_drain = 1024;
   return config;
+}
+
+rust::Vec<uint8_t> toBridgeBytes(const bytes &input) {
+  rust::Vec<uint8_t> output;
+  output.reserve(input.size());
+  for (const auto byte : input) {
+    output.push_back(static_cast<uint8_t>(byte));
+  }
+  return output;
 }
 
 }  // namespace
@@ -146,7 +156,16 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
   }
 
   if (pbft_block) {
-    pbft_mgr_->processProposedBlock(pbft_block);
+    rustaxa::NetworkPbftProposedBlockSidecarEffects effects{};
+    effects.peer_id = peer->getId().asArray();
+    effects.period = pbft_block->getPeriod();
+    effects.block_hash = pbft_block->getBlockHash().asArray();
+    effects.pivot_hash = pbft_block->getPivotDagBlockHash().asArray();
+    effects.block_rlp = toBridgeBytes(pbft_block->rlp(true));
+    effects.source_payload_id = 0;
+    effects.record_block = true;
+    (void)queuePbftProposedBlockSidecarEffects(effects);
+    executeConsensusNetworkEffects(16);
   }
 
   return result;
@@ -359,6 +378,12 @@ rustaxa::NetworkIngressDecision ExtVotesPacketHandler::queuePbftVoteGossipEffect
   return rust_consensus_network_api_->api->consensus_network_queue_pbft_vote_gossip_effects(effects);
 }
 
+rustaxa::NetworkIngressDecision ExtVotesPacketHandler::queuePbftProposedBlockSidecarEffects(
+    const rustaxa::NetworkPbftProposedBlockSidecarEffects &effects) {
+  assert(rust_consensus_network_api_);
+  return rust_consensus_network_api_->api->consensus_network_queue_pbft_proposed_block_sidecar_effects(effects);
+}
+
 void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget) {
   executeConsensusNetworkEffects(budget, nullptr, nullptr);
 }
@@ -421,6 +446,15 @@ void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget,
             }
           }
         }
+      } else if (effect.kind == kNetworkEffectKindRecordConsensusObject &&
+                 effect.object_kind == kNetworkObjectKindPbftBlock) {
+        auto proposed_block =
+            std::make_shared<PbftBlock>(bytes(effect.payload_bytes.begin(), effect.payload_bytes.end()));
+        if (proposed_block->getPeriod() != effect.period ||
+            proposed_block->getBlockHash().asArray() != effect.object_hash) {
+          throw std::runtime_error("Network API proposed PBFT block sidecar effect has mismatched block payload");
+        }
+        pbft_mgr_->processProposedBlock(proposed_block);
       } else if (effect.kind == kNetworkEffectKindRequestSync && effect.sync_kind == kNetworkSyncKindPbftNextVotes) {
         requestPbftNextVotesAtPeriodRound(peer_id, effect.period, effect.round);
         last_votes_sync_request_time_ = std::chrono::system_clock::now();
