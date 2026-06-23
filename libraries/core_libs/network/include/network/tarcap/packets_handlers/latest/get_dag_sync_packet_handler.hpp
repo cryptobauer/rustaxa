@@ -2,6 +2,9 @@
 
 #include "common/packet_handler.hpp"
 #include "network/tarcap/packets/latest/get_dag_sync_packet.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
 #include "transaction/transaction.hpp"
 
 namespace taraxa {
@@ -17,6 +20,7 @@ class GetDagSyncPacketHandler : public PacketHandler {
                           std::shared_ptr<TimePeriodPacketsStats> packets_stats,
                           std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<DagManager> dag_mgr,
                           const addr_t& node_addr, const std::string& logs_prefix = "");
+  ~GetDagSyncPacketHandler() override;
 
   void sendBlocks(const dev::p2p::NodeID& peer_id, std::vector<std::shared_ptr<DagBlock>>&& blocks,
                   SharedTransactions&& transactions, PbftPeriod request_period, PbftPeriod period);
@@ -28,6 +32,15 @@ class GetDagSyncPacketHandler : public PacketHandler {
   virtual void process(const threadpool::PacketData& packet_data, const std::shared_ptr<TaraxaPeer>& peer) override;
 
  protected:
+#ifdef RUSTAXA_ENABLE
+  rustaxa::NetworkIngressDecision queueDagSyncEgressRequestEffects(
+      const rustaxa::NetworkDagSyncEgressRequestEffects& effects);
+  void executeDagSyncEgressEffect(const std::shared_ptr<TaraxaPeer>& peer);
+
+  struct RustConsensusNetworkApiHolder;
+  std::unique_ptr<RustConsensusNetworkApiHolder> rust_consensus_network_api_;
+#endif
+
   std::shared_ptr<TransactionManager> trx_mgr_;
   std::shared_ptr<DagManager> dag_mgr_;
 };

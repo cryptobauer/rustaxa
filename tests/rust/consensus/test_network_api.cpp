@@ -25,7 +25,7 @@ rust::Vec<uint8_t> bytes(std::initializer_list<uint8_t> values) {
 rustaxa::NetworkApiConfig defaultConfig() {
   rustaxa::NetworkApiConfig config{};
   config.max_payload_bytes = 1024;
-  config.max_retained_payloads = 11;
+  config.max_retained_payloads = 12;
   config.max_effects_per_drain = 8;
   return config;
 }
@@ -114,27 +114,31 @@ TEST(ConsensusNetworkApiBridgeTest, ingestPacketStoresCanonicalBytesThroughDirec
   EXPECT_TRUE(get_pbft_sync_receipt.accepted);
   EXPECT_EQ(get_pbft_sync_receipt.payload_id, 6);
 
+  const auto get_dag_sync_receipt = network_api->consensus_network_ingest_packet(packet(12, peer, bytes({0xC0, 0x05})));
+  EXPECT_TRUE(get_dag_sync_receipt.accepted);
+  EXPECT_EQ(get_dag_sync_receipt.payload_id, 7);
+
   const auto dag_block_receipt = network_api->consensus_network_ingest_packet(packet(5, peer, bytes({0xC0, 0x04})));
   EXPECT_TRUE(dag_block_receipt.accepted);
-  EXPECT_EQ(dag_block_receipt.payload_id, 7);
+  EXPECT_EQ(dag_block_receipt.payload_id, 8);
 
   const auto dag_sync_receipt = network_api->consensus_network_ingest_packet(packet(6, peer, bytes({0xC0, 0x05})));
   EXPECT_TRUE(dag_sync_receipt.accepted);
-  EXPECT_EQ(dag_sync_receipt.payload_id, 8);
+  EXPECT_EQ(dag_sync_receipt.payload_id, 9);
 
   const auto pillar_vote_receipt = network_api->consensus_network_ingest_packet(packet(13, peer, bytes({0xC0, 0x06})));
   EXPECT_TRUE(pillar_vote_receipt.accepted);
-  EXPECT_EQ(pillar_vote_receipt.payload_id, 9);
+  EXPECT_EQ(pillar_vote_receipt.payload_id, 10);
 
   const auto get_pillar_votes_bundle_receipt =
       network_api->consensus_network_ingest_packet(packet(14, peer, bytes({0xC0, 0x07})));
   EXPECT_TRUE(get_pillar_votes_bundle_receipt.accepted);
-  EXPECT_EQ(get_pillar_votes_bundle_receipt.payload_id, 10);
+  EXPECT_EQ(get_pillar_votes_bundle_receipt.payload_id, 11);
 
   const auto pillar_votes_bundle_receipt =
       network_api->consensus_network_ingest_packet(packet(15, peer, bytes({0xC0, 0x07})));
   EXPECT_TRUE(pillar_votes_bundle_receipt.accepted);
-  EXPECT_EQ(pillar_votes_bundle_receipt.payload_id, 11);
+  EXPECT_EQ(pillar_votes_bundle_receipt.payload_id, 12);
 }
 
 TEST(ConsensusNetworkApiBridgeTest, ingestPacketRejectsEmptyPayloadWithoutAllocatingIngress) {
@@ -485,6 +489,39 @@ TEST(ConsensusNetworkApiBridgeTest, pillarVotesBundleEgressRequestQueuesRecordOb
   EXPECT_EQ(batch.effects[0].source_payload_id, 106);
 }
 
+TEST(ConsensusNetworkApiBridgeTest, dagSyncEgressRequestQueuesRecordObjectEffect) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+
+  rustaxa::NetworkDagSyncEgressRequestEffects effects{};
+  effects.peer_id = nodeId(0x8B);
+  effects.peer_period = 62;
+  effects.requested_block_hashes.push_back(rustaxa::DagHash{hash(0xAC)});
+  effects.requested_block_hashes.push_back(rustaxa::DagHash{hash(0xAD)});
+  effects.source_payload_id = 107;
+  effects.request_blocks = true;
+
+  const auto decision = network_api->consensus_network_queue_dag_sync_egress_request_effects(effects);
+  EXPECT_TRUE(decision.routed);
+  EXPECT_EQ(decision.status, 0);
+  EXPECT_EQ(decision.queued_effect_count, 1);
+
+  const auto batch = network_api->consensus_network_drain_work(10);
+  ASSERT_EQ(batch.effects.size(), 1);
+  EXPECT_EQ(batch.effects[0].kind, 8);
+  EXPECT_EQ(batch.effects[0].peer_id, nodeId(0x8B));
+  EXPECT_EQ(batch.effects[0].packet_kind, 12);
+  ASSERT_EQ(batch.effects[0].payload_bytes.size(), 64);
+  EXPECT_EQ(batch.effects[0].payload_bytes[0], 0xAC);
+  EXPECT_EQ(batch.effects[0].payload_bytes[32], 0xAD);
+  EXPECT_EQ(batch.effects[0].object_kind, 10);
+  EXPECT_EQ(batch.effects[0].object_hash[7], 62);
+  EXPECT_EQ(batch.effects[0].object_hash[15], 2);
+  EXPECT_EQ(batch.effects[0].object_hash[23], 107);
+  EXPECT_EQ(batch.effects[0].period, 62);
+  EXPECT_EQ(batch.effects[0].dependency_id, 2);
+  EXPECT_EQ(batch.effects[0].source_payload_id, 107);
+}
+
 TEST(ConsensusNetworkApiBridgeTest, pbftProposedBlockSidecarQueuesRecordObjectEffect) {
   auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
 
@@ -494,7 +531,7 @@ TEST(ConsensusNetworkApiBridgeTest, pbftProposedBlockSidecarQueuesRecordObjectEf
   effects.block_hash = hash(0xA1);
   effects.pivot_hash = hash(0xB2);
   effects.block_rlp = bytes({0xC0, 0x01});
-  effects.source_payload_id = 107;
+  effects.source_payload_id = 108;
   effects.record_block = true;
 
   const auto decision = network_api->consensus_network_queue_pbft_proposed_block_sidecar_effects(effects);
@@ -513,7 +550,7 @@ TEST(ConsensusNetworkApiBridgeTest, pbftProposedBlockSidecarQueuesRecordObjectEf
   EXPECT_EQ(batch.effects[0].object_kind, 1);
   EXPECT_EQ(batch.effects[0].object_hash, hash(0xA1));
   EXPECT_EQ(batch.effects[0].period, 42);
-  EXPECT_EQ(batch.effects[0].source_payload_id, 107);
+  EXPECT_EQ(batch.effects[0].source_payload_id, 108);
 }
 
 TEST(ConsensusNetworkApiBridgeTest, pbftProposedBlockBundleQueuesRecordObjectEffect) {
