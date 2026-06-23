@@ -224,3 +224,26 @@ TEST(ConsensusNetworkApiBridgeTest, pbftVoteAdmissionEffectsQueueMarkKnownEffect
   EXPECT_EQ(batch.effects[0].object_hash, hash(0xAB));
   EXPECT_EQ(batch.effects[0].source_payload_id, 101);
 }
+
+TEST(ConsensusNetworkApiBridgeTest, pbftBlockAdmissionEffectsQueueMarkKnownEffect) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+
+  rustaxa::NetworkPbftBlockAdmissionEffects effects{};
+  effects.peer_id = nodeId(0x66);
+  effects.block_hash = hash(0xCD);
+  effects.source_payload_id = 102;
+  effects.mark_block_known = true;
+
+  const auto decision = network_api->consensus_network_queue_pbft_block_admission_effects(effects);
+  EXPECT_TRUE(decision.routed);
+  EXPECT_EQ(decision.status, 0);
+  EXPECT_EQ(decision.queued_effect_count, 1);
+
+  const auto batch = network_api->consensus_network_drain_work(10);
+  ASSERT_EQ(batch.effects.size(), 1);
+  EXPECT_EQ(batch.effects[0].kind, 2);
+  EXPECT_EQ(batch.effects[0].peer_id, nodeId(0x66));
+  EXPECT_EQ(batch.effects[0].object_kind, 1);
+  EXPECT_EQ(batch.effects[0].object_hash, hash(0xCD));
+  EXPECT_EQ(batch.effects[0].source_payload_id, 102);
+}

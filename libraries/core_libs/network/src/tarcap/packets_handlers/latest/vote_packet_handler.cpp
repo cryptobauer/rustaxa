@@ -81,7 +81,13 @@ void VotePacketHandler::process(const threadpool::PacketData &packet_data, const
 
 #ifdef RUSTAXA_ENABLE
   if (pbft_block) {
-    peer->markPbftBlockAsKnown(pbft_block->getBlockHash());
+    rustaxa::NetworkPbftBlockAdmissionEffects effects{};
+    effects.peer_id = peer->getId().asArray();
+    effects.block_hash = pbft_block->getBlockHash().asArray();
+    effects.source_payload_id = 0;
+    effects.mark_block_known = true;
+    (void)queuePbftBlockAdmissionEffects(effects);
+    executeConsensusNetworkEffects(16);
   }
 #endif
 

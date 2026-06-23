@@ -24,6 +24,7 @@ constexpr uint8_t kNetworkEffectKindDisconnectPeer = 5;
 constexpr uint8_t kNetworkSyncKindPbftChain = 0;
 constexpr uint8_t kNetworkSyncKindPbftNextVotes = 1;
 constexpr uint8_t kNetworkObjectKindPbftVote = 0;
+constexpr uint8_t kNetworkObjectKindPbftBlock = 1;
 
 rustaxa::NetworkApiConfig defaultNetworkApiConfig() {
   rustaxa::NetworkApiConfig config{};
@@ -343,6 +344,12 @@ rustaxa::NetworkIngressDecision ExtVotesPacketHandler::queuePbftVoteAdmissionEff
   return rust_consensus_network_api_->api->consensus_network_queue_pbft_vote_admission_effects(effects);
 }
 
+rustaxa::NetworkIngressDecision ExtVotesPacketHandler::queuePbftBlockAdmissionEffects(
+    const rustaxa::NetworkPbftBlockAdmissionEffects &effects) {
+  assert(rust_consensus_network_api_);
+  return rust_consensus_network_api_->api->consensus_network_queue_pbft_block_admission_effects(effects);
+}
+
 void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget) {
   assert(rust_consensus_network_api_);
   const auto batch = rust_consensus_network_api_->api->consensus_network_drain_work(static_cast<uint32_t>(budget));
@@ -367,6 +374,11 @@ void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget) {
         const auto peer = peers_state_->getPeer(peer_id);
         if (peer) {
           peer->markPbftVoteAsKnown(vote_hash_t(effect.object_hash));
+        }
+      } else if (effect.kind == kNetworkEffectKindMarkPeerKnown && effect.object_kind == kNetworkObjectKindPbftBlock) {
+        const auto peer = peers_state_->getPeer(peer_id);
+        if (peer) {
+          peer->markPbftBlockAsKnown(blk_hash_t(effect.object_hash));
         }
       } else if (effect.kind == kNetworkEffectKindDisconnectPeer) {
         disconnect(peer_id, dev::p2p::UserReason);

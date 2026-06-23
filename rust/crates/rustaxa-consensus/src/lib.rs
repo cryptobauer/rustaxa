@@ -122,7 +122,8 @@ pub use network_api::{
     NETWORK_SYNC_KIND_PBFT_NEXT_VOTES, NetworkApiConfig, NetworkEffect, NetworkEffectAck,
     NetworkEffectBatch, NetworkEffectResult, NetworkIngressDecision, NetworkIngressPacket,
     NetworkIngressPayload, NetworkIngressReceipt, NetworkPayloadId,
-    NetworkPbftVoteAdmissionEffects, NetworkPbftVoteIngressContext,
+    NetworkPbftBlockAdmissionEffects, NetworkPbftVoteAdmissionEffects,
+    NetworkPbftVoteIngressContext,
 };
 pub use pbft_chain::{
     PbftBlockStorageLookup, PbftChain, PbftChainStorageRestore, load_pbft_block_from_storage,

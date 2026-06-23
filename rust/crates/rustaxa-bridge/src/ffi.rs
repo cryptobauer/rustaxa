@@ -726,6 +726,14 @@ pub mod rustaxa_ffi {
         mark_vote_known: bool,
     }
 
+    /// Accepted PBFT block sidecar network effects supplied after admission.
+    struct NetworkPbftBlockAdmissionEffects {
+        peer_id: [u8; 64],
+        block_hash: [u8; 32],
+        source_payload_id: u64,
+        mark_block_known: bool,
+    }
+
     /// Gas-estimation request supplied before C++ may call FinalChain/EVM.
     struct TransactionManagerGasEstimationFact {
         hash: [u8; 32],
@@ -4731,6 +4739,10 @@ pub mod rustaxa_ffi {
         pub fn consensus_network_queue_pbft_vote_admission_effects(
             self: &BridgeConsensusNetworkApi,
             effects: NetworkPbftVoteAdmissionEffects,
+        ) -> Result<NetworkIngressDecision>;
+        pub fn consensus_network_queue_pbft_block_admission_effects(
+            self: &BridgeConsensusNetworkApi,
+            effects: NetworkPbftBlockAdmissionEffects,
         ) -> Result<NetworkIngressDecision>;
 
         type WesolowskiVdf;

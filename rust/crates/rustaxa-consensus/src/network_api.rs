@@ -279,6 +279,19 @@ pub struct NetworkPbftVoteAdmissionEffects {
     pub mark_vote_known: bool,
 }
 
+/// Accepted-PBFT-block network effects derived after verified-vote admission.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftBlockAdmissionEffects {
+    /// Peer that supplied the accepted vote with the block sidecar.
+    pub peer_id: [u8; 64],
+    /// Accepted PBFT block hash attached to the vote packet.
+    pub block_hash: [u8; 32],
+    /// Optional retained packet payload id.
+    pub source_payload_id: u64,
+    /// Whether the network executor should mark the block as known for the peer.
+    pub mark_block_known: bool,
+}
+
 /// Rust-owned external network/tarcap API facade.
 ///
 /// The facade owns canonical ingress payload bytes and an ordered network
@@ -554,6 +567,47 @@ impl ConsensusNetworkApi {
                 exclude_peers: Vec::new(),
                 object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
                 object_hash: effects.vote_hash,
+                sync_kind: 0,
+                sync_start: 0,
+                reason_code: 0,
+                dependency_id: 0,
+                period: 0,
+                round: 0,
+            });
+        }
+
+        NetworkIngressDecision {
+            payload_id: effects.source_payload_id,
+            payload_accepted: effects.source_payload_id != 0,
+            routed: true,
+            status: NETWORK_INGRESS_STATUS_ACCEPTED,
+            error_code: ERROR_NONE.to_owned(),
+            queued_effect_count: self.pending_effects.len().saturating_sub(before_effects) as u32,
+        }
+    }
+
+    /// Queues network effects derived from accepted PBFT block sidecars.
+    ///
+    /// Vote packets may include the PBFT block voted for. Tarcap still owns
+    /// the peer object cache during this migration stage, but Rust owns the
+    /// decision to request that external peer-cache mutation through the same
+    /// effect queue used by vote admission and rejected ingress paths.
+    pub fn queue_pbft_block_admission_effects(
+        &mut self,
+        effects: NetworkPbftBlockAdmissionEffects,
+    ) -> NetworkIngressDecision {
+        let before_effects = self.pending_effects.len();
+        if effects.mark_block_known {
+            self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: effects.source_payload_id,
+                kind: NETWORK_EFFECT_KIND_MARK_PEER_KNOWN,
+                peer_id: effects.peer_id,
+                packet_kind: 0,
+                payload_bytes: Vec::new(),
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_PBFT_BLOCK,
+                object_hash: effects.block_hash,
                 sync_kind: 0,
                 sync_start: 0,
                 reason_code: 0,
@@ -1097,5 +1151,29 @@ mod tests {
         assert_eq!(batch.effects[0].object_kind, NETWORK_OBJECT_KIND_PBFT_VOTE);
         assert_eq!(batch.effects[0].object_hash, hash(0xAB));
         assert_eq!(batch.effects[0].source_payload_id, 77);
+    }
+
+    #[test]
+    fn queue_pbft_block_admission_effects_marks_block_known() {
+        let mut api = ConsensusNetworkApi::new();
+
+        let decision = api.queue_pbft_block_admission_effects(NetworkPbftBlockAdmissionEffects {
+            peer_id: peer(9),
+            block_hash: hash(0xCD),
+            source_payload_id: 78,
+            mark_block_known: true,
+        });
+
+        assert!(decision.routed);
+        assert_eq!(decision.status, NETWORK_INGRESS_STATUS_ACCEPTED);
+        assert_eq!(decision.queued_effect_count, 1);
+
+        let batch = api.drain_work(10);
+        assert_eq!(batch.effects.len(), 1);
+        assert_eq!(batch.effects[0].kind, NETWORK_EFFECT_KIND_MARK_PEER_KNOWN);
+        assert_eq!(batch.effects[0].peer_id, peer(9));
+        assert_eq!(batch.effects[0].object_kind, NETWORK_OBJECT_KIND_PBFT_BLOCK);
+        assert_eq!(batch.effects[0].object_hash, hash(0xCD));
+        assert_eq!(batch.effects[0].source_payload_id, 78);
     }
 }

@@ -119,15 +119,18 @@ Rules:
     `consensus_network_ingest_pbft_vote` / `consensus_network_ingest_pbft_vote_bundle_member` return a
     `NetworkIngressDecision` and queue `REQUEST_SYNC`, `REPORT_PEER`, and `DISCONNECT_PEER` effects for
     `drain_work` / `report_effect_results`.
-  - Accepted PBFT vote admission can now queue `MARK_PEER_KNOWN` through
+  - Accepted PBFT vote admission can now queue vote `MARK_PEER_KNOWN` through
     `consensus_network_queue_pbft_vote_admission_effects`; tarcap executes that peer-cache mutation via the same
+    `drain_work` / `report_effect_results` path instead of mutating the peer directly.
+  - Accepted PBFT vote packets with attached PBFT block sidecars can now queue block `MARK_PEER_KNOWN` through
+    `consensus_network_queue_pbft_block_admission_effects`; tarcap executes that peer-cache mutation via the same
     `drain_work` / `report_effect_results` path instead of mutating the peer directly.
   - This is still not the final production route: tarcap executes the drained network effects, and accepted votes still
     enter validation/admission through the temporary VoteManager/PBFT manager path.
   - The facade methods themselves do not call consensus shims, C++ consensus managers, `DbStorage`, peer transport,
     packet wrapping, or gossip.
   - Remaining work is to move vote validation/admission, verified-vote mutation, packet interpretation, accepted-vote
-    gossip/proposed-block effects, and other packet families behind the facade, then remove the corresponding
+    gossip, proposed-block processing, and other packet families behind the facade, then remove the corresponding
     consensus-manager dependencies from tarcap handlers.
 
 First useful routes:
