@@ -105,11 +105,12 @@ Rules:
 - The first implemented direct bridge slice is intentionally narrow:
   - Rust domain facade: `rust/crates/rustaxa-consensus/src/network_api.rs`
   - CXX bridge facade: `BridgeConsensusNetworkApi` in `rust/crates/rustaxa-bridge/src/network.rs`
-  - It accepts latest vote, get-next-votes sync, vote-bundle, DAG block, DAG sync, transaction, PBFT sync, pillar vote,
-    pillar votes bundle, and PBFT blocks bundle packet ids
+  - It accepts latest vote, get-next-votes sync, vote-bundle, DAG block, DAG sync, transaction, get-PBFT-sync, PBFT
+    sync, pillar vote, pillar votes bundle, and PBFT blocks bundle packet ids
     (`kVotePacket = 1`, `kGetNextVotesSyncPacket = 2`, `kVotesBundlePacket = 3`, `kDagBlockPacket = 5`,
-    `kDagSyncPacket = 6`, `kTransactionPacket = 7`, `kPbftSyncPacket = 11`, `kPillarVotePacket = 13`,
-    `kPillarVotesBundlePacket = 15`, `kPbftBlocksBundlePacket = 16`) into a bounded Rust-owned ingress arena.
+    `kDagSyncPacket = 6`, `kTransactionPacket = 7`, `kGetPbftSyncPacket = 10`, `kPbftSyncPacket = 11`,
+    `kPillarVotePacket = 13`, `kPillarVotesBundlePacket = 15`, `kPbftBlocksBundlePacket = 16`) into a bounded
+    Rust-owned ingress arena.
   - It exposes effect-drain and effect-result-reporting contracts used by the Rust-enabled vote, DAG block, PBFT blocks
     bundle, and transaction packet handlers.
   - Rust-enabled `TaraxaCapability::interpretCapabilityPacket` now shadow-submits peer-gated canonical packet bytes
@@ -145,6 +146,10 @@ Rules:
     `consensus_network_queue_pbft_next_votes_bundle_egress_request_effects`; tarcap supplies the local previous PBFT
     round to serve before the temporary vote executor plans hashes, builds optimized bundle RLP, sends
     `VotesBundlePacket`, and marks sent vote hashes known for the peer.
+  - Get-PBFT-sync egress can now queue PBFT sync `RECORD_CONSENSUS_OBJECT` requests through
+    `consensus_network_queue_pbft_sync_egress_request_effects`; tarcap supplies the requested start period, transfer
+    count, and synced-chain flag before the temporary PBFT sync executor reads period data, builds `PbftSyncPacket`
+    payloads, sends current proposed blocks when needed, and reports the effect result.
   - Accepted PBFT vote proposed-block sidecars can now queue `RECORD_CONSENSUS_OBJECT` through
     `consensus_network_queue_pbft_proposed_block_sidecar_effects`; tarcap supplies canonical PBFT block RLP and compact
     period/hash facts to the facade before the executor records the sidecar.
@@ -182,10 +187,10 @@ Rules:
     proof that the intended action ran.
   - This is still not the final production route: tarcap executes the drained network effects, accepted votes still
     mutate verified-vote state through the temporary VoteManager executor path, DAG block and DAG sync intake still use
-    the temporary DagManager executor path, PBFT sync period-data intake still uses the temporary PBFT manager executor
-    path, pillar vote duplicate/signature/eligibility validation and insertion still execute through the temporary
-    PillarChainManager executor path, get-next-votes egress still uses the temporary VoteManager executor path, and
-    transaction gossip admission still uses the temporary TransactionManager executor path.
+    the temporary DagManager executor path, PBFT sync egress and period-data intake still use the temporary PBFT manager
+    executor path, pillar vote duplicate/signature/eligibility validation and insertion still execute through the
+    temporary PillarChainManager executor path, get-next-votes egress still uses the temporary VoteManager executor path,
+    and transaction gossip admission still uses the temporary TransactionManager executor path.
   - Proposed-block sidecar and PBFT blocks bundle recording still use the temporary PBFT manager executor boundary until
     the network API is injected with the same Rust proposed-block runtime/storage handle used by PBFT.
   - The facade methods themselves do not call consensus shims, C++ consensus managers, `DbStorage`, peer transport,

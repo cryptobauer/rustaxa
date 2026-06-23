@@ -25,7 +25,7 @@ rust::Vec<uint8_t> bytes(std::initializer_list<uint8_t> values) {
 rustaxa::NetworkApiConfig defaultConfig() {
   rustaxa::NetworkApiConfig config{};
   config.max_payload_bytes = 1024;
-  config.max_retained_payloads = 9;
+  config.max_retained_payloads = 10;
   config.max_effects_per_drain = 8;
   return config;
 }
@@ -109,22 +109,27 @@ TEST(ConsensusNetworkApiBridgeTest, ingestPacketStoresCanonicalBytesThroughDirec
   EXPECT_TRUE(transaction_receipt.accepted);
   EXPECT_EQ(transaction_receipt.payload_id, 5);
 
+  const auto get_pbft_sync_receipt =
+      network_api->consensus_network_ingest_packet(packet(10, peer, bytes({0xC0, 0x04})));
+  EXPECT_TRUE(get_pbft_sync_receipt.accepted);
+  EXPECT_EQ(get_pbft_sync_receipt.payload_id, 6);
+
   const auto dag_block_receipt = network_api->consensus_network_ingest_packet(packet(5, peer, bytes({0xC0, 0x04})));
   EXPECT_TRUE(dag_block_receipt.accepted);
-  EXPECT_EQ(dag_block_receipt.payload_id, 6);
+  EXPECT_EQ(dag_block_receipt.payload_id, 7);
 
   const auto dag_sync_receipt = network_api->consensus_network_ingest_packet(packet(6, peer, bytes({0xC0, 0x05})));
   EXPECT_TRUE(dag_sync_receipt.accepted);
-  EXPECT_EQ(dag_sync_receipt.payload_id, 7);
+  EXPECT_EQ(dag_sync_receipt.payload_id, 8);
 
   const auto pillar_vote_receipt = network_api->consensus_network_ingest_packet(packet(13, peer, bytes({0xC0, 0x06})));
   EXPECT_TRUE(pillar_vote_receipt.accepted);
-  EXPECT_EQ(pillar_vote_receipt.payload_id, 8);
+  EXPECT_EQ(pillar_vote_receipt.payload_id, 9);
 
   const auto pillar_votes_bundle_receipt =
       network_api->consensus_network_ingest_packet(packet(15, peer, bytes({0xC0, 0x07})));
   EXPECT_TRUE(pillar_votes_bundle_receipt.accepted);
-  EXPECT_EQ(pillar_votes_bundle_receipt.payload_id, 9);
+  EXPECT_EQ(pillar_votes_bundle_receipt.payload_id, 10);
 }
 
 TEST(ConsensusNetworkApiBridgeTest, ingestPacketRejectsEmptyPayloadWithoutAllocatingIngress) {
@@ -414,6 +419,40 @@ TEST(ConsensusNetworkApiBridgeTest, pbftNextVotesBundleEgressRequestQueuesRecord
   EXPECT_EQ(batch.effects[0].source_payload_id, 104);
 }
 
+TEST(ConsensusNetworkApiBridgeTest, pbftSyncEgressRequestQueuesRecordObjectEffect) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+
+  rustaxa::NetworkPbftSyncEgressRequestEffects effects{};
+  effects.peer_id = nodeId(0x89);
+  effects.from_period = 60;
+  effects.blocks_to_transfer = 9;
+  effects.pbft_chain_synced = true;
+  effects.source_payload_id = 105;
+  effects.request_sync = true;
+
+  const auto decision = network_api->consensus_network_queue_pbft_sync_egress_request_effects(effects);
+  EXPECT_TRUE(decision.routed);
+  EXPECT_EQ(decision.status, 0);
+  EXPECT_EQ(decision.queued_effect_count, 1);
+
+  const auto batch = network_api->consensus_network_drain_work(10);
+  ASSERT_EQ(batch.effects.size(), 1);
+  EXPECT_EQ(batch.effects[0].kind, 8);
+  EXPECT_EQ(batch.effects[0].peer_id, nodeId(0x89));
+  EXPECT_EQ(batch.effects[0].packet_kind, 10);
+  EXPECT_TRUE(batch.effects[0].payload_bytes.empty());
+  EXPECT_EQ(batch.effects[0].object_kind, 8);
+  EXPECT_EQ(batch.effects[0].object_hash[7], 60);
+  EXPECT_EQ(batch.effects[0].object_hash[15], 9);
+  EXPECT_EQ(batch.effects[0].object_hash[23], 105);
+  EXPECT_EQ(batch.effects[0].sync_kind, 0);
+  EXPECT_EQ(batch.effects[0].sync_start, 60);
+  EXPECT_EQ(batch.effects[0].reason_code, 1);
+  EXPECT_EQ(batch.effects[0].dependency_id, 9);
+  EXPECT_EQ(batch.effects[0].period, 60);
+  EXPECT_EQ(batch.effects[0].source_payload_id, 105);
+}
+
 TEST(ConsensusNetworkApiBridgeTest, pbftProposedBlockSidecarQueuesRecordObjectEffect) {
   auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
 
@@ -423,7 +462,7 @@ TEST(ConsensusNetworkApiBridgeTest, pbftProposedBlockSidecarQueuesRecordObjectEf
   effects.block_hash = hash(0xA1);
   effects.pivot_hash = hash(0xB2);
   effects.block_rlp = bytes({0xC0, 0x01});
-  effects.source_payload_id = 105;
+  effects.source_payload_id = 106;
   effects.record_block = true;
 
   const auto decision = network_api->consensus_network_queue_pbft_proposed_block_sidecar_effects(effects);
@@ -442,7 +481,7 @@ TEST(ConsensusNetworkApiBridgeTest, pbftProposedBlockSidecarQueuesRecordObjectEf
   EXPECT_EQ(batch.effects[0].object_kind, 1);
   EXPECT_EQ(batch.effects[0].object_hash, hash(0xA1));
   EXPECT_EQ(batch.effects[0].period, 42);
-  EXPECT_EQ(batch.effects[0].source_payload_id, 105);
+  EXPECT_EQ(batch.effects[0].source_payload_id, 106);
 }
 
 TEST(ConsensusNetworkApiBridgeTest, pbftProposedBlockBundleQueuesRecordObjectEffect) {

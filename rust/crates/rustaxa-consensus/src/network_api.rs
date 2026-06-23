@@ -97,6 +97,8 @@ pub const NETWORK_OBJECT_KIND_PILLAR_VOTE: u8 = 5;
 pub const NETWORK_OBJECT_KIND_PILLAR_VOTE_VALIDATION: u8 = 6;
 /// Network object effect identifies a PBFT next-votes bundle egress request.
 pub const NETWORK_OBJECT_KIND_PBFT_NEXT_VOTES_BUNDLE_EGRESS_REQUEST: u8 = 7;
+/// Network object effect identifies a PBFT sync egress request.
+pub const NETWORK_OBJECT_KIND_PBFT_SYNC_EGRESS_REQUEST: u8 = 8;
 
 /// Network packet effect identifies the latest PBFT vote packet.
 pub const NETWORK_PACKET_KIND_PBFT_VOTE: u32 = 1;
@@ -108,6 +110,8 @@ pub const NETWORK_PACKET_KIND_DAG_BLOCK: u32 = 5;
 pub const NETWORK_PACKET_KIND_DAG_SYNC: u32 = 6;
 /// Network packet effect identifies the latest transaction packet.
 pub const NETWORK_PACKET_KIND_TRANSACTION: u32 = 7;
+/// Network packet effect identifies the latest get-PBFT-sync packet.
+pub const NETWORK_PACKET_KIND_GET_PBFT_SYNC: u32 = 10;
 /// Network packet effect identifies the latest PBFT sync packet.
 pub const NETWORK_PACKET_KIND_PBFT_SYNC: u32 = 11;
 /// Network packet effect identifies the latest pillar vote packet.
@@ -380,6 +384,24 @@ pub struct NetworkPbftNextVotesBundleEgressRequestEffects {
     pub source_payload_id: u64,
     /// Whether the executor should build and send available next-vote bundles.
     pub request_bundle: bool,
+}
+
+/// PBFT sync egress request supplied by network/tarcap.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftSyncEgressRequestEffects {
+    /// Peer that requested PBFT sync data.
+    pub peer_id: [u8; 64],
+    /// First PBFT period requested by the peer.
+    pub from_period: u64,
+    /// Number of PBFT periods the temporary executor should send.
+    pub blocks_to_transfer: u64,
+    /// Whether the executor should mark the peer PBFT chain as synced after the
+    /// last packet and attach current reward votes when available.
+    pub pbft_chain_synced: bool,
+    /// Optional retained packet payload id.
+    pub source_payload_id: u64,
+    /// Whether the executor should build and send PBFT sync packets.
+    pub request_sync: bool,
 }
 
 /// Proposed-block sidecar effects derived from accepted PBFT vote packets.
@@ -969,6 +991,51 @@ impl ConsensusNetworkApi {
         }
     }
 
+    /// Queues PBFT sync egress for external execution.
+    ///
+    /// Rust owns the PBFT sync request identity and effect result contract. The
+    /// temporary executor still reads period data, builds `PbftSyncPacket`
+    /// payloads, sends them, and publishes current proposed blocks until PBFT
+    /// sync egress is backed by Rust storage/runtime handles inside this facade.
+    pub fn queue_pbft_sync_egress_request_effects(
+        &mut self,
+        effects: NetworkPbftSyncEgressRequestEffects,
+    ) -> NetworkIngressDecision {
+        let before_effects = self.pending_effects.len();
+        if effects.request_sync {
+            self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: effects.source_payload_id,
+                kind: NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT,
+                peer_id: effects.peer_id,
+                packet_kind: NETWORK_PACKET_KIND_GET_PBFT_SYNC,
+                payload_bytes: Vec::new(),
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_PBFT_SYNC_EGRESS_REQUEST,
+                object_hash: pbft_sync_egress_request_key(
+                    effects.from_period,
+                    effects.blocks_to_transfer,
+                    effects.source_payload_id,
+                ),
+                sync_kind: NETWORK_SYNC_KIND_PBFT_CHAIN,
+                sync_start: effects.from_period,
+                reason_code: u8::from(effects.pbft_chain_synced),
+                dependency_id: effects.blocks_to_transfer,
+                period: effects.from_period,
+                round: 0,
+            });
+        }
+
+        NetworkIngressDecision {
+            payload_id: effects.source_payload_id,
+            payload_accepted: effects.source_payload_id != 0,
+            routed: true,
+            status: NETWORK_INGRESS_STATUS_ACCEPTED,
+            error_code: ERROR_NONE.to_owned(),
+            queued_effect_count: self.pending_effects.len().saturating_sub(before_effects) as u32,
+        }
+    }
+
     /// Queues effects for a proposed PBFT block carried beside an accepted vote.
     ///
     /// The network/tarcap boundary supplies canonical block bytes and compact
@@ -1457,7 +1524,7 @@ fn is_supported_ingress_packet(packet_type: u32) -> bool {
     // current latest-tarcap packet ids come from `SubprotocolPacketType`:
     // `kVotePacket = 1`, `kGetNextVotesSyncPacket = 2`, `kVotesBundlePacket = 3`, `kDagBlockPacket = 5`,
     // `kDagSyncPacket = 6`, `kTransactionPacket = 7`,
-    // `kPbftSyncPacket = 11`, `kPillarVotePacket = 13`,
+    // `kGetPbftSyncPacket = 10`, `kPbftSyncPacket = 11`, `kPillarVotePacket = 13`,
     // `kPillarVotesBundlePacket = 15`, and `kPbftBlocksBundlePacket = 16`.
     matches!(
         packet_type,
@@ -1466,6 +1533,7 @@ fn is_supported_ingress_packet(packet_type: u32) -> bool {
             | NETWORK_PACKET_KIND_DAG_BLOCK
             | NETWORK_PACKET_KIND_DAG_SYNC
             | NETWORK_PACKET_KIND_TRANSACTION
+            | NETWORK_PACKET_KIND_GET_PBFT_SYNC
             | NETWORK_PACKET_KIND_PBFT_SYNC
             | NETWORK_PACKET_KIND_PILLAR_VOTE
             | NETWORK_PACKET_KIND_PILLAR_VOTES_BUNDLE
@@ -1481,6 +1549,18 @@ fn pbft_next_votes_bundle_egress_request_key(
     let mut key = [0u8; 32];
     key[0..8].copy_from_slice(&period.to_be_bytes());
     key[8..16].copy_from_slice(&round.to_be_bytes());
+    key[16..24].copy_from_slice(&source_payload_id.to_be_bytes());
+    key
+}
+
+fn pbft_sync_egress_request_key(
+    from_period: u64,
+    blocks_to_transfer: u64,
+    source_payload_id: u64,
+) -> [u8; 32] {
+    let mut key = [0u8; 32];
+    key[0..8].copy_from_slice(&from_period.to_be_bytes());
+    key[8..16].copy_from_slice(&blocks_to_transfer.to_be_bytes());
     key[16..24].copy_from_slice(&source_payload_id.to_be_bytes());
     key
 }
@@ -2232,6 +2312,52 @@ mod tests {
         assert_eq!(batch.effects[0].period, 50);
         assert_eq!(batch.effects[0].round, 7);
         assert_eq!(batch.effects[0].source_payload_id, 87);
+    }
+
+    #[test]
+    fn queue_pbft_sync_egress_request_effects_records_request() {
+        let mut api = ConsensusNetworkApi::new();
+
+        let decision =
+            api.queue_pbft_sync_egress_request_effects(NetworkPbftSyncEgressRequestEffects {
+                peer_id: peer(19),
+                from_period: 21,
+                blocks_to_transfer: 8,
+                pbft_chain_synced: true,
+                source_payload_id: 88,
+                request_sync: true,
+            });
+
+        assert!(decision.routed);
+        assert_eq!(decision.status, NETWORK_INGRESS_STATUS_ACCEPTED);
+        assert_eq!(decision.queued_effect_count, 1);
+
+        let batch = api.drain_work(10);
+        assert_eq!(batch.effects.len(), 1);
+        assert_eq!(
+            batch.effects[0].kind,
+            NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT
+        );
+        assert_eq!(batch.effects[0].peer_id, peer(19));
+        assert_eq!(
+            batch.effects[0].packet_kind,
+            NETWORK_PACKET_KIND_GET_PBFT_SYNC
+        );
+        assert!(batch.effects[0].payload_bytes.is_empty());
+        assert_eq!(
+            batch.effects[0].object_kind,
+            NETWORK_OBJECT_KIND_PBFT_SYNC_EGRESS_REQUEST
+        );
+        assert_eq!(
+            batch.effects[0].object_hash,
+            pbft_sync_egress_request_key(21, 8, 88)
+        );
+        assert_eq!(batch.effects[0].sync_kind, NETWORK_SYNC_KIND_PBFT_CHAIN);
+        assert_eq!(batch.effects[0].sync_start, 21);
+        assert_eq!(batch.effects[0].reason_code, 1);
+        assert_eq!(batch.effects[0].dependency_id, 8);
+        assert_eq!(batch.effects[0].period, 21);
+        assert_eq!(batch.effects[0].source_payload_id, 88);
     }
 
     #[test]

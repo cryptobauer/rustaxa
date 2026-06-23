@@ -1,5 +1,10 @@
 #include "network/tarcap/packets_handlers/latest/get_pbft_sync_packet_handler.hpp"
 
+#include <array>
+#include <cassert>
+#include <exception>
+#include <stdexcept>
+
 #include "network/tarcap/packets/latest/pbft_blocks_bundle_packet.hpp"
 #include "network/tarcap/packets/latest/pbft_sync_packet.hpp"
 #include "network/tarcap/packets_handlers/latest/pbft_blocks_bundle_packet_handler.hpp"
@@ -15,17 +20,53 @@
 
 namespace taraxa::network::tarcap {
 
-GetPbftSyncPacketHandler::GetPbftSyncPacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
-                                                   std::shared_ptr<TimePeriodPacketsStats> packets_stats,
-                                                   std::shared_ptr<PbftSyncingState> pbft_syncing_state,
-                                                   std::shared_ptr<PbftManager> pbft_mgr,
-                                                   std::shared_ptr<PbftChain> pbft_chain,
-                                                   std::shared_ptr<VoteManager> vote_mgr,
-#ifndef RUSTAXA_ENABLE
-                                                   std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY:
-                                                                                  // legacy sync egress.
+#ifdef RUSTAXA_ENABLE
+namespace {
+
+constexpr uint8_t kNetworkEffectResultStatusOk = 0;
+constexpr uint8_t kNetworkEffectResultStatusFailed = 1;
+constexpr uint8_t kNetworkEffectKindRecordConsensusObject = 8;
+constexpr uint8_t kNetworkObjectKindPbftSyncEgressRequest = 8;
+constexpr uint32_t kNetworkPacketKindGetPbftSync = 10;
+constexpr uint8_t kNetworkSyncKindPbftChain = 0;
+
+rustaxa::NetworkApiConfig defaultNetworkApiConfig() {
+  rustaxa::NetworkApiConfig config{};
+  config.max_payload_bytes = 64 * 1024 * 1024;
+  config.max_retained_payloads = 4096;
+  config.max_effects_per_drain = 1024;
+  return config;
+}
+
+std::array<uint8_t, 32> pbftSyncEgressRequestKey(uint64_t from_period, uint64_t blocks_to_transfer,
+                                                 uint64_t source_payload_id) {
+  std::array<uint8_t, 32> key{};
+  for (size_t i = 0; i < sizeof(uint64_t); ++i) {
+    key[i] = static_cast<uint8_t>(from_period >> ((sizeof(uint64_t) - 1 - i) * 8));
+    key[8 + i] = static_cast<uint8_t>(blocks_to_transfer >> ((sizeof(uint64_t) - 1 - i) * 8));
+    key[16 + i] = static_cast<uint8_t>(source_payload_id >> ((sizeof(uint64_t) - 1 - i) * 8));
+  }
+  return key;
+}
+
+}  // namespace
+
+struct GetPbftSyncPacketHandler::RustConsensusNetworkApiHolder {
+  RustConsensusNetworkApiHolder() : api(rustaxa::create_consensus_network_api(defaultNetworkApiConfig())) {}
+
+  rust::Box<rustaxa::BridgeConsensusNetworkApi> api;
+};
 #endif
-                                                   const addr_t &node_addr, const std::string &logs_prefix)
+
+GetPbftSyncPacketHandler::GetPbftSyncPacketHandler(
+    const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
+    std::shared_ptr<TimePeriodPacketsStats> packets_stats, std::shared_ptr<PbftSyncingState> pbft_syncing_state,
+    std::shared_ptr<PbftManager> pbft_mgr, std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
+#ifndef RUSTAXA_ENABLE
+    std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY:
+                                    // legacy sync egress.
+#endif
+    const addr_t &node_addr, const std::string &logs_prefix)
     : PacketHandler(conf, std::move(peers_state), std::move(packets_stats), node_addr,
                     logs_prefix + "GET_PBFT_SYNC_PH"),
       pbft_syncing_state_(std::move(pbft_syncing_state)),
@@ -37,7 +78,12 @@ GetPbftSyncPacketHandler::GetPbftSyncPacketHandler(const FullNodeConfig &conf, s
       db_(std::move(db))
 #endif
 {
+#ifdef RUSTAXA_ENABLE
+  rust_consensus_network_api_ = std::make_unique<RustConsensusNetworkApiHolder>();
+#endif
 }
+
+GetPbftSyncPacketHandler::~GetPbftSyncPacketHandler() = default;
 
 void GetPbftSyncPacketHandler::process(const threadpool::PacketData &packet_data,
                                        const std::shared_ptr<TaraxaPeer> &peer) {
@@ -74,6 +120,19 @@ void GetPbftSyncPacketHandler::process(const threadpool::PacketData &packet_data
   }
   LOG(log_tr_) << "Will send " << blocks_to_transfer << " PBFT blocks to " << peer->getId();
 
+#ifdef RUSTAXA_ENABLE
+  rustaxa::NetworkPbftSyncEgressRequestEffects effects{};
+  effects.peer_id = peer->getId().asArray();
+  effects.from_period = packet.height_to_sync;
+  effects.blocks_to_transfer = blocks_to_transfer;
+  effects.pbft_chain_synced = pbft_chain_synced;
+  effects.source_payload_id = packet_data.id_;
+  effects.request_sync = true;
+  (void)queuePbftSyncEgressRequestEffects(effects);
+  executePbftSyncEgressEffect(peer);
+  return;
+#endif
+
   sendPbftBlocks(peer, packet.height_to_sync, blocks_to_transfer, pbft_chain_synced);
 
   // Send current proposed blocks after the last sync packet
@@ -100,6 +159,80 @@ void GetPbftSyncPacketHandler::process(const threadpool::PacketData &packet_data
   }
 }
 
+#ifdef RUSTAXA_ENABLE
+rustaxa::NetworkIngressDecision GetPbftSyncPacketHandler::queuePbftSyncEgressRequestEffects(
+    const rustaxa::NetworkPbftSyncEgressRequestEffects &effects) {
+  assert(rust_consensus_network_api_);
+  return rust_consensus_network_api_->api->consensus_network_queue_pbft_sync_egress_request_effects(effects);
+}
+
+void GetPbftSyncPacketHandler::executePbftSyncEgressEffect(const std::shared_ptr<TaraxaPeer> &peer) {
+  assert(rust_consensus_network_api_);
+  const auto batch = rust_consensus_network_api_->api->consensus_network_drain_work(1);
+  rust::Vec<rustaxa::NetworkEffectResult> results;
+  results.reserve(batch.effects.size());
+  std::exception_ptr pending_exception;
+
+  for (const auto &effect : batch.effects) {
+    rustaxa::NetworkEffectResult result{};
+    result.effect_id = effect.effect_id;
+    result.kind = effect.kind;
+    result.peer_id = effect.peer_id;
+    result.packet_kind = effect.packet_kind;
+    result.object_kind = effect.object_kind;
+    result.object_hash = effect.object_hash;
+    result.status = kNetworkEffectResultStatusOk;
+
+    try {
+      const auto blocks_to_transfer = static_cast<size_t>(effect.dependency_id);
+      if (effect.kind != kNetworkEffectKindRecordConsensusObject ||
+          effect.object_kind != kNetworkObjectKindPbftSyncEgressRequest ||
+          effect.packet_kind != kNetworkPacketKindGetPbftSync || effect.sync_kind != kNetworkSyncKindPbftChain ||
+          effect.peer_id != peer->getId().asArray() || effect.sync_start != effect.period ||
+          effect.object_hash !=
+              pbftSyncEgressRequestKey(effect.period, effect.dependency_id, effect.source_payload_id)) {
+        throw std::runtime_error("Network API PBFT sync egress effect missing matching request");
+      }
+
+      sendPbftBlocks(peer, effect.period, blocks_to_transfer, effect.reason_code != 0);
+
+      if (effect.reason_code != 0) {
+        PbftBlocksBundlePacket proposed_blocks_packet;
+
+        for (auto &&period_proposed_blocks : pbft_mgr_->getProposedBlocks()) {
+          for (auto &&proposed_block : period_proposed_blocks.second) {
+            proposed_blocks_packet.pbft_blocks.push_back(std::move(proposed_block));
+
+            if (proposed_blocks_packet.pbft_blocks.size() == PbftBlocksBundlePacketHandler::kMaxBlocksInPacket) {
+              sealAndSend(peer->getId(), SubprotocolPacketType::kPbftBlocksBundlePacket,
+                          encodePacketRlp(proposed_blocks_packet));
+              proposed_blocks_packet.pbft_blocks.clear();
+            }
+          }
+        }
+
+        if (!proposed_blocks_packet.pbft_blocks.empty()) {
+          sealAndSend(peer->getId(), SubprotocolPacketType::kPbftBlocksBundlePacket,
+                      encodePacketRlp(proposed_blocks_packet));
+        }
+      }
+    } catch (...) {
+      result.status = kNetworkEffectResultStatusFailed;
+      if (!pending_exception) {
+        pending_exception = std::current_exception();
+      }
+    }
+
+    results.push_back(std::move(result));
+  }
+
+  (void)rust_consensus_network_api_->api->consensus_network_report_effect_results(std::move(results));
+  if (pending_exception) {
+    std::rethrow_exception(pending_exception);
+  }
+}
+#endif
+
 // api for pbft syncing
 void GetPbftSyncPacketHandler::sendPbftBlocks(const std::shared_ptr<TaraxaPeer> &peer, PbftPeriod from_period,
                                               size_t blocks_to_transfer, bool pbft_chain_synced) {
@@ -113,7 +246,7 @@ void GetPbftSyncPacketHandler::sendPbftBlocks(const std::shared_ptr<TaraxaPeer> 
     auto period_data = db_->getPeriodDataRaw(block_period);  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy tarcap sync
                                                              // reads remain outside Rust-enabled production routing.
 #else
-    std::vector<std::shared_ptr<PbftVote>> reward_votes;
+    std::vector<std::shared_ptr<PbftVote> > reward_votes;
     if (pbft_chain_synced && last_block) {
       reward_votes = vote_mgr_->getRewardVotes();
       assert(!reward_votes.empty());
