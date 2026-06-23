@@ -102,7 +102,7 @@ pub const NETWORK_PACKET_KIND_TRANSACTION: u32 = 7;
 /// Network packet effect identifies the latest PBFT sync packet.
 pub const NETWORK_PACKET_KIND_PBFT_SYNC: u32 = 11;
 /// Network packet effect identifies the latest PBFT blocks bundle packet.
-pub const NETWORK_PACKET_KIND_PBFT_BLOCKS_BUNDLE: u32 = 15;
+pub const NETWORK_PACKET_KIND_PBFT_BLOCKS_BUNDLE: u32 = 16;
 
 const ERROR_NONE: &str = "";
 const ERROR_REJECTED_EMPTY_PAYLOAD: &str = "NETWORK_INGRESS_REJECTED_EMPTY_PAYLOAD";
@@ -1221,7 +1221,7 @@ fn is_supported_ingress_packet(packet_type: u32) -> bool {
     // current latest-tarcap packet ids come from `SubprotocolPacketType`:
     // `kVotePacket = 1`, `kVotesBundlePacket = 3`, `kDagBlockPacket = 5`,
     // `kDagSyncPacket = 6`, `kTransactionPacket = 7`,
-    // `kPbftSyncPacket = 11`, and `kPbftBlocksBundlePacket = 15`.
+    // `kPbftSyncPacket = 11`, and `kPbftBlocksBundlePacket = 16`.
     matches!(
         packet_type,
         1 | 3

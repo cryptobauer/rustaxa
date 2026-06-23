@@ -107,7 +107,7 @@ Rules:
   - CXX bridge facade: `BridgeConsensusNetworkApi` in `rust/crates/rustaxa-bridge/src/network.rs`
   - It accepts latest vote, vote-bundle, DAG block, DAG sync, transaction, PBFT sync, and PBFT blocks bundle packet ids
     (`kVotePacket = 1`, `kVotesBundlePacket = 3`, `kDagBlockPacket = 5`, `kDagSyncPacket = 6`,
-    `kTransactionPacket = 7`, `kPbftSyncPacket = 11`, `kPbftBlocksBundlePacket = 15`) into a bounded Rust-owned
+    `kTransactionPacket = 7`, `kPbftSyncPacket = 11`, `kPbftBlocksBundlePacket = 16`) into a bounded Rust-owned
     ingress arena.
   - It exposes effect-drain and effect-result-reporting contracts used by the Rust-enabled vote, DAG block, PBFT blocks
     bundle, and transaction packet handlers.

@@ -20,6 +20,7 @@ constexpr uint8_t kNetworkEffectResultStatusOk = 0;
 constexpr uint8_t kNetworkEffectResultStatusFailed = 1;
 constexpr uint8_t kNetworkEffectKindRecordConsensusObject = 8;
 constexpr uint8_t kNetworkObjectKindPbftBlock = 1;
+constexpr uint32_t kNetworkPacketKindPbftBlocksBundle = 16;
 
 rustaxa::NetworkApiConfig defaultNetworkApiConfig() {
   rustaxa::NetworkApiConfig config{};
@@ -165,7 +166,9 @@ void PbftBlocksBundlePacketHandler::executeConsensusNetworkEffects(size_t budget
     result.status = kNetworkEffectResultStatusOk;
 
     try {
-      if (effect.kind != kNetworkEffectKindRecordConsensusObject || effect.object_kind != kNetworkObjectKindPbftBlock) {
+      if (effect.kind != kNetworkEffectKindRecordConsensusObject ||
+          effect.object_kind != kNetworkObjectKindPbftBlock ||
+          effect.packet_kind != kNetworkPacketKindPbftBlocksBundle) {
         throw std::runtime_error("Network API PBFT blocks bundle effect has unsupported kind");
       }
 

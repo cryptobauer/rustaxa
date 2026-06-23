@@ -97,7 +97,7 @@ TEST(ConsensusNetworkApiBridgeTest, ingestPacketStoresCanonicalBytesThroughDirec
   EXPECT_EQ(second_receipt.payload_id, 2);
 
   const auto proposed_blocks_receipt =
-      network_api->consensus_network_ingest_packet(packet(15, peer, bytes({0xC0, 0x02})));
+      network_api->consensus_network_ingest_packet(packet(16, peer, bytes({0xC0, 0x02})));
   EXPECT_TRUE(proposed_blocks_receipt.accepted);
   EXPECT_EQ(proposed_blocks_receipt.payload_id, 3);
 
@@ -400,7 +400,7 @@ TEST(ConsensusNetworkApiBridgeTest, pbftProposedBlockBundleQueuesRecordObjectEff
   ASSERT_EQ(batch.effects.size(), 1);
   EXPECT_EQ(batch.effects[0].kind, 8);
   EXPECT_EQ(batch.effects[0].peer_id, nodeId(0x99));
-  EXPECT_EQ(batch.effects[0].packet_kind, 15);
+  EXPECT_EQ(batch.effects[0].packet_kind, 16);
   ASSERT_EQ(batch.effects[0].payload_bytes.size(), 2);
   EXPECT_EQ(batch.effects[0].payload_bytes[0], 0xC0);
   EXPECT_EQ(batch.effects[0].payload_bytes[1], 0x02);
