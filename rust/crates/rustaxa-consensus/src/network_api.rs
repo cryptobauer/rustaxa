@@ -87,6 +87,8 @@ pub const NETWORK_OBJECT_KIND_PBFT_BLOCK: u8 = 1;
 
 /// Network packet effect identifies the latest PBFT vote packet.
 pub const NETWORK_PACKET_KIND_PBFT_VOTE: u32 = 1;
+/// Network packet effect identifies the latest PBFT blocks bundle packet.
+pub const NETWORK_PACKET_KIND_PBFT_BLOCKS_BUNDLE: u32 = 15;
 
 const ERROR_NONE: &str = "";
 const ERROR_REJECTED_EMPTY_PAYLOAD: &str = "NETWORK_INGRESS_REJECTED_EMPTY_PAYLOAD";
@@ -790,6 +792,31 @@ impl ConsensusNetworkApi {
         &mut self,
         effects: NetworkPbftProposedBlockSidecarEffects,
     ) -> NetworkIngressDecision {
+        self.queue_pbft_proposed_block_record_effects(effects, NETWORK_PACKET_KIND_PBFT_VOTE)
+    }
+
+    /// Queues effects for proposed PBFT blocks received in a PBFT blocks bundle.
+    ///
+    /// The network/tarcap boundary supplies canonical block bytes and compact
+    /// decoded facts after bundle-level peer, period, and author checks. Rust
+    /// owns the record-object effect identity for this external route; the
+    /// temporary C++ executor still performs live PBFT manager insertion until
+    /// the facade is wired to the shared Rust proposed-block runtime.
+    pub fn queue_pbft_proposed_block_bundle_effects(
+        &mut self,
+        effects: NetworkPbftProposedBlockSidecarEffects,
+    ) -> NetworkIngressDecision {
+        self.queue_pbft_proposed_block_record_effects(
+            effects,
+            NETWORK_PACKET_KIND_PBFT_BLOCKS_BUNDLE,
+        )
+    }
+
+    fn queue_pbft_proposed_block_record_effects(
+        &mut self,
+        effects: NetworkPbftProposedBlockSidecarEffects,
+        packet_kind: u32,
+    ) -> NetworkIngressDecision {
         let before_effects = self.pending_effects.len();
         if effects.record_block {
             self.enqueue_effect(NetworkEffect {
@@ -797,7 +824,7 @@ impl ConsensusNetworkApi {
                 source_payload_id: effects.source_payload_id,
                 kind: NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT,
                 peer_id: effects.peer_id,
-                packet_kind: NETWORK_PACKET_KIND_PBFT_VOTE,
+                packet_kind,
                 payload_bytes: effects.block_rlp,
                 exclude_peers: Vec::new(),
                 object_kind: NETWORK_OBJECT_KIND_PBFT_BLOCK,

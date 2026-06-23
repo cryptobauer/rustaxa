@@ -264,6 +264,22 @@ impl BridgeConsensusNetworkApi {
             ),
         ))
     }
+
+    /// Queues network effects derived from proposed PBFT blocks bundle intake.
+    pub fn consensus_network_queue_pbft_proposed_block_bundle_effects(
+        &self,
+        effects: rustaxa_ffi::NetworkPbftProposedBlockSidecarEffects,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
+        let mut api = self
+            .api
+            .lock()
+            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        Ok(to_bridge_network_ingress_decision(
+            api.queue_pbft_proposed_block_bundle_effects(
+                to_domain_pbft_proposed_block_sidecar_effects(effects),
+            ),
+        ))
+    }
 }
 
 fn to_domain_config(config: rustaxa_ffi::NetworkApiConfig) -> rustaxa_consensus::NetworkApiConfig {

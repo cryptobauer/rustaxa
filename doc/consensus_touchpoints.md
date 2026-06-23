@@ -140,13 +140,16 @@ Rules:
   - Accepted PBFT vote proposed-block sidecars can now queue `RECORD_CONSENSUS_OBJECT` through
     `consensus_network_queue_pbft_proposed_block_sidecar_effects`; tarcap supplies canonical PBFT block RLP and compact
     period/hash facts to the facade before the executor records the sidecar.
+  - PBFT blocks bundle proposed-block intake can now queue `RECORD_CONSENSUS_OBJECT` through
+    `consensus_network_queue_pbft_proposed_block_bundle_effects`; tarcap supplies canonical PBFT block RLP and compact
+    period/hash facts to the facade before the same temporary record-object executor inserts the block.
   - Network effect result reports now echo typed effect identity fields, and Rust rejects mismatched reports before
     accepting acknowledgements. This keeps temporary executor work visible instead of treating an `effect_id` alone as
     proof that the intended action ran.
   - This is still not the final production route: tarcap executes the drained network effects, and accepted votes still
     mutate verified-vote state through the temporary VoteManager executor path.
-  - Proposed-block sidecar recording still uses the temporary PBFT manager executor boundary until the network API is
-    injected with the same Rust proposed-block runtime/storage handle used by PBFT.
+  - Proposed-block sidecar and PBFT blocks bundle recording still use the temporary PBFT manager executor boundary until
+    the network API is injected with the same Rust proposed-block runtime/storage handle used by PBFT.
   - The facade methods themselves do not call consensus shims, C++ consensus managers, `DbStorage`, peer transport,
     packet wrapping, or gossip.
   - Remaining work is to move vote validation, verified-vote mutation, packet interpretation, shared proposed-block
