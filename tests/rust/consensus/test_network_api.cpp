@@ -334,6 +334,47 @@ TEST(ConsensusNetworkApiBridgeTest, statusSyncPlanningRoutesThroughNetworkApi) {
   EXPECT_EQ(plan.next_votes_round, 2);
 }
 
+TEST(ConsensusNetworkApiBridgeTest, statusEgressPlanningRoutesThroughNetworkApi) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+
+  rustaxa::NetworkStatusEgressFacts facts{};
+  facts.initial = true;
+  facts.local_chain_id = 7;
+  facts.genesis_hash = hash(0xA0);
+  facts.node_major_version = 2;
+  facts.node_minor_version = 3;
+  facts.node_patch_version = 4;
+  facts.is_light_node = true;
+  facts.light_node_history = 9;
+  facts.local_pbft_chain_size = 10;
+  facts.local_pbft_round = 5;
+  facts.local_dag_level = 44;
+  facts.pbft_syncing = true;
+  facts.deep_pbft_syncing = false;
+
+  auto plan = network_api->consensus_network_plan_status_egress(facts);
+  EXPECT_EQ(plan.status, 0);
+  EXPECT_EQ(plan.peer_pbft_chain_size, 10);
+  EXPECT_EQ(plan.peer_pbft_round, 5);
+  EXPECT_EQ(plan.peer_dag_level, 44);
+  EXPECT_TRUE(plan.peer_syncing);
+  EXPECT_TRUE(plan.include_initial_data);
+  EXPECT_EQ(plan.chain_id, 7);
+  EXPECT_EQ(plan.genesis_hash, hash(0xA0));
+  EXPECT_EQ(plan.node_major_version, 2);
+  EXPECT_TRUE(plan.is_light_node);
+  EXPECT_EQ(plan.light_node_history, 9);
+
+  facts.initial = false;
+  facts.pbft_syncing = true;
+  facts.deep_pbft_syncing = false;
+  plan = network_api->consensus_network_plan_status_egress(facts);
+  EXPECT_EQ(plan.status, 0);
+  EXPECT_FALSE(plan.peer_syncing);
+  EXPECT_FALSE(plan.include_initial_data);
+  EXPECT_EQ(plan.chain_id, 0);
+}
+
 TEST(ConsensusNetworkApiBridgeTest, initialStatusPlanningRoutesThroughNetworkApi) {
   auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
 

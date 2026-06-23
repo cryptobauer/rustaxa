@@ -499,6 +499,70 @@ pub struct NetworkStatusSyncPlan {
     pub next_votes_round: u64,
 }
 
+/// Compact facts needed to shape a local status packet for tarcap egress.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkStatusEgressFacts {
+    /// Whether tarcap is sending the initial status packet.
+    pub initial: bool,
+    /// Locally configured chain id for initial status packets.
+    pub local_chain_id: u64,
+    /// Locally configured genesis hash for initial status packets.
+    pub genesis_hash: [u8; 32],
+    /// Local node major version for initial status packets.
+    pub node_major_version: u32,
+    /// Local node minor version for initial status packets.
+    pub node_minor_version: u32,
+    /// Local node patch version for initial status packets.
+    pub node_patch_version: u32,
+    /// Whether this node is configured as a light node.
+    pub is_light_node: bool,
+    /// Number of recent periods served when this node is a light node.
+    pub light_node_history: u64,
+    /// Local PBFT chain size snapshot.
+    pub local_pbft_chain_size: u64,
+    /// Local PBFT round snapshot.
+    pub local_pbft_round: u64,
+    /// Local DAG max level snapshot.
+    pub local_dag_level: u64,
+    /// Whether local PBFT sync is active.
+    pub pbft_syncing: bool,
+    /// Whether local PBFT sync is deep sync.
+    pub deep_pbft_syncing: bool,
+}
+
+/// Side-effect-free local status packet plan for tarcap egress.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkStatusEgressPlan {
+    /// Stable status for boundary logs and tests.
+    pub status: u8,
+    /// Stable textual status for boundary logs and tests.
+    pub error_code: String,
+    /// PBFT chain size to advertise.
+    pub peer_pbft_chain_size: u64,
+    /// PBFT round to advertise.
+    pub peer_pbft_round: u64,
+    /// DAG max level to advertise.
+    pub peer_dag_level: u64,
+    /// Syncing flag to advertise in the status packet.
+    pub peer_syncing: bool,
+    /// Whether initial status metadata should be included.
+    pub include_initial_data: bool,
+    /// Chain id for initial status metadata.
+    pub chain_id: u64,
+    /// Genesis hash for initial status metadata.
+    pub genesis_hash: [u8; 32],
+    /// Node major version for initial status metadata.
+    pub node_major_version: u32,
+    /// Node minor version for initial status metadata.
+    pub node_minor_version: u32,
+    /// Node patch version for initial status metadata.
+    pub node_patch_version: u32,
+    /// Light-node flag for initial status metadata.
+    pub is_light_node: bool,
+    /// Light-node history for initial status metadata.
+    pub light_node_history: u64,
+}
+
 /// Compact facts needed to validate an initial status packet.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NetworkInitialStatusFacts {
@@ -1000,6 +1064,16 @@ impl ConsensusNetworkApi {
     #[must_use]
     pub fn plan_status_sync(&self, facts: NetworkStatusSyncFacts) -> NetworkStatusSyncPlan {
         plan_status_sync(facts)
+    }
+
+    /// Plans local status packet egress.
+    ///
+    /// Rust owns status packet shaping from compact local snapshot facts.
+    /// Tarcap still owns gathering live snapshot facts, RLP encoding, packet
+    /// framing, and transport send execution.
+    #[must_use]
+    pub fn plan_status_egress(&self, facts: NetworkStatusEgressFacts) -> NetworkStatusEgressPlan {
+        plan_status_egress(facts)
     }
 
     /// Plans initial status packet admission.
@@ -1951,6 +2025,53 @@ fn plan_status_sync(facts: NetworkStatusSyncFacts) -> NetworkStatusSyncPlan {
     }
 }
 
+fn plan_status_egress(facts: NetworkStatusEgressFacts) -> NetworkStatusEgressPlan {
+    NetworkStatusEgressPlan {
+        status: NETWORK_STATUS_PLAN_STATUS_OK,
+        error_code: ERROR_NONE.to_owned(),
+        peer_pbft_chain_size: facts.local_pbft_chain_size,
+        peer_pbft_round: facts.local_pbft_round,
+        peer_dag_level: facts.local_dag_level,
+        peer_syncing: if facts.initial {
+            facts.pbft_syncing
+        } else {
+            facts.deep_pbft_syncing
+        },
+        include_initial_data: facts.initial,
+        chain_id: if facts.initial {
+            facts.local_chain_id
+        } else {
+            0
+        },
+        genesis_hash: if facts.initial {
+            facts.genesis_hash
+        } else {
+            [0; 32]
+        },
+        node_major_version: if facts.initial {
+            facts.node_major_version
+        } else {
+            0
+        },
+        node_minor_version: if facts.initial {
+            facts.node_minor_version
+        } else {
+            0
+        },
+        node_patch_version: if facts.initial {
+            facts.node_patch_version
+        } else {
+            0
+        },
+        is_light_node: facts.initial && facts.is_light_node,
+        light_node_history: if facts.initial {
+            facts.light_node_history
+        } else {
+            0
+        },
+    }
+}
+
 fn plan_initial_status(facts: NetworkInitialStatusFacts) -> NetworkInitialStatusPlan {
     if facts.peer_chain_id != facts.local_chain_id {
         return NetworkInitialStatusPlan {
@@ -2281,6 +2402,24 @@ mod tests {
             peer_pbft_round: 2,
             peer_dag_synced: true,
             peer_last_status_pbft_chain_size: 9,
+        }
+    }
+
+    fn status_egress_facts(initial: bool) -> NetworkStatusEgressFacts {
+        NetworkStatusEgressFacts {
+            initial,
+            local_chain_id: 7,
+            genesis_hash: hash(1),
+            node_major_version: 2,
+            node_minor_version: 3,
+            node_patch_version: 4,
+            is_light_node: true,
+            light_node_history: 8,
+            local_pbft_chain_size: 10,
+            local_pbft_round: 5,
+            local_dag_level: 44,
+            pbft_syncing: true,
+            deep_pbft_syncing: false,
         }
     }
 
@@ -2667,6 +2806,44 @@ mod tests {
         assert!(!plan.request_pbft_sync);
         assert!(!plan.request_pending_dag_blocks);
         assert!(!plan.request_next_votes);
+    }
+
+    #[test]
+    fn plan_status_egress_includes_initial_metadata() {
+        let api = ConsensusNetworkApi::new();
+
+        let plan = api.plan_status_egress(status_egress_facts(true));
+
+        assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_OK);
+        assert_eq!(plan.peer_pbft_chain_size, 10);
+        assert_eq!(plan.peer_pbft_round, 5);
+        assert_eq!(plan.peer_dag_level, 44);
+        assert!(plan.peer_syncing);
+        assert!(plan.include_initial_data);
+        assert_eq!(plan.chain_id, 7);
+        assert_eq!(plan.genesis_hash, hash(1));
+        assert_eq!(plan.node_major_version, 2);
+        assert_eq!(plan.node_minor_version, 3);
+        assert_eq!(plan.node_patch_version, 4);
+        assert!(plan.is_light_node);
+        assert_eq!(plan.light_node_history, 8);
+    }
+
+    #[test]
+    fn plan_status_egress_uses_deep_sync_flag_for_standard_status() {
+        let api = ConsensusNetworkApi::new();
+        let mut facts = status_egress_facts(false);
+        facts.pbft_syncing = true;
+        facts.deep_pbft_syncing = false;
+
+        let plan = api.plan_status_egress(facts);
+
+        assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_OK);
+        assert!(!plan.peer_syncing);
+        assert!(!plan.include_initial_data);
+        assert_eq!(plan.chain_id, 0);
+        assert_eq!(plan.genesis_hash, [0; 32]);
+        assert_eq!(plan.light_node_history, 0);
     }
 
     #[test]

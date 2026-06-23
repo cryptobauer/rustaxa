@@ -182,6 +182,42 @@ bool ISyncPacketHandler::sendStatus(const dev::p2p::NodeID& node_id, bool initia
   auto pbft_chain_size = pbft_chain_->getPbftChainSize();
   const auto pbft_round = pbft_mgr_->getPbftRound();
 
+#ifdef RUSTAXA_ENABLE
+  rustaxa::NetworkStatusEgressFacts facts{};
+  facts.initial = initial;
+  facts.local_chain_id = kConf.genesis.chain_id;
+  facts.genesis_hash = kGenesisHash.asArray();
+  facts.node_major_version = TARAXA_MAJOR_VERSION;
+  facts.node_minor_version = TARAXA_MINOR_VERSION;
+  facts.node_patch_version = TARAXA_PATCH_VERSION;
+  facts.is_light_node = kConf.is_light_node;
+  facts.light_node_history = kConf.light_node_history;
+  facts.local_pbft_chain_size = pbft_chain_size;
+  facts.local_pbft_round = pbft_round;
+  facts.local_dag_level = dag_max_level;
+  facts.pbft_syncing = pbft_syncing_state_->isPbftSyncing();
+  facts.deep_pbft_syncing = pbft_syncing_state_->isDeepPbftSyncing();
+
+  const auto status_plan = rust_consensus_network_api_->api->consensus_network_plan_status_egress(facts);
+  if (status_plan.include_initial_data) {
+    success = sealAndSend(
+        node_id, SubprotocolPacketType::kStatusPacket,
+        encodePacketRlp(StatusPacket(
+            status_plan.peer_pbft_chain_size, status_plan.peer_pbft_round, status_plan.peer_dag_level,
+            status_plan.peer_syncing,
+            StatusPacket::InitialData{
+                status_plan.chain_id, blk_hash_t(status_plan.genesis_hash.data(), blk_hash_t::ConstructFromPointer),
+                status_plan.node_major_version, status_plan.node_minor_version, status_plan.node_patch_version,
+                status_plan.is_light_node, status_plan.light_node_history})));
+  } else {
+    success = sealAndSend(node_id, SubprotocolPacketType::kStatusPacket,
+                          encodePacketRlp(StatusPacket(status_plan.peer_pbft_chain_size, status_plan.peer_pbft_round,
+                                                       status_plan.peer_dag_level, status_plan.peer_syncing)));
+  }
+
+  return success;
+#endif
+
   if (initial) {
     success = sealAndSend(
         node_id, SubprotocolPacketType::kStatusPacket,

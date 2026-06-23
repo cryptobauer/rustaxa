@@ -165,6 +165,20 @@ impl BridgeConsensusNetworkApi {
         )))
     }
 
+    /// Plans local status packet egress through the network/tarcap API.
+    pub fn consensus_network_plan_status_egress(
+        &self,
+        facts: rustaxa_ffi::NetworkStatusEgressFacts,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkStatusEgressPlan> {
+        let api = self
+            .api
+            .lock()
+            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        Ok(to_bridge_network_status_egress_plan(
+            api.plan_status_egress(to_domain_network_status_egress_facts(facts)),
+        ))
+    }
+
     /// Plans whether an initial status packet should be accepted.
     pub fn consensus_network_plan_initial_status(
         &self,
@@ -658,6 +672,47 @@ fn to_bridge_network_status_sync_plan(
         request_next_votes: plan.request_next_votes,
         next_votes_period: plan.next_votes_period,
         next_votes_round: plan.next_votes_round,
+    }
+}
+
+fn to_domain_network_status_egress_facts(
+    value: rustaxa_ffi::NetworkStatusEgressFacts,
+) -> rustaxa_consensus::NetworkStatusEgressFacts {
+    rustaxa_consensus::NetworkStatusEgressFacts {
+        initial: value.initial,
+        local_chain_id: value.local_chain_id,
+        genesis_hash: value.genesis_hash,
+        node_major_version: value.node_major_version,
+        node_minor_version: value.node_minor_version,
+        node_patch_version: value.node_patch_version,
+        is_light_node: value.is_light_node,
+        light_node_history: value.light_node_history,
+        local_pbft_chain_size: value.local_pbft_chain_size,
+        local_pbft_round: value.local_pbft_round,
+        local_dag_level: value.local_dag_level,
+        pbft_syncing: value.pbft_syncing,
+        deep_pbft_syncing: value.deep_pbft_syncing,
+    }
+}
+
+fn to_bridge_network_status_egress_plan(
+    plan: rustaxa_consensus::NetworkStatusEgressPlan,
+) -> rustaxa_ffi::NetworkStatusEgressPlan {
+    rustaxa_ffi::NetworkStatusEgressPlan {
+        status: plan.status,
+        error_code: plan.error_code,
+        peer_pbft_chain_size: plan.peer_pbft_chain_size,
+        peer_pbft_round: plan.peer_pbft_round,
+        peer_dag_level: plan.peer_dag_level,
+        peer_syncing: plan.peer_syncing,
+        include_initial_data: plan.include_initial_data,
+        chain_id: plan.chain_id,
+        genesis_hash: plan.genesis_hash,
+        node_major_version: plan.node_major_version,
+        node_minor_version: plan.node_minor_version,
+        node_patch_version: plan.node_patch_version,
+        is_light_node: plan.is_light_node,
+        light_node_history: plan.light_node_history,
     }
 }
 

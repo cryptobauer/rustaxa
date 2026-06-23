@@ -197,6 +197,9 @@ Rules:
     peer-advertised chain id, genesis hash, PBFT sync period, peer chain size, and light-node history before Rust decides
     whether the peer should be accepted or disconnected. Tarcap still owns pending-peer lookup, peer-state
     materialization, logging, and disconnect execution.
+  - Status packet egress now routes through `consensus_network_plan_status_egress`; tarcap supplies local PBFT/DAG
+    snapshot facts plus node identity/config metadata before Rust shapes the initial or standard status payload. Tarcap
+    still owns live snapshot reads, RLP encoding, packet framing, and transport send execution.
   - PBFT sync-start planning now routes through `consensus_network_plan_pbft_sync_start`; tarcap supplies local PBFT
     sync facts plus compact peer candidates before Rust chooses the max-chain sync peer, applies light-node history
     eligibility, decides the first requested period, and reports whether snapshot creation should be re-enabled because
@@ -221,8 +224,9 @@ Rules:
     bundle egress still execute through the temporary PillarChainManager executor path, get-next-votes egress still uses
     the temporary VoteManager executor path, and transaction gossip admission still uses the temporary TransactionManager
     executor path.
-  - Status packet ingress still performs pending-peer lookup and peer-state materialization in tarcap, and status egress
-    still reads local PBFT/DAG snapshot facts directly until a fuller local status snapshot API is injected.
+  - Status packet ingress still performs pending-peer lookup and peer-state materialization in tarcap. Status egress
+    still reads local PBFT/DAG snapshot facts directly until the facade is injected with Rust-owned local status
+    snapshot state.
   - PBFT sync-start execution still mutates `PbftSyncingState` and toggles snapshot creation in tarcap after the selected
     sync peer is installed.
   - Pending-DAG-block request execution still uses tarcap peer reservation plus the temporary DagManager snapshot and

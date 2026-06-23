@@ -149,7 +149,8 @@ pub use network_api::{
     NetworkPbftVoteIngressContext, NetworkPeerSelectionFacts, NetworkPeerSelectionPlan,
     NetworkPendingDagBlocksRequestFacts, NetworkPendingDagBlocksRequestPlan,
     NetworkPillarVoteAdmissionRequestEffects, NetworkPillarVoteValidationRequestEffects,
-    NetworkPillarVotesBundleEgressRequestEffects, NetworkStatusSyncFacts, NetworkStatusSyncPlan,
+    NetworkPillarVotesBundleEgressRequestEffects, NetworkStatusEgressFacts,
+    NetworkStatusEgressPlan, NetworkStatusSyncFacts, NetworkStatusSyncPlan,
     NetworkTransactionAdmissionRequestEffects,
 };
 pub use pbft_chain::{

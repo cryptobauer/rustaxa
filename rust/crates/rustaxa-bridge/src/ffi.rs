@@ -745,6 +745,41 @@ pub mod rustaxa_ffi {
         next_votes_round: u64,
     }
 
+    /// Compact facts needed to shape a local status packet for tarcap egress.
+    struct NetworkStatusEgressFacts {
+        initial: bool,
+        local_chain_id: u64,
+        genesis_hash: [u8; 32],
+        node_major_version: u32,
+        node_minor_version: u32,
+        node_patch_version: u32,
+        is_light_node: bool,
+        light_node_history: u64,
+        local_pbft_chain_size: u64,
+        local_pbft_round: u64,
+        local_dag_level: u64,
+        pbft_syncing: bool,
+        deep_pbft_syncing: bool,
+    }
+
+    /// Side-effect-free local status packet plan for tarcap egress.
+    struct NetworkStatusEgressPlan {
+        status: u8,
+        error_code: String,
+        peer_pbft_chain_size: u64,
+        peer_pbft_round: u64,
+        peer_dag_level: u64,
+        peer_syncing: bool,
+        include_initial_data: bool,
+        chain_id: u64,
+        genesis_hash: [u8; 32],
+        node_major_version: u32,
+        node_minor_version: u32,
+        node_patch_version: u32,
+        is_light_node: bool,
+        light_node_history: u64,
+    }
+
     /// Compact facts needed to validate an initial status packet.
     struct NetworkInitialStatusFacts {
         local_chain_id: u64,
@@ -4970,6 +5005,10 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusNetworkApi,
             facts: NetworkStatusSyncFacts,
         ) -> Result<NetworkStatusSyncPlan>;
+        pub fn consensus_network_plan_status_egress(
+            self: &BridgeConsensusNetworkApi,
+            facts: NetworkStatusEgressFacts,
+        ) -> Result<NetworkStatusEgressPlan>;
         pub fn consensus_network_plan_initial_status(
             self: &BridgeConsensusNetworkApi,
             facts: NetworkInitialStatusFacts,
