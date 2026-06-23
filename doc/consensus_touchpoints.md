@@ -104,8 +104,8 @@ Rules:
 - The first implemented direct bridge slice is intentionally narrow:
   - Rust domain facade: `rust/crates/rustaxa-consensus/src/network_api.rs`
   - CXX bridge facade: `BridgeConsensusNetworkApi` in `rust/crates/rustaxa-bridge/src/network.rs`
-  - It accepts only latest vote and vote-bundle packet ids (`kVotePacket = 1`, `kVotesBundlePacket = 3`) into a
-    bounded Rust-owned ingress arena.
+  - It accepts latest vote, vote-bundle, and PBFT blocks bundle packet ids (`kVotePacket = 1`,
+    `kVotesBundlePacket = 3`, `kPbftBlocksBundlePacket = 15`) into a bounded Rust-owned ingress arena.
   - It exposes empty effect-drain and effect-result-reporting contracts, but no production tarcap handler is rerouted
     yet.
   - Rust-enabled `TaraxaCapability::interpretCapabilityPacket` now shadow-submits peer-gated canonical packet bytes

@@ -1008,8 +1008,9 @@ impl ConsensusNetworkApi {
 fn is_supported_ingress_packet(packet_type: u32) -> bool {
     // Keep this first direct network facade slice intentionally narrow. The
     // current latest-tarcap packet ids come from `SubprotocolPacketType`:
-    // `kVotePacket = 1` and `kVotesBundlePacket = 3`.
-    matches!(packet_type, 1 | 3)
+    // `kVotePacket = 1`, `kVotesBundlePacket = 3`, and
+    // `kPbftBlocksBundlePacket = 15`.
+    matches!(packet_type, 1 | 3 | NETWORK_PACKET_KIND_PBFT_BLOCKS_BUNDLE)
 }
 
 fn effect_result_matches_effect(result: &NetworkEffectResult, effect: &NetworkEffect) -> bool {

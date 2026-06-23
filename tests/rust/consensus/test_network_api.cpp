@@ -95,6 +95,11 @@ TEST(ConsensusNetworkApiBridgeTest, ingestPacketStoresCanonicalBytesThroughDirec
   const auto second_receipt = network_api->consensus_network_ingest_packet(packet(3, peer, bytes({4})));
   EXPECT_TRUE(second_receipt.accepted);
   EXPECT_EQ(second_receipt.payload_id, 2);
+
+  const auto proposed_blocks_receipt =
+      network_api->consensus_network_ingest_packet(packet(15, peer, bytes({0xC0, 0x02})));
+  EXPECT_TRUE(proposed_blocks_receipt.accepted);
+  EXPECT_EQ(proposed_blocks_receipt.payload_id, 3);
 }
 
 TEST(ConsensusNetworkApiBridgeTest, ingestPacketRejectsEmptyPayloadWithoutAllocatingIngress) {
