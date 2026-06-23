@@ -81,6 +81,9 @@ pub const NETWORK_OBJECT_KIND_PBFT_VOTE: u8 = 0;
 /// Network known-object effect identifies a PBFT block hash.
 pub const NETWORK_OBJECT_KIND_PBFT_BLOCK: u8 = 1;
 
+/// Network packet effect identifies the latest PBFT vote packet.
+pub const NETWORK_PACKET_KIND_PBFT_VOTE: u32 = 1;
+
 const ERROR_NONE: &str = "";
 const ERROR_REJECTED_EMPTY_PAYLOAD: &str = "NETWORK_INGRESS_REJECTED_EMPTY_PAYLOAD";
 const ERROR_UNSUPPORTED_PACKET_TYPE: &str = "NETWORK_INGRESS_UNSUPPORTED_PACKET_TYPE";
@@ -290,6 +293,21 @@ pub struct NetworkPbftBlockAdmissionEffects {
     pub source_payload_id: u64,
     /// Whether the network executor should mark the block as known for the peer.
     pub mark_block_known: bool,
+}
+
+/// Accepted-vote gossip effects derived after verified-vote admission.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPbftVoteGossipEffects {
+    /// Peer that supplied the accepted vote. The network executor may use this
+    /// identity for exclusion or peer-cache checks.
+    pub peer_id: [u8; 64],
+    /// Accepted vote hash used to correlate the gossip intent with the live
+    /// vote object at the network boundary.
+    pub vote_hash: [u8; 32],
+    /// Optional retained packet payload id.
+    pub source_payload_id: u64,
+    /// Whether the network executor should gossip the accepted vote.
+    pub gossip_vote: bool,
 }
 
 /// Rust-owned external network/tarcap API facade.
@@ -608,6 +626,47 @@ impl ConsensusNetworkApi {
                 exclude_peers: Vec::new(),
                 object_kind: NETWORK_OBJECT_KIND_PBFT_BLOCK,
                 object_hash: effects.block_hash,
+                sync_kind: 0,
+                sync_start: 0,
+                reason_code: 0,
+                dependency_id: 0,
+                period: 0,
+                round: 0,
+            });
+        }
+
+        NetworkIngressDecision {
+            payload_id: effects.source_payload_id,
+            payload_accepted: effects.source_payload_id != 0,
+            routed: true,
+            status: NETWORK_INGRESS_STATUS_ACCEPTED,
+            error_code: ERROR_NONE.to_owned(),
+            queued_effect_count: self.pending_effects.len().saturating_sub(before_effects) as u32,
+        }
+    }
+
+    /// Queues network effects derived from accepted PBFT vote gossip.
+    ///
+    /// Rust owns the decision that an accepted vote should be gossiped. The
+    /// network executor still owns peer filtering, packet wrapping, and
+    /// transport, so this effect carries only the stable packet kind and vote
+    /// identity needed to execute the live boundary action.
+    pub fn queue_pbft_vote_gossip_effects(
+        &mut self,
+        effects: NetworkPbftVoteGossipEffects,
+    ) -> NetworkIngressDecision {
+        let before_effects = self.pending_effects.len();
+        if effects.gossip_vote {
+            self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: effects.source_payload_id,
+                kind: NETWORK_EFFECT_KIND_GOSSIP_PACKET,
+                peer_id: effects.peer_id,
+                packet_kind: NETWORK_PACKET_KIND_PBFT_VOTE,
+                payload_bytes: Vec::new(),
+                exclude_peers: vec![effects.peer_id],
+                object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
+                object_hash: effects.vote_hash,
                 sync_kind: 0,
                 sync_start: 0,
                 reason_code: 0,
@@ -1175,5 +1234,31 @@ mod tests {
         assert_eq!(batch.effects[0].object_kind, NETWORK_OBJECT_KIND_PBFT_BLOCK);
         assert_eq!(batch.effects[0].object_hash, hash(0xCD));
         assert_eq!(batch.effects[0].source_payload_id, 78);
+    }
+
+    #[test]
+    fn queue_pbft_vote_gossip_effects_gossips_vote_packet() {
+        let mut api = ConsensusNetworkApi::new();
+
+        let decision = api.queue_pbft_vote_gossip_effects(NetworkPbftVoteGossipEffects {
+            peer_id: peer(10),
+            vote_hash: hash(0xEF),
+            source_payload_id: 79,
+            gossip_vote: true,
+        });
+
+        assert!(decision.routed);
+        assert_eq!(decision.status, NETWORK_INGRESS_STATUS_ACCEPTED);
+        assert_eq!(decision.queued_effect_count, 1);
+
+        let batch = api.drain_work(10);
+        assert_eq!(batch.effects.len(), 1);
+        assert_eq!(batch.effects[0].kind, NETWORK_EFFECT_KIND_GOSSIP_PACKET);
+        assert_eq!(batch.effects[0].peer_id, peer(10));
+        assert_eq!(batch.effects[0].packet_kind, NETWORK_PACKET_KIND_PBFT_VOTE);
+        assert_eq!(batch.effects[0].exclude_peers, vec![peer(10)]);
+        assert_eq!(batch.effects[0].object_kind, NETWORK_OBJECT_KIND_PBFT_VOTE);
+        assert_eq!(batch.effects[0].object_hash, hash(0xEF));
+        assert_eq!(batch.effects[0].source_payload_id, 79);
     }
 }

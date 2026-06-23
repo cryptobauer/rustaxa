@@ -1,6 +1,7 @@
 #include "network/tarcap/packets_handlers/latest/common/ext_votes_packet_handler.hpp"
 
 #include "network/tarcap/packets/latest/get_next_votes_bundle_packet.hpp"
+#include "network/tarcap/packets/latest/vote_packet.hpp"
 #include "network/tarcap/packets_handlers/latest/common/exceptions.hpp"
 #include "pbft/pbft_manager.hpp"
 #include "vote/pbft_vote.hpp"
@@ -17,6 +18,7 @@ namespace {
 
 constexpr uint8_t kNetworkEffectResultStatusOk = 0;
 constexpr uint8_t kNetworkEffectResultStatusFailed = 1;
+constexpr uint8_t kNetworkEffectKindGossipPacket = 1;
 constexpr uint8_t kNetworkEffectKindMarkPeerKnown = 2;
 constexpr uint8_t kNetworkEffectKindRequestSync = 3;
 constexpr uint8_t kNetworkEffectKindReportPeer = 4;
@@ -25,6 +27,7 @@ constexpr uint8_t kNetworkSyncKindPbftChain = 0;
 constexpr uint8_t kNetworkSyncKindPbftNextVotes = 1;
 constexpr uint8_t kNetworkObjectKindPbftVote = 0;
 constexpr uint8_t kNetworkObjectKindPbftBlock = 1;
+constexpr uint32_t kNetworkPacketKindPbftVote = 1;
 
 rustaxa::NetworkApiConfig defaultNetworkApiConfig() {
   rustaxa::NetworkApiConfig config{};
@@ -75,7 +78,7 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
   // TODO(rustaxa): move this temporary network-handler hook into the future
   // tarcap/network pipeline overlay. Rust decides deterministic PBFT vote
   // ingress gates here; C++ still executes peer sync requests, live sidecar
-  // admission, proposed-block handling, logging, and gossip.
+  // admission, proposed-block handling, logging, and typed network effects.
   if (vote_mgr_->voteAlreadyValidated(vote->getHash())) {
     LOG(this->log_dg_) << "Received vote " << vote->getHash() << " has already been validated";
     return {};
@@ -350,7 +353,19 @@ rustaxa::NetworkIngressDecision ExtVotesPacketHandler::queuePbftBlockAdmissionEf
   return rust_consensus_network_api_->api->consensus_network_queue_pbft_block_admission_effects(effects);
 }
 
+rustaxa::NetworkIngressDecision ExtVotesPacketHandler::queuePbftVoteGossipEffects(
+    const rustaxa::NetworkPbftVoteGossipEffects &effects) {
+  assert(rust_consensus_network_api_);
+  return rust_consensus_network_api_->api->consensus_network_queue_pbft_vote_gossip_effects(effects);
+}
+
 void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget) {
+  executeConsensusNetworkEffects(budget, nullptr, nullptr);
+}
+
+void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget,
+                                                           const std::shared_ptr<PbftVote> &gossip_vote,
+                                                           const std::shared_ptr<PbftBlock> &gossip_block) {
   assert(rust_consensus_network_api_);
   const auto batch = rust_consensus_network_api_->api->consensus_network_drain_work(static_cast<uint32_t>(budget));
   rust::Vec<rustaxa::NetworkEffectResult> results;
@@ -367,6 +382,45 @@ void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget) {
         sealAndSend(peer_id, SubprotocolPacketType::kGetPbftSyncPacket,
                     encodePacketRlp(GetPbftSyncPacket{effect.sync_start}));
         last_pbft_block_sync_request_time_ = std::chrono::system_clock::now();
+      } else if (effect.kind == kNetworkEffectKindGossipPacket && effect.packet_kind == kNetworkPacketKindPbftVote) {
+        if (!gossip_vote || gossip_vote->getHash().asArray() != effect.object_hash) {
+          throw std::runtime_error("Network API PBFT vote gossip effect missing matching live vote");
+        }
+        for (const auto &peer : peers_state_->getAllPeers()) {
+          if (peer.second->syncing_) {
+            LOG(log_dg_) << " PBFT vote " << gossip_vote->getHash() << " not sent to " << peer.first
+                         << " peer syncing";
+            continue;
+          }
+
+          bool excluded = false;
+          for (const auto &excluded_peer : effect.exclude_peers) {
+            if (dev::p2p::NodeID(excluded_peer.id) == peer.first) {
+              excluded = true;
+              break;
+            }
+          }
+          if (excluded || peer.second->isPbftVoteKnown(gossip_vote->getHash())) {
+            continue;
+          }
+
+          std::optional<VotePacket::OptionalData> optional_packet_data;
+          if (gossip_block && !peer.second->isPbftBlockKnown(gossip_vote->getBlockHash())) {
+            optional_packet_data = VotePacket::OptionalData{gossip_block, pbft_chain_->getPbftChainSize()};
+          }
+
+          if (sealAndSend(peer.first, SubprotocolPacketType::kVotePacket,
+                          encodePacketRlp(VotePacket(gossip_vote, std::move(optional_packet_data))))) {
+            peer.second->markPbftVoteAsKnown(gossip_vote->getHash());
+            if (optional_packet_data.has_value()) {
+              peer.second->markPbftBlockAsKnown(gossip_block->getBlockHash());
+              LOG(log_dg_) << " PBFT vote " << gossip_vote->getHash() << " together with block "
+                           << gossip_block->getBlockHash() << " sent to " << peer.first;
+            } else {
+              LOG(log_dg_) << " PBFT vote " << gossip_vote->getHash() << " sent to " << peer.first;
+            }
+          }
+        }
       } else if (effect.kind == kNetworkEffectKindRequestSync && effect.sync_kind == kNetworkSyncKindPbftNextVotes) {
         requestPbftNextVotesAtPeriodRound(peer_id, effect.period, effect.round);
         last_votes_sync_request_time_ = std::chrono::system_clock::now();
