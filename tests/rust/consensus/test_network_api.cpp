@@ -139,6 +139,39 @@ TEST(ConsensusNetworkApiBridgeTest, drainWorkAndReportResultsExposeExecutorContr
   EXPECT_TRUE(ack.error_code.empty());
 }
 
+TEST(ConsensusNetworkApiBridgeTest, reportEffectResultsAcceptsMatchingEffectIdentity) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+
+  rustaxa::NetworkPbftVoteAdmissionEffects effects{};
+  effects.peer_id = nodeId(0x33);
+  effects.vote_hash = hash(0x44);
+  effects.source_payload_id = 105;
+  effects.mark_vote_known = true;
+
+  const auto decision = network_api->consensus_network_queue_pbft_vote_admission_effects(effects);
+  ASSERT_EQ(decision.queued_effect_count, 1);
+
+  const auto batch = network_api->consensus_network_drain_work(10);
+  ASSERT_EQ(batch.effects.size(), 1);
+
+  rustaxa::NetworkEffectResult result{};
+  result.effect_id = batch.effects[0].effect_id;
+  result.kind = batch.effects[0].kind;
+  result.peer_id = batch.effects[0].peer_id;
+  result.packet_kind = batch.effects[0].packet_kind;
+  result.object_kind = batch.effects[0].object_kind;
+  result.object_hash = batch.effects[0].object_hash;
+  result.status = 0;
+
+  rust::Vec<rustaxa::NetworkEffectResult> results;
+  results.push_back(std::move(result));
+  const auto ack = network_api->consensus_network_report_effect_results(std::move(results));
+  EXPECT_EQ(ack.status, 0);
+  EXPECT_EQ(ack.accepted_results, 1);
+  EXPECT_EQ(ack.failed_results, 0);
+  EXPECT_TRUE(ack.error_code.empty());
+}
+
 TEST(ConsensusNetworkApiBridgeTest, voteIngressPlanningRoutesThroughNetworkApi) {
   auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
 

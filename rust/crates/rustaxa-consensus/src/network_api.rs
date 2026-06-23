@@ -12,7 +12,7 @@
 //! and leaves effect production empty until packet-specific consensus pipelines
 //! are routed behind this API.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::{
     PbftVoteIngressContext, PbftVoteIngressFact, PbftVoteIngressPlan, PbftVoteIngressStatus,
@@ -43,6 +43,8 @@ pub const NETWORK_EFFECT_ACK_STATUS_UNKNOWN_EFFECT_ID: u8 = 1;
 pub const NETWORK_EFFECT_ACK_STATUS_DUPLICATE_EFFECT_RESULT: u8 = 2;
 /// Network effect result used an unsupported executor status code.
 pub const NETWORK_EFFECT_ACK_STATUS_INVALID_RESULT_STATUS: u8 = 3;
+/// Network effect result did not match the effect it claims to acknowledge.
+pub const NETWORK_EFFECT_ACK_STATUS_MISMATCHED_EFFECT_RESULT: u8 = 4;
 
 /// Network effect executor reported success.
 pub const NETWORK_EFFECT_RESULT_STATUS_OK: u8 = 0;
@@ -95,6 +97,7 @@ const ERROR_PAYLOAD_ID_EXHAUSTED: &str = "NETWORK_INGRESS_PAYLOAD_ID_EXHAUSTED";
 const ERROR_UNKNOWN_EFFECT_ID: &str = "NETWORK_EFFECT_RESULT_UNKNOWN_EFFECT_ID";
 const ERROR_DUPLICATE_EFFECT_RESULT: &str = "NETWORK_EFFECT_RESULT_DUPLICATE_EFFECT_ID";
 const ERROR_INVALID_RESULT_STATUS: &str = "NETWORK_EFFECT_RESULT_INVALID_STATUS";
+const ERROR_MISMATCHED_EFFECT_RESULT: &str = "NETWORK_EFFECT_RESULT_MISMATCHED_EFFECT";
 
 /// Capacity limits for the external network/tarcap facade.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -220,6 +223,16 @@ pub struct NetworkEffectBatch {
 pub struct NetworkEffectResult {
     /// Effect id from [`NetworkEffect`].
     pub effect_id: u64,
+    /// Effect kind that the executor attempted.
+    pub kind: u8,
+    /// Target peer id used by the executor.
+    pub peer_id: [u8; 64],
+    /// Packet kind used by send/gossip effects.
+    pub packet_kind: u32,
+    /// Object kind used by known-object or record-object effects.
+    pub object_kind: u8,
+    /// Object hash used by known-object or record-object effects.
+    pub object_hash: [u8; 32],
     /// Stable executor result status.
     pub status: u8,
     /// Optional diagnostic text for logging at the boundary.
@@ -345,7 +358,7 @@ pub struct ConsensusNetworkApi {
     next_effect_id: u64,
     ingress_payloads: Vec<NetworkIngressPayload>,
     pending_effects: VecDeque<NetworkEffect>,
-    outstanding_effects: HashSet<u64>,
+    outstanding_effects: HashMap<u64, NetworkEffect>,
     effect_results: Vec<NetworkEffectResult>,
 }
 
@@ -366,7 +379,7 @@ impl ConsensusNetworkApi {
             next_effect_id: 1,
             ingress_payloads: Vec::new(),
             pending_effects: VecDeque::new(),
-            outstanding_effects: HashSet::new(),
+            outstanding_effects: HashMap::new(),
             effect_results: Vec::new(),
         }
     }
@@ -456,7 +469,8 @@ impl ConsensusNetworkApi {
             let Some(effect) = self.pending_effects.pop_front() else {
                 break;
             };
-            self.outstanding_effects.insert(effect.effect_id);
+            self.outstanding_effects
+                .insert(effect.effect_id, effect.clone());
             effects.push(effect);
         }
         NetworkEffectBatch {
@@ -496,9 +510,14 @@ impl ConsensusNetworkApi {
                 error_code = ERROR_DUPLICATE_EFFECT_RESULT;
                 break;
             }
-            if !self.outstanding_effects.contains(&result.effect_id) {
+            let Some(effect) = self.outstanding_effects.get(&result.effect_id) else {
                 status = NETWORK_EFFECT_ACK_STATUS_UNKNOWN_EFFECT_ID;
                 error_code = ERROR_UNKNOWN_EFFECT_ID;
+                break;
+            };
+            if !effect_result_matches_effect(result, effect) {
+                status = NETWORK_EFFECT_ACK_STATUS_MISMATCHED_EFFECT_RESULT;
+                error_code = ERROR_MISMATCHED_EFFECT_RESULT;
                 break;
             }
             accepted_results += 1;
@@ -913,6 +932,14 @@ fn is_supported_ingress_packet(packet_type: u32) -> bool {
     matches!(packet_type, 1 | 3)
 }
 
+fn effect_result_matches_effect(result: &NetworkEffectResult, effect: &NetworkEffect) -> bool {
+    result.kind == effect.kind
+        && result.peer_id == effect.peer_id
+        && result.packet_kind == effect.packet_kind
+        && result.object_kind == effect.object_kind
+        && result.object_hash == effect.object_hash
+}
+
 const fn pbft_vote_ingress_error_code(status: PbftVoteIngressStatus) -> &'static str {
     match status {
         PbftVoteIngressStatus::Accepted => "",
@@ -986,6 +1013,19 @@ mod tests {
 
     fn hash(byte: u8) -> [u8; 32] {
         [byte; 32]
+    }
+
+    fn effect_result(effect: &NetworkEffect, status: u8) -> NetworkEffectResult {
+        NetworkEffectResult {
+            effect_id: effect.effect_id,
+            kind: effect.kind,
+            peer_id: effect.peer_id,
+            packet_kind: effect.packet_kind,
+            object_kind: effect.object_kind,
+            object_hash: effect.object_hash,
+            status,
+            diagnostic: String::new(),
+        }
     }
 
     #[test]
@@ -1138,11 +1178,21 @@ mod tests {
         let ack = api.report_effect_results(vec![
             NetworkEffectResult {
                 effect_id: 1,
+                kind: 0,
+                peer_id: [0; 64],
+                packet_kind: 0,
+                object_kind: 0,
+                object_hash: [0; 32],
                 status: NETWORK_EFFECT_RESULT_STATUS_OK,
                 diagnostic: String::new(),
             },
             NetworkEffectResult {
                 effect_id: 2,
+                kind: 0,
+                peer_id: [0; 64],
+                packet_kind: 0,
+                object_kind: 0,
+                object_hash: [0; 32],
                 status: NETWORK_EFFECT_RESULT_STATUS_FAILED,
                 diagnostic: "send failed".to_owned(),
             },
@@ -1178,17 +1228,52 @@ mod tests {
         let batch = api.drain_work(1);
         assert_eq!(batch.effects[0].effect_id, 1);
 
-        let ack = api.report_effect_results(vec![NetworkEffectResult {
-            effect_id: 1,
-            status: NETWORK_EFFECT_RESULT_STATUS_OK,
-            diagnostic: String::new(),
-        }]);
+        let ack = api.report_effect_results(vec![effect_result(
+            &batch.effects[0],
+            NETWORK_EFFECT_RESULT_STATUS_OK,
+        )]);
 
         assert_eq!(ack.status, NETWORK_EFFECT_ACK_STATUS_ACCEPTED);
         assert_eq!(ack.accepted_results, 1);
         assert_eq!(ack.failed_results, 0);
         assert_eq!(ack.error_code, "");
         assert_eq!(api.effect_result_len(), 1);
+    }
+
+    #[test]
+    fn report_effect_results_rejects_mismatched_effect_identity() {
+        let mut api = ConsensusNetworkApi::new();
+        api.enqueue_effect(NetworkEffect {
+            effect_id: 0,
+            source_payload_id: 1,
+            kind: NETWORK_EFFECT_KIND_MARK_PEER_KNOWN,
+            peer_id: peer(1),
+            packet_kind: 0,
+            payload_bytes: Vec::new(),
+            exclude_peers: Vec::new(),
+            object_kind: NETWORK_OBJECT_KIND_PBFT_VOTE,
+            object_hash: hash(0xAA),
+            sync_kind: 0,
+            sync_start: 0,
+            reason_code: 0,
+            dependency_id: 0,
+            period: 0,
+            round: 0,
+        });
+        let batch = api.drain_work(1);
+        let mut result = effect_result(&batch.effects[0], NETWORK_EFFECT_RESULT_STATUS_OK);
+        result.object_hash = hash(0xBB);
+
+        let ack = api.report_effect_results(vec![result]);
+
+        assert_eq!(
+            ack.status,
+            NETWORK_EFFECT_ACK_STATUS_MISMATCHED_EFFECT_RESULT
+        );
+        assert_eq!(ack.accepted_results, 0);
+        assert_eq!(ack.failed_results, 0);
+        assert_eq!(ack.error_code, ERROR_MISMATCHED_EFFECT_RESULT);
+        assert_eq!(api.effect_result_len(), 0);
     }
 
     #[test]

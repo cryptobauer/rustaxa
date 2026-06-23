@@ -688,6 +688,11 @@ pub mod rustaxa_ffi {
     /// Network/tarcap executor result for one effect.
     struct NetworkEffectResult {
         effect_id: u64,
+        kind: u8,
+        peer_id: [u8; 64],
+        packet_kind: u32,
+        object_kind: u8,
+        object_hash: [u8; 32],
         status: u8,
         diagnostic: String,
     }

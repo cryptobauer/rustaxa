@@ -399,6 +399,11 @@ void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget,
   for (const auto &effect : batch.effects) {
     rustaxa::NetworkEffectResult result{};
     result.effect_id = effect.effect_id;
+    result.kind = effect.kind;
+    result.peer_id = effect.peer_id;
+    result.packet_kind = effect.packet_kind;
+    result.object_kind = effect.object_kind;
+    result.object_hash = effect.object_hash;
     result.status = kNetworkEffectResultStatusOk;
 
     try {

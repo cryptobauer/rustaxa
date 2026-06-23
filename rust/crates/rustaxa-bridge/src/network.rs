@@ -360,6 +360,11 @@ fn from_bridge_effect_result(
 ) -> rustaxa_consensus::NetworkEffectResult {
     rustaxa_consensus::NetworkEffectResult {
         effect_id: result.effect_id,
+        kind: result.kind,
+        peer_id: result.peer_id,
+        packet_kind: result.packet_kind,
+        object_kind: result.object_kind,
+        object_hash: result.object_hash,
         status: result.status,
         diagnostic: result.diagnostic,
     }

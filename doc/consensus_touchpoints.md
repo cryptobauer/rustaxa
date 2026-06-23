@@ -83,6 +83,7 @@ Minimal DTOs:
   - `drive_consensus_progress { period, round }`
 - `NetworkEffectResult`
   - `effect_id`
+  - echoed effect identity fields: effect kind, target peer, packet kind, object kind, and object hash.
   - `status`
   - optional diagnostic text.
 - `NetworkEffectAck`
@@ -132,6 +133,9 @@ Rules:
   - Accepted PBFT vote proposed-block sidecars can now queue `RECORD_CONSENSUS_OBJECT` through
     `consensus_network_queue_pbft_proposed_block_sidecar_effects`; tarcap supplies canonical PBFT block RLP and compact
     period/hash facts to the facade before the executor records the sidecar.
+  - Network effect result reports now echo typed effect identity fields, and Rust rejects mismatched reports before
+    accepting acknowledgements. This keeps temporary executor work visible instead of treating an `effect_id` alone as
+    proof that the intended action ran.
   - This is still not the final production route: tarcap executes the drained network effects, and accepted votes still
     enter validation/admission through the temporary VoteManager/PBFT manager path.
   - Proposed-block sidecar recording still uses the temporary PBFT manager executor boundary until the network API is
