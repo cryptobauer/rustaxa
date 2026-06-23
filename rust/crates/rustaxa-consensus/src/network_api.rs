@@ -84,9 +84,13 @@ pub const NETWORK_REASON_BUNDLE_VOTE_MISMATCH: u8 = 1;
 pub const NETWORK_OBJECT_KIND_PBFT_VOTE: u8 = 0;
 /// Network known-object effect identifies a PBFT block hash.
 pub const NETWORK_OBJECT_KIND_PBFT_BLOCK: u8 = 1;
+/// Network object effect identifies a transaction hash.
+pub const NETWORK_OBJECT_KIND_TRANSACTION: u8 = 2;
 
 /// Network packet effect identifies the latest PBFT vote packet.
 pub const NETWORK_PACKET_KIND_PBFT_VOTE: u32 = 1;
+/// Network packet effect identifies the latest transaction packet.
+pub const NETWORK_PACKET_KIND_TRANSACTION: u32 = 7;
 /// Network packet effect identifies the latest PBFT blocks bundle packet.
 pub const NETWORK_PACKET_KIND_PBFT_BLOCKS_BUNDLE: u32 = 15;
 
@@ -357,6 +361,21 @@ pub struct NetworkPbftProposedBlockSidecarEffects {
     pub source_payload_id: u64,
     /// Whether the executor should record the sidecar in proposed-block state.
     pub record_block: bool,
+}
+
+/// Transaction admission request supplied by network/tarcap.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkTransactionAdmissionRequestEffects {
+    /// Peer that supplied the transaction packet.
+    pub peer_id: [u8; 64],
+    /// Transaction hash decoded by the network boundary.
+    pub transaction_hash: [u8; 32],
+    /// Canonical transaction RLP.
+    pub transaction_rlp: Vec<u8>,
+    /// Optional retained packet payload id.
+    pub source_payload_id: u64,
+    /// Whether the executor should run transaction-pool admission.
+    pub admit_transaction: bool,
 }
 
 /// Rust-owned external network/tarcap API facade.
@@ -848,6 +867,47 @@ impl ConsensusNetworkApi {
         }
     }
 
+    /// Queues transaction-pool admission for a transaction received from tarcap.
+    ///
+    /// Rust owns the transaction admission request identity and effect result
+    /// contract. The live transaction-pool verification and insertion remain a
+    /// temporary C++ executor boundary until transaction gossip admission is
+    /// backed by a Rust transaction runtime/storage handle.
+    pub fn queue_transaction_admission_request_effects(
+        &mut self,
+        effects: NetworkTransactionAdmissionRequestEffects,
+    ) -> NetworkIngressDecision {
+        let before_effects = self.pending_effects.len();
+        if effects.admit_transaction {
+            self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: effects.source_payload_id,
+                kind: NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT,
+                peer_id: effects.peer_id,
+                packet_kind: NETWORK_PACKET_KIND_TRANSACTION,
+                payload_bytes: effects.transaction_rlp,
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_TRANSACTION,
+                object_hash: effects.transaction_hash,
+                sync_kind: 0,
+                sync_start: 0,
+                reason_code: 0,
+                dependency_id: 0,
+                period: 0,
+                round: 0,
+            });
+        }
+
+        NetworkIngressDecision {
+            payload_id: effects.source_payload_id,
+            payload_accepted: effects.source_payload_id != 0,
+            routed: true,
+            status: NETWORK_INGRESS_STATUS_ACCEPTED,
+            error_code: ERROR_NONE.to_owned(),
+            queued_effect_count: self.pending_effects.len().saturating_sub(before_effects) as u32,
+        }
+    }
+
     fn decision_from_vote_plan(
         &mut self,
         plan: PbftVoteIngressPlan,
@@ -1008,9 +1068,12 @@ impl ConsensusNetworkApi {
 fn is_supported_ingress_packet(packet_type: u32) -> bool {
     // Keep this first direct network facade slice intentionally narrow. The
     // current latest-tarcap packet ids come from `SubprotocolPacketType`:
-    // `kVotePacket = 1`, `kVotesBundlePacket = 3`, and
-    // `kPbftBlocksBundlePacket = 15`.
-    matches!(packet_type, 1 | 3 | NETWORK_PACKET_KIND_PBFT_BLOCKS_BUNDLE)
+    // `kVotePacket = 1`, `kVotesBundlePacket = 3`, `kTransactionPacket = 7`,
+    // and `kPbftBlocksBundlePacket = 15`.
+    matches!(
+        packet_type,
+        1 | 3 | NETWORK_PACKET_KIND_TRANSACTION | NETWORK_PACKET_KIND_PBFT_BLOCKS_BUNDLE
+    )
 }
 
 fn effect_result_matches_effect(result: &NetworkEffectResult, effect: &NetworkEffect) -> bool {

@@ -766,6 +766,15 @@ pub mod rustaxa_ffi {
         record_block: bool,
     }
 
+    /// Transaction admission request supplied by network/tarcap.
+    struct NetworkTransactionAdmissionRequestEffects {
+        peer_id: [u8; 64],
+        transaction_hash: [u8; 32],
+        transaction_rlp: Vec<u8>,
+        source_payload_id: u64,
+        admit_transaction: bool,
+    }
+
     /// Gas-estimation request supplied before C++ may call FinalChain/EVM.
     struct TransactionManagerGasEstimationFact {
         hash: [u8; 32],
@@ -4791,6 +4800,10 @@ pub mod rustaxa_ffi {
         pub fn consensus_network_queue_pbft_proposed_block_bundle_effects(
             self: &BridgeConsensusNetworkApi,
             effects: NetworkPbftProposedBlockSidecarEffects,
+        ) -> Result<NetworkIngressDecision>;
+        pub fn consensus_network_queue_transaction_admission_request_effects(
+            self: &BridgeConsensusNetworkApi,
+            effects: NetworkTransactionAdmissionRequestEffects,
         ) -> Result<NetworkIngressDecision>;
 
         type WesolowskiVdf;
