@@ -774,6 +774,15 @@ pub mod rustaxa_ffi {
         request_sync: bool,
     }
 
+    /// Pillar votes bundle egress request supplied by network/tarcap.
+    struct NetworkPillarVotesBundleEgressRequestEffects {
+        peer_id: [u8; 64],
+        period: u64,
+        pillar_block_hash: [u8; 32],
+        source_payload_id: u64,
+        request_bundle: bool,
+    }
+
     /// Proposed PBFT block sidecar effects supplied after vote admission.
     struct NetworkPbftProposedBlockSidecarEffects {
         peer_id: [u8; 64],
@@ -4864,6 +4873,10 @@ pub mod rustaxa_ffi {
         pub fn consensus_network_queue_pbft_sync_egress_request_effects(
             self: &BridgeConsensusNetworkApi,
             effects: NetworkPbftSyncEgressRequestEffects,
+        ) -> Result<NetworkIngressDecision>;
+        pub fn consensus_network_queue_pillar_votes_bundle_egress_request_effects(
+            self: &BridgeConsensusNetworkApi,
+            effects: NetworkPillarVotesBundleEgressRequestEffects,
         ) -> Result<NetworkIngressDecision>;
         pub fn consensus_network_queue_pbft_proposed_block_sidecar_effects(
             self: &BridgeConsensusNetworkApi,
