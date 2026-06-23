@@ -125,12 +125,12 @@ Rules:
     `consensus_network_ingest_pbft_vote` / `consensus_network_ingest_pbft_vote_bundle_member` return a
     `NetworkIngressDecision` and queue `REQUEST_SYNC`, `REPORT_PEER`, and `DISCONNECT_PEER` effects for
     `drain_work` / `report_effect_results`.
-  - Accepted PBFT vote admission requests can now queue vote `RECORD_CONSENSUS_OBJECT` through
-    `consensus_network_queue_pbft_vote_admission_request_effects`; tarcap executes the temporary verified-vote mutation
-    through the effect executor and reports the matching effect identity back to Rust.
-  - Rust-enabled single-vote and vote-bundle handling no longer perform direct
-    `VoteManager::voteAlreadyValidated` pre-checks outside the common admission executor path; duplicate/non-admitted
-    votes flow through the network API admission request route.
+  - Accepted PBFT vote packets now enter deterministic admission directly in `ExtVotesPacketHandler` via
+    `vote_mgr_->addVerifiedVoteWithReport`, eliminating the temporary `consensus_network_queue_pbft_vote_admission_request_effects`
+    hop for this decision boundary. Tarcap still uses network effect draining/reports for peer-visible follow-up actions.
+  - Rust-enabled single-vote and vote-bundle handling no longer perform direct `VoteManager::voteAlreadyValidated`
+    pre-checks outside the common admission path; duplicate/non-admitted votes flow through the same direct
+    Rust-managed admission/reporting path in tarcap's vote handlers.
   - Accepted PBFT vote admission can now queue vote `MARK_PEER_KNOWN` through
     `consensus_network_queue_pbft_vote_admission_effects`; tarcap executes that peer-cache mutation via the same
     `drain_work` / `report_effect_results` path instead of mutating the peer directly. Rust-enabled single-vote and
