@@ -1,6 +1,7 @@
 use crate::dag::*;
 use crate::final_chain::*;
 use crate::gas_pricer::*;
+use crate::network::*;
 use crate::pbft_chain::*;
 use crate::pbft_finalize::*;
 use crate::pbft_manager::*;
@@ -39,6 +40,7 @@ use rustaxa_consensus::transaction_manager::{
     TransactionManagerSidecar, TransactionPackingPlanner,
 };
 use rustaxa_consensus::transaction_queue::{TransactionQueue, TransactionQueueEntry};
+use rustaxa_consensus::ConsensusNetworkApi;
 use rustaxa_consensus::FinalChain;
 use rustaxa_consensus::PbftVoteAdmissionRuntime;
 use rustaxa_consensus::PillarVotes;
@@ -130,6 +132,15 @@ pub struct BridgeFinalChainExecutionSession {
 }
 
 pub struct BridgeGasPricer(pub Mutex<GasPriceOracle>, pub Option<Arc<Storage>>);
+
+/// Rust-owned external network/tarcap facade.
+///
+/// The facade accepts canonical packet bytes and returns typed network effects
+/// without exposing consensus managers or shim-owned compatibility state to the
+/// network module.
+pub struct BridgeConsensusNetworkApi {
+    pub api: Mutex<ConsensusNetworkApi>,
+}
 
 pub struct BridgeDagGraph(pub DagGraph);
 
@@ -616,6 +627,77 @@ pub mod rustaxa_ffi {
     struct TransactionManagerRuntimeQueueCleanupPlan {
         non_proposable_expired: TransactionQueuePurgePlan,
         finalized_account_purged: TransactionQueuePurgePlan,
+    }
+
+    /// Result of accepting packet bytes at the Rust consensus ingress boundary.
+    struct NetworkIngressReceipt {
+        accepted: bool,
+        payload_id: u64,
+        status: u8,
+        error_code: String,
+    }
+
+    /// Capacity limits for the external network/tarcap facade.
+    struct NetworkApiConfig {
+        max_payload_bytes: u64,
+        max_retained_payloads: u64,
+        max_effects_per_drain: u32,
+    }
+
+    /// Canonical packet bytes submitted by network/tarcap.
+    struct NetworkIngressPacket {
+        packet_type: u32,
+        peer_id: [u8; 64],
+        payload_bytes: Vec<u8>,
+        received_at_mono_ms: u64,
+        source_packet_id: u64,
+    }
+
+    /// Fixed-size peer id used by network effect payloads.
+    struct NetworkPeerId {
+        id: [u8; 64],
+    }
+
+    /// Executor-visible network effect planned by Rust consensus.
+    struct NetworkEffect {
+        effect_id: u64,
+        source_payload_id: u64,
+        kind: u8,
+        peer_id: [u8; 64],
+        packet_kind: u32,
+        payload_bytes: Vec<u8>,
+        exclude_peers: Vec<NetworkPeerId>,
+        object_kind: u8,
+        object_hash: [u8; 32],
+        sync_kind: u8,
+        sync_start: u64,
+        reason_code: u8,
+        dependency_id: u64,
+        period: u64,
+        round: u64,
+    }
+
+    /// Ordered network effects returned to network/tarcap for execution.
+    struct NetworkEffectBatch {
+        status: u8,
+        effects: Vec<NetworkEffect>,
+        more_available: bool,
+        error_code: String,
+    }
+
+    /// Network/tarcap executor result for one effect.
+    struct NetworkEffectResult {
+        effect_id: u64,
+        status: u8,
+        diagnostic: String,
+    }
+
+    /// Summary returned after Rust records network effect results.
+    struct NetworkEffectAck {
+        status: u8,
+        accepted_results: u64,
+        failed_results: u64,
+        error_code: String,
     }
 
     /// Gas-estimation request supplied before C++ may call FinalChain/EVM.
@@ -4581,6 +4663,24 @@ pub mod rustaxa_ffi {
     }
 
     extern "Rust" {
+        type BridgeConsensusNetworkApi;
+
+        pub fn create_consensus_network_api(
+            config: NetworkApiConfig,
+        ) -> Box<BridgeConsensusNetworkApi>;
+        pub fn consensus_network_ingest_packet(
+            self: &BridgeConsensusNetworkApi,
+            packet: NetworkIngressPacket,
+        ) -> Result<NetworkIngressReceipt>;
+        pub fn consensus_network_drain_work(
+            self: &BridgeConsensusNetworkApi,
+            budget: u32,
+        ) -> Result<NetworkEffectBatch>;
+        pub fn consensus_network_report_effect_results(
+            self: &BridgeConsensusNetworkApi,
+            results: Vec<NetworkEffectResult>,
+        ) -> Result<NetworkEffectAck>;
+
         type WesolowskiVdf;
         type CancellationToken;
         type Solution;

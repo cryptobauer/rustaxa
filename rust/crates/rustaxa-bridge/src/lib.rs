@@ -2,6 +2,7 @@ mod dag;
 mod ffi;
 mod final_chain;
 mod gas_pricer;
+mod network;
 mod pbft_chain;
 mod pbft_finalize;
 mod pbft_manager;

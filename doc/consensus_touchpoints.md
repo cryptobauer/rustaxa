@@ -100,6 +100,14 @@ Rules:
 - Packet payloads should be canonical bytes or opaque ingress ids until materialization is unavoidable.
 - This API replaces direct tarcap access to `PbftManager`, `DagManager`, `VoteManager`, `TransactionManager`,
   `PillarChainManager`, and `DbStorage` for consensus decisions.
+- The first implemented direct bridge slice is intentionally narrow:
+  - Rust domain facade: `rust/crates/rustaxa-consensus/src/network_api.rs`
+  - CXX bridge facade: `BridgeConsensusNetworkApi` in `rust/crates/rustaxa-bridge/src/network.rs`
+  - It accepts only latest vote and vote-bundle packet ids (`kVotePacket = 1`, `kVotesBundlePacket = 3`) into a
+    bounded Rust-owned ingress arena.
+  - It exposes empty effect-drain and effect-result-reporting contracts, but no production tarcap handler is rerouted
+    yet.
+  - It does not call consensus shims, C++ consensus managers, `DbStorage`, peer transport, packet wrapping, or gossip.
 
 First useful routes:
 

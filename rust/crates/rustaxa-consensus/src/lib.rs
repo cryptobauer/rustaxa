@@ -1,6 +1,7 @@
 pub mod consensus_pipeline;
 pub mod dag;
 pub mod gas_pricer;
+pub mod network_api;
 pub mod pbft_chain;
 pub mod pbft_finalize;
 pub mod pbft_manager;
@@ -103,6 +104,22 @@ pub use final_chain_execution::{
     plan_external_evm_system_transactions,
 };
 pub use gas_pricer::{GasPriceOracle, GasPricerConfig};
+pub use network_api::{
+    ConsensusNetworkApi, NETWORK_EFFECT_ACK_STATUS_ACCEPTED,
+    NETWORK_EFFECT_ACK_STATUS_DUPLICATE_EFFECT_RESULT,
+    NETWORK_EFFECT_ACK_STATUS_INVALID_RESULT_STATUS, NETWORK_EFFECT_ACK_STATUS_UNKNOWN_EFFECT_ID,
+    NETWORK_EFFECT_BATCH_STATUS_OK, NETWORK_EFFECT_KIND_BLOCK_PEER_ORDER,
+    NETWORK_EFFECT_KIND_DISCONNECT_PEER, NETWORK_EFFECT_KIND_DRIVE_CONSENSUS_PROGRESS,
+    NETWORK_EFFECT_KIND_GOSSIP_PACKET, NETWORK_EFFECT_KIND_MARK_PEER_KNOWN,
+    NETWORK_EFFECT_KIND_REPORT_PEER, NETWORK_EFFECT_KIND_REQUEST_SYNC,
+    NETWORK_EFFECT_KIND_SEND_PACKET, NETWORK_EFFECT_RESULT_STATUS_FAILED,
+    NETWORK_EFFECT_RESULT_STATUS_OK, NETWORK_INGRESS_STATUS_ACCEPTED,
+    NETWORK_INGRESS_STATUS_PAYLOAD_ID_EXHAUSTED, NETWORK_INGRESS_STATUS_PAYLOAD_TOO_LARGE,
+    NETWORK_INGRESS_STATUS_QUEUE_FULL, NETWORK_INGRESS_STATUS_REJECTED_EMPTY_PAYLOAD,
+    NETWORK_INGRESS_STATUS_UNSUPPORTED_PACKET_TYPE, NetworkApiConfig, NetworkEffect,
+    NetworkEffectAck, NetworkEffectBatch, NetworkEffectResult, NetworkIngressPacket,
+    NetworkIngressPayload, NetworkIngressReceipt, NetworkPayloadId,
+};
 pub use pbft_chain::{
     PbftBlockStorageLookup, PbftChain, PbftChainStorageRestore, load_pbft_block_from_storage,
     pbft_block_exists_in_storage, restore_pbft_chain_from_storage,
