@@ -41,6 +41,10 @@ pub const NETWORK_STATUS_PLAN_STATUS_ALREADY_SYNCING: u8 = 1;
 pub const NETWORK_STATUS_PLAN_STATUS_NO_ELIGIBLE_PEER: u8 = 2;
 /// Network status/sync planner found no sync work needed.
 pub const NETWORK_STATUS_PLAN_STATUS_SYNC_NOT_NEEDED: u8 = 3;
+/// Network status/sync planner found the peer already DAG-synced.
+pub const NETWORK_STATUS_PLAN_STATUS_DAG_ALREADY_SYNCED: u8 = 4;
+/// Network status/sync planner found the peer's PBFT period does not match local sync period.
+pub const NETWORK_STATUS_PLAN_STATUS_DAG_PERIOD_MISMATCH: u8 = 5;
 
 /// Network work drain completed successfully.
 pub const NETWORK_EFFECT_BATCH_STATUS_OK: u8 = 0;
@@ -503,6 +507,12 @@ pub struct NetworkPbftSyncPeerCandidate {
     pub is_light_node: bool,
     /// Number of recent periods the light node can serve.
     pub light_node_history: u64,
+    /// Whether tarcap already considers this peer's DAG synchronized.
+    pub peer_dag_synced: bool,
+    /// Whether tarcap already has a pending DAG sync request for this peer.
+    pub peer_dag_syncing: bool,
+    /// Whether tarcap allows requesting DAG sync from this peer now.
+    pub dag_sync_allowed: bool,
 }
 
 /// Compact facts needed to plan PBFT sync start from known peers.
@@ -537,6 +547,36 @@ pub struct NetworkPbftSyncStartPlan {
     pub request_period: u64,
     /// Whether tarcap should enable snapshot creation because PBFT sync is not needed.
     pub enable_snapshot_creation: bool,
+}
+
+/// Compact facts needed to plan a pending-DAG-block request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPendingDagBlocksRequestFacts {
+    /// Local PBFT sync period used to gate DAG requests.
+    pub local_pbft_syncing_period: u64,
+    /// Whether the caller supplied an explicit peer.
+    pub has_explicit_peer: bool,
+    /// Explicit peer candidate. Ignored when `has_explicit_peer` is false.
+    pub explicit_peer: NetworkPbftSyncPeerCandidate,
+    /// Candidate peers known by tarcap when no explicit peer is supplied.
+    pub candidates: Vec<NetworkPbftSyncPeerCandidate>,
+}
+
+/// Side-effect-free pending-DAG request plan for the network/tarcap executor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkPendingDagBlocksRequestPlan {
+    /// Stable status for boundary logs and tests.
+    pub status: u8,
+    /// Stable textual status for boundary logs and tests.
+    pub error_code: String,
+    /// Whether tarcap should reserve the peer and send a `GetDagSyncPacket`.
+    pub request_pending_dag_blocks: bool,
+    /// Whether the plan selected a peer.
+    pub has_peer: bool,
+    /// Selected peer id, or zeroes when no peer was selected.
+    pub peer_id: [u8; 64],
+    /// PBFT period to request in the `GetDagSyncPacket`.
+    pub request_period: u64,
 }
 
 /// Proposed-block sidecar effects derived from accepted PBFT vote packets.
@@ -910,6 +950,21 @@ impl ConsensusNetworkApi {
         facts: NetworkPbftSyncStartFacts,
     ) -> NetworkPbftSyncStartPlan {
         plan_pbft_sync_start(facts)
+    }
+
+    /// Plans whether tarcap should request pending DAG blocks from a peer.
+    ///
+    /// Rust owns explicit-peer gating, max-chain peer selection, light-node
+    /// serviceability checks, and the PBFT-period match required before a
+    /// `GetDagSyncPacket` is sent. Tarcap still owns the atomic
+    /// `peer_dag_syncing_` reservation, non-finalized DAG snapshot
+    /// materialization, packet encoding, and network send execution.
+    #[must_use]
+    pub fn plan_pending_dag_blocks_request(
+        &self,
+        facts: NetworkPendingDagBlocksRequestFacts,
+    ) -> NetworkPendingDagBlocksRequestPlan {
+        plan_pending_dag_blocks_request(facts)
     }
 
     /// Routes one PBFT vote ingress decision and queues network effects.
@@ -1874,6 +1929,74 @@ fn plan_pbft_sync_start(facts: NetworkPbftSyncStartFacts) -> NetworkPbftSyncStar
     }
 }
 
+fn plan_pending_dag_blocks_request(
+    facts: NetworkPendingDagBlocksRequestFacts,
+) -> NetworkPendingDagBlocksRequestPlan {
+    let selected = if facts.has_explicit_peer {
+        Some(facts.explicit_peer)
+    } else {
+        facts
+            .candidates
+            .into_iter()
+            .filter(|candidate| {
+                !candidate.peer_dag_synced
+                    && candidate.dag_sync_allowed
+                    && (!candidate.is_light_node
+                        || facts
+                            .local_pbft_syncing_period
+                            .saturating_add(candidate.light_node_history)
+                            >= candidate.pbft_chain_size)
+            })
+            .max_by(|left, right| {
+                left.pbft_chain_size
+                    .cmp(&right.pbft_chain_size)
+                    .then_with(|| left.dag_level.cmp(&right.dag_level))
+            })
+    };
+
+    let Some(peer) = selected else {
+        return NetworkPendingDagBlocksRequestPlan {
+            status: NETWORK_STATUS_PLAN_STATUS_NO_ELIGIBLE_PEER,
+            error_code: "NETWORK_STATUS_NO_ELIGIBLE_DAG_PEER".to_owned(),
+            request_pending_dag_blocks: false,
+            has_peer: false,
+            peer_id: [0; 64],
+            request_period: 0,
+        };
+    };
+
+    if peer.peer_dag_synced {
+        return NetworkPendingDagBlocksRequestPlan {
+            status: NETWORK_STATUS_PLAN_STATUS_DAG_ALREADY_SYNCED,
+            error_code: "NETWORK_STATUS_DAG_ALREADY_SYNCED".to_owned(),
+            request_pending_dag_blocks: false,
+            has_peer: true,
+            peer_id: peer.peer_id,
+            request_period: 0,
+        };
+    }
+
+    if facts.local_pbft_syncing_period != peer.pbft_chain_size {
+        return NetworkPendingDagBlocksRequestPlan {
+            status: NETWORK_STATUS_PLAN_STATUS_DAG_PERIOD_MISMATCH,
+            error_code: "NETWORK_STATUS_DAG_PERIOD_MISMATCH".to_owned(),
+            request_pending_dag_blocks: false,
+            has_peer: true,
+            peer_id: peer.peer_id,
+            request_period: 0,
+        };
+    }
+
+    NetworkPendingDagBlocksRequestPlan {
+        status: NETWORK_STATUS_PLAN_STATUS_OK,
+        error_code: ERROR_NONE.to_owned(),
+        request_pending_dag_blocks: true,
+        has_peer: true,
+        peer_id: peer.peer_id,
+        request_period: facts.local_pbft_syncing_period,
+    }
+}
+
 fn is_supported_ingress_packet(packet_type: u32) -> bool {
     // Keep this first direct network facade slice intentionally narrow. The
     // current latest-tarcap packet ids come from `SubprotocolPacketType`:
@@ -2018,6 +2141,9 @@ mod tests {
             dag_level,
             is_light_node: false,
             light_node_history: 0,
+            peer_dag_synced: false,
+            peer_dag_syncing: false,
+            dag_sync_allowed: true,
         }
     }
 
@@ -2459,6 +2585,119 @@ mod tests {
         assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_ALREADY_SYNCING);
         assert!(!plan.start_sync);
         assert!(!plan.has_peer);
+    }
+
+    #[test]
+    fn plan_pending_dag_blocks_request_accepts_explicit_peer_on_matching_period() {
+        let api = ConsensusNetworkApi::new();
+
+        let plan = api.plan_pending_dag_blocks_request(NetworkPendingDagBlocksRequestFacts {
+            local_pbft_syncing_period: 12,
+            has_explicit_peer: true,
+            explicit_peer: sync_candidate(1, 12, 20),
+            candidates: vec![],
+        });
+
+        assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_OK);
+        assert!(plan.request_pending_dag_blocks);
+        assert!(plan.has_peer);
+        assert_eq!(plan.peer_id, peer(1));
+        assert_eq!(plan.request_period, 12);
+    }
+
+    #[test]
+    fn plan_pending_dag_blocks_request_rejects_explicit_peer_already_synced() {
+        let api = ConsensusNetworkApi::new();
+        let mut candidate = sync_candidate(1, 12, 20);
+        candidate.peer_dag_synced = true;
+
+        let plan = api.plan_pending_dag_blocks_request(NetworkPendingDagBlocksRequestFacts {
+            local_pbft_syncing_period: 12,
+            has_explicit_peer: true,
+            explicit_peer: candidate,
+            candidates: vec![],
+        });
+
+        assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_DAG_ALREADY_SYNCED);
+        assert!(!plan.request_pending_dag_blocks);
+        assert!(plan.has_peer);
+        assert_eq!(plan.peer_id, peer(1));
+    }
+
+    #[test]
+    fn plan_pending_dag_blocks_request_selects_max_eligible_peer() {
+        let api = ConsensusNetworkApi::new();
+        let mut already_synced = sync_candidate(1, 14, 50);
+        already_synced.peer_dag_synced = true;
+        let mut disallowed = sync_candidate(2, 13, 40);
+        disallowed.dag_sync_allowed = false;
+
+        let plan = api.plan_pending_dag_blocks_request(NetworkPendingDagBlocksRequestFacts {
+            local_pbft_syncing_period: 12,
+            has_explicit_peer: false,
+            explicit_peer: sync_candidate(0, 0, 0),
+            candidates: vec![
+                already_synced,
+                disallowed,
+                sync_candidate(3, 11, 100),
+                sync_candidate(4, 12, 10),
+            ],
+        });
+
+        assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_OK);
+        assert!(plan.request_pending_dag_blocks);
+        assert_eq!(plan.peer_id, peer(4));
+        assert_eq!(plan.request_period, 12);
+    }
+
+    #[test]
+    fn plan_pending_dag_blocks_request_breaks_chain_size_ties_by_dag_level() {
+        let api = ConsensusNetworkApi::new();
+
+        let plan = api.plan_pending_dag_blocks_request(NetworkPendingDagBlocksRequestFacts {
+            local_pbft_syncing_period: 12,
+            has_explicit_peer: false,
+            explicit_peer: sync_candidate(0, 0, 0),
+            candidates: vec![sync_candidate(1, 12, 10), sync_candidate(2, 12, 11)],
+        });
+
+        assert!(plan.request_pending_dag_blocks);
+        assert_eq!(plan.peer_id, peer(2));
+    }
+
+    #[test]
+    fn plan_pending_dag_blocks_request_rejects_period_mismatch() {
+        let api = ConsensusNetworkApi::new();
+
+        let plan = api.plan_pending_dag_blocks_request(NetworkPendingDagBlocksRequestFacts {
+            local_pbft_syncing_period: 11,
+            has_explicit_peer: true,
+            explicit_peer: sync_candidate(1, 12, 20),
+            candidates: vec![],
+        });
+
+        assert_eq!(plan.status, NETWORK_STATUS_PLAN_STATUS_DAG_PERIOD_MISMATCH);
+        assert!(!plan.request_pending_dag_blocks);
+        assert!(plan.has_peer);
+        assert_eq!(plan.peer_id, peer(1));
+    }
+
+    #[test]
+    fn plan_pending_dag_blocks_request_skips_light_peer_that_cannot_serve_history() {
+        let api = ConsensusNetworkApi::new();
+        let mut light = sync_candidate(1, 20, 50);
+        light.is_light_node = true;
+        light.light_node_history = 4;
+
+        let plan = api.plan_pending_dag_blocks_request(NetworkPendingDagBlocksRequestFacts {
+            local_pbft_syncing_period: 12,
+            has_explicit_peer: false,
+            explicit_peer: sync_candidate(0, 0, 0),
+            candidates: vec![light, sync_candidate(2, 12, 1)],
+        });
+
+        assert!(plan.request_pending_dag_blocks);
+        assert_eq!(plan.peer_id, peer(2));
     }
 
     #[test]

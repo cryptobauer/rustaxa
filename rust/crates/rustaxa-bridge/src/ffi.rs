@@ -752,6 +752,9 @@ pub mod rustaxa_ffi {
         dag_level: u64,
         is_light_node: bool,
         light_node_history: u64,
+        peer_dag_synced: bool,
+        peer_dag_syncing: bool,
+        dag_sync_allowed: bool,
     }
 
     /// Compact facts needed to plan PBFT sync start from known peers.
@@ -772,6 +775,24 @@ pub mod rustaxa_ffi {
         peer_pbft_chain_size: u64,
         request_period: u64,
         enable_snapshot_creation: bool,
+    }
+
+    /// Compact facts needed to plan a pending-DAG-block request.
+    struct NetworkPendingDagBlocksRequestFacts {
+        local_pbft_syncing_period: u64,
+        has_explicit_peer: bool,
+        explicit_peer: NetworkPbftSyncPeerCandidate,
+        candidates: Vec<NetworkPbftSyncPeerCandidate>,
+    }
+
+    /// Side-effect-free pending-DAG request plan for tarcap execution.
+    struct NetworkPendingDagBlocksRequestPlan {
+        status: u8,
+        error_code: String,
+        request_pending_dag_blocks: bool,
+        has_peer: bool,
+        peer_id: [u8; 64],
+        request_period: u64,
     }
 
     /// Accepted PBFT vote network effects supplied after admission.
@@ -4918,6 +4939,10 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusNetworkApi,
             facts: NetworkPbftSyncStartFacts,
         ) -> Result<NetworkPbftSyncStartPlan>;
+        pub fn consensus_network_plan_pending_dag_blocks_request(
+            self: &BridgeConsensusNetworkApi,
+            facts: NetworkPendingDagBlocksRequestFacts,
+        ) -> Result<NetworkPendingDagBlocksRequestPlan>;
         pub fn consensus_network_queue_pbft_vote_admission_effects(
             self: &BridgeConsensusNetworkApi,
             effects: NetworkPbftVoteAdmissionEffects,

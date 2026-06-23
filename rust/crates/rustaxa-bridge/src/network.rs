@@ -179,6 +179,22 @@ impl BridgeConsensusNetworkApi {
         ))
     }
 
+    /// Plans whether pending DAG blocks should be requested and from which peer.
+    pub fn consensus_network_plan_pending_dag_blocks_request(
+        &self,
+        facts: rustaxa_ffi::NetworkPendingDagBlocksRequestFacts,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkPendingDagBlocksRequestPlan> {
+        let api = self
+            .api
+            .lock()
+            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        Ok(to_bridge_network_pending_dag_blocks_request_plan(
+            api.plan_pending_dag_blocks_request(
+                to_domain_network_pending_dag_blocks_request_facts(facts),
+            ),
+        ))
+    }
+
     /// Routes single-vote PBFT ingress and queues network effects.
     ///
     /// Unlike the side-effect-free planner method, this production-facing route
@@ -627,16 +643,23 @@ fn to_domain_network_pbft_sync_start_facts(
         candidates: value
             .candidates
             .into_iter()
-            .map(
-                |candidate| rustaxa_consensus::NetworkPbftSyncPeerCandidate {
-                    peer_id: candidate.peer_id,
-                    pbft_chain_size: candidate.pbft_chain_size,
-                    dag_level: candidate.dag_level,
-                    is_light_node: candidate.is_light_node,
-                    light_node_history: candidate.light_node_history,
-                },
-            )
+            .map(to_domain_network_pbft_sync_peer_candidate)
             .collect(),
+    }
+}
+
+fn to_domain_network_pbft_sync_peer_candidate(
+    candidate: rustaxa_ffi::NetworkPbftSyncPeerCandidate,
+) -> rustaxa_consensus::NetworkPbftSyncPeerCandidate {
+    rustaxa_consensus::NetworkPbftSyncPeerCandidate {
+        peer_id: candidate.peer_id,
+        pbft_chain_size: candidate.pbft_chain_size,
+        dag_level: candidate.dag_level,
+        is_light_node: candidate.is_light_node,
+        light_node_history: candidate.light_node_history,
+        peer_dag_synced: candidate.peer_dag_synced,
+        peer_dag_syncing: candidate.peer_dag_syncing,
+        dag_sync_allowed: candidate.dag_sync_allowed,
     }
 }
 
@@ -652,6 +675,34 @@ fn to_bridge_network_pbft_sync_start_plan(
         peer_pbft_chain_size: plan.peer_pbft_chain_size,
         request_period: plan.request_period,
         enable_snapshot_creation: plan.enable_snapshot_creation,
+    }
+}
+
+fn to_domain_network_pending_dag_blocks_request_facts(
+    value: rustaxa_ffi::NetworkPendingDagBlocksRequestFacts,
+) -> rustaxa_consensus::NetworkPendingDagBlocksRequestFacts {
+    rustaxa_consensus::NetworkPendingDagBlocksRequestFacts {
+        local_pbft_syncing_period: value.local_pbft_syncing_period,
+        has_explicit_peer: value.has_explicit_peer,
+        explicit_peer: to_domain_network_pbft_sync_peer_candidate(value.explicit_peer),
+        candidates: value
+            .candidates
+            .into_iter()
+            .map(to_domain_network_pbft_sync_peer_candidate)
+            .collect(),
+    }
+}
+
+fn to_bridge_network_pending_dag_blocks_request_plan(
+    plan: rustaxa_consensus::NetworkPendingDagBlocksRequestPlan,
+) -> rustaxa_ffi::NetworkPendingDagBlocksRequestPlan {
+    rustaxa_ffi::NetworkPendingDagBlocksRequestPlan {
+        status: plan.status,
+        error_code: plan.error_code,
+        request_pending_dag_blocks: plan.request_pending_dag_blocks,
+        has_peer: plan.has_peer,
+        peer_id: plan.peer_id,
+        request_period: plan.request_period,
     }
 }
 

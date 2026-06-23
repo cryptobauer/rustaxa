@@ -198,6 +198,11 @@ Rules:
     eligibility, decides the first requested period, and reports whether snapshot creation should be re-enabled because
     sync is not needed. Tarcap still installs the selected peer into `PbftSyncingState`, sends `GetPbftSyncPacket`, and
     applies the deep-sync snapshot disable timing after the live sync state is set.
+  - Pending-DAG-block request planning now routes through
+    `consensus_network_plan_pending_dag_blocks_request`; tarcap supplies the local PBFT sync period plus either an
+    explicit peer snapshot or compact live peer candidates before Rust selects an eligible peer and gates the PBFT-period
+    match required for `GetDagSyncPacket`. Tarcap still CAS-reserves the live peer, reads non-finalized DAG block hashes
+    from `DagManager`, encodes the request packet, and sends the transport message.
   - Network effect result reports now echo typed effect identity fields, and Rust rejects mismatched reports before
     accepting acknowledgements. This keeps temporary executor work visible instead of treating an `effect_id` alone as
     proof that the intended action ran.
@@ -213,6 +218,8 @@ Rules:
     injected.
   - PBFT sync-start execution still mutates `PbftSyncingState` and toggles snapshot creation in tarcap after the selected
     sync peer is installed.
+  - Pending-DAG-block request execution still uses tarcap peer reservation plus the temporary DagManager snapshot and
+    request-packet executor path after Rust returns the selected peer and requested period.
   - Proposed-block sidecar and PBFT blocks bundle recording still use the temporary PBFT manager executor boundary until
     the network API is injected with the same Rust proposed-block runtime/storage handle used by PBFT.
   - The facade methods themselves do not call consensus shims, C++ consensus managers, `DbStorage`, peer transport,
