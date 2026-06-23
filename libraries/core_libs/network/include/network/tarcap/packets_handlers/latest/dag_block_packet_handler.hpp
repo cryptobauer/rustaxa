@@ -1,7 +1,12 @@
 #pragma once
 
+#include <memory>
+
 #include "network/tarcap/packets/latest/dag_block_packet.hpp"
 #include "network/tarcap/packets_handlers/interface/dag_block_packet_handler.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
 
 namespace taraxa {
 class TransactionManager;
@@ -20,6 +25,7 @@ class DagBlockPacketHandler : public IDagBlockPacketHandler {
                         std::shared_ptr<DbStorage> db,  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy DAG handler.
 #endif
                         const addr_t &node_addr, const std::string &logs_prefix = "");
+  ~DagBlockPacketHandler() override;
 
   void sendBlockWithTransactions(const std::shared_ptr<TaraxaPeer> &peer, const std::shared_ptr<DagBlock> &block,
                                  SharedTransactions &&trxs) override;
@@ -33,8 +39,19 @@ class DagBlockPacketHandler : public IDagBlockPacketHandler {
  private:
   virtual void process(const threadpool::PacketData &packet_data, const std::shared_ptr<TaraxaPeer> &peer) override;
 
+#ifdef RUSTAXA_ENABLE
+  rustaxa::NetworkIngressDecision queueDagBlockAdmissionRequestEffects(
+      const rustaxa::NetworkDagBlockAdmissionRequestEffects &effects);
+  void executeDagBlockAdmissionEffect(std::shared_ptr<DagBlock> &&block, const std::shared_ptr<TaraxaPeer> &peer,
+                                      const std::unordered_map<trx_hash_t, std::shared_ptr<Transaction>> &trxs);
+#endif
+
  protected:
   std::shared_ptr<TransactionManager> trx_mgr_{nullptr};
+#ifdef RUSTAXA_ENABLE
+  struct RustConsensusNetworkApiHolder;
+  std::unique_ptr<RustConsensusNetworkApiHolder> rust_consensus_network_api_;
+#endif
 };
 
 }  // namespace taraxa::network::tarcap

@@ -1,11 +1,53 @@
 #include "network/tarcap/packets_handlers/latest/dag_block_packet_handler.hpp"
 
+#include <cassert>
+#include <exception>
+#include <stdexcept>
+
 #include "dag/dag_manager.hpp"
 #include "network/tarcap/packets_handlers/latest/transaction_packet_handler.hpp"
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
+#ifdef RUSTAXA_ENABLE
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
 #include "transaction/transaction_manager.hpp"
 
 namespace taraxa::network::tarcap {
+
+#ifdef RUSTAXA_ENABLE
+namespace {
+
+constexpr uint8_t kNetworkEffectResultStatusOk = 0;
+constexpr uint8_t kNetworkEffectResultStatusFailed = 1;
+constexpr uint8_t kNetworkEffectKindRecordConsensusObject = 8;
+constexpr uint8_t kNetworkObjectKindDagBlock = 3;
+constexpr uint32_t kNetworkPacketKindDagBlock = 5;
+
+rustaxa::NetworkApiConfig defaultNetworkApiConfig() {
+  rustaxa::NetworkApiConfig config{};
+  config.max_payload_bytes = 64 * 1024 * 1024;
+  config.max_retained_payloads = 4096;
+  config.max_effects_per_drain = 1024;
+  return config;
+}
+
+rust::Vec<uint8_t> toBridgeBytes(const bytes &input) {
+  rust::Vec<uint8_t> output;
+  output.reserve(input.size());
+  for (const auto byte : input) {
+    output.push_back(static_cast<uint8_t>(byte));
+  }
+  return output;
+}
+
+}  // namespace
+
+struct DagBlockPacketHandler::RustConsensusNetworkApiHolder {
+  RustConsensusNetworkApiHolder() : api(rustaxa::create_consensus_network_api(defaultNetworkApiConfig())) {}
+
+  rust::Box<rustaxa::BridgeConsensusNetworkApi> api;
+};
+#endif
 
 DagBlockPacketHandler::DagBlockPacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
                                              std::shared_ptr<TimePeriodPacketsStats> packets_stats,
@@ -25,7 +67,12 @@ DagBlockPacketHandler::DagBlockPacketHandler(const FullNodeConfig &conf, std::sh
 #endif
                              node_addr, logs_prefix + "DAG_BLOCK_PH"),
       trx_mgr_(std::move(trx_mgr)) {
+#ifdef RUSTAXA_ENABLE
+  rust_consensus_network_api_ = std::make_unique<RustConsensusNetworkApiHolder>();
+#endif
 }
+
+DagBlockPacketHandler::~DagBlockPacketHandler() = default;
 
 void DagBlockPacketHandler::process(const threadpool::PacketData &packet_data,
                                     const std::shared_ptr<TaraxaPeer> &peer) {
@@ -55,7 +102,19 @@ void DagBlockPacketHandler::process(const threadpool::PacketData &packet_data,
     txs_map.emplace(tx->getHash(), tx);
   }
 
+#ifdef RUSTAXA_ENABLE
+  rustaxa::NetworkDagBlockAdmissionRequestEffects effects{};
+  effects.peer_id = peer->getId().asArray();
+  effects.block_hash = packet.dag_block->getHash().asArray();
+  effects.block_rlp = toBridgeBytes(packet.dag_block->rlp(true));
+  effects.transaction_count = packet.transactions.size();
+  effects.source_payload_id = 0;
+  effects.admit_block = true;
+  (void)queueDagBlockAdmissionRequestEffects(effects);
+  executeDagBlockAdmissionEffect(std::move(packet.dag_block), peer, txs_map);
+#else
   onNewBlockReceived(std::move(packet.dag_block), peer, txs_map);
+#endif
 }
 
 void DagBlockPacketHandler::sendBlockWithTransactions(const std::shared_ptr<TaraxaPeer> &peer,
@@ -167,5 +226,59 @@ void DagBlockPacketHandler::onNewBlockReceived(
       break;
   }
 }
+
+#ifdef RUSTAXA_ENABLE
+rustaxa::NetworkIngressDecision DagBlockPacketHandler::queueDagBlockAdmissionRequestEffects(
+    const rustaxa::NetworkDagBlockAdmissionRequestEffects &effects) {
+  assert(rust_consensus_network_api_);
+  return rust_consensus_network_api_->api->consensus_network_queue_dag_block_admission_request_effects(effects);
+}
+
+void DagBlockPacketHandler::executeDagBlockAdmissionEffect(
+    std::shared_ptr<DagBlock> &&block, const std::shared_ptr<TaraxaPeer> &peer,
+    const std::unordered_map<trx_hash_t, std::shared_ptr<Transaction>> &trxs) {
+  assert(rust_consensus_network_api_);
+  const auto batch = rust_consensus_network_api_->api->consensus_network_drain_work(1);
+  rust::Vec<rustaxa::NetworkEffectResult> results;
+  results.reserve(batch.effects.size());
+  std::exception_ptr pending_exception;
+
+  for (const auto &effect : batch.effects) {
+    rustaxa::NetworkEffectResult result{};
+    result.effect_id = effect.effect_id;
+    result.kind = effect.kind;
+    result.peer_id = effect.peer_id;
+    result.packet_kind = effect.packet_kind;
+    result.object_kind = effect.object_kind;
+    result.object_hash = effect.object_hash;
+    result.status = kNetworkEffectResultStatusOk;
+
+    try {
+      if (effect.kind != kNetworkEffectKindRecordConsensusObject || effect.object_kind != kNetworkObjectKindDagBlock ||
+          effect.packet_kind != kNetworkPacketKindDagBlock || !block || block->getHash().asArray() != effect.object_hash ||
+          block->rlp(true) != bytes(effect.payload_bytes.begin(), effect.payload_bytes.end()) ||
+          effect.dependency_id != trxs.size()) {
+        throw std::runtime_error("Network API DAG block admission effect missing matching live block");
+      }
+
+      onNewBlockReceived(std::move(block), peer, trxs);
+    } catch (const std::exception &e) {
+      result.status = kNetworkEffectResultStatusFailed;
+      result.diagnostic = e.what();
+      pending_exception = std::current_exception();
+    }
+
+    results.push_back(std::move(result));
+  }
+
+  if (!results.empty()) {
+    (void)rust_consensus_network_api_->api->consensus_network_report_effect_results(std::move(results));
+  }
+
+  if (pending_exception) {
+    std::rethrow_exception(pending_exception);
+  }
+}
+#endif
 
 }  // namespace taraxa::network::tarcap

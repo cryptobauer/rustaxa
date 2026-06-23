@@ -86,9 +86,13 @@ pub const NETWORK_OBJECT_KIND_PBFT_VOTE: u8 = 0;
 pub const NETWORK_OBJECT_KIND_PBFT_BLOCK: u8 = 1;
 /// Network object effect identifies a transaction hash.
 pub const NETWORK_OBJECT_KIND_TRANSACTION: u8 = 2;
+/// Network object effect identifies a DAG block hash.
+pub const NETWORK_OBJECT_KIND_DAG_BLOCK: u8 = 3;
 
 /// Network packet effect identifies the latest PBFT vote packet.
 pub const NETWORK_PACKET_KIND_PBFT_VOTE: u32 = 1;
+/// Network packet effect identifies the latest DAG block packet.
+pub const NETWORK_PACKET_KIND_DAG_BLOCK: u32 = 5;
 /// Network packet effect identifies the latest transaction packet.
 pub const NETWORK_PACKET_KIND_TRANSACTION: u32 = 7;
 /// Network packet effect identifies the latest PBFT blocks bundle packet.
@@ -376,6 +380,23 @@ pub struct NetworkTransactionAdmissionRequestEffects {
     pub source_payload_id: u64,
     /// Whether the executor should run transaction-pool admission.
     pub admit_transaction: bool,
+}
+
+/// DAG block admission request supplied by network/tarcap.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkDagBlockAdmissionRequestEffects {
+    /// Peer that supplied the DAG block packet.
+    pub peer_id: [u8; 64],
+    /// DAG block hash decoded by the network boundary.
+    pub block_hash: [u8; 32],
+    /// Canonical signed DAG block RLP.
+    pub block_rlp: Vec<u8>,
+    /// Number of transactions supplied with the packet.
+    pub transaction_count: u64,
+    /// Optional retained packet payload id.
+    pub source_payload_id: u64,
+    /// Whether the executor should run DAG block admission.
+    pub admit_block: bool,
 }
 
 /// Rust-owned external network/tarcap API facade.
@@ -908,6 +929,47 @@ impl ConsensusNetworkApi {
         }
     }
 
+    /// Queues DAG block admission for a DAG block received from tarcap.
+    ///
+    /// Rust owns the DAG block admission request identity and effect result
+    /// contract. The live DAG block verification, graph insertion, missing-data
+    /// sync reaction, and peer penalty behavior remain a temporary C++ executor
+    /// boundary until DAG intake is backed by the Rust DAG runtime/storage path.
+    pub fn queue_dag_block_admission_request_effects(
+        &mut self,
+        effects: NetworkDagBlockAdmissionRequestEffects,
+    ) -> NetworkIngressDecision {
+        let before_effects = self.pending_effects.len();
+        if effects.admit_block {
+            self.enqueue_effect(NetworkEffect {
+                effect_id: 0,
+                source_payload_id: effects.source_payload_id,
+                kind: NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT,
+                peer_id: effects.peer_id,
+                packet_kind: NETWORK_PACKET_KIND_DAG_BLOCK,
+                payload_bytes: effects.block_rlp,
+                exclude_peers: Vec::new(),
+                object_kind: NETWORK_OBJECT_KIND_DAG_BLOCK,
+                object_hash: effects.block_hash,
+                sync_kind: 0,
+                sync_start: 0,
+                reason_code: 0,
+                dependency_id: effects.transaction_count,
+                period: 0,
+                round: 0,
+            });
+        }
+
+        NetworkIngressDecision {
+            payload_id: effects.source_payload_id,
+            payload_accepted: effects.source_payload_id != 0,
+            routed: true,
+            status: NETWORK_INGRESS_STATUS_ACCEPTED,
+            error_code: ERROR_NONE.to_owned(),
+            queued_effect_count: self.pending_effects.len().saturating_sub(before_effects) as u32,
+        }
+    }
+
     fn decision_from_vote_plan(
         &mut self,
         plan: PbftVoteIngressPlan,
@@ -1068,11 +1130,14 @@ impl ConsensusNetworkApi {
 fn is_supported_ingress_packet(packet_type: u32) -> bool {
     // Keep this first direct network facade slice intentionally narrow. The
     // current latest-tarcap packet ids come from `SubprotocolPacketType`:
-    // `kVotePacket = 1`, `kVotesBundlePacket = 3`, `kTransactionPacket = 7`,
-    // and `kPbftBlocksBundlePacket = 15`.
+    // `kVotePacket = 1`, `kVotesBundlePacket = 3`, `kDagBlockPacket = 5`,
+    // `kTransactionPacket = 7`, and `kPbftBlocksBundlePacket = 15`.
     matches!(
         packet_type,
-        1 | 3 | NETWORK_PACKET_KIND_TRANSACTION | NETWORK_PACKET_KIND_PBFT_BLOCKS_BUNDLE
+        1 | 3
+            | NETWORK_PACKET_KIND_DAG_BLOCK
+            | NETWORK_PACKET_KIND_TRANSACTION
+            | NETWORK_PACKET_KIND_PBFT_BLOCKS_BUNDLE
     )
 }
 

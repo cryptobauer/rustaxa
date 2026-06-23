@@ -296,6 +296,22 @@ impl BridgeConsensusNetworkApi {
             ),
         ))
     }
+
+    /// Queues DAG block admission for a DAG block packet.
+    pub fn consensus_network_queue_dag_block_admission_request_effects(
+        &self,
+        effects: rustaxa_ffi::NetworkDagBlockAdmissionRequestEffects,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
+        let mut api = self
+            .api
+            .lock()
+            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        Ok(to_bridge_network_ingress_decision(
+            api.queue_dag_block_admission_request_effects(
+                to_domain_dag_block_admission_request_effects(effects),
+            ),
+        ))
+    }
 }
 
 fn to_domain_config(config: rustaxa_ffi::NetworkApiConfig) -> rustaxa_consensus::NetworkApiConfig {
@@ -423,6 +439,19 @@ fn to_domain_transaction_admission_request_effects(
         transaction_rlp: value.transaction_rlp,
         source_payload_id: value.source_payload_id,
         admit_transaction: value.admit_transaction,
+    }
+}
+
+fn to_domain_dag_block_admission_request_effects(
+    value: rustaxa_ffi::NetworkDagBlockAdmissionRequestEffects,
+) -> rustaxa_consensus::NetworkDagBlockAdmissionRequestEffects {
+    rustaxa_consensus::NetworkDagBlockAdmissionRequestEffects {
+        peer_id: value.peer_id,
+        block_hash: value.block_hash,
+        block_rlp: value.block_rlp,
+        transaction_count: value.transaction_count,
+        source_payload_id: value.source_payload_id,
+        admit_block: value.admit_block,
     }
 }
 

@@ -104,11 +104,11 @@ Rules:
 - The first implemented direct bridge slice is intentionally narrow:
   - Rust domain facade: `rust/crates/rustaxa-consensus/src/network_api.rs`
   - CXX bridge facade: `BridgeConsensusNetworkApi` in `rust/crates/rustaxa-bridge/src/network.rs`
-  - It accepts latest vote, vote-bundle, transaction, and PBFT blocks bundle packet ids (`kVotePacket = 1`,
-    `kVotesBundlePacket = 3`, `kTransactionPacket = 7`, `kPbftBlocksBundlePacket = 15`) into a bounded Rust-owned
-    ingress arena.
-  - It exposes effect-drain and effect-result-reporting contracts used by the Rust-enabled vote, PBFT blocks bundle,
-    and transaction packet handlers.
+  - It accepts latest vote, vote-bundle, DAG block, transaction, and PBFT blocks bundle packet ids (`kVotePacket = 1`,
+    `kVotesBundlePacket = 3`, `kDagBlockPacket = 5`, `kTransactionPacket = 7`, `kPbftBlocksBundlePacket = 15`) into a
+    bounded Rust-owned ingress arena.
+  - It exposes effect-drain and effect-result-reporting contracts used by the Rust-enabled vote, DAG block, PBFT blocks
+    bundle, and transaction packet handlers.
   - Rust-enabled `TaraxaCapability::interpretCapabilityPacket` now shadow-submits peer-gated canonical packet bytes
     directly to `BridgeConsensusNetworkApi` before the legacy tarcap thread-pool enqueue.
   - Shadow ingress is non-authoritative: unsupported packet types are rejected by the API, accepted packet bytes are
@@ -147,12 +147,16 @@ Rules:
   - Transaction gossip admission can now queue transaction `RECORD_CONSENSUS_OBJECT` through
     `consensus_network_queue_transaction_admission_request_effects`; tarcap supplies canonical transaction RLP and the
     transaction hash to the facade before the temporary transaction-pool executor verifies and inserts it.
+  - DAG block intake can now queue DAG block `RECORD_CONSENSUS_OBJECT` through
+    `consensus_network_queue_dag_block_admission_request_effects`; tarcap supplies canonical DAG block RLP, block hash,
+    and packet transaction count to the facade before the temporary DAG executor verifies and inserts the block.
   - Network effect result reports now echo typed effect identity fields, and Rust rejects mismatched reports before
     accepting acknowledgements. This keeps temporary executor work visible instead of treating an `effect_id` alone as
     proof that the intended action ran.
   - This is still not the final production route: tarcap executes the drained network effects, accepted votes still
-    mutate verified-vote state through the temporary VoteManager executor path, and transaction gossip admission still
-    uses the temporary TransactionManager executor path.
+    mutate verified-vote state through the temporary VoteManager executor path, DAG block intake still uses the
+    temporary DagManager executor path, and transaction gossip admission still uses the temporary TransactionManager
+    executor path.
   - Proposed-block sidecar and PBFT blocks bundle recording still use the temporary PBFT manager executor boundary until
     the network API is injected with the same Rust proposed-block runtime/storage handle used by PBFT.
   - The facade methods themselves do not call consensus shims, C++ consensus managers, `DbStorage`, peer transport,
