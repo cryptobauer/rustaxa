@@ -312,6 +312,22 @@ impl BridgeConsensusNetworkApi {
             ),
         ))
     }
+
+    /// Queues DAG block admission for a DAG sync packet member.
+    pub fn consensus_network_queue_dag_sync_block_admission_request_effects(
+        &self,
+        effects: rustaxa_ffi::NetworkDagBlockAdmissionRequestEffects,
+    ) -> anyhow::Result<rustaxa_ffi::NetworkIngressDecision> {
+        let mut api = self
+            .api
+            .lock()
+            .map_err(|_| anyhow::anyhow!("consensus network api lock poisoned"))?;
+        Ok(to_bridge_network_ingress_decision(
+            api.queue_dag_sync_block_admission_request_effects(
+                to_domain_dag_block_admission_request_effects(effects),
+            ),
+        ))
+    }
 }
 
 fn to_domain_config(config: rustaxa_ffi::NetworkApiConfig) -> rustaxa_consensus::NetworkApiConfig {

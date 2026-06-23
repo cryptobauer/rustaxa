@@ -108,6 +108,10 @@ TEST(ConsensusNetworkApiBridgeTest, ingestPacketStoresCanonicalBytesThroughDirec
   const auto dag_block_receipt = network_api->consensus_network_ingest_packet(packet(5, peer, bytes({0xC0, 0x04})));
   EXPECT_TRUE(dag_block_receipt.accepted);
   EXPECT_EQ(dag_block_receipt.payload_id, 5);
+
+  const auto dag_sync_receipt = network_api->consensus_network_ingest_packet(packet(6, peer, bytes({0xC0, 0x05})));
+  EXPECT_TRUE(dag_sync_receipt.accepted);
+  EXPECT_EQ(dag_sync_receipt.payload_id, 6);
 }
 
 TEST(ConsensusNetworkApiBridgeTest, ingestPacketRejectsEmptyPayloadWithoutAllocatingIngress) {
@@ -462,4 +466,34 @@ TEST(ConsensusNetworkApiBridgeTest, dagBlockAdmissionRequestQueuesRecordObjectEf
   EXPECT_EQ(batch.effects[0].object_hash, hash(0xE2));
   EXPECT_EQ(batch.effects[0].source_payload_id, 107);
   EXPECT_EQ(batch.effects[0].dependency_id, 2);
+}
+
+TEST(ConsensusNetworkApiBridgeTest, dagSyncBlockAdmissionRequestQueuesRecordObjectEffect) {
+  auto network_api = rustaxa::create_consensus_network_api(defaultConfig());
+
+  rustaxa::NetworkDagBlockAdmissionRequestEffects effects{};
+  effects.peer_id = nodeId(0xAC);
+  effects.block_hash = hash(0xE3);
+  effects.block_rlp = bytes({0xC0, 0x05});
+  effects.transaction_count = 3;
+  effects.source_payload_id = 108;
+  effects.admit_block = true;
+
+  const auto decision = network_api->consensus_network_queue_dag_sync_block_admission_request_effects(effects);
+  EXPECT_TRUE(decision.routed);
+  EXPECT_EQ(decision.status, 0);
+  EXPECT_EQ(decision.queued_effect_count, 1);
+
+  const auto batch = network_api->consensus_network_drain_work(10);
+  ASSERT_EQ(batch.effects.size(), 1);
+  EXPECT_EQ(batch.effects[0].kind, 8);
+  EXPECT_EQ(batch.effects[0].peer_id, nodeId(0xAC));
+  EXPECT_EQ(batch.effects[0].packet_kind, 6);
+  ASSERT_EQ(batch.effects[0].payload_bytes.size(), 2);
+  EXPECT_EQ(batch.effects[0].payload_bytes[0], 0xC0);
+  EXPECT_EQ(batch.effects[0].payload_bytes[1], 0x05);
+  EXPECT_EQ(batch.effects[0].object_kind, 3);
+  EXPECT_EQ(batch.effects[0].object_hash, hash(0xE3));
+  EXPECT_EQ(batch.effects[0].source_payload_id, 108);
+  EXPECT_EQ(batch.effects[0].dependency_id, 3);
 }

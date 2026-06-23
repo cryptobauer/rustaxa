@@ -93,6 +93,8 @@ pub const NETWORK_OBJECT_KIND_DAG_BLOCK: u8 = 3;
 pub const NETWORK_PACKET_KIND_PBFT_VOTE: u32 = 1;
 /// Network packet effect identifies the latest DAG block packet.
 pub const NETWORK_PACKET_KIND_DAG_BLOCK: u32 = 5;
+/// Network packet effect identifies the latest DAG sync packet.
+pub const NETWORK_PACKET_KIND_DAG_SYNC: u32 = 6;
 /// Network packet effect identifies the latest transaction packet.
 pub const NETWORK_PACKET_KIND_TRANSACTION: u32 = 7;
 /// Network packet effect identifies the latest PBFT blocks bundle packet.
@@ -939,6 +941,27 @@ impl ConsensusNetworkApi {
         &mut self,
         effects: NetworkDagBlockAdmissionRequestEffects,
     ) -> NetworkIngressDecision {
+        self.queue_dag_block_record_effects(effects, NETWORK_PACKET_KIND_DAG_BLOCK)
+    }
+
+    /// Queues DAG block admission for a DAG block received from DAG sync.
+    ///
+    /// Rust owns the DAG-sync block admission request identity and effect
+    /// result contract. The live DAG sync verification and insertion behavior
+    /// remain a temporary C++ executor boundary until DAG sync intake is backed
+    /// by the Rust DAG runtime/storage path.
+    pub fn queue_dag_sync_block_admission_request_effects(
+        &mut self,
+        effects: NetworkDagBlockAdmissionRequestEffects,
+    ) -> NetworkIngressDecision {
+        self.queue_dag_block_record_effects(effects, NETWORK_PACKET_KIND_DAG_SYNC)
+    }
+
+    fn queue_dag_block_record_effects(
+        &mut self,
+        effects: NetworkDagBlockAdmissionRequestEffects,
+        packet_kind: u32,
+    ) -> NetworkIngressDecision {
         let before_effects = self.pending_effects.len();
         if effects.admit_block {
             self.enqueue_effect(NetworkEffect {
@@ -946,7 +969,7 @@ impl ConsensusNetworkApi {
                 source_payload_id: effects.source_payload_id,
                 kind: NETWORK_EFFECT_KIND_RECORD_CONSENSUS_OBJECT,
                 peer_id: effects.peer_id,
-                packet_kind: NETWORK_PACKET_KIND_DAG_BLOCK,
+                packet_kind,
                 payload_bytes: effects.block_rlp,
                 exclude_peers: Vec::new(),
                 object_kind: NETWORK_OBJECT_KIND_DAG_BLOCK,
@@ -1131,11 +1154,13 @@ fn is_supported_ingress_packet(packet_type: u32) -> bool {
     // Keep this first direct network facade slice intentionally narrow. The
     // current latest-tarcap packet ids come from `SubprotocolPacketType`:
     // `kVotePacket = 1`, `kVotesBundlePacket = 3`, `kDagBlockPacket = 5`,
-    // `kTransactionPacket = 7`, and `kPbftBlocksBundlePacket = 15`.
+    // `kDagSyncPacket = 6`, `kTransactionPacket = 7`, and
+    // `kPbftBlocksBundlePacket = 15`.
     matches!(
         packet_type,
         1 | 3
             | NETWORK_PACKET_KIND_DAG_BLOCK
+            | NETWORK_PACKET_KIND_DAG_SYNC
             | NETWORK_PACKET_KIND_TRANSACTION
             | NETWORK_PACKET_KIND_PBFT_BLOCKS_BUNDLE
     )

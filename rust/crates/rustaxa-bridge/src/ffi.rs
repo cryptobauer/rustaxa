@@ -4819,6 +4819,10 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusNetworkApi,
             effects: NetworkDagBlockAdmissionRequestEffects,
         ) -> Result<NetworkIngressDecision>;
+        pub fn consensus_network_queue_dag_sync_block_admission_request_effects(
+            self: &BridgeConsensusNetworkApi,
+            effects: NetworkDagBlockAdmissionRequestEffects,
+        ) -> Result<NetworkIngressDecision>;
 
         type WesolowskiVdf;
         type CancellationToken;
