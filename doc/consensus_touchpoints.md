@@ -142,14 +142,11 @@ Rules:
     `consensus_network_queue_pbft_vote_gossip_effects`; tarcap executes the effect with existing peer filtering,
     optional block-sidecar packet wrapping, send policy, and peer known-cache updates instead of calling
     `PbftManager::gossipVote` in Rust-enabled latest vote handling.
-  - Get-next-votes egress can now queue PBFT next-votes bundle `RECORD_CONSENSUS_OBJECT` requests through
-    `consensus_network_queue_pbft_next_votes_bundle_egress_request_effects`; tarcap supplies the local previous PBFT
-    round to serve before the temporary vote executor plans hashes, builds optimized bundle RLP, sends
-    `VotesBundlePacket`, and marks sent vote hashes known for the peer.
-  - Get-PBFT-sync egress can now queue PBFT sync `RECORD_CONSENSUS_OBJECT` requests through
-    `consensus_network_queue_pbft_sync_egress_request_effects`; tarcap supplies the requested start period, transfer
-    count, and synced-chain flag before the temporary PBFT sync executor reads period data, builds `PbftSyncPacket`
-    payloads, sends current proposed blocks when needed, and reports the effect result.
+  - Get-next-votes egress now runs directly in `GetNextVotesBundlePacketHandler`: tarcap supplies the local previous PBFT
+    round and reads candidate next-vote/full-null votes directly from `VoteManager` before sending `VotesBundlePacket`.
+  - Get-PBFT-sync egress now runs directly in `GetPbftSyncPacketHandler`: tarcap supplies the requested start period,
+    transfer count, and synced-chain flag before directly reading period data, building `PbftSyncPacket` payloads, sending
+    current proposed blocks when needed, and updating the peer sync state.
   - Accepted PBFT vote proposed-block sidecars can now queue `RECORD_CONSENSUS_OBJECT` through
     `consensus_network_queue_pbft_proposed_block_sidecar_effects`; tarcap supplies canonical PBFT block RLP and compact
     period/hash facts to the facade before the executor records the sidecar.
@@ -164,10 +161,9 @@ Rules:
     path.
   - DAG sync block intake now bypasses `consensus_network_queue_dag_sync_block_admission_request_effects`; tarcap decodes
     packet data and verifies/adds each DAG block directly in `DagSyncPacketHandler` using `DagManager`.
-  - Get-DAG-sync egress can now queue DAG sync `RECORD_CONSENSUS_OBJECT` requests through
-    `consensus_network_queue_dag_sync_egress_request_effects`; tarcap supplies the requesting peer's period and
-    requested DAG block hashes before the temporary DAG executor reads non-finalized blocks/transactions, updates peer
-    sync state, materializes `DagSyncPacket`, and sends it.
+  - Get-DAG-sync egress now runs directly in `GetDagSyncPacketHandler`: tarcap supplies the requesting peer period and
+    requested DAG block hashes before directly reading non-finalized blocks/transactions, updating peer sync state,
+    materializing `DagSyncPacket`, and sending it.
   - PBFT sync finalized-period intake now bypasses `consensus_network_queue_pbft_sync_period_data_admission_request_effects`;
     tarcap validates and queues period data directly in `PbftSyncPacketHandler` through `PbftManager::periodDataQueuePush`.
   - Pillar vote and pillar votes bundle member admission can now queue pillar vote `RECORD_CONSENSUS_OBJECT` through
@@ -214,11 +210,9 @@ Rules:
     accepting acknowledgements. This keeps temporary executor work visible instead of treating an `effect_id` alone as
     proof that the intended action ran.
   - This is still not the final production route: tarcap executes the drained network effects, accepted votes still
-    mutate verified-vote state through the temporary VoteManager executor path, DAG sync egress still uses the temporary
-    DagManager executor path, PBFT sync egress still uses the temporary PBFT manager executor path, pillar vote
-    duplicate/signature/eligibility validation, insertion, and
-    bundle egress still execute through the temporary PillarChainManager executor path, and get-next-votes egress still uses
-    the temporary VoteManager executor path.
+    mutate verified-vote state through the temporary VoteManager executor path, and pillar vote duplicate/signature/
+    eligibility validation, insertion, and bundle egress still execute through the temporary PillarChainManager executor
+    path.
   - Status packet ingress still performs pending-peer lookup and peer-state materialization in tarcap. Status egress
     still reads local PBFT/DAG snapshot facts directly until the facade is injected with Rust-owned local status
     snapshot state.

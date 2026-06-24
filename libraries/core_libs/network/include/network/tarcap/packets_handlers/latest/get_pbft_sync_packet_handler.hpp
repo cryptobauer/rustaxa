@@ -2,9 +2,6 @@
 
 #include "common/packet_handler.hpp"
 #include "network/tarcap/packets/latest/get_pbft_sync_packet.hpp"
-#ifdef RUSTAXA_ENABLE
-#include "rustaxa-bridge/ffi.rs.h"
-#endif
 
 namespace taraxa {
 #ifndef RUSTAXA_ENABLE
@@ -38,12 +35,6 @@ class GetPbftSyncPacketHandler : public PacketHandler {
   virtual void process(const threadpool::PacketData& packet_data, const std::shared_ptr<TaraxaPeer>& peer) override;
 
  protected:
-#ifdef RUSTAXA_ENABLE
-  rustaxa::NetworkIngressDecision queuePbftSyncEgressRequestEffects(
-      const rustaxa::NetworkPbftSyncEgressRequestEffects& effects);
-  void executePbftSyncEgressEffect(const std::shared_ptr<TaraxaPeer>& peer);
-#endif
-
   virtual void sendPbftBlocks(const std::shared_ptr<TaraxaPeer>& peer, PbftPeriod from_period,
                               size_t blocks_to_transfer, bool pbft_chain_synced);
 
@@ -53,9 +44,6 @@ class GetPbftSyncPacketHandler : public PacketHandler {
   std::shared_ptr<VoteManager> vote_mgr_;
 #ifndef RUSTAXA_ENABLE
   std::shared_ptr<DbStorage> db_;  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy sync egress storage.
-#else
-  struct RustConsensusNetworkApiHolder;
-  std::unique_ptr<RustConsensusNetworkApiHolder> rust_consensus_network_api_;
 #endif
 };
 

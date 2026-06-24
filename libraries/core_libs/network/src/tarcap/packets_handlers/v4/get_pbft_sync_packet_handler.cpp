@@ -45,19 +45,6 @@ void GetPbftSyncPacketHandler::process(const threadpool::PacketData& packet_data
   }
   LOG(log_tr_) << "Will send " << blocks_to_transfer << " PBFT blocks to " << peer->getId();
 
-#ifdef RUSTAXA_ENABLE
-  rustaxa::NetworkPbftSyncEgressRequestEffects effects{};
-  effects.peer_id = peer->getId().asArray();
-  effects.from_period = packet.height_to_sync;
-  effects.blocks_to_transfer = blocks_to_transfer;
-  effects.pbft_chain_synced = pbft_chain_synced;
-  effects.source_payload_id = packet_data.id_;
-  effects.request_sync = true;
-  (void)queuePbftSyncEgressRequestEffects(effects);
-  executePbftSyncEgressEffect(peer);
-  return;
-#endif
-
   sendPbftBlocks(peer, packet.height_to_sync, blocks_to_transfer, pbft_chain_synced);
 }
 
