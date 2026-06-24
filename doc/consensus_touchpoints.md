@@ -217,6 +217,7 @@ First useful routes:
 - Transaction and DAG block direct intake.
 - PBFT sync and DAG sync egress.
 - Pillar vote and pillar-vote-bundle ingress.
+- Status follow-up control actions (PBFT sync-start, pending DAG request, next-votes request) now execute directly in tarcap after Rust planning.
 
 ### 2. External EVM, StateAPI, and State DB API
 

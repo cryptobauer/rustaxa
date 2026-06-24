@@ -130,8 +130,9 @@ void ExtSyncingPacketHandler::requestPendingDagBlocks(std::shared_ptr<TaraxaPeer
 
   LOG(this->log_nf_) << "Request pending blocks from peer " << selected_peer->getId();
   requestDagBlocks(selected_peer->getId(), std::move(known_non_finalized_blocks), dag_request_plan.request_period);
+  return;
 #endif
-
+#ifndef RUSTAXA_ENABLE
   if (!peer) {
     peer = peers_state_->getMaxChainPeer(pbft_mgr_, [](const std::shared_ptr<TaraxaPeer> &peer) {
       if (peer->peer_dag_synced_ || !peer->dagSyncingAllowed()) {
@@ -175,6 +176,7 @@ void ExtSyncingPacketHandler::requestPendingDagBlocks(std::shared_ptr<TaraxaPeer
 
     requestDagBlocks(peer->getId(), std::move(known_non_finalized_blocks), period);
   }
+#endif
 }
 
 void ExtSyncingPacketHandler::requestDagBlocks(const dev::p2p::NodeID &_nodeID, std::vector<blk_hash_t> &&blocks,
