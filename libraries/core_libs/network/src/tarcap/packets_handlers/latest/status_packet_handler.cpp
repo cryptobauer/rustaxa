@@ -1,11 +1,13 @@
 #include "network/tarcap/packets_handlers/latest/status_packet_handler.hpp"
 
 #include "config/version.hpp"
-#include "network/tarcap/packets/latest/get_next_votes_bundle_packet.hpp"
 #include "network/tarcap/packets/latest/status_packet.hpp"
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
 #include "pbft/pbft_chain.hpp"
 #include "pbft/pbft_manager.hpp"
+#ifndef RUSTAXA_ENABLE
+#include "network/tarcap/packets/latest/get_next_votes_bundle_packet.hpp"
+#endif
 #ifdef RUSTAXA_ENABLE
 #include "rustaxa-bridge/ffi.rs.h"
 #endif
@@ -190,10 +192,7 @@ void StatusPacketHandler::process(const threadpool::PacketData& packet_data, con
     }
 
     if (sync_plan.request_next_votes) {
-      const auto get_next_votes_packet = GetNextVotesBundlePacket{.peer_pbft_period = sync_plan.next_votes_period,
-                                                                  .peer_pbft_round = sync_plan.next_votes_round};
-      sealAndSend(selected_peer->getId(), SubprotocolPacketType::kGetNextVotesSyncPacket,
-                  encodePacketRlp(get_next_votes_packet));
+      requestPbftNextVotesAtPeriodRound(selected_peer->getId(), sync_plan.next_votes_period, sync_plan.next_votes_round);
     }
 #else
     // TODO: Address malicious status

@@ -74,30 +74,41 @@ void ISyncPacketHandler::startSyncingPbft() {
     return;
   }
 
-  auto peer = peers_state_->getPeer(dev::p2p::NodeID(sync_start_plan.peer_id));
-  if (!peer) {
+  const auto selected_peer =
+      peers_state_->getPeer(dev::p2p::NodeID(sync_start_plan.peer_id.data(), dev::p2p::NodeID::ConstructFromPointer));
+  if (!selected_peer) {
     LOG(this->log_nf_) << "Restarting syncing PBFT not possible since selected peer is no longer connected";
     return;
   }
 
-  auto peer_id = peer->getId().abridged();
-  auto peer_pbft_chain_size = peer->pbft_chain_size_.load();
-  if (!pbft_syncing_state_->setPbftSyncing(true, facts.local_pbft_synced_period, std::move(peer))) {
+  const auto synced_period = pbft_mgr_->pbftSyncingPeriod();
+  if (!pbft_syncing_state_->setPbftSyncing(true, synced_period, selected_peer)) {
     LOG(this->log_dg_) << "startSyncingPbft called but syncing_ already true";
     return;
   }
-  LOG(this->log_si_) << "Restarting syncing PBFT from peer " << peer_id << ", peer PBFT chain size "
-                     << peer_pbft_chain_size << ", own PBFT chain synced at period " << facts.local_pbft_synced_period;
 
-  if (syncPeerPbft(sync_start_plan.request_period)) {
-    if (pbft_syncing_state_->isDeepPbftSyncing()) {
-      pbft_mgr_->setPbftSyncSnapshotCreationEnabled(false);
-    }
-  } else {
+  LOG(this->log_si_) << "Restarting syncing PBFT from peer " << selected_peer->getId().abridged()
+                     << ", peer PBFT chain size " << selected_peer->pbft_chain_size_.load()
+                     << ", own PBFT chain synced at period " << synced_period;
+
+  if (sync_start_plan.request_period > selected_peer->pbft_chain_size_) {
     pbft_syncing_state_->setPbftSyncing(false);
+    LOG(this->log_wr_) << "Unable to start PBFT sync from peer " << selected_peer->getId().abridged()
+                       << ", peer chain size " << selected_peer->pbft_chain_size_.load()
+                       << ", requested period " << sync_start_plan.request_period;
+    return;
   }
+
+  if (!syncPeerPbft(sync_start_plan.request_period)) {
+    pbft_syncing_state_->setPbftSyncing(false);
+    return;
+  }
+  if (pbft_syncing_state_->isDeepPbftSyncing()) {
+    pbft_mgr_->setPbftSyncSnapshotCreationEnabled(false);
+  }
+
   return;
-#endif
+#else
 
   std::shared_ptr<TaraxaPeer> peer = peers_state_->getMaxChainPeer(pbft_mgr_);
   if (!peer) {
@@ -138,6 +149,7 @@ void ISyncPacketHandler::startSyncingPbft() {
     db_->enableSnapshots();  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy snapshot lifecycle.
 #endif
   }
+#endif
 }
 
 bool ISyncPacketHandler::syncPeerPbft(PbftPeriod request_period) {

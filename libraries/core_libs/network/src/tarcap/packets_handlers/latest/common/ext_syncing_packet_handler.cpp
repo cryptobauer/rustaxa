@@ -2,6 +2,7 @@
 
 #include "network/tarcap/packets/latest/get_dag_sync_packet.hpp"
 #include "network/tarcap/packets/latest/get_pbft_sync_packet.hpp"
+#include "network/tarcap/packets/latest/get_next_votes_bundle_packet.hpp"
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
 #include "pbft/pbft_chain.hpp"
 #include "pbft/pbft_manager.hpp"
@@ -41,11 +42,8 @@ rustaxa::NetworkPbftSyncPeerCandidate toNetworkSyncPeerCandidate(const std::shar
 
 }  // namespace
 
-struct ExtSyncingPacketHandler::RustConsensusNetworkApiHolder {
-  RustConsensusNetworkApiHolder() : api(rustaxa::create_consensus_network_api(defaultNetworkApiConfig())) {}
-
-  rust::Box<rustaxa::BridgeConsensusNetworkApi> api;
-};
+ExtSyncingPacketHandler::RustConsensusNetworkApiHolder::RustConsensusNetworkApiHolder()
+    : api(rustaxa::create_consensus_network_api(defaultNetworkApiConfig())) {}
 #endif
 
 ExtSyncingPacketHandler::ExtSyncingPacketHandler(const FullNodeConfig &conf, std::shared_ptr<PeersState> peers_state,
@@ -73,6 +71,8 @@ ExtSyncingPacketHandler::ExtSyncingPacketHandler(const FullNodeConfig &conf, std
   rust_consensus_network_api_ = std::make_unique<RustConsensusNetworkApiHolder>();
 #endif
 }
+
+ExtSyncingPacketHandler::~ExtSyncingPacketHandler() = default;
 
 void ExtSyncingPacketHandler::requestPendingDagBlocks(std::shared_ptr<TaraxaPeer> peer) {
 #ifdef RUSTAXA_ENABLE
@@ -104,7 +104,9 @@ void ExtSyncingPacketHandler::requestPendingDagBlocks(std::shared_ptr<TaraxaPeer
     return;
   }
 
-  auto selected_peer = peer ? peer : peers_state_->getPeer(dev::p2p::NodeID(dag_request_plan.peer_id));
+  auto selected_peer =
+      peer ? peer : peers_state_->getPeer(
+                         dev::p2p::NodeID(dag_request_plan.peer_id.data(), dev::p2p::NodeID::ConstructFromPointer));
   if (!selected_peer) {
     LOG(this->log_nf_) << "requestPendingDagBlocks not possible since no connected peers";
     return;
@@ -112,21 +114,22 @@ void ExtSyncingPacketHandler::requestPendingDagBlocks(std::shared_ptr<TaraxaPeer
 
   // This prevents parallel requests. Rust owns deterministic request planning,
   // while the live tarcap peer keeps the atomic executor-side reservation.
-  if (bool b = false; !selected_peer->peer_dag_syncing_.compare_exchange_strong(b, !b)) {
+  bool expected = false;
+  if (!selected_peer->peer_dag_syncing_.compare_exchange_strong(expected, true)) {
     LOG(this->log_nf_) << "requestPendingDagBlocks not possible since already requesting for peer";
     return;
   }
-  LOG(this->log_nf_) << "Request pending blocks from peer " << selected_peer->getId();
+
   std::vector<blk_hash_t> known_non_finalized_blocks;
-  auto [period, blocks] = dag_mgr_->getNonFinalizedBlocks();
+  auto [_, blocks] = dag_mgr_->getNonFinalizedBlocks();
   for (auto &level_blocks : blocks) {
     for (auto &block : level_blocks.second) {
       known_non_finalized_blocks.emplace_back(block);
     }
   }
 
-  requestDagBlocks(selected_peer->getId(), std::move(known_non_finalized_blocks), period);
-  return;
+  LOG(this->log_nf_) << "Request pending blocks from peer " << selected_peer->getId();
+  requestDagBlocks(selected_peer->getId(), std::move(known_non_finalized_blocks), dag_request_plan.request_period);
 #endif
 
   if (!peer) {
@@ -179,5 +182,16 @@ void ExtSyncingPacketHandler::requestDagBlocks(const dev::p2p::NodeID &_nodeID, 
   this->sealAndSend(_nodeID, SubprotocolPacketType::kGetDagSyncPacket,
                     encodePacketRlp(GetDagSyncPacket{period, std::move(blocks)}));
 }
+
+#ifdef RUSTAXA_ENABLE
+void ExtSyncingPacketHandler::requestPbftNextVotesAtPeriodRound(const dev::p2p::NodeID &peer_id,
+                                                              PbftPeriod peer_pbft_period,
+                                                              PbftRound peer_pbft_round) {
+  LOG(log_dg_) << "Sending GetNextVotesSyncPacket with period:" << peer_pbft_period << ", round:" << peer_pbft_round;
+  const auto packet = GetNextVotesBundlePacket{.peer_pbft_period = peer_pbft_period, .peer_pbft_round = peer_pbft_round};
+  sealAndSend(peer_id, SubprotocolPacketType::kGetNextVotesSyncPacket, encodePacketRlp(packet));
+}
+
+#endif
 
 }  // namespace taraxa::network::tarcap

@@ -33,7 +33,7 @@ class ExtSyncingPacketHandler : public PacketHandler {
 #endif
                           const addr_t &node_addr, const std::string &log_channel_name);
 
-  virtual ~ExtSyncingPacketHandler() = default;
+  virtual ~ExtSyncingPacketHandler();
   ExtSyncingPacketHandler &operator=(const ExtSyncingPacketHandler &) = delete;
   ExtSyncingPacketHandler &operator=(ExtSyncingPacketHandler &&) = delete;
 
@@ -41,6 +41,11 @@ class ExtSyncingPacketHandler : public PacketHandler {
   void requestPendingDagBlocks(std::shared_ptr<TaraxaPeer> peer = nullptr);
 
  protected:
+ #ifdef RUSTAXA_ENABLE
+  void requestPbftNextVotesAtPeriodRound(const dev::p2p::NodeID &peer_id, PbftPeriod peer_pbft_period,
+                                        PbftRound peer_pbft_round);
+ #endif
+
   std::shared_ptr<PbftSyncingState> pbft_syncing_state_{nullptr};
 
   std::shared_ptr<PbftChain> pbft_chain_{nullptr};
@@ -49,7 +54,10 @@ class ExtSyncingPacketHandler : public PacketHandler {
 #ifndef RUSTAXA_ENABLE
   std::shared_ptr<DbStorage> db_{nullptr};  // RUSTAXA_NETWORK_COMPAT_LEGACY_ONLY: legacy sync handler storage.
 #else
-  struct RustConsensusNetworkApiHolder;
+  struct RustConsensusNetworkApiHolder {
+    RustConsensusNetworkApiHolder();
+    rust::Box<rustaxa::BridgeConsensusNetworkApi> api;
+  };
   std::unique_ptr<RustConsensusNetworkApiHolder> rust_consensus_network_api_;
 #endif
 };
