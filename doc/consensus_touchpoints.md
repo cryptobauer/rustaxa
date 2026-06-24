@@ -159,9 +159,9 @@ Rules:
   - Transaction packet admission now executes directly in `TransactionPacketHandler` against `TransactionManager` for
     verification and insertion, eliminating the temporary `consensus_network_queue_transaction_admission_request_effects`
     executor hop. The handler now reports validation and overflow handling directly through existing peer telemetry.
-  - DAG block intake can now queue DAG block `RECORD_CONSENSUS_OBJECT` through
-    `consensus_network_queue_dag_block_admission_request_effects`; tarcap supplies canonical DAG block RLP, block hash,
-    and packet transaction count to the facade before the temporary DAG executor verifies and inserts the block.
+  - DAG block intake now bypasses `consensus_network_queue_dag_block_admission_request_effects`; tarcap decodes packet
+    data and calls `onNewBlockReceived` directly so `DagManager` verifies and inserts the block using the existing local DAG
+    path.
   - DAG sync block intake can now queue DAG block `RECORD_CONSENSUS_OBJECT` through
     `consensus_network_queue_dag_sync_block_admission_request_effects`; tarcap supplies canonical DAG block RLP, block
     hash, and packet transaction count to the facade before the temporary DAG sync executor verifies and inserts the
@@ -218,8 +218,8 @@ Rules:
     accepting acknowledgements. This keeps temporary executor work visible instead of treating an `effect_id` alone as
     proof that the intended action ran.
   - This is still not the final production route: tarcap executes the drained network effects, accepted votes still
-    mutate verified-vote state through the temporary VoteManager executor path, DAG block intake, DAG sync intake, and
-    DAG sync egress still use the temporary DagManager executor path, PBFT sync egress and period-data intake still use
+    mutate verified-vote state through the temporary VoteManager executor path, DAG sync intake, and DAG sync egress still
+    use the temporary DagManager executor path, PBFT sync egress and period-data intake still use
     the temporary PBFT manager executor path, pillar vote duplicate/signature/eligibility validation, insertion, and
     bundle egress still execute through the temporary PillarChainManager executor path, and get-next-votes egress still uses
     the temporary VoteManager executor path.
@@ -241,7 +241,7 @@ Rules:
 First useful routes:
 
 - PBFT vote and vote-bundle ingress.
-- DAG block ingress and DAG sync intake.
+- Transaction and DAG block direct intake.
 - PBFT sync and finalized-period intake.
 - Pillar vote and pillar-vote-bundle ingress.
 
