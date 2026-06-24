@@ -5,9 +5,6 @@
 
 #include "network/tarcap/packets/latest/transaction_packet.hpp"
 #include "network/tarcap/packets_handlers/interface/transaction_packet_handler.hpp"
-#ifdef RUSTAXA_ENABLE
-#include "rustaxa-bridge/ffi.rs.h"
-#endif
 #include "transaction/transaction.hpp"
 
 namespace taraxa {
@@ -41,28 +38,8 @@ class TransactionPacketHandler : public ITransactionPacketHandler {
  private:
   virtual void process(const threadpool::PacketData& packet_data, const std::shared_ptr<TaraxaPeer>& peer) override;
 
-  struct TransactionProcessingResult {
-    bool already_known = false;
-    bool accepted = false;
-    bool inserted = false;
-    bool overflow = false;
-    bool overflow_over_limit = false;
-    bool validation_failed = false;
-    std::string error;
-  };
-
-#ifdef RUSTAXA_ENABLE
-  rustaxa::NetworkIngressDecision queueTransactionAdmissionRequestEffects(
-      const rustaxa::NetworkTransactionAdmissionRequestEffects& effects);
-  TransactionProcessingResult executeTransactionAdmissionEffect(std::shared_ptr<Transaction>&& transaction);
-#endif
-
  protected:
   std::shared_ptr<TransactionManager> trx_mgr_;
-#ifdef RUSTAXA_ENABLE
-  struct RustConsensusNetworkApiHolder;
-  std::unique_ptr<RustConsensusNetworkApiHolder> rust_consensus_network_api_;
-#endif
 
   std::atomic<uint64_t> received_trx_count_{0};
   std::atomic<uint64_t> unique_received_trx_count_{0};

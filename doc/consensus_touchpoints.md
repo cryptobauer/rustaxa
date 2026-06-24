@@ -156,9 +156,9 @@ Rules:
   - PBFT blocks bundle proposed-block intake can now queue `RECORD_CONSENSUS_OBJECT` through
     `consensus_network_queue_pbft_proposed_block_bundle_effects`; tarcap supplies canonical PBFT block RLP and compact
     period/hash facts to the facade before the same temporary record-object executor inserts the block.
-  - Transaction gossip admission can now queue transaction `RECORD_CONSENSUS_OBJECT` through
-    `consensus_network_queue_transaction_admission_request_effects`; tarcap supplies canonical transaction RLP and the
-    transaction hash to the facade before the temporary transaction-pool executor verifies and inserts it.
+  - Transaction packet admission now executes directly in `TransactionPacketHandler` against `TransactionManager` for
+    verification and insertion, eliminating the temporary `consensus_network_queue_transaction_admission_request_effects`
+    executor hop. The handler now reports validation and overflow handling directly through existing peer telemetry.
   - DAG block intake can now queue DAG block `RECORD_CONSENSUS_OBJECT` through
     `consensus_network_queue_dag_block_admission_request_effects`; tarcap supplies canonical DAG block RLP, block hash,
     and packet transaction count to the facade before the temporary DAG executor verifies and inserts the block.
@@ -221,9 +221,8 @@ Rules:
     mutate verified-vote state through the temporary VoteManager executor path, DAG block intake, DAG sync intake, and
     DAG sync egress still use the temporary DagManager executor path, PBFT sync egress and period-data intake still use
     the temporary PBFT manager executor path, pillar vote duplicate/signature/eligibility validation, insertion, and
-    bundle egress still execute through the temporary PillarChainManager executor path, get-next-votes egress still uses
-    the temporary VoteManager executor path, and transaction gossip admission still uses the temporary TransactionManager
-    executor path.
+    bundle egress still execute through the temporary PillarChainManager executor path, and get-next-votes egress still uses
+    the temporary VoteManager executor path.
   - Status packet ingress still performs pending-peer lookup and peer-state materialization in tarcap. Status egress
     still reads local PBFT/DAG snapshot facts directly until the facade is injected with Rust-owned local status
     snapshot state.
@@ -244,7 +243,6 @@ First useful routes:
 - PBFT vote and vote-bundle ingress.
 - DAG block ingress and DAG sync intake.
 - PBFT sync and finalized-period intake.
-- Transaction gossip admission.
 - Pillar vote and pillar-vote-bundle ingress.
 
 ### 2. External EVM, StateAPI, and State DB API
