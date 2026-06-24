@@ -162,18 +162,14 @@ Rules:
   - DAG block intake now bypasses `consensus_network_queue_dag_block_admission_request_effects`; tarcap decodes packet
     data and calls `onNewBlockReceived` directly so `DagManager` verifies and inserts the block using the existing local DAG
     path.
-  - DAG sync block intake can now queue DAG block `RECORD_CONSENSUS_OBJECT` through
-    `consensus_network_queue_dag_sync_block_admission_request_effects`; tarcap supplies canonical DAG block RLP, block
-    hash, and packet transaction count to the facade before the temporary DAG sync executor verifies and inserts the
-    block.
+  - DAG sync block intake now bypasses `consensus_network_queue_dag_sync_block_admission_request_effects`; tarcap decodes
+    packet data and verifies/adds each DAG block directly in `DagSyncPacketHandler` using `DagManager`.
   - Get-DAG-sync egress can now queue DAG sync `RECORD_CONSENSUS_OBJECT` requests through
     `consensus_network_queue_dag_sync_egress_request_effects`; tarcap supplies the requesting peer's period and
     requested DAG block hashes before the temporary DAG executor reads non-finalized blocks/transactions, updates peer
     sync state, materializes `DagSyncPacket`, and sends it.
-  - PBFT sync finalized-period intake can now queue PBFT period-data `RECORD_CONSENSUS_OBJECT` through
-    `consensus_network_queue_pbft_sync_period_data_admission_request_effects`; tarcap supplies canonical `PeriodData`
-    RLP, PBFT block hash, PBFT period, and current-block cert-vote count to the facade before the temporary PBFT sync
-    executor validates the effect identity and calls `PbftManager::periodDataQueuePush`.
+  - PBFT sync finalized-period intake now bypasses `consensus_network_queue_pbft_sync_period_data_admission_request_effects`;
+    tarcap validates and queues period data directly in `PbftSyncPacketHandler` through `PbftManager::periodDataQueuePush`.
   - Pillar vote and pillar votes bundle member admission can now queue pillar vote `RECORD_CONSENSUS_OBJECT` through
     `consensus_network_queue_pillar_vote_admission_request_effects` and
     `consensus_network_queue_pillar_vote_bundle_member_admission_request_effects`; tarcap supplies canonical pillar
@@ -218,9 +214,9 @@ Rules:
     accepting acknowledgements. This keeps temporary executor work visible instead of treating an `effect_id` alone as
     proof that the intended action ran.
   - This is still not the final production route: tarcap executes the drained network effects, accepted votes still
-    mutate verified-vote state through the temporary VoteManager executor path, DAG sync intake, and DAG sync egress still
-    use the temporary DagManager executor path, PBFT sync egress and period-data intake still use
-    the temporary PBFT manager executor path, pillar vote duplicate/signature/eligibility validation, insertion, and
+    mutate verified-vote state through the temporary VoteManager executor path, DAG sync egress still uses the temporary
+    DagManager executor path, PBFT sync egress still uses the temporary PBFT manager executor path, pillar vote
+    duplicate/signature/eligibility validation, insertion, and
     bundle egress still execute through the temporary PillarChainManager executor path, and get-next-votes egress still uses
     the temporary VoteManager executor path.
   - Status packet ingress still performs pending-peer lookup and peer-state materialization in tarcap. Status egress
@@ -242,7 +238,7 @@ First useful routes:
 
 - PBFT vote and vote-bundle ingress.
 - Transaction and DAG block direct intake.
-- PBFT sync and finalized-period intake.
+- PBFT sync and DAG sync egress.
 - Pillar vote and pillar-vote-bundle ingress.
 
 ### 2. External EVM, StateAPI, and State DB API
