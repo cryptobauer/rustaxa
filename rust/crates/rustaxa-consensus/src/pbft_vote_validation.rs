@@ -119,6 +119,10 @@ pub struct PbftVoteValidationExternalFacts {
     pub committee_size: u64,
     /// Proposal committee size used for proposal vote sortition.
     pub number_of_proposers: u64,
+    /// Whether the caller supplied an already verified sidecar weight.
+    pub has_preverified_weight: bool,
+    /// Already verified sidecar weight for trusted `addVerifiedVote` callers.
+    pub preverified_weight: u64,
 }
 
 /// Complete Rust validation result for one canonical PBFT vote.
@@ -567,6 +571,40 @@ pub fn validate_canonical_pbft_vote(
             0,
             false,
             0,
+            [0; VRF_OUTPUT_BYTES],
+        ));
+    }
+
+    if facts.has_preverified_weight {
+        let fact = PbftVoteValidationFact {
+            vote_type: inspection.vote_type,
+            dpos_vote_count_ready: facts.preverified_weight > 0,
+            dpos_vote_count: facts.preverified_weight,
+            vrf_key_ready: true,
+            has_vrf_key: true,
+            signature_ready: true,
+            signature_valid: inspection.signature_valid,
+            vrf_sortition_ready: true,
+            vrf_sortition_valid: true,
+            total_dpos_vote_count_ready: facts.preverified_weight > 0,
+            total_dpos_vote_count: facts.preverified_weight,
+            weight_ready: facts.preverified_weight > 0,
+            weight: facts.preverified_weight,
+            future_dpos_state: false,
+            unknown_error: false,
+            committee_size: facts.committee_size,
+            number_of_proposers: facts.number_of_proposers,
+        };
+        let plan = plan_pbft_vote_validation(fact);
+        return Ok(validation_from_plan(
+            inspection,
+            plan,
+            vote_validation_error_code(plan.status),
+            true,
+            true,
+            plan.sortition_threshold,
+            true,
+            facts.preverified_weight,
             [0; VRF_OUTPUT_BYTES],
         ));
     }
@@ -1400,6 +1438,8 @@ mod tests {
                 strict_vrf: true,
                 committee_size: 100,
                 number_of_proposers: 20,
+                has_preverified_weight: false,
+                preverified_weight: 0,
             },
         )
         .unwrap();

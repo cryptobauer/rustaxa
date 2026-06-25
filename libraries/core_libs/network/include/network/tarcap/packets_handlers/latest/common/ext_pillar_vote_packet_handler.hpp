@@ -22,14 +22,6 @@ class ExtPillarVotePacketHandler : public PacketHandler {
 
 #ifdef RUSTAXA_ENABLE
   rustaxa::PillarVoteRelevancePlan planPillarVoteRelevance(const std::shared_ptr<PillarVote>& vote) const;
-  rustaxa::NetworkIngressDecision queuePillarVoteValidationRequestEffects(
-      const rustaxa::NetworkPillarVoteValidationRequestEffects& effects, SubprotocolPacketType packet_type);
-  bool executePillarVoteValidationEffect(const std::shared_ptr<PillarVote>& vote,
-                                         const std::shared_ptr<TaraxaPeer>& peer, SubprotocolPacketType packet_type);
-  rustaxa::NetworkIngressDecision queuePillarVoteAdmissionRequestEffects(
-      const rustaxa::NetworkPillarVoteAdmissionRequestEffects& effects, SubprotocolPacketType packet_type);
-  void executePillarVoteAdmissionEffect(const std::shared_ptr<PillarVote>& vote,
-                                        const std::shared_ptr<TaraxaPeer>& peer, SubprotocolPacketType packet_type);
 #endif
 
  protected:

@@ -3,9 +3,6 @@
 #include "network/tarcap/packets/latest/get_pillar_votes_bundle_packet.hpp"
 #include "network/tarcap/packets_handlers/interface/get_pillar_votes_bundle_packet_handler.hpp"
 #include "pillar_chain/pillar_chain_manager.hpp"
-#ifdef RUSTAXA_ENABLE
-#include "rustaxa-bridge/ffi.rs.h"
-#endif
 
 namespace taraxa::network::tarcap {
 
@@ -27,15 +24,6 @@ class GetPillarVotesBundlePacketHandler : public IGetPillarVotesBundlePacketHand
   virtual void process(const threadpool::PacketData& packet_data, const std::shared_ptr<TaraxaPeer>& peer) override;
 
  protected:
-#ifdef RUSTAXA_ENABLE
-  rustaxa::NetworkIngressDecision queuePillarVotesBundleEgressRequestEffects(
-      const rustaxa::NetworkPillarVotesBundleEgressRequestEffects& effects);
-  void executePillarVotesBundleEgressEffect(const std::shared_ptr<TaraxaPeer>& peer);
-
-  struct RustConsensusNetworkApiHolder;
-  std::unique_ptr<RustConsensusNetworkApiHolder> rust_consensus_network_api_;
-#endif
-
   std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_manager_;
 };
 

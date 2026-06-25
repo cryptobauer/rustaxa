@@ -80,8 +80,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
 const DAG_PROPOSER_ACTION_CONTINUE: u8 = 1;
-#[cfg(test)]
-const DAG_PROPOSER_ACTION_SKIP: u8 = 2;
 
 #[cfg(test)]
 const DAG_PROPOSER_REASON_OK: u32 = 0;
@@ -551,43 +549,52 @@ impl BridgeDagManagerRuntime {
         &self,
         input: DagAddBlockRuntimeInput,
     ) -> Result<DagAddBlockEffectPlan> {
-        let block_exists = self.state.has_vertex(H256::from(input.block_hash))
-            || dag_block_exists_in_storage(self.storage.as_ref(), H256::from(input.block_hash))
+        let block_in_state = self.state.has_vertex(H256::from(input.block_hash));
+        let block_in_storage =
+            dag_block_exists_in_storage(self.storage.as_ref(), H256::from(input.block_hash))
                 .context("DAG_RUNTIME_ADD_BLOCK_EXISTS")?;
+        let block_exists = if input.save {
+            block_in_storage
+        } else {
+            block_in_state || block_in_storage
+        };
 
         let tips = input
             .tips
             .into_iter()
             .map(|tip| H256::from(tip.hash))
             .collect::<Vec<_>>();
-        let pivot_tips =
-            if input.save && !block_exists && input.block_level >= self.state.dag_expiry_level() {
-                let pivot = dag_reference_metadata_from_runtime_or_storage(
-                    &self.state,
-                    self.storage.as_ref(),
-                    H256::from(input.pivot),
-                )?;
-                let tips = tips
-                    .iter()
-                    .map(|tip| {
-                        dag_reference_metadata_from_runtime_or_storage(
-                            &self.state,
-                            self.storage.as_ref(),
-                            *tip,
-                        )
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                validate_pivot_tips_metadata(input.block_level, pivot, &tips)
-            } else {
-                rustaxa_consensus::dag::DagPivotTipsValidation {
-                    ok: true,
-                    expected_level: input.block_level,
-                    level_matches: true,
-                    missing_references: Vec::new(),
-                }
-            };
+        let pivot_tips = if input.save
+            && !block_in_state
+            && !block_exists
+            && input.block_level >= self.state.dag_expiry_level()
+        {
+            let pivot = dag_reference_metadata_from_runtime_or_storage(
+                &self.state,
+                self.storage.as_ref(),
+                H256::from(input.pivot),
+            )?;
+            let tips = tips
+                .iter()
+                .map(|tip| {
+                    dag_reference_metadata_from_runtime_or_storage(
+                        &self.state,
+                        self.storage.as_ref(),
+                        *tip,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?;
+            validate_pivot_tips_metadata(input.block_level, pivot, &tips)
+        } else {
+            rustaxa_consensus::dag::DagPivotTipsValidation {
+                ok: true,
+                expected_level: input.block_level,
+                level_matches: true,
+                missing_references: Vec::new(),
+            }
+        };
 
-        Ok(dag_plan_add_block_effects(DagAddBlockEffectInput {
+        let mut plan = dag_plan_add_block_effects(DagAddBlockEffectInput {
             save: input.save,
             proposed: input.proposed,
             block_exists,
@@ -595,7 +602,13 @@ impl BridgeDagManagerRuntime {
             dag_expiry_level: self.state.dag_expiry_level(),
             references_available: pivot_tips.ok,
             missing_references: to_dag_hashes(pivot_tips.missing_references),
-        }))
+        });
+        if input.save && block_in_state && !block_in_storage && plan.accepted && !plan.duplicate {
+            plan.add_to_graph = false;
+            plan.emit_verified = false;
+            plan.gossip = false;
+        }
+        Ok(plan)
     }
 
     /// Validates pivot/tip availability from Rust runtime state and storage.
@@ -2937,7 +2950,7 @@ mod tests {
                 })
                 .expect("add block");
 
-            let duplicate = runtime
+            let live_only = runtime
                 .dag_manager_runtime_plan_add_block(DagAddBlockRuntimeInput {
                     save: true,
                     proposed: true,
@@ -2946,11 +2959,13 @@ mod tests {
                     tips: vec![],
                     block_level: 2,
                 })
-                .expect("duplicate plan");
-            assert!(duplicate.accepted);
-            assert!(duplicate.duplicate);
-            assert!(!duplicate.persist_block);
-            assert!(!duplicate.add_to_graph);
+                .expect("live-only persistence plan");
+            assert!(live_only.accepted);
+            assert!(!live_only.duplicate);
+            assert!(live_only.persist_block);
+            assert!(!live_only.add_to_graph);
+            assert!(!live_only.emit_verified);
+            assert!(!live_only.gossip);
 
             let missing = runtime
                 .dag_manager_runtime_plan_add_block(DagAddBlockRuntimeInput {

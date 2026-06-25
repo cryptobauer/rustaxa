@@ -215,9 +215,10 @@ rustaxa::PbftFinalizationStorageWriteStage makeRewardResetWriteStage(
   return write_stage;
 }
 
-rustaxa::PbftRewardVotesResetRequest makeRewardResetRequest(
-    PbftPeriod period, PbftRound round, PbftStep step, const blk_hash_t& block_hash,
-    rustaxa::PbftFinalizationStorageWriteStage&& stage, bool sync) {
+rustaxa::PbftRewardVotesResetRequest makeRewardResetRequest(PbftPeriod period, PbftRound round, PbftStep step,
+                                                            const blk_hash_t& block_hash,
+                                                            rustaxa::PbftFinalizationStorageWriteStage&& stage,
+                                                            bool sync) {
   rustaxa::PbftRewardVotesResetRequest request{};
   request.period = period;
   request.round = round;
@@ -650,39 +651,49 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
 
   auto external_facts = makeVoteValidationExternalFacts(true, kPbftConfig);
   const auto recovered_voter = fromBridgeAddress(inspection.recovered_voter);
-  try {
-    const auto dpos_facts = collectPbftDposFacts(final_chain_, vote->getPeriod() - 1, true, {recovered_voter});
-    if (dpos_facts.address_facts.empty() || !finalChainFactReady(dpos_facts.address_facts[0].status) ||
-        !finalChainFactReady(dpos_facts.total_vote_count_status) || !dpos_facts.has_total_vote_count) {
-      external_facts.future_dpos_state = true;
-      const auto error = dpos_facts.address_facts.empty()
-                             ? finalChainFactError(dpos_facts)
-                             : finalChainAddressFactError(dpos_facts.address_facts[0], dpos_facts);
-      LOG(log_er_) << "Unable to admit vote " << hash << " against dpos contract. Its period (" << vote->getPeriod()
-                   << ") is too far ahead of actual finalized pbft chain size (" << dpos_facts.last_block_number
-                   << "). Err msg: " << error;
+  const auto preverified_weight = vote->getWeight();
+  if (preverified_weight.has_value()) {
+    if (*preverified_weight == 0) {
+      LOG(log_er_) << "Unable to add vote " << hash << " into the verified queue. Invalid vote weight";
       return report;
     }
-    external_facts.voter_dpos_vote_count = dpos_facts.address_facts[0].vote_count;
-    external_facts.voter_dpos_ready = true;
+    external_facts.has_preverified_weight = true;
+    external_facts.preverified_weight = *preverified_weight;
+  } else {
+    try {
+      const auto dpos_facts = collectPbftDposFacts(final_chain_, vote->getPeriod() - 1, true, {recovered_voter});
+      if (dpos_facts.address_facts.empty() || !finalChainFactReady(dpos_facts.address_facts[0].status) ||
+          !finalChainFactReady(dpos_facts.total_vote_count_status) || !dpos_facts.has_total_vote_count) {
+        external_facts.future_dpos_state = true;
+        const auto error = dpos_facts.address_facts.empty()
+                               ? finalChainFactError(dpos_facts)
+                               : finalChainAddressFactError(dpos_facts.address_facts[0], dpos_facts);
+        LOG(log_er_) << "Unable to admit vote " << hash << " against dpos contract. Its period (" << vote->getPeriod()
+                     << ") is too far ahead of actual finalized pbft chain size (" << dpos_facts.last_block_number
+                     << "). Err msg: " << error;
+        return report;
+      }
+      external_facts.voter_dpos_vote_count = dpos_facts.address_facts[0].vote_count;
+      external_facts.voter_dpos_ready = true;
 
-    const auto pk = key_manager_->getVrfKey(vote->getPeriod() - 1, recovered_voter);
-    external_facts.vrf_key_ready = true;
-    external_facts.has_vrf_key = pk != nullptr;
-    if (pk != nullptr) {
-      external_facts.vrf_public_key = pk->asArray();
+      const auto pk = key_manager_->getVrfKey(vote->getPeriod() - 1, recovered_voter);
+      external_facts.vrf_key_ready = true;
+      external_facts.has_vrf_key = pk != nullptr;
+      if (pk != nullptr) {
+        external_facts.vrf_public_key = pk->asArray();
+      }
+
+      external_facts.total_dpos_vote_count = dpos_facts.total_vote_count;
+      external_facts.total_dpos_ready = true;
+    } catch (const std::exception& e) {
+      external_facts.unknown_error = true;
+      LOG(log_er_) << "Unable to admit vote " << hash << ". Err msg: " << e.what();
+      return report;
+    } catch (...) {
+      external_facts.unknown_error = true;
+      LOG(log_er_) << "Unable to admit vote " << hash << ". Unknown error";
+      return report;
     }
-
-    external_facts.total_dpos_vote_count = dpos_facts.total_vote_count;
-    external_facts.total_dpos_ready = true;
-  } catch (const std::exception& e) {
-    external_facts.unknown_error = true;
-    LOG(log_er_) << "Unable to admit vote " << hash << ". Err msg: " << e.what();
-    return report;
-  } catch (...) {
-    external_facts.unknown_error = true;
-    LOG(log_er_) << "Unable to admit vote " << hash << ". Unknown error";
-    return report;
   }
 
   const auto runtime_result =
@@ -1045,9 +1056,8 @@ VoteManager::RewardVoteValidationResult VoteManager::checkRewardVotesDetailed(
     selection = verified_votes_.selectRewardVotePayloads(block_period, reward_votes_period, reward_votes_round,
                                                          reward_votes_block_hash, reward_vote_hashes, copy_votes);
   } catch (const std::exception& e) {
-    LOG(log_er_) << "Rust reward-vote payload selection failed for block " << block_hash
-                 << ", period: " << block_period << ", reward_votes_period: " << reward_votes_period
-                 << ", reward_votes_round_: " << reward_votes_round
+    LOG(log_er_) << "Rust reward-vote payload selection failed for block " << block_hash << ", period: " << block_period
+                 << ", reward_votes_period: " << reward_votes_period << ", reward_votes_round_: " << reward_votes_round
                  << ", reward_votes_block_hash: " << reward_votes_block_hash << ", error: " << e.what();
     assert(false);
     RewardVoteValidationResult result;
@@ -1068,9 +1078,8 @@ VoteManager::RewardVoteValidationResult VoteManager::checkRewardVotesDetailed(
 
   if (!plan.accepted) {
     LOG(log_er_) << "No (or not enough) reward votes found for block " << block_hash << ", period: " << block_period
-                 << ", prev. block hash: " << prev_block_hash
-                 << ", reward_votes_period: " << reward_votes_period << ", reward_votes_round_: " << reward_votes_round
-                 << ", selected_round: " << plan.selected_round
+                 << ", prev. block hash: " << prev_block_hash << ", reward_votes_period: " << reward_votes_period
+                 << ", reward_votes_round_: " << reward_votes_round << ", selected_round: " << plan.selected_round
                  << ", reward_votes_block_hash: " << reward_votes_block_hash
                  << ", status: " << static_cast<uint32_t>(plan.status)
                  << ", error: " << static_cast<std::string>(plan.error_code);
@@ -1263,9 +1272,11 @@ std::shared_ptr<PbftVote> VoteManager::generateVoteWithWeight(const blk_hash_t& 
   return materializeRustGeneratedVote(generated, wallet, true);
 }
 
-VoteManager::LocallyGeneratedVotePlacement VoteManager::generateAndPlaceLocalVote(
-    const blk_hash_t& block_hash, PbftVoteTypes vote_type, PbftPeriod period, PbftRound round, PbftStep step,
-    const WalletConfig& wallet) {
+VoteManager::LocallyGeneratedVotePlacement VoteManager::generateAndPlaceLocalVote(const blk_hash_t& block_hash,
+                                                                                  PbftVoteTypes vote_type,
+                                                                                  PbftPeriod period, PbftRound round,
+                                                                                  PbftStep step,
+                                                                                  const WalletConfig& wallet) {
   LocallyGeneratedVotePlacement result;
   result.vote = generateVoteWithWeight(block_hash, vote_type, period, round, step, wallet);
   if (!result.vote) {
@@ -1289,8 +1300,10 @@ VoteManager::LocallyGeneratedVotePlacement VoteManager::generateAndPlaceLocalVot
   return result;
 }
 
-VoteManager::LocalProposalVoteGeneration VoteManager::generateUniqueProposalVoteForBlock(
-    const blk_hash_t& block_hash, PbftPeriod period, PbftRound round, PbftStep step, const WalletConfig& wallet) {
+VoteManager::LocalProposalVoteGeneration VoteManager::generateUniqueProposalVoteForBlock(const blk_hash_t& block_hash,
+                                                                                         PbftPeriod period,
+                                                                                         PbftRound round, PbftStep step,
+                                                                                         const WalletConfig& wallet) {
   LocalProposalVoteGeneration result;
   result.vote = generateVoteWithWeight(block_hash, PbftVoteTypes::propose_vote, period, round, step, wallet);
   if (!result.vote) {
@@ -1303,8 +1316,8 @@ VoteManager::LocalProposalVoteGeneration VoteManager::generateUniqueProposalVote
 
   if (!isUniqueVote(result.vote).first) {
     std::stringstream err;
-    err << "Non unique propose vote " << result.vote->getHash() << " for block " << block_hash << ", period "
-        << period << ", round " << result.vote->getRound() << ", step " << result.vote->getStep() << ", validator "
+    err << "Non unique propose vote " << result.vote->getHash() << " for block " << block_hash << ", period " << period
+        << ", round " << result.vote->getRound() << ", step " << result.vote->getStep() << ", validator "
         << wallet.node_addr;
     result.error = err.str();
     result.vote.reset();
@@ -1466,6 +1479,18 @@ std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<Pbf
     return {false, err_msg.str()};
   }
 
+  if (!vote->getWeight().has_value()) {
+    if (!vote->calculateWeight(voter_dpos_votes_count, total_dpos_votes_count, validation.sortition_threshold)) {
+      err_msg << "Invalid vote " << vote->getHash() << ": zero weight";
+      return {false, err_msg.str()};
+    }
+  }
+  if (!vote->getWeight().has_value() || *vote->getWeight() != validation.calculated_weight) {
+    err_msg << "Invalid vote " << vote->getHash() << ": Rust calculated weight " << validation.calculated_weight
+            << " mismatches live vote weight " << vote->getWeight().value_or(0);
+    return {false, err_msg.str()};
+  }
+
   return {true, ""};
 }
 
@@ -1606,8 +1631,7 @@ bool VoteManager::genAndValidateVrfSortition(PbftPeriod pbft_period, PbftRound p
 }
 
 VoteManager::ProposalWalletFacts VoteManager::proposalWalletFacts(
-    PbftPeriod pbft_period, PbftRound pbft_round,
-    const std::vector<std::pair<bool, WalletConfig>>& wallets) const {
+    PbftPeriod pbft_period, PbftRound pbft_round, const std::vector<std::pair<bool, WalletConfig>>& wallets) const {
   ProposalWalletFacts result;
   result.local_wallets.reserve(wallets.size());
   result.wallet_facts.reserve(wallets.size());
@@ -1644,9 +1668,9 @@ std::optional<blk_hash_t> VoteManager::getTwoTPlusOneVotedBlock(PbftPeriod perio
 }
 
 VoteManager::StateActionVoteFacts VoteManager::stateActionVoteFacts(PbftPeriod period, PbftRound round,
-                                                                     bool needs_previous_round_next_null,
-                                                                     bool needs_previous_round_next_value,
-                                                                     bool needs_current_round_soft) const {
+                                                                    bool needs_previous_round_next_null,
+                                                                    bool needs_previous_round_next_value,
+                                                                    bool needs_current_round_soft) const {
   StateActionVoteFacts facts;
   if (round >= 2 && needs_previous_round_next_null) {
     facts.has_previous_round_next_null =
@@ -1674,11 +1698,10 @@ VoteManager::StateActionVoteFacts VoteManager::stateActionVoteFacts(PbftPeriod p
   return facts;
 }
 
-VoteManager::PreviousRoundNextVoteLogFacts VoteManager::previousRoundNextVoteLogFacts(
-    PbftPeriod period, PbftRound previous_round) const {
+VoteManager::PreviousRoundNextVoteLogFacts VoteManager::previousRoundNextVoteLogFacts(PbftPeriod period,
+                                                                                      PbftRound previous_round) const {
   PreviousRoundNextVoteLogFacts facts;
-  facts.next_voted_block =
-      getTwoTPlusOneVotedBlock(period, previous_round, TwoTPlusOneVotedBlockType::NextVotedBlock);
+  facts.next_voted_block = getTwoTPlusOneVotedBlock(period, previous_round, TwoTPlusOneVotedBlockType::NextVotedBlock);
   facts.next_voted_null_block =
       getTwoTPlusOneVotedBlock(period, previous_round, TwoTPlusOneVotedBlockType::NextVotedNullBlock).has_value();
   return facts;

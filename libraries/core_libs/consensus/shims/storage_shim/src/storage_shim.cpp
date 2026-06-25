@@ -341,6 +341,16 @@ void DbStorage::updateDagBlockCounters(std::vector<std::shared_ptr<DagBlock>> bl
   commitWriteBatch(write_batch);
 }
 
+void DbStorage::mirrorDagBlockCounters(uint64_t dag_blocks_count, uint64_t dag_edge_count) {
+  std::lock_guard<std::mutex> u_lock(dag_blocks_mutex_);
+  dag_blocks_count_.store(dag_blocks_count);
+  dag_edge_count_.store(dag_edge_count);
+}
+
+uint64_t DbStorage::getDagBlocksCount() const { return dag_blocks_count_.load(); }
+
+uint64_t DbStorage::getDagEdgeCount() const { return dag_edge_count_.load(); }
+
 void DbStorage::saveDagBlock(const std::shared_ptr<DagBlock>& blk, Batch* write_batch_p) {
   // Keep parity with legacy semantics: when called with caller-provided batch,
   // stage all writes there and update counters; otherwise delegate to Rust

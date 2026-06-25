@@ -2823,6 +2823,8 @@ pub mod rustaxa_ffi {
         strict_vrf: bool,
         committee_size: u64,
         number_of_proposers: u64,
+        has_preverified_weight: bool,
+        preverified_weight: u64,
     }
 
     /// Complete Rust result for validating one canonical legacy PBFT vote.

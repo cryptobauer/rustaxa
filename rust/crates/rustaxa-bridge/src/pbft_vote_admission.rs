@@ -142,6 +142,8 @@ fn validation_facts_to_domain(
         strict_vrf: value.strict_vrf,
         committee_size: value.committee_size,
         number_of_proposers: value.number_of_proposers,
+        has_preverified_weight: value.has_preverified_weight,
+        preverified_weight: value.preverified_weight,
     }
 }
 
@@ -479,6 +481,8 @@ mod tests {
             strict_vrf: true,
             committee_size: 100,
             number_of_proposers: 20,
+            has_preverified_weight: false,
+            preverified_weight: 0,
         }
     }
 

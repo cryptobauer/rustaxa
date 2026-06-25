@@ -78,8 +78,8 @@ std::shared_ptr<object::Block> Query::getBlock(std::optional<response::Value>&& 
     // shouldn't be possible
     return nullptr;
   }
-  return std::make_shared<object::Block>(std::make_shared<Block>(
-      final_chain_, transaction_manager_, get_block_by_num_, hashFromBridge(pbft_block_hash.hash), block_header));
+  return std::make_shared<object::Block>(std::make_shared<Block>(final_chain_, transaction_manager_, get_block_by_num_,
+                                                                 hashFromBridge(pbft_block_hash.hash), block_header));
 #endif
 
   auto pbft_block = db_->getPbftBlock(block_header->number);  // RUSTAXA_QUERY_COMPAT_READ
@@ -229,52 +229,54 @@ std::vector<std::shared_ptr<object::DagBlock>> Query::getDagBlocks(std::optional
                                                                    std::optional<int>&& countArg,
                                                                    std::optional<bool>&& reverseArg) const {
 #ifdef RUSTAXA_ENABLE
-  std::vector<std::shared_ptr<object::DagBlock>> rust_dag_blocks_result;
-  ::taraxa::level_t rust_act_dag_level = dag_manager_->getMaxLevel();
+  {
+    std::vector<std::shared_ptr<object::DagBlock>> rust_dag_blocks_result;
+    ::taraxa::level_t rust_act_dag_level = dag_manager_->getMaxLevel();
 
-  if (dagLevelArg) {
-    rust_act_dag_level = dagLevelArg->get<int>();
-    if (rust_act_dag_level < 0 || rust_act_dag_level > dag_manager_->getMaxLevel()) {
+    if (dagLevelArg) {
+      rust_act_dag_level = dagLevelArg->get<int>();
+      if (rust_act_dag_level < 0 || rust_act_dag_level > dag_manager_->getMaxLevel()) {
+        return rust_dag_blocks_result;
+      }
+    }
+
+    const auto dag_queries = rustaxa::create_dag_storage_queries(db_->rustStorage());
+    auto addRustDagBlocks = [final_chain = final_chain_, pbft_manager = pbft_manager_,
+                             transaction_manager = transaction_manager_, get_block_by_num = get_block_by_num_](
+                                auto& rust_dag_blocks, auto& result_dag_blocks) -> size_t {
+      const auto added = rust_dag_blocks.size();
+      for (auto& dag_block : rust_dag_blocks) {
+        result_dag_blocks.emplace_back(std::make_shared<object::DagBlock>(std::make_shared<DagBlock>(
+            std::move(dag_block), final_chain, pbft_manager, transaction_manager, get_block_by_num)));
+      }
+      return added;
+    };
+
+    auto rust_dag_blocks = dag_queries->get_dag_block_views_at_level(rust_act_dag_level, 1);
+    auto rust_act_count = addRustDagBlocks(rust_dag_blocks, rust_dag_blocks_result);
+
+    if (!countArg) {
       return rust_dag_blocks_result;
     }
-  }
 
-  const auto dag_queries = rustaxa::create_dag_storage_queries(db_->rustStorage());
-  auto addRustDagBlocks = [final_chain = final_chain_, pbft_manager = pbft_manager_,
-                           transaction_manager = transaction_manager_, get_block_by_num = get_block_by_num_](
-                              auto& rust_dag_blocks, auto& result_dag_blocks) -> size_t {
-    const auto added = rust_dag_blocks.size();
-    for (auto& dag_block : rust_dag_blocks) {
-      result_dag_blocks.emplace_back(std::make_shared<object::DagBlock>(std::make_shared<DagBlock>(
-          std::move(dag_block), final_chain, pbft_manager, transaction_manager, get_block_by_num)));
+    auto count = std::min(static_cast<size_t>(countArg.value()), Query::kMaxPropagationLimit);
+    bool reverse_flag = reverseArg ? reverseArg.value() : false;
+
+    while (rust_act_count < count && rust_act_dag_level <= dag_manager_->getMaxLevel()) {
+      if (!reverse_flag) {
+        rust_act_dag_level++;
+      } else if (rust_act_dag_level > 0) {
+        rust_act_dag_level--;
+      } else {
+        return rust_dag_blocks_result;
+      }
+
+      auto next_rust_dag_blocks = dag_queries->get_dag_block_views_at_level(rust_act_dag_level, 1);
+      rust_act_count += addRustDagBlocks(next_rust_dag_blocks, rust_dag_blocks_result);
     }
-    return added;
-  };
 
-  auto rust_dag_blocks = dag_queries->get_dag_block_views_at_level(rust_act_dag_level, 1);
-  auto rust_act_count = addRustDagBlocks(rust_dag_blocks, rust_dag_blocks_result);
-
-  if (!countArg) {
     return rust_dag_blocks_result;
   }
-
-  auto count = std::min(static_cast<size_t>(countArg.value()), Query::kMaxPropagationLimit);
-  bool reverse_flag = reverseArg ? reverseArg.value() : false;
-
-  while (rust_act_count < count && rust_act_dag_level <= dag_manager_->getMaxLevel()) {
-    if (!reverse_flag) {
-      rust_act_dag_level++;
-    } else if (rust_act_dag_level > 0) {
-      rust_act_dag_level--;
-    } else {
-      return rust_dag_blocks_result;
-    }
-
-    auto next_rust_dag_blocks = dag_queries->get_dag_block_views_at_level(rust_act_dag_level, 1);
-    rust_act_count += addRustDagBlocks(next_rust_dag_blocks, rust_dag_blocks_result);
-  }
-
-  return rust_dag_blocks_result;
 #endif
   std::vector<std::shared_ptr<object::DagBlock>> dag_blocks_result;
   ::taraxa::level_t act_dag_level = dag_manager_->getMaxLevel();

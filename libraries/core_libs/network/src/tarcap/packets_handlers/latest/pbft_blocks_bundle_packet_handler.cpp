@@ -1,52 +1,11 @@
 #include "network/tarcap/packets_handlers/latest/pbft_blocks_bundle_packet_handler.hpp"
 
-#include <cassert>
-#include <stdexcept>
-
 #include "final_chain/final_chain.hpp"
 #include "network/tarcap/packets/latest/pbft_blocks_bundle_packet.hpp"
 #include "network/tarcap/shared_states/pbft_syncing_state.hpp"
 #include "pbft/pbft_manager.hpp"
-#ifdef RUSTAXA_ENABLE
-#include "rustaxa-bridge/ffi.rs.h"
-#endif
 
 namespace taraxa::network::tarcap {
-
-#ifdef RUSTAXA_ENABLE
-namespace {
-
-constexpr uint8_t kNetworkEffectResultStatusOk = 0;
-constexpr uint8_t kNetworkEffectResultStatusFailed = 1;
-constexpr uint8_t kNetworkEffectKindRecordConsensusObject = 8;
-constexpr uint8_t kNetworkObjectKindPbftBlock = 1;
-constexpr uint32_t kNetworkPacketKindPbftBlocksBundle = 16;
-
-rustaxa::NetworkApiConfig defaultNetworkApiConfig() {
-  rustaxa::NetworkApiConfig config{};
-  config.max_payload_bytes = 64 * 1024 * 1024;
-  config.max_retained_payloads = 4096;
-  config.max_effects_per_drain = 1024;
-  return config;
-}
-
-rust::Vec<uint8_t> toBridgeBytes(const bytes &input) {
-  rust::Vec<uint8_t> output;
-  output.reserve(input.size());
-  for (const auto byte : input) {
-    output.push_back(static_cast<uint8_t>(byte));
-  }
-  return output;
-}
-
-}  // namespace
-
-struct PbftBlocksBundlePacketHandler::RustConsensusNetworkApiHolder {
-  RustConsensusNetworkApiHolder() : api(rustaxa::create_consensus_network_api(defaultNetworkApiConfig())) {}
-
-  rust::Box<rustaxa::BridgeConsensusNetworkApi> api;
-};
-#endif
 
 PbftBlocksBundlePacketHandler::PbftBlocksBundlePacketHandler(const FullNodeConfig &conf,
                                                              std::shared_ptr<PeersState> peers_state,
@@ -59,11 +18,7 @@ PbftBlocksBundlePacketHandler::PbftBlocksBundlePacketHandler(const FullNodeConfi
                     logs_prefix + "PBFT_BLOCKS_BUNDLE_PH"),
       pbft_mgr_(std::move(pbft_mgr)),
       final_chain_(std::move(final_chain)),
-      pbft_syncing_state_(syncing_state) {
-#ifdef RUSTAXA_ENABLE
-  rust_consensus_network_api_ = std::make_unique<RustConsensusNetworkApiHolder>();
-#endif
-}
+      pbft_syncing_state_(syncing_state) {}
 
 PbftBlocksBundlePacketHandler::~PbftBlocksBundlePacketHandler() = default;
 
@@ -124,73 +79,9 @@ void PbftBlocksBundlePacketHandler::process(const threadpool::PacketData &packet
       throw MaliciousPeerException(err_msg.str());
     }
 
-#ifdef RUSTAXA_ENABLE
-    rustaxa::NetworkPbftProposedBlockSidecarEffects effects{};
-    effects.peer_id = peer->getId().asArray();
-    effects.period = proposed_block_period;
-    effects.block_hash = proposed_block->getBlockHash().asArray();
-    effects.pivot_hash = proposed_block->getPivotDagBlockHash().asArray();
-    effects.block_rlp = toBridgeBytes(proposed_block->rlp(true));
-    effects.source_payload_id = 0;
-    effects.record_block = true;
-    (void)queuePbftProposedBlockBundleEffects(effects);
-    executeConsensusNetworkEffects(16);
-#else
     pbft_mgr_->processProposedBlock(proposed_block);
-#endif
     LOG(log_dg_) << "Processed received proposed block: " << proposed_block->getBlockHash();
   }
 }
-
-#ifdef RUSTAXA_ENABLE
-rustaxa::NetworkIngressDecision PbftBlocksBundlePacketHandler::queuePbftProposedBlockBundleEffects(
-    const rustaxa::NetworkPbftProposedBlockSidecarEffects &effects) {
-  assert(rust_consensus_network_api_);
-  return rust_consensus_network_api_->api->consensus_network_queue_pbft_proposed_block_bundle_effects(effects);
-}
-
-void PbftBlocksBundlePacketHandler::executeConsensusNetworkEffects(size_t budget) {
-  assert(rust_consensus_network_api_);
-  const auto batch = rust_consensus_network_api_->api->consensus_network_drain_work(static_cast<uint32_t>(budget));
-  rust::Vec<rustaxa::NetworkEffectResult> results;
-  results.reserve(batch.effects.size());
-
-  for (const auto &effect : batch.effects) {
-    rustaxa::NetworkEffectResult result{};
-    result.effect_id = effect.effect_id;
-    result.kind = effect.kind;
-    result.peer_id = effect.peer_id;
-    result.packet_kind = effect.packet_kind;
-    result.object_kind = effect.object_kind;
-    result.object_hash = effect.object_hash;
-    result.status = kNetworkEffectResultStatusOk;
-
-    try {
-      if (effect.kind != kNetworkEffectKindRecordConsensusObject ||
-          effect.object_kind != kNetworkObjectKindPbftBlock ||
-          effect.packet_kind != kNetworkPacketKindPbftBlocksBundle) {
-        throw std::runtime_error("Network API PBFT blocks bundle effect has unsupported kind");
-      }
-
-      auto proposed_block =
-          std::make_shared<PbftBlock>(bytes(effect.payload_bytes.begin(), effect.payload_bytes.end()));
-      if (proposed_block->getPeriod() != effect.period ||
-          proposed_block->getBlockHash().asArray() != effect.object_hash) {
-        throw std::runtime_error("Network API PBFT blocks bundle effect has mismatched block payload");
-      }
-      pbft_mgr_->processProposedBlock(proposed_block);
-    } catch (const std::exception &e) {
-      result.status = kNetworkEffectResultStatusFailed;
-      result.diagnostic = e.what();
-    }
-
-    results.push_back(std::move(result));
-  }
-
-  if (!results.empty()) {
-    (void)rust_consensus_network_api_->api->consensus_network_report_effect_results(std::move(results));
-  }
-}
-#endif
 
 }  // namespace taraxa::network::tarcap

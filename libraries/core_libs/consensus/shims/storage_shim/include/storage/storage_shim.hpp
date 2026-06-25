@@ -103,6 +103,9 @@ class DbStorage : public DbStorageOld {
   SharedTransactions getAllNonfinalizedTransactions();
   void removeDagBlock(blk_hash_t const& hash);
   void updateDagBlockCounters(std::vector<std::shared_ptr<DagBlock>> blks);
+  void mirrorDagBlockCounters(uint64_t dag_blocks_count, uint64_t dag_edge_count);
+  uint64_t getDagBlocksCount() const;
+  uint64_t getDagEdgeCount() const;
   void saveDagBlock(const std::shared_ptr<DagBlock>& blk, Batch* write_batch_p = nullptr);
 
   void saveSortitionParamsChange(PbftPeriod period, const SortitionParamsChange& params, Batch& batch);
@@ -223,8 +226,7 @@ class DbStorage : public DbStorageOld {
   void clearColumnHistory(std::unordered_set<T>& to_keep, Column c) {
     (void)to_keep;
     (void)c;
-    throw DbException(
-        "DbStorage::clearColumnHistory is a RUSTAXA_ADMIN_COMPAT_UNSUPPORTED boundary in Rust shim mode");
+    throw DbException("DbStorage::clearColumnHistory is a RUSTAXA_ADMIN_COMPAT_UNSUPPORTED boundary in Rust shim mode");
   }
 
  private:

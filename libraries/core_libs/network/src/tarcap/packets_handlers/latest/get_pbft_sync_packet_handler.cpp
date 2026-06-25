@@ -36,7 +36,8 @@ GetPbftSyncPacketHandler::GetPbftSyncPacketHandler(
       ,
       db_(std::move(db))
 #endif
-{}
+{
+}
 
 GetPbftSyncPacketHandler::~GetPbftSyncPacketHandler() = default;
 
@@ -50,7 +51,8 @@ void GetPbftSyncPacketHandler::process(const threadpool::PacketData &packet_data
   // Here need PBFT chain size, not synced period since synced blocks has not verified yet.
   const size_t my_chain_size = pbft_chain_->getPbftChainSize();
   if (packet.height_to_sync > my_chain_size) {
-    // Node update peers PBFT chain size in status packet. Should not request syncing period start bigger than pbft chain size
+    // Node update peers PBFT chain size in status packet. Should not request syncing period start bigger than pbft
+    // chain size
     std::ostringstream err_msg;
     err_msg << "Peer " << peer->getId() << " request syncing period start at " << packet.height_to_sync
             << ". That's bigger than own PBFT chain size " << my_chain_size;
@@ -117,7 +119,6 @@ void GetPbftSyncPacketHandler::sendPbftBlocks(const std::shared_ptr<TaraxaPeer> 
     std::vector<std::shared_ptr<PbftVote> > reward_votes;
     if (pbft_chain_synced && last_block) {
       reward_votes = vote_mgr_->getRewardVotes();
-      assert(!reward_votes.empty());
     }
     const auto reward_votes_present = !reward_votes.empty();
     const auto reward_votes_period = reward_votes_present ? reward_votes[0]->getPeriod() : PbftPeriod{0};
@@ -145,7 +146,7 @@ void GetPbftSyncPacketHandler::sendPbftBlocks(const std::shared_ptr<TaraxaPeer> 
       pbft_sync_packet = std::make_shared<PbftSyncPacketRaw>(last_block, std::move(period_data));
     }
 #else
-    if (sync_payload.attach_reward_votes) {
+    if (sync_payload.attach_reward_votes && !reward_votes.empty()) {
       pbft_sync_packet = std::make_shared<PbftSyncPacketRaw>(last_block, std::move(period_data),
                                                              OptimizedPbftVotesBundle{std::move(reward_votes)});
     } else {

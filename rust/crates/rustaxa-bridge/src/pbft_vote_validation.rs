@@ -218,6 +218,8 @@ pub fn pbft_validate_canonical_vote(
             strict_vrf: facts.strict_vrf,
             committee_size: facts.committee_size,
             number_of_proposers: facts.number_of_proposers,
+            has_preverified_weight: facts.has_preverified_weight,
+            preverified_weight: facts.preverified_weight,
         },
     )?
     .into())
@@ -597,6 +599,8 @@ mod tests {
                 strict_vrf: true,
                 committee_size: 100,
                 number_of_proposers: 20,
+                has_preverified_weight: false,
+                preverified_weight: 0,
             },
         )
         .unwrap();

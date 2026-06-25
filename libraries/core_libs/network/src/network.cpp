@@ -394,7 +394,8 @@ std::shared_ptr<network::tarcap::TaraxaPeer> Network::getMaxChainPeer() const {
     return nullptr;
   }
 
-  const auto selected_peer_id = dev::p2p::NodeID(peer_selection_plan.peer_id);
+  const auto selected_peer_id =
+      dev::p2p::NodeID(peer_selection_plan.peer_id.data(), dev::p2p::NodeID::ConstructFromPointer);
   for (const auto &tarcap : tarcaps_) {
     if (auto peer = tarcap.second->getPeersState()->getPeer(selected_peer_id); peer) {
       return peer;

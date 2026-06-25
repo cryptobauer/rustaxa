@@ -339,6 +339,29 @@ class TransactionManagerRustShimAccess {
     return fact;
   }
 
+  static std::optional<state_api::Account> latestAccountFact(const TransactionManager& manager, const addr_t& sender) {
+    try {
+      return manager.final_chain_->getAccount(sender);
+    } catch (const std::exception&) {
+      return std::nullopt;
+    }
+  }
+
+  static rustaxa::TransactionManagerFinalChainAdmissionFact buildFinalChainAdmissionFact(
+      const TransactionManager& manager, const rustaxa::LegacyTransactionInspection& envelope) {
+    rustaxa::TransactionManagerFinalChainAdmissionFact fact;
+    const auto sender = requireEnvelopeSender(envelope, "RUST_TX_MANAGER_ADMISSION_ENVELOPE_FAILED");
+    const auto account = latestAccountFact(manager, fromBridgeAddress(sender));
+    fact.account_found = account.has_value();
+    fact.account_nonce = toBridgeU256(account.value_or(state_api::ZeroAccount).nonce);
+    fact.account_balance = toBridgeU256(account.value_or(state_api::ZeroAccount).balance);
+
+    const auto location = manager.final_chain_->transactionLocation(fromBridgeHash(envelope.hash));
+    fact.finalized_period_known = location.has_value();
+    fact.finalized_period = location ? location->period : 0;
+    return fact;
+  }
+
   static rustaxa::TransactionManagerAdmissionCommandReport executeValidatedAdmissionReport(
       TransactionManager& manager, const rustaxa::LegacyTransactionInspection& envelope,
       const std::shared_ptr<Transaction>& tx, bool insert_non_proposable) {
@@ -352,11 +375,12 @@ class TransactionManagerRustShimAccess {
 
     std::unique_lock transactions_lock(manager.transactions_mutex_);
     const auto fact = buildValidatedInsertRuntimeFact(manager, envelope, insert_non_proposable);
+    const auto final_chain_fact = buildFinalChainAdmissionFact(manager, envelope);
     return [&]() {
       try {
         return manager.runtime_
-            ->transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report(
-                manager.final_chain_->rustFinalChainForRust(), fact,
+            ->transaction_manager_runtime_execute_transaction_admission_with_final_chain_facts_command_report(
+                fact, final_chain_fact,
                 toRuntimeQueueInsertInput(envelope, false, rustFinalChainLastBlockNumber(manager)));
       } catch (const std::exception& e) {
         throw std::runtime_error(std::string("RUST_TX_MANAGER_ADMISSION_EXECUTION_FAILED: ") + e.what());
@@ -379,12 +403,13 @@ class TransactionManagerRustShimAccess {
 
     const auto verify_fact = buildVerifyTransactionFact(manager, envelope);
     const auto admission_fact = buildValidatedInsertRuntimeFact(manager, envelope, false);
+    const auto final_chain_fact = buildFinalChainAdmissionFact(manager, envelope);
     std::unique_lock transactions_lock(manager.transactions_mutex_);
     return [&]() {
       try {
         return manager.runtime_
-            ->transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_command_report(
-                manager.final_chain_->rustFinalChainForRust(), verify_fact, admission_fact,
+            ->transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_facts_command_report(
+                verify_fact, admission_fact, final_chain_fact,
                 toRuntimeQueueInsertInput(envelope, false, rustFinalChainLastBlockNumber(manager)));
       } catch (const std::exception& e) {
         throw std::runtime_error(std::string("RUST_TX_MANAGER_ADMISSION_EXECUTION_FAILED: ") + e.what());
@@ -693,27 +718,28 @@ class TransactionManagerRustShimAccess {
 
     std::unique_lock transactions_lock(manager.transactions_mutex_);
 
-    rust::Vec<rustaxa::DagTransactionSaveRuntimeFact> facts;
+    rust::Vec<rustaxa::DagTransactionSaveSidecarFact> facts;
     facts.reserve(transaction_hashes.size());
 
     for (size_t idx = 0; idx < transaction_hashes.size(); ++idx) {
       const auto envelope = inspectRegularTransactionPayload(transaction_hashes[idx], transaction_rlps[idx],
                                                              "RUST_STORAGE_DAG_TX_ENVELOPE_FAILED");
       const auto sender = requireEnvelopeSender(envelope, "RUST_STORAGE_DAG_TX_ENVELOPE_FAILED");
+      const auto account = latestAccountFact(manager, fromBridgeAddress(sender)).value_or(state_api::ZeroAccount);
 
-      rustaxa::DagTransactionSaveRuntimeFact fact;
+      rustaxa::DagTransactionSaveSidecarFact fact;
       fact.input_index = static_cast<uint64_t>(idx);
       fact.hash = envelope.hash;
       fact.trx_rlp = cloneBridgeBytes(envelope.tx_rlp);
       fact.transaction_nonce = envelope.nonce;
-      fact.sender = sender;
+      fact.sender_account_nonce = toBridgeU256(account.nonce);
       facts.push_back(std::move(fact));
     }
 
     const auto report = [&]() {
       try {
-        return rustaxa::save_transactions_from_dag_block_command_report_with_runtime_and_final_chain(
-            *manager.runtime_, manager.final_chain_->rustFinalChainForRust(), std::move(facts));
+        return rustaxa::save_transactions_from_dag_block_command_report_with_runtime(*manager.runtime_,
+                                                                                     std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_DAG_TX_PERSIST_FAILED: ") + e.what());
       }
@@ -935,26 +961,26 @@ class TransactionManagerRustShimAccess {
       throw DbException("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: FinalChain is required for transaction facts");
     }
 
-    rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> facts;
+    rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedSidecarFact> facts;
     facts.reserve(trxs.size());
     uint64_t input_index = 0;
     for (const auto& transaction : trxs) {
       const auto envelope =
           inspectRegularTransaction(transaction, "RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_ENVELOPE_FAILED");
       const auto sender = requireEnvelopeSender(envelope, "RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_ENVELOPE_FAILED");
+      const auto account = latestAccountFact(manager, fromBridgeAddress(sender)).value_or(state_api::ZeroAccount);
 
-      rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact fact;
+      rustaxa::TransactionManagerVerifyNotFinalizedSidecarFact fact;
       fact.input_index = input_index++;
       fact.hash = envelope.hash;
       fact.transaction_nonce = envelope.nonce;
-      fact.sender = sender;
+      fact.sender_account_nonce = toBridgeU256(account.nonce);
       facts.push_back(fact);
     }
 
     const auto outcome = [&]() {
       try {
-        return rustaxa::transaction_manager_verify_not_finalized_with_runtime_and_final_chain(
-            *manager.runtime_, manager.final_chain_->rustFinalChainForRust(), std::move(facts));
+        return rustaxa::transaction_manager_verify_not_finalized_with_runtime(*manager.runtime_, std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: ") + e.what());
       }
@@ -982,8 +1008,7 @@ class TransactionManagerRustShimAccess {
   }
 
   static rustaxa::TransactionManagerVerifyNotFinalizedOutcome verifyTransactionsNotFinalizedDetailed(
-      const TransactionManager& manager,
-      rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact>&& facts) {
+      const TransactionManager& manager, rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact>&& facts) {
     if (!manager.final_chain_) {
       throw DbException("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: FinalChain is required for transaction facts");
     }
@@ -994,10 +1019,24 @@ class TransactionManagerRustShimAccess {
       expected_hashes.emplace_back(fact.hash.data(), trx_hash_t::ConstructFromPointer);
     }
 
+    rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedSidecarFact> sidecar_facts;
+    sidecar_facts.reserve(facts.size());
+    for (const auto& fact : facts) {
+      const auto account = latestAccountFact(manager, addr_t(fact.sender.data(), addr_t::ConstructFromPointer))
+                               .value_or(state_api::ZeroAccount);
+
+      rustaxa::TransactionManagerVerifyNotFinalizedSidecarFact sidecar_fact;
+      sidecar_fact.input_index = fact.input_index;
+      sidecar_fact.hash = fact.hash;
+      sidecar_fact.transaction_nonce = fact.transaction_nonce;
+      sidecar_fact.sender_account_nonce = toBridgeU256(account.nonce);
+      sidecar_facts.push_back(sidecar_fact);
+    }
+
     const auto outcome = [&]() {
       try {
-        return rustaxa::transaction_manager_verify_not_finalized_with_runtime_and_final_chain(
-            *manager.runtime_, manager.final_chain_->rustFinalChainForRust(), std::move(facts));
+        return rustaxa::transaction_manager_verify_not_finalized_with_runtime(*manager.runtime_,
+                                                                              std::move(sidecar_facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: ") + e.what());
       }
@@ -1005,12 +1044,14 @@ class TransactionManagerRustShimAccess {
 
     if (outcome.is_finalized) {
       if (outcome.input_index >= expected_hashes.size()) {
-        throw DbException("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: Rust returned an out-of-range transaction index");
+        throw DbException(
+            "RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: Rust returned an out-of-range transaction index");
       }
 
       const auto trx_hash = fromBridgeHash(outcome.hash);
       if (trx_hash != expected_hashes[static_cast<size_t>(outcome.input_index)]) {
-        throw DbException("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: Rust returned a transaction hash/index mismatch");
+        throw DbException(
+            "RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: Rust returned a transaction hash/index mismatch");
       }
 
       if (outcome.source == kVerifyNotFinalizedRecentSidecar) {
@@ -1186,8 +1227,8 @@ class TransactionManagerRustShimAccess {
   }
 
   static void initializeRecentlyFinalizedTransactionPayloads(TransactionManager& manager, PbftPeriod period,
-                                                            const vec_trx_t& transaction_hashes,
-                                                            const std::vector<dev::bytes>& transaction_rlps) {
+                                                             const vec_trx_t& transaction_hashes,
+                                                             const std::vector<dev::bytes>& transaction_rlps) {
     if (transaction_hashes.size() != transaction_rlps.size()) {
       throw DbException(
           "RUST_TX_MANAGER_RECENT_SIDECAR_INIT_FAILED: finalized transaction payload lengths do not match");
@@ -1214,7 +1255,8 @@ class TransactionManagerRustShimAccess {
   }
 
   static rustaxa::TransactionManagerFinalizedStatusCommandReport updateFinalizedTransactionsStatusReport(
-      TransactionManager& manager, PbftPeriod period, rust::Vec<rustaxa::FinalizedTransactionStatusSidecarFact>&& facts) {
+      TransactionManager& manager, PbftPeriod period,
+      rust::Vec<rustaxa::FinalizedTransactionStatusSidecarFact>&& facts) {
     const auto recently_finalized_transactions_periods =
         kRecentlyFinalizedTransactionsFactor * manager.final_chain_->delegationDelay();
 
@@ -1245,9 +1287,8 @@ class TransactionManagerRustShimAccess {
   static rustaxa::TransactionManagerFinalizedStatusCommandReport updateFinalizedTransactionsStatusReport(
       TransactionManager& manager, const PeriodData& period_data) {
     const auto payloads = periodTransactionPayloads(period_data);
-    return updateFinalizedTransactionsStatusReport(
-        manager, period_data.pbft_blk->getPeriod(),
-        buildFinalizedStatusPayloadFacts(payloads.first, payloads.second));
+    return updateFinalizedTransactionsStatusReport(manager, period_data.pbft_blk->getPeriod(),
+                                                   buildFinalizedStatusPayloadFacts(payloads.first, payloads.second));
   }
 
   static void updateFinalizedTransactionsStatus(TransactionManager& manager, const PeriodData& period_data) {

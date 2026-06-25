@@ -80,13 +80,7 @@ class ExtVotesPacketHandler : public PacketHandler {
   rustaxa::NetworkIngressDecision ingestPbftVoteBundleMember(const rustaxa::PbftVoteIngressFact& reference,
                                                              const rustaxa::PbftVoteIngressFact& vote,
                                                              const rustaxa::NetworkPbftVoteIngressContext& context);
-  rustaxa::NetworkIngressDecision queuePbftVoteAdmissionEffects(
-      const rustaxa::NetworkPbftVoteAdmissionEffects& effects);
-  rustaxa::NetworkIngressDecision queuePbftBlockAdmissionEffects(
-      const rustaxa::NetworkPbftBlockAdmissionEffects& effects);
   rustaxa::NetworkIngressDecision queuePbftVoteGossipEffects(const rustaxa::NetworkPbftVoteGossipEffects& effects);
-  rustaxa::NetworkIngressDecision queuePbftProposedBlockSidecarEffects(
-      const rustaxa::NetworkPbftProposedBlockSidecarEffects& effects);
   void executeConsensusNetworkEffects(size_t budget);
   void executeConsensusNetworkEffects(size_t budget, const std::shared_ptr<PbftVote>& gossip_vote,
                                       const std::shared_ptr<PbftBlock>& gossip_block);

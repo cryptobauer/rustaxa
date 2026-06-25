@@ -201,14 +201,12 @@ Rules:
   - Network effect result reports now echo typed effect identity fields, and Rust rejects mismatched reports before
     accepting acknowledgements. This keeps temporary executor work visible instead of treating an `effect_id` alone as
     proof that the intended action ran.
-  - This is still not the final production route: proposed-block sidecar request recording and sidecar/mark effects for some
-    packet-admission paths still use temporary `NetworkEffect` queues and remain to be moved into direct C++/Rust integration
-    without the queue hop.
+  - This is still not the final production route: accepted PBFT vote gossip still uses the temporary
+    `consensus_network_queue_pbft_vote_gossip_effects` / `NetworkEffect` queue so Rust can request gossip while tarcap
+    owns peer filtering, packet wrapping, and transport execution.
   - Status packet ingress still performs pending-peer lookup and peer-state materialization in tarcap. Status egress
     still reads local PBFT/DAG snapshot facts directly until the facade is injected with Rust-owned local status
     snapshot state.
-  - Proposed-block sidecar recording still uses temporary queue-based record-object APIs on some remaining packet families while
-    the broader Rust-side proposed-block runtime/storage integration is completed.
   - The facade methods themselves do not call consensus shims, C++ consensus managers, `DbStorage`, peer transport,
     packet wrapping, or gossip.
 First useful routes:

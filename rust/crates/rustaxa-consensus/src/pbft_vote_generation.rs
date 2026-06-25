@@ -475,6 +475,8 @@ mod tests {
                 strict_vrf: true,
                 committee_size: 50,
                 number_of_proposers: 100,
+                has_preverified_weight: false,
+                preverified_weight: 0,
             },
         )
         .unwrap();

@@ -119,8 +119,8 @@ class DagManager : public DagManagerOld {
   /**
    * Plans a DAG proposal attempt up to the live transaction-packing boundary.
    *
-   * Rust collects DAG runtime/storage facts and owns the pre-transaction proposal decision. C++ supplies live outer facts
-   * such as transaction pool pressure, FinalChain authorization facts, wallet keys, and retry state.
+   * Rust collects DAG runtime/storage facts and owns the pre-transaction proposal decision. C++ supplies live outer
+   * facts such as transaction pool pressure, FinalChain authorization facts, wallet keys, and retry state.
    */
   rustaxa::DagProposerAttemptPlan planProposerAttempt(rustaxa::DagProposerAttemptInput input) const;
   /**
@@ -150,6 +150,7 @@ class DagManager : public DagManagerOld {
 
  private:
   void rebuildRustGraphsFromStorage();
+  void mirrorDagCountersFromRuntime() const;
   bool addBlockToRustGraphs(const std::shared_ptr<DagBlock> &blk);
   bool addBlockToRustGraphs(const rustaxa::DagManagerBlock &blk);
   std::pair<blk_hash_t, std::vector<blk_hash_t>> getRustFrontier() const;

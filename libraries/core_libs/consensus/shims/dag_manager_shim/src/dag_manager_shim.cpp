@@ -257,8 +257,7 @@ dev::bytes rust_vdf_message(const blk_hash_t &pivot, const std::vector<trx_hash_
 }
 
 rustaxa::DagVerifyBlockSessionInput to_bridge_verify_block_session_input(
-    const std::shared_ptr<DagBlock> &block,
-    const std::unordered_map<trx_hash_t, std::shared_ptr<Transaction>> &trxs) {
+    const std::shared_ptr<DagBlock> &block, const std::unordered_map<trx_hash_t, std::shared_ptr<Transaction>> &trxs) {
   rustaxa::DagVerifyBlockSessionInput out;
   out.block_level = block->getLevel();
   out.pivot = to_bridge_hash(block->getPivot());
@@ -370,9 +369,15 @@ void DagManager::rebuildRustGraphsFromStorage() {
   try {
     std::unique_lock lock(rust_graphs_mutex_);
     rust_graphs_->runtime->dag_manager_runtime_restore_from_storage();
+    mirrorDagCountersFromRuntime();
   } catch (const std::exception &e) {
     std::cerr << "DagManager: failed to rebuild Rust state from storage: " << e.what() << std::endl;
   }
+}
+
+void DagManager::mirrorDagCountersFromRuntime() const {
+  const auto counters = rust_graphs_->runtime->dag_manager_runtime_persistence_counters();
+  db_->mirrorDagBlockCounters(counters.dag_blocks, counters.dag_edges);
 }
 
 bool DagManager::addBlockToRustGraphs(const std::shared_ptr<DagBlock> &blk) {
@@ -444,8 +449,7 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
   SharedTransactions all_block_trxs;
   all_block_trxs.reserve(blk->getTrxs().size());
 
-  auto finish_if_complete =
-      [&](const rustaxa::DagVerifyBlockSessionStep &step)
+  auto finish_if_complete = [&](const rustaxa::DagVerifyBlockSessionStep &step)
       -> std::optional<std::pair<DagManager::VerifyBlockReturnType, SharedTransactions>> {
     if (step.status == kDagVerifySessionStatusInvalidReport) {
       throw std::runtime_error("DagManager: Rust verifyBlock session rejected executor report: " +
@@ -562,9 +566,9 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
         rust_graphs_->runtime->dag_manager_runtime_tip_gas_estimations(to_bridge_dag_hashes(blk->getTips()));
   }
 
-  step = verify_session->dag_verify_block_session_report_gas(to_bridge_verify_block_gas_report(
-      blk->getGasEstimation(), estimated_transactions_weight, dag_gas_limit, pbft_gas_limit,
-      std::move(tip_gas_estimations)));
+  step = verify_session->dag_verify_block_session_report_gas(
+      to_bridge_verify_block_gas_report(blk->getGasEstimation(), estimated_transactions_weight, dag_gas_limit,
+                                        pbft_gas_limit, std::move(tip_gas_estimations)));
   if (auto complete = finish_if_complete(step); complete.has_value()) {
     return std::move(*complete);
   }
@@ -581,8 +585,8 @@ std::pair<bool, std::vector<blk_hash_t>> DagManager::pivotAndTipsAvailable(const
 
 rustaxa::DagProposerAddBlockReport DagManager::addDagBlockRlp(rustaxa::DagProposerSignedBlockIntent signed_block,
                                                               const vec_trx_t &transaction_hashes,
-                                                              std::vector<dev::bytes> &&transaction_rlps,
-                                                              bool proposed, bool save) {
+                                                              std::vector<dev::bytes> &&transaction_rlps, bool proposed,
+                                                              bool save) {
   const auto block_rlp = from_rust_bytes(signed_block.block_rlp);
   const auto block_facts = rustaxa::dag_manager_block_from_rlp(to_rust_vec(block_rlp));
   if (signed_block.block_hash != block_facts.hash) {
@@ -625,6 +629,7 @@ rustaxa::DagProposerAddBlockReport DagManager::addDagBlockRlp(rustaxa::DagPropos
     std::shared_lock lock(rust_graphs_mutex_);
     rust_graphs_->runtime->dag_manager_runtime_save_block(block_facts.hash, block_facts.level, block_facts.tips.size(),
                                                           to_rust_vec(block_rlp));
+    mirrorDagCountersFromRuntime();
   }
 
   if (add_plan.add_to_graph) {
@@ -632,6 +637,9 @@ rustaxa::DagProposerAddBlockReport DagManager::addDagBlockRlp(rustaxa::DagPropos
     {
       std::unique_lock lock(rust_graphs_mutex_);
       added_to_rust_graph = addBlockToRustGraphs(block_facts);
+      if (added_to_rust_graph) {
+        mirrorDagCountersFromRuntime();
+      }
     }
     if (!added_to_rust_graph) {
       throw std::runtime_error("DagManager: failed to add persisted DAG block facts to Rust graph");
@@ -688,6 +696,7 @@ std::pair<bool, std::vector<blk_hash_t>> DagManager::addDagBlock(const std::shar
     std::shared_lock lock(rust_graphs_mutex_);
     rust_graphs_->runtime->dag_manager_runtime_save_block(to_bridge_hash(blk_hash), blk->getLevel(),
                                                           blk->getTips().size(), std::move(block_rlp));
+    mirrorDagCountersFromRuntime();
   }
 
   if (add_plan.add_to_graph) {
@@ -695,6 +704,9 @@ std::pair<bool, std::vector<blk_hash_t>> DagManager::addDagBlock(const std::shar
     {
       std::unique_lock lock(rust_graphs_mutex_);
       added_to_rust_graph = addBlockToRustGraphs(blk);
+      if (added_to_rust_graph) {
+        mirrorDagCountersFromRuntime();
+      }
     }
     if (!added_to_rust_graph) {
       throw std::runtime_error("DagManager: failed to add persisted DAG block to Rust graph");
@@ -749,6 +761,7 @@ uint DagManager::setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, v
       }
       finalized = rust_graphs_->runtime->dag_manager_runtime_apply_finalized_order(to_bridge_hash(anchor), period,
                                                                                    to_bridge_dag_hashes(dag_order));
+      mirrorDagCountersFromRuntime();
     }
 
     const auto finalized_count = finalized.finalized_count;
@@ -825,12 +838,14 @@ void DagManager::drawGraph(std::string const &dotfile) const {
 std::pair<uint64_t, uint64_t> DagManager::getNumVerticesInDag() const {
   std::shared_lock lock(rust_graphs_mutex_);
   const auto persisted_counts = rust_graphs_->runtime->dag_manager_runtime_persistence_counters();
+  mirrorDagCountersFromRuntime();
   return {persisted_counts.dag_blocks, rust_graphs_->runtime->dag_manager_runtime_vertex_count()};
 }
 
 std::pair<uint64_t, uint64_t> DagManager::getNumEdgesInDag() const {
   std::shared_lock lock(rust_graphs_mutex_);
   const auto persisted_counts = rust_graphs_->runtime->dag_manager_runtime_persistence_counters();
+  mirrorDagCountersFromRuntime();
   return {persisted_counts.dag_edges, rust_graphs_->runtime->dag_manager_runtime_edge_count()};
 }
 

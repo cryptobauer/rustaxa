@@ -38,15 +38,6 @@ rustaxa::NetworkApiConfig defaultNetworkApiConfig() {
   return config;
 }
 
-rust::Vec<uint8_t> toBridgeBytes(const bytes &input) {
-  rust::Vec<uint8_t> output;
-  output.reserve(input.size());
-  for (const auto byte : input) {
-    output.push_back(static_cast<uint8_t>(byte));
-  }
-  return output;
-}
-
 }  // namespace
 
 struct ExtVotesPacketHandler::RustConsensusNetworkApiHolder {
@@ -87,8 +78,8 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
 #ifdef RUSTAXA_ENABLE
   // TODO(rustaxa): move this temporary network-handler hook into the future
   // tarcap/network pipeline overlay. Rust decides deterministic PBFT vote
-  // ingress gates here; C++ still executes peer sync requests, live sidecar
-  // admission, proposed-block handling, logging, and typed network effects.
+  // ingress gates here; C++ still executes peer sync requests, gossiping, and
+  // typed network effects.
   const auto [current_pbft_round, current_pbft_period] = pbft_mgr_->getPbftRoundAndPeriod();
   rustaxa::PbftVoteIngressFact ingress_fact{};
   ingress_fact.period = vote->getPeriod();
@@ -147,27 +138,18 @@ ExtVotesPacketHandler::VoteProcessingResult ExtVotesPacketHandler::processVote(
   }
 
   if (result.mark_vote_known) {
-    rustaxa::NetworkPbftVoteAdmissionEffects effects{};
-    effects.peer_id = peer->getId().asArray();
-    effects.vote_hash = vote->getHash().asArray();
-    effects.source_payload_id = 0;
-    effects.mark_vote_known = true;
-    (void)queuePbftVoteAdmissionEffects(effects);
-    executeConsensusNetworkEffects(16);
-    result.mark_vote_known = false;
+    peer->markPbftVoteAsKnown(vote->getHash());
   }
 
   if (pbft_block) {
-    rustaxa::NetworkPbftProposedBlockSidecarEffects effects{};
-    effects.peer_id = peer->getId().asArray();
-    effects.period = pbft_block->getPeriod();
-    effects.block_hash = pbft_block->getBlockHash().asArray();
-    effects.pivot_hash = pbft_block->getPivotDagBlockHash().asArray();
-    effects.block_rlp = toBridgeBytes(pbft_block->rlp(true));
-    effects.source_payload_id = 0;
-    effects.record_block = true;
-    (void)queuePbftProposedBlockSidecarEffects(effects);
-    executeConsensusNetworkEffects(16);
+    try {
+      pbft_mgr_->processProposedBlock(pbft_block);
+      peer->markPbftBlockAsKnown(pbft_block->getBlockHash());
+    } catch (const std::exception &e) {
+      LOG(this->log_wr_) << "Unable to process PBFT proposed-block sidecar from vote " << vote->getHash()
+                         << ". Err msg: " << e.what();
+      return {};
+    }
   }
 
   return result;
@@ -362,36 +344,17 @@ rustaxa::NetworkIngressDecision ExtVotesPacketHandler::ingestPbftVoteBundleMembe
   return rust_consensus_network_api_->api->consensus_network_ingest_pbft_vote_bundle_member(reference, vote, context);
 }
 
-rustaxa::NetworkIngressDecision ExtVotesPacketHandler::queuePbftVoteAdmissionEffects(
-    const rustaxa::NetworkPbftVoteAdmissionEffects &effects) {
-  assert(rust_consensus_network_api_);
-  return rust_consensus_network_api_->api->consensus_network_queue_pbft_vote_admission_effects(effects);
-}
-
-rustaxa::NetworkIngressDecision ExtVotesPacketHandler::queuePbftBlockAdmissionEffects(
-    const rustaxa::NetworkPbftBlockAdmissionEffects &effects) {
-  assert(rust_consensus_network_api_);
-  return rust_consensus_network_api_->api->consensus_network_queue_pbft_block_admission_effects(effects);
-}
-
 rustaxa::NetworkIngressDecision ExtVotesPacketHandler::queuePbftVoteGossipEffects(
     const rustaxa::NetworkPbftVoteGossipEffects &effects) {
   assert(rust_consensus_network_api_);
   return rust_consensus_network_api_->api->consensus_network_queue_pbft_vote_gossip_effects(effects);
 }
 
-rustaxa::NetworkIngressDecision ExtVotesPacketHandler::queuePbftProposedBlockSidecarEffects(
-    const rustaxa::NetworkPbftProposedBlockSidecarEffects &effects) {
-  assert(rust_consensus_network_api_);
-  return rust_consensus_network_api_->api->consensus_network_queue_pbft_proposed_block_sidecar_effects(effects);
-}
-
 void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget) {
   executeConsensusNetworkEffects(budget, nullptr, nullptr);
 }
 
-void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget,
-                                                           const std::shared_ptr<PbftVote> &gossip_vote,
+void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget, const std::shared_ptr<PbftVote> &gossip_vote,
                                                            const std::shared_ptr<PbftBlock> &gossip_block) {
   assert(rust_consensus_network_api_);
   const auto batch = rust_consensus_network_api_->api->consensus_network_drain_work(static_cast<uint32_t>(budget));
@@ -409,7 +372,7 @@ void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget,
     result.status = kNetworkEffectResultStatusOk;
 
     try {
-      const dev::p2p::NodeID peer_id(effect.peer_id);
+      const dev::p2p::NodeID peer_id(effect.peer_id.data(), dev::p2p::NodeID::ConstructFromPointer);
       if (effect.kind == kNetworkEffectKindRequestSync && effect.sync_kind == kNetworkSyncKindPbftChain) {
         sealAndSend(peer_id, SubprotocolPacketType::kGetPbftSyncPacket,
                     encodePacketRlp(GetPbftSyncPacket{effect.sync_start}));
@@ -420,14 +383,13 @@ void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget,
         }
         for (const auto &peer : peers_state_->getAllPeers()) {
           if (peer.second->syncing_) {
-            LOG(log_dg_) << " PBFT vote " << gossip_vote->getHash() << " not sent to " << peer.first
-                         << " peer syncing";
+            LOG(log_dg_) << " PBFT vote " << gossip_vote->getHash() << " not sent to " << peer.first << " peer syncing";
             continue;
           }
 
           bool excluded = false;
           for (const auto &excluded_peer : effect.exclude_peers) {
-            if (dev::p2p::NodeID(excluded_peer.id) == peer.first) {
+            if (dev::p2p::NodeID(excluded_peer.id.data(), dev::p2p::NodeID::ConstructFromPointer) == peer.first) {
               excluded = true;
               break;
             }
@@ -468,12 +430,12 @@ void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget,
       } else if (effect.kind == kNetworkEffectKindMarkPeerKnown && effect.object_kind == kNetworkObjectKindPbftVote) {
         const auto peer = peers_state_->getPeer(peer_id);
         if (peer) {
-          peer->markPbftVoteAsKnown(vote_hash_t(effect.object_hash));
+          peer->markPbftVoteAsKnown(vote_hash_t(effect.object_hash.data(), vote_hash_t::ConstructFromPointer));
         }
       } else if (effect.kind == kNetworkEffectKindMarkPeerKnown && effect.object_kind == kNetworkObjectKindPbftBlock) {
         const auto peer = peers_state_->getPeer(peer_id);
         if (peer) {
-          peer->markPbftBlockAsKnown(blk_hash_t(effect.object_hash));
+          peer->markPbftBlockAsKnown(blk_hash_t(effect.object_hash.data(), blk_hash_t::ConstructFromPointer));
         }
       } else if (effect.kind == kNetworkEffectKindDisconnectPeer) {
         disconnect(peer_id, dev::p2p::UserReason);

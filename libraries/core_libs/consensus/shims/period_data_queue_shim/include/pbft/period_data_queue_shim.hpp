@@ -29,8 +29,8 @@ class PeriodData;
  * Ownership:
  * - Rust owns entry order, accepted period tracking, effective processable size, pop vote-source decisions, cleanup
  *   planning, and clear semantics.
- * - C++ owns live `PeriodData` and peer `NodeID` objects until those model types are ported. PBFT cert-vote payloads
- *   are retained in Rust as canonical bytes and materialized into C++ vote sidecars only at executor boundaries.
+ * - C++ owns live `PeriodData`, weighted cert-vote sidecars, and peer `NodeID` objects until those model types are
+ *   ported. Rust still owns canonical cert-vote bytes and selects which sidecar source is used for a popped entry.
  *
  * Invariants:
  * - all Rust queue calls and live payload mutation are guarded by `queue_access_`
@@ -95,6 +95,14 @@ class PeriodDataQueue {
   PoppedPeriodData popWithMetadata();
 
   /**
+   * Pops one queue entry using the legacy tuple shape.
+   *
+   * This compatibility API is used only by legacy `PbftManagerOld` compilation while Rust mode links the full PBFT
+   * manager shim. Queue selection, size accounting, and cert-vote source decisions still come from Rust metadata.
+   */
+  std::tuple<PeriodData, std::vector<std::shared_ptr<PbftVote>>, dev::p2p::NodeID> pop();
+
+  /**
    * Clears all queue state and resets tracked period.
    */
   void clear();
@@ -130,6 +138,14 @@ class PeriodDataQueue {
   blk_hash_t lastBlockHashOrChain(uint64_t current_period, const blk_hash_t& chain_last_hash) const;
 
   /**
+   * Returns the newest queued PBFT block sidecar for legacy compilation compatibility.
+   *
+   * Rust owns the queue metadata; this method only exposes the temporary live C++ sidecar that still accompanies queued
+   * period data until PBFT sync processing no longer materializes legacy `PeriodData` objects.
+   */
+  std::shared_ptr<PbftBlock> lastPbftBlock() const;
+
+  /**
    * Removes queued entries with period lower than `period`.
    */
   void cleanOldData(uint64_t period);
@@ -138,6 +154,8 @@ class PeriodDataQueue {
   struct QueuedPayload {
     uint64_t entry_id = 0;
     PeriodData period_data;
+    std::vector<std::shared_ptr<PbftVote>> previous_block_cert_votes;
+    std::vector<std::shared_ptr<PbftVote>> current_block_cert_votes;
     dev::p2p::NodeID node_id;
   };
 
