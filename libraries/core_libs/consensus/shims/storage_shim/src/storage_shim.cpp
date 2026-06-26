@@ -755,6 +755,11 @@ void DbStorage::removeTransactionToBatch(trx_hash_t const& trx, Batch& write_bat
   rustaxa::storage_shim_remove_transaction(getOrCreateRustBatch(write_batch), h_arr);
 }
 
+bool DbStorage::transactionInDb(trx_hash_t const& hash) {
+  auto h_arr = into_bytes_array(hash);
+  return transaction_queries_.value()->transaction_in_db(h_arr);
+}
+
 bool DbStorage::transactionFinalized(trx_hash_t const& hash) {
   auto h_arr = into_bytes_array(hash);
   return transaction_queries_.value()->transaction_finalized(h_arr);
