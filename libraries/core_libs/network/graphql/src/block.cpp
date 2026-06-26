@@ -11,6 +11,23 @@ using namespace std::literals;
 
 namespace graphql::taraxa {
 
+namespace {
+BlockTransactionReader makeBlockTransactionReader(
+    const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain) {
+  BlockTransactionReader reader;
+  reader.transaction_count = [final_chain](::taraxa::EthBlockNumber block_number) {
+    return final_chain ? final_chain->transactionCount(block_number) : 0;
+  };
+  reader.transactions = [final_chain](::taraxa::EthBlockNumber block_number) {
+    if (!final_chain) {
+      return std::vector<std::shared_ptr<::taraxa::Transaction>>{};
+    }
+    return final_chain->transactions(block_number);
+  };
+  return reader;
+}
+}  // namespace
+
 #ifdef RUSTAXA_ENABLE
 namespace {
 constexpr uint8_t kConsensusQueryTransactionSourceMissing = 0;
@@ -63,6 +80,7 @@ Block::Block(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
       trx_manager_(std::move(trx_manager)),
       get_block_by_num_(std::move(get_block_by_num)),
       account_reader_(makeAccountStateReader(final_chain_)),
+      transaction_reader_(makeBlockTransactionReader(final_chain_)),
       kPBftBlockHash(pbft_block_hash),
       block_header_(std::move(block_header))
 #ifdef RUSTAXA_ENABLE
@@ -78,9 +96,18 @@ Block::Block(AccountStateReader account_reader, std::shared_ptr<::taraxa::Transa
              std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
              const ::taraxa::blk_hash_t& pbft_block_hash,
              std::shared_ptr<const ::taraxa::final_chain::BlockHeader> block_header) noexcept
+    : Block(std::move(account_reader), BlockTransactionReader{}, std::move(trx_manager), std::move(get_block_by_num),
+            pbft_block_hash, std::move(block_header)) {}
+
+Block::Block(AccountStateReader account_reader, BlockTransactionReader transaction_reader,
+             std::shared_ptr<::taraxa::TransactionManager> trx_manager,
+             std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
+             const ::taraxa::blk_hash_t& pbft_block_hash,
+             std::shared_ptr<const ::taraxa::final_chain::BlockHeader> block_header) noexcept
     : trx_manager_(std::move(trx_manager)),
       get_block_by_num_(std::move(get_block_by_num)),
       account_reader_(std::move(account_reader)),
+      transaction_reader_(std::move(transaction_reader)),
       kPBftBlockHash(pbft_block_hash),
       block_header_(std::move(block_header)) {}
 
@@ -106,8 +133,11 @@ std::optional<int> Block::getTransactionCount() const noexcept {
     return std::optional<int>(static_cast<int>(transaction_count_query_(block_header_->number)));
   }
 #endif
+  if (transaction_reader_.transaction_count) {
+    return std::optional<int>(static_cast<int>(transaction_reader_.transaction_count(block_header_->number)));
+  }
   if (!transactions_.size()) {
-    return std::optional<int>(final_chain_->transactionCount(block_header_->number));
+    return 0;
   } else {
     return std::optional<int>(transactions_.size());
   }
@@ -186,7 +216,9 @@ std::optional<std::vector<std::shared_ptr<object::Transaction>>> Block::getTrans
 
   std::vector<std::shared_ptr<object::Transaction>> ret;
   if (!transactions_.size()) {
-    transactions_ = final_chain_->transactions(block_header_->number);
+    if (transaction_reader_.transactions) {
+      transactions_ = transaction_reader_.transactions(block_header_->number);
+    }
     if (!transactions_.size()) return std::nullopt;
   }
   ret.reserve(transactions_.size());
@@ -216,7 +248,9 @@ std::shared_ptr<object::Transaction> Block::getTransactionAt(response::IntType&&
 #endif
 
   if (!transactions_.size()) {
-    transactions_ = final_chain_->transactions(block_header_->number);
+    if (transaction_reader_.transactions) {
+      transactions_ = transaction_reader_.transactions(block_header_->number);
+    }
     if (!transactions_.size()) return nullptr;
   }
   if (transactions_.size() < static_cast<size_t>(index)) {

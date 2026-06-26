@@ -912,6 +912,47 @@ TEST_F(RPCTest, graphql_block_accounts_use_account_reader) {
   EXPECT_EQ(2, *account_calls);
 }
 
+TEST_F(RPCTest, graphql_block_transactions_use_transaction_reader) {
+  auto transaction = samples::createSignedTrxSamples(1, 1, secret_t::random()).front();
+  auto count_called = std::make_shared<bool>(false);
+  auto transactions_called = std::make_shared<bool>(false);
+
+  graphql::taraxa::AccountStateReader account_reader;
+  account_reader.account_at = [](const dev::Address&, std::optional<EthBlockNumber>) {
+    return std::optional<state_api::Account>{};
+  };
+  account_reader.storage_at = [](const dev::Address&, const dev::u256&, std::optional<EthBlockNumber>) {
+    return dev::h256();
+  };
+  account_reader.code_at = [](const dev::Address&, std::optional<EthBlockNumber>) { return dev::bytes{}; };
+  account_reader.latest_finalized_block_number = [] { return EthBlockNumber(0); };
+
+  graphql::taraxa::BlockTransactionReader transaction_reader;
+  transaction_reader.transaction_count = [count_called](EthBlockNumber block_number) {
+    *count_called = true;
+    EXPECT_EQ(EthBlockNumber(18), block_number);
+    return uint64_t(1);
+  };
+  transaction_reader.transactions = [transactions_called, transaction](EthBlockNumber block_number) {
+    *transactions_called = true;
+    EXPECT_EQ(EthBlockNumber(18), block_number);
+    return std::vector<std::shared_ptr<Transaction>>{transaction};
+  };
+
+  auto header = std::make_shared<final_chain::BlockHeader>();
+  header->number = 18;
+
+  graphql::taraxa::Block block(
+      std::move(account_reader), std::move(transaction_reader), nullptr, [](EthBlockNumber) { return nullptr; },
+      blk_hash_t(2), header);
+
+  EXPECT_EQ(1, block.getTransactionCount().value());
+  const auto graphql_transaction = block.getTransactionAt(graphql::response::IntType(0));
+  ASSERT_NE(nullptr, graphql_transaction);
+  ASSERT_TRUE(*count_called);
+  ASSERT_TRUE(*transactions_called);
+}
+
 TEST_F(RPCTest, graphql_dag_block_author_uses_account_reader) {
   auto dag_block = std::make_shared<DagBlock>(blk_hash_t(1), level_t(1), vec_blk_t{}, vec_trx_t{}, secret_t::random());
   const auto author = dag_block->getSender();

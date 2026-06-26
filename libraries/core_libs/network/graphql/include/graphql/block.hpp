@@ -14,6 +14,15 @@
 #endif
 
 namespace graphql::taraxa {
+
+// BlockTransactionReader is GraphQL's minimal block-transaction boundary. It
+// supplies finalized transaction count and transaction vectors for one block
+// number without exposing FinalChain or storage objects to field resolvers.
+struct BlockTransactionReader {
+  std::function<uint64_t(::taraxa::EthBlockNumber)> transaction_count;
+  std::function<std::vector<std::shared_ptr<::taraxa::Transaction>>(::taraxa::EthBlockNumber)> transactions;
+};
+
 class Block {
  public:
   explicit Block(
@@ -30,6 +39,11 @@ class Block {
 #endif
       ) noexcept;
   explicit Block(AccountStateReader account_reader, std::shared_ptr<::taraxa::TransactionManager> trx_manager,
+                 std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
+                 const ::taraxa::blk_hash_t& pbft_block_hash,
+                 std::shared_ptr<const ::taraxa::final_chain::BlockHeader> block_header) noexcept;
+  explicit Block(AccountStateReader account_reader, BlockTransactionReader transaction_reader,
+                 std::shared_ptr<::taraxa::TransactionManager> trx_manager,
                  std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
                  const ::taraxa::blk_hash_t& pbft_block_hash,
                  std::shared_ptr<const ::taraxa::final_chain::BlockHeader> block_header) noexcept;
@@ -68,6 +82,7 @@ class Block {
   std::shared_ptr<::taraxa::TransactionManager> trx_manager_;
   std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num_;
   AccountStateReader account_reader_;
+  BlockTransactionReader transaction_reader_;
   const ::taraxa::blk_hash_t kPBftBlockHash;
   std::shared_ptr<const ::taraxa::final_chain::BlockHeader> block_header_;
   mutable std::vector<std::shared_ptr<::taraxa::Transaction>> transactions_;

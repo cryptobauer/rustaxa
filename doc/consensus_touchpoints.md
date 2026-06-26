@@ -447,6 +447,9 @@ Implemented first slice:
 - GraphQL `Block.transactionCount`, `Block.transactions`, and `Block.transactionAt` now use `ConsensusQueryApi` in Rust
   mode for finalized transaction counts, indexed transaction payloads, and receipt DTOs instead of lazy-loading
   `FinalChain` transaction vectors and receipts from the block object.
+- GraphQL `Block` now wraps finalized transaction-count and transaction-vector fallback reads in a local
+  `BlockTransactionReader` callback bundle. Rust-mode block routes still supply `ConsensusQueryApi` callbacks directly,
+  while legacy/default construction keeps the FinalChain-backed reader as an audited compatibility adapter.
 - GraphQL `nodeState.finalBlock` now uses `ConsensusQueryApi` in Rust mode for the finalized head number instead of
   reading `FinalChain` directly.
 - GraphQL `nodeState.dagBlockLevel`, `nodeState.dagBlockPeriod`, top-level `dagBlock` default selection, and
