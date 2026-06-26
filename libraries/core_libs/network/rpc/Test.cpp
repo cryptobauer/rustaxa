@@ -106,9 +106,20 @@ TestNodeStatusReader makeTestNodeStatusReader(std::weak_ptr<taraxa::AppBase> app
     if (!node) {
       return status;
     }
-    status.blocks_executed = node->getDB()->getNumBlockExecuted();              // RUSTAXA_QUERY_COMPAT_READ
-    status.dag_blocks_count = node->getDB()->getDagBlocksCount();               // RUSTAXA_QUERY_COMPAT_READ
-    status.transactions_executed = node->getDB()->getNumTransactionExecuted();  // RUSTAXA_QUERY_COMPAT_READ
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    const auto chain_stats = query_api->consensus_query_chain_stats();
+    status.blocks_executed = chain_stats.dag_blocks_executed;
+    status.dag_blocks_count = chain_stats.dag_blocks_count;
+    status.transactions_executed = chain_stats.transactions_executed;
+    status.transactions_count = chain_stats.transactions_count;
+    const auto consensus_status = query_api->consensus_query_status();
+    status.dag_level = consensus_status.latest_dag_level;
+    return status;
+#endif
+    status.blocks_executed = node->getDB()->getNumBlockExecuted();
+    status.dag_blocks_count = node->getDB()->getDagBlocksCount();
+    status.transactions_executed = node->getDB()->getNumTransactionExecuted();
     status.transactions_count = node->getTransactionManager()->getTransactionCount();
     status.dag_level = node->getDagManager()->getMaxLevel();
     return status;
@@ -124,15 +135,28 @@ TestSortitionReader makeTestSortitionReader(std::weak_ptr<taraxa::AppBase> app) 
     if (!node) {
       return view;
     }
-    const auto params_change = node->getDB()->getParamsChangeForPeriod(period);  // RUSTAXA_QUERY_COMPAT_READ
-    if (!params_change) {
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    const auto params_change = query_api->consensus_query_sortition_params_change_by_period(period);
+    if (!params_change.found) {
       return view;
     }
     view.found = true;
-    view.period = params_change->period;
-    view.interval_efficiency = params_change->interval_efficiency;
-    view.threshold_upper = params_change->vrf_params.threshold_upper;
-    view.threshold_upper_min = params_change->vrf_params.kThresholdUpperMinValue;
+    view.period = params_change.period;
+    view.interval_efficiency = params_change.interval_efficiency;
+    view.threshold_upper = params_change.threshold_upper;
+    view.threshold_upper_min = params_change.threshold_upper_min;
+    return view;
+#endif
+    const auto legacy_params_change = node->getDB()->getParamsChangeForPeriod(period);
+    if (!legacy_params_change) {
+      return view;
+    }
+    view.found = true;
+    view.period = legacy_params_change->period;
+    view.interval_efficiency = legacy_params_change->interval_efficiency;
+    view.threshold_upper = legacy_params_change->vrf_params.threshold_upper;
+    view.threshold_upper_min = legacy_params_change->vrf_params.kThresholdUpperMinValue;
     return view;
   };
   return reader;

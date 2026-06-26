@@ -615,9 +615,12 @@ Implemented first slice:
   level. Live network status, PBFT round/sync state, DPoS vote facts, PBFT queue size, transaction pool size, and
   non-finalized transaction size are supplied through the shared live status snapshot described below.
 - Test RPC legacy `get_node_status` persisted counters and DAG level now use a dedicated `TestNodeStatusReader` callback
-  bundle instead of reading `DbStorage`, `TransactionManager`, or `DagManager` directly from the public method.
+  bundle instead of reading `DbStorage`, `TransactionManager`, or `DagManager` directly from the public method. The
+  default reader uses `ConsensusQueryApi` in Rust mode and keeps the direct manager/storage reads only as the non-Rust
+  compatibility fallback.
 - Test RPC legacy `get_sortition_change` now uses a dedicated `TestSortitionReader` callback bundle for persisted
-  sortition params-change lookup instead of reading `DbStorage` directly from the public method.
+  sortition params-change lookup instead of reading `DbStorage` directly from the public method. The default reader uses
+  `ConsensusQueryApi` in Rust mode and keeps the direct `DbStorage` lookup only as the non-Rust compatibility fallback.
 - ETH `eth_syncing`, GraphQL `syncing.highestBlock`, and Test RPC `get_node_status` now consume a shared
   `LiveStatusReader` snapshot for live PBFT sync, peer progress, DPoS vote, queue, and transaction-pool facts. The
   production adapter in the RPC plugin is the remaining audited compatibility point that reads live Network/PBFT/Vote/
