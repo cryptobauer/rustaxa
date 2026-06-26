@@ -52,10 +52,31 @@ struct TaraxaDagBlockReader {
   std::function<std::shared_ptr<::taraxa::Transaction>(const trx_hash_t&)> transaction_by_hash;
 };
 
+// TaraxaChainStatsView is the storage-backed chain summary formatted by
+// taraxa_getChainStats. The fields are intentionally scalar so public RPC
+// methods do not need FinalChain or DbStorage handles for legacy fallback
+// materialization.
+struct TaraxaChainStatsView {
+  uint64_t pbft_period = 0;
+  uint64_t dag_blocks_executed = 0;
+  uint64_t transactions_executed = 0;
+};
+
+// TaraxaPersistentReader is the Taraxa RPC boundary for persisted consensus
+// metadata still needed by legacy fallback paths. Rust-enabled production
+// routes prefer ConsensusQueryApi when app storage is available; this reader is
+// the audited compatibility point for scalar DbStorage/FinalChain facts.
+struct TaraxaPersistentReader {
+  std::function<std::optional<blk_hash_t>(uint64_t)> pbft_block_hash_by_period;
+  std::function<TaraxaChainStatsView()> chain_stats;
+  std::function<std::optional<uint64_t>(uint64_t)> period_lambda;
+};
+
 class Taraxa : public TaraxaFace {
  public:
   explicit Taraxa(std::shared_ptr<taraxa::AppBase> app, TaraxaDposReader dpos_reader = {},
-                  TaraxaDagStatusReader dag_status_reader = {}, TaraxaDagBlockReader dag_block_reader = {});
+                  TaraxaDagStatusReader dag_status_reader = {}, TaraxaDagBlockReader dag_block_reader = {},
+                  TaraxaPersistentReader persistent_reader = {});
 
   virtual RPCModules implementedModules() const override { return RPCModules{RPCModule{"taraxa", "1.0"}}; }
 
@@ -81,6 +102,7 @@ class Taraxa : public TaraxaFace {
   TaraxaDposReader dpos_reader_;
   TaraxaDagStatusReader dag_status_reader_;
   TaraxaDagBlockReader dag_block_reader_;
+  TaraxaPersistentReader persistent_reader_;
 
  private:
   Json::Value version;

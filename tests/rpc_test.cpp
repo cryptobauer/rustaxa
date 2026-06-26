@@ -353,6 +353,43 @@ TEST_F(RPCTest, taraxa_dag_status_reads_use_dag_status_reader) {
   ASSERT_TRUE(*period_called);
 }
 
+TEST_F(RPCTest, taraxa_persistent_reads_use_persistent_reader) {
+  const auto block_hash = blk_hash_t::random();
+  auto hash_called = std::make_shared<bool>(false);
+  auto stats_called = std::make_shared<bool>(false);
+  auto lambda_called = std::make_shared<bool>(false);
+
+  net::TaraxaPersistentReader persistent_reader;
+  persistent_reader.pbft_block_hash_by_period = [hash_called, block_hash](uint64_t period) {
+    *hash_called = true;
+    EXPECT_EQ(uint64_t(8), period);
+    return std::optional<blk_hash_t>(block_hash);
+  };
+  persistent_reader.chain_stats = [stats_called] {
+    *stats_called = true;
+    return net::TaraxaChainStatsView{11, 13, 17};
+  };
+  persistent_reader.period_lambda = [lambda_called](uint64_t period) {
+    *lambda_called = true;
+    EXPECT_EQ(uint64_t(19), period);
+    return std::optional<uint64_t>(23);
+  };
+
+  net::Taraxa taraxa_rpc(nullptr, {}, {}, {}, std::move(persistent_reader));
+
+  EXPECT_EQ(dev::toJS(block_hash), taraxa_rpc.taraxa_pbftBlockHashByPeriod(dev::toJS(uint64_t(8))));
+  ASSERT_TRUE(*hash_called);
+
+  const auto stats = taraxa_rpc.taraxa_getChainStats();
+  EXPECT_EQ(Json::UInt64(11), stats["pbft_period"].asUInt64());
+  EXPECT_EQ(Json::UInt64(13), stats["dag_blocks_executed"].asUInt64());
+  EXPECT_EQ(Json::UInt64(17), stats["transactions_executed"].asUInt64());
+  ASSERT_TRUE(*stats_called);
+
+  EXPECT_EQ(dev::toJS(uint64_t(23)), taraxa_rpc.taraxa_getPeriodLambda(dev::toJS(uint64_t(19))));
+  ASSERT_TRUE(*lambda_called);
+}
+
 TEST_F(RPCTest, taraxa_dag_block_reads_use_dag_block_reader) {
   auto transaction = samples::createSignedTrxSamples(1, 1, secret_t::random()).front();
   const auto transaction_hash = transaction->getHash();
