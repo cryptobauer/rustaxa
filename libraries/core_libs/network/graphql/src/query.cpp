@@ -83,7 +83,15 @@ Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
       gas_pricer_(std::move(gas_pricer)),
       network_(std::move(network)),
       kChainId(chain_id),
-      live_status_(std::move(live_status)) {
+      live_status_(std::move(live_status)),
+      account_reader_(makeAccountStateReader(final_chain_)) {
+  get_block_by_num_ = [&](::taraxa::EthBlockNumber num) {
+    return getBlock(response::Value(static_cast<int>(num)), std::nullopt);
+  };
+}
+
+Query::Query(AccountStateReader account_reader, uint64_t chain_id) noexcept
+    : kChainId(chain_id), account_reader_(std::move(account_reader)) {
   get_block_by_num_ = [&](::taraxa::EthBlockNumber num) {
     return getBlock(response::Value(static_cast<int>(num)), std::nullopt);
   };
@@ -241,9 +249,9 @@ std::shared_ptr<object::Account> Query::getAccount(response::Value&& addressArg,
                                                    std::optional<response::Value>&& blockArg) const {
   const auto address = ::taraxa::addr_t(addressArg.get<std::string>());
   if (blockArg) {
-    return std::make_shared<object::Account>(std::make_shared<Account>(final_chain_, address, blockArg->get<int>()));
+    return std::make_shared<object::Account>(std::make_shared<Account>(account_reader_, address, blockArg->get<int>()));
   } else {
-    return std::make_shared<object::Account>(std::make_shared<Account>(final_chain_, address));
+    return std::make_shared<object::Account>(std::make_shared<Account>(account_reader_, address));
   }
 }
 

@@ -541,6 +541,9 @@ Implemented first slice:
 - GraphQL `Block.miner`, `Block.account`, and `DagBlock.author` now use the same `AccountStateReader` callback bundle
   instead of constructing account child objects from `FinalChain` directly. Existing block/DAG constructors remain
   compatibility adapters that build the reader from the FinalChain external-state boundary.
+- GraphQL top-level `account(address, block)` now also uses `AccountStateReader` instead of constructing the account
+  object from `FinalChain` directly. The default `Query` constructor keeps the same FinalChain-backed compatibility
+  adapter for now.
 - `taraxa_getPeriodLambda` now uses `ConsensusQueryApi` in Rust mode for exact persisted dynamic-lambda lookup instead
   of reading the metadata column through `DbStorage` directly.
 - `taraxa_getChainStats` now uses `ConsensusQueryApi` in Rust mode for latest finalized period and executed

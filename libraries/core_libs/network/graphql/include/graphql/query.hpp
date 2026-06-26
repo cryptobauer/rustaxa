@@ -3,6 +3,7 @@
 #include "QueryObject.h"
 #include "dag/dag_manager.hpp"
 #include "final_chain/final_chain.hpp"
+#include "graphql/account.hpp"
 #include "graphql/block.hpp"
 #include "network/live_status.hpp"
 #include "network/network.hpp"
@@ -19,6 +20,7 @@ class Query {
                  std::shared_ptr<::taraxa::DbStorage> db,  // RUSTAXA_QUERY_COMPAT_READ: GraphQL query storage owner.
                  std::shared_ptr<::taraxa::GasPricer> gas_pricer, std::weak_ptr<::taraxa::Network> network,
                  uint64_t chain_id, ::taraxa::net::LiveStatusReader live_status = {}) noexcept;
+  explicit Query(AccountStateReader account_reader, uint64_t chain_id = 0) noexcept;
 
   std::shared_ptr<object::Block> getBlock(std::optional<response::Value>&& numberArg,
                                           std::optional<response::Value>&& hashArg) const;
@@ -50,6 +52,7 @@ class Query {
   std::weak_ptr<::taraxa::Network> network_;
   const uint64_t kChainId;
   ::taraxa::net::LiveStatusReader live_status_;
+  AccountStateReader account_reader_;
   std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num_;
 };
 
