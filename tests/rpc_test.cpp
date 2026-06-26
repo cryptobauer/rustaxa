@@ -3,6 +3,7 @@
 #include <libdevcore/Common.h>
 #include <libdevcore/CommonJS.h>
 
+#include <filesystem>
 #include <sstream>
 
 #include "common/encoding_rlp.hpp"
@@ -20,7 +21,39 @@
 
 namespace taraxa::core_tests {
 
-struct RPCTest : NodesTest {};
+struct RPCTest : NodesTest {
+  std::vector<FullNodeConfig> make_isolated_node_cfgs(size_t total_count, size_t validators_count = 1,
+                                                      uint tests_speed = 1, bool enable_rpc_http = false,
+                                                      bool enable_rpc_ws = false) {
+    auto cfgs = make_node_cfgs(total_count, validators_count, tests_speed, enable_rpc_http, enable_rpc_ws);
+    const auto* test_info = ::testing::UnitTest::GetInstance()->current_test_info();
+    const auto test_data_dir =
+        std::filesystem::temp_directory_path() / "taraxa_node_tests" / test_info->test_suite_name() / test_info->name();
+    std::filesystem::remove_all(test_data_dir);
+    std::filesystem::create_directories(test_data_dir);
+    static uint16_t next_port_base = 20000;
+    const auto port_base = next_port_base;
+    next_port_base += 10;
+    for (size_t idx = 0; idx < cfgs.size(); ++idx) {
+      auto& cfg = cfgs[idx];
+      cfg.data_path = test_data_dir / ("node" + std::to_string(idx));
+      cfg.db_path = cfg.data_path / "db";
+      cfg.log_path = cfg.data_path / "log";
+      cfg.network.listen_port = port_base + idx;
+      if (cfg.network.rpc->http_port) {
+        cfg.network.rpc->http_port = port_base + 100 + idx;
+      }
+      if (cfg.network.rpc->ws_port) {
+        cfg.network.rpc->ws_port = port_base + 200 + idx;
+      }
+      if (cfgs.size() == 1) {
+        cfg.network.boot_nodes.clear();
+      }
+      cfg.log_configs.clear();
+    }
+    return cfgs;
+  }
+};
 
 TEST_F(RPCTest, eth_syncing_uses_live_status_reader) {
   auto eth_json_rpc = net::rpc::eth::NewEth(net::rpc::eth::EthParams{});
@@ -351,7 +384,7 @@ TEST_F(RPCTest, graphql_mutation_uses_transaction_api) {
 }
 
 TEST_F(RPCTest, eth_estimateGas) {
-  auto node_cfg = make_node_cfgs(1);
+  auto node_cfg = make_isolated_node_cfgs(1);
   auto nodes = launch_nodes(node_cfg);
   net::rpc::eth::EthParams eth_rpc_params;
   eth_rpc_params.chain_id = node_cfg.front().genesis.chain_id;
@@ -405,7 +438,7 @@ TEST_F(RPCTest, eth_estimateGas) {
 }
 
 TEST_F(RPCTest, eth_call) {
-  auto node_cfg = make_node_cfgs(1);
+  auto node_cfg = make_isolated_node_cfgs(1);
   auto nodes = launch_nodes(node_cfg);
   const auto final_chain = nodes.front()->getFinalChain();
 
@@ -558,7 +591,7 @@ TEST_F(RPCTest, eth_call) {
 }
 
 TEST_F(RPCTest, eth_getBlock) {
-  auto node_cfg = make_node_cfgs(1, 1, 10);
+  auto node_cfg = make_isolated_node_cfgs(1, 1, 10);
   // Enable rewards distribution
   node_cfg[0].genesis.state.dpos.yield_percentage = 10;
   node_cfg[0].genesis.state.hardforks.cacti_hf.block_num = -1;
@@ -577,7 +610,7 @@ TEST_F(RPCTest, eth_getBlock) {
 }
 
 TEST_F(RPCTest, eip_1898) {
-  auto node_cfg = make_node_cfgs(1);
+  auto node_cfg = make_isolated_node_cfgs(1);
   auto nodes = launch_nodes(node_cfg);
   net::rpc::eth::EthParams eth_rpc_params;
   eth_rpc_params.chain_id = node_cfg.front().genesis.chain_id;

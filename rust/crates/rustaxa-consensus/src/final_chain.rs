@@ -84,6 +84,7 @@ const EMPTY_TRIE_ROOT: [u8; 32] = [
 const VALUE_TRANSFER_GAS: u64 = 21_000;
 const CONTRACT_CREATION_ESTIMATE_GAS: u64 = 0x5dcc5;
 const DPOS_DEFAULT_METHOD_GAS: u64 = 20_000;
+const DPOS_GET_TOTAL_ELIGIBLE_VOTES_GAS: u64 = 22_000;
 const DPOS_GET_METHOD_GAS: u64 = 5_000;
 pub(crate) const DPOS_CONTRACT_ADDRESS: [u8; 20] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xfe,
@@ -3063,7 +3064,7 @@ impl FinalChain {
         selector: [u8; 4],
     ) -> Result<u64, anyhow::Error> {
         match selector {
-            DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR => Ok(DPOS_DEFAULT_METHOD_GAS),
+            DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR => Ok(DPOS_GET_TOTAL_ELIGIBLE_VOTES_GAS),
             DPOS_GET_VALIDATOR_SELECTOR => Ok(DPOS_GET_METHOD_GAS),
             DPOS_GET_VALIDATORS_SELECTOR => {
                 let snapshot = self.dpos_snapshot_at_finalized_block(request.block_number)?;
@@ -8404,6 +8405,13 @@ mod tests {
             u256_from_big_endian(&total_votes.code_retval),
             U256::from(10u64)
         );
+
+        let mut low_gas_total_votes_request =
+            dpos_call_request(0, DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR.to_vec());
+        low_gas_total_votes_request.gas_limit = 0x5330;
+        let low_gas_total_votes = final_chain.call(low_gas_total_votes_request).unwrap();
+        assert_eq!(low_gas_total_votes.code_err, "out of gas");
+        assert_eq!(low_gas_total_votes.gas_used, 0x5330);
 
         let validator_info = final_chain
             .call(dpos_call_request(0, get_validator_input(validator)))
