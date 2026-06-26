@@ -2,7 +2,6 @@
 
 #include <libdevcore/CommonJS.h>
 
-#include "graphql/account.hpp"
 #include "graphql/transaction.hpp"
 
 #ifdef RUSTAXA_ENABLE
@@ -57,10 +56,21 @@ DagBlock::DagBlock(std::shared_ptr<::taraxa::DagBlock> dag_block,
                    std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
                    std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept
     : dag_block_(std::move(dag_block)),
+      account_reader_(makeAccountStateReader(final_chain)),
       final_chain_(std::move(final_chain)),
       pbft_manager_(std::move(pbft_manager)),
       transaction_manager_(std::move(transaction_manager)),
       get_block_by_num_(get_block_by_num) {}
+
+DagBlock::DagBlock(AccountStateReader account_reader, std::shared_ptr<::taraxa::DagBlock> dag_block,
+                   std::shared_ptr<::taraxa::PbftManager> pbft_manager,
+                   std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
+                   std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept
+    : dag_block_(std::move(dag_block)),
+      account_reader_(std::move(account_reader)),
+      pbft_manager_(std::move(pbft_manager)),
+      transaction_manager_(std::move(transaction_manager)),
+      get_block_by_num_(std::move(get_block_by_num)) {}
 
 #ifdef RUSTAXA_ENABLE
 DagBlock::DagBlock(
@@ -70,6 +80,7 @@ DagBlock::DagBlock(
     std::function<rustaxa::TransactionPublicView(const ::taraxa::trx_hash_t&)> transaction_query,
     std::function<rustaxa::TransactionReceiptPublicView(const ::taraxa::trx_hash_t&)> receipt_query) noexcept
     : rust_dag_block_(std::move(dag_block)),
+      account_reader_(makeAccountStateReader(final_chain)),
       final_chain_(std::move(final_chain)),
       transaction_manager_(std::move(transaction_manager)),
       get_block_by_num_(std::move(get_block_by_num)),
@@ -151,20 +162,20 @@ std::shared_ptr<object::Account> DagBlock::getAuthor() const noexcept {
     const auto sender = addressFromBridge(rust_dag_block_->sender);
     if (rust_dag_block_->finalized_period_found) {
       period_ = rust_dag_block_->finalized_period;
-      return std::make_shared<object::Account>(std::make_shared<Account>(final_chain_, sender, *period_));
+      return std::make_shared<object::Account>(std::make_shared<Account>(account_reader_, sender, *period_));
     }
-    return std::make_shared<object::Account>(std::make_shared<Account>(final_chain_, sender));
+    return std::make_shared<object::Account>(std::make_shared<Account>(account_reader_, sender));
   }
 #endif
-  if (!period_) {
+  if (!period_ && pbft_manager_) {
     const auto [has_period, period] = pbft_manager_->getDagBlockPeriod(::taraxa::blk_hash_t(dag_block_->getHash()));
     if (has_period) {
       period_ = period;
       return std::make_shared<object::Account>(
-          std::make_shared<Account>(final_chain_, dag_block_->getSender(), *period_));
+          std::make_shared<Account>(account_reader_, dag_block_->getSender(), *period_));
     }
   }
-  return std::make_shared<object::Account>(std::make_shared<Account>(final_chain_, dag_block_->getSender()));
+  return std::make_shared<object::Account>(std::make_shared<Account>(account_reader_, dag_block_->getSender()));
 }
 
 response::Value DagBlock::getTimestamp() const noexcept {

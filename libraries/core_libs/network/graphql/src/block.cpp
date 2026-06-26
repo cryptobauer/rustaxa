@@ -3,7 +3,6 @@
 #include <cstddef>
 #include <optional>
 
-#include "graphql/account.hpp"
 #include "graphql/transaction.hpp"
 #include "libdevcore/CommonJS.h"
 #include "transaction/system_transaction.hpp"
@@ -63,6 +62,7 @@ Block::Block(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
     : final_chain_(std::move(final_chain)),
       trx_manager_(std::move(trx_manager)),
       get_block_by_num_(std::move(get_block_by_num)),
+      account_reader_(makeAccountStateReader(final_chain_)),
       kPBftBlockHash(pbft_block_hash),
       block_header_(std::move(block_header))
 #ifdef RUSTAXA_ENABLE
@@ -73,6 +73,16 @@ Block::Block(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
 #endif
 {
 }
+
+Block::Block(AccountStateReader account_reader, std::shared_ptr<::taraxa::TransactionManager> trx_manager,
+             std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
+             const ::taraxa::blk_hash_t& pbft_block_hash,
+             std::shared_ptr<const ::taraxa::final_chain::BlockHeader> block_header) noexcept
+    : trx_manager_(std::move(trx_manager)),
+      get_block_by_num_(std::move(get_block_by_num)),
+      account_reader_(std::move(account_reader)),
+      kPBftBlockHash(pbft_block_hash),
+      block_header_(std::move(block_header)) {}
 
 response::Value Block::getNumber() const noexcept { return response::Value(static_cast<int>(block_header_->number)); }
 
@@ -112,9 +122,9 @@ response::Value Block::getReceiptsRoot() const noexcept {
 std::shared_ptr<object::Account> Block::getMiner(std::optional<response::Value>&& blockArg) const {
   if (blockArg) {
     return std::make_shared<object::Account>(
-        std::make_shared<Account>(final_chain_, block_header_->author, blockArg->get<int>()));
+        std::make_shared<Account>(account_reader_, block_header_->author, blockArg->get<int>()));
   } else {
-    return std::make_shared<object::Account>(std::make_shared<Account>(final_chain_, block_header_->author));
+    return std::make_shared<object::Account>(std::make_shared<Account>(account_reader_, block_header_->author));
   }
 }
 
@@ -222,8 +232,8 @@ std::vector<std::shared_ptr<object::Log>> Block::getLogs(BlockFilterCriteria&&) 
 }
 
 std::shared_ptr<object::Account> Block::getAccount(response::Value&& addressArg) const {
-  return std::make_shared<object::Account>(
-      std::make_shared<Account>(final_chain_, ::taraxa::addr_t(addressArg.get<std::string>()), block_header_->number));
+  return std::make_shared<object::Account>(std::make_shared<Account>(
+      account_reader_, ::taraxa::addr_t(addressArg.get<std::string>()), block_header_->number));
 }
 
 std::shared_ptr<object::CallResult> Block::getCall(CallData&&) const noexcept { return nullptr; }

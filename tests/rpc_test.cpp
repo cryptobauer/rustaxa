@@ -8,11 +8,13 @@
 
 #include "common/encoding_rlp.hpp"
 #include "graphql/account.hpp"
+#include "graphql/block.hpp"
 #include "graphql/log.hpp"
 #include "graphql/mutation.hpp"
 #include "graphql/sync_state.hpp"
 #include "graphql/transaction.hpp"
 #include "graphql/types/current_state.hpp"
+#include "graphql/types/dag_block.hpp"
 #include "network/rpc/Debug.h"
 #include "network/rpc/Taraxa.h"
 #include "network/rpc/Test.h"
@@ -869,6 +871,70 @@ TEST_F(RPCTest, graphql_log_account_uses_account_reader) {
   graphql::taraxa::Log graphql_log(std::move(reader), nullptr, std::move(log), 0);
 
   ASSERT_NE(nullptr, graphql_log.getAccount(std::nullopt));
+  ASSERT_TRUE(*account_called);
+}
+
+TEST_F(RPCTest, graphql_block_accounts_use_account_reader) {
+  const auto miner = dev::KeyPair::create().address();
+  const auto queried_address = dev::KeyPair::create().address();
+  auto account_calls = std::make_shared<int>(0);
+
+  state_api::Account account;
+  account.balance = 7;
+
+  graphql::taraxa::AccountStateReader reader;
+  reader.account_at = [account_calls, miner, queried_address, account](const dev::Address& requested_address,
+                                                                       std::optional<EthBlockNumber> block_number) {
+    ++*account_calls;
+    if (*account_calls == 1) {
+      EXPECT_EQ(miner, requested_address);
+      EXPECT_FALSE(block_number.has_value());
+    } else {
+      EXPECT_EQ(queried_address, requested_address);
+      EXPECT_EQ(EthBlockNumber(12), block_number.value());
+    }
+    return std::optional<state_api::Account>(account);
+  };
+  reader.storage_at = [](const dev::Address&, const dev::u256&, std::optional<EthBlockNumber>) { return dev::h256(); };
+  reader.code_at = [](const dev::Address&, std::optional<EthBlockNumber>) { return dev::bytes{}; };
+  reader.latest_finalized_block_number = [] { return EthBlockNumber(0); };
+
+  auto header = std::make_shared<final_chain::BlockHeader>();
+  header->author = miner;
+  header->number = 12;
+
+  graphql::taraxa::Block block(
+      std::move(reader), nullptr, [](EthBlockNumber) { return nullptr; }, blk_hash_t(1), header);
+
+  ASSERT_NE(nullptr, block.getMiner(std::nullopt));
+  ASSERT_NE(nullptr, block.getAccount(graphql::response::Value(queried_address.toString())));
+  EXPECT_EQ(2, *account_calls);
+}
+
+TEST_F(RPCTest, graphql_dag_block_author_uses_account_reader) {
+  auto dag_block = std::make_shared<DagBlock>(blk_hash_t(1), level_t(1), vec_blk_t{}, vec_trx_t{}, secret_t::random());
+  const auto author = dag_block->getSender();
+  auto account_called = std::make_shared<bool>(false);
+
+  state_api::Account account;
+  account.balance = 9;
+
+  graphql::taraxa::AccountStateReader reader;
+  reader.account_at = [account_called, author, account](const dev::Address& requested_address,
+                                                        std::optional<EthBlockNumber> block_number) {
+    *account_called = true;
+    EXPECT_EQ(author, requested_address);
+    EXPECT_FALSE(block_number.has_value());
+    return std::optional<state_api::Account>(account);
+  };
+  reader.storage_at = [](const dev::Address&, const dev::u256&, std::optional<EthBlockNumber>) { return dev::h256(); };
+  reader.code_at = [](const dev::Address&, std::optional<EthBlockNumber>) { return dev::bytes{}; };
+  reader.latest_finalized_block_number = [] { return EthBlockNumber(0); };
+
+  graphql::taraxa::DagBlock graphql_dag_block(std::move(reader), std::move(dag_block), nullptr, nullptr,
+                                              [](EthBlockNumber) { return nullptr; });
+
+  ASSERT_NE(nullptr, graphql_dag_block.getAuthor());
   ASSERT_TRUE(*account_called);
 }
 

@@ -538,6 +538,9 @@ Implemented first slice:
   bundle instead of storing or reading `FinalChain` inside the log object. The compatibility constructor still builds the
   reader from the existing FinalChain external-state adapter, while Rust-mode transaction objects can pass the same
   account reader through to logs.
+- GraphQL `Block.miner`, `Block.account`, and `DagBlock.author` now use the same `AccountStateReader` callback bundle
+  instead of constructing account child objects from `FinalChain` directly. Existing block/DAG constructors remain
+  compatibility adapters that build the reader from the FinalChain external-state boundary.
 - `taraxa_getPeriodLambda` now uses `ConsensusQueryApi` in Rust mode for exact persisted dynamic-lambda lookup instead
   of reading the metadata column through `DbStorage` directly.
 - `taraxa_getChainStats` now uses `ConsensusQueryApi` in Rust mode for latest finalized period and executed

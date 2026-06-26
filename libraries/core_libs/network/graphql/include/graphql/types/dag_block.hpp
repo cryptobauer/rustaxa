@@ -6,6 +6,7 @@
 
 #include "DagBlockObject.h"
 #include "final_chain/final_chain.hpp"
+#include "graphql/account.hpp"
 #include "pbft/pbft_manager.hpp"
 #include "transaction/transaction_manager.hpp"
 
@@ -19,6 +20,10 @@ class DagBlock {
  public:
   explicit DagBlock(std::shared_ptr<::taraxa::DagBlock> dag_block,
                     std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
+                    std::shared_ptr<::taraxa::PbftManager> pbft_manager,
+                    std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
+                    std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept;
+  explicit DagBlock(AccountStateReader account_reader, std::shared_ptr<::taraxa::DagBlock> dag_block,
                     std::shared_ptr<::taraxa::PbftManager> pbft_manager,
                     std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
                     std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept;
@@ -48,6 +53,7 @@ class DagBlock {
 #ifdef RUSTAXA_ENABLE
   std::optional<rustaxa::DagBlockPublicView> rust_dag_block_;
 #endif
+  AccountStateReader account_reader_;
   std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain_;
   std::shared_ptr<::taraxa::PbftManager> pbft_manager_;
   std::shared_ptr<::taraxa::TransactionManager> transaction_manager_;
