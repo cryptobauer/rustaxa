@@ -240,8 +240,8 @@ Json::Value Taraxa::taraxa_getScheduleBlockByPeriod(const std::string& _period) 
     auto app = tryGetApp();
     auto period = dev::jsToInt(_period);
 #ifdef RUSTAXA_ENABLE
-    const auto period_queries = rustaxa::create_period_storage_queries(app->getDB()->rustStorage());
-    const auto view = period_queries->get_pbft_schedule_block_view(period);
+    const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
+    const auto view = query_api->consensus_query_pbft_schedule_block_by_period(period);
     if (!view.found) {
       return Json::Value();
     }

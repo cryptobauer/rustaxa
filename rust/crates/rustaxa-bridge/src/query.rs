@@ -42,6 +42,49 @@ fn dag_hashes_to_ffi(hashes: Vec<[u8; 32]>) -> Vec<rustaxa_ffi::DagHash> {
         .collect()
 }
 
+fn pbft_hashes_to_ffi(hashes: Vec<[u8; 32]>) -> Vec<rustaxa_ffi::PbftFinalizationHash> {
+    hashes
+        .into_iter()
+        .map(|hash| rustaxa_ffi::PbftFinalizationHash { hash })
+        .collect()
+}
+
+fn pbft_extra_data_view_to_ffi(
+    view: rustaxa_consensus::PbftBlockExtraDataView,
+) -> rustaxa_ffi::PbftBlockExtraDataView {
+    rustaxa_ffi::PbftBlockExtraDataView {
+        found: view.found,
+        major_version: view.major_version,
+        minor_version: view.minor_version,
+        patch_version: view.patch_version,
+        net_version: view.net_version,
+        node_implementation: view.node_implementation,
+        has_pillar_block_hash: view.has_pillar_block_hash,
+        pillar_block_hash: view.pillar_block_hash,
+    }
+}
+
+fn pbft_schedule_block_view_to_ffi(
+    view: rustaxa_consensus::PbftScheduleBlockView,
+) -> rustaxa_ffi::PbftScheduleBlockView {
+    rustaxa_ffi::PbftScheduleBlockView {
+        found: view.found,
+        prev_block_hash: view.prev_block_hash,
+        dag_block_hash_as_pivot: view.dag_block_hash_as_pivot,
+        order_hash: view.order_hash,
+        final_chain_hash: view.final_chain_hash,
+        period: view.period,
+        timestamp: view.timestamp,
+        block_hash: view.block_hash,
+        signature: view.signature,
+        beneficiary: view.beneficiary,
+        reward_votes: pbft_hashes_to_ffi(view.reward_votes),
+        has_extra_data: view.has_extra_data,
+        extra_data: pbft_extra_data_view_to_ffi(view.extra_data),
+        dag_blocks_order: pbft_hashes_to_ffi(view.dag_blocks_order),
+    }
+}
+
 fn dag_block_view_to_ffi(view: rustaxa_consensus::DagBlockView) -> rustaxa_ffi::DagBlockPublicView {
     rustaxa_ffi::DagBlockPublicView {
         found: view.found,
@@ -93,6 +136,16 @@ impl BridgeConsensusQueryApi {
         ))
     }
 
+    /// Returns a stable PBFT schedule-block public view by finalized period.
+    pub fn consensus_query_pbft_schedule_block_by_period(
+        &self,
+        period: u64,
+    ) -> Result<rustaxa_ffi::PbftScheduleBlockView, anyhow::Error> {
+        Ok(pbft_schedule_block_view_to_ffi(
+            self.0.pbft_schedule_block_by_period(period)?,
+        ))
+    }
+
     /// Returns a stable DAG public block view by block hash.
     pub fn consensus_query_dag_block_by_hash(
         &self,
@@ -120,6 +173,7 @@ impl BridgeConsensusQueryApi {
 mod tests {
     use super::*;
     use ethereum_types::{H256, U256};
+    use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
     use rustaxa_types::codec::rlp::final_chain::StoredBlockHeaderRlpOwned;
     use rustaxa_types::final_chain::StoredFinalChainBlockHeader;
@@ -132,6 +186,60 @@ mod tests {
         stream.append_raw(&[0xC0], 1);
         stream.append_raw(&[0xC0], 1);
         stream.out().to_vec()
+    }
+
+    fn period_data_rlp_with_dag_bundle(pbft_block_rlp: &[u8]) -> Vec<u8> {
+        let mut dag_bundle = RlpStream::new_list(3);
+        dag_bundle.begin_list(0);
+        dag_bundle.begin_list(0);
+        dag_bundle.begin_list(0);
+
+        let mut stream = RlpStream::new_list(5);
+        stream.append_raw(pbft_block_rlp, 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&dag_bundle.out(), 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.out().to_vec()
+    }
+
+    fn signed_pbft_block_rlp(signing_key: &SigningKey) -> Vec<u8> {
+        let mut extra_data = RlpStream::new_list(6);
+        extra_data.append(&1u16);
+        extra_data.append(&2u16);
+        extra_data.append(&3u16);
+        extra_data.append(&4u16);
+        extra_data.append(&"rustaxa-test".to_string());
+        extra_data.append(&H256::from_low_u64_be(55).as_bytes());
+        let extra_data_bytes = extra_data.out().to_vec();
+
+        let mut unsigned = RlpStream::new_list(8);
+        unsigned.append(&H256::from_low_u64_be(10));
+        unsigned.append(&H256::from_low_u64_be(11));
+        unsigned.append(&H256::from_low_u64_be(12));
+        unsigned.append(&H256::from_low_u64_be(13));
+        unsigned.append(&7u64);
+        unsigned.append(&99u64);
+        unsigned.append_list(&[H256::from_low_u64_be(20), H256::from_low_u64_be(21)]);
+        unsigned.append(&extra_data_bytes);
+        let message_hash = keccak256(&unsigned.out());
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(message_hash.as_bytes())
+            .unwrap();
+        let mut signature_bytes = signature.to_bytes().to_vec();
+        signature_bytes.push(recovery_id.to_byte());
+
+        let mut signed = RlpStream::new_list(9);
+        signed.append(&H256::from_low_u64_be(10));
+        signed.append(&H256::from_low_u64_be(11));
+        signed.append(&H256::from_low_u64_be(12));
+        signed.append(&H256::from_low_u64_be(13));
+        signed.append(&7u64);
+        signed.append(&99u64);
+        signed.append_list(&[H256::from_low_u64_be(20), H256::from_low_u64_be(21)]);
+        signed.append(&extra_data_bytes);
+        signed.append(&signature_bytes);
+        signed.out().to_vec()
     }
 
     fn dag_block_rlp() -> Vec<u8> {
@@ -219,6 +327,50 @@ mod tests {
         let lookup = api.consensus_query_pbft_block_hash_by_period(15).unwrap();
         assert!(lookup.found);
         assert_eq!(lookup.hash, view.pbft_block_hash);
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_consensus_query_api_reads_pbft_schedule_block_view() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "rustaxa_bridge_consensus_query_api_schedule_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let storage =
+            crate::storage::create_storage(temp_dir.to_str().expect("utf8 temp path")).unwrap();
+        let api = create_consensus_query_api(&storage);
+        let signing_key = SigningKey::from_slice(&[9u8; 32]).unwrap();
+        let pbft_block = signed_pbft_block_rlp(&signing_key);
+
+        storage
+            .save_period_data(7, period_data_rlp_with_dag_bundle(&pbft_block))
+            .unwrap();
+
+        let view = api
+            .consensus_query_pbft_schedule_block_by_period(7)
+            .unwrap();
+        assert!(view.found);
+        assert_eq!(view.prev_block_hash, H256::from_low_u64_be(10).0);
+        assert_eq!(view.dag_block_hash_as_pivot, H256::from_low_u64_be(11).0);
+        assert_eq!(view.period, 7);
+        assert_eq!(view.timestamp, 99);
+        assert_eq!(view.block_hash, keccak256(&pbft_block).0);
+        assert_eq!(view.signature.len(), 65);
+        assert_eq!(view.reward_votes.len(), 2);
+        assert_eq!(view.reward_votes[0].hash, H256::from_low_u64_be(20).0);
+        assert!(view.has_extra_data);
+        assert_eq!(view.extra_data.major_version, 1);
+        assert_eq!(view.extra_data.node_implementation, "rustaxa-test");
+        assert!(view.dag_blocks_order.is_empty());
+
+        assert!(
+            !api.consensus_query_pbft_schedule_block_by_period(8)
+                .unwrap()
+                .found
+        );
 
         drop(storage);
         let _ = std::fs::remove_dir_all(temp_dir);

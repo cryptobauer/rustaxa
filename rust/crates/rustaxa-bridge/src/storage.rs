@@ -34,16 +34,7 @@ use tiny_keccak::{Hasher, Keccak};
 
 const PBFT_BLOCK_POS_IN_PERIOD_DATA: usize = 0;
 const DAG_BLOCKS_POS_IN_PERIOD_DATA: usize = 2;
-const PBFT_PREV_HASH_POS: usize = 0;
-const PBFT_PIVOT_HASH_POS: usize = 1;
-const PBFT_ORDER_HASH_POS: usize = 2;
-const PBFT_FINAL_CHAIN_HASH_POS: usize = 3;
-const PBFT_PERIOD_POS: usize = 4;
-const PBFT_TIMESTAMP_POS: usize = 5;
-const PBFT_REWARD_VOTES_POS: usize = 6;
 const PBFT_EXTRA_DATA_POS: usize = 7;
-const PBFT_SIGNATURE_WITH_EXTRA_POS: usize = 8;
-const PBFT_SIGNATURE_WITHOUT_EXTRA_POS: usize = 7;
 const PBFT_EXTRA_DATA_FIELDS: usize = 6;
 const PBFT_EXTRA_DATA_MAX_SIZE: usize = 1024;
 const DAG_VDF_SORTITION_FIELDS: usize = 4;
@@ -804,31 +795,6 @@ impl BridgePeriodStorageQueries {
         })
     }
 
-    /// Returns a public/query PBFT schedule block view decoded from period data.
-    ///
-    /// Inputs:
-    /// - `period`: finalized PBFT period requested by RPC.
-    ///
-    /// Outputs:
-    /// - `found == false` when no period data is stored.
-    /// - Otherwise all fields required to preserve `PbftBlock::toJson()` plus
-    ///   `schedule.dag_blocks_order`, without materializing a C++ `PbftBlock`
-    ///   or finalized `DagBlock` objects.
-    ///
-    /// Edge behavior:
-    /// - Malformed period/PBFT/DAG RLP returns an error so existing RPC catch
-    ///   blocks keep returning invalid params.
-    pub fn get_pbft_schedule_block_view(
-        &self,
-        period: u64,
-    ) -> Result<rustaxa_ffi::PbftScheduleBlockView, anyhow::Error> {
-        let period_data = self.get_period_data_raw(period)?;
-        if period_data.is_empty() {
-            return Ok(empty_pbft_schedule_block_view());
-        }
-        pbft_schedule_block_view_from_period_data(&period_data)
-    }
-
     /// Returns PBFT beneficiary and node semantic-version facts for a finalized period.
     ///
     /// Inputs:
@@ -937,25 +903,6 @@ impl BridgePeriodStorageQueries {
     }
 }
 
-fn empty_pbft_schedule_block_view() -> rustaxa_ffi::PbftScheduleBlockView {
-    rustaxa_ffi::PbftScheduleBlockView {
-        found: false,
-        prev_block_hash: [0; 32],
-        dag_block_hash_as_pivot: [0; 32],
-        order_hash: [0; 32],
-        final_chain_hash: [0; 32],
-        period: 0,
-        timestamp: 0,
-        block_hash: [0; 32],
-        signature: Vec::new(),
-        beneficiary: [0; 20],
-        reward_votes: Vec::new(),
-        has_extra_data: false,
-        extra_data: empty_pbft_extra_data_view(),
-        dag_blocks_order: Vec::new(),
-    }
-}
-
 fn empty_pbft_extra_data_view() -> rustaxa_ffi::PbftBlockExtraDataView {
     rustaxa_ffi::PbftBlockExtraDataView {
         found: false,
@@ -990,58 +937,6 @@ fn empty_dag_block_public_view() -> rustaxa_ffi::DagBlockPublicView {
         vdf_sol2: Vec::new(),
         vdf_difficulty: 0,
     }
-}
-
-fn pbft_schedule_block_view_from_period_data(
-    period_data: &[u8],
-) -> Result<rustaxa_ffi::PbftScheduleBlockView, anyhow::Error> {
-    let period_rlp = Rlp::new(period_data);
-    let pbft_block = period_rlp.at(PBFT_BLOCK_POS_IN_PERIOD_DATA)?;
-    let pbft_block_rlp = pbft_block.as_raw();
-    let item_count = pbft_block.item_count()?;
-    anyhow::ensure!(
-        item_count == 8 || item_count == 9,
-        "invalid PBFT block field count"
-    );
-
-    let metadata = PbftBlockMetadata::try_from(SignedPbftBlockRlp::new(pbft_block_rlp))?;
-    let has_extra_data = item_count == 9;
-    let extra_data = if has_extra_data {
-        decode_pbft_extra_data(pbft_block.at(PBFT_EXTRA_DATA_POS)?.data()?)?
-    } else {
-        empty_pbft_extra_data_view()
-    };
-    let signature_pos = if has_extra_data {
-        PBFT_SIGNATURE_WITH_EXTRA_POS
-    } else {
-        PBFT_SIGNATURE_WITHOUT_EXTRA_POS
-    };
-    let signature = pbft_block.at(signature_pos)?.data()?.to_vec();
-    anyhow::ensure!(signature.len() == 65, "invalid PBFT block signature length");
-
-    let dag_blocks = period_rlp.at(DAG_BLOCKS_POS_IN_PERIOD_DATA)?;
-    let dag_blocks_order = finalized_dag_hashes(dag_blocks.as_raw())?;
-
-    Ok(rustaxa_ffi::PbftScheduleBlockView {
-        found: true,
-        prev_block_hash: pbft_block.val_at::<H256>(PBFT_PREV_HASH_POS)?.into(),
-        dag_block_hash_as_pivot: pbft_block.val_at::<H256>(PBFT_PIVOT_HASH_POS)?.into(),
-        order_hash: pbft_block.val_at::<H256>(PBFT_ORDER_HASH_POS)?.into(),
-        final_chain_hash: pbft_block.val_at::<H256>(PBFT_FINAL_CHAIN_HASH_POS)?.into(),
-        period: pbft_block.val_at(PBFT_PERIOD_POS)?,
-        timestamp: pbft_block.val_at(PBFT_TIMESTAMP_POS)?,
-        block_hash: keccak256(pbft_block_rlp).into(),
-        signature,
-        beneficiary: metadata.author.into(),
-        reward_votes: pbft_block
-            .list_at::<H256>(PBFT_REWARD_VOTES_POS)?
-            .into_iter()
-            .map(|hash| rustaxa_ffi::PbftFinalizationHash { hash: hash.into() })
-            .collect(),
-        has_extra_data: extra_data.found,
-        extra_data,
-        dag_blocks_order,
-    })
 }
 
 fn decode_pbft_extra_data(
@@ -1092,29 +987,6 @@ fn decode_pbft_extra_data(
         has_pillar_block_hash: pillar_block_hash.is_some(),
         pillar_block_hash: pillar_block_hash.unwrap_or_default().into(),
     })
-}
-
-fn finalized_dag_hashes(
-    dag_bundle_rlp: &[u8],
-) -> Result<Vec<rustaxa_ffi::PbftFinalizationHash>, anyhow::Error> {
-    let bundle = Rlp::new(dag_bundle_rlp);
-    if dag_bundle_is_empty(&bundle)? {
-        return Ok(Vec::new());
-    }
-    anyhow::ensure!(
-        bundle.item_count()? == 3,
-        "invalid finalized DAG block bundle field count"
-    );
-    let compact_blocks = bundle.at(2)?;
-    let finalized_bundle = FinalizedDagBlockBundleRlp::new(dag_bundle_rlp);
-    let mut out = Vec::with_capacity(compact_blocks.item_count()?);
-    for position in 0..compact_blocks.item_count()? {
-        let canonical = finalized_bundle.canonical_block_rlp(position)?;
-        out.push(rustaxa_ffi::PbftFinalizationHash {
-            hash: keccak256(&canonical).into(),
-        });
-    }
-    Ok(out)
 }
 
 fn finalized_dag_block_views(

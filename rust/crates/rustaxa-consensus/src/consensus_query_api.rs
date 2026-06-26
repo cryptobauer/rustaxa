@@ -10,8 +10,10 @@ use anyhow::{Context, Result};
 use ethereum_types::{H160, H256};
 use rlp::Rlp;
 use rustaxa_storage::Storage;
-use rustaxa_types::codec::rlp::dag::DagBlockRlp;
+use rustaxa_types::PbftBlockMetadata;
+use rustaxa_types::codec::rlp::dag::{DagBlockRlp, FinalizedDagBlockBundleRlp};
 use rustaxa_types::codec::rlp::final_chain::StoredBlockHeaderRlp;
+use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::dag::DagBlock;
 use rustaxa_types::final_chain::StoredFinalChainBlockHeader;
 use rustaxa_vdf::vdf_sortition::decode_vdf_sortition_payload;
@@ -19,6 +21,19 @@ use std::sync::Arc;
 use tiny_keccak::{Hasher, Keccak};
 
 const PBFT_BLOCK_POS_IN_PERIOD_DATA: usize = 0;
+const DAG_BLOCKS_POS_IN_PERIOD_DATA: usize = 2;
+const PBFT_PREV_HASH_POS: usize = 0;
+const PBFT_PIVOT_HASH_POS: usize = 1;
+const PBFT_ORDER_HASH_POS: usize = 2;
+const PBFT_FINAL_CHAIN_HASH_POS: usize = 3;
+const PBFT_PERIOD_POS: usize = 4;
+const PBFT_TIMESTAMP_POS: usize = 5;
+const PBFT_REWARD_VOTES_POS: usize = 6;
+const PBFT_EXTRA_DATA_POS: usize = 7;
+const PBFT_SIGNATURE_WITH_EXTRA_POS: usize = 8;
+const PBFT_SIGNATURE_WITHOUT_EXTRA_POS: usize = 7;
+const PBFT_EXTRA_DATA_FIELDS: usize = 6;
+const PBFT_EXTRA_DATA_MAX_SIZE: usize = 1024;
 
 /// Hash lookup result returned by public query facade methods.
 ///
@@ -89,6 +104,48 @@ pub struct DagBlockView {
     pub vdf_difficulty: u16,
 }
 
+/// Stable public view of optional PBFT block extra data.
+///
+/// `found` is false when the signed PBFT block has no compatible extra-data
+/// payload. When true, version fields and optional pillar-block hash mirror the
+/// legacy PBFT JSON shape without exposing a C++ `PbftBlock`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PbftBlockExtraDataView {
+    pub found: bool,
+    pub major_version: u16,
+    pub minor_version: u16,
+    pub patch_version: u16,
+    pub net_version: u16,
+    pub node_implementation: String,
+    pub has_pillar_block_hash: bool,
+    pub pillar_block_hash: [u8; 32],
+}
+
+/// Stable public view of a finalized PBFT schedule block.
+///
+/// The view is decoded from stored `PeriodData` and includes the PBFT block
+/// facts and finalized DAG block order required by
+/// `taraxa_getScheduleBlockByPeriod`. It does not materialize C++ PBFT/DAG
+/// objects or expose storage iterators. `found` is false when no period data is
+/// stored for the requested period.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PbftScheduleBlockView {
+    pub found: bool,
+    pub prev_block_hash: [u8; 32],
+    pub dag_block_hash_as_pivot: [u8; 32],
+    pub order_hash: [u8; 32],
+    pub final_chain_hash: [u8; 32],
+    pub period: u64,
+    pub timestamp: u64,
+    pub block_hash: [u8; 32],
+    pub signature: Vec<u8>,
+    pub beneficiary: [u8; 20],
+    pub reward_votes: Vec<[u8; 32]>,
+    pub has_extra_data: bool,
+    pub extra_data: PbftBlockExtraDataView,
+    pub dag_blocks_order: Vec<[u8; 32]>,
+}
+
 /// Read-only public query facade over Rust consensus storage.
 ///
 /// The API owns only a cloned Rust storage handle. It does not own RPC/GraphQL
@@ -129,6 +186,20 @@ impl ConsensusQueryApi {
             )
             .into(),
         })
+    }
+
+    /// Returns a finalized PBFT schedule-block view by period.
+    ///
+    /// The query decodes the signed PBFT block and finalized DAG block bundle
+    /// from Rust-owned period storage. Missing period data returns
+    /// `found == false`; malformed PBFT or DAG bundle bytes are errors so
+    /// public adapters can preserve their existing invalid-params behavior.
+    pub fn pbft_schedule_block_by_period(&self, period: u64) -> Result<PbftScheduleBlockView> {
+        let period_data = self.storage.period().data_raw(period)?;
+        if period_data.is_empty() {
+            return Ok(PbftScheduleBlockView::default());
+        }
+        pbft_schedule_block_view_from_period_data(&period_data)
     }
 
     /// Returns a finalized FinalChain block view by block number.
@@ -251,10 +322,179 @@ fn keccak256(data: &[u8]) -> H256 {
     H256::from(out)
 }
 
+fn pbft_schedule_block_view_from_period_data(period_data: &[u8]) -> Result<PbftScheduleBlockView> {
+    let period_rlp = Rlp::new(period_data);
+    let pbft_block = period_rlp
+        .at(PBFT_BLOCK_POS_IN_PERIOD_DATA)
+        .context("CONSENSUS_QUERY_SCHEDULE_PBFT_BLOCK")?;
+    let pbft_block_rlp = pbft_block.as_raw();
+    let item_count = pbft_block
+        .item_count()
+        .context("CONSENSUS_QUERY_SCHEDULE_PBFT_ITEM_COUNT")?;
+    anyhow::ensure!(
+        item_count == 8 || item_count == 9,
+        "CONSENSUS_QUERY_SCHEDULE_INVALID_PBFT_FIELD_COUNT"
+    );
+
+    let metadata = PbftBlockMetadata::try_from(SignedPbftBlockRlp::new(pbft_block_rlp))
+        .context("CONSENSUS_QUERY_SCHEDULE_PBFT_METADATA")?;
+    let has_extra_data = item_count == 9;
+    let extra_data = if has_extra_data {
+        decode_pbft_extra_data(
+            pbft_block
+                .at(PBFT_EXTRA_DATA_POS)
+                .context("CONSENSUS_QUERY_SCHEDULE_EXTRA_DATA")?
+                .data()
+                .context("CONSENSUS_QUERY_SCHEDULE_EXTRA_DATA_BYTES")?,
+        )?
+    } else {
+        PbftBlockExtraDataView::default()
+    };
+    let signature_pos = if has_extra_data {
+        PBFT_SIGNATURE_WITH_EXTRA_POS
+    } else {
+        PBFT_SIGNATURE_WITHOUT_EXTRA_POS
+    };
+    let signature = pbft_block
+        .at(signature_pos)
+        .context("CONSENSUS_QUERY_SCHEDULE_SIGNATURE")?
+        .data()
+        .context("CONSENSUS_QUERY_SCHEDULE_SIGNATURE_BYTES")?
+        .to_vec();
+    anyhow::ensure!(
+        signature.len() == 65,
+        "CONSENSUS_QUERY_SCHEDULE_INVALID_SIGNATURE_LENGTH"
+    );
+
+    let dag_blocks_order = finalized_dag_hashes(
+        period_rlp
+            .at(DAG_BLOCKS_POS_IN_PERIOD_DATA)
+            .context("CONSENSUS_QUERY_SCHEDULE_DAG_BUNDLE")?
+            .as_raw(),
+    )?;
+
+    Ok(PbftScheduleBlockView {
+        found: true,
+        prev_block_hash: pbft_block
+            .val_at::<H256>(PBFT_PREV_HASH_POS)
+            .context("CONSENSUS_QUERY_SCHEDULE_PREV_HASH")?
+            .into(),
+        dag_block_hash_as_pivot: pbft_block
+            .val_at::<H256>(PBFT_PIVOT_HASH_POS)
+            .context("CONSENSUS_QUERY_SCHEDULE_PIVOT_HASH")?
+            .into(),
+        order_hash: pbft_block
+            .val_at::<H256>(PBFT_ORDER_HASH_POS)
+            .context("CONSENSUS_QUERY_SCHEDULE_ORDER_HASH")?
+            .into(),
+        final_chain_hash: pbft_block
+            .val_at::<H256>(PBFT_FINAL_CHAIN_HASH_POS)
+            .context("CONSENSUS_QUERY_SCHEDULE_FINAL_CHAIN_HASH")?
+            .into(),
+        period: pbft_block
+            .val_at(PBFT_PERIOD_POS)
+            .context("CONSENSUS_QUERY_SCHEDULE_PERIOD")?,
+        timestamp: pbft_block
+            .val_at(PBFT_TIMESTAMP_POS)
+            .context("CONSENSUS_QUERY_SCHEDULE_TIMESTAMP")?,
+        block_hash: keccak256(pbft_block_rlp).into(),
+        signature,
+        beneficiary: metadata.author.into(),
+        reward_votes: pbft_block
+            .list_at::<H256>(PBFT_REWARD_VOTES_POS)
+            .context("CONSENSUS_QUERY_SCHEDULE_REWARD_VOTES")?
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+        has_extra_data: extra_data.found,
+        extra_data,
+        dag_blocks_order,
+    })
+}
+
+fn decode_pbft_extra_data(bytes: &[u8]) -> Result<PbftBlockExtraDataView> {
+    anyhow::ensure!(
+        bytes.len() <= PBFT_EXTRA_DATA_MAX_SIZE,
+        "CONSENSUS_QUERY_PBFT_EXTRA_DATA_TOO_LARGE"
+    );
+    let rlp = Rlp::new(bytes);
+    if rlp.item_count().ok() != Some(PBFT_EXTRA_DATA_FIELDS) {
+        return Ok(PbftBlockExtraDataView::default());
+    }
+    let major_version = match rlp.val_at(0) {
+        Ok(value) => value,
+        Err(_) => return Ok(PbftBlockExtraDataView::default()),
+    };
+    let minor_version = match rlp.val_at(1) {
+        Ok(value) => value,
+        Err(_) => return Ok(PbftBlockExtraDataView::default()),
+    };
+    let patch_version = match rlp.val_at(2) {
+        Ok(value) => value,
+        Err(_) => return Ok(PbftBlockExtraDataView::default()),
+    };
+    let net_version = match rlp.val_at(3) {
+        Ok(value) => value,
+        Err(_) => return Ok(PbftBlockExtraDataView::default()),
+    };
+    let node_implementation = match rlp.val_at(4) {
+        Ok(value) => value,
+        Err(_) => return Ok(PbftBlockExtraDataView::default()),
+    };
+    let pillar_block_hash = match rlp.at(5).and_then(|value| value.data()) {
+        Ok(data) if data.is_empty() => None,
+        Ok(data) if data.len() == 32 => Some(H256::from_slice(data)),
+        Ok(_) => return Ok(PbftBlockExtraDataView::default()),
+        Err(_) => return Ok(PbftBlockExtraDataView::default()),
+    };
+
+    Ok(PbftBlockExtraDataView {
+        found: true,
+        major_version,
+        minor_version,
+        patch_version,
+        net_version,
+        node_implementation,
+        has_pillar_block_hash: pillar_block_hash.is_some(),
+        pillar_block_hash: pillar_block_hash.unwrap_or_default().into(),
+    })
+}
+
+fn finalized_dag_hashes(dag_bundle_rlp: &[u8]) -> Result<Vec<[u8; 32]>> {
+    let bundle = Rlp::new(dag_bundle_rlp);
+    if dag_bundle_is_empty(&bundle)? {
+        return Ok(Vec::new());
+    }
+    anyhow::ensure!(
+        bundle.item_count()? == 3,
+        "CONSENSUS_QUERY_INVALID_FINALIZED_DAG_BUNDLE_FIELD_COUNT"
+    );
+    let compact_blocks = bundle
+        .at(2)
+        .context("CONSENSUS_QUERY_FINALIZED_DAG_COMPACT_BLOCKS")?;
+    let finalized_bundle = FinalizedDagBlockBundleRlp::new(dag_bundle_rlp);
+    let mut out = Vec::with_capacity(compact_blocks.item_count()?);
+    for position in 0..compact_blocks.item_count()? {
+        let canonical = finalized_bundle
+            .canonical_block_rlp(position)
+            .context("CONSENSUS_QUERY_FINALIZED_DAG_CANONICAL_BLOCK")?;
+        out.push(keccak256(&canonical).into());
+    }
+    Ok(out)
+}
+
+fn dag_bundle_is_empty(bundle: &Rlp<'_>) -> Result<bool> {
+    if bundle.is_list() {
+        return Ok(false);
+    }
+    Ok(bundle.data()?.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ethereum_types::U256;
+    use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
     use rustaxa_storage::Config;
     use rustaxa_types::codec::rlp::final_chain::StoredBlockHeaderRlpOwned;
@@ -279,6 +519,60 @@ mod tests {
         stream.append_raw(&[0xC0], 1);
         stream.append_raw(&[0xC0], 1);
         stream.out().to_vec()
+    }
+
+    fn period_data_rlp_with_dag_bundle(pbft_block_rlp: &[u8]) -> Vec<u8> {
+        let mut dag_bundle = RlpStream::new_list(3);
+        dag_bundle.begin_list(0);
+        dag_bundle.begin_list(0);
+        dag_bundle.begin_list(0);
+
+        let mut stream = RlpStream::new_list(5);
+        stream.append_raw(pbft_block_rlp, 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&dag_bundle.out(), 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.out().to_vec()
+    }
+
+    fn signed_pbft_block_rlp(signing_key: &SigningKey) -> Vec<u8> {
+        let mut extra_data = RlpStream::new_list(6);
+        extra_data.append(&1u16);
+        extra_data.append(&2u16);
+        extra_data.append(&3u16);
+        extra_data.append(&4u16);
+        extra_data.append(&"rustaxa-test".to_string());
+        extra_data.append(&H256::from_low_u64_be(55).as_bytes());
+        let extra_data_bytes = extra_data.out().to_vec();
+
+        let mut unsigned = RlpStream::new_list(8);
+        unsigned.append(&H256::from_low_u64_be(10));
+        unsigned.append(&H256::from_low_u64_be(11));
+        unsigned.append(&H256::from_low_u64_be(12));
+        unsigned.append(&H256::from_low_u64_be(13));
+        unsigned.append(&7u64);
+        unsigned.append(&99u64);
+        unsigned.append_list(&[H256::from_low_u64_be(20), H256::from_low_u64_be(21)]);
+        unsigned.append(&extra_data_bytes);
+        let message_hash = keccak256(&unsigned.out());
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(message_hash.as_bytes())
+            .unwrap();
+        let mut signature_bytes = signature.to_bytes().to_vec();
+        signature_bytes.push(recovery_id.to_byte());
+
+        let mut signed = RlpStream::new_list(9);
+        signed.append(&H256::from_low_u64_be(10));
+        signed.append(&H256::from_low_u64_be(11));
+        signed.append(&H256::from_low_u64_be(12));
+        signed.append(&H256::from_low_u64_be(13));
+        signed.append(&7u64);
+        signed.append(&99u64);
+        signed.append_list(&[H256::from_low_u64_be(20), H256::from_low_u64_be(21)]);
+        signed.append(&extra_data_bytes);
+        signed.append(&signature_bytes);
+        signed.out().to_vec()
     }
 
     fn dag_block_rlp() -> Vec<u8> {
@@ -358,6 +652,57 @@ mod tests {
 
         assert!(!api.final_chain_block_by_number(44).unwrap().found);
         assert!(!api.pbft_block_hash_by_period(44).unwrap().found);
+        assert!(!api.pbft_schedule_block_by_period(44).unwrap().found);
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn query_api_reads_pbft_schedule_block_view_from_period_data() {
+        let (path, storage) = test_storage("schedule_block_view");
+        let api = ConsensusQueryApi::new(storage.clone());
+        let signing_key = SigningKey::from_slice(&[9u8; 32]).unwrap();
+        let pbft_block = signed_pbft_block_rlp(&signing_key);
+        storage
+            .period()
+            .write(7, &period_data_rlp_with_dag_bundle(&pbft_block))
+            .unwrap();
+
+        let view = api.pbft_schedule_block_by_period(7).unwrap();
+
+        assert!(view.found);
+        assert_eq!(view.prev_block_hash, H256::from_low_u64_be(10).0);
+        assert_eq!(view.dag_block_hash_as_pivot, H256::from_low_u64_be(11).0);
+        assert_eq!(view.order_hash, H256::from_low_u64_be(12).0);
+        assert_eq!(view.final_chain_hash, H256::from_low_u64_be(13).0);
+        assert_eq!(view.period, 7);
+        assert_eq!(view.timestamp, 99);
+        assert_eq!(view.block_hash, keccak256(&pbft_block).0);
+        assert_eq!(view.signature.len(), 65);
+        assert_eq!(
+            view.beneficiary,
+            PbftBlockMetadata::try_from(SignedPbftBlockRlp::new(&pbft_block))
+                .unwrap()
+                .author
+                .0
+        );
+        assert_eq!(
+            view.reward_votes,
+            vec![H256::from_low_u64_be(20).0, H256::from_low_u64_be(21).0]
+        );
+        assert!(view.has_extra_data);
+        assert_eq!(view.extra_data.major_version, 1);
+        assert_eq!(view.extra_data.minor_version, 2);
+        assert_eq!(view.extra_data.patch_version, 3);
+        assert_eq!(view.extra_data.net_version, 4);
+        assert_eq!(view.extra_data.node_implementation, "rustaxa-test");
+        assert!(view.extra_data.has_pillar_block_hash);
+        assert_eq!(
+            view.extra_data.pillar_block_hash,
+            H256::from_low_u64_be(55).0
+        );
+        assert!(view.dag_blocks_order.is_empty());
 
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
