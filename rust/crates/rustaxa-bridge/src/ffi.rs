@@ -458,6 +458,15 @@ pub mod rustaxa_ffi {
         transactions_executed: u64,
     }
 
+    /// Public/query sortition params-change view for Test RPC compatibility.
+    struct SortitionParamsChangeView {
+        found: bool,
+        period: u64,
+        interval_efficiency: u16,
+        threshold_upper: u16,
+        threshold_upper_min: u16,
+    }
+
     struct PeriodRlp {
         period: u64,
         data: Vec<u8>,
@@ -5073,6 +5082,10 @@ pub mod rustaxa_ffi {
         pub fn consensus_query_chain_stats(
             self: &BridgeConsensusQueryApi,
         ) -> Result<ChainStatsView>;
+        pub fn consensus_query_sortition_params_change_by_period(
+            self: &BridgeConsensusQueryApi,
+            period: u64,
+        ) -> Result<SortitionParamsChangeView>;
         pub fn consensus_query_final_chain_blocks_with_bloom(
             self: &BridgeConsensusQueryApi,
             bloom: &[u8; 256],

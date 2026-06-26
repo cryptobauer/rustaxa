@@ -436,6 +436,9 @@ Implemented first slice:
   - `consensus_query_final_chain_block_number_by_hash(block_hash) -> FinalChainBlockNumberLookup`
   - `consensus_query_final_chain_last_block_number() -> u64`
   - `consensus_query_final_chain_blocks_with_bloom(bloom, from, to) -> Vec<u64>`
+  - `consensus_query_period_lambda_by_period(period) -> PeriodLambda`
+  - `consensus_query_chain_stats() -> ChainStatsView`
+  - `consensus_query_sortition_params_change_by_period(period) -> SortitionParamsChangeView`
 - `taraxa_pbftBlockHashByPeriod` and GraphQL final-chain block composition now use `ConsensusQueryApi` in Rust mode for
   PBFT hash-by-period lookup plus finalized block header, hash-to-number, and latest-block reads instead of creating
   endpoint-local period-storage query handles or reading `FinalChain` directly for those facts.
@@ -499,6 +502,8 @@ Implemented first slice:
   of reading the metadata column through `DbStorage` directly.
 - `taraxa_getChainStats` now uses `ConsensusQueryApi` in Rust mode for latest finalized period and executed
   block/transaction counters instead of reading `FinalChain` and `DbStorage` directly.
+- Test RPC `get_sortition_change` now uses `ConsensusQueryApi` in Rust mode for the persisted sortition params-change
+  active at or before the requested period instead of reading the metadata column through `DbStorage` directly.
 - The first `FinalChainBlockView` route returns finalized block number/hash, stored header roots, bloom/gas/reward facts,
   canonical stored-header bytes, and optional PBFT hash. It intentionally does not expand transactions, receipts, logs,
   account state, DPoS snapshots, or external `StateAPI` reads.

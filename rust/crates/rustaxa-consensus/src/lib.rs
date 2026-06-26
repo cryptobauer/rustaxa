@@ -45,7 +45,7 @@ pub use consensus_query_api::{
     ChainStatsView, ConsensusQueryApi, DagBlockView, FinalChainBlockView, PbftBlockExtraDataView,
     PbftNodeVersionView, PbftScheduleBlockView, PillarBlockDataView, PillarBlockViewSignature,
     PillarBlockViewVoteCountChange, QueryHashLookup, QueryNumberLookup, QueryPeriodLambda,
-    TransactionReceiptView, TransactionView,
+    SortitionParamsChangeView, TransactionReceiptView, TransactionView,
 };
 pub use final_chain::FinalChain;
 pub use final_chain_execution::{

@@ -24,6 +24,8 @@ use rustaxa_vdf::vdf_sortition::decode_vdf_sortition_payload;
 use std::sync::Arc;
 use tiny_keccak::{Hasher, Keccak};
 
+use crate::sortition::{SortitionParamsChange, THRESHOLD_UPPER_MIN_VALUE};
+
 const PBFT_BLOCK_POS_IN_PERIOD_DATA: usize = 0;
 const DAG_BLOCKS_POS_IN_PERIOD_DATA: usize = 2;
 const PBFT_PREV_HASH_POS: usize = 0;
@@ -91,6 +93,22 @@ pub struct ChainStatsView {
     pub pbft_period: u64,
     pub dag_blocks_executed: u64,
     pub transactions_executed: u64,
+}
+
+/// Storage-backed public view of the sortition params change active for a period.
+///
+/// The view is intentionally narrower than the full sortition manager state:
+/// it only exposes the compatibility fields returned by the Test RPC
+/// `get_sortition_change`. `found` is false when no params-change row exists at
+/// or before the requested period. Malformed storage bytes are returned as query
+/// errors so public adapters do not silently preserve corrupt consensus config.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SortitionParamsChangeView {
+    pub found: bool,
+    pub period: u64,
+    pub interval_efficiency: u16,
+    pub threshold_upper: u16,
+    pub threshold_upper_min: u16,
 }
 
 /// Stable public view of a finalized FinalChain block.
@@ -469,6 +487,34 @@ impl ConsensusQueryApi {
                 .storage
                 .metadata()
                 .status_field(StatusField::ExecutedTrxCount as u8)?,
+        })
+    }
+
+    /// Returns the sortition params change active at or before `period`.
+    ///
+    /// This is the public-query route for the Test RPC `get_sortition_change`.
+    /// It reads the Rust metadata repository directly and decodes the canonical
+    /// C++-compatible sortition change payload rather than exposing `DbStorage`
+    /// or the broader sortition manager to public RPC code.
+    pub fn sortition_params_change_by_period(
+        &self,
+        period: u64,
+    ) -> Result<SortitionParamsChangeView> {
+        let Some(raw_change) = self
+            .storage
+            .metadata()
+            .params_change_for_period_rlp(period)?
+        else {
+            return Ok(SortitionParamsChangeView::default());
+        };
+        let change = SortitionParamsChange::from_rlp_bytes(&raw_change)
+            .context("CONSENSUS_QUERY_SORTITION_PARAMS_CHANGE_DECODE")?;
+        Ok(SortitionParamsChangeView {
+            found: true,
+            period: change.period,
+            interval_efficiency: change.interval_efficiency,
+            threshold_upper: change.threshold_upper,
+            threshold_upper_min: THRESHOLD_UPPER_MIN_VALUE,
         })
     }
 
@@ -1689,6 +1735,15 @@ mod tests {
         assert_eq!(lookup.hash, view.pbft_block_hash);
         assert_eq!(api.final_chain_last_block_number().unwrap(), 9);
         storage.metadata().write_period_lambda(9, 1234).unwrap();
+        let sortition_change = SortitionParamsChange {
+            period: 8,
+            interval_efficiency: 4_200,
+            threshold_upper: 1_234,
+        };
+        storage
+            .metadata()
+            .write_sortition_params_change(8, &sortition_change.to_rlp_bytes())
+            .unwrap();
         storage
             .metadata()
             .write_status_field(StatusField::ExecutedBlkCount as u8, 21)
@@ -1705,6 +1760,32 @@ mod tests {
             }
         );
         assert!(!api.period_lambda_by_period(10).unwrap().found);
+        assert_eq!(
+            api.sortition_params_change_by_period(8).unwrap(),
+            SortitionParamsChangeView {
+                found: true,
+                period: 8,
+                interval_efficiency: 4_200,
+                threshold_upper: 1_234,
+                threshold_upper_min: THRESHOLD_UPPER_MIN_VALUE,
+            }
+        );
+        assert_eq!(
+            api.sortition_params_change_by_period(9).unwrap(),
+            SortitionParamsChangeView {
+                found: true,
+                period: 8,
+                interval_efficiency: 4_200,
+                threshold_upper: 1_234,
+                threshold_upper_min: THRESHOLD_UPPER_MIN_VALUE,
+            }
+        );
+        assert!(!api.sortition_params_change_by_period(7).unwrap().found);
+        storage
+            .metadata()
+            .write_sortition_params_change(10, &[0xC1])
+            .unwrap();
+        assert!(api.sortition_params_change_by_period(10).is_err());
         assert_eq!(
             api.chain_stats().unwrap(),
             ChainStatsView {
@@ -1750,6 +1831,7 @@ mod tests {
         assert!(!api.pbft_block_hash_by_period(44).unwrap().found);
         assert!(!api.pbft_schedule_block_by_period(44).unwrap().found);
         assert!(!api.pbft_node_version_by_period(44).unwrap().found);
+        assert!(!api.sortition_params_change_by_period(44).unwrap().found);
 
         drop(storage);
         let _ = std::fs::remove_dir_all(path);

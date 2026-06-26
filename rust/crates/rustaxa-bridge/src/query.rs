@@ -38,6 +38,18 @@ fn chain_stats_view_to_ffi(view: rustaxa_consensus::ChainStatsView) -> rustaxa_f
     }
 }
 
+fn sortition_params_change_view_to_ffi(
+    view: rustaxa_consensus::SortitionParamsChangeView,
+) -> rustaxa_ffi::SortitionParamsChangeView {
+    rustaxa_ffi::SortitionParamsChangeView {
+        found: view.found,
+        period: view.period,
+        interval_efficiency: view.interval_efficiency,
+        threshold_upper: view.threshold_upper,
+        threshold_upper_min: view.threshold_upper_min,
+    }
+}
+
 fn final_chain_block_view_to_ffi(
     view: rustaxa_consensus::FinalChainBlockView,
 ) -> rustaxa_ffi::FinalChainBlockView {
@@ -280,6 +292,16 @@ impl BridgeConsensusQueryApi {
         Ok(chain_stats_view_to_ffi(self.0.chain_stats()?))
     }
 
+    /// Returns the sortition params change active at or before a period.
+    pub fn consensus_query_sortition_params_change_by_period(
+        &self,
+        period: u64,
+    ) -> Result<rustaxa_ffi::SortitionParamsChangeView, anyhow::Error> {
+        Ok(sortition_params_change_view_to_ffi(
+            self.0.sortition_params_change_by_period(period)?,
+        ))
+    }
+
     /// Returns finalized block numbers whose Rust FinalChain bloom index contains the query bloom.
     pub fn consensus_query_final_chain_blocks_with_bloom(
         &self,
@@ -433,6 +455,7 @@ mod tests {
     use ethereum_types::{H160, H256, U256};
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
+    use rustaxa_consensus::sortition::{SortitionParamsChange, THRESHOLD_UPPER_MIN_VALUE};
     use rustaxa_types::codec::rlp::final_chain::StoredBlockHeaderRlpOwned;
     use rustaxa_types::final_chain::StoredFinalChainBlockHeader;
     use rustaxa_types::pillar::{
@@ -755,6 +778,14 @@ mod tests {
             15
         );
         storage.save_period_lambda(15, 1234).unwrap();
+        let sortition_change = SortitionParamsChange {
+            period: 12,
+            interval_efficiency: 4_200,
+            threshold_upper: 1_234,
+        };
+        storage
+            .save_sortition_params_change(12, sortition_change.to_rlp_bytes())
+            .unwrap();
         storage
             .save_status_field(rustaxa_storage::StatusField::ExecutedBlkCount as u8, 21)
             .unwrap();
@@ -769,6 +800,39 @@ mod tests {
                 .unwrap()
                 .found
         );
+        let exact_sortition_change_view = api
+            .consensus_query_sortition_params_change_by_period(12)
+            .unwrap();
+        assert!(exact_sortition_change_view.found);
+        assert_eq!(exact_sortition_change_view.period, 12);
+        assert_eq!(exact_sortition_change_view.interval_efficiency, 4_200);
+        assert_eq!(exact_sortition_change_view.threshold_upper, 1_234);
+        assert_eq!(
+            exact_sortition_change_view.threshold_upper_min,
+            THRESHOLD_UPPER_MIN_VALUE
+        );
+        let sortition_change_view = api
+            .consensus_query_sortition_params_change_by_period(15)
+            .unwrap();
+        assert!(sortition_change_view.found);
+        assert_eq!(sortition_change_view.period, 12);
+        assert_eq!(sortition_change_view.interval_efficiency, 4_200);
+        assert_eq!(sortition_change_view.threshold_upper, 1_234);
+        assert_eq!(
+            sortition_change_view.threshold_upper_min,
+            THRESHOLD_UPPER_MIN_VALUE
+        );
+        assert!(
+            !api.consensus_query_sortition_params_change_by_period(11)
+                .unwrap()
+                .found
+        );
+        storage
+            .save_sortition_params_change(16, vec![0xC1])
+            .unwrap();
+        assert!(api
+            .consensus_query_sortition_params_change_by_period(16)
+            .is_err());
         let chain_stats = api.consensus_query_chain_stats().unwrap();
         assert_eq!(chain_stats.pbft_period, 15);
         assert_eq!(chain_stats.dag_blocks_executed, 21);

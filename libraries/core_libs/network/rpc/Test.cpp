@@ -11,6 +11,10 @@
 #include "transaction/transaction_manager.hpp"
 #include "vote_manager/vote_manager.hpp"
 
+#ifdef RUSTAXA_ENABLE
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
+
 using namespace std;
 using namespace dev;
 using namespace ::taraxa::final_chain;
@@ -20,16 +24,34 @@ using namespace taraxa;
 namespace taraxa::net {
 
 Json::Value Test::get_sortition_change(const Json::Value &param1) {
-  Json::Value res;
-  if (auto node = app_.lock()) {
-    uint64_t period = param1["period"].asUInt64();
-    auto params_change = node->getDB()->getParamsChangeForPeriod(period);  // RUSTAXA_QUERY_COMPAT_READ
-    res["interval_efficiency"] = params_change->interval_efficiency;
-    res["period"] = params_change->period;
-    res["threshold_upper"] = params_change->vrf_params.threshold_upper;
-    res["kThresholdUpperMinValue"] = params_change->vrf_params.kThresholdUpperMinValue;
+  try {
+    Json::Value res;
+    if (auto node = app_.lock()) {
+      uint64_t period = param1["period"].asUInt64();
+#ifdef RUSTAXA_ENABLE
+      {
+        const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+        const auto params_change = query_api->consensus_query_sortition_params_change_by_period(period);
+        if (!params_change.found) {
+          return res;
+        }
+        res["interval_efficiency"] = params_change.interval_efficiency;
+        res["period"] = Json::UInt64(params_change.period);
+        res["threshold_upper"] = params_change.threshold_upper;
+        res["kThresholdUpperMinValue"] = params_change.threshold_upper_min;
+        return res;
+      }
+#endif
+      auto params_change = node->getDB()->getParamsChangeForPeriod(period);  // RUSTAXA_QUERY_COMPAT_READ
+      res["interval_efficiency"] = params_change->interval_efficiency;
+      res["period"] = params_change->period;
+      res["threshold_upper"] = params_change->vrf_params.threshold_upper;
+      res["kThresholdUpperMinValue"] = params_change->vrf_params.kThresholdUpperMinValue;
+    }
+    return res;
+  } catch (...) {
+    BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INVALID_PARAMS));
   }
-  return res;
 }
 
 Json::Value Test::send_coin_transaction(const Json::Value &param1) {
