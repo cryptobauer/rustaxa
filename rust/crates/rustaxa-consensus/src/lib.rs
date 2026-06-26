@@ -42,10 +42,10 @@ pub use consensus_pipeline::{
     PeerStatusEvent, PillarVoteEvent, PipelineKind, TransactionEvent,
 };
 pub use consensus_query_api::{
-    ChainStatsView, ConsensusQueryApi, DagBlockView, FinalChainBlockView, PbftBlockExtraDataView,
-    PbftNodeVersionView, PbftScheduleBlockView, PillarBlockDataView, PillarBlockViewSignature,
-    PillarBlockViewVoteCountChange, QueryHashLookup, QueryNumberLookup, QueryPeriodLambda,
-    SortitionParamsChangeView, TransactionReceiptView, TransactionView,
+    ChainStatsView, ConsensusQueryApi, ConsensusStatusView, DagBlockView, FinalChainBlockView,
+    PbftBlockExtraDataView, PbftNodeVersionView, PbftScheduleBlockView, PillarBlockDataView,
+    PillarBlockViewSignature, PillarBlockViewVoteCountChange, QueryHashLookup, QueryNumberLookup,
+    QueryPeriodLambda, SortitionParamsChangeView, TransactionReceiptView, TransactionView,
 };
 pub use final_chain::FinalChain;
 pub use final_chain_execution::{

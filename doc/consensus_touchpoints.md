@@ -438,6 +438,7 @@ Implemented first slice:
   - `consensus_query_final_chain_blocks_with_bloom(bloom, from, to) -> Vec<u64>`
   - `consensus_query_period_lambda_by_period(period) -> PeriodLambda`
   - `consensus_query_chain_stats() -> ChainStatsView`
+  - `consensus_query_status() -> ConsensusStatusView`
   - `consensus_query_sortition_params_change_by_period(period) -> SortitionParamsChangeView`
 - `taraxa_pbftBlockHashByPeriod` and GraphQL final-chain block composition now use `ConsensusQueryApi` in Rust mode for
   PBFT hash-by-period lookup plus finalized block header, hash-to-number, and latest-block reads instead of creating
@@ -446,8 +447,11 @@ Implemented first slice:
   mode for finalized transaction counts, indexed transaction payloads, and receipt DTOs instead of lazy-loading
   `FinalChain` transaction vectors and receipts from the block object.
 - GraphQL `nodeState.finalBlock` now uses `ConsensusQueryApi` in Rust mode for the finalized head number instead of
-  reading `FinalChain` directly. `nodeState.dagBlockLevel` and `nodeState.dagBlockPeriod` remain live DAG-manager
-  compatibility reads until a dedicated consensus status DTO owns the mixed live/finalized status view.
+  reading `FinalChain` directly.
+- GraphQL `nodeState.dagBlockLevel`, `nodeState.dagBlockPeriod`, top-level `dagBlock` default selection, and
+  `dagBlocks` Rust-mode level bounds now use `ConsensusQueryApi::consensus_query_status` for storage-backed latest DAG
+  level and proposal-period facts instead of asking the live `DagManager`. Peer progress and active sync state remain
+  outside this storage-backed status DTO until a network-backed `SyncStateView` route exists.
 - `taraxa_getScheduleBlockByPeriod` now uses `ConsensusQueryApi` for PBFT schedule block facts and finalized DAG order
   in Rust mode instead of creating an endpoint-local period-storage query handle.
 - `taraxa_getNodeVersions` now uses `ConsensusQueryApi` for PBFT block author/version facts in Rust mode instead of
@@ -516,8 +520,8 @@ Implemented first slice:
 - The first `FinalChainBlockView` route returns finalized block number/hash, stored header roots, bloom/gas/reward facts,
   canonical stored-header bytes, and optional PBFT hash. It intentionally does not expand transactions, receipts, logs,
   account state, DPoS snapshots, or external `StateAPI` reads.
-- Existing account-state, live subscription log delivery, debug log filtering, and sync/status routes remain
-  compatibility or typed-storage routes until they are moved behind `ConsensusQueryApi` in later slices.
+- Existing account-state, live subscription log delivery, debug log filtering, and live sync/status routes remain
+  compatibility or typed-storage routes until they are moved behind dedicated query APIs in later slices.
 
 ## Consensus Internal
 

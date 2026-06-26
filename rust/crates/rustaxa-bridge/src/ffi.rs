@@ -460,6 +460,14 @@ pub mod rustaxa_ffi {
         transactions_executed: u64,
     }
 
+    /// Storage-backed finalized head and DAG index status facts.
+    struct ConsensusStatusView {
+        final_block_number: u64,
+        latest_dag_level: u64,
+        latest_dag_period_found: bool,
+        latest_dag_period: u64,
+    }
+
     /// Public/query sortition params-change view for Test RPC compatibility.
     struct SortitionParamsChangeView {
         found: bool,
@@ -5084,6 +5092,9 @@ pub mod rustaxa_ffi {
         pub fn consensus_query_chain_stats(
             self: &BridgeConsensusQueryApi,
         ) -> Result<ChainStatsView>;
+        pub fn consensus_query_status(
+            self: &BridgeConsensusQueryApi,
+        ) -> Result<ConsensusStatusView>;
         pub fn consensus_query_sortition_params_change_by_period(
             self: &BridgeConsensusQueryApi,
             period: u64,

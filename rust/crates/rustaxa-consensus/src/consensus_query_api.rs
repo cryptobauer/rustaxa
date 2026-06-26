@@ -100,6 +100,21 @@ pub struct ChainStatsView {
     pub transactions_executed: u64,
 }
 
+/// Storage-backed public consensus status view.
+///
+/// This view is the read-only status DTO for public query clients that need
+/// consensus-owned finalized and DAG index facts without holding live manager
+/// pointers. `latest_dag_period_found` is false when the DAG level index exists
+/// but no proposal-period mapping has been persisted for that level, which can
+/// happen during genesis, import, or repair windows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConsensusStatusView {
+    pub final_block_number: u64,
+    pub latest_dag_level: u64,
+    pub latest_dag_period_found: bool,
+    pub latest_dag_period: u64,
+}
+
 /// Storage-backed public view of the sortition params change active for a period.
 ///
 /// The view is intentionally narrower than the full sortition manager state:
@@ -500,6 +515,27 @@ impl ConsensusQueryApi {
                 .storage
                 .metadata()
                 .status_field(StatusField::ExecutedTrxCount as u8)?,
+        })
+    }
+
+    /// Returns the storage-backed public consensus status view.
+    ///
+    /// This query is deliberately narrower than live node status: it exposes
+    /// finalized head and DAG index facts that are already persisted in
+    /// Rust-owned storage. Peer progress, active syncing state, mempool size,
+    /// and other live network/manager facts remain outside this storage query
+    /// facade until they have dedicated runtime DTOs.
+    pub fn consensus_status(&self) -> Result<ConsensusStatusView> {
+        let latest_dag_level = self.storage.dag().last_level()?;
+        let latest_dag_period = self
+            .storage
+            .dag()
+            .proposal_period_at_level(latest_dag_level)?;
+        Ok(ConsensusStatusView {
+            final_block_number: self.final_chain_last_block_number()?,
+            latest_dag_level,
+            latest_dag_period_found: latest_dag_period.is_some(),
+            latest_dag_period: latest_dag_period.unwrap_or_default(),
         })
     }
 
@@ -1757,6 +1793,13 @@ mod tests {
             .metadata()
             .write_sortition_params_change(8, &sortition_change.to_rlp_bytes())
             .unwrap();
+        let status_dag_block_rlp = dag_block_rlp();
+        let status_dag_block_hash = keccak256(&status_dag_block_rlp);
+        storage
+            .dag()
+            .write(status_dag_block_hash, 5, 1, &status_dag_block_rlp)
+            .unwrap();
+        storage.dag().write_proposal_period_at_level(5, 8).unwrap();
         storage
             .metadata()
             .write_status_field(StatusField::ExecutedBlkCount as u8, 21)
@@ -1815,6 +1858,15 @@ mod tests {
                 transactions_count: 89,
                 dag_blocks_executed: 21,
                 transactions_executed: 34
+            }
+        );
+        assert_eq!(
+            api.consensus_status().unwrap(),
+            ConsensusStatusView {
+                final_block_number: 9,
+                latest_dag_level: 5,
+                latest_dag_period_found: true,
+                latest_dag_period: 8,
             }
         );
         assert_eq!(

@@ -40,6 +40,17 @@ fn chain_stats_view_to_ffi(view: rustaxa_consensus::ChainStatsView) -> rustaxa_f
     }
 }
 
+fn consensus_status_view_to_ffi(
+    view: rustaxa_consensus::ConsensusStatusView,
+) -> rustaxa_ffi::ConsensusStatusView {
+    rustaxa_ffi::ConsensusStatusView {
+        final_block_number: view.final_block_number,
+        latest_dag_level: view.latest_dag_level,
+        latest_dag_period_found: view.latest_dag_period_found,
+        latest_dag_period: view.latest_dag_period,
+    }
+}
+
 fn sortition_params_change_view_to_ffi(
     view: rustaxa_consensus::SortitionParamsChangeView,
 ) -> rustaxa_ffi::SortitionParamsChangeView {
@@ -292,6 +303,13 @@ impl BridgeConsensusQueryApi {
         &self,
     ) -> Result<rustaxa_ffi::ChainStatsView, anyhow::Error> {
         Ok(chain_stats_view_to_ffi(self.0.chain_stats()?))
+    }
+
+    /// Returns storage-backed finalized head and DAG index status facts.
+    pub fn consensus_query_status(
+        &self,
+    ) -> Result<rustaxa_ffi::ConsensusStatusView, anyhow::Error> {
+        Ok(consensus_status_view_to_ffi(self.0.consensus_status()?))
     }
 
     /// Returns the sortition params change active at or before a period.
@@ -788,6 +806,12 @@ mod tests {
         storage
             .save_sortition_params_change(12, sortition_change.to_rlp_bytes())
             .unwrap();
+        let status_dag_block_rlp = dag_block_rlp();
+        let status_dag_block_hash = keccak256(&status_dag_block_rlp);
+        storage
+            .save_dag_block(&status_dag_block_hash.0, 5, 1, status_dag_block_rlp)
+            .unwrap();
+        storage.save_proposal_period_dag_levels_map(5, 12).unwrap();
         storage
             .save_status_field(rustaxa_storage::StatusField::ExecutedBlkCount as u8, 21)
             .unwrap();
@@ -847,6 +871,11 @@ mod tests {
         assert_eq!(chain_stats.transactions_count, 89);
         assert_eq!(chain_stats.dag_blocks_executed, 21);
         assert_eq!(chain_stats.transactions_executed, 34);
+        let status = api.consensus_query_status().unwrap();
+        assert_eq!(status.final_block_number, 15);
+        assert_eq!(status.latest_dag_level, 5);
+        assert!(status.latest_dag_period_found);
+        assert_eq!(status.latest_dag_period, 12);
         assert_eq!(
             api.consensus_query_final_chain_blocks_with_bloom(&query_bloom, 1, 15)
                 .unwrap(),

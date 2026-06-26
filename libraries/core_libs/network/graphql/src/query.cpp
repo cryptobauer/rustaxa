@@ -281,7 +281,8 @@ std::shared_ptr<object::DagBlock> Query::getDagBlock(std::optional<response::Val
       }
     }
   } else {
-    auto rust_dag_blocks = (*query_api)->consensus_query_dag_blocks_by_level(dag_manager_->getMaxLevel(), 1);
+    const auto status = (*query_api)->consensus_query_status();
+    auto rust_dag_blocks = (*query_api)->consensus_query_dag_blocks_by_level(status.latest_dag_level, 1);
     for (auto& rust_dag_block : rust_dag_blocks) {
       return std::make_shared<object::DagBlock>(
           std::make_shared<DagBlock>(std::move(rust_dag_block), final_chain_, pbft_manager_, transaction_manager_,
@@ -356,17 +357,19 @@ std::vector<std::shared_ptr<object::DagBlock>> Query::getDagBlocks(std::optional
 #ifdef RUSTAXA_ENABLE
   {
     std::vector<std::shared_ptr<object::DagBlock>> rust_dag_blocks_result;
-    ::taraxa::level_t rust_act_dag_level = dag_manager_->getMaxLevel();
+    auto query_api = std::make_shared<decltype(rustaxa::create_consensus_query_api(db_->rustStorage()))>(
+        rustaxa::create_consensus_query_api(db_->rustStorage()));
+    const auto status = (*query_api)->consensus_query_status();
+    const auto rust_max_dag_level = status.latest_dag_level;
+    ::taraxa::level_t rust_act_dag_level = rust_max_dag_level;
 
     if (dagLevelArg) {
       rust_act_dag_level = dagLevelArg->get<int>();
-      if (rust_act_dag_level < 0 || rust_act_dag_level > dag_manager_->getMaxLevel()) {
+      if (rust_act_dag_level < 0 || static_cast<uint64_t>(rust_act_dag_level) > rust_max_dag_level) {
         return rust_dag_blocks_result;
       }
     }
 
-    auto query_api = std::make_shared<decltype(rustaxa::create_consensus_query_api(db_->rustStorage()))>(
-        rustaxa::create_consensus_query_api(db_->rustStorage()));
     auto addRustDagBlocks = [final_chain = final_chain_, pbft_manager = pbft_manager_,
                              transaction_manager = transaction_manager_, get_block_by_num = get_block_by_num_,
                              query_api](auto& rust_dag_blocks, auto& result_dag_blocks) -> size_t {
@@ -394,7 +397,7 @@ std::vector<std::shared_ptr<object::DagBlock>> Query::getDagBlocks(std::optional
     auto count = std::min(static_cast<size_t>(countArg.value()), Query::kMaxPropagationLimit);
     bool reverse_flag = reverseArg ? reverseArg.value() : false;
 
-    while (rust_act_count < count && rust_act_dag_level <= dag_manager_->getMaxLevel()) {
+    while (rust_act_count < count && static_cast<uint64_t>(rust_act_dag_level) <= rust_max_dag_level) {
       if (!reverse_flag) {
         rust_act_dag_level++;
       } else if (rust_act_dag_level > 0) {
@@ -462,8 +465,9 @@ std::shared_ptr<object::CurrentState> Query::getNodeState() const {
   auto query_api = std::make_shared<decltype(rustaxa::create_consensus_query_api(db_->rustStorage()))>(
       rustaxa::create_consensus_query_api(db_->rustStorage()));
   return std::make_shared<object::CurrentState>(std::make_shared<CurrentState>(
-      final_chain_, dag_manager_,
-      [query_api]() { return (*query_api)->consensus_query_final_chain_last_block_number(); }));
+      final_chain_, dag_manager_, [query_api]() { return (*query_api)->consensus_query_status().final_block_number; },
+      [query_api]() { return (*query_api)->consensus_query_status().latest_dag_level; },
+      [query_api]() { return (*query_api)->consensus_query_status().latest_dag_period; }));
 #endif
   return std::make_shared<object::CurrentState>(std::make_shared<CurrentState>(final_chain_, dag_manager_));
 }
