@@ -471,6 +471,62 @@ TEST_F(RPCTest, test_network_reads_use_network_reader) {
   ASSERT_TRUE(*all_nodes_called);
 }
 
+TEST_F(RPCTest, test_node_status_uses_status_reader) {
+  auto live_status_called = std::make_shared<bool>(false);
+  auto node_status_called = std::make_shared<bool>(false);
+
+  net::LiveStatusReader live_status = [live_status_called] {
+    *live_status_called = true;
+    net::LiveStatusSnapshot snapshot;
+    snapshot.pbft_syncing = true;
+    snapshot.syncing_seconds = 11;
+    snapshot.peer_count = 3;
+    snapshot.node_count = 5;
+    snapshot.pbft_chain_size = 7;
+    snapshot.pbft_sync_period = 13;
+    snapshot.pbft_round = 17;
+    snapshot.dpos_total_votes = 19;
+    snapshot.dpos_node_votes = 23;
+    snapshot.dpos_quorum = 29;
+    snapshot.pbft_sync_queue_size = 31;
+    snapshot.transaction_pool_size = 37;
+    snapshot.nonfinalized_transaction_size = 41;
+    snapshot.compatibility_network_status["mode"] = "reader";
+    return snapshot;
+  };
+
+  net::TestNodeStatusReader node_status_reader;
+  node_status_reader.status = [node_status_called] {
+    *node_status_called = true;
+    return net::TestNodeStatusView{43, 47, 53, 59, 61};
+  };
+
+  net::Test test_rpc(nullptr, std::move(live_status), {}, 1, {}, std::move(node_status_reader));
+
+  const auto status = test_rpc.get_node_status();
+  EXPECT_FALSE(status["synced"].asBool());
+  EXPECT_EQ(Json::UInt64(11), status["syncing_seconds"].asUInt64());
+  EXPECT_EQ(Json::UInt64(3), status["peer_count"].asUInt64());
+  EXPECT_EQ(Json::UInt64(5), status["node_count"].asUInt64());
+  EXPECT_EQ(Json::UInt64(43), status["blk_executed"].asUInt64());
+  EXPECT_EQ(Json::UInt64(47), status["blk_count"].asUInt64());
+  EXPECT_EQ(Json::UInt64(53), status["trx_executed"].asUInt64());
+  EXPECT_EQ(Json::UInt64(59), status["trx_count"].asUInt64());
+  EXPECT_EQ(Json::UInt64(61), status["dag_level"].asUInt64());
+  EXPECT_EQ(Json::UInt64(7), status["pbft_size"].asUInt64());
+  EXPECT_EQ(Json::UInt64(13), status["pbft_sync_period"].asUInt64());
+  EXPECT_EQ(Json::UInt64(17), status["pbft_round"].asUInt64());
+  EXPECT_EQ(Json::UInt64(19), status["dpos_total_votes"].asUInt64());
+  EXPECT_EQ(Json::UInt64(23), status["dpos_node_votes"].asUInt64());
+  EXPECT_EQ(Json::UInt64(29), status["dpos_quorum"].asUInt64());
+  EXPECT_EQ(Json::UInt64(31), status["pbft_sync_queue_size"].asUInt64());
+  EXPECT_EQ(Json::UInt64(37), status["trx_pool_size"].asUInt64());
+  EXPECT_EQ(Json::UInt64(41), status["trx_nonfinalized_size"].asUInt64());
+  EXPECT_EQ("reader", status["network"]["mode"].asString());
+  ASSERT_TRUE(*live_status_called);
+  ASSERT_TRUE(*node_status_called);
+}
+
 TEST_F(RPCTest, graphql_mutation_uses_transaction_api) {
   const auto trx = samples::createSignedTrxSamples(1, 1, secret_t::random()).front();
   auto insert_called = std::make_shared<bool>(false);

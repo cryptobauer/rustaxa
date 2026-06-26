@@ -39,10 +39,30 @@ struct TestNetworkReader {
   std::function<std::vector<TestNetworkNodeView>()> all_nodes;
 };
 
+// TestNodeStatusView contains the storage-backed counters and DAG head fact
+// that Test RPC exposes in get_node_status. Live sync, peer, and pool facts are
+// intentionally carried by LiveStatusSnapshot instead.
+struct TestNodeStatusView {
+  uint64_t blocks_executed = 0;
+  uint64_t dag_blocks_count = 0;
+  uint64_t transactions_executed = 0;
+  uint64_t transactions_count = 0;
+  uint64_t dag_level = 0;
+};
+
+// TestNodeStatusReader is the Test RPC boundary for persisted node-status
+// counters. The RPC layer owns JSON formatting; the adapter supplies the
+// counters without exposing DbStorage, DagManager, or TransactionManager to the
+// public method.
+struct TestNodeStatusReader {
+  std::function<TestNodeStatusView()> status;
+};
+
 class Test : public TestFace {
  public:
   explicit Test(const std::shared_ptr<taraxa::AppBase>& app, LiveStatusReader live_status = {},
-                TestTransactionApi transaction_api = {}, uint64_t chain_id = 0, TestNetworkReader network_reader = {});
+                TestTransactionApi transaction_api = {}, uint64_t chain_id = 0, TestNetworkReader network_reader = {},
+                TestNodeStatusReader node_status_reader = {});
   virtual RPCModules implementedModules() const override { return RPCModules{RPCModule{"test", "1.0"}}; }
 
   virtual Json::Value get_sortition_change(const Json::Value& param1) override;
@@ -59,6 +79,7 @@ class Test : public TestFace {
   LiveStatusReader live_status_;
   TestTransactionApi transaction_api_;
   TestNetworkReader network_reader_;
+  TestNodeStatusReader node_status_reader_;
 };
 
 }  // namespace taraxa::net
