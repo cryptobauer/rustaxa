@@ -456,6 +456,9 @@ Implemented first slice:
 - GraphQL top-level legacy finalized block acquisition now uses a dedicated `QueryBlockReader` callback bundle for latest
   block number, hash-to-number lookup, block-header lookup, and PBFT hash lookup instead of reading `FinalChain` and
   `DbStorage` directly from `block` and `blocks` fallback methods.
+- GraphQL `QueryBlockReader`'s default PBFT-hash callback now uses `ConsensusQueryApi` in Rust mode and keeps
+  `DbStorage::getPbftBlock` only as the non-Rust compatibility fallback. GraphQL's stored `DbStorage` handle is now
+  limited to constructing `ConsensusQueryApi` for Rust-mode public routes and building legacy fallback callbacks.
 - GraphQL `nodeState.finalBlock` now uses `ConsensusQueryApi` in Rust mode for the finalized head number instead of
   reading `FinalChain` directly.
 - GraphQL `nodeState.dagBlockLevel`, `nodeState.dagBlockPeriod`, top-level `dagBlock` default selection, and
@@ -528,6 +531,9 @@ Implemented first slice:
   lookup, latest-level lookup, level-window block lookup, latest finalized-period lookup, and finalized-period block
   lookup instead of reading `DagManager`, `DbStorage`, or `FinalChain` directly from `dagBlock`, `dagBlocks`, and
   `periodDagBlocks` fallback methods.
+- GraphQL `QueryDagBlockReader`'s default level-window and finalized-period callbacks now use
+  `ConsensusQueryApi` in Rust mode and materialize legacy `DagBlock` objects from canonical RLP only at the GraphQL
+  compatibility edge. Direct `DbStorage` DAG block materialization is limited to the non-Rust compatibility fallback.
 - GraphQL top-level `transaction(hash)` now uses `ConsensusQueryApi` for storage-backed transaction payload lookup in
   Rust mode instead of asking the live `TransactionManager` to resolve the hash. The query view returns canonical RLP
   plus source classification for pending, finalized regular, and finalized system transaction materialization.

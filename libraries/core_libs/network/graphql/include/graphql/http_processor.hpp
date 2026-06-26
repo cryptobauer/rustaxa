@@ -27,7 +27,7 @@ class GraphQlHttpProcessor final : public HttpProcessor {
                        std::shared_ptr<::taraxa::DagManager> dag_manager,
                        std::shared_ptr<::taraxa::PbftManager> pbft_manager,
                        std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
-                       std::shared_ptr<::taraxa::DbStorage> db,  // RUSTAXA_QUERY_COMPAT_READ: GraphQL query owner.
+                       std::shared_ptr<::taraxa::DbStorage> db,
                        std::shared_ptr<::taraxa::GasPricer> gas_pricer, std::weak_ptr<::taraxa::Network> network,
                        uint64_t chain_id, ::taraxa::net::LiveStatusReader live_status = {});
   Response process(const Request& request) override;

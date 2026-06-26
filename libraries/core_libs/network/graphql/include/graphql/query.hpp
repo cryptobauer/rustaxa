@@ -79,7 +79,7 @@ class Query {
   explicit Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
                  std::shared_ptr<::taraxa::DagManager> dag_manager, std::shared_ptr<::taraxa::PbftManager> pbft_manager,
                  std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
-                 std::shared_ptr<::taraxa::DbStorage> db,  // RUSTAXA_QUERY_COMPAT_READ: GraphQL query storage owner.
+                 std::shared_ptr<::taraxa::DbStorage> db,
                  std::shared_ptr<::taraxa::GasPricer> gas_pricer, std::weak_ptr<::taraxa::Network> network,
                  uint64_t chain_id, ::taraxa::net::LiveStatusReader live_status = {}) noexcept;
   explicit Query(AccountStateReader account_reader, uint64_t chain_id = 0, QueryBlockReader block_reader = {},
@@ -109,7 +109,10 @@ class Query {
   // TODO: use pagination limit for all "list" queries
   static constexpr size_t kMaxPropagationLimit{100};
 
-  std::shared_ptr<::taraxa::DbStorage> db_;  // RUSTAXA_QUERY_COMPAT_READ
+  // Rust mode uses this storage handle only to construct ConsensusQueryApi. The
+  // same handle also builds non-Rust compatibility readers in the legacy
+  // constructor.
+  std::shared_ptr<::taraxa::DbStorage> db_;
   const uint64_t kChainId;
   AccountStateReader account_reader_;
   QueryBlockReader block_reader_;

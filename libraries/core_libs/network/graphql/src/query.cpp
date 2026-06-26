@@ -22,6 +22,23 @@ using namespace std::literals;
 namespace graphql::taraxa {
 
 namespace {
+#ifdef RUSTAXA_ENABLE
+dev::h256 hashFromBridge(const std::array<uint8_t, 32>& hash) {
+  return dev::h256(hash.data(), dev::h256::ConstructFromPointer);
+}
+
+std::shared_ptr<::taraxa::DagBlock> materializeDagBlockView(const rustaxa::DagBlockPublicView& view) {
+  if (!view.found) {
+    return nullptr;
+  }
+  auto block = std::make_shared<::taraxa::DagBlock>(dev::bytes(view.block_rlp.begin(), view.block_rlp.end()));
+  if (block->getHash() != hashFromBridge(view.hash)) {
+    throw std::runtime_error("CONSENSUS_QUERY_GRAPHQL_DAG_BLOCK_HASH_MISMATCH");
+  }
+  return block;
+}
+#endif
+
 QueryBlockReader makeQueryBlockReader(const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
                                       const std::shared_ptr<::taraxa::DbStorage>& db) {
   QueryBlockReader reader;
@@ -42,7 +59,15 @@ QueryBlockReader makeQueryBlockReader(const std::shared_ptr<::taraxa::final_chai
     if (!db) {
       return std::nullopt;
     }
-    auto pbft_block = db->getPbftBlock(period);  // RUSTAXA_QUERY_COMPAT_READ
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(db->rustStorage());
+    auto lookup = query_api->consensus_query_pbft_block_hash_by_period(period);
+    if (!lookup.found) {
+      return std::nullopt;
+    }
+    return hashFromBridge(lookup.hash);
+#endif
+    auto pbft_block = db->getPbftBlock(period);
     if (!pbft_block) {
       return std::nullopt;
     }
@@ -169,13 +194,33 @@ QueryDagBlockReader makeQueryDagBlockReader(const std::shared_ptr<::taraxa::fina
     if (!db) {
       return std::vector<std::shared_ptr<::taraxa::DagBlock>>{};
     }
-    return db->getDagBlocksAtLevel(level, 1);  // RUSTAXA_QUERY_COMPAT_READ
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(db->rustStorage());
+    auto views = query_api->consensus_query_dag_blocks_by_level(level, 1);
+    std::vector<std::shared_ptr<::taraxa::DagBlock>> blocks;
+    blocks.reserve(views.size());
+    for (const auto& view : views) {
+      blocks.emplace_back(materializeDagBlockView(view));
+    }
+    return blocks;
+#endif
+    return db->getDagBlocksAtLevel(level, 1);
   };
   reader.finalized_blocks_by_period = [db](uint64_t period) {
     if (!db) {
       return std::vector<std::shared_ptr<::taraxa::DagBlock>>{};
     }
-    return db->getFinalizedDagBlockByPeriod(period);  // RUSTAXA_QUERY_COMPAT_READ
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(db->rustStorage());
+    auto views = query_api->consensus_query_finalized_dag_blocks_by_period(period);
+    std::vector<std::shared_ptr<::taraxa::DagBlock>> blocks;
+    blocks.reserve(views.size());
+    for (const auto& view : views) {
+      blocks.emplace_back(materializeDagBlockView(view));
+    }
+    return blocks;
+#endif
+    return db->getFinalizedDagBlockByPeriod(period);
   };
   return reader;
 }
@@ -311,10 +356,6 @@ constexpr uint8_t kConsensusQueryTransactionSourcePending = 1;
 constexpr uint8_t kConsensusQueryTransactionSourceFinalizedRegular = 2;
 constexpr uint8_t kConsensusQueryTransactionSourceFinalizedSystem = 3;
 
-dev::h256 hashFromBridge(const std::array<uint8_t, 32>& hash) {
-  return dev::h256(hash.data(), dev::h256::ConstructFromPointer);
-}
-
 dev::Address addressFromBridge(const std::array<uint8_t, 20>& address) {
   return dev::Address(address.data(), dev::Address::ConstructFromPointer);
 }
@@ -370,10 +411,10 @@ std::shared_ptr<::taraxa::final_chain::BlockHeader> blockHeaderFromView(const ru
 Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
              std::shared_ptr<::taraxa::DagManager> dag_manager, std::shared_ptr<::taraxa::PbftManager> pbft_manager,
              std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
-             std::shared_ptr<::taraxa::DbStorage> db,  // RUSTAXA_QUERY_COMPAT_READ: GraphQL query storage owner.
+             std::shared_ptr<::taraxa::DbStorage> db,
              std::shared_ptr<::taraxa::GasPricer> gas_pricer, std::weak_ptr<::taraxa::Network> network,
              uint64_t chain_id, ::taraxa::net::LiveStatusReader live_status) noexcept
-    : db_(std::move(db)),  // RUSTAXA_QUERY_COMPAT_READ: GraphQL query compatibility storage owner.
+    : db_(std::move(db)),
       kChainId(chain_id),
       account_reader_(makeAccountStateReader(final_chain)),
       block_reader_(makeQueryBlockReader(final_chain, db_)),
