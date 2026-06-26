@@ -1,6 +1,8 @@
 #pragma once
 
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "AccountObject.h"
@@ -9,11 +11,25 @@
 
 namespace graphql::taraxa {
 
+// AccountStateReader is GraphQL's minimal account-state boundary. Callers provide
+// account, code, storage, and finalized-block facts for one requested block
+// context; missing accounts are represented by std::nullopt, while field-level
+// read failures keep the existing exception behavior of the backing adapter.
+struct AccountStateReader {
+  std::function<std::optional<::taraxa::state_api::Account>(const dev::Address&, std::optional<::taraxa::EthBlockNumber>)>
+      account_at;
+  std::function<dev::h256(const dev::Address&, const dev::u256&, std::optional<::taraxa::EthBlockNumber>)> storage_at;
+  std::function<dev::bytes(const dev::Address&, std::optional<::taraxa::EthBlockNumber>)> code_at;
+  std::function<::taraxa::EthBlockNumber()> latest_finalized_block_number;
+};
+
 class Account {
  public:
   explicit Account(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain, dev::Address address,
                    ::taraxa::EthBlockNumber blk_n);
   explicit Account(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain, dev::Address address);
+  explicit Account(AccountStateReader reader, dev::Address address, ::taraxa::EthBlockNumber blk_n);
+  explicit Account(AccountStateReader reader, dev::Address address);
 
   response::Value getAddress() const noexcept;
   response::Value getBalance() const noexcept;
@@ -24,6 +40,7 @@ class Account {
  private:
   const dev::Address kAddress;
   std::optional<::taraxa::state_api::Account> account_;
-  std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain_;
+  AccountStateReader reader_;
+  std::optional<::taraxa::EthBlockNumber> block_number_;
 };
 }  // namespace graphql::taraxa

@@ -3,6 +3,7 @@
 #include <libdevcore/Common.h>
 #include <libdevcore/CommonJS.h>
 
+#include "graphql/account.hpp"
 #include "network/rpc/eth/Eth.h"
 #include "test_util/samples.hpp"
 
@@ -307,6 +308,45 @@ TEST_F(RPCTest, eth_account_state_uses_query_callbacks) {
   EXPECT_EQ(dev::toJS(account.balance), eth_json_rpc->eth_getBalance(address.toString(), hash_block));
 }
 #endif
+
+TEST_F(RPCTest, graphql_account_uses_query_callbacks) {
+  const auto address = dev::KeyPair::create().address();
+  constexpr EthBlockNumber kLatestBlock = 9;
+  constexpr EthBlockNumber kAccountBlock = 3;
+
+  state_api::Account account;
+  account.balance = 1001;
+  account.nonce = 17;
+
+  graphql::taraxa::AccountStateReader reader;
+  reader.account_at = [address, account, kAccountBlock](const dev::Address& requested_address,
+                                                        std::optional<EthBlockNumber> block_number) {
+    EXPECT_EQ(address, requested_address);
+    EXPECT_EQ(kAccountBlock, block_number.value());
+    return std::optional<state_api::Account>(account);
+  };
+  reader.storage_at = [address, kAccountBlock](const dev::Address& requested_address, const dev::u256& key,
+                                               std::optional<EthBlockNumber> block_number) {
+    EXPECT_EQ(address, requested_address);
+    EXPECT_EQ(dev::u256(4), key);
+    EXPECT_EQ(kAccountBlock, block_number.value());
+    return dev::h256(0x44);
+  };
+  reader.code_at = [address, kAccountBlock](const dev::Address& requested_address,
+                                            std::optional<EthBlockNumber> block_number) {
+    EXPECT_EQ(address, requested_address);
+    EXPECT_EQ(kAccountBlock, block_number.value());
+    return dev::bytes{0x60, 0x02};
+  };
+  reader.latest_finalized_block_number = [] { return kLatestBlock; };
+
+  graphql::taraxa::Account graphql_account(std::move(reader), address, kAccountBlock);
+  EXPECT_EQ(dev::toJS(account.balance), graphql_account.getBalance().get<std::string>());
+  EXPECT_EQ(static_cast<int>(account.nonce), graphql_account.getTransactionCount().get<int>());
+  EXPECT_EQ(dev::toJS(dev::bytes{0x60, 0x02}), graphql_account.getCode().get<std::string>());
+  EXPECT_EQ(dev::toJS(dev::h256(0x44)),
+            graphql_account.getStorage(graphql::response::Value("0x4")).get<std::string>());
+}
 
 TEST_F(RPCTest, transaction_json) {
   auto nonce = 0;

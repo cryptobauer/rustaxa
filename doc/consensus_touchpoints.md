@@ -520,6 +520,10 @@ Implemented first slice:
   ETH account-state callbacks in Rust mode instead of directly reading `FinalChain` from the public RPC object. The
   callbacks are intentionally backed by the existing FinalChain external-state adapter because account state, storage
   slots, and code bytes remain on the external EVM/StateAPI boundary rather than Rust consensus storage.
+- GraphQL `Account` materialization now uses a local `AccountStateReader` callback bundle for account, code, storage,
+  and latest finalized block facts instead of letting account field resolvers call `FinalChain` directly. The default
+  reader is backed by the existing FinalChain external-state adapter, preserving the external EVM/StateAPI boundary
+  while giving GraphQL a narrow account-state API surface.
 - `taraxa_getPeriodLambda` now uses `ConsensusQueryApi` in Rust mode for exact persisted dynamic-lambda lookup instead
   of reading the metadata column through `DbStorage` directly.
 - `taraxa_getChainStats` now uses `ConsensusQueryApi` in Rust mode for latest finalized period and executed
@@ -535,8 +539,8 @@ Implemented first slice:
 - The first `FinalChainBlockView` route returns finalized block number/hash, stored header roots, bloom/gas/reward facts,
   canonical stored-header bytes, and optional PBFT hash. It intentionally does not expand transactions, receipts, logs,
   account state, DPoS snapshots, or external `StateAPI` reads.
-- GraphQL account-state, live subscription log delivery, debug log filtering, and live sync/status routes remain
-  compatibility or typed-storage routes until they are moved behind dedicated query APIs in later slices.
+- Live subscription log delivery, debug log filtering, and live sync/status routes remain compatibility or typed-storage
+  routes until they are moved behind dedicated query APIs in later slices.
 
 ## Consensus Internal
 
