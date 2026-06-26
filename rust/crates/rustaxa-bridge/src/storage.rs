@@ -971,7 +971,7 @@ fn decode_pbft_extra_data(
         Err(_) => return Ok(empty_pbft_extra_data_view()),
     };
     let pillar_block_hash = match rlp.at(5).and_then(|value| value.data()) {
-        Ok(data) if data.is_empty() => None,
+        Ok([]) => None,
         Ok(data) if data.len() == 32 => Some(H256::from_slice(data)),
         Ok(_) => return Ok(empty_pbft_extra_data_view()),
         Err(_) => return Ok(empty_pbft_extra_data_view()),

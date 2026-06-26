@@ -442,7 +442,7 @@ fn decode_pbft_extra_data(bytes: &[u8]) -> Result<PbftBlockExtraDataView> {
         Err(_) => return Ok(PbftBlockExtraDataView::default()),
     };
     let pillar_block_hash = match rlp.at(5).and_then(|value| value.data()) {
-        Ok(data) if data.is_empty() => None,
+        Ok([]) => None,
         Ok(data) if data.len() == 32 => Some(H256::from_slice(data)),
         Ok(_) => return Ok(PbftBlockExtraDataView::default()),
         Err(_) => return Ok(PbftBlockExtraDataView::default()),
