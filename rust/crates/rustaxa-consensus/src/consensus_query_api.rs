@@ -16,6 +16,7 @@ use rustaxa_types::codec::rlp::final_chain::StoredBlockHeaderRlp;
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::dag::DagBlock;
 use rustaxa_types::final_chain::StoredFinalChainBlockHeader;
+use rustaxa_types::pillar::{PillarBlockData, RawPillarBlockData};
 use rustaxa_vdf::vdf_sortition::decode_vdf_sortition_payload;
 use std::sync::Arc;
 use tiny_keccak::{Hasher, Keccak};
@@ -34,6 +35,7 @@ const PBFT_SIGNATURE_WITH_EXTRA_POS: usize = 8;
 const PBFT_SIGNATURE_WITHOUT_EXTRA_POS: usize = 7;
 const PBFT_EXTRA_DATA_FIELDS: usize = 6;
 const PBFT_EXTRA_DATA_MAX_SIZE: usize = 1024;
+const PILLAR_VOTES_POS_IN_PERIOD_DATA: usize = 4;
 
 /// Hash lookup result returned by public query facade methods.
 ///
@@ -146,6 +148,39 @@ pub struct PbftScheduleBlockView {
     pub dag_blocks_order: Vec<[u8; 32]>,
 }
 
+/// Public/query view for one pillar validator vote-count delta.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PillarBlockViewVoteCountChange {
+    pub address: [u8; 20],
+    pub vote_count_change: i32,
+}
+
+/// Public/query view for one compact pillar-vote signature.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PillarBlockViewSignature {
+    pub r: [u8; 32],
+    pub vs: [u8; 32],
+}
+
+/// Stable public view of stored pillar block data.
+///
+/// The view combines the finalized pillar block stored for `pbft_period` with
+/// the optimized pillar-vote bundle stored in the following period data row. It
+/// carries only the fields required by `taraxa_getPillarBlockData` and avoids
+/// exposing storage handles, raw period data, or C++ pillar objects.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PillarBlockDataView {
+    pub found: bool,
+    pub pbft_period: u64,
+    pub state_root: [u8; 32],
+    pub previous_pillar_block_hash: [u8; 32],
+    pub bridge_root: [u8; 32],
+    pub epoch: u64,
+    pub validator_vote_count_changes: Vec<PillarBlockViewVoteCountChange>,
+    pub block_hash: [u8; 32],
+    pub signatures: Vec<PillarBlockViewSignature>,
+}
+
 /// Read-only public query facade over Rust consensus storage.
 ///
 /// The API owns only a cloned Rust storage handle. It does not own RPC/GraphQL
@@ -237,6 +272,51 @@ impl ConsensusQueryApi {
             has_pbft_hash: pbft_hash.found,
             pbft_block_hash: pbft_hash.hash,
         })
+    }
+
+    /// Returns stored pillar block data for a finalized pillar period.
+    ///
+    /// Missing pillar block bytes, missing following period data, or an empty
+    /// pillar-vote bundle return `found == false`. Malformed pillar block or
+    /// vote bytes are returned as errors so public adapters can preserve their
+    /// existing invalid-params behavior.
+    pub fn pillar_block_data_by_period(&self, period: u64) -> Result<PillarBlockDataView> {
+        let Some(pillar_block_rlp) = self.storage.pillar().rlp(period)? else {
+            return Ok(PillarBlockDataView::default());
+        };
+        let votes_period = period
+            .checked_add(1)
+            .context("CONSENSUS_QUERY_PILLAR_VOTES_PERIOD_OVERFLOW")?;
+        let period_data = self
+            .storage
+            .period()
+            .data_raw(votes_period)
+            .context("CONSENSUS_QUERY_PILLAR_PERIOD_DATA")?;
+        if period_data.is_empty() {
+            return Ok(PillarBlockDataView::default());
+        }
+
+        let period_rlp = Rlp::new(&period_data);
+        if period_rlp.item_count()? <= PILLAR_VOTES_POS_IN_PERIOD_DATA {
+            return Ok(PillarBlockDataView::default());
+        }
+        let votes = period_rlp
+            .at(PILLAR_VOTES_POS_IN_PERIOD_DATA)
+            .context("CONSENSUS_QUERY_PILLAR_VOTES")?;
+        if votes.item_count()? == 0 {
+            return Ok(PillarBlockDataView::default());
+        }
+
+        let block_data_rlp = RawPillarBlockData {
+            pillar_block_rlp,
+            pillar_votes_bundle_rlp: votes.as_raw().to_vec(),
+        }
+        .encode_rlp()
+        .context("CONSENSUS_QUERY_PILLAR_BLOCK_DATA_RLP")?;
+        let block_data = PillarBlockData::decode_rlp(&block_data_rlp)
+            .context("CONSENSUS_QUERY_PILLAR_BLOCK_DATA_DECODE")?;
+
+        Ok(pillar_block_data_view(block_data))
     }
 
     /// Returns a public DAG block view by block hash.
@@ -490,6 +570,36 @@ fn dag_bundle_is_empty(bundle: &Rlp<'_>) -> Result<bool> {
     Ok(bundle.data()?.is_empty())
 }
 
+fn pillar_block_data_view(block_data: PillarBlockData) -> PillarBlockDataView {
+    let block_hash = block_data.pillar_block.hash();
+    PillarBlockDataView {
+        found: true,
+        pbft_period: block_data.pillar_block.period,
+        state_root: block_data.pillar_block.state_root.into(),
+        previous_pillar_block_hash: block_data.pillar_block.previous_pillar_block_hash.into(),
+        bridge_root: block_data.pillar_block.bridge_root.into(),
+        epoch: block_data.pillar_block.epoch,
+        validator_vote_count_changes: block_data
+            .pillar_block
+            .validator_vote_count_changes
+            .into_iter()
+            .map(|change| PillarBlockViewVoteCountChange {
+                address: change.address.into(),
+                vote_count_change: change.vote_count_change,
+            })
+            .collect(),
+        block_hash: block_hash.into(),
+        signatures: block_data
+            .pillar_votes
+            .into_iter()
+            .map(|vote| {
+                let (r, vs) = vote.compact_signature_words();
+                PillarBlockViewSignature { r, vs }
+            })
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -498,6 +608,9 @@ mod tests {
     use rlp::RlpStream;
     use rustaxa_storage::Config;
     use rustaxa_types::codec::rlp::final_chain::StoredBlockHeaderRlpOwned;
+    use rustaxa_types::pillar::{
+        PillarBlock, PillarVote, ValidatorVoteCountChange, encode_optimized_pillar_votes_bundle_rlp,
+    };
     use std::sync::Arc;
 
     fn test_storage(name: &str) -> (std::path::PathBuf, Arc<Storage>) {
@@ -534,6 +647,22 @@ mod tests {
         stream.append_raw(&[0xC0], 1);
         stream.append_raw(&[0xC0], 1);
         stream.out().to_vec()
+    }
+
+    fn period_data_with_pillar_votes_rlp(votes_bundle_rlp: &[u8]) -> Vec<u8> {
+        let mut stream = RlpStream::new_list(5);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(votes_bundle_rlp, 1);
+        stream.out().to_vec()
+    }
+
+    fn signature(value: u8) -> [u8; 65] {
+        let mut signature = [value; 65];
+        signature[64] = value & 1;
+        signature
     }
 
     fn signed_pbft_block_rlp(signing_key: &SigningKey) -> Vec<u8> {
@@ -703,6 +832,63 @@ mod tests {
             H256::from_low_u64_be(55).0
         );
         assert!(view.dag_blocks_order.is_empty());
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn query_api_reads_pillar_block_data_view_from_storage() {
+        let (path, storage) = test_storage("pillar_block_data_view");
+        let api = ConsensusQueryApi::new(storage.clone());
+        let block = PillarBlock {
+            period: 10,
+            state_root: H256::from_low_u64_be(0x10),
+            previous_pillar_block_hash: H256::from_low_u64_be(0x11),
+            bridge_root: H256::from_low_u64_be(0x12),
+            epoch: 13,
+            validator_vote_count_changes: vec![ValidatorVoteCountChange {
+                address: H160::from([0x14; 20]),
+                vote_count_change: -7,
+            }],
+        };
+        let vote = PillarVote {
+            period: 11,
+            block_hash: block.hash(),
+            signature: signature(0x21),
+        };
+        let votes_bundle_rlp =
+            encode_optimized_pillar_votes_bundle_rlp(std::slice::from_ref(&vote)).unwrap();
+
+        storage.pillar().write(10, &block.encode_rlp()).unwrap();
+        storage
+            .period()
+            .write(11, &period_data_with_pillar_votes_rlp(&votes_bundle_rlp))
+            .unwrap();
+
+        let view = api.pillar_block_data_by_period(10).unwrap();
+        assert!(view.found);
+        assert_eq!(view.pbft_period, 10);
+        assert_eq!(view.state_root, H256::from_low_u64_be(0x10).0);
+        assert_eq!(
+            view.previous_pillar_block_hash,
+            H256::from_low_u64_be(0x11).0
+        );
+        assert_eq!(view.bridge_root, H256::from_low_u64_be(0x12).0);
+        assert_eq!(view.epoch, 13);
+        assert_eq!(view.block_hash, <[u8; 32]>::from(block.hash()));
+        assert_eq!(view.validator_vote_count_changes.len(), 1);
+        assert_eq!(
+            view.validator_vote_count_changes[0].address,
+            H160::from([0x14; 20]).0
+        );
+        assert_eq!(view.validator_vote_count_changes[0].vote_count_change, -7);
+        assert_eq!(view.signatures.len(), 1);
+        let (r, vs) = vote.compact_signature_words();
+        assert_eq!(view.signatures[0].r, r);
+        assert_eq!(view.signatures[0].vs, vs);
+
+        assert!(!api.pillar_block_data_by_period(12).unwrap().found);
 
         drop(storage);
         let _ = std::fs::remove_dir_all(path);

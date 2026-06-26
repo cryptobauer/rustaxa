@@ -5033,6 +5033,10 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusQueryApi,
             period: u64,
         ) -> Result<PbftScheduleBlockView>;
+        pub fn consensus_query_pillar_block_data_by_period(
+            self: &BridgeConsensusQueryApi,
+            period: u64,
+        ) -> Result<PillarBlockDataView>;
         pub fn consensus_query_dag_block_by_hash(
             self: &BridgeConsensusQueryApi,
             hash: &[u8; 32],
@@ -7097,10 +7101,6 @@ pub mod rustaxa_ffi {
             self: &BridgePillarChainStorage,
             period: u64,
         ) -> Result<Vec<u8>>;
-        pub fn pillar_chain_storage_block_data_view(
-            self: &BridgePillarChainStorage,
-            period: u64,
-        ) -> Result<PillarBlockDataView>;
 
         // Consensus sortition
 

@@ -85,6 +85,48 @@ fn pbft_schedule_block_view_to_ffi(
     }
 }
 
+fn pillar_vote_count_change_to_ffi(
+    change: rustaxa_consensus::PillarBlockViewVoteCountChange,
+) -> rustaxa_ffi::PillarBlockViewVoteCountChange {
+    rustaxa_ffi::PillarBlockViewVoteCountChange {
+        address: change.address,
+        vote_count_change: change.vote_count_change,
+    }
+}
+
+fn pillar_signature_to_ffi(
+    signature: rustaxa_consensus::PillarBlockViewSignature,
+) -> rustaxa_ffi::PillarBlockViewSignature {
+    rustaxa_ffi::PillarBlockViewSignature {
+        r: signature.r,
+        vs: signature.vs,
+    }
+}
+
+fn pillar_block_data_view_to_ffi(
+    view: rustaxa_consensus::PillarBlockDataView,
+) -> rustaxa_ffi::PillarBlockDataView {
+    rustaxa_ffi::PillarBlockDataView {
+        found: view.found,
+        pbft_period: view.pbft_period,
+        state_root: view.state_root,
+        previous_pillar_block_hash: view.previous_pillar_block_hash,
+        bridge_root: view.bridge_root,
+        epoch: view.epoch,
+        validator_vote_count_changes: view
+            .validator_vote_count_changes
+            .into_iter()
+            .map(pillar_vote_count_change_to_ffi)
+            .collect(),
+        block_hash: view.block_hash,
+        signatures: view
+            .signatures
+            .into_iter()
+            .map(pillar_signature_to_ffi)
+            .collect(),
+    }
+}
+
 fn dag_block_view_to_ffi(view: rustaxa_consensus::DagBlockView) -> rustaxa_ffi::DagBlockPublicView {
     rustaxa_ffi::DagBlockPublicView {
         found: view.found,
@@ -146,6 +188,16 @@ impl BridgeConsensusQueryApi {
         ))
     }
 
+    /// Returns a stable pillar block-data public view by finalized pillar period.
+    pub fn consensus_query_pillar_block_data_by_period(
+        &self,
+        period: u64,
+    ) -> Result<rustaxa_ffi::PillarBlockDataView, anyhow::Error> {
+        Ok(pillar_block_data_view_to_ffi(
+            self.0.pillar_block_data_by_period(period)?,
+        ))
+    }
+
     /// Returns a stable DAG public block view by block hash.
     pub fn consensus_query_dag_block_by_hash(
         &self,
@@ -172,11 +224,14 @@ impl BridgeConsensusQueryApi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ethereum_types::{H256, U256};
+    use ethereum_types::{H160, H256, U256};
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
     use rustaxa_types::codec::rlp::final_chain::StoredBlockHeaderRlpOwned;
     use rustaxa_types::final_chain::StoredFinalChainBlockHeader;
+    use rustaxa_types::pillar::{
+        encode_optimized_pillar_votes_bundle_rlp, PillarBlock, PillarVote, ValidatorVoteCountChange,
+    };
 
     fn period_data_rlp(pbft_block_rlp: &[u8]) -> Vec<u8> {
         let mut stream = RlpStream::new_list(5);
@@ -201,6 +256,22 @@ mod tests {
         stream.append_raw(&[0xC0], 1);
         stream.append_raw(&[0xC0], 1);
         stream.out().to_vec()
+    }
+
+    fn period_data_with_pillar_votes_rlp(votes_bundle_rlp: &[u8]) -> Vec<u8> {
+        let mut stream = RlpStream::new_list(5);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(votes_bundle_rlp, 1);
+        stream.out().to_vec()
+    }
+
+    fn signature(value: u8) -> [u8; 65] {
+        let mut signature = [value; 65];
+        signature[64] = value & 1;
+        signature
     }
 
     fn signed_pbft_block_rlp(signing_key: &SigningKey) -> Vec<u8> {
@@ -368,6 +439,75 @@ mod tests {
 
         assert!(
             !api.consensus_query_pbft_schedule_block_by_period(8)
+                .unwrap()
+                .found
+        );
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_consensus_query_api_reads_pillar_block_data_view() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "rustaxa_bridge_consensus_query_api_pillar_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let storage =
+            crate::storage::create_storage(temp_dir.to_str().expect("utf8 temp path")).unwrap();
+        let api = create_consensus_query_api(&storage);
+        let pillar_storage = crate::pillar_chain::create_pillar_chain_storage(&storage);
+        let block = PillarBlock {
+            period: 10,
+            state_root: H256::from_low_u64_be(0x10),
+            previous_pillar_block_hash: H256::from_low_u64_be(0x11),
+            bridge_root: H256::from_low_u64_be(0x12),
+            epoch: 13,
+            validator_vote_count_changes: vec![ValidatorVoteCountChange {
+                address: H160::from([0x14; 20]),
+                vote_count_change: -7,
+            }],
+        };
+        let vote = PillarVote {
+            period: 11,
+            block_hash: block.hash(),
+            signature: signature(0x21),
+        };
+        let votes_bundle_rlp =
+            encode_optimized_pillar_votes_bundle_rlp(std::slice::from_ref(&vote)).unwrap();
+
+        pillar_storage
+            .pillar_chain_storage_apply_finalized_block(10, block.encode_rlp())
+            .unwrap();
+        storage
+            .save_period_data(11, period_data_with_pillar_votes_rlp(&votes_bundle_rlp))
+            .unwrap();
+
+        let view = api.consensus_query_pillar_block_data_by_period(10).unwrap();
+        assert!(view.found);
+        assert_eq!(view.pbft_period, 10);
+        assert_eq!(view.state_root, H256::from_low_u64_be(0x10).0);
+        assert_eq!(
+            view.previous_pillar_block_hash,
+            H256::from_low_u64_be(0x11).0
+        );
+        assert_eq!(view.bridge_root, H256::from_low_u64_be(0x12).0);
+        assert_eq!(view.epoch, 13);
+        assert_eq!(view.block_hash, <[u8; 32]>::from(block.hash()));
+        assert_eq!(view.validator_vote_count_changes.len(), 1);
+        assert_eq!(
+            view.validator_vote_count_changes[0].address,
+            H160::from([0x14; 20]).0
+        );
+        assert_eq!(view.validator_vote_count_changes[0].vote_count_change, -7);
+        assert_eq!(view.signatures.len(), 1);
+        let (r, vs) = vote.compact_signature_words();
+        assert_eq!(view.signatures[0].r, r);
+        assert_eq!(view.signatures[0].vs, vs);
+
+        assert!(
+            !api.consensus_query_pillar_block_data_by_period(12)
                 .unwrap()
                 .found
         );

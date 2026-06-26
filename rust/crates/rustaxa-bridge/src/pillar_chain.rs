@@ -10,13 +10,10 @@
 use crate::ffi::rustaxa_ffi::{
     PillarBlockCreationFact as FfiPillarBlockCreationFact,
     PillarBlockCreationPlan as FfiPillarBlockCreationPlan,
-    PillarBlockDataView as FfiPillarBlockDataView,
     PillarBlockFinalizationFact as FfiPillarBlockFinalizationFact,
     PillarBlockFinalizationPlan as FfiPillarBlockFinalizationPlan,
     PillarBlockLinkageFact as FfiPillarBlockLinkageFact,
     PillarBlockLinkagePlan as FfiPillarBlockLinkagePlan,
-    PillarBlockViewSignature as FfiPillarBlockViewSignature,
-    PillarBlockViewVoteCountChange as FfiPillarBlockViewVoteCountChange,
     PillarValidatorVoteCount as FfiPillarValidatorVoteCount,
     PillarValidatorVoteCountChange as FfiPillarValidatorVoteCountChange,
 };
@@ -44,7 +41,7 @@ use rustaxa_consensus::{
     PillarValidatorVoteCount as ConsensusPillarValidatorVoteCount,
     PillarValidatorVoteCountChange as ConsensusPillarValidatorVoteCountChange,
 };
-use rustaxa_types::pillar::{PillarBlockData, RawPillarBlockData};
+use rustaxa_types::pillar::RawPillarBlockData;
 
 const PILLAR_VOTES_POS_IN_PERIOD_DATA: usize = 4;
 
@@ -157,80 +154,6 @@ impl BridgePillarChainStorage {
             pillar_votes_bundle_rlp: votes.as_raw().to_vec(),
         }
         .encode_rlp()
-    }
-
-    /// Returns a Rust-decoded public/query view for pillar block data.
-    ///
-    /// Inputs:
-    /// - `period`: pillar block period requested by the RPC caller.
-    ///
-    /// Outputs:
-    /// - `found == false` when either the pillar block or the following
-    ///   period's finalized pillar-vote bundle is absent.
-    /// - Otherwise a bridge-safe view containing the exact data needed to
-    ///   preserve legacy `PillarBlockData::getJson()` output without
-    ///   materializing C++ `PillarBlockData`, `PillarBlock`, or `PillarVote`
-    ///   objects.
-    ///
-    /// Invariants and edge behavior:
-    /// - Malformed stored pillar data is returned as an error so the C++ RPC
-    ///   layer preserves its existing invalid-params behavior.
-    /// - Signature words use the same compact `(r, vs)` format as C++
-    ///   `CompactSignatureStruct`.
-    pub fn pillar_chain_storage_block_data_view(
-        &self,
-        period: u64,
-    ) -> Result<FfiPillarBlockDataView> {
-        let block_data_rlp = self.pillar_chain_storage_block_data_rlp(period)?;
-        if block_data_rlp.is_empty() {
-            return Ok(empty_pillar_block_data_view());
-        }
-        let block_data = PillarBlockData::decode_rlp(&block_data_rlp)?;
-        Ok(pillar_block_data_view(block_data))
-    }
-}
-
-fn empty_pillar_block_data_view() -> FfiPillarBlockDataView {
-    FfiPillarBlockDataView {
-        found: false,
-        pbft_period: 0,
-        state_root: [0; 32],
-        previous_pillar_block_hash: [0; 32],
-        bridge_root: [0; 32],
-        epoch: 0,
-        validator_vote_count_changes: Vec::new(),
-        block_hash: [0; 32],
-        signatures: Vec::new(),
-    }
-}
-
-fn pillar_block_data_view(block_data: PillarBlockData) -> FfiPillarBlockDataView {
-    let block_hash = block_data.pillar_block.hash();
-    FfiPillarBlockDataView {
-        found: true,
-        pbft_period: block_data.pillar_block.period,
-        state_root: block_data.pillar_block.state_root.into(),
-        previous_pillar_block_hash: block_data.pillar_block.previous_pillar_block_hash.into(),
-        bridge_root: block_data.pillar_block.bridge_root.into(),
-        epoch: block_data.pillar_block.epoch,
-        validator_vote_count_changes: block_data
-            .pillar_block
-            .validator_vote_count_changes
-            .into_iter()
-            .map(|change| FfiPillarBlockViewVoteCountChange {
-                address: change.address.into(),
-                vote_count_change: change.vote_count_change,
-            })
-            .collect(),
-        block_hash: block_hash.into(),
-        signatures: block_data
-            .pillar_votes
-            .into_iter()
-            .map(|vote| {
-                let (r, vs) = vote.compact_signature_words();
-                FfiPillarBlockViewSignature { r, vs }
-            })
-            .collect(),
     }
 }
 
@@ -438,12 +361,6 @@ mod tests {
 
     fn hash(value: u64) -> [u8; 32] {
         H256::from_low_u64_be(value).into()
-    }
-
-    fn signature(value: u8) -> [u8; 65] {
-        let mut signature = [value; 65];
-        signature[64] = value & 1;
-        signature
     }
 
     fn period_data_with_pillar_votes_rlp(votes_bundle_rlp: &[u8]) -> Vec<u8> {
@@ -686,72 +603,6 @@ mod tests {
             let decoded = RawPillarBlockData::decode_rlp(&encoded).expect("wrapper should decode");
             assert_eq!(decoded.pillar_block_rlp, pillar_block_rlp);
             assert_eq!(decoded.pillar_votes_bundle_rlp, votes_bundle_rlp);
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_pillar_storage_block_data_view_matches_json_contract_facts() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_storage_block_data_view");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            let pillar_storage = create_pillar_chain_storage(&storage);
-
-            let block = rustaxa_types::pillar::PillarBlock {
-                period: 10,
-                state_root: H256::from(hash(0x10)),
-                previous_pillar_block_hash: H256::from(hash(0x11)),
-                bridge_root: H256::from(hash(0x12)),
-                epoch: 13,
-                validator_vote_count_changes: vec![
-                    rustaxa_types::pillar::ValidatorVoteCountChange {
-                        address: H160::from(addr(0x14)),
-                        vote_count_change: -7,
-                    },
-                ],
-            };
-            let vote = rustaxa_types::pillar::PillarVote {
-                period: 11,
-                block_hash: block.hash(),
-                signature: signature(0x21),
-            };
-            let votes_bundle_rlp =
-                rustaxa_types::pillar::encode_optimized_pillar_votes_bundle_rlp(&[vote.clone()])
-                    .expect("vote bundle should encode");
-
-            pillar_storage
-                .pillar_chain_storage_apply_finalized_block(10, block.encode_rlp())
-                .expect("pillar block should persist");
-            storage
-                .save_period_data(11, period_data_with_pillar_votes_rlp(&votes_bundle_rlp))
-                .expect("period data should persist");
-
-            let view = pillar_storage
-                .pillar_chain_storage_block_data_view(10)
-                .expect("query view should decode");
-            assert!(view.found);
-            assert_eq!(view.pbft_period, 10);
-            assert_eq!(view.state_root, hash(0x10));
-            assert_eq!(view.previous_pillar_block_hash, hash(0x11));
-            assert_eq!(view.bridge_root, hash(0x12));
-            assert_eq!(view.epoch, 13);
-            assert_eq!(view.block_hash, <[u8; 32]>::from(block.hash()));
-            assert_eq!(view.validator_vote_count_changes.len(), 1);
-            assert_eq!(view.validator_vote_count_changes[0].address, addr(0x14));
-            assert_eq!(view.validator_vote_count_changes[0].vote_count_change, -7);
-            assert_eq!(view.signatures.len(), 1);
-            let (r, vs) = vote.compact_signature_words();
-            assert_eq!(view.signatures[0].r, r);
-            assert_eq!(view.signatures[0].vs, vs);
-
-            let missing = pillar_storage
-                .pillar_chain_storage_block_data_view(12)
-                .expect("missing query should succeed");
-            assert!(!missing.found);
-            assert!(missing.signatures.is_empty());
         }
 
         let _ = fs::remove_dir_all(temp_dir);
